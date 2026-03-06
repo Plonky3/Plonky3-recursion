@@ -5,9 +5,8 @@ use p3_challenger::{CanObserve, CanSampleBits, FieldChallenger, GrindingChalleng
 use p3_circuit::CircuitBuilder;
 use p3_circuit::ops::generate_poseidon2_trace;
 use p3_commit::Pcs;
-use p3_dft::Radix2DitParallel as Dft;
+use p3_dft::Radix2DitParallel;
 use p3_field::coset::TwoAdicMultiplicativeCoset;
-use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
 use p3_fri::create_test_fri_params;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_poseidon2_circuit_air::BabyBearD4Width16;
@@ -18,10 +17,9 @@ use p3_recursion::pcs::fri::{
 };
 use p3_recursion::public_inputs::{CommitmentOpening, FriVerifierInputs};
 use p3_recursion::{Poseidon2Config, Recursive};
+use p3_test_utils::baby_bear_params::*;
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
-
-use crate::common::baby_bear_params::*;
 
 type RecVal = RecValMmcs<F, 8, MyHash, MyCompress>;
 type RecExt = RecExtensionValMmcs<F, Challenge, 8, RecVal>;
@@ -120,7 +118,9 @@ fn produce_inputs_multi(
     p_challenger.observe_slice(&val_sizes);
 
     // Commit each group and observe all commitments before sampling zeta
-    let mut commitments_and_data = Vec::new();
+    type MyCommitment = <MyPcs as Pcs<Challenge, Challenger>>::Commitment;
+    type MyProverData = <MyPcs as Pcs<Challenge, Challenger>>::ProverData;
+    let mut commitments_and_data: Vec<(MyCommitment, MyProverData)> = Vec::new();
     for evals in &groups_evals {
         let (commitment, prover_data) =
             <MyPcs as Pcs<Challenge, Challenger>>::commit(pcs, evals.clone());
@@ -139,7 +139,8 @@ fn produce_inputs_multi(
     }
 
     // Open and produce FRI proof
-    let (opened_values, fri_proof) =
+    type MyProof = <MyPcs as Pcs<Challenge, Challenger>>::Proof;
+    let (opened_values, fri_proof): (_, MyProof) =
         <MyPcs as Pcs<Challenge, Challenger>>::open(pcs, open_data, &mut p_challenger);
 
     // --- Verifier transcript replay (to derive the public inputs) ---
@@ -335,9 +336,9 @@ fn generate_setup(log_final_poly_len: usize, group_sizes: Vec<Vec<u8>>) -> FriSe
     let perm = default_babybear_poseidon2_16();
     let hash = MyHash::new(perm.clone());
     let compress = MyCompress::new(perm.clone());
-    let val_mmcs = ValMmcs::new(hash, compress, 0);
+    let val_mmcs = MyMmcs::new(hash, compress, 0);
     let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
-    let dft = Dft::<F>::default();
+    let dft = Radix2DitParallel::<F>::default();
 
     let fri_params = create_test_fri_params(challenge_mmcs, log_final_poly_len);
     let log_blowup = fri_params.log_blowup;
@@ -726,7 +727,7 @@ fn run_fri_test_with_mmcs(setup: FriSetup) {
             let siblings: Vec<[Challenge; 2]> = batch_opening
                 .opening_proof
                 .iter()
-                .map(|digest| {
+                .map(|digest: &[F; DIGEST_ELEMS]| {
                     let ext_elements: Vec<Challenge> = digest
                         .chunks(4)
                         .map(|chunk| {
@@ -760,7 +761,7 @@ fn run_fri_test_with_mmcs(setup: FriSetup) {
                     .opening_proof
                     .iter()
                     .take(log_folded_height)
-                    .map(|digest| {
+                    .map(|digest: &[F; DIGEST_ELEMS]| {
                         let ext_elements: Vec<Challenge> = digest
                             .chunks(4)
                             .map(|chunk| {

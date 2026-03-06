@@ -3,10 +3,11 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::iter;
 
-use p3_air::lookup::{Direction, Kind, Lookup};
-use p3_air::{Air, AirBuilder, BaseAir, PermutationAirBuilder, SymbolicExpression};
+use p3_air::{Air, AirBuilder, AirLayout, BaseAir, SymbolicExpression, WindowAccess};
 use p3_circuit::ops::open_input::{OpenInputRow, OpenInputTrace};
 use p3_field::{BasedVectorSpace, ExtensionField, Field, PrimeCharacteristicRing};
+use p3_lookup::LookupAir;
+use p3_lookup::lookup_traits::{Direction, Kind, Lookup};
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_uni_stark::SymbolicAirBuilder;
@@ -219,7 +220,7 @@ impl<F: Field + Sync, const D: usize> BaseAir<F> for OpenInputAir<F, D> {
 }
 
 fn extension_multiplication<AB: AirBuilder, const D: usize>(
-    w_binomial: AB::Expr,
+    w_binomial: &AB::Expr,
     a: &[AB::Expr; D],
     b: &[AB::Expr; D],
 ) -> [AB::Expr; D]
@@ -261,20 +262,12 @@ where
 {
     fn eval(&self, builder: &mut AB) {
         let main = builder.main();
-        debug_assert_eq!(main.width(), self.width(), "column width mismatch");
+        let local = main.current_slice();
+        let next = main.next_slice();
 
-        let local = main.row_slice(0).expect("matrix must be non-empty");
-        let next = main.row_slice(1).expect("matrix must have at least 2 rows");
-
-        let preprocessed = builder
-            .preprocessed()
-            .expect("OpenInputAir requires preprocessed trace");
-        let preprocessed_local = preprocessed
-            .row_slice(0)
-            .expect("preprocessed trace must be non-empty");
-        let preprocessed_next = preprocessed
-            .row_slice(1)
-            .expect("preprocessed trace must have at least 2 rows");
+        let preprocessed = builder.preprocessed().clone();
+        let preprocessed_local = preprocessed.current_slice();
+        let preprocessed_next = preprocessed.next_slice();
 
         // Current row traced columns.
         let w = AB::Expr::from(self.w_binomial);
@@ -320,7 +313,7 @@ where
         }
 
         // Transition recurrence: ro_next = ro * alpha_next + (p_at_z_next - p_at_x_next)
-        let ro_mul_alpha = extension_multiplication::<AB, D>(w, ro, alpha_next);
+        let ro_mul_alpha = extension_multiplication::<AB, D>(&w, ro, alpha_next);
         let p_at_z_minus_pow_at_x_next: [AB::Expr; D] =
             sub_extension::<AB, D>(pow_at_z_next, pow_at_x_next);
         let lhs: [AB::Expr; D] = sub_extension::<AB, D>(ro_next, &p_at_z_minus_pow_at_x_next);
@@ -407,27 +400,32 @@ where
             builder.assert_zero(is_eval.clone() * pow_at_x[j].clone());
         }
     }
+}
 
+impl<F: Field, const D: usize> LookupAir<F> for OpenInputAir<F, D> {
     fn add_lookup_columns(&mut self) -> Vec<usize> {
         let new_idx = self.num_lookup_columns;
         self.num_lookup_columns += 1;
         vec![new_idx]
     }
 
-    fn get_lookups(&mut self) -> Vec<Lookup<<AB>::F>>
-    where
-        AB: PermutationAirBuilder,
-    {
-        let symbolic_air_builder =
-            SymbolicAirBuilder::<AB::F>::new(Self::preprocessed_width(), Self::width(), 0, 0, 0, 0);
+    fn get_lookups(&mut self) -> Vec<Lookup<F>> {
+        let air_layout = AirLayout {
+            preprocessed_width: Self::preprocessed_width(),
+            main_width: Self::width(),
+            num_public_values: 0,
+            permutation_width: 0,
+            num_permutation_challenges: 0,
+            num_permutation_values: 0,
+            num_periodic_columns: 0,
+        };
+        let symbolic_air_builder = SymbolicAirBuilder::<F>::new(air_layout);
 
         let symbolic_main = symbolic_air_builder.main();
-        let symbolic_main_local = symbolic_main.row_slice(0).unwrap().to_vec();
+        let symbolic_main_local = symbolic_main.current_slice();
 
-        let preprocessed = symbolic_air_builder
-            .preprocessed()
-            .expect("Expected preprocessed columns");
-        let preprocessed_local = preprocessed.row_slice(0).unwrap().to_vec();
+        let preprocessed = symbolic_air_builder.preprocessed();
+        let preprocessed_local = preprocessed.current_slice();
         // Preprocessed layout per row (9 columns):
         //   [0] is_last, [1] is_real,
         //   [2] alpha_idx, [3] p_at_x_idx, [4] p_at_z_idx, [5] ro_idx,
@@ -467,14 +465,14 @@ where
         let ro_inputs = iter::once(ro_idx).chain(ro).collect::<Vec<_>>();
 
         let ro_inputs = (ro_inputs, ro_ext_mult, Direction::Receive);
-        let ro_lookup = <Self as Air<AB>>::register_lookup(self, kind.clone(), &[ro_inputs]);
+        let ro_lookup = LookupAir::register_lookup(self, kind.clone(), &[ro_inputs]);
         let mut lookups = vec![];
         lookups.push(ro_lookup);
 
         lookups.extend(
             global_lookups
                 .into_iter()
-                .map(|l| <Self as Air<AB>>::register_lookup(self, kind.clone(), &[l])),
+                .map(|l| LookupAir::register_lookup(self, kind.clone(), &[l])),
         );
 
         lookups

@@ -1,12 +1,9 @@
 mod common;
 
-use p3_air::{Air, BaseAir};
+use p3_air::{Air, BaseAir, RowWindow};
 use p3_circuit::utils::{ColumnsTargets, RowSelectorsTargets};
 use p3_circuit::{CircuitBuilder, CircuitError};
 use p3_circuit_prover::air::{AluAir, ConstAir, PublicAir};
-use p3_commit::ExtensionMmcs;
-use p3_field::PrimeCharacteristicRing;
-use p3_fri::TwoAdicFriPcs;
 use p3_lookup::logup::LogUpGadget;
 use p3_matrix::dense::RowMajorMatrixView;
 use p3_matrix::stack::VerticalPair;
@@ -14,15 +11,14 @@ use p3_poseidon2_air::RoundConstants;
 use p3_poseidon2_circuit_air::Poseidon2CircuitAirBabyBearD4Width16;
 use p3_recursion::traits::{LookupMetadata, RecursiveAir};
 use p3_recursion::types::RecursiveLagrangeSelectors;
-use p3_uni_stark::{StarkConfig, SymbolicAirBuilder, VerifierConstraintFolder};
+use p3_test_utils::baby_bear_params::*;
+use p3_uni_stark::{SymbolicAirBuilder, VerifierConstraintFolder};
 use rand::rngs::SmallRng;
 use rand::{Rng, RngExt, SeedableRng};
 
-use crate::common::baby_bear_params::*;
-
 type Challenge = F;
-type ChallengeMmcs = ExtensionMmcs<F, Challenge, ValMmcs>;
-type MyPcs = TwoAdicFriPcs<F, Dft, ValMmcs, ChallengeMmcs>;
+type ChallengeMmcs = ExtensionMmcs<F, Challenge, MyMmcs>;
+type MyPcs = TwoAdicFriPcs<F, Dft, MyMmcs, ChallengeMmcs>;
 type MyConfig = StarkConfig<MyPcs, Challenge, Challenger>;
 
 fn run_recursive<A>(
@@ -54,16 +50,22 @@ where
         RowMajorMatrixView::new_row(&trace_next),
     );
     let preprocessed = if preprocessed_width > 0 {
-        Some(VerticalPair::new(
+        VerticalPair::new(
             RowMajorMatrixView::new_row(&preprocessed_local),
             RowMajorMatrixView::new_row(&preprocessed_next),
-        ))
+        )
     } else {
-        None
+        VerticalPair::new(
+            RowMajorMatrixView::new(&[], 0),
+            RowMajorMatrixView::new(&[], 0),
+        )
     };
+    let preprocessed_window =
+        RowWindow::from_two_rows(preprocessed.top.values, preprocessed.bottom.values);
     let mut folder: VerifierConstraintFolder<'_, MyConfig> = VerifierConstraintFolder {
         main,
         preprocessed,
+        preprocessed_window,
         public_values: &public_values,
         is_first_row: selectors[0],
         is_last_row: selectors[1],
@@ -104,6 +106,7 @@ where
         public_values: &public_targets,
         permutation_local_values: &[],
         permutation_next_values: &[],
+        permutation_values: &[],
         local_prep_values: &pre_local_targets,
         next_prep_values: &pre_next_targets,
         local_values: &local_targets,

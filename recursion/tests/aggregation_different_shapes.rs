@@ -10,21 +10,19 @@ use p3_circuit::ops::generate_poseidon2_trace;
 use p3_circuit::test_utils::{FibonacciAir, generate_trace_rows};
 use p3_circuit_prover::common::get_airs_and_degrees_with_prep;
 use p3_circuit_prover::{BatchStarkProver, CircuitProverData, ConstraintProfile, TablePacking};
-use p3_field::PrimeCharacteristicRing;
 use p3_fri::FriParameters;
-use p3_koala_bear::{KoalaBear, default_koalabear_poseidon2_16};
 use p3_lookup::logup::LogUpGadget;
 use p3_poseidon2_circuit_air::KoalaBearD4Width16;
 use p3_recursion::pcs::fri::{FriVerifierParams, InputProofTargets, MerkleCapTargets, RecValMmcs};
 use p3_recursion::pcs::set_fri_mmcs_private_data;
 use p3_recursion::verifier::{verify_p3_batch_proof_circuit, verify_p3_uni_proof_circuit};
 use p3_recursion::{Poseidon2Config, StarkVerifierInputsBuilder, VerificationError};
+use p3_test_utils::koala_bear_params::*;
 use p3_uni_stark::{prove, verify};
 
-use crate::common::koala_bear_params::{
-    Challenge, ChallengeMmcs, Challenger, DIGEST_ELEMS, Dft, F, InnerFri, MyCompress, MyConfig,
-    MyHash, MyPcs, Perm, RATE, ValMmcs, WIDTH,
-};
+use crate::common::InnerFriGeneric;
+
+type InnerFri = InnerFriGeneric<MyConfig, MyHash, MyCompress, DIGEST_ELEMS>;
 
 const TRACE_D: usize = 1;
 
@@ -34,7 +32,7 @@ fn make_config(perm: &Perm, log_blowup: usize, max_log_arity: usize) -> MyConfig
     let num_queries = (100 - query_pow_bits) / log_blowup;
     let hash = MyHash::new(perm.clone());
     let compress = MyCompress::new(perm.clone());
-    let val_mmcs = ValMmcs::new(hash, compress, 0);
+    let val_mmcs = MyMmcs::new(hash, compress, 0);
     let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
     let fri_params = FriParameters {
         max_log_arity,
@@ -82,7 +80,7 @@ fn test_aggregation_with_different_shapes() -> Result<(), VerificationError> {
     builder.connect(c, expected);
     let circuit = builder.build().unwrap();
     let table_packing = TablePacking::new(1, 1).with_fri_params(0, 3);
-    let (airs_degrees, preprocessed_columns) = get_airs_and_degrees_with_prep::<MyConfig, _, 1>(
+    let (airs_degrees, preprocessed_columns) = get_airs_and_degrees_with_prep::<MyConfig, F, 1>(
         &circuit,
         table_packing,
         &[],
@@ -156,7 +154,7 @@ fn test_aggregation_with_different_shapes() -> Result<(), VerificationError> {
         InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>>,
         InnerFri,
         LogUpGadget,
-        _,
+        Poseidon2Config,
         WIDTH,
         RATE,
         TRACE_D,
@@ -189,7 +187,7 @@ fn test_aggregation_with_different_shapes() -> Result<(), VerificationError> {
         F,
         Challenge,
         ChallengeMmcs,
-        ValMmcs,
+        MyMmcs,
         MyHash,
         MyCompress,
         DIGEST_ELEMS,
@@ -201,7 +199,7 @@ fn test_aggregation_with_different_shapes() -> Result<(), VerificationError> {
         F,
         Challenge,
         ChallengeMmcs,
-        ValMmcs,
+        MyMmcs,
         MyHash,
         MyCompress,
         DIGEST_ELEMS,

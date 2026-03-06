@@ -1,6 +1,5 @@
 use core::marker::PhantomData;
 
-use p3_baby_bear::BabyBear;
 use p3_circuit::builder::{
     CircuitBuilder, NonPrimitiveOperationData, NpoCircuitPlugin, NpoLoweringContext,
 };
@@ -9,7 +8,7 @@ use p3_circuit::op::{
 };
 use p3_circuit::tables::{NonPrimitiveTrace, TraceGeneratorFn};
 use p3_circuit::{CircuitBuilderError, CircuitError, WitnessId};
-use p3_field::{Field, PrimeCharacteristicRing};
+use p3_test_utils::baby_bear_params::*;
 
 // Simple non-primitive "cube" op: y = x^3
 const CUBE_TYPE_ID: &str = "cube_simple/x_cubed";

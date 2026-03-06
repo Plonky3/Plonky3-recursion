@@ -5,6 +5,7 @@ use alloc::vec::Vec;
 use alloc::{format, vec};
 
 use hashbrown::HashMap;
+use p3_field::Field;
 use tracing::instrument;
 
 use super::alu::{AluOpRecord, AluTrace};
@@ -15,7 +16,7 @@ use super::{NonPrimitiveTrace, Traces};
 use crate::circuit::Circuit;
 use crate::op::{ExecutionContext, NpoPrivateData, NpoTypeId, Op, OpStateMap};
 use crate::types::{NonPrimitiveOpId, WitnessId};
-use crate::{AluOpKind, CircuitError, CircuitField};
+use crate::{AluOpKind, CircuitError};
 
 /// Circuit execution engine.
 pub struct CircuitRunner<F> {
@@ -31,7 +32,7 @@ pub struct CircuitRunner<F> {
     op_states: OpStateMap,
 }
 
-impl<F: CircuitField> CircuitRunner<F> {
+impl<F: Field> CircuitRunner<F> {
     /// Creates circuit runner with empty witness storage.
     pub fn new(circuit: Circuit<F>) -> Self {
         let witness = vec![None; circuit.witness_count as usize];
@@ -487,9 +488,9 @@ impl<F: CircuitField> CircuitRunner<F> {
 #[cfg(test)]
 mod tests {
 
-    use p3_baby_bear::BabyBear;
-    use p3_field::extension::BinomialExtensionField;
-    use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
+    use p3_test_utils::baby_bear_params::{
+        BabyBear, BasedVectorSpace, BinomialExtensionField, Field, PrimeCharacteristicRing,
+    };
     use tracing_forest::ForestLayer;
     use tracing_forest::util::LevelFilter;
     use tracing_subscriber::layer::SubscriberExt;

@@ -90,8 +90,7 @@ impl<F> AluTrace<F> {
 mod tests {
     use alloc::vec;
 
-    use p3_baby_bear::BabyBear;
-    use p3_field::PrimeCharacteristicRing;
+    use p3_test_utils::baby_bear_params::{BabyBear, PrimeCharacteristicRing};
 
     use super::*;
     use crate::{CircuitError, Op};
@@ -154,11 +153,25 @@ mod tests {
         /// Resolves a single witness value safely.
         #[inline]
         fn resolve(&self, id: &WitnessId) -> Result<F, CircuitError> {
-            self.witness
-                .get(id.0 as usize)
-                .and_then(|opt| opt.as_ref())
-                .cloned()
-                .ok_or(CircuitError::WitnessNotSet { witness_id: *id })
+            #[cfg(debug_assertions)]
+            {
+                self.witness
+                    .get(id.0 as usize)
+                    .and_then(|opt| opt.as_ref())
+                    .cloned()
+                    .ok_or(CircuitError::WitnessNotSet { witness_id: *id })
+            }
+
+            #[cfg(not(debug_assertions))]
+            {
+                unsafe {
+                    Ok(self
+                        .witness
+                        .get_unchecked(id.0 as usize)
+                        .clone()
+                        .expect("witness not set?"))
+                }
+            }
         }
     }
 
@@ -299,6 +312,7 @@ mod tests {
         assert_eq!(trace.values[0][3], F::ZERO);
     }
 
+    #[cfg(debug_assertions)]
     #[test]
     fn test_missing_witness_returns_error() {
         let witness = vec![None, Some(F::from_u64(5)), Some(F::from_u64(5))];

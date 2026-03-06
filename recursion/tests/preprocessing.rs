@@ -1,14 +1,14 @@
 mod common;
 
-use p3_air::{Air, AirBuilder, BaseAir};
+use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 use p3_baby_bear::{BabyBear, default_babybear_poseidon2_16};
 use p3_batch_stark::{ProverData, StarkInstance, prove_batch, verify_batch};
 use p3_circuit::CircuitBuilder;
 use p3_circuit::ops::generate_poseidon2_trace;
 use p3_field::Field;
 use p3_fri::create_test_fri_params;
+use p3_lookup::LookupAir;
 use p3_lookup::logup::LogUpGadget;
-use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_poseidon2_circuit_air::BabyBearD4Width16;
 use p3_recursion::pcs::MerkleCapTargets;
@@ -16,13 +16,12 @@ use p3_recursion::{
     BatchStarkVerifierInputsBuilder, FriVerifierParams, Poseidon2Config, VerificationError,
     verify_batch_circuit,
 };
+use p3_test_utils::baby_bear_params::*;
 use rand::distr::{Distribution, StandardUniform};
 
-use crate::common::MulAir;
-use crate::common::baby_bear_params::{
-    Challenge, ChallengeMmcs, Challenger, DIGEST_ELEMS, Dft, F, InnerFri, MyCompress, MyConfig,
-    MyHash, MyPcs, RATE, ValMmcs, WIDTH,
-};
+use crate::common::{InnerFriGeneric, MulAir};
+
+type InnerFri = InnerFriGeneric<MyConfig, MyHash, MyCompress, DIGEST_ELEMS>;
 
 /// Enum to hold different AIR types for batch verification
 #[derive(Clone, Copy)]
@@ -66,6 +65,8 @@ where
         }
     }
 }
+
+impl<Val: Field> LookupAir<Val> for MixedAir where StandardUniform: Distribution<Val> {}
 
 /// AIR that doesn't have preprocessed columns - simple addition of two values
 #[derive(Clone, Copy)]
@@ -126,7 +127,7 @@ where
 {
     fn eval(&self, builder: &mut AB) {
         let main = builder.main();
-        let main_local = main.row_slice(0).expect("Matrix is empty?");
+        let main_local = main.current_slice();
 
         let a = main_local[0];
         let b = main_local[1];
@@ -136,6 +137,8 @@ where
         builder.assert_zero(a + b - c);
     }
 }
+
+impl<Val: Field> LookupAir<Val> for AddAirNoPreprocessed where StandardUniform: Distribution<Val> {}
 
 /// AIR that has some preprocessed columns - subtraction with one preprocessed constant
 #[derive(Clone, Copy)]
@@ -208,14 +211,10 @@ where
 {
     fn eval(&self, builder: &mut AB) {
         let main = builder.main();
-        let main_local = main.row_slice(0).expect("Matrix is empty?");
+        let main_local = main.current_slice();
 
-        let preprocessed = builder
-            .preprocessed()
-            .expect("Expected preprocessed columns");
-        let preprocessed_local = preprocessed
-            .row_slice(0)
-            .expect("Preprocessed matrix is empty?");
+        let preprocessed = builder.preprocessed().clone();
+        let preprocessed_local = preprocessed.current_slice();
 
         let a = main_local[0];
         let result = main_local[1];
@@ -226,6 +225,11 @@ where
     }
 }
 
+impl<Val: Field> LookupAir<Val> for SubAirPartialPreprocessed where
+    StandardUniform: Distribution<Val>
+{
+}
+
 #[test]
 fn test_batch_verifier_with_mixed_preprocessed() -> Result<(), VerificationError> {
     let n = 1 << 3;
@@ -233,7 +237,7 @@ fn test_batch_verifier_with_mixed_preprocessed() -> Result<(), VerificationError
     let perm = default_babybear_poseidon2_16();
     let hash = MyHash::new(perm.clone());
     let compress = MyCompress::new(perm.clone());
-    let val_mmcs = ValMmcs::new(hash, compress, 0);
+    let val_mmcs = MyMmcs::new(hash, compress, 0);
     let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
     let dft = Dft::default();
 
@@ -269,19 +273,19 @@ fn test_batch_verifier_with_mixed_preprocessed() -> Result<(), VerificationError
     let instances = vec![
         StarkInstance {
             air: &mixed_air1,
-            trace: trace1,
+            trace: &trace1,
             public_values: pvs[0].clone(),
             lookups: Vec::new(),
         },
         StarkInstance {
             air: &mixed_air2,
-            trace: trace2,
+            trace: &trace2,
             public_values: pvs[1].clone(),
             lookups: Vec::new(),
         },
         StarkInstance {
             air: &mixed_air3,
-            trace: trace3,
+            trace: &trace3,
             public_values: pvs[2].clone(),
             lookups: Vec::new(),
         },

@@ -4,13 +4,13 @@ use p3_baby_bear::default_babybear_poseidon2_16;
 use p3_circuit::CircuitBuilder;
 use p3_circuit::ops::generate_poseidon2_trace;
 use p3_circuit::test_utils::{FibonacciAir, generate_trace_rows};
-use p3_field::PrimeCharacteristicRing;
 use p3_fri::create_test_fri_params;
 use p3_poseidon2_circuit_air::BabyBearD4Width16;
 use p3_recursion::pcs::fri::{FriVerifierParams, InputProofTargets, MerkleCapTargets, RecValMmcs};
 use p3_recursion::pcs::set_fri_mmcs_private_data;
 use p3_recursion::public_inputs::StarkVerifierInputsBuilder;
 use p3_recursion::{Poseidon2Config, VerificationError, verify_p3_uni_proof_circuit};
+use p3_test_utils::baby_bear_params::*;
 use p3_uni_stark::{prove, verify};
 use tracing_forest::ForestLayer;
 use tracing_forest::util::LevelFilter;
@@ -18,7 +18,9 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Registry};
 
-use crate::common::baby_bear_params::*;
+use crate::common::InnerFriGeneric;
+
+type InnerFri = InnerFriGeneric<MyConfig, MyHash, MyCompress, DIGEST_ELEMS>;
 
 fn init_logger() {
     let env_filter = EnvFilter::builder()
@@ -41,7 +43,7 @@ fn test_fibonacci_verifier() -> Result<(), VerificationError> {
     let perm = default_babybear_poseidon2_16();
     let hash = MyHash::new(perm.clone());
     let compress = MyCompress::new(perm.clone());
-    let val_mmcs = ValMmcs::new(hash, compress, 0);
+    let val_mmcs = MyMmcs::new(hash, compress, 0);
     let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
     let dft = Dft::default();
     let trace = generate_trace_rows::<F>(0, 1, n);
@@ -119,7 +121,7 @@ fn test_fibonacci_verifier() -> Result<(), VerificationError> {
         F,
         Challenge,
         ChallengeMmcs,
-        ValMmcs,
+        MyMmcs,
         MyHash,
         MyCompress,
         DIGEST_ELEMS,

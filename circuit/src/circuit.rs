@@ -1,8 +1,6 @@
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
-use core::fmt::Debug;
-use core::ops::{Add, Mul, Sub};
 
 use hashbrown::HashMap;
 use p3_field::Field;
@@ -14,31 +12,6 @@ use crate::op::{
 use crate::tables::{CircuitRunner, TraceGeneratorFn};
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessId};
 use crate::{AluOpKind, CircuitError};
-
-/// Trait encapsulating the required field operations for circuits
-pub trait CircuitField:
-    Clone
-    + Default
-    + Add<Output = Self>
-    + Sub<Output = Self>
-    + Mul<Output = Self>
-    + PartialEq
-    + Debug
-    + Field
-{
-}
-
-impl<F> CircuitField for F where
-    F: Clone
-        + Default
-        + Add<Output = F>
-        + Sub<Output = F>
-        + Mul<Output = F>
-        + PartialEq
-        + Debug
-        + Field
-{
-}
 
 /// Preprocessed data for primitive and non-primitive operation tables.
 pub struct PreprocessedColumns<F> {
@@ -487,7 +460,7 @@ impl<F: Field> Circuit<F> {
     }
 }
 
-impl<F: CircuitField> Circuit<F> {
+impl<F: Field> Circuit<F> {
     /// Create a circuit runner for execution and trace generation
     pub fn runner(self) -> CircuitRunner<F> {
         CircuitRunner::new(self)
@@ -499,8 +472,7 @@ mod tests {
     use alloc::vec;
 
     use hashbrown::HashMap;
-    use p3_baby_bear::BabyBear;
-    use p3_field::PrimeCharacteristicRing;
+    use p3_test_utils::baby_bear_params::{BabyBear, PrimeCharacteristicRing};
     use strum::EnumCount;
 
     use super::*;

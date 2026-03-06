@@ -33,6 +33,7 @@ unroll.workspace = true
 tikv-jemallocator = "0.6"
 
 [dev-dependencies]
+p3-batch-stark.workspace = true
 p3-challenger.workspace = true
 p3-commit.workspace = true
 p3-dft.workspace = true

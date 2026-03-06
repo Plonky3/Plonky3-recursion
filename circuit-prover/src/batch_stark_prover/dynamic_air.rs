@@ -10,6 +10,7 @@ use p3_circuit::op::NpoTypeId;
 use p3_circuit::tables::Traces;
 use p3_field::extension::BinomialExtensionField;
 use p3_field::{Algebra, PrimeField};
+use p3_lookup::LookupAir;
 use p3_lookup::folder::{ProverConstraintFolderWithLookups, VerifierConstraintFolderWithLookups};
 use p3_lookup::lookup_traits::Lookup;
 use p3_matrix::dense::RowMajorMatrix;
@@ -82,8 +83,6 @@ macro_rules! impl_air_for_dynamic_entry {
         $lt:lifetime,
         $builder:ty,
         $eval_method:ident,
-        $add_lookup_method:ident,
-        $get_lookup_method:ident
     ) => {
         $(#[$cfg])?
         impl<$lt, SC> Air<$builder> for DynamicAirEntry<SC>
@@ -95,18 +94,9 @@ macro_rules! impl_air_for_dynamic_entry {
             fn eval(&self, builder: &mut $builder) {
                 self.air().$eval_method(builder);
             }
-
-            fn add_lookup_columns(&mut self) -> Vec<usize> {
-                self.air_mut().$add_lookup_method()
-            }
-
-            fn get_lookups(
-                &mut self,
-            ) -> Vec<Lookup<<$builder as AirBuilder>::F>> {
-                self.air_mut().$get_lookup_method()
-            }
         }
     };
+
     (
         $(#[$cfg:meta])?
         $builder:ty,
@@ -124,7 +114,14 @@ macro_rules! impl_air_for_dynamic_entry {
             fn eval(&self, builder: &mut $builder) {
                 self.air().$eval_method(builder);
             }
+        }
 
+        impl<SC> LookupAir<Val<SC>> for DynamicAirEntry<SC>
+        where
+            SC: StarkGenericConfig,
+            Val<SC>: PrimeField,
+            SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+        {
             fn add_lookup_columns(&mut self) -> Vec<usize> {
                 self.air_mut().$add_lookup_method()
             }
@@ -150,24 +147,18 @@ impl_air_for_dynamic_entry!(
     'a,
     DebugConstraintBuilder<'a, Val<SC>, SC::Challenge>,
     eval_debug,
-    add_lookup_columns_debug,
-    get_lookups_debug
 );
 
 impl_air_for_dynamic_entry!(
     'a,
     ProverConstraintFolderWithLookups<'a, SC>,
     eval_prover,
-    add_lookup_columns_prover,
-    get_lookups_prover
 );
 
 impl_air_for_dynamic_entry!(
     'a,
     VerifierConstraintFolderWithLookups<'a, SC>,
     eval_verifier,
-    add_lookup_columns_verifier,
-    get_lookups_verifier
 );
 
 /// Simple super trait of [`Air`] describing the behaviour of a non-primitive
@@ -219,12 +210,12 @@ macro_rules! impl_cloneable_batch_air_forwarding {
 
         $(#[$cfg])?
         fn $add_lookup_method<$lt>(&mut self) -> Vec<usize> {
-            <T as Air<$builder>>::add_lookup_columns(self)
+            LookupAir::add_lookup_columns(self)
         }
 
         $(#[$cfg])?
         fn $get_lookup_method<$lt>(&mut self) -> Vec<Lookup<Val<SC>>> {
-            <T as Air<$builder>>::get_lookups(self)
+            LookupAir::get_lookups(self)
         }
     };
     (
@@ -241,12 +232,12 @@ macro_rules! impl_cloneable_batch_air_forwarding {
 
         $(#[$cfg])?
         fn $add_lookup_method(&mut self) -> Vec<usize> {
-            <T as Air<$builder>>::add_lookup_columns(self)
+            LookupAir::add_lookup_columns(self)
         }
 
         $(#[$cfg])?
         fn $get_lookup_method(&mut self) -> Vec<Lookup<Val<SC>>> {
-            <T as Air<$builder>>::get_lookups(self)
+            LookupAir::get_lookups(self)
         }
     };
 }
@@ -284,7 +275,7 @@ where
 impl<SC, T> CloneableBatchAir<SC> for T
 where
     SC: StarkGenericConfig,
-    T: BatchAir<SC> + Clone + 'static,
+    T: BatchAir<SC> + LookupAir<Val<SC>> + Clone + 'static,
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
         Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {

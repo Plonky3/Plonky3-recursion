@@ -4,15 +4,14 @@ use alloc::vec::Vec;
 use hashbrown::HashMap;
 use itertools::zip_eq;
 use p3_air::Air;
+use p3_air::symbolic::AirLayout;
 use p3_batch_stark::config::observe_instance_binding;
-use p3_batch_stark::symbolic::{
-    get_log_num_quotient_chunks as get_batch_log_num_quotient_chunks, lookup_data_to_ext_expr,
-};
+use p3_batch_stark::symbolic::get_log_num_quotient_chunks as get_batch_log_num_quotient_chunks;
 use p3_batch_stark::{BatchProof, CommonData};
 use p3_challenger::{CanObserve, CanSample, CanSampleBits, FieldChallenger, GrindingChallenger};
-use p3_commit::{BatchOpening, Mmcs, Pcs, PolynomialSpace};
+use p3_commit::{BatchOpening, Mmcs, OpenedValues, Pcs, PolynomialSpace};
 use p3_field::{Algebra, BasedVectorSpace, PrimeCharacteristicRing, PrimeField, TwoAdicField};
-use p3_fri::{FriProof, TwoAdicFriPcs};
+use p3_fri::{FriProof, HidingFriPcs, TwoAdicFriPcs};
 use p3_lookup::lookup_traits::{Kind, Lookup, LookupGadget};
 use p3_uni_stark::{
     Domain, Proof, StarkGenericConfig, SymbolicAirBuilder, SymbolicExpression,
@@ -106,8 +105,14 @@ where
 
     let degree = 1 << degree_bits;
     let pcs = config.pcs();
+    let layout = AirLayout {
+        preprocessed_width,
+        main_width: air.width(),
+        num_public_values: air.num_public_values(),
+        ..Default::default()
+    };
     let log_quotient_degree =
-        get_log_num_quotient_chunks::<Val<SC>, A>(air, preprocessed_width, config.is_zk());
+        get_log_num_quotient_chunks::<Val<SC>, A>(air, layout, config.is_zk());
     let quotient_degree = 1 << (log_quotient_degree + config.is_zk());
 
     let trace_domain = pcs.natural_domain_for_degree(degree);
@@ -277,13 +282,6 @@ where
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
         Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
-    debug_assert_eq!(config.is_zk(), 0, "batch recursion assumes non-ZK");
-    if SC::Pcs::ZK {
-        return Err(GenerationError::InvalidProofShape(
-            "batch-STARK challenge generation does not support ZK mode",
-        ));
-    }
-
     let all_lookups = &common_data.lookups;
 
     let BatchProof {
@@ -314,12 +312,19 @@ where
                 Kind::Local => Ok(()),
             })?;
             if counter != global_lookups.len() {
-                Err(GenerationError::InvalidProofShape(
+                return Err(GenerationError::InvalidProofShape(
                     "Global lookups are inconsistent with lookups",
-                ))
-            } else {
-                Ok(())
+                ));
             }
+            let is_sorted = global_lookups
+                .windows(2)
+                .all(|w| w[0].aux_idx <= w[1].aux_idx);
+            if !is_sorted {
+                return Err(GenerationError::InvalidProofShape(
+                    "Expected cumulated values not sorted by auxiliary index",
+                ));
+            }
+            Ok(())
         })?;
 
     let n_instances = airs.len();
@@ -331,6 +336,16 @@ where
         return Err(GenerationError::InvalidProofShape(
             "instance metadata length mismatch",
         ));
+    }
+
+    // Check randomization consistency against the PCS ZK setting.
+    if (opened_values
+        .instances
+        .iter()
+        .any(|ov| ov.base_opened_values.random.is_some() != SC::Pcs::ZK))
+        || (commitments.random.is_some() != SC::Pcs::ZK)
+    {
+        return Err(GenerationError::RandomizationError);
     }
 
     let pcs = config.pcs();
@@ -349,6 +364,15 @@ where
                 "invalid quotient chunk length",
             ));
         }
+
+        if inst
+            .base_opened_values
+            .random
+            .as_ref()
+            .is_some_and(|r_vals| r_vals.len() != SC::Challenge::DIMENSION)
+        {
+            return Err(GenerationError::RandomizationError);
+        }
     }
 
     let mut preprocessed_widths = Vec::with_capacity(airs.len());
@@ -362,11 +386,16 @@ where
             .unwrap_or(0);
         preprocessed_widths.push(pre_w);
 
+        let batch_layout = AirLayout {
+            preprocessed_width: pre_w,
+            main_width: air.width(),
+            num_public_values: air.num_public_values(),
+            ..Default::default()
+        };
         let log_qd = get_batch_log_num_quotient_chunks(
             air,
-            pre_w,
+            batch_layout,
             &all_lookups[i],
-            &lookup_data_to_ext_expr(&global_lookup_data[i]),
             config.is_zk(),
             lookup_gadget,
         );
@@ -429,27 +458,59 @@ where
     let alpha = challenger.sample_algebra_element();
 
     challenger.observe(commitments.quotient_chunks.clone());
+    if let Some(random_commit) = commitments.random.clone() {
+        challenger.observe(random_commit);
+    }
     let zeta = challenger.sample_algebra_element();
 
-    // TODO: Update to support ZK.
+    let trace_domains: Vec<_> = degree_bits
+        .iter()
+        .map(|&ext_db| {
+            let base_db =
+                ext_db
+                    .checked_sub(config.is_zk())
+                    .ok_or(GenerationError::InvalidProofShape(
+                        "extended degree smaller than zk adjustment",
+                    ))?;
+            Ok(pcs.natural_domain_for_degree(1 << base_db))
+        })
+        .collect::<Result<Vec<_>, GenerationError>>()?;
     let ext_trace_domains: Vec<_> = degree_bits
         .iter()
         .map(|&ext_db| pcs.natural_domain_for_degree(1 << ext_db))
         .collect();
 
-    // We have, in the typical lookup case, up to four rounds:
-    // trace, quotient, optional preprocessed, and optional permutation.
-    let mut coms_to_verify = Vec::with_capacity(4);
+    // We have, in the typical lookup case, up to five rounds:
+    // optional random, trace, quotient, optional preprocessed, and optional permutation.
+    let mut coms_to_verify = Vec::with_capacity(5);
+
+    if let Some(random_commit) = &commitments.random {
+        let random_round = ext_trace_domains
+            .iter()
+            .zip(opened_values.instances.iter())
+            .map(|(domain, inst)| {
+                let random_vals = inst
+                    .base_opened_values
+                    .random
+                    .as_ref()
+                    .ok_or(GenerationError::RandomizationError)?;
+                Ok((*domain, vec![(zeta, random_vals.clone())]))
+            })
+            .collect::<Result<Vec<_>, GenerationError>>()?;
+        coms_to_verify.push((random_commit.clone(), random_round));
+    }
 
     let trace_round = ext_trace_domains
         .iter()
+        .zip(trace_domains.iter())
         .zip(opened_values.instances.iter())
-        .map(|(ext_dom, inst)| {
-            let zeta_next = ext_dom
-                .next_point(zeta)
-                .ok_or(GenerationError::InvalidProofShape(
-                    "trace domain lacks next point",
-                ))?;
+        .map(|((ext_dom, trace_dom), inst)| {
+            let zeta_next =
+                trace_dom
+                    .next_point(zeta)
+                    .ok_or(GenerationError::InvalidProofShape(
+                        "trace domain lacks next point",
+                    ))?;
             Ok((
                 *ext_dom,
                 vec![
@@ -471,16 +532,40 @@ where
         .iter()
         .zip(ext_trace_domains.iter())
         .zip(log_quotient_degrees.iter())
-        .map(|((&ext_db, ext_dom), &log_qd)| {
-            let base_db = ext_db - config.is_zk();
-            let q_domain = ext_dom.create_disjoint_domain(1 << (base_db + log_qd + config.is_zk()));
-            q_domain.split_domains(1 << (log_qd + config.is_zk()))
+        .map(
+            |((&ext_db, ext_dom), &log_qd)| -> Result<Vec<_>, GenerationError> {
+                let base_db = ext_db.checked_sub(config.is_zk()).ok_or(
+                    GenerationError::InvalidProofShape(
+                        "extended degree smaller than zk adjustment",
+                    ),
+                )?;
+                let q_domain =
+                    ext_dom.create_disjoint_domain(1 << (base_db + log_qd + config.is_zk()));
+                Ok(q_domain.split_domains(1 << (log_qd + config.is_zk())))
+            },
+        )
+        .collect::<Result<Vec<_>, GenerationError>>()?;
+
+    let randomized_quotient_domains: Vec<Vec<_>> = quotient_domains
+        .iter()
+        .map(|domains| {
+            domains
+                .iter()
+                .map(|domain| pcs.natural_domain_for_degree(domain.size() << config.is_zk()))
+                .collect()
         })
         .collect();
 
-    let mut quotient_round =
-        Vec::with_capacity(quotient_domains.iter().map(|domains| domains.len()).sum());
-    for (domains, inst) in quotient_domains.iter().zip(opened_values.instances.iter()) {
+    let mut quotient_round = Vec::with_capacity(
+        randomized_quotient_domains
+            .iter()
+            .map(|domains| domains.len())
+            .sum(),
+    );
+    for (domains, inst) in randomized_quotient_domains
+        .iter()
+        .zip(opened_values.instances.iter())
+    {
         if inst.base_opened_values.quotient_chunks.len() != domains.len() {
             return Err(GenerationError::InvalidProofShape(
                 "quotient chunk count mismatch",
@@ -514,9 +599,8 @@ where
                 GenerationError::InvalidProofShape("preprocessed next values should exist"),
             )?;
 
-            // Validate that the preprocessed data's base degree matches what we expect.
+            // Validate that the preprocessed data's degree metadata matches this instance.
             let ext_db = degree_bits[inst_idx];
-            let expected_base_db = ext_db - config.is_zk();
 
             let meta =
                 global.instances[inst_idx]
@@ -524,7 +608,7 @@ where
                     .ok_or(GenerationError::InvalidProofShape(
                         "Missing preprocessed instance metadata",
                     ))?;
-            if meta.matrix_index != matrix_index || meta.degree_bits != expected_base_db {
+            if meta.matrix_index != matrix_index || meta.degree_bits != ext_db {
                 return Err(GenerationError::InvalidProofShape(
                     "Preprocessed instance metadata mismatch",
                 ));
@@ -532,7 +616,7 @@ where
 
             let base_db = meta.degree_bits;
             let pre_domain = pcs.natural_domain_for_degree(1 << base_db);
-            let zeta_next_i = ext_trace_domains[inst_idx].next_point(zeta).ok_or(
+            let zeta_next_i = trace_domains[inst_idx].next_point(zeta).ok_or(
                 GenerationError::InvalidProofShape("Preprocessed domain lacks next point"),
             )?;
 
@@ -548,8 +632,10 @@ where
     if is_lookup {
         let permutation_commit = commitments.permutation.clone().unwrap();
         let mut permutation_round = Vec::with_capacity(ext_trace_domains.len());
-        for (ext_dom, inst_opened_vals) in
-            ext_trace_domains.iter().zip(opened_values.instances.iter())
+        for (i, (ext_dom, inst_opened_vals)) in ext_trace_domains
+            .iter()
+            .zip(opened_values.instances.iter())
+            .enumerate()
         {
             if inst_opened_vals.permutation_local.len() != inst_opened_vals.permutation_next.len() {
                 return Err(GenerationError::InvalidProofShape(
@@ -558,7 +644,7 @@ where
             }
             if !inst_opened_vals.permutation_local.is_empty() {
                 let zeta_next =
-                    ext_dom
+                    trace_domains[i]
                         .next_point(zeta)
                         .ok_or(GenerationError::InvalidProofShape(
                             "Missing preprocessed instance metadata",
@@ -704,6 +790,101 @@ where
             1 + opening_proof.commit_phase_commits.len() + opening_proof.query_proofs.len();
 
         Ok(num_challenges)
+    }
+}
+
+type HidingInnerFriProof<SC, InputMmcs, FriMmcs> = (
+    OpenedValues<<SC as StarkGenericConfig>::Challenge>,
+    InnerFriProof<SC, InputMmcs, FriMmcs>,
+);
+
+impl<SC: StarkGenericConfig, Dft, InputMmcs: Mmcs<Val<SC>>, FriMmcs: Mmcs<SC::Challenge>, R>
+    PcsGeneration<SC, HidingInnerFriProof<SC, InputMmcs, FriMmcs>>
+    for HidingFriPcs<Val<SC>, Dft, InputMmcs, FriMmcs, R>
+where
+    Val<SC>: TwoAdicField + PrimeField,
+    SC::Challenger: FieldChallenger<Val<SC>>
+        + GrindingChallenger<Witness = Val<SC>>
+        + CanObserve<FriMmcs::Commitment>,
+{
+    fn generate_challenges(
+        &self,
+        _config: &SC,
+        challenger: &mut SC::Challenger,
+        coms_to_verify: &ComsWithOpenings<SC>,
+        opening_proof: &HidingInnerFriProof<SC, InputMmcs, FriMmcs>,
+        extra_params: Option<&[usize]>,
+    ) -> Result<Vec<SC::Challenge>, GenerationError> {
+        let inner_proof = &opening_proof.1;
+        let num_challenges = <Self as PcsGeneration<
+            SC,
+            HidingInnerFriProof<SC, InputMmcs, FriMmcs>,
+        >>::num_challenges(opening_proof, None)?;
+        let mut challenges = Vec::with_capacity(num_challenges);
+
+        for (_, round) in coms_to_verify {
+            for (_, mat) in round {
+                for (_, point) in mat {
+                    point
+                        .iter()
+                        .for_each(|&opening| challenger.observe_algebra_element(opening));
+                }
+            }
+        }
+
+        challenges.push(challenger.sample_algebra_element());
+
+        inner_proof
+            .commit_phase_commits
+            .iter()
+            .zip(&inner_proof.commit_pow_witnesses)
+            .for_each(|(comm, pow_witness)| {
+                challenger.observe(comm.clone());
+                challenger.observe(*pow_witness);
+                let rand_f: Val<SC> = challenger.sample();
+                let rand_usize = rand_f.as_canonical_biguint().to_u64_digits()[0] as usize;
+                challenges.push(SC::Challenge::from_usize(rand_usize));
+                challenges.push(challenger.sample_algebra_element());
+            });
+
+        inner_proof
+            .final_poly
+            .iter()
+            .for_each(|x| challenger.observe_algebra_element(*x));
+
+        if let Some(first_qp) = inner_proof.query_proofs.first() {
+            for step in &first_qp.commit_phase_openings {
+                challenger.observe(Val::<SC>::from_usize(step.log_arity as usize));
+            }
+        }
+
+        let params = extra_params.ok_or(GenerationError::MissingParameterError)?;
+        if params.len() != 2 {
+            return Err(GenerationError::InvalidParameterCount(params.len(), 2));
+        }
+
+        challenger.observe(inner_proof.query_pow_witness);
+        let rand_f: Val<SC> = challenger.sample();
+        let rand_usize = rand_f.as_canonical_biguint().to_u64_digits()[0] as usize;
+        challenges.push(SC::Challenge::from_usize(rand_usize));
+
+        let log_height_max = params[1];
+        let log_global_max_height = inner_proof.commit_phase_commits.len() + log_height_max;
+        for _ in &inner_proof.query_proofs {
+            challenges.push(SC::Challenge::from_usize(
+                challenger.sample_bits(log_global_max_height),
+            ));
+        }
+
+        Ok(challenges)
+    }
+
+    fn num_challenges(
+        opening_proof: &HidingInnerFriProof<SC, InputMmcs, FriMmcs>,
+        _extra_params: Option<&[usize]>,
+    ) -> Result<usize, GenerationError> {
+        let inner_proof = &opening_proof.1;
+        Ok(1 + inner_proof.commit_phase_commits.len() + inner_proof.query_proofs.len())
     }
 }
 

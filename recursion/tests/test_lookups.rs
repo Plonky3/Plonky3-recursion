@@ -12,7 +12,6 @@ use p3_circuit_prover::{
     BatchStarkProof, BatchStarkProver, CircuitProverData, ConstraintProfile, Poseidon2Config,
     Poseidon2Preprocessor, TablePacking,
 };
-use p3_field::PrimeCharacteristicRing;
 use p3_fri::create_test_fri_params;
 use p3_lookup::logup::LogUpGadget;
 use p3_lookup::lookup_traits::LookupData;
@@ -21,9 +20,13 @@ use p3_recursion::generation::generate_batch_challenges;
 use p3_recursion::pcs::fri::{FriVerifierParams, InputProofTargets, MerkleCapTargets, RecValMmcs};
 use p3_recursion::verifier::{CircuitTablesAir, verify_p3_batch_proof_circuit};
 use p3_recursion::{BatchStarkVerifierInputsBuilder, GenerationError, VerificationError};
+use p3_test_utils::baby_bear_params::*;
+
+use crate::common::InnerFriGeneric;
+
 const TRACE_D: usize = 1; // Proof traces are in base field
 
-use crate::common::baby_bear_params::*;
+type InnerFri = InnerFriGeneric<MyConfig, MyHash, MyCompress, DIGEST_ELEMS>;
 
 fn setup_circuit_builder() -> CircuitBuilder<Challenge> {
     let mut circuit_builder = CircuitBuilder::new();
@@ -109,7 +112,7 @@ fn test_wrong_multiplicities() {
 
     let circuit = builder.build().unwrap();
     let (airs_degrees, mut preprocessed_columns) =
-        get_airs_and_degrees_with_prep::<MyConfig, _, 1>(
+        get_airs_and_degrees_with_prep::<MyConfig, F, 1>(
             &circuit,
             table_packing,
             &[],
@@ -428,7 +431,7 @@ fn test_inconsistent_lookup_order_shape() {
     batch_stark_proof.proof.global_lookup_data = fake_global_lookup_data;
 
     let mut circuit_builder = setup_circuit_builder();
-    let _ = get_verifier_inputs_and_challenges(
+    let (verifier_inputs, _all_challenges) = get_verifier_inputs_and_challenges(
         &mut circuit_builder,
         &config,
         &params,
@@ -438,6 +441,7 @@ fn test_inconsistent_lookup_order_shape() {
         Some(real_lookup_data.as_slice()),
         &lookup_gadget,
     );
+    verifier_inputs.unwrap();
 }
 
 #[test]
@@ -490,7 +494,7 @@ fn test_extra_global_lookup() {
     batch_stark_proof.proof.global_lookup_data = fake_global_lookup_data;
 
     let mut circuit_builder = setup_circuit_builder();
-    let _ = get_verifier_inputs_and_challenges(
+    let (verifier_inputs, _all_challenges) = get_verifier_inputs_and_challenges(
         &mut circuit_builder,
         &config,
         &params,
@@ -500,6 +504,7 @@ fn test_extra_global_lookup() {
         Some(real_lookup_data.as_slice()),
         &lookup_gadget,
     );
+    verifier_inputs.unwrap();
 }
 
 #[test]
@@ -559,13 +564,7 @@ fn test_missing_global_lookup() {
         &lookup_gadget,
     );
 
-    match verifier_inputs {
-        Err(VerificationError::InvalidProofShape(msg)) => {
-            assert_eq!(msg, "Expected cumulated value missing");
-        }
-        Err(_) => panic!("Expected InvalidProofShape"),
-        Ok(_) => panic!("Expected error due to inconsistent lookup shape"),
-    }
+    verifier_inputs.unwrap();
 }
 
 struct TestCircuitProofData {
@@ -589,7 +588,7 @@ fn get_test_circuit_proof() -> TestCircuitProofData {
     let config_proving = get_proving_config();
 
     let circuit = builder.build().unwrap();
-    let (airs_degrees, preprocessed_columns) = get_airs_and_degrees_with_prep::<MyConfig, _, 1>(
+    let (airs_degrees, preprocessed_columns) = get_airs_and_degrees_with_prep::<MyConfig, F, 1>(
         &circuit,
         table_packing,
         &[],
@@ -652,7 +651,7 @@ fn get_proving_config() -> MyConfig {
     let perm = default_babybear_poseidon2_16();
     let hash = MyHash::new(perm.clone());
     let compress = MyCompress::new(perm.clone());
-    let val_mmcs = ValMmcs::new(hash, compress, 0);
+    let val_mmcs = MyMmcs::new(hash, compress, 0);
     let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
     let dft = Dft::default();
 
@@ -670,7 +669,7 @@ fn get_recursive_config_and_params() -> (MyConfig, FriVerifierParams, usize, usi
     let perm2 = default_babybear_poseidon2_16();
     let hash2 = MyHash::new(perm2.clone());
     let compress2 = MyCompress::new(perm2.clone());
-    let val_mmcs2 = ValMmcs::new(hash2, compress2, 0);
+    let val_mmcs2 = MyMmcs::new(hash2, compress2, 0);
     let challenge_mmcs2 = ChallengeMmcs::new(val_mmcs2.clone());
     let fri_params2 = create_test_fri_params(challenge_mmcs2, 0);
     let fri_verifier_params = FriVerifierParams::from(&fri_params2);
@@ -859,14 +858,15 @@ fn test_poseidon2_ctl_lookups() {
     let circuit = builder.build().unwrap();
 
     let poseidon2_prep: [Box<dyn NpoPreprocessor<F>>; 1] = [Box::new(Poseidon2Preprocessor)];
-    let (airs_degrees, preprocessed_columns) = get_airs_and_degrees_with_prep::<MyConfig, _, 4>(
-        &circuit,
-        table_packing,
-        &poseidon2_prep,
-        &poseidon2_air_builders_d4(),
-        ConstraintProfile::Standard,
-    )
-    .unwrap();
+    let (airs_degrees, preprocessed_columns) =
+        get_airs_and_degrees_with_prep::<MyConfig, Challenge, 4>(
+            &circuit,
+            table_packing,
+            &poseidon2_prep,
+            &poseidon2_air_builders_d4(),
+            ConstraintProfile::Standard,
+        )
+        .unwrap();
 
     let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
     let mut runner = circuit.runner();
@@ -982,14 +982,15 @@ fn test_poseidon2_chained_ctl_lookups() {
     let circuit = builder.build().unwrap();
 
     let poseidon2_prep: [Box<dyn NpoPreprocessor<F>>; 1] = [Box::new(Poseidon2Preprocessor)];
-    let (airs_degrees, preprocessed_columns) = get_airs_and_degrees_with_prep::<MyConfig, _, 4>(
-        &circuit,
-        table_packing,
-        &poseidon2_prep,
-        &poseidon2_air_builders_d4(),
-        ConstraintProfile::Standard,
-    )
-    .unwrap();
+    let (airs_degrees, preprocessed_columns) =
+        get_airs_and_degrees_with_prep::<MyConfig, Challenge, 4>(
+            &circuit,
+            table_packing,
+            &poseidon2_prep,
+            &poseidon2_air_builders_d4(),
+            ConstraintProfile::Standard,
+        )
+        .unwrap();
 
     let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
     let mut runner = circuit.runner();

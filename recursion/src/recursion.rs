@@ -233,7 +233,8 @@ where
         + From<Val<SC>>
         + ExtensionField<Val<SC>>
         + ExtractBinomialW<Val<SC>>,
-    SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
     let mut circuit_builder = CircuitBuilder::new();
     backend.prepare_circuit(config, &mut circuit_builder)?;
@@ -283,6 +284,7 @@ where
     };
 
     let (mut airs, degrees): (Vec<_>, Vec<_>) = airs_degrees.into_iter().unzip();
+    let ext_degrees: Vec<usize> = degrees.iter().map(|&d| d + config.is_zk()).collect();
 
     let traces = {
         let public_inputs = verifier_result.pack_public_inputs(prev)?;
@@ -299,7 +301,7 @@ where
     };
 
     let circuit_prover_data = {
-        let prover_data = ProverData::from_airs_and_degrees(config, &mut airs, &degrees);
+        let prover_data = ProverData::from_airs_and_degrees(config, &mut airs, &ext_degrees);
         CircuitProverData::new(prover_data, preprocessed_columns)
     };
 
@@ -391,7 +393,8 @@ where
         + From<Val<SC>>
         + ExtensionField<Val<SC>>
         + ExtractBinomialW<Val<SC>>,
-    SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
     let mut circuit_builder = CircuitBuilder::new();
 
@@ -528,6 +531,7 @@ where
     };
 
     let (mut airs, degrees): (Vec<_>, Vec<_>) = airs_degrees.into_iter().unzip();
+    let ext_degrees: Vec<usize> = degrees.iter().map(|&d| d + config.is_zk()).collect();
 
     let traces = run_aggregation_verification_circuit::<SC, A1, A2, B, D>(
         left,
@@ -540,7 +544,7 @@ where
     )?;
 
     let circuit_prover_data = {
-        let prover_data = ProverData::from_airs_and_degrees(config, &mut airs, &degrees);
+        let prover_data = ProverData::from_airs_and_degrees(config, &mut airs, &ext_degrees);
         CircuitProverData::new(prover_data, preprocessed_columns)
     };
 

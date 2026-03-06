@@ -1,21 +1,15 @@
 #![allow(unused)]
 
 use itertools::Itertools;
-use p3_air::{Air, AirBuilder, BaseAir};
-use p3_challenger::DuplexChallenger;
-use p3_commit::ExtensionMmcs;
-use p3_dft::Radix2DitParallel;
-use p3_field::extension::BinomialExtensionField;
+use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 use p3_field::{Field, PrimeCharacteristicRing};
-use p3_fri::TwoAdicFriPcs;
+use p3_lookup::LookupAir;
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
-use p3_merkle_tree::MerkleTreeMmcs;
 use p3_recursion::pcs::{
     FriProofTargets, InputProofTargets, RecExtensionValMmcs, RecValMmcs, Witness,
 };
-use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
-use p3_uni_stark::{StarkConfig, StarkGenericConfig, Val};
+use p3_uni_stark::{StarkGenericConfig, Val};
 use rand::distr::{Distribution, StandardUniform};
 use rand::rngs::SmallRng;
 use rand::{Rng, RngExt, SeedableRng};
@@ -38,86 +32,6 @@ pub(crate) type InnerFriGeneric<MyConfig, MyHash, MyCompress, const DIGEST_ELEMS
         >,
         Witness<Val<MyConfig>>,
     >;
-
-/// Common parameters for the BabyBear field.
-pub(crate) mod baby_bear_params {
-    pub(crate) use p3_baby_bear::{BabyBear, Poseidon2BabyBear};
-
-    use super::*;
-
-    pub(crate) type F = BabyBear;
-    pub(crate) const D: usize = 4;
-    pub(crate) const WIDTH: usize = 16;
-    pub(crate) const RATE: usize = 8;
-    pub(crate) const DIGEST_ELEMS: usize = 8;
-    pub(crate) type Challenge = BinomialExtensionField<F, D>;
-    pub(crate) type Dft = Radix2DitParallel<F>;
-    pub(crate) type Perm = Poseidon2BabyBear<16>;
-    pub(crate) type MyHash = PaddingFreeSponge<Perm, 16, RATE, 8>;
-    pub(crate) type MyCompress = TruncatedPermutation<Perm, 2, 8, 16>;
-    pub(crate) type ValMmcs =
-        MerkleTreeMmcs<<F as Field>::Packing, <F as Field>::Packing, MyHash, MyCompress, 8>;
-    pub(crate) type ChallengeMmcs = ExtensionMmcs<F, Challenge, ValMmcs>;
-    pub(crate) type Challenger = DuplexChallenger<F, Perm, 16, RATE>;
-    pub(crate) type MyPcs = TwoAdicFriPcs<F, Dft, ValMmcs, ChallengeMmcs>;
-    pub(crate) type MyConfig = StarkConfig<MyPcs, Challenge, Challenger>;
-
-    pub(crate) type InnerFri = InnerFriGeneric<MyConfig, MyHash, MyCompress, DIGEST_ELEMS>;
-}
-
-/// Common parameters for the KoalaBear field.
-pub(crate) mod koala_bear_params {
-    pub(crate) use p3_koala_bear::{KoalaBear, Poseidon2KoalaBear};
-
-    use super::*;
-
-    pub(crate) type F = KoalaBear;
-    pub(crate) const D: usize = 4;
-    pub(crate) const WIDTH: usize = 16;
-    pub(crate) const RATE: usize = 8;
-    pub(crate) const DIGEST_ELEMS: usize = 8;
-
-    pub(crate) type Challenge = BinomialExtensionField<F, D>;
-    pub(crate) type Dft = Radix2DitParallel<F>;
-    pub(crate) type Perm = Poseidon2KoalaBear<16>;
-    pub(crate) type MyHash = PaddingFreeSponge<Perm, 16, RATE, 8>;
-    pub(crate) type MyCompress = TruncatedPermutation<Perm, 2, 8, 16>;
-    pub(crate) type ValMmcs =
-        MerkleTreeMmcs<<F as Field>::Packing, <F as Field>::Packing, MyHash, MyCompress, 8>;
-    pub(crate) type ChallengeMmcs = ExtensionMmcs<F, Challenge, ValMmcs>;
-    pub(crate) type Challenger = DuplexChallenger<F, Perm, 16, RATE>;
-    pub(crate) type MyPcs = TwoAdicFriPcs<F, Dft, ValMmcs, ChallengeMmcs>;
-    pub(crate) type MyConfig = StarkConfig<MyPcs, Challenge, Challenger>;
-
-    pub(crate) type InnerFri = InnerFriGeneric<MyConfig, MyHash, MyCompress, DIGEST_ELEMS>;
-}
-
-/// Common parameters for the Goldilocks field.
-pub(crate) mod goldilocks_params {
-    pub(crate) use p3_goldilocks::{Goldilocks, Poseidon2Goldilocks};
-
-    use super::*;
-
-    pub(crate) type F = Goldilocks;
-    pub(crate) const D: usize = 2;
-    pub(crate) const WIDTH: usize = 8;
-    pub(crate) const RATE: usize = 4;
-    pub(crate) const DIGEST_ELEMS: usize = 4;
-
-    pub(crate) type Challenge = BinomialExtensionField<F, D>;
-    pub(crate) type Dft = Radix2DitParallel<F>;
-    pub(crate) type Perm = Poseidon2Goldilocks<8>;
-    pub(crate) type MyHash = PaddingFreeSponge<Perm, 8, RATE, 4>;
-    pub(crate) type MyCompress = TruncatedPermutation<Perm, 2, 4, 8>;
-    pub(crate) type ValMmcs =
-        MerkleTreeMmcs<<F as Field>::Packing, <F as Field>::Packing, MyHash, MyCompress, 4>;
-    pub(crate) type ChallengeMmcs = ExtensionMmcs<F, Challenge, ValMmcs>;
-    pub(crate) type Challenger = DuplexChallenger<F, Perm, 8, RATE>;
-    pub(crate) type MyPcs = TwoAdicFriPcs<F, Dft, ValMmcs, ChallengeMmcs>;
-    pub(crate) type MyConfig = StarkConfig<MyPcs, Challenge, Challenger>;
-
-    pub(crate) type InnerFri = super::InnerFriGeneric<MyConfig, MyHash, MyCompress, DIGEST_ELEMS>;
-}
 
 /// A test AIR that enforces multiplication constraints: `a^(degree-1) * b = c`
 ///
@@ -217,26 +131,19 @@ where
 {
     fn eval(&self, builder: &mut AB) {
         let main = builder.main();
-        let main_local = main.row_slice(0).expect("Matrix is empty?");
+        let main_local = main.current_slice();
 
-        let preprocessed = builder
-            .preprocessed()
-            .expect("Expected preprocessed columns");
-        let preprocessed_local = preprocessed
-            .row_slice(0)
-            .expect("Preprocessed matrix is empty?");
-        let preprocessed_next = preprocessed
-            .row_slice(1)
-            .expect("Preprocessed matrix only has 1 row?");
+        let preprocessed = builder.preprocessed().clone();
+        let preprocessed_local = preprocessed.current_slice();
+        let preprocessed_next = preprocessed.next_slice();
 
-        for i in 0..REPETITIONS {
+        for (i, c) in main_local.iter().enumerate() {
             let prep_start = i * 2;
             let a = preprocessed_local[prep_start];
             let b = preprocessed_local[prep_start + 1];
-            let c = main_local[i];
 
             // Constraint 1: a^(degree-1) * b = c
-            builder.assert_zero(a.into().exp_u64(self.degree - 1) * b - c);
+            builder.assert_zero(a.into().exp_u64(self.degree - 1) * b - *c);
 
             // Constraint 2: On first row, b = a^2 + 1
             builder.when_first_row().assert_eq(a * a + AB::Expr::ONE, b);
@@ -249,3 +156,5 @@ where
         }
     }
 }
+
+impl<Val: Field> LookupAir<Val> for MulAir where StandardUniform: Distribution<Val> {}

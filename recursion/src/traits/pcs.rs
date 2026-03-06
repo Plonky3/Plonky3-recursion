@@ -168,4 +168,13 @@ pub trait RecursivePcs<
     /// # Returns
     /// The first domain point
     fn first_point(&self, trace_domain: &Domain) -> SC::Challenge;
+
+    /// Extract FRI-level random opened values from the opening proof, if any.
+    ///
+    /// For `HidingFriPcs`, returns the random codeword evaluations that were split off
+    /// during `open` and must be merged back into the opened values before FRI verification.
+    /// The returned structure mirrors `coms_to_verify`: `rounds[round][mat][point]`.
+    ///
+    /// For `TwoAdicFriPcs` (non-ZK), returns an empty slice.
+    fn get_fri_random_opened_values(proof: &OpeningProof) -> &[Vec<Vec<Vec<Target>>>];
 }

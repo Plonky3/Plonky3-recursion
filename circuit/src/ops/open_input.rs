@@ -13,8 +13,7 @@ use crate::op::{
 };
 use crate::tables::{NonPrimitiveTrace, TraceGeneratorFn};
 use crate::{
-    CircuitBuilder, CircuitBuilderError, CircuitError, CircuitField, ExprId, NonPrimitiveOpId,
-    WitnessId,
+    CircuitBuilder, CircuitBuilderError, CircuitError, ExprId, NonPrimitiveOpId, WitnessId,
 };
 
 #[derive(Default, Debug, Clone)]
@@ -236,11 +235,7 @@ impl<F: Field> NonPrimitiveExecutor<F> for OpenInputExecutor {
     }
 }
 
-pub fn generate_open_input_trace<
-    BaseF: Field,
-    F: CircuitField + ExtensionField<BaseF>,
-    const D: usize,
->(
+pub fn generate_open_input_trace<BaseF: Field, F: Field + ExtensionField<BaseF>, const D: usize>(
     op_states: &OpStateMap,
 ) -> Result<Option<Box<dyn NonPrimitiveTrace<F>>>, CircuitError> {
     let op_type = NpoTypeId::open_input_d(D);
@@ -526,7 +521,7 @@ pub struct OpenInputCircuitPlugin<BaseF, F, const D: usize> {
 impl<BaseF, F, const D: usize> OpenInputCircuitPlugin<BaseF, F, D>
 where
     BaseF: Field,
-    F: CircuitField + ExtensionField<BaseF>,
+    F: Field + ExtensionField<BaseF>,
 {
     pub fn new(trace_gen: TraceGeneratorFn<F>) -> Self {
         Self {
@@ -539,7 +534,7 @@ where
 impl<BaseF, F, const D: usize> NpoCircuitPlugin<F> for OpenInputCircuitPlugin<BaseF, F, D>
 where
     BaseF: Field,
-    F: CircuitField + ExtensionField<BaseF>,
+    F: Field + ExtensionField<BaseF>,
 {
     fn type_id(&self) -> NpoTypeId {
         NpoTypeId::open_input_d(D)

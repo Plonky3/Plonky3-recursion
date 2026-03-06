@@ -11,14 +11,13 @@ use p3_poseidon2_circuit_air::BabyBearD4Width16;
 use p3_recursion::pcs::fri::{FriVerifierParams, MerkleCapTargets};
 use p3_recursion::public_inputs::StarkVerifierInputsBuilder;
 use p3_recursion::{Poseidon2Config, VerificationError, verify_p3_uni_proof_circuit};
+use p3_test_utils::baby_bear_params::*;
 use p3_uni_stark::{prove_with_preprocessed, setup_preprocessed, verify_with_preprocessed};
 use p3_util::log2_ceil_usize;
 
-use crate::common::MulAir;
-use crate::common::baby_bear_params::{
-    Challenge, ChallengeMmcs, Challenger, DIGEST_ELEMS, Dft, F, InnerFri, MyCompress, MyConfig,
-    MyHash, MyPcs, RATE, ValMmcs, WIDTH,
-};
+use crate::common::{InnerFriGeneric, MulAir};
+
+type InnerFri = InnerFriGeneric<MyConfig, MyHash, MyCompress, DIGEST_ELEMS>;
 
 #[test]
 fn test_mul_verifier_circuit() -> Result<(), VerificationError> {
@@ -27,7 +26,7 @@ fn test_mul_verifier_circuit() -> Result<(), VerificationError> {
     let perm = default_babybear_poseidon2_16();
     let hash = MyHash::new(perm.clone());
     let compress = MyCompress::new(perm.clone());
-    let val_mmcs = ValMmcs::new(hash, compress, 0);
+    let val_mmcs = MyMmcs::new(hash, compress, 0);
     let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
     let dft = Dft::default();
 

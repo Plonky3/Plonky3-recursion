@@ -1,8 +1,7 @@
 use core::borrow::Borrow;
 
-use p3_air::{Air, AirBuilder, BaseAir};
+use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 use p3_field::PrimeField64;
-use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
 
 pub struct FibonacciAir {}
@@ -29,10 +28,7 @@ impl<AB: AirBuilder> Air<AB> for FibonacciAir {
         let b = pis[1];
         let x = pis[2];
 
-        let (local, next) = (
-            main.row_slice(0).expect("Matrix is empty?"),
-            main.row_slice(1).expect("Matrix only has 1 row?"),
-        );
+        let (local, next) = (main.current_slice(), main.next_slice());
         let local: &FibonacciRow<AB::Var> = (*local).borrow();
         let next: &FibonacciRow<AB::Var> = (*next).borrow();
 

@@ -27,6 +27,8 @@ pub struct ColumnsTargets<'a> {
     pub permutation_local_values: &'a [ExprId],
     /// Targets for the permutation values evaluated at the next row.
     pub permutation_next_values: &'a [ExprId],
+    /// Targets for the global lookup expected cumulated values (PermutationValue entries).
+    pub permutation_values: &'a [ExprId],
     /// Targets for the preprocessed values used in the circuit.
     pub local_prep_values: &'a [ExprId],
     /// Targets for the preprocessed values evaluated at the next row.
@@ -147,6 +149,7 @@ pub fn symbolic_ext_expr_to_circuit<F: Field, EF: ExtensionField<F>>(
                                 }
                             },
                             ExtEntry::Challenge => columns.challenges[v.index],
+                            ExtEntry::PermutationValue => columns.permutation_values[v.index],
                         };
                         ext_cache.insert(key, id);
                         stack.push(id);
@@ -238,6 +241,7 @@ fn symbolic_to_circuit_core<CF: Field, F: Field>(
         public_values,
         permutation_local_values: _,
         permutation_next_values: _,
+        permutation_values: _,
         local_prep_values,
         next_prep_values,
         local_values,
@@ -341,41 +345,16 @@ fn symbolic_to_circuit_core<CF: Field, F: Field>(
 
 #[cfg(test)]
 mod tests {
-    use p3_air::{Air, BaseAir};
-    use p3_baby_bear::{BabyBear, Poseidon2BabyBear};
-    use p3_challenger::DuplexChallenger;
-    use p3_commit::ExtensionMmcs;
-    use p3_dft::Radix2DitParallel;
-    use p3_field::extension::BinomialExtensionField;
+    use p3_air::{Air, AirLayout, BaseAir, RowWindow};
     use p3_field::integers::QuotientMap;
-    use p3_fri::TwoAdicFriPcs;
     use p3_matrix::dense::RowMajorMatrixView;
     use p3_matrix::stack::VerticalPair;
-    use p3_merkle_tree::MerkleTreeMmcs;
-    use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
-    use p3_uni_stark::{
-        StarkConfig, SymbolicExpression, VerifierConstraintFolder, get_symbolic_constraints,
-    };
+    use p3_test_utils::baby_bear_params::*;
+    use p3_uni_stark::{SymbolicExpression, VerifierConstraintFolder, get_symbolic_constraints};
     use rand::rngs::SmallRng;
     use rand::{Rng, SeedableRng};
 
     use super::*;
-
-    type F = BabyBear;
-    const D: usize = 4;
-    type Challenge = BinomialExtensionField<F, D>;
-    type Dft = Radix2DitParallel<F>;
-    type Perm = Poseidon2BabyBear<16>;
-    type MyHash = PaddingFreeSponge<Perm, 16, 8, 8>;
-    type MyCompress = TruncatedPermutation<Perm, 2, 8, 16>;
-    type ValMmcs =
-        MerkleTreeMmcs<<F as Field>::Packing, <F as Field>::Packing, MyHash, MyCompress, 8>;
-    type ChallengeMmcs = ExtensionMmcs<F, Challenge, ValMmcs>;
-    type Challenger = DuplexChallenger<F, Perm, 16, 8>;
-    type MyPcs = TwoAdicFriPcs<F, Dft, ValMmcs, ChallengeMmcs>;
-    type MyConfig = StarkConfig<MyPcs, Challenge, Challenger>;
-    use p3_field::PrimeCharacteristicRing;
-
     use crate::test_utils::{FibonacciAir, NUM_FIBONACCI_COLS};
     use crate::utils::{ColumnsTargets, RowSelectorsTargets, symbolic_to_circuit};
     use crate::{CircuitBuilder, CircuitError};
@@ -416,10 +395,19 @@ mod tests {
             Challenge::from_u64(rng.next_u64()),
         ];
 
+        let preprocessed = VerticalPair::new(
+            RowMajorMatrixView::new(&[], 0),
+            RowMajorMatrixView::new(&[], 0),
+        );
+
+        let preprocessed_window =
+            RowWindow::from_two_rows(preprocessed.top.values, preprocessed.bottom.values);
+
         // Fold the constraints using random values for the trace and selectors.
         let mut folder: VerifierConstraintFolder<'_, MyConfig> = VerifierConstraintFolder {
             main,
-            preprocessed: None,
+            preprocessed,
+            preprocessed_window,
             public_values: &pis,
             is_first_row: sels[0],
             is_last_row: sels[1],
@@ -430,9 +418,19 @@ mod tests {
         air.eval(&mut folder);
         let folded_constraints = folder.accumulator;
 
+        let layout = AirLayout {
+            preprocessed_width: 3,
+            main_width: BaseAir::<F>::width(&air),
+            num_public_values: BaseAir::<F>::num_public_values(&air),
+            permutation_width: 0,
+            num_permutation_challenges: 0,
+            num_permutation_values: 0,
+            num_periodic_columns: 0,
+        };
+
         // Get the symbolic constraints from `FibonacciAir`.
         let symbolic_constraints: Vec<p3_uni_stark::SymbolicExpression<Challenge>> =
-            get_symbolic_constraints(&air, 0);
+            get_symbolic_constraints(&air, layout);
 
         // Fold the symbolic constraints using `alpha`.
         let folded_symbolic_constraints = {
@@ -476,6 +474,7 @@ mod tests {
             public_values: &circuit_public_values,
             permutation_local_values: &[],
             permutation_next_values: &[],
+            permutation_values: &[],
             local_prep_values: &[],
             next_prep_values: &[],
             local_values: &circuit_local_values,

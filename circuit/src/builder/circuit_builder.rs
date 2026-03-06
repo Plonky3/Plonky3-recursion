@@ -21,7 +21,7 @@ use crate::ops::poseidon2_perm::Poseidon2CircuitPlugin;
 use crate::ops::{Poseidon2Params, Poseidon2PermCall, Poseidon2PermCallBase};
 use crate::tables::TraceGeneratorFn;
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};
-use crate::{CircuitBuilderError, CircuitError, CircuitField, Poseidon2PermOps};
+use crate::{CircuitBuilderError, CircuitError, Poseidon2PermOps};
 
 /// Builder for constructing circuits.
 pub struct CircuitBuilder<F: Field> {
@@ -243,7 +243,7 @@ where
 
     pub fn enable_open_input<BaseF: Field, const D: usize>(&mut self)
     where
-        F: CircuitField + ExtensionField<BaseF>,
+        F: Field + ExtensionField<BaseF>,
     {
         use crate::ops::open_input::{OpenInputCircuitPlugin, generate_open_input_trace};
         let plugin =
@@ -264,7 +264,7 @@ where
         perm: P,
     ) where
         Config: Poseidon2Params,
-        F: CircuitField + ExtensionField<Config::BaseField>,
+        F: Field + ExtensionField<Config::BaseField>,
         P: Permutation<[Config::BaseField; 16]> + Clone + Send + Sync + 'static,
     {
         let d = Config::D;
@@ -303,7 +303,7 @@ where
         perm: P,
     ) where
         Config: Poseidon2Params,
-        F: CircuitField + ExtensionField<Config::BaseField>,
+        F: Field + ExtensionField<Config::BaseField>,
         P: Permutation<[Config::BaseField; 8]> + Clone + Send + Sync + 'static,
     {
         assert!(
@@ -351,7 +351,7 @@ where
         perm: P,
     ) where
         Config: Poseidon2Params,
-        F: CircuitField,
+        F: Field,
         P: Permutation<[F; 16]> + Clone + Send + Sync + 'static,
     {
         assert!(
@@ -1422,8 +1422,7 @@ impl<BF: PrimeField64, EF: ExtensionField<BF>> HintExecutor<EF> for BinaryDecomp
 #[cfg(test)]
 mod tests {
 
-    use p3_baby_bear::BabyBear;
-    use p3_field::extension::BinomialExtensionField;
+    use p3_test_utils::baby_bear_params::{BabyBear, BinomialExtensionField};
 
     use super::*;
     use crate::op::{NpoConfig, NpoTypeId};
@@ -1920,9 +1919,9 @@ mod proptests {
     use core::array;
 
     use itertools::Itertools;
-    use p3_baby_bear::BabyBear;
-    use p3_field::extension::BinomialExtensionField;
-    use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
+    use p3_test_utils::baby_bear_params::{
+        BabyBear, BasedVectorSpace, BinomialExtensionField, PrimeCharacteristicRing,
+    };
     use proptest::prelude::*;
 
     use super::*;

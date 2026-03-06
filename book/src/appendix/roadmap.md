@@ -2,10 +2,6 @@
 
 This page tracks planned improvements and known optimization opportunities.
 
-## Soundness
-
-- **ZK mode**: Support zero-knowledge STARKs (trace randomization). Currently only non-ZK mode is supported.
-
 ## Performance
 
 - **Eliminate decompose/recompose round-trips**: Base field values are currently lifted to extension field targets and then repacked before MMCS verification, which decomposes them again. Keeping values in base coefficient form throughout would eliminate ~15-20% of circuit operations.

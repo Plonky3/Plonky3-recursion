@@ -536,7 +536,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use p3_baby_bear::BabyBear;
+    use p3_test_utils::baby_bear_params::BabyBear;
 
     use super::*;
     use crate::AluOpKind;
@@ -1048,6 +1048,54 @@ mod tests {
                 assert_eq!(context, "test context");
             }
             _ => panic!("Expected MissingExprMapping error from get_witness_id"),
+        }
+    }
+
+    #[test]
+    fn test_dsu_stress_chain() {
+        // 1000-element chain: 0->1->2->...->999
+        let mut parents = HashMap::new();
+        for i in 0..999 {
+            dsu_union(&mut parents, i, i + 1);
+        }
+        // All elements should share the same root
+        let root = dsu_find(&mut parents, 0);
+        for i in 1..1000 {
+            assert_eq!(dsu_find(&mut parents, i), root, "chain element {i} differs");
+        }
+    }
+
+    #[test]
+    fn test_dsu_stress_star() {
+        // 1000-element star: all connected to 0
+        let mut parents = HashMap::new();
+        for i in 1..1000 {
+            dsu_union(&mut parents, 0, i);
+        }
+        let root = dsu_find(&mut parents, 0);
+        for i in 1..1000 {
+            assert_eq!(dsu_find(&mut parents, i), root, "star element {i} differs");
+        }
+    }
+
+    #[test]
+    fn test_dsu_stress_mixed() {
+        // Mixed pattern: chains of 10 merged together
+        let mut parents = HashMap::new();
+        // Create 100 chains of 10
+        for chain in 0..100 {
+            let base = chain * 10;
+            for i in 0..9 {
+                dsu_union(&mut parents, base + i, base + i + 1);
+            }
+        }
+        // Merge all chains via their first elements
+        for chain in 1..100 {
+            dsu_union(&mut parents, 0, chain * 10);
+        }
+        let root = dsu_find(&mut parents, 0);
+        for i in 1..1000 {
+            assert_eq!(dsu_find(&mut parents, i), root, "mixed element {i} differs");
         }
     }
 
