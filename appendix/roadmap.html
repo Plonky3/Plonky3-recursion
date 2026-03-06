@@ -178,10 +178,6 @@
                         <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="roadmap"><a class="header" href="#roadmap">Roadmap</a></h1>
 <p>This page tracks planned improvements and known optimization opportunities.</p>
-<h2 id="soundness"><a class="header" href="#soundness">Soundness</a></h2>
-<ul>
-<li><strong>ZK mode</strong>: Support zero-knowledge STARKs (trace randomization). Currently only non-ZK mode is supported.</li>
-</ul>
 <h2 id="performance"><a class="header" href="#performance">Performance</a></h2>
 <ul>
 <li><strong>Eliminate decompose/recompose round-trips</strong>: Base field values are currently lifted to extension field targets and then repacked before MMCS verification, which decomposes them again. Keeping values in base coefficient form throughout would eliminate ~15-20% of circuit operations.</li>
