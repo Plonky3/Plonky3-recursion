@@ -7,13 +7,13 @@ use p3_circuit::ops::generate_poseidon2_trace;
 use p3_commit::Pcs;
 use p3_dft::Radix2DitParallel;
 use p3_field::coset::TwoAdicMultiplicativeCoset;
-use p3_fri::create_test_fri_params;
+use p3_fri::{HidingFriPcs, create_test_fri_params};
 use p3_matrix::dense::RowMajorMatrix;
 use p3_poseidon2_circuit_air::BabyBearD4Width16;
 // Recursive target graph pieces
 use p3_recursion::pcs::fri::{
-    FriProofTargets, InputProofTargets, MerkleCapTargets, RecExtensionValMmcs, RecValMmcs,
-    Witness as RecWitness,
+    FriProofTargets, HidingFriProofTargets, InputProofTargets, MerkleCapTargets,
+    RecExtensionValMmcs, RecValMmcs, Witness as RecWitness,
 };
 use p3_recursion::public_inputs::{CommitmentOpening, FriVerifierInputs};
 use p3_recursion::{Poseidon2Config, Recursive};
@@ -800,4 +800,412 @@ fn test_circuit_fri_verifier_with_mmcs() {
     let groups = vec![vec![4u8, 5]];
     let setup = generate_setup(1, groups);
     run_fri_test_with_mmcs(setup);
+}
+
+// ============================================================================
+// ZK FRI (`HidingFriPcs`) tests — arithmetic verifier
+// ============================================================================
+
+/// Alias for the ZK PCS type.
+type ZkPcs = HidingFriPcs<F, Radix2DitParallel<F>, MyMmcs, ChallengeMmcs, SmallRng>;
+
+/// Alias for `HidingFriProofTargets` using the BabyBear stack.
+type HidingFriTargets = HidingFriProofTargets<
+    F,
+    Challenge,
+    RecExtensionValMmcs<
+        F,
+        Challenge,
+        DIGEST_ELEMS,
+        RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>,
+    >,
+    InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>>,
+    RecWitness<F>,
+>;
+
+/// Produces a ZK FRI proof and returns the data needed to build the recursive circuit.
+struct ZkProduceResult {
+    /// Values to use as public inputs (random openings + inner FRI proof).
+    hiding_fri_values: Vec<Challenge>,
+    /// Transcript-derived α (batch combiner).
+    alpha: Challenge,
+    /// Per-phase β fold challenges.
+    betas: Vec<Challenge>,
+    /// Query index bits, one `Vec<Challenge>` per query.
+    index_bits_per_query: Vec<Vec<Challenge>>,
+    /// Per-batch `(commitment_placeholder, mats)` structure for the circuit.
+    commitments_with_points: CommitmentsWithPoints,
+    /// Number of FRI folding phases.
+    num_phases: usize,
+    /// log₂ of the largest evaluation domain.
+    log_max_height: usize,
+    /// The raw ZK proof, kept so we can set MMCS private data.
+    raw_proof: <ZkPcs as Pcs<Challenge, Challenger>>::Proof,
+}
+
+/// Build a `HidingFriPcs` and produce a ZK FRI proof over `group_sizes`.
+///
+/// `HidingFriPcs::commit` doubles the row count internally (interleaving random rows).
+/// To satisfy the inner `TwoAdicFriPcs` domain assertion, the caller must pass a domain
+/// of size `2 * matrix_height`.  We therefore build each group with a domain whose
+/// `log_size = deg_bits + 1` but an evaluation matrix of height `2^deg_bits`.
+fn produce_zk_inputs(
+    log_blowup: usize,
+    log_final_poly_len: usize,
+    pow_bits: (usize, usize),
+    group_sizes: &[Vec<u8>],
+    seed_base: u64,
+) -> ZkProduceResult {
+    let perm = default_babybear_poseidon2_16();
+    let hash = MyHash::new(perm.clone());
+    let compress = MyCompress::new(perm.clone());
+    let val_mmcs = MyMmcs::new(hash, compress, 0);
+    let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
+    let dft = Radix2DitParallel::<F>::default();
+
+    let fri_params = create_test_fri_params(challenge_mmcs, log_final_poly_len);
+    // num_random_codewords = 2 gives full ZK without being too heavy for tests.
+    let pcs = ZkPcs::new(
+        dft,
+        val_mmcs,
+        fri_params,
+        2,
+        SmallRng::seed_from_u64(seed_base),
+    );
+
+    // HidingFriPcs::commit doubles the matrix height by interleaving random rows, then
+    // passes the result to the inner TwoAdicFriPcs which asserts domain.size() == height.
+    // So we pass a domain of size 2*h alongside a matrix of height h; after doubling,
+    // the inner commit sees height == domain.size().
+    let make_zk_evals = |sizes: &[u8],
+                         seed: u64|
+     -> Vec<(TwoAdicMultiplicativeCoset<F>, RowMajorMatrix<F>)> {
+        let mut rng = SmallRng::seed_from_u64(seed);
+        sizes
+            .iter()
+            .map(|&deg_bits| {
+                let rows = 1usize << deg_bits;
+                // Domain is 2× the matrix height — required by HidingFriPcs.
+                let domain = TwoAdicMultiplicativeCoset::new(F::GENERATOR, deg_bits as usize + 1)
+                    .expect("valid two-adic size");
+                let width = core::cmp::max(1, (deg_bits as usize).saturating_sub(4));
+                (
+                    domain,
+                    RowMajorMatrix::<F>::rand_nonzero(&mut rng, rows, width),
+                )
+            })
+            .collect()
+    };
+
+    let mut groups_evals = Vec::new();
+    for (i, sizes) in group_sizes.iter().enumerate() {
+        groups_evals.push(make_zk_evals(sizes, seed_base + i as u64));
+    }
+
+    // Build the transcript binding: observe domain log-sizes (doubled for ZK).
+    let mut domains_log_sizes = Vec::new();
+    for sizes in group_sizes {
+        // Each domain has log_size = deg_bits + 1 for ZK.
+        domains_log_sizes.extend(sizes.iter().map(|&b| b as usize + 1));
+    }
+    let val_sizes: Vec<F> = domains_log_sizes
+        .iter()
+        .map(|&b| F::from_u8(b as u8))
+        .collect();
+
+    // --- Prover path ---
+    let mut p_challenger = Challenger::new(perm.clone());
+    p_challenger.observe_slice(&val_sizes);
+
+    type MyCommitment = <ZkPcs as Pcs<Challenge, Challenger>>::Commitment;
+    type MyProverData = <ZkPcs as Pcs<Challenge, Challenger>>::ProverData;
+    let mut commitments_and_data: Vec<(MyCommitment, MyProverData)> = Vec::new();
+    for evals in &groups_evals {
+        let (commitment, prover_data) =
+            <ZkPcs as Pcs<Challenge, Challenger>>::commit(&pcs, evals.clone());
+        p_challenger.observe(commitment.clone());
+        commitments_and_data.push((commitment, prover_data));
+    }
+
+    let zeta: Challenge = p_challenger.sample_algebra_element();
+
+    let mut open_data = Vec::new();
+    for (i, _) in groups_evals.iter().enumerate() {
+        let mat_count = groups_evals[i].len();
+        open_data.push((&commitments_and_data[i].1, vec![vec![zeta]; mat_count]));
+    }
+
+    // Pcs::open returns (eval_openings, proof) where for HidingFriPcs,
+    // proof = (random_opened_values, inner_fri_proof).
+    let (eval_openings, raw_proof) =
+        <ZkPcs as Pcs<Challenge, Challenger>>::open(&pcs, open_data, &mut p_challenger);
+
+    // --- Verifier transcript replay ---
+    let mut v_challenger = Challenger::new(perm);
+    v_challenger.observe_slice(&val_sizes);
+    for (commitment, _) in &commitments_and_data {
+        v_challenger.observe(commitment.clone());
+    }
+    let _zeta_v: Challenge = v_challenger.sample_algebra_element();
+
+    let (commit_pow_bits, query_pow_bits) = pow_bits;
+
+    let p3_fri::FriProof {
+        commit_phase_commits,
+        ref query_proofs,
+        final_poly,
+        query_pow_witness,
+        commit_pow_witnesses,
+    } = raw_proof.1.clone();
+
+    // The HidingFriPcs verifier merges the random opened values (raw_proof.0) into the main
+    // evaluations (eval_openings), then passes the merged rounds to TwoAdicFriPcs::verify,
+    // which observes all evaluations before sampling α.  Replay that same observation order:
+    // for each group, for each matrix, for each opening point, observe [main..., random...].
+    for (group_main, group_rand) in eval_openings.iter().zip(raw_proof.0.iter()) {
+        for (mat_main, mat_rand) in group_main.iter().zip(group_rand.iter()) {
+            for (point_main, point_rand) in mat_main.iter().zip(mat_rand.iter()) {
+                v_challenger.observe_algebra_slice(point_main);
+                v_challenger.observe_algebra_slice(point_rand);
+            }
+        }
+    }
+
+    let alpha: Challenge = v_challenger.sample_algebra_element();
+
+    let mut betas: Vec<Challenge> = Vec::with_capacity(commit_phase_commits.len());
+    for (c, w) in commit_phase_commits.iter().zip(commit_pow_witnesses.iter()) {
+        v_challenger.observe(c.clone());
+        assert!(v_challenger.check_witness(commit_pow_bits, *w));
+        betas.push(v_challenger.sample_algebra_element());
+    }
+
+    for &c in &final_poly {
+        v_challenger.observe_algebra_element(c);
+    }
+
+    if let Some(first_qp) = query_proofs.first() {
+        for step in &first_qp.commit_phase_openings {
+            v_challenger.observe(F::from_usize(step.log_arity as usize));
+        }
+    }
+
+    assert!(v_challenger.check_witness(query_pow_bits, query_pow_witness));
+
+    let num_phases = commit_phase_commits.len();
+    // log_max_height is based on the doubled domain (log_size = deg_bits + 1).
+    let max_log_size = domains_log_sizes.iter().copied().max().unwrap_or(0);
+    let log_max_height = num_phases + log_blowup + log_final_poly_len;
+
+    let _ = max_log_size;
+
+    let num_queries = query_proofs.len();
+    let mut indices: Vec<usize> = Vec::with_capacity(num_queries);
+    for _ in 0..num_queries {
+        indices.push(v_challenger.sample_bits(log_max_height));
+    }
+
+    let mut index_bits_per_query: Vec<Vec<Challenge>> = Vec::with_capacity(num_queries);
+    for &index in &indices {
+        let bits: Vec<Challenge> = (0..log_max_height)
+            .map(|k| {
+                if (index >> k) & 1 == 1 {
+                    Challenge::ONE
+                } else {
+                    Challenge::ZERO
+                }
+            })
+            .collect();
+        index_bits_per_query.push(bits);
+    }
+
+    // Build commitments_with_points using the actual evaluation values so that
+    // ps_at_z.len() == mat_opening.len() in verify_fri_circuit.
+    // The Merkle opening for each ZK matrix has width + num_random_codewords columns;
+    // eval_openings has the main columns and raw_proof.0 has the random columns.
+    let mut commitments_with_points: CommitmentsWithPoints = Vec::new();
+    for (group_idx, sizes) in group_sizes.iter().enumerate() {
+        let mut mats_data = Vec::new();
+        for (mat_idx, &log_size) in sizes.iter().enumerate() {
+            let domain = TwoAdicMultiplicativeCoset::new(F::GENERATOR, log_size as usize + 1)
+                .expect("valid domain");
+            // Merge main evals and random evals into a single opening point entry.
+            let main_vals = &eval_openings[group_idx][mat_idx][0]; // one opening point (zeta)
+            let rand_vals = &raw_proof.0[group_idx][mat_idx][0]; // one opening point (zeta)
+            let mut merged: Vec<Challenge> = main_vals.clone();
+            merged.extend(rand_vals);
+            mats_data.push((domain, vec![(zeta, merged)]));
+        }
+        commitments_with_points.push((Challenge::ZERO, mats_data));
+    }
+
+    let hiding_fri_values = HidingFriTargets::get_values(&raw_proof);
+
+    ZkProduceResult {
+        hiding_fri_values,
+        alpha,
+        betas,
+        index_bits_per_query,
+        commitments_with_points,
+        num_phases,
+        log_max_height,
+        raw_proof,
+    }
+}
+
+/// Runs the arithmetic-only FRI verifier circuit using `HidingFriPcs`-produced proofs.
+///
+/// This exercises `HidingFriProofTargets` allocation and the same `verify_fri_circuit`
+/// path as the non-ZK tests, confirming the circuit accepts ZK proofs transparently.
+fn run_zk_fri_test(
+    log_blowup: usize,
+    log_final_poly_len: usize,
+    pow_bits: (usize, usize),
+    group_sizes: &[Vec<u8>],
+) {
+    let result = produce_zk_inputs(log_blowup, log_final_poly_len, pow_bits, group_sizes, 100);
+
+    let num_phases = result.num_phases;
+    let log_max_height = result.log_max_height;
+    let num_queries = result.index_bits_per_query.len();
+
+    // ——— Build circuit ———
+    let mut builder = CircuitBuilder::<Challenge>::new();
+
+    // Allocate HidingFriProofTargets from the full ZK proof (random_openings + inner_proof).
+    let hiding_targets = HidingFriTargets::new(&mut builder, &result.raw_proof);
+
+    // Public inputs for α, βs, index bits.
+    let alpha_t = builder.public_input();
+    let betas_t: Vec<_> = (0..num_phases).map(|_| builder.public_input()).collect();
+    let index_bits_t: Vec<Vec<_>> = (0..num_queries)
+        .map(|_| {
+            (0..log_max_height)
+                .map(|_| builder.public_input())
+                .collect()
+        })
+        .collect();
+
+    builder.push_scope("commitments_with_opening_points");
+    let mut commitments_with_opening_points_targets = Vec::new();
+    for (_, mats_data) in &result.commitments_with_points {
+        let commit_t = builder.public_input();
+        let mut mats_targets = Vec::new();
+        for (domain, points_and_values) in mats_data {
+            let mut pv_targets = Vec::new();
+            for (_, fz) in points_and_values {
+                let z_t = builder.public_input();
+                let fz_t: Vec<_> = (0..fz.len()).map(|_| builder.public_input()).collect();
+                pv_targets.push((z_t, fz_t));
+            }
+            mats_targets.push((*domain, pv_targets));
+        }
+        commitments_with_opening_points_targets.push((commit_t, mats_targets));
+    }
+    builder.pop_scope();
+
+    // Wire the arithmetic-only FRI verifier against the inner proof targets.
+    // MMCS verification is disabled (None) for this arithmetic-only test.
+    let _mmcs_op_ids = p3_recursion::pcs::fri::verify_fri_circuit::<
+        F,
+        Challenge,
+        RecExtensionValMmcs<
+            F,
+            Challenge,
+            DIGEST_ELEMS,
+            RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>,
+        >,
+        RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>,
+        RecWitness<F>,
+        p3_recursion::Target,
+    >(
+        &mut builder,
+        &hiding_targets.inner_proof,
+        alpha_t,
+        &betas_t,
+        &index_bits_t,
+        &commitments_with_opening_points_targets,
+        log_blowup,
+        None,
+    )
+    .unwrap();
+
+    let circuit = builder.build().unwrap();
+
+    // ——— Pack public inputs ———
+    // Order: hiding_fri_values (random openings + inner FRI), then α, βs, index bits,
+    // then commitments with opening points.
+    let commitment_openings: Vec<CommitmentOpening<Challenge>> = result
+        .commitments_with_points
+        .iter()
+        .map(|(commitment, mats)| {
+            let opened_points = mats
+                .iter()
+                .flat_map(|(_, pvs)| pvs.iter().map(|(z, fz)| (*z, fz.clone())))
+                .collect();
+            CommitmentOpening {
+                commitment: *commitment,
+                opened_points,
+            }
+        })
+        .collect();
+
+    let mut pub_inputs = result.hiding_fri_values.clone();
+    pub_inputs.push(result.alpha);
+    pub_inputs.extend(&result.betas);
+    for bits in &result.index_bits_per_query {
+        pub_inputs.extend(bits);
+    }
+    // commitment_openings public inputs were allocated as individual public_input() calls.
+    for opening in &commitment_openings {
+        pub_inputs.push(opening.commitment);
+        for (z, fz) in &opening.opened_points {
+            pub_inputs.push(*z);
+            pub_inputs.extend(fz);
+        }
+    }
+
+    let mut runner = circuit.runner();
+    runner.set_public_inputs(&pub_inputs).unwrap();
+    runner.run().expect("ZK FRI circuit execution failed");
+}
+
+#[test]
+fn test_circuit_zk_fri_verifier_degree_0_final_poly() {
+    // Mirror of the non-ZK degree-0 test but using HidingFriPcs.
+    let perm = default_babybear_poseidon2_16();
+    let hash = MyHash::new(perm.clone());
+    let compress = MyCompress::new(perm);
+    let val_mmcs = MyMmcs::new(hash, compress, 0);
+    let challenge_mmcs = ChallengeMmcs::new(val_mmcs);
+    let fri_params = create_test_fri_params(challenge_mmcs, 0);
+    let log_blowup = fri_params.log_blowup;
+    let log_final_poly_len = fri_params.log_final_poly_len;
+    let pow_bits = (
+        fri_params.commit_proof_of_work_bits,
+        fri_params.query_proof_of_work_bits,
+    );
+
+    let groups = vec![vec![5u8, 8]];
+    run_zk_fri_test(log_blowup, log_final_poly_len, pow_bits, &groups);
+}
+
+#[test]
+fn test_circuit_zk_fri_verifier_multi_group() {
+    // Multiple input batches with HidingFriPcs, exercising the multi-group code path.
+    let perm = default_babybear_poseidon2_16();
+    let hash = MyHash::new(perm.clone());
+    let compress = MyCompress::new(perm);
+    let val_mmcs = MyMmcs::new(hash, compress, 0);
+    let challenge_mmcs = ChallengeMmcs::new(val_mmcs);
+    let fri_params = create_test_fri_params(challenge_mmcs, 0);
+    let log_blowup = fri_params.log_blowup;
+    let log_final_poly_len = fri_params.log_final_poly_len;
+    let pow_bits = (
+        fri_params.commit_proof_of_work_bits,
+        fri_params.query_proof_of_work_bits,
+    );
+
+    let groups = vec![vec![4u8, 6], vec![7u8]];
+    run_zk_fri_test(log_blowup, log_final_poly_len, pow_bits, &groups);
 }
