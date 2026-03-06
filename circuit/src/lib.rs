@@ -22,7 +22,7 @@ pub use builder::{
     CircuitBuilder, CircuitBuilderError, NonPrimitiveOperationData, NpoCircuitPlugin,
     NpoLoweringContext,
 };
-pub use circuit::{Circuit, CircuitField, PreprocessedColumns};
+pub use circuit::{Circuit, PreprocessedColumns};
 pub use errors::CircuitError;
 pub use expr::{Expr, ExpressionGraph};
 pub use op::{AluOpKind, HintExecutor, NonPrimitiveOpPrivateData, NpoPrivateData, NpoTypeId, Op};

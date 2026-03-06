@@ -72,17 +72,17 @@ enum ScheduleEntry {
 #[derive(Debug, Clone)]
 pub struct AluAir<F, const D: usize = 1> {
     /// Total number of logical ALU operations in the trace.
-    pub num_ops: usize,
+    pub(crate) num_ops: usize,
     /// Number of independent operations packed per trace row.
-    pub lanes: usize,
+    pub(crate) lanes: usize,
     /// For binomial extensions x^D = W (D > 1).
-    pub w_binomial: Option<F>,
+    pub(crate) w_binomial: Option<F>,
     /// Flattened preprocessed values (selectors + indices), in original op order.
-    pub preprocessed: Vec<F>,
+    pub(crate) preprocessed: Vec<F>,
     /// Number of lookup columns registered so far.
-    pub num_lookup_columns: usize,
+    pub(crate) num_lookup_columns: usize,
     /// Minimum trace height (for FRI compatibility with higher log_final_poly_len).
-    pub min_height: usize,
+    pub(crate) min_height: usize,
     /// HornerAcc lane schedule. When present, ops are reordered so that HornerAcc
     /// chains occupy lane 0 in consecutive rows, with zero-separators between chains.
     schedule: Option<Vec<ScheduleEntry>>,

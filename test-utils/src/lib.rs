@@ -1,5 +1,7 @@
 //! Test utilities for Plonky3 recursion crates.
 
+#![no_std]
+
 /// Maximum allowed constraint degree for AIR constraints.
 /// Keeping this at 3 ensures efficient FRI proving.
 pub const MAX_CONSTRAINT_DEGREE: usize = 3;

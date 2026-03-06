@@ -37,13 +37,16 @@ mod poseidon2;
 pub use dynamic_air::{
     BatchAir, BatchTableInstance, CloneableBatchAir, DynamicAirEntry, TableProver,
 };
-pub use packing::{TablePacking, TraceLengths};
+pub use packing::TablePacking;
+pub(crate) use packing::TraceLengths;
 pub use poseidon2::{
     Poseidon2AirBuilderD2, Poseidon2AirBuilderD4, Poseidon2AirWrapperInner, Poseidon2Preprocessor,
     Poseidon2Prover, Poseidon2ProverD2, poseidon2_preprocessor, poseidon2_verifier_air_from_config,
 };
 
+/// Prime modulus of the BabyBear field (`2^31 - 2^27 + 1`).
 pub const BABY_BEAR_MODULUS: u64 = 0x7800_0001;
+/// Prime modulus of the KoalaBear field (`2^31 - 2^24 + 1`).
 pub const KOALA_BEAR_MODULUS: u64 = 0x7f00_0001;
 
 /// Opaque variant tag for a non-primitive AIR in a batch proof.
@@ -210,6 +213,9 @@ macro_rules! impl_table_prover_batch_instances_from_base {
     };
 }
 
+/// Type alias for the primitive operation table selector.
+///
+/// Used as an index into [`RowCounts`] and related per-table arrays.
 pub type PrimitiveTable = PrimitiveOpType;
 
 /// Number of primitive circuit tables included in the unified batch STARK proof.
@@ -306,15 +312,19 @@ where
 /// Errors for the batch STARK table prover.
 #[derive(Debug, Error)]
 pub enum BatchStarkProverError {
+    /// The extension field degree is not one of the supported values (1, 2, 4, 6, 8).
     #[error("unsupported extension degree: {0} (supported: 1,2,4,6,8)")]
     UnsupportedDegree(usize),
 
+    /// An extension field with degree > 1 was requested but the binomial parameter `W` was not provided.
     #[error("missing binomial parameter W for extension-field multiplication")]
     MissingWForExtension,
 
+    /// The batch STARK verifier rejected the proof.
     #[error("verification failed: {0}")]
     Verify(String),
 
+    /// A non-primitive table entry references an op type for which no [`TableProver`] was registered.
     #[error("missing table prover for non-primitive op `{0:?}`")]
     MissingTableProver(NpoTypeId),
 }
@@ -424,6 +434,7 @@ where
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
         Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
+    /// Create a new prover with the given STARK config and default table packing.
     pub fn new(config: SC) -> Self {
         Self {
             config,
@@ -434,6 +445,7 @@ where
         }
     }
 
+    /// Override the default [`TablePacking`] configuration (builder-style).
     #[must_use]
     pub const fn with_table_packing(mut self, table_packing: TablePacking) -> Self {
         self.table_packing = table_packing;
@@ -485,6 +497,7 @@ where
         ))));
     }
 
+    /// Return the current [`TablePacking`] configuration.
     #[inline]
     pub const fn table_packing(&self) -> TablePacking {
         self.table_packing

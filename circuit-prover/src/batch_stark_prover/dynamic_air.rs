@@ -34,14 +34,17 @@ impl<SC> DynamicAirEntry<SC>
 where
     SC: StarkGenericConfig,
 {
+    /// Wrap a boxed [`CloneableBatchAir`] into a `DynamicAirEntry`.
     pub fn new(inner: Box<dyn CloneableBatchAir<SC>>) -> Self {
         Self { air: inner }
     }
 
+    /// Return a shared reference to the inner AIR.
     pub fn air(&self) -> &dyn CloneableBatchAir<SC> {
         &*self.air
     }
 
+    /// Return a mutable reference to the inner AIR.
     pub fn air_mut(&mut self) -> &mut dyn CloneableBatchAir<SC> {
         &mut *self.air
     }
@@ -184,6 +187,8 @@ where
 {
 }
 
+/// Simple super trait of [`Air`] describing the behaviour of a non-primitive
+/// dynamically dispatched AIR used in batched proofs.
 #[cfg(not(debug_assertions))]
 pub trait BatchAir<SC>:
     BaseAir<Val<SC>>
@@ -246,6 +251,10 @@ macro_rules! impl_cloneable_batch_air_forwarding {
     };
 }
 
+/// Object-safe extension of [`BatchAir`] that adds cloning support.
+///
+/// This trait is automatically implemented for any `T: BatchAir<SC> + Clone + 'static`.
+/// It is the concrete trait object type stored inside [`DynamicAirEntry`].
 pub trait CloneableBatchAir<SC>: BaseAir<Val<SC>> + Send + Sync
 where
     SC: StarkGenericConfig,

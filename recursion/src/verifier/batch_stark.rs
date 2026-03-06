@@ -50,7 +50,6 @@ pub type PcsVerifierParams<SC, InputProof, OpeningProof, Comm> =
 /// Type-erased recursive AIR entry for non-primitive tables.
 pub type DynRecursionAirEntry<SC> = DynamicAirEntry<SC>;
 
-// TODO(Robin): Remove with dynamic dispatch
 /// Wrapper enum for heterogeneous circuit table AIRs used by circuit-prover tables.
 pub enum CircuitTablesAir<SC: StarkGenericConfig, const D: usize> {
     Const(ConstAir<Val<SC>, D>),
