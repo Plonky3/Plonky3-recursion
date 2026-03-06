@@ -605,7 +605,6 @@ mod test {
     use alloc::vec;
     use alloc::vec::Vec;
 
-    use p3_circuit::CircuitError;
     use p3_circuit::ops::generate_poseidon2_trace;
     use p3_circuit::ops::mmcs::format_openings;
     use p3_field::PrimeCharacteristicRing;
@@ -1021,8 +1020,10 @@ mod test {
         )
         .unwrap();
         let circuit = builder.build().unwrap();
+        #[cfg(debug_assertions)]
         let root_widx0 = circuit.expr_to_widx[&root_exprs[0]];
-        let mut runner = circuit.runner();
+        #[allow(clippy::redundant_clone)] // for non debug assertions runs
+        let mut runner = circuit.clone().runner();
 
         let directions = (0..path_depth)
             .map(|k| CF::from_bool(index >> k & 1 == 1))
@@ -1069,11 +1070,53 @@ mod test {
         // the root computed by the MmcsVerify gate does not match the one given as input.
         let result = runner.run();
 
-        match result {
-            Err(CircuitError::WitnessConflict { witness_id, .. }) => {
-                assert_eq!(witness_id, root_widx0, "expected root witness mismatch");
+        #[cfg(debug_assertions)]
+        {
+            match result {
+                Err(p3_circuit::CircuitError::WitnessConflict { witness_id, .. }) => {
+                    assert_eq!(witness_id, root_widx0, "expected root witness mismatch");
+                }
+                _ => panic!("The test was suppose to fail with a root mismatch!"),
             }
-            _ => panic!("The test was suppose to fail with a root mismatch!"),
+        }
+
+        #[cfg(not(debug_assertions))]
+        {
+            use p3_circuit_prover::*;
+
+            let config = p3_circuit_prover::config::koala_bear().build();
+            let table_packing = TablePacking::default();
+
+            let (airs_degrees, preprocessed_columns) =
+                p3_circuit_prover::common::get_airs_and_degrees_with_prep::<
+                    p3_circuit_prover::config::KoalaBearConfig,
+                    _,
+                    1,
+                >(
+                    &circuit,
+                    table_packing,
+                    &[],
+                    &[],
+                    ConstraintProfile::Standard,
+                )
+                .unwrap();
+            let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
+
+            let traces = result.unwrap();
+            let prover_data =
+                p3_batch_stark::ProverData::from_airs_and_degrees(&config, &mut airs, &degrees);
+            let circuit_prover_data = CircuitProverData::new(prover_data, preprocessed_columns);
+            let mut prover = BatchStarkProver::new(config).with_table_packing(table_packing);
+            prover.register_poseidon2_table(Poseidon2Config::KoalaBearD4Width16);
+
+            let proof = prover
+                .prove_all_tables(&traces, &circuit_prover_data)
+                .expect("Failed to prove all tables");
+            assert!(
+                prover
+                    .verify_all_tables(&proof, circuit_prover_data.common_data())
+                    .is_err()
+            )
         }
     }
 

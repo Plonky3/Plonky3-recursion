@@ -39,7 +39,7 @@ jobs:
         env:
           BASE_REF: ${{ github.event.pull_request.base.sha || github.sha }}
           HEAD_REF: ${{ github.event.pull_request.head.sha || github.sha }}
-          REGRESSION_THRESHOLD_PCT: "5"
+          REGRESSION_THRESHOLD_PCT: "1"
           PERF_RUNS: "3"
           PERF_WARMUPS: "1"
         run: bash .github/scripts/perf_gate.sh
