@@ -1094,7 +1094,7 @@ mod test {
         let compress = MyCompress::new(u64_hash);
 
         // WARNING: DO NOT USE SmallRng in proper applications! Use a real PRNG instead!
-        type ValMmcs = MerkleTreeHidingMmcs<
+        type MyMmcs = MerkleTreeHidingMmcs<
             [Val; p3_keccak::VECTOR_LEN],
             [u64; p3_keccak::VECTOR_LEN],
             FieldHash,
@@ -1105,9 +1105,9 @@ mod test {
             4,
         >;
         let mut rng = SmallRng::seed_from_u64(1);
-        let val_mmcs = ValMmcs::new(field_hash, compress, 0, rng.clone());
+        let val_mmcs = MyMmcs::new(field_hash, compress, 0, rng.clone());
 
-        type ChallengeMmcs = ExtensionMmcs<Val, Challenge, ValMmcs>;
+        type ChallengeMmcs = ExtensionMmcs<Val, Challenge, MyMmcs>;
         let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
 
         type Challenger = SerializingChallenger32<Val, HashChallenger<u8, ByteHash, 32>>;
@@ -1245,7 +1245,7 @@ mod test {
         type Dft = p3_dft::Radix2Bowers;
         let dft = Dft::default();
 
-        type Pcs = TwoAdicFriPcs<Val, Dft, ValMmcs, ChallengeMmcs>;
+        type Pcs = TwoAdicFriPcs<Val, Dft, MyMmcs, ChallengeMmcs>;
         let pcs = Pcs::new(dft, val_mmcs, fri_params);
 
         type MyConfig = StarkConfig<Pcs, Challenge, Challenger>;

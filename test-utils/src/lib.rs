@@ -86,14 +86,20 @@ pub mod baby_bear_params {
     pub const DIGEST_ELEMS: usize = 8;
     pub type Challenge = BinomialExtensionField<F, D>;
     pub type Dft = Radix2DitParallel<F>;
-    pub type Perm = Poseidon2BabyBear<16>;
-    pub type MyHash = PaddingFreeSponge<Perm, 16, RATE, 8>;
-    pub type MyCompress = TruncatedPermutation<Perm, 2, 8, 16>;
-    pub type ValMmcs =
-        MerkleTreeMmcs<<F as Field>::Packing, <F as Field>::Packing, MyHash, MyCompress, 2, 8>;
-    pub type ChallengeMmcs = ExtensionMmcs<F, Challenge, ValMmcs>;
-    pub type Challenger = DuplexChallenger<F, Perm, 16, RATE>;
-    pub type MyPcs = TwoAdicFriPcs<F, Dft, ValMmcs, ChallengeMmcs>;
+    pub type Perm = Poseidon2BabyBear<WIDTH>;
+    pub type MyHash = PaddingFreeSponge<Perm, WIDTH, RATE, DIGEST_ELEMS>;
+    pub type MyCompress = TruncatedPermutation<Perm, 2, DIGEST_ELEMS, WIDTH>;
+    pub type MyMmcs = MerkleTreeMmcs<
+        <F as Field>::Packing,
+        <F as Field>::Packing,
+        MyHash,
+        MyCompress,
+        2,
+        DIGEST_ELEMS,
+    >;
+    pub type ChallengeMmcs = ExtensionMmcs<F, Challenge, MyMmcs>;
+    pub type Challenger = DuplexChallenger<F, Perm, WIDTH, RATE>;
+    pub type MyPcs = TwoAdicFriPcs<F, Dft, MyMmcs, ChallengeMmcs>;
     pub type MyConfig = StarkConfig<MyPcs, Challenge, Challenger>;
 }
 
@@ -111,14 +117,20 @@ pub mod koala_bear_params {
 
     pub type Challenge = BinomialExtensionField<F, D>;
     pub type Dft = Radix2DitParallel<F>;
-    pub type Perm = Poseidon2KoalaBear<16>;
-    pub type MyHash = PaddingFreeSponge<Perm, 16, RATE, 8>;
-    pub type MyCompress = TruncatedPermutation<Perm, 2, 8, 16>;
-    pub type ValMmcs =
-        MerkleTreeMmcs<<F as Field>::Packing, <F as Field>::Packing, MyHash, MyCompress, 2, 8>;
-    pub type ChallengeMmcs = ExtensionMmcs<F, Challenge, ValMmcs>;
-    pub type Challenger = DuplexChallenger<F, Perm, 16, RATE>;
-    pub type MyPcs = TwoAdicFriPcs<F, Dft, ValMmcs, ChallengeMmcs>;
+    pub type Perm = Poseidon2KoalaBear<WIDTH>;
+    pub type MyHash = PaddingFreeSponge<Perm, WIDTH, RATE, DIGEST_ELEMS>;
+    pub type MyCompress = TruncatedPermutation<Perm, 2, DIGEST_ELEMS, WIDTH>;
+    pub type MyMmcs = MerkleTreeMmcs<
+        <F as Field>::Packing,
+        <F as Field>::Packing,
+        MyHash,
+        MyCompress,
+        2,
+        DIGEST_ELEMS,
+    >;
+    pub type ChallengeMmcs = ExtensionMmcs<F, Challenge, MyMmcs>;
+    pub type Challenger = DuplexChallenger<F, Perm, WIDTH, RATE>;
+    pub type MyPcs = TwoAdicFriPcs<F, Dft, MyMmcs, ChallengeMmcs>;
     pub type MyConfig = StarkConfig<MyPcs, Challenge, Challenger>;
 }
 
@@ -136,13 +148,19 @@ pub mod goldilocks_params {
 
     pub type Challenge = BinomialExtensionField<F, D>;
     pub type Dft = Radix2DitParallel<F>;
-    pub type Perm = Poseidon2Goldilocks<8>;
-    pub type MyHash = PaddingFreeSponge<Perm, 8, RATE, 4>;
-    pub type MyCompress = TruncatedPermutation<Perm, 2, 4, 8>;
-    pub type ValMmcs =
-        MerkleTreeMmcs<<F as Field>::Packing, <F as Field>::Packing, MyHash, MyCompress, 2, 4>;
-    pub type ChallengeMmcs = ExtensionMmcs<F, Challenge, ValMmcs>;
-    pub type Challenger = DuplexChallenger<F, Perm, 8, RATE>;
-    pub type MyPcs = TwoAdicFriPcs<F, Dft, ValMmcs, ChallengeMmcs>;
+    pub type Perm = Poseidon2Goldilocks<WIDTH>;
+    pub type MyHash = PaddingFreeSponge<Perm, WIDTH, RATE, DIGEST_ELEMS>;
+    pub type MyCompress = TruncatedPermutation<Perm, 2, DIGEST_ELEMS, WIDTH>;
+    pub type MyMmcs = MerkleTreeMmcs<
+        <F as Field>::Packing,
+        <F as Field>::Packing,
+        MyHash,
+        MyCompress,
+        2,
+        DIGEST_ELEMS,
+    >;
+    pub type ChallengeMmcs = ExtensionMmcs<F, Challenge, MyMmcs>;
+    pub type Challenger = DuplexChallenger<F, Perm, WIDTH, RATE>;
+    pub type MyPcs = TwoAdicFriPcs<F, Dft, MyMmcs, ChallengeMmcs>;
     pub type MyConfig = StarkConfig<MyPcs, Challenge, Challenger>;
 }

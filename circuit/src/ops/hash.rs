@@ -72,7 +72,6 @@ mod tests {
     use crate::{CircuitBuilder, ExprId};
 
     type CF = Challenge;
-    type MyHash = PaddingFreeSponge<Perm, 16, 8, 8>;
 
     struct DummyParams;
 

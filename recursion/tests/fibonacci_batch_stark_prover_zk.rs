@@ -28,9 +28,9 @@ use rand::SeedableRng;
 use rand::rngs::SmallRng;
 
 // Non-ZK config used for the outer recursive proof of the verification circuit.
-type MyConfig = StarkConfig<TwoAdicFriPcs<F, Dft, ValMmcs, ChallengeMmcs>, Challenge, Challenger>;
+type MyConfig = StarkConfig<TwoAdicFriPcs<F, Dft, MyMmcs, ChallengeMmcs>, Challenge, Challenger>;
 
-type MyPcsZk = HidingFriPcs<F, Dft, ValMmcs, ChallengeMmcs, SmallRng>;
+type MyPcsZk = HidingFriPcs<F, Dft, MyMmcs, ChallengeMmcs, SmallRng>;
 type MyConfigZk = StarkConfig<MyPcsZk, Challenge, Challenger>;
 type InnerFriZk = HidingFriProofTargets<
     F,
@@ -104,7 +104,7 @@ fn test_batch_verifier_zk_hiding_fri() -> Result<(), VerificationError> {
     let perm = default_koalabear_poseidon2_16();
     let hash = MyHash::new(perm.clone());
     let compress = MyCompress::new(perm.clone());
-    let val_mmcs = ValMmcs::new(hash, compress, 0);
+    let val_mmcs = MyMmcs::new(hash, compress, 0);
     let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
     let dft = Dft::default();
     let fri_params = create_test_fri_params(challenge_mmcs, 0);
@@ -129,7 +129,7 @@ fn test_batch_verifier_zk_hiding_fri() -> Result<(), VerificationError> {
     let perm2 = default_koalabear_poseidon2_16();
     let hash2 = MyHash::new(perm2.clone());
     let compress2 = MyCompress::new(perm2.clone());
-    let val_mmcs2 = ValMmcs::new(hash2, compress2, 0);
+    let val_mmcs2 = MyMmcs::new(hash2, compress2, 0);
     let challenge_mmcs2 = ChallengeMmcs::new(val_mmcs2.clone());
     let dft2 = Dft::default();
     let fri_params2 = create_test_fri_params(challenge_mmcs2, 0);
@@ -185,7 +185,7 @@ fn test_batch_verifier_zk_hiding_fri() -> Result<(), VerificationError> {
             F,
             Challenge,
             ChallengeMmcs,
-            ValMmcs,
+            MyMmcs,
             MyHash,
             MyCompress,
             DIGEST_ELEMS,
@@ -204,7 +204,7 @@ fn test_batch_verifier_zk_hiding_fri() -> Result<(), VerificationError> {
     let perm3 = default_koalabear_poseidon2_16();
     let hash3 = MyHash::new(perm3.clone());
     let compress3 = MyCompress::new(perm3.clone());
-    let val_mmcs3 = ValMmcs::new(hash3, compress3, 0);
+    let val_mmcs3 = MyMmcs::new(hash3, compress3, 0);
     let challenge_mmcs3 = ChallengeMmcs::new(val_mmcs3.clone());
     let dft3 = Dft::default();
     let fri_params3 = create_test_fri_params(challenge_mmcs3, 0);

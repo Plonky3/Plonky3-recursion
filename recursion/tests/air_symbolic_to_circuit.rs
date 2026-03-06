@@ -17,8 +17,8 @@ use rand::rngs::SmallRng;
 use rand::{Rng, RngExt, SeedableRng};
 
 type Challenge = F;
-type ChallengeMmcs = ExtensionMmcs<F, Challenge, ValMmcs>;
-type MyPcs = TwoAdicFriPcs<F, Dft, ValMmcs, ChallengeMmcs>;
+type ChallengeMmcs = ExtensionMmcs<F, Challenge, MyMmcs>;
+type MyPcs = TwoAdicFriPcs<F, Dft, MyMmcs, ChallengeMmcs>;
 type MyConfig = StarkConfig<MyPcs, Challenge, Challenger>;
 
 fn run_recursive<A>(

@@ -32,7 +32,7 @@ fn make_config(perm: &Perm, log_blowup: usize, max_log_arity: usize) -> MyConfig
     let num_queries = (100 - query_pow_bits) / log_blowup;
     let hash = MyHash::new(perm.clone());
     let compress = MyCompress::new(perm.clone());
-    let val_mmcs = ValMmcs::new(hash, compress, 0);
+    let val_mmcs = MyMmcs::new(hash, compress, 0);
     let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
     let fri_params = FriParameters {
         max_log_arity,
@@ -186,7 +186,7 @@ fn test_aggregation_with_different_shapes() -> Result<(), VerificationError> {
         F,
         Challenge,
         ChallengeMmcs,
-        ValMmcs,
+        MyMmcs,
         MyHash,
         MyCompress,
         DIGEST_ELEMS,
@@ -198,7 +198,7 @@ fn test_aggregation_with_different_shapes() -> Result<(), VerificationError> {
         F,
         Challenge,
         ChallengeMmcs,
-        ValMmcs,
+        MyMmcs,
         MyHash,
         MyCompress,
         DIGEST_ELEMS,

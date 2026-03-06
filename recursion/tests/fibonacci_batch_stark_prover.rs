@@ -69,7 +69,7 @@ fn test_fibonacci_batch_verifier() {
     let perm = default_koalabear_poseidon2_16();
     let hash = MyHash::new(perm.clone());
     let compress = MyCompress::new(perm.clone());
-    let val_mmcs = ValMmcs::new(hash, compress, 0);
+    let val_mmcs = MyMmcs::new(hash, compress, 0);
     let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
     let dft = Dft::default();
 
@@ -121,7 +121,7 @@ fn test_fibonacci_batch_verifier() {
     let perm2 = default_koalabear_poseidon2_16();
     let hash2 = MyHash::new(perm2.clone());
     let compress2 = MyCompress::new(perm2.clone());
-    let val_mmcs2 = ValMmcs::new(hash2, compress2, 0);
+    let val_mmcs2 = MyMmcs::new(hash2, compress2, 0);
     let challenge_mmcs2 = ChallengeMmcs::new(val_mmcs2.clone());
     let fri_params2 = create_test_fri_params(challenge_mmcs2, 0);
     let fri_verifier_params = FriVerifierParams::with_mmcs(
@@ -210,7 +210,7 @@ fn test_fibonacci_batch_verifier() {
         F,
         Challenge,
         ChallengeMmcs,
-        ValMmcs,
+        MyMmcs,
         MyHash,
         MyCompress,
         DIGEST_ELEMS,
@@ -229,7 +229,7 @@ fn test_fibonacci_batch_verifier() {
     let perm3 = default_koalabear_poseidon2_16();
     let hash3 = MyHash::new(perm3.clone());
     let compress3 = MyCompress::new(perm3.clone());
-    let val_mmcs3 = ValMmcs::new(hash3, compress3, 0);
+    let val_mmcs3 = MyMmcs::new(hash3, compress3, 0);
     let challenge_mmcs3 = ChallengeMmcs::new(val_mmcs3.clone());
     let fri_params3 = create_test_fri_params(challenge_mmcs3, 0);
     let pcs3 = MyPcs::new(dft3, val_mmcs3, fri_params3);

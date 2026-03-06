@@ -650,7 +650,7 @@ fn get_proving_config() -> MyConfig {
     let perm = default_babybear_poseidon2_16();
     let hash = MyHash::new(perm.clone());
     let compress = MyCompress::new(perm.clone());
-    let val_mmcs = ValMmcs::new(hash, compress, 0);
+    let val_mmcs = MyMmcs::new(hash, compress, 0);
     let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
     let dft = Dft::default();
 
@@ -668,7 +668,7 @@ fn get_recursive_config_and_params() -> (MyConfig, FriVerifierParams, usize, usi
     let perm2 = default_babybear_poseidon2_16();
     let hash2 = MyHash::new(perm2.clone());
     let compress2 = MyCompress::new(perm2.clone());
-    let val_mmcs2 = ValMmcs::new(hash2, compress2, 0);
+    let val_mmcs2 = MyMmcs::new(hash2, compress2, 0);
     let challenge_mmcs2 = ChallengeMmcs::new(val_mmcs2.clone());
     let fri_params2 = create_test_fri_params(challenge_mmcs2, 0);
     let fri_verifier_params = FriVerifierParams::from(&fri_params2);

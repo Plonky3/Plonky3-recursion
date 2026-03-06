@@ -188,7 +188,7 @@ pub fn report_proof_size<S: Serialize>(proof: &S) {
 ///
 /// Defines (inline, no module wrapper):
 /// - Type aliases: `F`, `D`, `Challenge`, `Dft`, `Perm`, `MyHash`, `MyCompress`,
-///   `ValMmcs`, `ChallengeMmcs`, `Challenger`, `MyPcs`, `MyConfig`, `InnerFri`,
+///   `MyMmcs`, `ChallengeMmcs`, `Challenger`, `MyPcs`, `MyConfig`, `InnerFri`,
 ///   `ConfigWithFriParams`
 /// - Functions: `create_config`, `create_fri_verifier_params`, `config_with_fri_params`
 /// - Trait impls: `Deref`, `StarkGenericConfig`, `FriRecursionConfig` for `ConfigWithFriParams`
@@ -223,7 +223,7 @@ macro_rules! define_field_module_types {
         type Perm = $perm;
         type MyHash = PaddingFreeSponge<Perm, WIDTH, RATE, DIGEST_ELEMS>;
         type MyCompress = TruncatedPermutation<Perm, 2, DIGEST_ELEMS, WIDTH>;
-        type ValMmcs = MerkleTreeMmcs<
+        type MyMmcs = MerkleTreeMmcs<
             <F as Field>::Packing,
             <F as Field>::Packing,
             MyHash,
@@ -231,9 +231,9 @@ macro_rules! define_field_module_types {
             2,
             DIGEST_ELEMS,
         >;
-        type ChallengeMmcs = ExtensionMmcs<F, Challenge, ValMmcs>;
+        type ChallengeMmcs = ExtensionMmcs<F, Challenge, MyMmcs>;
         type Challenger = DuplexChallenger<F, Perm, WIDTH, RATE>;
-        type MyPcs = TwoAdicFriPcs<F, Dft, ValMmcs, ChallengeMmcs>;
+        type MyPcs = TwoAdicFriPcs<F, Dft, MyMmcs, ChallengeMmcs>;
         type MyConfig = StarkConfig<MyPcs, Challenge, Challenger>;
 
         type InnerFri = p3_recursion::pcs::FriProofTargets<
@@ -250,7 +250,7 @@ macro_rules! define_field_module_types {
         >;
 
         #[allow(dead_code)]
-        type MyPcsZk = HidingFriPcs<F, Dft, ValMmcs, ChallengeMmcs, SmallRng>;
+        type MyPcsZk = HidingFriPcs<F, Dft, MyMmcs, ChallengeMmcs, SmallRng>;
         #[allow(dead_code)]
         type MyConfigZk = StarkConfig<MyPcsZk, Challenge, Challenger>;
 
@@ -386,7 +386,7 @@ macro_rules! define_field_module_types {
                     F,
                     Challenge,
                     ChallengeMmcs,
-                    ValMmcs,
+                    MyMmcs,
                     MyHash,
                     MyCompress,
                     DIGEST_ELEMS,
@@ -461,7 +461,7 @@ macro_rules! define_field_module_types {
                     F,
                     Challenge,
                     ChallengeMmcs,
-                    ValMmcs,
+                    MyMmcs,
                     MyHash,
                     MyCompress,
                     DIGEST_ELEMS,
@@ -473,7 +473,7 @@ macro_rules! define_field_module_types {
             let perm = $default_perm();
             let hash = MyHash::new(perm.clone());
             let compress = MyCompress::new(perm.clone());
-            let val_mmcs = ValMmcs::new(hash, compress, fp.cap_height);
+            let val_mmcs = MyMmcs::new(hash, compress, fp.cap_height);
             let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
             let dft = Dft::default();
 
@@ -515,7 +515,7 @@ macro_rules! define_field_module_types {
             let perm = $default_perm();
             let hash = MyHash::new(perm.clone());
             let compress = MyCompress::new(perm.clone());
-            let val_mmcs = ValMmcs::new(hash, compress, fp.cap_height);
+            let val_mmcs = MyMmcs::new(hash, compress, fp.cap_height);
             let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
             let dft = Dft::default();
 

@@ -43,8 +43,8 @@ use p3_test_utils::baby_bear_params::*;
 // The common module uses extension field challenges (D=4), which would
 // create 4x more observations and circuit operations.
 type Challenge = F;
-type ChallengeMmcs = ExtensionMmcs<F, Challenge, ValMmcs>;
-type MyPcs = TwoAdicFriPcs<F, Dft, ValMmcs, ChallengeMmcs>;
+type ChallengeMmcs = ExtensionMmcs<F, Challenge, MyMmcs>;
+type MyPcs = TwoAdicFriPcs<F, Dft, MyMmcs, ChallengeMmcs>;
 type MyConfig = StarkConfig<MyPcs, Challenge, Challenger>;
 
 #[test]
@@ -70,7 +70,7 @@ fn test_poseidon2_perm_verifier() -> Result<(), VerificationError> {
 
     let hash = MyHash::new(perm.clone());
     let compress = MyCompress::new(perm.clone());
-    let val_mmcs = ValMmcs::new(hash, compress, 0);
+    let val_mmcs = MyMmcs::new(hash, compress, 0);
     let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
     let dft = Dft::default();
     // Keep a small final poly length; with enough rows we still get FRI fold phases.

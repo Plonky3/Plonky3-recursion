@@ -460,11 +460,11 @@ pub struct RecExtensionValMmcs<
     F: Field,
     EF: ExtensionField<F>,
     const DIGEST_ELEMS: usize,
-    ValMmcs: RecursiveMmcs<F, EF>,
+    MyMmcs: RecursiveMmcs<F, EF>,
 > {
     _phantom: PhantomData<F>,
     _phantom_ef: PhantomData<EF>,
-    _phantom_val: PhantomData<ValMmcs>,
+    _phantom_val: PhantomData<MyMmcs>,
 }
 
 impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize, RecValMmcs: RecursiveMmcs<F, EF>>

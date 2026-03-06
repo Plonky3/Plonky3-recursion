@@ -607,14 +607,10 @@ mod test {
 
     use p3_circuit::ops::generate_poseidon2_trace;
     use p3_circuit::ops::mmcs::format_openings;
-    use p3_field::PrimeCharacteristicRing;
-    use p3_field::extension::BinomialExtensionField;
-    use p3_koala_bear::{KoalaBear, Poseidon2KoalaBear, default_koalabear_poseidon2_16};
     use p3_matrix::Matrix;
     use p3_matrix::dense::{DenseMatrix, RowMajorMatrix};
-    use p3_merkle_tree::MerkleTreeMmcs;
     use p3_poseidon2_circuit_air::KoalaBearD4Width16;
-    use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
+    use p3_test_utils::koala_bear_params::*;
     use p3_util::log2_ceil_usize;
     use rand::SeedableRng;
     use rand::rngs::SmallRng;
@@ -628,12 +624,6 @@ mod test {
 
     type F = KoalaBear;
     type CF = BinomialExtensionField<F, 4>;
-
-    type Perm = Poseidon2KoalaBear<16>;
-    type MyHash = PaddingFreeSponge<Perm, 16, 8, 8>;
-    type MyCompress = TruncatedPermutation<Perm, 2, 8, 16>;
-    type MyMmcs =
-        MerkleTreeMmcs<<F as Field>::Packing, <F as Field>::Packing, MyHash, MyCompress, 2, 8>;
 
     fn base_digest_to_ext(digest: &[F], permutation_config: Poseidon2Config) -> Vec<CF> {
         assert_eq!(
