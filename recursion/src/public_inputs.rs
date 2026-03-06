@@ -9,7 +9,6 @@ use p3_commit::Pcs;
 use p3_field::{BasedVectorSpace, Field, PrimeField64};
 use p3_uni_stark::{Proof, StarkGenericConfig, Val};
 
-use crate::pcs::MAX_QUERY_INDEX_BITS;
 use crate::traits::Recursive;
 use crate::{BatchProofTargets, CommonDataTargets, ProofTargets};
 
@@ -111,7 +110,7 @@ impl<F: Field> PublicInputBuilder<F> {
     ///     i = Σ(j=0 to k-1) b_j · 2^j
     /// ```
     ///
-    /// where b_j ∈ {0, 1} and k = `MAX_QUERY_INDEX_BITS`.
+    /// where b_j ∈ {0, 1} and k = `F::bits()` (the bit width of the base field).
     ///
     /// # Parameters
     /// - `index`: The query index as a field element.
@@ -126,7 +125,7 @@ impl<F: Field> PublicInputBuilder<F> {
         let index_usize = index.as_canonical_u64() as usize;
 
         // For each bit position k in [0, MAX_QUERY_INDEX_BITS):
-        for k in 0..MAX_QUERY_INDEX_BITS {
+        for k in 0..F::bits() {
             // Extract bit k: shift right by k, then mask with 1.
             let bit = if (index_usize >> k) & 1 == 1 {
                 F::ONE
@@ -146,8 +145,6 @@ impl<F: Field> PublicInputBuilder<F> {
     ///
     /// The bits must be given in little-endian order (LSB first), and each bit
     /// should be encoded as field element 0 or 1.
-    ///
-    /// **WARNING**: The number of bits should be <= `MAX_QUERY_INDEX_BITS`.
     ///
     /// # Parameters
     /// - `bits`: An iterable collection of bit elements (each 0 or 1).
@@ -229,7 +226,7 @@ pub struct FriVerifierInputs<F: Field> {
     /// Query index bits for each query, in little-endian order.
     ///
     /// Each inner vector:
-    /// - has length `MAX_QUERY_INDEX_BITS`,
+    /// - has length `F::bits()` (the bit width of the base field),
     /// - encodes one query index as bits 0 or 1.
     pub query_index_bits: Vec<Vec<F>>,
 
@@ -266,11 +263,11 @@ impl<F: Field> FriVerifierInputs<F> {
 
         // 4. Add query index bits for each query.
         for bits in self.query_index_bits {
-            // Verify that the bit length is <= MAX_QUERY_INDEX_BITS.
             debug_assert!(
-                bits.len() <= MAX_QUERY_INDEX_BITS,
+                bits.len() <= F::bits(),
                 "query index bit length exceeds limit"
             );
+
             builder.add_query_index_bits(bits);
         }
 
@@ -713,8 +710,8 @@ mod tests {
 
         let inputs = builder.build();
 
-        // Should have exactly MAX_QUERY_INDEX_BITS bits.
-        assert_eq!(inputs.len(), MAX_QUERY_INDEX_BITS);
+        // Should have exactly `F::bits()` bits.
+        assert_eq!(inputs.len(), BabyBear::bits());
 
         // Verify little-endian bit pattern: 101 means bits are [1, 0, 1, 0, 0, ...].
         assert_eq!(inputs[0], BabyBear::ONE); // bit 0 (LSB)

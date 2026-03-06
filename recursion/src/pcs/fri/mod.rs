@@ -4,7 +4,7 @@ mod params;
 mod targets;
 mod verifier;
 
-pub use params::{FriVerifierParams, MAX_QUERY_INDEX_BITS};
+pub use params::FriVerifierParams;
 pub use targets::{
     BatchOpeningTargets, CommitPhaseProofStepTargets, FriProofTargets, HashProofTargets,
     HidingFriProofTargets, HidingOpenedValuesTargets, InputProofTargets, MerkleCapTargets,

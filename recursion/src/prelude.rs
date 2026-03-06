@@ -12,7 +12,7 @@
 pub use crate::Target;
 pub use crate::challenger::CircuitChallenger;
 pub use crate::generation::{GenerationError, PcsGeneration};
-pub use crate::pcs::fri::{FriVerifierParams, MAX_QUERY_INDEX_BITS};
+pub use crate::pcs::fri::FriVerifierParams;
 pub use crate::public_inputs::{
     CommitmentOpening, FriVerifierInputs, PublicInputBuilder, StarkVerifierInputs,
     StarkVerifierInputsBuilder,

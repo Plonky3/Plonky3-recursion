@@ -18,7 +18,7 @@ use p3_symmetric::{CryptographicHasher, MerkleCap, PseudoCompressionFunction};
 use p3_uni_stark::{StarkGenericConfig, Val};
 use serde::{Deserialize, Serialize};
 
-use super::{FriVerifierParams, MAX_QUERY_INDEX_BITS, verify_fri_circuit};
+use super::{FriVerifierParams, verify_fri_circuit};
 use crate::Target;
 use crate::challenger::CircuitChallenger;
 use crate::traits::{
@@ -645,9 +645,10 @@ where
         let total_log_reduction: usize = opening_proof.log_arities.iter().sum();
         let log_max_height = total_log_reduction + log_final_poly_len + log_blowup;
 
-        if log_max_height > MAX_QUERY_INDEX_BITS {
+        let max_query_index_bits = Val::<SC>::bits();
+        if log_max_height > max_query_index_bits {
             return Err(VerificationError::InvalidProofShape(format!(
-                "log_max_height {log_max_height} exceeds MAX_QUERY_INDEX_BITS {MAX_QUERY_INDEX_BITS}"
+                "log_max_height {log_max_height} exceeds base field bit width {max_query_index_bits}"
             )));
         }
 
@@ -1020,9 +1021,10 @@ where
         let total_log_reduction: usize = fri_proof.log_arities.iter().sum();
         let log_max_height = total_log_reduction + log_final_poly_len + log_blowup;
 
-        if log_max_height > MAX_QUERY_INDEX_BITS {
+        let max_query_index_bits = Val::<SC>::bits();
+        if log_max_height > max_query_index_bits {
             return Err(VerificationError::InvalidProofShape(format!(
-                "log_max_height {log_max_height} exceeds MAX_QUERY_INDEX_BITS {MAX_QUERY_INDEX_BITS}"
+                "log_max_height {log_max_height} exceeds base field bit width {max_query_index_bits}"
             )));
         }
 

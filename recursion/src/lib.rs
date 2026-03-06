@@ -25,7 +25,7 @@ pub use challenger_perm::ChallengerPermConfig;
 pub use generation::{GenerationError, PcsGeneration, generate_batch_challenges};
 pub use p3_circuit::ops;
 pub use p3_circuit::ops::Poseidon2Config;
-pub use pcs::fri::{FriVerifierParams, MAX_QUERY_INDEX_BITS};
+pub use pcs::fri::FriVerifierParams;
 pub use public_inputs::{
     BatchStarkVerifierInputsBuilder, CommitmentOpening, FriVerifierInputs, PublicInputBuilder,
     StarkVerifierInputs, StarkVerifierInputsBuilder, construct_batch_stark_verifier_inputs,
