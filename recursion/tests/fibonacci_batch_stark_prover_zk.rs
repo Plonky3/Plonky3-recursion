@@ -12,8 +12,8 @@ use p3_circuit_prover::{
 use p3_field::Field;
 use p3_fri::{HidingFriPcs, TwoAdicFriPcs, create_test_fri_params};
 use p3_koala_bear::default_koalabear_poseidon2_16;
-use p3_lookup::{Lookup, LookupAir};
 use p3_lookup::logup::LogUpGadget;
+use p3_lookup::{Lookup, LookupAir};
 use p3_matrix::dense::RowMajorMatrix;
 use p3_poseidon2_circuit_air::KoalaBearD4Width16;
 use p3_recursion::pcs::fri::{

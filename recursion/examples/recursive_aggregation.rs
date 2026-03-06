@@ -54,15 +54,6 @@ fn main() {
     init_logger();
 
     let args = Args::parse();
-
-    if args.common.zk {
-        eprintln!(
-            "error: --zk is not supported for recursive_aggregation yet.\n\
-             Awaiting upstream P3 changes to have HidingFriPcs support Sync."
-        );
-        std::process::exit(1);
-    }
-
     let fri_params = args.common.to_fri_params();
     let table_packing = args.common.table_packing();
 
@@ -79,18 +70,21 @@ fn main() {
             &fri_params,
             &table_packing,
             args.common.security_level,
+            args.common.zk,
         ),
         FieldOption::BabyBear => baby_bear::run(
             args.num_recursive_layers,
             &fri_params,
             &table_packing,
             args.common.security_level,
+            args.common.zk,
         ),
         FieldOption::Goldilocks => goldilocks::run(
             args.num_recursive_layers,
             &fri_params,
             &table_packing,
             args.common.security_level,
+            args.common.zk,
         ),
     }
 }
@@ -139,7 +133,7 @@ macro_rules! define_field_module {
                 $backend_rate
             );
 
-            /// Build a dummy circuit with a single constant and prove it.
+            /// Build a dummy circuit with a single constant and prove it (non-ZK).
             fn prove_dummy_circuit(
                 constant_value: u32,
                 config: &ConfigWithFriParams,
@@ -149,7 +143,6 @@ macro_rules! define_field_module {
                 let c = builder.alloc_const(F::from_u32(constant_value), "dummy_const");
                 let expected = builder.alloc_public_input("expected");
                 builder.connect(c, expected);
-
                 let circuit = builder.build().unwrap();
                 let (airs_degrees, preprocessed_columns) =
                     get_airs_and_degrees_with_prep::<ConfigWithFriParams, F, 1>(
@@ -161,27 +154,68 @@ macro_rules! define_field_module {
                     )
                     .unwrap();
                 let (mut airs, degrees): (Vec<_>, Vec<_>) = airs_degrees.into_iter().unzip();
-
                 let mut runner = circuit.runner();
                 runner
                     .set_public_inputs(&[F::from_u32(constant_value)])
                     .unwrap();
                 let traces = runner.run().unwrap();
-
-                let prover_data = ProverData::from_airs_and_degrees(config, &mut airs, &degrees);
+                let ext_degrees: Vec<usize> =
+                    degrees.iter().map(|&d| d + config.is_zk()).collect();
+                let prover_data =
+                    ProverData::from_airs_and_degrees(config, &mut airs, &ext_degrees);
                 let circuit_prover_data = CircuitProverData::new(prover_data, preprocessed_columns);
                 let prover =
                     BatchStarkProver::new(config.clone()).with_table_packing(table_packing);
-
                 let proof = prover
                     .prove_all_tables(&traces, &circuit_prover_data)
                     .expect("Failed to prove dummy circuit");
                 report_proof_size(&proof);
-
                 prover
                     .verify_all_tables(&proof, circuit_prover_data.common_data())
                     .expect("Failed to verify dummy proof");
+                RecursionOutput(proof, Rc::new(circuit_prover_data))
+            }
 
+            /// Build a dummy circuit with a single constant and prove it (ZK).
+            fn prove_dummy_circuit_zk(
+                constant_value: u32,
+                config: &ConfigWithFriParamsZk,
+                table_packing: TablePacking,
+            ) -> RecursionOutput<ConfigWithFriParamsZk> {
+                let mut builder = CircuitBuilder::new();
+                let c = builder.alloc_const(F::from_u32(constant_value), "dummy_const");
+                let expected = builder.alloc_public_input("expected");
+                builder.connect(c, expected);
+                let circuit = builder.build().unwrap();
+                let (airs_degrees, preprocessed_columns) =
+                    get_airs_and_degrees_with_prep::<ConfigWithFriParamsZk, F, 1>(
+                        &circuit,
+                        table_packing,
+                        &[],
+                        &[],
+                        ConstraintProfile::Standard,
+                    )
+                    .unwrap();
+                let (mut airs, degrees): (Vec<_>, Vec<_>) = airs_degrees.into_iter().unzip();
+                let mut runner = circuit.runner();
+                runner
+                    .set_public_inputs(&[F::from_u32(constant_value)])
+                    .unwrap();
+                let traces = runner.run().unwrap();
+                let ext_degrees: Vec<usize> =
+                    degrees.iter().map(|&d| d + config.is_zk()).collect();
+                let prover_data =
+                    ProverData::from_airs_and_degrees(config, &mut airs, &ext_degrees);
+                let circuit_prover_data = CircuitProverData::new(prover_data, preprocessed_columns);
+                let prover =
+                    BatchStarkProver::new(config.clone()).with_table_packing(table_packing);
+                let proof = prover
+                    .prove_all_tables(&traces, &circuit_prover_data)
+                    .expect("Failed to prove dummy circuit (ZK)");
+                report_proof_size(&proof);
+                prover
+                    .verify_all_tables(&proof, circuit_prover_data.common_data())
+                    .expect("Failed to verify dummy proof (ZK)");
                 RecursionOutput(proof, Rc::new(circuit_prover_data))
             }
 
@@ -190,8 +224,8 @@ macro_rules! define_field_module {
                 fri_params: &FriParams,
                 table_packing: &TablePacking,
                 security_level: usize,
+                zk: bool,
             ) {
-                let config = config_with_fri_params(fri_params, security_level);
                 let base_table_packing = TablePacking::new(1, 1)
                     .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup);
                 let backend = FriRecursionBackend::<$backend_width, $backend_rate>::$backend_ctor(
@@ -202,70 +236,81 @@ macro_rules! define_field_module {
                 let num_leaves = 1usize << tree_depth;
                 info!("Binary aggregation tree: {num_leaves} base proofs, {tree_depth} levels");
 
-                let mut proofs: Vec<RecursionOutput<ConfigWithFriParams>> = (0..num_leaves)
-                    .map(|i| {
-                        let val = (i + 1) as u32;
-                        info!("Base proof {i} (const = {val})");
-                        prove_dummy_circuit(val, &config, base_table_packing)
-                    })
-                    .collect();
+                macro_rules! run_aggregation {
+                    ($cfg_type:ident, $cfg_fn:expr, $prove_base_fn:ident) => {{
+                        let config: $cfg_type = $cfg_fn(0);
+                        let mut proofs: Vec<RecursionOutput<$cfg_type>> = (0..num_leaves)
+                            .map(|i| {
+                                let val = (i + 1) as u32;
+                                info!("Base proof {i} (const = {val})");
+                                $prove_base_fn(val, &config, base_table_packing)
+                            })
+                            .collect();
 
-                let mut level = 0u32;
-                while proofs.len() > 1 {
-                    level += 1;
-                    let pairs = proofs.len() / 2;
-                    info!(
-                        "Aggregation level {level}: {} proofs -> {pairs}",
-                        proofs.len()
-                    );
+                        let mut level = 0u32;
+                        while proofs.len() > 1 {
+                            level += 1;
+                            let pairs = proofs.len() / 2;
+                            info!(
+                                "Aggregation level {level}: {} proofs -> {pairs}",
+                                proofs.len()
+                            );
 
-                    let agg_params = ProveNextLayerParams {
-                        table_packing: if level == 1 {
-                            TablePacking::new(2, 2)
-                        } else {
-                            table_packing.clone()
-                        }
-                        .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup),
-                        use_npos_in_circuit: true,
-                        constraint_profile: ConstraintProfile::Standard,
-                    };
+                            let agg_params = ProveNextLayerParams {
+                                table_packing: if level == 1 {
+                                    TablePacking::new(2, 2)
+                                } else {
+                                    table_packing.clone()
+                                }
+                                .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup),
+                                use_npos_in_circuit: true,
+                                constraint_profile: ConstraintProfile::Standard,
+                            };
+                            let agg_config: $cfg_type = $cfg_fn(level as u64);
 
-                    let mut next_level = Vec::with_capacity(pairs);
-                    let mut prep_cache: Option<AggregationPrepCache<ConfigWithFriParams>> = None;
-                    for pair_idx in 0..pairs {
-                        let li = pair_idx * 2;
-                        let left = proofs[li].into_recursion_input::<BatchOnly>();
-                        let right = proofs[li + 1].into_recursion_input::<BatchOnly>();
+                            let mut next_level = Vec::with_capacity(pairs);
+                            let mut prep_cache: Option<AggregationPrepCache<$cfg_type>> = None;
+                            for pair_idx in 0..pairs {
+                                let li = pair_idx * 2;
+                                let left = proofs[li].into_recursion_input::<BatchOnly>();
+                                let right = proofs[li + 1].into_recursion_input::<BatchOnly>();
 
-                        let out =
-                            build_and_prove_aggregation_layer::<ConfigWithFriParams, _, _, _, D>(
-                                &left,
-                                &right,
-                                &config,
-                                &backend,
-                                &agg_params,
-                                Some(&mut prep_cache),
-                            )
-                            .unwrap_or_else(|e| {
-                                panic!("Failed at level {level}, pair {pair_idx}: {e:?}")
-                            });
-
-                        report_proof_size(&out.0);
-
-                        let mut verifier = BatchStarkProver::new(config.clone())
-                            .with_table_packing(agg_params.table_packing);
-                        verifier.$register_poseidon2_fn($poseidon2_config);
-                        verifier
-                            .verify_all_tables(&out.0, out.1.common_data())
-                            .unwrap_or_else(|e| {
-                                panic!(
-                                    "Verification failed at level {level}, pair {pair_idx}: {e:?}"
+                                let out = build_and_prove_aggregation_layer::<$cfg_type, _, _, _, D>(
+                                    &left, &right, &agg_config, &backend, &agg_params,
+                                    Some(&mut prep_cache),
                                 )
-                            });
+                                .unwrap_or_else(|e| {
+                                    panic!("Failed at level {level}, pair {pair_idx}: {e:?}")
+                                });
 
-                        next_level.push(out);
-                    }
-                    proofs = next_level;
+                                report_proof_size(&out.0);
+                                let mut verifier = BatchStarkProver::new(agg_config.clone())
+                                    .with_table_packing(agg_params.table_packing);
+                                verifier.$register_poseidon2_fn($poseidon2_config);
+                                verifier
+                                    .verify_all_tables(&out.0, out.1.common_data())
+                                    .unwrap_or_else(|e| {
+                                        panic!("Verification failed at level {level}, pair {pair_idx}: {e:?}")
+                                    });
+                                next_level.push(out);
+                            }
+                            proofs = next_level;
+                        }
+                    }};
+                }
+
+                if zk {
+                    run_aggregation!(
+                        ConfigWithFriParamsZk,
+                        |seed| config_with_fri_params_zk(fri_params, security_level, seed),
+                        prove_dummy_circuit_zk
+                    );
+                } else {
+                    run_aggregation!(
+                        ConfigWithFriParams,
+                        |_seed| config_with_fri_params(fri_params, security_level),
+                        prove_dummy_circuit
+                    );
                 }
 
                 info!("All levels verified successfully");

@@ -20,13 +20,14 @@ pub use p3_commit::{ExtensionMmcs, Pcs};
 pub use p3_dft::Radix2DitParallel;
 pub use p3_field::extension::BinomialExtensionField;
 pub use p3_field::{Field, PrimeCharacteristicRing};
-pub use p3_fri::{FriParameters, TwoAdicFriPcs};
+pub use p3_fri::{FriParameters, HidingFriPcs, TwoAdicFriPcs};
 pub use p3_lookup::logup::LogUpGadget;
 pub use p3_matrix::Matrix;
 pub use p3_matrix::dense::RowMajorMatrix;
 pub use p3_merkle_tree::MerkleTreeMmcs;
 pub use p3_recursion::pcs::{
-    InputProofTargets, MerkleCapTargets, RecValMmcs, set_fri_mmcs_private_data,
+    HidingFriProofTargets, InputProofTargets, MerkleCapTargets, RecValMmcs,
+    set_fri_mmcs_private_data, set_hiding_fri_mmcs_private_data,
 };
 pub use p3_recursion::traits::{RecursiveAir, RecursivePcs};
 pub use p3_recursion::verifier::VerificationError;
@@ -38,6 +39,8 @@ pub use p3_recursion::{
 };
 pub use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
 pub use p3_uni_stark::{StarkConfig, StarkGenericConfig, Val};
+pub use rand::SeedableRng;
+pub use rand::rngs::SmallRng;
 pub use serde::Serialize;
 pub use tracing::info;
 pub use tracing_forest::ForestLayer;
@@ -246,9 +249,35 @@ macro_rules! define_field_module_types {
             p3_recursion::pcs::Witness<F>,
         >;
 
+        #[allow(dead_code)]
+        type MyPcsZk = HidingFriPcs<F, Dft, ValMmcs, ChallengeMmcs, SmallRng>;
+        #[allow(dead_code)]
+        type MyConfigZk = StarkConfig<MyPcsZk, Challenge, Challenger>;
+
+        #[allow(dead_code)]
+        type InnerFriZk = HidingFriProofTargets<
+            F,
+            Challenge,
+            p3_recursion::pcs::RecExtensionValMmcs<
+                F,
+                Challenge,
+                DIGEST_ELEMS,
+                RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>,
+            >,
+            InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>>,
+            p3_recursion::pcs::Witness<F>,
+        >;
+
         #[derive(Clone)]
         struct ConfigWithFriParams {
             config: Arc<MyConfig>,
+            fri_verifier_params: FriVerifierParams,
+        }
+
+        #[allow(dead_code)]
+        #[derive(Clone)]
+        struct ConfigWithFriParamsZk {
+            config: Arc<MyConfigZk>,
             fri_verifier_params: FriVerifierParams,
         }
 
@@ -259,11 +288,30 @@ macro_rules! define_field_module_types {
             }
         }
 
+        impl core::ops::Deref for ConfigWithFriParamsZk {
+            type Target = MyConfigZk;
+            fn deref(&self) -> &MyConfigZk {
+                &self.config
+            }
+        }
+
         impl StarkGenericConfig for ConfigWithFriParams {
             type Challenge = Challenge;
             type Challenger = Challenger;
             type Pcs = MyPcs;
             fn pcs(&self) -> &MyPcs {
+                self.config.pcs()
+            }
+            fn initialise_challenger(&self) -> Challenger {
+                self.config.initialise_challenger()
+            }
+        }
+
+        impl StarkGenericConfig for ConfigWithFriParamsZk {
+            type Challenge = Challenge;
+            type Challenger = Challenger;
+            type Pcs = MyPcsZk;
+            fn pcs(&self) -> &MyPcsZk {
                 self.config.pcs()
             }
             fn initialise_challenger(&self) -> Challenger {
@@ -346,6 +394,81 @@ macro_rules! define_field_module_types {
             }
         }
 
+        impl FriRecursionConfig for ConfigWithFriParamsZk
+        where
+            MyPcsZk: RecursivePcs<
+                    ConfigWithFriParamsZk,
+                    InputProofTargets<
+                        F,
+                        Challenge,
+                        RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>,
+                    >,
+                    InnerFriZk,
+                    MerkleCapTargets<F, DIGEST_ELEMS>,
+                    <MyPcsZk as Pcs<Challenge, Challenger>>::Domain,
+                >,
+        {
+            type Commitment = MerkleCapTargets<F, DIGEST_ELEMS>;
+            type InputProof =
+                InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>>;
+            type OpeningProof = InnerFriZk;
+            type RawOpeningProof = <MyPcsZk as Pcs<Challenge, Challenger>>::Proof;
+            const DIGEST_ELEMS: usize = $digest_elems;
+
+            fn with_fri_opening_proof<'a, A, R>(
+                prev: &RecursionInput<'a, Self, A>,
+                f: impl FnOnce(&Self::RawOpeningProof) -> R,
+            ) -> R
+            where
+                A: RecursiveAir<Val<Self>, Self::Challenge, LogUpGadget>,
+            {
+                match prev {
+                    RecursionInput::UniStark { proof, .. } => f(&proof.opening_proof),
+                    RecursionInput::BatchStark { proof, .. } => f(&proof.proof.opening_proof),
+                }
+            }
+
+            fn prepare_circuit_for_verification(
+                &self,
+                circuit: &mut CircuitBuilder<Challenge>,
+            ) -> Result<(), VerificationError> {
+                let perm = $default_perm_circuit();
+                circuit.$enable_poseidon2_fn::<$poseidon2_circuit_config, _>(
+                    generate_poseidon2_trace::<Challenge, $poseidon2_circuit_config>,
+                    perm,
+                );
+                Ok(())
+            }
+
+            fn pcs_verifier_params(
+                &self,
+            ) -> &<MyPcsZk as RecursivePcs<
+                ConfigWithFriParamsZk,
+                InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>>,
+                InnerFriZk,
+                MerkleCapTargets<F, DIGEST_ELEMS>,
+                <MyPcsZk as Pcs<Challenge, Challenger>>::Domain,
+            >>::VerifierParams {
+                &self.fri_verifier_params
+            }
+
+            fn set_fri_private_data(
+                runner: &mut CircuitRunner<Challenge>,
+                op_ids: &[NonPrimitiveOpId],
+                opening_proof: &Self::RawOpeningProof,
+            ) -> Result<(), &'static str> {
+                set_hiding_fri_mmcs_private_data::<
+                    F,
+                    Challenge,
+                    ChallengeMmcs,
+                    ValMmcs,
+                    MyHash,
+                    MyCompress,
+                    DIGEST_ELEMS,
+                >(runner, op_ids, opening_proof)
+            }
+        }
+
         fn create_config(fp: &FriParams, security_level: usize) -> MyConfig {
             let perm = $default_perm();
             let hash = MyHash::new(perm.clone());
@@ -383,6 +506,49 @@ macro_rules! define_field_module_types {
         fn config_with_fri_params(fp: &FriParams, security_level: usize) -> ConfigWithFriParams {
             ConfigWithFriParams {
                 config: Arc::new(create_config(fp, security_level)),
+                fri_verifier_params: create_fri_verifier_params(fp),
+            }
+        }
+
+        #[allow(dead_code)]
+        fn create_config_zk(fp: &FriParams, security_level: usize, rng_seed: u64) -> MyConfigZk {
+            let perm = $default_perm();
+            let hash = MyHash::new(perm.clone());
+            let compress = MyCompress::new(perm.clone());
+            let val_mmcs = ValMmcs::new(hash, compress, fp.cap_height);
+            let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
+            let dft = Dft::default();
+
+            let num_queries = (security_level - fp.query_pow_bits) / fp.log_blowup;
+
+            let fri_params = FriParameters {
+                max_log_arity: fp.max_log_arity,
+                log_blowup: fp.log_blowup,
+                log_final_poly_len: fp.log_final_poly_len,
+                num_queries,
+                commit_proof_of_work_bits: fp.commit_pow_bits,
+                query_proof_of_work_bits: fp.query_pow_bits,
+                mmcs: challenge_mmcs,
+            };
+            let pcs = MyPcsZk::new(
+                dft,
+                val_mmcs,
+                fri_params,
+                2,
+                SmallRng::seed_from_u64(rng_seed),
+            );
+            let challenger = Challenger::new(perm);
+            MyConfigZk::new(pcs, challenger)
+        }
+
+        #[allow(dead_code)]
+        fn config_with_fri_params_zk(
+            fp: &FriParams,
+            security_level: usize,
+            rng_seed: u64,
+        ) -> ConfigWithFriParamsZk {
+            ConfigWithFriParamsZk {
+                config: Arc::new(create_config_zk(fp, security_level, rng_seed)),
                 fri_verifier_params: create_fri_verifier_params(fp),
             }
         }

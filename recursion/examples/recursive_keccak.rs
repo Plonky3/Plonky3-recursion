@@ -69,15 +69,6 @@ fn main() {
     init_logger();
 
     let args = Args::parse();
-
-    if args.common.zk {
-        eprintln!(
-            "error: --zk is not supported for recursive_keccak yet.\n\
-             Awaiting upstream P3 changes to have HidingFriPcs support Sync."
-        );
-        std::process::exit(1);
-    }
-
     let fri_params = args.common.to_fri_params();
     let table_packing = args.common.table_packing();
 
@@ -97,6 +88,7 @@ fn main() {
             &fri_params,
             &table_packing,
             args.common.security_level,
+            args.common.zk,
         ),
         FieldOption::BabyBear => baby_bear::run(
             args.num_hashes,
@@ -104,6 +96,7 @@ fn main() {
             &fri_params,
             &table_packing,
             args.common.security_level,
+            args.common.zk,
         ),
         FieldOption::Goldilocks => goldilocks::run(
             args.num_hashes,
@@ -111,6 +104,7 @@ fn main() {
             &fri_params,
             &table_packing,
             args.common.security_level,
+            args.common.zk,
         ),
     }
 }
@@ -163,6 +157,7 @@ macro_rules! define_field_module {
                 fri_params: &FriParams,
                 table_packing: &TablePacking,
                 security_level: usize,
+                zk: bool,
             ) {
                 let keccak_air = KeccakAir {};
                 let min_trace_rows: usize =
@@ -175,6 +170,7 @@ macro_rules! define_field_module {
                 let trace =
                     keccak_air.generate_trace_rows(effective_num_hashes, fri_params.log_blowup);
 
+                // The base Keccak layer always uses non-ZK uni-stark (p3-uni-stark has no ZK support).
                 let config_0 = config_with_fri_params(fri_params, security_level);
                 let pis: Vec<F> = vec![];
 
@@ -190,6 +186,19 @@ macro_rules! define_field_module {
 
                 let backend =
                     FriRecursionBackend::<$backend_width, $backend_rate>::$backend_ctor($poseidon2_config);
+
+                if zk {
+                    // The Keccak base proof is always non-ZK (p3-uni-stark has no ZK support).
+                    // Since the recursive chain's config must match the proof being verified,
+                    // all recursive layers here use ConfigWithFriParams. The --zk flag has no
+                    // effect for recursive_keccak; use recursive_fibonacci for full ZK recursion.
+                    tracing::warn!(
+                        "--zk is not applicable to recursive_keccak: the Keccak base proof \
+                         uses p3-uni-stark which has no ZK support. All recursive layers will \
+                         use non-ZK config."
+                    );
+                }
+
                 let mut output: Option<RecursionOutput<ConfigWithFriParams>> = None;
 
                 for layer in 1..=num_recursive_layers {

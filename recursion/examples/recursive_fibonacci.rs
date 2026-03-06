@@ -61,15 +61,6 @@ fn main() {
     init_logger();
 
     let args = Args::parse();
-
-    if args.common.zk {
-        eprintln!(
-            "error: --zk is not supported for recursive_fibonacci yet.\n\
-             Awaiting upstream P3 changes to have HidingFriPcs support Sync."
-        );
-        std::process::exit(1);
-    }
-
     let fri_params = args.common.to_fri_params();
     let table_packing = args.common.table_packing();
 
@@ -89,6 +80,7 @@ fn main() {
             &fri_params,
             &table_packing,
             args.common.security_level,
+            args.common.zk,
         ),
         FieldOption::BabyBear => baby_bear::run(
             args.n,
@@ -96,6 +88,7 @@ fn main() {
             &fri_params,
             &table_packing,
             args.common.security_level,
+            args.common.zk,
         ),
         FieldOption::Goldilocks => goldilocks::run(
             args.n,
@@ -103,6 +96,7 @@ fn main() {
             &fri_params,
             &table_packing,
             args.common.security_level,
+            args.common.zk,
         ),
     }
 }
@@ -157,6 +151,7 @@ macro_rules! define_field_module {
                 fri_params: &FriParams,
                 table_packing: &TablePacking,
                 security_level: usize,
+                zk: bool,
             ) {
                 let mut builder = CircuitBuilder::new();
                 let expected_result = builder.alloc_public_input("expected_result");
@@ -176,73 +171,97 @@ macro_rules! define_field_module {
                 let table_packing_0 = TablePacking::new(1, 1)
                     .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup);
 
-                let config_0 = config_with_fri_params(fri_params, security_level);
-                let (airs_degrees_0, preprocessed_columns_0) =
-                    get_airs_and_degrees_with_prep::<ConfigWithFriParams, F, 1>(
-                        &base_circuit,
-                        table_packing_0,
-                        &[],
-                        &[],
-                        ConstraintProfile::Standard,
-                    )
-                    .unwrap();
-                let (mut airs_0, degrees_0): (Vec<_>, Vec<usize>) = airs_degrees_0.into_iter().unzip();
-
-                let mut runner_0 = base_circuit.runner();
                 let expected_fib = compute_fibonacci(n);
-                runner_0.set_public_inputs(&[expected_fib]).unwrap();
-
-                let traces_0 = runner_0.run().unwrap();
-                let prover_data_0 =
-                    ProverData::from_airs_and_degrees(&config_0, &mut airs_0, &degrees_0);
-                let circuit_prover_data_0 =
-                    CircuitProverData::new(prover_data_0, preprocessed_columns_0);
-                let common_0 = circuit_prover_data_0.common_data();
-                let prover_0 =
-                    BatchStarkProver::new(config_0.clone()).with_table_packing(table_packing_0);
-                let proof_0 = prover_0
-                    .prove_all_tables(&traces_0, &circuit_prover_data_0)
-                    .expect("Failed to prove base circuit");
-                report_proof_size(&proof_0);
-
-                prover_0
-                    .verify_all_tables(&proof_0, &common_0)
-                    .expect("Failed to verify base proof");
-
-                if num_recursive_layers == 0 {
-                    info!("Recursive proof verified successfully");
-                    return;
-                }
+                let traces_0 = {
+                    let mut runner_0 = base_circuit.clone().runner();
+                    runner_0.set_public_inputs(&[expected_fib]).unwrap();
+                    runner_0.run().unwrap()
+                };
 
                 let backend = FriRecursionBackend::<$backend_width, $backend_rate>::$backend_ctor(
                     $poseidon2_config,
                 );
-                let mut output = RecursionOutput(proof_0, Rc::new(circuit_prover_data_0));
 
-                for layer in 1..=num_recursive_layers {
-                    let params = ProveNextLayerParams {
-                        table_packing: table_packing
-                            .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup),
-                        use_npos_in_circuit: true,
-                        constraint_profile: ConstraintProfile::Standard,
-                    };
-                    let config = config_with_fri_params(fri_params, security_level);
+                macro_rules! run_layers {
+                    ($cfg_type:ident, $cfg_fn:expr) => {{
+                        let config_0: $cfg_type = $cfg_fn(0);
+                        let (airs_degrees_0, preprocessed_columns_0) =
+                            get_airs_and_degrees_with_prep::<$cfg_type, F, 1>(
+                                &base_circuit,
+                                table_packing_0,
+                                &[],
+                                &[],
+                                ConstraintProfile::Standard,
+                            )
+                            .unwrap();
+                        let (mut airs_0, degrees_0): (Vec<_>, Vec<usize>) =
+                            airs_degrees_0.into_iter().unzip();
+                        let ext_degrees_0: Vec<usize> =
+                            degrees_0.iter().map(|&d| d + config_0.is_zk()).collect();
+                        let prover_data_0 = ProverData::from_airs_and_degrees(
+                            &config_0,
+                            &mut airs_0,
+                            &ext_degrees_0,
+                        );
+                        let circuit_prover_data_0 =
+                            CircuitProverData::new(prover_data_0, preprocessed_columns_0);
+                        let common_0 = circuit_prover_data_0.common_data();
+                        let prover_0 = BatchStarkProver::new(config_0.clone())
+                            .with_table_packing(table_packing_0);
+                        let proof_0 = prover_0
+                            .prove_all_tables(&traces_0, &circuit_prover_data_0)
+                            .expect("Failed to prove base circuit");
+                        report_proof_size(&proof_0);
+                        prover_0
+                            .verify_all_tables(&proof_0, &common_0)
+                            .expect("Failed to verify base proof");
 
-                    let input = output.into_recursion_input::<BatchOnly>();
-                    let out = build_and_prove_next_layer::<ConfigWithFriParams, _, _, D>(
-                        &input, &config, &backend, &params,
-                    )
-                    .unwrap_or_else(|e| panic!("Failed to prove layer {layer}: {e:?}"));
+                        if num_recursive_layers == 0 {
+                            info!("Recursive proof verified successfully");
+                            return;
+                        }
 
-                    report_proof_size(&out.0);
-                    let mut prover = BatchStarkProver::new(config.clone())
-                        .with_table_packing(params.table_packing);
-                    prover.$register_poseidon2_fn($poseidon2_config);
-                    prover
-                        .verify_all_tables(&out.0, out.1.common_data())
-                        .unwrap_or_else(|e| panic!("Failed to verify layer {layer}: {e:?}"));
+                        let mut output = RecursionOutput(proof_0, Rc::new(circuit_prover_data_0));
+                        for layer in 1..=num_recursive_layers {
+                            let params = ProveNextLayerParams {
+                                table_packing: table_packing.with_fri_params(
+                                    fri_params.log_final_poly_len,
+                                    fri_params.log_blowup,
+                                ),
+                                use_npos_in_circuit: true,
+                                constraint_profile: ConstraintProfile::Standard,
+                            };
+                            let config: $cfg_type = $cfg_fn(layer as u64);
 
-                    output = out;
+                            let input = output.into_recursion_input::<BatchOnly>();
+                            let out = build_and_prove_next_layer::<$cfg_type, _, _, D>(
+                                &input, &config, &backend, &params,
+                            )
+                            .unwrap_or_else(|e| panic!("Failed to prove layer {layer}: {e:?}"));
+
+                            report_proof_size(&out.0);
+                            let mut prover = BatchStarkProver::new(config.clone())
+                                .with_table_packing(params.table_packing);
+                            prover.$register_poseidon2_fn($poseidon2_config);
+                            prover
+                                .verify_all_tables(&out.0, out.1.common_data())
+                                .unwrap_or_else(|e| {
+                                    panic!("Failed to verify layer {layer}: {e:?}")
+                                });
+
+                            output = out;
+                        }
+                    }};
+                }
+
+                if zk {
+                    run_layers!(ConfigWithFriParamsZk, |seed| {
+                        config_with_fri_params_zk(fri_params, security_level, seed)
+                    });
+                } else {
+                    run_layers!(ConfigWithFriParams, |_seed| {
+                        config_with_fri_params(fri_params, security_level)
+                    });
                 }
 
                 info!("Recursive proof verified successfully");
