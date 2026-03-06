@@ -65,7 +65,9 @@ jobs:
           cargo run --package p3-circuit-prover --example fibonacci
           cargo run --package p3-circuit-prover --example poseidon2_perm_chain
           cargo run --package p3-circuit-prover --example poseidon2_perm_merkle
-          cargo run --release --features parallel --example recursive_aggregation -- --field koala-bear --num-recursive-layers 1
+          cargo run --release --features parallel --example recursive_aggregation -- --field koala-bear --num-recursive-layers 2
+          cargo run --release --features parallel --example recursive_fibonacci -- --field goldilocks --num-recursive-layers 2
+          cargo run --release --features parallel --example recursive_keccak -- --field baby-bear -n 10 --num-recursive-layers 2
 
       - name: Run allocation_log example with debugging feature and debug logging
         if: ${{ !matrix.features }}
