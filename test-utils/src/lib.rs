@@ -7,6 +7,7 @@
 pub const MAX_CONSTRAINT_DEGREE: usize = 3;
 
 pub use p3_air;
+pub use p3_baby_bear;
 pub use p3_batch_stark;
 pub use p3_field;
 pub use p3_lookup;
@@ -19,41 +20,30 @@ pub use p3_uni_stark;
 #[macro_export]
 macro_rules! assert_air_constraint_degree {
     ($air:expr, $air_name:expr) => {{
-        use $crate::p3_air::BaseAir;
-        use $crate::p3_batch_stark::symbolic::{get_symbolic_constraints, lookup_data_to_ext_expr};
-        use $crate::p3_field::PrimeCharacteristicRing;
+        use $crate::p3_air::{AirLayout, BaseAir};
+        use $crate::p3_batch_stark::symbolic::get_symbolic_constraints;
+        use $crate::p3_lookup::LookupAir;
         use $crate::p3_lookup::logup::LogUpGadget;
-        use $crate::p3_lookup::lookup_traits::{Kind, LookupData};
-        use $crate::p3_matrix::Matrix;
-        use $crate::p3_uni_stark::SymbolicAirBuilder;
 
-        type F = p3_baby_bear::BabyBear;
+        type F = $crate::p3_baby_bear::BabyBear;
+        type EF = $crate::p3_field::extension::BinomialExtensionField<F, 4>;
         let mut air = $air;
 
         let preprocessed_width = air.preprocessed_trace().map(|m| m.width()).unwrap_or(0);
-
-        let lookups = <_ as Air<SymbolicAirBuilder<F, F>>>::get_lookups(&mut air);
-        let lookup_data_raw = lookups
-            .iter()
-            .filter_map(|lookup| match &lookup.kind {
-                Kind::Global(name) => Some(LookupData {
-                    name: name.clone(),
-                    aux_idx: lookup.columns[0],
-                    expected_cumulated: F::ZERO,
-                }),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        let lookup_data = lookup_data_to_ext_expr::<F, F>(&lookup_data_raw);
-
+        let lookups = LookupAir::get_lookups(&mut air);
         let lookup_gadget = LogUpGadget::new();
-        let (base_constraints, extension_constraints) = get_symbolic_constraints(
-            &air,
+        let layout = AirLayout {
             preprocessed_width,
-            &lookups,
-            &lookup_data,
-            &lookup_gadget,
-        );
+            main_width: BaseAir::<F>::width(&air),
+            num_public_values: BaseAir::<F>::num_public_values(&air),
+            permutation_width: 0,
+            num_permutation_challenges: 0,
+            num_permutation_values: 0,
+            num_periodic_columns: 0,
+        };
+
+        let (base_constraints, extension_constraints) =
+            get_symbolic_constraints::<F, EF, _, _>(&air, layout, &lookups, &lookup_gadget);
 
         for (i, constraint) in base_constraints.iter().enumerate() {
             let degree = constraint.degree_multiple();

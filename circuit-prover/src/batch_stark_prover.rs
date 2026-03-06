@@ -8,13 +8,14 @@ use alloc::{format, vec};
 
 #[cfg(debug_assertions)]
 use p3_air::DebugConstraintBuilder;
-use p3_air::{Air, AirBuilder, BaseAir};
+use p3_air::{Air, BaseAir};
 use p3_batch_stark::{BatchProof, CommonData, ProverData, StarkGenericConfig, StarkInstance, Val};
 use p3_circuit::PreprocessedColumns;
 use p3_circuit::op::{NpoTypeId, Poseidon2Config, PrimitiveOpType};
 use p3_circuit::tables::Traces;
 use p3_field::extension::{BinomialExtensionField, BinomiallyExtendable};
 use p3_field::{Algebra, BasedVectorSpace, Field, PrimeField};
+use p3_lookup::LookupAir;
 use p3_lookup::folder::{ProverConstraintFolderWithLookups, VerifierConstraintFolderWithLookups};
 use p3_lookup::lookup_traits::Lookup;
 use p3_matrix::dense::RowMajorMatrix;
@@ -365,24 +366,6 @@ macro_rules! impl_circuit_table_air_for_builder {
                 Self::Dynamic(a) => Air::<$builder_ty>::eval(a, builder),
             }
         }
-
-        fn add_lookup_columns(&mut self) -> Vec<usize> {
-            match self {
-                Self::Const(a) => Air::<$builder_ty>::add_lookup_columns(a),
-                Self::Public(a) => Air::<$builder_ty>::add_lookup_columns(a),
-                Self::Alu(a) => Air::<$builder_ty>::add_lookup_columns(a),
-                Self::Dynamic(a) => Air::<$builder_ty>::add_lookup_columns(a),
-            }
-        }
-
-        fn get_lookups(&mut self) -> Vec<Lookup<<$builder_ty as AirBuilder>::F>> {
-            match self {
-                Self::Const(a) => Air::<$builder_ty>::get_lookups(a),
-                Self::Public(a) => Air::<$builder_ty>::get_lookups(a),
-                Self::Alu(a) => Air::<$builder_ty>::get_lookups(a),
-                Self::Dynamic(a) => Air::<$builder_ty>::get_lookups(a),
-            }
-        }
     };
 }
 
@@ -425,6 +408,32 @@ where
     SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
 {
     impl_circuit_table_air_for_builder!(VerifierConstraintFolderWithLookups<'a, SC>);
+}
+
+impl<SC, const D: usize> LookupAir<Val<SC>> for CircuitTableAir<SC, D>
+where
+    SC: StarkGenericConfig,
+    Val<SC>: PrimeField,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+{
+    fn add_lookup_columns(&mut self) -> Vec<usize> {
+        match self {
+            Self::Const(a) => ConstAir::<Val<SC>, D>::add_lookup_columns(a),
+            Self::Public(a) => PublicAir::<Val<SC>, D>::add_lookup_columns(a),
+            Self::Alu(a) => AluAir::<Val<SC>, D>::add_lookup_columns(a),
+            Self::Dynamic(a) => DynamicAirEntry::<SC>::add_lookup_columns(a),
+        }
+    }
+
+    fn get_lookups(&mut self) -> Vec<Lookup<Val<SC>>> {
+        match self {
+            Self::Const(a) => ConstAir::<Val<SC>, D>::get_lookups(a),
+            Self::Public(a) => PublicAir::<Val<SC>, D>::get_lookups(a),
+            Self::Alu(a) => AluAir::<Val<SC>, D>::get_lookups(a),
+            Self::Dynamic(a) => DynamicAirEntry::<SC>::get_lookups(a),
+        }
+    }
 }
 
 impl<SC> BatchStarkProver<SC>

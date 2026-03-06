@@ -233,7 +233,8 @@ where
         + From<Val<SC>>
         + ExtensionField<Val<SC>>
         + ExtractBinomialW<Val<SC>>,
-    SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
     let mut circuit_builder = CircuitBuilder::new();
     backend.prepare_circuit(config, &mut circuit_builder)?;
@@ -391,7 +392,8 @@ where
         + From<Val<SC>>
         + ExtensionField<Val<SC>>
         + ExtractBinomialW<Val<SC>>,
-    SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
     let mut circuit_builder = CircuitBuilder::new();
 

@@ -277,7 +277,7 @@ macro_rules! define_field_module {
             type MyHash = PaddingFreeSponge<Perm, WIDTH, RATE, DIGEST_ELEMS>;
             type MyCompress = TruncatedPermutation<Perm, 2, DIGEST_ELEMS, WIDTH>;
             type ValMmcs =
-                MerkleTreeMmcs<<F as Field>::Packing, <F as Field>::Packing, MyHash, MyCompress, DIGEST_ELEMS>;
+                MerkleTreeMmcs<<F as Field>::Packing, <F as Field>::Packing, MyHash, MyCompress, 2, DIGEST_ELEMS>;
             type ChallengeMmcs = ExtensionMmcs<F, Challenge, ValMmcs>;
             type Challenger = DuplexChallenger<F, Perm, WIDTH, RATE>;
             type MyPcs = TwoAdicFriPcs<F, Dft, ValMmcs, ChallengeMmcs>;

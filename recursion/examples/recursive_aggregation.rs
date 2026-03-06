@@ -259,6 +259,7 @@ macro_rules! define_field_module {
                 <F as Field>::Packing,
                 MyHash,
                 MyCompress,
+                2,
                 DIGEST_ELEMS,
             >;
             type ChallengeMmcs = ExtensionMmcs<F, Challenge, ValMmcs>;
@@ -443,7 +444,7 @@ macro_rules! define_field_module {
 
                 let circuit = builder.build().unwrap();
                 let (airs_degrees, preprocessed_columns) =
-                    get_airs_and_degrees_with_prep::<ConfigWithFriParams, _, 1>(
+                    get_airs_and_degrees_with_prep::<ConfigWithFriParams, F, 1>(
                         &circuit,
                         table_packing,
                         &[],

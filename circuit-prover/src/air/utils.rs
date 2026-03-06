@@ -2,22 +2,22 @@ use alloc::vec::Vec;
 use core::iter;
 
 use itertools::Itertools;
-use p3_air::lookup::LookupEvaluator;
-use p3_air::{Air, AirBuilder, PermutationAirBuilder};
+use p3_air::{Air, AirBuilder, AirLayout, PermutationAirBuilder};
 use p3_field::Field;
-use p3_lookup::lookup_traits::{Direction, Lookup, LookupData, LookupInput};
+use p3_lookup::lookup_traits::{Direction, Lookup, LookupInput};
+use p3_lookup::{AirWithLookups, LookupAir, LookupEvaluator};
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_uni_stark::{SymbolicAirBuilder, SymbolicExpression, SymbolicVariable};
 
-pub fn get_index_lookups<AB: PermutationAirBuilder, const D: usize>(
+pub fn get_index_lookups<F: Field, const D: usize>(
     main_start: usize,
     preprocessed_start: usize,
     num_lookups: usize,
-    main: &[SymbolicVariable<<AB as AirBuilder>::F>],
-    preprocessed: &[SymbolicVariable<<AB as AirBuilder>::F>],
+    main: &[SymbolicVariable<F>],
+    preprocessed: &[SymbolicVariable<F>],
     direction: Direction,
-) -> Vec<LookupInput<AB::F>> {
+) -> Vec<LookupInput<F>> {
     (0..num_lookups)
         .map(|i| {
             let idx = SymbolicExpression::from(preprocessed[1 + preprocessed_start + i]);
@@ -40,12 +40,12 @@ pub fn get_index_lookups<AB: PermutationAirBuilder, const D: usize>(
 /// - 2-5: selectors (add_vs_mul, bool, muladd, horner)
 /// - 6-9: indices (a_idx, b_idx, c_idx, out_idx)
 /// - 10: mult_b, 11: mult_out, 12: mult_c
-pub fn get_alu_index_lookups<AB: PermutationAirBuilder, const D: usize>(
+pub fn get_alu_index_lookups<F: Field, const D: usize>(
     main_start: usize,
     preprocessed_start: usize,
-    main: &[SymbolicVariable<<AB as AirBuilder>::F>],
-    preprocessed: &[SymbolicVariable<<AB as AirBuilder>::F>],
-) -> Vec<LookupInput<AB::F>> {
+    main: &[SymbolicVariable<F>],
+    preprocessed: &[SymbolicVariable<F>],
+) -> Vec<LookupInput<F>> {
     let mult_a = SymbolicExpression::from(preprocessed[preprocessed_start]);
     let mult_b = SymbolicExpression::from(preprocessed[preprocessed_start + 9]);
     let mult_out = SymbolicExpression::from(preprocessed[preprocessed_start + 10]);
@@ -106,12 +106,7 @@ pub fn create_direct_preprocessed_trace<F: Field>(
 pub trait LookupEvaluatorDyn<AB: PermutationAirBuilder> {
     fn num_aux_cols(&self) -> usize;
     fn num_challenges(&self) -> usize;
-    fn eval_with_lookups_dyn(
-        &self,
-        builder: &mut AB,
-        contexts: &[Lookup<AB::F>],
-        lookup_data: &[LookupData<AB::ExprEF>],
-    );
+    fn eval_with_lookups_dyn(&self, builder: &mut AB, contexts: &[Lookup<AB::F>]);
 }
 
 /// Blanket: any concrete `LookupEvaluator` becomes object‑safe.
@@ -126,14 +121,9 @@ where
     fn num_challenges(&self) -> usize {
         LE::num_challenges(self)
     }
-    fn eval_with_lookups_dyn(
-        &self,
-        builder: &mut AB,
-        contexts: &[Lookup<AB::F>],
-        lookup_data: &[LookupData<AB::ExprEF>],
-    ) {
+    fn eval_with_lookups_dyn(&self, builder: &mut AB, contexts: &[Lookup<AB::F>]) {
         // forward to the generic method on the concrete handler
-        LE::eval_lookups(self, builder, contexts, lookup_data);
+        LE::eval_lookups(self, builder, contexts);
     }
 }
 
@@ -148,7 +138,6 @@ where
         &self,
         builder: &mut AB,
         contexts: &[Lookup<AB::F>],
-        lookup_data: &[LookupData<AB::ExprEF>],
         lookup_evaluator: &LE,
     );
 }
@@ -157,22 +146,23 @@ where
 impl<AB, T> AirDyn<AB> for T
 where
     AB: PermutationAirBuilder,
-    T: Air<AB>,
+    T: Air<AB> + LookupAir<AB::F>,
 {
     fn add_lookup_columns_dyn(&mut self) -> Vec<usize> {
         self.add_lookup_columns()
     }
+
     fn get_lookups_dyn(&mut self) -> Vec<Lookup<AB::F>> {
         self.get_lookups()
     }
+
     fn eval_with_lookups_dyn<LE: LookupEvaluator>(
         &self,
         builder: &mut AB,
         contexts: &[Lookup<AB::F>],
-        lookup_data: &[LookupData<AB::ExprEF>],
         lookup_evaluator: &LE,
     ) {
-        Air::<AB>::eval_with_lookups(self, builder, contexts, lookup_data, lookup_evaluator);
+        T::eval_with_lookups(self, builder, contexts, lookup_evaluator);
     }
 }
 
@@ -185,14 +175,16 @@ pub fn create_symbolic_variables<F: Field>(
     num_public_values: usize,
     num_permutation_cols: usize,
 ) -> (Vec<SymbolicVariable<F>>, Vec<SymbolicVariable<F>>) {
-    let symbolic_air_builder = SymbolicAirBuilder::<F>::new(
+    let layout = AirLayout {
         preprocessed_width,
         main_width,
-        0,
         num_public_values,
-        num_permutation_cols,
-        0,
-    );
+        permutation_width: num_permutation_cols,
+        num_permutation_challenges: 0,
+        num_permutation_values: 0,
+        num_periodic_columns: 0,
+    };
+    let symbolic_air_builder = SymbolicAirBuilder::<F>::new(layout);
 
     let symbolic_main = symbolic_air_builder.main();
     let symbolic_main_local = symbolic_main.row_slice(0).unwrap().to_vec();

@@ -264,6 +264,7 @@ macro_rules! define_field_module {
                 <F as Field>::Packing,
                 MyHash,
                 MyCompress,
+                2,
                 DIGEST_ELEMS,
             >;
             type ChallengeMmcs = ExtensionMmcs<F, Challenge, ValMmcs>;
@@ -479,7 +480,7 @@ macro_rules! define_field_module {
 
                 let config_0 = config_with_fri_params(fri_params, security_level);
                 let (airs_degrees_0, preprocessed_columns_0) =
-                    get_airs_and_degrees_with_prep::<ConfigWithFriParams, _, 1>(
+                    get_airs_and_degrees_with_prep::<ConfigWithFriParams, F, 1>(
                         &base_circuit,
                         table_packing_0,
                         &[],
