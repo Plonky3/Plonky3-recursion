@@ -564,9 +564,13 @@ where
                     builder.assert_zero(sel_mul.clone() * (mul_acc[i].clone() - out_slice[i]));
                 }
 
-                // BOOL_CHECK constraint (base component only)
+                // BOOL_CHECK constraint: a's lowest coefficient must be boolean
+                // and all higher extension coefficients must be zero.
                 let one = AB::Expr::ONE;
                 builder.assert_zero(sel_bool * a_slice[0] * (a_slice[0] - one));
+                for i in 1..D {
+                    builder.assert_zero(sel_bool * a_slice[i]);
+                }
 
                 // MUL_ADD constraints: a * b + c = out (extension field), reuse mul_acc
                 let mut muladd_acc = mul_acc.clone();
@@ -896,6 +900,88 @@ mod tests {
         let proof = prove_with_preprocessed(&config, &air, matrix, &pis, Some(&prover_data));
         verify_with_preprocessed(&config, &air, &proof, &pis, Some(&verifier_data))
             .expect("extension field verification failed");
+    }
+
+    #[test]
+    fn prove_verify_alu_bool_check_extension_field_d4() {
+        type ExtField = BinomialExtensionField<Val, 4>;
+        let n = 4;
+        let w = Val::from_u64(11);
+
+        // Valid booleans: [0,0,0,0] and [1,0,0,0] interleaved
+        let zero =
+            ExtField::from_basis_coefficients_slice(&[Val::ZERO, Val::ZERO, Val::ZERO, Val::ZERO])
+                .unwrap();
+        let one =
+            ExtField::from_basis_coefficients_slice(&[Val::ONE, Val::ZERO, Val::ZERO, Val::ZERO])
+                .unwrap();
+
+        let values: Vec<[ExtField; 4]> = (0..n)
+            .map(|i| {
+                let v = if i % 2 == 0 { zero } else { one };
+                [v, zero, zero, v]
+            })
+            .collect();
+        let indices = vec![[WitnessId(1), WitnessId(0), WitnessId(0), WitnessId(1)]; n];
+
+        let trace = AluTrace {
+            op_kind: vec![AluOpKind::BoolCheck; n],
+            values,
+            indices,
+        };
+
+        let preprocessed_values = AluAir::<Val, 4>::trace_to_preprocessed(&trace);
+        let air = AluAir::<Val, 4>::new_binomial_with_preprocessed(n, 1, w, preprocessed_values);
+        let matrix: RowMajorMatrix<Val> = air.trace_to_matrix(&trace);
+
+        let config = build_test_config();
+        let pis: Vec<Val> = vec![];
+        let (prover_data, verifier_data) =
+            setup_preprocessed(&config, &air, log2_ceil_usize(matrix.height())).unwrap();
+        let proof = prove_with_preprocessed(&config, &air, matrix, &pis, Some(&prover_data));
+        verify_with_preprocessed(&config, &air, &proof, &pis, Some(&verifier_data))
+            .expect("extension field bool_check verification failed");
+    }
+
+    /// The prover should panic with an unsatisfied as higher limbs constraints are not satisfied.
+    #[test]
+    #[should_panic]
+    fn bool_check_extension_field_rejects_nonzero_higher_coefficients() {
+        type ExtField = BinomialExtensionField<Val, 4>;
+        let n = 4;
+        let w = Val::from_u64(11);
+
+        // a[0]=1 is a valid boolean, but a[1]=5 is non-zero — must be rejected.
+        let bad = ExtField::from_basis_coefficients_slice(&[
+            Val::ONE,
+            Val::from_u64(5),
+            Val::ZERO,
+            Val::ZERO,
+        ])
+        .unwrap();
+        let zero = ExtField::ZERO;
+
+        let values: Vec<[ExtField; 4]> = vec![[bad, zero, zero, bad]; n];
+        let indices = vec![[WitnessId(1), WitnessId(0), WitnessId(0), WitnessId(1)]; n];
+
+        let trace = AluTrace {
+            op_kind: vec![AluOpKind::BoolCheck; n],
+            values,
+            indices,
+        };
+
+        let preprocessed_values = AluAir::<Val, 4>::trace_to_preprocessed(&trace);
+        let air = AluAir::<Val, 4>::new_binomial_with_preprocessed(n, 1, w, preprocessed_values);
+        let matrix: RowMajorMatrix<Val> = air.trace_to_matrix(&trace);
+
+        let config = build_test_config();
+        let pis: Vec<Val> = vec![];
+        let (prover_data, verifier_data) =
+            setup_preprocessed(&config, &air, log2_ceil_usize(matrix.height())).unwrap();
+        let proof = prove_with_preprocessed(&config, &air, matrix, &pis, Some(&prover_data));
+        // Verification must fail — the constraint a[1] = 0 is violated.
+        verify_with_preprocessed(&config, &air, &proof, &pis, Some(&verifier_data))
+            .expect("should have failed");
     }
 
     #[test]
