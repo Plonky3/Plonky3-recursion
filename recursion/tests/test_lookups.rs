@@ -108,7 +108,7 @@ fn test_wrong_multiplicities() {
 
     let circuit = builder.build().unwrap();
     let (airs_degrees, mut preprocessed_columns) =
-        get_airs_and_degrees_with_prep::<MyConfig, _, 1>(
+        get_airs_and_degrees_with_prep::<MyConfig, F, 1>(
             &circuit,
             table_packing,
             &[],
@@ -427,7 +427,7 @@ fn test_inconsistent_lookup_order_shape() {
     batch_stark_proof.proof.global_lookup_data = fake_global_lookup_data;
 
     let mut circuit_builder = setup_circuit_builder();
-    let _ = get_verifier_inputs_and_challenges(
+    let (verifier_inputs, _all_challenges) = get_verifier_inputs_and_challenges(
         &mut circuit_builder,
         &config,
         &params,
@@ -437,6 +437,7 @@ fn test_inconsistent_lookup_order_shape() {
         Some(real_lookup_data.as_slice()),
         &lookup_gadget,
     );
+    verifier_inputs.unwrap();
 }
 
 #[test]
@@ -489,7 +490,7 @@ fn test_extra_global_lookup() {
     batch_stark_proof.proof.global_lookup_data = fake_global_lookup_data;
 
     let mut circuit_builder = setup_circuit_builder();
-    let _ = get_verifier_inputs_and_challenges(
+    let (verifier_inputs, _all_challenges) = get_verifier_inputs_and_challenges(
         &mut circuit_builder,
         &config,
         &params,
@@ -499,6 +500,7 @@ fn test_extra_global_lookup() {
         Some(real_lookup_data.as_slice()),
         &lookup_gadget,
     );
+    verifier_inputs.unwrap();
 }
 
 #[test]
@@ -558,13 +560,7 @@ fn test_missing_global_lookup() {
         &lookup_gadget,
     );
 
-    match verifier_inputs {
-        Err(VerificationError::InvalidProofShape(msg)) => {
-            assert_eq!(msg, "Expected cumulated value missing");
-        }
-        Err(_) => panic!("Expected InvalidProofShape"),
-        Ok(_) => panic!("Expected error due to inconsistent lookup shape"),
-    }
+    verifier_inputs.unwrap();
 }
 
 struct TestCircuitProofData {
@@ -588,7 +584,7 @@ fn get_test_circuit_proof() -> TestCircuitProofData {
     let config_proving = get_proving_config();
 
     let circuit = builder.build().unwrap();
-    let (airs_degrees, preprocessed_columns) = get_airs_and_degrees_with_prep::<MyConfig, _, 1>(
+    let (airs_degrees, preprocessed_columns) = get_airs_and_degrees_with_prep::<MyConfig, F, 1>(
         &circuit,
         table_packing,
         &[],
@@ -858,14 +854,15 @@ fn test_poseidon2_ctl_lookups() {
     let circuit = builder.build().unwrap();
 
     let poseidon2_prep: [Box<dyn NpoPreprocessor<F>>; 1] = [Box::new(Poseidon2Preprocessor)];
-    let (airs_degrees, preprocessed_columns) = get_airs_and_degrees_with_prep::<MyConfig, _, 4>(
-        &circuit,
-        table_packing,
-        &poseidon2_prep,
-        &poseidon2_air_builders_d4(),
-        ConstraintProfile::Standard,
-    )
-    .unwrap();
+    let (airs_degrees, preprocessed_columns) =
+        get_airs_and_degrees_with_prep::<MyConfig, Challenge, 4>(
+            &circuit,
+            table_packing,
+            &poseidon2_prep,
+            &poseidon2_air_builders_d4(),
+            ConstraintProfile::Standard,
+        )
+        .unwrap();
 
     let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
     let mut runner = circuit.runner();
@@ -980,14 +977,15 @@ fn test_poseidon2_chained_ctl_lookups() {
     let circuit = builder.build().unwrap();
 
     let poseidon2_prep: [Box<dyn NpoPreprocessor<F>>; 1] = [Box::new(Poseidon2Preprocessor)];
-    let (airs_degrees, preprocessed_columns) = get_airs_and_degrees_with_prep::<MyConfig, _, 4>(
-        &circuit,
-        table_packing,
-        &poseidon2_prep,
-        &poseidon2_air_builders_d4(),
-        ConstraintProfile::Standard,
-    )
-    .unwrap();
+    let (airs_degrees, preprocessed_columns) =
+        get_airs_and_degrees_with_prep::<MyConfig, Challenge, 4>(
+            &circuit,
+            table_packing,
+            &poseidon2_prep,
+            &poseidon2_air_builders_d4(),
+            ConstraintProfile::Standard,
+        )
+        .unwrap();
 
     let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
     let mut runner = circuit.runner();

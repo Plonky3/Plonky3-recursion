@@ -447,7 +447,7 @@ where
         + Sync,
     [F; DIGEST_ELEMS]: Serialize + for<'a> Deserialize<'a>,
 {
-    type Input = MerkleTreeMmcs<F::Packing, F::Packing, H, C, DIGEST_ELEMS>;
+    type Input = MerkleTreeMmcs<F::Packing, F::Packing, H, C, 2, DIGEST_ELEMS>;
 
     type Commitment = MerkleCapTargets<F, DIGEST_ELEMS>;
 

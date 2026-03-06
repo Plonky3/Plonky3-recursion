@@ -1,13 +1,14 @@
 #![allow(unused)]
 
 use itertools::Itertools;
-use p3_air::{Air, AirBuilder, BaseAir};
+use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 use p3_challenger::DuplexChallenger;
 use p3_commit::ExtensionMmcs;
 use p3_dft::Radix2DitParallel;
 use p3_field::extension::BinomialExtensionField;
 use p3_field::{Field, PrimeCharacteristicRing};
 use p3_fri::TwoAdicFriPcs;
+use p3_lookup::LookupAir;
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_merkle_tree::MerkleTreeMmcs;
@@ -56,7 +57,7 @@ pub(crate) mod baby_bear_params {
     pub(crate) type MyHash = PaddingFreeSponge<Perm, 16, RATE, 8>;
     pub(crate) type MyCompress = TruncatedPermutation<Perm, 2, 8, 16>;
     pub(crate) type ValMmcs =
-        MerkleTreeMmcs<<F as Field>::Packing, <F as Field>::Packing, MyHash, MyCompress, 8>;
+        MerkleTreeMmcs<<F as Field>::Packing, <F as Field>::Packing, MyHash, MyCompress, 2, 8>;
     pub(crate) type ChallengeMmcs = ExtensionMmcs<F, Challenge, ValMmcs>;
     pub(crate) type Challenger = DuplexChallenger<F, Perm, 16, RATE>;
     pub(crate) type MyPcs = TwoAdicFriPcs<F, Dft, ValMmcs, ChallengeMmcs>;
@@ -83,7 +84,7 @@ pub(crate) mod koala_bear_params {
     pub(crate) type MyHash = PaddingFreeSponge<Perm, 16, RATE, 8>;
     pub(crate) type MyCompress = TruncatedPermutation<Perm, 2, 8, 16>;
     pub(crate) type ValMmcs =
-        MerkleTreeMmcs<<F as Field>::Packing, <F as Field>::Packing, MyHash, MyCompress, 8>;
+        MerkleTreeMmcs<<F as Field>::Packing, <F as Field>::Packing, MyHash, MyCompress, 2, 8>;
     pub(crate) type ChallengeMmcs = ExtensionMmcs<F, Challenge, ValMmcs>;
     pub(crate) type Challenger = DuplexChallenger<F, Perm, 16, RATE>;
     pub(crate) type MyPcs = TwoAdicFriPcs<F, Dft, ValMmcs, ChallengeMmcs>;
@@ -110,7 +111,7 @@ pub(crate) mod goldilocks_params {
     pub(crate) type MyHash = PaddingFreeSponge<Perm, 8, RATE, 4>;
     pub(crate) type MyCompress = TruncatedPermutation<Perm, 2, 4, 8>;
     pub(crate) type ValMmcs =
-        MerkleTreeMmcs<<F as Field>::Packing, <F as Field>::Packing, MyHash, MyCompress, 4>;
+        MerkleTreeMmcs<<F as Field>::Packing, <F as Field>::Packing, MyHash, MyCompress, 2, 4>;
     pub(crate) type ChallengeMmcs = ExtensionMmcs<F, Challenge, ValMmcs>;
     pub(crate) type Challenger = DuplexChallenger<F, Perm, 8, RATE>;
     pub(crate) type MyPcs = TwoAdicFriPcs<F, Dft, ValMmcs, ChallengeMmcs>;
@@ -217,26 +218,19 @@ where
 {
     fn eval(&self, builder: &mut AB) {
         let main = builder.main();
-        let main_local = main.row_slice(0).expect("Matrix is empty?");
+        let main_local = main.current_slice();
 
-        let preprocessed = builder
-            .preprocessed()
-            .expect("Expected preprocessed columns");
-        let preprocessed_local = preprocessed
-            .row_slice(0)
-            .expect("Preprocessed matrix is empty?");
-        let preprocessed_next = preprocessed
-            .row_slice(1)
-            .expect("Preprocessed matrix only has 1 row?");
+        let preprocessed = builder.preprocessed().clone();
+        let preprocessed_local = preprocessed.current_slice();
+        let preprocessed_next = preprocessed.next_slice();
 
-        for i in 0..REPETITIONS {
+        for (i, c) in main_local.iter().enumerate() {
             let prep_start = i * 2;
             let a = preprocessed_local[prep_start];
             let b = preprocessed_local[prep_start + 1];
-            let c = main_local[i];
 
             // Constraint 1: a^(degree-1) * b = c
-            builder.assert_zero(a.into().exp_u64(self.degree - 1) * b - c);
+            builder.assert_zero(a.into().exp_u64(self.degree - 1) * b - *c);
 
             // Constraint 2: On first row, b = a^2 + 1
             builder.when_first_row().assert_eq(a * a + AB::Expr::ONE, b);
@@ -249,3 +243,5 @@ where
         }
     }
 }
+
+impl<Val: Field> LookupAir<Val> for MulAir where StandardUniform: Distribution<Val> {}

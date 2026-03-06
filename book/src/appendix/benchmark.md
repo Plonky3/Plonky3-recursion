@@ -30,34 +30,35 @@ RUSTFLAGS=-Ctarget-cpu=native RUSTFLAGS=-Copt-level=3 RUST_LOG=info cargo run --
 
 Each example supports additional parameterization around the FRI parameters, namely:
 - `--log-blowup`: logarithmic blowup factor for the LDE. Default 3.
-- `--max-log-arity`: maximum arity allowed during the FRI folding phases. Default 4.
+- `--max-log-arity`: maximum arity allowed during the FRI folding phases. Default 3.
 - `--log-final-poly-len`: logarithmic size (or degree) allowed for the final polynomial after folding. Default 5.
-- `--cap-height`: the height at which the MMCS tree is truncated for commitments. Default 0 (unique root).
+- `--cap-height`: the height at which the MMCS tree is truncated for commitments. Default varies per examples.
 - `--commit-pow-bits`: additional PoW grinding during the FRI commit phase. Default 0.
 - `--query-pow-bits`: additional PoW grinding during the FRI query phase. Default 16.
 - `--num-recursive-layers`: number of recursive proofs to be generated in a chain, starting from the base proof (Keccak or Fibonacci). Default 3.
 - `--witness-lanes`: number of witness lanes for the table packing in recursive layers. Default varies per examples.
-- `--public-lanes`: number of public lanes for the table packing in recursive layers. Default varies per examples.
-- `--alu-lanes`: number of ALU lanes for the table packing in recursive layers. Default varies per examples.
+- `--public-lanes`: number of public lanes for the table packing in recursive layers. Default 2.
+- `--alu-lanes`: number of ALU lanes for the table packing in recursive layers. Default 3.
+- `--security-level`: targeted conjectured security in bits. Default 124.
 
 ## Results
 
-Running on a Apple M4 pro, 14 Cores, with **KoalaBear** field and extension of **degree 4**, using default parameters mentioned above, performance benchmarks are as follows:
+Running on a Apple M4 pro, 14 Cores, with **KoalaBear** field and extension of **degree 4**, using default parameters mentioned above at a 124-bit security target, performance benchmarks are as follows:
 
 - **Keccak AIR program:** (1,000 hashes)
-  - Base uni-stark proof: 1.44 s
-  - 1st recursion layer: 1.26 s
-  - 2nd recursion layer: 284 ms
-  - 3rd recursion layer: 280 ms
+  - Base uni-stark proof: 1.43 s
+  - 1st recursion layer: 1.30 s
+  - 2nd recursion layer: 324 ms
+  - 3rd recursion layer: 274 ms
 
 - **Fibonacci multi-AIR program:** (10,000th element)
   - Base batch-stark proof: 86.1 ms
-  - 1st recursion layer: 182 ms
-  - 2nd recursion layer: 292 ms
-  - 3rd recursion layer: 277 ms
+  - 1st recursion layer: 209 ms
+  - 2nd recursion layer: 296 ms
+  - 3rd recursion layer: 283 ms
 
 - **2-to-1 aggregation:**
   - Base batch-stark proof: 30 ms
-  - 1st aggregation layer: 188 ms
-  - 2nd aggregation layer: 390 ms
-  - 3rd and next aggregation layers: 386 ms
+  - 1st aggregation layer: 270 ms
+  - 2nd aggregation layer: 402 ms
+  - 3rd and next aggregation layers: 394 ms

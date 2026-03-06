@@ -44,12 +44,12 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::marker::PhantomData;
 
-use p3_air::{Air, AirBuilder, BaseAir, PermutationAirBuilder};
+use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 use p3_circuit::op::AluOpKind;
 use p3_circuit::tables::AluTrace;
 use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
+use p3_lookup::LookupAir;
 use p3_lookup::lookup_traits::{Kind, Lookup};
-use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
 
 use crate::air::utils::{
@@ -72,17 +72,17 @@ enum ScheduleEntry {
 #[derive(Debug, Clone)]
 pub struct AluAir<F, const D: usize = 1> {
     /// Total number of logical ALU operations in the trace.
-    pub num_ops: usize,
+    pub(crate) num_ops: usize,
     /// Number of independent operations packed per trace row.
-    pub lanes: usize,
+    pub(crate) lanes: usize,
     /// For binomial extensions x^D = W (D > 1).
-    pub w_binomial: Option<F>,
+    pub(crate) w_binomial: Option<F>,
     /// Flattened preprocessed values (selectors + indices), in original op order.
-    pub preprocessed: Vec<F>,
+    pub(crate) preprocessed: Vec<F>,
     /// Number of lookup columns registered so far.
-    pub num_lookup_columns: usize,
+    pub(crate) num_lookup_columns: usize,
     /// Minimum trace height (for FRI compatibility with higher log_final_poly_len).
-    pub min_height: usize,
+    pub(crate) min_height: usize,
     /// HornerAcc lane schedule. When present, ops are reordered so that HornerAcc
     /// chains occupy lane 0 in consecutive rows, with zero-separators between chains.
     schedule: Option<Vec<ScheduleEntry>>,
@@ -449,25 +449,23 @@ where
     #[allow(clippy::needless_range_loop)]
     fn eval(&self, builder: &mut AB) {
         let main = builder.main();
-        debug_assert_eq!(main.width(), self.total_width(), "column width mismatch");
+        debug_assert_eq!(
+            main.current_slice().len(),
+            self.total_width(),
+            "column width mismatch"
+        );
 
-        let local = main.row_slice(0).expect("matrix must be non-empty");
+        let local = main.current_slice();
         let lane_width = Self::lane_width();
 
         // Get preprocessed columns
-        let preprocessed = builder
-            .preprocessed()
-            .expect("AluAir requires preprocessed trace");
-        let preprocessed_local = preprocessed
-            .row_slice(0)
-            .expect("preprocessed must be non-empty");
+        let preprocessed = builder.preprocessed().clone();
+        let preprocessed_local = preprocessed.current_slice();
         let preprocessed_lane_width = Self::preprocessed_lane_width();
 
         // Next-row access for HornerAcc inter-row constraint
-        let next = main.row_slice(1).expect("matrix must have next row");
-        let preprocessed_next = preprocessed
-            .row_slice(1)
-            .expect("preprocessed must have next row");
+        let next = main.next_slice();
+        let preprocessed_next = preprocessed.next_slice();
 
         // D=1 specialization
         if D == 1 {
@@ -612,23 +610,22 @@ where
             }
         }
     }
+}
 
+impl<F: Field, const D: usize> LookupAir<F> for AluAir<F, D> {
     fn add_lookup_columns(&mut self) -> Vec<usize> {
         let new_idx = self.num_lookup_columns;
         self.num_lookup_columns += 1;
         vec![new_idx]
     }
 
-    fn get_lookups(&mut self) -> Vec<Lookup<<AB>::F>>
-    where
-        AB: PermutationAirBuilder,
-    {
+    fn get_lookups(&mut self) -> Vec<Lookup<F>> {
         let mut lookups = Vec::new();
         self.num_lookup_columns = 0;
 
-        let (symbolic_main_local, preprocessed_local) = create_symbolic_variables::<AB::F>(
+        let (symbolic_main_local, preprocessed_local) = create_symbolic_variables::<F>(
             self.preprocessed_width(),
-            BaseAir::<AB::F>::width(self),
+            BaseAir::<F>::width(self),
             0,
             0,
         );
@@ -638,18 +635,14 @@ where
             let preprocessed_lane_offset = lane * Self::preprocessed_lane_width();
 
             // 4 lookups per lane: a, b, c, out (all Direction::Receive)
-            let lane_lookup_inputs = get_alu_index_lookups::<AB, D>(
+            let lane_lookup_inputs = get_alu_index_lookups::<F, D>(
                 lane_offset,
                 preprocessed_lane_offset,
                 &symbolic_main_local,
                 &preprocessed_local,
             );
             lookups.extend(lane_lookup_inputs.into_iter().map(|inps| {
-                <Self as Air<AB>>::register_lookup(
-                    self,
-                    Kind::Global("WitnessChecks".to_string()),
-                    &[inps],
-                )
+                LookupAir::register_lookup(self, Kind::Global("WitnessChecks".to_string()), &[inps])
             }));
         }
         lookups
@@ -664,6 +657,7 @@ mod tests {
     use p3_baby_bear::BabyBear as Val;
     use p3_circuit::WitnessId;
     use p3_field::extension::BinomialExtensionField;
+    use p3_matrix::Matrix;
     use p3_uni_stark::{prove_with_preprocessed, setup_preprocessed, verify_with_preprocessed};
     use p3_util::log2_ceil_usize;
 

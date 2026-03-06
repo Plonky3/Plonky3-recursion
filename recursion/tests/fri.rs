@@ -120,7 +120,9 @@ fn produce_inputs_multi(
     p_challenger.observe_slice(&val_sizes);
 
     // Commit each group and observe all commitments before sampling zeta
-    let mut commitments_and_data = Vec::new();
+    type MyCommitment = <MyPcs as Pcs<Challenge, Challenger>>::Commitment;
+    type MyProverData = <MyPcs as Pcs<Challenge, Challenger>>::ProverData;
+    let mut commitments_and_data: Vec<(MyCommitment, MyProverData)> = Vec::new();
     for evals in &groups_evals {
         let (commitment, prover_data) =
             <MyPcs as Pcs<Challenge, Challenger>>::commit(pcs, evals.clone());
@@ -139,7 +141,8 @@ fn produce_inputs_multi(
     }
 
     // Open and produce FRI proof
-    let (opened_values, fri_proof) =
+    type MyProof = <MyPcs as Pcs<Challenge, Challenger>>::Proof;
+    let (opened_values, fri_proof): (_, MyProof) =
         <MyPcs as Pcs<Challenge, Challenger>>::open(pcs, open_data, &mut p_challenger);
 
     // --- Verifier transcript replay (to derive the public inputs) ---
@@ -724,7 +727,7 @@ fn run_fri_test_with_mmcs(setup: FriSetup) {
             let siblings: Vec<[Challenge; 2]> = batch_opening
                 .opening_proof
                 .iter()
-                .map(|digest| {
+                .map(|digest: &[F; DIGEST_ELEMS]| {
                     let ext_elements: Vec<Challenge> = digest
                         .chunks(4)
                         .map(|chunk| {
@@ -758,7 +761,7 @@ fn run_fri_test_with_mmcs(setup: FriSetup) {
                     .opening_proof
                     .iter()
                     .take(log_folded_height)
-                    .map(|digest| {
+                    .map(|digest: &[F; DIGEST_ELEMS]| {
                         let ext_elements: Vec<Challenge> = digest
                             .chunks(4)
                             .map(|chunk| {

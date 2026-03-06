@@ -8,14 +8,23 @@ use crate::types::WitnessId;
 /// Record of an ALU operation captured during execution (avoids re-reading witness).
 #[derive(Debug, Clone)]
 pub struct AluOpRecord<F> {
+    /// The kind of ALU operation (Add, Mul, BoolCheck, MulAdd, HornerAcc).
     pub kind: AluOpKind,
+    /// Witness index of the first operand `a`.
     pub a_index: WitnessId,
+    /// Witness index of the second operand `b`.
     pub b_index: WitnessId,
+    /// Witness index of the third operand `c` (only meaningful for MulAdd).
     pub c_index: WitnessId,
+    /// Witness index of the output value.
     pub out_index: WitnessId,
+    /// Concrete value of `a` at execution time.
     pub a_val: F,
+    /// Concrete value of `b` at execution time.
     pub b_val: F,
+    /// Concrete value of `c` at execution time (zero for non-MulAdd ops).
     pub c_val: F,
+    /// Concrete output value at execution time.
     pub out_val: F,
 }
 

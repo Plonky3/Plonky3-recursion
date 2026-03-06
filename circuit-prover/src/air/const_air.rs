@@ -29,9 +29,10 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::marker::PhantomData;
 
-use p3_air::{Air, AirBuilder, BaseAir, PermutationAirBuilder};
+use p3_air::{Air, AirBuilder, BaseAir};
 use p3_circuit::tables::ConstTrace;
 use p3_field::{BasedVectorSpace, Field};
+use p3_lookup::LookupAir;
 use p3_lookup::lookup_traits::{Direction, Kind, Lookup};
 use p3_matrix::dense::RowMajorMatrix;
 
@@ -178,26 +179,26 @@ where
     fn eval(&self, _builder: &mut AB) {
         // No constraints for constants in Stage 1
     }
+}
+
+impl<F: Field, const D: usize> LookupAir<F> for ConstAir<F, D> {
     fn add_lookup_columns(&mut self) -> Vec<usize> {
         let new_idx = self.num_lookup_columns;
         self.num_lookup_columns += 1;
         vec![new_idx]
     }
 
-    fn get_lookups(&mut self) -> Vec<Lookup<<AB>::F>>
-    where
-        AB: PermutationAirBuilder,
-    {
+    fn get_lookups(&mut self) -> Vec<Lookup<F>> {
         self.num_lookup_columns = 0;
 
-        let (symbolic_main_local, preprocessed_local) = create_symbolic_variables::<AB::F>(
+        let (symbolic_main_local, preprocessed_local) = create_symbolic_variables::<F>(
             Self::preprocessed_width(),
-            BaseAir::<AB::F>::width(self),
+            BaseAir::<F>::width(self),
             1,
             0,
         );
 
-        let lookup_inps = get_index_lookups::<AB, D>(
+        let lookup_inps = get_index_lookups::<F, D>(
             0,
             0,
             1,
@@ -207,7 +208,7 @@ where
         );
 
         assert!(lookup_inps.len() == 1);
-        let lookup = <Self as Air<AB>>::register_lookup(
+        let lookup = LookupAir::register_lookup(
             self,
             Kind::Global("WitnessChecks".to_string()),
             &lookup_inps,

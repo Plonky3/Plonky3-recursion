@@ -272,6 +272,7 @@ where
         public_values,
         permutation_local_values: &[],
         permutation_next_values: &[],
+        permutation_values: &[],
         local_prep_values: opt_opened_preprocessed_local_targets
             .as_ref()
             .map_or(&[], |p| p),

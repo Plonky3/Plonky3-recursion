@@ -1043,4 +1043,126 @@ mod tests {
 
         assert_eq!(traces.alu_trace.len(), 1);
     }
+
+    #[test]
+    fn test_mixed_bool_check_and_muladd_optimizer_direct() {
+        // Directly test that both BoolCheck and MulAdd fusion fire on the same op list.
+        let optimizer = Optimizer::new();
+
+        let b = WitnessId(0);
+        let one = WitnessId(1);
+        let neg_one = WitnessId(2);
+        let neg_one_val = WitnessId(3);
+        let b_minus_one = WitnessId(4);
+        let product = WitnessId(5);
+        let a = WitnessId(6);
+        let c = WitnessId(7);
+        let mul_result = WitnessId(8);
+        let add_result = WitnessId(9);
+
+        let ops: Vec<Op<F>> = vec![
+            Op::Const {
+                out: one,
+                val: F::ONE,
+            },
+            Op::Const {
+                out: neg_one,
+                val: -F::ONE,
+            },
+            Op::mul(one, neg_one, neg_one_val),   // -1
+            Op::add(b, neg_one_val, b_minus_one), // b - 1
+            Op::mul(b, b_minus_one, product),     // b * (b-1) -> BoolCheck
+            Op::mul(a, c, mul_result),            // a * c
+            Op::add(mul_result, one, add_result), // a*c + 1 -> MulAdd
+        ];
+
+        let (optimized, _) = optimizer.optimize(ops);
+
+        let bool_check_count = optimized
+            .iter()
+            .filter(|op| op.is_alu_kind(AluOpKind::BoolCheck))
+            .count();
+        let muladd_count = optimized
+            .iter()
+            .filter(|op| op.is_alu_kind(AluOpKind::MulAdd))
+            .count();
+
+        assert_eq!(bool_check_count, 1, "Expected 1 BoolCheck");
+        assert!(muladd_count >= 1, "Expected at least 1 MulAdd");
+    }
+
+    #[test]
+    fn test_single_op_circuit() {
+        // Minimal: a single constant
+        let mut builder = CircuitBuilder::<F>::new();
+        let _c = builder.define_const(F::from_u64(42));
+        let circuit = builder.build().unwrap();
+        let runner = circuit.runner();
+        let traces = runner.run().unwrap();
+        assert!(!traces.const_trace.values.is_empty());
+    }
+
+    #[test]
+    fn test_public_input_only_circuit() {
+        // Only public inputs, no arithmetic
+        let mut builder = CircuitBuilder::<F>::new();
+        let _p = builder.public_input();
+        let circuit = builder.build().unwrap();
+        let mut runner = circuit.runner();
+        runner.set_public_inputs(&[F::from_u64(99)]).unwrap();
+        let traces = runner.run().unwrap();
+        assert!(!traces.public_trace.values.is_empty());
+    }
+
+    #[test]
+    fn test_all_deduplicated_circuit() {
+        // All ALU ops are duplicates — connect ensures they share witness slots
+        let mut builder = CircuitBuilder::<F>::new();
+        let a = builder.define_const(F::TWO);
+        let b = builder.public_input();
+
+        let r1 = builder.mul(a, b);
+        let r2 = builder.mul(a, b); // duplicate
+
+        builder.connect(r1, r2);
+
+        let circuit = builder.build().unwrap();
+        let mut runner = circuit.runner();
+        runner.set_public_inputs(&[F::from_u64(5)]).unwrap();
+        let traces = runner.run().unwrap();
+
+        // Verify only 1 Mul or MulAdd for the a*b operation (dedup removes the duplicate)
+        let mul_count = traces
+            .alu_trace
+            .values
+            .iter()
+            .filter(|row| row[3] == F::from_u64(10)) // out_val = 2*5 = 10
+            .count();
+        assert_eq!(mul_count, 1, "Duplicate mul should be deduped");
+    }
+
+    #[test]
+    fn test_large_circuit_correctness() {
+        // Large circuit: compute sum of 0..N using add chain
+        const N: usize = 5000;
+        let mut builder = CircuitBuilder::<F>::new();
+        let expected = builder.alloc_public_input("expected");
+        let mut acc = builder.define_const(F::ZERO);
+        for i in 1..=N {
+            let ci = builder.define_const(F::from_u64(i as u64));
+            acc = builder.add(acc, ci);
+        }
+        builder.connect(acc, expected);
+
+        let circuit = builder.build().unwrap();
+        let expected_val = F::from_u64((N * (N + 1) / 2) as u64);
+
+        // Verify circuit builds and runs without error
+        let mut runner = circuit.runner();
+        runner.set_public_inputs(&[expected_val]).unwrap();
+        let traces = runner.run().unwrap();
+
+        // Verify the circuit has the right number of witnesses
+        assert!(traces.witness_trace.num_rows() > N);
+    }
 }

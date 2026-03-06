@@ -1,14 +1,13 @@
 //! Trait for recursive AIR constraint evaluation.
 
-use alloc::vec::Vec;
-
 use hashbrown::HashMap;
-use p3_air::{Air, BaseEntry, BaseLeaf, ExtLeaf, SymbolicExpressionExt, SymbolicVariable};
+use p3_air::symbolic::AirLayout;
+use p3_air::{Air, SymbolicExpressionExt};
 use p3_batch_stark::symbolic::{get_log_num_quotient_chunks, get_symbolic_constraints};
 use p3_circuit::CircuitBuilder;
 use p3_circuit::utils::{ColumnsTargets, symbolic_ext_expr_to_circuit, symbolic_to_circuit_base};
 use p3_field::{Algebra, ExtensionField, Field};
-use p3_lookup::lookup_traits::{Lookup, LookupData, LookupGadget};
+use p3_lookup::lookup_traits::{Kind, Lookup, LookupData, LookupGadget};
 use p3_uni_stark::{SymbolicAirBuilder, SymbolicExpression};
 
 use crate::Target;
@@ -106,31 +105,23 @@ where
 
         let LookupMetadata {
             contexts,
-            lookup_data,
+            lookup_data: _,
         } = lookup_metadata;
 
-        let ld_expected = lookup_data
-            .iter()
-            .map(|ld| LookupData {
-                name: ld.name.clone(),
-                aux_idx: ld.aux_idx,
-                expected_cumulated: SymbolicExpressionExt::Leaf(ExtLeaf::Base(
-                    SymbolicExpression::Leaf(BaseLeaf::Variable(SymbolicVariable::new(
-                        BaseEntry::Public,
-                        ld.expected_cumulated,
-                    ))),
-                )),
-            })
-            .collect::<Vec<_>>();
-
         let num_preprocessed = columns.local_prep_values.len();
-        let (base_symbolic_constraints, extension_symbolic_constraints) = get_symbolic_constraints(
-            self,
-            num_preprocessed,
-            contexts,
-            &ld_expected,
-            lookup_gadget,
-        );
+        let num_permutation_values = contexts
+            .iter()
+            .filter(|c| matches!(&c.kind, Kind::Global(_)))
+            .count();
+        let layout = AirLayout {
+            preprocessed_width: num_preprocessed,
+            main_width: self.width(),
+            num_public_values: self.num_public_values(),
+            num_permutation_values,
+            ..Default::default()
+        };
+        let (base_symbolic_constraints, extension_symbolic_constraints) =
+            get_symbolic_constraints(self, layout, contexts, lookup_gadget);
 
         // Fold all constraints: result = c₀ + α·c₁ + α²·c₂ + ...
         //
@@ -176,7 +167,7 @@ where
         &self,
         preprocessed_width: usize,
         contexts: &[Lookup<F>],
-        lookup_data: &[LookupData<usize>],
+        _lookup_data: &[LookupData<usize>],
         is_zk: usize,
         lookup_gadget: &LG,
     ) -> usize
@@ -186,26 +177,12 @@ where
         SymbolicExpressionExt<F, EF>: Algebra<SymbolicExpression<F>>,
         LG: LookupGadget,
     {
-        let ld_dummy_expected = lookup_data
-            .iter()
-            .map(|ld| LookupData {
-                name: ld.name.clone(),
-                aux_idx: ld.aux_idx,
-                expected_cumulated: SymbolicExpressionExt::Leaf(ExtLeaf::Base(
-                    SymbolicExpression::Leaf(BaseLeaf::Variable(SymbolicVariable::new(
-                        BaseEntry::Public,
-                        ld.expected_cumulated,
-                    ))),
-                )),
-            })
-            .collect::<Vec<_>>();
-        get_log_num_quotient_chunks(
-            self,
+        let layout = AirLayout {
             preprocessed_width,
-            contexts,
-            &ld_dummy_expected,
-            is_zk,
-            lookup_gadget,
-        )
+            main_width: self.width(),
+            num_public_values: self.num_public_values(),
+            ..Default::default()
+        };
+        get_log_num_quotient_chunks(self, layout, contexts, is_zk, lookup_gadget)
     }
 }
