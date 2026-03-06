@@ -1,5 +1,3 @@
-#![cfg(any())]
-
 use p3_baby_bear::BabyBear;
 use p3_circuit::builder::CircuitBuilder;
 use p3_circuit::ops::hash::add_hash_slice;
@@ -134,10 +132,7 @@ fn test_table_lookups() {
 
     // Check that the generated lookups are correct and consistent across tables.
     for air in airs.iter_mut() {
-        let lookups =
-            Air::<SymbolicAirBuilder<BabyBear, BinomialExtensionField<BabyBear, 4>>>::get_lookups(
-                air,
-            );
+        let lookups = LookupAir::get_lookups(air);
 
         match air {
             CircuitTableAir::Const(_) => {
@@ -314,10 +309,7 @@ fn test_extension_field_table_lookups() {
 
     // Check that the generated lookups are correct and consistent across tables.
     for air in airs.iter_mut() {
-        let lookups =
-            Air::<SymbolicAirBuilder<BabyBear, BinomialExtensionField<BabyBear, 4>>>::get_lookups(
-                air,
-            );
+        let lookups = LookupAir::get_lookups(air);
 
         match air {
             CircuitTableAir::Const(_) => {
