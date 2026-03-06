@@ -10,21 +10,19 @@ use p3_circuit::ops::generate_poseidon2_trace;
 use p3_circuit::test_utils::{FibonacciAir, generate_trace_rows};
 use p3_circuit_prover::common::get_airs_and_degrees_with_prep;
 use p3_circuit_prover::{BatchStarkProver, CircuitProverData, ConstraintProfile, TablePacking};
-use p3_field::PrimeCharacteristicRing;
 use p3_fri::FriParameters;
-use p3_koala_bear::default_koalabear_poseidon2_16;
 use p3_lookup::logup::LogUpGadget;
 use p3_poseidon2_circuit_air::KoalaBearD4Width16;
 use p3_recursion::pcs::fri::{FriVerifierParams, InputProofTargets, MerkleCapTargets, RecValMmcs};
 use p3_recursion::pcs::set_fri_mmcs_private_data;
 use p3_recursion::verifier::{verify_p3_batch_proof_circuit, verify_p3_uni_proof_circuit};
 use p3_recursion::{Poseidon2Config, StarkVerifierInputsBuilder, VerificationError};
+use p3_test_utils::koala_bear_params::*;
 use p3_uni_stark::{prove, verify};
 
-use crate::common::koala_bear_params::{
-    Challenge, ChallengeMmcs, Challenger, DIGEST_ELEMS, Dft, F, InnerFri, MyCompress, MyConfig,
-    MyHash, MyPcs, Perm, RATE, ValMmcs, WIDTH,
-};
+use crate::common::InnerFriGeneric;
+
+type InnerFri = InnerFriGeneric<MyConfig, MyHash, MyCompress, DIGEST_ELEMS>;
 
 const TRACE_D: usize = 1;
 

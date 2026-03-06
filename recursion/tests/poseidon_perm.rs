@@ -1,9 +1,7 @@
 mod common;
 
-use p3_baby_bear::BabyBear as F;
 use p3_circuit::CircuitBuilder;
 use p3_circuit::ops::{BabyBearD1Width16, Poseidon2CircuitRow, generate_poseidon2_trace};
-use p3_field::PrimeCharacteristicRing;
 use p3_fri::create_test_fri_params;
 use p3_poseidon2::ExternalLayerConstants;
 use p3_poseidon2_air::RoundConstants;
@@ -39,15 +37,15 @@ fn init_logger() {
         .init();
 }
 
-use crate::common::baby_bear_params::*;
+use p3_test_utils::baby_bear_params::*;
 
 // Use base field challenges for this test to keep proof size manageable.
 // The common module uses extension field challenges (D=4), which would
 // create 4x more observations and circuit operations.
 type Challenge = F;
-type ChallengeMmcs = p3_commit::ExtensionMmcs<F, Challenge, ValMmcs>;
-type MyPcs = p3_fri::TwoAdicFriPcs<F, Dft, ValMmcs, ChallengeMmcs>;
-type MyConfig = p3_uni_stark::StarkConfig<MyPcs, Challenge, Challenger>;
+type ChallengeMmcs = ExtensionMmcs<F, Challenge, ValMmcs>;
+type MyPcs = TwoAdicFriPcs<F, Dft, ValMmcs, ChallengeMmcs>;
+type MyConfig = StarkConfig<MyPcs, Challenge, Challenger>;
 
 #[test]
 fn test_poseidon2_perm_verifier() -> Result<(), VerificationError> {

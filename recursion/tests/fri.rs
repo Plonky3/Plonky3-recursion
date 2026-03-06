@@ -5,9 +5,8 @@ use p3_challenger::{CanObserve, CanSampleBits, FieldChallenger, GrindingChalleng
 use p3_circuit::CircuitBuilder;
 use p3_circuit::ops::generate_poseidon2_trace;
 use p3_commit::Pcs;
-use p3_dft::Radix2DitParallel as Dft;
+use p3_dft::Radix2DitParallel;
 use p3_field::coset::TwoAdicMultiplicativeCoset;
-use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
 use p3_fri::create_test_fri_params;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_poseidon2_circuit_air::BabyBearD4Width16;
@@ -18,10 +17,9 @@ use p3_recursion::pcs::fri::{
 };
 use p3_recursion::public_inputs::{CommitmentOpening, FriVerifierInputs};
 use p3_recursion::{Poseidon2Config, Recursive};
+use p3_test_utils::baby_bear_params::*;
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
-
-use crate::common::baby_bear_params::*;
 
 type RecVal = RecValMmcs<F, 8, MyHash, MyCompress>;
 type RecExt = RecExtensionValMmcs<F, Challenge, 8, RecVal>;
@@ -340,7 +338,7 @@ fn generate_setup(log_final_poly_len: usize, group_sizes: Vec<Vec<u8>>) -> FriSe
     let compress = MyCompress::new(perm.clone());
     let val_mmcs = ValMmcs::new(hash, compress, 0);
     let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
-    let dft = Dft::<F>::default();
+    let dft = Radix2DitParallel::<F>::default();
 
     let fri_params = create_test_fri_params(challenge_mmcs, log_final_poly_len);
     let log_blowup = fri_params.log_blowup;

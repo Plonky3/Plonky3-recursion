@@ -12,7 +12,6 @@ use p3_circuit_prover::{
     BatchStarkProof, BatchStarkProver, CircuitProverData, ConstraintProfile, Poseidon2Config,
     Poseidon2Preprocessor, TablePacking,
 };
-use p3_field::PrimeCharacteristicRing;
 use p3_fri::create_test_fri_params;
 use p3_lookup::logup::LogUpGadget;
 use p3_lookup::lookup_traits::LookupData;
@@ -21,9 +20,13 @@ use p3_recursion::generation::generate_batch_challenges;
 use p3_recursion::pcs::fri::{FriVerifierParams, InputProofTargets, MerkleCapTargets, RecValMmcs};
 use p3_recursion::verifier::{CircuitTablesAir, verify_p3_batch_proof_circuit};
 use p3_recursion::{BatchStarkVerifierInputsBuilder, GenerationError, VerificationError};
+use p3_test_utils::baby_bear_params::*;
+
+use crate::common::InnerFriGeneric;
+
 const TRACE_D: usize = 1; // Proof traces are in base field
 
-use crate::common::baby_bear_params::*;
+type InnerFri = InnerFriGeneric<MyConfig, MyHash, MyCompress, DIGEST_ELEMS>;
 
 fn setup_circuit_builder() -> CircuitBuilder<Challenge> {
     let mut circuit_builder = CircuitBuilder::new();

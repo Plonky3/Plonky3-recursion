@@ -5,20 +5,16 @@
 
 mod common;
 
-use p3_baby_bear::{BabyBear, default_babybear_poseidon2_16};
-use p3_challenger::{CanObserve, CanSample, DuplexChallenger, FieldChallenger};
+use p3_challenger::{CanObserve, CanSample, FieldChallenger};
 use p3_circuit::ops::{Poseidon2Config, generate_poseidon2_trace};
 use p3_circuit::{CircuitBuilder, Traces};
-use p3_field::extension::BinomialExtensionField;
-use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
 use p3_poseidon2_circuit_air::BabyBearD4Width16;
 use p3_recursion::challenger::CircuitChallenger;
 use p3_recursion::traits::RecursiveChallenger;
+use p3_test_utils::baby_bear_params::*;
 
 type F = BabyBear;
 type EF = BinomialExtensionField<F, 4>;
-const WIDTH: usize = 16;
-const RATE: usize = 8;
 
 fn setup_circuit_with_poseidon2() -> CircuitBuilder<EF> {
     let mut circuit = CircuitBuilder::<EF>::new();

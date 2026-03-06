@@ -8,22 +8,23 @@ use p3_circuit_prover::common::{NpoPreprocessor, get_airs_and_degrees_with_prep}
 use p3_circuit_prover::{
     BatchStarkProver, CircuitProverData, ConstraintProfile, Poseidon2Preprocessor, TablePacking,
 };
-use p3_field::PrimeCharacteristicRing;
 use p3_fri::create_test_fri_params;
-use p3_koala_bear::default_koalabear_poseidon2_16;
 use p3_lookup::logup::LogUpGadget;
 use p3_poseidon2_circuit_air::KoalaBearD4Width16;
 use p3_recursion::Poseidon2Config;
 use p3_recursion::pcs::fri::{FriVerifierParams, InputProofTargets, MerkleCapTargets, RecValMmcs};
 use p3_recursion::pcs::set_fri_mmcs_private_data;
 use p3_recursion::verifier::verify_p3_batch_proof_circuit;
+use p3_test_utils::koala_bear_params::*;
 use tracing_forest::ForestLayer;
 use tracing_forest::util::LevelFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Registry};
 
-use crate::common::koala_bear_params::*;
+use crate::common::InnerFriGeneric;
+
+type InnerFri = InnerFriGeneric<MyConfig, MyHash, MyCompress, DIGEST_ELEMS>;
 
 fn init_logger() {
     let env_filter = EnvFilter::builder()

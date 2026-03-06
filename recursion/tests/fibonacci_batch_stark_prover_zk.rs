@@ -11,7 +11,6 @@ use p3_circuit_prover::{
 };
 use p3_field::Field;
 use p3_fri::{HidingFriPcs, TwoAdicFriPcs, create_test_fri_params};
-use p3_koala_bear::default_koalabear_poseidon2_16;
 use p3_lookup::logup::LogUpGadget;
 use p3_lookup::{Lookup, LookupAir};
 use p3_matrix::dense::RowMajorMatrix;
@@ -24,14 +23,9 @@ use p3_recursion::pcs::set_fri_mmcs_private_data;
 use p3_recursion::{
     BatchStarkVerifierInputsBuilder, Poseidon2Config, VerificationError, verify_batch_circuit,
 };
-use p3_uni_stark::StarkConfig;
+use p3_test_utils::koala_bear_params::*;
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
-
-use crate::common::koala_bear_params::{
-    Challenge, ChallengeMmcs, Challenger, DIGEST_ELEMS, Dft, F, MyCompress, MyHash, RATE, ValMmcs,
-    WIDTH,
-};
 
 // Non-ZK config used for the outer recursive proof of the verification circuit.
 type MyConfig = StarkConfig<TwoAdicFriPcs<F, Dft, ValMmcs, ChallengeMmcs>, Challenge, Challenger>;

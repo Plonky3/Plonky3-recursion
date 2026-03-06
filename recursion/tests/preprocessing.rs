@@ -16,13 +16,12 @@ use p3_recursion::{
     BatchStarkVerifierInputsBuilder, FriVerifierParams, Poseidon2Config, VerificationError,
     verify_batch_circuit,
 };
+use p3_test_utils::baby_bear_params::*;
 use rand::distr::{Distribution, StandardUniform};
 
-use crate::common::MulAir;
-use crate::common::baby_bear_params::{
-    Challenge, ChallengeMmcs, Challenger, DIGEST_ELEMS, Dft, F, InnerFri, MyCompress, MyConfig,
-    MyHash, MyPcs, RATE, ValMmcs, WIDTH,
-};
+use crate::common::{InnerFriGeneric, MulAir};
+
+type InnerFri = InnerFriGeneric<MyConfig, MyHash, MyCompress, DIGEST_ELEMS>;
 
 /// Enum to hold different AIR types for batch verification
 #[derive(Clone, Copy)]
