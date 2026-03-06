@@ -48,6 +48,7 @@ unroll.workspace = true
 
 [dev-dependencies]
 criterion = { version = "0.8", features = ["html_reports"] }
+p3-batch-stark.workspace = true
 p3-test-utils.workspace = true
 postcard = { version = "1.1", default-features = false, features = ["alloc"] }
 rand.workspace = true

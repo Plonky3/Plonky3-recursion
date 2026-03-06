@@ -222,18 +222,17 @@ impl<F: Field, const D: usize> LookupAir<F> for ConstAir<F, D> {
 mod tests {
     use alloc::vec;
 
-    use p3_baby_bear::BabyBear;
     use p3_circuit::WitnessId;
-    use p3_field::PrimeCharacteristicRing;
-    use p3_field::extension::BinomialExtensionField;
     use p3_matrix::Matrix;
+    use p3_test_utils::baby_bear_params::{
+        BabyBear as F, BinomialExtensionField, PrimeCharacteristicRing,
+    };
     use p3_uni_stark::{prove_with_preprocessed, setup_preprocessed, verify_with_preprocessed};
     use p3_util::log2_ceil_usize;
 
     use super::*;
     use crate::air::test_utils::build_test_config;
 
-    type F = BabyBear;
     type EF = BinomialExtensionField<F, 4>;
 
     #[test]

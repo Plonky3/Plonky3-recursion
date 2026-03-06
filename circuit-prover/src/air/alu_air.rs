@@ -654,10 +654,11 @@ mod tests {
     use alloc::vec;
     use alloc::vec::Vec;
 
-    use p3_baby_bear::BabyBear as Val;
     use p3_circuit::WitnessId;
-    use p3_field::extension::BinomialExtensionField;
     use p3_matrix::Matrix;
+    use p3_test_utils::baby_bear_params::{
+        BabyBear as Val, BinomialExtensionField, PrimeCharacteristicRing,
+    };
     use p3_uni_stark::{prove_with_preprocessed, setup_preprocessed, verify_with_preprocessed};
     use p3_util::log2_ceil_usize;
 
