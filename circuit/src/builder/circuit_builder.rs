@@ -21,7 +21,7 @@ use crate::ops::poseidon2_perm::Poseidon2CircuitPlugin;
 use crate::ops::{Poseidon2Params, Poseidon2PermCall, Poseidon2PermCallBase};
 use crate::tables::TraceGeneratorFn;
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};
-use crate::{CircuitBuilderError, CircuitError, CircuitField, Poseidon2PermOps};
+use crate::{CircuitBuilderError, CircuitError, Poseidon2PermOps};
 
 /// Builder for constructing circuits.
 pub struct CircuitBuilder<F: Field> {
@@ -221,7 +221,7 @@ where
         perm: P,
     ) where
         Config: Poseidon2Params,
-        F: CircuitField + ExtensionField<Config::BaseField>,
+        F: Field + ExtensionField<Config::BaseField>,
         P: Permutation<[Config::BaseField; 16]> + Clone + Send + Sync + 'static,
     {
         let d = Config::D;
@@ -260,7 +260,7 @@ where
         perm: P,
     ) where
         Config: Poseidon2Params,
-        F: CircuitField + ExtensionField<Config::BaseField>,
+        F: Field + ExtensionField<Config::BaseField>,
         P: Permutation<[Config::BaseField; 8]> + Clone + Send + Sync + 'static,
     {
         assert!(
@@ -308,7 +308,7 @@ where
         perm: P,
     ) where
         Config: Poseidon2Params,
-        F: CircuitField,
+        F: Field,
         P: Permutation<[F; 16]> + Clone + Send + Sync + 'static,
     {
         assert!(

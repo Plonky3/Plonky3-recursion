@@ -61,6 +61,7 @@ where
     /// Raw FRI opening proof type (value type, not circuit targets). Used to set private data.
     type RawOpeningProof;
 
+    /// Number of field elements in a single Merkle digest (e.g. 8 for BabyBear with Poseidon2).
     const DIGEST_ELEMS: usize;
 
     /// Invoke a closure with the FRI opening proof extracted from the recursion input.
@@ -104,10 +105,12 @@ where
 // TODO: Make this generic over the challenger permutation config.
 #[derive(Clone)]
 pub struct FriRecursionBackend<const WIDTH: usize = 16, const RATE: usize = 8> {
+    /// Poseidon2 configuration used for the Fiat-Shamir challenger permutation circuit.
     pub challenger_perm_config: Poseidon2Config,
 }
 
 impl<const WIDTH: usize, const RATE: usize> FriRecursionBackend<WIDTH, RATE> {
+    /// Create a new backend with the given challenger permutation configuration.
     pub const fn new(challenger_perm_config: Poseidon2Config) -> Self {
         Self {
             challenger_perm_config,
@@ -136,13 +139,15 @@ impl<const WIDTH: usize, const RATE: usize> FriRecursionBackend<WIDTH, RATE> {
 /// FRI backend for D=2 extension (e.g. Goldilocks).
 #[derive(Clone)]
 pub struct FriRecursionBackendD2<const WIDTH: usize = 16, const RATE: usize = 8>(
-    pub FriRecursionBackend<WIDTH, RATE>,
+    /// The inner backend holding the challenger permutation config.
+    pub(crate) FriRecursionBackend<WIDTH, RATE>,
 );
 
 /// FRI backend for D=4 extension (e.g. BabyBear, KoalaBear).
 #[derive(Clone)]
 pub struct FriRecursionBackendD4<const WIDTH: usize = 16, const RATE: usize = 8>(
-    pub FriRecursionBackend<WIDTH, RATE>,
+    /// The inner backend holding the challenger permutation config.
+    pub(crate) FriRecursionBackend<WIDTH, RATE>,
 );
 
 /// Verifier result from the FRI backend: either uni-stark or batch-stark builder + op_ids.
@@ -157,10 +162,12 @@ where
             <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain,
         >,
 {
+    /// Result for a single-instance (uni-STARK) input proof.
     UniStark(
         StarkVerifierInputsBuilder<SC, SC::Commitment, SC::OpeningProof>,
         Vec<NonPrimitiveOpId>,
     ),
+    /// Result for a batch-STARK input proof.
     BatchStark(
         BatchStarkVerifierInputsBuilder<SC, SC::Commitment, SC::OpeningProof>,
         Vec<NonPrimitiveOpId>,

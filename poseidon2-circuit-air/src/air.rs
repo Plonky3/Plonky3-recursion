@@ -5,9 +5,10 @@ use core::borrow::Borrow;
 use core::iter;
 use core::mem::MaybeUninit;
 
-use p3_air::{Air, AirBuilder, BaseAir, BaseLeaf, PermutationAirBuilder};
+use p3_air::{Air, AirBuilder, AirLayout, BaseAir, BaseLeaf, WindowAccess};
 use p3_circuit::ops::Poseidon2CircuitRow;
 use p3_field::{Field, PrimeCharacteristicRing, PrimeField};
+use p3_lookup::LookupAir;
 use p3_lookup::lookup_traits::{Direction, Kind, Lookup};
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
@@ -62,7 +63,7 @@ pub struct Poseidon2CircuitAir<
         PARTIAL_ROUNDS,
     >,
     /// Current number of lookup columns registered.
-    pub num_lookup_cols: usize,
+    pub(crate) num_lookup_cols: usize,
     /// Preprocessed values for the AIR. These values are only needed by the prover. During verification, the `Vec` can be empty.
     preprocessed: Vec<F>,
     /// Minimum trace height (for FRI compatibility with higher log_final_poly_len).
@@ -106,6 +107,7 @@ impl<
     }
 }
 
+/// Return the number of columns in the Poseidon2 preprocessed trace.
 pub const fn poseidon2_preprocessed_width() -> usize {
     core::mem::size_of::<Poseidon2PreprocessedRow<u8>>()
 }
@@ -137,6 +139,10 @@ impl<
         PARTIAL_ROUNDS,
     >
 {
+    /// Create a new `Poseidon2CircuitAir` with the given round constants.
+    ///
+    /// The preprocessed trace is left empty; call [`Self::new_with_preprocessed`] or
+    /// populate it separately before proving.
     pub const fn new(
         constants: RoundConstants<F, WIDTH, HALF_FULL_ROUNDS, PARTIAL_ROUNDS>,
     ) -> Self {
@@ -153,11 +159,19 @@ impl<
         }
     }
 
+    /// Set the minimum trace height (rounded up to the next power of two).
+    ///
+    /// Use this when FRI parameters require a minimum domain size larger than the
+    /// number of Poseidon2 rows actually produced.
     pub fn with_min_height(mut self, min_height: usize) -> Self {
         self.min_height = min_height.next_power_of_two().max(1);
         self
     }
 
+    /// Create a `Poseidon2CircuitAir` with pre-populated preprocessed trace data.
+    ///
+    /// Use this when the preprocessed columns have already been committed and you
+    /// want to skip regenerating them at verification time.
     pub const fn new_with_preprocessed(
         constants: RoundConstants<F, WIDTH, HALF_FULL_ROUNDS, PARTIAL_ROUNDS>,
         preprocessed: Vec<F>,
@@ -175,10 +189,18 @@ impl<
         }
     }
 
+    /// Return the number of preprocessed columns for this AIR.
+    ///
+    /// Delegates to [`poseidon2_preprocessed_width`].
     pub const fn preprocessed_width() -> usize {
         poseidon2_preprocessed_width()
     }
 
+    /// Generate the execution trace matrix from a sequence of Poseidon2 circuit rows.
+    ///
+    /// `sponge_ops` must have a length that is a power of two.
+    /// `extra_capacity_bits` controls how many additional zero-padded rows are appended
+    /// beyond the minimum power-of-two height.
     pub fn generate_trace_rows(
         &self,
         sponge_ops: &[Poseidon2CircuitRow<F>],
@@ -832,18 +854,13 @@ where
     #[inline]
     fn eval(&self, builder: &mut AB) {
         let main = builder.main();
-        let local = main.row_slice(0).expect("The matrix is empty?");
+        let local = main.current_slice();
         let local = (*local).borrow();
-        let next = main.row_slice(1).expect("The matrix has only one row?");
+        let next = main.next_slice();
         let next = (*next).borrow();
 
-        let preprocessed = builder
-            .preprocessed()
-            .expect("Expected preprocessed columns");
-        let next_preprocessed = preprocessed
-            .row_slice(1)
-            .expect("The preprocessed matrix has only one row?");
-        let next_preprocessed = (*next_preprocessed).borrow();
+        let preprocessed = builder.preprocessed().clone();
+        let next_preprocessed = preprocessed.next_slice();
 
         eval::<
             _,
@@ -859,32 +876,59 @@ where
             PARTIAL_ROUNDS,
         >(self, builder, local, next, next_preprocessed);
     }
+}
 
+impl<
+    F: PrimeField + PrimeCharacteristicRing,
+    LinearLayers: GenericPoseidon2LinearLayers<WIDTH>,
+    const D: usize,
+    const WIDTH: usize,
+    const WIDTH_EXT: usize,
+    const RATE_EXT: usize,
+    const CAPACITY_EXT: usize,
+    const SBOX_DEGREE: u64,
+    const SBOX_REGISTERS: usize,
+    const HALF_FULL_ROUNDS: usize,
+    const PARTIAL_ROUNDS: usize,
+> LookupAir<F>
+    for Poseidon2CircuitAir<
+        F,
+        LinearLayers,
+        D,
+        WIDTH,
+        WIDTH_EXT,
+        RATE_EXT,
+        CAPACITY_EXT,
+        SBOX_DEGREE,
+        SBOX_REGISTERS,
+        HALF_FULL_ROUNDS,
+        PARTIAL_ROUNDS,
+    >
+{
     fn add_lookup_columns(&mut self) -> Vec<usize> {
         let lookup_column_idx = self.num_lookup_cols;
         self.num_lookup_cols += 1;
         vec![lookup_column_idx]
     }
 
-    fn get_lookups(&mut self) -> Vec<Lookup<<AB>::F>>
-    where
-        AB: PermutationAirBuilder,
-    {
-        let symbolic_air_builder = SymbolicAirBuilder::<AB::F>::new(
-            Self::preprocessed_width(),
-            BaseAir::<AB::F>::width(self),
-            0,
-            0, // Here, we do not need the permutation trace
-            0,
-            0,
-        );
+    fn get_lookups(&mut self) -> Vec<Lookup<F>> {
+        let air_layout = AirLayout {
+            preprocessed_width: Self::preprocessed_width(),
+            main_width: BaseAir::<F>::width(self),
+            num_public_values: 0,
+            permutation_width: 0, // Here, we do not need the permutation trace
+            num_permutation_challenges: 0,
+            num_permutation_values: 0,
+            num_periodic_columns: 0,
+        };
+        let symbolic_air_builder = SymbolicAirBuilder::<F>::new(air_layout);
         let symbolic_main = symbolic_air_builder.main();
-        let symbolic_main_local = symbolic_main.row_slice(0).expect("The matrix is empty?");
+        let symbolic_main_local = symbolic_main.current_slice();
 
         let local: &Poseidon2CircuitCols<
-            SymbolicVariable<AB::F>,
+            SymbolicVariable<F>,
             Poseidon2Cols<
-                SymbolicVariable<AB::F>,
+                SymbolicVariable<F>,
                 WIDTH,
                 SBOX_DEGREE,
                 SBOX_REGISTERS,
@@ -897,21 +941,19 @@ where
         // [in_idx[0], in_ctl[0], normal_chain_sel[0], merkle_chain_sel[0], ..., in_idx[3], in_ctl[3], normal_chain_sel[3], merkle_chain_sel[3],
         //  out_idx[0], out_ctl[0], out_idx[1], out_ctl[1], mmcs_index_sum_ctl_idx, mmcs_merkle_flag, new_start, merkle_path]
         // The following corresponds to the size of the data related to one input limb (in_idx[i], in_ctl[i], normal_chain_sel[i], merkle_chain_sel[i]).
-        let preprocessed = symbolic_air_builder
-            .preprocessed()
-            .expect("Expected preprocessed columns");
+        let preprocessed = symbolic_air_builder.preprocessed();
         let local_preprocessed = preprocessed
             .row_slice(0)
             .expect("The preprocessed matrix has only one row?");
-        let local_preprocessed: &[SymbolicVariable<AB::F>] = (*local_preprocessed).borrow();
+        let local_preprocessed: &[SymbolicVariable<F>] = (*local_preprocessed).borrow();
         let next_preprocessed = preprocessed
             .row_slice(1)
             .expect("The preprocessed matrix has only one row?");
-        let next_preprocessed: &[SymbolicVariable<AB::F>] = (*next_preprocessed).borrow();
+        let next_preprocessed: &[SymbolicVariable<F>] = (*next_preprocessed).borrow();
 
-        let local_prep: &Poseidon2PreprocessedRow<SymbolicVariable<AB::F>> =
+        let local_preprocessed: &Poseidon2PreprocessedRow<SymbolicVariable<F>> =
             local_preprocessed.borrow();
-        let next_prep: &Poseidon2PreprocessedRow<SymbolicVariable<AB::F>> =
+        let next_preprocessed: &Poseidon2PreprocessedRow<SymbolicVariable<F>> =
             next_preprocessed.borrow();
 
         // There are POSEIDON2_LIMBS input limbs and POSEIDON2_PUBLIC_OUTPUT_LIMBS output limbs
@@ -926,11 +968,11 @@ where
         //   during creation (in `add_hash_slice` with merkle_path=false)
         // - Sibling values are private proof data (wrong siblings → wrong root)
         // - Chained values are AIR-constrained to equal previous Poseidon2 outputs
-        let not_merkle = SymbolicExpression::Leaf(BaseLeaf::Constant(AB::F::ONE))
-            - SymbolicExpression::from(local_prep.merkle_path);
+        let not_merkle = SymbolicExpression::Leaf(BaseLeaf::Constant(F::ONE))
+            - SymbolicExpression::from(local_preprocessed.merkle_path);
 
         for limb_idx in 0..POSEIDON2_LIMBS {
-            let limb = &local_prep.input_limbs[limb_idx];
+            let limb = &local_preprocessed.input_limbs[limb_idx];
             let input_idx_limb = iter::once(limb.idx)
                 .chain(
                     local.poseidon2.inputs[limb_idx * D..(limb_idx + 1) * D]
@@ -943,7 +985,7 @@ where
             // Multiplicity = in_ctl * (1 - merkle_path), both preprocessed, so degree 0.
             let mult = SymbolicExpression::from(limb.in_ctl) * not_merkle.clone();
 
-            lookups.push(<Self as Air<AB>>::register_lookup(
+            lookups.push(LookupAir::register_lookup(
                 self,
                 Kind::Global("WitnessChecks".to_string()),
                 &[(input_idx_limb, mult, Direction::Send)],
@@ -951,7 +993,7 @@ where
         }
 
         for limb_idx in 0..POSEIDON2_PUBLIC_OUTPUT_LIMBS {
-            let limb = &local_prep.output_limbs[limb_idx];
+            let limb = &local_preprocessed.output_limbs[limb_idx];
             let output_idx_limb = iter::once(limb.idx)
                 .chain(
                     local.poseidon2.ending_full_rounds[HALF_FULL_ROUNDS - 1].post
@@ -962,7 +1004,7 @@ where
                 .map(SymbolicExpression::from)
                 .collect::<Vec<_>>();
 
-            lookups.push(<Self as Air<AB>>::register_lookup(
+            lookups.push(LookupAir::register_lookup(
                 self,
                 Kind::Global("WitnessChecks".to_string()),
                 &[(
@@ -976,19 +1018,19 @@ where
         // If mmcs_merkle_flag = 1 AND next.new_start = 1, expose mmcs_index_sum via CTL.
         // mmcs_merkle_flag is precomputed as: mmcs_ctl_enabled * merkle_path.
         // This keeps multiplicity at degree 2 (safe for constraint evaluation).
-        let multiplicity = local_prep.mmcs_merkle_flag * next_prep.new_start;
+        let multiplicity = local_preprocessed.mmcs_merkle_flag * next_preprocessed.new_start;
 
         let mut mmcs_index_sum_lookup = vec![
-            SymbolicExpression::from(local_prep.mmcs_index_sum_ctl_idx),
+            SymbolicExpression::from(local_preprocessed.mmcs_index_sum_ctl_idx),
             SymbolicExpression::from(local.mmcs_index_sum),
         ];
         // Extend `mmcs_index_sum` to D elements with zeros.
         mmcs_index_sum_lookup.extend(iter::repeat_n(
-            SymbolicExpression::Leaf(BaseLeaf::Constant(AB::F::ZERO)),
+            SymbolicExpression::Leaf(BaseLeaf::Constant(F::ZERO)),
             D - 1,
         ));
 
-        lookups.push(<Self as Air<AB>>::register_lookup(
+        lookups.push(LookupAir::register_lookup(
             self,
             Kind::Global("WitnessChecks".to_string()),
             &[(mmcs_index_sum_lookup, multiplicity, Direction::Send)],
@@ -1058,6 +1100,7 @@ mod test {
             FieldHash,
             MyCompress,
             SmallRng,
+            2,
             4,
             4,
         >;

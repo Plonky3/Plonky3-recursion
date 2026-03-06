@@ -225,6 +225,7 @@ macro_rules! define_field_module_types {
             <F as Field>::Packing,
             MyHash,
             MyCompress,
+            2,
             DIGEST_ELEMS,
         >;
         type ChallengeMmcs = ExtensionMmcs<F, Challenge, ValMmcs>;

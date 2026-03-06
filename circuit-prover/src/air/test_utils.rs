@@ -16,6 +16,7 @@ pub type ValMmcs = MerkleTreeMmcs<
     <Val as p3_field::Field>::Packing,
     MyHash<Perm<16>, 16, 8, 8>,
     MyCompress<Perm<16>, 2, 8, 16>,
+    2,
     8,
 >;
 pub type ChallengeMmcs = ExtensionMmcs<Val, Challenge, ValMmcs>;

@@ -3,7 +3,9 @@
 //! Instance shape and size are parameterized so results are comparable and
 //! scaling is visible.
 
-use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
+use core::hint::black_box;
+
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use p3_batch_stark::ProverData;
 use p3_circuit::CircuitBuilder;
 use p3_circuit_prover::air::{AluAir, ConstAir, PublicAir};

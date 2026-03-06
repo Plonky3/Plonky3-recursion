@@ -4,10 +4,9 @@ use alloc::vec::Vec;
 use hashbrown::HashMap;
 use itertools::zip_eq;
 use p3_air::Air;
+use p3_air::symbolic::AirLayout;
 use p3_batch_stark::config::observe_instance_binding;
-use p3_batch_stark::symbolic::{
-    get_log_num_quotient_chunks as get_batch_log_num_quotient_chunks, lookup_data_to_ext_expr,
-};
+use p3_batch_stark::symbolic::get_log_num_quotient_chunks as get_batch_log_num_quotient_chunks;
 use p3_batch_stark::{BatchProof, CommonData};
 use p3_challenger::{CanObserve, CanSample, CanSampleBits, FieldChallenger, GrindingChallenger};
 use p3_commit::{BatchOpening, Mmcs, OpenedValues, Pcs, PolynomialSpace};
@@ -106,8 +105,14 @@ where
 
     let degree = 1 << degree_bits;
     let pcs = config.pcs();
+    let layout = AirLayout {
+        preprocessed_width,
+        main_width: air.width(),
+        num_public_values: air.num_public_values(),
+        ..Default::default()
+    };
     let log_quotient_degree =
-        get_log_num_quotient_chunks::<Val<SC>, A>(air, preprocessed_width, config.is_zk());
+        get_log_num_quotient_chunks::<Val<SC>, A>(air, layout, config.is_zk());
     let quotient_degree = 1 << (log_quotient_degree + config.is_zk());
 
     let trace_domain = pcs.natural_domain_for_degree(degree);
@@ -307,12 +312,19 @@ where
                 Kind::Local => Ok(()),
             })?;
             if counter != global_lookups.len() {
-                Err(GenerationError::InvalidProofShape(
+                return Err(GenerationError::InvalidProofShape(
                     "Global lookups are inconsistent with lookups",
-                ))
-            } else {
-                Ok(())
+                ));
             }
+            let is_sorted = global_lookups
+                .windows(2)
+                .all(|w| w[0].aux_idx <= w[1].aux_idx);
+            if !is_sorted {
+                return Err(GenerationError::InvalidProofShape(
+                    "Expected cumulated values not sorted by auxiliary index",
+                ));
+            }
+            Ok(())
         })?;
 
     let n_instances = airs.len();
@@ -374,11 +386,16 @@ where
             .unwrap_or(0);
         preprocessed_widths.push(pre_w);
 
+        let batch_layout = AirLayout {
+            preprocessed_width: pre_w,
+            main_width: air.width(),
+            num_public_values: air.num_public_values(),
+            ..Default::default()
+        };
         let log_qd = get_batch_log_num_quotient_chunks(
             air,
-            pre_w,
+            batch_layout,
             &all_lookups[i],
-            &lookup_data_to_ext_expr(&global_lookup_data[i]),
             config.is_zk(),
             lookup_gadget,
         );

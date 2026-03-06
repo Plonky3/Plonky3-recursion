@@ -1,6 +1,6 @@
 mod common;
 
-use p3_air::{Air, BaseAir};
+use p3_air::{Air, BaseAir, RowWindow};
 use p3_circuit::utils::{ColumnsTargets, RowSelectorsTargets};
 use p3_circuit::{CircuitBuilder, CircuitError};
 use p3_circuit_prover::air::{AluAir, ConstAir, PublicAir};
@@ -54,16 +54,22 @@ where
         RowMajorMatrixView::new_row(&trace_next),
     );
     let preprocessed = if preprocessed_width > 0 {
-        Some(VerticalPair::new(
+        VerticalPair::new(
             RowMajorMatrixView::new_row(&preprocessed_local),
             RowMajorMatrixView::new_row(&preprocessed_next),
-        ))
+        )
     } else {
-        None
+        VerticalPair::new(
+            RowMajorMatrixView::new(&[], 0),
+            RowMajorMatrixView::new(&[], 0),
+        )
     };
+    let preprocessed_window =
+        RowWindow::from_two_rows(preprocessed.top.values, preprocessed.bottom.values);
     let mut folder: VerifierConstraintFolder<'_, MyConfig> = VerifierConstraintFolder {
         main,
         preprocessed,
+        preprocessed_window,
         public_values: &public_values,
         is_first_row: selectors[0],
         is_last_row: selectors[1],
@@ -104,6 +110,7 @@ where
         public_values: &public_targets,
         permutation_local_values: &[],
         permutation_next_values: &[],
+        permutation_values: &[],
         local_prep_values: &pre_local_targets,
         next_prep_values: &pre_next_targets,
         local_values: &local_targets,

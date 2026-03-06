@@ -34,7 +34,6 @@ use p3_field::{ExtensionField, Field, PrimeCharacteristicRing, PrimeField};
 use serde::{Deserialize, Serialize};
 
 use crate::builder::{CircuitBuilder, NonPrimitiveOpParams, NpoCircuitPlugin, NpoLoweringContext};
-use crate::circuit::CircuitField;
 use crate::op::{ExecutionContext, NonPrimitiveExecutor, NpoTypeId, Op, OpExecutionState};
 use crate::tables::{NonPrimitiveTrace, TraceGeneratorFn};
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessId};
@@ -285,7 +284,7 @@ impl<F: Field> Poseidon2CircuitPlugin<F> {
 
 impl<F> NpoCircuitPlugin<F> for Poseidon2CircuitPlugin<F>
 where
-    F: CircuitField,
+    F: Field,
 {
     fn type_id(&self) -> NpoTypeId {
         self.type_id.clone()
@@ -1513,7 +1512,7 @@ impl<TraceF: Clone + Send + Sync + 'static, CF> NonPrimitiveTrace<CF> for Poseid
 /// - `F`: The circuit field type (extension field)
 /// - `Config`: A type implementing `Poseidon2Params` that specifies the Poseidon2 configuration
 pub fn generate_poseidon2_trace<
-    F: CircuitField + ExtensionField<Config::BaseField>,
+    F: Field + ExtensionField<Config::BaseField>,
     Config: Poseidon2Params,
 >(
     op_states: &crate::op::OpStateMap,

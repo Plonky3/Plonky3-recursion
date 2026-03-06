@@ -8,13 +8,14 @@ use alloc::{format, vec};
 
 #[cfg(debug_assertions)]
 use p3_air::DebugConstraintBuilder;
-use p3_air::{Air, AirBuilder, BaseAir};
+use p3_air::{Air, BaseAir};
 use p3_batch_stark::{BatchProof, CommonData, ProverData, StarkGenericConfig, StarkInstance, Val};
 use p3_circuit::PreprocessedColumns;
 use p3_circuit::op::{NpoTypeId, Poseidon2Config, PrimitiveOpType};
 use p3_circuit::tables::Traces;
 use p3_field::extension::{BinomialExtensionField, BinomiallyExtendable};
 use p3_field::{Algebra, BasedVectorSpace, Field, PrimeField};
+use p3_lookup::LookupAir;
 use p3_lookup::folder::{ProverConstraintFolderWithLookups, VerifierConstraintFolderWithLookups};
 use p3_lookup::lookup_traits::Lookup;
 use p3_matrix::dense::RowMajorMatrix;
@@ -37,13 +38,16 @@ mod poseidon2;
 pub use dynamic_air::{
     BatchAir, BatchTableInstance, CloneableBatchAir, DynamicAirEntry, TableProver,
 };
-pub use packing::{TablePacking, TraceLengths};
+pub use packing::TablePacking;
+pub(crate) use packing::TraceLengths;
 pub use poseidon2::{
     Poseidon2AirBuilderD2, Poseidon2AirBuilderD4, Poseidon2AirWrapperInner, Poseidon2Preprocessor,
     Poseidon2Prover, Poseidon2ProverD2, poseidon2_preprocessor, poseidon2_verifier_air_from_config,
 };
 
+/// Prime modulus of the BabyBear field (`2^31 - 2^27 + 1`).
 pub const BABY_BEAR_MODULUS: u64 = 0x7800_0001;
+/// Prime modulus of the KoalaBear field (`2^31 - 2^24 + 1`).
 pub const KOALA_BEAR_MODULUS: u64 = 0x7f00_0001;
 
 /// Opaque variant tag for a non-primitive AIR in a batch proof.
@@ -210,6 +214,9 @@ macro_rules! impl_table_prover_batch_instances_from_base {
     };
 }
 
+/// Type alias for the primitive operation table selector.
+///
+/// Used as an index into [`RowCounts`] and related per-table arrays.
 pub type PrimitiveTable = PrimitiveOpType;
 
 /// Number of primitive circuit tables included in the unified batch STARK proof.
@@ -306,15 +313,19 @@ where
 /// Errors for the batch STARK table prover.
 #[derive(Debug, Error)]
 pub enum BatchStarkProverError {
+    /// The extension field degree is not one of the supported values (1, 2, 4, 6, 8).
     #[error("unsupported extension degree: {0} (supported: 1,2,4,6,8)")]
     UnsupportedDegree(usize),
 
+    /// An extension field with degree > 1 was requested but the binomial parameter `W` was not provided.
     #[error("missing binomial parameter W for extension-field multiplication")]
     MissingWForExtension,
 
+    /// The batch STARK verifier rejected the proof.
     #[error("verification failed: {0}")]
     Verify(String),
 
+    /// A non-primitive table entry references an op type for which no [`TableProver`] was registered.
     #[error("missing table prover for non-primitive op `{0:?}`")]
     MissingTableProver(NpoTypeId),
 }
@@ -353,24 +364,6 @@ macro_rules! impl_circuit_table_air_for_builder {
                 Self::Public(a) => Air::<$builder_ty>::eval(a, builder),
                 Self::Alu(a) => Air::<$builder_ty>::eval(a, builder),
                 Self::Dynamic(a) => Air::<$builder_ty>::eval(a, builder),
-            }
-        }
-
-        fn add_lookup_columns(&mut self) -> Vec<usize> {
-            match self {
-                Self::Const(a) => Air::<$builder_ty>::add_lookup_columns(a),
-                Self::Public(a) => Air::<$builder_ty>::add_lookup_columns(a),
-                Self::Alu(a) => Air::<$builder_ty>::add_lookup_columns(a),
-                Self::Dynamic(a) => Air::<$builder_ty>::add_lookup_columns(a),
-            }
-        }
-
-        fn get_lookups(&mut self) -> Vec<Lookup<<$builder_ty as AirBuilder>::F>> {
-            match self {
-                Self::Const(a) => Air::<$builder_ty>::get_lookups(a),
-                Self::Public(a) => Air::<$builder_ty>::get_lookups(a),
-                Self::Alu(a) => Air::<$builder_ty>::get_lookups(a),
-                Self::Dynamic(a) => Air::<$builder_ty>::get_lookups(a),
             }
         }
     };
@@ -417,6 +410,32 @@ where
     impl_circuit_table_air_for_builder!(VerifierConstraintFolderWithLookups<'a, SC>);
 }
 
+impl<SC, const D: usize> LookupAir<Val<SC>> for CircuitTableAir<SC, D>
+where
+    SC: StarkGenericConfig,
+    Val<SC>: PrimeField,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+{
+    fn add_lookup_columns(&mut self) -> Vec<usize> {
+        match self {
+            Self::Const(a) => ConstAir::<Val<SC>, D>::add_lookup_columns(a),
+            Self::Public(a) => PublicAir::<Val<SC>, D>::add_lookup_columns(a),
+            Self::Alu(a) => AluAir::<Val<SC>, D>::add_lookup_columns(a),
+            Self::Dynamic(a) => DynamicAirEntry::<SC>::add_lookup_columns(a),
+        }
+    }
+
+    fn get_lookups(&mut self) -> Vec<Lookup<Val<SC>>> {
+        match self {
+            Self::Const(a) => ConstAir::<Val<SC>, D>::get_lookups(a),
+            Self::Public(a) => PublicAir::<Val<SC>, D>::get_lookups(a),
+            Self::Alu(a) => AluAir::<Val<SC>, D>::get_lookups(a),
+            Self::Dynamic(a) => DynamicAirEntry::<SC>::get_lookups(a),
+        }
+    }
+}
+
 impl<SC> BatchStarkProver<SC>
 where
     SC: StarkGenericConfig + 'static,
@@ -424,6 +443,7 @@ where
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
         Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
+    /// Create a new prover with the given STARK config and default table packing.
     pub fn new(config: SC) -> Self {
         Self {
             config,
@@ -434,6 +454,7 @@ where
         }
     }
 
+    /// Override the default [`TablePacking`] configuration (builder-style).
     #[must_use]
     pub const fn with_table_packing(mut self, table_packing: TablePacking) -> Self {
         self.table_packing = table_packing;
@@ -485,6 +506,7 @@ where
         ))));
     }
 
+    /// Return the current [`TablePacking`] configuration.
     #[inline]
     pub const fn table_packing(&self) -> TablePacking {
         self.table_packing

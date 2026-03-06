@@ -1,6 +1,6 @@
 mod common;
 
-use p3_air::{Air, AirBuilder, BaseAir};
+use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 use p3_batch_stark::{ProverData, StarkInstance, prove_batch, verify_batch};
 use p3_circuit::CircuitBuilder;
 use p3_circuit::ops::generate_poseidon2_trace;
@@ -12,8 +12,8 @@ use p3_circuit_prover::{
 use p3_field::Field;
 use p3_fri::{HidingFriPcs, TwoAdicFriPcs, create_test_fri_params};
 use p3_koala_bear::default_koalabear_poseidon2_16;
+use p3_lookup::{Lookup, LookupAir};
 use p3_lookup::logup::LogUpGadget;
-use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_poseidon2_circuit_air::KoalaBearD4Width16;
 use p3_recursion::pcs::fri::{
@@ -66,8 +66,18 @@ where
 {
     fn eval(&self, builder: &mut AB) {
         let main = builder.main();
-        let row = main.row_slice(0).expect("main row must exist");
+        let row = main.current_slice();
         builder.assert_zero(row[0] + row[1] - row[2]);
+    }
+}
+
+impl<F: Field> LookupAir<F> for AddAir {
+    fn add_lookup_columns(&mut self) -> Vec<usize> {
+        vec![0]
+    }
+
+    fn get_lookups(&mut self) -> Vec<Lookup<F>> {
+        vec![]
     }
 }
 

@@ -63,6 +63,7 @@ pub type Config<
             F,
             PaddingFreeSponge<PermHash, HASH_PERM_WIDTH, RATE, OUT>,
             TruncatedPermutation<PermCompress, COMPRESS_ARITY, COMPRESS_CHUNK, COMPRESS_PERM_WIDTH>,
+            2,
             COMPRESS_CHUNK,
         >,
         ExtensionMmcs<
@@ -78,6 +79,7 @@ pub type Config<
                     COMPRESS_CHUNK,
                     COMPRESS_PERM_WIDTH,
                 >,
+                2,
                 COMPRESS_CHUNK,
             >,
         >,

@@ -6,7 +6,7 @@ use alloc::vec::Vec;
 use alloc::{format, vec};
 
 use hashbrown::HashMap;
-use p3_air::{Air as P3Air, AirBuilder, BaseAir as P3BaseAir, SymbolicAirBuilder};
+use p3_air::{Air as P3Air, BaseAir as P3BaseAir, SymbolicAirBuilder};
 use p3_batch_stark::CommonData;
 use p3_circuit::utils::ColumnsTargets;
 use p3_circuit::{CircuitBuilder, NonPrimitiveOpId};
@@ -19,6 +19,7 @@ use p3_commit::{Pcs, PolynomialSpace};
 use p3_field::{
     Algebra, BasedVectorSpace, ExtensionField, Field, PrimeCharacteristicRing, PrimeField64,
 };
+use p3_lookup::LookupAir;
 use p3_lookup::lookup_traits::{Kind, Lookup, LookupData, LookupGadget};
 use p3_uni_stark::{StarkGenericConfig, SymbolicExpression, SymbolicExpressionExt, Val};
 
@@ -50,7 +51,6 @@ pub type PcsVerifierParams<SC, InputProof, OpeningProof, Comm> =
 /// Type-erased recursive AIR entry for non-primitive tables.
 pub type DynRecursionAirEntry<SC> = DynamicAirEntry<SC>;
 
-// TODO(Robin): Remove with dynamic dispatch
 /// Wrapper enum for heterogeneous circuit table AIRs used by circuit-prover tables.
 pub enum CircuitTablesAir<SC: StarkGenericConfig, const D: usize> {
     Const(ConstAir<Val<SC>, D>),
@@ -94,39 +94,31 @@ where
             Self::Dynamic(inner) => P3Air::eval(inner, builder),
         }
     }
+}
 
+impl<SC, const D: usize> LookupAir<Val<SC>> for CircuitTablesAir<SC, D>
+where
+    SC: StarkGenericConfig,
+    Val<SC>: PrimeField64,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+{
     fn add_lookup_columns(&mut self) -> Vec<usize> {
         match self {
-            Self::Const(a) => P3Air::<
-                SymbolicAirBuilder<Val<SC>, <SC as StarkGenericConfig>::Challenge>,
-            >::add_lookup_columns(a),
-            Self::Public(a) => P3Air::<
-                SymbolicAirBuilder<Val<SC>, <SC as StarkGenericConfig>::Challenge>,
-            >::add_lookup_columns(a),
-            Self::Alu(a) => P3Air::<
-                SymbolicAirBuilder<Val<SC>, <SC as StarkGenericConfig>::Challenge>,
-            >::add_lookup_columns(a),
-            Self::Dynamic(inner) => P3Air::<
-                SymbolicAirBuilder<Val<SC>, <SC as StarkGenericConfig>::Challenge>,
-            >::add_lookup_columns(inner),
+            Self::Const(a) => LookupAir::<Val<SC>>::add_lookup_columns(a),
+            Self::Public(a) => LookupAir::<Val<SC>>::add_lookup_columns(a),
+            Self::Alu(a) => LookupAir::<Val<SC>>::add_lookup_columns(a),
+            Self::Dynamic(inner) => LookupAir::<Val<SC>>::add_lookup_columns(inner),
         }
     }
 
     #[allow(clippy::missing_transmute_annotations)]
-    fn get_lookups(
-        &mut self,
-    ) -> Vec<
-        p3_lookup::lookup_traits::Lookup<
-            <SymbolicAirBuilder<Val<SC>, <SC as StarkGenericConfig>::Challenge> as AirBuilder>::F,
-        >,
-    > {
+    fn get_lookups(&mut self) -> Vec<Lookup<Val<SC>>> {
         match self {
-            Self::Const(a) => P3Air::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::get_lookups(a),
-            Self::Public(a) => P3Air::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::get_lookups(a),
-            Self::Alu(a) => P3Air::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::get_lookups(a),
-            Self::Dynamic(inner) => {
-                P3Air::<SymbolicAirBuilder<Val<SC>, SC::Challenge>>::get_lookups(inner)
-            }
+            Self::Const(a) => LookupAir::<Val<SC>>::get_lookups(a),
+            Self::Public(a) => LookupAir::<Val<SC>>::get_lookups(a),
+            Self::Alu(a) => LookupAir::<Val<SC>>::get_lookups(a),
+            Self::Dynamic(inner) => LookupAir::<Val<SC>>::get_lookups(inner),
         }
     }
 }
@@ -423,6 +415,30 @@ where
                 trace_local_targets.len(),
                 trace_next_targets.len()
             )));
+        }
+
+        let expected_global_count = all_lookups[i]
+            .iter()
+            .filter(|l| matches!(&l.kind, Kind::Global(_)))
+            .count();
+        let actual_global_count = global_lookup_data[i].len();
+        if actual_global_count < expected_global_count {
+            return Err(VerificationError::InvalidProofShape(
+                "Expected cumulated value missing".to_string(),
+            ));
+        }
+        if actual_global_count > expected_global_count {
+            return Err(VerificationError::InvalidProofShape(
+                "Too many expected cumulated values provided".to_string(),
+            ));
+        }
+        let is_sorted_by_aux_idx = global_lookup_data[i]
+            .windows(2)
+            .all(|w| w[0].aux_idx <= w[1].aux_idx);
+        if !is_sorted_by_aux_idx {
+            return Err(VerificationError::InvalidProofShape(
+                "Expected cumulated values not sorted by auxiliary index".to_string(),
+            ));
         }
 
         let log_qd = A::get_log_num_quotient_chunks(
@@ -845,7 +861,7 @@ where
         let air = &airs[i];
         let inst = &instances[i];
         let trace_domain = &trace_domains[i];
-        let public_vals = &public_values[i];
+        let public_values = &public_values[i];
         let domains = &quotient_domains[i];
 
         let quotient = recompose_quotient_from_chunks_circuit::<SC, _, _, _, _>(
@@ -919,16 +935,17 @@ where
             None => &[],
         };
 
-        // Add the expected cumulated values to the public values, so that we can use them in the constraints.
-        let mut public_vals_with_expected_cumulated = public_vals.clone();
-        public_vals_with_expected_cumulated
-            .extend(global_lookup_data[i].iter().map(|ld| ld.expected_cumulated));
+        let expected_cumulated_values: Vec<Target> = global_lookup_data[i]
+            .iter()
+            .map(|ld| ld.expected_cumulated)
+            .collect();
         let sels = pcs.selectors_at_point_circuit(circuit, trace_domain, &zeta);
         let columns_targets = ColumnsTargets {
             challenges: &challenges_per_instance[i],
-            public_values: &public_vals_with_expected_cumulated,
+            public_values,
             permutation_local_values: &local_permutation_values,
             permutation_next_values: &next_permutation_values,
+            permutation_values: &expected_cumulated_values,
             local_prep_values,
             next_prep_values,
             local_values: &inst.opened_values_no_lookups.trace_local_targets,
@@ -937,7 +954,7 @@ where
 
         let lookup_metadata = LookupMetadata {
             contexts: &all_lookups[i],
-            lookup_data: &lookup_data_to_pv_index(&global_lookup_data[i], public_vals.len()),
+            lookup_data: &lookup_data_to_pv_index(&global_lookup_data[i], public_values.len()),
         };
         let folded_constraints = air.eval_folded_circuit(
             circuit,

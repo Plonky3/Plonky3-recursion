@@ -178,7 +178,7 @@ macro_rules! define_field_module {
 
                 let config_0 = config_with_fri_params(fri_params, security_level);
                 let (airs_degrees_0, preprocessed_columns_0) =
-                    get_airs_and_degrees_with_prep::<ConfigWithFriParams, _, 1>(
+                    get_airs_and_degrees_with_prep::<ConfigWithFriParams, F, 1>(
                         &base_circuit,
                         table_packing_0,
                         &[],
@@ -186,7 +186,7 @@ macro_rules! define_field_module {
                         ConstraintProfile::Standard,
                     )
                     .unwrap();
-                let (mut airs_0, degrees_0): (Vec<_>, Vec<_>) = airs_degrees_0.into_iter().unzip();
+                let (mut airs_0, degrees_0): (Vec<_>, Vec<usize>) = airs_degrees_0.into_iter().unzip();
 
                 let mut runner_0 = base_circuit.runner();
                 let expected_fib = compute_fibonacci(n);
