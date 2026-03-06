@@ -273,19 +273,19 @@ fn test_batch_verifier_with_mixed_preprocessed() -> Result<(), VerificationError
     let instances = vec![
         StarkInstance {
             air: &mixed_air1,
-            trace: trace1,
+            trace: &trace1,
             public_values: pvs[0].clone(),
             lookups: Vec::new(),
         },
         StarkInstance {
             air: &mixed_air2,
-            trace: trace2,
+            trace: &trace2,
             public_values: pvs[1].clone(),
             lookups: Vec::new(),
         },
         StarkInstance {
             air: &mixed_air3,
-            trace: trace3,
+            trace: &trace3,
             public_values: pvs[2].clone(),
             lookups: Vec::new(),
         },

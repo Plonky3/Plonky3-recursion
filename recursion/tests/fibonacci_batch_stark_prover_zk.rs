@@ -114,7 +114,7 @@ fn test_batch_verifier_zk_hiding_fri() -> Result<(), VerificationError> {
 
     let instance = StarkInstance {
         air: &air,
-        trace,
+        trace: &trace,
         public_values: pvs[0].clone(),
         lookups: Vec::new(),
     };

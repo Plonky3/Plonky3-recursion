@@ -772,10 +772,11 @@ where
             non_primitive_meta.push((op_type, rows, AirVariant::Baseline));
         }
 
+        let trace_refs: Vec<&RowMajorMatrix<Val<SC>>> = trace_storage.iter().collect();
         let instances: Vec<StarkInstance<'_, SC, CircuitTableAir<SC, D>>> =
             StarkInstance::new_multiple(
                 &air_storage,
-                &trace_storage,
+                &trace_refs,
                 &public_storage,
                 &prover_data.common,
             );
@@ -808,7 +809,7 @@ where
                 .iter()
                 .zip(preprocessed_traces.iter())
                 .map(|(inst, prep)| LookupDebugInstance {
-                    main_trace: &inst.trace,
+                    main_trace: inst.trace,
                     preprocessed_trace: prep,
                     public_values: &inst.public_values,
                     lookups: &inst.lookups,
