@@ -16,7 +16,14 @@ env:
 jobs:
   regression_check:
     name: Check for regressions
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+          - os: ubuntu-latest
+            features: "+avx2"
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     if: "! contains(toJSON(github.event.commits.*.message), '[skip-ci]')"
 
