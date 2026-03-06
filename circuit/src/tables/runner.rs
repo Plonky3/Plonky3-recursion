@@ -488,9 +488,9 @@ impl<F: Field> CircuitRunner<F> {
 #[cfg(test)]
 mod tests {
 
-    use p3_baby_bear::BabyBear;
-    use p3_field::extension::BinomialExtensionField;
-    use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
+    use p3_test_utils::baby_bear_params::{
+        BabyBear, BasedVectorSpace, BinomialExtensionField, Field, PrimeCharacteristicRing,
+    };
     use tracing_forest::ForestLayer;
     use tracing_forest::util::LevelFilter;
     use tracing_subscriber::layer::SubscriberExt;

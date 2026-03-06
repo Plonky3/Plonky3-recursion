@@ -64,18 +64,14 @@ mod tests {
     use core::iter;
 
     use itertools::Itertools;
-    use p3_baby_bear::{BabyBear, Poseidon2BabyBear, default_babybear_poseidon2_16};
-    use p3_field::extension::BinomialExtensionField;
-    use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
-    use p3_symmetric::{CryptographicHasher, PaddingFreeSponge};
+    use p3_symmetric::CryptographicHasher;
+    use p3_test_utils::baby_bear_params::*;
 
     use super::add_hash_slice;
     use crate::ops::{Poseidon2Config, Poseidon2Params, generate_poseidon2_trace};
     use crate::{CircuitBuilder, ExprId};
 
-    type F = BabyBear;
-    type CF = BinomialExtensionField<F, 4>;
-    type Perm = Poseidon2BabyBear<16>;
+    type CF = Challenge;
     type MyHash = PaddingFreeSponge<Perm, 16, 8, 8>;
 
     struct DummyParams;

@@ -90,8 +90,7 @@ impl<F> AluTrace<F> {
 mod tests {
     use alloc::vec;
 
-    use p3_baby_bear::BabyBear;
-    use p3_field::PrimeCharacteristicRing;
+    use p3_test_utils::baby_bear_params::{BabyBear, PrimeCharacteristicRing};
 
     use super::*;
     use crate::{CircuitError, Op};

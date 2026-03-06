@@ -472,8 +472,7 @@ mod tests {
     use alloc::vec;
 
     use hashbrown::HashMap;
-    use p3_baby_bear::BabyBear;
-    use p3_field::PrimeCharacteristicRing;
+    use p3_test_utils::baby_bear_params::{BabyBear, PrimeCharacteristicRing};
     use strum::EnumCount;
 
     use super::*;

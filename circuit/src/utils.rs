@@ -346,40 +346,15 @@ fn symbolic_to_circuit_core<CF: Field, F: Field>(
 #[cfg(test)]
 mod tests {
     use p3_air::{Air, AirLayout, BaseAir, RowWindow};
-    use p3_baby_bear::{BabyBear, Poseidon2BabyBear};
-    use p3_challenger::DuplexChallenger;
-    use p3_commit::ExtensionMmcs;
-    use p3_dft::Radix2DitParallel;
-    use p3_field::extension::BinomialExtensionField;
     use p3_field::integers::QuotientMap;
-    use p3_fri::TwoAdicFriPcs;
     use p3_matrix::dense::RowMajorMatrixView;
     use p3_matrix::stack::VerticalPair;
-    use p3_merkle_tree::MerkleTreeMmcs;
-    use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
-    use p3_uni_stark::{
-        StarkConfig, SymbolicExpression, VerifierConstraintFolder, get_symbolic_constraints,
-    };
+    use p3_test_utils::baby_bear_params::*;
+    use p3_uni_stark::{SymbolicExpression, VerifierConstraintFolder, get_symbolic_constraints};
     use rand::rngs::SmallRng;
     use rand::{Rng, SeedableRng};
 
     use super::*;
-
-    type F = BabyBear;
-    const D: usize = 4;
-    type Challenge = BinomialExtensionField<F, D>;
-    type Dft = Radix2DitParallel<F>;
-    type Perm = Poseidon2BabyBear<16>;
-    type MyHash = PaddingFreeSponge<Perm, 16, 8, 8>;
-    type MyCompress = TruncatedPermutation<Perm, 2, 8, 16>;
-    type ValMmcs =
-        MerkleTreeMmcs<<F as Field>::Packing, <F as Field>::Packing, MyHash, MyCompress, 2, 8>;
-    type ChallengeMmcs = ExtensionMmcs<F, Challenge, ValMmcs>;
-    type Challenger = DuplexChallenger<F, Perm, 16, 8>;
-    type MyPcs = TwoAdicFriPcs<F, Dft, ValMmcs, ChallengeMmcs>;
-    type MyConfig = StarkConfig<MyPcs, Challenge, Challenger>;
-    use p3_field::PrimeCharacteristicRing;
-
     use crate::test_utils::{FibonacciAir, NUM_FIBONACCI_COLS};
     use crate::utils::{ColumnsTargets, RowSelectorsTargets, symbolic_to_circuit};
     use crate::{CircuitBuilder, CircuitError};

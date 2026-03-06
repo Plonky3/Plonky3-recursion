@@ -1379,8 +1379,7 @@ impl<BF: PrimeField64, EF: ExtensionField<BF>> HintExecutor<EF> for BinaryDecomp
 #[cfg(test)]
 mod tests {
 
-    use p3_baby_bear::BabyBear;
-    use p3_field::extension::BinomialExtensionField;
+    use p3_test_utils::baby_bear_params::{BabyBear, BinomialExtensionField};
 
     use super::*;
     use crate::op::{NpoConfig, NpoTypeId};
@@ -1877,9 +1876,9 @@ mod proptests {
     use core::array;
 
     use itertools::Itertools;
-    use p3_baby_bear::BabyBear;
-    use p3_field::extension::BinomialExtensionField;
-    use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
+    use p3_test_utils::baby_bear_params::{
+        BabyBear, BasedVectorSpace, BinomialExtensionField, PrimeCharacteristicRing,
+    };
     use proptest::prelude::*;
 
     use super::*;
