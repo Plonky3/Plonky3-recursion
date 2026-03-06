@@ -5,9 +5,10 @@
 
 mod common;
 
-use p3_challenger::{CanObserve, CanSample, FieldChallenger};
+use p3_challenger::{CanObserve, CanSample, CanSampleBits, FieldChallenger};
 use p3_circuit::ops::{Poseidon2Config, generate_poseidon2_trace};
 use p3_circuit::{CircuitBuilder, Traces};
+use p3_field::PrimeField64;
 use p3_poseidon2_circuit_air::BabyBearD4Width16;
 use p3_recursion::challenger::CircuitChallenger;
 use p3_recursion::traits::RecursiveChallenger;
@@ -617,6 +618,271 @@ fn test_edge_case_single_observe_multiple_samples() {
         .expect("Single observe then multiple samples should match native");
 
     assert!(traces.witness_trace.num_rows() > 0);
+}
+
+// ============================================================================
+// sample_bits / PoW grinding tests
+// ============================================================================
+
+/// Test that `sample_bits(n)` in the circuit produces the same low-n bits as
+/// the native `CanSampleBits::sample_bits(n)` after an identical observation
+/// sequence.
+///
+/// The native challenger returns a `usize`; bit `k` of that integer must equal
+/// the `k`-th target produced by the circuit challenger.
+#[test]
+fn test_sample_bits_matches_native() {
+    let perm = default_babybear_poseidon2_16();
+
+    let mut native = DuplexChallenger::<F, _, WIDTH, RATE>::new(perm);
+    let mut circuit = setup_circuit_with_poseidon2();
+    let mut circuit_challenger = CircuitChallenger::<WIDTH, RATE, Poseidon2Config>::new_babybear();
+
+    // Sync transcripts: observe RATE values in both native and circuit challenger.
+    for i in 0..RATE {
+        let val = F::from_u64(i as u64 + 42);
+        native.observe(val);
+        let t = circuit.define_const(EF::from(val));
+        RecursiveChallenger::<F, EF>::observe(&mut circuit_challenger, &mut circuit, t);
+    }
+
+    // Sample the same base field element natively and in the circuit.
+    let num_bits = 5usize;
+    let native_index: usize = native.sample_bits(num_bits);
+    let circuit_bits: Vec<_> =
+        RecursiveChallenger::<F, EF>::sample_bits(&mut circuit_challenger, &mut circuit, num_bits)
+            .expect("sample_bits should succeed");
+
+    // Connect each circuit bit to its expected native value.
+    assert_eq!(circuit_bits.len(), num_bits);
+    for (k, &bit_target) in circuit_bits.iter().enumerate() {
+        let expected_bit = ((native_index >> k) & 1) as u64;
+        let expected = circuit.define_const(EF::from(F::from_u64(expected_bit)));
+        circuit.connect(bit_target, expected);
+    }
+
+    let compiled = circuit.build().expect("circuit should build");
+    compiled
+        .runner()
+        .run()
+        .expect("sample_bits circuit bits should match native");
+}
+
+/// Test `sample_bits` across several calls with different bit counts,
+/// interleaved with new observations, to exercise the full duplex cycle.
+#[test]
+fn test_sample_bits_multiple_calls_match_native() {
+    let perm = default_babybear_poseidon2_16();
+
+    let mut native = DuplexChallenger::<F, _, WIDTH, RATE>::new(perm);
+    let mut circuit = setup_circuit_with_poseidon2();
+    let mut circuit_challenger = CircuitChallenger::<WIDTH, RATE, Poseidon2Config>::new_babybear();
+
+    // First batch: observe + sample_bits(3)
+    for i in 0..RATE {
+        let val = F::from_u64(i as u64 + 10);
+        native.observe(val);
+        let t = circuit.define_const(EF::from(val));
+        RecursiveChallenger::<F, EF>::observe(&mut circuit_challenger, &mut circuit, t);
+    }
+
+    let n1 = 3usize;
+    let native_idx1: usize = native.sample_bits(n1);
+    let circuit_bits1 =
+        RecursiveChallenger::<F, EF>::sample_bits(&mut circuit_challenger, &mut circuit, n1)
+            .expect("sample_bits should succeed");
+    for (k, &bit) in circuit_bits1.iter().enumerate() {
+        let expected = circuit.define_const(EF::from(F::from_u64(((native_idx1 >> k) & 1) as u64)));
+        circuit.connect(bit, expected);
+    }
+
+    // Second batch: observe more + sample_bits(7)
+    for i in 0..RATE {
+        let val = F::from_u64(i as u64 + 200);
+        native.observe(val);
+        let t = circuit.define_const(EF::from(val));
+        RecursiveChallenger::<F, EF>::observe(&mut circuit_challenger, &mut circuit, t);
+    }
+
+    let n2 = 7usize;
+    let native_idx2: usize = native.sample_bits(n2);
+    let circuit_bits2 =
+        RecursiveChallenger::<F, EF>::sample_bits(&mut circuit_challenger, &mut circuit, n2)
+            .expect("sample_bits should succeed");
+    for (k, &bit) in circuit_bits2.iter().enumerate() {
+        let expected = circuit.define_const(EF::from(F::from_u64(((native_idx2 >> k) & 1) as u64)));
+        circuit.connect(bit, expected);
+    }
+
+    // Third call with no new observations: sample_bits(1)
+    let n3 = 1usize;
+    let native_idx3: usize = native.sample_bits(n3);
+    let circuit_bits3 =
+        RecursiveChallenger::<F, EF>::sample_bits(&mut circuit_challenger, &mut circuit, n3)
+            .expect("sample_bits should succeed");
+    let expected3 = circuit.define_const(EF::from(F::from_u64(native_idx3 as u64)));
+    circuit.connect(circuit_bits3[0], expected3);
+
+    let compiled = circuit.build().expect("circuit should build");
+    compiled
+        .runner()
+        .run()
+        .expect("multiple sample_bits calls should match native");
+}
+
+/// Test that `sample_bits` is consistent with `sample`: the low `n` bits of
+/// the sampled field element returned by `sample` must equal the bits returned
+/// by `sample_bits(n)` for an identical transcript.
+///
+/// We verify this on the native side (where both operations can be compared
+/// directly) and confirm the bit-level agreement using the circuit challenger.
+#[test]
+fn test_sample_bits_consistent_with_sample() {
+    let perm = default_babybear_poseidon2_16();
+    let num_bits = 4usize;
+
+    // Native: confirm sample+mask equals sample_bits.
+    let mut native_a = DuplexChallenger::<F, _, WIDTH, RATE>::new(perm.clone());
+    let mut native_b = DuplexChallenger::<F, _, WIDTH, RATE>::new(perm);
+
+    for i in 0..RATE {
+        let val = F::from_u64(i as u64 + 77);
+        native_a.observe(val);
+        native_b.observe(val);
+    }
+    let raw_sample: F = native_a.sample();
+    let native_mask = (raw_sample.as_canonical_u64() & ((1u64 << num_bits) - 1)) as usize;
+    let native_bits: usize = native_b.sample_bits(num_bits);
+    assert_eq!(
+        native_mask, native_bits,
+        "native sample+mask and sample_bits must agree"
+    );
+
+    // Circuit: use a single circuit and sample_bits; connect each bit to the
+    // expected native bit value derived from native_bits.
+    let mut circuit = setup_circuit_with_poseidon2();
+    let mut circuit_challenger = CircuitChallenger::<WIDTH, RATE, Poseidon2Config>::new_babybear();
+
+    for i in 0..RATE {
+        let val = F::from_u64(i as u64 + 77);
+        let t = circuit.define_const(EF::from(val));
+        RecursiveChallenger::<F, EF>::observe(&mut circuit_challenger, &mut circuit, t);
+    }
+
+    let circuit_bits =
+        RecursiveChallenger::<F, EF>::sample_bits(&mut circuit_challenger, &mut circuit, num_bits)
+            .expect("sample_bits should succeed");
+    assert_eq!(circuit_bits.len(), num_bits);
+    for (k, &bit_target) in circuit_bits.iter().enumerate() {
+        let expected_val = EF::from(F::from_u64(((native_bits >> k) & 1) as u64));
+        let expected = circuit.define_const(expected_val);
+        circuit.connect(bit_target, expected);
+    }
+
+    let compiled = circuit.build().expect("circuit should build");
+    compiled
+        .runner()
+        .run()
+        .expect("sample_bits should be consistent with sample+mask");
+}
+
+/// Test that `check_pow_witness` in the circuit correctly verifies a valid
+/// proof-of-work witness.
+///
+/// We grind for a witness by brute-force on a clone of the native challenger,
+/// then replay the same observation + `check_pow_witness` in the circuit.
+/// A valid witness causes all leading bits to be zero, so `assert_zero` in
+/// the circuit succeeds.
+#[test]
+fn test_check_pow_witness_valid() {
+    let perm = default_babybear_poseidon2_16();
+    let pow_bits = 2usize; // small so brute-force terminates quickly
+
+    let mut native = DuplexChallenger::<F, _, WIDTH, RATE>::new(perm);
+    let mut circuit = setup_circuit_with_poseidon2();
+    let mut circuit_challenger = CircuitChallenger::<WIDTH, RATE, Poseidon2Config>::new_babybear();
+
+    // Sync transcripts.
+    for i in 0..RATE {
+        let val = F::from_u64(i as u64 + 55);
+        native.observe(val);
+        let t = circuit.define_const(EF::from(val));
+        RecursiveChallenger::<F, EF>::observe(&mut circuit_challenger, &mut circuit, t);
+    }
+
+    // Grind: find a base field element w such that, after observing w, the next
+    // `pow_bits` sampled bits are all zero.  Clone the native challenger so we
+    // can probe multiple candidates without advancing the real transcript.
+    let witness = (0u64..)
+        .find(|&w| {
+            let mut probe = native.clone();
+            probe.observe(F::from_u64(w));
+            probe.sample_bits(pow_bits) == 0
+        })
+        .expect("brute-force PoW witness should terminate");
+    let witness_f = F::from_u64(witness);
+
+    // Verify natively: observe witness, check pow_bits leading bits are zero.
+    native.observe(witness_f);
+    let native_check = native.sample_bits(pow_bits) == 0;
+    assert!(native_check, "native PoW witness check must pass");
+
+    // Verify in circuit.
+    let witness_target = circuit.define_const(EF::from(witness_f));
+    RecursiveChallenger::<F, EF>::check_pow_witness(
+        &mut circuit_challenger,
+        &mut circuit,
+        pow_bits,
+        witness_target,
+    )
+    .expect("check_pow_witness should succeed");
+
+    let compiled = circuit.build().expect("circuit should build");
+    compiled
+        .runner()
+        .run()
+        .expect("valid PoW witness should satisfy circuit constraints");
+}
+
+/// Test that `check_pow_witness` with `pow_bits = 0` is a no-op: the circuit
+/// state is unchanged and running succeeds without any additional Poseidon2
+/// calls.
+#[test]
+fn test_check_pow_witness_zero_bits_is_noop() {
+    let perm = default_babybear_poseidon2_16();
+
+    let mut native = DuplexChallenger::<F, _, WIDTH, RATE>::new(perm);
+    let mut circuit = setup_circuit_with_poseidon2();
+    let mut circuit_challenger = CircuitChallenger::<WIDTH, RATE, Poseidon2Config>::new_babybear();
+
+    for i in 0..RATE {
+        let val = F::from_u64(i as u64 + 1);
+        native.observe(val);
+        let t = circuit.define_const(EF::from(val));
+        RecursiveChallenger::<F, EF>::observe(&mut circuit_challenger, &mut circuit, t);
+    }
+
+    // With 0 bits, check_pow_witness is a no-op; the witness value is irrelevant.
+    let dummy_witness = circuit.define_const(EF::from(F::from_u64(999)));
+    RecursiveChallenger::<F, EF>::check_pow_witness(
+        &mut circuit_challenger,
+        &mut circuit,
+        0,
+        dummy_witness,
+    )
+    .expect("check_pow_witness(0) should succeed");
+
+    // The transcript should still agree with native (no witness was observed).
+    let native_s: F = native.sample();
+    let circuit_s = RecursiveChallenger::<F, EF>::sample(&mut circuit_challenger, &mut circuit);
+    let expected = circuit.define_const(EF::from(native_s));
+    circuit.connect(circuit_s, expected);
+
+    let compiled = circuit.build().expect("circuit should build");
+    compiled
+        .runner()
+        .run()
+        .expect("zero-bit PoW check should leave transcript unchanged");
 }
 
 /// Edge case: Extension field samples draining output buffer.
