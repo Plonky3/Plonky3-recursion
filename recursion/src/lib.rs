@@ -22,9 +22,7 @@ pub use backend::fri::FriRecursionConfig;
 pub use backend::{FriRecursionBackend, FriRecursionBackendD2, FriRecursionBackendD4};
 pub use challenger::CircuitChallenger;
 pub use challenger_perm::ChallengerPermConfig;
-pub use generation::{
-    GenerationError, PcsGeneration, generate_batch_challenges, generate_challenges,
-};
+pub use generation::{GenerationError, PcsGeneration, generate_batch_challenges};
 pub use p3_circuit::ops;
 pub use p3_circuit::ops::Poseidon2Config;
 pub use pcs::fri::{FriVerifierParams, MAX_QUERY_INDEX_BITS};

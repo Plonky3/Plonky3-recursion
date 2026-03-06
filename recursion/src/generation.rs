@@ -2,7 +2,6 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use hashbrown::HashMap;
-use itertools::zip_eq;
 use p3_air::Air;
 use p3_air::symbolic::AirLayout;
 use p3_batch_stark::config::observe_instance_binding;
@@ -14,11 +13,9 @@ use p3_field::{Algebra, BasedVectorSpace, PrimeCharacteristicRing, PrimeField, T
 use p3_fri::{FriProof, HidingFriPcs, TwoAdicFriPcs};
 use p3_lookup::lookup_traits::{Kind, Lookup, LookupGadget};
 use p3_uni_stark::{
-    Domain, Proof, StarkGenericConfig, SymbolicAirBuilder, SymbolicExpression,
-    SymbolicExpressionExt, Val, VerifierConstraintFolder, get_log_num_quotient_chunks,
+    Domain, StarkGenericConfig, SymbolicAirBuilder, SymbolicExpression, SymbolicExpressionExt, Val,
 };
 use thiserror::Error;
-use tracing::debug_span;
 
 #[derive(Debug, Error)]
 pub enum GenerationError {
@@ -78,192 +75,6 @@ pub trait PcsGeneration<SC: StarkGenericConfig, OpeningProof> {
         opening_proof: &OpeningProof,
         extra_params: Option<&[usize]>,
     ) -> Result<usize, GenerationError>;
-}
-
-// TODO: This could be used on the Plonky3 side as well.
-/// Generates the challenges used in the verification of a STARK proof.
-pub fn generate_challenges<SC: StarkGenericConfig, A>(
-    air: &A,
-    config: &SC,
-    proof: &Proof<SC>,
-    public_values: &[Val<SC>],
-    extra_params: Option<&[usize]>,
-) -> Result<Vec<SC::Challenge>, GenerationError>
-where
-    A: Air<SymbolicAirBuilder<Val<SC>>> + for<'a> Air<VerifierConstraintFolder<'a, SC>>,
-    SC::Pcs: PcsGeneration<SC, <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Proof>,
-{
-    let Proof {
-        commitments,
-        opened_values,
-        opening_proof,
-        degree_bits,
-    } = proof;
-
-    let preprocessed = air.preprocessed_trace();
-    let preprocessed_width = preprocessed.as_ref().map(|m| m.width).unwrap_or(0);
-
-    let degree = 1 << degree_bits;
-    let pcs = config.pcs();
-    let layout = AirLayout {
-        preprocessed_width,
-        main_width: air.width(),
-        num_public_values: air.num_public_values(),
-        ..Default::default()
-    };
-    let log_quotient_degree =
-        get_log_num_quotient_chunks::<Val<SC>, A>(air, layout, config.is_zk());
-    let quotient_degree = 1 << (log_quotient_degree + config.is_zk());
-
-    let trace_domain = pcs.natural_domain_for_degree(degree);
-    let init_trace_domain = pcs.natural_domain_for_degree(degree >> (config.is_zk()));
-    let quotient_domain =
-        trace_domain.create_disjoint_domain(1 << (degree_bits + log_quotient_degree));
-    let quotient_chunks_domains = quotient_domain.split_domains(quotient_degree);
-
-    let randomized_quotient_chunks_domains = quotient_chunks_domains
-        .iter()
-        .map(|domain| pcs.natural_domain_for_degree(domain.size() << (config.is_zk())))
-        .collect::<Vec<_>>();
-
-    let preprocessed_commit = if preprocessed_width > 0 {
-        assert_eq!(config.is_zk(), 0); // TODO: preprocessed columns not supported in zk mode
-
-        let prep = preprocessed.expect("If the width is > 0, then the commit exists.");
-        let height = prep.values.len() / preprocessed_width;
-
-        if height != trace_domain.size() {
-            return Err(GenerationError::InvalidProofShape(
-                "Verifier's preprocessed trace height must be equal to trace domain size",
-            ));
-        }
-
-        let (preprocessed_commit, _) = debug_span!("process preprocessed trace")
-            .in_scope(|| pcs.commit([(trace_domain, prep)]));
-        Some(preprocessed_commit)
-    } else {
-        None
-    };
-
-    let num_challenges = 3 // alpha, zeta and zeta_next
-     + SC::Pcs::num_challenges(opening_proof, extra_params)?;
-
-    let mut challenges = Vec::with_capacity(num_challenges);
-
-    let mut challenger = config.initialise_challenger();
-
-    challenger.observe(Val::<SC>::from_usize(*degree_bits));
-    challenger.observe(Val::<SC>::from_usize(*degree_bits - config.is_zk()));
-
-    challenger.observe(Val::<SC>::from_usize(preprocessed_width));
-    challenger.observe(commitments.trace.clone());
-    if preprocessed_width > 0 {
-        challenger.observe(
-            preprocessed_commit
-                .as_ref()
-                .expect("If the width is > 0, then the commit exists.")
-                .clone(),
-        );
-    }
-    challenger.observe_slice(public_values);
-
-    // Get the first Fiat-Shamir challenge which will be used to combine all constraint polynomials into a single polynomial.
-    challenges.push(challenger.sample_algebra_element());
-    challenger.observe(commitments.quotient_chunks.clone());
-
-    if let Some(r_commit) = commitments.random.clone() {
-        challenger.observe(r_commit);
-    }
-
-    // Get an out-of-domain point to open our values at.
-    let zeta = challenger.sample_algebra_element();
-    challenges.push(zeta);
-    let zeta_next = init_trace_domain.next_point(zeta).unwrap();
-    challenges.push(zeta_next);
-
-    let mut coms_to_verify = if let Some(r_commit) = &commitments.random {
-        let random_values = opened_values
-            .random
-            .as_ref()
-            .ok_or(GenerationError::RandomizationError)?;
-        vec![(
-            r_commit.clone(),
-            vec![(trace_domain, vec![(zeta, random_values.clone())])],
-        )]
-    } else {
-        vec![]
-    };
-    coms_to_verify.extend([
-        (
-            commitments.trace.clone(),
-            vec![(
-                trace_domain,
-                vec![
-                    (zeta, opened_values.trace_local.clone()),
-                    (
-                        zeta_next,
-                        opened_values
-                            .trace_next
-                            .clone()
-                            .expect("trace_next is always present"),
-                    ),
-                ],
-            )],
-        ),
-        (
-            commitments.quotient_chunks.clone(),
-            // Check the commitment on the randomized domains.
-            zip_eq(
-                randomized_quotient_chunks_domains.iter(),
-                opened_values.quotient_chunks.clone(),
-            )
-            .map(|(domain, values)| (*domain, vec![(zeta, values)]))
-            .collect::<Vec<_>>(),
-        ),
-    ]);
-
-    // Add preprocessed commitment verification if present
-    if preprocessed_width > 0 {
-        // If preprocessed_width > 0, then preprocessed opened values must be present.
-        let opened_prep_local =
-            &opened_values
-                .preprocessed_local
-                .clone()
-                .ok_or(GenerationError::InvalidProofShape(
-                    "Missing preprocessed local opened values",
-                ))?;
-
-        let opened_prep_next =
-            &opened_values
-                .preprocessed_next
-                .clone()
-                .ok_or(GenerationError::InvalidProofShape(
-                    "Missing preprocessed next opened values",
-                ))?;
-
-        coms_to_verify.push((
-            preprocessed_commit.unwrap(),
-            vec![(
-                trace_domain,
-                vec![
-                    (zeta, opened_prep_local.clone()),
-                    (zeta_next, opened_prep_next.clone()),
-                ],
-            )],
-        ));
-    }
-
-    let pcs_challenges = pcs.generate_challenges(
-        config,
-        &mut challenger,
-        &coms_to_verify,
-        opening_proof,
-        extra_params,
-    )?;
-
-    challenges.extend(pcs_challenges);
-
-    Ok(challenges)
 }
 
 /// Generates the challenges used in the verification of a batch-STARK proof.
