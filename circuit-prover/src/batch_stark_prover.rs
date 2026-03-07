@@ -675,19 +675,13 @@ where
         // get_airs_and_degrees_with_prep. When the trace is empty, a dummy row is included.
         let alu_rows = traces.alu_trace.values.len();
         let alu_prep = primitive[PrimitiveOpType::Alu as usize].clone();
-        let alu_num_ops = alu_prep.len() / AluAir::<Val<SC>, D>::preprocessed_lane_width();
         let alu_air: AluAir<Val<SC>, D> = if D == 1 {
-            AluAir::<Val<SC>, D>::new_with_preprocessed(alu_num_ops, alu_lanes, alu_prep)
+            AluAir::<Val<SC>, D>::new_with_preprocessed(alu_lanes, alu_prep)
                 .with_min_height(min_height)
         } else {
             let w = w_binomial.ok_or(BatchStarkProverError::MissingWForExtension)?;
-            AluAir::<Val<SC>, D>::new_binomial_with_preprocessed(
-                alu_num_ops,
-                alu_lanes,
-                w,
-                alu_prep,
-            )
-            .with_min_height(min_height)
+            AluAir::<Val<SC>, D>::new_binomial_with_preprocessed(alu_lanes, w, alu_prep)
+                .with_min_height(min_height)
         };
         let alu_matrix: RowMajorMatrix<Val<SC>> = alu_air.trace_to_matrix(&traces.alu_trace);
 
@@ -929,15 +923,11 @@ where
                 .with_min_height(min_height),
         );
         let alu_air: CircuitTableAir<SC, D> = if D == 1 {
-            CircuitTableAir::Alu(
-                AluAir::<Val<SC>, D>::new(proof.rows[PrimitiveTable::Alu], alu_lanes)
-                    .with_min_height(min_height),
-            )
+            CircuitTableAir::Alu(AluAir::<Val<SC>, D>::new(alu_lanes).with_min_height(min_height))
         } else {
             let w = w_binomial.ok_or(BatchStarkProverError::MissingWForExtension)?;
             CircuitTableAir::Alu(
-                AluAir::<Val<SC>, D>::new_binomial(proof.rows[PrimitiveTable::Alu], alu_lanes, w)
-                    .with_min_height(min_height),
+                AluAir::<Val<SC>, D>::new_binomial(alu_lanes, w).with_min_height(min_height),
             )
         };
         let mut airs = vec![const_air, public_air, alu_air];

@@ -20,7 +20,6 @@ pub enum AllocationType {
     Sub,
     Mul,
     Div,
-    HornerAcc,
     NonPrimitiveOp(NpoTypeId),
     WitnessHint,
 }
@@ -116,7 +115,6 @@ fn dump_internal_log(allocation_log: &[AllocationEntry]) {
     let mut subs = Vec::new();
     let mut muls = Vec::new();
     let mut divs = Vec::new();
-    let mut horner_accs = Vec::new();
     let mut non_primitives = Vec::new();
     let mut witness_hints = Vec::new();
 
@@ -136,7 +134,6 @@ fn dump_internal_log(allocation_log: &[AllocationEntry]) {
             AllocationType::Sub => subs.push(entry),
             AllocationType::Mul => muls.push(entry),
             AllocationType::Div => divs.push(entry),
-            AllocationType::HornerAcc => horner_accs.push(entry),
             AllocationType::NonPrimitiveOp(_) => {
                 non_primitives.push(entry);
             }
@@ -254,18 +251,6 @@ fn dump_internal_log(allocation_log: &[AllocationEntry]) {
                     display_label(entry.label)
                 );
             }
-        }
-        tracing::debug!("");
-    }
-
-    if !horner_accs.is_empty() {
-        tracing::debug!("--- Horner Accumulator Steps ({}) ---", horner_accs.len());
-        for entry in horner_accs {
-            tracing::debug!(
-                "  expr_{} (HornerAcc){}",
-                entry.expr_id.0,
-                display_label(entry.label)
-            );
         }
         tracing::debug!("");
     }

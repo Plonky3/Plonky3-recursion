@@ -37,9 +37,14 @@ pub fn get_index_lookups<F: Field, const D: usize>(
 /// ALU preprocessed layout per lane (13 columns):
 /// - 0: active (1 for active row, 0 for padding)
 /// - 1: mult_a (-1 reader, +N first unconstrained creator, 0 padding)
-/// - 2-5: selectors (add_vs_mul, bool, muladd, horner)
-/// - 6-9: indices (a_idx, b_idx, c_idx, out_idx)
-/// - 10: mult_b, 11: mult_out, 12: mult_c
+/// - 2-4: selectors (add_vs_mul, bool, muladd)
+/// - 5-8: indices (a_idx, b_idx, c_idx, out_idx)
+/// - 9: mult_b, 10: mult_out, 11: a_is_reader, 12: c_is_reader
+/// Wait — new layout is 12 columns total (0-indexed 0..11):
+/// - 0: mult_a
+/// - 1-3: sel_add_vs_mul, sel_bool, sel_muladd
+/// - 4-7: a_idx, b_idx, c_idx, out_idx
+/// - 8: mult_b, 9: mult_out, 10: a_is_reader, 11: c_is_reader
 pub fn get_alu_index_lookups<F: Field, const D: usize>(
     main_start: usize,
     preprocessed_start: usize,
@@ -47,13 +52,13 @@ pub fn get_alu_index_lookups<F: Field, const D: usize>(
     preprocessed: &[SymbolicVariable<F>],
 ) -> Vec<LookupInput<F>> {
     let mult_a = SymbolicExpression::from(preprocessed[preprocessed_start]);
-    let mult_b = SymbolicExpression::from(preprocessed[preprocessed_start + 9]);
-    let mult_out = SymbolicExpression::from(preprocessed[preprocessed_start + 10]);
-    let a_is_reader = SymbolicExpression::from(preprocessed[preprocessed_start + 11]);
-    let c_is_reader = SymbolicExpression::from(preprocessed[preprocessed_start + 12]);
+    let mult_b = SymbolicExpression::from(preprocessed[preprocessed_start + 8]);
+    let mult_out = SymbolicExpression::from(preprocessed[preprocessed_start + 9]);
+    let a_is_reader = SymbolicExpression::from(preprocessed[preprocessed_start + 10]);
+    let c_is_reader = SymbolicExpression::from(preprocessed[preprocessed_start + 11]);
 
-    // Indices are at positions 5-8 (after mult_a + 4 selectors)
-    let idx_offset = 5;
+    // Indices are at positions 4-7 (after mult_a + 3 selectors)
+    let idx_offset = 4;
 
     // Effective multiplicities: mult_a * is_reader. This zeros out bus contributions
     // for unconstrained witnesses while keeping mult_a = -1 for active = -mult_a = 1.

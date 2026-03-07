@@ -114,7 +114,7 @@ impl Optimizer {
                             b: b.0,
                             c: 0,
                         },
-                        AluOpKind::MulAdd | AluOpKind::HornerAcc => AluKey {
+                        AluOpKind::MulAdd => AluKey {
                             kind: *kind,
                             a: a.0,
                             b: b.0,

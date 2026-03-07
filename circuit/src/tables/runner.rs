@@ -369,28 +369,6 @@ impl<F: Field> CircuitRunner<F> {
                                 out_val,
                             });
                         }
-                        AluOpKind::HornerAcc => {
-                            let acc_id = intermediate_out
-                                .expect("HornerAcc requires acc in intermediate_out");
-                            let c_id = c.expect("HornerAcc requires c operand");
-                            let acc_val = self.get_witness(acc_id)?;
-                            let a_val = self.get_witness(a)?;
-                            let b_val = self.get_witness(b)?;
-                            let c_val = self.get_witness(c_id)?;
-                            let result = acc_val * b_val + c_val - a_val;
-                            self.set_witness(out, result)?;
-                            alu_records.push(AluOpRecord {
-                                kind,
-                                a_index: a,
-                                b_index: b,
-                                c_index,
-                                out_index: out,
-                                a_val,
-                                b_val,
-                                c_val,
-                                out_val: result,
-                            });
-                        }
                     }
                 }
                 Op::Hint {

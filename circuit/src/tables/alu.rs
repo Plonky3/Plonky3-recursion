@@ -8,7 +8,7 @@ use crate::types::WitnessId;
 /// Record of an ALU operation captured during execution (avoids re-reading witness).
 #[derive(Debug, Clone)]
 pub struct AluOpRecord<F> {
-    /// The kind of ALU operation (Add, Mul, BoolCheck, MulAdd, HornerAcc).
+    /// The kind of ALU operation (Add, Mul, BoolCheck, MulAdd).
     pub kind: AluOpKind,
     /// Witness index of the first operand `a`.
     pub a_index: WitnessId,

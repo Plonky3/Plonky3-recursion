@@ -176,33 +176,33 @@ where
         let table = PrimitiveOpType::from(idx);
         match table {
             PrimitiveOpType::Alu => {
-                // ALU preprocessed per op from circuit.rs: 12 values
-                // [sel_add_vs_mul, sel_bool, sel_muladd, sel_horner, a_idx, b_idx, c_idx, out_idx,
-                //  mult_a_eff, b_is_creator, mult_c_eff, out_is_creator]
+                // ALU preprocessed per op from circuit.rs: 11 values
+                // [sel_add_vs_mul, sel_bool, sel_muladd, a_idx, b_idx, c_idx, out_idx,
+                //  a_is_reader, b_is_creator, c_is_reader, out_is_creator]
                 //
-                // mult_a_eff / mult_c_eff: -1 (reader or later unconstrained), or +N (first
-                // unconstrained creator). We convert to 12 values for AluAir (same order, mult_c_eff last).
-                let lane_12 = 12_usize;
+                // We convert to 12 values for AluAir by prepending mult_a and replacing
+                // b_is_creator/out_is_creator with actual signed multiplicities.
+                let lane_11 = 11_usize;
                 let neg_one = <Val<SC>>::ZERO - <Val<SC>>::ONE;
 
-                let mut chunks = base_prep[idx].chunks_exact(lane_12);
-                let mut prep_13col: Vec<Val<SC>> = Vec::with_capacity(
+                let lane_12 = AluAir::<Val<SC>, D>::preprocessed_lane_width();
+                let mut chunks = base_prep[idx].chunks_exact(lane_11);
+                let mut prep_12col: Vec<Val<SC>> = Vec::with_capacity(
                     chunks.len() * lane_12 + if alu_empty { 0 } else { lane_12 },
                 );
                 for chunk in &mut chunks {
                     let sel1 = chunk[0];
                     let sel2 = chunk[1];
                     let sel3 = chunk[2];
-                    let sel4 = chunk[3];
-                    let a_idx = chunk[4];
-                    let b_idx = chunk[5];
-                    let c_idx = chunk[6];
-                    let out_idx = chunk[7];
-                    let a_is_reader = <Val<SC> as PrimeField64>::as_canonical_u64(&chunk[8]) != 0;
-                    let b_is_creator = <Val<SC> as PrimeField64>::as_canonical_u64(&chunk[9]) != 0;
-                    let c_is_reader = <Val<SC> as PrimeField64>::as_canonical_u64(&chunk[10]) != 0;
+                    let a_idx = chunk[3];
+                    let b_idx = chunk[4];
+                    let c_idx = chunk[5];
+                    let out_idx = chunk[6];
+                    let a_is_reader = <Val<SC> as PrimeField64>::as_canonical_u64(&chunk[7]) != 0;
+                    let b_is_creator = <Val<SC> as PrimeField64>::as_canonical_u64(&chunk[8]) != 0;
+                    let c_is_reader = <Val<SC> as PrimeField64>::as_canonical_u64(&chunk[9]) != 0;
                     let out_is_creator =
-                        <Val<SC> as PrimeField64>::as_canonical_u64(&chunk[11]) != 0;
+                        <Val<SC> as PrimeField64>::as_canonical_u64(&chunk[10]) != 0;
 
                     // mult_a = -1 for all active rows; active = -mult_a = 1 always.
                     // Effective a-lookup mult = mult_a * a_is_reader_col (in get_alu_index_lookups).
@@ -239,12 +239,11 @@ where
                         neg_one
                     };
 
-                    prep_13col.extend([
+                    prep_12col.extend([
                         mult_a,
                         sel1,
                         sel2,
                         sel3,
-                        sel4,
                         a_idx,
                         b_idx,
                         c_idx,
@@ -259,27 +258,25 @@ where
 
                 // If ALU was empty, add a dummy row (all zeros = padding, no logup contribution).
                 if alu_empty {
-                    prep_13col.extend([<Val<SC>>::ZERO; 13]);
+                    prep_12col.resize(prep_12col.len() + lane_12, <Val<SC>>::ZERO);
                 }
 
-                let num_ops = prep_13col.len() / 13;
+                let num_ops = prep_12col.len() / lane_12;
                 let alu_air = if D == 1 {
-                    AluAir::new_with_preprocessed(num_ops, effective_alu_lanes, prep_13col.clone())
+                    AluAir::new_with_preprocessed(effective_alu_lanes, prep_12col.clone())
                         .with_min_height(min_height)
                 } else {
                     let w = w_binomial.unwrap();
                     AluAir::new_binomial_with_preprocessed(
-                        num_ops,
                         effective_alu_lanes,
                         w,
-                        prep_13col.clone(),
+                        prep_12col.clone(),
                     )
                     .with_min_height(min_height)
                 };
-                let num_entries = alu_air.scheduled_entry_count();
-                let num_rows = num_entries.div_ceil(effective_alu_lanes);
-                // Store the converted 13-col format so the prover can use it directly.
-                base_prep[idx] = prep_13col;
+                let num_rows = num_ops.div_ceil(effective_alu_lanes);
+                // Store the converted 12-col format so the prover can use it directly.
+                base_prep[idx] = prep_12col;
                 table_preps.push((CircuitTableAir::Alu(alu_air), compute_degree(num_rows)));
             }
             PrimitiveOpType::Public => {

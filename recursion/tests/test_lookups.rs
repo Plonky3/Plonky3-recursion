@@ -724,10 +724,7 @@ fn get_verifier_inputs_and_challenges(
             rows[PrimitiveTable::Public],
             packing.public_lanes(),
         )),
-        CircuitTablesAir::<MyConfig, TRACE_D>::Alu(AluAir::<F, TRACE_D>::new(
-            rows[PrimitiveTable::Alu],
-            packing.alu_lanes(),
-        )),
+        CircuitTablesAir::<MyConfig, TRACE_D>::Alu(AluAir::<F, TRACE_D>::new(packing.alu_lanes())),
     ];
 
     // Attach verifier without manually building circuit_airs

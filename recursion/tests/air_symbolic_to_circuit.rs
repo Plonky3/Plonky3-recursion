@@ -155,18 +155,17 @@ fn primitive_airs_symbolic_to_circuit() -> Result<(), CircuitError> {
     let mut rng = SmallRng::seed_from_u64(7);
 
     // AluAir preprocessed format (per op, multiplicity added by AIR):
-    // [sel_add_vs_mul, sel_bool, sel_muladd, sel_horner, a_idx, b_idx, c_idx, out_idx]
+    // [sel_add_vs_mul, sel_bool, sel_muladd, a_idx, b_idx, c_idx, out_idx]
     let alu_add_prep = vec![
         F::ONE,  // sel_add_vs_mul
         F::ZERO, // sel_bool
         F::ZERO, // sel_muladd
-        F::ZERO, // sel_horner
         F::ZERO,
         F::ONE,
         F::ZERO,
         F::from_u64(2), // a_idx, b_idx, c_idx, out_idx
     ];
-    let alu_air = AluAir::<F, 1>::new_with_preprocessed(1, 1, alu_add_prep);
+    let alu_air = AluAir::<F, 1>::new_with_preprocessed(1, alu_add_prep);
     run_recursive(&alu_air, alu_air.preprocessed_width(), 0, &mut rng)?;
 
     let const_air = ConstAir::<F, 1>::new_with_preprocessed(1, vec![F::from_u64(3)]);

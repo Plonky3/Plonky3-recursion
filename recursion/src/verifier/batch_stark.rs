@@ -139,7 +139,7 @@ where
         } else {
             vec![F::ZERO; num_ops * AluAir::<F, TRACE_D>::preprocessed_lane_width()]
         };
-        AluAir::<F, TRACE_D>::new_with_preprocessed(num_ops, lanes, preprocessed)
+        AluAir::<F, TRACE_D>::new_with_preprocessed(lanes, preprocessed)
     } else {
         // For D > 1, extract W from the extension field
         // BinomialExtensionField<F, D> has W as the constant such that x^D = W
@@ -149,7 +149,7 @@ where
         } else {
             vec![F::ZERO; num_ops * AluAir::<F, TRACE_D>::preprocessed_lane_width()]
         };
-        AluAir::<F, TRACE_D>::new_binomial_with_preprocessed(num_ops, lanes, w, preprocessed)
+        AluAir::<F, TRACE_D>::new_binomial_with_preprocessed(lanes, w, preprocessed)
     }
 }
 
