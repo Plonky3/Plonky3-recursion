@@ -91,6 +91,41 @@ where
         })
     }
 
+    fn batch_instance_d1_with_committed_prep(
+        &self,
+        _config: &SC,
+        packing: TablePacking,
+        traces: &Traces<Val<SC>>,
+        committed_prep: Vec<Val<SC>>,
+    ) -> Option<BatchTableInstance<SC>> {
+        let op_type = NpoTypeId::open_input_d(self.circuit_d);
+        let trace = traces.non_primitive_trace::<OpenInputTrace<Val<SC>>>(&op_type)?;
+
+        let rows = trace.rows.len();
+        if rows == 0 {
+            return None;
+        }
+
+        let min_height = packing.min_trace_height();
+        let generator = Val::<SC>::GENERATOR;
+        // Use committed preprocessed data directly, skipping trace_to_preprocessed.
+        // w_binomial is unused for D=1 (no extension multiplication).
+        let air =
+            OpenInputAir::<Val<SC>, 1>::new_with_preprocessed(Val::<SC>::ZERO, committed_prep)
+                .with_generator(generator)
+                .with_min_height(min_height);
+        let matrix = air.trace_to_matrix::<Val<SC>>(&trace.rows);
+        let padded_rows = rows.next_power_of_two();
+
+        Some(BatchTableInstance {
+            op_type: NpoTypeId::open_input_d(self.circuit_d),
+            air: DynamicAirEntry::new(Box::new(air)),
+            trace: matrix,
+            public_values: Vec::new(),
+            rows: padded_rows,
+        })
+    }
+
     fn batch_instance_d2(
         &self,
         _config: &SC,
@@ -111,8 +146,6 @@ where
     {
         type EF4<F> = BinomialExtensionField<F, 4>;
         let op_type = NpoTypeId::open_input_d(self.circuit_d);
-        // The OpenInput trace stores EF4 rows (circuit-field values) so that
-        // `trace_to_matrix::<EF4>` can extract the correct D=4 limbs per value.
         let trace = traces.non_primitive_trace::<OpenInputTrace<EF4<Val<SC>>>>(&op_type)?;
 
         let rows = trace.rows.len();
@@ -125,6 +158,46 @@ where
         let w = <Val<SC> as BinomiallyExtendable<4>>::W;
         let generator = Val::<SC>::GENERATOR;
         let air = OpenInputAir::<Val<SC>, 4>::new_with_preprocessed(w, preprocessed)
+            .with_generator(generator)
+            .with_min_height(min_height);
+        let matrix = air.trace_to_matrix::<EF4<Val<SC>>>(&trace.rows);
+        let padded_rows = rows.next_power_of_two();
+
+        Some(BatchTableInstance {
+            op_type: NpoTypeId::open_input_d(self.circuit_d),
+            air: DynamicAirEntry::new(Box::new(air)),
+            trace: matrix,
+            public_values: Vec::new(),
+            rows: padded_rows,
+        })
+    }
+
+    fn batch_instance_d4_with_committed_prep(
+        &self,
+        _config: &SC,
+        packing: TablePacking,
+        traces: &Traces<BinomialExtensionField<Val<SC>, 4>>,
+        committed_prep: Vec<Val<SC>>,
+    ) -> Option<BatchTableInstance<SC>>
+    where
+        Val<SC>: BinomiallyExtendable<4>,
+    {
+        type EF4<F> = BinomialExtensionField<F, 4>;
+        let op_type = NpoTypeId::open_input_d(self.circuit_d);
+        // The OpenInput trace stores EF4 rows so that `trace_to_matrix::<EF4>` can extract
+        // the correct D=4 limbs per value.
+        let trace = traces.non_primitive_trace::<OpenInputTrace<EF4<Val<SC>>>>(&op_type)?;
+
+        let rows = trace.rows.len();
+        if rows == 0 {
+            return None;
+        }
+
+        let min_height = packing.min_trace_height();
+        let w = <Val<SC> as BinomiallyExtendable<4>>::W;
+        let generator = Val::<SC>::GENERATOR;
+        // Use committed preprocessed data directly, skipping trace_to_preprocessed.
+        let air = OpenInputAir::<Val<SC>, 4>::new_with_preprocessed(w, committed_prep)
             .with_generator(generator)
             .with_min_height(min_height);
         let matrix = air.trace_to_matrix::<EF4<Val<SC>>>(&trace.rows);
@@ -303,6 +376,44 @@ where
         })
     }
 
+    fn batch_instance_d2_with_committed_prep(
+        &self,
+        _config: &SC,
+        packing: TablePacking,
+        traces: &Traces<BinomialExtensionField<Val<SC>, 2>>,
+        committed_prep: Vec<Val<SC>>,
+    ) -> Option<BatchTableInstance<SC>>
+    where
+        Val<SC>: BinomiallyExtendable<2>,
+    {
+        type EF2<F> = BinomialExtensionField<F, 2>;
+        let op_type = NpoTypeId::open_input_d(self.circuit_d);
+        let trace = traces.non_primitive_trace::<OpenInputTrace<EF2<Val<SC>>>>(&op_type)?;
+
+        let rows = trace.rows.len();
+        if rows == 0 {
+            return None;
+        }
+
+        let min_height = packing.min_trace_height();
+        let w = <Val<SC> as BinomiallyExtendable<2>>::W;
+        let generator = Val::<SC>::GENERATOR;
+        // Use committed preprocessed data directly, skipping trace_to_preprocessed.
+        let air = OpenInputAir::<Val<SC>, 2>::new_with_preprocessed(w, committed_prep)
+            .with_generator(generator)
+            .with_min_height(min_height);
+        let matrix = air.trace_to_matrix::<EF2<Val<SC>>>(&trace.rows);
+        let padded_rows = rows.next_power_of_two();
+
+        Some(BatchTableInstance {
+            op_type: NpoTypeId::open_input_d(self.circuit_d),
+            air: DynamicAirEntry::new(Box::new(air)),
+            trace: matrix,
+            public_values: Vec::new(),
+            rows: padded_rows,
+        })
+    }
+
     fn batch_instance_d4(
         &self,
         _config: &SC,
@@ -390,7 +501,7 @@ where
     ExtF: ExtensionField<F>,
 {
     const PREP_WIDTH: usize = 10;
-    // Column indices within the preprocessed row.
+    // Column indices within each preprocessed row.
     const RO_INDEX_COL: usize = 5;
     const RO_EXT_MULT_COL: usize = 6;
 
@@ -401,19 +512,29 @@ where
             continue;
         }
 
-        let mut prep_base: Vec<F> = prep
-            .iter()
-            .map(|v| v.as_base().ok_or(CircuitError::InvalidPreprocessedValues))
-            .collect::<Result<Vec<_>, CircuitError>>()?;
-
-        let num_rows = prep_base.len() / PREP_WIDTH;
+        // Convert ExtF → F and fill ro_ext_mult in one pass, avoiding a second scan.
+        let num_rows = prep.len() / PREP_WIDTH;
+        let mut prep_base: Vec<F> = Vec::with_capacity(prep.len());
         for row_idx in 0..num_rows {
             let row_start = row_idx * PREP_WIDTH;
-            let ro_idx_val = prep_base[row_start + RO_INDEX_COL];
-            let ro_wid = (F::as_canonical_u64(&ro_idx_val) as usize) / D;
-            if ro_wid > 0 {
-                let n_reads = preprocessed.ext_reads.get(ro_wid).copied().unwrap_or(0);
-                prep_base[row_start + RO_EXT_MULT_COL] = F::from_u32(n_reads);
+            for (col, val) in prep[row_start..row_start + PREP_WIDTH].iter().enumerate() {
+                let base = val
+                    .as_base()
+                    .ok_or(CircuitError::InvalidPreprocessedValues)?;
+                if col == RO_EXT_MULT_COL {
+                    // Derive ro_ext_mult from the already-converted ro_index in the same row.
+                    // ro_index was written to prep_base at position row_start + RO_INDEX_COL.
+                    let ro_idx_val = prep_base[row_start + RO_INDEX_COL];
+                    let ro_wid = (F::as_canonical_u64(&ro_idx_val) as usize) / D;
+                    let mult = if ro_wid > 0 {
+                        F::from_u32(preprocessed.ext_reads.get(ro_wid).copied().unwrap_or(0))
+                    } else {
+                        F::ZERO
+                    };
+                    prep_base.push(mult);
+                } else {
+                    prep_base.push(base);
+                }
             }
         }
 

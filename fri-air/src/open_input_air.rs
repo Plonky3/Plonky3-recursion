@@ -8,7 +8,6 @@ use p3_circuit::ops::open_input::{OpenInputRow, OpenInputTrace};
 use p3_field::{BasedVectorSpace, ExtensionField, Field, PrimeCharacteristicRing};
 use p3_lookup::LookupAir;
 use p3_lookup::lookup_traits::{Direction, Kind, Lookup};
-use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_uni_stark::SymbolicAirBuilder;
 
@@ -147,36 +146,60 @@ impl<F: Field, const D: usize> OpenInputAir<F, D> {
 
             reset = row.is_last;
         }
-        for _ in n..new_n {
-            values.extend_from_slice(&vec![F::ZERO; Self::width()]);
-        }
+        values.extend(core::iter::repeat_n(F::ZERO, (new_n - n) * Self::width()));
 
         RowMajorMatrix::new(values, Self::width())
     }
 
+    /// Converts the trace rows to a flat preprocessed-column buffer.
+    ///
+    /// `ro_ext_mult` (column 6) is left as zero; it must be filled in afterward by the
+    /// committed preprocessed data from `get_airs_and_degrees_with_prep`. Use
+    /// [`trace_to_preprocessed_with_ext_reads`] instead when `ext_reads` is already
+    /// available to avoid the second pass.
     pub fn trace_to_preprocessed<ExtF: BasedVectorSpace<F>>(
         trace: &OpenInputTrace<ExtF>,
     ) -> Vec<F> {
-        trace
-            .rows
-            .iter()
-            .flat_map(|row| {
-                // g_power is a base field element embedded in ExtF; extract the first coefficient.
-                let g_power_base = row.g_power.as_basis_coefficients_slice()[0];
-                [
-                    F::from_u64(row.is_last as u64),
-                    F::from_u64(row.is_real as u64),
-                    F::from_u64(row.alpha_index as u64),
-                    F::from_u64(row.pow_at_x_index as u64),
-                    F::from_u64(row.pow_at_z_index as u64),
-                    F::from_u64(row.ro_index as u64),
-                    F::ZERO, // ro_ext_mult placeholder (populated by committed preprocessed)
-                    F::from_u64(row.is_eval as u64),
-                    g_power_base,
-                    F::from_u64(row.is_first as u64),
-                ]
-            })
-            .collect()
+        Self::trace_to_preprocessed_with_ext_reads(trace, &[], 0)
+    }
+
+    /// Like [`trace_to_preprocessed`] but fills `ro_ext_mult` (column 6) from `ext_reads`
+    /// in the same pass, avoiding a second scan of the buffer.
+    ///
+    /// `ext_reads[i]` is the number of times `WitnessId(i)` is read as an extension-field
+    /// value; used to set the creator multiplicity on the `WitnessChecks` bus.
+    /// `d` is the extension degree used when scaling witness indices (index = wid * d).
+    /// Pass `ext_reads = &[]` and `d = 0` to leave `ro_ext_mult` as zero (same as
+    /// [`trace_to_preprocessed`]).
+    pub fn trace_to_preprocessed_with_ext_reads<ExtF: BasedVectorSpace<F>>(
+        trace: &OpenInputTrace<ExtF>,
+        ext_reads: &[u32],
+        d: usize,
+    ) -> Vec<F> {
+        let mut values = Vec::with_capacity(trace.rows.len() * Self::preprocessed_width());
+        for row in &trace.rows {
+            let g_power_base = row.g_power.as_basis_coefficients_slice()[0];
+            let ro_index = row.ro_index as u64;
+            let ro_wid = if d > 0 { (ro_index as usize) / d } else { 0 };
+            let ro_ext_mult = if ro_wid > 0 {
+                F::from_u32(ext_reads.get(ro_wid).copied().unwrap_or(0))
+            } else {
+                F::ZERO
+            };
+            values.extend_from_slice(&[
+                F::from_u64(row.is_last as u64),
+                F::from_u64(row.is_real as u64),
+                F::from_u64(row.alpha_index as u64),
+                F::from_u64(row.pow_at_x_index as u64),
+                F::from_u64(row.pow_at_z_index as u64),
+                F::from_u64(ro_index),
+                ro_ext_mult,
+                F::from_u64(row.is_eval as u64),
+                g_power_base,
+                F::from_u64(row.is_first as u64),
+            ]);
+        }
+        values
     }
 }
 
@@ -186,38 +209,28 @@ impl<F: Field + Sync, const D: usize> BaseAir<F> for OpenInputAir<F, D> {
     }
 
     fn preprocessed_trace(&self) -> Option<RowMajorMatrix<F>> {
+        let width = Self::preprocessed_width();
+
         debug_assert!(
-            self.preprocessed
-                .len()
-                .is_multiple_of(Self::preprocessed_width()),
+            self.preprocessed.len().is_multiple_of(width),
             "Preprocessed trace length is not a multiple of preprocessed width. Expected multiple of {}, got {}",
-            Self::preprocessed_width(),
+            width,
             self.preprocessed.len(),
         );
 
-        let width = Self::preprocessed_width();
         let natural_rows = self.preprocessed.len() / width;
-        let num_extra_rows = natural_rows
-            .next_power_of_two()
-            .saturating_sub(natural_rows);
-
-        let mut preprocessed = self.preprocessed.clone();
-        let start_len = preprocessed.len();
-        preprocessed.resize(start_len + num_extra_rows * width, F::ZERO);
-
-        let mut mat = RowMajorMatrix::new(preprocessed, width);
-        let current_height = mat.height();
-
-        let target_height = current_height
+        let target_height = natural_rows
             .next_power_of_two()
             .max(self.min_height.next_power_of_two());
-        if current_height < target_height {
-            let padding_rows = target_height - current_height;
-            mat.values
-                .extend(core::iter::repeat_n(F::ZERO, padding_rows * width));
-        }
 
-        Some(mat)
+        let mut values = Vec::with_capacity(target_height * width);
+        values.extend_from_slice(&self.preprocessed);
+        values.extend(core::iter::repeat_n(
+            F::ZERO,
+            (target_height - natural_rows) * width,
+        ));
+
+        Some(RowMajorMatrix::new(values, width))
     }
 }
 

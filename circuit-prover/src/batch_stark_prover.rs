@@ -708,28 +708,59 @@ where
 
         let mut dynamic_instances: Vec<BatchTableInstance<SC>> =
             Vec::with_capacity(self.non_primitive_provers.len());
+
+        /// Helper: try the `_with_committed_prep` fast path first; fall back to the standard
+        /// `batch_instance_dN` + `air_with_committed_preprocessed` override if it returns `None`.
+        macro_rules! push_instance {
+            ($p:expr, $instance_expr:expr, $fallback_expr:expr) => {{
+                let committed = non_primitive.get(&$p.op_type());
+                let instance = if let Some(cp) = committed {
+                    $instance_expr(cp.clone()).or_else(|| {
+                        let mut inst = $fallback_expr?;
+                        if let Some(new_air) =
+                            $p.air_with_committed_preprocessed(cp.clone(), min_height)
+                        {
+                            inst.air = new_air;
+                        }
+                        Some(inst)
+                    })
+                } else {
+                    $fallback_expr
+                };
+                if let Some(instance) = instance {
+                    dynamic_instances.push(instance);
+                }
+            }};
+        }
+
         if D == 1 {
             let t: &Traces<Val<SC>> = unsafe { transmute_traces(traces) };
             for p in &self.non_primitive_provers {
-                if let Some(instance) = p.batch_instance_d1(&self.config, packing, t) {
-                    dynamic_instances.push(instance);
-                }
+                push_instance!(
+                    p,
+                    |cp| p.batch_instance_d1_with_committed_prep(&self.config, packing, t, cp),
+                    p.batch_instance_d1(&self.config, packing, t)
+                );
             }
         } else if D == 2 {
             type EF2<F> = BinomialExtensionField<F, 2>;
             let t: &Traces<EF2<Val<SC>>> = unsafe { transmute_traces(traces) };
             for p in &self.non_primitive_provers {
-                if let Some(instance) = p.batch_instance_d2(&self.config, packing, t) {
-                    dynamic_instances.push(instance);
-                }
+                push_instance!(
+                    p,
+                    |cp| p.batch_instance_d2_with_committed_prep(&self.config, packing, t, cp),
+                    p.batch_instance_d2(&self.config, packing, t)
+                );
             }
         } else if D == 4 {
             type EF4<F> = BinomialExtensionField<F, 4>;
             let t: &Traces<EF4<Val<SC>>> = unsafe { transmute_traces(traces) };
             for p in &self.non_primitive_provers {
-                if let Some(instance) = p.batch_instance_d4(&self.config, packing, t) {
-                    dynamic_instances.push(instance);
-                }
+                push_instance!(
+                    p,
+                    |cp| p.batch_instance_d4_with_committed_prep(&self.config, packing, t, cp),
+                    p.batch_instance_d4(&self.config, packing, t)
+                );
             }
         } else if D == 6 {
             type EF6<F> = BinomialExtensionField<F, 6>;
@@ -745,26 +776,6 @@ where
             for p in &self.non_primitive_provers {
                 if let Some(instance) = p.batch_instance_d8(&self.config, packing, t) {
                     dynamic_instances.push(instance);
-                }
-            }
-        }
-
-        // The `batch_instance_dN` methods regenerate Poseidon2 preprocessed data from
-        // runtime ops using `extract_preprocessed_from_operations`.
-        //
-        // Hence, we override here with the committed preprocessed data so the debug
-        // lookup check is consistent with the committed preprocessed trace.
-        for instance in &mut dynamic_instances {
-            if let Some(committed_prep) = non_primitive.get(&instance.op_type) {
-                for p in &self.non_primitive_provers {
-                    if p.op_type() == instance.op_type {
-                        if let Some(new_air) =
-                            p.air_with_committed_preprocessed(committed_prep.clone(), min_height)
-                        {
-                            instance.air = new_air;
-                        }
-                        break;
-                    }
                 }
             }
         }

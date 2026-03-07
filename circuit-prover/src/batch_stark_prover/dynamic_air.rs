@@ -428,4 +428,45 @@ where
         let _ = (committed_prep, min_height);
         None
     }
+
+    /// Build a base-field trace instance using committed preprocessed data for the AIR
+    /// instead of recomputing it from the trace.
+    ///
+    /// Implementations that override this can skip the `trace_to_preprocessed` step (which
+    /// would otherwise be immediately discarded at the call site) and go directly to building
+    /// the trace matrix with the committed data.
+    ///
+    /// The default returns `None`, signalling the call site to fall back to `batch_instance_d1`
+    /// followed by `air_with_committed_preprocessed`.
+    fn batch_instance_d1_with_committed_prep(
+        &self,
+        _config: &SC,
+        _packing: TablePacking,
+        _traces: &Traces<Val<SC>>,
+        _committed_prep: Vec<Val<SC>>,
+    ) -> Option<BatchTableInstance<SC>> {
+        None
+    }
+
+    /// Variant of [`batch_instance_d1_with_committed_prep`] for D=2 extension traces.
+    fn batch_instance_d2_with_committed_prep(
+        &self,
+        _config: &SC,
+        _packing: TablePacking,
+        _traces: &Traces<BinomialExtensionField<Val<SC>, 2>>,
+        _committed_prep: Vec<Val<SC>>,
+    ) -> Option<BatchTableInstance<SC>> {
+        None
+    }
+
+    /// Variant of [`batch_instance_d1_with_committed_prep`] for D=4 extension traces.
+    fn batch_instance_d4_with_committed_prep(
+        &self,
+        _config: &SC,
+        _packing: TablePacking,
+        _traces: &Traces<BinomialExtensionField<Val<SC>, 4>>,
+        _committed_prep: Vec<Val<SC>>,
+    ) -> Option<BatchTableInstance<SC>> {
+        None
+    }
 }
