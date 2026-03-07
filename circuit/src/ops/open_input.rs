@@ -26,6 +26,7 @@ pub struct OpenInputRow<F> {
     pub pow_at_z: Vec<F>,
     pub pow_at_z_index: u32,
     pub ro_index: u32, // For EvalPoint: output index for eval result
+    pub is_first: bool,
     pub is_last: bool,
     pub is_real: bool,
     pub is_eval: bool, // true for EvalPoint rows, false for ReducedOpening rows
@@ -77,13 +78,15 @@ impl<F: Field> OpExecutionState for OpenInputState<F> {
 #[derive(Debug, Clone)]
 pub(crate) struct OpenInputExecutor {
     op_type: NpoTypeId,
+    is_first: bool,
     is_last: bool,
 }
 
 impl OpenInputExecutor {
-    pub fn new(is_last: bool, d: usize) -> Self {
+    pub fn new(is_first: bool, is_last: bool, d: usize) -> Self {
         Self {
             op_type: NpoTypeId::open_input_d(d),
+            is_first,
             is_last,
         }
     }
@@ -146,6 +149,7 @@ impl<F: Field> NonPrimitiveExecutor<F> for OpenInputExecutor {
             pow_at_z: vec![p_at_z.0],
             pow_at_z_index: p_at_z.1,
             ro_index: output_index,
+            is_first: self.is_first,
             is_last: self.is_last,
             is_real: true,
             is_eval: false,
@@ -194,8 +198,10 @@ impl<F: Field> NonPrimitiveExecutor<F> for OpenInputExecutor {
         // Preprocess `is_real`
         preprocessed.register_non_primitive_preprocessed_no_read(&self.op_type, &[F::ONE]);
 
-        // Preprocess input indices.
-        for inp in inputs {
+        // Preprocess input indices. Alpha (inputs[0]) is only read from the bus on `is_first`
+        // rows; all other rows carry the same alpha value proven constant by the AIR transition
+        // constraint, so they don't need a separate bus lookup.
+        for (slot_idx, inp) in inputs.iter().enumerate() {
             if inp.len() != 1 {
                 return Err(CircuitError::NonPrimitiveOpLayoutMismatch {
                     op: self.op_type.clone(),
@@ -203,7 +209,15 @@ impl<F: Field> NonPrimitiveExecutor<F> for OpenInputExecutor {
                     got: inp.len(),
                 });
             }
-            preprocessed.register_non_primitive_witness_read(&self.op_type, inp[0])?;
+            if slot_idx == 0 && !self.is_first {
+                // Alpha is fixed for the sequence; write the index without incrementing ext_reads.
+                preprocessed.register_non_primitive_preprocessed_no_read(
+                    &self.op_type,
+                    &[preprocessed.witness_index_as_field(inp[0])],
+                );
+            } else {
+                preprocessed.register_non_primitive_witness_read(&self.op_type, inp[0])?;
+            }
         }
 
         // Preprocess output index if this is the last OpenInput operation.
@@ -226,6 +240,12 @@ impl<F: Field> NonPrimitiveExecutor<F> for OpenInputExecutor {
 
         // g_power = 0 for ReducedOpening rows.
         preprocessed.register_non_primitive_preprocessed_no_read(&self.op_type, &[F::ZERO]);
+
+        // is_first: 1 on the first row of a sequence, 0 otherwise.
+        preprocessed.register_non_primitive_preprocessed_no_read(
+            &self.op_type,
+            &[F::from_u64(self.is_first as u64)],
+        );
 
         Ok(())
     }
@@ -266,6 +286,7 @@ pub struct OpenInputCall {
     pub alpha: ExprId,
     pub p_at_x: ExprId,
     pub p_at_z: ExprId,
+    pub is_first: bool,
     pub is_last: bool,
 }
 
@@ -295,6 +316,7 @@ impl<F: Field> OpenInputOp for CircuitBuilder<F> {
             input_exprs,
             vec![call.is_last.then_some("OpenInput output")],
             Some(NonPrimitiveOpParams::OpenInput {
+                is_first: call.is_first,
                 is_last: call.is_last,
             }),
             "open_input",
@@ -312,6 +334,7 @@ pub struct EvalPointCall<F> {
     pub rev_bit: ExprId, // Witness target for the reversed bit
     pub g_power: F,      // g^(2^i) constant for this row
     pub generator: F,    // Coset generator (F::GENERATOR promoted to EF)
+    pub is_first: bool,  // First row of eval sequence
     pub is_last: bool,   // Last row of eval sequence
 }
 
@@ -342,6 +365,7 @@ impl<F: Field> EvalPointOp<F> for CircuitBuilder<F> {
             input_exprs,
             vec![call.is_last.then_some("EvalPoint output")],
             Some(NonPrimitiveOpParams::EvalPoint {
+                is_first: call.is_first,
                 is_last: call.is_last,
                 g_power: call.g_power,
                 generator: call.generator,
@@ -357,15 +381,17 @@ impl<F: Field> EvalPointOp<F> for CircuitBuilder<F> {
 #[derive(Debug, Clone)]
 pub struct EvalPointExecutor<F> {
     op_type: NpoTypeId,
+    is_first: bool,
     is_last: bool,
     g_power: F,
     generator: F,
 }
 
 impl<F: Field> EvalPointExecutor<F> {
-    pub fn new(is_last: bool, g_power: F, generator: F, d: usize) -> Self {
+    pub fn new(is_first: bool, is_last: bool, g_power: F, generator: F, d: usize) -> Self {
         Self {
             op_type: NpoTypeId::open_input_d(d),
+            is_first,
             is_last,
             g_power,
             generator,
@@ -432,6 +458,7 @@ impl<F: Field> NonPrimitiveExecutor<F> for EvalPointExecutor<F> {
             pow_at_z: vec![F::ZERO],
             pow_at_z_index: 0,
             ro_index: output_index,
+            is_first: self.is_first,
             is_last: self.is_last,
             is_real: true,
             is_eval: true,
@@ -500,6 +527,12 @@ impl<F: Field> NonPrimitiveExecutor<F> for EvalPointExecutor<F> {
 
         // [8] g_power
         preprocessed.register_non_primitive_preprocessed_no_read(&self.op_type, &[self.g_power]);
+
+        // [9] is_first: 1 on the first row of a sequence, 0 otherwise.
+        preprocessed.register_non_primitive_preprocessed_no_read(
+            &self.op_type,
+            &[F::from_u64(self.is_first as u64)],
+        );
 
         Ok(())
     }
@@ -592,14 +625,17 @@ where
             .collect::<Result<_, _>>()?;
 
         let executor: Box<dyn NonPrimitiveExecutor<F>> = match params {
-            NonPrimitiveOpParams::OpenInput { is_last } => {
-                Box::new(OpenInputExecutor::new(*is_last, D))
+            NonPrimitiveOpParams::OpenInput { is_first, is_last } => {
+                Box::new(OpenInputExecutor::new(*is_first, *is_last, D))
             }
             NonPrimitiveOpParams::EvalPoint {
+                is_first,
                 is_last,
                 g_power,
                 generator,
-            } => Box::new(EvalPointExecutor::new(*is_last, *g_power, *generator, D)),
+            } => Box::new(EvalPointExecutor::new(
+                *is_first, *is_last, *g_power, *generator, D,
+            )),
             _ => {
                 return Err(CircuitBuilderError::InvalidNonPrimitiveOpConfiguration {
                     op: data.op_type.clone(),

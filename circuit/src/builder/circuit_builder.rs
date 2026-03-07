@@ -61,9 +61,11 @@ pub enum NonPrimitiveOpParams<F> {
         merkle_path: bool,
     },
     OpenInput {
+        is_first: bool,
         is_last: bool,
     },
     EvalPoint {
+        is_first: bool,
         is_last: bool,
         g_power: F,
         generator: F,
@@ -83,12 +85,17 @@ impl<F: Field> Clone for NonPrimitiveOpParams<F> {
                 new_start: *new_start,
                 merkle_path: *merkle_path,
             },
-            Self::OpenInput { is_last } => Self::OpenInput { is_last: *is_last },
+            Self::OpenInput { is_first, is_last } => Self::OpenInput {
+                is_first: *is_first,
+                is_last: *is_last,
+            },
             Self::EvalPoint {
+                is_first,
                 is_last,
                 g_power,
                 generator,
             } => Self::EvalPoint {
+                is_first: *is_first,
                 is_last: *is_last,
                 g_power: *g_power,
                 generator: *generator,

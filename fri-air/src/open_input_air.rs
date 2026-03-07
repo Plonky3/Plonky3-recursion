@@ -62,6 +62,7 @@ impl<F: Field, const D: usize> OpenInputAir<F, D> {
         + 1 // ro_ext_mult: creator multiplicity for ro output (= ext_reads[ro_wid])
         + 1 // is_eval: 1 for EvalPoint rows, 0 for ReducedOpening rows
         + 1 // g_power: g^(2^i) for EvalPoint rows, 0 otherwise
+        + 1 // is_first: 1 on the first row of a ReducedOpening sequence, 0 otherwise
     }
 
     pub fn trace_to_matrix<ExtF: ExtensionField<F>>(
@@ -172,6 +173,7 @@ impl<F: Field, const D: usize> OpenInputAir<F, D> {
                     F::ZERO, // ro_ext_mult placeholder (populated by committed preprocessed)
                     F::from_u64(row.is_eval as u64),
                     g_power_base,
+                    F::from_u64(row.is_first as u64),
                 ]
             })
             .collect()
@@ -434,20 +436,27 @@ impl<F: Field, const D: usize> LookupAir<F> for OpenInputAir<F, D> {
         let ro_ext_mult = SymbolicExpression::from(preprocessed_local[6]);
         let is_eval = SymbolicExpression::from(preprocessed_local[7]);
         let not_is_eval = SymbolicExpression::ONE - is_eval;
+        let is_first = SymbolicExpression::from(preprocessed_local[9]);
 
         let kind = Kind::Global("WitnessChecks".to_string());
 
         // Inputs are READS from the bus → Send (negative multiplicity).
-        // alpha (i=0) and p_at_z (i=2): multiplicity = is_real * (1 - is_eval)
-        // p_at_x (i=1): multiplicity = is_real (active for both op types)
+        // alpha (i=0): only read on is_first rows of a ReducedOpening sequence; the AIR
+        //   transition constraint proves alpha is constant within a sequence, so intermediate
+        //   rows don't need a separate bus lookup.
+        // p_at_z (i=2): multiplicity = is_real * (1 - is_eval), unchanged.
+        // p_at_x (i=1): multiplicity = is_real (active for both op types), unchanged.
         let global_lookups = (0..3).map(|i| {
             let index = SymbolicExpression::from(preprocessed_local[2 + i]);
             let values = (0..D).map(|j| SymbolicExpression::from(symbolic_main_local[i * D + j]));
 
             let inputs = iter::once(index).chain(values).collect::<Vec<_>>();
 
-            let multiplicity = if i == 0 || i == 2 {
-                // alpha and p_at_z: disabled for EvalPoint rows
+            let multiplicity = if i == 0 {
+                // alpha: only sent on the first row of each ReducedOpening sequence
+                is_real.clone() * not_is_eval.clone() * is_first.clone()
+            } else if i == 2 {
+                // p_at_z: disabled for EvalPoint rows
                 is_real.clone() * not_is_eval.clone()
             } else {
                 // p_at_x: active for both (reads rev_bit for EvalPoint, p_at_x for ReducedOpening)

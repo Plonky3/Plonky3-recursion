@@ -791,11 +791,13 @@ where
     let mut eval_point = None;
     let mut g_power = g;
     for i in 0..log_height {
+        let is_first = i == 0;
         let is_last = i == log_height - 1;
         let call = EvalPointCall {
             rev_bit: rev_bits[i],
             g_power: EF::from(g_power),
             generator: generator_ef,
+            is_first,
             is_last,
         };
         let (_, output) = builder.add_eval_point(call).unwrap();
@@ -845,6 +847,7 @@ fn compute_single_reduced_opening<EF: Field>(
             alpha,
             p_at_x,
             p_at_z,
+            is_first: p_idx == 0,
             is_last: p_idx == n - 1,
         };
         let (_, ro) = builder.add_open_input(open_input_call).unwrap();

@@ -389,7 +389,7 @@ where
     F: StarkField + PrimeField64,
     ExtF: ExtensionField<F>,
 {
-    const PREP_WIDTH: usize = 9;
+    const PREP_WIDTH: usize = 10;
     // Column indices within the preprocessed row.
     const RO_INDEX_COL: usize = 5;
     const RO_EXT_MULT_COL: usize = 6;
