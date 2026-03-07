@@ -912,11 +912,10 @@ where
 
         // Create bit witness variables
         let binary_decomposition_hint = BinaryDecompositionHint::new();
-        let mut bits: Vec<ExprId> = self
+        let bits: Vec<ExprId> = self
             .push_unconstrained_op(
                 vec![vec![x]],
-                // We need all the bits so that we can reconstruct the F element.
-                F::bits(),
+                n_bits,
                 binary_decomposition_hint,
                 "decompose_to_bits",
             )
@@ -929,8 +928,6 @@ where
         let reconstructed = self.reconstruct_index_from_bits(&bits)?;
         self.connect(x, reconstructed);
 
-        // Return only `n_bits` bits.
-        let _ = bits.split_off(n_bits);
         self.pop_scope();
         Ok(bits)
     }
