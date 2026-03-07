@@ -92,3 +92,9 @@ p3-test-utils = { path = "test-utils", version = "0.1.0" }
 [profile.profiling]
 inherits = "release"
 debug = true
+
+[profile.perf]
+inherits = "release"
+lto = "thin"
+codegen-units = 1
+opt-level = 3
