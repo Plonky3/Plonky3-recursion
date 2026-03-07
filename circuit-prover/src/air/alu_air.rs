@@ -262,6 +262,16 @@ impl<F: Field, const D: usize> BaseAir<F> for AluAir<F, D> {
             self.min_height,
         ))
     }
+
+    /// The Alu AIR does not access next row columns.
+    fn main_next_row_columns(&self) -> Vec<usize> {
+        vec![]
+    }
+
+    /// The Alu AIR does not access next row preprocessed columns.
+    fn preprocessed_next_row_columns(&self) -> Vec<usize> {
+        vec![]
+    }
 }
 
 impl<AB: AirBuilder, const D: usize> Air<AB> for AluAir<AB::F, D>
