@@ -45,6 +45,12 @@ mod common;
 use common::*;
 use p3_keccak_air::KeccakAir;
 use p3_uni_stark::{prove, verify};
+#[cfg(target_family = "unix")]
+use tikv_jemallocator::Jemalloc;
+
+#[cfg(target_family = "unix")]
+#[global_allocator]
+static GLOBAL: Jemalloc = Jemalloc;
 
 #[derive(Parser, Debug)]
 #[command(version, about = "Recursive Keccak proof verification example")]

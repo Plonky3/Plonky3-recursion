@@ -43,6 +43,9 @@ unroll.workspace = true
 # Local dependencies
 p3-circuit.workspace = true
 
+[target.'cfg(target_family = "unix")'.dev-dependencies]
+tikv-jemallocator = "0.6"
+
 [dev-dependencies]
 clap.workspace = true
 p3-air.workspace = true

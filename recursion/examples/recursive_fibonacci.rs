@@ -37,6 +37,12 @@
 #[macro_use]
 mod common;
 use common::*;
+#[cfg(target_family = "unix")]
+use tikv_jemallocator::Jemalloc;
+
+#[cfg(target_family = "unix")]
+#[global_allocator]
+static GLOBAL: Jemalloc = Jemalloc;
 
 #[derive(Parser, Debug)]
 #[command(version, about = "Recursive Fibonacci proof verification example")]
