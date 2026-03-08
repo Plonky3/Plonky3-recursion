@@ -1464,34 +1464,34 @@ This ensures that all constraints are properly satisfied before proceeding to th
 </ul>
 <h2 id="results"><a class="header" href="#results">Results</a></h2>
 <p>Running on a Apple M4 pro, 14 Cores, with <strong>KoalaBear</strong> field and extension of <strong>degree 4</strong>, using default parameters mentioned above at a 124-bit security target, performance benchmarks are as follows:</p>
+<p><em>NOTE</em>: In production systems, circuits may be pre-generated offline and cached to reduce overhead in fixed recursive layers.</p>
 <ul>
 <li>
 <p><strong>Keccak AIR program:</strong> (1,000 hashes)</p>
 <ul>
-<li>Base uni-stark proof: 1.37 s</li>
-<li>1st recursion layer: 1.23 s</li>
-<li>2nd recursion layer: 311 ms</li>
-<li>3rd recursion layer: 263 ms</li>
-<li>3rd recursion layer: 254 ms</li>
+<li>Base uni-stark proof: 1.36 s</li>
+<li>1st recursion layer: 1.21 s</li>
+<li>2nd recursion layer: 300 ms</li>
+<li>3rd and 4th recursion layers: 247 ms</li>
+<li>5th and next recursion layers: 193 ms</li>
 </ul>
 </li>
 <li>
 <p><strong>Fibonacci multi-AIR program:</strong> (10,000th element)</p>
 <ul>
 <li>Base batch-stark proof: 82.6 ms</li>
-<li>1st recursion layer: 197 ms</li>
-<li>2nd recursion layer: 273 ms</li>
-<li>3rd recursion layer: 265 ms</li>
-<li>3rd recursion layer: 253 ms</li>
+<li>1st recursion layer: 193 ms</li>
+<li>2nd and 3rd recursion layers: 260 ms</li>
+<li>4th and next recursion layers: 198 ms</li>
 </ul>
 </li>
 <li>
 <p><strong>2-to-1 aggregation:</strong></p>
 <ul>
 <li>Base batch-stark proof: 28 ms</li>
-<li>1st aggregation layer: 255 ms</li>
-<li>2nd aggregation layer: 347 ms</li>
-<li>3rd and next aggregation layers: 342 ms</li>
+<li>1st aggregation layer: 170 ms</li>
+<li>2nd aggregation layer: 342 ms</li>
+<li>3rd and next aggregation layers: 338 ms</li>
 </ul>
 </li>
 </ul>
