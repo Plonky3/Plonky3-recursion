@@ -217,9 +217,24 @@ impl<F: Field, EF: ExtensionField<F>, LG: LookupGadget> RecursiveAir<F, EF, LG> 
     }
 }
 
+/// Preprocessed prover data for a fixed verification circuit shape, produced offline by
+/// [`build_next_layer_prep`].
+///
+/// Pass this to [`prove_next_layer`] via `prep` to skip the overhead of LDEs and Merkle tree
+/// construction that would otherwise run on every call. This is safe to reuse across layers
+/// because `generate_preprocessed_columns` is purely a function of the circuit's static
+/// op-list — it does not depend on runtime witness values.
+///
+/// Requires that the same config (including ZK seed, if using `HidingFriPcs`) is used for
+/// every `prove_next_layer` call that reuses this cache.
+pub struct NextLayerPrepCache<SC: StarkGenericConfig + 'static> {
+    pub circuit_prover_data: Rc<CircuitProverData<SC>>,
+    pub prover: BatchStarkProver<SC>,
+}
+
 /// Build a verifier circuit for a recursion layer.
 #[instrument(skip_all)]
-fn build_next_layer_circuit<SC, A, B, const D: usize>(
+pub fn build_next_layer_circuit<SC, A, B, const D: usize>(
     prev: &RecursionInput<'_, SC, A>,
     config: &SC,
     backend: &B,
@@ -248,7 +263,74 @@ where
     Ok((verification_circuit, verifier_result))
 }
 
-/// Prove one recursion layer: build a verifier circuit for `prev`, run it, and prove it with batch STARK.
+/// Offline step: commit to preprocessed columns for a fixed verification circuit shape.
+///
+/// The resulting [`NextLayerPrepCache`] can be reused across many [`prove_next_layer`] calls
+/// that share the same circuit shape. Since `generate_preprocessed_columns` depends only on
+/// the circuit's static op-list (not on runtime witness values), the commitment is valid for
+/// every proof with the same verification circuit structure.
+///
+/// **Important**: if using `HidingFriPcs` (ZK mode), the same config (including PCS seed)
+/// must be used for every `prove_next_layer` call that reuses this cache, because the
+/// preprocessed commitment is bound to the PCS randomness.
+#[instrument(skip_all)]
+pub fn build_next_layer_prep<SC, A, B, const D: usize>(
+    verification_circuit: &Circuit<SC::Challenge>,
+    config: &SC,
+    backend: &B,
+    params: &ProveNextLayerParams,
+) -> Result<NextLayerPrepCache<SC>, VerificationError>
+where
+    SC: StarkGenericConfig + Send + Sync + Clone + 'static,
+    A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
+    B: PcsRecursionBackend<SC, A, D>,
+    Val<SC>: PrimeField64 + StarkField + BinomiallyExtendable<D>,
+    SC::Challenge: BasedVectorSpace<Val<SC>>
+        + From<Val<SC>>
+        + ExtensionField<Val<SC>>
+        + ExtractBinomialW<Val<SC>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+{
+    let (airs_degrees, preprocessed_columns) = {
+        let preprocessors = backend.non_primitive_preprocessors();
+        let air_builders = backend.non_primitive_air_builders();
+        get_airs_and_degrees_with_prep::<SC, SC::Challenge, D>(
+            verification_circuit,
+            params.table_packing,
+            &preprocessors,
+            &air_builders,
+            params.constraint_profile,
+        )
+        .map_err(VerificationError::Circuit)?
+    };
+
+    let (mut airs, degrees): (Vec<_>, Vec<_>) = airs_degrees.into_iter().unzip();
+    let ext_degrees: Vec<usize> = degrees.iter().map(|&d| d + config.is_zk()).collect();
+
+    let prover_data = ProverData::from_airs_and_degrees(config, &mut airs, &ext_degrees);
+    let circuit_prover_data = Rc::new(CircuitProverData::new(prover_data, preprocessed_columns));
+
+    let mut prover = BatchStarkProver::new(config.clone())
+        .with_table_packing(params.table_packing)
+        .with_alu_variant(match params.constraint_profile {
+            ConstraintProfile::Standard => AirVariant::Baseline,
+            ConstraintProfile::RecursionOptimized => AirVariant::Optimized,
+        });
+    for p in backend.non_primitive_provers(D) {
+        prover.register_table_prover(p);
+    }
+
+    Ok(NextLayerPrepCache {
+        circuit_prover_data,
+        prover,
+    })
+}
+
+/// Prove one recursion layer: run the verifier circuit and prove it with batch STARK.
+///
+/// Pass a [`NextLayerPrepCache`] produced by [`build_next_layer_prep`] to skip the LDE and
+/// Merkle-tree commitment for preprocessed columns on every layer.
 #[instrument(skip_all)]
 pub fn prove_next_layer<SC, A, B, const D: usize>(
     prev: &RecursionInput<'_, SC, A>,
@@ -257,6 +339,7 @@ pub fn prove_next_layer<SC, A, B, const D: usize>(
     config: &SC,
     backend: &B,
     params: &ProveNextLayerParams,
+    prep: Option<&NextLayerPrepCache<SC>>,
 ) -> Result<RecursionOutput<SC>, VerificationError>
 where
     SC: StarkGenericConfig + Send + Sync + Clone + 'static,
@@ -270,6 +353,28 @@ where
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
         Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
+    if let Some(cached) = prep {
+        let traces = {
+            let public_inputs = verifier_result.pack_public_inputs(prev)?;
+            let mut runner = verification_circuit.runner();
+            runner
+                .set_public_inputs(&public_inputs)
+                .map_err(VerificationError::Circuit)?;
+            backend
+                .set_private_data(config, &mut runner, verifier_result.op_ids(), prev)
+                .map_err(|e| proof_shape_err(&e))?;
+            runner.run().map_err(VerificationError::Circuit)?
+        };
+        let proof = cached
+            .prover
+            .prove_all_tables(&traces, &cached.circuit_prover_data)
+            .map_err(|e| proof_shape_err(&e.to_string()))?;
+        return Ok(RecursionOutput(
+            proof,
+            Rc::clone(&cached.circuit_prover_data),
+        ));
+    }
+
     let (airs_degrees, preprocessed_columns) = {
         let preprocessors = backend.non_primitive_preprocessors();
         let air_builders = backend.non_primitive_air_builders();
@@ -321,16 +426,7 @@ where
     Ok(RecursionOutput(proof, Rc::new(circuit_prover_data)))
 }
 
-/// Convenience method to build and prove a recursion layer.
-///
-/// In production environments, consider using [`prove_next_layer`] directly for better performance.
-///
-/// # Example
-///
-/// ```ignore
-/// let (verification_circuit, verifier_result) = build_next_layer_circuit::<SC, A, B>(prev, config, backend)?;
-/// let out = prove_next_layer::<SC, A, B, D>(prev, verification_circuit, verifier_result, config, backend, params);
-/// ```
+/// Convenience wrapper that calls [`build_next_layer_circuit`] then [`prove_next_layer`] without a prep cache.
 pub fn build_and_prove_next_layer<SC, A, B, const D: usize>(
     prev: &RecursionInput<'_, SC, A>,
     config: &SC,
@@ -359,6 +455,7 @@ where
         config,
         backend,
         params,
+        None,
     )
 }
 

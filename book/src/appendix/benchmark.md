@@ -46,19 +46,20 @@ Each example supports additional parameterization around the FRI parameters, nam
 
 Running on a Apple M4 pro, 14 Cores, with **KoalaBear** field and extension of **degree 4**, using default parameters mentioned above at a 124-bit security target, performance benchmarks are as follows:
 
+*NOTE*: In production systems, circuits may be pre-generated offline and cached to reduce overhead in fixed recursive layers.
+
 - **Keccak AIR program:** (1,000 hashes)
-  - Base uni-stark proof: 1.37 s
-  - 1st recursion layer: 1.23 s
-  - 2nd recursion layer: 311 ms
-  - 3rd recursion layer: 263 ms
-  - 3rd recursion layer: 254 ms
+  - Base uni-stark proof: 1.36 s
+  - 1st recursion layer: 1.21 s
+  - 2nd recursion layer: 300 ms
+  - 3rd and 4th recursion layers: 247 ms
+  - 5th and next recursion layers: 193 ms
 
 - **Fibonacci multi-AIR program:** (10,000th element)
   - Base batch-stark proof: 82.6 ms
-  - 1st recursion layer: 197 ms
-  - 2nd recursion layer: 273 ms
-  - 3rd recursion layer: 265 ms
-  - 3rd recursion layer: 253 ms
+  - 1st recursion layer: 193 ms
+  - 2nd and 3rd recursion layers: 260 ms
+  - 4th and next recursion layers: 198 ms
 
 - **2-to-1 aggregation:**
   - Base batch-stark proof: 28 ms

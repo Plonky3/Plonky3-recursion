@@ -201,6 +201,9 @@ macro_rules! define_field_module {
 
                 let mut output: Option<RecursionOutput<ConfigWithFriParams>> = None;
 
+                let mut prev_witness_count: Option<u32> = None;
+                let mut stable_prep: Option<NextLayerPrepCache<ConfigWithFriParams>> = None;
+
                 for layer in 1..=num_recursive_layers {
                     let layer_table_packing = if layer == 1 {
                         TablePacking::new(1, 2)
@@ -228,16 +231,47 @@ macro_rules! define_field_module {
                             &backend,
                             &params,
                         )
+                        .unwrap_or_else(|e| panic!("Failed to prove layer {layer}: {e:?}"))
                     } else {
                         let input = output.as_ref().unwrap().into_recursion_input::<BatchOnly>();
-                        build_and_prove_next_layer::<ConfigWithFriParams, _, _, D>(
+
+                        let (verification_circuit, verifier_result) =
+                            build_next_layer_circuit::<ConfigWithFriParams, BatchOnly, _, D>(
+                                &input, &config, &backend,
+                            )
+                            .unwrap_or_else(|e| {
+                                panic!("Failed to build circuit layer {layer}: {e:?}")
+                            });
+
+                        let current_witness_count = verification_circuit.witness_count;
+                        let is_stable = prev_witness_count == Some(current_witness_count);
+                        prev_witness_count = Some(current_witness_count);
+
+                        if is_stable && stable_prep.is_none() {
+                            stable_prep = Some(
+                                build_next_layer_prep::<ConfigWithFriParams, BatchOnly, _, D>(
+                                    &verification_circuit,
+                                    &config,
+                                    &backend,
+                                    &params,
+                                )
+                                .unwrap_or_else(|e| {
+                                    panic!("Failed to build prep cache: {e:?}")
+                                }),
+                            );
+                        }
+
+                        prove_next_layer::<ConfigWithFriParams, BatchOnly, _, D>(
                             &input,
+                            verification_circuit,
+                            &verifier_result,
                             &config,
                             &backend,
                             &params,
+                            stable_prep.as_ref(),
                         )
-                    }
-                    .unwrap_or_else(|e| panic!("Failed to prove layer {layer}: {e:?}"));
+                        .unwrap_or_else(|e| panic!("Failed to prove layer {layer}: {e:?}"))
+                    };
 
                     report_proof_size(&out.0);
                     let mut prover = BatchStarkProver::new(config.clone())

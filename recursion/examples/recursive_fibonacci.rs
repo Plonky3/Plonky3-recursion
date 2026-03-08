@@ -222,6 +222,15 @@ macro_rules! define_field_module {
                         }
 
                         let mut output = RecursionOutput(proof_0, Rc::new(circuit_prover_data_0));
+
+                        // The verifier circuit grows until the proof size stabilises (fixed point).
+                        // Track consecutive identical proof witness counts to detect this.
+                        let mut prev_witness_count: Option<u32> = None;
+                        let mut stable_prep: Option<NextLayerPrepCache<$cfg_type>> = None;
+                        // Seed used when the circuit first stabilised; all cached layers reuse
+                        // this seed so that the cached PCS commitment stays valid.
+                        let mut stable_seed: Option<u64> = None;
+
                         for layer in 1..=num_recursive_layers {
                             let params = ProveNextLayerParams {
                                 table_packing: table_packing.with_fri_params(
@@ -231,11 +240,46 @@ macro_rules! define_field_module {
                                 use_npos_in_circuit: true,
                                 constraint_profile: ConstraintProfile::Standard,
                             };
-                            let config: $cfg_type = $cfg_fn(layer as u64);
+                            let seed = stable_seed.unwrap_or(layer as u64);
+                            let config: $cfg_type = $cfg_fn(seed);
 
                             let input = output.into_recursion_input::<BatchOnly>();
-                            let out = build_and_prove_next_layer::<$cfg_type, _, _, D>(
-                                &input, &config, &backend, &params,
+
+                            let (verification_circuit, verifier_result) =
+                                build_next_layer_circuit::<$cfg_type, BatchOnly, _, D>(
+                                    &input, &config, &backend,
+                                )
+                                .unwrap_or_else(|e| {
+                                    panic!("Failed to build circuit layer {layer}: {e:?}")
+                                });
+
+                            let current_witness_count = verification_circuit.witness_count;
+                            let is_stable = prev_witness_count == Some(current_witness_count);
+                            prev_witness_count = Some(current_witness_count);
+
+                            if is_stable && stable_prep.is_none() {
+                                stable_seed = Some(seed);
+                                stable_prep = Some(
+                                    build_next_layer_prep::<$cfg_type, BatchOnly, _, D>(
+                                        &verification_circuit,
+                                        &config,
+                                        &backend,
+                                        &params,
+                                    )
+                                    .unwrap_or_else(|e| {
+                                        panic!("Failed to build prep cache: {e:?}")
+                                    }),
+                                );
+                            }
+
+                            let out = prove_next_layer::<$cfg_type, BatchOnly, _, D>(
+                                &input,
+                                verification_circuit,
+                                &verifier_result,
+                                &config,
+                                &backend,
+                                &params,
+                                stable_prep.as_ref(),
                             )
                             .unwrap_or_else(|e| panic!("Failed to prove layer {layer}: {e:?}"));
 
