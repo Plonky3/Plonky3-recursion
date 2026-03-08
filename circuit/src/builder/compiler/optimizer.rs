@@ -38,6 +38,9 @@ impl Optimizer {
     /// - BoolCheck fusion: detects `b * (b - 1) = 0` patterns and fuses them into BoolCheck ops
     /// - MulAdd fusion: detects `a * b + c` patterns and fuses them into MulAdd ops
     ///
+    /// *Note*: CSE is implemented within the
+    /// [ExpressionBuilder](crate::builder::expression_builder::ExpressionBuilder) itself.
+    ///
     /// Future passes that can be added here:
     /// - Dead code elimination
     pub fn optimize<F: Field>(
