@@ -68,7 +68,9 @@ mod tests {
     use p3_test_utils::baby_bear_params::*;
 
     use super::add_hash_slice;
-    use crate::ops::{Poseidon2Config, Poseidon2Params, generate_poseidon2_trace};
+    use crate::ops::{
+        Poseidon2Config, Poseidon2Params, generate_poseidon2_trace, generate_recompose_trace,
+    };
     use crate::{CircuitBuilder, ExprId};
 
     type CF = Challenge;
@@ -99,6 +101,7 @@ mod tests {
                 generate_poseidon2_trace::<CF, DummyParams>,
                 perm.clone(),
             );
+            builder.enable_recompose::<F>(generate_recompose_trace::<F, CF>);
 
             let input_exprs: Vec<ExprId> = (0..base_inputs.len())
                 .chunks(<CF as BasedVectorSpace<F>>::DIMENSION)
@@ -174,6 +177,7 @@ mod tests {
             generate_poseidon2_trace::<CF, DummyParams>,
             perm,
         );
+        builder.enable_recompose::<F>(generate_recompose_trace::<F, CF>);
 
         // Pack base inputs into extension elements (will zero-pad the last one)
         let input_exprs: Vec<ExprId> = base_inputs

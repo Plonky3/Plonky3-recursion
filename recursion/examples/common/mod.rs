@@ -7,7 +7,7 @@ pub use std::sync::Arc;
 
 pub use clap::{Args as ClapArgs, Parser, ValueEnum};
 pub use p3_challenger::DuplexChallenger;
-pub use p3_circuit::ops::generate_poseidon2_trace;
+pub use p3_circuit::ops::{generate_poseidon2_trace, generate_recompose_trace};
 pub use p3_circuit::{CircuitBuilder, CircuitRunner, NonPrimitiveOpId};
 pub use p3_circuit_prover::batch_stark_prover::{
     poseidon2_air_builders_d2, poseidon2_air_builders_d4,
@@ -211,7 +211,8 @@ macro_rules! define_field_module_types {
         $poseidon2_air_builders_fn:ident,
         $backend_ctor:ident,
         $backend_width:expr,
-        $backend_rate:expr
+        $backend_rate:expr,
+        $enable_recompose_fn:ident
     ) => {
         pub type F = $field;
         pub const D: usize = $d;
@@ -363,6 +364,7 @@ macro_rules! define_field_module_types {
                     generate_poseidon2_trace::<Challenge, $poseidon2_circuit_config>,
                     perm,
                 );
+                circuit.$enable_recompose_fn::<F>(generate_recompose_trace::<F, Challenge>);
                 Ok(())
             }
 
@@ -438,6 +440,7 @@ macro_rules! define_field_module_types {
                     generate_poseidon2_trace::<Challenge, $poseidon2_circuit_config>,
                     perm,
                 );
+                circuit.$enable_recompose_fn::<F>(generate_recompose_trace::<F, Challenge>);
                 Ok(())
             }
 

@@ -11,13 +11,13 @@ use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 use p3_batch_stark::{
     BatchProof, CommonData, ProverData, StarkInstance, prove_batch, verify_batch,
 };
-use p3_circuit::ops::generate_poseidon2_trace;
+use p3_circuit::ops::{generate_poseidon2_trace, generate_recompose_trace};
 use p3_circuit::{CircuitBuilder, NonPrimitiveOpId};
-use p3_circuit_prover::batch_stark_prover::poseidon2_air_builders_d4;
+use p3_circuit_prover::batch_stark_prover::{poseidon2_air_builders_d4, recompose_air_builders_d4};
 use p3_circuit_prover::common::{NpoPreprocessor, get_airs_and_degrees_with_prep};
 use p3_circuit_prover::{
     BatchStarkProver, CircuitProverData, ConstraintProfile, Poseidon2Config, Poseidon2Preprocessor,
-    TablePacking,
+    RecomposePreprocessor, TablePacking,
 };
 use p3_field::Field;
 use p3_fri::{HidingFriPcs, TwoAdicFriPcs, create_test_fri_params};
@@ -216,6 +216,7 @@ fn test_zk_aggregation() -> Result<(), VerificationError> {
         generate_poseidon2_trace::<Challenge, KoalaBearD4Width16>,
         perm,
     );
+    circuit_builder.enable_recompose::<F>(generate_recompose_trace::<F, Challenge>);
 
     let (left_verifier_inputs, left_op_ids) = add_zk_batch_verifier_to_circuit(
         &config_zk_left,
@@ -285,12 +286,17 @@ fn test_zk_aggregation() -> Result<(), VerificationError> {
 
     let poseidon2_config = Poseidon2Config::KoalaBearD4Width16;
     let table_packing = TablePacking::new(1, 8);
-    let poseidon2_prep: [Box<dyn NpoPreprocessor<F>>; 1] = [Box::new(Poseidon2Preprocessor)];
+    let npo_prep: Vec<Box<dyn NpoPreprocessor<F>>> = vec![
+        Box::new(Poseidon2Preprocessor),
+        Box::new(RecomposePreprocessor),
+    ];
+    let mut air_builders = poseidon2_air_builders_d4();
+    air_builders.extend(recompose_air_builders_d4());
     let (airs_degrees, preprocessed_columns) = get_airs_and_degrees_with_prep::<MyConfig, _, 4>(
         &aggregation_circuit,
         table_packing,
-        &poseidon2_prep,
-        &poseidon2_air_builders_d4(),
+        &npo_prep,
+        &air_builders,
         ConstraintProfile::Standard,
     )
     .unwrap();
@@ -301,6 +307,7 @@ fn test_zk_aggregation() -> Result<(), VerificationError> {
 
     let mut prover = BatchStarkProver::new(config_outer).with_table_packing(table_packing);
     prover.register_poseidon2_table(poseidon2_config);
+    prover.register_recompose_table();
 
     let aggregated_proof = prover
         .prove_all_tables(&aggregation_traces, &circuit_prover_data)

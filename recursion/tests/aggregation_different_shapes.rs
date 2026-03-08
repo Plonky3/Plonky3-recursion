@@ -6,7 +6,7 @@ mod common;
 
 use p3_batch_stark::ProverData;
 use p3_circuit::CircuitBuilder;
-use p3_circuit::ops::generate_poseidon2_trace;
+use p3_circuit::ops::{generate_poseidon2_trace, generate_recompose_trace};
 use p3_circuit::test_utils::{FibonacciAir, generate_trace_rows};
 use p3_circuit_prover::common::get_airs_and_degrees_with_prep;
 use p3_circuit_prover::{BatchStarkProver, CircuitProverData, ConstraintProfile, TablePacking};
@@ -109,6 +109,7 @@ fn test_aggregation_with_different_shapes() -> Result<(), VerificationError> {
         generate_poseidon2_trace::<Challenge, KoalaBearD4Width16>,
         perm,
     );
+    circuit_builder.enable_recompose::<F>(generate_recompose_trace::<F, Challenge>);
 
     // Build the verifier inputs for the Uni-Stark.
     let left_fri_params = fri_verifier_params(2);

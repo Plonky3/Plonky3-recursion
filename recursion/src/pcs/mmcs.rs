@@ -605,8 +605,8 @@ mod test {
     use alloc::vec;
     use alloc::vec::Vec;
 
-    use p3_circuit::ops::generate_poseidon2_trace;
     use p3_circuit::ops::mmcs::format_openings;
+    use p3_circuit::ops::{generate_poseidon2_trace, generate_recompose_trace};
     use p3_matrix::Matrix;
     use p3_matrix::dense::{DenseMatrix, RowMajorMatrix};
     use p3_poseidon2_circuit_air::KoalaBearD4Width16;
@@ -673,6 +673,7 @@ mod test {
                 generate_poseidon2_trace::<CF, KoalaBearD4Width16>,
                 perm.clone(),
             );
+            builder.enable_recompose::<F>(generate_recompose_trace::<F, CF>);
 
             let batch_opening = mmcs.open_batch(index, &prover_data);
 
@@ -965,6 +966,7 @@ mod test {
             generate_poseidon2_trace::<CF, KoalaBearD4Width16>,
             perm,
         );
+        builder.enable_recompose::<F>(generate_recompose_trace::<F, CF>);
 
         // open the 3rd row of each matrix, mess with proof, and verify
         let index = 3;
@@ -1098,6 +1100,7 @@ mod test {
             let circuit_prover_data = CircuitProverData::new(prover_data, preprocessed_columns);
             let mut prover = BatchStarkProver::new(config).with_table_packing(table_packing);
             prover.register_poseidon2_table(Poseidon2Config::KoalaBearD4Width16);
+            prover.register_recompose_table();
 
             let proof = prover
                 .prove_all_tables(&traces, &circuit_prover_data)
@@ -1152,6 +1155,7 @@ mod test {
                 generate_poseidon2_trace::<CF, KoalaBearD4Width16>,
                 perm.clone(),
             );
+            builder.enable_recompose::<F>(generate_recompose_trace::<F, CF>);
 
             let batch_opening = mmcs.open_batch(index, &prover_data);
 
@@ -1310,6 +1314,7 @@ mod test {
                 generate_poseidon2_trace::<CF, KoalaBearD4Width16>,
                 perm.clone(),
             );
+            builder.enable_recompose::<F>(generate_recompose_trace::<F, CF>);
 
             let batch_opening = mmcs.open_batch(index, &prover_data);
 

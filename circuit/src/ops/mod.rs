@@ -1,6 +1,7 @@
 pub mod hash;
 pub mod mmcs;
 pub mod poseidon2_perm;
+pub mod recompose;
 
 pub use poseidon2_perm::{
     // D=1 configurations for base field challenges
@@ -20,4 +21,8 @@ pub use poseidon2_perm::{
     Poseidon2PermPrivateData,
     Poseidon2Trace,
     generate_poseidon2_trace,
+};
+pub use recompose::{
+    RecomposeCircuitPlugin, RecomposeCircuitRow, RecomposeConfig, RecomposeFn, RecomposeTrace,
+    generate_recompose_trace,
 };

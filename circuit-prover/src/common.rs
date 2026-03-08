@@ -331,8 +331,10 @@ where
         }
     }
 
-    for (op_type, prep_base) in non_primitive_base.iter() {
-        for builder in non_primitive_air_builders {
+    // Iterate air builders first (fixed registration order) so that the
+    // resulting AIR ordering matches the prover's non_primitive_provers order.
+    for builder in non_primitive_air_builders {
+        for (op_type, prep_base) in non_primitive_base.iter() {
             if let Some((air, degree)) =
                 builder.try_build(op_type, prep_base, min_height, constraint_profile)
             {

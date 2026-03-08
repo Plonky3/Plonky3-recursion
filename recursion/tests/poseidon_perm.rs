@@ -1,7 +1,9 @@
 mod common;
 
 use p3_circuit::CircuitBuilder;
-use p3_circuit::ops::{BabyBearD1Width16, Poseidon2CircuitRow, generate_poseidon2_trace};
+use p3_circuit::ops::{
+    BabyBearD1Width16, Poseidon2CircuitRow, generate_poseidon2_trace, generate_recompose_trace,
+};
 use p3_fri::create_test_fri_params;
 use p3_poseidon2::ExternalLayerConstants;
 use p3_poseidon2_air::RoundConstants;
@@ -147,6 +149,7 @@ fn test_poseidon2_perm_verifier() -> Result<(), VerificationError> {
         generate_poseidon2_trace::<Challenge, BabyBearD1Width16>,
         perm,
     );
+    circuit_builder.enable_recompose::<F>(generate_recompose_trace::<F, Challenge>);
     let verifier_inputs = StarkVerifierInputsBuilder::<
         MyConfig,
         MerkleCapTargets<F, DIGEST_ELEMS>,

@@ -2,7 +2,7 @@ mod common;
 
 use p3_baby_bear::default_babybear_poseidon2_16;
 use p3_circuit::CircuitBuilder;
-use p3_circuit::ops::generate_poseidon2_trace;
+use p3_circuit::ops::{generate_poseidon2_trace, generate_recompose_trace};
 use p3_circuit::test_utils::{FibonacciAir, generate_trace_rows};
 use p3_field::PrimeCharacteristicRing;
 use p3_fri::create_test_fri_params;
@@ -93,6 +93,7 @@ fn run_recursive_verifier(
         generate_poseidon2_trace::<Challenge, BabyBearD4Width16>,
         setup.perm.clone(),
     );
+    circuit_builder.enable_recompose::<F>(generate_recompose_trace::<F, Challenge>);
 
     // Allocate all targets
     let verifier_inputs = StarkVerifierInputsBuilder::<
@@ -229,6 +230,7 @@ fn test_truncated_fri_proof() {
         generate_poseidon2_trace::<Challenge, BabyBearD4Width16>,
         setup.perm.clone(),
     );
+    circuit_builder.enable_recompose::<F>(generate_recompose_trace::<F, Challenge>);
     // Allocate all targets
     let verifier_inputs = StarkVerifierInputsBuilder::<
         MyConfig,

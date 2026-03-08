@@ -3,7 +3,7 @@ mod common;
 use p3_baby_bear::default_babybear_poseidon2_16;
 use p3_challenger::{CanObserve, CanSampleBits, FieldChallenger, GrindingChallenger};
 use p3_circuit::CircuitBuilder;
-use p3_circuit::ops::generate_poseidon2_trace;
+use p3_circuit::ops::{generate_poseidon2_trace, generate_recompose_trace};
 use p3_commit::Pcs;
 use p3_dft::Radix2DitParallel;
 use p3_field::coset::TwoAdicMultiplicativeCoset;
@@ -573,6 +573,7 @@ fn run_fri_test_with_mmcs(setup: FriSetup) {
         generate_poseidon2_trace::<Challenge, BabyBearD4Width16>,
         perm_for_circuit,
     );
+    builder.enable_recompose::<F>(generate_recompose_trace::<F, Challenge>);
 
     // 1) Allocate FriProofTargets
     let fri_targets = FriTargets::new(&mut builder, &result.fri_proof);

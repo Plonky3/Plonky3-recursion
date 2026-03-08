@@ -3,14 +3,17 @@ mod common;
 use p3_baby_bear::default_babybear_poseidon2_16;
 use p3_batch_stark::{CommonData, ProverData};
 use p3_circuit::op::PrimitiveOpType;
-use p3_circuit::ops::{Poseidon2PermCall, generate_poseidon2_trace};
+use p3_circuit::ops::{Poseidon2PermCall, generate_poseidon2_trace, generate_recompose_trace};
 use p3_circuit::{CircuitBuilder, Poseidon2PermOps};
 use p3_circuit_prover::air::{AluAir, ConstAir, PublicAir};
-use p3_circuit_prover::batch_stark_prover::{PrimitiveTable, poseidon2_air_builders_d4};
+use p3_circuit_prover::batch_stark_prover::{
+    PrimitiveTable, poseidon2_air_builders_d4, poseidon2_table_provers_d4,
+    recompose_air_builders_d4, recompose_table_provers_d4,
+};
 use p3_circuit_prover::common::{NpoPreprocessor, get_airs_and_degrees_with_prep};
 use p3_circuit_prover::{
     BatchStarkProof, BatchStarkProver, CircuitProverData, ConstraintProfile, Poseidon2Config,
-    Poseidon2Preprocessor, TablePacking,
+    Poseidon2Preprocessor, RecomposePreprocessor, TablePacking,
 };
 use p3_fri::create_test_fri_params;
 use p3_lookup::logup::LogUpGadget;
@@ -35,6 +38,7 @@ fn setup_circuit_builder() -> CircuitBuilder<Challenge> {
         generate_poseidon2_trace::<Challenge, BabyBearD4Width16>,
         poseidon2_perm,
     );
+    circuit_builder.enable_recompose::<F>(generate_recompose_trace::<F, Challenge>);
     circuit_builder
 }
 
@@ -748,9 +752,11 @@ fn get_verifier_inputs_and_challenges(
         common,
         lookup_gadget,
         Poseidon2Config::BabyBearD4Width16,
-        &p3_circuit_prover::batch_stark_prover::poseidon2_table_provers_d4(
-            Poseidon2Config::BabyBearD4Width16,
-        ),
+        &{
+            let mut tp = poseidon2_table_provers_d4(Poseidon2Config::BabyBearD4Width16);
+            tp.extend(recompose_table_provers_d4());
+            tp
+        },
     )
     .map(|(inputs, _mmcs_op_ids)| inputs);
 
@@ -814,6 +820,7 @@ fn test_poseidon2_ctl_lookups() {
         generate_poseidon2_trace::<Challenge, BabyBearD4Width16>,
         poseidon2_perm,
     );
+    builder.enable_recompose::<F>(generate_recompose_trace::<F, Challenge>);
 
     // Create public inputs that will also serve as witnesses for the Poseidon2 inputs
     let input0 = builder.public_input();
@@ -856,13 +863,18 @@ fn test_poseidon2_ctl_lookups() {
 
     let circuit = builder.build().unwrap();
 
-    let poseidon2_prep: [Box<dyn NpoPreprocessor<F>>; 1] = [Box::new(Poseidon2Preprocessor)];
+    let npo_prep: Vec<Box<dyn NpoPreprocessor<F>>> = vec![
+        Box::new(Poseidon2Preprocessor),
+        Box::new(RecomposePreprocessor),
+    ];
+    let mut air_builders = poseidon2_air_builders_d4();
+    air_builders.extend(recompose_air_builders_d4());
     let (airs_degrees, preprocessed_columns) =
         get_airs_and_degrees_with_prep::<MyConfig, Challenge, 4>(
             &circuit,
             table_packing,
-            &poseidon2_prep,
-            &poseidon2_air_builders_d4(),
+            &npo_prep,
+            &air_builders,
             ConstraintProfile::Standard,
         )
         .unwrap();
@@ -884,6 +896,7 @@ fn test_poseidon2_ctl_lookups() {
 
     let mut prover = BatchStarkProver::new(config_proving).with_table_packing(table_packing);
     prover.register_poseidon2_table(poseidon2_config);
+    prover.register_recompose_table();
 
     let proof = prover
         .prove_all_tables(&traces, &circuit_prover_data)
@@ -912,6 +925,7 @@ fn test_poseidon2_chained_ctl_lookups() {
         generate_poseidon2_trace::<Challenge, BabyBearD4Width16>,
         poseidon2_perm,
     );
+    builder.enable_recompose::<F>(generate_recompose_trace::<F, Challenge>);
 
     // Create public inputs for the first operation's inputs
     let input0 = builder.public_input();
@@ -979,13 +993,18 @@ fn test_poseidon2_chained_ctl_lookups() {
 
     let circuit = builder.build().unwrap();
 
-    let poseidon2_prep: [Box<dyn NpoPreprocessor<F>>; 1] = [Box::new(Poseidon2Preprocessor)];
+    let npo_prep: Vec<Box<dyn NpoPreprocessor<F>>> = vec![
+        Box::new(Poseidon2Preprocessor),
+        Box::new(RecomposePreprocessor),
+    ];
+    let mut air_builders = poseidon2_air_builders_d4();
+    air_builders.extend(recompose_air_builders_d4());
     let (airs_degrees, preprocessed_columns) =
         get_airs_and_degrees_with_prep::<MyConfig, Challenge, 4>(
             &circuit,
             table_packing,
-            &poseidon2_prep,
-            &poseidon2_air_builders_d4(),
+            &npo_prep,
+            &air_builders,
             ConstraintProfile::Standard,
         )
         .unwrap();
@@ -1007,6 +1026,7 @@ fn test_poseidon2_chained_ctl_lookups() {
 
     let mut prover = BatchStarkProver::new(config_proving).with_table_packing(table_packing);
     prover.register_poseidon2_table(poseidon2_config);
+    prover.register_recompose_table();
 
     let proof = prover
         .prove_all_tables(&traces, &circuit_prover_data)

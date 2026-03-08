@@ -8,14 +8,16 @@ use std::error::Error;
 
 use p3_batch_stark::ProverData;
 use p3_circuit::op::NpoTypeId;
-use p3_circuit::ops::{Poseidon2PermCall, Poseidon2PermOps, generate_poseidon2_trace};
+use p3_circuit::ops::{
+    Poseidon2PermCall, Poseidon2PermOps, generate_poseidon2_trace, generate_recompose_trace,
+};
 use p3_circuit::{CircuitBuilder, ExprId};
-use p3_circuit_prover::batch_stark_prover::poseidon2_air_builders_d4;
+use p3_circuit_prover::batch_stark_prover::{poseidon2_air_builders_d4, recompose_air_builders_d4};
 use p3_circuit_prover::common::{NpoPreprocessor, get_airs_and_degrees_with_prep};
 use p3_circuit_prover::config::KoalaBearConfig;
 use p3_circuit_prover::{
     BatchStarkProver, CircuitProverData, ConstraintProfile, Poseidon2Config, Poseidon2Preprocessor,
-    TablePacking, config,
+    RecomposePreprocessor, TablePacking, config,
 };
 use p3_field::extension::BinomialExtensionField;
 use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
@@ -76,6 +78,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         generate_poseidon2_trace::<Ext4, KoalaBearD4Width16>,
         perm,
     );
+    builder.enable_recompose::<Base>(generate_recompose_trace::<Base, Ext4>);
 
     // Allocate initial input limbs (constants for this example).
     let first_inputs_expr: [ExprId; 4] =
@@ -129,13 +132,18 @@ fn main() -> Result<(), Box<dyn Error>> {
     let stark_config = config::koala_bear().build();
     let table_packing = TablePacking::new(2, 2);
     let poseidon2_config = Poseidon2Config::KoalaBearD4Width16;
-    let poseidon2_prep: [Box<dyn NpoPreprocessor<Base>>; 1] = [Box::new(Poseidon2Preprocessor)];
+    let npo_prep: Vec<Box<dyn NpoPreprocessor<Base>>> = vec![
+        Box::new(Poseidon2Preprocessor),
+        Box::new(RecomposePreprocessor),
+    ];
+    let mut air_builders = poseidon2_air_builders_d4();
+    air_builders.extend(recompose_air_builders_d4());
     let (airs_degrees, preprocessed_columns) =
         get_airs_and_degrees_with_prep::<KoalaBearConfig, _, 4>(
             &circuit,
             table_packing,
-            &poseidon2_prep,
-            &poseidon2_air_builders_d4(),
+            &npo_prep,
+            &air_builders,
             ConstraintProfile::Standard,
         )
         .unwrap();
@@ -191,6 +199,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let mut prover = BatchStarkProver::new(stark_config).with_table_packing(table_packing);
     prover.register_poseidon2_table(poseidon2_config);
+    prover.register_recompose_table();
 
     let proof = prover.prove_all_tables(&traces, &circuit_prover_data)?;
     prover.verify_all_tables(&proof, circuit_prover_data.common_data())?;

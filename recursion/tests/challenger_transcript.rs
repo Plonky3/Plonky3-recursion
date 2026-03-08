@@ -6,7 +6,7 @@
 mod common;
 
 use p3_challenger::{CanObserve, CanSample, CanSampleBits, FieldChallenger};
-use p3_circuit::ops::{Poseidon2Config, generate_poseidon2_trace};
+use p3_circuit::ops::{Poseidon2Config, generate_poseidon2_trace, generate_recompose_trace};
 use p3_circuit::{CircuitBuilder, Traces};
 use p3_field::PrimeField64;
 use p3_poseidon2_circuit_air::BabyBearD4Width16;
@@ -32,6 +32,7 @@ mod baby_bear_d4 {
             generate_poseidon2_trace::<EF, BabyBearD4Width16>,
             perm,
         );
+        circuit.enable_recompose::<F>(generate_recompose_trace::<F, EF>);
         circuit
     }
 
@@ -1020,6 +1021,7 @@ mod koala_bear_d4 {
             generate_poseidon2_trace::<EF, KoalaBearD4Width16>,
             perm,
         );
+        circuit.enable_recompose::<F>(generate_recompose_trace::<F, EF>);
         circuit
     }
 
@@ -1237,6 +1239,7 @@ mod koala_bear_d1 {
             generate_poseidon2_trace::<F, KoalaBearD1Width16>,
             perm,
         );
+        circuit.enable_recompose::<F>(generate_recompose_trace::<F, F>);
         circuit
     }
 
@@ -1390,6 +1393,7 @@ mod goldilocks_d2 {
             generate_poseidon2_trace::<EF, GoldilocksD2Width8>,
             make_perm(),
         );
+        circuit.enable_recompose::<F>(generate_recompose_trace::<F, EF>);
         circuit
     }
 

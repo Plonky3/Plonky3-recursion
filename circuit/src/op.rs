@@ -418,6 +418,11 @@ impl NpoTypeId {
         Self::new(alloc::format!("poseidon2_perm/{}", config.variant_name()))
     }
 
+    /// Convenience: Recompose (BF→EF packing) operation type ID.
+    pub fn recompose() -> Self {
+        Self::new("recompose")
+    }
+
     /// Convenience: Unconstrained (hint) operation type ID.
     ///
     /// This is kept only for profiling / debugging purposes; Unconstrained is

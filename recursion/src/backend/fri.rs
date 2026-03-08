@@ -8,12 +8,14 @@ use alloc::{format, vec};
 use p3_circuit::{CircuitBuilder, CircuitRunner, NonPrimitiveOpId};
 use p3_circuit_prover::batch_stark_prover::{
     poseidon2_air_builders_d2, poseidon2_air_builders_d4, poseidon2_preprocessor,
-    poseidon2_table_provers_d2, poseidon2_table_provers_d4,
+    poseidon2_table_provers_d2, poseidon2_table_provers_d4, recompose_air_builders_d2,
+    recompose_air_builders_d4, recompose_preprocessor, recompose_table_provers_d2,
+    recompose_table_provers_d4,
 };
 use p3_circuit_prover::common::{NpoAirBuilder, NpoPreprocessor};
 use p3_circuit_prover::config::StarkField;
 use p3_circuit_prover::field_params::ExtractBinomialW;
-use p3_circuit_prover::{Poseidon2Preprocessor, TableProver};
+use p3_circuit_prover::{Poseidon2Preprocessor, RecomposePreprocessor, TableProver};
 use p3_commit::Pcs;
 use p3_field::extension::BinomiallyExtendable;
 use p3_field::{Algebra, BasedVectorSpace, ExtensionField, PrimeCharacteristicRing, PrimeField64};
@@ -372,6 +374,7 @@ where
     A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
     Val<SC>: PrimeField64 + BinomiallyExtendable<2> + StarkField,
     Poseidon2Preprocessor: NpoPreprocessor<Val<SC>>,
+    RecomposePreprocessor: NpoPreprocessor<Val<SC>>,
     SC::Challenge: BasedVectorSpace<Val<SC>>
         + From<Val<SC>>
         + ExtensionField<Val<SC>>
@@ -431,19 +434,26 @@ where
     }
 
     fn non_primitive_preprocessors(&self) -> Vec<Box<dyn NpoPreprocessor<Val<SC>>>> {
-        vec![poseidon2_preprocessor::<Val<SC>>()]
+        vec![
+            poseidon2_preprocessor::<Val<SC>>(),
+            recompose_preprocessor::<Val<SC>>(),
+        ]
     }
 
     fn non_primitive_provers(&self, ext_degree: usize) -> Vec<Box<dyn TableProver<SC>>> {
         if ext_degree == 2 {
-            poseidon2_table_provers_d2(self.0.challenger_perm_config)
+            let mut provers = poseidon2_table_provers_d2(self.0.challenger_perm_config);
+            provers.extend(recompose_table_provers_d2::<SC>());
+            provers
         } else {
             Vec::new()
         }
     }
 
     fn non_primitive_air_builders(&self) -> Vec<Box<dyn NpoAirBuilder<SC, 2>>> {
-        poseidon2_air_builders_d2()
+        let mut builders = poseidon2_air_builders_d2();
+        builders.extend(recompose_air_builders_d2::<SC>());
+        builders
     }
 }
 
@@ -454,6 +464,7 @@ where
     A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
     Val<SC>: PrimeField64 + BinomiallyExtendable<4> + StarkField,
     Poseidon2Preprocessor: NpoPreprocessor<Val<SC>>,
+    RecomposePreprocessor: NpoPreprocessor<Val<SC>>,
     SC::Challenge: BasedVectorSpace<Val<SC>>
         + From<Val<SC>>
         + ExtensionField<Val<SC>>
@@ -513,18 +524,25 @@ where
     }
 
     fn non_primitive_preprocessors(&self) -> Vec<Box<dyn NpoPreprocessor<Val<SC>>>> {
-        vec![poseidon2_preprocessor::<Val<SC>>()]
+        vec![
+            poseidon2_preprocessor::<Val<SC>>(),
+            recompose_preprocessor::<Val<SC>>(),
+        ]
     }
 
     fn non_primitive_provers(&self, ext_degree: usize) -> Vec<Box<dyn TableProver<SC>>> {
         if ext_degree == 4 {
-            poseidon2_table_provers_d4(self.0.challenger_perm_config)
+            let mut provers = poseidon2_table_provers_d4(self.0.challenger_perm_config);
+            provers.extend(recompose_table_provers_d4::<SC>());
+            provers
         } else {
             Vec::new()
         }
     }
 
     fn non_primitive_air_builders(&self) -> Vec<Box<dyn NpoAirBuilder<SC, 4>>> {
-        poseidon2_air_builders_d4()
+        let mut builders = poseidon2_air_builders_d4();
+        builders.extend(recompose_air_builders_d4::<SC>());
+        builders
     }
 }

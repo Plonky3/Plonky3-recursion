@@ -2,7 +2,7 @@ use p3_baby_bear::BabyBear;
 use p3_circuit::builder::CircuitBuilder;
 use p3_circuit::ops::hash::add_hash_slice;
 use p3_circuit::ops::poseidon2_perm::GoldilocksD2Width8;
-use p3_circuit::ops::{Poseidon2Config, generate_poseidon2_trace};
+use p3_circuit::ops::{Poseidon2Config, generate_poseidon2_trace, generate_recompose_trace};
 use p3_field::PrimeCharacteristicRing;
 use p3_goldilocks::{Goldilocks, Poseidon2Goldilocks};
 use p3_koala_bear::KoalaBear;
@@ -12,6 +12,7 @@ use super::*;
 use crate::ConstraintProfile;
 use crate::batch_stark_prover::{
     BABY_BEAR_MODULUS, KOALA_BEAR_MODULUS, poseidon2_air_builders_d2, poseidon2_air_builders_d4,
+    recompose_air_builders_d2, recompose_air_builders_d4,
 };
 use crate::common::get_airs_and_degrees_with_prep;
 use crate::config::{self, BabyBearConfig, GoldilocksConfig, KoalaBearConfig};
@@ -250,12 +251,14 @@ fn test_extension_field_table_lookups() {
 
     let circuit = builder.build().unwrap();
     let default_packing = TablePacking::default();
+    let mut air_builders_d4 = poseidon2_air_builders_d4();
+    air_builders_d4.extend(recompose_air_builders_d4());
     let (airs_degrees, preprocessed_columns) =
         get_airs_and_degrees_with_prep::<BabyBearConfig, _, D>(
             &circuit,
             default_packing,
             &[],
-            &poseidon2_air_builders_d4(),
+            &air_builders_d4,
             ConstraintProfile::Standard,
         )
         .unwrap();
@@ -509,12 +512,14 @@ fn test_goldilocks_batch_stark_extension_field_d2() {
     builder.assert_zero(diff);
 
     let circuit = builder.build().unwrap();
+    let mut air_builders_d2 = poseidon2_air_builders_d2();
+    air_builders_d2.extend(recompose_air_builders_d2());
     let (airs_degrees, preprocessed_columns) =
         get_airs_and_degrees_with_prep::<GoldilocksConfig, _, D>(
             &circuit,
             TablePacking::default(),
             &[],
-            &poseidon2_air_builders_d2(),
+            &air_builders_d2,
             ConstraintProfile::Standard,
         )
         .unwrap();
@@ -564,6 +569,7 @@ fn test_goldilocks_poseidon2_circuit_build_and_run() {
         generate_poseidon2_trace::<Ext2, GoldilocksD2Width8>,
         perm,
     );
+    builder.enable_recompose::<Goldilocks>(generate_recompose_trace::<Goldilocks, Ext2>);
     let poseidon2_config = Poseidon2Config::GoldilocksD2Width8;
     let inputs = [builder.public_input(), builder.public_input()];
     let hash_outputs = add_hash_slice(&mut builder, &poseidon2_config, &inputs, true).unwrap();

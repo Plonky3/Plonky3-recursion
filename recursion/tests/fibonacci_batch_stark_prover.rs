@@ -2,11 +2,15 @@ mod common;
 
 use p3_batch_stark::ProverData;
 use p3_circuit::CircuitBuilder;
-use p3_circuit::ops::generate_poseidon2_trace;
-use p3_circuit_prover::batch_stark_prover::poseidon2_air_builders_d4;
+use p3_circuit::ops::{generate_poseidon2_trace, generate_recompose_trace};
+use p3_circuit_prover::batch_stark_prover::{
+    poseidon2_air_builders_d4, poseidon2_table_provers_d4, recompose_air_builders_d4,
+    recompose_table_provers_d4,
+};
 use p3_circuit_prover::common::{NpoPreprocessor, get_airs_and_degrees_with_prep};
 use p3_circuit_prover::{
-    BatchStarkProver, CircuitProverData, ConstraintProfile, Poseidon2Preprocessor, TablePacking,
+    BatchStarkProver, CircuitProverData, ConstraintProfile, Poseidon2Preprocessor,
+    RecomposePreprocessor, TablePacking,
 };
 use p3_fri::create_test_fri_params;
 use p3_lookup::logup::LogUpGadget;
@@ -150,6 +154,7 @@ fn test_fibonacci_batch_verifier() {
         generate_poseidon2_trace::<Challenge, KoalaBearD4Width16>,
         poseidon2_perm,
     );
+    circuit_builder.enable_recompose::<F>(generate_recompose_trace::<F, Challenge>);
 
     // Attach verifier without manually building circuit_airs
     let (verifier_inputs, mmcs_op_ids) = verify_p3_batch_proof_circuit::<
@@ -170,9 +175,11 @@ fn test_fibonacci_batch_verifier() {
         common,
         &lookup_gadget,
         Poseidon2Config::KoalaBearD4Width16,
-        &p3_circuit_prover::batch_stark_prover::poseidon2_table_provers_d4(
-            Poseidon2Config::KoalaBearD4Width16,
-        ),
+        &{
+            let mut tp = poseidon2_table_provers_d4(Poseidon2Config::KoalaBearD4Width16);
+            tp.extend(recompose_table_provers_d4());
+            tp
+        },
     )
     .unwrap();
 
@@ -188,13 +195,18 @@ fn test_fibonacci_batch_verifier() {
 
     let verification_table_packing = TablePacking::new(1, 8);
     let poseidon2_config = Poseidon2Config::KoalaBearD4Width16;
-    let poseidon2_prep: [Box<dyn NpoPreprocessor<F>>; 1] = [Box::new(Poseidon2Preprocessor)];
+    let npo_prep: Vec<Box<dyn NpoPreprocessor<F>>> = vec![
+        Box::new(Poseidon2Preprocessor),
+        Box::new(RecomposePreprocessor),
+    ];
+    let mut air_builders = poseidon2_air_builders_d4();
+    air_builders.extend(recompose_air_builders_d4());
     let (verification_airs_degrees, verification_preprocessed_columns) =
         get_airs_and_degrees_with_prep::<MyConfig, _, 4>(
             &verification_circuit,
             verification_table_packing,
-            &poseidon2_prep,
-            &poseidon2_air_builders_d4(),
+            &npo_prep,
+            &air_builders,
             ConstraintProfile::Standard,
         )
         .unwrap();
@@ -244,6 +256,7 @@ fn test_fibonacci_batch_verifier() {
     let mut verification_prover =
         BatchStarkProver::new(config3).with_table_packing(verification_table_packing);
     verification_prover.register_poseidon2_table(poseidon2_config);
+    verification_prover.register_recompose_table();
 
     // Prove the verification circuit
     let verification_proof = verification_prover

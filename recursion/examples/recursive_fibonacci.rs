@@ -142,7 +142,8 @@ macro_rules! define_field_module {
                 $poseidon2_air_builders_fn,
                 $backend_ctor,
                 $backend_width,
-                $backend_rate
+                $backend_rate,
+                noop_enable_recompose
             );
 
             pub fn run(

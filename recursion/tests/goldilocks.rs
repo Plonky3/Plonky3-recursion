@@ -7,7 +7,7 @@
 mod common;
 
 use p3_circuit::CircuitBuilder;
-use p3_circuit::ops::{GoldilocksD2Width8, generate_poseidon2_trace};
+use p3_circuit::ops::{GoldilocksD2Width8, generate_poseidon2_trace, generate_recompose_trace};
 use p3_circuit::test_utils::{FibonacciAir, generate_trace_rows};
 use p3_fri::create_test_fri_params;
 use p3_goldilocks::Poseidon2Goldilocks;
@@ -77,6 +77,7 @@ fn test_goldilocks_fibonacci_verifier() -> Result<(), VerificationError> {
         generate_poseidon2_trace::<Challenge, GoldilocksD2Width8>,
         perm,
     );
+    circuit_builder.enable_recompose::<F>(generate_recompose_trace::<F, Challenge>);
 
     // Allocate all targets
     let verifier_inputs = StarkVerifierInputsBuilder::<
@@ -181,6 +182,7 @@ fn test_goldilocks_mul_verifier_with_preprocessed() -> Result<(), VerificationEr
         generate_poseidon2_trace::<Challenge, GoldilocksD2Width8>,
         perm,
     );
+    circuit_builder.enable_recompose::<F>(generate_recompose_trace::<F, Challenge>);
 
     // Allocate all targets
     let verifier_inputs = StarkVerifierInputsBuilder::<

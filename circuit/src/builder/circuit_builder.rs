@@ -8,7 +8,7 @@ use core::marker::PhantomData;
 
 use hashbrown::HashMap;
 use itertools::zip_eq;
-use p3_field::{ExtensionField, Field, PrimeCharacteristicRing, PrimeField64};
+use p3_field::{BasedVectorSpace, ExtensionField, Field, PrimeCharacteristicRing, PrimeField64};
 use p3_symmetric::Permutation;
 
 #[cfg(feature = "profiling")]
@@ -18,7 +18,9 @@ use super::{BuilderConfig, ExpressionBuilder, PublicInputTracker};
 use crate::circuit::Circuit;
 use crate::op::{HintExecutor, NpoConfig, NpoRegistry, NpoTypeId, Op, Poseidon2Config};
 use crate::ops::poseidon2_perm::Poseidon2CircuitPlugin;
-use crate::ops::{Poseidon2Params, Poseidon2PermCall, Poseidon2PermCallBase};
+use crate::ops::{
+    Poseidon2Params, Poseidon2PermCall, Poseidon2PermCallBase, RecomposeCircuitPlugin,
+};
 use crate::tables::TraceGeneratorFn;
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};
 use crate::{CircuitBuilderError, CircuitError, Poseidon2PermOps};
@@ -51,6 +53,9 @@ pub struct CircuitBuilder<F: Field> {
 
     /// Tags for non-primitive operations - enables setting private data by name.
     tag_to_op: HashMap<String, NonPrimitiveOpId>,
+
+    /// Whether the recompose NPO table is enabled (bypasses ALU-based recompose).
+    recompose_npo_enabled: bool,
 }
 
 /// Per-op extra parameters that are not encoded in the op type.
@@ -58,6 +63,7 @@ pub struct CircuitBuilder<F: Field> {
 pub enum NonPrimitiveOpParams<F> {
     Poseidon2Perm { new_start: bool, merkle_path: bool },
     Unconstrained { executor: Box<dyn HintExecutor<F>> },
+    Recompose,
 }
 
 impl<F: Field> Clone for NonPrimitiveOpParams<F> {
@@ -73,6 +79,7 @@ impl<F: Field> Clone for NonPrimitiveOpParams<F> {
             Self::Unconstrained { executor } => Self::Unconstrained {
                 executor: executor.boxed(),
             },
+            Self::Recompose => Self::Recompose,
         }
     }
 }
@@ -189,6 +196,7 @@ where
             npo_registry: HashMap::new(),
             tag_to_expr: HashMap::new(),
             tag_to_op: HashMap::new(),
+            recompose_npo_enabled: false,
         }
     }
 
@@ -326,6 +334,40 @@ where
 
         let plugin = Poseidon2CircuitPlugin::new_base(Config::CONFIG, exec, trace_generator);
         self.register_npo(plugin);
+    }
+
+    /// Enables the recompose NPO table, which replaces ALU-based `recompose_base_coeffs_to_ext`
+    /// with a dedicated table that packs D base-field witnesses into one extension-field witness.
+    pub fn enable_recompose<BF>(&mut self, trace_generator: TraceGeneratorFn<F>)
+    where
+        BF: PrimeField64,
+        F: ExtensionField<BF>,
+    {
+        let d = <F as BasedVectorSpace<BF>>::DIMENSION;
+
+        // Build a recompose closure that captures the BF→EF relationship via
+        // `BasedVectorSpace<BF>`. Each input value is an EF element of the form
+        // (c_i, 0, …, 0); we extract the BF scalar and reconstruct the full EF.
+        #[allow(clippy::type_complexity)]
+        let recompose_fn: Arc<dyn Fn(&[F]) -> F + Send + Sync> = Arc::new(|values: &[F]| {
+            <F as BasedVectorSpace<BF>>::from_basis_coefficients_fn(|i| {
+                <F as BasedVectorSpace<BF>>::as_basis_coefficients_slice(&values[i])[0]
+            })
+        });
+
+        let plugin = RecomposeCircuitPlugin::new(d, trace_generator, recompose_fn);
+        self.register_npo(plugin);
+        self.recompose_npo_enabled = true;
+    }
+
+    /// No-op recompose enablement: leaves `recompose_base_coeffs_to_ext` using
+    /// the ALU fallback. Has the same signature as `enable_recompose` so it
+    /// can be selected via a macro `$ident` parameter.
+    pub fn noop_enable_recompose<BF>(&mut self, _trace_generator: TraceGeneratorFn<F>)
+    where
+        BF: PrimeField64,
+        F: ExtensionField<BF>,
+    {
     }
 
     /// Checks whether an op type is enabled on this builder.
@@ -1015,7 +1057,8 @@ where
     /// Returns error if `coeffs.len() != F::DIMENSION`
     ///
     /// # Cost
-    /// D multiplications + (D-1) additions
+    /// When recompose NPO is enabled: 1 NPO row (zero ALU cost).
+    /// Otherwise: D multiplications + (D-1) additions.
     pub fn recompose_base_coeffs_to_ext<BF>(
         &mut self,
         coeffs: &[ExprId],
@@ -1031,18 +1074,20 @@ where
             });
         }
 
+        if self.recompose_npo_enabled {
+            return self.recompose_via_npo(coeffs);
+        }
+
         self.push_scope("recompose_base_coeffs_to_ext");
 
         let mut acc = self.define_const(F::ZERO);
 
         for (i, &coeff) in coeffs.iter().enumerate() {
-            // Construct the i-th canonical basis element: [0, ..., 0, 1, 0, ..., 0]
             let mut basis_coeffs = vec![BF::ZERO; F::DIMENSION];
             basis_coeffs[i] = BF::ONE;
             let basis_elem = F::from_basis_coefficients_slice(&basis_coeffs)
                 .expect("basis coefficients are valid");
 
-            // Multiply coefficient by basis element
             let basis_const = self.define_const(basis_elem);
             let term = self.mul(coeff, basis_const);
             acc = self.add(acc, term);
@@ -1050,6 +1095,23 @@ where
 
         self.pop_scope();
         Ok(acc)
+    }
+
+    /// Recompose via the dedicated NPO table (zero ALU cost).
+    fn recompose_via_npo(&mut self, coeffs: &[ExprId]) -> Result<ExprId, CircuitBuilderError> {
+        self.push_scope("recompose_base_coeffs_to_ext");
+
+        let (_, _call, outputs) = self.push_non_primitive_op_with_outputs(
+            NpoTypeId::recompose(),
+            vec![coeffs.to_vec()],
+            vec![Some("recompose_out")],
+            Some(NonPrimitiveOpParams::Recompose),
+            "recompose",
+        );
+
+        let result = outputs[0].ok_or(CircuitBuilderError::MissingOutput)?;
+        self.pop_scope();
+        Ok(result)
     }
 
     /// Decomposes an extension field element into its D base field coefficients.

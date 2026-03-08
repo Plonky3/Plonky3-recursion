@@ -4,7 +4,7 @@ use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 use p3_baby_bear::default_babybear_poseidon2_16;
 use p3_batch_stark::{ProverData, StarkInstance, prove_batch, verify_batch};
 use p3_circuit::CircuitBuilder;
-use p3_circuit::ops::generate_poseidon2_trace;
+use p3_circuit::ops::{generate_poseidon2_trace, generate_recompose_trace};
 use p3_field::Field;
 use p3_fri::create_test_fri_params;
 use p3_lookup::LookupAir;
@@ -313,6 +313,7 @@ fn test_batch_verifier_with_mixed_preprocessed() -> Result<(), VerificationError
         generate_poseidon2_trace::<Challenge, BabyBearD4Width16>,
         perm,
     );
+    circuit_builder.enable_recompose::<F>(generate_recompose_trace::<F, Challenge>);
 
     // Allocate batch verifier inputs
     let air_public_counts = vec![0usize; batch_proof.opened_values.instances.len()];

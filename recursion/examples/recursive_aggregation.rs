@@ -103,6 +103,7 @@ macro_rules! define_field_module {
         $digest_elems:expr,
         $enable_poseidon2_fn:ident,
         $register_poseidon2_fn:ident,
+        $register_recompose_fn:ident,
         $default_perm_circuit:path,
         $poseidon2_air_builders_fn:ident,
         $backend_ctor:ident,
@@ -130,7 +131,8 @@ macro_rules! define_field_module {
                 $poseidon2_air_builders_fn,
                 $backend_ctor,
                 $backend_width,
-                $backend_rate
+                $backend_rate,
+                enable_recompose
             );
 
             /// Build a dummy circuit with a single constant and prove it (non-ZK).
@@ -287,6 +289,7 @@ macro_rules! define_field_module {
                                 let mut verifier = BatchStarkProver::new(agg_config.clone())
                                     .with_table_packing(agg_params.table_packing);
                                 verifier.$register_poseidon2_fn($poseidon2_config);
+                                verifier.$register_recompose_fn();
                                 verifier
                                     .verify_all_tables(&out.0, out.1.common_data())
                                     .unwrap_or_else(|e| {
@@ -332,6 +335,7 @@ define_field_module!(
     8,
     enable_poseidon2_perm,
     register_poseidon2_table,
+    register_recompose_table,
     p3_koala_bear::default_koalabear_poseidon2_16,
     poseidon2_air_builders_d4,
     new_d4,
@@ -352,6 +356,7 @@ define_field_module!(
     8,
     enable_poseidon2_perm,
     register_poseidon2_table,
+    register_recompose_table,
     p3_baby_bear::default_babybear_poseidon2_16,
     poseidon2_air_builders_d4,
     new_d4,
@@ -372,6 +377,7 @@ define_field_module!(
     4,
     enable_poseidon2_perm_width_8,
     register_poseidon2_table_d2,
+    register_recompose_table_d2,
     default_goldilocks_poseidon2_8,
     poseidon2_air_builders_d2,
     new_d2,

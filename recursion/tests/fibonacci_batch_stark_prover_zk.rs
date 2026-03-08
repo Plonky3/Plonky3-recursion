@@ -3,11 +3,12 @@ mod common;
 use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 use p3_batch_stark::{ProverData, StarkInstance, prove_batch, verify_batch};
 use p3_circuit::CircuitBuilder;
-use p3_circuit::ops::generate_poseidon2_trace;
-use p3_circuit_prover::batch_stark_prover::poseidon2_air_builders_d4;
+use p3_circuit::ops::{generate_poseidon2_trace, generate_recompose_trace};
+use p3_circuit_prover::batch_stark_prover::{poseidon2_air_builders_d4, recompose_air_builders_d4};
 use p3_circuit_prover::common::{NpoPreprocessor, get_airs_and_degrees_with_prep};
 use p3_circuit_prover::{
-    BatchStarkProver, CircuitProverData, ConstraintProfile, Poseidon2Preprocessor, TablePacking,
+    BatchStarkProver, CircuitProverData, ConstraintProfile, Poseidon2Preprocessor,
+    RecomposePreprocessor, TablePacking,
 };
 use p3_field::Field;
 use p3_fri::{HidingFriPcs, TwoAdicFriPcs, create_test_fri_params};
@@ -143,6 +144,7 @@ fn test_batch_verifier_zk_hiding_fri() -> Result<(), VerificationError> {
         generate_poseidon2_trace::<Challenge, KoalaBearD4Width16>,
         perm2,
     );
+    circuit_builder.enable_recompose::<F>(generate_recompose_trace::<F, Challenge>);
 
     let lookup_gadget = LogUpGadget::new();
     let air_public_counts = vec![0usize; batch_stark_proof.opened_values.instances.len()];
@@ -214,13 +216,18 @@ fn test_batch_verifier_zk_hiding_fri() -> Result<(), VerificationError> {
 
     let verification_table_packing = TablePacking::new(1, 8);
     let poseidon2_config = Poseidon2Config::KoalaBearD4Width16;
-    let poseidon2_prep: [Box<dyn NpoPreprocessor<F>>; 1] = [Box::new(Poseidon2Preprocessor)];
+    let npo_prep: Vec<Box<dyn NpoPreprocessor<F>>> = vec![
+        Box::new(Poseidon2Preprocessor),
+        Box::new(RecomposePreprocessor),
+    ];
+    let mut air_builders = poseidon2_air_builders_d4();
+    air_builders.extend(recompose_air_builders_d4());
     let (verification_airs_degrees, verification_preprocessed_columns) =
         get_airs_and_degrees_with_prep::<MyConfig, _, 4>(
             &verification_circuit,
             verification_table_packing,
-            &poseidon2_prep,
-            &poseidon2_air_builders_d4(),
+            &npo_prep,
+            &air_builders,
             ConstraintProfile::Standard,
         )
         .unwrap();
@@ -235,6 +242,7 @@ fn test_batch_verifier_zk_hiding_fri() -> Result<(), VerificationError> {
     let mut verification_prover =
         BatchStarkProver::new(config3).with_table_packing(verification_table_packing);
     verification_prover.register_poseidon2_table(poseidon2_config);
+    verification_prover.register_recompose_table();
 
     let verification_proof = verification_prover
         .prove_all_tables(&verification_traces, &verification_circuit_prover_data)
