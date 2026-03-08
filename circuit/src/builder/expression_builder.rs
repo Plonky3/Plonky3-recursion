@@ -150,6 +150,15 @@ pub struct ExpressionBuilder<F> {
     /// If the value exists, the cached ID is returned immediately, avoiding duplicate nodes.
     const_pool: HashMap<F, ExprId>,
 
+    /// Common sub-expression elimination pool for binary operations.
+    ///
+    /// Maps `(op_discriminant, lhs, rhs)` to the existing [`ExprId`] that computes
+    /// the same result. For commutative operations (Add, Mul) the operands are
+    /// sorted so that `add(a,b)` and `add(b,a)` share the same key.
+    ///
+    /// Discriminants: 0 = Add, 1 = Mul, 2 = Sub, 3 = Div.
+    cse_pool: HashMap<(u8, ExprId, ExprId), ExprId>,
+
     /// Pending equality constraints.
     ///
     /// Each entry `(a, b)` represents a constraint that expressions `a` and `b` must
@@ -239,6 +248,7 @@ where
         Self {
             graph,
             const_pool,
+            cse_pool: HashMap::new(),
             pending_connects: Vec::new(),
             #[cfg(feature = "debugging")]
             allocation_log: Vec::new(),
@@ -369,17 +379,29 @@ where
             return self.define_const(a + b, label);
         }
 
+        // CSE: commutative, so normalize operand order.
+        let key = if lhs.0 <= rhs.0 {
+            (0u8, lhs, rhs)
+        } else {
+            (0u8, rhs, lhs)
+        };
+        if let Some(&existing) = self.cse_pool.get(&key) {
+            return existing;
+        }
+
         #[cfg(feature = "profiling")]
         self.profiling.bump_add();
 
-        self.add_bin_op(
+        let expr_id = self.add_bin_op(
             Expr::Add { lhs, rhs },
             label,
             #[cfg(feature = "debugging")]
             AllocationType::Add,
             lhs,
             rhs,
-        )
+        );
+        self.cse_pool.insert(key, expr_id);
+        expr_id
     }
 
     /// Adds a subtraction expression to the graph.
@@ -413,17 +435,25 @@ where
             return self.define_const(a - b, label);
         }
 
+        // CSE: non-commutative, operand order matters.
+        let key = (2u8, lhs, rhs);
+        if let Some(&existing) = self.cse_pool.get(&key) {
+            return existing;
+        }
+
         #[cfg(feature = "profiling")]
         self.profiling.bump_sub();
 
-        self.add_bin_op(
+        let expr_id = self.add_bin_op(
             Expr::Sub { lhs, rhs },
             label,
             #[cfg(feature = "debugging")]
             AllocationType::Sub,
             lhs,
             rhs,
-        )
+        );
+        self.cse_pool.insert(key, expr_id);
+        expr_id
     }
 
     /// Adds a multiplication expression to the graph.
@@ -458,17 +488,29 @@ where
             return self.define_const(a * b, label);
         }
 
+        // CSE: commutative, so normalize operand order.
+        let key = if lhs.0 <= rhs.0 {
+            (1u8, lhs, rhs)
+        } else {
+            (1u8, rhs, lhs)
+        };
+        if let Some(&existing) = self.cse_pool.get(&key) {
+            return existing;
+        }
+
         #[cfg(feature = "profiling")]
         self.profiling.bump_mul();
 
-        self.add_bin_op(
+        let expr_id = self.add_bin_op(
             Expr::Mul { lhs, rhs },
             label,
             #[cfg(feature = "debugging")]
             AllocationType::Mul,
             lhs,
             rhs,
-        )
+        );
+        self.cse_pool.insert(key, expr_id);
+        expr_id
     }
 
     /// Adds a division expression to the graph.
@@ -501,17 +543,25 @@ where
             return self.define_const(F::ONE, label);
         }
 
+        // CSE: non-commutative, operand order matters.
+        let key = (3u8, lhs, rhs);
+        if let Some(&existing) = self.cse_pool.get(&key) {
+            return existing;
+        }
+
         #[cfg(feature = "profiling")]
         self.profiling.bump_div();
 
-        self.add_bin_op(
+        let expr_id = self.add_bin_op(
             Expr::Div { lhs, rhs },
             label,
             #[cfg(feature = "debugging")]
             AllocationType::Div,
             lhs,
             rhs,
-        )
+        );
+        self.cse_pool.insert(key, expr_id);
+        expr_id
     }
 
     /// Adds a Horner accumulator step to the graph: result = acc * alpha + p_at_z - p_at_x.
@@ -1451,5 +1501,122 @@ mod tests {
         // In release mode, list_scopes should return empty vec
         let builder = ExpressionBuilder::<BabyBear>::new();
         assert!(builder.list_scopes().is_empty());
+    }
+
+    #[test]
+    fn test_cse_add_dedup() {
+        let mut builder = ExpressionBuilder::<BabyBear>::new();
+        let a = builder.public(0, "a");
+        let b = builder.public(1, "b");
+
+        let sum1 = builder.add(a, b, "sum1");
+        let sum2 = builder.add(a, b, "sum2");
+
+        assert_eq!(sum1, sum2, "identical add should return same ExprId");
+        // zero + pub_a + pub_b + add = 4 nodes (no duplicate)
+        assert_eq!(builder.graph().nodes().len(), 4);
+    }
+
+    #[test]
+    fn test_cse_add_commutative() {
+        let mut builder = ExpressionBuilder::<BabyBear>::new();
+        let a = builder.public(0, "a");
+        let b = builder.public(1, "b");
+
+        let sum1 = builder.add(a, b, "a+b");
+        let sum2 = builder.add(b, a, "b+a");
+
+        assert_eq!(sum1, sum2, "add(a,b) and add(b,a) should share ExprId");
+    }
+
+    #[test]
+    fn test_cse_mul_dedup() {
+        let mut builder = ExpressionBuilder::<BabyBear>::new();
+        let a = builder.public(0, "a");
+        let b = builder.public(1, "b");
+
+        let prod1 = builder.mul(a, b, "prod1");
+        let prod2 = builder.mul(a, b, "prod2");
+
+        assert_eq!(prod1, prod2, "identical mul should return same ExprId");
+    }
+
+    #[test]
+    fn test_cse_mul_commutative() {
+        let mut builder = ExpressionBuilder::<BabyBear>::new();
+        let a = builder.public(0, "a");
+        let b = builder.public(1, "b");
+
+        let prod1 = builder.mul(a, b, "a*b");
+        let prod2 = builder.mul(b, a, "b*a");
+
+        assert_eq!(prod1, prod2, "mul(a,b) and mul(b,a) should share ExprId");
+    }
+
+    #[test]
+    fn test_cse_sub_dedup() {
+        let mut builder = ExpressionBuilder::<BabyBear>::new();
+        let a = builder.public(0, "a");
+        let b = builder.public(1, "b");
+
+        let diff1 = builder.sub(a, b, "diff1");
+        let diff2 = builder.sub(a, b, "diff2");
+
+        assert_eq!(diff1, diff2, "identical sub should return same ExprId");
+    }
+
+    #[test]
+    fn test_cse_sub_not_commutative() {
+        let mut builder = ExpressionBuilder::<BabyBear>::new();
+        let a = builder.public(0, "a");
+        let b = builder.public(1, "b");
+
+        let diff1 = builder.sub(a, b, "a-b");
+        let diff2 = builder.sub(b, a, "b-a");
+
+        assert_ne!(diff1, diff2, "sub(a,b) and sub(b,a) must be different");
+    }
+
+    #[test]
+    fn test_cse_transitive_chain() {
+        let mut builder = ExpressionBuilder::<BabyBear>::new();
+        let a = builder.public(0, "a");
+        let b = builder.public(1, "b");
+        let c = builder.public(2, "c");
+
+        let prod1 = builder.mul(a, b, "a*b");
+        let sum1 = builder.add(prod1, c, "a*b+c");
+
+        let prod2 = builder.mul(a, b, "a*b again");
+        let sum2 = builder.add(prod2, c, "a*b+c again");
+
+        assert_eq!(prod1, prod2, "mul should be CSE'd");
+        assert_eq!(sum1, sum2, "transitive: add should also be CSE'd");
+        // zero + 3 publics + 1 mul + 1 add = 6 nodes total
+        assert_eq!(builder.graph().nodes().len(), 6);
+    }
+
+    #[test]
+    fn test_cse_different_ops_same_operands() {
+        let mut builder = ExpressionBuilder::<BabyBear>::new();
+        let a = builder.public(0, "a");
+        let b = builder.public(1, "b");
+
+        let sum = builder.add(a, b, "a+b");
+        let prod = builder.mul(a, b, "a*b");
+
+        assert_ne!(sum, prod, "add and mul with same operands must differ");
+    }
+
+    #[test]
+    fn test_cse_div_dedup() {
+        let mut builder = ExpressionBuilder::<BabyBear>::new();
+        let a = builder.public(0, "a");
+        let b = builder.public(1, "b");
+
+        let div1 = builder.div(a, b, "a/b");
+        let div2 = builder.div(a, b, "a/b again");
+
+        assert_eq!(div1, div2, "identical div should return same ExprId");
     }
 }
