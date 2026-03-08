@@ -46,45 +46,125 @@ struct Args {
     )]
     num_recursive_layers: usize,
 
-    #[command(flatten)]
-    common: CommonArgs,
+    #[arg(short, long, ignore_case = true, value_enum, default_value_t = FieldOption::KoalaBear)]
+    pub field: FieldOption,
+
+    #[arg(
+        long,
+        default_value_t = 3,
+        help = "Logarithmic blowup factor for the LDE"
+    )]
+    pub log_blowup: usize,
+
+    #[arg(
+        long,
+        default_value_t = 3,
+        help = "Maximum arity allowed during FRI folding phases"
+    )]
+    pub max_log_arity: usize,
+
+    #[arg(long, default_value_t = 2, help = "Height of the Merkle cap to open")]
+    pub cap_height: usize,
+
+    #[arg(
+        long,
+        default_value_t = 5,
+        help = "Log size of final polynomial after FRI folding"
+    )]
+    pub log_final_poly_len: usize,
+
+    #[arg(
+        long,
+        default_value_t = 0,
+        help = "PoW grinding bits during FRI commit phase"
+    )]
+    pub commit_pow_bits: usize,
+
+    #[arg(
+        long,
+        default_value_t = 18,
+        help = "PoW grinding bits during FRI query phase"
+    )]
+    pub query_pow_bits: usize,
+
+    #[arg(
+        long,
+        default_value_t = 2,
+        help = "Number of public lanes for the table packing in recursive layers"
+    )]
+    pub public_lanes: usize,
+
+    #[arg(
+        long,
+        default_value_t = 2,
+        help = "Number of ALU lanes for the table packing in recursive layers"
+    )]
+    pub alu_lanes: usize,
+
+    // TODO: Update once https://github.com/Plonky3/Plonky3/pull/1329 lands
+    #[arg(
+        long,
+        default_value_t = 124,
+        help = "Targeted security level (conjectured)"
+    )]
+    pub security_level: usize,
+
+    #[arg(long, default_value_t = false, help = "Enable ZK mode (HidingFriPcs)")]
+    pub zk: bool,
+}
+
+impl Args {
+    pub const fn to_fri_params(&self) -> FriParams {
+        FriParams {
+            log_blowup: self.log_blowup,
+            max_log_arity: self.max_log_arity,
+            cap_height: self.cap_height,
+            log_final_poly_len: self.log_final_poly_len,
+            commit_pow_bits: self.commit_pow_bits,
+            query_pow_bits: self.query_pow_bits,
+        }
+    }
+
+    pub fn table_packing(&self) -> TablePacking {
+        TablePacking::new(self.public_lanes, self.alu_lanes)
+    }
 }
 
 fn main() {
     init_logger();
 
     let args = Args::parse();
-    let fri_params = args.common.to_fri_params();
-    let table_packing = args.common.table_packing();
+    let fri_params = args.to_fri_params();
+    let table_packing = args.table_packing();
 
     assert!(args.num_recursive_layers >= 1);
 
     info!(
         "2-to-1 aggregation with field {:?}, {} aggregation recursive layers",
-        args.common.field, args.num_recursive_layers
+        args.field, args.num_recursive_layers
     );
 
-    match args.common.field {
+    match args.field {
         FieldOption::KoalaBear => koala_bear::run(
             args.num_recursive_layers,
             &fri_params,
             &table_packing,
-            args.common.security_level,
-            args.common.zk,
+            args.security_level,
+            args.zk,
         ),
         FieldOption::BabyBear => baby_bear::run(
             args.num_recursive_layers,
             &fri_params,
             &table_packing,
-            args.common.security_level,
-            args.common.zk,
+            args.security_level,
+            args.zk,
         ),
         FieldOption::Goldilocks => goldilocks::run(
             args.num_recursive_layers,
             &fri_params,
             &table_packing,
-            args.common.security_level,
-            args.common.zk,
+            args.security_level,
+            args.zk,
         ),
     }
 }
