@@ -324,11 +324,8 @@ fn reconstruct_evals<EF: Field>(
 /// `subgroup_start` is skipped and the provided value is used directly.
 fn compute_subgroup_points<F, EF>(
     builder: &mut CircuitBuilder<EF>,
-    index_bits: &[Target],
-    bits_consumed: usize,
     log_arity: usize,
-    log_folded_height: usize,
-    precomputed_subgroup_start: Option<Target>,
+    subgroup_start: Target,
 ) -> (Vec<Target>, Target)
 where
     F: Field + TwoAdicField,
@@ -337,36 +334,6 @@ where
     builder.push_scope("fri_compute_subgroup_points");
 
     let arity = 1usize << log_arity;
-
-    let subgroup_start = if let Some(ss) = precomputed_subgroup_start {
-        ss
-    } else {
-        // Parent index bits start after index_in_group bits
-        let parent_offset = bits_consumed + log_arity;
-
-        // Compute subgroup_start = g_big^{reverse_bits_len(parent_index, log_folded_height)}
-        let g_big = F::two_adic_generator(log_folded_height + log_arity);
-        let one = builder.define_const(EF::ONE);
-
-        let g_big_pows: Vec<Target> = if log_folded_height > 0 {
-            iter::successors(Some(g_big), |&prev| Some(prev.square()))
-                .take(log_folded_height)
-                .map(|p| builder.define_const(EF::from(p)))
-                .collect()
-        } else {
-            Vec::new()
-        };
-
-        let mut ss = one;
-        if log_folded_height > 0 {
-            for j in 0..log_folded_height {
-                let bit = index_bits[parent_offset + log_folded_height - 1 - j];
-                let multiplier = builder.select(bit, g_big_pows[j], one);
-                ss = builder.mul(ss, multiplier);
-            }
-        }
-        ss
-    };
 
     // Compute xs[i] = subgroup_start * omega^{br(i)}
     let omega = F::two_adic_generator(log_arity);
@@ -516,11 +483,10 @@ fn fold_one_phase<F, EF>(
     index_bits: &[Target],
     bits_consumed: usize,
     log_arity: usize,
-    log_current_height: usize,
     roll_in: Option<Target>,
     precomputed_beta_pow: Option<Target>,
     precomputed_evals: Option<&[Target]>,
-    precomputed_subgroup_start: Option<Target>,
+    precomputed_subgroup_start: Target,
 ) -> Target
 where
     F: Field + TwoAdicField,
@@ -528,7 +494,6 @@ where
 {
     builder.push_scope("fri_fold_one_phase");
 
-    let log_folded_height = log_current_height - log_arity;
     let index_in_group_bits = &index_bits[bits_consumed..bits_consumed + log_arity];
 
     // For arity 2, use the optimized formula
@@ -541,14 +506,7 @@ where
         let sibling_is_right = builder.sub(one, index_bits[bits_consumed]);
 
         let e0 = builder.select(sibling_is_right, folded, sibling);
-        let x0 = precomputed_subgroup_start.unwrap_or_else(|| {
-            compute_x0_from_index_bits_general::<F, EF>(
-                builder,
-                index_bits,
-                bits_consumed,
-                log_folded_height,
-            )
-        });
+        let x0 = precomputed_subgroup_start;
         let inv = builder.div(neg_half, x0);
 
         let d = builder.sub(sibling, folded);
@@ -580,14 +538,8 @@ where
         }
     };
 
-    let (xs, subgroup_start) = compute_subgroup_points::<F, EF>(
-        builder,
-        index_bits,
-        bits_consumed,
-        log_arity,
-        log_folded_height,
-        precomputed_subgroup_start,
-    );
+    let (xs, subgroup_start) =
+        compute_subgroup_points::<F, EF>(builder, log_arity, precomputed_subgroup_start);
 
     let mut subgroup_start_powers: Vec<Target> = vec![subgroup_start];
     for _ in 1..log_arity {
@@ -656,45 +608,6 @@ where
     new_folded
 }
 
-/// Compute x0 for arity-2 folding from index bits (generalized for variable bits_consumed).
-///
-/// x0 = two_adic_generator(log_folded_height + 1)^{reverse_bits_len(parent_index, log_folded_height)}
-fn compute_x0_from_index_bits_general<F, EF>(
-    builder: &mut CircuitBuilder<EF>,
-    index_bits: &[Target],
-    bits_consumed: usize,
-    log_folded_height: usize,
-) -> Target
-where
-    F: Field + TwoAdicField,
-    EF: ExtensionField<F>,
-{
-    let g = F::two_adic_generator(log_folded_height + 1);
-    let pows: Vec<EF> = iter::successors(Some(g), |&prev| Some(prev.square()))
-        .take(log_folded_height)
-        .map(EF::from)
-        .collect();
-
-    // Pre-lift all powers to circuit constants once
-    let pow_consts: Vec<Target> = pows.iter().map(|p| builder.define_const(*p)).collect();
-
-    let one = builder.define_const(EF::ONE);
-    let mut res = one;
-
-    let parent_offset = bits_consumed + 1;
-    let k = log_folded_height;
-
-    for j in 0..k {
-        let bit = index_bits[parent_offset + k - 1 - j];
-        let diff = builder.sub(pow_consts[j], one);
-        let diff_bit = builder.mul(diff, bit);
-        let gate = builder.add(one, diff_bit);
-        res = builder.mul(res, gate);
-    }
-
-    res
-}
-
 /// Perform the full FRI fold chain with variable arity per phase.
 fn fold_chain_circuit<F, EF>(
     builder: &mut CircuitBuilder<EF>,
@@ -723,7 +636,6 @@ where
 
     let mut folded = initial_folded_eval;
     let mut bits_consumed = 0usize;
-    let mut log_current_height = log_max_height;
 
     for (i, phase) in phases.iter().enumerate() {
         let log_arity = log_arities[i];
@@ -735,14 +647,12 @@ where
             index_bits,
             bits_consumed,
             log_arity,
-            log_current_height,
             phase.roll_in,
             Some(beta_pows_per_phase[i]),
             None,
-            Some(subgroup_starts[i]),
+            subgroup_starts[i],
         );
         bits_consumed += log_arity;
-        log_current_height -= log_arity;
     }
 
     builder.pop_scope();
@@ -1459,11 +1369,10 @@ where
                         &index_bits_per_query[q],
                         bits_consumed,
                         log_arity,
-                        log_current_height,
                         roll_ins[phase_idx],
                         Some(beta_pows_per_phase[phase_idx]),
                         None,
-                        Some(subgroup_starts[phase_idx]),
+                        subgroup_starts[phase_idx],
                     );
                     bits_consumed += log_arity;
                     log_current_height = log_folded_height;
@@ -1537,11 +1446,10 @@ where
                     &index_bits_per_query[q],
                     bits_consumed,
                     log_arity,
-                    log_current_height,
                     roll_ins[phase_idx],
                     Some(beta_pows_per_phase[phase_idx]),
                     Some(&evals),
-                    Some(subgroup_starts[phase_idx]),
+                    subgroup_starts[phase_idx],
                 );
 
                 bits_consumed += log_arity;
