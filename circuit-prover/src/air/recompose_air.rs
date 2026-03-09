@@ -26,10 +26,10 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::marker::PhantomData;
 
-use p3_air::{Air, AirBuilder, BaseAir};
+use p3_air::{Air, AirBuilder, BaseAir, SymbolicExpression};
 use p3_field::{Field, PrimeCharacteristicRing};
-use p3_lookup::LookupAir;
 use p3_lookup::lookup_traits::{Direction, Kind, Lookup};
+use p3_lookup::{LookupAir, LookupInput};
 use p3_matrix::dense::RowMajorMatrix;
 
 use super::utils::{create_direct_preprocessed_trace, create_symbolic_variables};
@@ -133,9 +133,6 @@ impl<F: Field, const D: usize> LookupAir<F> for RecomposeAir<F, D> {
     }
 
     fn get_lookups(&mut self) -> Vec<Lookup<F>> {
-        use p3_lookup::lookup_traits::LookupInput;
-        use p3_uni_stark::SymbolicExpression;
-
         let mut lookups = Vec::new();
         self.num_lookup_columns = 0;
 

@@ -66,15 +66,14 @@ impl<const D: usize> RecomposeProver<D> {
 
         // Build preprocessed data: 2 values per operation [output_idx, out_mult]
         // These are stored flat; create_direct_preprocessed_trace handles lane layout.
-        let mut preprocessed = Vec::with_capacity(num_ops * 2);
-        for row in &t.operations {
-            preprocessed.push(Val::<SC>::from_u32(row.output_wid.0 * D as u32));
-            preprocessed.push(Val::<SC>::ONE); // out_mult placeholder
+        let mut preprocessed = Val::<SC>::zero_vec(num_ops * 2);
+        for (i, row) in t.operations.iter().enumerate() {
+            preprocessed[i * 2] = Val::<SC>::from_u32(row.output_wid.0 * D as u32);
         }
 
         let air =
             RecomposeAir::<Val<SC>, D>::new_with_preprocessed(lanes, preprocessed, min_height);
-        let matrix = RecomposeAir::<Val<SC>, 4>::trace_to_matrix(&t.operations, lanes);
+        let matrix = RecomposeAir::<Val<SC>, D>::trace_to_matrix(&t.operations, lanes);
 
         Some(BatchTableInstance {
             op_type,
