@@ -1,7 +1,7 @@
 //! [`RecomposeAir`] defines the AIR for the recompose NPO table.
 //!
 //! Each row packs D base-field witnesses into one extension-field witness.
-//! Multiple operations can be packed side-by-side as lanes (like `PublicAir`).
+//! Multiple operations can be packed side-by-side as independent lanes.
 //! There are zero local constraints — correctness is enforced entirely
 //! by the output cross-table lookup on the WitnessChecks bus.
 //!

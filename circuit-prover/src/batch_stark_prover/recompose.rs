@@ -5,6 +5,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use hashbrown::HashMap;
+use p3_baby_bear::BabyBear;
 use p3_batch_stark::{StarkGenericConfig, Val};
 use p3_circuit::op::{NonPrimitivePreprocessedMap, NpoTypeId};
 use p3_circuit::ops::recompose::RecomposeTrace;
@@ -12,27 +13,21 @@ use p3_circuit::tables::Traces;
 use p3_circuit::{CircuitError, PreprocessedColumns};
 use p3_field::extension::BinomialExtensionField;
 use p3_field::{Algebra, ExtensionField, Field, PrimeCharacteristicRing, PrimeField64};
+use p3_goldilocks::Goldilocks;
+use p3_koala_bear::KoalaBear;
 use p3_uni_stark::{SymbolicExpression, SymbolicExpressionExt};
+use p3_util::log2_ceil_usize;
 
 use super::dynamic_air::{
     BatchAir, BatchTableInstance, DynamicAirEntry, TableProver, transmute_traces,
 };
 use super::{NonPrimitiveTableEntry, TablePacking};
 use crate::air::RecomposeAir;
-use crate::common::NpoPreprocessor;
+use crate::common::{CircuitTableAir, NpoAirBuilder, NpoPreprocessor};
 use crate::config::StarkField;
-use crate::impl_table_prover_batch_instances_from_base;
+use crate::{ConstraintProfile, impl_table_prover_batch_instances_from_base};
 
-impl<SC> BatchAir<SC> for RecomposeAir<Val<SC>, 4>
-where
-    SC: StarkGenericConfig + Send + Sync,
-    Val<SC>: StarkField,
-    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
-        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
-{
-}
-
-impl<SC> BatchAir<SC> for RecomposeAir<Val<SC>, 2>
+impl<SC, const D: usize> BatchAir<SC> for RecomposeAir<Val<SC>, D>
 where
     SC: StarkGenericConfig + Send + Sync,
     Val<SC>: StarkField,
@@ -42,15 +37,9 @@ where
 }
 
 /// Table prover for the recompose (BF→EF packing) NPO.
-pub struct RecomposeProver {
-    d: usize,
-}
+pub struct RecomposeProver<const D: usize>;
 
-impl RecomposeProver {
-    pub const fn new(d: usize) -> Self {
-        Self { d }
-    }
-
+impl<const D: usize> RecomposeProver<D> {
     fn batch_instance_base<SC>(
         &self,
         _config: &SC,
@@ -79,12 +68,12 @@ impl RecomposeProver {
         // These are stored flat; create_direct_preprocessed_trace handles lane layout.
         let mut preprocessed = Vec::with_capacity(num_ops * 2);
         for row in &t.operations {
-            preprocessed.push(Val::<SC>::from_u32(row.output_wid.0 * self.d as u32));
+            preprocessed.push(Val::<SC>::from_u32(row.output_wid.0 * D as u32));
             preprocessed.push(Val::<SC>::ONE); // out_mult placeholder
         }
 
         let air =
-            RecomposeAir::<Val<SC>, 4>::new_with_preprocessed(lanes, preprocessed, min_height);
+            RecomposeAir::<Val<SC>, D>::new_with_preprocessed(lanes, preprocessed, min_height);
         let matrix = RecomposeAir::<Val<SC>, 4>::trace_to_matrix(&t.operations, lanes);
 
         Some(BatchTableInstance {
@@ -97,7 +86,7 @@ impl RecomposeProver {
     }
 }
 
-impl<SC> TableProver<SC> for RecomposeProver
+impl<SC, const D: usize> TableProver<SC> for RecomposeProver<D>
 where
     SC: StarkGenericConfig + 'static + Send + Sync,
     Val<SC>: StarkField,
@@ -116,7 +105,7 @@ where
         _degree: usize,
         _table_entry: &NonPrimitiveTableEntry<SC>,
     ) -> Result<DynamicAirEntry<SC>, String> {
-        let air = RecomposeAir::<Val<SC>, 4>::new_with_preprocessed(1, Vec::new(), 1);
+        let air = RecomposeAir::<Val<SC>, D>::new_with_preprocessed(1, Vec::new(), 1);
         Ok(DynamicAirEntry::new(Box::new(air)))
     }
 
@@ -125,91 +114,7 @@ where
         committed_prep: Vec<Val<SC>>,
         min_height: usize,
     ) -> Option<DynamicAirEntry<SC>> {
-        let air = RecomposeAir::<Val<SC>, 4>::new_with_preprocessed(1, committed_prep, min_height);
-        Some(DynamicAirEntry::new(Box::new(air)))
-    }
-}
-
-// ============================================================================
-// D=2 Table Prover (Goldilocks)
-// ============================================================================
-
-pub struct RecomposeProverD2;
-
-impl RecomposeProverD2 {
-    fn batch_instance_base<SC>(
-        &self,
-        _config: &SC,
-        packing: TablePacking,
-        traces: &Traces<Val<SC>>,
-    ) -> Option<BatchTableInstance<SC>>
-    where
-        SC: StarkGenericConfig + 'static + Send + Sync,
-        Val<SC>: StarkField,
-        SymbolicExpressionExt<Val<SC>, SC::Challenge>:
-            Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
-    {
-        let op_type = NpoTypeId::recompose();
-        let trace = traces.non_primitive_traces.get(&op_type)?;
-        if trace.rows() == 0 {
-            return None;
-        }
-
-        let t = trace.as_any().downcast_ref::<RecomposeTrace<Val<SC>>>()?;
-        let num_ops = t.total_rows();
-        let min_height = packing.min_trace_height();
-        let d = 2;
-        let lanes = 1;
-
-        let mut preprocessed = Vec::with_capacity(num_ops * 2);
-        for row in &t.operations {
-            preprocessed.push(Val::<SC>::from_u32(row.output_wid.0 * d as u32));
-            preprocessed.push(Val::<SC>::ONE); // out_mult placeholder
-        }
-
-        let air =
-            RecomposeAir::<Val<SC>, 2>::new_with_preprocessed(lanes, preprocessed, min_height);
-        let matrix = RecomposeAir::<Val<SC>, 2>::trace_to_matrix(&t.operations, lanes);
-
-        Some(BatchTableInstance {
-            op_type,
-            air: DynamicAirEntry::new(Box::new(air)),
-            trace: matrix,
-            public_values: Vec::new(),
-            rows: num_ops,
-        })
-    }
-}
-
-impl<SC> TableProver<SC> for RecomposeProverD2
-where
-    SC: StarkGenericConfig + 'static + Send + Sync,
-    Val<SC>: StarkField,
-    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
-        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
-{
-    fn op_type(&self) -> NpoTypeId {
-        NpoTypeId::recompose()
-    }
-
-    impl_table_prover_batch_instances_from_base!(batch_instance_base);
-
-    fn batch_air_from_table_entry(
-        &self,
-        _config: &SC,
-        _degree: usize,
-        _table_entry: &NonPrimitiveTableEntry<SC>,
-    ) -> Result<DynamicAirEntry<SC>, String> {
-        let air = RecomposeAir::<Val<SC>, 2>::new_with_preprocessed(1, Vec::new(), 1);
-        Ok(DynamicAirEntry::new(Box::new(air)))
-    }
-
-    fn air_with_committed_preprocessed(
-        &self,
-        committed_prep: Vec<Val<SC>>,
-        min_height: usize,
-    ) -> Option<DynamicAirEntry<SC>> {
-        let air = RecomposeAir::<Val<SC>, 2>::new_with_preprocessed(1, committed_prep, min_height);
+        let air = RecomposeAir::<Val<SC>, D>::new_with_preprocessed(1, committed_prep, min_height);
         Some(DynamicAirEntry::new(Box::new(air)))
     }
 }
@@ -224,13 +129,13 @@ where
 #[derive(Clone, Default)]
 pub struct RecomposePreprocessor;
 
-impl NpoPreprocessor<p3_koala_bear::KoalaBear> for RecomposePreprocessor {
+impl NpoPreprocessor<KoalaBear> for RecomposePreprocessor {
     fn preprocess(
         &self,
         _circuit: &dyn core::any::Any,
         preprocessed: &mut dyn core::any::Any,
-    ) -> Result<NonPrimitivePreprocessedMap<p3_koala_bear::KoalaBear>, CircuitError> {
-        type F = p3_koala_bear::KoalaBear;
+    ) -> Result<NonPrimitivePreprocessedMap<KoalaBear>, CircuitError> {
+        type F = KoalaBear;
         if let Some(prep) =
             preprocessed.downcast_mut::<PreprocessedColumns<BinomialExtensionField<F, 4>>>()
         {
@@ -243,13 +148,13 @@ impl NpoPreprocessor<p3_koala_bear::KoalaBear> for RecomposePreprocessor {
     }
 }
 
-impl NpoPreprocessor<p3_baby_bear::BabyBear> for RecomposePreprocessor {
+impl NpoPreprocessor<BabyBear> for RecomposePreprocessor {
     fn preprocess(
         &self,
         _circuit: &dyn core::any::Any,
         preprocessed: &mut dyn core::any::Any,
-    ) -> Result<NonPrimitivePreprocessedMap<p3_baby_bear::BabyBear>, CircuitError> {
-        type F = p3_baby_bear::BabyBear;
+    ) -> Result<NonPrimitivePreprocessedMap<BabyBear>, CircuitError> {
+        type F = BabyBear;
         if let Some(prep) =
             preprocessed.downcast_mut::<PreprocessedColumns<BinomialExtensionField<F, 4>>>()
         {
@@ -262,13 +167,13 @@ impl NpoPreprocessor<p3_baby_bear::BabyBear> for RecomposePreprocessor {
     }
 }
 
-impl NpoPreprocessor<p3_goldilocks::Goldilocks> for RecomposePreprocessor {
+impl NpoPreprocessor<Goldilocks> for RecomposePreprocessor {
     fn preprocess(
         &self,
         _circuit: &dyn core::any::Any,
         preprocessed: &mut dyn core::any::Any,
-    ) -> Result<NonPrimitivePreprocessedMap<p3_goldilocks::Goldilocks>, CircuitError> {
-        type F = p3_goldilocks::Goldilocks;
+    ) -> Result<NonPrimitivePreprocessedMap<Goldilocks>, CircuitError> {
+        type F = Goldilocks;
         if let Some(prep) =
             preprocessed.downcast_mut::<PreprocessedColumns<BinomialExtensionField<F, 2>>>()
         {
@@ -337,11 +242,11 @@ where
 // AIR Builder
 // ============================================================================
 
-/// NpoAirBuilder for the recompose table (D=4).
+/// NpoAirBuilder for the recompose table.
 #[derive(Clone)]
-pub struct RecomposeAirBuilder;
+pub struct RecomposeAirBuilder<const D: usize>;
 
-impl<SC> crate::common::NpoAirBuilder<SC, 4> for RecomposeAirBuilder
+impl<SC, const D: usize> NpoAirBuilder<SC, D> for RecomposeAirBuilder<D>
 where
     SC: StarkGenericConfig + 'static + Send + Sync,
     Val<SC>: StarkField,
@@ -353,65 +258,25 @@ where
         op_type: &NpoTypeId,
         prep_base: &[Val<SC>],
         min_height: usize,
-        _constraint_profile: crate::constraint_profile::ConstraintProfile,
-    ) -> Option<(crate::common::CircuitTableAir<SC, 4>, usize)> {
+        _constraint_profile: ConstraintProfile,
+    ) -> Option<(CircuitTableAir<SC, D>, usize)> {
         if op_type.as_str() != "recompose" {
             return None;
         }
 
-        let prep_lane_width = RecomposeAir::<Val<SC>, 4>::preprocessed_lane_width();
+        let prep_lane_width = RecomposeAir::<Val<SC>, D>::preprocessed_lane_width();
         let num_rows = prep_base.len() / prep_lane_width;
 
         let air =
-            RecomposeAir::<Val<SC>, 4>::new_with_preprocessed(1, prep_base.to_vec(), min_height);
+            RecomposeAir::<Val<SC>, D>::new_with_preprocessed(1, prep_base.to_vec(), min_height);
 
         let padded_rows = num_rows
             .next_power_of_two()
             .max(min_height.next_power_of_two());
-        let degree = p3_util::log2_ceil_usize(padded_rows);
+        let degree = log2_ceil_usize(padded_rows);
 
         Some((
-            crate::common::CircuitTableAir::Dynamic(DynamicAirEntry::new(Box::new(air))),
-            degree,
-        ))
-    }
-}
-
-/// NpoAirBuilder for the recompose table (D=2, e.g. Goldilocks).
-#[derive(Clone)]
-pub struct RecomposeAirBuilderD2;
-
-impl<SC> crate::common::NpoAirBuilder<SC, 2> for RecomposeAirBuilderD2
-where
-    SC: StarkGenericConfig + 'static + Send + Sync,
-    Val<SC>: StarkField,
-    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
-        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
-{
-    fn try_build(
-        &self,
-        op_type: &NpoTypeId,
-        prep_base: &[Val<SC>],
-        min_height: usize,
-        _constraint_profile: crate::constraint_profile::ConstraintProfile,
-    ) -> Option<(crate::common::CircuitTableAir<SC, 2>, usize)> {
-        if op_type.as_str() != "recompose" {
-            return None;
-        }
-
-        let prep_lane_width = RecomposeAir::<Val<SC>, 2>::preprocessed_lane_width();
-        let num_rows = prep_base.len() / prep_lane_width;
-
-        let air =
-            RecomposeAir::<Val<SC>, 2>::new_with_preprocessed(1, prep_base.to_vec(), min_height);
-
-        let padded_rows = num_rows
-            .next_power_of_two()
-            .max(min_height.next_power_of_two());
-        let degree = p3_util::log2_ceil_usize(padded_rows);
-
-        Some((
-            crate::common::CircuitTableAir::Dynamic(DynamicAirEntry::new(Box::new(air))),
+            CircuitTableAir::Dynamic(DynamicAirEntry::new(Box::new(air))),
             degree,
         ))
     }

@@ -7,13 +7,12 @@ use p3_circuit::ops::{Poseidon2PermCall, generate_poseidon2_trace, generate_reco
 use p3_circuit::{CircuitBuilder, Poseidon2PermOps};
 use p3_circuit_prover::air::{AluAir, ConstAir, PublicAir};
 use p3_circuit_prover::batch_stark_prover::{
-    PrimitiveTable, poseidon2_air_builders_d4, poseidon2_table_provers_d4,
-    recompose_air_builders_d4, recompose_table_provers_d4,
+    PrimitiveTable, poseidon2_air_builders_d4, poseidon2_table_provers_d4, recompose_air_builders,
 };
 use p3_circuit_prover::common::{NpoPreprocessor, get_airs_and_degrees_with_prep};
 use p3_circuit_prover::{
     BatchStarkProof, BatchStarkProver, CircuitProverData, ConstraintProfile, Poseidon2Config,
-    Poseidon2Preprocessor, RecomposePreprocessor, TablePacking,
+    Poseidon2Preprocessor, RecomposePreprocessor, TablePacking, recompose_table_provers,
 };
 use p3_fri::create_test_fri_params;
 use p3_lookup::logup::LogUpGadget;
@@ -754,7 +753,7 @@ fn get_verifier_inputs_and_challenges(
         Poseidon2Config::BabyBearD4Width16,
         &{
             let mut tp = poseidon2_table_provers_d4(Poseidon2Config::BabyBearD4Width16);
-            tp.extend(recompose_table_provers_d4());
+            tp.extend(recompose_table_provers::<_, 4>());
             tp
         },
     )
@@ -868,7 +867,7 @@ fn test_poseidon2_ctl_lookups() {
         Box::new(RecomposePreprocessor),
     ];
     let mut air_builders = poseidon2_air_builders_d4();
-    air_builders.extend(recompose_air_builders_d4());
+    air_builders.extend(recompose_air_builders());
     let (airs_degrees, preprocessed_columns) =
         get_airs_and_degrees_with_prep::<MyConfig, Challenge, 4>(
             &circuit,
@@ -998,7 +997,7 @@ fn test_poseidon2_chained_ctl_lookups() {
         Box::new(RecomposePreprocessor),
     ];
     let mut air_builders = poseidon2_air_builders_d4();
-    air_builders.extend(recompose_air_builders_d4());
+    air_builders.extend(recompose_air_builders());
     let (airs_degrees, preprocessed_columns) =
         get_airs_and_degrees_with_prep::<MyConfig, Challenge, 4>(
             &circuit,

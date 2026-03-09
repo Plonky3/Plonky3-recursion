@@ -6,7 +6,7 @@ use p3_circuit::ops::{
     Poseidon2PermPrivateData, generate_poseidon2_trace, generate_recompose_trace,
 };
 use p3_circuit::{CircuitBuilder, ExprId, Poseidon2PermOps};
-use p3_circuit_prover::batch_stark_prover::{poseidon2_air_builders_d4, recompose_air_builders_d4};
+use p3_circuit_prover::batch_stark_prover::{poseidon2_air_builders_d4, recompose_air_builders};
 use p3_circuit_prover::common::{NpoPreprocessor, get_airs_and_degrees_with_prep};
 use p3_circuit_prover::config::KoalaBearConfig;
 use p3_circuit_prover::{
@@ -227,7 +227,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         Box::new(RecomposePreprocessor),
     ];
     let mut air_builders = poseidon2_air_builders_d4();
-    air_builders.extend(recompose_air_builders_d4());
+    air_builders.extend(recompose_air_builders());
     let (airs_degrees, preprocessed_columns) =
         get_airs_and_degrees_with_prep::<KoalaBearConfig, _, 4>(
             &circuit,

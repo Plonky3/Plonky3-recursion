@@ -4,13 +4,12 @@ use p3_batch_stark::ProverData;
 use p3_circuit::CircuitBuilder;
 use p3_circuit::ops::{generate_poseidon2_trace, generate_recompose_trace};
 use p3_circuit_prover::batch_stark_prover::{
-    poseidon2_air_builders_d4, poseidon2_table_provers_d4, recompose_air_builders_d4,
-    recompose_table_provers_d4,
+    poseidon2_air_builders_d4, poseidon2_table_provers_d4, recompose_air_builders,
 };
 use p3_circuit_prover::common::{NpoPreprocessor, get_airs_and_degrees_with_prep};
 use p3_circuit_prover::{
     BatchStarkProver, CircuitProverData, ConstraintProfile, Poseidon2Preprocessor,
-    RecomposePreprocessor, TablePacking,
+    RecomposePreprocessor, TablePacking, recompose_table_provers,
 };
 use p3_fri::create_test_fri_params;
 use p3_lookup::logup::LogUpGadget;
@@ -177,7 +176,7 @@ fn test_fibonacci_batch_verifier() {
         Poseidon2Config::KoalaBearD4Width16,
         &{
             let mut tp = poseidon2_table_provers_d4(Poseidon2Config::KoalaBearD4Width16);
-            tp.extend(recompose_table_provers_d4());
+            tp.extend(recompose_table_provers::<_, 4>());
             tp
         },
     )
@@ -200,7 +199,7 @@ fn test_fibonacci_batch_verifier() {
         Box::new(RecomposePreprocessor),
     ];
     let mut air_builders = poseidon2_air_builders_d4();
-    air_builders.extend(recompose_air_builders_d4());
+    air_builders.extend(recompose_air_builders());
     let (verification_airs_degrees, verification_preprocessed_columns) =
         get_airs_and_degrees_with_prep::<MyConfig, _, 4>(
             &verification_circuit,

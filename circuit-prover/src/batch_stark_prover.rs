@@ -26,7 +26,7 @@ use tracing::instrument;
 
 use crate::air::{AluAir, ConstAir, PublicAir};
 use crate::batch_stark_prover::dynamic_air::transmute_traces;
-use crate::common::{CircuitTableAir, NpoAirBuilder};
+use crate::common::{CircuitTableAir, NpoAirBuilder, NpoPreprocessor};
 use crate::config::StarkField;
 use crate::constraint_profile::ConstraintProfile;
 use crate::field_params::ExtractBinomialW;
@@ -45,10 +45,7 @@ pub use poseidon2::{
     Poseidon2AirBuilderD2, Poseidon2AirBuilderD4, Poseidon2AirWrapperInner, Poseidon2Preprocessor,
     Poseidon2Prover, Poseidon2ProverD2, poseidon2_preprocessor, poseidon2_verifier_air_from_config,
 };
-pub use recompose::{
-    RecomposeAirBuilder, RecomposeAirBuilderD2, RecomposePreprocessor, RecomposeProver,
-    RecomposeProverD2,
-};
+pub use recompose::{RecomposeAirBuilder, RecomposePreprocessor, RecomposeProver};
 
 /// Prime modulus of the BabyBear field (`2^31 - 2^27 + 1`).
 pub const BABY_BEAR_MODULUS: u64 = 0x7800_0001;
@@ -504,7 +501,7 @@ where
     where
         SC: Send + Sync,
     {
-        self.register_table_prover(Box::new(RecomposeProver::new(4)));
+        self.register_table_prover(Box::new(RecomposeProver::<4>));
     }
 
     /// Register the recompose (BF→EF packing) table prover (D=2, e.g. Goldilocks).
@@ -512,7 +509,7 @@ where
     where
         SC: Send + Sync,
     {
-        self.register_table_prover(Box::new(RecomposeProverD2));
+        self.register_table_prover(Box::new(RecomposeProver::<2>));
     }
 
     /// Builder-style registration for the recompose table prover (D=4).
@@ -1008,49 +1005,27 @@ where
 }
 
 /// Returns a type-erased Recompose preprocessor.
-pub fn recompose_preprocessor<F>() -> Box<dyn crate::common::NpoPreprocessor<F>>
+pub fn recompose_preprocessor<F>() -> Box<dyn NpoPreprocessor<F>>
 where
     F: StarkField + PrimeField,
-    RecomposePreprocessor: crate::common::NpoPreprocessor<F>,
+    RecomposePreprocessor: NpoPreprocessor<F>,
 {
     Box::new(RecomposePreprocessor)
 }
 
-/// Recompose table provers for D=2 (e.g. Goldilocks).
-pub fn recompose_table_provers_d2<SC>() -> Vec<Box<dyn dynamic_air::TableProver<SC>>>
+/// Recompose table provers for a given extension field degree.
+pub fn recompose_table_provers<SC, const D: usize>() -> Vec<Box<dyn TableProver<SC>>>
 where
     SC: StarkGenericConfig + 'static + Send + Sync,
     Val<SC>: StarkField,
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
         Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
-    vec![Box::new(RecomposeProverD2)]
+    vec![Box::new(RecomposeProver::<D>)]
 }
 
-/// Recompose table provers for D=4 (e.g. BabyBear, KoalaBear).
-pub fn recompose_table_provers_d4<SC>() -> Vec<Box<dyn dynamic_air::TableProver<SC>>>
-where
-    SC: StarkGenericConfig + 'static + Send + Sync,
-    Val<SC>: StarkField,
-    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
-        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
-{
-    vec![Box::new(RecomposeProver::new(4))]
-}
-
-/// Recompose AIR builders for D=2 (e.g. Goldilocks).
-pub fn recompose_air_builders_d2<SC>() -> Vec<Box<dyn NpoAirBuilder<SC, 2>>>
-where
-    SC: StarkGenericConfig + 'static + Send + Sync,
-    Val<SC>: StarkField,
-    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
-        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
-{
-    vec![Box::new(RecomposeAirBuilderD2)]
-}
-
-/// Recompose AIR builders for D=4 (e.g. BabyBear, KoalaBear).
-pub fn recompose_air_builders_d4<SC>() -> Vec<Box<dyn NpoAirBuilder<SC, 4>>>
+/// Recompose AIR builders for a given extension field degree.
+pub fn recompose_air_builders<SC, const D: usize>() -> Vec<Box<dyn NpoAirBuilder<SC, D>>>
 where
     SC: StarkGenericConfig + 'static + Send + Sync,
     Val<SC>: StarkField,
