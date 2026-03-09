@@ -187,6 +187,14 @@ impl<F: Field, const D: usize> BaseAir<F> for PublicAir<F, D> {
             self.min_height,
         ))
     }
+
+    fn main_next_row_columns(&self) -> Vec<usize> {
+        vec![]
+    }
+
+    fn preprocessed_next_row_columns(&self) -> Vec<usize> {
+        vec![]
+    }
 }
 
 impl<AB: AirBuilder, const D: usize> Air<AB> for PublicAir<AB::F, D>
