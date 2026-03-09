@@ -24,8 +24,6 @@ MAIN_FILL    = "#b9ddff"
 MAIN_STROKE  = "#60a5fa"
 PREP_FILL    = "#f8b4d9"
 PREP_STROKE  = "#ec4899"
-MARKER_FILL  = "#e2e8f0"
-MARKER_STROKE = "#94a3b8"
 BG_FILL      = "#ffffff"
 PANEL_FILL   = "#f8fafc"
 PANEL_STROKE = "#cbd5e1"
@@ -56,24 +54,15 @@ AREA_MIN_W = 4.0
 # ── Per-AIR layout panel (bottom) ────────────────────────────────────────
 LAYOUT_X, LAYOUT_Y, LAYOUT_W, LAYOUT_H = 40, 440, 1620, 520
 
-# Bar geometry (matches template)
-BAR_START_X  = 430    # x where column bars start
-BAR_AVAIL_W  = 880    # total px for all columns (430 → 1310)
+# Bar geometry
+BAR_START_X      = 430    # x where column bars start
+BAR_AVAIL_W_MAX  = 950    # maximum px budget for bars; label gets the rest
+BAR_LABEL_MIN_W  = 240    # minimum px reserved for the "N rows × M cols" label
 BAR_H        = 34     # height of each bar row
 BAR_Y_FIRST  = 545    # y-top of first bar
 BAR_ROW_STEP = 78     # y distance between consecutive bar tops
 # Name label sits at the bar midpoint baseline
 NAME_LABEL_DY = BAR_H // 2 + 6   # ≈ 23 px below bar top → baseline at bar y + 23
-
-# Row-count marker column
-MARKER_X    = 1380
-MARKER_W    = 16
-MARKER_TOP  = 548     # y-top when height == max (matches template)
-MARKER_BOT  = 938     # y-bottom limit (template: 548 + 390 = 938)
-MARKER_SPAN = MARKER_BOT - MARKER_TOP   # 390
-
-# "rows" label for the marker column header
-ROWS_LABEL_Y = LAYOUT_Y + 87   # 527
 
 
 # ---------------------------------------------------------------------------
@@ -211,16 +200,12 @@ def build_layout_panel(airs: list[dict]) -> list[str]:
     ))
 
     max_cols = max(a["total_cols"] for a in airs)
-    max_rows = max(a["rows"] for a in airs)
-    px_per_col = BAR_AVAIL_W / max_cols if max_cols else 1
-
-    # Marker column header
-    lines.append(text_el(MARKER_X + MARKER_W + 4, ROWS_LABEL_Y, "rows", 13, 400, TEXT_MUTED))
+    # Reserve enough room for the label to the right of the widest bar.
+    bar_avail_w = min(BAR_AVAIL_W_MAX, W - BAR_START_X - BAR_LABEL_MIN_W)
+    px_per_col = bar_avail_w / max_cols if max_cols else 1
 
     for idx, air in enumerate(airs):
-        bar_y   = BAR_Y_FIRST + idx * BAR_ROW_STEP
-        label_y = bar_y + NAME_LABEL_DY    # baseline for name text (vertically centred in bar)
-        name_y  = bar_y - 10 + BAR_H // 2 + 6   # same but nicer: label above bar
+        bar_y = BAR_Y_FIRST + idx * BAR_ROW_STEP
 
         # AIR name label (left column, at bar vertical centre)
         lines.append(text_el(64, bar_y + BAR_H // 2 + 6, air["name"], 16, 700, TEXT_DARK))
@@ -236,11 +221,9 @@ def build_layout_panel(airs: list[dict]) -> list[str]:
             lines.append(rect_el(BAR_START_X + w_main, bar_y, w_prep, BAR_H, rx=8,
                                   fill=PREP_FILL, stroke=PREP_STROKE, sw=1.2))
 
-        # Column labels inside bars
+        # Column labels inside / above bars
         total_bar_w = w_main + w_prep
         if air["total_cols"] <= 12:
-            # Small AIR: show the count above each section, matching template style
-            # ("4" above main, "2" above prep). y = bar_y - 2 puts baseline just above bar.
             label_above_y = bar_y - 2
             lines.append(text_el(
                 BAR_START_X + w_main / 2, label_above_y,
@@ -252,7 +235,6 @@ def build_layout_panel(airs: list[dict]) -> list[str]:
                     str(air["prep_cols"]), 13, 700, TEXT_DARK, "middle",
                 ))
         else:
-            # Large AIR: "N main cols" / "N prep cols" centred inside each section
             main_cx = BAR_START_X + w_main / 2
             prep_cx = BAR_START_X + w_main + w_prep / 2
             if w_main >= 60:
@@ -262,24 +244,10 @@ def build_layout_panel(airs: list[dict]) -> list[str]:
                 lines.append(text_el(prep_cx, bar_y + BAR_H - 11,
                                       f"{air['prep_cols']} prep cols", 13, 700, TEXT_DARK, "middle"))
 
-        # "N rows × M total cols" label — right of bars if space allows, else above
+        # "N rows × M total cols" label — right of bars
         end_x = BAR_START_X + total_bar_w + 14
         label_str = f"{fmt_int(air['rows'])} rows \u00d7 {air['total_cols']} total cols"
-        if end_x + 220 <= MARKER_X:
-            # Enough room to the right — place at bar midline
-            lines.append(text_el(end_x, bar_y + BAR_H // 2 + 5, label_str, 14, 400, TEXT_MUTED))
-        else:
-            # Not enough room — place above the bar (to the right, anchor=start at MARKER_X gap)
-            lines.append(text_el(
-                BAR_START_X + total_bar_w / 2, bar_y - 10,
-                label_str, 14, 400, TEXT_MUTED, "middle",
-            ))
-
-        # Row-count marker (proportional height, bottom-aligned within the span)
-        marker_h = max(4.0, MARKER_SPAN * air["rows"] / max_rows)
-        marker_y = MARKER_BOT - marker_h
-        lines.append(rect_el(MARKER_X, marker_y, MARKER_W, marker_h, rx=6,
-                              fill=MARKER_FILL, stroke=MARKER_STROKE, sw=1.0))
+        lines.append(text_el(end_x, bar_y + BAR_H // 2 + 5, label_str, 14, 400, TEXT_MUTED))
 
     return lines
 
@@ -288,7 +256,7 @@ def build_layout_panel(airs: list[dict]) -> list[str]:
 # Full SVG assembly
 # ---------------------------------------------------------------------------
 
-def build_svg(airs: list[dict], layer: int, n: int) -> str:
+def build_svg(airs: list[dict], layer: int, n: int | None, example: str = "recursive_fibonacci") -> str:
     airs = enrich(airs)
 
     total_cells = sum(a["total_cells"] for a in airs)
@@ -323,9 +291,10 @@ def build_svg(airs: list[dict], layer: int, n: int) -> str:
     lines += build_layout_panel(airs)
 
     # ── Footer ──────────────────────────────────────────────────────────
+    n_suffix = f" (N = {fmt_int(n)})" if n is not None else ""
     lines.append(text_el(
         W - 40, H - 18,
-        f"Last recursive layer (layer {layer}) from a Fibonacci chain proof (N = {fmt_int(n)}).",
+        f"Last recursive layer (layer {layer}) — {example}{n_suffix}.",
         12, 400, TEXT_MUTED, "end",
     ))
 
@@ -340,12 +309,15 @@ def build_svg(airs: list[dict], layer: int, n: int) -> str:
 
 def build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        description="Run the recursive_fibonacci example and generate a trace-footprint SVG.",
+        description="Run a recursion example and generate a trace-footprint SVG.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
+    p.add_argument("--example", default="recursive_fibonacci",
+                   help="Name of the cargo example to run (must support --emit-trace-json)")
     p.add_argument("--field", default="koala-bear",
                    choices=["koala-bear", "baby-bear", "goldilocks"])
-    p.add_argument("-n", "--n", type=int, default=10000, help="Fibonacci index F(n)")
+    p.add_argument("-n", "--n", type=int, default=None,
+                   help="Fibonacci index F(n) — only used for recursive_fibonacci (default: 10000)")
     p.add_argument("--num-recursive-layers", type=int, default=3)
     p.add_argument("--log-blowup",          type=int, default=2)
     p.add_argument("--max-log-arity",       type=int, default=3)
@@ -379,11 +351,12 @@ def main() -> int:
             cmd = [
                 "cargo", "run",
                 *( ["--release"] if args.release else [] ),
-                "--example", "recursive_fibonacci",
+                "--example", args.example,
                 "--manifest-path", os.path.join(workspace, "Cargo.toml"),
                 "--",
                 "--field",               args.field,
-                "--n",                   str(args.n),
+                *( ["--n", str(args.n if args.n is not None else 10000)]
+                   if args.example != "recursive_aggregation" else [] ),
                 "--num-recursive-layers", str(args.num_recursive_layers),
                 "--log-blowup",          str(args.log_blowup),
                 "--max-log-arity",       str(args.max_log_arity),
@@ -392,7 +365,9 @@ def main() -> int:
                 "--emit-trace-json",     json_path,
             ]
             print("Running:", " ".join(cmd))
-            result = subprocess.run(cmd, check=False)
+            env = os.environ.copy()
+            env.setdefault("RUST_LOG", "warn")
+            result = subprocess.run(cmd, check=False, env=env)
             if result.returncode != 0:
                 print(f"cargo run failed (exit {result.returncode})", file=sys.stderr)
                 return 1
@@ -412,13 +387,13 @@ def main() -> int:
 
     airs  = data["airs"]
     layer = data.get("layer", 1)
-    n_val = data.get("n", args.n)
+    n_val = data.get("n") or args.n  # None for examples that don't emit n
 
     if not airs:
         print("No AIR data found in JSON.", file=sys.stderr)
         return 1
 
-    svg = build_svg(airs, layer, n_val)
+    svg = build_svg(airs, layer, n_val, example=args.example)
     with open(args.output, "w") as f:
         f.write(svg)
     print(f"SVG written to {args.output}")

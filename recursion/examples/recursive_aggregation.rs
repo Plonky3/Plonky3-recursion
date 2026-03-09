@@ -33,7 +33,10 @@
 
 #[macro_use]
 mod common;
+use std::path::PathBuf;
+
 use common::*;
+use p3_circuit_prover::AirTraceShape;
 
 #[derive(Parser, Debug)]
 #[command(version, about = "2-to-1 proof aggregation example")]
@@ -111,6 +114,10 @@ struct Args {
 
     #[arg(long, default_value_t = false, help = "Enable ZK mode (HidingFriPcs)")]
     pub zk: bool,
+
+    /// If set, write a JSON file with the trace shape of the last aggregation level to this path.
+    #[arg(long, help = "Write last-level AIR trace shape as JSON to this path")]
+    emit_trace_json: Option<PathBuf>,
 }
 
 impl Args {
@@ -151,6 +158,7 @@ fn main() {
             &table_packing,
             args.security_level,
             args.zk,
+            args.emit_trace_json.as_deref(),
         ),
         FieldOption::BabyBear => baby_bear::run(
             args.num_recursive_layers,
@@ -158,6 +166,7 @@ fn main() {
             &table_packing,
             args.security_level,
             args.zk,
+            args.emit_trace_json.as_deref(),
         ),
         FieldOption::Goldilocks => goldilocks::run(
             args.num_recursive_layers,
@@ -165,6 +174,7 @@ fn main() {
             &table_packing,
             args.security_level,
             args.zk,
+            args.emit_trace_json.as_deref(),
         ),
     }
 }
@@ -307,6 +317,7 @@ macro_rules! define_field_module {
                 table_packing: &TablePacking,
                 security_level: usize,
                 zk: bool,
+                emit_trace_json: Option<&std::path::Path>,
             ) {
                 let base_table_packing = TablePacking::new(1, 1)
                     .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup);
@@ -333,6 +344,7 @@ macro_rules! define_field_module {
                         while proofs.len() > 1 {
                             level += 1;
                             let pairs = proofs.len() / 2;
+                            let is_last_level = pairs == 1;
                             info!(
                                 "Aggregation level {level}: {} proofs -> {pairs}",
                                 proofs.len()
@@ -357,6 +369,56 @@ macro_rules! define_field_module {
                                 let left = proofs[li].into_recursion_input::<BatchOnly>();
                                 let right = proofs[li + 1].into_recursion_input::<BatchOnly>();
 
+                                // On the last level, build the circuit first so we can extract
+                                // AIR trace shapes before proving.
+                                let shapes_for_emit: Option<Vec<AirTraceShape>> =
+                                    if is_last_level && pair_idx == 0 && emit_trace_json.is_some() {
+                                        match build_aggregation_layer_circuit::<$cfg_type, _, _, _, D>(
+                                            &left, &right, &agg_config, &backend,
+                                        ) {
+                                            Ok((circuit, _)) => {
+                                                let preprocessors = PcsRecursionBackend::<
+                                                    $cfg_type,
+                                                    BatchOnly,
+                                                    D,
+                                                >::non_primitive_preprocessors(&backend);
+                                                let air_builders = PcsRecursionBackend::<
+                                                    $cfg_type,
+                                                    BatchOnly,
+                                                    D,
+                                                >::non_primitive_air_builders(&backend);
+                                                match get_airs_and_degrees_with_prep::<
+                                                    $cfg_type,
+                                                    <$cfg_type as StarkGenericConfig>::Challenge,
+                                                    D,
+                                                >(
+                                                    &circuit,
+                                                    agg_params.table_packing,
+                                                    &preprocessors,
+                                                    &air_builders,
+                                                    agg_params.constraint_profile,
+                                                ) {
+                                                    Ok((airs_degrees, _)) => Some(
+                                                        airs_degrees
+                                                            .iter()
+                                                            .map(|(air, deg)| air.trace_shape(*deg))
+                                                            .collect(),
+                                                    ),
+                                                    Err(e) => {
+                                                        eprintln!("Warning: failed to collect trace shapes: {e:?}");
+                                                        None
+                                                    }
+                                                }
+                                            }
+                                            Err(e) => {
+                                                eprintln!("Warning: failed to build aggregation circuit for shape extraction: {e:?}");
+                                                None
+                                            }
+                                        }
+                                    } else {
+                                        None
+                                    };
+
                                 let out = build_and_prove_aggregation_layer::<$cfg_type, _, _, _, D>(
                                     &left, &right, &agg_config, &backend, &agg_params,
                                     Some(&mut prep_cache),
@@ -376,6 +438,10 @@ macro_rules! define_field_module {
                                         panic!("Verification failed at level {level}, pair {pair_idx}: {e:?}")
                                     });
                                 next_level.push(out);
+
+                                if let (Some(shapes), Some(path)) = (shapes_for_emit, emit_trace_json) {
+                                    write_trace_shapes_json(&shapes, level as usize, path);
+                                }
                             }
                             proofs = next_level;
                         }
@@ -400,6 +466,25 @@ macro_rules! define_field_module {
             }
         }
     };
+}
+
+fn write_trace_shapes_json(shapes: &[AirTraceShape], level: usize, path: &std::path::Path) {
+    use std::fmt::Write as FmtWrite;
+    let mut json = String::from("{\n");
+    json.push_str(&format!("  \"layer\": {level},\n"));
+    json.push_str("  \"airs\": [\n");
+    for (i, shape) in shapes.iter().enumerate() {
+        let comma = if i + 1 < shapes.len() { "," } else { "" };
+        let _ = writeln!(
+            json,
+            "    {{\"name\": \"{}\", \"main_cols\": {}, \"prep_cols\": {}, \"log_degree\": {}, \"rows\": {}}}{}\n",
+            shape.name, shape.main_cols, shape.prep_cols, shape.log_degree, shape.rows, comma
+        );
+    }
+    json.push_str("  ]\n}\n");
+    std::fs::write(path, &json)
+        .unwrap_or_else(|e| eprintln!("Warning: failed to write trace JSON to {path:?}: {e}"));
+    println!("Trace shape JSON written to {}", path.display());
 }
 
 define_field_module!(
