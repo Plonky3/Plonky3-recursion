@@ -12,7 +12,9 @@ pub use p3_circuit::{CircuitBuilder, CircuitRunner, NonPrimitiveOpId};
 pub use p3_circuit_prover::batch_stark_prover::{
     poseidon2_air_builders_d2, poseidon2_air_builders_d4,
 };
-pub use p3_circuit_prover::common::{NpoPreprocessor, get_airs_and_degrees_with_prep};
+pub use p3_circuit_prover::common::{
+    NpoAirBuilder, NpoPreprocessor, get_airs_and_degrees_with_prep,
+};
 pub use p3_circuit_prover::{
     BatchStarkProver, CircuitProverData, ConstraintProfile, Poseidon2Preprocessor, TablePacking,
 };
@@ -33,10 +35,10 @@ pub use p3_recursion::traits::{RecursiveAir, RecursivePcs};
 pub use p3_recursion::verifier::VerificationError;
 pub use p3_recursion::{
     AggregationPrepCache, BatchOnly, BatchStarkVerifierInputsBuilder, FriRecursionBackend,
-    FriRecursionConfig, FriVerifierParams, NextLayerPrepCache, Poseidon2Config,
-    ProveNextLayerParams, RecursionInput, RecursionOutput, build_and_prove_aggregation_layer,
-    build_and_prove_next_layer, build_next_layer_circuit, build_next_layer_prep, prove_next_layer,
-    verify_batch_circuit,
+    FriRecursionConfig, FriVerifierParams, NextLayerPrepCache, PcsRecursionBackend,
+    Poseidon2Config, ProveNextLayerParams, RecursionInput, RecursionOutput,
+    build_and_prove_aggregation_layer, build_and_prove_next_layer, build_next_layer_circuit,
+    build_next_layer_prep, prove_next_layer, verify_batch_circuit,
 };
 pub use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
 pub use p3_uni_stark::{StarkConfig, StarkGenericConfig, Val};

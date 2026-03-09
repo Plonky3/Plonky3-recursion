@@ -1,18 +1,37 @@
 use alloc::boxed::Box;
+use alloc::string::String;
 use alloc::vec::Vec;
 use core::any::Any;
 
 use hashbrown::HashMap;
+use p3_air::BaseAir;
 use p3_circuit::ops::{NonPrimitivePreprocessedMap, NpoTypeId, PrimitiveOpType};
 use p3_circuit::{Circuit, CircuitError, PreprocessedColumns};
 use p3_field::{Algebra, ExtensionField, Field, PrimeCharacteristicRing, PrimeField64};
+use p3_matrix::Matrix;
 use p3_uni_stark::{StarkGenericConfig, SymbolicExpression, SymbolicExpressionExt, Val};
 use p3_util::log2_ceil_usize;
+use serde::{Deserialize, Serialize};
 
 use crate::air::{AluAir, ConstAir, PublicAir};
 use crate::config::StarkField;
 use crate::field_params::ExtractBinomialW;
 use crate::{ConstraintProfile, DynamicAirEntry, TablePacking};
+
+/// Shape of a single AIR table: name, column counts, and trace height.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AirTraceShape {
+    /// Human-readable name for the AIR (e.g. "AluAir (D=4)").
+    pub name: String,
+    /// Number of main (witness) trace columns.
+    pub main_cols: usize,
+    /// Number of preprocessed trace columns.
+    pub prep_cols: usize,
+    /// Log₂ of the trace height (degree).
+    pub log_degree: usize,
+    /// Number of rows (= 2^log_degree).
+    pub rows: usize,
+}
 
 /// Plugin trait for NPO-owned preprocessing over generic circuits.
 ///
@@ -63,7 +82,8 @@ where
     Public(PublicAir<Val<SC>, D>),
     /// Unified ALU table for all arithmetic operations
     Alu(AluAir<Val<SC>, D>),
-    Dynamic(DynamicAirEntry<SC>),
+    /// Non-primitive (plugin) table; carries the op-type name for display.
+    Dynamic(DynamicAirEntry<SC>, String),
 }
 
 impl<SC, const D: usize> Clone for CircuitTableAir<SC, D>
@@ -76,7 +96,48 @@ where
             Self::Const(air) => Self::Const(air.clone()),
             Self::Public(air) => Self::Public(air.clone()),
             Self::Alu(air) => Self::Alu(air.clone()),
-            Self::Dynamic(air) => Self::Dynamic(air.clone()),
+            Self::Dynamic(air, name) => Self::Dynamic(air.clone(), name.clone()),
+        }
+    }
+}
+
+impl<SC, const D: usize> CircuitTableAir<SC, D>
+where
+    SC: StarkGenericConfig,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
+{
+    /// Return the trace shape of this AIR for inspection and reporting.
+    pub fn trace_shape(&self, log_degree: usize) -> AirTraceShape {
+        let rows = 1 << log_degree;
+        match self {
+            Self::Const(air) => AirTraceShape {
+                name: alloc::format!("ConstAir (D={D})"),
+                main_cols: BaseAir::<Val<SC>>::width(air),
+                prep_cols: air.preprocessed_trace().map(|m| m.width()).unwrap_or(0),
+                log_degree,
+                rows,
+            },
+            Self::Public(air) => AirTraceShape {
+                name: alloc::format!("PublicAir (D={D})"),
+                main_cols: BaseAir::<Val<SC>>::width(air),
+                prep_cols: air.preprocessed_trace().map(|m| m.width()).unwrap_or(0),
+                log_degree,
+                rows,
+            },
+            Self::Alu(air) => AirTraceShape {
+                name: alloc::format!("AluAir (D={D})"),
+                main_cols: BaseAir::<Val<SC>>::width(air),
+                prep_cols: air.preprocessed_trace().map(|m| m.width()).unwrap_or(0),
+                log_degree,
+                rows,
+            },
+            Self::Dynamic(air, name) => AirTraceShape {
+                name: name.clone(),
+                main_cols: BaseAir::<Val<SC>>::width(air),
+                prep_cols: air.preprocessed_trace().map(|m| m.width()).unwrap_or(0),
+                log_degree,
+                rows,
+            },
         }
     }
 }
@@ -355,7 +416,13 @@ where
             if let Some((air, degree)) =
                 builder.try_build(op_type, prep_base, min_height, constraint_profile)
             {
-                table_preps.push((air, degree));
+                let named_air = match air {
+                    CircuitTableAir::Dynamic(entry, _) => {
+                        CircuitTableAir::Dynamic(entry, op_type.as_str().into())
+                    }
+                    other => other,
+                };
+                table_preps.push((named_air, degree));
                 break;
             }
         }

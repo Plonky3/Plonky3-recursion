@@ -275,7 +275,7 @@ where
         let degree = log2_ceil_usize(padded_rows);
 
         Some((
-            CircuitTableAir::Dynamic(DynamicAirEntry::new(Box::new(air))),
+            CircuitTableAir::Dynamic(DynamicAirEntry::new(Box::new(air)), op_type.as_str().into()),
             degree,
         ))
     }

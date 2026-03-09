@@ -46,5 +46,6 @@ pub mod field_params;
 
 // Re-export main API
 pub use batch_stark_prover::*;
+pub use common::AirTraceShape;
 pub use constraint_profile::ConstraintProfile;
 pub use p3_circuit::ops::Poseidon2Config;

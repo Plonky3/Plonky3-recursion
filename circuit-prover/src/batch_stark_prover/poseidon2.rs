@@ -1482,7 +1482,10 @@ where
                 .next_power_of_two()
                 .max(min_height.next_power_of_two()),
         );
-        Some((CircuitTableAir::Dynamic(wrapper), degree))
+        Some((
+            CircuitTableAir::Dynamic(wrapper, op_type.as_str().into()),
+            degree,
+        ))
     }
 }
 
@@ -1523,7 +1526,10 @@ where
                 .next_power_of_two()
                 .max(min_height.next_power_of_two()),
         );
-        Some((CircuitTableAir::Dynamic(wrapper), degree))
+        Some((
+            CircuitTableAir::Dynamic(wrapper, op_type.as_str().into()),
+            degree,
+        ))
     }
 }
 
