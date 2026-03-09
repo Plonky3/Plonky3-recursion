@@ -154,7 +154,7 @@ fn test_table_lookups() {
                     lookups.len()
                 );
             }
-            CircuitTableAir::Dynamic(_dynamic_air) => {
+            CircuitTableAir::Dynamic(_dynamic_air, _) => {
                 assert!(
                     lookups.is_empty(),
                     "There is no dynamic table in this test, so no lookups expected"
@@ -336,7 +336,7 @@ fn test_extension_field_table_lookups() {
                     lookups.len()
                 );
             }
-            CircuitTableAir::Dynamic(_dynamic_air) => {
+            CircuitTableAir::Dynamic(_dynamic_air, _) => {
                 assert!(
                     lookups.is_empty(),
                     "There is no dynamic table in this test, so no lookups expected"

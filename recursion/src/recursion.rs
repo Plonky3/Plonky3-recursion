@@ -503,7 +503,7 @@ where
 /// and one `BatchStark` right) or identical ones.
 #[instrument(skip_all)]
 #[allow(clippy::type_complexity)]
-fn build_aggregation_layer_circuit<SC, A1, A2, B, const D: usize>(
+pub fn build_aggregation_layer_circuit<SC, A1, A2, B, const D: usize>(
     left: &RecursionInput<'_, SC, A1>,
     right: &RecursionInput<'_, SC, A2>,
     config: &SC,

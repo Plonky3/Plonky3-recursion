@@ -36,7 +36,10 @@
 
 #[macro_use]
 mod common;
+use std::path::PathBuf;
+
 use common::*;
+use p3_circuit_prover::AirTraceShape;
 
 #[derive(Parser, Debug)]
 #[command(version, about = "Recursive Fibonacci proof verification example")]
@@ -122,6 +125,9 @@ struct Args {
 
     #[arg(long, default_value_t = false, help = "Enable ZK mode (HidingFriPcs)")]
     pub zk: bool,
+    /// If set, write a JSON file with the trace shape of the last recursive layer to this path.
+    #[arg(long, help = "Write last-layer AIR trace shape as JSON to this path")]
+    emit_trace_json: Option<PathBuf>,
 }
 
 impl Args {
@@ -166,6 +172,7 @@ fn main() {
             &table_packing,
             args.security_level,
             args.zk,
+            args.emit_trace_json.as_deref(),
         ),
         FieldOption::BabyBear => baby_bear::run(
             args.n,
@@ -174,6 +181,7 @@ fn main() {
             &table_packing,
             args.security_level,
             args.zk,
+            args.emit_trace_json.as_deref(),
         ),
         FieldOption::Goldilocks => goldilocks::run(
             args.n,
@@ -182,6 +190,7 @@ fn main() {
             &table_packing,
             args.security_level,
             args.zk,
+            args.emit_trace_json.as_deref(),
         ),
     }
 }
@@ -232,6 +241,7 @@ macro_rules! define_field_module {
                 table_packing: &TablePacking,
                 security_level: usize,
                 zk: bool,
+                emit_trace_json: Option<&std::path::Path>,
             ) {
                 let mut builder = CircuitBuilder::new();
                 let expected_result = builder.alloc_public_input("expected_result");
@@ -355,6 +365,48 @@ macro_rules! define_field_module {
                                 );
                             }
 
+                            // On the last layer, collect AIR trace shapes before proving.
+                            let is_last_layer = layer == num_recursive_layers;
+                            let shapes_for_emit: Option<Vec<AirTraceShape>> = if is_last_layer
+                                && emit_trace_json.is_some()
+                            {
+                                let preprocessors = PcsRecursionBackend::<
+                                                            $cfg_type,
+                                                            BatchOnly,
+                                                            D,
+                                                        >::non_primitive_preprocessors(&backend);
+                                let air_builders = PcsRecursionBackend::<
+                                                            $cfg_type,
+                                                            BatchOnly,
+                                                            D,
+                                                        >::non_primitive_air_builders(&backend);
+                                let circuit_clone = verification_circuit.clone();
+                                match get_airs_and_degrees_with_prep::<
+                                    $cfg_type,
+                                    <$cfg_type as StarkGenericConfig>::Challenge,
+                                    D,
+                                >(
+                                    &circuit_clone,
+                                    &params.table_packing,
+                                    &preprocessors,
+                                    &air_builders,
+                                    params.constraint_profile,
+                                ) {
+                                    Ok((airs_degrees, _, _)) => Some(
+                                        airs_degrees
+                                            .iter()
+                                            .map(|(air, deg)| air.trace_shape(*deg))
+                                            .collect(),
+                                    ),
+                                    Err(e) => {
+                                        eprintln!("Warning: failed to collect trace shapes: {e:?}");
+                                        None
+                                    }
+                                }
+                            } else {
+                                None
+                            };
+
                             let out = prove_next_layer::<$cfg_type, BatchOnly, _, D>(
                                 &input,
                                 &verification_circuit,
@@ -377,6 +429,10 @@ macro_rules! define_field_module {
                                 });
 
                             output = out;
+
+                            if let (Some(shapes), Some(path)) = (shapes_for_emit, emit_trace_json) {
+                                write_trace_shapes_json(&shapes, layer, n, path);
+                            }
                         }
                     }};
                 }
@@ -387,7 +443,7 @@ macro_rules! define_field_module {
                     });
                 } else {
                     run_layers!(ConfigWithFriParams, |_seed| {
-                        config_with_fri_params(fri_params, security_level, true)
+                        config_with_fri_params(fri_params, security_level, false)
                     });
                 }
 
@@ -412,6 +468,31 @@ macro_rules! define_field_module {
             }
         }
     };
+}
+
+fn write_trace_shapes_json(
+    shapes: &[AirTraceShape],
+    layer: usize,
+    n: usize,
+    path: &std::path::Path,
+) {
+    use std::fmt::Write as FmtWrite;
+    let mut json = String::from("{\n");
+    json.push_str(&format!("  \"layer\": {layer},\n"));
+    json.push_str(&format!("  \"n\": {n},\n"));
+    json.push_str("  \"airs\": [\n");
+    for (i, shape) in shapes.iter().enumerate() {
+        let comma = if i + 1 < shapes.len() { "," } else { "" };
+        let _ = writeln!(
+            json,
+            "    {{\"name\": \"{}\", \"main_cols\": {}, \"prep_cols\": {}, \"log_degree\": {}, \"rows\": {}}}{}\n",
+            shape.name, shape.main_cols, shape.prep_cols, shape.log_degree, shape.rows, comma
+        );
+    }
+    json.push_str("  ]\n}\n");
+    std::fs::write(path, &json)
+        .unwrap_or_else(|e| eprintln!("Warning: failed to write trace JSON to {path:?}: {e}"));
+    println!("Trace shape JSON written to {}", path.display());
 }
 
 define_field_module!(

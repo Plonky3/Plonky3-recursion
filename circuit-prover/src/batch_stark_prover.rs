@@ -343,7 +343,7 @@ where
             Self::Const(a) => a.width(),
             Self::Public(a) => a.width(),
             Self::Alu(a) => a.width(),
-            Self::Dynamic(a) => <dyn CloneableBatchAir<SC> as BaseAir<Val<SC>>>::width(a.air()),
+            Self::Dynamic(a, _) => <dyn CloneableBatchAir<SC> as BaseAir<Val<SC>>>::width(a.air()),
         }
     }
 
@@ -352,7 +352,7 @@ where
             Self::Const(a) => a.preprocessed_trace(),
             Self::Public(a) => a.preprocessed_trace(),
             Self::Alu(a) => a.preprocessed_trace(),
-            Self::Dynamic(a) => {
+            Self::Dynamic(a, _) => {
                 <dyn CloneableBatchAir<SC> as BaseAir<Val<SC>>>::preprocessed_trace(a.air())
             }
         }
@@ -366,7 +366,7 @@ macro_rules! impl_circuit_table_air_for_builder {
                 Self::Const(a) => Air::<$builder_ty>::eval(a, builder),
                 Self::Public(a) => Air::<$builder_ty>::eval(a, builder),
                 Self::Alu(a) => Air::<$builder_ty>::eval(a, builder),
-                Self::Dynamic(a) => Air::<$builder_ty>::eval(a, builder),
+                Self::Dynamic(a, _) => Air::<$builder_ty>::eval(a, builder),
             }
         }
     };
@@ -425,7 +425,7 @@ where
             Self::Const(a) => ConstAir::<Val<SC>, D>::add_lookup_columns(a),
             Self::Public(a) => PublicAir::<Val<SC>, D>::add_lookup_columns(a),
             Self::Alu(a) => AluAir::<Val<SC>, D>::add_lookup_columns(a),
-            Self::Dynamic(a) => DynamicAirEntry::<SC>::add_lookup_columns(a),
+            Self::Dynamic(a, _) => DynamicAirEntry::<SC>::add_lookup_columns(a),
         }
     }
 
@@ -434,7 +434,7 @@ where
             Self::Const(a) => ConstAir::<Val<SC>, D>::get_lookups(a),
             Self::Public(a) => PublicAir::<Val<SC>, D>::get_lookups(a),
             Self::Alu(a) => AluAir::<Val<SC>, D>::get_lookups(a),
-            Self::Dynamic(a) => DynamicAirEntry::<SC>::get_lookups(a),
+            Self::Dynamic(a, _) => DynamicAirEntry::<SC>::get_lookups(a),
         }
     }
 }
@@ -824,7 +824,7 @@ where
                 lanes,
                 rows,
             } = instance;
-            air_storage.push(CircuitTableAir::Dynamic(air));
+            air_storage.push(CircuitTableAir::Dynamic(air, op_type.as_str().into()));
             trace.pad_to_min_power_of_two_height(min_height, Val::<SC>::ZERO);
             trace_storage.push(trace);
             public_storage.push(public_values);
@@ -984,7 +984,7 @@ where
             let air = plugin
                 .batch_air_from_table_entry(&self.config, D, entry)
                 .map_err(BatchStarkProverError::Verify)?;
-            airs.push(CircuitTableAir::Dynamic(air));
+            airs.push(CircuitTableAir::Dynamic(air, entry.op_type.as_str().into()));
             pvs.push(entry.public_values.clone());
         }
 

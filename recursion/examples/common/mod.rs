@@ -31,9 +31,10 @@ pub use p3_recursion::traits::{RecursiveAir, RecursivePcs};
 pub use p3_recursion::verifier::VerificationError;
 pub use p3_recursion::{
     AggregationPrepCache, BatchOnly, BatchStarkVerifierInputsBuilder, FriRecursionBackend,
-    FriRecursionConfig, FriVerifierParams, NextLayerPrepCache, Poseidon2Config,
-    ProveNextLayerParams, RecursionInput, RecursionOutput, build_and_prove_aggregation_layer,
-    build_and_prove_next_layer, build_next_layer_circuit, build_next_layer_prep, prove_next_layer,
+    FriRecursionConfig, FriVerifierParams, NextLayerPrepCache, PcsRecursionBackend,
+    Poseidon2Config, ProveNextLayerParams, RecursionInput, RecursionOutput,
+    build_aggregation_layer_circuit, build_and_prove_aggregation_layer, build_and_prove_next_layer,
+    build_next_layer_circuit, build_next_layer_prep, prove_aggregation_layer, prove_next_layer,
     verify_batch_circuit,
 };
 pub use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
