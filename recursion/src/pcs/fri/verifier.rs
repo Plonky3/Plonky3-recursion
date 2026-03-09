@@ -218,27 +218,95 @@ fn reconstruct_evals<EF: Field>(
     let arity = 1usize << log_arity;
     debug_assert_eq!(siblings.len(), arity - 1);
 
-    let one_hot = one_hot_from_bits(builder, index_in_group_bits);
+    let evals = match log_arity {
+        // Arity 1
+        0 => vec![folded],
 
-    // Compute cumulative sum: cum[j] = sum(one_hot[0..=j]) ∈ {0, 1}
-    let mut cum = Vec::with_capacity(arity);
-    cum.push(one_hot[0]);
-    for j in 1..arity {
-        cum.push(builder.add(cum[j - 1], one_hot[j]));
-    }
+        // Arity 2: one bit b0, siblings[0]
+        //
+        // idx = 0: [folded, siblings[0]]
+        // idx = 1: [siblings[0], folded]
+        1 => {
+            let b0 = index_in_group_bits[0];
+            let s0 = siblings[0];
 
-    // For each position j:
-    //   if one_hot[j] = 1: evals[j] = folded
-    //   if one_hot[j] = 0 and cum[j] = 0: evals[j] = siblings[j]     (j < index_in_group)
-    //   if one_hot[j] = 0 and cum[j] = 1: evals[j] = siblings[j-1]   (j > index_in_group)
-    let mut evals = Vec::with_capacity(arity);
-    for j in 0..arity {
-        let left_idx = if j > 0 { j - 1 } else { 0 };
-        let right_idx = if j < arity - 1 { j } else { arity - 2 };
-        let actual_sibling = builder.select(cum[j], siblings[left_idx], siblings[right_idx]);
-        let eval_j = builder.select(one_hot[j], folded, actual_sibling);
-        evals.push(eval_j);
-    }
+            let e0 = builder.select(b0, s0, folded); // if b0==0 -> folded, else s0
+            let e1 = builder.select(b0, folded, s0); // if b0==0 -> s0,     else folded
+
+            vec![e0, e1]
+        }
+
+        // Arity 4: two bits [b0, b1] (little-endian), idx = b0 + 2*b1
+        //
+        // siblings = [s0, s1, s2]
+        //
+        // Generic semantics (from the original one_hot + cum implementation):
+        //   idx=0: [folded, s0, s1, s2]
+        //   idx=1: [s0,     folded, s1, s2]
+        //   idx=2: [s0,     s1,     folded, s2]
+        //   idx=3: [s0,     s1,     s2,     folded]
+        2 => {
+            let b0 = index_in_group_bits[0];
+            let b1 = index_in_group_bits[1];
+
+            let s0 = siblings[0];
+            let s1 = siblings[1];
+            let s2 = siblings[2];
+
+            // One-hot over {0,1,2,3}
+            let [h0, h1, h2, h3] = one_hot_from_two_bits(builder, b0, b1);
+
+            // e0: folded if idx=0, else s0
+            //   => e0 = s0 + h0 * (folded - s0)
+            let diff_f_s0 = builder.sub(folded, s0);
+            let e0 = builder.mul_add(h0, diff_f_s0, s0);
+
+            // e1: s0 if idx=0, folded if idx=1, s1 if idx∈{2,3}
+            //   => e1 = f*h1 + s0*h0 + s1*(h2 + h3)
+            let h2_plus_h3 = builder.add(h2, h3);
+            let s1_term_for_e1 = builder.mul(s1, h2_plus_h3);
+            let f_h1 = builder.mul(folded, h1);
+            let tmp_e1 = builder.mul_add(s0, h0, f_h1);
+            let e1 = builder.add(tmp_e1, s1_term_for_e1);
+
+            // e2: s1 if idx∈{0,1}, folded if idx=2, s2 if idx=3
+            //   => e2 = f*h2 + s1*(h0 + h1) + s2*h3
+            let h0_plus_h1 = builder.add(h0, h1);
+            let s1_term_for_e2 = builder.mul(s1, h0_plus_h1);
+            let tmp_e2 = builder.mul_add(folded, h2, s1_term_for_e2);
+            let e2 = builder.mul_add(s2, h3, tmp_e2);
+
+            // e3: s2 if idx∈{0,1,2}, folded if idx=3
+            //   => e3 = s2 + h3 * (folded - s2)
+            let diff_f_s2 = builder.sub(folded, s2);
+            let e3 = builder.mul_add(h3, diff_f_s2, s2);
+
+            vec![e0, e1, e2, e3]
+        }
+
+        // Generic path for larger arities
+        _ => {
+            let one_hot = one_hot_from_bits(builder, index_in_group_bits);
+
+            // Compute cumulative sum: cum[j] = sum(one_hot[0..=j]) ∈ {0, 1}
+            let mut cum = Vec::with_capacity(arity);
+            cum.push(one_hot[0]);
+            for j in 1..arity {
+                cum.push(builder.add(cum[j - 1], one_hot[j]));
+            }
+
+            let mut evals = Vec::with_capacity(arity);
+            for j in 0..arity {
+                let left_idx = if j > 0 { j - 1 } else { 0 };
+                let right_idx = if j < arity - 1 { j } else { arity - 2 };
+                let actual_sibling =
+                    builder.select(cum[j], siblings[left_idx], siblings[right_idx]);
+                let eval_j = builder.select(one_hot[j], folded, actual_sibling);
+                evals.push(eval_j);
+            }
+            evals
+        }
+    };
 
     builder.pop_scope();
     evals
@@ -256,11 +324,8 @@ fn reconstruct_evals<EF: Field>(
 /// `subgroup_start` is skipped and the provided value is used directly.
 fn compute_subgroup_points<F, EF>(
     builder: &mut CircuitBuilder<EF>,
-    index_bits: &[Target],
-    bits_consumed: usize,
     log_arity: usize,
-    log_folded_height: usize,
-    precomputed_subgroup_start: Option<Target>,
+    subgroup_start: Target,
 ) -> (Vec<Target>, Target)
 where
     F: Field + TwoAdicField,
@@ -269,36 +334,6 @@ where
     builder.push_scope("fri_compute_subgroup_points");
 
     let arity = 1usize << log_arity;
-
-    let subgroup_start = if let Some(ss) = precomputed_subgroup_start {
-        ss
-    } else {
-        // Parent index bits start after index_in_group bits
-        let parent_offset = bits_consumed + log_arity;
-
-        // Compute subgroup_start = g_big^{reverse_bits_len(parent_index, log_folded_height)}
-        let g_big = F::two_adic_generator(log_folded_height + log_arity);
-        let one = builder.define_const(EF::ONE);
-
-        let g_big_pows: Vec<Target> = if log_folded_height > 0 {
-            iter::successors(Some(g_big), |&prev| Some(prev.square()))
-                .take(log_folded_height)
-                .map(|p| builder.define_const(EF::from(p)))
-                .collect()
-        } else {
-            Vec::new()
-        };
-
-        let mut ss = one;
-        if log_folded_height > 0 {
-            for j in 0..log_folded_height {
-                let bit = index_bits[parent_offset + log_folded_height - 1 - j];
-                let multiplier = builder.select(bit, g_big_pows[j], one);
-                ss = builder.mul(ss, multiplier);
-            }
-        }
-        ss
-    };
 
     // Compute xs[i] = subgroup_start * omega^{br(i)}
     let omega = F::two_adic_generator(log_arity);
@@ -448,11 +483,10 @@ fn fold_one_phase<F, EF>(
     index_bits: &[Target],
     bits_consumed: usize,
     log_arity: usize,
-    log_current_height: usize,
     roll_in: Option<Target>,
     precomputed_beta_pow: Option<Target>,
     precomputed_evals: Option<&[Target]>,
-    precomputed_subgroup_start: Option<Target>,
+    precomputed_subgroup_start: Target,
 ) -> Target
 where
     F: Field + TwoAdicField,
@@ -460,30 +494,23 @@ where
 {
     builder.push_scope("fri_fold_one_phase");
 
-    let log_folded_height = log_current_height - log_arity;
     let index_in_group_bits = &index_bits[bits_consumed..bits_consumed + log_arity];
 
     // For arity 2, use the optimized formula
     if log_arity == 1 {
         let sibling = siblings[0];
         let one = builder.define_const(EF::ONE);
+        let two = builder.define_const(EF::TWO);
+        let neg_one = builder.define_const(EF::NEG_ONE);
         let neg_half = builder.define_const(EF::NEG_ONE * EF::ONE.halve());
         let sibling_is_right = builder.sub(one, index_bits[bits_consumed]);
 
         let e0 = builder.select(sibling_is_right, folded, sibling);
-        let x0 = precomputed_subgroup_start.unwrap_or_else(|| {
-            compute_x0_from_index_bits_general::<F, EF>(
-                builder,
-                index_bits,
-                bits_consumed,
-                log_folded_height,
-            )
-        });
+        let x0 = precomputed_subgroup_start;
         let inv = builder.div(neg_half, x0);
 
         let d = builder.sub(sibling, folded);
-        let two_b = builder.add(sibling_is_right, sibling_is_right);
-        let two_b_m1 = builder.sub(two_b, one);
+        let two_b_m1 = builder.mul_add(two, sibling_is_right, neg_one);
         let e1_minus_e0 = builder.mul(two_b_m1, d);
 
         let beta_minus_x0 = builder.sub(beta, x0);
@@ -511,14 +538,8 @@ where
         }
     };
 
-    let (xs, subgroup_start) = compute_subgroup_points::<F, EF>(
-        builder,
-        index_bits,
-        bits_consumed,
-        log_arity,
-        log_folded_height,
-        precomputed_subgroup_start,
-    );
+    let (xs, subgroup_start) =
+        compute_subgroup_points::<F, EF>(builder, log_arity, precomputed_subgroup_start);
 
     let mut subgroup_start_powers: Vec<Target> = vec![subgroup_start];
     for _ in 1..log_arity {
@@ -587,45 +608,6 @@ where
     new_folded
 }
 
-/// Compute x0 for arity-2 folding from index bits (generalized for variable bits_consumed).
-///
-/// x0 = two_adic_generator(log_folded_height + 1)^{reverse_bits_len(parent_index, log_folded_height)}
-fn compute_x0_from_index_bits_general<F, EF>(
-    builder: &mut CircuitBuilder<EF>,
-    index_bits: &[Target],
-    bits_consumed: usize,
-    log_folded_height: usize,
-) -> Target
-where
-    F: Field + TwoAdicField,
-    EF: ExtensionField<F>,
-{
-    let g = F::two_adic_generator(log_folded_height + 1);
-    let pows: Vec<EF> = iter::successors(Some(g), |&prev| Some(prev.square()))
-        .take(log_folded_height)
-        .map(EF::from)
-        .collect();
-
-    // Pre-lift all powers to circuit constants once
-    let pow_consts: Vec<Target> = pows.iter().map(|p| builder.define_const(*p)).collect();
-
-    let one = builder.define_const(EF::ONE);
-    let mut res = one;
-
-    let parent_offset = bits_consumed + 1;
-    let k = log_folded_height;
-
-    for j in 0..k {
-        let bit = index_bits[parent_offset + k - 1 - j];
-        let diff = builder.sub(pow_consts[j], one);
-        let diff_bit = builder.mul(diff, bit);
-        let gate = builder.add(one, diff_bit);
-        res = builder.mul(res, gate);
-    }
-
-    res
-}
-
 /// Perform the full FRI fold chain with variable arity per phase.
 fn fold_chain_circuit<F, EF>(
     builder: &mut CircuitBuilder<EF>,
@@ -654,7 +636,6 @@ where
 
     let mut folded = initial_folded_eval;
     let mut bits_consumed = 0usize;
-    let mut log_current_height = log_max_height;
 
     for (i, phase) in phases.iter().enumerate() {
         let log_arity = log_arities[i];
@@ -666,14 +647,12 @@ where
             index_bits,
             bits_consumed,
             log_arity,
-            log_current_height,
             phase.roll_in,
             Some(beta_pows_per_phase[i]),
             None,
-            Some(subgroup_starts[i]),
+            subgroup_starts[i],
         );
         bits_consumed += log_arity;
-        log_current_height -= log_arity;
     }
 
     builder.pop_scope();
@@ -1390,11 +1369,10 @@ where
                         &index_bits_per_query[q],
                         bits_consumed,
                         log_arity,
-                        log_current_height,
                         roll_ins[phase_idx],
                         Some(beta_pows_per_phase[phase_idx]),
                         None,
-                        Some(subgroup_starts[phase_idx]),
+                        subgroup_starts[phase_idx],
                     );
                     bits_consumed += log_arity;
                     log_current_height = log_folded_height;
@@ -1468,11 +1446,10 @@ where
                     &index_bits_per_query[q],
                     bits_consumed,
                     log_arity,
-                    log_current_height,
                     roll_ins[phase_idx],
                     Some(beta_pows_per_phase[phase_idx]),
                     Some(&evals),
-                    Some(subgroup_starts[phase_idx]),
+                    subgroup_starts[phase_idx],
                 );
 
                 bits_consumed += log_arity;
