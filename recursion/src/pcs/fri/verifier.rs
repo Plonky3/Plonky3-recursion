@@ -218,27 +218,95 @@ fn reconstruct_evals<EF: Field>(
     let arity = 1usize << log_arity;
     debug_assert_eq!(siblings.len(), arity - 1);
 
-    let one_hot = one_hot_from_bits(builder, index_in_group_bits);
+    let evals = match log_arity {
+        // Arity 1
+        0 => vec![folded],
 
-    // Compute cumulative sum: cum[j] = sum(one_hot[0..=j]) ∈ {0, 1}
-    let mut cum = Vec::with_capacity(arity);
-    cum.push(one_hot[0]);
-    for j in 1..arity {
-        cum.push(builder.add(cum[j - 1], one_hot[j]));
-    }
+        // Arity 2: one bit b0, siblings[0]
+        //
+        // idx = 0: [folded, siblings[0]]
+        // idx = 1: [siblings[0], folded]
+        1 => {
+            let b0 = index_in_group_bits[0];
+            let s0 = siblings[0];
 
-    // For each position j:
-    //   if one_hot[j] = 1: evals[j] = folded
-    //   if one_hot[j] = 0 and cum[j] = 0: evals[j] = siblings[j]     (j < index_in_group)
-    //   if one_hot[j] = 0 and cum[j] = 1: evals[j] = siblings[j-1]   (j > index_in_group)
-    let mut evals = Vec::with_capacity(arity);
-    for j in 0..arity {
-        let left_idx = if j > 0 { j - 1 } else { 0 };
-        let right_idx = if j < arity - 1 { j } else { arity - 2 };
-        let actual_sibling = builder.select(cum[j], siblings[left_idx], siblings[right_idx]);
-        let eval_j = builder.select(one_hot[j], folded, actual_sibling);
-        evals.push(eval_j);
-    }
+            let e0 = builder.select(b0, s0, folded); // if b0==0 -> folded, else s0
+            let e1 = builder.select(b0, folded, s0); // if b0==0 -> s0,     else folded
+
+            vec![e0, e1]
+        }
+
+        // Arity 4: two bits [b0, b1] (little-endian), idx = b0 + 2*b1
+        //
+        // siblings = [s0, s1, s2]
+        //
+        // Generic semantics (from the original one_hot + cum implementation):
+        //   idx=0: [folded, s0, s1, s2]
+        //   idx=1: [s0,     folded, s1, s2]
+        //   idx=2: [s0,     s1,     folded, s2]
+        //   idx=3: [s0,     s1,     s2,     folded]
+        2 => {
+            let b0 = index_in_group_bits[0];
+            let b1 = index_in_group_bits[1];
+
+            let s0 = siblings[0];
+            let s1 = siblings[1];
+            let s2 = siblings[2];
+
+            // One-hot over {0,1,2,3}
+            let [h0, h1, h2, h3] = one_hot_from_two_bits(builder, b0, b1);
+
+            // e0: folded if idx=0, else s0
+            //   => e0 = s0 + h0 * (folded - s0)
+            let diff_f_s0 = builder.sub(folded, s0);
+            let e0 = builder.mul_add(h0, diff_f_s0, s0);
+
+            // e1: s0 if idx=0, folded if idx=1, s1 if idx∈{2,3}
+            //   => e1 = f*h1 + s0*h0 + s1*(h2 + h3)
+            let h2_plus_h3 = builder.add(h2, h3);
+            let s1_term_for_e1 = builder.mul(s1, h2_plus_h3);
+            let f_h1 = builder.mul(folded, h1);
+            let tmp_e1 = builder.mul_add(s0, h0, f_h1);
+            let e1 = builder.add(tmp_e1, s1_term_for_e1);
+
+            // e2: s1 if idx∈{0,1}, folded if idx=2, s2 if idx=3
+            //   => e2 = f*h2 + s1*(h0 + h1) + s2*h3
+            let h0_plus_h1 = builder.add(h0, h1);
+            let s1_term_for_e2 = builder.mul(s1, h0_plus_h1);
+            let tmp_e2 = builder.mul_add(folded, h2, s1_term_for_e2);
+            let e2 = builder.mul_add(s2, h3, tmp_e2);
+
+            // e3: s2 if idx∈{0,1,2}, folded if idx=3
+            //   => e3 = s2 + h3 * (folded - s2)
+            let diff_f_s2 = builder.sub(folded, s2);
+            let e3 = builder.mul_add(h3, diff_f_s2, s2);
+
+            vec![e0, e1, e2, e3]
+        }
+
+        // Generic path for larger arities
+        _ => {
+            let one_hot = one_hot_from_bits(builder, index_in_group_bits);
+
+            // Compute cumulative sum: cum[j] = sum(one_hot[0..=j]) ∈ {0, 1}
+            let mut cum = Vec::with_capacity(arity);
+            cum.push(one_hot[0]);
+            for j in 1..arity {
+                cum.push(builder.add(cum[j - 1], one_hot[j]));
+            }
+
+            let mut evals = Vec::with_capacity(arity);
+            for j in 0..arity {
+                let left_idx = if j > 0 { j - 1 } else { 0 };
+                let right_idx = if j < arity - 1 { j } else { arity - 2 };
+                let actual_sibling =
+                    builder.select(cum[j], siblings[left_idx], siblings[right_idx]);
+                let eval_j = builder.select(one_hot[j], folded, actual_sibling);
+                evals.push(eval_j);
+            }
+            evals
+        }
+    };
 
     builder.pop_scope();
     evals
