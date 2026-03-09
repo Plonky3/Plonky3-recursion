@@ -467,6 +467,8 @@ where
     if log_arity == 1 {
         let sibling = siblings[0];
         let one = builder.define_const(EF::ONE);
+        let two = builder.define_const(EF::TWO);
+        let neg_one = builder.define_const(EF::NEG_ONE);
         let neg_half = builder.define_const(EF::NEG_ONE * EF::ONE.halve());
         let sibling_is_right = builder.sub(one, index_bits[bits_consumed]);
 
@@ -482,8 +484,7 @@ where
         let inv = builder.div(neg_half, x0);
 
         let d = builder.sub(sibling, folded);
-        let two_b = builder.add(sibling_is_right, sibling_is_right);
-        let two_b_m1 = builder.sub(two_b, one);
+        let two_b_m1 = builder.mul_add(two, sibling_is_right, neg_one);
         let e1_minus_e0 = builder.mul(two_b_m1, d);
 
         let beta_minus_x0 = builder.sub(beta, x0);
