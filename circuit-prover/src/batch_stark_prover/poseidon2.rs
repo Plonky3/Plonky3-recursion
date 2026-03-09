@@ -984,7 +984,7 @@ impl Poseidon2Prover {
                 merkle_path: false,
                 mmcs_bit: false,
                 mmcs_index_sum: Val::<SC>::ZERO,
-                input_values: vec![Val::<SC>::ZERO; WIDTH],
+                input_values: Val::<SC>::zero_vec(WIDTH),
                 in_ctl: vec![false; 4],
                 input_indices: vec![0; 4],
                 out_ctl: vec![false; 2],

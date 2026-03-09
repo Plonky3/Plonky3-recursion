@@ -1,7 +1,16 @@
-//! Public types for the Poseidon2 circuit AIR.
+//! Field-specific configurations and type aliases for the Poseidon2 circuit AIR.
 //!
-//! Defines abstracted field-specific parameters for
-//! the Poseidon2 circuit AIR for commonly used configurations.
+//! # Supported Configurations
+//!
+//! ```text
+//!     Field       Extension degree   State width   Partial rounds
+//!     ─────────   ────────────────   ───────────   ──────────────
+//!     BabyBear    4                  16            13
+//!     BabyBear    4                  24            21
+//!     KoalaBear   4                  16            20
+//!     KoalaBear   4                  24            23
+//!     Goldilocks  2                   8            22
+//! ```
 
 extern crate alloc;
 
@@ -12,12 +21,19 @@ use p3_circuit::ops::{GoldilocksD2Width8, Poseidon2Config, Poseidon2Params};
 use p3_goldilocks::{GenericPoseidon2LinearLayersGoldilocks, Goldilocks};
 use p3_koala_bear::{GenericPoseidon2LinearLayersKoalaBear, KoalaBear};
 use p3_poseidon2_air::RoundConstants;
-use rand::SeedableRng;
+use rand::distr::StandardUniform;
 use rand::rngs::SmallRng;
+use rand::{RngExt, SeedableRng};
 
 use crate::Poseidon2CircuitAir;
 
-/// Poseidon2 configuration for BabyBear with D=4, WIDTH=16.
+/// Configuration for BabyBear with a quartic extension and a 16-element
+/// Poseidon2 state.
+///
+/// Most common configuration for 31-bit recursive proofs.
+///
+/// S-box degree 7, 1 intermediate register, 4 half-full rounds, 13
+/// partial rounds.
 pub struct BabyBearD4Width16;
 
 impl Poseidon2Params for BabyBearD4Width16 {
@@ -26,6 +42,7 @@ impl Poseidon2Params for BabyBearD4Width16 {
 }
 
 impl BabyBearD4Width16 {
+    /// Return the canonical round constants for this configuration.
     pub const fn round_constants() -> RoundConstants<BabyBear, 16, 4, 13> {
         RoundConstants::new(
             p3_baby_bear::BABYBEAR_RC16_EXTERNAL_INITIAL,
@@ -34,10 +51,14 @@ impl BabyBearD4Width16 {
         )
     }
 
+    /// Create an AIR instance with canonical round constants and an empty
+    /// preprocessed trace.
     pub const fn default_air() -> Poseidon2CircuitAirBabyBearD4Width16 {
         Poseidon2CircuitAirBabyBearD4Width16::new(Self::round_constants())
     }
 
+    /// Create an AIR instance with canonical round constants, pre-populated
+    /// preprocessed data, and a minimum trace height.
     pub fn default_air_with_preprocessed(
         preprocessed: Vec<BabyBear>,
         min_height: usize,
@@ -50,7 +71,12 @@ impl BabyBearD4Width16 {
     }
 }
 
-/// Poseidon2 configuration for BabyBear with D=4, WIDTH=24.
+/// Configuration for BabyBear with a quartic extension and a 24-element
+/// Poseidon2 state.
+///
+/// The wider state provides higher throughput per permutation.
+///
+/// Costs more columns per row.
 pub struct BabyBearD4Width24;
 
 impl Poseidon2Params for BabyBearD4Width24 {
@@ -59,6 +85,7 @@ impl Poseidon2Params for BabyBearD4Width24 {
 }
 
 impl BabyBearD4Width24 {
+    /// Return the canonical round constants for this configuration.
     pub const fn round_constants() -> RoundConstants<BabyBear, 24, 4, 21> {
         RoundConstants::new(
             p3_baby_bear::BABYBEAR_RC24_EXTERNAL_INITIAL,
@@ -67,10 +94,14 @@ impl BabyBearD4Width24 {
         )
     }
 
+    /// Create an AIR instance with canonical round constants and an empty
+    /// preprocessed trace.
     pub const fn default_air() -> Poseidon2CircuitAirBabyBearD4Width24 {
         Poseidon2CircuitAirBabyBearD4Width24::new(Self::round_constants())
     }
 
+    /// Create an AIR instance with canonical round constants, pre-populated
+    /// preprocessed data, and a minimum trace height.
     pub fn default_air_with_preprocessed(
         preprocessed: Vec<BabyBear>,
         min_height: usize,
@@ -83,7 +114,14 @@ impl BabyBearD4Width24 {
     }
 }
 
-/// Poseidon2 configuration for KoalaBear with D=4, WIDTH=16.
+/// Configuration for KoalaBear with a quartic extension and a 16-element
+/// Poseidon2 state.
+///
+/// KoalaBear is an alternative 31-bit field with different S-box
+/// parameters.
+///
+/// S-box degree 3, 0 intermediate registers, 4 half-full rounds, 20
+/// partial rounds.
 pub struct KoalaBearD4Width16;
 
 impl Poseidon2Params for KoalaBearD4Width16 {
@@ -92,6 +130,7 @@ impl Poseidon2Params for KoalaBearD4Width16 {
 }
 
 impl KoalaBearD4Width16 {
+    /// Return the canonical round constants for this configuration.
     pub const fn round_constants() -> RoundConstants<KoalaBear, 16, 4, 20> {
         RoundConstants::new(
             p3_koala_bear::KOALABEAR_RC16_EXTERNAL_INITIAL,
@@ -100,10 +139,14 @@ impl KoalaBearD4Width16 {
         )
     }
 
+    /// Create an AIR instance with canonical round constants and an empty
+    /// preprocessed trace.
     pub const fn default_air() -> Poseidon2CircuitAirKoalaBearD4Width16 {
         Poseidon2CircuitAirKoalaBearD4Width16::new(Self::round_constants())
     }
 
+    /// Create an AIR instance with canonical round constants, pre-populated
+    /// preprocessed data, and a minimum trace height.
     pub fn default_air_with_preprocessed(
         preprocessed: Vec<KoalaBear>,
         min_height: usize,
@@ -116,7 +159,8 @@ impl KoalaBearD4Width16 {
     }
 }
 
-/// Poseidon2 configuration for KoalaBear with D=4, WIDTH=24.
+/// Configuration for KoalaBear with a quartic extension and a 24-element
+/// Poseidon2 state.
 pub struct KoalaBearD4Width24;
 
 impl Poseidon2Params for KoalaBearD4Width24 {
@@ -125,6 +169,7 @@ impl Poseidon2Params for KoalaBearD4Width24 {
 }
 
 impl KoalaBearD4Width24 {
+    /// Return the canonical round constants for this configuration.
     pub const fn round_constants() -> RoundConstants<KoalaBear, 24, 4, 23> {
         RoundConstants::new(
             p3_koala_bear::KOALABEAR_RC24_EXTERNAL_INITIAL,
@@ -133,10 +178,14 @@ impl KoalaBearD4Width24 {
         )
     }
 
+    /// Create an AIR instance with canonical round constants and an empty
+    /// preprocessed trace.
     pub const fn default_air() -> Poseidon2CircuitAirKoalaBearD4Width24 {
         Poseidon2CircuitAirKoalaBearD4Width24::new(Self::round_constants())
     }
 
+    /// Create an AIR instance with canonical round constants, pre-populated
+    /// preprocessed data, and a minimum trace height.
     pub fn default_air_with_preprocessed(
         preprocessed: Vec<KoalaBear>,
         min_height: usize,
@@ -149,8 +198,7 @@ impl KoalaBearD4Width24 {
     }
 }
 
-/// BabyBear Poseidon2 circuit AIR with D=4, WIDTH=16.
-/// Uses constants from `BabyBearD4Width16` configuration.
+/// BabyBear Poseidon2 circuit AIR with quartic extension and 16-element state.
 pub type Poseidon2CircuitAirBabyBearD4Width16 = Poseidon2CircuitAir<
     BabyBear,
     GenericPoseidon2LinearLayersBabyBear,
@@ -165,8 +213,7 @@ pub type Poseidon2CircuitAirBabyBearD4Width16 = Poseidon2CircuitAir<
     { BabyBearD4Width16::PARTIAL_ROUNDS },
 >;
 
-/// BabyBear Poseidon2 circuit AIR with D=4, WIDTH=24.
-/// Uses constants from `BabyBearD4Width24` configuration.
+/// BabyBear Poseidon2 circuit AIR with quartic extension and 24-element state.
 pub type Poseidon2CircuitAirBabyBearD4Width24 = Poseidon2CircuitAir<
     BabyBear,
     GenericPoseidon2LinearLayersBabyBear,
@@ -181,8 +228,7 @@ pub type Poseidon2CircuitAirBabyBearD4Width24 = Poseidon2CircuitAir<
     { BabyBearD4Width24::PARTIAL_ROUNDS },
 >;
 
-/// KoalaBear Poseidon2 circuit AIR with D=4, WIDTH=16.
-/// Uses constants from `KoalaBearD4Width16` configuration.
+/// KoalaBear Poseidon2 circuit AIR with quartic extension and 16-element state.
 pub type Poseidon2CircuitAirKoalaBearD4Width16 = Poseidon2CircuitAir<
     KoalaBear,
     GenericPoseidon2LinearLayersKoalaBear,
@@ -197,8 +243,7 @@ pub type Poseidon2CircuitAirKoalaBearD4Width16 = Poseidon2CircuitAir<
     { KoalaBearD4Width16::PARTIAL_ROUNDS },
 >;
 
-/// KoalaBear Poseidon2 circuit AIR with D=4, WIDTH=24.
-/// Uses constants from `KoalaBearD4Width24` configuration.
+/// KoalaBear Poseidon2 circuit AIR with quartic extension and 24-element state.
 pub type Poseidon2CircuitAirKoalaBearD4Width24 = Poseidon2CircuitAir<
     KoalaBear,
     GenericPoseidon2LinearLayersKoalaBear,
@@ -213,7 +258,7 @@ pub type Poseidon2CircuitAirKoalaBearD4Width24 = Poseidon2CircuitAir<
     { KoalaBearD4Width24::PARTIAL_ROUNDS },
 >;
 
-/// Goldilocks Poseidon2 circuit AIR with D=2, WIDTH=8.
+/// Goldilocks Poseidon2 circuit AIR with quadratic extension and 8-element state.
 pub type Poseidon2CircuitAirGoldilocksD2Width8 = Poseidon2CircuitAir<
     Goldilocks,
     GenericPoseidon2LinearLayersGoldilocks,
@@ -228,21 +273,24 @@ pub type Poseidon2CircuitAirGoldilocksD2Width8 = Poseidon2CircuitAir<
     { GoldilocksD2Width8::PARTIAL_ROUNDS },
 >;
 
+/// Generate deterministic round constants for the Goldilocks width-8
+/// configuration using a fixed seed.
 pub fn goldilocks_d2_width8_round_constants() -> RoundConstants<Goldilocks, 8, 4, 22> {
-    use rand::RngExt;
-    use rand::distr::StandardUniform;
     let mut rng = SmallRng::seed_from_u64(1);
-    let beginning_full: [[Goldilocks; 8]; 4] =
-        core::array::from_fn(|_| rng.sample(StandardUniform));
-    let ending_full: [[Goldilocks; 8]; 4] = core::array::from_fn(|_| rng.sample(StandardUniform));
-    let partial: [Goldilocks; 22] = core::array::from_fn(|_| rng.sample(StandardUniform));
+    let beginning_full = rng.sample(StandardUniform);
+    let ending_full = rng.sample(StandardUniform);
+    let partial = rng.sample(StandardUniform);
     RoundConstants::new(beginning_full, partial, ending_full)
 }
 
+/// Create a Goldilocks width-8 AIR with deterministic round constants and
+/// an empty preprocessed trace.
 pub fn goldilocks_d2_width8_default_air() -> Poseidon2CircuitAirGoldilocksD2Width8 {
     Poseidon2CircuitAirGoldilocksD2Width8::new(goldilocks_d2_width8_round_constants())
 }
 
+/// Create a Goldilocks width-8 AIR with deterministic round constants,
+/// pre-populated preprocessed data, and a minimum trace height.
 pub fn goldilocks_d2_width8_default_air_with_preprocessed(
     preprocessed: Vec<Goldilocks>,
     min_height: usize,

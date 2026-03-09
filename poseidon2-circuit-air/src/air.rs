@@ -23,22 +23,49 @@ use crate::columns::{
 };
 use crate::{Poseidon2CircuitCols, num_cols};
 
-/// Extends the Poseidon2 AIR with recursion circuit-specific columns and constraints.
+/// Poseidon2 circuit AIR for recursive proof composition.
 ///
-/// This implements the Poseidon2 Permutation Table specification.
-/// See: https://github.com/Plonky3/Plonky3-recursion/discussions/186
+/// Wraps the upstream permutation AIR and adds four groups of constraints:
 ///
-/// The AIR enforces:
-/// - Poseidon2 permutation constraint: out[0..3] = Poseidon2(in[0..3])
-/// - Chaining rules for normal sponge and Merkle-path modes
-/// - MMCS index accumulator updates
+/// - Sponge chaining.
+/// - Merkle-path chaining.
+/// - MMCS leaf-index accumulator.
+/// - Cross-table lookup interactions.
 ///
-/// Assumes the field size is at least 16 bits.
+/// # Const Generic Parameters
 ///
-/// SPECIFIC ASSUMPTIONS:
-/// - Memory elements from the witness table are extension elements of degree D.
-/// - RATE and CAPACITY are the number of extension elements in the rate/capacity.
-/// - WIDTH is the number of field elements in the state, i.e., (RATE + CAPACITY) * D.
+/// - **D** — extension degree.
+///   Number of base-field elements per extension-field element.
+///
+/// - **WIDTH** — state width in base-field elements.
+///   Equals the rate plus capacity, counted in base-field elements.
+///
+/// - **WIDTH_EXT** — state width in extension-field elements.
+///   Must satisfy `WIDTH_EXT × D = WIDTH`.
+///
+/// - **RATE_EXT / CAPACITY_EXT** — rate and capacity in extension elements.
+///   Their sum must equal WIDTH_EXT.
+///
+/// - **SBOX_DEGREE** — algebraic degree of the S-box polynomial.
+///   For example, 7 for BabyBear, 3 for KoalaBear.
+///
+/// - **SBOX_REGISTERS** — number of intermediate registers.
+///   Used to decompose the high-degree S-box into lower-degree steps.
+///
+/// - **HALF_FULL_ROUNDS** — full rounds per half.
+///   Applied at the beginning and again at the end of the permutation.
+///
+/// - **PARTIAL_ROUNDS** — number of partial rounds.
+///   The S-box is applied to only one state element in each partial round.
+///
+/// # Invariants
+///
+/// Checked at compile time during construction:
+///
+/// ```text
+///     WIDTH_EXT × D = WIDTH
+///     RATE_EXT + CAPACITY_EXT = WIDTH_EXT
+/// ```
 #[derive(Debug)]
 pub struct Poseidon2CircuitAir<
     F: PrimeCharacteristicRing,
@@ -53,6 +80,15 @@ pub struct Poseidon2CircuitAir<
     const HALF_FULL_ROUNDS: usize,
     const PARTIAL_ROUNDS: usize,
 > {
+    /// The inner permutation AIR.
+    ///
+    /// Stores the round constants.
+    ///
+    /// Enforces the core constraint:
+    /// - The output state must equal the Poseidon2 permutation of the input state.
+    ///
+    /// All circuit-level constraints (chaining, accumulator, cross-table
+    /// lookups) are layered on top by this crate.
     p3_poseidon2: Poseidon2Air<
         F,
         LinearLayers,
@@ -62,11 +98,31 @@ pub struct Poseidon2CircuitAir<
         HALF_FULL_ROUNDS,
         PARTIAL_ROUNDS,
     >,
-    /// Current number of lookup columns registered.
+
+    /// Number of lookup columns registered so far.
+    ///
+    /// Each cross-table interaction adds one permutation argument column.
+    ///
+    /// There is:
+    /// - one interaction per input limb,
+    /// - one interaction per public output limb,
+    /// - one interaction for the MMCS accumulator.
     pub(crate) num_lookup_cols: usize,
-    /// Preprocessed values for the AIR. These values are only needed by the prover. During verification, the `Vec` can be empty.
+
+    /// Flat preprocessed trace data in row-major order.
+    ///
+    /// Only needed by the prover.
+    ///
+    /// The verifier works with the committed digest instead, so this
+    /// vector may be empty for verification-only instances.
     preprocessed: Vec<F>,
-    /// Minimum trace height (for FRI compatibility with higher log_final_poly_len).
+
+    /// Minimum trace height for FRI compatibility.
+    ///
+    /// Some FRI configurations require a minimum domain size.
+    ///
+    /// The actual height is the maximum of the natural row count (rounded
+    /// up to a power of two) and this value.
     min_height: usize,
 }
 
@@ -107,7 +163,16 @@ impl<
     }
 }
 
-/// Return the number of columns in the Poseidon2 preprocessed trace.
+/// Return the number of columns in the preprocessed trace.
+///
+/// Works by measuring the byte-size of the preprocessed row struct
+/// instantiated with single-byte elements.
+///
+/// Because the struct is `#[repr(C)]` and every field is one element,
+/// the byte-size equals the column count.
+///
+/// When an AIR instance is available, prefer the associated method on
+/// the AIR struct instead.
 pub const fn poseidon2_preprocessed_width() -> usize {
     core::mem::size_of::<Poseidon2PreprocessedRow<u8>>()
 }
@@ -139,10 +204,16 @@ impl<
         PARTIAL_ROUNDS,
     >
 {
-    /// Create a new `Poseidon2CircuitAir` with the given round constants.
+    /// Create a new AIR with the given round constants.
     ///
-    /// The preprocessed trace is left empty; call [`Self::new_with_preprocessed`] or
-    /// populate it separately before proving.
+    /// The preprocessed trace starts empty.
+    ///
+    /// You can supply it later via the preprocessed constructor variant,
+    /// or by building it from circuit rows with the extraction helper.
+    ///
+    /// Two compile-time assertions fire if the generic invariants are violated:
+    /// - The rate plus capacity must equal the extension width,
+    /// - The extension width times the degree must equal the state width.
     pub const fn new(
         constants: RoundConstants<F, WIDTH, HALF_FULL_ROUNDS, PARTIAL_ROUNDS>,
     ) -> Self {
@@ -159,19 +230,28 @@ impl<
         }
     }
 
-    /// Set the minimum trace height (rounded up to the next power of two).
+    /// Set the minimum trace height.
     ///
-    /// Use this when FRI parameters require a minimum domain size larger than the
-    /// number of Poseidon2 rows actually produced.
+    /// The value is rounded up to a power of two.
+    ///
+    /// Use this when FRI requires a domain larger than the natural number
+    /// of permutation rows.
     pub fn with_min_height(mut self, min_height: usize) -> Self {
         self.min_height = min_height.next_power_of_two().max(1);
         self
     }
 
-    /// Create a `Poseidon2CircuitAir` with pre-populated preprocessed trace data.
+    /// Create a new AIR with pre-populated preprocessed trace data.
     ///
-    /// Use this when the preprocessed columns have already been committed and you
-    /// want to skip regenerating them at verification time.
+    /// The preprocessed vector must be flat and row-major.
+    ///
+    /// Its length must be a multiple of the preprocessed width.
+    ///
+    /// For verification-only instances an empty vector is fine — the
+    /// verifier only needs the committed digest.
+    ///
+    /// The same compile-time invariant checks apply as for the basic
+    /// constructor.
     pub const fn new_with_preprocessed(
         constants: RoundConstants<F, WIDTH, HALF_FULL_ROUNDS, PARTIAL_ROUNDS>,
         preprocessed: Vec<F>,
@@ -189,18 +269,33 @@ impl<
         }
     }
 
-    /// Return the number of preprocessed columns for this AIR.
-    ///
-    /// Delegates to [`poseidon2_preprocessed_width`].
+    /// Return the number of preprocessed columns per row.
     pub const fn preprocessed_width() -> usize {
         poseidon2_preprocessed_width()
     }
 
-    /// Generate the execution trace matrix from a sequence of Poseidon2 circuit rows.
+    /// Generate the execution trace matrix from a sequence of circuit rows.
     ///
-    /// `sponge_ops` must have a length that is a power of two.
-    /// `extra_capacity_bits` controls how many additional zero-padded rows are appended
-    /// beyond the minimum power-of-two height.
+    /// # Two-Pass Strategy
+    ///
+    /// ```text
+    ///     Pass 1 (sequential)
+    ///         Write the direction bit, the MMCS accumulator, and the
+    ///         Poseidon2 input state into uninitialized trace memory.
+    ///
+    ///     Pass 2 (parallel)
+    ///         Read the inputs back.
+    ///         Compute the full Poseidon2 permutation for every row.
+    /// ```
+    ///
+    /// Pass 1 is sequential because the MMCS accumulator depends on the previous row.
+    ///
+    /// Pass 2 is parallel because each permutation is independent.
+    ///
+    /// # Panics
+    ///
+    /// - If the number of rows is not a power of two.
+    /// - If any row's input state has the wrong number of elements.
     pub fn generate_trace_rows(
         &self,
         sponge_ops: &[Poseidon2CircuitRow<F>],
@@ -213,6 +308,23 @@ impl<
             "Callers expected to pad inputs to a power of two"
         );
 
+        // Each row has two segments:
+        //
+        //     [ --- permutation columns --- | direction bit | accumulator ]
+        //
+        // The permutation segment holds the full Poseidon2 state.
+        //
+        // That includes the 16 input elements, all intermediate values
+        // produced during the rounds, and the 16 output elements.
+        //
+        // After the permutation block come two circuit-specific columns.
+        //
+        // The direction bit says whether the current node is a left or
+        // right child in a Merkle tree (only meaningful in Merkle mode).
+        //
+        // The accumulator reconstructs the Merkle leaf index one bit at
+        // a time as the circuit walks up the authentication path.
+
         let p2_ncols = p3_poseidon2_air::num_cols::<
             WIDTH,
             SBOX_DEGREE,
@@ -223,20 +335,53 @@ impl<
         let ncols = self.width();
         let circuit_ncols = ncols - p2_ncols;
 
-        // We allocate the final vector immediately with uninitialized memory.
+        // Allocate the final trace as uninitialized memory.
         //
-        // The extra capacity bits only enlarges the Poseidon2 columns, not the circuit columns.
+        // We use uninitialized memory because both passes will write
+        // every element before it is read.
+        //
+        // The extra capacity bits enlarge only the permutation segment.
+        //
+        // The circuit columns are always two wide (direction bit and accumulator).
         let mut trace_vec: Vec<F> =
             Vec::with_capacity(n * ((p2_ncols << extra_capacity_bits) + circuit_ncols));
         let trace_slice = trace_vec.spare_capacity_mut();
 
-        // We need a lightweight vector to store the state inputs for the parallel pass.
+        // Pass 1: Sequential
         //
-        // This is much smaller than the full trace (WIDTH vs NUM_COLS).
-        let mut inputs = Vec::with_capacity(n);
+        // This pass must run row by row because each row's accumulator
+        // depends on the previous row's value.
+        //
+        // For each row we write three things into the uninitialized memory:
+        //
+        //   1. The Poseidon2 input state — the 16 field elements that will
+        //      be fed into the permutation. These come directly from the
+        //      operation struct provided by the caller.
+        //
+        //   2. The direction bit — zero or one, indicating left or right
+        //      child in a Merkle tree.
+        //
+        //   3. The MMCS accumulator — a running value that reconstructs
+        //      the Merkle leaf index from the direction bits.
+        //
+        // The accumulator follows a simple recurrence:
+        //
+        //     next_sum = current_sum × 2 + next_bit
+        //
+        // This is just binary-to-integer conversion built up one bit at
+        // a time. For example, leaf index 5 (binary 101) is reconstructed
+        // as: 1 → 1×2+0=2 → 2×2+1=5.
+        //
+        // On chain boundaries or non-Merkle rows the accumulator resets
+        // to whatever value the operation struct carries.
+
+        // Tracks the accumulator value from the previous row.
+        //
+        // Starts at zero. Updated on each iteration.
         let mut prev_mmcs_index_sum = F::ZERO;
 
-        // Split slice into rows
+        // View the flat allocation as individual rows, each with the
+        // right number of columns.
         let rows = trace_slice[..n * ncols].chunks_exact_mut(ncols);
 
         for (row_index, (op, row)) in sponge_ops.iter().zip(rows).enumerate() {
@@ -249,49 +394,82 @@ impl<
                 ..
             } = op;
 
-            // Copy input_values into fixed-size array, padding with zeros.
-            // Note: input_values already contains the fully resolved state with chaining
-            // applied during circuit execution, so no additional chaining is needed here.
             assert_eq!(
                 input_values.len(),
                 WIDTH,
                 "Trace row input_values must have length WIDTH"
             );
-            let mut state = [F::ZERO; WIDTH];
-            state[..WIDTH].copy_from_slice(&input_values[..WIDTH]);
 
-            // Update MMCS index accumulator
-            let acc = if row_index > 0 && *merkle_path && !*new_start {
-                // mmcs_index_sum_{r+1} = mmcs_index_sum_r * 2 + mmcs_bit_r
-                prev_mmcs_index_sum + prev_mmcs_index_sum + F::from_bool(*mmcs_bit)
+            // Update the accumulator.
+            //
+            // If this is a Merkle row that continues a chain (not the
+            // first row, not a chain boundary), apply the recurrence:
+            //
+            //     new_value = old_value × 2 + direction_bit
+            //
+            // Otherwise reset the accumulator. This happens on:
+            //   - The very first row (no previous value exists).
+            //   - Chain boundaries (a new Merkle proof starts).
+            //   - Non-Merkle rows (sponge mode, no index to track).
+            if row_index > 0 && *merkle_path && !*new_start {
+                prev_mmcs_index_sum = prev_mmcs_index_sum.double() + F::from_bool(*mmcs_bit);
             } else {
-                // Reset / non-Merkle behavior.
-                // The AIR does not constrain mmcs_index_sum on these rows;
-                // we simply use the value stored in the op.
-                *mmcs_index_sum
-            };
-            prev_mmcs_index_sum = acc;
+                prev_mmcs_index_sum = *mmcs_index_sum;
+            }
 
+            // Write the 16 input field elements into the first 16 slots
+            // of the row. These will be read back in pass 2 when the
+            // permutation is computed.
+            for (i, &val) in input_values.iter().enumerate() {
+                row[i].write(val);
+            }
+
+            // Write the two circuit columns at the end of the row.
+            //
+            // First circuit column: the direction bit (0 = left, 1 = right).
+            //
+            // Second circuit column: the running accumulator value.
             let (_p2_part, circuit_part) = row.split_at_mut(p2_ncols);
-
             circuit_part[0].write(F::from_bool(*mmcs_bit));
-            circuit_part[1].write(acc);
-
-            // Save the state to be used as input for the heavy Poseidon2 trace generation
-            inputs.push(state);
+            circuit_part[1].write(prev_mmcs_index_sum);
         }
 
-        // Poseidon2 trace generation
+        // Pass 2: Parallel
         //
-        // Now that we have the inputs, we can generate the expensive Poseidon2 columns in parallel.
+        // Each row's permutation is independent of every other row.
+        //
+        // That means we can compute all of them in parallel.
+        //
+        // For each row:
+        //
+        //   1. Read back the 16 input elements written during pass 1.
+        //
+        //   2. Run the full Poseidon2 permutation: external rounds (S-box
+        //      applied to all 16 elements), then partial rounds (S-box
+        //      applied to just one element), then external rounds again.
+        //
+        //   3. Write all intermediate round states and the 16 output
+        //      elements into the remaining permutation columns.
 
         trace_slice[..n * ncols]
             .par_chunks_exact_mut(ncols)
-            .zip(inputs.into_par_iter())
-            .for_each(|(row, input)| {
+            .for_each(|row| {
+                // Split the row into permutation columns and circuit columns.
+                //
+                // We only need the permutation part here. The circuit
+                // columns were already finalized in pass 1.
                 let (p2_part, _circuit_part) = row.split_at_mut(p2_ncols);
 
-                // Align the raw field elements to the Poseidon2Cols struct
+                // Read back the 16 input elements that pass 1 wrote.
+                //
+                // SAFETY: Pass 1 initialized exactly these positions.
+                let input: [F; WIDTH] =
+                    core::array::from_fn(|i| unsafe { p2_part[i].assume_init() });
+
+                // Reinterpret the flat slice as the typed permutation column struct.
+                //
+                // This is a zero-copy cast. The struct is `#[repr(C)]`
+                // and the slice has exactly the right number of elements.
                 let (prefix, p2_cols, suffix) = unsafe {
                     p2_part.align_to_mut::<Poseidon2Cols<
                         MaybeUninit<F>,
@@ -303,12 +481,19 @@ impl<
                     >>()
                 };
 
-                // Sanity checks to ensure memory layout is what we expect
+                // Verify the cast produced exactly one struct with no
+                // leftover bytes on either side.
                 debug_assert!(prefix.is_empty(), "Alignment mismatch");
                 debug_assert!(suffix.is_empty(), "Alignment mismatch");
                 debug_assert_eq!(p2_cols.len(), 1);
 
-                // Generate the heavy trace
+                // Run the Poseidon2 permutation on the input.
+                //
+                // This fills in every column of the permutation struct:
+                // - the beginning full rounds,
+                // - the partial rounds,
+                // - the ending full rounds,
+                // - the final output state.
                 generate_trace_rows_for_perm::<
                     F,
                     LinearLayers,
@@ -320,9 +505,13 @@ impl<
                 >(&mut p2_cols[0], input, constants);
             });
 
-        // SAFETY: We have written to all columns in the slice [0..n*ncols].
-        // 1. Circuit columns were written in the sequential loop.
-        // 2. Poseidon2 columns were written in the parallel loop.
+        // SAFETY: At this point every element has been initialized.
+        //
+        // Pass 1 wrote the input state, direction bit, and accumulator.
+        //
+        // Pass 2 wrote all intermediate round states and the output.
+        //
+        // We can now safely tell the allocator that these bytes are live.
         unsafe {
             trace_vec.set_len(n * ncols);
         }
@@ -358,55 +547,115 @@ impl<
         PARTIAL_ROUNDS,
     >
 {
+    /// Total number of value columns per row.
+    ///
+    /// Includes all Poseidon2 permutation columns (input, round
+    /// intermediates, output).
+    ///
+    /// Also includes the two circuit-specific columns:
+    /// - The direction bit,
+    /// - The MMCS accumulator.
     fn width(&self) -> usize {
         num_cols::<
             Poseidon2Cols<u8, WIDTH, SBOX_DEGREE, SBOX_REGISTERS, HALF_FULL_ROUNDS, PARTIAL_ROUNDS>,
         >()
     }
 
+    /// Build the preprocessed trace matrix.
+    ///
+    /// Pads to a power-of-two height.
+    ///
+    /// # Padding Strategy
+    ///
+    /// ```text
+    ///     Row 0 .. n-1        actual preprocessed data
+    ///     Row n (first pad)   chain boundary flag = 1, rest zero
+    ///     Row n+1 .. end      all zeros
+    /// ```
+    ///
+    /// The first padding row marks a chain boundary.
+    ///
+    /// This prevents chaining constraints from firing across the
+    /// real-to-padding boundary.
+    ///
+    /// All subsequent padding rows are fully zero. Every selector is
+    /// inactive, so every constraint is trivially satisfied.
+    ///
+    /// The chain boundary flag is the second-to-last field in each
+    /// preprocessed row.
     fn preprocessed_trace(&self) -> Option<RowMajorMatrix<F>> {
+        let width = Self::preprocessed_width();
+        let len = self.preprocessed.len();
+
         debug_assert!(
-            self.preprocessed
-                .len()
-                .is_multiple_of(Self::preprocessed_width()),
-            "Preprocessed trace length is not a multiple of preprocessed width. Expected multiple of {}, got {}",
-            Self::preprocessed_width(),
-            self.preprocessed.len(),
+            len.is_multiple_of(width),
+            "Preprocessed trace length {len} is not a multiple of preprocessed width {width}."
         );
 
-        let width = Self::preprocessed_width();
-        let natural_rows = self.preprocessed.len() / width;
-        let num_extra_rows = natural_rows
-            .next_power_of_two()
-            .saturating_sub(natural_rows);
+        let natural_rows = len / width;
 
-        let mut preprocessed = self.preprocessed.clone();
-        let start_len = preprocessed.len();
-        preprocessed.resize(start_len + num_extra_rows * width, F::ZERO);
+        // The minimum height is already rounded to a power of two in
+        // the builder method, so we can use it directly here.
+        let padded_rows = natural_rows.next_power_of_two().max(self.min_height);
 
-        if num_extra_rows > 0 {
-            preprocessed[start_len + width - 2] = F::ONE;
+        // Clone the existing preprocessed data.
+        let mut data = self.preprocessed.clone();
+
+        // Pad with zeros up to the required power-of-two height.
+        //
+        // All-zero padding rows have every selector inactive, so
+        // every constraint is trivially satisfied on those rows.
+        data.resize(padded_rows * width, F::ZERO);
+
+        // Mark the first padding row as a chain boundary.
+        //
+        // Without this, the chaining constraint would try to connect
+        // the last real row to the first padding row. Setting the
+        // chain-start flag to one disables that connection.
+        //
+        // The flag is the second-to-last field in each row.
+        if padded_rows > natural_rows {
+            data[len + width - 2] = F::ONE;
         }
 
-        let mut mat = RowMajorMatrix::new(preprocessed, width);
-        let current_height = mat.height();
-        let target_height = current_height
-            .next_power_of_two()
-            .max(self.min_height.next_power_of_two());
-        if current_height < target_height {
-            let padding_rows = target_height - current_height;
-            mat.values
-                .extend(core::iter::repeat_n(F::ZERO, padding_rows * width));
-        }
-        Some(mat)
+        Some(RowMajorMatrix::new(data, width))
     }
 }
 
-/// Preprocessed columns from Poseidon2 circuit rows. `d`: extension degree; indices are scaled by `d`.
+/// Build the preprocessed trace from a sequence of circuit operations.
+///
+/// Each operation becomes one preprocessed row. The results are flattened
+/// into a single vector in row-major order.
+///
+/// # Index Scaling
+///
+/// All witness indices are multiplied by the extension degree.
+///
+/// This way the CTL keys directly index into the flattened witness table.
+/// For example, with extension degree 4 and logical index 5, the stored
+/// value is 20.
+///
+/// # Precomputed Selectors
+///
+/// Several boolean products are precomputed here to keep the constraint
+/// degree at 3 during evaluation.
+///
+/// - The **sponge chain selector** is true when the row is not a chain
+///   boundary, not a Merkle row, and the limb is not looked up via CTL.
+///
+/// - The **Merkle chain selector** is true when the row is not a chain
+///   boundary, is a Merkle row, and the limb is not looked up via CTL.
+///
+/// - The **MMCS Merkle flag** is true when MMCS CTL is enabled and the
+///   row is a Merkle row.
+///
+/// Computing these products at setup time avoids degree-4 expressions
+/// in the constraint polynomial.
 pub fn extract_preprocessed_from_operations<F: Field, OF: Field>(
     operations: &[Poseidon2CircuitRow<OF>],
     d: u32,
 ) -> Vec<F> {
+    // Pre-allocate for all rows. Each row has a fixed number of preprocessed columns.
     let mut preprocessed = Vec::with_capacity(operations.len() * poseidon2_preprocessed_width());
 
     for operation in operations {
@@ -422,35 +671,50 @@ pub fn extract_preprocessed_from_operations<F: Field, OF: Field>(
             ..
         } = operation;
 
-        let row: Poseidon2PreprocessedRow<F> = Poseidon2PreprocessedRow {
+        // Build one preprocessed row.
+        let row = Poseidon2PreprocessedRow {
+            // For each of the 4 input limbs, compute:
+            //
+            //   - The witness index, scaled by the extension degree.
+            //
+            //   - The CTL enable flag (is this limb looked up?).
+            //
+            //   - The sponge chain selector: active when this is a
+            //     continuation row in sponge mode and the limb is not
+            //     coming from a CTL lookup.
+            //
+            //   - The Merkle chain selector: active when this is a
+            //     continuation row in Merkle mode and the limb is not
+            //     coming from a CTL lookup.
             input_limbs: core::array::from_fn(|i| {
                 let ctl = in_ctl[i];
                 Poseidon2PrepInputLimb {
                     idx: F::from_u32(input_indices[i] * d),
                     in_ctl: F::from_bool(ctl),
-                    normal_chain_sel: if !*new_start && !*merkle_path && !ctl {
-                        F::ONE
-                    } else {
-                        F::ZERO
-                    },
-                    merkle_chain_sel: if !new_start && *merkle_path && !ctl {
-                        F::ONE
-                    } else {
-                        F::ZERO
-                    },
+                    normal_chain_sel: F::from_bool(!*new_start && !*merkle_path && !ctl),
+                    merkle_chain_sel: F::from_bool(!*new_start && *merkle_path && !ctl),
                 }
             }),
+
+            // For each of the 2 public output limbs, store:
+            // - the witness index,
+            // - the CTL enable flag.
             output_limbs: core::array::from_fn(|i| Poseidon2PrepOutputLimb {
                 idx: F::from_u32(output_indices[i] * d),
                 out_ctl: F::from_bool(out_ctl[i]),
             }),
+
+            // The witness index for the MMCS accumulator lookup, scaled.
             mmcs_index_sum_ctl_idx: F::from_u64(*mmcs_index_sum_idx as u64 * d as u64),
-            mmcs_merkle_flag: if *mmcs_ctl_enabled && *merkle_path {
-                F::ONE
-            } else {
-                F::ZERO
-            },
+
+            // Precomputed product: is the MMCS CTL enabled AND is this
+            // a Merkle row? Used to detect the end of a Merkle chain.
+            mmcs_merkle_flag: F::from_bool(*mmcs_ctl_enabled && *merkle_path),
+
+            // Whether this row starts a new chain.
             new_start: F::from_bool(*new_start),
+
+            // Whether this row is a Merkle-path step.
             merkle_path: F::from_bool(*merkle_path),
         };
         row.write_into(&mut preprocessed);
@@ -459,6 +723,41 @@ pub fn extract_preprocessed_from_operations<F: Field, OF: Field>(
     preprocessed
 }
 
+/// Evaluate all circuit-level constraints for one pair of adjacent rows.
+///
+/// This is the core constraint function.
+///
+/// It enforces five groups of constraints on the builder.
+///
+/// 1. **Boolean** — the direction bit must be 0 or 1.
+///
+/// 2. **Sponge chaining** — when the sponge chain selector is active,
+///    the next row's input equals the current row's output for that limb.
+///    Checked element by element across the extension degree.
+///
+/// 3. **Merkle-path chaining** — when the Merkle chain selector is
+///    active, the chaining direction depends on the direction bit:
+///
+///    ```text
+///        bit = 0 (left child)    next input limbs 0-1 ← current output 0-1
+///        bit = 1 (right child)   next input limbs 2-3 ← current output 0-1
+///    ```
+///
+///    Only the first two limbs carry the Merkle selector.
+///    Limbs 2-3 reuse the same selectors gated on the opposite direction.
+///
+/// 4. **MMCS accumulator** — on Merkle rows that are not chain boundaries,
+///    the next accumulator equals twice the current plus the next bit.
+///
+/// 5. **Poseidon2 permutation** — delegated to the inner permutation AIR
+///    via a sub-builder restricted to the permutation columns.
+///    Unconditional on every row.
+///
+/// Chain selectors and the Merkle flag are preprocessed columns. They are
+/// known to the verifier and do not need boolean assertions.
+///
+/// The direction bit is a prover-supplied value column. It must be
+/// explicitly constrained to be boolean.
 #[unroll::unroll_for_loops]
 pub(crate) fn eval<
     AB: AirBuilder,
@@ -511,21 +810,55 @@ pub(crate) fn eval<
     >,
     next_preprocessed: &[AB::Var],
 ) {
-    // Control flags (new_start, merkle_path, in_ctl, out_ctl) are preprocessed columns,
-    // so they are known to the verifier and don't need bool assertions.
-    // Note: mmcs_bit is a value column (not transparent) because it's used in constraints
-    // with the value column mmcs_index_sum.
-
+    // Cast the raw preprocessed slice into a typed struct so we can
+    // access individual fields by name.
     let next_prep: &Poseidon2PreprocessedRow<AB::Var> = next_preprocessed.borrow();
+
+    // Extract the three things we'll reference repeatedly:
+    //
+    //   - The direction bit from the next row (left vs right child).
+    //
+    //   - The current row's output state — the 16 field elements
+    //     produced by the Poseidon2 permutation on this row. Located
+    //     in the last full-round's post-state.
+    //
+    //   - The next row's input state — the 16 field elements that
+    //     will be fed into the next permutation. Chaining constraints
+    //     tie these to the current output.
     let next_bit = next.mmcs_bit;
     let local_out = &local.poseidon2.ending_full_rounds[HALF_FULL_ROUNDS - 1].post;
     let next_in = &next.poseidon2.inputs;
 
-    // mmcs_bit should always be boolean.
+    // Boolean constraint
+    //
+    // The direction bit is a value column filled by the prover at
+    // runtime. A cheating prover could put any field element here.
+    //
+    // We constrain it to be 0 or 1 by asserting:
+    //
+    //     bit × (1 − bit) = 0
+    //
+    // Preprocessed flags don't need this check — they were committed
+    // at setup time and cannot be changed.
+
     builder.assert_bool(local.mmcs_bit);
 
-    // Normal chaining: when normal_chain_sel[limb] = 1 (i.e., !new_start && !merkle_path &&
-    // !in_ctl[limb]), the input of the next row equals the output of the current row.
+    // Sponge chaining
+    //
+    // In sponge mode the output of one permutation feeds directly
+    // into the input of the next permutation.
+    //
+    // For example, if row 0 outputs [a, b, c, ...] then row 1 must
+    // have input [a, b, c, ...].
+    //
+    // We check this element by element. Each limb has D base-field
+    // elements (the extension degree), so we loop over all of them.
+    //
+    // The sponge chain selector gates the constraint. It is only
+    // active on continuation rows in sponge mode. On chain boundaries,
+    // Merkle rows, or CTL-loaded limbs, the selector is zero and the
+    // constraint is trivially satisfied.
+
     for limb in 0..POSEIDON2_LIMBS {
         for d in 0..D {
             let gate = next_prep.input_limbs[limb].normal_chain_sel;
@@ -536,49 +869,108 @@ pub(crate) fn eval<
         }
     }
 
-    // Merkle-path chaining.
-    // When merkle_chain_sel[limb] = 1 (i.e., !new_start && merkle_path && !in_ctl[limb]):
-    //   - mmcs_bit = 0 (left):  in[0..D] = out[0..D],  in[D..2D] = out[D..2D]
-    //   - mmcs_bit = 1 (right): in[2D..3D] = out[0..D], in[3D..4D] = out[D..2D]
+    // Merkle-path chaining
     //
-    // Input limbs 0-1 use merkle_chain_sel[0] and merkle_chain_sel[1].
-    // Input limbs 2-3 reuse merkle_chain_sel[0] and merkle_chain_sel[1] (same physical
-    // sel, gated by mmcs_bit instead).
+    // In Merkle mode each permutation compresses two children into
+    // one parent. The output is a two-limb digest.
+    //
+    // The next row also compresses two children. One of them is the
+    // digest we just computed. The other is the sibling, supplied by
+    // the prover.
+    //
+    // The direction bit tells us which side our digest goes on:
+    //
+    //     bit = 0 (left child):
+    //         Next row's input = [ our_digest | sibling ]
+    //         Our output goes into limbs 0 and 1.
+    //
+    //     bit = 1 (right child):
+    //         Next row's input = [ sibling | our_digest ]
+    //         Our output goes into limbs 2 and 3.
+    //
+    // We build four gate expressions — one per (limb, direction)
+    // combination. Each gate is the product of the Merkle chain
+    // selector and the direction (or its complement).
+    //
+    // Only the first two limbs have a Merkle chain selector. The
+    // constraints for limbs 2 and 3 reuse limbs 0 and 1's selectors
+    // but gated on the opposite direction value.
+
+    // Compute (1 − bit) once. If bit=0 this is 1 (left-child case).
     let is_left = AB::Expr::ONE - next_bit.into();
 
-    let gate = next_prep.input_limbs[0].merkle_chain_sel * is_left.clone();
+    // Gate for placing our digest on the left side (limbs 0 and 1).
+    let gate_left_0 = next_prep.input_limbs[0].merkle_chain_sel * is_left.clone();
+    let gate_left_1 = next_prep.input_limbs[1].merkle_chain_sel * is_left;
+
+    // Gate for placing our digest on the right side (limbs 2 and 3).
+    let gate_right_0 = next_prep.input_limbs[0].merkle_chain_sel * next_bit;
+    let gate_right_1 = next_prep.input_limbs[1].merkle_chain_sel * next_bit;
+
+    // Check each base-field element of the digest.
     for d in 0..D {
+        // Left child: output element → next input limb 0 element.
         builder
             .when_transition()
-            .when(gate.clone())
+            .when(gate_left_0.clone())
             .assert_zero(next_in[d] - local_out[d]);
-    }
-    let gate = next_prep.input_limbs[1].merkle_chain_sel * is_left;
-    for d in 0..D {
+
+        // Left child: output element → next input limb 1 element.
         builder
             .when_transition()
-            .when(gate.clone())
+            .when(gate_left_1.clone())
             .assert_zero(next_in[D + d] - local_out[D + d]);
-    }
-    let gate = next_prep.input_limbs[0].merkle_chain_sel * next_bit;
-    for d in 0..D {
+
+        // Right child: output element → next input limb 2 element.
+        //
+        // Notice we compare against the same output positions as the
+        // left case (limbs 0-1 of the output). The difference is
+        // where in the next input they land (limbs 2-3 instead of 0-1).
         builder
             .when_transition()
-            .when(gate.clone())
+            .when(gate_right_0.clone())
             .assert_zero(next_in[2 * D + d] - local_out[d]);
-    }
-    let gate = next_prep.input_limbs[1].merkle_chain_sel * next_bit;
-    for d in 0..D {
+
+        // Right child: output element → next input limb 3 element.
         builder
             .when_transition()
-            .when(gate.clone())
+            .when(gate_right_1.clone())
             .assert_zero(next_in[3 * D + d] - local_out[D + d]);
     }
 
-    // MMCS accumulator update.
-    // When !new_start_{r+1} && merkle_path_{r+1}:
-    //   mmcs_index_sum_{r+1} = mmcs_index_sum_r * 2 + mmcs_bit_{r+1}
+    // MMCS accumulator
+    //
+    // As the circuit walks up a Merkle tree, it sees one direction bit
+    // per level. These bits form the binary representation of the leaf
+    // index being authenticated.
+    //
+    // The accumulator reconstructs that index with the recurrence:
+    //
+    //     next_sum = current_sum × 2 + next_bit
+    //
+    // For example, authenticating leaf 5 (binary 101):
+    //
+    //     row 0:  acc = 1            (first bit)
+    //     row 1:  acc = 1×2 + 0 = 2  (second bit)
+    //     row 2:  acc = 2×2 + 1 = 5  (third bit → final index)
+    //
+    // The constraint only fires when the next row is a Merkle row
+    // that is not a chain boundary. On chain boundaries the
+    // accumulator resets, and on non-Merkle rows it is unused.
+
+    // Compute (1 − next_new_start). This is 1 when the next row
+    // continues a chain, 0 when it starts a new one.
     let not_next_new_start = AB::Expr::ONE - next_prep.new_start.into();
+
+    // The constraint:
+    //
+    //     next_accumulator = current_accumulator × 2 + next_direction_bit
+    //
+    // Rearranged for assert_zero:
+    //
+    //     next_acc − (current_acc × 2 + next_bit) = 0
+    //
+    // Gated on: not a chain boundary AND is a Merkle row.
     builder
         .when_transition()
         .when(not_next_new_start)
@@ -586,6 +978,18 @@ pub(crate) fn eval<
         .assert_zero(
             next.mmcs_index_sum - (local.mmcs_index_sum * AB::Expr::TWO + next.mmcs_bit.into()),
         );
+
+    // Poseidon2 permutation
+    //
+    // Every row must satisfy the Poseidon2 permutation constraint:
+    // the output state must be the correct hash of the input state.
+    //
+    // This is unconditional — it applies regardless of whether the
+    // row is sponge, Merkle, padding, or anything else.
+    //
+    // The permutation constraint is handled by a separate AIR. We
+    // give it a sub-builder that only sees the permutation columns
+    // (not the two circuit columns at the end of the row).
 
     let p3_poseidon2_num_cols = p3_poseidon2_air::num_cols::<
         WIDTH,
@@ -608,19 +1012,34 @@ pub(crate) fn eval<
         AB::Var,
     >::new(builder, 0..p3_poseidon2_num_cols);
 
-    // Enforce Poseidon2 permutation constraint:
-    // out[0..3] = Poseidon2(in[0..3])
-    // This holds regardless of merkle_path, new_start, CTL flags, chaining, or MMCS accumulator.
     air.p3_poseidon2.eval(&mut sub_builder);
 }
 
-/// Like `eval_unchecked` but the PrimeSubfield bound is on `ABConcrete`; `AB` is
-/// only required to be an `AirBuilder`. Caller must ensure `AB` and `ABConcrete`
-/// have identical layout at runtime.
+/// Unchecked constraint evaluation with a concrete builder type.
+///
+/// Exists to support the batch prover.
+///
+/// In the batch prover the constraint evaluation dispatch erases the
+/// concrete builder type behind a trait object. The caller provides two
+/// builder types: the erased one and a concrete one that carries the
+/// required field bounds.
+///
+/// At runtime both must be the same type with the same field.
+///
+/// All five arguments are transmuted from the erased types to the
+/// concrete types before calling the main evaluation function.
+///
+/// This is sound only if the types are truly identical at runtime.
 ///
 /// # Safety
-/// Caller must ensure `F == AB::F == ABConcrete::F` at runtime and that `AB` and
-/// `ABConcrete` are layout-compatible.
+///
+/// The caller must guarantee:
+///
+/// - The AIR's field type, the erased builder's field type, and the
+///   concrete builder's field type are all the same.
+///
+/// - The erased and concrete builder types have identical memory layout.
+#[allow(clippy::missing_transmute_annotations)]
 pub unsafe fn eval_unchecked_with_concrete<
     F: PrimeField,
     AB: AirBuilder,
@@ -676,44 +1095,18 @@ pub unsafe fn eval_unchecked_with_concrete<
 ) where
     ABConcrete::F: PrimeField,
 {
+    // SAFETY: The caller guarantees all erased types are identical to
+    // their concrete counterparts at runtime.
+    //
+    // Each transmute reinterprets the same memory under the concrete
+    // type so the main evaluation function can be called with proper
+    // trait bounds.
     unsafe {
-        let builder_c: &mut ABConcrete = core::mem::transmute(builder);
-        let local_c: &Poseidon2CircuitCols<
-            ABConcrete::Var,
-            Poseidon2Cols<
-                ABConcrete::Var,
-                WIDTH,
-                SBOX_DEGREE,
-                SBOX_REGISTERS,
-                HALF_FULL_ROUNDS,
-                PARTIAL_ROUNDS,
-            >,
-        > = core::mem::transmute(local);
-        let next_c: &Poseidon2CircuitCols<
-            ABConcrete::Var,
-            Poseidon2Cols<
-                ABConcrete::Var,
-                WIDTH,
-                SBOX_DEGREE,
-                SBOX_REGISTERS,
-                HALF_FULL_ROUNDS,
-                PARTIAL_ROUNDS,
-            >,
-        > = core::mem::transmute(next);
-        let next_preprocessed_c: &[ABConcrete::Var] = core::mem::transmute(next_preprocessed);
-        let air_c: &Poseidon2CircuitAir<
-            ABConcrete::F,
-            LinearLayers,
-            D,
-            WIDTH,
-            WIDTH_EXT,
-            RATE_EXT,
-            CAPACITY_EXT,
-            SBOX_DEGREE,
-            SBOX_REGISTERS,
-            HALF_FULL_ROUNDS,
-            PARTIAL_ROUNDS,
-        > = core::mem::transmute(air);
+        let builder_c = core::mem::transmute(builder);
+        let local_c = core::mem::transmute(local);
+        let next_c = core::mem::transmute(next);
+        let next_preprocessed_c = core::mem::transmute(next_preprocessed);
+        let air_c = core::mem::transmute(air);
         eval::<
             ABConcrete,
             LinearLayers,
@@ -730,12 +1123,24 @@ pub unsafe fn eval_unchecked_with_concrete<
     }
 }
 
-/// Unsafe version of `eval` that allows calling with a builder whose field type
-/// doesn't match the AIR's field type at compile time, but matches at runtime.
+/// Unchecked constraint evaluation with a field type mismatch.
+///
+/// The AIR's field type may differ from the builder's field type at
+/// compile time. At runtime they must be the same.
+///
+/// This function transmutes the AIR reference so its field matches the
+/// builder, then calls the main evaluation function.
+///
+/// Simpler than the concrete-builder variant above: only the AIR needs
+/// to be transmuted. The builder already has the correct associated types.
 ///
 /// # Safety
-/// The caller must ensure that `F == AB::F` at runtime. Violating this will cause
-/// undefined behavior.
+///
+/// The caller must guarantee that the AIR's field type and the builder's
+/// field type are the same at runtime.
+///
+/// Violating this leads to undefined behavior.
+#[allow(clippy::missing_transmute_annotations)]
 pub unsafe fn eval_unchecked<
     F: PrimeField,
     AB: AirBuilder,
@@ -790,22 +1195,10 @@ pub unsafe fn eval_unchecked<
 ) where
     AB::F: PrimeField,
 {
-    // SAFETY: Caller guarantees F == AB::F at runtime, so the struct layouts are identical.
-    // The transmute is safe because all field types have the same runtime representation.
+    // SAFETY: The caller guarantees the two field types are identical at
+    // runtime, so the AIR struct has the same memory layout under both.
     unsafe {
-        let air_transmuted: &Poseidon2CircuitAir<
-            AB::F,
-            LinearLayers,
-            D,
-            WIDTH,
-            WIDTH_EXT,
-            RATE_EXT,
-            CAPACITY_EXT,
-            SBOX_DEGREE,
-            SBOX_REGISTERS,
-            HALF_FULL_ROUNDS,
-            PARTIAL_ROUNDS,
-        > = core::mem::transmute(air);
+        let air_transmuted = core::mem::transmute(air);
 
         eval::<
             AB,
@@ -854,15 +1247,27 @@ where
 {
     #[inline]
     fn eval(&self, builder: &mut AB) {
+        // Get the main trace window.
+        //
+        // It provides the current row and the next row as flat slices.
         let main = builder.main();
-        let local = main.current_slice();
-        let local = (*local).borrow();
-        let next = main.next_slice();
-        let next = (*next).borrow();
 
+        // Reinterpret the flat slices as typed column structs.
+        //
+        // This is a zero-copy cast enabled by the `#[repr(C)]` layout
+        // and the `Borrow` implementations in the columns module.
+        let local = main.current_slice().borrow();
+        let next = main.next_slice().borrow();
+
+        // Get the preprocessed trace window and extract the next row.
+        //
+        // The clone here copies a small window struct (two slice
+        // pointers), not the full preprocessed matrix.
         let preprocessed = builder.preprocessed().clone();
         let next_preprocessed = preprocessed.next_slice();
 
+        // Delegate to the core constraint function, which enforces all
+        // five constraint groups.
         eval::<
             _,
             _,
@@ -906,18 +1311,33 @@ impl<
         PARTIAL_ROUNDS,
     >
 {
+    /// Allocate one permutation argument column and return its index.
     fn add_lookup_columns(&mut self) -> Vec<usize> {
         let lookup_column_idx = self.num_lookup_cols;
         self.num_lookup_cols += 1;
         vec![lookup_column_idx]
     }
 
+    /// Build symbolic lookup descriptions for all CTL interactions.
+    ///
+    /// Uses a symbolic AIR builder to produce symbolic expressions for
+    /// each lookup's key, multiplicity, and direction.
+    ///
+    /// The STARK framework compiles these into permutation argument constraints.
     fn get_lookups(&mut self) -> Vec<Lookup<F>> {
+        // Build a symbolic AIR builder.
+        //
+        // This creates one symbolic variable per column. We use these
+        // symbolic variables to express lookup keys and multiplicities
+        // as formal polynomials.
+        //
+        // The STARK framework later evaluates these polynomials at
+        // concrete points to enforce the permutation argument.
         let air_layout = AirLayout {
             preprocessed_width: Self::preprocessed_width(),
             main_width: BaseAir::<F>::width(self),
             num_public_values: 0,
-            permutation_width: 0, // Here, we do not need the permutation trace
+            permutation_width: 0,
             num_permutation_challenges: 0,
             num_permutation_values: 0,
             num_periodic_columns: 0,
@@ -938,10 +1358,11 @@ impl<
             >,
         > = (*symbolic_main_local).borrow();
 
-        // Preprocessing layout:
-        // [in_idx[0], in_ctl[0], normal_chain_sel[0], merkle_chain_sel[0], ..., in_idx[3], in_ctl[3], normal_chain_sel[3], merkle_chain_sel[3],
-        //  out_idx[0], out_ctl[0], out_idx[1], out_ctl[1], mmcs_index_sum_ctl_idx, mmcs_merkle_flag, new_start, merkle_path]
-        // The following corresponds to the size of the data related to one input limb (in_idx[i], in_ctl[i], normal_chain_sel[i], merkle_chain_sel[i]).
+        // Extract the current row (row 0) and next row (row 1) from the
+        // preprocessed trace, then cast them to typed structs.
+        //
+        // We need both rows because some multiplicities depend on the
+        // next row's chain-start flag.
         let preprocessed = symbolic_air_builder.preprocessed();
         let local_preprocessed = preprocessed
             .row_slice(0)
@@ -957,23 +1378,40 @@ impl<
         let next_preprocessed: &Poseidon2PreprocessedRow<SymbolicVariable<F>> =
             next_preprocessed.borrow();
 
-        // There are POSEIDON2_LIMBS input limbs and POSEIDON2_PUBLIC_OUTPUT_LIMBS output limbs
-        // to be looked up in the `Witness` table.
+        // Total lookups:
+        // One per input limb + one per public output limb + one for the MMCS accumulator.
         let mut lookups = Vec::with_capacity(POSEIDON2_LIMBS + POSEIDON2_PUBLIC_OUTPUT_LIMBS + 1);
 
-        // Input CTL lookups disabled for merkle_path=1 rows due to degree constraints:
-        // permuting CTL metadata based on runtime would make `mmcs_bit` exceed degree 3.
+        // Input limb lookups
         //
-        // This is sound because:
-        // - Row digest values are bound to expression IDs that were CTL-verified
-        //   during creation (in `add_hash_slice` with merkle_path=false)
-        // - Sibling values are private proof data (wrong siblings → wrong root)
-        // - Chained values are AIR-constrained to equal previous Poseidon2 outputs
+        // Input CTL lookups are disabled on Merkle rows. If they were
+        // active, permuting the CTL metadata based on the runtime
+        // direction bit would push the constraint degree above 3.
+        //
+        // Disabling input CTL on Merkle rows is sound because:
+        //
+        //   - Digest values in the row were already CTL-verified when
+        //     they were first created (on a non-Merkle row).
+        //
+        //   - Sibling values are private proof data — wrong siblings
+        //     simply produce the wrong Merkle root.
+        //
+        //   - Chained values are AIR-constrained to equal the previous
+        //     permutation output.
+
+        // Compute (1 − merkle_path). This is 1 on sponge rows and 0 on
+        // Merkle rows. Used to disable input CTL on Merkle rows.
         let not_merkle = SymbolicExpression::Leaf(BaseLeaf::Constant(F::ONE))
             - SymbolicExpression::from(local_preprocessed.merkle_path);
 
         for limb_idx in 0..POSEIDON2_LIMBS {
             let limb = &local_preprocessed.input_limbs[limb_idx];
+
+            // Build the lookup key: [witness_index, elem_0, elem_1, ..., elem_{D-1}].
+            //
+            // The witness index tells the Witness table which slot to
+            // look up. The extension-field elements are the actual values
+            // being checked.
             let input_idx_limb = iter::once(limb.idx)
                 .chain(
                     local.poseidon2.inputs[limb_idx * D..(limb_idx + 1) * D]
@@ -981,11 +1419,20 @@ impl<
                         .cloned(),
                 )
                 .map(SymbolicExpression::from)
-                .collect::<Vec<_>>();
+                .collect();
 
-            // Multiplicity = in_ctl * (1 - merkle_path), both preprocessed, so degree 0.
+            // Multiplicity = CTL enable flag × (1 − merkle_path).
+            //
+            // This is zero on Merkle rows (disabling the lookup) and
+            // equal to the CTL flag on sponge rows.
+            //
+            // Both factors are preprocessed, so this product costs
+            // nothing at constraint-evaluation time.
             let mult = SymbolicExpression::from(limb.in_ctl) * not_merkle.clone();
 
+            // Direction::Send means this table is the sender:
+            //
+            // "I claim my input limb matches the value in the Witness table at this index."
             lookups.push(LookupAir::register_lookup(
                 self,
                 Kind::Global("WitnessChecks".to_string()),
@@ -993,8 +1440,24 @@ impl<
             ));
         }
 
+        // Output limb lookups
+        //
+        // Each publicly exposed output limb receives its value from the
+        // Witness table.
+        //
+        // The key has the same format as input lookups: witness index
+        // followed by the extension-field elements.
+        //
+        // Direction::Receive means "the Witness table sent this value
+        // to me." If the output doesn't match, the permutation argument
+        // will fail.
+
         for limb_idx in 0..POSEIDON2_PUBLIC_OUTPUT_LIMBS {
             let limb = &local_preprocessed.output_limbs[limb_idx];
+
+            // Build the lookup key from the output state.
+            //
+            // The output lives in the last full round's post-state.
             let output_idx_limb = iter::once(limb.idx)
                 .chain(
                     local.poseidon2.ending_full_rounds[HALF_FULL_ROUNDS - 1].post
@@ -1003,7 +1466,7 @@ impl<
                         .cloned(),
                 )
                 .map(SymbolicExpression::from)
-                .collect::<Vec<_>>();
+                .collect();
 
             lookups.push(LookupAir::register_lookup(
                 self,
@@ -1016,16 +1479,32 @@ impl<
             ));
         }
 
-        // If mmcs_merkle_flag = 1 AND next.new_start = 1, expose mmcs_index_sum via CTL.
-        // mmcs_merkle_flag is precomputed as: mmcs_ctl_enabled * merkle_path.
-        // This keeps multiplicity at degree 2 (safe for constraint evaluation).
+        // MMCS accumulator lookup
+        //
+        // At the end of a Merkle chain the accumulated leaf index must
+        // be sent to the Witness table for verification.
+        //
+        // The lookup fires on the last Merkle row of a chain. We
+        // detect this as: the current row has the MMCS Merkle flag set
+        // AND the next row starts a new chain.
+        //
+        // Both flags are preprocessed, so the multiplicity is a
+        // degree-2 expression that costs nothing extra.
+        //
+        // The accumulator is a single base-field element. The Witness
+        // table expects extension-field-width keys, so we pad with
+        // zeros to fill the remaining extension-degree minus one slots.
+
         let multiplicity = local_preprocessed.mmcs_merkle_flag * next_preprocessed.new_start;
 
+        // Build the lookup key: [witness_index, accumulator, 0, 0, ...].
+        //
+        // The accumulator is one base-field element. We zero-pad to
+        // match the extension-field width expected by the Witness table.
         let mut mmcs_index_sum_lookup = vec![
             SymbolicExpression::from(local_preprocessed.mmcs_index_sum_ctl_idx),
             SymbolicExpression::from(local.mmcs_index_sum),
         ];
-        // Extend `mmcs_index_sum` to D elements with zeros.
         mmcs_index_sum_lookup.extend(iter::repeat_n(
             SymbolicExpression::Leaf(BaseLeaf::Constant(F::ZERO)),
             D - 1,
