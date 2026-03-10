@@ -28,4 +28,4 @@
 
 **Target** — An identifier for a value in the circuit's expression graph. Each `Target` (also called `ExprId`) refers to either a constant, a public input, or the output of an operation.
 
-**WitnessId** — An index into the global Witness table. After circuit compilation, each `Target` is assigned a `WitnessId` that identifies its slot in the witness memory bus.
+**WitnessId** — An index into the global witness memory bus. After circuit compilation, each `Target` is assigned a `WitnessId` that identifies its slot in this shared memory.

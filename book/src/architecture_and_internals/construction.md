@@ -38,7 +38,7 @@ and why it provides a powerful foundation for recursive proof systems.
 An **Execution IR** (intermediate representation) is defined to describe the steps of the verifier.
 This IR is *not itself proved*, but will be used as source of truth between prover and verifier to guide trace population.
 The actual soundness comes from the constraints inside the operation-specific STARK chips along with an aggregated lookup argument ensuring consistency of the common values they operate on.
-The lookups can be seen as representing the `READ`/`WRITE` operations from/to the witness table.
+The lookups can be seen as representing `READ`/`WRITE` interactions on a shared witness memory bus, without requiring a dedicated witness table.
 
 The example below represents the (fixed) IR associated to the statement `37.x - 111 = 0`, where `x` is a public input. It can be reproduced by running
 
@@ -72,18 +72,17 @@ The computation graph that represents all operations in the IR is called `Circui
 
 A `circuit_builder` provides convenient helper functions and macros for representing and defining operations within this graph. See section [Building Circuits](./circuit_building.md#building-circuits) for more details on how to build a circuit.
 
-## Witness Table
+## Witness memory
 
-The `Witness` table can be seen as a central memory bus that stores values shared across all operations. It is represented as pairs `(index, value)`, where indices are  that will be accessed by 
-the different chips via lookups to enforce consistency.
+Conceptually, we still think in terms of a central memory bus that stores values shared across all operations. This bus is indexed by `WitnessId` and can be represented as pairs `(index, value)`, where indices are accessed by the different chips via lookups to enforce consistency.
 
-- The index column is *preprocessed*, or *read-after-preprocess* ([RAP](https://hackmd.io/@aztec-network/plonk-arithmetiization-air)): it is known to both prover and verifier in advance, requiring no online commitment.[^1]
-- The `Witness` table values are represented as extension field elements directly (where base field elements are padded with 0 on higher coordinates) for addressing efficiency.
+- The index information is *preprocessed*, or *read-after-preprocess* ([RAP](https://hackmd.io/@aztec-network/plonk-arithmetiization-air)): it is known to both prover and verifier in advance, requiring no online commitment.[^1]
+- Values are represented as extension field elements directly (where base field elements are padded with 0 on higher coordinates) for addressing efficiency.
 
-From the fixed IR of the example above, we can deduce an associated `Witness` table as follows:
+From the fixed IR of the example above, we can deduce an associated witness memory view as follows:
 
 ```bash
-=== WITNESS TRACE ===
+=== WITNESS MEMORY ===
 Row 0: WitnessId(w0) = 0
 Row 1: WitnessId(w1) = 37
 Row 2: WitnessId(w2) = 111
@@ -91,8 +90,7 @@ Row 3: WitnessId(w3) = 3
 Row 4: WitnessId(w4) = 111
 ```
 
-Note that the initial version of the recursion machine, for the sake of simplicity and ease of iteration, contains a `Witness` table. However, because the verifier effectively knows the order of
-each operation and the interaction between them, the `Witness` table can be entirely removed, and global consistency can still be enforced at the cost of additional (smaller) lookups between the different chips.
+This dedicated table does not actually exist: the same witness indices are instead enforced via cross-table lookups directly between operation-specific chips.
 
 
 ## Operation-specific STARK Chips
@@ -102,7 +100,7 @@ Each operation family (e.g. addition, multiplication, MMCS path verification, FR
 A chip contains:
 
 - Local columns for its variables.
-- Lookup ports into the `Witness` table.
+- Lookup ports that describe which witness indices they read from and write to.
 - An AIR that enforces its semantics.
 
 We distinguish two kind of chips: those representing native, i.e. primitive operations, and additional non-primitive ones, defined at runtime, that serve as precompiles to optimize certain operations.
@@ -110,7 +108,7 @@ The recursion machine contains 3 primitive chips: `CONST`, `PUBLIC_INPUT`, and a
 
 Given only the primitive operations, one should be able to carry out most operations necessary in circuit verification. Primitive operations have the following properties:
 
-- They operate on elements of the `Witness` table, through their `WitnessId` (index within the `Witness` table).
+- They operate on witness slots identified by `WitnessId` indices in the shared memory bus.
 - The representation can be heavily optimized. For example, every time a constant is added to the IR, we either create a new `WitnessId` or return an already existing one. We could also carry out common subexpression elimination.
 - They are executed in topological order during the circuit evaluation, and they form a directed acyclic graph of dependencies.
 
@@ -144,7 +142,7 @@ At execution time, the recursion machine walks the IR and, for each non-primitiv
 - performs the desired computation (possibly using additional private data),
 - writes the outputs back into the `Witness` table, and, if needed, updates preprocessed columns used by its table AIR.
 
-A simple end-to-end example of this pattern is the “cube” NPO used in the integration tests. It defines an operation `y = x^3` with one input and one output. Its circuit plugin registers a new NPO type id, lowers calls to `y = x^3` into non-primitive IR rows, and attaches a cube executor to those rows. The executor then reads `x` from the `Witness` table, computes `x^3`, and writes `y` back. In that example, the trace generator returns no dedicated table, so only the existing primitive chips appear in the STARK; more sophisticated NPOs (e.g. permutation or Merkle-path verifiers) can in addition expose their own tables and AIRs that are proven alongside the primitive chips.
+A simple end-to-end example of this pattern is the “cube” NPO used in the integration tests. It defines an operation `y = x^3` with one input and one output. Its circuit plugin registers a new NPO type id, lowers calls to `y = x^3` into non-primitive IR rows, and attaches a cube executor to those rows. The executor then reads `x` from the shared witness memory, computes `x^3`, and writes `y` back. In that example, the trace generator returns no dedicated table, so only the existing primitive chips appear in the STARK; more sophisticated NPOs (e.g. permutation or Merkle-path verifiers) can in addition expose their own tables and AIRs that are proven alongside the primitive chips.
 
 Going back to the previous example, prover and verifier can agree on the following logic for each chip:
 
@@ -169,9 +167,9 @@ Note that because we started from a known, fixed program that has been lowered t
 
 ## Lookups
 
-All chips interactions are performed via a lookup argument. Enforcing multiset equality between all chip ports and the `Witness` table entries ensures correctness without proving the execution order of the entire IR itself. Lookups can be seen as `READ`/`WRITE` or `RECEIVE`/`SEND` interactions between tables which allow global consistency over local AIRs.
+All chips interactions are performed via a lookup argument. Enforcing multiset equality between all chip ports and the shared witness memory view ensures correctness without proving the execution order of the entire IR itself. Lookups can be seen as `READ`/`WRITE` or `RECEIVE`/`SEND` interactions between tables which allow global consistency over local AIRs.
 
-Cross-table lookups (CTLs) ensure that **every** chip interaction happens through the Witness table: producers write a `(index, value)` pair into Witness and consumers read the same pair back. No chip talks directly to any other chip; the aggregated LogUp argument enforces multiset equality between the writes and reads.
+Cross-table lookups (CTLs) ensure that **every** chip interaction is mediated by shared witness indices: producers expose a `(index, value)` pair and consumers read the same pair back. In the current design this is encoded directly as CTL relations between operation tables, rather than through a separate Witness table. No chip talks directly to any other chip; the aggregated LogUp argument enforces multiset equality between the writes and reads.
 
 For the toy example the CTL relations are:[^2]
 
@@ -186,4 +184,4 @@ For the toy example the CTL relations are:[^2]
 
 [^1]: Preprocessed columns / polynomials can be reconstructed manually by the verifier, removing the need for a prover to commit to them and later perform the FRI protocol on them. However, the verifier needs $O(n)$ work when these columns are not structured, as it still needs to interpolate them. To alleviate this, the Plonky3 recursion stack performs *offline* commitment of unstructured preprocessed columns, so that we need only one instance of the FRI protocol to verify all preprocessed columns evaluations. 
 
-[^2]: The two ALU rows both write `w4 = 111` to the Witness table (once via a mul row, once via an add row). Because the Witness table is a *read-only* / *write-once* memory bus, the aggregated lookup forces those duplicate writes to agree, which is exactly the constraint `37 * 3 = 111 = 0 + 111`.
+[^2]: The two ALU rows both write `w4 = 111` to the shared witness memory (once via a mul row, once via an add row). Because this memory is modeled as a *read-only* / *write-once* bus, the aggregated lookup forces those duplicate writes to agree, which is exactly the constraint `37 * 3 = 111 = 0 + 111`.

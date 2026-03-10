@@ -147,7 +147,7 @@ The circuit builder supports registering custom non-primitive operations beyond 
 Non-primitive operations:
 - Are controlled by a runtime policy (`DefaultProfile` disables all, `AllowAllProfile` enables all)
 - Require a custom trace builder for trace generation
-- Interact with the witness table via lookups, and may additionally use private data
+- Interact with the shared witness memory via lookups, and may additionally use private data
 
 To enable a non-primitive operation, call the appropriate `enable_*` method on the `CircuitBuilder` before building. Attempting to use a non-primitive operation that hasn't been enabled will result in a runtime error.
 

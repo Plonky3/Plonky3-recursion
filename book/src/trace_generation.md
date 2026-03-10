@@ -7,8 +7,8 @@ After building a circuit, the next step is execution: running the program with c
 The trace generation pipeline consists of three distinct phases:
 
 1. **Circuit compilation** — Transform high-level circuit expressions into a fixed intermediate representation.
-2. **Circuit execution** — Populate the witness table by evaluating operations with concrete input values.
-3. **Trace extraction** — Generate operation-specific traces from the populated witness table.
+2. **Circuit execution** — Populate the circuit’s witness values by evaluating operations with concrete input values.
+3. **Trace extraction** — Generate operation-specific traces from the populated witness values.
 
 Each phase has a clear responsibility and produces well-defined outputs that feed into the next stage.
 
@@ -22,7 +22,7 @@ The output is a `Circuit<F>` containing the primitive operations in topological 
 
 ## Phase 2: Circuit Execution
 
-Circuit execution happens when calling `runner.run()`. This phase populates the witness table by evaluating each operation with concrete field element values.
+Circuit execution happens when calling `runner.run()`. This phase populates the witness values by evaluating each operation with concrete field element values.
 
 The runner is initialized with a `Circuit<F>` and receives:
 - Public input values via `runner.set_public_inputs()`
@@ -30,21 +30,20 @@ The runner is initialized with a `Circuit<F>` and receives:
 
 The runner iterates through primitive operations in topological order, executing each one to populate witness slots. Operations can run in **forward mode** (computing outputs from inputs) or **backward mode** (inferring missing inputs from outputs), allowing bidirectional constraint solving.
 
-The output is a fully populated witness table where every slot contains a concrete field element. Any unset witness triggers a `WitnessNotSet` error.
+The output is a fully populated witness array where every slot contains a concrete field element. Any unset witness triggers a `WitnessNotSet` error.
 
 ## Phase 3: Trace Extraction
 
-Trace extraction happens internally within `runner.run()` after execution completes. This phase delegates to specialized trace builders that transform the populated witness table into operation-specific trace tables.
+Trace extraction happens internally within `runner.run()` after execution completes. This phase delegates to specialized trace builders that transform the populated witness values into operation-specific trace tables.
 
 Each primitive operation has a dedicated builder that extracts its operations from the IR and produces trace columns:
 
-- **WitnessTraceBuilder** — Generates the central [witness table](./construction.md#witness-table) with sequential `(index, value)` pairs
 - **ConstTraceBuilder** — Extracts constants (both columns preprocessed)
 - **PublicTraceBuilder** — Extracts public inputs (index preprocessed, values at runtime)
 - **AddTraceBuilder** — Extracts additions with six columns: `(lhs_index, lhs_value, rhs_index, rhs_value, result_index, result_value)`
 - **MulTraceBuilder** — Extracts multiplications with the same six-column structure
 
-Non-primitive operations require custom trace builders. For example, **MmcsTraceBuilder** validates and extracts MMCS path verification traces. Custom trace builders follow the same pattern, operating independently in a single pass to produce isolated trace tables. All index columns are preprocessed since the IR is fixed and known to the verifier.
+Non-primitive operations require custom trace builders. For example, **MmcsTraceBuilder** validates and extracts MMCS path verification traces. Custom trace builders follow the same pattern, operating independently in a single pass to produce isolated trace tables. All index-like columns are preprocessed since the IR is fixed and known to the verifier.
 
 The output is a `Traces<F>` structure containing all execution traces needed by the prover to generate STARK proofs for each [operation-specific chip](./construction.md#operation-specific-stark-chips).
 
@@ -106,7 +105,7 @@ add_trace: [
 mul_trace: []
 ```
 
-The witness table acts as the central bus, with each operation table containing [lookups](./construction.md#lookups) into it. The aggregated lookup argument enforces that all these lookups are consistent.
+Conceptually, the shared witness memory acts as a central bus: each operation table contains [lookups](./construction.md#lookups) that reference the same `(index, value)` pairs. The aggregated lookup argument enforces that all these lookups are consistent, without requiring a separate Witness table AIR.
 
 ## Key Properties
 
