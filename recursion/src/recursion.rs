@@ -99,6 +99,7 @@ where
     fn pack_public_inputs(
         &self,
         prev: &RecursionInput<'_, SC, A>,
+        config: &SC,
     ) -> Result<Vec<SC::Challenge>, VerificationError>
     where
         Val<SC>: PrimeField64,
@@ -160,6 +161,16 @@ where
     /// AIR builders for NPOs from preprocessed data.
     fn non_primitive_air_builders(&self) -> Vec<Box<dyn NpoAirBuilder<SC, D>>> {
         Vec::new()
+    }
+
+    /// Number of public values that should be excluded from the WitnessChecks lookup (e.g. 4-ary
+    /// MMCS sibling values). When `Some(n)`, the last `n` Public table entries get multiplicity 0.
+    fn num_sibling_values(
+        &self,
+        _prev: &RecursionInput<'_, SC, A>,
+        _config: &SC,
+    ) -> Option<usize> {
+        None
     }
 }
 
@@ -276,6 +287,7 @@ where
 #[instrument(skip_all)]
 pub fn build_next_layer_prep<SC, A, B, const D: usize>(
     verification_circuit: &Circuit<SC::Challenge>,
+    prev: &RecursionInput<'_, SC, A>,
     config: &SC,
     backend: &B,
     params: &ProveNextLayerParams,
@@ -301,6 +313,7 @@ where
             &preprocessors,
             &air_builders,
             params.constraint_profile,
+            backend.num_sibling_values(prev, config),
         )
         .map_err(VerificationError::Circuit)?
     };
@@ -355,7 +368,7 @@ where
 {
     if let Some(cached) = prep {
         let traces = {
-            let public_inputs = verifier_result.pack_public_inputs(prev)?;
+            let public_inputs = verifier_result.pack_public_inputs(prev, config)?;
             let mut runner = verification_circuit.runner();
             runner
                 .set_public_inputs(&public_inputs)
@@ -384,6 +397,7 @@ where
             &preprocessors,
             &air_builders,
             params.constraint_profile,
+            backend.num_sibling_values(prev, config),
         )
         .map_err(VerificationError::Circuit)?
     };
@@ -392,7 +406,7 @@ where
     let ext_degrees: Vec<usize> = degrees.iter().map(|&d| d + config.is_zk()).collect();
 
     let traces = {
-        let public_inputs = verifier_result.pack_public_inputs(prev)?;
+        let public_inputs = verifier_result.pack_public_inputs(prev, config)?;
         let mut runner = verification_circuit.runner();
         runner
             .set_public_inputs(&public_inputs)
@@ -526,8 +540,8 @@ where
     B: PcsRecursionBackend<SC, A1, D> + PcsRecursionBackend<SC, A2, D>,
     Val<SC>: PrimeField64,
 {
-    let mut public_inputs = left_result.pack_public_inputs(left)?;
-    public_inputs.extend(right_result.pack_public_inputs(right)?);
+    let mut public_inputs = left_result.pack_public_inputs(left, config)?;
+    public_inputs.extend(right_result.pack_public_inputs(right, config)?);
 
     let mut runner = verification_circuit.clone().runner();
     runner
@@ -612,6 +626,16 @@ where
         ));
     }
 
+    let num_sibling = backend
+        .num_sibling_values(left, config)
+        .unwrap_or(0)
+        + backend.num_sibling_values(right, config).unwrap_or(0);
+    let num_sibling_values = if num_sibling > 0 {
+        Some(num_sibling)
+    } else {
+        None
+    };
+
     let (airs_degrees, preprocessed_columns) = {
         let preprocessors =
             <B as PcsRecursionBackend<SC, A1, D>>::non_primitive_preprocessors(backend);
@@ -623,6 +647,7 @@ where
             &preprocessors,
             &air_builders,
             params.constraint_profile,
+            num_sibling_values,
         )
         .map_err(VerificationError::Circuit)?
     };

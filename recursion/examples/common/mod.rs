@@ -33,12 +33,14 @@ pub use p3_recursion::traits::{RecursiveAir, RecursivePcs};
 pub use p3_recursion::verifier::VerificationError;
 pub use p3_recursion::{
     AggregationPrepCache, BatchOnly, BatchStarkVerifierInputsBuilder, FriRecursionBackend,
-    FriRecursionConfig, FriVerifierParams, NextLayerPrepCache, Poseidon2Config,
+    FriRecursionConfig, FriVerifierParams, MmcsArity, NextLayerPrepCache, Poseidon2Config,
     ProveNextLayerParams, RecursionInput, RecursionOutput, build_and_prove_aggregation_layer,
     build_and_prove_next_layer, build_next_layer_circuit, build_next_layer_prep, prove_next_layer,
     verify_batch_circuit,
 };
-pub use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
+pub use p3_symmetric::{
+    CompressionFunctionFromHasher, PaddingFreeSponge, TruncatedPermutation,
+};
 pub use p3_uni_stark::{StarkConfig, StarkGenericConfig, Val};
 pub use rand::SeedableRng;
 pub use rand::rngs::SmallRng;
@@ -301,6 +303,25 @@ macro_rules! define_field_module_types {
                 &self.fri_verifier_params
             }
 
+            fn mmcs_arity(&self) -> MmcsArity {
+                self.fri_verifier_params.mmcs_arity
+            }
+
+            fn fri_permutation_config(&self) -> Option<Poseidon2Config> {
+                self.fri_verifier_params.permutation_config
+            }
+
+            fn extract_4ary_sibling_values(
+                &self,
+                _opening_proof: &<MyPcs as Pcs<Challenge, Challenger>>::Proof,
+            ) -> Vec<Challenge>
+            where
+                Challenge: p3_field::ExtensionField<F> + p3_field::BasedVectorSpace<F>,
+                F: p3_field::PrimeField64,
+            {
+                vec![]
+            }
+
             fn set_fri_private_data(
                 runner: &mut CircuitRunner<Challenge>,
                 op_ids: &[NonPrimitiveOpId],
@@ -375,6 +396,25 @@ macro_rules! define_field_module_types {
                 <MyPcsZk as Pcs<Challenge, Challenger>>::Domain,
             >>::VerifierParams {
                 &self.fri_verifier_params
+            }
+
+            fn mmcs_arity(&self) -> MmcsArity {
+                self.fri_verifier_params.mmcs_arity
+            }
+
+            fn fri_permutation_config(&self) -> Option<Poseidon2Config> {
+                self.fri_verifier_params.permutation_config
+            }
+
+            fn extract_4ary_sibling_values(
+                &self,
+                _opening_proof: &<MyPcsZk as Pcs<Challenge, Challenger>>::Proof,
+            ) -> Vec<Challenge>
+            where
+                Challenge: p3_field::ExtensionField<F> + p3_field::BasedVectorSpace<F>,
+                F: p3_field::PrimeField64,
+            {
+                vec![]
             }
 
             fn set_fri_private_data(
@@ -475,6 +515,216 @@ macro_rules! define_field_module_types {
             ConfigWithFriParamsZk {
                 config: Arc::new(create_config_zk(fp, security_level, rng_seed)),
                 fri_verifier_params: create_fri_verifier_params(fp),
+            }
+        }
+    };
+}
+
+/// Expands to 4-ary Merkle types and config for the same field as `define_field_module_types`.
+#[macro_export]
+macro_rules! define_field_module_types_4ary {
+    (
+        $field:ty,
+        $perm:ty,
+        $default_perm:path,
+        $poseidon2_config:expr,
+        $poseidon2_circuit_config:ty,
+        $d:expr,
+        $width:expr,
+        $rate:expr,
+        $digest_elems:expr,
+        $enable_poseidon2_fn:ident,
+        $register_poseidon2_fn:ident,
+        $default_perm_circuit:path,
+        $poseidon2_air_builders_fn:ident,
+        $backend_ctor:ident,
+        $backend_width:expr,
+        $backend_rate:expr,
+        $enable_recompose_fn:ident
+    ) => {
+        type MyCompress4 = CompressionFunctionFromHasher<MyHash, 4, DIGEST_ELEMS>;
+        type MyMmcs4 = MerkleTreeMmcs<
+            <F as Field>::Packing,
+            <F as Field>::Packing,
+            MyHash,
+            MyCompress4,
+            4,
+            DIGEST_ELEMS,
+        >;
+        type ChallengeMmcs4 = ExtensionMmcs<F, Challenge, MyMmcs4>;
+        type MyPcs4 = TwoAdicFriPcs<F, Dft, MyMmcs4, ChallengeMmcs4>;
+        type MyConfig4 = StarkConfig<MyPcs4, Challenge, Challenger>;
+
+        type InnerFri4 = p3_recursion::pcs::FriProofTargets<
+            F,
+            Challenge,
+            p3_recursion::pcs::RecExtensionValMmcs<
+                F,
+                Challenge,
+                DIGEST_ELEMS,
+                RecValMmcs<F, DIGEST_ELEMS, 4, MyHash, MyCompress4>,
+            >,
+            InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, 4, MyHash, MyCompress4>>,
+            p3_recursion::pcs::Witness<F>,
+        >;
+
+        #[derive(Clone)]
+        struct ConfigWithFriParams4ary {
+            config: Arc<MyConfig4>,
+            fri_verifier_params: FriVerifierParams,
+        }
+
+        impl core::ops::Deref for ConfigWithFriParams4ary {
+            type Target = MyConfig4;
+            fn deref(&self) -> &MyConfig4 {
+                &self.config
+            }
+        }
+
+        impl StarkGenericConfig for ConfigWithFriParams4ary {
+            type Challenge = Challenge;
+            type Challenger = Challenger;
+            type Pcs = MyPcs4;
+            fn pcs(&self) -> &MyPcs4 {
+                self.config.pcs()
+            }
+            fn initialise_challenger(&self) -> Challenger {
+                self.config.initialise_challenger()
+            }
+        }
+
+        impl FriRecursionConfig for ConfigWithFriParams4ary
+        where
+            MyPcs4: RecursivePcs<
+                    ConfigWithFriParams4ary,
+                    InputProofTargets<
+                        F,
+                        Challenge,
+                        RecValMmcs<F, DIGEST_ELEMS, 4, MyHash, MyCompress4>,
+                    >,
+                    InnerFri4,
+                    MerkleCapTargets<F, DIGEST_ELEMS>,
+                    <MyPcs4 as Pcs<Challenge, Challenger>>::Domain,
+                >,
+        {
+            type Commitment = MerkleCapTargets<F, DIGEST_ELEMS>;
+            type InputProof =
+                InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, 4, MyHash, MyCompress4>>;
+            type OpeningProof = InnerFri4;
+            type RawOpeningProof = <MyPcs4 as Pcs<Challenge, Challenger>>::Proof;
+            const DIGEST_ELEMS: usize = $digest_elems;
+
+            fn with_fri_opening_proof<'a, A, R>(
+                prev: &RecursionInput<'a, Self, A>,
+                f: impl FnOnce(&Self::RawOpeningProof) -> R,
+            ) -> R
+            where
+                A: RecursiveAir<Val<Self>, Self::Challenge, LogUpGadget>,
+            {
+                match prev {
+                    RecursionInput::UniStark { proof, .. } => f(&proof.opening_proof),
+                    RecursionInput::BatchStark { proof, .. } => f(&proof.proof.opening_proof),
+                }
+            }
+
+            fn prepare_circuit_for_verification(
+                &self,
+                circuit: &mut CircuitBuilder<Challenge>,
+            ) -> Result<(), VerificationError> {
+                let perm = $default_perm_circuit();
+                circuit.$enable_poseidon2_fn::<$poseidon2_circuit_config, _>(
+                    generate_poseidon2_trace::<Challenge, $poseidon2_circuit_config>,
+                    perm,
+                );
+                circuit.$enable_recompose_fn::<F>(generate_recompose_trace::<F, Challenge>);
+                Ok(())
+            }
+
+            fn pcs_verifier_params(
+                &self,
+            ) -> &<MyPcs4 as RecursivePcs<
+                ConfigWithFriParams4ary,
+                InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, 4, MyHash, MyCompress4>>,
+                InnerFri4,
+                MerkleCapTargets<F, DIGEST_ELEMS>,
+                <MyPcs4 as Pcs<Challenge, Challenger>>::Domain,
+            >>::VerifierParams {
+                &self.fri_verifier_params
+            }
+
+            fn mmcs_arity(&self) -> MmcsArity {
+                self.fri_verifier_params.mmcs_arity
+            }
+
+            fn fri_permutation_config(&self) -> Option<Poseidon2Config> {
+                self.fri_verifier_params.permutation_config
+            }
+
+            fn extract_4ary_sibling_values(
+                &self,
+                opening_proof: &Self::RawOpeningProof,
+            ) -> Vec<Challenge>
+            where
+                Challenge: p3_field::ExtensionField<F> + p3_field::BasedVectorSpace<F>,
+                F: p3_field::PrimeField64,
+            {
+                let fp = &self.fri_verifier_params;
+                p3_recursion::pcs::extract_4ary_sibling_values_from_fri_proof::<
+                    F,
+                    Challenge,
+                    ChallengeMmcs4,
+                    MyMmcs4,
+                    DIGEST_ELEMS,
+                >(opening_proof, fp.log_blowup, fp.log_final_poly_len)
+            }
+
+            fn set_fri_private_data(
+                _runner: &mut CircuitRunner<Challenge>,
+                _op_ids: &[NonPrimitiveOpId],
+                _opening_proof: &Self::RawOpeningProof,
+            ) -> Result<(), &'static str> {
+                Ok(())
+            }
+        }
+
+        fn create_config_4ary(fp: &FriParams, security_level: usize) -> MyConfig4 {
+            let perm = $default_perm();
+            let hash = MyHash::new(perm.clone());
+            let compress = MyCompress4::new(hash.clone());
+            let val_mmcs = MyMmcs4::new(hash, compress, fp.cap_height);
+            let challenge_mmcs = ChallengeMmcs4::new(val_mmcs.clone());
+            let dft = Dft::default();
+
+            let num_queries = (security_level - fp.query_pow_bits) / fp.log_blowup;
+
+            let fri_params = FriParameters {
+                max_log_arity: fp.max_log_arity,
+                log_blowup: fp.log_blowup,
+                log_final_poly_len: fp.log_final_poly_len,
+                num_queries,
+                commit_proof_of_work_bits: fp.commit_pow_bits,
+                query_proof_of_work_bits: fp.query_pow_bits,
+                mmcs: challenge_mmcs,
+            };
+            let pcs = MyPcs4::new(dft, val_mmcs, fri_params);
+            let challenger = Challenger::new(perm);
+            MyConfig4::new(pcs, challenger)
+        }
+
+        const fn create_fri_verifier_params_4ary(fp: &FriParams) -> FriVerifierParams {
+            FriVerifierParams::with_mmcs_4ary(
+                fp.log_blowup,
+                fp.log_final_poly_len,
+                fp.commit_pow_bits,
+                fp.query_pow_bits,
+                $poseidon2_config,
+            )
+        }
+
+        fn config_with_fri_params_4ary(fp: &FriParams, security_level: usize) -> ConfigWithFriParams4ary {
+            ConfigWithFriParams4ary {
+                config: Arc::new(create_config_4ary(fp, security_level)),
+                fri_verifier_params: create_fri_verifier_params_4ary(fp),
             }
         }
     };

@@ -91,6 +91,7 @@ fn test_fibonacci_batch_verifier() {
         &[],
         &[],
         ConstraintProfile::Standard,
+        None,
     )
     .unwrap();
     let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
@@ -207,6 +208,7 @@ fn test_fibonacci_batch_verifier() {
             &npo_prep,
             &air_builders,
             ConstraintProfile::Standard,
+            None,
         )
         .unwrap();
     let (mut verification_airs, verification_degrees): (Vec<_>, Vec<usize>) =

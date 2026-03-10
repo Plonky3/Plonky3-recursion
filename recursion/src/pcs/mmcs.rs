@@ -372,10 +372,10 @@ where
         .peekable();
 
     let path_depth_4ary = path_depth / 2;
-    let digest_levels = path_depth_4ary + 1;
+    let digest_levels = path_depth + 1;
     let mut formatted_digests = vec![vec![]; digest_levels];
     for (i, digest) in formatted_digests.iter_mut().enumerate() {
-        let curr_height = 1 << (2 * (path_depth_4ary.saturating_sub(i)));
+        let curr_height = 1 << (max_height_log.saturating_sub(i));
 
         let all_base_coeffs: Vec<Target> = heights_tallest_first
             .peeking_take_while(|(_, dims)| dims.height.next_power_of_two() == curr_height)
@@ -394,9 +394,13 @@ where
         )?;
     }
 
+    let path_digests: Vec<Vec<Target>> = (0..path_depth_4ary)
+        .map(|j| formatted_digests[2 * j].clone())
+        .collect();
+
     circuit.add_mmcs_verify_4ary(
         permutation_config,
-        &formatted_digests,
+        &path_digests,
         path_bits,
         &selected_root,
     )
@@ -473,6 +477,88 @@ where
     )
 }
 
+/// 4-ary variant of `verify_batch_circuit_from_extension_opened`.
+/// Use for FRI commit-phase when using 4-ary Merkle trees.
+pub fn verify_batch_circuit_from_extension_opened_4ary<F, EF>(
+    circuit: &mut CircuitBuilder<EF>,
+    permutation_config: Poseidon2Config,
+    commitment_cap: &[Vec<Target>],
+    dimensions: &[Dimensions],
+    index_bits: &[Target],
+    opened_extension_values: &[Vec<Target>],
+) -> Result<(Vec<NonPrimitiveOpId>, Vec<Vec<Target>>), CircuitBuilderError>
+where
+    F: Field + TwoAdicField + PrimeField64,
+    EF: ExtensionField<F>,
+{
+    if dimensions.len() != opened_extension_values.len() {
+        return Err(CircuitBuilderError::WrongBatchSize {
+            expected: dimensions.len(),
+            got: opened_extension_values.len(),
+        });
+    }
+
+    assert!(
+        !commitment_cap.is_empty(),
+        "commitment cap must have at least one entry"
+    );
+
+    let cap_height = if commitment_cap.len() == 1 {
+        0
+    } else {
+        log2_strict_usize(commitment_cap.len())
+    };
+
+    let max_height_log = index_bits.len();
+    let path_depth = max_height_log - cap_height;
+    if !path_depth.is_multiple_of(2) {
+        return Err(CircuitBuilderError::MalformedCircuit {
+            details: "4-ary requires even path_depth (2 bits per level)".to_string(),
+        });
+    }
+
+    let path_bits = &index_bits[..path_depth];
+    let cap_index_bits = &index_bits[path_depth..];
+
+    let selected_root = select_cap_entry(circuit, commitment_cap, cap_index_bits);
+
+    let mut heights_tallest_first = dimensions
+        .iter()
+        .enumerate()
+        .sorted_by_key(|(_, dims)| Reverse(dims.height))
+        .peekable();
+
+    let path_depth_4ary = path_depth / 2;
+    let digest_levels = path_depth + 1;
+    let mut formatted_digests = vec![vec![]; digest_levels];
+    for (i, digest) in formatted_digests.iter_mut().enumerate() {
+        let curr_height = 1 << (max_height_log.saturating_sub(i));
+
+        let all_ext: Vec<Target> = heights_tallest_first
+            .peeking_take_while(|(_, dims)| dims.height.next_power_of_two() == curr_height)
+            .flat_map(|(mat_idx, _)| opened_extension_values[mat_idx].clone())
+            .collect();
+
+        if all_ext.is_empty() {
+            continue;
+        }
+
+        *digest =
+            add_hash_extension_elements::<F, EF>(circuit, &permutation_config, &all_ext, true)?;
+    }
+
+    let path_digests: Vec<Vec<Target>> = (0..path_depth_4ary)
+        .map(|j| formatted_digests[2 * j].clone())
+        .collect();
+
+    circuit.add_mmcs_verify_4ary(
+        permutation_config,
+        &path_digests,
+        path_bits,
+        &selected_root,
+    )
+}
+
 /// Select one cap entry from a Merkle cap using a binary tree multiplexer.
 ///
 /// For `cap_height = 0` (single entry), returns the entry directly.
@@ -520,6 +606,70 @@ fn select_cap_entry<EF: Field>(
 
     debug_assert_eq!(current.len(), 1);
     current.into_iter().next().unwrap()
+}
+
+/// Extract 4-ary MMCS sibling values from a FRI proof for use as public inputs.
+///
+/// Iterates in the same order as the verifier: for each query, input batch MMCS
+/// proofs first, then commit-phase MMCS proofs (only when `log_folded_height % 2 == 0`).
+/// Each digest is converted to `rate_ext` extension elements.
+pub fn extract_4ary_sibling_values_from_fri_proof<
+    F,
+    EF,
+    FriMmcs,
+    InputMmcs,
+    const DIGEST_ELEMS: usize,
+>(
+    fri_proof: &FriProof<EF, FriMmcs, F, Vec<BatchOpening<F, InputMmcs>>>,
+    log_blowup: usize,
+    log_final_poly_len: usize,
+) -> Vec<EF>
+where
+    F: Field,
+    EF: ExtensionField<F> + BasedVectorSpace<F>,
+    FriMmcs: Mmcs<EF, Proof = Vec<[F; DIGEST_ELEMS]>>,
+    InputMmcs: Mmcs<F, Proof = Vec<[F; DIGEST_ELEMS]>>,
+{
+    let log_arities: Vec<usize> = fri_proof
+        .query_proofs
+        .first()
+        .map(|qp| {
+            qp.commit_phase_openings
+                .iter()
+                .map(|o| o.log_arity as usize)
+                .collect()
+        })
+        .unwrap_or_default();
+    let total_log_reduction: usize = log_arities.iter().sum();
+    let log_max_height = total_log_reduction + log_final_poly_len + log_blowup;
+
+    let mut out = Vec::new();
+    for query_proof in &fri_proof.query_proofs {
+        for batch_opening in &query_proof.input_proof {
+            let siblings =
+                convert_merkle_proof_to_siblings::<F, EF, DIGEST_ELEMS>(&batch_opening.opening_proof);
+            for [e0, e1] in siblings {
+                out.push(e0);
+                out.push(e1);
+            }
+        }
+        let mut log_current_height = log_max_height;
+        for (phase_idx, phase_opening) in query_proof.commit_phase_openings.iter().enumerate() {
+            let log_arity = log_arities.get(phase_idx).copied().unwrap_or(0);
+            let log_folded_height = log_current_height.saturating_sub(log_arity);
+            if log_folded_height % 2 == 0 {
+                let siblings = convert_merkle_proof_to_siblings::<F, EF, DIGEST_ELEMS>(
+                    &phase_opening.opening_proof,
+                );
+                for [e0, e1] in siblings {
+                    out.push(e0);
+                    out.push(e1);
+                }
+            }
+            log_current_height = log_folded_height;
+        }
+    }
+    out
 }
 
 /// Convert a base field Merkle proof to extension field sibling values.
@@ -1166,6 +1316,7 @@ mod test {
                     &[],
                     &[],
                     ConstraintProfile::Standard,
+                    None,
                 )
                 .unwrap();
             let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();

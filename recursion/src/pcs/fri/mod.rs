@@ -4,7 +4,7 @@ mod params;
 mod targets;
 mod verifier;
 
-pub use params::FriVerifierParams;
+pub use params::{FriVerifierParams, MmcsArity};
 pub use targets::{
     BatchOpeningTargets, CommitPhaseProofStepTargets, FriProofTargets, HashProofTargets,
     HidingFriProofTargets, HidingOpenedValuesTargets, InputProofTargets, MerkleCapTargets,

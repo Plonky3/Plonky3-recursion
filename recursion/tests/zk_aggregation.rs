@@ -298,6 +298,7 @@ fn test_zk_aggregation() -> Result<(), VerificationError> {
         &npo_prep,
         &air_builders,
         ConstraintProfile::Standard,
+        None,
     )
     .unwrap();
     let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();

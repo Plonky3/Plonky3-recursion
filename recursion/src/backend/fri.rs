@@ -31,6 +31,7 @@ use crate::verifier::{
     ObservableCommitment, VerificationError, verify_p3_batch_proof_circuit,
     verify_p3_uni_proof_circuit,
 };
+use crate::pcs::fri::MmcsArity;
 use crate::{ChallengerPermConfig, Recursive, RecursivePcs};
 
 /// Config that uses FRI with Merkle-tree MMCS and fixed constants (WIDTH, RATE, DIGEST_ELEMS).
@@ -92,6 +93,22 @@ where
         Self::Commitment,
         <Self::Pcs as Pcs<Self::Challenge, Self::Challenger>>::Domain,
     >>::VerifierParams;
+
+    /// MMCS arity for FRI (binary or 4-ary). Used when packing 4-ary sibling values as public inputs.
+    fn mmcs_arity(&self) -> MmcsArity;
+
+    /// Poseidon2 config for FRI MMCS, when available. Used when extracting 4-ary sibling values.
+    fn fri_permutation_config(&self) -> Option<Poseidon2Config>;
+
+    /// Extract 4-ary MMCS sibling values from a batch proof's opening proof for use as public inputs.
+    /// Returns an empty vec when not using 4-ary.
+    fn extract_4ary_sibling_values(
+        &self,
+        _opening_proof: &Self::RawOpeningProof,
+    ) -> Vec<Self::Challenge>
+    where
+        Self::Challenge: ExtensionField<Val<Self>> + BasedVectorSpace<Val<Self>>,
+        Val<Self>: PrimeField64;
 
     /// Set FRI Merkle path private data on the runner. Implement by calling
     /// [`crate::pcs::set_fri_mmcs_private_data`] with your concrete MMCS/hasher types.
@@ -194,6 +211,7 @@ where
     fn pack_public_inputs(
         &self,
         prev: &RecursionInput<'_, SC, A>,
+        config: &SC,
     ) -> Result<Vec<SC::Challenge>, VerificationError> {
         match (self, prev) {
             (
@@ -212,7 +230,15 @@ where
                     common_data,
                     table_public_inputs,
                 },
-            ) => Ok(builder.pack_values(table_public_inputs, &proof.proof, common_data)),
+            ) => {
+                let mut values = builder.pack_values(table_public_inputs, &proof.proof, common_data);
+                if config.mmcs_arity().is_4ary() {
+                    let siblings =
+                        SC::with_fri_opening_proof(prev, |op| config.extract_4ary_sibling_values(op));
+                    values.extend(siblings);
+                }
+                Ok(values)
+            }
             _ => Err(VerificationError::InvalidProofShape(
                 "RecursionInput variant does not match verifier result".to_string(),
             )),
@@ -456,6 +482,18 @@ where
         builders.extend(recompose_air_builders::<SC, 2>());
         builders
     }
+
+    fn num_sibling_values(
+        &self,
+        prev: &RecursionInput<'_, SC, A>,
+        config: &SC,
+    ) -> Option<usize> {
+        if config.mmcs_arity().is_4ary() {
+            Some(SC::with_fri_opening_proof(prev, |op| config.extract_4ary_sibling_values(op).len()))
+        } else {
+            None
+        }
+    }
 }
 
 impl<SC, A, const WIDTH: usize, const RATE: usize> PcsRecursionBackend<SC, A, 4>
@@ -545,5 +583,17 @@ where
         let mut builders = poseidon2_air_builders_d4();
         builders.extend(recompose_air_builders::<SC, 4>());
         builders
+    }
+
+    fn num_sibling_values(
+        &self,
+        prev: &RecursionInput<'_, SC, A>,
+        config: &SC,
+    ) -> Option<usize> {
+        if config.mmcs_arity().is_4ary() {
+            Some(SC::with_fri_opening_proof(prev, |op| config.extract_4ary_sibling_values(op).len()))
+        } else {
+            None
+        }
     }
 }

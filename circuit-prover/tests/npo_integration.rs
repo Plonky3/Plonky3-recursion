@@ -283,6 +283,7 @@ fn cube_npo_stark_proof() {
             &[],
             &[],
             ConstraintProfile::Standard,
+            None,
         )
         .expect("get_airs_and_degrees_with_prep should succeed");
     let (mut airs, log_degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();

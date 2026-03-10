@@ -639,6 +639,7 @@ where
             commit_pow_bits: _,
             query_pow_bits: _,
             permutation_config,
+            mmcs_arity,
         } = *params;
         let num_betas = opening_proof.commit_phase_commits.len();
         let num_queries = opening_proof.query_proofs.len();
@@ -669,6 +670,7 @@ where
             commitments_with_opening_points,
             log_blowup,
             permutation_config,
+            mmcs_arity,
         )
     }
 
@@ -1014,6 +1016,7 @@ where
             commit_pow_bits: _,
             query_pow_bits: _,
             permutation_config,
+            mmcs_arity,
         } = *params;
         let fri_proof = &opening_proof.inner_proof;
         let num_betas = fri_proof.commit_phase_commits.len();
@@ -1050,6 +1053,7 @@ where
             &merged_commitments,
             log_blowup,
             permutation_config,
+            mmcs_arity,
         )
     }
 

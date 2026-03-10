@@ -45,6 +45,7 @@ fn test_babybear_batch_stark_base_field() {
             &[],
             &[],
             ConstraintProfile::Standard,
+            None,
         )
         .unwrap();
     let (mut airs, log_degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
@@ -103,6 +104,7 @@ fn test_table_lookups() {
             &[],
             &[],
             ConstraintProfile::Standard,
+            None,
         )
         .unwrap();
     let (mut airs, log_degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
@@ -186,6 +188,7 @@ fn test_extension_field_batch_stark() {
             &[],
             &[],
             ConstraintProfile::Standard,
+            None,
         )
         .unwrap();
     let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
@@ -259,6 +262,7 @@ fn test_extension_field_table_lookups() {
             &[],
             &air_builders_d4,
             ConstraintProfile::Standard,
+            None,
         )
         .unwrap();
     let (mut airs, log_degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
@@ -367,6 +371,7 @@ fn test_koalabear_batch_stark_base_field() {
             &[],
             &[],
             ConstraintProfile::Standard,
+            None,
         )
         .unwrap();
     let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
@@ -432,6 +437,7 @@ fn test_koalabear_batch_stark_extension_field_d8() {
             &[],
             &[],
             ConstraintProfile::Standard,
+            None,
         )
         .unwrap();
     let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
@@ -520,6 +526,7 @@ fn test_goldilocks_batch_stark_extension_field_d2() {
             &[],
             &air_builders_d2,
             ConstraintProfile::Standard,
+            None,
         )
         .unwrap();
     let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
@@ -670,6 +677,7 @@ fn test_mul_only_circuit_padding() {
             &[],
             &[],
             ConstraintProfile::Standard,
+            None,
         )
         .unwrap();
     let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
@@ -716,6 +724,7 @@ fn test_add_only_circuit_padding() {
             &[],
             &[],
             ConstraintProfile::Standard,
+            None,
         )
         .unwrap();
     let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();

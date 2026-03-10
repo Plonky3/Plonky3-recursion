@@ -120,6 +120,7 @@ fn test_wrong_multiplicities() {
             &[],
             &[],
             ConstraintProfile::Standard,
+            None,
         )
         .unwrap();
 
@@ -596,6 +597,7 @@ fn get_test_circuit_proof() -> TestCircuitProofData {
         &[],
         &[],
         ConstraintProfile::Standard,
+        None,
     )
     .unwrap();
 
@@ -875,6 +877,7 @@ fn test_poseidon2_ctl_lookups() {
             &npo_prep,
             &air_builders,
             ConstraintProfile::Standard,
+            None,
         )
         .unwrap();
 
@@ -1004,6 +1007,7 @@ fn test_poseidon2_chained_ctl_lookups() {
             &npo_prep,
             &air_builders,
             ConstraintProfile::Standard,
+            None,
         )
         .unwrap();
 

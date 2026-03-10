@@ -159,6 +159,7 @@ fn main() {
             &table_packing,
             args.security_level,
             args.zk,
+            args.merkle_arity,
         ),
         FieldOption::BabyBear => baby_bear::run(
             args.num_recursive_layers,
@@ -166,6 +167,7 @@ fn main() {
             &table_packing,
             args.security_level,
             args.zk,
+            args.merkle_arity,
         ),
         FieldOption::Goldilocks => goldilocks::run(
             args.num_recursive_layers,
@@ -173,6 +175,7 @@ fn main() {
             &table_packing,
             args.security_level,
             args.zk,
+            args.merkle_arity,
         ),
     }
 }
@@ -222,6 +225,25 @@ macro_rules! define_field_module {
                 $backend_rate,
                 enable_recompose
             );
+            define_field_module_types_4ary!(
+                $field,
+                $perm,
+                $default_perm,
+                $poseidon2_config,
+                $poseidon2_circuit_config,
+                $d,
+                $width,
+                $rate,
+                $digest_elems,
+                $enable_poseidon2_fn,
+                $register_poseidon2_fn,
+                $default_perm_circuit,
+                $poseidon2_air_builders_fn,
+                $backend_ctor,
+                $backend_width,
+                $backend_rate,
+                enable_recompose
+            );
 
             /// Build a dummy circuit with a single constant and prove it (non-ZK).
             fn prove_dummy_circuit(
@@ -241,6 +263,7 @@ macro_rules! define_field_module {
                         &[],
                         &[],
                         ConstraintProfile::Standard,
+                        None,
                     )
                     .unwrap();
                 let (mut airs, degrees): (Vec<_>, Vec<_>) = airs_degrees.into_iter().unzip();
@@ -266,6 +289,49 @@ macro_rules! define_field_module {
                 RecursionOutput(proof, Rc::new(circuit_prover_data))
             }
 
+            fn prove_dummy_circuit_4ary(
+                constant_value: u32,
+                config: &ConfigWithFriParams4ary,
+                table_packing: TablePacking,
+            ) -> RecursionOutput<ConfigWithFriParams4ary> {
+                let mut builder = CircuitBuilder::new();
+                let c = builder.alloc_const(F::from_u32(constant_value), "dummy_const");
+                let expected = builder.alloc_public_input("expected");
+                builder.connect(c, expected);
+                let circuit = builder.build().unwrap();
+                let (airs_degrees, preprocessed_columns) =
+                    get_airs_and_degrees_with_prep::<ConfigWithFriParams4ary, F, 1>(
+                        &circuit,
+                        table_packing,
+                        &[],
+                        &[],
+                        ConstraintProfile::Standard,
+                        None,
+                    )
+                    .unwrap();
+                let (mut airs, degrees): (Vec<_>, Vec<_>) = airs_degrees.into_iter().unzip();
+                let mut runner = circuit.runner();
+                runner
+                    .set_public_inputs(&[F::from_u32(constant_value)])
+                    .unwrap();
+                let traces = runner.run().unwrap();
+                let ext_degrees: Vec<usize> =
+                    degrees.iter().map(|&d| d + config.is_zk()).collect();
+                let prover_data =
+                    ProverData::from_airs_and_degrees(config, &mut airs, &ext_degrees);
+                let circuit_prover_data = CircuitProverData::new(prover_data, preprocessed_columns);
+                let prover =
+                    BatchStarkProver::new(config.clone()).with_table_packing(table_packing);
+                let proof = prover
+                    .prove_all_tables(&traces, &circuit_prover_data)
+                    .expect("Failed to prove dummy circuit (4-ary)");
+                report_proof_size(&proof);
+                prover
+                    .verify_all_tables(&proof, circuit_prover_data.common_data())
+                    .expect("Failed to verify dummy proof (4-ary)");
+                RecursionOutput(proof, Rc::new(circuit_prover_data))
+            }
+
             /// Build a dummy circuit with a single constant and prove it (ZK).
             fn prove_dummy_circuit_zk(
                 constant_value: u32,
@@ -284,6 +350,7 @@ macro_rules! define_field_module {
                         &[],
                         &[],
                         ConstraintProfile::Standard,
+                        None,
                     )
                     .unwrap();
                 let (mut airs, degrees): (Vec<_>, Vec<_>) = airs_degrees.into_iter().unzip();
@@ -315,6 +382,7 @@ macro_rules! define_field_module {
                 table_packing: &TablePacking,
                 security_level: usize,
                 zk: bool,
+                merkle_arity: MerkleArity,
             ) {
                 let base_table_packing = TablePacking::new(1, 1)
                     .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup);
@@ -395,6 +463,12 @@ macro_rules! define_field_module {
                         ConfigWithFriParamsZk,
                         |seed| config_with_fri_params_zk(fri_params, security_level, seed),
                         prove_dummy_circuit_zk
+                    );
+                } else if matches!(merkle_arity, MerkleArity::Quaternary4) {
+                    run_aggregation!(
+                        ConfigWithFriParams4ary,
+                        |_seed| config_with_fri_params_4ary(fri_params, security_level),
+                        prove_dummy_circuit_4ary
                     );
                 } else {
                     run_aggregation!(

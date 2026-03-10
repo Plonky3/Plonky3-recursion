@@ -94,6 +94,7 @@ pub fn get_airs_and_degrees_with_prep<
     non_primitive_preprocessors: &[Box<dyn NpoPreprocessor<Val<SC>>>],
     non_primitive_air_builders: &[Box<dyn NpoAirBuilder<SC, D>>],
     constraint_profile: ConstraintProfile,
+    num_sibling_values: Option<usize>,
 ) -> Result<(CircuitAirsWithDegrees<SC, D>, PreprocessedColumns<Val<SC>>), CircuitError>
 where
     SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
@@ -292,6 +293,15 @@ where
                     let n_reads = preprocessed.ext_reads.get(out_wid).copied().unwrap_or(0);
                     prep_2col.push(<Val<SC>>::from_u32(n_reads));
                     prep_2col.push(out_idx);
+                }
+
+                if let Some(n) = num_sibling_values {
+                    let num_ops = prep_2col.len() / 2;
+                    let start = num_ops.saturating_sub(n) * 2;
+                    let zero = Val::<SC>::from_u32(0);
+                    for i in (start..prep_2col.len()).step_by(2) {
+                        prep_2col[i] = zero;
+                    }
                 }
 
                 let num_ops = prep_2col.len() / 2;

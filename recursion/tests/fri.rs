@@ -458,6 +458,7 @@ fn run_fri_test(setup: FriSetup, build_only: bool) {
             &commitments_with_opening_points_targets,
             log_blowup,
             None, // MMCS verification disabled
+            p3_recursion::pcs::fri::MmcsArity::Binary2,
         )
         .unwrap();
 
@@ -658,6 +659,7 @@ fn run_fri_test_with_mmcs(setup: FriSetup) {
         &commitments_with_opening_points_targets,
         log_blowup,
         Some(Poseidon2Config::BabyBearD4Width16),
+        p3_recursion::pcs::fri::MmcsArity::Binary2,
     )
     .unwrap();
 

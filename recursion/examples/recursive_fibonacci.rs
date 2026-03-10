@@ -161,13 +161,6 @@ fn main() {
         args.n, args.field
     );
 
-    if matches!(args.merkle_arity, MerkleArity::Quaternary4) {
-        tracing::warn!(
-            "Quaternary4 Merkle arity selected; native 4-ary MMCS requires wider Poseidon2. \
-             Using binary config for now. Use verify_batch_circuit_4ary when native supports it."
-        );
-    }
-
     match args.field {
         FieldOption::KoalaBear => koala_bear::run(
             args.n,
@@ -176,6 +169,7 @@ fn main() {
             &table_packing,
             args.security_level,
             args.zk,
+            args.merkle_arity,
         ),
         FieldOption::BabyBear => baby_bear::run(
             args.n,
@@ -184,6 +178,7 @@ fn main() {
             &table_packing,
             args.security_level,
             args.zk,
+            args.merkle_arity,
         ),
         FieldOption::Goldilocks => goldilocks::run(
             args.n,
@@ -192,6 +187,7 @@ fn main() {
             &table_packing,
             args.security_level,
             args.zk,
+            args.merkle_arity,
         ),
     }
 }
@@ -240,6 +236,25 @@ macro_rules! define_field_module {
                 $backend_rate,
                 noop_enable_recompose
             );
+            define_field_module_types_4ary!(
+                $field,
+                $perm,
+                $default_perm,
+                $poseidon2_config,
+                $poseidon2_circuit_config,
+                $d,
+                $width,
+                $rate,
+                $digest_elems,
+                $enable_poseidon2_fn,
+                $register_poseidon2_fn,
+                $default_perm_circuit,
+                $poseidon2_air_builders_fn,
+                $backend_ctor,
+                $backend_width,
+                $backend_rate,
+                noop_enable_recompose
+            );
 
             pub fn run(
                 n: usize,
@@ -248,6 +263,7 @@ macro_rules! define_field_module {
                 table_packing: &TablePacking,
                 security_level: usize,
                 zk: bool,
+                merkle_arity: MerkleArity,
             ) {
                 let mut builder = CircuitBuilder::new();
                 let expected_result = builder.alloc_public_input("expected_result");
@@ -288,6 +304,7 @@ macro_rules! define_field_module {
                                 &[],
                                 &[],
                                 ConstraintProfile::Standard,
+                                None,
                             )
                             .unwrap();
                         let (mut airs_0, degrees_0): (Vec<_>, Vec<usize>) =
@@ -358,6 +375,7 @@ macro_rules! define_field_module {
                                 stable_prep = Some(
                                     build_next_layer_prep::<$cfg_type, BatchOnly, _, D>(
                                         &verification_circuit,
+                                        &input,
                                         &config,
                                         &backend,
                                         &params,
@@ -397,6 +415,10 @@ macro_rules! define_field_module {
                 if zk {
                     run_layers!(ConfigWithFriParamsZk, |seed| {
                         config_with_fri_params_zk(fri_params, security_level, seed)
+                    });
+                } else if matches!(merkle_arity, MerkleArity::Quaternary4) {
+                    run_layers!(ConfigWithFriParams4ary, |_seed| {
+                        config_with_fri_params_4ary(fri_params, security_level)
                     });
                 } else {
                     run_layers!(ConfigWithFriParams, |_seed| {

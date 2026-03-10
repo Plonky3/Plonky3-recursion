@@ -86,6 +86,7 @@ fn test_aggregation_with_different_shapes() -> Result<(), VerificationError> {
         &[],
         &[],
         ConstraintProfile::Standard,
+        None,
     )
     .unwrap();
     let (mut airs, degrees): (Vec<_>, Vec<_>) = airs_degrees.into_iter().unzip();

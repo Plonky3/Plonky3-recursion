@@ -15,9 +15,13 @@ use p3_field::{BasedVectorSpace, ExtensionField, Field, PrimeField64, TwoAdicFie
 use p3_matrix::Dimensions;
 use p3_util::zip_eq::zip_eq;
 
+use super::params::MmcsArity;
 use super::{FriProofTargets, InputProofTargets};
 use crate::Target;
-use crate::pcs::{verify_batch_circuit, verify_batch_circuit_from_extension_opened};
+use crate::pcs::{
+    verify_batch_circuit, verify_batch_circuit_4ary, verify_batch_circuit_from_extension_opened,
+    verify_batch_circuit_from_extension_opened_4ary,
+};
 use crate::traits::{ComsWithOpeningsTargets, Recursive, RecursiveExtensionMmcs, RecursiveMmcs};
 use crate::verifier::{ObservableCommitment, VerificationError};
 
@@ -903,6 +907,7 @@ fn open_input<F, EF, Comm>(
     batch_opened_values: &[Vec<Vec<Target>>], // Per batch -> per matrix -> per column
     permutation_config: Option<Poseidon2Config>,
     pre_packed_input_caps: Option<&[Vec<Vec<Target>>]>,
+    mmcs_arity: MmcsArity,
 ) -> Result<(Vec<(usize, Target)>, Vec<NonPrimitiveOpId>), VerificationError>
 where
     F: Field + TwoAdicField + PrimeField64,
@@ -984,19 +989,36 @@ where
                 })
                 .collect();
 
-            let op_ids = verify_batch_circuit::<F, EF>(
-                builder,
-                perm_config,
-                &commitment_cap,
-                &dimensions,
-                index_bits,
-                batch_openings,
-            )
-            .map_err(|e| {
-                VerificationError::InvalidProofShape(format!(
-                    "MMCS verification failed for batch {batch_idx}: {e:?}"
-                ))
-            })?;
+            let op_ids = if mmcs_arity.is_4ary() {
+                let (op_ids, _sibling_inputs) = verify_batch_circuit_4ary::<F, EF>(
+                    builder,
+                    perm_config,
+                    &commitment_cap,
+                    &dimensions,
+                    index_bits,
+                    batch_openings,
+                )
+                .map_err(|e| {
+                    VerificationError::InvalidProofShape(format!(
+                        "MMCS verification failed for batch {batch_idx}: {e:?}"
+                    ))
+                })?;
+                op_ids
+            } else {
+                verify_batch_circuit::<F, EF>(
+                    builder,
+                    perm_config,
+                    &commitment_cap,
+                    &dimensions,
+                    index_bits,
+                    batch_openings,
+                )
+                .map_err(|e| {
+                    VerificationError::InvalidProofShape(format!(
+                        "MMCS verification failed for batch {batch_idx}: {e:?}"
+                    ))
+                })?
+            };
             mmcs_op_ids.extend(op_ids);
         }
 
@@ -1088,6 +1110,7 @@ where
 ///
 /// Returns the list of non-primitive operation IDs that require private data
 /// (Merkle sibling values) to be set by the runner.
+/// For 4-ary MMCS, siblings are public inputs, so op_ids are empty for those.
 ///
 /// Reference (Plonky3): `p3_fri::verifier::verify_fri`
 pub fn verify_fri_circuit<F, EF, RecMmcs, Inner, Witness, Comm>(
@@ -1099,6 +1122,7 @@ pub fn verify_fri_circuit<F, EF, RecMmcs, Inner, Witness, Comm>(
     commitments_with_opening_points: &ComsWithOpeningsTargets<Comm, TwoAdicMultiplicativeCoset<F>>,
     log_blowup: usize,
     permutation_config: Option<Poseidon2Config>,
+    mmcs_arity: MmcsArity,
 ) -> Result<Vec<NonPrimitiveOpId>, VerificationError>
 where
     F: Field + TwoAdicField + PrimeField64,
@@ -1265,6 +1289,7 @@ where
             &batch_opened_values,
             permutation_config,
             pre_packed_input_caps.as_deref(),
+            mmcs_arity,
         )?;
         all_mmcs_op_ids.extend(input_mmcs_ops);
 
@@ -1422,19 +1447,36 @@ where
 
                 let evals_for_mmcs = vec![evals.clone()];
 
-                let commit_phase_ops = verify_batch_circuit_from_extension_opened::<F, EF>(
-                    builder,
-                    perm_config,
-                    &commitment_cap,
-                    &dimensions,
-                    &parent_index_bits,
-                    &evals_for_mmcs,
-                )
-                .map_err(|e| {
-                    VerificationError::InvalidProofShape(format!(
-                        "Commit-phase MMCS verification failed for query {q}, phase {phase_idx}: {e:?}"
-                    ))
-                })?;
+                let commit_phase_ops = if mmcs_arity.is_4ary() && log_folded_height % 2 == 0 {
+                    let (op_ids, _) = verify_batch_circuit_from_extension_opened_4ary::<F, EF>(
+                        builder,
+                        perm_config,
+                        &commitment_cap,
+                        &dimensions,
+                        &parent_index_bits,
+                        &evals_for_mmcs,
+                    )
+                    .map_err(|e| {
+                        VerificationError::InvalidProofShape(format!(
+                            "Commit-phase MMCS verification failed for query {q}, phase {phase_idx}: {e:?}"
+                        ))
+                    })?;
+                    op_ids
+                } else {
+                    verify_batch_circuit_from_extension_opened::<F, EF>(
+                        builder,
+                        perm_config,
+                        &commitment_cap,
+                        &dimensions,
+                        &parent_index_bits,
+                        &evals_for_mmcs,
+                    )
+                    .map_err(|e| {
+                        VerificationError::InvalidProofShape(format!(
+                            "Commit-phase MMCS verification failed for query {q}, phase {phase_idx}: {e:?}"
+                        ))
+                    })?
+                };
                 all_mmcs_op_ids.extend(commit_phase_ops);
 
                 // Fold reusing the pre-built evals and subgroup_start

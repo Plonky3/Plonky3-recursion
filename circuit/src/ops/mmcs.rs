@@ -203,6 +203,18 @@ impl<F: Field> CircuitBuilder<F> {
         }
         let path_openings = &openings_expr[..path_depth];
 
+        if path_depth == 0 {
+            let leaf = openings_expr
+                .first()
+                .ok_or(CircuitBuilderError::MalformedCircuit {
+                    details: "4-ary path_depth=0 requires at least one opening".to_string(),
+                })?;
+            for (o, r) in leaf.iter().take(rate_ext).zip(root_expr.iter()) {
+                self.connect(*o, *r);
+            }
+            return Ok((Vec::new(), Vec::new()));
+        }
+
         let mut sibling_inputs = Vec::with_capacity(path_depth);
         for _ in 0..path_depth {
             let mut level_siblings = Vec::with_capacity(3 * rate_ext);
@@ -237,7 +249,17 @@ impl<F: Field> CircuitBuilder<F> {
                 .collect();
 
             let cur: Vec<ExprId> = if level == 0 {
-                row_digest.iter().take(rate_ext).copied().collect()
+                let c: Vec<ExprId> = row_digest.iter().take(rate_ext).copied().collect();
+                if c.len() < rate_ext {
+                    return Err(CircuitBuilderError::MalformedCircuit {
+                        details: format!(
+                            "4-ary level 0 row_digest has {} elements, need {}",
+                            c.len(),
+                            rate_ext
+                        ),
+                    });
+                }
+                c
             } else {
                 current.iter().map(|o| o.expect("current set")).collect()
             };

@@ -235,6 +235,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             &npo_prep,
             &air_builders,
             ConstraintProfile::Standard,
+            None,
         )?;
     let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
 

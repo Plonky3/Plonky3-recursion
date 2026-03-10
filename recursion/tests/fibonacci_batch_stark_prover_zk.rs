@@ -229,6 +229,7 @@ fn test_batch_verifier_zk_hiding_fri() -> Result<(), VerificationError> {
             &npo_prep,
             &air_builders,
             ConstraintProfile::Standard,
+            None,
         )
         .unwrap();
     let (mut verification_airs, verification_degrees): (Vec<_>, Vec<usize>) =

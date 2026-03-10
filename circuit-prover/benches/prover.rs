@@ -94,6 +94,7 @@ fn bench_prove_all_tables(c: &mut Criterion) {
                         &[],
                         &[],
                         ConstraintProfile::Standard,
+                        None,
                     )
                     .unwrap();
                 let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();

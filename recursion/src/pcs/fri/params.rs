@@ -1,6 +1,22 @@
 use p3_circuit::op::Poseidon2Config;
 use p3_fri::FriParameters;
 
+/// Merkle tree arity for MMCS verification.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum MmcsArity {
+    /// Binary (2-ary) Merkle trees.
+    #[default]
+    Binary2,
+    /// Quaternary (4-ary) Merkle trees with 4-to-1 Poseidon2 compression.
+    Quaternary4,
+}
+
+impl MmcsArity {
+    pub const fn is_4ary(self) -> bool {
+        matches!(self, MmcsArity::Quaternary4)
+    }
+}
+
 /// FRI verifier parameters (subset needed for verification).
 ///
 /// These parameters are extracted from the full `FriParameters` and contain
@@ -19,10 +35,12 @@ pub struct FriVerifierParams {
     /// When `Some`, recursive MMCS verification is performed.
     /// When `None`, only arithmetic verification is performed (for testing).
     pub permutation_config: Option<Poseidon2Config>,
+    /// Merkle tree arity for MMCS (2-ary or 4-ary).
+    pub mmcs_arity: MmcsArity,
 }
 
 impl FriVerifierParams {
-    /// Create params with MMCS verification enabled.
+    /// Create params with MMCS verification enabled (binary Merkle).
     pub const fn with_mmcs(
         log_blowup: usize,
         log_final_poly_len: usize,
@@ -36,6 +54,25 @@ impl FriVerifierParams {
             commit_pow_bits,
             query_pow_bits,
             permutation_config: Some(permutation_config),
+            mmcs_arity: MmcsArity::Binary2,
+        }
+    }
+
+    /// Create params with 4-ary MMCS verification.
+    pub const fn with_mmcs_4ary(
+        log_blowup: usize,
+        log_final_poly_len: usize,
+        commit_pow_bits: usize,
+        query_pow_bits: usize,
+        permutation_config: Poseidon2Config,
+    ) -> Self {
+        Self {
+            log_blowup,
+            log_final_poly_len,
+            commit_pow_bits,
+            query_pow_bits,
+            permutation_config: Some(permutation_config),
+            mmcs_arity: MmcsArity::Quaternary4,
         }
     }
 
@@ -52,6 +89,7 @@ impl FriVerifierParams {
             commit_pow_bits,
             query_pow_bits,
             permutation_config: None,
+            mmcs_arity: MmcsArity::Binary2,
         }
     }
 }
@@ -66,6 +104,7 @@ impl<M> From<&FriParameters<M>> for FriVerifierParams {
             commit_pow_bits: params.commit_proof_of_work_bits,
             query_pow_bits: params.query_proof_of_work_bits,
             permutation_config: None,
+            mmcs_arity: MmcsArity::Binary2,
         }
     }
 }
