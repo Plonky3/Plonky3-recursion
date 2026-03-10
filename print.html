@@ -184,7 +184,7 @@
 <ul>
 <li><strong><a href="./getting_started/introduction.html">Getting Started</a></strong> — Motivation, design philosophy, and a quick start guide with working examples.</li>
 <li><strong><a href="./user_guide/api.html">User Guide</a></strong> — The unified recursion API, aggregation, configuration, public inputs, integration into your project, and the low-level API for advanced use cases.</li>
-<li><strong><a href="./architecture_and_internals/construction.html">Architecture &amp; Internals</a></strong> — How the fixed recursive verifier is built: the execution IR, witness table, operation-specific chips, circuit building pipeline, trace generation, and Poseidon2-based hashing.</li>
+<li><strong><a href="./architecture_and_internals/construction.html">Architecture &amp; Internals</a></strong> — How the fixed recursive verifier is built: the execution IR, shared witness memory model, operation-specific chips, circuit building pipeline, trace generation, and Poseidon2-based hashing.</li>
 <li><strong><a href="./advanced_topics/scaling.html">Advanced Topics</a></strong> — Scaling strategies for variable-length inputs, performance tuning, soundness considerations, and debugging tools.</li>
 <li><strong><a href="./appendix/benchmark.html">Appendix</a></strong> — Benchmarks, roadmap, and glossary.</li>
 </ul>
@@ -745,7 +745,7 @@ struct MyRecursionConfig {
 <ul>
 <li>Are controlled by a runtime policy (<code>DefaultProfile</code> disables all, <code>AllowAllProfile</code> enables all)</li>
 <li>Require a custom trace builder for trace generation</li>
-<li>Interact with the witness table via lookups, and may additionally use private data</li>
+<li>Interact with the shared witness memory via lookups, and may additionally use private data</li>
 </ul>
 <p>To enable a non-primitive operation, call the appropriate <code>enable_*</code> method on the <code>CircuitBuilder</code> before building. Attempting to use a non-primitive operation that hasn't been enabled will result in a runtime error.</p>
 <h2 id="end-to-end-integration-checklist"><a class="header" href="#end-to-end-integration-checklist">End-to-end integration checklist</a></h2>
@@ -896,7 +896,7 @@ and why it provides a powerful foundation for recursive proof systems.</p>
 <p>An <strong>Execution IR</strong> (intermediate representation) is defined to describe the steps of the verifier.
 This IR is <em>not itself proved</em>, but will be used as source of truth between prover and verifier to guide trace population.
 The actual soundness comes from the constraints inside the operation-specific STARK chips along with an aggregated lookup argument ensuring consistency of the common values they operate on.
-The lookups can be seen as representing the <code>READ</code>/<code>WRITE</code> operations from/to the witness table.</p>
+The lookups can be seen as representing <code>READ</code>/<code>WRITE</code> interactions on a shared witness memory bus, without requiring a dedicated witness table.</p>
 <p>The example below represents the (fixed) IR associated to the statement <code>37.x - 111 = 0</code>, where <code>x</code> is a public input. It can be reproduced by running</p>
 <pre><code class="language-bash">RUST_LOG=debug cargo test --package p3-circuit --lib -- tables::runner::tests::test_toy_example_37_times_x_minus_111 --exact --show-output
 </code></pre>
@@ -919,36 +919,34 @@ The lookups can be seen as representing the <code>READ</code>/<code>WRITE</code>
 </ul>
 <p>The computation graph that represents all operations in the IR is called <code>Circuit</code>.</p>
 <p>A <code>circuit_builder</code> provides convenient helper functions and macros for representing and defining operations within this graph. See section <a href="architecture_and_internals/./circuit_building.html#building-circuits">Building Circuits</a> for more details on how to build a circuit.</p>
-<h2 id="witness-table"><a class="header" href="#witness-table">Witness Table</a></h2>
-<p>The <code>Witness</code> table can be seen as a central memory bus that stores values shared across all operations. It is represented as pairs <code>(index, value)</code>, where indices are  that will be accessed by
-the different chips via lookups to enforce consistency.</p>
+<h2 id="witness-memory"><a class="header" href="#witness-memory">Witness memory</a></h2>
+<p>Conceptually, we still think in terms of a central memory bus that stores values shared across all operations. This bus is indexed by <code>WitnessId</code> and can be represented as pairs <code>(index, value)</code>, where indices are accessed by the different chips via lookups to enforce consistency.</p>
 <ul>
-<li>The index column is <em>preprocessed</em>, or <em>read-after-preprocess</em> (<a href="https://hackmd.io/@aztec-network/plonk-arithmetiization-air">RAP</a>): it is known to both prover and verifier in advance, requiring no online commitment.<sup class="footnote-reference" id="fr-1-1"><a href="#footnote-1">1</a></sup></li>
-<li>The <code>Witness</code> table values are represented as extension field elements directly (where base field elements are padded with 0 on higher coordinates) for addressing efficiency.</li>
+<li>The index information is <em>preprocessed</em>, or <em>read-after-preprocess</em> (<a href="https://hackmd.io/@aztec-network/plonk-arithmetiization-air">RAP</a>): it is known to both prover and verifier in advance, requiring no online commitment.<sup class="footnote-reference" id="fr-1-1"><a href="#footnote-1">1</a></sup></li>
+<li>Values are represented as extension field elements directly (where base field elements are padded with 0 on higher coordinates) for addressing efficiency.</li>
 </ul>
-<p>From the fixed IR of the example above, we can deduce an associated <code>Witness</code> table as follows:</p>
-<pre><code class="language-bash">=== WITNESS TRACE ===
+<p>From the fixed IR of the example above, we can deduce an associated witness memory view as follows:</p>
+<pre><code class="language-bash">=== WITNESS MEMORY ===
 Row 0: WitnessId(w0) = 0
 Row 1: WitnessId(w1) = 37
 Row 2: WitnessId(w2) = 111
 Row 3: WitnessId(w3) = 3
 Row 4: WitnessId(w4) = 111
 </code></pre>
-<p>Note that the initial version of the recursion machine, for the sake of simplicity and ease of iteration, contains a <code>Witness</code> table. However, because the verifier effectively knows the order of
-each operation and the interaction between them, the <code>Witness</code> table can be entirely removed, and global consistency can still be enforced at the cost of additional (smaller) lookups between the different chips.</p>
+<p>This dedicated table does not actually exist: the same witness indices are instead enforced via cross-table lookups directly between operation-specific chips.</p>
 <h2 id="operation-specific-stark-chips"><a class="header" href="#operation-specific-stark-chips">Operation-specific STARK Chips</a></h2>
 <p>Each operation family (e.g. addition, multiplication, MMCS path verification, FRI folding) has its own chip.</p>
 <p>A chip contains:</p>
 <ul>
 <li>Local columns for its variables.</li>
-<li>Lookup ports into the <code>Witness</code> table.</li>
+<li>Lookup ports that describe which witness indices they read from and write to.</li>
 <li>An AIR that enforces its semantics.</li>
 </ul>
 <p>We distinguish two kind of chips: those representing native, i.e. primitive operations, and additional non-primitive ones, defined at runtime, that serve as precompiles to optimize certain operations.
 The recursion machine contains 3 primitive chips: <code>CONST</code>, <code>PUBLIC_INPUT</code>, and a unified <code>ALU</code> chip with three selector columns (add/mul, bool-check, mul-add). <code>SUB</code> and <code>DIV</code> are encoded as ALU rows using the add or mul operation.</p>
 <p>Given only the primitive operations, one should be able to carry out most operations necessary in circuit verification. Primitive operations have the following properties:</p>
 <ul>
-<li>They operate on elements of the <code>Witness</code> table, through their <code>WitnessId</code> (index within the <code>Witness</code> table).</li>
+<li>They operate on witness slots identified by <code>WitnessId</code> indices in the shared memory bus.</li>
 <li>The representation can be heavily optimized. For example, every time a constant is added to the IR, we either create a new <code>WitnessId</code> or return an already existing one. We could also carry out common subexpression elimination.</li>
 <li>They are executed in topological order during the circuit evaluation, and they form a directed acyclic graph of dependencies.</li>
 </ul>
@@ -957,6 +955,28 @@ The recursion machine contains 3 primitive chips: <code>CONST</code>, <code>PUBL
 <p>This library aims at providing a certain
 number of non-primary chips so that projects can natively inherit from full recursive verifiers, which implies chips for FRI, MMCS path verification, etc. Specific applications can also build their own
 non-primitive chips and plug them at runtime.</p>
+<h3 id="non-primitive-operations-npos-in-practice"><a class="header" href="#non-primitive-operations-npos-in-practice">Non-primitive operations (NPOs) in practice</a></h3>
+<p>In the codebase, non-primitive chips are exposed as <strong>non-primitive operations (NPOs)</strong> that can be plugged into a circuit and executed at runtime. Conceptually, each NPO has three responsibilities:</p>
+<ul>
+<li>A <strong>circuit-level plugin</strong> that describes how a high-level call to the operation is lowered into a concrete row in the execution IR.</li>
+<li>A <strong>runtime executor</strong> that knows how to read input witnesses, compute outputs (and any associated private data), and write the results back.</li>
+<li>Optionally, a <strong>dedicated table and AIR</strong> when we want to prove the internal structure of the operation instead of treating it as an opaque black box.</li>
+</ul>
+<p>On the circuit side, an NPO implements a small plugin interface that:</p>
+<ul>
+<li>advertises a unique operation type identifier (for example, a toy cube operation uses a type id of the form <code>cube_simple/x_cubed</code>),</li>
+<li>maps circuit expressions to <code>WitnessId</code>s and creates a non-primitive operation row in the IR,</li>
+<li>exposes a configuration object used when building AIRs and preprocessed columns,</li>
+<li>optionally provides a trace generator for its own dedicated table.</li>
+</ul>
+<p>At execution time, the recursion machine walks the IR and, for each non-primitive row, calls the operation’s executor. The executor:</p>
+<ul>
+<li>receives the input and output <code>WitnessId</code>s for that row,</li>
+<li>reads the input values from the <code>Witness</code> table,</li>
+<li>performs the desired computation (possibly using additional private data),</li>
+<li>writes the outputs back into the <code>Witness</code> table, and, if needed, updates preprocessed columns used by its table AIR.</li>
+</ul>
+<p>A simple end-to-end example of this pattern is the “cube” NPO used in the integration tests. It defines an operation <code>y = x^3</code> with one input and one output. Its circuit plugin registers a new NPO type id, lowers calls to <code>y = x^3</code> into non-primitive IR rows, and attaches a cube executor to those rows. The executor then reads <code>x</code> from the shared witness memory, computes <code>x^3</code>, and writes <code>y</code> back. In that example, the trace generator returns no dedicated table, so only the existing primitive chips appear in the STARK; more sophisticated NPOs (e.g. permutation or Merkle-path verifiers) can in addition expose their own tables and AIRs that are proven alongside the primitive chips.</p>
 <p>Going back to the previous example, prover and verifier can agree on the following logic for each chip:</p>
 <pre><code class="language-bash">=== CONST TRACE ===
 Row 0: WitnessId(w0) = 0
@@ -973,8 +993,8 @@ Row 1: add: WitnessId(w2) + WitnessId(w0) -&gt; WitnessId(w4) | 111 + 0 -&gt; 11
 <p>Note that because we started from a known, fixed program that has been lowered to a deterministic IR, we can have the <code>CONST</code> chip's table entirely preprocessed
 (i.e. known to the verifier), as well as all <code>index</code> columns of the other primitive chips.</p>
 <h2 id="lookups"><a class="header" href="#lookups">Lookups</a></h2>
-<p>All chips interactions are performed via a lookup argument. Enforcing multiset equality between all chip ports and the <code>Witness</code> table entries ensures correctness without proving the execution order of the entire IR itself. Lookups can be seen as <code>READ</code>/<code>WRITE</code> or <code>RECEIVE</code>/<code>SEND</code> interactions between tables which allow global consistency over local AIRs.</p>
-<p>Cross-table lookups (CTLs) ensure that <strong>every</strong> chip interaction happens through the Witness table: producers write a <code>(index, value)</code> pair into Witness and consumers read the same pair back. No chip talks directly to any other chip; the aggregated LogUp argument enforces multiset equality between the writes and reads.</p>
+<p>All chips interactions are performed via a lookup argument. Enforcing multiset equality between all chip ports and the shared witness memory view ensures correctness without proving the execution order of the entire IR itself. Lookups can be seen as <code>READ</code>/<code>WRITE</code> or <code>RECEIVE</code>/<code>SEND</code> interactions between tables which allow global consistency over local AIRs.</p>
+<p>Cross-table lookups (CTLs) ensure that <strong>every</strong> chip interaction is mediated by shared witness indices: producers expose a <code>(index, value)</code> pair and consumers read the same pair back. In the current design this is encoded directly as CTL relations between operation tables, rather than through a separate Witness table. No chip talks directly to any other chip; the aggregated LogUp argument enforces multiset equality between the writes and reads.</p>
 <p>For the toy example the CTL relations are:<sup class="footnote-reference" id="fr-2-1"><a href="#footnote-2">2</a></sup></p>
 <pre><code class="language-bash">(index 0, value 0)   : CONST → Witness → ALU(add row)
 (index 1, value 37)  : CONST → Witness → ALU(mul row)
@@ -987,7 +1007,7 @@ Row 1: add: WitnessId(w2) + WitnessId(w0) -&gt; WitnessId(w4) | 111 + 0 -&gt; 11
 <p>Preprocessed columns / polynomials can be reconstructed manually by the verifier, removing the need for a prover to commit to them and later perform the FRI protocol on them. However, the verifier needs <span class="katex"><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:1em;vertical-align:-0.25em;"></span><span class="mord mathnormal" style="margin-right:0.02778em;">O</span><span class="mopen">(</span><span class="mord mathnormal">n</span><span class="mclose">)</span></span></span></span> work when these columns are not structured, as it still needs to interpolate them. To alleviate this, the Plonky3 recursion stack performs <em>offline</em> commitment of unstructured preprocessed columns, so that we need only one instance of the FRI protocol to verify all preprocessed columns evaluations. <a href="#fr-1-1">↩</a></p>
 </li>
 <li id="footnote-2">
-<p>The two ALU rows both write <code>w4 = 111</code> to the Witness table (once via a mul row, once via an add row). Because the Witness table is a <em>read-only</em> / <em>write-once</em> memory bus, the aggregated lookup forces those duplicate writes to agree, which is exactly the constraint <code>37 * 3 = 111 = 0 + 111</code>. <a href="#fr-2-1">↩</a></p>
+<p>The two ALU rows both write <code>w4 = 111</code> to the shared witness memory (once via a mul row, once via an add row). Because this memory is modeled as a <em>read-only</em> / <em>write-once</em> bus, the aggregated lookup forces those duplicate writes to agree, which is exactly the constraint <code>37 * 3 = 111 = 0 + 111</code>. <a href="#fr-2-1">↩</a></p>
 </li>
 </ol><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="building-circuits"><a class="header" href="#building-circuits">Building Circuits</a></h1>
@@ -1500,8 +1520,6 @@ This ensures that all constraints are properly satisfied before proceeding to th
 <p>This page tracks planned improvements and known optimization opportunities.</p>
 <h2 id="performance"><a class="header" href="#performance">Performance</a></h2>
 <ul>
-<li><strong>Eliminate decompose/recompose round-trips</strong>: Base field values are currently lifted to extension field targets and then repacked before MMCS verification, which decomposes them again. Keeping values in base coefficient form throughout would eliminate ~15-20% of circuit operations.</li>
-<li><strong>Dedicated FRI AIR table</strong>: A specialized non-primitive chip for Lagrange interpolation during FRI folding would offload ~30K primitive operations to a compact AIR.</li>
 <li><strong>Additional optimization passes</strong>: More aggressive dead-node pruning, common subexpression elimination, and chain fusion in the circuit optimizer.</li>
 </ul>
 <h2 id="flexibility"><a class="header" href="#flexibility">Flexibility</a></h2>
@@ -1526,7 +1544,7 @@ Making these configurable would support wider permutations and different securit
 <p><strong>RAP</strong> — Randomized AIR with Preprocessing. An extension of AIR that supports preprocessed columns (known to the verifier before the proof) and randomized columns (computed after an initial commitment round).</p>
 <p><strong>STARK</strong> — Scalable Transparent Argument of Knowledge. A proof system based on polynomial IOPs and hash functions (no trusted setup). Plonky3 implements uni-STARKs (single AIR) and batch-STARKs (multiple AIRs with shared FRI).</p>
 <p><strong>Target</strong> — An identifier for a value in the circuit's expression graph. Each <code>Target</code> (also called <code>ExprId</code>) refers to either a constant, a public input, or the output of an operation.</p>
-<p><strong>WitnessId</strong> — An index into the global Witness table. After circuit compilation, each <code>Target</code> is assigned a <code>WitnessId</code> that identifies its slot in the witness memory bus.</p>
+<p><strong>WitnessId</strong> — An index into the global witness memory bus. After circuit compilation, each <code>Target</code> is assigned a <code>WitnessId</code> that identifies its slot in this shared memory.</p>
 
                     </main>
 

@@ -191,7 +191,7 @@
 <p><strong>RAP</strong> — Randomized AIR with Preprocessing. An extension of AIR that supports preprocessed columns (known to the verifier before the proof) and randomized columns (computed after an initial commitment round).</p>
 <p><strong>STARK</strong> — Scalable Transparent Argument of Knowledge. A proof system based on polynomial IOPs and hash functions (no trusted setup). Plonky3 implements uni-STARKs (single AIR) and batch-STARKs (multiple AIRs with shared FRI).</p>
 <p><strong>Target</strong> — An identifier for a value in the circuit's expression graph. Each <code>Target</code> (also called <code>ExprId</code>) refers to either a constant, a public input, or the output of an operation.</p>
-<p><strong>WitnessId</strong> — An index into the global Witness table. After circuit compilation, each <code>Target</code> is assigned a <code>WitnessId</code> that identifies its slot in the witness memory bus.</p>
+<p><strong>WitnessId</strong> — An index into the global witness memory bus. After circuit compilation, each <code>Target</code> is assigned a <code>WitnessId</code> that identifies its slot in this shared memory.</p>
 
                     </main>
 

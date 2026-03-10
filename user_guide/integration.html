@@ -295,7 +295,7 @@ struct MyRecursionConfig {
 <ul>
 <li>Are controlled by a runtime policy (<code>DefaultProfile</code> disables all, <code>AllowAllProfile</code> enables all)</li>
 <li>Require a custom trace builder for trace generation</li>
-<li>Interact with the witness table via lookups, and may additionally use private data</li>
+<li>Interact with the shared witness memory via lookups, and may additionally use private data</li>
 </ul>
 <p>To enable a non-primitive operation, call the appropriate <code>enable_*</code> method on the <code>CircuitBuilder</code> before building. Attempting to use a non-primitive operation that hasn't been enabled will result in a runtime error.</p>
 <h2 id="end-to-end-integration-checklist"><a class="header" href="#end-to-end-integration-checklist">End-to-end integration checklist</a></h2>
