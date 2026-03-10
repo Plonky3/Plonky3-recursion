@@ -512,7 +512,7 @@ fn test_goldilocks_batch_stark_extension_field_d2() {
 
     let circuit = builder.build().unwrap();
     let mut air_builders_d2 = poseidon2_air_builders::<_, D>();
-    air_builders_d2.extend(recompose_air_builders::<_, 2>());
+    air_builders_d2.extend(recompose_air_builders::<_, D>());
     let (airs_degrees, preprocessed_columns) =
         get_airs_and_degrees_with_prep::<GoldilocksConfig, _, D>(
             &circuit,
