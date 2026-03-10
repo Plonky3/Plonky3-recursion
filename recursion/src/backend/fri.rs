@@ -7,15 +7,14 @@ use alloc::{format, vec};
 
 use p3_circuit::{CircuitBuilder, CircuitRunner, NonPrimitiveOpId};
 use p3_circuit_prover::batch_stark_prover::{
-    poseidon2_air_builders_d2, poseidon2_air_builders_d4, poseidon2_preprocessor,
-    poseidon2_table_provers_d2, poseidon2_table_provers_d4, recompose_air_builders,
-    recompose_preprocessor,
+    poseidon2_air_builders, poseidon2_preprocessor, recompose_air_builders, recompose_preprocessor,
 };
 use p3_circuit_prover::common::{NpoAirBuilder, NpoPreprocessor};
 use p3_circuit_prover::config::StarkField;
 use p3_circuit_prover::field_params::ExtractBinomialW;
 use p3_circuit_prover::{
-    Poseidon2Preprocessor, RecomposePreprocessor, TableProver, recompose_table_provers,
+    Poseidon2Preprocessor, RecomposePreprocessor, TableProver, poseidon2_table_provers,
+    recompose_table_provers,
 };
 use p3_commit::Pcs;
 use p3_field::extension::BinomiallyExtendable;
@@ -443,7 +442,7 @@ where
 
     fn non_primitive_provers(&self, ext_degree: usize) -> Vec<Box<dyn TableProver<SC>>> {
         if ext_degree == 2 {
-            let mut provers = poseidon2_table_provers_d2(self.0.challenger_perm_config);
+            let mut provers = poseidon2_table_provers::<SC, 2>(self.0.challenger_perm_config);
             provers.extend(recompose_table_provers::<SC, 2>());
             provers
         } else {
@@ -452,7 +451,7 @@ where
     }
 
     fn non_primitive_air_builders(&self) -> Vec<Box<dyn NpoAirBuilder<SC, 2>>> {
-        let mut builders = poseidon2_air_builders_d2();
+        let mut builders = poseidon2_air_builders::<SC, 2>();
         builders.extend(recompose_air_builders::<SC, 2>());
         builders
     }
@@ -533,7 +532,7 @@ where
 
     fn non_primitive_provers(&self, ext_degree: usize) -> Vec<Box<dyn TableProver<SC>>> {
         if ext_degree == 4 {
-            let mut provers = poseidon2_table_provers_d4(self.0.challenger_perm_config);
+            let mut provers = poseidon2_table_provers::<SC, 4>(self.0.challenger_perm_config);
             provers.extend(recompose_table_provers::<SC, 4>());
             provers
         } else {
@@ -542,7 +541,7 @@ where
     }
 
     fn non_primitive_air_builders(&self) -> Vec<Box<dyn NpoAirBuilder<SC, 4>>> {
-        let mut builders = poseidon2_air_builders_d4();
+        let mut builders = poseidon2_air_builders::<SC, 4>();
         builders.extend(recompose_air_builders::<SC, 4>());
         builders
     }

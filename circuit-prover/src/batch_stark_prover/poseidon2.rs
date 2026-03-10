@@ -1448,12 +1448,12 @@ impl NpoPreprocessor<Goldilocks> for Poseidon2Preprocessor {
 }
 
 #[derive(Clone, Default)]
-pub struct Poseidon2AirBuilderD2;
+pub struct Poseidon2AirBuilder<const D: usize>;
 
-impl<SC> NpoAirBuilder<SC, 2> for Poseidon2AirBuilderD2
+impl<SC, const D: usize> NpoAirBuilder<SC, D> for Poseidon2AirBuilder<D>
 where
     SC: StarkGenericConfig + 'static + Send + Sync,
-    Val<SC>: StarkField + BinomiallyExtendable<2>,
+    Val<SC>: StarkField,
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
         Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
@@ -1463,55 +1463,9 @@ where
         prep_base: &[Val<SC>],
         min_height: usize,
         constraint_profile: ConstraintProfile,
-    ) -> Option<(CircuitTableAir<SC, 2>, usize)> {
+    ) -> Option<(CircuitTableAir<SC, D>, usize)> {
         let suffix = op_type.as_str().strip_prefix("poseidon2_perm/")?;
         let config = Poseidon2Config::from_variant_name(suffix)?;
-        let Poseidon2Config::GoldilocksD2Width8 = config else {
-            return None;
-        };
-        let prover = Poseidon2ProverD2(Poseidon2Prover::new(config, constraint_profile));
-        let wrapper = prover
-            .0
-            .wrapper_from_config_with_preprocessed(prep_base.to_vec(), min_height);
-        let width = prover.0.preprocessed_width_from_config();
-        let num_rows = prep_base.len().div_ceil(width);
-        let degree = log2_ceil_usize(
-            num_rows
-                .next_power_of_two()
-                .max(min_height.next_power_of_two()),
-        );
-        Some((CircuitTableAir::Dynamic(wrapper), degree))
-    }
-}
-
-#[derive(Clone, Default)]
-pub struct Poseidon2AirBuilderD4;
-
-impl<SC> NpoAirBuilder<SC, 4> for Poseidon2AirBuilderD4
-where
-    SC: StarkGenericConfig + 'static + Send + Sync,
-    Val<SC>: StarkField + BinomiallyExtendable<4>,
-    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
-        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
-{
-    fn try_build(
-        &self,
-        op_type: &NpoTypeId,
-        prep_base: &[Val<SC>],
-        min_height: usize,
-        constraint_profile: ConstraintProfile,
-    ) -> Option<(CircuitTableAir<SC, 4>, usize)> {
-        let suffix = op_type.as_str().strip_prefix("poseidon2_perm/")?;
-        let config = Poseidon2Config::from_variant_name(suffix)?;
-        let config = match config {
-            Poseidon2Config::BabyBearD1Width16
-            | Poseidon2Config::BabyBearD4Width16
-            | Poseidon2Config::BabyBearD4Width24
-            | Poseidon2Config::KoalaBearD1Width16
-            | Poseidon2Config::KoalaBearD4Width16
-            | Poseidon2Config::KoalaBearD4Width24 => config,
-            _ => return None,
-        };
         let prover = Poseidon2Prover::new(config, constraint_profile);
         let wrapper = prover.wrapper_from_config_with_preprocessed(prep_base.to_vec(), min_height);
         let width = prover.preprocessed_width_from_config();

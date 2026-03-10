@@ -7,7 +7,7 @@ use p3_circuit::ops::{Poseidon2PermCall, generate_poseidon2_trace, generate_reco
 use p3_circuit::{CircuitBuilder, Poseidon2PermOps};
 use p3_circuit_prover::air::{AluAir, ConstAir, PublicAir};
 use p3_circuit_prover::batch_stark_prover::{
-    PrimitiveTable, poseidon2_air_builders_d4, poseidon2_table_provers_d4, recompose_air_builders,
+    PrimitiveTable, poseidon2_air_builders, recompose_air_builders,
 };
 use p3_circuit_prover::common::{NpoPreprocessor, get_airs_and_degrees_with_prep};
 use p3_circuit_prover::{
@@ -752,7 +752,7 @@ fn get_verifier_inputs_and_challenges(
         lookup_gadget,
         Poseidon2Config::BabyBearD4Width16,
         &{
-            let mut tp = poseidon2_table_provers_d4(Poseidon2Config::BabyBearD4Width16);
+            let mut tp = poseidon2_table_provers::<_, 4>(Poseidon2Config::BabyBearD4Width16);
             tp.extend(recompose_table_provers::<_, 4>());
             tp
         },
@@ -866,7 +866,7 @@ fn test_poseidon2_ctl_lookups() {
         Box::new(Poseidon2Preprocessor),
         Box::new(RecomposePreprocessor),
     ];
-    let mut air_builders = poseidon2_air_builders_d4();
+    let mut air_builders = poseidon2_air_builders::<4>();
     air_builders.extend(recompose_air_builders());
     let (airs_degrees, preprocessed_columns) =
         get_airs_and_degrees_with_prep::<MyConfig, Challenge, 4>(
@@ -996,7 +996,7 @@ fn test_poseidon2_chained_ctl_lookups() {
         Box::new(Poseidon2Preprocessor),
         Box::new(RecomposePreprocessor),
     ];
-    let mut air_builders = poseidon2_air_builders_d4();
+    let mut air_builders = poseidon2_air_builders::<4>();
     air_builders.extend(recompose_air_builders());
     let (airs_degrees, preprocessed_columns) =
         get_airs_and_degrees_with_prep::<MyConfig, Challenge, 4>(

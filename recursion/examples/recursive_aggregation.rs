@@ -417,7 +417,7 @@ define_field_module!(
     register_poseidon2_table,
     register_recompose_table,
     p3_koala_bear::default_koalabear_poseidon2_16,
-    poseidon2_air_builders_d4,
+    poseidon2_air_builders::<4>,
     new_d4,
     16,
     8
@@ -438,7 +438,7 @@ define_field_module!(
     register_poseidon2_table,
     register_recompose_table,
     p3_baby_bear::default_babybear_poseidon2_16,
-    poseidon2_air_builders_d4,
+    poseidon2_air_builders::<4>,
     new_d4,
     16,
     8
@@ -459,7 +459,7 @@ define_field_module!(
     register_poseidon2_table_d2,
     register_recompose_table_d2,
     default_goldilocks_poseidon2_8,
-    poseidon2_air_builders_d2,
+    poseidon2_air_builders::<2>,
     new_d2,
     8,
     4

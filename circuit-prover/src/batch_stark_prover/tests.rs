@@ -11,8 +11,7 @@ use p3_symmetric::CryptographicHasher;
 use super::*;
 use crate::ConstraintProfile;
 use crate::batch_stark_prover::{
-    BABY_BEAR_MODULUS, KOALA_BEAR_MODULUS, poseidon2_air_builders_d2, poseidon2_air_builders_d4,
-    recompose_air_builders,
+    BABY_BEAR_MODULUS, KOALA_BEAR_MODULUS, poseidon2_air_builders, recompose_air_builders,
 };
 use crate::common::get_airs_and_degrees_with_prep;
 use crate::config::{self, BabyBearConfig, GoldilocksConfig, KoalaBearConfig};
@@ -251,7 +250,7 @@ fn test_extension_field_table_lookups() {
 
     let circuit = builder.build().unwrap();
     let default_packing = TablePacking::default();
-    let mut air_builders_d4 = poseidon2_air_builders_d4();
+    let mut air_builders_d4 = poseidon2_air_builders::<_, D>();
     air_builders_d4.extend(recompose_air_builders());
     let (airs_degrees, preprocessed_columns) =
         get_airs_and_degrees_with_prep::<BabyBearConfig, _, D>(
@@ -512,7 +511,7 @@ fn test_goldilocks_batch_stark_extension_field_d2() {
     builder.assert_zero(diff);
 
     let circuit = builder.build().unwrap();
-    let mut air_builders_d2 = poseidon2_air_builders_d2();
+    let mut air_builders_d2 = poseidon2_air_builders::<_, D>();
     air_builders_d2.extend(recompose_air_builders::<_, 2>());
     let (airs_degrees, preprocessed_columns) =
         get_airs_and_degrees_with_prep::<GoldilocksConfig, _, D>(

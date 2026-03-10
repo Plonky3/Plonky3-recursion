@@ -42,8 +42,8 @@ pub use dynamic_air::{
 pub use packing::TablePacking;
 pub(crate) use packing::TraceLengths;
 pub use poseidon2::{
-    Poseidon2AirBuilderD2, Poseidon2AirBuilderD4, Poseidon2AirWrapperInner, Poseidon2Preprocessor,
-    Poseidon2Prover, Poseidon2ProverD2, poseidon2_preprocessor, poseidon2_verifier_air_from_config,
+    Poseidon2AirBuilder, Poseidon2AirWrapperInner, Poseidon2Preprocessor, Poseidon2Prover,
+    Poseidon2ProverD2, poseidon2_preprocessor, poseidon2_verifier_air_from_config,
 };
 pub use recompose::{RecomposeAirBuilder, RecomposePreprocessor, RecomposeProver};
 
@@ -954,54 +954,64 @@ where
     }
 }
 
-/// Create Poseidon2 table provers for D=2 (e.g. Goldilocks).
-pub fn poseidon2_table_provers_d2<SC>(config: Poseidon2Config) -> Vec<Box<dyn TableProver<SC>>>
+/// Internal helper selecting the Poseidon2 table prover type for a given extension degree.
+trait Poseidon2ProverForDegree<SC: StarkGenericConfig + 'static, const D: usize> {
+    type Prover: TableProver<SC>;
+
+    fn new(config: Poseidon2Config) -> Self::Prover;
+}
+
+impl<SC> Poseidon2ProverForDegree<SC, 2> for ()
 where
     SC: StarkGenericConfig + 'static + Send + Sync,
     Val<SC>: BinomiallyExtendable<2> + StarkField,
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
         Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
-    vec![Box::new(Poseidon2ProverD2(Poseidon2Prover::new(
-        config,
-        ConstraintProfile::Standard,
-    )))]
+    type Prover = Poseidon2ProverD2;
+
+    fn new(config: Poseidon2Config) -> Self::Prover {
+        Poseidon2ProverD2(Poseidon2Prover::new(config, ConstraintProfile::Standard))
+    }
 }
 
-/// Create Poseidon2 table provers for D=4 (e.g. BabyBear, KoalaBear).
-pub fn poseidon2_table_provers_d4<SC>(config: Poseidon2Config) -> Vec<Box<dyn TableProver<SC>>>
+impl<SC> Poseidon2ProverForDegree<SC, 4> for ()
 where
     SC: StarkGenericConfig + 'static + Send + Sync,
     Val<SC>: BinomiallyExtendable<4> + StarkField,
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
         Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
-    vec![Box::new(Poseidon2Prover::new(
+    type Prover = Poseidon2Prover;
+
+    fn new(config: Poseidon2Config) -> Self::Prover {
+        Poseidon2Prover::new(config, ConstraintProfile::Standard)
+    }
+}
+
+/// Create Poseidon2 table provers for a given extension degree `D`.
+pub fn poseidon2_table_provers<SC, const D: usize>(
+    config: Poseidon2Config,
+) -> Vec<Box<dyn TableProver<SC>>>
+where
+    SC: StarkGenericConfig + 'static,
+    (): Poseidon2ProverForDegree<SC, D>,
+    <() as Poseidon2ProverForDegree<SC, D>>::Prover: TableProver<SC> + 'static,
+{
+    vec![Box::new(<() as Poseidon2ProverForDegree<SC, D>>::new(
         config,
-        ConstraintProfile::Standard,
     ))]
 }
 
-/// Poseidon2 AIR builders for D=2 (e.g. Goldilocks).
-pub fn poseidon2_air_builders_d2<SC>() -> Vec<Box<dyn NpoAirBuilder<SC, 2>>>
+/// Poseidon2 AIR builders.
+pub fn poseidon2_air_builders<SC, const D: usize>() -> Vec<Box<dyn NpoAirBuilder<SC, D>>>
 where
     SC: StarkGenericConfig + 'static + Send + Sync,
-    Val<SC>: BinomiallyExtendable<2> + StarkField,
+    Val<SC>: StarkField,
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
         Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
-    vec![Box::new(Poseidon2AirBuilderD2)]
-}
-
-/// Poseidon2 AIR builders for D=4 (e.g. BabyBear, KoalaBear).
-pub fn poseidon2_air_builders_d4<SC>() -> Vec<Box<dyn NpoAirBuilder<SC, 4>>>
-where
-    SC: StarkGenericConfig + 'static + Send + Sync,
-    Val<SC>: BinomiallyExtendable<4> + StarkField,
-    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
-        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
-{
-    vec![Box::new(Poseidon2AirBuilderD4)]
+    vec![Box::new(Poseidon2AirBuilder::<D>)]
 }
 
 /// Returns a type-erased Recompose preprocessor.

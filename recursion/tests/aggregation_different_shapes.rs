@@ -166,7 +166,7 @@ fn test_aggregation_with_different_shapes() -> Result<(), VerificationError> {
         common,
         &lookup_gadget,
         Poseidon2Config::KoalaBearD4Width16,
-        &p3_circuit_prover::batch_stark_prover::poseidon2_table_provers_d4(
+        &p3_circuit_prover::batch_stark_prover::poseidon2_table_provers::<_, 4>(
             Poseidon2Config::KoalaBearD4Width16,
         ),
     )?;

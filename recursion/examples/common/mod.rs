@@ -9,9 +9,7 @@ pub use clap::{Args as ClapArgs, Parser, ValueEnum};
 pub use p3_challenger::DuplexChallenger;
 pub use p3_circuit::ops::{generate_poseidon2_trace, generate_recompose_trace};
 pub use p3_circuit::{CircuitBuilder, CircuitRunner, NonPrimitiveOpId};
-pub use p3_circuit_prover::batch_stark_prover::{
-    poseidon2_air_builders_d2, poseidon2_air_builders_d4,
-};
+pub use p3_circuit_prover::batch_stark_prover::poseidon2_air_builders;
 pub use p3_circuit_prover::common::{NpoPreprocessor, get_airs_and_degrees_with_prep};
 pub use p3_circuit_prover::{
     BatchStarkProver, CircuitProverData, ConstraintProfile, Poseidon2Preprocessor, TablePacking,
