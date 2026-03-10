@@ -122,6 +122,30 @@ This library aims at providing a certain
 number of non-primary chips so that projects can natively inherit from full recursive verifiers, which implies chips for FRI, MMCS path verification, etc. Specific applications can also build their own
 non-primitive chips and plug them at runtime.
 
+### Non-primitive operations (NPOs) in practice
+
+In the codebase, non-primitive chips are exposed as **non-primitive operations (NPOs)** that can be plugged into a circuit and executed at runtime. Conceptually, each NPO has three responsibilities:
+
+- A **circuit-level plugin** that describes how a high-level call to the operation is lowered into a concrete row in the execution IR.
+- A **runtime executor** that knows how to read input witnesses, compute outputs (and any associated private data), and write the results back.
+- Optionally, a **dedicated table and AIR** when we want to prove the internal structure of the operation instead of treating it as an opaque black box.
+
+On the circuit side, an NPO implements a small plugin interface that:
+
+- advertises a unique operation type identifier (for example, a toy cube operation uses a type id of the form `cube_simple/x_cubed`),
+- maps circuit expressions to `WitnessId`s and creates a non-primitive operation row in the IR,
+- exposes a configuration object used when building AIRs and preprocessed columns,
+- optionally provides a trace generator for its own dedicated table.
+
+At execution time, the recursion machine walks the IR and, for each non-primitive row, calls the operation’s executor. The executor:
+
+- receives the input and output `WitnessId`s for that row,
+- reads the input values from the `Witness` table,
+- performs the desired computation (possibly using additional private data),
+- writes the outputs back into the `Witness` table, and, if needed, updates preprocessed columns used by its table AIR.
+
+A simple end-to-end example of this pattern is the “cube” NPO used in the integration tests. It defines an operation `y = x^3` with one input and one output. Its circuit plugin registers a new NPO type id, lowers calls to `y = x^3` into non-primitive IR rows, and attaches a cube executor to those rows. The executor then reads `x` from the `Witness` table, computes `x^3`, and writes `y` back. In that example, the trace generator returns no dedicated table, so only the existing primitive chips appear in the STARK; more sophisticated NPOs (e.g. permutation or Merkle-path verifiers) can in addition expose their own tables and AIRs that are proven alongside the primitive chips.
+
 Going back to the previous example, prover and verifier can agree on the following logic for each chip:
 
 ```bash
