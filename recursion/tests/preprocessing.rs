@@ -356,6 +356,7 @@ fn test_batch_verifier_with_mixed_preprocessed() -> Result<(), VerificationError
         &pvs, // public inputs for each AIR
         &batch_proof,
         common_data,
+        &[],
     );
 
     runner

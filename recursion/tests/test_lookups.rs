@@ -89,7 +89,7 @@ fn test_arith_lookups() {
     let batch_proof = &batch_stark_proof.proof;
     let public_inputs = verifier_inputs
         .unwrap()
-        .pack_values(&pis, batch_proof, common);
+        .pack_values(&pis, batch_proof, common, &[]);
 
     assert_eq!(public_inputs.len(), expected_public_input_len);
     assert!(!public_inputs.is_empty());
@@ -192,7 +192,7 @@ fn test_wrong_multiplicities() {
     let batch_proof = &batch_stark_proof.proof;
     let public_inputs = verifier_inputs
         .unwrap()
-        .pack_values(&pis, batch_proof, common);
+        .pack_values(&pis, batch_proof, common, &[]);
 
     assert_eq!(public_inputs.len(), expected_public_input_len);
     assert!(!public_inputs.is_empty());
@@ -249,7 +249,7 @@ fn test_wrong_expected_cumulated() {
     let public_inputs =
         verifier_inputs
             .unwrap()
-            .pack_values(&pis, &batch_stark_proof.proof, common);
+            .pack_values(&pis, &batch_stark_proof.proof, common, &[]);
 
     assert_eq!(public_inputs.len(), expected_public_input_len);
     assert!(!public_inputs.is_empty());
@@ -333,7 +333,7 @@ fn test_inconsistent_lookup_name() {
     let public_inputs =
         verifier_inputs
             .unwrap()
-            .pack_values(&pis, &batch_stark_proof.proof, common);
+            .pack_values(&pis, &batch_stark_proof.proof, common, &[]);
 
     assert_eq!(public_inputs.len(), expected_public_input_len);
     assert!(!public_inputs.is_empty());

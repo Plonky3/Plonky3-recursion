@@ -175,50 +175,58 @@ impl<F: Field> CircuitBuilder<F> {
 
     /// Verify a 4-ary Merkle path in the circuit.
     ///
-    /// Uses 4-to-1 Poseidon2 compression. Consumes 2 index bits per level.
-    /// Allocates public inputs for the 3 siblings per level; the caller must set them from the proof.
+    /// Follows the native `MerkleTreeMmcs<_, _, _, _, 4, _>` verification logic,
+    /// supporting variable arity per level (4 or 2) and matrix injections.
     ///
-    /// Returns `(op_ids, sibling_inputs)` where `sibling_inputs[level]` contains 3 siblings
-    /// (each `rate_ext` elements) in order: [s0, s1, s2].
+    /// # Parameters
+    /// - `openings_expr`: Digests indexed by bit level. Index 0 is the leaf hash,
+    ///   non-empty entries at higher indices are injection hashes (matrices entering
+    ///   the tree at that height).
+    /// - `arity_schedule`: Arity (4 or 2) at each tree level, matching the native
+    ///   `MerkleTreeMmcs` schedule. Computed by `compute_4ary_arity_schedule`.
+    /// - `index_bits`: Merkle path direction bits.
+    /// - `root_expr`: Expected root digest.
+    ///
+    /// Returns `(op_ids, sibling_inputs)` where `sibling_inputs[level]` contains
+    /// allocated public inputs for siblings: `3 * rate_ext` elements for arity-4
+    /// levels, `rate_ext` for arity-2 levels.
     pub fn add_mmcs_verify_4ary(
         &mut self,
         permutation_config: Poseidon2Config,
         openings_expr: &[Vec<ExprId>],
+        arity_schedule: &[usize],
         index_bits: &[ExprId],
         root_expr: &[ExprId],
     ) -> Result<(Vec<NonPrimitiveOpId>, Vec<Vec<ExprId>>), CircuitBuilderError> {
         let rate_ext = permutation_config.rate_ext();
-        let path_depth = index_bits.len() / 2;
-        if index_bits.len() != path_depth * 2 {
-            return Err(CircuitBuilderError::MalformedCircuit {
-                details: "index_bits.len() must be even for 4-ary (2 bits per level)".to_string(),
-            });
-        }
+        let total_bits = index_bits.len();
 
-        let has_tail = openings_expr.len() > path_depth && !openings_expr[path_depth].is_empty();
-        if has_tail {
-            return Err(CircuitBuilderError::MalformedCircuit {
-                details: "4-ary MMCS verify does not yet support tail digest".to_string(),
-            });
-        }
-        let path_openings = &openings_expr[..path_depth];
-
-        if path_depth == 0 {
-            let leaf = openings_expr
-                .first()
-                .ok_or(CircuitBuilderError::MalformedCircuit {
-                    details: "4-ary path_depth=0 requires at least one opening".to_string(),
-                })?;
-            for (o, r) in leaf.iter().take(rate_ext).zip(root_expr.iter()) {
-                self.connect(*o, *r);
+        if arity_schedule.is_empty() {
+            if total_bits == 0 {
+                let leaf = openings_expr
+                    .first()
+                    .ok_or(CircuitBuilderError::MalformedCircuit {
+                        details: "4-ary path_depth=0 requires at least one opening".to_string(),
+                    })?;
+                for (o, r) in leaf.iter().take(rate_ext).zip(root_expr.iter()) {
+                    self.connect(*o, *r);
+                }
+                return Ok((Vec::new(), Vec::new()));
             }
-            return Ok((Vec::new(), Vec::new()));
+            return Err(CircuitBuilderError::MalformedCircuit {
+                details: "arity_schedule is empty but index_bits is non-empty".to_string(),
+            });
         }
 
-        let mut sibling_inputs = Vec::with_capacity(path_depth);
-        for _ in 0..path_depth {
-            let mut level_siblings = Vec::with_capacity(3 * rate_ext);
-            for _ in 0..3 {
+        let one = self.define_const(F::ONE);
+        let zero = self.define_const(F::ZERO);
+
+        // Allocate sibling public inputs per tree level.
+        let mut sibling_inputs = Vec::with_capacity(arity_schedule.len());
+        for &arity in arity_schedule {
+            let num_sibs = arity - 1; // 3 for arity-4, 1 for arity-2
+            let mut level_siblings = Vec::with_capacity(num_sibs * rate_ext);
+            for _ in 0..num_sibs {
                 for _ in 0..rate_ext {
                     level_siblings.push(self.alloc_public_input("mmcs_4ary_sibling"));
                 }
@@ -226,66 +234,117 @@ impl<F: Field> CircuitBuilder<F> {
             sibling_inputs.push(level_siblings);
         }
 
-        let one = self.define_const(F::ONE);
-        let mut current = vec![None; rate_ext];
-        let op_ids = Vec::new();
+        let mut current: Vec<Option<ExprId>> = vec![None; rate_ext];
+        let mut bit_idx: usize = 0;
 
-        for (level, row_digest) in path_openings.iter().enumerate() {
-            let bit0 = index_bits[2 * level];
-            let bit1 = index_bits[2 * level + 1];
-            let not_bit0 = self.sub(one, bit0);
-            let not_bit1 = self.sub(one, bit1);
-            let eq0 = self.mul(not_bit0, not_bit1);
-            let eq1 = self.mul(bit0, not_bit1);
-            let eq2 = self.mul(not_bit0, bit1);
-            let eq3 = self.mul(bit0, bit1);
-
-            let s0: Vec<ExprId> = (0..rate_ext).map(|j| sibling_inputs[level][j]).collect();
-            let s1: Vec<ExprId> = (0..rate_ext)
-                .map(|j| sibling_inputs[level][rate_ext + j])
-                .collect();
-            let s2: Vec<ExprId> = (0..rate_ext)
-                .map(|j| sibling_inputs[level][2 * rate_ext + j])
-                .collect();
-
-            let cur: Vec<ExprId> = if level == 0 {
-                let c: Vec<ExprId> = row_digest.iter().take(rate_ext).copied().collect();
-                if c.len() < rate_ext {
+        for (tree_level, &arity) in arity_schedule.iter().enumerate() {
+            // At the very first tree level, initialise the running digest from the leaf hash.
+            let cur: Vec<ExprId> = if tree_level == 0 {
+                let leaf = &openings_expr[0];
+                if leaf.len() < rate_ext {
                     return Err(CircuitBuilderError::MalformedCircuit {
                         details: format!(
-                            "4-ary level 0 row_digest has {} elements, need {}",
-                            c.len(),
+                            "4-ary leaf opening has {} elements, need {}",
+                            leaf.len(),
                             rate_ext
                         ),
                     });
                 }
-                c
+                leaf.iter().take(rate_ext).copied().collect()
             } else {
                 current.iter().map(|o| o.expect("current set")).collect()
             };
 
-            let mut c0 = Vec::with_capacity(rate_ext);
-            let mut c1 = Vec::with_capacity(rate_ext);
-            let mut c2 = Vec::with_capacity(rate_ext);
-            let mut c3 = Vec::with_capacity(rate_ext);
-            for j in 0..rate_ext {
-                let s01 = self.select(eq0, s0[j], s1[j]);
-                let s12 = self.select(eq1, s1[j], s2[j]);
-                let s02 = self.select(eq0, s1[j], s12);
-                c0.push(self.select(eq0, cur[j], s0[j]));
-                c1.push(self.select(eq1, cur[j], s01));
-                c2.push(self.select(eq2, cur[j], s02));
-                c3.push(self.select(eq3, cur[j], s2[j]));
-            }
-            let mut children = Vec::with_capacity(4 * rate_ext);
-            children.extend(c0);
-            children.extend(c1);
-            children.extend(c2);
-            children.extend(c3);
+            if arity == 4 {
+                // 4-ary compression: 2 index bits, 3 siblings
+                let bit0 = index_bits[bit_idx];
+                let bit1 = index_bits[bit_idx + 1];
+                let not_bit0 = self.sub(one, bit0);
+                let not_bit1 = self.sub(one, bit1);
+                let eq0 = self.mul(not_bit0, not_bit1);
+                let eq1 = self.mul(bit0, not_bit1);
+                let eq2 = self.mul(not_bit0, bit1);
+                let eq3 = self.mul(bit0, bit1);
 
-            let out = self.add_poseidon2_compress_4to1(&permutation_config, &children)?;
-            for (i, o) in out.into_iter().enumerate() {
-                current[i] = Some(o);
+                let s0: Vec<ExprId> = (0..rate_ext)
+                    .map(|j| sibling_inputs[tree_level][j])
+                    .collect();
+                let s1: Vec<ExprId> = (0..rate_ext)
+                    .map(|j| sibling_inputs[tree_level][rate_ext + j])
+                    .collect();
+                let s2: Vec<ExprId> = (0..rate_ext)
+                    .map(|j| sibling_inputs[tree_level][2 * rate_ext + j])
+                    .collect();
+
+                let mut c0 = Vec::with_capacity(rate_ext);
+                let mut c1 = Vec::with_capacity(rate_ext);
+                let mut c2 = Vec::with_capacity(rate_ext);
+                let mut c3 = Vec::with_capacity(rate_ext);
+                for j in 0..rate_ext {
+                    let s01 = self.select(eq0, s0[j], s1[j]);
+                    let s12 = self.select(eq1, s1[j], s2[j]);
+                    let s02 = self.select(eq0, s1[j], s12);
+                    c0.push(self.select(eq0, cur[j], s0[j]));
+                    c1.push(self.select(eq1, cur[j], s01));
+                    c2.push(self.select(eq2, cur[j], s02));
+                    c3.push(self.select(eq3, cur[j], s2[j]));
+                }
+                let mut children = Vec::with_capacity(4 * rate_ext);
+                children.extend(c0);
+                children.extend(c1);
+                children.extend(c2);
+                children.extend(c3);
+
+                let out = self.add_poseidon2_compress_4to1(&permutation_config, &children)?;
+                for (i, o) in out.into_iter().enumerate() {
+                    current[i] = Some(o);
+                }
+                bit_idx += 2;
+            } else {
+                // Binary compression: 1 index bit, 1 sibling, pad with zeros
+                let bit = index_bits[bit_idx];
+                let sibs = &sibling_inputs[tree_level];
+
+                let mut c0 = Vec::with_capacity(rate_ext);
+                let mut c1 = Vec::with_capacity(rate_ext);
+                for j in 0..rate_ext {
+                    c0.push(self.select(bit, sibs[j], cur[j]));
+                    c1.push(self.select(bit, cur[j], sibs[j]));
+                }
+                let mut children = Vec::with_capacity(4 * rate_ext);
+                children.extend(c0);
+                children.extend(c1);
+                for _ in 0..2 * rate_ext {
+                    children.push(zero);
+                }
+
+                let out = self.add_poseidon2_compress_4to1(&permutation_config, &children)?;
+                for (i, o) in out.into_iter().enumerate() {
+                    current[i] = Some(o);
+                }
+                bit_idx += 1;
+            }
+
+            // Handle matrix injection at the new height.
+            // After compression, bit_idx points to the height where shorter matrices
+            // may need to be merged (matching native compress_and_inject).
+            if bit_idx < openings_expr.len() && !openings_expr[bit_idx].is_empty() {
+                let inject_hash = &openings_expr[bit_idx];
+                let cur_after: Vec<ExprId> =
+                    current.iter().map(|o| o.expect("current set")).collect();
+
+                let mut inject_children = Vec::with_capacity(4 * rate_ext);
+                inject_children.extend(cur_after);
+                inject_children.extend(inject_hash.iter().take(rate_ext).copied());
+                for _ in 0..2 * rate_ext {
+                    inject_children.push(zero);
+                }
+
+                let out =
+                    self.add_poseidon2_compress_4to1(&permutation_config, &inject_children)?;
+                for (i, o) in out.into_iter().enumerate() {
+                    current[i] = Some(o);
+                }
             }
         }
 
@@ -294,6 +353,6 @@ impl<F: Field> CircuitBuilder<F> {
             self.connect(*o, *r);
         }
 
-        Ok((op_ids, sibling_inputs))
+        Ok((Vec::new(), sibling_inputs))
     }
 }

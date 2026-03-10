@@ -188,7 +188,7 @@ fn test_fibonacci_batch_verifier() {
     let expected_public_input_len = verification_circuit.public_flat_len;
 
     // Pack values using the builder
-    let public_inputs = verifier_inputs.pack_values(&pis, batch_proof, common);
+    let public_inputs = verifier_inputs.pack_values(&pis, batch_proof, common, &[]);
 
     assert_eq!(public_inputs.len(), expected_public_input_len);
     assert!(!public_inputs.is_empty());

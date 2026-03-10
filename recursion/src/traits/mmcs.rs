@@ -1,5 +1,7 @@
 //! Traits for recursive MMCS operations.
 
+use alloc::vec::Vec;
+
 use p3_commit::Mmcs;
 use p3_field::{ExtensionField, Field};
 
@@ -22,6 +24,10 @@ pub trait RecursiveMmcs<F: Field, EF: ExtensionField<F>> {
     ///
     /// Must implement `Recursive` with `Input` being the proof type from `Self::Input`.
     type Proof: Recursive<EF, Input = <Self::Input as Mmcs<F>>::Proof>;
+
+    fn extract_sibling_values_from_proof(_proof: &<Self::Input as Mmcs<F>>::Proof) -> Vec<EF> {
+        Vec::new()
+    }
 }
 
 /// Trait for the recursive version of an MMCS operating over the extension field.
@@ -42,4 +48,9 @@ pub trait RecursiveExtensionMmcs<F: Field, EF: ExtensionField<F>> {
     ///
     /// Must implement `Recursive` with `Input` being the proof type from `Self::Input`.
     type Proof: Recursive<EF, Input = <Self::Input as Mmcs<EF>>::Proof>;
+
+    /// Extract 4-ary sibling values from a Merkle proof for use as public inputs.
+    fn extract_sibling_values_from_proof(_proof: &<Self::Input as Mmcs<EF>>::Proof) -> Vec<EF> {
+        Vec::new()
+    }
 }

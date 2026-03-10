@@ -27,7 +27,7 @@ pub use p3_matrix::dense::RowMajorMatrix;
 pub use p3_merkle_tree::MerkleTreeMmcs;
 pub use p3_recursion::pcs::{
     HidingFriProofTargets, InputProofTargets, MerkleCapTargets, RecValMmcs,
-    set_fri_mmcs_private_data, set_hiding_fri_mmcs_private_data,
+    set_fri_mmcs_private_data, set_fri_mmcs_private_data_4ary, set_hiding_fri_mmcs_private_data,
 };
 pub use p3_recursion::traits::{RecursiveAir, RecursivePcs};
 pub use p3_recursion::verifier::VerificationError;
@@ -38,9 +38,7 @@ pub use p3_recursion::{
     build_and_prove_next_layer, build_next_layer_circuit, build_next_layer_prep, prove_next_layer,
     verify_batch_circuit,
 };
-pub use p3_symmetric::{
-    CompressionFunctionFromHasher, PaddingFreeSponge, TruncatedPermutation,
-};
+pub use p3_symmetric::{CompressionFunctionFromHasher, PaddingFreeSponge, TruncatedPermutation};
 pub use p3_uni_stark::{StarkConfig, StarkGenericConfig, Val};
 pub use rand::SeedableRng;
 pub use rand::rngs::SmallRng;
@@ -323,6 +321,7 @@ macro_rules! define_field_module_types {
             }
 
             fn set_fri_private_data(
+                &self,
                 runner: &mut CircuitRunner<Challenge>,
                 op_ids: &[NonPrimitiveOpId],
                 opening_proof: &Self::RawOpeningProof,
@@ -418,6 +417,7 @@ macro_rules! define_field_module_types {
             }
 
             fn set_fri_private_data(
+                &self,
                 runner: &mut CircuitRunner<Challenge>,
                 op_ids: &[NonPrimitiveOpId],
                 opening_proof: &Self::RawOpeningProof,
@@ -608,8 +608,11 @@ macro_rules! define_field_module_types_4ary {
                 >,
         {
             type Commitment = MerkleCapTargets<F, DIGEST_ELEMS>;
-            type InputProof =
-                InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, 4, MyHash, MyCompress4>>;
+            type InputProof = InputProofTargets<
+                F,
+                Challenge,
+                RecValMmcs<F, DIGEST_ELEMS, 4, MyHash, MyCompress4>,
+            >;
             type OpeningProof = InnerFri4;
             type RawOpeningProof = <MyPcs4 as Pcs<Challenge, Challenger>>::Proof;
             const DIGEST_ELEMS: usize = $digest_elems;
@@ -644,7 +647,11 @@ macro_rules! define_field_module_types_4ary {
                 &self,
             ) -> &<MyPcs4 as RecursivePcs<
                 ConfigWithFriParams4ary,
-                InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, 4, MyHash, MyCompress4>>,
+                InputProofTargets<
+                    F,
+                    Challenge,
+                    RecValMmcs<F, DIGEST_ELEMS, 4, MyHash, MyCompress4>,
+                >,
                 InnerFri4,
                 MerkleCapTargets<F, DIGEST_ELEMS>,
                 <MyPcs4 as Pcs<Challenge, Challenger>>::Domain,
@@ -668,22 +675,22 @@ macro_rules! define_field_module_types_4ary {
                 Challenge: p3_field::ExtensionField<F> + p3_field::BasedVectorSpace<F>,
                 F: p3_field::PrimeField64,
             {
-                let fp = &self.fri_verifier_params;
                 p3_recursion::pcs::extract_4ary_sibling_values_from_fri_proof::<
                     F,
                     Challenge,
                     ChallengeMmcs4,
                     MyMmcs4,
                     DIGEST_ELEMS,
-                >(opening_proof, fp.log_blowup, fp.log_final_poly_len)
+                >(opening_proof)
             }
 
             fn set_fri_private_data(
+                &self,
                 _runner: &mut CircuitRunner<Challenge>,
-                _op_ids: &[NonPrimitiveOpId],
+                op_ids: &[NonPrimitiveOpId],
                 _opening_proof: &Self::RawOpeningProof,
             ) -> Result<(), &'static str> {
-                Ok(())
+                set_fri_mmcs_private_data_4ary(op_ids)
             }
         }
 
@@ -721,7 +728,10 @@ macro_rules! define_field_module_types_4ary {
             )
         }
 
-        fn config_with_fri_params_4ary(fp: &FriParams, security_level: usize) -> ConfigWithFriParams4ary {
+        fn config_with_fri_params_4ary(
+            fp: &FriParams,
+            security_level: usize,
+        ) -> ConfigWithFriParams4ary {
             ConfigWithFriParams4ary {
                 config: Arc::new(create_config_4ary(fp, security_level)),
                 fri_verifier_params: create_fri_verifier_params_4ary(fp),

@@ -165,11 +165,7 @@ where
 
     /// Number of public values that should be excluded from the WitnessChecks lookup (e.g. 4-ary
     /// MMCS sibling values). When `Some(n)`, the last `n` Public table entries get multiplicity 0.
-    fn num_sibling_values(
-        &self,
-        _prev: &RecursionInput<'_, SC, A>,
-        _config: &SC,
-    ) -> Option<usize> {
+    fn num_sibling_values(&self, _prev: &RecursionInput<'_, SC, A>, _config: &SC) -> Option<usize> {
         None
     }
 }
@@ -626,9 +622,7 @@ where
         ));
     }
 
-    let num_sibling = backend
-        .num_sibling_values(left, config)
-        .unwrap_or(0)
+    let num_sibling = backend.num_sibling_values(left, config).unwrap_or(0)
         + backend.num_sibling_values(right, config).unwrap_or(0);
     let num_sibling_values = if num_sibling > 0 {
         Some(num_sibling)

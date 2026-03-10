@@ -178,7 +178,7 @@ fn test_aggregation_with_different_shapes() -> Result<(), VerificationError> {
 
     // Pack the public inputs.
     let mut public_inputs = left_verifier_inputs.pack_values(&pis, &uni_proof, &None);
-    public_inputs.extend(right_verifier_inputs.pack_values(&right_pis, batch_proof, common));
+    public_inputs.extend(right_verifier_inputs.pack_values(&right_pis, batch_proof, common, &[]));
     runner
         .set_public_inputs(&public_inputs)
         .map_err(VerificationError::Circuit)?;

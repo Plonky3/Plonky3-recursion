@@ -171,7 +171,7 @@ fn test_batch_verifier_zk_hiding_fri() -> Result<(), VerificationError> {
     )?;
 
     let verification_circuit = circuit_builder.build().unwrap();
-    let public_inputs = verifier_inputs.pack_values(&pvs, &batch_stark_proof, common);
+    let public_inputs = verifier_inputs.pack_values(&pvs, &batch_stark_proof, common, &[]);
     assert_eq!(public_inputs.len(), verification_circuit.public_flat_len);
 
     // --- Step 3: Run the verification circuit ---

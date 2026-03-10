@@ -1447,7 +1447,7 @@ where
 
                 let evals_for_mmcs = vec![evals.clone()];
 
-                let commit_phase_ops = if mmcs_arity.is_4ary() && log_folded_height % 2 == 0 {
+                let commit_phase_ops = if mmcs_arity.is_4ary() {
                     let (op_ids, _) = verify_batch_circuit_from_extension_opened_4ary::<F, EF>(
                         builder,
                         perm_config,
@@ -1458,7 +1458,7 @@ where
                     )
                     .map_err(|e| {
                         VerificationError::InvalidProofShape(format!(
-                            "Commit-phase MMCS verification failed for query {q}, phase {phase_idx}: {e:?}"
+                            "Commit-phase 4-ary MMCS verification failed for query {q}, phase {phase_idx}: {e:?}"
                         ))
                     })?;
                     op_ids

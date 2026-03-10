@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 use super::{FriVerifierParams, verify_fri_circuit};
 use crate::Target;
 use crate::challenger::CircuitChallenger;
+use crate::pcs::mmcs::convert_merkle_proof_to_siblings;
 use crate::traits::{
     ComsWithOpeningsTargets, Recursive, RecursiveChallenger, RecursiveExtensionMmcs, RecursiveMmcs,
     RecursivePcs,
@@ -457,6 +458,19 @@ where
     type Commitment = MerkleCapTargets<F, DIGEST_ELEMS>;
 
     type Proof = HashProofTargets<F, DIGEST_ELEMS>;
+
+    fn extract_sibling_values_from_proof(
+        proof: &<Self::Input as p3_commit::Mmcs<F>>::Proof,
+    ) -> Vec<EF> {
+        if ARITY == 4 {
+            convert_merkle_proof_to_siblings::<F, EF, DIGEST_ELEMS>(proof)
+                .into_iter()
+                .flat_map(|[e0, e1]| [e0, e1])
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        }
+    }
 }
 
 /// `Recursive` version of an `ExtensionFieldMmcs` where the inner `Mmcs` is a `MerkleTreeMmcs`.
@@ -479,6 +493,12 @@ impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize, RecValMmcs: Rec
     type Commitment = RecValMmcs::Commitment;
 
     type Proof = RecValMmcs::Proof;
+
+    fn extract_sibling_values_from_proof(
+        proof: &<Self::Input as p3_commit::Mmcs<EF>>::Proof,
+    ) -> Vec<EF> {
+        RecValMmcs::extract_sibling_values_from_proof(proof)
+    }
 }
 
 pub type InputProofTargets<F, EF, Inner> = Vec<BatchOpeningTargets<F, EF, Inner>>;

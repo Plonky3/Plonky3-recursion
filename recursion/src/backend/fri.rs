@@ -24,6 +24,7 @@ use p3_lookup::logup::LogUpGadget;
 use p3_uni_stark::{StarkGenericConfig, SymbolicExpressionExt, Val};
 
 use crate::ops::Poseidon2Config;
+use crate::pcs::fri::MmcsArity;
 use crate::public_inputs::{BatchStarkVerifierInputsBuilder, StarkVerifierInputsBuilder};
 use crate::recursion::{PcsRecursionBackend, RecursionInput, VerifierCircuitResult};
 use crate::traits::RecursiveAir;
@@ -31,7 +32,6 @@ use crate::verifier::{
     ObservableCommitment, VerificationError, verify_p3_batch_proof_circuit,
     verify_p3_uni_proof_circuit,
 };
-use crate::pcs::fri::MmcsArity;
 use crate::{ChallengerPermConfig, Recursive, RecursivePcs};
 
 /// Config that uses FRI with Merkle-tree MMCS and fixed constants (WIDTH, RATE, DIGEST_ELEMS).
@@ -112,7 +112,12 @@ where
 
     /// Set FRI Merkle path private data on the runner. Implement by calling
     /// [`crate::pcs::set_fri_mmcs_private_data`] with your concrete MMCS/hasher types.
+    ///
+    /// For 4-ary configs, commit-phase openings with odd `log_folded_height` fall back to
+    /// binary MMCS verification and need private data. Use
+    /// [`crate::pcs::set_fri_mmcs_private_data_4ary`] for those cases.
     fn set_fri_private_data(
+        &self,
         runner: &mut CircuitRunner<Self::Challenge>,
         op_ids: &[NonPrimitiveOpId],
         opening_proof: &Self::RawOpeningProof,
@@ -231,13 +236,14 @@ where
                     table_public_inputs,
                 },
             ) => {
-                let mut values = builder.pack_values(table_public_inputs, &proof.proof, common_data);
-                if config.mmcs_arity().is_4ary() {
-                    let siblings =
-                        SC::with_fri_opening_proof(prev, |op| config.extract_4ary_sibling_values(op));
-                    values.extend(siblings);
-                }
-                Ok(values)
+                let extra = if config.mmcs_arity().is_4ary() {
+                    SC::with_fri_opening_proof(prev, |opening_proof| {
+                        config.extract_4ary_sibling_values(opening_proof)
+                    })
+                } else {
+                    vec![]
+                };
+                Ok(builder.pack_values(table_public_inputs, &proof.proof, common_data, &extra))
             }
             _ => Err(VerificationError::InvalidProofShape(
                 "RecursionInput variant does not match verifier result".to_string(),
@@ -450,9 +456,8 @@ where
         op_ids: &[NonPrimitiveOpId],
         prev: &RecursionInput<'_, SC, A>,
     ) -> Result<(), &'static str> {
-        let _ = config;
         SC::with_fri_opening_proof(prev, |opening_proof| {
-            SC::set_fri_private_data(runner, op_ids, opening_proof)
+            config.set_fri_private_data(runner, op_ids, opening_proof)
         })
     }
 
@@ -483,16 +488,8 @@ where
         builders
     }
 
-    fn num_sibling_values(
-        &self,
-        prev: &RecursionInput<'_, SC, A>,
-        config: &SC,
-    ) -> Option<usize> {
-        if config.mmcs_arity().is_4ary() {
-            Some(SC::with_fri_opening_proof(prev, |op| config.extract_4ary_sibling_values(op).len()))
-        } else {
-            None
-        }
+    fn num_sibling_values(&self, _prev: &RecursionInput<'_, SC, A>, _config: &SC) -> Option<usize> {
+        None
     }
 }
 
@@ -552,9 +549,8 @@ where
         op_ids: &[NonPrimitiveOpId],
         prev: &RecursionInput<'_, SC, A>,
     ) -> Result<(), &'static str> {
-        let _ = config;
         SC::with_fri_opening_proof(prev, |opening_proof| {
-            SC::set_fri_private_data(runner, op_ids, opening_proof)
+            config.set_fri_private_data(runner, op_ids, opening_proof)
         })
     }
 
@@ -585,15 +581,7 @@ where
         builders
     }
 
-    fn num_sibling_values(
-        &self,
-        prev: &RecursionInput<'_, SC, A>,
-        config: &SC,
-    ) -> Option<usize> {
-        if config.mmcs_arity().is_4ary() {
-            Some(SC::with_fri_opening_proof(prev, |op| config.extract_4ary_sibling_values(op).len()))
-        } else {
-            None
-        }
+    fn num_sibling_values(&self, _prev: &RecursionInput<'_, SC, A>, _config: &SC) -> Option<usize> {
+        None
     }
 }

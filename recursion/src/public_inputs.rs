@@ -644,6 +644,7 @@ where
     /// - `air_public_values`: AIR public values for each instance.
     /// - `proof`: Actual batch proof.
     /// - `common`: Common data for the batch proof.
+    /// - `extra_proof_values`: Optional 4-ary MMCS sibling values to append (when using 4-ary Merkle).
     ///
     /// # Returns
     /// A flattened public input vector ready for the batch verifier circuit.
@@ -652,19 +653,18 @@ where
         air_public_values: &[Vec<Val<SC>>],
         proof: &BatchProof<SC>,
         common: &CommonData<SC>,
+        extra_proof_values: &[SC::Challenge],
     ) -> Vec<SC::Challenge>
     where
         Val<SC>: PrimeField64,
         SC::Challenge: BasedVectorSpace<Val<SC>> + From<Val<SC>>,
     {
-        // Extract extension-field values from the batch proof structure.
-        //
-        // The internal order matches the structure used when targets were created.
         let common_data = CommonDataTargets::<SC, Comm>::get_values(common);
         let proof_values = BatchProofTargets::<SC, Comm, OpeningProof>::get_values(proof);
-
-        // Combine AIR public values and proof values into a single public input vector.
-        construct_batch_stark_verifier_inputs(air_public_values, &proof_values, &common_data)
+        let mut result =
+            construct_batch_stark_verifier_inputs(air_public_values, &proof_values, &common_data);
+        result.extend(extra_proof_values.iter().copied());
+        result
     }
 }
 

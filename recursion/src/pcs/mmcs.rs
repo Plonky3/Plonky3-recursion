@@ -1,4 +1,3 @@
-use alloc::string::ToString;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::cmp::{Reverse, min};
@@ -320,8 +319,8 @@ where
 
 /// 4-ary variant of `verify_batch_circuit`. Uses 4-to-1 Poseidon2 compression.
 ///
-/// Returns `(op_ids, sibling_inputs)` where `sibling_inputs[level]` has 3 siblings
-/// (each `rate_ext` elements). The caller must set these as public inputs from the proof.
+/// Returns `(op_ids, sibling_inputs)` where `sibling_inputs[level]` contains
+/// siblings as public inputs (3 per arity-4 level, 1 per arity-2 level).
 pub fn verify_batch_circuit_4ary<F, EF>(
     circuit: &mut CircuitBuilder<EF>,
     permutation_config: Poseidon2Config,
@@ -354,11 +353,6 @@ where
 
     let max_height_log = index_bits.len();
     let path_depth = max_height_log - cap_height;
-    if !path_depth.is_multiple_of(2) {
-        return Err(CircuitBuilderError::MalformedCircuit {
-            details: "4-ary requires even path_depth (2 bits per level)".to_string(),
-        });
-    }
 
     let path_bits = &index_bits[..path_depth];
     let cap_index_bits = &index_bits[path_depth..];
@@ -371,7 +365,7 @@ where
         .sorted_by_key(|(_, dims)| Reverse(dims.height))
         .peekable();
 
-    let path_depth_4ary = path_depth / 2;
+    // Build formatted_digests for ALL bit levels (one per bit, not per 4-ary level).
     let digest_levels = path_depth + 1;
     let mut formatted_digests = vec![vec![]; digest_levels];
     for (i, digest) in formatted_digests.iter_mut().enumerate() {
@@ -394,13 +388,12 @@ where
         )?;
     }
 
-    let path_digests: Vec<Vec<Target>> = (0..path_depth_4ary)
-        .map(|j| formatted_digests[2 * j].clone())
-        .collect();
+    let arity_schedule = compute_4ary_arity_schedule(dimensions, max_height_log, cap_height);
 
     circuit.add_mmcs_verify_4ary(
         permutation_config,
-        &path_digests,
+        &formatted_digests,
+        &arity_schedule,
         path_bits,
         &selected_root,
     )
@@ -511,11 +504,6 @@ where
 
     let max_height_log = index_bits.len();
     let path_depth = max_height_log - cap_height;
-    if !path_depth.is_multiple_of(2) {
-        return Err(CircuitBuilderError::MalformedCircuit {
-            details: "4-ary requires even path_depth (2 bits per level)".to_string(),
-        });
-    }
 
     let path_bits = &index_bits[..path_depth];
     let cap_index_bits = &index_bits[path_depth..];
@@ -528,7 +516,6 @@ where
         .sorted_by_key(|(_, dims)| Reverse(dims.height))
         .peekable();
 
-    let path_depth_4ary = path_depth / 2;
     let digest_levels = path_depth + 1;
     let mut formatted_digests = vec![vec![]; digest_levels];
     for (i, digest) in formatted_digests.iter_mut().enumerate() {
@@ -547,13 +534,12 @@ where
             add_hash_extension_elements::<F, EF>(circuit, &permutation_config, &all_ext, true)?;
     }
 
-    let path_digests: Vec<Vec<Target>> = (0..path_depth_4ary)
-        .map(|j| formatted_digests[2 * j].clone())
-        .collect();
+    let arity_schedule = compute_4ary_arity_schedule(dimensions, max_height_log, cap_height);
 
     circuit.add_mmcs_verify_4ary(
         permutation_config,
-        &path_digests,
+        &formatted_digests,
+        &arity_schedule,
         path_bits,
         &selected_root,
     )
@@ -621,8 +607,6 @@ pub fn extract_4ary_sibling_values_from_fri_proof<
     const DIGEST_ELEMS: usize,
 >(
     fri_proof: &FriProof<EF, FriMmcs, F, Vec<BatchOpening<F, InputMmcs>>>,
-    log_blowup: usize,
-    log_final_poly_len: usize,
 ) -> Vec<EF>
 where
     F: Field,
@@ -630,43 +614,25 @@ where
     FriMmcs: Mmcs<EF, Proof = Vec<[F; DIGEST_ELEMS]>>,
     InputMmcs: Mmcs<F, Proof = Vec<[F; DIGEST_ELEMS]>>,
 {
-    let log_arities: Vec<usize> = fri_proof
-        .query_proofs
-        .first()
-        .map(|qp| {
-            qp.commit_phase_openings
-                .iter()
-                .map(|o| o.log_arity as usize)
-                .collect()
-        })
-        .unwrap_or_default();
-    let total_log_reduction: usize = log_arities.iter().sum();
-    let log_max_height = total_log_reduction + log_final_poly_len + log_blowup;
-
     let mut out = Vec::new();
     for query_proof in &fri_proof.query_proofs {
         for batch_opening in &query_proof.input_proof {
-            let siblings =
-                convert_merkle_proof_to_siblings::<F, EF, DIGEST_ELEMS>(&batch_opening.opening_proof);
+            let siblings = convert_merkle_proof_to_siblings::<F, EF, DIGEST_ELEMS>(
+                &batch_opening.opening_proof,
+            );
             for [e0, e1] in siblings {
                 out.push(e0);
                 out.push(e1);
             }
         }
-        let mut log_current_height = log_max_height;
-        for (phase_idx, phase_opening) in query_proof.commit_phase_openings.iter().enumerate() {
-            let log_arity = log_arities.get(phase_idx).copied().unwrap_or(0);
-            let log_folded_height = log_current_height.saturating_sub(log_arity);
-            if log_folded_height % 2 == 0 {
-                let siblings = convert_merkle_proof_to_siblings::<F, EF, DIGEST_ELEMS>(
-                    &phase_opening.opening_proof,
-                );
-                for [e0, e1] in siblings {
-                    out.push(e0);
-                    out.push(e1);
-                }
+        for phase_opening in &query_proof.commit_phase_openings {
+            let siblings = convert_merkle_proof_to_siblings::<F, EF, DIGEST_ELEMS>(
+                &phase_opening.opening_proof,
+            );
+            for [e0, e1] in siblings {
+                out.push(e0);
+                out.push(e1);
             }
-            log_current_height = log_folded_height;
         }
     }
     out
@@ -677,7 +643,7 @@ where
 /// Each sibling hash in the proof has `DIGEST_ELEMS` base field elements.
 /// These are packed into extension field elements (EF::DIMENSION base elements per extension element).
 /// The result is `rate_ext` extension field elements per sibling.
-fn convert_merkle_proof_to_siblings<F, EF, const DIGEST_ELEMS: usize>(
+pub(crate) fn convert_merkle_proof_to_siblings<F, EF, const DIGEST_ELEMS: usize>(
     opening_proof: &[[F; DIGEST_ELEMS]],
 ) -> Vec<[EF; 2]>
 where
@@ -789,6 +755,96 @@ where
     }
 
     Ok(())
+}
+
+/// Set private data for FRI MMCS verification in 4-ary mode.
+///
+/// In 4-ary mode, all Merkle siblings (both input batch and commit-phase) are public inputs.
+/// The circuit uses `add_mmcs_verify_4ary` which doesn't generate any merkle-path op_ids.
+/// This function simply asserts that no op_ids need private data.
+pub fn set_fri_mmcs_private_data_4ary(op_ids: &[NonPrimitiveOpId]) -> Result<(), &'static str> {
+    if !op_ids.is_empty() {
+        return Err("4ary: expected no op_ids needing private data, but got some");
+    }
+    Ok(())
+}
+
+/// Replicate the native `MerkleTreeMmcs` padding helper:
+/// round up to a multiple of `n`, with special handling for small values.
+const fn padded_len_4ary(raw_len: usize, n: usize) -> usize {
+    if raw_len <= 1 {
+        raw_len
+    } else if raw_len >= n {
+        raw_len.div_ceil(n) * n
+    } else {
+        n
+    }
+}
+
+/// Compute the arity schedule for a 4-ary Merkle tree, matching the native
+/// `MerkleTreeMmcs<_, _, _, _, 4, _>` logic.
+///
+/// Returns a `Vec<usize>` where each entry is 4 (full 4-ary step, consuming
+/// 2 index bits) or 2 (binary step, consuming 1 index bit). The sum of bits
+/// consumed equals `max_height_log - cap_height`.
+pub fn compute_4ary_arity_schedule(
+    dimensions: &[Dimensions],
+    max_height_log: usize,
+    cap_height: usize,
+) -> Vec<usize> {
+    const N: usize = 4;
+    let target_bits = max_height_log - cap_height;
+
+    if target_bits == 0 || dimensions.is_empty() {
+        return Vec::new();
+    }
+
+    let max_height = dimensions.iter().map(|d| d.height).max().unwrap_or(1);
+    let leaf_height_npt = max_height.next_power_of_two();
+
+    let mut curr_height_padded = padded_len_4ary(max_height, N);
+
+    // Collect unique next-power-of-two heights for non-leaf matrices
+    let mut remaining_npts: Vec<usize> = dimensions
+        .iter()
+        .map(|d| d.height.next_power_of_two())
+        .filter(|&npt| npt != leaf_height_npt)
+        .sorted_by_key(|h| Reverse(*h))
+        .dedup()
+        .collect();
+
+    let mut schedule = Vec::new();
+    let mut total_bits = 0;
+
+    while total_bits < target_bits {
+        let step = if curr_height_padded < N {
+            2
+        } else {
+            let n_ary_target = curr_height_padded / N;
+            let has_intermediate = remaining_npts.iter().any(|&npt| npt > n_ary_target);
+            if has_intermediate { 2 } else { N }
+        };
+
+        // Cap: if step would overshoot, use binary
+        let bits_for_step = if step == N { 2 } else { 1 };
+        let step = if total_bits + bits_for_step > target_bits {
+            2
+        } else {
+            step
+        };
+
+        schedule.push(step);
+        total_bits += if step == N { 2 } else { 1 };
+
+        let logical_next = curr_height_padded / step;
+        curr_height_padded = padded_len_4ary(logical_next, N);
+
+        // Remove injected heights
+        let logical_next_npt = logical_next.next_power_of_two();
+        remaining_npts.retain(|&npt| npt != logical_next_npt);
+    }
+
+    schedule
 }
 
 /// [HidingFriPcs](p3_fri::HidingFriPcs) wraps the inner FRI proof as
