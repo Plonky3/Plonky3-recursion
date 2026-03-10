@@ -1,3 +1,4 @@
+use alloc::string::ToString;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::cmp::{Reverse, min};
@@ -317,6 +318,90 @@ where
     )
 }
 
+/// 4-ary variant of `verify_batch_circuit`. Uses 4-to-1 Poseidon2 compression.
+///
+/// Returns `(op_ids, sibling_inputs)` where `sibling_inputs[level]` has 3 siblings
+/// (each `rate_ext` elements). The caller must set these as public inputs from the proof.
+pub fn verify_batch_circuit_4ary<F, EF>(
+    circuit: &mut CircuitBuilder<EF>,
+    permutation_config: Poseidon2Config,
+    commitment_cap: &[Vec<Target>],
+    dimensions: &[Dimensions],
+    index_bits: &[Target],
+    opened_base_coeffs: &[Vec<Target>],
+) -> Result<(Vec<NonPrimitiveOpId>, Vec<Vec<Target>>), CircuitBuilderError>
+where
+    F: Field + TwoAdicField + PrimeField64,
+    EF: ExtensionField<F>,
+{
+    if dimensions.len() != opened_base_coeffs.len() {
+        return Err(CircuitBuilderError::WrongBatchSize {
+            expected: dimensions.len(),
+            got: opened_base_coeffs.len(),
+        });
+    }
+
+    assert!(
+        !commitment_cap.is_empty(),
+        "commitment cap must have at least one entry"
+    );
+
+    let cap_height = if commitment_cap.len() == 1 {
+        0
+    } else {
+        log2_strict_usize(commitment_cap.len())
+    };
+
+    let max_height_log = index_bits.len();
+    let path_depth = max_height_log - cap_height;
+    if !path_depth.is_multiple_of(2) {
+        return Err(CircuitBuilderError::MalformedCircuit {
+            details: "4-ary requires even path_depth (2 bits per level)".to_string(),
+        });
+    }
+
+    let path_bits = &index_bits[..path_depth];
+    let cap_index_bits = &index_bits[path_depth..];
+
+    let selected_root = select_cap_entry(circuit, commitment_cap, cap_index_bits);
+
+    let mut heights_tallest_first = dimensions
+        .iter()
+        .enumerate()
+        .sorted_by_key(|(_, dims)| Reverse(dims.height))
+        .peekable();
+
+    let path_depth_4ary = path_depth / 2;
+    let digest_levels = path_depth_4ary + 1;
+    let mut formatted_digests = vec![vec![]; digest_levels];
+    for (i, digest) in formatted_digests.iter_mut().enumerate() {
+        let curr_height = 1 << (2 * (path_depth_4ary.saturating_sub(i)));
+
+        let all_base_coeffs: Vec<Target> = heights_tallest_first
+            .peeking_take_while(|(_, dims)| dims.height.next_power_of_two() == curr_height)
+            .flat_map(|(mat_idx, _)| opened_base_coeffs[mat_idx].clone())
+            .collect();
+
+        if all_base_coeffs.is_empty() {
+            continue;
+        }
+
+        *digest = add_hash_base_coeffs_overwrite::<F, EF>(
+            circuit,
+            &permutation_config,
+            &all_base_coeffs,
+            true,
+        )?;
+    }
+
+    circuit.add_mmcs_verify_4ary(
+        permutation_config,
+        &formatted_digests,
+        path_bits,
+        &selected_root,
+    )
+}
+
 /// Like `verify_batch_circuit` but opened values are already extension elements (no decompose).
 /// Use for FRI commit-phase where evals are extension and only the challenger needs base form.
 pub fn verify_batch_circuit_from_extension_opened<F, EF>(
@@ -608,8 +693,8 @@ mod test {
     use p3_poseidon2_circuit_air::KoalaBearD4Width16;
     use p3_test_utils::koala_bear_params::*;
     use p3_util::log2_ceil_usize;
-    use rand::SeedableRng;
     use rand::rngs::SmallRng;
+    use rand::{Rng, SeedableRng};
     use tracing_forest::ForestLayer;
     use tracing_forest::util::LevelFilter;
     use tracing_subscriber::layer::SubscriberExt;
@@ -1442,6 +1527,107 @@ mod test {
             3, // 4 rows, 3 columns
         );
         test_lifted_openings(vec![mat1, mat2]);
+    }
+
+    /// Test that the 4-ary MMCS verify circuit builds and runs with synthetic data.
+    #[test]
+    fn verify_batch_circuit_4ary_builds_and_runs() {
+        init_logger();
+        let mut rng = SmallRng::seed_from_u64(77);
+        let perm = default_koalabear_poseidon2_16();
+        let hash = MyHash::new(perm.clone());
+
+        let rate_ext = 2;
+        let ext_degree = 4;
+        let leaf_base: Vec<F> = (0..rate_ext * ext_degree)
+            .map(|_| F::from_u64(rng.next_u64() % 1000))
+            .collect();
+        let leaf_digest = hash.hash_iter(leaf_base.clone());
+
+        let s0_digest = hash.hash_iter(
+            (0..rate_ext * ext_degree)
+                .map(|_| F::from_u64(rng.next_u64() % 1000))
+                .collect::<Vec<_>>(),
+        );
+        let s1_digest = hash.hash_iter(
+            (0..rate_ext * ext_degree)
+                .map(|_| F::from_u64(rng.next_u64() % 1000))
+                .collect::<Vec<_>>(),
+        );
+        let s2_digest = hash.hash_iter(
+            (0..rate_ext * ext_degree)
+                .map(|_| F::from_u64(rng.next_u64() % 1000))
+                .collect::<Vec<_>>(),
+        );
+
+        let index = 0u32;
+        let children_flat: Vec<F> = [
+            leaf_digest.as_slice(),
+            s0_digest.as_slice(),
+            s1_digest.as_slice(),
+            s2_digest.as_slice(),
+        ]
+        .into_iter()
+        .flatten()
+        .cloned()
+        .collect();
+        let root_digest = hash.hash_iter(children_flat);
+
+        let mut builder = CircuitBuilder::<CF>::new();
+        let permutation_config = Poseidon2Config::KoalaBearD4Width16;
+        builder.enable_poseidon2_perm::<KoalaBearD4Width16, _>(
+            generate_poseidon2_trace::<CF, KoalaBearD4Width16>,
+            perm,
+        );
+        builder.enable_recompose::<F>(generate_recompose_trace::<F, CF>);
+
+        let dimensions = vec![Dimensions {
+            height: 4,
+            width: 1,
+        }];
+        let opened_base_coeffs: Vec<Vec<_>> =
+            vec![leaf_base.iter().map(|_| builder.public_input()).collect()];
+        let cap_targets: Vec<_> = (0..rate_ext).map(|_| builder.public_input()).collect();
+        let commitment_cap = vec![cap_targets];
+        let index_bits = vec![
+            builder.alloc_public_input("b0"),
+            builder.alloc_public_input("b1"),
+        ];
+
+        let result = verify_batch_circuit_4ary::<F, CF>(
+            &mut builder,
+            permutation_config,
+            &commitment_cap,
+            &dimensions,
+            &index_bits,
+            &opened_base_coeffs,
+        );
+
+        let (_op_ids, sibling_inputs) = result.unwrap();
+        assert_eq!(sibling_inputs.len(), 1);
+        assert_eq!(sibling_inputs[0].len(), 3 * rate_ext);
+
+        let circuit = builder.build().unwrap();
+        assert_eq!(circuit.public_flat_len, 18);
+
+        let mut runner = circuit.runner();
+
+        let mut public_inputs: Vec<CF> = leaf_base.iter().map(|&b| CF::from(b)).collect();
+        public_inputs.extend(
+            root_digest
+                .chunks(ext_degree)
+                .map(|c| CF::from_basis_coefficients_slice(c).unwrap()),
+        );
+        public_inputs.push(CF::from_bool(index & 1 != 0));
+        public_inputs.push(CF::from_bool((index >> 1) & 1 != 0));
+        for s in [&s0_digest, &s1_digest, &s2_digest] {
+            for chunk in s.chunks(ext_degree) {
+                public_inputs.push(CF::from_basis_coefficients_slice(chunk).unwrap());
+            }
+        }
+
+        runner.set_public_inputs(&public_inputs).unwrap();
+        runner.run().unwrap();
     }
 
     /// Test with very small column widths (1 column) - edge case from recursive_fibonacci -n 1

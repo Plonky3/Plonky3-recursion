@@ -84,4 +84,8 @@ pub enum CircuitBuilderError {
     /// Invalid dimension: expected a specific number of elements.
     #[error("Invalid dimension: expected {expected}, got {actual}")]
     InvalidDimension { expected: usize, actual: usize },
+
+    /// Malformed circuit structure.
+    #[error("Malformed circuit: {details}")]
+    MalformedCircuit { details: String },
 }

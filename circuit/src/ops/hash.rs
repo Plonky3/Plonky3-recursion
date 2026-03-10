@@ -57,6 +57,25 @@ impl<F: Field> CircuitBuilder<F> {
             })
             .collect()
     }
+
+    /// Compress 4 digests into 1 using Poseidon2 sponge.
+    ///
+    /// Each digest has `rate_ext` extension elements. The 4 digests are concatenated
+    /// and hashed via the sponge; the output is the first `rate_ext` elements.
+    /// Matches the structure of 4-to-1 Merkle compression for N-ary trees.
+    pub fn add_poseidon2_compress_4to1(
+        &mut self,
+        poseidon2_config: &Poseidon2Config,
+        digests: &[ExprId],
+    ) -> Result<Vec<ExprId>, CircuitBuilderError> {
+        let rate_ext = poseidon2_config.rate_ext();
+        debug_assert_eq!(
+            digests.len(),
+            4 * rate_ext,
+            "4 digests × rate_ext elements each"
+        );
+        self.add_hash_slice(poseidon2_config, digests, true)
+    }
 }
 
 #[cfg(test)]
@@ -215,6 +234,63 @@ mod tests {
         runner.set_public_inputs(&public_inputs).unwrap();
 
         // This will panic with WitnessConflict because circuit hash != native hash
+        runner.run().unwrap();
+    }
+
+    #[test]
+    fn test_poseidon2_compress_4to1() {
+        let perm = default_babybear_poseidon2_16();
+        let hasher = MyHash::new(perm.clone());
+
+        let rate_ext = 2;
+        let digest_elems = 8;
+        let four_digests_flat: Vec<F> = (0..4 * digest_elems)
+            .map(|i| F::from_u64(i as u64 + 100))
+            .collect();
+        let expected = hasher.hash_iter(four_digests_flat.clone());
+
+        let mut builder = CircuitBuilder::<CF>::new();
+        builder.enable_poseidon2_perm::<DummyParams, _>(
+            generate_poseidon2_trace::<CF, DummyParams>,
+            perm,
+        );
+        builder.enable_recompose::<F>(generate_recompose_trace::<F, CF>);
+
+        let input_exprs: Vec<ExprId> = four_digests_flat
+            .chunks(<CF as BasedVectorSpace<F>>::DIMENSION)
+            .map(|_| builder.public_input())
+            .collect();
+        let digests: Vec<ExprId> = input_exprs.iter().take(4 * rate_ext).copied().collect();
+
+        let outputs = builder
+            .add_poseidon2_compress_4to1(&Poseidon2Config::BabyBearD4Width16, &digests)
+            .unwrap();
+
+        let out0_pi = builder.public_input();
+        let out1_pi = builder.public_input();
+        builder.connect(outputs[0], out0_pi);
+        builder.connect(outputs[1], out1_pi);
+
+        let circuit = builder.build().unwrap();
+        let mut runner = circuit.runner();
+        let mut public_inputs: Vec<CF> = four_digests_flat
+            .chunks(<CF as BasedVectorSpace<F>>::DIMENSION)
+            .map(|chunk| {
+                let c: Vec<F> = chunk
+                    .iter()
+                    .cloned()
+                    .chain(iter::repeat(F::ZERO))
+                    .take(<CF as BasedVectorSpace<F>>::DIMENSION)
+                    .collect();
+                CF::from_basis_coefficients_slice(&c).unwrap()
+            })
+            .collect();
+        let expected_limb0 = CF::from_basis_coefficients_slice(&expected[0..4]).unwrap();
+        let expected_limb1 = CF::from_basis_coefficients_slice(&expected[4..8]).unwrap();
+        public_inputs.push(expected_limb0);
+        public_inputs.push(expected_limb1);
+        runner.set_public_inputs(&public_inputs).unwrap();
+
         runner.run().unwrap();
     }
 }

@@ -91,7 +91,7 @@ fn test_goldilocks_fibonacci_verifier() -> Result<(), VerificationError> {
         FibonacciAir,
         MyConfig,
         MerkleCapTargets<F, DIGEST_ELEMS>,
-        InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>>,
+        InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, 2, MyHash, MyCompress>>,
         InnerFri,
         _,
         WIDTH,

@@ -126,6 +126,14 @@ struct Args {
 
     #[arg(long, default_value_t = false, help = "Enable ZK mode (HidingFriPcs)")]
     pub zk: bool,
+
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = MerkleArity::Binary2,
+        help = "Merkle tree arity (Binary2 = default, Quaternary4 = 4-to-1 compression)"
+    )]
+    pub merkle_arity: MerkleArity,
 }
 
 impl Args {

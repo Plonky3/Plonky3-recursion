@@ -425,8 +425,12 @@ impl<F: Field, EF: ExtensionField<F>> Recursive<EF> for Witness<F> {
     }
 }
 
+/// Type alias for binary (arity-2) RecValMmcs.
+#[allow(dead_code)]
+pub type RecValMmcs2<F, const DIGEST_ELEMS: usize, H, C> = RecValMmcs<F, DIGEST_ELEMS, 2, H, C>;
+
 /// `Recursive` version of a `MerkleTreeMmcs` where the leaf and digest elements are base field values.
-pub struct RecValMmcs<F: Field, const DIGEST_ELEMS: usize, H, C>
+pub struct RecValMmcs<F: Field, const DIGEST_ELEMS: usize, const ARITY: usize, H, C>
 where
     H: CryptographicHasher<F, [F; DIGEST_ELEMS]>
         + CryptographicHasher<F::Packing, [F::Packing; DIGEST_ELEMS]>
@@ -437,18 +441,18 @@ where
     _phantom: PhantomData<F>,
 }
 
-impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize, H, C> RecursiveMmcs<F, EF>
-    for RecValMmcs<F, DIGEST_ELEMS, H, C>
+impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize, const ARITY: usize, H, C>
+    RecursiveMmcs<F, EF> for RecValMmcs<F, DIGEST_ELEMS, ARITY, H, C>
 where
     H: CryptographicHasher<F, [F; DIGEST_ELEMS]>
         + CryptographicHasher<F::Packing, [F::Packing; DIGEST_ELEMS]>
         + Sync,
-    C: PseudoCompressionFunction<[F; DIGEST_ELEMS], 2>
-        + PseudoCompressionFunction<[F::Packing; DIGEST_ELEMS], 2>
+    C: PseudoCompressionFunction<[F; DIGEST_ELEMS], ARITY>
+        + PseudoCompressionFunction<[F::Packing; DIGEST_ELEMS], ARITY>
         + Sync,
     [F; DIGEST_ELEMS]: Serialize + for<'a> Deserialize<'a>,
 {
-    type Input = MerkleTreeMmcs<F::Packing, F::Packing, H, C, 2, DIGEST_ELEMS>;
+    type Input = MerkleTreeMmcs<F::Packing, F::Packing, H, C, ARITY, DIGEST_ELEMS>;
 
     type Commitment = MerkleCapTargets<F, DIGEST_ELEMS>;
 

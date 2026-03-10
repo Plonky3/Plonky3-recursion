@@ -118,6 +118,14 @@ struct Args {
 
     #[arg(long, default_value_t = false, help = "Enable ZK mode (HidingFriPcs)")]
     pub zk: bool,
+
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = MerkleArity::Binary2,
+        help = "Merkle tree arity (Binary2 = default, Quaternary4 = 4-to-1 compression)"
+    )]
+    pub merkle_arity: MerkleArity,
 }
 
 impl Args {
@@ -152,6 +160,13 @@ fn main() {
         "Recursively proving {} Fibonacci iterations with field {:?}",
         args.n, args.field
     );
+
+    if matches!(args.merkle_arity, MerkleArity::Quaternary4) {
+        tracing::warn!(
+            "Quaternary4 Merkle arity selected; native 4-ary MMCS requires wider Poseidon2. \
+             Using binary config for now. Use verify_batch_circuit_4ary when native supports it."
+        );
+    }
 
     match args.field {
         FieldOption::KoalaBear => koala_bear::run(

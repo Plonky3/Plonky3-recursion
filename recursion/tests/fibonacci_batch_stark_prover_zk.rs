@@ -40,9 +40,9 @@ type InnerFriZk = HidingFriProofTargets<
         F,
         Challenge,
         DIGEST_ELEMS,
-        RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>,
+        RecValMmcs<F, DIGEST_ELEMS, 2, MyHash, MyCompress>,
     >,
-    InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>>,
+    InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, 2, MyHash, MyCompress>>,
     Witness<F>,
 >;
 

@@ -172,4 +172,106 @@ impl<F: Field> CircuitBuilder<F> {
         }
         Ok(op_ids)
     }
+
+    /// Verify a 4-ary Merkle path in the circuit.
+    ///
+    /// Uses 4-to-1 Poseidon2 compression. Consumes 2 index bits per level.
+    /// Allocates public inputs for the 3 siblings per level; the caller must set them from the proof.
+    ///
+    /// Returns `(op_ids, sibling_inputs)` where `sibling_inputs[level]` contains 3 siblings
+    /// (each `rate_ext` elements) in order: [s0, s1, s2].
+    pub fn add_mmcs_verify_4ary(
+        &mut self,
+        permutation_config: Poseidon2Config,
+        openings_expr: &[Vec<ExprId>],
+        index_bits: &[ExprId],
+        root_expr: &[ExprId],
+    ) -> Result<(Vec<NonPrimitiveOpId>, Vec<Vec<ExprId>>), CircuitBuilderError> {
+        let rate_ext = permutation_config.rate_ext();
+        let path_depth = index_bits.len() / 2;
+        if index_bits.len() != path_depth * 2 {
+            return Err(CircuitBuilderError::MalformedCircuit {
+                details: "index_bits.len() must be even for 4-ary (2 bits per level)".to_string(),
+            });
+        }
+
+        let has_tail = openings_expr.len() > path_depth && !openings_expr[path_depth].is_empty();
+        if has_tail {
+            return Err(CircuitBuilderError::MalformedCircuit {
+                details: "4-ary MMCS verify does not yet support tail digest".to_string(),
+            });
+        }
+        let path_openings = &openings_expr[..path_depth];
+
+        let mut sibling_inputs = Vec::with_capacity(path_depth);
+        for _ in 0..path_depth {
+            let mut level_siblings = Vec::with_capacity(3 * rate_ext);
+            for _ in 0..3 {
+                for _ in 0..rate_ext {
+                    level_siblings.push(self.alloc_public_input("mmcs_4ary_sibling"));
+                }
+            }
+            sibling_inputs.push(level_siblings);
+        }
+
+        let one = self.define_const(F::ONE);
+        let mut current = vec![None; rate_ext];
+        let op_ids = Vec::new();
+
+        for (level, row_digest) in path_openings.iter().enumerate() {
+            let bit0 = index_bits[2 * level];
+            let bit1 = index_bits[2 * level + 1];
+            let not_bit0 = self.sub(one, bit0);
+            let not_bit1 = self.sub(one, bit1);
+            let eq0 = self.mul(not_bit0, not_bit1);
+            let eq1 = self.mul(bit0, not_bit1);
+            let eq2 = self.mul(not_bit0, bit1);
+            let eq3 = self.mul(bit0, bit1);
+
+            let s0: Vec<ExprId> = (0..rate_ext).map(|j| sibling_inputs[level][j]).collect();
+            let s1: Vec<ExprId> = (0..rate_ext)
+                .map(|j| sibling_inputs[level][rate_ext + j])
+                .collect();
+            let s2: Vec<ExprId> = (0..rate_ext)
+                .map(|j| sibling_inputs[level][2 * rate_ext + j])
+                .collect();
+
+            let cur: Vec<ExprId> = if level == 0 {
+                row_digest.iter().take(rate_ext).copied().collect()
+            } else {
+                current.iter().map(|o| o.expect("current set")).collect()
+            };
+
+            let mut c0 = Vec::with_capacity(rate_ext);
+            let mut c1 = Vec::with_capacity(rate_ext);
+            let mut c2 = Vec::with_capacity(rate_ext);
+            let mut c3 = Vec::with_capacity(rate_ext);
+            for j in 0..rate_ext {
+                let s01 = self.select(eq0, s0[j], s1[j]);
+                let s12 = self.select(eq1, s1[j], s2[j]);
+                let s02 = self.select(eq0, s1[j], s12);
+                c0.push(self.select(eq0, cur[j], s0[j]));
+                c1.push(self.select(eq1, cur[j], s01));
+                c2.push(self.select(eq2, cur[j], s02));
+                c3.push(self.select(eq3, cur[j], s2[j]));
+            }
+            let mut children = Vec::with_capacity(4 * rate_ext);
+            children.extend(c0);
+            children.extend(c1);
+            children.extend(c2);
+            children.extend(c3);
+
+            let out = self.add_poseidon2_compress_4to1(&permutation_config, &children)?;
+            for (i, o) in out.into_iter().enumerate() {
+                current[i] = Some(o);
+            }
+        }
+
+        let output: Vec<ExprId> = current.iter().map(|o| o.expect("output set")).collect();
+        for (o, r) in output.iter().zip(root_expr.iter()) {
+            self.connect(*o, *r);
+        }
+
+        Ok((op_ids, sibling_inputs))
+    }
 }

@@ -23,12 +23,12 @@ pub(crate) type InnerFriGeneric<MyConfig, MyHash, MyCompress, const DIGEST_ELEMS
             Val<MyConfig>,
             <MyConfig as StarkGenericConfig>::Challenge,
             DIGEST_ELEMS,
-            RecValMmcs<Val<MyConfig>, DIGEST_ELEMS, MyHash, MyCompress>,
+            RecValMmcs<Val<MyConfig>, DIGEST_ELEMS, 2, MyHash, MyCompress>,
         >,
         InputProofTargets<
             Val<MyConfig>,
             <MyConfig as StarkGenericConfig>::Challenge,
-            RecValMmcs<Val<MyConfig>, DIGEST_ELEMS, MyHash, MyCompress>,
+            RecValMmcs<Val<MyConfig>, DIGEST_ELEMS, 2, MyHash, MyCompress>,
         >,
         Witness<Val<MyConfig>>,
     >;

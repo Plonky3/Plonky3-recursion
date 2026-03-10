@@ -78,6 +78,16 @@ pub enum FieldOption {
     Goldilocks,
 }
 
+/// Merkle tree arity for recursion configs.
+#[derive(Debug, Clone, Copy, Default, ValueEnum)]
+pub enum MerkleArity {
+    /// Binary (2-ary) Merkle trees. Default, fully supported.
+    #[default]
+    Binary2,
+    /// Quaternary (4-ary) Merkle trees. Requires wider Poseidon2 (rate ≥ 4).
+    Quaternary4,
+}
+
 pub fn default_goldilocks_poseidon2_8() -> p3_goldilocks::Poseidon2Goldilocks<8> {
     use rand::SeedableRng;
     let mut rng = rand::rngs::SmallRng::seed_from_u64(1);
@@ -156,9 +166,9 @@ macro_rules! define_field_module_types {
                 F,
                 Challenge,
                 DIGEST_ELEMS,
-                RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>,
+                RecValMmcs<F, DIGEST_ELEMS, 2, MyHash, MyCompress>,
             >,
-            InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>>,
+            InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, 2, MyHash, MyCompress>>,
             p3_recursion::pcs::Witness<F>,
         >;
 
@@ -175,9 +185,9 @@ macro_rules! define_field_module_types {
                 F,
                 Challenge,
                 DIGEST_ELEMS,
-                RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>,
+                RecValMmcs<F, DIGEST_ELEMS, 2, MyHash, MyCompress>,
             >,
-            InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>>,
+            InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, 2, MyHash, MyCompress>>,
             p3_recursion::pcs::Witness<F>,
         >;
 
@@ -239,7 +249,7 @@ macro_rules! define_field_module_types {
                     InputProofTargets<
                         F,
                         Challenge,
-                        RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>,
+                        RecValMmcs<F, DIGEST_ELEMS, 2, MyHash, MyCompress>,
                     >,
                     InnerFri,
                     MerkleCapTargets<F, DIGEST_ELEMS>,
@@ -248,7 +258,7 @@ macro_rules! define_field_module_types {
         {
             type Commitment = MerkleCapTargets<F, DIGEST_ELEMS>;
             type InputProof =
-                InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>>;
+                InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, 2, MyHash, MyCompress>>;
             type OpeningProof = InnerFri;
             type RawOpeningProof = <MyPcs as Pcs<Challenge, Challenger>>::Proof;
             const DIGEST_ELEMS: usize = $digest_elems;
@@ -283,7 +293,7 @@ macro_rules! define_field_module_types {
                 &self,
             ) -> &<MyPcs as RecursivePcs<
                 ConfigWithFriParams,
-                InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>>,
+                InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, 2, MyHash, MyCompress>>,
                 InnerFri,
                 MerkleCapTargets<F, DIGEST_ELEMS>,
                 <MyPcs as Pcs<Challenge, Challenger>>::Domain,
@@ -315,7 +325,7 @@ macro_rules! define_field_module_types {
                     InputProofTargets<
                         F,
                         Challenge,
-                        RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>,
+                        RecValMmcs<F, DIGEST_ELEMS, 2, MyHash, MyCompress>,
                     >,
                     InnerFriZk,
                     MerkleCapTargets<F, DIGEST_ELEMS>,
@@ -324,7 +334,7 @@ macro_rules! define_field_module_types {
         {
             type Commitment = MerkleCapTargets<F, DIGEST_ELEMS>;
             type InputProof =
-                InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>>;
+                InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, 2, MyHash, MyCompress>>;
             type OpeningProof = InnerFriZk;
             type RawOpeningProof = <MyPcsZk as Pcs<Challenge, Challenger>>::Proof;
             const DIGEST_ELEMS: usize = $digest_elems;
@@ -359,7 +369,7 @@ macro_rules! define_field_module_types {
                 &self,
             ) -> &<MyPcsZk as RecursivePcs<
                 ConfigWithFriParamsZk,
-                InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>>,
+                InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, 2, MyHash, MyCompress>>,
                 InnerFriZk,
                 MerkleCapTargets<F, DIGEST_ELEMS>,
                 <MyPcsZk as Pcs<Challenge, Challenger>>::Domain,

@@ -126,7 +126,7 @@ fn test_aggregation_with_different_shapes() -> Result<(), VerificationError> {
         FibonacciAir,
         MyConfig,
         MerkleCapTargets<F, DIGEST_ELEMS>,
-        InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>>,
+        InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, 2, MyHash, MyCompress>>,
         InnerFri,
         _,
         WIDTH,
@@ -151,7 +151,7 @@ fn test_aggregation_with_different_shapes() -> Result<(), VerificationError> {
     let (right_verifier_inputs, right_op_ids) = verify_p3_batch_proof_circuit::<
         MyConfig,
         MerkleCapTargets<F, DIGEST_ELEMS>,
-        InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>>,
+        InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, 2, MyHash, MyCompress>>,
         InnerFri,
         LogUpGadget,
         Poseidon2Config,

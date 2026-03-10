@@ -132,12 +132,12 @@ fn test_poseidon2_perm_verifier() -> Result<(), VerificationError> {
             p3_uni_stark::Val<MyConfig>,
             <MyConfig as StarkGenericConfig>::Challenge,
             DIGEST_ELEMS,
-            RecValMmcs<p3_uni_stark::Val<MyConfig>, DIGEST_ELEMS, MyHash, MyCompress>,
+            RecValMmcs<p3_uni_stark::Val<MyConfig>, DIGEST_ELEMS, 2, MyHash, MyCompress>,
         >,
         InputProofTargets<
             p3_uni_stark::Val<MyConfig>,
             <MyConfig as StarkGenericConfig>::Challenge,
-            RecValMmcs<p3_uni_stark::Val<MyConfig>, DIGEST_ELEMS, MyHash, MyCompress>,
+            RecValMmcs<p3_uni_stark::Val<MyConfig>, DIGEST_ELEMS, 2, MyHash, MyCompress>,
         >,
         Witness<p3_uni_stark::Val<MyConfig>>,
     >;
@@ -165,7 +165,7 @@ fn test_poseidon2_perm_verifier() -> Result<(), VerificationError> {
         Poseidon2CircuitAirBabyBearD4Width16,
         MyConfig,
         MerkleCapTargets<F, DIGEST_ELEMS>,
-        InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>>,
+        InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, 2, MyHash, MyCompress>>,
         InnerFri,
         _,
         WIDTH,

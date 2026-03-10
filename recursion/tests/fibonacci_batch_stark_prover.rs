@@ -159,7 +159,7 @@ fn test_fibonacci_batch_verifier() {
     let (verifier_inputs, mmcs_op_ids) = verify_p3_batch_proof_circuit::<
         MyConfig,
         MerkleCapTargets<F, DIGEST_ELEMS>,
-        InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>>,
+        InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, 2, MyHash, MyCompress>>,
         InnerFri,
         LogUpGadget,
         _,

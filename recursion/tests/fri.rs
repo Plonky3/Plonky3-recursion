@@ -21,7 +21,7 @@ use p3_test_utils::baby_bear_params::*;
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
 
-type RecVal = RecValMmcs<F, 8, MyHash, MyCompress>;
+type RecVal = RecValMmcs<F, 8, 2, MyHash, MyCompress>;
 type RecExt = RecExtensionValMmcs<F, Challenge, 8, RecVal>;
 
 // Bring the circuit we're testing.

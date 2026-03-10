@@ -736,7 +736,7 @@ fn get_verifier_inputs_and_challenges(
     let verifier_inputs = verify_p3_batch_proof_circuit::<
         MyConfig,
         MerkleCapTargets<F, DIGEST_ELEMS>,
-        InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>>,
+        InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, 2, MyHash, MyCompress>>,
         InnerFri,
         LogUpGadget,
         _,
