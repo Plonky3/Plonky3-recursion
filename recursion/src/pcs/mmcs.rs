@@ -318,6 +318,85 @@ where
     )
 }
 
+/// Compute the padded output length for a compression step, mirroring the
+/// `padded_len` helper from the high-arity `MerkleTree` implementation.
+///
+/// The output layer must be large enough for the *next* compression step to
+/// form complete groups. There are three cases:
+///
+/// - `raw_len <= 1`: this is the root, no padding needed.
+/// - `raw_len >= n`: pad up to the next multiple of `n`.
+/// - `1 < raw_len < n`: pad to exactly `n` so that the next step can do a
+///   single full N-to-1 compression to produce the root.
+const fn padded_len(raw_len: usize, n: usize) -> usize {
+    if raw_len <= 1 {
+        raw_len
+    } else if raw_len >= n {
+        raw_len.div_ceil(n) * n
+    } else {
+        n
+    }
+}
+
+/// Recompute the Merkle arity schedule for a given batch of matrices.
+///
+/// This mirrors the logic used in the high-arity `MerkleTree` implementation:
+/// starting from the leaf layer, at each step we decide whether this level is a
+/// full N-ary compression (`step = merkle_arity`) or a binary compression
+/// (`step = 2`), then derive the next layer's padded length.
+///
+/// The decision rule is:
+/// - If the current layer length is less than `merkle_arity`, use a binary step.
+/// - Otherwise, compute `n_ary_target = (prev_len / merkle_arity).next_power_of_two()`
+///   and check whether there exists any matrix whose padded height
+///   (`dims.height.next_power_of_two()`) is strictly greater than `n_ary_target`.
+///   If so, use a binary step to leave room for intermediate injections;
+///   otherwise, use a full N-ary step.
+fn compute_arity_schedule(dimensions: &[Dimensions], merkle_arity: usize) -> Vec<usize> {
+    assert!(
+        merkle_arity >= 2 && merkle_arity.is_power_of_two(),
+        "merkle_arity must be a power of two >= 2"
+    );
+
+    if dimensions.is_empty() {
+        return Vec::new();
+    }
+
+    let max_height = dimensions
+        .iter()
+        .map(|d| d.height)
+        .max()
+        .expect("non-empty dimensions");
+
+    // Initial leaf layer length: tallest matrix height, padded according to N.
+    let mut prev_len = padded_len(max_height, merkle_arity);
+    let mut arity_schedule = Vec::new();
+
+    // Precompute next_power_of_two(heights) once for efficiency.
+    let heights_npt: Vec<usize> = dimensions
+        .iter()
+        .map(|d| d.height.next_power_of_two())
+        .collect();
+
+    while prev_len > 1 {
+        let step = if prev_len < merkle_arity {
+            2
+        } else {
+            let n_ary_target = (prev_len / merkle_arity).next_power_of_two();
+            let has_intermediate = heights_npt.iter().any(|&h_npt| h_npt > n_ary_target);
+            if has_intermediate { 2 } else { merkle_arity }
+        };
+
+        arity_schedule.push(step);
+
+        // Next layer length before padding, then padded to support the next step.
+        let next_raw = prev_len / step;
+        prev_len = padded_len(next_raw, merkle_arity);
+    }
+
+    arity_schedule
+}
+
 /// Like `verify_batch_circuit` but opened values are already extension elements (no decompose).
 /// Use for FRI commit-phase where evals are extension and only the challenger needs base form.
 pub fn verify_batch_circuit_from_extension_opened<F, EF>(
@@ -461,7 +540,11 @@ where
                         .expect("chunk size should match extension degree")
                 })
                 .collect();
-            // For Poseidon2 MMCS, we expect exactly 2 extension elements per sibling
+            // For the current Poseidon2-based MMCS, we expect exactly 2 extension
+            // elements per sibling (extension degree 4, 8 base elements per digest).
+            // High-arity Merkle trees (N>2) still produce one digest per sibling;
+            // the increased arity is reflected in how many siblings appear per
+            // level in the opening proof, not in the size of each digest.
             debug_assert_eq!(
                 ext_elements.len(),
                 2,
