@@ -88,7 +88,30 @@ impl<F: Field> Poseidon2CircuitPlugin<F> {
         trace_gen: TraceGeneratorFn<F>,
     ) -> Self {
         let type_id = NpoTypeId::poseidon2_perm(config);
-        let payload = Poseidon2PluginConfig::Ext(Poseidon2PermConfigData { config, exec });
+        // Default to binary Merkle arity for extension-mode Poseidon2 tables.
+        let payload = Poseidon2PluginConfig::Ext(Poseidon2PermConfigData::new(config, exec, 2));
+        Self {
+            type_id,
+            poseidon2_config: config,
+            config_payload: payload,
+            trace_gen,
+        }
+    }
+
+    /// Extension-mode plugin constructor with an explicit Merkle arity.
+    ///
+    /// This allows callers (e.g. recursion backends) to prepare Poseidon2 tables
+    /// that conceptually correspond to 4-ary Merkle trees, while keeping the
+    /// existing binary behavior when `merkle_arity = 2`.
+    pub fn new_ext_with_merkle_arity(
+        config: Poseidon2Config,
+        exec: Poseidon2PermExec<F>,
+        trace_gen: TraceGeneratorFn<F>,
+        merkle_arity: u8,
+    ) -> Self {
+        let type_id = NpoTypeId::poseidon2_perm(config);
+        let payload =
+            Poseidon2PluginConfig::Ext(Poseidon2PermConfigData::new(config, exec, merkle_arity));
         Self {
             type_id,
             poseidon2_config: config,
@@ -119,10 +142,8 @@ impl<F: Field> Poseidon2CircuitPlugin<F> {
         let type_id = NpoTypeId::poseidon2_perm(config);
         let dummy_exec: Poseidon2PermExec<F> =
             Arc::new(|_| panic!("Poseidon2PermExec used without proper registration"));
-        let payload = Poseidon2PluginConfig::Ext(Poseidon2PermConfigData {
-            config,
-            exec: dummy_exec,
-        });
+        let payload =
+            Poseidon2PluginConfig::Ext(Poseidon2PermConfigData::new(config, dummy_exec, 2));
         Self {
             type_id,
             poseidon2_config: config,

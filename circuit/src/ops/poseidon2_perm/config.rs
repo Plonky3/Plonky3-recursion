@@ -142,7 +142,8 @@ impl Poseidon2Config {
 }
 
 /// Poseidon2 permutation execution closure (extension field mode).
-/// Takes width_ext extension field limbs and returns width_ext output limbs.
+///
+/// Takes `width_ext` extension field limbs and returns `width_ext` output limbs.
 pub type Poseidon2PermExec<F> = Arc<dyn Fn(&[F]) -> Vec<F> + Send + Sync>;
 
 /// Type alias for the Poseidon2 permutation execution closure for D=1 (base field).
@@ -153,8 +154,36 @@ pub type Poseidon2PermExecBase<F> = Arc<dyn Fn(&[F; 16]) -> [F; 16] + Send + Syn
 /// Config data stored inside `NpoConfig` for Poseidon2 D>=2 (extension field) mode.
 #[derive(Clone)]
 pub struct Poseidon2PermConfigData<F> {
+    /// Poseidon2 parameter set (width, rate, etc.).
     pub config: Poseidon2Config,
+    /// Execution closure for the permutation.
     pub exec: Poseidon2PermExec<F>,
+    /// Merkle arity used when this permutation is in Merkle-path mode.
+    ///
+    /// This is a per-table parameter (constant for a given `NpoTypeId`) that
+    /// controls how many children a single compression node conceptually has.
+    /// For now we only support the binary case `2` and the 4-ary case `4`.
+    pub merkle_arity: u8,
+}
+
+impl<F> Poseidon2PermConfigData<F> {
+    /// Construct a new config payload with an explicit Merkle arity.
+    ///
+    /// The arity must be a power of two and at least 2. Currently only 2 and 4
+    /// are supported.
+    pub fn new(config: Poseidon2Config, exec: Poseidon2PermExec<F>, merkle_arity: u8) -> Self {
+        // Accept only small, power-of-two arities; this keeps the table ready for
+        // 2-ary and 4-ary Merkle trees while preventing accidental misuse.
+        assert!(
+            matches!(merkle_arity, 2 | 4),
+            "Poseidon2PermConfigData::new only supports merkle_arity in {{2, 4}}, got {merkle_arity}"
+        );
+        Self {
+            config,
+            exec,
+            merkle_arity,
+        }
+    }
 }
 
 /// Config data stored inside `NpoConfig` for Poseidon2 D=1 (base field) mode.

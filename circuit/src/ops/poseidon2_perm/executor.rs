@@ -244,6 +244,14 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Poseidon2Perm
                 op: self.op_type.clone(),
             })?;
         let poseidon2_config = ext_cfg.config;
+        let merkle_arity = ext_cfg.merkle_arity;
+        // Merkle arity is a per-table constant; only small powers of two are
+        // currently supported to keep the table aligned with MerkleTree/MMCS.
+        if !(merkle_arity == 2 || merkle_arity == 4) {
+            return Err(CircuitError::InvalidNonPrimitiveOpConfiguration {
+                op: self.op_type.clone(),
+            });
+        }
         let exec = Arc::clone(&ext_cfg.exec);
 
         let width_ext = poseidon2_config.width_ext();
