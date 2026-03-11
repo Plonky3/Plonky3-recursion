@@ -232,6 +232,7 @@ where
 /// - `dimensions`: Matrix dimensions (height used for tree structure)
 /// - `index_bits`: All Merkle path direction bits (length = `log_max_height`)
 /// - `opened_base_coeffs`: Base field coefficients per matrix (already decomposed)
+/// - `merkle_arity`: Arity of the Merkle tree (2 or 4). Must match the native MMCS.
 pub fn verify_batch_circuit<F, EF>(
     circuit: &mut CircuitBuilder<EF>,
     permutation_config: Poseidon2Config,
@@ -239,6 +240,7 @@ pub fn verify_batch_circuit<F, EF>(
     dimensions: &[Dimensions],
     index_bits: &[Target],
     opened_base_coeffs: &[Vec<Target>],
+    merkle_arity: usize,
 ) -> Result<Vec<NonPrimitiveOpId>, CircuitBuilderError>
 where
     F: Field + TwoAdicField + PrimeField64,
@@ -266,7 +268,28 @@ where
     let max_height_log = index_bits.len();
     let path_depth = max_height_log - cap_height;
 
-    // Split index_bits into path bits (for Merkle traversal) and cap index bits
+    let arity_schedule = compute_arity_schedule(dimensions, merkle_arity);
+    // With a cap, the proof covers only the path_depth levels below the cap; the
+    // full tree has path_depth + cap_height compression levels.
+    debug_assert_eq!(
+        arity_schedule.len(),
+        path_depth + cap_height,
+        "arity_schedule length ({}) must equal path_depth ({}) + cap_height ({})",
+        arity_schedule.len(),
+        path_depth,
+        cap_height
+    );
+    debug_assert!(
+        arity_schedule
+            .iter()
+            .all(|&step| step == 2 || step == merkle_arity),
+        "arity_schedule steps must be 2 or merkle_arity ({}), got {:?}",
+        merkle_arity,
+        arity_schedule
+    );
+
+    // Path bits for Merkle traversal (one bit per level for binary; for N>2,
+    // index_bits layout must match native: log2(step_i) bits per level i).
     let path_bits = &index_bits[..path_depth];
     let cap_index_bits = &index_bits[path_depth..];
 
@@ -397,6 +420,26 @@ fn compute_arity_schedule(dimensions: &[Dimensions], merkle_arity: usize) -> Vec
     arity_schedule
 }
 
+/// Bit ranges into `index_bits` for each Merkle level, given the arity schedule.
+///
+/// Level `i` uses `log2(step_i)` bits starting at `start`; the returned slice has
+/// one `(start, end)` per level so that `index_bits[start..end]` are the bits for
+/// that level. Used when segmenting proofs or deriving `pos_in_group_i` per level.
+#[allow(dead_code)]
+fn arity_schedule_bit_ranges(arity_schedule: &[usize]) -> Vec<(usize, usize)> {
+    let mut start = 0;
+    arity_schedule
+        .iter()
+        .map(|&step| {
+            let log_step = step.trailing_zeros() as usize;
+            let end = start + log_step;
+            let range = (start, end);
+            start = end;
+            range
+        })
+        .collect()
+}
+
 /// Like `verify_batch_circuit` but opened values are already extension elements (no decompose).
 /// Use for FRI commit-phase where evals are extension and only the challenger needs base form.
 pub fn verify_batch_circuit_from_extension_opened<F, EF>(
@@ -406,6 +449,7 @@ pub fn verify_batch_circuit_from_extension_opened<F, EF>(
     dimensions: &[Dimensions],
     index_bits: &[Target],
     opened_extension_values: &[Vec<Target>],
+    merkle_arity: usize,
 ) -> Result<Vec<NonPrimitiveOpId>, CircuitBuilderError>
 where
     F: Field + TwoAdicField + PrimeField64,
@@ -431,6 +475,25 @@ where
 
     let max_height_log = index_bits.len();
     let path_depth = max_height_log - cap_height;
+
+    let arity_schedule = compute_arity_schedule(dimensions, merkle_arity);
+    debug_assert_eq!(
+        arity_schedule.len(),
+        path_depth + cap_height,
+        "arity_schedule length ({}) must equal path_depth ({}) + cap_height ({})",
+        arity_schedule.len(),
+        path_depth,
+        cap_height
+    );
+    debug_assert!(
+        arity_schedule
+            .iter()
+            .all(|&step| step == 2 || step == merkle_arity),
+        "arity_schedule steps must be 2 or merkle_arity ({}), got {:?}",
+        merkle_arity,
+        arity_schedule
+    );
+
     let path_bits = &index_bits[..path_depth];
     let cap_index_bits = &index_bits[path_depth..];
 
@@ -787,6 +850,7 @@ mod test {
                 &dimensions,
                 &directions_expr,
                 &openings,
+                2,
             )
             .unwrap();
 
@@ -1264,6 +1328,7 @@ mod test {
                 &dimensions,
                 &directions_expr,
                 &lifted_openings,
+                2,
             )
             .unwrap();
 
@@ -1423,6 +1488,7 @@ mod test {
                 &dimensions,
                 &directions_expr,
                 &lifted_openings,
+                2,
             )
             .unwrap();
 

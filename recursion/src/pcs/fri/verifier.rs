@@ -991,6 +991,7 @@ where
                 &dimensions,
                 index_bits,
                 batch_openings,
+                2, // merkle_arity: binary for now
             )
             .map_err(|e| {
                 VerificationError::InvalidProofShape(format!(
@@ -1429,6 +1430,7 @@ where
                     &dimensions,
                     &parent_index_bits,
                     &evals_for_mmcs,
+                    2, // merkle_arity: binary for now
                 )
                 .map_err(|e| {
                     VerificationError::InvalidProofShape(format!(
