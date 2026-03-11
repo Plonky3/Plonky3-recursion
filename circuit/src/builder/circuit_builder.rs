@@ -19,8 +19,7 @@ use super::{BuilderConfig, ExpressionBuilder, PublicInputTracker};
 use crate::circuit::Circuit;
 use crate::ops::poseidon2_perm::Poseidon2CircuitPlugin;
 use crate::ops::{
-    HintExecutor, NpoConfig, NpoRegistry, NpoTypeId, Poseidon2Params, Poseidon2PermCall,
-    Poseidon2PermCallBase, RecomposeCircuitPlugin,
+    HintExecutor, NpoConfig, NpoRegistry, NpoTypeId, Poseidon2Params, Poseidon2PermCall, Poseidon2PermCallBase, Poseidon2PermExec, RecomposeCircuitPlugin
 };
 use crate::tables::TraceGeneratorFn;
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};
@@ -138,7 +137,7 @@ where
         let d = Config::D;
         let width_ext = Config::WIDTH_EXT;
         let width = Config::WIDTH;
-        let exec: crate::ops::Poseidon2PermExec<F> = Arc::new(move |input: &[F]| {
+        let exec: Poseidon2PermExec<F> = Arc::new(move |input: &[F]| {
             let mut base_input = vec![Config::BaseField::ZERO; width];
             for (i, ext_elem) in input.iter().enumerate() {
                 let coeffs = ext_elem.as_basis_coefficients_slice();
@@ -164,6 +163,56 @@ where
         self.register_npo(plugin);
     }
 
+    /// Enables Poseidon2 permutation operations with an explicit Merkle arity.
+    ///
+    /// This is identical to `enable_poseidon2_perm` but allows callers (for
+    /// example, recursion backends) to prepare a Poseidon2 table that is
+    /// configured for a specific Merkle arity (currently 2 or 4). The arity
+    /// only affects Merkle-path mode; normal hashing usage is unchanged.
+    pub fn enable_poseidon2_perm_with_merkle_arity<Config, P>(
+        &mut self,
+        trace_generator: TraceGeneratorFn<F>,
+        perm: P,
+        merkle_arity: u8,
+    ) where
+        Config: Poseidon2Params,
+        F: Field + ExtensionField<Config::BaseField>,
+        P: Permutation<[Config::BaseField; 16]> + Clone + Send + Sync + 'static,
+    {
+        let d = Config::D;
+        let width_ext = Config::WIDTH_EXT;
+        let width = Config::WIDTH;
+        let exec: Poseidon2PermExec<F> = Arc::new(move |input: &[F]| {
+            let mut base_input = vec![Config::BaseField::ZERO; width];
+            for (i, ext_elem) in input.iter().enumerate() {
+                let coeffs = ext_elem.as_basis_coefficients_slice();
+                base_input[i * d..(i + 1) * d].copy_from_slice(coeffs);
+            }
+            let base_output = perm.permute(
+                base_input
+                    .try_into()
+                    .expect("base_input length must equal WIDTH"),
+            );
+            let mut output = Vec::with_capacity(width_ext);
+            for i in 0..width_ext {
+                let coeffs = &base_output[i * d..(i + 1) * d];
+                output.push(
+                    F::from_basis_coefficients_slice(coeffs)
+                        .expect("basis coefficients should be valid"),
+                );
+            }
+            output
+        });
+
+        let plugin = Poseidon2CircuitPlugin::new_ext_with_merkle_arity(
+            Config::CONFIG,
+            exec,
+            trace_generator,
+            merkle_arity,
+        );
+        self.register_npo(plugin);
+    }
+
     /// Enables Poseidon2 for configs with WIDTH=8 (e.g. Goldilocks).
     pub fn enable_poseidon2_perm_width_8<Config, P>(
         &mut self,
@@ -180,7 +229,7 @@ where
         );
         let d = Config::D;
         let width_ext = Config::WIDTH_EXT;
-        let exec: crate::ops::Poseidon2PermExec<F> = Arc::new(move |input: &[F]| {
+        let exec: Poseidon2PermExec<F> = Arc::new(move |input: &[F]| {
             let mut base_input = vec![Config::BaseField::ZERO; 8];
             for (i, ext_elem) in input.iter().enumerate() {
                 let coeffs = ext_elem.as_basis_coefficients_slice();
@@ -232,7 +281,7 @@ where
         );
 
         // For D=1, the exec closure operates directly on 16 base field elements
-        let exec: crate::ops::Poseidon2PermExecBase<F> =
+        let exec: Poseidon2PermExecBase<F> =
             Arc::new(move |input: &[F; 16]| perm.permute(*input));
 
         let plugin = Poseidon2CircuitPlugin::new_base(Config::CONFIG, exec, trace_generator);
