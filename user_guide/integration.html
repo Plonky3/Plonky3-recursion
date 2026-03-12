@@ -293,7 +293,7 @@ struct MyRecursionConfig {
 <p>The circuit builder supports registering custom non-primitive operations beyond Poseidon2. These are operations that are too expensive to express purely in primitives and benefit from dedicated AIR tables.</p>
 <p>Non-primitive operations:</p>
 <ul>
-<li>Are controlled by a runtime policy (<code>DefaultProfile</code> disables all, <code>AllowAllProfile</code> enables all)</li>
+<li>Must be explicitly enabled on the <code>CircuitBuilder</code> before use</li>
 <li>Require a custom trace builder for trace generation</li>
 <li>Interact with the shared witness memory via lookups, and may additionally use private data</li>
 </ul>
