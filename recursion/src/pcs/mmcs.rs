@@ -349,15 +349,17 @@ where
 ///
 /// - `raw_len <= 1`: this is the root, no padding needed.
 /// - `raw_len >= n`: pad up to the next multiple of `n`.
-/// - `1 < raw_len < n`: pad to exactly `n` so that the next step can do a
-///   single full N-to-1 compression to produce the root.
+/// - `1 < raw_len < n`: no extra padding; we are close enough to the root that
+///   forcing a full N-to-1 layer would only increase the height without
+///   changing semantics. Returning `raw_len` here ensures the schedule always
+///   makes progress towards 1 even for `merkle_arity > 2`.
 const fn padded_len(raw_len: usize, n: usize) -> usize {
     if raw_len <= 1 {
         raw_len
     } else if raw_len >= n {
         raw_len.div_ceil(n) * n
     } else {
-        n
+        raw_len
     }
 }
 
@@ -750,8 +752,8 @@ mod test {
 
     use p3_circuit::ops::mmcs::format_openings;
     use p3_circuit::ops::{generate_poseidon2_trace, generate_recompose_trace};
-    use p3_matrix::Matrix;
     use p3_matrix::dense::{DenseMatrix, RowMajorMatrix};
+    use p3_matrix::{Dimensions, Matrix};
     use p3_poseidon2_circuit_air::KoalaBearD4Width16;
     use p3_test_utils::koala_bear_params::*;
     use p3_util::log2_ceil_usize;
@@ -764,6 +766,40 @@ mod test {
     use tracing_subscriber::{EnvFilter, Registry};
 
     use super::*;
+
+    #[test]
+    fn test_padded_len() {
+        assert_eq!(super::padded_len(0, 2), 0);
+        assert_eq!(super::padded_len(1, 2), 1);
+        assert_eq!(super::padded_len(1, 4), 1);
+        assert_eq!(super::padded_len(2, 2), 2);
+        assert_eq!(super::padded_len(2, 4), 2);
+        assert_eq!(super::padded_len(3, 4), 3);
+        assert_eq!(super::padded_len(4, 4), 4);
+        assert_eq!(super::padded_len(5, 4), 8);
+        assert_eq!(super::padded_len(8, 4), 8);
+        assert_eq!(super::padded_len(9, 4), 12);
+    }
+
+    #[test]
+    fn test_compute_arity_schedule_binary() {
+        let dims = vec![Dimensions {
+            height: 8,
+            width: 1,
+        }];
+        let schedule = super::compute_arity_schedule(&dims, 2);
+        assert_eq!(schedule, [2, 2, 2]);
+    }
+
+    #[test]
+    fn test_compute_arity_schedule_quaternary_single_matrix() {
+        let dims = vec![Dimensions {
+            height: 16,
+            width: 1,
+        }];
+        let schedule = super::compute_arity_schedule(&dims, 4);
+        assert_eq!(schedule, [2, 2, 2, 2]);
+    }
 
     type F = KoalaBear;
     type CF = BinomialExtensionField<F, 4>;
@@ -812,9 +848,10 @@ mod test {
         for index in 0..max_height {
             let mut builder = CircuitBuilder::<CF>::new();
             let permutation_config = Poseidon2Config::KoalaBearD4Width16;
-            builder.enable_poseidon2_perm::<KoalaBearD4Width16, _>(
+            builder.enable_poseidon2_perm_with_merkle_arity::<KoalaBearD4Width16, _>(
                 generate_poseidon2_trace::<CF, KoalaBearD4Width16>,
                 perm.clone(),
+                2,
             );
             builder.enable_recompose::<F>(generate_recompose_trace::<F, CF>);
 
@@ -1106,9 +1143,10 @@ mod test {
         let mut builder = CircuitBuilder::<CF>::new();
         let permutation_config = Poseidon2Config::KoalaBearD4Width16;
         let perm = default_koalabear_poseidon2_16();
-        builder.enable_poseidon2_perm::<KoalaBearD4Width16, _>(
+        builder.enable_poseidon2_perm_with_merkle_arity::<KoalaBearD4Width16, _>(
             generate_poseidon2_trace::<CF, KoalaBearD4Width16>,
             perm,
+            2,
         );
         builder.enable_recompose::<F>(generate_recompose_trace::<F, CF>);
 
@@ -1290,9 +1328,10 @@ mod test {
         for index in 0..max_height {
             let mut builder = CircuitBuilder::<CF>::new();
             let permutation_config = Poseidon2Config::KoalaBearD4Width16;
-            builder.enable_poseidon2_perm::<KoalaBearD4Width16, _>(
+            builder.enable_poseidon2_perm_with_merkle_arity::<KoalaBearD4Width16, _>(
                 generate_poseidon2_trace::<CF, KoalaBearD4Width16>,
                 perm.clone(),
+                2,
             );
             builder.enable_recompose::<F>(generate_recompose_trace::<F, CF>);
 
@@ -1450,9 +1489,10 @@ mod test {
         for index in 0..max_height {
             let mut builder = CircuitBuilder::<CF>::new();
             let permutation_config = Poseidon2Config::KoalaBearD4Width16;
-            builder.enable_poseidon2_perm::<KoalaBearD4Width16, _>(
+            builder.enable_poseidon2_perm_with_merkle_arity::<KoalaBearD4Width16, _>(
                 generate_poseidon2_trace::<CF, KoalaBearD4Width16>,
                 perm.clone(),
+                2,
             );
             builder.enable_recompose::<F>(generate_recompose_trace::<F, CF>);
 

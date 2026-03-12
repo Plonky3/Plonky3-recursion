@@ -149,9 +149,10 @@ fn test_fibonacci_batch_verifier() {
     // Build the recursive verification circuit
     let mut circuit_builder = CircuitBuilder::new();
     let poseidon2_perm = default_koalabear_poseidon2_16();
-    circuit_builder.enable_poseidon2_perm::<KoalaBearD4Width16, _>(
+    circuit_builder.enable_poseidon2_perm_with_merkle_arity::<KoalaBearD4Width16, _>(
         generate_poseidon2_trace::<Challenge, KoalaBearD4Width16>,
         poseidon2_perm,
+        2,
     );
     circuit_builder.enable_recompose::<F>(generate_recompose_trace::<F, Challenge>);
 

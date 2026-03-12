@@ -325,6 +325,7 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Poseidon2Perm
             last_output.map(|v| v.as_slice()),
             width_ext,
             rate_ext,
+            merkle_arity,
         )?;
 
         let output = exec(&resolved_inputs);

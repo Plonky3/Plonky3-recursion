@@ -12,7 +12,9 @@ use crate::types::WitnessId;
 /// Build the complete resolved input array for a Poseidon2 permutation.
 ///
 /// Resolves all width_ext input limbs in one pass, then applies the merkle swap
-/// permutation if needed.
+/// permutation if needed. For merkle_arity > 2, child layout (current digest +
+/// siblings + dummy digests) can be applied in a later step; for 2 we keep the
+/// existing binary behaviour (one sibling, mmcs_bit swap).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn resolve_all_inputs<F: Field>(
     new_start: bool,
@@ -24,7 +26,9 @@ pub(crate) fn resolve_all_inputs<F: Field>(
     last_output: Option<&[F]>,
     width_ext: usize,
     rate_ext: usize,
+    merkle_arity: u8,
 ) -> Result<Vec<F>, CircuitError> {
+    let _ = merkle_arity;
     let mut resolved = init_base_state(
         new_start,
         merkle_path,

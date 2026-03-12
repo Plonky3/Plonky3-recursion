@@ -140,9 +140,10 @@ fn test_batch_verifier_zk_hiding_fri() -> Result<(), VerificationError> {
     let config = MyConfigZk::new(pcs_verif, challenger_verif);
 
     let mut circuit_builder = CircuitBuilder::new();
-    circuit_builder.enable_poseidon2_perm::<KoalaBearD4Width16, _>(
+    circuit_builder.enable_poseidon2_perm_with_merkle_arity::<KoalaBearD4Width16, _>(
         generate_poseidon2_trace::<Challenge, KoalaBearD4Width16>,
         perm2,
+        2,
     );
     circuit_builder.enable_recompose::<F>(generate_recompose_trace::<F, Challenge>);
 

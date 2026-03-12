@@ -212,9 +212,10 @@ fn test_zk_aggregation() -> Result<(), VerificationError> {
     // for all tables of both verifiers simultaneously.
     let perm = default_koalabear_poseidon2_16();
     let mut circuit_builder = CircuitBuilder::new();
-    circuit_builder.enable_poseidon2_perm::<KoalaBearD4Width16, _>(
+    circuit_builder.enable_poseidon2_perm_with_merkle_arity::<KoalaBearD4Width16, _>(
         generate_poseidon2_trace::<Challenge, KoalaBearD4Width16>,
         perm,
+        2,
     );
     circuit_builder.enable_recompose::<F>(generate_recompose_trace::<F, Challenge>);
 

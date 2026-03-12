@@ -34,9 +34,10 @@ type InnerFri = InnerFriGeneric<MyConfig, MyHash, MyCompress, DIGEST_ELEMS>;
 fn setup_circuit_builder() -> CircuitBuilder<Challenge> {
     let mut circuit_builder = CircuitBuilder::new();
     let poseidon2_perm = default_babybear_poseidon2_16();
-    circuit_builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
+    circuit_builder.enable_poseidon2_perm_with_merkle_arity::<BabyBearD4Width16, _>(
         generate_poseidon2_trace::<Challenge, BabyBearD4Width16>,
         poseidon2_perm,
+        2,
     );
     circuit_builder.enable_recompose::<F>(generate_recompose_trace::<F, Challenge>);
     circuit_builder
@@ -816,9 +817,10 @@ fn test_poseidon2_ctl_lookups() {
     let mut builder: CircuitBuilder<Challenge> = CircuitBuilder::new();
     let poseidon2_perm = default_babybear_poseidon2_16();
     let poseidon2_config = Poseidon2Config::BabyBearD4Width16;
-    builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
+    builder.enable_poseidon2_perm_with_merkle_arity::<BabyBearD4Width16, _>(
         generate_poseidon2_trace::<Challenge, BabyBearD4Width16>,
         poseidon2_perm,
+        2,
     );
     builder.enable_recompose::<F>(generate_recompose_trace::<F, Challenge>);
 
@@ -920,9 +922,10 @@ fn test_poseidon2_chained_ctl_lookups() {
     let mut builder: CircuitBuilder<Challenge> = CircuitBuilder::new();
     let poseidon2_perm = default_babybear_poseidon2_16();
     let poseidon2_config = Poseidon2Config::BabyBearD4Width16;
-    builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
+    builder.enable_poseidon2_perm_with_merkle_arity::<BabyBearD4Width16, _>(
         generate_poseidon2_trace::<Challenge, BabyBearD4Width16>,
         poseidon2_perm,
+        2,
     );
     builder.enable_recompose::<F>(generate_recompose_trace::<F, Challenge>);
 

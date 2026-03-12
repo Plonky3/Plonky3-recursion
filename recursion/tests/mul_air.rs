@@ -61,9 +61,10 @@ fn test_mul_verifier_circuit() -> Result<(), VerificationError> {
     );
 
     let mut circuit_builder = CircuitBuilder::new();
-    circuit_builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
+    circuit_builder.enable_poseidon2_perm_with_merkle_arity::<BabyBearD4Width16, _>(
         generate_poseidon2_trace::<Challenge, BabyBearD4Width16>,
         perm,
+        2,
     );
     circuit_builder.enable_recompose::<F>(generate_recompose_trace::<F, Challenge>);
 

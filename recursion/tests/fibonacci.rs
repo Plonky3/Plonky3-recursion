@@ -89,9 +89,10 @@ fn run_recursive_verifier(
     pis: &[F],
 ) -> Result<(), VerificationError> {
     let mut circuit_builder = CircuitBuilder::new();
-    circuit_builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
+    circuit_builder.enable_poseidon2_perm_with_merkle_arity::<BabyBearD4Width16, _>(
         generate_poseidon2_trace::<Challenge, BabyBearD4Width16>,
         setup.perm.clone(),
+        2,
     );
     circuit_builder.enable_recompose::<F>(generate_recompose_trace::<F, Challenge>);
 
@@ -226,9 +227,10 @@ fn test_truncated_fri_proof() {
 
     // Build the circuit against the valid proof so op_ids match the full shape.
     let mut circuit_builder = CircuitBuilder::new();
-    circuit_builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
+    circuit_builder.enable_poseidon2_perm_with_merkle_arity::<BabyBearD4Width16, _>(
         generate_poseidon2_trace::<Challenge, BabyBearD4Width16>,
         setup.perm.clone(),
+        2,
     );
     circuit_builder.enable_recompose::<F>(generate_recompose_trace::<F, Challenge>);
     // Allocate all targets

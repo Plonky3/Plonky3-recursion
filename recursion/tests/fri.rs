@@ -569,9 +569,10 @@ fn run_fri_test_with_mmcs(setup: FriSetup) {
 
     // Enable Poseidon2 permutation for MMCS verification
     let perm_for_circuit = default_babybear_poseidon2_16();
-    builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
+    builder.enable_poseidon2_perm_with_merkle_arity::<BabyBearD4Width16, _>(
         generate_poseidon2_trace::<Challenge, BabyBearD4Width16>,
         perm_for_circuit,
+        2,
     );
     builder.enable_recompose::<F>(generate_recompose_trace::<F, Challenge>);
 

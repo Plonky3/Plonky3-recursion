@@ -28,9 +28,10 @@ mod baby_bear_d4 {
     fn setup_circuit_with_poseidon2() -> CircuitBuilder<EF> {
         let mut circuit = CircuitBuilder::<EF>::new();
         let perm = default_babybear_poseidon2_16();
-        circuit.enable_poseidon2_perm::<BabyBearD4Width16, _>(
+        circuit.enable_poseidon2_perm_with_merkle_arity::<BabyBearD4Width16, _>(
             generate_poseidon2_trace::<EF, BabyBearD4Width16>,
             perm,
+            2,
         );
         circuit.enable_recompose::<F>(generate_recompose_trace::<F, EF>);
         circuit
@@ -1017,9 +1018,10 @@ mod koala_bear_d4 {
     fn setup_circuit() -> CircuitBuilder<EF> {
         let mut circuit = CircuitBuilder::<EF>::new();
         let perm = default_koalabear_poseidon2_16();
-        circuit.enable_poseidon2_perm::<KoalaBearD4Width16, _>(
+        circuit.enable_poseidon2_perm_with_merkle_arity::<KoalaBearD4Width16, _>(
             generate_poseidon2_trace::<EF, KoalaBearD4Width16>,
             perm,
+            2,
         );
         circuit.enable_recompose::<F>(generate_recompose_trace::<F, EF>);
         circuit
