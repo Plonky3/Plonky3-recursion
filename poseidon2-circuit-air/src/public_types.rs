@@ -45,9 +45,9 @@ impl BabyBearD4Width16 {
     /// Return the canonical round constants for this configuration.
     pub const fn round_constants() -> RoundConstants<BabyBear, 16, 4, 13> {
         RoundConstants::new(
-            p3_baby_bear::BABYBEAR_RC16_EXTERNAL_INITIAL,
-            p3_baby_bear::BABYBEAR_RC16_INTERNAL,
-            p3_baby_bear::BABYBEAR_RC16_EXTERNAL_FINAL,
+            p3_baby_bear::BABYBEAR_POSEIDON2_RC_16_EXTERNAL_INITIAL,
+            p3_baby_bear::BABYBEAR_POSEIDON2_RC_16_INTERNAL,
+            p3_baby_bear::BABYBEAR_POSEIDON2_RC_16_EXTERNAL_FINAL,
         )
     }
 
@@ -88,9 +88,9 @@ impl BabyBearD4Width24 {
     /// Return the canonical round constants for this configuration.
     pub const fn round_constants() -> RoundConstants<BabyBear, 24, 4, 21> {
         RoundConstants::new(
-            p3_baby_bear::BABYBEAR_RC24_EXTERNAL_INITIAL,
-            p3_baby_bear::BABYBEAR_RC24_INTERNAL,
-            p3_baby_bear::BABYBEAR_RC24_EXTERNAL_FINAL,
+            p3_baby_bear::BABYBEAR_POSEIDON2_RC_24_EXTERNAL_INITIAL,
+            p3_baby_bear::BABYBEAR_POSEIDON2_RC_24_INTERNAL,
+            p3_baby_bear::BABYBEAR_POSEIDON2_RC_24_EXTERNAL_FINAL,
         )
     }
 
@@ -133,9 +133,9 @@ impl KoalaBearD4Width16 {
     /// Return the canonical round constants for this configuration.
     pub const fn round_constants() -> RoundConstants<KoalaBear, 16, 4, 20> {
         RoundConstants::new(
-            p3_koala_bear::KOALABEAR_RC16_EXTERNAL_INITIAL,
-            p3_koala_bear::KOALABEAR_RC16_INTERNAL,
-            p3_koala_bear::KOALABEAR_RC16_EXTERNAL_FINAL,
+            p3_koala_bear::KOALABEAR_POSEIDON2_RC_16_EXTERNAL_INITIAL,
+            p3_koala_bear::KOALABEAR_POSEIDON2_RC_16_INTERNAL,
+            p3_koala_bear::KOALABEAR_POSEIDON2_RC_16_EXTERNAL_FINAL,
         )
     }
 
@@ -172,9 +172,9 @@ impl KoalaBearD4Width24 {
     /// Return the canonical round constants for this configuration.
     pub const fn round_constants() -> RoundConstants<KoalaBear, 24, 4, 23> {
         RoundConstants::new(
-            p3_koala_bear::KOALABEAR_RC24_EXTERNAL_INITIAL,
-            p3_koala_bear::KOALABEAR_RC24_INTERNAL,
-            p3_koala_bear::KOALABEAR_RC24_EXTERNAL_FINAL,
+            p3_koala_bear::KOALABEAR_POSEIDON2_RC_24_EXTERNAL_INITIAL,
+            p3_koala_bear::KOALABEAR_POSEIDON2_RC_24_INTERNAL,
+            p3_koala_bear::KOALABEAR_POSEIDON2_RC_24_EXTERNAL_FINAL,
         )
     }
 
