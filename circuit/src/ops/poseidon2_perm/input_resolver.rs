@@ -12,14 +12,14 @@ use crate::types::WitnessId;
 /// Build the complete resolved input array for a Poseidon2 permutation.
 ///
 /// Resolves all width_ext input limbs in one pass, then applies the merkle swap
-/// permutation if needed. For merkle_arity > 2, child layout (current digest +
-/// siblings + dummy digests) can be applied in a later step; for 2 we keep the
-/// existing binary behaviour (one sibling, mmcs_bit swap).
+/// permutation if needed. `pos_in_group` is the position in the group at this level
+/// (0 or 1 for binary; 0..4 for 4-ary). For binary the low bit controls swap; for
+/// merkle_arity > 2 the same convention applies until multi-sibling layout is wired.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn resolve_all_inputs<F: Field>(
     new_start: bool,
     merkle_path: bool,
-    mmcs_bit: bool,
+    pos_in_group: usize,
     inputs: &[Vec<WitnessId>],
     private_inputs: Option<&[F]>,
     ctx: &ExecutionContext<'_, F>,
@@ -45,7 +45,8 @@ pub(crate) fn resolve_all_inputs<F: Field>(
         width_ext,
     );
     apply_ctl_inputs(&mut resolved, inputs, ctx, width_ext)?;
-    apply_merkle_swap(&mut resolved, mmcs_bit, merkle_path, rate_ext);
+    let swap = merkle_path && (pos_in_group & 1) != 0;
+    apply_merkle_swap(&mut resolved, swap, merkle_path, rate_ext);
     Ok(resolved)
 }
 

@@ -36,6 +36,7 @@ impl<F: Field> CircuitBuilder<F> {
                 new_start: is_first && reset,
                 merkle_path: false,
                 mmcs_bit: None,
+                mmcs_bits: None,
                 inputs: call_inputs,
                 out_ctl: vec![is_last; rate_ext],
                 return_all_outputs: false,

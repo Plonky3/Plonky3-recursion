@@ -19,7 +19,8 @@ use super::{BuilderConfig, ExpressionBuilder, PublicInputTracker};
 use crate::circuit::Circuit;
 use crate::ops::poseidon2_perm::Poseidon2CircuitPlugin;
 use crate::ops::{
-    HintExecutor, NpoConfig, NpoRegistry, NpoTypeId, Poseidon2Params, Poseidon2PermCall, Poseidon2PermCallBase, Poseidon2PermExec, RecomposeCircuitPlugin
+    HintExecutor, NpoConfig, NpoRegistry, NpoTypeId, Poseidon2Params, Poseidon2PermCall,
+    Poseidon2PermCallBase, Poseidon2PermExec, Poseidon2PermExecBase, RecomposeCircuitPlugin,
 };
 use crate::tables::TraceGeneratorFn;
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};
@@ -281,8 +282,7 @@ where
         );
 
         // For D=1, the exec closure operates directly on 16 base field elements
-        let exec: Poseidon2PermExecBase<F> =
-            Arc::new(move |input: &[F; 16]| perm.permute(*input));
+        let exec: Poseidon2PermExecBase<F> = Arc::new(move |input: &[F; 16]| perm.permute(*input));
 
         let plugin = Poseidon2CircuitPlugin::new_base(Config::CONFIG, exec, trace_generator);
         self.register_npo(plugin);
@@ -1152,6 +1152,7 @@ where
             new_start: true, // Each challenger permutation is independent
             merkle_path: false,
             mmcs_bit: None,
+            mmcs_bits: None,
             inputs: inputs.iter().map(|&x| Some(x)).collect(),
             out_ctl: vec![true; config.rate_ext()],
             return_all_outputs: true,
@@ -1680,6 +1681,7 @@ mod tests {
                 new_start: true,
                 merkle_path: false,
                 mmcs_bit: None,
+                mmcs_bits: None,
                 inputs: vec![Some(z), Some(z), Some(z), Some(z)],
                 out_ctl: vec![true, true],
                 return_all_outputs: false,

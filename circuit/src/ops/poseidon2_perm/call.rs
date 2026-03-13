@@ -14,11 +14,13 @@ pub struct Poseidon2PermCall {
     pub new_start: bool,
     /// Flag indicating whether we are verifying a Merkle path
     pub merkle_path: bool,
-    /// MMCS direction bit input (base field, boolean).
+    /// MMCS direction bit(s): one bit for binary (arity 2), two bits for 4-ary.
     ///
-    /// Required when `merkle_path = true`. When `merkle_path = false`, this may be omitted and
-    /// defaults to 0 (not exposed via CTL).
+    /// Required when `merkle_path = true`. Use `mmcs_bits` for variable arity (length 1 or 2);
+    /// if `mmcs_bits` is None, `mmcs_bit` is used as a single direction bit (binary).
     pub mmcs_bit: Option<ExprId>,
+    /// Per-level direction bits (length = log2(arity)). Overrides `mmcs_bit` when `Some`.
+    pub mmcs_bits: Option<Vec<ExprId>>,
     /// Optional CTL exposure for each input limb (one extension element).
     /// If `None`, the limb is not exposed via CTL (in_ctl = 0).
     /// Note: For Merkle mode, unexposed limbs are provided via Poseidon2PermPrivateData (the sibling).
@@ -46,6 +48,7 @@ impl Default for Poseidon2PermCall {
             new_start: false,
             merkle_path: false,
             mmcs_bit: None,
+            mmcs_bits: None,
             inputs: vec![None; config.width_ext()],
             out_ctl: vec![false; config.rate_ext()],
             return_all_outputs: false,

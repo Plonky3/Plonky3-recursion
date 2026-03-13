@@ -72,16 +72,16 @@ impl<F: Field> CircuitBuilder<F> {
     /// Verify a Merkle path in the circuit.
     ///
     /// `openings_expr` contains the row digests at each tree level. When its length equals
-    /// `directions_expr.len()`, every entry corresponds to a sibling-compression step.
-    /// When its length is `directions_expr.len() + 1`, the extra trailing entry is a
+    /// `direction_bits_per_level.len()`, every entry corresponds to a sibling-compression step.
+    /// When its length is `direction_bits_per_level.len() + 1`, the extra trailing entry is a
     /// **tail digest**: it is compressed into the running hash *after* the last sibling
-    /// step but *before* the root comparison. This mirrors the native MMCS behaviour
-    /// where matrices at the cap level are injected after the final proof sibling.
+    /// step but *before* the root comparison. Each `direction_bits_per_level[i]` is 1 or 2
+    /// bits (binary or 4-ary) encoding position-in-group at that level.
     pub fn add_mmcs_verify(
         &mut self,
         permutation_config: Poseidon2Config,
         openings_expr: &[Vec<ExprId>],
-        directions_expr: &[ExprId],
+        direction_bits_per_level: &[Vec<ExprId>],
         root_expr: &[ExprId],
     ) -> Result<Vec<NonPrimitiveOpId>, CircuitBuilderError> {
         let width_ext = permutation_config.width_ext();
@@ -90,14 +90,18 @@ impl<F: Field> CircuitBuilder<F> {
         let mut output = vec![None; width_ext];
         let zero = self.define_const(F::ZERO);
 
-        let has_tail = openings_expr.len() > directions_expr.len()
-            && !openings_expr[directions_expr.len()].is_empty();
+        let has_tail = openings_expr.len() > direction_bits_per_level.len()
+            && !openings_expr[direction_bits_per_level.len()].is_empty();
 
-        let path_openings = &openings_expr[..directions_expr.len()];
+        let path_openings = &openings_expr[..direction_bits_per_level.len()];
 
-        for (i, (row_digest, direction)) in path_openings.iter().zip(directions_expr).enumerate() {
+        for (i, (row_digest, bits)) in path_openings
+            .iter()
+            .zip(direction_bits_per_level)
+            .enumerate()
+        {
             let is_first = i == 0;
-            let is_last_direction = i == directions_expr.len() - 1;
+            let is_last_direction = i == direction_bits_per_level.len() - 1;
             let is_final = is_last_direction && !has_tail;
 
             if !is_first && !row_digest.is_empty() {
@@ -109,7 +113,8 @@ impl<F: Field> CircuitBuilder<F> {
                     config: permutation_config,
                     new_start: false,
                     merkle_path: true,
-                    mmcs_bit: Some(zero),
+                    mmcs_bit: None,
+                    mmcs_bits: Some(vec![zero; bits.len()]),
                     inputs,
                     out_ctl: vec![false; rate_ext],
                     return_all_outputs: false,
@@ -127,7 +132,8 @@ impl<F: Field> CircuitBuilder<F> {
                 config: permutation_config,
                 new_start: is_first,
                 merkle_path: true,
-                mmcs_bit: Some(*direction),
+                mmcs_bit: None,
+                mmcs_bits: Some(bits.clone()),
                 inputs,
                 out_ctl: vec![is_final; rate_ext],
                 return_all_outputs: false,
@@ -138,7 +144,7 @@ impl<F: Field> CircuitBuilder<F> {
         }
 
         if has_tail {
-            let tail = &openings_expr[directions_expr.len()];
+            let tail = &openings_expr[direction_bits_per_level.len()];
             let mut inputs = vec![None; width_ext];
             for (j, &t) in tail.iter().take(rate_ext).enumerate() {
                 inputs[rate_ext + j] = Some(t);
@@ -147,7 +153,8 @@ impl<F: Field> CircuitBuilder<F> {
                 config: permutation_config,
                 new_start: false,
                 merkle_path: true,
-                mmcs_bit: Some(zero),
+                mmcs_bit: None,
+                mmcs_bits: Some(vec![zero]),
                 inputs,
                 out_ctl: vec![true; rate_ext],
                 return_all_outputs: false,

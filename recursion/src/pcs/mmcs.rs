@@ -112,6 +112,7 @@ where
             new_start: if is_first { reset } else { false },
             merkle_path: false,
             mmcs_bit: None,
+            mmcs_bits: None,
             inputs,
             out_ctl: vec![true; rate_ext],
             return_all_outputs: false,
@@ -180,6 +181,7 @@ where
             new_start: is_first && reset,
             merkle_path: false,
             mmcs_bit: None,
+            mmcs_bits: None,
             inputs,
             out_ctl: vec![true; rate_ext],
             return_all_outputs: false,
@@ -288,12 +290,22 @@ where
         arity_schedule
     );
 
-    // Path bits for Merkle traversal (one bit per level for binary; for N>2,
-    // index_bits layout must match native: log2(step_i) bits per level i).
-    let path_bits = &index_bits[..path_depth];
-    let cap_index_bits = &index_bits[path_depth..];
+    let path_bits_len = path_bits_len(&arity_schedule, path_depth);
+    let expected_index_bits_len = path_bits_len + cap_height;
+    if index_bits.len() != expected_index_bits_len {
+        return Err(CircuitBuilderError::WrongBatchSize {
+            expected: expected_index_bits_len,
+            got: index_bits.len(),
+        });
+    }
+    let path_bits = &index_bits[..path_bits_len];
+    let path_ranges = arity_schedule_bit_ranges(&arity_schedule[..path_depth]);
+    let direction_bits_per_level: Vec<Vec<Target>> = path_ranges
+        .iter()
+        .map(|&(s, e)| path_bits[s..e].to_vec())
+        .collect();
+    let cap_index_bits = &index_bits[path_bits_len..];
 
-    // Select the correct cap entry using a multiplexer
     let selected_root = select_cap_entry(circuit, commitment_cap, cap_index_bits);
 
     // Group matrices by height level (matching format_openings logic)
@@ -336,7 +348,7 @@ where
     circuit.add_mmcs_verify(
         permutation_config,
         &op_vals_digests,
-        path_bits,
+        &direction_bits_per_level,
         &selected_root,
     )
 }
@@ -427,8 +439,7 @@ fn compute_arity_schedule(dimensions: &[Dimensions], merkle_arity: usize) -> Vec
 /// Level `i` uses `log2(step_i)` bits starting at `start`; the returned slice has
 /// one `(start, end)` per level so that `index_bits[start..end]` are the bits for
 /// that level. Used when segmenting proofs or deriving `pos_in_group_i` per level.
-#[allow(dead_code)]
-fn arity_schedule_bit_ranges(arity_schedule: &[usize]) -> Vec<(usize, usize)> {
+pub fn arity_schedule_bit_ranges(arity_schedule: &[usize]) -> Vec<(usize, usize)> {
     let mut start = 0;
     arity_schedule
         .iter()
@@ -440,6 +451,37 @@ fn arity_schedule_bit_ranges(arity_schedule: &[usize]) -> Vec<(usize, usize)> {
             range
         })
         .collect()
+}
+
+/// Replay arity schedule and position-in-group per level from dimensions and leaf index.
+///
+/// Returns `(arity_schedule, positions)` where `positions[i]` is the position in the
+/// group at level `i` (in `0..arity_schedule[i]`), derived from the leaf index bits.
+/// Compatible with Plonky3's `replay_arity_and_positions()` when proof format matches.
+pub fn replay_arity_and_positions(
+    dimensions: &[Dimensions],
+    leaf_index: usize,
+    merkle_arity: usize,
+) -> (Vec<usize>, Vec<usize>) {
+    let arity_schedule = compute_arity_schedule(dimensions, merkle_arity);
+    let ranges = arity_schedule_bit_ranges(&arity_schedule);
+    let positions = ranges
+        .iter()
+        .map(|&(start, end)| {
+            let log_step = end - start;
+            (leaf_index >> start) & ((1 << log_step) - 1)
+        })
+        .collect();
+    (arity_schedule, positions)
+}
+
+/// Number of path bits for the first `path_depth` levels given an arity schedule.
+pub fn path_bits_len(arity_schedule: &[usize], path_depth: usize) -> usize {
+    arity_schedule
+        .iter()
+        .take(path_depth)
+        .map(|&step| step.trailing_zeros() as usize)
+        .sum()
 }
 
 /// Like `verify_batch_circuit` but opened values are already extension elements (no decompose).
@@ -496,8 +538,21 @@ where
         arity_schedule
     );
 
-    let path_bits = &index_bits[..path_depth];
-    let cap_index_bits = &index_bits[path_depth..];
+    let path_bits_len = path_bits_len(&arity_schedule, path_depth);
+    let expected_index_bits_len = path_bits_len + cap_height;
+    if index_bits.len() != expected_index_bits_len {
+        return Err(CircuitBuilderError::WrongBatchSize {
+            expected: expected_index_bits_len,
+            got: index_bits.len(),
+        });
+    }
+    let path_bits = &index_bits[..path_bits_len];
+    let path_ranges = arity_schedule_bit_ranges(&arity_schedule[..path_depth]);
+    let direction_bits_per_level: Vec<Vec<Target>> = path_ranges
+        .iter()
+        .map(|&(s, e)| path_bits[s..e].to_vec())
+        .collect();
+    let cap_index_bits = &index_bits[path_bits_len..];
 
     let selected_root = select_cap_entry(circuit, commitment_cap, cap_index_bits);
 
@@ -528,7 +583,7 @@ where
     circuit.add_mmcs_verify(
         permutation_config,
         &formatted_digests,
-        path_bits,
+        &direction_bits_per_level,
         &selected_root,
     )
 }
@@ -1183,10 +1238,17 @@ mod test {
         let openings =
             format_openings(&openings, &dimensions, path_depth, permutation_config).unwrap();
         let directions_expr = builder.alloc_public_inputs(path_depth, "directions");
+        let direction_bits_per_level: Vec<Vec<_>> =
+            (0..path_depth).map(|i| vec![directions_expr[i]]).collect();
         let root_exprs = builder.alloc_public_inputs(permutation_config.rate_ext(), "root");
 
         let permutation_mmcs_ops = builder
-            .add_mmcs_verify(permutation_config, &openings, &directions_expr, &root_exprs)
+            .add_mmcs_verify(
+                permutation_config,
+                &openings,
+                &direction_bits_per_level,
+                &root_exprs,
+            )
             .unwrap();
         let circuit = builder.build().unwrap();
         #[cfg(debug_assertions)]

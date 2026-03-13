@@ -195,13 +195,23 @@ impl<F: Field> NpoCircuitPlugin<F> for Poseidon2CircuitPlugin<F> {
         let rate_ext = config.rate_ext();
         let is_d1_mode = d == 1;
 
-        // Validate input count
-        let expected_inputs = if is_d1_mode { 16 } else { width_ext + 2 };
-        if data.input_exprs.len() != expected_inputs {
+        // Validate input count: width_ext + mmcs_index_sum + 0..=2 mmcs_bits
+        let min_inputs = width_ext + 1;
+        let max_inputs = width_ext + 1 + 2;
+        let n_inputs = data.input_exprs.len();
+        if is_d1_mode {
+            if n_inputs != 16 {
+                return Err(CircuitBuilderError::NonPrimitiveOpArity {
+                    op: "Poseidon2Perm",
+                    expected: "16 inputs for D=1".to_string(),
+                    got: n_inputs,
+                });
+            }
+        } else if n_inputs < min_inputs || n_inputs > max_inputs {
             return Err(CircuitBuilderError::NonPrimitiveOpArity {
                 op: "Poseidon2Perm",
-                expected: format!("{expected_inputs} inputs"),
-                got: data.input_exprs.len(),
+                expected: format!("{min_inputs}..={max_inputs} inputs"),
+                got: n_inputs,
             });
         }
 
@@ -238,15 +248,17 @@ impl<F: Field> NpoCircuitPlugin<F> for Poseidon2CircuitPlugin<F> {
                 .pop()
                 .unwrap(),
             );
-            widx.push(
-                lower_expr_slots(
-                    &data.input_exprs[width_ext + 1..width_ext + 2],
-                    expr_to_widx,
-                    "mmcs_bit",
-                )?
-                .pop()
-                .unwrap(),
-            );
+            for (i, slot) in data.input_exprs[width_ext + 1..].iter().enumerate() {
+                widx.push(
+                    lower_expr_slots(
+                        core::slice::from_ref(slot),
+                        expr_to_widx,
+                        &format!("mmcs_bit_{i}"),
+                    )?
+                    .pop()
+                    .unwrap(),
+                );
+            }
             widx
         };
 

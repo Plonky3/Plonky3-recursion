@@ -48,11 +48,12 @@ impl Poseidon2PermExecutor {
         inputs: &[Vec<WitnessId>],
         width_ext: usize,
     ) -> Result<(), CircuitError> {
-        let expected_inputs = width_ext + 2;
-        if inputs.len() != expected_inputs {
+        let min_inputs = width_ext + 1;
+        let max_inputs = width_ext + 1 + 2;
+        if inputs.len() < min_inputs || inputs.len() > max_inputs {
             return Err(CircuitError::NonPrimitiveOpLayoutMismatch {
                 op: self.op_type.clone(),
-                expected: format!("{expected_inputs} input vectors"),
+                expected: format!("{min_inputs}..={max_inputs} input vectors"),
                 got: inputs.len(),
             });
         }
@@ -72,12 +73,22 @@ impl Poseidon2PermExecutor {
                 got: inputs[width_ext].len(),
             });
         }
-        if inputs[width_ext + 1].len() > 1 {
+        let num_mmcs_bits = inputs.len().saturating_sub(width_ext + 1);
+        if num_mmcs_bits > 2 {
             return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
                 op: self.op_type.clone(),
-                expected: "0 or 1 element for mmcs_bit".to_string(),
-                got: inputs[width_ext + 1].len(),
+                expected: "1 or 2 elements for mmcs_bits".to_string(),
+                got: num_mmcs_bits,
             });
+        }
+        for slot in &inputs[width_ext + 1..] {
+            if slot.len() > 1 {
+                return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
+                    op: self.op_type.clone(),
+                    expected: "0 or 1 element per mmcs_bit slot".to_string(),
+                    got: slot.len(),
+                });
+            }
         }
         Ok(())
     }
@@ -280,30 +291,42 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Poseidon2Perm
             Err(_) => None,
         };
 
-        let mmcs_bit = if let Some(&wid) = inputs[width_ext + 1].first() {
-            let val = ctx.get_witness(wid)?;
-            match val {
-                v if v == F::ZERO => false,
-                v if v == F::ONE => true,
-                v => {
+        let log_arity = (merkle_arity as usize).trailing_zeros() as usize;
+        let num_bits = if self.merkle_path {
+            log_arity.max(1)
+        } else {
+            0
+        };
+        let mut pos_in_group = 0usize;
+        if self.merkle_path {
+            for (i, slot) in inputs[width_ext + 1..].iter().take(num_bits).enumerate() {
+                let val = if let Some(&wid) = slot.first() {
+                    let v = ctx.get_witness(wid)?;
+                    match (v == F::ZERO, v == F::ONE) {
+                        (true, _) => false,
+                        (_, true) => true,
+                        _ => {
+                            return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
+                                op: self.op_type.clone(),
+                                operation_index: ctx.operation_id(),
+                                expected: "boolean mmcs_bit (0 or 1)".into(),
+                                got: format!("{v:?}"),
+                            });
+                        }
+                    }
+                } else {
                     return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
                         op: self.op_type.clone(),
                         operation_index: ctx.operation_id(),
-                        expected: "boolean mmcs_bit (0 or 1)".into(),
-                        got: format!("{v:?}"),
+                        expected: "mmcs_bits must be provided when merkle_path=true".into(),
+                        got: "missing mmcs_bit".into(),
                     });
+                };
+                if val {
+                    pos_in_group |= 1 << i;
                 }
             }
-        } else if self.merkle_path {
-            return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
-                op: self.op_type.clone(),
-                operation_index: ctx.operation_id(),
-                expected: "mmcs_bit must be provided when merkle_path=true".into(),
-                got: "missing mmcs_bit".into(),
-            });
-        } else {
-            false
-        };
+        }
 
         let last_output: Option<&Vec<F>> = ctx
             .get_op_state::<Poseidon2ExecutionState<F>>(&self.op_type)
@@ -318,7 +341,7 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Poseidon2Perm
         let resolved_inputs = resolve_all_inputs(
             self.new_start,
             self.merkle_path,
-            mmcs_bit,
+            pos_in_group,
             inputs,
             private_inputs,
             ctx,
@@ -371,7 +394,7 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Poseidon2Perm
         let row = Poseidon2CircuitRow {
             new_start: self.new_start,
             merkle_path: self.merkle_path,
-            mmcs_bit,
+            mmcs_bit: (pos_in_group & 1) != 0,
             mmcs_index_sum,
             input_values,
             in_ctl,
