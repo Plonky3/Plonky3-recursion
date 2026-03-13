@@ -760,6 +760,146 @@ where
     Ok(())
 }
 
+/// Set private data for FRI MMCS with 4-ary grouping when `merkle_arity == 4`.
+///
+/// When `merkle_arity == 4`, uses `dimensions` and `path_depth` to compute the arity
+/// schedule and groups siblings per level: one op per level with 2 elements (binary
+/// level) or 6 elements (three siblings for 4-ary level). When `merkle_arity == 2`,
+/// behaves like [`set_fri_mmcs_private_data`] (one sibling per op).
+pub fn set_fri_mmcs_private_data_with_arity<
+    F,
+    EF,
+    FriMmcs,
+    InputMmcs,
+    H,
+    C,
+    const DIGEST_ELEMS: usize,
+>(
+    runner: &mut CircuitRunner<EF>,
+    op_ids: &[NonPrimitiveOpId],
+    fri_proof: &FriProof<EF, FriMmcs, F, Vec<BatchOpening<F, InputMmcs>>>,
+    dimensions: &[Dimensions],
+    path_depth: usize,
+    merkle_arity: u8,
+) -> Result<(), &'static str>
+where
+    F: Field,
+    EF: ExtensionField<F> + BasedVectorSpace<F>,
+    FriMmcs: Mmcs<EF, Proof = Vec<[F; DIGEST_ELEMS]>>,
+    InputMmcs: Mmcs<F, Proof = Vec<[F; DIGEST_ELEMS]>>,
+    H: CryptographicHasher<F, [F; DIGEST_ELEMS]>
+        + CryptographicHasher<F::Packing, [F::Packing; DIGEST_ELEMS]>
+        + Sync,
+    C: PseudoCompressionFunction<[F; DIGEST_ELEMS], 2>
+        + PseudoCompressionFunction<[F::Packing; DIGEST_ELEMS], 2>
+        + Sync,
+{
+    let mut op_idx = 0;
+    let merkle_arity_usize = merkle_arity as usize;
+    let schedule_4ary: Vec<usize> = if merkle_arity_usize == 4 && !dimensions.is_empty() {
+        let full = compute_arity_schedule(dimensions, merkle_arity_usize);
+        full.into_iter().take(path_depth).collect()
+    } else {
+        Vec::new()
+    };
+    let use_4ary = merkle_arity_usize == 4 && schedule_4ary.len() == path_depth;
+
+    for query_proof in &fri_proof.query_proofs {
+        for batch_opening in &query_proof.input_proof {
+            let siblings = convert_merkle_proof_to_siblings::<F, EF, DIGEST_ELEMS>(
+                &batch_opening.opening_proof,
+            );
+            if use_4ary {
+                let mut sibling_idx = 0usize;
+                for level in schedule_4ary.iter().take(path_depth) {
+                    let n = *level - 1;
+                    if op_idx >= op_ids.len() {
+                        return Err("More ops in arity schedule than op_ids provided");
+                    }
+                    match n {
+                        1 => {
+                            if sibling_idx >= siblings.len() {
+                                return Err("Fewer siblings in proof than required for 4-ary");
+                            }
+                            let s = &siblings[sibling_idx];
+                            runner
+                                .set_private_data(
+                                    op_ids[op_idx],
+                                    NonPrimitiveOpPrivateData::new(Poseidon2PermPrivateData {
+                                        sibling: [s[0], s[1]],
+                                    }),
+                                )
+                                .map_err(|_| "Failed to set private data for input batch MMCS")?;
+                            sibling_idx += 1;
+                        }
+                        3 => {
+                            if sibling_idx + 3 > siblings.len() {
+                                return Err("Fewer siblings in proof than required for 4-ary");
+                            }
+                            let a = &siblings[sibling_idx];
+                            let b = &siblings[sibling_idx + 1];
+                            let c = &siblings[sibling_idx + 2];
+                            runner
+                                .set_private_data(
+                                    op_ids[op_idx],
+                                    NonPrimitiveOpPrivateData::new(Poseidon2PermPrivateData {
+                                        sibling: [a[0], a[1], b[0], b[1], c[0], c[1]],
+                                    }),
+                                )
+                                .map_err(|_| "Failed to set private data for input batch MMCS")?;
+                            sibling_idx += 3;
+                        }
+                        _ => return Err("Unsupported arity in schedule (expected 2 or 4)"),
+                    }
+                    op_idx += 1;
+                }
+                if sibling_idx != siblings.len() {
+                    return Err("More siblings in proof than consumed by arity schedule");
+                }
+            } else {
+                for sibling in &siblings {
+                    if op_idx >= op_ids.len() {
+                        return Err("More siblings in proof than op_ids provided");
+                    }
+                    runner
+                        .set_private_data(
+                            op_ids[op_idx],
+                            NonPrimitiveOpPrivateData::new(Poseidon2PermPrivateData {
+                                sibling: *sibling,
+                            }),
+                        )
+                        .map_err(|_| "Failed to set private data for input batch MMCS")?;
+                    op_idx += 1;
+                }
+            }
+        }
+
+        for phase_opening in &query_proof.commit_phase_openings {
+            let siblings = convert_merkle_proof_to_siblings::<F, EF, DIGEST_ELEMS>(
+                &phase_opening.opening_proof,
+            );
+            for sibling in siblings {
+                if op_idx >= op_ids.len() {
+                    return Err("More siblings in proof than op_ids provided");
+                }
+                runner
+                    .set_private_data(
+                        op_ids[op_idx],
+                        NonPrimitiveOpPrivateData::new(Poseidon2PermPrivateData { sibling }),
+                    )
+                    .map_err(|_| "Failed to set private data for commit-phase MMCS")?;
+                op_idx += 1;
+            }
+        }
+    }
+
+    if op_idx != op_ids.len() {
+        return Err("Fewer siblings in proof than op_ids provided");
+    }
+
+    Ok(())
+}
+
 /// [HidingFriPcs](p3_fri::HidingFriPcs) wraps the inner FRI proof as
 /// `(random_opened_values, inner_fri_proof)`.
 pub(crate) type HidingFriProof<F, EF, FriMmcs, InputMmcs> = (

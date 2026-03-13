@@ -273,8 +273,14 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Poseidon2Perm
 
         let private_inputs: Option<&[F]> = match ctx.get_private_data() {
             Ok(private_data) => {
-                if let Some(data) = private_data.downcast_ref::<Poseidon2PermPrivateData<F, 2>>() {
-                    if !self.merkle_path {
+                if !self.merkle_path {
+                    if private_data
+                        .downcast_ref::<Poseidon2PermPrivateData<F, 2>>()
+                        .is_some()
+                        || private_data
+                            .downcast_ref::<Poseidon2PermPrivateData<F, 6>>()
+                            .is_some()
+                    {
                         return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
                             op: self.op_type.clone(),
                             operation_index: ctx.operation_id(),
@@ -283,6 +289,21 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Poseidon2Perm
                             got: "private data provided for non-Merkle operation".to_string(),
                         });
                     }
+                    None
+                } else if merkle_arity == 4 {
+                    private_data
+                        .downcast_ref::<Poseidon2PermPrivateData<F, 6>>()
+                        .map_or_else(
+                            || {
+                                private_data
+                                    .downcast_ref::<Poseidon2PermPrivateData<F, 2>>()
+                                    .map(|data| &data.sibling[..])
+                            },
+                            |data| Some(&data.sibling[..]),
+                        )
+                } else if let Some(data) =
+                    private_data.downcast_ref::<Poseidon2PermPrivateData<F, 2>>()
+                {
                     Some(&data.sibling[..])
                 } else {
                     None
