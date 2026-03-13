@@ -44,9 +44,12 @@ use crate::constraint_profile::ConstraintProfile;
 pub enum Poseidon2AirWrapperInner {
     BabyBearD4Width16(Box<Poseidon2CircuitAirBabyBearD4Width16>),
     BabyBearD4Width24(Box<Poseidon2CircuitAirBabyBearD4Width24>),
+    BabyBearD4Width32(Box<Poseidon2CircuitAirBabyBearD4Width32>),
     KoalaBearD4Width16(Box<Poseidon2CircuitAirKoalaBearD4Width16>),
     KoalaBearD4Width24(Box<Poseidon2CircuitAirKoalaBearD4Width24>),
+    KoalaBearD4Width32(Box<Poseidon2CircuitAirKoalaBearD4Width32>),
     GoldilocksD2Width8(Box<Poseidon2CircuitAirGoldilocksD2Width8>),
+    GoldilocksD2Width16(Box<Poseidon2CircuitAirGoldilocksD2Width16>),
 }
 
 impl Poseidon2AirWrapperInner {
@@ -54,9 +57,12 @@ impl Poseidon2AirWrapperInner {
         match self {
             Self::BabyBearD4Width16(air) => air.width(),
             Self::BabyBearD4Width24(air) => air.width(),
+            Self::BabyBearD4Width32(air) => air.width(),
             Self::KoalaBearD4Width16(air) => air.width(),
             Self::KoalaBearD4Width24(air) => air.width(),
+            Self::KoalaBearD4Width32(air) => air.width(),
             Self::GoldilocksD2Width8(air) => air.width(),
+            Self::GoldilocksD2Width16(air) => air.width(),
         }
     }
 }
@@ -66,9 +72,12 @@ impl Clone for Poseidon2AirWrapperInner {
         match self {
             Self::BabyBearD4Width16(air) => Self::BabyBearD4Width16(air.clone()),
             Self::BabyBearD4Width24(air) => Self::BabyBearD4Width24(air.clone()),
+            Self::BabyBearD4Width32(air) => Self::BabyBearD4Width32(air.clone()),
             Self::KoalaBearD4Width16(air) => Self::KoalaBearD4Width16(air.clone()),
             Self::KoalaBearD4Width24(air) => Self::KoalaBearD4Width24(air.clone()),
+            Self::KoalaBearD4Width32(air) => Self::KoalaBearD4Width32(air.clone()),
             Self::GoldilocksD2Width8(air) => Self::GoldilocksD2Width8(air.clone()),
+            Self::GoldilocksD2Width16(air) => Self::GoldilocksD2Width16(air.clone()),
         }
     }
 }
@@ -809,6 +818,9 @@ impl Poseidon2Prover {
             Poseidon2Config::BabyBearD4Width24 => Poseidon2AirWrapperInner::BabyBearD4Width24(
                 Box::new(BabyBearD4Width24::default_air()),
             ),
+            Poseidon2Config::BabyBearD4Width32 => Poseidon2AirWrapperInner::BabyBearD4Width32(
+                Box::new(BabyBearD4Width32::default_air()),
+            ),
             Poseidon2Config::KoalaBearD1Width16 | Poseidon2Config::KoalaBearD4Width16 => {
                 Poseidon2AirWrapperInner::KoalaBearD4Width16(Box::new(
                     KoalaBearD4Width16::default_air(),
@@ -817,8 +829,14 @@ impl Poseidon2Prover {
             Poseidon2Config::KoalaBearD4Width24 => Poseidon2AirWrapperInner::KoalaBearD4Width24(
                 Box::new(KoalaBearD4Width24::default_air()),
             ),
+            Poseidon2Config::KoalaBearD4Width32 => Poseidon2AirWrapperInner::KoalaBearD4Width32(
+                Box::new(KoalaBearD4Width32::default_air()),
+            ),
             Poseidon2Config::GoldilocksD2Width8 => Poseidon2AirWrapperInner::GoldilocksD2Width8(
                 Box::new(goldilocks_d2_width8_default_air()),
+            ),
+            Poseidon2Config::GoldilocksD2Width16 => Poseidon2AirWrapperInner::GoldilocksD2Width16(
+                Box::new(goldilocks_d2_width16_default_air()),
             ),
         }
     }

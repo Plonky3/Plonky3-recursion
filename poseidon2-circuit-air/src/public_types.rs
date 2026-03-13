@@ -114,6 +114,45 @@ impl BabyBearD4Width24 {
     }
 }
 
+/// Configuration for BabyBear with a quartic extension and a 32-element
+/// Poseidon2 state.
+pub struct BabyBearD4Width32;
+
+impl Poseidon2Params for BabyBearD4Width32 {
+    type BaseField = BabyBear;
+    const CONFIG: Poseidon2Config = Poseidon2Config::BabyBearD4Width32;
+}
+
+impl BabyBearD4Width32 {
+    /// Return the canonical round constants for this configuration.
+    pub const fn round_constants() -> RoundConstants<BabyBear, 32, 4, 29> {
+        RoundConstants::new(
+            p3_baby_bear::BABYBEAR_POSEIDON2_RC_32_EXTERNAL_INITIAL,
+            p3_baby_bear::BABYBEAR_POSEIDON2_RC_32_INTERNAL,
+            p3_baby_bear::BABYBEAR_POSEIDON2_RC_32_EXTERNAL_FINAL,
+        )
+    }
+
+    /// Create an AIR instance with canonical round constants and an empty
+    /// preprocessed trace.
+    pub const fn default_air() -> Poseidon2CircuitAirBabyBearD4Width32 {
+        Poseidon2CircuitAirBabyBearD4Width32::new(Self::round_constants())
+    }
+
+    /// Create an AIR instance with canonical round constants, pre-populated
+    /// preprocessed data, and a minimum trace height.
+    pub fn default_air_with_preprocessed(
+        preprocessed: Vec<BabyBear>,
+        min_height: usize,
+    ) -> Poseidon2CircuitAirBabyBearD4Width32 {
+        Poseidon2CircuitAirBabyBearD4Width32::new_with_preprocessed(
+            Self::round_constants(),
+            preprocessed,
+        )
+        .with_min_height(min_height)
+    }
+}
+
 /// Configuration for KoalaBear with a quartic extension and a 16-element
 /// Poseidon2 state.
 ///
@@ -226,6 +265,21 @@ pub type Poseidon2CircuitAirBabyBearD4Width24 = Poseidon2CircuitAir<
     { BabyBearD4Width24::SBOX_REGISTERS },
     { BabyBearD4Width24::HALF_FULL_ROUNDS },
     { BabyBearD4Width24::PARTIAL_ROUNDS },
+>;
+
+/// BabyBear Poseidon2 circuit AIR with quartic extension and 32-element state.
+pub type Poseidon2CircuitAirBabyBearD4Width32 = Poseidon2CircuitAir<
+    BabyBear,
+    GenericPoseidon2LinearLayersBabyBear,
+    { BabyBearD4Width32::D },
+    { BabyBearD4Width32::WIDTH },
+    { BabyBearD4Width32::WIDTH_EXT },
+    { BabyBearD4Width32::RATE_EXT },
+    { BabyBearD4Width32::CAPACITY_EXT },
+    { BabyBearD4Width32::SBOX_DEGREE },
+    { BabyBearD4Width32::SBOX_REGISTERS },
+    { BabyBearD4Width32::HALF_FULL_ROUNDS },
+    { BabyBearD4Width32::PARTIAL_ROUNDS },
 >;
 
 /// KoalaBear Poseidon2 circuit AIR with quartic extension and 16-element state.

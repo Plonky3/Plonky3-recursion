@@ -124,10 +124,9 @@ impl Poseidon2Config {
             | Self::KoalaBearD4Width16
             | Self::KoalaBearD4Width24
             | Self::GoldilocksD2Width8
-            | Self::GoldilocksD2Width16
+            | Self::GoldilocksD2Width16 => 4,
             // Width 32 configs use 8 half-full rounds (see poseidon2::round_numbers).
-            | Self::BabyBearD4Width32
-            | Self::KoalaBearD4Width32 => 8,
+            Self::BabyBearD4Width32 | Self::KoalaBearD4Width32 => 8,
         }
     }
 
