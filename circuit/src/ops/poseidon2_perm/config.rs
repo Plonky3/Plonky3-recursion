@@ -12,23 +12,31 @@ pub enum Poseidon2Config {
     BabyBearD1Width16,
     BabyBearD4Width16,
     BabyBearD4Width24,
+    /// BabyBear with quartic extension, width 32.
+    BabyBearD4Width32,
     /// KoalaBear with extension degree D=1 (base field challenges), width 16.
     KoalaBearD1Width16,
     KoalaBearD4Width16,
     KoalaBearD4Width24,
+    /// KoalaBear with quartic extension, width 32.
+    KoalaBearD4Width32,
     /// Goldilocks with extension degree D=2, width 8 (matches Poseidon2Goldilocks<8>).
     GoldilocksD2Width8,
+    /// Goldilocks with quadratic extension, width 16.
+    GoldilocksD2Width16,
 }
 
 impl Poseidon2Config {
     pub const fn d(self) -> usize {
         match self {
             Self::BabyBearD1Width16 | Self::KoalaBearD1Width16 => 1,
-            Self::GoldilocksD2Width8 => 2,
+            Self::GoldilocksD2Width8 | Self::GoldilocksD2Width16 => 2,
             Self::BabyBearD4Width16
             | Self::BabyBearD4Width24
+            | Self::BabyBearD4Width32
             | Self::KoalaBearD4Width16
-            | Self::KoalaBearD4Width24 => 4,
+            | Self::KoalaBearD4Width24
+            | Self::KoalaBearD4Width32 => 4,
         }
     }
 
@@ -37,8 +45,10 @@ impl Poseidon2Config {
             Self::BabyBearD1Width16
             | Self::BabyBearD4Width16
             | Self::KoalaBearD1Width16
-            | Self::KoalaBearD4Width16 => 16,
+            | Self::KoalaBearD4Width16
+            | Self::GoldilocksD2Width16 => 16,
             Self::BabyBearD4Width24 | Self::KoalaBearD4Width24 => 24,
+            Self::BabyBearD4Width32 | Self::KoalaBearD4Width32 => 32,
             Self::GoldilocksD2Width8 => 8,
         }
     }
@@ -49,7 +59,12 @@ impl Poseidon2Config {
             Self::BabyBearD1Width16 | Self::KoalaBearD1Width16 => 8,
             Self::BabyBearD4Width16 | Self::KoalaBearD4Width16 => 2,
             Self::BabyBearD4Width24 | Self::KoalaBearD4Width24 => 4,
+            // For width 32 with D=4 we have 8 extension limbs; keep capacity_ext=2,
+            // so rate_ext=6.
+            Self::BabyBearD4Width32 | Self::KoalaBearD4Width32 => 6,
+            // For Goldilocks D=2, keep capacity_ext=2 and let rate_ext grow with width.
             Self::GoldilocksD2Width8 => 2,
+            Self::GoldilocksD2Width16 => 6,
         }
     }
 
@@ -63,17 +78,25 @@ impl Poseidon2Config {
             Self::BabyBearD1Width16 | Self::KoalaBearD1Width16 => 8,
             Self::BabyBearD4Width16
             | Self::BabyBearD4Width24
+            | Self::BabyBearD4Width32
             | Self::KoalaBearD4Width16
-            | Self::KoalaBearD4Width24 => 2,
-            Self::GoldilocksD2Width8 => 2,
+            | Self::KoalaBearD4Width24
+            | Self::KoalaBearD4Width32 => 2,
+            Self::GoldilocksD2Width8 | Self::GoldilocksD2Width16 => 2,
         }
     }
 
     pub const fn sbox_degree(self) -> u64 {
         match self {
-            Self::BabyBearD1Width16 | Self::BabyBearD4Width16 | Self::BabyBearD4Width24 => 7,
-            Self::KoalaBearD1Width16 | Self::KoalaBearD4Width16 | Self::KoalaBearD4Width24 => 3,
-            Self::GoldilocksD2Width8 => 7,
+            Self::BabyBearD1Width16
+            | Self::BabyBearD4Width16
+            | Self::BabyBearD4Width24
+            | Self::BabyBearD4Width32 => 7,
+            Self::KoalaBearD1Width16
+            | Self::KoalaBearD4Width16
+            | Self::KoalaBearD4Width24
+            | Self::KoalaBearD4Width32 => 3,
+            Self::GoldilocksD2Width8 | Self::GoldilocksD2Width16 => 7,
         }
     }
 
@@ -82,8 +105,13 @@ impl Poseidon2Config {
             Self::BabyBearD1Width16
             | Self::BabyBearD4Width16
             | Self::BabyBearD4Width24
-            | Self::GoldilocksD2Width8 => 1,
-            Self::KoalaBearD1Width16 | Self::KoalaBearD4Width16 | Self::KoalaBearD4Width24 => 0,
+            | Self::BabyBearD4Width32
+            | Self::GoldilocksD2Width8
+            | Self::GoldilocksD2Width16 => 1,
+            Self::KoalaBearD1Width16
+            | Self::KoalaBearD4Width16
+            | Self::KoalaBearD4Width24
+            | Self::KoalaBearD4Width32 => 0,
         }
     }
 
@@ -95,7 +123,11 @@ impl Poseidon2Config {
             | Self::KoalaBearD1Width16
             | Self::KoalaBearD4Width16
             | Self::KoalaBearD4Width24
-            | Self::GoldilocksD2Width8 => 4,
+            | Self::GoldilocksD2Width8
+            | Self::GoldilocksD2Width16
+            // Width 32 configs use 8 half-full rounds (see poseidon2::round_numbers).
+            | Self::BabyBearD4Width32
+            | Self::KoalaBearD4Width32 => 8,
         }
     }
 
@@ -103,9 +135,15 @@ impl Poseidon2Config {
         match self {
             Self::BabyBearD1Width16 | Self::BabyBearD4Width16 => 13,
             Self::BabyBearD4Width24 => 21,
+            // BabyBear width 32, s-box degree 7 -> 30 partial rounds.
+            Self::BabyBearD4Width32 => 30,
             Self::KoalaBearD1Width16 | Self::KoalaBearD4Width16 => 20,
             Self::KoalaBearD4Width24 => 23,
-            Self::GoldilocksD2Width8 => 22,
+            // KoalaBear width 32, s-box degree 3 -> 31 partial rounds.
+            Self::KoalaBearD4Width32 => 31,
+            // Goldilocks: reuse 22 partial rounds for both width 8 and 16,
+            // matching upstream Poseidon2Goldilocks configurations.
+            Self::GoldilocksD2Width8 | Self::GoldilocksD2Width16 => 22,
         }
     }
 
@@ -119,10 +157,13 @@ impl Poseidon2Config {
             Self::BabyBearD1Width16 => "baby_bear_d1_w16",
             Self::BabyBearD4Width16 => "baby_bear_d4_w16",
             Self::BabyBearD4Width24 => "baby_bear_d4_w24",
+            Self::BabyBearD4Width32 => "baby_bear_d4_w32",
             Self::KoalaBearD1Width16 => "koala_bear_d1_w16",
             Self::KoalaBearD4Width16 => "koala_bear_d4_w16",
             Self::KoalaBearD4Width24 => "koala_bear_d4_w24",
+            Self::KoalaBearD4Width32 => "koala_bear_d4_w32",
             Self::GoldilocksD2Width8 => "goldilocks_d2_w8",
+            Self::GoldilocksD2Width16 => "goldilocks_d2_w16",
         }
     }
 
@@ -132,10 +173,13 @@ impl Poseidon2Config {
             "baby_bear_d1_w16" => Some(Self::BabyBearD1Width16),
             "baby_bear_d4_w16" => Some(Self::BabyBearD4Width16),
             "baby_bear_d4_w24" => Some(Self::BabyBearD4Width24),
+            "baby_bear_d4_w32" => Some(Self::BabyBearD4Width32),
             "koala_bear_d1_w16" => Some(Self::KoalaBearD1Width16),
             "koala_bear_d4_w16" => Some(Self::KoalaBearD4Width16),
             "koala_bear_d4_w24" => Some(Self::KoalaBearD4Width24),
+            "koala_bear_d4_w32" => Some(Self::KoalaBearD4Width32),
             "goldilocks_d2_w8" => Some(Self::GoldilocksD2Width8),
+            "goldilocks_d2_w16" => Some(Self::GoldilocksD2Width16),
             _ => None,
         }
     }
