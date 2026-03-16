@@ -631,8 +631,6 @@ where
             packing.alu_lanes()
         };
 
-        TraceLengths::from_traces(traces, packing).log();
-
         // Const — preprocessed is already in [ext_mult, index] 2-col format.
         let const_rows = traces.const_trace.values.len();
         let const_prep = primitive[PrimitiveOpType::Const as usize].clone();
@@ -683,6 +681,10 @@ where
             .with_min_height(min_height)
         };
         let alu_matrix: RowMajorMatrix<Val<SC>> = alu_air.trace_to_matrix(&traces.alu_trace);
+
+        // Log trace lengths with the actual scheduled ALU row count.
+        let scheduled_alu_rows = alu_air.scheduled_entry_count();
+        TraceLengths::from_traces(traces, packing).log(Some(scheduled_alu_rows));
 
         // We first handle all non-primitive tables dynamically, which will then be batched alongside primitive ones.
         // Each trace must have a corresponding registered prover for it to be provable.

@@ -49,8 +49,10 @@ use p3_circuit::ops::AluOpKind;
 use p3_circuit::tables::AluTrace;
 use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
 use p3_lookup::LookupAir;
-use p3_lookup::lookup_traits::{Kind, Lookup};
+use p3_lookup::lookup_traits::{Direction, Kind, Lookup};
+use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
+use p3_uni_stark::SymbolicExpression;
 
 use crate::air::utils::{
     create_direct_preprocessed_trace, create_symbolic_variables, get_alu_index_lookups,
@@ -62,6 +64,11 @@ use crate::air::utils::{
 enum ScheduleEntry {
     /// A real ALU op at the given original index.
     Op(usize),
+    /// A paired double-step HornerAcc covering two original ops.
+    ///
+    /// The first index is the step-0 op (provides `a, b, c, out`), the second
+    /// index is the step-1 op (provides `a1, c1, out1`).
+    DoubleHorner(usize, usize),
     /// A virtual zero-separator (multiplicity 0, all values 0).
     Separator,
 }
@@ -177,7 +184,16 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AluAir<F, D> {
 
     /// Total main trace width for this AIR instance.
     pub const fn total_width(&self) -> usize {
-        self.lanes * Self::lane_width()
+        // In addition to per-lane columns we reserve 3 * D extra columns that
+        // are used by the double-step HornerAcc chaining logic:
+        //
+        // - D columns for the intermediate accumulator `int`
+        // - D columns for the second step's `a1`
+        // - D columns for the second step's `c1`
+        //
+        // These extra columns are shared across all lanes and are only
+        // interpreted for lane 0 in the constraint system.
+        self.lanes * Self::lane_width() + 3 * D
     }
 
     /// Number of preprocessed columns per lane (12 total):
@@ -188,7 +204,13 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AluAir<F, D> {
 
     /// Total preprocessed width for this AIR instance.
     pub const fn preprocessed_width(&self) -> usize {
-        self.lanes * Self::preprocessed_lane_width()
+        // Per-lane preprocessed columns plus 5 global columns used for
+        // double-step HornerAcc rows:
+        //
+        // - sel_horner_double
+        // - a1_idx, c1_idx
+        // - a1_reader, c1_reader
+        self.lanes * Self::preprocessed_lane_width() + 5
     }
 
     /// Number of preprocessed columns excluding multiplicity.
@@ -256,6 +278,12 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AluAir<F, D> {
             }
         };
 
+        // Leading separator before the first chain. The cyclic constraint
+        // wraps from the last row back to row 0, and without this separator
+        // the first chain would be a Horner row whose `sel_horner(_double)` = 1,
+        schedule.push(ScheduleEntry::Separator);
+        fill_row(&mut schedule, &mut nc, &non_chain);
+
         for (chain_idx, chain) in chains.iter().enumerate() {
             if chain_idx > 0 {
                 // Complete previous row
@@ -265,10 +293,20 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AluAir<F, D> {
                 fill_row(&mut schedule, &mut nc, &non_chain);
             }
 
-            // Place chain ops in lane 0
-            for &op_idx in chain {
+            // Place chain ops in lane 0, pairing consecutive HornerAcc ops
+            // into double-step rows when possible.
+            let mut i = 0;
+            while i < chain.len() {
                 debug_assert_eq!(schedule.len() % lanes, 0, "chain op not at lane 0");
-                schedule.push(ScheduleEntry::Op(op_idx));
+                if i + 1 < chain.len() {
+                    // Pair two consecutive HornerAcc ops into a DoubleHorner row.
+                    schedule.push(ScheduleEntry::DoubleHorner(chain[i], chain[i + 1]));
+                    i += 2;
+                } else {
+                    // Trailing single HornerAcc op remains a single-step row.
+                    schedule.push(ScheduleEntry::Op(chain[i]));
+                    i += 1;
+                }
                 fill_row(&mut schedule, &mut nc, &non_chain);
             }
         }
@@ -296,18 +334,96 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AluAir<F, D> {
         assert!(lanes > 0, "lane count must be non-zero");
 
         let lane_width = Self::lane_width();
-        let width = lane_width * lanes;
+        let width = self.total_width();
         let entry_count = self.scheduled_entry_count();
         let row_count = entry_count.div_ceil(lanes);
 
         let mut values = F::zero_vec(width * row_count.max(1));
 
-        // Write one entry at position `pos` (row = pos/lanes, lane = pos%lanes)
-        let mut write_op =
-            |pos: usize, a_val: &ExtF, b_val: &ExtF, c_val: &ExtF, out_val: &ExtF| {
-                let row = pos / lanes;
-                let lane = pos % lanes;
+        if let Some(ref schedule) = self.schedule {
+            for (pos, entry) in schedule.iter().enumerate() {
+                match entry {
+                    ScheduleEntry::Op(i) => {
+                        let row = pos / lanes;
+                        let lane = pos % lanes;
+                        let mut cursor = row * width + lane * lane_width;
+
+                        let a_val = &trace.values[*i][0];
+                        let b_val = &trace.values[*i][1];
+                        let c_val = &trace.values[*i][2];
+                        let out_val = &trace.values[*i][3];
+
+                        let a_coeffs = a_val.as_basis_coefficients_slice();
+                        values[cursor..cursor + D].copy_from_slice(a_coeffs);
+                        cursor += D;
+                        let b_coeffs = b_val.as_basis_coefficients_slice();
+                        values[cursor..cursor + D].copy_from_slice(b_coeffs);
+                        cursor += D;
+                        let c_coeffs = c_val.as_basis_coefficients_slice();
+                        values[cursor..cursor + D].copy_from_slice(c_coeffs);
+                        cursor += D;
+                        let out_coeffs = out_val.as_basis_coefficients_slice();
+                        values[cursor..cursor + D].copy_from_slice(out_coeffs);
+                    }
+                    ScheduleEntry::DoubleHorner(i0, i1) => {
+                        // Lane 0: encode a paired double-step Horner row.
+                        let row = pos / lanes;
+                        let lane = pos % lanes;
+                        let base = row * width + lane * lane_width;
+
+                        // Step 0: write a, b, c from first op as usual.
+                        let a0 = &trace.values[*i0][0];
+                        let b0 = &trace.values[*i0][1];
+                        let c0 = &trace.values[*i0][2];
+                        let out0 = &trace.values[*i0][3];
+
+                        let a0_coeffs = a0.as_basis_coefficients_slice();
+                        values[base..base + D].copy_from_slice(a0_coeffs);
+                        let mut cursor = base + D;
+                        let b0_coeffs = b0.as_basis_coefficients_slice();
+                        values[cursor..cursor + D].copy_from_slice(b0_coeffs);
+                        cursor += D;
+                        let c0_coeffs = c0.as_basis_coefficients_slice();
+                        values[cursor..cursor + D].copy_from_slice(c0_coeffs);
+                        cursor += D;
+
+                        // For the main lane `out` we write the second step's output.
+                        let out1 = &trace.values[*i1][3];
+                        let out1_coeffs = out1.as_basis_coefficients_slice();
+                        values[cursor..cursor + D].copy_from_slice(out1_coeffs);
+
+                        // Extra global columns (only meaningful for lane 0):
+                        if lane == 0 {
+                            let extra_base = row * width + self.lanes * lane_width;
+                            // int = step 0's output
+                            let out0_coeffs = out0.as_basis_coefficients_slice();
+                            values[extra_base..extra_base + D].copy_from_slice(out0_coeffs);
+
+                            // a1 and c1 from the second Horner op
+                            let a1 = &trace.values[*i1][0];
+                            let c1 = &trace.values[*i1][2];
+                            let a1_coeffs = a1.as_basis_coefficients_slice();
+                            let c1_coeffs = c1.as_basis_coefficients_slice();
+                            values[extra_base + D..extra_base + 2 * D].copy_from_slice(a1_coeffs);
+                            values[extra_base + 2 * D..extra_base + 3 * D]
+                                .copy_from_slice(c1_coeffs);
+                        }
+                    }
+                    ScheduleEntry::Separator => {
+                        // Separator entries stay zero (already initialized)
+                    }
+                }
+            }
+        } else {
+            for op_idx in 0..trace.values.len() {
+                let row = op_idx / lanes;
+                let lane = op_idx % lanes;
                 let mut cursor = row * width + lane * lane_width;
+
+                let a_val = &trace.values[op_idx][0];
+                let b_val = &trace.values[op_idx][1];
+                let c_val = &trace.values[op_idx][2];
+                let out_val = &trace.values[op_idx][3];
 
                 let a_coeffs = a_val.as_basis_coefficients_slice();
                 values[cursor..cursor + D].copy_from_slice(a_coeffs);
@@ -320,30 +436,6 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AluAir<F, D> {
                 cursor += D;
                 let out_coeffs = out_val.as_basis_coefficients_slice();
                 values[cursor..cursor + D].copy_from_slice(out_coeffs);
-            };
-
-        if let Some(ref schedule) = self.schedule {
-            for (pos, entry) in schedule.iter().enumerate() {
-                if let ScheduleEntry::Op(i) = entry {
-                    write_op(
-                        pos,
-                        &trace.values[*i][0], // a
-                        &trace.values[*i][1], // b
-                        &trace.values[*i][2], // c
-                        &trace.values[*i][3], // out
-                    );
-                }
-                // Separator entries stay zero (already initialized)
-            }
-        } else {
-            for op_idx in 0..trace.values.len() {
-                write_op(
-                    op_idx,
-                    &trace.values[op_idx][0], // a
-                    &trace.values[op_idx][1], // b
-                    &trace.values[op_idx][2], // c
-                    &trace.values[op_idx][3], // out
-                );
             }
         }
 
@@ -358,7 +450,7 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AluAir<F, D> {
     fn build_scheduled_preprocessed_trace(&self, schedule: &[ScheduleEntry]) -> RowMajorMatrix<F> {
         let plw = Self::preprocessed_lane_width(); // 13
         let row_count = schedule.len().div_ceil(self.lanes);
-        let row_width = self.lanes * plw;
+        let row_width = self.preprocessed_width();
 
         let mut values = F::zero_vec(row_count.max(1) * row_width);
 
@@ -371,6 +463,47 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AluAir<F, D> {
                 ScheduleEntry::Op(i) => {
                     let src = &self.preprocessed[i * plw..(i + 1) * plw];
                     values[base..base + plw].copy_from_slice(src);
+                }
+                ScheduleEntry::DoubleHorner(i0, i1) => {
+                    // Lane 0 carries the merged preprocessed data for both steps.
+                    if lane == 0 {
+                        let src0 = &self.preprocessed[*i0 * plw..(*i0 + 1) * plw];
+                        let src1 = &self.preprocessed[*i1 * plw..(*i1 + 1) * plw];
+
+                        // Start from step 0's preprocessed row.
+                        values[base..base + plw].copy_from_slice(src0);
+
+                        // Override out_idx and mult_out with step 1's values.
+                        // Layout: [mult_a, sel_add_vs_mul, sel_bool, sel_muladd, sel_horner,
+                        //          a_idx, b_idx, c_idx, out_idx, mult_b, mult_out, a_is_reader, c_is_reader]
+                        let out_idx1 = src1[8];
+                        let mult_out1 = src1[10];
+
+                        values[base + 8] = out_idx1;
+                        values[base + 10] = mult_out1;
+
+                        // Double mult_b to account for two reads of alpha.
+                        let mult_b0 = values[base + 9];
+                        values[base + 9] = mult_b0 + mult_b0;
+
+                        // Extra global columns live after all per-lane columns.
+                        let extra_base = row * row_width + self.lanes * plw;
+
+                        // Set sel_horner_double = 1.
+                        values[extra_base] = F::ONE;
+
+                        // a1_idx and c1_idx come from step 1's a_idx and c_idx.
+                        let a1_idx = src1[5];
+                        let c1_idx = src1[7];
+                        values[extra_base + 1] = a1_idx;
+                        values[extra_base + 2] = c1_idx;
+
+                        // a1_reader / c1_reader mirror a_is_reader / c_is_reader of step 1.
+                        let a1_reader = src1[11];
+                        let c1_reader = src1[12];
+                        values[extra_base + 3] = a1_reader;
+                        values[extra_base + 4] = c1_reader;
+                    }
                 }
                 ScheduleEntry::Separator => {
                     // multiplicity = 0, all zeros — already initialized
@@ -429,12 +562,31 @@ impl<F: Field, const D: usize> BaseAir<F> for AluAir<F, D> {
     fn preprocessed_trace(&self) -> Option<RowMajorMatrix<F>> {
         self.schedule.as_ref().map_or_else(
             || {
-                Some(create_direct_preprocessed_trace(
+                // No Horner scheduling: build a direct preprocessed trace and then
+                // widen each row to the full preprocessed width by appending zeros
+                // for the extra double-step columns.
+                let base = create_direct_preprocessed_trace(
                     &self.preprocessed,
                     Self::preprocessed_lane_width(),
                     self.lanes,
                     self.min_height,
-                ))
+                );
+                let base_width = base.width();
+                let target_width = self.preprocessed_width();
+                if target_width == base_width {
+                    Some(base)
+                } else {
+                    let height = base.height();
+                    let mut widened =
+                        RowMajorMatrix::new(F::zero_vec(height * target_width), target_width);
+                    for r in 0..height {
+                        let src_row = base.row_slice(r).unwrap();
+                        let dst_start = r * target_width;
+                        widened.values[dst_start..dst_start + base_width].copy_from_slice(&src_row);
+                        // remaining columns stay zero
+                    }
+                    Some(widened)
+                }
             },
             |schedule| Some(self.build_scheduled_preprocessed_trace(schedule)),
         )
@@ -505,13 +657,63 @@ where
                 // MUL_ADD constraint: sel_muladd * (a * b + c - out) = 0
                 builder.assert_zero(sel_muladd * (a * b + c - out));
 
-                // HORNER_ACC constraint (inter-row): next_sel_horner * (local_out * next_b + next_c - next_a - next_out) = 0
+                // HORNER_ACC constraints:
+                //
+                // We support both single-step and double-step Horner accumulation:
+                // - Single-step: next_out = local_out * next_b + next_c - next_a
+                // - Double-step:
+                //     next_int = local_out * next_b + next_c - next_a      (inter-row)
+                //     out      = int * b + c1 - a1                         (intra-row)
+                //
+                // The extra columns are shared across lanes and are only interpreted
+                // when `lane == 0`.
                 let next_sel_horner = preprocessed_next[prep_offset + 4];
-                let next_b = next[main_offset + 1];
-                let next_c = next[main_offset + 2];
-                let next_a = next[main_offset];
-                let next_out = next[main_offset + 3];
-                builder.assert_zero(next_sel_horner * (out * next_b + next_c - next_a - next_out));
+
+                // Global extra columns (only meaningful for lane 0). When the
+                // widened preprocessed/main traces are not present (e.g. in
+                // simple tests or once different ALU profiles are supported), fall
+                // back to the single-step constraint.
+                // TODO: Once different ALU profiles are supported, update comment above.
+                let extra_main = self.lanes * lane_width;
+                let extra_prep = self.lanes * preprocessed_lane_width;
+                let has_extra_cols = extra_main + 3 <= local.len()
+                    && extra_prep < preprocessed_local.len()
+                    && extra_prep < preprocessed_next.len();
+                if lane == 0 && has_extra_cols {
+                    let int = local[extra_main];
+                    let a1 = local[extra_main + 1];
+                    let c1 = local[extra_main + 2];
+                    let next_int = next[extra_main];
+
+                    let sel_horner_double = preprocessed_local[extra_prep];
+                    let next_sel_horner_double = preprocessed_next[extra_prep];
+
+                    let next_b = next[main_offset + 1];
+                    let next_c = next[main_offset + 2];
+                    let next_a = next[main_offset];
+                    let next_out = next[main_offset + 3];
+
+                    // 1) Double-step inter-row: prev_out -> next_int
+                    builder.assert_zero(
+                        next_sel_horner_double * (out * next_b + next_c - next_a - next_int),
+                    );
+
+                    // 2) Single-step inter-row (fallback): prev_out -> next_out
+                    let next_sel_single = next_sel_horner - next_sel_horner_double;
+                    builder
+                        .assert_zero(next_sel_single * (out * next_b + next_c - next_a - next_out));
+
+                    // 3) Intra-row double-step: int -> out
+                    builder.assert_zero(sel_horner_double * (int * b + c1 - a1 - out));
+                } else {
+                    // For non-zero lanes we retain the original single-step constraint.
+                    let next_b = next[main_offset + 1];
+                    let next_c = next[main_offset + 2];
+                    let next_a = next[main_offset];
+                    let next_out = next[main_offset + 3];
+                    builder
+                        .assert_zero(next_sel_horner * (out * next_b + next_c - next_a - next_out));
+                }
             }
         } else {
             // Extension field case (D > 1)
@@ -581,9 +783,20 @@ where
                     builder.assert_zero(sel_muladd * (muladd_acc[i].clone() - out_slice[i]));
                 }
 
-                // HORNER_ACC constraint (inter-row, extension field):
-                // next_out = local_out * next_b + next_c - next_a
+                // HORNER_ACC constraints (extension field):
+                //
+                // Single-step:
+                //   next_out = local_out * next_b + next_c - next_a
+                //
+                // Double-step:
+                //   next_int = local_out * next_b + next_c - next_a      (inter-row)
+                //   out      = int * b + c1 - a1                         (intra-row)
+                //
                 let next_sel_horner = preprocessed_next[prep_offset + 4];
+
+                let extra_main = self.lanes * lane_width;
+                let extra_prep = self.lanes * preprocessed_lane_width;
+
                 let next_a_slice = &next[main_offset..main_offset + D];
                 let next_b_slice = &next[main_offset + D..main_offset + 2 * D];
                 let next_c_slice = &next[main_offset + 2 * D..main_offset + 3 * D];
@@ -602,14 +815,71 @@ where
                         }
                     }
                 }
-                // horner_result = local_out * next_b + next_c - next_a
-                for i in 0..D {
-                    builder.assert_zero(
-                        next_sel_horner
-                            * (horner_mul[i].clone() + next_c_slice[i]
-                                - next_a_slice[i]
-                                - next_out_slice[i]),
-                    );
+
+                let has_extra_cols = extra_main + 3 * D <= local.len()
+                    && extra_prep < preprocessed_local.len()
+                    && extra_prep < preprocessed_next.len();
+
+                if lane == 0 && has_extra_cols {
+                    let int_slice = &local[extra_main..extra_main + D];
+                    let a1_slice = &local[extra_main + D..extra_main + 2 * D];
+                    let c1_slice = &local[extra_main + 2 * D..extra_main + 3 * D];
+                    let next_int_slice = &next[extra_main..extra_main + D];
+
+                    let sel_horner_double = preprocessed_local[extra_prep];
+                    let next_sel_horner_double = preprocessed_next[extra_prep];
+
+                    // 1) Double-step inter-row: prev_out -> next_int
+                    for i in 0..D {
+                        builder.assert_zero(
+                            next_sel_horner_double
+                                * (horner_mul[i].clone() + next_c_slice[i]
+                                    - next_a_slice[i]
+                                    - next_int_slice[i]),
+                        );
+                    }
+
+                    // 2) Single-step inter-row (fallback): prev_out -> next_out
+                    let next_sel_single = next_sel_horner - next_sel_horner_double;
+                    for i in 0..D {
+                        builder.assert_zero(
+                            next_sel_single.clone()
+                                * (horner_mul[i].clone() + next_c_slice[i]
+                                    - next_a_slice[i]
+                                    - next_out_slice[i]),
+                        );
+                    }
+
+                    // 3) Intra-row double-step: int -> out
+                    // Reuse `horner_mul` accumulator but for int * b (within current row).
+                    let mut int_mul = vec![AB::Expr::ZERO; D];
+                    for i in 0..D {
+                        for j in 0..D {
+                            let term = int_slice[i] * b_slice[j];
+                            let k = i + j;
+                            if k < D {
+                                int_mul[k] = int_mul[k].clone() + term;
+                            } else {
+                                int_mul[k - D] = int_mul[k - D].clone() + w.clone() * term;
+                            }
+                        }
+                    }
+                    for i in 0..D {
+                        builder.assert_zero(
+                            sel_horner_double
+                                * (int_mul[i].clone() + c1_slice[i] - a1_slice[i] - out_slice[i]),
+                        );
+                    }
+                } else {
+                    // Non-zero lanes keep the original single-step constraint.
+                    for i in 0..D {
+                        builder.assert_zero(
+                            next_sel_horner
+                                * (horner_mul[i].clone() + next_c_slice[i]
+                                    - next_a_slice[i]
+                                    - next_out_slice[i]),
+                        );
+                    }
                 }
             }
         }
@@ -649,6 +919,46 @@ impl<F: Field, const D: usize> LookupAir<F> for AluAir<F, D> {
                 LookupAir::register_lookup(self, Kind::Global("WitnessChecks".to_string()), &[inps])
             }));
         }
+
+        // Extra lookups for step 1's a1 and c1 in DoubleHorner rows.
+        // On non-DoubleHorner rows, a1_reader/c1_reader are zero so the
+        // effective multiplicity is zero and no bus contribution is made.
+        let extra_main = self.lanes * Self::lane_width();
+        let extra_prep = self.lanes * Self::preprocessed_lane_width();
+
+        let mult_a_lane0 = SymbolicExpression::from(preprocessed_local[0]);
+        let a1_reader = SymbolicExpression::from(preprocessed_local[extra_prep + 3]);
+        let c1_reader = SymbolicExpression::from(preprocessed_local[extra_prep + 4]);
+
+        let eff_mult_a1 = mult_a_lane0.clone() * a1_reader;
+        let eff_mult_c1 = mult_a_lane0 * c1_reader;
+
+        let a1_idx = SymbolicExpression::from(preprocessed_local[extra_prep + 1]);
+        let mut a1_inps = vec![a1_idx];
+        for j in 0..D {
+            a1_inps.push(SymbolicExpression::from(
+                symbolic_main_local[extra_main + D + j],
+            ));
+        }
+        lookups.push(LookupAir::register_lookup(
+            self,
+            Kind::Global("WitnessChecks".to_string()),
+            &[(a1_inps, eff_mult_a1, Direction::Receive)],
+        ));
+
+        let c1_idx = SymbolicExpression::from(preprocessed_local[extra_prep + 2]);
+        let mut c1_inps = vec![c1_idx];
+        for j in 0..D {
+            c1_inps.push(SymbolicExpression::from(
+                symbolic_main_local[extra_main + 2 * D + j],
+            ));
+        }
+        lookups.push(LookupAir::register_lookup(
+            self,
+            Kind::Global("WitnessChecks".to_string()),
+            &[(c1_inps, eff_mult_c1, Direction::Receive)],
+        ));
+
         lookups
     }
 }
@@ -693,7 +1003,7 @@ mod tests {
         let preprocessed_values = AluAir::<Val, 1>::trace_to_preprocessed(&trace);
         let air = AluAir::<Val, 1>::new_with_preprocessed(n, 1, preprocessed_values);
         let matrix: RowMajorMatrix<Val> = air.trace_to_matrix(&trace);
-        assert_eq!(matrix.width(), 4);
+        assert_eq!(matrix.width(), air.total_width());
 
         let config = build_test_config();
         let pis: Vec<Val> = vec![];
@@ -855,6 +1165,37 @@ mod tests {
     }
 
     #[test]
+    fn prove_verify_alu_double_step_horner_base_field() {
+        // Build a simple Horner chain of length 3 over the base field and
+        // check that the scheduled ALU trace with double-step rows verifies.
+        let n = 3;
+        let op_kind = vec![AluOpKind::HornerAcc; n];
+
+        // Use a fixed alpha and simple values so the Horner relation holds
+        let zero = Val::ZERO;
+        let values = vec![[zero, zero, zero, zero]; n];
+        let indices = vec![[WitnessId(1), WitnessId(2), WitnessId(3), WitnessId(4)]; n];
+
+        let trace = AluTrace {
+            op_kind,
+            values,
+            indices,
+        };
+
+        let preprocessed_values = AluAir::<Val, 1>::trace_to_preprocessed(&trace);
+        let air = AluAir::<Val, 1>::new_with_preprocessed(n, 1, preprocessed_values);
+        let matrix: RowMajorMatrix<Val> = air.trace_to_matrix(&trace);
+
+        let config = build_test_config();
+        let pis: Vec<Val> = vec![];
+        let (prover_data, verifier_data) =
+            setup_preprocessed(&config, &air, log2_ceil_usize(matrix.height())).unwrap();
+        let proof = prove_with_preprocessed(&config, &air, matrix, &pis, Some(&prover_data));
+        verify_with_preprocessed(&config, &air, &proof, &pis, Some(&verifier_data))
+            .expect("double-step horner base-field verification failed");
+    }
+
+    #[test]
     fn prove_verify_alu_extension_field_d4() {
         type ExtField = BinomialExtensionField<Val, 4>;
         let n = 4;
@@ -894,7 +1235,7 @@ mod tests {
 
         let air = AluAir::<Val, 4>::new_binomial_with_preprocessed(n, 1, w, preprocessed_values);
         let matrix: RowMajorMatrix<Val> = air.trace_to_matrix(&trace);
-        assert_eq!(matrix.width(), AluAir::<Val, 4>::lane_width());
+        assert_eq!(matrix.width(), air.total_width());
         let (prover_data, verifier_data) =
             setup_preprocessed(&config, &air, log2_ceil_usize(matrix.height())).unwrap();
         let proof = prove_with_preprocessed(&config, &air, matrix, &pis, Some(&prover_data));

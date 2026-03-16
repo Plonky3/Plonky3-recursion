@@ -68,7 +68,7 @@ struct Args {
 
     #[arg(
         long,
-        default_value_t = 5,
+        default_value_t = 2,
         help = "Log size of final polynomial after FRI folding"
     )]
     pub log_final_poly_len: usize,
@@ -96,7 +96,7 @@ struct Args {
 
     #[arg(
         long,
-        default_value_t = 2,
+        default_value_t = 3,
         help = "Number of ALU lanes for the table packing in recursive layers"
     )]
     pub alu_lanes: usize,

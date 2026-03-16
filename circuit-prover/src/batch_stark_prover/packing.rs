@@ -106,10 +106,10 @@ impl Default for TablePacking {
 pub(crate) struct TraceLengths {
     /// Number of entries in the constant table.
     pub const_: usize,
-    /// Number of logical public-input rows (before lane packing).
+    /// Number of logical public-input rows.
     pub public: usize,
-    /// Number of logical ALU rows (before lane packing).
-    pub alu: usize,
+    /// Total ALU operations.
+    pub alu_ops: usize,
     /// Number of public-input operations packed per AIR row.
     pub public_lanes: usize,
     /// Number of ALU operations packed per AIR row.
@@ -123,8 +123,8 @@ impl TraceLengths {
     pub fn from_traces<F>(traces: &Traces<F>, packing: TablePacking) -> Self {
         Self {
             const_: traces.const_trace.values.len(),
-            public: traces.public_trace.values.len() / packing.public_lanes(),
-            alu: traces.alu_trace.op_kind.len() / packing.alu_lanes(),
+            public: traces.public_trace.values.len(),
+            alu_ops: traces.alu_trace.op_kind.len(),
             public_lanes: packing.public_lanes(),
             alu_lanes: packing.alu_lanes(),
             non_primitive: traces
@@ -136,13 +136,15 @@ impl TraceLengths {
     }
 
     /// Log all trace lengths at info level.
-    pub fn log(&self) {
+    pub fn log(&self, scheduled_alu_rows: Option<usize>) {
+        let alu_rows = scheduled_alu_rows.unwrap_or(self.alu_ops) / self.alu_lanes;
+        let public_rows = self.public / self.public_lanes;
         tracing::info!(
             const_ = %self.const_,
             const_lanes = 1usize,
-            public = %self.public,
+            public = %public_rows,
             public_lanes = %self.public_lanes,
-            alu = %self.alu,
+            alu_rows = %alu_rows,
             alu_lanes = %self.alu_lanes,
             "Primitive trace lengths"
         );

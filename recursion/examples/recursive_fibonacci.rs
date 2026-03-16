@@ -103,7 +103,7 @@ struct Args {
 
     #[arg(
         long,
-        default_value_t = 3,
+        default_value_t = 2,
         help = "Number of ALU lanes for the table packing in recursive layers"
     )]
     pub alu_lanes: usize,
