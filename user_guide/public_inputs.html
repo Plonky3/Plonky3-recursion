@@ -197,7 +197,7 @@
 <p>If building the verification circuit manually, use the dedicated builders:</p>
 <h3 id="starkverifierinputsbuilder-uni-stark"><a class="header" href="#starkverifierinputsbuilder-uni-stark"><code>StarkVerifierInputsBuilder</code> (uni-STARK)</a></h3>
 <p>Returned by <code>verify_p3_uni_proof_circuit</code>. Packs values from a <code>Proof&lt;SC&gt;</code>:</p>
-<pre><code class="language-rust ignore">let public_inputs = verifier_inputs.pack_values(
+<pre><code class="language-rust ignore">let public_inputs = verifier_inputs.pack_public_values(
     &amp;air_public_inputs,
     &amp;proof,
     &amp;preprocessed_commit,
@@ -205,7 +205,7 @@
 runner.set_public_inputs(&amp;public_inputs)?;</code></pre>
 <h3 id="batchstarkverifierinputsbuilder-batch-stark"><a class="header" href="#batchstarkverifierinputsbuilder-batch-stark"><code>BatchStarkVerifierInputsBuilder</code> (batch-STARK)</a></h3>
 <p>Returned by <code>verify_p3_batch_proof_circuit</code>. Packs values from a <code>BatchProof&lt;SC&gt;</code> and <code>CommonData&lt;SC&gt;</code>:</p>
-<pre><code class="language-rust ignore">let public_inputs = verifier_inputs.pack_values(
+<pre><code class="language-rust ignore">let public_inputs = verifier_inputs.pack_public_values(
     &amp;table_public_inputs,
     &amp;batch_proof,
     &amp;common_data,
