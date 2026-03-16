@@ -12,15 +12,7 @@ jobs:
   label:
     runs-on: ubuntu-latest
     steps:
-      - name: Check if PR author is org member
-        id: author_member
-        run: |
-          is_member=$(gh api orgs/Plonky3/members/${{ github.event.pull_request.user.login }} --silent --http-status | grep -q 204 && echo true || echo false)
-          echo "is_member=$is_member" >> $GITHUB_OUTPUT
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Label by PR title
-        if: steps.author_member.outputs.is_member == 'true'
         run: |
           title="${PR_TITLE}"
           labels=()
