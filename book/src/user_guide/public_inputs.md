@@ -33,7 +33,7 @@ If building the verification circuit manually, use the dedicated builders:
 Returned by `verify_p3_uni_proof_circuit`. Packs values from a `Proof<SC>`:
 
 ```rust,ignore
-let public_inputs = verifier_inputs.pack_values(
+let public_inputs = verifier_inputs.pack_public_values(
     &air_public_inputs,
     &proof,
     &preprocessed_commit,
@@ -46,7 +46,7 @@ runner.set_public_inputs(&public_inputs)?;
 Returned by `verify_p3_batch_proof_circuit`. Packs values from a `BatchProof<SC>` and `CommonData<SC>`:
 
 ```rust,ignore
-let public_inputs = verifier_inputs.pack_values(
+let public_inputs = verifier_inputs.pack_public_values(
     &table_public_inputs,
     &batch_proof,
     &common_data,

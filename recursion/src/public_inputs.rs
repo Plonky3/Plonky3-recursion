@@ -419,7 +419,7 @@ where
 /// let built_circuit = circuit.build()?;
 ///
 /// // Phase 2: Execution
-/// let public_inputs = verifier.pack_values(&pis, &proof, &None);
+/// let public_inputs = verifier.pack_public_values(&pis, &proof, &None);
 /// runner.set_public_inputs(&public_inputs)?;
 /// ```
 pub struct StarkVerifierInputsBuilder<SC, Comm, OpeningProof>
@@ -522,7 +522,7 @@ where
     ///
     /// # Returns
     /// A public input vector ready to be passed to the verifier circuit.
-    pub fn pack_values(
+    pub fn pack_public_values(
         &self,
         air_public_values: &[Val<SC>],
         proof: &Proof<SC>,
@@ -562,6 +562,23 @@ where
         SC::Challenge: BasedVectorSpace<Val<SC>> + From<Val<SC>>,
     {
         ProofTargets::<SC, Comm, OpeningProof>::get_private_values(proof)
+    }
+
+    /// Pack both public and private input values for the verifier circuit.
+    pub fn pack_values(
+        &self,
+        air_public_values: &[Val<SC>],
+        proof: &Proof<SC>,
+        preprocessed_commit: &Option<Com<SC>>,
+    ) -> (Vec<SC::Challenge>, Vec<SC::Challenge>)
+    where
+        Val<SC>: PrimeField64,
+        SC::Challenge: BasedVectorSpace<Val<SC>> + From<Val<SC>>,
+    {
+        let public_values = self.pack_public_values(air_public_values, proof, preprocessed_commit);
+        let private_values = self.pack_private_values(proof);
+
+        (public_values, private_values)
     }
 }
 
@@ -656,7 +673,7 @@ where
     ///
     /// # Returns
     /// A flattened public input vector ready for the batch verifier circuit.
-    pub fn pack_values(
+    pub fn pack_public_values(
         &self,
         air_public_values: &[Vec<Val<SC>>],
         proof: &BatchProof<SC>,
@@ -683,6 +700,23 @@ where
         SC::Challenge: BasedVectorSpace<Val<SC>> + From<Val<SC>>,
     {
         BatchProofTargets::<SC, Comm, OpeningProof>::get_private_values(proof)
+    }
+
+    /// Pack both public and private input values for the verifier circuit.
+    pub fn pack_values(
+        &self,
+        air_public_values: &[Vec<Val<SC>>],
+        proof: &BatchProof<SC>,
+        common: &CommonData<SC>,
+    ) -> (Vec<SC::Challenge>, Vec<SC::Challenge>)
+    where
+        Val<SC>: PrimeField64,
+        SC::Challenge: BasedVectorSpace<Val<SC>> + From<Val<SC>>,
+    {
+        let public_values = self.pack_public_values(air_public_values, proof, common);
+        let private_values = self.pack_private_values(proof);
+
+        (public_values, private_values)
     }
 }
 

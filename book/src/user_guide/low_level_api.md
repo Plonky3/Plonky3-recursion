@@ -35,7 +35,7 @@ let op_ids = verify_p3_uni_proof_circuit::<
 let circuit = circuit_builder.build()?;
 let mut runner = circuit.runner();
 
-let public_inputs = verifier_inputs.pack_values(&pis, &proof, &preprocessed_commit);
+let public_inputs = verifier_inputs.pack_public_values(&pis, &proof, &preprocessed_commit);
 runner.set_public_inputs(&public_inputs)?;
 
 set_fri_mmcs_private_data(&mut runner, &op_ids, &proof.opening_proof)?;
@@ -64,7 +64,7 @@ let (verifier_inputs, op_ids) = verify_p3_batch_proof_circuit::<
 let circuit = circuit_builder.build()?;
 let mut runner = circuit.runner();
 
-let public_inputs = verifier_inputs.pack_values(
+let public_inputs = verifier_inputs.pack_public_values(
     &table_public_inputs, &batch_proof.proof, &common_data,
 );
 runner.set_public_inputs(&public_inputs)?;

@@ -204,7 +204,7 @@ where
                     preprocessed_commit,
                     ..
                 },
-            ) => Ok(builder.pack_values(public_inputs, proof, preprocessed_commit)),
+            ) => Ok(builder.pack_public_values(public_inputs, proof, preprocessed_commit)),
             (
                 Self::BatchStark(builder, _),
                 RecursionInput::BatchStark {
@@ -212,7 +212,7 @@ where
                     common_data,
                     table_public_inputs,
                 },
-            ) => Ok(builder.pack_values(table_public_inputs, &proof.proof, common_data)),
+            ) => Ok(builder.pack_public_values(table_public_inputs, &proof.proof, common_data)),
             _ => Err(VerificationError::InvalidProofShape(
                 "RecursionInput variant does not match verifier result".to_string(),
             )),

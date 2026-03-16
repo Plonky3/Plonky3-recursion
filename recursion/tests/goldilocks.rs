@@ -113,8 +113,8 @@ fn test_goldilocks_fibonacci_verifier() -> Result<(), VerificationError> {
     let mut runner = circuit.runner();
 
     // Pack values using the same builder
-    let public_inputs = verifier_inputs.pack_values(&pis, &proof, &None);
-    let private_inputs = verifier_inputs.pack_private_values(&proof);
+    let (public_inputs, private_inputs) = verifier_inputs.pack_values(&pis, &proof, &None);
+
     runner
         .set_public_inputs(&public_inputs)
         .map_err(VerificationError::Circuit)?;
@@ -218,9 +218,8 @@ fn test_goldilocks_mul_verifier_with_preprocessed() -> Result<(), VerificationEr
     let mut runner = circuit.runner();
 
     // Pack values using the same builder
-    let public_inputs =
+    let (public_inputs, private_inputs) =
         verifier_inputs.pack_values(&[], &proof, &preprocessed_vk.map(|vk| vk.commitment));
-    let private_inputs = verifier_inputs.pack_private_values(&proof);
 
     runner
         .set_public_inputs(&public_inputs)

@@ -89,8 +89,7 @@ fn test_arith_lookups() {
     // Pack values using the builder
     let batch_proof = &batch_stark_proof.proof;
     let builder = verifier_inputs.as_ref().unwrap();
-    let public_inputs = builder.pack_values(&pis, batch_proof, common);
-    let private_inputs = builder.pack_private_values(batch_proof);
+    let (public_inputs, private_inputs) = builder.pack_values(&pis, batch_proof, common);
 
     assert_eq!(public_inputs.len(), expected_public_input_len);
     assert!(!public_inputs.is_empty());
@@ -192,8 +191,7 @@ fn test_wrong_multiplicities() {
     // Pack values using the builder
     let batch_proof = &batch_stark_proof.proof;
     let builder = verifier_inputs.as_ref().unwrap();
-    let public_inputs = builder.pack_values(&pis, batch_proof, common);
-    let private_inputs = builder.pack_private_values(batch_proof);
+    let (public_inputs, private_inputs) = builder.pack_values(&pis, batch_proof, common);
 
     assert_eq!(public_inputs.len(), expected_public_input_len);
     assert!(!public_inputs.is_empty());
@@ -249,8 +247,8 @@ fn test_wrong_expected_cumulated() {
 
     // Pack values using the builder
     let builder = verifier_inputs.as_ref().unwrap();
-    let public_inputs = builder.pack_values(&pis, &batch_stark_proof.proof, common);
-    let private_inputs = builder.pack_private_values(&batch_stark_proof.proof);
+    let (public_inputs, private_inputs) =
+        builder.pack_values(&pis, &batch_stark_proof.proof, common);
 
     assert_eq!(public_inputs.len(), expected_public_input_len);
     assert!(!public_inputs.is_empty());
@@ -333,8 +331,8 @@ fn test_inconsistent_lookup_name() {
 
     // Pack values using the builder
     let builder = verifier_inputs.as_ref().unwrap();
-    let public_inputs = builder.pack_values(&pis, &batch_stark_proof.proof, common);
-    let private_inputs = builder.pack_private_values(&batch_stark_proof.proof);
+    let (public_inputs, private_inputs) =
+        builder.pack_values(&pis, &batch_stark_proof.proof, common);
 
     assert_eq!(public_inputs.len(), expected_public_input_len);
     assert!(!public_inputs.is_empty());
