@@ -49,18 +49,19 @@ Running on a Apple M4 pro, 14 Cores, with **KoalaBear** field and extension of *
 *NOTE*: In production systems, circuits may be pre-generated offline and cached to reduce overhead in fixed recursive layers.
 
 - **Keccak AIR program:** (1,000 hashes)
-  - Base uni-stark proof: 1.37 s
-  - 1st recursion layer: 1.03 s
-  - 2nd and 3rd recursion layers: 230 ms
-  - 4th and next recursion layers: 179 ms
+  - Base uni-stark proof: 735 ms
+  - 1st recursion layer: 739 ms
+  - 2nd and 3rd recursion layers: 195 ms
+  - 4th and next recursion layers: 152 ms
 
 - **Fibonacci multi-AIR program:** (10,000th element)
   - Base batch-stark proof: 82.6 ms
-  - 1st recursion layer: 171 ms
-  - 2nd and 3rd recursion layers: 230 ms
-  - 4th and next recursion layers: 178 ms
+  - 1st recursion layer: 125 ms
+  - 2nd and 3rd recursion layers: 195 ms
+  - 4th and next recursion layers: 154 ms
 
 - **2-to-1 aggregation:**
   - Base batch-stark proof: 28 ms
-  - 1st aggregation layer: 166 ms
-  - 2nd and next aggregation layers: 280 ms
+  - 1st aggregation layer: 128 ms
+  - 2nd and 3rd aggregation layers: 268 ms
+  - 4th and next aggregation layers: 257 ms

@@ -51,7 +51,7 @@ struct Args {
 
     #[arg(
         long,
-        default_value_t = 3,
+        default_value_t = 2,
         help = "Logarithmic blowup factor for the LDE"
     )]
     pub log_blowup: usize,
@@ -63,12 +63,12 @@ struct Args {
     )]
     pub max_log_arity: usize,
 
-    #[arg(long, default_value_t = 2, help = "Height of the Merkle cap to open")]
+    #[arg(long, default_value_t = 0, help = "Height of the Merkle cap to open")]
     pub cap_height: usize,
 
     #[arg(
         long,
-        default_value_t = 2,
+        default_value_t = 4,
         help = "Log size of final polynomial after FRI folding"
     )]
     pub log_final_poly_len: usize,
@@ -82,7 +82,7 @@ struct Args {
 
     #[arg(
         long,
-        default_value_t = 18,
+        default_value_t = 20,
         help = "PoW grinding bits during FRI query phase"
     )]
     pub query_pow_bits: usize,
@@ -96,7 +96,7 @@ struct Args {
 
     #[arg(
         long,
-        default_value_t = 3,
+        default_value_t = 2,
         help = "Number of ALU lanes for the table packing in recursive layers"
     )]
     pub alu_lanes: usize,
