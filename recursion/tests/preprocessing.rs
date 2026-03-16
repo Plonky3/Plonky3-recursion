@@ -352,12 +352,8 @@ fn test_batch_verifier_with_mixed_preprocessed() -> Result<(), VerificationError
     let mut runner = circuit.runner();
 
     // Pack values using the batch builder
-    let public_inputs = verifier_inputs.pack_values(
-        &pvs, // public inputs for each AIR
-        &batch_proof,
-        common_data,
-    );
-    let private_inputs = verifier_inputs.pack_private_values(&batch_proof);
+    let (public_inputs, private_inputs) =
+        verifier_inputs.pack_values(&pvs, &batch_proof, common_data);
 
     runner
         .set_public_inputs(&public_inputs)

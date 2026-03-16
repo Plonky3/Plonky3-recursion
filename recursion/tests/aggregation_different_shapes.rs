@@ -176,10 +176,12 @@ fn test_aggregation_with_different_shapes() -> Result<(), VerificationError> {
     let mut runner = verification_circuit.runner();
 
     // Pack the public and private inputs.
-    let mut public_inputs = left_verifier_inputs.pack_values(&pis, &uni_proof, &None);
-    public_inputs.extend(right_verifier_inputs.pack_values(&right_pis, batch_proof, common));
-    let mut private_inputs = left_verifier_inputs.pack_private_values(&uni_proof);
-    private_inputs.extend(right_verifier_inputs.pack_private_values(batch_proof));
+    let (mut public_inputs, mut private_inputs) =
+        left_verifier_inputs.pack_values(&pis, &uni_proof, &None);
+    let (right_public_inputs, right_private_inputs) =
+        right_verifier_inputs.pack_values(&right_pis, batch_proof, common);
+    public_inputs.extend(right_public_inputs);
+    private_inputs.extend(right_private_inputs);
     runner
         .set_public_inputs(&public_inputs)
         .map_err(VerificationError::Circuit)?;

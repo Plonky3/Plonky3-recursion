@@ -142,7 +142,7 @@ let circuit = circuit_builder.build()?;
 let mut runner = circuit.runner();
 
 // Pack public inputs using the builder
-let public_inputs = verifier_inputs.pack_values(&pis, &batch_proof, common_data);
+let public_inputs = verifier_inputs.pack_public_values(&pis, &batch_proof, common_data);
 runner.set_public_inputs(&public_inputs)?;
 
 // Set MMCS private data (Merkle paths)
@@ -202,7 +202,7 @@ builder
 let public_inputs = builder.build();
 ```
 
-For batch verification, use `BatchStarkVerifierInputsBuilder::pack_values()` which handles the packing automatically.
+For batch verification, use `BatchStarkVerifierInputsBuilder::pack_public_values()` which handles the packing automatically.
 
 ## Architecture
 

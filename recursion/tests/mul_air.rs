@@ -97,9 +97,8 @@ fn test_mul_verifier_circuit() -> Result<(), VerificationError> {
     let mut runner = circuit.runner();
 
     // Pack values using the same builder
-    let public_inputs =
+    let (public_inputs, private_inputs) =
         verifier_inputs.pack_values(&pis, &proof, &preprocessed_vk.map(|vk| vk.commitment));
-    let private_inputs = verifier_inputs.pack_private_values(&proof);
 
     runner
         .set_public_inputs(&public_inputs)

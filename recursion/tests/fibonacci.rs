@@ -129,8 +129,7 @@ fn run_recursive_verifier(
     let mut runner = circuit.runner();
 
     // Pack values using the same builder
-    let public_inputs = verifier_inputs.pack_values(pis, proof, &None);
-    let private_inputs = verifier_inputs.pack_private_values(proof);
+    let (public_inputs, private_inputs) = verifier_inputs.pack_values(pis, proof, &None);
     runner
         .set_public_inputs(&public_inputs)
         .map_err(VerificationError::Circuit)?;
@@ -266,8 +265,9 @@ fn test_truncated_fri_proof() {
     let circuit = circuit_builder.build().unwrap();
     let mut runner = circuit.runner();
     // Pack values using the same builder
-    let public_inputs = verifier_inputs.pack_values(&setup.pis, &setup.proof, &None);
-    let private_inputs = verifier_inputs.pack_private_values(&setup.proof);
+    let (public_inputs, private_inputs) =
+        verifier_inputs.pack_values(&setup.pis, &setup.proof, &None);
+
     runner.set_public_inputs(&public_inputs).unwrap();
     runner.set_private_inputs(&private_inputs).unwrap();
 

@@ -184,12 +184,11 @@ fn test_poseidon2_perm_verifier() -> Result<(), VerificationError> {
     let circuit = circuit_builder.build()?;
     let mut runner = circuit.runner();
 
-    let packed_publics =
+    let (public_inputs, private_inputs) =
         verifier_inputs.pack_values(&public_inputs, &proof, &Some(verifier_data.commitment));
-    let private_inputs = verifier_inputs.pack_private_values(&proof);
 
     runner
-        .set_public_inputs(&packed_publics)
+        .set_public_inputs(&public_inputs)
         .map_err(VerificationError::Circuit)?;
     runner
         .set_private_inputs(&private_inputs)

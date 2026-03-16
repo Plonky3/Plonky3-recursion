@@ -235,16 +235,12 @@ fn test_zk_aggregation() -> Result<(), VerificationError> {
     // --- Step 3: Run the aggregation circuit ---
     let aggregation_circuit = circuit_builder.build().unwrap();
 
-    let mut public_inputs: Vec<Challenge> =
+    let (mut public_inputs, mut private_inputs) =
         left_verifier_inputs.pack_values(&[vec![]], &left_data.proof, common_left);
-    public_inputs.extend(right_verifier_inputs.pack_values(
-        &[vec![]],
-        &right_data.proof,
-        common_right,
-    ));
-
-    let mut private_inputs = left_verifier_inputs.pack_private_values(&left_data.proof);
-    private_inputs.extend(right_verifier_inputs.pack_private_values(&right_data.proof));
+    let (right_public_inputs, right_private_inputs) =
+        right_verifier_inputs.pack_values(&[vec![]], &right_data.proof, common_right);
+    public_inputs.extend(right_public_inputs);
+    private_inputs.extend(right_private_inputs);
 
     let mut runner = aggregation_circuit.clone().runner();
     runner
