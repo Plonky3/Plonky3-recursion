@@ -95,6 +95,28 @@ impl<F: Field> CircuitRunner<F> {
         Ok(())
     }
 
+    /// Sets private input values into witness table.
+    ///
+    /// Private inputs do not create Public table rows, and should be constrained by downstream use.
+    pub fn set_private_inputs(&mut self, private_values: &[F]) -> Result<(), CircuitError> {
+        if private_values.len() != self.circuit.private_flat_len {
+            return Err(CircuitError::PrivateInputLengthMismatch {
+                expected: self.circuit.private_flat_len,
+                got: private_values.len(),
+            });
+        }
+        if self.circuit.private_input_rows.len() != self.circuit.private_flat_len {
+            return Err(CircuitError::MissingPrivateRowsMapping);
+        }
+
+        for (i, value) in private_values.iter().enumerate() {
+            let widx = self.circuit.private_input_rows[i];
+            self.set_witness(widx, *value)?;
+        }
+
+        Ok(())
+    }
+
     /// Sets private data for a non-primitive operation.
     pub fn set_private_data(
         &mut self,

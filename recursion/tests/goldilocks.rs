@@ -114,8 +114,12 @@ fn test_goldilocks_fibonacci_verifier() -> Result<(), VerificationError> {
 
     // Pack values using the same builder
     let public_inputs = verifier_inputs.pack_values(&pis, &proof, &None);
+    let private_inputs = verifier_inputs.pack_private_values(&proof);
     runner
         .set_public_inputs(&public_inputs)
+        .map_err(VerificationError::Circuit)?;
+    runner
+        .set_private_inputs(&private_inputs)
         .map_err(VerificationError::Circuit)?;
 
     // Set MMCS private data from the FRI proof
@@ -216,9 +220,13 @@ fn test_goldilocks_mul_verifier_with_preprocessed() -> Result<(), VerificationEr
     // Pack values using the same builder
     let public_inputs =
         verifier_inputs.pack_values(&[], &proof, &preprocessed_vk.map(|vk| vk.commitment));
+    let private_inputs = verifier_inputs.pack_private_values(&proof);
 
     runner
         .set_public_inputs(&public_inputs)
+        .map_err(VerificationError::Circuit)?;
+    runner
+        .set_private_inputs(&private_inputs)
         .map_err(VerificationError::Circuit)?;
 
     runner.run().map_err(VerificationError::Circuit)?;

@@ -123,6 +123,14 @@ impl<
             .chain(Witness::get_values(query_pow_witness))
             .collect()
     }
+
+    fn get_private_values(input: &Self::Input) -> Vec<EF> {
+        input
+            .query_proofs
+            .iter()
+            .flat_map(|c| QueryProofTargets::<F, EF, InputProof, RecMmcs>::get_private_values(c))
+            .collect()
+    }
 }
 
 /// `Recursive` version of `QueryProof`.
@@ -167,6 +175,17 @@ impl<
                     .commit_phase_openings
                     .iter()
                     .flat_map(|o| CommitPhaseProofStepTargets::<_, _, RecMmcs>::get_values(o)),
+            )
+            .collect()
+    }
+
+    fn get_private_values(input: &Self::Input) -> Vec<EF> {
+        InputProof::get_private_values(&input.input_proof)
+            .into_iter()
+            .chain(
+                input.commit_phase_openings.iter().flat_map(|o| {
+                    CommitPhaseProofStepTargets::<_, _, RecMmcs>::get_private_values(o)
+                }),
             )
             .collect()
     }
@@ -243,7 +262,7 @@ impl<F: Field, EF: ExtensionField<F> + BasedVectorSpace<F>, RecMmcs: RecursiveEx
         let num_siblings = arity - 1;
         let num_coeffs = num_siblings * EF::DIMENSION;
         let sibling_coefficients =
-            circuit.alloc_public_inputs(num_coeffs, "FRI commit phase sibling coefficients");
+            circuit.alloc_private_inputs(num_coeffs, "FRI commit phase sibling coefficients");
         let opening_proof = RecMmcs::Proof::new(circuit, &input.opening_proof);
         Self {
             log_arity,
@@ -254,17 +273,15 @@ impl<F: Field, EF: ExtensionField<F> + BasedVectorSpace<F>, RecMmcs: RecursiveEx
     }
 
     fn get_values(input: &Self::Input) -> Vec<EF> {
-        let CommitPhaseProofStep {
-            log_arity: _,
-            sibling_values,
-            opening_proof,
-        } = input;
+        RecMmcs::Proof::get_values(&input.opening_proof)
+    }
+
+    fn get_private_values(input: &Self::Input) -> Vec<EF> {
         let mut values: Vec<EF> = Vec::new();
-        for sibling_value in sibling_values {
+        for sibling_value in &input.sibling_values {
             let coeffs = sibling_value.as_basis_coefficients_slice();
             values.extend(coeffs.iter().map(|&c| EF::from(c)));
         }
-        values.extend(RecMmcs::Proof::get_values(opening_proof));
         values
     }
 }
@@ -291,7 +308,7 @@ impl<F: Field, EF: ExtensionField<F>, Inner: RecursiveMmcs<F, EF>> Recursive<EF>
         let opened_values = input
             .opened_values
             .iter()
-            .map(|values| circuit.alloc_public_inputs(values.len(), "batch opened values"))
+            .map(|values| circuit.alloc_private_inputs(values.len(), "batch opened values"))
             .collect();
 
         let opening_proof = Inner::Proof::new(circuit, &input.opening_proof);
@@ -303,15 +320,14 @@ impl<F: Field, EF: ExtensionField<F>, Inner: RecursiveMmcs<F, EF>> Recursive<EF>
     }
 
     fn get_values(input: &Self::Input) -> Vec<EF> {
-        let BatchOpening {
-            opened_values,
-            opening_proof,
-        } = input;
+        Inner::Proof::get_values(&input.opening_proof)
+    }
 
-        opened_values
+    fn get_private_values(input: &Self::Input) -> Vec<EF> {
+        input
+            .opened_values
             .iter()
             .flat_map(|inner| inner.iter().map(|v| EF::from(*v)))
-            .chain(Inner::Proof::get_values(opening_proof))
             .collect()
     }
 }
@@ -371,6 +387,7 @@ impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize> Recursive<EF>
 }
 
 /// `HashProofTargets` corresponds to a Merkle tree `Proof` in the form of a vector of hashes with `DIGEST_ELEMS` digest elements.
+// TODO: This could be fully removed?
 pub struct HashProofTargets<F, const DIGEST_ELEMS: usize> {
     pub hash_proof_targets: Vec<[Target; DIGEST_ELEMS]>,
     _phantom: PhantomData<F>,
@@ -383,24 +400,16 @@ impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize> Recursive<EF>
 {
     type Input = ValMmcsProof<F, DIGEST_ELEMS>;
 
-    fn new(circuit: &mut CircuitBuilder<EF>, input: &Self::Input) -> Self {
-        let proof_len = input.len();
-        let mut proof = Vec::with_capacity(proof_len);
-        for _ in 0..proof_len {
-            proof.push(circuit.alloc_public_input_array("Merkle proof hash"));
-        }
-
+    fn new(_circuit: &mut CircuitBuilder<EF>, _input: &Self::Input) -> Self {
+        // Merkle proof hashes are not allocated as circuit inputs.
         Self {
-            hash_proof_targets: proof,
+            hash_proof_targets: vec![],
             _phantom: PhantomData,
         }
     }
 
-    fn get_values(input: &Self::Input) -> Vec<EF> {
-        input
-            .iter()
-            .flat_map(|h| h.iter().map(|v| EF::from(*v)))
-            .collect()
+    fn get_values(_input: &Self::Input) -> Vec<EF> {
+        vec![]
     }
 }
 
@@ -502,6 +511,15 @@ impl<F: Field, EF: ExtensionField<F>, Inner: RecursiveMmcs<F, EF>> Recursive<EF>
             .iter()
             .flat_map(|batch_opening| {
                 BatchOpeningTargets::<F, EF, Inner>::get_values(batch_opening)
+            })
+            .collect()
+    }
+
+    fn get_private_values(input: &Self::Input) -> Vec<EF> {
+        input
+            .iter()
+            .flat_map(|batch_opening| {
+                BatchOpeningTargets::<F, EF, Inner>::get_private_values(batch_opening)
             })
             .collect()
     }
@@ -766,7 +784,7 @@ impl<EF: Field> Recursive<EF> for HidingOpenedValuesTargets<EF> {
                         matrix
                             .iter()
                             .map(|point_vals| {
-                                circuit.alloc_public_inputs(
+                                circuit.alloc_private_inputs(
                                     point_vals.len(),
                                     "hiding random opened values",
                                 )
@@ -783,7 +801,11 @@ impl<EF: Field> Recursive<EF> for HidingOpenedValuesTargets<EF> {
         }
     }
 
-    fn get_values(input: &Self::Input) -> Vec<EF> {
+    fn get_values(_input: &Self::Input) -> Vec<EF> {
+        vec![]
+    }
+
+    fn get_private_values(input: &Self::Input) -> Vec<EF> {
         input
             .iter()
             .flat_map(|round| round.iter())
@@ -830,9 +852,17 @@ impl<
     }
 
     fn get_values(input: &Self::Input) -> Vec<EF> {
-        HidingOpenedValuesTargets::<EF>::get_values(&input.0)
+        FriProofTargets::<F, EF, RecMmcs, InputProof, PowWitness>::get_values(&input.1)
+    }
+
+    fn get_private_values(input: &Self::Input) -> Vec<EF> {
+        HidingOpenedValuesTargets::<EF>::get_private_values(&input.0)
             .into_iter()
-            .chain(FriProofTargets::<F, EF, RecMmcs, InputProof, PowWitness>::get_values(&input.1))
+            .chain(
+                FriProofTargets::<F, EF, RecMmcs, InputProof, PowWitness>::get_private_values(
+                    &input.1,
+                ),
+            )
             .collect()
     }
 }

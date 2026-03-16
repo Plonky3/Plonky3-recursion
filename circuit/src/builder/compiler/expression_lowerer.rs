@@ -78,6 +78,9 @@ pub struct ExpressionLowerer<'a, F: Field> {
     /// Number of public inputs
     public_input_count: usize,
 
+    /// Number of private inputs
+    private_input_count: usize,
+
     /// Witness allocator
     witness_alloc: WitnessAllocator,
 
@@ -95,6 +98,7 @@ where
         non_primitive_ops: &'a [NonPrimitiveOperationData<F>],
         pending_connects: &'a [(ExprId, ExprId)],
         public_input_count: usize,
+        private_input_count: usize,
         witness_alloc: WitnessAllocator,
         npo_registry: &'a HashMap<NpoTypeId, Arc<dyn NpoCircuitPlugin<F>>>,
     ) -> Self {
@@ -103,6 +107,7 @@ where
             non_primitive_ops,
             pending_connects,
             public_input_count,
+            private_input_count,
             witness_alloc,
             npo_registry,
         }
@@ -204,6 +209,7 @@ where
         (
             Vec<Op<F>>,
             Vec<WitnessId>,
+            Vec<WitnessId>,
             HashMap<ExprId, WitnessId>,
             HashMap<ExprId, WitnessId>,
             u32,
@@ -267,6 +273,7 @@ where
         let mut ops = Vec::new();
         let mut expr_to_widx: HashMap<ExprId, WitnessId> = HashMap::new();
         let mut public_rows: Vec<WitnessId> = vec![WitnessId(0); self.public_input_count];
+        let mut private_input_rows: Vec<WitnessId> = vec![WitnessId(0); self.private_input_count];
         let mut public_mappings = HashMap::new();
 
         // Unified class slot map: DSU root -> chosen out slot
@@ -316,13 +323,23 @@ where
             }
         }
 
+        // Pass B': emit private inputs (witness slot only)
+        for (expr_idx, expr) in self.graph.nodes().iter().enumerate() {
+            if let Expr::PrivateInput(pos) = expr {
+                let id = ExprId(expr_idx as u32);
+                let out_widx = alloc_witness_id_for_expr(expr_idx);
+                expr_to_widx.insert(id, out_widx);
+                private_input_rows[*pos] = out_widx;
+            }
+        }
+
         // Pass C: emit arithmetic and unconstrained ops in creation order; tie outputs to class slot if connected
         let mut emitted_non_primitive_ops: HashSet<u32> = HashSet::new();
 
         for (expr_idx, expr) in self.graph.nodes().iter().enumerate() {
             let expr_id = ExprId(expr_idx as u32);
             match expr {
-                Expr::Const(_) | Expr::Public(_) => { /* handled above */ }
+                Expr::Const(_) | Expr::Public(_) | Expr::PrivateInput(_) => { /* handled above */ }
                 Expr::Add { lhs, rhs } => {
                     let out_widx = alloc_witness_id_for_expr(expr_idx);
                     let a_widx =
@@ -553,6 +570,7 @@ where
         Ok((
             ops,
             public_rows,
+            private_input_rows,
             expr_to_widx,
             public_mappings,
             witness_count,
@@ -671,8 +689,9 @@ mod tests {
         let alloc = WitnessAllocator::new();
         let registry = HashMap::new();
 
-        let lowerer = ExpressionLowerer::new(&graph, &[], &connects, 3, alloc, &registry);
-        let (prims, public_rows, expr_map, public_map, witness_count) = lowerer.lower().unwrap();
+        let lowerer = ExpressionLowerer::new(&graph, &[], &connects, 3, 0, alloc, &registry);
+        let (prims, public_rows, _private_input_rows, expr_map, public_map, witness_count) =
+            lowerer.lower().unwrap();
 
         // Verify Primitives
         //
@@ -884,8 +903,9 @@ mod tests {
         let alloc = WitnessAllocator::new();
         let registry = HashMap::new();
 
-        let lowerer = ExpressionLowerer::new(&graph, &[], &connects, 5, alloc, &registry);
-        let (prims, public_rows, expr_map, public_map, witness_count) = lowerer.lower().unwrap();
+        let lowerer = ExpressionLowerer::new(&graph, &[], &connects, 5, 0, alloc, &registry);
+        let (prims, public_rows, _private_input_rows, expr_map, public_map, witness_count) =
+            lowerer.lower().unwrap();
 
         // Verify Primitives
         //
@@ -1030,7 +1050,7 @@ mod tests {
         let connects = vec![];
         let alloc = WitnessAllocator::new();
         let registry = HashMap::new();
-        let lowerer = ExpressionLowerer::new(&graph, &[], &connects, 0, alloc, &registry);
+        let lowerer = ExpressionLowerer::new(&graph, &[], &connects, 0, 0, alloc, &registry);
         let result = lowerer.lower();
 
         assert!(result.is_err());
@@ -1052,7 +1072,7 @@ mod tests {
         let connects = vec![];
         let alloc = WitnessAllocator::new();
         let registry = HashMap::new();
-        let lowerer = ExpressionLowerer::new(&graph, &[], &connects, 0, alloc, &registry);
+        let lowerer = ExpressionLowerer::new(&graph, &[], &connects, 0, 0, alloc, &registry);
         let result = lowerer.lower();
 
         assert!(result.is_err());

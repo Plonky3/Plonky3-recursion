@@ -88,9 +88,9 @@ fn test_arith_lookups() {
 
     // Pack values using the builder
     let batch_proof = &batch_stark_proof.proof;
-    let public_inputs = verifier_inputs
-        .unwrap()
-        .pack_values(&pis, batch_proof, common);
+    let builder = verifier_inputs.as_ref().unwrap();
+    let public_inputs = builder.pack_values(&pis, batch_proof, common);
+    let private_inputs = builder.pack_private_values(batch_proof);
 
     assert_eq!(public_inputs.len(), expected_public_input_len);
     assert!(!public_inputs.is_empty());
@@ -98,6 +98,7 @@ fn test_arith_lookups() {
     // Actually run the circuit to ensure constraints are satisfiable
     let mut runner = verification_circuit.runner();
     runner.set_public_inputs(&public_inputs).unwrap();
+    runner.set_private_inputs(&private_inputs).unwrap();
     let _traces = runner.run().unwrap();
 }
 
@@ -190,9 +191,9 @@ fn test_wrong_multiplicities() {
 
     // Pack values using the builder
     let batch_proof = &batch_stark_proof.proof;
-    let public_inputs = verifier_inputs
-        .unwrap()
-        .pack_values(&pis, batch_proof, common);
+    let builder = verifier_inputs.as_ref().unwrap();
+    let public_inputs = builder.pack_values(&pis, batch_proof, common);
+    let private_inputs = builder.pack_private_values(batch_proof);
 
     assert_eq!(public_inputs.len(), expected_public_input_len);
     assert!(!public_inputs.is_empty());
@@ -200,6 +201,7 @@ fn test_wrong_multiplicities() {
     // Actually run the circuit to ensure constraints are satisfiable
     let mut runner = verification_circuit.runner();
     runner.set_public_inputs(&public_inputs).unwrap();
+    runner.set_private_inputs(&private_inputs).unwrap();
 
     // This line fails because the proof was generated with wrong multiplicities.
     // Thus, we have an OOD evaluation mismatch, resulting in a `WitnessConflict` in the circuit.
@@ -246,10 +248,9 @@ fn test_wrong_expected_cumulated() {
     let expected_public_input_len = verification_circuit.public_flat_len;
 
     // Pack values using the builder
-    let public_inputs =
-        verifier_inputs
-            .unwrap()
-            .pack_values(&pis, &batch_stark_proof.proof, common);
+    let builder = verifier_inputs.as_ref().unwrap();
+    let public_inputs = builder.pack_values(&pis, &batch_stark_proof.proof, common);
+    let private_inputs = builder.pack_private_values(&batch_stark_proof.proof);
 
     assert_eq!(public_inputs.len(), expected_public_input_len);
     assert!(!public_inputs.is_empty());
@@ -257,6 +258,7 @@ fn test_wrong_expected_cumulated() {
     // Actually run the circuit to ensure constraints are satisfiable
     let mut runner = verification_circuit.runner();
     runner.set_public_inputs(&public_inputs).unwrap();
+    runner.set_private_inputs(&private_inputs).unwrap();
 
     // This line fails because the verifier gets wrong global lookup data.
     // This leads to the sum of all expected cumulated values being off by 1,
@@ -330,10 +332,9 @@ fn test_inconsistent_lookup_name() {
     let expected_public_input_len = verification_circuit.public_flat_len;
 
     // Pack values using the builder
-    let public_inputs =
-        verifier_inputs
-            .unwrap()
-            .pack_values(&pis, &batch_stark_proof.proof, common);
+    let builder = verifier_inputs.as_ref().unwrap();
+    let public_inputs = builder.pack_values(&pis, &batch_stark_proof.proof, common);
+    let private_inputs = builder.pack_private_values(&batch_stark_proof.proof);
 
     assert_eq!(public_inputs.len(), expected_public_input_len);
     assert!(!public_inputs.is_empty());
@@ -341,6 +342,7 @@ fn test_inconsistent_lookup_name() {
     // Actually run the circuit to ensure constraints are satisfiable
     let mut runner = verification_circuit.runner();
     runner.set_public_inputs(&public_inputs).unwrap();
+    runner.set_private_inputs(&private_inputs).unwrap();
 
     // This line fails because the verifier gets wrong global lookup data.
     // This leads to the sum of all expected cumulated values being off by 1,

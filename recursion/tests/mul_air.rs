@@ -99,9 +99,13 @@ fn test_mul_verifier_circuit() -> Result<(), VerificationError> {
     // Pack values using the same builder
     let public_inputs =
         verifier_inputs.pack_values(&pis, &proof, &preprocessed_vk.map(|vk| vk.commitment));
+    let private_inputs = verifier_inputs.pack_private_values(&proof);
 
     runner
         .set_public_inputs(&public_inputs)
+        .map_err(VerificationError::Circuit)?;
+    runner
+        .set_private_inputs(&private_inputs)
         .map_err(VerificationError::Circuit)?;
 
     let _traces = runner.run().map_err(VerificationError::Circuit)?;

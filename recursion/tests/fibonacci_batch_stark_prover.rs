@@ -188,6 +188,7 @@ fn test_fibonacci_batch_verifier() {
 
     // Pack values using the builder
     let public_inputs = verifier_inputs.pack_values(&pis, batch_proof, common);
+    let private_inputs = verifier_inputs.pack_private_values(batch_proof);
 
     assert_eq!(public_inputs.len(), expected_public_input_len);
     assert!(!public_inputs.is_empty());
@@ -215,6 +216,7 @@ fn test_fibonacci_batch_verifier() {
     // Now run the circuit to generate traces
     let mut runner = verification_circuit.runner();
     runner.set_public_inputs(&public_inputs).unwrap();
+    runner.set_private_inputs(&private_inputs).unwrap();
 
     // Set MMCS private data for the verification circuit
     set_fri_mmcs_private_data::<

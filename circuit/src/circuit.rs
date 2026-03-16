@@ -204,6 +204,10 @@ pub struct Circuit<F> {
     pub public_rows: Vec<WitnessId>,
     /// Total number of public field elements
     pub public_flat_len: usize,
+    /// Private input witness indices
+    pub private_input_rows: Vec<WitnessId>,
+    /// Total number of private input field elements
+    pub private_flat_len: usize,
     /// Enabled non-primitive operation types with their respective configuration
     pub enabled_ops: HashMap<NpoTypeId, NpoConfig>,
     /// Expression to witness index map
@@ -228,6 +232,8 @@ impl<F: Field + Clone> Clone for Circuit<F> {
             ops: self.ops.clone(),
             public_rows: self.public_rows.clone(),
             public_flat_len: self.public_flat_len,
+            private_input_rows: self.private_input_rows.clone(),
+            private_flat_len: self.private_flat_len,
             enabled_ops: self.enabled_ops.clone(),
             expr_to_widx: self.expr_to_widx.clone(),
             non_primitive_trace_generators: self.non_primitive_trace_generators.clone(),
@@ -247,6 +253,8 @@ impl<F: Field> Circuit<F> {
             ops: Vec::new(),
             public_rows: Vec::new(),
             public_flat_len: 0,
+            private_input_rows: Vec::new(),
+            private_flat_len: 0,
             enabled_ops: HashMap::new(),
             expr_to_widx,
             non_primitive_trace_generators: HashMap::new(),
@@ -282,6 +290,11 @@ impl<F: Field> Circuit<F> {
         // or their `b` operand (backward/sub encoding where `out` was already defined).
         let mut defined = vec![false; self.witness_count as usize];
 
+        // Private input witness IDs: these get their bus creator role from the first
+        // ALU op that uses them, rather than from a Public table row.
+        let private_input_wids: hashbrown::HashSet<u32> =
+            self.private_input_rows.iter().map(|w| w.0).collect();
+
         // Process each primitive operation.
         for op in &self.ops {
             match op {
@@ -311,24 +324,15 @@ impl<F: Field> Circuit<F> {
                 //
                 // Preprocessed per op (12 values, no multiplicities):
                 // [sel_add_vs_mul, sel_bool, sel_muladd, sel_horner, a_idx, b_idx, c_idx, out_idx,
-                //  a_is_reader, b_is_creator, c_is_reader, out_is_creator]
+                //  a_state, b_is_creator, c_state, out_is_creator]
                 //
-                // a_is_reader: 1 if `a` is a constrained witness (defined by Const/Public/ALU/Poseidon2).
-                // c_is_reader: 1 if `c` is a constrained witness.
-                // 0 means unconstrained (Unconstrained NonPrimitive op output): no bus contribution.
+                // a_state / c_state (3-valued):
+                //   0 = skip (unconstrained, no bus contribution)
+                //   1 = reader (defined by Const/Public/ALU/Poseidon2, bus receive)
+                //   2 = private creator (private input, first ALU use → bus send)
                 //
-                // Three cases based on which operands are already defined:
-                //
-                // Forward (out not yet defined): b_is_creator=0, out_is_creator=1.
-                //   Creator: out. Readers: b (always), a (if a_is_reader), c (if c_is_reader).
-                //
-                // Backward (out defined, b not yet defined, e.g. backward-encoded Sub):
-                //   b_is_creator=1, out_is_creator=0. Creator: b.
-                //   Readers: out (always), a (if a_is_reader), c (if c_is_reader).
-                //
-                // All-reader (out and b both already defined, e.g. assert_zero rewrite):
-                //   b_is_creator=0, out_is_creator=0. No creator.
-                //   Readers: b, out (always), a (if a_is_reader), c (if c_is_reader).
+                // b_is_creator / out_is_creator can both be set simultaneously when
+                // b is a private input in the forward case.
                 Op::Alu {
                     kind, a, b, c, out, ..
                 } => {
@@ -346,20 +350,43 @@ impl<F: Field> Circuit<F> {
                         (out.0 as usize) < defined.len() && defined[out.0 as usize];
                     let b_already_defined = (b.0 as usize) < defined.len() && defined[b.0 as usize];
 
-                    // Determine whether a and c are constrained witnesses (have creator AIRs).
-                    // Unconstrained witnesses are never marked defined; their reads don't
-                    // contribute to the WitnessChecks bus.
-                    let a_is_reader = (a.0 as usize) < defined.len() && defined[a.0 as usize];
-                    let c_is_reader =
-                        (c_wid.0 as usize) < defined.len() && defined[c_wid.0 as usize];
-
-                    let (b_is_creator, out_is_creator) = if !out_already_defined {
-                        (F::ZERO, F::ONE) // forward: out is new creator
-                    } else if !b_already_defined {
-                        (F::ONE, F::ZERO) // backward: b is new creator
+                    // 3-state for a and c:
+                    //   0 = skip (not defined, not private → unconstrained)
+                    //   1 = reader (already defined by another table)
+                    //   2 = private creator (private input, first use → this row creates it)
+                    let a_defined = (a.0 as usize) < defined.len() && defined[a.0 as usize];
+                    let a_state: u32 = if a_defined {
+                        1 // reader
+                    } else if private_input_wids.contains(&a.0) {
+                        2 // private creator
                     } else {
-                        (F::ZERO, F::ZERO) // all-reader: no new creator
+                        0 // skip
                     };
+
+                    let c_defined = (c_wid.0 as usize) < defined.len() && defined[c_wid.0 as usize];
+                    let c_state: u32 = if c_defined {
+                        1 // reader
+                    } else if private_input_wids.contains(&c_wid.0) {
+                        2 // private creator
+                    } else {
+                        0 // skip
+                    };
+
+                    // b and out creator flags (now independent).
+                    // Private inputs can be b-creators even in the forward case.
+                    let b_is_private_creator =
+                        !b_already_defined && private_input_wids.contains(&b.0);
+                    let out_is_creator = if !out_already_defined {
+                        F::ONE
+                    } else {
+                        F::ZERO
+                    };
+                    let b_is_creator =
+                        if b_is_private_creator || out_already_defined && !b_already_defined {
+                            F::ONE
+                        } else {
+                            F::ZERO
+                        };
 
                     preprocessed.primitive[PrimitiveOpType::Alu as usize].extend([
                         sel_add_vs_mul,
@@ -370,55 +397,59 @@ impl<F: Field> Circuit<F> {
                         F::from_u32(b.0 * d_u32),
                         F::from_u32(c_wid.0 * d_u32),
                         F::from_u32(out.0 * d_u32),
-                        if a_is_reader { F::ONE } else { F::ZERO },
+                        F::from_u32(a_state),
                         b_is_creator,
-                        if c_is_reader { F::ONE } else { F::ZERO },
+                        F::from_u32(c_state),
                         out_is_creator,
                     ]);
 
-                    if !out_already_defined {
-                        // Forward: out is the creator, b is always a reader.
-                        // a and c contribute to ext_reads only if they are constrained.
+                    // Build readers list — creators are excluded.
+                    let mut readers = Vec::new();
+
+                    // b: reader unless it's a creator (private or backward)
+                    if b_is_creator == F::ZERO {
+                        readers.push(*b);
+                    }
+                    // out: reader unless it's a creator
+                    if out_is_creator == F::ZERO {
+                        readers.push(*out);
+                    }
+                    if a_state == 1 {
+                        readers.push(*a);
+                    }
+                    if c_state == 1 {
+                        readers.push(c_wid);
+                    }
+                    preprocessed.increment_ext_reads(&readers);
+
+                    // Mark new creators as defined.
+                    if out_is_creator == F::ONE {
                         let out_idx = out.0 as usize;
                         if out_idx >= defined.len() {
                             defined.resize(out_idx + 1, false);
                         }
                         defined[out_idx] = true;
-                        let mut readers = vec![*b];
-                        if a_is_reader {
-                            readers.push(*a);
-                        }
-                        if c_is_reader {
-                            readers.push(c_wid);
-                        }
-                        preprocessed.increment_ext_reads(&readers);
-                    } else if !b_already_defined {
-                        // Backward: b is the creator, out is always a reader.
-                        // a and c contribute to ext_reads only if they are constrained.
+                    }
+                    if b_is_creator == F::ONE {
                         let b_idx = b.0 as usize;
                         if b_idx >= defined.len() {
                             defined.resize(b_idx + 1, false);
                         }
                         defined[b_idx] = true;
-                        let mut readers = vec![*out];
-                        if a_is_reader {
-                            readers.push(*a);
+                    }
+                    if a_state == 2 {
+                        let a_idx = a.0 as usize;
+                        if a_idx >= defined.len() {
+                            defined.resize(a_idx + 1, false);
                         }
-                        if c_is_reader {
-                            readers.push(c_wid);
+                        defined[a_idx] = true;
+                    }
+                    if c_state == 2 {
+                        let c_idx = c_wid.0 as usize;
+                        if c_idx >= defined.len() {
+                            defined.resize(c_idx + 1, false);
                         }
-                        preprocessed.increment_ext_reads(&readers);
-                    } else {
-                        // All-reader: b and out are always readers.
-                        // a and c contribute to ext_reads only if they are constrained.
-                        let mut readers = vec![*b, *out];
-                        if a_is_reader {
-                            readers.push(*a);
-                        }
-                        if c_is_reader {
-                            readers.push(c_wid);
-                        }
-                        preprocessed.increment_ext_reads(&readers);
+                        defined[c_idx] = true;
                     }
                 }
                 Op::NonPrimitiveOpWithExecutor {
@@ -465,6 +496,18 @@ impl<F: Field> Circuit<F> {
         let size = self.witness_count as usize;
         if preprocessed.ext_reads.len() < size {
             preprocessed.ext_reads.resize(size, 0);
+        }
+
+        // Safety: every private input must have been claimed as a creator by some ALU op,
+        // or the WitnessChecks bus would be unbalanced.
+        for &wid in &self.private_input_rows {
+            debug_assert!(
+                defined[wid.0 as usize],
+                "Private input WitnessId({}) was never used as an ALU operand — \
+                 cannot assign a bus creator. All private inputs must appear in \
+                 at least one ALU op.",
+                wid.0
+            );
         }
 
         Ok(preprocessed)

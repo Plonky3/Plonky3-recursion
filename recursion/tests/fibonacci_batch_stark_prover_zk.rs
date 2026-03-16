@@ -172,12 +172,16 @@ fn test_batch_verifier_zk_hiding_fri() -> Result<(), VerificationError> {
 
     let verification_circuit = circuit_builder.build().unwrap();
     let public_inputs = verifier_inputs.pack_values(&pvs, &batch_stark_proof, common);
+    let private_inputs = verifier_inputs.pack_private_values(&batch_stark_proof);
     assert_eq!(public_inputs.len(), verification_circuit.public_flat_len);
 
     // --- Step 3: Run the verification circuit ---
     let mut verification_runner = verification_circuit.clone().runner();
     verification_runner
         .set_public_inputs(&public_inputs)
+        .unwrap();
+    verification_runner
+        .set_private_inputs(&private_inputs)
         .unwrap();
 
     // HidingFriPcs proof is (random_opened_values, inner_fri_proof); pass the inner part.

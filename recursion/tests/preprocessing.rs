@@ -357,9 +357,13 @@ fn test_batch_verifier_with_mixed_preprocessed() -> Result<(), VerificationError
         &batch_proof,
         common_data,
     );
+    let private_inputs = verifier_inputs.pack_private_values(&batch_proof);
 
     runner
         .set_public_inputs(&public_inputs)
+        .map_err(VerificationError::Circuit)?;
+    runner
+        .set_private_inputs(&private_inputs)
         .map_err(VerificationError::Circuit)?;
 
     let _traces = runner.run().map_err(VerificationError::Circuit)?;

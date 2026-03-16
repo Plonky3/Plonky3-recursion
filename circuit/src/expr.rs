@@ -9,6 +9,8 @@ pub enum Expr<F> {
     Const(F),
     /// Public input at declaration position
     Public(usize),
+    /// Private input that must be constrained by downstream use.
+    PrivateInput(usize),
     /// Addition of two expressions
     Add { lhs: ExprId, rhs: ExprId },
     /// Subtraction of two expressions

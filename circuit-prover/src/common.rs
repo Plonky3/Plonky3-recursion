@@ -198,25 +198,42 @@ where
                     let b_idx = chunk[5];
                     let c_idx = chunk[6];
                     let out_idx = chunk[7];
-                    let a_is_reader = <Val<SC> as PrimeField64>::as_canonical_u64(&chunk[8]) != 0;
+                    let a_state = <Val<SC> as PrimeField64>::as_canonical_u64(&chunk[8]);
                     let b_is_creator = <Val<SC> as PrimeField64>::as_canonical_u64(&chunk[9]) != 0;
-                    let c_is_reader = <Val<SC> as PrimeField64>::as_canonical_u64(&chunk[10]) != 0;
+                    let c_state = <Val<SC> as PrimeField64>::as_canonical_u64(&chunk[10]);
                     let out_is_creator =
                         <Val<SC> as PrimeField64>::as_canonical_u64(&chunk[11]) != 0;
 
                     // mult_a = -1 for all active rows; active = -mult_a = 1 always.
-                    // Effective a-lookup mult = mult_a * a_is_reader_col (in get_alu_index_lookups).
-                    // Effective c-lookup mult = mult_a * c_is_reader_col (in get_alu_index_lookups).
+                    // Effective a-lookup mult = mult_a * a_reader_col (in get_alu_index_lookups).
+                    // Effective c-lookup mult = mult_a * c_reader_col (in get_alu_index_lookups).
+                    //
+                    // a_state / c_state encoding:
+                    //   0 → skip: col = 0, eff = 0
+                    //   1 → reader: col = 1, eff = (-1)*1 = -1
+                    //   2 → private creator: col = -(n_reads), eff = (-1)*(-(n_reads)) = +n_reads
                     let mult_a = neg_one;
-                    let a_reader_col = if a_is_reader {
-                        <Val<SC>>::ONE
-                    } else {
-                        <Val<SC>>::ZERO
+                    let a_reader_col = match a_state {
+                        0 => <Val<SC>>::ZERO,
+                        1 => <Val<SC>>::ONE,
+                        2 => {
+                            let a_wid =
+                                <Val<SC> as PrimeField64>::as_canonical_u64(&a_idx) as usize / D;
+                            let n_reads = preprocessed.ext_reads.get(a_wid).copied().unwrap_or(0);
+                            <Val<SC>>::ZERO - <Val<SC>>::from_u32(n_reads)
+                        }
+                        _ => <Val<SC>>::ZERO,
                     };
-                    let c_reader_col = if c_is_reader {
-                        <Val<SC>>::ONE
-                    } else {
-                        <Val<SC>>::ZERO
+                    let c_reader_col = match c_state {
+                        0 => <Val<SC>>::ZERO,
+                        1 => <Val<SC>>::ONE,
+                        2 => {
+                            let c_wid =
+                                <Val<SC> as PrimeField64>::as_canonical_u64(&c_idx) as usize / D;
+                            let n_reads = preprocessed.ext_reads.get(c_wid).copied().unwrap_or(0);
+                            <Val<SC>>::ZERO - <Val<SC>>::from_u32(n_reads)
+                        }
+                        _ => <Val<SC>>::ZERO,
                     };
 
                     // b: creator if b_is_creator, reader otherwise.

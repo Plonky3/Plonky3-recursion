@@ -34,6 +34,8 @@ pub struct CircuitBuilder<F: Field> {
 
     /// Public input tracker
     public_tracker: PublicInputTracker,
+    /// Private input tracker
+    private_input_tracker: PublicInputTracker,
 
     /// Witness index allocator
     witness_alloc: WitnessAllocator,
@@ -78,6 +80,7 @@ where
         Self {
             expr_builder: ExpressionBuilder::new(),
             public_tracker: PublicInputTracker::new(),
+            private_input_tracker: PublicInputTracker::new(),
             witness_alloc: WitnessAllocator::new(),
             non_primitive_ops: Vec::new(),
             config: BuilderConfig::new(),
@@ -319,6 +322,34 @@ where
     /// Returns the current public input count.
     pub const fn public_input_count(&self) -> usize {
         self.public_tracker.count()
+    }
+
+    /// Allocates a private input with a descriptive label.
+    ///
+    /// Private inputs are set at runtime via `set_private_inputs` but do not create a Public table row.
+    pub fn alloc_private_input(&mut self, label: &'static str) -> ExprId {
+        let pos = self.private_input_tracker.alloc();
+        self.expr_builder.private_input(pos, label)
+    }
+
+    /// Allocates multiple private inputs with a descriptive label.
+    pub fn alloc_private_inputs(&mut self, count: usize, label: &'static str) -> Vec<ExprId> {
+        (0..count)
+            .map(|_| self.alloc_private_input(label))
+            .collect()
+    }
+
+    /// Allocates a fixed-size array of private inputs with a descriptive label.
+    pub fn alloc_private_input_array<const N: usize>(
+        &mut self,
+        label: &'static str,
+    ) -> [ExprId; N] {
+        core::array::from_fn(|_| self.alloc_private_input(label))
+    }
+
+    /// Returns the current private input count.
+    pub const fn private_input_count(&self) -> usize {
+        self.private_input_tracker.count()
     }
 
     /// Adds a constant to the circuit (deduplicated).
@@ -760,10 +791,12 @@ where
             &self.non_primitive_ops,
             self.expr_builder.pending_connects(),
             self.public_tracker.count(),
+            self.private_input_tracker.count(),
             self.witness_alloc,
             &self.npo_registry,
         );
-        let (ops, public_rows, expr_to_widx, public_mappings, witness_count) = lowerer.lower()?;
+        let (ops, public_rows, private_input_rows, expr_to_widx, public_mappings, witness_count) =
+            lowerer.lower()?;
 
         // Stage 2: IR transformations and optimizations
         let (ops, rewrite) = Optimizer::optimize(ops);
@@ -774,11 +807,14 @@ where
             .map(|(e, w)| (e, resolve(w)))
             .collect();
         let public_rows = public_rows.into_iter().map(resolve).collect();
+        let private_input_rows = private_input_rows.into_iter().map(resolve).collect();
 
         // Stage 3: Generate final circuit
         let mut circuit = Circuit::new(witness_count, expr_to_widx);
         circuit.ops = ops;
         circuit.public_rows = public_rows;
+        circuit.private_input_rows = private_input_rows;
+        circuit.private_flat_len = self.private_input_tracker.count();
         if !rewrite.is_empty() {
             circuit.witness_rewrite = Some(rewrite);
         }

@@ -18,6 +18,14 @@ pub enum CircuitError {
     #[error("Circuit missing public_rows mapping")]
     MissingPublicRowsMapping,
 
+    /// Private input length mismatch.
+    #[error("Private input length mismatch: expected {expected}, got {got}")]
+    PrivateInputLengthMismatch { expected: usize, got: usize },
+
+    /// Circuit missing private_input_rows mapping.
+    #[error("Circuit missing private_input_rows mapping")]
+    MissingPrivateRowsMapping,
+
     /// NonPrimitiveOpId out of range.
     #[error("NonPrimitiveOpId {op_id} out of range (circuit has {max_ops} complex ops)")]
     NonPrimitiveOpIdOutOfRange { op_id: u32, max_ops: usize },

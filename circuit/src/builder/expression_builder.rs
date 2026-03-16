@@ -368,6 +368,19 @@ where
         expr_id
     }
 
+    /// Allocates a private input expression at the given position.
+    ///
+    /// Private inputs are externally provided at runtime but do not create a Public table row.
+    /// They are constrained by downstream use (e.g. MMCS Merkle path verification).
+    pub fn private_input(&mut self, pos: usize, label: &'static str) -> ExprId {
+        let expr_id = self.graph.add_expr(Expr::PrivateInput(pos));
+        #[cfg(feature = "debugging")]
+        self.log_alloc(expr_id, label, || (AllocationType::Public, vec![]));
+        #[cfg(not(feature = "debugging"))]
+        self.log_alloc(expr_id, label, || ());
+        expr_id
+    }
+
     /// Adds an addition expression to the graph.
     ///
     /// Represents the field addition operation: `result = lhs + rhs`.

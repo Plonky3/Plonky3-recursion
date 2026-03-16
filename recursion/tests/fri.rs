@@ -476,8 +476,11 @@ fn run_fri_test(setup: FriSetup, build_only: bool) {
         result_1.index_bits_per_query.clone(),
         result_1.commitments_with_points,
     );
+    let private_inputs1 =
+        <FriTargets as Recursive<Challenge>>::get_private_values(&result_1.fri_proof);
     let mut runner1 = circuit.clone().runner();
     runner1.set_public_inputs(&pub_inputs1).unwrap();
+    runner1.set_private_inputs(&private_inputs1).unwrap();
     runner1.run().unwrap();
 
     // ---- Run instance 2 ----
@@ -488,8 +491,11 @@ fn run_fri_test(setup: FriSetup, build_only: bool) {
         result_2.index_bits_per_query.clone(),
         result_2.commitments_with_points,
     );
+    let private_inputs2 =
+        <FriTargets as Recursive<Challenge>>::get_private_values(&result_2.fri_proof);
     let mut runner2 = circuit.runner();
     runner2.set_public_inputs(&pub_inputs2).unwrap();
+    runner2.set_private_inputs(&private_inputs2).unwrap();
     runner2.run().unwrap();
 }
 
@@ -707,8 +713,11 @@ fn run_fri_test_with_mmcs(setup: FriSetup) {
         }
     }
 
+    let private_inputs =
+        <FriTargets as Recursive<Challenge>>::get_private_values(&result.fri_proof);
     let mut runner = circuit.runner();
     runner.set_public_inputs(&packed_inputs).unwrap();
+    runner.set_private_inputs(&private_inputs).unwrap();
 
     println!(
         "FRI circuit with MMCS: {} MMCS operations (input batch + commit-phase)",

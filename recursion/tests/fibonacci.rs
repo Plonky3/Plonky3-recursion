@@ -130,8 +130,12 @@ fn run_recursive_verifier(
 
     // Pack values using the same builder
     let public_inputs = verifier_inputs.pack_values(pis, proof, &None);
+    let private_inputs = verifier_inputs.pack_private_values(proof);
     runner
         .set_public_inputs(&public_inputs)
+        .map_err(VerificationError::Circuit)?;
+    runner
+        .set_private_inputs(&private_inputs)
         .map_err(VerificationError::Circuit)?;
 
     // Set MMCS private data from the FRI proof
@@ -263,7 +267,9 @@ fn test_truncated_fri_proof() {
     let mut runner = circuit.runner();
     // Pack values using the same builder
     let public_inputs = verifier_inputs.pack_values(&setup.pis, &setup.proof, &None);
+    let private_inputs = verifier_inputs.pack_private_values(&setup.proof);
     runner.set_public_inputs(&public_inputs).unwrap();
+    runner.set_private_inputs(&private_inputs).unwrap();
 
     // Now supply a truncated FRI proof — this gives fewer siblings than op_ids expects.
     let mut truncated_opening_proof = setup.proof.opening_proof.clone();

@@ -219,6 +219,23 @@ where
         }
     }
 
+    fn pack_private_inputs(
+        &self,
+        prev: &RecursionInput<'_, SC, A>,
+    ) -> Result<Vec<SC::Challenge>, VerificationError> {
+        match (self, prev) {
+            (Self::UniStark(builder, _), RecursionInput::UniStark { proof, .. }) => {
+                Ok(builder.pack_private_values(proof))
+            }
+            (Self::BatchStark(builder, _), RecursionInput::BatchStark { proof, .. }) => {
+                Ok(builder.pack_private_values(&proof.proof))
+            }
+            _ => Err(VerificationError::InvalidProofShape(
+                "RecursionInput variant does not match verifier result".to_string(),
+            )),
+        }
+    }
+
     fn op_ids(&self) -> &[NonPrimitiveOpId] {
         match self {
             Self::UniStark(_, ids) | Self::BatchStark(_, ids) => ids,

@@ -30,12 +30,13 @@ pub struct AluOpRecord<F> {
 
 /// Unified ALU operation table.
 ///
-/// Records all ALU operations (Add, Mul, BoolCheck, MulAdd) in the circuit.
+/// Records all ALU operations (Add, Mul, BoolCheck, MulAdd, HornerAcc) in the circuit.
 /// Each row represents one constraint based on the operation kind:
 /// - Add: a + b = out
 /// - Mul: a * b = out
 /// - BoolCheck: a * (a - 1) = 0, out = a
 /// - MulAdd: a * b + c = out
+/// - HornerAcc: out = prev_row_out * b + c - a
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AluTrace<F> {
     /// Operation kind for each row

@@ -293,6 +293,15 @@ impl<
             .chain(OpeningProof::get_values(opening_proof))
             .collect()
     }
+
+    fn get_private_values(input: &Self::Input) -> Vec<SC::Challenge> {
+        let mut values = vec![];
+        values.extend(OpenedValuesTargets::<SC>::get_private_values(
+            &input.opened_values,
+        ));
+        values.extend(OpeningProof::get_private_values(&input.opening_proof));
+        values
+    }
 }
 
 impl<
@@ -399,7 +408,7 @@ impl<
     fn get_values(input: &Self::Input) -> Vec<SC::Challenge> {
         let BatchProof {
             commitments,
-            opened_values,
+            opened_values: _,
             opening_proof,
             global_lookup_data,
             degree_bits: _,
@@ -407,7 +416,6 @@ impl<
 
         CommitmentTargets::<SC::Challenge, Comm>::get_values(commitments)
             .into_iter()
-            .chain(BatchOpenedValuesTargets::<SC>::get_values(opened_values))
             .chain(OpeningProof::get_values(opening_proof))
             .chain(
                 global_lookup_data
@@ -416,6 +424,15 @@ impl<
                     .map(|ld| ld.expected_cumulated),
             )
             .collect()
+    }
+
+    fn get_private_values(input: &Self::Input) -> Vec<SC::Challenge> {
+        let mut values = vec![];
+        values.extend(BatchOpenedValuesTargets::<SC>::get_private_values(
+            &input.opened_values,
+        ));
+        values.extend(OpeningProof::get_private_values(&input.opening_proof));
+        values
     }
 }
 
@@ -471,37 +488,37 @@ impl<SC: StarkGenericConfig> Recursive<SC::Challenge> for OpenedValuesTargets<SC
     fn new(circuit: &mut CircuitBuilder<SC::Challenge>, input: &Self::Input) -> Self {
         let trace_local_len = input.trace_local.len();
         let trace_local_targets =
-            circuit.alloc_public_inputs(trace_local_len, "trace local values");
+            circuit.alloc_private_inputs(trace_local_len, "trace local values");
 
         let trace_next_len = input
             .trace_next
             .as_ref()
             .expect("trace_next is always present")
             .len();
-        let trace_next_targets = circuit.alloc_public_inputs(trace_next_len, "trace next values");
+        let trace_next_targets = circuit.alloc_private_inputs(trace_next_len, "trace next values");
 
         let preprocessed_local_targets = input
             .preprocessed_local
             .as_ref()
-            .map(|prep| circuit.alloc_public_inputs(prep.len(), "local preprocessed values"));
+            .map(|prep| circuit.alloc_private_inputs(prep.len(), "local preprocessed values"));
         let preprocessed_next_targets = input
             .preprocessed_next
             .as_ref()
-            .map(|prep| circuit.alloc_public_inputs(prep.len(), "local preprocessed values"));
+            .map(|prep| circuit.alloc_private_inputs(prep.len(), "local preprocessed values"));
 
         let quotient_chunks_len = input.quotient_chunks.len();
         let mut quotient_chunks_targets = Vec::with_capacity(quotient_chunks_len);
         for quotient_chunk in input.quotient_chunks.iter() {
             let quotient_chunks_cols_len = quotient_chunk.len();
             let quotient_col =
-                circuit.alloc_public_inputs(quotient_chunks_cols_len, "quotient chunk columns");
+                circuit.alloc_private_inputs(quotient_chunks_cols_len, "quotient chunk columns");
             quotient_chunks_targets.push(quotient_col);
         }
 
         let random_targets = input
             .random
             .as_ref()
-            .map(|random| circuit.alloc_public_inputs(random.len(), "random values (ZK mode)"));
+            .map(|random| circuit.alloc_private_inputs(random.len(), "random values (ZK mode)"));
 
         Self {
             trace_local_targets,
@@ -514,7 +531,11 @@ impl<SC: StarkGenericConfig> Recursive<SC::Challenge> for OpenedValuesTargets<SC
         }
     }
 
-    fn get_values(input: &Self::Input) -> Vec<SC::Challenge> {
+    fn get_values(_input: &Self::Input) -> Vec<SC::Challenge> {
+        vec![]
+    }
+
+    fn get_private_values(input: &Self::Input) -> Vec<SC::Challenge> {
         let OpenedValues {
             trace_local,
             trace_next,
@@ -550,11 +571,11 @@ impl<SC: StarkGenericConfig> Recursive<SC::Challenge> for OpenedValuesTargetsWit
     fn new(circuit: &mut CircuitBuilder<SC::Challenge>, input: &Self::Input) -> Self {
         let opened_values_no_lookups = OpenedValuesTargets::new(circuit, &input.base_opened_values);
 
-        let permutation_local_targets = circuit.alloc_public_inputs(
+        let permutation_local_targets = circuit.alloc_private_inputs(
             input.permutation_local.len(),
             "permutation local opened values",
         );
-        let permutation_next_targets = circuit.alloc_public_inputs(
+        let permutation_next_targets = circuit.alloc_private_inputs(
             input.permutation_next.len(),
             "permutation next opened values",
         );
@@ -566,7 +587,11 @@ impl<SC: StarkGenericConfig> Recursive<SC::Challenge> for OpenedValuesTargetsWit
         }
     }
 
-    fn get_values(input: &Self::Input) -> Vec<SC::Challenge> {
+    fn get_values(_input: &Self::Input) -> Vec<SC::Challenge> {
+        vec![]
+    }
+
+    fn get_private_values(input: &Self::Input) -> Vec<SC::Challenge> {
         let OpenedValuesWithLookups {
             base_opened_values,
             permutation_local,
@@ -574,7 +599,9 @@ impl<SC: StarkGenericConfig> Recursive<SC::Challenge> for OpenedValuesTargetsWit
         } = input;
 
         let mut values = vec![];
-        values.extend(OpenedValuesTargets::<SC>::get_values(base_opened_values));
+        values.extend(OpenedValuesTargets::<SC>::get_private_values(
+            base_opened_values,
+        ));
         values.extend(permutation_local);
         values.extend(permutation_next);
         values
@@ -594,10 +621,16 @@ impl<SC: StarkGenericConfig> Recursive<SC::Challenge> for BatchOpenedValuesTarge
         Self { instances }
     }
 
-    fn get_values(input: &Self::Input) -> Vec<SC::Challenge> {
+    fn get_values(_input: &Self::Input) -> Vec<SC::Challenge> {
+        vec![]
+    }
+
+    fn get_private_values(input: &Self::Input) -> Vec<SC::Challenge> {
         let mut values = vec![];
         for instance in &input.instances {
-            values.extend(OpenedValuesTargetsWithLookups::<SC>::get_values(instance));
+            values.extend(OpenedValuesTargetsWithLookups::<SC>::get_private_values(
+                instance,
+            ));
         }
         values
     }

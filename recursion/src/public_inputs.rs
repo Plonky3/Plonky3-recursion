@@ -554,6 +554,15 @@ where
         }
         .build()
     }
+
+    /// Pack private input values (opened values, FRI siblings, etc.) for the verifier circuit.
+    pub fn pack_private_values(&self, proof: &Proof<SC>) -> Vec<SC::Challenge>
+    where
+        Val<SC>: PrimeField64,
+        SC::Challenge: BasedVectorSpace<Val<SC>> + From<Val<SC>>,
+    {
+        ProofTargets::<SC, Comm, OpeningProof>::get_private_values(proof)
+    }
 }
 
 /// Two-phase builder for batch (multi-instance) STARK verification circuits.
@@ -665,6 +674,15 @@ where
 
         // Combine AIR public values and proof values into a single public input vector.
         construct_batch_stark_verifier_inputs(air_public_values, &proof_values, &common_data)
+    }
+
+    /// Pack private input values (opened values, FRI siblings, etc.) for the verifier circuit.
+    pub fn pack_private_values(&self, proof: &BatchProof<SC>) -> Vec<SC::Challenge>
+    where
+        Val<SC>: PrimeField64,
+        SC::Challenge: BasedVectorSpace<Val<SC>> + From<Val<SC>>,
+    {
+        BatchProofTargets::<SC, Comm, OpeningProof>::get_private_values(proof)
     }
 }
 

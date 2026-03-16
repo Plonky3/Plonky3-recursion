@@ -96,7 +96,7 @@ struct Args {
 
     #[arg(
         long,
-        default_value_t = 2,
+        default_value_t = 1,
         help = "Number of public lanes for the table packing in recursive layers"
     )]
     pub public_lanes: usize,

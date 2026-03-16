@@ -243,9 +243,15 @@ fn test_zk_aggregation() -> Result<(), VerificationError> {
         common_right,
     ));
 
+    let mut private_inputs = left_verifier_inputs.pack_private_values(&left_data.proof);
+    private_inputs.extend(right_verifier_inputs.pack_private_values(&right_data.proof));
+
     let mut runner = aggregation_circuit.clone().runner();
     runner
         .set_public_inputs(&public_inputs)
+        .map_err(VerificationError::Circuit)?;
+    runner
+        .set_private_inputs(&private_inputs)
         .map_err(VerificationError::Circuit)?;
 
     // HidingFriPcs proof is (random_opened_values, inner_fri_proof); pass the inner part.

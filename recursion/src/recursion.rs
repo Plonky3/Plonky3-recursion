@@ -104,6 +104,15 @@ where
         Val<SC>: PrimeField64,
         SC::Challenge: BasedVectorSpace<Val<SC>> + From<Val<SC>>;
 
+    /// Pack the private inputs (opened values, FRI siblings, etc.) for the verifier circuit.
+    fn pack_private_inputs(
+        &self,
+        prev: &RecursionInput<'_, SC, A>,
+    ) -> Result<Vec<SC::Challenge>, VerificationError>
+    where
+        Val<SC>: PrimeField64,
+        SC::Challenge: BasedVectorSpace<Val<SC>> + From<Val<SC>>;
+
     /// Operation IDs that require private data (e.g. Merkle paths) for the circuit runner.
     fn op_ids(&self) -> &[NonPrimitiveOpId];
 }
@@ -356,9 +365,13 @@ where
     if let Some(cached) = prep {
         let traces = {
             let public_inputs = verifier_result.pack_public_inputs(prev)?;
+            let private_inputs = verifier_result.pack_private_inputs(prev)?;
             let mut runner = verification_circuit.runner();
             runner
                 .set_public_inputs(&public_inputs)
+                .map_err(VerificationError::Circuit)?;
+            runner
+                .set_private_inputs(&private_inputs)
                 .map_err(VerificationError::Circuit)?;
             backend
                 .set_private_data(config, &mut runner, verifier_result.op_ids(), prev)
@@ -393,9 +406,13 @@ where
 
     let traces = {
         let public_inputs = verifier_result.pack_public_inputs(prev)?;
+        let private_inputs = verifier_result.pack_private_inputs(prev)?;
         let mut runner = verification_circuit.runner();
         runner
             .set_public_inputs(&public_inputs)
+            .map_err(VerificationError::Circuit)?;
+        runner
+            .set_private_inputs(&private_inputs)
             .map_err(VerificationError::Circuit)?;
 
         backend
@@ -529,9 +546,15 @@ where
     let mut public_inputs = left_result.pack_public_inputs(left)?;
     public_inputs.extend(right_result.pack_public_inputs(right)?);
 
+    let mut private_inputs = left_result.pack_private_inputs(left)?;
+    private_inputs.extend(right_result.pack_private_inputs(right)?);
+
     let mut runner = verification_circuit.clone().runner();
     runner
         .set_public_inputs(&public_inputs)
+        .map_err(VerificationError::Circuit)?;
+    runner
+        .set_private_inputs(&private_inputs)
         .map_err(VerificationError::Circuit)?;
 
     <B as PcsRecursionBackend<SC, A1, D>>::set_private_data(
