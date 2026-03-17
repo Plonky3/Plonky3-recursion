@@ -3,10 +3,7 @@ set -euo pipefail
 
 # benchmark.sh
 #
-# Usage:
-#   bash benchmark.sh recursive_fibonacci
-#   bash benchmark.sh recursive_keccak
-#   bash benchmark.sh recursive_aggregation
+# Usage: ./scripts/benchmark.sh [fibonacci|keccak|aggregation]
 #
 # Output: CSV to stdout.
 #
@@ -20,7 +17,7 @@ set -euo pipefail
 
 example="${1:-}"
 if [[ -z "${example}" ]]; then
-  echo "usage: $0 <recursive_fibonacci|recursive_keccak|recursive_aggregation>" >&2
+  echo "usage: $0 [fibonacci|keccak|aggregation]" >&2
   exit 2
 fi
 
@@ -190,21 +187,21 @@ run_aggregation() {
 }
 
 case "${example}" in
-  recursive_fibonacci)
+  fibonacci)
     echo "----------------------------------------------"
     echo "Recursive Fibonacci with N=10000 and 4 layers."
     echo "----------------------------------------------"
     run_fib_or_keccak "recursive_fibonacci" -n 10000 --num-recursive-layers 4
     echo "------------------------------------"
     ;;
-  recursive_keccak)
+  keccak)
     echo "------------------------------------------"
     echo "Recursive Keccak with N=1000 and 4 layers."
     echo "------------------------------------------"
     run_fib_or_keccak "recursive_keccak" -n 1000 --num-recursive-layers 4
     echo "------------------------------------"
     ;;
-  recursive_aggregation)
+  aggregation)
     echo "------------------------------------"
     echo "Recursive Aggregation with 5 layers."
     echo "------------------------------------"
