@@ -10,6 +10,10 @@ use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_uni_stark::{SymbolicAirBuilder, SymbolicExpression, SymbolicVariable};
 
+use super::alu_air::{
+    PREP_A_IDX, PREP_A_IS_READER, PREP_C_IS_READER, PREP_MULT_A, PREP_MULT_B, PREP_MULT_OUT,
+};
+
 pub fn get_index_lookups<F: Field, const D: usize>(
     main_start: usize,
     preprocessed_start: usize,
@@ -34,38 +38,27 @@ pub fn get_index_lookups<F: Field, const D: usize>(
 
 /// Get ALU lookups for the 4 operands (a, b, c, out).
 ///
-/// ALU preprocessed layout per lane (13 columns):
-/// - 0: active (1 for active row, 0 for padding)
-/// - 1: mult_a (-1 reader, +N first unconstrained creator, 0 padding)
-/// - 2-5: selectors (add_vs_mul, bool, muladd, horner)
-/// - 6-9: indices (a_idx, b_idx, c_idx, out_idx)
-/// - 10: mult_b, 11: mult_out, 12: mult_c
+/// Uses the `PREP_*` constants from [`super::alu_air`] for column offsets.
 pub fn get_alu_index_lookups<F: Field, const D: usize>(
     main_start: usize,
     preprocessed_start: usize,
     main: &[SymbolicVariable<F>],
     preprocessed: &[SymbolicVariable<F>],
 ) -> Vec<LookupInput<F>> {
-    let mult_a = SymbolicExpression::from(preprocessed[preprocessed_start]);
-    let mult_b = SymbolicExpression::from(preprocessed[preprocessed_start + 9]);
-    let mult_out = SymbolicExpression::from(preprocessed[preprocessed_start + 10]);
-    let a_is_reader = SymbolicExpression::from(preprocessed[preprocessed_start + 11]);
-    let c_is_reader = SymbolicExpression::from(preprocessed[preprocessed_start + 12]);
+    let mult_a = SymbolicExpression::from(preprocessed[preprocessed_start + PREP_MULT_A]);
+    let mult_b = SymbolicExpression::from(preprocessed[preprocessed_start + PREP_MULT_B]);
+    let mult_out = SymbolicExpression::from(preprocessed[preprocessed_start + PREP_MULT_OUT]);
+    let a_is_reader = SymbolicExpression::from(preprocessed[preprocessed_start + PREP_A_IS_READER]);
+    let c_is_reader = SymbolicExpression::from(preprocessed[preprocessed_start + PREP_C_IS_READER]);
 
-    // Indices are at positions 5-8 (after mult_a + 4 selectors)
-    let idx_offset = 5;
-
-    // Effective multiplicities: mult_a * is_reader. This zeros out bus contributions
-    // for unconstrained witnesses while keeping mult_a = -1 for active = -mult_a = 1.
     let eff_mult_a = mult_a.clone() * a_is_reader;
     let eff_mult_c = mult_a * c_is_reader;
 
-    // [a, b, c, out] multiplicities
     let multiplicities = [eff_mult_a, mult_b, eff_mult_c, mult_out];
 
     (0..4)
         .map(|i| {
-            let idx = SymbolicExpression::from(preprocessed[preprocessed_start + idx_offset + i]);
+            let idx = SymbolicExpression::from(preprocessed[preprocessed_start + PREP_A_IDX + i]);
 
             let values = (0..D).map(|j| SymbolicExpression::from(main[main_start + i * D + j]));
             let inps = iter::once(idx).chain(values).collect::<Vec<_>>();
