@@ -676,10 +676,10 @@ fn evaluate_polynomial<EF: Field>(
         return coefficients[0];
     }
 
-    let mut result = coefficients[coefficients.len() - 1];
-    for &coeff in coefficients.iter().rev().skip(1) {
-        result = builder.mul(result, point);
-        result = builder.add(result, coeff);
+    let zero = builder.define_const(EF::ZERO);
+    let mut result = zero;
+    for &coeff in coefficients.iter().rev() {
+        result = builder.horner_acc_step(result, point, coeff, zero);
     }
 
     builder.pop_scope(); // close `evaluate_polynomial` scope
