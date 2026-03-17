@@ -102,6 +102,51 @@ pub fn create_direct_preprocessed_trace<F: Field>(
     pad_matrix_with_min_height(mat, min_height)
 }
 
+/// Like [`create_direct_preprocessed_trace`], but allocates the *final* width
+/// directly by appending a fixed number of zero columns to every row.
+///
+/// This is useful when an AIR wants its preprocessed trace to have extra
+/// global columns (e.g. selectors) that are always zero in the unscheduled
+/// case: we can avoid building a narrow matrix and widening it row-by-row.
+pub fn create_direct_preprocessed_trace_with_extra<F: Field>(
+    preprocessed_values: &[F],
+    preprocessed_lane_width: usize,
+    extra_cols_per_row: usize,
+    num_lanes: usize,
+    min_height: usize,
+) -> RowMajorMatrix<F> {
+    let base_width = num_lanes * preprocessed_lane_width;
+
+    let mut values = preprocessed_values.to_vec();
+
+    // Pad to a multiple of the *base* row width.
+    if base_width > 0 && !values.len().is_multiple_of(base_width) {
+        let padding = base_width - (values.len() % base_width);
+        values.extend(core::iter::repeat_n(F::ZERO, padding));
+    }
+
+    // Ensure at least one base row.
+    if values.is_empty() {
+        values.extend(core::iter::repeat_n(F::ZERO, base_width.max(1)));
+    }
+
+    let num_rows = values.len() / base_width;
+    let target_width = base_width + extra_cols_per_row;
+
+    // Build the widened matrix in one pass: copy each base row into the
+    // prefix of the widened row and leave the extra columns zero.
+    let mut widened = RowMajorMatrix::new(F::zero_vec(num_rows * target_width), target_width);
+    for r in 0..num_rows {
+        let src_start = r * base_width;
+        let dst_start = r * target_width;
+        widened.values[dst_start..dst_start + base_width]
+            .copy_from_slice(&values[src_start..src_start + base_width]);
+        // trailing extra_cols_per_row entries stay zero
+    }
+
+    pad_matrix_with_min_height(widened, min_height)
+}
+
 /// Object‑safe gadget shim.
 pub trait LookupEvaluatorDyn<AB: PermutationAirBuilder> {
     fn num_aux_cols(&self) -> usize;

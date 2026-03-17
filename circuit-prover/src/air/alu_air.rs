@@ -50,12 +50,11 @@ use p3_circuit::tables::AluTrace;
 use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
 use p3_lookup::LookupAir;
 use p3_lookup::lookup_traits::{Direction, Kind, Lookup};
-use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_uni_stark::SymbolicExpression;
 
 use crate::air::utils::{
-    create_direct_preprocessed_trace, create_symbolic_variables, get_alu_index_lookups,
+    create_direct_preprocessed_trace_with_extra, create_symbolic_variables, get_alu_index_lookups,
     pad_matrix_with_min_height,
 };
 
@@ -561,31 +560,16 @@ impl<F: Field, const D: usize> BaseAir<F> for AluAir<F, D> {
     fn preprocessed_trace(&self) -> Option<RowMajorMatrix<F>> {
         self.schedule.as_ref().map_or_else(
             || {
-                // No Horner scheduling: build a direct preprocessed trace and then
-                // widen each row to the full preprocessed width by appending zeros
-                // for the extra double-step columns.
-                let base = create_direct_preprocessed_trace(
+                // No Horner scheduling: build the preprocessed trace at the final
+                // width directly by appending 5 zero columns to every row. This
+                // avoids an extra allocation + row-by-row copy.
+                Some(create_direct_preprocessed_trace_with_extra(
                     &self.preprocessed,
                     Self::preprocessed_lane_width(),
+                    5, // extra columns per row for double-step HornerAcc
                     self.lanes,
                     self.min_height,
-                );
-                let base_width = base.width();
-                let target_width = self.preprocessed_width();
-                if target_width == base_width {
-                    Some(base)
-                } else {
-                    let height = base.height();
-                    let mut widened =
-                        RowMajorMatrix::new(F::zero_vec(height * target_width), target_width);
-                    for r in 0..height {
-                        let src_row = base.row_slice(r).unwrap();
-                        let dst_start = r * target_width;
-                        widened.values[dst_start..dst_start + base_width].copy_from_slice(&src_row);
-                        // remaining columns stay zero
-                    }
-                    Some(widened)
-                }
+                ))
             },
             |schedule| Some(self.build_scheduled_preprocessed_trace(schedule)),
         )
