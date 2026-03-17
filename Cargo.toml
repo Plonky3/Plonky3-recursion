@@ -93,7 +93,7 @@ p3-test-utils = { path = "test-utils", version = "0.1.0" }
 inherits = "release"
 debug = true
 
-[profile.perf]
+[profile.optimized]
 inherits = "release"
 lto = "thin"
 codegen-units = 1

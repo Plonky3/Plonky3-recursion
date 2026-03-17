@@ -32,7 +32,7 @@ run_fib_or_keccak() {
   {
     for ((r=1; r<=runs; r++)); do
       echo "###RUN ${r}###"
-      RUST_LOG=info cargo run --profile perf --example "${ex}" -q --features parallel -- "${args[@]}" || true
+      RUST_LOG=info cargo run --profile optimized --example "${ex}" -q --features parallel -- "${args[@]}" || true
     done
   } | perl -ne '
     use strict;
@@ -97,7 +97,7 @@ run_aggregation() {
   {
     for ((r=1; r<=runs; r++)); do
       echo "###RUN ${r}###"
-      RUST_LOG=info cargo run --profile perf --example recursive_aggregation -q --features parallel -- --num-recursive-layers 5 || true
+      RUST_LOG=info cargo run --profile optimized --example recursive_aggregation -q --features parallel -- --num-recursive-layers 5 || true
     done
   } | perl -ne '
     use strict;

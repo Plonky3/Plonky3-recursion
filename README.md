@@ -157,17 +157,17 @@ All examples use the unified API (`prove_next_layer`, `RecursionInput`, `FriRecu
 
 - **`recursive_fibonacci.rs`**: Base layer is a batch-stark circuit (Fibonacci); recursive layers use `into_recursion_input::<BatchOnly>()` and `prove_next_layer`.
   ```bash
-  cargo run --profile perf --example recursive_fibonacci -- --field koala-bear --n 1000 --num-recursive-layers 5
+  cargo run --profile optimized --example recursive_fibonacci -- --field koala-bear --n 1000 --num-recursive-layers 5
   ```
 
 - **`recursive_keccak.rs`**: Base layer is a uni-stark Keccak proof; layer 1 uses `RecursionInput::UniStark`, then further layers use `into_recursion_input::<BatchOnly>()` and `prove_next_layer`.
   ```bash
-  cargo run --profile perf --example recursive_keccak -- --field koala-bear --n 100 --num-recursive-layers 5
+  cargo run --profile optimized --example recursive_keccak -- --field koala-bear --n 100 --num-recursive-layers 5
   ```
 
 - **`recursive_aggregation.rs`**: Base layer are dummy batch-stark circuits; recursive layers use `into_recursion_input::<BatchOnly>()` and `prove_next_aggregation` to fold 2 proofs into 1.
   ```bash
-  cargo run --profile perf --example recursive_aggregation -- --field koala-bear --num-recursive-layers 4
+  cargo run --profile optimized --example recursive_aggregation -- --field koala-bear --num-recursive-layers 4
   ```
 
 ## API Overview
