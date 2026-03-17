@@ -318,7 +318,6 @@ macro_rules! define_field_module {
                                     fri_params.log_final_poly_len,
                                     fri_params.log_blowup,
                                 ),
-                                use_npos_in_circuit: true,
                                 constraint_profile: ConstraintProfile::Standard,
                             };
                             let seed = stable_seed.unwrap_or(layer as u64);
@@ -385,7 +384,7 @@ macro_rules! define_field_module {
                     });
                 } else {
                     run_layers!(ConfigWithFriParams, |_seed| {
-                        config_with_fri_params(fri_params, security_level)
+                        config_with_fri_params(fri_params, security_level, true)
                     });
                 }
 

@@ -252,7 +252,7 @@ macro_rules! define_field_module {
                     keccak_air.generate_trace_rows(effective_num_hashes, fri_params.log_blowup);
 
                 // The base Keccak layer always uses non-ZK uni-stark (p3-uni-stark has no ZK support).
-                let config_0 = config_with_fri_params(fri_params, security_level);
+                let config_0 = config_with_fri_params(fri_params, security_level, true);
                 let pis: Vec<F> = vec![];
 
                 let proof_0 = prove(&config_0, &keccak_air, trace, &pis);
@@ -294,10 +294,9 @@ macro_rules! define_field_module {
                     .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup);
                     let params = ProveNextLayerParams {
                         table_packing: layer_table_packing,
-                        use_npos_in_circuit: true,
                         constraint_profile: ConstraintProfile::Standard,
                     };
-                    let config = config_with_fri_params(fri_params, security_level);
+                    let config = config_with_fri_params(fri_params, security_level, true);
 
                     let out = if layer == 1 {
                         let input = RecursionInput::UniStark {

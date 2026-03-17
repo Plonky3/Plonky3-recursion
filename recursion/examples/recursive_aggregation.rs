@@ -111,6 +111,13 @@ struct Args {
 
     #[arg(long, default_value_t = false, help = "Enable ZK mode (HidingFriPcs)")]
     pub zk: bool,
+
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "Disable recompose NPO (use only Poseidon2 perm)"
+    )]
+    pub disable_recompose_npo: bool,
 }
 
 impl Args {
@@ -151,6 +158,7 @@ fn main() {
             &table_packing,
             args.security_level,
             args.zk,
+            args.disable_recompose_npo,
         ),
         FieldOption::BabyBear => baby_bear::run(
             args.num_recursive_layers,
@@ -158,6 +166,7 @@ fn main() {
             &table_packing,
             args.security_level,
             args.zk,
+            args.disable_recompose_npo,
         ),
         FieldOption::Goldilocks => goldilocks::run(
             args.num_recursive_layers,
@@ -165,6 +174,7 @@ fn main() {
             &table_packing,
             args.security_level,
             args.zk,
+            args.disable_recompose_npo,
         ),
     }
 }
@@ -307,6 +317,7 @@ macro_rules! define_field_module {
                 table_packing: &TablePacking,
                 security_level: usize,
                 zk: bool,
+                disable_recompose_npo: bool,
             ) {
                 let base_table_packing = TablePacking::new(1, 1)
                     .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup);
@@ -344,8 +355,10 @@ macro_rules! define_field_module {
                                 } else {
                                     table_packing.clone()
                                 }
-                                .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup),
-                                use_npos_in_circuit: true,
+                                .with_fri_params(
+                                    fri_params.log_final_poly_len,
+                                    fri_params.log_blowup,
+                                ),
                                 constraint_profile: ConstraintProfile::Standard,
                             };
                             let agg_config: $cfg_type = $cfg_fn(level as u64);
@@ -369,7 +382,9 @@ macro_rules! define_field_module {
                                 let mut verifier = BatchStarkProver::new(agg_config.clone())
                                     .with_table_packing(agg_params.table_packing);
                                 verifier.$register_poseidon2_fn($poseidon2_config);
-                                verifier.$register_recompose_fn();
+                                if !disable_recompose_npo {
+                                    verifier.$register_recompose_fn();
+                                }
                                 verifier
                                     .verify_all_tables(&out.0, out.1.common_data())
                                     .unwrap_or_else(|e| {
@@ -391,7 +406,7 @@ macro_rules! define_field_module {
                 } else {
                     run_aggregation!(
                         ConfigWithFriParams,
-                        |_seed| config_with_fri_params(fri_params, security_level),
+                        |_seed| config_with_fri_params(fri_params, security_level, disable_recompose_npo),
                         prove_dummy_circuit
                     );
                 }

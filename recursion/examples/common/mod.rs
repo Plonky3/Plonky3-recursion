@@ -185,6 +185,7 @@ macro_rules! define_field_module_types {
         struct ConfigWithFriParams {
             config: Arc<MyConfig>,
             fri_verifier_params: FriVerifierParams,
+            disable_recompose_npo: bool,
         }
 
         #[allow(dead_code)]
@@ -192,6 +193,7 @@ macro_rules! define_field_module_types {
         struct ConfigWithFriParamsZk {
             config: Arc<MyConfigZk>,
             fri_verifier_params: FriVerifierParams,
+            disable_recompose_npo: bool,
         }
 
         impl core::ops::Deref for ConfigWithFriParams {
@@ -275,7 +277,11 @@ macro_rules! define_field_module_types {
                     generate_poseidon2_trace::<Challenge, $poseidon2_circuit_config>,
                     perm,
                 );
-                circuit.$enable_recompose_fn::<F>(generate_recompose_trace::<F, Challenge>);
+                if self.disable_recompose_npo {
+                    circuit.noop_enable_recompose::<F>(generate_recompose_trace::<F, Challenge>);
+                } else {
+                    circuit.$enable_recompose_fn::<F>(generate_recompose_trace::<F, Challenge>);
+                }
                 Ok(())
             }
 
@@ -351,7 +357,11 @@ macro_rules! define_field_module_types {
                     generate_poseidon2_trace::<Challenge, $poseidon2_circuit_config>,
                     perm,
                 );
-                circuit.$enable_recompose_fn::<F>(generate_recompose_trace::<F, Challenge>);
+                if self.disable_recompose_npo {
+                    circuit.noop_enable_recompose::<F>(generate_recompose_trace::<F, Challenge>);
+                } else {
+                    circuit.$enable_recompose_fn::<F>(generate_recompose_trace::<F, Challenge>);
+                }
                 Ok(())
             }
 
@@ -418,10 +428,15 @@ macro_rules! define_field_module_types {
             )
         }
 
-        fn config_with_fri_params(fp: &FriParams, security_level: usize) -> ConfigWithFriParams {
+        fn config_with_fri_params(
+            fp: &FriParams,
+            security_level: usize,
+            disable_recompose_npo: bool,
+        ) -> ConfigWithFriParams {
             ConfigWithFriParams {
                 config: Arc::new(create_config(fp, security_level)),
                 fri_verifier_params: create_fri_verifier_params(fp),
+                disable_recompose_npo,
             }
         }
 
@@ -465,6 +480,7 @@ macro_rules! define_field_module_types {
             ConfigWithFriParamsZk {
                 config: Arc::new(create_config_zk(fp, security_level, rng_seed)),
                 fri_verifier_params: create_fri_verifier_params(fp),
+                disable_recompose_npo: false,
             }
         }
     };

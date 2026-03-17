@@ -176,8 +176,6 @@ where
 #[derive(Clone, Debug)]
 pub struct ProveNextLayerParams {
     pub table_packing: TablePacking,
-    /// Whether to register NPO table provers (e.g. challenger permutation) on the circuit prover.
-    pub use_npos_in_circuit: bool,
     /// Constraint profile controlling which AIR variants are used for this layer.
     pub constraint_profile: ConstraintProfile,
 }
@@ -186,7 +184,6 @@ impl Default for ProveNextLayerParams {
     fn default() -> Self {
         Self {
             table_packing: TablePacking::new(1, 4),
-            use_npos_in_circuit: true,
             constraint_profile: ConstraintProfile::Standard,
         }
     }
