@@ -196,7 +196,7 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AluAir<F, D> {
         self.lanes * Self::lane_width() + 3 * D
     }
 
-    /// Number of preprocessed columns per lane (12 total):
+    /// Number of preprocessed columns per lane (13 total):
     /// [active, mult_a, sel1, sel2, sel3, sel4, a_idx, b_idx, c_idx, out_idx, mult_b, mult_out, mult_c]
     pub const fn preprocessed_lane_width() -> usize {
         13
@@ -342,10 +342,11 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AluAir<F, D> {
 
         if let Some(ref schedule) = self.schedule {
             for (pos, entry) in schedule.iter().enumerate() {
+                let row = pos / lanes;
+                let lane = pos % lanes;
+
                 match entry {
                     ScheduleEntry::Op(i) => {
-                        let row = pos / lanes;
-                        let lane = pos % lanes;
                         let mut cursor = row * width + lane * lane_width;
 
                         let a_val = &trace.values[*i][0];
@@ -367,8 +368,6 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AluAir<F, D> {
                     }
                     ScheduleEntry::DoubleHorner(i0, i1) => {
                         // Lane 0: encode a paired double-step Horner row.
-                        let row = pos / lanes;
-                        let lane = pos % lanes;
                         let base = row * width + lane * lane_width;
 
                         // Step 0: write a, b, c from first op as usual.
@@ -1168,12 +1167,27 @@ mod tests {
     fn prove_verify_alu_double_step_horner_base_field() {
         // Build a simple Horner chain of length 3 over the base field and
         // check that the scheduled ALU trace with double-step rows verifies.
+        // Relation: out = prev_out * b + c - a; double-step shares b for two steps.
         let n = 3;
         let op_kind = vec![AluOpKind::HornerAcc; n];
 
-        // Use a fixed alpha and simple values so the Horner relation holds
-        let zero = Val::ZERO;
-        let values = vec![[zero, zero, zero, zero]; n];
+        let prev_out = Val::ZERO;
+        let a0 = Val::from_u64(1);
+        let b0 = Val::from_u64(2);
+        let c0 = Val::from_u64(5);
+        let out0 = prev_out * b0 + c0 - a0;
+
+        let a1 = Val::ZERO;
+        let b1 = b0;
+        let c1 = Val::from_u64(3);
+        let out1 = out0 * b1 + c1 - a1;
+
+        let a2 = Val::from_u64(1);
+        let b2 = Val::from_u64(3);
+        let c2 = Val::from_u64(2);
+        let out2 = out1 * b2 + c2 - a2;
+
+        let values = vec![[a0, b0, c0, out0], [a1, b1, c1, out1], [a2, b2, c2, out2]];
         let indices = vec![[WitnessId(1), WitnessId(2), WitnessId(3), WitnessId(4)]; n];
 
         let trace = AluTrace {
