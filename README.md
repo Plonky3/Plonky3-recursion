@@ -243,6 +243,32 @@ FRI parameters affect proof size and verification cost:
 
 For intermediate recursive layers, consider relaxed parameters (fewer queries, higher PoW bits).
 
+## Build Profiles and Compile Features
+
+### Build profiles
+
+Two custom profiles are defined in the workspace `Cargo.toml`:
+
+| Profile | Based on | Description |
+|---------|----------|-------------|
+| `optimized` | `release` | Maximum performance: thin LTO, single codegen unit, `opt-level = 3`. Use for all benchmarks and production runs. |
+| `profiling` | `release` | Like `release` but with debug symbols (`debug = true`) for CPU profilers (`perf`, Instruments, `samply`). |
+
+```bash
+cargo run --profile optimized --example recursive_fibonacci --features parallel
+cargo run --profile profiling  --example recursive_fibonacci --features parallel
+```
+
+### Compile features
+
+| Crate | Feature | Description |
+|-------|---------|-------------|
+| `p3-circuit` | `debugging` | Allocation logging — every witness slot records the operation and scope that created it. |
+| `p3-circuit` | `profiling` | Operation-count profiling (implies `debugging`) — tracks `add`/`mul`/`const`/NPO counts globally and per named scope via `OpCounts`. |
+| `p3-circuit-prover` | `parallel` | Multi-threaded trace generation via Rayon. Strongly recommended for benchmarks and production. |
+
+See [Debugging](https://Plonky3.github.io/Plonky3-recursion/advanced_topics/debugging.html) in the book for full details.
+
 ## Current Limitations
 
 - **Fixed Configurations**: Field extensions are currently not fully parametrizable.
