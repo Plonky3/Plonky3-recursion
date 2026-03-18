@@ -167,7 +167,7 @@ Note that because we started from a known, fixed program that has been lowered t
 
 ## Lookups
 
-All chips interactions are performed via a lookup argument. Enforcing multiset equality between all chip ports and the shared witness memory view ensures correctness without proving the execution order of the entire IR itself. Lookups can be seen as `READ`/`WRITE` or `RECEIVE`/`SEND` interactions between tables which allow global consistency over local AIRs.
+All chip interactions are performed via a lookup argument. Enforcing multiset equality between all chip ports and the shared witness memory view ensures correctness without proving the execution order of the entire IR itself. Lookups can be seen as `READ`/`WRITE` or `RECEIVE`/`SEND` interactions between tables which allow global consistency over local AIRs.
 
 Cross-table lookups (CTLs) ensure that **every** chip interaction is mediated by shared witness indices: producers expose a `(index, value)` pair and consumers read the same pair back. In the current design this is encoded directly as CTL relations between operation tables, rather than through a separate Witness table. No chip talks directly to any other chip; the aggregated LogUp argument enforces multiset equality between the writes and reads.
 
@@ -180,6 +180,8 @@ For the toy example the CTL relations are:[^2]
 (index 3, value 3)   : PUBLIC → Witness → ALU(mul row)
 (index 4, value 111) : ALU(mul row) → Witness ← ALU(add row)
 ```
+
+For the full protocol specification — including the LogUp accumulation formula, per-chip multiplicity encoding, the `global_lookup_data` proof field, challenge derivation, and how the recursive verifier checks the argument — see [Lookups & CTL Spec](./lookups.md).
 
 
 [^1]: Preprocessed columns / polynomials can be reconstructed manually by the verifier, removing the need for a prover to commit to them and later perform the FRI protocol on them. However, the verifier needs $O(n)$ work when these columns are not structured, as it still needs to interpolate them. To alleviate this, the Plonky3 recursion stack performs *offline* commitment of unstructured preprocessed columns, so that we need only one instance of the FRI protocol to verify all preprocessed columns evaluations. 

@@ -21,6 +21,7 @@
 
 - [Construction](architecture_and_internals/construction.md)
 - [Circuit Building](architecture_and_internals/circuit_building.md)
+- [Lookups & CTL Spec](architecture_and_internals/lookups.md)
 - [Hashing and Fiat-Shamir](architecture_and_internals/hashing.md)
 
 # Advanced Topics
