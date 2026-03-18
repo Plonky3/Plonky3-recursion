@@ -90,7 +90,7 @@ fn bench_prove_all_tables(c: &mut Criterion) {
                 let (airs_degrees, preprocessed_columns) =
                     get_airs_and_degrees_with_prep::<KoalaBearConfig, _, 1>(
                         &circuit,
-                        table_packing,
+                        &table_packing,
                         &[],
                         &[],
                         ConstraintProfile::Standard,
@@ -102,7 +102,8 @@ fn bench_prove_all_tables(c: &mut Criterion) {
                 let traces = runner.run().unwrap();
                 let prover_data = ProverData::from_airs_and_degrees(&config, &mut airs, &degrees);
                 let circuit_prover_data = CircuitProverData::new(prover_data, preprocessed_columns);
-                let prover = BatchStarkProver::new(config).with_table_packing(table_packing);
+                let prover =
+                    BatchStarkProver::new(config).with_table_packing(table_packing.clone());
                 black_box(
                     prover
                         .prove_all_tables(&traces, &circuit_prover_data)

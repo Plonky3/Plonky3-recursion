@@ -918,7 +918,7 @@ impl Poseidon2Prover {
     fn batch_instance_from_traces<SC, CF>(
         &self,
         _config: &SC,
-        packing: TablePacking,
+        packing: &TablePacking,
         traces: &Traces<CF>,
     ) -> Option<BatchTableInstance<SC>>
     where
@@ -1100,6 +1100,7 @@ impl Poseidon2Prover {
             trace: matrix,
             public_values: Vec::new(),
             rows: padded_rows,
+            lanes: 1,
         })
     }
 }
@@ -1118,7 +1119,7 @@ where
     fn batch_instance_d1(
         &self,
         config: &SC,
-        packing: TablePacking,
+        packing: &TablePacking,
         traces: &Traces<Val<SC>>,
     ) -> Option<BatchTableInstance<SC>> {
         self.batch_instance_from_traces::<SC, Val<SC>>(config, packing, traces)
@@ -1127,7 +1128,7 @@ where
     fn batch_instance_d2(
         &self,
         _config: &SC,
-        _packing: TablePacking,
+        _packing: &TablePacking,
         _traces: &Traces<BinomialExtensionField<Val<SC>, 2>>,
     ) -> Option<BatchTableInstance<SC>> {
         None
@@ -1136,7 +1137,7 @@ where
     fn batch_instance_d4(
         &self,
         config: &SC,
-        packing: TablePacking,
+        packing: &TablePacking,
         traces: &Traces<BinomialExtensionField<Val<SC>, 4>>,
     ) -> Option<BatchTableInstance<SC>> {
         self.batch_instance_from_traces::<SC, BinomialExtensionField<Val<SC>, 4>>(
@@ -1147,7 +1148,7 @@ where
     fn batch_instance_d6(
         &self,
         config: &SC,
-        packing: TablePacking,
+        packing: &TablePacking,
         traces: &Traces<BinomialExtensionField<Val<SC>, 6>>,
     ) -> Option<BatchTableInstance<SC>> {
         let _ = (config, packing, traces);
@@ -1157,7 +1158,7 @@ where
     fn batch_instance_d8(
         &self,
         config: &SC,
-        packing: TablePacking,
+        packing: &TablePacking,
         traces: &Traces<BinomialExtensionField<Val<SC>, 8>>,
     ) -> Option<BatchTableInstance<SC>> {
         let _ = (config, packing, traces);
@@ -1182,6 +1183,7 @@ where
         &self,
         committed_prep: Vec<Val<SC>>,
         min_height: usize,
+        _lanes: usize,
     ) -> Option<DynamicAirEntry<SC>> {
         Some(self.wrapper_from_config_with_preprocessed(committed_prep, min_height))
     }
@@ -1202,7 +1204,7 @@ where
     fn batch_instance_d1(
         &self,
         _config: &SC,
-        _packing: TablePacking,
+        _packing: &TablePacking,
         _traces: &Traces<Val<SC>>,
     ) -> Option<BatchTableInstance<SC>> {
         None
@@ -1211,7 +1213,7 @@ where
     fn batch_instance_d2(
         &self,
         config: &SC,
-        packing: TablePacking,
+        packing: &TablePacking,
         traces: &Traces<BinomialExtensionField<Val<SC>, 2>>,
     ) -> Option<BatchTableInstance<SC>> {
         self.0
@@ -1223,7 +1225,7 @@ where
     fn batch_instance_d4(
         &self,
         _config: &SC,
-        _packing: TablePacking,
+        _packing: &TablePacking,
         _traces: &Traces<BinomialExtensionField<Val<SC>, 4>>,
     ) -> Option<BatchTableInstance<SC>> {
         None
@@ -1232,7 +1234,7 @@ where
     fn batch_instance_d6(
         &self,
         _config: &SC,
-        _packing: TablePacking,
+        _packing: &TablePacking,
         _traces: &Traces<BinomialExtensionField<Val<SC>, 6>>,
     ) -> Option<BatchTableInstance<SC>> {
         None
@@ -1241,7 +1243,7 @@ where
     fn batch_instance_d8(
         &self,
         _config: &SC,
-        _packing: TablePacking,
+        _packing: &TablePacking,
         _traces: &Traces<BinomialExtensionField<Val<SC>, 8>>,
     ) -> Option<BatchTableInstance<SC>> {
         None
@@ -1265,6 +1267,7 @@ where
         &self,
         committed_prep: Vec<Val<SC>>,
         min_height: usize,
+        _lanes: usize,
     ) -> Option<DynamicAirEntry<SC>> {
         Some(
             self.0
@@ -1464,6 +1467,7 @@ where
         op_type: &NpoTypeId,
         prep_base: &[Val<SC>],
         min_height: usize,
+        _lanes: usize,
         constraint_profile: ConstraintProfile,
     ) -> Option<(CircuitTableAir<SC, 2>, usize)> {
         let suffix = op_type.as_str().strip_prefix("poseidon2_perm/")?;
@@ -1501,6 +1505,7 @@ where
         op_type: &NpoTypeId,
         prep_base: &[Val<SC>],
         min_height: usize,
+        _lanes: usize,
         constraint_profile: ConstraintProfile,
     ) -> Option<(CircuitTableAir<SC, 4>, usize)> {
         let suffix = op_type.as_str().strip_prefix("poseidon2_perm/")?;

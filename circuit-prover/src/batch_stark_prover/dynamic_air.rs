@@ -333,8 +333,10 @@ where
     pub trace: RowMajorMatrix<Val<SC>>,
     /// Public values exposed by this table.
     pub public_values: Vec<Val<SC>>,
-    /// Number of rows produced for this table.
+    /// Number of logical operations (before lane packing) produced for this table.
     pub rows: usize,
+    /// Number of operations packed per AIR row (lane count).
+    pub lanes: usize,
 }
 
 #[inline(always)]
@@ -367,11 +369,19 @@ where
     /// Operation type for this prover.
     fn op_type(&self) -> NpoTypeId;
 
+    /// Number of operations packed into a single AIR row.
+    ///
+    /// Defaults to 1. Override to pack multiple operations per row, reducing the trace
+    /// height by a factor of `lanes`. The AIR and its lookups must be designed accordingly.
+    fn lanes(&self) -> usize {
+        1
+    }
+
     /// Produce a batched table instance for base-field traces.
     fn batch_instance_d1(
         &self,
         config: &SC,
-        packing: TablePacking,
+        packing: &TablePacking,
         traces: &Traces<Val<SC>>,
     ) -> Option<BatchTableInstance<SC>>;
 
@@ -379,7 +389,7 @@ where
     fn batch_instance_d2(
         &self,
         config: &SC,
-        packing: TablePacking,
+        packing: &TablePacking,
         traces: &Traces<BinomialExtensionField<Val<SC>, 2>>,
     ) -> Option<BatchTableInstance<SC>>;
 
@@ -387,7 +397,7 @@ where
     fn batch_instance_d4(
         &self,
         config: &SC,
-        packing: TablePacking,
+        packing: &TablePacking,
         traces: &Traces<BinomialExtensionField<Val<SC>, 4>>,
     ) -> Option<BatchTableInstance<SC>>;
 
@@ -395,7 +405,7 @@ where
     fn batch_instance_d6(
         &self,
         config: &SC,
-        packing: TablePacking,
+        packing: &TablePacking,
         traces: &Traces<BinomialExtensionField<Val<SC>, 6>>,
     ) -> Option<BatchTableInstance<SC>>;
 
@@ -403,7 +413,7 @@ where
     fn batch_instance_d8(
         &self,
         config: &SC,
-        packing: TablePacking,
+        packing: &TablePacking,
         traces: &Traces<BinomialExtensionField<Val<SC>, 8>>,
     ) -> Option<BatchTableInstance<SC>>;
 
@@ -417,6 +427,9 @@ where
 
     /// Build an AIR entry using committed preprocessed data.
     ///
+    /// `lanes` is the lane count that was used when building the table instance
+    /// (may differ from the prover's own default when overridden via `TablePacking`).
+    ///
     /// Returns `None` if not supported by this table prover.
     /// This is used to override the preprocessed data regenerated from runtime ops
     /// with the data that was committed during `get_airs_and_degrees_with_prep`.
@@ -424,8 +437,9 @@ where
         &self,
         committed_prep: Vec<Val<SC>>,
         min_height: usize,
+        lanes: usize,
     ) -> Option<DynamicAirEntry<SC>> {
-        let _ = (committed_prep, min_height);
+        let _ = (committed_prep, min_height, lanes);
         None
     }
 }

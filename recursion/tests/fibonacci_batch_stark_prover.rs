@@ -87,7 +87,7 @@ fn test_fibonacci_batch_verifier() {
     let circuit = builder.build().unwrap();
     let (airs_degrees, preprocessed_columns) = get_airs_and_degrees_with_prep::<MyConfig, _, 1>(
         &circuit,
-        table_packing,
+        &table_packing,
         &[],
         &[],
         ConstraintProfile::Standard,
@@ -176,7 +176,7 @@ fn test_fibonacci_batch_verifier() {
         Poseidon2Config::KoalaBearD4Width16,
         &{
             let mut tp = poseidon2_table_provers_d4(Poseidon2Config::KoalaBearD4Width16);
-            tp.extend(recompose_table_provers::<_, 4>());
+            tp.extend(recompose_table_provers::<_, 4>(1));
             tp
         },
     )
@@ -199,11 +199,11 @@ fn test_fibonacci_batch_verifier() {
         Box::new(RecomposePreprocessor),
     ];
     let mut air_builders = poseidon2_air_builders_d4();
-    air_builders.extend(recompose_air_builders());
+    air_builders.extend(recompose_air_builders(1));
     let (verification_airs_degrees, verification_preprocessed_columns) =
         get_airs_and_degrees_with_prep::<MyConfig, _, 4>(
             &verification_circuit,
-            verification_table_packing,
+            &verification_table_packing,
             &npo_prep,
             &air_builders,
             ConstraintProfile::Standard,

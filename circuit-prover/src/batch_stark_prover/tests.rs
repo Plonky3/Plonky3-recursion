@@ -41,7 +41,7 @@ fn test_babybear_batch_stark_base_field() {
     let (airs_degrees, preprocessed_columns) =
         get_airs_and_degrees_with_prep::<BabyBearConfig, _, 1>(
             &circuit,
-            TablePacking::default(),
+            &TablePacking::default(),
             &[],
             &[],
             ConstraintProfile::Standard,
@@ -99,7 +99,7 @@ fn test_table_lookups() {
     let (airs_degrees, preprocessed_columns) =
         get_airs_and_degrees_with_prep::<BabyBearConfig, _, 1>(
             &circuit,
-            default_packing,
+            &default_packing,
             &[],
             &[],
             ConstraintProfile::Standard,
@@ -182,7 +182,7 @@ fn test_extension_field_batch_stark() {
     let (airs_degrees, preprocessed_columns) =
         get_airs_and_degrees_with_prep::<BabyBearConfig, _, D>(
             &circuit,
-            TablePacking::default(),
+            &TablePacking::default(),
             &[],
             &[],
             ConstraintProfile::Standard,
@@ -251,11 +251,11 @@ fn test_extension_field_table_lookups() {
     let circuit = builder.build().unwrap();
     let default_packing = TablePacking::default();
     let mut air_builders_d4 = poseidon2_air_builders_d4();
-    air_builders_d4.extend(recompose_air_builders());
+    air_builders_d4.extend(recompose_air_builders(1));
     let (airs_degrees, preprocessed_columns) =
         get_airs_and_degrees_with_prep::<BabyBearConfig, _, D>(
             &circuit,
-            default_packing,
+            &default_packing,
             &[],
             &air_builders_d4,
             ConstraintProfile::Standard,
@@ -363,7 +363,7 @@ fn test_koalabear_batch_stark_base_field() {
     let (airs_degrees, preprocessed_columns) =
         get_airs_and_degrees_with_prep::<KoalaBearConfig, _, 1>(
             &circuit,
-            TablePacking::default(),
+            &TablePacking::default(),
             &[],
             &[],
             ConstraintProfile::Standard,
@@ -428,7 +428,7 @@ fn test_koalabear_batch_stark_extension_field_d8() {
     let (airs_degrees, preprocessed_columns) =
         get_airs_and_degrees_with_prep::<KoalaBearConfig, _, D>(
             &circuit,
-            TablePacking::default(),
+            &TablePacking::default(),
             &[],
             &[],
             ConstraintProfile::Standard,
@@ -512,11 +512,11 @@ fn test_goldilocks_batch_stark_extension_field_d2() {
 
     let circuit = builder.build().unwrap();
     let mut air_builders_d2 = poseidon2_air_builders_d2();
-    air_builders_d2.extend(recompose_air_builders::<_, 2>());
+    air_builders_d2.extend(recompose_air_builders::<_, 2>(1));
     let (airs_degrees, preprocessed_columns) =
         get_airs_and_degrees_with_prep::<GoldilocksConfig, _, D>(
             &circuit,
-            TablePacking::default(),
+            &TablePacking::default(),
             &[],
             &air_builders_d2,
             ConstraintProfile::Standard,
@@ -666,7 +666,7 @@ fn test_mul_only_circuit_padding() {
     let (airs_degrees, preprocessed_columns) =
         get_airs_and_degrees_with_prep::<BabyBearConfig, _, 1>(
             &circuit,
-            TablePacking::default(),
+            &TablePacking::default(),
             &[],
             &[],
             ConstraintProfile::Standard,
@@ -712,7 +712,7 @@ fn test_add_only_circuit_padding() {
     let (airs_degrees, preprocessed_columns) =
         get_airs_and_degrees_with_prep::<BabyBearConfig, _, 1>(
             &circuit,
-            TablePacking::default(),
+            &TablePacking::default(),
             &[],
             &[],
             ConstraintProfile::Standard,

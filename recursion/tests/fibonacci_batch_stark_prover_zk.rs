@@ -225,11 +225,11 @@ fn test_batch_verifier_zk_hiding_fri() -> Result<(), VerificationError> {
         Box::new(RecomposePreprocessor),
     ];
     let mut air_builders = poseidon2_air_builders_d4();
-    air_builders.extend(recompose_air_builders());
+    air_builders.extend(recompose_air_builders(1));
     let (verification_airs_degrees, verification_preprocessed_columns) =
         get_airs_and_degrees_with_prep::<MyConfig, _, 4>(
             &verification_circuit,
-            verification_table_packing,
+            &verification_table_packing,
             &npo_prep,
             &air_builders,
             ConstraintProfile::Standard,

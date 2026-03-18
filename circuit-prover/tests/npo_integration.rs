@@ -279,7 +279,7 @@ fn cube_npo_stark_proof() {
     let (airs_degrees, preprocessed_columns) =
         get_airs_and_degrees_with_prep::<config::BabyBearConfig, _, D>(
             &circuit,
-            TablePacking::default(),
+            &TablePacking::default(),
             &[],
             &[],
             ConstraintProfile::Standard,

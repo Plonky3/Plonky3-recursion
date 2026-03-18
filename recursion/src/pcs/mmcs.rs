@@ -1077,7 +1077,7 @@ mod test {
                     1,
                 >(
                     &circuit,
-                    table_packing,
+                    &table_packing,
                     &[],
                     &[],
                     ConstraintProfile::Standard,

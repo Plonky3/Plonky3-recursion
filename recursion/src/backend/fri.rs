@@ -110,6 +110,11 @@ where
 pub struct FriRecursionBackend<const WIDTH: usize = 16, const RATE: usize = 8> {
     /// Poseidon2 configuration used for the Fiat-Shamir challenger permutation circuit.
     pub challenger_perm_config: Poseidon2Config,
+    /// Number of recompose operations packed per AIR row.
+    ///
+    /// Increasing this reduces the recompose table height proportionally.
+    /// Must be kept in sync between prover and verifier. Defaults to 1.
+    pub recompose_lanes: usize,
 }
 
 impl<const WIDTH: usize, const RATE: usize> FriRecursionBackend<WIDTH, RATE> {
@@ -117,25 +122,28 @@ impl<const WIDTH: usize, const RATE: usize> FriRecursionBackend<WIDTH, RATE> {
     pub const fn new(challenger_perm_config: Poseidon2Config) -> Self {
         Self {
             challenger_perm_config,
+            recompose_lanes: 1,
         }
+    }
+
+    /// Override the number of recompose operations packed per AIR row.
+    pub const fn with_recompose_lanes(mut self, lanes: usize) -> Self {
+        self.recompose_lanes = if lanes < 1 { 1 } else { lanes };
+        self
     }
 
     /// For Goldilocks (D=2). Use this when `Val<SC>` is Goldilocks.
     pub const fn new_d2(
         challenger_perm_config: Poseidon2Config,
     ) -> FriRecursionBackendD2<WIDTH, RATE> {
-        FriRecursionBackendD2(Self {
-            challenger_perm_config,
-        })
+        FriRecursionBackendD2(Self::new(challenger_perm_config))
     }
 
     /// For BabyBear/KoalaBear (D=4). Use this when `Val<SC>` is BabyBear or KoalaBear.
     pub const fn new_d4(
         challenger_perm_config: Poseidon2Config,
     ) -> FriRecursionBackendD4<WIDTH, RATE> {
-        FriRecursionBackendD4(Self {
-            challenger_perm_config,
-        })
+        FriRecursionBackendD4(Self::new(challenger_perm_config))
     }
 }
 
@@ -461,7 +469,7 @@ where
     fn non_primitive_provers(&self, ext_degree: usize) -> Vec<Box<dyn TableProver<SC>>> {
         if ext_degree == 2 {
             let mut provers = poseidon2_table_provers_d2(self.0.challenger_perm_config);
-            provers.extend(recompose_table_provers::<SC, 2>());
+            provers.extend(recompose_table_provers::<SC, 2>(self.0.recompose_lanes));
             provers
         } else {
             Vec::new()
@@ -470,7 +478,7 @@ where
 
     fn non_primitive_air_builders(&self) -> Vec<Box<dyn NpoAirBuilder<SC, 2>>> {
         let mut builders = poseidon2_air_builders_d2();
-        builders.extend(recompose_air_builders::<SC, 2>());
+        builders.extend(recompose_air_builders::<SC, 2>(self.0.recompose_lanes));
         builders
     }
 }
@@ -551,7 +559,7 @@ where
     fn non_primitive_provers(&self, ext_degree: usize) -> Vec<Box<dyn TableProver<SC>>> {
         if ext_degree == 4 {
             let mut provers = poseidon2_table_provers_d4(self.0.challenger_perm_config);
-            provers.extend(recompose_table_provers::<SC, 4>());
+            provers.extend(recompose_table_provers::<SC, 4>(self.0.recompose_lanes));
             provers
         } else {
             Vec::new()
@@ -560,7 +568,7 @@ where
 
     fn non_primitive_air_builders(&self) -> Vec<Box<dyn NpoAirBuilder<SC, 4>>> {
         let mut builders = poseidon2_air_builders_d4();
-        builders.extend(recompose_air_builders::<SC, 4>());
+        builders.extend(recompose_air_builders::<SC, 4>(self.0.recompose_lanes));
         builders
     }
 }

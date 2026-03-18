@@ -227,11 +227,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         Box::new(RecomposePreprocessor),
     ];
     let mut air_builders = poseidon2_air_builders_d4();
-    air_builders.extend(recompose_air_builders());
+    air_builders.extend(recompose_air_builders(1));
     let (airs_degrees, preprocessed_columns) =
         get_airs_and_degrees_with_prep::<KoalaBearConfig, _, 4>(
             &circuit,
-            table_packing,
+            &table_packing,
             &npo_prep,
             &air_builders,
             ConstraintProfile::Standard,

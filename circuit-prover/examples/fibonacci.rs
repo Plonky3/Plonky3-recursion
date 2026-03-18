@@ -68,7 +68,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let (airs_degrees, preprocessed_columns) =
         get_airs_and_degrees_with_prep::<KoalaBearConfig, _, 1>(
             &circuit,
-            table_packing,
+            &table_packing,
             &[],
             &[],
             ConstraintProfile::Standard,

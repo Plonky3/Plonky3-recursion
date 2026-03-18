@@ -303,7 +303,7 @@ where
         let air_builders = backend.non_primitive_air_builders();
         get_airs_and_degrees_with_prep::<SC, SC::Challenge, D>(
             verification_circuit,
-            params.table_packing,
+            &params.table_packing,
             &preprocessors,
             &air_builders,
             params.constraint_profile,
@@ -318,7 +318,7 @@ where
     let circuit_prover_data = Rc::new(CircuitProverData::new(prover_data, preprocessed_columns));
 
     let mut prover = BatchStarkProver::new(config.clone())
-        .with_table_packing(params.table_packing)
+        .with_table_packing(params.table_packing.clone())
         .with_alu_variant(match params.constraint_profile {
             ConstraintProfile::Standard => AirVariant::Baseline,
             ConstraintProfile::RecursionOptimized => AirVariant::Optimized,
@@ -390,7 +390,7 @@ where
         let air_builders = backend.non_primitive_air_builders();
         get_airs_and_degrees_with_prep::<SC, SC::Challenge, D>(
             verification_circuit,
-            params.table_packing,
+            &params.table_packing,
             &preprocessors,
             &air_builders,
             params.constraint_profile,
@@ -425,7 +425,7 @@ where
     };
 
     let mut prover = BatchStarkProver::new(config.clone())
-        .with_table_packing(params.table_packing)
+        .with_table_packing(params.table_packing.clone())
         .with_alu_variant(match params.constraint_profile {
             ConstraintProfile::Standard => AirVariant::Baseline,
             ConstraintProfile::RecursionOptimized => AirVariant::Optimized,
@@ -639,7 +639,7 @@ where
             <B as PcsRecursionBackend<SC, A1, D>>::non_primitive_air_builders(backend);
         get_airs_and_degrees_with_prep::<SC, SC::Challenge, D>(
             verification_circuit,
-            params.table_packing,
+            &params.table_packing,
             &preprocessors,
             &air_builders,
             params.constraint_profile,
@@ -666,7 +666,7 @@ where
     };
 
     let mut prover = BatchStarkProver::new(config.clone())
-        .with_table_packing(params.table_packing)
+        .with_table_packing(params.table_packing.clone())
         .with_alu_variant(match params.constraint_profile {
             ConstraintProfile::Standard => AirVariant::Baseline,
             ConstraintProfile::RecursionOptimized => AirVariant::Optimized,

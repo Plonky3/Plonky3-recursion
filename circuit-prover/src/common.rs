@@ -41,11 +41,23 @@ where
     SC: StarkGenericConfig,
     SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
 {
+    /// Number of operations packed into a single AIR row for this NPO.
+    ///
+    /// Must match the `lanes` value returned by the corresponding [`TableProver`] implementation.
+    /// Defaults to 1.
+    fn lanes(&self) -> usize {
+        1
+    }
+
+    /// Attempt to build an AIR and compute its degree from committed preprocessed data.
+    ///
+    /// The `lanes` argument is `self.lanes()` forwarded by the framework.
     fn try_build(
         &self,
         op_type: &NpoTypeId,
         prep_base: &[Val<SC>],
         min_height: usize,
+        lanes: usize,
         constraint_profile: ConstraintProfile,
     ) -> Option<(CircuitTableAir<SC, D>, usize)>;
 }
@@ -90,7 +102,7 @@ pub fn get_airs_and_degrees_with_prep<
     const D: usize,
 >(
     circuit: &Circuit<ExtF>,
-    packing: TablePacking,
+    packing: &TablePacking,
     non_primitive_preprocessors: &[Box<dyn NpoPreprocessor<Val<SC>>>],
     non_primitive_air_builders: &[Box<dyn NpoAirBuilder<SC, D>>],
     constraint_profile: ConstraintProfile,
@@ -352,8 +364,12 @@ where
     // resulting AIR ordering matches the prover's non_primitive_provers order.
     for builder in non_primitive_air_builders {
         for (op_type, prep_base) in non_primitive_base.iter() {
+            // TablePacking overrides the builder's own default lane count.
+            let lanes = packing
+                .npo_lanes(op_type)
+                .unwrap_or_else(|| builder.lanes());
             if let Some((air, degree)) =
-                builder.try_build(op_type, prep_base, min_height, constraint_profile)
+                builder.try_build(op_type, prep_base, min_height, lanes, constraint_profile)
             {
                 table_preps.push((air, degree));
                 break;

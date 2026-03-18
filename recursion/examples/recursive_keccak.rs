@@ -355,7 +355,7 @@ macro_rules! define_field_module {
 
                     report_proof_size(&out.0);
                     let mut prover = BatchStarkProver::new(config.clone())
-                        .with_table_packing(params.table_packing);
+                        .with_table_packing(params.table_packing.clone());
                     prover.$register_poseidon2_fn($poseidon2_config);
                     prover
                         .verify_all_tables(&out.0, out.1.common_data())

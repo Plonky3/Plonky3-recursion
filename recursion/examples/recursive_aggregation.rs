@@ -101,6 +101,13 @@ struct Args {
     )]
     pub alu_lanes: usize,
 
+    #[arg(
+        long,
+        default_value_t = 1,
+        help = "Number of recompose lanes for the table packing in recursive layers"
+    )]
+    pub recompose_lanes: usize,
+
     // TODO: Update once https://github.com/Plonky3/Plonky3/pull/1329 lands
     #[arg(
         long,
@@ -134,6 +141,7 @@ impl Args {
 
     pub fn table_packing(&self) -> TablePacking {
         TablePacking::new(self.public_lanes, self.alu_lanes)
+            .with_npo_lanes(NpoTypeId::recompose(), self.recompose_lanes)
     }
 }
 
@@ -156,6 +164,7 @@ fn main() {
             args.num_recursive_layers,
             &fri_params,
             &table_packing,
+            args.recompose_lanes,
             args.security_level,
             args.zk,
             args.disable_recompose_npo,
@@ -164,6 +173,7 @@ fn main() {
             args.num_recursive_layers,
             &fri_params,
             &table_packing,
+            args.recompose_lanes,
             args.security_level,
             args.zk,
             args.disable_recompose_npo,
@@ -172,6 +182,7 @@ fn main() {
             args.num_recursive_layers,
             &fri_params,
             &table_packing,
+            args.recompose_lanes,
             args.security_level,
             args.zk,
             args.disable_recompose_npo,
@@ -229,7 +240,7 @@ macro_rules! define_field_module {
             fn prove_dummy_circuit(
                 constant_value: u32,
                 config: &ConfigWithFriParams,
-                table_packing: TablePacking,
+                table_packing: &TablePacking,
             ) -> RecursionOutput<ConfigWithFriParams> {
                 let mut builder = CircuitBuilder::new();
                 let c = builder.alloc_const(F::from_u32(constant_value), "dummy_const");
@@ -239,7 +250,7 @@ macro_rules! define_field_module {
                 let (airs_degrees, preprocessed_columns) =
                     get_airs_and_degrees_with_prep::<ConfigWithFriParams, F, 1>(
                         &circuit,
-                        table_packing,
+                        &table_packing,
                         &[],
                         &[],
                         ConstraintProfile::Standard,
@@ -257,7 +268,7 @@ macro_rules! define_field_module {
                     ProverData::from_airs_and_degrees(config, &mut airs, &ext_degrees);
                 let circuit_prover_data = CircuitProverData::new(prover_data, preprocessed_columns);
                 let prover =
-                    BatchStarkProver::new(config.clone()).with_table_packing(table_packing);
+                    BatchStarkProver::new(config.clone()).with_table_packing(table_packing.clone());
                 let proof = prover
                     .prove_all_tables(&traces, &circuit_prover_data)
                     .expect("Failed to prove dummy circuit");
@@ -272,7 +283,7 @@ macro_rules! define_field_module {
             fn prove_dummy_circuit_zk(
                 constant_value: u32,
                 config: &ConfigWithFriParamsZk,
-                table_packing: TablePacking,
+                table_packing: &TablePacking,
             ) -> RecursionOutput<ConfigWithFriParamsZk> {
                 let mut builder = CircuitBuilder::new();
                 let c = builder.alloc_const(F::from_u32(constant_value), "dummy_const");
@@ -282,7 +293,7 @@ macro_rules! define_field_module {
                 let (airs_degrees, preprocessed_columns) =
                     get_airs_and_degrees_with_prep::<ConfigWithFriParamsZk, F, 1>(
                         &circuit,
-                        table_packing,
+                        &table_packing,
                         &[],
                         &[],
                         ConstraintProfile::Standard,
@@ -300,7 +311,7 @@ macro_rules! define_field_module {
                     ProverData::from_airs_and_degrees(config, &mut airs, &ext_degrees);
                 let circuit_prover_data = CircuitProverData::new(prover_data, preprocessed_columns);
                 let prover =
-                    BatchStarkProver::new(config.clone()).with_table_packing(table_packing);
+                    BatchStarkProver::new(config.clone()).with_table_packing(table_packing.clone());
                 let proof = prover
                     .prove_all_tables(&traces, &circuit_prover_data)
                     .expect("Failed to prove dummy circuit (ZK)");
@@ -315,6 +326,7 @@ macro_rules! define_field_module {
                 num_recursive_layers: usize,
                 fri_params: &FriParams,
                 table_packing: &TablePacking,
+                recompose_lanes: usize,
                 security_level: usize,
                 zk: bool,
                 disable_recompose_npo: bool,
@@ -336,7 +348,7 @@ macro_rules! define_field_module {
                             .map(|i| {
                                 let val = (i + 1) as u32;
                                 info!("Base proof {i} (const = {val})");
-                                $prove_base_fn(val, &config, base_table_packing)
+                                $prove_base_fn(val, &config, &base_table_packing)
                             })
                             .collect();
 
@@ -352,6 +364,7 @@ macro_rules! define_field_module {
                             let agg_params = ProveNextLayerParams {
                                 table_packing: if level == 1 {
                                     TablePacking::new(2, 2)
+                                        .with_npo_lanes(NpoTypeId::recompose(), recompose_lanes)
                                 } else {
                                     table_packing.clone()
                                 }
@@ -380,7 +393,7 @@ macro_rules! define_field_module {
 
                                 report_proof_size(&out.0);
                                 let mut verifier = BatchStarkProver::new(agg_config.clone())
-                                    .with_table_packing(agg_params.table_packing);
+                                    .with_table_packing(agg_params.table_packing.clone());
                                 verifier.$register_poseidon2_fn($poseidon2_config);
                                 if !disable_recompose_npo {
                                     verifier.$register_recompose_fn();

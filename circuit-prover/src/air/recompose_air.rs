@@ -138,7 +138,7 @@ impl<F: Field, const D: usize> LookupAir<F> for RecomposeAir<F, D> {
         let total_prep_width = self.lanes * Self::preprocessed_lane_width();
 
         let (symbolic_main, symbolic_preprocessed) =
-            create_symbolic_variables::<F>(total_prep_width, total_main_width, self.lanes, 0);
+            create_symbolic_variables::<F>(total_prep_width, total_main_width, 0, 0);
 
         for lane in 0..self.lanes {
             let main_off = lane * Self::lane_width();

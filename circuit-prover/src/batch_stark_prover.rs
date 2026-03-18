@@ -72,6 +72,10 @@ pub enum AirVariant {
 /// per batch instance. The entry is stored inside a `BatchStarkProof` and later provided
 /// back to the plugin during verification through
 /// [`TableProver::batch_air_from_table_entry`].
+const fn default_npo_lanes() -> usize {
+    1
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(bound = "")]
 pub struct NonPrimitiveTableEntry<SC>
@@ -80,8 +84,11 @@ where
 {
     /// Operation type (it should match `TableProver::op_type`).
     pub op_type: NpoTypeId,
-    /// Number of logical rows produced for this table.
+    /// Number of logical operations (before lane packing) produced for this table.
     pub rows: usize,
+    /// Number of operations packed per AIR row (lane count). Defaults to 1.
+    #[serde(default = "default_npo_lanes")]
+    pub lanes: usize,
     /// Public values exposed by this table (if any).
     pub public_values: Vec<Val<SC>>,
     /// AIR variant used for this non-primitive table.
@@ -156,7 +163,7 @@ macro_rules! impl_table_prover_batch_instances_from_base {
         fn batch_instance_d1(
             &self,
             config: &SC,
-            packing: TablePacking,
+            packing: &TablePacking,
             traces: &p3_circuit::tables::Traces<p3_batch_stark::Val<SC>>,
         ) -> Option<BatchTableInstance<SC>> {
             self.$base::<SC>(config, packing, traces)
@@ -165,7 +172,7 @@ macro_rules! impl_table_prover_batch_instances_from_base {
         fn batch_instance_d2(
             &self,
             config: &SC,
-            packing: TablePacking,
+            packing: &TablePacking,
             traces: &p3_circuit::tables::Traces<
                 p3_field::extension::BinomialExtensionField<p3_batch_stark::Val<SC>, 2>,
             >,
@@ -178,7 +185,7 @@ macro_rules! impl_table_prover_batch_instances_from_base {
         fn batch_instance_d4(
             &self,
             config: &SC,
-            packing: TablePacking,
+            packing: &TablePacking,
             traces: &p3_circuit::tables::Traces<
                 p3_field::extension::BinomialExtensionField<p3_batch_stark::Val<SC>, 4>,
             >,
@@ -191,7 +198,7 @@ macro_rules! impl_table_prover_batch_instances_from_base {
         fn batch_instance_d6(
             &self,
             config: &SC,
-            packing: TablePacking,
+            packing: &TablePacking,
             traces: &p3_circuit::tables::Traces<
                 p3_field::extension::BinomialExtensionField<p3_batch_stark::Val<SC>, 6>,
             >,
@@ -204,7 +211,7 @@ macro_rules! impl_table_prover_batch_instances_from_base {
         fn batch_instance_d8(
             &self,
             config: &SC,
-            packing: TablePacking,
+            packing: &TablePacking,
             traces: &p3_circuit::tables::Traces<
                 p3_field::extension::BinomialExtensionField<p3_batch_stark::Val<SC>, 8>,
             >,
@@ -458,7 +465,7 @@ where
 
     /// Override the default [`TablePacking`] configuration (builder-style).
     #[must_use]
-    pub const fn with_table_packing(mut self, table_packing: TablePacking) -> Self {
+    pub fn with_table_packing(mut self, table_packing: TablePacking) -> Self {
         self.table_packing = table_packing;
         self
     }
@@ -501,7 +508,7 @@ where
     where
         SC: Send + Sync,
     {
-        self.register_table_prover(Box::new(RecomposeProver::<4>));
+        self.register_table_prover(Box::new(RecomposeProver::<4>::new(1)));
     }
 
     /// Register the recompose (BF→EF packing) table prover (D=2, e.g. Goldilocks).
@@ -509,7 +516,7 @@ where
     where
         SC: Send + Sync,
     {
-        self.register_table_prover(Box::new(RecomposeProver::<2>));
+        self.register_table_prover(Box::new(RecomposeProver::<2>::new(1)));
     }
 
     /// Builder-style registration for the recompose table prover (D=4).
@@ -536,8 +543,8 @@ where
 
     /// Return the current [`TablePacking`] configuration.
     #[inline]
-    pub const fn table_packing(&self) -> TablePacking {
-        self.table_packing
+    pub const fn table_packing(&self) -> &TablePacking {
+        &self.table_packing
     }
 
     /// Select which ALU AIR variant to use for primitive tables.
@@ -609,7 +616,7 @@ where
         let prover_data = &circuit_prover_data.prover_data;
 
         // Build matrices and AIRs per table.
-        let packing = self.table_packing;
+        let packing = &self.table_packing;
         let min_height = packing.min_trace_height();
 
         // Check if Alu table has only dummy operations (trace length <= 1).
@@ -687,7 +694,15 @@ where
 
         // Log trace lengths with the actual scheduled ALU row count.
         let scheduled_alu_rows = alu_air.scheduled_entry_count();
-        TraceLengths::from_traces(traces, packing).log(Some(scheduled_alu_rows));
+        TraceLengths::from_traces(traces, packing, |op| {
+            packing.npo_lanes(op).unwrap_or_else(|| {
+                self.non_primitive_provers
+                    .iter()
+                    .find(|p| p.op_type() == *op)
+                    .map_or(1, |p| p.lanes())
+            })
+        })
+        .log(Some(scheduled_alu_rows));
 
         // We first handle all non-primitive tables dynamically, which will then be batched alongside primitive ones.
         // Each trace must have a corresponding registered prover for it to be provable.
@@ -756,9 +771,11 @@ where
             if let Some(committed_prep) = non_primitive.get(&instance.op_type) {
                 for p in &self.non_primitive_provers {
                     if p.op_type() == instance.op_type {
-                        if let Some(new_air) =
-                            p.air_with_committed_preprocessed(committed_prep.clone(), min_height)
-                        {
+                        if let Some(new_air) = p.air_with_committed_preprocessed(
+                            committed_prep.clone(),
+                            min_height,
+                            instance.lanes,
+                        ) {
                             instance.air = new_air;
                         }
                         break;
@@ -775,7 +792,7 @@ where
             Vec::with_capacity(NUM_PRIMITIVE_TABLES + dynamic_instances.len());
         let mut public_storage: Vec<Vec<Val<SC>>> =
             Vec::with_capacity(NUM_PRIMITIVE_TABLES + dynamic_instances.len());
-        let mut non_primitive_meta: Vec<(NpoTypeId, usize, AirVariant)> =
+        let mut non_primitive_meta: Vec<(NpoTypeId, usize, usize, AirVariant)> =
             Vec::with_capacity(dynamic_instances.len());
 
         // Pad all trace matrices to at least min_height (for FRI compatibility)
@@ -797,13 +814,14 @@ where
                 air,
                 mut trace,
                 public_values,
+                lanes,
                 rows,
             } = instance;
             air_storage.push(CircuitTableAir::Dynamic(air));
             trace.pad_to_min_power_of_two_height(min_height, Val::<SC>::ZERO);
             trace_storage.push(trace);
             public_storage.push(public_values);
-            non_primitive_meta.push((op_type, rows, AirVariant::Baseline));
+            non_primitive_meta.push((op_type, rows, lanes, AirVariant::Baseline));
         }
 
         let trace_refs: Vec<&RowMajorMatrix<Val<SC>>> = trace_storage.iter().collect();
@@ -823,15 +841,18 @@ where
                 .map(|inst| inst.air.preprocessed_trace())
                 .collect();
 
-            for (j, (op_type, _, _)) in non_primitive_meta.iter().enumerate() {
+            for (j, (op_type, _, lanes, _)) in non_primitive_meta.iter().enumerate() {
                 if let Some(committed_prep) = non_primitive.get(op_type) {
                     let prover = self
                         .non_primitive_provers
                         .iter()
                         .find(|p| TableProver::op_type(p.as_ref()) == *op_type);
                     if let Some(prover) = prover
-                        && let Some(air) = prover
-                            .air_with_committed_preprocessed(committed_prep.clone(), min_height)
+                        && let Some(air) = prover.air_with_committed_preprocessed(
+                            committed_prep.clone(),
+                            min_height,
+                            *lanes,
+                        )
                         && let Some(trace) = air.preprocessed_trace()
                     {
                         preprocessed_traces[NUM_PRIMITIVE_TABLES + j] = Some(trace);
@@ -860,9 +881,10 @@ where
             .into_iter()
             .zip(dynamic_public_values)
             .map(
-                |((op_type, rows, air_variant), public_values)| NonPrimitiveTableEntry {
+                |((op_type, rows, lanes, air_variant), public_values)| NonPrimitiveTableEntry {
                     op_type,
                     rows,
+                    lanes,
                     public_values,
                     air_variant,
                 },
@@ -903,7 +925,7 @@ where
         common: &CommonData<SC>,
     ) -> Result<(), BatchStarkProverError> {
         // Rebuild AIRs in the same order as prove.
-        let packing = proof.table_packing;
+        let packing = &proof.table_packing;
         let public_lanes = packing.public_lanes();
         let alu_lanes = packing.alu_lanes();
         let min_height = packing.min_trace_height();
@@ -1020,25 +1042,27 @@ where
 }
 
 /// Recompose table provers for a given extension field degree.
-pub fn recompose_table_provers<SC, const D: usize>() -> Vec<Box<dyn TableProver<SC>>>
+pub fn recompose_table_provers<SC, const D: usize>(lanes: usize) -> Vec<Box<dyn TableProver<SC>>>
 where
     SC: StarkGenericConfig + 'static + Send + Sync,
     Val<SC>: StarkField,
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
         Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
-    vec![Box::new(RecomposeProver::<D>)]
+    vec![Box::new(RecomposeProver::<D>::new(lanes))]
 }
 
 /// Recompose AIR builders for a given extension field degree.
-pub fn recompose_air_builders<SC, const D: usize>() -> Vec<Box<dyn NpoAirBuilder<SC, D>>>
+pub fn recompose_air_builders<SC, const D: usize>(
+    lanes: usize,
+) -> Vec<Box<dyn NpoAirBuilder<SC, D>>>
 where
     SC: StarkGenericConfig + 'static + Send + Sync,
     Val<SC>: StarkField,
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
         Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
-    vec![Box::new(RecomposeAirBuilder)]
+    vec![Box::new(RecomposeAirBuilder::<D>::new(lanes))]
 }
 
 #[cfg(test)]

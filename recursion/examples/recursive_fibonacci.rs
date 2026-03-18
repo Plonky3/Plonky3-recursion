@@ -269,7 +269,7 @@ macro_rules! define_field_module {
                         let (airs_degrees_0, preprocessed_columns_0) =
                             get_airs_and_degrees_with_prep::<$cfg_type, F, 1>(
                                 &base_circuit,
-                                table_packing_0,
+                                &table_packing_0,
                                 &[],
                                 &[],
                                 ConstraintProfile::Standard,
@@ -314,7 +314,7 @@ macro_rules! define_field_module {
 
                         for layer in 1..=num_recursive_layers {
                             let params = ProveNextLayerParams {
-                                table_packing: table_packing.with_fri_params(
+                                table_packing: table_packing.clone().with_fri_params(
                                     fri_params.log_final_poly_len,
                                     fri_params.log_blowup,
                                 ),
@@ -365,7 +365,7 @@ macro_rules! define_field_module {
 
                             report_proof_size(&out.0);
                             let mut prover = BatchStarkProver::new(config.clone())
-                                .with_table_packing(params.table_packing);
+                                .with_table_packing(params.table_packing.clone());
                             prover.$register_poseidon2_fn($poseidon2_config);
                             prover
                                 .verify_all_tables(&out.0, out.1.common_data())

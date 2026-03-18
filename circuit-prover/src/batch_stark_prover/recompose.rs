@@ -37,13 +37,26 @@ where
 }
 
 /// Table prover for the recompose (BF→EF packing) NPO.
-pub struct RecomposeProver<const D: usize>;
+///
+/// `lanes` controls how many operations are packed into a single AIR row.
+/// Increasing this value reduces the trace height proportionally, at the cost of
+/// a wider trace. Must be kept in sync with the corresponding [`RecomposeAirBuilder`].
+pub struct RecomposeProver<const D: usize> {
+    lanes: usize,
+}
 
 impl<const D: usize> RecomposeProver<D> {
+    /// Create a prover that packs `lanes` recompose operations per row.
+    pub fn new(lanes: usize) -> Self {
+        Self {
+            lanes: lanes.max(1),
+        }
+    }
+
     fn batch_instance_base<SC>(
         &self,
         _config: &SC,
-        packing: TablePacking,
+        packing: &TablePacking,
         traces: &Traces<Val<SC>>,
     ) -> Option<BatchTableInstance<SC>>
     where
@@ -61,8 +74,9 @@ impl<const D: usize> RecomposeProver<D> {
         let t = trace.as_any().downcast_ref::<RecomposeTrace<Val<SC>>>()?;
 
         let num_ops = t.total_rows();
+        // Prefer the per-op override from TablePacking; fall back to the prover's own default.
+        let lanes = packing.npo_lanes(&op_type).unwrap_or(self.lanes);
         let min_height = packing.min_trace_height();
-        let lanes = 1;
 
         // Build preprocessed data: 2 values per operation [output_idx, out_mult]
         // These are stored flat; from_flat_padded handles lane layout.
@@ -81,6 +95,7 @@ impl<const D: usize> RecomposeProver<D> {
             trace: matrix,
             public_values: Vec::new(),
             rows: num_ops,
+            lanes,
         })
     }
 }
@@ -96,15 +111,20 @@ where
         NpoTypeId::recompose()
     }
 
+    fn lanes(&self) -> usize {
+        self.lanes
+    }
+
     impl_table_prover_batch_instances_from_base!(batch_instance_base);
 
     fn batch_air_from_table_entry(
         &self,
         _config: &SC,
         _degree: usize,
-        _table_entry: &NonPrimitiveTableEntry<SC>,
+        table_entry: &NonPrimitiveTableEntry<SC>,
     ) -> Result<DynamicAirEntry<SC>, String> {
-        let air = RecomposeAir::<Val<SC>, D>::new_with_preprocessed(1, Vec::new(), 1);
+        let air =
+            RecomposeAir::<Val<SC>, D>::new_with_preprocessed(table_entry.lanes, Vec::new(), 1);
         Ok(DynamicAirEntry::new(Box::new(air)))
     }
 
@@ -112,8 +132,10 @@ where
         &self,
         committed_prep: Vec<Val<SC>>,
         min_height: usize,
+        lanes: usize,
     ) -> Option<DynamicAirEntry<SC>> {
-        let air = RecomposeAir::<Val<SC>, D>::new_with_preprocessed(1, committed_prep, min_height);
+        let air =
+            RecomposeAir::<Val<SC>, D>::new_with_preprocessed(lanes, committed_prep, min_height);
         Some(DynamicAirEntry::new(Box::new(air)))
     }
 }
@@ -242,8 +264,21 @@ where
 // ============================================================================
 
 /// NpoAirBuilder for the recompose table.
+///
+/// `lanes` must match the value used in the paired [`RecomposeProver`].
 #[derive(Clone)]
-pub struct RecomposeAirBuilder<const D: usize>;
+pub struct RecomposeAirBuilder<const D: usize> {
+    lanes: usize,
+}
+
+impl<const D: usize> RecomposeAirBuilder<D> {
+    /// Create a builder that expects `lanes` operations packed per AIR row.
+    pub fn new(lanes: usize) -> Self {
+        Self {
+            lanes: lanes.max(1),
+        }
+    }
+}
 
 impl<SC, const D: usize> NpoAirBuilder<SC, D> for RecomposeAirBuilder<D>
 where
@@ -252,11 +287,16 @@ where
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
         Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
+    fn lanes(&self) -> usize {
+        self.lanes
+    }
+
     fn try_build(
         &self,
         op_type: &NpoTypeId,
         prep_base: &[Val<SC>],
         min_height: usize,
+        lanes: usize,
         _constraint_profile: ConstraintProfile,
     ) -> Option<(CircuitTableAir<SC, D>, usize)> {
         if op_type.as_str() != "recompose" {
@@ -264,10 +304,14 @@ where
         }
 
         let prep_lane_width = RecomposeAir::<Val<SC>, D>::preprocessed_lane_width();
-        let num_rows = prep_base.len() / prep_lane_width;
+        let num_ops = prep_base.len() / prep_lane_width;
+        let num_rows = num_ops.div_ceil(lanes).max(1);
 
-        let air =
-            RecomposeAir::<Val<SC>, D>::new_with_preprocessed(1, prep_base.to_vec(), min_height);
+        let air = RecomposeAir::<Val<SC>, D>::new_with_preprocessed(
+            lanes,
+            prep_base.to_vec(),
+            min_height,
+        );
 
         let padded_rows = num_rows
             .next_power_of_two()

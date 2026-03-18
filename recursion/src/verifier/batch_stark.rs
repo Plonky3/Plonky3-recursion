@@ -210,7 +210,7 @@ where
 {
     assert_eq!(proof.ext_degree, TRACE_D, "trace extension degree mismatch");
     let rows: RowCounts = proof.rows;
-    let packing = proof.table_packing;
+    let packing = proof.table_packing.clone();
     let public_lanes = packing.public_lanes();
     let alu_lanes = packing.alu_lanes();
 
