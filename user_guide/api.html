@@ -226,7 +226,7 @@ let (circuit, verifier_result) = build_next_layer_circuit(&amp;input, &amp;confi
 
 // Prove (can be called multiple times with different inputs of the same shape)
 let output = prove_next_layer::&lt;SC, A, B, D&gt;(
-    &amp;input, circuit, &amp;verifier_result, &amp;config, &amp;backend, &amp;params,
+    &amp;input, &amp;circuit, &amp;verifier_result, &amp;config, &amp;backend, &amp;params,
 )?;</code></pre>
 <h3 id="build_and_prove_aggregation_layer"><a class="header" href="#build_and_prove_aggregation_layer"><code>build_and_prove_aggregation_layer</code></a></h3>
 <p>Verifies two proofs in a single circuit. The two inputs can be different <code>RecursionInput</code> variants:</p>
