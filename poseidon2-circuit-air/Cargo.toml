@@ -42,7 +42,7 @@ p3-keccak.workspace = true
 p3-merkle-tree.workspace = true
 p3-test-utils.workspace = true
 
-tracing-forest = { workspace = true, features = ["ansi", "smallvec"] }
+tracing-forest = { workspace = true, features = ["smallvec"] }
 tracing-subscriber = { workspace = true, features = ["std", "env-filter"] }
 
 [features]
