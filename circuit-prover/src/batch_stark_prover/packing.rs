@@ -2,33 +2,7 @@ use alloc::vec::Vec;
 
 use p3_circuit::ops::NpoTypeId;
 use p3_circuit::tables::Traces;
-use p3_field::Field;
-use p3_matrix::Matrix;
-use p3_matrix::dense::RowMajorMatrix;
 use serde::{Deserialize, Serialize};
-
-/// Pad a trace matrix to at least `min_height` rows.
-/// The height is always rounded up to a power of two.
-pub(crate) fn pad_matrix_to_min_height<F: Field>(
-    mut matrix: RowMajorMatrix<F>,
-    min_height: usize,
-) -> RowMajorMatrix<F> {
-    let current_height = matrix.height();
-    // Target height is max of current power-of-two and min_height
-    let target_height = current_height
-        .next_power_of_two()
-        .max(min_height.next_power_of_two());
-
-    if current_height < target_height {
-        // Pad with zeros to reach target height
-        let width = matrix.width();
-        let padding_rows = target_height - current_height;
-        matrix
-            .values
-            .extend(core::iter::repeat_n(F::ZERO, padding_rows * width));
-    }
-    matrix
-}
 
 /// Configuration for packing multiple primitive operations into a single AIR row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

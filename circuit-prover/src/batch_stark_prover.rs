@@ -14,7 +14,7 @@ use p3_circuit::PreprocessedColumns;
 use p3_circuit::ops::{NpoTypeId, Poseidon2Config, PrimitiveOpType};
 use p3_circuit::tables::Traces;
 use p3_field::extension::{BinomialExtensionField, BinomiallyExtendable};
-use p3_field::{Algebra, BasedVectorSpace, Field, PrimeField};
+use p3_field::{Algebra, BasedVectorSpace, Field, PrimeCharacteristicRing, PrimeField};
 use p3_lookup::LookupAir;
 use p3_lookup::folder::{ProverConstraintFolderWithLookups, VerifierConstraintFolderWithLookups};
 use p3_lookup::lookup_traits::Lookup;
@@ -636,8 +636,9 @@ where
         let const_prep = primitive[PrimitiveOpType::Const as usize].clone();
         let const_air = ConstAir::<Val<SC>, D>::new_with_preprocessed(const_rows, const_prep)
             .with_min_height(min_height);
-        let const_matrix: RowMajorMatrix<Val<SC>> =
+        let mut const_matrix: RowMajorMatrix<Val<SC>> =
             ConstAir::<Val<SC>, D>::trace_to_matrix(&traces.const_trace);
+        const_matrix.pad_to_min_power_of_two_height(min_height, Val::<SC>::ZERO);
 
         // Public — reduce lanes to 1 if the table has only dummy operations.
         let public_trace_only_dummy = traces.public_trace.values.len() <= 1;
@@ -659,8 +660,9 @@ where
         let public_air =
             PublicAir::<Val<SC>, D>::new_with_preprocessed(public_rows, public_lanes, public_prep)
                 .with_min_height(min_height);
-        let public_matrix: RowMajorMatrix<Val<SC>> =
+        let mut public_matrix: RowMajorMatrix<Val<SC>> =
             PublicAir::<Val<SC>, D>::trace_to_matrix(&traces.public_trace, public_lanes);
+        public_matrix.pad_to_min_power_of_two_height(min_height, Val::<SC>::ZERO);
 
         // ALU — preprocessed is already in 10-col format (with multiplicities) from
         // get_airs_and_degrees_with_prep. When the trace is empty, a dummy row is included.
@@ -680,7 +682,8 @@ where
             )
             .with_min_height(min_height)
         };
-        let alu_matrix: RowMajorMatrix<Val<SC>> = alu_air.trace_to_matrix(&traces.alu_trace);
+        let mut alu_matrix: RowMajorMatrix<Val<SC>> = alu_air.trace_to_matrix(&traces.alu_trace);
+        alu_matrix.pad_to_min_power_of_two_height(min_height, Val::<SC>::ZERO);
 
         // Log trace lengths with the actual scheduled ALU row count.
         let scheduled_alu_rows = alu_air.scheduled_entry_count();
@@ -777,27 +780,28 @@ where
 
         // Pad all trace matrices to at least min_height (for FRI compatibility)
         air_storage.push(CircuitTableAir::Const(const_air));
-        trace_storage.push(packing::pad_matrix_to_min_height(const_matrix, min_height));
+        trace_storage.push(const_matrix);
         public_storage.push(Vec::new());
 
         air_storage.push(CircuitTableAir::Public(public_air));
-        trace_storage.push(packing::pad_matrix_to_min_height(public_matrix, min_height));
+        trace_storage.push(public_matrix);
         public_storage.push(Vec::new());
 
         air_storage.push(CircuitTableAir::Alu(alu_air));
-        trace_storage.push(packing::pad_matrix_to_min_height(alu_matrix, min_height));
+        trace_storage.push(alu_matrix);
         public_storage.push(Vec::new());
 
         for instance in dynamic_instances {
             let BatchTableInstance {
                 op_type,
                 air,
-                trace,
+                mut trace,
                 public_values,
                 rows,
             } = instance;
             air_storage.push(CircuitTableAir::Dynamic(air));
-            trace_storage.push(packing::pad_matrix_to_min_height(trace, min_height));
+            trace.pad_to_min_power_of_two_height(min_height, Val::<SC>::ZERO);
+            trace_storage.push(trace);
             public_storage.push(public_values);
             non_primitive_meta.push((op_type, rows, AirVariant::Baseline));
         }

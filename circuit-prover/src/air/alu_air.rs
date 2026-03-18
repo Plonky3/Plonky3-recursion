@@ -100,7 +100,6 @@ use p3_uni_stark::SymbolicExpression;
 
 use crate::air::utils::{
     create_direct_preprocessed_trace_with_extra, create_symbolic_variables, get_alu_index_lookups,
-    pad_matrix_with_min_height,
 };
 
 // ── Preprocessed column offsets within each lane (13 columns) ────────────────
@@ -521,8 +520,9 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AluAir<F, D> {
             }
         }
 
-        let mat = RowMajorMatrix::new(values, row_width);
-        pad_matrix_with_min_height(mat, self.min_height)
+        let mut mat = RowMajorMatrix::new(values, row_width);
+        mat.pad_to_min_power_of_two_height(self.min_height, F::ZERO);
+        mat
     }
 
     /// Convert an `AluTrace` to preprocessed values (13 columns per op).

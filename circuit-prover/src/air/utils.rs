@@ -90,8 +90,9 @@ pub fn create_direct_preprocessed_trace<F: Field>(
         values.extend(core::iter::repeat_n(F::ZERO, preprocessed_width.max(1)));
     }
 
-    let mat = RowMajorMatrix::new(values, preprocessed_width);
-    pad_matrix_with_min_height(mat, min_height)
+    let mut mat = RowMajorMatrix::new(values, preprocessed_width);
+    mat.pad_to_min_power_of_two_height(min_height, F::ZERO);
+    mat
 }
 
 /// Like [`create_direct_preprocessed_trace`], but allocates the *final* width
@@ -136,7 +137,8 @@ pub fn create_direct_preprocessed_trace_with_extra<F: Field>(
         // trailing extra_cols_per_row entries stay zero
     }
 
-    pad_matrix_with_min_height(widened, min_height)
+    widened.pad_to_min_power_of_two_height(min_height, F::ZERO);
+    widened
 }
 
 /// Helper to create symbolic air builder and extract symbolic variables for lookup generation.
@@ -169,24 +171,6 @@ pub fn create_symbolic_variables<F: Field>(
         .to_vec();
 
     (symbolic_main_local, preprocessed_local)
-}
-
-/// Helper to pad a matrix to power-of-two height and then to min_height if needed.
-pub fn pad_matrix_with_min_height<F: Field>(
-    mut mat: RowMajorMatrix<F>,
-    min_height: usize,
-) -> RowMajorMatrix<F> {
-    mat.pad_to_power_of_two_height(F::ZERO);
-
-    let min_rows = min_height.next_power_of_two();
-    if mat.height() < min_rows {
-        let width = mat.width();
-        let padding_rows = min_rows - mat.height();
-        mat.values
-            .extend(core::iter::repeat_n(F::ZERO, padding_rows * width));
-    }
-
-    mat
 }
 
 /// Helper to create preprocessed trace with multiplicity insertion and padding.
@@ -222,8 +206,9 @@ pub fn create_preprocessed_trace_with_multiplicity<F: Field>(
         }
     }
 
-    let mat = RowMajorMatrix::new(values, row_width);
-    pad_matrix_with_min_height(mat, min_height)
+    let mut mat = RowMajorMatrix::new(values, row_width);
+    mat.pad_to_min_power_of_two_height(min_height, F::ZERO);
+    mat
 }
 
 /// Helper to create preprocessed trace for single-row-per-op AIRs (like ConstAir).
@@ -239,8 +224,9 @@ pub fn create_simple_preprocessed_trace<F: Field>(
         .flat_map(|v| [F::ONE, *v])
         .collect();
 
-    let mat = RowMajorMatrix::new(preprocessed_with_multiplicity, preprocessed_width);
-    pad_matrix_with_min_height(mat, min_height)
+    let mut mat = RowMajorMatrix::new(preprocessed_with_multiplicity, preprocessed_width);
+    mat.pad_to_min_power_of_two_height(min_height, F::ZERO);
+    mat
 }
 
 /// Helper to create preprocessed trace for AIRs with chunked preprocessed values (like AluAir).
@@ -275,6 +261,7 @@ pub fn create_chunked_preprocessed_trace<F: Field>(
         preprocessed_with_multiplicity.extend(core::iter::repeat_n(F::ZERO, padding_len));
     }
 
-    let mat = RowMajorMatrix::new(preprocessed_with_multiplicity, preprocessed_width);
-    pad_matrix_with_min_height(mat, min_height)
+    let mut mat = RowMajorMatrix::new(preprocessed_with_multiplicity, preprocessed_width);
+    mat.pad_to_min_power_of_two_height(min_height, F::ZERO);
+    mat
 }
