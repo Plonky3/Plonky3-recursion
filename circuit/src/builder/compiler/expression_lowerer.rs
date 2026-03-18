@@ -481,6 +481,17 @@ where
                     });
                     expr_to_widx.insert(expr_id, out_widx);
                 }
+                Expr::MulAdd { a, b, c } => {
+                    let out_widx = alloc_witness_id_for_expr(expr_idx);
+                    let a_widx =
+                        get_witness_id(&expr_to_widx, *a, &format!("MulAdd a for {expr_id:?}"))?;
+                    let b_widx =
+                        get_witness_id(&expr_to_widx, *b, &format!("MulAdd b for {expr_id:?}"))?;
+                    let c_widx =
+                        get_witness_id(&expr_to_widx, *c, &format!("MulAdd c for {expr_id:?}"))?;
+                    ops.push(Op::mul_add(a_widx, b_widx, c_widx, out_widx));
+                    expr_to_widx.insert(expr_id, out_widx);
+                }
                 Expr::NonPrimitiveCall { op_id, inputs: _ } => {
                     // The `inputs` field encodes DAG dependencies for ordering purposes.
                     // Actual input data is read from NonPrimitiveOperationData.

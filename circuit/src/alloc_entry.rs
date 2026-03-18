@@ -21,6 +21,7 @@ pub enum AllocationType {
     Div,
     HornerAcc,
     BoolCheck,
+    MulAdd,
     NonPrimitiveOp(NpoTypeId),
     WitnessHint,
 }
@@ -37,6 +38,7 @@ impl AllocationType {
             Self::Div => "Divisions",
             Self::HornerAcc => "Horner Accumulator Steps",
             Self::BoolCheck => "Bool Checks",
+            Self::MulAdd => "Fused Multiply-Adds",
             Self::NonPrimitiveOp(_) => "Non-Primitive Operations",
             Self::WitnessHint => "Witness Hints",
         }
@@ -65,6 +67,7 @@ impl fmt::Display for AllocationType {
             Self::Div => f.write_str("Div"),
             Self::HornerAcc => f.write_str("HornerAcc"),
             Self::BoolCheck => f.write_str("BoolCheck"),
+            Self::MulAdd => f.write_str("MulAdd"),
             Self::NonPrimitiveOp(id) => write!(f, "NonPrimitiveOp({id:?})"),
             Self::WitnessHint => f.write_str("WitnessHint"),
         }
@@ -200,7 +203,8 @@ impl AllocationLog {
     /// Emit one summary event with per-type counts as structured fields.
     fn log_summary(&self) {
         let (mut pub_n, mut cst, mut add, mut sub) = (0u32, 0, 0, 0);
-        let (mut mul, mut div, mut hor, mut bck, mut npo, mut wit) = (0u32, 0, 0, 0, 0, 0);
+        let (mut mul, mut div, mut hor, mut bck, mut mad, mut npo, mut wit) =
+            (0u32, 0, 0, 0, 0, 0, 0);
 
         for e in self.iter() {
             match e.alloc_type {
@@ -212,6 +216,7 @@ impl AllocationLog {
                 AllocationType::Div => div += 1,
                 AllocationType::HornerAcc => hor += 1,
                 AllocationType::BoolCheck => bck += 1,
+                AllocationType::MulAdd => mad += 1,
                 AllocationType::NonPrimitiveOp(_) => npo += 1,
                 AllocationType::WitnessHint => wit += 1,
             }
@@ -226,6 +231,7 @@ impl AllocationLog {
             divisions = div,
             horner_steps = hor,
             bool_checks = bck,
+            mul_adds = mad,
             non_primitive_ops = npo,
             witness_hints = wit,
             "allocation summary",
@@ -244,6 +250,7 @@ impl AllocationLog {
             |a| matches!(a, AllocationType::Div),
             |a| matches!(a, AllocationType::HornerAcc),
             |a| matches!(a, AllocationType::BoolCheck),
+            |a| matches!(a, AllocationType::MulAdd),
             |a| matches!(a, AllocationType::NonPrimitiveOp(_)),
             |a| matches!(a, AllocationType::WitnessHint),
         ];
@@ -307,6 +314,7 @@ mod tests {
         assert_eq!(AllocationType::Div.to_string(), "Div");
         assert_eq!(AllocationType::HornerAcc.to_string(), "HornerAcc");
         assert_eq!(AllocationType::BoolCheck.to_string(), "BoolCheck");
+        assert_eq!(AllocationType::MulAdd.to_string(), "MulAdd");
         assert_eq!(AllocationType::WitnessHint.to_string(), "WitnessHint");
         assert_eq!(
             AllocationType::NonPrimitiveOp(NpoTypeId::new("poseidon2")).to_string(),
@@ -327,6 +335,7 @@ mod tests {
             "Horner Accumulator Steps"
         );
         assert_eq!(AllocationType::BoolCheck.group_name(), "Bool Checks");
+        assert_eq!(AllocationType::MulAdd.group_name(), "Fused Multiply-Adds");
         assert_eq!(
             AllocationType::NonPrimitiveOp(NpoTypeId::new("x")).group_name(),
             "Non-Primitive Operations"
@@ -348,6 +357,7 @@ mod tests {
         assert_eq!(AllocationType::Const.operator(), None);
         assert_eq!(AllocationType::HornerAcc.operator(), None);
         assert_eq!(AllocationType::BoolCheck.operator(), None);
+        assert_eq!(AllocationType::MulAdd.operator(), None);
         assert_eq!(AllocationType::WitnessHint.operator(), None);
         assert_eq!(
             AllocationType::NonPrimitiveOp(NpoTypeId::new("x")).operator(),

@@ -717,13 +717,12 @@ mod tests {
 
         let mut builder = CircuitBuilder::new();
 
-        // Test extension field operations: x + y * z
+        // Test extension field operations: y * z + x (fused multiply-add)
         let x = builder.public_input();
         let y = builder.public_input();
         let z = builder.public_input();
 
-        let yz = builder.mul(y, z);
-        let _result = builder.add(x, yz);
+        let _result = builder.mul_add(y, z, x);
 
         let circuit = builder.build().unwrap();
         let mut runner = circuit.runner();
@@ -754,19 +753,13 @@ mod tests {
         runner.set_public_inputs(&[x_val, y_val, z_val]).unwrap();
         let traces = runner.run().unwrap();
 
-        let yz = y_val * z_val;
-        let result = yz + x_val;
+        let result = y_val * z_val + x_val;
         assert_eq!(
             traces,
             Traces {
-                witness_trace: WitnessTrace::new(vec![
-                    ExtField::ZERO,
-                    x_val,
-                    y_val,
-                    z_val,
-                    yz,
-                    result,
-                ]),
+                witness_trace: WitnessTrace::new(
+                    vec![ExtField::ZERO, x_val, y_val, z_val, result,]
+                ),
                 const_trace: ConstTrace {
                     index: vec![WitnessId(0)],
                     values: vec![ExtField::ZERO],
@@ -778,7 +771,7 @@ mod tests {
                 alu_trace: AluTrace {
                     op_kind: vec![AluOpKind::MulAdd],
                     values: vec![[y_val, z_val, x_val, result]],
-                    indices: vec![[WitnessId(2), WitnessId(3), WitnessId(1), WitnessId(5)]],
+                    indices: vec![[WitnessId(2), WitnessId(3), WitnessId(1), WitnessId(4)]],
                 },
                 non_primitive_traces: HashMap::new(),
                 tag_to_witness: HashMap::new(),

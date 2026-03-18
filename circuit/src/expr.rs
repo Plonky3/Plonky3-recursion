@@ -32,6 +32,10 @@ pub enum Expr<F> {
     ///
     /// Emits a single BoolCheck ALU op with no intermediate witnesses.
     BoolCheck { val: ExprId },
+    /// Fused multiply-add: result = a * b + c.
+    ///
+    /// Emits a single MulAdd ALU op with no intermediate witnesses.
+    MulAdd { a: ExprId, b: ExprId, c: ExprId },
     /// Anchor node for a non-primitive operation in the expression DAG.
     ///
     /// This node has no witness value itself, but it fixes the relative execution order

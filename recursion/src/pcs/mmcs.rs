@@ -425,8 +425,7 @@ fn select_cap_entry<EF: Field>(
             for j in 0..rate_ext {
                 // left[j] + bit * (right[j] - left[j])
                 let diff = circuit.sub(right[j], left[j]);
-                let term = circuit.mul(bit, diff);
-                let val = circuit.add(left[j], term);
+                let val = circuit.mul_add(bit, diff, left[j]);
                 selected.push(val);
             }
             next.push(selected);

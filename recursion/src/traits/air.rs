@@ -135,16 +135,14 @@ where
         let mut acc = builder.define_const(EF::ZERO);
         let mut base_cache = HashMap::new();
         for s_c in &base_symbolic_constraints {
-            let mul_prev = builder.mul(acc, *alpha);
             let constraints = compiler.compile_base(s_c, builder, &mut base_cache);
-            acc = builder.add(mul_prev, constraints);
+            acc = builder.mul_add(acc, *alpha, constraints);
         }
 
         let mut ext_cache = HashMap::new();
         for s_c in &extension_symbolic_constraints {
-            let mul_prev = builder.mul(acc, *alpha);
             let constraints = compiler.compile_ext(s_c, builder, &mut base_cache, &mut ext_cache);
-            acc = builder.add(mul_prev, constraints);
+            acc = builder.mul_add(acc, *alpha, constraints);
         }
 
         builder.pop_scope();

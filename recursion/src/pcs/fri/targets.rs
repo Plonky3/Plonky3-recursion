@@ -226,8 +226,7 @@ impl<F: Field, EF: ExtensionField<F> + BasedVectorSpace<F>, RecMmcs: RecursiveEx
         let mut result = coeffs[0];
         for (i, &basis_elem) in basis.iter().enumerate().skip(1) {
             let basis_const = circuit.define_const(basis_elem);
-            let term = circuit.mul(coeffs[i], basis_const);
-            result = circuit.add(result, term);
+            result = circuit.mul_add(coeffs[i], basis_const, result);
         }
         result
     }

@@ -420,10 +420,9 @@ where
     /// A new `ExprId` representing the result of `a * b + c`.
     ///
     /// # Cost
-    /// 1 multiplication and 1 addition constraint.
+    /// 1 fused multiply-add constraint (single ALU row).
     pub fn mul_add(&mut self, a: ExprId, b: ExprId, c: ExprId) -> ExprId {
-        let product = self.mul(a, b);
-        self.add(product, c)
+        self.expr_builder.add_mul_add(a, b, c, "mul_add")
     }
 
     /// Horner accumulator step: result = acc * alpha + p_at_z - p_at_x
@@ -482,7 +481,7 @@ where
     /// A new `ExprId` representing the inner product.
     ///
     /// # Cost
-    /// `N` multiplications and `N-1` additions, where `N` is the length of the slices.
+    /// `N` fused multiply-adds.
     pub fn inner_product(&mut self, a: &[ExprId], b: &[ExprId]) -> ExprId {
         let zero = self.define_const(F::ZERO);
 
@@ -545,8 +544,7 @@ where
             return t;
         }
         let t_minus_s = self.sub(t, s);
-        let scaled = self.mul(b, t_minus_s);
-        self.add(s, scaled)
+        self.mul_add(b, t_minus_s, s)
     }
 
     /// Exponentiates a base expression to a power of 2 (i.e. base^(2^power_log)), by squaring repeatedly.
@@ -968,8 +966,7 @@ where
                 self.assert_bool(b);
 
                 // Add b_i · 2^j to the accumulator (at the corresponding limb).
-                let term = self.mul(b, pow2);
-                acc = self.add(acc, term);
+                acc = self.mul_add(b, pow2, acc);
             }
         }
 
@@ -1027,8 +1024,7 @@ where
                 .expect("basis coefficients are valid");
 
             let basis_const = self.define_const(basis_elem);
-            let term = self.mul(coeff, basis_const);
-            acc = self.add(acc, term);
+            acc = self.mul_add(coeff, basis_const, acc);
         }
 
         self.pop_scope();

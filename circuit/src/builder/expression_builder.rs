@@ -57,6 +57,8 @@ pub struct OpCounts {
     pub horner_accs: u64,
     /// Number of boolean check expressions allocated.
     pub bool_checks: u64,
+    /// Number of fused multiply-add expressions allocated.
+    pub mul_adds: u64,
     /// Number of non-primitive calls allocated, broken down by type.
     pub non_primitives: HashMap<NpoTypeId, u64>,
 }
@@ -123,6 +125,11 @@ impl ProfilingState {
     #[inline]
     fn bump_bool_check(&mut self) {
         self.bump_with(|c| c.bool_checks += 1);
+    }
+
+    #[inline]
+    fn bump_mul_add(&mut self) {
+        self.bump_with(|c| c.mul_adds += 1);
     }
 
     #[inline]
@@ -639,6 +646,25 @@ where
         #[cfg(feature = "debugging")]
         self.log_alloc(expr_id, label, || {
             (AllocationType::BoolCheck, vec![vec![val]])
+        });
+        #[cfg(not(feature = "debugging"))]
+        self.log_alloc(expr_id, label, || ());
+
+        expr_id
+    }
+
+    /// Adds a fused multiply-add expression to the graph: result = a * b + c.
+    ///
+    /// Lowers to a single MulAdd ALU op with no intermediate witnesses.
+    pub fn add_mul_add(&mut self, a: ExprId, b: ExprId, c: ExprId, label: &'static str) -> ExprId {
+        #[cfg(feature = "profiling")]
+        self.profiling.bump_mul_add();
+
+        let expr_id = self.graph.add_expr(Expr::MulAdd { a, b, c });
+
+        #[cfg(feature = "debugging")]
+        self.log_alloc(expr_id, label, || {
+            (AllocationType::MulAdd, vec![vec![a], vec![b], vec![c]])
         });
         #[cfg(not(feature = "debugging"))]
         self.log_alloc(expr_id, label, || ());

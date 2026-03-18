@@ -907,8 +907,7 @@ where
                             SC::Challenge::ith_basis_element(j)
                                 .expect("Basis element should exist"),
                         );
-                        let m = circuit.mul(coeff, e_i);
-                        sum = circuit.add(sum, m);
+                        sum = circuit.mul_add(coeff, e_i, sum);
                     });
                     sum
                 })
