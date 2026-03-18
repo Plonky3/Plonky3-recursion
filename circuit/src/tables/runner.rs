@@ -19,11 +19,13 @@ use crate::types::{NonPrimitiveOpId, WitnessId};
 use crate::{AluOpKind, CircuitError};
 
 /// Circuit execution engine.
-pub struct CircuitRunner<F> {
-    /// Circuit specification.
-    circuit: Circuit<F>,
+pub struct CircuitRunner<'a, F> {
+    /// Borrowed circuit specification.
+    circuit: &'a Circuit<F>,
     /// Witness values (None = unset, Some = computed).
     witness: Vec<Option<F>>,
+    /// ALU deduplication rewrite map.
+    witness_rewrite: Option<HashMap<WitnessId, WitnessId>>,
     /// Private data for non-primitive operations (not on witness bus)
     non_primitive_op_private_data: Vec<Option<NpoPrivateData>>,
     /// Map from NonPrimitiveOpId -> index in `circuit.ops` for type checks.
@@ -32,9 +34,9 @@ pub struct CircuitRunner<F> {
     op_states: OpStateMap,
 }
 
-impl<F: Field> CircuitRunner<F> {
+impl<'a, F: Field> CircuitRunner<'a, F> {
     /// Creates circuit runner with empty witness storage.
-    pub fn new(circuit: Circuit<F>) -> Self {
+    pub fn new(circuit: &'a Circuit<F>) -> Self {
         let witness = vec![None; circuit.witness_count as usize];
         let mut max_op_id: Option<u32> = None;
         for op in &circuit.ops {
@@ -65,10 +67,12 @@ impl<F: Field> CircuitRunner<F> {
         let mut non_primitive_op_private_data: Vec<Option<NpoPrivateData>> =
             Vec::with_capacity(non_primitive_op_count);
         non_primitive_op_private_data.resize_with(non_primitive_op_count, || None);
+        let witness_rewrite = circuit.witness_rewrite.clone();
         let op_states = BTreeMap::new();
         Self {
             circuit,
             witness,
+            witness_rewrite,
             non_primitive_op_private_data,
             non_primitive_op_index_by_id,
             op_states,
@@ -191,7 +195,7 @@ impl<F: Field> CircuitRunner<F> {
     pub fn run(mut self) -> Result<Traces<F>, CircuitError> {
         let alu_records = self.execute_all()?;
 
-        if let Some(rewrite) = self.circuit.witness_rewrite.take() {
+        if let Some(rewrite) = self.witness_rewrite.take() {
             let mut resolved: HashMap<WitnessId, WitnessId> = HashMap::with_capacity(rewrite.len());
             let mut root = |canon: WitnessId| {
                 *resolved.entry(canon).or_insert_with(|| {
@@ -240,7 +244,7 @@ impl<F: Field> CircuitRunner<F> {
             const_trace,
             public_trace,
             alu_trace,
-            tag_to_witness: self.circuit.tag_to_witness,
+            tag_to_witness: self.circuit.tag_to_witness.clone(),
             non_primitive_traces,
         })
     }

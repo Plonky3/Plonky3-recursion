@@ -478,7 +478,7 @@ fn run_fri_test(setup: FriSetup, build_only: bool) {
     );
     let private_inputs1 =
         <FriTargets as Recursive<Challenge>>::get_private_values(&result_1.fri_proof);
-    let mut runner1 = circuit.clone().runner();
+    let mut runner1 = circuit.runner();
     runner1.set_public_inputs(&pub_inputs1).unwrap();
     runner1.set_private_inputs(&private_inputs1).unwrap();
     runner1.run().unwrap();

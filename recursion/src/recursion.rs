@@ -145,7 +145,7 @@ where
     fn set_private_data(
         &self,
         config: &SC,
-        runner: &mut CircuitRunner<SC::Challenge>,
+        runner: &mut CircuitRunner<'_, SC::Challenge>,
         op_ids: &[NonPrimitiveOpId],
         prev: &RecursionInput<'_, SC, A>,
     ) -> Result<(), &'static str>;
@@ -340,7 +340,7 @@ where
 #[instrument(skip_all)]
 pub fn prove_next_layer<SC, A, B, const D: usize>(
     prev: &RecursionInput<'_, SC, A>,
-    verification_circuit: Circuit<SC::Challenge>,
+    verification_circuit: &Circuit<SC::Challenge>,
     verifier_result: &B::VerifierResult,
     config: &SC,
     backend: &B,
@@ -389,7 +389,7 @@ where
         let preprocessors = backend.non_primitive_preprocessors();
         let air_builders = backend.non_primitive_air_builders();
         get_airs_and_degrees_with_prep::<SC, SC::Challenge, D>(
-            &verification_circuit,
+            verification_circuit,
             params.table_packing,
             &preprocessors,
             &air_builders,
@@ -464,7 +464,7 @@ where
 
     prove_next_layer::<SC, A, B, D>(
         prev,
-        verification_circuit,
+        &verification_circuit,
         &verifier_result,
         config,
         backend,
@@ -546,7 +546,7 @@ where
     let mut private_inputs = left_result.pack_private_inputs(left)?;
     private_inputs.extend(right_result.pack_private_inputs(right)?);
 
-    let mut runner = verification_circuit.clone().runner();
+    let mut runner = verification_circuit.runner();
     runner
         .set_public_inputs(&public_inputs)
         .map_err(VerificationError::Circuit)?;

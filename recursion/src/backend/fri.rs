@@ -96,7 +96,7 @@ where
     /// Set FRI Merkle path private data on the runner. Implement by calling
     /// [`crate::pcs::set_fri_mmcs_private_data`] with your concrete MMCS/hasher types.
     fn set_fri_private_data(
-        runner: &mut CircuitRunner<Self::Challenge>,
+        runner: &mut CircuitRunner<'_, Self::Challenge>,
         op_ids: &[NonPrimitiveOpId],
         opening_proof: &Self::RawOpeningProof,
     ) -> Result<(), &'static str>;
@@ -437,7 +437,7 @@ where
     fn set_private_data(
         &self,
         config: &SC,
-        runner: &mut CircuitRunner<SC::Challenge>,
+        runner: &mut CircuitRunner<'_, SC::Challenge>,
         op_ids: &[NonPrimitiveOpId],
         prev: &RecursionInput<'_, SC, A>,
     ) -> Result<(), &'static str> {
@@ -527,7 +527,7 @@ where
     fn set_private_data(
         &self,
         config: &SC,
-        runner: &mut CircuitRunner<SC::Challenge>,
+        runner: &mut CircuitRunner<'_, SC::Challenge>,
         op_ids: &[NonPrimitiveOpId],
         prev: &RecursionInput<'_, SC, A>,
     ) -> Result<(), &'static str> {

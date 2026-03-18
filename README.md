@@ -49,7 +49,7 @@ let params = ProveNextLayerParams { table_packing, use_poseidon2_in_circuit: tru
 let (verification_circuit, verifier_result) = build_next_layer_circuit(&input, &config, &backend)?;
 let output = prove_next_layer(
     &input,
-    verification_circuit,
+    &verification_circuit,
     &verifier_result,
     &config,
     &backend,
@@ -61,7 +61,7 @@ let input = output.into_recursion_input::<BatchOnly>();
 let (verification_circuit, verifier_result) = build_next_layer_circuit(&input, &config, &backend)?;
 let output = prove_next_layer(
     &input,
-    verification_circuit,
+    &verification_circuit,
     &verifier_result,
     &config,
     &backend,

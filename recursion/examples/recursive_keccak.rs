@@ -343,7 +343,7 @@ macro_rules! define_field_module {
 
                         prove_next_layer::<ConfigWithFriParams, BatchOnly, _, D>(
                             &input,
-                            verification_circuit,
+                            &verification_circuit,
                             &verifier_result,
                             &config,
                             &backend,

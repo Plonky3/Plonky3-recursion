@@ -254,7 +254,7 @@ macro_rules! define_field_module {
 
                 let expected_fib = compute_fibonacci(n);
                 let traces_0 = {
-                    let mut runner_0 = base_circuit.clone().runner();
+                    let mut runner_0 = base_circuit.runner();
                     runner_0.set_public_inputs(&[expected_fib]).unwrap();
                     runner_0.run().unwrap()
                 };
@@ -354,7 +354,7 @@ macro_rules! define_field_module {
 
                             let out = prove_next_layer::<$cfg_type, BatchOnly, _, D>(
                                 &input,
-                                verification_circuit,
+                                &verification_circuit,
                                 &verifier_result,
                                 &config,
                                 &backend,

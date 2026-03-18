@@ -242,7 +242,7 @@ fn test_zk_aggregation() -> Result<(), VerificationError> {
     public_inputs.extend(right_public_inputs);
     private_inputs.extend(right_private_inputs);
 
-    let mut runner = aggregation_circuit.clone().runner();
+    let mut runner = aggregation_circuit.runner();
     runner
         .set_public_inputs(&public_inputs)
         .map_err(VerificationError::Circuit)?;

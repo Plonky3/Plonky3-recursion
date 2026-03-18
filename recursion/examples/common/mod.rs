@@ -298,7 +298,7 @@ macro_rules! define_field_module_types {
             }
 
             fn set_fri_private_data(
-                runner: &mut CircuitRunner<Challenge>,
+                runner: &mut CircuitRunner<'_, Challenge>,
                 op_ids: &[NonPrimitiveOpId],
                 opening_proof: &Self::RawOpeningProof,
             ) -> Result<(), &'static str> {
@@ -378,7 +378,7 @@ macro_rules! define_field_module_types {
             }
 
             fn set_fri_private_data(
-                runner: &mut CircuitRunner<Challenge>,
+                runner: &mut CircuitRunner<'_, Challenge>,
                 op_ids: &[NonPrimitiveOpId],
                 opening_proof: &Self::RawOpeningProof,
             ) -> Result<(), &'static str> {

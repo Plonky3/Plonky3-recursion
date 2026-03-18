@@ -176,7 +176,7 @@ fn test_batch_verifier_zk_hiding_fri() -> Result<(), VerificationError> {
     assert_eq!(public_inputs.len(), verification_circuit.public_flat_len);
 
     // --- Step 3: Run the verification circuit ---
-    let mut verification_runner = verification_circuit.clone().runner();
+    let mut verification_runner = verification_circuit.runner();
     verification_runner
         .set_public_inputs(&public_inputs)
         .unwrap();

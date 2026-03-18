@@ -492,7 +492,7 @@ where
 ///    - Input batch MMCS ops (one per batch, each with `path_depth` siblings)
 ///    - Commit-phase MMCS ops (one per phase, each with `phase_depth` siblings)
 pub fn set_fri_mmcs_private_data<F, EF, FriMmcs, InputMmcs, H, C, const DIGEST_ELEMS: usize>(
-    runner: &mut CircuitRunner<EF>,
+    runner: &mut CircuitRunner<'_, EF>,
     op_ids: &[NonPrimitiveOpId],
     fri_proof: &FriProof<EF, FriMmcs, F, Vec<BatchOpening<F, InputMmcs>>>,
 ) -> Result<(), &'static str>
@@ -574,7 +574,7 @@ pub fn set_hiding_fri_mmcs_private_data<
     C,
     const DIGEST_ELEMS: usize,
 >(
-    runner: &mut CircuitRunner<EF>,
+    runner: &mut CircuitRunner<'_, EF>,
     op_ids: &[NonPrimitiveOpId],
     fri_proof: &HidingFriProof<F, EF, FriMmcs, InputMmcs>,
 ) -> Result<(), &'static str>
@@ -1007,7 +1007,7 @@ mod test {
         #[cfg(debug_assertions)]
         let root_widx0 = circuit.expr_to_widx[&root_exprs[0]];
         #[allow(clippy::redundant_clone)] // for non debug assertions runs
-        let mut runner = circuit.clone().runner();
+        let mut runner = circuit.runner();
 
         let directions = (0..path_depth)
             .map(|k| CF::from_bool(index >> k & 1 == 1))

@@ -80,7 +80,7 @@ let (circuit, verifier_result) = build_next_layer_circuit(&input, &config, &back
 
 // Prove (can be called multiple times with different inputs of the same shape)
 let output = prove_next_layer::<SC, A, B, D>(
-    &input, circuit, &verifier_result, &config, &backend, &params,
+    &input, &circuit, &verifier_result, &config, &backend, &params,
 )?;
 ```
 
