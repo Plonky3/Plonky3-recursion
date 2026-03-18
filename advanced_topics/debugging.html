@@ -178,11 +178,45 @@
                         <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="debugging"><a class="header" href="#debugging">Debugging</a></h1>
 <p>The <code>CircuitBuilder</code> provides built-in debugging tools to help identify wiring issues and unsatisfied constraints.</p>
+<h2 id="compile-features"><a class="header" href="#compile-features">Compile features</a></h2>
+<p>The workspace exposes several opt-in compile features that activate extra instrumentation. They are disabled by default to keep production binaries lean.</p>
+<div class="table-wrapper"><table><thead><tr><th>Crate</th><th>Feature</th><th>What it enables</th></tr></thead><tbody>
+<tr><td><code>p3-circuit</code></td><td><code>debugging</code></td><td>Allocation logging: every witness slot records the operation type, optional label, and call-site scope that allocated it. Exposes <code>AllocationLog</code>, <code>AllocationEntry</code>, and <code>AllocationType</code> in the public API.</td></tr>
+<tr><td><code>p3-circuit</code></td><td><code>profiling</code></td><td>Operation-count profiling (implies <code>debugging</code>): the builder tracks how many <code>add</code>, <code>mul</code>, <code>const</code>, <code>public</code>, <code>horner_acc</code>, <code>bool_check</code>, <code>mul_add</code>, and per-NPO-type operations were allocated, both globally and per named scope. Exposes <code>OpCounts</code> and <code>ProfilingState</code>.</td></tr>
+<tr><td><code>p3-circuit-prover</code></td><td><code>parallel</code></td><td>Enables multi-threaded trace generation via Rayon (<code>p3-maybe-rayon/parallel</code>). Strongly recommended for benchmarking and production workloads.</td></tr>
+</tbody></table>
+</div>
+<p>Enable a feature by passing <code>--features &lt;feature&gt;</code> (or <code>--features parallel</code> for the prover sub-crate) to Cargo:</p>
+<pre><code class="language-bash"># Enable allocation logging
+cargo test -p p3-circuit --features debugging
+
+# Enable profiling (includes debugging)
+cargo test -p p3-circuit --features profiling
+
+# Enable parallel trace generation
+cargo run --example recursive_fibonacci --features parallel
+</code></pre>
+<h2 id="build-profiles"><a class="header" href="#build-profiles">Build profiles</a></h2>
+<p>Two custom workspace profiles complement the features above:</p>
+<div class="table-wrapper"><table><thead><tr><th>Profile</th><th>Inherits</th><th>Extra flags</th><th>Purpose</th></tr></thead><tbody>
+<tr><td><code>profiling</code></td><td><code>release</code></td><td><code>debug = true</code></td><td>Keeps DWARF symbols in an otherwise-optimised binary so that tools like <code>perf</code>, Instruments, or <code>samply</code> can map samples back to source lines. Use this together with the <code>profiling</code> crate feature.</td></tr>
+<tr><td><code>optimized</code></td><td><code>release</code></td><td><code>lto = "thin"</code>, <code>codegen-units = 1</code>, <code>opt-level = 3</code></td><td>Maximum-performance binary. All benchmarks and the provided examples are run under this profile.</td></tr>
+</tbody></table>
+</div>
+<pre><code class="language-bash"># Profile-guided performance measurement (symbols + optimisation)
+cargo run --profile profiling --example recursive_fibonacci --features parallel
+
+# Maximum-performance binary (examples, benchmarks)
+cargo run --profile optimized --example recursive_fibonacci --features parallel
+</code></pre>
 <h2 id="allocation-logging"><a class="header" href="#allocation-logging">Allocation Logging</a></h2>
 <p>The <code>CircuitBuilder</code> supports an allocation logger during circuit building that logs allocations being performed.
 These logs can then be analyzed at runtime and leveraged to detect issues in circuit constructions.</p>
+<blockquote>
+<p><strong>Requirement</strong>: allocation logging requires the <code>debugging</code> compile feature to be enabled on <code>p3-circuit</code>.</p>
+</blockquote>
 <h3 id="enabling-debug-logging"><a class="header" href="#enabling-debug-logging">Enabling Debug Logging</a></h3>
-<p>Allocation logging is automatically enabled in debug builds (or moe generally if <code>debug_assertions</code> are enabled).
+<p>Allocation logging is active whenever the <code>debugging</code> feature is compiled in.
 Logs can be dumped to <code>stdout</code> when calling <code>builder.dump_allocation_log()</code>, if logging level is set to <code>DEBUG</code> or lower.</p>
 <h3 id="allocation-log-format"><a class="header" href="#allocation-log-format">Allocation Log Format</a></h3>
 <p>By default, the <code>CircuitBuilder</code> automatically logs all allocations with no specific labels.

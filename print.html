@@ -993,7 +993,7 @@ Row 1: add: WitnessId(w2) + WitnessId(w0) -&gt; WitnessId(w4) | 111 + 0 -&gt; 11
 <p>Note that because we started from a known, fixed program that has been lowered to a deterministic IR, we can have the <code>CONST</code> chip's table entirely preprocessed
 (i.e. known to the verifier), as well as all <code>index</code> columns of the other primitive chips.</p>
 <h2 id="lookups"><a class="header" href="#lookups">Lookups</a></h2>
-<p>All chips interactions are performed via a lookup argument. Enforcing multiset equality between all chip ports and the shared witness memory view ensures correctness without proving the execution order of the entire IR itself. Lookups can be seen as <code>READ</code>/<code>WRITE</code> or <code>RECEIVE</code>/<code>SEND</code> interactions between tables which allow global consistency over local AIRs.</p>
+<p>All chip interactions are performed via a lookup argument. Enforcing multiset equality between all chip ports and the shared witness memory view ensures correctness without proving the execution order of the entire IR itself. Lookups can be seen as <code>READ</code>/<code>WRITE</code> or <code>RECEIVE</code>/<code>SEND</code> interactions between tables which allow global consistency over local AIRs.</p>
 <p>Cross-table lookups (CTLs) ensure that <strong>every</strong> chip interaction is mediated by shared witness indices: producers expose a <code>(index, value)</code> pair and consumers read the same pair back. In the current design this is encoded directly as CTL relations between operation tables, rather than through a separate Witness table. No chip talks directly to any other chip; the aggregated LogUp argument enforces multiset equality between the writes and reads.</p>
 <p>For the toy example the CTL relations are:<sup class="footnote-reference" id="fr-2-1"><a href="#footnote-2">2</a></sup></p>
 <pre><code class="language-bash">(index 0, value 0)   : CONST → Witness → ALU(add row)
@@ -1002,6 +1002,7 @@ Row 1: add: WitnessId(w2) + WitnessId(w0) -&gt; WitnessId(w4) | 111 + 0 -&gt; 11
 (index 3, value 3)   : PUBLIC → Witness → ALU(mul row)
 (index 4, value 111) : ALU(mul row) → Witness ← ALU(add row)
 </code></pre>
+<p>For the full protocol specification — including the LogUp accumulation formula, per-chip multiplicity encoding, the <code>global_lookup_data</code> proof field, challenge derivation, and how the recursive verifier checks the argument — see <a href="architecture_and_internals/./lookups.html">Lookups &amp; CTL Spec</a>.</p>
 <hr>
 <ol class="footnote-definition"><li id="footnote-1">
 <p>Preprocessed columns / polynomials can be reconstructed manually by the verifier, removing the need for a prover to commit to them and later perform the FRI protocol on them. However, the verifier needs <span class="katex"><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:1em;vertical-align:-0.25em;"></span><span class="mord mathnormal" style="margin-right:0.02778em;">O</span><span class="mopen">(</span><span class="mord mathnormal">n</span><span class="mclose">)</span></span></span></span> work when these columns are not structured, as it still needs to interpolate them. To alleviate this, the Plonky3 recursion stack performs <em>offline</em> commitment of unstructured preprocessed columns, so that we need only one instance of the FRI protocol to verify all preprocessed columns evaluations. <a href="#fr-1-1">↩</a></p>
@@ -1128,6 +1129,107 @@ let proof = prover.prove_all_tables(&amp;traces)?;</code></pre>
 <p><strong>Minimal primitive set:</strong> With <code>Sub</code>/<code>Div</code> being effectively translated as equivalent <code>Add</code>/<code>Mul</code> operations, the IR stays extremely lean, consisting only of <code>Const</code>, <code>Public</code>, <code>Add</code> and <code>Mul</code>, simplifying the design and implementation details.</p>
 </li>
 </ul>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
+<h1 id="lookups-and-cross-table-lookup-ctl-spec"><a class="header" href="#lookups-and-cross-table-lookup-ctl-spec">Lookups and Cross-Table Lookup (CTL) Spec</a></h1>
+<p>This page specifies how multiset equality is enforced across all operation-specific chips via a shared witness bus, how each chip participates in the lookup argument, and how the recursive verifier checks the resulting proof data.</p>
+<h2 id="the-witnesschecks-bus"><a class="header" href="#the-witnesschecks-bus">The WitnessChecks bus</a></h2>
+<p>All chips in the recursion machine communicate through a single <strong>virtual bus</strong> named <code>WitnessChecks</code>. There is no physical table for this bus — it exists only as the aggregate of each chip's lookup contributions. The bus carries tuples of the form <code>(index, value)</code>, where:</p>
+<ul>
+<li><code>index</code> is a <code>WitnessId</code> scaled by the extension degree <code>D</code> (i.e. <code>WitnessId * D</code>),</li>
+<li><code>value</code> is a <code>D</code>-element extension field value (the basis coefficients of the witness slot).</li>
+</ul>
+<p>A chip <strong>sends</strong> a tuple to the bus when it creates a witness value, and <strong>receives</strong> a tuple from the bus when it consumes one. The lookup argument enforces that every sent tuple is received the correct number of times, without requiring a shared table to be committed to.</p>
+<h2 id="the-logup-argument"><a class="header" href="#the-logup-argument">The LogUp argument</a></h2>
+<p>The system uses the <strong>LogUp</strong> accumulation scheme. For a random challenge <code>α</code> drawn after all trace commitments are observed, define the compressed row for a tuple <code>(idx, v[0], ..., v[D-1])</code> as:</p>
+<pre><code>compressed = α^0 * idx + α^1 * v[0] + ... + α^D * v[D-1]
+</code></pre>
+<p>Each chip row contributes a rational term <code>mult / (β - compressed)</code> to a running accumulator, where <code>β</code> is a second random challenge and <code>mult</code> is the signed multiplicity for that row:</p>
+<ul>
+<li><strong>Positive multiplicity</strong> means the row is a <em>sender</em> (it writes a value onto the bus).</li>
+<li><strong>Negative multiplicity</strong> means the row is a <em>receiver</em> (it reads a value from the bus).</li>
+</ul>
+<p>The lookup argument is satisfied when the sum of all contributions across all chips and all rows equals zero:</p>
+<pre><code>Σ_{chip} Σ_{row} mult_row / (β - compressed_row) = 0
+</code></pre>
+<p>This is equivalent to asserting multiset equality between the multiset of all sent <code>(index, value)</code> tuples and the multiset of all received <code>(index, value)</code> tuples.</p>
+<p>In practice, the prover computes a <strong>permutation polynomial</strong> (the running cumulative sum) for each lookup, commits to it, and the verifier checks the boundary condition at the last row. The permutation columns are opened during the FRI query phase alongside the main trace.</p>
+<h2 id="multiplicities-and-preprocessed-columns"><a class="header" href="#multiplicities-and-preprocessed-columns">Multiplicities and preprocessed columns</a></h2>
+<p>Because the circuit's IR is fixed at compile time, the <code>WitnessId</code> index for every operation is known before proving begins. This means <strong>all index and multiplicity columns are preprocessed</strong> — they require no online commitment and can be reconstructed by the verifier.</p>
+<p>Each chip encodes its multiplicities differently:</p>
+<h3 id="constair"><a class="header" href="#constair">ConstAir</a></h3>
+<p><code>ConstAir</code> has two preprocessed columns per row: <code>[multiplicity, index]</code>. Both the index and the value are fully preprocessed (the entire constant table is known before proving). Each row <strong>sends</strong> <code>(index, value)</code> with the preprocessed multiplicity, which equals the number of times that constant slot is read by other chips.</p>
+<h3 id="publicair"><a class="header" href="#publicair">PublicAir</a></h3>
+<p><code>PublicAir</code> has two preprocessed columns per lane: <code>[multiplicity, index]</code>. For active rows the multiplicity is <code>+1</code>; for padding rows it is <code>0</code>. Each lane <strong>sends</strong> <code>(index, value)</code> once.</p>
+<h3 id="aluair"><a class="header" href="#aluair">AluAir</a></h3>
+<p><code>AluAir</code> has 13 preprocessed columns per lane (see <code>PREP_*</code> constants). The lookup-relevant ones are:</p>
+<div class="table-wrapper"><table><thead><tr><th>Column</th><th>Name</th><th>Value</th></tr></thead><tbody>
+<tr><td>0</td><td><code>mult_a</code></td><td><code>-1</code> (active reader) or <code>0</code> (pad)</td></tr>
+<tr><td>5–8</td><td><code>a_idx</code>, <code>b_idx</code>, <code>c_idx</code>, <code>out_idx</code></td><td>Preprocessed <code>WitnessId * D</code></td></tr>
+<tr><td>9</td><td><code>mult_b</code></td><td><code>-1</code> (active reader) or <code>0</code> (pad)</td></tr>
+<tr><td>10</td><td><code>mult_out</code></td><td><code>+1</code> (active writer) or <code>0</code> (pad)</td></tr>
+<tr><td>11</td><td><code>a_is_reader</code></td><td><code>1</code> if <code>a</code> participates in the bus</td></tr>
+<tr><td>12</td><td><code>c_is_reader</code></td><td><code>1</code> if <code>c</code> participates in the bus</td></tr>
+</tbody></table>
+</div>
+<p>Each ALU row contributes four tuples to the <code>WitnessChecks</code> bus:</p>
+<ul>
+<li><code>a</code>: received with effective multiplicity <code>mult_a * a_is_reader</code></li>
+<li><code>b</code>: received with multiplicity <code>mult_b</code></li>
+<li><code>c</code>: received with effective multiplicity <code>mult_a * c_is_reader</code></li>
+<li><code>out</code>: sent with multiplicity <code>mult_out</code></li>
+</ul>
+<p>The <code>add</code> operation does not use <code>c</code> (it is aliased to the zero witness slot), while <code>mul_add</code> and <code>horner_acc</code> use all four operands. Double-step HornerAcc rows additionally contribute two extra lookups (<code>a1</code>, <code>c1</code>) via five global extra preprocessed columns.</p>
+<h3 id="non-primitive-operations-npos"><a class="header" href="#non-primitive-operations-npos">Non-primitive operations (NPOs)</a></h3>
+<p>Non-primitive chips such as Poseidon2 and MMCS can expose their own input/output ports on the <code>WitnessChecks</code> bus via CTL. The <code>out_ctl</code> flag on a <code>Poseidon2PermCall</code> controls which output limbs are made visible on the bus, allowing subsequent operations to read the hash outputs without committing them to the main witness table.</p>
+<h2 id="the-global_lookup_data-proof-field"><a class="header" href="#the-global_lookup_data-proof-field">The <code>global_lookup_data</code> proof field</a></h2>
+<p>The <code>BatchProof</code> carries a field <code>global_lookup_data: Vec&lt;Vec&lt;LookupData&lt;F&gt;&gt;&gt;</code>, with one inner <code>Vec</code> per table instance. Each <code>LookupData</code> entry contains:</p>
+<pre><pre class="playground"><code class="language-rust edition2024"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub struct LookupData&lt;F&gt; {
+    /// Unique name identifying the lookup (e.g. "WitnessChecks").
+    pub name: String,
+    /// Index of the auxiliary permutation column for this lookup.
+    pub aux_idx: usize,
+    /// The expected final value of the running accumulator (committed to as a public input).
+    pub expected_cumulated: F,
+}
+<span class="boring">}</span></code></pre></pre>
+<p>The <code>expected_cumulated</code> value is the boundary check: after the prover runs the LogUp accumulation to the last row, the result must match this value. The verifier checks this in circuit. Because it is committed as a <strong>public input</strong> of the recursive circuit, tampering with it is caught immediately during circuit execution — a <code>WitnessConflict</code> error is raised (see <code>test_wrong_expected_cumulated</code>).</p>
+<p>The <code>name</code> field determines how the random permutation challenges (<code>α</code>, <code>β</code>) are derived from the Fiat-Shamir transcript. Changing the name of a lookup while keeping the same proof is detected as an inconsistency between the challenge generation and the opened permutation values (see <code>test_inconsistent_lookup_name</code>).</p>
+<h2 id="challenge-generation"><a class="header" href="#challenge-generation">Challenge generation</a></h2>
+<p>Lookup challenges are derived from the Fiat-Shamir transcript after the main trace commitment is absorbed. The generation follows this sequence:</p>
+<ol>
+<li>Observe the main trace commitment.</li>
+<li>For each named lookup, squeeze two extension field challenges (<code>α</code>, <code>β</code>) from the transcript using the lookup's <code>name</code> as domain-separation context.</li>
+<li>The prover builds the permutation columns using these challenges and commits to them.</li>
+<li>Observe the permutation commitment.</li>
+<li>The <code>expected_cumulated</code> value is included as a public input to the recursive circuit, binding the proof to the correct permutation boundary.</li>
+</ol>
+<p>The ordering of <code>LookupData</code> entries within each instance must be sorted by <code>aux_idx</code> (see <code>test_inconsistent_lookup_order_shape</code>). Mismatches in count or order cause <code>InvalidProofShape</code> errors before the recursive circuit is even built.</p>
+<h2 id="recursive-verification-of-lookups"><a class="header" href="#recursive-verification-of-lookups">Recursive verification of lookups</a></h2>
+<p>During recursive verification, the circuit:</p>
+<ol>
+<li>Allocates a public input target for each <code>expected_cumulated</code> value from <code>global_lookup_data</code>.</li>
+<li>Evaluates the LogUp constraint at the opened permutation values <code>(perm_local, perm_next)</code> using the lookup challenges derived in-circuit via the circuit challenger.</li>
+<li>Checks that the final running sum matches the committed <code>expected_cumulated</code> value via <code>connect</code>.</li>
+</ol>
+<p>Because the permutation columns are opened through the same FRI batch as the main trace, their evaluations are private inputs to the recursive circuit. The <code>expected_cumulated</code> values, being public inputs, are visible to the outer proof.</p>
+<h2 id="ctl-example-the-toy-circuit-revisited"><a class="header" href="#ctl-example-the-toy-circuit-revisited">CTL example: the toy circuit revisited</a></h2>
+<p>For the <code>37 * x - 111 = 0</code> example from the <a href="architecture_and_internals/./construction.html#lookups">Construction</a> section, the full set of <code>WitnessChecks</code> contributions is:</p>
+<div class="table-wrapper"><table><thead><tr><th>Chip</th><th>Row</th><th>Tuple</th><th>mult</th></tr></thead><tbody>
+<tr><td>CONST</td><td>0</td><td><code>(w0, 0)</code></td><td><code>+1</code></td></tr>
+<tr><td>CONST</td><td>1</td><td><code>(w1, 37)</code></td><td><code>+1</code></td></tr>
+<tr><td>CONST</td><td>2</td><td><code>(w2, 111)</code></td><td><code>+1</code></td></tr>
+<tr><td>PUBLIC</td><td>0</td><td><code>(w3, x)</code></td><td><code>+1</code></td></tr>
+<tr><td>ALU (mul)</td><td>0</td><td><code>(w1, 37)</code></td><td><code>-1</code> (reads <code>a</code>)</td></tr>
+<tr><td>ALU (mul)</td><td>0</td><td><code>(w3, x)</code></td><td><code>-1</code> (reads <code>b</code>)</td></tr>
+<tr><td>ALU (mul)</td><td>0</td><td><code>(w4, 111)</code></td><td><code>+1</code> (writes <code>out</code>)</td></tr>
+<tr><td>ALU (add)</td><td>1</td><td><code>(w2, 111)</code></td><td><code>-1</code> (reads <code>a</code>)</td></tr>
+<tr><td>ALU (add)</td><td>1</td><td><code>(w0, 0)</code></td><td><code>-1</code> (reads <code>b</code>)</td></tr>
+<tr><td>ALU (add)</td><td>1</td><td><code>(w4, 111)</code></td><td><code>-1</code> (reads <code>out</code> as final check)</td></tr>
+</tbody></table>
+</div>
+<p>The <code>c</code> operand of the ALU <code>add</code> row reads <code>w4 = 111</code> rather than producing it, closing the constraint <code>37 * x = 111 + 0</code>. The net sum across all entries is zero iff multiset equality holds.</p>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="hashing-and-fiat-shamir-in-recursion"><a class="header" href="#hashing-and-fiat-shamir-in-recursion">Hashing and Fiat-Shamir in Recursion</a></h1>
 <p>This section explains how cryptographic hashing, specifically Poseidon2, is used in recursive verification,
@@ -1397,11 +1499,45 @@ conjectural assumption is being made.</p>
 </div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="debugging"><a class="header" href="#debugging">Debugging</a></h1>
 <p>The <code>CircuitBuilder</code> provides built-in debugging tools to help identify wiring issues and unsatisfied constraints.</p>
+<h2 id="compile-features"><a class="header" href="#compile-features">Compile features</a></h2>
+<p>The workspace exposes several opt-in compile features that activate extra instrumentation. They are disabled by default to keep production binaries lean.</p>
+<div class="table-wrapper"><table><thead><tr><th>Crate</th><th>Feature</th><th>What it enables</th></tr></thead><tbody>
+<tr><td><code>p3-circuit</code></td><td><code>debugging</code></td><td>Allocation logging: every witness slot records the operation type, optional label, and call-site scope that allocated it. Exposes <code>AllocationLog</code>, <code>AllocationEntry</code>, and <code>AllocationType</code> in the public API.</td></tr>
+<tr><td><code>p3-circuit</code></td><td><code>profiling</code></td><td>Operation-count profiling (implies <code>debugging</code>): the builder tracks how many <code>add</code>, <code>mul</code>, <code>const</code>, <code>public</code>, <code>horner_acc</code>, <code>bool_check</code>, <code>mul_add</code>, and per-NPO-type operations were allocated, both globally and per named scope. Exposes <code>OpCounts</code> and <code>ProfilingState</code>.</td></tr>
+<tr><td><code>p3-circuit-prover</code></td><td><code>parallel</code></td><td>Enables multi-threaded trace generation via Rayon (<code>p3-maybe-rayon/parallel</code>). Strongly recommended for benchmarking and production workloads.</td></tr>
+</tbody></table>
+</div>
+<p>Enable a feature by passing <code>--features &lt;feature&gt;</code> (or <code>--features parallel</code> for the prover sub-crate) to Cargo:</p>
+<pre><code class="language-bash"># Enable allocation logging
+cargo test -p p3-circuit --features debugging
+
+# Enable profiling (includes debugging)
+cargo test -p p3-circuit --features profiling
+
+# Enable parallel trace generation
+cargo run --example recursive_fibonacci --features parallel
+</code></pre>
+<h2 id="build-profiles"><a class="header" href="#build-profiles">Build profiles</a></h2>
+<p>Two custom workspace profiles complement the features above:</p>
+<div class="table-wrapper"><table><thead><tr><th>Profile</th><th>Inherits</th><th>Extra flags</th><th>Purpose</th></tr></thead><tbody>
+<tr><td><code>profiling</code></td><td><code>release</code></td><td><code>debug = true</code></td><td>Keeps DWARF symbols in an otherwise-optimised binary so that tools like <code>perf</code>, Instruments, or <code>samply</code> can map samples back to source lines. Use this together with the <code>profiling</code> crate feature.</td></tr>
+<tr><td><code>optimized</code></td><td><code>release</code></td><td><code>lto = "thin"</code>, <code>codegen-units = 1</code>, <code>opt-level = 3</code></td><td>Maximum-performance binary. All benchmarks and the provided examples are run under this profile.</td></tr>
+</tbody></table>
+</div>
+<pre><code class="language-bash"># Profile-guided performance measurement (symbols + optimisation)
+cargo run --profile profiling --example recursive_fibonacci --features parallel
+
+# Maximum-performance binary (examples, benchmarks)
+cargo run --profile optimized --example recursive_fibonacci --features parallel
+</code></pre>
 <h2 id="allocation-logging"><a class="header" href="#allocation-logging">Allocation Logging</a></h2>
 <p>The <code>CircuitBuilder</code> supports an allocation logger during circuit building that logs allocations being performed.
 These logs can then be analyzed at runtime and leveraged to detect issues in circuit constructions.</p>
+<blockquote>
+<p><strong>Requirement</strong>: allocation logging requires the <code>debugging</code> compile feature to be enabled on <code>p3-circuit</code>.</p>
+</blockquote>
 <h3 id="enabling-debug-logging"><a class="header" href="#enabling-debug-logging">Enabling Debug Logging</a></h3>
-<p>Allocation logging is automatically enabled in debug builds (or moe generally if <code>debug_assertions</code> are enabled).
+<p>Allocation logging is active whenever the <code>debugging</code> feature is compiled in.
 Logs can be dumped to <code>stdout</code> when calling <code>builder.dump_allocation_log()</code>, if logging level is set to <code>DEBUG</code> or lower.</p>
 <h3 id="allocation-log-format"><a class="header" href="#allocation-log-format">Allocation Log Format</a></h3>
 <p>By default, the <code>CircuitBuilder</code> automatically logs all allocations with no specific labels.

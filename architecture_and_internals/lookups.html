@@ -1,0 +1,333 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Lookups &amp; CTL Spec - The Plonky3 recursion book</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon.svg">
+        <link rel="shortcut icon" href="../favicon.png">
+        <link rel="stylesheet" href="../css/variables.css">
+        <link rel="stylesheet" href="../css/general.css">
+        <link rel="stylesheet" href="../css/chrome.css">
+        <link rel="stylesheet" href="../css/print.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="../fonts/fonts.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="highlight-css" href="../highlight.css">
+        <link rel="stylesheet" id="tomorrow-night-css" href="../tomorrow-night.css">
+        <link rel="stylesheet" id="ayu-highlight-css" href="../ayu-highlight.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "../";
+            const default_light_theme = "light";
+            const default_dark_theme = "navy";
+            window.path_to_searchindex_js = "../searchindex.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="../toc.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
+            </noscript>
+            <div id="sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="menu-bar-hover-placeholder"></div>
+                <div id="menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="sidebar-toggle" class="icon-button" for="sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
+                            <i class="fa fa-bars"></i>
+                        </label>
+                        <button id="theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="theme-list">
+                            <i class="fa fa-paint-brush"></i>
+                        </button>
+                        <ul id="theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="ayu">Ayu</button></li>
+                        </ul>
+                        <button id="search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="searchbar">
+                            <i class="fa fa-search"></i>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">The Plonky3 recursion book</h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <i id="print-button" class="fa fa-print"></i>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="search-wrapper" class="hidden">
+                    <form id="searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <i class="fa fa-spinner fa-spin"></i>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="searchresults-outer" class="searchresults-outer hidden">
+                        <div id="searchresults-header" class="searchresults-header"></div>
+                        <ul id="searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="content" class="content">
+                    <main>
+                        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
+<h1 id="lookups-and-cross-table-lookup-ctl-spec"><a class="header" href="#lookups-and-cross-table-lookup-ctl-spec">Lookups and Cross-Table Lookup (CTL) Spec</a></h1>
+<p>This page specifies how multiset equality is enforced across all operation-specific chips via a shared witness bus, how each chip participates in the lookup argument, and how the recursive verifier checks the resulting proof data.</p>
+<h2 id="the-witnesschecks-bus"><a class="header" href="#the-witnesschecks-bus">The WitnessChecks bus</a></h2>
+<p>All chips in the recursion machine communicate through a single <strong>virtual bus</strong> named <code>WitnessChecks</code>. There is no physical table for this bus — it exists only as the aggregate of each chip's lookup contributions. The bus carries tuples of the form <code>(index, value)</code>, where:</p>
+<ul>
+<li><code>index</code> is a <code>WitnessId</code> scaled by the extension degree <code>D</code> (i.e. <code>WitnessId * D</code>),</li>
+<li><code>value</code> is a <code>D</code>-element extension field value (the basis coefficients of the witness slot).</li>
+</ul>
+<p>A chip <strong>sends</strong> a tuple to the bus when it creates a witness value, and <strong>receives</strong> a tuple from the bus when it consumes one. The lookup argument enforces that every sent tuple is received the correct number of times, without requiring a shared table to be committed to.</p>
+<h2 id="the-logup-argument"><a class="header" href="#the-logup-argument">The LogUp argument</a></h2>
+<p>The system uses the <strong>LogUp</strong> accumulation scheme. For a random challenge <code>α</code> drawn after all trace commitments are observed, define the compressed row for a tuple <code>(idx, v[0], ..., v[D-1])</code> as:</p>
+<pre><code>compressed = α^0 * idx + α^1 * v[0] + ... + α^D * v[D-1]
+</code></pre>
+<p>Each chip row contributes a rational term <code>mult / (β - compressed)</code> to a running accumulator, where <code>β</code> is a second random challenge and <code>mult</code> is the signed multiplicity for that row:</p>
+<ul>
+<li><strong>Positive multiplicity</strong> means the row is a <em>sender</em> (it writes a value onto the bus).</li>
+<li><strong>Negative multiplicity</strong> means the row is a <em>receiver</em> (it reads a value from the bus).</li>
+</ul>
+<p>The lookup argument is satisfied when the sum of all contributions across all chips and all rows equals zero:</p>
+<pre><code>Σ_{chip} Σ_{row} mult_row / (β - compressed_row) = 0
+</code></pre>
+<p>This is equivalent to asserting multiset equality between the multiset of all sent <code>(index, value)</code> tuples and the multiset of all received <code>(index, value)</code> tuples.</p>
+<p>In practice, the prover computes a <strong>permutation polynomial</strong> (the running cumulative sum) for each lookup, commits to it, and the verifier checks the boundary condition at the last row. The permutation columns are opened during the FRI query phase alongside the main trace.</p>
+<h2 id="multiplicities-and-preprocessed-columns"><a class="header" href="#multiplicities-and-preprocessed-columns">Multiplicities and preprocessed columns</a></h2>
+<p>Because the circuit's IR is fixed at compile time, the <code>WitnessId</code> index for every operation is known before proving begins. This means <strong>all index and multiplicity columns are preprocessed</strong> — they require no online commitment and can be reconstructed by the verifier.</p>
+<p>Each chip encodes its multiplicities differently:</p>
+<h3 id="constair"><a class="header" href="#constair">ConstAir</a></h3>
+<p><code>ConstAir</code> has two preprocessed columns per row: <code>[multiplicity, index]</code>. Both the index and the value are fully preprocessed (the entire constant table is known before proving). Each row <strong>sends</strong> <code>(index, value)</code> with the preprocessed multiplicity, which equals the number of times that constant slot is read by other chips.</p>
+<h3 id="publicair"><a class="header" href="#publicair">PublicAir</a></h3>
+<p><code>PublicAir</code> has two preprocessed columns per lane: <code>[multiplicity, index]</code>. For active rows the multiplicity is <code>+1</code>; for padding rows it is <code>0</code>. Each lane <strong>sends</strong> <code>(index, value)</code> once.</p>
+<h3 id="aluair"><a class="header" href="#aluair">AluAir</a></h3>
+<p><code>AluAir</code> has 13 preprocessed columns per lane (see <code>PREP_*</code> constants). The lookup-relevant ones are:</p>
+<div class="table-wrapper"><table><thead><tr><th>Column</th><th>Name</th><th>Value</th></tr></thead><tbody>
+<tr><td>0</td><td><code>mult_a</code></td><td><code>-1</code> (active reader) or <code>0</code> (pad)</td></tr>
+<tr><td>5–8</td><td><code>a_idx</code>, <code>b_idx</code>, <code>c_idx</code>, <code>out_idx</code></td><td>Preprocessed <code>WitnessId * D</code></td></tr>
+<tr><td>9</td><td><code>mult_b</code></td><td><code>-1</code> (active reader) or <code>0</code> (pad)</td></tr>
+<tr><td>10</td><td><code>mult_out</code></td><td><code>+1</code> (active writer) or <code>0</code> (pad)</td></tr>
+<tr><td>11</td><td><code>a_is_reader</code></td><td><code>1</code> if <code>a</code> participates in the bus</td></tr>
+<tr><td>12</td><td><code>c_is_reader</code></td><td><code>1</code> if <code>c</code> participates in the bus</td></tr>
+</tbody></table>
+</div>
+<p>Each ALU row contributes four tuples to the <code>WitnessChecks</code> bus:</p>
+<ul>
+<li><code>a</code>: received with effective multiplicity <code>mult_a * a_is_reader</code></li>
+<li><code>b</code>: received with multiplicity <code>mult_b</code></li>
+<li><code>c</code>: received with effective multiplicity <code>mult_a * c_is_reader</code></li>
+<li><code>out</code>: sent with multiplicity <code>mult_out</code></li>
+</ul>
+<p>The <code>add</code> operation does not use <code>c</code> (it is aliased to the zero witness slot), while <code>mul_add</code> and <code>horner_acc</code> use all four operands. Double-step HornerAcc rows additionally contribute two extra lookups (<code>a1</code>, <code>c1</code>) via five global extra preprocessed columns.</p>
+<h3 id="non-primitive-operations-npos"><a class="header" href="#non-primitive-operations-npos">Non-primitive operations (NPOs)</a></h3>
+<p>Non-primitive chips such as Poseidon2 and MMCS can expose their own input/output ports on the <code>WitnessChecks</code> bus via CTL. The <code>out_ctl</code> flag on a <code>Poseidon2PermCall</code> controls which output limbs are made visible on the bus, allowing subsequent operations to read the hash outputs without committing them to the main witness table.</p>
+<h2 id="the-global_lookup_data-proof-field"><a class="header" href="#the-global_lookup_data-proof-field">The <code>global_lookup_data</code> proof field</a></h2>
+<p>The <code>BatchProof</code> carries a field <code>global_lookup_data: Vec&lt;Vec&lt;LookupData&lt;F&gt;&gt;&gt;</code>, with one inner <code>Vec</code> per table instance. Each <code>LookupData</code> entry contains:</p>
+<pre><pre class="playground"><code class="language-rust edition2024"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub struct LookupData&lt;F&gt; {
+    /// Unique name identifying the lookup (e.g. "WitnessChecks").
+    pub name: String,
+    /// Index of the auxiliary permutation column for this lookup.
+    pub aux_idx: usize,
+    /// The expected final value of the running accumulator (committed to as a public input).
+    pub expected_cumulated: F,
+}
+<span class="boring">}</span></code></pre></pre>
+<p>The <code>expected_cumulated</code> value is the boundary check: after the prover runs the LogUp accumulation to the last row, the result must match this value. The verifier checks this in circuit. Because it is committed as a <strong>public input</strong> of the recursive circuit, tampering with it is caught immediately during circuit execution — a <code>WitnessConflict</code> error is raised (see <code>test_wrong_expected_cumulated</code>).</p>
+<p>The <code>name</code> field determines how the random permutation challenges (<code>α</code>, <code>β</code>) are derived from the Fiat-Shamir transcript. Changing the name of a lookup while keeping the same proof is detected as an inconsistency between the challenge generation and the opened permutation values (see <code>test_inconsistent_lookup_name</code>).</p>
+<h2 id="challenge-generation"><a class="header" href="#challenge-generation">Challenge generation</a></h2>
+<p>Lookup challenges are derived from the Fiat-Shamir transcript after the main trace commitment is absorbed. The generation follows this sequence:</p>
+<ol>
+<li>Observe the main trace commitment.</li>
+<li>For each named lookup, squeeze two extension field challenges (<code>α</code>, <code>β</code>) from the transcript using the lookup's <code>name</code> as domain-separation context.</li>
+<li>The prover builds the permutation columns using these challenges and commits to them.</li>
+<li>Observe the permutation commitment.</li>
+<li>The <code>expected_cumulated</code> value is included as a public input to the recursive circuit, binding the proof to the correct permutation boundary.</li>
+</ol>
+<p>The ordering of <code>LookupData</code> entries within each instance must be sorted by <code>aux_idx</code> (see <code>test_inconsistent_lookup_order_shape</code>). Mismatches in count or order cause <code>InvalidProofShape</code> errors before the recursive circuit is even built.</p>
+<h2 id="recursive-verification-of-lookups"><a class="header" href="#recursive-verification-of-lookups">Recursive verification of lookups</a></h2>
+<p>During recursive verification, the circuit:</p>
+<ol>
+<li>Allocates a public input target for each <code>expected_cumulated</code> value from <code>global_lookup_data</code>.</li>
+<li>Evaluates the LogUp constraint at the opened permutation values <code>(perm_local, perm_next)</code> using the lookup challenges derived in-circuit via the circuit challenger.</li>
+<li>Checks that the final running sum matches the committed <code>expected_cumulated</code> value via <code>connect</code>.</li>
+</ol>
+<p>Because the permutation columns are opened through the same FRI batch as the main trace, their evaluations are private inputs to the recursive circuit. The <code>expected_cumulated</code> values, being public inputs, are visible to the outer proof.</p>
+<h2 id="ctl-example-the-toy-circuit-revisited"><a class="header" href="#ctl-example-the-toy-circuit-revisited">CTL example: the toy circuit revisited</a></h2>
+<p>For the <code>37 * x - 111 = 0</code> example from the <a href="./construction.html#lookups">Construction</a> section, the full set of <code>WitnessChecks</code> contributions is:</p>
+<div class="table-wrapper"><table><thead><tr><th>Chip</th><th>Row</th><th>Tuple</th><th>mult</th></tr></thead><tbody>
+<tr><td>CONST</td><td>0</td><td><code>(w0, 0)</code></td><td><code>+1</code></td></tr>
+<tr><td>CONST</td><td>1</td><td><code>(w1, 37)</code></td><td><code>+1</code></td></tr>
+<tr><td>CONST</td><td>2</td><td><code>(w2, 111)</code></td><td><code>+1</code></td></tr>
+<tr><td>PUBLIC</td><td>0</td><td><code>(w3, x)</code></td><td><code>+1</code></td></tr>
+<tr><td>ALU (mul)</td><td>0</td><td><code>(w1, 37)</code></td><td><code>-1</code> (reads <code>a</code>)</td></tr>
+<tr><td>ALU (mul)</td><td>0</td><td><code>(w3, x)</code></td><td><code>-1</code> (reads <code>b</code>)</td></tr>
+<tr><td>ALU (mul)</td><td>0</td><td><code>(w4, 111)</code></td><td><code>+1</code> (writes <code>out</code>)</td></tr>
+<tr><td>ALU (add)</td><td>1</td><td><code>(w2, 111)</code></td><td><code>-1</code> (reads <code>a</code>)</td></tr>
+<tr><td>ALU (add)</td><td>1</td><td><code>(w0, 0)</code></td><td><code>-1</code> (reads <code>b</code>)</td></tr>
+<tr><td>ALU (add)</td><td>1</td><td><code>(w4, 111)</code></td><td><code>-1</code> (reads <code>out</code> as final check)</td></tr>
+</tbody></table>
+</div>
+<p>The <code>c</code> operand of the ALU <code>add</code> row reads <code>w4 = 111</code> rather than producing it, closing the constraint <code>37 * x = 111 + 0</code>. The net sum across all entries is zero iff multiset equality holds.</p>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../architecture_and_internals/circuit_building.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <i class="fa fa-angle-left"></i>
+                            </a>
+
+                            <a rel="next prefetch" href="../architecture_and_internals/hashing.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <i class="fa fa-angle-right"></i>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../architecture_and_internals/circuit_building.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <i class="fa fa-angle-left"></i>
+                    </a>
+
+                    <a rel="next prefetch" href="../architecture_and_internals/hashing.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <i class="fa fa-angle-right"></i>
+                    </a>
+            </nav>
+
+        </div>
+
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="../elasticlunr.min.js"></script>
+        <script src="../mark.min.js"></script>
+        <script src="../searcher.js"></script>
+
+        <script src="../clipboard.min.js"></script>
+        <script src="../highlight.js"></script>
+        <script src="../book.js"></script>
+
+        <!-- Custom JS scripts -->
+        <script src="../mermaid.min.js"></script>
+        <script src="../mermaid-init.js"></script>
+
+
+
+    </div>
+    </body>
+</html>
