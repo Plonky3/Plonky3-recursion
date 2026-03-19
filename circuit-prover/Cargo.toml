@@ -15,7 +15,6 @@ rustdoc-args = ["--html-in-header", ".cargo/katex-header.html"]
 
 [dependencies]
 hashbrown.workspace = true
-itertools.workspace = true
 p3-air.workspace = true
 p3-baby-bear.workspace = true
 p3-batch-stark.workspace = true
@@ -52,7 +51,7 @@ p3-batch-stark.workspace = true
 p3-test-utils.workspace = true
 postcard = { version = "1.1", default-features = false, features = ["alloc"] }
 rand.workspace = true
-tracing-forest = { workspace = true, features = ["ansi", "smallvec"] }
+tracing-forest = { workspace = true, features = ["smallvec"] }
 tracing-subscriber = { workspace = true, features = ["std", "env-filter"] }
 
 [features]

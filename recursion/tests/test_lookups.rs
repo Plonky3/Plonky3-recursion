@@ -4,7 +4,8 @@ use p3_baby_bear::default_babybear_poseidon2_16;
 use p3_batch_stark::{CommonData, ProverData};
 use p3_circuit::CircuitBuilder;
 use p3_circuit::ops::{
-    Poseidon2PermCall, PrimitiveOpType, generate_poseidon2_trace, generate_recompose_trace,
+    Poseidon2Config, Poseidon2PermCall, PrimitiveOpType, generate_poseidon2_trace,
+    generate_recompose_trace,
 };
 use p3_circuit_prover::air::{AluAir, ConstAir, PublicAir};
 use p3_circuit_prover::batch_stark_prover::{
@@ -12,8 +13,8 @@ use p3_circuit_prover::batch_stark_prover::{
 };
 use p3_circuit_prover::common::{NpoPreprocessor, get_airs_and_degrees_with_prep};
 use p3_circuit_prover::{
-    BatchStarkProof, BatchStarkProver, CircuitProverData, ConstraintProfile, Poseidon2Config,
-    Poseidon2Preprocessor, RecomposePreprocessor, TablePacking, recompose_table_provers,
+    BatchStarkProof, BatchStarkProver, CircuitProverData, ConstraintProfile, Poseidon2Preprocessor,
+    RecomposePreprocessor, TablePacking, recompose_table_provers,
 };
 use p3_fri::create_test_fri_params;
 use p3_lookup::logup::LogUpGadget;

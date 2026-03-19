@@ -210,11 +210,10 @@ where
                     let b_idx = chunk[5];
                     let c_idx = chunk[6];
                     let out_idx = chunk[7];
-                    let a_state = <Val<SC> as PrimeField64>::as_canonical_u64(&chunk[8]);
-                    let b_is_creator = <Val<SC> as PrimeField64>::as_canonical_u64(&chunk[9]) != 0;
-                    let c_state = <Val<SC> as PrimeField64>::as_canonical_u64(&chunk[10]);
-                    let out_is_creator =
-                        <Val<SC> as PrimeField64>::as_canonical_u64(&chunk[11]) != 0;
+                    let a_state = chunk[8].as_canonical_u64();
+                    let b_is_creator = chunk[9].as_canonical_u64() != 0;
+                    let c_state = chunk[10].as_canonical_u64();
+                    let out_is_creator = chunk[11].as_canonical_u64() != 0;
 
                     // mult_a = -1 for all active rows; active = -mult_a = 1 always.
                     // Effective a-lookup mult = mult_a * a_reader_col (in get_alu_index_lookups).
@@ -229,8 +228,7 @@ where
                         0 => <Val<SC>>::ZERO,
                         1 => <Val<SC>>::ONE,
                         2 => {
-                            let a_wid =
-                                <Val<SC> as PrimeField64>::as_canonical_u64(&a_idx) as usize / D;
+                            let a_wid = a_idx.as_canonical_u64() as usize / D;
                             let n_reads = preprocessed.ext_reads.get(a_wid).copied().unwrap_or(0);
                             <Val<SC>>::ZERO - <Val<SC>>::from_u32(n_reads)
                         }
@@ -240,8 +238,7 @@ where
                         0 => <Val<SC>>::ZERO,
                         1 => <Val<SC>>::ONE,
                         2 => {
-                            let c_wid =
-                                <Val<SC> as PrimeField64>::as_canonical_u64(&c_idx) as usize / D;
+                            let c_wid = c_idx.as_canonical_u64() as usize / D;
                             let n_reads = preprocessed.ext_reads.get(c_wid).copied().unwrap_or(0);
                             <Val<SC>>::ZERO - <Val<SC>>::from_u32(n_reads)
                         }
@@ -250,8 +247,7 @@ where
 
                     // b: creator if b_is_creator, reader otherwise.
                     let mult_b = if b_is_creator {
-                        let b_wid =
-                            <Val<SC> as PrimeField64>::as_canonical_u64(&b_idx) as usize / D;
+                        let b_wid = b_idx.as_canonical_u64() as usize / D;
                         let n_reads = preprocessed.ext_reads.get(b_wid).copied().unwrap_or(0);
                         <Val<SC>>::from_u32(n_reads)
                     } else {
@@ -260,8 +256,7 @@ where
 
                     // out: creator if out_is_creator, reader otherwise.
                     let mult_out = if out_is_creator {
-                        let out_wid =
-                            <Val<SC> as PrimeField64>::as_canonical_u64(&out_idx) as usize / D;
+                        let out_wid = out_idx.as_canonical_u64() as usize / D;
                         let n_reads = preprocessed.ext_reads.get(out_wid).copied().unwrap_or(0);
                         <Val<SC>>::from_u32(n_reads)
                     } else {
@@ -343,8 +338,7 @@ where
                 // Convert to [ext_mult, out_idx] pairs using ext_reads.
                 let mut prep_2col: Vec<Val<SC>> = Vec::with_capacity(base_prep[idx].len() * 2);
                 for &out_idx in &base_prep[idx] {
-                    let out_wid =
-                        (<Val<SC> as PrimeField64>::as_canonical_u64(&out_idx) as usize) / D;
+                    let out_wid = out_idx.as_canonical_u64() as usize / D;
                     let n_reads = preprocessed.ext_reads.get(out_wid).copied().unwrap_or(0);
                     prep_2col.push(<Val<SC>>::from_u32(n_reads));
                     prep_2col.push(out_idx);

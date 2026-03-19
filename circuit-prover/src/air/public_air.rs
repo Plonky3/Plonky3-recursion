@@ -159,17 +159,6 @@ impl<F: Field, const D: usize> PublicAir<F, D> {
         mat.pad_to_power_of_two_height(F::ZERO);
         mat
     }
-
-    /// Returns `[ext_mult, index]` pairs for each public input, with `ext_mult = F::ONE` as a
-    /// placeholder. In the full pipeline, `common.rs` computes actual multiplicities from
-    /// `ext_reads`.
-    pub fn trace_to_preprocessed<ExtF: BasedVectorSpace<F>>(trace: &PublicTrace<ExtF>) -> Vec<F> {
-        trace
-            .index
-            .iter()
-            .flat_map(|widx| [F::ONE, F::from_u64(widx.0 as u64 * D as u64)])
-            .collect()
-    }
 }
 
 impl<F: Field, const D: usize> BaseAir<F> for PublicAir<F, D> {

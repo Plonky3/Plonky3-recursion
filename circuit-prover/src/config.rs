@@ -24,9 +24,7 @@ use p3_fri::{TwoAdicFriPcs, create_benchmark_fri_params_high_arity};
 use p3_goldilocks::{Goldilocks, Poseidon2Goldilocks};
 use p3_koala_bear::{KoalaBear, Poseidon2KoalaBear, default_koalabear_poseidon2_16};
 use p3_merkle_tree::MerkleTreeMmcs;
-use p3_symmetric::{
-    CryptographicPermutation, PaddingFreeSponge, PseudoCompressionFunction, TruncatedPermutation,
-};
+use p3_symmetric::{CryptographicPermutation, PaddingFreeSponge, TruncatedPermutation};
 use p3_uni_stark::StarkConfig;
 
 /// Compression function arity (number of inputs per compression).
@@ -172,14 +170,6 @@ where
 
         StarkConfig::new(pcs, challenger)
     }
-
-    /// Creates the compression function for this configuration.
-    pub fn compression_function(
-        &self,
-    ) -> TruncatedPermutation<PermCompress, COMPRESS_ARITY, COMPRESS_CHUNK, COMPRESS_PERM_WIDTH>
-    {
-        TruncatedPermutation::new(self.perm_compress.clone())
-    }
 }
 
 /// Creates a standard BabyBear configuration.
@@ -206,17 +196,6 @@ pub fn baby_bear()
     ConfigBuilder::new(perm.clone(), perm)
 }
 
-/// Creates the standard BabyBear compression function.
-///
-/// # Parameters
-/// - **Input arrays**: 2
-/// - **Elements per array**: 8 (256 bits / 32 bits per element)
-/// - **Output size**: 8 BabyBear elements (256 bits)
-#[inline]
-pub fn baby_bear_compression() -> impl PseudoCompressionFunction<[BabyBear; 8], 2> {
-    baby_bear().compression_function()
-}
-
 /// Creates a standard KoalaBear configuration.
 ///
 /// KoalaBear is a 31-bit prime field (2^31 - 2^24 + 1).
@@ -239,17 +218,6 @@ pub fn koala_bear()
 -> ConfigBuilder<KoalaBear, Poseidon2KoalaBear<16>, Poseidon2KoalaBear<16>, 16, 16, 8, 8, 8, 4> {
     let perm = default_koalabear_poseidon2_16();
     ConfigBuilder::new(perm.clone(), perm)
-}
-
-/// Creates the standard KoalaBear compression function.
-///
-/// # Parameters
-/// - **Input arrays**: 2
-/// - **Elements per array**: 8 (256 bits / 32 bits per element)
-/// - **Output size**: 8 KoalaBear elements (256 bits)
-#[inline]
-pub fn koala_bear_compression() -> impl PseudoCompressionFunction<[KoalaBear; 8], 2> {
-    koala_bear().compression_function()
 }
 
 /// Creates a standard Goldilocks configuration.
@@ -278,17 +246,6 @@ pub fn goldilocks()
     ConfigBuilder::new(perm.clone(), perm)
 }
 
-/// Creates the standard Goldilocks compression function.
-///
-/// # Parameters
-/// - **Input arrays**: 2
-/// - **Elements per array**: 4 (256 bits / 64 bits per element)
-/// - **Output size**: 4 Goldilocks elements (256 bits)
-#[inline]
-pub fn goldilocks_compression() -> impl PseudoCompressionFunction<[Goldilocks; 4], 2> {
-    goldilocks().compression_function()
-}
-
 /// Type alias for BabyBear STARK configuration.
 pub type BabyBearConfig =
     Config<BabyBear, Poseidon2BabyBear<16>, Poseidon2BabyBear<16>, 16, 16, 8, 8, 8, 4>;
@@ -315,12 +272,5 @@ mod tests {
         let _bb: BabyBearConfig = baby_bear().build();
         let _kb: KoalaBearConfig = koala_bear().build();
         let _gl: GoldilocksConfig = goldilocks().build();
-    }
-
-    #[test]
-    fn compression_function_works() {
-        let _compress = baby_bear_compression();
-        let _compress = koala_bear_compression();
-        let _compress = goldilocks_compression();
     }
 }

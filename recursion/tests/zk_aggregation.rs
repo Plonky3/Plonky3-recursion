@@ -11,12 +11,12 @@ use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 use p3_batch_stark::{
     BatchProof, CommonData, ProverData, StarkInstance, prove_batch, verify_batch,
 };
-use p3_circuit::ops::{generate_poseidon2_trace, generate_recompose_trace};
+use p3_circuit::ops::{Poseidon2Config, generate_poseidon2_trace, generate_recompose_trace};
 use p3_circuit::{CircuitBuilder, NonPrimitiveOpId};
 use p3_circuit_prover::batch_stark_prover::{poseidon2_air_builders_d4, recompose_air_builders};
 use p3_circuit_prover::common::{NpoPreprocessor, get_airs_and_degrees_with_prep};
 use p3_circuit_prover::{
-    BatchStarkProver, CircuitProverData, ConstraintProfile, Poseidon2Config, Poseidon2Preprocessor,
+    BatchStarkProver, CircuitProverData, ConstraintProfile, Poseidon2Preprocessor,
     RecomposePreprocessor, TablePacking,
 };
 use p3_field::Field;

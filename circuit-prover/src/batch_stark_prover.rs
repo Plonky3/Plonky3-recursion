@@ -123,11 +123,6 @@ impl<SC: StarkGenericConfig> CircuitProverData<SC> {
     pub const fn common_data(&self) -> &CommonData<SC> {
         &self.prover_data.common
     }
-
-    /// Get a reference to the preprocessed columns.
-    pub const fn preprocessed_columns(&self) -> &PreprocessedColumns<Val<SC>> {
-        &self.preprocessed_columns
-    }
 }
 
 /// Convenience macro for deriving all degree-specific helpers from a single base
@@ -246,24 +241,12 @@ impl RowCounts {
         }
         Self(rows)
     }
-
-    /// Gets the row count for a specific table.
-    #[inline]
-    pub const fn get(&self, t: PrimitiveTable) -> usize {
-        self.0[t as usize]
-    }
 }
 
 impl core::ops::Index<PrimitiveTable> for RowCounts {
     type Output = usize;
     fn index(&self, table: PrimitiveTable) -> &Self::Output {
         &self.0[table as usize]
-    }
-}
-
-impl From<[usize; NUM_PRIMITIVE_TABLES]> for RowCounts {
-    fn from(rows: [usize; NUM_PRIMITIVE_TABLES]) -> Self {
-        Self(rows)
     }
 }
 

@@ -2,7 +2,7 @@ use std::error::Error;
 
 use p3_batch_stark::ProverData;
 use p3_circuit::ops::{
-    NpoPrivateData, NpoTypeId, Poseidon2PermPrivateData, generate_poseidon2_trace,
+    NpoPrivateData, NpoTypeId, Poseidon2Config, Poseidon2PermPrivateData, generate_poseidon2_trace,
     generate_recompose_trace,
 };
 use p3_circuit::{CircuitBuilder, ExprId};
@@ -10,7 +10,7 @@ use p3_circuit_prover::batch_stark_prover::{poseidon2_air_builders_d4, recompose
 use p3_circuit_prover::common::{NpoPreprocessor, get_airs_and_degrees_with_prep};
 use p3_circuit_prover::config::KoalaBearConfig;
 use p3_circuit_prover::{
-    BatchStarkProver, CircuitProverData, ConstraintProfile, Poseidon2Config, Poseidon2Preprocessor,
+    BatchStarkProver, CircuitProverData, ConstraintProfile, Poseidon2Preprocessor,
     RecomposePreprocessor, TablePacking, config,
 };
 use p3_field::extension::BinomialExtensionField;
