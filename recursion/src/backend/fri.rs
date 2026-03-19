@@ -316,7 +316,7 @@ where
         RecursionInput::BatchStark {
             proof,
             common_data,
-            table_public_inputs,
+            table_public_inputs: _,
         } => {
             let lookup_gadget = LogUpGadget::new();
             let (verifier_inputs, op_ids) = match proof.ext_degree {
@@ -387,7 +387,6 @@ where
                     )));
                 }
             };
-            let _ = table_public_inputs;
             Ok(FriVerifierResult::BatchStark(verifier_inputs, op_ids))
         }
     }

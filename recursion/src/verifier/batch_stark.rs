@@ -12,7 +12,7 @@ use p3_circuit::symbolic::ColumnsTargets;
 use p3_circuit::{CircuitBuilder, NonPrimitiveOpId};
 use p3_circuit_prover::air::{AluAir, ConstAir, PublicAir};
 use p3_circuit_prover::batch_stark_prover::{
-    AirVariant, DynamicAirEntry, PrimitiveTable, RowCounts, TableProver,
+    AirVariant, DynamicAirEntry, NUM_PRIMITIVE_TABLES, PrimitiveTable, RowCounts, TableProver,
 };
 use p3_circuit_prover::field_params::ExtractBinomialW;
 use p3_commit::{Pcs, PolynomialSpace};
@@ -70,6 +70,15 @@ where
             Self::Public(a) => P3BaseAir::width(a),
             Self::Alu(a) => P3BaseAir::width(a),
             Self::Dynamic(a) => P3BaseAir::width(a),
+        }
+    }
+
+    fn num_public_values(&self) -> usize {
+        match self {
+            Self::Const(a) => P3BaseAir::num_public_values(a),
+            Self::Public(a) => P3BaseAir::num_public_values(a),
+            Self::Alu(a) => P3BaseAir::num_public_values(a),
+            Self::Dynamic(a) => P3BaseAir::num_public_values(a),
         }
     }
 }
@@ -251,8 +260,10 @@ where
         circuit_airs.push(CircuitTablesAir::Dynamic(air));
     }
 
-    // TODO: public values are empty for all circuit tables for now.
-    let air_public_counts = vec![0usize; proof.proof.opened_values.instances.len()];
+    let mut air_public_counts = vec![0usize; NUM_PRIMITIVE_TABLES];
+    for entry in &proof.non_primitives {
+        air_public_counts.push(entry.public_values.len());
+    }
     let verifier_inputs = BatchStarkVerifierInputsBuilder::<SC, Comm, OpeningProof>::allocate(
         circuit,
         &proof.proof,

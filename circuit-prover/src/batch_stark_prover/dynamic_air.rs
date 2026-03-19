@@ -72,6 +72,10 @@ where
         <dyn CloneableBatchAir<SC> as BaseAir<Val<SC>>>::width(self.air())
     }
 
+    fn num_public_values(&self) -> usize {
+        <dyn CloneableBatchAir<SC> as BaseAir<Val<SC>>>::num_public_values(self.air())
+    }
+
     fn preprocessed_trace(&self) -> Option<RowMajorMatrix<Val<SC>>> {
         <dyn CloneableBatchAir<SC> as BaseAir<Val<SC>>>::preprocessed_trace(self.air())
     }
