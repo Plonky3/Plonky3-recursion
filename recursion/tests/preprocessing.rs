@@ -230,6 +230,54 @@ impl<Val: Field> LookupAir<Val> for SubAirPartialPreprocessed where
 {
 }
 
+/// AIR with public values: constrains `pis[0] == row[0]` on the first row.
+#[derive(Clone, Copy)]
+struct PublicValueAir {
+    rows: usize,
+}
+
+impl PublicValueAir {
+    fn generate_trace<Val: Field>(&self) -> (RowMajorMatrix<Val>, Vec<Val>) {
+        let width = 2;
+        let mut values = Val::zero_vec(self.rows * width);
+        for row in 0..self.rows {
+            let idx = row * width;
+            let a = Val::from_usize(row + 42);
+            let b = Val::from_usize(row + 1);
+            values[idx] = a;
+            values[idx + 1] = b;
+        }
+        let pv = values[0];
+        (RowMajorMatrix::new(values, width), vec![pv])
+    }
+}
+
+impl<Val: Field> BaseAir<Val> for PublicValueAir {
+    fn width(&self) -> usize {
+        2
+    }
+
+    fn num_public_values(&self) -> usize {
+        1
+    }
+}
+
+impl<AB: AirBuilder> Air<AB> for PublicValueAir
+where
+    AB::F: Field,
+{
+    fn eval(&self, builder: &mut AB) {
+        let main = builder.main();
+        let local = main.current_slice();
+        let pis = builder.public_values();
+        let pi0 = pis[0];
+
+        builder.when_first_row().assert_eq(local[0], pi0);
+    }
+}
+
+impl<Val: Field> LookupAir<Val> for PublicValueAir {}
+
 #[test]
 fn test_batch_verifier_with_mixed_preprocessed() -> Result<(), VerificationError> {
     let n = 1 << 3;
@@ -365,4 +413,174 @@ fn test_batch_verifier_with_mixed_preprocessed() -> Result<(), VerificationError
     let _traces = runner.run().map_err(VerificationError::Circuit)?;
 
     Ok(())
+}
+
+#[test]
+fn test_batch_verifier_with_public_values() -> Result<(), VerificationError> {
+    let n = 1 << 3;
+
+    let perm = default_babybear_poseidon2_16();
+    let hash = MyHash::new(perm.clone());
+    let compress = MyCompress::new(perm.clone());
+    let val_mmcs = MyMmcs::new(hash, compress, 0);
+    let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
+    let dft = Dft::default();
+
+    let fri_params = create_test_fri_params(challenge_mmcs, 0);
+    let fri_verifier_params = FriVerifierParams::from(&fri_params);
+    let pcs = MyPcs::new(dft, val_mmcs, fri_params);
+    let challenger = Challenger::new(perm.clone());
+    let config = MyConfig::new(pcs, challenger);
+
+    let pv_air = PublicValueAir { rows: n };
+    let (pv_trace, pv_vals) = pv_air.generate_trace::<F>();
+
+    let pvs = [pv_vals];
+
+    let instances = vec![StarkInstance {
+        air: &pv_air,
+        trace: &pv_trace,
+        public_values: pvs[0].clone(),
+        lookups: Vec::new(),
+    }];
+
+    let prover_data = ProverData::from_instances(&config, &instances);
+    let common_data = &prover_data.common;
+    let batch_proof = prove_batch(&config, &instances, &prover_data);
+
+    verify_batch(&config, &[pv_air], &batch_proof, &pvs, common_data).unwrap();
+
+    let lookup_gadget = LogUpGadget::new();
+
+    let mut circuit_builder = CircuitBuilder::new();
+    circuit_builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
+        generate_poseidon2_trace::<Challenge, BabyBearD4Width16>,
+        perm,
+    );
+    circuit_builder.enable_recompose::<F>(generate_recompose_trace::<F, Challenge>);
+
+    let air_public_counts = vec![1usize];
+    let verifier_inputs = BatchStarkVerifierInputsBuilder::<
+        MyConfig,
+        MerkleCapTargets<F, DIGEST_ELEMS>,
+        InnerFri,
+    >::allocate(
+        &mut circuit_builder,
+        &batch_proof,
+        common_data,
+        &air_public_counts,
+    );
+
+    verify_batch_circuit::<_, _, _, _, _, _, _, WIDTH, RATE>(
+        &config,
+        &[pv_air],
+        &mut circuit_builder,
+        &verifier_inputs.proof_targets,
+        &verifier_inputs.air_public_targets,
+        &fri_verifier_params,
+        &verifier_inputs.common_data,
+        &lookup_gadget,
+        Poseidon2Config::BabyBearD4Width16,
+    )?;
+
+    let circuit = circuit_builder.build()?;
+    let mut runner = circuit.runner();
+
+    let (public_inputs, private_inputs) =
+        verifier_inputs.pack_values(&pvs, &batch_proof, common_data);
+
+    runner
+        .set_public_inputs(&public_inputs)
+        .map_err(VerificationError::Circuit)?;
+    runner
+        .set_private_inputs(&private_inputs)
+        .map_err(VerificationError::Circuit)?;
+
+    let _traces = runner.run().map_err(VerificationError::Circuit)?;
+
+    Ok(())
+}
+
+#[test]
+#[should_panic(expected = "WitnessConflict")]
+fn test_batch_verifier_wrong_public_values() {
+    let n = 1 << 3;
+
+    let perm = default_babybear_poseidon2_16();
+    let hash = MyHash::new(perm.clone());
+    let compress = MyCompress::new(perm.clone());
+    let val_mmcs = MyMmcs::new(hash, compress, 0);
+    let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
+    let dft = Dft::default();
+
+    let fri_params = create_test_fri_params(challenge_mmcs, 0);
+    let fri_verifier_params = FriVerifierParams::from(&fri_params);
+    let pcs = MyPcs::new(dft, val_mmcs, fri_params);
+    let challenger = Challenger::new(perm.clone());
+    let config = MyConfig::new(pcs, challenger);
+
+    let pv_air = PublicValueAir { rows: n };
+    let (pv_trace, pv_vals) = pv_air.generate_trace::<F>();
+
+    let pvs = [pv_vals.clone()];
+
+    let instances = vec![StarkInstance {
+        air: &pv_air,
+        trace: &pv_trace,
+        public_values: pvs[0].clone(),
+        lookups: Vec::new(),
+    }];
+
+    let prover_data = ProverData::from_instances(&config, &instances);
+    let common_data = &prover_data.common;
+    let batch_proof = prove_batch(&config, &instances, &prover_data);
+
+    let lookup_gadget = LogUpGadget::new();
+
+    let mut circuit_builder = CircuitBuilder::new();
+    circuit_builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
+        generate_poseidon2_trace::<Challenge, BabyBearD4Width16>,
+        perm,
+    );
+    circuit_builder.enable_recompose::<F>(generate_recompose_trace::<F, Challenge>);
+
+    let air_public_counts = vec![1usize];
+    let verifier_inputs = BatchStarkVerifierInputsBuilder::<
+        MyConfig,
+        MerkleCapTargets<F, DIGEST_ELEMS>,
+        InnerFri,
+    >::allocate(
+        &mut circuit_builder,
+        &batch_proof,
+        common_data,
+        &air_public_counts,
+    );
+
+    verify_batch_circuit::<_, _, _, _, _, _, _, WIDTH, RATE>(
+        &config,
+        &[pv_air],
+        &mut circuit_builder,
+        &verifier_inputs.proof_targets,
+        &verifier_inputs.air_public_targets,
+        &fri_verifier_params,
+        &verifier_inputs.common_data,
+        &lookup_gadget,
+        Poseidon2Config::BabyBearD4Width16,
+    )
+    .unwrap();
+
+    let circuit = circuit_builder.build().unwrap();
+    let mut runner = circuit.runner();
+
+    // Tamper with the public value: provide a wrong value.
+    let wrong_pvs: [Vec<F>; 1] = [vec![pv_vals[0] + F::ONE]];
+
+    let (public_inputs, private_inputs) =
+        verifier_inputs.pack_values(&wrong_pvs, &batch_proof, common_data);
+
+    runner.set_public_inputs(&public_inputs).unwrap();
+    runner.set_private_inputs(&private_inputs).unwrap();
+
+    // Should panic with WitnessConflict because the public value doesn't match the trace.
+    runner.run().unwrap();
 }

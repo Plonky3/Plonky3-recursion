@@ -751,7 +751,6 @@ where
         }
 
         // Wrap AIRs in enum for heterogeneous batching and build instances in fixed order.
-        // TODO: Support public values for tables
         let mut air_storage: Vec<CircuitTableAir<SC, D>> =
             Vec::with_capacity(NUM_PRIMITIVE_TABLES + dynamic_instances.len());
         let mut trace_storage: Vec<RowMajorMatrix<Val<SC>>> =
@@ -912,7 +911,6 @@ where
             )
         };
         let mut airs = vec![const_air, public_air, alu_air];
-        // TODO: Handle public values.
         let mut pvs: Vec<Vec<Val<SC>>> =
             Vec::with_capacity(NUM_PRIMITIVE_TABLES + proof.non_primitives.len());
         pvs.resize_with(NUM_PRIMITIVE_TABLES, Vec::new);
