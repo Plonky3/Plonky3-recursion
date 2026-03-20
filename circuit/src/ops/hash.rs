@@ -26,7 +26,7 @@ impl<F: Field> CircuitBuilder<F> {
             let is_last = i == last_idx;
             let call_inputs: Vec<Option<ExprId>> = input
                 .iter()
-                .cloned()
+                .copied()
                 .map(Some)
                 .chain(iter::repeat(None))
                 .take(width_ext)

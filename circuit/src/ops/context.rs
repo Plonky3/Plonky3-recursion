@@ -54,7 +54,7 @@ impl<'a, F: PrimeCharacteristicRing + Eq + Clone> ExecutionContext<'a, F> {
             self.witness
                 .get(idx)
                 .and_then(Option::as_ref)
-                .cloned()
+                .map(|x| x.dup())
                 .ok_or(CircuitError::WitnessNotSet { witness_id: widx })
         }
 
@@ -65,7 +65,7 @@ impl<'a, F: PrimeCharacteristicRing + Eq + Clone> ExecutionContext<'a, F> {
                 .get_unchecked(idx)
                 .as_ref()
                 .unwrap_unchecked()
-                .clone())
+                .dup())
         }
     }
 

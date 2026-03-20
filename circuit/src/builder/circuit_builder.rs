@@ -1240,7 +1240,7 @@ impl<BF: PrimeField64, EF: ExtensionField<BF>> HintExecutor<EF> for ExtDecomposi
         let ext_val = witness
             .get(in_idx)
             .and_then(|opt| opt.as_ref())
-            .cloned()
+            .map(|x| x.dup())
             .ok_or(CircuitError::WitnessNotSet { witness_id: in_wid })?;
         let coeffs = ext_val.as_basis_coefficients_slice();
 
@@ -1330,7 +1330,7 @@ impl<BF: PrimeField64, EF: ExtensionField<BF>> HintExecutor<EF> for BinaryDecomp
         let ext_val = witness
             .get(in_idx)
             .and_then(|opt| opt.as_ref())
-            .cloned()
+            .map(|x| x.dup())
             .ok_or(CircuitError::WitnessNotSet { witness_id: in_wid })?;
 
         let bits_iter = ext_val

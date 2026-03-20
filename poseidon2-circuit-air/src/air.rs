@@ -7,7 +7,7 @@ use core::mem::MaybeUninit;
 
 use p3_air::{Air, AirBuilder, AirLayout, BaseAir, BaseLeaf, WindowAccess};
 use p3_circuit::ops::Poseidon2CircuitRow;
-use p3_field::{Field, PrimeCharacteristicRing, PrimeField};
+use p3_field::{Dup, Field, PrimeCharacteristicRing, PrimeField};
 use p3_lookup::LookupAir;
 use p3_lookup::lookup_traits::{Direction, Kind, Lookup};
 use p3_matrix::Matrix;
@@ -1416,7 +1416,7 @@ impl<
                 .chain(
                     local.poseidon2.inputs[limb_idx * D..(limb_idx + 1) * D]
                         .iter()
-                        .cloned(),
+                        .map(|x| x.dup()),
                 )
                 .map(SymbolicExpression::from)
                 .collect();
@@ -1428,7 +1428,7 @@ impl<
             //
             // Both factors are preprocessed, so this product costs
             // nothing at constraint-evaluation time.
-            let mult = SymbolicExpression::from(limb.in_ctl) * not_merkle.clone();
+            let mult = SymbolicExpression::from(limb.in_ctl) * not_merkle.dup();
 
             // Direction::Send means this table is the sender:
             //
@@ -1463,7 +1463,7 @@ impl<
                     local.poseidon2.ending_full_rounds[HALF_FULL_ROUNDS - 1].post
                         [limb_idx * D..(limb_idx + 1) * D]
                         .iter()
-                        .cloned(),
+                        .map(|x| x.dup()),
                 )
                 .map(SymbolicExpression::from)
                 .collect();
