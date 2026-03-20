@@ -119,6 +119,33 @@ impl Poseidon2Config {
         self.rate_ext() + self.capacity_ext()
     }
 
+    /// D=1 sponge config for the Fiat–Shamir challenger when `self` is the packed MMCS config (D=4
+    /// width 16). Returns `self` unchanged for all other variants (including D=1 and Goldilocks).
+    pub const fn companion_challenger_sponge(self) -> Self {
+        match self {
+            Self::BabyBearD4Width16 => Self::BabyBearD1Width16,
+            Self::KoalaBearD4Width16 => Self::KoalaBearD1Width16,
+            _ => self,
+        }
+    }
+
+    /// Poseidon2 config for in-circuit CTL when the native FS sponge uses `d()==1` (16 base limbs)
+    /// but the circuit builder field is an extension field of dimension `ef_dim`.
+    ///
+    /// [`Poseidon2CircuitAir`] witness lookups pack one extension element per logical input limb; the
+    /// D=1 NPO layout (16 separate CTL slots) does not match that bus encoding. Use the returned
+    /// packed config (e.g. D4 width 16) for `add_poseidon2_perm_for_challenger` when `ef_dim > 1`.
+    ///
+    /// Native proving/verification still uses the D=1 sponge config; the width-16 permutation on
+    /// the flattened base tuple is the same.
+    pub const fn packed_for_ctl_when_sponge_d1(self, ef_dim: usize) -> Self {
+        match (self, ef_dim) {
+            (Self::BabyBearD1Width16, 4) => Self::BabyBearD4Width16,
+            (Self::KoalaBearD1Width16, 4) => Self::KoalaBearD4Width16,
+            _ => self,
+        }
+    }
+
     /// Check that input and output counts match this config's expected layout.
     ///
     /// - For D=1: expects `width` inputs and `rate` or `width` outputs.

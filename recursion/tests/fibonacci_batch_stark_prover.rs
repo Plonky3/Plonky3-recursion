@@ -2,13 +2,13 @@ mod common;
 
 use p3_batch_stark::ProverData;
 use p3_circuit::CircuitBuilder;
-use p3_circuit::ops::{generate_poseidon2_trace, generate_recompose_trace};
+use p3_circuit::ops::{KoalaBearD1Width16, generate_poseidon2_trace, generate_recompose_trace};
 use p3_circuit_prover::batch_stark_prover::{
     poseidon2_air_builders_d4, poseidon2_table_provers_d4, recompose_air_builders,
 };
 use p3_circuit_prover::common::{NpoPreprocessor, get_airs_and_degrees_with_prep};
 use p3_circuit_prover::{
-    BatchStarkProver, CircuitProverData, ConstraintProfile, Poseidon2Preprocessor,
+    BatchStarkProver, CircuitProverData, ConstraintProfile, Poseidon2Preprocessor, Poseidon2Prover,
     RecomposePreprocessor, TablePacking, recompose_table_provers,
 };
 use p3_fri::create_test_fri_params;
@@ -151,6 +151,10 @@ fn test_fibonacci_batch_verifier() {
     let poseidon2_perm = default_koalabear_poseidon2_16();
     circuit_builder.enable_poseidon2_perm::<KoalaBearD4Width16, _>(
         generate_poseidon2_trace::<Challenge, KoalaBearD4Width16>,
+        poseidon2_perm.clone(),
+    );
+    circuit_builder.enable_poseidon2_perm_base::<KoalaBearD1Width16, _>(
+        generate_poseidon2_trace::<Challenge, KoalaBearD1Width16>,
         poseidon2_perm,
     );
     circuit_builder.enable_recompose::<F>(generate_recompose_trace::<F, Challenge>);
@@ -173,9 +177,13 @@ fn test_fibonacci_batch_verifier() {
         &fri_verifier_params,
         common,
         &lookup_gadget,
-        Poseidon2Config::KoalaBearD4Width16,
+        Poseidon2Config::KoalaBearD1Width16,
         &{
             let mut tp = poseidon2_table_provers_d4(Poseidon2Config::KoalaBearD4Width16);
+            tp.push(Box::new(Poseidon2Prover::new(
+                Poseidon2Config::KoalaBearD1Width16,
+                ConstraintProfile::Standard,
+            )));
             tp.extend(recompose_table_provers::<_, 4>(1));
             tp
         },
@@ -256,6 +264,7 @@ fn test_fibonacci_batch_verifier() {
     let mut verification_prover =
         BatchStarkProver::new(config3).with_table_packing(verification_table_packing);
     verification_prover.register_poseidon2_table(poseidon2_config);
+    verification_prover.register_poseidon2_table(Poseidon2Config::KoalaBearD1Width16);
     verification_prover.register_recompose_table();
 
     // Prove the verification circuit

@@ -4,8 +4,8 @@ use p3_baby_bear::default_babybear_poseidon2_16;
 use p3_batch_stark::{CommonData, ProverData};
 use p3_circuit::CircuitBuilder;
 use p3_circuit::ops::{
-    Poseidon2Config, Poseidon2PermCall, PrimitiveOpType, generate_poseidon2_trace,
-    generate_recompose_trace,
+    BabyBearD1Width16, Poseidon2Config, Poseidon2PermCall, PrimitiveOpType,
+    generate_poseidon2_trace, generate_recompose_trace,
 };
 use p3_circuit_prover::air::{AluAir, ConstAir, PublicAir};
 use p3_circuit_prover::batch_stark_prover::{
@@ -14,7 +14,7 @@ use p3_circuit_prover::batch_stark_prover::{
 use p3_circuit_prover::common::{NpoPreprocessor, get_airs_and_degrees_with_prep};
 use p3_circuit_prover::{
     BatchStarkProof, BatchStarkProver, CircuitProverData, ConstraintProfile, Poseidon2Preprocessor,
-    RecomposePreprocessor, TablePacking, recompose_table_provers,
+    Poseidon2Prover, RecomposePreprocessor, TablePacking, recompose_table_provers,
 };
 use p3_fri::create_test_fri_params;
 use p3_lookup::logup::LogUpGadget;
@@ -37,6 +37,10 @@ fn setup_circuit_builder() -> CircuitBuilder<Challenge> {
     let poseidon2_perm = default_babybear_poseidon2_16();
     circuit_builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
         generate_poseidon2_trace::<Challenge, BabyBearD4Width16>,
+        poseidon2_perm.clone(),
+    );
+    circuit_builder.enable_poseidon2_perm_base::<BabyBearD1Width16, _>(
+        generate_poseidon2_trace::<Challenge, BabyBearD1Width16>,
         poseidon2_perm,
     );
     circuit_builder.enable_recompose::<F>(generate_recompose_trace::<F, Challenge>);
@@ -752,9 +756,13 @@ fn get_verifier_inputs_and_challenges(
         &params.fri_verifier_params,
         common,
         lookup_gadget,
-        Poseidon2Config::BabyBearD4Width16,
+        Poseidon2Config::BabyBearD1Width16,
         &{
             let mut tp = poseidon2_table_provers_d4(Poseidon2Config::BabyBearD4Width16);
+            tp.push(Box::new(Poseidon2Prover::new(
+                Poseidon2Config::BabyBearD1Width16,
+                ConstraintProfile::Standard,
+            )));
             tp.extend(recompose_table_provers::<_, 4>(1));
             tp
         },

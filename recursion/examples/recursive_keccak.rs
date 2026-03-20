@@ -207,12 +207,196 @@ macro_rules! define_field_module {
         $poseidon2_air_builders_fn:ident,
         $backend_ctor:ident,
         $backend_width:expr,
-        $backend_rate:expr
+        $backend_rate:expr,
+        dual,
+        $poseidon2_d1_circuit_config:ty
     ) => {
         mod $mod_name {
             use super::*;
 
             define_field_module_types!(
+                dual,
+                $field,
+                $perm,
+                $default_perm,
+                $poseidon2_config,
+                $poseidon2_circuit_config,
+                $d,
+                $width,
+                $rate,
+                $digest_elems,
+                $enable_poseidon2_fn,
+                $register_poseidon2_fn,
+                $default_perm_circuit,
+                $poseidon2_air_builders_fn,
+                $backend_ctor,
+                $backend_width,
+                $backend_rate,
+                $poseidon2_d1_circuit_config,
+                noop_enable_recompose
+            );
+
+            pub fn run(
+                num_hashes: usize,
+                num_recursive_layers: usize,
+                fri_params: &FriParams,
+                table_packing: &TablePacking,
+                security_level: usize,
+                zk: bool,
+            ) {
+                let keccak_air = KeccakAir {};
+                let min_trace_rows: usize =
+                    1 << (fri_params.log_final_poly_len + fri_params.log_blowup + 1);
+                let min_keccak_hashes = min_trace_rows.div_ceil(p3_keccak_air::NUM_ROUNDS);
+                let effective_num_hashes = num_hashes.max(min_keccak_hashes);
+                if effective_num_hashes != num_hashes {
+                    tracing::warn!("Number of equivalent Keccak hashes after mandatory padding: {effective_num_hashes}");
+                }
+                let trace =
+                    keccak_air.generate_trace_rows(effective_num_hashes, fri_params.log_blowup);
+
+                // The base Keccak layer always uses non-ZK uni-stark (p3-uni-stark has no ZK support).
+                let config_0 = config_with_fri_params(fri_params, security_level, true);
+                let pis: Vec<F> = vec![];
+
+                let proof_0 = prove(&config_0, &keccak_air, trace, &pis);
+                report_proof_size(&proof_0);
+
+                verify(&config_0, &keccak_air, &proof_0, &pis)
+                    .expect("Failed to verify Keccak proof natively");
+
+                if num_recursive_layers < 1 {
+                    return;
+                }
+
+                let backend =
+                    FriRecursionBackend::<$backend_width, $backend_rate>::$backend_ctor($poseidon2_config);
+
+                if zk {
+                    // The Keccak base proof is always non-ZK (p3-uni-stark has no ZK support).
+                    // Since the recursive chain's config must match the proof being verified,
+                    // all recursive layers here use ConfigWithFriParams. The --zk flag has no
+                    // effect for recursive_keccak; use recursive_fibonacci for full ZK recursion.
+                    tracing::warn!(
+                        "--zk is not applicable to recursive_keccak: the Keccak base proof \
+                         uses p3-uni-stark which has no ZK support. All recursive layers will \
+                         use non-ZK config."
+                    );
+                }
+
+                let mut output: Option<RecursionOutput<ConfigWithFriParams>> = None;
+
+                let mut prev_witness_count: Option<u32> = None;
+                let mut stable_prep: Option<NextLayerPrepCache<ConfigWithFriParams>> = None;
+
+                for layer in 1..=num_recursive_layers {
+                    let layer_table_packing = if layer == 1 {
+                        TablePacking::new(1, 2)
+                    } else {
+                        table_packing.clone()
+                    }
+                    .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup);
+                    let params = ProveNextLayerParams {
+                        table_packing: layer_table_packing,
+                        constraint_profile: ConstraintProfile::Standard,
+                    };
+                    let config = config_with_fri_params(fri_params, security_level, true);
+
+                    let out = if layer == 1 {
+                        let input = RecursionInput::UniStark {
+                            proof: &proof_0,
+                            air: &keccak_air,
+                            public_inputs: pis.clone(),
+                            preprocessed_commit: None,
+                        };
+                        build_and_prove_next_layer::<ConfigWithFriParams, _, _, D>(
+                            &input,
+                            &config,
+                            &backend,
+                            &params,
+                        )
+                        .unwrap_or_else(|e| panic!("Failed to prove layer {layer}: {e:?}"))
+                    } else {
+                        let input = output.as_ref().unwrap().into_recursion_input::<BatchOnly>();
+
+                        let (verification_circuit, verifier_result) =
+                            build_next_layer_circuit::<ConfigWithFriParams, BatchOnly, _, D>(
+                                &input, &config, &backend,
+                            )
+                            .unwrap_or_else(|e| {
+                                panic!("Failed to build circuit layer {layer}: {e:?}")
+                            });
+
+                        let current_witness_count = verification_circuit.witness_count;
+                        let is_stable = prev_witness_count == Some(current_witness_count);
+                        prev_witness_count = Some(current_witness_count);
+
+                        if is_stable && stable_prep.is_none() {
+                            stable_prep = Some(
+                                build_next_layer_prep::<ConfigWithFriParams, BatchOnly, _, D>(
+                                    &verification_circuit,
+                                    &config,
+                                    &backend,
+                                    &params,
+                                )
+                                .unwrap_or_else(|e| {
+                                    panic!("Failed to build prep cache: {e:?}")
+                                }),
+                            );
+                        }
+
+                        prove_next_layer::<ConfigWithFriParams, BatchOnly, _, D>(
+                            &input,
+                            &verification_circuit,
+                            &verifier_result,
+                            &config,
+                            &backend,
+                            &params,
+                            stable_prep.as_ref(),
+                        )
+                        .unwrap_or_else(|e| panic!("Failed to prove layer {layer}: {e:?}"))
+                    };
+
+                    report_proof_size(&out.0);
+                    let mut prover = BatchStarkProver::new(config.clone())
+                        .with_table_packing(params.table_packing.clone());
+                    prover.$register_poseidon2_fn($poseidon2_config);
+                    prover
+                        .verify_all_tables(&out.0, out.1.common_data())
+                        .unwrap_or_else(|e| panic!("Failed to verify layer {layer}: {e:?}"));
+
+                    output = Some(out);
+                }
+
+                info!("Recursive proof verified successfully");
+            }
+        }
+    };
+    (
+        $mod_name:ident,
+        $field:ty,
+        $perm:ty,
+        $default_perm:path,
+        $poseidon2_config:expr,
+        $poseidon2_circuit_config:ty,
+        $d:expr,
+        $width:expr,
+        $rate:expr,
+        $digest_elems:expr,
+        $enable_poseidon2_fn:ident,
+        $register_poseidon2_fn:ident,
+        $default_perm_circuit:path,
+        $poseidon2_air_builders_fn:ident,
+        $backend_ctor:ident,
+        $backend_width:expr,
+        $backend_rate:expr,
+        single
+    ) => {
+        mod $mod_name {
+            use super::*;
+
+            define_field_module_types!(
+                single,
                 $field,
                 $perm,
                 $default_perm,
@@ -366,8 +550,10 @@ macro_rules! define_field_module {
 
                 info!("Recursive proof verified successfully");
             }
+
         }
     };
+
 }
 
 define_field_module!(
@@ -387,7 +573,9 @@ define_field_module!(
     poseidon2_air_builders_d4,
     new_d4,
     16,
-    8
+    8,
+    dual,
+    p3_circuit::ops::KoalaBearD1Width16
 );
 
 define_field_module!(
@@ -407,7 +595,9 @@ define_field_module!(
     poseidon2_air_builders_d4,
     new_d4,
     16,
-    8
+    8,
+    dual,
+    p3_circuit::ops::BabyBearD1Width16
 );
 
 define_field_module!(
@@ -427,5 +617,6 @@ define_field_module!(
     poseidon2_air_builders_d2,
     new_d2,
     8,
-    4
+    4,
+    single
 );

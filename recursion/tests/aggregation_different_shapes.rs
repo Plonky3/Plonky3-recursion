@@ -6,10 +6,13 @@ mod common;
 
 use p3_batch_stark::ProverData;
 use p3_circuit::CircuitBuilder;
-use p3_circuit::ops::{generate_poseidon2_trace, generate_recompose_trace};
+use p3_circuit::ops::{KoalaBearD1Width16, generate_poseidon2_trace, generate_recompose_trace};
 use p3_circuit::test_utils::{FibonacciAir, generate_trace_rows};
+use p3_circuit_prover::batch_stark_prover::poseidon2_table_provers_d4;
 use p3_circuit_prover::common::get_airs_and_degrees_with_prep;
-use p3_circuit_prover::{BatchStarkProver, CircuitProverData, ConstraintProfile, TablePacking};
+use p3_circuit_prover::{
+    BatchStarkProver, CircuitProverData, ConstraintProfile, Poseidon2Prover, TablePacking,
+};
 use p3_fri::FriParameters;
 use p3_lookup::logup::LogUpGadget;
 use p3_poseidon2_circuit_air::KoalaBearD4Width16;
@@ -107,6 +110,10 @@ fn test_aggregation_with_different_shapes() -> Result<(), VerificationError> {
     let mut circuit_builder = CircuitBuilder::new();
     circuit_builder.enable_poseidon2_perm::<KoalaBearD4Width16, _>(
         generate_poseidon2_trace::<Challenge, KoalaBearD4Width16>,
+        perm.clone(),
+    );
+    circuit_builder.enable_poseidon2_perm_base::<KoalaBearD1Width16, _>(
+        generate_poseidon2_trace::<Challenge, KoalaBearD1Width16>,
         perm,
     );
     circuit_builder.enable_recompose::<F>(generate_recompose_trace::<F, Challenge>);
@@ -139,13 +146,19 @@ fn test_aggregation_with_different_shapes() -> Result<(), VerificationError> {
         &left_verifier_inputs.air_public_targets,
         &None,
         &left_fri_params,
-        Poseidon2Config::KoalaBearD4Width16,
+        Poseidon2Config::KoalaBearD1Width16,
     )?;
 
     // Build the verifier inputs for the Batch-Stark.
     let lookup_gadget = LogUpGadget::new();
     let batch_proof = &batch_stark_proof.proof;
     let right_pis: Vec<Vec<F>> = vec![vec![]; 5];
+
+    let mut batch_npo_provers = poseidon2_table_provers_d4(Poseidon2Config::KoalaBearD4Width16);
+    batch_npo_provers.push(Box::new(Poseidon2Prover::new(
+        Poseidon2Config::KoalaBearD1Width16,
+        ConstraintProfile::Standard,
+    )));
 
     // Verify the Batch-Stark proof.
     let (right_verifier_inputs, right_op_ids) = verify_p3_batch_proof_circuit::<
@@ -165,10 +178,8 @@ fn test_aggregation_with_different_shapes() -> Result<(), VerificationError> {
         &right_fri_params,
         common,
         &lookup_gadget,
-        Poseidon2Config::KoalaBearD4Width16,
-        &p3_circuit_prover::batch_stark_prover::poseidon2_table_provers_d4(
-            Poseidon2Config::KoalaBearD4Width16,
-        ),
+        Poseidon2Config::KoalaBearD1Width16,
+        &batch_npo_provers,
     )?;
 
     // Build the verification circuit.

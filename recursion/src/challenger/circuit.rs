@@ -6,9 +6,12 @@
 //! # Soundness
 //!
 //! All Poseidon2 permutations in the challenger are CTL-verified against the Poseidon2 AIR table.
-//! The circuit builder's `add_poseidon2_perm_for_challenger` / `add_poseidon2_perm_for_challenger_base`
-//! (in `p3_circuit`) delegate to the standard Poseidon2 non-primitive op with full input and rate-output CTL exposure,
-//! and the executor runs the real permutation so the lookup argument enforces correctness.
+//! For BabyBear/KoalaBear width-16 sponges with `d()==1`, native Fiat–Shamir still uses the D=1
+//! sponge. When the circuit field `EF` is an extension field (`EF::DIMENSION > 1`), in-circuit
+//! duplexing uses `add_poseidon2_perm_for_challenger` with the packed config (e.g. D4 width 16) so
+//! `WitnessChecks` CTL keys match the Poseidon2 circuit AIR (one extension limb per logical input).
+//! When `EF::DIMENSION == 1`, `add_poseidon2_perm_for_challenger_base` is used instead.
+//! Goldilocks width-8 uses extension-packed Poseidon (`d=2` from config) with the same grouping as `config.d()`.
 
 use alloc::vec;
 use alloc::vec::Vec;
@@ -94,14 +97,16 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
         debug_assert!(self.initialized, "Challenger must be initialized");
         debug_assert!(self.input_buffer.len() <= RATE, "Input buffer exceeds RATE");
 
-        // Validate config matches extension field dimension
-        let config_d = self.config.extension_degree();
+        let poseidon2_config = self
+            .config
+            .as_poseidon2()
+            .expect("only Poseidon2 challenger permutation is supported");
         assert_eq!(
-            config_d,
-            EF::DIMENSION,
-            "Poseidon2 config dimension mismatch: config D={} but EF::DIMENSION={}",
-            config_d,
-            EF::DIMENSION
+            poseidon2_config.width(),
+            WIDTH,
+            "Poseidon2 config width {} does not match CircuitChallenger WIDTH {}",
+            poseidon2_config.width(),
+            WIDTH
         );
 
         // 1. Overwrite state[0..n] with inputs (NOT XOR, matches native)
@@ -109,13 +114,35 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
             self.state[i] = val;
         }
 
-        // Branch based on extension degree
-        if EF::DIMENSION == 1 {
-            // D=1: Use base field permutation directly
-            self.duplexing_base(circuit);
+        let d_perm = poseidon2_config.d();
+        if d_perm == 1 {
+            assert_eq!(
+                WIDTH, 16,
+                "D=1 challenger sponge is only implemented for WIDTH=16 (base Poseidon2 NPO)"
+            );
+            if EF::DIMENSION == 1 {
+                self.duplexing_base(circuit);
+            } else {
+                let packed = poseidon2_config.packed_for_ctl_when_sponge_d1(EF::DIMENSION);
+                assert_eq!(
+                    packed.d(),
+                    EF::DIMENSION,
+                    "CircuitChallenger: Poseidon2 sponge d()==1 with circuit EF dimension {} \
+                     requires a packed Poseidon2 config with d()=={} (e.g. BabyBearD4Width16)",
+                    EF::DIMENSION,
+                    EF::DIMENSION,
+                );
+                self.duplexing_packed::<BF, EF>(circuit, packed);
+            }
         } else {
-            // D=4: Use extension field permutation with recomposition
-            self.duplexing_ext::<BF, EF>(circuit);
+            assert_eq!(
+                WIDTH % d_perm,
+                0,
+                "Packed Poseidon2 config: WIDTH {} must be divisible by config d() {}",
+                WIDTH,
+                d_perm
+            );
+            self.duplexing_packed::<BF, EF>(circuit, *poseidon2_config);
         }
 
         // 5. Fill output buffer from state[0..RATE]
@@ -123,7 +150,7 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
         self.output_buffer.extend_from_slice(&self.state[..RATE]);
     }
 
-    /// Duplexing for D=1 (base field): permutation operates directly on 16 elements.
+    /// Duplexing for Poseidon2 configs with `d() == 1`: permutation on 16 base limbs (native `BF^16`).
     fn duplexing_base<EF>(&mut self, circuit: &mut CircuitBuilder<EF>)
     where
         EF: p3_field::Field,
@@ -145,20 +172,27 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
         self.state = outputs.to_vec();
     }
 
-    fn duplexing_ext<BF, EF>(&mut self, circuit: &mut CircuitBuilder<EF>)
-    where
+    /// Duplexing for packed Poseidon2 configs: group `perm_cfg.d()` embedded base coefficients per
+    /// extension limb, matching the Poseidon2 NPO layout for that config.
+    fn duplexing_packed<BF, EF>(
+        &mut self,
+        circuit: &mut CircuitBuilder<EF>,
+        perm_cfg: Poseidon2Config,
+    ) where
         BF: PrimeField64,
         EF: ExtensionField<BF>,
     {
-        let poseidon2_config = self
-            .config
-            .as_poseidon2()
-            .expect("only Poseidon2 challenger permutation is supported");
-        let num_ext_limbs = WIDTH / EF::DIMENSION;
+        let d_pack = perm_cfg.d();
+        assert_eq!(
+            EF::DIMENSION,
+            d_pack,
+            "circuit extension degree must match Poseidon2 config d() for packed challenger duplexing"
+        );
+        let num_ext_limbs = WIDTH / d_pack;
         let mut ext_inputs = Vec::with_capacity(num_ext_limbs);
         for i in 0..num_ext_limbs {
-            let start = i * EF::DIMENSION;
-            let end = start + EF::DIMENSION;
+            let start = i * d_pack;
+            let end = start + d_pack;
             let ext = circuit
                 .recompose_base_coeffs_to_ext::<BF>(&self.state[start..end])
                 .expect("recomposition should succeed");
@@ -166,14 +200,14 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
         }
 
         let ext_outputs = circuit
-            .add_poseidon2_perm_for_challenger(*poseidon2_config, &ext_inputs)
+            .add_poseidon2_perm_for_challenger(perm_cfg, &ext_inputs)
             .expect("poseidon2 permutation should succeed");
 
         for (limb, &ext_out) in ext_outputs.iter().enumerate() {
             let coeffs = circuit
                 .decompose_ext_to_base_coeffs::<BF>(ext_out)
                 .expect("decomposition should succeed");
-            let start = limb * EF::DIMENSION;
+            let start = limb * d_pack;
             for (i, coeff) in coeffs.into_iter().enumerate() {
                 self.state[start + i] = coeff;
             }
@@ -182,22 +216,22 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
 }
 
 impl<const WIDTH: usize, const RATE: usize> CircuitChallenger<WIDTH, RATE, Poseidon2Config> {
-    /// Create a challenger with BabyBear D4 Width16 configuration (default).
+    /// Create a challenger with BabyBear D1 Width16 (sponge matches native `DuplexChallenger` on `BabyBear^16`).
     pub const fn new_babybear() -> Self {
-        Self::new(Poseidon2Config::BabyBearD4Width16)
+        Self::new(Poseidon2Config::BabyBearD1Width16)
     }
 
-    /// Create a challenger with BabyBear D1 Width16 configuration (base field challenges).
+    /// Same as [`Self::new_babybear`] (alias).
     pub const fn new_babybear_base() -> Self {
         Self::new(Poseidon2Config::BabyBearD1Width16)
     }
 
-    /// Create a challenger with KoalaBear D4 Width16 configuration.
+    /// Create a challenger with KoalaBear D1 Width16 (sponge matches native `DuplexChallenger` on `KoalaBear^16`).
     pub const fn new_koalabear() -> Self {
-        Self::new(Poseidon2Config::KoalaBearD4Width16)
+        Self::new(Poseidon2Config::KoalaBearD1Width16)
     }
 
-    /// Create a challenger with KoalaBear D1 Width16 configuration (base field challenges).
+    /// Same as [`Self::new_koalabear`] (alias).
     pub const fn new_koalabear_base() -> Self {
         Self::new(Poseidon2Config::KoalaBearD1Width16)
     }

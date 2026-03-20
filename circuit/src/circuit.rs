@@ -29,6 +29,9 @@ pub struct PreprocessedColumns<F> {
     /// `WitnessId(wid)` was already defined by an earlier op and this NPO occurrence is
     /// a reader, not the creator. Populated by `generate_preprocessed_columns`.
     pub dup_npo_outputs: HashMap<NpoTypeId, Vec<bool>>,
+    /// Order of non-primitive `NpoTypeId`s as emitted into the batch STARK `table_preps` by
+    /// `get_airs_and_degrees_with_prep`. Used by `BatchStarkProver::prove` to match instance order.
+    pub non_primitive_air_order: Vec<NpoTypeId>,
 }
 
 impl<F: PartialEq> PartialEq for PreprocessedColumns<F> {
@@ -38,6 +41,7 @@ impl<F: PartialEq> PartialEq for PreprocessedColumns<F> {
             && self.ext_reads == other.ext_reads
             && self.non_primitive == other.non_primitive
             && self.dup_npo_outputs == other.dup_npo_outputs
+            && self.non_primitive_air_order == other.non_primitive_air_order
     }
 }
 
@@ -51,6 +55,7 @@ impl<F: Field + Clone> Clone for PreprocessedColumns<F> {
             d: self.d,
             ext_reads: self.ext_reads.clone(),
             dup_npo_outputs: self.dup_npo_outputs.clone(),
+            non_primitive_air_order: self.non_primitive_air_order.clone(),
         }
     }
 }
@@ -65,6 +70,7 @@ impl<F: Field> PreprocessedColumns<F> {
             d: 1,
             ext_reads: Vec::new(),
             dup_npo_outputs: HashMap::new(),
+            non_primitive_air_order: Vec::new(),
         }
     }
 
@@ -79,6 +85,7 @@ impl<F: Field> PreprocessedColumns<F> {
             d,
             ext_reads: Vec::new(),
             dup_npo_outputs: HashMap::new(),
+            non_primitive_air_order: Vec::new(),
         }
     }
 
@@ -521,6 +528,7 @@ mod tests {
                 d: 1,
                 ext_reads: vec![0],
                 dup_npo_outputs: HashMap::new(),
+                non_primitive_air_order: vec![],
             }
         );
     }
@@ -611,6 +619,7 @@ mod tests {
                 //            wid1=1, wid2=2 (b in op2+op3), wid3=1, wid4=1
                 ext_reads: vec![4, 1, 2, 1, 1],
                 dup_npo_outputs: HashMap::new(),
+                non_primitive_air_order: vec![],
             }
         );
     }
@@ -658,6 +667,7 @@ mod tests {
                 //                    0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15
                 ext_reads: vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
                 dup_npo_outputs: HashMap::new(),
+                non_primitive_air_order: vec![],
             }
         );
     }
@@ -714,6 +724,7 @@ mod tests {
                 // ext_reads: 0(a)=1, 1(b)=1, 2(c)=1
                 ext_reads: vec![1, 1, 1],
                 dup_npo_outputs: HashMap::new(),
+                non_primitive_air_order: vec![],
             }
         );
     }

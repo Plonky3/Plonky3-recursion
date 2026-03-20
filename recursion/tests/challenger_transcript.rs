@@ -6,7 +6,9 @@
 mod common;
 
 use p3_challenger::{CanObserve, CanSample, CanSampleBits, FieldChallenger};
-use p3_circuit::ops::{Poseidon2Config, generate_poseidon2_trace, generate_recompose_trace};
+use p3_circuit::ops::{
+    BabyBearD1Width16, Poseidon2Config, generate_poseidon2_trace, generate_recompose_trace,
+};
 use p3_circuit::{CircuitBuilder, Traces};
 use p3_field::PrimeField64;
 use p3_poseidon2_circuit_air::BabyBearD4Width16;
@@ -30,6 +32,10 @@ mod baby_bear_d4 {
         let perm = default_babybear_poseidon2_16();
         circuit.enable_poseidon2_perm::<BabyBearD4Width16, _>(
             generate_poseidon2_trace::<EF, BabyBearD4Width16>,
+            perm.clone(),
+        );
+        circuit.enable_poseidon2_perm_base::<BabyBearD1Width16, _>(
+            generate_poseidon2_trace::<EF, BabyBearD1Width16>,
             perm,
         );
         circuit.enable_recompose::<F>(generate_recompose_trace::<F, EF>);
@@ -1006,6 +1012,7 @@ mod baby_bear_d4 {
 // ============================================================================
 
 mod koala_bear_d4 {
+    use p3_circuit::ops::KoalaBearD1Width16;
     use p3_poseidon2_circuit_air::KoalaBearD4Width16;
     use p3_test_utils::koala_bear_params::*;
 
@@ -1019,6 +1026,10 @@ mod koala_bear_d4 {
         let perm = default_koalabear_poseidon2_16();
         circuit.enable_poseidon2_perm::<KoalaBearD4Width16, _>(
             generate_poseidon2_trace::<EF, KoalaBearD4Width16>,
+            perm.clone(),
+        );
+        circuit.enable_poseidon2_perm_base::<KoalaBearD1Width16, _>(
+            generate_poseidon2_trace::<EF, KoalaBearD1Width16>,
             perm,
         );
         circuit.enable_recompose::<F>(generate_recompose_trace::<F, EF>);

@@ -182,6 +182,7 @@ where
 
     let mut table_preps: Vec<(CircuitTableAir<SC, D>, usize)> =
         Vec::with_capacity(base_prep.len() + non_primitive_base.len());
+    let mut non_primitive_air_order: Vec<NpoTypeId> = Vec::new();
 
     #[allow(clippy::needless_range_loop)]
     for idx in 0..base_prep.len() {
@@ -354,17 +355,22 @@ where
         }
     }
 
-    // Iterate air builders first (fixed registration order) so that the
-    // resulting AIR ordering matches the prover's non_primitive_provers order.
-    for builder in non_primitive_air_builders {
-        for (op_type, prep_base) in non_primitive_base.iter() {
-            // TablePacking overrides the builder's own default lane count.
+    // One dynamic AIR per non-primitive `op_type`. Iterate ops in deterministic order so every
+    // NPO in the trace gets an AIR (e.g. Poseidon D1 and D4 are two distinct `NpoTypeId`s).
+    // `BatchStarkProver::prove` sorts `dynamic_instances` by the same key so preprocessed
+    // `matrix_index` in `ProverData` matches quotient evaluation order.
+    let mut npo_keys: Vec<&NpoTypeId> = non_primitive_base.keys().collect();
+    npo_keys.sort_by_key(|k| k.as_str());
+    for op_type in npo_keys {
+        let prep_base = &non_primitive_base[op_type];
+        for builder in non_primitive_air_builders {
             let lanes = packing
                 .npo_lanes(op_type)
                 .unwrap_or_else(|| builder.lanes());
             if let Some((air, degree)) =
                 builder.try_build(op_type, prep_base, min_height, lanes, constraint_profile)
             {
+                non_primitive_air_order.push(op_type.clone());
                 table_preps.push((air, degree));
                 break;
             }
@@ -379,6 +385,7 @@ where
         d: D,
         ext_reads: preprocessed.ext_reads,
         dup_npo_outputs: preprocessed.dup_npo_outputs,
+        non_primitive_air_order,
     };
 
     Ok((table_preps, preprocessed_columns))

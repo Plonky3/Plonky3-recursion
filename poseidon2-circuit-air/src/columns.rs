@@ -297,6 +297,31 @@ impl<T: Copy> Poseidon2PreprocessedRow<T> {
     }
 }
 
+/// Number of contiguous column slots in one Poseidon2 preprocessed row (matches `Poseidon2PreprocessedRow<u8>` width).
+pub const POSEIDON2_PREPROCESSED_NUM_COLS: usize = size_of::<Poseidon2PreprocessedRow<u8>>();
+
+/// Load one preprocessed row from a flat column slice.
+///
+/// The slice may be **unaligned** for [`Poseidon2PreprocessedRow`], which happens when the
+/// STARK prover evaluates constraints on vertically packed rows (`PackedVal`): row data is
+/// contiguous in column-major packed layout but the row start address is not necessarily
+/// aligned to the row struct's alignment requirement.
+///
+/// `slice.len()` must equal [`POSEIDON2_PREPROCESSED_NUM_COLS`] (one `T` per logical column).
+/// Do not compare `slice.len() * size_of::<T>()` to `size_of::<Poseidon2PreprocessedRow<T>>()`:
+/// the row struct can carry trailing padding, so those byte sizes need not match.
+#[inline]
+pub fn load_poseidon2_preprocessed_row_unaligned<T: Copy>(
+    slice: &[T],
+) -> Poseidon2PreprocessedRow<T> {
+    assert_eq!(
+        slice.len(),
+        POSEIDON2_PREPROCESSED_NUM_COLS,
+        "Poseidon2 preprocessed row: expected one packed column per logical prep column"
+    );
+    unsafe { (slice.as_ptr() as *const Poseidon2PreprocessedRow<T>).read_unaligned() }
+}
+
 impl<T> Borrow<Poseidon2PreprocessedRow<T>> for [T] {
     fn borrow(&self) -> &Poseidon2PreprocessedRow<T> {
         let (prefix, rows, suffix) = unsafe { self.align_to::<Poseidon2PreprocessedRow<T>>() };

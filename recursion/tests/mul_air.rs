@@ -4,7 +4,7 @@ mod common;
 
 use p3_baby_bear::default_babybear_poseidon2_16;
 use p3_circuit::CircuitBuilder;
-use p3_circuit::ops::{generate_poseidon2_trace, generate_recompose_trace};
+use p3_circuit::ops::{BabyBearD1Width16, generate_poseidon2_trace, generate_recompose_trace};
 use p3_fri::create_test_fri_params;
 use p3_matrix::Matrix;
 use p3_poseidon2_circuit_air::BabyBearD4Width16;
@@ -63,6 +63,10 @@ fn test_mul_verifier_circuit() -> Result<(), VerificationError> {
     let mut circuit_builder = CircuitBuilder::new();
     circuit_builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
         generate_poseidon2_trace::<Challenge, BabyBearD4Width16>,
+        perm.clone(),
+    );
+    circuit_builder.enable_poseidon2_perm_base::<BabyBearD1Width16, _>(
+        generate_poseidon2_trace::<Challenge, BabyBearD1Width16>,
         perm,
     );
     circuit_builder.enable_recompose::<F>(generate_recompose_trace::<F, Challenge>);
@@ -88,7 +92,7 @@ fn test_mul_verifier_circuit() -> Result<(), VerificationError> {
         &verifier_inputs.air_public_targets,
         &verifier_inputs.preprocessed_commit,
         &fri_verifier_params,
-        Poseidon2Config::BabyBearD4Width16,
+        Poseidon2Config::BabyBearD1Width16,
     )?;
 
     // Build the circuit

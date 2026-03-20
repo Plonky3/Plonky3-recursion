@@ -6,6 +6,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use alloc::{format, vec};
 
+use hashbrown::HashMap;
 #[cfg(debug_assertions)]
 use p3_air::DebugConstraintBuilder;
 use p3_air::{Air, BaseAir};
@@ -595,6 +596,7 @@ where
             d: _,
             ext_reads: _,
             dup_npo_outputs: _,
+            non_primitive_air_order,
         } = &circuit_prover_data.preprocessed_columns;
         let prover_data = &circuit_prover_data.prover_data;
 
@@ -743,6 +745,22 @@ where
                     dynamic_instances.push(instance);
                 }
             }
+        }
+
+        if !non_primitive_air_order.is_empty() {
+            let rank: HashMap<NpoTypeId, usize> = non_primitive_air_order
+                .iter()
+                .enumerate()
+                .map(|(i, k)| (k.clone(), i))
+                .collect();
+            dynamic_instances.sort_by(|a, b| {
+                let ia = rank.get(&a.op_type).copied().unwrap_or(usize::MAX);
+                let ib = rank.get(&b.op_type).copied().unwrap_or(usize::MAX);
+                ia.cmp(&ib)
+                    .then_with(|| a.op_type.as_str().cmp(b.op_type.as_str()))
+            });
+        } else {
+            dynamic_instances.sort_by(|a, b| a.op_type.as_str().cmp(b.op_type.as_str()));
         }
 
         // The `batch_instance_dN` methods regenerate Poseidon2 preprocessed data from

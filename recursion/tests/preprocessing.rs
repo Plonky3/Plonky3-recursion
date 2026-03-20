@@ -4,7 +4,7 @@ use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 use p3_baby_bear::default_babybear_poseidon2_16;
 use p3_batch_stark::{ProverData, StarkInstance, prove_batch, verify_batch};
 use p3_circuit::CircuitBuilder;
-use p3_circuit::ops::{generate_poseidon2_trace, generate_recompose_trace};
+use p3_circuit::ops::{BabyBearD1Width16, generate_poseidon2_trace, generate_recompose_trace};
 use p3_field::Field;
 use p3_fri::create_test_fri_params;
 use p3_lookup::LookupAir;
@@ -359,6 +359,10 @@ fn test_batch_verifier_with_mixed_preprocessed() -> Result<(), VerificationError
     let mut circuit_builder = CircuitBuilder::new();
     circuit_builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
         generate_poseidon2_trace::<Challenge, BabyBearD4Width16>,
+        perm.clone(),
+    );
+    circuit_builder.enable_poseidon2_perm_base::<BabyBearD1Width16, _>(
+        generate_poseidon2_trace::<Challenge, BabyBearD1Width16>,
         perm,
     );
     circuit_builder.enable_recompose::<F>(generate_recompose_trace::<F, Challenge>);
@@ -392,7 +396,7 @@ fn test_batch_verifier_with_mixed_preprocessed() -> Result<(), VerificationError
         &pcs_verifier_params,
         &verifier_inputs.common_data,
         &lookup_gadget,
-        Poseidon2Config::BabyBearD4Width16,
+        Poseidon2Config::BabyBearD1Width16,
     )?;
 
     // Build the circuit
@@ -455,6 +459,10 @@ fn test_batch_verifier_with_public_values() -> Result<(), VerificationError> {
     let mut circuit_builder = CircuitBuilder::new();
     circuit_builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
         generate_poseidon2_trace::<Challenge, BabyBearD4Width16>,
+        perm.clone(),
+    );
+    circuit_builder.enable_poseidon2_perm_base::<BabyBearD1Width16, _>(
+        generate_poseidon2_trace::<Challenge, BabyBearD1Width16>,
         perm,
     );
     circuit_builder.enable_recompose::<F>(generate_recompose_trace::<F, Challenge>);
@@ -480,7 +488,7 @@ fn test_batch_verifier_with_public_values() -> Result<(), VerificationError> {
         &fri_verifier_params,
         &verifier_inputs.common_data,
         &lookup_gadget,
-        Poseidon2Config::BabyBearD4Width16,
+        Poseidon2Config::BabyBearD1Width16,
     )?;
 
     let circuit = circuit_builder.build()?;
@@ -540,6 +548,10 @@ fn test_batch_verifier_wrong_public_values() {
     let mut circuit_builder = CircuitBuilder::new();
     circuit_builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
         generate_poseidon2_trace::<Challenge, BabyBearD4Width16>,
+        perm.clone(),
+    );
+    circuit_builder.enable_poseidon2_perm_base::<BabyBearD1Width16, _>(
+        generate_poseidon2_trace::<Challenge, BabyBearD1Width16>,
         perm,
     );
     circuit_builder.enable_recompose::<F>(generate_recompose_trace::<F, Challenge>);
@@ -565,7 +577,7 @@ fn test_batch_verifier_wrong_public_values() {
         &fri_verifier_params,
         &verifier_inputs.common_data,
         &lookup_gadget,
-        Poseidon2Config::BabyBearD4Width16,
+        Poseidon2Config::BabyBearD1Width16,
     )
     .unwrap();
 

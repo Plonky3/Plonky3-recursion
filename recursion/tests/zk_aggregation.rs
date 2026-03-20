@@ -11,7 +11,9 @@ use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 use p3_batch_stark::{
     BatchProof, CommonData, ProverData, StarkInstance, prove_batch, verify_batch,
 };
-use p3_circuit::ops::{Poseidon2Config, generate_poseidon2_trace, generate_recompose_trace};
+use p3_circuit::ops::{
+    KoalaBearD1Width16, Poseidon2Config, generate_poseidon2_trace, generate_recompose_trace,
+};
 use p3_circuit::{CircuitBuilder, NonPrimitiveOpId};
 use p3_circuit_prover::batch_stark_prover::{poseidon2_air_builders_d4, recompose_air_builders};
 use p3_circuit_prover::common::{NpoPreprocessor, get_airs_and_degrees_with_prep};
@@ -185,7 +187,7 @@ fn add_zk_batch_verifier_to_circuit(
         &fri_verifier_params,
         &verifier_inputs.common_data,
         &lookup_gadget,
-        Poseidon2Config::KoalaBearD4Width16,
+        Poseidon2Config::KoalaBearD1Width16,
     )?;
 
     Ok((verifier_inputs, mmcs_op_ids))
@@ -214,6 +216,10 @@ fn test_zk_aggregation() -> Result<(), VerificationError> {
     let mut circuit_builder = CircuitBuilder::new();
     circuit_builder.enable_poseidon2_perm::<KoalaBearD4Width16, _>(
         generate_poseidon2_trace::<Challenge, KoalaBearD4Width16>,
+        perm.clone(),
+    );
+    circuit_builder.enable_poseidon2_perm_base::<KoalaBearD1Width16, _>(
+        generate_poseidon2_trace::<Challenge, KoalaBearD1Width16>,
         perm,
     );
     circuit_builder.enable_recompose::<F>(generate_recompose_trace::<F, Challenge>);

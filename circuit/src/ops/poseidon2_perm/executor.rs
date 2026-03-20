@@ -511,6 +511,59 @@ impl Poseidon2PermExecutor {
         inputs: &[Vec<WitnessId>],
         preprocessed: &mut PreprocessedColumns<F>,
     ) -> Result<(), CircuitError> {
+        if self.config.d() == 1 {
+            let logical_limbs = self.config.width() / 4;
+            for limb_idx in 0..logical_limbs {
+                let base = limb_idx * 4;
+                let limb_wids: Vec<WitnessId> = (0..4)
+                    .filter_map(|d| {
+                        let inp = &inputs[base + d];
+                        if inp.is_empty() { None } else { Some(inp[0]) }
+                    })
+                    .collect();
+                if limb_wids.is_empty() {
+                    preprocessed.register_non_primitive_preprocessed_no_read(
+                        &self.op_type,
+                        &[F::ZERO, F::ZERO],
+                    );
+                } else if self.merkle_path {
+                    preprocessed.register_non_primitive_preprocessed_no_read(
+                        &self.op_type,
+                        &[preprocessed.witness_index_as_field(limb_wids[0])],
+                    );
+                    preprocessed
+                        .register_non_primitive_preprocessed_no_read(&self.op_type, &[F::ONE]);
+                } else {
+                    preprocessed.register_non_primitive_witness_reads(
+                        &self.op_type,
+                        core::slice::from_ref(&limb_wids[0]),
+                    )?;
+                    preprocessed
+                        .register_non_primitive_preprocessed_no_read(&self.op_type, &[F::ONE]);
+                }
+                let limb_all_empty = (0..4).all(|d| inputs[base + d].is_empty());
+                let normal_chain_sel = if !self.new_start && !self.merkle_path && limb_all_empty {
+                    F::ONE
+                } else {
+                    F::ZERO
+                };
+                preprocessed.register_non_primitive_preprocessed_no_read(
+                    &self.op_type,
+                    &[normal_chain_sel],
+                );
+                let merkle_chain_sel = if !self.new_start && self.merkle_path && limb_all_empty {
+                    F::ONE
+                } else {
+                    F::ZERO
+                };
+                preprocessed.register_non_primitive_preprocessed_no_read(
+                    &self.op_type,
+                    &[merkle_chain_sel],
+                );
+            }
+            return Ok(());
+        }
+
         let width_ext = self.config.width_ext();
         for (limb_idx, inp) in inputs[0..width_ext].iter().enumerate() {
             if inp.is_empty() {
@@ -558,6 +611,37 @@ impl Poseidon2PermExecutor {
         outputs: &[Vec<WitnessId>],
         preprocessed: &mut PreprocessedColumns<F>,
     ) -> Result<(), CircuitError> {
+        if self.config.d() == 1 {
+            let rate_logical_limbs = self.config.rate() / 4;
+            for limb in 0..rate_logical_limbs {
+                let base = limb * 4;
+                let limb_wids: Vec<WitnessId> = (0..4)
+                    .filter_map(|d| {
+                        let idx = base + d;
+                        if idx < outputs.len() && !outputs[idx].is_empty() {
+                            Some(outputs[idx][0])
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                if limb_wids.is_empty() {
+                    preprocessed.register_non_primitive_preprocessed_no_read(
+                        &self.op_type,
+                        &[F::ZERO, F::ZERO],
+                    );
+                } else {
+                    preprocessed.register_non_primitive_output_index(
+                        &self.op_type,
+                        core::slice::from_ref(&limb_wids[0]),
+                    );
+                    preprocessed
+                        .register_non_primitive_preprocessed_no_read(&self.op_type, &[F::ONE]);
+                }
+            }
+            return Ok(());
+        }
+
         let rate_ext = self.config.rate_ext();
         for out in outputs.iter().take(rate_ext) {
             if out.is_empty() {
@@ -582,6 +666,18 @@ impl Poseidon2PermExecutor {
         inputs: &[Vec<WitnessId>],
         preprocessed: &mut PreprocessedColumns<F>,
     ) -> Result<(), CircuitError> {
+        if self.config.d() == 1 {
+            preprocessed.register_non_primitive_preprocessed_no_read(&self.op_type, &[F::ZERO]);
+            preprocessed.register_non_primitive_preprocessed_no_read(&self.op_type, &[F::ZERO]);
+            let new_start_val = if self.new_start { F::ONE } else { F::ZERO };
+            let merkle_path_val = if self.merkle_path { F::ONE } else { F::ZERO };
+            preprocessed.register_non_primitive_preprocessed_no_read(
+                &self.op_type,
+                &[new_start_val, merkle_path_val],
+            );
+            return Ok(());
+        }
+
         let width_ext = self.config.width_ext();
         if inputs[width_ext].is_empty() {
             preprocessed.register_non_primitive_preprocessed_no_read(&self.op_type, &[F::ZERO]);

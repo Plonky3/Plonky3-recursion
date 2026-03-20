@@ -11,7 +11,8 @@ use p3_circuit::ops::Poseidon2Config;
 /// verifier and [`crate::CircuitChallenger`] use this trait so they do not depend
 /// on a specific hash by name.
 pub trait ChallengerPermConfig: Send + Sync {
-    /// Extension degree of the permutation (e.g. 2 for Goldilocks, 4 for BabyBear).
+    /// Poseidon2 witness packing degree for this config (`Poseidon2Config::d()`), not necessarily
+    /// `SC::Challenge::DIMENSION` (e.g. BabyBear challenges may be EF4 while the sponge uses D=1).
     fn extension_degree(&self) -> usize;
 
     /// Poseidon2 config if this is a Poseidon2 permutation; `None` otherwise.

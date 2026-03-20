@@ -152,7 +152,10 @@ impl<TraceF: Clone + Send + Sync + 'static, CF> NonPrimitiveTrace<CF> for Poseid
 
 /// Generate the Poseidon2 trace from execution state.
 ///
-/// Converts circuit rows from extension field format (4 limbs) to base field format (16 elements).
+/// Converts execution rows (circuit field `F` limbs) to AIR rows over the Poseidon base field.
+/// For packed configs (`D>1`), each limb is a full extension element decomposed into `D` bases.
+/// For `D=1`, the circuit may still run over an extension field `F`; each of the `WIDTH` limbs is
+/// an embedded base scalar (only the constant coefficient is used).
 ///
 /// # Type Parameters
 /// - `F`: The circuit field type (extension field)
@@ -198,7 +201,19 @@ pub fn generate_poseidon2_trace<
             );
             for (limb, ext_val) in row.input_values.iter().enumerate() {
                 let coeffs = ext_val.as_basis_coefficients_slice();
-                input_values[limb * d..(limb + 1) * d].copy_from_slice(coeffs);
+                if d == 1 {
+                    input_values[limb] = *coeffs.first().ok_or_else(|| {
+                        CircuitError::IncorrectNonPrimitiveOpPrivateData {
+                            op: op_type.clone(),
+                            operation_index: NonPrimitiveOpId(row_index as u32),
+                            expected: "at least one basis coefficient for embedded base limb"
+                                .to_string(),
+                            got: "empty coefficient slice".to_string(),
+                        }
+                    })?;
+                } else {
+                    input_values[limb * d..(limb + 1) * d].copy_from_slice(coeffs);
+                }
             }
 
             let mmcs_index_sum = row.mmcs_index_sum.as_base().ok_or_else(|| {

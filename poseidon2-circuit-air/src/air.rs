@@ -19,7 +19,7 @@ use p3_uni_stark::{SubAirBuilder, SymbolicAirBuilder, SymbolicExpression, Symbol
 
 use crate::columns::{
     POSEIDON2_LIMBS, POSEIDON2_PUBLIC_OUTPUT_LIMBS, Poseidon2PrepInputLimb,
-    Poseidon2PrepOutputLimb, Poseidon2PreprocessedRow,
+    Poseidon2PrepOutputLimb, Poseidon2PreprocessedRow, load_poseidon2_preprocessed_row_unaligned,
 };
 use crate::{Poseidon2CircuitCols, num_cols};
 
@@ -810,9 +810,9 @@ pub(crate) fn eval<
     >,
     next_preprocessed: &[AB::Var],
 ) {
-    // Cast the raw preprocessed slice into a typed struct so we can
-    // access individual fields by name.
-    let next_prep: &Poseidon2PreprocessedRow<AB::Var> = next_preprocessed.borrow();
+    // Load the next row's preprocessed flags. Use unaligned load so packed prover traces
+    // (e.g. KoalaBear SIMD) do not require the row slice to satisfy `align_of` for the row struct.
+    let next_prep = load_poseidon2_preprocessed_row_unaligned(next_preprocessed);
 
     // Extract the three things we'll reference repeatedly:
     //

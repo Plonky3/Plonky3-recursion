@@ -8,14 +8,14 @@ use alloc::{format, vec};
 use p3_circuit::{CircuitBuilder, CircuitRunner, NonPrimitiveOpId};
 use p3_circuit_prover::batch_stark_prover::{
     poseidon2_air_builders_d2, poseidon2_air_builders_d4, poseidon2_preprocessor,
-    poseidon2_table_provers_d2, poseidon2_table_provers_d4, recompose_air_builders,
-    recompose_preprocessor,
+    poseidon2_table_provers_d2, recompose_air_builders, recompose_preprocessor,
 };
 use p3_circuit_prover::common::{NpoAirBuilder, NpoPreprocessor};
 use p3_circuit_prover::config::StarkField;
 use p3_circuit_prover::field_params::ExtractBinomialW;
 use p3_circuit_prover::{
-    Poseidon2Preprocessor, RecomposePreprocessor, TableProver, recompose_table_provers,
+    ConstraintProfile, Poseidon2Preprocessor, Poseidon2Prover, RecomposePreprocessor, TableProver,
+    recompose_table_provers,
 };
 use p3_commit::Pcs;
 use p3_field::extension::BinomiallyExtendable;
@@ -102,13 +102,15 @@ where
     ) -> Result<(), &'static str>;
 }
 
-/// FRI-based recursion backend, holding the challenger permutation config.
+/// FRI-based recursion backend, holding Poseidon2 configs for MMCS (packed) and the challenger.
 /// The verifier params come from the config via [`FriRecursionConfig::pcs_verifier_params`].
 /// `WIDTH` and `RATE` are the permutation circuit parameters (typically 16 and 8).
 // TODO: Make this generic over the challenger permutation config.
 #[derive(Clone)]
 pub struct FriRecursionBackend<const WIDTH: usize = 16, const RATE: usize = 8> {
-    /// Poseidon2 configuration used for the Fiat-Shamir challenger permutation circuit.
+    /// Poseidon2 configuration for Merkle/MMCS packed hashing (typically D=4 width 16).
+    pub merkle_poseidon_config: Poseidon2Config,
+    /// Poseidon2 configuration for the Fiat–Shamir sponge (D=1 width 16 for Baby/Koala).
     pub challenger_perm_config: Poseidon2Config,
     /// Number of recompose operations packed per AIR row.
     ///
@@ -118,10 +120,12 @@ pub struct FriRecursionBackend<const WIDTH: usize = 16, const RATE: usize = 8> {
 }
 
 impl<const WIDTH: usize, const RATE: usize> FriRecursionBackend<WIDTH, RATE> {
-    /// Create a new backend with the given challenger permutation configuration.
-    pub const fn new(challenger_perm_config: Poseidon2Config) -> Self {
+    /// Create a backend from the MMCS Poseidon2 config. The challenger sponge config is
+    /// [`Poseidon2Config::companion_challenger_sponge`] (D=1 width 16 when `merkle` is D4 width 16).
+    pub const fn new(merkle_poseidon_config: Poseidon2Config) -> Self {
         Self {
-            challenger_perm_config,
+            merkle_poseidon_config,
+            challenger_perm_config: merkle_poseidon_config.companion_challenger_sponge(),
             recompose_lanes: 1,
         }
     }
@@ -139,11 +143,11 @@ impl<const WIDTH: usize, const RATE: usize> FriRecursionBackend<WIDTH, RATE> {
         FriRecursionBackendD2(Self::new(challenger_perm_config))
     }
 
-    /// For BabyBear/KoalaBear (D=4). Use this when `Val<SC>` is BabyBear or KoalaBear.
+    /// For BabyBear/KoalaBear (D=4 challenges). Pass the **packed** MMCS Poseidon2 config (D=4).
     pub const fn new_d4(
-        challenger_perm_config: Poseidon2Config,
+        merkle_poseidon_config: Poseidon2Config,
     ) -> FriRecursionBackendD4<WIDTH, RATE> {
-        FriRecursionBackendD4(Self::new(challenger_perm_config))
+        FriRecursionBackendD4(Self::new(merkle_poseidon_config))
     }
 }
 
@@ -157,7 +161,7 @@ pub struct FriRecursionBackendD2<const WIDTH: usize = 16, const RATE: usize = 8>
 /// FRI backend for D=4 extension (e.g. BabyBear, KoalaBear).
 #[derive(Clone)]
 pub struct FriRecursionBackendD4<const WIDTH: usize = 16, const RATE: usize = 8>(
-    /// The inner backend holding the challenger permutation config.
+    /// Inner backend (MMCS Poseidon + D=1 challenger sponge).
     pub(crate) FriRecursionBackend<WIDTH, RATE>,
 );
 
@@ -557,7 +561,16 @@ where
 
     fn non_primitive_provers(&self, ext_degree: usize) -> Vec<Box<dyn TableProver<SC>>> {
         if ext_degree == 4 {
-            let mut provers = poseidon2_table_provers_d4(self.0.challenger_perm_config);
+            let mut provers = vec![Box::new(Poseidon2Prover::new(
+                self.0.merkle_poseidon_config,
+                ConstraintProfile::Standard,
+            )) as Box<dyn TableProver<SC>>];
+            if self.0.challenger_perm_config != self.0.merkle_poseidon_config {
+                provers.push(Box::new(Poseidon2Prover::new(
+                    self.0.challenger_perm_config,
+                    ConstraintProfile::Standard,
+                )));
+            }
             provers.extend(recompose_table_provers::<SC, 4>(self.0.recompose_lanes));
             provers
         } else {

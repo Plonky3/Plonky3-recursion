@@ -210,22 +210,23 @@ where
         self.register_npo(plugin);
     }
 
-    /// Enables the Poseidon2 permutation operation for base field challenges (D=1).
+    /// Enables the Poseidon2 permutation operation for challenger-style sponges (D=1 NPO layout).
     ///
-    /// This variant is for tests/circuits using base field as the challenge type.
-    /// The permutation operates directly on 16 base field elements without packing.
+    /// The permutation runs on **16 base field elements** (same as native `DuplexChallenger`), while
+    /// circuit witnesses live in `F` (often an extension field). Inputs are read as embedded base
+    /// scalars via the constant term of each `F` element; outputs are lifted with `F::from(base)`.
     ///
     /// # Arguments
     /// * `trace_generator` - Function to generate Poseidon2 trace from circuit and witness
-    /// * `perm` - The Poseidon2 permutation to use for execution
+    /// * `perm` - The Poseidon2 permutation on `[Config::BaseField; 16]`
     pub fn enable_poseidon2_perm_base<Config, P>(
         &mut self,
         trace_generator: TraceGeneratorFn<F>,
         perm: P,
     ) where
         Config: Poseidon2Params,
-        F: Field,
-        P: Permutation<[F; 16]> + Clone + Send + Sync + 'static,
+        F: Field + ExtensionField<Config::BaseField>,
+        P: Permutation<[Config::BaseField; 16]> + Clone + Send + Sync + 'static,
     {
         assert!(
             Config::D == 1,
@@ -236,10 +237,11 @@ where
             "enable_poseidon2_perm_base only supports WIDTH=16"
         );
 
-        // For D=1, the exec closure converts slice to/from [F; 16]
         let exec: Poseidon2PermExec<F> = Arc::new(move |input: &[F]| {
             let arr: [F; 16] = input.try_into().expect("D=1 input must have 16 elements");
-            perm.permute(arr).to_vec()
+            let base_in = core::array::from_fn(|i| F::as_basis_coefficients_slice(&arr[i])[0]);
+            let base_out = perm.permute(base_in);
+            base_out.map(F::from).to_vec()
         });
 
         let plugin = Poseidon2CircuitPlugin::new(Config::CONFIG, exec, trace_generator);

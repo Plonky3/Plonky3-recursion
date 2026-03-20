@@ -3,7 +3,7 @@ use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::any::Any;
-use core::borrow::{Borrow, BorrowMut};
+use core::borrow::Borrow;
 use core::mem::transmute;
 
 use hashbrown::HashMap;
@@ -938,21 +938,18 @@ impl Poseidon2Prover {
         }
 
         let min_height = packing.min_trace_height();
+        let witness_index_scale = CF::DIMENSION as u32;
         match self.config {
-            Poseidon2Config::BabyBearD1Width16 | Poseidon2Config::BabyBearD4Width16 => {
-                self.batch_instance_base_impl::<SC, 16, 4, 13, 2>(t, min_height)
-            }
-            Poseidon2Config::BabyBearD4Width24 => {
-                self.batch_instance_base_impl::<SC, 24, 4, 21, 4>(t, min_height)
-            }
-            Poseidon2Config::KoalaBearD1Width16 | Poseidon2Config::KoalaBearD4Width16 => {
-                self.batch_instance_base_impl::<SC, 16, 4, 20, 2>(t, min_height)
-            }
-            Poseidon2Config::KoalaBearD4Width24 => {
-                self.batch_instance_base_impl::<SC, 24, 4, 23, 4>(t, min_height)
-            }
+            Poseidon2Config::BabyBearD1Width16 | Poseidon2Config::BabyBearD4Width16 => self
+                .batch_instance_base_impl::<SC, 16, 4, 13, 2>(t, min_height, witness_index_scale),
+            Poseidon2Config::BabyBearD4Width24 => self
+                .batch_instance_base_impl::<SC, 24, 4, 21, 4>(t, min_height, witness_index_scale),
+            Poseidon2Config::KoalaBearD1Width16 | Poseidon2Config::KoalaBearD4Width16 => self
+                .batch_instance_base_impl::<SC, 16, 4, 20, 2>(t, min_height, witness_index_scale),
+            Poseidon2Config::KoalaBearD4Width24 => self
+                .batch_instance_base_impl::<SC, 24, 4, 23, 4>(t, min_height, witness_index_scale),
             Poseidon2Config::GoldilocksD2Width8 => {
-                self.batch_instance_base_impl::<SC, 8, 4, 22, 2>(t, min_height)
+                self.batch_instance_base_impl::<SC, 8, 4, 22, 2>(t, min_height, witness_index_scale)
             }
         }
     }
@@ -967,6 +964,7 @@ impl Poseidon2Prover {
         &self,
         t: &Poseidon2Trace<Val<SC>>,
         min_height: usize,
+        witness_index_scale: u32,
     ) -> Option<BatchTableInstance<SC>>
     where
         SC: StarkGenericConfig + 'static + Send + Sync,
@@ -1001,7 +999,7 @@ impl Poseidon2Prover {
                 let constants = BabyBearD4Width16::round_constants();
                 let preprocessed = extract_preprocessed_from_operations::<BabyBear, Val<SC>>(
                     &t.operations,
-                    self.config.d() as u32,
+                    witness_index_scale,
                 );
                 let air =
                     BabyBearD4Width16::default_air_with_preprocessed(preprocessed, min_height);
@@ -1020,7 +1018,7 @@ impl Poseidon2Prover {
                 let constants = BabyBearD4Width24::round_constants();
                 let preprocessed = extract_preprocessed_from_operations::<BabyBear, Val<SC>>(
                     &t.operations,
-                    self.config.d() as u32,
+                    witness_index_scale,
                 );
                 let air =
                     BabyBearD4Width24::default_air_with_preprocessed(preprocessed, min_height);
@@ -1039,7 +1037,7 @@ impl Poseidon2Prover {
                 let constants = KoalaBearD4Width16::round_constants();
                 let preprocessed = extract_preprocessed_from_operations::<KoalaBear, Val<SC>>(
                     &t.operations,
-                    self.config.d() as u32,
+                    witness_index_scale,
                 );
                 let air =
                     KoalaBearD4Width16::default_air_with_preprocessed(preprocessed, min_height);
@@ -1058,7 +1056,7 @@ impl Poseidon2Prover {
                 let constants = KoalaBearD4Width24::round_constants();
                 let preprocessed = extract_preprocessed_from_operations::<KoalaBear, Val<SC>>(
                     &t.operations,
-                    self.config.d() as u32,
+                    witness_index_scale,
                 );
                 let air =
                     KoalaBearD4Width24::default_air_with_preprocessed(preprocessed, min_height);
@@ -1077,7 +1075,7 @@ impl Poseidon2Prover {
                 let constants = goldilocks_d2_width8_round_constants();
                 let preprocessed = extract_preprocessed_from_operations::<Goldilocks, Val<SC>>(
                     &t.operations,
-                    self.config.d() as u32,
+                    witness_index_scale,
                 );
                 let air =
                     goldilocks_d2_width8_default_air_with_preprocessed(preprocessed, min_height);
@@ -1276,6 +1274,22 @@ where
     }
 }
 
+#[inline]
+fn read_poseidon2_prep_row_unaligned<F: Copy>(chunk: &[F]) -> Poseidon2PreprocessedRow<F> {
+    let w = poseidon2_preprocessed_width();
+    debug_assert_eq!(chunk.len(), w);
+    unsafe { (chunk.as_ptr() as *const Poseidon2PreprocessedRow<F>).read_unaligned() }
+}
+
+#[inline]
+fn write_poseidon2_prep_row_unaligned<F: Copy>(row: &Poseidon2PreprocessedRow<F>, chunk: &mut [F]) {
+    let w = poseidon2_preprocessed_width();
+    debug_assert_eq!(chunk.len(), w);
+    unsafe {
+        (chunk.as_mut_ptr() as *mut Poseidon2PreprocessedRow<F>).write_unaligned(*row);
+    }
+}
+
 /// Shared helper implementing Poseidon2-specific preprocessing on generic preprocessed columns.
 fn poseidon2_preprocess_for_prover<F, ExtF, const D: usize>(
     preprocessed: &mut PreprocessedColumns<ExtF>,
@@ -1302,8 +1316,9 @@ where
 
             for row_idx in 0..num_rows {
                 let row_start = row_idx * prep_row_width;
-                let row: &Poseidon2PreprocessedRow<F> =
-                    prep_base[row_start..row_start + prep_row_width].borrow();
+                let row = read_poseidon2_prep_row_unaligned(
+                    &prep_base[row_start..row_start + prep_row_width],
+                );
                 let current_mmcs_merkle_flag = row.mmcs_merkle_flag;
 
                 // Check if next row exists and has new_start = 1.
@@ -1312,14 +1327,15 @@ where
                 // lookup if its mmcs_merkle_flag = 1 and there is padding.
                 let next_new_start = if row_idx + 1 < num_rows {
                     let next_start = (row_idx + 1) * prep_row_width;
-                    let next_row: &Poseidon2PreprocessedRow<F> =
-                        prep_base[next_start..next_start + prep_row_width].borrow();
+                    let next_row = read_poseidon2_prep_row_unaligned(
+                        &prep_base[next_start..next_start + prep_row_width],
+                    );
                     next_row.new_start
                 } else if has_padding {
                     F::ONE
                 } else {
-                    let first_row: &Poseidon2PreprocessedRow<F> =
-                        prep_base[0..prep_row_width].borrow();
+                    let first_row =
+                        read_poseidon2_prep_row_unaligned(&prep_base[0..prep_row_width]);
                     first_row.new_start
                 };
 
@@ -1356,8 +1372,9 @@ where
 
             for row_idx in 0..num_rows {
                 let row_start = row_idx * prep_row_width;
-                let row: &mut Poseidon2PreprocessedRow<F> =
-                    prep_base[row_start..row_start + prep_row_width].borrow_mut();
+                let mut row = read_poseidon2_prep_row_unaligned(
+                    &prep_base[row_start..row_start + prep_row_width],
+                );
 
                 for out_limb in &mut row.output_limbs {
                     if out_limb.out_ctl != F::ZERO {
@@ -1373,6 +1390,11 @@ where
                         }
                     }
                 }
+
+                write_poseidon2_prep_row_unaligned(
+                    &row,
+                    &mut prep_base[row_start..row_start + prep_row_width],
+                );
             }
 
             non_primitive_base.insert(op_type.clone(), prep_base);
