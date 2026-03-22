@@ -95,7 +95,7 @@ let circuit_prover_data = CircuitProverData::new(prover_data, preprocessed);
 
 let mut prover = BatchStarkProver::new(config.clone())
     .with_table_packing(table_packing);
-prover.register_poseidon2_table(poseidon2_config);
+prover.register_poseidon2_table::<4>(poseidon2_config);
 
 let proof = prover.prove_all_tables(&traces, &circuit_prover_data)?;
 ```

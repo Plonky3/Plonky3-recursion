@@ -42,8 +42,8 @@ pub use dynamic_air::{
 pub use packing::TablePacking;
 pub(crate) use packing::TraceLengths;
 pub use poseidon2::{
-    Poseidon2AirBuilderD2, Poseidon2AirBuilderD4, Poseidon2AirWrapperInner, Poseidon2Preprocessor,
-    Poseidon2Prover, Poseidon2ProverD2, poseidon2_preprocessor, poseidon2_verifier_air_from_config,
+    Poseidon2AirBuilder, Poseidon2AirWrapperInner, Poseidon2Preprocessor, Poseidon2Prover,
+    Poseidon2ProverD2, poseidon2_preprocessor, poseidon2_verifier_air_from_config,
 };
 pub use recompose::{RecomposeAirBuilder, RecomposePreprocessor, RecomposeProver};
 
@@ -428,6 +428,46 @@ where
     }
 }
 
+/// Const-generic dispatch for [`BatchStarkProver::register_poseidon2_table`]: only the chosen
+/// extension degree's `BinomiallyExtendable` bound is required on `Val<SC>`.
+#[doc(hidden)]
+pub trait RegisterPoseidon2ForExt<const D: usize, SC>
+where
+    SC: StarkGenericConfig + 'static,
+{
+    fn register_poseidon2(prover: &mut BatchStarkProver<SC>, config: Poseidon2Config);
+}
+
+impl<SC> RegisterPoseidon2ForExt<2, SC> for ()
+where
+    SC: StarkGenericConfig + 'static + Send + Sync,
+    Val<SC>: StarkField + BinomiallyExtendable<2>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+{
+    fn register_poseidon2(prover: &mut BatchStarkProver<SC>, config: Poseidon2Config) {
+        prover.register_table_prover(Box::new(Poseidon2ProverD2::new(
+            config,
+            ConstraintProfile::Standard,
+        )));
+    }
+}
+
+impl<SC> RegisterPoseidon2ForExt<4, SC> for ()
+where
+    SC: StarkGenericConfig + 'static + Send + Sync,
+    Val<SC>: StarkField + BinomiallyExtendable<4>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+{
+    fn register_poseidon2(prover: &mut BatchStarkProver<SC>, config: Poseidon2Config) {
+        prover.register_table_prover(Box::new(Poseidon2Prover::new(
+            config,
+            ConstraintProfile::Standard,
+        )));
+    }
+}
+
 impl<SC> BatchStarkProver<SC>
 where
     SC: StarkGenericConfig + 'static,
@@ -474,54 +514,31 @@ where
         self
     }
 
-    /// Register the non-primitive Poseidon2 prover plugin with the given configuration (D=4).
-    pub fn register_poseidon2_table(&mut self, config: Poseidon2Config)
+    /// Register the non-primitive Poseidon2 table prover for extension degree `D` (`2` or `4`).
+    pub fn register_poseidon2_table<const D: usize>(&mut self, config: Poseidon2Config)
     where
         SC: Send + Sync,
-        Val<SC>: BinomiallyExtendable<4>,
+        (): RegisterPoseidon2ForExt<D, SC>,
     {
-        self.register_table_prover(Box::new(Poseidon2Prover::new(
-            config,
-            ConstraintProfile::Standard,
-        )));
+        <() as RegisterPoseidon2ForExt<D, SC>>::register_poseidon2(self, config);
     }
 
-    /// Register the recompose (BF→EF packing) table prover (D=4).
-    pub fn register_recompose_table(&mut self)
+    /// Register the recompose (BF→EF packing) table prover for extension degree `D`.
+    pub fn register_recompose_table<const D: usize>(&mut self)
     where
         SC: Send + Sync,
     {
-        self.register_table_prover(Box::new(RecomposeProver::<4>::new(1)));
+        self.register_table_prover(Box::new(RecomposeProver::<D>::new(1)));
     }
 
-    /// Register the recompose (BF→EF packing) table prover (D=2, e.g. Goldilocks).
-    pub fn register_recompose_table_d2(&mut self)
-    where
-        SC: Send + Sync,
-    {
-        self.register_table_prover(Box::new(RecomposeProver::<2>::new(1)));
-    }
-
-    /// Builder-style registration for the recompose table prover (D=4).
+    /// Builder-style registration for the recompose table prover.
     #[must_use]
-    pub fn with_recompose_table(mut self) -> Self
+    pub fn with_recompose_table<const D: usize>(mut self) -> Self
     where
         SC: Send + Sync,
     {
-        self.register_recompose_table();
+        self.register_recompose_table::<D>();
         self
-    }
-
-    /// Register Poseidon2 for D=2 challenge field (e.g. Goldilocks).
-    pub fn register_poseidon2_table_d2(&mut self, config: Poseidon2Config)
-    where
-        SC: Send + Sync,
-        Val<SC>: BinomiallyExtendable<2>,
-    {
-        self.register_table_prover(Box::new(Poseidon2ProverD2(Poseidon2Prover::new(
-            config,
-            ConstraintProfile::Standard,
-        ))));
     }
 
     /// Return the current [`TablePacking`] configuration.
@@ -970,54 +987,16 @@ where
     }
 }
 
-/// Create Poseidon2 table provers for D=2 (e.g. Goldilocks).
-pub fn poseidon2_table_provers_d2<SC>(config: Poseidon2Config) -> Vec<Box<dyn TableProver<SC>>>
+/// Poseidon2 AIR builders for the given extension degree `D` (typically `2` or `4`).
+pub fn poseidon2_air_builders<SC, const D: usize>() -> Vec<Box<dyn NpoAirBuilder<SC, D>>>
 where
     SC: StarkGenericConfig + 'static + Send + Sync,
-    Val<SC>: BinomiallyExtendable<2> + StarkField,
+    Val<SC>: BinomiallyExtendable<D> + StarkField,
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
         Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+    Poseidon2AirBuilder<D>: NpoAirBuilder<SC, D>,
 {
-    vec![Box::new(Poseidon2ProverD2(Poseidon2Prover::new(
-        config,
-        ConstraintProfile::Standard,
-    )))]
-}
-
-/// Create Poseidon2 table provers for D=4 (e.g. BabyBear, KoalaBear).
-pub fn poseidon2_table_provers_d4<SC>(config: Poseidon2Config) -> Vec<Box<dyn TableProver<SC>>>
-where
-    SC: StarkGenericConfig + 'static + Send + Sync,
-    Val<SC>: BinomiallyExtendable<4> + StarkField,
-    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
-        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
-{
-    vec![Box::new(Poseidon2Prover::new(
-        config,
-        ConstraintProfile::Standard,
-    ))]
-}
-
-/// Poseidon2 AIR builders for D=2 (e.g. Goldilocks).
-pub fn poseidon2_air_builders_d2<SC>() -> Vec<Box<dyn NpoAirBuilder<SC, 2>>>
-where
-    SC: StarkGenericConfig + 'static + Send + Sync,
-    Val<SC>: BinomiallyExtendable<2> + StarkField,
-    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
-        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
-{
-    vec![Box::new(Poseidon2AirBuilderD2)]
-}
-
-/// Poseidon2 AIR builders for D=4 (e.g. BabyBear, KoalaBear).
-pub fn poseidon2_air_builders_d4<SC>() -> Vec<Box<dyn NpoAirBuilder<SC, 4>>>
-where
-    SC: StarkGenericConfig + 'static + Send + Sync,
-    Val<SC>: BinomiallyExtendable<4> + StarkField,
-    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
-        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
-{
-    vec![Box::new(Poseidon2AirBuilderD4)]
+    vec![Box::new(Poseidon2AirBuilder)]
 }
 
 /// Returns a type-erased Recompose preprocessor.

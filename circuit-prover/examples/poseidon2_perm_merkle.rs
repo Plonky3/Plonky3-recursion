@@ -6,7 +6,7 @@ use p3_circuit::ops::{
     generate_recompose_trace,
 };
 use p3_circuit::{CircuitBuilder, ExprId};
-use p3_circuit_prover::batch_stark_prover::{poseidon2_air_builders_d4, recompose_air_builders};
+use p3_circuit_prover::batch_stark_prover::{poseidon2_air_builders, recompose_air_builders};
 use p3_circuit_prover::common::{NpoPreprocessor, get_airs_and_degrees_with_prep};
 use p3_circuit_prover::config::KoalaBearConfig;
 use p3_circuit_prover::{
@@ -226,7 +226,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         Box::new(Poseidon2Preprocessor),
         Box::new(RecomposePreprocessor),
     ];
-    let mut air_builders = poseidon2_air_builders_d4();
+    let mut air_builders = poseidon2_air_builders::<_, 4>();
     air_builders.extend(recompose_air_builders(1));
     let (airs_degrees, preprocessed_columns) =
         get_airs_and_degrees_with_prep::<KoalaBearConfig, _, 4>(
@@ -285,8 +285,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     );
 
     let mut prover = BatchStarkProver::new(stark_config).with_table_packing(table_packing);
-    prover.register_poseidon2_table(poseidon2_config);
-    prover.register_recompose_table();
+    prover.register_poseidon2_table::<4>(poseidon2_config);
+    prover.register_recompose_table::<4>();
 
     let proof = prover.prove_all_tables(&traces, &circuit_prover_data)?;
     prover.verify_all_tables(&proof, circuit_prover_data.common_data())?;

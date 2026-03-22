@@ -3,13 +3,11 @@ mod common;
 use p3_batch_stark::ProverData;
 use p3_circuit::CircuitBuilder;
 use p3_circuit::ops::{generate_poseidon2_trace, generate_recompose_trace};
-use p3_circuit_prover::batch_stark_prover::{
-    poseidon2_air_builders_d4, poseidon2_table_provers_d4, recompose_air_builders,
-};
+use p3_circuit_prover::batch_stark_prover::{poseidon2_air_builders, recompose_air_builders};
 use p3_circuit_prover::common::{NpoPreprocessor, get_airs_and_degrees_with_prep};
 use p3_circuit_prover::{
-    BatchStarkProver, CircuitProverData, ConstraintProfile, Poseidon2Preprocessor,
-    RecomposePreprocessor, TablePacking, recompose_table_provers,
+    BatchStarkProver, CircuitProverData, ConstraintProfile, Poseidon2Preprocessor, Poseidon2Prover,
+    RecomposePreprocessor, TablePacking, TableProver, recompose_table_provers,
 };
 use p3_fri::create_test_fri_params;
 use p3_lookup::logup::LogUpGadget;
@@ -175,7 +173,10 @@ fn test_fibonacci_batch_verifier() {
         &lookup_gadget,
         Poseidon2Config::KoalaBearD4Width16,
         &{
-            let mut tp = poseidon2_table_provers_d4(Poseidon2Config::KoalaBearD4Width16);
+            let mut tp: Vec<Box<dyn TableProver<MyConfig>>> = vec![Box::new(Poseidon2Prover::new(
+                Poseidon2Config::KoalaBearD4Width16,
+                ConstraintProfile::Standard,
+            ))];
             tp.extend(recompose_table_provers::<_, 4>(1));
             tp
         },
@@ -198,7 +199,7 @@ fn test_fibonacci_batch_verifier() {
         Box::new(Poseidon2Preprocessor),
         Box::new(RecomposePreprocessor),
     ];
-    let mut air_builders = poseidon2_air_builders_d4();
+    let mut air_builders = poseidon2_air_builders::<_, 4>();
     air_builders.extend(recompose_air_builders(1));
     let (verification_airs_degrees, verification_preprocessed_columns) =
         get_airs_and_degrees_with_prep::<MyConfig, _, 4>(
@@ -255,8 +256,8 @@ fn test_fibonacci_batch_verifier() {
 
     let mut verification_prover =
         BatchStarkProver::new(config3).with_table_packing(verification_table_packing);
-    verification_prover.register_poseidon2_table(poseidon2_config);
-    verification_prover.register_recompose_table();
+    verification_prover.register_poseidon2_table::<4>(poseidon2_config);
+    verification_prover.register_recompose_table::<4>();
 
     // Prove the verification circuit
     let verification_proof = verification_prover

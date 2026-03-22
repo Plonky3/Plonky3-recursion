@@ -10,8 +10,7 @@ use p3_symmetric::CryptographicHasher;
 use super::*;
 use crate::ConstraintProfile;
 use crate::batch_stark_prover::{
-    BABY_BEAR_MODULUS, KOALA_BEAR_MODULUS, poseidon2_air_builders_d2, poseidon2_air_builders_d4,
-    recompose_air_builders,
+    BABY_BEAR_MODULUS, KOALA_BEAR_MODULUS, poseidon2_air_builders, recompose_air_builders,
 };
 use crate::common::get_airs_and_degrees_with_prep;
 use crate::config::{self, BabyBearConfig, GoldilocksConfig, KoalaBearConfig};
@@ -251,14 +250,14 @@ fn test_extension_field_table_lookups() {
 
     let circuit = builder.build().unwrap();
     let default_packing = TablePacking::default();
-    let mut air_builders_d4 = poseidon2_air_builders_d4();
-    air_builders_d4.extend(recompose_air_builders(1));
+    let mut air_builders_ext4 = poseidon2_air_builders::<BabyBearConfig, 4>();
+    air_builders_ext4.extend(recompose_air_builders::<BabyBearConfig, 4>(1));
     let (airs_degrees, preprocessed_columns) =
         get_airs_and_degrees_with_prep::<BabyBearConfig, _, D>(
             &circuit,
             &default_packing,
             &[],
-            &air_builders_d4,
+            &air_builders_ext4,
             ConstraintProfile::Standard,
         )
         .unwrap();
@@ -495,7 +494,7 @@ fn test_koalabear_batch_stark_extension_field_d8() {
 }
 
 #[test]
-fn test_goldilocks_batch_stark_extension_field_d2() {
+fn test_goldilocks_batch_stark_binomial_ext2() {
     const D: usize = 2;
     type Ext2 = BinomialExtensionField<Goldilocks, D>;
     let mut builder = CircuitBuilder::<Ext2>::new();
@@ -513,14 +512,14 @@ fn test_goldilocks_batch_stark_extension_field_d2() {
     builder.assert_zero(diff);
 
     let circuit = builder.build().unwrap();
-    let mut air_builders_d2 = poseidon2_air_builders_d2();
-    air_builders_d2.extend(recompose_air_builders::<_, 2>(1));
+    let mut air_builders_ext2 = poseidon2_air_builders::<GoldilocksConfig, 2>();
+    air_builders_ext2.extend(recompose_air_builders::<GoldilocksConfig, 2>(1));
     let (airs_degrees, preprocessed_columns) =
         get_airs_and_degrees_with_prep::<GoldilocksConfig, _, D>(
             &circuit,
             &TablePacking::default(),
             &[],
-            &air_builders_d2,
+            &air_builders_ext2,
             ConstraintProfile::Standard,
         )
         .unwrap();

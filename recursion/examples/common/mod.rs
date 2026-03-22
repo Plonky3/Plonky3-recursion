@@ -9,9 +9,7 @@ pub use clap::{Args as ClapArgs, Parser, ValueEnum};
 pub use p3_challenger::DuplexChallenger;
 pub use p3_circuit::ops::{NpoTypeId, generate_poseidon2_trace, generate_recompose_trace};
 pub use p3_circuit::{CircuitBuilder, CircuitRunner, NonPrimitiveOpId};
-pub use p3_circuit_prover::batch_stark_prover::{
-    poseidon2_air_builders_d2, poseidon2_air_builders_d4,
-};
+pub use p3_circuit_prover::batch_stark_prover::poseidon2_air_builders;
 pub use p3_circuit_prover::common::{NpoPreprocessor, get_airs_and_degrees_with_prep};
 pub use p3_circuit_prover::{
     BatchStarkProver, CircuitProverData, ConstraintProfile, Poseidon2Preprocessor, TablePacking,
@@ -104,6 +102,9 @@ pub fn report_proof_size<S: Serialize>(proof: &S) {
 ///   `ConfigWithFriParams`
 /// - Functions: `create_config`, `create_fri_verifier_params`, `config_with_fri_params`
 /// - Trait impls: `Deref`, `StarkGenericConfig`, `FriRecursionConfig` for `ConfigWithFriParams`
+///
+/// Use `D` as the extension degree for `register_poseidon2_table::<D>`, `register_recompose_table::<D>`,
+/// `poseidon2_air_builders::<_, D>()`, and `FriRecursionBackend::for_extension_degree::<D>(...)`.
 #[macro_export]
 macro_rules! define_field_module_types {
     (
@@ -117,10 +118,7 @@ macro_rules! define_field_module_types {
         $rate:expr,
         $digest_elems:expr,
         $enable_poseidon2_fn:ident,
-        $register_poseidon2_fn:ident,
         $default_perm_circuit:path,
-        $poseidon2_air_builders_fn:ident,
-        $backend_ctor:ident,
         $backend_width:expr,
         $backend_rate:expr,
         $enable_recompose_fn:ident

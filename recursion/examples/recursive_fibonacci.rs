@@ -199,10 +199,7 @@ macro_rules! define_field_module {
         $rate:expr,
         $digest_elems:expr,
         $enable_poseidon2_fn:ident,
-        $register_poseidon2_fn:ident,
         $default_perm_circuit:path,
-        $poseidon2_air_builders_fn:ident,
-        $backend_ctor:ident,
         $backend_width:expr,
         $backend_rate:expr
     ) => {
@@ -222,10 +219,7 @@ macro_rules! define_field_module {
                 $rate,
                 $digest_elems,
                 $enable_poseidon2_fn,
-                $register_poseidon2_fn,
                 $default_perm_circuit,
-                $poseidon2_air_builders_fn,
-                $backend_ctor,
                 $backend_width,
                 $backend_rate,
                 noop_enable_recompose
@@ -265,9 +259,9 @@ macro_rules! define_field_module {
                     runner_0.run().unwrap()
                 };
 
-                let backend = FriRecursionBackend::<$backend_width, $backend_rate>::$backend_ctor(
-                    $poseidon2_config,
-                );
+                let backend =
+                    FriRecursionBackend::<$backend_width, $backend_rate>::new($poseidon2_config)
+                        .for_extension_degree::<$d>();
 
                 macro_rules! run_layers {
                     ($cfg_type:ident, $cfg_fn:expr) => {{
@@ -372,7 +366,7 @@ macro_rules! define_field_module {
                             report_proof_size(&out.0);
                             let mut prover = BatchStarkProver::new(config.clone())
                                 .with_table_packing(params.table_packing.clone());
-                            prover.$register_poseidon2_fn($poseidon2_config);
+                            prover.register_poseidon2_table::<$d>($poseidon2_config);
                             prover
                                 .verify_all_tables(&out.0, out.1.common_data())
                                 .unwrap_or_else(|e| {
@@ -429,10 +423,7 @@ define_field_module!(
     8,
     8,
     enable_poseidon2_perm,
-    register_poseidon2_table,
     p3_koala_bear::default_koalabear_poseidon2_16,
-    poseidon2_air_builders_d4,
-    new_d4,
     16,
     8
 );
@@ -449,10 +440,7 @@ define_field_module!(
     8,
     8,
     enable_poseidon2_perm,
-    register_poseidon2_table,
     p3_baby_bear::default_babybear_poseidon2_16,
-    poseidon2_air_builders_d4,
-    new_d4,
     16,
     8
 );
@@ -469,10 +457,7 @@ define_field_module!(
     4,
     4,
     enable_poseidon2_perm_width_8,
-    register_poseidon2_table_d2,
     default_goldilocks_poseidon2_8,
-    poseidon2_air_builders_d2,
-    new_d2,
     8,
     4
 );
