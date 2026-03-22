@@ -9,8 +9,7 @@ use p3_field::Field;
 use tracing::instrument;
 
 use super::alu::{AluOpRecord, AluTrace};
-use super::constant::ConstTraceBuilder;
-use super::public::PublicTraceBuilder;
+use super::public::PublicTrace;
 use super::witness::WitnessTrace;
 use super::{NonPrimitiveTrace, Traces};
 use crate::circuit::Circuit;
@@ -221,8 +220,24 @@ impl<'a, F: Field> CircuitRunner<'a, F> {
         }
         let witness_trace = WitnessTrace::new(witness_values);
 
-        let const_trace = ConstTraceBuilder::new(&self.circuit.ops).build()?;
-        let public_trace = PublicTraceBuilder::new(&self.circuit.ops, &self.witness).build()?;
+        let const_trace = self.circuit.runner_const_trace.clone();
+        let wids = &self.circuit.runner_public_trace_witness_ids;
+        let mut public_index = Vec::with_capacity(wids.len());
+        let mut public_values = Vec::with_capacity(wids.len());
+        for &out in wids {
+            public_index.push(out);
+            let value = self
+                .witness
+                .get(out.0 as usize)
+                .and_then(|opt| opt.as_ref())
+                .cloned()
+                .ok_or(CircuitError::WitnessNotSet { witness_id: out })?;
+            public_values.push(value);
+        }
+        let public_trace = PublicTrace {
+            index: public_index,
+            values: public_values,
+        };
         let alu_trace = AluTrace::from_records(alu_records);
 
         let mut non_primitive_traces: HashMap<NpoTypeId, Box<dyn NonPrimitiveTrace<F>>> =

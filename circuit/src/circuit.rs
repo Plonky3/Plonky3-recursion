@@ -7,7 +7,7 @@ use p3_field::Field;
 use strum::EnumCount;
 
 use crate::ops::{NonPrimitivePreprocessedMap, NpoConfig, NpoTypeId, Op, PrimitiveOpType};
-use crate::tables::{CircuitRunner, TraceGeneratorFn};
+use crate::tables::{CircuitRunner, ConstTrace, TraceGeneratorFn};
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessId};
 use crate::{AluOpKind, CircuitError};
 
@@ -189,6 +189,10 @@ pub struct Circuit<F> {
     /// After ALU deduplication, duplicate outputs are rewritten to canonical.
     /// This map is used by the runner to fill those slots.
     pub witness_rewrite: Option<HashMap<WitnessId, WitnessId>>,
+    /// Const trace rows in order of `Op::Const` appearance in `ops` (same as [`ConstTraceBuilder`](crate::tables::ConstTraceBuilder)).
+    pub runner_const_trace: ConstTrace<F>,
+    /// Public table witness IDs in order of `Op::Public` appearance in `ops` (values filled at runtime from the witness table).
+    pub runner_public_trace_witness_ids: Vec<WitnessId>,
 }
 
 impl<F: Field + Clone> Clone for Circuit<F> {
@@ -207,6 +211,8 @@ impl<F: Field + Clone> Clone for Circuit<F> {
             tag_to_witness: self.tag_to_witness.clone(),
             tag_to_op_id: self.tag_to_op_id.clone(),
             witness_rewrite: self.witness_rewrite.clone(),
+            runner_const_trace: self.runner_const_trace.clone(),
+            runner_public_trace_witness_ids: self.runner_public_trace_witness_ids.clone(),
         }
     }
 }
@@ -228,6 +234,11 @@ impl<F: Field> Circuit<F> {
             tag_to_witness: HashMap::new(),
             tag_to_op_id: HashMap::new(),
             witness_rewrite: None,
+            runner_const_trace: ConstTrace {
+                index: Vec::new(),
+                values: Vec::new(),
+            },
+            runner_public_trace_witness_ids: Vec::new(),
         }
     }
 
@@ -487,6 +498,39 @@ impl<F: Field> Circuit<F> {
     }
 }
 
+impl<F: Clone> Circuit<F> {
+    /// Const/public primitive trace layout derived from `ops` execution order.
+    ///
+    /// Matches [`ConstTraceBuilder`](crate::tables::ConstTraceBuilder) and
+    /// [`PublicTraceBuilder`](crate::tables::PublicTraceBuilder) scans of the same slice.
+    pub(crate) fn runner_primitive_layout_from_ops(
+        ops: &[Op<F>],
+    ) -> (ConstTrace<F>, Vec<WitnessId>) {
+        let mut const_index = Vec::new();
+        let mut const_values = Vec::new();
+        let mut public_wids = Vec::new();
+        for op in ops {
+            match op {
+                Op::Const { out, val } => {
+                    const_index.push(*out);
+                    const_values.push(val.clone());
+                }
+                Op::Public { out, .. } => {
+                    public_wids.push(*out);
+                }
+                _ => {}
+            }
+        }
+        (
+            ConstTrace {
+                index: const_index,
+                values: const_values,
+            },
+            public_wids,
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use alloc::vec;
@@ -504,6 +548,10 @@ mod tests {
     fn make_circuit(ops: Vec<Op<F>>) -> Circuit<F> {
         let mut circuit = Circuit::new(0, HashMap::new());
         circuit.ops = ops;
+        let (runner_const_trace, runner_public_trace_witness_ids) =
+            Circuit::runner_primitive_layout_from_ops(&circuit.ops);
+        circuit.runner_const_trace = runner_const_trace;
+        circuit.runner_public_trace_witness_ids = runner_public_trace_witness_ids;
         circuit
     }
 

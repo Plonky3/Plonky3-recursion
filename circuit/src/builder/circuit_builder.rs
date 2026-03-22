@@ -813,6 +813,10 @@ where
         // Stage 3: Generate final circuit
         let mut circuit = Circuit::new(witness_count, expr_to_widx);
         circuit.ops = ops;
+        let (runner_const_trace, runner_public_trace_witness_ids) =
+            Circuit::runner_primitive_layout_from_ops(&circuit.ops);
+        circuit.runner_const_trace = runner_const_trace;
+        circuit.runner_public_trace_witness_ids = runner_public_trace_witness_ids;
         circuit.public_rows = public_rows;
         circuit.private_input_rows = private_input_rows;
         circuit.private_flat_len = self.private_input_tracker.count();
