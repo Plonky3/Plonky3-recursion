@@ -15,7 +15,7 @@ use p3_symmetric::Permutation;
 
 #[cfg(feature = "profiling")]
 use super::OpCounts;
-use super::compiler::{ExpressionLowerer, Optimizer};
+use super::compiler::{ExpressionLowerer, LoweringResult, Optimizer};
 use super::npo::{NonPrimitiveOpParams, NonPrimitiveOperationData, NpoCircuitPlugin};
 use super::{BuilderConfig, ExpressionBuilder, PublicInputTracker};
 use crate::circuit::Circuit;
@@ -796,8 +796,15 @@ where
             self.witness_alloc,
             &self.npo_registry,
         );
-        let (ops, public_rows, private_input_rows, expr_to_widx, public_mappings, witness_count) =
-            lowerer.lower()?;
+        // Run the multi-phase lowering pipeline and destructure the result.
+        let LoweringResult {
+            ops,
+            public_rows,
+            private_input_rows,
+            expr_to_widx,
+            public_mappings,
+            witness_count,
+        } = lowerer.lower()?;
 
         // Stage 2: IR transformations and optimizations
         let (ops, rewrite) = Optimizer::optimize(ops);

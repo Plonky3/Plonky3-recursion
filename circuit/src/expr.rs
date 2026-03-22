@@ -1,5 +1,10 @@
+use alloc::format;
+use alloc::string::ToString;
 use alloc::vec::Vec;
 
+use hashbrown::HashMap;
+
+use crate::builder::CircuitBuilderError;
 use crate::types::{ExprId, NonPrimitiveOpId};
 
 /// Expression DAG for field operations
@@ -88,6 +93,54 @@ impl<F> ExpressionGraph<F> {
     pub fn nodes(&self) -> &[Expr<F>] {
         &self.nodes
     }
+
+    /// Build a map from `NonPrimitiveOpId` to its sorted, validated output expressions.
+    pub fn build_npo_output_map(
+        &self,
+    ) -> Result<HashMap<NonPrimitiveOpId, Vec<(u32, ExprId)>>, CircuitBuilderError> {
+        let mut map: HashMap<NonPrimitiveOpId, Vec<(u32, ExprId)>> = HashMap::new();
+
+        // Scan every node, collecting output nodes grouped by their parent operation.
+        for (expr_idx, expr) in self.nodes.iter().enumerate() {
+            // Skip non-output nodes.
+            let Expr::NonPrimitiveOutput { call, output_idx } = expr else {
+                continue;
+            };
+            // Validate that the referenced call node is actually a call.
+            let Expr::NonPrimitiveCall { op_id, .. } = self.get_expr(*call) else {
+                return Err(CircuitBuilderError::MissingExprMapping {
+                    expr_id: *call,
+                    context: "NonPrimitiveOutput.call must reference a NonPrimitiveCall"
+                        .to_string(),
+                });
+            };
+            // Record this output under its parent operation.
+            map.entry(*op_id)
+                .or_default()
+                .push((*output_idx, ExprId(expr_idx as u32)));
+        }
+
+        // Sort each operation's outputs by index for deterministic ordering.
+        for outputs in map.values_mut() {
+            outputs.sort_unstable_by_key(|(idx, _)| *idx);
+        }
+
+        // After sorting, a contiguous 0..N range means output_idx[pos] == pos for all pos.
+        //
+        // This single check catches both gaps and duplicates.
+        for (&op_id, outputs) in &map {
+            for (pos, &(output_idx, _)) in outputs.iter().enumerate() {
+                if output_idx != pos as u32 {
+                    return Err(CircuitBuilderError::MalformedNonPrimitiveOutputs {
+                        op_id,
+                        details: format!("expected contiguous output_idx {pos}, got {output_idx}"),
+                    });
+                }
+            }
+        }
+
+        Ok(map)
+    }
 }
 
 #[cfg(test)]
@@ -123,6 +176,124 @@ mod tests {
         let add_id = graph.add_expr(add_expr.clone());
         assert_eq!(add_id, ExprId(2));
         assert_eq!(graph.get_expr(add_id), &add_expr);
+    }
+
+    #[test]
+    fn npo_output_map_empty_graph() {
+        // An empty graph has no output nodes, so the map should be empty.
+        let graph = ExpressionGraph::<MockExtField>::new();
+        let map = graph.build_npo_output_map().unwrap();
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn npo_output_map_no_npo_nodes() {
+        // A graph with only constants and publics has no output nodes.
+        let mut graph = ExpressionGraph::<MockExtField>::new();
+        graph.add_expr(Expr::Const(MockExtField(1)));
+        graph.add_expr(Expr::Public(0));
+        let map = graph.build_npo_output_map().unwrap();
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn npo_output_map_valid_contiguous() {
+        let mut graph = ExpressionGraph::<MockExtField>::new();
+        // Create a call node with no inputs.
+        let call = graph.add_expr(Expr::NonPrimitiveCall {
+            op_id: NonPrimitiveOpId(0),
+            inputs: Vec::new(),
+        });
+        // Insert outputs out of order to exercise the sorting logic.
+        let out1 = graph.add_expr(Expr::NonPrimitiveOutput {
+            call,
+            output_idx: 1,
+        });
+        let out0 = graph.add_expr(Expr::NonPrimitiveOutput {
+            call,
+            output_idx: 0,
+        });
+        let map = graph.build_npo_output_map().unwrap();
+        let outputs = &map[&NonPrimitiveOpId(0)];
+        // After sorting, index 0 should come first despite being added second.
+        assert_eq!(outputs, &[(0, out0), (1, out1)]);
+    }
+
+    #[test]
+    fn npo_output_map_gap_rejected() {
+        use crate::builder::CircuitBuilderError;
+
+        let mut graph = ExpressionGraph::<MockExtField>::new();
+        let call = graph.add_expr(Expr::NonPrimitiveCall {
+            op_id: NonPrimitiveOpId(0),
+            inputs: Vec::new(),
+        });
+        // Create outputs at indices 0 and 2, leaving a gap at index 1.
+        graph.add_expr(Expr::NonPrimitiveOutput {
+            call,
+            output_idx: 0,
+        });
+        graph.add_expr(Expr::NonPrimitiveOutput {
+            call,
+            output_idx: 2,
+        });
+        // The contiguity check should reject this with a descriptive error.
+        match graph.build_npo_output_map() {
+            Err(CircuitBuilderError::MalformedNonPrimitiveOutputs { op_id, details }) => {
+                assert_eq!(op_id, NonPrimitiveOpId(0));
+                assert!(details.contains("expected contiguous"));
+            }
+            other => panic!("expected MalformedNonPrimitiveOutputs, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn npo_output_map_duplicate_rejected() {
+        use crate::builder::CircuitBuilderError;
+
+        let mut graph = ExpressionGraph::<MockExtField>::new();
+        let call = graph.add_expr(Expr::NonPrimitiveCall {
+            op_id: NonPrimitiveOpId(0),
+            inputs: Vec::new(),
+        });
+        // Two outputs both claiming index 0 — a duplicate.
+        graph.add_expr(Expr::NonPrimitiveOutput {
+            call,
+            output_idx: 0,
+        });
+        graph.add_expr(Expr::NonPrimitiveOutput {
+            call,
+            output_idx: 0,
+        });
+        // Duplicates cause two entries at position 0, making position 1 mismatch.
+        match graph.build_npo_output_map() {
+            Err(CircuitBuilderError::MalformedNonPrimitiveOutputs { op_id, details }) => {
+                assert_eq!(op_id, NonPrimitiveOpId(0));
+                assert!(details.contains("expected contiguous"));
+            }
+            other => panic!("expected MalformedNonPrimitiveOutputs, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn npo_output_map_call_points_to_non_call() {
+        use crate::builder::CircuitBuilderError;
+
+        let mut graph = ExpressionGraph::<MockExtField>::new();
+        // Create a constant node and an output that incorrectly references it as a call.
+        let not_a_call = graph.add_expr(Expr::Const(MockExtField(42)));
+        graph.add_expr(Expr::NonPrimitiveOutput {
+            call: not_a_call,
+            output_idx: 0,
+        });
+        // Should fail because the referenced node is not a call.
+        match graph.build_npo_output_map() {
+            Err(CircuitBuilderError::MissingExprMapping { expr_id, context }) => {
+                assert_eq!(expr_id, not_a_call);
+                assert!(context.contains("NonPrimitiveCall"));
+            }
+            other => panic!("expected MissingExprMapping, got {other:?}"),
+        }
     }
 
     proptest! {
