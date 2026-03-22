@@ -36,6 +36,7 @@ use p3_lookup::LookupAir;
 use p3_lookup::lookup_traits::{Direction, Kind, Lookup};
 use p3_matrix::dense::RowMajorMatrix;
 
+use crate::air::column_layout::WITNESS_LOOKUP_PREP_LANE_WIDTH;
 use crate::air::utils::{create_symbolic_variables, get_index_lookups};
 
 /// ConstAir: vector-valued constant binding with generic extension degree D.
@@ -96,7 +97,7 @@ impl<F: Field, const D: usize> ConstAir<F, D> {
 
     /// Number of preprocessed columns: multiplicity + index.
     pub const fn preprocessed_width() -> usize {
-        2
+        WITNESS_LOOKUP_PREP_LANE_WIDTH
     }
     /// Convert a `ConstTrace` into a `RowMajorMatrix` suitable for the STARK prover.
     ///

@@ -29,7 +29,7 @@
 //!
 //! ## Preprocessed trace layout
 //!
-//! Each lane occupies 13 columns (see [`PREP_*`][PREP_MULT_A] constants):
+//! Each lane occupies 13 columns (see [`AluPrepLaneCols`](super::alu_columns::AluPrepLaneCols)):
 //!
 //! | Offset | Name              | Purpose                                        |
 //! |--------|-------------------|------------------------------------------------|
@@ -48,7 +48,7 @@
 //! | 12     | `c_is_reader`     | 1 if `c` reads from the WitnessChecks bus      |
 //!
 //! After all lanes, there are 5 **global** extra preprocessed columns for
-//! double-step HornerAcc (see [`EXTRA_PREP_*`][EXTRA_PREP_SEL_DOUBLE] constants):
+//! double-step HornerAcc (see [`AluExtraPrepCols`](super::alu_columns::AluExtraPrepCols)):
 //!
 //! | Offset | Name              | Purpose                                      |
 //! |--------|-------------------|----------------------------------------------|
@@ -87,6 +87,7 @@
 use alloc::string::ToString;
 use alloc::vec;
 use alloc::vec::Vec;
+use core::borrow::{Borrow, BorrowMut};
 use core::marker::PhantomData;
 
 use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
@@ -97,34 +98,11 @@ use p3_lookup::lookup_traits::{Direction, Kind, Lookup};
 use p3_matrix::dense::RowMajorMatrix;
 use p3_uni_stark::SymbolicExpression;
 
+use super::alu_columns::{
+    AluExtraPrepCols, AluMainHornerExtraCols, AluMainLaneCols, AluPrepLaneCols, EXTRA_PREP_WIDTH,
+    PREP_LANE_WIDTH, alu_main_horner_extra_width, alu_main_lane_width,
+};
 use crate::air::utils::{create_symbolic_variables, get_alu_index_lookups};
-
-// ── Preprocessed column offsets within each lane (13 columns) ────────────────
-pub(crate) const PREP_MULT_A: usize = 0;
-pub(crate) const PREP_SEL_ADD: usize = 1;
-pub(crate) const PREP_SEL_BOOL: usize = 2;
-pub(crate) const PREP_SEL_MULADD: usize = 3;
-pub(crate) const PREP_SEL_HORNER: usize = 4;
-pub(crate) const PREP_A_IDX: usize = 5;
-pub(crate) const PREP_C_IDX: usize = 7;
-pub(crate) const PREP_OUT_IDX: usize = 8;
-pub(crate) const PREP_MULT_B: usize = 9;
-pub(crate) const PREP_MULT_OUT: usize = 10;
-pub(crate) const PREP_A_IS_READER: usize = 11;
-pub(crate) const PREP_C_IS_READER: usize = 12;
-
-/// Number of preprocessed columns per lane.
-pub(crate) const PREP_LANE_WIDTH: usize = 13;
-
-// ── Global extra preprocessed column offsets (5 columns, after all lanes) ────
-pub(crate) const EXTRA_PREP_SEL_DOUBLE: usize = 0;
-pub(crate) const EXTRA_PREP_A1_IDX: usize = 1;
-pub(crate) const EXTRA_PREP_C1_IDX: usize = 2;
-pub(crate) const EXTRA_PREP_A1_READER: usize = 3;
-pub(crate) const EXTRA_PREP_C1_READER: usize = 4;
-
-/// Number of global extra preprocessed columns for double-step HornerAcc.
-pub(crate) const EXTRA_PREP_WIDTH: usize = 5;
 
 /// Entry in the HornerAcc lane schedule.
 #[derive(Debug, Clone, Copy)]
@@ -246,7 +224,7 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AluAir<F, D> {
 
     /// Number of main columns per lane: a[D], b[D], c[D], out[D]
     pub const fn lane_width() -> usize {
-        4 * D
+        alu_main_lane_width::<D>()
     }
 
     /// Total main trace width for this AIR instance.
@@ -260,16 +238,16 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AluAir<F, D> {
         //
         // These extra columns are shared across all lanes and are only
         // interpreted for lane 0 in the constraint system.
-        self.lanes * Self::lane_width() + 3 * D
+        self.lanes * Self::lane_width() + alu_main_horner_extra_width::<D>()
     }
 
-    /// Number of preprocessed columns per lane (see `PREP_*` constants).
+    /// Number of preprocessed columns per lane (see [`AluPrepLaneCols`](super::alu_columns::AluPrepLaneCols)).
     pub const fn preprocessed_lane_width() -> usize {
         PREP_LANE_WIDTH
     }
 
     /// Total preprocessed width: per-lane base columns plus global
-    /// double-step HornerAcc columns (see `EXTRA_PREP_*` constants).
+    /// double-step HornerAcc columns (see [`AluExtraPrepCols`](super::alu_columns::AluExtraPrepCols)).
     pub const fn preprocessed_width(&self) -> usize {
         self.lanes * PREP_LANE_WIDTH + EXTRA_PREP_WIDTH
     }
@@ -293,7 +271,10 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AluAir<F, D> {
         }
 
         let is_horner: Vec<bool> = (0..num_ops)
-            .map(|i| preprocessed[i * plw + PREP_SEL_HORNER] == F::ONE)
+            .map(|i| {
+                let prep: &AluPrepLaneCols<F> = preprocessed[i * plw..(i + 1) * plw].borrow();
+                prep.sel_horner == F::ONE
+            })
             .collect();
 
         if !is_horner.iter().any(|&h| h) {
@@ -438,14 +419,18 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AluAir<F, D> {
 
                         if lane == 0 {
                             let extra = row * width + self.lanes * lane_width;
-                            // int = step 0's output
-                            let int = trace.values[*i0][3].as_basis_coefficients_slice();
-                            values[extra..extra + D].copy_from_slice(int);
-                            // a1, c1 from step 1
-                            let a1 = trace.values[*i1][0].as_basis_coefficients_slice();
-                            let c1 = trace.values[*i1][2].as_basis_coefficients_slice();
-                            values[extra + D..extra + 2 * D].copy_from_slice(a1);
-                            values[extra + 2 * D..extra + 3 * D].copy_from_slice(c1);
+                            let horner: &mut AluMainHornerExtraCols<F, D> = values
+                                [extra..extra + alu_main_horner_extra_width::<D>()]
+                                .borrow_mut();
+                            horner.int.copy_from_slice(
+                                trace.values[*i0][3].as_basis_coefficients_slice(),
+                            );
+                            horner.a1.copy_from_slice(
+                                trace.values[*i1][0].as_basis_coefficients_slice(),
+                            );
+                            horner.c1.copy_from_slice(
+                                trace.values[*i1][2].as_basis_coefficients_slice(),
+                            );
                         }
                     }
                     ScheduleEntry::Separator => {}
@@ -492,18 +477,21 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AluAir<F, D> {
 
                         values[base..base + plw].copy_from_slice(src0);
 
-                        values[base + PREP_OUT_IDX] = src1[PREP_OUT_IDX];
-                        values[base + PREP_MULT_OUT] = src1[PREP_MULT_OUT];
-
-                        let mult_b0 = values[base + PREP_MULT_B];
-                        values[base + PREP_MULT_B] = mult_b0 + mult_b0;
+                        let lane_prep: &mut AluPrepLaneCols<F> =
+                            values[base..base + plw].borrow_mut();
+                        let src1_prep: &AluPrepLaneCols<F> = src1.borrow();
+                        lane_prep.out_idx = src1_prep.out_idx;
+                        lane_prep.mult_out = src1_prep.mult_out;
+                        lane_prep.mult_b = lane_prep.mult_b + lane_prep.mult_b;
 
                         let extra_base = row * row_width + self.lanes * plw;
-                        values[extra_base + EXTRA_PREP_SEL_DOUBLE] = F::ONE;
-                        values[extra_base + EXTRA_PREP_A1_IDX] = src1[PREP_A_IDX];
-                        values[extra_base + EXTRA_PREP_C1_IDX] = src1[PREP_C_IDX];
-                        values[extra_base + EXTRA_PREP_A1_READER] = src1[PREP_A_IS_READER];
-                        values[extra_base + EXTRA_PREP_C1_READER] = src1[PREP_C_IS_READER];
+                        let extra: &mut AluExtraPrepCols<F> =
+                            values[extra_base..extra_base + EXTRA_PREP_WIDTH].borrow_mut();
+                        extra.sel_double = F::ONE;
+                        extra.a1_idx = src1_prep.a_idx;
+                        extra.c1_idx = src1_prep.c_idx;
+                        extra.a1_reader = src1_prep.a_is_reader;
+                        extra.c1_reader = src1_prep.c_is_reader;
                     }
                 }
                 ScheduleEntry::Separator => {}
@@ -594,16 +582,22 @@ where
             let m = lane * lane_width;
             let p = lane * PREP_LANE_WIDTH;
 
-            let a = &local[m..m + D];
-            let b = &local[m + D..m + 2 * D];
-            let c = &local[m + 2 * D..m + 3 * D];
-            let out = &local[m + 3 * D..m + 4 * D];
+            let lane_local: &AluMainLaneCols<_, D> = local[m..m + lane_width].borrow();
+            let lane_next: &AluMainLaneCols<_, D> = next[m..m + lane_width].borrow();
 
-            let mult_a = prep_local[p + PREP_MULT_A];
-            let sel_add = prep_local[p + PREP_SEL_ADD];
-            let sel_bool = prep_local[p + PREP_SEL_BOOL];
-            let sel_muladd = prep_local[p + PREP_SEL_MULADD];
-            let sel_horner = prep_local[p + PREP_SEL_HORNER];
+            let prep_cur: &AluPrepLaneCols<_> = prep_local[p..p + PREP_LANE_WIDTH].borrow();
+            let prep_n: &AluPrepLaneCols<_> = prep_next[p..p + PREP_LANE_WIDTH].borrow();
+
+            let a = &lane_local.a;
+            let b = &lane_local.b;
+            let c = &lane_local.c;
+            let out = &lane_local.out;
+
+            let mult_a = prep_cur.mult_a;
+            let sel_add = prep_cur.sel_add;
+            let sel_bool = prep_cur.sel_bool;
+            let sel_muladd = prep_cur.sel_muladd;
+            let sel_horner = prep_cur.sel_horner;
 
             let active = AB::Expr::ZERO - mult_a;
             let sel_mul = active - sel_bool - sel_muladd - sel_horner - sel_add;
@@ -632,35 +626,41 @@ where
             }
 
             // ── HORNER_ACC ───────────────────────────────────────────────
-            let next_sel_horner = prep_next[p + PREP_SEL_HORNER];
+            let next_sel_horner = prep_n.sel_horner;
 
-            let next_a = &next[m..m + D];
-            let next_b = &next[m + D..m + 2 * D];
-            let next_c = &next[m + 2 * D..m + 3 * D];
-            let next_out = &next[m + 3 * D..m + 4 * D];
+            let next_a = &lane_next.a;
+            let next_b = &lane_next.b;
+            let next_c = &lane_next.c;
+            let next_out = &lane_next.out;
 
             let out_next_b = ext_mul::<AB, D>(out, next_b, &w);
 
             let extra_main = self.lanes * lane_width;
             let extra_prep = self.lanes * PREP_LANE_WIDTH;
-            let has_extra_cols = extra_main + 3 * D <= local.len()
-                && extra_prep < prep_local.len()
-                && extra_prep < prep_next.len();
+            let horner_w = alu_main_horner_extra_width::<D>();
+            let has_extra_cols = extra_main + horner_w <= local.len()
+                && extra_prep + EXTRA_PREP_WIDTH <= prep_local.len()
+                && extra_prep + EXTRA_PREP_WIDTH <= prep_next.len();
 
             if lane == 0 && has_extra_cols {
-                let int = &local[extra_main..extra_main + D];
-                let a1 = &local[extra_main + D..extra_main + 2 * D];
-                let c1 = &local[extra_main + 2 * D..extra_main + 3 * D];
-                let next_int = &next[extra_main..extra_main + D];
+                let horner: &AluMainHornerExtraCols<_, D> =
+                    local[extra_main..extra_main + horner_w].borrow();
+                let next_horner: &AluMainHornerExtraCols<_, D> =
+                    next[extra_main..extra_main + horner_w].borrow();
 
-                let sel_double = prep_local[extra_prep + EXTRA_PREP_SEL_DOUBLE];
-                let next_sel_double = prep_next[extra_prep + EXTRA_PREP_SEL_DOUBLE];
+                let prep_extra_cur: &AluExtraPrepCols<_> =
+                    prep_local[extra_prep..extra_prep + EXTRA_PREP_WIDTH].borrow();
+                let prep_extra_next: &AluExtraPrepCols<_> =
+                    prep_next[extra_prep..extra_prep + EXTRA_PREP_WIDTH].borrow();
+
+                let sel_double = prep_extra_cur.sel_double;
+                let next_sel_double = prep_extra_next.sel_double;
 
                 // 1) Double-step inter-row: prev_out -> next_int
                 for i in 0..D {
                     builder.assert_zero(
                         next_sel_double
-                            * (out_next_b[i].dup() + next_c[i] - next_a[i] - next_int[i]),
+                            * (out_next_b[i].dup() + next_c[i] - next_a[i] - next_horner.int[i]),
                     );
                 }
 
@@ -674,9 +674,11 @@ where
                 }
 
                 // 3) Intra-row double-step: int * b + c1 - a1 - out = 0
-                let int_b = ext_mul::<AB, D>(int, b, &w);
+                let int_b = ext_mul::<AB, D>(&horner.int, b, &w);
                 for i in 0..D {
-                    builder.assert_zero(sel_double * (int_b[i].dup() + c1[i] - a1[i] - out[i]));
+                    builder.assert_zero(
+                        sel_double * (int_b[i].dup() + horner.c1[i] - horner.a1[i] - out[i]),
+                    );
                 }
             } else {
                 for i in 0..D {
@@ -730,21 +732,24 @@ impl<F: Field, const D: usize> LookupAir<F> for AluAir<F, D> {
         let extra_main = self.lanes * Self::lane_width();
         let extra_prep = self.lanes * Self::preprocessed_lane_width();
 
-        let mult_a_lane0 = SymbolicExpression::from(preprocessed_local[PREP_MULT_A]);
-        let a1_reader =
-            SymbolicExpression::from(preprocessed_local[extra_prep + EXTRA_PREP_A1_READER]);
-        let c1_reader =
-            SymbolicExpression::from(preprocessed_local[extra_prep + EXTRA_PREP_C1_READER]);
+        let prep_lane0: &AluPrepLaneCols<_> = preprocessed_local[..PREP_LANE_WIDTH].borrow();
+        let prep_extra: &AluExtraPrepCols<_> =
+            preprocessed_local[extra_prep..extra_prep + EXTRA_PREP_WIDTH].borrow();
+
+        let mult_a_lane0 = SymbolicExpression::from(prep_lane0.mult_a);
+        let a1_reader = SymbolicExpression::from(prep_extra.a1_reader);
+        let c1_reader = SymbolicExpression::from(prep_extra.c1_reader);
 
         let eff_mult_a1 = mult_a_lane0.dup() * a1_reader;
         let eff_mult_c1 = mult_a_lane0 * c1_reader;
 
-        let a1_idx = SymbolicExpression::from(preprocessed_local[extra_prep + EXTRA_PREP_A1_IDX]);
+        let a1_idx = SymbolicExpression::from(prep_extra.a1_idx);
+        let horner: &AluMainHornerExtraCols<_, D> = symbolic_main_local
+            [extra_main..extra_main + alu_main_horner_extra_width::<D>()]
+            .borrow();
         let mut a1_inps = vec![a1_idx];
         for j in 0..D {
-            a1_inps.push(SymbolicExpression::from(
-                symbolic_main_local[extra_main + D + j],
-            ));
+            a1_inps.push(SymbolicExpression::from(horner.a1[j]));
         }
         lookups.push(LookupAir::register_lookup(
             self,
@@ -752,12 +757,10 @@ impl<F: Field, const D: usize> LookupAir<F> for AluAir<F, D> {
             &[(a1_inps, eff_mult_a1, Direction::Receive)],
         ));
 
-        let c1_idx = SymbolicExpression::from(preprocessed_local[extra_prep + EXTRA_PREP_C1_IDX]);
+        let c1_idx = SymbolicExpression::from(prep_extra.c1_idx);
         let mut c1_inps = vec![c1_idx];
         for j in 0..D {
-            c1_inps.push(SymbolicExpression::from(
-                symbolic_main_local[extra_main + 2 * D + j],
-            ));
+            c1_inps.push(SymbolicExpression::from(horner.c1[j]));
         }
         lookups.push(LookupAir::register_lookup(
             self,
