@@ -287,9 +287,15 @@ where
                 }
 
                 let num_ops = prep_13col.len() / 13;
+                let horner_k = packing.horner_packed_steps();
                 let alu_air = if D == 1 {
-                    AluAir::new_with_preprocessed(num_ops, effective_alu_lanes, prep_13col.clone())
-                        .with_min_height(min_height)
+                    AluAir::new_with_preprocessed(
+                        num_ops,
+                        effective_alu_lanes,
+                        prep_13col.clone(),
+                        horner_k,
+                    )
+                    .with_min_height(min_height)
                 } else {
                     let w = w_binomial.unwrap();
                     AluAir::new_binomial_with_preprocessed(
@@ -297,6 +303,7 @@ where
                         effective_alu_lanes,
                         w,
                         prep_13col.clone(),
+                        horner_k,
                     )
                     .with_min_height(min_height)
                 };

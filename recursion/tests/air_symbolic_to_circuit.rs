@@ -166,7 +166,7 @@ fn primitive_airs_symbolic_to_circuit() -> Result<(), CircuitError> {
         F::ZERO,
         F::from_u64(2), // a_idx, b_idx, c_idx, out_idx
     ];
-    let alu_air = AluAir::<F, 1>::new_with_preprocessed(1, 1, alu_add_prep);
+    let alu_air = AluAir::<F, 1>::new_with_preprocessed(1, 1, alu_add_prep, 2);
     run_recursive(&alu_air, alu_air.preprocessed_width(), 0, &mut rng)?;
 
     let const_air = ConstAir::<F, 1>::new_with_preprocessed(1, vec![F::from_u64(3)]);
