@@ -7,15 +7,14 @@ use alloc::{format, vec};
 
 use p3_circuit::{CircuitBuilder, CircuitRunner, NonPrimitiveOpId};
 use p3_circuit_prover::batch_stark_prover::{
-    poseidon2_air_builders_d2, poseidon2_air_builders_d4, poseidon2_preprocessor,
-    poseidon2_table_provers_d2, poseidon2_table_provers_d4, recompose_air_builders,
-    recompose_preprocessor,
+    poseidon2_air_builders, poseidon2_preprocessor, recompose_air_builders, recompose_preprocessor,
 };
 use p3_circuit_prover::common::{NpoAirBuilder, NpoPreprocessor};
 use p3_circuit_prover::config::StarkField;
 use p3_circuit_prover::field_params::ExtractBinomialW;
 use p3_circuit_prover::{
-    Poseidon2Preprocessor, RecomposePreprocessor, TableProver, recompose_table_provers,
+    ConstraintProfile, Poseidon2Preprocessor, Poseidon2Prover, Poseidon2ProverD2,
+    RecomposePreprocessor, TableProver, recompose_table_provers,
 };
 use p3_commit::Pcs;
 use p3_field::extension::BinomiallyExtendable;
@@ -132,31 +131,17 @@ impl<const WIDTH: usize, const RATE: usize> FriRecursionBackend<WIDTH, RATE> {
         self
     }
 
-    /// For Goldilocks (D=2). Use this when `Val<SC>` is Goldilocks.
-    pub const fn new_d2(
-        challenger_perm_config: Poseidon2Config,
-    ) -> FriRecursionBackendD2<WIDTH, RATE> {
-        FriRecursionBackendD2(Self::new(challenger_perm_config))
-    }
-
-    /// For BabyBear/KoalaBear (D=4). Use this when `Val<SC>` is BabyBear or KoalaBear.
-    pub const fn new_d4(
-        challenger_perm_config: Poseidon2Config,
-    ) -> FriRecursionBackendD4<WIDTH, RATE> {
-        FriRecursionBackendD4(Self::new(challenger_perm_config))
+    /// Tag this backend for a fixed batch/extension degree `D` (typically `2` or `4`).
+    pub const fn for_extension_degree<const D: usize>(
+        self,
+    ) -> FriRecursionBackendForExt<D, WIDTH, RATE> {
+        FriRecursionBackendForExt(self)
     }
 }
 
-/// FRI backend for D=2 extension (e.g. Goldilocks).
+/// FRI recursion backend tagged with batch/extension field degree `D` (e.g. `2` or `4`).
 #[derive(Clone)]
-pub struct FriRecursionBackendD2<const WIDTH: usize = 16, const RATE: usize = 8>(
-    /// The inner backend holding the challenger permutation config.
-    pub(crate) FriRecursionBackend<WIDTH, RATE>,
-);
-
-/// FRI backend for D=4 extension (e.g. BabyBear, KoalaBear).
-#[derive(Clone)]
-pub struct FriRecursionBackendD4<const WIDTH: usize = 16, const RATE: usize = 8>(
+pub struct FriRecursionBackendForExt<const D: usize, const WIDTH: usize = 16, const RATE: usize = 8>(
     /// The inner backend holding the challenger permutation config.
     pub(crate) FriRecursionBackend<WIDTH, RATE>,
 );
@@ -393,7 +378,7 @@ where
 }
 
 impl<SC, A, const WIDTH: usize, const RATE: usize> PcsRecursionBackend<SC, A, 2>
-    for FriRecursionBackendD2<WIDTH, RATE>
+    for FriRecursionBackendForExt<2, WIDTH, RATE>
 where
     SC: FriRecursionConfig + Send + Sync + 'static,
     A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
@@ -467,7 +452,9 @@ where
 
     fn non_primitive_provers(&self, ext_degree: usize) -> Vec<Box<dyn TableProver<SC>>> {
         if ext_degree == 2 {
-            let mut provers = poseidon2_table_provers_d2(self.0.challenger_perm_config);
+            let mut provers: Vec<Box<dyn TableProver<SC>>> = vec![Box::new(
+                Poseidon2ProverD2::new(self.0.challenger_perm_config, ConstraintProfile::Standard),
+            )];
             provers.extend(recompose_table_provers::<SC, 2>(self.0.recompose_lanes));
             provers
         } else {
@@ -476,14 +463,14 @@ where
     }
 
     fn non_primitive_air_builders(&self) -> Vec<Box<dyn NpoAirBuilder<SC, 2>>> {
-        let mut builders = poseidon2_air_builders_d2();
+        let mut builders = poseidon2_air_builders::<SC, 2>();
         builders.extend(recompose_air_builders::<SC, 2>(self.0.recompose_lanes));
         builders
     }
 }
 
 impl<SC, A, const WIDTH: usize, const RATE: usize> PcsRecursionBackend<SC, A, 4>
-    for FriRecursionBackendD4<WIDTH, RATE>
+    for FriRecursionBackendForExt<4, WIDTH, RATE>
 where
     SC: FriRecursionConfig + Send + Sync + 'static,
     A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
@@ -557,7 +544,10 @@ where
 
     fn non_primitive_provers(&self, ext_degree: usize) -> Vec<Box<dyn TableProver<SC>>> {
         if ext_degree == 4 {
-            let mut provers = poseidon2_table_provers_d4(self.0.challenger_perm_config);
+            let mut provers: Vec<Box<dyn TableProver<SC>>> = vec![Box::new(Poseidon2Prover::new(
+                self.0.challenger_perm_config,
+                ConstraintProfile::Standard,
+            ))];
             provers.extend(recompose_table_provers::<SC, 4>(self.0.recompose_lanes));
             provers
         } else {
@@ -566,7 +556,7 @@ where
     }
 
     fn non_primitive_air_builders(&self) -> Vec<Box<dyn NpoAirBuilder<SC, 4>>> {
-        let mut builders = poseidon2_air_builders_d4();
+        let mut builders = poseidon2_air_builders::<SC, 4>();
         builders.extend(recompose_air_builders::<SC, 4>(self.0.recompose_lanes));
         builders
     }

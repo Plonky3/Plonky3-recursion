@@ -13,7 +13,7 @@ use p3_batch_stark::{
 };
 use p3_circuit::ops::{Poseidon2Config, generate_poseidon2_trace, generate_recompose_trace};
 use p3_circuit::{CircuitBuilder, NonPrimitiveOpId};
-use p3_circuit_prover::batch_stark_prover::{poseidon2_air_builders_d4, recompose_air_builders};
+use p3_circuit_prover::batch_stark_prover::{poseidon2_air_builders, recompose_air_builders};
 use p3_circuit_prover::common::{NpoPreprocessor, get_airs_and_degrees_with_prep};
 use p3_circuit_prover::{
     BatchStarkProver, CircuitProverData, ConstraintProfile, Poseidon2Preprocessor,
@@ -292,7 +292,7 @@ fn test_zk_aggregation() -> Result<(), VerificationError> {
         Box::new(Poseidon2Preprocessor),
         Box::new(RecomposePreprocessor),
     ];
-    let mut air_builders = poseidon2_air_builders_d4();
+    let mut air_builders = poseidon2_air_builders::<_, 4>();
     air_builders.extend(recompose_air_builders(1));
     let (airs_degrees, preprocessed_columns) = get_airs_and_degrees_with_prep::<MyConfig, _, 4>(
         &aggregation_circuit,
@@ -308,8 +308,8 @@ fn test_zk_aggregation() -> Result<(), VerificationError> {
     let circuit_prover_data = CircuitProverData::new(prover_data, preprocessed_columns);
 
     let mut prover = BatchStarkProver::new(config_outer).with_table_packing(table_packing);
-    prover.register_poseidon2_table(poseidon2_config);
-    prover.register_recompose_table();
+    prover.register_poseidon2_table::<4>(poseidon2_config);
+    prover.register_recompose_table::<4>();
 
     let aggregated_proof = prover
         .prove_all_tables(&aggregation_traces, &circuit_prover_data)

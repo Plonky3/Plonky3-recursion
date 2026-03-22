@@ -203,11 +203,7 @@ macro_rules! define_field_module {
         $rate:expr,
         $digest_elems:expr,
         $enable_poseidon2_fn:ident,
-        $register_poseidon2_fn:ident,
-        $register_recompose_fn:ident,
         $default_perm_circuit:path,
-        $poseidon2_air_builders_fn:ident,
-        $backend_ctor:ident,
         $backend_width:expr,
         $backend_rate:expr
     ) => {
@@ -227,10 +223,7 @@ macro_rules! define_field_module {
                 $rate,
                 $digest_elems,
                 $enable_poseidon2_fn,
-                $register_poseidon2_fn,
                 $default_perm_circuit,
-                $poseidon2_air_builders_fn,
-                $backend_ctor,
                 $backend_width,
                 $backend_rate,
                 enable_recompose
@@ -333,9 +326,10 @@ macro_rules! define_field_module {
             ) {
                 let base_table_packing = TablePacking::new(1, 1)
                     .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup);
-                let backend = FriRecursionBackend::<$backend_width, $backend_rate>::$backend_ctor(
+                let backend = FriRecursionBackend::<$backend_width, $backend_rate>::new(
                     $poseidon2_config,
-                );
+                )
+                .for_extension_degree::<$d>();
 
                 let tree_depth = num_recursive_layers;
                 let num_leaves = 1usize << tree_depth;
@@ -394,9 +388,9 @@ macro_rules! define_field_module {
                                 report_proof_size(&out.0);
                                 let mut verifier = BatchStarkProver::new(agg_config.clone())
                                     .with_table_packing(agg_params.table_packing.clone());
-                                verifier.$register_poseidon2_fn($poseidon2_config);
+                                verifier.register_poseidon2_table::<$d>($poseidon2_config);
                                 if !disable_recompose_npo {
-                                    verifier.$register_recompose_fn();
+                                    verifier.register_recompose_table::<$d>();
                                 }
                                 verifier
                                     .verify_all_tables(&out.0, out.1.common_data())
@@ -442,11 +436,7 @@ define_field_module!(
     8,
     8,
     enable_poseidon2_perm,
-    register_poseidon2_table,
-    register_recompose_table,
     p3_koala_bear::default_koalabear_poseidon2_16,
-    poseidon2_air_builders_d4,
-    new_d4,
     16,
     8
 );
@@ -463,11 +453,7 @@ define_field_module!(
     8,
     8,
     enable_poseidon2_perm,
-    register_poseidon2_table,
-    register_recompose_table,
     p3_baby_bear::default_babybear_poseidon2_16,
-    poseidon2_air_builders_d4,
-    new_d4,
     16,
     8
 );
@@ -484,11 +470,7 @@ define_field_module!(
     4,
     4,
     enable_poseidon2_perm_width_8,
-    register_poseidon2_table_d2,
-    register_recompose_table_d2,
     default_goldilocks_poseidon2_8,
-    poseidon2_air_builders_d2,
-    new_d2,
     8,
     4
 );
