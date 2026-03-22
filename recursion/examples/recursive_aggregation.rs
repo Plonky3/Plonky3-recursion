@@ -68,7 +68,7 @@ struct Args {
 
     #[arg(
         long,
-        default_value_t = 4,
+        default_value_t = 6,
         help = "Log size of final polynomial after FRI folding"
     )]
     pub log_final_poly_len: usize,
@@ -96,10 +96,18 @@ struct Args {
 
     #[arg(
         long,
-        default_value_t = 2,
+        default_value_t = 3,
         help = "Number of ALU lanes for the table packing in recursive layers"
     )]
     pub alu_lanes: usize,
+
+    /// Pack this many consecutive HornerAcc steps (same `b`) per ALU row on lane 0 (must be >= 2).
+    #[arg(
+        long,
+        default_value_t = 4,
+        help = "Pack this many consecutive HornerAcc steps (same `b`) per ALU row on lane 0 (must be >= 2)"
+    )]
+    pub horner_packed_steps: usize,
 
     #[arg(
         long,
@@ -141,6 +149,7 @@ impl Args {
 
     pub fn table_packing(&self) -> TablePacking {
         TablePacking::new(self.public_lanes, self.alu_lanes)
+            .with_horner_pack_k(self.horner_packed_steps)
             .with_npo_lanes(NpoTypeId::recompose(), self.recompose_lanes)
     }
 }
@@ -332,6 +341,7 @@ macro_rules! define_field_module {
                 disable_recompose_npo: bool,
             ) {
                 let base_table_packing = TablePacking::new(1, 1)
+                    .with_horner_pack_k(table_packing.horner_packed_steps())
                     .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup);
                 let backend = FriRecursionBackend::<$backend_width, $backend_rate>::$backend_ctor(
                     $poseidon2_config,
@@ -364,6 +374,7 @@ macro_rules! define_field_module {
                             let agg_params = ProveNextLayerParams {
                                 table_packing: if level == 1 {
                                     TablePacking::new(2, 2)
+                                        .with_horner_pack_k(table_packing.horner_packed_steps())
                                         .with_npo_lanes(NpoTypeId::recompose(), recompose_lanes)
                                 } else {
                                     table_packing.clone()

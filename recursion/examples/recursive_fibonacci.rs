@@ -108,6 +108,10 @@ struct Args {
     )]
     pub alu_lanes: usize,
 
+    /// Pack this many consecutive HornerAcc steps (same `b`) per ALU row on lane 0 (must be >= 2).
+    #[arg(long, default_value_t = 2)]
+    pub horner_packed_steps: usize,
+
     // TODO: Update once https://github.com/Plonky3/Plonky3/pull/1329 lands
     #[arg(
         long,
@@ -134,6 +138,7 @@ impl Args {
 
     pub fn table_packing(&self) -> TablePacking {
         TablePacking::new(self.public_lanes, self.alu_lanes)
+            .with_horner_pack_k(self.horner_packed_steps)
     }
 }
 
@@ -250,6 +255,7 @@ macro_rules! define_field_module {
 
                 let base_circuit = builder.build().unwrap();
                 let table_packing_0 = TablePacking::new(1, 1)
+                    .with_horner_pack_k(table_packing.horner_packed_steps())
                     .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup);
 
                 let expected_fib = compute_fibonacci(n);
