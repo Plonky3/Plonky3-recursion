@@ -270,7 +270,7 @@ impl<'a, F: Field> CircuitRunner<'a, F> {
     /// can blindly execute from index 0 to end.
     #[instrument(skip_all, level = "debug")]
     pub fn execute_all(&mut self) -> Result<Vec<AluOpRecord<F>>, CircuitError> {
-        let mut alu_records = Vec::with_capacity(1 << 16);
+        let mut alu_records = Vec::with_capacity(1 << 17);
 
         for i in 0..self.circuit.ops.len() {
             let op = &self.circuit.ops[i];
