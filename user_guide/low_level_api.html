@@ -260,7 +260,7 @@ let circuit_prover_data = CircuitProverData::new(prover_data, preprocessed);
 
 let mut prover = BatchStarkProver::new(config.clone())
     .with_table_packing(table_packing);
-prover.register_poseidon2_table(poseidon2_config);
+prover.register_poseidon2_table::&lt;4&gt;(poseidon2_config);
 
 let proof = prover.prove_all_tables(&amp;traces, &amp;circuit_prover_data)?;</code></pre>
 <h2 id="when-to-use-the-low-level-api"><a class="header" href="#when-to-use-the-low-level-api">When to use the low-level API</a></h2>
