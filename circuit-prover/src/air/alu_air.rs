@@ -82,7 +82,7 @@ use core::marker::PhantomData;
 
 use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 use p3_circuit::tables::AluTrace;
-use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
+use p3_field::{BasedVectorSpace, Dup, Field, PrimeCharacteristicRing};
 use p3_lookup::LookupAir;
 use p3_lookup::lookup_traits::{Direction, Kind, Lookup};
 use p3_matrix::dense::RowMajorMatrix;
@@ -618,9 +618,9 @@ fn ext_mul<AB: AirBuilder, const D: usize>(
             let term = x[i] * y[j];
             let k = i + j;
             if k < D {
-                acc[k] = acc[k].clone() + term;
+                acc[k] = acc[k].dup() + term;
             } else {
-                acc[k - D] = acc[k - D].clone() + w.clone().unwrap() * term;
+                acc[k - D] = acc[k - D].dup() + w.as_ref().unwrap().dup() * term;
             }
         }
     }
@@ -675,7 +675,7 @@ where
             // ── MUL: a * b - out = 0 ────────────────────────────────────
             let ab = ext_mul::<AB, D>(a, b, &w);
             for i in 0..D {
-                builder.assert_zero(sel_mul.clone() * (ab[i].clone() - out[i]));
+                builder.assert_zero(sel_mul.dup() * (ab[i].dup() - out[i]));
             }
 
             // ── BOOL_CHECK: a[0]*(a[0]-1)=0, a[1..D]=0 ─────────────────
@@ -687,7 +687,7 @@ where
 
             // ── MUL_ADD: a * b + c - out = 0 ────────────────────────────
             for i in 0..D {
-                builder.assert_zero(sel_muladd * (ab[i].clone() + c[i] - out[i]));
+                builder.assert_zero(sel_muladd * (ab[i].dup() + c[i] - out[i]));
             }
 
             // ── HORNER_ACC ───────────────────────────────────────────────
@@ -718,7 +718,7 @@ where
                 for i in 0..D {
                     builder.assert_zero(
                         next_sel_packed
-                            * (out_next_b[i].clone() + next_c[i] - next_a[i] - next_int0[i]),
+                            * (out_next_b[i].dup() + next_c[i] - next_a[i] - next_int0[i]),
                     );
                 }
 
@@ -726,8 +726,8 @@ where
                 let next_sel_single = next_sel_horner - next_sel_packed;
                 for i in 0..D {
                     builder.assert_zero(
-                        next_sel_single.clone()
-                            * (out_next_b[i].clone() + next_c[i] - next_a[i] - next_out[i]),
+                        next_sel_single.dup()
+                            * (out_next_b[i].dup() + next_c[i] - next_a[i] - next_out[i]),
                     );
                 }
 
@@ -744,7 +744,7 @@ where
                     let int_s_b = ext_mul::<AB, D>(int_s, b, &w);
                     for i in 0..D {
                         builder.assert_zero(
-                            sel_packed * (int_s_b[i].clone() + c_t[i] - a_t[i] - int_sp1[i]),
+                            sel_packed * (int_s_b[i].dup() + c_t[i] - a_t[i] - int_sp1[i]),
                         );
                     }
                 }
@@ -758,7 +758,7 @@ where
                     let int_last_b = ext_mul::<AB, D>(int_last, b, &w);
                     for i in 0..D {
                         builder.assert_zero(
-                            sel_packed * (int_last_b[i].clone() + c_t[i] - a_t[i] - out[i]),
+                            sel_packed * (int_last_b[i].dup() + c_t[i] - a_t[i] - out[i]),
                         );
                     }
                 }
@@ -766,7 +766,7 @@ where
                 for i in 0..D {
                     builder.assert_zero(
                         next_sel_horner
-                            * (out_next_b[i].clone() + next_c[i] - next_a[i] - next_out[i]),
+                            * (out_next_b[i].dup() + next_c[i] - next_a[i] - next_out[i]),
                     );
                 }
             }
@@ -821,8 +821,8 @@ impl<F: Field, const D: usize> LookupAir<F> for AluAir<F, D> {
             let p = extra_prep + extra_prep_a_idx_for_step(t);
             let a_reader = SymbolicExpression::from(preprocessed_local[p + 2]);
             let c_reader = SymbolicExpression::from(preprocessed_local[p + 3]);
-            let eff_mult_a = mult_a_lane0.clone() * a_reader.clone();
-            let eff_mult_c = mult_a_lane0.clone() * c_reader;
+            let eff_mult_a = mult_a_lane0.dup() * a_reader.dup();
+            let eff_mult_c = mult_a_lane0.dup() * c_reader;
 
             let a_idx = SymbolicExpression::from(preprocessed_local[p]);
             let main_off = ac_base + 2 * (t - 1) * D;

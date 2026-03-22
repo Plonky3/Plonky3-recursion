@@ -292,7 +292,7 @@ where
         // Collect all base coefficients from matrices at this height level
         let all_base_coeffs: Vec<Target> = heights_tallest_first
             .peeking_take_while(|(_, dims)| dims.height.next_power_of_two() == curr_height)
-            .flat_map(|(mat_idx, _)| opened_base_coeffs[mat_idx].clone())
+            .flat_map(|(mat_idx, _)| opened_base_coeffs[mat_idx].iter().copied())
             .collect();
 
         if all_base_coeffs.is_empty() {
@@ -370,7 +370,7 @@ where
 
         let all_ext: Vec<Target> = heights_tallest_first
             .peeking_take_while(|(_, dims)| dims.height.next_power_of_two() == curr_height)
-            .flat_map(|(mat_idx, _)| opened_extension_values[mat_idx].clone())
+            .flat_map(|(mat_idx, _)| opened_extension_values[mat_idx].iter().copied())
             .collect();
 
         if all_ext.is_empty() {
@@ -976,7 +976,7 @@ mod test {
             .zip(dimensions)
             .chunk_by(|(_, dimensions)| dimensions.height)
             .into_iter()
-            .map(|(_, group)| hash.hash_iter(group.flat_map(|(x, _)| x.clone())))
+            .map(|(_, group)| hash.hash_iter(group.flat_map(|(x, _)| x.iter().copied())))
             .collect_vec();
         let dimensions = dimensions
             .iter()

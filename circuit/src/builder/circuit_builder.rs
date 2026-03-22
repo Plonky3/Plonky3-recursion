@@ -8,7 +8,9 @@ use core::marker::PhantomData;
 
 use hashbrown::HashMap;
 use itertools::zip_eq;
-use p3_field::{BasedVectorSpace, ExtensionField, Field, PrimeCharacteristicRing, PrimeField64};
+use p3_field::{
+    BasedVectorSpace, Dup, ExtensionField, Field, PrimeCharacteristicRing, PrimeField64,
+};
 use p3_symmetric::Permutation;
 
 #[cfg(feature = "profiling")]
@@ -63,18 +65,18 @@ pub struct CircuitBuilder<F: Field> {
     recompose_npo_enabled: bool,
 }
 
-impl<F: Field> Default for CircuitBuilder<F>
+impl<F> Default for CircuitBuilder<F>
 where
-    F: Clone + PrimeCharacteristicRing + Eq + Hash,
+    F: Field + PrimeCharacteristicRing + Eq + Hash,
 {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<F: Field> CircuitBuilder<F>
+impl<F> CircuitBuilder<F>
 where
-    F: Clone + PrimeCharacteristicRing + Eq + Hash,
+    F: Field + PrimeCharacteristicRing + Eq + Hash,
 {
     /// Creates a new circuit builder.
     pub fn new() -> Self {
@@ -1240,7 +1242,7 @@ impl<BF: PrimeField64, EF: ExtensionField<BF>> HintExecutor<EF> for ExtDecomposi
         let ext_val = witness
             .get(in_idx)
             .and_then(|opt| opt.as_ref())
-            .cloned()
+            .map(Dup::dup)
             .ok_or(CircuitError::WitnessNotSet { witness_id: in_wid })?;
         let coeffs = ext_val.as_basis_coefficients_slice();
 
@@ -1330,7 +1332,7 @@ impl<BF: PrimeField64, EF: ExtensionField<BF>> HintExecutor<EF> for BinaryDecomp
         let ext_val = witness
             .get(in_idx)
             .and_then(|opt| opt.as_ref())
-            .cloned()
+            .map(Dup::dup)
             .ok_or(CircuitError::WitnessNotSet { witness_id: in_wid })?;
 
         let bits_iter = ext_val

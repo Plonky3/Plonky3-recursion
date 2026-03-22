@@ -132,11 +132,7 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
             .config
             .as_poseidon2()
             .expect("only Poseidon2 challenger permutation is supported");
-        let inputs: [Target; 16] = self
-            .state
-            .clone()
-            .try_into()
-            .expect("state should have WIDTH=16 elements");
+        let inputs: [Target; 16] = core::array::from_fn(|i| self.state[i]);
 
         let outputs = circuit
             .add_poseidon2_perm_for_challenger_base(*poseidon2_config, inputs)

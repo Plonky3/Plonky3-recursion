@@ -356,6 +356,7 @@ macro_rules! define_field_module {
                             })
                             .collect();
 
+                        let mut prep_cache: Option<AggregationPrepCache<$cfg_type>> = None;
                         let mut level = 0u32;
                         while proofs.len() > 1 {
                             level += 1;
@@ -382,7 +383,6 @@ macro_rules! define_field_module {
                             let agg_config: $cfg_type = $cfg_fn(level as u64);
 
                             let mut next_level = Vec::with_capacity(pairs);
-                            let mut prep_cache: Option<AggregationPrepCache<$cfg_type>> = None;
                             for pair_idx in 0..pairs {
                                 let li = pair_idx * 2;
                                 let left = proofs[li].into_recursion_input::<BatchOnly>();

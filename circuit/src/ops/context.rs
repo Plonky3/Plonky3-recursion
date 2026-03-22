@@ -26,7 +26,7 @@ pub struct ExecutionContext<'a, F> {
     op_states: &'a mut OpStateMap,
 }
 
-impl<'a, F: PrimeCharacteristicRing + Eq + Clone> ExecutionContext<'a, F> {
+impl<'a, F: PrimeCharacteristicRing + Eq> ExecutionContext<'a, F> {
     /// Create a new execution context
     pub const fn new(
         witness: &'a mut [Option<F>],
@@ -54,7 +54,7 @@ impl<'a, F: PrimeCharacteristicRing + Eq + Clone> ExecutionContext<'a, F> {
             self.witness
                 .get(idx)
                 .and_then(Option::as_ref)
-                .cloned()
+                .map(p3_field::Dup::dup)
                 .ok_or(CircuitError::WitnessNotSet { witness_id: widx })
         }
 
@@ -65,7 +65,7 @@ impl<'a, F: PrimeCharacteristicRing + Eq + Clone> ExecutionContext<'a, F> {
                 .get_unchecked(idx)
                 .as_ref()
                 .unwrap_unchecked()
-                .clone())
+                .dup())
         }
     }
 

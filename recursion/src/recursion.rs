@@ -35,10 +35,30 @@ fn proof_shape_err(e: &impl ToString) -> VerificationError {
     VerificationError::InvalidProofShape(e.to_string())
 }
 
-/// Cached prover data and prover for aggregation when the same verification circuit is reused per level.
-/// Pass `Some(&mut None)` on the first aggregation at a given level; the slot is filled after the
-/// first proof and reused for subsequent pairs to avoid ~100ms of clone/from_airs_and_degrees/prover creation.
+/// Fingerprint for the compiled verification [`Circuit`].
+///
+/// This is used to reject [`AggregationPrepCache`] hits when a new aggregation step builds a different
+/// circuit (e.g. verifying proofs from a different recursion depth that reuses a different layout even if
+/// `ProveNextLayerParams` and `config` match).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct AggregationCircuitFingerprint {
+    pub witness_count: u32,
+    pub public_flat_len: usize,
+    pub private_flat_len: usize,
+    pub ops_len: usize,
+}
+
+const fn aggregation_circuit_fingerprint<F>(circuit: &Circuit<F>) -> AggregationCircuitFingerprint {
+    AggregationCircuitFingerprint {
+        witness_count: circuit.witness_count,
+        public_flat_len: circuit.public_flat_len,
+        private_flat_len: circuit.private_flat_len,
+        ops_len: circuit.ops.len(),
+    }
+}
+
 pub struct AggregationPrepCache<SC: StarkGenericConfig + 'static> {
+    pub circuit_fingerprint: AggregationCircuitFingerprint,
     pub circuit_prover_data: Rc<CircuitProverData<SC>>,
     pub prover: BatchStarkProver<SC>,
 }
@@ -578,9 +598,11 @@ where
 /// Prove a 2-to-1 aggregation layer: build verifier circuits for both `left` and `right`
 /// in a single circuit, run it, and produce one aggregated batch STARK proof.
 ///
-/// When proving multiple pairs with the same verification circuit (e.g. all pairs at one level),
-/// pass `prep_cache: Some(&mut None)` on the first call; the slot is filled and can be passed
-/// again for subsequent pairs to skip [`get_airs_and_degrees_with_prep`].
+/// When proving multiple pairs that compile to the **same** verification [`Circuit`] fingerprint
+/// and use the same `ProveNextLayerParams` / `config`, pass `prep_cache: Some(&mut None)` on the
+/// first call; the slot is filled and can be passed again for later pairs to skip
+/// [`get_airs_and_degrees_with_prep`]. If the fingerprint changes (different proof structure,
+/// etc.), the cache is ignored automatically.
 ///
 /// The two inputs may be different `RecursionInput` variants (e.g. one `UniStark` left
 /// and one `BatchStark` right) or identical ones.
@@ -610,8 +632,10 @@ where
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
         Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
+    let current_fp = aggregation_circuit_fingerprint(verification_circuit);
     if let Some(ref mut cache_slot) = prep_cache
         && let Some(cached) = cache_slot.as_ref()
+        && cached.circuit_fingerprint == current_fp
     {
         let traces = run_aggregation_verification_circuit::<SC, A1, A2, B, D>(
             left,
@@ -681,6 +705,7 @@ where
     if let Some(ref mut cache_slot) = prep_cache {
         let circuit_prover_data_rc = Rc::new(circuit_prover_data);
         **cache_slot = Some(AggregationPrepCache {
+            circuit_fingerprint: current_fp,
             circuit_prover_data: Rc::clone(&circuit_prover_data_rc),
             prover,
         });

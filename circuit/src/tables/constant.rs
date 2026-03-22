@@ -1,5 +1,7 @@
 use alloc::vec::Vec;
 
+use p3_field::PrimeCharacteristicRing;
+
 use crate::CircuitError;
 use crate::ops::Op;
 use crate::types::WitnessId;
@@ -24,7 +26,7 @@ pub struct ConstTraceBuilder<'a, F> {
     primitive_ops: &'a [Op<F>],
 }
 
-impl<'a, F: Clone> ConstTraceBuilder<'a, F> {
+impl<'a, F: PrimeCharacteristicRing> ConstTraceBuilder<'a, F> {
     /// Creates a new constant trace builder.
     pub const fn new(primitive_ops: &'a [Op<F>]) -> Self {
         Self { primitive_ops }
@@ -38,7 +40,7 @@ impl<'a, F: Clone> ConstTraceBuilder<'a, F> {
         for prim in self.primitive_ops {
             if let Op::Const { out, val } = prim {
                 index.push(*out);
-                values.push(val.clone());
+                values.push(val.dup());
             }
         }
 

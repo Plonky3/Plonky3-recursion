@@ -4,7 +4,7 @@ use alloc::{format, vec};
 use core::cmp::Reverse;
 
 use itertools::Itertools;
-use p3_field::Field;
+use p3_field::{Dup, Field};
 use p3_matrix::Dimensions;
 
 use crate::builder::{CircuitBuilder, CircuitBuilderError};
@@ -16,7 +16,7 @@ use crate::{CircuitError, NonPrimitiveOpId};
 /// into a vec of size `max_height`, where each entry contains the openings
 /// corresponding to that height. Openings for heights that do not exist in the
 /// input are empty vectors.
-pub fn format_openings<T: Clone + alloc::fmt::Debug>(
+pub fn format_openings<T: Dup + alloc::fmt::Debug>(
     openings: &[Vec<T>],
     dimensions: &[Dimensions],
     max_height_log: usize,
@@ -61,7 +61,7 @@ pub fn format_openings<T: Clone + alloc::fmt::Debug>(
         //              2. heights_tallest_first is empty.
         let new_opening = heights_tallest_first
             .peeking_take_while(|(_, dims)| dims.height.next_power_of_two() == curr_height)
-            .flat_map(|(i, _)| openings[i].clone())
+            .flat_map(|(i, _)| openings[i].iter().map(Dup::dup))
             .collect();
         *opening = new_opening;
     }
