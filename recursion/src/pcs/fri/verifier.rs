@@ -283,6 +283,79 @@ fn reconstruct_evals<EF: Field>(
             vec![e0, e1, e2, e3]
         }
 
+        // Arity 8: three bits [b0, b1, b2] (little-endian), idx = b0 + 2*b1 + 4*b2
+        //
+        // siblings = [s0, s1, s2, s3, s4, s5, s6]
+        //
+        // Same placement as one_hot + cum + select, in closed form:
+        //   e_j = h_j * folded + siblings[j] * sum_{k>j} h_k + siblings[j-1] * sum_{k<j} h_k
+        // with the missing sibling terms treated as zero (j = 0 or j = 7).
+        3 => {
+            let b0 = index_in_group_bits[0];
+            let b1 = index_in_group_bits[1];
+            let b2 = index_in_group_bits[2];
+
+            let s0 = siblings[0];
+            let s1 = siblings[1];
+            let s2 = siblings[2];
+            let s3 = siblings[3];
+            let s4 = siblings[4];
+            let s5 = siblings[5];
+            let s6 = siblings[6];
+
+            let [h0, h1, h2, h3, h4, h5, h6, h7] = one_hot_from_three_bits(builder, b0, b1, b2);
+
+            // P[j] = sum_{k < j} h_k for j = 1..=7
+            let p1 = h0;
+            let p2 = builder.add(p1, h1);
+            let p3 = builder.add(p2, h2);
+            let p4 = builder.add(p3, h3);
+            let p5 = builder.add(p4, h4);
+            let p6 = builder.add(p5, h5);
+            let p7 = builder.add(p6, h6);
+
+            // S[j] = sum_{k > j} h_k for j = 0..=6
+            let su6 = h7;
+            let su5 = builder.add(h6, su6);
+            let su4 = builder.add(h5, su5);
+            let su3 = builder.add(h4, su4);
+            let su2 = builder.add(h3, su3);
+            let su1 = builder.add(h2, su2);
+            let su0 = builder.add(h1, su1);
+
+            let e0_sib = builder.mul(s0, su0);
+            let e0 = builder.mul_add(h0, folded, e0_sib);
+
+            let e1_lo = builder.mul(s0, p1);
+            let e1_sib = builder.mul_add(s1, su1, e1_lo);
+            let e1 = builder.mul_add(h1, folded, e1_sib);
+
+            let e2_lo = builder.mul(s1, p2);
+            let e2_sib = builder.mul_add(s2, su2, e2_lo);
+            let e2 = builder.mul_add(h2, folded, e2_sib);
+
+            let e3_lo = builder.mul(s2, p3);
+            let e3_sib = builder.mul_add(s3, su3, e3_lo);
+            let e3 = builder.mul_add(h3, folded, e3_sib);
+
+            let e4_lo = builder.mul(s3, p4);
+            let e4_sib = builder.mul_add(s4, su4, e4_lo);
+            let e4 = builder.mul_add(h4, folded, e4_sib);
+
+            let e5_lo = builder.mul(s4, p5);
+            let e5_sib = builder.mul_add(s5, su5, e5_lo);
+            let e5 = builder.mul_add(h5, folded, e5_sib);
+
+            let e6_lo = builder.mul(s5, p6);
+            let e6_sib = builder.mul_add(s6, su6, e6_lo);
+            let e6 = builder.mul_add(h6, folded, e6_sib);
+
+            let e7_sib = builder.mul(s6, p7);
+            let e7 = builder.mul_add(h7, folded, e7_sib);
+
+            vec![e0, e1, e2, e3, e4, e5, e6, e7]
+        }
+
         // Generic path for larger arities
         _ => {
             let one_hot = one_hot_from_bits(builder, index_in_group_bits);
