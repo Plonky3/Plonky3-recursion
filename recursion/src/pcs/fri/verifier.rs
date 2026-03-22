@@ -543,6 +543,7 @@ fn arity2_fold_at_point<EF: Field>(
 ///
 /// For log_arity > 1 we use k sequential arity-2 folds (beta, beta^2, ...)
 /// instead of one Lagrange interpolation, reducing batch inversions to one per step.
+/// Arity 4 and 8 use the same fold schedule with the loop unrolled (no subgroup `Vec`s).
 ///
 /// When `precomputed_evals` is `Some`, those evals are reused instead of
 /// rebuilding them via `reconstruct_evals`.
@@ -596,8 +597,6 @@ where
         return new_folded;
     }
 
-    // General path: k sequential arity-2 folds (beta, beta^2, ...) instead of
-    // one Lagrange interpolation, matching the native optimization to reduce inversions.
     let owned_evals;
     let evals: &[Target] = match precomputed_evals {
         Some(e) => e,
@@ -607,63 +606,131 @@ where
         }
     };
 
-    let (xs, subgroup_start) =
-        compute_subgroup_points::<F, EF>(builder, log_arity, precomputed_subgroup_start);
+    // Unrolled fold tree for arity 4 / 8: same x0 and beta schedule as the generic loop,
+    // but no `compute_subgroup_points` / `data` / `omega_s_br` vectors.
+    let mut new_folded = if log_arity == 2 {
+        let omega = F::two_adic_generator(2);
+        let ss = precomputed_subgroup_start;
 
-    let mut subgroup_start_powers: Vec<Target> = vec![subgroup_start];
-    for _ in 1..log_arity {
-        let prev = subgroup_start_powers.last().copied().unwrap();
-        subgroup_start_powers.push(builder.mul(prev, prev));
-    }
+        let x_at_step0 = |builder: &mut CircuitBuilder<EF>, j: usize| {
+            let br = p3_util::reverse_bits_len(2 * j, 2);
+            let w = builder.define_const(EF::from(omega.exp_u64(br as u64)));
+            builder.mul(ss, w)
+        };
 
-    let omega = F::two_adic_generator(log_arity);
-    let mut data: Vec<Target> = evals.to_vec();
-    let mut current_beta = beta;
+        let x00 = x_at_step0(builder, 0);
+        let x01 = x_at_step0(builder, 1);
+        let f0 = arity2_fold_at_point::<EF>(builder, evals[0], evals[1], beta, x00);
+        let f1 = arity2_fold_at_point::<EF>(builder, evals[2], evals[3], beta, x01);
 
-    for (step, ss) in subgroup_start_powers
-        .into_iter()
-        .enumerate()
-        .take(log_arity)
-    {
-        let num_pairs = data.len() / 2;
-        if step == 0 {
-            for j in 0..num_pairs {
-                data[j] = arity2_fold_at_point::<EF>(
-                    builder,
-                    data[2 * j],
-                    data[2 * j + 1],
-                    current_beta,
-                    xs[2 * j],
-                );
+        let beta2 = builder.mul(beta, beta);
+        let ss2 = builder.mul(ss, ss);
+        let omega_s = omega.exp_u64(1 << 1);
+        let br = p3_util::reverse_bits_len(0, 1);
+        let w = builder.define_const(EF::from(omega_s.exp_u64(br as u64)));
+        let x_step1 = builder.mul(ss2, w);
+        arity2_fold_at_point::<EF>(builder, f0, f1, beta2, x_step1)
+    } else if log_arity == 3 {
+        let omega = F::two_adic_generator(3);
+        let ss = precomputed_subgroup_start;
+
+        let x_at_step0 = |builder: &mut CircuitBuilder<EF>, j: usize| {
+            let br = p3_util::reverse_bits_len(2 * j, 3);
+            let w = builder.define_const(EF::from(omega.exp_u64(br as u64)));
+            builder.mul(ss, w)
+        };
+
+        let x00 = x_at_step0(builder, 0);
+        let x01 = x_at_step0(builder, 1);
+        let x02 = x_at_step0(builder, 2);
+        let x03 = x_at_step0(builder, 3);
+        let f0 = arity2_fold_at_point::<EF>(builder, evals[0], evals[1], beta, x00);
+        let f1 = arity2_fold_at_point::<EF>(builder, evals[2], evals[3], beta, x01);
+        let f2 = arity2_fold_at_point::<EF>(builder, evals[4], evals[5], beta, x02);
+        let f3 = arity2_fold_at_point::<EF>(builder, evals[6], evals[7], beta, x03);
+
+        let beta2 = builder.mul(beta, beta);
+        let ss2 = builder.mul(ss, ss);
+        let omega_s1 = omega.exp_u64(1 << 1);
+
+        let x_at_step1 = |builder: &mut CircuitBuilder<EF>, j: usize| {
+            let br = p3_util::reverse_bits_len(2 * j, 2);
+            let w = builder.define_const(EF::from(omega_s1.exp_u64(br as u64)));
+            builder.mul(ss2, w)
+        };
+        let x10 = x_at_step1(builder, 0);
+        let x11 = x_at_step1(builder, 1);
+        let g0 = arity2_fold_at_point::<EF>(builder, f0, f1, beta2, x10);
+        let g1 = arity2_fold_at_point::<EF>(builder, f2, f3, beta2, x11);
+
+        let beta4 = builder.mul(beta2, beta2);
+        let ss4 = builder.mul(ss2, ss2);
+        let omega_s2 = omega.exp_u64(1 << 2);
+        let br = p3_util::reverse_bits_len(0, 1);
+        let w = builder.define_const(EF::from(omega_s2.exp_u64(br as u64)));
+        let x_step2 = builder.mul(ss4, w);
+        arity2_fold_at_point::<EF>(builder, g0, g1, beta4, x_step2)
+    } else {
+        // General path: k sequential arity-2 folds (beta, beta^2, ...) instead of
+        // one Lagrange interpolation, matching the native optimization to reduce inversions.
+        let (xs, subgroup_start) =
+            compute_subgroup_points::<F, EF>(builder, log_arity, precomputed_subgroup_start);
+
+        let mut subgroup_start_powers: Vec<Target> = vec![subgroup_start];
+        for _ in 1..log_arity {
+            let prev = subgroup_start_powers.last().copied().unwrap();
+            subgroup_start_powers.push(builder.mul(prev, prev));
+        }
+
+        let omega = F::two_adic_generator(log_arity);
+        let mut data: Vec<Target> = evals.to_vec();
+        let mut current_beta = beta;
+
+        for (step, ss) in subgroup_start_powers
+            .into_iter()
+            .enumerate()
+            .take(log_arity)
+        {
+            let num_pairs = data.len() / 2;
+            if step == 0 {
+                for j in 0..num_pairs {
+                    data[j] = arity2_fold_at_point::<EF>(
+                        builder,
+                        data[2 * j],
+                        data[2 * j + 1],
+                        current_beta,
+                        xs[2 * j],
+                    );
+                }
+            } else {
+                let log_domain = log_arity - step;
+                let omega_s = omega.exp_u64(1 << step);
+                let omega_s_br: Vec<Target> = (0..num_pairs)
+                    .map(|j| {
+                        let br_2j = p3_util::reverse_bits_len(2 * j, log_domain);
+                        let c = omega_s.exp_u64(br_2j as u64);
+                        builder.define_const(EF::from(c))
+                    })
+                    .collect();
+                for j in 0..num_pairs {
+                    let x0 = builder.mul(ss, omega_s_br[j]);
+                    data[j] = arity2_fold_at_point::<EF>(
+                        builder,
+                        data[2 * j],
+                        data[2 * j + 1],
+                        current_beta,
+                        x0,
+                    );
+                }
             }
-        } else {
-            let log_domain = log_arity - step;
-            let omega_s = omega.exp_u64(1 << step);
-            let omega_s_br: Vec<Target> = (0..num_pairs)
-                .map(|j| {
-                    let br_2j = p3_util::reverse_bits_len(2 * j, log_domain);
-                    let c = omega_s.exp_u64(br_2j as u64);
-                    builder.define_const(EF::from(c))
-                })
-                .collect();
-            for j in 0..num_pairs {
-                let x0 = builder.mul(ss, omega_s_br[j]);
-                data[j] = arity2_fold_at_point::<EF>(
-                    builder,
-                    data[2 * j],
-                    data[2 * j + 1],
-                    current_beta,
-                    x0,
-                );
+            data.truncate(num_pairs);
+            if step < log_arity - 1 {
+                current_beta = builder.mul(current_beta, current_beta);
             }
         }
-        data.truncate(num_pairs);
-        if step < log_arity - 1 {
-            current_beta = builder.mul(current_beta, current_beta);
-        }
-    }
 
-    let mut new_folded = data[0];
+        data[0]
+    };
 
     // Roll-in: folded += beta^{2^log_arity} * roll_in
     if let Some(ro) = roll_in {
