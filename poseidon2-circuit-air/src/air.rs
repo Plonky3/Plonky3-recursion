@@ -7,7 +7,7 @@ use core::mem::MaybeUninit;
 
 use p3_air::{Air, AirBuilder, AirLayout, BaseAir, BaseLeaf, WindowAccess};
 use p3_circuit::ops::Poseidon2CircuitRow;
-use p3_field::{Field, PrimeCharacteristicRing, PrimeField};
+use p3_field::{Dup, Field, PrimeCharacteristicRing, PrimeField};
 use p3_lookup::LookupAir;
 use p3_lookup::lookup_traits::{Direction, Kind, Lookup};
 use p3_matrix::Matrix;
@@ -900,7 +900,7 @@ pub(crate) fn eval<
     let is_left = AB::Expr::ONE - next_bit.into();
 
     // Gate for placing our digest on the left side (limbs 0 and 1).
-    let gate_left_0 = next_prep.input_limbs[0].merkle_chain_sel * is_left.clone();
+    let gate_left_0 = next_prep.input_limbs[0].merkle_chain_sel * is_left.dup();
     let gate_left_1 = next_prep.input_limbs[1].merkle_chain_sel * is_left;
 
     // Gate for placing our digest on the right side (limbs 2 and 3).
@@ -912,13 +912,13 @@ pub(crate) fn eval<
         // Left child: output element → next input limb 0 element.
         builder
             .when_transition()
-            .when(gate_left_0.clone())
+            .when(gate_left_0.dup())
             .assert_zero(next_in[d] - local_out[d]);
 
         // Left child: output element → next input limb 1 element.
         builder
             .when_transition()
-            .when(gate_left_1.clone())
+            .when(gate_left_1.dup())
             .assert_zero(next_in[D + d] - local_out[D + d]);
 
         // Right child: output element → next input limb 2 element.
@@ -928,13 +928,13 @@ pub(crate) fn eval<
         // where in the next input they land (limbs 2-3 instead of 0-1).
         builder
             .when_transition()
-            .when(gate_right_0.clone())
+            .when(gate_right_0.dup())
             .assert_zero(next_in[2 * D + d] - local_out[d]);
 
         // Right child: output element → next input limb 3 element.
         builder
             .when_transition()
-            .when(gate_right_1.clone())
+            .when(gate_right_1.dup())
             .assert_zero(next_in[3 * D + d] - local_out[D + d]);
     }
 
@@ -1416,7 +1416,7 @@ impl<
                 .chain(
                     local.poseidon2.inputs[limb_idx * D..(limb_idx + 1) * D]
                         .iter()
-                        .cloned(),
+                        .copied(),
                 )
                 .map(SymbolicExpression::from)
                 .collect();
@@ -1428,7 +1428,7 @@ impl<
             //
             // Both factors are preprocessed, so this product costs
             // nothing at constraint-evaluation time.
-            let mult = SymbolicExpression::from(limb.in_ctl) * not_merkle.clone();
+            let mult = SymbolicExpression::from(limb.in_ctl) * not_merkle.dup();
 
             // Direction::Send means this table is the sender:
             //
@@ -1463,7 +1463,7 @@ impl<
                     local.poseidon2.ending_full_rounds[HALF_FULL_ROUNDS - 1].post
                         [limb_idx * D..(limb_idx + 1) * D]
                         .iter()
-                        .cloned(),
+                        .copied(),
                 )
                 .map(SymbolicExpression::from)
                 .collect();

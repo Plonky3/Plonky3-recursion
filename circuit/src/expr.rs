@@ -97,7 +97,7 @@ mod tests {
     use super::*;
 
     // Mock extension field element for testing
-    #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     struct MockExtField(u64);
 
     #[test]
@@ -132,14 +132,14 @@ mod tests {
             let mut ids = Vec::new();
 
             for val in &vals {
-                let expr = Expr::Const(val.clone());
+                let expr = Expr::Const(*val);
                 let id = graph.add_expr(expr.clone());
                 ids.push(id);
             }
 
             for (id, val) in ids.iter().zip(vals.iter()) {
                 let retrieved = graph.get_expr(*id);
-                prop_assert_eq!(retrieved, &Expr::Const(val.clone()), "get should return added expression");
+                prop_assert_eq!(retrieved, &Expr::Const(*val), "get should return added expression");
             }
         }
 
@@ -209,8 +209,8 @@ mod tests {
 
         #[test]
         fn expr_equality(val in any::<u64>().prop_map(MockExtField)) {
-            let expr1 = Expr::Const(val.clone());
-            let expr2 = Expr::Const(val.clone());
+            let expr1 = Expr::Const(val);
+            let expr2 = Expr::Const(val);
             let expr3 = Expr::Const(MockExtField(val.0 + 1));
 
             prop_assert_eq!(&expr1, &expr2, "same expressions should be equal");

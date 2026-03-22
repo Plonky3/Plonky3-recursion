@@ -26,7 +26,7 @@ impl<F: Field> CircuitBuilder<F> {
             let is_last = i == last_idx;
             let call_inputs: Vec<Option<ExprId>> = input
                 .iter()
-                .cloned()
+                .copied()
                 .map(Some)
                 .chain(iter::repeat(None))
                 .take(width_ext)
@@ -124,7 +124,7 @@ mod tests {
                 .map(|chunk| {
                     let chunk: Vec<F> = chunk
                         .iter()
-                        .cloned()
+                        .copied()
                         .chain(iter::repeat(F::ZERO))
                         .take(<CF as BasedVectorSpace<F>>::DIMENSION)
                         .collect();
@@ -198,7 +198,7 @@ mod tests {
             .map(|chunk| {
                 let chunk: Vec<F> = chunk
                     .iter()
-                    .cloned()
+                    .copied()
                     .chain(iter::repeat(F::ZERO))
                     .take(<CF as BasedVectorSpace<F>>::DIMENSION)
                     .collect();

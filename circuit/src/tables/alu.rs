@@ -92,7 +92,7 @@ mod tests {
         witness: &'a [Option<F>],
     }
 
-    impl<'a, F: Clone + Field> AluTraceBuilder<'a, F> {
+    impl<'a, F: Field> AluTraceBuilder<'a, F> {
         /// Creates a new ALU trace builder.
         pub const fn new(primitive_ops: &'a [Op<F>], witness: &'a [Option<F>]) -> Self {
             Self {
@@ -149,17 +149,17 @@ mod tests {
                 self.witness
                     .get(id.0 as usize)
                     .and_then(|opt| opt.as_ref())
-                    .cloned()
+                    .copied()
                     .ok_or(CircuitError::WitnessNotSet { witness_id: *id })
             }
 
             #[cfg(not(debug_assertions))]
             {
                 unsafe {
-                    Ok(self
+                    Ok(*self
                         .witness
                         .get_unchecked(id.0 as usize)
-                        .clone()
+                        .as_ref()
                         .expect("witness not set?"))
                 }
             }

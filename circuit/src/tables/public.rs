@@ -1,5 +1,7 @@
 use alloc::vec::Vec;
 
+use p3_field::{Dup, PrimeCharacteristicRing};
+
 use crate::CircuitError;
 use crate::ops::Op;
 use crate::types::WitnessId;
@@ -28,7 +30,7 @@ pub struct PublicTraceBuilder<'a, F> {
     witness: &'a [Option<F>],
 }
 
-impl<'a, F: Clone> PublicTraceBuilder<'a, F> {
+impl<'a, F: PrimeCharacteristicRing> PublicTraceBuilder<'a, F> {
     /// Creates a new public trace builder.
     pub const fn new(primitive_ops: &'a [Op<F>], witness: &'a [Option<F>]) -> Self {
         Self {
@@ -49,7 +51,7 @@ impl<'a, F: Clone> PublicTraceBuilder<'a, F> {
                     .witness
                     .get(out.0 as usize)
                     .and_then(|opt| opt.as_ref())
-                    .cloned()
+                    .map(Dup::dup)
                     .ok_or(CircuitError::WitnessNotSet { witness_id: *out })?;
                 values.push(value);
             }

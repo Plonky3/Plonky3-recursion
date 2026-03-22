@@ -888,7 +888,7 @@ where
         // For constraint evaluation, we need an extension field matrix with width `aux_width``.
         let aux_width = all_lookups[i]
             .iter()
-            .flat_map(|ctx| ctx.columns.iter().cloned())
+            .flat_map(|ctx| ctx.columns.iter().copied())
             .max()
             .map(|m| m + 1)
             .unwrap_or(0);

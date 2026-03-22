@@ -232,6 +232,7 @@ mod tests {
         Air, AirLayout, BaseAir, BaseEntry, BaseLeaf, ExtEntry, ExtLeaf, RowWindow,
         SymbolicExpressionExt, SymbolicVariable, SymbolicVariableExt,
     };
+    use p3_field::Dup;
     use p3_matrix::dense::RowMajorMatrixView;
     use p3_matrix::stack::VerticalPair;
     use p3_test_utils::baby_bear_params::*;
@@ -331,8 +332,8 @@ mod tests {
                 SymbolicExpression::<Challenge>::Leaf(BaseLeaf::Constant(Challenge::ZERO));
             let ch = SymbolicExpression::Leaf(BaseLeaf::Constant(alpha));
             for s_c in symbolic_constraints.iter() {
-                acc = ch.clone() * acc;
-                acc += s_c.clone();
+                acc = ch.dup() * acc;
+                acc += s_c.dup();
             }
             acc
         };
@@ -481,7 +482,7 @@ mod tests {
         // (a + b) * (a - b) where a=7, b=3 => (10)*(4) = 40
         let a = SymbolicExpression::Leaf(BaseLeaf::Constant(Challenge::from_u64(7)));
         let b = SymbolicExpression::Leaf(BaseLeaf::Constant(Challenge::from_u64(3)));
-        let expr = (a.clone() + b.clone()) * (a - b);
+        let expr = (a.dup() + b.dup()) * (a - b);
 
         let zeros = vec![Challenge::ZERO; 8];
         compile_and_check_base(&expr, Challenge::from_u64(40), &zeros)

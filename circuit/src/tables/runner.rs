@@ -454,7 +454,7 @@ impl<'a, F: Field> CircuitRunner<'a, F> {
         self.witness
             .get(widx.0 as usize)
             .and_then(|opt| opt.as_ref())
-            .cloned()
+            .copied()
             .ok_or(CircuitError::WitnessNotSet { witness_id: widx })
     }
 
@@ -612,14 +612,14 @@ mod tests {
             let a = witness
                 .get(a_idx)
                 .and_then(|opt| opt.as_ref())
-                .cloned()
+                .copied()
                 .ok_or(CircuitError::WitnessNotSet {
                     witness_id: inputs[0],
                 })?;
             let b = witness
                 .get(b_idx)
                 .and_then(|opt| opt.as_ref())
-                .cloned()
+                .copied()
                 .ok_or(CircuitError::WitnessNotSet {
                     witness_id: inputs[1],
                 })?;

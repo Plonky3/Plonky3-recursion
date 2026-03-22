@@ -90,7 +90,7 @@ pub struct ExpressionLowerer<'a, F: Field> {
 
 impl<'a, F> ExpressionLowerer<'a, F>
 where
-    F: Field + Clone + PrimeCharacteristicRing + PartialEq + Eq + Hash,
+    F: Field + PrimeCharacteristicRing + PartialEq + Eq + Hash,
 {
     /// Creates a new expression lowerer.
     pub const fn new(

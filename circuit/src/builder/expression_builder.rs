@@ -224,7 +224,7 @@ pub struct ExpressionBuilder<F> {
 
 impl<F> ExpressionBuilder<F>
 where
-    F: Clone + PrimeCharacteristicRing + Eq + Hash,
+    F: PrimeCharacteristicRing + Eq + Hash,
 {
     #[inline]
     pub(crate) fn is_const_zero(&self, id: ExprId) -> bool {
@@ -239,7 +239,7 @@ where
     #[inline]
     fn get_const_value(&self, id: ExprId) -> Option<F> {
         match self.graph.get_expr(id) {
-            Expr::Const(val) => Some(val.clone()),
+            Expr::Const(val) => Some(val.dup()),
             _ => None,
         }
     }
@@ -263,7 +263,7 @@ where
         //
         // This ensures ExprId::ZERO (which is ExprId(0)) always refers to zero.
         let zero_val = F::ZERO;
-        let zero_id = graph.add_expr(Expr::Const(zero_val.clone()));
+        let zero_id = graph.add_expr(Expr::Const(zero_val.dup()));
 
         // Pre-populate the constant pool with zero.
         let const_pool = [(zero_val, zero_id)].into();
@@ -316,7 +316,7 @@ where
         }
 
         // This is a new constant. Add it to the expression graph.
-        let expr_id = self.graph.add_expr(Expr::Const(val.clone()));
+        let expr_id = self.graph.add_expr(Expr::Const(val.dup()));
 
         // Insert into the constant pool for future lookups.
         self.const_pool.insert(val, expr_id);
@@ -1030,7 +1030,7 @@ where
 
 impl<F> Default for ExpressionBuilder<F>
 where
-    F: Clone + PrimeCharacteristicRing + Eq + Hash,
+    F: PrimeCharacteristicRing + Eq + Hash,
 {
     fn default() -> Self {
         Self::new()

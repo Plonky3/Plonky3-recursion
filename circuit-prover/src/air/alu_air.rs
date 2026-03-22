@@ -91,7 +91,7 @@ use core::marker::PhantomData;
 
 use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 use p3_circuit::tables::AluTrace;
-use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
+use p3_field::{BasedVectorSpace, Dup, Field, PrimeCharacteristicRing};
 use p3_lookup::LookupAir;
 use p3_lookup::lookup_traits::{Direction, Kind, Lookup};
 use p3_matrix::dense::RowMajorMatrix;
@@ -558,9 +558,9 @@ fn ext_mul<AB: AirBuilder, const D: usize>(
             let term = x[i] * y[j];
             let k = i + j;
             if k < D {
-                acc[k] = acc[k].clone() + term;
+                acc[k] = acc[k].dup() + term;
             } else {
-                acc[k - D] = acc[k - D].clone() + w.clone().unwrap() * term;
+                acc[k - D] = acc[k - D].dup() + w.as_ref().unwrap().dup() * term;
             }
         }
     }
@@ -616,7 +616,7 @@ where
             // ── MUL: a * b - out = 0 ────────────────────────────────────
             let ab = ext_mul::<AB, D>(a, b, &w);
             for i in 0..D {
-                builder.assert_zero(sel_mul.clone() * (ab[i].clone() - out[i]));
+                builder.assert_zero(sel_mul.dup() * (ab[i].dup() - out[i]));
             }
 
             // ── BOOL_CHECK: a[0]*(a[0]-1)=0, a[1..D]=0 ─────────────────
@@ -628,7 +628,7 @@ where
 
             // ── MUL_ADD: a * b + c - out = 0 ────────────────────────────
             for i in 0..D {
-                builder.assert_zero(sel_muladd * (ab[i].clone() + c[i] - out[i]));
+                builder.assert_zero(sel_muladd * (ab[i].dup() + c[i] - out[i]));
             }
 
             // ── HORNER_ACC ───────────────────────────────────────────────
@@ -660,7 +660,7 @@ where
                 for i in 0..D {
                     builder.assert_zero(
                         next_sel_double
-                            * (out_next_b[i].clone() + next_c[i] - next_a[i] - next_int[i]),
+                            * (out_next_b[i].dup() + next_c[i] - next_a[i] - next_int[i]),
                     );
                 }
 
@@ -668,21 +668,21 @@ where
                 let next_sel_single = next_sel_horner - next_sel_double;
                 for i in 0..D {
                     builder.assert_zero(
-                        next_sel_single.clone()
-                            * (out_next_b[i].clone() + next_c[i] - next_a[i] - next_out[i]),
+                        next_sel_single.dup()
+                            * (out_next_b[i].dup() + next_c[i] - next_a[i] - next_out[i]),
                     );
                 }
 
                 // 3) Intra-row double-step: int * b + c1 - a1 - out = 0
                 let int_b = ext_mul::<AB, D>(int, b, &w);
                 for i in 0..D {
-                    builder.assert_zero(sel_double * (int_b[i].clone() + c1[i] - a1[i] - out[i]));
+                    builder.assert_zero(sel_double * (int_b[i].dup() + c1[i] - a1[i] - out[i]));
                 }
             } else {
                 for i in 0..D {
                     builder.assert_zero(
                         next_sel_horner
-                            * (out_next_b[i].clone() + next_c[i] - next_a[i] - next_out[i]),
+                            * (out_next_b[i].dup() + next_c[i] - next_a[i] - next_out[i]),
                     );
                 }
             }
@@ -736,7 +736,7 @@ impl<F: Field, const D: usize> LookupAir<F> for AluAir<F, D> {
         let c1_reader =
             SymbolicExpression::from(preprocessed_local[extra_prep + EXTRA_PREP_C1_READER]);
 
-        let eff_mult_a1 = mult_a_lane0.clone() * a1_reader;
+        let eff_mult_a1 = mult_a_lane0.dup() * a1_reader;
         let eff_mult_c1 = mult_a_lane0 * c1_reader;
 
         let a1_idx = SymbolicExpression::from(preprocessed_local[extra_prep + EXTRA_PREP_A1_IDX]);
