@@ -13,10 +13,21 @@ pub struct Poseidon2PermPrivateData<F, const SIBLING_LIMBS: usize> {
 }
 
 /// Execution state for Poseidon2 permutation operations.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct Poseidon2ExecutionState<F> {
     pub last_output_normal: Option<Vec<F>>,
     pub last_output_merkle: Option<Vec<F>>,
     /// Circuit rows captured during execution.
     pub rows: Vec<Poseidon2CircuitRow<F>>,
+}
+
+impl<F> Default for Poseidon2ExecutionState<F> {
+    fn default() -> Self {
+        let rows = Vec::with_capacity(2048);
+        Self {
+            last_output_normal: None,
+            last_output_merkle: None,
+            rows,
+        }
+    }
 }

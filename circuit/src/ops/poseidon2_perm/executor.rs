@@ -7,7 +7,9 @@ use alloc::{format, vec};
 
 use p3_field::Field;
 
-use crate::ops::poseidon2_perm::config::{Poseidon2Config, Poseidon2PermConfigData};
+use crate::ops::poseidon2_perm::config::{
+    Poseidon2Config, Poseidon2PermConfigData, Poseidon2PermExec,
+};
 use crate::ops::poseidon2_perm::state::{Poseidon2ExecutionState, Poseidon2PermPrivateData};
 use crate::ops::poseidon2_perm::trace::Poseidon2CircuitRow;
 use crate::ops::{ExecutionContext, NonPrimitiveExecutor, NpoTypeId};
@@ -367,6 +369,7 @@ impl Poseidon2PermExecutor {
     /// - `width_ext` limb slots, each with 0 or 1 witness.
     /// - 1 MMCS index accumulator slot (0 or 1 element).
     /// - 1 MMCS direction bit slot (0 or 1 element).
+    #[inline]
     fn validate_ext_inputs(&self, inputs: &[Vec<WitnessId>]) -> Result<(), CircuitError> {
         let width_ext = self.config.width_ext();
         let expected_inputs = width_ext + 2;
@@ -377,28 +380,31 @@ impl Poseidon2PermExecutor {
                 got: inputs.len(),
             });
         }
-        for limb_inputs in inputs[..width_ext].iter() {
-            if limb_inputs.len() > 1 {
-                return Err(CircuitError::NonPrimitiveOpLayoutMismatch {
+        #[cfg(debug_assertions)]
+        {
+            for limb_inputs in inputs[..width_ext].iter() {
+                if limb_inputs.len() > 1 {
+                    return Err(CircuitError::NonPrimitiveOpLayoutMismatch {
+                        op: self.op_type.clone(),
+                        expected: "0 or 1 witness per input limb (extension-only)".to_string(),
+                        got: limb_inputs.len(),
+                    });
+                }
+            }
+            if inputs[width_ext].len() > 1 {
+                return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
                     op: self.op_type.clone(),
-                    expected: "0 or 1 witness per input limb (extension-only)".to_string(),
-                    got: limb_inputs.len(),
+                    expected: "0 or 1 element for mmcs_index_sum".to_string(),
+                    got: inputs[width_ext].len(),
                 });
             }
-        }
-        if inputs[width_ext].len() > 1 {
-            return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
-                op: self.op_type.clone(),
-                expected: "0 or 1 element for mmcs_index_sum".to_string(),
-                got: inputs[width_ext].len(),
-            });
-        }
-        if inputs[width_ext + 1].len() > 1 {
-            return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
-                op: self.op_type.clone(),
-                expected: "0 or 1 element for mmcs_bit".to_string(),
-                got: inputs[width_ext + 1].len(),
-            });
+            if inputs[width_ext + 1].len() > 1 {
+                return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
+                    op: self.op_type.clone(),
+                    expected: "0 or 1 element for mmcs_bit".to_string(),
+                    got: inputs[width_ext + 1].len(),
+                });
+            }
         }
         Ok(())
     }
@@ -406,6 +412,7 @@ impl Poseidon2PermExecutor {
     /// Validate the output layout for D>1 (extension field) mode.
     ///
     /// Accepts either `rate_ext` outputs (rate-only) or `width_ext` outputs (full state).
+    #[inline]
     fn validate_ext_outputs(&self, outputs: &[Vec<WitnessId>]) -> Result<(), CircuitError> {
         let rate_ext = self.config.rate_ext();
         let width_ext = self.config.width_ext();
@@ -464,6 +471,7 @@ impl Poseidon2PermExecutor {
                 got: inputs.len(),
             });
         }
+        #[cfg(debug_assertions)]
         for (i, inp) in inputs.iter().enumerate() {
             if inp.len() > 1 {
                 return Err(CircuitError::NonPrimitiveOpLayoutMismatch {
@@ -619,17 +627,18 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Poseidon2Perm
         outputs: &[Vec<WitnessId>],
         ctx: &mut ExecutionContext<'_, F>,
     ) -> Result<(), CircuitError> {
-        // Retrieve the type-erased permutation closure from the config registry.
-        let config = ctx.get_config(&self.op_type)?.clone();
-        let cfg = config
+        let exec: Poseidon2PermExec<F> = ctx
+            .get_config(&self.op_type)?
             .downcast_ref::<Poseidon2PermConfigData<F>>()
             .ok_or_else(|| CircuitError::InvalidNonPrimitiveOpConfiguration {
                 op: self.op_type.clone(),
-            })?;
+            })?
+            .exec
+            .clone();
 
         // D=1 mode uses a separate code path with fixed 16-element layout.
         if self.config.d() == 1 {
-            return self.execute_base(inputs, outputs, ctx, &*cfg.exec);
+            return self.execute_base(inputs, outputs, ctx, exec.as_ref());
         }
 
         // Validate extension-field input/output shapes before touching any state.
@@ -652,7 +661,7 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Poseidon2Perm
         self.apply_merkle_swap(&mut state, mmcs_bit);
 
         // Run the permutation and record the result.
-        let output = (cfg.exec)(&state);
+        let output = exec(&state);
 
         let row = self.build_trace_row(inputs, outputs, mmcs_bit, &state, ctx)?;
         self.write_outputs(outputs, &output, ctx)?;

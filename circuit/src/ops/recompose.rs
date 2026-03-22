@@ -49,9 +49,16 @@ pub struct RecomposeCircuitRow<F> {
 }
 
 /// Execution state collecting rows across all recompose calls.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct RecomposeExecutionState<F> {
     pub rows: Vec<RecomposeCircuitRow<F>>,
+}
+
+impl<F> Default for RecomposeExecutionState<F> {
+    fn default() -> Self {
+        let rows = Vec::with_capacity(512);
+        Self { rows }
+    }
 }
 
 // ============================================================================
