@@ -32,6 +32,7 @@ use p3_lookup::lookup_traits::{Direction, Kind, Lookup};
 use p3_lookup::{LookupAir, LookupInput};
 use p3_matrix::dense::RowMajorMatrix;
 
+use super::recompose_columns::{RECOMPOSE_PREP_LANE_COL_MAP, RECOMPOSE_PREP_LANE_WIDTH};
 use super::utils::create_symbolic_variables;
 
 /// AIR for the recompose (BF→EF packing) table.
@@ -54,7 +55,7 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> RecomposeAir<F, D> {
 
     /// Preprocessed width per lane: 1 output index + 1 out_mult.
     pub const fn preprocessed_lane_width() -> usize {
-        2
+        RECOMPOSE_PREP_LANE_WIDTH
     }
 
     /// Create a new `RecomposeAir` with the given preprocessed data and lane count.
@@ -144,8 +145,12 @@ impl<F: Field, const D: usize> LookupAir<F> for RecomposeAir<F, D> {
             let main_off = lane * Self::lane_width();
             let prep_off = lane * Self::preprocessed_lane_width();
 
-            let output_idx = SymbolicExpression::from(symbolic_preprocessed[prep_off]);
-            let out_mult = SymbolicExpression::from(symbolic_preprocessed[prep_off + 1]);
+            let output_idx = SymbolicExpression::from(
+                symbolic_preprocessed[prep_off + RECOMPOSE_PREP_LANE_COL_MAP.output_idx],
+            );
+            let out_mult = SymbolicExpression::from(
+                symbolic_preprocessed[prep_off + RECOMPOSE_PREP_LANE_COL_MAP.out_mult],
+            );
 
             let mut values = vec![output_idx];
             for j in 0..D {

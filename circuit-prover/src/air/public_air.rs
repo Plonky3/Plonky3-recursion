@@ -31,6 +31,7 @@ use p3_lookup::LookupAir;
 use p3_lookup::lookup_traits::{Direction, Kind, Lookup};
 use p3_matrix::dense::RowMajorMatrix;
 
+use crate::air::column_layout::WITNESS_LOOKUP_PREP_LANE_WIDTH;
 use crate::air::utils::{create_symbolic_variables, get_index_lookups};
 
 /// PublicAir: vector-valued public input binding with generic extension degree D.
@@ -109,9 +110,9 @@ impl<F: Field, const D: usize> PublicAir<F, D> {
     }
 
     /// Number of preprocessed base-field columns occupied by a single lane.
-    /// Each lane stores multiplicity + index = 2 columns.
+    /// Each lane stores multiplicity + index (see [`WitnessLookupPrepCols`](crate::air::column_layout::WitnessLookupPrepCols)).
     pub const fn preprocessed_lane_width() -> usize {
-        2
+        WITNESS_LOOKUP_PREP_LANE_WIDTH
     }
 
     /// Total number of preprocessed columns for this AIR instance.

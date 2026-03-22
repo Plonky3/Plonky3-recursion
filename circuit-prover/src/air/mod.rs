@@ -1,7 +1,10 @@
 pub mod alu_air;
+mod alu_columns;
+mod column_layout;
 pub mod const_air;
 pub mod public_air;
 pub mod recompose_air;
+mod recompose_columns;
 pub mod utils;
 
 #[cfg(test)]

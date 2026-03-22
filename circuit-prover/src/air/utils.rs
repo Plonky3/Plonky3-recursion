@@ -1,4 +1,5 @@
 use alloc::vec::Vec;
+use core::borrow::Borrow;
 use core::iter;
 
 use p3_air::{AirBuilder, AirLayout};
@@ -7,9 +8,8 @@ use p3_lookup::lookup_traits::{Direction, LookupInput};
 use p3_matrix::Matrix;
 use p3_uni_stark::{SymbolicAirBuilder, SymbolicExpression, SymbolicVariable};
 
-use super::alu_air::{
-    PREP_A_IDX, PREP_A_IS_READER, PREP_C_IS_READER, PREP_MULT_A, PREP_MULT_B, PREP_MULT_OUT,
-};
+use super::alu_columns::{AluMainLaneCols, AluPrepLaneCols, PREP_LANE_WIDTH, alu_main_lane_width};
+use super::column_layout::WITNESS_LOOKUP_PREP_COL_MAP;
 
 pub fn get_index_lookups<F: Field, const D: usize>(
     main_start: usize,
@@ -21,9 +21,13 @@ pub fn get_index_lookups<F: Field, const D: usize>(
 ) -> Vec<LookupInput<F>> {
     (0..num_lookups)
         .map(|i| {
-            let idx = SymbolicExpression::from(preprocessed[1 + preprocessed_start + i]);
+            let idx = SymbolicExpression::from(
+                preprocessed[preprocessed_start + WITNESS_LOOKUP_PREP_COL_MAP.witness_idx + i],
+            );
 
-            let multiplicity = SymbolicExpression::from(preprocessed[preprocessed_start]);
+            let multiplicity = SymbolicExpression::from(
+                preprocessed[preprocessed_start + WITNESS_LOOKUP_PREP_COL_MAP.multiplicity],
+            );
 
             let values = (0..D).map(|j| SymbolicExpression::from(main[main_start + i * D + j]));
             let inps = iter::once(idx).chain(values).collect::<Vec<_>>();
@@ -35,29 +39,37 @@ pub fn get_index_lookups<F: Field, const D: usize>(
 
 /// Get ALU lookups for the 4 operands (a, b, c, out).
 ///
-/// Uses the `PREP_*` constants from [`super::alu_air`] for column offsets.
+/// Uses [`super::alu_columns`] for column offsets.
 pub fn get_alu_index_lookups<F: Field, const D: usize>(
     main_start: usize,
     preprocessed_start: usize,
     main: &[SymbolicVariable<F>],
     preprocessed: &[SymbolicVariable<F>],
 ) -> Vec<LookupInput<F>> {
-    let mult_a = SymbolicExpression::from(preprocessed[preprocessed_start + PREP_MULT_A]);
-    let mult_b = SymbolicExpression::from(preprocessed[preprocessed_start + PREP_MULT_B]);
-    let mult_out = SymbolicExpression::from(preprocessed[preprocessed_start + PREP_MULT_OUT]);
-    let a_is_reader = SymbolicExpression::from(preprocessed[preprocessed_start + PREP_A_IS_READER]);
-    let c_is_reader = SymbolicExpression::from(preprocessed[preprocessed_start + PREP_C_IS_READER]);
+    let prep: &AluPrepLaneCols<_> =
+        preprocessed[preprocessed_start..preprocessed_start + PREP_LANE_WIDTH].borrow();
+    let lane_main: &AluMainLaneCols<_, D> =
+        main[main_start..main_start + alu_main_lane_width::<D>()].borrow();
+
+    let mult_a = SymbolicExpression::from(prep.mult_a);
+    let mult_b = SymbolicExpression::from(prep.mult_b);
+    let mult_out = SymbolicExpression::from(prep.mult_out);
+    let a_is_reader = SymbolicExpression::from(prep.a_is_reader);
+    let c_is_reader = SymbolicExpression::from(prep.c_is_reader);
 
     let eff_mult_a = mult_a.clone() * a_is_reader;
     let eff_mult_c = mult_a * c_is_reader;
 
     let multiplicities = [eff_mult_a, mult_b, eff_mult_c, mult_out];
 
+    let idx_vars = [prep.a_idx, prep.b_idx, prep.c_idx, prep.out_idx];
+    let operands = [&lane_main.a, &lane_main.b, &lane_main.c, &lane_main.out];
+
     (0..4)
         .map(|i| {
-            let idx = SymbolicExpression::from(preprocessed[preprocessed_start + PREP_A_IDX + i]);
+            let idx = SymbolicExpression::from(idx_vars[i]);
 
-            let values = (0..D).map(|j| SymbolicExpression::from(main[main_start + i * D + j]));
+            let values = (0..D).map(|j| SymbolicExpression::from(operands[i][j]));
             let inps = iter::once(idx).chain(values).collect::<Vec<_>>();
 
             (inps, multiplicities[i].clone(), Direction::Receive)
