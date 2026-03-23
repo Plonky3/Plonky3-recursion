@@ -23,14 +23,13 @@ pub(crate) struct AluPrepLaneCols<T> {
     pub c_is_reader: T,
 }
 
-/// Global extra preprocessed columns for double-step HornerAcc (after all lanes).
+/// Extra preprocessed columns for one packed-Horner step `t` in `1..K-1`.
 #[repr(C)]
-pub(crate) struct AluExtraPrepCols<T> {
-    pub sel_double: T,
-    pub a1_idx: T,
-    pub c1_idx: T,
-    pub a1_reader: T,
-    pub c1_reader: T,
+pub(crate) struct AluPackedHornerStepPrepCols<T> {
+    pub a_idx: T,
+    pub c_idx: T,
+    pub a_reader: T,
+    pub c_reader: T,
 }
 
 /// Main trace columns for one ALU lane: `a`, `b`, `c`, `out` (each `D` base coefficients).
@@ -42,28 +41,41 @@ pub(crate) struct AluMainLaneCols<T, const D: usize> {
     pub out: [T; D],
 }
 
-/// Trailing main-trace columns for double-step HornerAcc on lane 0: `int`, `a1`, `c1`.
-#[repr(C)]
-pub(crate) struct AluMainHornerExtraCols<T, const D: usize> {
-    pub int: [T; D],
-    pub a1: [T; D],
-    pub c1: [T; D],
-}
+/// Column 0 of the global extra preprocessed region (packed Horner selector).
+pub(crate) const EXTRA_PREP_SEL_PACKED: usize = 0;
 
 pub(crate) const PREP_LANE_WIDTH: usize = size_of::<AluPrepLaneCols<u8>>();
-pub(crate) const EXTRA_PREP_WIDTH: usize = size_of::<AluExtraPrepCols<u8>>();
+
+pub(crate) const PACKED_HORNER_STEP_PREP_WIDTH: usize =
+    size_of::<AluPackedHornerStepPrepCols<u8>>();
+
+#[inline]
+pub(crate) const fn extra_prep_a_idx_for_step(t: usize) -> usize {
+    1 + PACKED_HORNER_STEP_PREP_WIDTH * (t - 1)
+}
+
+/// Width of global extra preprocessed columns for K-step packed Horner (`K >= 2`).
+#[inline]
+pub(crate) const fn horner_extra_prep_width(k: usize) -> usize {
+    1 + PACKED_HORNER_STEP_PREP_WIDTH * (k - 1)
+}
 
 pub(crate) const fn alu_main_lane_width<const D: usize>() -> usize {
     size_of::<AluMainLaneCols<u8, D>>()
 }
 
-pub(crate) const fn alu_main_horner_extra_width<const D: usize>() -> usize {
-    size_of::<AluMainHornerExtraCols<u8, D>>()
-}
-
 const _ALU_PREP_LANE_COL_MAP: AluPrepLaneCols<usize> = {
     let indices = column_indices::<PREP_LANE_WIDTH>();
     unsafe { transmute::<[usize; PREP_LANE_WIDTH], AluPrepLaneCols<usize>>(indices) }
+};
+
+const _PACKED_STEP_COL_MAP: AluPackedHornerStepPrepCols<usize> = {
+    let indices = column_indices::<PACKED_HORNER_STEP_PREP_WIDTH>();
+    unsafe {
+        transmute::<[usize; PACKED_HORNER_STEP_PREP_WIDTH], AluPackedHornerStepPrepCols<usize>>(
+            indices,
+        )
+    }
 };
 
 impl<T> Borrow<AluPrepLaneCols<T>> for [T] {
@@ -88,10 +100,10 @@ impl<T> BorrowMut<AluPrepLaneCols<T>> for [T] {
     }
 }
 
-impl<T> Borrow<AluExtraPrepCols<T>> for [T] {
-    fn borrow(&self) -> &AluExtraPrepCols<T> {
-        assert_eq!(self.len(), EXTRA_PREP_WIDTH);
-        let (prefix, cols, suffix) = unsafe { self.align_to::<AluExtraPrepCols<T>>() };
+impl<T> Borrow<AluPackedHornerStepPrepCols<T>> for [T] {
+    fn borrow(&self) -> &AluPackedHornerStepPrepCols<T> {
+        assert_eq!(self.len(), PACKED_HORNER_STEP_PREP_WIDTH);
+        let (prefix, cols, suffix) = unsafe { self.align_to::<AluPackedHornerStepPrepCols<T>>() };
         debug_assert!(prefix.is_empty(), "alignment should match");
         debug_assert!(suffix.is_empty(), "alignment should match");
         debug_assert_eq!(cols.len(), 1);
@@ -99,10 +111,11 @@ impl<T> Borrow<AluExtraPrepCols<T>> for [T] {
     }
 }
 
-impl<T> BorrowMut<AluExtraPrepCols<T>> for [T] {
-    fn borrow_mut(&mut self) -> &mut AluExtraPrepCols<T> {
-        assert_eq!(self.len(), EXTRA_PREP_WIDTH);
-        let (prefix, cols, suffix) = unsafe { self.align_to_mut::<AluExtraPrepCols<T>>() };
+impl<T> BorrowMut<AluPackedHornerStepPrepCols<T>> for [T] {
+    fn borrow_mut(&mut self) -> &mut AluPackedHornerStepPrepCols<T> {
+        assert_eq!(self.len(), PACKED_HORNER_STEP_PREP_WIDTH);
+        let (prefix, cols, suffix) =
+            unsafe { self.align_to_mut::<AluPackedHornerStepPrepCols<T>>() };
         debug_assert!(prefix.is_empty(), "alignment should match");
         debug_assert!(suffix.is_empty(), "alignment should match");
         debug_assert_eq!(cols.len(), 1);
@@ -132,33 +145,16 @@ impl<T, const D: usize> BorrowMut<AluMainLaneCols<T, D>> for [T] {
     }
 }
 
-impl<T, const D: usize> Borrow<AluMainHornerExtraCols<T, D>> for [T] {
-    fn borrow(&self) -> &AluMainHornerExtraCols<T, D> {
-        assert_eq!(self.len(), alu_main_horner_extra_width::<D>());
-        let (prefix, cols, suffix) = unsafe { self.align_to::<AluMainHornerExtraCols<T, D>>() };
-        debug_assert!(prefix.is_empty(), "alignment should match");
-        debug_assert!(suffix.is_empty(), "alignment should match");
-        debug_assert_eq!(cols.len(), 1);
-        &cols[0]
-    }
-}
-
-impl<T, const D: usize> BorrowMut<AluMainHornerExtraCols<T, D>> for [T] {
-    fn borrow_mut(&mut self) -> &mut AluMainHornerExtraCols<T, D> {
-        assert_eq!(self.len(), alu_main_horner_extra_width::<D>());
-        let (prefix, cols, suffix) = unsafe { self.align_to_mut::<AluMainHornerExtraCols<T, D>>() };
-        debug_assert!(prefix.is_empty(), "alignment should match");
-        debug_assert!(suffix.is_empty(), "alignment should match");
-        debug_assert_eq!(cols.len(), 1);
-        &mut cols[0]
-    }
-}
-
 const _: () = assert!(size_of::<AluPrepLaneCols<usize>>() == PREP_LANE_WIDTH * size_of::<usize>());
-const _: () =
-    assert!(size_of::<AluExtraPrepCols<usize>>() == EXTRA_PREP_WIDTH * size_of::<usize>());
+const _: () = assert!(
+    size_of::<AluPackedHornerStepPrepCols<usize>>()
+        == PACKED_HORNER_STEP_PREP_WIDTH * size_of::<usize>()
+);
 const _: () = assert!(_ALU_PREP_LANE_COL_MAP.b_idx == _ALU_PREP_LANE_COL_MAP.a_idx + 1);
 const _: () = assert!(_ALU_PREP_LANE_COL_MAP.c_idx == _ALU_PREP_LANE_COL_MAP.b_idx + 1);
 const _: () = assert!(_ALU_PREP_LANE_COL_MAP.out_idx == _ALU_PREP_LANE_COL_MAP.c_idx + 1);
+const _: () = assert!(_PACKED_STEP_COL_MAP.c_idx == _PACKED_STEP_COL_MAP.a_idx + 1);
+const _: () = assert!(_PACKED_STEP_COL_MAP.a_reader == _PACKED_STEP_COL_MAP.c_idx + 1);
+const _: () = assert!(_PACKED_STEP_COL_MAP.c_reader == _PACKED_STEP_COL_MAP.a_reader + 1);
 const _: () = assert!(size_of::<AluMainLaneCols<u8, 1>>() == 4);
-const _: () = assert!(size_of::<AluMainHornerExtraCols<u8, 1>>() == 3);
+const _: () = assert!(PACKED_HORNER_STEP_PREP_WIDTH == 4);

@@ -676,8 +676,9 @@ where
         let alu_rows = traces.alu_trace.values.len();
         let alu_prep = primitive[PrimitiveOpType::Alu as usize].clone();
         let alu_num_ops = alu_prep.len() / AluAir::<Val<SC>, D>::preprocessed_lane_width();
+        let horner_k = packing.horner_packed_steps();
         let alu_air: AluAir<Val<SC>, D> = if D == 1 {
-            AluAir::<Val<SC>, D>::new_with_preprocessed(alu_num_ops, alu_lanes, alu_prep)
+            AluAir::<Val<SC>, D>::new_with_preprocessed(alu_num_ops, alu_lanes, alu_prep, horner_k)
                 .with_min_height(min_height)
         } else {
             let w = w_binomial.ok_or(BatchStarkProverError::MissingWForExtension)?;
@@ -686,6 +687,7 @@ where
                 alu_lanes,
                 w,
                 alu_prep,
+                horner_k,
             )
             .with_min_height(min_height)
         };
@@ -896,10 +898,12 @@ where
         let public_rows_padded = public_rows.max(1);
         let alu_rows_padded = alu_rows.max(1);
 
-        // Store the effective packing (with reduced lanes if applicable) so the verifier
-        // uses the same configuration that was actually used during proving.
-        let effective_packing =
-            TablePacking::new(public_lanes, alu_lanes).with_min_trace_height(min_height);
+        // Store the effective packing (reduced lanes if applicable) so the verifier matches
+        // proving. Clone full config so `horner_packed_steps`, NPO lane overrides, etc. are preserved.
+        let effective_packing = self
+            .table_packing
+            .clone()
+            .with_public_alu_lanes(public_lanes, alu_lanes);
 
         Ok(BatchStarkProof {
             proof,
@@ -937,15 +941,18 @@ where
             PublicAir::<Val<SC>, D>::new(proof.rows[PrimitiveTable::Public], public_lanes)
                 .with_min_height(min_height),
         );
+        let horner_k = packing.horner_packed_steps();
         let alu_air: CircuitTableAir<SC, D> = if D == 1 {
             CircuitTableAir::Alu(
                 AluAir::<Val<SC>, D>::new(proof.rows[PrimitiveTable::Alu], alu_lanes)
+                    .with_horner_pack_k(horner_k)
                     .with_min_height(min_height),
             )
         } else {
             let w = w_binomial.ok_or(BatchStarkProverError::MissingWForExtension)?;
             CircuitTableAir::Alu(
                 AluAir::<Val<SC>, D>::new_binomial(proof.rows[PrimitiveTable::Alu], alu_lanes, w)
+                    .with_horner_pack_k(horner_k)
                     .with_min_height(min_height),
             )
         };

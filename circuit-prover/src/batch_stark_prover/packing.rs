@@ -19,6 +19,14 @@ pub struct TablePacking {
     /// FRI requires: log_trace_height > log_final_poly_len + log_blowup
     /// So min_trace_height should be >= 2^(log_final_poly_len + log_blowup + 1)
     min_trace_height: usize,
+    /// Pack this many consecutive `HornerAcc` ops (same `b` witness) per ALU row on lane 0.
+    /// Must be at least 2. Default 2 matches the previous double-step Horner layout.
+    #[serde(default = "default_horner_pack_k")]
+    horner_packed_steps: usize,
+}
+
+const fn default_horner_pack_k() -> usize {
+    2
 }
 
 impl TablePacking {
@@ -31,7 +39,27 @@ impl TablePacking {
             alu_lanes: alu_lanes.max(1),
             npo_lanes: Vec::new(),
             min_trace_height: 1,
+            horner_packed_steps: 2,
         }
+    }
+
+    /// Override packed Horner chain length (must be >= 2).
+    #[must_use]
+    pub fn with_horner_pack_k(mut self, k: usize) -> Self {
+        assert!(k >= 2, "horner_packed_steps must be at least 2");
+        self.horner_packed_steps = k;
+        self
+    }
+
+    /// Override public and ALU lane counts after trace-driven clamping (e.g. dummy-only traces).
+    ///
+    /// Used when embedding the effective packing in [`super::BatchStarkProof`] so metadata matches
+    /// proving while preserving [`Self::horner_packed_steps`] and NPO lane overrides.
+    #[must_use]
+    pub fn with_public_alu_lanes(mut self, public_lanes: usize, alu_lanes: usize) -> Self {
+        self.public_lanes = public_lanes.max(1);
+        self.alu_lanes = alu_lanes.max(1);
+        self
     }
 
     /// Override the lane count for a specific NPO type (builder-style).
@@ -100,6 +128,11 @@ impl TablePacking {
     /// Return the minimum trace height (always a power of two, at least 1).
     pub const fn min_trace_height(&self) -> usize {
         self.min_trace_height
+    }
+
+    /// Number of consecutive HornerAcc steps packed into one scheduled ALU row (lane 0).
+    pub const fn horner_packed_steps(&self) -> usize {
+        self.horner_packed_steps
     }
 }
 

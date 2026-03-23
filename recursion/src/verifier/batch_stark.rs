@@ -134,10 +134,14 @@ where
 
 /// Create an AluAir with the appropriate constructor based on TRACE_D.
 ///
-/// For D=1 (base field), uses `AluAir::new()`.
-/// For D>1 (extension field), uses `AluAir::new_binomial()` with the W parameter
-/// extracted from the challenge field type.
-fn create_alu_air<F, EF, const TRACE_D: usize>(num_ops: usize, lanes: usize) -> AluAir<F, TRACE_D>
+/// For D=1 (base field), uses `new_with_preprocessed` with zeroed lane prep.
+/// For D>1 (extension field), uses `new_binomial_with_preprocessed` with `W` from `EF`.
+/// `horner_packed_steps` must match `BatchStarkProof.table_packing.horner_packed_steps` from the proof.
+fn create_alu_air<F, EF, const TRACE_D: usize>(
+    num_ops: usize,
+    lanes: usize,
+    horner_packed_steps: usize,
+) -> AluAir<F, TRACE_D>
 where
     F: Field + PrimeCharacteristicRing,
     EF: ExtensionField<F> + ExtractBinomialW<F>,
@@ -148,7 +152,12 @@ where
         } else {
             vec![F::ZERO; num_ops * AluAir::<F, TRACE_D>::preprocessed_lane_width()]
         };
-        AluAir::<F, TRACE_D>::new_with_preprocessed(num_ops, lanes, preprocessed)
+        AluAir::<F, TRACE_D>::new_with_preprocessed(
+            num_ops,
+            lanes,
+            preprocessed,
+            horner_packed_steps,
+        )
     } else {
         // For D > 1, extract W from the extension field
         // BinomialExtensionField<F, D> has W as the constant such that x^D = W
@@ -158,7 +167,13 @@ where
         } else {
             vec![F::ZERO; num_ops * AluAir::<F, TRACE_D>::preprocessed_lane_width()]
         };
-        AluAir::<F, TRACE_D>::new_binomial_with_preprocessed(num_ops, lanes, w, preprocessed)
+        AluAir::<F, TRACE_D>::new_binomial_with_preprocessed(
+            num_ops,
+            lanes,
+            w,
+            preprocessed,
+            horner_packed_steps,
+        )
     }
 }
 
@@ -229,7 +244,11 @@ where
     // in a different ALU AIR in the future based on `proof.alu_variant`.
     let alu_air = match proof.alu_variant {
         AirVariant::Baseline | AirVariant::Optimized => {
-            create_alu_air::<Val<SC>, SC::Challenge, TRACE_D>(rows[PrimitiveTable::Alu], alu_lanes)
+            create_alu_air::<Val<SC>, SC::Challenge, TRACE_D>(
+                rows[PrimitiveTable::Alu],
+                alu_lanes,
+                packing.horner_packed_steps(),
+            )
         }
     };
 

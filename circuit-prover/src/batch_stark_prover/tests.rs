@@ -142,7 +142,8 @@ fn test_table_lookups() {
             }
             CircuitTableAir::Alu(_) => {
                 // ALU table sends 4 lookups per lane + 2 extra for double-step Horner a1/c1
-                let expected_num_lookups = default_packing.alu_lanes() * 4 + 2;
+                let expected_num_lookups = default_packing.alu_lanes() * 4
+                    + 2 * (default_packing.horner_packed_steps() - 1);
                 assert_eq!(
                     lookups.len(),
                     expected_num_lookups,
@@ -321,7 +322,8 @@ fn test_extension_field_table_lookups() {
             }
             CircuitTableAir::Alu(_) => {
                 // ALU table sends 4 lookups per lane + 2 extra for double-step Horner a1/c1
-                let expected_num_lookups = default_packing.alu_lanes() * 4 + 2;
+                let expected_num_lookups = default_packing.alu_lanes() * 4
+                    + 2 * (default_packing.horner_packed_steps() - 1);
                 assert_eq!(
                     lookups.len(),
                     expected_num_lookups,
