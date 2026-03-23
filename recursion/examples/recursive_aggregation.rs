@@ -400,7 +400,7 @@ macro_rules! define_field_module {
 
                             let agg_params = ProveNextLayerParams {
                                 table_packing: if level == 1 {
-                                    TablePacking::new(arity, arity)
+                                    TablePacking::new(2, 2)
                                         .with_horner_pack_k(table_packing.horner_packed_steps())
                                         .with_npo_lanes(NpoTypeId::recompose(), recompose_lanes)
                                 } else {

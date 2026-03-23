@@ -929,7 +929,7 @@ where
         ));
     }
 
-    let (airs_degrees, preprocessed_columns) = {
+    let (airs_degrees, primitive_columns, non_primitive_columns) = {
         let preprocessors = backend.non_primitive_preprocessors();
         let air_builders = backend.non_primitive_air_builders();
         get_airs_and_degrees_with_prep::<SC, SC::Challenge, D>(
@@ -955,7 +955,7 @@ where
 
     let circuit_prover_data = {
         let prover_data = ProverData::from_airs_and_degrees(config, &mut airs, &ext_degrees);
-        CircuitProverData::new(prover_data, preprocessed_columns)
+        CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns)
     };
 
     let mut prover = BatchStarkProver::new(config.clone())
