@@ -228,7 +228,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     ];
     let mut air_builders = poseidon2_air_builders::<_, 4>();
     air_builders.extend(recompose_air_builders(1));
-    let (airs_degrees, preprocessed_columns) =
+    let (airs_degrees, primitive_columns, non_primitive_columns) =
         get_airs_and_degrees_with_prep::<KoalaBearConfig, _, 4>(
             &circuit,
             &table_packing,
@@ -276,7 +276,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     assert_eq!(poseidon2_trace.total_rows(), 3, "expected three perm rows");
 
     let prover_data = ProverData::from_airs_and_degrees(&stark_config, &mut airs, &degrees);
-    let circuit_prover_data = CircuitProverData::new(prover_data, preprocessed_columns);
+    let circuit_prover_data =
+        CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
 
     // Lookups order being CONST, PUBLIC, ALU, DYNAMIC.
     assert!(

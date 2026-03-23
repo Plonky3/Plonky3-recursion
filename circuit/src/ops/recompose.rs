@@ -16,11 +16,11 @@ use core::fmt::Debug;
 
 use p3_field::{ExtensionField, Field, PrimeField64};
 
+use crate::CircuitError;
 use crate::builder::{CircuitBuilderError, NpoCircuitPlugin, NpoLoweringContext};
-use crate::ops::{ExecutionContext, NonPrimitiveExecutor, NpoTypeId, Op};
+use crate::ops::{ExecutionContext, NonPrimitiveExecutor, NpoTypeId, Op, PreprocessedWriter};
 use crate::tables::{NonPrimitiveTrace, TraceGeneratorFn};
 use crate::types::{ExprId, WitnessId};
-use crate::{CircuitError, PreprocessedColumns};
 
 // ============================================================================
 // Configuration
@@ -161,7 +161,7 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for RecomposeExec
         &self,
         _inputs: &[Vec<WitnessId>],
         outputs: &[Vec<WitnessId>],
-        preprocessed: &mut PreprocessedColumns<F>,
+        preprocessed: &mut dyn PreprocessedWriter<F>,
     ) -> Result<(), CircuitError> {
         let output_wid = outputs[0][0];
 

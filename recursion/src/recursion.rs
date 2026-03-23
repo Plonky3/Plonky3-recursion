@@ -318,7 +318,7 @@ where
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
         Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
-    let (airs_degrees, preprocessed_columns) = {
+    let (airs_degrees, primitive_columns, non_primitive_columns) = {
         let preprocessors = backend.non_primitive_preprocessors();
         let air_builders = backend.non_primitive_air_builders();
         get_airs_and_degrees_with_prep::<SC, SC::Challenge, D>(
@@ -335,7 +335,11 @@ where
     let ext_degrees: Vec<usize> = degrees.iter().map(|&d| d + config.is_zk()).collect();
 
     let prover_data = ProverData::from_airs_and_degrees(config, &mut airs, &ext_degrees);
-    let circuit_prover_data = Rc::new(CircuitProverData::new(prover_data, preprocessed_columns));
+    let circuit_prover_data = Rc::new(CircuitProverData::new(
+        prover_data,
+        primitive_columns,
+        non_primitive_columns,
+    ));
 
     let mut prover = BatchStarkProver::new(config.clone())
         .with_table_packing(params.table_packing.clone())
@@ -405,7 +409,7 @@ where
         ));
     }
 
-    let (airs_degrees, preprocessed_columns) = {
+    let (airs_degrees, primitive_columns, non_primitive_columns) = {
         let preprocessors = backend.non_primitive_preprocessors();
         let air_builders = backend.non_primitive_air_builders();
         get_airs_and_degrees_with_prep::<SC, SC::Challenge, D>(
@@ -441,7 +445,7 @@ where
 
     let circuit_prover_data = {
         let prover_data = ProverData::from_airs_and_degrees(config, &mut airs, &ext_degrees);
-        CircuitProverData::new(prover_data, preprocessed_columns)
+        CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns)
     };
 
     let mut prover = BatchStarkProver::new(config.clone())
@@ -656,7 +660,7 @@ where
         ));
     }
 
-    let (airs_degrees, preprocessed_columns) = {
+    let (airs_degrees, primitive_columns, non_primitive_columns) = {
         let preprocessors =
             <B as PcsRecursionBackend<SC, A1, D>>::non_primitive_preprocessors(backend);
         let air_builders =
@@ -686,7 +690,7 @@ where
 
     let circuit_prover_data = {
         let prover_data = ProverData::from_airs_and_degrees(config, &mut airs, &ext_degrees);
-        CircuitProverData::new(prover_data, preprocessed_columns)
+        CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns)
     };
 
     let mut prover = BatchStarkProver::new(config.clone())

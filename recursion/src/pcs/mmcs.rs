@@ -1070,7 +1070,7 @@ mod test {
             let config = p3_circuit_prover::config::koala_bear().build();
             let table_packing = TablePacking::default();
 
-            let (airs_degrees, preprocessed_columns) =
+            let (airs_degrees, primitive_columns, non_primitive_columns) =
                 p3_circuit_prover::common::get_airs_and_degrees_with_prep::<
                     p3_circuit_prover::config::KoalaBearConfig,
                     _,
@@ -1088,7 +1088,8 @@ mod test {
             let traces = result.unwrap();
             let prover_data =
                 p3_batch_stark::ProverData::from_airs_and_degrees(&config, &mut airs, &degrees);
-            let circuit_prover_data = CircuitProverData::new(prover_data, preprocessed_columns);
+            let circuit_prover_data =
+                CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
             let mut prover = BatchStarkProver::new(config).with_table_packing(table_packing);
             prover.register_poseidon2_table::<4>(Poseidon2Config::KoalaBearD4Width16);
             prover.register_recompose_table::<4>();

@@ -7,8 +7,45 @@ use p3_field::Field;
 
 use super::context::ExecutionContext;
 use super::npo::NpoTypeId;
+use crate::CircuitError;
 use crate::types::WitnessId;
-use crate::{CircuitError, PreprocessedColumns};
+
+/// Object-safe trait exposing the subset of [`PreprocessedColumns`](crate::PreprocessedColumns)
+/// methods that [`NonPrimitiveExecutor::preprocess`] implementations need.
+///
+/// This allows `PreprocessedColumns<F, const D: usize>` to be passed through `dyn` dispatch
+/// without requiring executors to know `D` at compile time.
+pub trait PreprocessedWriter<F: Field> {
+    /// Returns the D-scaled base-field index for a given witness ID as a field element.
+    ///
+    /// `WitnessId(n)` maps to base-field index `n * D`.
+    fn witness_index_as_field(&self, wid: WitnessId) -> F;
+
+    /// Increments the ext-field read count for each of the given witness indices.
+    fn increment_ext_reads(&mut self, wids: &[WitnessId]);
+
+    /// Extends the preprocessed data of `op_type`'s non-primitive operation
+    /// with `wids`'s witness indices (D-scaled). Does NOT increment ext-field read counts.
+    ///
+    /// Use this for non-primitive OUTPUTS: the table creates these witnesses on the
+    /// `WitnessChecks` bus, so they are not readers. The `out_ctl` multiplicity is
+    /// set separately by `get_airs_and_degrees_with_prep` based on `ext_reads`.
+    fn register_non_primitive_output_index(&mut self, op_type: &NpoTypeId, wids: &[WitnessId]);
+
+    /// Extends the preprocessed data of `op_type`'s non-primitive operation
+    /// with `wids`'s witness indices (D-scaled), and increments their ext-field read counts.
+    ///
+    /// Use this for non-primitive inputs that the table reads from the `WitnessChecks` bus.
+    fn register_non_primitive_witness_reads(
+        &mut self,
+        op_type: &NpoTypeId,
+        wids: &[WitnessId],
+    ) -> Result<(), CircuitError>;
+
+    /// Extends the preprocessed data of `op_type`'s non-primitive operation with `values`.
+    /// Does not update read counts.
+    fn register_non_primitive_preprocessed_no_read(&mut self, op_type: &NpoTypeId, values: &[F]);
+}
 
 /// Trait for operation-specific execution state.
 ///
@@ -64,7 +101,7 @@ pub trait NonPrimitiveExecutor<F: Field>: Debug {
     /// - the preprocessed values for the associated table
     /// - the multiplicity for the `Witness` table.
     ///
-    /// Uses the `PreprocessedColumns` API to ensure witness multiplicities are updated
+    /// Uses the [`PreprocessedWriter`] API to ensure witness multiplicities are updated
     /// consistently when reading from the witness table. Duplicate-output detection
     /// (which outputs were already defined by an earlier op) is handled generically
     /// by `generate_preprocessed_columns` after this method returns.
@@ -72,7 +109,7 @@ pub trait NonPrimitiveExecutor<F: Field>: Debug {
         &self,
         _inputs: &[Vec<WitnessId>],
         _outputs: &[Vec<WitnessId>],
-        _preprocessed: &mut PreprocessedColumns<F>,
+        _preprocessed: &mut dyn PreprocessedWriter<F>,
     ) -> Result<(), CircuitError> {
         Ok(())
     }

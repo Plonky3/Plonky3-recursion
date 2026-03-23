@@ -158,12 +158,12 @@ impl NpoPreprocessor<KoalaBear> for RecomposePreprocessor {
     ) -> Result<NonPrimitivePreprocessedMap<KoalaBear>, CircuitError> {
         type F = KoalaBear;
         if let Some(prep) =
-            preprocessed.downcast_mut::<PreprocessedColumns<BinomialExtensionField<F, 4>>>()
+            preprocessed.downcast_mut::<PreprocessedColumns<BinomialExtensionField<F, 4>, 4>>()
         {
-            return recompose_preprocess_impl::<F, _>(prep);
+            return recompose_preprocess_impl::<F, _, 4>(prep);
         }
-        if let Some(prep) = preprocessed.downcast_mut::<PreprocessedColumns<F>>() {
-            return recompose_preprocess_impl::<F, _>(prep);
+        if let Some(prep) = preprocessed.downcast_mut::<PreprocessedColumns<F, 1>>() {
+            return recompose_preprocess_impl::<F, _, 1>(prep);
         }
         Ok(HashMap::new())
     }
@@ -177,12 +177,12 @@ impl NpoPreprocessor<BabyBear> for RecomposePreprocessor {
     ) -> Result<NonPrimitivePreprocessedMap<BabyBear>, CircuitError> {
         type F = BabyBear;
         if let Some(prep) =
-            preprocessed.downcast_mut::<PreprocessedColumns<BinomialExtensionField<F, 4>>>()
+            preprocessed.downcast_mut::<PreprocessedColumns<BinomialExtensionField<F, 4>, 4>>()
         {
-            return recompose_preprocess_impl::<F, _>(prep);
+            return recompose_preprocess_impl::<F, _, 4>(prep);
         }
-        if let Some(prep) = preprocessed.downcast_mut::<PreprocessedColumns<F>>() {
-            return recompose_preprocess_impl::<F, _>(prep);
+        if let Some(prep) = preprocessed.downcast_mut::<PreprocessedColumns<F, 1>>() {
+            return recompose_preprocess_impl::<F, _, 1>(prep);
         }
         Ok(HashMap::new())
     }
@@ -196,20 +196,20 @@ impl NpoPreprocessor<Goldilocks> for RecomposePreprocessor {
     ) -> Result<NonPrimitivePreprocessedMap<Goldilocks>, CircuitError> {
         type F = Goldilocks;
         if let Some(prep) =
-            preprocessed.downcast_mut::<PreprocessedColumns<BinomialExtensionField<F, 2>>>()
+            preprocessed.downcast_mut::<PreprocessedColumns<BinomialExtensionField<F, 2>, 2>>()
         {
-            return recompose_preprocess_impl::<F, _>(prep);
+            return recompose_preprocess_impl::<F, _, 2>(prep);
         }
-        if let Some(prep) = preprocessed.downcast_mut::<PreprocessedColumns<F>>() {
-            return recompose_preprocess_impl::<F, _>(prep);
+        if let Some(prep) = preprocessed.downcast_mut::<PreprocessedColumns<F, 1>>() {
+            return recompose_preprocess_impl::<F, _, 1>(prep);
         }
         Ok(HashMap::new())
     }
 }
 
 /// Generic implementation: extract recompose preprocessed data and set output multiplicities.
-fn recompose_preprocess_impl<F, EF>(
-    prep: &PreprocessedColumns<EF>,
+fn recompose_preprocess_impl<F, EF, const D: usize>(
+    prep: &PreprocessedColumns<EF, D>,
 ) -> Result<NonPrimitivePreprocessedMap<F>, CircuitError>
 where
     F: StarkField + PrimeField64,
@@ -221,7 +221,6 @@ where
         _ => return Ok(HashMap::new()),
     };
 
-    let d = prep.d;
     let prep_width = 2; // [output_idx, out_mult]
 
     let mut prep_base: Vec<F> = ef_data
@@ -238,7 +237,7 @@ where
         let out_mult_pos = row_start + 1; // out_mult is column 1
 
         let output_idx_val = prep_base[output_idx_pos];
-        let out_wid = F::as_canonical_u64(&output_idx_val) as usize / d;
+        let out_wid = F::as_canonical_u64(&output_idx_val) as usize / D;
 
         let is_dup = prep
             .dup_npo_outputs

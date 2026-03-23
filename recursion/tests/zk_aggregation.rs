@@ -294,18 +294,20 @@ fn test_zk_aggregation() -> Result<(), VerificationError> {
     ];
     let mut air_builders = poseidon2_air_builders::<_, 4>();
     air_builders.extend(recompose_air_builders(1));
-    let (airs_degrees, preprocessed_columns) = get_airs_and_degrees_with_prep::<MyConfig, _, 4>(
-        &aggregation_circuit,
-        &table_packing,
-        &npo_prep,
-        &air_builders,
-        ConstraintProfile::Standard,
-    )
-    .unwrap();
+    let (airs_degrees, primitive_columns, non_primitive_columns) =
+        get_airs_and_degrees_with_prep::<MyConfig, _, 4>(
+            &aggregation_circuit,
+            &table_packing,
+            &npo_prep,
+            &air_builders,
+            ConstraintProfile::Standard,
+        )
+        .unwrap();
     let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
 
     let prover_data = ProverData::from_airs_and_degrees(&config_outer, &mut airs, &degrees);
-    let circuit_prover_data = CircuitProverData::new(prover_data, preprocessed_columns);
+    let circuit_prover_data =
+        CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
 
     let mut prover = BatchStarkProver::new(config_outer).with_table_packing(table_packing);
     prover.register_poseidon2_table::<4>(poseidon2_config);

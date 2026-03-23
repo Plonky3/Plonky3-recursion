@@ -4,7 +4,7 @@ use core::any::Any;
 
 use hashbrown::HashMap;
 use p3_circuit::ops::{NonPrimitivePreprocessedMap, NpoTypeId, PrimitiveOpType};
-use p3_circuit::{Circuit, CircuitError, PreprocessedColumns};
+use p3_circuit::{Circuit, CircuitError};
 use p3_field::{Algebra, ExtensionField, Field, PrimeCharacteristicRing, PrimeField64};
 use p3_uni_stark::{StarkGenericConfig, SymbolicExpression, SymbolicExpressionExt, Val};
 use p3_util::log2_ceil_usize;
@@ -96,6 +96,13 @@ where
 /// Type alias for a vector of circuit table AIRs paired with their respective degrees (log of their trace height).
 type CircuitAirsWithDegrees<SC, const D: usize> = Vec<(CircuitTableAir<SC, D>, usize)>;
 
+/// Output of [`get_airs_and_degrees_with_prep`]: AIRs with degrees, primitive columns, and non-primitive columns.
+type PrepOutput<SC, const D: usize> = (
+    CircuitAirsWithDegrees<SC, D>,
+    Vec<Vec<Val<SC>>>,
+    NonPrimitivePreprocessedMap<Val<SC>>,
+);
+
 pub fn get_airs_and_degrees_with_prep<
     SC: StarkGenericConfig + 'static + Send + Sync,
     ExtF: Field + ExtensionField<Val<SC>> + ExtractBinomialW<Val<SC>>,
@@ -106,12 +113,12 @@ pub fn get_airs_and_degrees_with_prep<
     non_primitive_preprocessors: &[Box<dyn NpoPreprocessor<Val<SC>>>],
     non_primitive_air_builders: &[Box<dyn NpoAirBuilder<SC, D>>],
     constraint_profile: ConstraintProfile,
-) -> Result<(CircuitAirsWithDegrees<SC, D>, PreprocessedColumns<Val<SC>>), CircuitError>
+) -> Result<PrepOutput<SC, D>, CircuitError>
 where
     SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
     Val<SC>: StarkField,
 {
-    let mut preprocessed = circuit.generate_preprocessed_columns(D)?;
+    let mut preprocessed = circuit.generate_preprocessed_columns::<D>()?;
 
     // Check if Public/Alu tables are empty and lanes > 1.
     // Using lanes > 1 with empty tables causes issues in recursive verification
@@ -378,15 +385,5 @@ where
         }
     }
 
-    let non_primitive_output: NonPrimitivePreprocessedMap<Val<SC>> = non_primitive_base;
-
-    let preprocessed_columns = PreprocessedColumns {
-        primitive: base_prep,
-        non_primitive: non_primitive_output,
-        d: D,
-        ext_reads: preprocessed.ext_reads,
-        dup_npo_outputs: preprocessed.dup_npo_outputs,
-    };
-
-    Ok((table_preps, preprocessed_columns))
+    Ok((table_preps, base_prep, non_primitive_base))
 }

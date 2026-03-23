@@ -83,14 +83,15 @@ fn test_fibonacci_batch_verifier() {
     let config_proving = MyConfig::new(pcs_proving, challenger_proving);
 
     let circuit = builder.build().unwrap();
-    let (airs_degrees, preprocessed_columns) = get_airs_and_degrees_with_prep::<MyConfig, _, 1>(
-        &circuit,
-        &table_packing,
-        &[],
-        &[],
-        ConstraintProfile::Standard,
-    )
-    .unwrap();
+    let (airs_degrees, primitive_columns, non_primitive_columns) =
+        get_airs_and_degrees_with_prep::<MyConfig, _, 1>(
+            &circuit,
+            &table_packing,
+            &[],
+            &[],
+            ConstraintProfile::Standard,
+        )
+        .unwrap();
     let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
     let mut runner = circuit.runner();
 
@@ -102,7 +103,8 @@ fn test_fibonacci_batch_verifier() {
 
     // Create prover data for proving and verifying.
     let prover_data = ProverData::from_airs_and_degrees(&config_proving, &mut airs, &degrees);
-    let circuit_prover_data = CircuitProverData::new(prover_data, preprocessed_columns);
+    let circuit_prover_data =
+        CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
 
     let prover = BatchStarkProver::new(config_proving).with_table_packing(table_packing);
 
@@ -201,15 +203,18 @@ fn test_fibonacci_batch_verifier() {
     ];
     let mut air_builders = poseidon2_air_builders::<_, 4>();
     air_builders.extend(recompose_air_builders(1));
-    let (verification_airs_degrees, verification_preprocessed_columns) =
-        get_airs_and_degrees_with_prep::<MyConfig, _, 4>(
-            &verification_circuit,
-            &verification_table_packing,
-            &npo_prep,
-            &air_builders,
-            ConstraintProfile::Standard,
-        )
-        .unwrap();
+    let (
+        verification_airs_degrees,
+        verification_primitive_columns,
+        verification_non_primitive_columns,
+    ) = get_airs_and_degrees_with_prep::<MyConfig, _, 4>(
+        &verification_circuit,
+        &verification_table_packing,
+        &npo_prep,
+        &air_builders,
+        ConstraintProfile::Standard,
+    )
+    .unwrap();
     let (mut verification_airs, verification_degrees): (Vec<_>, Vec<usize>) =
         verification_airs_degrees.into_iter().unzip();
 
@@ -251,8 +256,11 @@ fn test_fibonacci_batch_verifier() {
 
     let verification_prover_data =
         ProverData::from_airs_and_degrees(&config3, &mut verification_airs, &verification_degrees);
-    let verification_circuit_prover_data =
-        CircuitProverData::new(verification_prover_data, verification_preprocessed_columns);
+    let verification_circuit_prover_data = CircuitProverData::new(
+        verification_prover_data,
+        verification_primitive_columns,
+        verification_non_primitive_columns,
+    );
 
     let mut verification_prover =
         BatchStarkProver::new(config3).with_table_packing(verification_table_packing);

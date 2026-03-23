@@ -144,7 +144,7 @@ where
         &self,
         _inputs: &[Vec<WitnessId>],
         _outputs: &[Vec<WitnessId>],
-        _preprocessed: &mut p3_circuit::PreprocessedColumns<F>,
+        _preprocessed: &mut dyn p3_circuit::PreprocessedWriter<F>,
     ) -> Result<(), p3_circuit::CircuitError> {
         Ok(())
     }
@@ -276,7 +276,7 @@ fn cube_npo_stark_proof() {
 
     // Derive AIRs and preprocessed columns from the circuit.
     // The cube NPO has no dedicated table, so only primitive AIRs are generated.
-    let (airs_degrees, preprocessed_columns) =
+    let (airs_degrees, primitive_columns, non_primitive_columns) =
         get_airs_and_degrees_with_prep::<config::BabyBearConfig, _, D>(
             &circuit,
             &TablePacking::default(),
@@ -298,7 +298,8 @@ fn cube_npo_stark_proof() {
     // Prove all primitive tables.
     let prover_data =
         p3_batch_stark::ProverData::from_airs_and_degrees(&cfg, &mut airs, &log_degrees);
-    let circuit_prover_data = CircuitProverData::new(prover_data, preprocessed_columns);
+    let circuit_prover_data =
+        CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
     let prover = BatchStarkProver::new(cfg);
 
     let proof = prover

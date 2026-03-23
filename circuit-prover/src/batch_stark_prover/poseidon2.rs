@@ -1287,7 +1287,7 @@ where
 
 /// Shared helper implementing Poseidon2-specific preprocessing on generic preprocessed columns.
 fn poseidon2_preprocess_for_prover<F, ExtF, const D: usize>(
-    preprocessed: &mut PreprocessedColumns<ExtF>,
+    preprocessed: &mut PreprocessedColumns<ExtF, D>,
 ) -> Result<NonPrimitivePreprocessedMap<F>, CircuitError>
 where
     F: StarkField + PrimeField64,
@@ -1401,11 +1401,11 @@ impl NpoPreprocessor<BabyBear> for Poseidon2Preprocessor {
         _circuit: &dyn Any,
         preprocessed: &mut dyn Any,
     ) -> Result<NonPrimitivePreprocessedMap<BabyBear>, CircuitError> {
-        if let Some(prep) = preprocessed.downcast_mut::<PreprocessedColumns<BabyBear>>() {
+        if let Some(prep) = preprocessed.downcast_mut::<PreprocessedColumns<BabyBear, 1>>() {
             return poseidon2_preprocess_for_prover::<BabyBear, BabyBear, 1>(prep);
         }
-        if let Some(prep) =
-            preprocessed.downcast_mut::<PreprocessedColumns<BinomialExtensionField<BabyBear, 4>>>()
+        if let Some(prep) = preprocessed
+            .downcast_mut::<PreprocessedColumns<BinomialExtensionField<BabyBear, 4>, 4>>()
         {
             return poseidon2_preprocess_for_prover::<
                 BabyBear,
@@ -1423,11 +1423,11 @@ impl NpoPreprocessor<KoalaBear> for Poseidon2Preprocessor {
         _circuit: &dyn Any,
         preprocessed: &mut dyn Any,
     ) -> Result<NonPrimitivePreprocessedMap<KoalaBear>, CircuitError> {
-        if let Some(prep) = preprocessed.downcast_mut::<PreprocessedColumns<KoalaBear>>() {
+        if let Some(prep) = preprocessed.downcast_mut::<PreprocessedColumns<KoalaBear, 1>>() {
             return poseidon2_preprocess_for_prover::<KoalaBear, KoalaBear, 1>(prep);
         }
-        if let Some(prep) =
-            preprocessed.downcast_mut::<PreprocessedColumns<BinomialExtensionField<KoalaBear, 4>>>()
+        if let Some(prep) = preprocessed
+            .downcast_mut::<PreprocessedColumns<BinomialExtensionField<KoalaBear, 4>, 4>>()
         {
             return poseidon2_preprocess_for_prover::<
                 KoalaBear,
@@ -1445,11 +1445,11 @@ impl NpoPreprocessor<Goldilocks> for Poseidon2Preprocessor {
         _circuit: &dyn Any,
         preprocessed: &mut dyn Any,
     ) -> Result<NonPrimitivePreprocessedMap<Goldilocks>, CircuitError> {
-        if let Some(prep) = preprocessed.downcast_mut::<PreprocessedColumns<Goldilocks>>() {
+        if let Some(prep) = preprocessed.downcast_mut::<PreprocessedColumns<Goldilocks, 1>>() {
             return poseidon2_preprocess_for_prover::<Goldilocks, Goldilocks, 1>(prep);
         }
         if let Some(prep) = preprocessed
-            .downcast_mut::<PreprocessedColumns<BinomialExtensionField<Goldilocks, 2>>>()
+            .downcast_mut::<PreprocessedColumns<BinomialExtensionField<Goldilocks, 2>, 2>>()
         {
             return poseidon2_preprocess_for_prover::<
                 Goldilocks,

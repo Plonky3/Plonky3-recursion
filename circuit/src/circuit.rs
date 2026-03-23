@@ -6,19 +6,21 @@ use hashbrown::HashMap;
 use p3_field::Field;
 use strum::EnumCount;
 
-use crate::ops::{NonPrimitivePreprocessedMap, NpoConfig, NpoTypeId, Op, PrimitiveOpType};
+use crate::ops::{
+    NonPrimitivePreprocessedMap, NpoConfig, NpoTypeId, Op, PreprocessedWriter, PrimitiveOpType,
+};
 use crate::tables::{CircuitRunner, TraceGeneratorFn};
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessId};
 use crate::{AluOpKind, CircuitError};
 
 /// Preprocessed data for primitive and non-primitive operation tables.
+///
+/// The const generic `D` is the extension degree used for base-field index scaling.
+/// A `WitnessId(n)` is stored as base-field index `n * D` in CTL lookup tuples.
 #[derive(Debug)]
-pub struct PreprocessedColumns<F> {
+pub struct PreprocessedColumns<F, const D: usize> {
     pub primitive: Vec<Vec<F>>,
     pub non_primitive: NonPrimitivePreprocessedMap<F>,
-    /// Extension degree used for base-field index scaling.
-    /// A `WitnessId(n)` is stored as base-field index `n * d` in CTL lookup tuples.
-    pub d: usize,
     /// Ext-field read counts per witness index (indexed by `WitnessId.0`).
     ///
     /// `ext_reads[i]` is the number of times `WitnessId(i)` is read by any table
@@ -31,66 +33,51 @@ pub struct PreprocessedColumns<F> {
     pub dup_npo_outputs: HashMap<NpoTypeId, Vec<bool>>,
 }
 
-impl<F: PartialEq> PartialEq for PreprocessedColumns<F> {
+impl<F: PartialEq, const D: usize> PartialEq for PreprocessedColumns<F, D> {
     fn eq(&self, other: &Self) -> bool {
         self.primitive == other.primitive
-            && self.d == other.d
             && self.ext_reads == other.ext_reads
             && self.non_primitive == other.non_primitive
             && self.dup_npo_outputs == other.dup_npo_outputs
     }
 }
 
-impl<F: Eq> Eq for PreprocessedColumns<F> {}
+impl<F: Eq, const D: usize> Eq for PreprocessedColumns<F, D> {}
 
-impl<F: Field + Clone> Clone for PreprocessedColumns<F> {
+impl<F: Field + Clone, const D: usize> Clone for PreprocessedColumns<F, D> {
     fn clone(&self) -> Self {
         Self {
             primitive: self.primitive.clone(),
             non_primitive: self.non_primitive.clone(),
-            d: self.d,
             ext_reads: self.ext_reads.clone(),
             dup_npo_outputs: self.dup_npo_outputs.clone(),
         }
     }
 }
 
-impl<F: Field> PreprocessedColumns<F> {
-    /// Creates an empty [`PreprocessedColumns`] with one primitive entry per [`PrimitiveOpType`]
-    /// and extension degree 1 (base field, no index scaling).
+impl<F: Field, const D: usize> PreprocessedColumns<F, D> {
+    /// Creates an empty [`PreprocessedColumns`] with one primitive entry per [`PrimitiveOpType`].
     pub fn new() -> Self {
+        const { assert!(D >= 1, "extension degree must be at least 1") };
         Self {
             primitive: vec![vec![]; PrimitiveOpType::COUNT],
             non_primitive: NonPrimitivePreprocessedMap::new(),
-            d: 1,
             ext_reads: Vec::new(),
             dup_npo_outputs: HashMap::new(),
         }
     }
+}
 
-    /// Creates an empty [`PreprocessedColumns`] with the given extension degree `d`.
-    ///
-    /// With `d > 1`, `WitnessId(n)` is stored as base-field index `n * d` in CTL lookup tuples.
-    pub fn new_with_d(d: usize) -> Self {
-        assert!(d >= 1, "extension degree must be at least 1");
-        Self {
-            primitive: vec![vec![]; PrimitiveOpType::COUNT],
-            non_primitive: NonPrimitivePreprocessedMap::new(),
-            d,
-            ext_reads: Vec::new(),
-            dup_npo_outputs: HashMap::new(),
-        }
-    }
-
+impl<F: Field, const D: usize> PreprocessedWriter<F> for PreprocessedColumns<F, D> {
     /// Returns the D-scaled base-field index for a given witness ID as a field element.
     ///
-    /// `WitnessId(n)` maps to base-field index `n * d`.
-    pub fn witness_index_as_field(&self, wid: WitnessId) -> F {
-        F::from_u32(wid.0 * self.d as u32)
+    /// `WitnessId(n)` maps to base-field index `n * D`.
+    fn witness_index_as_field(&self, wid: WitnessId) -> F {
+        F::from_u32(wid.0 * D as u32)
     }
 
     /// Increments the ext-field read count for each of the given witness indices.
-    pub fn increment_ext_reads(&mut self, wids: &[WitnessId]) {
+    fn increment_ext_reads(&mut self, wids: &[WitnessId]) {
         for wid in wids {
             let idx = wid.0 as usize;
             if idx >= self.ext_reads.len() {
@@ -106,10 +93,9 @@ impl<F: Field> PreprocessedColumns<F> {
     /// Use this for non-primitive OUTPUTS: the table creates these witnesses on the
     /// `WitnessChecks` bus, so they are not readers. The `out_ctl` multiplicity is
     /// set separately by `get_airs_and_degrees_with_prep` based on `ext_reads`.
-    pub fn register_non_primitive_output_index(&mut self, op_type: &NpoTypeId, wids: &[WitnessId]) {
+    fn register_non_primitive_output_index(&mut self, op_type: &NpoTypeId, wids: &[WitnessId]) {
         let entry = self.non_primitive.entry(op_type.clone()).or_default();
-        let d = self.d as u32;
-        let wids_field = wids.iter().map(|wid| F::from_u32(wid.0 * d));
+        let wids_field = wids.iter().map(|wid| F::from_u32(wid.0 * D as u32));
         entry.extend(wids_field);
     }
 
@@ -117,35 +103,27 @@ impl<F: Field> PreprocessedColumns<F> {
     /// with `wids`'s witness indices (D-scaled), and increments their ext-field read counts.
     ///
     /// Use this for non-primitive inputs that the table reads from the `WitnessChecks` bus.
-    pub fn register_non_primitive_witness_reads(
+    fn register_non_primitive_witness_reads(
         &mut self,
         op_type: &NpoTypeId,
         wids: &[WitnessId],
     ) -> Result<(), CircuitError> {
         let entry = self.non_primitive.entry(op_type.clone()).or_default();
-
-        let d = self.d as u32;
-        let wids_field = wids.iter().map(|wid| F::from_u32(wid.0 * d));
+        let wids_field = wids.iter().map(|wid| F::from_u32(wid.0 * D as u32));
         entry.extend(wids_field);
-
         self.increment_ext_reads(wids);
-
         Ok(())
     }
 
     /// Extends the preprocessed data of `op_type`'s non-primitive operation with `values`.
     /// Does not update read counts.
-    pub fn register_non_primitive_preprocessed_no_read(
-        &mut self,
-        op_type: &NpoTypeId,
-        values: &[F],
-    ) {
+    fn register_non_primitive_preprocessed_no_read(&mut self, op_type: &NpoTypeId, values: &[F]) {
         let entry = self.non_primitive.entry(op_type.clone()).or_default();
         entry.extend(values);
     }
 }
 
-impl<F: Field> Default for PreprocessedColumns<F> {
+impl<F: Field, const D: usize> Default for PreprocessedColumns<F, D> {
     fn default() -> Self {
         Self::new()
     }
@@ -244,12 +222,11 @@ impl<F: Field> Circuit<F> {
     /// Signed multiplicities are not stored here; they are computed in `get_airs_and_degrees_with_prep`
     /// using the `ext_reads` field, which tracks how many times each witness is read.
     ///
-    /// Indices in CTL lookups are stored as `WitnessId(n) * d`; use `d = EF::DIMENSION` for extension field.
-    pub fn generate_preprocessed_columns(
+    /// Indices in CTL lookups are stored as `WitnessId(n) * D`; use `D = EF::DIMENSION` for extension field.
+    pub fn generate_preprocessed_columns<const D: usize>(
         &self,
-        d: usize,
-    ) -> Result<PreprocessedColumns<F>, CircuitError> {
-        let mut preprocessed = PreprocessedColumns::new_with_d(d);
+    ) -> Result<PreprocessedColumns<F, D>, CircuitError> {
+        let mut preprocessed = PreprocessedColumns::<F, D>::new();
 
         // Track which witnesses have been defined (first-occurrence = creator).
         // Const and Public define their outputs first. ALU ops define their output (forward)
@@ -310,7 +287,7 @@ impl<F: Field> Circuit<F> {
                         AluOpKind::HornerAcc => (F::ZERO, F::ZERO, F::ZERO, F::ONE),
                     };
                     let c_wid = c.unwrap_or(WitnessId(0));
-                    let d_u32 = d as u32;
+                    let d_u32 = D as u32;
 
                     let out_already_defined =
                         (out.0 as usize) < defined.len() && defined[out.0 as usize];
@@ -511,14 +488,13 @@ mod tests {
     fn test_empty_circuit() {
         let mut circuit: Circuit<F> = make_circuit(vec![]);
         circuit.witness_count = 1;
-        let result = circuit.generate_preprocessed_columns(1).unwrap();
+        let result = circuit.generate_preprocessed_columns::<1>().unwrap();
 
         assert_eq!(
             result,
             PreprocessedColumns {
                 primitive: vec![vec![]; PrimitiveOpType::COUNT],
                 non_primitive: HashMap::new(),
-                d: 1,
                 ext_reads: vec![0],
                 dup_npo_outputs: HashMap::new(),
             }
@@ -550,7 +526,7 @@ mod tests {
         ];
 
         let circuit = make_circuit(ops);
-        let result = circuit.generate_preprocessed_columns(1).unwrap();
+        let result = circuit.generate_preprocessed_columns::<1>().unwrap();
 
         let f = F::from_u32;
         assert_eq!(
@@ -606,7 +582,6 @@ mod tests {
                     ],
                 ],
                 non_primitive: HashMap::new(),
-                d: 1,
                 // ext_reads: wid0=4 (a+c in op1, c in op2, c in op3),
                 //            wid1=1, wid2=2 (b in op2+op3), wid3=1, wid4=1
                 ext_reads: vec![4, 1, 2, 1, 1],
@@ -628,7 +603,7 @@ mod tests {
 
         let mut circuit = make_circuit(ops);
         circuit.witness_count = 16;
-        let result = circuit.generate_preprocessed_columns(1).unwrap();
+        let result = circuit.generate_preprocessed_columns::<1>().unwrap();
 
         let f = F::from_u32;
         assert_eq!(
@@ -654,7 +629,6 @@ mod tests {
                     ],
                 ],
                 non_primitive: HashMap::new(),
-                d: 1,
                 //                    0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15
                 ext_reads: vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
                 dup_npo_outputs: HashMap::new(),
@@ -682,7 +656,7 @@ mod tests {
         ];
 
         let circuit = make_circuit(ops);
-        let result = circuit.generate_preprocessed_columns(1).unwrap();
+        let result = circuit.generate_preprocessed_columns::<1>().unwrap();
 
         let f = F::from_u32;
         assert_eq!(
@@ -710,7 +684,6 @@ mod tests {
                     ],
                 ],
                 non_primitive: HashMap::new(),
-                d: 1,
                 // ext_reads: 0(a)=1, 1(b)=1, 2(c)=1
                 ext_reads: vec![1, 1, 1],
                 dup_npo_outputs: HashMap::new(),

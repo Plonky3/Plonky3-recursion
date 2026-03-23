@@ -7,12 +7,12 @@ use alloc::{format, vec};
 
 use p3_field::Field;
 
+use crate::CircuitError;
 use crate::ops::poseidon2_perm::config::{Poseidon2Config, Poseidon2PermConfigData};
 use crate::ops::poseidon2_perm::state::{Poseidon2ExecutionState, Poseidon2PermPrivateData};
 use crate::ops::poseidon2_perm::trace::Poseidon2CircuitRow;
-use crate::ops::{ExecutionContext, NonPrimitiveExecutor, NpoTypeId};
+use crate::ops::{ExecutionContext, NonPrimitiveExecutor, NpoTypeId, PreprocessedWriter};
 use crate::types::WitnessId;
-use crate::{CircuitError, PreprocessedColumns};
 
 /// Runtime executor for a single Poseidon2 permutation row.
 ///
@@ -509,7 +509,7 @@ impl Poseidon2PermExecutor {
     fn preprocess_inputs<F: Field>(
         &self,
         inputs: &[Vec<WitnessId>],
-        preprocessed: &mut PreprocessedColumns<F>,
+        preprocessed: &mut dyn PreprocessedWriter<F>,
     ) -> Result<(), CircuitError> {
         let width_ext = self.config.width_ext();
         for (limb_idx, inp) in inputs[0..width_ext].iter().enumerate() {
@@ -556,7 +556,7 @@ impl Poseidon2PermExecutor {
     fn preprocess_outputs<F: Field>(
         &self,
         outputs: &[Vec<WitnessId>],
-        preprocessed: &mut PreprocessedColumns<F>,
+        preprocessed: &mut dyn PreprocessedWriter<F>,
     ) -> Result<(), CircuitError> {
         let rate_ext = self.config.rate_ext();
         for out in outputs.iter().take(rate_ext) {
@@ -580,7 +580,7 @@ impl Poseidon2PermExecutor {
     fn preprocess_flags<F: Field>(
         &self,
         inputs: &[Vec<WitnessId>],
-        preprocessed: &mut PreprocessedColumns<F>,
+        preprocessed: &mut dyn PreprocessedWriter<F>,
     ) -> Result<(), CircuitError> {
         let width_ext = self.config.width_ext();
         if inputs[width_ext].is_empty() {
@@ -677,7 +677,7 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Poseidon2Perm
         &self,
         inputs: &[Vec<WitnessId>],
         outputs: &[Vec<WitnessId>],
-        preprocessed: &mut PreprocessedColumns<F>,
+        preprocessed: &mut dyn PreprocessedWriter<F>,
     ) -> Result<(), CircuitError> {
         self.preprocess_inputs(inputs, preprocessed)?;
         self.preprocess_outputs(outputs, preprocessed)?;

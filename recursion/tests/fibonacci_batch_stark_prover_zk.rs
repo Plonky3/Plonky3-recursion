@@ -226,22 +226,28 @@ fn test_batch_verifier_zk_hiding_fri() -> Result<(), VerificationError> {
     ];
     let mut air_builders = poseidon2_air_builders::<_, 4>();
     air_builders.extend(recompose_air_builders(1));
-    let (verification_airs_degrees, verification_preprocessed_columns) =
-        get_airs_and_degrees_with_prep::<MyConfig, _, 4>(
-            &verification_circuit,
-            &verification_table_packing,
-            &npo_prep,
-            &air_builders,
-            ConstraintProfile::Standard,
-        )
-        .unwrap();
+    let (
+        verification_airs_degrees,
+        verification_primitive_columns,
+        verification_non_primitive_columns,
+    ) = get_airs_and_degrees_with_prep::<MyConfig, _, 4>(
+        &verification_circuit,
+        &verification_table_packing,
+        &npo_prep,
+        &air_builders,
+        ConstraintProfile::Standard,
+    )
+    .unwrap();
     let (mut verification_airs, verification_degrees): (Vec<_>, Vec<usize>) =
         verification_airs_degrees.into_iter().unzip();
 
     let verification_prover_data =
         ProverData::from_airs_and_degrees(&config3, &mut verification_airs, &verification_degrees);
-    let verification_circuit_prover_data =
-        CircuitProverData::new(verification_prover_data, verification_preprocessed_columns);
+    let verification_circuit_prover_data = CircuitProverData::new(
+        verification_prover_data,
+        verification_primitive_columns,
+        verification_non_primitive_columns,
+    );
 
     let mut verification_prover =
         BatchStarkProver::new(config3).with_table_packing(verification_table_packing);

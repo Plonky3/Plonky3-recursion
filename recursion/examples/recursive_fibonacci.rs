@@ -266,7 +266,7 @@ macro_rules! define_field_module {
                 macro_rules! run_layers {
                     ($cfg_type:ident, $cfg_fn:expr) => {{
                         let config_0: $cfg_type = $cfg_fn(0);
-                        let (airs_degrees_0, preprocessed_columns_0) =
+                        let (airs_degrees_0, primitive_columns_0, non_primitive_columns_0) =
                             get_airs_and_degrees_with_prep::<$cfg_type, F, 1>(
                                 &base_circuit,
                                 &table_packing_0,
@@ -284,8 +284,11 @@ macro_rules! define_field_module {
                             &mut airs_0,
                             &ext_degrees_0,
                         );
-                        let circuit_prover_data_0 =
-                            CircuitProverData::new(prover_data_0, preprocessed_columns_0);
+                        let circuit_prover_data_0 = CircuitProverData::new(
+                            prover_data_0,
+                            primitive_columns_0,
+                            non_primitive_columns_0,
+                        );
                         let common_0 = circuit_prover_data_0.common_data();
                         let prover_0 = BatchStarkProver::new(config_0.clone())
                             .with_table_packing(table_packing_0);

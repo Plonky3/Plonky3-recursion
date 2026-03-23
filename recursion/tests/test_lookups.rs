@@ -115,7 +115,7 @@ fn test_wrong_multiplicities() {
     let config_proving = get_proving_config();
 
     let circuit = builder.build().unwrap();
-    let (airs_degrees, mut preprocessed_columns) =
+    let (airs_degrees, mut primitive_columns, non_primitive_columns) =
         get_airs_and_degrees_with_prep::<MyConfig, F, 1>(
             &circuit,
             &table_packing,
@@ -126,7 +126,7 @@ fn test_wrong_multiplicities() {
         .unwrap();
 
     // Introduce an error in the Const table multiplicities.
-    preprocessed_columns.primitive[PrimitiveOpType::Const as usize][0] += F::ONE;
+    primitive_columns[PrimitiveOpType::Const as usize][0] += F::ONE;
     let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
     let mut runner = circuit.runner();
 
@@ -148,7 +148,8 @@ fn test_wrong_multiplicities() {
 
     // Create prover data for proving and verifying.
     let prover_data = ProverData::from_airs_and_degrees(&config_proving, &mut airs, &degrees);
-    let circuit_prover_data = CircuitProverData::new(prover_data, preprocessed_columns);
+    let circuit_prover_data =
+        CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
 
     let prover = BatchStarkProver::new(config_proving).with_table_packing(table_packing);
 
@@ -592,14 +593,15 @@ fn get_test_circuit_proof() -> TestCircuitProofData {
     let config_proving = get_proving_config();
 
     let circuit = builder.build().unwrap();
-    let (airs_degrees, preprocessed_columns) = get_airs_and_degrees_with_prep::<MyConfig, F, 1>(
-        &circuit,
-        &table_packing,
-        &[],
-        &[],
-        ConstraintProfile::Standard,
-    )
-    .unwrap();
+    let (airs_degrees, primitive_columns, non_primitive_columns) =
+        get_airs_and_degrees_with_prep::<MyConfig, F, 1>(
+            &circuit,
+            &table_packing,
+            &[],
+            &[],
+            ConstraintProfile::Standard,
+        )
+        .unwrap();
 
     let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
     let mut runner = circuit.runner();
@@ -622,7 +624,8 @@ fn get_test_circuit_proof() -> TestCircuitProofData {
 
     // Create prover data for proving and verifying.
     let prover_data = ProverData::from_airs_and_degrees(&config_proving, &mut airs, &degrees);
-    let circuit_prover_data = CircuitProverData::new(prover_data, preprocessed_columns);
+    let circuit_prover_data =
+        CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
 
     let lookup_gadget = LogUpGadget::new();
     let prover = BatchStarkProver::new(config_proving).with_table_packing(table_packing);
@@ -873,7 +876,7 @@ fn test_poseidon2_ctl_lookups() {
     ];
     let mut air_builders = poseidon2_air_builders::<_, 4>();
     air_builders.extend(recompose_air_builders(1));
-    let (airs_degrees, preprocessed_columns) =
+    let (airs_degrees, primitive_columns, non_primitive_columns) =
         get_airs_and_degrees_with_prep::<MyConfig, Challenge, 4>(
             &circuit,
             &table_packing,
@@ -894,7 +897,8 @@ fn test_poseidon2_ctl_lookups() {
     let traces = runner.run().unwrap();
 
     let prover_data = ProverData::from_airs_and_degrees(&config_proving, &mut airs, &degrees);
-    let circuit_prover_data = CircuitProverData::new(prover_data, preprocessed_columns);
+    let circuit_prover_data =
+        CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
 
     let common = circuit_prover_data.common_data();
 
@@ -1002,7 +1006,7 @@ fn test_poseidon2_chained_ctl_lookups() {
     ];
     let mut air_builders = poseidon2_air_builders::<_, 4>();
     air_builders.extend(recompose_air_builders(1));
-    let (airs_degrees, preprocessed_columns) =
+    let (airs_degrees, primitive_columns, non_primitive_columns) =
         get_airs_and_degrees_with_prep::<MyConfig, Challenge, 4>(
             &circuit,
             &table_packing,
@@ -1023,7 +1027,8 @@ fn test_poseidon2_chained_ctl_lookups() {
     let traces = runner.run().unwrap();
 
     let prover_data = ProverData::from_airs_and_degrees(&config_proving, &mut airs, &degrees);
-    let circuit_prover_data = CircuitProverData::new(prover_data, preprocessed_columns);
+    let circuit_prover_data =
+        CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
 
     let common = circuit_prover_data.common_data();
 

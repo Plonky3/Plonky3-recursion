@@ -83,20 +83,22 @@ fn test_aggregation_with_different_shapes() -> Result<(), VerificationError> {
     builder.connect(c, expected);
     let circuit = builder.build().unwrap();
     let table_packing = TablePacking::new(1, 1).with_fri_params(0, 3);
-    let (airs_degrees, preprocessed_columns) = get_airs_and_degrees_with_prep::<MyConfig, F, 1>(
-        &circuit,
-        &table_packing,
-        &[],
-        &[],
-        ConstraintProfile::Standard,
-    )
-    .unwrap();
+    let (airs_degrees, primitive_columns, non_primitive_columns) =
+        get_airs_and_degrees_with_prep::<MyConfig, F, 1>(
+            &circuit,
+            &table_packing,
+            &[],
+            &[],
+            ConstraintProfile::Standard,
+        )
+        .unwrap();
     let (mut airs, degrees): (Vec<_>, Vec<_>) = airs_degrees.into_iter().unzip();
     let mut runner = circuit.runner();
     runner.set_public_inputs(&[F::from_u32(42)]).unwrap();
     let traces = runner.run().unwrap();
     let prover_data = ProverData::from_airs_and_degrees(&right_config, &mut airs, &degrees);
-    let circuit_prover_data = CircuitProverData::new(prover_data, preprocessed_columns);
+    let circuit_prover_data =
+        CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
     let prover = BatchStarkProver::new(right_config).with_table_packing(table_packing);
     let batch_stark_proof = prover
         .prove_all_tables(&traces, &circuit_prover_data)

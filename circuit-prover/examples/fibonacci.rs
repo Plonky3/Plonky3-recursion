@@ -65,7 +65,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let circuit = builder.build()?;
     let table_packing = TablePacking::new(4, 4);
 
-    let (airs_degrees, preprocessed_columns) =
+    let (airs_degrees, primitive_columns, non_primitive_columns) =
         get_airs_and_degrees_with_prep::<KoalaBearConfig, _, 1>(
             &circuit,
             &table_packing,
@@ -83,7 +83,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let traces = runner.run()?;
     let prover_data = ProverData::from_airs_and_degrees(&config, &mut airs, &degrees);
-    let circuit_prover_data = CircuitProverData::new(prover_data, preprocessed_columns);
+    let circuit_prover_data =
+        CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
     let prover = BatchStarkProver::new(config).with_table_packing(table_packing);
 
     let proof = prover.prove_all_tables(&traces, &circuit_prover_data)?;

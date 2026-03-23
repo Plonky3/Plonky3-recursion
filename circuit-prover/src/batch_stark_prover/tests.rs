@@ -37,7 +37,7 @@ fn test_babybear_batch_stark_base_field() {
 
     let circuit = builder.build().unwrap();
     let cfg = config::baby_bear().build();
-    let (airs_degrees, preprocessed_columns) =
+    let (airs_degrees, primitive_columns, non_primitive_columns) =
         get_airs_and_degrees_with_prep::<BabyBearConfig, _, 1>(
             &circuit,
             &TablePacking::default(),
@@ -48,7 +48,8 @@ fn test_babybear_batch_stark_base_field() {
         .unwrap();
     let (mut airs, log_degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
     let prover_data = ProverData::from_airs_and_degrees(&cfg, &mut airs, &log_degrees);
-    let circuit_prover_data = CircuitProverData::new(prover_data, preprocessed_columns);
+    let circuit_prover_data =
+        CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
 
     let mut runner = circuit.runner();
 
@@ -95,7 +96,7 @@ fn test_table_lookups() {
 
     let circuit = builder.build().unwrap();
     let default_packing = TablePacking::default();
-    let (airs_degrees, preprocessed_columns) =
+    let (airs_degrees, primitive_columns, non_primitive_columns) =
         get_airs_and_degrees_with_prep::<BabyBearConfig, _, 1>(
             &circuit,
             &default_packing,
@@ -113,7 +114,8 @@ fn test_table_lookups() {
     runner.set_public_inputs(&[x_val, expected_val]).unwrap();
     let traces = runner.run().unwrap();
     let prover_data = ProverData::from_airs_and_degrees(&cfg, &mut airs, &log_degrees);
-    let circuit_prover_data = CircuitProverData::new(prover_data, preprocessed_columns);
+    let circuit_prover_data =
+        CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
 
     let prover = BatchStarkProver::new(cfg);
 
@@ -179,7 +181,7 @@ fn test_extension_field_batch_stark() {
     builder.assert_zero(diff);
 
     let circuit = builder.build().unwrap();
-    let (airs_degrees, preprocessed_columns) =
+    let (airs_degrees, primitive_columns, non_primitive_columns) =
         get_airs_and_degrees_with_prep::<BabyBearConfig, _, D>(
             &circuit,
             &TablePacking::default(),
@@ -217,7 +219,8 @@ fn test_extension_field_batch_stark() {
     let traces = runner.run().unwrap();
 
     let prover_data = ProverData::from_airs_and_degrees(&cfg, &mut airs, &degrees);
-    let circuit_prover_data = CircuitProverData::new(prover_data, preprocessed_columns);
+    let circuit_prover_data =
+        CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
     let prover = BatchStarkProver::new(cfg);
 
     let proof = prover
@@ -252,7 +255,7 @@ fn test_extension_field_table_lookups() {
     let default_packing = TablePacking::default();
     let mut air_builders_ext4 = poseidon2_air_builders::<BabyBearConfig, 4>();
     air_builders_ext4.extend(recompose_air_builders::<BabyBearConfig, 4>(1));
-    let (airs_degrees, preprocessed_columns) =
+    let (airs_degrees, primitive_columns, non_primitive_columns) =
         get_airs_and_degrees_with_prep::<BabyBearConfig, _, D>(
             &circuit,
             &default_packing,
@@ -291,7 +294,8 @@ fn test_extension_field_table_lookups() {
     let traces = runner.run().unwrap();
 
     let prover_data = ProverData::from_airs_and_degrees(&cfg, &mut airs, &log_degrees);
-    let circuit_prover_data = CircuitProverData::new(prover_data, preprocessed_columns);
+    let circuit_prover_data =
+        CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
 
     let prover = BatchStarkProver::new(cfg);
 
@@ -361,7 +365,7 @@ fn test_koalabear_batch_stark_base_field() {
     builder.assert_zero(diff);
 
     let circuit = builder.build().unwrap();
-    let (airs_degrees, preprocessed_columns) =
+    let (airs_degrees, primitive_columns, non_primitive_columns) =
         get_airs_and_degrees_with_prep::<KoalaBearConfig, _, 1>(
             &circuit,
             &TablePacking::default(),
@@ -382,7 +386,8 @@ fn test_koalabear_batch_stark_base_field() {
     let traces = runner.run().unwrap();
 
     let prover_data = ProverData::from_airs_and_degrees(&cfg, &mut airs, &degrees);
-    let circuit_prover_data = CircuitProverData::new(prover_data, preprocessed_columns);
+    let circuit_prover_data =
+        CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
     let prover = BatchStarkProver::new(cfg);
 
     let proof = prover
@@ -426,7 +431,7 @@ fn test_koalabear_batch_stark_extension_field_d8() {
     builder.assert_zero(diff);
 
     let circuit = builder.build().unwrap();
-    let (airs_degrees, preprocessed_columns) =
+    let (airs_degrees, primitive_columns, non_primitive_columns) =
         get_airs_and_degrees_with_prep::<KoalaBearConfig, _, D>(
             &circuit,
             &TablePacking::default(),
@@ -479,7 +484,8 @@ fn test_koalabear_batch_stark_extension_field_d8() {
     let traces = runner.run().unwrap();
 
     let prover_data = ProverData::from_airs_and_degrees(&cfg, &mut airs, &degrees);
-    let circuit_prover_data = CircuitProverData::new(prover_data, preprocessed_columns);
+    let circuit_prover_data =
+        CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
     let prover = BatchStarkProver::new(cfg);
 
     let proof = prover
@@ -514,7 +520,7 @@ fn test_goldilocks_batch_stark_binomial_ext2() {
     let circuit = builder.build().unwrap();
     let mut air_builders_ext2 = poseidon2_air_builders::<GoldilocksConfig, 2>();
     air_builders_ext2.extend(recompose_air_builders::<GoldilocksConfig, 2>(1));
-    let (airs_degrees, preprocessed_columns) =
+    let (airs_degrees, primitive_columns, non_primitive_columns) =
         get_airs_and_degrees_with_prep::<GoldilocksConfig, _, D>(
             &circuit,
             &TablePacking::default(),
@@ -543,7 +549,8 @@ fn test_goldilocks_batch_stark_binomial_ext2() {
     let traces = runner.run().unwrap();
 
     let prover_data = ProverData::from_airs_and_degrees(&cfg, &mut airs, &degrees);
-    let circuit_prover_data = CircuitProverData::new(prover_data, preprocessed_columns);
+    let circuit_prover_data =
+        CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
     let prover = BatchStarkProver::new(cfg);
 
     let proof = prover
@@ -664,7 +671,7 @@ fn test_mul_only_circuit_padding() {
     builder.mul(x, y);
 
     let circuit = builder.build().unwrap();
-    let (airs_degrees, preprocessed_columns) =
+    let (airs_degrees, primitive_columns, non_primitive_columns) =
         get_airs_and_degrees_with_prep::<BabyBearConfig, _, 1>(
             &circuit,
             &TablePacking::default(),
@@ -682,7 +689,8 @@ fn test_mul_only_circuit_padding() {
     let traces = runner.run().unwrap();
 
     let prover_data = ProverData::from_airs_and_degrees(&cfg, &mut airs, &degrees);
-    let circuit_prover_data = CircuitProverData::new(prover_data, preprocessed_columns);
+    let circuit_prover_data =
+        CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
 
     let common = circuit_prover_data.common_data();
 
@@ -710,7 +718,7 @@ fn test_add_only_circuit_padding() {
     builder.assert_zero(diff);
 
     let circuit = builder.build().unwrap();
-    let (airs_degrees, preprocessed_columns) =
+    let (airs_degrees, primitive_columns, non_primitive_columns) =
         get_airs_and_degrees_with_prep::<BabyBearConfig, _, 1>(
             &circuit,
             &TablePacking::default(),
@@ -731,7 +739,8 @@ fn test_add_only_circuit_padding() {
     let traces = runner.run().unwrap();
 
     let prover_data = ProverData::from_airs_and_degrees(&cfg, &mut airs, &degrees);
-    let circuit_prover_data = CircuitProverData::new(prover_data, preprocessed_columns);
+    let circuit_prover_data =
+        CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
 
     let common = circuit_prover_data.common_data();
 

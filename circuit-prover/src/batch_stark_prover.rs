@@ -10,8 +10,7 @@ use alloc::{format, vec};
 use p3_air::DebugConstraintBuilder;
 use p3_air::{Air, BaseAir};
 use p3_batch_stark::{BatchProof, CommonData, ProverData, StarkGenericConfig, StarkInstance, Val};
-use p3_circuit::PreprocessedColumns;
-use p3_circuit::ops::{NpoTypeId, Poseidon2Config, PrimitiveOpType};
+use p3_circuit::ops::{NonPrimitivePreprocessedMap, NpoTypeId, Poseidon2Config, PrimitiveOpType};
 use p3_circuit::tables::Traces;
 use p3_field::extension::{BinomialExtensionField, BinomiallyExtendable};
 use p3_field::{Algebra, BasedVectorSpace, Field, PrimeCharacteristicRing, PrimeField};
@@ -98,24 +97,36 @@ where
 
 /// Combined data for circuit proving, including STARK prover data and preprocessed columns.
 ///
-/// This struct bundles the upstream [`ProverData`] with circuit-specific [`PreprocessedColumns`],
+/// This struct bundles the upstream [`ProverData`] with circuit-specific preprocessed data,
 /// providing a cleaner API for `prove_all_tables`.
+///
+/// Preprocessed columns are stored as flat base-field vectors rather than a
+/// [`PreprocessedColumns<F, D>`](p3_circuit::PreprocessedColumns) because `D` is only
+/// determined at proving time (via `EF::DIMENSION`) while this struct is constructed
+/// and stored beforehand. The `ext_reads` and `dup_npo_outputs` fields from
+/// `PreprocessedColumns` are fully consumed during AIR construction in
+/// [`get_airs_and_degrees_with_prep`](crate::common::get_airs_and_degrees_with_prep)
+/// and are not needed here.
 pub struct CircuitProverData<SC: StarkGenericConfig> {
     /// STARK prover data from p3_batch_stark.
     pub prover_data: ProverData<SC>,
-    /// Preprocessed columns for all primitive and non-primitive operations.
-    pub preprocessed_columns: PreprocessedColumns<Val<SC>>,
+    /// Preprocessed columns for primitive operations (Const, Public, ALU).
+    pub primitive_columns: Vec<Vec<Val<SC>>>,
+    /// Preprocessed columns for non-primitive operations.
+    pub non_primitive_columns: NonPrimitivePreprocessedMap<Val<SC>>,
 }
 
 impl<SC: StarkGenericConfig> CircuitProverData<SC> {
     /// Create new circuit prover data from components.
     pub const fn new(
         prover_data: ProverData<SC>,
-        preprocessed_columns: PreprocessedColumns<Val<SC>>,
+        primitive_columns: Vec<Vec<Val<SC>>>,
+        non_primitive_columns: NonPrimitivePreprocessedMap<Val<SC>>,
     ) -> Self {
         Self {
             prover_data,
-            preprocessed_columns,
+            primitive_columns,
+            non_primitive_columns,
         }
     }
 
@@ -606,13 +617,8 @@ where
     where
         EF: Field + BasedVectorSpace<Val<SC>>,
     {
-        let PreprocessedColumns {
-            primitive,
-            non_primitive,
-            d: _,
-            ext_reads: _,
-            dup_npo_outputs: _,
-        } = &circuit_prover_data.preprocessed_columns;
+        let primitive = &circuit_prover_data.primitive_columns;
+        let non_primitive = &circuit_prover_data.non_primitive_columns;
         let prover_data = &circuit_prover_data.prover_data;
 
         // Build matrices and AIRs per table.

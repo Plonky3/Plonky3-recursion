@@ -87,7 +87,7 @@ fn bench_prove_all_tables(c: &mut Criterion) {
             b.iter(|| {
                 let config = config::koala_bear().build();
                 let (circuit, expected_fib) = fib_circuit(n);
-                let (airs_degrees, preprocessed_columns) =
+                let (airs_degrees, primitive_columns, non_primitive_columns) =
                     get_airs_and_degrees_with_prep::<KoalaBearConfig, _, 1>(
                         &circuit,
                         &table_packing,
@@ -101,7 +101,8 @@ fn bench_prove_all_tables(c: &mut Criterion) {
                 runner.set_public_inputs(&[expected_fib]).unwrap();
                 let traces = runner.run().unwrap();
                 let prover_data = ProverData::from_airs_and_degrees(&config, &mut airs, &degrees);
-                let circuit_prover_data = CircuitProverData::new(prover_data, preprocessed_columns);
+                let circuit_prover_data =
+                    CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
                 let prover =
                     BatchStarkProver::new(config).with_table_packing(table_packing.clone());
                 black_box(
