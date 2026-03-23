@@ -3,26 +3,34 @@ set -euo pipefail
 
 # benchmark.sh
 #
-# Usage: ./scripts/benchmark.sh [fibonacci|keccak|aggregation]
+# Usage: ./scripts/benchmark.sh [fibonacci|keccak|aggregation] [runs]
+#
+# runs: optional positive integer (default 5).
 #
 # Output: CSV to stdout.
 #
 # fibonacci/keccak:
 #   - layer index = order of prove_next_layer lines within each run
-#   - stats per layer across 5 runs: min/mean/max, samples
+#   - stats per layer across runs: min/mean/max, samples
 #
 # aggregation:
 #   - within each run, for each Aggregation level K, average all prove_aggregation_layer timings
-#   - then stats across 5 runs on those per-run means: min/mean/max, runs_with_level
+#   - then stats across runs on those per-run means: min/mean/max, runs_with_level
 
 example="${1:-}"
+runs="${2:-5}"
+
 if [[ -z "${example}" ]]; then
-  echo "usage: $0 [fibonacci|keccak|aggregation]" >&2
+  echo "usage: $0 [fibonacci|keccak|aggregation] [runs]" >&2
+  exit 2
+fi
+
+if ! [[ "${runs}" =~ ^[1-9][0-9]*$ ]]; then
+  echo "runs must be a positive integer, got: ${runs}" >&2
   exit 2
 fi
 
 export RUSTFLAGS="-Ctarget-cpu=native -Copt-level=3"
-runs=5
 
 run_fib_or_keccak() {
   local ex="$1"
