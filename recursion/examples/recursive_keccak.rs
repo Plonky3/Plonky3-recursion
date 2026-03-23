@@ -289,7 +289,6 @@ macro_rules! define_field_module {
                 for layer in 1..=num_recursive_layers {
                     let layer_table_packing = if layer == 1 {
                         TablePacking::new(1, 2)
-                            .with_horner_pack_k(table_packing.horner_packed_steps())
                     } else {
                         table_packing.clone()
                     }

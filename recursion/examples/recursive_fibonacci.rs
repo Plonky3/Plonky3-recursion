@@ -248,9 +248,7 @@ macro_rules! define_field_module {
                 builder.connect(b, expected_result);
 
                 let base_circuit = builder.build().unwrap();
-                let table_packing_0 = TablePacking::new(1, 1)
-                    .with_horner_pack_k(table_packing.horner_packed_steps())
-                    .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup);
+                let table_packing_0 = TablePacking::new(1, 1).with_fri_params(4, 3);
 
                 let expected_fib = compute_fibonacci(n);
                 let traces_0 = {
