@@ -11,11 +11,12 @@ set -euo pipefail
 #
 # fibonacci/keccak:
 #   - layer index = order of prove_next_layer lines within each run
-#   - stats per layer across runs: min/mean/max, samples
+#   - stats per layer across runs: min/mean/median/max, samples
 #
 # aggregation:
 #   - within each run, for each Aggregation level K, average all prove_aggregation_layer timings
-#   - then stats across runs on those per-run means: min/mean/max, runs_with_level
+#   - if runs > 1: skip the first prove_aggregation_layer per level per run (cold / no caching)
+#   - then stats across runs on those per-run means: min/mean/median/max
 
 example="${1:-}"
 runs="${2:-5}"
@@ -46,25 +47,41 @@ run_fib_or_keccak() {
     use strict;
     use warnings;
 
-    our (%sum, %sum2, %cnt, %minv, %maxv, $run, $idx);
+    our (%vals, %minv, %maxv, $idx);
 
     BEGIN {
-      %sum=(); %sum2=(); %cnt=(); %minv=(); %maxv=();
-      $run = 0;
+      %vals=(); %minv=(); %maxv=();
       $idx = 0;
+    }
+
+    sub median {
+      my ($ref) = @_;
+      my @a = sort { $a <=> $b } @$ref;
+      my $n = @a;
+      return 0 unless $n;
+      if ($n % 2) {
+        return $a[($n - 1) / 2];
+      }
+      return ($a[$n / 2 - 1] + $a[$n / 2]) / 2;
+    }
+
+    sub arith_mean {
+      my ($ref) = @_;
+      my $n = @$ref;
+      return 0 unless $n;
+      my $s = 0;
+      $s += $_ for @$ref;
+      return $s / $n;
     }
 
     sub upd_stats {
       my ($k, $x) = @_;
-      $sum{$k}  += $x;
-      $sum2{$k} += $x * $x;
-      $cnt{$k}  += 1;
+      push @{ $vals{$k} }, $x;
       if (!exists $minv{$k} || $x < $minv{$k}) { $minv{$k} = $x; }
       if (!exists $maxv{$k} || $x > $maxv{$k}) { $maxv{$k} = $x; }
     }
 
     if (/^###RUN\s+(\d+)###\s*$/) {
-      $run = $1;
       $idx = 0;
       next;
     }
@@ -84,18 +101,13 @@ run_fib_or_keccak() {
     upd_stats($idx, $ms);
 
     END {
-      print "layer, min_ms, mean_ms, max_ms, samples\n";
-      for my $k (sort { $a <=> $b } keys %sum) {
-        my $n = $cnt{$k} || 0;
-        my $mean = $n ? ($sum{$k} / $n) : 0;
-
-        my $var = 0;
-        if ($n) {
-          $var = ($sum2{$k} / $n) - ($mean * $mean);
-          $var = 0 if $var < 0;
-        }
-
-        printf "%d, %d ms, %d ms, %d ms, %d\n", $k, $minv{$k}, $mean, $maxv{$k}, $n;
+      print "layer, min_ms, mean_ms, median_ms, max_ms\n";
+      for my $k (sort { $a <=> $b } keys %vals) {
+        my $ref = $vals{$k};
+        my $n = $ref ? @$ref : 0;
+        my $mn  = $n ? arith_mean($ref) : 0;
+        my $med = $n ? median($ref)     : 0;
+        printf "%d, %d ms, %d ms, %d ms, %d ms", $k, $minv{$k}, int($mn + 0.5), int($med + 0.5), $maxv{$k};
       }
     }
   '
@@ -107,26 +119,45 @@ run_aggregation() {
       echo "###RUN ${r}###"
       RUST_LOG=info cargo run --profile optimized --example recursive_aggregation -q --features parallel -- --num-recursive-layers 5 || true
     done
-  } | perl -ne '
+  } | BENCHMARK_AGG_RUNS="$runs" perl -ne '
     use strict;
     use warnings;
 
-    our ($run, $cur_level);
+    our ($run, $cur_level, $skip_cold_first);
     our (%run_sum, %run_cnt, %seen_first);
-    our (%sum, %sum2, %cnt, %minv, %maxv);
+    our (%vals, %minv, %maxv);
 
     BEGIN {
       $run = 0;
+      $skip_cold_first = ($ENV{BENCHMARK_AGG_RUNS} // 1) > 1;
       undef $cur_level;
       %run_sum=(); %run_cnt=(); %seen_first=();
-      %sum=(); %sum2=(); %cnt=(); %minv=(); %maxv=();
+      %vals=(); %minv=(); %maxv=();
+    }
+
+    sub median {
+      my ($ref) = @_;
+      my @a = sort { $a <=> $b } @$ref;
+      my $n = @a;
+      return 0 unless $n;
+      if ($n % 2) {
+        return $a[($n - 1) / 2];
+      }
+      return ($a[$n / 2 - 1] + $a[$n / 2]) / 2;
+    }
+
+    sub arith_mean {
+      my ($ref) = @_;
+      my $n = @$ref;
+      return 0 unless $n;
+      my $s = 0;
+      $s += $_ for @$ref;
+      return $s / $n;
     }
 
     sub upd_stats {
       my ($k, $x) = @_;
-      $sum{$k}  += $x;
-      $sum2{$k} += $x * $x;
-      $cnt{$k}  += 1;
+      push @{ $vals{$k} }, $x;
       if (!exists $minv{$k} || $x < $minv{$k}) { $minv{$k} = $x; }
       if (!exists $maxv{$k} || $x > $maxv{$k}) { $maxv{$k} = $x; }
     }
@@ -165,8 +196,8 @@ run_aggregation() {
       next;
     }
 
-    # --- Skip first aggregation per level (cold / no caching) ---
-    if (!exists $seen_first{$cur_level}) {
+    # --- Skip first aggregation per level when runs>1 (cold / no caching) ---
+    if ($skip_cold_first && !exists $seen_first{$cur_level}) {
       $seen_first{$cur_level} = 1;
       next;
     }
@@ -177,18 +208,13 @@ run_aggregation() {
     END {
       finalize_run() if $run != 0;
 
-      print "aggregation_level, min_ms, mean_ms, max_ms, runs_with_level\n";
-      for my $lvl (sort { $a <=> $b } keys %sum) {
-        my $n = $cnt{$lvl} || 0;
-        my $mean = $n ? ($sum{$lvl} / $n) : 0;
-
-        my $var = 0;
-        if ($n) {
-          $var = ($sum2{$lvl} / $n) - ($mean * $mean);
-          $var = 0 if $var < 0;
-        }
-
-        printf "%d, %d ms, %d ms, %d ms, %d\n", $lvl, $minv{$lvl}, $mean, $maxv{$lvl}, $n;
+      print "aggregation_level, min_ms, mean_ms, median_ms, max_ms\n";
+      for my $lvl (sort { $a <=> $b } keys %vals) {
+        my $ref = $vals{$lvl};
+        my $n = $ref ? @$ref : 0;
+        my $mn  = $n ? arith_mean($ref) : 0;
+        my $med = $n ? median($ref)     : 0;
+        printf "%d, %d ms, %d ms, %d ms, %d ms\n", $lvl, $minv{$lvl}, int($mn + 0.5), int($med + 0.5), $maxv{$lvl};
       }
     }
   '
@@ -197,16 +223,16 @@ run_aggregation() {
 case "${example}" in
   fibonacci)
     echo "----------------------------------------------"
-    echo "Recursive Fibonacci with N=10000 and 4 layers."
+    echo "Recursive Fibonacci with N=10000 and 5 layers."
     echo "----------------------------------------------"
-    run_fib_or_keccak "recursive_fibonacci" -n 10000 --num-recursive-layers 4
+    run_fib_or_keccak "recursive_fibonacci" -n 10000 --num-recursive-layers 5
     echo "------------------------------------"
     ;;
   keccak)
     echo "------------------------------------------"
-    echo "Recursive Keccak with N=1000 and 4 layers."
+    echo "Recursive Keccak with N=1000 and 5 layers."
     echo "------------------------------------------"
-    run_fib_or_keccak "recursive_keccak" -n 1000 --num-recursive-layers 4
+    run_fib_or_keccak "recursive_keccak" -n 1000 --num-recursive-layers 5
     echo "------------------------------------"
     ;;
   aggregation)
