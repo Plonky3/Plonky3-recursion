@@ -329,8 +329,18 @@ macro_rules! define_field_module {
                 zk: bool,
                 disable_recompose_npo: bool,
             ) {
-                let base_table_packing = TablePacking::new(1, 1)
-                    .with_fri_params(4, 3);
+                // Leaf proofs are tiny; use a larger blowup so num_queries is smaller.  The same
+                // FRI shape must be used for every aggregation layer: the in-circuit verifier is
+                // built from `agg_config`, and its MMCS op count must match the child proofs.
+                const BASE_LOG_BLOWUP: usize = 3;
+                let base_fri_params = FriParams {
+                    log_blowup: BASE_LOG_BLOWUP,
+                    ..*fri_params
+                };
+                let base_table_packing = TablePacking::new(1, 1).with_fri_params(
+                    base_fri_params.log_final_poly_len,
+                    base_fri_params.log_blowup,
+                );
                 let backend = FriRecursionBackend::<$backend_width, $backend_rate>::new(
                     $poseidon2_config,
                 )
@@ -341,13 +351,13 @@ macro_rules! define_field_module {
                 info!("Binary aggregation tree: {num_leaves} base proofs, {tree_depth} levels");
 
                 macro_rules! run_aggregation {
-                    ($cfg_type:ident, $cfg_fn:expr, $prove_base_fn:ident) => {{
-                        let config: $cfg_type = $cfg_fn(0);
+                    ($cfg_type:ident, $base_cfg:expr, $agg_cfg:expr, $prove_base_fn:ident) => {{
+                        let base_config: $cfg_type = $base_cfg;
                         let mut proofs: Vec<RecursionOutput<$cfg_type>> = (0..num_leaves)
                             .map(|i| {
                                 let val = (i + 1) as u32;
                                 info!("Base proof {i} (const = {val})");
-                                $prove_base_fn(val, &config, &base_table_packing)
+                                $prove_base_fn(val, &base_config, &base_table_packing)
                             })
                             .collect();
 
@@ -368,12 +378,12 @@ macro_rules! define_field_module {
                                     table_packing.clone()
                                 }
                                 .with_fri_params(
-                                    fri_params.log_final_poly_len,
-                                    fri_params.log_blowup,
+                                    base_fri_params.log_final_poly_len,
+                                    base_fri_params.log_blowup,
                                 ),
                                 constraint_profile: ConstraintProfile::Standard,
                             };
-                            let agg_config: $cfg_type = $cfg_fn(level as u64);
+                            let agg_config: $cfg_type = $agg_cfg(level as u64);
 
                             let mut next_level = Vec::with_capacity(pairs);
                             for pair_idx in 0..pairs {
@@ -411,13 +421,23 @@ macro_rules! define_field_module {
                 if zk {
                     run_aggregation!(
                         ConfigWithFriParamsZk,
-                        |seed| config_with_fri_params_zk(fri_params, security_level, seed),
+                        config_with_fri_params_zk(&base_fri_params, security_level, 0),
+                        |seed| config_with_fri_params_zk(&base_fri_params, security_level, seed),
                         prove_dummy_circuit_zk
                     );
                 } else {
                     run_aggregation!(
                         ConfigWithFriParams,
-                        |_seed| config_with_fri_params(fri_params, security_level, disable_recompose_npo),
+                        config_with_fri_params(
+                            &base_fri_params,
+                            security_level,
+                            disable_recompose_npo,
+                        ),
+                        |_lvl| config_with_fri_params(
+                            &base_fri_params,
+                            security_level,
+                            disable_recompose_npo,
+                        ),
                         prove_dummy_circuit
                     );
                 }
