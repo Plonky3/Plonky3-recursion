@@ -66,6 +66,7 @@ where
         main,
         preprocessed,
         preprocessed_window,
+        periodic_values: &[],
         public_values: &public_values,
         is_first_row: selectors[0],
         is_last_row: selectors[1],

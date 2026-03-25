@@ -302,6 +302,7 @@ mod tests {
             main,
             preprocessed,
             preprocessed_window,
+            periodic_values: &[],
             public_values: &pis,
             is_first_row: sels[0],
             is_last_row: sels[1],

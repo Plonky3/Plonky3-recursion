@@ -4,9 +4,8 @@ use alloc::vec::Vec;
 use hashbrown::HashMap;
 use p3_air::Air;
 use p3_air::symbolic::AirLayout;
-use p3_batch_stark::config::observe_instance_binding;
 use p3_batch_stark::symbolic::get_log_num_quotient_chunks as get_batch_log_num_quotient_chunks;
-use p3_batch_stark::{BatchProof, CommonData};
+use p3_batch_stark::{BatchProof, BatchTranscript, CommonData};
 use p3_challenger::{CanObserve, CanSample, CanSampleBits, FieldChallenger, GrindingChallenger};
 use p3_commit::{BatchOpening, Mmcs, OpenedValues, Pcs, PolynomialSpace};
 use p3_field::{Algebra, BasedVectorSpace, PrimeCharacteristicRing, PrimeField, TwoAdicField};
@@ -160,9 +159,9 @@ where
     }
 
     let pcs = config.pcs();
-    let mut challenger = config.initialise_challenger();
+    let mut transcript = BatchTranscript::<SC>::new(config.initialise_challenger());
 
-    challenger.observe_base_as_algebra_element::<SC::Challenge>(Val::<SC>::from_usize(n_instances));
+    transcript.observe_instance_count(n_instances);
 
     for inst in &opened_values.instances {
         if inst
@@ -224,8 +223,7 @@ where
                     "extended degree smaller than zk adjustment",
                 ))?;
 
-        observe_instance_binding::<SC>(
-            &mut challenger,
+        transcript.observe_instance_binding(
             ext_db,
             base_db,
             A::width(&airs[i]),
@@ -233,46 +231,28 @@ where
         );
     }
 
-    challenger.observe(commitments.main.clone());
-    for pv in public_values {
-        challenger.observe_slice(pv);
-    }
-    for pre_w in &preprocessed_widths {
-        challenger.observe_base_as_algebra_element::<SC::Challenge>(Val::<SC>::from_usize(*pre_w));
-    }
-    if let Some(global) = &common_data.preprocessed {
-        challenger.observe(global.commitment.clone());
-    }
+    transcript.observe_main(&commitments.main, public_values);
+    transcript.observe_preprocessed(&preprocessed_widths, common_data.preprocessed.as_ref());
 
     let is_lookup = commitments.permutation.is_some();
 
     // Fetch lookups and sample their challenges.
     // We use `get_different_perm_challenges` to ensure we only store the newly created challenges, in their order of sampling.
-    let different_challenges =
-        get_different_perm_challenges::<SC, LG>(&mut challenger, all_lookups, lookup_gadget);
+    let different_challenges = transcript
+        .sample_perm_challenges(all_lookups, lookup_gadget)
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
 
-    // Then, observe the permutation tables, if any.
-    if is_lookup {
-        challenger.observe(
-            commitments
-                .permutation
-                .clone()
-                .expect("We checked that the commitment exists"),
-        );
-        for instance_data in global_lookup_data {
-            for ld in instance_data {
-                challenger.observe_algebra_element(ld.expected_cumulated);
-            }
-        }
+    // Then, observe the permutation tables, if any and sample the alpha challenge.
+    let alpha = transcript
+        .observe_perm_and_sample_alpha(commitments.permutation.as_ref(), global_lookup_data);
+
+    transcript.observe_quotient_commitment(&commitments.quotient_chunks);
+    if let Some(random_commit) = &commitments.random {
+        transcript.observe_random_commitment(random_commit);
     }
-
-    let alpha = challenger.sample_algebra_element();
-
-    challenger.observe(commitments.quotient_chunks.clone());
-    if let Some(random_commit) = commitments.random.clone() {
-        challenger.observe(random_commit);
-    }
-    let zeta = challenger.sample_algebra_element();
+    let zeta = transcript.sample_zeta();
 
     let trace_domains: Vec<_> = degree_bits
         .iter()
@@ -474,7 +454,7 @@ where
 
     let pcs_challenges = pcs.generate_challenges(
         config,
-        &mut challenger,
+        &mut transcript.challenger,
         &coms_to_verify,
         opening_proof,
         extra_params,
