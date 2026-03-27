@@ -755,10 +755,10 @@ fn get_verifier_inputs_and_challenges(
         &params.fri_verifier_params,
         common,
         lookup_gadget,
-        Poseidon2Config::BabyBearD4Width16,
+        Poseidon2Config::BABY_BEAR_D4_W16,
         &{
             let mut tp: Vec<Box<dyn TableProver<MyConfig>>> = vec![Box::new(Poseidon2Prover::new(
-                Poseidon2Config::BabyBearD4Width16,
+                Poseidon2Config::BABY_BEAR_D4_W16,
                 ConstraintProfile::Standard,
             ))];
             tp.extend(recompose_table_provers::<_, 4>(1));
@@ -822,7 +822,7 @@ fn get_circuit(n: usize) -> CircuitBuilder<F> {
 fn test_poseidon2_ctl_lookups() {
     let mut builder: CircuitBuilder<Challenge> = CircuitBuilder::new();
     let poseidon2_perm = default_babybear_poseidon2_16();
-    let poseidon2_config = Poseidon2Config::BabyBearD4Width16;
+    let poseidon2_config = Poseidon2Config::BABY_BEAR_D4_W16;
     builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
         generate_poseidon2_trace::<Challenge, BabyBearD4Width16>,
         poseidon2_perm,
@@ -927,7 +927,7 @@ fn test_poseidon2_chained_ctl_lookups() {
 
     let mut builder: CircuitBuilder<Challenge> = CircuitBuilder::new();
     let poseidon2_perm = default_babybear_poseidon2_16();
-    let poseidon2_config = Poseidon2Config::BabyBearD4Width16;
+    let poseidon2_config = Poseidon2Config::BABY_BEAR_D4_W16;
     builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
         generate_poseidon2_trace::<Challenge, BabyBearD4Width16>,
         poseidon2_perm,

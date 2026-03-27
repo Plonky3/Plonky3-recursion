@@ -1665,7 +1665,7 @@ mod tests {
         let dummy_exec: Poseidon2PermExec<Ext4> =
             Arc::new(|_| panic!("should not be called in this test"));
         let plugin = Poseidon2CircuitPlugin::<Ext4>::new(
-            Poseidon2Config::BabyBearD4Width16,
+            Poseidon2Config::BABY_BEAR_D4_W16,
             dummy_exec,
             |_| Ok(None),
         );
@@ -1674,7 +1674,7 @@ mod tests {
         let z = builder.define_const(Ext4::ZERO);
         let (op_id, outputs) = builder
             .add_poseidon2_perm(&Poseidon2PermCall {
-                config: Poseidon2Config::BabyBearD4Width16,
+                config: Poseidon2Config::BABY_BEAR_D4_W16,
                 new_start: true,
                 merkle_path: false,
                 mmcs_bit: None,

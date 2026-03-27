@@ -20,7 +20,7 @@ pub trait ChallengerPermConfig: Send + Sync {
 
 impl ChallengerPermConfig for Poseidon2Config {
     fn extension_degree(&self) -> usize {
-        Self::d(*self)
+        self.d
     }
 
     fn as_poseidon2(&self) -> Option<&Poseidon2Config> {

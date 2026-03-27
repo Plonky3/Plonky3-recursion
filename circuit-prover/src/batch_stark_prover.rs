@@ -148,7 +148,7 @@ impl<SC: StarkGenericConfig> CircuitProverData<SC> {
 /// ```ignore
 /// impl<SC> TableProver<SC> for MyPlugin {
 ///     fn op_type(&self) -> NpoTypeId {
-///         NpoTypeId::Poseidon2Perm(Poseidon2Config::BabyBearD4Width16)
+///         NpoTypeId::Poseidon2Perm(Poseidon2Config::BABY_BEAR_D4_W16)
 ///     }
 ///
 ///     impl_table_prover_batch_instances_from_base!(batch_instance_base);

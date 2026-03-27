@@ -24,7 +24,7 @@ pub use challenger::CircuitChallenger;
 pub use challenger_perm::ChallengerPermConfig;
 pub use generation::{GenerationError, PcsGeneration, generate_batch_challenges};
 pub use p3_circuit::ops;
-pub use p3_circuit::ops::Poseidon2Config;
+pub use p3_circuit::ops::{Poseidon2Config, Poseidon2FieldId};
 pub use pcs::fri::FriVerifierParams;
 pub use public_inputs::{
     BatchStarkVerifierInputsBuilder, CommitmentOpening, FriVerifierInputs, PublicInputBuilder,

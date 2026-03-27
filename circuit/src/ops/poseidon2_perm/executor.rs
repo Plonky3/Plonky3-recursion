@@ -694,8 +694,8 @@ mod tests {
 
     type F = BabyBear;
 
-    const CONFIG_D4_W16: Poseidon2Config = Poseidon2Config::BabyBearD4Width16;
-    const CONFIG_D1_W16: Poseidon2Config = Poseidon2Config::BabyBearD1Width16;
+    const CONFIG_D4_W16: Poseidon2Config = Poseidon2Config::BABY_BEAR_D4_W16;
+    const CONFIG_D1_W16: Poseidon2Config = Poseidon2Config::BABY_BEAR_D1_W16;
 
     fn op_type_d4() -> NpoTypeId {
         NpoTypeId::poseidon2_perm(CONFIG_D4_W16)

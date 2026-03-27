@@ -40,7 +40,7 @@ pub struct Poseidon2PermCall {
 
 impl Default for Poseidon2PermCall {
     fn default() -> Self {
-        let config = Poseidon2Config::BabyBearD4Width16;
+        let config = Poseidon2Config::BABY_BEAR_D4_W16;
         Self {
             config,
             new_start: false,
@@ -78,7 +78,7 @@ pub struct Poseidon2PermCallBase {
 impl Default for Poseidon2PermCallBase {
     fn default() -> Self {
         Self {
-            config: Poseidon2Config::BabyBearD1Width16,
+            config: Poseidon2Config::BABY_BEAR_D1_W16,
             new_start: false,
             inputs: [None; 16],
             out_ctl: [false; 8],
