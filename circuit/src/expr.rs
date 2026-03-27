@@ -103,39 +103,40 @@ impl<F> ExpressionGraph<F> {
         // Scan every node, collecting output nodes grouped by their parent operation.
         for (expr_idx, expr) in self.nodes.iter().enumerate() {
             // Skip non-output nodes.
-            let Expr::NonPrimitiveOutput { call, output_idx } = expr else {
-                continue;
-            };
-            // Validate that the referenced call node is actually a call.
-            let Expr::NonPrimitiveCall { op_id, .. } = self.get_expr(*call) else {
-                return Err(CircuitBuilderError::MissingExprMapping {
-                    expr_id: *call,
-                    context: "NonPrimitiveOutput.call must reference a NonPrimitiveCall"
-                        .to_string(),
-                });
-            };
-            // Record this output under its parent operation.
-            map.entry(*op_id)
-                .or_default()
-                .push((*output_idx, ExprId(expr_idx as u32)));
-        }
-
-        // Sort each operation's outputs by index for deterministic ordering.
-        for outputs in map.values_mut() {
-            outputs.sort_unstable_by_key(|(idx, _)| *idx);
-        }
-
-        // After sorting, a contiguous 0..N range means output_idx[pos] == pos for all pos.
-        //
-        // This single check catches both gaps and duplicates.
-        for (&op_id, outputs) in &map {
-            for (pos, &(output_idx, _)) in outputs.iter().enumerate() {
-                if output_idx != pos as u32 {
-                    return Err(CircuitBuilderError::MalformedNonPrimitiveOutputs {
-                        op_id,
-                        details: format!("expected contiguous output_idx {pos}, got {output_idx}"),
+            if let Expr::NonPrimitiveOutput { call, output_idx } = expr {
+                // Validate that the referenced call node is actually a call.
+                if let Expr::NonPrimitiveCall { op_id, .. } = self.get_expr(*call) {
+                    // Record this output under its parent operation.
+                    map.entry(*op_id)
+                        .or_default()
+                        .push((*output_idx, ExprId(expr_idx as u32)));
+                } else {
+                    return Err(CircuitBuilderError::MissingExprMapping {
+                        expr_id: *call,
+                        context: "NonPrimitiveOutput.call must reference a NonPrimitiveCall"
+                            .to_string(),
                     });
                 }
+            }
+        }
+
+        // Sort and validate in a single pass
+        for (&op_id, outputs) in &mut map {
+            // Sort each operation's outputs by index for deterministic ordering.
+            outputs.sort_unstable_by_key(|&(idx, _)| idx);
+
+            // After sorting, a contiguous 0..N range means output_idx[pos] == pos for all pos.
+            //
+            // This single check catches both gaps and duplicates.
+            if let Some((pos, &(bad_idx, _))) = outputs
+                .iter()
+                .enumerate()
+                .find(|&(pos, &(idx, _))| idx != pos as u32)
+            {
+                return Err(CircuitBuilderError::MalformedNonPrimitiveOutputs {
+                    op_id,
+                    details: format!("expected contiguous output_idx {pos}, got {bad_idx}"),
+                });
             }
         }
 
