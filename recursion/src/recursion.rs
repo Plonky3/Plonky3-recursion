@@ -768,3 +768,253 @@ where
         prep_cache,
     )
 }
+
+/// Build a k-way aggregation verifier circuit: one shared [`CircuitBuilder`] with k independent
+/// verifiers (same AIR type `A` per input), witnesses concatenated in slice order.
+///
+/// For k = 2 with the same `A` on both sides, this matches binary aggregation; use
+/// [`build_and_prove_aggregation_layer`] when the two AIR types `A1` and `A2` differ.
+#[allow(clippy::type_complexity)]
+#[instrument(skip_all, name = "build_aggregation_layer_circuit", fields(arity = inputs.len()))]
+fn build_k_aggregation_layer_circuit<SC, A, B, const D: usize>(
+    inputs: &[RecursionInput<'_, SC, A>],
+    config: &SC,
+    backend: &B,
+) -> Result<
+    (
+        Circuit<SC::Challenge>,
+        Vec<<B as PcsRecursionBackend<SC, A, D>>::VerifierResult>,
+    ),
+    VerificationError,
+>
+where
+    SC: StarkGenericConfig + Send + Sync + Clone + 'static,
+    A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
+    B: PcsRecursionBackend<SC, A, D>,
+    Val<SC>: PrimeField64 + StarkField + BinomiallyExtendable<D>,
+    SC::Challenge: BasedVectorSpace<Val<SC>>
+        + From<Val<SC>>
+        + ExtensionField<Val<SC>>
+        + ExtractBinomialW<Val<SC>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+{
+    if inputs.is_empty() {
+        return Err(proof_shape_err(
+            &"k-ary aggregation requires a non-empty inputs slice",
+        ));
+    }
+
+    let mut circuit_builder = CircuitBuilder::new();
+    backend.prepare_circuit(config, &mut circuit_builder)?;
+
+    let mut verifier_results = Vec::with_capacity(inputs.len());
+    for prev in inputs {
+        verifier_results.push(backend.build_verifier_circuit(
+            prev,
+            config,
+            &mut circuit_builder,
+        )?);
+    }
+
+    let verification_circuit = circuit_builder
+        .build()
+        .map_err(VerificationError::CircuitBuilder)?;
+
+    Ok((verification_circuit, verifier_results))
+}
+
+fn run_k_aggregation_verification_circuit<SC, A, B, const D: usize>(
+    inputs: &[RecursionInput<'_, SC, A>],
+    verifier_results: &[<B as PcsRecursionBackend<SC, A, D>>::VerifierResult],
+    verification_circuit: &Circuit<SC::Challenge>,
+    config: &SC,
+    backend: &B,
+) -> Result<Traces<SC::Challenge>, VerificationError>
+where
+    SC: StarkGenericConfig,
+    A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
+    B: PcsRecursionBackend<SC, A, D>,
+    Val<SC>: PrimeField64,
+{
+    if inputs.len() != verifier_results.len() {
+        return Err(proof_shape_err(
+            &"k-ary aggregation: inputs and verifier_results length mismatch",
+        ));
+    }
+
+    let mut public_inputs = Vec::new();
+    let mut private_inputs = Vec::new();
+    for (prev, vr) in inputs.iter().zip(verifier_results.iter()) {
+        public_inputs.extend(vr.pack_public_inputs(prev)?);
+        private_inputs.extend(vr.pack_private_inputs(prev)?);
+    }
+
+    let mut runner = verification_circuit.runner();
+    runner
+        .set_public_inputs(&public_inputs)
+        .map_err(VerificationError::Circuit)?;
+    runner
+        .set_private_inputs(&private_inputs)
+        .map_err(VerificationError::Circuit)?;
+
+    for (prev, vr) in inputs.iter().zip(verifier_results.iter()) {
+        backend
+            .set_private_data(config, &mut runner, vr.op_ids(), prev)
+            .map_err(|e| proof_shape_err(&e.to_string()))?;
+    }
+
+    runner.run().map_err(VerificationError::Circuit)
+}
+
+/// Prove a k-way aggregation layer: k verifiers in one circuit (same AIR type `A`), run once,
+/// and produce one batch STARK proof.
+///
+/// Public and private packed inputs are concatenated in slice order (same convention as binary
+/// aggregation, left then right, generalized to k slots).
+/// [`AggregationPrepCache`] behavior matches [`prove_aggregation_layer`].
+#[instrument(skip_all, name = "prove_aggregation_layer", fields(arity = inputs.len()))]
+#[allow(clippy::too_many_arguments)]
+pub fn prove_k_aggregation_layer<SC, A, B, const D: usize>(
+    inputs: &[RecursionInput<'_, SC, A>],
+    verifier_results: &[<B as PcsRecursionBackend<SC, A, D>>::VerifierResult],
+    verification_circuit: &Circuit<SC::Challenge>,
+    config: &SC,
+    backend: &B,
+    params: &ProveNextLayerParams,
+    mut prep_cache: Option<&mut Option<AggregationPrepCache<SC>>>,
+) -> Result<RecursionOutput<SC>, VerificationError>
+where
+    SC: StarkGenericConfig + Send + Sync + Clone + 'static,
+    A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
+    B: PcsRecursionBackend<SC, A, D>,
+    Val<SC>: PrimeField64 + StarkField + BinomiallyExtendable<D>,
+    SC::Challenge: BasedVectorSpace<Val<SC>>
+        + From<Val<SC>>
+        + ExtensionField<Val<SC>>
+        + ExtractBinomialW<Val<SC>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+{
+    if inputs.is_empty() {
+        return Err(proof_shape_err(
+            &"k-ary aggregation requires a non-empty inputs slice",
+        ));
+    }
+    if inputs.len() != verifier_results.len() {
+        return Err(proof_shape_err(
+            &"k-ary aggregation: inputs and verifier_results length mismatch",
+        ));
+    }
+
+    let current_fp = aggregation_circuit_fingerprint(verification_circuit);
+    if let Some(ref mut cache_slot) = prep_cache
+        && let Some(cached) = cache_slot.as_ref()
+        && cached.circuit_fingerprint == current_fp
+    {
+        let traces = run_k_aggregation_verification_circuit::<SC, A, B, D>(
+            inputs,
+            verifier_results,
+            verification_circuit,
+            config,
+            backend,
+        )?;
+        let proof = cached
+            .prover
+            .prove_all_tables(&traces, &cached.circuit_prover_data)
+            .map_err(|e| proof_shape_err(&e.to_string()))?;
+        return Ok(RecursionOutput(
+            proof,
+            Rc::clone(&cached.circuit_prover_data),
+        ));
+    }
+
+    let (airs_degrees, primitive_columns, non_primitive_columns) = {
+        let preprocessors = backend.non_primitive_preprocessors();
+        let air_builders = backend.non_primitive_air_builders();
+        get_airs_and_degrees_with_prep::<SC, SC::Challenge, D>(
+            verification_circuit,
+            &params.table_packing,
+            &preprocessors,
+            &air_builders,
+            params.constraint_profile,
+        )
+        .map_err(VerificationError::Circuit)?
+    };
+
+    let (mut airs, degrees): (Vec<_>, Vec<_>) = airs_degrees.into_iter().unzip();
+    let ext_degrees: Vec<usize> = degrees.iter().map(|&d| d + config.is_zk()).collect();
+
+    let traces = run_k_aggregation_verification_circuit::<SC, A, B, D>(
+        inputs,
+        verifier_results,
+        verification_circuit,
+        config,
+        backend,
+    )?;
+
+    let circuit_prover_data = {
+        let prover_data = ProverData::from_airs_and_degrees(config, &mut airs, &ext_degrees);
+        CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns)
+    };
+
+    let mut prover = BatchStarkProver::new(config.clone())
+        .with_table_packing(params.table_packing.clone())
+        .with_alu_variant(match params.constraint_profile {
+            ConstraintProfile::Standard => AirVariant::Baseline,
+            ConstraintProfile::RecursionOptimized => AirVariant::Optimized,
+        });
+    for p in backend.non_primitive_provers(D) {
+        prover.register_table_prover(p);
+    }
+    let proof = prover
+        .prove_all_tables(&traces, &circuit_prover_data)
+        .map_err(|e| proof_shape_err(&e.to_string()))?;
+
+    if let Some(ref mut cache_slot) = prep_cache {
+        let circuit_prover_data_rc = Rc::new(circuit_prover_data);
+        **cache_slot = Some(AggregationPrepCache {
+            circuit_fingerprint: current_fp,
+            circuit_prover_data: Rc::clone(&circuit_prover_data_rc),
+            prover,
+        });
+        Ok(RecursionOutput(proof, circuit_prover_data_rc))
+    } else {
+        Ok(RecursionOutput(proof, Rc::new(circuit_prover_data)))
+    }
+}
+
+/// Convenience: [`build_k_aggregation_layer_circuit`] then [`prove_k_aggregation_layer`].
+#[instrument(skip_all)]
+pub fn build_and_prove_k_aggregation_layer<SC, A, B, const D: usize>(
+    inputs: &[RecursionInput<'_, SC, A>],
+    config: &SC,
+    backend: &B,
+    params: &ProveNextLayerParams,
+    prep_cache: Option<&mut Option<AggregationPrepCache<SC>>>,
+) -> Result<RecursionOutput<SC>, VerificationError>
+where
+    SC: StarkGenericConfig + Send + Sync + Clone + 'static,
+    A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
+    B: PcsRecursionBackend<SC, A, D>,
+    Val<SC>: PrimeField64 + StarkField + BinomiallyExtendable<D>,
+    SC::Challenge: BasedVectorSpace<Val<SC>>
+        + From<Val<SC>>
+        + ExtensionField<Val<SC>>
+        + ExtractBinomialW<Val<SC>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+{
+    let (verification_circuit, verifier_results) =
+        build_k_aggregation_layer_circuit::<SC, A, B, D>(inputs, config, backend)?;
+
+    prove_k_aggregation_layer::<SC, A, B, D>(
+        inputs,
+        &verifier_results,
+        &verification_circuit,
+        config,
+        backend,
+        params,
+        prep_cache,
+    )
+}

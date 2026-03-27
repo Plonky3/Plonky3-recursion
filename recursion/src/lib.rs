@@ -34,8 +34,9 @@ pub use public_inputs::{
 pub use recursion::{
     AggregationCircuitFingerprint, AggregationPrepCache, BatchOnly, NextLayerPrepCache,
     PcsRecursionBackend, ProveNextLayerParams, RecursionInput, RecursionOutput,
-    VerifierCircuitResult, build_and_prove_aggregation_layer, build_and_prove_next_layer,
-    build_next_layer_circuit, build_next_layer_prep, prove_aggregation_layer, prove_next_layer,
+    VerifierCircuitResult, build_and_prove_aggregation_layer, build_and_prove_k_aggregation_layer,
+    build_and_prove_next_layer, build_next_layer_circuit, build_next_layer_prep,
+    prove_aggregation_layer, prove_k_aggregation_layer, prove_next_layer,
 };
 pub use traits::{
     Recursive, RecursiveAir, RecursiveChallenger, RecursiveExtensionMmcs, RecursiveMmcs,
