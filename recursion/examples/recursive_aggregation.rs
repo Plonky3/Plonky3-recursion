@@ -82,7 +82,7 @@ struct Args {
 
     #[arg(
         long,
-        default_value_t = 20,
+        default_value_t = 19,
         help = "PoW grinding bits during FRI query phase"
     )]
     pub query_pow_bits: usize,
