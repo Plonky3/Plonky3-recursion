@@ -3,6 +3,7 @@
 use alloc::boxed::Box;
 use alloc::rc::Rc;
 use alloc::string::ToString;
+use alloc::vec;
 use alloc::vec::Vec;
 
 use p3_air::{SymbolicExpression, SymbolicExpressionExt};
@@ -104,7 +105,7 @@ where
         RecursionInput::BatchStark {
             proof: &self.0,
             common_data: self.1.common_data(),
-            table_public_inputs: alloc::vec![alloc::vec![]; num_tables],
+            table_public_inputs: vec![vec![]; num_tables],
         }
     }
 }

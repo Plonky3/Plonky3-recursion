@@ -1555,15 +1555,13 @@ where
                     parent_index_bits.push(zero);
                 }
 
-                let evals_for_mmcs = vec![evals.clone()];
-
                 let commit_phase_ops = verify_batch_circuit_from_extension_opened::<F, EF>(
                     builder,
                     perm_config,
                     &commitment_cap,
                     &dimensions,
                     &parent_index_bits,
-                    &evals_for_mmcs,
+                    &[evals.clone()],
                 )
                 .map_err(|e| {
                     VerificationError::InvalidProofShape(format!(
