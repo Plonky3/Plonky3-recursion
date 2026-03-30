@@ -403,7 +403,7 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AluAir<F, D> {
 
     /// Write the 4 operands `[a, b, c, out]` of operation `op_idx` into `dst`
     /// starting at `cursor`, advancing it by `4 * D`.
-    #[inline]
+    #[inline(always)]
     fn write_operands<ExtF: BasedVectorSpace<F>>(
         dst: &mut [F],
         cursor: &mut usize,
@@ -529,12 +529,7 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AluAir<F, D> {
                         lane_prep.out_idx = src_last_prep.out_idx;
                         lane_prep.mult_out = src_last_prep.mult_out;
 
-                        let mult_b0 = lane_prep.mult_b;
-                        let mut mult_b_scaled = F::ZERO;
-                        for _ in 0..k {
-                            mult_b_scaled += mult_b0;
-                        }
-                        lane_prep.mult_b = mult_b_scaled;
+                        lane_prep.mult_b = lane_prep.mult_b * F::from_usize(k);
 
                         let extra_base = row * row_width + self.lanes * plw;
                         values[extra_base + EXTRA_PREP_SEL_PACKED] = F::ONE;
