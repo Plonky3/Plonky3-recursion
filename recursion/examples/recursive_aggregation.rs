@@ -173,7 +173,6 @@ fn main() {
             args.num_recursive_layers,
             &fri_params,
             &table_packing,
-            args.recompose_lanes,
             args.security_level,
             args.zk,
             args.disable_recompose_npo,
@@ -182,7 +181,6 @@ fn main() {
             args.num_recursive_layers,
             &fri_params,
             &table_packing,
-            args.recompose_lanes,
             args.security_level,
             args.zk,
             args.disable_recompose_npo,
@@ -191,7 +189,6 @@ fn main() {
             args.num_recursive_layers,
             &fri_params,
             &table_packing,
-            args.recompose_lanes,
             args.security_level,
             args.zk,
             args.disable_recompose_npo,
@@ -328,7 +325,6 @@ macro_rules! define_field_module {
                 num_recursive_layers: usize,
                 fri_params: &FriParams,
                 table_packing: &TablePacking,
-                recompose_lanes: usize,
                 security_level: usize,
                 zk: bool,
                 disable_recompose_npo: bool,
@@ -369,8 +365,6 @@ macro_rules! define_field_module {
                             let agg_params = ProveNextLayerParams {
                                 table_packing: if level == 1 {
                                     TablePacking::new(2, 2)
-                                        .with_horner_pack_k(table_packing.horner_packed_steps())
-                                        .with_npo_lanes(NpoTypeId::recompose(), recompose_lanes)
                                 } else {
                                     table_packing.clone()
                                 }
