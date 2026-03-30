@@ -197,7 +197,7 @@ pub struct Poseidon2PrepOutputLimb<T> {
 
 /// Full preprocessed row for the Poseidon2 circuit table.
 ///
-/// One row per Poseidon2 permutation invocation.
+/// Two rows per logical Poseidon2 permutation (phase 0 and phase 1).
 ///
 /// The preprocessed data is committed once at setup and reused across
 /// all proofs.
@@ -207,10 +207,13 @@ pub struct Poseidon2PrepOutputLimb<T> {
 /// ```text
 ///     [ input_limbs (4 × 4 fields) | output_limbs (2 × 2 fields)
 ///       | mmcs_index_sum_ctl_idx | mmcs_merkle_flag
-///       | new_start | merkle_path ]
+///       | new_start | merkle_path | perm_second_phase
+///       | next_row_normal_chain_sel (4) | next_row_merkle_chain_sel (2)
+///       | mmcs_trans_accum_sel | mmcs_witness_send_sel ]
 /// ```
 ///
-/// Total width: 24 columns.
+/// `next_row_*` and `mmcs_trans_accum_sel` precompute transition gates so constraints
+/// stay low degree. `perm_second_phase` marks row B of the two-row permutation.
 ///
 /// # Padding
 ///
@@ -268,6 +271,27 @@ pub struct Poseidon2PreprocessedRow<T> {
     ///
     /// Clear for standard sponge rows.
     pub merkle_path: T,
+
+    /// Second row of a two-row Poseidon2 permutation (continuation row).
+    ///
+    /// When set, input CTL and sponge/Merkle chaining from the previous row's
+    /// permutation output are disabled; output CTL reads the final digest.
+    pub perm_second_phase: T,
+
+    /// Sponge chain selectors of the **next** trace row's phase-0 row, stored on row B.
+    ///
+    /// Used for B → next-A transitions; zero on row A and padding.
+    pub next_row_normal_chain_sel: [T; POSEIDON2_LIMBS],
+
+    /// Merkle chain selectors (first two limbs) for that same next phase-0 row.
+    pub next_row_merkle_chain_sel: [T; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
+
+    /// When set, the MMCS accumulator may update on transition to the next row
+    /// (`!next.new_start && next.merkle_path && !next.perm_second_phase`), precomputed on row B.
+    pub mmcs_trans_accum_sel: T,
+
+    /// Preprocessed multiplicity factor for the MMCS accumulator witness send (row B only).
+    pub mmcs_witness_send_sel: T,
 }
 
 impl<T: Copy> Poseidon2PreprocessedRow<T> {

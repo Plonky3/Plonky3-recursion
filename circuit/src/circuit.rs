@@ -236,7 +236,7 @@ impl<F: Field> Circuit<F> {
             self.private_input_rows.iter().map(|w| w.0).collect();
 
         // Process each primitive operation.
-        for op in &self.ops {
+        for (i, op) in self.ops.iter().enumerate() {
             match op {
                 // Const: creates the output witness value. Store D-scaled out index.
                 // No ext_reads increment: Const is a creator, not a reader.
@@ -390,7 +390,24 @@ impl<F: Field> Circuit<F> {
                     outputs,
                     ..
                 } => {
-                    executor.preprocess(inputs, outputs, &mut preprocessed)?;
+                    let next_same_type = self.ops[i + 1..].iter().find_map(|later| {
+                        let Op::NonPrimitiveOpWithExecutor {
+                            executor: e2,
+                            inputs: ni,
+                            outputs: no,
+                            ..
+                        } = later
+                        else {
+                            return None;
+                        };
+                        if e2.op_type() != executor.op_type() {
+                            return None;
+                        }
+                        use crate::ops::poseidon2_perm::executor::Poseidon2PermExecutor;
+                        let p2 = e2.as_any().downcast_ref::<Poseidon2PermExecutor>()?;
+                        Some((p2.new_start, p2.merkle_path, ni.as_slice(), no.as_slice()))
+                    });
+                    executor.preprocess(inputs, outputs, &mut preprocessed, next_same_type)?;
 
                     // Track duplicate non-primitive outputs: first occurrence is a creator,
                     // subsequent occurrences are treated as readers on WitnessChecks.

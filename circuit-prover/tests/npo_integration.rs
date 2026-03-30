@@ -145,6 +145,7 @@ where
         _inputs: &[Vec<WitnessId>],
         _outputs: &[Vec<WitnessId>],
         _preprocessed: &mut dyn p3_circuit::PreprocessedWriter<F>,
+        _preprocessed_width: Option<(bool, bool, &[Vec<WitnessId>], &[Vec<WitnessId>])>,
     ) -> Result<(), p3_circuit::CircuitError> {
         Ok(())
     }

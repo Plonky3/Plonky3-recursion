@@ -162,6 +162,7 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for RecomposeExec
         _inputs: &[Vec<WitnessId>],
         outputs: &[Vec<WitnessId>],
         preprocessed: &mut dyn PreprocessedWriter<F>,
+        _next_same_type: Option<(bool, bool, &[Vec<WitnessId>], &[Vec<WitnessId>])>,
     ) -> Result<(), CircuitError> {
         let output_wid = outputs[0][0];
 

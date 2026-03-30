@@ -211,6 +211,7 @@ pub type Poseidon2CircuitAirBabyBearD4Width16 = Poseidon2CircuitAir<
     { BabyBearD4Width16::SBOX_REGISTERS },
     { BabyBearD4Width16::HALF_FULL_ROUNDS },
     { BabyBearD4Width16::PARTIAL_ROUNDS },
+    { (BabyBearD4Width16::PARTIAL_ROUNDS + 1) / 2 },
 >;
 
 /// BabyBear Poseidon2 circuit AIR with quartic extension and 24-element state.
@@ -226,6 +227,7 @@ pub type Poseidon2CircuitAirBabyBearD4Width24 = Poseidon2CircuitAir<
     { BabyBearD4Width24::SBOX_REGISTERS },
     { BabyBearD4Width24::HALF_FULL_ROUNDS },
     { BabyBearD4Width24::PARTIAL_ROUNDS },
+    { (BabyBearD4Width24::PARTIAL_ROUNDS + 1) / 2 },
 >;
 
 /// KoalaBear Poseidon2 circuit AIR with quartic extension and 16-element state.
@@ -241,6 +243,7 @@ pub type Poseidon2CircuitAirKoalaBearD4Width16 = Poseidon2CircuitAir<
     { KoalaBearD4Width16::SBOX_REGISTERS },
     { KoalaBearD4Width16::HALF_FULL_ROUNDS },
     { KoalaBearD4Width16::PARTIAL_ROUNDS },
+    { (KoalaBearD4Width16::PARTIAL_ROUNDS + 1) / 2 },
 >;
 
 /// KoalaBear Poseidon2 circuit AIR with quartic extension and 24-element state.
@@ -256,6 +259,7 @@ pub type Poseidon2CircuitAirKoalaBearD4Width24 = Poseidon2CircuitAir<
     { KoalaBearD4Width24::SBOX_REGISTERS },
     { KoalaBearD4Width24::HALF_FULL_ROUNDS },
     { KoalaBearD4Width24::PARTIAL_ROUNDS },
+    { (KoalaBearD4Width24::PARTIAL_ROUNDS + 1) / 2 },
 >;
 
 /// Goldilocks Poseidon2 circuit AIR with quadratic extension and 8-element state.
@@ -271,6 +275,7 @@ pub type Poseidon2CircuitAirGoldilocksD2Width8 = Poseidon2CircuitAir<
     { GoldilocksD2Width8::SBOX_REGISTERS },
     { GoldilocksD2Width8::HALF_FULL_ROUNDS },
     { GoldilocksD2Width8::PARTIAL_ROUNDS },
+    { (GoldilocksD2Width8::PARTIAL_ROUNDS + 1) / 2 },
 >;
 
 /// Generate deterministic round constants for the Goldilocks width-8

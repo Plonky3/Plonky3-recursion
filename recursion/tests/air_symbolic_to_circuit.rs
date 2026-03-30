@@ -190,7 +190,7 @@ fn poseidon2_perm_air_symbolic_to_circuit() -> Result<(), CircuitError> {
 
     let constants = RoundConstants::new(rng.random(), rng.random(), rng.random());
     let preprocessed_width = Poseidon2CircuitAirBabyBearD4Width16::preprocessed_width();
-    let preprocessed_values: Vec<F> = (0..preprocessed_width).map(|_| rng.random()).collect();
+    let preprocessed_values: Vec<F> = (0..preprocessed_width * 2).map(|_| rng.random()).collect();
     let air =
         Poseidon2CircuitAirBabyBearD4Width16::new_with_preprocessed(constants, preprocessed_values);
 

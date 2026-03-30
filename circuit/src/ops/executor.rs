@@ -105,11 +105,16 @@ pub trait NonPrimitiveExecutor<F: Field>: Debug {
     /// consistently when reading from the witness table. Duplicate-output detection
     /// (which outputs were already defined by an earlier op) is handled generically
     /// by `generate_preprocessed_columns` after this method returns.
+    ///
+    /// `next_same_type` is `Some((next_new_start, next_merkle_path, next_inputs, next_outputs))`
+    /// for the next Poseidon2 op with the same [`NpoTypeId`] in execution order (skipping
+    /// unrelated ops). Used to populate row-B transition columns; [`None`] at end of chain.
     fn preprocess(
         &self,
         _inputs: &[Vec<WitnessId>],
         _outputs: &[Vec<WitnessId>],
         _preprocessed: &mut dyn PreprocessedWriter<F>,
+        _next_same_type: Option<(bool, bool, &[Vec<WitnessId>], &[Vec<WitnessId>])>,
     ) -> Result<(), CircuitError> {
         Ok(())
     }

@@ -608,6 +608,15 @@ where
 /// [`get_airs_and_degrees_with_prep`]. If the fingerprint changes (different proof structure,
 /// etc.), the cache is ignored automatically.
 ///
+/// **Why the first prove of each “layer” can look much slower:** the cold path runs symbolic
+/// `get_airs_and_degrees_with_prep`, builds `ProverData`, and constructs a fresh
+/// `BatchStarkProver`. Later pairs with a matching fingerprint only run the witness runner and
+/// `prove_all_tables`. Moving to a new aggregation level often changes the verifier `Circuit`
+/// (e.g. different child proof shapes or table packing), so the fingerprint no longer matches and
+/// the expensive setup runs again. Compared to an older single-row Poseidon2 layout, the two-row
+/// table also increases trace height and constraint work, so that cold path costs more in
+/// absolute time even when caching behavior is unchanged.
+///
 /// The two inputs may be different `RecursionInput` variants (e.g. one `UniStark` left
 /// and one `BatchStark` right) or identical ones.
 #[instrument(skip_all)]

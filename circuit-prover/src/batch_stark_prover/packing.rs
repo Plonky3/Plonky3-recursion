@@ -199,8 +199,21 @@ impl TraceLengths {
             "Primitive trace lengths"
         );
         for (op, num_ops, lanes) in &self.non_primitive {
-            let air_rows = num_ops.div_ceil(*lanes);
-            tracing::info!(?op, air_rows, lanes, "Non-primitive trace length");
+            if op.as_str().starts_with("poseidon2_perm/") {
+                // `NonPrimitiveTrace::rows()` counts permutation *calls*; the circuit AIR uses two
+                // main-trace rows per call (phase 0 + phase 1).
+                let main_trace_rows_natural = num_ops.saturating_mul(2);
+                tracing::info!(
+                    ?op,
+                    perm_ops = num_ops,
+                    main_trace_rows_natural,
+                    lanes,
+                    "Non-primitive trace length"
+                );
+            } else {
+                let air_rows = num_ops.div_ceil(*lanes);
+                tracing::info!(?op, air_rows, lanes, "Non-primitive trace length");
+            }
         }
     }
 }

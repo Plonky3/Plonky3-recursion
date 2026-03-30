@@ -33,6 +33,11 @@ pub(crate) struct Poseidon2PermExecutor {
 }
 
 impl Poseidon2PermExecutor {
+    /// Must match `p3_poseidon2_circuit_air::columns::POSEIDON2_LIMBS`.
+    const PREPROCESSED_INPUT_LIMBS: usize = 4;
+    /// Must match `p3_poseidon2_circuit_air::columns::POSEIDON2_PUBLIC_OUTPUT_LIMBS`.
+    const PREPROCESSED_PUBLIC_OUTPUT_LIMBS: usize = 2;
+
     pub const fn new(
         op_type: NpoTypeId,
         config: Poseidon2Config,
@@ -499,103 +504,248 @@ impl Poseidon2PermExecutor {
         Ok(())
     }
 
-    /// Emit preprocessed columns for input limbs.
-    ///
-    /// For each limb, registers:
-    /// - A witness read index (or zero if the limb is chain-inherited).
-    /// - A CTL-enabled flag.
-    /// - A normal-chain selector (1 when the limb inherits from the previous normal output).
-    /// - A Merkle-chain selector (1 when the limb inherits from the previous Merkle output).
-    fn preprocess_inputs<F: Field>(
+    /// Updates `ext_reads` for CTL input witnesses without appending to the non-primitive
+    /// preprocessed vector (indices are already encoded inside the two-row chunk).
+    fn count_input_witness_reads_two_row<F: Field>(
         &self,
         inputs: &[Vec<WitnessId>],
+        width_ext: usize,
         preprocessed: &mut dyn PreprocessedWriter<F>,
-    ) -> Result<(), CircuitError> {
-        let width_ext = self.config.width_ext();
-        for (limb_idx, inp) in inputs[0..width_ext].iter().enumerate() {
-            if inp.is_empty() {
-                preprocessed.register_non_primitive_preprocessed_no_read(
-                    &self.op_type,
-                    &[F::ZERO, F::ZERO],
-                );
-            } else if self.merkle_path {
-                preprocessed.register_non_primitive_preprocessed_no_read(
-                    &self.op_type,
-                    &[preprocessed.witness_index_as_field(inp[0])],
-                );
-                preprocessed.register_non_primitive_preprocessed_no_read(&self.op_type, &[F::ONE]);
-            } else {
-                preprocessed.register_non_primitive_witness_reads(&self.op_type, inp)?;
-                preprocessed.register_non_primitive_preprocessed_no_read(&self.op_type, &[F::ONE]);
+    ) {
+        for inp in inputs.iter().take(width_ext) {
+            if inp.is_empty() || self.merkle_path {
+                continue;
             }
-            let normal_chain_sel =
-                F::from_bool(!self.new_start && !self.merkle_path && inputs[limb_idx].is_empty());
-
-            preprocessed
-                .register_non_primitive_preprocessed_no_read(&self.op_type, &[normal_chain_sel]);
-
-            let merkle_chain_sel =
-                F::from_bool(!self.new_start && self.merkle_path && inputs[limb_idx].is_empty());
-            preprocessed
-                .register_non_primitive_preprocessed_no_read(&self.op_type, &[merkle_chain_sel]);
+            preprocessed.increment_ext_reads(inp);
         }
-        Ok(())
     }
 
-    /// Emit preprocessed columns for rate-portion output limbs.
-    ///
-    /// Each exposed output gets a witness output index and a CTL-enabled flag.
-    fn preprocess_outputs<F: Field>(
+    fn d1_limb_ctl(inputs: &[Vec<WitnessId>], limb: usize) -> bool {
+        for d in 0..4 {
+            let idx = limb * 4 + d;
+            if inputs.get(idx).is_some_and(|s| !s.is_empty()) {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn d1_limb_first_wid(inputs: &[Vec<WitnessId>], limb: usize) -> u32 {
+        for d in 0..4 {
+            let idx = limb * 4 + d;
+            if let Some(slot) = inputs.get(idx)
+                && let Some(w) = slot.first()
+            {
+                return w.0;
+            }
+        }
+        0
+    }
+
+    fn d1_output_limb(outputs: &[Vec<WitnessId>], limb: usize) -> (bool, u32) {
+        for d in 0..4 {
+            let idx = limb * 4 + d;
+            if let Some(slot) = outputs.get(idx)
+                && let Some(w) = slot.first()
+            {
+                return (true, w.0);
+            }
+        }
+        (false, 0)
+    }
+
+    /// Two-row preprocessed trace (phase 0 + phase 1) for D=1 (16 base inputs, MMCS unused).
+    fn preprocess_two_row_d1<F: Field>(
         &self,
+        inputs: &[Vec<WitnessId>],
         outputs: &[Vec<WitnessId>],
+        next_same_type: Option<(bool, bool, &[Vec<WitnessId>], &[Vec<WitnessId>])>,
         preprocessed: &mut dyn PreprocessedWriter<F>,
     ) -> Result<(), CircuitError> {
-        let rate_ext = self.config.rate_ext();
-        for out in outputs.iter().take(rate_ext) {
-            if out.is_empty() {
-                preprocessed.register_non_primitive_preprocessed_no_read(
-                    &self.op_type,
-                    &[F::ZERO, F::ZERO],
-                );
-            } else {
-                preprocessed.register_non_primitive_output_index(&self.op_type, out);
-                preprocessed.register_non_primitive_preprocessed_no_read(&self.op_type, &[F::ONE]);
+        self.count_input_witness_reads_two_row(inputs, 16, preprocessed);
+
+        let mut in_ctl = [false; Self::PREPROCESSED_INPUT_LIMBS];
+        let mut input_indices = [0u32; Self::PREPROCESSED_INPUT_LIMBS];
+        for limb in 0..Self::PREPROCESSED_INPUT_LIMBS {
+            in_ctl[limb] = Self::d1_limb_ctl(inputs, limb);
+            if in_ctl[limb] {
+                input_indices[limb] = Self::d1_limb_first_wid(inputs, limb);
             }
         }
-        Ok(())
+        let mut out_ctl = [false; Self::PREPROCESSED_PUBLIC_OUTPUT_LIMBS];
+        let mut output_indices = [0u32; Self::PREPROCESSED_PUBLIC_OUTPUT_LIMBS];
+        for limb in 0..Self::PREPROCESSED_PUBLIC_OUTPUT_LIMBS {
+            let (c, w) = Self::d1_output_limb(outputs, limb);
+            out_ctl[limb] = c;
+            if c {
+                output_indices[limb] = w;
+            }
+        }
+
+        let mmcs_idx_f = F::ZERO;
+        let mmcs_ctl = false;
+
+        self.append_poseidon_preprocessed_pair(
+            preprocessed,
+            &in_ctl,
+            &input_indices,
+            &out_ctl,
+            &output_indices,
+            mmcs_idx_f,
+            mmcs_ctl,
+            next_same_type,
+        )
     }
 
-    /// Emit preprocessed columns for control flags.
-    ///
-    /// Registers the MMCS index accumulator witness index, the Merkle CTL flag,
-    /// and the `new_start` / `merkle_path` boolean selectors.
-    fn preprocess_flags<F: Field>(
+    /// Two-row preprocessed trace for extension-field configs with `width_ext == 4` and rate 2.
+    fn preprocess_two_row_ext<F: Field>(
         &self,
         inputs: &[Vec<WitnessId>],
+        outputs: &[Vec<WitnessId>],
+        next_same_type: Option<(bool, bool, &[Vec<WitnessId>], &[Vec<WitnessId>])>,
         preprocessed: &mut dyn PreprocessedWriter<F>,
     ) -> Result<(), CircuitError> {
         let width_ext = self.config.width_ext();
-        if inputs[width_ext].is_empty() {
-            preprocessed.register_non_primitive_preprocessed_no_read(&self.op_type, &[F::ZERO]);
-        } else {
-            preprocessed.register_non_primitive_preprocessed_no_read(
-                &self.op_type,
-                &[preprocessed.witness_index_as_field(inputs[width_ext][0])],
-            );
+        if width_ext != Self::PREPROCESSED_INPUT_LIMBS {
+            return Err(CircuitError::NonPrimitiveOpLayoutMismatch {
+                op: self.op_type.clone(),
+                expected: format!(
+                    "symbolic two-row preprocess supports width_ext={}",
+                    Self::PREPROCESSED_INPUT_LIMBS
+                ),
+                got: width_ext,
+            });
+        }
+        self.validate_ext_inputs(inputs)?;
+        self.validate_ext_outputs(outputs)?;
+        self.count_input_witness_reads_two_row(inputs, width_ext, preprocessed);
+
+        let mut in_ctl = [false; Self::PREPROCESSED_INPUT_LIMBS];
+        let mut input_indices = [0u32; Self::PREPROCESSED_INPUT_LIMBS];
+        for (i, inp) in inputs[..width_ext].iter().enumerate() {
+            if let Some(&wid) = inp.first() {
+                in_ctl[i] = true;
+                input_indices[i] = wid.0;
+            }
+        }
+        let mut out_ctl = [false; Self::PREPROCESSED_PUBLIC_OUTPUT_LIMBS];
+        let mut output_indices = [0u32; Self::PREPROCESSED_PUBLIC_OUTPUT_LIMBS];
+        for i in 0..Self::PREPROCESSED_PUBLIC_OUTPUT_LIMBS {
+            if let Some(out_slot) = outputs.get(i)
+                && let Some(&wid) = out_slot.first()
+            {
+                out_ctl[i] = true;
+                output_indices[i] = wid.0;
+            }
         }
 
-        let mmcs_ctl_enabled = !inputs[width_ext].is_empty();
-        let mmcs_merkle_flag = F::from_bool(mmcs_ctl_enabled && self.merkle_path);
-        preprocessed
-            .register_non_primitive_preprocessed_no_read(&self.op_type, &[mmcs_merkle_flag]);
+        let mmcs_ctl = inputs[width_ext].len() == 1;
+        let mmcs_idx_f = if mmcs_ctl {
+            preprocessed.witness_index_as_field(inputs[width_ext][0])
+        } else {
+            F::ZERO
+        };
 
-        let new_start_val = F::from_bool(self.new_start);
-        let merkle_path_val = F::from_bool(self.merkle_path);
-        preprocessed.register_non_primitive_preprocessed_no_read(
-            &self.op_type,
-            &[new_start_val, merkle_path_val],
-        );
+        self.append_poseidon_preprocessed_pair(
+            preprocessed,
+            &in_ctl,
+            &input_indices,
+            &out_ctl,
+            &output_indices,
+            mmcs_idx_f,
+            mmcs_ctl,
+            next_same_type,
+        )
+    }
 
+    /// Flatten two [`Poseidon2PreprocessedRow`](p3_poseidon2_circuit_air) equivalents in field order.
+    fn append_poseidon_preprocessed_pair<F: Field>(
+        &self,
+        preprocessed: &mut dyn PreprocessedWriter<F>,
+        in_ctl: &[bool; Self::PREPROCESSED_INPUT_LIMBS],
+        input_indices: &[u32; Self::PREPROCESSED_INPUT_LIMBS],
+        out_ctl: &[bool; Self::PREPROCESSED_PUBLIC_OUTPUT_LIMBS],
+        output_indices: &[u32; Self::PREPROCESSED_PUBLIC_OUTPUT_LIMBS],
+        mmcs_idx_f: F,
+        mmcs_ctl: bool,
+        next_same_type: Option<(bool, bool, &[Vec<WitnessId>], &[Vec<WitnessId>])>,
+    ) -> Result<(), CircuitError> {
+        let mut chunk = Vec::with_capacity(66);
+
+        for i in 0..Self::PREPROCESSED_INPUT_LIMBS {
+            let ctl = in_ctl[i];
+            let idx = if ctl {
+                preprocessed.witness_index_as_field(WitnessId(input_indices[i]))
+            } else {
+                F::ZERO
+            };
+            chunk.push(idx);
+            chunk.push(F::from_bool(ctl));
+            chunk.push(F::from_bool(!self.new_start && !self.merkle_path && !ctl));
+            chunk.push(F::from_bool(!self.new_start && self.merkle_path && !ctl));
+        }
+        for i in 0..Self::PREPROCESSED_PUBLIC_OUTPUT_LIMBS {
+            chunk.push(preprocessed.witness_index_as_field(WitnessId(output_indices[i])));
+            chunk.push(F::ZERO);
+        }
+        chunk.push(mmcs_idx_f);
+        chunk.push(F::from_bool(mmcs_ctl && self.merkle_path));
+        chunk.push(F::from_bool(self.new_start));
+        chunk.push(F::from_bool(self.merkle_path));
+        chunk.push(F::ZERO);
+        for _ in 0..Self::PREPROCESSED_INPUT_LIMBS {
+            chunk.push(F::ZERO);
+        }
+        for _ in 0..Self::PREPROCESSED_PUBLIC_OUTPUT_LIMBS {
+            chunk.push(F::ZERO);
+        }
+        chunk.push(F::ZERO);
+        chunk.push(F::ZERO);
+
+        for _ in 0..Self::PREPROCESSED_INPUT_LIMBS {
+            chunk.push(F::ZERO);
+            chunk.push(F::ZERO);
+            chunk.push(F::ZERO);
+            chunk.push(F::ZERO);
+        }
+        for i in 0..Self::PREPROCESSED_PUBLIC_OUTPUT_LIMBS {
+            chunk.push(preprocessed.witness_index_as_field(WitnessId(output_indices[i])));
+            chunk.push(F::from_bool(out_ctl[i]));
+        }
+        chunk.push(mmcs_idx_f);
+        chunk.push(F::from_bool(mmcs_ctl && self.merkle_path));
+        chunk.push(F::ZERO);
+        chunk.push(F::from_bool(self.merkle_path));
+        chunk.push(F::ONE);
+
+        if let Some((next_ns, next_mp, next_in, _)) = next_same_type {
+            let next_limb_ctl = |k: usize| -> bool {
+                if self.config.d() == 1 {
+                    Self::d1_limb_ctl(next_in, k)
+                } else {
+                    next_in.get(k).is_some_and(|s| !s.is_empty())
+                }
+            };
+            for k in 0..Self::PREPROCESSED_INPUT_LIMBS {
+                let ctl = next_limb_ctl(k);
+                chunk.push(F::from_bool(!next_ns && !next_mp && !ctl));
+            }
+            chunk.push(F::from_bool(!next_ns && next_mp && !next_limb_ctl(0)));
+            chunk.push(F::from_bool(!next_ns && next_mp && !next_limb_ctl(1)));
+            chunk.push(F::from_bool(!next_ns && next_mp));
+            chunk.push(F::from_bool(mmcs_ctl && self.merkle_path) * F::from_bool(next_ns));
+        } else {
+            for _ in 0..Self::PREPROCESSED_INPUT_LIMBS {
+                chunk.push(F::ZERO);
+            }
+            chunk.push(F::ZERO);
+            chunk.push(F::ZERO);
+            chunk.push(F::ZERO);
+            chunk.push(F::from_bool(mmcs_ctl && self.merkle_path));
+        }
+
+        debug_assert_eq!(chunk.len(), 66);
+        preprocessed.register_non_primitive_preprocessed_no_read(&self.op_type, &chunk);
         Ok(())
     }
 }
@@ -666,12 +816,13 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Poseidon2Perm
         inputs: &[Vec<WitnessId>],
         outputs: &[Vec<WitnessId>],
         preprocessed: &mut dyn PreprocessedWriter<F>,
+        next_same_type: Option<(bool, bool, &[Vec<WitnessId>], &[Vec<WitnessId>])>,
     ) -> Result<(), CircuitError> {
-        self.preprocess_inputs(inputs, preprocessed)?;
-        self.preprocess_outputs(outputs, preprocessed)?;
-        self.preprocess_flags(inputs, preprocessed)?;
-
-        Ok(())
+        if self.config.d() == 1 {
+            self.preprocess_two_row_d1(inputs, outputs, next_same_type, preprocessed)
+        } else {
+            self.preprocess_two_row_ext(inputs, outputs, next_same_type, preprocessed)
+        }
     }
 
     fn boxed(&self) -> Box<dyn NonPrimitiveExecutor<F>> {

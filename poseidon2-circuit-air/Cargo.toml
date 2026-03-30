@@ -21,6 +21,7 @@ p3-matrix.workspace = true
 p3-maybe-rayon.workspace = true
 p3-poseidon2.workspace = true
 p3-poseidon2-air.workspace = true
+p3-poseidon2-two-row-air.workspace = true
 p3-symmetric.workspace = true
 p3-uni-stark.workspace = true
 

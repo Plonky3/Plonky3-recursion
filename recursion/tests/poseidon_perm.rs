@@ -41,9 +41,7 @@ fn init_logger() {
 
 use p3_test_utils::baby_bear_params::*;
 
-// Use base field challenges for this test to keep proof size manageable.
-// The common module uses extension field challenges (D=4), which would
-// create 4x more observations and circuit operations.
+// Base-field challenges keep the recursive circuit path small (D=1 NPO table).
 type Challenge = F;
 type ChallengeMmcs = ExtensionMmcs<F, Challenge, MyMmcs>;
 type MyPcs = TwoAdicFriPcs<F, Dft, MyMmcs, ChallengeMmcs>;
@@ -85,9 +83,9 @@ fn test_poseidon2_perm_verifier() -> Result<(), VerificationError> {
     let challenger = Challenger::new(perm.clone());
     let config = MyConfig::new(pcs, challenger);
 
-    // Build a trace with enough rows to satisfy FRI height constraints.
-    let n_rows: usize = 32;
-    let ops: Vec<_> = (0..n_rows)
+    // Two main trace rows per logical permutation; keep total main height 32 (16 ops).
+    let n_ops: usize = 16;
+    let ops: Vec<_> = (0..n_ops)
         .map(|row| {
             let input_values: Vec<F> = (0..16_u32)
                 .map(|i| F::from_u32(i + 5 + row as u32))

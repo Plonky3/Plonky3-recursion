@@ -1,7 +1,7 @@
 use alloc::string::ToString;
 use alloc::vec;
 use alloc::vec::Vec;
-use core::borrow::Borrow;
+use core::borrow::{Borrow, BorrowMut};
 use core::iter;
 use core::mem::MaybeUninit;
 
@@ -14,8 +14,12 @@ use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_maybe_rayon::prelude::*;
 use p3_poseidon2::GenericPoseidon2LinearLayers;
-use p3_poseidon2_air::{Poseidon2Air, Poseidon2Cols, RoundConstants, generate_trace_rows_for_perm};
-use p3_uni_stark::{SubAirBuilder, SymbolicAirBuilder, SymbolicExpression, SymbolicVariable};
+use p3_poseidon2_air::RoundConstants;
+use p3_poseidon2_two_row_air::{
+    Poseidon2TwoRowAir, Poseidon2TwoRowCols, eval_with_phase, generate_trace_pair_for_perm,
+    num_cols as poseidon2_two_row_num_cols, p_max_partial_slots,
+};
+use p3_uni_stark::{SymbolicAirBuilder, SymbolicExpression, SymbolicVariable};
 
 use crate::columns::{
     POSEIDON2_LIMBS, POSEIDON2_PUBLIC_OUTPUT_LIMBS, Poseidon2PrepInputLimb,
@@ -79,8 +83,9 @@ pub struct Poseidon2CircuitAir<
     const SBOX_REGISTERS: usize,
     const HALF_FULL_ROUNDS: usize,
     const PARTIAL_ROUNDS: usize,
+    const P_MAX_PARTIAL_SLOTS: usize,
 > {
-    /// The inner permutation AIR.
+    /// The inner two-row permutation AIR.
     ///
     /// Stores the round constants.
     ///
@@ -89,7 +94,7 @@ pub struct Poseidon2CircuitAir<
     ///
     /// All circuit-level constraints (chaining, accumulator, cross-table
     /// lookups) are layered on top by this crate.
-    p3_poseidon2: Poseidon2Air<
+    p3_poseidon2: Poseidon2TwoRowAir<
         F,
         LinearLayers,
         WIDTH,
@@ -97,6 +102,7 @@ pub struct Poseidon2CircuitAir<
         SBOX_REGISTERS,
         HALF_FULL_ROUNDS,
         PARTIAL_ROUNDS,
+        P_MAX_PARTIAL_SLOTS,
     >,
 
     /// Number of lookup columns registered so far.
@@ -138,6 +144,7 @@ impl<
     const SBOX_REGISTERS: usize,
     const HALF_FULL_ROUNDS: usize,
     const PARTIAL_ROUNDS: usize,
+    const P_MAX_PARTIAL_SLOTS: usize,
 > Clone
     for Poseidon2CircuitAir<
         F,
@@ -151,6 +158,7 @@ impl<
         SBOX_REGISTERS,
         HALF_FULL_ROUNDS,
         PARTIAL_ROUNDS,
+        P_MAX_PARTIAL_SLOTS,
     >
 {
     fn clone(&self) -> Self {
@@ -189,6 +197,7 @@ impl<
     const SBOX_REGISTERS: usize,
     const HALF_FULL_ROUNDS: usize,
     const PARTIAL_ROUNDS: usize,
+    const P_MAX_PARTIAL_SLOTS: usize,
 >
     Poseidon2CircuitAir<
         F,
@@ -202,6 +211,7 @@ impl<
         SBOX_REGISTERS,
         HALF_FULL_ROUNDS,
         PARTIAL_ROUNDS,
+        P_MAX_PARTIAL_SLOTS,
     >
 {
     /// Create a new AIR with the given round constants.
@@ -220,10 +230,11 @@ impl<
         const {
             assert!(CAPACITY_EXT + RATE_EXT == WIDTH_EXT);
             assert!(WIDTH_EXT * D == WIDTH);
+            assert!(P_MAX_PARTIAL_SLOTS == p_max_partial_slots(PARTIAL_ROUNDS));
         }
 
         Self {
-            p3_poseidon2: Poseidon2Air::new(constants),
+            p3_poseidon2: Poseidon2TwoRowAir::new(constants),
             num_lookup_cols: 0,
             preprocessed: Vec::new(),
             min_height: 1,
@@ -259,10 +270,11 @@ impl<
         const {
             assert!(CAPACITY_EXT + RATE_EXT == WIDTH_EXT);
             assert!(WIDTH_EXT * D == WIDTH);
+            assert!(P_MAX_PARTIAL_SLOTS == p_max_partial_slots(PARTIAL_ROUNDS));
         }
 
         Self {
-            p3_poseidon2: Poseidon2Air::new(constants),
+            p3_poseidon2: Poseidon2TwoRowAir::new(constants),
             num_lookup_cols: 0,
             preprocessed,
             min_height: 1,
@@ -325,27 +337,29 @@ impl<
         // The accumulator reconstructs the Merkle leaf index one bit at
         // a time as the circuit walks up the authentication path.
 
-        let p2_ncols = p3_poseidon2_air::num_cols::<
+        let p2_ncols = poseidon2_two_row_num_cols::<
             WIDTH,
             SBOX_DEGREE,
             SBOX_REGISTERS,
             HALF_FULL_ROUNDS,
             PARTIAL_ROUNDS,
+            P_MAX_PARTIAL_SLOTS,
         >();
         let ncols = self.width();
         let circuit_ncols = ncols - p2_ncols;
 
-        // Allocate the final trace as uninitialized memory.
-        //
-        // We use uninitialized memory because both passes will write
-        // every element before it is read.
-        //
-        // The extra capacity bits enlarge only the permutation segment.
-        //
-        // The circuit columns are always two wide (direction bit and accumulator).
+        let n_ops = sponge_ops.len();
+        let n_rows = n_ops * 2;
+
         let mut trace_vec: Vec<F> =
-            Vec::with_capacity(n * ((p2_ncols << extra_capacity_bits) + circuit_ncols));
+            Vec::with_capacity(n_rows * ((p2_ncols << extra_capacity_bits) + circuit_ncols));
         let trace_slice = trace_vec.spare_capacity_mut();
+        let logical_trace_len = n_rows * ncols;
+        debug_assert!(
+            trace_slice.len() >= logical_trace_len,
+            "trace capacity must cover the packed logical row-major layout"
+        );
+        let trace_logical = &mut trace_slice[..logical_trace_len];
 
         // Pass 1: Sequential
         //
@@ -380,11 +394,7 @@ impl<
         // Starts at zero. Updated on each iteration.
         let mut prev_mmcs_index_sum = F::ZERO;
 
-        // View the flat allocation as individual rows, each with the
-        // right number of columns.
-        let rows = trace_slice[..n * ncols].chunks_exact_mut(ncols);
-
-        for (row_index, (op, row)) in sponge_ops.iter().zip(rows).enumerate() {
+        for (pair_idx, op) in sponge_ops.iter().enumerate() {
             let Poseidon2CircuitRow {
                 new_start,
                 merkle_path,
@@ -400,38 +410,26 @@ impl<
                 "Trace row input_values must have length WIDTH"
             );
 
-            // Update the accumulator.
-            //
-            // If this is a Merkle row that continues a chain (not the
-            // first row, not a chain boundary), apply the recurrence:
-            //
-            //     new_value = old_value × 2 + direction_bit
-            //
-            // Otherwise reset the accumulator. This happens on:
-            //   - The very first row (no previous value exists).
-            //   - Chain boundaries (a new Merkle proof starts).
-            //   - Non-Merkle rows (sponge mode, no index to track).
-            if row_index > 0 && *merkle_path && !*new_start {
+            if pair_idx > 0 && *merkle_path && !*new_start {
                 prev_mmcs_index_sum = prev_mmcs_index_sum.double() + F::from_bool(*mmcs_bit);
             } else {
                 prev_mmcs_index_sum = *mmcs_index_sum;
             }
 
-            // Write the 16 input field elements into the first 16 slots
-            // of the row. These will be read back in pass 2 when the
-            // permutation is computed.
+            let row_a_off = pair_idx * 2 * ncols;
+            let row_a = &mut trace_logical[row_a_off..row_a_off + ncols];
             for (i, &val) in input_values.iter().enumerate() {
-                row[i].write(val);
+                row_a[i].write(val);
             }
+            let (_p2_a, circuit_a) = row_a.split_at_mut(p2_ncols);
+            circuit_a[0].write(F::from_bool(*mmcs_bit));
+            circuit_a[1].write(prev_mmcs_index_sum);
 
-            // Write the two circuit columns at the end of the row.
-            //
-            // First circuit column: the direction bit (0 = left, 1 = right).
-            //
-            // Second circuit column: the running accumulator value.
-            let (_p2_part, circuit_part) = row.split_at_mut(p2_ncols);
-            circuit_part[0].write(F::from_bool(*mmcs_bit));
-            circuit_part[1].write(prev_mmcs_index_sum);
+            let row_b_off = (pair_idx * 2 + 1) * ncols;
+            let row_b = &mut trace_logical[row_b_off..row_b_off + ncols];
+            let (_p2_b, circuit_b) = row_b.split_at_mut(p2_ncols);
+            circuit_b[0].write(F::from_bool(*mmcs_bit));
+            circuit_b[1].write(prev_mmcs_index_sum);
         }
 
         // Pass 2: Parallel
@@ -451,50 +449,44 @@ impl<
         //   3. Write all intermediate round states and the 16 output
         //      elements into the remaining permutation columns.
 
-        trace_slice[..n * ncols]
-            .par_chunks_exact_mut(ncols)
-            .for_each(|row| {
-                // Split the row into permutation columns and circuit columns.
-                //
-                // We only need the permutation part here. The circuit
-                // columns were already finalized in pass 1.
-                let (p2_part, _circuit_part) = row.split_at_mut(p2_ncols);
+        trace_logical
+            .par_chunks_mut(2 * ncols)
+            .for_each(|pair_slice| {
+                let (row_a, row_b) = pair_slice.split_at_mut(ncols);
 
-                // Read back the 16 input elements that pass 1 wrote.
-                //
-                // SAFETY: Pass 1 initialized exactly these positions.
-                let input: [F; WIDTH] =
-                    core::array::from_fn(|i| unsafe { p2_part[i].assume_init() });
+                let (p2_a, _) = row_a.split_at_mut(p2_ncols);
+                let (p2_b, _) = row_b.split_at_mut(p2_ncols);
 
-                // Reinterpret the flat slice as the typed permutation column struct.
-                //
-                // This is a zero-copy cast. The struct is `#[repr(C)]`
-                // and the slice has exactly the right number of elements.
-                let (prefix, p2_cols, suffix) = unsafe {
-                    p2_part.align_to_mut::<Poseidon2Cols<
+                let input: [F; WIDTH] = core::array::from_fn(|i| unsafe { p2_a[i].assume_init() });
+
+                let (prefix_a, cols_a, suffix_a) = unsafe {
+                    p2_a.align_to_mut::<Poseidon2TwoRowCols<
                         MaybeUninit<F>,
                         WIDTH,
                         SBOX_DEGREE,
                         SBOX_REGISTERS,
                         HALF_FULL_ROUNDS,
                         PARTIAL_ROUNDS,
+                        P_MAX_PARTIAL_SLOTS,
                     >>()
                 };
+                let (prefix_b, cols_b, suffix_b) = unsafe {
+                    p2_b.align_to_mut::<Poseidon2TwoRowCols<
+                        MaybeUninit<F>,
+                        WIDTH,
+                        SBOX_DEGREE,
+                        SBOX_REGISTERS,
+                        HALF_FULL_ROUNDS,
+                        PARTIAL_ROUNDS,
+                        P_MAX_PARTIAL_SLOTS,
+                    >>()
+                };
+                debug_assert!(prefix_a.is_empty() && suffix_a.is_empty());
+                debug_assert!(prefix_b.is_empty() && suffix_b.is_empty());
+                debug_assert_eq!(cols_a.len(), 1);
+                debug_assert_eq!(cols_b.len(), 1);
 
-                // Verify the cast produced exactly one struct with no
-                // leftover bytes on either side.
-                debug_assert!(prefix.is_empty(), "Alignment mismatch");
-                debug_assert!(suffix.is_empty(), "Alignment mismatch");
-                debug_assert_eq!(p2_cols.len(), 1);
-
-                // Run the Poseidon2 permutation on the input.
-                //
-                // This fills in every column of the permutation struct:
-                // - the beginning full rounds,
-                // - the partial rounds,
-                // - the ending full rounds,
-                // - the final output state.
-                generate_trace_rows_for_perm::<
+                generate_trace_pair_for_perm::<
                     F,
                     LinearLayers,
                     WIDTH,
@@ -502,7 +494,8 @@ impl<
                     SBOX_REGISTERS,
                     HALF_FULL_ROUNDS,
                     PARTIAL_ROUNDS,
-                >(&mut p2_cols[0], input, constants);
+                    P_MAX_PARTIAL_SLOTS,
+                >(&mut cols_a[0], &mut cols_b[0], input, constants);
             });
 
         // SAFETY: At this point every element has been initialized.
@@ -513,7 +506,7 @@ impl<
         //
         // We can now safely tell the allocator that these bytes are live.
         unsafe {
-            trace_vec.set_len(n * ncols);
+            trace_vec.set_len(n_rows * ncols);
         }
 
         RowMajorMatrix::new(trace_vec, ncols)
@@ -532,6 +525,7 @@ impl<
     const SBOX_REGISTERS: usize,
     const HALF_FULL_ROUNDS: usize,
     const PARTIAL_ROUNDS: usize,
+    const P_MAX_PARTIAL_SLOTS: usize,
 > BaseAir<F>
     for Poseidon2CircuitAir<
         F,
@@ -545,6 +539,7 @@ impl<
         SBOX_REGISTERS,
         HALF_FULL_ROUNDS,
         PARTIAL_ROUNDS,
+        P_MAX_PARTIAL_SLOTS,
     >
 {
     /// Total number of value columns per row.
@@ -557,8 +552,46 @@ impl<
     /// - The MMCS accumulator.
     fn width(&self) -> usize {
         num_cols::<
-            Poseidon2Cols<u8, WIDTH, SBOX_DEGREE, SBOX_REGISTERS, HALF_FULL_ROUNDS, PARTIAL_ROUNDS>,
+            Poseidon2TwoRowCols<
+                u8,
+                WIDTH,
+                SBOX_DEGREE,
+                SBOX_REGISTERS,
+                HALF_FULL_ROUNDS,
+                PARTIAL_ROUNDS,
+                P_MAX_PARTIAL_SLOTS,
+            >,
         >()
+    }
+
+    fn main_next_row_columns(&self) -> Vec<usize> {
+        let p2 = poseidon2_two_row_num_cols::<
+            WIDTH,
+            SBOX_DEGREE,
+            SBOX_REGISTERS,
+            HALF_FULL_ROUNDS,
+            PARTIAL_ROUNDS,
+            P_MAX_PARTIAL_SLOTS,
+        >();
+        let mut indices = Poseidon2TwoRowAir::<
+            F,
+            LinearLayers,
+            WIDTH,
+            SBOX_DEGREE,
+            SBOX_REGISTERS,
+            HALF_FULL_ROUNDS,
+            PARTIAL_ROUNDS,
+            P_MAX_PARTIAL_SLOTS,
+        >::bridge_next_column_indices();
+        indices.push(p2);
+        indices.push(p2 + 1);
+        indices.sort_unstable();
+        indices.dedup();
+        indices
+    }
+
+    fn max_constraint_degree(&self) -> Option<usize> {
+        None
     }
 
     /// Build the preprocessed trace matrix.
@@ -567,22 +600,10 @@ impl<
     ///
     /// # Padding Strategy
     ///
-    /// ```text
-    ///     Row 0 .. n-1        actual preprocessed data
-    ///     Row n (first pad)   chain boundary flag = 1, rest zero
-    ///     Row n+1 .. end      all zeros
-    /// ```
-    ///
-    /// The first padding row marks a chain boundary.
-    ///
-    /// This prevents chaining constraints from firing across the
-    /// real-to-padding boundary.
-    ///
-    /// All subsequent padding rows are fully zero. Every selector is
-    /// inactive, so every constraint is trivially satisfied.
-    ///
-    /// The chain boundary flag is the second-to-last field in each
-    /// preprocessed row.
+    /// Preprocessed height is always even (phase-0 / phase-1 pairs). Extra
+    /// rows are filled in **pairs**: row A has `new_start = 1`, row B has
+    /// `perm_second_phase = 1`, other selectors zero. This matches the
+    /// two-row permutation layout at the real-to-padding boundary.
     fn preprocessed_trace(&self) -> Option<RowMajorMatrix<F>> {
         let width = Self::preprocessed_width();
         let len = self.preprocessed.len();
@@ -593,29 +614,39 @@ impl<
         );
 
         let natural_rows = len / width;
+        debug_assert!(
+            natural_rows.is_multiple_of(2),
+            "preprocessed height must be even (pairs of perm phase-0 / phase-1 rows); got {natural_rows}"
+        );
 
         // The minimum height is already rounded to a power of two in
         // the builder method, so we can use it directly here.
-        let padded_rows = natural_rows.next_power_of_two().max(self.min_height);
+        let mut padded_rows = natural_rows.next_power_of_two().max(self.min_height);
+        // `next_power_of_two(0)` is 1; `max(min_height)` can also be odd — main trace is always even.
+        if padded_rows % 2 == 1 {
+            padded_rows *= 2;
+        }
 
         // Clone the existing preprocessed data.
         let mut data = self.preprocessed.clone();
 
         // Pad with zeros up to the required power-of-two height.
-        //
-        // All-zero padding rows have every selector inactive, so
-        // every constraint is trivially satisfied on those rows.
         data.resize(padded_rows * width, F::ZERO);
 
-        // Mark the first padding row as a chain boundary.
-        //
-        // Without this, the chaining constraint would try to connect
-        // the last real row to the first padding row. Setting the
-        // chain-start flag to one disables that connection.
-        //
-        // The flag is the second-to-last field in each row.
+        // Each padding **pair** is: row A (`new_start = 1`), row B (`perm_second_phase = 1`).
+        // That matches the two-row permutation layout and keeps transitions well-formed.
         if padded_rows > natural_rows {
-            data[len + width - 2] = F::ONE;
+            for pair_start in (natural_rows..padded_rows).step_by(2) {
+                let row_a = &mut data[pair_start * width..(pair_start + 1) * width];
+                let prep_a: &mut Poseidon2PreprocessedRow<F> = row_a.borrow_mut();
+                prep_a.new_start = F::ONE;
+                prep_a.perm_second_phase = F::ZERO;
+
+                let row_b = &mut data[(pair_start + 1) * width..(pair_start + 2) * width];
+                let prep_b: &mut Poseidon2PreprocessedRow<F> = row_b.borrow_mut();
+                prep_b.new_start = F::ZERO;
+                prep_b.perm_second_phase = F::ONE;
+            }
         }
 
         Some(RowMajorMatrix::new(data, width))
@@ -624,8 +655,8 @@ impl<
 
 /// Build the preprocessed trace from a sequence of circuit operations.
 ///
-/// Each operation becomes one preprocessed row. The results are flattened
-/// into a single vector in row-major order.
+/// Each operation becomes **two** preprocessed rows (phase 0 then phase 1).
+/// The results are flattened into a single vector in row-major order.
 ///
 /// # Index Scaling
 ///
@@ -655,10 +686,17 @@ pub fn extract_preprocessed_from_operations<F: Field, OF: Field>(
     operations: &[Poseidon2CircuitRow<OF>],
     d: u32,
 ) -> Vec<F> {
-    // Pre-allocate for all rows. Each row has a fixed number of preprocessed columns.
-    let mut preprocessed = Vec::with_capacity(operations.len() * poseidon2_preprocessed_width());
+    let mut preprocessed =
+        Vec::with_capacity(operations.len() * 2 * poseidon2_preprocessed_width());
 
-    for operation in operations {
+    let zero_limb = Poseidon2PrepInputLimb {
+        idx: F::ZERO,
+        in_ctl: F::ZERO,
+        normal_chain_sel: F::ZERO,
+        merkle_chain_sel: F::ZERO,
+    };
+
+    for (op_idx, operation) in operations.iter().enumerate() {
         let Poseidon2CircuitRow {
             in_ctl,
             input_indices,
@@ -671,21 +709,32 @@ pub fn extract_preprocessed_from_operations<F: Field, OF: Field>(
             ..
         } = operation;
 
-        // Build one preprocessed row.
-        let row = Poseidon2PreprocessedRow {
-            // For each of the 4 input limbs, compute:
-            //
-            //   - The witness index, scaled by the extension degree.
-            //
-            //   - The CTL enable flag (is this limb looked up?).
-            //
-            //   - The sponge chain selector: active when this is a
-            //     continuation row in sponge mode and the limb is not
-            //     coming from a CTL lookup.
-            //
-            //   - The Merkle chain selector: active when this is a
-            //     continuation row in Merkle mode and the limb is not
-            //     coming from a CTL lookup.
+        let next_op = operations.get(op_idx + 1);
+        let row_b_next_normal = if let Some(no) = next_op {
+            core::array::from_fn(|k| {
+                let ctl = no.in_ctl[k];
+                F::from_bool(!no.new_start && !no.merkle_path && !ctl)
+            })
+        } else {
+            [F::ZERO; POSEIDON2_LIMBS]
+        };
+        let row_b_next_merkle = if let Some(no) = next_op {
+            [
+                F::from_bool(!no.new_start && no.merkle_path && !no.in_ctl[0]),
+                F::from_bool(!no.new_start && no.merkle_path && !no.in_ctl[1]),
+            ]
+        } else {
+            [F::ZERO; POSEIDON2_PUBLIC_OUTPUT_LIMBS]
+        };
+        let row_b_mmcs_trans = if let Some(no) = next_op {
+            F::from_bool(!no.new_start && no.merkle_path)
+        } else {
+            F::ZERO
+        };
+        let row_b_mmcs_send = F::from_bool(*mmcs_ctl_enabled && *merkle_path)
+            * F::from_bool(next_op.map(|o| o.new_start).unwrap_or(true));
+
+        let row_a = Poseidon2PreprocessedRow {
             input_limbs: core::array::from_fn(|i| {
                 let ctl = in_ctl[i];
                 Poseidon2PrepInputLimb {
@@ -695,29 +744,39 @@ pub fn extract_preprocessed_from_operations<F: Field, OF: Field>(
                     merkle_chain_sel: F::from_bool(!*new_start && *merkle_path && !ctl),
                 }
             }),
+            output_limbs: core::array::from_fn(|i| Poseidon2PrepOutputLimb {
+                idx: F::from_u32(output_indices[i] * d),
+                out_ctl: F::ZERO,
+            }),
+            mmcs_index_sum_ctl_idx: F::from_u64(*mmcs_index_sum_idx as u64 * d as u64),
+            mmcs_merkle_flag: F::from_bool(*mmcs_ctl_enabled && *merkle_path),
+            new_start: F::from_bool(*new_start),
+            merkle_path: F::from_bool(*merkle_path),
+            perm_second_phase: F::ZERO,
+            next_row_normal_chain_sel: [F::ZERO; POSEIDON2_LIMBS],
+            next_row_merkle_chain_sel: [F::ZERO; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
+            mmcs_trans_accum_sel: F::ZERO,
+            mmcs_witness_send_sel: F::ZERO,
+        };
+        row_a.write_into(&mut preprocessed);
 
-            // For each of the 2 public output limbs, store:
-            // - the witness index,
-            // - the CTL enable flag.
+        let row_b = Poseidon2PreprocessedRow {
+            input_limbs: [zero_limb; POSEIDON2_LIMBS],
             output_limbs: core::array::from_fn(|i| Poseidon2PrepOutputLimb {
                 idx: F::from_u32(output_indices[i] * d),
                 out_ctl: F::from_bool(out_ctl[i]),
             }),
-
-            // The witness index for the MMCS accumulator lookup, scaled.
             mmcs_index_sum_ctl_idx: F::from_u64(*mmcs_index_sum_idx as u64 * d as u64),
-
-            // Precomputed product: is the MMCS CTL enabled AND is this
-            // a Merkle row? Used to detect the end of a Merkle chain.
             mmcs_merkle_flag: F::from_bool(*mmcs_ctl_enabled && *merkle_path),
-
-            // Whether this row starts a new chain.
-            new_start: F::from_bool(*new_start),
-
-            // Whether this row is a Merkle-path step.
+            new_start: F::ZERO,
             merkle_path: F::from_bool(*merkle_path),
+            perm_second_phase: F::ONE,
+            next_row_normal_chain_sel: row_b_next_normal,
+            next_row_merkle_chain_sel: row_b_next_merkle,
+            mmcs_trans_accum_sel: row_b_mmcs_trans,
+            mmcs_witness_send_sel: row_b_mmcs_send,
         };
-        row.write_into(&mut preprocessed);
+        row_b.write_into(&mut preprocessed);
     }
 
     preprocessed
@@ -771,6 +830,7 @@ pub(crate) fn eval<
     const SBOX_REGISTERS: usize,
     const HALF_FULL_ROUNDS: usize,
     const PARTIAL_ROUNDS: usize,
+    const P_MAX_PARTIAL_SLOTS: usize,
 >(
     air: &Poseidon2CircuitAir<
         AB::F,
@@ -784,35 +844,38 @@ pub(crate) fn eval<
         SBOX_REGISTERS,
         HALF_FULL_ROUNDS,
         PARTIAL_ROUNDS,
+        P_MAX_PARTIAL_SLOTS,
     >,
     builder: &mut AB,
     local: &Poseidon2CircuitCols<
         AB::Var,
-        Poseidon2Cols<
+        Poseidon2TwoRowCols<
             AB::Var,
             WIDTH,
             SBOX_DEGREE,
             SBOX_REGISTERS,
             HALF_FULL_ROUNDS,
             PARTIAL_ROUNDS,
+            P_MAX_PARTIAL_SLOTS,
         >,
     >,
     next: &Poseidon2CircuitCols<
         AB::Var,
-        Poseidon2Cols<
+        Poseidon2TwoRowCols<
             AB::Var,
             WIDTH,
             SBOX_DEGREE,
             SBOX_REGISTERS,
             HALF_FULL_ROUNDS,
             PARTIAL_ROUNDS,
+            P_MAX_PARTIAL_SLOTS,
         >,
     >,
-    next_preprocessed: &[AB::Var],
+    _next_preprocessed: &[AB::Var],
 ) {
-    // Cast the raw preprocessed slice into a typed struct so we can
-    // access individual fields by name.
-    let next_prep: &Poseidon2PreprocessedRow<AB::Var> = next_preprocessed.borrow();
+    let preprocessed_window = builder.preprocessed().clone();
+    let local_prep: &Poseidon2PreprocessedRow<AB::Var> =
+        preprocessed_window.current_slice().borrow();
 
     // Extract the three things we'll reference repeatedly:
     //
@@ -820,14 +883,14 @@ pub(crate) fn eval<
     //
     //   - The current row's output state — the 16 field elements
     //     produced by the Poseidon2 permutation on this row. Located
-    //     in the last full-round's post-state.
+    //     in the last full-round's post-state (row B of the two-row perm).
     //
     //   - The next row's input state — the 16 field elements that
     //     will be fed into the next permutation. Chaining constraints
     //     tie these to the current output.
     let next_bit = next.mmcs_bit;
-    let local_out = &local.poseidon2.ending_full_rounds[HALF_FULL_ROUNDS - 1].post;
-    let next_in = &next.poseidon2.inputs;
+    let local_out = &local.poseidon2.full_rounds[HALF_FULL_ROUNDS - 1].post;
+    let next_in = &next.poseidon2.inputs_mid;
 
     // Boolean constraint
     //
@@ -861,7 +924,7 @@ pub(crate) fn eval<
 
     for limb in 0..POSEIDON2_LIMBS {
         for d in 0..D {
-            let gate = next_prep.input_limbs[limb].normal_chain_sel;
+            let gate: AB::Expr = local_prep.next_row_normal_chain_sel[limb].into();
             builder
                 .when_transition()
                 .when(gate)
@@ -900,12 +963,12 @@ pub(crate) fn eval<
     let is_left = AB::Expr::ONE - next_bit.into();
 
     // Gate for placing our digest on the left side (limbs 0 and 1).
-    let gate_left_0 = next_prep.input_limbs[0].merkle_chain_sel * is_left.dup();
-    let gate_left_1 = next_prep.input_limbs[1].merkle_chain_sel * is_left;
+    let gate_left_0: AB::Expr = local_prep.next_row_merkle_chain_sel[0].into() * is_left.dup();
+    let gate_left_1: AB::Expr = local_prep.next_row_merkle_chain_sel[1].into() * is_left;
 
     // Gate for placing our digest on the right side (limbs 2 and 3).
-    let gate_right_0 = next_prep.input_limbs[0].merkle_chain_sel * next_bit;
-    let gate_right_1 = next_prep.input_limbs[1].merkle_chain_sel * next_bit;
+    let gate_right_0: AB::Expr = local_prep.next_row_merkle_chain_sel[0].into() * next_bit;
+    let gate_right_1: AB::Expr = local_prep.next_row_merkle_chain_sel[1].into() * next_bit;
 
     // Check each base-field element of the digest.
     for d in 0..D {
@@ -958,61 +1021,20 @@ pub(crate) fn eval<
     // that is not a chain boundary. On chain boundaries the
     // accumulator resets, and on non-Merkle rows it is unused.
 
-    // Compute (1 − next_new_start). This is 1 when the next row
-    // continues a chain, 0 when it starts a new one.
-    let not_next_new_start = AB::Expr::ONE - next_prep.new_start.into();
-
-    // The constraint:
-    //
-    //     next_accumulator = current_accumulator × 2 + next_direction_bit
-    //
-    // Rearranged for assert_zero:
-    //
-    //     next_acc − (current_acc × 2 + next_bit) = 0
-    //
-    // Gated on: not a chain boundary AND is a Merkle row.
     builder
         .when_transition()
-        .when(not_next_new_start)
-        .when(next_prep.merkle_path)
+        .when(local_prep.mmcs_trans_accum_sel.into())
         .assert_zero(
             next.mmcs_index_sum - (local.mmcs_index_sum * AB::Expr::TWO + next.mmcs_bit.into()),
         );
 
-    // Poseidon2 permutation
-    //
-    // Every row must satisfy the Poseidon2 permutation constraint:
-    // the output state must be the correct hash of the input state.
-    //
-    // This is unconditional — it applies regardless of whether the
-    // row is sponge, Merkle, padding, or anything else.
-    //
-    // The permutation constraint is handled by a separate AIR. We
-    // give it a sub-builder that only sees the permutation columns
-    // (not the two circuit columns at the end of the row).
-
-    let p3_poseidon2_num_cols = p3_poseidon2_air::num_cols::<
-        WIDTH,
-        SBOX_DEGREE,
-        SBOX_REGISTERS,
-        HALF_FULL_ROUNDS,
-        PARTIAL_ROUNDS,
-    >();
-    let mut sub_builder = SubAirBuilder::<
-        AB,
-        Poseidon2Air<
-            AB::F,
-            LinearLayers,
-            WIDTH,
-            SBOX_DEGREE,
-            SBOX_REGISTERS,
-            HALF_FULL_ROUNDS,
-            PARTIAL_ROUNDS,
-        >,
-        AB::Var,
-    >::new(builder, 0..p3_poseidon2_num_cols);
-
-    air.p3_poseidon2.eval(&mut sub_builder);
+    eval_with_phase(
+        &air.p3_poseidon2,
+        builder,
+        &local.poseidon2,
+        &next.poseidon2,
+        local_prep.perm_second_phase.into(),
+    );
 }
 
 /// Unchecked constraint evaluation with a concrete builder type.
@@ -1054,6 +1076,7 @@ pub unsafe fn eval_unchecked_with_concrete<
     const SBOX_REGISTERS: usize,
     const HALF_FULL_ROUNDS: usize,
     const PARTIAL_ROUNDS: usize,
+    const P_MAX_PARTIAL_SLOTS: usize,
 >(
     air: &Poseidon2CircuitAir<
         F,
@@ -1067,28 +1090,31 @@ pub unsafe fn eval_unchecked_with_concrete<
         SBOX_REGISTERS,
         HALF_FULL_ROUNDS,
         PARTIAL_ROUNDS,
+        P_MAX_PARTIAL_SLOTS,
     >,
     builder: &mut AB,
     local: &Poseidon2CircuitCols<
         AB::Var,
-        Poseidon2Cols<
+        Poseidon2TwoRowCols<
             AB::Var,
             WIDTH,
             SBOX_DEGREE,
             SBOX_REGISTERS,
             HALF_FULL_ROUNDS,
             PARTIAL_ROUNDS,
+            P_MAX_PARTIAL_SLOTS,
         >,
     >,
     next: &Poseidon2CircuitCols<
         AB::Var,
-        Poseidon2Cols<
+        Poseidon2TwoRowCols<
             AB::Var,
             WIDTH,
             SBOX_DEGREE,
             SBOX_REGISTERS,
             HALF_FULL_ROUNDS,
             PARTIAL_ROUNDS,
+            P_MAX_PARTIAL_SLOTS,
         >,
     >,
     next_preprocessed: &[AB::Var],
@@ -1119,6 +1145,7 @@ pub unsafe fn eval_unchecked_with_concrete<
             SBOX_REGISTERS,
             HALF_FULL_ROUNDS,
             PARTIAL_ROUNDS,
+            P_MAX_PARTIAL_SLOTS,
         >(air_c, builder_c, local_c, next_c, next_preprocessed_c);
     }
 }
@@ -1154,6 +1181,7 @@ pub unsafe fn eval_unchecked<
     const SBOX_REGISTERS: usize,
     const HALF_FULL_ROUNDS: usize,
     const PARTIAL_ROUNDS: usize,
+    const P_MAX_PARTIAL_SLOTS: usize,
 >(
     air: &Poseidon2CircuitAir<
         F,
@@ -1167,28 +1195,31 @@ pub unsafe fn eval_unchecked<
         SBOX_REGISTERS,
         HALF_FULL_ROUNDS,
         PARTIAL_ROUNDS,
+        P_MAX_PARTIAL_SLOTS,
     >,
     builder: &mut AB,
     local: &Poseidon2CircuitCols<
         AB::Var,
-        Poseidon2Cols<
+        Poseidon2TwoRowCols<
             AB::Var,
             WIDTH,
             SBOX_DEGREE,
             SBOX_REGISTERS,
             HALF_FULL_ROUNDS,
             PARTIAL_ROUNDS,
+            P_MAX_PARTIAL_SLOTS,
         >,
     >,
     next: &Poseidon2CircuitCols<
         AB::Var,
-        Poseidon2Cols<
+        Poseidon2TwoRowCols<
             AB::Var,
             WIDTH,
             SBOX_DEGREE,
             SBOX_REGISTERS,
             HALF_FULL_ROUNDS,
             PARTIAL_ROUNDS,
+            P_MAX_PARTIAL_SLOTS,
         >,
     >,
     next_preprocessed: &[AB::Var],
@@ -1212,6 +1243,7 @@ pub unsafe fn eval_unchecked<
             SBOX_REGISTERS,
             HALF_FULL_ROUNDS,
             PARTIAL_ROUNDS,
+            P_MAX_PARTIAL_SLOTS,
         >(air_transmuted, builder, local, next, next_preprocessed);
     }
 }
@@ -1228,6 +1260,7 @@ impl<
     const SBOX_REGISTERS: usize,
     const HALF_FULL_ROUNDS: usize,
     const PARTIAL_ROUNDS: usize,
+    const P_MAX_PARTIAL_SLOTS: usize,
 > Air<AB>
     for Poseidon2CircuitAir<
         AB::F,
@@ -1241,6 +1274,7 @@ impl<
         SBOX_REGISTERS,
         HALF_FULL_ROUNDS,
         PARTIAL_ROUNDS,
+        P_MAX_PARTIAL_SLOTS,
     >
 where
     AB::F: PrimeField,
@@ -1280,6 +1314,7 @@ where
             SBOX_REGISTERS,
             HALF_FULL_ROUNDS,
             PARTIAL_ROUNDS,
+            P_MAX_PARTIAL_SLOTS,
         >(self, builder, local, next, next_preprocessed);
     }
 }
@@ -1296,6 +1331,7 @@ impl<
     const SBOX_REGISTERS: usize,
     const HALF_FULL_ROUNDS: usize,
     const PARTIAL_ROUNDS: usize,
+    const P_MAX_PARTIAL_SLOTS: usize,
 > LookupAir<F>
     for Poseidon2CircuitAir<
         F,
@@ -1309,6 +1345,7 @@ impl<
         SBOX_REGISTERS,
         HALF_FULL_ROUNDS,
         PARTIAL_ROUNDS,
+        P_MAX_PARTIAL_SLOTS,
     >
 {
     /// Allocate one permutation argument column and return its index.
@@ -1348,35 +1385,28 @@ impl<
 
         let local: &Poseidon2CircuitCols<
             SymbolicVariable<F>,
-            Poseidon2Cols<
+            Poseidon2TwoRowCols<
                 SymbolicVariable<F>,
                 WIDTH,
                 SBOX_DEGREE,
                 SBOX_REGISTERS,
                 HALF_FULL_ROUNDS,
                 PARTIAL_ROUNDS,
+                P_MAX_PARTIAL_SLOTS,
             >,
         > = (*symbolic_main_local).borrow();
 
         // Extract the current row (row 0) and next row (row 1) from the
         // preprocessed trace, then cast them to typed structs.
         //
-        // We need both rows because some multiplicities depend on the
-        // next row's chain-start flag.
         let preprocessed = symbolic_air_builder.preprocessed();
         let local_preprocessed = preprocessed
             .row_slice(0)
             .expect("The preprocessed matrix has only one row?");
         let local_preprocessed: &[SymbolicVariable<F>] = (*local_preprocessed).borrow();
-        let next_preprocessed = preprocessed
-            .row_slice(1)
-            .expect("The preprocessed matrix has only one row?");
-        let next_preprocessed: &[SymbolicVariable<F>] = (*next_preprocessed).borrow();
 
         let local_preprocessed: &Poseidon2PreprocessedRow<SymbolicVariable<F>> =
             local_preprocessed.borrow();
-        let next_preprocessed: &Poseidon2PreprocessedRow<SymbolicVariable<F>> =
-            next_preprocessed.borrow();
 
         // Total lookups:
         // One per input limb + one per public output limb + one for the MMCS accumulator.
@@ -1414,20 +1444,13 @@ impl<
             // being checked.
             let input_idx_limb = iter::once(limb.idx)
                 .chain(
-                    local.poseidon2.inputs[limb_idx * D..(limb_idx + 1) * D]
+                    local.poseidon2.inputs_mid[limb_idx * D..(limb_idx + 1) * D]
                         .iter()
                         .copied(),
                 )
                 .map(SymbolicExpression::from)
                 .collect();
 
-            // Multiplicity = CTL enable flag × (1 − merkle_path).
-            //
-            // This is zero on Merkle rows (disabling the lookup) and
-            // equal to the CTL flag on sponge rows.
-            //
-            // Both factors are preprocessed, so this product costs
-            // nothing at constraint-evaluation time.
             let mult = SymbolicExpression::from(limb.in_ctl) * not_merkle.dup();
 
             // Direction::Send means this table is the sender:
@@ -1460,7 +1483,7 @@ impl<
             // The output lives in the last full round's post-state.
             let output_idx_limb = iter::once(limb.idx)
                 .chain(
-                    local.poseidon2.ending_full_rounds[HALF_FULL_ROUNDS - 1].post
+                    local.poseidon2.full_rounds[HALF_FULL_ROUNDS - 1].post
                         [limb_idx * D..(limb_idx + 1) * D]
                         .iter()
                         .copied(),
@@ -1495,7 +1518,7 @@ impl<
         // table expects extension-field-width keys, so we pad with
         // zeros to fill the remaining extension-degree minus one slots.
 
-        let multiplicity = local_preprocessed.mmcs_merkle_flag * next_preprocessed.new_start;
+        let multiplicity = SymbolicExpression::from(local_preprocessed.mmcs_witness_send_sel);
 
         // Build the lookup key: [witness_index, accumulator, 0, 0, ...].
         //
@@ -1523,6 +1546,7 @@ impl<
 #[cfg(test)]
 mod test {
     use alloc::vec;
+    use core::borrow::Borrow;
 
     use p3_baby_bear::{BabyBear, Poseidon2BabyBear};
     use p3_challenger::{HashChallenger, SerializingChallenger32};
@@ -1533,6 +1557,7 @@ mod test {
     use p3_merkle_tree::MerkleTreeHidingMmcs;
     use p3_poseidon2::ExternalLayerConstants;
     use p3_poseidon2_air::RoundConstants;
+    use p3_poseidon2_two_row_air::Poseidon2TwoRowCols;
     use p3_symmetric::{
         CompressionFunctionFromHasher, PaddingFreeSponge, Permutation, SerializingHasher,
     };
@@ -1544,7 +1569,9 @@ mod test {
 
     use super::*;
     use crate::Poseidon2CircuitAirBabyBearD4Width16;
-    use crate::columns::{POSEIDON2_LIMBS, POSEIDON2_PUBLIC_OUTPUT_LIMBS};
+    use crate::columns::{
+        POSEIDON2_LIMBS, POSEIDON2_PUBLIC_OUTPUT_LIMBS, Poseidon2PreprocessedRow,
+    };
 
     const WIDTH: usize = 16;
 
@@ -1695,8 +1722,9 @@ mod test {
 
         let mut rows = vec![sponge_a, sponge_b, sponge_c, sponge_d];
         let degree_bits = 5;
-        let target_rows = 1 << degree_bits;
-        if rows.len() < target_rows {
+        let target_main_rows = 1 << degree_bits;
+        let target_ops = target_main_rows / 2;
+        if rows.len() < target_ops {
             // Filler rows must have new_start=true to avoid chaining constraints
             let filler = Poseidon2CircuitRow {
                 new_start: true,
@@ -1711,7 +1739,7 @@ mod test {
                 mmcs_index_sum_idx: 0,
                 mmcs_ctl_enabled: false,
             };
-            rows.resize(target_rows, filler);
+            rows.resize(target_ops, filler);
         }
 
         let preprocessed = extract_preprocessed_from_operations::<Val, Val>(&rows, 4);
@@ -1741,11 +1769,55 @@ mod test {
 
     #[test]
     fn test_air_constraint_degree() {
+        use p3_air::{AirLayout, BaseAir};
+        use p3_batch_stark::symbolic::get_symbolic_constraints;
+        use p3_lookup::LookupAir;
+        use p3_lookup::logup::LogUpGadget;
+
         let mut rng = SmallRng::seed_from_u64(1);
         let constants = RoundConstants::new(rng.random(), rng.random(), rng.random());
 
-        let air = Poseidon2CircuitAirBabyBearD4Width16::new(constants);
-        p3_test_utils::assert_air_constraint_degree!(air, "Poseidon2CircuitAir");
+        let mut air = Poseidon2CircuitAirBabyBearD4Width16::new(constants);
+        let preprocessed_width = air.preprocessed_trace().map(|m| m.width()).unwrap_or(0);
+        let lookups = LookupAir::get_lookups(&mut air);
+        let lookup_gadget = LogUpGadget::new();
+        let layout = AirLayout {
+            preprocessed_width,
+            main_width: BaseAir::<BabyBear>::width(&air),
+            num_public_values: BaseAir::<BabyBear>::num_public_values(&air),
+            permutation_width: 0,
+            num_permutation_challenges: 0,
+            num_permutation_values: 0,
+            num_periodic_columns: 0,
+        };
+        let (base_constraints, extension_constraints) =
+            get_symbolic_constraints::<BabyBear, BinomialExtensionField<BabyBear, 4>, _, _>(
+                &air,
+                layout,
+                &lookups,
+                &lookup_gadget,
+            );
+        let max_sym = base_constraints
+            .iter()
+            .map(|c| c.degree_multiple())
+            .chain(extension_constraints.iter().map(|c| c.degree_multiple()))
+            .max()
+            .unwrap_or(3);
+        let max_d = BaseAir::<BabyBear>::max_constraint_degree(&air).unwrap_or(max_sym);
+        for (i, c) in base_constraints.iter().enumerate() {
+            let d = c.degree_multiple();
+            assert!(
+                d <= max_d,
+                "Poseidon2CircuitAir base constraint {i} has degree {d} (max {max_d})"
+            );
+        }
+        for (i, c) in extension_constraints.iter().enumerate() {
+            let d = c.degree_multiple();
+            assert!(
+                d <= max_d,
+                "Poseidon2CircuitAir extension constraint {i} has degree {d} (max {max_d})"
+            );
+        }
     }
 
     /// Helper: set up STARK infrastructure and prove/verify a set of rows.
@@ -1793,9 +1865,10 @@ mod test {
         fri_params.log_blowup = 4;
 
         let degree_bits = 5;
-        let target_rows = 1usize << degree_bits;
+        let target_main_rows = 1usize << degree_bits;
+        let target_ops = target_main_rows / 2;
         let mut padded = rows.to_vec();
-        if padded.len() < target_rows {
+        if padded.len() < target_ops {
             let filler = Poseidon2CircuitRow {
                 new_start: true,
                 merkle_path: false,
@@ -1809,7 +1882,7 @@ mod test {
                 mmcs_index_sum_idx: 0,
                 mmcs_ctl_enabled: false,
             };
-            padded.resize(target_rows, filler);
+            padded.resize(target_ops, filler);
         }
 
         let preprocessed = extract_preprocessed_from_operations::<Val, Val>(&padded, 4);
@@ -2021,34 +2094,20 @@ mod test {
             .expect("preprocessed_trace returned None")
     }
 
-    /// The preprocessed width for BabyBear width-16 is 24 columns.
-    ///
-    /// 4 input limbs × 4 fields each  = 16
-    /// 2 output limbs × 2 fields each =  4
-    /// 4 scalar fields                =  4
-    ///                           total = 24
-    const PREP_WIDTH: usize = 24;
+    const PREP_WIDTH: usize = poseidon2_preprocessed_width();
 
     #[test]
     fn preprocessed_trace_pads_to_power_of_two() {
-        // Feed 3 rows of data. That's 3 × 24 = 72 field elements.
-        //
-        // 3 is not a power of two, so the method must round up to 4 rows.
-        let three_rows = vec![BabyBear::ONE; 3 * PREP_WIDTH];
-        let trace = build_preprocessed_trace(three_rows, 1);
+        // Six rows (valid even count); pad to 8.
+        let six_rows = vec![BabyBear::ONE; 6 * PREP_WIDTH];
+        let trace = build_preprocessed_trace(six_rows, 1);
 
-        // The matrix should have 4 rows and 24 columns.
-        assert_eq!(trace.height(), 4);
+        assert_eq!(trace.height(), 8);
         assert_eq!(trace.width(), PREP_WIDTH);
     }
 
     #[test]
     fn preprocessed_trace_respects_min_height() {
-        // Feed 2 rows of data (already a power of two).
-        //
-        // But request a minimum height of 8.
-        //
-        // The result must have 8 rows, not 2.
         let two_rows = vec![BabyBear::ONE; 2 * PREP_WIDTH];
         let trace = build_preprocessed_trace(two_rows, 8);
 
@@ -2058,59 +2117,39 @@ mod test {
 
     #[test]
     fn preprocessed_trace_preserves_original_data() {
-        // Fill one row with all-twos.
-        //
-        // After padding the result must still have those values in the
-        // first row.
-        let one_row = vec![BabyBear::TWO; PREP_WIDTH];
-        let trace = build_preprocessed_trace(one_row.clone(), 1);
+        let two_rows = vec![BabyBear::TWO; 2 * PREP_WIDTH];
+        let trace = build_preprocessed_trace(two_rows.clone(), 1);
 
-        // The first row should be exactly what we put in.
         let values = trace.values.as_slice();
-        assert_eq!(&values[..PREP_WIDTH], &one_row[..]);
+        assert_eq!(&values[..2 * PREP_WIDTH], &two_rows[..]);
     }
 
     #[test]
-    fn preprocessed_trace_sets_chain_boundary_on_first_padding_row() {
-        // Feed 3 rows. The method pads to 4 rows (next power of two).
-        //
-        // The first padding row (row index 3) must have its chain-start
-        // flag set to one. That flag is the second-to-last column.
-        //
-        // This prevents the chaining constraint from connecting the
-        // last real row to the first padding row.
-        let three_rows = vec![BabyBear::ZERO; 3 * PREP_WIDTH];
-        let trace = build_preprocessed_trace(three_rows, 1);
+    fn preprocessed_trace_sets_chain_boundary_on_first_padding_pair() {
+        let six_rows = vec![BabyBear::ZERO; 6 * PREP_WIDTH];
+        let trace = build_preprocessed_trace(six_rows, 1);
 
-        assert_eq!(trace.height(), 4);
+        assert_eq!(trace.height(), 8);
 
-        // Row 3 (first padding row): second-to-last column = 1.
         let values = trace.values.as_slice();
-        let padding_row = &values[3 * PREP_WIDTH..4 * PREP_WIDTH];
-        let chain_start_flag = padding_row[PREP_WIDTH - 2];
-        assert_eq!(chain_start_flag, BabyBear::ONE);
-
-        // All other columns in the padding row should be zero.
-        for (i, &val) in padding_row.iter().enumerate() {
-            if i != PREP_WIDTH - 2 {
-                assert_eq!(val, BabyBear::ZERO, "padding row column {i} should be zero");
-            }
-        }
+        // Padding pair at rows 6 (phase 0) and 7 (phase 1).
+        let row_a = &values[6 * PREP_WIDTH..7 * PREP_WIDTH];
+        let row_b = &values[7 * PREP_WIDTH..8 * PREP_WIDTH];
+        let prep_a: &Poseidon2PreprocessedRow<BabyBear> = row_a.borrow();
+        let prep_b: &Poseidon2PreprocessedRow<BabyBear> = row_b.borrow();
+        assert_eq!(prep_a.new_start, BabyBear::ONE);
+        assert_eq!(prep_a.perm_second_phase, BabyBear::ZERO);
+        assert_eq!(prep_b.new_start, BabyBear::ZERO);
+        assert_eq!(prep_b.perm_second_phase, BabyBear::ONE);
     }
 
     #[test]
     fn preprocessed_trace_no_padding_when_exact_power_of_two() {
-        // Feed exactly 4 rows. Already a power of two.
-        //
-        // No padding should occur, so no chain-boundary flag is set on
-        // any extra row.
         let four_rows = vec![BabyBear::ONE; 4 * PREP_WIDTH];
         let trace = build_preprocessed_trace(four_rows, 1);
 
-        // Height should be exactly 4 — no extra rows.
         assert_eq!(trace.height(), 4);
 
-        // All 4 rows should contain the original data (all ones).
         let values = trace.values.as_slice();
         for row_idx in 0..4 {
             let start = row_idx * PREP_WIDTH;
@@ -2123,25 +2162,21 @@ mod test {
     }
 
     #[test]
-    fn preprocessed_trace_padding_rows_beyond_first_are_all_zero() {
-        // Feed 1 row. Request minimum height of 8.
-        //
-        // Rows 1..8 are padding. Row 1 has the chain-boundary flag.
-        // Rows 2..8 should be entirely zero.
-        let one_row = vec![BabyBear::ONE; PREP_WIDTH];
-        let trace = build_preprocessed_trace(one_row, 8);
+    fn circuit_main_width_lower_than_single_row_poseidon2_air() {
+        const W: usize = 16;
+        const SD: u64 = 7;
+        const SR: usize = 1;
+        const HFR: usize = 4;
+        const PR: usize = 13;
+        const PMAX: usize = (PR + 1) / 2;
 
-        assert_eq!(trace.height(), 8);
-
-        // Rows 2 through 7 should be completely zero.
-        let values = trace.values.as_slice();
-        for row_idx in 2..8 {
-            let start = row_idx * PREP_WIDTH;
-            let row = &values[start..start + PREP_WIDTH];
-            assert!(
-                row.iter().all(|&v| v == BabyBear::ZERO),
-                "padding row {row_idx} should be all zeros"
-            );
-        }
+        let inner = p3_poseidon2_two_row_air::num_cols::<W, SD, SR, HFR, PR, PMAX>();
+        let circuit = crate::num_cols::<Poseidon2TwoRowCols<u8, W, SD, SR, HFR, PR, PMAX>>();
+        let old = p3_poseidon2_air::num_cols::<W, SD, SR, HFR, PR>();
+        assert!(
+            circuit < old,
+            "expected narrower main row than single-row Poseidon2Cols + circuit tail"
+        );
+        assert!(inner < old);
     }
 }

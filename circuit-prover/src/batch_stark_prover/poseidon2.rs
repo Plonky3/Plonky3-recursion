@@ -27,6 +27,7 @@ use p3_lookup::folder::{ProverConstraintFolderWithLookups, VerifierConstraintFol
 use p3_lookup::lookup_traits::Lookup;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_poseidon2_circuit_air::*;
+use p3_poseidon2_two_row_air::Poseidon2TwoRowCols;
 use p3_uni_stark::{
     ProverConstraintFolder, SymbolicAirBuilder, SymbolicExpression, SymbolicExpressionExt,
     VerifierConstraintFolder,
@@ -113,6 +114,7 @@ macro_rules! call_eval_variant {
             { <$Params as Poseidon2Params>::SBOX_REGISTERS },
             { <$Params as Poseidon2Params>::HALF_FULL_ROUNDS },
             { <$Params as Poseidon2Params>::PARTIAL_ROUNDS },
+            { (<$Params as Poseidon2Params>::PARTIAL_ROUNDS + 1) / 2 },
         >($air, $b, $l, $n, $p)
     };
 }
@@ -277,6 +279,7 @@ macro_rules! call_eval_variant_2ab {
             { <$Params as Poseidon2Params>::SBOX_REGISTERS },
             { <$Params as Poseidon2Params>::HALF_FULL_ROUNDS },
             { <$Params as Poseidon2Params>::PARTIAL_ROUNDS },
+            { (<$Params as Poseidon2Params>::PARTIAL_ROUNDS + 1) / 2 },
         >($air, $b, $l, $n, $p)
     };
 }
@@ -444,6 +447,7 @@ pub(crate) unsafe fn eval_poseidon2_variant<
     const SBOX_REGISTERS: usize,
     const HALF_FULL_ROUNDS: usize,
     const PARTIAL_ROUNDS: usize,
+    const P_MAX_PARTIAL_SLOTS: usize,
 >(
     air: &Poseidon2CircuitAir<
         F,
@@ -457,6 +461,7 @@ pub(crate) unsafe fn eval_poseidon2_variant<
         SBOX_REGISTERS,
         HALF_FULL_ROUNDS,
         PARTIAL_ROUNDS,
+        P_MAX_PARTIAL_SLOTS,
     >,
     builder: &mut AB,
     local_slice: &[<AB as AirBuilder>::Var],
@@ -475,13 +480,14 @@ pub(crate) unsafe fn eval_poseidon2_variant<
         let local_slice_f = core::slice::from_raw_parts(local_slice_ptr, local_slice.len());
         let local_f: &p3_poseidon2_circuit_air::Poseidon2CircuitCols<
             <F as p3_field::Field>::Packing,
-            p3_poseidon2_air::Poseidon2Cols<
+            Poseidon2TwoRowCols<
                 <F as p3_field::Field>::Packing,
                 WIDTH,
                 SBOX_DEGREE,
                 SBOX_REGISTERS,
                 HALF_FULL_ROUNDS,
                 PARTIAL_ROUNDS,
+                P_MAX_PARTIAL_SLOTS,
             >,
         > = (*local_slice_f).borrow();
 
@@ -489,13 +495,14 @@ pub(crate) unsafe fn eval_poseidon2_variant<
         let next_slice_f = core::slice::from_raw_parts(next_slice_ptr, next_slice.len());
         let next_f: &p3_poseidon2_circuit_air::Poseidon2CircuitCols<
             <F as p3_field::Field>::Packing,
-            p3_poseidon2_air::Poseidon2Cols<
+            Poseidon2TwoRowCols<
                 <F as p3_field::Field>::Packing,
                 WIDTH,
                 SBOX_DEGREE,
                 SBOX_REGISTERS,
                 HALF_FULL_ROUNDS,
                 PARTIAL_ROUNDS,
+                P_MAX_PARTIAL_SLOTS,
             >,
         > = (*next_slice_f).borrow();
 
@@ -506,25 +513,27 @@ pub(crate) unsafe fn eval_poseidon2_variant<
 
         let local_var: &p3_poseidon2_circuit_air::Poseidon2CircuitCols<
             AB::Var,
-            p3_poseidon2_air::Poseidon2Cols<
+            Poseidon2TwoRowCols<
                 AB::Var,
                 WIDTH,
                 SBOX_DEGREE,
                 SBOX_REGISTERS,
                 HALF_FULL_ROUNDS,
                 PARTIAL_ROUNDS,
+                P_MAX_PARTIAL_SLOTS,
             >,
         > = core::mem::transmute(local_f);
 
         let next_var: &p3_poseidon2_circuit_air::Poseidon2CircuitCols<
             AB::Var,
-            p3_poseidon2_air::Poseidon2Cols<
+            Poseidon2TwoRowCols<
                 AB::Var,
                 WIDTH,
                 SBOX_DEGREE,
                 SBOX_REGISTERS,
                 HALF_FULL_ROUNDS,
                 PARTIAL_ROUNDS,
+                P_MAX_PARTIAL_SLOTS,
             >,
         > = core::mem::transmute(next_f);
 
@@ -544,6 +553,7 @@ pub(crate) unsafe fn eval_poseidon2_variant<
             SBOX_REGISTERS,
             HALF_FULL_ROUNDS,
             PARTIAL_ROUNDS,
+            P_MAX_PARTIAL_SLOTS,
         >(air, builder, local_var, next_var, next_preprocessed_var);
     }
 }
@@ -665,6 +675,7 @@ where
                     { GoldilocksD2Width8::SBOX_REGISTERS },
                     { GoldilocksD2Width8::HALF_FULL_ROUNDS },
                     { GoldilocksD2Width8::PARTIAL_ROUNDS },
+                    { (GoldilocksD2Width8::PARTIAL_ROUNDS + 1) / 2 },
                 >(
                     air.as_ref(),
                     builder,
@@ -689,6 +700,7 @@ where
                     { BabyBearD4Width16::SBOX_REGISTERS },
                     { BabyBearD4Width16::HALF_FULL_ROUNDS },
                     { BabyBearD4Width16::PARTIAL_ROUNDS },
+                    { (BabyBearD4Width16::PARTIAL_ROUNDS + 1) / 2 },
                 >(
                     air.as_ref(),
                     builder,
@@ -713,6 +725,7 @@ where
                     { BabyBearD4Width24::SBOX_REGISTERS },
                     { BabyBearD4Width24::HALF_FULL_ROUNDS },
                     { BabyBearD4Width24::PARTIAL_ROUNDS },
+                    { (BabyBearD4Width24::PARTIAL_ROUNDS + 1) / 2 },
                 >(
                     air.as_ref(),
                     builder,
@@ -737,6 +750,7 @@ where
                     { KoalaBearD4Width16::SBOX_REGISTERS },
                     { KoalaBearD4Width16::HALF_FULL_ROUNDS },
                     { KoalaBearD4Width16::PARTIAL_ROUNDS },
+                    { (KoalaBearD4Width16::PARTIAL_ROUNDS + 1) / 2 },
                 >(
                     air.as_ref(),
                     builder,
@@ -761,6 +775,7 @@ where
                     { KoalaBearD4Width24::SBOX_REGISTERS },
                     { KoalaBearD4Width24::HALF_FULL_ROUNDS },
                     { KoalaBearD4Width24::PARTIAL_ROUNDS },
+                    { (KoalaBearD4Width24::PARTIAL_ROUNDS + 1) / 2 },
                 >(
                     air.as_ref(),
                     builder,
@@ -974,10 +989,13 @@ impl Poseidon2Prover {
         SymbolicExpressionExt<Val<SC>, SC::Challenge>:
             Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
     {
-        let rows = t.total_rows();
+        let n_ops = t.total_rows();
+        let min_h = min_height.next_power_of_two().max(1);
+        let natural_main_rows = n_ops * 2;
+        let padded_main_rows = natural_main_rows.next_power_of_two().max(min_h);
+        debug_assert!(padded_main_rows.is_multiple_of(2));
+        let padded_ops_count = padded_main_rows / 2;
 
-        // Pad logical ops to the larger of (next power-of-two of row count) and `min_height`.
-        let padded_rows = rows.next_power_of_two().max(min_height.next_power_of_two());
         let mut padded_ops = t.operations.clone();
         let last_op = padded_ops
             .last()
@@ -995,7 +1013,7 @@ impl Poseidon2Prover {
                 mmcs_index_sum_idx: 0,
                 mmcs_ctl_enabled: false,
             });
-        padded_ops.resize(padded_rows, last_op);
+        padded_ops.resize(padded_ops_count, last_op);
 
         let (air, matrix) = match self.config {
             Poseidon2Config::BabyBearD1Width16 | Poseidon2Config::BabyBearD4Width16 => {
@@ -1100,7 +1118,7 @@ impl Poseidon2Prover {
             air: DynamicAirEntry::new(Box::new(air)),
             trace: matrix,
             public_values: Vec::new(),
-            rows: padded_rows,
+            rows: padded_main_rows,
             lanes: 1,
         })
     }
