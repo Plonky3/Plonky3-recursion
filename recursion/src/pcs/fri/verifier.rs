@@ -1561,7 +1561,7 @@ where
                     &commitment_cap,
                     &dimensions,
                     &parent_index_bits,
-                    &[evals.clone()],
+                    core::slice::from_ref(&evals),
                 )
                 .map_err(|e| {
                     VerificationError::InvalidProofShape(format!(

@@ -781,16 +781,16 @@ where
         // Hence, we override here with the committed preprocessed data so the debug
         // lookup check is consistent with the committed preprocessed trace.
         for instance in &mut dynamic_instances {
-            if let Some(committed_prep) = non_primitive.get(&instance.op_type) {
-                if let Some(&pi) = prover_index_by_type.get(&instance.op_type) {
-                    let p = &self.non_primitive_provers[pi];
-                    if let Some(new_air) = p.air_with_committed_preprocessed(
-                        committed_prep.clone(),
-                        min_height,
-                        instance.lanes,
-                    ) {
-                        instance.air = new_air;
-                    }
+            if let Some(committed_prep) = non_primitive.get(&instance.op_type)
+                && let Some(&pi) = prover_index_by_type.get(&instance.op_type)
+            {
+                let p = &self.non_primitive_provers[pi];
+                if let Some(new_air) = p.air_with_committed_preprocessed(
+                    committed_prep.clone(),
+                    min_height,
+                    instance.lanes,
+                ) {
+                    instance.air = new_air;
                 }
             }
         }

@@ -529,7 +529,7 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AluAir<F, D> {
                         lane_prep.out_idx = src_last_prep.out_idx;
                         lane_prep.mult_out = src_last_prep.mult_out;
 
-                        lane_prep.mult_b = lane_prep.mult_b * F::from_usize(k);
+                        lane_prep.mult_b *= F::from_usize(k);
 
                         let extra_base = row * row_width + self.lanes * plw;
                         values[extra_base + EXTRA_PREP_SEL_PACKED] = F::ONE;
