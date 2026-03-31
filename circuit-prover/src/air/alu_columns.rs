@@ -23,13 +23,17 @@ pub(crate) struct AluPrepLaneCols<T> {
     pub c_is_reader: T,
 }
 
-/// Extra preprocessed columns for one packed-Horner step `t` in `1..K-1`.
+/// Extra preprocessed columns for one packed-Horner step `t` in `1..K_max-1`.
 #[repr(C)]
 pub(crate) struct AluPackedHornerStepPrepCols<T> {
     pub a_idx: T,
     pub c_idx: T,
     pub a_reader: T,
     pub c_reader: T,
+    /// `mult_a * a_reader * (t < actual_k)` for WitnessChecks multiplicity (single column, degree 1).
+    pub horner_lookup_mult_a: T,
+    /// `mult_a * c_reader * (t < actual_k)` for WitnessChecks multiplicity.
+    pub horner_lookup_mult_c: T,
 }
 
 /// Main trace columns for one ALU lane: `a`, `b`, `c`, `out` (each `D` base coefficients).
@@ -41,23 +45,34 @@ pub(crate) struct AluMainLaneCols<T, const D: usize> {
     pub out: [T; D],
 }
 
-/// Column 0 of the global extra preprocessed region (packed Horner selector).
-pub(crate) const EXTRA_PREP_SEL_PACKED: usize = 0;
-
 pub(crate) const PREP_LANE_WIDTH: usize = size_of::<AluPrepLaneCols<u8>>();
 
 pub(crate) const PACKED_HORNER_STEP_PREP_WIDTH: usize =
     size_of::<AluPackedHornerStepPrepCols<u8>>();
 
+/// Number of stored intermediate columns for packed Horner with max arity `k_max` (degree-3 pair compression).
 #[inline]
-pub(crate) const fn extra_prep_a_idx_for_step(t: usize) -> usize {
-    1 + PACKED_HORNER_STEP_PREP_WIDTH * (t - 1)
+pub(crate) const fn num_horner_intermediates(k_max: usize) -> usize {
+    (k_max - 1) / 2
 }
 
-/// Width of global extra preprocessed columns for K-step packed Horner (`K >= 2`).
+/// Index in the global extra **preprocessed** region of selector `sel_k` for packed arity `k` (`k >= 2`).
+#[inline]
+pub(crate) const fn extra_prep_sel_k_idx(k: usize) -> usize {
+    k - 2
+}
+
+/// Byte offset of step `t` packed-Horner prep block (`t` in `1..k_max`), after the `(k_max-1)` selector columns.
+#[inline]
+pub(crate) const fn extra_prep_a_idx_for_step(t: usize, k_max: usize) -> usize {
+    (k_max - 1) + PACKED_HORNER_STEP_PREP_WIDTH * (t - 1)
+}
+
+/// Width of global extra preprocessed columns for variable-arity packed Horner (`k_max >= 2`):
+/// `(k_max-1)` arity selectors plus `(k_max-1)` step prep blocks.
 #[inline]
 pub(crate) const fn horner_extra_prep_width(k: usize) -> usize {
-    1 + PACKED_HORNER_STEP_PREP_WIDTH * (k - 1)
+    (k - 1) + PACKED_HORNER_STEP_PREP_WIDTH * (k - 1)
 }
 
 pub(crate) const fn alu_main_lane_width<const D: usize>() -> usize {
@@ -156,5 +171,10 @@ const _: () = assert!(_ALU_PREP_LANE_COL_MAP.out_idx == _ALU_PREP_LANE_COL_MAP.c
 const _: () = assert!(_PACKED_STEP_COL_MAP.c_idx == _PACKED_STEP_COL_MAP.a_idx + 1);
 const _: () = assert!(_PACKED_STEP_COL_MAP.a_reader == _PACKED_STEP_COL_MAP.c_idx + 1);
 const _: () = assert!(_PACKED_STEP_COL_MAP.c_reader == _PACKED_STEP_COL_MAP.a_reader + 1);
+const _: () =
+    assert!(_PACKED_STEP_COL_MAP.horner_lookup_mult_a == _PACKED_STEP_COL_MAP.c_reader + 1);
+const _: () = assert!(
+    _PACKED_STEP_COL_MAP.horner_lookup_mult_c == _PACKED_STEP_COL_MAP.horner_lookup_mult_a + 1
+);
 const _: () = assert!(size_of::<AluMainLaneCols<u8, 1>>() == 4);
-const _: () = assert!(PACKED_HORNER_STEP_PREP_WIDTH == 4);
+const _: () = assert!(PACKED_HORNER_STEP_PREP_WIDTH == 6);
