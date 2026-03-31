@@ -2,6 +2,7 @@
 //! into a single batched STARK proof using `p3-batch-stark`.
 
 use alloc::boxed::Box;
+use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 use alloc::{format, vec};
@@ -621,6 +622,14 @@ where
         let non_primitive = &circuit_prover_data.non_primitive_columns;
         let prover_data = &circuit_prover_data.prover_data;
 
+        // One lookup per NpoTypeId instead of repeated `op_type()` (clones inner id string).
+        let prover_index_by_type: BTreeMap<NpoTypeId, usize> = self
+            .non_primitive_provers
+            .iter()
+            .enumerate()
+            .map(|(i, p)| (p.op_type(), i))
+            .collect();
+
         // Build matrices and AIRs per table.
         let packing = &self.table_packing;
         let min_height = packing.min_trace_height();
@@ -704,10 +713,10 @@ where
         let scheduled_alu_rows = alu_air.scheduled_entry_count();
         TraceLengths::from_traces(traces, packing, |op| {
             packing.npo_lanes(op).unwrap_or_else(|| {
-                self.non_primitive_provers
-                    .iter()
-                    .find(|p| p.op_type() == *op)
-                    .map_or(1, |p| p.lanes())
+                prover_index_by_type
+                    .get(op)
+                    .map(|&i| self.non_primitive_provers[i].lanes())
+                    .unwrap_or(1)
             })
         })
         .log(Some(scheduled_alu_rows));
@@ -718,11 +727,7 @@ where
             if trace.rows() == 0 {
                 continue;
             }
-            if !self
-                .non_primitive_provers
-                .iter()
-                .any(|p| p.op_type().as_str() == op_type.as_str())
-            {
+            if !prover_index_by_type.contains_key(op_type) {
                 return Err(BatchStarkProverError::MissingTableProver(op_type.clone()));
             }
         }
@@ -776,18 +781,16 @@ where
         // Hence, we override here with the committed preprocessed data so the debug
         // lookup check is consistent with the committed preprocessed trace.
         for instance in &mut dynamic_instances {
-            if let Some(committed_prep) = non_primitive.get(&instance.op_type) {
-                for p in &self.non_primitive_provers {
-                    if p.op_type() == instance.op_type {
-                        if let Some(new_air) = p.air_with_committed_preprocessed(
-                            committed_prep.clone(),
-                            min_height,
-                            instance.lanes,
-                        ) {
-                            instance.air = new_air;
-                        }
-                        break;
-                    }
+            if let Some(committed_prep) = non_primitive.get(&instance.op_type)
+                && let Some(&pi) = prover_index_by_type.get(&instance.op_type)
+            {
+                let p = &self.non_primitive_provers[pi];
+                if let Some(new_air) = p.air_with_committed_preprocessed(
+                    committed_prep.clone(),
+                    min_height,
+                    instance.lanes,
+                ) {
+                    instance.air = new_air;
                 }
             }
         }
@@ -933,6 +936,13 @@ where
         w_binomial: Option<Val<SC>>,
         common: &CommonData<SC>,
     ) -> Result<(), BatchStarkProverError> {
+        let prover_index_by_type: BTreeMap<NpoTypeId, usize> = self
+            .non_primitive_provers
+            .iter()
+            .enumerate()
+            .map(|(i, p)| (p.op_type(), i))
+            .collect();
+
         // Rebuild AIRs in the same order as prove.
         let packing = &proof.table_packing;
         let public_lanes = packing.public_lanes();
@@ -968,19 +978,13 @@ where
         pvs.resize_with(NUM_PRIMITIVE_TABLES, Vec::new);
 
         for entry in &proof.non_primitives {
-            let plugin = self
-                .non_primitive_provers
-                .iter()
-                .find(|p| {
-                    let tp = p.as_ref();
-                    TableProver::op_type(tp) == entry.op_type
-                })
-                .ok_or_else(|| {
-                    BatchStarkProverError::Verify(format!(
-                        "unknown non-primitive op: {:?}",
-                        entry.op_type
-                    ))
-                })?;
+            let pi = *prover_index_by_type.get(&entry.op_type).ok_or_else(|| {
+                BatchStarkProverError::Verify(format!(
+                    "unknown non-primitive op: {:?}",
+                    entry.op_type
+                ))
+            })?;
+            let plugin = &self.non_primitive_provers[pi];
             let air = plugin
                 .batch_air_from_table_entry(&self.config, D, entry)
                 .map_err(BatchStarkProverError::Verify)?;

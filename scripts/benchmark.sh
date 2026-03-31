@@ -107,7 +107,7 @@ run_fib_or_keccak() {
         my $n = $ref ? @$ref : 0;
         my $mn  = $n ? arith_mean($ref) : 0;
         my $med = $n ? median($ref)     : 0;
-        printf "%d, %d ms, %d ms, %d ms, %d ms", $k, $minv{$k}, int($mn + 0.5), int($med + 0.5), $maxv{$k};
+        printf "%d, %d ms, %d ms, %d ms, %d ms\n", $k, $minv{$k}, int($mn + 0.5), int($med + 0.5), $maxv{$k};
       }
     }
   '

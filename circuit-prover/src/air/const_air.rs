@@ -123,7 +123,7 @@ impl<F: Field, const D: usize> ConstAir<F, D> {
         for i in 0..height {
             // Extract basis coefficients.
             let coeffs = trace.values[i].as_basis_coefficients_slice();
-            assert_eq!(
+            debug_assert_eq!(
                 coeffs.len(),
                 D,
                 "extension degree mismatch for ConstTrace value"

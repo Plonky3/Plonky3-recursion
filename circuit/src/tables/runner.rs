@@ -5,7 +5,7 @@ use alloc::vec::Vec;
 use alloc::{format, vec};
 
 use hashbrown::HashMap;
-use p3_field::Field;
+use p3_field::{Dup, Field};
 use tracing::instrument;
 
 use super::alu::{AluOpRecord, AluTrace};
@@ -255,10 +255,9 @@ impl<'a, F: Field> CircuitRunner<'a, F> {
     /// can blindly execute from index 0 to end.
     #[instrument(skip_all, level = "debug")]
     pub fn execute_all(&mut self) -> Result<Vec<AluOpRecord<F>>, CircuitError> {
-        let mut alu_records = Vec::with_capacity(1 << 16);
+        let mut alu_records = Vec::with_capacity(self.circuit.ops.len());
 
-        for i in 0..self.circuit.ops.len() {
-            let op = &self.circuit.ops[i];
+        for op in &self.circuit.ops {
             match op {
                 Op::Const { out, val } => {
                     self.set_witness(*out, *val)?;
@@ -285,7 +284,7 @@ impl<'a, F: Field> CircuitRunner<'a, F> {
                     match kind {
                         AluOpKind::Add => {
                             let a_val = self.get_witness(a)?;
-                            if let Ok(b_val) = self.get_witness(b) {
+                            if let Some(b_val) = self.witness_value(b) {
                                 let result = a_val + b_val;
                                 self.set_witness(out, result)?;
                                 alu_records.push(AluOpRecord {
@@ -318,7 +317,7 @@ impl<'a, F: Field> CircuitRunner<'a, F> {
                         }
                         AluOpKind::Mul => {
                             let a_val = self.get_witness(a)?;
-                            if let Ok(b_val) = self.get_witness(b) {
+                            if let Some(b_val) = self.witness_value(b) {
                                 let result = a_val * b_val;
                                 self.set_witness(out, result)?;
                                 alu_records.push(AluOpRecord {
@@ -448,18 +447,23 @@ impl<'a, F: Field> CircuitRunner<'a, F> {
         Ok(alu_records)
     }
 
+    /// Witness value if the slot exists and is set (`None` = unset or out of range).
+    #[inline(always)]
+    fn witness_value(&self, widx: WitnessId) -> Option<F> {
+        self.witness
+            .get(widx.0 as usize)
+            .and_then(|opt| opt.as_ref().map(Dup::dup))
+    }
+
     /// Gets witness value by ID.
     #[inline(always)]
     fn get_witness(&self, widx: WitnessId) -> Result<F, CircuitError> {
-        self.witness
-            .get(widx.0 as usize)
-            .and_then(|opt| opt.as_ref())
-            .copied()
+        self.witness_value(widx)
             .ok_or(CircuitError::WitnessNotSet { witness_id: widx })
     }
 
     /// Sets witness value by ID.
-    #[inline]
+    #[inline(always)]
     fn set_witness(&mut self, widx: WitnessId, value: F) -> Result<(), CircuitError> {
         if widx.0 as usize >= self.witness.len() {
             return Err(CircuitError::WitnessIdOutOfBounds { witness_id: widx });

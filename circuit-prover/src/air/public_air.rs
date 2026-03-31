@@ -143,7 +143,7 @@ impl<F: Field, const D: usize> PublicAir<F, D> {
                 let op_idx = row_idx * lanes + lane;
                 if op_idx < num_ops {
                     let coeffs = trace.values[op_idx].as_basis_coefficients_slice();
-                    assert_eq!(
+                    debug_assert_eq!(
                         coeffs.len(),
                         D,
                         "extension degree mismatch for PublicTrace value"
