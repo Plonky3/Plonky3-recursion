@@ -18,6 +18,7 @@ use p3_field::{Algebra, BasedVectorSpace, Field, PrimeCharacteristicRing, PrimeF
 use p3_lookup::LookupAir;
 use p3_lookup::folder::{ProverConstraintFolderWithLookups, VerifierConstraintFolderWithLookups};
 use p3_lookup::lookup_traits::Lookup;
+use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_uni_stark::{SymbolicAirBuilder, SymbolicExpression, SymbolicExpressionExt};
 use serde::{Deserialize, Serialize};
@@ -26,6 +27,7 @@ use tracing::instrument;
 
 use crate::air::{AluAir, ConstAir, PublicAir};
 use crate::batch_stark_prover::dynamic_air::transmute_traces;
+use crate::batch_stark_prover::packing::{AirTableShape, TraceTablesLayout};
 use crate::common::{CircuitTableAir, NpoAirBuilder, NpoPreprocessor};
 use crate::config::StarkField;
 use crate::constraint_profile::ConstraintProfile;
@@ -40,7 +42,6 @@ pub use dynamic_air::{
     BatchAir, BatchTableInstance, CloneableBatchAir, DynamicAirEntry, TableProver,
 };
 pub use packing::TablePacking;
-pub(crate) use packing::TraceLengths;
 pub use poseidon2::{
     Poseidon2AirBuilder, Poseidon2AirWrapperInner, Poseidon2Preprocessor, Poseidon2Prover,
     Poseidon2ProverD2, poseidon2_preprocessor, poseidon2_verifier_air_from_config,
@@ -708,18 +709,7 @@ where
         };
         let mut alu_matrix: RowMajorMatrix<Val<SC>> = alu_air.trace_to_matrix(&traces.alu_trace);
         alu_matrix.pad_to_min_power_of_two_height(min_height, Val::<SC>::ZERO);
-
-        // Log trace lengths with the actual scheduled ALU row count.
-        let scheduled_alu_rows = alu_air.scheduled_entry_count();
-        TraceLengths::from_traces(traces, packing, |op| {
-            packing.npo_lanes(op).unwrap_or_else(|| {
-                prover_index_by_type
-                    .get(op)
-                    .map(|&i| self.non_primitive_provers[i].lanes())
-                    .unwrap_or(1)
-            })
-        })
-        .log(Some(scheduled_alu_rows));
+        let alu_scheduled_entries = alu_air.scheduled_entry_count();
 
         // We first handle all non-primitive tables dynamically, which will then be batched alongside primitive ones.
         // Each trace must have a corresponding registered prover for it to be provable.
@@ -794,6 +784,45 @@ where
                 }
             }
         }
+
+        TraceTablesLayout {
+            const_: AirTableShape {
+                main_cols: BaseAir::width(&const_air),
+                prep_cols: ConstAir::<Val<SC>, D>::preprocessed_width(),
+                rows: const_rows,
+                lanes: 1,
+            },
+            public: AirTableShape {
+                main_cols: BaseAir::width(&public_air),
+                prep_cols: public_air.preprocessed_width(),
+                rows: public_rows.div_ceil(public_lanes),
+                lanes: public_lanes,
+            },
+            alu: AirTableShape {
+                main_cols: BaseAir::width(&alu_air),
+                prep_cols: alu_air.preprocessed_width(),
+                rows: alu_scheduled_entries.div_ceil(alu_lanes),
+                lanes: alu_lanes,
+            },
+            non_primitives: dynamic_instances
+                .iter()
+                .map(|inst| {
+                    let prep_cols = BaseAir::preprocessed_trace(&inst.air)
+                        .map(|m| m.width())
+                        .unwrap_or(0);
+                    (
+                        inst.op_type.clone(),
+                        AirTableShape {
+                            main_cols: inst.trace.width(),
+                            prep_cols,
+                            rows: inst.rows,
+                            lanes: inst.lanes,
+                        },
+                    )
+                })
+                .collect(),
+        }
+        .log();
 
         // Wrap AIRs in enum for heterogeneous batching and build instances in fixed order.
         let mut air_storage: Vec<CircuitTableAir<SC, D>> =
