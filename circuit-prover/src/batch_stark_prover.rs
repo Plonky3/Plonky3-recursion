@@ -810,12 +810,17 @@ where
                     let prep_cols = BaseAir::preprocessed_trace(&inst.air)
                         .map(|m| m.width())
                         .unwrap_or(0);
+                    let rows = traces
+                        .non_primitive_traces
+                        .get(&inst.op_type)
+                        .map(|t| t.rows())
+                        .unwrap_or(inst.rows);
                     (
                         inst.op_type.clone(),
                         AirTableShape {
                             main_cols: inst.trace.width(),
                             prep_cols,
-                            rows: inst.rows,
+                            rows,
                             lanes: inst.lanes,
                         },
                     )
