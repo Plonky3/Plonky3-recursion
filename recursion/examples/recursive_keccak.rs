@@ -73,12 +73,12 @@ struct Args {
 
     #[arg(
         long,
-        default_value_t = 3,
+        default_value_t = 2,
         help = "Maximum arity allowed during FRI folding phases"
     )]
     pub max_log_arity: usize,
 
-    #[arg(long, default_value_t = 2, help = "Height of the Merkle cap to open")]
+    #[arg(long, default_value_t = 0, help = "Height of the Merkle cap to open")]
     pub cap_height: usize,
 
     #[arg(
@@ -97,7 +97,7 @@ struct Args {
 
     #[arg(
         long,
-        default_value_t = 16,
+        default_value_t = 15,
         help = "PoW grinding bits during FRI query phase"
     )]
     pub query_pow_bits: usize,
@@ -117,8 +117,22 @@ struct Args {
     pub alu_lanes: usize,
 
     /// Pack this many consecutive HornerAcc steps (same `b`) per ALU row on lane 0 (must be >= 2).
-    #[arg(long, default_value_t = 2)]
+    #[arg(long, default_value_t = 4)]
     pub horner_packed_steps: usize,
+
+    #[arg(
+        long,
+        default_value_t = 1,
+        help = "Number of recompose lanes for the table packing in recursive layers"
+    )]
+    pub recompose_lanes: usize,
+
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "Disable recompose NPO (use only Poseidon2 perm)"
+    )]
+    pub disable_recompose_npo: bool,
 
     // TODO: Update once https://github.com/Plonky3/Plonky3/pull/1329 lands
     #[arg(
@@ -147,6 +161,7 @@ impl Args {
     pub fn table_packing(&self) -> TablePacking {
         TablePacking::new(self.public_lanes, self.alu_lanes)
             .with_horner_pack_k(self.horner_packed_steps)
+            .with_npo_lanes(NpoTypeId::recompose(), self.recompose_lanes)
     }
 }
 
@@ -174,6 +189,7 @@ fn main() {
             &table_packing,
             args.security_level,
             args.zk,
+            args.disable_recompose_npo,
         ),
         FieldOption::BabyBear => baby_bear::run(
             args.num_hashes,
@@ -182,6 +198,7 @@ fn main() {
             &table_packing,
             args.security_level,
             args.zk,
+            args.disable_recompose_npo,
         ),
         FieldOption::Goldilocks => goldilocks::run(
             args.num_hashes,
@@ -190,6 +207,7 @@ fn main() {
             &table_packing,
             args.security_level,
             args.zk,
+            args.disable_recompose_npo,
         ),
     }
 }
@@ -228,7 +246,7 @@ macro_rules! define_field_module {
                 $default_perm_circuit,
                 $backend_width,
                 $backend_rate,
-                noop_enable_recompose
+                enable_recompose
             );
 
             pub fn run(
@@ -238,6 +256,7 @@ macro_rules! define_field_module {
                 table_packing: &TablePacking,
                 security_level: usize,
                 zk: bool,
+                disable_recompose_npo: bool,
             ) {
                 let keccak_air = KeccakAir {};
                 let min_trace_rows: usize =
@@ -251,7 +270,7 @@ macro_rules! define_field_module {
                     keccak_air.generate_trace_rows(effective_num_hashes, fri_params.log_blowup);
 
                 // The base Keccak layer always uses non-ZK uni-stark (p3-uni-stark has no ZK support).
-                let config_0 = config_with_fri_params(fri_params, security_level, true);
+                let config_0 = config_with_fri_params(fri_params, security_level, disable_recompose_npo);
                 let pis: Vec<F> = vec![];
 
                 let proof_0 = prove(&config_0, &keccak_air, trace, &pis);
@@ -287,18 +306,26 @@ macro_rules! define_field_module {
                 let mut stable_prep: Option<NextLayerPrepCache<ConfigWithFriParams>> = None;
 
                 for layer in 1..=num_recursive_layers {
-                    let layer_table_packing = if layer == 1 {
-                        TablePacking::new(1, 2)
-                            .with_horner_pack_k(table_packing.horner_packed_steps())
-                    } else {
-                        table_packing.clone()
-                    }
-                    .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup);
+                    let layer_table_packing = {
+                        let p = if layer == 1 {
+                            let mut p = TablePacking::new(1, 2)
+                                .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup);
+                            if let Some(rl) = table_packing.npo_lanes(&NpoTypeId::recompose()) {
+                                p = p.with_npo_lanes(NpoTypeId::recompose(), rl);
+                            }
+                            p
+                        } else {
+                            table_packing.clone()
+                        }
+                        .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup);
+                        p
+                    };
                     let params = ProveNextLayerParams {
                         table_packing: layer_table_packing,
                         constraint_profile: ConstraintProfile::Standard,
                     };
-                    let config = config_with_fri_params(fri_params, security_level, true);
+                    let config =
+                        config_with_fri_params(fri_params, security_level, disable_recompose_npo);
 
                     let out = if layer == 1 {
                         let input = RecursionInput::UniStark {
@@ -359,6 +386,9 @@ macro_rules! define_field_module {
                     let mut prover = BatchStarkProver::new(config.clone())
                         .with_table_packing(params.table_packing.clone());
                     prover.register_poseidon2_table::<$d>($poseidon2_config);
+                    if !disable_recompose_npo {
+                        prover.register_recompose_table::<$d>();
+                    }
                     prover
                         .verify_all_tables(&out.0, out.1.common_data())
                         .unwrap_or_else(|e| panic!("Failed to verify layer {layer}: {e:?}"));

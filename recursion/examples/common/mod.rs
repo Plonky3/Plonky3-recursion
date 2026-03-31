@@ -473,12 +473,13 @@ macro_rules! define_field_module_types {
         fn config_with_fri_params_zk(
             fp: &FriParams,
             security_level: usize,
+            disable_recompose_npo: bool,
             rng_seed: u64,
         ) -> ConfigWithFriParamsZk {
             ConfigWithFriParamsZk {
                 config: Arc::new(create_config_zk(fp, security_level, rng_seed)),
                 fri_verifier_params: create_fri_verifier_params(fp),
-                disable_recompose_npo: false,
+                disable_recompose_npo,
             }
         }
     };
