@@ -65,12 +65,12 @@ struct Args {
 
     #[arg(
         long,
-        default_value_t = 3,
+        default_value_t = 2,
         help = "Maximum arity allowed during FRI folding phases"
     )]
     pub max_log_arity: usize,
 
-    #[arg(long, default_value_t = 2, help = "Height of the Merkle cap to open")]
+    #[arg(long, default_value_t = 0, help = "Height of the Merkle cap to open")]
     pub cap_height: usize,
 
     #[arg(
@@ -89,7 +89,7 @@ struct Args {
 
     #[arg(
         long,
-        default_value_t = 16,
+        default_value_t = 15,
         help = "PoW grinding bits during FRI query phase"
     )]
     pub query_pow_bits: usize,
@@ -109,8 +109,22 @@ struct Args {
     pub alu_lanes: usize,
 
     /// Pack this many consecutive HornerAcc steps (same `b`) per ALU row on lane 0 (must be >= 2).
-    #[arg(long, default_value_t = 2)]
+    #[arg(long, default_value_t = 4)]
     pub horner_packed_steps: usize,
+
+    #[arg(
+        long,
+        default_value_t = 1,
+        help = "Number of recompose lanes for the table packing in recursive layers"
+    )]
+    pub recompose_lanes: usize,
+
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "Disable recompose NPO (use only Poseidon2 perm)"
+    )]
+    pub disable_recompose_npo: bool,
 
     // TODO: Update once https://github.com/Plonky3/Plonky3/pull/1329 lands
     #[arg(
@@ -139,6 +153,7 @@ impl Args {
     pub fn table_packing(&self) -> TablePacking {
         TablePacking::new(self.public_lanes, self.alu_lanes)
             .with_horner_pack_k(self.horner_packed_steps)
+            .with_npo_lanes(NpoTypeId::recompose(), self.recompose_lanes)
     }
 }
 
@@ -166,6 +181,7 @@ fn main() {
             &table_packing,
             args.security_level,
             args.zk,
+            args.disable_recompose_npo,
         ),
         FieldOption::BabyBear => baby_bear::run(
             args.n,
@@ -174,6 +190,7 @@ fn main() {
             &table_packing,
             args.security_level,
             args.zk,
+            args.disable_recompose_npo,
         ),
         FieldOption::Goldilocks => goldilocks::run(
             args.n,
@@ -182,6 +199,7 @@ fn main() {
             &table_packing,
             args.security_level,
             args.zk,
+            args.disable_recompose_npo,
         ),
     }
 }
@@ -222,7 +240,7 @@ macro_rules! define_field_module {
                 $default_perm_circuit,
                 $backend_width,
                 $backend_rate,
-                noop_enable_recompose
+                enable_recompose
             );
 
             pub fn run(
@@ -232,6 +250,7 @@ macro_rules! define_field_module {
                 table_packing: &TablePacking,
                 security_level: usize,
                 zk: bool,
+                disable_recompose_npo: bool,
             ) {
                 let mut builder = CircuitBuilder::new();
                 let expected_result = builder.alloc_public_input("expected_result");
@@ -248,6 +267,7 @@ macro_rules! define_field_module {
                 builder.connect(b, expected_result);
 
                 let base_circuit = builder.build().unwrap();
+                // Base Fibonacci circuit has no BF→EF recompose ops; omit recompose NPO packing.
                 let table_packing_0 = TablePacking::new(1, 1)
                     .with_horner_pack_k(table_packing.horner_packed_steps())
                     .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup);
@@ -264,8 +284,8 @@ macro_rules! define_field_module {
                         .for_extension_degree::<$d>();
 
                 macro_rules! run_layers {
-                    ($cfg_type:ident, $cfg_fn:expr) => {{
-                        let config_0: $cfg_type = $cfg_fn(0);
+                    ($cfg_type:ident, $config_0:expr, $config_recursive:expr) => {{
+                        let config_0: $cfg_type = $config_0;
                         let (airs_degrees_0, primitive_columns_0, non_primitive_columns_0) =
                             get_airs_and_degrees_with_prep::<$cfg_type, F, 1>(
                                 &base_circuit,
@@ -324,7 +344,7 @@ macro_rules! define_field_module {
                                 constraint_profile: ConstraintProfile::Standard,
                             };
                             let seed = stable_seed.unwrap_or(layer as u64);
-                            let config: $cfg_type = $cfg_fn(seed);
+                            let config: $cfg_type = $config_recursive(seed);
 
                             let input = output.into_recursion_input::<BatchOnly>();
 
@@ -370,6 +390,9 @@ macro_rules! define_field_module {
                             let mut prover = BatchStarkProver::new(config.clone())
                                 .with_table_packing(params.table_packing.clone());
                             prover.register_poseidon2_table::<$d>($poseidon2_config);
+                            if !disable_recompose_npo {
+                                prover.register_recompose_table::<$d>();
+                            }
                             prover
                                 .verify_all_tables(&out.0, out.1.common_data())
                                 .unwrap_or_else(|e| {
@@ -382,13 +405,30 @@ macro_rules! define_field_module {
                 }
 
                 if zk {
-                    run_layers!(ConfigWithFriParamsZk, |seed| {
-                        config_with_fri_params_zk(fri_params, security_level, seed)
-                    });
+                    run_layers!(
+                        ConfigWithFriParamsZk,
+                        config_with_fri_params_zk(fri_params, security_level, true, 0),
+                        |seed| {
+                            config_with_fri_params_zk(
+                                fri_params,
+                                security_level,
+                                disable_recompose_npo,
+                                seed,
+                            )
+                        }
+                    );
                 } else {
-                    run_layers!(ConfigWithFriParams, |_seed| {
-                        config_with_fri_params(fri_params, security_level, true)
-                    });
+                    run_layers!(
+                        ConfigWithFriParams,
+                        config_with_fri_params(fri_params, security_level, true),
+                        |_seed| {
+                            config_with_fri_params(
+                                fri_params,
+                                security_level,
+                                disable_recompose_npo,
+                            )
+                        }
+                    );
                 }
 
                 info!("Recursive proof verified successfully");

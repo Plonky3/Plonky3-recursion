@@ -329,6 +329,7 @@ macro_rules! define_field_module {
                 zk: bool,
                 disable_recompose_npo: bool,
             ) {
+                // Leaf dummy circuits have no recompose ops; omit recompose NPO packing on base.
                 let base_table_packing = TablePacking::new(1, 1)
                     .with_horner_pack_k(table_packing.horner_packed_steps())
                     .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup);
@@ -342,13 +343,13 @@ macro_rules! define_field_module {
                 info!("Binary aggregation tree: {num_leaves} base proofs, {tree_depth} levels");
 
                 macro_rules! run_aggregation {
-                    ($cfg_type:ident, $cfg_fn:expr, $prove_base_fn:ident) => {{
-                        let config: $cfg_type = $cfg_fn(0);
+                    ($cfg_type:ident, $config_base:expr, $config_agg:expr, $prove_base_fn:ident) => {{
+                        let config_base: $cfg_type = $config_base;
                         let mut proofs: Vec<RecursionOutput<$cfg_type>> = (0..num_leaves)
                             .map(|i| {
                                 let val = (i + 1) as u32;
                                 info!("Base proof {i} (const = {val})");
-                                $prove_base_fn(val, &config, &base_table_packing)
+                                $prove_base_fn(val, &config_base, &base_table_packing)
                             })
                             .collect();
 
@@ -374,7 +375,7 @@ macro_rules! define_field_module {
                                 ),
                                 constraint_profile: ConstraintProfile::Standard,
                             };
-                            let agg_config: $cfg_type = $cfg_fn(level as u64);
+                            let agg_config: $cfg_type = $config_agg(level as u64);
 
                             let mut next_level = Vec::with_capacity(pairs);
                             for pair_idx in 0..pairs {
@@ -412,13 +413,24 @@ macro_rules! define_field_module {
                 if zk {
                     run_aggregation!(
                         ConfigWithFriParamsZk,
-                        |seed| config_with_fri_params_zk(fri_params, security_level, seed),
+                        config_with_fri_params_zk(fri_params, security_level, true, 0),
+                        |lvl| config_with_fri_params_zk(
+                            fri_params,
+                            security_level,
+                            disable_recompose_npo,
+                            lvl,
+                        ),
                         prove_dummy_circuit_zk
                     );
                 } else {
                     run_aggregation!(
                         ConfigWithFriParams,
-                        |_seed| config_with_fri_params(fri_params, security_level, disable_recompose_npo),
+                        config_with_fri_params(fri_params, security_level, true),
+                        |_lvl| config_with_fri_params(
+                            fri_params,
+                            security_level,
+                            disable_recompose_npo,
+                        ),
                         prove_dummy_circuit
                     );
                 }
