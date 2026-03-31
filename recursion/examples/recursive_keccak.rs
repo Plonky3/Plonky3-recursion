@@ -309,7 +309,7 @@ macro_rules! define_field_module {
                     let layer_table_packing = {
                         let p = if layer == 1 {
                             let mut p = TablePacking::new(1, 2)
-                                .with_horner_pack_k(table_packing.horner_packed_steps());
+                                .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup);
                             if let Some(rl) = table_packing.npo_lanes(&NpoTypeId::recompose()) {
                                 p = p.with_npo_lanes(NpoTypeId::recompose(), rl);
                             }

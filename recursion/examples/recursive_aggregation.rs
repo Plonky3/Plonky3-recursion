@@ -329,9 +329,7 @@ macro_rules! define_field_module {
                 zk: bool,
                 disable_recompose_npo: bool,
             ) {
-                // Leaf dummy circuits have no recompose ops; omit recompose NPO packing on base.
                 let base_table_packing = TablePacking::new(1, 1)
-                    .with_horner_pack_k(table_packing.horner_packed_steps())
                     .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup);
                 let backend = FriRecursionBackend::<$backend_width, $backend_rate>::new(
                     $poseidon2_config,
