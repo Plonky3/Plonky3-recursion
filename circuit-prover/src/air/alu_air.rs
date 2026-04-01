@@ -89,6 +89,7 @@ use p3_lookup::LookupAir;
 use p3_lookup::lookup_traits::{Direction, Kind, Lookup};
 use p3_matrix::dense::RowMajorMatrix;
 use p3_uni_stark::SymbolicExpression;
+use tracing::instrument;
 
 use super::alu_columns::{
     AluMainLaneCols, AluPackedHornerStepPrepCols, AluPrepLaneCols, EXTRA_PREP_SEL_PACKED,
@@ -274,6 +275,7 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AluAir<F, D> {
     /// Even with `lanes == 1`, scheduling is required: chains must start at
     /// row 0 so the cyclic wrap from the last (zero-padded) row provides
     /// `prev_out = 0`, and separators must appear between chains.
+    #[instrument(skip_all, name = "AluAir::compute_schedule")]
     fn compute_schedule(
         preprocessed: &[F],
         lanes: usize,
@@ -418,6 +420,7 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AluAir<F, D> {
     }
 
     /// Convert an `AluTrace` into a `RowMajorMatrix` suitable for the STARK prover.
+    #[instrument(skip_all, name = "AluAir::trace_to_matrix")]
     pub fn trace_to_matrix<ExtF: BasedVectorSpace<F>>(
         &self,
         trace: &AluTrace<ExtF>,

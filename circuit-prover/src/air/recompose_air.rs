@@ -31,6 +31,7 @@ use p3_field::{Field, PrimeCharacteristicRing};
 use p3_lookup::lookup_traits::{Direction, Kind, Lookup};
 use p3_lookup::{LookupAir, LookupInput};
 use p3_matrix::dense::RowMajorMatrix;
+use tracing::instrument;
 
 use super::recompose_columns::{RECOMPOSE_PREP_LANE_COL_MAP, RECOMPOSE_PREP_LANE_WIDTH};
 use super::utils::create_symbolic_variables;
@@ -70,6 +71,7 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> RecomposeAir<F, D> {
     }
 
     /// Build the main trace matrix from recompose circuit rows with lane packing.
+    #[instrument(skip_all, name = "RecomposeAir::build_trace")]
     pub fn trace_to_matrix(
         rows: &[p3_circuit::ops::recompose::RecomposeCircuitRow<F>],
         lanes: usize,

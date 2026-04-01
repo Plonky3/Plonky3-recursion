@@ -35,6 +35,7 @@ use p3_field::{BasedVectorSpace, Field};
 use p3_lookup::LookupAir;
 use p3_lookup::lookup_traits::{Direction, Kind, Lookup};
 use p3_matrix::dense::RowMajorMatrix;
+use tracing::instrument;
 
 use crate::air::column_layout::WITNESS_LOOKUP_PREP_LANE_WIDTH;
 use crate::air::utils::{create_symbolic_variables, get_index_lookups};
@@ -106,6 +107,7 @@ impl<F: Field, const D: usize> ConstAir<F, D> {
     /// 1. Decomposing each extension element in the trace into `D` basis coordinates.
     /// 2. Padding the trace to have a power-of-two number of rows.
     #[inline]
+    #[instrument(skip_all, name = "ConstAir::build_trace")]
     pub fn trace_to_matrix<ExtF: BasedVectorSpace<F>>(
         trace: &ConstTrace<ExtF>,
     ) -> RowMajorMatrix<F> {
