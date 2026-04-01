@@ -34,6 +34,7 @@ use p3_circuit::tables::ConstTrace;
 use p3_field::{BasedVectorSpace, Field};
 use p3_lookup::LookupAir;
 use p3_lookup::lookup_traits::{Direction, Kind, Lookup};
+use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
 use tracing::instrument;
 
@@ -110,6 +111,7 @@ impl<F: Field, const D: usize> ConstAir<F, D> {
     #[instrument(skip_all, name = "ConstAir::build_trace")]
     pub fn trace_to_matrix<ExtF: BasedVectorSpace<F>>(
         trace: &ConstTrace<ExtF>,
+        min_height: usize,
     ) -> RowMajorMatrix<F> {
         let height = trace.values.len();
         assert_eq!(
@@ -136,7 +138,10 @@ impl<F: Field, const D: usize> ConstAir<F, D> {
 
         // Pad to power of two by repeating last row
         let mut mat = RowMajorMatrix::new(values, width);
-        mat.pad_to_power_of_two_height(F::ZERO);
+        mat.pad_to_min_power_of_two_height(
+            core::cmp::max(min_height, mat.height().next_power_of_two()),
+            F::ZERO,
+        );
 
         mat
     }
@@ -250,7 +255,7 @@ mod tests {
         };
 
         // Convert to matrix using the ConstAir
-        let matrix = ConstAir::<F, 1>::trace_to_matrix(&trace);
+        let matrix = ConstAir::<F, 1>::trace_to_matrix(&trace, 1);
 
         // Verify matrix dimensions
         assert_eq!(matrix.width(), 1);
@@ -332,7 +337,7 @@ mod tests {
         };
 
         // Convert to matrix for D=4 extension field
-        let matrix: RowMajorMatrix<F> = ConstAir::<F, 4>::trace_to_matrix(&trace);
+        let matrix: RowMajorMatrix<F> = ConstAir::<F, 4>::trace_to_matrix(&trace, 1);
 
         // Verify matrix dimensions: D = 4 (4 value coefficients)
         assert_eq!(matrix.width(), 4);

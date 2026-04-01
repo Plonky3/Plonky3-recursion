@@ -29,6 +29,7 @@ use p3_circuit::tables::PublicTrace;
 use p3_field::{BasedVectorSpace, Field};
 use p3_lookup::LookupAir;
 use p3_lookup::lookup_traits::{Direction, Kind, Lookup};
+use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
 use tracing::instrument;
 
@@ -127,6 +128,7 @@ impl<F: Field, const D: usize> PublicAir<F, D> {
     pub fn trace_to_matrix<ExtF: BasedVectorSpace<F>>(
         trace: &PublicTrace<ExtF>,
         lanes: usize,
+        min_height: usize,
     ) -> RowMajorMatrix<F> {
         let num_ops = trace.values.len();
         assert_eq!(
@@ -159,7 +161,11 @@ impl<F: Field, const D: usize> PublicAir<F, D> {
         }
 
         let mut mat = RowMajorMatrix::new(values, row_width);
-        mat.pad_to_power_of_two_height(F::ZERO);
+        mat.pad_to_min_power_of_two_height(
+            core::cmp::max(min_height, mat.height().next_power_of_two()),
+            F::ZERO,
+        );
+
         mat
     }
 }
@@ -268,7 +274,7 @@ mod tests {
             index: indices,
         };
 
-        let matrix = PublicAir::<F, 1>::trace_to_matrix(&trace, lanes);
+        let matrix = PublicAir::<F, 1>::trace_to_matrix(&trace, lanes, 1);
 
         // Verify matrix dimensions
         assert_eq!(matrix.width(), 1); // D = 1, lanes = 1
@@ -326,7 +332,7 @@ mod tests {
             index: indices,
         };
 
-        let matrix = PublicAir::<F, 1>::trace_to_matrix(&trace, lanes);
+        let matrix = PublicAir::<F, 1>::trace_to_matrix(&trace, lanes, 1);
 
         // Verify matrix dimensions
         assert_eq!(matrix.width(), 1); // D = 1, lanes = 1
@@ -410,7 +416,7 @@ mod tests {
             values,
             index: indices,
         };
-        let matrix = PublicAir::<F, 4>::trace_to_matrix(&trace, lanes);
+        let matrix = PublicAir::<F, 4>::trace_to_matrix(&trace, lanes, 1);
 
         // Verify matrix dimensions
         assert_eq!(matrix.width(), 4); // D = 4, lanes = 1
@@ -461,7 +467,7 @@ mod tests {
             values,
             index: indices,
         };
-        PublicAir::<F, 1>::trace_to_matrix(&trace, 1);
+        PublicAir::<F, 1>::trace_to_matrix(&trace, 1, 1);
     }
 
     #[test]

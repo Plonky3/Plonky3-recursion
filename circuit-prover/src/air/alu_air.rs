@@ -87,6 +87,7 @@ use p3_circuit::tables::AluTrace;
 use p3_field::{BasedVectorSpace, Dup, Field, PrimeCharacteristicRing};
 use p3_lookup::LookupAir;
 use p3_lookup::lookup_traits::{Direction, Kind, Lookup};
+use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_uni_stark::SymbolicExpression;
 use tracing::instrument;
@@ -424,6 +425,7 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AluAir<F, D> {
     pub fn trace_to_matrix<ExtF: BasedVectorSpace<F>>(
         &self,
         trace: &AluTrace<ExtF>,
+        min_height: usize,
     ) -> RowMajorMatrix<F> {
         let lanes = self.lanes;
         assert!(lanes > 0, "lane count must be non-zero");
@@ -493,7 +495,11 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AluAir<F, D> {
         }
 
         let mut mat = RowMajorMatrix::new(values, width);
-        mat.pad_to_power_of_two_height(F::ZERO);
+        mat.pad_to_min_power_of_two_height(
+            core::cmp::max(min_height, mat.height().next_power_of_two()),
+            F::ZERO,
+        );
+
         mat
     }
 
@@ -925,7 +931,7 @@ mod tests {
 
         let preprocessed_values = trace_to_preprocessed::<Val, _, 1>(&trace);
         let air = AluAir::<Val, 1>::new_with_preprocessed(n, 1, preprocessed_values, 2);
-        let matrix: RowMajorMatrix<Val> = air.trace_to_matrix(&trace);
+        let matrix: RowMajorMatrix<Val> = air.trace_to_matrix(&trace, 1);
         assert_eq!(matrix.width(), air.total_width());
 
         let config = build_test_config();
@@ -960,7 +966,7 @@ mod tests {
 
         let preprocessed_values = trace_to_preprocessed::<Val, _, 1>(&trace);
         let air = AluAir::<Val, 1>::new_with_preprocessed(n, 1, preprocessed_values, 2);
-        let matrix: RowMajorMatrix<Val> = air.trace_to_matrix(&trace);
+        let matrix: RowMajorMatrix<Val> = air.trace_to_matrix(&trace, 1);
 
         let config = build_test_config();
         let pis: Vec<Val> = vec![];
@@ -997,7 +1003,7 @@ mod tests {
 
         let preprocessed_values = trace_to_preprocessed::<Val, _, 1>(&trace);
         let air = AluAir::<Val, 1>::new_with_preprocessed(n, 1, preprocessed_values, 2);
-        let matrix: RowMajorMatrix<Val> = air.trace_to_matrix(&trace);
+        let matrix: RowMajorMatrix<Val> = air.trace_to_matrix(&trace, 1);
 
         let config = build_test_config();
         let pis: Vec<Val> = vec![];
@@ -1033,7 +1039,7 @@ mod tests {
 
         let preprocessed_values = trace_to_preprocessed::<Val, _, 1>(&trace);
         let air = AluAir::<Val, 1>::new_with_preprocessed(n, 1, preprocessed_values, 2);
-        let matrix: RowMajorMatrix<Val> = air.trace_to_matrix(&trace);
+        let matrix: RowMajorMatrix<Val> = air.trace_to_matrix(&trace, 1);
 
         let config = build_test_config();
         let pis: Vec<Val> = vec![];
@@ -1076,7 +1082,7 @@ mod tests {
 
         let preprocessed_values = trace_to_preprocessed::<Val, _, 1>(&trace);
         let air = AluAir::<Val, 1>::new_with_preprocessed(2, 1, preprocessed_values, 2);
-        let matrix: RowMajorMatrix<Val> = air.trace_to_matrix(&trace);
+        let matrix: RowMajorMatrix<Val> = air.trace_to_matrix(&trace, 1);
 
         let config = build_test_config();
         let pis: Vec<Val> = vec![];
@@ -1122,7 +1128,7 @@ mod tests {
 
         let preprocessed_values = trace_to_preprocessed::<Val, _, 1>(&trace);
         let air = AluAir::<Val, 1>::new_with_preprocessed(n, 1, preprocessed_values, 2);
-        let matrix: RowMajorMatrix<Val> = air.trace_to_matrix(&trace);
+        let matrix: RowMajorMatrix<Val> = air.trace_to_matrix(&trace, 1);
 
         let config = build_test_config();
         let pis: Vec<Val> = vec![];
@@ -1159,7 +1165,7 @@ mod tests {
         let preprocessed_values = trace_to_preprocessed::<Val, _, 1>(&trace);
         let air = AluAir::<Val, 1>::new_with_preprocessed(n, 1, preprocessed_values, K);
         assert_eq!(air.horner_packed_steps, K);
-        let matrix: RowMajorMatrix<Val> = air.trace_to_matrix(&trace);
+        let matrix: RowMajorMatrix<Val> = air.trace_to_matrix(&trace, 1);
 
         let config = build_test_config();
         let pis: Vec<Val> = vec![];
@@ -1209,7 +1215,7 @@ mod tests {
         let w = Val::from_u64(11); // BabyBear's binomial extension uses w=11
 
         let air = AluAir::<Val, 4>::new_binomial_with_preprocessed(n, 1, w, preprocessed_values, 2);
-        let matrix: RowMajorMatrix<Val> = air.trace_to_matrix(&trace);
+        let matrix: RowMajorMatrix<Val> = air.trace_to_matrix(&trace, 1);
         assert_eq!(matrix.width(), air.total_width());
         let (prover_data, verifier_data) =
             setup_preprocessed(&config, &air, log2_ceil_usize(matrix.height())).unwrap();
@@ -1248,7 +1254,7 @@ mod tests {
 
         let preprocessed_values = trace_to_preprocessed::<Val, _, 4>(&trace);
         let air = AluAir::<Val, 4>::new_binomial_with_preprocessed(n, 1, w, preprocessed_values, 2);
-        let matrix: RowMajorMatrix<Val> = air.trace_to_matrix(&trace);
+        let matrix: RowMajorMatrix<Val> = air.trace_to_matrix(&trace, 1);
 
         let config = build_test_config();
         let pis: Vec<Val> = vec![];
@@ -1288,7 +1294,7 @@ mod tests {
 
         let preprocessed_values = trace_to_preprocessed::<Val, _, 4>(&trace);
         let air = AluAir::<Val, 4>::new_binomial_with_preprocessed(n, 1, w, preprocessed_values, 2);
-        let matrix: RowMajorMatrix<Val> = air.trace_to_matrix(&trace);
+        let matrix: RowMajorMatrix<Val> = air.trace_to_matrix(&trace, 1);
 
         let config = build_test_config();
         let pis: Vec<Val> = vec![];
