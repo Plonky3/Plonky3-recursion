@@ -821,7 +821,7 @@ where
                         AirTableShape {
                             main_cols: inst.trace.width(),
                             prep_cols,
-                            rows,
+                            rows: rows / inst.lanes,
                             lanes: inst.lanes,
                         },
                     )
