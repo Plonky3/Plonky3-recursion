@@ -65,13 +65,14 @@ fn bench_trace_to_matrix(c: &mut Criterion) {
                 let mut runner = circuit.runner();
                 runner.set_public_inputs(&[expected_fib]).unwrap();
                 let traces = runner.run().unwrap();
-                let _ = black_box(ConstAir::<F, 1>::trace_to_matrix(&traces.const_trace));
+                let _ = black_box(ConstAir::<F, 1>::trace_to_matrix(&traces.const_trace, 1));
                 let _ = black_box(PublicAir::<F, 1>::trace_to_matrix(
                     &traces.public_trace,
                     lanes_p,
+                    1,
                 ));
                 let alu_air = AluAir::<F, 1>::new(traces.alu_trace.values.len(), lanes_a);
-                let _ = black_box(alu_air.trace_to_matrix(&traces.alu_trace));
+                let _ = black_box(alu_air.trace_to_matrix(&traces.alu_trace, 1));
             });
         });
     }

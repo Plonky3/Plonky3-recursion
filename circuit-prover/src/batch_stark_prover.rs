@@ -659,9 +659,8 @@ where
         let const_prep = primitive[PrimitiveOpType::Const as usize].clone();
         let const_air = ConstAir::<Val<SC>, D>::new_with_preprocessed(const_rows, const_prep)
             .with_min_height(min_height);
-        let mut const_matrix: RowMajorMatrix<Val<SC>> =
-            ConstAir::<Val<SC>, D>::trace_to_matrix(&traces.const_trace);
-        const_matrix.pad_to_min_power_of_two_height(min_height, Val::<SC>::ZERO);
+        let const_matrix: RowMajorMatrix<Val<SC>> =
+            ConstAir::<Val<SC>, D>::trace_to_matrix(&traces.const_trace, min_height);
 
         // Public — reduce lanes to 1 if the table has only dummy operations.
         let public_trace_only_dummy = traces.public_trace.values.len() <= 1;
@@ -683,9 +682,11 @@ where
         let public_air =
             PublicAir::<Val<SC>, D>::new_with_preprocessed(public_rows, public_lanes, public_prep)
                 .with_min_height(min_height);
-        let mut public_matrix: RowMajorMatrix<Val<SC>> =
-            PublicAir::<Val<SC>, D>::trace_to_matrix(&traces.public_trace, public_lanes);
-        public_matrix.pad_to_min_power_of_two_height(min_height, Val::<SC>::ZERO);
+        let public_matrix: RowMajorMatrix<Val<SC>> = PublicAir::<Val<SC>, D>::trace_to_matrix(
+            &traces.public_trace,
+            public_lanes,
+            min_height,
+        );
 
         // ALU — preprocessed is already in 10-col format (with multiplicities) from
         // get_airs_and_degrees_with_prep. When the trace is empty, a dummy row is included.
@@ -707,8 +708,8 @@ where
             )
             .with_min_height(min_height)
         };
-        let mut alu_matrix: RowMajorMatrix<Val<SC>> = alu_air.trace_to_matrix(&traces.alu_trace);
-        alu_matrix.pad_to_min_power_of_two_height(min_height, Val::<SC>::ZERO);
+        let alu_matrix: RowMajorMatrix<Val<SC>> =
+            alu_air.trace_to_matrix(&traces.alu_trace, min_height);
         let alu_scheduled_entries = alu_air.scheduled_entry_count();
 
         // We first handle all non-primitive tables dynamically, which will then be batched alongside primitive ones.
@@ -820,7 +821,7 @@ where
                         AirTableShape {
                             main_cols: inst.trace.width(),
                             prep_cols,
-                            rows,
+                            rows: rows / inst.lanes,
                             lanes: inst.lanes,
                         },
                     )
