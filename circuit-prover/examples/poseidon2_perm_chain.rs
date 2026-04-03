@@ -103,7 +103,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
 
         let (_op_id, outputs) = builder.add_poseidon2_perm(&Poseidon2PermCall {
-            config: Poseidon2Config::KoalaBearD4Width16,
+            config: Poseidon2Config::KOALA_BEAR_D4_W16,
             new_start: is_first,
             merkle_path: false,
             mmcs_bit: None,
@@ -129,9 +129,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     let circuit = builder.build()?;
     let expr_to_widx = circuit.expr_to_widx.clone();
 
-    let stark_config = config::koala_bear().build();
+    let stark_config = config::koala_bear();
     let table_packing = TablePacking::new(2, 2);
-    let poseidon2_config = Poseidon2Config::KoalaBearD4Width16;
+    let poseidon2_config = Poseidon2Config::KOALA_BEAR_D4_W16;
     let npo_prep: Vec<Box<dyn NpoPreprocessor<Base>>> = vec![
         Box::new(Poseidon2Preprocessor),
         Box::new(RecomposePreprocessor),
@@ -180,7 +180,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         traces
             .non_primitive_traces
             .get(&NpoTypeId::poseidon2_perm(
-                Poseidon2Config::KoalaBearD4Width16
+                Poseidon2Config::KOALA_BEAR_D4_W16
             ))
             .is_some_and(|t| t.rows() == chain_length),
         "Poseidon2 trace should contain one row per perm op"

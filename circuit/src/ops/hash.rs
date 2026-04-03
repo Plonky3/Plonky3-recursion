@@ -78,7 +78,7 @@ mod tests {
 
     impl Poseidon2Params for DummyParams {
         type BaseField = F;
-        const CONFIG: Poseidon2Config = Poseidon2Config::BabyBearD4Width16;
+        const CONFIG: Poseidon2Config = Poseidon2Config::BABY_BEAR_D4_W16;
     }
 
     #[test]
@@ -109,7 +109,7 @@ mod tests {
                 .collect();
 
             let outputs = builder
-                .add_hash_slice(&Poseidon2Config::BabyBearD4Width16, &input_exprs, true)
+                .add_hash_slice(&Poseidon2Config::BABY_BEAR_D4_W16, &input_exprs, true)
                 .unwrap();
 
             let out0_pi = builder.public_input();
@@ -181,7 +181,7 @@ mod tests {
             .collect();
 
         let outputs = builder
-            .add_hash_slice(&Poseidon2Config::BabyBearD4Width16, &input_exprs, true)
+            .add_hash_slice(&Poseidon2Config::BABY_BEAR_D4_W16, &input_exprs, true)
             .unwrap();
 
         let out0_pi = builder.public_input();

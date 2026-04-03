@@ -88,7 +88,7 @@ fn test_mul_verifier_circuit() -> Result<(), VerificationError> {
         &verifier_inputs.air_public_targets,
         &verifier_inputs.preprocessed_commit,
         &fri_verifier_params,
-        Poseidon2Config::BabyBearD4Width16,
+        Poseidon2Config::BABY_BEAR_D4_W16,
     )?;
 
     // Build the circuit

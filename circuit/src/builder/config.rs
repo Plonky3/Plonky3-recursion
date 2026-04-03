@@ -48,7 +48,7 @@ mod tests {
     fn test_builder_config_default() {
         let config = BuilderConfig::default();
         assert!(!config.is_op_enabled(&NpoTypeId::poseidon2_perm(
-            Poseidon2Config::BabyBearD4Width16,
+            Poseidon2Config::BABY_BEAR_D4_W16,
         )));
     }
 
@@ -57,12 +57,12 @@ mod tests {
         let mut config = BuilderConfig::new();
 
         config.enable_op(
-            NpoTypeId::poseidon2_perm(Poseidon2Config::BabyBearD4Width16),
+            NpoTypeId::poseidon2_perm(Poseidon2Config::BABY_BEAR_D4_W16),
             NpoConfig::new(()),
         );
 
         assert!(config.is_op_enabled(&NpoTypeId::poseidon2_perm(
-            Poseidon2Config::BabyBearD4Width16,
+            Poseidon2Config::BABY_BEAR_D4_W16,
         )));
     }
 }

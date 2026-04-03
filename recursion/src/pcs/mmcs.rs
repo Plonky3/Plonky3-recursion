@@ -664,7 +664,7 @@ mod test {
         let log_max_height = log2_ceil_usize(max_height);
         for index in 0..max_height {
             let mut builder = CircuitBuilder::<CF>::new();
-            let permutation_config = Poseidon2Config::KoalaBearD4Width16;
+            let permutation_config = Poseidon2Config::KOALA_BEAR_D4_W16;
             builder.enable_poseidon2_perm::<KoalaBearD4Width16, _>(
                 generate_poseidon2_trace::<CF, KoalaBearD4Width16>,
                 perm.clone(),
@@ -956,7 +956,7 @@ mod test {
         let (commit, prover_data) = mmcs.commit(mats);
 
         let mut builder = CircuitBuilder::<CF>::new();
-        let permutation_config = Poseidon2Config::KoalaBearD4Width16;
+        let permutation_config = Poseidon2Config::KOALA_BEAR_D4_W16;
         let perm = default_koalabear_poseidon2_16();
         builder.enable_poseidon2_perm::<KoalaBearD4Width16, _>(
             generate_poseidon2_trace::<CF, KoalaBearD4Width16>,
@@ -1067,7 +1067,7 @@ mod test {
         {
             use p3_circuit_prover::*;
 
-            let config = p3_circuit_prover::config::koala_bear().build();
+            let config = p3_circuit_prover::config::koala_bear();
             let table_packing = TablePacking::default();
 
             let (airs_degrees, primitive_columns, non_primitive_columns) =
@@ -1091,7 +1091,7 @@ mod test {
             let circuit_prover_data =
                 CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
             let mut prover = BatchStarkProver::new(config).with_table_packing(table_packing);
-            prover.register_poseidon2_table::<4>(Poseidon2Config::KoalaBearD4Width16);
+            prover.register_poseidon2_table::<4>(Poseidon2Config::KOALA_BEAR_D4_W16);
             prover.register_recompose_table::<4>();
 
             let proof = prover
@@ -1142,7 +1142,7 @@ mod test {
 
         for index in 0..max_height {
             let mut builder = CircuitBuilder::<CF>::new();
-            let permutation_config = Poseidon2Config::KoalaBearD4Width16;
+            let permutation_config = Poseidon2Config::KOALA_BEAR_D4_W16;
             builder.enable_poseidon2_perm::<KoalaBearD4Width16, _>(
                 generate_poseidon2_trace::<CF, KoalaBearD4Width16>,
                 perm.clone(),
@@ -1301,7 +1301,7 @@ mod test {
         let log_max_height = log2_ceil_usize(max_height);
         for index in 0..max_height {
             let mut builder = CircuitBuilder::<CF>::new();
-            let permutation_config = Poseidon2Config::KoalaBearD4Width16;
+            let permutation_config = Poseidon2Config::KOALA_BEAR_D4_W16;
             builder.enable_poseidon2_perm::<KoalaBearD4Width16, _>(
                 generate_poseidon2_trace::<CF, KoalaBearD4Width16>,
                 perm.clone(),

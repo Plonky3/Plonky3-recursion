@@ -180,29 +180,29 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
 impl<const WIDTH: usize, const RATE: usize> CircuitChallenger<WIDTH, RATE, Poseidon2Config> {
     /// Create a challenger with BabyBear D4 Width16 configuration (default).
     pub const fn new_babybear() -> Self {
-        Self::new(Poseidon2Config::BabyBearD4Width16)
+        Self::new(Poseidon2Config::BABY_BEAR_D4_W16)
     }
 
     /// Create a challenger with BabyBear D1 Width16 configuration (base field challenges).
     pub const fn new_babybear_base() -> Self {
-        Self::new(Poseidon2Config::BabyBearD1Width16)
+        Self::new(Poseidon2Config::BABY_BEAR_D1_W16)
     }
 
     /// Create a challenger with KoalaBear D4 Width16 configuration.
     pub const fn new_koalabear() -> Self {
-        Self::new(Poseidon2Config::KoalaBearD4Width16)
+        Self::new(Poseidon2Config::KOALA_BEAR_D4_W16)
     }
 
     /// Create a challenger with KoalaBear D1 Width16 configuration (base field challenges).
     pub const fn new_koalabear_base() -> Self {
-        Self::new(Poseidon2Config::KoalaBearD1Width16)
+        Self::new(Poseidon2Config::KOALA_BEAR_D1_W16)
     }
 }
 
 impl CircuitChallenger<8, 4, Poseidon2Config> {
     /// Create a challenger with Goldilocks D2 Width8 configuration.
     pub const fn new_goldilocks() -> Self {
-        Self::new(Poseidon2Config::GoldilocksD2Width8)
+        Self::new(Poseidon2Config::GOLDILOCKS_D2_W8)
     }
 }
 

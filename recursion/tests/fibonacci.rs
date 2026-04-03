@@ -63,7 +63,7 @@ fn build_fibonacci_test_setup() -> FibonacciTestSetup {
         fri_params.log_final_poly_len,
         fri_params.commit_proof_of_work_bits,
         fri_params.query_proof_of_work_bits,
-        Poseidon2Config::BabyBearD4Width16,
+        Poseidon2Config::BABY_BEAR_D4_W16,
     );
 
     let pcs = MyPcs::new(dft, val_mmcs, fri_params);
@@ -120,7 +120,7 @@ fn run_recursive_verifier(
         &verifier_inputs.air_public_targets,
         &None,
         &setup.fri_verifier_params,
-        Poseidon2Config::BabyBearD4Width16,
+        Poseidon2Config::BABY_BEAR_D4_W16,
     )?;
 
     // Build the circuit.
@@ -258,7 +258,7 @@ fn test_truncated_fri_proof() {
         &verifier_inputs.air_public_targets,
         &None,
         &setup.fri_verifier_params,
-        Poseidon2Config::BabyBearD4Width16,
+        Poseidon2Config::BABY_BEAR_D4_W16,
     )
     .unwrap();
     // Build the circuit.

@@ -132,7 +132,7 @@ fn test_fibonacci_batch_verifier() {
         fri_params2.log_final_poly_len,
         fri_params2.commit_proof_of_work_bits,
         fri_params2.query_proof_of_work_bits,
-        Poseidon2Config::KoalaBearD4Width16,
+        Poseidon2Config::KOALA_BEAR_D4_W16,
     );
     let pcs_verif = MyPcs::new(dft2, val_mmcs2, fri_params2);
     let challenger_verif = Challenger::new(perm2);
@@ -173,10 +173,10 @@ fn test_fibonacci_batch_verifier() {
         &fri_verifier_params,
         common,
         &lookup_gadget,
-        Poseidon2Config::KoalaBearD4Width16,
+        Poseidon2Config::KOALA_BEAR_D4_W16,
         &{
             let mut tp: Vec<Box<dyn TableProver<MyConfig>>> = vec![Box::new(Poseidon2Prover::new(
-                Poseidon2Config::KoalaBearD4Width16,
+                Poseidon2Config::KOALA_BEAR_D4_W16,
                 ConstraintProfile::Standard,
             ))];
             tp.extend(recompose_table_provers::<_, 4>(1));
@@ -196,7 +196,7 @@ fn test_fibonacci_batch_verifier() {
     assert!(!public_inputs.is_empty());
 
     let verification_table_packing = TablePacking::new(1, 8);
-    let poseidon2_config = Poseidon2Config::KoalaBearD4Width16;
+    let poseidon2_config = Poseidon2Config::KOALA_BEAR_D4_W16;
     let npo_prep: Vec<Box<dyn NpoPreprocessor<F>>> = vec![
         Box::new(Poseidon2Preprocessor),
         Box::new(RecomposePreprocessor),

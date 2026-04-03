@@ -36,7 +36,7 @@ fn test_babybear_batch_stark_base_field() {
     builder.assert_zero(diff);
 
     let circuit = builder.build().unwrap();
-    let cfg = config::baby_bear().build();
+    let cfg = config::baby_bear();
     let (airs_degrees, primitive_columns, non_primitive_columns) =
         get_airs_and_degrees_with_prep::<BabyBearConfig, _, 1>(
             &circuit,
@@ -76,7 +76,7 @@ fn test_babybear_batch_stark_base_field() {
 #[test]
 fn test_table_lookups() {
     let mut builder = CircuitBuilder::<BabyBear>::new();
-    let cfg = config::baby_bear().build();
+    let cfg = config::baby_bear();
 
     // x + 5*2 - 3 + (-1) == expected
     let x = builder.public_input();
@@ -168,7 +168,7 @@ fn test_table_lookups() {
 fn test_extension_field_batch_stark() {
     const D: usize = 4;
     type Ext4 = BinomialExtensionField<BabyBear, D>;
-    let cfg = config::baby_bear().build();
+    let cfg = config::baby_bear();
 
     let mut builder = CircuitBuilder::<Ext4>::new();
     let x = builder.public_input();
@@ -239,7 +239,7 @@ fn test_extension_field_batch_stark() {
 fn test_extension_field_table_lookups() {
     const D: usize = 4;
     type Ext4 = BinomialExtensionField<BabyBear, D>;
-    let cfg = config::baby_bear().build();
+    let cfg = config::baby_bear();
 
     let mut builder = CircuitBuilder::<Ext4>::new();
     let x = builder.public_input();
@@ -349,7 +349,7 @@ fn test_extension_field_table_lookups() {
 #[test]
 fn test_koalabear_batch_stark_base_field() {
     let mut builder = CircuitBuilder::<KoalaBear>::new();
-    let cfg = config::koala_bear().build();
+    let cfg = config::koala_bear();
 
     // a * b + 100 - (-1) == expected
     let a = builder.public_input();
@@ -405,7 +405,7 @@ fn test_koalabear_batch_stark_extension_field_d8() {
     const D: usize = 8;
     type KBExtField = BinomialExtensionField<KoalaBear, D>;
     let mut builder = CircuitBuilder::<KBExtField>::new();
-    let cfg = config::koala_bear().build();
+    let cfg = config::koala_bear();
 
     // x * y * z == expected
     let x = builder.public_input();
@@ -504,7 +504,7 @@ fn test_goldilocks_batch_stark_binomial_ext2() {
     const D: usize = 2;
     type Ext2 = BinomialExtensionField<Goldilocks, D>;
     let mut builder = CircuitBuilder::<Ext2>::new();
-    let cfg = config::goldilocks().build();
+    let cfg = config::goldilocks();
 
     // x * y + z == expected
     let x = builder.public_input();
@@ -577,7 +577,7 @@ fn test_goldilocks_poseidon2_circuit_build_and_run() {
         perm,
     );
     builder.enable_recompose::<Goldilocks>(generate_recompose_trace::<Goldilocks, Ext2>);
-    let poseidon2_config = Poseidon2Config::GoldilocksD2Width8;
+    let poseidon2_config = Poseidon2Config::GOLDILOCKS_D2_W8;
     let inputs = [builder.public_input(), builder.public_input()];
     let hash_outputs = builder
         .add_hash_slice(&poseidon2_config, &inputs, true)
@@ -662,7 +662,7 @@ fn test_babybear_modulus_constant() {
 fn test_mul_only_circuit_padding() {
     // Circuit with only mul operations; ALU table still needs correct padding/lanes handling.
     let mut builder = CircuitBuilder::<BabyBear>::new();
-    let cfg = config::baby_bear().build();
+    let cfg = config::baby_bear();
 
     let x = builder.public_input();
     let y = builder.public_input();
@@ -706,7 +706,7 @@ fn test_mul_only_circuit_padding() {
 fn test_add_only_circuit_padding() {
     // Circuit with only add operations; ALU table still needs correct padding/lanes handling.
     let mut builder = CircuitBuilder::<BabyBear>::new();
-    let cfg = config::baby_bear().build();
+    let cfg = config::baby_bear();
 
     let x = builder.public_input();
     let y = builder.public_input();

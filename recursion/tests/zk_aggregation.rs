@@ -185,7 +185,7 @@ fn add_zk_batch_verifier_to_circuit(
         &fri_verifier_params,
         &verifier_inputs.common_data,
         &lookup_gadget,
-        Poseidon2Config::KoalaBearD4Width16,
+        Poseidon2Config::KOALA_BEAR_D4_W16,
     )?;
 
     Ok((verifier_inputs, mmcs_op_ids))
@@ -286,7 +286,7 @@ fn test_zk_aggregation() -> Result<(), VerificationError> {
     // --- Step 4: Prove the aggregation circuit itself (non-ZK outer proof) ---
     let config_outer = make_non_zk_config();
 
-    let poseidon2_config = Poseidon2Config::KoalaBearD4Width16;
+    let poseidon2_config = Poseidon2Config::KOALA_BEAR_D4_W16;
     let table_packing = TablePacking::new(1, 8);
     let npo_prep: Vec<Box<dyn NpoPreprocessor<F>>> = vec![
         Box::new(Poseidon2Preprocessor),

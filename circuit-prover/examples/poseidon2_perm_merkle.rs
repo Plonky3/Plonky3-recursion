@@ -172,7 +172,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let (_row0_op_id, _row0_outputs) =
         builder.add_poseidon2_perm(&p3_circuit::ops::Poseidon2PermCall {
-            config: Poseidon2Config::KoalaBearD4Width16,
+            config: Poseidon2Config::KOALA_BEAR_D4_W16,
             new_start: true,
             merkle_path: true,
             mmcs_bit: Some(mmcs_bit_row0),
@@ -190,7 +190,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mmcs_bit_row1 = builder.alloc_const(Ext4::from_prime_subfield(Base::ONE), "mmcs_bit_row1");
     let (row1_op_id, _row1_outputs) =
         builder.add_poseidon2_perm(&p3_circuit::ops::Poseidon2PermCall {
-            config: Poseidon2Config::KoalaBearD4Width16,
+            config: Poseidon2Config::KOALA_BEAR_D4_W16,
             new_start: false,
             merkle_path: true,
             mmcs_bit: Some(mmcs_bit_row1),
@@ -204,7 +204,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let sibling2_inputs: Vec<Option<ExprId>> = vec![None; 4];
     let (row2_op_id, row2_outputs) =
         builder.add_poseidon2_perm(&p3_circuit::ops::Poseidon2PermCall {
-            config: Poseidon2Config::KoalaBearD4Width16,
+            config: Poseidon2Config::KOALA_BEAR_D4_W16,
             new_start: false,
             merkle_path: true,
             mmcs_bit: Some(mmcs_bit_row2),
@@ -220,8 +220,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let circuit = builder.build()?;
     let table_packing = TablePacking::new(4, 4);
-    let poseidon2_config = Poseidon2Config::KoalaBearD4Width16;
-    let stark_config = config::koala_bear().build();
+    let poseidon2_config = Poseidon2Config::KOALA_BEAR_D4_W16;
+    let stark_config = config::koala_bear();
     let npo_prep: Vec<Box<dyn NpoPreprocessor<Base>>> = vec![
         Box::new(Poseidon2Preprocessor),
         Box::new(RecomposePreprocessor),
@@ -270,7 +270,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Check Poseidon2 trace rows and mmcs_index_sum exposure
     let poseidon2_trace = traces
         .non_primitive_trace::<p3_circuit::ops::Poseidon2Trace<Base>>(&NpoTypeId::poseidon2_perm(
-            Poseidon2Config::KoalaBearD4Width16,
+            Poseidon2Config::KOALA_BEAR_D4_W16,
         ))
         .expect("poseidon2 trace missing");
     assert_eq!(poseidon2_trace.total_rows(), 3, "expected three perm rows");

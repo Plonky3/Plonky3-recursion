@@ -38,7 +38,7 @@ pub struct BabyBearD4Width16;
 
 impl Poseidon2Params for BabyBearD4Width16 {
     type BaseField = BabyBear;
-    const CONFIG: Poseidon2Config = Poseidon2Config::BabyBearD4Width16;
+    const CONFIG: Poseidon2Config = Poseidon2Config::BABY_BEAR_D4_W16;
 }
 
 impl BabyBearD4Width16 {
@@ -81,7 +81,7 @@ pub struct BabyBearD4Width24;
 
 impl Poseidon2Params for BabyBearD4Width24 {
     type BaseField = BabyBear;
-    const CONFIG: Poseidon2Config = Poseidon2Config::BabyBearD4Width24;
+    const CONFIG: Poseidon2Config = Poseidon2Config::BABY_BEAR_D4_W24;
 }
 
 impl BabyBearD4Width24 {
@@ -126,7 +126,7 @@ pub struct KoalaBearD4Width16;
 
 impl Poseidon2Params for KoalaBearD4Width16 {
     type BaseField = KoalaBear;
-    const CONFIG: Poseidon2Config = Poseidon2Config::KoalaBearD4Width16;
+    const CONFIG: Poseidon2Config = Poseidon2Config::KOALA_BEAR_D4_W16;
 }
 
 impl KoalaBearD4Width16 {
@@ -165,7 +165,7 @@ pub struct KoalaBearD4Width24;
 
 impl Poseidon2Params for KoalaBearD4Width24 {
     type BaseField = KoalaBear;
-    const CONFIG: Poseidon2Config = Poseidon2Config::KoalaBearD4Width24;
+    const CONFIG: Poseidon2Config = Poseidon2Config::KOALA_BEAR_D4_W24;
 }
 
 impl KoalaBearD4Width24 {

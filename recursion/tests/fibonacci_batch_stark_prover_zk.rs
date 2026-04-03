@@ -167,7 +167,7 @@ fn test_batch_verifier_zk_hiding_fri() -> Result<(), VerificationError> {
         &fri_verifier_params,
         &verifier_inputs.common_data,
         &lookup_gadget,
-        Poseidon2Config::KoalaBearD4Width16,
+        Poseidon2Config::KOALA_BEAR_D4_W16,
     )?;
 
     let verification_circuit = circuit_builder.build().unwrap();
@@ -219,7 +219,7 @@ fn test_batch_verifier_zk_hiding_fri() -> Result<(), VerificationError> {
     let config3 = MyConfig::new(pcs3, challenger3);
 
     let verification_table_packing = TablePacking::new(1, 8);
-    let poseidon2_config = Poseidon2Config::KoalaBearD4Width16;
+    let poseidon2_config = Poseidon2Config::KOALA_BEAR_D4_W16;
     let npo_prep: Vec<Box<dyn NpoPreprocessor<F>>> = vec![
         Box::new(Poseidon2Preprocessor),
         Box::new(RecomposePreprocessor),
