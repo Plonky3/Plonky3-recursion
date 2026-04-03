@@ -16,7 +16,7 @@ use crate::types::{ExprId, WitnessId};
 /// Used internally for dispatching to concrete field-specific AIR types.
 /// When adding support for a new prime field, add a variant here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd, Serialize, Deserialize)]
-pub enum Poseidon2FieldId {
+pub(crate) enum Poseidon2FieldId {
     /// BabyBear (31-bit, p = 2^31 - 2^27 + 1).
     BabyBear,
     /// KoalaBear (31-bit, p = 2^31 - 2^24 + 1).
@@ -29,19 +29,19 @@ pub enum Poseidon2FieldId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd, Serialize, Deserialize)]
 pub struct Poseidon2Config {
     /// Identifies which prime field this configuration targets.
-    pub field_id: Poseidon2FieldId,
+    field_id: Poseidon2FieldId,
     /// Extension degree (1 = base field challenges, 2 = quadratic, 4 = quartic).
-    pub d: usize,
+    d: usize,
     /// Permutation state width in base field elements (e.g. 8, 16, 24).
-    pub width: usize,
+    width: usize,
     /// S-box polynomial degree.
-    pub sbox_degree: u64,
+    sbox_degree: u64,
     /// Number of S-box intermediate registers.
-    pub sbox_registers: usize,
+    sbox_registers: usize,
     /// Number of half full rounds.
-    pub half_full_rounds: usize,
+    half_full_rounds: usize,
     /// Number of partial rounds.
-    pub partial_rounds: usize,
+    partial_rounds: usize,
 }
 
 impl Poseidon2Config {
@@ -124,6 +124,21 @@ impl Poseidon2Config {
 }
 
 impl Poseidon2Config {
+    /// Returns `true` if this configuration targets BabyBear.
+    pub const fn is_baby_bear(self) -> bool {
+        matches!(self.field_id, Poseidon2FieldId::BabyBear)
+    }
+
+    /// Returns `true` if this configuration targets KoalaBear.
+    pub const fn is_koala_bear(self) -> bool {
+        matches!(self.field_id, Poseidon2FieldId::KoalaBear)
+    }
+
+    /// Returns `true` if this configuration targets Goldilocks.
+    pub const fn is_goldilocks(self) -> bool {
+        matches!(self.field_id, Poseidon2FieldId::Goldilocks)
+    }
+
     /// Extension degree.
     pub const fn d(self) -> usize {
         self.d

@@ -25,13 +25,15 @@ use p3_uni_stark::StarkConfig;
 
 /// Standard Poseidon2-based STARK configuration.
 ///
-/// All Poseidon2 setups use the same permutation for hashing and compression,
-/// so the only free parameters are the field `F`, the permutation `Perm`,
-/// the sponge dimensions (`WIDTH`, `RATE`, `OUT`), and the challenge degree `D`.
+/// Hasher and compressor permutations are kept as separate type parameters so
+/// that callers can opt into a dual setup (e.g. width-24 hasher with a
+/// narrower width-16 compressor).
 pub type Poseidon2StarkConfig<
     F,
-    Perm,
-    const WIDTH: usize,
+    PermHash,
+    PermCompress,
+    const HASH_WIDTH: usize,
+    const COMPRESS_WIDTH: usize,
     const RATE: usize,
     const OUT: usize,
     const D: usize,
@@ -42,8 +44,8 @@ pub type Poseidon2StarkConfig<
         MerkleTreeMmcs<
             F,
             F,
-            PaddingFreeSponge<Perm, WIDTH, RATE, OUT>,
-            TruncatedPermutation<Perm, 2, OUT, WIDTH>,
+            PaddingFreeSponge<PermHash, HASH_WIDTH, RATE, OUT>,
+            TruncatedPermutation<PermCompress, 2, OUT, COMPRESS_WIDTH>,
             2,
             OUT,
         >,
@@ -53,62 +55,78 @@ pub type Poseidon2StarkConfig<
             MerkleTreeMmcs<
                 F,
                 F,
-                PaddingFreeSponge<Perm, WIDTH, RATE, OUT>,
-                TruncatedPermutation<Perm, 2, OUT, WIDTH>,
+                PaddingFreeSponge<PermHash, HASH_WIDTH, RATE, OUT>,
+                TruncatedPermutation<PermCompress, 2, OUT, COMPRESS_WIDTH>,
                 2,
                 OUT,
             >,
         >,
     >,
     BinomialExtensionField<F, D>,
-    DuplexChallenger<F, Perm, WIDTH, RATE>,
+    DuplexChallenger<F, PermHash, HASH_WIDTH, RATE>,
 >;
 
-/// Build a [`Poseidon2StarkConfig`] from a permutation instance.
-///
-/// This is the only way to construct a config — no separate builder type needed.
+/// Build a [`Poseidon2StarkConfig`] from separate hasher and compressor permutations.
 ///
 /// ```ignore
-/// let config = build_poseidon2_stark_config(default_babybear_poseidon2_16());
+/// let perm = default_babybear_poseidon2_16();
+/// let config = build_poseidon2_stark_config(perm.clone(), perm);
 /// ```
 pub fn build_poseidon2_stark_config<
     F: Field,
-    Perm: Clone + CryptographicPermutation<[F; WIDTH]>,
-    const WIDTH: usize,
+    PermHash: Clone + CryptographicPermutation<[F; HASH_WIDTH]>,
+    PermCompress: Clone + CryptographicPermutation<[F; COMPRESS_WIDTH]>,
+    const HASH_WIDTH: usize,
+    const COMPRESS_WIDTH: usize,
     const RATE: usize,
     const OUT: usize,
     const D: usize,
 >(
-    perm: Perm,
-) -> Poseidon2StarkConfig<F, Perm, WIDTH, RATE, OUT, D> {
-    let hash = PaddingFreeSponge::new(perm.clone());
-    let compress = TruncatedPermutation::new(perm.clone());
+    perm_hash: PermHash,
+    perm_compress: PermCompress,
+) -> Poseidon2StarkConfig<F, PermHash, PermCompress, HASH_WIDTH, COMPRESS_WIDTH, RATE, OUT, D> {
+    let hash = PaddingFreeSponge::new(perm_hash.clone());
+    let compress = TruncatedPermutation::new(perm_compress);
     let val_mmcs = MerkleTreeMmcs::new(hash, compress, 3);
     let challenge_mmcs = ExtensionMmcs::new(val_mmcs.clone());
     let dft = Radix2DitParallel::default();
     let fri_params = create_benchmark_fri_params_high_arity(challenge_mmcs);
     let pcs = TwoAdicFriPcs::new(dft, val_mmcs, fri_params);
-    let challenger = DuplexChallenger::new(perm);
+    let challenger = DuplexChallenger::new(perm_hash);
     StarkConfig::new(pcs, challenger)
 }
 
-pub type BabyBearConfig = Poseidon2StarkConfig<BabyBear, Poseidon2BabyBear<16>, 16, 8, 8, 4>;
-pub type KoalaBearConfig = Poseidon2StarkConfig<KoalaBear, Poseidon2KoalaBear<16>, 16, 8, 8, 4>;
-pub type GoldilocksConfig = Poseidon2StarkConfig<Goldilocks, Poseidon2Goldilocks<8>, 8, 4, 4, 2>;
+pub type BabyBearConfig =
+    Poseidon2StarkConfig<BabyBear, Poseidon2BabyBear<16>, Poseidon2BabyBear<16>, 16, 16, 8, 8, 4>;
+pub type KoalaBearConfig = Poseidon2StarkConfig<
+    KoalaBear,
+    Poseidon2KoalaBear<16>,
+    Poseidon2KoalaBear<16>,
+    16,
+    16,
+    8,
+    8,
+    4,
+>;
+pub type GoldilocksConfig =
+    Poseidon2StarkConfig<Goldilocks, Poseidon2Goldilocks<8>, Poseidon2Goldilocks<8>, 8, 8, 4, 4, 2>;
 
 /// Standard BabyBear STARK config (D=4, width=16).
 pub fn baby_bear() -> BabyBearConfig {
-    build_poseidon2_stark_config(default_babybear_poseidon2_16())
+    let perm = default_babybear_poseidon2_16();
+    build_poseidon2_stark_config(perm.clone(), perm)
 }
 
 /// Standard KoalaBear STARK config (D=4, width=16).
 pub fn koala_bear() -> KoalaBearConfig {
-    build_poseidon2_stark_config(default_koalabear_poseidon2_16())
+    let perm = default_koalabear_poseidon2_16();
+    build_poseidon2_stark_config(perm.clone(), perm)
 }
 
 /// Standard Goldilocks STARK config (D=2, width=8).
 pub fn goldilocks() -> GoldilocksConfig {
-    build_poseidon2_stark_config(default_goldilocks_poseidon2_8())
+    let perm = default_goldilocks_poseidon2_8();
+    build_poseidon2_stark_config(perm.clone(), perm)
 }
 
 fn default_goldilocks_poseidon2_8() -> Poseidon2Goldilocks<8> {

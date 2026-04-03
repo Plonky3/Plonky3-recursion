@@ -20,7 +20,6 @@ pub use poseidon2_perm::{
     // Prover/AIR (trace access)
     Poseidon2CircuitRow,
     Poseidon2Config,
-    Poseidon2FieldId,
     Poseidon2Params,
     // Builder API
     Poseidon2PermCall,
