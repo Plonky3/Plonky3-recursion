@@ -224,7 +224,7 @@ impl<F: Field> Circuit<F> {
     /// |-------|-----------|----------------------------------------------------------------------------|----------------|
     /// | 0     | Const     | `[out_0, out_1, ...]` (D-scaled indices)                                   | 1              |
     /// | 1     | Public    | `[out_0, out_1, ...]` (D-scaled indices)                                   | 1              |
-    /// | 2     | Alu       | `[sel_add_vs_mul, sel_bool, sel_muladd, a_idx, b_idx, c_idx, out_idx, a_is_reader, b_is_creator, c_is_reader, out_is_creator]` | 11 |
+    /// | 2     | Alu       | `[sel_add_vs_mul, sel_bool, sel_muladd, sel_horner, a_idx, b_idx, c_idx, out_idx, a_state, b_is_creator, c_state, out_is_creator]` | 12 |
     ///
     /// Signed multiplicities are not stored here; they are computed in `get_airs_and_degrees_with_prep`
     /// using the `ext_reads` field, which tracks how many times each witness is read.
@@ -265,7 +265,7 @@ impl<F: Field> Circuit<F> {
                 _ => None,
             })
             .collect();
-        let hint_output_wids: hashbrown::HashSet<u32> = self
+        preprocessed.hint_output_wids = self
             .ops
             .iter()
             .filter_map(|op| {
@@ -278,7 +278,8 @@ impl<F: Field> Circuit<F> {
             .flatten()
             .filter(|wid| !const_public_wids.contains(wid))
             .collect();
-        preprocessed.hint_output_wids = hint_output_wids.clone();
+        // Clone for use in the loop below; the original stays in `preprocessed` for the prover.
+        let hint_output_wids = preprocessed.hint_output_wids.clone();
 
         // Process each primitive operation.
         for op in &self.ops {
@@ -645,7 +646,7 @@ mod tests {
     #[test]
     fn test_input_indices_contribute_to_ext_reads() {
         // Ensures input indices are tracked for ext_reads
-        // add(0, 15, 5): a=0 (undefined), c=0 (undefined) → a_is_reader=0, c_is_reader=0
+        // add(0, 15, 5): a=0 (undefined, not private/hint → a_state=skip), no c limb
         // Only b=15 is counted (always a reader in forward case).
         let ops = vec![Op::add(
             WitnessId(0),

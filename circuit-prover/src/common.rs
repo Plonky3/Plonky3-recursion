@@ -295,11 +295,13 @@ where
 
                 let num_ops = prep_13col.len() / 13;
                 let horner_k = packing.horner_packed_steps();
+                // Store the converted 13-col format before building the AIR.
+                base_prep[idx] = prep_13col;
                 let alu_air = if D == 1 {
                     AluAir::new_with_preprocessed(
                         num_ops,
                         effective_alu_lanes,
-                        prep_13col.clone(),
+                        base_prep[idx].clone(),
                         horner_k,
                     )
                     .with_min_height(min_height)
@@ -307,7 +309,7 @@ where
                     AluAir::new_quintic_trinomial_with_preprocessed(
                         num_ops,
                         effective_alu_lanes,
-                        prep_13col.clone(),
+                        base_prep[idx].clone(),
                         horner_k,
                     )
                     .with_min_height(min_height)
@@ -318,15 +320,13 @@ where
                         num_ops,
                         effective_alu_lanes,
                         w,
-                        prep_13col.clone(),
+                        base_prep[idx].clone(),
                         horner_k,
                     )
                     .with_min_height(min_height)
                 };
                 let num_entries = alu_air.scheduled_entry_count();
                 let num_rows = num_entries.div_ceil(effective_alu_lanes);
-                // Store the converted 13-col format so the prover can use it directly.
-                base_prep[idx] = prep_13col;
                 table_preps.push((CircuitTableAir::Alu(alu_air), compute_degree(num_rows)));
             }
             PrimitiveOpType::Public => {
@@ -342,15 +342,15 @@ where
                 }
 
                 let num_ops = prep_2col.len() / 2;
+                // Store the converted 2-col format before building the AIR.
+                base_prep[idx] = prep_2col;
                 let public_air = PublicAir::new_with_preprocessed(
                     num_ops,
                     effective_public_lanes,
-                    prep_2col.clone(),
+                    base_prep[idx].clone(),
                 )
                 .with_min_height(min_height);
                 let num_rows = num_ops.div_ceil(effective_public_lanes);
-                // Store the converted 2-col format.
-                base_prep[idx] = prep_2col;
                 table_preps.push((
                     CircuitTableAir::Public(public_air),
                     compute_degree(num_rows),
@@ -368,10 +368,10 @@ where
                 }
 
                 let height = prep_2col.len() / 2;
-                let const_air = ConstAir::new_with_preprocessed(height, prep_2col.clone())
-                    .with_min_height(min_height);
-                // Store the converted 2-col format.
+                // Store the converted 2-col format before building the AIR.
                 base_prep[idx] = prep_2col;
+                let const_air = ConstAir::new_with_preprocessed(height, base_prep[idx].clone())
+                    .with_min_height(min_height);
                 table_preps.push((CircuitTableAir::Const(const_air), compute_degree(height)));
             }
         }
