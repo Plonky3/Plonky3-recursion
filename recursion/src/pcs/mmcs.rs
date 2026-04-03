@@ -1140,7 +1140,7 @@ mod test {
                 CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
             let mut prover = BatchStarkProver::new(config).with_table_packing(table_packing);
             prover.register_poseidon2_table::<4>(Poseidon2Config::KoalaBearD4Width16);
-            prover.register_recompose_table::<4>();
+            prover.register_recompose_table::<4>(false);
 
             let proof = prover
                 .prove_all_tables(&traces, &circuit_prover_data)

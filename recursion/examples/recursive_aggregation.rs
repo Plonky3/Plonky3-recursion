@@ -397,7 +397,7 @@ macro_rules! define_field_module {
                                     .with_table_packing(agg_params.table_packing.clone());
                                 verifier.register_poseidon2_table::<$d>($poseidon2_config);
                                 if !disable_recompose_npo {
-                                    verifier.register_recompose_table::<$d>();
+                                    verifier.register_recompose_table::<$d>($poseidon2_config.d() != $d);
                                 }
                                 verifier
                                     .verify_all_tables(&out.0, out.1.common_data())

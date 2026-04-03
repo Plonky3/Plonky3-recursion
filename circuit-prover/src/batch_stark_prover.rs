@@ -579,20 +579,23 @@ where
     }
 
     /// Register the recompose (BF→EF packing) table prover for extension degree `D`.
-    pub fn register_recompose_table<const D: usize>(&mut self)
+    ///
+    /// Set `coeff_lookups` to `true` when the Poseidon2 permutation degree differs
+    /// from the circuit extension degree `D` (e.g. D=1 Poseidon2 in a D=5 circuit).
+    pub fn register_recompose_table<const D: usize>(&mut self, coeff_lookups: bool)
     where
         SC: Send + Sync,
     {
-        self.register_table_prover(Box::new(RecomposeProver::<D>::new(1)));
+        self.register_table_prover(Box::new(RecomposeProver::<D>::new(1, coeff_lookups)));
     }
 
     /// Builder-style registration for the recompose table prover.
     #[must_use]
-    pub fn with_recompose_table<const D: usize>(mut self) -> Self
+    pub fn with_recompose_table<const D: usize>(mut self, coeff_lookups: bool) -> Self
     where
         SC: Send + Sync,
     {
-        self.register_recompose_table::<D>();
+        self.register_recompose_table::<D>(coeff_lookups);
         self
     }
 
@@ -1191,28 +1194,40 @@ where
 }
 
 /// Returns a type-erased Recompose preprocessor.
-pub fn recompose_preprocessor<F>() -> Box<dyn NpoPreprocessor<F>>
+///
+/// `coeff_lookups` enables per-coefficient Receive lookups for circuits that
+/// contain a D=1 Poseidon2 inside a D>1 extension field.
+pub fn recompose_preprocessor<F>(coeff_lookups: bool) -> Box<dyn NpoPreprocessor<F>>
 where
     F: StarkField + PrimeField,
     RecomposePreprocessor: NpoPreprocessor<F>,
 {
-    Box::new(RecomposePreprocessor)
+    Box::new(RecomposePreprocessor::new(coeff_lookups))
 }
 
 /// Recompose table provers for a given extension field degree.
-pub fn recompose_table_provers<SC, const D: usize>(lanes: usize) -> Vec<Box<dyn TableProver<SC>>>
+///
+/// `coeff_lookups` enables per-coefficient Receive lookups for circuits that
+/// contain a D=1 Poseidon2 inside a D>1 extension field.
+pub fn recompose_table_provers<SC, const D: usize>(
+    lanes: usize,
+    coeff_lookups: bool,
+) -> Vec<Box<dyn TableProver<SC>>>
 where
     SC: StarkGenericConfig + 'static + Send + Sync,
     Val<SC>: StarkField,
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
         Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
-    vec![Box::new(RecomposeProver::<D>::new(lanes))]
+    vec![Box::new(RecomposeProver::<D>::new(lanes, coeff_lookups))]
 }
 
 /// Recompose AIR builders for a given extension field degree.
+///
+/// `coeff_lookups` must match the value used in the paired [`recompose_table_provers`].
 pub fn recompose_air_builders<SC, const D: usize>(
     lanes: usize,
+    coeff_lookups: bool,
 ) -> Vec<Box<dyn NpoAirBuilder<SC, D>>>
 where
     SC: StarkGenericConfig + 'static + Send + Sync,
@@ -1220,7 +1235,10 @@ where
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
         Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
-    vec![Box::new(RecomposeAirBuilder::<D>::new(lanes))]
+    vec![Box::new(RecomposeAirBuilder::<D>::new(
+        lanes,
+        coeff_lookups,
+    ))]
 }
 
 #[cfg(test)]

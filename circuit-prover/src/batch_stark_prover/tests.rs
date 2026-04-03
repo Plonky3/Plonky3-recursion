@@ -258,7 +258,7 @@ fn test_extension_field_table_lookups() {
     let circuit = builder.build().unwrap();
     let default_packing = TablePacking::default();
     let mut air_builders_ext4 = poseidon2_air_builders::<BabyBearConfig, 4>();
-    air_builders_ext4.extend(recompose_air_builders::<BabyBearConfig, 4>(1));
+    air_builders_ext4.extend(recompose_air_builders::<BabyBearConfig, 4>(1, false));
     let (airs_degrees, primitive_columns, non_primitive_columns) =
         get_airs_and_degrees_with_prep::<BabyBearConfig, _, D>(
             &circuit,
@@ -523,7 +523,7 @@ fn test_goldilocks_batch_stark_binomial_ext2() {
 
     let circuit = builder.build().unwrap();
     let mut air_builders_ext2 = poseidon2_air_builders::<GoldilocksConfig, 2>();
-    air_builders_ext2.extend(recompose_air_builders::<GoldilocksConfig, 2>(1));
+    air_builders_ext2.extend(recompose_air_builders::<GoldilocksConfig, 2>(1, false));
     let (airs_degrees, primitive_columns, non_primitive_columns) =
         get_airs_and_degrees_with_prep::<GoldilocksConfig, _, D>(
             &circuit,

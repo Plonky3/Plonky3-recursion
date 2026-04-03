@@ -43,13 +43,17 @@ where
 /// a wider trace. Must be kept in sync with the corresponding [`RecomposeAirBuilder`].
 pub struct RecomposeProver<const D: usize> {
     lanes: usize,
+    /// When true, per-coefficient Receive lookups are registered so that a D=1 Poseidon2
+    /// inside a D>1 circuit can read individual BF coefficients from the WitnessChecks bus.
+    coeff_lookups: bool,
 }
 
 impl<const D: usize> RecomposeProver<D> {
     /// Create a prover that packs `lanes` recompose operations per row.
-    pub fn new(lanes: usize) -> Self {
+    pub fn new(lanes: usize, coeff_lookups: bool) -> Self {
         Self {
             lanes: lanes.max(1),
+            coeff_lookups,
         }
     }
 
@@ -78,21 +82,26 @@ impl<const D: usize> RecomposeProver<D> {
         let lanes = packing.npo_lanes(&op_type).unwrap_or(self.lanes);
         let min_height = packing.min_trace_height();
 
-        // Build raw preprocessed data: [output_idx, out_mult, coeff_0_idx, coeff_0_mult, ...]
-        // Multiplicities are left as zero here; the committed preprocessed data (with correct
-        // multiplicities from recompose_preprocess_impl) replaces this AIR in prove().
-        let prep_lane_width = RecomposeAir::<Val<SC>, D>::preprocessed_lane_width();
+        let coeff_lookups = self.coeff_lookups;
+        let prep_lane_width =
+            RecomposeAir::<Val<SC>, D>::preprocessed_lane_width_for(coeff_lookups);
         let mut preprocessed = Val::<SC>::zero_vec(num_ops * prep_lane_width);
         for (i, row) in t.operations.iter().enumerate() {
             let base = i * prep_lane_width;
             preprocessed[base] = row.output_wid.base_field_index::<Val<SC>, D>();
-            for (j, &coeff_wid) in row.input_wids.iter().enumerate().take(D) {
-                preprocessed[base + 2 + j * 2] = coeff_wid.base_field_index::<Val<SC>, D>();
+            if coeff_lookups {
+                for (j, &coeff_wid) in row.input_wids.iter().enumerate().take(D) {
+                    preprocessed[base + 2 + j * 2] = coeff_wid.base_field_index::<Val<SC>, D>();
+                }
             }
         }
 
-        let air =
-            RecomposeAir::<Val<SC>, D>::new_with_preprocessed(lanes, preprocessed, min_height);
+        let air = RecomposeAir::<Val<SC>, D>::new_with_preprocessed(
+            lanes,
+            preprocessed,
+            min_height,
+            coeff_lookups,
+        );
         let matrix = RecomposeAir::<Val<SC>, D>::trace_to_matrix(&t.operations, lanes);
 
         Some(BatchTableInstance {
@@ -130,8 +139,12 @@ where
         _circuit_extension_degree: u32,
         table_entry: &NonPrimitiveTableEntry<SC>,
     ) -> Result<DynamicAirEntry<SC>, String> {
-        let air =
-            RecomposeAir::<Val<SC>, D>::new_with_preprocessed(table_entry.lanes, Vec::new(), 1);
+        let air = RecomposeAir::<Val<SC>, D>::new_with_preprocessed(
+            table_entry.lanes,
+            Vec::new(),
+            1,
+            self.coeff_lookups,
+        );
         Ok(DynamicAirEntry::new(Box::new(air)))
     }
 
@@ -142,8 +155,12 @@ where
         lanes: usize,
         _circuit_extension_degree: u32,
     ) -> Option<DynamicAirEntry<SC>> {
-        let air =
-            RecomposeAir::<Val<SC>, D>::new_with_preprocessed(lanes, committed_prep, min_height);
+        let air = RecomposeAir::<Val<SC>, D>::new_with_preprocessed(
+            lanes,
+            committed_prep,
+            min_height,
+            self.coeff_lookups,
+        );
         Some(DynamicAirEntry::new(Box::new(air)))
     }
 }
@@ -155,8 +172,16 @@ where
 /// NpoPreprocessor for the recompose table.
 ///
 /// Converts EF preprocessed data to BF and sets `out_mult` from `ext_reads`.
-#[derive(Clone, Default)]
-pub struct RecomposePreprocessor;
+#[derive(Default, Clone)]
+pub struct RecomposePreprocessor {
+    pub coeff_lookups: bool,
+}
+
+impl RecomposePreprocessor {
+    pub const fn new(coeff_lookups: bool) -> Self {
+        Self { coeff_lookups }
+    }
+}
 
 impl NpoPreprocessor<KoalaBear> for RecomposePreprocessor {
     fn preprocess(
@@ -165,18 +190,19 @@ impl NpoPreprocessor<KoalaBear> for RecomposePreprocessor {
         preprocessed: &mut dyn core::any::Any,
     ) -> Result<NonPrimitivePreprocessedMap<KoalaBear>, CircuitError> {
         type F = KoalaBear;
+        let cl = self.coeff_lookups;
         if let Some(prep) =
             preprocessed.downcast_mut::<PreprocessedColumns<BinomialExtensionField<F, 4>, 4>>()
         {
-            return recompose_preprocess_impl::<F, _, 4>(prep);
+            return recompose_preprocess_impl::<F, _, 4>(prep, cl);
         }
         if let Some(prep) =
             preprocessed.downcast_mut::<PreprocessedColumns<QuinticTrinomialExtensionField<F>, 5>>()
         {
-            return recompose_preprocess_impl::<F, _, 5>(prep);
+            return recompose_preprocess_impl::<F, _, 5>(prep, cl);
         }
         if let Some(prep) = preprocessed.downcast_mut::<PreprocessedColumns<F, 1>>() {
-            return recompose_preprocess_impl::<F, _, 1>(prep);
+            return recompose_preprocess_impl::<F, _, 1>(prep, cl);
         }
         Ok(HashMap::new())
     }
@@ -189,13 +215,14 @@ impl NpoPreprocessor<BabyBear> for RecomposePreprocessor {
         preprocessed: &mut dyn core::any::Any,
     ) -> Result<NonPrimitivePreprocessedMap<BabyBear>, CircuitError> {
         type F = BabyBear;
+        let cl = self.coeff_lookups;
         if let Some(prep) =
             preprocessed.downcast_mut::<PreprocessedColumns<BinomialExtensionField<F, 4>, 4>>()
         {
-            return recompose_preprocess_impl::<F, _, 4>(prep);
+            return recompose_preprocess_impl::<F, _, 4>(prep, cl);
         }
         if let Some(prep) = preprocessed.downcast_mut::<PreprocessedColumns<F, 1>>() {
-            return recompose_preprocess_impl::<F, _, 1>(prep);
+            return recompose_preprocess_impl::<F, _, 1>(prep, cl);
         }
         Ok(HashMap::new())
     }
@@ -208,13 +235,14 @@ impl NpoPreprocessor<Goldilocks> for RecomposePreprocessor {
         preprocessed: &mut dyn core::any::Any,
     ) -> Result<NonPrimitivePreprocessedMap<Goldilocks>, CircuitError> {
         type F = Goldilocks;
+        let cl = self.coeff_lookups;
         if let Some(prep) =
             preprocessed.downcast_mut::<PreprocessedColumns<BinomialExtensionField<F, 2>, 2>>()
         {
-            return recompose_preprocess_impl::<F, _, 2>(prep);
+            return recompose_preprocess_impl::<F, _, 2>(prep, cl);
         }
         if let Some(prep) = preprocessed.downcast_mut::<PreprocessedColumns<F, 1>>() {
-            return recompose_preprocess_impl::<F, _, 1>(prep);
+            return recompose_preprocess_impl::<F, _, 1>(prep, cl);
         }
         Ok(HashMap::new())
     }
@@ -223,6 +251,7 @@ impl NpoPreprocessor<Goldilocks> for RecomposePreprocessor {
 /// Generic implementation: extract recompose preprocessed data and set output multiplicities.
 fn recompose_preprocess_impl<F, EF, const D: usize>(
     prep: &PreprocessedColumns<EF, D>,
+    coeff_lookups: bool,
 ) -> Result<NonPrimitivePreprocessedMap<F>, CircuitError>
 where
     F: StarkField + PrimeField64,
@@ -234,13 +263,30 @@ where
         _ => return Ok(HashMap::new()),
     };
 
-    // Layout per op: [output_idx, out_mult, coeff_0_idx, coeff_0_mult, ..., coeff_{D-1}_idx, coeff_{D-1}_mult]
-    let prep_width = 2 + 2 * D;
+    let prep_width = if coeff_lookups { 2 + 2 * D } else { 2 };
 
-    let mut prep_base: Vec<F> = ef_data
-        .iter()
-        .map(|v| v.as_base().ok_or(CircuitError::InvalidPreprocessedValues))
-        .collect::<Result<Vec<_>, CircuitError>>()?;
+    let mut prep_base: Vec<F> = if coeff_lookups {
+        ef_data
+            .iter()
+            .map(|v| v.as_base().ok_or(CircuitError::InvalidPreprocessedValues))
+            .collect::<Result<Vec<_>, CircuitError>>()?
+    } else {
+        // Strip the coefficient columns that the executor emitted but this layout does not need.
+        let full_width = 2 + 2 * D;
+        let num_rows = ef_data.len() / full_width;
+        let mut out = Vec::with_capacity(num_rows * prep_width);
+        for row_idx in 0..num_rows {
+            let row_start = row_idx * full_width;
+            for col in 0..prep_width {
+                out.push(
+                    ef_data[row_start + col]
+                        .as_base()
+                        .ok_or(CircuitError::InvalidPreprocessedValues)?,
+                );
+            }
+        }
+        out
+    };
 
     let neg_one = F::ZERO - F::ONE;
     let num_rows = prep_base.len() / prep_width;
@@ -264,20 +310,17 @@ where
             prep_base[row_start + 1] = F::from_u32(n_reads);
         }
 
-        // Set coefficient creation multiplicities.
-        // Only hint-derived coefficients need to be created on the WitnessChecks bus;
-        // coefficients that are already-defined witnesses (e.g. Poseidon2 rate outputs
-        // consumed via `sample_ext`) are created by their originating table and must
-        // not be created again here.
-        for i in 0..D {
-            let coeff_idx_val = prep_base[row_start + 2 + i * 2];
-            let coeff_wid = F::as_canonical_u64(&coeff_idx_val) as usize / D;
-            let n_coeff_reads = if prep.hint_output_wids.contains(&(coeff_wid as u32)) {
-                prep.ext_reads.get(coeff_wid).copied().unwrap_or(0)
-            } else {
-                0
-            };
-            prep_base[row_start + 2 + i * 2 + 1] = F::from_u32(n_coeff_reads);
+        if coeff_lookups {
+            for i in 0..D {
+                let coeff_idx_val = prep_base[row_start + 2 + i * 2];
+                let coeff_wid = F::as_canonical_u64(&coeff_idx_val) as usize / D;
+                let n_coeff_reads = if prep.hint_output_wids.contains(&(coeff_wid as u32)) {
+                    prep.ext_reads.get(coeff_wid).copied().unwrap_or(0)
+                } else {
+                    0
+                };
+                prep_base[row_start + 2 + i * 2 + 1] = F::from_u32(n_coeff_reads);
+            }
         }
     }
 
@@ -296,13 +339,15 @@ where
 #[derive(Clone)]
 pub struct RecomposeAirBuilder<const D: usize> {
     lanes: usize,
+    coeff_lookups: bool,
 }
 
 impl<const D: usize> RecomposeAirBuilder<D> {
     /// Create a builder that expects `lanes` operations packed per AIR row.
-    pub fn new(lanes: usize) -> Self {
+    pub fn new(lanes: usize, coeff_lookups: bool) -> Self {
         Self {
             lanes: lanes.max(1),
+            coeff_lookups,
         }
     }
 }
@@ -330,7 +375,8 @@ where
             return None;
         }
 
-        let prep_lane_width = RecomposeAir::<Val<SC>, D>::preprocessed_lane_width();
+        let prep_lane_width =
+            RecomposeAir::<Val<SC>, D>::preprocessed_lane_width_for(self.coeff_lookups);
         let num_ops = prep_base.len() / prep_lane_width;
         let num_rows = num_ops.div_ceil(lanes).max(1);
 
@@ -338,6 +384,7 @@ where
             lanes,
             prep_base.to_vec(),
             min_height,
+            self.coeff_lookups,
         );
 
         let padded_rows = num_rows

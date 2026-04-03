@@ -480,18 +480,20 @@ where
     }
 
     fn non_primitive_preprocessors(&self) -> Vec<Box<dyn NpoPreprocessor<Val<SC>>>> {
+        let cl = self.0.challenger_perm_config.d() != 2;
         vec![
             poseidon2_preprocessor::<Val<SC>>(),
-            recompose_preprocessor::<Val<SC>>(),
+            recompose_preprocessor::<Val<SC>>(cl),
         ]
     }
 
     fn non_primitive_provers(&self, ext_degree: usize) -> Vec<Box<dyn TableProver<SC>>> {
         if ext_degree == 2 {
+            let cl = self.0.challenger_perm_config.d() != 2;
             let mut provers: Vec<Box<dyn TableProver<SC>>> = vec![Box::new(
                 Poseidon2ProverD2::new(self.0.challenger_perm_config, ConstraintProfile::Standard),
             )];
-            provers.extend(recompose_table_provers::<SC, 2>(self.0.recompose_lanes));
+            provers.extend(recompose_table_provers::<SC, 2>(self.0.recompose_lanes, cl));
             provers
         } else {
             Vec::new()
@@ -499,8 +501,9 @@ where
     }
 
     fn non_primitive_air_builders(&self) -> Vec<Box<dyn NpoAirBuilder<SC, 2>>> {
+        let cl = self.0.challenger_perm_config.d() != 2;
         let mut builders = poseidon2_air_builders::<SC, 2>();
-        builders.extend(recompose_air_builders::<SC, 2>(self.0.recompose_lanes));
+        builders.extend(recompose_air_builders::<SC, 2>(self.0.recompose_lanes, cl));
         builders
     }
 }
@@ -572,19 +575,21 @@ where
     }
 
     fn non_primitive_preprocessors(&self) -> Vec<Box<dyn NpoPreprocessor<Val<SC>>>> {
+        let cl = self.0.challenger_perm_config.d() != 4;
         vec![
             poseidon2_preprocessor::<Val<SC>>(),
-            recompose_preprocessor::<Val<SC>>(),
+            recompose_preprocessor::<Val<SC>>(cl),
         ]
     }
 
     fn non_primitive_provers(&self, ext_degree: usize) -> Vec<Box<dyn TableProver<SC>>> {
         if ext_degree == 4 {
+            let cl = self.0.challenger_perm_config.d() != 4;
             let mut provers: Vec<Box<dyn TableProver<SC>>> = vec![Box::new(Poseidon2Prover::new(
                 self.0.challenger_perm_config,
                 ConstraintProfile::Standard,
             ))];
-            provers.extend(recompose_table_provers::<SC, 4>(self.0.recompose_lanes));
+            provers.extend(recompose_table_provers::<SC, 4>(self.0.recompose_lanes, cl));
             provers
         } else {
             Vec::new()
@@ -592,8 +597,9 @@ where
     }
 
     fn non_primitive_air_builders(&self) -> Vec<Box<dyn NpoAirBuilder<SC, 4>>> {
+        let cl = self.0.challenger_perm_config.d() != 4;
         let mut builders = poseidon2_air_builders::<SC, 4>();
-        builders.extend(recompose_air_builders::<SC, 4>(self.0.recompose_lanes));
+        builders.extend(recompose_air_builders::<SC, 4>(self.0.recompose_lanes, cl));
         builders
     }
 }
@@ -665,16 +671,18 @@ where
     }
 
     fn non_primitive_preprocessors(&self) -> Vec<Box<dyn NpoPreprocessor<Val<SC>>>> {
+        let cl = self.0.challenger_perm_config.d() != 5;
         vec![
             poseidon2_preprocessor::<Val<SC>>(),
-            recompose_preprocessor::<Val<SC>>(),
+            recompose_preprocessor::<Val<SC>>(cl),
         ]
     }
 
     fn non_primitive_provers(&self, ext_degree: usize) -> Vec<Box<dyn TableProver<SC>>> {
         if ext_degree == 5 {
+            let cl = self.0.challenger_perm_config.d() != 5;
             let mut provers = poseidon2_table_provers_d5(self.0.challenger_perm_config);
-            provers.extend(recompose_table_provers::<SC, 5>(self.0.recompose_lanes));
+            provers.extend(recompose_table_provers::<SC, 5>(self.0.recompose_lanes, cl));
             provers
         } else {
             Vec::new()
@@ -682,8 +690,9 @@ where
     }
 
     fn non_primitive_air_builders(&self) -> Vec<Box<dyn NpoAirBuilder<SC, 5>>> {
+        let cl = self.0.challenger_perm_config.d() != 5;
         let mut builders = poseidon2_air_builders_d5();
-        builders.extend(recompose_air_builders::<SC, 5>(self.0.recompose_lanes));
+        builders.extend(recompose_air_builders::<SC, 5>(self.0.recompose_lanes, cl));
         builders
     }
 }

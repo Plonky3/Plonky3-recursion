@@ -196,7 +196,7 @@ fn test_fibonacci_batch_verifier_quintic_koala() {
         Poseidon2Config::KoalaBearD1Width16,
         &{
             let mut tp = poseidon2_table_provers_d5(Poseidon2Config::KoalaBearD1Width16);
-            tp.extend(recompose_table_provers::<MyConfig, 5>(1));
+            tp.extend(recompose_table_provers::<MyConfig, 5>(1, true));
             tp
         },
     )
@@ -211,10 +211,10 @@ fn test_fibonacci_batch_verifier_quintic_koala() {
     let verification_table_packing = TablePacking::new(1, 8);
     let npo_prep: Vec<Box<dyn NpoPreprocessor<F>>> = vec![
         Box::new(Poseidon2Preprocessor),
-        Box::new(RecomposePreprocessor),
+        Box::new(RecomposePreprocessor::new(true)),
     ];
     let mut air_builders = poseidon2_air_builders_d5::<MyConfig>();
-    air_builders.extend(recompose_air_builders::<MyConfig, 5>(1));
+    air_builders.extend(recompose_air_builders::<MyConfig, 5>(1, true));
     let (verification_airs_degrees, verification_primitive, verification_npo) =
         get_airs_and_degrees_with_prep::<MyConfig, _, 5>(
             &verification_circuit,
@@ -274,7 +274,7 @@ fn test_fibonacci_batch_verifier_quintic_koala() {
     let mut verification_prover =
         BatchStarkProver::new(config3).with_table_packing(verification_table_packing);
     verification_prover.register_poseidon2_table::<5>(Poseidon2Config::KoalaBearD1Width16);
-    verification_prover.register_recompose_table::<5>();
+    verification_prover.register_recompose_table::<5>(true);
 
     let verification_proof = verification_prover
         .prove_all_tables(&verification_traces, &verification_circuit_prover_data)

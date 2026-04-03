@@ -746,7 +746,7 @@ fn get_verifier_inputs_and_challenges(
                 Poseidon2Config::BabyBearD4Width16,
                 ConstraintProfile::Standard,
             ))];
-            tp.extend(recompose_table_provers::<_, 4>(1));
+            tp.extend(recompose_table_provers::<_, 4>(1, false));
             tp
         },
     )
@@ -871,10 +871,10 @@ fn test_poseidon2_ctl_lookups() {
 
     let npo_prep: Vec<Box<dyn NpoPreprocessor<F>>> = vec![
         Box::new(Poseidon2Preprocessor),
-        Box::new(RecomposePreprocessor),
+        Box::new(RecomposePreprocessor::default()),
     ];
     let mut air_builders = poseidon2_air_builders::<_, 4>();
-    air_builders.extend(recompose_air_builders(1));
+    air_builders.extend(recompose_air_builders(1, false));
     let (airs_degrees, primitive_columns, non_primitive_columns) =
         get_airs_and_degrees_with_prep::<MyConfig, Challenge, 4>(
             &circuit,
@@ -903,7 +903,7 @@ fn test_poseidon2_ctl_lookups() {
 
     let mut prover = BatchStarkProver::new(config_proving).with_table_packing(table_packing);
     prover.register_poseidon2_table::<4>(poseidon2_config);
-    prover.register_recompose_table::<4>();
+    prover.register_recompose_table::<4>(false);
 
     let proof = prover
         .prove_all_tables(&traces, &circuit_prover_data)
@@ -1001,10 +1001,10 @@ fn test_poseidon2_chained_ctl_lookups() {
 
     let npo_prep: Vec<Box<dyn NpoPreprocessor<F>>> = vec![
         Box::new(Poseidon2Preprocessor),
-        Box::new(RecomposePreprocessor),
+        Box::new(RecomposePreprocessor::default()),
     ];
     let mut air_builders = poseidon2_air_builders::<_, 4>();
-    air_builders.extend(recompose_air_builders(1));
+    air_builders.extend(recompose_air_builders(1, false));
     let (airs_degrees, primitive_columns, non_primitive_columns) =
         get_airs_and_degrees_with_prep::<MyConfig, Challenge, 4>(
             &circuit,
@@ -1033,7 +1033,7 @@ fn test_poseidon2_chained_ctl_lookups() {
 
     let mut prover = BatchStarkProver::new(config_proving).with_table_packing(table_packing);
     prover.register_poseidon2_table::<4>(poseidon2_config);
-    prover.register_recompose_table::<4>();
+    prover.register_recompose_table::<4>(false);
 
     let proof = prover
         .prove_all_tables(&traces, &circuit_prover_data)
