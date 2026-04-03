@@ -1,25 +1,30 @@
-//! 2-to-1 proof aggregation example (binary tree).
+//! k-ary proof aggregation example (fixed fan-in tree).
 //!
-//! Builds a full binary aggregation tree from distinct base proofs:
-//! 1. **Leaves**: `2^(N+1)` dummy circuits (each a single distinct constant),
+//! Builds a full k-ary aggregation tree from distinct base proofs:
+//! 1. **Leaves**: `k^N` dummy circuits (each a single distinct constant),
 //!    each proved independently with batch STARK.
-//! 2. **Levels 1..N+1**: Pairwise 2-to-1 aggregation up the tree until a
-//!    single root proof remains.
+//! 2. **Levels 1..N**: k-to-1 aggregation at each level until a single root
+//!    proof remains.
 //!
-//! `N` is the `--num-recursive-layers` argument (default 1).
+//! `N` is `--num-recursive-layers` (default 1); `k` is `--arity` (default 2,
+//! binary tree).
 //!
 //! ## What this proves
 //!
 //! The root proof attests that every base proof in the tree is valid.  All
 //! base proofs are genuinely distinct (different constant values) so the
-//! circuit optimizer cannot collapse the two verifications inside an
+//! circuit optimizer cannot collapse the k verifications inside an
 //! aggregation node.
 //!
 //! ## Usage
 //!
 //! ```bash
-//! # 4 base proofs, 2 aggregation levels (default)
+//! # 2 base proofs, binary tree, 1 level (defaults: arity 2, depth 1)
 //! cargo run --release --example recursive_aggregation -- --field koala-bear
+//!
+//! # 27 base proofs, ternary tree (arity 3), depth 3
+//! cargo run --release --example recursive_aggregation -- \
+//!     --field koala-bear --arity 3 --num-recursive-layers 3
 //!
 //! # 8 base proofs, 3 aggregation levels, custom FRI parameters
 //! cargo run --release --example recursive_aggregation -- \
@@ -36,15 +41,23 @@ mod common;
 use common::*;
 
 #[derive(Parser, Debug)]
-#[command(version, about = "2-to-1 proof aggregation example")]
+#[command(version, about = "k-ary proof aggregation example")]
 struct Args {
-    /// Tree depth (total base proofs = 2^(tree_depth)).  (1 = single pair, 2 = 4 leaves, …)
+    /// Tree depth (total base proofs = arity^tree_depth)
     #[arg(
         long,
         default_value_t = 1,
-        help = "Tree depth (total base proofs = 2^(tree_depth))"
+        help = "Tree depth (total base proofs = arity^tree_depth)"
     )]
     num_recursive_layers: usize,
+
+    /// Fan-in at each aggregation level (2 = binary tree)
+    #[arg(
+        long,
+        default_value_t = 2,
+        help = "Fan-in at each aggregation level (2 = binary)"
+    )]
+    arity: usize,
 
     #[arg(short, long, ignore_case = true, value_enum, default_value_t = FieldOption::KoalaBear)]
     pub field: FieldOption,
@@ -162,15 +175,20 @@ fn main() {
     let table_packing = args.table_packing();
 
     assert!(args.num_recursive_layers >= 1);
+    assert!(
+        args.arity >= 2,
+        "--arity must be at least 2 (fan-in per aggregation node)"
+    );
 
     info!(
-        "2-to-1 aggregation with field {:?}, {} aggregation recursive layers",
-        args.field, args.num_recursive_layers
+        "k-ary (arity {}) aggregation with field {:?}, {} recursive layers",
+        args.arity, args.field, args.num_recursive_layers
     );
 
     match args.field {
         FieldOption::KoalaBear => koala_bear::run(
             args.num_recursive_layers,
+            args.arity,
             &fri_params,
             &table_packing,
             args.security_level,
@@ -179,6 +197,7 @@ fn main() {
         ),
         FieldOption::BabyBear => baby_bear::run(
             args.num_recursive_layers,
+            args.arity,
             &fri_params,
             &table_packing,
             args.security_level,
@@ -187,6 +206,7 @@ fn main() {
         ),
         FieldOption::Goldilocks => goldilocks::run(
             args.num_recursive_layers,
+            args.arity,
             &fri_params,
             &table_packing,
             args.security_level,
@@ -321,8 +341,10 @@ macro_rules! define_field_module {
                 RecursionOutput(proof, Rc::new(circuit_prover_data))
             }
 
+            #[allow(clippy::too_many_arguments)]
             pub fn run(
                 num_recursive_layers: usize,
+                arity: usize,
                 fri_params: &FriParams,
                 table_packing: &TablePacking,
                 security_level: usize,
@@ -337,8 +359,12 @@ macro_rules! define_field_module {
                 .for_extension_degree::<$d>();
 
                 let tree_depth = num_recursive_layers;
-                let num_leaves = 1usize << tree_depth;
-                info!("Binary aggregation tree: {num_leaves} base proofs, {tree_depth} levels");
+                let num_leaves = arity
+                    .checked_pow(tree_depth as u32)
+                    .expect("arity^tree_depth overflows usize");
+                info!(
+                    "{arity}-ary aggregation tree: {num_leaves} base proofs, {tree_depth} levels"
+                );
 
                 macro_rules! run_aggregation {
                     ($cfg_type:ident, $config_base:expr, $config_agg:expr, $prove_base_fn:ident) => {{
@@ -355,9 +381,15 @@ macro_rules! define_field_module {
                         let mut level = 0u32;
                         while proofs.len() > 1 {
                             level += 1;
-                            let pairs = proofs.len() / 2;
+                            assert_eq!(
+                                proofs.len() % arity,
+                                0,
+                                "internal: proof count {} not divisible by arity {arity}",
+                                proofs.len()
+                            );
+                            let num_groups = proofs.len() / arity;
                             info!(
-                                "Aggregation level {level}: {} proofs -> {pairs}",
+                                "Aggregation level {level}: {} proofs -> {num_groups}",
                                 proofs.len()
                             );
 
@@ -375,18 +407,24 @@ macro_rules! define_field_module {
                             };
                             let agg_config: $cfg_type = $config_agg(level as u64);
 
-                            let mut next_level = Vec::with_capacity(pairs);
-                            for pair_idx in 0..pairs {
-                                let li = pair_idx * 2;
-                                let left = proofs[li].into_recursion_input::<BatchOnly>();
-                                let right = proofs[li + 1].into_recursion_input::<BatchOnly>();
+                            let mut next_level = Vec::with_capacity(num_groups);
+                            for group_idx in 0..num_groups {
+                                let base = group_idx * arity;
+                                let inputs: Vec<_> = (0..arity)
+                                    .map(|j| {
+                                        proofs[base + j].into_recursion_input::<BatchOnly>()
+                                    })
+                                    .collect();
 
-                                let out = build_and_prove_aggregation_layer::<$cfg_type, _, _, _, D>(
-                                    &left, &right, &agg_config, &backend, &agg_params,
+                                let out = build_and_prove_k_aggregation_layer::<$cfg_type, _, _, D>(
+                                    &inputs,
+                                    &agg_config,
+                                    &backend,
+                                    &agg_params,
                                     Some(&mut prep_cache),
                                 )
                                 .unwrap_or_else(|e| {
-                                    panic!("Failed at level {level}, pair {pair_idx}: {e:?}")
+                                    panic!("Failed at level {level}, group {group_idx}: {e:?}")
                                 });
 
                                 report_proof_size(&out.0);
@@ -399,7 +437,7 @@ macro_rules! define_field_module {
                                 verifier
                                     .verify_all_tables(&out.0, out.1.common_data())
                                     .unwrap_or_else(|e| {
-                                        panic!("Verification failed at level {level}, pair {pair_idx}: {e:?}")
+                                        panic!("Verification failed at level {level}, group {group_idx}: {e:?}")
                                     });
                                 next_level.push(out);
                             }
