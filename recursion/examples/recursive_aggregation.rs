@@ -61,7 +61,7 @@ struct Args {
 
     #[arg(
         long,
-        default_value_t = 3,
+        default_value_t = 2,
         help = "Maximum arity allowed during FRI folding phases"
     )]
     pub max_log_arity: usize,
@@ -85,7 +85,7 @@ struct Args {
 
     #[arg(
         long,
-        default_value_t = 19,
+        default_value_t = 15,
         help = "PoW grinding bits during FRI query phase"
     )]
     pub query_pow_bits: usize,

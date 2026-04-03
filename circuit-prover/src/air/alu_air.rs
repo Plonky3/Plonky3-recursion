@@ -22,12 +22,13 @@
 //! ## Main trace layout
 //!
 //! Each lane occupies `4 * D` columns: `[a[D], b[D], c[D], out[D]]`.
-//! After all lanes, there are `3 * (K - 1) * D` **global** extra columns on lane 0
-//! for **K-step** packed HornerAcc (`K >= 2`, fixed per AIR): `(K-1)` intermediate
-//! accumulators `int_*[D]`, then `(a_t,c_t)` for steps `t = 1..K-1`. For `K = 2` this
-//! matches the previous `[int, a1, c1]` layout (`3D` extra).
+//! After all lanes, there are `(num_int + 2 * (K_max - 1)) * D` **global** extra columns
+//! on lane 0 for variable-arity packed HornerAcc (`K_max >= 2`, fixed per AIR):
+//! `num_int = (K_max - 1) / 2` compressed intermediates `int_*[D]`, then `(a_t,c_t)` for
+//! `t = 1..K_max-1` (operand pairs for packed steps after the first).
 //!
-//! Total main width = `lanes * 4D + 3 * (K - 1) * D`.
+//! Total main width = `lanes * 4D + (num_int + 2 * (K_max - 1) + 1) * D` (extra `+ D` is `b^2`
+//! witness for lane 0, keeping packed Horner constraints at degree 3 with preprocessed selectors).
 //!
 //! ## Preprocessed trace layout
 //!
@@ -49,23 +50,22 @@
 //! | 11     | `a_is_reader`     | 1 if `a` reads from the WitnessChecks bus      |
 //! | 12     | `c_is_reader`     | 1 if `c` reads from the WitnessChecks bus      |
 //!
-//! After all lanes, there are `1 + 4 * (K - 1)` **global** extra preprocessed
-//! columns for packed HornerAcc: column 0 is `sel_horner_packed`; for each step
-//! `t = 1..K-1`, four columns `a_t_idx`, `c_t_idx`, `a_t_reader`, `c_t_reader`
+//! After all lanes, there are `(K_max - 1) + 4 * (K_max - 1)` **global** extra preprocessed
+//! columns: `sel_k` for each arity `k = 2..K_max`, then for each step `t = 1..K_max-1` four
+//! columns `a_t_idx`, `c_t_idx`, `a_t_reader`, `c_t_reader`
 //! (see [`AluPackedHornerStepPrepCols`](super::alu_columns::AluPackedHornerStepPrepCols)).
 //!
-//! Total preprocessed width = `lanes * 13 + 1 + 4 * (K - 1)`.
+//! Total preprocessed width = `lanes * 13 + (K_max - 1) + 6 * (K_max - 1)`.
 //!
 //! ## K-step packed HornerAcc
 //!
 //! When HornerAcc operations are present, [`compute_schedule`] places Horner chains
-//! on lane 0 and packs each contiguous run of **K** ops (same `b` witness index)
-//! into [`ScheduleEntry::PackedHorner`]. Remainder ops use single-step rows.
+//! on lane 0 and greedily packs each prefix of a chain into [`ScheduleEntry::PackedHorner`]
+//! with arity `k ∈ {2..K_max}` (same `b` witness index, contiguous indices). Remainder ops
+//! use single-step rows.
 //!
-//! 1. **Inter-row** (prev row `out` → next row first intermediate):
-//!    `int_0 = prev_out * b + c - a`
-//! 2. **Intra-row**: `int_{s+1} = int_s * b + c_{s+1} - a_{s+1}` for `s < K-2`, and
-//!    `out = int_{K-2} * b + c_{K-1} - a_{K-1}`.
+//! Inter-row and intra-row constraints fold consecutive Horner steps in pairs (degree-3
+//! where needed); see `eval` implementation for the exact selector layout per `k`.
 //!
 //! A leading [`ScheduleEntry::Separator`] prevents bogus inter-row Horner on row 0.
 //!
@@ -93,9 +93,9 @@ use p3_uni_stark::SymbolicExpression;
 use tracing::instrument;
 
 use super::alu_columns::{
-    AluMainLaneCols, AluPackedHornerStepPrepCols, AluPrepLaneCols, EXTRA_PREP_SEL_PACKED,
-    PACKED_HORNER_STEP_PREP_WIDTH, PREP_LANE_WIDTH, alu_main_lane_width, extra_prep_a_idx_for_step,
-    horner_extra_prep_width,
+    AluMainLaneCols, AluPackedHornerStepPrepCols, AluPrepLaneCols, PACKED_HORNER_STEP_PREP_WIDTH,
+    PREP_LANE_WIDTH, alu_main_lane_width, extra_prep_a_idx_for_step, extra_prep_sel_k_idx,
+    horner_extra_prep_width, num_horner_intermediates,
 };
 use crate::air::utils::{create_symbolic_variables, get_alu_index_lookups};
 
@@ -104,8 +104,8 @@ use crate::air::utils::{create_symbolic_variables, get_alu_index_lookups};
 enum ScheduleEntry {
     /// A real ALU op at the given original index.
     Op(usize),
-    /// K consecutive HornerAcc ops with indices `first..first+K` in the original trace.
-    PackedHorner(usize),
+    /// `k` consecutive HornerAcc ops with indices `first..first+k` in the original trace (`k >= 2`).
+    PackedHorner(usize, usize),
     /// A virtual zero-separator (multiplicity 0, all values 0).
     Separator,
 }
@@ -301,7 +301,9 @@ impl<F: Field + PrimeCharacteristicRing + Copy, const D: usize> AluAir<F, D> {
 
     /// Total main trace width for this AIR instance.
     pub const fn total_width(&self) -> usize {
-        let extra = 3 * (self.horner_packed_steps - 1) * D;
+        let k = self.horner_packed_steps;
+        let num_int = num_horner_intermediates(k);
+        let extra = (num_int + 2 * (k - 1) + 1) * D;
         self.lanes * Self::lane_width() + extra
     }
 
@@ -385,7 +387,7 @@ impl<F: Field + PrimeCharacteristicRing + Copy, const D: usize> AluAir<F, D> {
 
         // Leading separator before the first chain. The cyclic constraint
         // wraps from the last row back to row 0, and without this separator
-        // the first chain would be a Horner row whose `sel_horner_packed` = 1,
+        // the first chain would be a Horner row with a packed-arity selector set,
         schedule.push(ScheduleEntry::Separator);
         fill_row(&mut schedule, &mut nc, &non_chain);
 
@@ -401,23 +403,26 @@ impl<F: Field + PrimeCharacteristicRing + Copy, const D: usize> AluAir<F, D> {
             let mut i = 0;
             while i < chain.len() {
                 debug_assert_eq!(schedule.len() % lanes, 0, "chain op not at lane 0");
-                if i + pack_k <= chain.len() {
+                let k_try = chain.len().saturating_sub(i).min(pack_k);
+                let mut best_k = 1usize;
+                for k in (2..=k_try).rev() {
                     let mut contiguous = true;
-                    for j in 1..pack_k {
+                    for j in 1..k {
                         if chain[i + j] != chain[i] + j {
                             contiguous = false;
                             break;
                         }
                     }
-                    let slice = &chain[i..i + pack_k];
-                    let share_b = Self::horner_ops_share_b_idx(preprocessed, plw, slice);
-                    if contiguous && share_b {
-                        schedule.push(ScheduleEntry::PackedHorner(chain[i]));
-                        i += pack_k;
-                    } else {
-                        schedule.push(ScheduleEntry::Op(chain[i]));
-                        i += 1;
+                    if contiguous
+                        && Self::horner_ops_share_b_idx(preprocessed, plw, &chain[i..i + k])
+                    {
+                        best_k = k;
+                        break;
                     }
+                }
+                if best_k >= 2 {
+                    schedule.push(ScheduleEntry::PackedHorner(chain[i], best_k));
+                    i += best_k;
                 } else {
                     schedule.push(ScheduleEntry::Op(chain[i]));
                     i += 1;
@@ -472,7 +477,7 @@ impl<F: Field + PrimeCharacteristicRing + Copy, const D: usize> AluAir<F, D> {
 
     /// Convert an `AluTrace` into a `RowMajorMatrix` suitable for the STARK prover.
     #[instrument(skip_all, name = "AluAir::trace_to_matrix")]
-    pub fn trace_to_matrix<ExtF: BasedVectorSpace<F>>(
+    pub fn trace_to_matrix<ExtF: BasedVectorSpace<F> + Field>(
         &self,
         trace: &AluTrace<ExtF>,
         min_height: usize,
@@ -488,6 +493,7 @@ impl<F: Field + PrimeCharacteristicRing + Copy, const D: usize> AluAir<F, D> {
         let mut values = F::zero_vec(width * row_count.max(1));
 
         if let Some(ref schedule) = self.schedule {
+            let mut prev_lane0_out = [F::ZERO; D];
             for (pos, entry) in schedule.iter().enumerate() {
                 let row = pos / lanes;
                 let lane = pos % lanes;
@@ -496,9 +502,14 @@ impl<F: Field + PrimeCharacteristicRing + Copy, const D: usize> AluAir<F, D> {
                     ScheduleEntry::Op(i) => {
                         let mut cursor = row * width + lane * lane_width;
                         Self::write_operands(&mut values, &mut cursor, trace, *i);
+                        if lane == 0 {
+                            let out_start = row * width + 3 * D;
+                            prev_lane0_out[..D].copy_from_slice(&values[out_start..out_start + D]);
+                        }
                     }
-                    ScheduleEntry::PackedHorner(first_idx) => {
-                        let k = self.horner_packed_steps;
+                    ScheduleEntry::PackedHorner(first_idx, actual_k) => {
+                        let k = *actual_k;
+                        let k_max = self.horner_packed_steps;
                         let base = row * width + lane * lane_width;
                         let mut cursor = base;
 
@@ -514,12 +525,28 @@ impl<F: Field + PrimeCharacteristicRing + Copy, const D: usize> AluAir<F, D> {
 
                         if lane == 0 {
                             let extra = row * width + self.lanes * lane_width;
-                            let num_int = k - 1;
+                            let num_int = num_horner_intermediates(k_max);
+                            let prev_ext =
+                                ExtF::from_basis_coefficients_slice(&prev_lane0_out[..D]).unwrap();
+                            let b = trace.values[*first_idx][1];
+                            let mut step = 0usize;
+                            let mut acc = prev_ext;
                             for s in 0..num_int {
-                                let acc =
-                                    trace.values[*first_idx + s][3].as_basis_coefficients_slice();
+                                let i0 = *first_idx + step;
+                                let i1 = *first_idx + step + 1;
+                                let v0 = &trace.values[i0];
+                                if i1 < *first_idx + k {
+                                    let v1 = &trace.values[i1];
+                                    let o0 = acc * b + v0[2] - v0[0];
+                                    acc = o0 * b + v1[2] - v1[0];
+                                    step += 2;
+                                } else {
+                                    acc = acc * b + v0[2] - v0[0];
+                                    step += 1;
+                                }
                                 let off = extra + s * D;
-                                values[off..off + D].copy_from_slice(acc);
+                                values[off..off + D]
+                                    .copy_from_slice(acc.as_basis_coefficients_slice());
                             }
                             let ac_base = extra + num_int * D;
                             for t in 1..k {
@@ -530,9 +557,19 @@ impl<F: Field + PrimeCharacteristicRing + Copy, const D: usize> AluAir<F, D> {
                                 values[off..off + D].copy_from_slice(a_t);
                                 values[off + D..off + 2 * D].copy_from_slice(c_t);
                             }
+                            let b_sq_ext = b * b;
+                            let b_sq_base = ac_base + 2 * (k_max - 1) * D;
+                            values[b_sq_base..b_sq_base + D]
+                                .copy_from_slice(b_sq_ext.as_basis_coefficients_slice());
+                            let out_start = row * width + 3 * D;
+                            prev_lane0_out[..D].copy_from_slice(&values[out_start..out_start + D]);
                         }
                     }
-                    ScheduleEntry::Separator => {}
+                    ScheduleEntry::Separator => {
+                        if lane == 0 {
+                            prev_lane0_out = [F::ZERO; D];
+                        }
+                    }
                 }
             }
         } else {
@@ -573,36 +610,43 @@ impl<F: Field + PrimeCharacteristicRing + Copy, const D: usize> AluAir<F, D> {
                     let src = &self.preprocessed[i * plw..(i + 1) * plw];
                     values[base..base + plw].copy_from_slice(src);
                 }
-                ScheduleEntry::PackedHorner(first_idx) => {
+                ScheduleEntry::PackedHorner(first_idx, actual_k) => {
                     if lane == 0 {
-                        let k = self.horner_packed_steps;
+                        let k = *actual_k;
+                        let k_max = self.horner_packed_steps;
                         let src0 = &self.preprocessed[*first_idx * plw..(*first_idx + 1) * plw];
                         let last = *first_idx + k - 1;
                         let src_last = &self.preprocessed[last * plw..(last + 1) * plw];
 
                         values[base..base + plw].copy_from_slice(src0);
 
-                        let lane_prep: &mut AluPrepLaneCols<F> =
-                            values[base..base + plw].borrow_mut();
-                        let src_last_prep: &AluPrepLaneCols<F> = src_last.borrow();
-                        lane_prep.out_idx = src_last_prep.out_idx;
-                        lane_prep.mult_out = src_last_prep.mult_out;
+                        let mult_a_lane = {
+                            let lane_prep: &mut AluPrepLaneCols<F> =
+                                values[base..base + plw].borrow_mut();
+                            let src_last_prep: &AluPrepLaneCols<F> = src_last.borrow();
+                            lane_prep.out_idx = src_last_prep.out_idx;
+                            lane_prep.mult_out = src_last_prep.mult_out;
 
-                        lane_prep.mult_b *= F::from_usize(k);
+                            lane_prep.mult_b *= F::from_usize(k);
+                            lane_prep.mult_a
+                        };
 
                         let extra_base = row * row_width + self.lanes * plw;
-                        values[extra_base + EXTRA_PREP_SEL_PACKED] = F::ONE;
+                        values[extra_base + extra_prep_sel_k_idx(k)] = F::ONE;
                         for t in 1..k {
                             let src_t: &AluPrepLaneCols<F> = self.preprocessed
                                 [(*first_idx + t) * plw..(*first_idx + t + 1) * plw]
                                 .borrow();
-                            let p = extra_base + extra_prep_a_idx_for_step(t);
+                            let p = extra_base + extra_prep_a_idx_for_step(t, k_max);
                             let step: &mut AluPackedHornerStepPrepCols<F> =
                                 values[p..p + PACKED_HORNER_STEP_PREP_WIDTH].borrow_mut();
                             step.a_idx = src_t.a_idx;
                             step.c_idx = src_t.c_idx;
                             step.a_reader = src_t.a_is_reader;
                             step.c_reader = src_t.c_is_reader;
+                            let on = if t < k { F::ONE } else { F::ZERO };
+                            step.horner_lookup_mult_a = mult_a_lane * src_t.a_is_reader * on;
+                            step.horner_lookup_mult_c = mult_a_lane * src_t.c_is_reader * on;
                         }
                     }
                 }
@@ -786,28 +830,61 @@ where
 
             let extra_main = self.lanes * lane_width;
             let extra_prep = self.lanes * PREP_LANE_WIDTH;
-            let k = self.horner_packed_steps;
-            let extra_coeff_width = 3 * (k - 1) * D;
+            let k_max = self.horner_packed_steps;
+            let num_int = num_horner_intermediates(k_max);
+            let extra_coeff_width = (num_int + 2 * (k_max - 1) + 1) * D;
             let has_extra_cols = extra_main + extra_coeff_width <= local.len()
-                && extra_prep + horner_extra_prep_width(k) <= prep_local.len()
-                && extra_prep + horner_extra_prep_width(k) <= prep_next.len();
+                && extra_prep + horner_extra_prep_width(k_max) <= prep_local.len()
+                && extra_prep + horner_extra_prep_width(k_max) <= prep_next.len();
 
             if lane == 0 && has_extra_cols {
                 let next_int0 = &next[extra_main..extra_main + D];
 
-                let sel_packed = prep_local[extra_prep + EXTRA_PREP_SEL_PACKED];
-                let next_sel_packed = prep_next[extra_prep + EXTRA_PREP_SEL_PACKED];
+                let mut any_packed_cur = AB::Expr::ZERO;
+                for kk in 2..=k_max {
+                    any_packed_cur += prep_local[extra_prep + extra_prep_sel_k_idx(kk)];
+                }
 
-                // 1) Packed inter-row: prev_out -> next row's first intermediate
+                let mut any_packed_next = AB::Expr::ZERO;
+                for kk in 2..=k_max {
+                    any_packed_next += prep_next[extra_prep + extra_prep_sel_k_idx(kk)];
+                }
+
+                let next_sel_k2 = prep_next[extra_prep + extra_prep_sel_k_idx(2)];
+                let mut sel_ge3_next = AB::Expr::ZERO;
+                for kk in 3..=k_max {
+                    sel_ge3_next += prep_next[extra_prep + extra_prep_sel_k_idx(kk)];
+                }
+
+                let ac_base = extra_main + num_int * D;
+                let b_sq_base = ac_base + 2 * (k_max - 1) * D;
+                let b_sq = &local[b_sq_base..b_sq_base + D];
+                let b_sq_next = &next[b_sq_base..b_sq_base + D];
+                let bb = ext_mul_lane(b, b);
                 for i in 0..D {
-                    builder.assert_zero(
-                        next_sel_packed
-                            * (out_next_b[i].dup() + next_c[i] - next_a[i] - next_int0[i]),
-                    );
+                    builder.assert_zero(any_packed_cur.dup() * (b_sq[i] - bb[i].dup()));
+                }
+
+                let out_b_sq = ext_mul_lane(out, b_sq_next);
+                let c0_b_next = ext_mul_lane(next_c, next_b);
+                let a0_b_next = ext_mul_lane(next_a, next_b);
+
+                let ac_base_next = extra_main + num_int * D;
+                let off1 = ac_base_next;
+                let a1_next = &next[off1..off1 + D];
+                let c1_next = &next[off1 + D..off1 + 2 * D];
+
+                // 1) Packed inter-row: fold first two steps of next row
+                for i in 0..D {
+                    let poly_i = out_b_sq[i].dup() + c0_b_next[i].dup() - a0_b_next[i].dup()
+                        + c1_next[i]
+                        - a1_next[i];
+                    builder.assert_zero(next_sel_k2.dup() * (poly_i.dup() - next_out[i]));
+                    builder.assert_zero(sel_ge3_next.dup() * (poly_i - next_int0[i]));
                 }
 
                 // 2) Single-step fallback: prev_out -> next_out
-                let next_sel_single = next_sel_horner - next_sel_packed;
+                let next_sel_single = next_sel_horner - any_packed_next;
                 for i in 0..D {
                     builder.assert_zero(
                         next_sel_single.dup()
@@ -815,35 +892,55 @@ where
                     );
                 }
 
-                // 3) Intra-row: int_s * b + c_{s+1} - a_{s+1} - int_{s+1} = 0, last leg -> out
-                let num_int = k - 1;
-                let ac_base = extra_main + num_int * D;
-                for s in 0..num_int.saturating_sub(1) {
-                    let int_s = &local[extra_main + s * D..extra_main + (s + 1) * D];
-                    let int_sp1 = &local[extra_main + (s + 1) * D..extra_main + (s + 2) * D];
-                    let t = s + 1;
-                    let off = ac_base + 2 * (t - 1) * D;
-                    let a_t = &local[off..off + D];
-                    let c_t = &local[off + D..off + 2 * D];
-                    let int_s_b = ext_mul_lane(int_s, b);
-                    for i in 0..D {
-                        builder.assert_zero(
-                            sel_packed * (int_s_b[i].dup() + c_t[i] - a_t[i] - int_sp1[i]),
-                        );
-                    }
-                }
-                if k >= 2 {
-                    let s_last = k - 2;
-                    let int_last = &local[extra_main + s_last * D..extra_main + (s_last + 1) * D];
-                    let t = k - 1;
-                    let off = ac_base + 2 * (t - 1) * D;
-                    let a_t = &local[off..off + D];
-                    let c_t = &local[off + D..off + 2 * D];
-                    let int_last_b = ext_mul_lane(int_last, b);
-                    for i in 0..D {
-                        builder.assert_zero(
-                            sel_packed * (int_last_b[i].dup() + c_t[i] - a_t[i] - out[i]),
-                        );
+                // 3) Intra-row packed legs (per arity selector sel_k, k >= 3)
+                for kk in 3..=k_max {
+                    let sel_kk = prep_local[extra_prep + extra_prep_sel_k_idx(kk)];
+                    let mut s = 2usize;
+                    let mut curr_int_slot = 0usize;
+                    while s < kk {
+                        let int_curr = &local
+                            [extra_main + curr_int_slot * D..extra_main + (curr_int_slot + 1) * D];
+                        let off_s = ac_base + 2 * (s - 1) * D;
+                        let a_s = &local[off_s..off_s + D];
+                        let c_s = &local[off_s + D..off_s + 2 * D];
+                        if s + 1 < kk {
+                            let c_s = &local[off_s + D..off_s + 2 * D];
+                            let off_sp1 = ac_base + 2 * s * D;
+                            let a_sp1 = &local[off_sp1..off_sp1 + D];
+                            let c_sp1 = &local[off_sp1 + D..off_sp1 + 2 * D];
+
+                            let int_b_sq = ext_mul_lane(int_curr, b_sq);
+                            let c_s_b = ext_mul_lane(c_s, b);
+                            let a_s_b = ext_mul_lane(a_s, b);
+
+                            if s + 2 >= kk {
+                                for i in 0..D {
+                                    let prod = int_b_sq[i].dup() + c_s_b[i].dup() - a_s_b[i].dup()
+                                        + c_sp1[i]
+                                        - a_sp1[i];
+                                    builder.assert_zero(sel_kk * (prod - out[i]));
+                                }
+                            } else {
+                                let int_next = &local[extra_main + (curr_int_slot + 1) * D
+                                    ..extra_main + (curr_int_slot + 2) * D];
+                                for i in 0..D {
+                                    let prod = int_b_sq[i].dup() + c_s_b[i].dup() - a_s_b[i].dup()
+                                        + c_sp1[i]
+                                        - a_sp1[i];
+                                    builder.assert_zero(sel_kk * (prod - int_next[i]));
+                                }
+                                curr_int_slot += 1;
+                            }
+                            s += 2;
+                        } else {
+                            let int_b = ext_mul_lane(int_curr, b);
+                            for i in 0..D {
+                                builder.assert_zero(
+                                    sel_kk * (int_b[i].dup() + c_s[i] - a_s[i] - out[i]),
+                                );
+                            }
+                            s += 1;
+                        }
                     }
                 }
             } else {
@@ -892,24 +989,19 @@ impl<F: Field + Copy, const D: usize> LookupAir<F> for AluAir<F, D> {
             }));
         }
 
-        // Extra lookups for (a_t, c_t), t = 1..K-1, on packed Horner rows.
+        // Extra lookups for (a_t, c_t), t = 1..K_max-1, on packed Horner rows.
         let extra_main = self.lanes * Self::lane_width();
         let extra_prep = self.lanes * Self::preprocessed_lane_width();
-        let k = self.horner_packed_steps;
-        let num_int = k - 1;
+        let k_max = self.horner_packed_steps;
+        let num_int = num_horner_intermediates(k_max);
         let ac_base = extra_main + num_int * D;
 
-        let prep_lane0: &AluPrepLaneCols<_> = preprocessed_local[..PREP_LANE_WIDTH].borrow();
-        let mult_a_lane0 = SymbolicExpression::from(prep_lane0.mult_a);
-
-        for t in 1..k {
-            let p = extra_prep + extra_prep_a_idx_for_step(t);
+        for t in 1..k_max {
+            let p = extra_prep + extra_prep_a_idx_for_step(t, k_max);
             let step: &AluPackedHornerStepPrepCols<_> =
                 preprocessed_local[p..p + PACKED_HORNER_STEP_PREP_WIDTH].borrow();
-            let a_reader = SymbolicExpression::from(step.a_reader);
-            let c_reader = SymbolicExpression::from(step.c_reader);
-            let eff_mult_a = mult_a_lane0.dup() * a_reader.dup();
-            let eff_mult_c = mult_a_lane0.dup() * c_reader;
+            let eff_mult_a = SymbolicExpression::from(step.horner_lookup_mult_a);
+            let eff_mult_c = SymbolicExpression::from(step.horner_lookup_mult_c);
 
             let a_idx = SymbolicExpression::from(step.a_idx);
             let main_off = ac_base + 2 * (t - 1) * D;
