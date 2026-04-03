@@ -246,15 +246,7 @@ fn test_fibonacci_batch_verifier_quintic_koala() {
         )
         .unwrap();
     }
-    // Known issue: the MMCS Merkle-cap witness conflicts (committed vs circuit-computed hash).
-    // Outer prove is structurally complete below and will run once this conflict is resolved.
-    let verification_traces = match runner.run() {
-        Ok(t) => t,
-        Err(e) => {
-            eprintln!("Skipping outer prove: runner.run() returned {e:?}");
-            return;
-        }
-    };
+    let verification_traces = runner.run().expect("outer circuit trace generation failed");
     assert!(
         verification_traces.witness_trace.num_rows() > 0,
         "verifier circuit should produce witness trace"

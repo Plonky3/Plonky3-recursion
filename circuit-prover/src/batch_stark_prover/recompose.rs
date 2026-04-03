@@ -78,11 +78,17 @@ impl<const D: usize> RecomposeProver<D> {
         let lanes = packing.npo_lanes(&op_type).unwrap_or(self.lanes);
         let min_height = packing.min_trace_height();
 
-        // Build preprocessed data: 2 values per operation [output_idx, out_mult]
-        // These are stored flat; from_flat_padded handles lane layout.
-        let mut preprocessed = Val::<SC>::zero_vec(num_ops * 2);
+        // Build raw preprocessed data: [output_idx, out_mult, coeff_0_idx, coeff_0_mult, ...]
+        // Multiplicities are left as zero here; the committed preprocessed data (with correct
+        // multiplicities from recompose_preprocess_impl) replaces this AIR in prove().
+        let prep_lane_width = RecomposeAir::<Val<SC>, D>::preprocessed_lane_width();
+        let mut preprocessed = Val::<SC>::zero_vec(num_ops * prep_lane_width);
         for (i, row) in t.operations.iter().enumerate() {
-            preprocessed[i * 2] = row.output_wid.base_field_index::<Val<SC>, D>();
+            let base = i * prep_lane_width;
+            preprocessed[base] = row.output_wid.base_field_index::<Val<SC>, D>();
+            for (j, &coeff_wid) in row.input_wids.iter().enumerate().take(D) {
+                preprocessed[base + 2 + j * 2] = coeff_wid.base_field_index::<Val<SC>, D>();
+            }
         }
 
         let air =
@@ -228,7 +234,8 @@ where
         _ => return Ok(HashMap::new()),
     };
 
-    let prep_width = 2; // [output_idx, out_mult]
+    // Layout per op: [output_idx, out_mult, coeff_0_idx, coeff_0_mult, ..., coeff_{D-1}_idx, coeff_{D-1}_mult]
+    let prep_width = 2 + 2 * D;
 
     let mut prep_base: Vec<F> = ef_data
         .iter()
@@ -240,10 +247,8 @@ where
 
     for row_idx in 0..num_rows {
         let row_start = row_idx * prep_width;
-        let output_idx_pos = row_start; // output_idx is column 0
-        let out_mult_pos = row_start + 1; // out_mult is column 1
 
-        let output_idx_val = prep_base[output_idx_pos];
+        let output_idx_val = prep_base[row_start];
         let out_wid = F::as_canonical_u64(&output_idx_val) as usize / D;
 
         let is_dup = prep
@@ -253,10 +258,26 @@ where
             .unwrap_or(false);
 
         if is_dup {
-            prep_base[out_mult_pos] = neg_one;
+            prep_base[row_start + 1] = neg_one;
         } else {
             let n_reads = prep.ext_reads.get(out_wid).copied().unwrap_or(0);
-            prep_base[out_mult_pos] = F::from_u32(n_reads);
+            prep_base[row_start + 1] = F::from_u32(n_reads);
+        }
+
+        // Set coefficient creation multiplicities.
+        // Only hint-derived coefficients need to be created on the WitnessChecks bus;
+        // coefficients that are already-defined witnesses (e.g. Poseidon2 rate outputs
+        // consumed via `sample_ext`) are created by their originating table and must
+        // not be created again here.
+        for i in 0..D {
+            let coeff_idx_val = prep_base[row_start + 2 + i * 2];
+            let coeff_wid = F::as_canonical_u64(&coeff_idx_val) as usize / D;
+            let n_coeff_reads = if prep.hint_output_wids.contains(&(coeff_wid as u32)) {
+                prep.ext_reads.get(coeff_wid).copied().unwrap_or(0)
+            } else {
+                0
+            };
+            prep_base[row_start + 2 + i * 2 + 1] = F::from_u32(n_coeff_reads);
         }
     }
 

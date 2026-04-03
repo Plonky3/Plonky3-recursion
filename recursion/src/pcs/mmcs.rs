@@ -156,6 +156,10 @@ where
 
 /// Hash extension field elements directly (no recompose). Use when values are already
 /// extension elements (e.g. FRI commit-phase evals). Absorbs in chunks of `rate_ext`.
+///
+/// For D=1 Poseidon2 in a high-degree extension context, each extension element is decomposed
+/// into its `D` base field coefficients and hashed flat, matching native `ExtensionMmcs`
+/// behavior which flattens extension elements before hashing.
 fn add_hash_extension_elements<F, EF>(
     circuit: &mut CircuitBuilder<EF>,
     permutation_config: &Poseidon2Config,
@@ -166,6 +170,29 @@ where
     F: Field + PrimeField64,
     EF: ExtensionField<F>,
 {
+    let ext_degree = <EF as BasedVectorSpace<F>>::DIMENSION;
+
+    // For D=1 Poseidon2 in a higher-degree extension context, the native `ExtensionMmcs`
+    // flattens each EF element to D base field values before hashing. Mirror that by
+    // decomposing each element and routing coefficients through the base-coefficient path.
+    if permutation_config.d() == 1 && ext_degree > 1 {
+        if ext_elements.is_empty() {
+            let zero = circuit.define_const(EF::ZERO);
+            return Ok(vec![zero; permutation_config.rate_ext()]);
+        }
+        let mut base_coeffs: Vec<Target> = Vec::with_capacity(ext_elements.len() * ext_degree);
+        for &t in ext_elements {
+            let coeffs = circuit.decompose_ext_to_base_coeffs::<F>(t)?;
+            base_coeffs.extend(coeffs);
+        }
+        return add_hash_base_coeffs_overwrite::<F, EF>(
+            circuit,
+            permutation_config,
+            &base_coeffs,
+            reset,
+        );
+    }
+
     let rate_ext = permutation_config.rate_ext();
     let width_ext = permutation_config.width_ext();
     if ext_elements.is_empty() {
@@ -471,15 +498,13 @@ where
     opening_proof
         .iter()
         .map(|digest| {
-            if DIGEST_ELEMS % d == 0 {
+            if DIGEST_ELEMS.is_multiple_of(d) {
                 let ext_count = DIGEST_ELEMS / d;
                 (0..ext_count)
                     .map(|chunk_idx| {
                         let start = chunk_idx * d;
                         let mut coeffs = vec![F::ZERO; d];
-                        for k in 0..d {
-                            coeffs[k] = digest[start + k];
-                        }
+                        coeffs[..d].copy_from_slice(&digest[start..(d + start)]);
                         EF::from_basis_coefficients_slice(&coeffs)
                             .expect("coefficients match extension degree")
                     })

@@ -31,6 +31,13 @@ pub struct PreprocessedColumns<F, const D: usize> {
     /// `WitnessId(wid)` was already defined by an earlier op and this NPO occurrence is
     /// a reader, not the creator. Populated by `generate_preprocessed_columns`.
     pub dup_npo_outputs: HashMap<NpoTypeId, Vec<bool>>,
+    /// WitnessId.0 values for all `Op::Hint` outputs in the circuit.
+    ///
+    /// Used by prover preprocessors (e.g. `recompose_preprocess_impl`) to distinguish
+    /// hint-derived witnesses (which need to be created on the WitnessChecks bus by the
+    /// owning NPO table) from already-defined witnesses (e.g. Poseidon2 rate outputs that
+    /// are also passed as recompose coefficients via `sample_ext`).
+    pub hint_output_wids: hashbrown::HashSet<u32>,
 }
 
 impl<F: PartialEq, const D: usize> PartialEq for PreprocessedColumns<F, D> {
@@ -39,6 +46,7 @@ impl<F: PartialEq, const D: usize> PartialEq for PreprocessedColumns<F, D> {
             && self.ext_reads == other.ext_reads
             && self.non_primitive == other.non_primitive
             && self.dup_npo_outputs == other.dup_npo_outputs
+            && self.hint_output_wids == other.hint_output_wids
     }
 }
 
@@ -51,6 +59,7 @@ impl<F: Field + Clone, const D: usize> Clone for PreprocessedColumns<F, D> {
             non_primitive: self.non_primitive.clone(),
             ext_reads: self.ext_reads.clone(),
             dup_npo_outputs: self.dup_npo_outputs.clone(),
+            hint_output_wids: self.hint_output_wids.clone(),
         }
     }
 }
@@ -64,6 +73,7 @@ impl<F: Field, const D: usize> PreprocessedColumns<F, D> {
             non_primitive: NonPrimitivePreprocessedMap::new(),
             ext_reads: Vec::new(),
             dup_npo_outputs: HashMap::new(),
+            hint_output_wids: hashbrown::HashSet::new(),
         }
     }
 }
@@ -235,6 +245,41 @@ impl<F: Field> Circuit<F> {
         let private_input_wids: hashbrown::HashSet<u32> =
             self.private_input_rows.iter().map(|w| w.0).collect();
 
+        // Hint output witness IDs: like private inputs, they are not emitted by any AIR
+        // table and must have their bus creator role assigned by the first ALU op that
+        // uses them.  Collect them in a pre-pass so the main loop can check membership.
+        // Also stored in `preprocessed.hint_output_wids` for use by prover preprocessors
+        // (e.g. `recompose_preprocess_impl`) that need to distinguish hint-derived witnesses
+        // from already-defined ones (e.g. Poseidon2 outputs used as recompose coefficients).
+        //
+        // Important: when `assert_zero(x)` connects a hint output to `ExprId::ZERO`, the
+        // hint output alias gets WitnessId(0), which is the Const-defined zero. We must
+        // exclude such Const/Public-defined WitnessIds so they are not treated as creators
+        // by the Recompose table (which would double-create them alongside ConstAir).
+        let const_public_wids: hashbrown::HashSet<u32> = self
+            .ops
+            .iter()
+            .filter_map(|op| match op {
+                Op::Const { out, .. } => Some(out.0),
+                Op::Public { out, .. } => Some(out.0),
+                _ => None,
+            })
+            .collect();
+        let hint_output_wids: hashbrown::HashSet<u32> = self
+            .ops
+            .iter()
+            .filter_map(|op| {
+                if let Op::Hint { outputs, .. } = op {
+                    Some(outputs.iter().map(|w| w.0))
+                } else {
+                    None
+                }
+            })
+            .flatten()
+            .filter(|wid| !const_public_wids.contains(wid))
+            .collect();
+        preprocessed.hint_output_wids = hint_output_wids.clone();
+
         // Process each primitive operation.
         for op in &self.ops {
             match op {
@@ -269,7 +314,7 @@ impl<F: Field> Circuit<F> {
                 // a_state / c_state (3-valued):
                 //   0 = skip (unconstrained, no bus contribution)
                 //   1 = reader (defined by Const/Public/ALU/Poseidon2, bus receive)
-                //   2 = private creator (private input, first ALU use → bus send)
+                //   2 = creator (private input or hint output, first ALU use → bus send)
                 //
                 // b_is_creator / out_is_creator can both be set simultaneously when
                 // b is a private input in the forward case.
@@ -289,14 +334,21 @@ impl<F: Field> Circuit<F> {
                     let b_already_defined = (b.0 as usize) < defined.len() && defined[b.0 as usize];
 
                     // 3-state for a and c:
-                    //   0 = skip (not defined, not private → unconstrained)
+                    //   0 = skip (not defined, not private/hint → unconstrained)
                     //   1 = reader (already defined by another table)
-                    //   2 = private creator (private input, first use → this row creates it)
+                    //   2 = creator (private input or hint output, first use → this row creates it)
+                    //
+                    // Guard: if the `out` slot is the creator for this op (!out_already_defined)
+                    // and a (or c) aliases `out` (same WitnessId), skip the a/c creator role to
+                    // avoid double-creation.  This happens in e.g. BoolCheck where a = c = out.
                     let a_defined = (a.0 as usize) < defined.len() && defined[a.0 as usize];
+                    let a_aliased_by_out = !out_already_defined && a.0 == out.0;
                     let a_state: F = if a_defined {
                         F::ONE // reader
-                    } else if private_input_wids.contains(&a.0) {
-                        F::TWO // private creator
+                    } else if (private_input_wids.contains(&a.0) || hint_output_wids.contains(&a.0))
+                        && !a_aliased_by_out
+                    {
+                        F::TWO // creator (private input or hint output)
                     } else {
                         F::ZERO // skip
                     };
@@ -305,20 +357,21 @@ impl<F: Field> Circuit<F> {
                     // witness 0 may hold Const(0); treating it as c would set c_state = reader and
                     // duplicate WitnessChecks reads with b when assert_zero connects the sub result
                     // to ExprId::ZERO (b aliases witness 0).
-                    let (c_wid, c_state) = match c {
-                        Some(w) => {
-                            let c_defined = (w.0 as usize) < defined.len() && defined[w.0 as usize];
-                            let c_state = if c_defined {
-                                F::ONE // reader
-                            } else if private_input_wids.contains(&w.0) {
-                                F::TWO // private creator
-                            } else {
-                                F::ZERO // skip
-                            };
-                            (*w, c_state)
-                        }
-                        None => (WitnessId(0), F::ZERO),
-                    };
+                    let (c_wid, c_state) = c.as_ref().map_or((WitnessId(0), F::ZERO), |w| {
+                        let c_defined = (w.0 as usize) < defined.len() && defined[w.0 as usize];
+                        let c_aliased_by_out = !out_already_defined && w.0 == out.0;
+                        let c_state = if c_defined {
+                            F::ONE // reader
+                        } else if (private_input_wids.contains(&w.0)
+                            || hint_output_wids.contains(&w.0))
+                            && !c_aliased_by_out
+                        {
+                            F::TWO // creator (private input or hint output)
+                        } else {
+                            F::ZERO // skip
+                        };
+                        (*w, c_state)
+                    });
 
                     // b and out creator flags (now independent).
                     // Private inputs can be b-creators even in the forward case.
@@ -495,6 +548,7 @@ mod tests {
                 non_primitive: HashMap::new(),
                 ext_reads: vec![0],
                 dup_npo_outputs: HashMap::new(),
+                hint_output_wids: hashbrown::HashSet::new(),
             }
         );
     }
@@ -583,6 +637,7 @@ mod tests {
                 // ext_reads: op1 reads a=0,b=1; op2 reads a=3,b=2; op3 reads a=4,b=2
                 ext_reads: vec![1, 1, 2, 1, 1],
                 dup_npo_outputs: HashMap::new(),
+                hint_output_wids: hashbrown::HashSet::new(),
             }
         );
     }
@@ -629,6 +684,7 @@ mod tests {
                 //                    0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15
                 ext_reads: vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
                 dup_npo_outputs: HashMap::new(),
+                hint_output_wids: hashbrown::HashSet::new(),
             }
         );
     }
@@ -684,6 +740,7 @@ mod tests {
                 // ext_reads: 0(a)=1, 1(b)=1, 2(c)=1
                 ext_reads: vec![1, 1, 1],
                 dup_npo_outputs: HashMap::new(),
+                hint_output_wids: hashbrown::HashSet::new(),
             }
         );
     }

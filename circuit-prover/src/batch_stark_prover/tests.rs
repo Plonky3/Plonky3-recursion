@@ -805,7 +805,7 @@ fn test_koalabear_quintic_trinomial_batch_stark_with_poseidon_d1() {
     sponge0[0] = KoalaBear::from_u64(11);
     sponge0[1] = KoalaBear::from_u64(13);
     let sponge_out = inner_perm.permute(sponge0);
-    let lift_perm = LiftKoalaPermForQuinticCircuit(inner_perm.clone());
+    let lift_perm = LiftKoalaPermForQuinticCircuit(inner_perm);
 
     let in0 = koala_ef5_lift(KoalaBear::from_u64(11));
     let in1 = koala_ef5_lift(KoalaBear::from_u64(13));

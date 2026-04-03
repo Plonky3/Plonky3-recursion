@@ -1177,23 +1177,27 @@ where
     ///
     /// # Errors
     /// Returns error if the Poseidon2 operation is not enabled
+    /// Applies a D=1 Poseidon2 permutation for the circuit challenger.
+    ///
+    /// - `new_start`: when `true`, all inputs are CTL-verified from the witness bus;
+    ///   when `false`, rate inputs (0-7) are CTL-verified and capacity inputs (8-15)
+    ///   that are `None` are inherited from the previous row via chain constraint.
+    /// - `inputs`: `Some(expr)` for CTL-verified slots, `None` for chain-inherited slots.
     pub fn add_poseidon2_perm_for_challenger_base(
         &mut self,
         config: crate::ops::Poseidon2Config,
-        inputs: [ExprId; 16],
+        new_start: bool,
+        inputs: [Option<ExprId>; 16],
     ) -> Result<[ExprId; 16], CircuitBuilderError> {
         self.push_scope("poseidon2_perm_for_challenger_base");
 
-        // Use add_poseidon2_perm_base with CTL verification for soundness
-        // - All 16 inputs are CTL-verified
-        // - Outputs 0-7 are CTL-verified (rate elements)
-        // - Outputs 8-15 are returned but NOT CTL-verified (capacity elements)
+        // Rate outputs (0-7) are CTL-verified; capacity outputs (8-15) are chained.
         let (_op_id, outputs) = self.add_poseidon2_perm_base(&Poseidon2PermCallBase {
             config,
-            new_start: true,          // Each challenger permutation is independent
-            inputs: inputs.map(Some), // All 16 inputs are CTL-verified
-            out_ctl: [true; 8],       // CTL-verify all 8 rate outputs
-            return_all_outputs: true, // Return all 16 outputs for sponge state
+            new_start,
+            inputs,
+            out_ctl: [true; 8],
+            return_all_outputs: true,
         })?;
 
         let output_exprs: [ExprId; 16] =

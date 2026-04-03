@@ -685,7 +685,7 @@ fn ext_mul_quintic_trinomial<AB: AirBuilder>(x: &[AB::Var], y: &[AB::Var]) -> Ve
     let c7 = xi(3) * yj(4) + xi(4) * yj(3);
     let c8 = xi(4) * yj(4);
 
-    let c5_minus_c8 = c5.clone() - c8.clone();
+    let c5_minus_c8 = c5 - c8.clone();
 
     vec![
         c0 + c5_minus_c8.clone(),

@@ -44,8 +44,8 @@ pub use dynamic_air::{
 };
 pub use packing::TablePacking;
 pub use poseidon2::{
-    Poseidon2AirBuilder, Poseidon2AirBuilderD5, Poseidon2AirWrapperInner, Poseidon2Preprocessor,
-    Poseidon2Prover, Poseidon2ProverD2, poseidon2_preprocessor, poseidon2_verifier_air_from_config,
+    Poseidon2AirBuilder, Poseidon2AirWrapperInner, Poseidon2Preprocessor, Poseidon2Prover,
+    Poseidon2ProverD2, poseidon2_preprocessor, poseidon2_verifier_air_from_config,
 };
 pub use recompose::{RecomposeAirBuilder, RecomposePreprocessor, RecomposeProver};
 
@@ -1165,7 +1165,7 @@ where
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
         Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
-    vec![Box::new(Poseidon2AirBuilder::<2>::default())]
+    vec![Box::new(Poseidon2AirBuilder::<2>)]
 }
 
 /// Poseidon2 AIR builders for D=4 (e.g. BabyBear, KoalaBear).
@@ -1176,7 +1176,7 @@ where
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
         Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
-    vec![Box::new(Poseidon2AirBuilder::<4>::default())]
+    vec![Box::new(Poseidon2AirBuilder::<4>)]
 }
 
 /// Poseidon2 AIR builders for `D = 5` circuit traces (e.g. KoalaBear quintic).
@@ -1187,7 +1187,7 @@ where
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
         Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
-    vec![Box::new(Poseidon2AirBuilderD5)]
+    vec![Box::new(Poseidon2AirBuilder::<5>)]
 }
 
 /// Returns a type-erased Recompose preprocessor.

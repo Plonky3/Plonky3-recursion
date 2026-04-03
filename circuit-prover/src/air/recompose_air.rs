@@ -9,17 +9,21 @@
 //!
 //! **Main columns** (D per lane): `v_0, v_1, ..., v_{D-1}` — the base-field coefficient values.
 //!
-//! **Preprocessed columns** (2 per lane):
+//! **Preprocessed columns** (2 + 2\*D per lane):
 //! - `output_idx`: D-scaled witness ID for the output EF witness
 //! - `out_mult`: ext_reads\[wid\] for real rows, 0 for padding
+//! - `coeff_i_idx` (×D): D-scaled witness ID for each BF coefficient input
+//! - `coeff_i_mult` (×D): ext_reads\[coeff_i_wid\] for real rows, 0 for padding
 //!
-//! # CTL lookups (1 per lane per row)
+//! # CTL lookups (1 + D per lane per row)
 //!
 //! **Receive** `[output_idx, v_0, ..., v_{D-1}]` with multiplicity `out_mult`
 //!
-//! No input lookups are needed: the output lookup alone constrains the main trace
-//! values because the output witness is aliased (via `connect`) to the original
-//! extension-field element, so consumers verify the correct tuple.
+//! **Receive** `[coeff_i_idx, v_i, 0, ..., 0]` with multiplicity `coeff_i_mult`  (×D)
+//!
+//! The D coefficient lookups create each BF coefficient on the WitnessChecks bus so that
+//! NPOs reading the raw coefficients directly (e.g. the D=1 Poseidon2 challenger permutation)
+//! find them there. When a coefficient is not consumed by any such NPO its multiplicity is 0.
 
 use alloc::string::ToString;
 use alloc::vec;
@@ -54,9 +58,9 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> RecomposeAir<F, D> {
         D
     }
 
-    /// Preprocessed width per lane: 1 output index + 1 out_mult.
+    /// Preprocessed width per lane: 1 output index + 1 out_mult + D*(1 coeff_idx + 1 coeff_mult).
     pub const fn preprocessed_lane_width() -> usize {
-        RECOMPOSE_PREP_LANE_WIDTH
+        RECOMPOSE_PREP_LANE_WIDTH + 2 * D
     }
 
     /// Create a new `RecomposeAir` with the given preprocessed data and lane count.
@@ -165,6 +169,33 @@ impl<F: Field, const D: usize> LookupAir<F> for RecomposeAir<F, D> {
                 Kind::Global("WitnessChecks".to_string()),
                 &[inp],
             ));
+
+            // One Receive lookup per BF coefficient: creates the coefficient witness on the
+            // WitnessChecks bus so that NPOs consuming the raw coefficients (e.g. the D=1
+            // Poseidon2 challenger) find them there. coeff_i_mult is 0 when the coefficient
+            // is not directly consumed by any such NPO, making the lookup a no-op.
+            for i in 0..D {
+                let coeff_idx = SymbolicExpression::from(
+                    symbolic_preprocessed[prep_off + RECOMPOSE_PREP_LANE_WIDTH + i * 2],
+                );
+                let coeff_mult = SymbolicExpression::from(
+                    symbolic_preprocessed[prep_off + RECOMPOSE_PREP_LANE_WIDTH + i * 2 + 1],
+                );
+                // Key: [coeff_i_idx, v_i, 0, ..., 0] — BF value embedded as EF element.
+                let mut coeff_values = vec![
+                    coeff_idx,
+                    SymbolicExpression::from(symbolic_main[main_off + i]),
+                ];
+                for _ in 1..D {
+                    coeff_values.push(SymbolicExpression::from(F::ZERO));
+                }
+                let coeff_inp: LookupInput<F> = (coeff_values, coeff_mult, Direction::Receive);
+                lookups.push(LookupAir::register_lookup(
+                    self,
+                    Kind::Global("WitnessChecks".to_string()),
+                    &[coeff_inp],
+                ));
+            }
         }
 
         lookups

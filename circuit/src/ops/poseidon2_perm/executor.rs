@@ -498,7 +498,11 @@ impl Poseidon2PermExecutor {
             });
         }
 
-        let mut resolved_inputs = [F::ZERO; 16];
+        // Initialize from previous chain output (or zeros for new_start).
+        // This matches native PaddingFreeSponge overwrite mode, which preserves the full
+        // state (including capacity) between chunks of a multi-chunk sponge absorption.
+        let chain_output = self.get_chain_output(ctx);
+        let mut resolved_inputs = self.init_chain_state(chain_output.map(|v| v.as_slice()), ctx)?;
         for (slot, inp) in resolved_inputs.iter_mut().zip(limbs) {
             if let [wid] = inp.as_slice() {
                 *slot = ctx.get_witness(*wid)?;
@@ -508,10 +512,8 @@ impl Poseidon2PermExecutor {
         let output = exec(&resolved_inputs);
         let row = self.build_base_trace_row(limbs, outputs, &resolved_inputs);
 
-        let state = ctx.get_op_state_mut::<Poseidon2ExecutionState<F>>(&self.op_type);
-        state.rows.push(row);
-
         self.write_outputs(outputs, &output, ctx)?;
+        self.update_chain_state(ctx, output, row);
 
         Ok(())
     }

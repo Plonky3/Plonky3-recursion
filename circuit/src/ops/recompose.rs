@@ -159,17 +159,26 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for RecomposeExec
 
     fn preprocess(
         &self,
-        _inputs: &[Vec<WitnessId>],
+        inputs: &[Vec<WitnessId>],
         outputs: &[Vec<WitnessId>],
         preprocessed: &mut dyn PreprocessedWriter<F>,
     ) -> Result<(), CircuitError> {
         let output_wid = outputs[0][0];
 
-        // Preprocessed layout: [output_idx, out_mult]
-        // No input reads are registered — the output lookup alone constrains
-        // correctness via `connect()` aliasing + the WitnessChecks bus.
+        // Preprocessed layout per op:
+        //   [output_idx, out_mult, coeff_0_idx, coeff_0_mult, ..., coeff_{D-1}_idx, coeff_{D-1}_mult]
+        //
+        // The RecomposeAir creates both the EF output witness AND the D BF coefficient witnesses
+        // on the WitnessChecks bus. The coefficient lookups allow NPOs that directly consume the
+        // raw coefficients (e.g. the D=1 Poseidon2 challenger permutation) to find them on the bus.
+        // Creation multiplicities are set by the prover preprocessor from ext_reads.
         preprocessed.register_non_primitive_output_index(&self.op_type, &[output_wid]);
         preprocessed.register_non_primitive_preprocessed_no_read(&self.op_type, &[F::ONE]);
+
+        for &coeff_wid in &inputs[0] {
+            preprocessed.register_non_primitive_output_index(&self.op_type, &[coeff_wid]);
+            preprocessed.register_non_primitive_preprocessed_no_read(&self.op_type, &[F::ONE]);
+        }
 
         Ok(())
     }

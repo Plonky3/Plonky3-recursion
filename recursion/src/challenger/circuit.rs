@@ -46,6 +46,14 @@ pub struct CircuitChallenger<const WIDTH: usize, const RATE: usize, C: Challenge
 
     /// Whether the challenger has been initialized with zero state.
     initialized: bool,
+
+    /// Whether `duplexing_base` has been called at least once since the last init/clear.
+    ///
+    /// The first D=1 permutation uses `new_start=true` so that all 16 inputs (including
+    /// the zero-initialised capacity) are CTL-verified. Subsequent permutations use
+    /// `new_start=false` with capacity slots set to `None` so the Poseidon2 AIR enforces
+    /// the capacity via its row-to-row chain constraint instead of the witness bus.
+    duplexed_once: bool,
 }
 
 impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
@@ -64,6 +72,7 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
             input_buffer: Vec::new(),
             output_buffer: Vec::new(),
             initialized: false,
+            duplexed_once: false,
         }
     }
 
@@ -118,6 +127,11 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
     }
 
     /// Duplexing for D=1 (base field): permutation operates directly on 16 elements.
+    ///
+    /// The first call uses `new_start=true` (all 16 inputs CTL-verified, including the
+    /// zero-initialised capacity). Subsequent calls use `new_start=false` with `None` for
+    /// capacity slots so the Poseidon2 AIR enforces continuity via chain constraint rather
+    /// than requiring uncreated capacity witnesses on the WitnessChecks bus.
     fn duplexing_base<EF>(&mut self, circuit: &mut CircuitBuilder<EF>)
     where
         EF: p3_field::Field,
@@ -126,10 +140,21 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
             .config
             .as_poseidon2()
             .expect("only Poseidon2 challenger permutation is supported");
-        let inputs: [Target; 16] = core::array::from_fn(|i| self.state[i]);
+
+        let (new_start, inputs) = if !self.duplexed_once {
+            // First permutation: CTL-verify all 16 inputs (capacity = zero constants).
+            let inputs: [Option<Target>; 16] = core::array::from_fn(|i| Some(self.state[i]));
+            (true, inputs)
+        } else {
+            // Subsequent permutations: CTL-verify rate inputs only; capacity via chain.
+            let inputs: [Option<Target>; 16] =
+                core::array::from_fn(|i| if i < RATE { Some(self.state[i]) } else { None });
+            (false, inputs)
+        };
+        self.duplexed_once = true;
 
         let outputs = circuit
-            .add_poseidon2_perm_for_challenger_base(*poseidon2_config, inputs)
+            .add_poseidon2_perm_for_challenger_base(*poseidon2_config, new_start, inputs)
             .expect("poseidon2 base permutation should succeed");
 
         self.state = outputs.to_vec();
@@ -298,5 +323,6 @@ where
         self.input_buffer.clear();
         self.output_buffer.clear();
         self.initialized = true;
+        self.duplexed_once = false;
     }
 }
