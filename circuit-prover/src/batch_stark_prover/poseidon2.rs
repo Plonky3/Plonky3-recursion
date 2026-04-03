@@ -966,7 +966,8 @@ impl Poseidon2Prover {
     {
         let rows = t.total_rows();
 
-        let padded_rows = rows.next_power_of_two();
+        // Pad logical ops to the larger of (next power-of-two of row count) and `min_height`.
+        let padded_rows = rows.next_power_of_two().max(min_height.next_power_of_two());
         let mut padded_ops = t.operations.clone();
         let last_op = padded_ops
             .last()

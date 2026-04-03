@@ -1,5 +1,6 @@
 use core::fmt;
 
+use p3_field::PrimeCharacteristicRing;
 use serde::{Deserialize, Serialize};
 
 /// Witness ID type - a unique identifier for extension field values in the global witness bus
@@ -7,6 +8,14 @@ use serde::{Deserialize, Serialize};
 pub struct WitnessId(pub u32);
 
 impl WitnessId {
+    /// Returns the D-scaled base-field index as a field element.
+    ///
+    /// `WitnessId(n)` maps to base-field index `n * D`, where `D` is the
+    /// extension degree used for base-field index scaling in CTL lookup tuples.
+    pub fn base_field_index<F: PrimeCharacteristicRing, const D: usize>(self) -> F {
+        F::from_u32(self.0 * D as u32)
+    }
+
     /// Follow rewrite chains to find the canonical witness ID.
     pub fn resolve(self, rewrite: &hashbrown::HashMap<Self, Self>) -> Self {
         let mut cur = self;
@@ -74,7 +83,11 @@ impl WitnessAllocator {
 mod tests {
     use alloc::format;
 
+    use p3_test_utils::baby_bear_params::{BabyBear, PrimeCharacteristicRing};
+
     use super::*;
+
+    type F = BabyBear;
 
     #[test]
     fn test_witness_id_display() {
@@ -94,6 +107,21 @@ mod tests {
         assert_eq!(w1, WitnessId(1));
         assert_eq!(w2, WitnessId(2));
         assert_eq!(allocator.witness_count(), 3);
+    }
+
+    #[test]
+    fn test_base_field_index_zero_witness() {
+        assert_eq!(WitnessId(0).base_field_index::<F, 4>(), F::ZERO);
+    }
+
+    #[test]
+    fn test_base_field_index_d1() {
+        assert_eq!(WitnessId(7).base_field_index::<F, 1>(), F::from_u32(7));
+    }
+
+    #[test]
+    fn test_base_field_index_d4() {
+        assert_eq!(WitnessId(3).base_field_index::<F, 4>(), F::from_u32(12));
     }
 
     #[test]

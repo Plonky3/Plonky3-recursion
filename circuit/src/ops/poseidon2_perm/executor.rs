@@ -8,7 +8,9 @@ use alloc::{format, vec};
 use p3_field::Field;
 
 use crate::CircuitError;
-use crate::ops::poseidon2_perm::config::{Poseidon2Config, Poseidon2PermConfigData};
+use crate::ops::poseidon2_perm::config::{
+    Poseidon2Config, Poseidon2PermConfigData, Poseidon2PermExec,
+};
 use crate::ops::poseidon2_perm::state::{Poseidon2ExecutionState, Poseidon2PermPrivateData};
 use crate::ops::poseidon2_perm::trace::Poseidon2CircuitRow;
 use crate::ops::{ExecutionContext, NonPrimitiveExecutor, NpoTypeId, PreprocessedWriter};
@@ -227,7 +229,7 @@ impl Poseidon2PermExecutor {
         inputs: &[Vec<WitnessId>],
         outputs: &[Vec<WitnessId>],
         mmcs_bit: bool,
-        input_values: &[F],
+        input_values: Vec<F>,
         ctx: &ExecutionContext<'_, F>,
     ) -> Result<Poseidon2CircuitRow<F>, CircuitError> {
         let width_ext = self.config.width_ext();
@@ -271,7 +273,7 @@ impl Poseidon2PermExecutor {
             merkle_path: self.merkle_path,
             mmcs_bit,
             mmcs_index_sum,
-            input_values: input_values.to_vec(),
+            input_values,
             in_ctl,
             input_indices,
             out_ctl,
@@ -512,7 +514,7 @@ impl Poseidon2PermExecutor {
         preprocessed: &mut dyn PreprocessedWriter<F>,
     ) -> Result<(), CircuitError> {
         let width_ext = self.config.width_ext();
-        for (limb_idx, inp) in inputs[0..width_ext].iter().enumerate() {
+        for inp in inputs[0..width_ext].iter() {
             if inp.is_empty() {
                 preprocessed.register_non_primitive_preprocessed_no_read(
                     &self.op_type,
@@ -529,21 +531,13 @@ impl Poseidon2PermExecutor {
                 preprocessed.register_non_primitive_preprocessed_no_read(&self.op_type, &[F::ONE]);
             }
             let normal_chain_sel =
-                if !self.new_start && !self.merkle_path && inputs[limb_idx].is_empty() {
-                    F::ONE
-                } else {
-                    F::ZERO
-                };
+                F::from_bool(!self.new_start && !self.merkle_path && inp.is_empty());
 
             preprocessed
                 .register_non_primitive_preprocessed_no_read(&self.op_type, &[normal_chain_sel]);
 
             let merkle_chain_sel =
-                if !self.new_start && self.merkle_path && inputs[limb_idx].is_empty() {
-                    F::ONE
-                } else {
-                    F::ZERO
-                };
+                F::from_bool(!self.new_start && self.merkle_path && inp.is_empty());
             preprocessed
                 .register_non_primitive_preprocessed_no_read(&self.op_type, &[merkle_chain_sel]);
         }
@@ -593,16 +587,12 @@ impl Poseidon2PermExecutor {
         }
 
         let mmcs_ctl_enabled = !inputs[width_ext].is_empty();
-        let mmcs_merkle_flag = if mmcs_ctl_enabled && self.merkle_path {
-            F::ONE
-        } else {
-            F::ZERO
-        };
+        let mmcs_merkle_flag = F::from_bool(mmcs_ctl_enabled && self.merkle_path);
         preprocessed
             .register_non_primitive_preprocessed_no_read(&self.op_type, &[mmcs_merkle_flag]);
 
-        let new_start_val = if self.new_start { F::ONE } else { F::ZERO };
-        let merkle_path_val = if self.merkle_path { F::ONE } else { F::ZERO };
+        let new_start_val = F::from_bool(self.new_start);
+        let merkle_path_val = F::from_bool(self.merkle_path);
         preprocessed.register_non_primitive_preprocessed_no_read(
             &self.op_type,
             &[new_start_val, merkle_path_val],
@@ -619,17 +609,17 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Poseidon2Perm
         outputs: &[Vec<WitnessId>],
         ctx: &mut ExecutionContext<'_, F>,
     ) -> Result<(), CircuitError> {
-        // Retrieve the type-erased permutation closure from the config registry.
-        let config = ctx.get_config(&self.op_type)?.clone();
-        let cfg = config
+        let exec: Poseidon2PermExec<F> = ctx
+            .get_config(&self.op_type)?
             .downcast_ref::<Poseidon2PermConfigData<F>>()
+            .map(|cfg| cfg.exec.clone())
             .ok_or_else(|| CircuitError::InvalidNonPrimitiveOpConfiguration {
                 op: self.op_type.clone(),
             })?;
 
         // D=1 mode uses a separate code path with fixed 16-element layout.
         if self.config.d() == 1 {
-            return self.execute_base(inputs, outputs, ctx, &*cfg.exec);
+            return self.execute_base(inputs, outputs, ctx, exec.as_ref());
         }
 
         // Validate extension-field input/output shapes before touching any state.
@@ -652,9 +642,9 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Poseidon2Perm
         self.apply_merkle_swap(&mut state, mmcs_bit);
 
         // Run the permutation and record the result.
-        let output = (cfg.exec)(&state);
+        let output = exec(&state);
 
-        let row = self.build_trace_row(inputs, outputs, mmcs_bit, &state, ctx)?;
+        let row = self.build_trace_row(inputs, outputs, mmcs_bit, state, ctx)?;
         self.write_outputs(outputs, &output, ctx)?;
         self.update_chain_state(ctx, output, row);
 
@@ -1182,7 +1172,7 @@ mod tests {
         let input_values: Vec<F> = (0..width_ext).map(|i| F::from_u64(i as u64)).collect();
 
         let row = exec
-            .build_trace_row(&inputs, &outputs, false, &input_values, &ctx)
+            .build_trace_row(&inputs, &outputs, false, input_values, &ctx)
             .unwrap();
 
         assert_eq!(row.in_ctl, vec![true, false, true, false]);
@@ -1208,7 +1198,7 @@ mod tests {
         let input_values = F::zero_vec(width_ext);
 
         let row = exec
-            .build_trace_row(&inputs, &outputs, false, &input_values, &ctx)
+            .build_trace_row(&inputs, &outputs, false, input_values, &ctx)
             .unwrap();
 
         assert!(!row.mmcs_ctl_enabled);

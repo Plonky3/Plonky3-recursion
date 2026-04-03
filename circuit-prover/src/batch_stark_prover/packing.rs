@@ -1,7 +1,6 @@
 use alloc::vec::Vec;
 
 use p3_circuit::ops::NpoTypeId;
-use p3_circuit::tables::Traces;
 use serde::{Deserialize, Serialize};
 
 /// Configuration for packing multiple primitive operations into a single AIR row.
@@ -16,8 +15,8 @@ pub struct TablePacking {
     npo_lanes: Vec<(NpoTypeId, usize)>,
     /// Minimum trace height for all tables (must be power of two).
     /// This is required for FRI with higher `log_final_poly_len`.
-    /// FRI requires: log_trace_height > log_final_poly_len + log_blowup
-    /// So min_trace_height should be >= 2^(log_final_poly_len + log_blowup + 1)
+    /// FRI requires: `log_trace_height > log_final_poly_len + log_blowup`
+    /// So min_trace_height should be >= `2^(log_final_poly_len + log_blowup + 1)`
     min_trace_height: usize,
     /// Pack this many consecutive `HornerAcc` ops (same `b` witness) per ALU row on lane 0.
     /// Must be at least 2. Default 2 matches the previous double-step Horner layout.
@@ -62,7 +61,7 @@ impl TablePacking {
         self
     }
 
-    /// Override the lane count for a specific NPO type (builder-style).
+    /// Override the lane count for a specific non-primitive op type (builder-style).
     ///
     /// Any NPO not listed falls back to the lane count returned by its [`TableProver`].
     #[must_use]
@@ -79,8 +78,8 @@ impl TablePacking {
 
     /// Update the current [`TablePacking`] with a minimum trace height requirement.
     ///
-    /// Use this when FRI parameters have `log_final_poly_len > 0`.
-    /// The minimum trace height must satisfy: `min_trace_height > 2^(log_final_poly_len + log_blowup)`
+    /// FRI requires: `log_trace_height > log_final_poly_len + log_blowup`
+    /// So `min_trace_height` should be >= `2^(log_final_poly_len + log_blowup + 1)`
     ///
     /// For example, with `log_final_poly_len = 3` and `log_blowup = 1`:
     /// - Required: `min_trace_height > 2^(3+1) = 16`
@@ -142,65 +141,58 @@ impl Default for TablePacking {
     }
 }
 
-/// Summary of trace lengths for all circuit tables.
-#[derive(Debug, Clone)]
-pub(crate) struct TraceLengths {
-    /// Number of entries in the constant table.
-    pub const_: usize,
-    /// Number of logical public-input rows.
-    pub public: usize,
-    /// Total ALU operations.
-    pub alu_ops: usize,
-    /// Number of public-input operations packed per AIR row.
-    pub public_lanes: usize,
-    /// Number of ALU operations packed per AIR row.
-    pub alu_lanes: usize,
-    /// Per-plugin counts: `(op_type, num_ops, lanes)` for each non-primitive table.
-    pub non_primitive: Vec<(NpoTypeId, usize, usize)>,
+/// Main trace width, preprocessed row width, logical AIR row count, and lane packing for one table.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct AirTableShape {
+    pub main_cols: usize,
+    pub prep_cols: usize,
+    pub rows: usize,
+    pub lanes: usize,
 }
 
-impl TraceLengths {
-    /// Compute trace lengths from traces, packing configuration, and a lane-lookup function.
-    ///
-    /// `lane_for` is called once per registered NPO type to obtain its lane count.
-    pub fn from_traces<F>(
-        traces: &Traces<F>,
-        packing: &TablePacking,
-        lane_for: impl Fn(&NpoTypeId) -> usize,
-    ) -> Self {
-        Self {
-            const_: traces.const_trace.values.len(),
-            public: traces.public_trace.values.len(),
-            alu_ops: traces.alu_trace.op_kind.len(),
-            public_lanes: packing.public_lanes(),
-            alu_lanes: packing.alu_lanes(),
-            non_primitive: traces
-                .non_primitive_traces
-                .iter()
-                .map(|(op, t)| {
-                    let lanes = lane_for(op);
-                    (op.clone(), t.rows(), lanes)
-                })
-                .collect(),
-        }
-    }
+/// Layout of every table in a batch (for prover logging).
+#[derive(Debug)]
+pub(crate) struct TraceTablesLayout {
+    pub const_: AirTableShape,
+    pub public: AirTableShape,
+    pub alu: AirTableShape,
+    pub non_primitives: Vec<(NpoTypeId, AirTableShape)>,
+}
 
-    /// Log all trace lengths at info level.
-    pub fn log(&self, scheduled_alu_rows: Option<usize>) {
-        let alu_rows = scheduled_alu_rows.unwrap_or(self.alu_ops) / self.alu_lanes;
-        let public_rows = self.public / self.public_lanes;
+impl TraceTablesLayout {
+    /// Log each AIR’s main width, preprocessed width, row count, and lanes at info level.
+    pub fn log(&self) {
         tracing::info!(
-            const_ = %self.const_,
-            const_lanes = 1usize,
-            public = %public_rows,
-            public_lanes = %self.public_lanes,
-            alu_rows = %alu_rows,
-            alu_lanes = %self.alu_lanes,
-            "Primitive trace lengths"
+            table = "CONST",
+            main_cols = self.const_.main_cols,
+            prep_cols = self.const_.prep_cols,
+            rows = self.const_.rows,
+            "AIR shape"
         );
-        for (op, num_ops, lanes) in &self.non_primitive {
-            let air_rows = num_ops.div_ceil(*lanes);
-            tracing::info!(?op, air_rows, lanes, "Non-primitive trace length");
+        tracing::info!(
+            table = "PUBLIC",
+            main_cols = self.public.main_cols,
+            prep_cols = self.public.prep_cols,
+            rows = self.public.rows,
+            "AIR shape"
+        );
+        tracing::info!(
+            table = "ALU",
+            main_cols = self.alu.main_cols,
+            prep_cols = self.alu.prep_cols,
+            rows = self.alu.rows,
+            lanes = self.alu.lanes,
+            "AIR shape"
+        );
+        for (op, shape) in &self.non_primitives {
+            tracing::info!(
+                table = ?op,
+                main_cols = shape.main_cols,
+                prep_cols = shape.prep_cols,
+                rows = shape.rows,
+                lanes = shape.lanes,
+                "AIR shape"
+            );
         }
     }
 }

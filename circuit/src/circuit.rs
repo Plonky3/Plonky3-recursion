@@ -69,11 +69,8 @@ impl<F: Field, const D: usize> PreprocessedColumns<F, D> {
 }
 
 impl<F: Field, const D: usize> PreprocessedWriter<F> for PreprocessedColumns<F, D> {
-    /// Returns the D-scaled base-field index for a given witness ID as a field element.
-    ///
-    /// `WitnessId(n)` maps to base-field index `n * D`.
     fn witness_index_as_field(&self, wid: WitnessId) -> F {
-        F::from_u32(wid.0 * D as u32)
+        wid.base_field_index::<F, D>()
     }
 
     /// Increments the ext-field read count for each of the given witness indices.
@@ -95,7 +92,7 @@ impl<F: Field, const D: usize> PreprocessedWriter<F> for PreprocessedColumns<F, 
     /// set separately by `get_airs_and_degrees_with_prep` based on `ext_reads`.
     fn register_non_primitive_output_index(&mut self, op_type: &NpoTypeId, wids: &[WitnessId]) {
         let entry = self.non_primitive.entry(op_type.clone()).or_default();
-        let wids_field = wids.iter().map(|wid| F::from_u32(wid.0 * D as u32));
+        let wids_field = wids.iter().map(|wid| wid.base_field_index::<F, D>());
         entry.extend(wids_field);
     }
 
@@ -109,7 +106,7 @@ impl<F: Field, const D: usize> PreprocessedWriter<F> for PreprocessedColumns<F, 
         wids: &[WitnessId],
     ) -> Result<(), CircuitError> {
         let entry = self.non_primitive.entry(op_type.clone()).or_default();
-        let wids_field = wids.iter().map(|wid| F::from_u32(wid.0 * D as u32));
+        let wids_field = wids.iter().map(|wid| wid.base_field_index::<F, D>());
         entry.extend(wids_field);
         self.increment_ext_reads(wids);
         Ok(())
@@ -244,7 +241,7 @@ impl<F: Field> Circuit<F> {
                 // Const: creates the output witness value. Store D-scaled out index.
                 // No ext_reads increment: Const is a creator, not a reader.
                 Op::Const { out, .. } => {
-                    let idx = preprocessed.witness_index_as_field(*out);
+                    let idx = out.base_field_index::<F, D>();
                     preprocessed.primitive[PrimitiveOpType::Const as usize].push(idx);
                     let out_idx = out.0 as usize;
                     if out_idx >= defined.len() {
@@ -255,7 +252,7 @@ impl<F: Field> Circuit<F> {
                 // Public: creates the output witness value. Store D-scaled out index.
                 // No ext_reads increment: Public is a creator, not a reader.
                 Op::Public { out, .. } => {
-                    let idx = preprocessed.witness_index_as_field(*out);
+                    let idx = out.base_field_index::<F, D>();
                     preprocessed.primitive[PrimitiveOpType::Public as usize].push(idx);
                     let out_idx = out.0 as usize;
                     if out_idx >= defined.len() {
@@ -287,7 +284,6 @@ impl<F: Field> Circuit<F> {
                         AluOpKind::HornerAcc => (F::ZERO, F::ZERO, F::ZERO, F::ONE),
                     };
                     let c_wid = c.unwrap_or(WitnessId(0));
-                    let d_u32 = D as u32;
 
                     let out_already_defined =
                         (out.0 as usize) < defined.len() && defined[out.0 as usize];
@@ -298,51 +294,44 @@ impl<F: Field> Circuit<F> {
                     //   1 = reader (already defined by another table)
                     //   2 = private creator (private input, first use → this row creates it)
                     let a_defined = (a.0 as usize) < defined.len() && defined[a.0 as usize];
-                    let a_state: u32 = if a_defined {
-                        1 // reader
+                    let a_state: F = if a_defined {
+                        F::ONE // reader
                     } else if private_input_wids.contains(&a.0) {
-                        2 // private creator
+                        F::TWO // private creator
                     } else {
-                        0 // skip
+                        F::ZERO // skip
                     };
 
                     let c_defined = (c_wid.0 as usize) < defined.len() && defined[c_wid.0 as usize];
-                    let c_state: u32 = if c_defined {
-                        1 // reader
+                    let c_state: F = if c_defined {
+                        F::ONE // reader
                     } else if private_input_wids.contains(&c_wid.0) {
-                        2 // private creator
+                        F::TWO // private creator
                     } else {
-                        0 // skip
+                        F::ZERO // skip
                     };
 
                     // b and out creator flags (now independent).
                     // Private inputs can be b-creators even in the forward case.
                     let b_is_private_creator =
                         !b_already_defined && private_input_wids.contains(&b.0);
-                    let out_is_creator = if !out_already_defined {
-                        F::ONE
-                    } else {
-                        F::ZERO
-                    };
-                    let b_is_creator =
-                        if b_is_private_creator || out_already_defined && !b_already_defined {
-                            F::ONE
-                        } else {
-                            F::ZERO
-                        };
+                    let out_is_creator = F::from_bool(!out_already_defined);
+                    let b_is_creator = F::from_bool(
+                        b_is_private_creator || out_already_defined && !b_already_defined,
+                    );
 
                     preprocessed.primitive[PrimitiveOpType::Alu as usize].extend([
                         sel_add_vs_mul,
                         sel_bool,
                         sel_muladd,
                         sel_horner,
-                        F::from_u32(a.0 * d_u32),
-                        F::from_u32(b.0 * d_u32),
-                        F::from_u32(c_wid.0 * d_u32),
-                        F::from_u32(out.0 * d_u32),
-                        F::from_u32(a_state),
+                        a.base_field_index::<F, D>(),
+                        b.base_field_index::<F, D>(),
+                        c_wid.base_field_index::<F, D>(),
+                        out.base_field_index::<F, D>(),
+                        a_state,
                         b_is_creator,
-                        F::from_u32(c_state),
+                        c_state,
                         out_is_creator,
                     ]);
 
@@ -357,10 +346,10 @@ impl<F: Field> Circuit<F> {
                     if out_is_creator == F::ZERO {
                         readers.push(*out);
                     }
-                    if a_state == 1 {
+                    if a_state == F::ONE {
                         readers.push(*a);
                     }
-                    if c_state == 1 {
+                    if c_state == F::ONE {
                         readers.push(c_wid);
                     }
                     preprocessed.increment_ext_reads(&readers);
@@ -380,14 +369,14 @@ impl<F: Field> Circuit<F> {
                         }
                         defined[b_idx] = true;
                     }
-                    if a_state == 2 {
+                    if a_state == F::TWO {
                         let a_idx = a.0 as usize;
                         if a_idx >= defined.len() {
                             defined.resize(a_idx + 1, false);
                         }
                         defined[a_idx] = true;
                     }
-                    if c_state == 2 {
+                    if c_state == F::TWO {
                         let c_idx = c_wid.0 as usize;
                         if c_idx >= defined.len() {
                             defined.resize(c_idx + 1, false);

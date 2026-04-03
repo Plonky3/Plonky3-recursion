@@ -82,7 +82,7 @@ impl<const D: usize> RecomposeProver<D> {
         // These are stored flat; from_flat_padded handles lane layout.
         let mut preprocessed = Val::<SC>::zero_vec(num_ops * 2);
         for (i, row) in t.operations.iter().enumerate() {
-            preprocessed[i * 2] = Val::<SC>::from_u32(row.output_wid.0 * D as u32);
+            preprocessed[i * 2] = row.output_wid.base_field_index::<Val<SC>, D>();
         }
 
         let air =

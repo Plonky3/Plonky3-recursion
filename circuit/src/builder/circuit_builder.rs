@@ -1252,18 +1252,19 @@ impl<BF: PrimeField64, EF: ExtensionField<BF>> HintExecutor<EF> for ExtDecomposi
             .map(Dup::dup)
             .ok_or(CircuitError::WitnessNotSet { witness_id: in_wid })?;
         let coeffs = ext_val.as_basis_coefficients_slice();
+        let witness_len = witness.len();
+        let mut embedded_buf = vec![BF::ZERO; EF::DIMENSION];
 
         for (i, &out_wid) in outputs.iter().enumerate() {
             let coeff = coeffs
                 .get(i)
                 .ok_or(CircuitError::InvalidPreprocessedValues)?;
-            let mut embedded = vec![BF::ZERO; EF::DIMENSION];
-            embedded[0] = *coeff;
-            let embedded_ef = EF::from_basis_coefficients_slice(&embedded)
+            embedded_buf[0] = *coeff;
+            let embedded_ef = EF::from_basis_coefficients_slice(&embedded_buf)
                 .expect("embedded coefficients are valid");
 
             let out_idx = out_wid.0 as usize;
-            if out_idx >= witness.len() {
+            if out_idx >= witness_len {
                 return Err(CircuitError::WitnessIdOutOfBounds {
                     witness_id: out_wid,
                 });
@@ -1342,32 +1343,40 @@ impl<BF: PrimeField64, EF: ExtensionField<BF>> HintExecutor<EF> for BinaryDecomp
             .map(Dup::dup)
             .ok_or(CircuitError::WitnessNotSet { witness_id: in_wid })?;
 
-        let bits_iter = ext_val
-            .as_basis_coefficients_slice()
-            .iter()
-            .map(BF::as_canonical_u64)
-            .flat_map(|val| (0..felt_bits).map(move |i| EF::from_bool(val >> i & 1 == 1)))
-            .take(outputs.len());
+        let witness_len = witness.len();
+        let coeffs = ext_val.as_basis_coefficients_slice();
+        let n_out = outputs.len();
+        let mut o = 0usize;
 
-        for (out_wid, bit) in outputs.iter().zip(bits_iter) {
-            let out_idx = out_wid.0 as usize;
-            if out_idx >= witness.len() {
-                return Err(CircuitError::WitnessIdOutOfBounds {
-                    witness_id: *out_wid,
-                });
-            }
-            let slot = &mut witness[out_idx];
-            if let Some(existing) = slot.as_ref() {
-                if *existing != bit {
-                    return Err(CircuitError::WitnessConflict {
-                        witness_id: *out_wid,
-                        existing: format!("{existing:?}"),
-                        new: format!("{bit:?}"),
-                        expr_ids: vec![],
+        for coeff in coeffs {
+            let val = coeff.as_canonical_u64();
+            for i in 0..felt_bits {
+                if o >= n_out {
+                    return Ok(());
+                }
+                let bit = EF::from_bool(val >> i & 1 == 1);
+                let out_wid = outputs[o];
+                o += 1;
+
+                let out_idx = out_wid.0 as usize;
+                if out_idx >= witness_len {
+                    return Err(CircuitError::WitnessIdOutOfBounds {
+                        witness_id: out_wid,
                     });
                 }
-            } else {
-                *slot = Some(bit);
+                let slot = &mut witness[out_idx];
+                if let Some(existing) = slot.as_ref() {
+                    if *existing != bit {
+                        return Err(CircuitError::WitnessConflict {
+                            witness_id: out_wid,
+                            existing: format!("{existing:?}"),
+                            new: format!("{bit:?}"),
+                            expr_ids: vec![],
+                        });
+                    }
+                } else {
+                    *slot = Some(bit);
+                }
             }
         }
 

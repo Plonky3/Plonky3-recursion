@@ -2,6 +2,7 @@
 //! into a single batched STARK proof using `p3-batch-stark`.
 
 use alloc::boxed::Box;
+use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 use alloc::{format, vec};
@@ -17,6 +18,7 @@ use p3_field::{Algebra, BasedVectorSpace, Field, PrimeCharacteristicRing, PrimeF
 use p3_lookup::LookupAir;
 use p3_lookup::folder::{ProverConstraintFolderWithLookups, VerifierConstraintFolderWithLookups};
 use p3_lookup::lookup_traits::Lookup;
+use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_uni_stark::{SymbolicAirBuilder, SymbolicExpression, SymbolicExpressionExt};
 use serde::{Deserialize, Serialize};
@@ -25,6 +27,7 @@ use tracing::instrument;
 
 use crate::air::{AluAir, ConstAir, PublicAir};
 use crate::batch_stark_prover::dynamic_air::transmute_traces;
+use crate::batch_stark_prover::packing::{AirTableShape, TraceTablesLayout};
 use crate::common::{CircuitTableAir, NpoAirBuilder, NpoPreprocessor};
 use crate::config::StarkField;
 use crate::constraint_profile::ConstraintProfile;
@@ -39,7 +42,6 @@ pub use dynamic_air::{
     BatchAir, BatchTableInstance, CloneableBatchAir, DynamicAirEntry, TableProver,
 };
 pub use packing::TablePacking;
-pub(crate) use packing::TraceLengths;
 pub use poseidon2::{
     Poseidon2AirBuilder, Poseidon2AirWrapperInner, Poseidon2Preprocessor, Poseidon2Prover,
     Poseidon2ProverD2, poseidon2_preprocessor, poseidon2_verifier_air_from_config,
@@ -621,6 +623,14 @@ where
         let non_primitive = &circuit_prover_data.non_primitive_columns;
         let prover_data = &circuit_prover_data.prover_data;
 
+        // One lookup per NpoTypeId instead of repeated `op_type()` (clones inner id string).
+        let prover_index_by_type: BTreeMap<NpoTypeId, usize> = self
+            .non_primitive_provers
+            .iter()
+            .enumerate()
+            .map(|(i, p)| (p.op_type(), i))
+            .collect();
+
         // Build matrices and AIRs per table.
         let packing = &self.table_packing;
         let min_height = packing.min_trace_height();
@@ -649,9 +659,8 @@ where
         let const_prep = primitive[PrimitiveOpType::Const as usize].clone();
         let const_air = ConstAir::<Val<SC>, D>::new_with_preprocessed(const_rows, const_prep)
             .with_min_height(min_height);
-        let mut const_matrix: RowMajorMatrix<Val<SC>> =
-            ConstAir::<Val<SC>, D>::trace_to_matrix(&traces.const_trace);
-        const_matrix.pad_to_min_power_of_two_height(min_height, Val::<SC>::ZERO);
+        let const_matrix: RowMajorMatrix<Val<SC>> =
+            ConstAir::<Val<SC>, D>::trace_to_matrix(&traces.const_trace, min_height);
 
         // Public — reduce lanes to 1 if the table has only dummy operations.
         let public_trace_only_dummy = traces.public_trace.values.len() <= 1;
@@ -673,9 +682,11 @@ where
         let public_air =
             PublicAir::<Val<SC>, D>::new_with_preprocessed(public_rows, public_lanes, public_prep)
                 .with_min_height(min_height);
-        let mut public_matrix: RowMajorMatrix<Val<SC>> =
-            PublicAir::<Val<SC>, D>::trace_to_matrix(&traces.public_trace, public_lanes);
-        public_matrix.pad_to_min_power_of_two_height(min_height, Val::<SC>::ZERO);
+        let public_matrix: RowMajorMatrix<Val<SC>> = PublicAir::<Val<SC>, D>::trace_to_matrix(
+            &traces.public_trace,
+            public_lanes,
+            min_height,
+        );
 
         // ALU — preprocessed is already in 10-col format (with multiplicities) from
         // get_airs_and_degrees_with_prep. When the trace is empty, a dummy row is included.
@@ -697,20 +708,9 @@ where
             )
             .with_min_height(min_height)
         };
-        let mut alu_matrix: RowMajorMatrix<Val<SC>> = alu_air.trace_to_matrix(&traces.alu_trace);
-        alu_matrix.pad_to_min_power_of_two_height(min_height, Val::<SC>::ZERO);
-
-        // Log trace lengths with the actual scheduled ALU row count.
-        let scheduled_alu_rows = alu_air.scheduled_entry_count();
-        TraceLengths::from_traces(traces, packing, |op| {
-            packing.npo_lanes(op).unwrap_or_else(|| {
-                self.non_primitive_provers
-                    .iter()
-                    .find(|p| p.op_type() == *op)
-                    .map_or(1, |p| p.lanes())
-            })
-        })
-        .log(Some(scheduled_alu_rows));
+        let alu_matrix: RowMajorMatrix<Val<SC>> =
+            alu_air.trace_to_matrix(&traces.alu_trace, min_height);
+        let alu_scheduled_entries = alu_air.scheduled_entry_count();
 
         // We first handle all non-primitive tables dynamically, which will then be batched alongside primitive ones.
         // Each trace must have a corresponding registered prover for it to be provable.
@@ -718,11 +718,7 @@ where
             if trace.rows() == 0 {
                 continue;
             }
-            if !self
-                .non_primitive_provers
-                .iter()
-                .any(|p| p.op_type().as_str() == op_type.as_str())
-            {
+            if !prover_index_by_type.contains_key(op_type) {
                 return Err(BatchStarkProverError::MissingTableProver(op_type.clone()));
             }
         }
@@ -776,21 +772,63 @@ where
         // Hence, we override here with the committed preprocessed data so the debug
         // lookup check is consistent with the committed preprocessed trace.
         for instance in &mut dynamic_instances {
-            if let Some(committed_prep) = non_primitive.get(&instance.op_type) {
-                for p in &self.non_primitive_provers {
-                    if p.op_type() == instance.op_type {
-                        if let Some(new_air) = p.air_with_committed_preprocessed(
-                            committed_prep.clone(),
-                            min_height,
-                            instance.lanes,
-                        ) {
-                            instance.air = new_air;
-                        }
-                        break;
-                    }
+            if let Some(committed_prep) = non_primitive.get(&instance.op_type)
+                && let Some(&pi) = prover_index_by_type.get(&instance.op_type)
+            {
+                let p = &self.non_primitive_provers[pi];
+                if let Some(new_air) = p.air_with_committed_preprocessed(
+                    committed_prep.clone(),
+                    min_height,
+                    instance.lanes,
+                ) {
+                    instance.air = new_air;
                 }
             }
         }
+
+        TraceTablesLayout {
+            const_: AirTableShape {
+                main_cols: BaseAir::width(&const_air),
+                prep_cols: ConstAir::<Val<SC>, D>::preprocessed_width(),
+                rows: const_rows,
+                lanes: 1,
+            },
+            public: AirTableShape {
+                main_cols: BaseAir::width(&public_air),
+                prep_cols: public_air.preprocessed_width(),
+                rows: public_rows.div_ceil(public_lanes),
+                lanes: public_lanes,
+            },
+            alu: AirTableShape {
+                main_cols: BaseAir::width(&alu_air),
+                prep_cols: alu_air.preprocessed_width(),
+                rows: alu_scheduled_entries.div_ceil(alu_lanes),
+                lanes: alu_lanes,
+            },
+            non_primitives: dynamic_instances
+                .iter()
+                .map(|inst| {
+                    let prep_cols = BaseAir::preprocessed_trace(&inst.air)
+                        .map(|m| m.width())
+                        .unwrap_or(0);
+                    let rows = traces
+                        .non_primitive_traces
+                        .get(&inst.op_type)
+                        .map(|t| t.rows())
+                        .unwrap_or(inst.rows);
+                    (
+                        inst.op_type.clone(),
+                        AirTableShape {
+                            main_cols: inst.trace.width(),
+                            prep_cols,
+                            rows: rows / inst.lanes,
+                            lanes: inst.lanes,
+                        },
+                    )
+                })
+                .collect(),
+        }
+        .log();
 
         // Wrap AIRs in enum for heterogeneous batching and build instances in fixed order.
         let mut air_storage: Vec<CircuitTableAir<SC, D>> =
@@ -933,6 +971,13 @@ where
         w_binomial: Option<Val<SC>>,
         common: &CommonData<SC>,
     ) -> Result<(), BatchStarkProverError> {
+        let prover_index_by_type: BTreeMap<NpoTypeId, usize> = self
+            .non_primitive_provers
+            .iter()
+            .enumerate()
+            .map(|(i, p)| (p.op_type(), i))
+            .collect();
+
         // Rebuild AIRs in the same order as prove.
         let packing = &proof.table_packing;
         let public_lanes = packing.public_lanes();
@@ -968,19 +1013,13 @@ where
         pvs.resize_with(NUM_PRIMITIVE_TABLES, Vec::new);
 
         for entry in &proof.non_primitives {
-            let plugin = self
-                .non_primitive_provers
-                .iter()
-                .find(|p| {
-                    let tp = p.as_ref();
-                    TableProver::op_type(tp) == entry.op_type
-                })
-                .ok_or_else(|| {
-                    BatchStarkProverError::Verify(format!(
-                        "unknown non-primitive op: {:?}",
-                        entry.op_type
-                    ))
-                })?;
+            let pi = *prover_index_by_type.get(&entry.op_type).ok_or_else(|| {
+                BatchStarkProverError::Verify(format!(
+                    "unknown non-primitive op: {:?}",
+                    entry.op_type
+                ))
+            })?;
+            let plugin = &self.non_primitive_provers[pi];
             let air = plugin
                 .batch_air_from_table_entry(&self.config, D, entry)
                 .map_err(BatchStarkProverError::Verify)?;

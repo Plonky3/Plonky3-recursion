@@ -50,8 +50,7 @@ impl<'a, F: PrimeCharacteristicRing> PublicTraceBuilder<'a, F> {
                 let value = self
                     .witness
                     .get(out.0 as usize)
-                    .and_then(|opt| opt.as_ref())
-                    .map(Dup::dup)
+                    .and_then(|opt| opt.as_ref().map(Dup::dup))
                     .ok_or(CircuitError::WitnessNotSet { witness_id: *out })?;
                 values.push(value);
             }

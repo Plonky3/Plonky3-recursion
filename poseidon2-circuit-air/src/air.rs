@@ -16,6 +16,7 @@ use p3_maybe_rayon::prelude::*;
 use p3_poseidon2::GenericPoseidon2LinearLayers;
 use p3_poseidon2_air::{Poseidon2Air, Poseidon2Cols, RoundConstants, generate_trace_rows_for_perm};
 use p3_uni_stark::{SubAirBuilder, SymbolicAirBuilder, SymbolicExpression, SymbolicVariable};
+use tracing::instrument;
 
 use crate::columns::{
     POSEIDON2_LIMBS, POSEIDON2_PUBLIC_OUTPUT_LIMBS, Poseidon2PrepInputLimb,
@@ -296,6 +297,7 @@ impl<
     ///
     /// - If the number of rows is not a power of two.
     /// - If any row's input state has the wrong number of elements.
+    #[instrument(skip_all, name = "Poseidon2CircuitAir::build_trace")]
     pub fn generate_trace_rows(
         &self,
         sponge_ops: &[Poseidon2CircuitRow<F>],
