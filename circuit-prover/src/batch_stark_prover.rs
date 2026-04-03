@@ -1085,6 +1085,7 @@ where
                     proof.rows[PrimitiveTable::Alu],
                     alu_lanes,
                 )
+                .with_horner_pack_k(horner_k)
                 .with_min_height(min_height),
             )
         } else {

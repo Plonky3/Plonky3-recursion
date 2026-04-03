@@ -29,6 +29,9 @@
 //! # Basic usage with default parameters (3 recursive layers)
 //! cargo run --release --example recursive_keccak -- --field koala-bear --num-hashes 1000
 //!
+//! # KoalaBear with quintic challenge extension (D = 5)
+//! cargo run --release --example recursive_keccak -- --field koala-bear-quintic --num-hashes 1000
+//!
 //! # With custom FRI parameters and recursion depth
 //! cargo run --release --example recursive_keccak -- \
 //!     --field koala-bear \
@@ -209,10 +212,222 @@ fn main() {
             args.zk,
             args.disable_recompose_npo,
         ),
-        FieldOption::KoalaBearQuintic => {
-            unimplemented!("Keccak recursive example does not yet support KoalaBear quintic")
-        }
+        FieldOption::KoalaBearQuintic => koala_bear_quintic::run(
+            args.num_hashes,
+            args.num_recursive_layers,
+            &fri_params,
+            &table_packing,
+            args.security_level,
+            args.zk,
+            args.disable_recompose_npo,
+        ),
     }
+}
+
+/// KoalaBear quintic extension (`D = 5`) variant of [`define_field_module`] for Keccak recursion.
+macro_rules! define_field_module_keccak_quintic {
+    (
+        $mod_name:ident,
+        $field:ty,
+        $perm:ty,
+        $default_perm:path,
+        $poseidon2_config:expr,
+        $poseidon2_circuit_config:ty,
+        $width:expr,
+        $rate:expr,
+        $digest_elems:expr,
+        $backend_width:expr,
+        $backend_rate:expr
+    ) => {
+        mod $mod_name {
+            use p3_field::BasedVectorSpace;
+
+            use super::*;
+
+            #[derive(Clone)]
+            struct LiftPermForQuintic($perm);
+
+            impl Permutation<[QuinticTrinomialExtensionField<$field>; $width]>
+                for LiftPermForQuintic
+            {
+                fn permute(
+                    &self,
+                    input: [QuinticTrinomialExtensionField<$field>; $width],
+                ) -> [QuinticTrinomialExtensionField<$field>; $width] {
+                    let bases: [$field; $width] =
+                        core::array::from_fn(|i| input[i].as_basis_coefficients_slice()[0]);
+                    let out = self.0.permute(bases);
+                    core::array::from_fn(|i| {
+                        QuinticTrinomialExtensionField::new([
+                            out[i],
+                            <$field as PrimeCharacteristicRing>::ZERO,
+                            <$field as PrimeCharacteristicRing>::ZERO,
+                            <$field as PrimeCharacteristicRing>::ZERO,
+                            <$field as PrimeCharacteristicRing>::ZERO,
+                        ])
+                    })
+                }
+            }
+
+            define_field_module_types_quintic!(
+                $field,
+                $perm,
+                $default_perm,
+                $poseidon2_config,
+                $poseidon2_circuit_config,
+                $width,
+                $rate,
+                $digest_elems,
+                || LiftPermForQuintic($default_perm()),
+                $backend_width,
+                $backend_rate
+            );
+
+            pub fn run(
+                num_hashes: usize,
+                num_recursive_layers: usize,
+                fri_params: &FriParams,
+                table_packing: &TablePacking,
+                security_level: usize,
+                zk: bool,
+                disable_recompose_npo: bool,
+            ) {
+                let keccak_air = KeccakAir {};
+                let min_trace_rows: usize =
+                    1 << (fri_params.log_final_poly_len + fri_params.log_blowup + 1);
+                let min_keccak_hashes = min_trace_rows.div_ceil(p3_keccak_air::NUM_ROUNDS);
+                let effective_num_hashes = num_hashes.max(min_keccak_hashes);
+                if effective_num_hashes != num_hashes {
+                    tracing::warn!("Number of equivalent Keccak hashes after mandatory padding: {effective_num_hashes}");
+                }
+                let trace =
+                    keccak_air.generate_trace_rows(effective_num_hashes, fri_params.log_blowup);
+
+                let config_0 = config_with_fri_params(fri_params, security_level, disable_recompose_npo);
+                let pis: Vec<F> = vec![];
+
+                let proof_0 = prove(&config_0, &keccak_air, trace, &pis);
+                report_proof_size(&proof_0);
+
+                verify(&config_0, &keccak_air, &proof_0, &pis)
+                    .expect("Failed to verify Keccak proof natively");
+
+                if num_recursive_layers < 1 {
+                    return;
+                }
+
+                let backend = FriRecursionBackend::<$backend_width, $backend_rate>::new_d5(
+                    $poseidon2_config,
+                );
+
+                if zk {
+                    tracing::warn!(
+                        "--zk is not applicable to recursive_keccak: the Keccak base proof \
+                         uses p3-uni-stark which has no ZK support. All recursive layers will \
+                         use non-ZK config."
+                    );
+                }
+
+                let mut output: Option<RecursionOutput<ConfigWithFriParams>> = None;
+
+                let mut prev_witness_count: Option<u32> = None;
+                let mut stable_prep: Option<NextLayerPrepCache<ConfigWithFriParams>> = None;
+
+                for layer in 1..=num_recursive_layers {
+                    let layer_table_packing = {
+                        let p = if layer == 1 {
+                            let mut p = TablePacking::new(1, 2)
+                                .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup);
+                            if let Some(rl) = table_packing.npo_lanes(&NpoTypeId::recompose()) {
+                                p = p.with_npo_lanes(NpoTypeId::recompose(), rl);
+                            }
+                            p
+                        } else {
+                            table_packing.clone()
+                        }
+                        .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup);
+                        p
+                    };
+                    let params = ProveNextLayerParams {
+                        table_packing: layer_table_packing,
+                        constraint_profile: ConstraintProfile::Standard,
+                    };
+                    let config =
+                        config_with_fri_params(fri_params, security_level, disable_recompose_npo);
+
+                    let out = if layer == 1 {
+                        let input = RecursionInput::UniStark {
+                            proof: &proof_0,
+                            air: &keccak_air,
+                            public_inputs: pis.clone(),
+                            preprocessed_commit: None,
+                        };
+                        build_and_prove_next_layer::<ConfigWithFriParams, _, _, D>(
+                            &input,
+                            &config,
+                            &backend,
+                            &params,
+                        )
+                        .unwrap_or_else(|e| panic!("Failed to prove layer {layer}: {e:?}"))
+                    } else {
+                        let input = output.as_ref().unwrap().into_recursion_input::<BatchOnly>();
+
+                        let (verification_circuit, verifier_result) =
+                            build_next_layer_circuit::<ConfigWithFriParams, BatchOnly, _, D>(
+                                &input, &config, &backend,
+                            )
+                            .unwrap_or_else(|e| {
+                                panic!("Failed to build circuit layer {layer}: {e:?}")
+                            });
+
+                        let current_witness_count = verification_circuit.witness_count;
+                        let is_stable = prev_witness_count == Some(current_witness_count);
+                        prev_witness_count = Some(current_witness_count);
+
+                        if is_stable && stable_prep.is_none() {
+                            stable_prep = Some(
+                                build_next_layer_prep::<ConfigWithFriParams, BatchOnly, _, D>(
+                                    &verification_circuit,
+                                    &config,
+                                    &backend,
+                                    &params,
+                                )
+                                .unwrap_or_else(|e| {
+                                    panic!("Failed to build prep cache: {e:?}")
+                                }),
+                            );
+                        }
+
+                        prove_next_layer::<ConfigWithFriParams, BatchOnly, _, D>(
+                            &input,
+                            &verification_circuit,
+                            &verifier_result,
+                            &config,
+                            &backend,
+                            &params,
+                            stable_prep.as_ref(),
+                        )
+                        .unwrap_or_else(|e| panic!("Failed to prove layer {layer}: {e:?}"))
+                    };
+
+                    report_proof_size(&out.0);
+                    let mut prover = BatchStarkProver::new(config.clone())
+                        .with_table_packing(params.table_packing.clone());
+                    prover.register_poseidon2_table::<D>($poseidon2_config);
+                    if !disable_recompose_npo {
+                        prover.register_recompose_table::<D>($poseidon2_config.d() != D);
+                    }
+                    prover
+                        .verify_all_tables(&out.0, out.1.common_data())
+                        .unwrap_or_else(|e| panic!("Failed to verify layer {layer}: {e:?}"));
+
+                    output = Some(out);
+                }
+
+                info!("Recursive proof verified successfully");
+            }
+        }
+    };
 }
 
 macro_rules! define_field_module {
@@ -404,6 +619,20 @@ macro_rules! define_field_module {
         }
     };
 }
+
+define_field_module_keccak_quintic!(
+    koala_bear_quintic,
+    p3_koala_bear::KoalaBear,
+    p3_koala_bear::Poseidon2KoalaBear<16>,
+    p3_koala_bear::default_koalabear_poseidon2_16,
+    Poseidon2Config::KoalaBearD1Width16,
+    p3_poseidon2_circuit_air::KoalaBearD1Width16,
+    16,
+    8,
+    8,
+    16,
+    8
+);
 
 define_field_module!(
     koala_bear,
