@@ -283,7 +283,6 @@ impl<F: Field> Circuit<F> {
                         AluOpKind::MulAdd => (F::ZERO, F::ZERO, F::ONE, F::ZERO),
                         AluOpKind::HornerAcc => (F::ZERO, F::ZERO, F::ZERO, F::ONE),
                     };
-                    let c_wid = c.unwrap_or(WitnessId(0));
 
                     let out_already_defined =
                         (out.0 as usize) < defined.len() && defined[out.0 as usize];
@@ -302,13 +301,23 @@ impl<F: Field> Circuit<F> {
                         F::ZERO // skip
                     };
 
-                    let c_defined = (c_wid.0 as usize) < defined.len() && defined[c_wid.0 as usize];
-                    let c_state: F = if c_defined {
-                        F::ONE // reader
-                    } else if private_input_wids.contains(&c_wid.0) {
-                        F::TWO // private creator
-                    } else {
-                        F::ZERO // skip
+                    // `c` is absent for Add/Mul/BoolCheck. Do not use WitnessId(0) as a fake c:
+                    // witness 0 may hold Const(0); treating it as c would set c_state = reader and
+                    // duplicate WitnessChecks reads with b when assert_zero connects the sub result
+                    // to ExprId::ZERO (b aliases witness 0).
+                    let (c_wid, c_state) = match c {
+                        Some(w) => {
+                            let c_defined = (w.0 as usize) < defined.len() && defined[w.0 as usize];
+                            let c_state = if c_defined {
+                                F::ONE // reader
+                            } else if private_input_wids.contains(&w.0) {
+                                F::TWO // private creator
+                            } else {
+                                F::ZERO // skip
+                            };
+                            (*w, c_state)
+                        }
+                        None => (WitnessId(0), F::ZERO),
                     };
 
                     // b and out creator flags (now independent).
@@ -527,9 +536,9 @@ mod tests {
                     // Public: D-scaled output index
                     vec![f(1)],
                     // ALU: [sel_add_vs_mul, sel_bool, sel_muladd, sel_horner, a, b, c, out,
-                    //       a_is_reader, b_is_creator, c_is_reader, out_is_creator] per op
+                    //       a_state, b_is_creator, c_state, out_is_creator] per op
                     vec![
-                        // add(0, 1, 3): forward, a=0(defined), c=0(defined)
+                        // add(0, 1, 3): forward, a=0(defined), no c limb
                         F::ONE,
                         F::ZERO,
                         F::ZERO,
@@ -540,9 +549,9 @@ mod tests {
                         f(3),
                         F::ONE,
                         F::ZERO,
+                        F::ZERO,
                         F::ONE,
-                        F::ONE,
-                        // add(3, 2, 4): forward, a=3(defined), c=0(defined)
+                        // add(3, 2, 4): forward, a=3(defined), no c limb
                         F::ONE,
                         F::ZERO,
                         F::ZERO,
@@ -553,9 +562,9 @@ mod tests {
                         f(4),
                         F::ONE,
                         F::ZERO,
+                        F::ZERO,
                         F::ONE,
-                        F::ONE,
-                        // mul(4, 2, 5): forward, a=4(defined), c=0(defined)
+                        // mul(4, 2, 5): forward, a=4(defined), no c limb
                         F::ZERO,
                         F::ZERO,
                         F::ZERO,
@@ -566,14 +575,13 @@ mod tests {
                         f(5),
                         F::ONE,
                         F::ZERO,
-                        F::ONE,
+                        F::ZERO,
                         F::ONE,
                     ],
                 ],
                 non_primitive: HashMap::new(),
-                // ext_reads: wid0=4 (a+c in op1, c in op2, c in op3),
-                //            wid1=1, wid2=2 (b in op2+op3), wid3=1, wid4=1
-                ext_reads: vec![4, 1, 2, 1, 1],
+                // ext_reads: op1 reads a=0,b=1; op2 reads a=3,b=2; op3 reads a=4,b=2
+                ext_reads: vec![1, 1, 2, 1, 1],
                 dup_npo_outputs: HashMap::new(),
             }
         );

@@ -70,6 +70,35 @@ where
         .collect()
 }
 
+/// Build MMCS commitment-cap rows from Fiat–Shamir observation targets (lifted base scalars).
+///
+/// For D=4-style configs, adjacent lifted coordinates are packed into one extension element via
+/// [`pack_lifted_to_ext`]. For D=1 width-16 configs over a high-degree challenge extension, the
+/// inner hash absorbs one base element per rate slot (lifted scalars); cap rows must **not** be
+/// packed, so each row has `rate_ext` targets matching the D=1 per-base MMCS hash path.
+fn commitment_cap_rows_from_lifted<F, EF>(
+    builder: &mut CircuitBuilder<EF>,
+    perm_config: Poseidon2Config,
+    lifted: &[Target],
+) -> Vec<Vec<Target>>
+where
+    F: Field,
+    EF: ExtensionField<F> + BasedVectorSpace<F>,
+{
+    let rate_ext = perm_config.rate_ext();
+    if perm_config.d() == 1 && EF::DIMENSION > 1 {
+        debug_assert_eq!(
+            lifted.len() % rate_ext,
+            0,
+            "lifted cap length should be a multiple of rate_ext"
+        );
+        lifted.chunks(rate_ext).map(|c| c.to_vec()).collect()
+    } else {
+        let packed = pack_lifted_to_ext::<F, EF>(builder, lifted);
+        packed.chunks(rate_ext).map(|c| c.to_vec()).collect()
+    }
+}
+
 /// Per-phase configuration for the FRI fold chain.
 #[derive(Clone, Debug)]
 pub struct FoldPhaseConfig {
@@ -1102,15 +1131,11 @@ where
                 pre_packed[batch_idx].clone()
             } else {
                 let lifted_commitment = batch_commit.to_observation_targets();
-                let packed_commitment_flat =
-                    pack_lifted_to_ext::<F, EF>(builder, &lifted_commitment);
-                let rate_ext = perm_config.rate_ext();
-                packed_commitment_flat
-                    .chunks(rate_ext)
-                    .map(|c| c.to_vec())
-                    .collect()
+                commitment_cap_rows_from_lifted::<F, EF>(builder, perm_config, &lifted_commitment)
             };
 
+            // Match native `p3_fri::verifier::open_input`: width is unused by MerkleTreeMmcs
+            // verification (only height drives grouping); see Plonky3 TODO on Dimensions.width.
             let dimensions: Vec<Dimensions> = mats
                 .iter()
                 .map(|(domain, _)| Dimensions {
@@ -1352,27 +1377,23 @@ where
     // lifted representation to extension representation a single time.
     let pre_packed_input_caps: Option<Vec<Vec<Vec<Target>>>> =
         permutation_config.map(|perm_config| {
-            let rate_ext = perm_config.rate_ext();
             commitments_with_opening_points
                 .iter()
                 .map(|(commit, _)| {
                     let lifted = commit.to_observation_targets();
-                    let packed = pack_lifted_to_ext::<F, EF>(builder, &lifted);
-                    packed.chunks(rate_ext).map(|c| c.to_vec()).collect()
+                    commitment_cap_rows_from_lifted::<F, EF>(builder, perm_config, &lifted)
                 })
                 .collect()
         });
 
     let pre_packed_commit_caps: Option<Vec<Vec<Vec<Target>>>> =
         permutation_config.map(|perm_config| {
-            let rate_ext = perm_config.rate_ext();
             fri_proof_targets
                 .commit_phase_commits
                 .iter()
                 .map(|commit| {
                     let lifted = commit.to_observation_targets();
-                    let packed = pack_lifted_to_ext::<F, EF>(builder, &lifted);
-                    packed.chunks(rate_ext).map(|c| c.to_vec()).collect()
+                    commitment_cap_rows_from_lifted::<F, EF>(builder, perm_config, &lifted)
                 })
                 .collect()
         });
@@ -1528,13 +1549,11 @@ where
                         pre_packed[phase_idx].clone()
                     } else {
                         let lifted_commitment = commit.to_observation_targets();
-                        let packed_commitment_flat =
-                            pack_lifted_to_ext::<F, EF>(builder, &lifted_commitment);
-                        let rate_ext = perm_config.rate_ext();
-                        packed_commitment_flat
-                            .chunks(rate_ext)
-                            .map(|c| c.to_vec())
-                            .collect()
+                        commitment_cap_rows_from_lifted::<F, EF>(
+                            builder,
+                            perm_config,
+                            &lifted_commitment,
+                        )
                     };
 
                 // Dimensions: width = arity, height = 2^log_folded_height

@@ -1,0 +1,23 @@
+[package]
+name = "p3-air"
+description = "Defines the Algebraic Intermediate Representation (AIR) interface and supporting utilities for STARK provers."
+# Must match the git dependency version for [patch] to apply (see root Cargo.toml).
+version = "0.5.1"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+p3-field.workspace = true
+p3-matrix.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+p3-baby-bear.workspace = true
+p3-field.workspace = true
+
+[lints]
+workspace = true

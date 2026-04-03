@@ -19,8 +19,8 @@ use p3_uni_stark::{SubAirBuilder, SymbolicAirBuilder, SymbolicExpression, Symbol
 use tracing::instrument;
 
 use crate::columns::{
-    POSEIDON2_LIMBS, POSEIDON2_PUBLIC_OUTPUT_LIMBS, Poseidon2PrepInputLimb,
-    Poseidon2PrepOutputLimb, Poseidon2PreprocessedRow,
+    Poseidon2PrepInputLimb, Poseidon2PrepOutputLimb, Poseidon2PreprocessedRow,
+    poseidon2_preprocessed_row_width,
 };
 use crate::{Poseidon2CircuitCols, num_cols};
 
@@ -80,6 +80,7 @@ pub struct Poseidon2CircuitAir<
     const SBOX_REGISTERS: usize,
     const HALF_FULL_ROUNDS: usize,
     const PARTIAL_ROUNDS: usize,
+    const WITNESS_EXT_D: usize,
 > {
     /// The inner permutation AIR.
     ///
@@ -139,6 +140,7 @@ impl<
     const SBOX_REGISTERS: usize,
     const HALF_FULL_ROUNDS: usize,
     const PARTIAL_ROUNDS: usize,
+    const WITNESS_EXT_D: usize,
 > Clone
     for Poseidon2CircuitAir<
         F,
@@ -152,6 +154,7 @@ impl<
         SBOX_REGISTERS,
         HALF_FULL_ROUNDS,
         PARTIAL_ROUNDS,
+        WITNESS_EXT_D,
     >
 {
     fn clone(&self) -> Self {
@@ -162,20 +165,6 @@ impl<
             min_height: self.min_height,
         }
     }
-}
-
-/// Return the number of columns in the preprocessed trace.
-///
-/// Works by measuring the byte-size of the preprocessed row struct
-/// instantiated with single-byte elements.
-///
-/// Because the struct is `#[repr(C)]` and every field is one element,
-/// the byte-size equals the column count.
-///
-/// When an AIR instance is available, prefer the associated method on
-/// the AIR struct instead.
-pub const fn poseidon2_preprocessed_width() -> usize {
-    core::mem::size_of::<Poseidon2PreprocessedRow<u8>>()
 }
 
 impl<
@@ -190,6 +179,7 @@ impl<
     const SBOX_REGISTERS: usize,
     const HALF_FULL_ROUNDS: usize,
     const PARTIAL_ROUNDS: usize,
+    const WITNESS_EXT_D: usize,
 >
     Poseidon2CircuitAir<
         F,
@@ -203,6 +193,7 @@ impl<
         SBOX_REGISTERS,
         HALF_FULL_ROUNDS,
         PARTIAL_ROUNDS,
+        WITNESS_EXT_D,
     >
 {
     /// Create a new AIR with the given round constants.
@@ -221,6 +212,7 @@ impl<
         const {
             assert!(CAPACITY_EXT + RATE_EXT == WIDTH_EXT);
             assert!(WIDTH_EXT * D == WIDTH);
+            assert!(WITNESS_EXT_D >= D);
         }
 
         Self {
@@ -260,6 +252,7 @@ impl<
         const {
             assert!(CAPACITY_EXT + RATE_EXT == WIDTH_EXT);
             assert!(WIDTH_EXT * D == WIDTH);
+            assert!(WITNESS_EXT_D >= D);
         }
 
         Self {
@@ -272,7 +265,7 @@ impl<
 
     /// Return the number of preprocessed columns per row.
     pub const fn preprocessed_width() -> usize {
-        poseidon2_preprocessed_width()
+        poseidon2_preprocessed_row_width(WIDTH_EXT, RATE_EXT)
     }
 
     /// Generate the execution trace matrix from a sequence of circuit rows.
@@ -534,6 +527,7 @@ impl<
     const SBOX_REGISTERS: usize,
     const HALF_FULL_ROUNDS: usize,
     const PARTIAL_ROUNDS: usize,
+    const WITNESS_EXT_D: usize,
 > BaseAir<F>
     for Poseidon2CircuitAir<
         F,
@@ -547,6 +541,7 @@ impl<
         SBOX_REGISTERS,
         HALF_FULL_ROUNDS,
         PARTIAL_ROUNDS,
+        WITNESS_EXT_D,
     >
 {
     /// Total number of value columns per row.
@@ -653,12 +648,17 @@ impl<
 ///
 /// Computing these products at setup time avoids degree-4 expressions
 /// in the constraint polynomial.
-pub fn extract_preprocessed_from_operations<F: Field, OF: Field>(
+pub fn extract_preprocessed_from_operations<
+    const IL: usize,
+    const OL: usize,
+    F: Field,
+    OF: Field,
+>(
     operations: &[Poseidon2CircuitRow<OF>],
     d: u32,
 ) -> Vec<F> {
-    // Pre-allocate for all rows. Each row has a fixed number of preprocessed columns.
-    let mut preprocessed = Vec::with_capacity(operations.len() * poseidon2_preprocessed_width());
+    let row_width = poseidon2_preprocessed_row_width(IL, OL);
+    let mut preprocessed = Vec::with_capacity(operations.len() * row_width);
 
     for operation in operations {
         let Poseidon2CircuitRow {
@@ -673,21 +673,12 @@ pub fn extract_preprocessed_from_operations<F: Field, OF: Field>(
             ..
         } = operation;
 
-        // Build one preprocessed row.
-        let row = Poseidon2PreprocessedRow {
-            // For each of the 4 input limbs, compute:
-            //
-            //   - The witness index, scaled by the extension degree.
-            //
-            //   - The CTL enable flag (is this limb looked up?).
-            //
-            //   - The sponge chain selector: active when this is a
-            //     continuation row in sponge mode and the limb is not
-            //     coming from a CTL lookup.
-            //
-            //   - The Merkle chain selector: active when this is a
-            //     continuation row in Merkle mode and the limb is not
-            //     coming from a CTL lookup.
+        debug_assert_eq!(in_ctl.len(), IL);
+        debug_assert_eq!(input_indices.len(), IL);
+        debug_assert_eq!(out_ctl.len(), OL);
+        debug_assert_eq!(output_indices.len(), OL);
+
+        let row = Poseidon2PreprocessedRow::<IL, OL, F> {
             input_limbs: core::array::from_fn(|i| {
                 let ctl = in_ctl[i];
                 Poseidon2PrepInputLimb {
@@ -698,25 +689,17 @@ pub fn extract_preprocessed_from_operations<F: Field, OF: Field>(
                 }
             }),
 
-            // For each of the 2 public output limbs, store:
-            // - the witness index,
-            // - the CTL enable flag.
             output_limbs: core::array::from_fn(|i| Poseidon2PrepOutputLimb {
                 idx: F::from_u32(output_indices[i] * d),
                 out_ctl: F::from_bool(out_ctl[i]),
             }),
 
-            // The witness index for the MMCS accumulator lookup, scaled.
             mmcs_index_sum_ctl_idx: F::from_u64(*mmcs_index_sum_idx as u64 * d as u64),
 
-            // Precomputed product: is the MMCS CTL enabled AND is this
-            // a Merkle row? Used to detect the end of a Merkle chain.
             mmcs_merkle_flag: F::from_bool(*mmcs_ctl_enabled && *merkle_path),
 
-            // Whether this row starts a new chain.
             new_start: F::from_bool(*new_start),
 
-            // Whether this row is a Merkle-path step.
             merkle_path: F::from_bool(*merkle_path),
         };
         row.write_into(&mut preprocessed);
@@ -773,6 +756,7 @@ pub(crate) fn eval<
     const SBOX_REGISTERS: usize,
     const HALF_FULL_ROUNDS: usize,
     const PARTIAL_ROUNDS: usize,
+    const WITNESS_EXT_D: usize,
 >(
     air: &Poseidon2CircuitAir<
         AB::F,
@@ -786,6 +770,7 @@ pub(crate) fn eval<
         SBOX_REGISTERS,
         HALF_FULL_ROUNDS,
         PARTIAL_ROUNDS,
+        WITNESS_EXT_D,
     >,
     builder: &mut AB,
     local: &Poseidon2CircuitCols<
@@ -814,7 +799,8 @@ pub(crate) fn eval<
 ) {
     // Cast the raw preprocessed slice into a typed struct so we can
     // access individual fields by name.
-    let next_prep: &Poseidon2PreprocessedRow<AB::Var> = next_preprocessed.borrow();
+    let next_prep: &Poseidon2PreprocessedRow<WIDTH_EXT, RATE_EXT, AB::Var> =
+        next_preprocessed.borrow();
 
     // Extract the three things we'll reference repeatedly:
     //
@@ -861,7 +847,7 @@ pub(crate) fn eval<
     // Merkle rows, or CTL-loaded limbs, the selector is zero and the
     // constraint is trivially satisfied.
 
-    for limb in 0..POSEIDON2_LIMBS {
+    for limb in 0..WIDTH_EXT {
         for d in 0..D {
             let gate = next_prep.input_limbs[limb].normal_chain_sel;
             builder
@@ -871,73 +857,28 @@ pub(crate) fn eval<
         }
     }
 
-    // Merkle-path chaining
-    //
-    // In Merkle mode each permutation compresses two children into
-    // one parent. The output is a two-limb digest.
-    //
-    // The next row also compresses two children. One of them is the
-    // digest we just computed. The other is the sibling, supplied by
-    // the prover.
-    //
-    // The direction bit tells us which side our digest goes on:
-    //
-    //     bit = 0 (left child):
-    //         Next row's input = [ our_digest | sibling ]
-    //         Our output goes into limbs 0 and 1.
-    //
-    //     bit = 1 (right child):
-    //         Next row's input = [ sibling | our_digest ]
-    //         Our output goes into limbs 2 and 3.
-    //
-    // We build four gate expressions — one per (limb, direction)
-    // combination. Each gate is the product of the Merkle chain
-    // selector and the direction (or its complement).
-    //
-    // Only the first two limbs have a Merkle chain selector. The
-    // constraints for limbs 2 and 3 reuse limbs 0 and 1's selectors
-    // but gated on the opposite direction value.
-
-    // Compute (1 − bit) once. If bit=0 this is 1 (left-child case).
+    // Merkle-path chaining: first `RATE_EXT` logical limbs of the output
+    // form our digest; the sibling occupies the next `RATE_EXT` limbs of
+    // the next row's input. The direction bit selects left vs right placement.
     let is_left = AB::Expr::ONE - next_bit.into();
 
-    // Gate for placing our digest on the left side (limbs 0 and 1).
-    let gate_left_0 = next_prep.input_limbs[0].merkle_chain_sel * is_left.dup();
-    let gate_left_1 = next_prep.input_limbs[1].merkle_chain_sel * is_left;
-
-    // Gate for placing our digest on the right side (limbs 2 and 3).
-    let gate_right_0 = next_prep.input_limbs[0].merkle_chain_sel * next_bit;
-    let gate_right_1 = next_prep.input_limbs[1].merkle_chain_sel * next_bit;
-
-    // Check each base-field element of the digest.
-    for d in 0..D {
-        // Left child: output element → next input limb 0 element.
-        builder
-            .when_transition()
-            .when(gate_left_0.dup())
-            .assert_zero(next_in[d] - local_out[d]);
-
-        // Left child: output element → next input limb 1 element.
-        builder
-            .when_transition()
-            .when(gate_left_1.dup())
-            .assert_zero(next_in[D + d] - local_out[D + d]);
-
-        // Right child: output element → next input limb 2 element.
-        //
-        // Notice we compare against the same output positions as the
-        // left case (limbs 0-1 of the output). The difference is
-        // where in the next input they land (limbs 2-3 instead of 0-1).
-        builder
-            .when_transition()
-            .when(gate_right_0.dup())
-            .assert_zero(next_in[2 * D + d] - local_out[d]);
-
-        // Right child: output element → next input limb 3 element.
-        builder
-            .when_transition()
-            .when(gate_right_1.dup())
-            .assert_zero(next_in[3 * D + d] - local_out[D + d]);
+    for i in 0..RATE_EXT {
+        let gate_left_i = next_prep.input_limbs[i].merkle_chain_sel * is_left.clone();
+        for d in 0..D {
+            builder
+                .when_transition()
+                .when(gate_left_i.clone())
+                .assert_zero(next_in[i * D + d] - local_out[i * D + d]);
+        }
+    }
+    for i in 0..RATE_EXT {
+        let gate_right_i = next_prep.input_limbs[i].merkle_chain_sel * next_bit;
+        for d in 0..D {
+            builder
+                .when_transition()
+                .when(gate_right_i.clone())
+                .assert_zero(next_in[(RATE_EXT + i) * D + d] - local_out[i * D + d]);
+        }
     }
 
     // MMCS accumulator
@@ -1056,6 +997,7 @@ pub unsafe fn eval_unchecked_with_concrete<
     const SBOX_REGISTERS: usize,
     const HALF_FULL_ROUNDS: usize,
     const PARTIAL_ROUNDS: usize,
+    const WITNESS_EXT_D: usize,
 >(
     air: &Poseidon2CircuitAir<
         F,
@@ -1069,6 +1011,7 @@ pub unsafe fn eval_unchecked_with_concrete<
         SBOX_REGISTERS,
         HALF_FULL_ROUNDS,
         PARTIAL_ROUNDS,
+        WITNESS_EXT_D,
     >,
     builder: &mut AB,
     local: &Poseidon2CircuitCols<
@@ -1121,6 +1064,7 @@ pub unsafe fn eval_unchecked_with_concrete<
             SBOX_REGISTERS,
             HALF_FULL_ROUNDS,
             PARTIAL_ROUNDS,
+            WITNESS_EXT_D,
         >(air_c, builder_c, local_c, next_c, next_preprocessed_c);
     }
 }
@@ -1156,6 +1100,7 @@ pub unsafe fn eval_unchecked<
     const SBOX_REGISTERS: usize,
     const HALF_FULL_ROUNDS: usize,
     const PARTIAL_ROUNDS: usize,
+    const WITNESS_EXT_D: usize,
 >(
     air: &Poseidon2CircuitAir<
         F,
@@ -1169,6 +1114,7 @@ pub unsafe fn eval_unchecked<
         SBOX_REGISTERS,
         HALF_FULL_ROUNDS,
         PARTIAL_ROUNDS,
+        WITNESS_EXT_D,
     >,
     builder: &mut AB,
     local: &Poseidon2CircuitCols<
@@ -1214,6 +1160,7 @@ pub unsafe fn eval_unchecked<
             SBOX_REGISTERS,
             HALF_FULL_ROUNDS,
             PARTIAL_ROUNDS,
+            WITNESS_EXT_D,
         >(air_transmuted, builder, local, next, next_preprocessed);
     }
 }
@@ -1230,6 +1177,7 @@ impl<
     const SBOX_REGISTERS: usize,
     const HALF_FULL_ROUNDS: usize,
     const PARTIAL_ROUNDS: usize,
+    const WITNESS_EXT_D: usize,
 > Air<AB>
     for Poseidon2CircuitAir<
         AB::F,
@@ -1243,6 +1191,7 @@ impl<
         SBOX_REGISTERS,
         HALF_FULL_ROUNDS,
         PARTIAL_ROUNDS,
+        WITNESS_EXT_D,
     >
 where
     AB::F: PrimeField,
@@ -1282,6 +1231,7 @@ where
             SBOX_REGISTERS,
             HALF_FULL_ROUNDS,
             PARTIAL_ROUNDS,
+            WITNESS_EXT_D,
         >(self, builder, local, next, next_preprocessed);
     }
 }
@@ -1298,6 +1248,7 @@ impl<
     const SBOX_REGISTERS: usize,
     const HALF_FULL_ROUNDS: usize,
     const PARTIAL_ROUNDS: usize,
+    const WITNESS_EXT_D: usize,
 > LookupAir<F>
     for Poseidon2CircuitAir<
         F,
@@ -1311,6 +1262,7 @@ impl<
         SBOX_REGISTERS,
         HALF_FULL_ROUNDS,
         PARTIAL_ROUNDS,
+        WITNESS_EXT_D,
     >
 {
     /// Allocate one permutation argument column and return its index.
@@ -1375,14 +1327,17 @@ impl<
             .expect("The preprocessed matrix has only one row?");
         let next_preprocessed: &[SymbolicVariable<F>] = (*next_preprocessed).borrow();
 
-        let local_preprocessed: &Poseidon2PreprocessedRow<SymbolicVariable<F>> =
-            local_preprocessed.borrow();
-        let next_preprocessed: &Poseidon2PreprocessedRow<SymbolicVariable<F>> =
+        let local_preprocessed: &Poseidon2PreprocessedRow<
+            WIDTH_EXT,
+            RATE_EXT,
+            SymbolicVariable<F>,
+        > = local_preprocessed.borrow();
+        let next_preprocessed: &Poseidon2PreprocessedRow<WIDTH_EXT, RATE_EXT, SymbolicVariable<F>> =
             next_preprocessed.borrow();
 
         // Total lookups:
         // One per input limb + one per public output limb + one for the MMCS accumulator.
-        let mut lookups = Vec::with_capacity(POSEIDON2_LIMBS + POSEIDON2_PUBLIC_OUTPUT_LIMBS + 1);
+        let mut lookups = Vec::with_capacity(WIDTH_EXT + RATE_EXT + 1);
 
         // Input limb lookups
         //
@@ -1406,7 +1361,7 @@ impl<
         let not_merkle = SymbolicExpression::Leaf(BaseLeaf::Constant(F::ONE))
             - SymbolicExpression::from(local_preprocessed.merkle_path);
 
-        for limb_idx in 0..POSEIDON2_LIMBS {
+        for limb_idx in 0..WIDTH_EXT {
             let limb = &local_preprocessed.input_limbs[limb_idx];
 
             // Build the lookup key: [witness_index, elem_0, elem_1, ..., elem_{D-1}].
@@ -1414,7 +1369,7 @@ impl<
             // The witness index tells the Witness table which slot to
             // look up. The extension-field elements are the actual values
             // being checked.
-            let input_idx_limb = iter::once(limb.idx)
+            let mut input_idx_limb: Vec<SymbolicExpression<F>> = iter::once(limb.idx)
                 .chain(
                     local.poseidon2.inputs[limb_idx * D..(limb_idx + 1) * D]
                         .iter()
@@ -1422,6 +1377,10 @@ impl<
                 )
                 .map(SymbolicExpression::from)
                 .collect();
+            input_idx_limb.extend(iter::repeat_n(
+                SymbolicExpression::Leaf(BaseLeaf::Constant(F::ZERO)),
+                WITNESS_EXT_D - D,
+            ));
 
             // Multiplicity = CTL enable flag × (1 − merkle_path).
             //
@@ -1454,13 +1413,13 @@ impl<
         // to me." If the output doesn't match, the permutation argument
         // will fail.
 
-        for limb_idx in 0..POSEIDON2_PUBLIC_OUTPUT_LIMBS {
+        for limb_idx in 0..RATE_EXT {
             let limb = &local_preprocessed.output_limbs[limb_idx];
 
             // Build the lookup key from the output state.
             //
             // The output lives in the last full round's post-state.
-            let output_idx_limb = iter::once(limb.idx)
+            let mut output_idx_limb: Vec<SymbolicExpression<F>> = iter::once(limb.idx)
                 .chain(
                     local.poseidon2.ending_full_rounds[HALF_FULL_ROUNDS - 1].post
                         [limb_idx * D..(limb_idx + 1) * D]
@@ -1469,6 +1428,10 @@ impl<
                 )
                 .map(SymbolicExpression::from)
                 .collect();
+            output_idx_limb.extend(iter::repeat_n(
+                SymbolicExpression::Leaf(BaseLeaf::Constant(F::ZERO)),
+                WITNESS_EXT_D - D,
+            ));
 
             lookups.push(LookupAir::register_lookup(
                 self,
@@ -1509,7 +1472,7 @@ impl<
         ];
         mmcs_index_sum_lookup.extend(iter::repeat_n(
             SymbolicExpression::Leaf(BaseLeaf::Constant(F::ZERO)),
-            D - 1,
+            WITNESS_EXT_D - 1,
         ));
 
         lookups.push(LookupAir::register_lookup(
@@ -1716,7 +1679,7 @@ mod test {
             rows.resize(target_rows, filler);
         }
 
-        let preprocessed = extract_preprocessed_from_operations::<Val, Val>(&rows, 4);
+        let preprocessed = extract_preprocessed_from_operations::<4, 2, Val, Val>(&rows, 4);
         let air = Poseidon2CircuitAirBabyBearD4Width16::new_with_preprocessed(
             constants.clone(),
             preprocessed,
@@ -1814,7 +1777,7 @@ mod test {
             padded.resize(target_rows, filler);
         }
 
-        let preprocessed = extract_preprocessed_from_operations::<Val, Val>(&padded, 4);
+        let preprocessed = extract_preprocessed_from_operations::<4, 2, Val, Val>(&padded, 4);
         let air = Poseidon2CircuitAirBabyBearD4Width16::new_with_preprocessed(
             constants.clone(),
             preprocessed,

@@ -2,4 +2,4 @@
 
 pub mod fri;
 
-pub use fri::{FriRecursionBackend, FriRecursionBackendForExt};
+pub use fri::{FriRecursionBackend, FriRecursionBackendD5, FriRecursionBackendForExt};

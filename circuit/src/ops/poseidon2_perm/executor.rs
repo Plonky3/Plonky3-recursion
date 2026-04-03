@@ -149,7 +149,7 @@ impl Poseidon2PermExecutor {
         let Ok(private_data) = ctx.get_private_data() else {
             return Ok(None);
         };
-        let Some(data) = private_data.downcast_ref::<Poseidon2PermPrivateData<F, 2>>() else {
+        let Some(data) = private_data.downcast_ref::<Poseidon2PermPrivateData<F>>() else {
             return Ok(None);
         };
         if !self.merkle_path {
@@ -160,7 +160,7 @@ impl Poseidon2PermExecutor {
                 got: "private data provided for non-Merkle operation".to_string(),
             });
         }
-        Ok(Some(&data.sibling))
+        Ok(Some(data.sibling.as_slice()))
     }
 
     /// Read the MMCS direction bit from the witness table.
@@ -285,41 +285,36 @@ impl Poseidon2PermExecutor {
 
     /// Construct the circuit trace row for D=1 (base field) mode.
     ///
-    /// Groups the 16 base-field input slots into 4 logical limbs of 4 elements each,
-    /// and the 8 output rate slots into 2 logical limbs.
-    /// A limb is CTL-flagged if any of its 4 sub-elements is non-empty.
-    #[unroll::unroll_for_loops]
+    /// One CTL flag and witness index per physical input slot (`WIDTH` = 16) and per
+    /// rate output slot (`RATE` = 8), matching the preprocessed column layout for
+    /// width-16 / rate-8 Poseidon2 AIR.
     fn build_base_trace_row<F: Field>(
         &self,
         inputs: &[Vec<WitnessId>],
         outputs: &[Vec<WitnessId>],
         input_values: &[F],
     ) -> Poseidon2CircuitRow<F> {
-        let mut in_ctl = [false; 4];
-        let mut input_indices = [0u32; 4];
-        for limb in 0..4 {
-            for d in 0..4 {
-                let idx = limb * 4 + d;
-                if !inputs[idx].is_empty() {
-                    in_ctl[limb] = true;
-                    if input_indices[limb] == 0 {
-                        input_indices[limb] = inputs[idx][0].0;
-                    }
-                }
+        let width = self.config.width();
+        let rate_ext = self.config.rate_ext();
+        let mut in_ctl = vec![false; width];
+        let mut input_indices = vec![0u32; width];
+        for i in 0..width {
+            if let Some(inp) = inputs.get(i)
+                && let [wid] = inp.as_slice()
+            {
+                in_ctl[i] = true;
+                input_indices[i] = wid.0;
             }
         }
 
-        let mut out_ctl = [false; 2];
-        let mut output_indices = [0u32; 2];
-        for limb in 0..2 {
-            for d in 0..4 {
-                let idx = limb * 4 + d;
-                if idx < outputs.len() && !outputs[idx].is_empty() {
-                    out_ctl[limb] = true;
-                    if output_indices[limb] == 0 {
-                        output_indices[limb] = outputs[idx][0].0;
-                    }
-                }
+        let mut out_ctl = vec![false; rate_ext];
+        let mut output_indices = vec![0u32; rate_ext];
+        for i in 0..rate_ext {
+            if let Some(out_slot) = outputs.get(i)
+                && let [wid] = out_slot.as_slice()
+            {
+                out_ctl[i] = true;
+                output_indices[i] = wid.0;
             }
         }
 
@@ -329,10 +324,10 @@ impl Poseidon2PermExecutor {
             mmcs_bit: false,
             mmcs_index_sum: F::ZERO,
             input_values: input_values.to_vec(),
-            in_ctl: in_ctl.to_vec(),
-            input_indices: input_indices.to_vec(),
-            out_ctl: out_ctl.to_vec(),
-            output_indices: output_indices.to_vec(),
+            in_ctl,
+            input_indices,
+            out_ctl,
+            output_indices,
             mmcs_index_sum_idx: 0,
             mmcs_ctl_enabled: false,
         }
@@ -459,14 +454,34 @@ impl Poseidon2PermExecutor {
         ctx: &mut ExecutionContext<'_, F>,
         exec: &dyn Fn(&[F]) -> Vec<F>,
     ) -> Result<(), CircuitError> {
-        if inputs.len() != 16 {
-            return Err(CircuitError::NonPrimitiveOpLayoutMismatch {
-                op: self.op_type.clone(),
-                expected: "16 input vectors for D=1 mode".to_string(),
-                got: inputs.len(),
-            });
-        }
-        for (i, inp) in inputs.iter().enumerate() {
+        let width = self.config.width();
+        let width_ext = self.config.width_ext();
+        let limbs: &[Vec<WitnessId>] = match inputs.len() {
+            n if n == width => inputs,
+            n if n == width_ext + 2 => {
+                for (i, slot) in inputs[width_ext..].iter().enumerate() {
+                    if !slot.is_empty() {
+                        return Err(CircuitError::NonPrimitiveOpLayoutMismatch {
+                            op: self.op_type.clone(),
+                            expected: format!(
+                                "empty mmcs slots for D=1 non-Merkle (tail slot {i})"
+                            ),
+                            got: slot.len(),
+                        });
+                    }
+                }
+                &inputs[..width]
+            }
+            got => {
+                return Err(CircuitError::NonPrimitiveOpLayoutMismatch {
+                    op: self.op_type.clone(),
+                    expected: format!("{width} or {} input vectors for D=1 mode", width_ext + 2),
+                    got,
+                });
+            }
+        };
+
+        for (i, inp) in limbs.iter().enumerate() {
             if inp.len() > 1 {
                 return Err(CircuitError::NonPrimitiveOpLayoutMismatch {
                     op: self.op_type.clone(),
@@ -484,14 +499,14 @@ impl Poseidon2PermExecutor {
         }
 
         let mut resolved_inputs = [F::ZERO; 16];
-        for (slot, inp) in resolved_inputs.iter_mut().zip(inputs) {
+        for (slot, inp) in resolved_inputs.iter_mut().zip(limbs) {
             if let [wid] = inp.as_slice() {
                 *slot = ctx.get_witness(*wid)?;
             }
         }
 
         let output = exec(&resolved_inputs);
-        let row = self.build_base_trace_row(inputs, outputs, &resolved_inputs);
+        let row = self.build_base_trace_row(limbs, outputs, &resolved_inputs);
 
         let state = ctx.get_op_state_mut::<Poseidon2ExecutionState<F>>(&self.op_type);
         state.rows.push(row);
@@ -577,6 +592,20 @@ impl Poseidon2PermExecutor {
         preprocessed: &mut dyn PreprocessedWriter<F>,
     ) -> Result<(), CircuitError> {
         let width_ext = self.config.width_ext();
+        // D=1 non-Merkle: keep the compact flag layout expected by the D=1 Poseidon2 AIR (covers
+        // both `add_poseidon2_perm_base` and `add_poseidon2_perm` empty MMCS slots).
+        if self.config.d() == 1 && !self.merkle_path {
+            preprocessed.register_non_primitive_preprocessed_no_read(&self.op_type, &[F::ZERO]);
+            preprocessed.register_non_primitive_preprocessed_no_read(&self.op_type, &[F::ZERO]);
+            let new_start_val = if self.new_start { F::ONE } else { F::ZERO };
+            let merkle_path_val = if self.merkle_path { F::ONE } else { F::ZERO };
+            preprocessed.register_non_primitive_preprocessed_no_read(
+                &self.op_type,
+                &[new_start_val, merkle_path_val],
+            );
+            return Ok(());
+        }
+
         if inputs[width_ext].is_empty() {
             preprocessed.register_non_primitive_preprocessed_no_read(&self.op_type, &[F::ZERO]);
         } else {
@@ -617,8 +646,8 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Poseidon2Perm
                 op: self.op_type.clone(),
             })?;
 
-        // D=1 mode uses a separate code path with fixed 16-element layout.
-        if self.config.d() == 1 {
+        // D=1 non-Merkle: base trace row (`width` limbs, or `width_ext+2` with empty MMCS tail).
+        if self.config.d() == 1 && !self.merkle_path {
             return self.execute_base(inputs, outputs, ctx, exec.as_ref());
         }
 
@@ -1206,21 +1235,27 @@ mod tests {
     }
 
     #[test]
-    fn build_base_trace_row_groups_by_limbs_of_4() {
+    fn build_base_trace_row_one_ctl_flag_per_input_slot() {
         let exec = executor(CONFIG_D1_W16, true, false);
 
         // 16 inputs: make slot 0 and slot 4 nonempty
         let mut inputs: Vec<Vec<WitnessId>> = vec![vec![]; 16];
-        inputs[0] = vec![WitnessId(10)]; // limb 0, d=0
-        inputs[4] = vec![WitnessId(20)]; // limb 1, d=0
+        inputs[0] = vec![WitnessId(10)];
+        inputs[4] = vec![WitnessId(20)];
 
         let outputs: Vec<Vec<WitnessId>> = vec![vec![]; 8];
         let input_values = F::zero_vec(16);
 
         let row = exec.build_base_trace_row(&inputs, &outputs, &input_values);
 
-        assert_eq!(row.in_ctl, vec![true, true, false, false]);
-        assert_eq!(row.input_indices, vec![10, 20, 0, 0]);
+        let mut exp_ctl = vec![false; 16];
+        exp_ctl[0] = true;
+        exp_ctl[4] = true;
+        let mut exp_idx = vec![0u32; 16];
+        exp_idx[0] = 10;
+        exp_idx[4] = 20;
+        assert_eq!(row.in_ctl, exp_ctl);
+        assert_eq!(row.input_indices, exp_idx);
     }
 
     #[test]
@@ -1323,7 +1358,7 @@ mod tests {
             panic!("expected NonPrimitiveOpLayoutMismatch");
         };
         assert_eq!(op, op_type_d1);
-        assert_eq!(expected, "16 input vectors for D=1 mode");
+        assert_eq!(expected, "16 or 18 input vectors for D=1 mode");
         assert_eq!(got, 10);
     }
 

@@ -193,6 +193,9 @@ fn main() {
             args.zk,
             args.disable_recompose_npo,
         ),
+        FieldOption::KoalaBearQuintic => {
+            unimplemented!("Aggregation recursive example does not yet support KoalaBear quintic")
+        }
     }
 }
 

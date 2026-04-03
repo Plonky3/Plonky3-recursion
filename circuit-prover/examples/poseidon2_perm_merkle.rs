@@ -251,7 +251,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     runner.set_private_data(
         row1_op_id,
         NpoPrivateData::new(Poseidon2PermPrivateData {
-            sibling: [sibling1_limb2, sibling1_limb3],
+            sibling: vec![sibling1_limb2, sibling1_limb3],
         }),
     )?;
 
@@ -261,7 +261,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     runner.set_private_data(
         row2_op_id,
         NpoPrivateData::new(Poseidon2PermPrivateData {
-            sibling: [sibling2_limb2, sibling2_limb3],
+            sibling: vec![sibling2_limb2, sibling2_limb3],
         }),
     )?;
 

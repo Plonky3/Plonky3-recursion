@@ -10,6 +10,6 @@ pub use fri::{
     Witness, verify_fri_circuit,
 };
 pub use mmcs::{
-    set_fri_mmcs_private_data, set_hiding_fri_mmcs_private_data, verify_batch_circuit,
-    verify_batch_circuit_from_extension_opened,
+    convert_merkle_proof_to_siblings, set_fri_mmcs_private_data, set_hiding_fri_mmcs_private_data,
+    verify_batch_circuit, verify_batch_circuit_from_extension_opened,
 };

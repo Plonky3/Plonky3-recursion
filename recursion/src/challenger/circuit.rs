@@ -94,27 +94,21 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
         debug_assert!(self.initialized, "Challenger must be initialized");
         debug_assert!(self.input_buffer.len() <= RATE, "Input buffer exceeds RATE");
 
-        // Validate config matches extension field dimension
-        let config_d = self.config.extension_degree();
-        assert_eq!(
-            config_d,
-            EF::DIMENSION,
-            "Poseidon2 config dimension mismatch: config D={} but EF::DIMENSION={}",
-            config_d,
-            EF::DIMENSION
-        );
+        let poseidon2_config = self
+            .config
+            .as_poseidon2()
+            .expect("only Poseidon2 challenger permutation is supported");
 
         // 1. Overwrite state[0..n] with inputs (NOT XOR, matches native)
         for (i, val) in self.input_buffer.drain(..).enumerate() {
             self.state[i] = val;
         }
 
-        // Branch based on extension degree
-        if EF::DIMENSION == 1 {
-            // D=1: Use base field permutation directly
+        // Branch by Poseidon2 NPO packing (`config.d()`), not `EF::DIMENSION`, so a
+        // quintic (or other) challenge field can still use base width-16 Poseidon2.
+        if poseidon2_config.d() == 1 {
             self.duplexing_base(circuit);
         } else {
-            // D=4: Use extension field permutation with recomposition
             self.duplexing_ext::<BF, EF>(circuit);
         }
 

@@ -21,6 +21,7 @@ use p3_lookup::lookup_traits::Lookup;
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_uni_stark::{SymbolicAirBuilder, SymbolicExpression, SymbolicExpressionExt};
+use p3_util::log2_strict_usize;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tracing::instrument;
@@ -43,8 +44,8 @@ pub use dynamic_air::{
 };
 pub use packing::TablePacking;
 pub use poseidon2::{
-    Poseidon2AirBuilder, Poseidon2AirWrapperInner, Poseidon2Preprocessor, Poseidon2Prover,
-    Poseidon2ProverD2, poseidon2_preprocessor, poseidon2_verifier_air_from_config,
+    Poseidon2AirBuilder, Poseidon2AirBuilderD5, Poseidon2AirWrapperInner, Poseidon2Preprocessor,
+    Poseidon2Prover, Poseidon2ProverD2, poseidon2_preprocessor, poseidon2_verifier_air_from_config,
 };
 pub use recompose::{RecomposeAirBuilder, RecomposePreprocessor, RecomposeProver};
 
@@ -159,6 +160,7 @@ impl<SC: StarkGenericConfig> CircuitProverData<SC> {
 ///         &self,
 ///         config: &SC,
 ///         degree: usize,
+///         circuit_extension_degree: u32,
 ///         table_entry: &NonPrimitiveTableEntry<SC>,
 ///     ) -> Result<DynamicAirEntry<SC>, String> {
 ///         Ok(DynamicAirEntry::new(Box::new(MyPluginAir::<Val<SC>>::new(config))))
@@ -228,6 +230,19 @@ macro_rules! impl_table_prover_batch_instances_from_base {
                 unsafe { transmute_traces(traces) };
             self.$base::<SC>(config, packing, t)
         }
+
+        fn batch_instance_d5(
+            &self,
+            config: &SC,
+            packing: &TablePacking,
+            traces: &p3_circuit::tables::Traces<
+                p3_field::extension::QuinticTrinomialExtensionField<p3_batch_stark::Val<SC>>,
+            >,
+        ) -> Option<BatchTableInstance<SC>> {
+            let t: &p3_circuit::tables::Traces<p3_batch_stark::Val<SC>> =
+                unsafe { transmute_traces(traces) };
+            self.$base::<SC>(config, packing, t)
+        }
     };
 }
 
@@ -282,8 +297,18 @@ where
     pub ext_degree: usize,
     /// The binomial coefficient `W` for extension field multiplication, if `ext_degree > 1`.
     pub w_binomial: Option<Val<SC>>,
+    /// When `true` with `ext_degree == 5`, the ALU uses quintic trinomial reduction (`X^5+X^2-1`).
+    #[serde(default)]
+    pub alu_quintic_trinomial: bool,
     /// Manifest describing batched non-primitive tables defined at runtime.
     pub non_primitives: Vec<NonPrimitiveTableEntry<SC>>,
+    /// Common data derived from the final table AIRs after trace construction.
+    ///
+    /// Verification should prefer this over [`CircuitProverData::common_data`] from the
+    /// pre-prove `get_airs_and_degrees_with_prep` path so lookup column layouts match the
+    /// committed traces. Omitted on deserialization (e.g. legacy proofs).
+    #[serde(skip, default)]
+    pub stark_common: Option<CommonData<SC>>,
 }
 
 impl<SC> core::fmt::Debug for BatchStarkProof<SC>
@@ -296,6 +321,8 @@ where
             .field("rows", &self.rows)
             .field("ext_degree", &self.ext_degree)
             .field("w_binomial", &self.w_binomial)
+            .field("alu_quintic_trinomial", &self.alu_quintic_trinomial)
+            .field("stark_common", &self.stark_common.is_some())
             .finish()
     }
 }
@@ -319,7 +346,7 @@ where
 #[derive(Debug, Error)]
 pub enum BatchStarkProverError {
     /// The extension field degree is not one of the supported values (1, 2, 4, 6, 8).
-    #[error("unsupported extension degree: {0} (supported: 1,2,4,6,8)")]
+    #[error("unsupported extension degree: {0} (supported: 1,2,4,5,6,8)")]
     UnsupportedDegree(usize),
 
     /// An extension field with degree > 1 was requested but the binomial parameter `W` was not provided.
@@ -481,6 +508,21 @@ where
     }
 }
 
+impl<SC> RegisterPoseidon2ForExt<5, SC> for ()
+where
+    SC: StarkGenericConfig + 'static + Send + Sync,
+    Val<SC>: StarkField + BinomiallyExtendable<4>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+{
+    fn register_poseidon2(prover: &mut BatchStarkProver<SC>, config: Poseidon2Config) {
+        prover.register_table_prover(Box::new(Poseidon2Prover::new(
+            config,
+            ConstraintProfile::Standard,
+        )));
+    }
+}
+
 impl<SC> BatchStarkProver<SC>
 where
     SC: StarkGenericConfig + 'static,
@@ -583,6 +625,7 @@ where
             1 => self.prove::<EF, 1>(traces, None, circuit_prover_data),
             2 => self.prove::<EF, 2>(traces, w_opt, circuit_prover_data),
             4 => self.prove::<EF, 4>(traces, w_opt, circuit_prover_data),
+            5 => self.prove::<EF, 5>(traces, w_opt, circuit_prover_data),
             6 => self.prove::<EF, 6>(traces, w_opt, circuit_prover_data),
             8 => self.prove::<EF, 8>(traces, w_opt, circuit_prover_data),
             d => Err(BatchStarkProverError::UnsupportedDegree(d)),
@@ -593,12 +636,14 @@ where
     pub fn verify_all_tables(
         &self,
         proof: &BatchStarkProof<SC>,
-        common: &CommonData<SC>,
+        circuit_common: &CommonData<SC>,
     ) -> Result<(), BatchStarkProverError> {
+        let common = proof.stark_common.as_ref().unwrap_or(circuit_common);
         match proof.ext_degree {
             1 => self.verify::<1>(proof, None, common),
             2 => self.verify::<2>(proof, proof.w_binomial, common),
             4 => self.verify::<4>(proof, proof.w_binomial, common),
+            5 => self.verify::<5>(proof, proof.w_binomial, common),
             6 => self.verify::<6>(proof, proof.w_binomial, common),
             8 => self.verify::<8>(proof, proof.w_binomial, common),
             d => Err(BatchStarkProverError::UnsupportedDegree(d)),
@@ -617,11 +662,10 @@ where
         circuit_prover_data: &CircuitProverData<SC>,
     ) -> Result<BatchStarkProof<SC>, BatchStarkProverError>
     where
-        EF: Field + BasedVectorSpace<Val<SC>>,
+        EF: Field + BasedVectorSpace<Val<SC>> + ExtractBinomialW<Val<SC>>,
     {
         let primitive = &circuit_prover_data.primitive_columns;
         let non_primitive = &circuit_prover_data.non_primitive_columns;
-        let prover_data = &circuit_prover_data.prover_data;
 
         // One lookup per NpoTypeId instead of repeated `op_type()` (clones inner id string).
         let prover_index_by_type: BTreeMap<NpoTypeId, usize> = self
@@ -694,9 +738,18 @@ where
         let alu_prep = primitive[PrimitiveOpType::Alu as usize].clone();
         let alu_num_ops = alu_prep.len() / AluAir::<Val<SC>, D>::preprocessed_lane_width();
         let horner_k = packing.horner_packed_steps();
+        let alu_quintic = D == 5 && EF::alu_is_quintic_trinomial();
         let alu_air: AluAir<Val<SC>, D> = if D == 1 {
             AluAir::<Val<SC>, D>::new_with_preprocessed(alu_num_ops, alu_lanes, alu_prep, horner_k)
                 .with_min_height(min_height)
+        } else if alu_quintic {
+            AluAir::<Val<SC>, D>::new_quintic_trinomial_with_preprocessed(
+                alu_num_ops,
+                alu_lanes,
+                alu_prep,
+                horner_k,
+            )
+            .with_min_height(min_height)
         } else {
             let w = w_binomial.ok_or(BatchStarkProverError::MissingWForExtension)?;
             AluAir::<Val<SC>, D>::new_binomial_with_preprocessed(
@@ -764,6 +817,14 @@ where
                     dynamic_instances.push(instance);
                 }
             }
+        } else if D == 5 {
+            type EF5<F> = p3_field::extension::QuinticTrinomialExtensionField<F>;
+            let t: &Traces<EF5<Val<SC>>> = unsafe { transmute_traces(traces) };
+            for p in &self.non_primitive_provers {
+                if let Some(instance) = p.batch_instance_d5(&self.config, packing, t) {
+                    dynamic_instances.push(instance);
+                }
+            }
         }
 
         // The `batch_instance_dN` methods regenerate Poseidon2 preprocessed data from
@@ -780,6 +841,7 @@ where
                     committed_prep.clone(),
                     min_height,
                     instance.lanes,
+                    D as u32,
                 ) {
                     instance.air = new_air;
                 }
@@ -869,13 +931,24 @@ where
             non_primitive_meta.push((op_type, rows, lanes, AirVariant::Baseline));
         }
 
+        let trace_ext_degree_bits: Vec<usize> = trace_storage
+            .iter()
+            .map(|m| log2_strict_usize(m.height()) + self.config.is_zk())
+            .collect();
+        debug_assert_eq!(trace_ext_degree_bits.len(), air_storage.len());
+        let table_prover_data = ProverData::from_airs_and_degrees(
+            &self.config,
+            &mut air_storage,
+            &trace_ext_degree_bits,
+        );
+
         let trace_refs: Vec<&RowMajorMatrix<Val<SC>>> = trace_storage.iter().collect();
         let instances: Vec<StarkInstance<'_, SC, CircuitTableAir<SC, D>>> =
             StarkInstance::new_multiple(
                 &air_storage,
                 &trace_refs,
                 &public_storage,
-                &prover_data.common,
+                &table_prover_data.common,
             );
 
         if self.debug_lookups {
@@ -897,6 +970,7 @@ where
                             committed_prep.clone(),
                             min_height,
                             *lanes,
+                            D as u32,
                         )
                         && let Some(trace) = air.preprocessed_trace()
                     {
@@ -919,7 +993,8 @@ where
             check_lookups(&debug_instances);
         }
 
-        let proof = p3_batch_stark::prove_batch(&self.config, &instances, prover_data);
+        let proof = p3_batch_stark::prove_batch(&self.config, &instances, &table_prover_data);
+        let stark_common = table_prover_data.common;
 
         let dynamic_public_values = public_storage.drain(NUM_PRIMITIVE_TABLES..);
         let non_primitives: Vec<NonPrimitiveTableEntry<SC>> = non_primitive_meta
@@ -956,7 +1031,9 @@ where
             alu_variant: self.alu_variant,
             ext_degree: D,
             w_binomial: if D > 1 { w_binomial } else { None },
+            alu_quintic_trinomial: alu_quintic,
             non_primitives,
+            stark_common: Some(stark_common),
         })
     }
 
@@ -999,6 +1076,14 @@ where
                     .with_horner_pack_k(horner_k)
                     .with_min_height(min_height),
             )
+        } else if D == 5 && proof.alu_quintic_trinomial {
+            CircuitTableAir::Alu(
+                AluAir::<Val<SC>, D>::new_quintic_trinomial(
+                    proof.rows[PrimitiveTable::Alu],
+                    alu_lanes,
+                )
+                .with_min_height(min_height),
+            )
         } else {
             let w = w_binomial.ok_or(BatchStarkProverError::MissingWForExtension)?;
             CircuitTableAir::Alu(
@@ -1021,7 +1106,7 @@ where
             })?;
             let plugin = &self.non_primitive_provers[pi];
             let air = plugin
-                .batch_air_from_table_entry(&self.config, D, entry)
+                .batch_air_from_table_entry(&self.config, D, proof.ext_degree as u32, entry)
                 .map_err(BatchStarkProverError::Verify)?;
             airs.push(CircuitTableAir::Dynamic(air));
             pvs.push(entry.public_values.clone());
@@ -1042,6 +1127,67 @@ where
     Poseidon2AirBuilder<D>: NpoAirBuilder<SC, D>,
 {
     vec![Box::new(Poseidon2AirBuilder)]
+}
+
+/// Create Poseidon2 table provers for D=4 (e.g. BabyBear, KoalaBear).
+pub fn poseidon2_table_provers_d4<SC>(config: Poseidon2Config) -> Vec<Box<dyn TableProver<SC>>>
+where
+    SC: StarkGenericConfig + 'static + Send + Sync,
+    Val<SC>: BinomiallyExtendable<4> + StarkField,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+{
+    vec![Box::new(Poseidon2Prover::new(
+        config,
+        ConstraintProfile::Standard,
+    ))]
+}
+
+/// Create Poseidon2 table provers for `D = 5` circuit traces (e.g. Koala quintic with base-first Poseidon).
+pub fn poseidon2_table_provers_d5<SC>(config: Poseidon2Config) -> Vec<Box<dyn TableProver<SC>>>
+where
+    SC: StarkGenericConfig + 'static + Send + Sync,
+    Val<SC>: StarkField + BinomiallyExtendable<4>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+{
+    vec![Box::new(Poseidon2Prover::new(
+        config,
+        ConstraintProfile::Standard,
+    ))]
+}
+
+/// Poseidon2 AIR builders for D=2 (e.g. Goldilocks).
+pub fn poseidon2_air_builders_d2<SC>() -> Vec<Box<dyn NpoAirBuilder<SC, 2>>>
+where
+    SC: StarkGenericConfig + 'static + Send + Sync,
+    Val<SC>: BinomiallyExtendable<2> + StarkField,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+{
+    vec![Box::new(Poseidon2AirBuilder::<2>::default())]
+}
+
+/// Poseidon2 AIR builders for D=4 (e.g. BabyBear, KoalaBear).
+pub fn poseidon2_air_builders_d4<SC>() -> Vec<Box<dyn NpoAirBuilder<SC, 4>>>
+where
+    SC: StarkGenericConfig + 'static + Send + Sync,
+    Val<SC>: BinomiallyExtendable<4> + StarkField,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+{
+    vec![Box::new(Poseidon2AirBuilder::<4>::default())]
+}
+
+/// Poseidon2 AIR builders for `D = 5` circuit traces (e.g. KoalaBear quintic).
+pub fn poseidon2_air_builders_d5<SC>() -> Vec<Box<dyn NpoAirBuilder<SC, 5>>>
+where
+    SC: StarkGenericConfig + 'static + Send + Sync,
+    Val<SC>: StarkField,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+{
+    vec![Box::new(Poseidon2AirBuilderD5)]
 }
 
 /// Returns a type-erased Recompose preprocessor.

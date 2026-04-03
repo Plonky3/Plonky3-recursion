@@ -11,7 +11,7 @@ use p3_circuit::ops::recompose::RecomposeTrace;
 use p3_circuit::ops::{NonPrimitivePreprocessedMap, NpoTypeId};
 use p3_circuit::tables::Traces;
 use p3_circuit::{CircuitError, PreprocessedColumns};
-use p3_field::extension::BinomialExtensionField;
+use p3_field::extension::{BinomialExtensionField, QuinticTrinomialExtensionField};
 use p3_field::{Algebra, ExtensionField, Field, PrimeCharacteristicRing, PrimeField64};
 use p3_goldilocks::Goldilocks;
 use p3_koala_bear::KoalaBear;
@@ -121,6 +121,7 @@ where
         &self,
         _config: &SC,
         _degree: usize,
+        _circuit_extension_degree: u32,
         table_entry: &NonPrimitiveTableEntry<SC>,
     ) -> Result<DynamicAirEntry<SC>, String> {
         let air =
@@ -133,6 +134,7 @@ where
         committed_prep: Vec<Val<SC>>,
         min_height: usize,
         lanes: usize,
+        _circuit_extension_degree: u32,
     ) -> Option<DynamicAirEntry<SC>> {
         let air =
             RecomposeAir::<Val<SC>, D>::new_with_preprocessed(lanes, committed_prep, min_height);
@@ -161,6 +163,11 @@ impl NpoPreprocessor<KoalaBear> for RecomposePreprocessor {
             preprocessed.downcast_mut::<PreprocessedColumns<BinomialExtensionField<F, 4>, 4>>()
         {
             return recompose_preprocess_impl::<F, _, 4>(prep);
+        }
+        if let Some(prep) =
+            preprocessed.downcast_mut::<PreprocessedColumns<QuinticTrinomialExtensionField<F>, 5>>()
+        {
+            return recompose_preprocess_impl::<F, _, 5>(prep);
         }
         if let Some(prep) = preprocessed.downcast_mut::<PreprocessedColumns<F, 1>>() {
             return recompose_preprocess_impl::<F, _, 1>(prep);

@@ -134,6 +134,38 @@ pub mod koala_bear_params {
     pub type MyConfig = StarkConfig<MyPcs, Challenge, Challenger>;
 }
 
+/// KoalaBear with quintic trinomial challenge field (`D = 5`).
+pub mod koala_bear_quintic_params {
+    pub use p3_field::extension::QuinticTrinomialExtensionField;
+    pub use p3_koala_bear::{KoalaBear, Poseidon2KoalaBear, default_koalabear_poseidon2_16};
+
+    pub use super::*;
+
+    pub type F = KoalaBear;
+    pub const D: usize = 5;
+    pub const WIDTH: usize = 16;
+    pub const RATE: usize = 8;
+    pub const DIGEST_ELEMS: usize = 8;
+
+    pub type Challenge = QuinticTrinomialExtensionField<F>;
+    pub type Dft = Radix2DitParallel<F>;
+    pub type Perm = Poseidon2KoalaBear<WIDTH>;
+    pub type MyHash = PaddingFreeSponge<Perm, WIDTH, RATE, DIGEST_ELEMS>;
+    pub type MyCompress = TruncatedPermutation<Perm, 2, DIGEST_ELEMS, WIDTH>;
+    pub type MyMmcs = MerkleTreeMmcs<
+        <F as Field>::Packing,
+        <F as Field>::Packing,
+        MyHash,
+        MyCompress,
+        2,
+        DIGEST_ELEMS,
+    >;
+    pub type ChallengeMmcs = ExtensionMmcs<F, Challenge, MyMmcs>;
+    pub type Challenger = DuplexChallenger<F, Perm, WIDTH, RATE>;
+    pub type MyPcs = TwoAdicFriPcs<F, Dft, MyMmcs, ChallengeMmcs>;
+    pub type MyConfig = StarkConfig<MyPcs, Challenge, Challenger>;
+}
+
 /// Common parameters for the Goldilocks field.
 pub mod goldilocks_params {
     pub use p3_goldilocks::{Goldilocks, Poseidon2Goldilocks};

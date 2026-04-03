@@ -303,8 +303,17 @@ where
                         horner_k,
                     )
                     .with_min_height(min_height)
+                } else if D == 5 && ExtF::alu_is_quintic_trinomial() {
+                    AluAir::new_quintic_trinomial_with_preprocessed(
+                        num_ops,
+                        effective_alu_lanes,
+                        prep_13col.clone(),
+                        horner_k,
+                    )
+                    .with_min_height(min_height)
                 } else {
-                    let w = w_binomial.unwrap();
+                    let w =
+                        w_binomial.expect("binomial W required for this extension field / degree");
                     AluAir::new_binomial_with_preprocessed(
                         num_ops,
                         effective_alu_lanes,

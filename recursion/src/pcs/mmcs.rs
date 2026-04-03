@@ -57,52 +57,68 @@ where
     let mut last_rate_outputs: Option<Vec<Target>> = None;
     let mut final_outputs: Vec<Option<Target>> = vec![None; width_ext];
 
+    let use_per_base_lift = permutation_config.d() == 1 && ext_degree > 1;
+
     for (chunk_idx, chunk) in base_coeffs.chunks(rate).enumerate() {
         let is_first = chunk_idx == 0;
         let is_last = chunk_idx == num_chunks - 1;
 
         let mut inputs: Vec<Option<Target>> = vec![None; width_ext];
 
-        for ext_idx in 0..rate_ext {
-            let base_start = ext_idx * ext_degree;
-            let num_values_in_ext = min(ext_degree, chunk.len().saturating_sub(base_start));
+        if use_per_base_lift {
+            // D=1 width-16 perm uses lifted scalars per rate slot. Opened batch values are already
+            // `EF::from(base)` targets (FRI BatchOpeningTargets); use them directly — recompose would
+            // add redundant NPO/ALU wiring and can desync witness sharing with cap/public inputs.
+            for ext_idx in 0..rate_ext {
+                if ext_idx < chunk.len() {
+                    inputs[ext_idx] = Some(chunk[ext_idx]);
+                } else {
+                    inputs[ext_idx] = None;
+                }
+            }
+        } else {
+            for ext_idx in 0..rate_ext {
+                let base_start = ext_idx * ext_degree;
+                let num_values_in_ext = min(ext_degree, chunk.len().saturating_sub(base_start));
 
-            if num_values_in_ext == 0 {
-                // No values for this extension position - use None for chaining
-                // This keeps the previous output (overwrite mode)
-                inputs[ext_idx] = None;
-            } else if num_values_in_ext == ext_degree {
-                // Full extension element - just recompose our values
-                let ext_coeffs: Vec<_> = (0..ext_degree).map(|i| chunk[base_start + i]).collect();
-                inputs[ext_idx] = Some(circuit.recompose_base_coeffs_to_ext::<F>(&ext_coeffs)?);
-            } else {
-                // Partial extension element - mix with previous output (overwrite mode)
-                // This is the key fix: unused positions keep previous permutation output
-                let prev_coeffs: Option<Vec<Target>> = if !is_first {
-                    if let Some(ref prev_rate) = last_rate_outputs {
-                        Some(circuit.decompose_ext_to_base_coeffs::<F>(prev_rate[ext_idx])?)
+                if num_values_in_ext == 0 {
+                    // No values for this extension position - use None for chaining
+                    // This keeps the previous output (overwrite mode)
+                    inputs[ext_idx] = None;
+                } else if num_values_in_ext == ext_degree {
+                    // Full extension element - just recompose our values
+                    let ext_coeffs: Vec<_> =
+                        (0..ext_degree).map(|i| chunk[base_start + i]).collect();
+                    inputs[ext_idx] = Some(circuit.recompose_base_coeffs_to_ext::<F>(&ext_coeffs)?);
+                } else {
+                    // Partial extension element - mix with previous output (overwrite mode)
+                    // This is the key fix: unused positions keep previous permutation output
+                    let prev_coeffs: Option<Vec<Target>> = if !is_first {
+                        if let Some(ref prev_rate) = last_rate_outputs {
+                            Some(circuit.decompose_ext_to_base_coeffs::<F>(prev_rate[ext_idx])?)
+                        } else {
+                            None
+                        }
                     } else {
                         None
-                    }
-                } else {
-                    None
-                };
+                    };
 
-                let mut ext_coeffs = Vec::with_capacity(ext_degree);
-                for coeff_idx in 0..ext_degree {
-                    if coeff_idx < num_values_in_ext {
-                        // Use our absorbed value
-                        ext_coeffs.push(chunk[base_start + coeff_idx]);
-                    } else if let Some(ref prev) = prev_coeffs {
-                        // Overwrite mode: keep previous output for this position
-                        ext_coeffs.push(prev[coeff_idx]);
-                    } else {
-                        // First permutation with new_start, use zero
-                        ext_coeffs.push(circuit.define_const(EF::ZERO));
+                    let mut ext_coeffs = Vec::with_capacity(ext_degree);
+                    for coeff_idx in 0..ext_degree {
+                        if coeff_idx < num_values_in_ext {
+                            // Use our absorbed value
+                            ext_coeffs.push(chunk[base_start + coeff_idx]);
+                        } else if let Some(ref prev) = prev_coeffs {
+                            // Overwrite mode: keep previous output for this position
+                            ext_coeffs.push(prev[coeff_idx]);
+                        } else {
+                            // First permutation with new_start, use zero
+                            ext_coeffs.push(circuit.define_const(EF::ZERO));
+                        }
                     }
+
+                    inputs[ext_idx] = Some(circuit.recompose_base_coeffs_to_ext::<F>(&ext_coeffs)?);
                 }
-
-                inputs[ext_idx] = Some(circuit.recompose_base_coeffs_to_ext::<F>(&ext_coeffs)?);
             }
         }
 
@@ -437,37 +453,48 @@ fn select_cap_entry<EF: Field>(
     current.into_iter().next().unwrap()
 }
 
-/// Convert a base field Merkle proof to extension field sibling values.
+/// Convert a base field Merkle proof to extension field sibling values for MMCS private data.
 ///
-/// Each sibling hash in the proof has `DIGEST_ELEMS` base field elements.
-/// These are packed into extension field elements (EF::DIMENSION base elements per extension element).
-/// The result is `rate_ext` extension field elements per sibling.
-fn convert_merkle_proof_to_siblings<F, EF, const DIGEST_ELEMS: usize>(
+/// When `DIGEST_ELEMS` is a multiple of `EF::DIMENSION`, digest coefficients are packed into
+/// `DIGEST_ELEMS / D` extension limbs (e.g. eight bases and quartic `EF` → two limbs).
+///
+/// Otherwise (e.g. eight bases and quintic `EF`), each base digest element is embedded as its
+/// own extension limb so the D=1 lifted-scalar Poseidon path matches native absorption.
+pub fn convert_merkle_proof_to_siblings<F, EF, const DIGEST_ELEMS: usize>(
     opening_proof: &[[F; DIGEST_ELEMS]],
-) -> Vec<[EF; 2]>
+) -> Vec<Vec<EF>>
 where
     F: Field,
     EF: ExtensionField<F> + BasedVectorSpace<F>,
 {
+    let d = EF::DIMENSION;
     opening_proof
         .iter()
         .map(|digest| {
-            // Pack base field elements into extension field elements
-            let ext_elements: Vec<EF> = digest
-                .chunks(EF::DIMENSION)
-                .map(|chunk| {
-                    EF::from_basis_coefficients_slice(chunk)
-                        .expect("chunk size should match extension degree")
-                })
-                .collect();
-            // For Poseidon2 MMCS, we expect exactly 2 extension elements per sibling
-            debug_assert_eq!(
-                ext_elements.len(),
-                2,
-                "Expected 2 extension elements per sibling, got {}",
-                ext_elements.len()
-            );
-            [ext_elements[0], ext_elements[1]]
+            if DIGEST_ELEMS % d == 0 {
+                let ext_count = DIGEST_ELEMS / d;
+                (0..ext_count)
+                    .map(|chunk_idx| {
+                        let start = chunk_idx * d;
+                        let mut coeffs = vec![F::ZERO; d];
+                        for k in 0..d {
+                            coeffs[k] = digest[start + k];
+                        }
+                        EF::from_basis_coefficients_slice(&coeffs)
+                            .expect("coefficients match extension degree")
+                    })
+                    .collect()
+            } else {
+                digest
+                    .iter()
+                    .map(|&b| {
+                        let mut coeffs = vec![F::ZERO; d];
+                        coeffs[0] = b;
+                        EF::from_basis_coefficients_slice(&coeffs)
+                            .expect("embedded base digest element")
+                    })
+                    .collect()
+            }
         })
         .collect()
 }
@@ -742,13 +769,10 @@ mod test {
                 .collect_vec();
 
             for (&op_id, sibling) in permutation_mmcs_ops.iter().zip(siblings) {
-                let sibling_arr: [CF; 2] = sibling.try_into().unwrap();
                 runner
                     .set_private_data(
                         op_id,
-                        NpoPrivateData::new(Poseidon2PermPrivateData {
-                            sibling: sibling_arr,
-                        }),
+                        NpoPrivateData::new(Poseidon2PermPrivateData { sibling }),
                     )
                     .unwrap();
             }
@@ -1040,7 +1064,6 @@ mod test {
             .collect_vec();
 
         for (&op_id, sibling) in permutation_mmcs_ops.iter().zip(siblings) {
-            let sibling: [CF; 2] = sibling.try_into().unwrap();
             runner
                 .set_private_data(
                     op_id,
@@ -1218,13 +1241,10 @@ mod test {
                 .collect_vec();
 
             for (&op_id, sibling) in _permutation_mmcs_ops.iter().zip(siblings) {
-                let sibling_arr: [CF; 2] = sibling.try_into().unwrap();
                 runner
                     .set_private_data(
                         op_id,
-                        NpoPrivateData::new(Poseidon2PermPrivateData {
-                            sibling: sibling_arr,
-                        }),
+                        NpoPrivateData::new(Poseidon2PermPrivateData { sibling }),
                     )
                     .unwrap();
             }
@@ -1376,13 +1396,10 @@ mod test {
                 .collect_vec();
 
             for (&op_id, sibling) in permutation_mmcs_ops.iter().zip(siblings) {
-                let sibling_arr: [CF; 2] = sibling.try_into().unwrap();
                 runner
                     .set_private_data(
                         op_id,
-                        NpoPrivateData::new(Poseidon2PermPrivateData {
-                            sibling: sibling_arr,
-                        }),
+                        NpoPrivateData::new(Poseidon2PermPrivateData { sibling }),
                     )
                     .unwrap();
             }

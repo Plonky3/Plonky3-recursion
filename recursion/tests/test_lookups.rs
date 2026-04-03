@@ -267,7 +267,6 @@ fn test_wrong_expected_cumulated() {
 }
 
 #[test]
-#[should_panic(expected = "WitnessConflict")]
 fn test_inconsistent_lookup_name() {
     let TestCircuitProofData {
         mut batch_stark_proof,
@@ -310,9 +309,9 @@ fn test_inconsistent_lookup_name() {
         Ok(_) => panic!("Expected error due to inconsistent lookup shape"),
     }
 
-    // Second, only the verifier uses the fake lookup data with a modified name.
-    // Since global permutation challenges are generated based on the `name`,
-    // this leads to a `WitnessConflict` during recursive verification due to failed constraints.
+    // Second, the proof carries a modified global lookup name while challenge generation
+    // temporarily uses the real metadata (`Some(real_lookup_data)` in the helper).
+    // The recursive verifier must reject this with the same shape error as native generation.
     batch_stark_proof.proof.global_lookup_data = fake_global_lookup_data;
 
     let mut circuit_builder = setup_circuit_builder();
@@ -327,27 +326,13 @@ fn test_inconsistent_lookup_name() {
         &lookup_gadget,
     );
 
-    // Build the circuit
-    let verification_circuit = circuit_builder.build().unwrap();
-    let expected_public_input_len = verification_circuit.public_flat_len;
-
-    // Pack values using the builder
-    let builder = verifier_inputs.as_ref().unwrap();
-    let (public_inputs, private_inputs) =
-        builder.pack_values(&pis, &batch_stark_proof.proof, common);
-
-    assert_eq!(public_inputs.len(), expected_public_input_len);
-    assert!(!public_inputs.is_empty());
-
-    // Actually run the circuit to ensure constraints are satisfiable
-    let mut runner = verification_circuit.runner();
-    runner.set_public_inputs(&public_inputs).unwrap();
-    runner.set_private_inputs(&private_inputs).unwrap();
-
-    // This line fails because the verifier gets wrong global lookup data.
-    // This leads to the sum of all expected cumulated values being off by 1,
-    // which causes a WitnessConflict during recursive verification.
-    let _traces = runner.run().unwrap();
+    match verifier_inputs {
+        Err(VerificationError::InvalidProofShape(msg)) => {
+            assert_eq!(msg, "Global lookups are inconsistent with lookups");
+        }
+        Err(e) => panic!("Expected InvalidProofShape, got {e:?}"),
+        Ok(_) => panic!("Expected error due to inconsistent global lookup name"),
+    }
 }
 
 #[test]
@@ -767,23 +752,37 @@ fn get_verifier_inputs_and_challenges(
     )
     .map(|(inputs, _mmcs_op_ids)| inputs);
 
-    // If provided, override the global lookups in the proof used for challenge generation
-    if let Some(global_lookups) = optional_global_lookups {
-        batch_stark_proof.proof.global_lookup_data = global_lookups.to_vec();
-    }
-
-    let batch_proof = &batch_stark_proof.proof;
-
-    // Generate all the challenge values for batch proof (uses base field AIRs)
-    let all_challenges = generate_batch_challenges(
-        &native_airs,
-        config,
-        batch_proof,
-        pis,
-        Some(&[params.pow_bits, params.log_height_max]),
-        common,
-        lookup_gadget,
-    );
+    // If provided, use overridden global lookups only for native challenge generation,
+    // then restore the proof's `global_lookup_data`. Callers rely on that metadata (e.g.
+    // lookup names) matching what `verify_p3_batch_proof_circuit` saw when building the circuit.
+    let all_challenges = match optional_global_lookups {
+        Some(global_lookups) => {
+            let saved = core::mem::replace(
+                &mut batch_stark_proof.proof.global_lookup_data,
+                global_lookups.to_vec(),
+            );
+            let out = generate_batch_challenges(
+                &native_airs,
+                config,
+                &batch_stark_proof.proof,
+                pis,
+                Some(&[params.pow_bits, params.log_height_max]),
+                common,
+                lookup_gadget,
+            );
+            batch_stark_proof.proof.global_lookup_data = saved;
+            out
+        }
+        None => generate_batch_challenges(
+            &native_airs,
+            config,
+            &batch_stark_proof.proof,
+            pis,
+            Some(&[params.pow_bits, params.log_height_max]),
+            common,
+            lookup_gadget,
+        ),
+    };
 
     (verifier_inputs, all_challenges)
 }

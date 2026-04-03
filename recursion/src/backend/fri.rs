@@ -7,7 +7,8 @@ use alloc::{format, vec};
 
 use p3_circuit::{CircuitBuilder, CircuitRunner, NonPrimitiveOpId};
 use p3_circuit_prover::batch_stark_prover::{
-    poseidon2_air_builders, poseidon2_preprocessor, recompose_air_builders, recompose_preprocessor,
+    poseidon2_air_builders, poseidon2_air_builders_d5, poseidon2_preprocessor,
+    poseidon2_table_provers_d5, recompose_air_builders, recompose_preprocessor,
 };
 use p3_circuit_prover::common::{NpoAirBuilder, NpoPreprocessor};
 use p3_circuit_prover::config::StarkField;
@@ -137,11 +138,26 @@ impl<const WIDTH: usize, const RATE: usize> FriRecursionBackend<WIDTH, RATE> {
     ) -> FriRecursionBackendForExt<D, WIDTH, RATE> {
         FriRecursionBackendForExt(self)
     }
+
+    /// For KoalaBear quintic extension (`D = 5`). Use when `SC::Challenge` is
+    /// `QuinticTrinomialExtensionField<KoalaBear>`.
+    pub const fn new_d5(
+        challenger_perm_config: Poseidon2Config,
+    ) -> FriRecursionBackendD5<WIDTH, RATE> {
+        FriRecursionBackendD5(Self::new(challenger_perm_config))
+    }
 }
 
 /// FRI recursion backend tagged with batch/extension field degree `D` (e.g. `2` or `4`).
 #[derive(Clone)]
 pub struct FriRecursionBackendForExt<const D: usize, const WIDTH: usize = 16, const RATE: usize = 8>(
+    /// The inner backend holding the challenger permutation config.
+    pub(crate) FriRecursionBackend<WIDTH, RATE>,
+);
+
+/// FRI backend for KoalaBear quintic extension (`D = 5`).
+#[derive(Clone)]
+pub struct FriRecursionBackendD5<const WIDTH: usize = 16, const RATE: usize = 8>(
     /// The inner backend holding the challenger permutation config.
     pub(crate) FriRecursionBackend<WIDTH, RATE>,
 );
@@ -365,6 +381,26 @@ where
                     backend.challenger_perm_config,
                     non_primitive_provers,
                 )?,
+                5 => verify_p3_batch_proof_circuit::<
+                    SC,
+                    SC::Commitment,
+                    SC::InputProof,
+                    SC::OpeningProof,
+                    _,
+                    _,
+                    WIDTH,
+                    RATE,
+                    5,
+                >(
+                    config,
+                    circuit,
+                    proof,
+                    config.pcs_verifier_params(),
+                    common_data,
+                    &lookup_gadget,
+                    backend.challenger_perm_config,
+                    non_primitive_provers,
+                )?,
                 d => {
                     return Err(VerificationError::InvalidProofShape(format!(
                         "unsupported batch proof ext_degree {}",
@@ -558,6 +594,96 @@ where
     fn non_primitive_air_builders(&self) -> Vec<Box<dyn NpoAirBuilder<SC, 4>>> {
         let mut builders = poseidon2_air_builders::<SC, 4>();
         builders.extend(recompose_air_builders::<SC, 4>(self.0.recompose_lanes));
+        builders
+    }
+}
+
+impl<SC, A, const WIDTH: usize, const RATE: usize> PcsRecursionBackend<SC, A, 5>
+    for FriRecursionBackendD5<WIDTH, RATE>
+where
+    SC: FriRecursionConfig + Send + Sync + 'static,
+    A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
+    Val<SC>: PrimeField64 + StarkField + BinomiallyExtendable<4>,
+    Poseidon2Preprocessor: NpoPreprocessor<Val<SC>>,
+    RecomposePreprocessor: NpoPreprocessor<Val<SC>>,
+    SC::Challenge: BasedVectorSpace<Val<SC>>
+        + From<Val<SC>>
+        + ExtensionField<Val<SC>>
+        + PrimeCharacteristicRing
+        + ExtractBinomialW<Val<SC>>,
+    <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain: Clone,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        From<p3_uni_stark::SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+    SC::Pcs: RecursivePcs<
+            SC,
+            SC::InputProof,
+            SC::OpeningProof,
+            SC::Commitment,
+            <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain,
+        >,
+{
+    type VerifierResult = FriVerifierResult<SC>;
+
+    fn prepare_circuit(
+        &self,
+        config: &SC,
+        circuit: &mut CircuitBuilder<SC::Challenge>,
+    ) -> Result<(), VerificationError> {
+        config.prepare_circuit_for_verification(circuit)
+    }
+
+    fn build_verifier_circuit(
+        &self,
+        prev: &RecursionInput<'_, SC, A>,
+        config: &SC,
+        circuit: &mut CircuitBuilder<SC::Challenge>,
+    ) -> Result<Self::VerifierResult, VerificationError> {
+        let provers = match prev {
+            RecursionInput::BatchStark { proof, .. } => {
+                PcsRecursionBackend::<SC, A, 5>::non_primitive_provers(self, proof.ext_degree)
+            }
+            _ => Vec::new(),
+        };
+        build_verifier_circuit_impl(&self.0, prev, config, circuit, &provers)
+    }
+
+    fn set_private_data(
+        &self,
+        config: &SC,
+        runner: &mut CircuitRunner<'_, SC::Challenge>,
+        op_ids: &[NonPrimitiveOpId],
+        prev: &RecursionInput<'_, SC, A>,
+    ) -> Result<(), &'static str> {
+        let _ = config;
+        SC::with_fri_opening_proof(prev, |opening_proof| {
+            SC::set_fri_private_data(runner, op_ids, opening_proof)
+        })
+    }
+
+    fn challenger_perm_config(&self) -> Option<Box<dyn ChallengerPermConfig>> {
+        Some(Box::new(self.0.challenger_perm_config))
+    }
+
+    fn non_primitive_preprocessors(&self) -> Vec<Box<dyn NpoPreprocessor<Val<SC>>>> {
+        vec![
+            poseidon2_preprocessor::<Val<SC>>(),
+            recompose_preprocessor::<Val<SC>>(),
+        ]
+    }
+
+    fn non_primitive_provers(&self, ext_degree: usize) -> Vec<Box<dyn TableProver<SC>>> {
+        if ext_degree == 5 {
+            let mut provers = poseidon2_table_provers_d5(self.0.challenger_perm_config);
+            provers.extend(recompose_table_provers::<SC, 5>(self.0.recompose_lanes));
+            provers
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn non_primitive_air_builders(&self) -> Vec<Box<dyn NpoAirBuilder<SC, 5>>> {
+        let mut builders = poseidon2_air_builders_d5();
+        builders.extend(recompose_air_builders::<SC, 5>(self.0.recompose_lanes));
         builders
     }
 }

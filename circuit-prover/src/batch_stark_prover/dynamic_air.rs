@@ -8,7 +8,7 @@ use p3_air::{Air, AirBuilder, BaseAir};
 use p3_batch_stark::{StarkGenericConfig, Val};
 use p3_circuit::ops::NpoTypeId;
 use p3_circuit::tables::Traces;
-use p3_field::extension::BinomialExtensionField;
+use p3_field::extension::{BinomialExtensionField, QuinticTrinomialExtensionField};
 use p3_field::{Algebra, PrimeField};
 use p3_lookup::LookupAir;
 use p3_lookup::folder::{ProverConstraintFolderWithLookups, VerifierConstraintFolderWithLookups};
@@ -421,11 +421,25 @@ where
         traces: &Traces<BinomialExtensionField<Val<SC>, 8>>,
     ) -> Option<BatchTableInstance<SC>>;
 
+    /// Produce a batched table instance for degree-5 quintic trinomial extension traces.
+    fn batch_instance_d5(
+        &self,
+        _config: &SC,
+        _packing: &TablePacking,
+        _traces: &Traces<QuinticTrinomialExtensionField<Val<SC>>>,
+    ) -> Option<BatchTableInstance<SC>> {
+        None
+    }
+
     /// Rebuild the AIR for verification from the recorded non-primitive table entry.
+    ///
+    /// `circuit_extension_degree` is the circuit's extension-field dimension (e.g. 4 or 5), used
+    /// by D1 Poseidon2 wrappers to select the witness-bus width (Bus4 vs Bus5).
     fn batch_air_from_table_entry(
         &self,
         config: &SC,
         degree: usize,
+        circuit_extension_degree: u32,
         table_entry: &super::NonPrimitiveTableEntry<SC>,
     ) -> Result<DynamicAirEntry<SC>, String>;
 
@@ -442,8 +456,9 @@ where
         committed_prep: Vec<Val<SC>>,
         min_height: usize,
         lanes: usize,
+        circuit_extension_degree: u32,
     ) -> Option<DynamicAirEntry<SC>> {
-        let _ = (committed_prep, min_height, lanes);
+        let _ = (committed_prep, min_height, lanes, circuit_extension_degree);
         None
     }
 }
