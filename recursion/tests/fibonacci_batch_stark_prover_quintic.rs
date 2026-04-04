@@ -123,10 +123,7 @@ fn test_fibonacci_batch_verifier_quintic_koala() {
 
     // `prove_all_tables` may reduce lanes for dummy ALU/public tables; `stark_common` matches
     // the committed AIR layout. Recursive verification must use it (not pre-prove common).
-    let common = batch_stark_proof
-        .stark_common
-        .as_ref()
-        .expect("prove_all_tables sets stark_common");
+    let common = batch_stark_proof.stark_common.as_ref().unwrap_or(common);
 
     let dft2 = Dft::default();
     let perm2 = default_koalabear_poseidon2_16();

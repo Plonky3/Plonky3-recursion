@@ -673,6 +673,7 @@ where
     {
         let primitive = &circuit_prover_data.primitive_columns;
         let non_primitive = &circuit_prover_data.non_primitive_columns;
+        let prover_data = &circuit_prover_data.prover_data;
 
         // One lookup per NpoTypeId instead of repeated `op_type()` (clones inner id string).
         let prover_index_by_type: BTreeMap<NpoTypeId, usize> = self
@@ -938,70 +939,80 @@ where
             non_primitive_meta.push((op_type, rows, lanes, AirVariant::Baseline));
         }
 
-        let trace_ext_degree_bits: Vec<usize> = trace_storage
-            .iter()
-            .map(|m| log2_strict_usize(m.height()) + self.config.is_zk())
-            .collect();
-        debug_assert_eq!(trace_ext_degree_bits.len(), air_storage.len());
-        let table_prover_data = ProverData::from_airs_and_degrees(
-            &self.config,
-            &mut air_storage,
-            &trace_ext_degree_bits,
-        );
-
-        let trace_refs: Vec<&RowMajorMatrix<Val<SC>>> = trace_storage.iter().collect();
-        let instances: Vec<StarkInstance<'_, SC, CircuitTableAir<SC, D>>> =
-            StarkInstance::new_multiple(
-                &air_storage,
-                &trace_refs,
-                &public_storage,
-                &table_prover_data.common,
-            );
-
-        if self.debug_lookups {
-            use p3_lookup::debug_util::{LookupDebugInstance, check_lookups};
-
-            let mut preprocessed_traces: Vec<Option<RowMajorMatrix<Val<SC>>>> = instances
+        // Use the pre-computed ProverData when the AIR structure is unchanged (common case).
+        // Recompute only when lane reduction altered the lookup layout, since the number of
+        // lookups per table depends on lane count.
+        let lanes_reduced = (alu_trace_only_dummy && packing.alu_lanes() > 1)
+            || (public_trace_only_dummy && packing.public_lanes() > 1);
+        let recomputed_data: Option<ProverData<SC>> = if lanes_reduced {
+            let trace_ext_degree_bits: Vec<usize> = trace_storage
                 .iter()
-                .map(|inst| inst.air.preprocessed_trace())
+                .map(|m| log2_strict_usize(m.height()) + self.config.is_zk())
                 .collect();
+            Some(ProverData::from_airs_and_degrees(
+                &self.config,
+                &mut air_storage,
+                &trace_ext_degree_bits,
+            ))
+        } else {
+            None
+        };
+        let effective_prover_data = recomputed_data.as_ref().unwrap_or(prover_data);
 
-            for (j, (op_type, _, lanes, _)) in non_primitive_meta.iter().enumerate() {
-                if let Some(committed_prep) = non_primitive.get(op_type) {
-                    let prover = self
-                        .non_primitive_provers
-                        .iter()
-                        .find(|p| TableProver::op_type(p.as_ref()) == *op_type);
-                    if let Some(prover) = prover
-                        && let Some(air) = prover.air_with_committed_preprocessed(
-                            committed_prep.clone(),
-                            min_height,
-                            *lanes,
-                            D as u32,
-                        )
-                        && let Some(trace) = air.preprocessed_trace()
-                    {
-                        preprocessed_traces[NUM_PRIMITIVE_TABLES + j] = Some(trace);
+        let proof = {
+            let trace_refs: Vec<&RowMajorMatrix<Val<SC>>> = trace_storage.iter().collect();
+            let instances: Vec<StarkInstance<'_, SC, CircuitTableAir<SC, D>>> =
+                StarkInstance::new_multiple(
+                    &air_storage,
+                    &trace_refs,
+                    &public_storage,
+                    &effective_prover_data.common,
+                );
+
+            if self.debug_lookups {
+                use p3_lookup::debug_util::{LookupDebugInstance, check_lookups};
+
+                let mut preprocessed_traces: Vec<Option<RowMajorMatrix<Val<SC>>>> = instances
+                    .iter()
+                    .map(|inst| inst.air.preprocessed_trace())
+                    .collect();
+
+                for (j, (op_type, _, lanes, _)) in non_primitive_meta.iter().enumerate() {
+                    if let Some(committed_prep) = non_primitive.get(op_type) {
+                        let prover = self
+                            .non_primitive_provers
+                            .iter()
+                            .find(|p| TableProver::op_type(p.as_ref()) == *op_type);
+                        if let Some(prover) = prover
+                            && let Some(air) = prover.air_with_committed_preprocessed(
+                                committed_prep.clone(),
+                                min_height,
+                                *lanes,
+                                D as u32,
+                            )
+                            && let Some(trace) = air.preprocessed_trace()
+                        {
+                            preprocessed_traces[NUM_PRIMITIVE_TABLES + j] = Some(trace);
+                        }
                     }
                 }
+
+                let debug_instances: Vec<LookupDebugInstance<'_, Val<SC>>> = instances
+                    .iter()
+                    .zip(preprocessed_traces.iter())
+                    .map(|(inst, prep)| LookupDebugInstance {
+                        main_trace: inst.trace,
+                        preprocessed_trace: prep,
+                        public_values: &inst.public_values,
+                        lookups: &inst.lookups,
+                        permutation_challenges: &[],
+                    })
+                    .collect();
+                check_lookups(&debug_instances);
             }
 
-            let debug_instances: Vec<LookupDebugInstance<'_, Val<SC>>> = instances
-                .iter()
-                .zip(preprocessed_traces.iter())
-                .map(|(inst, prep)| LookupDebugInstance {
-                    main_trace: inst.trace,
-                    preprocessed_trace: prep,
-                    public_values: &inst.public_values,
-                    lookups: &inst.lookups,
-                    permutation_challenges: &[],
-                })
-                .collect();
-            check_lookups(&debug_instances);
-        }
-
-        let proof = p3_batch_stark::prove_batch(&self.config, &instances, &table_prover_data);
-        let stark_common = table_prover_data.common;
+            p3_batch_stark::prove_batch(&self.config, &instances, effective_prover_data)
+        };
 
         let dynamic_public_values = public_storage.drain(NUM_PRIMITIVE_TABLES..);
         let non_primitives: Vec<NonPrimitiveTableEntry<SC>> = non_primitive_meta
@@ -1040,7 +1051,7 @@ where
             w_binomial: if D > 1 { w_binomial } else { None },
             alu_quintic_trinomial: alu_quintic,
             non_primitives,
-            stark_common: Some(stark_common),
+            stark_common: recomputed_data.map(|pd| pd.common),
         })
     }
 

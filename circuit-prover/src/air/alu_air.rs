@@ -761,13 +761,14 @@ where
         let prep_next = preprocessed.next_slice();
 
         let kind = self.ext_mul_kind;
+        let w: Option<AB::Expr> = match kind {
+            AluExtMulKind::Binomial { w } => Some(AB::Expr::from(w)),
+            _ => None,
+        };
         let ext_mul_lane = |x: &[AB::Var], y: &[AB::Var]| -> Vec<AB::Expr> {
             match kind {
                 AluExtMulKind::QuinticTrinomial => ext_mul_quintic_trinomial::<AB>(x, y),
-                AluExtMulKind::Base => ext_mul_binomial::<AB, D>(x, y, &None),
-                AluExtMulKind::Binomial { w } => {
-                    ext_mul_binomial::<AB, D>(x, y, &Some(AB::Expr::from(w)))
-                }
+                _ => ext_mul_binomial::<AB, D>(x, y, &w),
             }
         };
 
