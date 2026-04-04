@@ -281,6 +281,11 @@ macro_rules! define_field_module_types {
                 } else {
                     circuit.$enable_recompose_fn::<F>(generate_recompose_trace::<F, Challenge>);
                 }
+                if <$poseidon2_circuit_config as p3_circuit::ops::Poseidon2Params>::D == 1
+                    && <Challenge as ::p3_field::BasedVectorSpace<F>>::DIMENSION > 1
+                {
+                    circuit.set_recompose_coeff_ctl_for_decompose_links(true);
+                }
                 Ok(())
             }
 
@@ -360,6 +365,11 @@ macro_rules! define_field_module_types {
                     circuit.noop_enable_recompose::<F>(generate_recompose_trace::<F, Challenge>);
                 } else {
                     circuit.$enable_recompose_fn::<F>(generate_recompose_trace::<F, Challenge>);
+                }
+                if <$poseidon2_circuit_config as p3_circuit::ops::Poseidon2Params>::D == 1
+                    && <Challenge as ::p3_field::BasedVectorSpace<F>>::DIMENSION > 1
+                {
+                    circuit.set_recompose_coeff_ctl_for_decompose_links(true);
                 }
                 Ok(())
             }
@@ -618,6 +628,11 @@ macro_rules! define_field_module_types_quintic {
                     circuit.noop_enable_recompose::<F>(generate_recompose_trace::<F, Challenge>);
                 } else {
                     circuit.enable_recompose::<F>(generate_recompose_trace::<F, Challenge>);
+                }
+                if <$poseidon2_circuit_config as p3_circuit::ops::Poseidon2Params>::D == 1
+                    && <Challenge as ::p3_field::BasedVectorSpace<F>>::DIMENSION > 1
+                {
+                    circuit.set_recompose_coeff_ctl_for_decompose_links(true);
                 }
                 Ok(())
             }

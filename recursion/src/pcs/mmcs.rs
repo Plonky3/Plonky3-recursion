@@ -159,7 +159,8 @@ where
 ///
 /// For D=1 Poseidon2 in a high-degree extension context, each extension element is decomposed
 /// into its `D` base field coefficients and hashed flat, matching native `ExtensionMmcs`
-/// behavior which flattens extension elements before hashing.
+/// behavior which flattens extension elements before hashing. Decomposition is a no-op when the
+/// element came from `recompose_base_coeffs_to_ext` in the same circuit (see circuit builder).
 fn add_hash_extension_elements<F, EF>(
     circuit: &mut CircuitBuilder<EF>,
     permutation_config: &Poseidon2Config,

@@ -69,7 +69,11 @@ impl<const D: usize> RecomposeProver<D> {
         SymbolicExpressionExt<Val<SC>, SC::Challenge>:
             Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
     {
-        let op_type = NpoTypeId::recompose();
+        let op_type = if self.coeff_lookups {
+            NpoTypeId::recompose_with_coeff_lookups()
+        } else {
+            NpoTypeId::recompose()
+        };
         let trace = traces.non_primitive_traces.get(&op_type)?;
         if trace.rows() == 0 {
             return None;
@@ -79,7 +83,16 @@ impl<const D: usize> RecomposeProver<D> {
 
         let num_ops = t.total_rows();
         // Prefer the per-op override from TablePacking; fall back to the prover's own default.
-        let lanes = packing.npo_lanes(&op_type).unwrap_or(self.lanes);
+        let lanes = packing
+            .npo_lanes(&op_type)
+            .or_else(|| {
+                if self.coeff_lookups {
+                    packing.npo_lanes(&NpoTypeId::recompose())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(self.lanes);
         let min_height = packing.min_trace_height();
 
         let coeff_lookups = self.coeff_lookups;
@@ -123,7 +136,11 @@ where
         Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
     fn op_type(&self) -> NpoTypeId {
-        NpoTypeId::recompose()
+        if self.coeff_lookups {
+            NpoTypeId::recompose_with_coeff_lookups()
+        } else {
+            NpoTypeId::recompose()
+        }
     }
 
     fn lanes(&self) -> usize {
@@ -169,17 +186,18 @@ where
 // Preprocessor
 // ============================================================================
 
-/// NpoPreprocessor for the recompose table.
+/// NpoPreprocessor for the recompose table(s).
 ///
 /// Converts EF preprocessed data to BF and sets `out_mult` from `ext_reads`.
+/// When `split_coeff_tables` is true, emits separate base rows for `recompose` and `recompose/coeff`.
 #[derive(Default, Clone)]
 pub struct RecomposePreprocessor {
-    pub coeff_lookups: bool,
+    pub split_coeff_tables: bool,
 }
 
 impl RecomposePreprocessor {
-    pub const fn new(coeff_lookups: bool) -> Self {
-        Self { coeff_lookups }
+    pub const fn new(split_coeff_tables: bool) -> Self {
+        Self { split_coeff_tables }
     }
 }
 
@@ -190,19 +208,19 @@ impl NpoPreprocessor<KoalaBear> for RecomposePreprocessor {
         preprocessed: &mut dyn core::any::Any,
     ) -> Result<NonPrimitivePreprocessedMap<KoalaBear>, CircuitError> {
         type F = KoalaBear;
-        let cl = self.coeff_lookups;
+        let split = self.split_coeff_tables;
         if let Some(prep) =
             preprocessed.downcast_mut::<PreprocessedColumns<BinomialExtensionField<F, 4>, 4>>()
         {
-            return recompose_preprocess_impl::<F, _, 4>(prep, cl);
+            return recompose_preprocess_impl::<F, _, 4>(prep, split);
         }
         if let Some(prep) =
             preprocessed.downcast_mut::<PreprocessedColumns<QuinticTrinomialExtensionField<F>, 5>>()
         {
-            return recompose_preprocess_impl::<F, _, 5>(prep, cl);
+            return recompose_preprocess_impl::<F, _, 5>(prep, split);
         }
         if let Some(prep) = preprocessed.downcast_mut::<PreprocessedColumns<F, 1>>() {
-            return recompose_preprocess_impl::<F, _, 1>(prep, cl);
+            return recompose_preprocess_impl::<F, _, 1>(prep, split);
         }
         Ok(HashMap::new())
     }
@@ -215,14 +233,14 @@ impl NpoPreprocessor<BabyBear> for RecomposePreprocessor {
         preprocessed: &mut dyn core::any::Any,
     ) -> Result<NonPrimitivePreprocessedMap<BabyBear>, CircuitError> {
         type F = BabyBear;
-        let cl = self.coeff_lookups;
+        let split = self.split_coeff_tables;
         if let Some(prep) =
             preprocessed.downcast_mut::<PreprocessedColumns<BinomialExtensionField<F, 4>, 4>>()
         {
-            return recompose_preprocess_impl::<F, _, 4>(prep, cl);
+            return recompose_preprocess_impl::<F, _, 4>(prep, split);
         }
         if let Some(prep) = preprocessed.downcast_mut::<PreprocessedColumns<F, 1>>() {
-            return recompose_preprocess_impl::<F, _, 1>(prep, cl);
+            return recompose_preprocess_impl::<F, _, 1>(prep, split);
         }
         Ok(HashMap::new())
     }
@@ -235,58 +253,68 @@ impl NpoPreprocessor<Goldilocks> for RecomposePreprocessor {
         preprocessed: &mut dyn core::any::Any,
     ) -> Result<NonPrimitivePreprocessedMap<Goldilocks>, CircuitError> {
         type F = Goldilocks;
-        let cl = self.coeff_lookups;
+        let split = self.split_coeff_tables;
         if let Some(prep) =
             preprocessed.downcast_mut::<PreprocessedColumns<BinomialExtensionField<F, 2>, 2>>()
         {
-            return recompose_preprocess_impl::<F, _, 2>(prep, cl);
+            return recompose_preprocess_impl::<F, _, 2>(prep, split);
         }
         if let Some(prep) = preprocessed.downcast_mut::<PreprocessedColumns<F, 1>>() {
-            return recompose_preprocess_impl::<F, _, 1>(prep, cl);
+            return recompose_preprocess_impl::<F, _, 1>(prep, split);
         }
         Ok(HashMap::new())
     }
 }
 
-/// Generic implementation: extract recompose preprocessed data and set output multiplicities.
 fn recompose_preprocess_impl<F, EF, const D: usize>(
     prep: &PreprocessedColumns<EF, D>,
+    split_coeff_tables: bool,
+) -> Result<NonPrimitivePreprocessedMap<F>, CircuitError>
+where
+    F: StarkField + PrimeField64,
+    EF: Field + ExtensionField<F> + 'static,
+{
+    let mut result = HashMap::new();
+    result.extend(recompose_preprocess_for_op::<F, EF, D>(
+        prep,
+        &NpoTypeId::recompose(),
+        false,
+    )?);
+    if split_coeff_tables {
+        result.extend(recompose_preprocess_for_op::<F, EF, D>(
+            prep,
+            &NpoTypeId::recompose_with_coeff_lookups(),
+            true,
+        )?);
+    }
+    Ok(result)
+}
+
+/// Extract preprocessed rows for one recompose `NpoTypeId` and set output / coeff multiplicities.
+fn recompose_preprocess_for_op<F, EF, const D: usize>(
+    prep: &PreprocessedColumns<EF, D>,
+    op_type: &NpoTypeId,
     coeff_lookups: bool,
 ) -> Result<NonPrimitivePreprocessedMap<F>, CircuitError>
 where
     F: StarkField + PrimeField64,
     EF: Field + ExtensionField<F> + 'static,
 {
-    let op_type = NpoTypeId::recompose();
-    let ef_data = match prep.non_primitive.get(&op_type) {
+    let ef_data = match prep.non_primitive.get(op_type) {
         Some(d) if !d.is_empty() => d,
         _ => return Ok(HashMap::new()),
     };
 
     let prep_width = if coeff_lookups { 2 + 2 * D } else { 2 };
 
-    let mut prep_base: Vec<F> = if coeff_lookups {
-        ef_data
-            .iter()
-            .map(|v| v.as_base().ok_or(CircuitError::InvalidPreprocessedValues))
-            .collect::<Result<Vec<_>, CircuitError>>()?
-    } else {
-        // Strip the coefficient columns that the executor emitted but this layout does not need.
-        let full_width = 2 + 2 * D;
-        let num_rows = ef_data.len() / full_width;
-        let mut out = Vec::with_capacity(num_rows * prep_width);
-        for row_idx in 0..num_rows {
-            let row_start = row_idx * full_width;
-            for col in 0..prep_width {
-                out.push(
-                    ef_data[row_start + col]
-                        .as_base()
-                        .ok_or(CircuitError::InvalidPreprocessedValues)?,
-                );
-            }
-        }
-        out
-    };
+    let mut prep_base: Vec<F> = ef_data
+        .iter()
+        .map(|v| v.as_base().ok_or(CircuitError::InvalidPreprocessedValues))
+        .collect::<Result<Vec<_>, CircuitError>>()?;
+
+    if prep_base.len() % prep_width != 0 {
+        return Err(CircuitError::InvalidPreprocessedValues);
+    }
 
     let neg_one = F::ZERO - F::ONE;
     let num_rows = prep_base.len() / prep_width;
@@ -299,7 +327,7 @@ where
 
         let is_dup = prep
             .dup_npo_outputs
-            .get(&op_type)
+            .get(op_type)
             .and_then(|d| d.get(out_wid).copied())
             .unwrap_or(false);
 
@@ -325,7 +353,7 @@ where
     }
 
     let mut result = HashMap::new();
-    result.insert(op_type, prep_base);
+    result.insert(op_type.clone(), prep_base);
     Ok(result)
 }
 
@@ -371,7 +399,11 @@ where
         lanes: usize,
         _constraint_profile: ConstraintProfile,
     ) -> Option<(CircuitTableAir<SC, D>, usize)> {
-        if op_type.as_str() != "recompose" {
+        let matches = match self.coeff_lookups {
+            false => op_type.as_str() == "recompose",
+            true => op_type.as_str() == "recompose/coeff",
+        };
+        if !matches {
             return None;
         }
 

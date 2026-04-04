@@ -37,6 +37,7 @@
 #[macro_use]
 mod common;
 use common::*;
+use p3_batch_stark::ProverData;
 
 #[derive(Parser, Debug)]
 #[command(version, about = "Recursive Fibonacci proof verification example")]
@@ -230,8 +231,6 @@ macro_rules! define_field_module {
         $backend_rate:expr
     ) => {
         mod $mod_name {
-            use p3_batch_stark::ProverData;
-
             use super::*;
 
             define_field_module_types!(

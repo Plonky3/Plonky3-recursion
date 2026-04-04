@@ -175,6 +175,7 @@ fn test_fibonacci_batch_verifier_quintic_koala() {
         lift,
     );
     circuit_builder.enable_recompose::<F>(generate_recompose_trace::<F, Challenge>);
+    circuit_builder.set_recompose_coeff_ctl_for_decompose_links(true);
 
     let (verifier_inputs, mmcs_op_ids) = verify_p3_batch_proof_circuit::<
         MyConfig,

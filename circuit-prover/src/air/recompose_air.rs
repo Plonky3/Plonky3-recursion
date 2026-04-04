@@ -5,21 +5,23 @@
 //! There are zero local constraints — correctness is enforced entirely
 //! by the output cross-table lookup on the WitnessChecks bus.
 //!
+//! Circuits use two logical tables when extension degree can differ from a base-width Poseidon2:
+//! - **`recompose`**: EF output receive only (narrow preprocessed row).
+//! - **`recompose/coeff`**: also D per-coefficient receives for D=1-style readers.
+//!
 //! # Column layout (per lane)
 //!
 //! **Main columns** (D per lane): `v_0, v_1, ..., v_{D-1}` — the base-field coefficient values.
 //!
-//! **Preprocessed columns** (2 + 2\*D per lane):
-//! - `output_idx`: D-scaled witness ID for the output EF witness
-//! - `out_mult`: ext_reads\[wid\] for real rows, 0 for padding
-//! - `coeff_i_idx` (×D): D-scaled witness ID for each BF coefficient input
-//! - `coeff_i_mult` (×D): ext_reads\[coeff_i_wid\] for real rows, 0 for padding
+//! **Preprocessed columns** per lane:
+//! - Always: `output_idx`, `out_mult` (2 columns).
+//! - On `recompose/coeff` only: `coeff_i_idx`, `coeff_i_mult` for each `i` (2×D extra).
 //!
-//! # CTL lookups (1 + D per lane per row)
+//! # CTL lookups (per lane per row)
 //!
 //! **Receive** `[output_idx, v_0, ..., v_{D-1}]` with multiplicity `out_mult`
 //!
-//! **Receive** `[coeff_i_idx, v_i, 0, ..., 0]` with multiplicity `coeff_i_mult`  (×D)
+//! **Receive** `[coeff_i_idx, v_i, 0, ..., 0]` with multiplicity `coeff_i_mult`  (×D, coeff table only)
 //!
 //! The D coefficient lookups create each BF coefficient on the WitnessChecks bus so that
 //! NPOs reading the raw coefficients directly (e.g. the D=1 Poseidon2 challenger permutation)

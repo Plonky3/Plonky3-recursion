@@ -314,8 +314,12 @@ where
                     )
                     .with_min_height(min_height)
                 } else {
-                    let w =
-                        w_binomial.expect("binomial W required for this extension field / degree");
+                    let w = w_binomial.expect(
+                        "ALU preprocessed path needs binomial W when D>1 and the element field is \
+                         not the quintic-trinomial ALU variant. Use D=1 for base-field circuits \
+                         (ExtF = Val<SC>); for extension circuits use D = ExtF::DIMENSION and a \
+                         binomial or supported quintic ExtF.",
+                    );
                     AluAir::new_binomial_with_preprocessed(
                         num_ops,
                         effective_alu_lanes,

@@ -70,6 +70,9 @@ pub struct RecomposeExecutor<F> {
     op_type: NpoTypeId,
     d: usize,
     recompose_fn: RecomposeFn<F>,
+    /// When false, only the packed EF output is advertised on the WitnessChecks bus (narrow
+    /// preprocessed row). When true, also register coefficient indices for per-coeff receives.
+    coeff_witness_ctl: bool,
 }
 
 impl<F> Clone for RecomposeExecutor<F> {
@@ -78,6 +81,7 @@ impl<F> Clone for RecomposeExecutor<F> {
             op_type: self.op_type.clone(),
             d: self.d,
             recompose_fn: Arc::clone(&self.recompose_fn),
+            coeff_witness_ctl: self.coeff_witness_ctl,
         }
     }
 }
@@ -87,16 +91,23 @@ impl<F> Debug for RecomposeExecutor<F> {
         f.debug_struct("RecomposeExecutor")
             .field("op_type", &self.op_type)
             .field("d", &self.d)
+            .field("coeff_witness_ctl", &self.coeff_witness_ctl)
             .finish()
     }
 }
 
 impl<F> RecomposeExecutor<F> {
-    pub fn new(d: usize, recompose_fn: RecomposeFn<F>) -> Self {
+    pub fn new(
+        d: usize,
+        recompose_fn: RecomposeFn<F>,
+        op_type: NpoTypeId,
+        coeff_witness_ctl: bool,
+    ) -> Self {
         Self {
-            op_type: NpoTypeId::recompose(),
+            op_type,
             d,
             recompose_fn,
+            coeff_witness_ctl,
         }
     }
 }
@@ -165,19 +176,16 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for RecomposeExec
     ) -> Result<(), CircuitError> {
         let output_wid = outputs[0][0];
 
-        // Preprocessed layout per op:
-        //   [output_idx, out_mult, coeff_0_idx, coeff_0_mult, ..., coeff_{D-1}_idx, coeff_{D-1}_mult]
-        //
-        // The RecomposeAir creates both the EF output witness AND the D BF coefficient witnesses
-        // on the WitnessChecks bus. The coefficient lookups allow NPOs that directly consume the
-        // raw coefficients (e.g. the D=1 Poseidon2 challenger permutation) to find them on the bus.
-        // Creation multiplicities are set by the prover preprocessor from ext_reads.
+        // Standard table: [output_idx, out_mult]. Coeff variant adds coeff_i_idx and coeff_i_mult
+        // (placeholders) for each coefficient so the prover can attach per-coeff bus multiplicities.
         preprocessed.register_non_primitive_output_index(&self.op_type, &[output_wid]);
         preprocessed.register_non_primitive_preprocessed_no_read(&self.op_type, &[F::ONE]);
 
-        for &coeff_wid in &inputs[0] {
-            preprocessed.register_non_primitive_output_index(&self.op_type, &[coeff_wid]);
-            preprocessed.register_non_primitive_preprocessed_no_read(&self.op_type, &[F::ONE]);
+        if self.coeff_witness_ctl {
+            for &coeff_wid in &inputs[0] {
+                preprocessed.register_non_primitive_output_index(&self.op_type, &[coeff_wid]);
+                preprocessed.register_non_primitive_preprocessed_no_read(&self.op_type, &[F::ONE]);
+            }
         }
 
         Ok(())
@@ -201,14 +209,21 @@ pub(crate) struct RecomposeCircuitPlugin<F: Field> {
     d: usize,
     trace_gen: TraceGeneratorFn<F>,
     recompose_fn: RecomposeFn<F>,
+    coeff_witness_ctl: bool,
 }
 
 impl<F: Field> RecomposeCircuitPlugin<F> {
-    pub fn new(d: usize, trace_gen: TraceGeneratorFn<F>, recompose_fn: RecomposeFn<F>) -> Self {
+    pub fn new(
+        d: usize,
+        trace_gen: TraceGeneratorFn<F>,
+        recompose_fn: RecomposeFn<F>,
+        coeff_witness_ctl: bool,
+    ) -> Self {
         Self {
             d,
             trace_gen,
             recompose_fn,
+            coeff_witness_ctl,
         }
     }
 }
@@ -217,6 +232,7 @@ impl<F: Field> Debug for RecomposeCircuitPlugin<F> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("RecomposeCircuitPlugin")
             .field("d", &self.d)
+            .field("coeff_witness_ctl", &self.coeff_witness_ctl)
             .finish()
     }
 }
@@ -226,7 +242,11 @@ where
     F: Field,
 {
     fn type_id(&self) -> NpoTypeId {
-        NpoTypeId::recompose()
+        if self.coeff_witness_ctl {
+            NpoTypeId::recompose_with_coeff_lookups()
+        } else {
+            NpoTypeId::recompose()
+        }
     }
 
     fn lower(
@@ -271,12 +291,20 @@ where
         let (_, out_expr) = output_exprs[0];
         let out_wid = ctx.resolve_witness_id(out_expr, "Recompose output")?;
 
+        let op_type = if self.coeff_witness_ctl {
+            NpoTypeId::recompose_with_coeff_lookups()
+        } else {
+            NpoTypeId::recompose()
+        };
+
         Ok(Op::NonPrimitiveOpWithExecutor {
             inputs: vec![input_wids],
             outputs: vec![vec![out_wid]],
             executor: Box::new(RecomposeExecutor::new(
                 self.d,
                 Arc::clone(&self.recompose_fn),
+                op_type,
+                self.coeff_witness_ctl,
             )),
             op_id: data.op_id,
         })
@@ -299,10 +327,18 @@ unsafe impl<F: Field> Sync for RecomposeCircuitPlugin<F> {}
 // Trace
 // ============================================================================
 
+/// Which logical recompose AIR table this trace targets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecomposeTraceKind {
+    Standard,
+    WithCoeffLookups,
+}
+
 /// Trace for recompose operations.
 #[derive(Debug, Clone)]
 pub struct RecomposeTrace<F> {
     pub operations: Vec<RecomposeCircuitRow<F>>,
+    pub kind: RecomposeTraceKind,
 }
 
 impl<F> RecomposeTrace<F> {
@@ -313,7 +349,10 @@ impl<F> RecomposeTrace<F> {
 
 impl<TraceF: Clone + Send + Sync + 'static, CF> NonPrimitiveTrace<CF> for RecomposeTrace<TraceF> {
     fn op_type(&self) -> NpoTypeId {
-        NpoTypeId::recompose()
+        match self.kind {
+            RecomposeTraceKind::Standard => NpoTypeId::recompose(),
+            RecomposeTraceKind::WithCoeffLookups => NpoTypeId::recompose_with_coeff_lookups(),
+        }
     }
 
     fn rows(&self) -> usize {
@@ -333,7 +372,7 @@ impl<TraceF: Clone + Send + Sync + 'static, CF> NonPrimitiveTrace<CF> for Recomp
 // Trace Generation
 // ============================================================================
 
-/// Generate the recompose trace from execution state.
+/// Generate the standard recompose trace from execution state.
 ///
 /// The trace generator extracts BF coefficient values from the extension-field execution state.
 /// Since the circuit operates on extension-field values, each BF coefficient is stored as
@@ -345,7 +384,32 @@ where
     BF: PrimeField64,
     EF: Field + ExtensionField<BF>,
 {
-    let op_type = NpoTypeId::recompose();
+    generate_recompose_trace_for_kind::<BF, EF>(op_states, RecomposeTraceKind::Standard)
+}
+
+/// Trace generator for [`NpoTypeId::recompose_with_coeff_lookups`] rows.
+pub fn generate_recompose_coeff_trace<BF, EF>(
+    op_states: &crate::ops::OpStateMap,
+) -> Result<Option<Box<dyn NonPrimitiveTrace<EF>>>, CircuitError>
+where
+    BF: PrimeField64,
+    EF: Field + ExtensionField<BF>,
+{
+    generate_recompose_trace_for_kind::<BF, EF>(op_states, RecomposeTraceKind::WithCoeffLookups)
+}
+
+fn generate_recompose_trace_for_kind<BF, EF>(
+    op_states: &crate::ops::OpStateMap,
+    kind: RecomposeTraceKind,
+) -> Result<Option<Box<dyn NonPrimitiveTrace<EF>>>, CircuitError>
+where
+    BF: PrimeField64,
+    EF: Field + ExtensionField<BF>,
+{
+    let op_type = match kind {
+        RecomposeTraceKind::Standard => NpoTypeId::recompose(),
+        RecomposeTraceKind::WithCoeffLookups => NpoTypeId::recompose_with_coeff_lookups(),
+    };
     let Some(state) = op_states
         .get(&op_type)
         .and_then(|s| s.downcast_ref::<RecomposeExecutionState<EF>>())
@@ -380,5 +444,5 @@ where
         })
         .collect();
 
-    Ok(Some(Box::new(RecomposeTrace { operations })))
+    Ok(Some(Box::new(RecomposeTrace { operations, kind })))
 }

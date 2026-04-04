@@ -578,24 +578,28 @@ where
         <() as RegisterPoseidon2ForExt<D, SC>>::register_poseidon2(self, config);
     }
 
-    /// Register the recompose (BF→EF packing) table prover for extension degree `D`.
+    /// Register the recompose (BF→EF packing) table prover(s) for extension degree `D`.
     ///
-    /// Set `coeff_lookups` to `true` when the Poseidon2 permutation degree differs
-    /// from the circuit extension degree `D` (e.g. D=1 Poseidon2 in a D=5 circuit).
-    pub fn register_recompose_table<const D: usize>(&mut self, coeff_lookups: bool)
+    /// Set `split_coeff_tables` to `true` when the Poseidon2 permutation degree can differ
+    /// from the circuit extension degree `D` (e.g. D=1 Poseidon2 in a D=5 circuit). That
+    /// registers both the standard `recompose` table and `recompose/coeff` (per-coefficient
+    /// WitnessChecks receives only where the circuit uses them).
+    pub fn register_recompose_table<const D: usize>(&mut self, split_coeff_tables: bool)
     where
         SC: Send + Sync,
     {
-        self.register_table_prover(Box::new(RecomposeProver::<D>::new(1, coeff_lookups)));
+        for prover in recompose_table_provers::<SC, D>(1, split_coeff_tables) {
+            self.register_table_prover(prover);
+        }
     }
 
     /// Builder-style registration for the recompose table prover.
     #[must_use]
-    pub fn with_recompose_table<const D: usize>(mut self, coeff_lookups: bool) -> Self
+    pub fn with_recompose_table<const D: usize>(mut self, split_coeff_tables: bool) -> Self
     where
         SC: Send + Sync,
     {
-        self.register_recompose_table::<D>(coeff_lookups);
+        self.register_recompose_table::<D>(split_coeff_tables);
         self
     }
 
@@ -1196,23 +1200,22 @@ where
 
 /// Returns a type-erased Recompose preprocessor.
 ///
-/// `coeff_lookups` enables per-coefficient Receive lookups for circuits that
-/// contain a D=1 Poseidon2 inside a D>1 extension field.
-pub fn recompose_preprocessor<F>(coeff_lookups: bool) -> Box<dyn NpoPreprocessor<F>>
+/// When `split_coeff_tables` is true, preprocesses both `recompose` and `recompose/coeff` rows.
+pub fn recompose_preprocessor<F>(split_coeff_tables: bool) -> Box<dyn NpoPreprocessor<F>>
 where
     F: StarkField + PrimeField,
     RecomposePreprocessor: NpoPreprocessor<F>,
 {
-    Box::new(RecomposePreprocessor::new(coeff_lookups))
+    Box::new(RecomposePreprocessor::new(split_coeff_tables))
 }
 
 /// Recompose table provers for a given extension field degree.
 ///
-/// `coeff_lookups` enables per-coefficient Receive lookups for circuits that
-/// contain a D=1 Poseidon2 inside a D>1 extension field.
+/// When `split_coeff_tables` is true, returns both the standard table and the `recompose/coeff`
+/// variant.
 pub fn recompose_table_provers<SC, const D: usize>(
     lanes: usize,
-    coeff_lookups: bool,
+    split_coeff_tables: bool,
 ) -> Vec<Box<dyn TableProver<SC>>>
 where
     SC: StarkGenericConfig + 'static + Send + Sync,
@@ -1220,15 +1223,22 @@ where
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
         Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
-    vec![Box::new(RecomposeProver::<D>::new(lanes, coeff_lookups))]
+    if split_coeff_tables {
+        vec![
+            Box::new(RecomposeProver::<D>::new(lanes, false)),
+            Box::new(RecomposeProver::<D>::new(lanes, true)),
+        ]
+    } else {
+        vec![Box::new(RecomposeProver::<D>::new(lanes, false))]
+    }
 }
 
 /// Recompose AIR builders for a given extension field degree.
 ///
-/// `coeff_lookups` must match the value used in the paired [`recompose_table_provers`].
+/// `split_coeff_tables` must match the value used in the paired [`recompose_table_provers`].
 pub fn recompose_air_builders<SC, const D: usize>(
     lanes: usize,
-    coeff_lookups: bool,
+    split_coeff_tables: bool,
 ) -> Vec<Box<dyn NpoAirBuilder<SC, D>>>
 where
     SC: StarkGenericConfig + 'static + Send + Sync,
@@ -1236,10 +1246,14 @@ where
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
         Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
-    vec![Box::new(RecomposeAirBuilder::<D>::new(
-        lanes,
-        coeff_lookups,
-    ))]
+    if split_coeff_tables {
+        vec![
+            Box::new(RecomposeAirBuilder::<D>::new(lanes, false)),
+            Box::new(RecomposeAirBuilder::<D>::new(lanes, true)),
+        ]
+    } else {
+        vec![Box::new(RecomposeAirBuilder::<D>::new(lanes, false))]
+    }
 }
 
 #[cfg(test)]

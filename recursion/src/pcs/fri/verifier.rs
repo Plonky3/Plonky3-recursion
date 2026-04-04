@@ -1537,7 +1537,6 @@ where
 
                 builder.push_scope("fri_commit_phase_mmcs");
 
-                // Build full evaluation row once; reused for both MMCS and folding.
                 let index_in_group_bits =
                     &index_bits_per_query[q][bits_consumed..bits_consumed + log_arity];
                 let evals =
