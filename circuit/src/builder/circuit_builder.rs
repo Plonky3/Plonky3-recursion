@@ -1073,9 +1073,10 @@ where
         self.recompose_base_coeffs_to_ext_impl::<BF>(coeffs, false)
     }
 
-    /// Like [`Self::recompose_base_coeffs_to_ext`], but uses the `recompose/coeff` table so each
-    /// BF coefficient is received on the WitnessChecks bus. Required for soundness when those
-    /// coefficients are consumed by a D=1 Poseidon2 (or similar) inside a higher-degree circuit.
+    /// Like [`Self::recompose_base_coeffs_to_ext`], but uses the `recompose/coeff` table so the
+    /// BF coefficients appear on the WitnessChecks bus (one grouped receive per row when D=4).
+    /// Required for soundness when those coefficients are consumed by a D=1 Poseidon2 (or similar)
+    /// inside a higher-degree circuit.
     pub fn recompose_base_coeffs_to_ext_with_coeff_lookups<BF>(
         &mut self,
         coeffs: &[ExprId],

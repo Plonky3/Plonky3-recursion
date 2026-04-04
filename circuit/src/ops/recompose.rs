@@ -176,15 +176,21 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for RecomposeExec
     ) -> Result<(), CircuitError> {
         let output_wid = outputs[0][0];
 
-        // Standard table: [output_idx, out_mult]. Coeff variant adds coeff_i_idx and coeff_i_mult
-        // (placeholders) for each coefficient so the prover can attach per-coeff bus multiplicities.
+        // Standard table: [output_idx, out_mult]. Coeff variant adds either one grouped
+        // (coeff_group_idx, coeff_group_mult) when D=4 or per-coefficient pairs.
         preprocessed.register_non_primitive_output_index(&self.op_type, &[output_wid]);
         preprocessed.register_non_primitive_preprocessed_no_read(&self.op_type, &[F::ONE]);
 
         if self.coeff_witness_ctl {
-            for &coeff_wid in &inputs[0] {
-                preprocessed.register_non_primitive_output_index(&self.op_type, &[coeff_wid]);
+            if self.d == 4 {
+                preprocessed.register_non_primitive_output_index(&self.op_type, &[inputs[0][0]]);
                 preprocessed.register_non_primitive_preprocessed_no_read(&self.op_type, &[F::ONE]);
+            } else {
+                for &coeff_wid in &inputs[0] {
+                    preprocessed.register_non_primitive_output_index(&self.op_type, &[coeff_wid]);
+                    preprocessed
+                        .register_non_primitive_preprocessed_no_read(&self.op_type, &[F::ONE]);
+                }
             }
         }
 

@@ -1134,11 +1134,13 @@ impl Poseidon2Prover {
         let (air, matrix) = match cfg {
             Poseidon2Config::BabyBearD1Width16 => {
                 let constants = BabyBearD1Width16::round_constants();
+                let wbus = poseidon_d1_witness_bus_dim(witness_ctl_scale);
                 let preprocessed = extract_preprocessed_from_operations::<16, 8, BabyBear, Val<SC>>(
                     &t.operations,
                     witness_ctl_scale,
+                    1,
+                    wbus as usize,
                 );
-                let wbus = poseidon_d1_witness_bus_dim(witness_ctl_scale);
                 let (inner, matrix_f) = match wbus {
                     1 => {
                         let air = BabyBearD1Width16::default_air_with_preprocessed(
@@ -1195,6 +1197,8 @@ impl Poseidon2Prover {
                 let preprocessed = extract_preprocessed_from_operations::<4, 2, BabyBear, Val<SC>>(
                     &t.operations,
                     witness_ctl_scale,
+                    cfg.d(),
+                    cfg.d(),
                 );
                 let air =
                     BabyBearD4Width16::default_air_with_preprocessed(preprocessed, min_height);
@@ -1214,6 +1218,8 @@ impl Poseidon2Prover {
                 let preprocessed = extract_preprocessed_from_operations::<6, 4, BabyBear, Val<SC>>(
                     &t.operations,
                     witness_ctl_scale,
+                    cfg.d(),
+                    cfg.d(),
                 );
                 let air =
                     BabyBearD4Width24::default_air_with_preprocessed(preprocessed, min_height);
@@ -1230,11 +1236,13 @@ impl Poseidon2Prover {
             }
             Poseidon2Config::KoalaBearD1Width16 => {
                 let constants = KoalaBearD1Width16::round_constants();
+                let wbus = poseidon_d1_witness_bus_dim(witness_ctl_scale);
                 let preprocessed = extract_preprocessed_from_operations::<16, 8, KoalaBear, Val<SC>>(
                     &t.operations,
                     witness_ctl_scale,
+                    1,
+                    wbus as usize,
                 );
-                let wbus = poseidon_d1_witness_bus_dim(witness_ctl_scale);
                 let (inner, matrix_f) = match wbus {
                     1 => {
                         let air = KoalaBearD1Width16::default_air_with_preprocessed(
@@ -1291,6 +1299,8 @@ impl Poseidon2Prover {
                 let preprocessed = extract_preprocessed_from_operations::<4, 2, KoalaBear, Val<SC>>(
                     &t.operations,
                     witness_ctl_scale,
+                    cfg.d(),
+                    cfg.d(),
                 );
                 let air =
                     KoalaBearD4Width16::default_air_with_preprocessed(preprocessed, min_height);
@@ -1310,6 +1320,8 @@ impl Poseidon2Prover {
                 let preprocessed = extract_preprocessed_from_operations::<6, 4, KoalaBear, Val<SC>>(
                     &t.operations,
                     witness_ctl_scale,
+                    cfg.d(),
+                    cfg.d(),
                 );
                 let air =
                     KoalaBearD4Width24::default_air_with_preprocessed(preprocessed, min_height);
@@ -1329,6 +1341,8 @@ impl Poseidon2Prover {
                 let preprocessed = extract_preprocessed_from_operations::<4, 2, Goldilocks, Val<SC>>(
                     &t.operations,
                     witness_ctl_scale,
+                    cfg.d(),
+                    cfg.d(),
                 );
                 let air =
                     goldilocks_d2_width8_default_air_with_preprocessed(preprocessed, min_height);
