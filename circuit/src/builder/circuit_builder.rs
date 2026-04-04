@@ -2845,6 +2845,58 @@ mod proptests {
     }
 
     #[test]
+    fn test_decompose_select_with_recompose_provenance() {
+        type Ext4 = BinomialExtensionField<BabyBear, 4>;
+
+        fn check_case(selector: BabyBear, expect_t: bool) {
+            let mut builder = CircuitBuilder::<Ext4>::new();
+
+            let b = builder.define_const(Ext4::from(selector));
+            builder.assert_bool(b);
+
+            let t0 = builder.define_const(Ext4::from(BabyBear::from_u64(10)));
+            let t1 = builder.define_const(Ext4::from(BabyBear::from_u64(11)));
+            let t2 = builder.define_const(Ext4::from(BabyBear::from_u64(12)));
+            let t3 = builder.define_const(Ext4::from(BabyBear::from_u64(13)));
+            let coeffs_t = [t0, t1, t2, t3];
+            let ext_t = builder
+                .recompose_base_coeffs_to_ext::<BabyBear>(&coeffs_t)
+                .unwrap();
+
+            let s0 = builder.define_const(Ext4::from(BabyBear::from_u64(20)));
+            let s1 = builder.define_const(Ext4::from(BabyBear::from_u64(21)));
+            let s2 = builder.define_const(Ext4::from(BabyBear::from_u64(22)));
+            let s3 = builder.define_const(Ext4::from(BabyBear::from_u64(23)));
+            let coeffs_s = [s0, s1, s2, s3];
+            let ext_s = builder
+                .recompose_base_coeffs_to_ext::<BabyBear>(&coeffs_s)
+                .unwrap();
+
+            let selected = builder.select(b, ext_t, ext_s);
+            let coeffs = builder
+                .decompose_ext_to_base_coeffs::<BabyBear>(selected)
+                .unwrap();
+
+            let circuit = builder.build().expect("Failed to build circuit");
+            let expr_to_widx = circuit.expr_to_widx.clone();
+            let runner = circuit.runner();
+            let traces = runner.run().expect("Failed to run circuit");
+
+            let src = if expect_t { coeffs_t } else { coeffs_s };
+            for (i, coeff_expr) in coeffs.iter().enumerate() {
+                let w = expr_to_widx.get(coeff_expr).expect("coeff mapped");
+                let v = *traces.witness_trace.get_value(*w).unwrap();
+                let w_src = expr_to_widx.get(&src[i]).expect("src coeff mapped");
+                let v_src = *traces.witness_trace.get_value(*w_src).unwrap();
+                assert_eq!(v, v_src, "coeff index {i}");
+            }
+        }
+
+        check_case(BabyBear::ZERO, false);
+        check_case(BabyBear::ONE, true);
+    }
+
+    #[test]
     fn test_recompose_invalid_dimension() {
         type Ext4 = BinomialExtensionField<BabyBear, 4>;
 

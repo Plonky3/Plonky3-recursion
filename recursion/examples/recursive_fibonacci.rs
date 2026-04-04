@@ -508,14 +508,10 @@ macro_rules! define_field_module_quintic {
                 let mut builder = CircuitBuilder::new();
                 let expected_result = builder.alloc_public_input("expected_result");
 
-                let mut a = builder.alloc_const(
-                    <F as p3_field::PrimeCharacteristicRing>::ZERO,
-                    "F(0)",
-                );
-                let mut b = builder.alloc_const(
-                    <F as p3_field::PrimeCharacteristicRing>::ONE,
-                    "F(1)",
-                );
+                let mut a =
+                    builder.alloc_const(<F as p3_field::PrimeCharacteristicRing>::ZERO, "F(0)");
+                let mut b =
+                    builder.alloc_const(<F as p3_field::PrimeCharacteristicRing>::ONE, "F(1)");
 
                 for _ in 2..=n {
                     let next = builder.add(a, b);
@@ -559,8 +555,8 @@ macro_rules! define_field_module_quintic {
                     non_primitive_columns_0,
                 );
                 let common_0 = circuit_prover_data_0.common_data();
-                let prover_0 = BatchStarkProver::new(config_0.clone())
-                    .with_table_packing(table_packing_0);
+                let prover_0 =
+                    BatchStarkProver::new(config_0.clone()).with_table_packing(table_packing_0);
                 let proof_0 = prover_0
                     .prove_all_tables(&traces_0, &circuit_prover_data_0)
                     .expect("Failed to prove base circuit");
@@ -582,10 +578,9 @@ macro_rules! define_field_module_quintic {
 
                 for layer in 1..=num_recursive_layers {
                     let params = ProveNextLayerParams {
-                        table_packing: table_packing.clone().with_fri_params(
-                            fri_params.log_final_poly_len,
-                            fri_params.log_blowup,
-                        ),
+                        table_packing: table_packing
+                            .clone()
+                            .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup),
                         constraint_profile: ConstraintProfile::Standard,
                     };
                     let seed = stable_seed.unwrap_or(layer as u64);
@@ -598,9 +593,7 @@ macro_rules! define_field_module_quintic {
                         build_next_layer_circuit::<ConfigWithFriParams, BatchOnly, _, D>(
                             &input, &config, &backend,
                         )
-                        .unwrap_or_else(|e| {
-                            panic!("Failed to build circuit layer {layer}: {e:?}")
-                        });
+                        .unwrap_or_else(|e| panic!("Failed to build circuit layer {layer}: {e:?}"));
 
                     let current_witness_count = verification_circuit.witness_count;
                     let is_stable = prev_witness_count == Some(current_witness_count);
@@ -615,9 +608,7 @@ macro_rules! define_field_module_quintic {
                                 &backend,
                                 &params,
                             )
-                            .unwrap_or_else(|e| {
-                                panic!("Failed to build prep cache: {e:?}")
-                            }),
+                            .unwrap_or_else(|e| panic!("Failed to build prep cache: {e:?}")),
                         );
                     }
 
@@ -641,9 +632,7 @@ macro_rules! define_field_module_quintic {
                     }
                     prover
                         .verify_all_tables(&out.0, out.1.common_data())
-                        .unwrap_or_else(|e| {
-                            panic!("Failed to verify layer {layer}: {e:?}")
-                        });
+                        .unwrap_or_else(|e| panic!("Failed to verify layer {layer}: {e:?}"));
 
                     output = out;
                 }
