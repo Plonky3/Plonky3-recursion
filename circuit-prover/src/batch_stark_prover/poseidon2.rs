@@ -1109,27 +1109,28 @@ impl Poseidon2Prover {
 
         // Pad logical ops to the larger of (next power-of-two of row count) and `min_height`.
         let padded_rows = rows.next_power_of_two().max(min_height.next_power_of_two());
-        let mut padded_ops = t.operations.clone();
         let width = cfg.width();
         let width_ext = cfg.width_ext();
         let rate_ext = cfg.rate_ext();
-        let last_op = padded_ops
-            .last()
-            .cloned()
-            .unwrap_or_else(|| Poseidon2CircuitRow {
-                new_start: true,
-                merkle_path: false,
-                mmcs_bit: false,
-                mmcs_index_sum: Val::<SC>::ZERO,
-                input_values: Val::<SC>::zero_vec(width),
-                in_ctl: vec![false; width_ext],
-                input_indices: vec![0; width_ext],
-                out_ctl: vec![false; rate_ext],
-                output_indices: vec![0; rate_ext],
-                mmcs_index_sum_idx: 0,
-                mmcs_ctl_enabled: false,
-            });
-        padded_ops.resize(padded_rows, last_op);
+        // Must match `Poseidon2CircuitAir::preprocessed_trace`: first padded row is a sponge
+        // chain boundary (`new_start` in preprocessed) with zero state. Duplicating the last real
+        // row would leave non-zero capacity inputs and break compact D=1 constraints that assert
+        // zero capacity on sponge `new_start` transitions.
+        let pad_filler = Poseidon2CircuitRow {
+            new_start: true,
+            merkle_path: false,
+            mmcs_bit: false,
+            mmcs_index_sum: Val::<SC>::ZERO,
+            input_values: Val::<SC>::zero_vec(width),
+            in_ctl: vec![false; width_ext],
+            input_indices: vec![0; width_ext],
+            out_ctl: vec![false; rate_ext],
+            output_indices: vec![0; rate_ext],
+            mmcs_index_sum_idx: 0,
+            mmcs_ctl_enabled: false,
+        };
+        let mut padded_ops = t.operations.clone();
+        padded_ops.resize(padded_rows, pad_filler);
 
         let (air, matrix) = match cfg {
             Poseidon2Config::BabyBearD1Width16 => {

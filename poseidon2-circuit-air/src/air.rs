@@ -644,11 +644,11 @@ impl<
 /// # Compact D=1 width-16 / rate-8 layout
 ///
 /// When `IL == 16`, `OL == 8`, and `poseidon_extension_degree == 1`, rows use a compact layout:
-/// `OL` per-rate-limb `in_ctl`, grouped capacity (`cap_in_ctl`, `cap_chain_enable`), `OL` sponge
-/// chain helpers `(1 − new_start)(1 − merkle_path)(1 − in_ctl_i)`, `OL` Merkle chain helpers
+/// `OL` per-rate-limb `in_ctl`, `cap_in_ctl` (always zero; column retained for layout), `cap_chain_enable`,
+/// `OL` sponge chain helpers `(1 − new_start)(1 − merkle_path)(1 − in_ctl_i)`, `OL` Merkle chain helpers
 /// `(1 − new_start)(merkle_path)(1 − in_ctl_i)`, then `IL` input indices, `OL` output indices,
-/// `OL` per-limb `out_ctl`, then four tail flags. The capacity half (`in_ctl[OL..]`) must be
-/// uniform; rate `in_ctl` may vary (e.g. partial-chunk overwrite).
+/// `OL` per-limb `out_ctl`, then four tail flags. Rate `in_ctl` may vary (e.g. partial-chunk overwrite).
+/// Capacity inputs are not CTL-verified; sponge `new_start` rows enforce zero capacity in `eval`.
 ///
 /// # Precomputed Selectors
 ///
@@ -751,15 +751,16 @@ pub fn extract_preprocessed_from_operations<
             for i in 0..OL {
                 preprocessed.push(F::from_bool(in_ctl[i]));
             }
-            let cap_in_ctl = in_ctl[OL];
-            for i in (OL + 1)..IL {
-                assert_eq!(
-                    in_ctl[i], cap_in_ctl,
-                    "compact D=1 Poseidon2: capacity half in_ctl must be uniform"
-                );
+            if !*merkle_path {
+                for i in OL..IL {
+                    debug_assert!(
+                        !in_ctl[i],
+                        "compact D=1 Poseidon2: capacity must not be witness-fed on sponge rows"
+                    );
+                }
             }
-            let cap_chain_enable = !*new_start && !cap_in_ctl;
-            preprocessed.push(F::from_bool(cap_in_ctl));
+            let cap_chain_enable = !*new_start;
+            preprocessed.push(F::ZERO);
             preprocessed.push(F::from_bool(cap_chain_enable));
             for i in 0..OL {
                 let ctl = in_ctl[i];
@@ -988,6 +989,18 @@ pub(crate) fn eval<
                     .when_transition()
                     .when(gate_right_i.clone())
                     .assert_zero(next_in[(RATE_EXT + i) * D + d] - local_out[i * D + d]);
+            }
+        }
+
+        // Sponge chain starts (next row new_start, not Merkle): capacity is never witness-fed;
+        // replacing the former zero-constant CTL sends for slots RATE_EXT..WIDTH_EXT.
+        for slot in RATE_EXT..WIDTH_EXT {
+            for d in 0..D {
+                builder
+                    .when_transition()
+                    .when(next_new_start)
+                    .when(not_merkle.clone())
+                    .assert_zero(next_in[slot * D + d]);
             }
         }
 
@@ -1507,7 +1520,14 @@ impl<
             && WITNESS_EXT_D > 1
             && WIDTH_EXT.is_multiple_of(WITNESS_EXT_D)
             && RATE_EXT.is_multiple_of(WITNESS_EXT_D);
-        let input_lookup_count = if grouped_bf_ctl {
+        let compact_d1 = poseidon2_uses_compact_d1_preprocessed(D, WIDTH_EXT, RATE_EXT);
+        let input_lookup_count = if compact_d1 {
+            if grouped_bf_ctl {
+                RATE_EXT / WITNESS_EXT_D
+            } else {
+                RATE_EXT
+            }
+        } else if grouped_bf_ctl {
             WIDTH_EXT / WITNESS_EXT_D
         } else {
             WIDTH_EXT
@@ -1518,8 +1538,6 @@ impl<
             RATE_EXT
         };
         let mut lookups = Vec::with_capacity(input_lookup_count + output_lookup_count + 1);
-
-        let compact_d1 = poseidon2_uses_compact_d1_preprocessed(D, WIDTH_EXT, RATE_EXT);
 
         if compact_d1 {
             let hdr = poseidon2_d1_compact_preprocessed_header_cols(RATE_EXT);
@@ -1532,9 +1550,9 @@ impl<
                 - SymbolicExpression::from(merkle_path_p);
             let idx_base = hdr;
 
-            // Input limb lookups
+            // Input limb lookups (rate only; sponge new_start capacity is zero-asserted in eval)
             if grouped_bf_ctl {
-                for group in 0..(WIDTH_EXT / WITNESS_EXT_D) {
+                for group in 0..(RATE_EXT / WITNESS_EXT_D) {
                     let base = group * WITNESS_EXT_D;
                     let idx_first = local_flat[idx_base + base];
                     let mut input_key: Vec<SymbolicExpression<F>> =
@@ -1545,11 +1563,7 @@ impl<
                     let mut mult = SymbolicExpression::Leaf(BaseLeaf::Constant(F::ONE));
                     for k in 0..WITNESS_EXT_D {
                         let limb = base + k;
-                        let in_ctl_col = if limb < RATE_EXT {
-                            local_flat[limb]
-                        } else {
-                            local_flat[RATE_EXT]
-                        };
+                        let in_ctl_col = local_flat[limb];
                         mult *= SymbolicExpression::from(in_ctl_col);
                     }
                     let mult = mult * not_merkle.dup();
@@ -1560,13 +1574,9 @@ impl<
                     ));
                 }
             } else {
-                for limb_idx in 0..WIDTH_EXT {
+                for limb_idx in 0..RATE_EXT {
                     let idx = local_flat[idx_base + limb_idx];
-                    let in_ctl = if limb_idx < RATE_EXT {
-                        local_flat[limb_idx]
-                    } else {
-                        local_flat[RATE_EXT]
-                    };
+                    let in_ctl = local_flat[limb_idx];
                     let mut input_idx_limb: Vec<SymbolicExpression<F>> = iter::once(idx)
                         .chain(
                             local.poseidon2.inputs[limb_idx * D..(limb_idx + 1) * D]

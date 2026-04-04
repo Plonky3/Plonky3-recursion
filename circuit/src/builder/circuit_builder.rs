@@ -1336,7 +1336,8 @@ where
     /// This operation is **CTL-verified** against the Poseidon2 AIR table for soundness.
     ///
     /// # CTL Verification
-    /// - Inputs 0-15: CTL-verified against witness table
+    /// - Inputs 0-7: CTL-verified against witness table (rate)
+    /// - Inputs 8-15: not CTL-verified; sponge `new_start` enforces zero via AIR, else chained
     /// - Outputs 0-7: CTL-verified against witness table (rate elements)
     /// - Outputs 8-15: NOT CTL-verified (capacity elements, constrained by Poseidon2 AIR)
     ///
@@ -1351,10 +1352,10 @@ where
     /// Returns error if the Poseidon2 operation is not enabled
     /// Applies a D=1 Poseidon2 permutation for the circuit challenger.
     ///
-    /// - `new_start`: when `true`, all inputs are CTL-verified from the witness bus;
-    ///   when `false`, rate inputs (0-7) are CTL-verified and capacity inputs (8-15)
-    ///   that are `None` are inherited from the previous row via chain constraint.
-    /// - `inputs`: `Some(expr)` for CTL-verified slots, `None` for chain-inherited slots.
+    /// - `new_start`: when `true`, rate inputs (0-7) are CTL-verified; capacity (8-15) should be
+    ///   `None` (zeros are enforced by the AIR). When `false`, rate is CTL-verified and capacity
+    ///   `None` inherits from the previous row via the chain constraint.
+    /// - `inputs`: `Some(expr)` for CTL-verified slots, `None` for zeroed or chain-inherited slots.
     pub fn add_poseidon2_perm_for_challenger_base(
         &mut self,
         config: crate::ops::Poseidon2Config,

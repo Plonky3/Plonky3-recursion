@@ -49,10 +49,9 @@ pub struct CircuitChallenger<const WIDTH: usize, const RATE: usize, C: Challenge
 
     /// Whether `duplexing_base` has been called at least once since the last init/clear.
     ///
-    /// The first D=1 permutation uses `new_start=true` so that all 16 inputs (including
-    /// the zero-initialised capacity) are CTL-verified. Subsequent permutations use
-    /// `new_start=false` with capacity slots set to `None` so the Poseidon2 AIR enforces
-    /// the capacity via its row-to-row chain constraint instead of the witness bus.
+    /// The first D=1 permutation uses `new_start=true` with rate slots CTL-verified and
+    /// capacity `None` (zeros enforced by the compact D=1 AIR). Later permutations use
+    /// `new_start=false` with the same capacity pattern and chaining.
     duplexed_once: bool,
 }
 
@@ -128,10 +127,10 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
 
     /// Duplexing for D=1 (base field): permutation operates directly on 16 elements.
     ///
-    /// The first call uses `new_start=true` (all 16 inputs CTL-verified, including the
-    /// zero-initialised capacity). Subsequent calls use `new_start=false` with `None` for
-    /// capacity slots so the Poseidon2 AIR enforces continuity via chain constraint rather
-    /// than requiring uncreated capacity witnesses on the WitnessChecks bus.
+    /// The first call uses `new_start=true`: rate slots are CTL-verified; capacity slots use
+    /// `None` (initial state is zero and the compact D=1 AIR asserts zero capacity on sponge
+    /// chain starts). Subsequent calls use `new_start=false` with `None` for capacity so the
+    /// AIR enforces continuity via the chain constraint.
     fn duplexing_base<EF>(
         &mut self,
         circuit: &mut CircuitBuilder<EF>,
@@ -140,8 +139,9 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
         EF: p3_field::Field,
     {
         let (new_start, inputs) = if !self.duplexed_once {
-            // First permutation: CTL-verify all 16 inputs (capacity = zero constants).
-            let inputs: [Option<Target>; 16] = core::array::from_fn(|i| Some(self.state[i]));
+            // First permutation: CTL-verify rate only; capacity is zero without witness CTL.
+            let inputs: [Option<Target>; 16] =
+                core::array::from_fn(|i| if i < RATE { Some(self.state[i]) } else { None });
             (true, inputs)
         } else {
             // Subsequent permutations: CTL-verify rate inputs only; capacity via chain.

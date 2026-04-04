@@ -316,6 +316,11 @@ impl Poseidon2PermExecutor {
                 input_indices[i] = wid.0;
             }
         }
+        if self.compact_d1_preprocessed_layout() {
+            for c in in_ctl.iter_mut().take(width).skip(rate_ext) {
+                *c = false;
+            }
+        }
 
         let mut out_ctl = vec![false; rate_ext];
         let mut output_indices = vec![0u32; rate_ext];
@@ -544,28 +549,28 @@ impl Poseidon2PermExecutor {
         let rate_ext = self.config.rate_ext();
 
         if self.compact_d1_preprocessed_layout() {
-            let cap_ctl = Self::limb_ctl_enabled(&inputs[rate_ext]);
-            for input in inputs
-                .iter()
-                .skip(rate_ext + 1)
-                .take(width_ext - rate_ext - 1)
-            {
-                if Self::limb_ctl_enabled(input) != cap_ctl {
-                    return Err(CircuitError::NonPrimitiveOpLayoutMismatch {
-                        op: self.op_type.clone(),
-                        expected: "uniform capacity-half CTL exposure for D=1 compact Poseidon2"
-                            .into(),
-                        got: input.len(),
-                    });
+            // Sponge rows: capacity is never witness-fed (AIR zero-assert on new_start; else chain).
+            // Merkle rows: siblings live in capacity slots and use witness indices without input CTL.
+            if !self.merkle_path {
+                for input in inputs.iter().skip(rate_ext).take(width_ext - rate_ext) {
+                    if Self::limb_ctl_enabled(input) {
+                        return Err(CircuitError::NonPrimitiveOpLayoutMismatch {
+                            op: self.op_type.clone(),
+                            expected:
+                                "capacity input slots must be empty on compact D=1 sponge rows"
+                                    .into(),
+                            got: input.len(),
+                        });
+                    }
                 }
             }
 
-            let cap_chain_enable = !self.new_start && !cap_ctl;
+            let cap_chain_enable = !self.new_start;
             let mut hdr = Vec::with_capacity(rate_ext + 2 + rate_ext + rate_ext);
             for inp in inputs.iter().take(rate_ext) {
                 hdr.push(F::from_bool(Self::limb_ctl_enabled(inp)));
             }
-            hdr.push(F::from_bool(cap_ctl));
+            hdr.push(F::ZERO);
             hdr.push(F::from_bool(cap_chain_enable));
             for inp in inputs.iter().take(rate_ext) {
                 let ctl = Self::limb_ctl_enabled(inp);
