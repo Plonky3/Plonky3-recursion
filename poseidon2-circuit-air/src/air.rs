@@ -20,7 +20,8 @@ use tracing::instrument;
 
 use crate::columns::{
     Poseidon2PrepInputLimb, Poseidon2PrepOutputLimb, Poseidon2PreprocessedRow,
-    poseidon2_preprocessed_row_width,
+    poseidon2_d1_compact_preprocessed_header_cols, poseidon2_preprocessed_row_width_for_air,
+    poseidon2_uses_compact_d1_preprocessed,
 };
 use crate::{Poseidon2CircuitCols, num_cols};
 
@@ -266,7 +267,7 @@ impl<
 
     /// Return the number of preprocessed columns per row.
     pub const fn preprocessed_width() -> usize {
-        poseidon2_preprocessed_row_width(WIDTH_EXT, RATE_EXT)
+        poseidon2_preprocessed_row_width_for_air(D, WIDTH_EXT, RATE_EXT, WITNESS_EXT_D)
     }
 
     /// Generate the execution trace matrix from a sequence of circuit rows.
@@ -640,6 +641,15 @@ impl<
 /// within a pack must be consecutive. `witness_bus_value_slots` is the AIR's `WITNESS_EXT_D`
 /// (e.g. 4 for WitnessBus4). `d` scales stored indices and must match the circuit's extension degree.
 ///
+/// # Compact D=1 width-16 / rate-8 layout
+///
+/// When `IL == 16`, `OL == 8`, and `poseidon_extension_degree == 1`, rows use a compact layout:
+/// `OL` per-rate-limb `in_ctl`, grouped capacity (`cap_in_ctl`, `cap_chain_enable`), `OL` sponge
+/// chain helpers `(1 − new_start)(1 − merkle_path)(1 − in_ctl_i)`, `OL` Merkle chain helpers
+/// `(1 − new_start)(merkle_path)(1 − in_ctl_i)`, then `IL` input indices, `OL` output indices,
+/// `OL` per-limb `out_ctl`, then four tail flags. The capacity half (`in_ctl[OL..]`) must be
+/// uniform; rate `in_ctl` may vary (e.g. partial-chunk overwrite).
+///
 /// # Precomputed Selectors
 ///
 /// Several boolean products are precomputed here to keep the constraint
@@ -667,8 +677,15 @@ pub fn extract_preprocessed_from_operations<
     poseidon_extension_degree: usize,
     witness_bus_value_slots: usize,
 ) -> Vec<F> {
-    let row_width = poseidon2_preprocessed_row_width(IL, OL);
+    let row_width = poseidon2_preprocessed_row_width_for_air(
+        poseidon_extension_degree,
+        IL,
+        OL,
+        witness_bus_value_slots,
+    );
     let mut preprocessed = Vec::with_capacity(operations.len() * row_width);
+
+    let compact_d1 = poseidon2_uses_compact_d1_preprocessed(poseidon_extension_degree, IL, OL);
 
     for operation in operations {
         let Poseidon2CircuitRow {
@@ -690,8 +707,8 @@ pub fn extract_preprocessed_from_operations<
 
         let grouped_ctl = poseidon_extension_degree == 1
             && witness_bus_value_slots > 1
-            && IL % witness_bus_value_slots == 0
-            && OL % witness_bus_value_slots == 0;
+            && IL.is_multiple_of(witness_bus_value_slots)
+            && OL.is_multiple_of(witness_bus_value_slots);
         if grouped_ctl {
             let gsz = witness_bus_value_slots;
             for ig in 0..IL / gsz {
@@ -730,31 +747,68 @@ pub fn extract_preprocessed_from_operations<
             }
         }
 
-        let row = Poseidon2PreprocessedRow::<IL, OL, F> {
-            input_limbs: core::array::from_fn(|i| {
+        if compact_d1 {
+            for i in 0..OL {
+                preprocessed.push(F::from_bool(in_ctl[i]));
+            }
+            let cap_in_ctl = in_ctl[OL];
+            for i in (OL + 1)..IL {
+                assert_eq!(
+                    in_ctl[i], cap_in_ctl,
+                    "compact D=1 Poseidon2: capacity half in_ctl must be uniform"
+                );
+            }
+            let cap_chain_enable = !*new_start && !cap_in_ctl;
+            preprocessed.push(F::from_bool(cap_in_ctl));
+            preprocessed.push(F::from_bool(cap_chain_enable));
+            for i in 0..OL {
                 let ctl = in_ctl[i];
-                Poseidon2PrepInputLimb {
-                    idx: F::from_u32(input_indices[i] * d),
-                    in_ctl: F::from_bool(ctl),
-                    normal_chain_sel: F::from_bool(!*new_start && !*merkle_path && !ctl),
-                    merkle_chain_sel: F::from_bool(!*new_start && *merkle_path && !ctl),
-                }
-            }),
+                preprocessed.push(F::from_bool(!*new_start && !*merkle_path && !ctl));
+            }
+            for i in 0..OL {
+                let ctl = in_ctl[i];
+                preprocessed.push(F::from_bool(!*new_start && *merkle_path && !ctl));
+            }
+            for i in 0..IL {
+                preprocessed.push(F::from_u32(input_indices[i] * d));
+            }
+            for i in 0..OL {
+                preprocessed.push(F::from_u32(output_indices[i] * d));
+            }
+            for j in 0..OL {
+                preprocessed.push(F::from_bool(out_ctl[j]));
+            }
+            preprocessed.push(F::from_u64(*mmcs_index_sum_idx as u64 * d as u64));
+            preprocessed.push(F::from_bool(*mmcs_ctl_enabled && *merkle_path));
+            preprocessed.push(F::from_bool(*new_start));
+            preprocessed.push(F::from_bool(*merkle_path));
+        } else {
+            let row = Poseidon2PreprocessedRow::<IL, OL, F> {
+                input_limbs: core::array::from_fn(|i| {
+                    let ctl = in_ctl[i];
+                    Poseidon2PrepInputLimb {
+                        idx: F::from_u32(input_indices[i] * d),
+                        in_ctl: F::from_bool(ctl),
+                        normal_chain_sel: F::from_bool(!*new_start && !*merkle_path && !ctl),
+                        merkle_chain_sel: F::from_bool(!*new_start && *merkle_path && !ctl),
+                    }
+                }),
 
-            output_limbs: core::array::from_fn(|i| Poseidon2PrepOutputLimb {
-                idx: F::from_u32(output_indices[i] * d),
-                out_ctl: F::from_bool(out_ctl[i]),
-            }),
+                output_limbs: core::array::from_fn(|i| Poseidon2PrepOutputLimb {
+                    idx: F::from_u32(output_indices[i] * d),
+                    out_ctl: F::from_bool(out_ctl[i]),
+                }),
 
-            mmcs_index_sum_ctl_idx: F::from_u64(*mmcs_index_sum_idx as u64 * d as u64),
+                mmcs_index_sum_ctl_idx: F::from_u64(*mmcs_index_sum_idx as u64 * d as u64),
 
-            mmcs_merkle_flag: F::from_bool(*mmcs_ctl_enabled && *merkle_path),
+                mmcs_merkle_flag: F::from_bool(*mmcs_ctl_enabled && *merkle_path),
 
-            new_start: F::from_bool(*new_start),
+                new_start: F::from_bool(*new_start),
 
-            merkle_path: F::from_bool(*merkle_path),
-        };
-        row.write_into(&mut preprocessed);
+                merkle_path: F::from_bool(*merkle_path),
+            };
+            row.write_into(&mut preprocessed);
+        }
     }
 
     preprocessed
@@ -849,11 +903,6 @@ pub(crate) fn eval<
     >,
     next_preprocessed: &[AB::Var],
 ) {
-    // Cast the raw preprocessed slice into a typed struct so we can
-    // access individual fields by name.
-    let next_prep: &Poseidon2PreprocessedRow<WIDTH_EXT, RATE_EXT, AB::Var> =
-        next_preprocessed.borrow();
-
     // Extract the three things we'll reference repeatedly:
     //
     //   - The direction bit from the next row (left vs right child).
@@ -883,96 +932,167 @@ pub(crate) fn eval<
 
     builder.assert_bool(local.mmcs_bit);
 
-    // Sponge chaining
-    //
-    // In sponge mode the output of one permutation feeds directly
-    // into the input of the next permutation.
-    //
-    // For example, if row 0 outputs [a, b, c, ...] then row 1 must
-    // have input [a, b, c, ...].
-    //
-    // We check this element by element. Each limb has D base-field
-    // elements (the extension degree), so we loop over all of them.
-    //
-    // The sponge chain selector gates the constraint. It is only
-    // active on continuation rows in sponge mode. On chain boundaries,
-    // Merkle rows, or CTL-loaded limbs, the selector is zero and the
-    // constraint is trivially satisfied.
-
-    for limb in 0..WIDTH_EXT {
-        for d in 0..D {
-            let gate = next_prep.input_limbs[limb].normal_chain_sel;
-            builder
-                .when_transition()
-                .when(gate)
-                .assert_zero(next_in[limb * D + d] - local_out[limb * D + d]);
-        }
-    }
-
-    // Merkle-path chaining: first `RATE_EXT` logical limbs of the output
-    // form our digest; the sibling occupies the next `RATE_EXT` limbs of
-    // the next row's input. The direction bit selects left vs right placement.
-    let is_left = AB::Expr::ONE - next_bit.into();
-
-    for i in 0..RATE_EXT {
-        let gate_left_i = next_prep.input_limbs[i].merkle_chain_sel * is_left.clone();
-        for d in 0..D {
-            builder
-                .when_transition()
-                .when(gate_left_i.clone())
-                .assert_zero(next_in[i * D + d] - local_out[i * D + d]);
-        }
-    }
-    for i in 0..RATE_EXT {
-        let gate_right_i = next_prep.input_limbs[i].merkle_chain_sel * next_bit;
-        for d in 0..D {
-            builder
-                .when_transition()
-                .when(gate_right_i.clone())
-                .assert_zero(next_in[(RATE_EXT + i) * D + d] - local_out[i * D + d]);
-        }
-    }
-
-    // MMCS accumulator
-    //
-    // As the circuit walks up a Merkle tree, it sees one direction bit
-    // per level. These bits form the binary representation of the leaf
-    // index being authenticated.
-    //
-    // The accumulator reconstructs that index with the recurrence:
-    //
-    //     next_sum = current_sum × 2 + next_bit
-    //
-    // For example, authenticating leaf 5 (binary 101):
-    //
-    //     row 0:  acc = 1            (first bit)
-    //     row 1:  acc = 1×2 + 0 = 2  (second bit)
-    //     row 2:  acc = 2×2 + 1 = 5  (third bit → final index)
-    //
-    // The constraint only fires when the next row is a Merkle row
-    // that is not a chain boundary. On chain boundaries the
-    // accumulator resets, and on non-Merkle rows it is unused.
-
-    // Compute (1 − next_new_start). This is 1 when the next row
-    // continues a chain, 0 when it starts a new one.
-    let not_next_new_start = AB::Expr::ONE - next_prep.new_start.into();
-
-    // The constraint:
-    //
-    //     next_accumulator = current_accumulator × 2 + next_direction_bit
-    //
-    // Rearranged for assert_zero:
-    //
-    //     next_acc − (current_acc × 2 + next_bit) = 0
-    //
-    // Gated on: not a chain boundary AND is a Merkle row.
-    builder
-        .when_transition()
-        .when(not_next_new_start)
-        .when(next_prep.merkle_path)
-        .assert_zero(
-            next.mmcs_index_sum - (local.mmcs_index_sum * AB::Expr::TWO + next.mmcs_bit.into()),
+    if poseidon2_uses_compact_d1_preprocessed(D, WIDTH_EXT, RATE_EXT) {
+        let hdr = poseidon2_d1_compact_preprocessed_header_cols(RATE_EXT);
+        debug_assert_eq!(
+            next_preprocessed.len(),
+            hdr + WIDTH_EXT + RATE_EXT + RATE_EXT + 4
         );
+        let s = next_preprocessed;
+        let cap_chain_enable = s[RATE_EXT + 1];
+        let rate_sponge_base = RATE_EXT + 2;
+        let rate_merkle_base = rate_sponge_base + RATE_EXT;
+        let tail = hdr + WIDTH_EXT + RATE_EXT + RATE_EXT;
+        let next_new_start = s[tail + 2];
+        let next_merkle_path = s[tail + 3];
+        let not_next_new_start = AB::Expr::ONE - next_new_start.into();
+
+        // Sponge chaining (compact): rate uses precomputed `(1−ns)(1−merkle)(1−ctl_i)`; capacity shares `cap_chain_enable`.
+        for limb in 0..RATE_EXT {
+            let chain_en = s[rate_sponge_base + limb];
+            for d in 0..D {
+                builder
+                    .when_transition()
+                    .when(chain_en)
+                    .assert_zero(next_in[limb * D + d] - local_out[limb * D + d]);
+            }
+        }
+        let not_merkle = AB::Expr::ONE - next_merkle_path.into();
+        for limb in RATE_EXT..WIDTH_EXT {
+            let chain_en = cap_chain_enable * not_merkle.clone();
+            for d in 0..D {
+                builder
+                    .when_transition()
+                    .when(chain_en.clone())
+                    .assert_zero(next_in[limb * D + d] - local_out[limb * D + d]);
+            }
+        }
+
+        // Merkle-path chaining (compact): precomputed `(1−ns)(merkle)(1−ctl_i)` × direction bit (degree 3).
+        let is_left = AB::Expr::ONE - next_bit.into();
+        for i in 0..RATE_EXT {
+            let merkle_chain_i = s[rate_merkle_base + i];
+            let gate_left_i = merkle_chain_i * is_left.clone();
+            for d in 0..D {
+                builder
+                    .when_transition()
+                    .when(gate_left_i.clone())
+                    .assert_zero(next_in[i * D + d] - local_out[i * D + d]);
+            }
+        }
+        for i in 0..RATE_EXT {
+            let merkle_chain_i = s[rate_merkle_base + i];
+            let gate_right_i = merkle_chain_i * next_bit;
+            for d in 0..D {
+                builder
+                    .when_transition()
+                    .when(gate_right_i.clone())
+                    .assert_zero(next_in[(RATE_EXT + i) * D + d] - local_out[i * D + d]);
+            }
+        }
+
+        builder
+            .when_transition()
+            .when(not_next_new_start)
+            .when(next_merkle_path)
+            .assert_zero(
+                next.mmcs_index_sum - (local.mmcs_index_sum * AB::Expr::TWO + next.mmcs_bit.into()),
+            );
+    } else {
+        let next_prep: &Poseidon2PreprocessedRow<WIDTH_EXT, RATE_EXT, AB::Var> =
+            next_preprocessed.borrow();
+
+        // Sponge chaining
+        //
+        // In sponge mode the output of one permutation feeds directly
+        // into the input of the next permutation.
+        //
+        // For example, if row 0 outputs [a, b, c, ...] then row 1 must
+        // have input [a, b, c, ...].
+        //
+        // We check this element by element. Each limb has D base-field
+        // elements (the extension degree), so we loop over all of them.
+        //
+        // The sponge chain selector gates the constraint. It is only
+        // active on continuation rows in sponge mode. On chain boundaries,
+        // Merkle rows, or CTL-loaded limbs, the selector is zero and the
+        // constraint is trivially satisfied.
+
+        for limb in 0..WIDTH_EXT {
+            for d in 0..D {
+                let gate = next_prep.input_limbs[limb].normal_chain_sel;
+                builder
+                    .when_transition()
+                    .when(gate)
+                    .assert_zero(next_in[limb * D + d] - local_out[limb * D + d]);
+            }
+        }
+
+        // Merkle-path chaining: first `RATE_EXT` logical limbs of the output
+        // form our digest; the sibling occupies the next `RATE_EXT` limbs of
+        // the next row's input. The direction bit selects left vs right placement.
+        let is_left = AB::Expr::ONE - next_bit.into();
+
+        for i in 0..RATE_EXT {
+            let gate_left_i = next_prep.input_limbs[i].merkle_chain_sel * is_left.clone();
+            for d in 0..D {
+                builder
+                    .when_transition()
+                    .when(gate_left_i.clone())
+                    .assert_zero(next_in[i * D + d] - local_out[i * D + d]);
+            }
+        }
+        for i in 0..RATE_EXT {
+            let gate_right_i = next_prep.input_limbs[i].merkle_chain_sel * next_bit;
+            for d in 0..D {
+                builder
+                    .when_transition()
+                    .when(gate_right_i.clone())
+                    .assert_zero(next_in[(RATE_EXT + i) * D + d] - local_out[i * D + d]);
+            }
+        }
+
+        // MMCS accumulator
+        //
+        // As the circuit walks up a Merkle tree, it sees one direction bit
+        // per level. These bits form the binary representation of the leaf
+        // index being authenticated.
+        //
+        // The accumulator reconstructs that index with the recurrence:
+        //
+        //     next_sum = current_sum × 2 + next_bit
+        //
+        // For example, authenticating leaf 5 (binary 101):
+        //
+        //     row 0:  acc = 1            (first bit)
+        //     row 1:  acc = 1×2 + 0 = 2  (second bit)
+        //     row 2:  acc = 2×2 + 1 = 5  (third bit → final index)
+        //
+        // The constraint only fires when the next row is a Merkle row
+        // that is not a chain boundary. On chain boundaries the
+        // accumulator resets, and on non-Merkle rows it is unused.
+
+        // Compute (1 − next_new_start). This is 1 when the next row
+        // continues a chain, 0 when it starts a new one.
+        let not_next_new_start = AB::Expr::ONE - next_prep.new_start.into();
+
+        // The constraint:
+        //
+        //     next_accumulator = current_accumulator × 2 + next_direction_bit
+        //
+        // Rearranged for assert_zero:
+        //
+        //     next_acc − (current_acc × 2 + next_bit) = 0
+        //
+        // Gated on: not a chain boundary AND is a Merkle row.
+        builder
+            .when_transition()
+            .when(not_next_new_start)
+            .when(next_prep.merkle_path)
+            .assert_zero(
+                next.mmcs_index_sum - (local.mmcs_index_sum * AB::Expr::TWO + next.mmcs_bit.into()),
+            );
+    }
 
     // Poseidon2 permutation
     //
@@ -1373,19 +1493,11 @@ impl<
         let local_preprocessed = preprocessed
             .row_slice(0)
             .expect("The preprocessed matrix has only one row?");
-        let local_preprocessed: &[SymbolicVariable<F>] = (*local_preprocessed).borrow();
+        let local_flat: &[SymbolicVariable<F>] = (*local_preprocessed).borrow();
         let next_preprocessed = preprocessed
             .row_slice(1)
             .expect("The preprocessed matrix has only one row?");
-        let next_preprocessed: &[SymbolicVariable<F>] = (*next_preprocessed).borrow();
-
-        let local_preprocessed: &Poseidon2PreprocessedRow<
-            WIDTH_EXT,
-            RATE_EXT,
-            SymbolicVariable<F>,
-        > = local_preprocessed.borrow();
-        let next_preprocessed: &Poseidon2PreprocessedRow<WIDTH_EXT, RATE_EXT, SymbolicVariable<F>> =
-            next_preprocessed.borrow();
+        let next_flat: &[SymbolicVariable<F>] = (*next_preprocessed).borrow();
 
         // Total lookups:
         // - Ungrouped: one per input limb + one per rate output limb + MMCS.
@@ -1393,8 +1505,8 @@ impl<
         //   WITNESS_EXT_D base inputs/outputs + MMCS — same count as the D=WITNESS_EXT_D AIR.
         let grouped_bf_ctl = D == 1
             && WITNESS_EXT_D > 1
-            && WIDTH_EXT % WITNESS_EXT_D == 0
-            && RATE_EXT % WITNESS_EXT_D == 0;
+            && WIDTH_EXT.is_multiple_of(WITNESS_EXT_D)
+            && RATE_EXT.is_multiple_of(WITNESS_EXT_D);
         let input_lookup_count = if grouped_bf_ctl {
             WIDTH_EXT / WITNESS_EXT_D
         } else {
@@ -1407,203 +1519,352 @@ impl<
         };
         let mut lookups = Vec::with_capacity(input_lookup_count + output_lookup_count + 1);
 
-        // Input limb lookups
-        //
-        // Input CTL lookups are disabled on Merkle rows. If they were
-        // active, permuting the CTL metadata based on the runtime
-        // direction bit would push the constraint degree above 3.
-        //
-        // Disabling input CTL on Merkle rows is sound because:
-        //
-        //   - Digest values in the row were already CTL-verified when
-        //     they were first created (on a non-Merkle row).
-        //
-        //   - Sibling values are private proof data — wrong siblings
-        //     simply produce the wrong Merkle root.
-        //
-        //   - Chained values are AIR-constrained to equal the previous
-        //     permutation output.
+        let compact_d1 = poseidon2_uses_compact_d1_preprocessed(D, WIDTH_EXT, RATE_EXT);
 
-        // Compute (1 − merkle_path). This is 1 on sponge rows and 0 on
-        // Merkle rows. Used to disable input CTL on Merkle rows.
-        let not_merkle = SymbolicExpression::Leaf(BaseLeaf::Constant(F::ONE))
-            - SymbolicExpression::from(local_preprocessed.merkle_path);
+        if compact_d1 {
+            let hdr = poseidon2_d1_compact_preprocessed_header_cols(RATE_EXT);
+            let tail = hdr + WIDTH_EXT + RATE_EXT + RATE_EXT;
+            debug_assert_eq!(local_flat.len(), tail + 4);
+            debug_assert_eq!(next_flat.len(), tail + 4);
 
-        if grouped_bf_ctl {
-            // Pack WITNESS_EXT_D consecutive base-field inputs into one bus key
-            // `[idx_first, v_0, ..., v_{WITNESS_EXT_D-1}]`, matching recompose/coeff grouped receives.
-            for group in 0..(WIDTH_EXT / WITNESS_EXT_D) {
-                let base = group * WITNESS_EXT_D;
-                let first = &local_preprocessed.input_limbs[base];
-                let mut input_key: Vec<SymbolicExpression<F>> =
-                    iter::once(SymbolicExpression::from(first.idx)).collect();
-                for k in 0..WITNESS_EXT_D {
-                    input_key.push(SymbolicExpression::from(local.poseidon2.inputs[base + k]));
+            let merkle_path_p = local_flat[tail + 3];
+            let not_merkle = SymbolicExpression::Leaf(BaseLeaf::Constant(F::ONE))
+                - SymbolicExpression::from(merkle_path_p);
+            let idx_base = hdr;
+
+            // Input limb lookups
+            if grouped_bf_ctl {
+                for group in 0..(WIDTH_EXT / WITNESS_EXT_D) {
+                    let base = group * WITNESS_EXT_D;
+                    let idx_first = local_flat[idx_base + base];
+                    let mut input_key: Vec<SymbolicExpression<F>> =
+                        iter::once(SymbolicExpression::from(idx_first)).collect();
+                    for k in 0..WITNESS_EXT_D {
+                        input_key.push(SymbolicExpression::from(local.poseidon2.inputs[base + k]));
+                    }
+                    let mut mult = SymbolicExpression::Leaf(BaseLeaf::Constant(F::ONE));
+                    for k in 0..WITNESS_EXT_D {
+                        let limb = base + k;
+                        let in_ctl_col = if limb < RATE_EXT {
+                            local_flat[limb]
+                        } else {
+                            local_flat[RATE_EXT]
+                        };
+                        mult *= SymbolicExpression::from(in_ctl_col);
+                    }
+                    let mult = mult * not_merkle.dup();
+                    lookups.push(LookupAir::register_lookup(
+                        self,
+                        Kind::Global("WitnessChecks".to_string()),
+                        &[(input_key, mult, Direction::Send)],
+                    ));
                 }
-
-                let mut mult =
-                    SymbolicExpression::from(local_preprocessed.input_limbs[base].in_ctl);
-                for k in 1..WITNESS_EXT_D {
-                    mult = mult
-                        * SymbolicExpression::from(local_preprocessed.input_limbs[base + k].in_ctl);
+            } else {
+                for limb_idx in 0..WIDTH_EXT {
+                    let idx = local_flat[idx_base + limb_idx];
+                    let in_ctl = if limb_idx < RATE_EXT {
+                        local_flat[limb_idx]
+                    } else {
+                        local_flat[RATE_EXT]
+                    };
+                    let mut input_idx_limb: Vec<SymbolicExpression<F>> = iter::once(idx)
+                        .chain(
+                            local.poseidon2.inputs[limb_idx * D..(limb_idx + 1) * D]
+                                .iter()
+                                .copied(),
+                        )
+                        .map(SymbolicExpression::from)
+                        .collect();
+                    input_idx_limb.extend(iter::repeat_n(
+                        SymbolicExpression::Leaf(BaseLeaf::Constant(F::ZERO)),
+                        WITNESS_EXT_D - D,
+                    ));
+                    let mult = SymbolicExpression::from(in_ctl) * not_merkle.dup();
+                    lookups.push(LookupAir::register_lookup(
+                        self,
+                        Kind::Global("WitnessChecks".to_string()),
+                        &[(input_idx_limb, mult, Direction::Send)],
+                    ));
                 }
-                let mult = mult * not_merkle.dup();
-
-                lookups.push(LookupAir::register_lookup(
-                    self,
-                    Kind::Global("WitnessChecks".to_string()),
-                    &[(input_key, mult, Direction::Send)],
-                ));
             }
+
+            // Output limb lookups
+            let out_idx_base = idx_base + WIDTH_EXT;
+            let out_ctl_base = out_idx_base + RATE_EXT;
+            if grouped_bf_ctl {
+                for group in 0..(RATE_EXT / WITNESS_EXT_D) {
+                    let base = group * WITNESS_EXT_D;
+                    let first_idx = local_flat[out_idx_base + base];
+                    let post = &local.poseidon2.ending_full_rounds[HALF_FULL_ROUNDS - 1].post;
+                    let mut output_key: Vec<SymbolicExpression<F>> =
+                        iter::once(SymbolicExpression::from(first_idx)).collect();
+                    for k in 0..WITNESS_EXT_D {
+                        output_key.push(SymbolicExpression::from(post[base + k]));
+                    }
+                    let mut mult = SymbolicExpression::from(local_flat[out_ctl_base + base]);
+                    for k in 1..WITNESS_EXT_D {
+                        mult *= SymbolicExpression::from(local_flat[out_ctl_base + base + k]);
+                    }
+                    lookups.push(LookupAir::register_lookup(
+                        self,
+                        Kind::Global("WitnessChecks".to_string()),
+                        &[(output_key, mult, Direction::Receive)],
+                    ));
+                }
+            } else {
+                for limb_idx in 0..RATE_EXT {
+                    let idx = local_flat[out_idx_base + limb_idx];
+                    let out_ctl = local_flat[out_ctl_base + limb_idx];
+                    let mut output_idx_limb: Vec<SymbolicExpression<F>> = iter::once(idx)
+                        .chain(
+                            local.poseidon2.ending_full_rounds[HALF_FULL_ROUNDS - 1].post
+                                [limb_idx * D..(limb_idx + 1) * D]
+                                .iter()
+                                .copied(),
+                        )
+                        .map(SymbolicExpression::from)
+                        .collect();
+                    output_idx_limb.extend(iter::repeat_n(
+                        SymbolicExpression::Leaf(BaseLeaf::Constant(F::ZERO)),
+                        WITNESS_EXT_D - D,
+                    ));
+                    lookups.push(LookupAir::register_lookup(
+                        self,
+                        Kind::Global("WitnessChecks".to_string()),
+                        &[(
+                            output_idx_limb,
+                            SymbolicExpression::from(out_ctl),
+                            Direction::Receive,
+                        )],
+                    ));
+                }
+            }
+
+            let multiplicity = SymbolicExpression::from(local_flat[tail + 1])
+                * SymbolicExpression::from(next_flat[tail + 2]);
+            let mut mmcs_index_sum_lookup = vec![
+                SymbolicExpression::from(local_flat[tail]),
+                SymbolicExpression::from(local.mmcs_index_sum),
+            ];
+            mmcs_index_sum_lookup.extend(iter::repeat_n(
+                SymbolicExpression::Leaf(BaseLeaf::Constant(F::ZERO)),
+                WITNESS_EXT_D - 1,
+            ));
+            lookups.push(LookupAir::register_lookup(
+                self,
+                Kind::Global("WitnessChecks".to_string()),
+                &[(mmcs_index_sum_lookup, multiplicity, Direction::Send)],
+            ));
         } else {
-            for limb_idx in 0..WIDTH_EXT {
-                let limb = &local_preprocessed.input_limbs[limb_idx];
+            let local_preprocessed: &Poseidon2PreprocessedRow<
+                WIDTH_EXT,
+                RATE_EXT,
+                SymbolicVariable<F>,
+            > = local_flat.borrow();
+            let next_preprocessed: &Poseidon2PreprocessedRow<
+                WIDTH_EXT,
+                RATE_EXT,
+                SymbolicVariable<F>,
+            > = next_flat.borrow();
 
-                // Build the lookup key: [witness_index, elem_0, elem_1, ..., elem_{D-1}].
-                //
-                // The witness index tells the Witness table which slot to
-                // look up. The extension-field elements are the actual values
-                // being checked.
-                let mut input_idx_limb: Vec<SymbolicExpression<F>> = iter::once(limb.idx)
-                    .chain(
-                        local.poseidon2.inputs[limb_idx * D..(limb_idx + 1) * D]
-                            .iter()
-                            .copied(),
-                    )
-                    .map(SymbolicExpression::from)
-                    .collect();
-                input_idx_limb.extend(iter::repeat_n(
-                    SymbolicExpression::Leaf(BaseLeaf::Constant(F::ZERO)),
-                    WITNESS_EXT_D - D,
-                ));
+            // Input limb lookups
+            //
+            // Input CTL lookups are disabled on Merkle rows. If they were
+            // active, permuting the CTL metadata based on the runtime
+            // direction bit would push the constraint degree above 3.
+            //
+            // Disabling input CTL on Merkle rows is sound because:
+            //
+            //   - Digest values in the row were already CTL-verified when
+            //     they were first created (on a non-Merkle row).
+            //
+            //   - Sibling values are private proof data — wrong siblings
+            //     simply produce the wrong Merkle root.
+            //
+            //   - Chained values are AIR-constrained to equal the previous
+            //     permutation output.
 
-                // Multiplicity = CTL enable flag × (1 − merkle_path).
-                //
-                // This is zero on Merkle rows (disabling the lookup) and
-                // equal to the CTL flag on sponge rows.
-                //
-                // Both factors are preprocessed, so this product costs
-                // nothing at constraint-evaluation time.
-                let mult = SymbolicExpression::from(limb.in_ctl) * not_merkle.dup();
+            // Compute (1 − merkle_path). This is 1 on sponge rows and 0 on
+            // Merkle rows. Used to disable input CTL on Merkle rows.
+            let not_merkle = SymbolicExpression::Leaf(BaseLeaf::Constant(F::ONE))
+                - SymbolicExpression::from(local_preprocessed.merkle_path);
 
-                // Direction::Send means this table is the sender:
-                //
-                // "I claim my input limb matches the value in the Witness table at this index."
-                lookups.push(LookupAir::register_lookup(
-                    self,
-                    Kind::Global("WitnessChecks".to_string()),
-                    &[(input_idx_limb, mult, Direction::Send)],
-                ));
-            }
-        }
+            if grouped_bf_ctl {
+                // Pack WITNESS_EXT_D consecutive base-field inputs into one bus key
+                // `[idx_first, v_0, ..., v_{WITNESS_EXT_D-1}]`, matching recompose/coeff grouped receives.
+                for group in 0..(WIDTH_EXT / WITNESS_EXT_D) {
+                    let base = group * WITNESS_EXT_D;
+                    let first = &local_preprocessed.input_limbs[base];
+                    let mut input_key: Vec<SymbolicExpression<F>> =
+                        iter::once(SymbolicExpression::from(first.idx)).collect();
+                    for k in 0..WITNESS_EXT_D {
+                        input_key.push(SymbolicExpression::from(local.poseidon2.inputs[base + k]));
+                    }
 
-        // Output limb lookups
-        //
-        // Each publicly exposed output limb receives its value from the
-        // Witness table.
-        //
-        // The key has the same format as input lookups: witness index
-        // followed by the extension-field elements.
-        //
-        // Direction::Receive means "the Witness table sent this value
-        // to me." If the output doesn't match, the permutation argument
-        // will fail.
+                    let mut mult =
+                        SymbolicExpression::from(local_preprocessed.input_limbs[base].in_ctl);
+                    for k in 1..WITNESS_EXT_D {
+                        mult *= SymbolicExpression::from(
+                            local_preprocessed.input_limbs[base + k].in_ctl,
+                        );
+                    }
+                    let mult = mult * not_merkle.dup();
 
-        if grouped_bf_ctl {
-            for group in 0..(RATE_EXT / WITNESS_EXT_D) {
-                let base = group * WITNESS_EXT_D;
-                let first = &local_preprocessed.output_limbs[base];
-                let post = &local.poseidon2.ending_full_rounds[HALF_FULL_ROUNDS - 1].post;
-                let mut output_key: Vec<SymbolicExpression<F>> =
-                    iter::once(SymbolicExpression::from(first.idx)).collect();
-                for k in 0..WITNESS_EXT_D {
-                    output_key.push(SymbolicExpression::from(post[base + k]));
+                    lookups.push(LookupAir::register_lookup(
+                        self,
+                        Kind::Global("WitnessChecks".to_string()),
+                        &[(input_key, mult, Direction::Send)],
+                    ));
                 }
+            } else {
+                for limb_idx in 0..WIDTH_EXT {
+                    let limb = &local_preprocessed.input_limbs[limb_idx];
 
-                let mut mult =
-                    SymbolicExpression::from(local_preprocessed.output_limbs[base].out_ctl);
-                for k in 1..WITNESS_EXT_D {
-                    mult = mult
-                        * SymbolicExpression::from(
+                    // Build the lookup key: [witness_index, elem_0, elem_1, ..., elem_{D-1}].
+                    //
+                    // The witness index tells the Witness table which slot to
+                    // look up. The extension-field elements are the actual values
+                    // being checked.
+                    let mut input_idx_limb: Vec<SymbolicExpression<F>> = iter::once(limb.idx)
+                        .chain(
+                            local.poseidon2.inputs[limb_idx * D..(limb_idx + 1) * D]
+                                .iter()
+                                .copied(),
+                        )
+                        .map(SymbolicExpression::from)
+                        .collect();
+                    input_idx_limb.extend(iter::repeat_n(
+                        SymbolicExpression::Leaf(BaseLeaf::Constant(F::ZERO)),
+                        WITNESS_EXT_D - D,
+                    ));
+
+                    // Multiplicity = CTL enable flag × (1 − merkle_path).
+                    //
+                    // This is zero on Merkle rows (disabling the lookup) and
+                    // equal to the CTL flag on sponge rows.
+                    //
+                    // Both factors are preprocessed, so this product costs
+                    // nothing at constraint-evaluation time.
+                    let mult = SymbolicExpression::from(limb.in_ctl) * not_merkle.dup();
+
+                    // Direction::Send means this table is the sender:
+                    //
+                    // "I claim my input limb matches the value in the Witness table at this index."
+                    lookups.push(LookupAir::register_lookup(
+                        self,
+                        Kind::Global("WitnessChecks".to_string()),
+                        &[(input_idx_limb, mult, Direction::Send)],
+                    ));
+                }
+            }
+
+            // Output limb lookups
+            //
+            // Each publicly exposed output limb receives its value from the
+            // Witness table.
+            //
+            // The key has the same format as input lookups: witness index
+            // followed by the extension-field elements.
+            //
+            // Direction::Receive means "the Witness table sent this value
+            // to me." If the output doesn't match, the permutation argument
+            // will fail.
+
+            if grouped_bf_ctl {
+                for group in 0..(RATE_EXT / WITNESS_EXT_D) {
+                    let base = group * WITNESS_EXT_D;
+                    let first = &local_preprocessed.output_limbs[base];
+                    let post = &local.poseidon2.ending_full_rounds[HALF_FULL_ROUNDS - 1].post;
+                    let mut output_key: Vec<SymbolicExpression<F>> =
+                        iter::once(SymbolicExpression::from(first.idx)).collect();
+                    for k in 0..WITNESS_EXT_D {
+                        output_key.push(SymbolicExpression::from(post[base + k]));
+                    }
+
+                    let mut mult =
+                        SymbolicExpression::from(local_preprocessed.output_limbs[base].out_ctl);
+                    for k in 1..WITNESS_EXT_D {
+                        mult *= SymbolicExpression::from(
                             local_preprocessed.output_limbs[base + k].out_ctl,
                         );
+                    }
+
+                    lookups.push(LookupAir::register_lookup(
+                        self,
+                        Kind::Global("WitnessChecks".to_string()),
+                        &[(output_key, mult, Direction::Receive)],
+                    ));
                 }
+            } else {
+                for limb_idx in 0..RATE_EXT {
+                    let limb = &local_preprocessed.output_limbs[limb_idx];
 
-                lookups.push(LookupAir::register_lookup(
-                    self,
-                    Kind::Global("WitnessChecks".to_string()),
-                    &[(output_key, mult, Direction::Receive)],
-                ));
+                    // Build the lookup key from the output state.
+                    //
+                    // The output lives in the last full round's post-state.
+                    let mut output_idx_limb: Vec<SymbolicExpression<F>> = iter::once(limb.idx)
+                        .chain(
+                            local.poseidon2.ending_full_rounds[HALF_FULL_ROUNDS - 1].post
+                                [limb_idx * D..(limb_idx + 1) * D]
+                                .iter()
+                                .copied(),
+                        )
+                        .map(SymbolicExpression::from)
+                        .collect();
+                    output_idx_limb.extend(iter::repeat_n(
+                        SymbolicExpression::Leaf(BaseLeaf::Constant(F::ZERO)),
+                        WITNESS_EXT_D - D,
+                    ));
+
+                    lookups.push(LookupAir::register_lookup(
+                        self,
+                        Kind::Global("WitnessChecks".to_string()),
+                        &[(
+                            output_idx_limb,
+                            SymbolicExpression::from(limb.out_ctl),
+                            Direction::Receive,
+                        )],
+                    ));
+                }
             }
-        } else {
-            for limb_idx in 0..RATE_EXT {
-                let limb = &local_preprocessed.output_limbs[limb_idx];
 
-                // Build the lookup key from the output state.
-                //
-                // The output lives in the last full round's post-state.
-                let mut output_idx_limb: Vec<SymbolicExpression<F>> = iter::once(limb.idx)
-                    .chain(
-                        local.poseidon2.ending_full_rounds[HALF_FULL_ROUNDS - 1].post
-                            [limb_idx * D..(limb_idx + 1) * D]
-                            .iter()
-                            .copied(),
-                    )
-                    .map(SymbolicExpression::from)
-                    .collect();
-                output_idx_limb.extend(iter::repeat_n(
-                    SymbolicExpression::Leaf(BaseLeaf::Constant(F::ZERO)),
-                    WITNESS_EXT_D - D,
-                ));
+            // MMCS accumulator lookup
+            //
+            // At the end of a Merkle chain the accumulated leaf index must
+            // be sent to the Witness table for verification.
+            //
+            // The lookup fires on the last Merkle row of a chain. We
+            // detect this as: the current row has the MMCS Merkle flag set
+            // AND the next row starts a new chain.
+            //
+            // Both flags are preprocessed, so the multiplicity is a
+            // degree-2 expression that costs nothing extra.
+            //
+            // The accumulator is a single base-field element. The Witness
+            // table expects extension-field-width keys, so we pad with
+            // zeros to fill the remaining extension-degree minus one slots.
 
-                lookups.push(LookupAir::register_lookup(
-                    self,
-                    Kind::Global("WitnessChecks".to_string()),
-                    &[(
-                        output_idx_limb,
-                        SymbolicExpression::from(limb.out_ctl),
-                        Direction::Receive,
-                    )],
-                ));
-            }
+            let multiplicity = local_preprocessed.mmcs_merkle_flag * next_preprocessed.new_start;
+
+            // Build the lookup key: [witness_index, accumulator, 0, 0, ...].
+            //
+            // The accumulator is one base-field element. We zero-pad to
+            // match the extension-field width expected by the Witness table.
+            let mut mmcs_index_sum_lookup = vec![
+                SymbolicExpression::from(local_preprocessed.mmcs_index_sum_ctl_idx),
+                SymbolicExpression::from(local.mmcs_index_sum),
+            ];
+            mmcs_index_sum_lookup.extend(iter::repeat_n(
+                SymbolicExpression::Leaf(BaseLeaf::Constant(F::ZERO)),
+                WITNESS_EXT_D - 1,
+            ));
+
+            lookups.push(LookupAir::register_lookup(
+                self,
+                Kind::Global("WitnessChecks".to_string()),
+                &[(mmcs_index_sum_lookup, multiplicity, Direction::Send)],
+            ));
         }
-
-        // MMCS accumulator lookup
-        //
-        // At the end of a Merkle chain the accumulated leaf index must
-        // be sent to the Witness table for verification.
-        //
-        // The lookup fires on the last Merkle row of a chain. We
-        // detect this as: the current row has the MMCS Merkle flag set
-        // AND the next row starts a new chain.
-        //
-        // Both flags are preprocessed, so the multiplicity is a
-        // degree-2 expression that costs nothing extra.
-        //
-        // The accumulator is a single base-field element. The Witness
-        // table expects extension-field-width keys, so we pad with
-        // zeros to fill the remaining extension-degree minus one slots.
-
-        let multiplicity = local_preprocessed.mmcs_merkle_flag * next_preprocessed.new_start;
-
-        // Build the lookup key: [witness_index, accumulator, 0, 0, ...].
-        //
-        // The accumulator is one base-field element. We zero-pad to
-        // match the extension-field width expected by the Witness table.
-        let mut mmcs_index_sum_lookup = vec![
-            SymbolicExpression::from(local_preprocessed.mmcs_index_sum_ctl_idx),
-            SymbolicExpression::from(local.mmcs_index_sum),
-        ];
-        mmcs_index_sum_lookup.extend(iter::repeat_n(
-            SymbolicExpression::Leaf(BaseLeaf::Constant(F::ZERO)),
-            WITNESS_EXT_D - 1,
-        ));
-
-        lookups.push(LookupAir::register_lookup(
-            self,
-            Kind::Global("WitnessChecks".to_string()),
-            &[(mmcs_index_sum_lookup, multiplicity, Direction::Send)],
-        ));
 
         lookups
     }

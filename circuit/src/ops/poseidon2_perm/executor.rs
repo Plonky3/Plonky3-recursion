@@ -49,6 +49,16 @@ impl Poseidon2PermExecutor {
         }
     }
 
+    #[inline]
+    const fn compact_d1_preprocessed_layout(&self) -> bool {
+        self.config.d() == 1 && self.config.width_ext() == 16 && self.config.rate_ext() == 8
+    }
+
+    #[inline]
+    const fn limb_ctl_enabled(slot: &[WitnessId]) -> bool {
+        !slot.is_empty()
+    }
+
     /// Build the initial permutation state vector.
     ///
     /// - New chain: returns a zero vector of `width_ext` elements.
@@ -531,6 +541,66 @@ impl Poseidon2PermExecutor {
         preprocessed: &mut dyn PreprocessedWriter<F>,
     ) -> Result<(), CircuitError> {
         let width_ext = self.config.width_ext();
+        let rate_ext = self.config.rate_ext();
+
+        if self.compact_d1_preprocessed_layout() {
+            let cap_ctl = Self::limb_ctl_enabled(&inputs[rate_ext]);
+            for input in inputs
+                .iter()
+                .skip(rate_ext + 1)
+                .take(width_ext - rate_ext - 1)
+            {
+                if Self::limb_ctl_enabled(input) != cap_ctl {
+                    return Err(CircuitError::NonPrimitiveOpLayoutMismatch {
+                        op: self.op_type.clone(),
+                        expected: "uniform capacity-half CTL exposure for D=1 compact Poseidon2"
+                            .into(),
+                        got: input.len(),
+                    });
+                }
+            }
+
+            let cap_chain_enable = !self.new_start && !cap_ctl;
+            let mut hdr = Vec::with_capacity(rate_ext + 2 + rate_ext + rate_ext);
+            for inp in inputs.iter().take(rate_ext) {
+                hdr.push(F::from_bool(Self::limb_ctl_enabled(inp)));
+            }
+            hdr.push(F::from_bool(cap_ctl));
+            hdr.push(F::from_bool(cap_chain_enable));
+            for inp in inputs.iter().take(rate_ext) {
+                let ctl = Self::limb_ctl_enabled(inp);
+                hdr.push(F::from_bool(!self.new_start && !self.merkle_path && !ctl));
+            }
+            for inp in inputs.iter().take(rate_ext) {
+                let ctl = Self::limb_ctl_enabled(inp);
+                hdr.push(F::from_bool(!self.new_start && self.merkle_path && !ctl));
+            }
+            preprocessed.register_non_primitive_preprocessed_no_read(&self.op_type, &hdr);
+
+            for inp in inputs[0..width_ext].iter() {
+                if inp.is_empty() {
+                    preprocessed
+                        .register_non_primitive_preprocessed_no_read(&self.op_type, &[F::ZERO]);
+                } else if let [wid] = inp.as_slice() {
+                    if self.merkle_path {
+                        preprocessed.register_non_primitive_preprocessed_no_read(
+                            &self.op_type,
+                            &[preprocessed.witness_index_as_field(*wid)],
+                        );
+                    } else {
+                        preprocessed.register_non_primitive_witness_reads(&self.op_type, inp)?;
+                    }
+                } else {
+                    return Err(CircuitError::NonPrimitiveOpLayoutMismatch {
+                        op: self.op_type.clone(),
+                        expected: "0 or 1 witness per input limb".into(),
+                        got: inp.len(),
+                    });
+                }
+            }
+            return Ok(());
+        }
+
         for inp in inputs[0..width_ext].iter() {
             if inp.is_empty() {
                 preprocessed.register_non_primitive_preprocessed_no_read(
@@ -570,6 +640,32 @@ impl Poseidon2PermExecutor {
         preprocessed: &mut dyn PreprocessedWriter<F>,
     ) -> Result<(), CircuitError> {
         let rate_ext = self.config.rate_ext();
+
+        if self.compact_d1_preprocessed_layout() {
+            for out in outputs.iter().take(rate_ext) {
+                if out.is_empty() {
+                    preprocessed
+                        .register_non_primitive_preprocessed_no_read(&self.op_type, &[F::ZERO]);
+                } else if let [_] = out.as_slice() {
+                    preprocessed.register_non_primitive_output_index(&self.op_type, out);
+                } else {
+                    return Err(CircuitError::NonPrimitiveOpLayoutMismatch {
+                        op: self.op_type.clone(),
+                        expected: "0 or 1 witness per output limb".into(),
+                        got: out.len(),
+                    });
+                }
+            }
+
+            for out in outputs.iter().take(rate_ext) {
+                preprocessed.register_non_primitive_preprocessed_no_read(
+                    &self.op_type,
+                    &[F::from_bool(Self::limb_ctl_enabled(out))],
+                );
+            }
+            return Ok(());
+        }
+
         for out in outputs.iter().take(rate_ext) {
             if out.is_empty() {
                 preprocessed.register_non_primitive_preprocessed_no_read(

@@ -128,20 +128,24 @@ fn debug_koala_quintic_poseidon_witness_ids() {
 
     let op_type = NpoTypeId::poseidon2_perm(Poseidon2Config::KoalaBearD1Width16);
     if let Some(flat) = non_primitive_flat.get(&op_type) {
-        let row_w = p3_poseidon2_circuit_air::poseidon2_preprocessed_row_width(16, 8);
+        let row_w = p3_poseidon2_circuit_air::poseidon2_preprocessed_row_width_for_air(1, 16, 8, 4);
         println!(
             "poseidon committed prep: {} vals, row_w={row_w}",
             flat.len()
         );
         if flat.len() >= row_w {
-            let o0_idx = 16 * 4;
+            const IL: usize = 16;
+            const OL: usize = 8;
+            let hdr = p3_poseidon2_circuit_air::poseidon2_d1_compact_preprocessed_header_cols(OL);
+            let out_idx0 = hdr + IL;
+            let out_ctl0 = hdr + IL + OL;
             println!(
                 "row0 output limb0 idx (base) = {:?}",
-                flat[o0_idx].as_canonical_u64()
+                flat[out_idx0].as_canonical_u64()
             );
             println!(
-                "row0 output limb0 out_mult (base) = {:?}",
-                flat[o0_idx + 1].as_canonical_u64()
+                "row0 output limb0 out_ctl (base) = {:?}",
+                flat[out_ctl0].as_canonical_u64()
             );
         }
     }

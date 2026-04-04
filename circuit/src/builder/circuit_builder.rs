@@ -107,7 +107,7 @@ where
 
     /// Toggle whether [`Self::decompose_ext_to_base_coeffs`] reconnects hinted coefficients via the
     /// `recompose/coeff` table (needed with D=1 Poseidon2 over a higher-degree extension field).
-    pub fn set_recompose_coeff_ctl_for_decompose_links(&mut self, enabled: bool) {
+    pub const fn set_recompose_coeff_ctl_for_decompose_links(&mut self, enabled: bool) {
         self.recompose_coeff_ctl_for_decompose_links = enabled;
     }
 

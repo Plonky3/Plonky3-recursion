@@ -128,6 +128,10 @@ impl<F: Field, const D: usize> PreprocessedWriter<F> for PreprocessedColumns<F, 
         let entry = self.non_primitive.entry(op_type.clone()).or_default();
         entry.extend(values);
     }
+
+    fn witness_extension_degree_slots(&self) -> usize {
+        D
+    }
 }
 
 impl<F: Field, const D: usize> Default for PreprocessedColumns<F, D> {

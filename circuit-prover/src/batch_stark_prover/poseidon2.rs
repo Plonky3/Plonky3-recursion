@@ -1592,7 +1592,12 @@ where
             .ok_or(CircuitError::InvalidPreprocessedValues)?;
         let il = p2_cfg.width_ext();
         let ol = p2_cfg.rate_ext();
-        let prep_row_width = poseidon2_preprocessed_row_width(il, ol);
+        let prep_row_width = p3_poseidon2_circuit_air::poseidon2_preprocessed_row_width_for_air(
+            p2_cfg.d(),
+            il,
+            ol,
+            D,
+        );
 
         let prep_base: Vec<F> = prep
             .iter()
@@ -1606,7 +1611,12 @@ where
         let num_rows = prep_base.len() / prep_row_width;
         let trace_height = num_rows.next_power_of_two();
         let has_padding = trace_height > num_rows;
-        let tail = il * 4 + ol * 2;
+        let compact = p2_cfg.d() == 1 && il == 16 && ol == 8;
+        let tail = if compact {
+            ol + 2 + ol + ol + il + ol + ol
+        } else {
+            il * 4 + ol * 2
+        };
 
         for row_idx in 0..num_rows {
             let row_start = row_idx * prep_row_width;
@@ -1657,7 +1667,12 @@ where
             .ok_or(CircuitError::InvalidPreprocessedValues)?;
         let il = p2_cfg.width_ext();
         let ol = p2_cfg.rate_ext();
-        let prep_row_width = poseidon2_preprocessed_row_width(il, ol);
+        let prep_row_width = p3_poseidon2_circuit_air::poseidon2_preprocessed_row_width_for_air(
+            p2_cfg.d(),
+            il,
+            ol,
+            D,
+        );
 
         let dup_wids = preprocessed.dup_npo_outputs.get(op_type);
 
@@ -1671,20 +1686,30 @@ where
         }
 
         let num_rows = prep_base.len() / prep_row_width;
+        let compact = p2_cfg.d() == 1 && il == 16 && ol == 8;
 
         for row_idx in 0..num_rows {
             let row_start = row_idx * prep_row_width;
-            let out_base = row_start + il * 4;
+            let out_base = if compact {
+                row_start + ol + 2 + ol + ol + il
+            } else {
+                row_start + il * 4
+            };
             for j in 0..ol {
-                let o0 = out_base + j * 2;
-                let out_ctl = prep_base[o0 + 1];
+                let (o0, ctl_off) = if compact {
+                    (out_base + j, out_base + ol + j)
+                } else {
+                    let o = out_base + j * 2;
+                    (o, o + 1)
+                };
+                let out_ctl = prep_base[ctl_off];
                 if out_ctl != F::ZERO {
                     let idx = prep_base[o0];
                     let out_wid = F::as_canonical_u64(&idx) as usize / D;
                     let is_dup = dup_wids
                         .and_then(|d| d.get(out_wid).copied())
                         .unwrap_or(false);
-                    prep_base[o0 + 1] = if is_dup {
+                    prep_base[ctl_off] = if is_dup {
                         neg_one
                     } else {
                         let n_reads = preprocessed.ext_reads.get(out_wid).copied().unwrap_or(0);
