@@ -240,36 +240,9 @@ macro_rules! define_field_module_keccak_quintic {
         $backend_rate:expr
     ) => {
         mod $mod_name {
-            use p3_field::BasedVectorSpace;
-
             use super::*;
 
-            #[derive(Clone)]
-            struct LiftPermForQuintic($perm);
-
-            impl Permutation<[QuinticTrinomialExtensionField<$field>; $width]>
-                for LiftPermForQuintic
-            {
-                fn permute(
-                    &self,
-                    input: [QuinticTrinomialExtensionField<$field>; $width],
-                ) -> [QuinticTrinomialExtensionField<$field>; $width] {
-                    let bases: [$field; $width] =
-                        core::array::from_fn(|i| input[i].as_basis_coefficients_slice()[0]);
-                    let out = self.0.permute(bases);
-                    core::array::from_fn(|i| {
-                        QuinticTrinomialExtensionField::new([
-                            out[i],
-                            <$field as PrimeCharacteristicRing>::ZERO,
-                            <$field as PrimeCharacteristicRing>::ZERO,
-                            <$field as PrimeCharacteristicRing>::ZERO,
-                            <$field as PrimeCharacteristicRing>::ZERO,
-                        ])
-                    })
-                }
-            }
-
-            define_field_module_types_quintic!(
+            define_quintic_poseidon_perm_lift_and_types!(
                 $field,
                 $perm,
                 $default_perm,
@@ -278,7 +251,6 @@ macro_rules! define_field_module_keccak_quintic {
                 $width,
                 $rate,
                 $digest_elems,
-                || LiftPermForQuintic($default_perm()),
                 $backend_width,
                 $backend_rate
             );

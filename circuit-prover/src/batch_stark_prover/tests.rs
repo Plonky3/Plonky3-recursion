@@ -7,8 +7,8 @@ use p3_circuit::ops::{
 use p3_field::PrimeCharacteristicRing;
 use p3_field::extension::QuinticTrinomialExtensionField;
 use p3_goldilocks::{Goldilocks, Poseidon2Goldilocks};
-use p3_koala_bear::KoalaBear;
-use p3_symmetric::{CryptographicHasher, Permutation};
+use p3_koala_bear::{KoalaBear, Poseidon2KoalaBear, default_koalabear_poseidon2_16};
+use p3_symmetric::{CryptographicHasher, PaddingFreeSponge, Permutation};
 
 use super::*;
 use crate::ConstraintProfile;
@@ -599,7 +599,7 @@ fn test_goldilocks_poseidon2_circuit_build_and_run() {
     let in1 =
         Ext2::from_basis_coefficients_slice(&[Goldilocks::from_u64(2), Goldilocks::ZERO]).unwrap();
     let hasher =
-        p3_symmetric::PaddingFreeSponge::<Poseidon2Goldilocks<8>, 8, 4, 4>::new(perm_for_hash);
+        PaddingFreeSponge::<Poseidon2Goldilocks<8>, 8, 4, 4>::new(perm_for_hash);
     let base_inputs = [
         Goldilocks::from_u64(1),
         Goldilocks::ZERO,
@@ -757,7 +757,7 @@ fn test_add_only_circuit_padding() {
 }
 
 #[derive(Clone)]
-struct LiftKoalaPermForQuinticCircuit(p3_koala_bear::Poseidon2KoalaBear<16>);
+struct LiftKoalaPermForQuinticCircuit(Poseidon2KoalaBear<16>);
 
 impl Permutation<[QuinticTrinomialExtensionField<KoalaBear>; 16]>
     for LiftKoalaPermForQuinticCircuit
@@ -800,7 +800,7 @@ fn test_koalabear_quintic_trinomial_batch_stark_with_poseidon_d1() {
     type EF5 = QuinticTrinomialExtensionField<KoalaBear>;
 
     // Must match KoalaBearD1Width16::round_constants() in poseidon2-circuit-air (not RNG-derived).
-    let inner_perm = p3_koala_bear::default_koalabear_poseidon2_16();
+    let inner_perm = default_koalabear_poseidon2_16();
     let mut sponge0 = [KoalaBear::ZERO; 16];
     sponge0[0] = KoalaBear::from_u64(11);
     sponge0[1] = KoalaBear::from_u64(13);

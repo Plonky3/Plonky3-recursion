@@ -462,7 +462,7 @@ macro_rules! define_field_module {
 /// Variant of [`define_field_module`] for KoalaBear quintic extension (D=5).
 ///
 /// Differences from the standard macro:
-/// - Uses `define_field_module_types_quintic!` so `Challenge = QuinticTrinomialExtensionField<F>`.
+/// - Uses `define_quintic_poseidon_perm_lift_and_types!` so `Challenge = QuinticTrinomialExtensionField<F>`.
 /// - Backend is `FriRecursionBackendD5` (constructed via `FriRecursionBackend::new_d5`).
 /// - Does not support ZK mode (HidingFriPcs) — quintic ZK is not yet wired up.
 macro_rules! define_field_module_quintic {
@@ -481,39 +481,10 @@ macro_rules! define_field_module_quintic {
     ) => {
         mod $mod_name {
             use p3_batch_stark::ProverData;
-            use p3_field::BasedVectorSpace;
 
             use super::*;
 
-            /// Lifts a base-field Poseidon2 permutation to act on the quintic extension by
-            /// extracting the base coefficient of each element, applying the permutation, then
-            /// re-embedding back into the extension.
-            #[derive(Clone)]
-            struct LiftPermForQuintic($perm);
-
-            impl Permutation<[QuinticTrinomialExtensionField<$field>; $width]>
-                for LiftPermForQuintic
-            {
-                fn permute(
-                    &self,
-                    input: [QuinticTrinomialExtensionField<$field>; $width],
-                ) -> [QuinticTrinomialExtensionField<$field>; $width] {
-                    let bases: [$field; $width] =
-                        core::array::from_fn(|i| input[i].as_basis_coefficients_slice()[0]);
-                    let out = self.0.permute(bases);
-                    core::array::from_fn(|i| {
-                        QuinticTrinomialExtensionField::new([
-                            out[i],
-                            <$field as p3_field::PrimeCharacteristicRing>::ZERO,
-                            <$field as p3_field::PrimeCharacteristicRing>::ZERO,
-                            <$field as p3_field::PrimeCharacteristicRing>::ZERO,
-                            <$field as p3_field::PrimeCharacteristicRing>::ZERO,
-                        ])
-                    })
-                }
-            }
-
-            define_field_module_types_quintic!(
+            define_quintic_poseidon_perm_lift_and_types!(
                 $field,
                 $perm,
                 $default_perm,
@@ -522,7 +493,6 @@ macro_rules! define_field_module_quintic {
                 $width,
                 $rate,
                 $digest_elems,
-                || LiftPermForQuintic($default_perm()),
                 $backend_width,
                 $backend_rate
             );
