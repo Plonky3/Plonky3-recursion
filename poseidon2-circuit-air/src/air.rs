@@ -762,10 +762,10 @@ pub fn extract_preprocessed_from_operations<
             let cap_chain_enable = !*new_start;
             preprocessed.push(F::ZERO);
             preprocessed.push(F::from_bool(cap_chain_enable));
-            for ctl in out_ctl.iter().take(OL) {
+            for ctl in in_ctl.iter().take(OL) {
                 preprocessed.push(F::from_bool(!*new_start && !*merkle_path && !ctl));
             }
-            for ctl in out_ctl.iter().take(OL) {
+            for ctl in in_ctl.iter().take(OL) {
                 preprocessed.push(F::from_bool(!*new_start && *merkle_path && !ctl));
             }
             for input_index in input_indices.iter().take(IL) {

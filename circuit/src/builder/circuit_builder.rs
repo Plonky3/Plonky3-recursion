@@ -565,6 +565,8 @@ where
         if a == ExprId::ZERO || b == ExprId::ZERO {
             self.ext_recompose_coeffs.remove(&a);
             self.ext_recompose_coeffs.remove(&b);
+            self.ext_select_sources.remove(&a);
+            self.ext_select_sources.remove(&b);
         } else {
             let ca = self.ext_recompose_coeffs.remove(&a);
             let cb = self.ext_recompose_coeffs.remove(&b);
@@ -582,6 +584,24 @@ where
             if let Some(v) = merged {
                 self.ext_recompose_coeffs.insert(a, v.clone());
                 self.ext_recompose_coeffs.insert(b, v);
+            }
+
+            let sa = self.ext_select_sources.remove(&a);
+            let sb = self.ext_select_sources.remove(&b);
+            let merged_select = match (sa, sb) {
+                (Some(va), Some(vb)) => {
+                    debug_assert_eq!(
+                        va, vb,
+                        "connect: both sides carry ext_select_sources but they differ"
+                    );
+                    Some(va)
+                }
+                (Some(v), None) | (None, Some(v)) => Some(v),
+                (None, None) => None,
+            };
+            if let Some(v) = merged_select {
+                self.ext_select_sources.insert(a, v);
+                self.ext_select_sources.insert(b, v);
             }
         }
         self.expr_builder.connect(a, b);
@@ -1045,6 +1065,29 @@ where
         Ok(acc)
     }
 
+    /// Records that `result` is the recomposition of `coeffs` in the coefficient-provenance
+    /// cache, without adding any circuit constraint. A subsequent
+    /// [`Self::decompose_ext_to_base_coeffs`] on `result` can return `coeffs` directly.
+    ///
+    /// The caller must ensure `result` equals the field recomposition of `coeffs`. In debug
+    /// builds, conflicting provenance for the same `ExprId` or use of `ExprId::ZERO` is
+    /// rejected via `debug_assert`.
+    pub fn hint_ext_recompose_coeffs(&mut self, result: ExprId, coeffs: &[ExprId]) {
+        debug_assert_ne!(
+            result,
+            ExprId::ZERO,
+            "hint_ext_recompose_coeffs: ExprId::ZERO is shared circuit-wide; do not attach provenance"
+        );
+        if let Some(existing) = self.ext_recompose_coeffs.get(&result) {
+            debug_assert_eq!(
+                existing.as_slice(),
+                coeffs,
+                "hint_ext_recompose_coeffs: conflicting coefficient provenance for the same ExprId"
+            );
+        }
+        self.ext_recompose_coeffs.insert(result, coeffs.to_vec());
+    }
+
     /// Recomposes D base field coefficients into an extension field element.
     ///
     /// Given coefficients `[c_0, c_1, ..., c_{D-1}]`, computes `x = sum(c_i * basis_i)`
@@ -1066,19 +1109,10 @@ where
     /// When recompose NPO is enabled: 1 NPO row (zero ALU cost).
     /// Otherwise: D multiplications + (D-1) additions.
     ///
-    /// The builder records the output as derived from `coeffs` so a later
-    /// `decompose_ext_to_base_coeffs` on that output can return `coeffs` without extra hints.
+    /// The builder records the output in the coefficient-provenance cache so a later
+    /// [`Self::decompose_ext_to_base_coeffs`] on that output can return the same `coeffs`
+    /// without extra witness rows (this path **does** constrain recomposition via the recompose AIR).
     ///
-    /// Records that `result` is the recomposition of `coeffs` in the provenance cache, without
-    /// adding any circuit constraint. A subsequent [`Self::decompose_ext_to_base_coeffs`] on
-    /// `result` will return `coeffs` directly without allocating new witnesses.
-    ///
-    /// The caller is responsible for ensuring that `result` equals `recompose(coeffs)` in the
-    /// circuit — the cache entry is a hint, not a constraint.
-    pub fn hint_ext_recompose_coeffs(&mut self, result: ExprId, coeffs: &[ExprId]) {
-        self.ext_recompose_coeffs.insert(result, coeffs.to_vec());
-    }
-
     /// Uses the standard recompose AIR (no per-coefficient WitnessChecks receives). Prefer
     /// [`Self::recompose_base_coeffs_to_ext_with_coeff_lookups`] when the coefficient targets
     /// are read by a lower-degree Poseidon2 (e.g. D=1) after decomposition.
@@ -1343,19 +1377,17 @@ where
     ///
     /// # Parameters
     /// - `config`: The Poseidon2 configuration to use (must be D=1)
-    /// - `inputs`: 16 base field element targets (the sponge state)
+    /// - `new_start`: When `true`, rate inputs (0-7) are CTL-verified; capacity slots (8-15)
+    ///   should be `None` (zeros are enforced by the AIR). When `false`, rate is CTL-verified and
+    ///   capacity `None` inherits from the previous row via the chain constraint.
+    /// - `inputs`: Sixteen slots: `Some(expr)` for CTL-verified or witness-fed values, `None` for
+    ///   zeroed or chain-inherited capacity per `new_start`.
     ///
     /// # Returns
     /// 16 base field element targets (the permuted state)
     ///
     /// # Errors
-    /// Returns error if the Poseidon2 operation is not enabled
-    /// Applies a D=1 Poseidon2 permutation for the circuit challenger.
-    ///
-    /// - `new_start`: when `true`, rate inputs (0-7) are CTL-verified; capacity (8-15) should be
-    ///   `None` (zeros are enforced by the AIR). When `false`, rate is CTL-verified and capacity
-    ///   `None` inherits from the previous row via the chain constraint.
-    /// - `inputs`: `Some(expr)` for CTL-verified slots, `None` for zeroed or chain-inherited slots.
+    /// Returns an error if the Poseidon2 operation is not enabled.
     pub fn add_poseidon2_perm_for_challenger_base(
         &mut self,
         config: crate::ops::Poseidon2Config,

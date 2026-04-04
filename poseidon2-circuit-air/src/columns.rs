@@ -277,6 +277,21 @@ pub struct Poseidon2PreprocessedRow<const INPUT_LIMBS: usize, const OUTPUT_LIMBS
     pub merkle_path: T,
 }
 
+impl<const INPUT_LIMBS: usize, const OUTPUT_LIMBS: usize, T: Copy + Default> Default
+    for Poseidon2PreprocessedRow<INPUT_LIMBS, OUTPUT_LIMBS, T>
+{
+    fn default() -> Self {
+        Self {
+            input_limbs: [Poseidon2PrepInputLimb::default(); INPUT_LIMBS],
+            output_limbs: [Poseidon2PrepOutputLimb::default(); OUTPUT_LIMBS],
+            mmcs_index_sum_ctl_idx: T::default(),
+            mmcs_merkle_flag: T::default(),
+            new_start: T::default(),
+            merkle_path: T::default(),
+        }
+    }
+}
+
 impl<const INPUT_LIMBS: usize, const OUTPUT_LIMBS: usize, T: Copy>
     Poseidon2PreprocessedRow<INPUT_LIMBS, OUTPUT_LIMBS, T>
 {
