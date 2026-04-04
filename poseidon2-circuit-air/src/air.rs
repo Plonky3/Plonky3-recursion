@@ -748,13 +748,13 @@ pub fn extract_preprocessed_from_operations<
         }
 
         if compact_d1 {
-            for i in 0..OL {
-                preprocessed.push(F::from_bool(in_ctl[i]));
+            for ctl in in_ctl.iter().take(OL) {
+                preprocessed.push(F::from_bool(*ctl));
             }
             if !*merkle_path {
-                for i in OL..IL {
+                for ctl in in_ctl.iter().take(IL).skip(OL) {
                     debug_assert!(
-                        !in_ctl[i],
+                        !ctl,
                         "compact D=1 Poseidon2: capacity must not be witness-fed on sponge rows"
                     );
                 }
@@ -762,22 +762,20 @@ pub fn extract_preprocessed_from_operations<
             let cap_chain_enable = !*new_start;
             preprocessed.push(F::ZERO);
             preprocessed.push(F::from_bool(cap_chain_enable));
-            for i in 0..OL {
-                let ctl = in_ctl[i];
+            for ctl in out_ctl.iter().take(OL) {
                 preprocessed.push(F::from_bool(!*new_start && !*merkle_path && !ctl));
             }
-            for i in 0..OL {
-                let ctl = in_ctl[i];
+            for ctl in out_ctl.iter().take(OL) {
                 preprocessed.push(F::from_bool(!*new_start && *merkle_path && !ctl));
             }
-            for i in 0..IL {
-                preprocessed.push(F::from_u32(input_indices[i] * d));
+            for input_index in input_indices.iter().take(IL) {
+                preprocessed.push(F::from_u32(input_index * d));
             }
-            for i in 0..OL {
-                preprocessed.push(F::from_u32(output_indices[i] * d));
+            for output_index in output_indices.iter().take(OL) {
+                preprocessed.push(F::from_u32(output_index * d));
             }
-            for j in 0..OL {
-                preprocessed.push(F::from_bool(out_ctl[j]));
+            for ctl in out_ctl.iter().take(OL) {
+                preprocessed.push(F::from_bool(*ctl));
             }
             preprocessed.push(F::from_u64(*mmcs_index_sum_idx as u64 * d as u64));
             preprocessed.push(F::from_bool(*mmcs_ctl_enabled && *merkle_path));

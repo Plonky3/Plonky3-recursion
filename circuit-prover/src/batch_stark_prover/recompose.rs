@@ -320,7 +320,7 @@ where
         .map(|v| v.as_base().ok_or(CircuitError::InvalidPreprocessedValues))
         .collect::<Result<Vec<_>, CircuitError>>()?;
 
-    if prep_base.len() % prep_width != 0 {
+    if !prep_base.len().is_multiple_of(prep_width) {
         return Err(CircuitError::InvalidPreprocessedValues);
     }
 
@@ -427,9 +427,10 @@ where
         lanes: usize,
         _constraint_profile: ConstraintProfile,
     ) -> Option<(CircuitTableAir<SC, D>, usize)> {
-        let matches = match self.coeff_lookups {
-            false => op_type.as_str() == "recompose",
-            true => op_type.as_str() == "recompose/coeff",
+        let matches = if !self.coeff_lookups {
+            op_type.as_str() == "recompose"
+        } else {
+            op_type.as_str() == "recompose/coeff"
         };
         if !matches {
             return None;
