@@ -7,8 +7,9 @@ use p3_circuit::ops::{
 use p3_field::PrimeCharacteristicRing;
 use p3_field::extension::QuinticTrinomialExtensionField;
 use p3_goldilocks::{Goldilocks, Poseidon2Goldilocks};
-use p3_koala_bear::{KoalaBear, Poseidon2KoalaBear, default_koalabear_poseidon2_16};
+use p3_koala_bear::{KoalaBear, default_koalabear_poseidon2_16};
 use p3_symmetric::{CryptographicHasher, PaddingFreeSponge, Permutation};
+use p3_test_utils::LiftPermToQuintic;
 
 use super::*;
 use crate::ConstraintProfile;
@@ -755,33 +756,6 @@ fn test_add_only_circuit_padding() {
     prover.verify_all_tables(&proof, common).unwrap();
 }
 
-#[derive(Clone)]
-struct LiftKoalaPermForQuinticCircuit(Poseidon2KoalaBear<16>);
-
-impl Permutation<[QuinticTrinomialExtensionField<KoalaBear>; 16]>
-    for LiftKoalaPermForQuinticCircuit
-{
-    fn permute(
-        &self,
-        input: [QuinticTrinomialExtensionField<KoalaBear>; 16],
-    ) -> [QuinticTrinomialExtensionField<KoalaBear>; 16] {
-        type EF5 = QuinticTrinomialExtensionField<KoalaBear>;
-        let bases: [KoalaBear; 16] =
-            core::array::from_fn(|i| input[i].as_basis_coefficients_slice()[0]);
-        let out_b = self.0.permute(bases);
-        core::array::from_fn(|i| {
-            EF5::from_basis_coefficients_slice(&[
-                out_b[i],
-                KoalaBear::ZERO,
-                KoalaBear::ZERO,
-                KoalaBear::ZERO,
-                KoalaBear::ZERO,
-            ])
-            .expect("lift to EF5")
-        })
-    }
-}
-
 fn koala_ef5_lift(b: KoalaBear) -> QuinticTrinomialExtensionField<KoalaBear> {
     QuinticTrinomialExtensionField::<KoalaBear>::from_basis_coefficients_slice(&[
         b,
@@ -804,7 +778,7 @@ fn test_koalabear_quintic_trinomial_batch_stark_with_poseidon_d1() {
     sponge0[0] = KoalaBear::from_u64(11);
     sponge0[1] = KoalaBear::from_u64(13);
     let sponge_out = inner_perm.permute(sponge0);
-    let lift_perm = LiftKoalaPermForQuinticCircuit(inner_perm);
+    let lift_perm = LiftPermToQuintic::new(inner_perm);
 
     let in0 = koala_ef5_lift(KoalaBear::from_u64(11));
     let in1 = koala_ef5_lift(KoalaBear::from_u64(13));
@@ -893,7 +867,7 @@ fn test_koalabear_quintic_trinomial_batch_stark_poseidon_d1_sponge_chain() {
     sponge0[1] = KoalaBear::from_u64(13);
     let sponge_out0 = inner_perm.permute(sponge0);
     let sponge_out1 = inner_perm.permute(sponge_out0);
-    let lift_perm = LiftKoalaPermForQuinticCircuit(inner_perm);
+    let lift_perm = LiftPermToQuintic::new(inner_perm);
 
     let in0 = koala_ef5_lift(KoalaBear::from_u64(11));
     let in1 = koala_ef5_lift(KoalaBear::from_u64(13));

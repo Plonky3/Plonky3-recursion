@@ -505,7 +505,7 @@ macro_rules! define_field_module_types {
 ///   `impl Permutation<[Challenge; WIDTH]>`.
 ///
 /// Recursive examples usually call `define_quintic_poseidon_perm_lift_and_types!` instead, which
-/// defines the standard base-coefficient Poseidon lift and then invokes this macro.
+/// wires in [`p3_test_utils::LiftPermToQuintic`] and then invokes this macro.
 #[macro_export]
 macro_rules! define_field_module_types_quintic {
     (
@@ -717,10 +717,8 @@ macro_rules! define_field_module_types_quintic {
     };
 }
 
-/// Lifts a base-field Poseidon2 permutation to act on the quintic extension by taking the base
-/// coefficient of each lane, permuting in the base field, then re-embedding; then expands
-/// [`define_field_module_types_quintic!`] with `|| LiftPermForQuintic($default_perm())` as the
-/// circuit permutation constructor.
+/// Expands [`define_field_module_types_quintic!`] with a circuit permutation constructor that uses
+/// [`p3_test_utils::LiftPermToQuintic`].
 #[macro_export]
 macro_rules! define_quintic_poseidon_perm_lift_and_types {
     (
@@ -735,33 +733,6 @@ macro_rules! define_quintic_poseidon_perm_lift_and_types {
         $backend_width:expr,
         $backend_rate:expr
     ) => {
-        #[derive(Clone)]
-        struct LiftPermForQuintic($perm);
-
-        impl p3_symmetric::Permutation<
-            [p3_field::extension::QuinticTrinomialExtensionField<$field>; $width],
-        > for LiftPermForQuintic
-        {
-            fn permute(
-                &self,
-                input: [p3_field::extension::QuinticTrinomialExtensionField<$field>; $width],
-            ) -> [p3_field::extension::QuinticTrinomialExtensionField<$field>; $width] {
-                let bases: [$field; $width] = core::array::from_fn(|i| {
-                    <p3_field::extension::QuinticTrinomialExtensionField<$field> as p3_field::BasedVectorSpace<$field>>::as_basis_coefficients_slice(&input[i])[0]
-                });
-                let out = self.0.permute(bases);
-                core::array::from_fn(|i| {
-                    p3_field::extension::QuinticTrinomialExtensionField::new([
-                        out[i],
-                        <$field as p3_field::PrimeCharacteristicRing>::ZERO,
-                        <$field as p3_field::PrimeCharacteristicRing>::ZERO,
-                        <$field as p3_field::PrimeCharacteristicRing>::ZERO,
-                        <$field as p3_field::PrimeCharacteristicRing>::ZERO,
-                    ])
-                })
-            }
-        }
-
         define_field_module_types_quintic!(
             $field,
             $perm,
@@ -771,7 +742,7 @@ macro_rules! define_quintic_poseidon_perm_lift_and_types {
             $width,
             $rate,
             $digest_elems,
-            || LiftPermForQuintic($default_perm()),
+            || ::p3_test_utils::LiftPermToQuintic::<$field, $perm, $width>::new($default_perm()),
             $backend_width,
             $backend_rate
         );

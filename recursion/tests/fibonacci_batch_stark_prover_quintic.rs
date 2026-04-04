@@ -34,23 +34,6 @@ use crate::common::InnerFriGeneric;
 
 type InnerFri = InnerFriGeneric<MyConfig, MyHash, MyCompress, DIGEST_ELEMS>;
 
-use p3_symmetric::Permutation;
-
-#[derive(Clone)]
-struct LiftKoalaPermForQuintic(Perm);
-
-impl Permutation<[Challenge; 16]> for LiftKoalaPermForQuintic {
-    fn permute(&self, input: [Challenge; 16]) -> [Challenge; 16] {
-        let bases: [F; 16] = core::array::from_fn(|i| input[i].as_basis_coefficients_slice()[0]);
-        let out_b = self.0.permute(bases);
-        core::array::from_fn(|i| lift_scalar_to_challenge(out_b[i]))
-    }
-}
-
-fn lift_scalar_to_challenge(b: F) -> Challenge {
-    Challenge::from_basis_coefficients_slice(&[b, F::ZERO, F::ZERO, F::ZERO, F::ZERO]).unwrap()
-}
-
 fn init_logger() {
     let env_filter = EnvFilter::builder()
         .with_default_directive(LevelFilter::INFO.into())
@@ -169,7 +152,7 @@ fn test_fibonacci_batch_verifier_quintic_koala() {
     let pis: Vec<Vec<F>> = vec![vec![]; 5];
 
     let mut circuit_builder = CircuitBuilder::<Challenge>::new();
-    let lift = LiftKoalaPermForQuintic(default_koalabear_poseidon2_16());
+    let lift = LiftKoalaPermForQuintic::new(default_koalabear_poseidon2_16());
     circuit_builder.enable_poseidon2_perm_base::<KoalaBearD1Width16, _>(
         generate_poseidon2_trace::<Challenge, KoalaBearD1Width16>,
         lift,
