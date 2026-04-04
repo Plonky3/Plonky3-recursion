@@ -68,6 +68,13 @@ pub struct CircuitBuilder<F: Field> {
     /// Lets `decompose_ext_to_base_coeffs` return those nodes without extra decomposition hints.
     ext_recompose_coeffs: HashMap<ExprId, Vec<ExprId>>,
 
+    /// `select(b, t, s)` outputs mapped to their `(b, t, s)` triple.
+    ///
+    /// Lets `decompose_ext_to_base_coeffs` handle EF selects coefficient-wise when at least one
+    /// input has known coefficient provenance (via `ext_recompose_coeffs`), avoiding D witness
+    /// allocations for the known branch. The unknown branch is decomposed recursively.
+    ext_select_sources: HashMap<ExprId, (ExprId, ExprId, ExprId)>,
+
     /// Routes decomposition reconnect through `recompose/coeff` when set (see
     /// [`Self::set_recompose_coeff_ctl_for_decompose_links`]).
     recompose_coeff_ctl_for_decompose_links: bool,
@@ -101,6 +108,7 @@ where
             tag_to_op: HashMap::new(),
             recompose_npo_enabled: false,
             ext_recompose_coeffs: HashMap::new(),
+            ext_select_sources: HashMap::new(),
             recompose_coeff_ctl_for_decompose_links: false,
         }
     }
@@ -598,7 +606,9 @@ where
             return t;
         }
         let t_minus_s = self.sub(t, s);
-        self.mul_add(b, t_minus_s, s)
+        let result = self.mul_add(b, t_minus_s, s);
+        self.ext_select_sources.insert(result, (b, t, s));
+        result
     }
 
     /// Exponentiates a base expression to a power of 2 (i.e. base^(2^power_log)), by squaring repeatedly.
@@ -1059,6 +1069,16 @@ where
     /// The builder records the output as derived from `coeffs` so a later
     /// `decompose_ext_to_base_coeffs` on that output can return `coeffs` without extra hints.
     ///
+    /// Records that `result` is the recomposition of `coeffs` in the provenance cache, without
+    /// adding any circuit constraint. A subsequent [`Self::decompose_ext_to_base_coeffs`] on
+    /// `result` will return `coeffs` directly without allocating new witnesses.
+    ///
+    /// The caller is responsible for ensuring that `result` equals `recompose(coeffs)` in the
+    /// circuit — the cache entry is a hint, not a constraint.
+    pub fn hint_ext_recompose_coeffs(&mut self, result: ExprId, coeffs: &[ExprId]) {
+        self.ext_recompose_coeffs.insert(result, coeffs.to_vec());
+    }
+
     /// Uses the standard recompose AIR (no per-coefficient WitnessChecks receives). Prefer
     /// [`Self::recompose_base_coeffs_to_ext_with_coeff_lookups`] when the coefficient targets
     /// are read by a lower-degree Poseidon2 (e.g. D=1) after decomposition.
@@ -1187,6 +1207,49 @@ where
         if let Some(coeffs) = self.ext_recompose_coeffs.get(&x) {
             debug_assert_eq!(coeffs.len(), F::DIMENSION);
             return Ok(coeffs.clone());
+        }
+
+        // If x = select(b, t, s) and at least one input has known coefficient provenance,
+        // decompose coefficient-wise: coeff[i] = select(b, t_coeff[i], s_coeff[i]).
+        // For the input without provenance, decompose it recursively (may generate witnesses).
+        // This saves D witness allocations for every input that IS in the provenance cache.
+        if let Some((b, t, s)) = self.ext_select_sources.get(&x).copied() {
+            let t_coeffs_opt = self.ext_recompose_coeffs.get(&t).cloned();
+            let s_coeffs_opt = self.ext_recompose_coeffs.get(&s).cloned();
+            if t_coeffs_opt.is_some() || s_coeffs_opt.is_some() {
+                // Non-cached branches are decomposed WITHOUT the coeff-ctl flag: their
+                // witnesses are not placed directly into Poseidon2 rate slots — only the
+                // select results are. We create a ctl entry for x itself below (if needed),
+                // so the WitnessChecks bus stays balanced.
+                let saved_ctl = self.recompose_coeff_ctl_for_decompose_links;
+                self.recompose_coeff_ctl_for_decompose_links = false;
+                let t_coeffs = match t_coeffs_opt {
+                    Some(c) => c,
+                    None => self.decompose_ext_to_base_coeffs::<BF>(t)?,
+                };
+                let s_coeffs = match s_coeffs_opt {
+                    Some(c) => c,
+                    None => self.decompose_ext_to_base_coeffs::<BF>(s)?,
+                };
+                self.recompose_coeff_ctl_for_decompose_links = saved_ctl;
+                debug_assert_eq!(t_coeffs.len(), F::DIMENSION);
+                debug_assert_eq!(s_coeffs.len(), F::DIMENSION);
+                let mut coeffs = Vec::with_capacity(F::DIMENSION);
+                for (&tc, &sc) in t_coeffs.iter().zip(s_coeffs.iter()) {
+                    coeffs.push(self.select(b, tc, sc));
+                }
+                if saved_ctl {
+                    // The select coefficients are what enter Poseidon2 rate slots, so they
+                    // need a coeff-ctl entry. Emit one for x now that the selects are known.
+                    let reconstructed =
+                        self.recompose_base_coeffs_to_ext_with_coeff_lookups::<BF>(&coeffs)?;
+                    self.connect(x, reconstructed);
+                    // connect() propagates ext_recompose_coeffs[reconstructed] → x
+                } else {
+                    self.ext_recompose_coeffs.insert(x, coeffs.clone());
+                }
+                return Ok(coeffs);
+            }
         }
 
         self.push_scope("decompose_ext_to_base_coeffs");
