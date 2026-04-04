@@ -30,7 +30,7 @@
 //! cargo run --release --example recursive_keccak -- --field koala-bear --num-hashes 1000
 //!
 //! # KoalaBear with quintic challenge extension (D = 5)
-//! cargo run --release --example recursive_keccak -- --field koala-bear-quintic --num-hashes 1000
+//! cargo run --release --example recursive_keccak -- --field koala-bear --quintic --num-hashes 1000
 //!
 //! # With custom FRI parameters and recursion depth
 //! cargo run --release --example recursive_keccak -- \
@@ -66,6 +66,10 @@ struct Args {
 
     #[arg(short, long, ignore_case = true, value_enum, default_value_t = FieldOption::KoalaBear)]
     pub field: FieldOption,
+
+    /// Use quintic (D = 5) challenge extension (KoalaBear only; incompatible with baby-bear / goldilocks).
+    #[arg(long, default_value_t = false)]
+    pub quintic: bool,
 
     #[arg(
         long,
@@ -179,12 +183,23 @@ fn main() {
         panic!("Number of recursive layers should be at least 1");
     }
 
+    assert_quintic_field(args.field, args.quintic);
+
     info!(
-        "Recursively proving {} Keccak hashes with field {:?}",
-        args.num_hashes, args.field
+        "Recursively proving {} Keccak hashes with field {:?}, quintic {}",
+        args.num_hashes, args.field, args.quintic
     );
 
     match args.field {
+        FieldOption::KoalaBear if args.quintic => koala_bear_quintic::run(
+            args.num_hashes,
+            args.num_recursive_layers,
+            &fri_params,
+            &table_packing,
+            args.security_level,
+            args.zk,
+            args.disable_recompose_npo,
+        ),
         FieldOption::KoalaBear => koala_bear::run(
             args.num_hashes,
             args.num_recursive_layers,
@@ -204,15 +219,6 @@ fn main() {
             args.disable_recompose_npo,
         ),
         FieldOption::Goldilocks => goldilocks::run(
-            args.num_hashes,
-            args.num_recursive_layers,
-            &fri_params,
-            &table_packing,
-            args.security_level,
-            args.zk,
-            args.disable_recompose_npo,
-        ),
-        FieldOption::KoalaBearQuintic => koala_bear_quintic::run(
             args.num_hashes,
             args.num_recursive_layers,
             &fri_params,

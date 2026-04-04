@@ -72,9 +72,19 @@ pub struct FriParams {
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum FieldOption {
     KoalaBear,
-    KoalaBearQuintic,
     BabyBear,
     Goldilocks,
+}
+
+/// Panics when `--quintic` is set with a base field that does not support the quintic challenge extension.
+#[inline]
+pub fn assert_quintic_field(field: FieldOption, quintic: bool) {
+    if quintic && !matches!(field, FieldOption::KoalaBear) {
+        panic!(
+            "--quintic is only supported with --field koala-bear (got {:?})",
+            field
+        );
+    }
 }
 
 pub fn default_goldilocks_poseidon2_8() -> p3_goldilocks::Poseidon2Goldilocks<8> {

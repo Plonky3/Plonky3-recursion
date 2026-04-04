@@ -23,6 +23,9 @@
 //! # Basic usage with default parameters (3 recursive layers)
 //! cargo run --release --example recursive_fibonacci -- --field koala-bear --n 10000
 //!
+//! # KoalaBear with quintic challenge extension (D = 5)
+//! cargo run --release --example recursive_fibonacci -- --field koala-bear --quintic --n 10000
+//!
 //! # With custom FRI parameters and recursion depth
 //! cargo run --release --example recursive_fibonacci -- \
 //!     --field koala-bear \
@@ -56,6 +59,10 @@ struct Args {
 
     #[arg(short, long, ignore_case = true, value_enum, default_value_t = FieldOption::KoalaBear)]
     pub field: FieldOption,
+
+    /// Use quintic (D = 5) challenge extension (KoalaBear only; incompatible with baby-bear / goldilocks).
+    #[arg(long, default_value_t = false)]
+    pub quintic: bool,
 
     #[arg(
         long,
@@ -169,12 +176,22 @@ fn main() {
         panic!("Number of recursive layers should be at least 1");
     }
 
+    assert_quintic_field(args.field, args.quintic);
+
     info!(
-        "Recursively proving {} Fibonacci iterations with field {:?}",
-        args.n, args.field
+        "Recursively proving {} Fibonacci iterations with field {:?}, quintic {}",
+        args.n, args.field, args.quintic
     );
 
     match args.field {
+        FieldOption::KoalaBear if args.quintic => koala_bear_quintic::run(
+            args.n,
+            args.num_recursive_layers,
+            &fri_params,
+            &table_packing,
+            args.security_level,
+            args.disable_recompose_npo,
+        ),
         FieldOption::KoalaBear => koala_bear::run(
             args.n,
             args.num_recursive_layers,
@@ -182,14 +199,6 @@ fn main() {
             &table_packing,
             args.security_level,
             args.zk,
-            args.disable_recompose_npo,
-        ),
-        FieldOption::KoalaBearQuintic => koala_bear_quintic::run(
-            args.n,
-            args.num_recursive_layers,
-            &fri_params,
-            &table_packing,
-            args.security_level,
             args.disable_recompose_npo,
         ),
         FieldOption::BabyBear => baby_bear::run(

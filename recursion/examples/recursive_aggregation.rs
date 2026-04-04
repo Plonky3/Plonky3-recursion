@@ -22,7 +22,7 @@
 //! cargo run --release --example recursive_aggregation -- --field koala-bear
 //!
 //! # KoalaBear with quintic challenge extension (D = 5)
-//! cargo run --release --example recursive_aggregation -- --field koala-bear-quintic
+//! cargo run --release --example recursive_aggregation -- --field koala-bear --quintic
 //!
 //! # 8 base proofs, 3 aggregation levels, custom FRI parameters
 //! cargo run --release --example recursive_aggregation -- \
@@ -52,6 +52,10 @@ struct Args {
 
     #[arg(short, long, ignore_case = true, value_enum, default_value_t = FieldOption::KoalaBear)]
     pub field: FieldOption,
+
+    /// Use quintic (D = 5) challenge extension (KoalaBear only; incompatible with baby-bear / goldilocks).
+    #[arg(long, default_value_t = false)]
+    pub quintic: bool,
 
     #[arg(
         long,
@@ -167,12 +171,22 @@ fn main() {
 
     assert!(args.num_recursive_layers >= 1);
 
+    assert_quintic_field(args.field, args.quintic);
+
     info!(
-        "2-to-1 aggregation with field {:?}, {} aggregation recursive layers",
-        args.field, args.num_recursive_layers
+        "2-to-1 aggregation with field {:?}, quintic {}, {} aggregation recursive layers",
+        args.field, args.quintic, args.num_recursive_layers
     );
 
     match args.field {
+        FieldOption::KoalaBear if args.quintic => koala_bear_quintic::run(
+            args.num_recursive_layers,
+            &fri_params,
+            &table_packing,
+            args.security_level,
+            args.zk,
+            args.disable_recompose_npo,
+        ),
         FieldOption::KoalaBear => koala_bear::run(
             args.num_recursive_layers,
             &fri_params,
@@ -190,14 +204,6 @@ fn main() {
             args.disable_recompose_npo,
         ),
         FieldOption::Goldilocks => goldilocks::run(
-            args.num_recursive_layers,
-            &fri_params,
-            &table_packing,
-            args.security_level,
-            args.zk,
-            args.disable_recompose_npo,
-        ),
-        FieldOption::KoalaBearQuintic => koala_bear_quintic::run(
             args.num_recursive_layers,
             &fri_params,
             &table_packing,
