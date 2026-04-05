@@ -113,6 +113,7 @@ macro_rules! call_eval_variant {
             { <$Params as Poseidon2Params>::SBOX_REGISTERS },
             { <$Params as Poseidon2Params>::HALF_FULL_ROUNDS },
             { <$Params as Poseidon2Params>::PARTIAL_ROUNDS },
+            { <$Params as Poseidon2Params>::D },
         >($air, $b, $l, $n, $p)
     };
 }
@@ -277,6 +278,7 @@ macro_rules! call_eval_variant_2ab {
             { <$Params as Poseidon2Params>::SBOX_REGISTERS },
             { <$Params as Poseidon2Params>::HALF_FULL_ROUNDS },
             { <$Params as Poseidon2Params>::PARTIAL_ROUNDS },
+            { <$Params as Poseidon2Params>::D },
         >($air, $b, $l, $n, $p)
     };
 }
@@ -444,6 +446,7 @@ pub(crate) unsafe fn eval_poseidon2_variant<
     const SBOX_REGISTERS: usize,
     const HALF_FULL_ROUNDS: usize,
     const PARTIAL_ROUNDS: usize,
+    const WITNESS_EXT_D: usize,
 >(
     air: &Poseidon2CircuitAir<
         F,
@@ -457,6 +460,7 @@ pub(crate) unsafe fn eval_poseidon2_variant<
         SBOX_REGISTERS,
         HALF_FULL_ROUNDS,
         PARTIAL_ROUNDS,
+        WITNESS_EXT_D,
     >,
     builder: &mut AB,
     local_slice: &[<AB as AirBuilder>::Var],
@@ -544,6 +548,7 @@ pub(crate) unsafe fn eval_poseidon2_variant<
             SBOX_REGISTERS,
             HALF_FULL_ROUNDS,
             PARTIAL_ROUNDS,
+            WITNESS_EXT_D,
         >(air, builder, local_var, next_var, next_preprocessed_var);
     }
 }
@@ -665,6 +670,7 @@ where
                     { GoldilocksD2Width8::SBOX_REGISTERS },
                     { GoldilocksD2Width8::HALF_FULL_ROUNDS },
                     { GoldilocksD2Width8::PARTIAL_ROUNDS },
+                    { GoldilocksD2Width8::D },
                 >(
                     air.as_ref(),
                     builder,
@@ -689,6 +695,7 @@ where
                     { BabyBearD4Width16::SBOX_REGISTERS },
                     { BabyBearD4Width16::HALF_FULL_ROUNDS },
                     { BabyBearD4Width16::PARTIAL_ROUNDS },
+                    { BabyBearD4Width16::D },
                 >(
                     air.as_ref(),
                     builder,
@@ -713,6 +720,7 @@ where
                     { BabyBearD4Width24::SBOX_REGISTERS },
                     { BabyBearD4Width24::HALF_FULL_ROUNDS },
                     { BabyBearD4Width24::PARTIAL_ROUNDS },
+                    { BabyBearD4Width24::D },
                 >(
                     air.as_ref(),
                     builder,
@@ -737,6 +745,7 @@ where
                     { KoalaBearD4Width16::SBOX_REGISTERS },
                     { KoalaBearD4Width16::HALF_FULL_ROUNDS },
                     { KoalaBearD4Width16::PARTIAL_ROUNDS },
+                    { KoalaBearD4Width16::D },
                 >(
                     air.as_ref(),
                     builder,
@@ -761,6 +770,7 @@ where
                     { KoalaBearD4Width24::SBOX_REGISTERS },
                     { KoalaBearD4Width24::HALF_FULL_ROUNDS },
                     { KoalaBearD4Width24::PARTIAL_ROUNDS },
+                    { KoalaBearD4Width24::D },
                 >(
                     air.as_ref(),
                     builder,
@@ -1000,9 +1010,16 @@ impl Poseidon2Prover {
         let (air, matrix) = match self.config {
             Poseidon2Config::BabyBearD1Width16 | Poseidon2Config::BabyBearD4Width16 => {
                 let constants = BabyBearD4Width16::round_constants();
-                let preprocessed = extract_preprocessed_from_operations::<BabyBear, Val<SC>>(
+                let preprocessed = extract_preprocessed_from_operations::<
+                    { BabyBearD4Width16::WIDTH_EXT },
+                    { BabyBearD4Width16::RATE_EXT },
+                    BabyBear,
+                    Val<SC>,
+                >(
                     &t.operations,
                     self.config.d() as u32,
+                    BabyBearD4Width16::D,
+                    BabyBearD4Width16::D,
                 );
                 let air =
                     BabyBearD4Width16::default_air_with_preprocessed(preprocessed, min_height);
@@ -1019,9 +1036,16 @@ impl Poseidon2Prover {
             }
             Poseidon2Config::BabyBearD4Width24 => {
                 let constants = BabyBearD4Width24::round_constants();
-                let preprocessed = extract_preprocessed_from_operations::<BabyBear, Val<SC>>(
+                let preprocessed = extract_preprocessed_from_operations::<
+                    { BabyBearD4Width24::WIDTH_EXT },
+                    { BabyBearD4Width24::RATE_EXT },
+                    BabyBear,
+                    Val<SC>,
+                >(
                     &t.operations,
                     self.config.d() as u32,
+                    BabyBearD4Width24::D,
+                    BabyBearD4Width24::D,
                 );
                 let air =
                     BabyBearD4Width24::default_air_with_preprocessed(preprocessed, min_height);
@@ -1038,9 +1062,16 @@ impl Poseidon2Prover {
             }
             Poseidon2Config::KoalaBearD1Width16 | Poseidon2Config::KoalaBearD4Width16 => {
                 let constants = KoalaBearD4Width16::round_constants();
-                let preprocessed = extract_preprocessed_from_operations::<KoalaBear, Val<SC>>(
+                let preprocessed = extract_preprocessed_from_operations::<
+                    { KoalaBearD4Width16::WIDTH_EXT },
+                    { KoalaBearD4Width16::RATE_EXT },
+                    KoalaBear,
+                    Val<SC>,
+                >(
                     &t.operations,
                     self.config.d() as u32,
+                    KoalaBearD4Width16::D,
+                    KoalaBearD4Width16::D,
                 );
                 let air =
                     KoalaBearD4Width16::default_air_with_preprocessed(preprocessed, min_height);
@@ -1057,9 +1088,16 @@ impl Poseidon2Prover {
             }
             Poseidon2Config::KoalaBearD4Width24 => {
                 let constants = KoalaBearD4Width24::round_constants();
-                let preprocessed = extract_preprocessed_from_operations::<KoalaBear, Val<SC>>(
+                let preprocessed = extract_preprocessed_from_operations::<
+                    { KoalaBearD4Width24::WIDTH_EXT },
+                    { KoalaBearD4Width24::RATE_EXT },
+                    KoalaBear,
+                    Val<SC>,
+                >(
                     &t.operations,
                     self.config.d() as u32,
+                    KoalaBearD4Width24::D,
+                    KoalaBearD4Width24::D,
                 );
                 let air =
                     KoalaBearD4Width24::default_air_with_preprocessed(preprocessed, min_height);
@@ -1076,9 +1114,16 @@ impl Poseidon2Prover {
             }
             Poseidon2Config::GoldilocksD2Width8 => {
                 let constants = goldilocks_d2_width8_round_constants();
-                let preprocessed = extract_preprocessed_from_operations::<Goldilocks, Val<SC>>(
+                let preprocessed = extract_preprocessed_from_operations::<
+                    { GoldilocksD2Width8::WIDTH_EXT },
+                    { GoldilocksD2Width8::RATE_EXT },
+                    Goldilocks,
+                    Val<SC>,
+                >(
                     &t.operations,
                     self.config.d() as u32,
+                    GoldilocksD2Width8::D,
+                    GoldilocksD2Width8::D,
                 );
                 let air =
                     goldilocks_d2_width8_default_air_with_preprocessed(preprocessed, min_height);
@@ -1287,14 +1332,14 @@ where
 }
 
 /// Shared helper implementing Poseidon2-specific preprocessing on generic preprocessed columns.
-fn poseidon2_preprocess_for_prover<F, ExtF, const D: usize>(
+fn poseidon2_preprocess_for_prover<F, ExtF, const D: usize, const IL: usize, const OL: usize>(
     preprocessed: &mut PreprocessedColumns<ExtF, D>,
 ) -> Result<NonPrimitivePreprocessedMap<F>, CircuitError>
 where
     F: StarkField + PrimeField64,
     ExtF: ExtensionField<F>,
 {
-    let prep_row_width = poseidon2_preprocessed_width();
+    let prep_row_width = poseidon2_preprocessed_row_width(IL, OL);
     let neg_one = F::NEG_ONE;
 
     // Phase 1: scan Poseidon2 preprocessed data to count mmcs_index_sum conditional reads,
@@ -1312,7 +1357,7 @@ where
 
             for row_idx in 0..num_rows {
                 let row_start = row_idx * prep_row_width;
-                let row: &Poseidon2PreprocessedRow<F> =
+                let row: &Poseidon2PreprocessedRow<IL, OL, F> =
                     prep_base[row_start..row_start + prep_row_width].borrow();
                 let current_mmcs_merkle_flag = row.mmcs_merkle_flag;
 
@@ -1322,13 +1367,13 @@ where
                 // lookup if its mmcs_merkle_flag = 1 and there is padding.
                 let next_new_start = if row_idx + 1 < num_rows {
                     let next_start = (row_idx + 1) * prep_row_width;
-                    let next_row: &Poseidon2PreprocessedRow<F> =
+                    let next_row: &Poseidon2PreprocessedRow<IL, OL, F> =
                         prep_base[next_start..next_start + prep_row_width].borrow();
                     next_row.new_start
                 } else if has_padding {
                     F::ONE
                 } else {
-                    let first_row: &Poseidon2PreprocessedRow<F> =
+                    let first_row: &Poseidon2PreprocessedRow<IL, OL, F> =
                         prep_base[0..prep_row_width].borrow();
                     first_row.new_start
                 };
@@ -1366,7 +1411,7 @@ where
 
             for row_idx in 0..num_rows {
                 let row_start = row_idx * prep_row_width;
-                let row: &mut Poseidon2PreprocessedRow<F> =
+                let row: &mut Poseidon2PreprocessedRow<IL, OL, F> =
                     prep_base[row_start..row_start + prep_row_width].borrow_mut();
 
                 for out_limb in &mut row.output_limbs {
@@ -1403,7 +1448,13 @@ impl NpoPreprocessor<BabyBear> for Poseidon2Preprocessor {
         preprocessed: &mut dyn Any,
     ) -> Result<NonPrimitivePreprocessedMap<BabyBear>, CircuitError> {
         if let Some(prep) = preprocessed.downcast_mut::<PreprocessedColumns<BabyBear, 1>>() {
-            return poseidon2_preprocess_for_prover::<BabyBear, BabyBear, 1>(prep);
+            return poseidon2_preprocess_for_prover::<
+                BabyBear,
+                BabyBear,
+                1,
+                { BabyBearD4Width16::WIDTH_EXT },
+                { BabyBearD4Width16::RATE_EXT },
+            >(prep);
         }
         if let Some(prep) = preprocessed
             .downcast_mut::<PreprocessedColumns<BinomialExtensionField<BabyBear, 4>, 4>>()
@@ -1412,6 +1463,8 @@ impl NpoPreprocessor<BabyBear> for Poseidon2Preprocessor {
                 BabyBear,
                 BinomialExtensionField<BabyBear, 4>,
                 4,
+                { BabyBearD4Width16::WIDTH_EXT },
+                { BabyBearD4Width16::RATE_EXT },
             >(prep);
         }
         Ok(NonPrimitivePreprocessedMap::new())
@@ -1425,7 +1478,13 @@ impl NpoPreprocessor<KoalaBear> for Poseidon2Preprocessor {
         preprocessed: &mut dyn Any,
     ) -> Result<NonPrimitivePreprocessedMap<KoalaBear>, CircuitError> {
         if let Some(prep) = preprocessed.downcast_mut::<PreprocessedColumns<KoalaBear, 1>>() {
-            return poseidon2_preprocess_for_prover::<KoalaBear, KoalaBear, 1>(prep);
+            return poseidon2_preprocess_for_prover::<
+                KoalaBear,
+                KoalaBear,
+                1,
+                { KoalaBearD4Width16::WIDTH_EXT },
+                { KoalaBearD4Width16::RATE_EXT },
+            >(prep);
         }
         if let Some(prep) = preprocessed
             .downcast_mut::<PreprocessedColumns<BinomialExtensionField<KoalaBear, 4>, 4>>()
@@ -1434,6 +1493,8 @@ impl NpoPreprocessor<KoalaBear> for Poseidon2Preprocessor {
                 KoalaBear,
                 BinomialExtensionField<KoalaBear, 4>,
                 4,
+                { KoalaBearD4Width16::WIDTH_EXT },
+                { KoalaBearD4Width16::RATE_EXT },
             >(prep);
         }
         Ok(NonPrimitivePreprocessedMap::new())
@@ -1447,7 +1508,13 @@ impl NpoPreprocessor<Goldilocks> for Poseidon2Preprocessor {
         preprocessed: &mut dyn Any,
     ) -> Result<NonPrimitivePreprocessedMap<Goldilocks>, CircuitError> {
         if let Some(prep) = preprocessed.downcast_mut::<PreprocessedColumns<Goldilocks, 1>>() {
-            return poseidon2_preprocess_for_prover::<Goldilocks, Goldilocks, 1>(prep);
+            return poseidon2_preprocess_for_prover::<
+                Goldilocks,
+                Goldilocks,
+                1,
+                { GoldilocksD2Width8::WIDTH_EXT },
+                { GoldilocksD2Width8::RATE_EXT },
+            >(prep);
         }
         if let Some(prep) = preprocessed
             .downcast_mut::<PreprocessedColumns<BinomialExtensionField<Goldilocks, 2>, 2>>()
@@ -1456,6 +1523,8 @@ impl NpoPreprocessor<Goldilocks> for Poseidon2Preprocessor {
                 Goldilocks,
                 BinomialExtensionField<Goldilocks, 2>,
                 2,
+                { GoldilocksD2Width8::WIDTH_EXT },
+                { GoldilocksD2Width8::RATE_EXT },
             >(prep);
         }
         Ok(NonPrimitivePreprocessedMap::new())
