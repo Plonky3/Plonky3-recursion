@@ -50,7 +50,7 @@ pub trait PreprocessedWriter<F: Field> {
     /// D>`](crate::PreprocessedColumns)).
     ///
     /// Used by Poseidon2 D=1 preprocessing to align compact preprocessed rows with the chosen
-    /// witness-bus Poseidon2 AIR (Bus1 / Bus4 / Bus5).
+    /// witness-bus Poseidon2 AIR (Bus1 / Bus5).
     fn witness_extension_degree_slots(&self) -> usize {
         1
     }

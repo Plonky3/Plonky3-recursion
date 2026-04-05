@@ -1128,7 +1128,7 @@ where
     }
 
     /// Like [`Self::recompose_base_coeffs_to_ext`], but uses the `recompose/coeff` table so the
-    /// BF coefficients appear on the WitnessChecks bus (one grouped receive per row when D=4).
+    /// BF coefficients appear on the WitnessChecks bus (per-coefficient receives).
     /// Required for soundness when those coefficients are consumed by a D=1 Poseidon2 (or similar)
     /// inside a higher-degree circuit.
     pub fn recompose_base_coeffs_to_ext_with_coeff_lookups<BF>(

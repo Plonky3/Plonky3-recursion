@@ -44,7 +44,7 @@ where
 pub struct RecomposeProver<const D: usize> {
     lanes: usize,
     /// When true, extra WitnessChecks receives are registered so a D=1 Poseidon2 inside a D>1
-    /// circuit can read BF coefficients (one grouped receive per lane when D=4).
+    /// circuit can read BF coefficients (per-coefficient receives per lane).
     coeff_lookups: bool,
 }
 
@@ -103,12 +103,8 @@ impl<const D: usize> RecomposeProver<D> {
             let base = i * prep_lane_width;
             preprocessed[base] = row.output_wid.base_field_index::<Val<SC>, D>();
             if coeff_lookups {
-                if D == 4 {
-                    preprocessed[base + 2] = row.input_wids[0].base_field_index::<Val<SC>, D>();
-                } else {
-                    for (j, &coeff_wid) in row.input_wids.iter().enumerate().take(D) {
-                        preprocessed[base + 2 + j * 2] = coeff_wid.base_field_index::<Val<SC>, D>();
-                    }
+                for (j, &coeff_wid) in row.input_wids.iter().enumerate().take(D) {
+                    preprocessed[base + 2 + j * 2] = coeff_wid.base_field_index::<Val<SC>, D>();
                 }
             }
         }
@@ -309,11 +305,7 @@ where
         _ => return Ok(HashMap::new()),
     };
 
-    let prep_width = if coeff_lookups {
-        if D == 4 { 4 } else { 2 + 2 * D }
-    } else {
-        2
-    };
+    let prep_width = if coeff_lookups { 2 + 2 * D } else { 2 };
 
     let mut prep_base: Vec<F> = ef_data
         .iter()
@@ -347,35 +339,15 @@ where
         }
 
         if coeff_lookups {
-            if D == 4 {
-                let coeff_idx_val = prep_base[row_start + 2];
-                let coeff_wid0 = F::as_canonical_u64(&coeff_idx_val) as usize / D;
-                let mut n_coeff_reads = 0u32;
-                for i in 0..D {
-                    let coeff_wid = coeff_wid0 + i;
-                    let n = if prep.hint_output_wids.contains(&(coeff_wid as u32)) {
-                        prep.ext_reads.get(coeff_wid).copied().unwrap_or(0)
-                    } else {
-                        0
-                    };
-                    if i == 0 {
-                        n_coeff_reads = n;
-                    } else if n != n_coeff_reads {
-                        return Err(CircuitError::InvalidPreprocessedValues);
-                    }
-                }
-                prep_base[row_start + 3] = F::from_u32(n_coeff_reads);
-            } else {
-                for i in 0..D {
-                    let coeff_idx_val = prep_base[row_start + 2 + i * 2];
-                    let coeff_wid = F::as_canonical_u64(&coeff_idx_val) as usize / D;
-                    let n_coeff_reads = if prep.hint_output_wids.contains(&(coeff_wid as u32)) {
-                        prep.ext_reads.get(coeff_wid).copied().unwrap_or(0)
-                    } else {
-                        0
-                    };
-                    prep_base[row_start + 2 + i * 2 + 1] = F::from_u32(n_coeff_reads);
-                }
+            for i in 0..D {
+                let coeff_idx_val = prep_base[row_start + 2 + i * 2];
+                let coeff_wid = F::as_canonical_u64(&coeff_idx_val) as usize / D;
+                let n_coeff_reads = if prep.hint_output_wids.contains(&(coeff_wid as u32)) {
+                    prep.ext_reads.get(coeff_wid).copied().unwrap_or(0)
+                } else {
+                    0
+                };
+                prep_base[row_start + 2 + i * 2 + 1] = F::from_u32(n_coeff_reads);
             }
         }
     }

@@ -434,7 +434,7 @@ where
     /// Rebuild the AIR for verification from the recorded non-primitive table entry.
     ///
     /// `circuit_extension_degree` is the circuit's extension-field dimension (e.g. 4 or 5), used
-    /// by D1 Poseidon2 wrappers to select the witness-bus width (Bus4 vs Bus5).
+    /// by D1 Poseidon2 wrappers to select the witness-bus width (Bus1 vs Bus5).
     fn batch_air_from_table_entry(
         &self,
         config: &SC,

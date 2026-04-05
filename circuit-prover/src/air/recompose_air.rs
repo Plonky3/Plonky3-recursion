@@ -7,7 +7,7 @@
 //!
 //! Circuits use two logical tables when extension degree can differ from a base-width Poseidon2:
 //! - **`recompose`**: EF output receive only (narrow preprocessed row).
-//! - **`recompose/coeff`**: grouped (D=4) or per-coefficient receives for D=1-style readers.
+//! - **`recompose/coeff`**: per-coefficient receives for D=1-style readers (plus the EF output receive).
 //!
 //! # Column layout (per lane)
 //!
@@ -15,19 +15,13 @@
 //!
 //! **Preprocessed columns** per lane:
 //! - Always: `output_idx`, `out_mult` (2 columns).
-//! - On `recompose/coeff` only: either `coeff_group_idx`, `coeff_group_mult` (D=4, one grouped
-//!   receive per lane) or `coeff_i_idx`, `coeff_i_mult` for each `i` (2×D extra).
+//! - On `recompose/coeff` only: `coeff_i_idx`, `coeff_i_mult` for each `i` (2×D extra).
 //!
 //! # CTL lookups (per lane per row)
 //!
 //! **Receive** `[output_idx, v_0, ..., v_{D-1}]` with multiplicity `out_mult`
 //!
-//! **Receive (coeff, D=4)** `[coeff_group_idx, v_0, v_1, v_2, v_3]` with multiplicity `coeff_group_mult`
-//!
-//! **Receive (coeff, D≠4)** `[coeff_i_idx, v_i, 0, ..., 0]` with multiplicity `coeff_i_mult` (×D)
-//!
-//! For D=4, one grouped receive matches the D=1 Poseidon2 WitnessBus4 packed input/output CTLs.
-//! For other extension degrees, per-coefficient receives are unchanged.
+//! **Receive (coeff)** `[coeff_i_idx, v_i, 0, ..., 0]` with multiplicity `coeff_i_mult` (×D)
 
 use alloc::string::ToString;
 use alloc::vec;
@@ -70,15 +64,10 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> RecomposeAir<F, D> {
     /// Preprocessed width per lane.
     ///
     /// Without coefficient lookups: `[output_idx, out_mult]` = 2 columns.
-    /// With coefficient lookups: for `D = 4`, adds one `(coeff_group_idx, coeff_group_mult)` pair;
-    /// otherwise adds `D × (coeff_idx, coeff_mult)`.
+    /// With coefficient lookups: adds `D × (coeff_idx, coeff_mult)`.
     pub const fn preprocessed_lane_width_for(coeff_lookups: bool) -> usize {
         if coeff_lookups {
-            if D == 4 {
-                RECOMPOSE_PREP_LANE_WIDTH + 2
-            } else {
-                RECOMPOSE_PREP_LANE_WIDTH + 2 * D
-            }
+            RECOMPOSE_PREP_LANE_WIDTH + 2 * D
         } else {
             RECOMPOSE_PREP_LANE_WIDTH
         }
@@ -203,20 +192,21 @@ impl<F: Field, const D: usize> LookupAir<F> for RecomposeAir<F, D> {
             ));
 
             // Coefficient Receive lookups: only registered when the circuit contains a Poseidon2
-            // permutation whose D differs from the circuit extension degree. For D=4 circuits,
-            // one grouped receive packs all BF coefficients per lane; otherwise D separate
-            // receives (padded keys) are used.
+            // permutation whose D differs from the circuit extension degree.
             if self.coeff_lookups {
-                if D == 4 {
+                for i in 0..D {
                     let coeff_idx = SymbolicExpression::from(
-                        symbolic_preprocessed[prep_off + RECOMPOSE_PREP_LANE_WIDTH],
+                        symbolic_preprocessed[prep_off + RECOMPOSE_PREP_LANE_WIDTH + i * 2],
                     );
                     let coeff_mult = SymbolicExpression::from(
-                        symbolic_preprocessed[prep_off + RECOMPOSE_PREP_LANE_WIDTH + 1],
+                        symbolic_preprocessed[prep_off + RECOMPOSE_PREP_LANE_WIDTH + i * 2 + 1],
                     );
-                    let mut coeff_values = vec![coeff_idx];
-                    for j in 0..D {
-                        coeff_values.push(SymbolicExpression::from(symbolic_main[main_off + j]));
+                    let mut coeff_values = vec![
+                        coeff_idx,
+                        SymbolicExpression::from(symbolic_main[main_off + i]),
+                    ];
+                    for _ in 1..D {
+                        coeff_values.push(SymbolicExpression::from(F::ZERO));
                     }
                     let coeff_inp: LookupInput<F> = (coeff_values, coeff_mult, Direction::Receive);
                     lookups.push(LookupAir::register_lookup(
@@ -224,29 +214,6 @@ impl<F: Field, const D: usize> LookupAir<F> for RecomposeAir<F, D> {
                         Kind::Global("WitnessChecks".to_string()),
                         &[coeff_inp],
                     ));
-                } else {
-                    for i in 0..D {
-                        let coeff_idx = SymbolicExpression::from(
-                            symbolic_preprocessed[prep_off + RECOMPOSE_PREP_LANE_WIDTH + i * 2],
-                        );
-                        let coeff_mult = SymbolicExpression::from(
-                            symbolic_preprocessed[prep_off + RECOMPOSE_PREP_LANE_WIDTH + i * 2 + 1],
-                        );
-                        let mut coeff_values = vec![
-                            coeff_idx,
-                            SymbolicExpression::from(symbolic_main[main_off + i]),
-                        ];
-                        for _ in 1..D {
-                            coeff_values.push(SymbolicExpression::from(F::ZERO));
-                        }
-                        let coeff_inp: LookupInput<F> =
-                            (coeff_values, coeff_mult, Direction::Receive);
-                        lookups.push(LookupAir::register_lookup(
-                            self,
-                            Kind::Global("WitnessChecks".to_string()),
-                            &[coeff_inp],
-                        ));
-                    }
                 }
             }
         }

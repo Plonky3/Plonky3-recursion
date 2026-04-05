@@ -639,7 +639,7 @@ impl<
 /// When `poseidon_extension_degree == 1` (base-field Poseidon2 slots) and `witness_bus_value_slots`
 /// divides `IL` / `OL`, each pack uses **all-or-nothing** `in_ctl` / `out_ctl`, and witness indices
 /// within a pack must be consecutive. `witness_bus_value_slots` is the AIR's `WITNESS_EXT_D`
-/// (e.g. 4 for WitnessBus4). `d` scales stored indices and must match the circuit's extension degree.
+/// (e.g. 5 for WitnessBus5). `d` scales stored indices and must match the circuit's extension degree.
 ///
 /// # Compact D=1 width-16 / rate-8 layout
 ///
@@ -704,48 +704,6 @@ pub fn extract_preprocessed_from_operations<
         debug_assert_eq!(input_indices.len(), IL);
         debug_assert_eq!(out_ctl.len(), OL);
         debug_assert_eq!(output_indices.len(), OL);
-
-        let grouped_ctl = poseidon_extension_degree == 1
-            && witness_bus_value_slots > 1
-            && IL.is_multiple_of(witness_bus_value_slots)
-            && OL.is_multiple_of(witness_bus_value_slots);
-        if grouped_ctl {
-            let gsz = witness_bus_value_slots;
-            for ig in 0..IL / gsz {
-                let b = ig * gsz;
-                let any_in = in_ctl[b..b + gsz].iter().any(|&x| x);
-                if any_in {
-                    assert!(
-                        in_ctl[b..b + gsz].iter().all(|&x| x),
-                        "Poseidon2 grouped input CTL: in_ctl must be uniform within each group of {gsz} slots"
-                    );
-                    for k in 1..gsz {
-                        assert_eq!(
-                            input_indices[b + k],
-                            input_indices[b] + k as u32,
-                            "Poseidon2 grouped input CTL: witness indices must be consecutive"
-                        );
-                    }
-                }
-            }
-            for og in 0..OL / gsz {
-                let b = og * gsz;
-                let any_out = out_ctl[b..b + gsz].iter().any(|&x| x);
-                if any_out {
-                    assert!(
-                        out_ctl[b..b + gsz].iter().all(|&x| x),
-                        "Poseidon2 grouped output CTL: out_ctl must be uniform within each group of {gsz} slots"
-                    );
-                    for k in 1..gsz {
-                        assert_eq!(
-                            output_indices[b + k],
-                            output_indices[b] + k as u32,
-                            "Poseidon2 grouped output CTL: witness indices must be consecutive"
-                        );
-                    }
-                }
-            }
-        }
 
         if compact_d1 {
             for ctl in in_ctl.iter().take(OL) {
@@ -1510,31 +1468,11 @@ impl<
             .expect("The preprocessed matrix has only one row?");
         let next_flat: &[SymbolicVariable<F>] = (*next_preprocessed).borrow();
 
-        // Total lookups:
-        // - Ungrouped: one per input limb + one per rate output limb + MMCS.
-        // - Grouped (D=1, WITNESS_EXT_D | WIDTH_EXT and RATE_EXT): one per pack of
-        //   WITNESS_EXT_D base inputs/outputs + MMCS — same count as the D=WITNESS_EXT_D AIR.
-        let grouped_bf_ctl = D == 1
-            && WITNESS_EXT_D > 1
-            && WIDTH_EXT.is_multiple_of(WITNESS_EXT_D)
-            && RATE_EXT.is_multiple_of(WITNESS_EXT_D);
+        // Total lookups: one per input limb + one per rate output limb + MMCS
+        // (compact D=1 layout counts input CTLs only over the rate).
         let compact_d1 = poseidon2_uses_compact_d1_preprocessed(D, WIDTH_EXT, RATE_EXT);
-        let input_lookup_count = if compact_d1 {
-            if grouped_bf_ctl {
-                RATE_EXT / WITNESS_EXT_D
-            } else {
-                RATE_EXT
-            }
-        } else if grouped_bf_ctl {
-            WIDTH_EXT / WITNESS_EXT_D
-        } else {
-            WIDTH_EXT
-        };
-        let output_lookup_count = if grouped_bf_ctl {
-            RATE_EXT / WITNESS_EXT_D
-        } else {
-            RATE_EXT
-        };
+        let input_lookup_count = if compact_d1 { RATE_EXT } else { WIDTH_EXT };
+        let output_lookup_count = RATE_EXT;
         let mut lookups = Vec::with_capacity(input_lookup_count + output_lookup_count + 1);
 
         if compact_d1 {
@@ -1549,103 +1487,57 @@ impl<
             let idx_base = hdr;
 
             // Input limb lookups (rate only; sponge new_start capacity is zero-asserted in eval)
-            if grouped_bf_ctl {
-                for group in 0..(RATE_EXT / WITNESS_EXT_D) {
-                    let base = group * WITNESS_EXT_D;
-                    let idx_first = local_flat[idx_base + base];
-                    let mut input_key: Vec<SymbolicExpression<F>> =
-                        iter::once(SymbolicExpression::from(idx_first)).collect();
-                    for k in 0..WITNESS_EXT_D {
-                        input_key.push(SymbolicExpression::from(local.poseidon2.inputs[base + k]));
-                    }
-                    let mut mult = SymbolicExpression::Leaf(BaseLeaf::Constant(F::ONE));
-                    for k in 0..WITNESS_EXT_D {
-                        let limb = base + k;
-                        let in_ctl_col = local_flat[limb];
-                        mult *= SymbolicExpression::from(in_ctl_col);
-                    }
-                    let mult = mult * not_merkle.dup();
-                    lookups.push(LookupAir::register_lookup(
-                        self,
-                        Kind::Global("WitnessChecks".to_string()),
-                        &[(input_key, mult, Direction::Send)],
-                    ));
-                }
-            } else {
-                for limb_idx in 0..RATE_EXT {
-                    let idx = local_flat[idx_base + limb_idx];
-                    let in_ctl = local_flat[limb_idx];
-                    let mut input_idx_limb: Vec<SymbolicExpression<F>> = iter::once(idx)
-                        .chain(
-                            local.poseidon2.inputs[limb_idx * D..(limb_idx + 1) * D]
-                                .iter()
-                                .copied(),
-                        )
-                        .map(SymbolicExpression::from)
-                        .collect();
-                    input_idx_limb.extend(iter::repeat_n(
-                        SymbolicExpression::Leaf(BaseLeaf::Constant(F::ZERO)),
-                        WITNESS_EXT_D - D,
-                    ));
-                    let mult = SymbolicExpression::from(in_ctl) * not_merkle.dup();
-                    lookups.push(LookupAir::register_lookup(
-                        self,
-                        Kind::Global("WitnessChecks".to_string()),
-                        &[(input_idx_limb, mult, Direction::Send)],
-                    ));
-                }
+            for limb_idx in 0..RATE_EXT {
+                let idx = local_flat[idx_base + limb_idx];
+                let in_ctl = local_flat[limb_idx];
+                let mut input_idx_limb: Vec<SymbolicExpression<F>> = iter::once(idx)
+                    .chain(
+                        local.poseidon2.inputs[limb_idx * D..(limb_idx + 1) * D]
+                            .iter()
+                            .copied(),
+                    )
+                    .map(SymbolicExpression::from)
+                    .collect();
+                input_idx_limb.extend(iter::repeat_n(
+                    SymbolicExpression::Leaf(BaseLeaf::Constant(F::ZERO)),
+                    WITNESS_EXT_D - D,
+                ));
+                let mult = SymbolicExpression::from(in_ctl) * not_merkle.dup();
+                lookups.push(LookupAir::register_lookup(
+                    self,
+                    Kind::Global("WitnessChecks".to_string()),
+                    &[(input_idx_limb, mult, Direction::Send)],
+                ));
             }
 
             // Output limb lookups
             let out_idx_base = idx_base + WIDTH_EXT;
             let out_ctl_base = out_idx_base + RATE_EXT;
-            if grouped_bf_ctl {
-                for group in 0..(RATE_EXT / WITNESS_EXT_D) {
-                    let base = group * WITNESS_EXT_D;
-                    let first_idx = local_flat[out_idx_base + base];
-                    let post = &local.poseidon2.ending_full_rounds[HALF_FULL_ROUNDS - 1].post;
-                    let mut output_key: Vec<SymbolicExpression<F>> =
-                        iter::once(SymbolicExpression::from(first_idx)).collect();
-                    for k in 0..WITNESS_EXT_D {
-                        output_key.push(SymbolicExpression::from(post[base + k]));
-                    }
-                    let mut mult = SymbolicExpression::from(local_flat[out_ctl_base + base]);
-                    for k in 1..WITNESS_EXT_D {
-                        mult *= SymbolicExpression::from(local_flat[out_ctl_base + base + k]);
-                    }
-                    lookups.push(LookupAir::register_lookup(
-                        self,
-                        Kind::Global("WitnessChecks".to_string()),
-                        &[(output_key, mult, Direction::Receive)],
-                    ));
-                }
-            } else {
-                for limb_idx in 0..RATE_EXT {
-                    let idx = local_flat[out_idx_base + limb_idx];
-                    let out_ctl = local_flat[out_ctl_base + limb_idx];
-                    let mut output_idx_limb: Vec<SymbolicExpression<F>> = iter::once(idx)
-                        .chain(
-                            local.poseidon2.ending_full_rounds[HALF_FULL_ROUNDS - 1].post
-                                [limb_idx * D..(limb_idx + 1) * D]
-                                .iter()
-                                .copied(),
-                        )
-                        .map(SymbolicExpression::from)
-                        .collect();
-                    output_idx_limb.extend(iter::repeat_n(
-                        SymbolicExpression::Leaf(BaseLeaf::Constant(F::ZERO)),
-                        WITNESS_EXT_D - D,
-                    ));
-                    lookups.push(LookupAir::register_lookup(
-                        self,
-                        Kind::Global("WitnessChecks".to_string()),
-                        &[(
-                            output_idx_limb,
-                            SymbolicExpression::from(out_ctl),
-                            Direction::Receive,
-                        )],
-                    ));
-                }
+            for limb_idx in 0..RATE_EXT {
+                let idx = local_flat[out_idx_base + limb_idx];
+                let out_ctl = local_flat[out_ctl_base + limb_idx];
+                let mut output_idx_limb: Vec<SymbolicExpression<F>> = iter::once(idx)
+                    .chain(
+                        local.poseidon2.ending_full_rounds[HALF_FULL_ROUNDS - 1].post
+                            [limb_idx * D..(limb_idx + 1) * D]
+                            .iter()
+                            .copied(),
+                    )
+                    .map(SymbolicExpression::from)
+                    .collect();
+                output_idx_limb.extend(iter::repeat_n(
+                    SymbolicExpression::Leaf(BaseLeaf::Constant(F::ZERO)),
+                    WITNESS_EXT_D - D,
+                ));
+                lookups.push(LookupAir::register_lookup(
+                    self,
+                    Kind::Global("WitnessChecks".to_string()),
+                    &[(
+                        output_idx_limb,
+                        SymbolicExpression::from(out_ctl),
+                        Direction::Receive,
+                    )],
+                ));
             }
 
             let multiplicity = SymbolicExpression::from(local_flat[tail + 1])
@@ -1697,73 +1589,44 @@ impl<
             let not_merkle = SymbolicExpression::Leaf(BaseLeaf::Constant(F::ONE))
                 - SymbolicExpression::from(local_preprocessed.merkle_path);
 
-            if grouped_bf_ctl {
-                // Pack WITNESS_EXT_D consecutive base-field inputs into one bus key
-                // `[idx_first, v_0, ..., v_{WITNESS_EXT_D-1}]`, matching recompose/coeff grouped receives.
-                for group in 0..(WIDTH_EXT / WITNESS_EXT_D) {
-                    let base = group * WITNESS_EXT_D;
-                    let first = &local_preprocessed.input_limbs[base];
-                    let mut input_key: Vec<SymbolicExpression<F>> =
-                        iter::once(SymbolicExpression::from(first.idx)).collect();
-                    for k in 0..WITNESS_EXT_D {
-                        input_key.push(SymbolicExpression::from(local.poseidon2.inputs[base + k]));
-                    }
+            for limb_idx in 0..WIDTH_EXT {
+                let limb = &local_preprocessed.input_limbs[limb_idx];
 
-                    let mut mult =
-                        SymbolicExpression::from(local_preprocessed.input_limbs[base].in_ctl);
-                    for k in 1..WITNESS_EXT_D {
-                        mult *= SymbolicExpression::from(
-                            local_preprocessed.input_limbs[base + k].in_ctl,
-                        );
-                    }
-                    let mult = mult * not_merkle.dup();
+                // Build the lookup key: [witness_index, elem_0, elem_1, ..., elem_{D-1}].
+                //
+                // The witness index tells the Witness table which slot to
+                // look up. The extension-field elements are the actual values
+                // being checked.
+                let mut input_idx_limb: Vec<SymbolicExpression<F>> = iter::once(limb.idx)
+                    .chain(
+                        local.poseidon2.inputs[limb_idx * D..(limb_idx + 1) * D]
+                            .iter()
+                            .copied(),
+                    )
+                    .map(SymbolicExpression::from)
+                    .collect();
+                input_idx_limb.extend(iter::repeat_n(
+                    SymbolicExpression::Leaf(BaseLeaf::Constant(F::ZERO)),
+                    WITNESS_EXT_D - D,
+                ));
 
-                    lookups.push(LookupAir::register_lookup(
-                        self,
-                        Kind::Global("WitnessChecks".to_string()),
-                        &[(input_key, mult, Direction::Send)],
-                    ));
-                }
-            } else {
-                for limb_idx in 0..WIDTH_EXT {
-                    let limb = &local_preprocessed.input_limbs[limb_idx];
+                // Multiplicity = CTL enable flag × (1 − merkle_path).
+                //
+                // This is zero on Merkle rows (disabling the lookup) and
+                // equal to the CTL flag on sponge rows.
+                //
+                // Both factors are preprocessed, so this product costs
+                // nothing at constraint-evaluation time.
+                let mult = SymbolicExpression::from(limb.in_ctl) * not_merkle.dup();
 
-                    // Build the lookup key: [witness_index, elem_0, elem_1, ..., elem_{D-1}].
-                    //
-                    // The witness index tells the Witness table which slot to
-                    // look up. The extension-field elements are the actual values
-                    // being checked.
-                    let mut input_idx_limb: Vec<SymbolicExpression<F>> = iter::once(limb.idx)
-                        .chain(
-                            local.poseidon2.inputs[limb_idx * D..(limb_idx + 1) * D]
-                                .iter()
-                                .copied(),
-                        )
-                        .map(SymbolicExpression::from)
-                        .collect();
-                    input_idx_limb.extend(iter::repeat_n(
-                        SymbolicExpression::Leaf(BaseLeaf::Constant(F::ZERO)),
-                        WITNESS_EXT_D - D,
-                    ));
-
-                    // Multiplicity = CTL enable flag × (1 − merkle_path).
-                    //
-                    // This is zero on Merkle rows (disabling the lookup) and
-                    // equal to the CTL flag on sponge rows.
-                    //
-                    // Both factors are preprocessed, so this product costs
-                    // nothing at constraint-evaluation time.
-                    let mult = SymbolicExpression::from(limb.in_ctl) * not_merkle.dup();
-
-                    // Direction::Send means this table is the sender:
-                    //
-                    // "I claim my input limb matches the value in the Witness table at this index."
-                    lookups.push(LookupAir::register_lookup(
-                        self,
-                        Kind::Global("WitnessChecks".to_string()),
-                        &[(input_idx_limb, mult, Direction::Send)],
-                    ));
-                }
+                // Direction::Send means this table is the sender:
+                //
+                // "I claim my input limb matches the value in the Witness table at this index."
+                lookups.push(LookupAir::register_lookup(
+                    self,
+                    Kind::Global("WitnessChecks".to_string()),
+                    &[(input_idx_limb, mult, Direction::Send)],
+                ));
             }
 
             // Output limb lookups
@@ -1778,62 +1641,35 @@ impl<
             // to me." If the output doesn't match, the permutation argument
             // will fail.
 
-            if grouped_bf_ctl {
-                for group in 0..(RATE_EXT / WITNESS_EXT_D) {
-                    let base = group * WITNESS_EXT_D;
-                    let first = &local_preprocessed.output_limbs[base];
-                    let post = &local.poseidon2.ending_full_rounds[HALF_FULL_ROUNDS - 1].post;
-                    let mut output_key: Vec<SymbolicExpression<F>> =
-                        iter::once(SymbolicExpression::from(first.idx)).collect();
-                    for k in 0..WITNESS_EXT_D {
-                        output_key.push(SymbolicExpression::from(post[base + k]));
-                    }
+            for limb_idx in 0..RATE_EXT {
+                let limb = &local_preprocessed.output_limbs[limb_idx];
 
-                    let mut mult =
-                        SymbolicExpression::from(local_preprocessed.output_limbs[base].out_ctl);
-                    for k in 1..WITNESS_EXT_D {
-                        mult *= SymbolicExpression::from(
-                            local_preprocessed.output_limbs[base + k].out_ctl,
-                        );
-                    }
+                // Build the lookup key from the output state.
+                //
+                // The output lives in the last full round's post-state.
+                let mut output_idx_limb: Vec<SymbolicExpression<F>> = iter::once(limb.idx)
+                    .chain(
+                        local.poseidon2.ending_full_rounds[HALF_FULL_ROUNDS - 1].post
+                            [limb_idx * D..(limb_idx + 1) * D]
+                            .iter()
+                            .copied(),
+                    )
+                    .map(SymbolicExpression::from)
+                    .collect();
+                output_idx_limb.extend(iter::repeat_n(
+                    SymbolicExpression::Leaf(BaseLeaf::Constant(F::ZERO)),
+                    WITNESS_EXT_D - D,
+                ));
 
-                    lookups.push(LookupAir::register_lookup(
-                        self,
-                        Kind::Global("WitnessChecks".to_string()),
-                        &[(output_key, mult, Direction::Receive)],
-                    ));
-                }
-            } else {
-                for limb_idx in 0..RATE_EXT {
-                    let limb = &local_preprocessed.output_limbs[limb_idx];
-
-                    // Build the lookup key from the output state.
-                    //
-                    // The output lives in the last full round's post-state.
-                    let mut output_idx_limb: Vec<SymbolicExpression<F>> = iter::once(limb.idx)
-                        .chain(
-                            local.poseidon2.ending_full_rounds[HALF_FULL_ROUNDS - 1].post
-                                [limb_idx * D..(limb_idx + 1) * D]
-                                .iter()
-                                .copied(),
-                        )
-                        .map(SymbolicExpression::from)
-                        .collect();
-                    output_idx_limb.extend(iter::repeat_n(
-                        SymbolicExpression::Leaf(BaseLeaf::Constant(F::ZERO)),
-                        WITNESS_EXT_D - D,
-                    ));
-
-                    lookups.push(LookupAir::register_lookup(
-                        self,
-                        Kind::Global("WitnessChecks".to_string()),
-                        &[(
-                            output_idx_limb,
-                            SymbolicExpression::from(limb.out_ctl),
-                            Direction::Receive,
-                        )],
-                    ));
-                }
+                lookups.push(LookupAir::register_lookup(
+                    self,
+                    Kind::Global("WitnessChecks".to_string()),
+                    &[(
+                        output_idx_limb,
+                        SymbolicExpression::from(limb.out_ctl),
+                        Direction::Receive,
+                    )],
+                ));
             }
 
             // MMCS accumulator lookup
