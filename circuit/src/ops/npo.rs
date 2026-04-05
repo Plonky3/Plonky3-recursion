@@ -42,6 +42,14 @@ impl NpoTypeId {
         Self::new("recompose")
     }
 
+    /// Recompose table variant that registers per-coefficient WitnessChecks receives.
+    ///
+    /// Used when a D=1 Poseidon2 (or similar) must read individual BF coefficients that came
+    /// from this packing op. The standard [`Self::recompose`] table omits that overhead.
+    pub fn recompose_with_coeff_lookups() -> Self {
+        Self::new("recompose/coeff")
+    }
+
     /// Convenience: Unconstrained (hint) operation type ID.
     ///
     /// This is kept only for profiling / debugging purposes; Unconstrained is

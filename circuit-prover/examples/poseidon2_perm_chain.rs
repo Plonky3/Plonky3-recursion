@@ -134,10 +134,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     let poseidon2_config = Poseidon2Config::KoalaBearD4Width16;
     let npo_prep: Vec<Box<dyn NpoPreprocessor<Base>>> = vec![
         Box::new(Poseidon2Preprocessor),
-        Box::new(RecomposePreprocessor),
+        Box::new(RecomposePreprocessor::default()),
     ];
     let mut air_builders = poseidon2_air_builders::<_, 4>();
-    air_builders.extend(recompose_air_builders(1));
+    air_builders.extend(recompose_air_builders(1, false));
     let (airs_degrees, primitive_columns, non_primitive_columns) =
         get_airs_and_degrees_with_prep::<KoalaBearConfig, _, 4>(
             &circuit,
@@ -200,7 +200,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let mut prover = BatchStarkProver::new(stark_config).with_table_packing(table_packing);
     prover.register_poseidon2_table::<4>(poseidon2_config);
-    prover.register_recompose_table::<4>();
+    prover.register_recompose_table::<4>(false);
 
     let proof = prover.prove_all_tables(&traces, &circuit_prover_data)?;
     prover.verify_all_tables(&proof, circuit_prover_data.common_data())?;

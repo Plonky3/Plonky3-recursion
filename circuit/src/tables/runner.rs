@@ -790,7 +790,7 @@ mod tests {
         let mut runner = circuit.runner();
 
         let private_data = Poseidon2PermPrivateData {
-            sibling: [BabyBear::ZERO, BabyBear::ZERO],
+            sibling: vec![BabyBear::ZERO, BabyBear::ZERO],
         };
 
         let result = runner.set_private_data_by_tag(

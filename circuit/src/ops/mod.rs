@@ -28,4 +28,7 @@ pub use poseidon2_perm::{
     Poseidon2Trace,
     generate_poseidon2_trace,
 };
-pub use recompose::{RecomposeCircuitRow, RecomposeTrace, generate_recompose_trace};
+pub use recompose::{
+    RecomposeCircuitRow, RecomposeTrace, RecomposeTraceKind, generate_recompose_coeff_trace,
+    generate_recompose_trace,
+};

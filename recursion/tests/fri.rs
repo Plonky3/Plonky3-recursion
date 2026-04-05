@@ -11,6 +11,7 @@ use p3_fri::create_test_fri_params;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_poseidon2_circuit_air::BabyBearD4Width16;
 // Recursive target graph pieces
+use p3_recursion::pcs::convert_merkle_proof_to_siblings;
 use p3_recursion::pcs::fri::{
     FriProofTargets, InputProofTargets, MerkleCapTargets, RecExtensionValMmcs, RecValMmcs,
     Witness as RecWitness,
@@ -732,20 +733,9 @@ fn run_fri_test_with_mmcs(setup: FriSetup) {
     for query_proof in &result.fri_proof.query_proofs {
         // Input batch MMCS proofs
         for batch_opening in &query_proof.input_proof {
-            let siblings: Vec<[Challenge; 2]> = batch_opening
-                .opening_proof
-                .iter()
-                .map(|digest: &[F; DIGEST_ELEMS]| {
-                    let ext_elements: Vec<Challenge> = digest
-                        .chunks(4)
-                        .map(|chunk| {
-                            Challenge::from_basis_coefficients_slice(chunk)
-                                .expect("chunk size should match extension degree")
-                        })
-                        .collect();
-                    [ext_elements[0], ext_elements[1]]
-                })
-                .collect();
+            let siblings = convert_merkle_proof_to_siblings::<F, Challenge, DIGEST_ELEMS>(
+                &batch_opening.opening_proof,
+            );
             for sibling in siblings {
                 runner
                     .set_private_data(
@@ -765,21 +755,14 @@ fn run_fri_test_with_mmcs(setup: FriSetup) {
 
             // Only set data if there's a tree to verify (height > 0)
             if log_folded_height > 0 {
-                let siblings: Vec<[Challenge; 2]> = phase_opening
+                let prefix: Vec<[F; DIGEST_ELEMS]> = phase_opening
                     .opening_proof
                     .iter()
                     .take(log_folded_height)
-                    .map(|digest: &[F; DIGEST_ELEMS]| {
-                        let ext_elements: Vec<Challenge> = digest
-                            .chunks(4)
-                            .map(|chunk| {
-                                Challenge::from_basis_coefficients_slice(chunk)
-                                    .expect("chunk size should match extension degree")
-                            })
-                            .collect();
-                        [ext_elements[0], ext_elements[1]]
-                    })
+                    .copied()
                     .collect();
+                let siblings =
+                    convert_merkle_proof_to_siblings::<F, Challenge, DIGEST_ELEMS>(&prefix);
                 for sibling in siblings {
                     runner
                         .set_private_data(

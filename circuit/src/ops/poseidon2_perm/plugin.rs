@@ -73,10 +73,10 @@ impl<F: Field> NpoCircuitPlugin<F> for Poseidon2CircuitPlugin<F> {
 
         // Validate that the builder provided the expected number of inputs/outputs.
         let config = self.poseidon2_config;
-        config.validate_io_counts(data.input_exprs.len(), data.output_exprs.len())?;
+        config.validate_io_counts(data.input_exprs.len(), data.output_exprs.len(), merkle_path)?;
 
         // Convert expression-level slots to witness-level slots.
-        let inputs_widx = config.lower_inputs(&data.input_exprs, ctx)?;
+        let inputs_widx = config.lower_inputs(&data.input_exprs, ctx, merkle_path)?;
         let outputs_widx = ctx.lower_expr_slots(&data.output_exprs, "Poseidon2Perm", "output")?;
 
         Ok(Op::NonPrimitiveOpWithExecutor {

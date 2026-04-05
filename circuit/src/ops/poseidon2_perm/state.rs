@@ -6,10 +6,11 @@ use crate::ops::poseidon2_perm::trace::Poseidon2CircuitRow;
 
 /// Private data for Poseidon2 permutation.
 ///
-/// Only used for Merkle mode operations, contains exactly `SIBLING_LIMBS` extension field limbs.
+/// Only used for Merkle mode operations. `sibling` holds extension limbs copied into the
+/// capacity portion of the sponge state (length ≤ `capacity_ext` for the configured perm).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Poseidon2PermPrivateData<F, const SIBLING_LIMBS: usize> {
-    pub sibling: [F; SIBLING_LIMBS],
+pub struct Poseidon2PermPrivateData<F> {
+    pub sibling: Vec<F>,
 }
 
 /// Execution state for Poseidon2 permutation operations.

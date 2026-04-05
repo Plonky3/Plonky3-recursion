@@ -5,21 +5,23 @@
 //! There are zero local constraints — correctness is enforced entirely
 //! by the output cross-table lookup on the WitnessChecks bus.
 //!
+//! Circuits use two logical tables when extension degree can differ from a base-width Poseidon2:
+//! - **`recompose`**: EF output receive only (narrow preprocessed row).
+//! - **`recompose/coeff`**: per-coefficient receives for D=1-style readers (plus the EF output receive).
+//!
 //! # Column layout (per lane)
 //!
 //! **Main columns** (D per lane): `v_0, v_1, ..., v_{D-1}` — the base-field coefficient values.
 //!
-//! **Preprocessed columns** (2 per lane):
-//! - `output_idx`: D-scaled witness ID for the output EF witness
-//! - `out_mult`: ext_reads\[wid\] for real rows, 0 for padding
+//! **Preprocessed columns** per lane:
+//! - Always: `output_idx`, `out_mult` (2 columns).
+//! - On `recompose/coeff` only: `coeff_i_idx`, `coeff_i_mult` for each `i` (2×D extra).
 //!
-//! # CTL lookups (1 per lane per row)
+//! # CTL lookups (per lane per row)
 //!
 //! **Receive** `[output_idx, v_0, ..., v_{D-1}]` with multiplicity `out_mult`
 //!
-//! No input lookups are needed: the output lookup alone constrains the main trace
-//! values because the output witness is aliased (via `connect`) to the original
-//! extension-field element, so consumers verify the correct tuple.
+//! **Receive (coeff)** `[coeff_i_idx, v_i, 0, ..., 0]` with multiplicity `coeff_i_mult` (×D)
 
 use alloc::string::ToString;
 use alloc::vec;
@@ -45,6 +47,11 @@ pub struct RecomposeAir<F, const D: usize> {
     pub(crate) preprocessed: Vec<F>,
     pub(crate) num_lookup_columns: usize,
     pub(crate) min_height: usize,
+    /// When true, D additional per-coefficient Receive lookups are registered per lane so
+    /// that NPOs consuming raw BF coefficients (e.g. a D=1 Poseidon2 challenger inside a
+    /// D>1 circuit) find them on the WitnessChecks bus.  When false, only the single EF
+    /// output lookup is registered, matching the pre-decoupling layout.
+    pub(crate) coeff_lookups: bool,
     _phantom: PhantomData<F>,
 }
 
@@ -54,18 +61,36 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> RecomposeAir<F, D> {
         D
     }
 
-    /// Preprocessed width per lane: 1 output index + 1 out_mult.
-    pub const fn preprocessed_lane_width() -> usize {
-        RECOMPOSE_PREP_LANE_WIDTH
+    /// Preprocessed width per lane.
+    ///
+    /// Without coefficient lookups: `[output_idx, out_mult]` = 2 columns.
+    /// With coefficient lookups: adds `D × (coeff_idx, coeff_mult)`.
+    pub const fn preprocessed_lane_width_for(coeff_lookups: bool) -> usize {
+        if coeff_lookups {
+            RECOMPOSE_PREP_LANE_WIDTH + 2 * D
+        } else {
+            RECOMPOSE_PREP_LANE_WIDTH
+        }
+    }
+
+    /// Preprocessed width per lane for this AIR instance.
+    pub const fn preprocessed_lane_width(&self) -> usize {
+        Self::preprocessed_lane_width_for(self.coeff_lookups)
     }
 
     /// Create a new `RecomposeAir` with the given preprocessed data and lane count.
-    pub fn new_with_preprocessed(lanes: usize, preprocessed: Vec<F>, min_height: usize) -> Self {
+    pub fn new_with_preprocessed(
+        lanes: usize,
+        preprocessed: Vec<F>,
+        min_height: usize,
+        coeff_lookups: bool,
+    ) -> Self {
         Self {
             lanes: lanes.max(1),
             preprocessed,
             num_lookup_columns: 0,
             min_height,
+            coeff_lookups,
             _phantom: PhantomData,
         }
     }
@@ -104,7 +129,7 @@ impl<F: Field, const D: usize> BaseAir<F> for RecomposeAir<F, D> {
     }
 
     fn preprocessed_trace(&self) -> Option<RowMajorMatrix<F>> {
-        let width = self.lanes * Self::preprocessed_lane_width();
+        let width = self.lanes * self.preprocessed_lane_width();
         let mut mat = RowMajorMatrix::from_flat_padded(self.preprocessed.to_vec(), width, F::ZERO);
         mat.pad_to_min_power_of_two_height(self.min_height, F::ZERO);
         Some(mat)
@@ -138,14 +163,14 @@ impl<F: Field, const D: usize> LookupAir<F> for RecomposeAir<F, D> {
         self.num_lookup_columns = 0;
 
         let total_main_width = self.lanes * Self::lane_width();
-        let total_prep_width = self.lanes * Self::preprocessed_lane_width();
+        let total_prep_width = self.lanes * self.preprocessed_lane_width();
 
         let (symbolic_main, symbolic_preprocessed) =
             create_symbolic_variables::<F>(total_prep_width, total_main_width, 0, 0);
 
         for lane in 0..self.lanes {
             let main_off = lane * Self::lane_width();
-            let prep_off = lane * Self::preprocessed_lane_width();
+            let prep_off = lane * self.preprocessed_lane_width();
 
             let output_idx = SymbolicExpression::from(
                 symbolic_preprocessed[prep_off + RECOMPOSE_PREP_LANE_COL_MAP.output_idx],
@@ -165,6 +190,32 @@ impl<F: Field, const D: usize> LookupAir<F> for RecomposeAir<F, D> {
                 Kind::Global("WitnessChecks".to_string()),
                 &[inp],
             ));
+
+            // Coefficient Receive lookups: only registered when the circuit contains a Poseidon2
+            // permutation whose D differs from the circuit extension degree.
+            if self.coeff_lookups {
+                for i in 0..D {
+                    let coeff_idx = SymbolicExpression::from(
+                        symbolic_preprocessed[prep_off + RECOMPOSE_PREP_LANE_WIDTH + i * 2],
+                    );
+                    let coeff_mult = SymbolicExpression::from(
+                        symbolic_preprocessed[prep_off + RECOMPOSE_PREP_LANE_WIDTH + i * 2 + 1],
+                    );
+                    let mut coeff_values = vec![
+                        coeff_idx,
+                        SymbolicExpression::from(symbolic_main[main_off + i]),
+                    ];
+                    for _ in 1..D {
+                        coeff_values.push(SymbolicExpression::from(F::ZERO));
+                    }
+                    let coeff_inp: LookupInput<F> = (coeff_values, coeff_mult, Direction::Receive);
+                    lookups.push(LookupAir::register_lookup(
+                        self,
+                        Kind::Global("WitnessChecks".to_string()),
+                        &[coeff_inp],
+                    ));
+                }
+            }
         }
 
         lookups
