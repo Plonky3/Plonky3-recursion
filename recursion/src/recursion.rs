@@ -20,7 +20,6 @@ use p3_circuit_prover::{
     TablePacking,
 };
 use p3_commit::Pcs;
-use p3_field::extension::BinomiallyExtendable;
 use p3_field::{Algebra, BasedVectorSpace, ExtensionField, Field, PrimeField64};
 use p3_lookup::logup::LogUpGadget;
 use p3_lookup::lookup_traits::{Lookup, LookupData, LookupGadget};
@@ -270,7 +269,7 @@ where
     SC: StarkGenericConfig + Send + Sync + Clone + 'static,
     A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
     B: PcsRecursionBackend<SC, A, D>,
-    Val<SC>: PrimeField64 + StarkField + BinomiallyExtendable<D>,
+    Val<SC>: PrimeField64 + StarkField,
     SC::Challenge: BasedVectorSpace<Val<SC>>
         + From<Val<SC>>
         + ExtensionField<Val<SC>>
@@ -311,7 +310,7 @@ where
     SC: StarkGenericConfig + Send + Sync + Clone + 'static,
     A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
     B: PcsRecursionBackend<SC, A, D>,
-    Val<SC>: PrimeField64 + StarkField + BinomiallyExtendable<D>,
+    Val<SC>: PrimeField64 + StarkField,
     SC::Challenge: BasedVectorSpace<Val<SC>>
         + From<Val<SC>>
         + ExtensionField<Val<SC>>
@@ -376,7 +375,7 @@ where
     SC: StarkGenericConfig + Send + Sync + Clone + 'static,
     A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
     B: PcsRecursionBackend<SC, A, D>,
-    Val<SC>: PrimeField64 + StarkField + BinomiallyExtendable<D>,
+    Val<SC>: PrimeField64 + StarkField,
     SC::Challenge: BasedVectorSpace<Val<SC>>
         + From<Val<SC>>
         + ExtensionField<Val<SC>>
@@ -476,7 +475,7 @@ where
     SC: StarkGenericConfig + Send + Sync + Clone + 'static,
     A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
     B: PcsRecursionBackend<SC, A, D>,
-    Val<SC>: PrimeField64 + StarkField + BinomiallyExtendable<D>,
+    Val<SC>: PrimeField64 + StarkField,
     SC::Challenge: BasedVectorSpace<Val<SC>>
         + From<Val<SC>>
         + ExtensionField<Val<SC>>
@@ -524,7 +523,7 @@ where
     A1: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
     A2: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
     B: PcsRecursionBackend<SC, A1, D> + PcsRecursionBackend<SC, A2, D>,
-    Val<SC>: PrimeField64 + StarkField + BinomiallyExtendable<D>,
+    Val<SC>: PrimeField64 + StarkField,
     SC::Challenge: BasedVectorSpace<Val<SC>>
         + From<Val<SC>>
         + ExtensionField<Val<SC>>
@@ -629,7 +628,7 @@ where
     A1: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
     A2: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
     B: PcsRecursionBackend<SC, A1, D> + PcsRecursionBackend<SC, A2, D>,
-    Val<SC>: PrimeField64 + StarkField + BinomiallyExtendable<D>,
+    Val<SC>: PrimeField64 + StarkField,
     SC::Challenge: BasedVectorSpace<Val<SC>>
         + From<Val<SC>>
         + ExtensionField<Val<SC>>
@@ -746,7 +745,7 @@ where
     A1: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
     A2: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
     B: PcsRecursionBackend<SC, A1, D> + PcsRecursionBackend<SC, A2, D>,
-    Val<SC>: PrimeField64 + StarkField + BinomiallyExtendable<D>,
+    Val<SC>: PrimeField64 + StarkField,
     SC::Challenge: BasedVectorSpace<Val<SC>>
         + From<Val<SC>>
         + ExtensionField<Val<SC>>

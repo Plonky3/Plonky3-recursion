@@ -179,7 +179,7 @@ fn test_fibonacci_batch_verifier() {
                 Poseidon2Config::KoalaBearD4Width16,
                 ConstraintProfile::Standard,
             ))];
-            tp.extend(recompose_table_provers::<_, 4>(1));
+            tp.extend(recompose_table_provers::<_, 4>(1, false));
             tp
         },
     )
@@ -199,10 +199,10 @@ fn test_fibonacci_batch_verifier() {
     let poseidon2_config = Poseidon2Config::KoalaBearD4Width16;
     let npo_prep: Vec<Box<dyn NpoPreprocessor<F>>> = vec![
         Box::new(Poseidon2Preprocessor),
-        Box::new(RecomposePreprocessor),
+        Box::new(RecomposePreprocessor::default()),
     ];
     let mut air_builders = poseidon2_air_builders::<_, 4>();
-    air_builders.extend(recompose_air_builders(1));
+    air_builders.extend(recompose_air_builders(1, false));
     let (
         verification_airs_degrees,
         verification_primitive_columns,
@@ -265,7 +265,7 @@ fn test_fibonacci_batch_verifier() {
     let mut verification_prover =
         BatchStarkProver::new(config3).with_table_packing(verification_table_packing);
     verification_prover.register_poseidon2_table::<4>(poseidon2_config);
-    verification_prover.register_recompose_table::<4>();
+    verification_prover.register_recompose_table::<4>(false);
 
     // Prove the verification circuit
     let verification_proof = verification_prover
