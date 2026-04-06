@@ -52,14 +52,28 @@ fn fibonacci_challenge(n: usize) -> Challenge {
     if n == 1 {
         return Challenge::ONE;
     }
-    let mut a = Challenge::ZERO;
-    let mut b = Challenge::ONE;
+    let mut a = F::ZERO;
+    let mut b = F::ONE;
     for _ in 2..=n {
         let next = a + b;
         a = b;
         b = next;
     }
-    b
+
+    b.into()
+}
+
+fn make_test_config() -> MyConfig {
+    let perm = default_koalabear_poseidon2_16();
+    let hash = MyHash::new(perm.clone());
+    let compress = MyCompress::new(perm.clone());
+    let val_mmcs = MyMmcs::new(hash, compress, 0);
+    let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
+    let dft = Dft::default();
+    let fri_params = create_test_fri_params(challenge_mmcs, 0);
+    let pcs = MyPcs::new(dft, val_mmcs, fri_params);
+    let challenger = Challenger::new(perm);
+    MyConfig::new(pcs, challenger)
 }
 
 #[test]
@@ -81,16 +95,7 @@ fn test_fibonacci_batch_verifier_quintic_koala() {
 
     let table_packing = TablePacking::new(2, 4);
 
-    let perm = default_koalabear_poseidon2_16();
-    let hash = MyHash::new(perm.clone());
-    let compress = MyCompress::new(perm.clone());
-    let val_mmcs = MyMmcs::new(hash, compress, 0);
-    let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
-    let dft = Dft::default();
-    let fri_params = create_test_fri_params(challenge_mmcs, 0);
-    let pcs_proving = MyPcs::new(dft, val_mmcs, fri_params);
-    let challenger_proving = Challenger::new(perm);
-    let config_proving = MyConfig::new(pcs_proving, challenger_proving);
+    let config_proving = make_test_config();
 
     let circuit = builder.build().unwrap();
     let (airs_degrees, primitive_columns, non_primitive_columns) =
@@ -146,7 +151,12 @@ fn test_fibonacci_batch_verifier_quintic_koala() {
     let batch_proof = &batch_stark_proof.proof;
     const TRACE_D: usize = 5;
 
-    let pis: Vec<Vec<F>> = vec![vec![]; 5];
+    let num_tables = common
+        .preprocessed
+        .as_ref()
+        .map(|g| g.instances.len())
+        .unwrap_or(0);
+    let pis: Vec<Vec<F>> = vec![vec![]; num_tables];
 
     let mut circuit_builder = CircuitBuilder::<Challenge>::new();
     let lift = LiftKoalaPermForQuintic::new(default_koalabear_poseidon2_16());
@@ -233,16 +243,7 @@ fn test_fibonacci_batch_verifier_quintic_koala() {
         "verifier circuit should produce witness trace"
     );
 
-    let dft3 = Dft::default();
-    let perm3 = default_koalabear_poseidon2_16();
-    let hash3 = MyHash::new(perm3.clone());
-    let compress3 = MyCompress::new(perm3.clone());
-    let val_mmcs3 = MyMmcs::new(hash3, compress3, 0);
-    let challenge_mmcs3 = ChallengeMmcs::new(val_mmcs3.clone());
-    let fri_params3 = create_test_fri_params(challenge_mmcs3, 0);
-    let pcs3 = MyPcs::new(dft3, val_mmcs3, fri_params3);
-    let challenger3 = Challenger::new(perm3);
-    let config3 = MyConfig::new(pcs3, challenger3);
+    let config3 = make_test_config();
 
     let verification_prover_data =
         ProverData::from_airs_and_degrees(&config3, &mut verification_airs, &verification_degrees);

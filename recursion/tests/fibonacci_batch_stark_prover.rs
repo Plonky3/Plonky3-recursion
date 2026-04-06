@@ -144,7 +144,12 @@ fn test_fibonacci_batch_verifier() {
     const TRACE_D: usize = 1; // Proof traces are in base field
 
     // Public values (empty for all 5 circuit tables: Witness, Const, Public, Alu, Poseidon2)
-    let pis: Vec<Vec<F>> = vec![vec![]; 5];
+    let num_tables = common
+        .preprocessed
+        .as_ref()
+        .map(|g| g.instances.len())
+        .unwrap_or(0);
+    let pis: Vec<Vec<F>> = vec![vec![]; num_tables];
 
     // Build the recursive verification circuit
     let mut circuit_builder = CircuitBuilder::new();
