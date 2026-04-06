@@ -86,7 +86,7 @@ fn bench_prove_all_tables(c: &mut Criterion) {
     for n in [100, 500, 2000] {
         group.bench_with_input(BenchmarkId::new("fibonacci", n), &n, |b, &n| {
             b.iter(|| {
-                let config = config::koala_bear().build();
+                let config = config::koala_bear();
                 let (circuit, expected_fib) = fib_circuit(n);
                 let (airs_degrees, primitive_columns, non_primitive_columns) =
                     get_airs_and_degrees_with_prep::<KoalaBearConfig, _, 1>(

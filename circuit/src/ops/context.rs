@@ -331,7 +331,7 @@ mod tests {
     #[test]
     fn test_execution_context_get_config() {
         let mut configs = HashMap::new();
-        let op_type = NpoTypeId::poseidon2_perm(Poseidon2Config::BabyBearD4Width16);
+        let op_type = NpoTypeId::poseidon2_perm(Poseidon2Config::BABY_BEAR_D4_W16);
         configs.insert(op_type.clone(), NpoConfig::new(42u32));
 
         let mut witness = vec![];
@@ -356,7 +356,7 @@ mod tests {
         let ctx: ExecutionContext<'_, F> =
             ExecutionContext::new(&mut witness, &private_data, &configs, op_id, &mut op_states);
 
-        let op_type = NpoTypeId::poseidon2_perm(Poseidon2Config::BabyBearD4Width16);
+        let op_type = NpoTypeId::poseidon2_perm(Poseidon2Config::BABY_BEAR_D4_W16);
         let result = ctx.get_config(&op_type);
 
         assert!(result.is_err());
@@ -402,7 +402,7 @@ mod tests {
         let mut ctx =
             ExecutionContext::new(&mut witness, &private_data, &configs, op_id, &mut op_states);
 
-        let key = NpoTypeId::poseidon2_perm(Poseidon2Config::BabyBearD4Width16);
+        let key = NpoTypeId::poseidon2_perm(Poseidon2Config::BABY_BEAR_D4_W16);
 
         assert!(ctx.get_op_state::<TestOpState>(&key).is_none());
 

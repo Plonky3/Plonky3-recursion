@@ -48,7 +48,7 @@ fn make_config() -> (MyConfig, Perm, FriVerifierParams) {
         fri_params.log_final_poly_len,
         fri_params.commit_proof_of_work_bits,
         fri_params.query_proof_of_work_bits,
-        Poseidon2Config::GoldilocksD2Width8,
+        Poseidon2Config::GOLDILOCKS_D2_W8,
     );
 
     let pcs = MyPcs::new(dft, val_mmcs, fri_params);
@@ -104,7 +104,7 @@ fn test_goldilocks_fibonacci_verifier() -> Result<(), VerificationError> {
         &verifier_inputs.air_public_targets,
         &None,
         &fri_verifier_params,
-        Poseidon2Config::GoldilocksD2Width8,
+        Poseidon2Config::GOLDILOCKS_D2_W8,
     )?;
 
     // Build the circuit.
@@ -209,7 +209,7 @@ fn test_goldilocks_mul_verifier_with_preprocessed() -> Result<(), VerificationEr
         &verifier_inputs.air_public_targets,
         &verifier_inputs.preprocessed_commit,
         &fri_verifier_params,
-        Poseidon2Config::GoldilocksD2Width8,
+        Poseidon2Config::GOLDILOCKS_D2_W8,
     )?;
 
     // Build the circuit

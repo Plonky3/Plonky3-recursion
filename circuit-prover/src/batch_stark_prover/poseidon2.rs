@@ -800,26 +800,24 @@ impl Poseidon2Prover {
     }
 
     pub(crate) fn air_wrapper_for_config(config: Poseidon2Config) -> Poseidon2AirWrapperInner {
-        match config {
-            Poseidon2Config::BabyBearD1Width16 | Poseidon2Config::BabyBearD4Width16 => {
-                Poseidon2AirWrapperInner::BabyBearD4Width16(Box::new(
-                    BabyBearD4Width16::default_air(),
-                ))
-            }
-            Poseidon2Config::BabyBearD4Width24 => Poseidon2AirWrapperInner::BabyBearD4Width24(
-                Box::new(BabyBearD4Width24::default_air()),
-            ),
-            Poseidon2Config::KoalaBearD1Width16 | Poseidon2Config::KoalaBearD4Width16 => {
-                Poseidon2AirWrapperInner::KoalaBearD4Width16(Box::new(
-                    KoalaBearD4Width16::default_air(),
-                ))
-            }
-            Poseidon2Config::KoalaBearD4Width24 => Poseidon2AirWrapperInner::KoalaBearD4Width24(
+        if config.is_baby_bear() && config.width() == 16 {
+            Poseidon2AirWrapperInner::BabyBearD4Width16(Box::new(BabyBearD4Width16::default_air()))
+        } else if config.is_baby_bear() && config.width() == 24 {
+            Poseidon2AirWrapperInner::BabyBearD4Width24(Box::new(BabyBearD4Width24::default_air()))
+        } else if config.is_koala_bear() && config.width() == 16 {
+            Poseidon2AirWrapperInner::KoalaBearD4Width16(
+                Box::new(KoalaBearD4Width16::default_air()),
+            )
+        } else if config.is_koala_bear() && config.width() == 24 {
+            Poseidon2AirWrapperInner::KoalaBearD4Width24(
                 Box::new(KoalaBearD4Width24::default_air()),
-            ),
-            Poseidon2Config::GoldilocksD2Width8 => Poseidon2AirWrapperInner::GoldilocksD2Width8(
-                Box::new(goldilocks_d2_width8_default_air()),
-            ),
+            )
+        } else if config.is_goldilocks() && config.width() == 8 {
+            Poseidon2AirWrapperInner::GoldilocksD2Width8(Box::new(
+                goldilocks_d2_width8_default_air(),
+            ))
+        } else {
+            panic!("unsupported Poseidon2 config: {:?}", config)
         }
     }
 
@@ -828,49 +826,47 @@ impl Poseidon2Prover {
         preprocessed: Vec<F>,
         min_height: usize,
     ) -> Poseidon2AirWrapperInner {
-        match config {
-            Poseidon2Config::BabyBearD1Width16 | Poseidon2Config::BabyBearD4Width16 => {
-                assert!(F::from_u64(BABY_BEAR_MODULUS) == F::ZERO);
-                Poseidon2AirWrapperInner::BabyBearD4Width16(Box::new(
-                    BabyBearD4Width16::default_air_with_preprocessed(
-                        unsafe { transmute::<Vec<F>, Vec<BabyBear>>(preprocessed) },
-                        min_height,
-                    ),
-                ))
-            }
-            Poseidon2Config::BabyBearD4Width24 => {
-                assert!(F::from_u64(BABY_BEAR_MODULUS) == F::ZERO);
-                Poseidon2AirWrapperInner::BabyBearD4Width24(Box::new(
-                    BabyBearD4Width24::default_air_with_preprocessed(
-                        unsafe { transmute::<Vec<F>, Vec<BabyBear>>(preprocessed) },
-                        min_height,
-                    ),
-                ))
-            }
-            Poseidon2Config::KoalaBearD1Width16 | Poseidon2Config::KoalaBearD4Width16 => {
-                assert!(F::from_u64(KOALA_BEAR_MODULUS) == F::ZERO);
-                Poseidon2AirWrapperInner::KoalaBearD4Width16(Box::new(
-                    KoalaBearD4Width16::default_air_with_preprocessed(
-                        unsafe { transmute::<Vec<F>, Vec<KoalaBear>>(preprocessed) },
-                        min_height,
-                    ),
-                ))
-            }
-            Poseidon2Config::KoalaBearD4Width24 => {
-                assert!(F::from_u64(KOALA_BEAR_MODULUS) == F::ZERO);
-                Poseidon2AirWrapperInner::KoalaBearD4Width24(Box::new(
-                    KoalaBearD4Width24::default_air_with_preprocessed(
-                        unsafe { transmute::<Vec<F>, Vec<KoalaBear>>(preprocessed) },
-                        min_height,
-                    ),
-                ))
-            }
-            Poseidon2Config::GoldilocksD2Width8 => Poseidon2AirWrapperInner::GoldilocksD2Width8(
-                Box::new(goldilocks_d2_width8_default_air_with_preprocessed(
+        if config.is_baby_bear() && config.width() == 16 {
+            assert!(F::from_u64(BABY_BEAR_MODULUS) == F::ZERO);
+            Poseidon2AirWrapperInner::BabyBearD4Width16(Box::new(
+                BabyBearD4Width16::default_air_with_preprocessed(
+                    unsafe { transmute::<Vec<F>, Vec<BabyBear>>(preprocessed) },
+                    min_height,
+                ),
+            ))
+        } else if config.is_baby_bear() && config.width() == 24 {
+            assert!(F::from_u64(BABY_BEAR_MODULUS) == F::ZERO);
+            Poseidon2AirWrapperInner::BabyBearD4Width24(Box::new(
+                BabyBearD4Width24::default_air_with_preprocessed(
+                    unsafe { transmute::<Vec<F>, Vec<BabyBear>>(preprocessed) },
+                    min_height,
+                ),
+            ))
+        } else if config.is_koala_bear() && config.width() == 16 {
+            assert!(F::from_u64(KOALA_BEAR_MODULUS) == F::ZERO);
+            Poseidon2AirWrapperInner::KoalaBearD4Width16(Box::new(
+                KoalaBearD4Width16::default_air_with_preprocessed(
+                    unsafe { transmute::<Vec<F>, Vec<KoalaBear>>(preprocessed) },
+                    min_height,
+                ),
+            ))
+        } else if config.is_koala_bear() && config.width() == 24 {
+            assert!(F::from_u64(KOALA_BEAR_MODULUS) == F::ZERO);
+            Poseidon2AirWrapperInner::KoalaBearD4Width24(Box::new(
+                KoalaBearD4Width24::default_air_with_preprocessed(
+                    unsafe { transmute::<Vec<F>, Vec<KoalaBear>>(preprocessed) },
+                    min_height,
+                ),
+            ))
+        } else if config.is_goldilocks() && config.width() == 8 {
+            Poseidon2AirWrapperInner::GoldilocksD2Width8(Box::new(
+                goldilocks_d2_width8_default_air_with_preprocessed(
                     unsafe { transmute::<Vec<F>, Vec<Goldilocks>>(preprocessed) },
                     min_height,
-                )),
-            ),
+                ),
+            ))
+        } else {
+            panic!("unsupported Poseidon2 config: {:?}", config)
         }
     }
 
@@ -895,23 +891,20 @@ impl Poseidon2Prover {
         }))
     }
 
-    pub const fn preprocessed_width_from_config(&self) -> usize {
-        match self.config {
-            Poseidon2Config::BabyBearD1Width16 | Poseidon2Config::BabyBearD4Width16 => {
-                Poseidon2CircuitAirBabyBearD4Width16::preprocessed_width()
-            }
-            Poseidon2Config::BabyBearD4Width24 => {
-                Poseidon2CircuitAirBabyBearD4Width24::preprocessed_width()
-            }
-            Poseidon2Config::KoalaBearD1Width16 | Poseidon2Config::KoalaBearD4Width16 => {
-                Poseidon2CircuitAirKoalaBearD4Width16::preprocessed_width()
-            }
-            Poseidon2Config::KoalaBearD4Width24 => {
-                Poseidon2CircuitAirKoalaBearD4Width24::preprocessed_width()
-            }
-            Poseidon2Config::GoldilocksD2Width8 => {
-                Poseidon2CircuitAirGoldilocksD2Width8::preprocessed_width()
-            }
+    pub fn preprocessed_width_from_config(&self) -> usize {
+        let c = self.config;
+        if c.is_baby_bear() && c.width() == 16 {
+            Poseidon2CircuitAirBabyBearD4Width16::preprocessed_width()
+        } else if c.is_baby_bear() && c.width() == 24 {
+            Poseidon2CircuitAirBabyBearD4Width24::preprocessed_width()
+        } else if c.is_koala_bear() && c.width() == 16 {
+            Poseidon2CircuitAirKoalaBearD4Width16::preprocessed_width()
+        } else if c.is_koala_bear() && c.width() == 24 {
+            Poseidon2CircuitAirKoalaBearD4Width24::preprocessed_width()
+        } else if c.is_goldilocks() && c.width() == 8 {
+            Poseidon2CircuitAirGoldilocksD2Width8::preprocessed_width()
+        } else {
+            panic!("unsupported Poseidon2 config: {:?}", c)
         }
     }
 
@@ -938,22 +931,19 @@ impl Poseidon2Prover {
         }
 
         let min_height = packing.min_trace_height();
-        match self.config {
-            Poseidon2Config::BabyBearD1Width16 | Poseidon2Config::BabyBearD4Width16 => {
-                self.batch_instance_base_impl::<SC, 16, 4, 13, 2>(t, min_height)
-            }
-            Poseidon2Config::BabyBearD4Width24 => {
-                self.batch_instance_base_impl::<SC, 24, 4, 21, 4>(t, min_height)
-            }
-            Poseidon2Config::KoalaBearD1Width16 | Poseidon2Config::KoalaBearD4Width16 => {
-                self.batch_instance_base_impl::<SC, 16, 4, 20, 2>(t, min_height)
-            }
-            Poseidon2Config::KoalaBearD4Width24 => {
-                self.batch_instance_base_impl::<SC, 24, 4, 23, 4>(t, min_height)
-            }
-            Poseidon2Config::GoldilocksD2Width8 => {
-                self.batch_instance_base_impl::<SC, 8, 4, 22, 2>(t, min_height)
-            }
+        let c = self.config;
+        if c.is_baby_bear() && c.width() == 16 {
+            self.batch_instance_base_impl::<SC, 16, 4, 13, 2>(t, min_height)
+        } else if c.is_baby_bear() && c.width() == 24 {
+            self.batch_instance_base_impl::<SC, 24, 4, 21, 4>(t, min_height)
+        } else if c.is_koala_bear() && c.width() == 16 {
+            self.batch_instance_base_impl::<SC, 16, 4, 20, 2>(t, min_height)
+        } else if c.is_koala_bear() && c.width() == 24 {
+            self.batch_instance_base_impl::<SC, 24, 4, 23, 4>(t, min_height)
+        } else if c.is_goldilocks() && c.width() == 8 {
+            self.batch_instance_base_impl::<SC, 8, 4, 22, 2>(t, min_height)
+        } else {
+            panic!("unsupported Poseidon2 config: {:?}", c)
         }
     }
 
@@ -997,102 +987,94 @@ impl Poseidon2Prover {
             });
         padded_ops.resize(padded_rows, last_op);
 
-        let (air, matrix) = match self.config {
-            Poseidon2Config::BabyBearD1Width16 | Poseidon2Config::BabyBearD4Width16 => {
-                let constants = BabyBearD4Width16::round_constants();
-                let preprocessed = extract_preprocessed_from_operations::<BabyBear, Val<SC>>(
-                    &t.operations,
-                    self.config.d() as u32,
-                );
-                let air =
-                    BabyBearD4Width16::default_air_with_preprocessed(preprocessed, min_height);
-                let ops: Vec<Poseidon2CircuitRow<BabyBear>> = unsafe { transmute(padded_ops) };
-                let matrix_f = air.generate_trace_rows(&ops, &constants, 0);
-                let matrix: RowMajorMatrix<Val<SC>> = unsafe { transmute(matrix_f) };
-                (
-                    Poseidon2AirWrapper {
-                        inner: Poseidon2AirWrapperInner::BabyBearD4Width16(Box::new(air)),
-                        _phantom: core::marker::PhantomData::<SC>,
-                    },
-                    matrix,
-                )
-            }
-            Poseidon2Config::BabyBearD4Width24 => {
-                let constants = BabyBearD4Width24::round_constants();
-                let preprocessed = extract_preprocessed_from_operations::<BabyBear, Val<SC>>(
-                    &t.operations,
-                    self.config.d() as u32,
-                );
-                let air =
-                    BabyBearD4Width24::default_air_with_preprocessed(preprocessed, min_height);
-                let ops: Vec<Poseidon2CircuitRow<BabyBear>> = unsafe { transmute(padded_ops) };
-                let matrix_f = air.generate_trace_rows(&ops, &constants, 0);
-                let matrix: RowMajorMatrix<Val<SC>> = unsafe { transmute(matrix_f) };
-                (
-                    Poseidon2AirWrapper {
-                        inner: Poseidon2AirWrapperInner::BabyBearD4Width24(Box::new(air)),
-                        _phantom: core::marker::PhantomData::<SC>,
-                    },
-                    matrix,
-                )
-            }
-            Poseidon2Config::KoalaBearD1Width16 | Poseidon2Config::KoalaBearD4Width16 => {
-                let constants = KoalaBearD4Width16::round_constants();
-                let preprocessed = extract_preprocessed_from_operations::<KoalaBear, Val<SC>>(
-                    &t.operations,
-                    self.config.d() as u32,
-                );
-                let air =
-                    KoalaBearD4Width16::default_air_with_preprocessed(preprocessed, min_height);
-                let ops: Vec<Poseidon2CircuitRow<KoalaBear>> = unsafe { transmute(padded_ops) };
-                let matrix_f = air.generate_trace_rows(&ops, &constants, 0);
-                let matrix: RowMajorMatrix<Val<SC>> = unsafe { transmute(matrix_f) };
-                (
-                    Poseidon2AirWrapper {
-                        inner: Poseidon2AirWrapperInner::KoalaBearD4Width16(Box::new(air)),
-                        _phantom: core::marker::PhantomData::<SC>,
-                    },
-                    matrix,
-                )
-            }
-            Poseidon2Config::KoalaBearD4Width24 => {
-                let constants = KoalaBearD4Width24::round_constants();
-                let preprocessed = extract_preprocessed_from_operations::<KoalaBear, Val<SC>>(
-                    &t.operations,
-                    self.config.d() as u32,
-                );
-                let air =
-                    KoalaBearD4Width24::default_air_with_preprocessed(preprocessed, min_height);
-                let ops: Vec<Poseidon2CircuitRow<KoalaBear>> = unsafe { transmute(padded_ops) };
-                let matrix_f = air.generate_trace_rows(&ops, &constants, 0);
-                let matrix: RowMajorMatrix<Val<SC>> = unsafe { transmute(matrix_f) };
-                (
-                    Poseidon2AirWrapper {
-                        inner: Poseidon2AirWrapperInner::KoalaBearD4Width24(Box::new(air)),
-                        _phantom: core::marker::PhantomData::<SC>,
-                    },
-                    matrix,
-                )
-            }
-            Poseidon2Config::GoldilocksD2Width8 => {
-                let constants = goldilocks_d2_width8_round_constants();
-                let preprocessed = extract_preprocessed_from_operations::<Goldilocks, Val<SC>>(
-                    &t.operations,
-                    self.config.d() as u32,
-                );
-                let air =
-                    goldilocks_d2_width8_default_air_with_preprocessed(preprocessed, min_height);
-                let ops: Vec<Poseidon2CircuitRow<Goldilocks>> = unsafe { transmute(padded_ops) };
-                let matrix_f = air.generate_trace_rows(&ops, &constants, 0);
-                let matrix: RowMajorMatrix<Val<SC>> = unsafe { transmute(matrix_f) };
-                (
-                    Poseidon2AirWrapper {
-                        inner: Poseidon2AirWrapperInner::GoldilocksD2Width8(Box::new(air)),
-                        _phantom: core::marker::PhantomData::<SC>,
-                    },
-                    matrix,
-                )
-            }
+        let c = self.config;
+        let (air, matrix) = if c.is_baby_bear() && c.width() == 16 {
+            let constants = BabyBearD4Width16::round_constants();
+            let preprocessed = extract_preprocessed_from_operations::<BabyBear, Val<SC>>(
+                &t.operations,
+                c.d() as u32,
+            );
+            let air = BabyBearD4Width16::default_air_with_preprocessed(preprocessed, min_height);
+            let ops: Vec<Poseidon2CircuitRow<BabyBear>> = unsafe { transmute(padded_ops) };
+            let matrix_f = air.generate_trace_rows(&ops, &constants, 0);
+            let matrix: RowMajorMatrix<Val<SC>> = unsafe { transmute(matrix_f) };
+            (
+                Poseidon2AirWrapper {
+                    inner: Poseidon2AirWrapperInner::BabyBearD4Width16(Box::new(air)),
+                    _phantom: core::marker::PhantomData::<SC>,
+                },
+                matrix,
+            )
+        } else if c.is_baby_bear() && c.width() == 24 {
+            let constants = BabyBearD4Width24::round_constants();
+            let preprocessed = extract_preprocessed_from_operations::<BabyBear, Val<SC>>(
+                &t.operations,
+                c.d() as u32,
+            );
+            let air = BabyBearD4Width24::default_air_with_preprocessed(preprocessed, min_height);
+            let ops: Vec<Poseidon2CircuitRow<BabyBear>> = unsafe { transmute(padded_ops) };
+            let matrix_f = air.generate_trace_rows(&ops, &constants, 0);
+            let matrix: RowMajorMatrix<Val<SC>> = unsafe { transmute(matrix_f) };
+            (
+                Poseidon2AirWrapper {
+                    inner: Poseidon2AirWrapperInner::BabyBearD4Width24(Box::new(air)),
+                    _phantom: core::marker::PhantomData::<SC>,
+                },
+                matrix,
+            )
+        } else if c.is_koala_bear() && c.width() == 16 {
+            let constants = KoalaBearD4Width16::round_constants();
+            let preprocessed = extract_preprocessed_from_operations::<KoalaBear, Val<SC>>(
+                &t.operations,
+                c.d() as u32,
+            );
+            let air = KoalaBearD4Width16::default_air_with_preprocessed(preprocessed, min_height);
+            let ops: Vec<Poseidon2CircuitRow<KoalaBear>> = unsafe { transmute(padded_ops) };
+            let matrix_f = air.generate_trace_rows(&ops, &constants, 0);
+            let matrix: RowMajorMatrix<Val<SC>> = unsafe { transmute(matrix_f) };
+            (
+                Poseidon2AirWrapper {
+                    inner: Poseidon2AirWrapperInner::KoalaBearD4Width16(Box::new(air)),
+                    _phantom: core::marker::PhantomData::<SC>,
+                },
+                matrix,
+            )
+        } else if c.is_koala_bear() && c.width() == 24 {
+            let constants = KoalaBearD4Width24::round_constants();
+            let preprocessed = extract_preprocessed_from_operations::<KoalaBear, Val<SC>>(
+                &t.operations,
+                c.d() as u32,
+            );
+            let air = KoalaBearD4Width24::default_air_with_preprocessed(preprocessed, min_height);
+            let ops: Vec<Poseidon2CircuitRow<KoalaBear>> = unsafe { transmute(padded_ops) };
+            let matrix_f = air.generate_trace_rows(&ops, &constants, 0);
+            let matrix: RowMajorMatrix<Val<SC>> = unsafe { transmute(matrix_f) };
+            (
+                Poseidon2AirWrapper {
+                    inner: Poseidon2AirWrapperInner::KoalaBearD4Width24(Box::new(air)),
+                    _phantom: core::marker::PhantomData::<SC>,
+                },
+                matrix,
+            )
+        } else if c.is_goldilocks() && c.width() == 8 {
+            let constants = goldilocks_d2_width8_round_constants();
+            let preprocessed = extract_preprocessed_from_operations::<Goldilocks, Val<SC>>(
+                &t.operations,
+                c.d() as u32,
+            );
+            let air = goldilocks_d2_width8_default_air_with_preprocessed(preprocessed, min_height);
+            let ops: Vec<Poseidon2CircuitRow<Goldilocks>> = unsafe { transmute(padded_ops) };
+            let matrix_f = air.generate_trace_rows(&ops, &constants, 0);
+            let matrix: RowMajorMatrix<Val<SC>> = unsafe { transmute(matrix_f) };
+            (
+                Poseidon2AirWrapper {
+                    inner: Poseidon2AirWrapperInner::GoldilocksD2Width8(Box::new(air)),
+                    _phantom: core::marker::PhantomData::<SC>,
+                },
+                matrix,
+            )
+        } else {
+            panic!("unsupported Poseidon2 config: {:?}", c)
         };
 
         Some(BatchTableInstance {
@@ -1467,24 +1449,9 @@ impl NpoPreprocessor<Goldilocks> for Poseidon2Preprocessor {
 pub(crate) fn poseidon2_config_for_air_builder<const D: usize>(
     config: Poseidon2Config,
 ) -> Option<Poseidon2Config> {
-    if D == 2 {
-        return match config {
-            Poseidon2Config::GoldilocksD2Width8 => Some(config),
-            _ => None,
-        };
-    }
-    if D == 4 {
-        return match config {
-            Poseidon2Config::BabyBearD1Width16
-            | Poseidon2Config::BabyBearD4Width16
-            | Poseidon2Config::BabyBearD4Width24
-            | Poseidon2Config::KoalaBearD1Width16
-            | Poseidon2Config::KoalaBearD4Width16
-            | Poseidon2Config::KoalaBearD4Width24 => Some(config),
-            _ => None,
-        };
-    }
-    None
+    let supported = (D == 2 && config.is_goldilocks())
+        || (D == 4 && (config.is_baby_bear() || config.is_koala_bear()));
+    supported.then_some(config)
 }
 
 pub(crate) fn poseidon2_air_try_build<SC, const D: usize>(
