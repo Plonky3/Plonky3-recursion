@@ -10,6 +10,7 @@ use alloc::{format, vec};
 #[cfg(debug_assertions)]
 use p3_air::DebugConstraintBuilder;
 use p3_air::{Air, BaseAir};
+use p3_batch_stark::common::GlobalPreprocessed;
 use p3_batch_stark::{BatchProof, CommonData, ProverData, StarkGenericConfig, StarkInstance, Val};
 use p3_circuit::ops::{NonPrimitivePreprocessedMap, NpoTypeId, Poseidon2Config, PrimitiveOpType};
 use p3_circuit::tables::Traces;
@@ -1131,7 +1132,19 @@ where
             pvs.push(entry.public_values.clone());
         }
 
-        p3_batch_stark::verify_batch(&self.config, &airs, &proof.proof, &pvs, common)
+        // Derive lookups from the rebuilt AIRs, which always reflect the effective lane counts
+        // stored in `proof.table_packing`, as `stark_common` isn't deserializable.
+        let lookups: Vec<Vec<Lookup<Val<SC>>>> = airs.iter_mut().map(|a| a.get_lookups()).collect();
+        let effective_common = CommonData::new(
+            common.preprocessed.as_ref().map(|g| GlobalPreprocessed {
+                commitment: g.commitment.clone(),
+                instances: g.instances.clone(),
+                matrix_to_instance: g.matrix_to_instance.clone(),
+            }),
+            lookups,
+        );
+
+        p3_batch_stark::verify_batch(&self.config, &airs, &proof.proof, &pvs, &effective_common)
             .map_err(|e| BatchStarkProverError::Verify(format!("{e:?}")))
     }
 }
