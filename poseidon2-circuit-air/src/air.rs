@@ -924,17 +924,14 @@ pub(crate) fn eval<
         for i in 0..RATE_EXT {
             let merkle_chain_i = s[rate_merkle_base + i];
             let gate_left_i = merkle_chain_i * is_left.clone();
+            let gate_right_i = merkle_chain_i * next_bit;
+
             for d in 0..D {
                 builder
                     .when_transition()
                     .when(gate_left_i.clone())
                     .assert_zero(next_in[i * D + d] - local_out[i * D + d]);
-            }
-        }
-        for i in 0..RATE_EXT {
-            let merkle_chain_i = s[rate_merkle_base + i];
-            let gate_right_i = merkle_chain_i * next_bit;
-            for d in 0..D {
+
                 builder
                     .when_transition()
                     .when(gate_right_i.clone())

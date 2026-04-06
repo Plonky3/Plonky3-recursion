@@ -4,6 +4,8 @@ use alloc::vec::Vec;
 use core::borrow::{Borrow, BorrowMut};
 use core::mem::size_of;
 
+use p3_circuit::ops::{KoalaBearD1Width16, Poseidon2Params};
+
 /// Number of extension-field limbs for Poseidon2 input and output.
 ///
 /// Each limb is one extension-field element.
@@ -218,7 +220,9 @@ pub const fn poseidon2_uses_compact_d1_preprocessed(
     width_ext: usize,
     rate_ext: usize,
 ) -> bool {
-    poseidon_d == 1 && width_ext == 16 && rate_ext == 8
+    poseidon_d == 1
+        && width_ext == KoalaBearD1Width16::WIDTH_EXT
+        && rate_ext == KoalaBearD1Width16::RATE_EXT
 }
 
 /// Scalar columns before input indices in the compact D=1 layout: `rate_ext` per-limb `in_ctl`,
@@ -335,7 +339,15 @@ impl<const INPUT_LIMBS: usize, const OUTPUT_LIMBS: usize, T: Copy>
     /// A manual push sequence would need to be kept in sync with the
     /// struct definition. The pointer cast avoids that fragility.
     pub fn write_into(self, buf: &mut Vec<T>) {
+        // Compute the number of elements in the struct.
+        //
+        // For single-byte types this equals the struct size directly.
+        // For larger field types we divide out the element size.
         let num_elements = size_of::<Self>() / size_of::<T>();
+
+        // SAFETY: the struct is `#[repr(C)]` with `T: Copy` and all fields
+        // are plain `T` values. No padding exists between same-typed fields.
+        // The resulting slice covers exactly `num_elements` contiguous items.
         let ptr = &self as *const Self as *const T;
         let slice = unsafe { core::slice::from_raw_parts(ptr, num_elements) };
         buf.extend_from_slice(slice);
