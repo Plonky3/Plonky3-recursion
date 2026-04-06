@@ -270,9 +270,39 @@ pub struct Poseidon2PreprocessedRow<const INPUT_LIMBS: usize, const OUTPUT_LIMBS
     /// Per-limb preprocessed output columns for rate outputs under CTL.
     pub output_limbs: [Poseidon2PrepOutputLimb<T>; OUTPUT_LIMBS],
 
+    /// Witness index for the MMCS accumulator column.
+    ///
+    /// Used in the cross-table lookup that exposes the accumulator
+    /// to the Witness table at the end of a Merkle chain.
     pub mmcs_index_sum_ctl_idx: T,
+
+    /// Precomputed product of the MMCS-enabled flag and the Merkle-path
+    /// flag.
+    ///
+    /// This is the row-local part of the multiplicity expression for the
+    /// accumulator lookup.
+    ///
+    /// The full multiplicity also involves the next row's chain-start
+    /// flag, so the lookup fires on the last Merkle row before a chain
+    /// boundary.
+    ///
+    /// Precomputing this product keeps the overall multiplicity at
+    /// degree two.
     pub mmcs_merkle_flag: T,
+
+    /// Chain boundary flag.
+    ///
+    /// Set on the first row of a new sponge or Merkle chain.
+    ///
+    /// When set, all chaining constraints and the MMCS accumulator
+    /// update are disabled.
     pub new_start: T,
+
+    /// Merkle-path flag.
+    ///
+    /// Set when this row is a Merkle-path step with directional hashing.
+    ///
+    /// Clear for standard sponge rows.
     pub merkle_path: T,
 }
 
@@ -294,6 +324,16 @@ impl<const INPUT_LIMBS: usize, const OUTPUT_LIMBS: usize, T: Copy + Default> Def
 impl<const INPUT_LIMBS: usize, const OUTPUT_LIMBS: usize, T: Copy>
     Poseidon2PreprocessedRow<INPUT_LIMBS, OUTPUT_LIMBS, T>
 {
+    /// Flatten this row into a buffer, preserving the field order.
+    ///
+    /// Uses a raw pointer cast instead of pushing fields one by one.
+    ///
+    /// This is automatically correct for any field ordering because
+    /// `#[repr(C)]` guarantees the in-memory layout matches the
+    /// declaration order.
+    ///
+    /// A manual push sequence would need to be kept in sync with the
+    /// struct definition. The pointer cast avoids that fragility.
     pub fn write_into(self, buf: &mut Vec<T>) {
         let num_elements = size_of::<Self>() / size_of::<T>();
         let ptr = &self as *const Self as *const T;
