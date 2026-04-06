@@ -286,8 +286,8 @@ mod tests {
 
     #[test]
     fn test_execution_context_get_private_data() {
-        let poseidon2_data: Poseidon2PermPrivateData<F, 2> = Poseidon2PermPrivateData {
-            sibling: [F::ZERO, F::ZERO],
+        let poseidon2_data: Poseidon2PermPrivateData<F> = Poseidon2PermPrivateData {
+            sibling: vec![F::ZERO, F::ZERO],
         };
         let private_data = vec![Some(NpoPrivateData::new(poseidon2_data.clone()))];
 
@@ -302,7 +302,7 @@ mod tests {
         assert!(result.is_ok());
         let downcast = result
             .unwrap()
-            .downcast_ref::<Poseidon2PermPrivateData<F, 2>>()
+            .downcast_ref::<Poseidon2PermPrivateData<F>>()
             .unwrap();
         assert_eq!(*downcast, poseidon2_data);
     }

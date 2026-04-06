@@ -121,7 +121,9 @@ impl Poseidon2Config {
 
     /// Check that input and output counts match this config's expected layout.
     ///
-    /// - For D=1: expects `width` inputs and `rate` or `width` outputs.
+    /// - For D=1: `add_poseidon2_perm` always supplies `width_ext + 2` input slots (MMCS slots may
+    ///   be empty when `merkle_path` is false). `add_poseidon2_perm_base` uses exactly `width` inputs.
+    /// - For D=1 with Merkle (`merkle_path`): inputs must be `width_ext + 2`.
     /// - For D>1: expects `width_ext + 2` inputs and `rate_ext` or `width_ext` outputs.
     ///
     /// # Errors
@@ -131,17 +133,35 @@ impl Poseidon2Config {
         self,
         input_count: usize,
         output_count: usize,
+        merkle_path: bool,
     ) -> Result<(), CircuitBuilderError> {
         let is_d1 = self.d() == 1;
-        let expected_inputs = if is_d1 {
-            self.width()
+        let inputs_ok = if is_d1 {
+            if merkle_path {
+                input_count == self.width_ext() + 2
+            } else {
+                input_count == self.width() || input_count == self.width_ext() + 2
+            }
         } else {
-            self.width_ext() + 2
+            input_count == self.width_ext() + 2
         };
-        if input_count != expected_inputs {
+        if !inputs_ok {
+            let expected = if is_d1 {
+                if merkle_path {
+                    format!("{} inputs", self.width_ext() + 2)
+                } else {
+                    format!(
+                        "{} or {} inputs for D=1 mode",
+                        self.width(),
+                        self.width_ext() + 2
+                    )
+                }
+            } else {
+                format!("{} inputs", self.width_ext() + 2)
+            };
             return Err(CircuitBuilderError::NonPrimitiveOpArity {
                 op: "Poseidon2Perm",
-                expected: format!("{expected_inputs} inputs"),
+                expected,
                 got: input_count,
             });
         }
@@ -172,42 +192,43 @@ impl Poseidon2Config {
 
     /// Convert input expressions to witness indices according to this config's layout.
     ///
-    /// - D=1: all 16 inputs are independent flat slots.
-    /// - D>1: `width_ext` limb slots, followed by the MMCS index accumulator and the MMCS direction bit.
+    /// - D=1 with `width` inputs (`add_poseidon2_perm_base`): flat slots.
+    /// - Otherwise: `width_ext` limb slots, then MMCS index accumulator and direction bit.
     pub fn lower_inputs<F: Field>(
         self,
         input_exprs: &[Vec<ExprId>],
         ctx: &NpoLoweringContext<'_, F>,
+        merkle_path: bool,
     ) -> Result<Vec<Vec<WitnessId>>, CircuitBuilderError> {
-        if self.d() == 1 {
-            ctx.lower_expr_slots(input_exprs, "Poseidon2Perm", "D=1 input")
-        } else {
-            let width_ext = self.width_ext();
-            let mut widx =
-                ctx.lower_expr_slots(&input_exprs[..width_ext], "Poseidon2Perm", "input limb")?;
-
-            let [mmcs_sum] = ctx
-                .lower_expr_slots(
-                    &input_exprs[width_ext..=width_ext],
-                    "Poseidon2Perm",
-                    "mmcs_index_sum",
-                )?
-                .try_into()
-                .expect("single-element slice must yield single-element vec");
-            widx.push(mmcs_sum);
-
-            let [mmcs_bit] = ctx
-                .lower_expr_slots(
-                    &input_exprs[width_ext + 1..=width_ext + 1],
-                    "Poseidon2Perm",
-                    "mmcs_bit",
-                )?
-                .try_into()
-                .expect("single-element slice must yield single-element vec");
-            widx.push(mmcs_bit);
-
-            Ok(widx)
+        if self.d() == 1 && !merkle_path && input_exprs.len() == self.width() {
+            return ctx.lower_expr_slots(input_exprs, "Poseidon2Perm", "D=1 input");
         }
+
+        let width_ext = self.width_ext();
+        let mut widx =
+            ctx.lower_expr_slots(&input_exprs[..width_ext], "Poseidon2Perm", "input limb")?;
+
+        let [mmcs_sum] = ctx
+            .lower_expr_slots(
+                &input_exprs[width_ext..=width_ext],
+                "Poseidon2Perm",
+                "mmcs_index_sum",
+            )?
+            .try_into()
+            .expect("single-element slice must yield single-element vec");
+        widx.push(mmcs_sum);
+
+        let [mmcs_bit] = ctx
+            .lower_expr_slots(
+                &input_exprs[width_ext + 1..=width_ext + 1],
+                "Poseidon2Perm",
+                "mmcs_bit",
+            )?
+            .try_into()
+            .expect("single-element slice must yield single-element vec");
+        widx.push(mmcs_bit);
+
+        Ok(widx)
     }
 
     /// Stable string name for this config variant, used to build `NpoTypeId`.
@@ -268,22 +289,43 @@ mod tests {
     fn validate_io_counts_d4_w16_ok() {
         let cfg = Poseidon2Config::BabyBearD4Width16;
         // width_ext=4, rate_ext=2
-        assert!(cfg.validate_io_counts(4 + 2, 2).is_ok()); // inputs=6, outputs=rate
-        assert!(cfg.validate_io_counts(6, 4).is_ok()); // outputs=width
+        assert!(cfg.validate_io_counts(4 + 2, 2, false).is_ok()); // inputs=6, outputs=rate
+        assert!(cfg.validate_io_counts(6, 4, true).is_ok()); // outputs=width
     }
 
     #[test]
     fn validate_io_counts_d1_w16_ok() {
         let cfg = Poseidon2Config::BabyBearD1Width16;
-        assert!(cfg.validate_io_counts(16, 8).is_ok());
-        assert!(cfg.validate_io_counts(16, 16).is_ok());
+        assert!(cfg.validate_io_counts(16, 8, false).is_ok());
+        assert!(cfg.validate_io_counts(16, 16, false).is_ok());
+        assert!(cfg.validate_io_counts(18, 8, false).is_ok());
+        assert!(cfg.validate_io_counts(18, 16, false).is_ok());
+    }
+
+    #[test]
+    fn validate_io_counts_d1_w16_merkle_ok() {
+        let cfg = Poseidon2Config::BabyBearD1Width16;
+        assert!(cfg.validate_io_counts(18, 8, true).is_ok());
+        assert!(cfg.validate_io_counts(18, 16, true).is_ok());
+    }
+
+    #[test]
+    fn validate_io_counts_d1_merkle_wrong_input_len_errors() {
+        let cfg = Poseidon2Config::BabyBearD1Width16;
+        let Err(CircuitBuilderError::NonPrimitiveOpArity { expected, got, .. }) =
+            cfg.validate_io_counts(16, 8, true)
+        else {
+            panic!("expected NonPrimitiveOpArity");
+        };
+        assert_eq!(expected, "18 inputs");
+        assert_eq!(got, 16);
     }
 
     #[test]
     fn validate_io_counts_wrong_inputs_errors() {
         let cfg = Poseidon2Config::BabyBearD4Width16;
         let Err(CircuitBuilderError::NonPrimitiveOpArity { op, expected, got }) =
-            cfg.validate_io_counts(3, 2)
+            cfg.validate_io_counts(3, 2, false)
         else {
             panic!("expected NonPrimitiveOpArity");
         };
@@ -296,7 +338,7 @@ mod tests {
     fn validate_io_counts_wrong_outputs_errors() {
         let cfg = Poseidon2Config::BabyBearD4Width16;
         let Err(CircuitBuilderError::NonPrimitiveOpArity { op, expected, got }) =
-            cfg.validate_io_counts(6, 3)
+            cfg.validate_io_counts(6, 3, false)
         else {
             panic!("expected NonPrimitiveOpArity");
         };
@@ -309,7 +351,7 @@ mod tests {
     fn validate_io_counts_d1_wrong_outputs_errors() {
         let cfg = Poseidon2Config::BabyBearD1Width16;
         let Err(CircuitBuilderError::NonPrimitiveOpArity { op, expected, got }) =
-            cfg.validate_io_counts(16, 5)
+            cfg.validate_io_counts(16, 5, false)
         else {
             panic!("expected NonPrimitiveOpArity");
         };
@@ -335,7 +377,7 @@ mod tests {
         let ctx = NpoLoweringContext::<F>::new(&mut map, &mut alloc);
 
         let input_exprs: Vec<Vec<ExprId>> = (0u32..6).map(|i| vec![ExprId(i)]).collect();
-        let result = cfg.lower_inputs(&input_exprs, &ctx).unwrap();
+        let result = cfg.lower_inputs(&input_exprs, &ctx, false).unwrap();
 
         let expected: Vec<Vec<WitnessId>> = (0u32..6).map(|i| vec![WitnessId(100 + i)]).collect();
         assert_eq!(result, expected);
@@ -358,9 +400,53 @@ mod tests {
         let ctx = NpoLoweringContext::<F>::new(&mut map, &mut alloc);
 
         let input_exprs: Vec<Vec<ExprId>> = (0u32..16).map(|i| vec![ExprId(i)]).collect();
-        let result = cfg.lower_inputs(&input_exprs, &ctx).unwrap();
+        let result = cfg.lower_inputs(&input_exprs, &ctx, false).unwrap();
 
         let expected: Vec<Vec<WitnessId>> = (0u32..16).map(|i| vec![WitnessId(i)]).collect();
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn lower_inputs_d1_merkle_matches_ext_layout() {
+        let cfg = Poseidon2Config::BabyBearD1Width16;
+        let mut map = HashMap::new();
+        for i in 0u32..18 {
+            map.insert(ExprId(i), WitnessId(100 + i));
+        }
+        let mut counter = 300u32;
+        let mut alloc = |_: usize| {
+            let id = WitnessId(counter);
+            counter += 1;
+            id
+        };
+        let ctx = NpoLoweringContext::<F>::new(&mut map, &mut alloc);
+
+        let input_exprs: Vec<Vec<ExprId>> = (0u32..18).map(|i| vec![ExprId(i)]).collect();
+        let result = cfg.lower_inputs(&input_exprs, &ctx, true).unwrap();
+
+        let expected: Vec<Vec<WitnessId>> = (0u32..18).map(|i| vec![WitnessId(100 + i)]).collect();
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn lower_inputs_d1_non_merkle_18_slot_layout() {
+        let cfg = Poseidon2Config::BabyBearD1Width16;
+        let mut map = HashMap::new();
+        for i in 0u32..18 {
+            map.insert(ExprId(i), WitnessId(200 + i));
+        }
+        let mut counter = 400u32;
+        let mut alloc = |_: usize| {
+            let id = WitnessId(counter);
+            counter += 1;
+            id
+        };
+        let ctx = NpoLoweringContext::<F>::new(&mut map, &mut alloc);
+
+        let input_exprs: Vec<Vec<ExprId>> = (0u32..18).map(|i| vec![ExprId(i)]).collect();
+        let result = cfg.lower_inputs(&input_exprs, &ctx, false).unwrap();
+
+        let expected: Vec<Vec<WitnessId>> = (0u32..18).map(|i| vec![WitnessId(200 + i)]).collect();
         assert_eq!(result, expected);
     }
 
@@ -383,7 +469,7 @@ mod tests {
         input_exprs.push(vec![ExprId(10)]);
         input_exprs.push(vec![ExprId(11)]);
 
-        let result = cfg.lower_inputs(&input_exprs, &ctx).unwrap();
+        let result = cfg.lower_inputs(&input_exprs, &ctx, false).unwrap();
 
         assert_eq!(
             result,

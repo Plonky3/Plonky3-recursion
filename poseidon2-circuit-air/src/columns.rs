@@ -4,6 +4,8 @@ use alloc::vec::Vec;
 use core::borrow::{Borrow, BorrowMut};
 use core::mem::size_of;
 
+use p3_circuit::ops::{KoalaBearD1Width16, Poseidon2Params};
+
 /// Number of extension-field limbs for Poseidon2 input and output.
 ///
 /// Each limb is one extension-field element.
@@ -195,44 +197,82 @@ pub struct Poseidon2PrepOutputLimb<T> {
     pub out_ctl: T,
 }
 
+/// Number of preprocessed columns for one Poseidon2 row.
+///
+/// `input_limbs` is the number of logical input limbs (`WIDTH_EXT` in the
+/// AIR). Each [`Poseidon2PrepInputLimb`] occupies four scalar columns.
+/// `output_limbs` is the number of rate output limbs exposed via CTL
+/// (`RATE_EXT`). Each [`Poseidon2PrepOutputLimb`] occupies two columns.
+/// The row ends with four single-column flags.
+///
+/// For D=1 width-16 / rate-8 Poseidon2, use [`poseidon2_preprocessed_row_width_for_air`] instead.
+#[inline]
+pub const fn poseidon2_preprocessed_row_width(input_limbs: usize, output_limbs: usize) -> usize {
+    input_limbs * size_of::<Poseidon2PrepInputLimb<u8>>()
+        + output_limbs * size_of::<Poseidon2PrepOutputLimb<u8>>()
+        + 4
+}
+
+/// `true` when Poseidon2 uses the compact D=1 preprocessed layout.
+#[inline]
+pub const fn poseidon2_uses_compact_d1_preprocessed(
+    poseidon_d: usize,
+    width_ext: usize,
+    rate_ext: usize,
+) -> bool {
+    poseidon_d == 1
+        && width_ext == KoalaBearD1Width16::WIDTH_EXT
+        && rate_ext == KoalaBearD1Width16::RATE_EXT
+}
+
+/// Scalar columns before input indices in the compact D=1 layout: `rate_ext` per-limb `in_ctl`,
+/// unused `cap_in_ctl` (always zero; kept for fixed offset), `cap_chain_enable`, then `rate_ext`
+/// sponge-chain helpers `(1 − new_start) * (1 − merkle_path) * (1 − in_ctl_i)` and `rate_ext`
+/// Merkle-chain helpers `(1 − new_start) * merkle_path * (1 − in_ctl_i)` so transition gates stay degree-3.
+#[inline]
+pub const fn poseidon2_d1_compact_preprocessed_header_cols(rate_ext: usize) -> usize {
+    rate_ext + 2 + rate_ext + rate_ext
+}
+
+/// Preprocessed row width for a [`crate::Poseidon2CircuitAir`] with the given const parameters.
+#[inline]
+pub const fn poseidon2_preprocessed_row_width_for_air(
+    poseidon_d: usize,
+    width_ext: usize,
+    rate_ext: usize,
+) -> usize {
+    if poseidon2_uses_compact_d1_preprocessed(poseidon_d, width_ext, rate_ext) {
+        // Compact D=1: per-rate-limb in_ctl + cap_in_ctl (zero) + cap_chain + input idx + output idx +
+        // per-limb out_ctl (out_ctl stays per limb for prover multiplicity pass).
+        poseidon2_d1_compact_preprocessed_header_cols(rate_ext)
+            + width_ext
+            + rate_ext
+            + rate_ext
+            + 4
+    } else {
+        poseidon2_preprocessed_row_width(width_ext, rate_ext)
+    }
+}
+
 /// Full preprocessed row for the Poseidon2 circuit table.
 ///
 /// One row per Poseidon2 permutation invocation.
 ///
-/// The preprocessed data is committed once at setup and reused across
-/// all proofs.
-///
-/// # Memory Layout
-///
-/// ```text
-///     [ input_limbs (4 × 4 fields) | output_limbs (2 × 2 fields)
-///       | mmcs_index_sum_ctl_idx | mmcs_merkle_flag
-///       | new_start | merkle_path ]
-/// ```
-///
-/// Total width: 24 columns.
+/// `INPUT_LIMBS` matches the AIR's `WIDTH_EXT` (state width in logical
+/// limbs). `OUTPUT_LIMBS` matches `RATE_EXT` (rate in logical limbs).
 ///
 /// # Padding
 ///
 /// When padded to a power-of-two height, the **first** padding row sets
 /// the chain-start flag to one.
-///
-/// This prevents chaining constraints from firing across the real/padding
-/// boundary.
-///
-/// All other padding fields are zero.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug)]
 #[repr(C)]
-pub struct Poseidon2PreprocessedRow<T> {
-    /// Per-limb preprocessed input columns.
-    ///
-    /// One entry per extension-field input limb.
-    pub input_limbs: [Poseidon2PrepInputLimb<T>; POSEIDON2_LIMBS],
+pub struct Poseidon2PreprocessedRow<const INPUT_LIMBS: usize, const OUTPUT_LIMBS: usize, T> {
+    /// Per-limb preprocessed input columns (one logical limb = `D` bases in the trace).
+    pub input_limbs: [Poseidon2PrepInputLimb<T>; INPUT_LIMBS],
 
-    /// Per-limb preprocessed output columns.
-    ///
-    /// One entry per publicly exposed output limb.
-    pub output_limbs: [Poseidon2PrepOutputLimb<T>; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
+    /// Per-limb preprocessed output columns for rate outputs under CTL.
+    pub output_limbs: [Poseidon2PrepOutputLimb<T>; OUTPUT_LIMBS],
 
     /// Witness index for the MMCS accumulator column.
     ///
@@ -270,7 +310,24 @@ pub struct Poseidon2PreprocessedRow<T> {
     pub merkle_path: T,
 }
 
-impl<T: Copy> Poseidon2PreprocessedRow<T> {
+impl<const INPUT_LIMBS: usize, const OUTPUT_LIMBS: usize, T: Copy + Default> Default
+    for Poseidon2PreprocessedRow<INPUT_LIMBS, OUTPUT_LIMBS, T>
+{
+    fn default() -> Self {
+        Self {
+            input_limbs: [Poseidon2PrepInputLimb::default(); INPUT_LIMBS],
+            output_limbs: [Poseidon2PrepOutputLimb::default(); OUTPUT_LIMBS],
+            mmcs_index_sum_ctl_idx: T::default(),
+            mmcs_merkle_flag: T::default(),
+            new_start: T::default(),
+            merkle_path: T::default(),
+        }
+    }
+}
+
+impl<const INPUT_LIMBS: usize, const OUTPUT_LIMBS: usize, T: Copy>
+    Poseidon2PreprocessedRow<INPUT_LIMBS, OUTPUT_LIMBS, T>
+{
     /// Flatten this row into a buffer, preserving the field order.
     ///
     /// Uses a raw pointer cast instead of pushing fields one by one.
@@ -297,9 +354,16 @@ impl<T: Copy> Poseidon2PreprocessedRow<T> {
     }
 }
 
-impl<T> Borrow<Poseidon2PreprocessedRow<T>> for [T] {
-    fn borrow(&self) -> &Poseidon2PreprocessedRow<T> {
-        let (prefix, rows, suffix) = unsafe { self.align_to::<Poseidon2PreprocessedRow<T>>() };
+impl<const INPUT_LIMBS: usize, const OUTPUT_LIMBS: usize, T>
+    Borrow<Poseidon2PreprocessedRow<INPUT_LIMBS, OUTPUT_LIMBS, T>> for [T]
+{
+    fn borrow(&self) -> &Poseidon2PreprocessedRow<INPUT_LIMBS, OUTPUT_LIMBS, T> {
+        debug_assert_eq!(
+            self.len(),
+            poseidon2_preprocessed_row_width(INPUT_LIMBS, OUTPUT_LIMBS)
+        );
+        let (prefix, rows, suffix) =
+            unsafe { self.align_to::<Poseidon2PreprocessedRow<INPUT_LIMBS, OUTPUT_LIMBS, T>>() };
         debug_assert!(prefix.is_empty(), "Alignment should match");
         debug_assert!(suffix.is_empty(), "Alignment should match");
         debug_assert_eq!(rows.len(), 1);
@@ -307,9 +371,17 @@ impl<T> Borrow<Poseidon2PreprocessedRow<T>> for [T] {
     }
 }
 
-impl<T> BorrowMut<Poseidon2PreprocessedRow<T>> for [T] {
-    fn borrow_mut(&mut self) -> &mut Poseidon2PreprocessedRow<T> {
-        let (prefix, rows, suffix) = unsafe { self.align_to_mut::<Poseidon2PreprocessedRow<T>>() };
+impl<const INPUT_LIMBS: usize, const OUTPUT_LIMBS: usize, T>
+    BorrowMut<Poseidon2PreprocessedRow<INPUT_LIMBS, OUTPUT_LIMBS, T>> for [T]
+{
+    fn borrow_mut(&mut self) -> &mut Poseidon2PreprocessedRow<INPUT_LIMBS, OUTPUT_LIMBS, T> {
+        debug_assert_eq!(
+            self.len(),
+            poseidon2_preprocessed_row_width(INPUT_LIMBS, OUTPUT_LIMBS)
+        );
+        let (prefix, rows, suffix) = unsafe {
+            self.align_to_mut::<Poseidon2PreprocessedRow<INPUT_LIMBS, OUTPUT_LIMBS, T>>()
+        };
         debug_assert!(prefix.is_empty(), "Alignment should match");
         debug_assert!(suffix.is_empty(), "Alignment should match");
         debug_assert_eq!(rows.len(), 1);

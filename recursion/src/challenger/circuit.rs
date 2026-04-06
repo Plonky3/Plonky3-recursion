@@ -46,6 +46,13 @@ pub struct CircuitChallenger<const WIDTH: usize, const RATE: usize, C: Challenge
 
     /// Whether the challenger has been initialized with zero state.
     initialized: bool,
+
+    /// Whether `duplexing_base` has been called at least once since the last init/clear.
+    ///
+    /// The first D=1 permutation uses `new_start=true` with rate slots CTL-verified and
+    /// capacity `None` (zeros enforced by the compact D=1 AIR). Later permutations use
+    /// `new_start=false` with the same capacity pattern and chaining.
+    duplexed_once: bool,
 }
 
 impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
@@ -64,6 +71,7 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
             input_buffer: Vec::new(),
             output_buffer: Vec::new(),
             initialized: false,
+            duplexed_once: false,
         }
     }
 
@@ -94,28 +102,22 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
         debug_assert!(self.initialized, "Challenger must be initialized");
         debug_assert!(self.input_buffer.len() <= RATE, "Input buffer exceeds RATE");
 
-        // Validate config matches extension field dimension
-        let config_d = self.config.extension_degree();
-        assert_eq!(
-            config_d,
-            EF::DIMENSION,
-            "Poseidon2 config dimension mismatch: config D={} but EF::DIMENSION={}",
-            config_d,
-            EF::DIMENSION
-        );
+        let poseidon2_config = *self
+            .config
+            .as_poseidon2()
+            .expect("only Poseidon2 challenger permutation is supported");
 
         // 1. Overwrite state[0..n] with inputs (NOT XOR, matches native)
         for (i, val) in self.input_buffer.drain(..).enumerate() {
             self.state[i] = val;
         }
 
-        // Branch based on extension degree
-        if EF::DIMENSION == 1 {
-            // D=1: Use base field permutation directly
-            self.duplexing_base(circuit);
+        // Branch by Poseidon2 NPO packing (`config.d()`), not `EF::DIMENSION`, so a
+        // quintic (or other) challenge field can still use base width-16 Poseidon2.
+        if poseidon2_config.d() == 1 {
+            self.duplexing_base(circuit, poseidon2_config);
         } else {
-            // D=4: Use extension field permutation with recomposition
-            self.duplexing_ext::<BF, EF>(circuit);
+            self.duplexing_ext::<BF, EF>(circuit, poseidon2_config);
         }
 
         // 5. Fill output buffer from state[0..RATE]
@@ -124,32 +126,46 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
     }
 
     /// Duplexing for D=1 (base field): permutation operates directly on 16 elements.
-    fn duplexing_base<EF>(&mut self, circuit: &mut CircuitBuilder<EF>)
-    where
+    ///
+    /// The first call uses `new_start=true`: rate slots are CTL-verified; capacity slots use
+    /// `None` (initial state is zero and the compact D=1 AIR asserts zero capacity on sponge
+    /// chain starts). Subsequent calls use `new_start=false` with `None` for capacity so the
+    /// AIR enforces continuity via the chain constraint.
+    fn duplexing_base<EF>(
+        &mut self,
+        circuit: &mut CircuitBuilder<EF>,
+        poseidon2_config: Poseidon2Config,
+    ) where
         EF: p3_field::Field,
     {
-        let poseidon2_config = self
-            .config
-            .as_poseidon2()
-            .expect("only Poseidon2 challenger permutation is supported");
-        let inputs: [Target; 16] = core::array::from_fn(|i| self.state[i]);
+        let (new_start, inputs) = if !self.duplexed_once {
+            // First permutation: CTL-verify rate only; capacity is zero without witness CTL.
+            let inputs: [Option<Target>; 16] =
+                core::array::from_fn(|i| if i < RATE { Some(self.state[i]) } else { None });
+            (true, inputs)
+        } else {
+            // Subsequent permutations: CTL-verify rate inputs only; capacity via chain.
+            let inputs: [Option<Target>; 16] =
+                core::array::from_fn(|i| if i < RATE { Some(self.state[i]) } else { None });
+            (false, inputs)
+        };
+        self.duplexed_once = true;
 
         let outputs = circuit
-            .add_poseidon2_perm_for_challenger_base(*poseidon2_config, inputs)
+            .add_poseidon2_perm_for_challenger_base(poseidon2_config, new_start, inputs)
             .expect("poseidon2 base permutation should succeed");
 
         self.state = outputs.to_vec();
     }
 
-    fn duplexing_ext<BF, EF>(&mut self, circuit: &mut CircuitBuilder<EF>)
-    where
+    fn duplexing_ext<BF, EF>(
+        &mut self,
+        circuit: &mut CircuitBuilder<EF>,
+        poseidon2_config: Poseidon2Config,
+    ) where
         BF: PrimeField64,
         EF: ExtensionField<BF>,
     {
-        let poseidon2_config = self
-            .config
-            .as_poseidon2()
-            .expect("only Poseidon2 challenger permutation is supported");
         let num_ext_limbs = WIDTH / EF::DIMENSION;
         let mut ext_inputs = Vec::with_capacity(num_ext_limbs);
         for i in 0..num_ext_limbs {
@@ -162,7 +178,7 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
         }
 
         let ext_outputs = circuit
-            .add_poseidon2_perm_for_challenger(*poseidon2_config, &ext_inputs)
+            .add_poseidon2_perm_for_challenger(poseidon2_config, &ext_inputs)
             .expect("poseidon2 permutation should succeed");
 
         for (limb, &ext_out) in ext_outputs.iter().enumerate() {
@@ -304,5 +320,6 @@ where
         self.input_buffer.clear();
         self.output_buffer.clear();
         self.initialized = true;
+        self.duplexed_once = false;
     }
 }
