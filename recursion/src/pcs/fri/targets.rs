@@ -218,6 +218,12 @@ impl<F: Field, EF: ExtensionField<F> + BasedVectorSpace<F>, RecMmcs: RecursiveEx
     CommitPhaseProofStepTargets<F, EF, RecMmcs>
 {
     /// Pack a single sibling's lifted base field coefficients into an extension element.
+    ///
+    /// Uses pure ALU ops (so the coefficient private inputs satisfy the "used in ALU operand"
+    /// invariant) and registers the result in the circuit builder's coefficient-provenance cache
+    /// via [`CircuitBuilder::hint_ext_recompose_coeffs`]. This makes a subsequent
+    /// `decompose_ext_to_base_coeffs` call on the packed value a no-op rather than allocating
+    /// new witnesses (critical for D=1 MMCS hashing over higher-degree extension fields).
     fn pack_one_sibling(coeffs: &[Target], circuit: &mut CircuitBuilder<EF>) -> Target {
         let basis: Vec<EF> = (0..EF::DIMENSION)
             .map(|i| EF::from_basis_coefficients_fn(|j| if i == j { F::ONE } else { F::ZERO }))
@@ -228,6 +234,7 @@ impl<F: Field, EF: ExtensionField<F> + BasedVectorSpace<F>, RecMmcs: RecursiveEx
             let basis_const = circuit.define_const(basis_elem);
             result = circuit.mul_add(coeffs[i], basis_const, result);
         }
+        circuit.hint_ext_recompose_coeffs(result, coeffs);
         result
     }
 

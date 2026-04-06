@@ -45,6 +45,15 @@ pub trait PreprocessedWriter<F: Field> {
     /// Extends the preprocessed data of `op_type`'s non-primitive operation with `values`.
     /// Does not update read counts.
     fn register_non_primitive_preprocessed_no_read(&mut self, op_type: &NpoTypeId, values: &[F]);
+
+    /// Witness-table extension packing width `D` for this circuit (matches [`PreprocessedColumns<F,
+    /// D>`](crate::PreprocessedColumns)).
+    ///
+    /// Used by Poseidon2 D=1 preprocessing to align compact preprocessed rows with the chosen
+    /// witness-bus Poseidon2 AIR (Bus1 / Bus5).
+    fn witness_extension_degree_slots(&self) -> usize {
+        1
+    }
 }
 
 /// Trait for operation-specific execution state.

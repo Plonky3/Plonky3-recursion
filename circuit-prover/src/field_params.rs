@@ -10,7 +10,10 @@
 //! from field types at runtime, supporting both base fields and extension fields.
 
 use p3_field::Field;
-use p3_field::extension::{BinomialExtensionField, BinomiallyExtendable};
+use p3_field::extension::{
+    BinomialExtensionField, BinomiallyExtendable, QuinticTrinomialExtendable,
+    QuinticTrinomialExtensionField,
+};
 
 /// Extract binomial parameters from field types.
 ///
@@ -20,6 +23,12 @@ pub trait ExtractBinomialW<F: Field> {
     /// Extract the binomial parameter W for the current extension degree (e.g., x^D = W).
     /// Returns None for base fields, Some(W) for supported binomial extensions.
     fn extract_w() -> Option<F>;
+
+    /// When true and `D == 5`, the ALU uses the trinomial reduction `X^5 + X^2 - 1`
+    /// instead of a binomial `x^5 = W`.
+    fn alu_is_quintic_trinomial() -> bool {
+        false
+    }
 }
 
 /// When the element field is the same as the base field (no extension), there's no binomial parameter W.
@@ -39,5 +48,18 @@ where
 {
     fn extract_w() -> Option<F> {
         Some(F::W)
+    }
+}
+
+impl<F> ExtractBinomialW<F> for QuinticTrinomialExtensionField<F>
+where
+    F: Field + QuinticTrinomialExtendable,
+{
+    fn extract_w() -> Option<F> {
+        None
+    }
+
+    fn alu_is_quintic_trinomial() -> bool {
+        true
     }
 }

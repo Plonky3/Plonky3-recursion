@@ -1,18 +1,23 @@
 use p3_baby_bear::BabyBear;
 use p3_circuit::builder::CircuitBuilder;
-use p3_circuit::ops::poseidon2_perm::GoldilocksD2Width8;
-use p3_circuit::ops::{Poseidon2Config, generate_poseidon2_trace, generate_recompose_trace};
+use p3_circuit::ops::poseidon2_perm::{GoldilocksD2Width8, Poseidon2PermCallBase};
+use p3_circuit::ops::{
+    KoalaBearD1Width16, Poseidon2Config, generate_poseidon2_trace, generate_recompose_trace,
+};
 use p3_field::PrimeCharacteristicRing;
+use p3_field::extension::QuinticTrinomialExtensionField;
 use p3_goldilocks::{Goldilocks, Poseidon2Goldilocks};
-use p3_koala_bear::KoalaBear;
-use p3_symmetric::CryptographicHasher;
+use p3_koala_bear::{KoalaBear, default_koalabear_poseidon2_16};
+use p3_symmetric::{CryptographicHasher, PaddingFreeSponge, Permutation};
+use p3_test_utils::LiftPermToQuintic;
 
 use super::*;
 use crate::ConstraintProfile;
 use crate::batch_stark_prover::{
-    BABY_BEAR_MODULUS, KOALA_BEAR_MODULUS, poseidon2_air_builders, recompose_air_builders,
+    BABY_BEAR_MODULUS, KOALA_BEAR_MODULUS, Poseidon2Preprocessor, poseidon2_air_builders,
+    poseidon2_air_builders_d5, poseidon2_table_provers_d5, recompose_air_builders,
 };
-use crate::common::get_airs_and_degrees_with_prep;
+use crate::common::{NpoPreprocessor, get_airs_and_degrees_with_prep};
 use crate::config::{self, BabyBearConfig, GoldilocksConfig, KoalaBearConfig};
 
 #[test]
@@ -254,7 +259,7 @@ fn test_extension_field_table_lookups() {
     let circuit = builder.build().unwrap();
     let default_packing = TablePacking::default();
     let mut air_builders_ext4 = poseidon2_air_builders::<BabyBearConfig, 4>();
-    air_builders_ext4.extend(recompose_air_builders::<BabyBearConfig, 4>(1));
+    air_builders_ext4.extend(recompose_air_builders::<BabyBearConfig, 4>(1, false));
     let (airs_degrees, primitive_columns, non_primitive_columns) =
         get_airs_and_degrees_with_prep::<BabyBearConfig, _, D>(
             &circuit,
@@ -519,7 +524,7 @@ fn test_goldilocks_batch_stark_binomial_ext2() {
 
     let circuit = builder.build().unwrap();
     let mut air_builders_ext2 = poseidon2_air_builders::<GoldilocksConfig, 2>();
-    air_builders_ext2.extend(recompose_air_builders::<GoldilocksConfig, 2>(1));
+    air_builders_ext2.extend(recompose_air_builders::<GoldilocksConfig, 2>(1, false));
     let (airs_degrees, primitive_columns, non_primitive_columns) =
         get_airs_and_degrees_with_prep::<GoldilocksConfig, _, D>(
             &circuit,
@@ -594,8 +599,7 @@ fn test_goldilocks_poseidon2_circuit_build_and_run() {
         Ext2::from_basis_coefficients_slice(&[Goldilocks::from_u64(1), Goldilocks::ZERO]).unwrap();
     let in1 =
         Ext2::from_basis_coefficients_slice(&[Goldilocks::from_u64(2), Goldilocks::ZERO]).unwrap();
-    let hasher =
-        p3_symmetric::PaddingFreeSponge::<Poseidon2Goldilocks<8>, 8, 4, 4>::new(perm_for_hash);
+    let hasher = PaddingFreeSponge::<Poseidon2Goldilocks<8>, 8, 4, 4>::new(perm_for_hash);
     let base_inputs = [
         Goldilocks::from_u64(1),
         Goldilocks::ZERO,
@@ -750,4 +754,200 @@ fn test_add_only_circuit_padding() {
         .prove_all_tables(&traces, &circuit_prover_data)
         .unwrap();
     prover.verify_all_tables(&proof, common).unwrap();
+}
+
+fn koala_ef5_lift(b: KoalaBear) -> QuinticTrinomialExtensionField<KoalaBear> {
+    QuinticTrinomialExtensionField::<KoalaBear>::from_basis_coefficients_slice(&[
+        b,
+        KoalaBear::ZERO,
+        KoalaBear::ZERO,
+        KoalaBear::ZERO,
+        KoalaBear::ZERO,
+    ])
+    .expect("basis slice")
+}
+
+#[test]
+fn test_koalabear_quintic_trinomial_batch_stark_with_poseidon_d1() {
+    const D: usize = 5;
+    type EF5 = QuinticTrinomialExtensionField<KoalaBear>;
+
+    // Must match KoalaBearD1Width16::round_constants() in poseidon2-circuit-air (not RNG-derived).
+    let inner_perm = default_koalabear_poseidon2_16();
+    let mut sponge0 = [KoalaBear::ZERO; 16];
+    sponge0[0] = KoalaBear::from_u64(11);
+    sponge0[1] = KoalaBear::from_u64(13);
+    let sponge_out = inner_perm.permute(sponge0);
+    let lift_perm = LiftPermToQuintic::new(inner_perm);
+
+    let in0 = koala_ef5_lift(KoalaBear::from_u64(11));
+    let in1 = koala_ef5_lift(KoalaBear::from_u64(13));
+    let exp0 = koala_ef5_lift(sponge_out[0]);
+    let exp1 = koala_ef5_lift(sponge_out[1]);
+
+    let mut builder = CircuitBuilder::<EF5>::new();
+    builder.enable_poseidon2_perm_base::<KoalaBearD1Width16, _>(
+        generate_poseidon2_trace::<EF5, KoalaBearD1Width16>,
+        lift_perm,
+    );
+
+    let in_a = builder.public_input();
+    let in_b = builder.public_input();
+    let mut perm_inputs: [Option<_>; 16] = [None; 16];
+    perm_inputs[0] = Some(in_a);
+    perm_inputs[1] = Some(in_b);
+    let (_pid, hash_outputs) = builder
+        .add_poseidon2_perm_base(&Poseidon2PermCallBase {
+            config: Poseidon2Config::KoalaBearD1Width16,
+            new_start: true,
+            inputs: perm_inputs,
+            // Only CTL-expose rate limbs that are wired into the rest of the circuit; unused
+            // exposed outputs would leave WitnessChecks Receive contributions unmatched.
+            out_ctl: [true; 8],
+            return_all_outputs: false,
+        })
+        .unwrap();
+    let e0 = builder.public_input();
+    let e1 = builder.public_input();
+    let h0_diff = builder.sub(hash_outputs[0].unwrap(), e0);
+    let h1_diff = builder.sub(hash_outputs[1].unwrap(), e1);
+    builder.assert_zero(h0_diff);
+    builder.assert_zero(h1_diff);
+
+    let circuit = builder.build().unwrap();
+    let cfg = config::koala_bear().build();
+
+    let npo_prep: Vec<Box<dyn NpoPreprocessor<KoalaBear>>> = vec![Box::new(Poseidon2Preprocessor)];
+    let air_builders = poseidon2_air_builders_d5::<KoalaBearConfig>();
+    let (airs_degrees, primitive_columns, non_primitive_columns) =
+        get_airs_and_degrees_with_prep::<KoalaBearConfig, _, D>(
+            &circuit,
+            &TablePacking::default(),
+            &npo_prep,
+            &air_builders,
+            ConstraintProfile::Standard,
+        )
+        .unwrap();
+    let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
+    let mut runner = circuit.runner();
+
+    runner.set_public_inputs(&[in0, in1, exp0, exp1]).unwrap();
+    let traces = runner.run().unwrap();
+
+    let prover_data = ProverData::from_airs_and_degrees(&cfg, &mut airs, &degrees);
+    let circuit_prover_data =
+        CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
+
+    let mut prover = BatchStarkProver::new(cfg);
+    for p in poseidon2_table_provers_d5(Poseidon2Config::KoalaBearD1Width16) {
+        prover.register_table_prover(p);
+    }
+
+    let proof = prover
+        .prove_all_tables(&traces, &circuit_prover_data)
+        .unwrap();
+    assert_eq!(proof.ext_degree, D);
+    assert!(proof.w_binomial.is_none());
+    assert!(proof.alu_quintic_trinomial);
+    prover
+        .verify_all_tables(&proof, circuit_prover_data.common_data())
+        .unwrap();
+}
+
+/// Two D=1 Poseidon rows in an EF5 circuit: the second row uses `new_start=false` so the full
+/// 16-wide state chains through the compact D=1 preprocessed layout (sponge selectors, not Merkle).
+#[test]
+fn test_koalabear_quintic_trinomial_batch_stark_poseidon_d1_sponge_chain() {
+    const D: usize = 5;
+    type EF5 = QuinticTrinomialExtensionField<KoalaBear>;
+
+    let inner_perm = default_koalabear_poseidon2_16();
+    let mut sponge0 = [KoalaBear::ZERO; 16];
+    sponge0[0] = KoalaBear::from_u64(11);
+    sponge0[1] = KoalaBear::from_u64(13);
+    let sponge_out0 = inner_perm.permute(sponge0);
+    let sponge_out1 = inner_perm.permute(sponge_out0);
+    let lift_perm = LiftPermToQuintic::new(inner_perm);
+
+    let in0 = koala_ef5_lift(KoalaBear::from_u64(11));
+    let in1 = koala_ef5_lift(KoalaBear::from_u64(13));
+    let exp0 = koala_ef5_lift(sponge_out1[0]);
+    let exp1 = koala_ef5_lift(sponge_out1[1]);
+
+    let mut builder = CircuitBuilder::<EF5>::new();
+    builder.enable_poseidon2_perm_base::<KoalaBearD1Width16, _>(
+        generate_poseidon2_trace::<EF5, KoalaBearD1Width16>,
+        lift_perm,
+    );
+
+    let in_a = builder.public_input();
+    let in_b = builder.public_input();
+    let mut perm0_inputs: [Option<_>; 16] = [None; 16];
+    perm0_inputs[0] = Some(in_a);
+    perm0_inputs[1] = Some(in_b);
+    let (_pid0, _hash0) = builder
+        .add_poseidon2_perm_base(&Poseidon2PermCallBase {
+            config: Poseidon2Config::KoalaBearD1Width16,
+            new_start: true,
+            inputs: perm0_inputs,
+            out_ctl: [false; 8],
+            return_all_outputs: false,
+        })
+        .unwrap();
+
+    let perm1_inputs: [Option<_>; 16] = [None; 16];
+    let (_pid1, hash1_outputs) = builder
+        .add_poseidon2_perm_base(&Poseidon2PermCallBase {
+            config: Poseidon2Config::KoalaBearD1Width16,
+            new_start: false,
+            inputs: perm1_inputs,
+            out_ctl: [true; 8],
+            return_all_outputs: false,
+        })
+        .unwrap();
+    let e0 = builder.public_input();
+    let e1 = builder.public_input();
+    let h0_diff = builder.sub(hash1_outputs[0].unwrap(), e0);
+    let h1_diff = builder.sub(hash1_outputs[1].unwrap(), e1);
+    builder.assert_zero(h0_diff);
+    builder.assert_zero(h1_diff);
+
+    let circuit = builder.build().unwrap();
+    let cfg = config::koala_bear().build();
+
+    let npo_prep: Vec<Box<dyn NpoPreprocessor<KoalaBear>>> = vec![Box::new(Poseidon2Preprocessor)];
+    let air_builders = poseidon2_air_builders_d5::<KoalaBearConfig>();
+    let (airs_degrees, primitive_columns, non_primitive_columns) =
+        get_airs_and_degrees_with_prep::<KoalaBearConfig, _, D>(
+            &circuit,
+            &TablePacking::default(),
+            &npo_prep,
+            &air_builders,
+            ConstraintProfile::Standard,
+        )
+        .unwrap();
+    let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
+    let mut runner = circuit.runner();
+
+    runner.set_public_inputs(&[in0, in1, exp0, exp1]).unwrap();
+    let traces = runner.run().unwrap();
+
+    let prover_data = ProverData::from_airs_and_degrees(&cfg, &mut airs, &degrees);
+    let circuit_prover_data =
+        CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
+
+    let mut prover = BatchStarkProver::new(cfg);
+    for p in poseidon2_table_provers_d5(Poseidon2Config::KoalaBearD1Width16) {
+        prover.register_table_prover(p);
+    }
+
+    let proof = prover
+        .prove_all_tables(&traces, &circuit_prover_data)
+        .unwrap();
+    assert_eq!(proof.ext_degree, D);
+    assert!(proof.w_binomial.is_none());
+    assert!(proof.alu_quintic_trinomial);
+    prover
+        .verify_all_tables(&proof, circuit_prover_data.common_data())
+        .unwrap();
 }

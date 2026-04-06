@@ -110,17 +110,27 @@ enum ScheduleEntry {
     Separator,
 }
 
+/// How extension multiplication is reduced in the MUL / MUL_ADD / Horner paths.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum AluExtMulKind<F: Copy> {
+    /// Base field only (`D == 1`).
+    Base,
+    /// Binomial extension `x^D = W` for `D > 1`.
+    Binomial { w: F },
+    /// Quintic trinomial `X^5 + X^2 - 1` (KoalaBear-style), `D == 5` only.
+    QuinticTrinomial,
+}
+
 /// AIR for proving unified arithmetic operations.
 ///
 /// Supports ADD, MUL, BOOL_CHECK, and MUL_ADD operations with preprocessed selectors.
 #[derive(Debug, Clone)]
-pub struct AluAir<F, const D: usize = 1> {
+pub struct AluAir<F: Copy, const D: usize = 1> {
     /// Total number of logical ALU operations in the trace.
     pub(crate) num_ops: usize,
     /// Number of independent operations packed per trace row.
     pub(crate) lanes: usize,
-    /// For binomial extensions x^D = W (D > 1).
-    pub(crate) w_binomial: Option<F>,
+    pub(crate) ext_mul_kind: AluExtMulKind<F>,
     /// Flattened preprocessed values (selectors + indices), in original op order.
     pub(crate) preprocessed: Vec<F>,
     /// Number of lookup columns registered so far.
@@ -135,15 +145,18 @@ pub struct AluAir<F, const D: usize = 1> {
     _phantom: PhantomData<F>,
 }
 
-impl<F: Field + PrimeCharacteristicRing, const D: usize> AluAir<F, D> {
+impl<F: Field + PrimeCharacteristicRing + Copy, const D: usize> AluAir<F, D> {
     /// Construct a new `AluAir` for base-field operations (D=1).
     pub const fn new(num_ops: usize, lanes: usize) -> Self {
         assert!(lanes > 0, "lane count must be non-zero");
-        assert!(D == 1, "Use new_binomial for D > 1");
+        assert!(
+            D == 1,
+            "Base-field constructor requires D == 1; use new_binomial or new_quintic_trinomial"
+        );
         Self {
             num_ops,
             lanes,
-            w_binomial: None,
+            ext_mul_kind: AluExtMulKind::Base,
             preprocessed: Vec::new(),
             num_lookup_columns: 0,
             min_height: 1,
@@ -161,7 +174,10 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AluAir<F, D> {
         horner_packed_steps: usize,
     ) -> Self {
         assert!(lanes > 0, "lane count must be non-zero");
-        assert!(D == 1, "Use new_binomial_with_preprocessed for D > 1");
+        assert!(
+            D == 1,
+            "Base-field constructor requires D == 1; use new_binomial_with_preprocessed or new_quintic_trinomial_with_preprocessed"
+        );
         assert!(
             horner_packed_steps >= 2,
             "horner_packed_steps must be at least 2"
@@ -170,7 +186,7 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AluAir<F, D> {
         Self {
             num_ops,
             lanes,
-            w_binomial: None,
+            ext_mul_kind: AluExtMulKind::Base,
             preprocessed,
             num_lookup_columns: 0,
             min_height: 1,
@@ -187,7 +203,7 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AluAir<F, D> {
         Self {
             num_ops,
             lanes,
-            w_binomial: Some(w),
+            ext_mul_kind: AluExtMulKind::Binomial { w },
             preprocessed: Vec::new(),
             num_lookup_columns: 0,
             min_height: 1,
@@ -215,7 +231,52 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AluAir<F, D> {
         Self {
             num_ops,
             lanes,
-            w_binomial: Some(w),
+            ext_mul_kind: AluExtMulKind::Binomial { w },
+            preprocessed,
+            num_lookup_columns: 0,
+            min_height: 1,
+            schedule,
+            horner_packed_steps,
+            _phantom: PhantomData,
+        }
+    }
+
+    /// Quintic trinomial extension (`X^5 + X^2 - 1`), `D = 5` only.
+    pub const fn new_quintic_trinomial(num_ops: usize, lanes: usize) -> Self {
+        assert!(lanes > 0, "lane count must be non-zero");
+        assert!(D == 5, "Quintic trinomial ALU requires D = 5");
+        Self {
+            num_ops,
+            lanes,
+            ext_mul_kind: AluExtMulKind::QuinticTrinomial,
+            preprocessed: Vec::new(),
+            num_lookup_columns: 0,
+            min_height: 1,
+            schedule: None,
+            horner_packed_steps: 2,
+            _phantom: PhantomData,
+        }
+    }
+
+    /// Quintic trinomial extension with preprocessed columns, `D = 5` only.
+    pub fn new_quintic_trinomial_with_preprocessed(
+        num_ops: usize,
+        lanes: usize,
+        preprocessed: Vec<F>,
+        horner_packed_steps: usize,
+    ) -> Self {
+        assert!(lanes > 0, "lane count must be non-zero");
+        assert!(D == 5, "Quintic trinomial ALU requires D = 5");
+        assert!(
+            horner_packed_steps >= 2,
+            "horner_packed_steps must be at least 2"
+        );
+
+        let schedule = Self::compute_schedule(&preprocessed, lanes, horner_packed_steps);
+        Self {
+            num_ops,
+            lanes,
+            ext_mul_kind: AluExtMulKind::QuinticTrinomial,
             preprocessed,
             num_lookup_columns: 0,
             min_height: 1,
@@ -610,7 +671,7 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> AluAir<F, D> {
     }
 }
 
-impl<F: Field, const D: usize> BaseAir<F> for AluAir<F, D> {
+impl<F: Field + Copy, const D: usize> BaseAir<F> for AluAir<F, D> {
     fn width(&self) -> usize {
         self.total_width()
     }
@@ -641,7 +702,7 @@ impl<F: Field, const D: usize> BaseAir<F> for AluAir<F, D> {
 /// When `D == 1` the `w` parameter is unused and all loops degenerate to a
 /// single scalar multiply, so this is zero-cost for base-field AIRs.
 #[inline]
-fn ext_mul<AB: AirBuilder, const D: usize>(
+fn ext_mul_binomial<AB: AirBuilder, const D: usize>(
     x: &[AB::Var],
     y: &[AB::Var],
     w: &Option<AB::Expr>,
@@ -661,9 +722,38 @@ fn ext_mul<AB: AirBuilder, const D: usize>(
     acc
 }
 
+/// Extension multiply in `GF(p)[X]/(X^5 + X^2 - 1)` (KoalaBear-style), on `AB::Expr`.
+#[inline]
+fn ext_mul_quintic_trinomial<AB: AirBuilder>(x: &[AB::Var], y: &[AB::Var]) -> Vec<AB::Expr> {
+    debug_assert_eq!(x.len(), 5);
+    debug_assert_eq!(y.len(), 5);
+    let xi = |i: usize| AB::Expr::from(x[i]);
+    let yj = |j: usize| AB::Expr::from(y[j]);
+
+    let c0 = xi(0) * yj(0);
+    let c1 = xi(0) * yj(1) + xi(1) * yj(0);
+    let c2 = xi(0) * yj(2) + xi(1) * yj(1) + xi(2) * yj(0);
+    let c3 = xi(0) * yj(3) + xi(1) * yj(2) + xi(2) * yj(1) + xi(3) * yj(0);
+    let c4 = xi(0) * yj(4) + xi(1) * yj(3) + xi(2) * yj(2) + xi(3) * yj(1) + xi(4) * yj(0);
+    let c5 = xi(1) * yj(4) + xi(2) * yj(3) + xi(3) * yj(2) + xi(4) * yj(1);
+    let c6 = xi(2) * yj(4) + xi(3) * yj(3) + xi(4) * yj(2);
+    let c7 = xi(3) * yj(4) + xi(4) * yj(3);
+    let c8 = xi(4) * yj(4);
+
+    let c5_minus_c8 = c5 - c8.clone();
+
+    vec![
+        c0 + c5_minus_c8.clone(),
+        c1 + c6.clone(),
+        c2 - c5_minus_c8 + c7.clone(),
+        c3 - c6 + c8,
+        c4 - c7,
+    ]
+}
+
 impl<AB: AirBuilder, const D: usize> Air<AB> for AluAir<AB::F, D>
 where
-    AB::F: Field,
+    AB::F: Field + Copy,
 {
     fn eval(&self, builder: &mut AB) {
         let main = builder.main();
@@ -681,7 +771,28 @@ where
         let prep_local = preprocessed.current_slice();
         let prep_next = preprocessed.next_slice();
 
-        let w: Option<AB::Expr> = self.w_binomial.as_ref().map(|w| AB::Expr::from(*w));
+        let kind = self.ext_mul_kind;
+        #[cfg(debug_assertions)]
+        {
+            match kind {
+                AluExtMulKind::Base => debug_assert_eq!(D, 1, "Base ext_mul_kind requires D == 1"),
+                AluExtMulKind::Binomial { .. } => debug_assert!(D >= 2, "Binomial requires D >= 2"),
+                AluExtMulKind::QuinticTrinomial => {
+                    debug_assert_eq!(D, 5, "QuinticTrinomial requires D == 5");
+                }
+            }
+        }
+
+        let w: Option<AB::Expr> = match kind {
+            AluExtMulKind::Binomial { w } => Some(AB::Expr::from(w)),
+            _ => None,
+        };
+        let ext_mul_lane = |x: &[AB::Var], y: &[AB::Var]| -> Vec<AB::Expr> {
+            match kind {
+                AluExtMulKind::QuinticTrinomial => ext_mul_quintic_trinomial::<AB>(x, y),
+                _ => ext_mul_binomial::<AB, D>(x, y, &w),
+            }
+        };
 
         for lane in 0..self.lanes {
             let m = lane * lane_width;
@@ -713,7 +824,7 @@ where
             }
 
             // ── MUL: a * b - out = 0 ────────────────────────────────────
-            let ab = ext_mul::<AB, D>(a, b, &w);
+            let ab = ext_mul_lane(a, b);
             for i in 0..D {
                 builder.assert_zero(sel_mul.dup() * (ab[i].dup() - out[i]));
             }
@@ -738,7 +849,7 @@ where
             let next_c = &lane_next.c;
             let next_out = &lane_next.out;
 
-            let out_next_b = ext_mul::<AB, D>(out, next_b, &w);
+            let out_next_b = ext_mul_lane(out, next_b);
 
             let extra_main = self.lanes * lane_width;
             let extra_prep = self.lanes * PREP_LANE_WIDTH;
@@ -772,14 +883,14 @@ where
                 let b_sq_base = ac_base + 2 * (k_max - 1) * D;
                 let b_sq = &local[b_sq_base..b_sq_base + D];
                 let b_sq_next = &next[b_sq_base..b_sq_base + D];
-                let bb = ext_mul::<AB, D>(b, b, &w);
+                let bb = ext_mul_lane(b, b);
                 for i in 0..D {
                     builder.assert_zero(any_packed_cur.dup() * (b_sq[i] - bb[i].dup()));
                 }
 
-                let out_b_sq = ext_mul::<AB, D>(out, b_sq_next, &w);
-                let c0_b_next = ext_mul::<AB, D>(next_c, next_b, &w);
-                let a0_b_next = ext_mul::<AB, D>(next_a, next_b, &w);
+                let out_b_sq = ext_mul_lane(out, b_sq_next);
+                let c0_b_next = ext_mul_lane(next_c, next_b);
+                let a0_b_next = ext_mul_lane(next_a, next_b);
 
                 let ac_base_next = extra_main + num_int * D;
                 let off1 = ac_base_next;
@@ -821,9 +932,9 @@ where
                             let a_sp1 = &local[off_sp1..off_sp1 + D];
                             let c_sp1 = &local[off_sp1 + D..off_sp1 + 2 * D];
 
-                            let int_b_sq = ext_mul::<AB, D>(int_curr, b_sq, &w);
-                            let c_s_b = ext_mul::<AB, D>(c_s, b, &w);
-                            let a_s_b = ext_mul::<AB, D>(a_s, b, &w);
+                            let int_b_sq = ext_mul_lane(int_curr, b_sq);
+                            let c_s_b = ext_mul_lane(c_s, b);
+                            let a_s_b = ext_mul_lane(a_s, b);
 
                             if s + 2 >= kk {
                                 for i in 0..D {
@@ -845,7 +956,7 @@ where
                             }
                             s += 2;
                         } else {
-                            let int_b = ext_mul::<AB, D>(int_curr, b, &w);
+                            let int_b = ext_mul_lane(int_curr, b);
                             for i in 0..D {
                                 builder.assert_zero(
                                     sel_kk * (int_b[i].dup() + c_s[i] - a_s[i] - out[i]),
@@ -867,7 +978,7 @@ where
     }
 }
 
-impl<F: Field, const D: usize> LookupAir<F> for AluAir<F, D> {
+impl<F: Field + Copy, const D: usize> LookupAir<F> for AluAir<F, D> {
     fn add_lookup_columns(&mut self) -> Vec<usize> {
         let new_idx = self.num_lookup_columns;
         self.num_lookup_columns += 1;
