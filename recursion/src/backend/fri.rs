@@ -141,9 +141,22 @@ impl<const WIDTH: usize, const RATE: usize> FriRecursionBackend<WIDTH, RATE> {
 
     /// For KoalaBear quintic extension (`D = 5`). Use when `SC::Challenge` is
     /// `QuinticTrinomialExtensionField<KoalaBear>`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `challenger_perm_config.d() != 1`. The quintic challenger operates
+    /// entirely in the base field, so the Poseidon2 config must be a D=1 variant
+    /// (e.g. `KoalaBearD1Width16`). Passing a D=4 config would cause a dimension
+    /// mismatch when the trace generator copies 5-element quintic coefficients into
+    /// 4-slot base-field state slices.
     pub const fn new_d5(
         challenger_perm_config: Poseidon2Config,
     ) -> FriRecursionBackendD5<WIDTH, RATE> {
+        assert!(
+            challenger_perm_config.d() == 1,
+            "new_d5 requires a D=1 (base-field) Poseidon2 config; \
+             the quintic challenger operates in the base field"
+        );
         FriRecursionBackendD5(Self::new(challenger_perm_config))
     }
 }

@@ -1,7 +1,7 @@
 use alloc::boxed::Box;
 use alloc::string::String;
-use alloc::vec;
 use alloc::vec::Vec;
+use alloc::{format, vec};
 use core::any::Any;
 use core::mem::transmute;
 
@@ -45,13 +45,16 @@ use crate::common::{CircuitTableAir, NpoAirBuilder, NpoPreprocessor};
 use crate::config::{BabyBearConfig, GoldilocksConfig, KoalaBearConfig, StarkField};
 use crate::constraint_profile::ConstraintProfile;
 
-/// Valid witness-table extension widths for Poseidon2 configs with `CONFIG.d() == 1`.
+/// Returns the witness-bus dimension for a D=1 Poseidon2 config given the circuit's extension
+/// degree, or `None` if the scale is not supported.
+///
+/// Currently supported: 1 (base-field circuit) and 5 (KoalaBear quintic).
 #[inline]
-fn poseidon_d1_witness_bus_dim(witness_ctl_scale: u32) -> u32 {
+const fn poseidon_d1_witness_bus_dim(witness_ctl_scale: u32) -> Option<u32> {
     match witness_ctl_scale {
-        1 => 1,
-        5 => 5,
-        _ => panic!("unsupported witness_ctl_scale for D1 Poseidon2 AIR"),
+        1 => Some(1),
+        5 => Some(5),
+        _ => None,
     }
 }
 
@@ -852,12 +855,12 @@ impl Poseidon2Prover {
         preprocessed: Vec<F>,
         min_height: usize,
         circuit_extension_degree: u32,
-    ) -> Poseidon2AirWrapperInner {
-        match config {
+    ) -> Option<Poseidon2AirWrapperInner> {
+        let inner = match config {
             Poseidon2Config::BabyBearD1Width16 => {
                 assert!(F::from_u64(BABY_BEAR_MODULUS) == F::ZERO);
                 let prep = unsafe { transmute::<Vec<F>, Vec<BabyBear>>(preprocessed) };
-                match poseidon_d1_witness_bus_dim(circuit_extension_degree) {
+                match poseidon_d1_witness_bus_dim(circuit_extension_degree)? {
                     1 => Poseidon2AirWrapperInner::BabyBearD1Width16Bus1(Box::new(
                         BabyBearD1Width16::default_air_with_preprocessed(prep, min_height),
                     )),
@@ -890,7 +893,7 @@ impl Poseidon2Prover {
             Poseidon2Config::KoalaBearD1Width16 => {
                 assert!(F::from_u64(KOALA_BEAR_MODULUS) == F::ZERO);
                 let prep = unsafe { transmute::<Vec<F>, Vec<KoalaBear>>(preprocessed) };
-                match poseidon_d1_witness_bus_dim(circuit_extension_degree) {
+                match poseidon_d1_witness_bus_dim(circuit_extension_degree)? {
                     1 => Poseidon2AirWrapperInner::KoalaBearD1Width16Bus1(Box::new(
                         KoalaBearD1Width16::default_air_with_preprocessed(prep, min_height),
                     )),
@@ -926,7 +929,8 @@ impl Poseidon2Prover {
                     min_height,
                 )),
             ),
-        }
+        };
+        Some(inner)
     }
 
     pub fn wrapper_from_config_with_preprocessed<SC>(
@@ -934,22 +938,23 @@ impl Poseidon2Prover {
         preprocessed: Vec<Val<SC>>,
         min_height: usize,
         circuit_extension_degree: u32,
-    ) -> DynamicAirEntry<SC>
+    ) -> Option<DynamicAirEntry<SC>>
     where
         SC: StarkGenericConfig + 'static + Send + Sync,
         Val<SC>: StarkField,
         SymbolicExpressionExt<Val<SC>, SC::Challenge>:
             Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
     {
-        DynamicAirEntry::new(Box::new(Poseidon2AirWrapper {
-            inner: Self::air_wrapper_for_config_with_preprocessed::<Val<SC>>(
-                self.config,
-                preprocessed,
-                min_height,
-                circuit_extension_degree,
-            ),
+        let inner = Self::air_wrapper_for_config_with_preprocessed::<Val<SC>>(
+            self.config,
+            preprocessed,
+            min_height,
+            circuit_extension_degree,
+        )?;
+        Some(DynamicAirEntry::new(Box::new(Poseidon2AirWrapper {
+            inner,
             _phantom: core::marker::PhantomData::<SC>,
-        }))
+        })))
     }
 
     pub const fn preprocessed_width_from_config(&self) -> usize {
@@ -1048,7 +1053,7 @@ impl Poseidon2Prover {
         let (air, matrix) = match cfg {
             Poseidon2Config::BabyBearD1Width16 => {
                 let constants = BabyBearD1Width16::round_constants();
-                let wbus = poseidon_d1_witness_bus_dim(witness_ctl_scale);
+                let wbus = poseidon_d1_witness_bus_dim(witness_ctl_scale)?;
                 let preprocessed = extract_preprocessed_from_operations::<16, 8, BabyBear, Val<SC>>(
                     &t.operations,
                     witness_ctl_scale,
@@ -1137,7 +1142,7 @@ impl Poseidon2Prover {
             }
             Poseidon2Config::KoalaBearD1Width16 => {
                 let constants = KoalaBearD1Width16::round_constants();
-                let wbus = poseidon_d1_witness_bus_dim(witness_ctl_scale);
+                let wbus = poseidon_d1_witness_bus_dim(witness_ctl_scale)?;
                 let preprocessed = extract_preprocessed_from_operations::<16, 8, KoalaBear, Val<SC>>(
                     &t.operations,
                     witness_ctl_scale,
@@ -1342,7 +1347,13 @@ where
         circuit_extension_degree: u32,
         _table_entry: &NonPrimitiveTableEntry<SC>,
     ) -> Result<DynamicAirEntry<SC>, String> {
-        Ok(self.wrapper_from_config_with_preprocessed(Vec::new(), 1, circuit_extension_degree))
+        self.wrapper_from_config_with_preprocessed(Vec::new(), 1, circuit_extension_degree)
+            .ok_or_else(|| {
+                format!(
+                    "unsupported witness bus dimension {} for Poseidon2 config {:?}",
+                    circuit_extension_degree, self.config
+                )
+            })
     }
 
     fn air_with_committed_preprocessed(
@@ -1352,11 +1363,11 @@ where
         _lanes: usize,
         circuit_extension_degree: u32,
     ) -> Option<DynamicAirEntry<SC>> {
-        Some(self.wrapper_from_config_with_preprocessed(
+        self.wrapper_from_config_with_preprocessed(
             committed_prep,
             min_height,
             circuit_extension_degree,
-        ))
+        )
     }
 }
 pub struct Poseidon2ProverD2(pub(crate) Poseidon2Prover);
@@ -1436,9 +1447,14 @@ where
         circuit_extension_degree: u32,
         _table_entry: &NonPrimitiveTableEntry<SC>,
     ) -> Result<DynamicAirEntry<SC>, String> {
-        Ok(self
-            .0
-            .wrapper_from_config_with_preprocessed(Vec::new(), 1, circuit_extension_degree))
+        self.0
+            .wrapper_from_config_with_preprocessed(Vec::new(), 1, circuit_extension_degree)
+            .ok_or_else(|| {
+                format!(
+                    "unsupported witness bus dimension {} for Poseidon2 config {:?}",
+                    circuit_extension_degree, self.0.config
+                )
+            })
     }
 
     fn air_with_committed_preprocessed(
@@ -1448,11 +1464,11 @@ where
         _lanes: usize,
         circuit_extension_degree: u32,
     ) -> Option<DynamicAirEntry<SC>> {
-        Some(self.0.wrapper_from_config_with_preprocessed(
+        self.0.wrapper_from_config_with_preprocessed(
             committed_prep,
             min_height,
             circuit_extension_degree,
-        ))
+        )
     }
 }
 
@@ -1693,7 +1709,10 @@ impl NpoPreprocessor<Goldilocks> for Poseidon2Preprocessor {
 }
 
 /// Returns `Some(config)` when this Poseidon2 variant is supported for batch AIR building at
-/// extension degree `D` (2 = Goldilocks, 4 = BabyBear / KoalaBear).
+/// extension degree `D` (2 = Goldilocks, 4 = BabyBear / KoalaBear, 5 = KoalaBear quintic).
+///
+/// For `D = 5` only D=1 (base-field) configs are valid: the quintic challenger always operates
+/// in the base field.
 pub(crate) fn poseidon2_config_for_air_builder<const D: usize>(
     config: Poseidon2Config,
 ) -> Option<Poseidon2Config> {
@@ -1711,6 +1730,14 @@ pub(crate) fn poseidon2_config_for_air_builder<const D: usize>(
             | Poseidon2Config::KoalaBearD1Width16
             | Poseidon2Config::KoalaBearD4Width16
             | Poseidon2Config::KoalaBearD4Width24 => Some(config),
+            _ => None,
+        };
+    }
+    if D == 5 {
+        return match config {
+            Poseidon2Config::BabyBearD1Width16 | Poseidon2Config::KoalaBearD1Width16 => {
+                Some(config)
+            }
             _ => None,
         };
     }
@@ -1734,7 +1761,7 @@ where
     let config = poseidon2_config_for_air_builder::<D>(config)?;
     let prover = Poseidon2Prover::new(config, constraint_profile);
     let wrapper =
-        prover.wrapper_from_config_with_preprocessed(prep_base.to_vec(), min_height, D as u32);
+        prover.wrapper_from_config_with_preprocessed(prep_base.to_vec(), min_height, D as u32)?;
     let width = prover.preprocessed_width_from_config();
     let num_rows = prep_base.len().div_ceil(width);
     let degree = log2_ceil_usize(
@@ -1804,18 +1831,15 @@ where
     ) -> Option<(CircuitTableAir<SC, 5>, usize)> {
         let suffix = op_type.as_str().strip_prefix("poseidon2_perm/")?;
         let config = Poseidon2Config::from_variant_name(suffix)?;
+        // For D=5 circuits the Poseidon2 permutation always operates in the base field
+        // (the quintic challenger uses D=1 configs).
         let config = match config {
-            Poseidon2Config::BabyBearD1Width16
-            | Poseidon2Config::BabyBearD4Width16
-            | Poseidon2Config::BabyBearD4Width24
-            | Poseidon2Config::KoalaBearD1Width16
-            | Poseidon2Config::KoalaBearD4Width16
-            | Poseidon2Config::KoalaBearD4Width24 => config,
+            Poseidon2Config::BabyBearD1Width16 | Poseidon2Config::KoalaBearD1Width16 => config,
             _ => return None,
         };
         let prover = Poseidon2Prover::new(config, constraint_profile);
         let wrapper =
-            prover.wrapper_from_config_with_preprocessed(prep_base.to_vec(), min_height, 5);
+            prover.wrapper_from_config_with_preprocessed(prep_base.to_vec(), min_height, 5)?;
         let width = prover.preprocessed_width_from_config();
         let num_rows = prep_base.len().div_ceil(width);
         let degree = log2_ceil_usize(
