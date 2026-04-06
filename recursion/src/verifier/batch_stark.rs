@@ -135,15 +135,17 @@ where
 /// Create an AluAir with the appropriate constructor based on TRACE_D.
 ///
 /// For D=1 (base field), uses `new_with_preprocessed` with zeroed lane prep.
-/// For D>1 (extension field), uses `new_binomial_with_preprocessed` with `W` from `EF`.
+/// For D=5 with `alu_quintic_trinomial`, uses `new_quintic_trinomial_with_preprocessed`.
+/// Otherwise for D>1, uses `new_binomial_with_preprocessed` with `W` from `EF`.
 /// `horner_packed_steps` must match `BatchStarkProof.table_packing.horner_packed_steps` from the proof.
 fn create_alu_air<F, EF, const TRACE_D: usize>(
     num_ops: usize,
     lanes: usize,
     horner_packed_steps: usize,
+    alu_quintic_trinomial: bool,
 ) -> AluAir<F, TRACE_D>
 where
-    F: Field + PrimeCharacteristicRing,
+    F: Field + PrimeCharacteristicRing + Copy,
     EF: ExtensionField<F> + ExtractBinomialW<F>,
 {
     if TRACE_D == 1 {
@@ -158,9 +160,19 @@ where
             preprocessed,
             horner_packed_steps,
         )
+    } else if TRACE_D == 5 && alu_quintic_trinomial {
+        let preprocessed = if num_ops == 0 {
+            Vec::new()
+        } else {
+            vec![F::ZERO; num_ops * AluAir::<F, TRACE_D>::preprocessed_lane_width()]
+        };
+        AluAir::<F, TRACE_D>::new_quintic_trinomial_with_preprocessed(
+            num_ops,
+            lanes,
+            preprocessed,
+            horner_packed_steps,
+        )
     } else {
-        // For D > 1, extract W from the extension field
-        // BinomialExtensionField<F, D> has W as the constant such that x^D = W
         let w = binomial_w_for_alu::<F, EF>();
         let preprocessed = if num_ops == 0 {
             Vec::new()
@@ -248,6 +260,7 @@ where
                 rows[PrimitiveTable::Alu],
                 alu_lanes,
                 packing.horner_packed_steps(),
+                proof.alu_quintic_trinomial,
             )
         }
     };
@@ -274,7 +287,7 @@ where
                 ))
             })?;
         let air = plugin
-            .batch_air_from_table_entry(config, TRACE_D, entry)
+            .batch_air_from_table_entry(config, TRACE_D, proof.ext_degree as u32, entry)
             .map_err(VerificationError::InvalidProofShape)?;
         circuit_airs.push(CircuitTablesAir::Dynamic(air));
     }
@@ -462,6 +475,31 @@ where
                 "Too many expected cumulated values provided".to_string(),
             ));
         }
+
+        let lookups_i = &all_lookups[i];
+        let global_lookups_i = &global_lookup_data[i];
+        let mut global_name_idx = 0;
+        for lookup in lookups_i {
+            match &lookup.kind {
+                Kind::Global(name) => {
+                    if global_name_idx >= global_lookups_i.len()
+                        || global_lookups_i[global_name_idx].name != *name
+                    {
+                        return Err(VerificationError::InvalidProofShape(
+                            "Global lookups are inconsistent with lookups".to_string(),
+                        ));
+                    }
+                    global_name_idx += 1;
+                }
+                Kind::Local => {}
+            }
+        }
+        if global_name_idx != global_lookups_i.len() {
+            return Err(VerificationError::InvalidProofShape(
+                "Global lookups are inconsistent with lookups".to_string(),
+            ));
+        }
+
         let is_sorted_by_aux_idx = global_lookup_data[i]
             .windows(2)
             .all(|w| w[0].aux_idx <= w[1].aux_idx);

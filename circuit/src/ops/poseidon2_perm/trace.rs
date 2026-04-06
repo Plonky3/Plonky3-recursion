@@ -198,7 +198,13 @@ pub fn generate_poseidon2_trace<
             );
             for (limb, ext_val) in row.input_values.iter().enumerate() {
                 let coeffs = ext_val.as_basis_coefficients_slice();
-                input_values[limb * d..(limb + 1) * d].copy_from_slice(coeffs);
+                if d == 1 {
+                    // D=1 AIR consumes one base element per state slot. When the circuit field is an
+                    // extension of `BaseField`, embedded-base semantics use the constant coefficient.
+                    input_values[limb] = coeffs[0];
+                } else {
+                    input_values[limb * d..(limb + 1) * d].copy_from_slice(coeffs);
+                }
             }
 
             let mmcs_index_sum = row.mmcs_index_sum.as_base().ok_or_else(|| {

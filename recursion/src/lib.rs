@@ -19,7 +19,7 @@ pub mod verifier;
 /// Implement for your StarkConfig (or a wrapper holding FRI verifier params) to use [`FriRecursionBackend`].
 pub use backend::fri::FriRecursionConfig;
 /// FRI PCS backend for the unified recursion API. Use with [`prove_next_layer`] and a config implementing [`FriRecursionConfig`].
-pub use backend::{FriRecursionBackend, FriRecursionBackendForExt};
+pub use backend::{FriRecursionBackend, FriRecursionBackendD5, FriRecursionBackendForExt};
 pub use challenger::CircuitChallenger;
 pub use challenger_perm::ChallengerPermConfig;
 pub use generation::{GenerationError, PcsGeneration, generate_batch_challenges};

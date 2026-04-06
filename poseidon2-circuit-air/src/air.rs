@@ -267,7 +267,7 @@ impl<
 
     /// Return the number of preprocessed columns per row.
     pub const fn preprocessed_width() -> usize {
-        poseidon2_preprocessed_row_width_for_air(D, WIDTH_EXT, RATE_EXT, WITNESS_EXT_D)
+        poseidon2_preprocessed_row_width_for_air(D, WIDTH_EXT, RATE_EXT)
     }
 
     /// Generate the execution trace matrix from a sequence of circuit rows.
@@ -675,14 +675,8 @@ pub fn extract_preprocessed_from_operations<
     operations: &[Poseidon2CircuitRow<OF>],
     d: u32,
     poseidon_extension_degree: usize,
-    witness_bus_value_slots: usize,
 ) -> Vec<F> {
-    let row_width = poseidon2_preprocessed_row_width_for_air(
-        poseidon_extension_degree,
-        IL,
-        OL,
-        witness_bus_value_slots,
-    );
+    let row_width = poseidon2_preprocessed_row_width_for_air(poseidon_extension_degree, IL, OL);
     let mut preprocessed = Vec::with_capacity(operations.len() * row_width);
 
     let compact_d1 = poseidon2_uses_compact_d1_preprocessed(poseidon_extension_degree, IL, OL);
@@ -1908,7 +1902,7 @@ mod test {
             rows.resize(target_rows, filler);
         }
 
-        let preprocessed = extract_preprocessed_from_operations::<4, 2, Val, Val>(&rows, 4, 4, 4);
+        let preprocessed = extract_preprocessed_from_operations::<4, 2, Val, Val>(&rows, 4, 4);
         let air = Poseidon2CircuitAirBabyBearD4Width16::new_with_preprocessed(
             constants.clone(),
             preprocessed,
@@ -2006,7 +2000,7 @@ mod test {
             padded.resize(target_rows, filler);
         }
 
-        let preprocessed = extract_preprocessed_from_operations::<4, 2, Val, Val>(&padded, 4, 4, 4);
+        let preprocessed = extract_preprocessed_from_operations::<4, 2, Val, Val>(&padded, 4, 4);
         let air = Poseidon2CircuitAirBabyBearD4Width16::new_with_preprocessed(
             constants.clone(),
             preprocessed,

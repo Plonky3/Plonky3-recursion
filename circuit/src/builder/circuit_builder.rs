@@ -63,6 +63,21 @@ pub struct CircuitBuilder<F: Field> {
 
     /// Whether the recompose NPO table is enabled (bypasses ALU-based recompose).
     recompose_npo_enabled: bool,
+
+    /// `recompose_base_coeffs_to_ext` outputs mapped back to their coefficient `ExprId`s.
+    /// Lets `decompose_ext_to_base_coeffs` return those nodes without extra decomposition hints.
+    ext_recompose_coeffs: HashMap<ExprId, Vec<ExprId>>,
+
+    /// `select(b, t, s)` outputs mapped to their `(b, t, s)` triple.
+    ///
+    /// Lets `decompose_ext_to_base_coeffs` handle EF selects coefficient-wise when at least one
+    /// input has known coefficient provenance (via `ext_recompose_coeffs`), avoiding D witness
+    /// allocations for the known branch. The unknown branch is decomposed recursively.
+    ext_select_sources: HashMap<ExprId, (ExprId, ExprId, ExprId)>,
+
+    /// Routes decomposition reconnect through `recompose/coeff` when set (see
+    /// [`Self::set_recompose_coeff_ctl_for_decompose_links`]).
+    recompose_coeff_ctl_for_decompose_links: bool,
 }
 
 impl<F> Default for CircuitBuilder<F>
@@ -92,7 +107,16 @@ where
             tag_to_expr: HashMap::new(),
             tag_to_op: HashMap::new(),
             recompose_npo_enabled: false,
+            ext_recompose_coeffs: HashMap::new(),
+            ext_select_sources: HashMap::new(),
+            recompose_coeff_ctl_for_decompose_links: false,
         }
+    }
+
+    /// Toggle whether [`Self::decompose_ext_to_base_coeffs`] reconnects hinted coefficients via the
+    /// `recompose/coeff` table (needed with D=1 Poseidon2 over a higher-degree extension field).
+    pub const fn set_recompose_coeff_ctl_for_decompose_links(&mut self, enabled: bool) {
+        self.recompose_coeff_ctl_for_decompose_links = enabled;
     }
 
     /// Register a circuit-layer NPO plugin.
@@ -267,8 +291,16 @@ where
             })
         });
 
-        let plugin = RecomposeCircuitPlugin::new(d, trace_generator, recompose_fn);
-        self.register_npo(plugin);
+        let plugin_std =
+            RecomposeCircuitPlugin::new(d, trace_generator, Arc::clone(&recompose_fn), false);
+        self.register_npo(plugin_std);
+        let plugin_coeff = RecomposeCircuitPlugin::new(
+            d,
+            crate::ops::recompose::generate_recompose_coeff_trace::<BF, F>,
+            Arc::clone(&recompose_fn),
+            true,
+        );
+        self.register_npo(plugin_coeff);
         self.recompose_npo_enabled = true;
     }
 
@@ -525,6 +557,53 @@ where
     ///
     /// Cost: Free in proving (handled by IR optimization layer via witness slot aliasing).
     pub fn connect(&mut self, a: ExprId, b: ExprId) {
+        if a == b {
+            return;
+        }
+        // Never store coefficient provenance on `ExprId::ZERO`: it is shared circuit-wide
+        // (e.g. `assert_zero`), so aliasing recompose coeffs to it would poison other uses.
+        if a == ExprId::ZERO || b == ExprId::ZERO {
+            self.ext_recompose_coeffs.remove(&a);
+            self.ext_recompose_coeffs.remove(&b);
+            self.ext_select_sources.remove(&a);
+            self.ext_select_sources.remove(&b);
+        } else {
+            let ca = self.ext_recompose_coeffs.remove(&a);
+            let cb = self.ext_recompose_coeffs.remove(&b);
+            let merged = match (ca, cb) {
+                (Some(va), Some(vb)) => {
+                    debug_assert_eq!(
+                        va, vb,
+                        "connect: both sides carry recompose coeffs but they differ"
+                    );
+                    Some(va)
+                }
+                (Some(v), None) | (None, Some(v)) => Some(v),
+                (None, None) => None,
+            };
+            if let Some(v) = merged {
+                self.ext_recompose_coeffs.insert(a, v.clone());
+                self.ext_recompose_coeffs.insert(b, v);
+            }
+
+            let sa = self.ext_select_sources.remove(&a);
+            let sb = self.ext_select_sources.remove(&b);
+            let merged_select = match (sa, sb) {
+                (Some(va), Some(vb)) => {
+                    debug_assert_eq!(
+                        va, vb,
+                        "connect: both sides carry ext_select_sources but they differ"
+                    );
+                    Some(va)
+                }
+                (Some(v), None) | (None, Some(v)) => Some(v),
+                (None, None) => None,
+            };
+            if let Some(v) = merged_select {
+                self.ext_select_sources.insert(a, v);
+                self.ext_select_sources.insert(b, v);
+            }
+        }
         self.expr_builder.connect(a, b);
     }
 
@@ -547,7 +626,9 @@ where
             return t;
         }
         let t_minus_s = self.sub(t, s);
-        self.mul_add(b, t_minus_s, s)
+        let result = self.mul_add(b, t_minus_s, s);
+        self.ext_select_sources.insert(result, (b, t, s));
+        result
     }
 
     /// Exponentiates a base expression to a power of 2 (i.e. base^(2^power_log)), by squaring repeatedly.
@@ -984,6 +1065,29 @@ where
         Ok(acc)
     }
 
+    /// Records that `result` is the recomposition of `coeffs` in the coefficient-provenance
+    /// cache, without adding any circuit constraint. A subsequent
+    /// [`Self::decompose_ext_to_base_coeffs`] on `result` can return `coeffs` directly.
+    ///
+    /// The caller must ensure `result` equals the field recomposition of `coeffs`. In debug
+    /// builds, conflicting provenance for the same `ExprId` or use of `ExprId::ZERO` is
+    /// rejected via `debug_assert`.
+    pub fn hint_ext_recompose_coeffs(&mut self, result: ExprId, coeffs: &[ExprId]) {
+        debug_assert_ne!(
+            result,
+            ExprId::ZERO,
+            "hint_ext_recompose_coeffs: ExprId::ZERO is shared circuit-wide; do not attach provenance"
+        );
+        if let Some(existing) = self.ext_recompose_coeffs.get(&result) {
+            debug_assert_eq!(
+                existing.as_slice(),
+                coeffs,
+                "hint_ext_recompose_coeffs: conflicting coefficient provenance for the same ExprId"
+            );
+        }
+        self.ext_recompose_coeffs.insert(result, coeffs.to_vec());
+    }
+
     /// Recomposes D base field coefficients into an extension field element.
     ///
     /// Given coefficients `[c_0, c_1, ..., c_{D-1}]`, computes `x = sum(c_i * basis_i)`
@@ -1004,9 +1108,44 @@ where
     /// # Cost
     /// When recompose NPO is enabled: 1 NPO row (zero ALU cost).
     /// Otherwise: D multiplications + (D-1) additions.
+    ///
+    /// The builder records the output in the coefficient-provenance cache so a later
+    /// [`Self::decompose_ext_to_base_coeffs`] on that output can return the same `coeffs`
+    /// without extra witness rows (this path **does** constrain recomposition via the recompose AIR).
+    ///
+    /// Uses the standard recompose AIR (no per-coefficient WitnessChecks receives). Prefer
+    /// [`Self::recompose_base_coeffs_to_ext_with_coeff_lookups`] when the coefficient targets
+    /// are read by a lower-degree Poseidon2 (e.g. D=1) after decomposition.
     pub fn recompose_base_coeffs_to_ext<BF>(
         &mut self,
         coeffs: &[ExprId],
+    ) -> Result<ExprId, CircuitBuilderError>
+    where
+        BF: PrimeField64,
+        F: ExtensionField<BF>,
+    {
+        self.recompose_base_coeffs_to_ext_impl::<BF>(coeffs, false)
+    }
+
+    /// Like [`Self::recompose_base_coeffs_to_ext`], but uses the `recompose/coeff` table so the
+    /// BF coefficients appear on the WitnessChecks bus (per-coefficient receives).
+    /// Required for soundness when those coefficients are consumed by a D=1 Poseidon2 (or similar)
+    /// inside a higher-degree circuit.
+    pub fn recompose_base_coeffs_to_ext_with_coeff_lookups<BF>(
+        &mut self,
+        coeffs: &[ExprId],
+    ) -> Result<ExprId, CircuitBuilderError>
+    where
+        BF: PrimeField64,
+        F: ExtensionField<BF>,
+    {
+        self.recompose_base_coeffs_to_ext_impl::<BF>(coeffs, true)
+    }
+
+    fn recompose_base_coeffs_to_ext_impl<BF>(
+        &mut self,
+        coeffs: &[ExprId],
+        coeff_lookups: bool,
     ) -> Result<ExprId, CircuitBuilderError>
     where
         BF: PrimeField64,
@@ -1019,34 +1158,47 @@ where
             });
         }
 
-        if self.recompose_npo_enabled {
-            return self.recompose_via_npo(coeffs);
-        }
+        let result = if self.recompose_npo_enabled {
+            self.recompose_via_npo(coeffs, coeff_lookups)?
+        } else {
+            self.push_scope("recompose_base_coeffs_to_ext");
 
-        self.push_scope("recompose_base_coeffs_to_ext");
+            let mut acc = self.define_const(F::ZERO);
 
-        let mut acc = self.define_const(F::ZERO);
+            for (i, &coeff) in coeffs.iter().enumerate() {
+                let mut basis_coeffs = vec![BF::ZERO; F::DIMENSION];
+                basis_coeffs[i] = BF::ONE;
+                let basis_elem = F::from_basis_coefficients_slice(&basis_coeffs)
+                    .expect("basis coefficients are valid");
 
-        for (i, &coeff) in coeffs.iter().enumerate() {
-            let mut basis_coeffs = vec![BF::ZERO; F::DIMENSION];
-            basis_coeffs[i] = BF::ONE;
-            let basis_elem = F::from_basis_coefficients_slice(&basis_coeffs)
-                .expect("basis coefficients are valid");
+                let basis_const = self.define_const(basis_elem);
+                acc = self.mul_add(coeff, basis_const, acc);
+            }
 
-            let basis_const = self.define_const(basis_elem);
-            acc = self.mul_add(coeff, basis_const, acc);
-        }
+            self.pop_scope();
+            acc
+        };
 
-        self.pop_scope();
-        Ok(acc)
+        self.ext_recompose_coeffs.insert(result, coeffs.to_vec());
+        Ok(result)
     }
 
     /// Recompose via the dedicated NPO table (zero ALU cost).
-    fn recompose_via_npo(&mut self, coeffs: &[ExprId]) -> Result<ExprId, CircuitBuilderError> {
+    fn recompose_via_npo(
+        &mut self,
+        coeffs: &[ExprId],
+        coeff_lookups: bool,
+    ) -> Result<ExprId, CircuitBuilderError> {
         self.push_scope("recompose_base_coeffs_to_ext");
 
+        let op_type = if coeff_lookups {
+            NpoTypeId::recompose_with_coeff_lookups()
+        } else {
+            NpoTypeId::recompose()
+        };
+
         let (_, _call, outputs) = self.push_non_primitive_op_with_outputs(
-            NpoTypeId::recompose(),
+            op_type,
             vec![coeffs.to_vec()],
             vec![Some("recompose_out")],
             Some(NonPrimitiveOpParams::Recompose),
@@ -1075,7 +1227,9 @@ where
     /// - 1 recomposition constraint: `sum(c_i * basis_i) == x`
     ///
     /// # Cost
-    /// - D Witness rows + D Mul rows + (D-1) Add rows (for the recomposition constraint)
+    /// - If `x` is the output of `recompose_base_coeffs_to_ext` (same builder, modulo `connect`
+    ///   to non-zero wires): **no extra rows** — returns the original coefficient `ExprId`s.
+    /// - Otherwise: D Witness rows + D Mul rows + (D-1) Add rows (for the recomposition constraint)
     pub fn decompose_ext_to_base_coeffs<BF>(
         &mut self,
         x: ExprId,
@@ -1084,6 +1238,54 @@ where
         BF: PrimeField64,
         F: ExtensionField<BF>,
     {
+        if let Some(coeffs) = self.ext_recompose_coeffs.get(&x) {
+            debug_assert_eq!(coeffs.len(), F::DIMENSION);
+            return Ok(coeffs.clone());
+        }
+
+        // If x = select(b, t, s) and at least one input has known coefficient provenance,
+        // decompose coefficient-wise: coeff[i] = select(b, t_coeff[i], s_coeff[i]).
+        // For the input without provenance, decompose it recursively (may generate witnesses).
+        // This saves D witness allocations for every input that IS in the provenance cache.
+        if let Some((b, t, s)) = self.ext_select_sources.get(&x).copied() {
+            let t_coeffs_opt = self.ext_recompose_coeffs.get(&t).cloned();
+            let s_coeffs_opt = self.ext_recompose_coeffs.get(&s).cloned();
+            if t_coeffs_opt.is_some() || s_coeffs_opt.is_some() {
+                // Non-cached branches are decomposed WITHOUT the coeff-ctl flag: their
+                // witnesses are not placed directly into Poseidon2 rate slots — only the
+                // select results are. We create a ctl entry for x itself below (if needed),
+                // so the WitnessChecks bus stays balanced.
+                let saved_ctl = self.recompose_coeff_ctl_for_decompose_links;
+                self.recompose_coeff_ctl_for_decompose_links = false;
+                let t_coeffs = match t_coeffs_opt {
+                    Some(c) => c,
+                    None => self.decompose_ext_to_base_coeffs::<BF>(t)?,
+                };
+                let s_coeffs = match s_coeffs_opt {
+                    Some(c) => c,
+                    None => self.decompose_ext_to_base_coeffs::<BF>(s)?,
+                };
+                self.recompose_coeff_ctl_for_decompose_links = saved_ctl;
+                debug_assert_eq!(t_coeffs.len(), F::DIMENSION);
+                debug_assert_eq!(s_coeffs.len(), F::DIMENSION);
+                let mut coeffs = Vec::with_capacity(F::DIMENSION);
+                for (&tc, &sc) in t_coeffs.iter().zip(s_coeffs.iter()) {
+                    coeffs.push(self.select(b, tc, sc));
+                }
+                if saved_ctl {
+                    // The select coefficients are what enter Poseidon2 rate slots, so they
+                    // need a coeff-ctl entry. Emit one for x now that the selects are known.
+                    let reconstructed =
+                        self.recompose_base_coeffs_to_ext_with_coeff_lookups::<BF>(&coeffs)?;
+                    self.connect(x, reconstructed);
+                    // connect() propagates ext_recompose_coeffs[reconstructed] → x
+                } else {
+                    self.ext_recompose_coeffs.insert(x, coeffs.clone());
+                }
+                return Ok(coeffs);
+            }
+        }
+
         self.push_scope("decompose_ext_to_base_coeffs");
 
         // Allocate D witness slots for coefficients using hint
@@ -1101,7 +1303,11 @@ where
             .ok_or(CircuitBuilderError::MissingOutput)?;
 
         // Constrain: sum(coeffs[i] * basis[i]) == x
-        let reconstructed = self.recompose_base_coeffs_to_ext::<BF>(&coeffs)?;
+        let reconstructed = if self.recompose_coeff_ctl_for_decompose_links {
+            self.recompose_base_coeffs_to_ext_with_coeff_lookups::<BF>(&coeffs)?
+        } else {
+            self.recompose_base_coeffs_to_ext::<BF>(&coeffs)?
+        };
         self.connect(x, reconstructed);
 
         self.pop_scope();
@@ -1164,36 +1370,39 @@ where
     /// This operation is **CTL-verified** against the Poseidon2 AIR table for soundness.
     ///
     /// # CTL Verification
-    /// - Inputs 0-15: CTL-verified against witness table
+    /// - Inputs 0-7: CTL-verified against witness table (rate)
+    /// - Inputs 8-15: not CTL-verified; sponge `new_start` enforces zero via AIR, else chained
     /// - Outputs 0-7: CTL-verified against witness table (rate elements)
     /// - Outputs 8-15: NOT CTL-verified (capacity elements, constrained by Poseidon2 AIR)
     ///
     /// # Parameters
     /// - `config`: The Poseidon2 configuration to use (must be D=1)
-    /// - `inputs`: 16 base field element targets (the sponge state)
+    /// - `new_start`: When `true`, rate inputs (0-7) are CTL-verified; capacity slots (8-15)
+    ///   should be `None` (zeros are enforced by the AIR). When `false`, rate is CTL-verified and
+    ///   capacity `None` inherits from the previous row via the chain constraint.
+    /// - `inputs`: Sixteen slots: `Some(expr)` for CTL-verified or witness-fed values, `None` for
+    ///   zeroed or chain-inherited capacity per `new_start`.
     ///
     /// # Returns
     /// 16 base field element targets (the permuted state)
     ///
     /// # Errors
-    /// Returns error if the Poseidon2 operation is not enabled
+    /// Returns an error if the Poseidon2 operation is not enabled.
     pub fn add_poseidon2_perm_for_challenger_base(
         &mut self,
         config: crate::ops::Poseidon2Config,
-        inputs: [ExprId; 16],
+        new_start: bool,
+        inputs: [Option<ExprId>; 16],
     ) -> Result<[ExprId; 16], CircuitBuilderError> {
         self.push_scope("poseidon2_perm_for_challenger_base");
 
-        // Use add_poseidon2_perm_base with CTL verification for soundness
-        // - All 16 inputs are CTL-verified
-        // - Outputs 0-7 are CTL-verified (rate elements)
-        // - Outputs 8-15 are returned but NOT CTL-verified (capacity elements)
+        // Rate outputs (0-7) are CTL-verified; capacity outputs (8-15) are chained.
         let (_op_id, outputs) = self.add_poseidon2_perm_base(&Poseidon2PermCallBase {
             config,
-            new_start: true,          // Each challenger permutation is independent
-            inputs: inputs.map(Some), // All 16 inputs are CTL-verified
-            out_ctl: [true; 8],       // CTL-verify all 8 rate outputs
-            return_all_outputs: true, // Return all 16 outputs for sponge state
+            new_start,
+            inputs,
+            out_ctl: [true; 8],
+            return_all_outputs: true,
         })?;
 
         let output_exprs: [ExprId; 16] =
@@ -2611,6 +2820,80 @@ mod proptests {
         assert_eq!(val_orig, original);
         assert_eq!(val_recomp, original);
         assert_eq!(val_orig, val_recomp);
+    }
+
+    #[test]
+    fn test_decompose_reuses_recompose_coeffs() {
+        type Ext4 = BinomialExtensionField<BabyBear, 4>;
+
+        let mut builder = CircuitBuilder::<Ext4>::new();
+
+        let c0 = builder.define_const(Ext4::from(BabyBear::from_u64(1)));
+        let c1 = builder.define_const(Ext4::from(BabyBear::from_u64(2)));
+        let c2 = builder.define_const(Ext4::from(BabyBear::from_u64(3)));
+        let c3 = builder.define_const(Ext4::from(BabyBear::from_u64(4)));
+        let coeffs_in = [c0, c1, c2, c3];
+
+        let ext = builder
+            .recompose_base_coeffs_to_ext::<BabyBear>(&coeffs_in)
+            .unwrap();
+        let coeffs_out = builder
+            .decompose_ext_to_base_coeffs::<BabyBear>(ext)
+            .unwrap();
+
+        assert_eq!(coeffs_out, coeffs_in);
+    }
+
+    #[test]
+    fn test_decompose_select_with_recompose_provenance() {
+        type Ext4 = BinomialExtensionField<BabyBear, 4>;
+
+        fn check_case(selector: BabyBear, expect_t: bool) {
+            let mut builder = CircuitBuilder::<Ext4>::new();
+
+            let b = builder.define_const(Ext4::from(selector));
+            builder.assert_bool(b);
+
+            let t0 = builder.define_const(Ext4::from(BabyBear::from_u64(10)));
+            let t1 = builder.define_const(Ext4::from(BabyBear::from_u64(11)));
+            let t2 = builder.define_const(Ext4::from(BabyBear::from_u64(12)));
+            let t3 = builder.define_const(Ext4::from(BabyBear::from_u64(13)));
+            let coeffs_t = [t0, t1, t2, t3];
+            let ext_t = builder
+                .recompose_base_coeffs_to_ext::<BabyBear>(&coeffs_t)
+                .unwrap();
+
+            let s0 = builder.define_const(Ext4::from(BabyBear::from_u64(20)));
+            let s1 = builder.define_const(Ext4::from(BabyBear::from_u64(21)));
+            let s2 = builder.define_const(Ext4::from(BabyBear::from_u64(22)));
+            let s3 = builder.define_const(Ext4::from(BabyBear::from_u64(23)));
+            let coeffs_s = [s0, s1, s2, s3];
+            let ext_s = builder
+                .recompose_base_coeffs_to_ext::<BabyBear>(&coeffs_s)
+                .unwrap();
+
+            let selected = builder.select(b, ext_t, ext_s);
+            let coeffs = builder
+                .decompose_ext_to_base_coeffs::<BabyBear>(selected)
+                .unwrap();
+
+            let circuit = builder.build().expect("Failed to build circuit");
+            let expr_to_widx = circuit.expr_to_widx.clone();
+            let runner = circuit.runner();
+            let traces = runner.run().expect("Failed to run circuit");
+
+            let src = if expect_t { coeffs_t } else { coeffs_s };
+            for (i, coeff_expr) in coeffs.iter().enumerate() {
+                let w = expr_to_widx.get(coeff_expr).expect("coeff mapped");
+                let v = *traces.witness_trace.get_value(*w).unwrap();
+                let w_src = expr_to_widx.get(&src[i]).expect("src coeff mapped");
+                let v_src = *traces.witness_trace.get_value(*w_src).unwrap();
+                assert_eq!(v, v_src, "coeff index {i}");
+            }
+        }
+
+        check_case(BabyBear::ZERO, false);
+        check_case(BabyBear::ONE, true);
     }
 
     #[test]
