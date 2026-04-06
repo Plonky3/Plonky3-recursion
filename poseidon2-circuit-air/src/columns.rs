@@ -236,7 +236,6 @@ pub const fn poseidon2_preprocessed_row_width_for_air(
     poseidon_d: usize,
     width_ext: usize,
     rate_ext: usize,
-    _witness_ext_d: usize,
 ) -> usize {
     if poseidon2_uses_compact_d1_preprocessed(poseidon_d, width_ext, rate_ext) {
         // Compact D=1: per-rate-limb in_ctl + cap_in_ctl (zero) + cap_chain + input idx + output idx +

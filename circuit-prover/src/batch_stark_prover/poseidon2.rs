@@ -1058,7 +1058,6 @@ impl Poseidon2Prover {
                     &t.operations,
                     witness_ctl_scale,
                     1,
-                    wbus as usize,
                 );
                 let (inner, matrix_f) = match wbus {
                     1 => {
@@ -1104,7 +1103,6 @@ impl Poseidon2Prover {
                     &t.operations,
                     witness_ctl_scale,
                     cfg.d(),
-                    cfg.d(),
                 );
                 let air =
                     BabyBearD4Width16::default_air_with_preprocessed(preprocessed, min_height);
@@ -1124,7 +1122,6 @@ impl Poseidon2Prover {
                 let preprocessed = extract_preprocessed_from_operations::<6, 4, BabyBear, Val<SC>>(
                     &t.operations,
                     witness_ctl_scale,
-                    cfg.d(),
                     cfg.d(),
                 );
                 let air =
@@ -1147,7 +1144,6 @@ impl Poseidon2Prover {
                     &t.operations,
                     witness_ctl_scale,
                     1,
-                    wbus as usize,
                 );
                 let (inner, matrix_f) = match wbus {
                     1 => {
@@ -1193,7 +1189,6 @@ impl Poseidon2Prover {
                     &t.operations,
                     witness_ctl_scale,
                     cfg.d(),
-                    cfg.d(),
                 );
                 let air =
                     KoalaBearD4Width16::default_air_with_preprocessed(preprocessed, min_height);
@@ -1214,7 +1209,6 @@ impl Poseidon2Prover {
                     &t.operations,
                     witness_ctl_scale,
                     cfg.d(),
-                    cfg.d(),
                 );
                 let air =
                     KoalaBearD4Width24::default_air_with_preprocessed(preprocessed, min_height);
@@ -1234,7 +1228,6 @@ impl Poseidon2Prover {
                 let preprocessed = extract_preprocessed_from_operations::<4, 2, Goldilocks, Val<SC>>(
                     &t.operations,
                     witness_ctl_scale,
-                    cfg.d(),
                     cfg.d(),
                 );
                 let air =
@@ -1494,14 +1487,9 @@ where
             .ok_or(CircuitError::InvalidPreprocessedValues)?;
         let p2_cfg = Poseidon2Config::from_variant_name(rest)
             .ok_or(CircuitError::InvalidPreprocessedValues)?;
-        let il = p2_cfg.width_ext();
-        let ol = p2_cfg.rate_ext();
-        let prep_row_width = p3_poseidon2_circuit_air::poseidon2_preprocessed_row_width_for_air(
-            p2_cfg.d(),
-            il,
-            ol,
-            D,
-        );
+        let w_ext = p2_cfg.width_ext();
+        let r_ext = p2_cfg.rate_ext();
+        let prep_row_width = poseidon2_preprocessed_row_width_for_air(p2_cfg.d(), w_ext, r_ext);
 
         let prep_base: Vec<F> = prep
             .iter()
@@ -1515,11 +1503,11 @@ where
         let num_rows = prep_base.len() / prep_row_width;
         let trace_height = num_rows.next_power_of_two();
         let has_padding = trace_height > num_rows;
-        let compact = p2_cfg.d() == 1 && il == 16 && ol == 8;
+        let compact = poseidon2_uses_compact_d1_preprocessed(p2_cfg.d(), w_ext, r_ext);
         let tail = if compact {
-            ol + 2 + ol + ol + il + ol + ol
+            poseidon2_d1_compact_preprocessed_header_cols(r_ext) + w_ext + r_ext + r_ext
         } else {
-            il * 4 + ol * 2
+            poseidon2_preprocessed_row_width(w_ext, r_ext)
         };
 
         for row_idx in 0..num_rows {
@@ -1569,14 +1557,9 @@ where
             .ok_or(CircuitError::InvalidPreprocessedValues)?;
         let p2_cfg = Poseidon2Config::from_variant_name(rest)
             .ok_or(CircuitError::InvalidPreprocessedValues)?;
-        let il = p2_cfg.width_ext();
-        let ol = p2_cfg.rate_ext();
-        let prep_row_width = p3_poseidon2_circuit_air::poseidon2_preprocessed_row_width_for_air(
-            p2_cfg.d(),
-            il,
-            ol,
-            D,
-        );
+        let w_ext = p2_cfg.width_ext();
+        let r_ext = p2_cfg.rate_ext();
+        let prep_row_width = poseidon2_preprocessed_row_width_for_air(p2_cfg.d(), w_ext, r_ext);
 
         let dup_wids = preprocessed.dup_npo_outputs.get(op_type);
 
@@ -1590,18 +1573,18 @@ where
         }
 
         let num_rows = prep_base.len() / prep_row_width;
-        let compact = p2_cfg.d() == 1 && il == 16 && ol == 8;
+        let compact = poseidon2_uses_compact_d1_preprocessed(p2_cfg.d(), w_ext, r_ext);
 
         for row_idx in 0..num_rows {
             let row_start = row_idx * prep_row_width;
             let out_base = if compact {
-                row_start + ol + 2 + ol + ol + il
+                row_start + poseidon2_d1_compact_preprocessed_header_cols(r_ext) + w_ext
             } else {
-                row_start + il * 4
+                row_start + w_ext * size_of::<Poseidon2PrepInputLimb<u8>>()
             };
-            for j in 0..ol {
+            for j in 0..r_ext {
                 let (o0, ctl_off) = if compact {
-                    (out_base + j, out_base + ol + j)
+                    (out_base + j, out_base + r_ext + j)
                 } else {
                     let o = out_base + j * 2;
                     (o, o + 1)
@@ -1716,14 +1699,12 @@ impl NpoPreprocessor<Goldilocks> for Poseidon2Preprocessor {
 pub(crate) fn poseidon2_config_for_air_builder<const D: usize>(
     config: Poseidon2Config,
 ) -> Option<Poseidon2Config> {
-    if D == 2 {
-        return match config {
+    match D {
+        2 => match config {
             Poseidon2Config::GoldilocksD2Width8 => Some(config),
             _ => None,
-        };
-    }
-    if D == 4 {
-        return match config {
+        },
+        4 => match config {
             Poseidon2Config::BabyBearD1Width16
             | Poseidon2Config::BabyBearD4Width16
             | Poseidon2Config::BabyBearD4Width24
@@ -1731,17 +1712,15 @@ pub(crate) fn poseidon2_config_for_air_builder<const D: usize>(
             | Poseidon2Config::KoalaBearD4Width16
             | Poseidon2Config::KoalaBearD4Width24 => Some(config),
             _ => None,
-        };
-    }
-    if D == 5 {
-        return match config {
+        },
+        5 => match config {
             Poseidon2Config::BabyBearD1Width16 | Poseidon2Config::KoalaBearD1Width16 => {
                 Some(config)
             }
             _ => None,
-        };
+        },
+        _ => None,
     }
-    None
 }
 
 pub(crate) fn poseidon2_air_try_build<SC, const D: usize>(

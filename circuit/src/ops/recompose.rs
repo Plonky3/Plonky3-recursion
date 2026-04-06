@@ -97,7 +97,7 @@ impl<F> Debug for RecomposeExecutor<F> {
 }
 
 impl<F> RecomposeExecutor<F> {
-    pub fn new(
+    pub const fn new(
         d: usize,
         recompose_fn: RecomposeFn<F>,
         op_type: NpoTypeId,
