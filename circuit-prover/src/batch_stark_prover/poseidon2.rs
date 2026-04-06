@@ -1507,7 +1507,7 @@ where
         let tail = if compact {
             poseidon2_d1_compact_preprocessed_header_cols(r_ext) + w_ext + r_ext + r_ext
         } else {
-            poseidon2_preprocessed_row_width(w_ext, r_ext)
+            poseidon2_preprocessed_row_width(w_ext, r_ext) - 4
         };
 
         for row_idx in 0..num_rows {

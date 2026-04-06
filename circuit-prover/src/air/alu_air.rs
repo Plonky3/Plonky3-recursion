@@ -149,7 +149,10 @@ impl<F: Field + PrimeCharacteristicRing + Copy, const D: usize> AluAir<F, D> {
     /// Construct a new `AluAir` for base-field operations (D=1).
     pub const fn new(num_ops: usize, lanes: usize) -> Self {
         assert!(lanes > 0, "lane count must be non-zero");
-        assert!(D == 1, "Use new_binomial for D > 1");
+        assert!(
+            D == 1,
+            "Base-field constructor requires D == 1; use new_binomial or new_quintic_trinomial"
+        );
         Self {
             num_ops,
             lanes,
@@ -171,7 +174,10 @@ impl<F: Field + PrimeCharacteristicRing + Copy, const D: usize> AluAir<F, D> {
         horner_packed_steps: usize,
     ) -> Self {
         assert!(lanes > 0, "lane count must be non-zero");
-        assert!(D == 1, "Use new_binomial_with_preprocessed for D > 1");
+        assert!(
+            D == 1,
+            "Base-field constructor requires D == 1; use new_binomial_with_preprocessed or new_quintic_trinomial_with_preprocessed"
+        );
         assert!(
             horner_packed_steps >= 2,
             "horner_packed_steps must be at least 2"
@@ -261,6 +267,11 @@ impl<F: Field + PrimeCharacteristicRing + Copy, const D: usize> AluAir<F, D> {
     ) -> Self {
         assert!(lanes > 0, "lane count must be non-zero");
         assert!(D == 5, "Quintic trinomial ALU requires D = 5");
+        assert!(
+            horner_packed_steps >= 2,
+            "horner_packed_steps must be at least 2"
+        );
+
         let schedule = Self::compute_schedule(&preprocessed, lanes, horner_packed_steps);
         Self {
             num_ops,
@@ -761,6 +772,17 @@ where
         let prep_next = preprocessed.next_slice();
 
         let kind = self.ext_mul_kind;
+        #[cfg(debug_assertions)]
+        {
+            match kind {
+                AluExtMulKind::Base => debug_assert_eq!(D, 1, "Base ext_mul_kind requires D == 1"),
+                AluExtMulKind::Binomial { .. } => debug_assert!(D >= 2, "Binomial requires D >= 2"),
+                AluExtMulKind::QuinticTrinomial => {
+                    debug_assert_eq!(D, 5, "QuinticTrinomial requires D == 5");
+                }
+            }
+        }
+
         let w: Option<AB::Expr> = match kind {
             AluExtMulKind::Binomial { w } => Some(AB::Expr::from(w)),
             _ => None,
