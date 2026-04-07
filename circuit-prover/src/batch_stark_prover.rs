@@ -583,8 +583,9 @@ where
     ///
     /// Set `split_coeff_tables` to `true` when the Poseidon2 permutation degree can differ
     /// from the circuit extension degree `D` (e.g. D=1 Poseidon2 in a D=5 circuit). That
-    /// registers both the standard `recompose` table and `recompose/coeff` (per-coefficient
-    /// WitnessChecks receives only where the circuit uses them).
+    /// registers a single merged prover that combines `recompose` and `recompose/coeff` rows
+    /// into one STARK subtable, plus a drain prover to satisfy the type-check for the
+    /// `recompose/coeff` TypeId.
     pub fn register_recompose_table<const D: usize>(&mut self, split_coeff_tables: bool)
     where
         SC: Send + Sync,
@@ -1224,7 +1225,8 @@ where
 
 /// Returns a type-erased Recompose preprocessor.
 ///
-/// When `split_coeff_tables` is true, preprocesses both `recompose` and `recompose/coeff` rows.
+/// When `split_coeff_tables` is true, merges rows from both `recompose` and `recompose/coeff`
+/// into a single wide-format entry under `NpoTypeId::recompose()`.
 pub fn recompose_preprocessor<F>(split_coeff_tables: bool) -> Box<dyn NpoPreprocessor<F>>
 where
     F: StarkField + PrimeField,
@@ -1235,8 +1237,9 @@ where
 
 /// Recompose table provers for a given extension field degree.
 ///
-/// When `split_coeff_tables` is true, returns both the standard table and the `recompose/coeff`
-/// variant.
+/// When `split_coeff_tables` is true, returns a merged prover (one STARK subtable for both
+/// `recompose` and `recompose/coeff` rows) plus a drain prover that satisfies the
+/// `MissingTableProver` check for `recompose/coeff` without creating a second subtable.
 pub fn recompose_table_provers<SC, const D: usize>(
     lanes: usize,
     split_coeff_tables: bool,
@@ -1249,8 +1252,8 @@ where
 {
     if split_coeff_tables {
         vec![
-            Box::new(RecomposeProver::<D>::new(lanes, false)),
-            Box::new(RecomposeProver::<D>::new(lanes, true)),
+            Box::new(RecomposeProver::<D>::new_merged(lanes)),
+            Box::new(RecomposeProver::<D>::new_drain(lanes)),
         ]
     } else {
         vec![Box::new(RecomposeProver::<D>::new(lanes, false))]
@@ -1271,10 +1274,8 @@ where
         Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
     if split_coeff_tables {
-        vec![
-            Box::new(RecomposeAirBuilder::<D>::new(lanes, false)),
-            Box::new(RecomposeAirBuilder::<D>::new(lanes, true)),
-        ]
+        // One merged air builder for the single combined subtable.
+        vec![Box::new(RecomposeAirBuilder::<D>::new_merged(lanes))]
     } else {
         vec![Box::new(RecomposeAirBuilder::<D>::new(lanes, false))]
     }
