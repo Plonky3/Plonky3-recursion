@@ -1158,6 +1158,28 @@ where
             });
         }
 
+        // Constant fold: when every coefficient is a Const, build the recomposed EF value
+        // directly and skip the NPO row (or the D mul_add chain). The coefficient Const ops
+        // remain in the witness table for any other consumers.
+        let bf_consts: Option<Vec<BF>> = coeffs
+            .iter()
+            .map(|&c| {
+                self.expr_builder
+                    .get_const_value(c)
+                    .map(|ef| <F as BasedVectorSpace<BF>>::as_basis_coefficients_slice(&ef)[0])
+            })
+            .collect();
+        if let Some(bf_values) = bf_consts {
+            let folded =
+                F::from_basis_coefficients_slice(&bf_values).expect("basis coefficients are valid");
+            let result = self.alloc_const(folded, "recompose_const_fold");
+            // Skip provenance for ZERO: it is shared circuit-wide and must not carry coeffs.
+            if result != ExprId::ZERO {
+                self.ext_recompose_coeffs.insert(result, coeffs.to_vec());
+            }
+            return Ok(result);
+        }
+
         let result = if self.recompose_npo_enabled {
             self.recompose_via_npo(coeffs, coeff_lookups)?
         } else {
@@ -1241,6 +1263,28 @@ where
         if let Some(coeffs) = self.ext_recompose_coeffs.get(&x) {
             debug_assert_eq!(coeffs.len(), F::DIMENSION);
             return Ok(coeffs.clone());
+        }
+
+        // Constant fold: when `x` is a Const, materialize each coefficient as a Const ExprId
+        // and skip both the D witness allocations and the recomposition constraint.
+        if let Some(ext_val) = self.expr_builder.get_const_value(x) {
+            let bf_coeffs = <F as BasedVectorSpace<BF>>::as_basis_coefficients_slice(&ext_val);
+            debug_assert_eq!(bf_coeffs.len(), F::DIMENSION);
+            let mut embedded_buf = vec![BF::ZERO; F::DIMENSION];
+            let coeffs: Vec<ExprId> = bf_coeffs
+                .iter()
+                .map(|&bf| {
+                    embedded_buf[0] = bf;
+                    let embedded_ef = F::from_basis_coefficients_slice(&embedded_buf)
+                        .expect("embedded coefficients are valid");
+                    self.alloc_const(embedded_ef, "decompose_const_fold")
+                })
+                .collect();
+            // Cache the provenance so a later recompose on these coeffs returns the same `x`.
+            if x != ExprId::ZERO {
+                self.ext_recompose_coeffs.insert(x, coeffs.clone());
+            }
+            return Ok(coeffs);
         }
 
         // If x = select(b, t, s) and at least one input has known coefficient provenance,
