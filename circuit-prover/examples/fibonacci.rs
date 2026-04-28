@@ -88,7 +88,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let prover = BatchStarkProver::new(config).with_table_packing(table_packing);
 
     let proof = prover.prove_all_tables(&traces, &circuit_prover_data)?;
-    prover.verify_all_tables(&proof, circuit_prover_data.common_data())?;
+    prover.verify_all_tables(&proof)?;
     Ok(())
 }
 

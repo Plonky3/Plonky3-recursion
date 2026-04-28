@@ -71,11 +71,7 @@ fn test_babybear_batch_stark_base_field() {
     assert_eq!(proof.ext_degree, 1);
     assert!(proof.w_binomial.is_none());
 
-    assert!(
-        prover
-            .verify_all_tables(&proof, circuit_prover_data.common_data())
-            .is_ok()
-    );
+    assert!(prover.verify_all_tables(&proof).is_ok());
 }
 
 #[test]
@@ -130,11 +126,7 @@ fn test_table_lookups() {
     assert_eq!(proof.ext_degree, 1);
     assert!(proof.w_binomial.is_none());
 
-    assert!(
-        prover
-            .verify_all_tables(&proof, circuit_prover_data.common_data())
-            .is_ok()
-    );
+    assert!(prover.verify_all_tables(&proof).is_ok());
 
     // Check that the generated lookups are correct and consistent across tables.
     for air in airs.iter_mut() {
@@ -235,9 +227,7 @@ fn test_extension_field_batch_stark() {
     // Ensure W was captured
     let expected_w = <Ext4 as ExtractBinomialW<BabyBear>>::extract_w().unwrap();
     assert_eq!(proof.w_binomial, Some(expected_w));
-    prover
-        .verify_all_tables(&proof, circuit_prover_data.common_data())
-        .unwrap();
+    prover.verify_all_tables(&proof).unwrap();
 }
 
 #[test]
@@ -312,11 +302,7 @@ fn test_extension_field_table_lookups() {
     let expected_w = <Ext4 as ExtractBinomialW<BabyBear>>::extract_w().unwrap();
     assert_eq!(proof.w_binomial, Some(expected_w));
 
-    assert!(
-        prover
-            .verify_all_tables(&proof, circuit_prover_data.common_data())
-            .is_ok()
-    );
+    assert!(prover.verify_all_tables(&proof).is_ok());
 
     // Check that the generated lookups are correct and consistent across tables.
     for air in airs.iter_mut() {
@@ -400,9 +386,7 @@ fn test_koalabear_batch_stark_base_field() {
         .unwrap();
     assert_eq!(proof.ext_degree, 1);
     assert!(proof.w_binomial.is_none());
-    prover
-        .verify_all_tables(&proof, circuit_prover_data.common_data())
-        .unwrap();
+    prover.verify_all_tables(&proof).unwrap();
 }
 
 #[test]
@@ -499,9 +483,7 @@ fn test_koalabear_batch_stark_extension_field_d8() {
     assert_eq!(proof.ext_degree, 8);
     let expected_w = <KBExtField as ExtractBinomialW<KoalaBear>>::extract_w().unwrap();
     assert_eq!(proof.w_binomial, Some(expected_w));
-    prover
-        .verify_all_tables(&proof, circuit_prover_data.common_data())
-        .unwrap();
+    prover.verify_all_tables(&proof).unwrap();
 }
 
 #[test]
@@ -564,9 +546,7 @@ fn test_goldilocks_batch_stark_binomial_ext2() {
     assert_eq!(proof.ext_degree, 2);
     let expected_w = <Ext2 as ExtractBinomialW<Goldilocks>>::extract_w().unwrap();
     assert_eq!(proof.w_binomial, Some(expected_w));
-    prover
-        .verify_all_tables(&proof, circuit_prover_data.common_data())
-        .unwrap();
+    prover.verify_all_tables(&proof).unwrap();
 }
 
 #[test]
@@ -696,14 +676,12 @@ fn test_mul_only_circuit_padding() {
     let circuit_prover_data =
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
 
-    let common = circuit_prover_data.common_data();
-
     let prover = BatchStarkProver::new(cfg);
 
     let proof = prover
         .prove_all_tables(&traces, &circuit_prover_data)
         .unwrap();
-    prover.verify_all_tables(&proof, common).unwrap();
+    prover.verify_all_tables(&proof).unwrap();
 }
 
 #[test]
@@ -746,14 +724,12 @@ fn test_add_only_circuit_padding() {
     let circuit_prover_data =
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
 
-    let common = circuit_prover_data.common_data();
-
     let prover = BatchStarkProver::new(cfg);
 
     let proof = prover
         .prove_all_tables(&traces, &circuit_prover_data)
         .unwrap();
-    prover.verify_all_tables(&proof, common).unwrap();
+    prover.verify_all_tables(&proof).unwrap();
 }
 
 fn koala_ef5_lift(b: KoalaBear) -> QuinticTrinomialExtensionField<KoalaBear> {
@@ -849,9 +825,7 @@ fn test_koalabear_quintic_trinomial_batch_stark_with_poseidon_d1() {
     assert_eq!(proof.ext_degree, D);
     assert!(proof.w_binomial.is_none());
     assert!(proof.alu_quintic_trinomial);
-    prover
-        .verify_all_tables(&proof, circuit_prover_data.common_data())
-        .unwrap();
+    prover.verify_all_tables(&proof).unwrap();
 }
 
 /// Two D=1 Poseidon rows in an EF5 circuit: the second row uses `new_start=false` so the full
@@ -947,7 +921,78 @@ fn test_koalabear_quintic_trinomial_batch_stark_poseidon_d1_sponge_chain() {
     assert_eq!(proof.ext_degree, D);
     assert!(proof.w_binomial.is_none());
     assert!(proof.alu_quintic_trinomial);
-    prover
-        .verify_all_tables(&proof, circuit_prover_data.common_data())
+    prover.verify_all_tables(&proof).unwrap();
+}
+
+#[test]
+fn test_stark_serialization_round_trip() {
+    let mut builder = CircuitBuilder::<BabyBear>::new();
+
+    let x = builder.public_input();
+    let expected = builder.public_input();
+    let c5 = builder.define_const(BabyBear::from_u64(5));
+    let c2 = builder.define_const(BabyBear::from_u64(2));
+    let mul_result = builder.mul(c5, c2);
+    let add_result = builder.add(x, mul_result);
+    let diff = builder.sub(add_result, expected);
+    builder.assert_zero(diff);
+
+    let circuit = builder.build().unwrap();
+    let cfg = config::baby_bear().build();
+    let (airs_degrees, primitive_columns, non_primitive_columns) =
+        get_airs_and_degrees_with_prep::<BabyBearConfig, _, 1>(
+            &circuit,
+            &TablePacking::default(),
+            &[],
+            &[],
+            ConstraintProfile::Standard,
+        )
         .unwrap();
+    let (mut airs, log_degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
+    let prover_data = ProverData::from_airs_and_degrees(&cfg, &mut airs, &log_degrees);
+    let circuit_prover_data =
+        CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
+
+    let mut runner = circuit.runner();
+    let x_val = BabyBear::from_u64(7);
+    let expected_val = BabyBear::from_u64(17); // 7 + 5*2 = 17
+    runner.set_public_inputs(&[x_val, expected_val]).unwrap();
+    let traces = runner.run().unwrap();
+
+    let prover = BatchStarkProver::new(cfg);
+    let proof = prover
+        .prove_all_tables(&traces, &circuit_prover_data)
+        .unwrap();
+
+    let original_preprocessed = proof
+        .stark_common
+        .preprocessed
+        .as_ref()
+        .expect("preprocessed binding must be present");
+    let original_matrix_to_instance = original_preprocessed.matrix_to_instance.clone();
+    let original_instances_len = original_preprocessed.instances.len();
+
+    let bytes = postcard::to_allocvec(&proof).expect("serialize proof");
+    let deserialized: BatchStarkProof<BabyBearConfig> =
+        postcard::from_bytes(&bytes).expect("deserialize proof");
+
+    let restored_preprocessed = deserialized
+        .stark_common
+        .preprocessed
+        .as_ref()
+        .expect("preprocessed binding must survive (de)serialization");
+    assert_eq!(
+        restored_preprocessed.matrix_to_instance,
+        original_matrix_to_instance
+    );
+    assert_eq!(
+        restored_preprocessed.instances.len(),
+        original_instances_len
+    );
+
+    // Verification must succeed against the deserialized proof, relying only on the
+    // proof's own `stark_common` for the preprocessed binding.
+    prover
+        .verify_all_tables(&deserialized)
+        .expect("verification uses proof.stark_common");
 }

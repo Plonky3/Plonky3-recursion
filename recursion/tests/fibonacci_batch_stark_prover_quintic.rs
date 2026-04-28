@@ -121,14 +121,11 @@ fn test_fibonacci_batch_verifier_quintic_koala() {
     let batch_stark_proof = prover
         .prove_all_tables(&traces, &circuit_prover_data)
         .unwrap();
-    let common = circuit_prover_data.common_data();
-    prover
-        .verify_all_tables(&batch_stark_proof, common)
-        .unwrap();
+    prover.verify_all_tables(&batch_stark_proof).unwrap();
 
-    // `prove_all_tables` may reduce lanes for dummy ALU/public tables; `stark_common` matches
-    // the committed AIR layout. Recursive verification must use it (not pre-prove common).
-    let common = batch_stark_proof.stark_common.as_ref().unwrap_or(common);
+    // `prove_all_tables` may reduce lanes for dummy ALU/public tables; `stark_common` always
+    // matches the committed AIR layout, so recursive verification consumes it directly.
+    let common = &batch_stark_proof.stark_common;
 
     let dft2 = Dft::default();
     let perm2 = default_koalabear_poseidon2_16();
@@ -263,9 +260,6 @@ fn test_fibonacci_batch_verifier_quintic_koala() {
         .expect("Failed to prove verification circuit");
 
     verification_prover
-        .verify_all_tables(
-            &verification_proof,
-            verification_circuit_prover_data.common_data(),
-        )
+        .verify_all_tables(&verification_proof)
         .expect("Failed to verify proof of verification circuit");
 }
