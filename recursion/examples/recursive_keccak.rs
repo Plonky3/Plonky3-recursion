@@ -396,7 +396,7 @@ macro_rules! define_field_module_keccak_quintic {
                         prover.register_recompose_table::<D>($poseidon2_config.d() != D);
                     }
                     prover
-                        .verify_all_tables(&out.0, out.1.common_data())
+                        .verify_all_tables(&out.0)
                         .unwrap_or_else(|e| panic!("Failed to verify layer {layer}: {e:?}"));
 
                     output = Some(out);
@@ -586,7 +586,7 @@ macro_rules! define_field_module {
                         prover.register_recompose_table::<$d>($poseidon2_config.d() != $d);
                     }
                     prover
-                        .verify_all_tables(&out.0, out.1.common_data())
+                        .verify_all_tables(&out.0)
                         .unwrap_or_else(|e| panic!("Failed to verify layer {layer}: {e:?}"));
 
                     output = Some(out);

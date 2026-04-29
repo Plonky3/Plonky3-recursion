@@ -323,7 +323,6 @@ macro_rules! define_field_module {
                             primitive_columns_0,
                             non_primitive_columns_0,
                         );
-                        let common_0 = circuit_prover_data_0.common_data();
                         let prover_0 = BatchStarkProver::new(config_0.clone())
                             .with_table_packing(table_packing_0);
                         let proof_0 = prover_0
@@ -331,7 +330,7 @@ macro_rules! define_field_module {
                             .expect("Failed to prove base circuit");
                         report_proof_size(&proof_0);
                         prover_0
-                            .verify_all_tables(&proof_0, &common_0)
+                            .verify_all_tables(&proof_0)
                             .expect("Failed to verify base proof");
 
                         if num_recursive_layers == 0 {
@@ -407,11 +406,9 @@ macro_rules! define_field_module {
                             if !disable_recompose_npo {
                                 prover.register_recompose_table::<$d>($poseidon2_config.d() != $d);
                             }
-                            prover
-                                .verify_all_tables(&out.0, out.1.common_data())
-                                .unwrap_or_else(|e| {
-                                    panic!("Failed to verify layer {layer}: {e:?}")
-                                });
+                            prover.verify_all_tables(&out.0).unwrap_or_else(|e| {
+                                panic!("Failed to verify layer {layer}: {e:?}")
+                            });
 
                             output = out;
                         }
@@ -563,7 +560,6 @@ macro_rules! define_field_module_quintic {
                     primitive_columns_0,
                     non_primitive_columns_0,
                 );
-                let common_0 = circuit_prover_data_0.common_data();
                 let prover_0 =
                     BatchStarkProver::new(config_0.clone()).with_table_packing(table_packing_0);
                 let proof_0 = prover_0
@@ -571,7 +567,7 @@ macro_rules! define_field_module_quintic {
                     .expect("Failed to prove base circuit");
                 report_proof_size(&proof_0);
                 prover_0
-                    .verify_all_tables(&proof_0, &common_0)
+                    .verify_all_tables(&proof_0)
                     .expect("Failed to verify base proof");
 
                 if num_recursive_layers == 0 {
@@ -640,7 +636,7 @@ macro_rules! define_field_module_quintic {
                         prover.register_recompose_table::<D>($poseidon2_config.d() != D);
                     }
                     prover
-                        .verify_all_tables(&out.0, out.1.common_data())
+                        .verify_all_tables(&out.0)
                         .unwrap_or_else(|e| panic!("Failed to verify layer {layer}: {e:?}"));
 
                     output = out;

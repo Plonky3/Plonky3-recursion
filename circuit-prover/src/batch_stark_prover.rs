@@ -10,10 +10,11 @@ use alloc::{format, vec};
 #[cfg(debug_assertions)]
 use p3_air::DebugConstraintBuilder;
 use p3_air::{Air, BaseAir};
-use p3_batch_stark::common::GlobalPreprocessed;
+use p3_batch_stark::common::{GlobalPreprocessed, PreprocessedInstanceMeta};
 use p3_batch_stark::{BatchProof, CommonData, ProverData, StarkGenericConfig, StarkInstance, Val};
 use p3_circuit::ops::{NonPrimitivePreprocessedMap, NpoTypeId, Poseidon2Config, PrimitiveOpType};
 use p3_circuit::tables::Traces;
+use p3_commit::Pcs;
 use p3_field::extension::{BinomialExtensionField, BinomiallyExtendable};
 use p3_field::{Algebra, BasedVectorSpace, Field, PrimeCharacteristicRing, PrimeField};
 use p3_lookup::LookupAir;
@@ -279,6 +280,125 @@ impl core::ops::Index<PrimitiveTable> for RowCounts {
     }
 }
 
+/// Serializable mirror of [`PreprocessedInstanceMeta`].
+///
+/// Defined locally because the upstream type does not derive `Serialize`/`Deserialize`.
+#[derive(Serialize, Deserialize)]
+struct SerializedPreprocessedInstanceMeta {
+    matrix_index: usize,
+    width: usize,
+    degree_bits: usize,
+}
+
+/// Serializable projection of [`CommonData::preprocessed`] used to bind the proof
+/// to its prover-side common data across (de)serialization.
+///
+/// `lookups` are intentionally omitted: the verifier always rebuilds them from the
+/// AIRs reconstructed from proof metadata, so they are not part of the binding.
+#[derive(Serialize, Deserialize)]
+#[serde(bound = "")]
+struct SerializedStarkCommon<SC: StarkGenericConfig> {
+    commitment: <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment,
+    instances: Vec<Option<SerializedPreprocessedInstanceMeta>>,
+    matrix_to_instance: Vec<usize>,
+}
+
+impl<SC: StarkGenericConfig> SerializedStarkCommon<SC> {
+    fn from_common(common: &CommonData<SC>) -> Option<Self> {
+        common.preprocessed.as_ref().map(|gp| Self {
+            commitment: gp.commitment.clone(),
+            instances: gp
+                .instances
+                .iter()
+                .map(|opt| {
+                    opt.as_ref().map(|m| SerializedPreprocessedInstanceMeta {
+                        matrix_index: m.matrix_index,
+                        width: m.width,
+                        degree_bits: m.degree_bits,
+                    })
+                })
+                .collect(),
+            matrix_to_instance: gp.matrix_to_instance.clone(),
+        })
+    }
+
+    fn into_common(self) -> CommonData<SC> {
+        CommonData::new(
+            Some(GlobalPreprocessed {
+                commitment: self.commitment,
+                instances: self
+                    .instances
+                    .into_iter()
+                    .map(|opt| {
+                        opt.map(|m| PreprocessedInstanceMeta {
+                            matrix_index: m.matrix_index,
+                            width: m.width,
+                            degree_bits: m.degree_bits,
+                        })
+                    })
+                    .collect(),
+                matrix_to_instance: self.matrix_to_instance,
+            }),
+            Vec::new(),
+        )
+    }
+}
+
+/// Clone a [`CommonData`] without requiring [`Clone`] on the upstream
+/// [`GlobalPreprocessed`] / [`PreprocessedInstanceMeta`] types.
+fn clone_common_data<SC: StarkGenericConfig>(common: &CommonData<SC>) -> CommonData<SC> {
+    CommonData::new(
+        common.preprocessed.as_ref().map(|gp| GlobalPreprocessed {
+            commitment: gp.commitment.clone(),
+            instances: gp
+                .instances
+                .iter()
+                .map(|opt| {
+                    opt.as_ref().map(|m| PreprocessedInstanceMeta {
+                        matrix_index: m.matrix_index,
+                        width: m.width,
+                        degree_bits: m.degree_bits,
+                    })
+                })
+                .collect(),
+            matrix_to_instance: gp.matrix_to_instance.clone(),
+        }),
+        common.lookups.clone(),
+    )
+}
+
+/// Custom (de)serialization for [`BatchStarkProof::stark_common`]. Persists only the
+/// preprocessed binding (commitment + per-instance metadata): the part the verifier
+/// needs to bind the proof to the [`CommonData`] it was generated against. `lookups`
+/// are intentionally not serialized because the verifier always rebuilds them from
+/// the AIRs reconstructed from proof metadata.
+mod serde_stark_common {
+    use alloc::vec::Vec;
+
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    use super::{CommonData, SerializedStarkCommon, StarkGenericConfig};
+
+    pub(super) fn serialize<S, SC>(value: &CommonData<SC>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+        SC: StarkGenericConfig,
+    {
+        SerializedStarkCommon::from_common(value).serialize(serializer)
+    }
+
+    pub(super) fn deserialize<'de, D, SC>(deserializer: D) -> Result<CommonData<SC>, D::Error>
+    where
+        D: Deserializer<'de>,
+        SC: StarkGenericConfig,
+    {
+        let parsed: Option<SerializedStarkCommon<SC>> = Option::deserialize(deserializer)?;
+        Ok(parsed
+            .map(SerializedStarkCommon::into_common)
+            .unwrap_or_else(|| CommonData::new(None, Vec::new())))
+    }
+}
+
 /// Proof bundle and metadata for the unified batch STARK proof across all circuit tables.
 #[derive(Serialize, Deserialize)]
 #[serde(bound = "")]
@@ -304,12 +424,8 @@ where
     /// Manifest describing batched non-primitive tables defined at runtime.
     pub non_primitives: Vec<NonPrimitiveTableEntry<SC>>,
     /// Common data derived from the final table AIRs after trace construction.
-    ///
-    /// Verification should prefer this over [`CircuitProverData::common_data`] from the
-    /// pre-prove `get_airs_and_degrees_with_prep` path so lookup column layouts match the
-    /// committed traces. Omitted on deserialization (e.g. legacy proofs).
-    #[serde(skip, default)]
-    pub stark_common: Option<CommonData<SC>>,
+    #[serde(with = "serde_stark_common")]
+    pub stark_common: CommonData<SC>,
 }
 
 impl<SC> core::fmt::Debug for BatchStarkProof<SC>
@@ -317,13 +433,23 @@ where
     SC: StarkGenericConfig,
 {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let stark_common_summary = self.stark_common.preprocessed.as_ref().map(|gp| {
+            (
+                gp.instances.len(),
+                gp.matrix_to_instance.len(),
+                self.stark_common.lookups.len(),
+            )
+        });
         f.debug_struct("BatchStarkProof")
             .field("table_packing", &self.table_packing)
             .field("rows", &self.rows)
             .field("ext_degree", &self.ext_degree)
             .field("w_binomial", &self.w_binomial)
             .field("alu_quintic_trinomial", &self.alu_quintic_trinomial)
-            .field("stark_common", &self.stark_common.is_some())
+            .field(
+                "stark_common(instances, matrices, lookups)",
+                &stark_common_summary,
+            )
             .finish()
     }
 }
@@ -644,9 +770,8 @@ where
     pub fn verify_all_tables(
         &self,
         proof: &BatchStarkProof<SC>,
-        circuit_common: &CommonData<SC>,
     ) -> Result<(), BatchStarkProverError> {
-        let common = proof.stark_common.as_ref().unwrap_or(circuit_common);
+        let common = &proof.stark_common;
         match proof.ext_degree {
             1 => self.verify::<1>(proof, None, common),
             2 => self.verify::<2>(proof, proof.w_binomial, common),
@@ -1043,6 +1168,11 @@ where
             .clone()
             .with_public_alu_lanes(public_lanes, alu_lanes);
 
+        // Populate `stark_common` so the proof is self-binding to the preprocessed metadata.
+        let stark_common = recomputed_data
+            .map(|pd| pd.common)
+            .unwrap_or_else(|| clone_common_data(&prover_data.common));
+
         Ok(BatchStarkProof {
             proof,
             table_packing: effective_packing,
@@ -1052,7 +1182,7 @@ where
             w_binomial: if D > 1 { w_binomial } else { None },
             alu_quintic_trinomial: alu_quintic,
             non_primitives,
-            stark_common: recomputed_data.map(|pd| pd.common),
+            stark_common,
         })
     }
 
@@ -1132,8 +1262,9 @@ where
             pvs.push(entry.public_values.clone());
         }
 
-        // Derive lookups from the rebuilt AIRs, which always reflect the effective lane counts
-        // stored in `proof.table_packing`, as `stark_common` isn't deserializable.
+        // Derive lookups from the rebuilt AIRs so the layout always reflects the effective
+        // lane counts stored in `proof.table_packing`. The serialized `stark_common` only
+        // carries the preprocessed binding, not the lookup contexts.
         let lookups: Vec<Vec<Lookup<Val<SC>>>> = airs.iter_mut().map(|a| a.get_lookups()).collect();
         let effective_common = CommonData::new(
             common.preprocessed.as_ref().map(|g| GlobalPreprocessed {

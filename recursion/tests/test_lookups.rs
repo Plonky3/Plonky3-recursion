@@ -65,9 +65,7 @@ fn test_arith_lookups() {
     } = get_test_circuit_proof();
     let common = circuit_prover_data.common_data();
 
-    prover
-        .verify_all_tables(&batch_stark_proof, common)
-        .unwrap();
+    prover.verify_all_tables(&batch_stark_proof).unwrap();
 
     // Build the recursive verification circuit
     let mut circuit_builder = setup_circuit_builder();
@@ -899,8 +897,6 @@ fn test_poseidon2_ctl_lookups() {
     let circuit_prover_data =
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
 
-    let common = circuit_prover_data.common_data();
-
     let mut prover = BatchStarkProver::new(config_proving).with_table_packing(table_packing);
     prover.register_poseidon2_table::<4>(poseidon2_config);
     prover.register_recompose_table::<4>(false);
@@ -910,7 +906,7 @@ fn test_poseidon2_ctl_lookups() {
         .unwrap();
 
     prover
-        .verify_all_tables(&proof, common)
+        .verify_all_tables(&proof)
         .expect("Poseidon2 CTL lookup verification should succeed");
 }
 
@@ -1029,8 +1025,6 @@ fn test_poseidon2_chained_ctl_lookups() {
     let circuit_prover_data =
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
 
-    let common = circuit_prover_data.common_data();
-
     let mut prover = BatchStarkProver::new(config_proving).with_table_packing(table_packing);
     prover.register_poseidon2_table::<4>(poseidon2_config);
     prover.register_recompose_table::<4>(false);
@@ -1040,6 +1034,6 @@ fn test_poseidon2_chained_ctl_lookups() {
         .unwrap();
 
     prover
-        .verify_all_tables(&proof, common)
+        .verify_all_tables(&proof)
         .expect("Chained Poseidon2 CTL lookup verification should succeed");
 }

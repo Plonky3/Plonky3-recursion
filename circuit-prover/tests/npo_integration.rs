@@ -307,7 +307,7 @@ fn cube_npo_stark_proof() {
         .expect("prove_all_tables should succeed");
 
     prover
-        .verify_all_tables(&proof, circuit_prover_data.common_data())
+        .verify_all_tables(&proof)
         .expect("verify_all_tables should succeed");
 }
 

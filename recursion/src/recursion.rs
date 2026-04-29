@@ -101,14 +101,9 @@ where
         A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
     {
         let num_tables = self.0.proof.opened_values.instances.len();
-        let common_data = self
-            .0
-            .stark_common
-            .as_ref()
-            .unwrap_or_else(|| self.1.common_data());
         RecursionInput::BatchStark {
             proof: &self.0,
-            common_data,
+            common_data: &self.0.stark_common,
             table_public_inputs: vec![vec![]; num_tables],
         }
     }

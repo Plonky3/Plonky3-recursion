@@ -290,7 +290,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     prover.register_recompose_table::<4>(false);
 
     let proof = prover.prove_all_tables(&traces, &circuit_prover_data)?;
-    prover.verify_all_tables(&proof, circuit_prover_data.common_data())?;
+    prover.verify_all_tables(&proof)?;
 
     Ok(())
 }
