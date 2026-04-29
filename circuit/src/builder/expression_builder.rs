@@ -35,6 +35,37 @@ enum BinOpKind {
     Div,
 }
 
+/// CSE pool key for fused multiply-add: `a * b + c`.
+///
+/// `a` and `b` are sorted to share a single key for both `mul_add(a,b,c)` and `mul_add(b,a,c)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct MulAddKey {
+    a: ExprId,
+    b: ExprId,
+    c: ExprId,
+}
+
+impl MulAddKey {
+    fn new(a: ExprId, b: ExprId, c: ExprId) -> Self {
+        if a.0 <= b.0 {
+            Self { a, b, c }
+        } else {
+            Self { a: b, b: a, c }
+        }
+    }
+}
+
+/// CSE pool key for Horner accumulator step: `acc * alpha + p_at_z - p_at_x`.
+///
+/// None of the operands are commutative w.r.t. each other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct HornerAccKey {
+    acc: ExprId,
+    alpha: ExprId,
+    p_at_z: ExprId,
+    p_at_x: ExprId,
+}
+
 /// Per-operation counters for profiling expression allocations.
 ///
 /// This is only compiled when the `profiling` feature is enabled on the `p3-circuit` crate.
@@ -182,6 +213,17 @@ pub struct ExpressionBuilder<F> {
     /// sorted so that `add(a,b)` and `add(b,a)` share the same key.
     cse_pool: HashMap<(BinOpKind, ExprId, ExprId), ExprId>,
 
+    /// CSE pool for fused multiply-add expressions (`a * b + c`).
+    ///
+    /// The `a` and `b` operands are normalized so commutative variants share an entry.
+    mul_add_pool: HashMap<MulAddKey, ExprId>,
+
+    /// CSE pool for Horner accumulator steps (`acc * alpha + p_at_z - p_at_x`).
+    horner_acc_pool: HashMap<HornerAccKey, ExprId>,
+
+    /// CSE pool for boolean-check expressions (`val * (val - 1) = 0`), keyed by the input.
+    bool_check_pool: HashMap<ExprId, ExprId>,
+
     /// Pending equality constraints.
     ///
     /// Each entry `(a, b)` represents a constraint that expressions `a` and `b` must
@@ -237,7 +279,7 @@ where
     }
 
     #[inline]
-    fn get_const_value(&self, id: ExprId) -> Option<F> {
+    pub(crate) fn get_const_value(&self, id: ExprId) -> Option<F> {
         match self.graph.get_expr(id) {
             Expr::Const(val) => Some(val.dup()),
             _ => None,
@@ -272,6 +314,9 @@ where
             graph,
             const_pool,
             cse_pool: HashMap::new(),
+            mul_add_pool: HashMap::new(),
+            horner_acc_pool: HashMap::new(),
+            bool_check_pool: HashMap::new(),
             pending_connects: Vec::new(),
             #[cfg(feature = "debugging")]
             allocation_log: AllocationLog::default(),
@@ -611,6 +656,26 @@ where
         p_at_x: ExprId,
         label: &'static str,
     ) -> ExprId {
+        // Constant folding: all operands const collapses to a single Const node.
+        if let (Some(va), Some(vb), Some(vz), Some(vx)) = (
+            self.get_const_value(acc),
+            self.get_const_value(alpha),
+            self.get_const_value(p_at_z),
+            self.get_const_value(p_at_x),
+        ) {
+            return self.define_const(va * vb + vz - vx, label);
+        }
+
+        let key = HornerAccKey {
+            acc,
+            alpha,
+            p_at_z,
+            p_at_x,
+        };
+        if let Some(&existing) = self.horner_acc_pool.get(&key) {
+            return existing;
+        }
+
         #[cfg(feature = "profiling")]
         self.profiling.bump_horner_acc();
 
@@ -631,6 +696,7 @@ where
         #[cfg(not(feature = "debugging"))]
         self.log_alloc(expr_id, label, || ());
 
+        self.horner_acc_pool.insert(key, expr_id);
         expr_id
     }
 
@@ -638,6 +704,16 @@ where
     ///
     /// Lowers to a single BoolCheck ALU op with no intermediate witnesses.
     pub fn add_bool_check(&mut self, val: ExprId, label: &'static str) -> ExprId {
+        // Constants in {0, 1} satisfy the predicate vacuously: skip the ALU row entirely
+        // and return the input itself so downstream `connect(val, check)` is a no-op.
+        if self.is_const_zero(val) || self.is_const_one(val) {
+            return val;
+        }
+
+        if let Some(&existing) = self.bool_check_pool.get(&val) {
+            return existing;
+        }
+
         #[cfg(feature = "profiling")]
         self.profiling.bump_bool_check();
 
@@ -650,6 +726,7 @@ where
         #[cfg(not(feature = "debugging"))]
         self.log_alloc(expr_id, label, || ());
 
+        self.bool_check_pool.insert(val, expr_id);
         expr_id
     }
 
@@ -657,6 +734,20 @@ where
     ///
     /// Lowers to a single MulAdd ALU op with no intermediate witnesses.
     pub fn add_mul_add(&mut self, a: ExprId, b: ExprId, c: ExprId, label: &'static str) -> ExprId {
+        // Constant folding: all operands const collapses to a single Const node.
+        if let (Some(va), Some(vb), Some(vc)) = (
+            self.get_const_value(a),
+            self.get_const_value(b),
+            self.get_const_value(c),
+        ) {
+            return self.define_const(va * vb + vc, label);
+        }
+
+        let key = MulAddKey::new(a, b, c);
+        if let Some(&existing) = self.mul_add_pool.get(&key) {
+            return existing;
+        }
+
         #[cfg(feature = "profiling")]
         self.profiling.bump_mul_add();
 
@@ -669,6 +760,7 @@ where
         #[cfg(not(feature = "debugging"))]
         self.log_alloc(expr_id, label, || ());
 
+        self.mul_add_pool.insert(key, expr_id);
         expr_id
     }
 
