@@ -36,11 +36,13 @@ use crate::config::StarkField;
 use crate::constraint_profile::ConstraintProfile;
 use crate::field_params::ExtractBinomialW;
 
+mod blake3;
 mod dynamic_air;
 mod packing;
 mod poseidon2;
 mod recompose;
 
+pub use blake3::{Blake3AirBuilder, Blake3Preprocessor, Blake3Prover};
 pub use dynamic_air::{
     BatchAir, BatchTableInstance, CloneableBatchAir, DynamicAirEntry, TableProver,
 };
@@ -503,6 +505,17 @@ where
         }
     }
 
+    fn num_public_values(&self) -> usize {
+        match self {
+            Self::Const(a) => a.num_public_values(),
+            Self::Public(a) => a.num_public_values(),
+            Self::Alu(a) => a.num_public_values(),
+            Self::Dynamic(a) => {
+                <dyn CloneableBatchAir<SC> as BaseAir<Val<SC>>>::num_public_values(a.air())
+            }
+        }
+    }
+
     fn preprocessed_trace(&self) -> Option<RowMajorMatrix<Val<SC>>> {
         match self {
             Self::Const(a) => a.preprocessed_trace(),
@@ -703,6 +716,26 @@ where
         (): RegisterPoseidon2ForExt<D, SC>,
     {
         <() as RegisterPoseidon2ForExt<D, SC>>::register_poseidon2(self, config);
+    }
+
+    /// Register the Blake3 non-primitive table prover.
+    pub fn register_blake3_table(&mut self)
+    where
+        SC: Send + Sync,
+        Val<SC>: BinomiallyExtendable<4>,
+    {
+        self.register_table_prover(Box::new(Blake3Prover::new()));
+    }
+
+    /// Builder-style registration for the Blake3 table prover.
+    #[must_use]
+    pub fn with_blake3_table(mut self) -> Self
+    where
+        SC: Send + Sync,
+        Val<SC>: BinomiallyExtendable<4>,
+    {
+        self.register_blake3_table();
+        self
     }
 
     /// Register the recompose (BF→EF packing) table prover(s) for extension degree `D`.
@@ -1409,6 +1442,48 @@ where
     } else {
         vec![Box::new(RecomposeAirBuilder::<D>::new(lanes, false))]
     }
+}
+
+/// Blake3 AIR builders for D=4 (e.g. BabyBear, KoalaBear).
+pub fn blake3_air_builders<SC>() -> Vec<Box<dyn NpoAirBuilder<SC, 4>>>
+where
+    SC: StarkGenericConfig + 'static + Send + Sync,
+    Val<SC>: StarkField + BinomiallyExtendable<4>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+{
+    vec![Box::new(Blake3AirBuilder::<4>)]
+}
+
+/// Blake3 AIR builders for D=1 (base field only).
+pub fn blake3_air_builders_d1<SC>() -> Vec<Box<dyn NpoAirBuilder<SC, 1>>>
+where
+    SC: StarkGenericConfig + 'static + Send + Sync,
+    Val<SC>: StarkField,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+{
+    vec![Box::new(Blake3AirBuilder::<1>)]
+}
+
+/// Returns a type-erased Blake3 preprocessor.
+pub fn blake3_preprocessor<F>() -> Box<dyn NpoPreprocessor<F>>
+where
+    F: StarkField + PrimeField + BinomiallyExtendable<4>,
+    Blake3Preprocessor: NpoPreprocessor<F>,
+{
+    Box::new(Blake3Preprocessor)
+}
+
+/// Returns a Blake3 table prover (boxed).
+pub fn blake3_table_provers<SC>() -> Vec<Box<dyn TableProver<SC>>>
+where
+    SC: StarkGenericConfig + 'static + Send + Sync,
+    Val<SC>: StarkField + BinomiallyExtendable<4>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+{
+    vec![Box::new(Blake3Prover::new())]
 }
 
 #[cfg(test)]

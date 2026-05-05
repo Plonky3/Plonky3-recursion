@@ -68,7 +68,62 @@ pub fn format_openings<T: Dup + alloc::fmt::Debug>(
     Ok(formatted_openings)
 }
 
+/// Number of rounds per Blake3 compression.
+const BLAKE3_ROUNDS_PER_COMPRESSION: usize = 8;
+/// Number of 16-bit limbs in the Blake3 chaining value output.
+const BLAKE3_CV_LIMBS: usize = 16;
+
 impl<F: Field> CircuitBuilder<F> {
+    /// Verify a Blake3 Merkle membership proof in the circuit.
+    ///
+    /// Emits `depth` compressions (each 8 round ops). Every compression uses
+    /// `new_start = true` (parent-node compression always starts from IV).
+    /// The final compression exposes its cv_out via CTL and connects it to
+    /// `root_expr`.
+    ///
+    /// Returns all op IDs (8 * depth total) so the caller can set
+    /// [`Blake3PrivateData`](crate::ops::blake3::Blake3PrivateData) for each
+    /// round. The 64-byte message per compression is supplied as 8 rounds of
+    /// 8 bytes each via private data.
+    pub fn add_blake3_merkle_verify(
+        &mut self,
+        depth: usize,
+        root_expr: &[ExprId],
+    ) -> Result<Vec<NonPrimitiveOpId>, CircuitBuilderError> {
+        use crate::ops::blake3::call::Blake3Call;
+
+        let mut op_ids = Vec::with_capacity(depth * BLAKE3_ROUNDS_PER_COMPRESSION);
+
+        for level in 0..depth {
+            let is_final_level = level == depth - 1;
+
+            for round in 0..BLAKE3_ROUNDS_PER_COMPRESSION {
+                let is_first_round = round == 0;
+                let is_last_round = round == BLAKE3_ROUNDS_PER_COMPRESSION - 1;
+
+                let (op_id, outputs) = self.add_blake3_round(&Blake3Call {
+                    new_start: true,
+                    is_new_blake: is_first_round,
+                    is_hash_output: is_last_round && is_final_level,
+                    inputs: vec![None; BLAKE3_CV_LIMBS],
+                })?;
+                op_ids.push(op_id);
+
+                if is_last_round && is_final_level {
+                    for (o, r) in outputs.iter().zip(root_expr.iter()) {
+                        let out = o.ok_or_else(|| {
+                            CircuitBuilderError::MalformedNonPrimitiveOutputs {
+                                op_id,
+                                details: "Expected output from last Blake3 round".into(),
+                            }
+                        })?;
+                        self.connect(out, *r);
+                    }
+                }
+            }
+        }
+        Ok(op_ids)
+    }
     /// Verify a Merkle path in the circuit.
     ///
     /// `openings_expr` contains the row digests at each tree level. When its length equals

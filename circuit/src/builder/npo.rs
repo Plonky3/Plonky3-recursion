@@ -14,9 +14,19 @@ use crate::types::{ExprId, NonPrimitiveOpId, WitnessId};
 /// Per-op extra parameters that are not encoded in the op type.
 #[derive(Debug)]
 pub enum NonPrimitiveOpParams<F> {
-    Poseidon2Perm { new_start: bool, merkle_path: bool },
-    Unconstrained { executor: Box<dyn HintExecutor<F>> },
+    Poseidon2Perm {
+        new_start: bool,
+        merkle_path: bool,
+    },
+    Unconstrained {
+        executor: Box<dyn HintExecutor<F>>,
+    },
     Recompose,
+    Blake3 {
+        new_start: bool,
+        is_new_blake: bool,
+        is_hash_output: bool,
+    },
 }
 
 impl<F> NonPrimitiveOpParams<F> {
@@ -35,6 +45,18 @@ impl<F> NonPrimitiveOpParams<F> {
     pub const fn is_recompose(&self) -> bool {
         matches!(self, Self::Recompose)
     }
+
+    /// Return the Blake3 flags if this is a Blake3 operation.
+    pub const fn as_blake3(&self) -> Option<(bool, bool, bool)> {
+        match self {
+            Self::Blake3 {
+                new_start,
+                is_new_blake,
+                is_hash_output,
+            } => Some((*new_start, *is_new_blake, *is_hash_output)),
+            _ => None,
+        }
+    }
 }
 
 impl<F: Field> Clone for NonPrimitiveOpParams<F> {
@@ -51,6 +73,15 @@ impl<F: Field> Clone for NonPrimitiveOpParams<F> {
                 executor: executor.boxed(),
             },
             Self::Recompose => Self::Recompose,
+            Self::Blake3 {
+                new_start,
+                is_new_blake,
+                is_hash_output,
+            } => Self::Blake3 {
+                new_start: *new_start,
+                is_new_blake: *is_new_blake,
+                is_hash_output: *is_hash_output,
+            },
         }
     }
 }

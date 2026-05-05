@@ -50,6 +50,11 @@ impl NpoTypeId {
         Self::new("recompose/coeff")
     }
 
+    /// Convenience: Blake3 membership-proof operation type ID.
+    pub fn blake3() -> Self {
+        Self::new("blake3")
+    }
+
     /// Convenience: Unconstrained (hint) operation type ID.
     ///
     /// This is kept only for profiling / debugging purposes; Unconstrained is

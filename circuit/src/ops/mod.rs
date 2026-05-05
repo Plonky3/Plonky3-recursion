@@ -3,6 +3,7 @@ mod executor;
 mod npo;
 mod op;
 
+pub mod blake3;
 pub mod hash;
 pub mod mmcs;
 pub mod poseidon2_perm;
@@ -27,6 +28,10 @@ pub use poseidon2_perm::{
     Poseidon2PermPrivateData,
     Poseidon2Trace,
     generate_poseidon2_trace,
+};
+pub use blake3::{
+    Blake3Call, Blake3CircuitPlugin, Blake3CircuitRow, Blake3PrivateData, Blake3Trace,
+    generate_blake3_trace,
 };
 pub use recompose::{
     RecomposeCircuitRow, RecomposeTrace, RecomposeTraceKind, generate_recompose_coeff_trace,
