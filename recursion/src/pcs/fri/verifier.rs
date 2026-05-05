@@ -1163,7 +1163,14 @@ where
         let mut alpha_powers_set = HashMap::new();
         let mut inv_z_minus_x_cache: HashMap<(usize, Target), Target> = HashMap::new();
 
-        // For each matrix in the batch
+        // Group matrices in this batch by log_height. Within a height, when every matrix
+        // exposes a single shared opening point z, we can run ONE big Horner chain across
+        // all matrices instead of per-matrix chains. This eliminates K-1 alpha_pow advances
+        // and K-1 mul_add boundary ops per group of K matrices, plus reduces wasted slots
+        // in the K-step packed Horner schedule.
+        type MatRef<'a> = (&'a [Target], &'a [(Target, Vec<Target>)]);
+        let mut height_groups: BTreeMap<usize, Vec<MatRef<'_>>> = BTreeMap::new();
+
         for (mat_idx, ((mat_domain, mat_points_and_values), mat_opening)) in zip_eq(
             mats.iter(),
             batch_openings.iter(),
@@ -1173,47 +1180,130 @@ where
         )?
         .enumerate()
         {
-            let log_height = mat_domain.log_size() + log_blowup;
-
-            let x = eval_points[&log_height];
-
-            // Initialize / fetch per-height (alpha_pow, ro)
-            let (alpha_pow_h, ro_h) = reduced_openings.entry(log_height).or_insert_with(|| {
-                (
-                    builder.define_const(EF::ONE),
-                    builder.define_const(EF::ZERO),
-                )
-            });
-
-            // Process each (z, ps_at_z) pair for this matrix
-            for (z, ps_at_z) in mat_points_and_values {
+            for (_, ps_at_z) in mat_points_and_values {
                 if mat_opening.len() != ps_at_z.len() {
                     return Err(VerificationError::InvalidProofShape(format!(
                         "batch {batch_idx} mat {mat_idx}: opened_values columns must match point_values columns"
                     )));
                 }
+            }
+            let log_height = mat_domain.log_size() + log_blowup;
+            height_groups
+                .entry(log_height)
+                .or_default()
+                .push((mat_opening.as_slice(), mat_points_and_values.as_slice()));
+        }
 
+        for (log_height, matrices) in &height_groups {
+            let x = eval_points[log_height];
+
+            // Fast-path detection: all matrices in this height group expose exactly one
+            // (z, ps_at_z) pair AND they all share the same z. This is the common case
+            // (zeta-only opening per matrix, with a single shared challenge) and the only
+            // case where one big Horner chain reproduces the original semantics.
+            let unified_z: Option<Target> = if matrices.iter().all(|(_, pv)| pv.len() == 1) {
+                let z0 = matrices[0].1[0].0;
+                if matrices.iter().all(|(_, pv)| pv[0].0 == z0) {
+                    Some(z0)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            if let Some(z) = unified_z {
+                // Resolve inv_z_minus_x (cached across batches at same (height, z)).
                 let inv_z_minus_x =
                     *inv_z_minus_x_cache
-                        .entry((log_height, *z))
+                        .entry((*log_height, z))
                         .or_insert_with(|| {
-                            let z_minus_x = builder.sub(*z, x);
+                            let z_minus_x = builder.sub(z, x);
                             let one = builder.define_const(EF::ONE);
                             builder.div(one, z_minus_x)
                         });
 
-                let (new_alpha_pow_h, ro_contrib) = compute_single_reduced_opening(
-                    builder,
-                    mat_opening,
-                    ps_at_z,
-                    *alpha_pow_h,
-                    alpha,
-                    &mut alpha_powers_set,
-                    inv_z_minus_x,
-                );
+                // Run one big reverse-Horner chain across all matrices in this group.
+                //
+                // Originally, matrix m contributes `alpha_pow_at_m * inv_z * inner_m` with
+                // `alpha_pow_at_m = alpha_pow_initial * alpha^(prefix_<m)`. The total is
+                //     sum_m alpha^(prefix_<m) * inner_m
+                // which equals reverse-Horner over the concatenation
+                //     [diff_M, diff_{M-1}, ..., diff_1] (each diff_m in column-reverse order)
+                // because reverse-Horner of `[c_0, c_1, ..., c_{N-1}]` (last element processed
+                // first) yields `c_0 + alpha*c_1 + ... + alpha^{N-1}*c_{N-1}`.
+                let zero = builder.define_const(EF::ZERO);
+                let mut inner = zero;
+                let mut total_n = 0usize;
+                for (mat_opening, points_and_values) in matrices.iter().rev() {
+                    let ps_at_z = &points_and_values[0].1;
+                    for i in (0..mat_opening.len()).rev() {
+                        inner = builder.horner_acc_step(inner, alpha, ps_at_z[i], mat_opening[i]);
+                    }
+                    total_n += mat_opening.len();
+                }
 
-                *ro_h = builder.add(*ro_h, ro_contrib);
-                *alpha_pow_h = new_alpha_pow_h;
+                // alpha^total_n via cached square-and-multiply.
+                let alpha_total_n = match alpha_powers_set.get(&total_n) {
+                    Some(&v) => v,
+                    None => {
+                        let v = circuit_exp_by_constant(builder, alpha, total_n);
+                        alpha_powers_set.insert(total_n, v);
+                        v
+                    }
+                };
+
+                let (alpha_pow_h, ro_h) =
+                    reduced_openings.entry(*log_height).or_insert_with(|| {
+                        (
+                            builder.define_const(EF::ONE),
+                            builder.define_const(EF::ZERO),
+                        )
+                    });
+                let alpha_pow_old = *alpha_pow_h;
+                // ro_h += (alpha_pow * inv_z_minus_x) * inner
+                let c = builder.mul(alpha_pow_old, inv_z_minus_x);
+                *ro_h = builder.mul_add(c, inner, *ro_h);
+                // alpha_pow *= alpha^total_n
+                *alpha_pow_h = builder.mul(alpha_pow_old, alpha_total_n);
+            } else {
+                // Fallback: per-matrix per-z, identical to the original implementation.
+                for (mat_opening, points_and_values) in matrices {
+                    for (z, ps_at_z) in points_and_values.iter() {
+                        let inv_z_minus_x = *inv_z_minus_x_cache
+                            .entry((*log_height, *z))
+                            .or_insert_with(|| {
+                                let z_minus_x = builder.sub(*z, x);
+                                let one = builder.define_const(EF::ONE);
+                                builder.div(one, z_minus_x)
+                            });
+
+                        let alpha_pow_value = {
+                            let (alpha_pow_h, _ro_h) =
+                                reduced_openings.entry(*log_height).or_insert_with(|| {
+                                    (
+                                        builder.define_const(EF::ONE),
+                                        builder.define_const(EF::ZERO),
+                                    )
+                                });
+                            *alpha_pow_h
+                        };
+
+                        let (new_alpha_pow_h, ro_contrib) = compute_single_reduced_opening(
+                            builder,
+                            mat_opening,
+                            ps_at_z,
+                            alpha_pow_value,
+                            alpha,
+                            &mut alpha_powers_set,
+                            inv_z_minus_x,
+                        );
+
+                        let entry = reduced_openings.get_mut(log_height).expect("entry");
+                        entry.1 = builder.add(entry.1, ro_contrib);
+                        entry.0 = new_alpha_pow_h;
+                    }
+                }
             }
         }
 
