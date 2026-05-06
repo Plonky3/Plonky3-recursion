@@ -18,7 +18,8 @@ use p3_circuit_prover::{
     Poseidon2Preprocessor, Poseidon2Prover, RecomposePreprocessor, TablePacking, TableProver,
 };
 use p3_field::PrimeCharacteristicRing;
-use p3_fri::create_test_fri_params;
+use p3_fri::FriParameters::{self};
+use p3_fri::create_benchmark_fri_params;
 use p3_lookup::logup::LogUpGadget;
 use p3_poseidon2_circuit_air::BabyBearD4Width16;
 use p3_recursion::Poseidon2Config;
@@ -26,6 +27,7 @@ use p3_recursion::pcs::fri::{FriVerifierParams, InputProofTargets, MerkleCapTarg
 use p3_recursion::pcs::set_fri_mmcs_private_data;
 use p3_recursion::verifier::verify_p3_batch_proof_circuit;
 use p3_test_utils::baby_bear_params::*;
+use p3_util::{log2_ceil_usize, log2_strict_usize};
 use rand::rngs::SmallRng;
 use rand::{RngExt, SeedableRng};
 use tracing_forest::ForestLayer;
@@ -135,23 +137,26 @@ fn root_to_limbs(root: &[u32; 8]) -> [F; 16] {
 }
 
 /// Build the internal levels of a depth-`depth` Blake3 Merkle tree from `data`,
-/// where `data` contains `2^depth` 32-byte leaves laid out contiguously.
-/// Returns `(levels, root)`. `levels[0]` are the leaf-pair hashes, `levels[k]`
-/// the hashes at height `k+1`. The root is the single value at the top level.
+/// where `data` contains `2^depth` 64-byte leaves laid out contiguously.
+///
+/// Each leaf is hashed alone with the IV (one compression per leaf) to produce
+/// a 32-byte digest; those digests are then paired up the tree as usual.
+///
+/// Returns `(levels, root)` with `depth + 1` levels: `levels[0]` are the
+/// per-leaf digests, `levels[k]` for `k >= 1` are the digests at height `k`.
 fn merkle_levels(data: &[u8], depth: usize) -> (Vec<Vec<[u32; 8]>>, [u32; 8]) {
     let num_leaves = 1usize << depth;
-    assert_eq!(data.len(), num_leaves * 32);
+    assert_eq!(data.len(), num_leaves * 64);
 
     let mut levels: Vec<Vec<[u32; 8]>> = Vec::new();
 
-    let mut leaf_pairs = Vec::with_capacity(num_leaves / 2);
-    for i in (0..num_leaves).step_by(2) {
+    let mut leaf_digests = Vec::with_capacity(num_leaves);
+    for i in 0..num_leaves {
         let mut msg = [0u8; 64];
-        msg[..32].copy_from_slice(&data[i * 32..(i + 1) * 32]);
-        msg[32..].copy_from_slice(&data[(i + 1) * 32..(i + 2) * 32]);
-        leaf_pairs.push(blake3_compress(&BLAKE3_IV, &msg));
+        msg.copy_from_slice(&data[i * 64..(i + 1) * 64]);
+        leaf_digests.push(blake3_compress(&BLAKE3_IV, &msg));
     }
-    levels.push(leaf_pairs);
+    levels.push(leaf_digests);
 
     while levels.last().unwrap().len() > 1 {
         let prev = levels.last().unwrap();
@@ -169,8 +174,11 @@ fn merkle_levels(data: &[u8], depth: usize) -> (Vec<Vec<[u32; 8]>>, [u32; 8]) {
     (levels, root)
 }
 
-/// Compute the `depth` 64-byte compression messages along the Merkle path that
-/// authenticates leaf `leaf_idx` against the root produced by `merkle_levels`.
+/// Compute the `depth + 1` 64-byte compression messages along the Merkle path
+/// that authenticates leaf `leaf_idx` against the root produced by
+/// `merkle_levels`. The first message is the 64-byte leaf itself (the input to
+/// the leaf-hash compression); the next `depth` messages are the sibling-pair
+/// inputs, one per tree level.
 fn merkle_path_messages(
     data: &[u8],
     levels: &[Vec<[u32; 8]>],
@@ -180,22 +188,21 @@ fn merkle_path_messages(
     let num_leaves = 1usize << depth;
     assert!(leaf_idx < num_leaves);
 
-    let mut messages = Vec::with_capacity(depth);
-    let mut idx = leaf_idx;
+    let mut messages = Vec::with_capacity(depth + 1);
 
+    let mut leaf_msg = [0u8; 64];
+    leaf_msg.copy_from_slice(&data[leaf_idx * 64..(leaf_idx + 1) * 64]);
+    messages.push(leaf_msg);
+
+    let mut idx = leaf_idx;
     for level in 0..depth {
         let sibling_idx = idx ^ 1;
         let left_idx = idx.min(sibling_idx);
         let right_idx = idx.max(sibling_idx);
 
         let mut msg = [0u8; 64];
-        if level == 0 {
-            msg[..32].copy_from_slice(&data[left_idx * 32..(left_idx + 1) * 32]);
-            msg[32..].copy_from_slice(&data[right_idx * 32..(right_idx + 1) * 32]);
-        } else {
-            msg[..32].copy_from_slice(&words_to_bytes(&levels[level - 1][left_idx]));
-            msg[32..].copy_from_slice(&words_to_bytes(&levels[level - 1][right_idx]));
-        }
+        msg[..32].copy_from_slice(&words_to_bytes(&levels[level][left_idx]));
+        msg[32..].copy_from_slice(&words_to_bytes(&levels[level][right_idx]));
         messages.push(msg);
         idx /= 2;
     }
@@ -220,7 +227,7 @@ fn make_test_config() -> MyConfig {
     let val_mmcs = MyMmcs::new(hash, compress, 0);
     let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
     let dft = Dft::default();
-    let fri_params = create_test_fri_params(challenge_mmcs, 0);
+    let fri_params = create_benchmark_fri_params(challenge_mmcs);
     let pcs = MyPcs::new(dft, val_mmcs, fri_params);
     let challenger = Challenger::new(perm);
     MyConfig::new(pcs, challenger)
@@ -241,19 +248,22 @@ fn test_blake3_bench() {
 
     // Number of rows in the full weights matrix (a power of two — that's the
     // number of leaves in the matrix Merkle tree).
-    const N: usize = 32;
-    // Number of 16-bit field limbs per row / per vector entry. With 16 limbs
-    // each row (and the vector) is exactly 32 bytes, i.e. one Blake3 leaf.
-    const WEIGHT_WIDTH: usize = 16;
+    const N: usize = 2048;
+    // Number of 16-bit field limbs per row / per vector entry. With 32 limbs
+    // each row (and the vector) is exactly 64 bytes, i.e. one Blake3 leaf
+    // (one full Blake3 compression block).
+    const WEIGHT_WIDTH: usize = 32;
     // Number of rows we open against the matrix commitment.
-    const WEIGHT_HEIGHT: usize = 16;
-    // 32-byte leaves: 16 limbs × 2 bytes/limb.
+    const WEIGHT_HEIGHT: usize = 1024;
+    // 64-byte leaves: 32 limbs × 2 bytes/limb.
     const LEAF_BYTES: usize = WEIGHT_WIDTH * 2;
-    // depth = log2(N).
-    const DEPTH_WEIGHTS: usize = 5;
+    // Tree depth = log2(N). Each opening uses `DEPTH_WEIGHTS + 1` Blake3
+    // compressions: one to hash the 64-byte leaf alone, then DEPTH_WEIGHTS
+    // pair-hash levels going up to the root.
+    const DEPTH_WEIGHTS: usize = 11;
     const _: () = assert!(1 << DEPTH_WEIGHTS == N);
-    // The vector fits in a single 32-byte leaf; pair it with a (zero) sibling
-    // so blake3_merkle_verify(depth=1) can authenticate it.
+    // Vector tree: the vector fits in a single 64-byte leaf; pair it with a
+    // (zero) sibling so the depth-1 path (2 compressions) can authenticate it.
     const DEPTH_VECTOR: usize = 1;
 
     // -----------------------------------------------------------------------
@@ -273,7 +283,7 @@ fn test_blake3_bench() {
     // 2. Native Blake3 commitments (must match what the circuit recomputes)
     // -----------------------------------------------------------------------
     let (weights_levels, weights_root) = merkle_levels(&weights_data, DEPTH_WEIGHTS);
-    let (_vector_levels, vector_root) = merkle_levels(&vector_data, DEPTH_VECTOR);
+    let (vector_levels, vector_root) = merkle_levels(&vector_data, DEPTH_VECTOR);
 
     let weights_root_limbs = root_to_limbs(&weights_root);
     let vector_root_limbs = root_to_limbs(&vector_root);
@@ -301,15 +311,15 @@ fn test_blake3_bench() {
     let mut weight_op_ids: Vec<Vec<_>> = Vec::with_capacity(WEIGHT_HEIGHT);
     for _ in 0..WEIGHT_HEIGHT {
         let ids = builder
-            .add_blake3_merkle_verify(DEPTH_WEIGHTS, &weights_root_expr)
+            .add_blake3_merkle_verify(DEPTH_WEIGHTS + 1, &weights_root_expr)
             .unwrap();
-        assert_eq!(ids.len(), DEPTH_WEIGHTS * 8);
+        assert_eq!(ids.len(), (DEPTH_WEIGHTS + 1) * 8);
         weight_op_ids.push(ids);
     }
     let vector_op_ids = builder
-        .add_blake3_merkle_verify(DEPTH_VECTOR, &vector_root_expr)
+        .add_blake3_merkle_verify(DEPTH_VECTOR + 1, &vector_root_expr)
         .unwrap();
-    assert_eq!(vector_op_ids.len(), DEPTH_VECTOR * 8);
+    assert_eq!(vector_op_ids.len(), (DEPTH_VECTOR + 1) * 8);
 
     for i in 0..WEIGHT_HEIGHT {
         let mut cumsum = builder.alloc_const(F::ZERO, "zero");
@@ -351,18 +361,20 @@ fn test_blake3_bench() {
         }
     }
 
-    // The single vector compression: 64-byte message = vector || zero pad.
-    let mut vec_msg = [0u8; 64];
-    vec_msg.copy_from_slice(&vector_data);
-    for round in 0..8 {
-        let mut chunk = [0u8; 8];
-        chunk.copy_from_slice(&vec_msg[round * 8..(round + 1) * 8]);
-        runner
-            .set_private_data(
-                vector_op_ids[round],
-                NpoPrivateData::new(Blake3PrivateData { uint8_data: chunk }),
-            )
-            .unwrap();
+    // Open the vector against its (depth-1) tree: one leaf-hash compression
+    // plus one pair-hash compression with the zero sibling.
+    let vector_messages = merkle_path_messages(&vector_data, &vector_levels, DEPTH_VECTOR, 0);
+    for (compression, msg) in vector_messages.iter().enumerate() {
+        for round in 0..8 {
+            let mut chunk = [0u8; 8];
+            chunk.copy_from_slice(&msg[round * 8..(round + 1) * 8]);
+            runner
+                .set_private_data(
+                    vector_op_ids[compression * 8 + round],
+                    NpoPrivateData::new(Blake3PrivateData { uint8_data: chunk }),
+                )
+                .unwrap();
+        }
     }
 
     let traces = runner.run().unwrap();
@@ -392,16 +404,16 @@ fn test_blake3_bench() {
     let mut prover0 = BatchStarkProver::new(config0).with_table_packing(table_packing);
     prover0.register_blake3_table();
 
-    let t0 = Instant::now();
     let proof0 = prover0
         .prove_all_tables(&traces, &circuit_prover_data)
         .unwrap();
-    let layer0_time = t0.elapsed();
     let layer0_size = proof_size(&proof0);
 
-    let _ = prover0.verify_all_tables(&proof0);
+    match prover0.verify_all_tables(&proof0) {
+        Ok(()) => println!("Layer 0 native verify: OK"),
+        Err(e) => println!("Layer 0 native verify FAILED: {:?}", e),
+    }
     println!("=== Layer 0 (base circuit) ===");
-    println!("  Proving time : {:?}", layer0_time);
     println!(
         "  Proof size   : {} bytes ({:.1} KiB)",
         layer0_size,
@@ -480,7 +492,7 @@ fn prove_recursion_layer(
         let compress = MyCompress::new(perm);
         let val_mmcs = MyMmcs::new(hash, compress, 0);
         let challenge_mmcs = ChallengeMmcs::new(val_mmcs);
-        create_test_fri_params(challenge_mmcs, 0)
+        create_benchmark_fri_params(challenge_mmcs)
     };
 
     let fri_verifier_params = FriVerifierParams::with_mmcs(
@@ -612,15 +624,12 @@ fn prove_recursion_layer(
     ver_prover.register_poseidon2_table::<4>(poseidon2_config);
     ver_prover.register_recompose_table::<4>(false);
 
-    let t = Instant::now();
     let ver_proof = ver_prover
         .prove_all_tables(&ver_traces, &ver_cpd)
         .expect("Failed to prove verification circuit");
-    let layer_time = t.elapsed();
     let layer_size = proof_size(&ver_proof);
 
     println!("=== {} ===", label);
-    println!("  Proving time : {:?}", layer_time);
     println!(
         "  Proof size   : {} bytes ({:.1} KiB)",
         layer_size,
@@ -633,8 +642,209 @@ fn prove_recursion_layer(
             .verify_all_tables(&ver_proof)
             .expect("Final verification failed");
         let verify_time = tv.elapsed();
-        println!("  Verify time  : {:?}", verify_time);
     }
 
     ver_proof
 }
+
+// /// Build a recursive verification circuit around `inner_proof`, prove it, and
+// /// optionally verify. Returns the new proof.
+// fn prove_last_recursion_layer(
+//     inner_proof: &p3_circuit_prover::batch_stark_prover::BatchStarkProof<MyConfig>,
+//     inner_common: &p3_batch_stark::CommonData<MyConfig>,
+//     inner_pis: &[Vec<F>],
+//     trace_d: usize,
+//     has_blake3_tables: bool,
+//     lookup_gadget: &LogUpGadget,
+//     label: &str,
+// ) -> p3_circuit_prover::batch_stark_prover::BatchStarkProof<MyConfig> {
+//     let config_layer = make_test_config();
+//     let fri_params_layer = {
+//         let perm = default_babybear_poseidon2_16();
+//         let hash = MyHash::new(perm.clone());
+//         let compress = MyCompress::new(perm);
+//         let val_mmcs = MyMmcs::new(hash, compress, 0);
+//         let challenge_mmcs = ChallengeMmcs::new(val_mmcs);
+//         FriParameters::new_testing(challenge_mmcs, 0)
+//     };
+
+//     let security_level = 128;
+//     let pow_bits = 16;
+//     // Assemble the WHIR protocol parameters.
+//     let whir_params = make_whir_params();
+
+//     let fri_verifier_params = FriVerifierParams::with_mmcs(
+//         fri_params_layer.log_blowup,
+//         fri_params_layer.log_final_poly_len,
+//         fri_params_layer.commit_proof_of_work_bits,
+//         fri_params_layer.query_proof_of_work_bits,
+//         Poseidon2Config::BabyBearD4Width16,
+//     );
+
+//     let mut circuit_builder = CircuitBuilder::new();
+//     let poseidon2_perm = default_babybear_poseidon2_16();
+//     circuit_builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
+//         generate_poseidon2_trace::<Challenge, BabyBearD4Width16>,
+//         poseidon2_perm,
+//     );
+//     circuit_builder.enable_recompose::<F>(generate_recompose_trace::<F, Challenge>);
+
+//     let table_provers_for_verify: Vec<Box<dyn TableProver<MyConfig>>> = {
+//         let mut tp: Vec<Box<dyn TableProver<MyConfig>>> = vec![Box::new(Poseidon2Prover::new(
+//             Poseidon2Config::BabyBearD4Width16,
+//             ConstraintProfile::Standard,
+//         ))];
+//         tp.extend(recompose_table_provers::<_, 4>(1, false));
+//         if has_blake3_tables {
+//             tp.extend(blake3_table_provers::<MyConfig>());
+//         }
+//         tp
+//     };
+
+//     let (verifier_inputs, mmcs_op_ids) = match trace_d {
+//         1 => verify_p3_batch_proof_circuit::<
+//             MyConfig,
+//             MerkleCapTargets<F, DIGEST_ELEMS>,
+//             InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>>,
+//             InnerFri,
+//             LogUpGadget,
+//             _,
+//             WIDTH,
+//             RATE,
+//             1,
+//         >(
+//             &config_layer,
+//             &mut circuit_builder,
+//             inner_proof,
+//             &fri_verifier_params,
+//             inner_common,
+//             lookup_gadget,
+//             Poseidon2Config::BabyBearD4Width16,
+//             &table_provers_for_verify,
+//         )
+//         .unwrap(),
+//         4 => verify_p3_batch_proof_circuit::<
+//             MyConfig,
+//             MerkleCapTargets<F, DIGEST_ELEMS>,
+//             InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>>,
+//             InnerFri,
+//             LogUpGadget,
+//             _,
+//             WIDTH,
+//             RATE,
+//             4,
+//         >(
+//             &config_layer,
+//             &mut circuit_builder,
+//             inner_proof,
+//             &fri_verifier_params,
+//             inner_common,
+//             lookup_gadget,
+//             Poseidon2Config::BabyBearD4Width16,
+//             &table_provers_for_verify,
+//         )
+//         .unwrap(),
+//         _ => panic!("Unexpected TRACE_D: {trace_d}"),
+//     };
+
+//     let verification_circuit = circuit_builder.build().unwrap();
+//     let expected_pub_len = verification_circuit.public_flat_len;
+
+//     let (pub_vals, priv_vals) =
+//         verifier_inputs.pack_values(inner_pis, &inner_proof.proof, inner_common);
+//     assert_eq!(pub_vals.len(), expected_pub_len);
+
+//     let verification_table_packing = TablePacking::new(1, 8);
+//     let poseidon2_config = Poseidon2Config::BabyBearD4Width16;
+//     let npo_prep: Vec<Box<dyn NpoPreprocessor<F>>> = vec![
+//         Box::new(Poseidon2Preprocessor),
+//         Box::new(RecomposePreprocessor::default()),
+//     ];
+//     let mut air_builders = poseidon2_air_builders::<_, 4>();
+//     air_builders.extend(recompose_air_builders::<MyConfig, 4>(1, false));
+//     let (ver_airs_degrees, ver_prim, ver_npo) = get_airs_and_degrees_with_prep::<MyConfig, _, 4>(
+//         &verification_circuit,
+//         &verification_table_packing,
+//         &npo_prep,
+//         &air_builders,
+//         ConstraintProfile::RecursionOptimized,
+//     )
+//     .unwrap();
+//     let (mut ver_airs, ver_degrees): (Vec<_>, Vec<usize>) = ver_airs_degrees.into_iter().unzip();
+
+//     let mut ver_runner = verification_circuit.runner();
+//     ver_runner.set_public_inputs(&pub_vals).unwrap();
+//     ver_runner.set_private_inputs(&priv_vals).unwrap();
+//     set_fri_mmcs_private_data::<
+//         F,
+//         Challenge,
+//         ChallengeMmcs,
+//         MyMmcs,
+//         MyHash,
+//         MyCompress,
+//         DIGEST_ELEMS,
+//     >(
+//         &mut ver_runner,
+//         &mmcs_op_ids,
+//         &inner_proof.proof.opening_proof,
+//     )
+//     .unwrap();
+
+//     let ver_traces = ver_runner.run().unwrap();
+
+//     let max_log_degree = ver_degrees
+//         .iter()
+//         .map(|t| log2_ceil_usize(*t))
+//         .max()
+//         .unwrap();
+//     let config_prove = WhirConfig::new(max_log_degree, whir_params);
+//     let ver_prover_data =
+//         ProverData::from_airs_and_degrees(&config_prove, &mut ver_airs, &ver_degrees);
+//     let ver_cpd = CircuitProverData::new(ver_prover_data, ver_prim, ver_npo);
+
+//     let mut ver_prover =
+//         BatchStarkProver::new(config_prove).with_table_packing(verification_table_packing);
+//     ver_prover.register_poseidon2_table::<4>(poseidon2_config);
+//     ver_prover.register_recompose_table::<4>(false);
+
+//     let t = Instant::now();
+//     let ver_proof = ver_prover
+//         .prove_all_tables(&ver_traces, &ver_cpd)
+//         .expect("Failed to prove verification circuit");
+//     let layer_time = t.elapsed();
+//     let layer_size = proof_size(&ver_proof);
+
+//     println!("=== {} ===", label);
+//     println!("  Proving time : {:?}", layer_time);
+//     println!(
+//         "  Proof size   : {} bytes ({:.1} KiB)",
+//         layer_size,
+//         layer_size as f64 / 1024.0
+//     );
+
+//     let tv = Instant::now();
+//     ver_prover
+//         .verify_all_tables(&ver_proof)
+//         .expect("Final verification failed");
+//     let verify_time = tv.elapsed();
+//     println!("  Verify time  : {:?}", verify_time);
+
+//     ver_proof
+// }
+
+// /// Generates default WHIR parameters
+// fn make_whir_params() -> ProtocolParameters<MyMmcs> {
+//     let mut rng = rand::rngs::SmallRng::seed_from_u64(1);
+//     let perm = Perm::new_from_rng_128(&mut rng);
+//     let mmcs = MyMmcs::new(MyHash::new(perm.clone()), MyCompress::new(perm), 0);
+
+//     ProtocolParameters {
+//         security_level: 100,
+//         pow_bits: 16,
+//         rs_domain_initial_reduction_factor: 1,
+//         folding_factor: FoldingFactor::ConstantFromSecondRound(4, 4),
+//         mmcs,
+//         soundness_type: SecurityAssumption::CapacityBound,
+//         starting_log_inv_rate: 1,
+//     }
+// }

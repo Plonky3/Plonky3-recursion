@@ -403,11 +403,25 @@ fn shift_and_load_buffer_u32(buf: &mut [u32; 16], data: &[u8; 8]) {
 /// `Blake3CircuitRow`s. `recompute_compressions` then chains the blake3
 /// message-permutation and round computations through them so the AIR
 /// constraints stay satisfied without an explicit `is_not_padding` flag.
+///
+/// The very first padding row is marked `is_new_blake = true` so that the
+/// last `is_hash_output` row's `next.is_new_blake` is 1 — that flips
+/// `compute_intermediate_states` into the bit-decomp layout (instead of the
+/// half-G layout used for chained padding) and lets `cv_out` recover the real
+/// Blake3 hash on that row. Without this, the WitnessChecks Receive at the
+/// hash-output row picks up XOR-of-half-G-intermediates instead of the real
+/// hash, and the global LogUp cumulative check fails (the receivers would no
+/// longer match the corresponding sends).
+///
+/// Subsequent padding rows keep `is_new_blake = false`; `recompute_compressions`
+/// processes the first 8 padding rows as one phantom compression starting from
+/// `cv_in = [0; 8]` and then chains permute/mixing through any further padding.
 pub fn pad_blake3_padding_rows(
     padded_ops: &mut alloc::vec::Vec<p3_circuit::ops::Blake3CircuitRow>,
     padded_rows: usize,
 ) {
     use alloc::vec;
+    let first_pad = padded_ops.len();
     padded_ops.resize_with(padded_rows, || p3_circuit::ops::Blake3CircuitRow {
         round_idx: 0,
         is_new_blake: false,
@@ -430,6 +444,9 @@ pub fn pad_blake3_padding_rows(
         output_indices: vec![0; 16],
         out_ctl: vec![false; 16],
     });
+    if padded_rows > first_pad {
+        padded_ops[first_pad].is_new_blake = true;
+    }
 }
 
 fn permute_msg_u32(msg: &mut [u32; 16]) {

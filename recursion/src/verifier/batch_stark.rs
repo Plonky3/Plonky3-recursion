@@ -1035,18 +1035,18 @@ where
         let folded_mul = circuit.mul(folded_constraints, sels.inv_vanishing);
         // circuit.connect(folded_mul, quotient);
 
-        // // Check that the global lookup cumulative values accumulate to the expected value.
-        // let mut global_cumulative = HashMap::<&String, Vec<_>>::new();
-        // for data in global_lookup_data.iter().flatten() {
-        //     global_cumulative
-        //         .entry(&data.name)
-        //         .or_default()
-        //         .push(data.expected_cumulated);
-        // }
+        // Check that the global lookup cumulative values accumulate to the expected value.
+        let mut global_cumulative = HashMap::<&String, Vec<_>>::new();
+        for data in global_lookup_data.iter().flatten() {
+            global_cumulative
+                .entry(&data.name)
+                .or_default()
+                .push(data.expected_cumulated);
+        }
 
-        // for all_expected_cumulative in global_cumulative.values() {
-        //     lookup_gadget.verify_global_final_value_circuit(circuit, all_expected_cumulative);
-        // }
+        for all_expected_cumulative in global_cumulative.values() {
+            lookup_gadget.verify_global_final_value_circuit(circuit, all_expected_cumulative);
+        }
     }
 
     Ok(mmcs_op_ids)
