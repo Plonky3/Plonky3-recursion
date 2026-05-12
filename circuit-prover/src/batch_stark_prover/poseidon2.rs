@@ -26,14 +26,12 @@ use p3_field::{
 };
 use p3_goldilocks::{GenericPoseidon2LinearLayersGoldilocks, Goldilocks};
 use p3_koala_bear::{GenericPoseidon2LinearLayersKoalaBear, KoalaBear};
-use p3_lookup::LookupAir;
 use p3_lookup::folder::{ProverConstraintFolderWithLookups, VerifierConstraintFolderWithLookups};
-use p3_lookup::lookup_traits::Lookup;
+use p3_lookup::symbolic::InteractionSymbolicBuilder;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_poseidon2_circuit_air::*;
 use p3_uni_stark::{
-    ProverConstraintFolder, SymbolicAirBuilder, SymbolicExpression, SymbolicExpressionExt,
-    VerifierConstraintFolder,
+    ProverConstraintFolder, SymbolicExpression, SymbolicExpressionExt, VerifierConstraintFolder,
 };
 use p3_util::log2_ceil_usize;
 
@@ -82,6 +80,30 @@ impl Poseidon2AirWrapperInner {
             Self::KoalaBearD4Width16(air) => air.width(),
             Self::KoalaBearD4Width24(air) => air.width(),
             Self::GoldilocksD2Width8(air) => air.width(),
+        }
+    }
+
+    pub fn preprocessed_width(&self) -> usize {
+        match self {
+            Self::BabyBearD1Width16Bus1(air) => {
+                BaseAir::<BabyBear>::preprocessed_width(air.as_ref())
+            }
+            Self::BabyBearD1Width16Bus5(air) => {
+                BaseAir::<BabyBear>::preprocessed_width(air.as_ref())
+            }
+            Self::BabyBearD4Width16(air) => BaseAir::<BabyBear>::preprocessed_width(air.as_ref()),
+            Self::BabyBearD4Width24(air) => BaseAir::<BabyBear>::preprocessed_width(air.as_ref()),
+            Self::KoalaBearD1Width16Bus1(air) => {
+                BaseAir::<KoalaBear>::preprocessed_width(air.as_ref())
+            }
+            Self::KoalaBearD1Width16Bus5(air) => {
+                BaseAir::<KoalaBear>::preprocessed_width(air.as_ref())
+            }
+            Self::KoalaBearD4Width16(air) => BaseAir::<KoalaBear>::preprocessed_width(air.as_ref()),
+            Self::KoalaBearD4Width24(air) => BaseAir::<KoalaBear>::preprocessed_width(air.as_ref()),
+            Self::GoldilocksD2Width8(air) => {
+                BaseAir::<Goldilocks>::preprocessed_width(air.as_ref())
+            }
         }
     }
 }
@@ -241,154 +263,78 @@ macro_rules! eval_folder_inner {
     };
 }
 
-macro_rules! add_lookup_columns_inner {
-    ($inner:expr) => {
-        match $inner {
-            Poseidon2AirWrapperInner::BabyBearD1Width16Bus1(air) => {
-                LookupAir::add_lookup_columns(air.as_mut())
-            }
-            Poseidon2AirWrapperInner::BabyBearD1Width16Bus5(air) => {
-                LookupAir::add_lookup_columns(air.as_mut())
-            }
-            Poseidon2AirWrapperInner::BabyBearD4Width16(air) => {
-                LookupAir::add_lookup_columns(air.as_mut())
-            }
-            Poseidon2AirWrapperInner::BabyBearD4Width24(air) => {
-                LookupAir::add_lookup_columns(air.as_mut())
-            }
-            Poseidon2AirWrapperInner::KoalaBearD1Width16Bus1(air) => {
-                LookupAir::add_lookup_columns(air.as_mut())
-            }
-            Poseidon2AirWrapperInner::KoalaBearD1Width16Bus5(air) => {
-                LookupAir::add_lookup_columns(air.as_mut())
-            }
-            Poseidon2AirWrapperInner::KoalaBearD4Width16(air) => {
-                LookupAir::add_lookup_columns(air.as_mut())
-            }
-            Poseidon2AirWrapperInner::KoalaBearD4Width24(air) => {
-                LookupAir::add_lookup_columns(air.as_mut())
-            }
-            Poseidon2AirWrapperInner::GoldilocksD2Width8(air) => {
-                LookupAir::add_lookup_columns(air.as_mut())
-            }
-        }
-    };
-}
-
-#[allow(unused_macros)]
-macro_rules! get_lookups_inner {
-    ($inner:expr, $F:ty) => {
-        match $inner {
-            Poseidon2AirWrapperInner::GoldilocksD2Width8(air) => unsafe {
-                let lookups = LookupAir::get_lookups(air.as_mut());
-                core::mem::transmute(lookups)
-            },
-            Poseidon2AirWrapperInner::BabyBearD1Width16Bus1(air) => unsafe {
-                assert_eq!(<$F>::from_u64(BABY_BEAR_MODULUS), <$F>::ZERO);
-                let lookups = LookupAir::get_lookups(air.as_mut());
-                core::mem::transmute(lookups)
-            },
-            Poseidon2AirWrapperInner::BabyBearD1Width16Bus5(air) => unsafe {
-                assert_eq!(<$F>::from_u64(BABY_BEAR_MODULUS), <$F>::ZERO);
-                let lookups = LookupAir::get_lookups(air.as_mut());
-                core::mem::transmute(lookups)
-            },
-            Poseidon2AirWrapperInner::BabyBearD4Width16(air) => unsafe {
-                assert_eq!(<$F>::from_u64(BABY_BEAR_MODULUS), <$F>::ZERO);
-                let lookups = LookupAir::get_lookups(air.as_mut());
-                core::mem::transmute(lookups)
-            },
-            Poseidon2AirWrapperInner::BabyBearD4Width24(air) => unsafe {
-                assert_eq!(<$F>::from_u64(BABY_BEAR_MODULUS), <$F>::ZERO);
-                let lookups = LookupAir::get_lookups(air.as_mut());
-                core::mem::transmute(lookups)
-            },
-            Poseidon2AirWrapperInner::KoalaBearD1Width16Bus1(air) => unsafe {
-                assert_eq!(<$F>::from_u64(KOALA_BEAR_MODULUS), <$F>::ZERO);
-                let lookups = LookupAir::get_lookups(air.as_mut());
-                core::mem::transmute(lookups)
-            },
-            Poseidon2AirWrapperInner::KoalaBearD1Width16Bus5(air) => unsafe {
-                assert_eq!(<$F>::from_u64(KOALA_BEAR_MODULUS), <$F>::ZERO);
-                let lookups = LookupAir::get_lookups(air.as_mut());
-                core::mem::transmute(lookups)
-            },
-            Poseidon2AirWrapperInner::KoalaBearD4Width16(air) => unsafe {
-                assert_eq!(<$F>::from_u64(KOALA_BEAR_MODULUS), <$F>::ZERO);
-                let lookups = LookupAir::get_lookups(air.as_mut());
-                core::mem::transmute(lookups)
-            },
-            Poseidon2AirWrapperInner::KoalaBearD4Width24(air) => unsafe {
-                assert_eq!(<$F>::from_u64(KOALA_BEAR_MODULUS), <$F>::ZERO);
-                let lookups = LookupAir::get_lookups(air.as_mut());
-                core::mem::transmute(lookups)
-            },
-        }
-    };
-}
-
 macro_rules! eval_symbolic_inner {
     ($inner:expr, $builder:expr, $F:ty) => {
         match $inner {
             Poseidon2AirWrapperInner::BabyBearD1Width16Bus1(air) => {
                 assert_eq!(<$F>::from_u64(BABY_BEAR_MODULUS), <$F>::ZERO);
                 unsafe {
-                    let b: &mut SymbolicAirBuilder<BabyBear> = core::mem::transmute($builder);
+                    let b: &mut InteractionSymbolicBuilder<BabyBear> =
+                        core::mem::transmute($builder);
                     Air::eval(air.as_ref(), b);
                 }
             }
             Poseidon2AirWrapperInner::BabyBearD1Width16Bus5(air) => {
                 assert_eq!(<$F>::from_u64(BABY_BEAR_MODULUS), <$F>::ZERO);
                 unsafe {
-                    let b: &mut SymbolicAirBuilder<BabyBear> = core::mem::transmute($builder);
+                    let b: &mut InteractionSymbolicBuilder<BabyBear> =
+                        core::mem::transmute($builder);
                     Air::eval(air.as_ref(), b);
                 }
             }
             Poseidon2AirWrapperInner::BabyBearD4Width16(air) => {
                 assert_eq!(<$F>::from_u64(BABY_BEAR_MODULUS), <$F>::ZERO);
                 unsafe {
-                    let b: &mut SymbolicAirBuilder<BabyBear> = core::mem::transmute($builder);
+                    let b: &mut InteractionSymbolicBuilder<BabyBear> =
+                        core::mem::transmute($builder);
                     Air::eval(air.as_ref(), b);
                 }
             }
             Poseidon2AirWrapperInner::BabyBearD4Width24(air) => {
                 assert_eq!(<$F>::from_u64(BABY_BEAR_MODULUS), <$F>::ZERO);
                 unsafe {
-                    let b: &mut SymbolicAirBuilder<BabyBear> = core::mem::transmute($builder);
+                    let b: &mut InteractionSymbolicBuilder<BabyBear> =
+                        core::mem::transmute($builder);
                     Air::eval(air.as_ref(), b);
                 }
             }
             Poseidon2AirWrapperInner::KoalaBearD1Width16Bus1(air) => {
                 assert_eq!(<$F>::from_u64(KOALA_BEAR_MODULUS), <$F>::ZERO);
                 unsafe {
-                    let b: &mut SymbolicAirBuilder<KoalaBear> = core::mem::transmute($builder);
+                    let b: &mut InteractionSymbolicBuilder<KoalaBear> =
+                        core::mem::transmute($builder);
                     Air::eval(air.as_ref(), b);
                 }
             }
             Poseidon2AirWrapperInner::KoalaBearD1Width16Bus5(air) => {
                 assert_eq!(<$F>::from_u64(KOALA_BEAR_MODULUS), <$F>::ZERO);
                 unsafe {
-                    let b: &mut SymbolicAirBuilder<KoalaBear> = core::mem::transmute($builder);
+                    let b: &mut InteractionSymbolicBuilder<KoalaBear> =
+                        core::mem::transmute($builder);
                     Air::eval(air.as_ref(), b);
                 }
             }
             Poseidon2AirWrapperInner::KoalaBearD4Width16(air) => {
                 assert_eq!(<$F>::from_u64(KOALA_BEAR_MODULUS), <$F>::ZERO);
                 unsafe {
-                    let b: &mut SymbolicAirBuilder<KoalaBear> = core::mem::transmute($builder);
+                    let b: &mut InteractionSymbolicBuilder<KoalaBear> =
+                        core::mem::transmute($builder);
                     Air::eval(air.as_ref(), b);
                 }
             }
             Poseidon2AirWrapperInner::KoalaBearD4Width24(air) => {
                 assert_eq!(<$F>::from_u64(KOALA_BEAR_MODULUS), <$F>::ZERO);
                 unsafe {
-                    let b: &mut SymbolicAirBuilder<KoalaBear> = core::mem::transmute($builder);
+                    let b: &mut InteractionSymbolicBuilder<KoalaBear> =
+                        core::mem::transmute($builder);
                     Air::eval(air.as_ref(), b);
                 }
             }
             Poseidon2AirWrapperInner::GoldilocksD2Width8(air) => unsafe {
-                let b: &mut SymbolicAirBuilder<Goldilocks, BinomialExtensionField<Goldilocks, 2>> =
-                    core::mem::transmute($builder);
+                let b: &mut InteractionSymbolicBuilder<
+                    Goldilocks,
+                    BinomialExtensionField<Goldilocks, 2>,
+                > = core::mem::transmute($builder);
                 Air::eval(air.as_ref(), b);
             },
         }
@@ -514,76 +460,43 @@ where
         self.inner.width()
     }
 
+    fn preprocessed_width(&self) -> usize {
+        self.inner.preprocessed_width()
+    }
+
     fn preprocessed_trace(&self) -> Option<RowMajorMatrix<Val<SC>>> {
         preprocessed_trace_inner!(&self.inner, SC)
     }
 }
 
-impl<SC> Air<SymbolicAirBuilder<Val<SC>, SC::Challenge>> for Poseidon2AirWrapper<SC>
+impl<SC> Air<InteractionSymbolicBuilder<Val<SC>, SC::Challenge>> for Poseidon2AirWrapper<SC>
 where
     SC: StarkGenericConfig + Send + Sync,
     Val<SC>: StarkField,
 {
-    fn eval(&self, builder: &mut SymbolicAirBuilder<Val<SC>, SC::Challenge>) {
+    fn eval(&self, builder: &mut InteractionSymbolicBuilder<Val<SC>, SC::Challenge>) {
         eval_symbolic_inner!(&self.inner, builder, Val<SC>);
-    }
-}
-
-impl<SC> LookupAir<Val<SC>> for Poseidon2AirWrapper<SC>
-where
-    SC: StarkGenericConfig + Send + Sync,
-    Val<SC>: StarkField,
-{
-    fn add_lookup_columns(&mut self) -> Vec<usize> {
-        add_lookup_columns_inner!(&mut self.inner)
-    }
-
-    #[allow(clippy::missing_transmute_annotations)]
-    fn get_lookups(
-        &mut self,
-    ) -> Vec<Lookup<<SymbolicAirBuilder<Val<SC>, SC::Challenge> as AirBuilder>::F>> {
-        get_lookups_inner!(&mut self.inner, Val<SC>)
     }
 }
 
 impl<F: Field> BaseAir<F> for Poseidon2AirWrapperInner {
     fn width(&self) -> usize {
-        match self {
-            Self::BabyBearD1Width16Bus1(a) => BaseAir::<BabyBear>::width(a.as_ref()),
-            Self::BabyBearD1Width16Bus5(a) => BaseAir::<BabyBear>::width(a.as_ref()),
-            Self::BabyBearD4Width16(a) => BaseAir::<BabyBear>::width(a.as_ref()),
-            Self::BabyBearD4Width24(a) => BaseAir::<BabyBear>::width(a.as_ref()),
-            Self::KoalaBearD1Width16Bus1(a) => BaseAir::<KoalaBear>::width(a.as_ref()),
-            Self::KoalaBearD1Width16Bus5(a) => BaseAir::<KoalaBear>::width(a.as_ref()),
-            Self::KoalaBearD4Width16(a) => BaseAir::<KoalaBear>::width(a.as_ref()),
-            Self::KoalaBearD4Width24(a) => BaseAir::<KoalaBear>::width(a.as_ref()),
-            Self::GoldilocksD2Width8(a) => BaseAir::<Goldilocks>::width(a.as_ref()),
-        }
+        Self::width(self)
+    }
+
+    fn preprocessed_width(&self) -> usize {
+        Self::preprocessed_width(self)
     }
 }
 
-impl<F, EF> Air<SymbolicAirBuilder<F, EF>> for Poseidon2AirWrapperInner
+impl<F, EF> Air<InteractionSymbolicBuilder<F, EF>> for Poseidon2AirWrapperInner
 where
     F: Field + PrimeField64,
     EF: ExtensionField<F>,
     SymbolicExpressionExt<F, EF>: Algebra<SymbolicExpression<F>>,
 {
-    fn eval(&self, builder: &mut SymbolicAirBuilder<F, EF>) {
+    fn eval(&self, builder: &mut InteractionSymbolicBuilder<F, EF>) {
         eval_symbolic_inner!(self, builder, F);
-    }
-}
-
-impl<F> LookupAir<F> for Poseidon2AirWrapperInner
-where
-    F: Field + PrimeField64,
-{
-    fn add_lookup_columns(&mut self) -> Vec<usize> {
-        add_lookup_columns_inner!(self)
-    }
-
-    #[allow(clippy::missing_transmute_annotations)]
-    fn get_lookups(&mut self) -> Vec<Lookup<F>> {
-        get_lookups_inner!(self, F)
     }
 }
 

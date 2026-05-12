@@ -20,9 +20,8 @@ use p3_circuit_prover::{
     RecomposePreprocessor, TablePacking,
 };
 use p3_field::Field;
-use p3_fri::{HidingFriPcs, TwoAdicFriPcs, create_test_fri_params};
+use p3_fri::{FriParameters, HidingFriPcs, TwoAdicFriPcs};
 use p3_lookup::logup::LogUpGadget;
-use p3_lookup::{Lookup, LookupAir};
 use p3_matrix::dense::RowMajorMatrix;
 use p3_poseidon2_circuit_air::KoalaBearD4Width16;
 use p3_recursion::pcs::fri::{
@@ -74,16 +73,6 @@ where
     }
 }
 
-impl<F: Field> LookupAir<F> for AddAir {
-    fn add_lookup_columns(&mut self) -> Vec<usize> {
-        vec![0]
-    }
-
-    fn get_lookups(&mut self) -> Vec<Lookup<F>> {
-        vec![]
-    }
-}
-
 fn generate_add_trace<Val: Field>(rows: usize, offset: usize) -> RowMajorMatrix<Val> {
     let width = 3;
     let mut values = Val::zero_vec(rows * width);
@@ -104,7 +93,7 @@ fn make_zk_config(seed: u64) -> MyConfigZk {
     let compress = MyCompress::new(perm);
     let val_mmcs = MyMmcs::new(hash, compress, 0);
     let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
-    let fri_params = create_test_fri_params(challenge_mmcs, 0);
+    let fri_params = FriParameters::new_testing(challenge_mmcs, 0);
     let pcs = MyPcsZk::new(
         Dft::default(),
         val_mmcs,
@@ -121,7 +110,7 @@ fn make_non_zk_config() -> MyConfig {
     let compress = MyCompress::new(perm.clone());
     let val_mmcs = MyMmcs::new(hash, compress, 0);
     let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
-    let fri_params = create_test_fri_params(challenge_mmcs, 0);
+    let fri_params = FriParameters::new_testing(challenge_mmcs, 0);
     let pcs = TwoAdicFriPcs::new(Dft::default(), val_mmcs, fri_params);
     MyConfig::new(pcs, Challenger::new(perm))
 }
@@ -137,7 +126,6 @@ fn prove_zk_add_air(config: &MyConfigZk, trace: &RowMajorMatrix<F>) -> ZkProofDa
         air: &air,
         trace,
         public_values: vec![],
-        lookups: Vec::new(),
     };
     let instances = vec![instance];
     let prover_data = ProverData::from_instances(config, &instances);
@@ -164,7 +152,7 @@ fn add_zk_batch_verifier_to_circuit(
         let compress = MyCompress::new(default_koalabear_poseidon2_16());
         let val_mmcs = MyMmcs::new(hash, compress, 0);
         let challenge_mmcs = ChallengeMmcs::new(val_mmcs);
-        let fri_params = create_test_fri_params(challenge_mmcs, 0);
+        let fri_params = FriParameters::new_testing(challenge_mmcs, 0);
         FriVerifierParams::from(&fri_params)
     };
 
@@ -303,9 +291,9 @@ fn test_zk_aggregation() -> Result<(), VerificationError> {
             ConstraintProfile::Standard,
         )
         .unwrap();
-    let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
+    let (airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
 
-    let prover_data = ProverData::from_airs_and_degrees(&config_outer, &mut airs, &degrees);
+    let prover_data = ProverData::from_airs_and_degrees(&config_outer, &airs, &degrees);
     let circuit_prover_data =
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
 

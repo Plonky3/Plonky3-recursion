@@ -22,7 +22,7 @@ use p3_circuit_prover::{
 use p3_commit::Pcs;
 use p3_field::{Algebra, BasedVectorSpace, ExtensionField, Field, PrimeField64};
 use p3_lookup::logup::LogUpGadget;
-use p3_lookup::lookup_traits::{Lookup, LookupData, LookupGadget};
+use p3_lookup::{Lookup, LookupData, LookupProtocol};
 use p3_uni_stark::{Proof, StarkGenericConfig, Val};
 use tracing::instrument;
 
@@ -214,7 +214,7 @@ impl Default for ProveNextLayerParams {
 #[derive(Debug)]
 pub struct BatchOnly;
 
-impl<F: Field, EF: ExtensionField<F>, LG: LookupGadget> RecursiveAir<F, EF, LG> for BatchOnly {
+impl<F: Field, EF: ExtensionField<F>, LG: LookupProtocol> RecursiveAir<F, EF, LG> for BatchOnly {
     fn width(&self) -> usize {
         0
     }
@@ -331,10 +331,10 @@ where
         .map_err(VerificationError::Circuit)?
     };
 
-    let (mut airs, degrees): (Vec<_>, Vec<_>) = airs_degrees.into_iter().unzip();
+    let (airs, degrees): (Vec<_>, Vec<_>) = airs_degrees.into_iter().unzip();
     let ext_degrees: Vec<usize> = degrees.iter().map(|&d| d + config.is_zk()).collect();
 
-    let prover_data = ProverData::from_airs_and_degrees(config, &mut airs, &ext_degrees);
+    let prover_data = ProverData::from_airs_and_degrees(config, &airs, &ext_degrees);
     let circuit_prover_data = Rc::new(CircuitProverData::new(
         prover_data,
         primitive_columns,
@@ -422,7 +422,7 @@ where
         .map_err(VerificationError::Circuit)?
     };
 
-    let (mut airs, degrees): (Vec<_>, Vec<_>) = airs_degrees.into_iter().unzip();
+    let (airs, degrees): (Vec<_>, Vec<_>) = airs_degrees.into_iter().unzip();
     let ext_degrees: Vec<usize> = degrees.iter().map(|&d| d + config.is_zk()).collect();
 
     let traces = {
@@ -444,7 +444,7 @@ where
     };
 
     let circuit_prover_data = {
-        let prover_data = ProverData::from_airs_and_degrees(config, &mut airs, &ext_degrees);
+        let prover_data = ProverData::from_airs_and_degrees(config, &airs, &ext_degrees);
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns)
     };
 
@@ -675,7 +675,7 @@ where
         .map_err(VerificationError::Circuit)?
     };
 
-    let (mut airs, degrees): (Vec<_>, Vec<_>) = airs_degrees.into_iter().unzip();
+    let (airs, degrees): (Vec<_>, Vec<_>) = airs_degrees.into_iter().unzip();
     let ext_degrees: Vec<usize> = degrees.iter().map(|&d| d + config.is_zk()).collect();
 
     let traces = run_aggregation_verification_circuit::<SC, A1, A2, B, D>(
@@ -689,7 +689,7 @@ where
     )?;
 
     let circuit_prover_data = {
-        let prover_data = ProverData::from_airs_and_degrees(config, &mut airs, &ext_degrees);
+        let prover_data = ProverData::from_airs_and_degrees(config, &airs, &ext_degrees);
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns)
     };
 

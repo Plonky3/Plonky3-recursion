@@ -23,20 +23,17 @@
 //!
 //! **Receive (coeff)** `[coeff_i_idx, v_i, 0, ..., 0]` with multiplicity `coeff_i_mult` (×D)
 
-use alloc::string::ToString;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::marker::PhantomData;
 
-use p3_air::{Air, AirBuilder, BaseAir, SymbolicExpression};
+use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 use p3_field::{Field, PrimeCharacteristicRing};
-use p3_lookup::lookup_traits::{Direction, Kind, Lookup};
-use p3_lookup::{LookupAir, LookupInput};
+use p3_lookup::builder::InteractionBuilder;
 use p3_matrix::dense::RowMajorMatrix;
 use tracing::instrument;
 
 use super::recompose_columns::{RECOMPOSE_PREP_LANE_COL_MAP, RECOMPOSE_PREP_LANE_WIDTH};
-use super::utils::create_symbolic_variables;
 
 /// AIR for the recompose (BF→EF packing) table.
 ///
@@ -45,7 +42,6 @@ use super::utils::create_symbolic_variables;
 pub struct RecomposeAir<F, const D: usize> {
     pub(crate) lanes: usize,
     pub(crate) preprocessed: Vec<F>,
-    pub(crate) num_lookup_columns: usize,
     pub(crate) min_height: usize,
     /// When true, D additional per-coefficient Receive lookups are registered per lane so
     /// that NPOs consuming raw BF coefficients (e.g. a D=1 Poseidon2 challenger inside a
@@ -88,7 +84,6 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> RecomposeAir<F, D> {
         Self {
             lanes: lanes.max(1),
             preprocessed,
-            num_lookup_columns: 0,
             min_height,
             coeff_lookups,
             _phantom: PhantomData,
@@ -128,6 +123,10 @@ impl<F: Field, const D: usize> BaseAir<F> for RecomposeAir<F, D> {
         self.lanes * Self::lane_width()
     }
 
+    fn preprocessed_width(&self) -> usize {
+        self.lanes * self.preprocessed_lane_width()
+    }
+
     fn preprocessed_trace(&self) -> Option<RowMajorMatrix<F>> {
         let width = self.lanes * self.preprocessed_lane_width();
         let mut mat = RowMajorMatrix::from_flat_padded(self.preprocessed.to_vec(), width, F::ZERO);
@@ -144,80 +143,53 @@ impl<F: Field, const D: usize> BaseAir<F> for RecomposeAir<F, D> {
     }
 }
 
-impl<AB: AirBuilder, const D: usize> Air<AB> for RecomposeAir<AB::F, D>
+impl<AB: AirBuilder + InteractionBuilder, const D: usize> Air<AB> for RecomposeAir<AB::F, D>
 where
     AB::F: Field,
 {
-    fn eval(&self, _builder: &mut AB) {}
-}
+    fn eval(&self, builder: &mut AB) {
+        let main = builder.main();
+        let main_local = main.current_slice();
+        let prep = builder.preprocessed().clone();
+        let prep_local = prep.current_slice();
 
-impl<F: Field, const D: usize> LookupAir<F> for RecomposeAir<F, D> {
-    fn add_lookup_columns(&mut self) -> Vec<usize> {
-        let new_idx = self.num_lookup_columns;
-        self.num_lookup_columns += 1;
-        vec![new_idx]
-    }
-
-    fn get_lookups(&mut self) -> Vec<Lookup<F>> {
-        let mut lookups = Vec::new();
-        self.num_lookup_columns = 0;
-
-        let total_main_width = self.lanes * Self::lane_width();
-        let total_prep_width = self.lanes * self.preprocessed_lane_width();
-
-        let (symbolic_main, symbolic_preprocessed) =
-            create_symbolic_variables::<F>(total_prep_width, total_main_width, 0, 0);
+        let lane_w = Self::lane_width();
+        let prep_lane_w = self.preprocessed_lane_width();
 
         for lane in 0..self.lanes {
-            let main_off = lane * Self::lane_width();
-            let prep_off = lane * self.preprocessed_lane_width();
+            let main_off = lane * lane_w;
+            let prep_off = lane * prep_lane_w;
 
-            let output_idx = SymbolicExpression::from(
-                symbolic_preprocessed[prep_off + RECOMPOSE_PREP_LANE_COL_MAP.output_idx],
-            );
-            let out_mult = SymbolicExpression::from(
-                symbolic_preprocessed[prep_off + RECOMPOSE_PREP_LANE_COL_MAP.out_mult],
-            );
+            let output_idx: AB::Expr =
+                prep_local[prep_off + RECOMPOSE_PREP_LANE_COL_MAP.output_idx].into();
+            let out_mult: AB::Expr =
+                prep_local[prep_off + RECOMPOSE_PREP_LANE_COL_MAP.out_mult].into();
 
-            let mut values = vec![output_idx];
+            let mut values: Vec<AB::Expr> = Vec::with_capacity(1 + D);
+            values.push(output_idx);
             for j in 0..D {
-                values.push(SymbolicExpression::from(symbolic_main[main_off + j]));
+                values.push(main_local[main_off + j].into());
             }
+            builder.push_interaction("WitnessChecks", values, out_mult, 1);
 
-            let inp: LookupInput<F> = (values, out_mult, Direction::Receive);
-            lookups.push(LookupAir::register_lookup(
-                self,
-                Kind::Global("WitnessChecks".to_string()),
-                &[inp],
-            ));
-
-            // Coefficient Receive lookups: only registered when the circuit contains a Poseidon2
-            // permutation whose D differs from the circuit extension degree.
+            // Coefficient Receive lookups: only when the circuit hosts a Poseidon2 permutation
+            // whose D differs from the circuit extension degree.
             if self.coeff_lookups {
                 for i in 0..D {
-                    let coeff_idx = SymbolicExpression::from(
-                        symbolic_preprocessed[prep_off + RECOMPOSE_PREP_LANE_WIDTH + i * 2],
-                    );
-                    let coeff_mult = SymbolicExpression::from(
-                        symbolic_preprocessed[prep_off + RECOMPOSE_PREP_LANE_WIDTH + i * 2 + 1],
-                    );
-                    let mut coeff_values = vec![
-                        coeff_idx,
-                        SymbolicExpression::from(symbolic_main[main_off + i]),
-                    ];
+                    let coeff_idx: AB::Expr =
+                        prep_local[prep_off + RECOMPOSE_PREP_LANE_WIDTH + i * 2].into();
+                    let coeff_mult: AB::Expr =
+                        prep_local[prep_off + RECOMPOSE_PREP_LANE_WIDTH + i * 2 + 1].into();
+
+                    let mut coeff_values: Vec<AB::Expr> = Vec::with_capacity(1 + D);
+                    coeff_values.push(coeff_idx);
+                    coeff_values.push(main_local[main_off + i].into());
                     for _ in 1..D {
-                        coeff_values.push(SymbolicExpression::from(F::ZERO));
+                        coeff_values.push(AB::Expr::ZERO);
                     }
-                    let coeff_inp: LookupInput<F> = (coeff_values, coeff_mult, Direction::Receive);
-                    lookups.push(LookupAir::register_lookup(
-                        self,
-                        Kind::Global("WitnessChecks".to_string()),
-                        &[coeff_inp],
-                    ));
+                    builder.push_interaction("WitnessChecks", coeff_values, coeff_mult, 1);
                 }
             }
         }
-
-        lookups
     }
 }

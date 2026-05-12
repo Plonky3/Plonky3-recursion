@@ -17,12 +17,12 @@ use p3_circuit::tables::Traces;
 use p3_commit::Pcs;
 use p3_field::extension::{BinomialExtensionField, BinomiallyExtendable};
 use p3_field::{Algebra, BasedVectorSpace, Field, PrimeCharacteristicRing, PrimeField};
-use p3_lookup::LookupAir;
+use p3_lookup::Lookups;
 use p3_lookup::folder::{ProverConstraintFolderWithLookups, VerifierConstraintFolderWithLookups};
-use p3_lookup::lookup_traits::Lookup;
+use p3_lookup::symbolic::InteractionSymbolicBuilder;
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
-use p3_uni_stark::{SymbolicAirBuilder, SymbolicExpression, SymbolicExpressionExt};
+use p3_uni_stark::{SymbolicExpression, SymbolicExpressionExt};
 use p3_util::log2_strict_usize;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -503,6 +503,17 @@ where
         }
     }
 
+    fn preprocessed_width(&self) -> usize {
+        match self {
+            Self::Const(a) => BaseAir::<Val<SC>>::preprocessed_width(a),
+            Self::Public(a) => BaseAir::<Val<SC>>::preprocessed_width(a),
+            Self::Alu(a) => BaseAir::<Val<SC>>::preprocessed_width(a),
+            Self::Dynamic(a) => {
+                <dyn CloneableBatchAir<SC> as BaseAir<Val<SC>>>::preprocessed_width(a.air())
+            }
+        }
+    }
+
     fn preprocessed_trace(&self) -> Option<RowMajorMatrix<Val<SC>>> {
         match self {
             Self::Const(a) => a.preprocessed_trace(),
@@ -528,14 +539,15 @@ macro_rules! impl_circuit_table_air_for_builder {
     };
 }
 
-impl<SC, const D: usize> Air<SymbolicAirBuilder<Val<SC>, SC::Challenge>> for CircuitTableAir<SC, D>
+impl<SC, const D: usize> Air<InteractionSymbolicBuilder<Val<SC>, SC::Challenge>>
+    for CircuitTableAir<SC, D>
 where
     SC: StarkGenericConfig,
     Val<SC>: PrimeField,
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
         Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
-    impl_circuit_table_air_for_builder!(SymbolicAirBuilder<Val<SC>, SC::Challenge>);
+    impl_circuit_table_air_for_builder!(InteractionSymbolicBuilder<Val<SC>, SC::Challenge>);
 }
 
 #[cfg(debug_assertions)]
@@ -569,29 +581,22 @@ where
     impl_circuit_table_air_for_builder!(VerifierConstraintFolderWithLookups<'a, SC>);
 }
 
-impl<SC, const D: usize> LookupAir<Val<SC>> for CircuitTableAir<SC, D>
+/// Extract the lookups for a `CircuitTableAir` by symbolic evaluation. The dispatch by
+/// inner variant is needed to satisfy the AIR trait bound on the matched arms.
+pub(crate) fn lookups_for_circuit_table_air<SC, const D: usize>(
+    air: &CircuitTableAir<SC, D>,
+) -> Lookups<Val<SC>>
 where
     SC: StarkGenericConfig,
     Val<SC>: PrimeField,
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
         Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
-    fn add_lookup_columns(&mut self) -> Vec<usize> {
-        match self {
-            Self::Const(a) => ConstAir::<Val<SC>, D>::add_lookup_columns(a),
-            Self::Public(a) => PublicAir::<Val<SC>, D>::add_lookup_columns(a),
-            Self::Alu(a) => AluAir::<Val<SC>, D>::add_lookup_columns(a),
-            Self::Dynamic(a) => DynamicAirEntry::<SC>::add_lookup_columns(a),
-        }
-    }
-
-    fn get_lookups(&mut self) -> Vec<Lookup<Val<SC>>> {
-        match self {
-            Self::Const(a) => ConstAir::<Val<SC>, D>::get_lookups(a),
-            Self::Public(a) => PublicAir::<Val<SC>, D>::get_lookups(a),
-            Self::Alu(a) => AluAir::<Val<SC>, D>::get_lookups(a),
-            Self::Dynamic(a) => DynamicAirEntry::<SC>::get_lookups(a),
-        }
+    match air {
+        CircuitTableAir::Const(a) => Lookups::from_air::<SC::Challenge, _>(a),
+        CircuitTableAir::Public(a) => Lookups::from_air::<SC::Challenge, _>(a),
+        CircuitTableAir::Alu(a) => Lookups::from_air::<SC::Challenge, _>(a),
+        CircuitTableAir::Dynamic(a) => Lookups::from_air::<SC::Challenge, _>(a),
     }
 }
 
@@ -1077,7 +1082,7 @@ where
                 .collect();
             Some(ProverData::from_airs_and_degrees(
                 &self.config,
-                &mut air_storage,
+                &air_storage,
                 &trace_ext_degree_bits,
             ))
         } else {
@@ -1088,12 +1093,7 @@ where
         let proof = {
             let trace_refs: Vec<&RowMajorMatrix<Val<SC>>> = trace_storage.iter().collect();
             let instances: Vec<StarkInstance<'_, SC, CircuitTableAir<SC, D>>> =
-                StarkInstance::new_multiple(
-                    &air_storage,
-                    &trace_refs,
-                    &public_storage,
-                    &effective_prover_data.common,
-                );
+                StarkInstance::new_multiple(&air_storage, &trace_refs, &public_storage);
 
             if self.debug_lookups {
                 use p3_lookup::debug_util::{LookupDebugInstance, check_lookups};
@@ -1123,14 +1123,19 @@ where
                     }
                 }
 
+                let debug_instance_lookups: Vec<Lookups<Val<SC>>> = instances
+                    .iter()
+                    .map(|inst| lookups_for_circuit_table_air::<SC, D>(inst.air))
+                    .collect();
                 let debug_instances: Vec<LookupDebugInstance<'_, Val<SC>>> = instances
                     .iter()
                     .zip(preprocessed_traces.iter())
-                    .map(|(inst, prep)| LookupDebugInstance {
+                    .zip(debug_instance_lookups.iter())
+                    .map(|((inst, prep), lookups)| LookupDebugInstance {
                         main_trace: inst.trace,
                         preprocessed_trace: prep,
                         public_values: &inst.public_values,
-                        lookups: &inst.lookups,
+                        lookups,
                         permutation_challenges: &[],
                     })
                     .collect();
@@ -1265,7 +1270,10 @@ where
         // Derive lookups from the rebuilt AIRs so the layout always reflects the effective
         // lane counts stored in `proof.table_packing`. The serialized `stark_common` only
         // carries the preprocessed binding, not the lookup contexts.
-        let lookups: Vec<Vec<Lookup<Val<SC>>>> = airs.iter_mut().map(|a| a.get_lookups()).collect();
+        let lookups: Vec<Lookups<Val<SC>>> = airs
+            .iter()
+            .map(|a| lookups_for_circuit_table_air::<SC, D>(a))
+            .collect();
         let effective_common = CommonData::new(
             common.preprocessed.as_ref().map(|g| GlobalPreprocessed {
                 commitment: g.commitment.clone(),

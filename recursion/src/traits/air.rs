@@ -7,8 +7,9 @@ use p3_batch_stark::symbolic::{get_log_num_quotient_chunks, get_symbolic_constra
 use p3_circuit::CircuitBuilder;
 use p3_circuit::symbolic::{ColumnsTargets, SymbolicCompiler};
 use p3_field::{Algebra, ExtensionField, Field};
-use p3_lookup::lookup_traits::{Kind, Lookup, LookupData, LookupGadget};
-use p3_uni_stark::{SymbolicAirBuilder, SymbolicExpression};
+use p3_lookup::symbolic::InteractionSymbolicBuilder;
+use p3_lookup::{Kind, Lookup, LookupData, LookupProtocol};
+use p3_uni_stark::SymbolicExpression;
 
 use crate::Target;
 use crate::types::RecursiveLagrangeSelectors;
@@ -25,7 +26,7 @@ pub struct LookupMetadata<'a, F: Field> {
 ///
 /// This trait provides methods for computing constraint evaluations over circuit targets
 /// rather than concrete field values.
-pub trait RecursiveAir<F: Field, EF: ExtensionField<F>, LG: LookupGadget> {
+pub trait RecursiveAir<F: Field, EF: ExtensionField<F>, LG: LookupProtocol> {
     /// Returns the number of columns in the AIR's execution trace.
     ///
     /// This corresponds to the width of the trace matrix.
@@ -83,9 +84,9 @@ pub trait RecursiveAir<F: Field, EF: ExtensionField<F>, LG: LookupGadget> {
     ) -> usize;
 }
 
-impl<F: Field, EF: ExtensionField<F>, A, LG: LookupGadget> RecursiveAir<F, EF, LG> for A
+impl<F: Field, EF: ExtensionField<F>, A, LG: LookupProtocol> RecursiveAir<F, EF, LG> for A
 where
-    A: Air<SymbolicAirBuilder<F, EF>>,
+    A: Air<InteractionSymbolicBuilder<F, EF>>,
     SymbolicExpressionExt<F, EF>: Algebra<SymbolicExpression<F>> + Algebra<EF>,
 {
     fn width(&self) -> usize {
@@ -161,7 +162,7 @@ where
         F: Field,
         EF: ExtensionField<F>,
         SymbolicExpressionExt<F, EF>: Algebra<SymbolicExpression<F>>,
-        LG: LookupGadget,
+        LG: LookupProtocol,
     {
         let layout = AirLayout {
             preprocessed_width,

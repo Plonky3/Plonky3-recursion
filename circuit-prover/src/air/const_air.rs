@@ -24,22 +24,19 @@
 //!
 //! - send `(index, value[0..D])` with multiplicity `ext_mult`
 
-use alloc::string::ToString;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::marker::PhantomData;
 
-use p3_air::{Air, AirBuilder, BaseAir};
+use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 use p3_circuit::tables::ConstTrace;
 use p3_field::{BasedVectorSpace, Field};
-use p3_lookup::LookupAir;
-use p3_lookup::lookup_traits::{Direction, Kind, Lookup};
+use p3_lookup::builder::InteractionBuilder;
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
 use tracing::instrument;
 
-use crate::air::column_layout::WITNESS_LOOKUP_PREP_LANE_WIDTH;
-use crate::air::utils::{create_symbolic_variables, get_index_lookups};
+use crate::air::column_layout::{WITNESS_LOOKUP_PREP_COL_MAP, WITNESS_LOOKUP_PREP_LANE_WIDTH};
 
 /// ConstAir: vector-valued constant binding with generic extension degree D.
 ///
@@ -58,8 +55,6 @@ pub struct ConstAir<F, const D: usize = 1> {
     pub preprocessed: Vec<F>,
     /// Minimum trace height (for FRI compatibility with higher log_final_poly_len).
     pub min_height: usize,
-    /// Counter for unique auxiliary lookup column indices assigned by `add_lookup_columns`.
-    pub num_lookup_columns: usize,
     /// Marker tying this AIR to its base field.
     _phantom: PhantomData<F>,
 }
@@ -73,7 +68,6 @@ impl<F: Field, const D: usize> ConstAir<F, D> {
             height,
             preprocessed: Vec::new(),
             min_height: 1,
-            num_lookup_columns: 0,
             _phantom: PhantomData,
         }
     }
@@ -83,7 +77,6 @@ impl<F: Field, const D: usize> ConstAir<F, D> {
             height,
             preprocessed,
             min_height: 1,
-            num_lookup_columns: 0,
             _phantom: PhantomData,
         }
     }
@@ -152,6 +145,10 @@ impl<F: Field, const D: usize> BaseAir<F> for ConstAir<F, D> {
         D
     }
 
+    fn preprocessed_width(&self) -> usize {
+        WITNESS_LOOKUP_PREP_LANE_WIDTH
+    }
+
     fn preprocessed_trace(&self) -> Option<RowMajorMatrix<F>> {
         let width = Self::preprocessed_width();
         let mut mat = RowMajorMatrix::from_flat_padded(self.preprocessed.to_vec(), width, F::ZERO);
@@ -168,49 +165,26 @@ impl<F: Field, const D: usize> BaseAir<F> for ConstAir<F, D> {
     }
 }
 
-impl<AB: AirBuilder, const D: usize> Air<AB> for ConstAir<AB::F, D>
+impl<AB: AirBuilder + InteractionBuilder, const D: usize> Air<AB> for ConstAir<AB::F, D>
 where
     AB::F: Field,
 {
-    fn eval(&self, _builder: &mut AB) {
-        // No constraints for constants in Stage 1
-    }
-}
+    fn eval(&self, builder: &mut AB) {
+        // No constraints for constants. Just emit the WitnessChecks send: the (witness_idx,
+        // value) tuple is published with the row's preprocessed multiplicity.
+        let main = builder.main();
+        let main_local = main.current_slice();
+        let prep = builder.preprocessed().clone();
+        let prep_local = prep.current_slice();
 
-impl<F: Field, const D: usize> LookupAir<F> for ConstAir<F, D> {
-    fn add_lookup_columns(&mut self) -> Vec<usize> {
-        let new_idx = self.num_lookup_columns;
-        self.num_lookup_columns += 1;
-        vec![new_idx]
-    }
+        let multiplicity: AB::Expr = prep_local[WITNESS_LOOKUP_PREP_COL_MAP.multiplicity].into();
+        let witness_idx: AB::Expr = prep_local[WITNESS_LOOKUP_PREP_COL_MAP.witness_idx].into();
 
-    fn get_lookups(&mut self) -> Vec<Lookup<F>> {
-        self.num_lookup_columns = 0;
+        let mut fields: Vec<AB::Expr> = Vec::with_capacity(1 + D);
+        fields.push(witness_idx);
+        fields.extend(main_local[..D].iter().map(|&v| v.into()));
 
-        let (symbolic_main_local, preprocessed_local) = create_symbolic_variables::<F>(
-            Self::preprocessed_width(),
-            BaseAir::<F>::width(self),
-            1,
-            0,
-        );
-
-        let lookup_inps = get_index_lookups::<F, D>(
-            0,
-            0,
-            1,
-            &symbolic_main_local,
-            &preprocessed_local,
-            Direction::Receive,
-        );
-
-        assert!(lookup_inps.len() == 1);
-        let lookup = LookupAir::register_lookup(
-            self,
-            Kind::Global("WitnessChecks".to_string()),
-            &lookup_inps,
-        );
-
-        vec![lookup]
+        builder.push_interaction("WitnessChecks", fields, multiplicity, 1);
     }
 }
 
@@ -223,11 +197,8 @@ mod tests {
     use p3_test_utils::baby_bear_params::{
         BabyBear as F, BinomialExtensionField, PrimeCharacteristicRing,
     };
-    use p3_uni_stark::{prove_with_preprocessed, setup_preprocessed, verify_with_preprocessed};
-    use p3_util::log2_ceil_usize;
 
     use super::*;
-    use crate::air::test_utils::build_test_config;
 
     type EF = BinomialExtensionField<F, 4>;
 
@@ -276,10 +247,6 @@ mod tests {
         // Third row: value=0
         assert_eq!(data[2], F::from_u64(0));
 
-        // Test that we can prove and verify (should succeed since no constraints)
-        let config = build_test_config();
-        let pis: Vec<F> = vec![];
-
         let air = ConstAir::<F, 1>::new_with_preprocessed(height, preprocessed_values);
 
         let preprocessed_matrix = air.preprocessed_trace().unwrap();
@@ -296,12 +263,6 @@ mod tests {
         let last_row = preprocessed_matrix.row_slice(height - 1).unwrap();
         assert_eq!(last_row[0], F::ZERO);
         assert_eq!(last_row[1], F::ZERO);
-
-        let (prover_data, verifier_data) =
-            setup_preprocessed(&config, &air, log2_ceil_usize(height)).unwrap();
-        let proof = prove_with_preprocessed(&config, &air, matrix, &pis, Some(&prover_data));
-        verify_with_preprocessed(&config, &air, &proof, &pis, Some(&verifier_data))
-            .expect("CONST chip verification failed");
     }
 
     #[test]
@@ -358,10 +319,6 @@ mod tests {
         assert_eq!(data[6], F::from_u64(7));
         assert_eq!(data[7], F::from_u64(8));
 
-        // Test proving and verification for extension field
-        let config = build_test_config();
-        let pis: Vec<F> = vec![];
-
         let air = ConstAir::<F, 4>::new_with_preprocessed(height, preprocessed_values);
         let preprocessed_matrix = air.preprocessed_trace().unwrap();
         // Layout: [ext_mult, index] (width=2, D-scaled indices)
@@ -373,11 +330,6 @@ mod tests {
         assert_eq!(last_row[0], F::ONE); // ext_mult
         // D-scaled index: WitnessId(20) → 20 * 4 = 80
         assert_eq!(last_row[1], F::from_u64(80));
-        let (prover_data, verifier_data) =
-            setup_preprocessed(&config, &air, log2_ceil_usize(height)).unwrap();
-        let proof = prove_with_preprocessed(&config, &air, matrix, &pis, Some(&prover_data));
-        verify_with_preprocessed(&config, &air, &proof, &pis, Some(&verifier_data))
-            .expect("Extension field CONST verification failed");
     }
 
     #[test]

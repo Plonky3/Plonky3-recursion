@@ -92,11 +92,11 @@ fn test_aggregation_with_different_shapes() -> Result<(), VerificationError> {
             ConstraintProfile::Standard,
         )
         .unwrap();
-    let (mut airs, degrees): (Vec<_>, Vec<_>) = airs_degrees.into_iter().unzip();
+    let (airs, degrees): (Vec<_>, Vec<_>) = airs_degrees.into_iter().unzip();
     let mut runner = circuit.runner();
     runner.set_public_inputs(&[F::from_u32(42)]).unwrap();
     let traces = runner.run().unwrap();
-    let prover_data = ProverData::from_airs_and_degrees(&right_config, &mut airs, &degrees);
+    let prover_data = ProverData::from_airs_and_degrees(&right_config, &airs, &degrees);
     let circuit_prover_data =
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
     let prover = BatchStarkProver::new(right_config).with_table_packing(table_packing);

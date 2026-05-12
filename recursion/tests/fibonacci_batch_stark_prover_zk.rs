@@ -11,9 +11,8 @@ use p3_circuit_prover::{
     RecomposePreprocessor, TablePacking,
 };
 use p3_field::Field;
-use p3_fri::{HidingFriPcs, TwoAdicFriPcs, create_test_fri_params};
+use p3_fri::{FriParameters, HidingFriPcs, TwoAdicFriPcs};
 use p3_lookup::logup::LogUpGadget;
-use p3_lookup::{Lookup, LookupAir};
 use p3_matrix::dense::RowMajorMatrix;
 use p3_poseidon2_circuit_air::KoalaBearD4Width16;
 use p3_recursion::pcs::fri::{
@@ -66,16 +65,6 @@ where
     }
 }
 
-impl<F: Field> LookupAir<F> for AddAir {
-    fn add_lookup_columns(&mut self) -> Vec<usize> {
-        vec![0]
-    }
-
-    fn get_lookups(&mut self) -> Vec<Lookup<F>> {
-        vec![]
-    }
-}
-
 fn generate_add_trace<Val: Field>(rows: usize) -> RowMajorMatrix<Val> {
     let width = 3;
     let mut values = Val::zero_vec(rows * width);
@@ -108,7 +97,7 @@ fn test_batch_verifier_zk_hiding_fri() -> Result<(), VerificationError> {
     let val_mmcs = MyMmcs::new(hash, compress, 0);
     let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
     let dft = Dft::default();
-    let fri_params = create_test_fri_params(challenge_mmcs, 0);
+    let fri_params = FriParameters::new_testing(challenge_mmcs, 0);
     let pcs_proving = MyPcsZk::new(dft, val_mmcs, fri_params, 2, SmallRng::seed_from_u64(1));
     let challenger_proving = Challenger::new(perm);
     let config_proving = MyConfigZk::new(pcs_proving, challenger_proving);
@@ -117,7 +106,6 @@ fn test_batch_verifier_zk_hiding_fri() -> Result<(), VerificationError> {
         air: &air,
         trace: &trace,
         public_values: pvs[0].clone(),
-        lookups: Vec::new(),
     };
     let instances = vec![instance];
     let prover_data = ProverData::from_instances(&config_proving, &instances);
@@ -133,7 +121,7 @@ fn test_batch_verifier_zk_hiding_fri() -> Result<(), VerificationError> {
     let val_mmcs2 = MyMmcs::new(hash2, compress2, 0);
     let challenge_mmcs2 = ChallengeMmcs::new(val_mmcs2.clone());
     let dft2 = Dft::default();
-    let fri_params2 = create_test_fri_params(challenge_mmcs2, 0);
+    let fri_params2 = FriParameters::new_testing(challenge_mmcs2, 0);
     let fri_verifier_params = FriVerifierParams::from(&fri_params2);
     let pcs_verif = MyPcsZk::new(dft2, val_mmcs2, fri_params2, 2, SmallRng::seed_from_u64(2));
     let challenger_verif = Challenger::new(perm2.clone());
@@ -213,7 +201,7 @@ fn test_batch_verifier_zk_hiding_fri() -> Result<(), VerificationError> {
     let val_mmcs3 = MyMmcs::new(hash3, compress3, 0);
     let challenge_mmcs3 = ChallengeMmcs::new(val_mmcs3.clone());
     let dft3 = Dft::default();
-    let fri_params3 = create_test_fri_params(challenge_mmcs3, 0);
+    let fri_params3 = FriParameters::new_testing(challenge_mmcs3, 0);
     let pcs3 = TwoAdicFriPcs::new(dft3, val_mmcs3, fri_params3);
     let challenger3 = Challenger::new(perm3);
     let config3 = MyConfig::new(pcs3, challenger3);
@@ -238,11 +226,11 @@ fn test_batch_verifier_zk_hiding_fri() -> Result<(), VerificationError> {
         ConstraintProfile::Standard,
     )
     .unwrap();
-    let (mut verification_airs, verification_degrees): (Vec<_>, Vec<usize>) =
+    let (verification_airs, verification_degrees): (Vec<_>, Vec<usize>) =
         verification_airs_degrees.into_iter().unzip();
 
     let verification_prover_data =
-        ProverData::from_airs_and_degrees(&config3, &mut verification_airs, &verification_degrees);
+        ProverData::from_airs_and_degrees(&config3, &verification_airs, &verification_degrees);
     let verification_circuit_prover_data = CircuitProverData::new(
         verification_prover_data,
         verification_primitive_columns,

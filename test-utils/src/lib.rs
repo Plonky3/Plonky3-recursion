@@ -2,6 +2,8 @@
 
 #![no_std]
 
+extern crate alloc;
+
 use core::marker::PhantomData;
 
 /// Maximum allowed constraint degree for AIR constraints.
@@ -14,7 +16,7 @@ pub use p3_field::extension::BinomialExtensionField;
 use p3_field::extension::{QuinticTrinomialExtendable, QuinticTrinomialExtensionField};
 pub use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
 pub use p3_fri::TwoAdicFriPcs;
-pub use p3_lookup::LookupAir;
+pub use p3_lookup::Lookups;
 pub use p3_merkle_tree::MerkleTreeMmcs;
 use p3_symmetric::Permutation;
 pub use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
@@ -74,15 +76,15 @@ macro_rules! assert_air_constraint_degree {
     ($air:expr, $air_name:expr) => {{
         use p3_air::{AirLayout, BaseAir};
         use p3_batch_stark::symbolic::get_symbolic_constraints;
-        use p3_lookup::LookupAir;
+        use p3_lookup::Lookups;
         use p3_lookup::logup::LogUpGadget;
 
         type F = p3_baby_bear::BabyBear;
         type EF = p3_field::extension::BinomialExtensionField<F, 4>;
-        let mut air = $air;
+        let air = $air;
 
         let preprocessed_width = air.preprocessed_trace().map(|m| m.width()).unwrap_or(0);
-        let lookups = LookupAir::get_lookups(&mut air);
+        let lookups: Lookups<F> = Lookups::from_air::<EF, _>(&air);
         let lookup_gadget = LogUpGadget::new();
         let layout = AirLayout {
             preprocessed_width,
@@ -121,6 +123,179 @@ macro_rules! assert_air_constraint_degree {
             );
         }
     }};
+}
+
+/// Single-AIR satisfaction helpers.
+pub mod air_satisfaction {
+    use alloc::string::String;
+    use alloc::vec::Vec;
+
+    use p3_air::{Air, BaseAir, DebugConstraintBuilder};
+    use p3_field::{ExtensionField, Field};
+    use p3_matrix::Matrix;
+    use p3_matrix::dense::{RowMajorMatrix, RowMajorMatrixView};
+    use p3_matrix::stack::ViewPair;
+
+    /// Run `air.eval` on every (row, row_next) pair and return the first row that violates a
+    /// constraint, together with the formatted failure list.
+    pub fn check_air_satisfies<F, EF, A>(
+        air: &A,
+        main: &RowMajorMatrix<F>,
+        public_values: &[F],
+    ) -> Result<(), (usize, String)>
+    where
+        F: Field,
+        EF: ExtensionField<F>,
+        A: BaseAir<F> + for<'a> Air<DebugConstraintBuilder<'a, F, EF>>,
+    {
+        let height = main.height();
+        let preprocessed = air.preprocessed_trace();
+
+        if let Some(prep) = preprocessed.as_ref() {
+            assert_eq!(
+                prep.height(),
+                height,
+                "preprocessed height ({}) must match main height ({})",
+                prep.height(),
+                height
+            );
+        }
+
+        for row in 0..height {
+            let next = (row + 1) % height;
+            let local = main.row_slice(row).unwrap();
+            let next_row = main.row_slice(next).unwrap();
+            let main_pair = ViewPair::new(
+                RowMajorMatrixView::new_row(&*local),
+                RowMajorMatrixView::new_row(&*next_row),
+            );
+
+            let (prep_local, prep_next) = preprocessed.as_ref().map_or((None, None), |p| {
+                (
+                    Some(p.row_slice(row).unwrap()),
+                    Some(p.row_slice(next).unwrap()),
+                )
+            });
+            let prep_pair = match (prep_local.as_ref(), prep_next.as_ref()) {
+                (Some(l), Some(n)) => ViewPair::new(
+                    RowMajorMatrixView::new_row(&**l),
+                    RowMajorMatrixView::new_row(&**n),
+                ),
+                _ => ViewPair::new(
+                    RowMajorMatrixView::new(&[], 0),
+                    RowMajorMatrixView::new(&[], 0),
+                ),
+            };
+
+            let periodic_row = air.periodic_values(row);
+            let perm_pair = ViewPair::<EF>::new(
+                RowMajorMatrixView::new(&[], 0),
+                RowMajorMatrixView::new(&[], 0),
+            );
+            let mut builder = DebugConstraintBuilder::<F, EF>::new_with_permutation(
+                row,
+                main_pair,
+                prep_pair,
+                public_values,
+                F::from_bool(row == 0),
+                F::from_bool(row == height - 1),
+                F::from_bool(row != height - 1),
+                perm_pair,
+                &[],
+                &[],
+                &periodic_row,
+            );
+            air.eval(&mut builder);
+            if builder.has_failures() {
+                return Err((row, builder.formatted_failures()));
+            }
+        }
+        Ok(())
+    }
+
+    /// Panicking convenience wrapper for satisfying-trace tests.
+    pub fn assert_air_satisfies<F, EF, A>(air: &A, main: &RowMajorMatrix<F>)
+    where
+        F: Field,
+        EF: ExtensionField<F>,
+        A: BaseAir<F> + for<'a> Air<DebugConstraintBuilder<'a, F, EF>>,
+    {
+        if let Err((row, failures)) = check_air_satisfies::<F, EF, A>(air, main, &[]) {
+            panic!("AIR constraint failed at row {row}: {failures}");
+        }
+    }
+
+    /// Asserts that the AIR's `eval` rejects the given main trace on at least one row. Used
+    /// for soundness tests where the trace is intentionally invalid.
+    pub fn assert_air_rejects<F, EF, A>(air: &A, main: &RowMajorMatrix<F>)
+    where
+        F: Field,
+        EF: ExtensionField<F>,
+        A: BaseAir<F> + for<'a> Air<DebugConstraintBuilder<'a, F, EF>>,
+    {
+        let height = main.height();
+        let preprocessed = air.preprocessed_trace();
+
+        let mut any_failure = false;
+        let mut rendered: Vec<(usize, String)> = Vec::new();
+
+        for row in 0..height {
+            let next = (row + 1) % height;
+            let local = main.row_slice(row).unwrap();
+            let next_row = main.row_slice(next).unwrap();
+            let main_pair = ViewPair::new(
+                RowMajorMatrixView::new_row(&*local),
+                RowMajorMatrixView::new_row(&*next_row),
+            );
+
+            let (prep_local, prep_next) = preprocessed.as_ref().map_or((None, None), |p| {
+                (
+                    Some(p.row_slice(row).unwrap()),
+                    Some(p.row_slice(next).unwrap()),
+                )
+            });
+            let prep_pair = match (prep_local.as_ref(), prep_next.as_ref()) {
+                (Some(l), Some(n)) => ViewPair::new(
+                    RowMajorMatrixView::new_row(&**l),
+                    RowMajorMatrixView::new_row(&**n),
+                ),
+                _ => ViewPair::new(
+                    RowMajorMatrixView::new(&[], 0),
+                    RowMajorMatrixView::new(&[], 0),
+                ),
+            };
+
+            let periodic_row = air.periodic_values(row);
+            let perm_pair = ViewPair::<EF>::new(
+                RowMajorMatrixView::new(&[], 0),
+                RowMajorMatrixView::new(&[], 0),
+            );
+            let mut builder = DebugConstraintBuilder::<F, EF>::new_with_permutation(
+                row,
+                main_pair,
+                prep_pair,
+                &[],
+                F::from_bool(row == 0),
+                F::from_bool(row == height - 1),
+                F::from_bool(row != height - 1),
+                perm_pair,
+                &[],
+                &[],
+                &periodic_row,
+            );
+            air.eval(&mut builder);
+            if builder.has_failures() {
+                any_failure = true;
+                rendered.push((row, builder.formatted_failures()));
+            }
+        }
+
+        assert!(
+            any_failure,
+            "expected at least one constraint failure on the invalid trace, but every row satisfied the AIR ({} rows, formatted: {rendered:?})",
+            height
+        );
+    }
 }
 
 /// Common parameters for the BabyBear field.

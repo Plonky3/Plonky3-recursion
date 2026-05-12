@@ -16,9 +16,9 @@ use p3_circuit_prover::{
     BatchStarkProof, BatchStarkProver, CircuitProverData, ConstraintProfile, Poseidon2Preprocessor,
     Poseidon2Prover, RecomposePreprocessor, TablePacking, TableProver, recompose_table_provers,
 };
-use p3_fri::create_test_fri_params;
+use p3_fri::FriParameters;
+use p3_lookup::LookupData;
 use p3_lookup::logup::LogUpGadget;
-use p3_lookup::lookup_traits::LookupData;
 use p3_poseidon2_circuit_air::BabyBearD4Width16;
 use p3_recursion::generation::generate_batch_challenges;
 use p3_recursion::pcs::fri::{FriVerifierParams, InputProofTargets, MerkleCapTargets, RecValMmcs};
@@ -125,7 +125,7 @@ fn test_wrong_multiplicities() {
 
     // Introduce an error in the Const table multiplicities.
     primitive_columns[PrimitiveOpType::Const as usize][0] += F::ONE;
-    let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
+    let (airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
     let mut runner = circuit.runner();
 
     let init_a = 3;
@@ -145,7 +145,7 @@ fn test_wrong_multiplicities() {
     let traces = runner.run().unwrap();
 
     // Create prover data for proving and verifying.
-    let prover_data = ProverData::from_airs_and_degrees(&config_proving, &mut airs, &degrees);
+    let prover_data = ProverData::from_airs_and_degrees(&config_proving, &airs, &degrees);
     let circuit_prover_data =
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
 
@@ -223,7 +223,7 @@ fn test_wrong_expected_cumulated() {
     // Introduce an error in the global expected cumulated values for the first lookup.
     // This leads to the sum of all expected cumulated values being off by 1,
     // which causes a WitnessConflict during recursive verification.
-    batch_stark_proof.proof.global_lookup_data[0][0].expected_cumulated += F::ONE;
+    batch_stark_proof.proof.global_lookup_data[0][0].cumulative_sum += F::ONE;
     // Introduce an error in the expected cumulated values for the first lookup.
     assert!(batch_stark_proof.proof.global_lookup_data.len() == 3);
 
@@ -449,8 +449,8 @@ fn test_extra_global_lookup() {
     let real_lookup_data = batch_stark_proof.proof.global_lookup_data.clone();
     let fake_lookup = LookupData {
         name: "FakeLookup".to_string(),
-        aux_idx: 0,
-        expected_cumulated: Challenge::ZERO,
+        aux_column: 0,
+        cumulative_sum: Challenge::ZERO,
     };
     let mut fake_global_lookup_data = real_lookup_data.clone();
     fake_global_lookup_data[0].push(fake_lookup);
@@ -586,7 +586,7 @@ fn get_test_circuit_proof() -> TestCircuitProofData {
         )
         .unwrap();
 
-    let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
+    let (airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
     let mut runner = circuit.runner();
 
     let init_a = 3;
@@ -606,7 +606,7 @@ fn get_test_circuit_proof() -> TestCircuitProofData {
     let traces = runner.run().unwrap();
 
     // Create prover data for proving and verifying.
-    let prover_data = ProverData::from_airs_and_degrees(&config_proving, &mut airs, &degrees);
+    let prover_data = ProverData::from_airs_and_degrees(&config_proving, &airs, &degrees);
     let circuit_prover_data =
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
 
@@ -645,7 +645,7 @@ fn get_proving_config() -> MyConfig {
     let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
     let dft = Dft::default();
 
-    let fri_params = create_test_fri_params(challenge_mmcs, 0);
+    let fri_params = FriParameters::new_testing(challenge_mmcs, 0);
 
     let pcs_proving = MyPcs::new(dft, val_mmcs, fri_params);
     let challenger_proving = Challenger::new(perm);
@@ -661,7 +661,7 @@ fn get_recursive_config_and_params() -> (MyConfig, FriVerifierParams, usize, usi
     let compress2 = MyCompress::new(perm2.clone());
     let val_mmcs2 = MyMmcs::new(hash2, compress2, 0);
     let challenge_mmcs2 = ChallengeMmcs::new(val_mmcs2.clone());
-    let fri_params2 = create_test_fri_params(challenge_mmcs2, 0);
+    let fri_params2 = FriParameters::new_testing(challenge_mmcs2, 0);
     let fri_verifier_params = FriVerifierParams::from(&fri_params2);
     let pow_bits = fri_params2.query_proof_of_work_bits;
     let log_height_max = fri_params2.log_final_poly_len + fri_params2.log_blowup;
@@ -883,7 +883,7 @@ fn test_poseidon2_ctl_lookups() {
         )
         .unwrap();
 
-    let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
+    let (airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
     let mut runner = circuit.runner();
 
     // Set the public inputs
@@ -893,7 +893,7 @@ fn test_poseidon2_ctl_lookups() {
 
     let traces = runner.run().unwrap();
 
-    let prover_data = ProverData::from_airs_and_degrees(&config_proving, &mut airs, &degrees);
+    let prover_data = ProverData::from_airs_and_degrees(&config_proving, &airs, &degrees);
     let circuit_prover_data =
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
 
@@ -1011,7 +1011,7 @@ fn test_poseidon2_chained_ctl_lookups() {
         )
         .unwrap();
 
-    let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
+    let (airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
     let mut runner = circuit.runner();
 
     // Set the public inputs
@@ -1021,7 +1021,7 @@ fn test_poseidon2_chained_ctl_lookups() {
 
     let traces = runner.run().unwrap();
 
-    let prover_data = ProverData::from_airs_and_degrees(&config_proving, &mut airs, &degrees);
+    let prover_data = ProverData::from_airs_and_degrees(&config_proving, &airs, &degrees);
     let circuit_prover_data =
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
 

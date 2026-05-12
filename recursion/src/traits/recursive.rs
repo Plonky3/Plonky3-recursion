@@ -3,8 +3,8 @@ use alloc::vec::Vec;
 
 use p3_circuit::CircuitBuilder;
 use p3_field::Field;
+use p3_lookup::LookupProtocol;
 use p3_lookup::logup::LogUpGadget;
-use p3_lookup::lookup_traits::LookupGadget;
 
 use crate::Target;
 
@@ -47,7 +47,7 @@ pub trait Recursive<F: Field> {
     fn get_values(input: &Self::Input) -> Vec<F>;
 }
 
-pub trait RecursiveLookupGadget<F: Field>: LookupGadget {
+pub trait RecursiveLookupGadget<F: Field>: LookupProtocol {
     fn verify_global_final_value_circuit(
         &self,
         circuit: &mut CircuitBuilder<F>,

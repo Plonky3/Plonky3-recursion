@@ -6,8 +6,7 @@ use p3_batch_stark::{ProverData, StarkInstance, prove_batch, verify_batch};
 use p3_circuit::CircuitBuilder;
 use p3_circuit::ops::{generate_poseidon2_trace, generate_recompose_trace};
 use p3_field::Field;
-use p3_fri::create_test_fri_params;
-use p3_lookup::LookupAir;
+use p3_fri::FriParameters;
 use p3_lookup::logup::LogUpGadget;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_poseidon2_circuit_air::BabyBearD4Width16;
@@ -43,6 +42,14 @@ where
         }
     }
 
+    fn preprocessed_width(&self) -> usize {
+        match self {
+            Self::Mul(air) => BaseAir::<Val>::preprocessed_width(air),
+            Self::Add(air) => BaseAir::<Val>::preprocessed_width(air),
+            Self::Sub(air) => BaseAir::<Val>::preprocessed_width(air),
+        }
+    }
+
     fn preprocessed_trace(&self) -> Option<RowMajorMatrix<Val>> {
         match self {
             Self::Mul(air) => BaseAir::<Val>::preprocessed_trace(air),
@@ -65,8 +72,6 @@ where
         }
     }
 }
-
-impl<Val: Field> LookupAir<Val> for MixedAir where StandardUniform: Distribution<Val> {}
 
 /// AIR that doesn't have preprocessed columns - simple addition of two values
 #[derive(Clone, Copy)]
@@ -138,8 +143,6 @@ where
     }
 }
 
-impl<Val: Field> LookupAir<Val> for AddAirNoPreprocessed where StandardUniform: Distribution<Val> {}
-
 /// AIR that has some preprocessed columns - subtraction with one preprocessed constant
 #[derive(Clone, Copy)]
 pub struct SubAirPartialPreprocessed {
@@ -199,6 +202,10 @@ where
         2 // [a, result]
     }
 
+    fn preprocessed_width(&self) -> usize {
+        1 // [constant]
+    }
+
     fn preprocessed_trace(&self) -> Option<RowMajorMatrix<Val>> {
         Some(self.random_valid_trace(true).1)
     }
@@ -223,11 +230,6 @@ where
         // Constraint: a - constant = result
         builder.assert_zero(a - constant - result);
     }
-}
-
-impl<Val: Field> LookupAir<Val> for SubAirPartialPreprocessed where
-    StandardUniform: Distribution<Val>
-{
 }
 
 /// AIR with public values: constrains `pis[0] == row[0]` on the first row.
@@ -276,8 +278,6 @@ where
     }
 }
 
-impl<Val: Field> LookupAir<Val> for PublicValueAir {}
-
 #[test]
 fn test_batch_verifier_with_mixed_preprocessed() -> Result<(), VerificationError> {
     let n = 1 << 3;
@@ -290,7 +290,7 @@ fn test_batch_verifier_with_mixed_preprocessed() -> Result<(), VerificationError
     let dft = Dft::default();
 
     let log_final_poly_len = 0;
-    let fri_params = create_test_fri_params(challenge_mmcs, log_final_poly_len);
+    let fri_params = FriParameters::new_testing(challenge_mmcs, log_final_poly_len);
     let fri_verifier_params = FriVerifierParams::from(&fri_params);
     let _log_height_max = fri_params.log_final_poly_len + fri_params.log_blowup;
     let _pow_bits = fri_params.query_proof_of_work_bits;
@@ -323,19 +323,16 @@ fn test_batch_verifier_with_mixed_preprocessed() -> Result<(), VerificationError
             air: &mixed_air1,
             trace: &trace1,
             public_values: pvs[0].clone(),
-            lookups: Vec::new(),
         },
         StarkInstance {
             air: &mixed_air2,
             trace: &trace2,
             public_values: pvs[1].clone(),
-            lookups: Vec::new(),
         },
         StarkInstance {
             air: &mixed_air3,
             trace: &trace3,
             public_values: pvs[2].clone(),
-            lookups: Vec::new(),
         },
     ];
 
@@ -426,7 +423,7 @@ fn test_batch_verifier_with_public_values() -> Result<(), VerificationError> {
     let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
     let dft = Dft::default();
 
-    let fri_params = create_test_fri_params(challenge_mmcs, 0);
+    let fri_params = FriParameters::new_testing(challenge_mmcs, 0);
     let fri_verifier_params = FriVerifierParams::from(&fri_params);
     let pcs = MyPcs::new(dft, val_mmcs, fri_params);
     let challenger = Challenger::new(perm.clone());
@@ -441,7 +438,6 @@ fn test_batch_verifier_with_public_values() -> Result<(), VerificationError> {
         air: &pv_air,
         trace: &pv_trace,
         public_values: pvs[0].clone(),
-        lookups: Vec::new(),
     }];
 
     let prover_data = ProverData::from_instances(&config, &instances);
@@ -513,7 +509,7 @@ fn test_batch_verifier_wrong_public_values() {
     let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
     let dft = Dft::default();
 
-    let fri_params = create_test_fri_params(challenge_mmcs, 0);
+    let fri_params = FriParameters::new_testing(challenge_mmcs, 0);
     let fri_verifier_params = FriVerifierParams::from(&fri_params);
     let pcs = MyPcs::new(dft, val_mmcs, fri_params);
     let challenger = Challenger::new(perm.clone());
@@ -528,7 +524,6 @@ fn test_batch_verifier_wrong_public_values() {
         air: &pv_air,
         trace: &pv_trace,
         public_values: pvs[0].clone(),
-        lookups: Vec::new(),
     }];
 
     let prover_data = ProverData::from_instances(&config, &instances);

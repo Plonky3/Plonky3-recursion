@@ -70,37 +70,31 @@ impl<'a, F: PrimeCharacteristicRing + Eq> ExecutionContext<'a, F> {
     }
 
     /// Set witness value at the given index
+    ///
+    /// TODO: restore the `cfg(not(debug_assertions))` `get_unchecked_mut` short-circuit once
+    /// `PublicAir` ties each public-row trace cell to the user-supplied `builder.public_values()`
+    /// at the constraint layer.
     #[inline]
     pub fn set_witness(&mut self, widx: WitnessId, value: F) -> Result<(), CircuitError> {
         let idx = widx.0 as usize;
+        let slot = self
+            .witness
+            .get_mut(idx)
+            .ok_or(CircuitError::WitnessIdOutOfBounds { witness_id: widx })?;
 
-        #[cfg(debug_assertions)]
-        {
-            let slot = self
-                .witness
-                .get_mut(idx)
-                .ok_or(CircuitError::WitnessIdOutOfBounds { witness_id: widx })?;
-
-            if let Some(existing_value) = slot {
-                if *existing_value != value {
-                    return Err(CircuitError::WitnessConflict {
-                        witness_id: widx,
-                        existing: alloc::format!("{existing_value:?}"),
-                        new: alloc::format!("{value:?}"),
-                        expr_ids: alloc::vec![],
-                    });
-                }
-                return Ok(());
+        if let Some(existing_value) = slot {
+            if *existing_value != value {
+                return Err(CircuitError::WitnessConflict {
+                    witness_id: widx,
+                    existing: alloc::format!("{existing_value:?}"),
+                    new: alloc::format!("{value:?}"),
+                    expr_ids: alloc::vec![],
+                });
             }
-
-            *slot = Some(value);
+            return Ok(());
         }
 
-        #[cfg(not(debug_assertions))]
-        unsafe {
-            *self.witness.get_unchecked_mut(idx) = Some(value);
-        }
-
+        *slot = Some(value);
         Ok(())
     }
 

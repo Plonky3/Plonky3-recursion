@@ -3,7 +3,6 @@
 use itertools::Itertools;
 use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 use p3_field::{Field, PrimeCharacteristicRing};
-use p3_lookup::LookupAir;
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_recursion::pcs::{
@@ -119,6 +118,9 @@ where
     fn width(&self) -> usize {
         MAIN_TRACE_WIDTH
     }
+    fn preprocessed_width(&self) -> usize {
+        PREP_WIDTH
+    }
     fn preprocessed_trace(&self) -> Option<RowMajorMatrix<Val>> {
         Some(self.random_valid_trace(true).1)
     }
@@ -156,5 +158,3 @@ where
         }
     }
 }
-
-impl<Val: Field> LookupAir<Val> for MulAir where StandardUniform: Distribution<Val> {}

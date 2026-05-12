@@ -18,7 +18,7 @@ use p3_circuit_prover::{
     BatchStarkProver, CircuitProverData, ConstraintProfile, Poseidon2Preprocessor,
     RecomposePreprocessor, TablePacking,
 };
-use p3_fri::create_test_fri_params;
+use p3_fri::FriParameters;
 use p3_lookup::logup::LogUpGadget;
 use p3_recursion::pcs::fri::{FriVerifierParams, InputProofTargets, MerkleCapTargets, RecValMmcs};
 use p3_recursion::pcs::set_fri_mmcs_private_data;
@@ -70,7 +70,7 @@ fn make_test_config() -> MyConfig {
     let val_mmcs = MyMmcs::new(hash, compress, 0);
     let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
     let dft = Dft::default();
-    let fri_params = create_test_fri_params(challenge_mmcs, 0);
+    let fri_params = FriParameters::new_testing(challenge_mmcs, 0);
     let pcs = MyPcs::new(dft, val_mmcs, fri_params);
     let challenger = Challenger::new(perm);
     MyConfig::new(pcs, challenger)
@@ -107,13 +107,13 @@ fn test_fibonacci_batch_verifier_quintic_koala() {
             ConstraintProfile::Standard,
         )
         .unwrap();
-    let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
+    let (airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
     let mut runner = circuit.runner();
     let expected_fib = fibonacci_challenge(n);
     runner.set_public_inputs(&[expected_fib]).unwrap();
     let traces = runner.run().unwrap();
 
-    let prover_data = ProverData::from_airs_and_degrees(&config_proving, &mut airs, &degrees);
+    let prover_data = ProverData::from_airs_and_degrees(&config_proving, &airs, &degrees);
     let circuit_prover_data =
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
     let prover = BatchStarkProver::new(config_proving).with_table_packing(table_packing);
@@ -133,7 +133,7 @@ fn test_fibonacci_batch_verifier_quintic_koala() {
     let compress2 = MyCompress::new(perm2.clone());
     let val_mmcs2 = MyMmcs::new(hash2, compress2, 0);
     let challenge_mmcs2 = ChallengeMmcs::new(val_mmcs2.clone());
-    let fri_params2 = create_test_fri_params(challenge_mmcs2, 0);
+    let fri_params2 = FriParameters::new_testing(challenge_mmcs2, 0);
     let fri_verifier_params = FriVerifierParams::with_mmcs(
         fri_params2.log_blowup,
         fri_params2.log_final_poly_len,
@@ -212,7 +212,7 @@ fn test_fibonacci_batch_verifier_quintic_koala() {
             ConstraintProfile::Standard,
         )
         .unwrap();
-    let (mut verification_airs, verification_degrees): (Vec<_>, Vec<usize>) =
+    let (verification_airs, verification_degrees): (Vec<_>, Vec<usize>) =
         verification_airs_degrees.into_iter().unzip();
 
     let mut runner = verification_circuit.runner();
@@ -243,7 +243,7 @@ fn test_fibonacci_batch_verifier_quintic_koala() {
     let config3 = make_test_config();
 
     let verification_prover_data =
-        ProverData::from_airs_and_degrees(&config3, &mut verification_airs, &verification_degrees);
+        ProverData::from_airs_and_degrees(&config3, &verification_airs, &verification_degrees);
     let verification_circuit_prover_data = CircuitProverData::new(
         verification_prover_data,
         verification_primitive,

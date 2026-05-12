@@ -285,7 +285,7 @@ fn cube_npo_stark_proof() {
             ConstraintProfile::Standard,
         )
         .expect("get_airs_and_degrees_with_prep should succeed");
-    let (mut airs, log_degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
+    let (airs, log_degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
 
     // Run the circuit to produce traces.
     let mut runner = circuit.runner();
@@ -296,8 +296,7 @@ fn cube_npo_stark_proof() {
     let traces = runner.run().expect("run cube circuit");
 
     // Prove all primitive tables.
-    let prover_data =
-        p3_batch_stark::ProverData::from_airs_and_degrees(&cfg, &mut airs, &log_degrees);
+    let prover_data = p3_batch_stark::ProverData::from_airs_and_degrees(&cfg, &airs, &log_degrees);
     let circuit_prover_data =
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
     let prover = BatchStarkProver::new(cfg);
@@ -327,7 +326,7 @@ fn cube_air_stark_proof() {
     let val_mmcs = MyMmcs::new(hash, compress, 0);
     let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
     let dft = Dft::default();
-    let fri_params = p3_fri::create_test_fri_params(challenge_mmcs, 0);
+    let fri_params = p3_fri::FriParameters::new_testing(challenge_mmcs, 0);
     let pcs = MyPcs::new(dft, val_mmcs, fri_params);
     let challenger = Challenger::new(perm);
     let cfg = MyConfig::new(pcs, challenger);

@@ -51,8 +51,8 @@ fn test_babybear_batch_stark_base_field() {
             ConstraintProfile::Standard,
         )
         .unwrap();
-    let (mut airs, log_degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
-    let prover_data = ProverData::from_airs_and_degrees(&cfg, &mut airs, &log_degrees);
+    let (airs, log_degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
+    let prover_data = ProverData::from_airs_and_degrees(&cfg, &airs, &log_degrees);
     let circuit_prover_data =
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
 
@@ -106,7 +106,7 @@ fn test_table_lookups() {
             ConstraintProfile::Standard,
         )
         .unwrap();
-    let (mut airs, log_degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
+    let (airs, log_degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
 
     let mut runner = circuit.runner();
 
@@ -114,7 +114,7 @@ fn test_table_lookups() {
     let expected_val = BabyBear::from_u64(13); // 7 + 10 - 3 - 1 = 13
     runner.set_public_inputs(&[x_val, expected_val]).unwrap();
     let traces = runner.run().unwrap();
-    let prover_data = ProverData::from_airs_and_degrees(&cfg, &mut airs, &log_degrees);
+    let prover_data = ProverData::from_airs_and_degrees(&cfg, &airs, &log_degrees);
     let circuit_prover_data =
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
 
@@ -129,8 +129,8 @@ fn test_table_lookups() {
     assert!(prover.verify_all_tables(&proof).is_ok());
 
     // Check that the generated lookups are correct and consistent across tables.
-    for air in airs.iter_mut() {
-        let lookups = LookupAir::get_lookups(air);
+    for air in airs.iter() {
+        let lookups = crate::batch_stark_prover::lookups_for_circuit_table_air(air);
 
         match air {
             CircuitTableAir::Const(_) => {
@@ -187,7 +187,7 @@ fn test_extension_field_batch_stark() {
             ConstraintProfile::Standard,
         )
         .unwrap();
-    let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
+    let (airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
 
     let mut runner = circuit.runner();
     let xv = Ext4::from_basis_coefficients_slice(&[
@@ -215,7 +215,7 @@ fn test_extension_field_batch_stark() {
     runner.set_public_inputs(&[xv, yv, zv, expected_v]).unwrap();
     let traces = runner.run().unwrap();
 
-    let prover_data = ProverData::from_airs_and_degrees(&cfg, &mut airs, &degrees);
+    let prover_data = ProverData::from_airs_and_degrees(&cfg, &airs, &degrees);
     let circuit_prover_data =
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
     let prover = BatchStarkProver::new(cfg);
@@ -259,7 +259,7 @@ fn test_extension_field_table_lookups() {
             ConstraintProfile::Standard,
         )
         .unwrap();
-    let (mut airs, log_degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
+    let (airs, log_degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
 
     let mut runner = circuit.runner();
 
@@ -288,7 +288,7 @@ fn test_extension_field_table_lookups() {
     runner.set_public_inputs(&[xv, yv, zv, expected_v]).unwrap();
     let traces = runner.run().unwrap();
 
-    let prover_data = ProverData::from_airs_and_degrees(&cfg, &mut airs, &log_degrees);
+    let prover_data = ProverData::from_airs_and_degrees(&cfg, &airs, &log_degrees);
     let circuit_prover_data =
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
 
@@ -305,8 +305,8 @@ fn test_extension_field_table_lookups() {
     assert!(prover.verify_all_tables(&proof).is_ok());
 
     // Check that the generated lookups are correct and consistent across tables.
-    for air in airs.iter_mut() {
-        let lookups = LookupAir::get_lookups(air);
+    for air in airs.iter() {
+        let lookups = crate::batch_stark_prover::lookups_for_circuit_table_air(air);
 
         match air {
             CircuitTableAir::Const(_) => {
@@ -365,7 +365,7 @@ fn test_koalabear_batch_stark_base_field() {
             ConstraintProfile::Standard,
         )
         .unwrap();
-    let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
+    let (airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
     let mut runner = circuit.runner();
 
     let a_val = KoalaBear::from_u64(42);
@@ -376,7 +376,7 @@ fn test_koalabear_batch_stark_base_field() {
         .unwrap();
     let traces = runner.run().unwrap();
 
-    let prover_data = ProverData::from_airs_and_degrees(&cfg, &mut airs, &degrees);
+    let prover_data = ProverData::from_airs_and_degrees(&cfg, &airs, &degrees);
     let circuit_prover_data =
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
     let prover = BatchStarkProver::new(cfg);
@@ -429,7 +429,7 @@ fn test_koalabear_batch_stark_extension_field_d8() {
             ConstraintProfile::Standard,
         )
         .unwrap();
-    let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
+    let (airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
     let mut runner = circuit.runner();
 
     let x_val = KBExtField::from_basis_coefficients_slice(&[
@@ -472,7 +472,7 @@ fn test_koalabear_batch_stark_extension_field_d8() {
         .unwrap();
     let traces = runner.run().unwrap();
 
-    let prover_data = ProverData::from_airs_and_degrees(&cfg, &mut airs, &degrees);
+    let prover_data = ProverData::from_airs_and_degrees(&cfg, &airs, &degrees);
     let circuit_prover_data =
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
     let prover = BatchStarkProver::new(cfg);
@@ -516,7 +516,7 @@ fn test_goldilocks_batch_stark_binomial_ext2() {
             ConstraintProfile::Standard,
         )
         .unwrap();
-    let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
+    let (airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
     let mut runner = circuit.runner();
 
     let x_val =
@@ -535,7 +535,7 @@ fn test_goldilocks_batch_stark_binomial_ext2() {
         .unwrap();
     let traces = runner.run().unwrap();
 
-    let prover_data = ProverData::from_airs_and_degrees(&cfg, &mut airs, &degrees);
+    let prover_data = ProverData::from_airs_and_degrees(&cfg, &airs, &degrees);
     let circuit_prover_data =
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
     let prover = BatchStarkProver::new(cfg);
@@ -664,7 +664,7 @@ fn test_mul_only_circuit_padding() {
             ConstraintProfile::Standard,
         )
         .unwrap();
-    let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
+    let (airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
     let mut runner = circuit.runner();
 
     let x_val = BabyBear::from_u64(7);
@@ -672,7 +672,7 @@ fn test_mul_only_circuit_padding() {
     runner.set_public_inputs(&[x_val, y_val]).unwrap();
     let traces = runner.run().unwrap();
 
-    let prover_data = ProverData::from_airs_and_degrees(&cfg, &mut airs, &degrees);
+    let prover_data = ProverData::from_airs_and_degrees(&cfg, &airs, &degrees);
     let circuit_prover_data =
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
 
@@ -709,7 +709,7 @@ fn test_add_only_circuit_padding() {
             ConstraintProfile::Standard,
         )
         .unwrap();
-    let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
+    let (airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
     let mut runner = circuit.runner();
 
     let x_val = BabyBear::from_u64(42);
@@ -720,7 +720,7 @@ fn test_add_only_circuit_padding() {
         .unwrap();
     let traces = runner.run().unwrap();
 
-    let prover_data = ProverData::from_airs_and_degrees(&cfg, &mut airs, &degrees);
+    let prover_data = ProverData::from_airs_and_degrees(&cfg, &airs, &degrees);
     let circuit_prover_data =
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
 
@@ -804,13 +804,13 @@ fn test_koalabear_quintic_trinomial_batch_stark_with_poseidon_d1() {
             ConstraintProfile::Standard,
         )
         .unwrap();
-    let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
+    let (airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
     let mut runner = circuit.runner();
 
     runner.set_public_inputs(&[in0, in1, exp0, exp1]).unwrap();
     let traces = runner.run().unwrap();
 
-    let prover_data = ProverData::from_airs_and_degrees(&cfg, &mut airs, &degrees);
+    let prover_data = ProverData::from_airs_and_degrees(&cfg, &airs, &degrees);
     let circuit_prover_data =
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
 
@@ -900,13 +900,13 @@ fn test_koalabear_quintic_trinomial_batch_stark_poseidon_d1_sponge_chain() {
             ConstraintProfile::Standard,
         )
         .unwrap();
-    let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
+    let (airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
     let mut runner = circuit.runner();
 
     runner.set_public_inputs(&[in0, in1, exp0, exp1]).unwrap();
     let traces = runner.run().unwrap();
 
-    let prover_data = ProverData::from_airs_and_degrees(&cfg, &mut airs, &degrees);
+    let prover_data = ProverData::from_airs_and_degrees(&cfg, &airs, &degrees);
     let circuit_prover_data =
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
 
@@ -948,8 +948,8 @@ fn test_stark_serialization_round_trip() {
             ConstraintProfile::Standard,
         )
         .unwrap();
-    let (mut airs, log_degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
-    let prover_data = ProverData::from_airs_and_degrees(&cfg, &mut airs, &log_degrees);
+    let (airs, log_degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
+    let prover_data = ProverData::from_airs_and_degrees(&cfg, &airs, &log_degrees);
     let circuit_prover_data =
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
 

@@ -7,7 +7,7 @@ use p3_circuit::ops::{generate_poseidon2_trace, generate_recompose_trace};
 use p3_commit::Pcs;
 use p3_dft::Radix2DitParallel;
 use p3_field::coset::TwoAdicMultiplicativeCoset;
-use p3_fri::create_test_fri_params;
+use p3_fri::FriParameters;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_poseidon2_circuit_air::BabyBearD4Width16;
 // Recursive target graph pieces
@@ -341,7 +341,7 @@ fn generate_setup(log_final_poly_len: usize, group_sizes: Vec<Vec<u8>>) -> FriSe
     let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
     let dft = Radix2DitParallel::<F>::default();
 
-    let fri_params = create_test_fri_params(challenge_mmcs, log_final_poly_len);
+    let fri_params = FriParameters::new_testing(challenge_mmcs, log_final_poly_len);
     let log_blowup = fri_params.log_blowup;
     let log_final_poly_len = fri_params.log_final_poly_len;
     let query_pow_bits = fri_params.query_proof_of_work_bits;

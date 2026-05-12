@@ -5,7 +5,7 @@ mod common;
 use p3_baby_bear::default_babybear_poseidon2_16;
 use p3_circuit::CircuitBuilder;
 use p3_circuit::ops::{generate_poseidon2_trace, generate_recompose_trace};
-use p3_fri::create_test_fri_params;
+use p3_fri::FriParameters;
 use p3_matrix::Matrix;
 use p3_poseidon2_circuit_air::BabyBearD4Width16;
 use p3_recursion::pcs::fri::{FriVerifierParams, MerkleCapTargets};
@@ -31,7 +31,7 @@ fn test_mul_verifier_circuit() -> Result<(), VerificationError> {
     let dft = Dft::default();
 
     let log_final_poly_len = 0;
-    let fri_params = create_test_fri_params(challenge_mmcs, log_final_poly_len);
+    let fri_params = FriParameters::new_testing(challenge_mmcs, log_final_poly_len);
     let fri_verifier_params = FriVerifierParams::from(&fri_params);
     let _log_height_max = fri_params.log_final_poly_len + fri_params.log_blowup;
     let _pow_bits = fri_params.query_proof_of_work_bits;

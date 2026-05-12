@@ -10,10 +10,9 @@ use p3_challenger::{CanObserve, CanSample, CanSampleBits, FieldChallenger, Grind
 use p3_commit::{BatchOpening, Mmcs, OpenedValues, Pcs, PolynomialSpace};
 use p3_field::{Algebra, BasedVectorSpace, PrimeCharacteristicRing, PrimeField, TwoAdicField};
 use p3_fri::{FriProof, HidingFriPcs, TwoAdicFriPcs};
-use p3_lookup::lookup_traits::{Kind, Lookup, LookupGadget};
-use p3_uni_stark::{
-    Domain, StarkGenericConfig, SymbolicAirBuilder, SymbolicExpression, SymbolicExpressionExt, Val,
-};
+use p3_lookup::symbolic::InteractionSymbolicBuilder;
+use p3_lookup::{Kind, Lookup, LookupProtocol};
+use p3_uni_stark::{Domain, StarkGenericConfig, SymbolicExpression, SymbolicExpressionExt, Val};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -77,7 +76,7 @@ pub trait PcsGeneration<SC: StarkGenericConfig, OpeningProof> {
 }
 
 /// Generates the challenges used in the verification of a batch-STARK proof.
-pub fn generate_batch_challenges<SC: StarkGenericConfig, A, LG: LookupGadget>(
+pub fn generate_batch_challenges<SC: StarkGenericConfig, A, LG: LookupProtocol>(
     airs: &[A],
     config: &SC,
     proof: &BatchProof<SC>,
@@ -87,7 +86,7 @@ pub fn generate_batch_challenges<SC: StarkGenericConfig, A, LG: LookupGadget>(
     lookup_gadget: &LG,
 ) -> Result<Vec<SC::Challenge>, GenerationError>
 where
-    A: Air<SymbolicAirBuilder<Val<SC>, SC::Challenge>>,
+    A: Air<InteractionSymbolicBuilder<Val<SC>, SC::Challenge>>,
     SC::Pcs: PcsGeneration<SC, <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Proof>,
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
         Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
@@ -128,7 +127,7 @@ where
             }
             let is_sorted = global_lookups
                 .windows(2)
-                .all(|w| w[0].aux_idx <= w[1].aux_idx);
+                .all(|w| w[0].aux_column <= w[1].aux_column);
             if !is_sorted {
                 return Err(GenerationError::InvalidProofShape(
                     "Expected cumulated values not sorted by auxiliary index",
@@ -682,7 +681,7 @@ where
 /// Samples all the different permutation challenges in the right order.
 /// This method is used to generate values for the challenge public values, and so it must store
 /// only the newly created challenges, in their order of sampling.
-pub fn get_different_perm_challenges<SC: StarkGenericConfig, LG: LookupGadget>(
+pub fn get_different_perm_challenges<SC: StarkGenericConfig, LG: LookupProtocol>(
     challenger: &mut SC::Challenger,
     all_lookups: &[Vec<Lookup<Val<SC>>>],
     lookup_gadget: &LG,

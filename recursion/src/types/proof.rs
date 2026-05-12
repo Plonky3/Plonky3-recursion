@@ -10,7 +10,7 @@ use p3_batch_stark::{BatchCommitments, BatchOpenedValues, BatchProof, CommonData
 use p3_circuit::CircuitBuilder;
 use p3_commit::Pcs;
 use p3_field::{ExtensionField, Field, PrimeField64};
-use p3_lookup::lookup_traits::{Lookup, LookupData};
+use p3_lookup::{Lookup, LookupData};
 use p3_uni_stark::{OpenedValues, Proof, StarkGenericConfig, Val};
 
 use crate::Target;
@@ -178,7 +178,9 @@ where
 
         Self {
             preprocessed,
-            lookups: input.lookups.clone(),
+            // `CommonData::lookups` is `Vec<Lookups<Val<SC>>>`; we flatten each `Lookups` into a
+            // plain `Vec<Lookup<Val<SC>>>` for in-circuit consumption.
+            lookups: input.lookups.iter().map(|ls| ls.to_vec()).collect(),
         }
     }
 
@@ -341,8 +343,8 @@ impl<
                         let target = circuit.alloc_public_input("global lookup data");
                         LookupData {
                             name: ld.name.clone(),
-                            aux_idx: ld.aux_idx,
-                            expected_cumulated: target,
+                            aux_column: ld.aux_column,
+                            cumulative_sum: target,
                         }
                     })
                     .collect::<Vec<_>>()
@@ -421,7 +423,7 @@ impl<
                 global_lookup_data
                     .iter()
                     .flatten()
-                    .map(|ld| ld.expected_cumulated),
+                    .map(|ld| ld.cumulative_sum),
             )
             .collect()
     }
