@@ -18,8 +18,7 @@ use p3_circuit_prover::{
     Poseidon2Preprocessor, Poseidon2Prover, RecomposePreprocessor, TablePacking, TableProver,
 };
 use p3_field::PrimeCharacteristicRing;
-use p3_fri::FriParameters::{self};
-use p3_fri::create_benchmark_fri_params;
+use p3_fri::FriParameters;
 use p3_lookup::logup::LogUpGadget;
 use p3_poseidon2_circuit_air::BabyBearD4Width16;
 use p3_recursion::Poseidon2Config;
@@ -27,7 +26,6 @@ use p3_recursion::pcs::fri::{FriVerifierParams, InputProofTargets, MerkleCapTarg
 use p3_recursion::pcs::set_fri_mmcs_private_data;
 use p3_recursion::verifier::verify_p3_batch_proof_circuit;
 use p3_test_utils::baby_bear_params::*;
-use p3_util::{log2_ceil_usize, log2_strict_usize};
 use rand::rngs::SmallRng;
 use rand::{RngExt, SeedableRng};
 use tracing_forest::ForestLayer;
@@ -220,17 +218,32 @@ fn init_logger() {
         .init();
 }
 
-fn make_test_config() -> MyConfig {
+/// Build a `MyConfig` whose PCS uses the FRI parameters for `layer`.
+///
+/// `layer` indexes the per-layer parameter sets at the bottom of this file:
+/// 0 → first_layer, 1 → second_layer, 2 → third_layer. The verifier circuit
+/// for layer N must be built against the *same* FRI parameters used to prove
+/// layer N — see `fri_params_for_layer` and the call sites in `test_blake3_bench`.
+fn make_test_config(layer: usize) -> MyConfig {
     let perm = default_babybear_poseidon2_16();
     let hash = MyHash::new(perm.clone());
     let compress = MyCompress::new(perm.clone());
     let val_mmcs = MyMmcs::new(hash, compress, 0);
     let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
     let dft = Dft::default();
-    let fri_params = create_benchmark_fri_params(challenge_mmcs);
+    let fri_params = fri_params_for_layer(layer, challenge_mmcs);
     let pcs = MyPcs::new(dft, val_mmcs, fri_params);
     let challenger = Challenger::new(perm);
     MyConfig::new(pcs, challenger)
+}
+
+fn fri_params_for_layer<Mmcs>(layer: usize, mmcs: Mmcs) -> FriParameters<Mmcs> {
+    match layer {
+        0 => create_benchmark_fri_params_first_layer(mmcs),
+        1 => create_benchmark_fri_params_second_layer(mmcs),
+        2 => create_benchmark_fri_params_third_layer(mmcs),
+        _ => panic!("unsupported layer index: {layer}"),
+    }
 }
 
 fn proof_size<SC: p3_batch_stark::StarkGenericConfig>(
@@ -377,13 +390,15 @@ fn test_blake3_bench() {
         }
     }
 
+    let tv = Instant::now();
     let traces = runner.run().unwrap();
+    println!("Execution time: {:.2?}", tv.elapsed());
 
     // -----------------------------------------------------------------------
     // 5. Layer 0: prove the base circuit
     // -----------------------------------------------------------------------
-    let table_packing = TablePacking::new(4, 4);
-    let config0 = make_test_config();
+    let table_packing = TablePacking::new(1, 2);
+    let config0 = make_test_config(0);
 
     let npo_prep: Vec<Box<dyn NpoPreprocessor<F>>> = vec![Box::new(Blake3Preprocessor)];
     let air_builders = blake3_air_builders_d1::<MyConfig>();
@@ -413,6 +428,7 @@ fn test_blake3_bench() {
         Ok(()) => println!("Layer 0 native verify: OK"),
         Err(e) => println!("Layer 0 native verify FAILED: {:?}", e),
     }
+
     println!("=== Layer 0 (base circuit) ===");
     println!(
         "  Proof size   : {} bytes ({:.1} KiB)",
@@ -445,6 +461,8 @@ fn test_blake3_bench() {
             &lookup_gadget,
             "Layer 1 (recursion)",
             false,
+            1,
+            0,
         )
     };
 
@@ -467,14 +485,81 @@ fn test_blake3_bench() {
             &lookup_gadget,
             "Layer 2 (recursion)",
             true,
+            2,
+            1,
         );
     }
 
     println!("\nBlake3 benchmark completed successfully!");
 }
 
+/// Creates a set of `FriParameters` suitable for benchmarking.
+/// These parameters represent typical settings used in production-like scenarios.
+///
+/// `log_final_poly_len` is capped by the smallest committed trace's
+/// `log_height`. The base proof's `CONST` table has 33 rows → pads to `2^6`,
+/// so 5 is the largest legal value here.
+const fn create_benchmark_fri_params_first_layer<Mmcs>(mmcs: Mmcs) -> FriParameters<Mmcs> {
+    FriParameters {
+        log_blowup: 2,
+        log_final_poly_len: 5,
+        max_log_arity: 2,
+        // Conjectured soundness: log_blowup * num_queries + query_pow_bits
+        // = 2 * 51 + 18 = 120 bits.
+        num_queries: 51,
+        commit_proof_of_work_bits: 0,
+        query_proof_of_work_bits: 18,
+        mmcs,
+    }
+}
+
+/// Creates a set of `FriParameters` suitable for benchmarking.
+/// These parameters represent typical settings used in production-like scenarios.
+///
+/// `log_final_poly_len` must be strictly less than the smallest committed
+/// trace's `log_height`. The recursion circuit's primitive tables (notably
+/// `CONST`) are small — for this test the smallest table pads to `2^7` rows —
+/// so we use 6 here rather than 7.
+const fn create_benchmark_fri_params_second_layer<Mmcs>(mmcs: Mmcs) -> FriParameters<Mmcs> {
+    FriParameters {
+        log_blowup: 4,
+        log_final_poly_len: 6,
+        max_log_arity: 3,
+        // Conjectured soundness: log_blowup * num_queries + query_pow_bits
+        // = 4 * 26 + 18 = 122 bits.
+        num_queries: 26,
+        commit_proof_of_work_bits: 0,
+        query_proof_of_work_bits: 18,
+        mmcs,
+    }
+}
+
+/// Creates a set of `FriParameters` suitable for benchmarking.
+/// These parameters represent typical settings used in production-like scenarios.
+///
+/// See the note on `create_benchmark_fri_params_second_layer` about the
+/// `log_final_poly_len` upper bound from the smallest committed trace.
+/// Layer 2's smallest table (`PUBLIC`) pads to `2^8` here, so 7 is legal.
+const fn create_benchmark_fri_params_third_layer<Mmcs>(mmcs: Mmcs) -> FriParameters<Mmcs> {
+    FriParameters {
+        log_blowup: 7,
+        log_final_poly_len: 7,
+        max_log_arity: 3,
+        num_queries: 14,
+        commit_proof_of_work_bits: 0,
+        query_proof_of_work_bits: 22,
+        mmcs,
+    }
+}
+
 /// Build a recursive verification circuit around `inner_proof`, prove it, and
 /// optionally verify. Returns the new proof.
+///
+/// `layer_number` is the layer being proved here (e.g. `1` for "Layer 1
+/// recursion"); the outer prover uses that layer's FRI parameters. `inner_layer`
+/// is the layer of `inner_proof` and dictates the FRI parameters wired into
+/// the verifier circuit — it must match what produced `inner_proof`, otherwise
+/// the verifier rejects the shape with `InvalidProofShape`.
 fn prove_recursion_layer(
     inner_proof: &p3_circuit_prover::batch_stark_prover::BatchStarkProof<MyConfig>,
     inner_common: &p3_batch_stark::CommonData<MyConfig>,
@@ -484,15 +569,17 @@ fn prove_recursion_layer(
     lookup_gadget: &LogUpGadget,
     label: &str,
     do_verify: bool,
+    layer_number: usize,
+    inner_layer: usize,
 ) -> p3_circuit_prover::batch_stark_prover::BatchStarkProof<MyConfig> {
-    let config_layer = make_test_config();
+    let config_layer = make_test_config(inner_layer);
     let fri_params_layer = {
         let perm = default_babybear_poseidon2_16();
         let hash = MyHash::new(perm.clone());
         let compress = MyCompress::new(perm);
         let val_mmcs = MyMmcs::new(hash, compress, 0);
         let challenge_mmcs = ChallengeMmcs::new(val_mmcs);
-        create_benchmark_fri_params(challenge_mmcs)
+        fri_params_for_layer(inner_layer, challenge_mmcs)
     };
 
     let fri_verifier_params = FriVerifierParams::with_mmcs(
@@ -614,7 +701,7 @@ fn prove_recursion_layer(
 
     let ver_traces = ver_runner.run().unwrap();
 
-    let config_prove = make_test_config();
+    let config_prove = make_test_config(layer_number);
     let ver_prover_data =
         ProverData::from_airs_and_degrees(&config_prove, &mut ver_airs, &ver_degrees);
     let ver_cpd = CircuitProverData::new(ver_prover_data, ver_prim, ver_npo);
@@ -642,209 +729,8 @@ fn prove_recursion_layer(
             .verify_all_tables(&ver_proof)
             .expect("Final verification failed");
         let verify_time = tv.elapsed();
+        println!("verify time {:?}", verify_time);
     }
 
     ver_proof
 }
-
-// /// Build a recursive verification circuit around `inner_proof`, prove it, and
-// /// optionally verify. Returns the new proof.
-// fn prove_last_recursion_layer(
-//     inner_proof: &p3_circuit_prover::batch_stark_prover::BatchStarkProof<MyConfig>,
-//     inner_common: &p3_batch_stark::CommonData<MyConfig>,
-//     inner_pis: &[Vec<F>],
-//     trace_d: usize,
-//     has_blake3_tables: bool,
-//     lookup_gadget: &LogUpGadget,
-//     label: &str,
-// ) -> p3_circuit_prover::batch_stark_prover::BatchStarkProof<MyConfig> {
-//     let config_layer = make_test_config();
-//     let fri_params_layer = {
-//         let perm = default_babybear_poseidon2_16();
-//         let hash = MyHash::new(perm.clone());
-//         let compress = MyCompress::new(perm);
-//         let val_mmcs = MyMmcs::new(hash, compress, 0);
-//         let challenge_mmcs = ChallengeMmcs::new(val_mmcs);
-//         FriParameters::new_testing(challenge_mmcs, 0)
-//     };
-
-//     let security_level = 128;
-//     let pow_bits = 16;
-//     // Assemble the WHIR protocol parameters.
-//     let whir_params = make_whir_params();
-
-//     let fri_verifier_params = FriVerifierParams::with_mmcs(
-//         fri_params_layer.log_blowup,
-//         fri_params_layer.log_final_poly_len,
-//         fri_params_layer.commit_proof_of_work_bits,
-//         fri_params_layer.query_proof_of_work_bits,
-//         Poseidon2Config::BabyBearD4Width16,
-//     );
-
-//     let mut circuit_builder = CircuitBuilder::new();
-//     let poseidon2_perm = default_babybear_poseidon2_16();
-//     circuit_builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
-//         generate_poseidon2_trace::<Challenge, BabyBearD4Width16>,
-//         poseidon2_perm,
-//     );
-//     circuit_builder.enable_recompose::<F>(generate_recompose_trace::<F, Challenge>);
-
-//     let table_provers_for_verify: Vec<Box<dyn TableProver<MyConfig>>> = {
-//         let mut tp: Vec<Box<dyn TableProver<MyConfig>>> = vec![Box::new(Poseidon2Prover::new(
-//             Poseidon2Config::BabyBearD4Width16,
-//             ConstraintProfile::Standard,
-//         ))];
-//         tp.extend(recompose_table_provers::<_, 4>(1, false));
-//         if has_blake3_tables {
-//             tp.extend(blake3_table_provers::<MyConfig>());
-//         }
-//         tp
-//     };
-
-//     let (verifier_inputs, mmcs_op_ids) = match trace_d {
-//         1 => verify_p3_batch_proof_circuit::<
-//             MyConfig,
-//             MerkleCapTargets<F, DIGEST_ELEMS>,
-//             InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>>,
-//             InnerFri,
-//             LogUpGadget,
-//             _,
-//             WIDTH,
-//             RATE,
-//             1,
-//         >(
-//             &config_layer,
-//             &mut circuit_builder,
-//             inner_proof,
-//             &fri_verifier_params,
-//             inner_common,
-//             lookup_gadget,
-//             Poseidon2Config::BabyBearD4Width16,
-//             &table_provers_for_verify,
-//         )
-//         .unwrap(),
-//         4 => verify_p3_batch_proof_circuit::<
-//             MyConfig,
-//             MerkleCapTargets<F, DIGEST_ELEMS>,
-//             InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>>,
-//             InnerFri,
-//             LogUpGadget,
-//             _,
-//             WIDTH,
-//             RATE,
-//             4,
-//         >(
-//             &config_layer,
-//             &mut circuit_builder,
-//             inner_proof,
-//             &fri_verifier_params,
-//             inner_common,
-//             lookup_gadget,
-//             Poseidon2Config::BabyBearD4Width16,
-//             &table_provers_for_verify,
-//         )
-//         .unwrap(),
-//         _ => panic!("Unexpected TRACE_D: {trace_d}"),
-//     };
-
-//     let verification_circuit = circuit_builder.build().unwrap();
-//     let expected_pub_len = verification_circuit.public_flat_len;
-
-//     let (pub_vals, priv_vals) =
-//         verifier_inputs.pack_values(inner_pis, &inner_proof.proof, inner_common);
-//     assert_eq!(pub_vals.len(), expected_pub_len);
-
-//     let verification_table_packing = TablePacking::new(1, 8);
-//     let poseidon2_config = Poseidon2Config::BabyBearD4Width16;
-//     let npo_prep: Vec<Box<dyn NpoPreprocessor<F>>> = vec![
-//         Box::new(Poseidon2Preprocessor),
-//         Box::new(RecomposePreprocessor::default()),
-//     ];
-//     let mut air_builders = poseidon2_air_builders::<_, 4>();
-//     air_builders.extend(recompose_air_builders::<MyConfig, 4>(1, false));
-//     let (ver_airs_degrees, ver_prim, ver_npo) = get_airs_and_degrees_with_prep::<MyConfig, _, 4>(
-//         &verification_circuit,
-//         &verification_table_packing,
-//         &npo_prep,
-//         &air_builders,
-//         ConstraintProfile::RecursionOptimized,
-//     )
-//     .unwrap();
-//     let (mut ver_airs, ver_degrees): (Vec<_>, Vec<usize>) = ver_airs_degrees.into_iter().unzip();
-
-//     let mut ver_runner = verification_circuit.runner();
-//     ver_runner.set_public_inputs(&pub_vals).unwrap();
-//     ver_runner.set_private_inputs(&priv_vals).unwrap();
-//     set_fri_mmcs_private_data::<
-//         F,
-//         Challenge,
-//         ChallengeMmcs,
-//         MyMmcs,
-//         MyHash,
-//         MyCompress,
-//         DIGEST_ELEMS,
-//     >(
-//         &mut ver_runner,
-//         &mmcs_op_ids,
-//         &inner_proof.proof.opening_proof,
-//     )
-//     .unwrap();
-
-//     let ver_traces = ver_runner.run().unwrap();
-
-//     let max_log_degree = ver_degrees
-//         .iter()
-//         .map(|t| log2_ceil_usize(*t))
-//         .max()
-//         .unwrap();
-//     let config_prove = WhirConfig::new(max_log_degree, whir_params);
-//     let ver_prover_data =
-//         ProverData::from_airs_and_degrees(&config_prove, &mut ver_airs, &ver_degrees);
-//     let ver_cpd = CircuitProverData::new(ver_prover_data, ver_prim, ver_npo);
-
-//     let mut ver_prover =
-//         BatchStarkProver::new(config_prove).with_table_packing(verification_table_packing);
-//     ver_prover.register_poseidon2_table::<4>(poseidon2_config);
-//     ver_prover.register_recompose_table::<4>(false);
-
-//     let t = Instant::now();
-//     let ver_proof = ver_prover
-//         .prove_all_tables(&ver_traces, &ver_cpd)
-//         .expect("Failed to prove verification circuit");
-//     let layer_time = t.elapsed();
-//     let layer_size = proof_size(&ver_proof);
-
-//     println!("=== {} ===", label);
-//     println!("  Proving time : {:?}", layer_time);
-//     println!(
-//         "  Proof size   : {} bytes ({:.1} KiB)",
-//         layer_size,
-//         layer_size as f64 / 1024.0
-//     );
-
-//     let tv = Instant::now();
-//     ver_prover
-//         .verify_all_tables(&ver_proof)
-//         .expect("Final verification failed");
-//     let verify_time = tv.elapsed();
-//     println!("  Verify time  : {:?}", verify_time);
-
-//     ver_proof
-// }
-
-// /// Generates default WHIR parameters
-// fn make_whir_params() -> ProtocolParameters<MyMmcs> {
-//     let mut rng = rand::rngs::SmallRng::seed_from_u64(1);
-//     let perm = Perm::new_from_rng_128(&mut rng);
-//     let mmcs = MyMmcs::new(MyHash::new(perm.clone()), MyCompress::new(perm), 0);
-
-//     ProtocolParameters {
-//         security_level: 100,
-//         pow_bits: 16,
-//         rs_domain_initial_reduction_factor: 1,
-//         folding_factor: FoldingFactor::ConstantFromSecondRound(4, 4),
-//         mmcs,
-//         soundness_type: SecurityAssumption::CapacityBound,
-//         starting_log_inv_rate: 1,
-//     }
-// }
