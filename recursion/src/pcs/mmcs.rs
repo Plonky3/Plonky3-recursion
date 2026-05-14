@@ -1097,11 +1097,7 @@ mod test {
         }
 
         // When we run the runner and the MMCS trace is generated, the runner detects that
-        // the root computed by the MmcsVerify gate does not match the one given as input
-        // (the merkle traversal's NPO output is written via `connect`-aliased witness slots
-        // shared with the public-input root). The conflict check fires unconditionally in
-        // `ExecutionContext::set_witness` so this test catches the tampering in both debug
-        // and release builds.
+        // the root computed by the MmcsVerify gate does not match the one given as input.
         let result = runner.run();
 
         match result {
