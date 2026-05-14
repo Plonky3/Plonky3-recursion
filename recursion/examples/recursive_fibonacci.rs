@@ -309,15 +309,12 @@ macro_rules! define_field_module {
                                 ConstraintProfile::Standard,
                             )
                             .unwrap();
-                        let (mut airs_0, degrees_0): (Vec<_>, Vec<usize>) =
+                        let (airs_0, degrees_0): (Vec<_>, Vec<usize>) =
                             airs_degrees_0.into_iter().unzip();
                         let ext_degrees_0: Vec<usize> =
                             degrees_0.iter().map(|&d| d + config_0.is_zk()).collect();
-                        let prover_data_0 = ProverData::from_airs_and_degrees(
-                            &config_0,
-                            &mut airs_0,
-                            &ext_degrees_0,
-                        );
+                        let prover_data_0 =
+                            ProverData::from_airs_and_degrees(&config_0, &airs_0, &ext_degrees_0);
                         let circuit_prover_data_0 = CircuitProverData::new(
                             prover_data_0,
                             primitive_columns_0,
@@ -551,10 +548,9 @@ macro_rules! define_field_module_quintic {
                         ConstraintProfile::Standard,
                     )
                     .unwrap();
-                let (mut airs_0, degrees_0): (Vec<_>, Vec<usize>) =
-                    airs_degrees_0.into_iter().unzip();
+                let (airs_0, degrees_0): (Vec<_>, Vec<usize>) = airs_degrees_0.into_iter().unzip();
                 let prover_data_0 =
-                    ProverData::from_airs_and_degrees(&config_0, &mut airs_0, &degrees_0);
+                    ProverData::from_airs_and_degrees(&config_0, &airs_0, &degrees_0);
                 let circuit_prover_data_0 = CircuitProverData::new(
                     prover_data_0,
                     primitive_columns_0,

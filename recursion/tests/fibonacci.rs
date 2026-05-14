@@ -5,7 +5,7 @@ use p3_circuit::CircuitBuilder;
 use p3_circuit::ops::{generate_poseidon2_trace, generate_recompose_trace};
 use p3_circuit::test_utils::{FibonacciAir, generate_trace_rows};
 use p3_field::PrimeCharacteristicRing;
-use p3_fri::create_test_fri_params;
+use p3_fri::FriParameters;
 use p3_poseidon2_circuit_air::BabyBearD4Width16;
 use p3_recursion::pcs::fri::{FriVerifierParams, InputProofTargets, MerkleCapTargets, RecValMmcs};
 use p3_recursion::pcs::set_fri_mmcs_private_data;
@@ -55,7 +55,7 @@ fn build_fibonacci_test_setup() -> FibonacciTestSetup {
     let dft = Dft::default();
     let trace = generate_trace_rows::<F>(0, 1, n);
     let log_final_poly_len = 0;
-    let fri_params = create_test_fri_params(challenge_mmcs, log_final_poly_len);
+    let fri_params = FriParameters::new_testing(challenge_mmcs, log_final_poly_len);
 
     // Enable MMCS verification
     let fri_verifier_params = FriVerifierParams::with_mmcs(

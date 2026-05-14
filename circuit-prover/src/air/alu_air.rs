@@ -76,7 +76,6 @@
 
 #![allow(clippy::needless_range_loop)]
 
-use alloc::string::ToString;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::borrow::{Borrow, BorrowMut};
@@ -85,11 +84,9 @@ use core::marker::PhantomData;
 use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 use p3_circuit::tables::AluTrace;
 use p3_field::{BasedVectorSpace, Dup, Field, PrimeCharacteristicRing};
-use p3_lookup::LookupAir;
-use p3_lookup::lookup_traits::{Direction, Kind, Lookup};
+use p3_lookup::builder::InteractionBuilder;
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
-use p3_uni_stark::SymbolicExpression;
 use tracing::instrument;
 
 use super::alu_columns::{
@@ -97,7 +94,6 @@ use super::alu_columns::{
     PREP_LANE_WIDTH, alu_main_lane_width, extra_prep_a_idx_for_step, extra_prep_sel_k_idx,
     horner_extra_prep_width, num_horner_intermediates,
 };
-use crate::air::utils::{create_symbolic_variables, get_alu_index_lookups};
 
 /// Entry in the HornerAcc lane schedule.
 #[derive(Debug, Clone, Copy)]
@@ -133,8 +129,6 @@ pub struct AluAir<F: Copy, const D: usize = 1> {
     pub(crate) ext_mul_kind: AluExtMulKind<F>,
     /// Flattened preprocessed values (selectors + indices), in original op order.
     pub(crate) preprocessed: Vec<F>,
-    /// Number of lookup columns registered so far.
-    pub(crate) num_lookup_columns: usize,
     /// Minimum trace height (for FRI compatibility with higher log_final_poly_len).
     pub(crate) min_height: usize,
     /// HornerAcc lane schedule. When present, ops are reordered so that HornerAcc
@@ -158,7 +152,6 @@ impl<F: Field + PrimeCharacteristicRing + Copy, const D: usize> AluAir<F, D> {
             lanes,
             ext_mul_kind: AluExtMulKind::Base,
             preprocessed: Vec::new(),
-            num_lookup_columns: 0,
             min_height: 1,
             schedule: None,
             horner_packed_steps: 2,
@@ -188,7 +181,6 @@ impl<F: Field + PrimeCharacteristicRing + Copy, const D: usize> AluAir<F, D> {
             lanes,
             ext_mul_kind: AluExtMulKind::Base,
             preprocessed,
-            num_lookup_columns: 0,
             min_height: 1,
             schedule,
             horner_packed_steps,
@@ -205,7 +197,6 @@ impl<F: Field + PrimeCharacteristicRing + Copy, const D: usize> AluAir<F, D> {
             lanes,
             ext_mul_kind: AluExtMulKind::Binomial { w },
             preprocessed: Vec::new(),
-            num_lookup_columns: 0,
             min_height: 1,
             schedule: None,
             horner_packed_steps: 2,
@@ -233,7 +224,6 @@ impl<F: Field + PrimeCharacteristicRing + Copy, const D: usize> AluAir<F, D> {
             lanes,
             ext_mul_kind: AluExtMulKind::Binomial { w },
             preprocessed,
-            num_lookup_columns: 0,
             min_height: 1,
             schedule,
             horner_packed_steps,
@@ -250,7 +240,6 @@ impl<F: Field + PrimeCharacteristicRing + Copy, const D: usize> AluAir<F, D> {
             lanes,
             ext_mul_kind: AluExtMulKind::QuinticTrinomial,
             preprocessed: Vec::new(),
-            num_lookup_columns: 0,
             min_height: 1,
             schedule: None,
             horner_packed_steps: 2,
@@ -278,7 +267,6 @@ impl<F: Field + PrimeCharacteristicRing + Copy, const D: usize> AluAir<F, D> {
             lanes,
             ext_mul_kind: AluExtMulKind::QuinticTrinomial,
             preprocessed,
-            num_lookup_columns: 0,
             min_height: 1,
             schedule,
             horner_packed_steps,
@@ -676,6 +664,10 @@ impl<F: Field + Copy, const D: usize> BaseAir<F> for AluAir<F, D> {
         self.total_width()
     }
 
+    fn preprocessed_width(&self) -> usize {
+        self.lanes * PREP_LANE_WIDTH + horner_extra_prep_width(self.horner_packed_steps)
+    }
+
     fn preprocessed_trace(&self) -> Option<RowMajorMatrix<F>> {
         self.schedule.as_ref().map_or_else(
             || {
@@ -751,11 +743,15 @@ fn ext_mul_quintic_trinomial<AB: AirBuilder>(x: &[AB::Var], y: &[AB::Var]) -> Ve
     ]
 }
 
-impl<AB: AirBuilder, const D: usize> Air<AB> for AluAir<AB::F, D>
+impl<AB: AirBuilder + InteractionBuilder, const D: usize> Air<AB> for AluAir<AB::F, D>
 where
     AB::F: Field + Copy,
 {
     fn eval(&self, builder: &mut AB) {
+        // Emit cross-table interactions first so the borrow checker doesn't fight us when
+        // building the row windows below.
+        eval_alu_interactions::<AB, D>(self, builder);
+
         let main = builder.main();
         debug_assert_eq!(
             main.current_slice().len(),
@@ -978,81 +974,88 @@ where
     }
 }
 
-impl<F: Field + Copy, const D: usize> LookupAir<F> for AluAir<F, D> {
-    fn add_lookup_columns(&mut self) -> Vec<usize> {
-        let new_idx = self.num_lookup_columns;
-        self.num_lookup_columns += 1;
-        vec![new_idx]
+/// Push all WitnessChecks bus interactions for one row of [`AluAir`]: four per-lane sends
+/// (a, b, c, out) and 2·(K_max − 1) packed-Horner sends.
+fn eval_alu_interactions<AB: AirBuilder + InteractionBuilder, const D: usize>(
+    air: &AluAir<AB::F, D>,
+    builder: &mut AB,
+) where
+    AB::F: Field + Copy,
+{
+    let main = builder.main();
+    let main_local = main.current_slice();
+    let prep = builder.preprocessed().clone();
+    let prep_local = prep.current_slice();
+
+    let lane_w = AluAir::<AB::F, D>::lane_width();
+
+    for lane in 0..air.lanes {
+        let main_off = lane * lane_w;
+        let prep_off = lane * PREP_LANE_WIDTH;
+
+        let lane_prep: &AluPrepLaneCols<_> =
+            prep_local[prep_off..prep_off + PREP_LANE_WIDTH].borrow();
+        let lane_main: &AluMainLaneCols<_, D> =
+            main_local[main_off..main_off + alu_main_lane_width::<D>()].borrow();
+
+        let mult_a: AB::Expr = lane_prep.mult_a.into();
+        let mult_b: AB::Expr = lane_prep.mult_b.into();
+        let mult_out: AB::Expr = lane_prep.mult_out.into();
+        let a_is_reader: AB::Expr = lane_prep.a_is_reader.into();
+        let c_is_reader: AB::Expr = lane_prep.c_is_reader.into();
+
+        let eff_mult_a = mult_a.clone() * a_is_reader;
+        let eff_mult_c = mult_a * c_is_reader;
+
+        let multiplicities = [eff_mult_a, mult_b, eff_mult_c, mult_out];
+        let idx_vars = [
+            lane_prep.a_idx,
+            lane_prep.b_idx,
+            lane_prep.c_idx,
+            lane_prep.out_idx,
+        ];
+        let operands: [&[AB::Var; D]; 4] =
+            [&lane_main.a, &lane_main.b, &lane_main.c, &lane_main.out];
+
+        for i in 0..4 {
+            let mut fields: Vec<AB::Expr> = Vec::with_capacity(1 + D);
+            fields.push(idx_vars[i].into());
+            for j in 0..D {
+                fields.push(operands[i][j].into());
+            }
+            builder.push_interaction("WitnessChecks", fields, multiplicities[i].clone(), 1);
+        }
     }
 
-    fn get_lookups(&mut self) -> Vec<Lookup<F>> {
-        let mut lookups = Vec::new();
-        self.num_lookup_columns = 0;
+    // Extra lookups for (a_t, c_t), t = 1..K_max - 1, on packed Horner rows.
+    let extra_main = air.lanes * lane_w;
+    let extra_prep = air.lanes * PREP_LANE_WIDTH;
+    let k_max = air.horner_packed_steps;
+    let num_int = num_horner_intermediates(k_max);
+    let ac_base = extra_main + num_int * D;
 
-        let (symbolic_main_local, preprocessed_local) = create_symbolic_variables::<F>(
-            self.preprocessed_width(),
-            BaseAir::<F>::width(self),
-            0,
-            0,
-        );
+    for t in 1..k_max {
+        let p = extra_prep + extra_prep_a_idx_for_step(t, k_max);
+        let step: &AluPackedHornerStepPrepCols<_> =
+            prep_local[p..p + PACKED_HORNER_STEP_PREP_WIDTH].borrow();
+        let eff_mult_a: AB::Expr = step.horner_lookup_mult_a.into();
+        let eff_mult_c: AB::Expr = step.horner_lookup_mult_c.into();
 
-        for lane in 0..self.lanes {
-            let lane_offset = lane * Self::lane_width();
-            let preprocessed_lane_offset = lane * Self::preprocessed_lane_width();
+        let main_off = ac_base + 2 * (t - 1) * D;
 
-            // 4 lookups per lane: a, b, c, out (all Direction::Receive)
-            let lane_lookup_inputs = get_alu_index_lookups::<F, D>(
-                lane_offset,
-                preprocessed_lane_offset,
-                &symbolic_main_local,
-                &preprocessed_local,
-            );
-            lookups.extend(lane_lookup_inputs.into_iter().map(|inps| {
-                LookupAir::register_lookup(self, Kind::Global("WitnessChecks".to_string()), &[inps])
-            }));
+        let mut a_inps: Vec<AB::Expr> = Vec::with_capacity(1 + D);
+        a_inps.push(step.a_idx.into());
+        for j in 0..D {
+            a_inps.push(main_local[main_off + j].into());
         }
+        builder.push_interaction("WitnessChecks", a_inps, eff_mult_a, 1);
 
-        // Extra lookups for (a_t, c_t), t = 1..K_max-1, on packed Horner rows.
-        let extra_main = self.lanes * Self::lane_width();
-        let extra_prep = self.lanes * Self::preprocessed_lane_width();
-        let k_max = self.horner_packed_steps;
-        let num_int = num_horner_intermediates(k_max);
-        let ac_base = extra_main + num_int * D;
-
-        for t in 1..k_max {
-            let p = extra_prep + extra_prep_a_idx_for_step(t, k_max);
-            let step: &AluPackedHornerStepPrepCols<_> =
-                preprocessed_local[p..p + PACKED_HORNER_STEP_PREP_WIDTH].borrow();
-            let eff_mult_a = SymbolicExpression::from(step.horner_lookup_mult_a);
-            let eff_mult_c = SymbolicExpression::from(step.horner_lookup_mult_c);
-
-            let a_idx = SymbolicExpression::from(step.a_idx);
-            let main_off = ac_base + 2 * (t - 1) * D;
-            let mut a_inps = vec![a_idx];
-            for j in 0..D {
-                a_inps.push(SymbolicExpression::from(symbolic_main_local[main_off + j]));
-            }
-            lookups.push(LookupAir::register_lookup(
-                self,
-                Kind::Global("WitnessChecks".to_string()),
-                &[(a_inps, eff_mult_a, Direction::Receive)],
-            ));
-
-            let c_idx = SymbolicExpression::from(step.c_idx);
-            let mut c_inps = vec![c_idx];
-            for j in 0..D {
-                c_inps.push(SymbolicExpression::from(
-                    symbolic_main_local[main_off + D + j],
-                ));
-            }
-            lookups.push(LookupAir::register_lookup(
-                self,
-                Kind::Global("WitnessChecks".to_string()),
-                &[(c_inps, eff_mult_c, Direction::Receive)],
-            ));
+        let mut c_inps: Vec<AB::Expr> = Vec::with_capacity(1 + D);
+        c_inps.push(step.c_idx.into());
+        for j in 0..D {
+            c_inps.push(main_local[main_off + D + j].into());
         }
-
-        lookups
+        builder.push_interaction("WitnessChecks", c_inps, eff_mult_c, 1);
     }
 }
 
@@ -1068,11 +1071,9 @@ mod tests {
     use p3_test_utils::baby_bear_params::{
         BabyBear as Val, BinomialExtensionField, PrimeCharacteristicRing,
     };
-    use p3_uni_stark::{prove_with_preprocessed, setup_preprocessed, verify_with_preprocessed};
-    use p3_util::log2_ceil_usize;
 
     use super::*;
-    use crate::air::test_utils::build_test_config;
+    use crate::air::test_utils::{assert_air_rejects, assert_air_satisfies};
 
     /// Convert an `AluTrace` to preprocessed values (13 columns per op) for standalone tests.
     fn trace_to_preprocessed<F: Field, ExtF: BasedVectorSpace<F>, const D: usize>(
@@ -1111,198 +1112,137 @@ mod tests {
         preprocessed_values
     }
 
-    #[test]
-    fn prove_verify_alu_add_base_field() {
-        let n = 8;
-        let op_kind = vec![AluOpKind::Add; n];
-        let values = vec![
-            [
-                Val::from_u64(3),
-                Val::from_u64(5),
-                Val::ZERO,
-                Val::from_u64(8)
-            ];
-            n
-        ];
-        let indices = vec![[WitnessId(1), WitnessId(2), WitnessId(0), WitnessId(3)]; n];
+    type EF = BinomialExtensionField<Val, 4>;
 
+    #[test]
+    fn satisfies_alu_add_base_field() {
+        let n = 8;
         let trace = AluTrace {
-            op_kind,
-            values,
-            indices,
+            op_kind: vec![AluOpKind::Add; n],
+            values: vec![
+                [
+                    Val::from_u64(3),
+                    Val::from_u64(5),
+                    Val::ZERO,
+                    Val::from_u64(8),
+                ];
+                n
+            ],
+            indices: vec![[WitnessId(1), WitnessId(2), WitnessId(0), WitnessId(3)]; n],
         };
 
-        let preprocessed_values = trace_to_preprocessed::<Val, _, 1>(&trace);
-        let air = AluAir::<Val, 1>::new_with_preprocessed(n, 1, preprocessed_values, 2);
+        let preprocessed = trace_to_preprocessed::<Val, _, 1>(&trace);
+        let air = AluAir::<Val, 1>::new_with_preprocessed(n, 1, preprocessed, 2);
         let matrix: RowMajorMatrix<Val> = air.trace_to_matrix(&trace, 1);
         assert_eq!(matrix.width(), air.total_width());
-
-        let config = build_test_config();
-        let pis: Vec<Val> = vec![];
-        let (prover_data, verifier_data) =
-            setup_preprocessed(&config, &air, log2_ceil_usize(matrix.height())).unwrap();
-        let proof = prove_with_preprocessed(&config, &air, matrix, &pis, Some(&prover_data));
-        verify_with_preprocessed(&config, &air, &proof, &pis, Some(&verifier_data))
-            .expect("verification failed");
+        assert_air_satisfies::<Val, EF, _>(&air, &matrix);
     }
 
     #[test]
-    fn prove_verify_alu_mul_base_field() {
+    fn satisfies_alu_mul_base_field() {
         let n = 8;
-        let op_kind = vec![AluOpKind::Mul; n];
-        let values = vec![
-            [
-                Val::from_u64(3),
-                Val::from_u64(5),
-                Val::ZERO,
-                Val::from_u64(15)
-            ];
-            n
-        ];
-        let indices = vec![[WitnessId(1), WitnessId(2), WitnessId(0), WitnessId(3)]; n];
-
         let trace = AluTrace {
-            op_kind,
-            values,
-            indices,
-        };
-
-        let preprocessed_values = trace_to_preprocessed::<Val, _, 1>(&trace);
-        let air = AluAir::<Val, 1>::new_with_preprocessed(n, 1, preprocessed_values, 2);
-        let matrix: RowMajorMatrix<Val> = air.trace_to_matrix(&trace, 1);
-
-        let config = build_test_config();
-        let pis: Vec<Val> = vec![];
-
-        let (prover_data, verifier_data) =
-            setup_preprocessed(&config, &air, log2_ceil_usize(matrix.height())).unwrap();
-        let proof = prove_with_preprocessed(&config, &air, matrix, &pis, Some(&prover_data));
-        verify_with_preprocessed(&config, &air, &proof, &pis, Some(&verifier_data))
-            .expect("verification failed");
-    }
-
-    #[test]
-    fn prove_verify_alu_bool_check() {
-        let n = 8;
-        // Test with valid boolean values (0 and 1)
-        let op_kind = vec![AluOpKind::BoolCheck; n];
-        let values = (0..n)
-            .map(|i| {
+            op_kind: vec![AluOpKind::Mul; n],
+            values: vec![
                 [
-                    Val::from_u64(i as u64 % 2),
+                    Val::from_u64(3),
+                    Val::from_u64(5),
                     Val::ZERO,
-                    Val::ZERO,
-                    Val::from_u64(i as u64 % 2),
-                ]
-            })
-            .collect();
-        let indices = vec![[WitnessId(1), WitnessId(0), WitnessId(0), WitnessId(1)]; n];
-
-        let trace = AluTrace {
-            op_kind,
-            values,
-            indices,
+                    Val::from_u64(15),
+                ];
+                n
+            ],
+            indices: vec![[WitnessId(1), WitnessId(2), WitnessId(0), WitnessId(3)]; n],
         };
 
-        let preprocessed_values = trace_to_preprocessed::<Val, _, 1>(&trace);
-        let air = AluAir::<Val, 1>::new_with_preprocessed(n, 1, preprocessed_values, 2);
+        let preprocessed = trace_to_preprocessed::<Val, _, 1>(&trace);
+        let air = AluAir::<Val, 1>::new_with_preprocessed(n, 1, preprocessed, 2);
         let matrix: RowMajorMatrix<Val> = air.trace_to_matrix(&trace, 1);
-
-        let config = build_test_config();
-        let pis: Vec<Val> = vec![];
-
-        let (prover_data, verifier_data) =
-            setup_preprocessed(&config, &air, log2_ceil_usize(matrix.height())).unwrap();
-        let proof = prove_with_preprocessed(&config, &air, matrix, &pis, Some(&prover_data));
-        verify_with_preprocessed(&config, &air, &proof, &pis, Some(&verifier_data))
-            .expect("verification failed");
+        assert_air_satisfies::<Val, EF, _>(&air, &matrix);
     }
 
     #[test]
-    fn prove_verify_alu_muladd() {
+    fn satisfies_alu_bool_check() {
         let n = 8;
-        // a * b + c = out => 3 * 5 + 2 = 17
-        let op_kind = vec![AluOpKind::MulAdd; n];
-        let values = vec![
-            [
-                Val::from_u64(3),
-                Val::from_u64(5),
-                Val::from_u64(2),
-                Val::from_u64(17)
-            ];
-            n
-        ];
-        let indices = vec![[WitnessId(1), WitnessId(2), WitnessId(3), WitnessId(4)]; n];
-
         let trace = AluTrace {
-            op_kind,
-            values,
-            indices,
+            op_kind: vec![AluOpKind::BoolCheck; n],
+            values: (0..n)
+                .map(|i| {
+                    [
+                        Val::from_u64(i as u64 % 2),
+                        Val::ZERO,
+                        Val::ZERO,
+                        Val::from_u64(i as u64 % 2),
+                    ]
+                })
+                .collect(),
+            indices: vec![[WitnessId(1), WitnessId(0), WitnessId(0), WitnessId(1)]; n],
         };
 
-        let preprocessed_values = trace_to_preprocessed::<Val, _, 1>(&trace);
-        let air = AluAir::<Val, 1>::new_with_preprocessed(n, 1, preprocessed_values, 2);
+        let preprocessed = trace_to_preprocessed::<Val, _, 1>(&trace);
+        let air = AluAir::<Val, 1>::new_with_preprocessed(n, 1, preprocessed, 2);
         let matrix: RowMajorMatrix<Val> = air.trace_to_matrix(&trace, 1);
-
-        let config = build_test_config();
-        let pis: Vec<Val> = vec![];
-
-        let (prover_data, verifier_data) =
-            setup_preprocessed(&config, &air, log2_ceil_usize(matrix.height())).unwrap();
-        let proof = prove_with_preprocessed(&config, &air, matrix, &pis, Some(&prover_data));
-        verify_with_preprocessed(&config, &air, &proof, &pis, Some(&verifier_data))
-            .expect("verification failed");
+        assert_air_satisfies::<Val, EF, _>(&air, &matrix);
     }
 
     #[test]
-    fn prove_verify_alu_mixed_ops() {
-        // Mix of ADD and MUL operations
-        let op_kind = vec![AluOpKind::Add, AluOpKind::Mul];
-        let values = vec![
-            [
-                Val::from_u64(3),
-                Val::from_u64(5),
-                Val::ZERO,
-                Val::from_u64(8),
-            ],
-            [
-                Val::from_u64(4),
-                Val::from_u64(6),
-                Val::ZERO,
-                Val::from_u64(24),
-            ],
-        ];
-        let indices = vec![
-            [WitnessId(1), WitnessId(2), WitnessId(0), WitnessId(3)],
-            [WitnessId(1), WitnessId(2), WitnessId(0), WitnessId(3)],
-        ];
-
+    fn satisfies_alu_muladd() {
+        let n = 8;
+        // a * b + c = out  =>  3 * 5 + 2 = 17
         let trace = AluTrace {
-            op_kind,
-            values,
-            indices,
+            op_kind: vec![AluOpKind::MulAdd; n],
+            values: vec![
+                [
+                    Val::from_u64(3),
+                    Val::from_u64(5),
+                    Val::from_u64(2),
+                    Val::from_u64(17),
+                ];
+                n
+            ],
+            indices: vec![[WitnessId(1), WitnessId(2), WitnessId(3), WitnessId(4)]; n],
         };
 
-        let preprocessed_values = trace_to_preprocessed::<Val, _, 1>(&trace);
-        let air = AluAir::<Val, 1>::new_with_preprocessed(2, 1, preprocessed_values, 2);
+        let preprocessed = trace_to_preprocessed::<Val, _, 1>(&trace);
+        let air = AluAir::<Val, 1>::new_with_preprocessed(n, 1, preprocessed, 2);
         let matrix: RowMajorMatrix<Val> = air.trace_to_matrix(&trace, 1);
-
-        let config = build_test_config();
-        let pis: Vec<Val> = vec![];
-        let (prover_data, verifier_data) =
-            setup_preprocessed(&config, &air, log2_ceil_usize(matrix.height())).unwrap();
-        let proof = prove_with_preprocessed(&config, &air, matrix, &pis, Some(&prover_data));
-        verify_with_preprocessed(&config, &air, &proof, &pis, Some(&verifier_data))
-            .expect("verification failed");
+        assert_air_satisfies::<Val, EF, _>(&air, &matrix);
     }
 
     #[test]
-    fn prove_verify_alu_double_step_horner_base_field() {
-        // Build a simple Horner chain of length 3 over the base field and
-        // check that the scheduled ALU trace with double-step rows verifies.
-        // Relation: out = prev_out * b + c - a; double-step shares b for two steps.
+    fn satisfies_alu_mixed_ops() {
+        let trace = AluTrace {
+            op_kind: vec![AluOpKind::Add, AluOpKind::Mul],
+            values: vec![
+                [
+                    Val::from_u64(3),
+                    Val::from_u64(5),
+                    Val::ZERO,
+                    Val::from_u64(8),
+                ],
+                [
+                    Val::from_u64(4),
+                    Val::from_u64(6),
+                    Val::ZERO,
+                    Val::from_u64(24),
+                ],
+            ],
+            indices: vec![
+                [WitnessId(1), WitnessId(2), WitnessId(0), WitnessId(3)],
+                [WitnessId(1), WitnessId(2), WitnessId(0), WitnessId(3)],
+            ],
+        };
+
+        let preprocessed = trace_to_preprocessed::<Val, _, 1>(&trace);
+        let air = AluAir::<Val, 1>::new_with_preprocessed(2, 1, preprocessed, 2);
+        let matrix: RowMajorMatrix<Val> = air.trace_to_matrix(&trace, 1);
+        assert_air_satisfies::<Val, EF, _>(&air, &matrix);
+    }
+
+    #[test]
+    fn satisfies_alu_double_step_horner_base_field() {
+        // out = prev_out * b + c - a; double-step rows share b across two steps.
         let n = 3;
-        let op_kind = vec![AluOpKind::HornerAcc; n];
 
         let prev_out = Val::ZERO;
         let a0 = Val::from_u64(1);
@@ -1320,33 +1260,22 @@ mod tests {
         let c2 = Val::from_u64(2);
         let out2 = out1 * b2 + c2 - a2;
 
-        let values = vec![[a0, b0, c0, out0], [a1, b1, c1, out1], [a2, b2, c2, out2]];
-        let indices = vec![[WitnessId(1), WitnessId(2), WitnessId(3), WitnessId(4)]; n];
-
         let trace = AluTrace {
-            op_kind,
-            values,
-            indices,
+            op_kind: vec![AluOpKind::HornerAcc; n],
+            values: vec![[a0, b0, c0, out0], [a1, b1, c1, out1], [a2, b2, c2, out2]],
+            indices: vec![[WitnessId(1), WitnessId(2), WitnessId(3), WitnessId(4)]; n],
         };
 
-        let preprocessed_values = trace_to_preprocessed::<Val, _, 1>(&trace);
-        let air = AluAir::<Val, 1>::new_with_preprocessed(n, 1, preprocessed_values, 2);
+        let preprocessed = trace_to_preprocessed::<Val, _, 1>(&trace);
+        let air = AluAir::<Val, 1>::new_with_preprocessed(n, 1, preprocessed, 2);
         let matrix: RowMajorMatrix<Val> = air.trace_to_matrix(&trace, 1);
-
-        let config = build_test_config();
-        let pis: Vec<Val> = vec![];
-        let (prover_data, verifier_data) =
-            setup_preprocessed(&config, &air, log2_ceil_usize(matrix.height())).unwrap();
-        let proof = prove_with_preprocessed(&config, &air, matrix, &pis, Some(&prover_data));
-        verify_with_preprocessed(&config, &air, &proof, &pis, Some(&verifier_data))
-            .expect("double-step horner base-field verification failed");
+        assert_air_satisfies::<Val, EF, _>(&air, &matrix);
     }
 
     #[test]
-    fn prove_verify_alu_k4_packed_horner_base_field() {
+    fn satisfies_alu_k4_packed_horner_base_field() {
         const K: usize = 4;
         let n = 8;
-        let op_kind = vec![AluOpKind::HornerAcc; n];
         let b = Val::from_u64(2);
         let mut acc = Val::ZERO;
         let mut values = Vec::with_capacity(n);
@@ -1357,51 +1286,40 @@ mod tests {
             values.push([a, b, c, out]);
             acc = out;
         }
-        let indices = vec![[WitnessId(1), WitnessId(2), WitnessId(3), WitnessId(4)]; n];
-
         let trace = AluTrace {
-            op_kind,
+            op_kind: vec![AluOpKind::HornerAcc; n],
             values,
-            indices,
+            indices: vec![[WitnessId(1), WitnessId(2), WitnessId(3), WitnessId(4)]; n],
         };
 
-        let preprocessed_values = trace_to_preprocessed::<Val, _, 1>(&trace);
-        let air = AluAir::<Val, 1>::new_with_preprocessed(n, 1, preprocessed_values, K);
+        let preprocessed = trace_to_preprocessed::<Val, _, 1>(&trace);
+        let air = AluAir::<Val, 1>::new_with_preprocessed(n, 1, preprocessed, K);
         assert_eq!(air.horner_packed_steps, K);
         let matrix: RowMajorMatrix<Val> = air.trace_to_matrix(&trace, 1);
-
-        let config = build_test_config();
-        let pis: Vec<Val> = vec![];
-        let (prover_data, verifier_data) =
-            setup_preprocessed(&config, &air, log2_ceil_usize(matrix.height())).unwrap();
-        let proof = prove_with_preprocessed(&config, &air, matrix, &pis, Some(&prover_data));
-        verify_with_preprocessed(&config, &air, &proof, &pis, Some(&verifier_data))
-            .expect("K=4 packed horner base-field verification failed");
+        assert_air_satisfies::<Val, EF, _>(&air, &matrix);
     }
 
     #[test]
-    fn prove_verify_alu_extension_field_d4() {
-        type ExtField = BinomialExtensionField<Val, 4>;
+    fn satisfies_alu_extension_field_d4() {
         let n = 4;
+        let w = Val::from_u64(11); // BabyBear's binomial extension uses w=11
 
-        let a = ExtField::from_basis_coefficients_slice(&[
+        let a = EF::from_basis_coefficients_slice(&[
             Val::from_u64(7),
             Val::from_u64(3),
             Val::from_u64(4),
             Val::from_u64(5),
         ])
         .unwrap();
-
-        let b = ExtField::from_basis_coefficients_slice(&[
+        let b = EF::from_basis_coefficients_slice(&[
             Val::from_u64(11),
             Val::from_u64(2),
             Val::from_u64(9),
             Val::from_u64(6),
         ])
         .unwrap();
-
-        let c = ExtField::ZERO;
-        let out = a * b; // multiplication result
+        let c = EF::ZERO;
+        let out = a * b;
 
         let trace = AluTrace {
             op_kind: vec![AluOpKind::Mul; n],
@@ -1409,104 +1327,64 @@ mod tests {
             indices: vec![[WitnessId(1), WitnessId(2), WitnessId(0), WitnessId(3)]; n],
         };
 
-        let preprocessed_values = trace_to_preprocessed::<Val, _, 4>(&trace);
-
-        let config = build_test_config();
-        let pis: Vec<Val> = vec![];
-
-        // Get w from the extension field
-        let w = Val::from_u64(11); // BabyBear's binomial extension uses w=11
-
-        let air = AluAir::<Val, 4>::new_binomial_with_preprocessed(n, 1, w, preprocessed_values, 2);
+        let preprocessed = trace_to_preprocessed::<Val, _, 4>(&trace);
+        let air = AluAir::<Val, 4>::new_binomial_with_preprocessed(n, 1, w, preprocessed, 2);
         let matrix: RowMajorMatrix<Val> = air.trace_to_matrix(&trace, 1);
         assert_eq!(matrix.width(), air.total_width());
-        let (prover_data, verifier_data) =
-            setup_preprocessed(&config, &air, log2_ceil_usize(matrix.height())).unwrap();
-        let proof = prove_with_preprocessed(&config, &air, matrix, &pis, Some(&prover_data));
-        verify_with_preprocessed(&config, &air, &proof, &pis, Some(&verifier_data))
-            .expect("extension field verification failed");
+        assert_air_satisfies::<Val, EF, _>(&air, &matrix);
     }
 
     #[test]
-    fn prove_verify_alu_bool_check_extension_field_d4() {
-        type ExtField = BinomialExtensionField<Val, 4>;
+    fn satisfies_alu_bool_check_extension_field_d4() {
         let n = 4;
         let w = Val::from_u64(11);
 
-        // Valid booleans: [0,0,0,0] and [1,0,0,0] interleaved
-        let zero =
-            ExtField::from_basis_coefficients_slice(&[Val::ZERO, Val::ZERO, Val::ZERO, Val::ZERO])
-                .unwrap();
-        let one =
-            ExtField::from_basis_coefficients_slice(&[Val::ONE, Val::ZERO, Val::ZERO, Val::ZERO])
-                .unwrap();
-
-        let values: Vec<[ExtField; 4]> = (0..n)
-            .map(|i| {
-                let v = if i % 2 == 0 { zero } else { one };
-                [v, zero, zero, v]
-            })
-            .collect();
-        let indices = vec![[WitnessId(1), WitnessId(0), WitnessId(0), WitnessId(1)]; n];
+        // Valid booleans in EF: [0,0,0,0] and [1,0,0,0] interleaved.
+        let zero = EF::from_basis_coefficients_slice(&[Val::ZERO, Val::ZERO, Val::ZERO, Val::ZERO])
+            .unwrap();
+        let one = EF::from_basis_coefficients_slice(&[Val::ONE, Val::ZERO, Val::ZERO, Val::ZERO])
+            .unwrap();
 
         let trace = AluTrace {
             op_kind: vec![AluOpKind::BoolCheck; n],
-            values,
-            indices,
+            values: (0..n)
+                .map(|i| {
+                    let v = if i % 2 == 0 { zero } else { one };
+                    [v, zero, zero, v]
+                })
+                .collect(),
+            indices: vec![[WitnessId(1), WitnessId(0), WitnessId(0), WitnessId(1)]; n],
         };
 
-        let preprocessed_values = trace_to_preprocessed::<Val, _, 4>(&trace);
-        let air = AluAir::<Val, 4>::new_binomial_with_preprocessed(n, 1, w, preprocessed_values, 2);
+        let preprocessed = trace_to_preprocessed::<Val, _, 4>(&trace);
+        let air = AluAir::<Val, 4>::new_binomial_with_preprocessed(n, 1, w, preprocessed, 2);
         let matrix: RowMajorMatrix<Val> = air.trace_to_matrix(&trace, 1);
-
-        let config = build_test_config();
-        let pis: Vec<Val> = vec![];
-        let (prover_data, verifier_data) =
-            setup_preprocessed(&config, &air, log2_ceil_usize(matrix.height())).unwrap();
-        let proof = prove_with_preprocessed(&config, &air, matrix, &pis, Some(&prover_data));
-        verify_with_preprocessed(&config, &air, &proof, &pis, Some(&verifier_data))
-            .expect("extension field bool_check verification failed");
+        assert_air_satisfies::<Val, EF, _>(&air, &matrix);
     }
 
-    /// The prover should panic with an unsatisfied as higher limbs constraints are not satisfied.
+    /// Soundness regression: a non-zero higher coefficient on an EF bool_check input must be
+    /// rejected. `a[0] = 1` would be a valid boolean by itself, but the extension-field
+    /// bool_check constraint also asserts `a[1] = a[2] = a[3] = 0`.
     #[test]
-    #[should_panic]
     fn bool_check_extension_field_rejects_nonzero_higher_coefficients() {
-        type ExtField = BinomialExtensionField<Val, 4>;
         let n = 4;
         let w = Val::from_u64(11);
 
-        // a[0]=1 is a valid boolean, but a[1]=5 is non-zero — must be rejected.
-        let bad = ExtField::from_basis_coefficients_slice(&[
-            Val::ONE,
-            Val::from_u64(5),
-            Val::ZERO,
-            Val::ZERO,
-        ])
-        .unwrap();
-        let zero = ExtField::ZERO;
-
-        let values: Vec<[ExtField; 4]> = vec![[bad, zero, zero, bad]; n];
-        let indices = vec![[WitnessId(1), WitnessId(0), WitnessId(0), WitnessId(1)]; n];
+        let bad =
+            EF::from_basis_coefficients_slice(&[Val::ONE, Val::from_u64(5), Val::ZERO, Val::ZERO])
+                .unwrap();
+        let zero = EF::ZERO;
 
         let trace = AluTrace {
             op_kind: vec![AluOpKind::BoolCheck; n],
-            values,
-            indices,
+            values: vec![[bad, zero, zero, bad]; n],
+            indices: vec![[WitnessId(1), WitnessId(0), WitnessId(0), WitnessId(1)]; n],
         };
 
-        let preprocessed_values = trace_to_preprocessed::<Val, _, 4>(&trace);
-        let air = AluAir::<Val, 4>::new_binomial_with_preprocessed(n, 1, w, preprocessed_values, 2);
+        let preprocessed = trace_to_preprocessed::<Val, _, 4>(&trace);
+        let air = AluAir::<Val, 4>::new_binomial_with_preprocessed(n, 1, w, preprocessed, 2);
         let matrix: RowMajorMatrix<Val> = air.trace_to_matrix(&trace, 1);
-
-        let config = build_test_config();
-        let pis: Vec<Val> = vec![];
-        let (prover_data, verifier_data) =
-            setup_preprocessed(&config, &air, log2_ceil_usize(matrix.height())).unwrap();
-        let proof = prove_with_preprocessed(&config, &air, matrix, &pis, Some(&prover_data));
-        // Verification must fail — the constraint a[1] = 0 is violated.
-        verify_with_preprocessed(&config, &air, &proof, &pis, Some(&verifier_data))
-            .expect("should have failed");
+        assert_air_rejects::<Val, EF, _>(&air, &matrix);
     }
 
     #[test]

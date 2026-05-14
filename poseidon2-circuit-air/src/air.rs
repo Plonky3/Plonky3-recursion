@@ -1,21 +1,16 @@
-use alloc::string::ToString;
-use alloc::vec;
 use alloc::vec::Vec;
 use core::borrow::Borrow;
-use core::iter;
 use core::mem::MaybeUninit;
 
-use p3_air::{Air, AirBuilder, AirLayout, BaseAir, BaseLeaf, WindowAccess};
+use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 use p3_circuit::ops::Poseidon2CircuitRow;
-use p3_field::{Dup, Field, PrimeCharacteristicRing, PrimeField};
-use p3_lookup::LookupAir;
-use p3_lookup::lookup_traits::{Direction, Kind, Lookup};
-use p3_matrix::Matrix;
+use p3_field::{Field, PrimeCharacteristicRing, PrimeField};
+use p3_lookup::builder::InteractionBuilder;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_maybe_rayon::prelude::*;
 use p3_poseidon2::GenericPoseidon2LinearLayers;
 use p3_poseidon2_air::{Poseidon2Air, Poseidon2Cols, RoundConstants, generate_trace_rows_for_perm};
-use p3_uni_stark::{SubAirBuilder, SymbolicAirBuilder, SymbolicExpression, SymbolicVariable};
+use p3_uni_stark::SubAirBuilder;
 use tracing::instrument;
 
 use crate::columns::{
@@ -102,17 +97,6 @@ pub struct Poseidon2CircuitAir<
         PARTIAL_ROUNDS,
     >,
 
-    /// Number of lookup columns registered so far.
-    ///
-    /// Each cross-table interaction adds one permutation argument column.
-    ///
-    /// There is:
-    /// - one interaction per input limb (or per packed group when D=1 and the bus width divides
-    ///   the logical width),
-    /// - likewise for rate output limbs,
-    /// - one interaction for the MMCS accumulator.
-    pub(crate) num_lookup_cols: usize,
-
     /// Flat preprocessed trace data in row-major order.
     ///
     /// Only needed by the prover.
@@ -162,7 +146,6 @@ impl<
     fn clone(&self) -> Self {
         Self {
             p3_poseidon2: self.p3_poseidon2.clone(),
-            num_lookup_cols: self.num_lookup_cols,
             preprocessed: self.preprocessed.clone(),
             min_height: self.min_height,
         }
@@ -219,7 +202,6 @@ impl<
 
         Self {
             p3_poseidon2: Poseidon2Air::new(constants),
-            num_lookup_cols: 0,
             preprocessed: Vec::new(),
             min_height: 1,
         }
@@ -259,7 +241,6 @@ impl<
 
         Self {
             p3_poseidon2: Poseidon2Air::new(constants),
-            num_lookup_cols: 0,
             preprocessed,
             min_height: 1,
         }
@@ -558,6 +539,10 @@ impl<
         num_cols::<
             Poseidon2Cols<u8, WIDTH, SBOX_DEGREE, SBOX_REGISTERS, HALF_FULL_ROUNDS, PARTIAL_ROUNDS>,
         >()
+    }
+
+    fn preprocessed_width(&self) -> usize {
+        Self::preprocessed_width()
     }
 
     /// Build the preprocessed trace matrix.
@@ -1298,7 +1283,7 @@ pub unsafe fn eval_unchecked<
 }
 
 impl<
-    AB: AirBuilder,
+    AB: AirBuilder + InteractionBuilder,
     LinearLayers: GenericPoseidon2LinearLayers<WIDTH>,
     const D: usize,
     const WIDTH: usize,
@@ -1342,12 +1327,29 @@ where
         let local = main.current_slice().borrow();
         let next = main.next_slice().borrow();
 
-        // Get the preprocessed trace window and extract the next row.
+        // Get the preprocessed trace window and extract both rows.
         //
         // The clone here copies a small window struct (two slice
         // pointers), not the full preprocessed matrix.
         let preprocessed = builder.preprocessed().clone();
+        let local_preprocessed = preprocessed.current_slice();
         let next_preprocessed = preprocessed.next_slice();
+
+        // Record cross-table interactions on the WitnessChecks bus before the
+        // borrow checker locks `builder` to the constraint methods.
+        eval_interactions::<
+            AB,
+            D,
+            WIDTH,
+            WIDTH_EXT,
+            RATE_EXT,
+            CAPACITY_EXT,
+            SBOX_DEGREE,
+            SBOX_REGISTERS,
+            HALF_FULL_ROUNDS,
+            PARTIAL_ROUNDS,
+            WITNESS_EXT_D,
+        >(builder, local, local_preprocessed, next_preprocessed);
 
         // Delegate to the core constraint function, which enforces all
         // five constraint groups.
@@ -1368,9 +1370,11 @@ where
     }
 }
 
-impl<
-    F: PrimeField + PrimeCharacteristicRing,
-    LinearLayers: GenericPoseidon2LinearLayers<WIDTH>,
+/// Push the WitnessChecks CTL interactions for one row of the Poseidon2 circuit AIR: input
+/// limb sends, output limb receives, and the MMCS-accumulator send at the end of each
+/// Merkle chain.
+fn eval_interactions<
+    AB: AirBuilder + InteractionBuilder,
     const D: usize,
     const WIDTH: usize,
     const WIDTH_EXT: usize,
@@ -1381,327 +1385,140 @@ impl<
     const HALF_FULL_ROUNDS: usize,
     const PARTIAL_ROUNDS: usize,
     const WITNESS_EXT_D: usize,
-> LookupAir<F>
-    for Poseidon2CircuitAir<
-        F,
-        LinearLayers,
-        D,
-        WIDTH,
-        WIDTH_EXT,
-        RATE_EXT,
-        CAPACITY_EXT,
-        SBOX_DEGREE,
-        SBOX_REGISTERS,
-        HALF_FULL_ROUNDS,
-        PARTIAL_ROUNDS,
-        WITNESS_EXT_D,
-    >
+>(
+    builder: &mut AB,
+    local: &Poseidon2CircuitCols<
+        AB::Var,
+        Poseidon2Cols<
+            AB::Var,
+            WIDTH,
+            SBOX_DEGREE,
+            SBOX_REGISTERS,
+            HALF_FULL_ROUNDS,
+            PARTIAL_ROUNDS,
+        >,
+    >,
+    local_preprocessed: &[AB::Var],
+    next_preprocessed: &[AB::Var],
+) where
+    AB::F: PrimeField,
 {
-    /// Allocate one permutation argument column and return its index.
-    fn add_lookup_columns(&mut self) -> Vec<usize> {
-        let lookup_column_idx = self.num_lookup_cols;
-        self.num_lookup_cols += 1;
-        vec![lookup_column_idx]
-    }
+    let compact_d1 = poseidon2_uses_compact_d1_preprocessed(D, WIDTH_EXT, RATE_EXT);
 
-    /// Build symbolic lookup descriptions for all CTL interactions.
-    ///
-    /// Uses a symbolic AIR builder to produce symbolic expressions for
-    /// each lookup's key, multiplicity, and direction.
-    ///
-    /// The STARK framework compiles these into permutation argument constraints.
-    fn get_lookups(&mut self) -> Vec<Lookup<F>> {
-        // Build a symbolic AIR builder.
-        //
-        // This creates one symbolic variable per column. We use these
-        // symbolic variables to express lookup keys and multiplicities
-        // as formal polynomials.
-        //
-        // The STARK framework later evaluates these polynomials at
-        // concrete points to enforce the permutation argument.
-        let air_layout = AirLayout {
-            preprocessed_width: Self::preprocessed_width(),
-            main_width: BaseAir::<F>::width(self),
-            num_public_values: 0,
-            permutation_width: 0,
-            num_permutation_challenges: 0,
-            num_permutation_values: 0,
-            num_periodic_columns: 0,
-        };
-        let symbolic_air_builder = SymbolicAirBuilder::<F>::new(air_layout);
-        let symbolic_main = symbolic_air_builder.main();
-        let symbolic_main_local = symbolic_main.current_slice();
+    if compact_d1 {
+        let hdr = poseidon2_d1_compact_preprocessed_header_cols(RATE_EXT);
+        let tail = hdr + WIDTH_EXT + RATE_EXT + RATE_EXT;
+        debug_assert_eq!(local_preprocessed.len(), tail + 4);
+        debug_assert_eq!(next_preprocessed.len(), tail + 4);
 
-        let local: &Poseidon2CircuitCols<
-            SymbolicVariable<F>,
-            Poseidon2Cols<
-                SymbolicVariable<F>,
-                WIDTH,
-                SBOX_DEGREE,
-                SBOX_REGISTERS,
-                HALF_FULL_ROUNDS,
-                PARTIAL_ROUNDS,
-            >,
-        > = (*symbolic_main_local).borrow();
+        let merkle_path_p: AB::Expr = local_preprocessed[tail + 3].into();
+        let not_merkle = AB::Expr::ONE - merkle_path_p;
+        let idx_base = hdr;
 
-        // Extract the current row (row 0) and next row (row 1) from the
-        // preprocessed trace, then cast them to typed structs.
-        //
-        // We need both rows because some multiplicities depend on the
-        // next row's chain-start flag.
-        let preprocessed = symbolic_air_builder.preprocessed();
-        let local_preprocessed = preprocessed
-            .row_slice(0)
-            .expect("The preprocessed matrix has only one row?");
-        let local_flat: &[SymbolicVariable<F>] = (*local_preprocessed).borrow();
-        let next_preprocessed = preprocessed
-            .row_slice(1)
-            .expect("The preprocessed matrix has only one row?");
-        let next_flat: &[SymbolicVariable<F>] = (*next_preprocessed).borrow();
-
-        // Total lookups: one per input limb + one per rate output limb + MMCS
-        // (compact D=1 layout counts input CTLs only over the rate).
-        let compact_d1 = poseidon2_uses_compact_d1_preprocessed(D, WIDTH_EXT, RATE_EXT);
-        let input_lookup_count = if compact_d1 { RATE_EXT } else { WIDTH_EXT };
-        let output_lookup_count = RATE_EXT;
-        let mut lookups = Vec::with_capacity(input_lookup_count + output_lookup_count + 1);
-
-        if compact_d1 {
-            let hdr = poseidon2_d1_compact_preprocessed_header_cols(RATE_EXT);
-            let tail = hdr + WIDTH_EXT + RATE_EXT + RATE_EXT;
-            debug_assert_eq!(local_flat.len(), tail + 4);
-            debug_assert_eq!(next_flat.len(), tail + 4);
-
-            let merkle_path_p = local_flat[tail + 3];
-            let not_merkle = SymbolicExpression::Leaf(BaseLeaf::Constant(F::ONE))
-                - SymbolicExpression::from(merkle_path_p);
-            let idx_base = hdr;
-
-            // Input limb lookups (rate only; sponge new_start capacity is zero-asserted in eval)
-            for limb_idx in 0..RATE_EXT {
-                let idx = local_flat[idx_base + limb_idx];
-                let in_ctl = local_flat[limb_idx];
-                let mut input_idx_limb: Vec<SymbolicExpression<F>> = iter::once(idx)
-                    .chain(
-                        local.poseidon2.inputs[limb_idx * D..(limb_idx + 1) * D]
-                            .iter()
-                            .copied(),
-                    )
-                    .map(SymbolicExpression::from)
-                    .collect();
-                input_idx_limb.extend(iter::repeat_n(
-                    SymbolicExpression::Leaf(BaseLeaf::Constant(F::ZERO)),
-                    WITNESS_EXT_D - D,
-                ));
-                let mult = SymbolicExpression::from(in_ctl) * not_merkle.dup();
-                lookups.push(LookupAir::register_lookup(
-                    self,
-                    Kind::Global("WitnessChecks".to_string()),
-                    &[(input_idx_limb, mult, Direction::Send)],
-                ));
+        // Input limb sends (rate only; capacity is zero-asserted in eval)
+        for limb_idx in 0..RATE_EXT {
+            let idx: AB::Expr = local_preprocessed[idx_base + limb_idx].into();
+            let in_ctl: AB::Expr = local_preprocessed[limb_idx].into();
+            let mut input_idx_limb: Vec<AB::Expr> = Vec::with_capacity(WITNESS_EXT_D + 1);
+            input_idx_limb.push(idx);
+            for d in 0..D {
+                input_idx_limb.push(local.poseidon2.inputs[limb_idx * D + d].into());
             }
-
-            // Output limb lookups
-            let out_idx_base = idx_base + WIDTH_EXT;
-            let out_ctl_base = out_idx_base + RATE_EXT;
-            for limb_idx in 0..RATE_EXT {
-                let idx = local_flat[out_idx_base + limb_idx];
-                let out_ctl = local_flat[out_ctl_base + limb_idx];
-                let mut output_idx_limb: Vec<SymbolicExpression<F>> = iter::once(idx)
-                    .chain(
-                        local.poseidon2.ending_full_rounds[HALF_FULL_ROUNDS - 1].post
-                            [limb_idx * D..(limb_idx + 1) * D]
-                            .iter()
-                            .copied(),
-                    )
-                    .map(SymbolicExpression::from)
-                    .collect();
-                output_idx_limb.extend(iter::repeat_n(
-                    SymbolicExpression::Leaf(BaseLeaf::Constant(F::ZERO)),
-                    WITNESS_EXT_D - D,
-                ));
-                lookups.push(LookupAir::register_lookup(
-                    self,
-                    Kind::Global("WitnessChecks".to_string()),
-                    &[(
-                        output_idx_limb,
-                        SymbolicExpression::from(out_ctl),
-                        Direction::Receive,
-                    )],
-                ));
+            for _ in 0..(WITNESS_EXT_D - D) {
+                input_idx_limb.push(AB::Expr::ZERO);
             }
-
-            let multiplicity = SymbolicExpression::from(local_flat[tail + 1])
-                * SymbolicExpression::from(next_flat[tail + 2]);
-            let mut mmcs_index_sum_lookup = vec![
-                SymbolicExpression::from(local_flat[tail]),
-                SymbolicExpression::from(local.mmcs_index_sum),
-            ];
-            mmcs_index_sum_lookup.extend(iter::repeat_n(
-                SymbolicExpression::Leaf(BaseLeaf::Constant(F::ZERO)),
-                WITNESS_EXT_D - 1,
-            ));
-            lookups.push(LookupAir::register_lookup(
-                self,
-                Kind::Global("WitnessChecks".to_string()),
-                &[(mmcs_index_sum_lookup, multiplicity, Direction::Send)],
-            ));
-        } else {
-            let local_preprocessed: &Poseidon2PreprocessedRow<
-                WIDTH_EXT,
-                RATE_EXT,
-                SymbolicVariable<F>,
-            > = local_flat.borrow();
-            let next_preprocessed: &Poseidon2PreprocessedRow<
-                WIDTH_EXT,
-                RATE_EXT,
-                SymbolicVariable<F>,
-            > = next_flat.borrow();
-
-            // Input limb lookups
-            //
-            // Input CTL lookups are disabled on Merkle rows. If they were
-            // active, permuting the CTL metadata based on the runtime
-            // direction bit would push the constraint degree above 3.
-            //
-            // Disabling input CTL on Merkle rows is sound because:
-            //
-            //   - Digest values in the row were already CTL-verified when
-            //     they were first created (on a non-Merkle row).
-            //
-            //   - Sibling values are private proof data — wrong siblings
-            //     simply produce the wrong Merkle root.
-            //
-            //   - Chained values are AIR-constrained to equal the previous
-            //     permutation output.
-
-            // Compute (1 − merkle_path). This is 1 on sponge rows and 0 on
-            // Merkle rows. Used to disable input CTL on Merkle rows.
-            let not_merkle = SymbolicExpression::Leaf(BaseLeaf::Constant(F::ONE))
-                - SymbolicExpression::from(local_preprocessed.merkle_path);
-
-            for limb_idx in 0..WIDTH_EXT {
-                let limb = &local_preprocessed.input_limbs[limb_idx];
-
-                // Build the lookup key: [witness_index, elem_0, elem_1, ..., elem_{D-1}].
-                //
-                // The witness index tells the Witness table which slot to
-                // look up. The extension-field elements are the actual values
-                // being checked.
-                let mut input_idx_limb: Vec<SymbolicExpression<F>> = iter::once(limb.idx)
-                    .chain(
-                        local.poseidon2.inputs[limb_idx * D..(limb_idx + 1) * D]
-                            .iter()
-                            .copied(),
-                    )
-                    .map(SymbolicExpression::from)
-                    .collect();
-                input_idx_limb.extend(iter::repeat_n(
-                    SymbolicExpression::Leaf(BaseLeaf::Constant(F::ZERO)),
-                    WITNESS_EXT_D - D,
-                ));
-
-                // Multiplicity = CTL enable flag × (1 − merkle_path).
-                //
-                // This is zero on Merkle rows (disabling the lookup) and
-                // equal to the CTL flag on sponge rows.
-                //
-                // Both factors are preprocessed, so this product costs
-                // nothing at constraint-evaluation time.
-                let mult = SymbolicExpression::from(limb.in_ctl) * not_merkle.dup();
-
-                // Direction::Send means this table is the sender:
-                //
-                // "I claim my input limb matches the value in the Witness table at this index."
-                lookups.push(LookupAir::register_lookup(
-                    self,
-                    Kind::Global("WitnessChecks".to_string()),
-                    &[(input_idx_limb, mult, Direction::Send)],
-                ));
-            }
-
-            // Output limb lookups
-            //
-            // Each publicly exposed output limb receives its value from the
-            // Witness table.
-            //
-            // The key has the same format as input lookups: witness index
-            // followed by the extension-field elements.
-            //
-            // Direction::Receive means "the Witness table sent this value
-            // to me." If the output doesn't match, the permutation argument
-            // will fail.
-
-            for limb_idx in 0..RATE_EXT {
-                let limb = &local_preprocessed.output_limbs[limb_idx];
-
-                // Build the lookup key from the output state.
-                //
-                // The output lives in the last full round's post-state.
-                let mut output_idx_limb: Vec<SymbolicExpression<F>> = iter::once(limb.idx)
-                    .chain(
-                        local.poseidon2.ending_full_rounds[HALF_FULL_ROUNDS - 1].post
-                            [limb_idx * D..(limb_idx + 1) * D]
-                            .iter()
-                            .copied(),
-                    )
-                    .map(SymbolicExpression::from)
-                    .collect();
-                output_idx_limb.extend(iter::repeat_n(
-                    SymbolicExpression::Leaf(BaseLeaf::Constant(F::ZERO)),
-                    WITNESS_EXT_D - D,
-                ));
-
-                lookups.push(LookupAir::register_lookup(
-                    self,
-                    Kind::Global("WitnessChecks".to_string()),
-                    &[(
-                        output_idx_limb,
-                        SymbolicExpression::from(limb.out_ctl),
-                        Direction::Receive,
-                    )],
-                ));
-            }
-
-            // MMCS accumulator lookup
-            //
-            // At the end of a Merkle chain the accumulated leaf index must
-            // be sent to the Witness table for verification.
-            //
-            // The lookup fires on the last Merkle row of a chain. We
-            // detect this as: the current row has the MMCS Merkle flag set
-            // AND the next row starts a new chain.
-            //
-            // Both flags are preprocessed, so the multiplicity is a
-            // degree-2 expression that costs nothing extra.
-            //
-            // The accumulator is a single base-field element. The Witness
-            // table expects extension-field-width keys, so we pad with
-            // zeros to fill the remaining extension-degree minus one slots.
-
-            let multiplicity = local_preprocessed.mmcs_merkle_flag * next_preprocessed.new_start;
-
-            // Build the lookup key: [witness_index, accumulator, 0, 0, ...].
-            //
-            // The accumulator is one base-field element. We zero-pad to
-            // match the extension-field width expected by the Witness table.
-            let mut mmcs_index_sum_lookup = vec![
-                SymbolicExpression::from(local_preprocessed.mmcs_index_sum_ctl_idx),
-                SymbolicExpression::from(local.mmcs_index_sum),
-            ];
-            mmcs_index_sum_lookup.extend(iter::repeat_n(
-                SymbolicExpression::Leaf(BaseLeaf::Constant(F::ZERO)),
-                WITNESS_EXT_D - 1,
-            ));
-
-            lookups.push(LookupAir::register_lookup(
-                self,
-                Kind::Global("WitnessChecks".to_string()),
-                &[(mmcs_index_sum_lookup, multiplicity, Direction::Send)],
-            ));
+            let mult = in_ctl * not_merkle.clone();
+            builder.push_interaction("WitnessChecks", input_idx_limb, -mult, 1);
         }
 
-        lookups
+        // Output limb receives
+        let out_idx_base = idx_base + WIDTH_EXT;
+        let out_ctl_base = out_idx_base + RATE_EXT;
+        for limb_idx in 0..RATE_EXT {
+            let idx: AB::Expr = local_preprocessed[out_idx_base + limb_idx].into();
+            let out_ctl: AB::Expr = local_preprocessed[out_ctl_base + limb_idx].into();
+            let mut output_idx_limb: Vec<AB::Expr> = Vec::with_capacity(WITNESS_EXT_D + 1);
+            output_idx_limb.push(idx);
+            for d in 0..D {
+                output_idx_limb.push(
+                    local.poseidon2.ending_full_rounds[HALF_FULL_ROUNDS - 1].post[limb_idx * D + d]
+                        .into(),
+                );
+            }
+            for _ in 0..(WITNESS_EXT_D - D) {
+                output_idx_limb.push(AB::Expr::ZERO);
+            }
+            builder.push_interaction("WitnessChecks", output_idx_limb, out_ctl, 1);
+        }
+
+        // MMCS accumulator send.
+        let mult_a: AB::Expr = local_preprocessed[tail + 1].into();
+        let mult_b: AB::Expr = next_preprocessed[tail + 2].into();
+        let multiplicity = mult_a * mult_b;
+        let mut mmcs_index_sum_lookup: Vec<AB::Expr> = Vec::with_capacity(WITNESS_EXT_D + 1);
+        mmcs_index_sum_lookup.push(local_preprocessed[tail].into());
+        mmcs_index_sum_lookup.push(local.mmcs_index_sum.into());
+        for _ in 0..(WITNESS_EXT_D - 1) {
+            mmcs_index_sum_lookup.push(AB::Expr::ZERO);
+        }
+        builder.push_interaction("WitnessChecks", mmcs_index_sum_lookup, -multiplicity, 1);
+    } else {
+        let local_pre: &Poseidon2PreprocessedRow<WIDTH_EXT, RATE_EXT, AB::Var> =
+            local_preprocessed.borrow();
+        let next_pre: &Poseidon2PreprocessedRow<WIDTH_EXT, RATE_EXT, AB::Var> =
+            next_preprocessed.borrow();
+
+        // Input limb sends; disabled on Merkle rows (mult zero) so degree stays ≤ 3.
+        let not_merkle = AB::Expr::ONE - local_pre.merkle_path.into();
+
+        for limb_idx in 0..WIDTH_EXT {
+            let limb = &local_pre.input_limbs[limb_idx];
+
+            let mut input_idx_limb: Vec<AB::Expr> = Vec::with_capacity(WITNESS_EXT_D + 1);
+            input_idx_limb.push(limb.idx.into());
+            for d in 0..D {
+                input_idx_limb.push(local.poseidon2.inputs[limb_idx * D + d].into());
+            }
+            for _ in 0..(WITNESS_EXT_D - D) {
+                input_idx_limb.push(AB::Expr::ZERO);
+            }
+
+            let in_ctl: AB::Expr = limb.in_ctl.into();
+            let mult = in_ctl * not_merkle.clone();
+            builder.push_interaction("WitnessChecks", input_idx_limb, -mult, 1);
+        }
+
+        // Output limb receives.
+        for limb_idx in 0..RATE_EXT {
+            let limb = &local_pre.output_limbs[limb_idx];
+
+            let mut output_idx_limb: Vec<AB::Expr> = Vec::with_capacity(WITNESS_EXT_D + 1);
+            output_idx_limb.push(limb.idx.into());
+            for d in 0..D {
+                output_idx_limb.push(
+                    local.poseidon2.ending_full_rounds[HALF_FULL_ROUNDS - 1].post[limb_idx * D + d]
+                        .into(),
+                );
+            }
+            for _ in 0..(WITNESS_EXT_D - D) {
+                output_idx_limb.push(AB::Expr::ZERO);
+            }
+
+            builder.push_interaction("WitnessChecks", output_idx_limb, limb.out_ctl.into(), 1);
+        }
+
+        // MMCS accumulator send.
+        let mmf: AB::Expr = local_pre.mmcs_merkle_flag.into();
+        let next_ns: AB::Expr = next_pre.new_start.into();
+        let multiplicity = mmf * next_ns;
+
+        let mut mmcs_index_sum_lookup: Vec<AB::Expr> = Vec::with_capacity(WITNESS_EXT_D + 1);
+        mmcs_index_sum_lookup.push(local_pre.mmcs_index_sum_ctl_idx.into());
+        mmcs_index_sum_lookup.push(local.mmcs_index_sum.into());
+        for _ in 0..(WITNESS_EXT_D - 1) {
+            mmcs_index_sum_lookup.push(AB::Expr::ZERO);
+        }
+        builder.push_interaction("WitnessChecks", mmcs_index_sum_lookup, -multiplicity, 1);
     }
 }
 
@@ -1710,20 +1527,12 @@ mod test {
     use alloc::vec;
 
     use p3_baby_bear::{BabyBear, Poseidon2BabyBear};
-    use p3_challenger::{HashChallenger, SerializingChallenger32};
-    use p3_commit::ExtensionMmcs;
     use p3_field::extension::BinomialExtensionField;
-    use p3_fri::{TwoAdicFriPcs, create_benchmark_fri_params};
-    use p3_keccak::{Keccak256Hash, KeccakF};
-    use p3_merkle_tree::MerkleTreeHidingMmcs;
+    use p3_matrix::Matrix;
     use p3_poseidon2::ExternalLayerConstants;
     use p3_poseidon2_air::RoundConstants;
-    use p3_symmetric::{
-        CompressionFunctionFromHasher, PaddingFreeSponge, Permutation, SerializingHasher,
-    };
-    use p3_uni_stark::{
-        StarkConfig, prove_with_preprocessed, setup_preprocessed, verify_with_preprocessed,
-    };
+    use p3_symmetric::Permutation;
+    use p3_test_utils::air_satisfaction::assert_air_satisfies;
     use rand::rngs::SmallRng;
     use rand::{RngExt, SeedableRng};
 
@@ -1732,254 +1541,35 @@ mod test {
     use crate::columns::{POSEIDON2_LIMBS, POSEIDON2_PUBLIC_OUTPUT_LIMBS};
 
     const WIDTH: usize = 16;
+    type Val = BabyBear;
+    type EF = BinomialExtensionField<Val, 4>;
 
-    #[test]
-    fn prove_poseidon2_sponge() -> Result<
-        (),
-        p3_uni_stark::VerificationError<
-            p3_fri::verifier::FriError<
-                p3_merkle_tree::MerkleTreeError,
-                p3_merkle_tree::MerkleTreeError,
-            >,
-        >,
-    > {
-        type Val = BabyBear;
-        type Challenge = BinomialExtensionField<Val, 4>;
-
-        type ByteHash = Keccak256Hash;
-        let byte_hash = ByteHash {};
-
-        type U64Hash = PaddingFreeSponge<KeccakF, 25, 17, 4>;
-        let u64_hash = U64Hash::new(KeccakF {});
-
-        type FieldHash = SerializingHasher<U64Hash>;
-        let field_hash = FieldHash::new(u64_hash);
-
-        type MyCompress = CompressionFunctionFromHasher<U64Hash, 2, 4>;
-        let compress = MyCompress::new(u64_hash);
-
-        // WARNING: DO NOT USE SmallRng in proper applications! Use a real PRNG instead!
-        type MyMmcs = MerkleTreeHidingMmcs<
-            [Val; p3_keccak::VECTOR_LEN],
-            [u64; p3_keccak::VECTOR_LEN],
-            FieldHash,
-            MyCompress,
-            SmallRng,
-            2,
-            4,
-            4,
-        >;
-        let mut rng = SmallRng::seed_from_u64(1);
-        let val_mmcs = MyMmcs::new(field_hash, compress, 0, rng.clone());
-
-        type ChallengeMmcs = ExtensionMmcs<Val, Challenge, MyMmcs>;
-        let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
-
-        type Challenger = SerializingChallenger32<Val, HashChallenger<u8, ByteHash, 32>>;
-        let challenger = Challenger::from_hasher(vec![], byte_hash);
-
-        let mut fri_params = create_benchmark_fri_params(challenge_mmcs);
-        fri_params.log_blowup = 4;
-
-        let beginning_full_constants = rng.random();
-        let partial_constants = rng.random();
-        let ending_full_constants = rng.random();
-
-        let constants = RoundConstants::new(
-            beginning_full_constants,
-            partial_constants,
-            ending_full_constants,
-        );
-
+    /// Build constants + permutation from a seeded RNG; the same constants drive both the AIR
+    /// and the native permutation used to compute reference outputs.
+    fn make_constants_and_perm(
+        rng: &mut SmallRng,
+    ) -> (RoundConstants<Val, WIDTH, 4, 13>, Poseidon2BabyBear<WIDTH>) {
+        let beginning: [[Val; WIDTH]; 4] = rng.random();
+        let partial: [Val; 13] = rng.random();
+        let ending: [[Val; WIDTH]; 4] = rng.random();
+        let constants = RoundConstants::new(beginning, partial, ending);
         let perm = Poseidon2BabyBear::<WIDTH>::new(
-            ExternalLayerConstants::new(
-                beginning_full_constants.to_vec(),
-                ending_full_constants.to_vec(),
-            ),
-            partial_constants.to_vec(),
+            ExternalLayerConstants::new(beginning.to_vec(), ending.to_vec()),
+            partial.to_vec(),
         );
-
-        // Generate random inputs.
-        let mut rng = SmallRng::seed_from_u64(1);
-
-        // Row A: new_start=true, sponge mode - use random initial state
-        let state_a: [Val; WIDTH] = core::array::from_fn(|_| rng.random());
-        let output_a = perm.permute(state_a);
-
-        let sponge_a: Poseidon2CircuitRow<Val> = Poseidon2CircuitRow {
-            new_start: true,
-            merkle_path: false,
-            mmcs_bit: false,
-            mmcs_index_sum: Val::ZERO,
-            input_values: state_a.to_vec(),
-            in_ctl: vec![false; POSEIDON2_LIMBS],
-            input_indices: vec![0; POSEIDON2_LIMBS],
-            out_ctl: vec![false; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
-            output_indices: vec![0; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
-            mmcs_index_sum_idx: 0,
-            mmcs_ctl_enabled: false,
-        };
-
-        // Row B: new_start=false, sponge mode - chain from output_a
-        let state_b = output_a;
-        let output_b = perm.permute(state_b);
-
-        let sponge_b: Poseidon2CircuitRow<Val> = Poseidon2CircuitRow {
-            new_start: false,
-            merkle_path: false,
-            mmcs_bit: true,
-            mmcs_index_sum: Val::ZERO,
-            input_values: state_b.to_vec(),
-            in_ctl: vec![false; POSEIDON2_LIMBS],
-            input_indices: vec![0; POSEIDON2_LIMBS],
-            out_ctl: vec![false; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
-            output_indices: vec![0; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
-            mmcs_index_sum_idx: 0,
-            mmcs_ctl_enabled: false,
-        };
-
-        // Row C: new_start=false, merkle mode, mmcs_bit=false
-        // In merkle mode with mmcs_bit=0: prev digest (out[0..1]) goes to input limbs 0..1
-        // The rest (limbs 2..3) can be zeros (sibling)
-        const D: usize = 4; // extension degree
-        let mut state_c = [Val::ZERO; WIDTH];
-        // Chain prev output[0..2*D] into input[0..2*D] (limbs 0-1)
-        state_c[0..2 * D].copy_from_slice(&output_b[0..2 * D]);
-        let output_c = perm.permute(state_c);
-
-        let sponge_c: Poseidon2CircuitRow<Val> = Poseidon2CircuitRow {
-            new_start: false,
-            merkle_path: true,
-            mmcs_bit: false,
-            mmcs_index_sum: Val::ZERO,
-            input_values: state_c.to_vec(),
-            in_ctl: vec![false; POSEIDON2_LIMBS],
-            input_indices: vec![0; POSEIDON2_LIMBS],
-            out_ctl: vec![false; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
-            output_indices: vec![0; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
-            mmcs_index_sum_idx: 0,
-            mmcs_ctl_enabled: false,
-        };
-
-        // Row D: new_start=false, sponge mode - chain from output_c
-        let state_d = output_c;
-
-        let sponge_d: Poseidon2CircuitRow<Val> = Poseidon2CircuitRow {
-            new_start: false,
-            merkle_path: false,
-            mmcs_bit: false,
-            mmcs_index_sum: Val::ZERO,
-            input_values: state_d.to_vec(),
-            in_ctl: vec![false; POSEIDON2_LIMBS],
-            input_indices: vec![0; POSEIDON2_LIMBS],
-            out_ctl: vec![false; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
-            output_indices: vec![0; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
-            mmcs_index_sum_idx: 0,
-            mmcs_ctl_enabled: false,
-        };
-
-        let mut rows = vec![sponge_a, sponge_b, sponge_c, sponge_d];
-        let degree_bits = 5;
-        let target_rows = 1 << degree_bits;
-        if rows.len() < target_rows {
-            // Filler rows must have new_start=true to avoid chaining constraints
-            let filler = Poseidon2CircuitRow {
-                new_start: true,
-                merkle_path: false,
-                mmcs_bit: false,
-                mmcs_index_sum: Val::ZERO,
-                input_values: Val::zero_vec(WIDTH),
-                in_ctl: vec![false; POSEIDON2_LIMBS],
-                input_indices: vec![0; POSEIDON2_LIMBS],
-                out_ctl: vec![false; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
-                output_indices: vec![0; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
-                mmcs_index_sum_idx: 0,
-                mmcs_ctl_enabled: false,
-            };
-            rows.resize(target_rows, filler);
-        }
-
-        let preprocessed = extract_preprocessed_from_operations::<4, 2, Val, Val>(&rows, 4, 4);
-        let air = Poseidon2CircuitAirBabyBearD4Width16::new_with_preprocessed(
-            constants.clone(),
-            preprocessed,
-        );
-
-        let trace = air.generate_trace_rows(&rows, &constants, fri_params.log_blowup);
-
-        type Dft = p3_dft::Radix2Bowers;
-        let dft = Dft::default();
-
-        type Pcs = TwoAdicFriPcs<Val, Dft, MyMmcs, ChallengeMmcs>;
-        let pcs = Pcs::new(dft, val_mmcs, fri_params);
-
-        type MyConfig = StarkConfig<Pcs, Challenge, Challenger>;
-        let config = MyConfig::new(pcs, challenger);
-
-        let (preprocessed_prover, preprocessed_verifier) =
-            setup_preprocessed(&config, &air, degree_bits).unzip();
-        let proof =
-            prove_with_preprocessed(&config, &air, trace, &[], preprocessed_prover.as_ref());
-
-        verify_with_preprocessed(&config, &air, &proof, &[], preprocessed_verifier.as_ref())
+        (constants, perm)
     }
 
-    #[test]
-    fn test_air_constraint_degree() {
-        let mut rng = SmallRng::seed_from_u64(1);
-        let constants = RoundConstants::new(rng.random(), rng.random(), rng.random());
-
-        let air = Poseidon2CircuitAirBabyBearD4Width16::new(constants);
-        p3_test_utils::assert_air_constraint_degree!(air, "Poseidon2CircuitAir");
-    }
-
-    /// Helper: set up STARK infrastructure and prove/verify a set of rows.
-    fn prove_and_verify(
-        rows: &[Poseidon2CircuitRow<BabyBear>],
-        constants: &RoundConstants<BabyBear, WIDTH, 4, 13>,
-        perm: &Poseidon2BabyBear<WIDTH>,
-    ) -> Result<
-        (),
-        p3_uni_stark::VerificationError<
-            p3_fri::verifier::FriError<
-                p3_merkle_tree::MerkleTreeError,
-                p3_merkle_tree::MerkleTreeError,
-            >,
-        >,
-    > {
-        let _ = perm; // used only by callers to build rows
-        type Val = BabyBear;
-        type Challenge = BinomialExtensionField<Val, 4>;
-        type ByteHash = Keccak256Hash;
-        let byte_hash = ByteHash {};
-        type U64Hash = PaddingFreeSponge<KeccakF, 25, 17, 4>;
-        let u64_hash = U64Hash::new(KeccakF {});
-        type FieldHash = SerializingHasher<U64Hash>;
-        let field_hash = FieldHash::new(u64_hash);
-        type MyCompress = CompressionFunctionFromHasher<U64Hash, 2, 4>;
-        let compress = MyCompress::new(u64_hash);
-        type MyMmcs = MerkleTreeHidingMmcs<
-            [Val; p3_keccak::VECTOR_LEN],
-            [u64; p3_keccak::VECTOR_LEN],
-            FieldHash,
-            MyCompress,
-            SmallRng,
-            2,
-            4,
-            4,
-        >;
-        let rng = SmallRng::seed_from_u64(1);
-        let val_mmcs = MyMmcs::new(field_hash, compress, 0, rng);
-        type ChallengeMmcs = ExtensionMmcs<Val, Challenge, MyMmcs>;
-        let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
-        type Challenger = SerializingChallenger32<Val, HashChallenger<u8, ByteHash, 32>>;
-        let challenger = Challenger::from_hasher(vec![], byte_hash);
-        let mut fri_params = create_benchmark_fri_params(challenge_mmcs);
-        fri_params.log_blowup = 4;
-
+    /// Pad a row list to `1 << degree_bits` rows with `new_start=true` fillers so the chaining
+    /// constraints don't fire across the boundary, then build the AIR with its preprocessed
+    /// trace and the materialized main trace, and assert constraint satisfaction.
+    fn check_rows(
+        rows: Vec<Poseidon2CircuitRow<Val>>,
+        constants: &RoundConstants<Val, WIDTH, 4, 13>,
+    ) {
         let degree_bits = 5;
         let target_rows = 1usize << degree_bits;
-        let mut padded = rows.to_vec();
+        let mut padded = rows;
         if padded.len() < target_rows {
             let filler = Poseidon2CircuitRow {
                 new_start: true,
@@ -2002,58 +1592,97 @@ mod test {
             constants.clone(),
             preprocessed,
         );
-        let trace = air.generate_trace_rows(&padded, constants, fri_params.log_blowup);
-
-        type Dft = p3_dft::Radix2Bowers;
-        let dft = Dft::default();
-        type Pcs = TwoAdicFriPcs<Val, Dft, MyMmcs, ChallengeMmcs>;
-        let pcs = Pcs::new(dft, val_mmcs, fri_params);
-        type MyConfig = StarkConfig<Pcs, Challenge, Challenger>;
-        let config = MyConfig::new(pcs, challenger);
-
-        let (preprocessed_prover, preprocessed_verifier) =
-            setup_preprocessed(&config, &air, degree_bits).unzip();
-        let proof =
-            prove_with_preprocessed(&config, &air, trace, &[], preprocessed_prover.as_ref());
-        verify_with_preprocessed(&config, &air, &proof, &[], preprocessed_verifier.as_ref())
-    }
-
-    fn make_constants_and_perm(
-        rng: &mut SmallRng,
-    ) -> (
-        RoundConstants<BabyBear, WIDTH, 4, 13>,
-        Poseidon2BabyBear<WIDTH>,
-    ) {
-        let beginning: [[BabyBear; WIDTH]; 4] = rng.random();
-        let partial: [BabyBear; 13] = rng.random();
-        let ending: [[BabyBear; WIDTH]; 4] = rng.random();
-        let constants = RoundConstants::new(beginning, partial, ending);
-        let perm = Poseidon2BabyBear::<WIDTH>::new(
-            ExternalLayerConstants::new(beginning.to_vec(), ending.to_vec()),
-            partial.to_vec(),
-        );
-        (constants, perm)
+        let trace = air.generate_trace_rows(&padded, constants, 0);
+        assert_air_satisfies::<Val, EF, _>(&air, &trace);
     }
 
     #[test]
-    fn prove_poseidon2_merkle_right() -> Result<
-        (),
-        p3_uni_stark::VerificationError<
-            p3_fri::verifier::FriError<
-                p3_merkle_tree::MerkleTreeError,
-                p3_merkle_tree::MerkleTreeError,
-            >,
-        >,
-    > {
-        type Val = BabyBear;
+    fn satisfies_poseidon2_sponge() {
+        let mut rng = SmallRng::seed_from_u64(1);
+        let (constants, perm) = make_constants_and_perm(&mut rng);
+
+        // Row A: new_start=true, sponge mode - use random initial state.
+        let state_a: [Val; WIDTH] = core::array::from_fn(|_| rng.random());
+        let output_a = perm.permute(state_a);
+        let sponge_a = Poseidon2CircuitRow {
+            new_start: true,
+            merkle_path: false,
+            mmcs_bit: false,
+            mmcs_index_sum: Val::ZERO,
+            input_values: state_a.to_vec(),
+            in_ctl: vec![false; POSEIDON2_LIMBS],
+            input_indices: vec![0; POSEIDON2_LIMBS],
+            out_ctl: vec![false; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
+            output_indices: vec![0; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
+            mmcs_index_sum_idx: 0,
+            mmcs_ctl_enabled: false,
+        };
+
+        // Row B: new_start=false, sponge mode - chain from output_a.
+        let state_b = output_a;
+        let output_b = perm.permute(state_b);
+        let sponge_b = Poseidon2CircuitRow {
+            new_start: false,
+            merkle_path: false,
+            mmcs_bit: true,
+            mmcs_index_sum: Val::ZERO,
+            input_values: state_b.to_vec(),
+            in_ctl: vec![false; POSEIDON2_LIMBS],
+            input_indices: vec![0; POSEIDON2_LIMBS],
+            out_ctl: vec![false; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
+            output_indices: vec![0; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
+            mmcs_index_sum_idx: 0,
+            mmcs_ctl_enabled: false,
+        };
+
+        // Row C: merkle mode, mmcs_bit=false. Prev digest chains into limbs 0..1; sibling
+        // (limbs 2..3) zeros are fine.
+        const D: usize = 4;
+        let mut state_c = [Val::ZERO; WIDTH];
+        state_c[0..2 * D].copy_from_slice(&output_b[0..2 * D]);
+        let output_c = perm.permute(state_c);
+        let sponge_c = Poseidon2CircuitRow {
+            new_start: false,
+            merkle_path: true,
+            mmcs_bit: false,
+            mmcs_index_sum: Val::ZERO,
+            input_values: state_c.to_vec(),
+            in_ctl: vec![false; POSEIDON2_LIMBS],
+            input_indices: vec![0; POSEIDON2_LIMBS],
+            out_ctl: vec![false; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
+            output_indices: vec![0; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
+            mmcs_index_sum_idx: 0,
+            mmcs_ctl_enabled: false,
+        };
+
+        // Row D: sponge mode chaining from output_c.
+        let state_d = output_c;
+        let sponge_d = Poseidon2CircuitRow {
+            new_start: false,
+            merkle_path: false,
+            mmcs_bit: false,
+            mmcs_index_sum: Val::ZERO,
+            input_values: state_d.to_vec(),
+            in_ctl: vec![false; POSEIDON2_LIMBS],
+            input_indices: vec![0; POSEIDON2_LIMBS],
+            out_ctl: vec![false; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
+            output_indices: vec![0; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
+            mmcs_index_sum_idx: 0,
+            mmcs_ctl_enabled: false,
+        };
+
+        check_rows(vec![sponge_a, sponge_b, sponge_c, sponge_d], &constants);
+    }
+
+    #[test]
+    fn satisfies_poseidon2_merkle_right() {
         const D: usize = 4;
         let mut rng = SmallRng::seed_from_u64(42);
         let (constants, perm) = make_constants_and_perm(&mut rng);
 
-        // Row A: new_start, random state
+        // Row A: new_start, random state.
         let state_a: [Val; WIDTH] = core::array::from_fn(|_| rng.random());
         let output_a = perm.permute(state_a);
-
         let row_a = Poseidon2CircuitRow {
             new_start: true,
             merkle_path: false,
@@ -2069,15 +1698,14 @@ mod test {
         };
 
         // Row B: merkle mode, mmcs_bit=true (right child).
-        // With mmcs_bit=1: prev output[0..D] → input[2D..3D], output[D..2D] → input[3D..4D].
-        // Limbs 0-1 are sibling data (random).
+        // With mmcs_bit=1: prev output[0..D] → input[2D..3D], output[D..2D] → input[3D..4D];
+        // limbs 0-1 hold the sibling.
         let sibling: [Val; 2 * D] = core::array::from_fn(|_| rng.random());
         let mut state_b = [Val::ZERO; WIDTH];
         state_b[0..2 * D].copy_from_slice(&sibling);
         state_b[2 * D..3 * D].copy_from_slice(&output_a[0..D]);
         state_b[3 * D..4 * D].copy_from_slice(&output_a[D..2 * D]);
         let output_b = perm.permute(state_b);
-
         let row_b = Poseidon2CircuitRow {
             new_start: false,
             merkle_path: true,
@@ -2092,7 +1720,7 @@ mod test {
             mmcs_ctl_enabled: false,
         };
 
-        // Row C: chain from output_b in sponge mode
+        // Row C: sponge chaining from output_b.
         let row_c = Poseidon2CircuitRow {
             new_start: false,
             merkle_path: false,
@@ -2107,29 +1735,19 @@ mod test {
             mmcs_ctl_enabled: false,
         };
 
-        prove_and_verify(&[row_a, row_b, row_c], &constants, &perm)
+        check_rows(vec![row_a, row_b, row_c], &constants);
     }
 
     #[test]
-    fn prove_poseidon2_mmcs_accumulator() -> Result<
-        (),
-        p3_uni_stark::VerificationError<
-            p3_fri::verifier::FriError<
-                p3_merkle_tree::MerkleTreeError,
-                p3_merkle_tree::MerkleTreeError,
-            >,
-        >,
-    > {
-        type Val = BabyBear;
+    fn satisfies_poseidon2_mmcs_accumulator() {
         const D: usize = 4;
         let mut rng = SmallRng::seed_from_u64(99);
         let (constants, perm) = make_constants_and_perm(&mut rng);
 
-        // Build a 3-row Merkle chain that exercises the MMCS accumulator:
-        //   Row 0: new_start=true,  merkle, mmcs_bit=1 → mmcs_index_sum = 0 (reset)
-        //   Row 1: new_start=false, merkle, mmcs_bit=0 → mmcs_index_sum = 0*2+0 = 0
-        //   Row 2: new_start=false, merkle, mmcs_bit=1 → mmcs_index_sum = 0*2+1 = 1
-        // Expected final accumulator = 1.
+        // 3-row Merkle chain that exercises the MMCS accumulator.
+        //   Row 0: new_start=true,  merkle, mmcs_bit=1 → mmcs_index_sum resets to 0
+        //   Row 1: new_start=false, merkle, mmcs_bit=0 → mmcs_index_sum = 0*2 + 0 = 0
+        //   Row 2: new_start=false, merkle, mmcs_bit=1 → mmcs_index_sum = 0*2 + 1 = 1
         let bits = [true, false, true];
 
         let state_0: [Val; WIDTH] = core::array::from_fn(|_| rng.random());
@@ -2148,7 +1766,7 @@ mod test {
             mmcs_ctl_enabled: true,
         };
 
-        // Row 1: left child (mmcs_bit=0), chain output[0..2D] → input[0..2D]
+        // Row 1: left child (mmcs_bit=0), chain output[0..2D] → input[0..2D].
         let mut state_1 = [Val::ZERO; WIDTH];
         state_1[0..D].copy_from_slice(&output_0[0..D]);
         state_1[D..2 * D].copy_from_slice(&output_0[D..2 * D]);
@@ -2167,7 +1785,7 @@ mod test {
             mmcs_ctl_enabled: true,
         };
 
-        // Row 2: right child (mmcs_bit=1), chain output[0..D]→input[2D..3D], output[D..2D]→input[3D..4D]
+        // Row 2: right child (mmcs_bit=1), output[0..D]→input[2D..3D], output[D..2D]→input[3D..4D].
         let sibling: [Val; 2 * D] = core::array::from_fn(|_| rng.random());
         let mut state_2 = [Val::ZERO; WIDTH];
         state_2[0..2 * D].copy_from_slice(&sibling);
@@ -2188,7 +1806,16 @@ mod test {
             mmcs_ctl_enabled: true,
         };
 
-        prove_and_verify(&[row_0, row_1, row_2], &constants, &perm)
+        check_rows(vec![row_0, row_1, row_2], &constants);
+    }
+
+    #[test]
+    fn test_air_constraint_degree() {
+        let mut rng = SmallRng::seed_from_u64(1);
+        let constants = RoundConstants::new(rng.random(), rng.random(), rng.random());
+
+        let air = Poseidon2CircuitAirBabyBearD4Width16::new(constants);
+        p3_test_utils::assert_air_constraint_degree!(air, "Poseidon2CircuitAir");
     }
 
     /// Build an AIR with the given preprocessed data and optional minimum

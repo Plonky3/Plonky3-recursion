@@ -5,7 +5,6 @@ pub mod const_air;
 pub mod public_air;
 pub mod recompose_air;
 mod recompose_columns;
-pub mod utils;
 
 #[cfg(test)]
 pub mod test_utils;

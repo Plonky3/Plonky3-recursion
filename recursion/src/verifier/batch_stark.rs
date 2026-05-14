@@ -6,7 +6,7 @@ use alloc::vec::Vec;
 use alloc::{format, vec};
 
 use hashbrown::HashMap;
-use p3_air::{Air as P3Air, BaseAir as P3BaseAir, SymbolicAirBuilder};
+use p3_air::{Air as P3Air, BaseAir as P3BaseAir};
 use p3_batch_stark::CommonData;
 use p3_circuit::symbolic::ColumnsTargets;
 use p3_circuit::{CircuitBuilder, NonPrimitiveOpId};
@@ -19,8 +19,7 @@ use p3_commit::{Pcs, PolynomialSpace};
 use p3_field::{
     Algebra, BasedVectorSpace, ExtensionField, Field, PrimeCharacteristicRing, PrimeField64,
 };
-use p3_lookup::LookupAir;
-use p3_lookup::lookup_traits::{Kind, Lookup, LookupData, LookupGadget};
+use p3_lookup::{Kind, Lookup, LookupData, LookupProtocol, Lookups};
 use p3_uni_stark::{StarkGenericConfig, SymbolicExpression, SymbolicExpressionExt, Val};
 
 use super::{ObservableCommitment, VerificationError, recompose_quotient_from_chunks_circuit};
@@ -83,8 +82,13 @@ where
     }
 }
 
-impl<SC, const D: usize> P3Air<SymbolicAirBuilder<Val<SC>, <SC as StarkGenericConfig>::Challenge>>
-    for CircuitTablesAir<SC, D>
+impl<SC, const D: usize>
+    P3Air<
+        p3_lookup::symbolic::InteractionSymbolicBuilder<
+            Val<SC>,
+            <SC as StarkGenericConfig>::Challenge,
+        >,
+    > for CircuitTablesAir<SC, D>
 where
     SC: StarkGenericConfig,
     Val<SC>: PrimeField64,
@@ -94,7 +98,10 @@ where
 {
     fn eval(
         &self,
-        builder: &mut SymbolicAirBuilder<Val<SC>, <SC as StarkGenericConfig>::Challenge>,
+        builder: &mut p3_lookup::symbolic::InteractionSymbolicBuilder<
+            Val<SC>,
+            <SC as StarkGenericConfig>::Challenge,
+        >,
     ) {
         match self {
             Self::Const(a) => P3Air::eval(a, builder),
@@ -105,30 +112,20 @@ where
     }
 }
 
-impl<SC, const D: usize> LookupAir<Val<SC>> for CircuitTablesAir<SC, D>
+/// Extract lookups for a verifier-side [`CircuitTablesAir`] via symbolic AIR evaluation.
+#[allow(dead_code)]
+pub fn circuit_tables_lookups<SC, const D: usize>(air: &CircuitTablesAir<SC, D>) -> Lookups<Val<SC>>
 where
     SC: StarkGenericConfig,
     Val<SC>: PrimeField64,
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
         Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
-    fn add_lookup_columns(&mut self) -> Vec<usize> {
-        match self {
-            Self::Const(a) => LookupAir::<Val<SC>>::add_lookup_columns(a),
-            Self::Public(a) => LookupAir::<Val<SC>>::add_lookup_columns(a),
-            Self::Alu(a) => LookupAir::<Val<SC>>::add_lookup_columns(a),
-            Self::Dynamic(inner) => LookupAir::<Val<SC>>::add_lookup_columns(inner),
-        }
-    }
-
-    #[allow(clippy::missing_transmute_annotations)]
-    fn get_lookups(&mut self) -> Vec<Lookup<Val<SC>>> {
-        match self {
-            Self::Const(a) => LookupAir::<Val<SC>>::get_lookups(a),
-            Self::Public(a) => LookupAir::<Val<SC>>::get_lookups(a),
-            Self::Alu(a) => LookupAir::<Val<SC>>::get_lookups(a),
-            Self::Dynamic(inner) => LookupAir::<Val<SC>>::get_lookups(inner),
-        }
+    match air {
+        CircuitTablesAir::Const(a) => Lookups::from_air::<SC::Challenge, _>(a),
+        CircuitTablesAir::Public(a) => Lookups::from_air::<SC::Challenge, _>(a),
+        CircuitTablesAir::Alu(a) => Lookups::from_air::<SC::Challenge, _>(a),
+        CircuitTablesAir::Dynamic(inner) => Lookups::from_air::<SC::Challenge, _>(inner),
     }
 }
 
@@ -500,10 +497,10 @@ where
             ));
         }
 
-        let is_sorted_by_aux_idx = global_lookup_data[i]
+        let is_sorted_by_aux_column = global_lookup_data[i]
             .windows(2)
-            .all(|w| w[0].aux_idx <= w[1].aux_idx);
-        if !is_sorted_by_aux_idx {
+            .all(|w| w[0].aux_column <= w[1].aux_column);
+        if !is_sorted_by_aux_column {
             return Err(VerificationError::InvalidProofShape(
                 "Expected cumulated values not sorted by auxiliary index".to_string(),
             ));
@@ -638,7 +635,7 @@ where
         );
         for instance_data in global_lookup_data {
             for ld in instance_data {
-                challenger.observe_ext(circuit, ld.expected_cumulated);
+                challenger.observe_ext(circuit, ld.cumulative_sum);
             }
         }
     }
@@ -945,7 +942,7 @@ where
         // For constraint evaluation, we need an extension field matrix with width `aux_width``.
         let aux_width = all_lookups[i]
             .iter()
-            .flat_map(|ctx| ctx.columns.iter().copied())
+            .map(|ctx| ctx.column)
             .max()
             .map(|m| m + 1)
             .unwrap_or(0);
@@ -1004,7 +1001,7 @@ where
 
         let expected_cumulated_values: Vec<Target> = global_lookup_data[i]
             .iter()
-            .map(|ld| ld.expected_cumulated)
+            .map(|ld| ld.cumulative_sum)
             .collect();
         let sels = pcs.selectors_at_point_circuit(circuit, trace_domain, &zeta);
         let columns_targets = ColumnsTargets {
@@ -1041,7 +1038,7 @@ where
             global_cumulative
                 .entry(&data.name)
                 .or_default()
-                .push(data.expected_cumulated);
+                .push(data.cumulative_sum);
         }
 
         for all_expected_cumulative in global_cumulative.values() {
@@ -1057,7 +1054,7 @@ pub(crate) fn get_perm_challenges<
     CP: ChallengerPermConfig,
     const WIDTH: usize,
     const RATE: usize,
-    LG: LookupGadget,
+    LG: LookupProtocol,
 >(
     circuit: &mut CircuitBuilder<SC::Challenge>,
     challenger: &mut CircuitChallenger<WIDTH, RATE, CP>,
@@ -1113,8 +1110,8 @@ fn lookup_data_to_pv_index(
         .enumerate()
         .map(|(index, ld)| LookupData {
             name: ld.name.clone(),
-            aux_idx: ld.aux_idx,
-            expected_cumulated: public_values_len + index,
+            aux_column: ld.aux_column,
+            cumulative_sum: public_values_len + index,
         })
         .collect::<Vec<_>>()
 }

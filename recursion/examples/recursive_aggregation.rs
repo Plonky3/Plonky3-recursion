@@ -266,7 +266,7 @@ macro_rules! define_field_module_aggregation_quintic {
                         ConstraintProfile::Standard,
                     )
                     .unwrap();
-                let (mut airs, degrees): (Vec<_>, Vec<_>) = airs_degrees.into_iter().unzip();
+                let (airs, degrees): (Vec<_>, Vec<_>) = airs_degrees.into_iter().unzip();
                 let mut runner = circuit.runner();
                 runner
                     .set_public_inputs(&[F::from_u32(constant_value)])
@@ -275,7 +275,7 @@ macro_rules! define_field_module_aggregation_quintic {
                 let ext_degrees: Vec<usize> =
                     degrees.iter().map(|&d| d + config.is_zk()).collect();
                 let prover_data =
-                    ProverData::from_airs_and_degrees(config, &mut airs, &ext_degrees);
+                    ProverData::from_airs_and_degrees(config, &airs, &ext_degrees);
                 let circuit_prover_data = CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
                 let prover =
                     BatchStarkProver::new(config.clone()).with_table_packing(table_packing.clone());
@@ -456,7 +456,7 @@ macro_rules! define_field_module {
                         ConstraintProfile::Standard,
                     )
                     .unwrap();
-                let (mut airs, degrees): (Vec<_>, Vec<_>) = airs_degrees.into_iter().unzip();
+                let (airs, degrees): (Vec<_>, Vec<_>) = airs_degrees.into_iter().unzip();
                 let mut runner = circuit.runner();
                 runner
                     .set_public_inputs(&[F::from_u32(constant_value)])
@@ -465,7 +465,7 @@ macro_rules! define_field_module {
                 let ext_degrees: Vec<usize> =
                     degrees.iter().map(|&d| d + config.is_zk()).collect();
                 let prover_data =
-                    ProverData::from_airs_and_degrees(config, &mut airs, &ext_degrees);
+                    ProverData::from_airs_and_degrees(config, &airs, &ext_degrees);
                 let circuit_prover_data = CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
                 let prover =
                     BatchStarkProver::new(config.clone()).with_table_packing(table_packing.clone());
@@ -499,7 +499,7 @@ macro_rules! define_field_module {
                         ConstraintProfile::Standard,
                     )
                     .unwrap();
-                let (mut airs, degrees): (Vec<_>, Vec<_>) = airs_degrees.into_iter().unzip();
+                let (airs, degrees): (Vec<_>, Vec<_>) = airs_degrees.into_iter().unzip();
                 let mut runner = circuit.runner();
                 runner
                     .set_public_inputs(&[F::from_u32(constant_value)])
@@ -508,7 +508,7 @@ macro_rules! define_field_module {
                 let ext_degrees: Vec<usize> =
                     degrees.iter().map(|&d| d + config.is_zk()).collect();
                 let prover_data =
-                    ProverData::from_airs_and_degrees(config, &mut airs, &ext_degrees);
+                    ProverData::from_airs_and_degrees(config, &airs, &ext_degrees);
                 let circuit_prover_data = CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
                 let prover =
                     BatchStarkProver::new(config.clone()).with_table_packing(table_packing.clone());

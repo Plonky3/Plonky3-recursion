@@ -9,7 +9,7 @@ mod common;
 use p3_circuit::CircuitBuilder;
 use p3_circuit::ops::{GoldilocksD2Width8, generate_poseidon2_trace, generate_recompose_trace};
 use p3_circuit::test_utils::{FibonacciAir, generate_trace_rows};
-use p3_fri::create_test_fri_params;
+use p3_fri::FriParameters;
 use p3_goldilocks::Poseidon2Goldilocks;
 use p3_matrix::Matrix;
 use p3_recursion::pcs::fri::{FriVerifierParams, InputProofTargets, MerkleCapTargets, RecValMmcs};
@@ -40,7 +40,7 @@ fn make_config() -> (MyConfig, Perm, FriVerifierParams) {
     let val_mmcs = MyMmcs::new(hash, compress, 0);
     let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
     let dft = Dft::default();
-    let fri_params = create_test_fri_params(challenge_mmcs, 0);
+    let fri_params = FriParameters::new_testing(challenge_mmcs, 0);
 
     // Enable MMCS verification
     let fri_verifier_params = FriVerifierParams::with_mmcs(
@@ -155,7 +155,7 @@ fn test_goldilocks_mul_verifier_with_preprocessed() -> Result<(), VerificationEr
         let compress2 = MyCompress::new(perm2.clone());
         let val_mmcs2 = MyMmcs::new(hash2, compress2, 0);
         let challenge_mmcs2 = ChallengeMmcs::new(val_mmcs2.clone());
-        let fri_params2 = create_test_fri_params(challenge_mmcs2, 0);
+        let fri_params2 = FriParameters::new_testing(challenge_mmcs2, 0);
         let fri_verifier_params = FriVerifierParams::from(&fri_params2);
         let pcs2 = MyPcs::new(Dft::default(), val_mmcs2, fri_params2);
         let challenger2 = Challenger::new(perm2.clone());

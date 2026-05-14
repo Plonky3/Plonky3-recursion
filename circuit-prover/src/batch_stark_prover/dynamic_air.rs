@@ -4,17 +4,16 @@ use alloc::vec::Vec;
 
 #[cfg(debug_assertions)]
 use p3_air::DebugConstraintBuilder;
-use p3_air::{Air, AirBuilder, BaseAir};
+use p3_air::{Air, BaseAir};
 use p3_batch_stark::{StarkGenericConfig, Val};
 use p3_circuit::ops::NpoTypeId;
 use p3_circuit::tables::Traces;
 use p3_field::extension::{BinomialExtensionField, QuinticTrinomialExtensionField};
 use p3_field::{Algebra, PrimeField};
-use p3_lookup::LookupAir;
 use p3_lookup::folder::{ProverConstraintFolderWithLookups, VerifierConstraintFolderWithLookups};
-use p3_lookup::lookup_traits::Lookup;
+use p3_lookup::symbolic::InteractionSymbolicBuilder;
 use p3_matrix::dense::RowMajorMatrix;
-use p3_uni_stark::{SymbolicAirBuilder, SymbolicExpression, SymbolicExpressionExt};
+use p3_uni_stark::{SymbolicExpression, SymbolicExpressionExt};
 
 use super::TablePacking;
 
@@ -76,6 +75,10 @@ where
         <dyn CloneableBatchAir<SC> as BaseAir<Val<SC>>>::num_public_values(self.air())
     }
 
+    fn preprocessed_width(&self) -> usize {
+        <dyn CloneableBatchAir<SC> as BaseAir<Val<SC>>>::preprocessed_width(self.air())
+    }
+
     fn preprocessed_trace(&self) -> Option<RowMajorMatrix<Val<SC>>> {
         <dyn CloneableBatchAir<SC> as BaseAir<Val<SC>>>::preprocessed_trace(self.air())
     }
@@ -105,8 +108,6 @@ macro_rules! impl_air_for_dynamic_entry {
         $(#[$cfg:meta])?
         $builder:ty,
         $eval_method:ident,
-        $add_lookup_method:ident,
-        $get_lookup_method:ident
     ) => {
         $(#[$cfg])?
         impl<SC> Air<$builder> for DynamicAirEntry<SC>
@@ -119,31 +120,12 @@ macro_rules! impl_air_for_dynamic_entry {
                 self.air().$eval_method(builder);
             }
         }
-
-        impl<SC> LookupAir<Val<SC>> for DynamicAirEntry<SC>
-        where
-            SC: StarkGenericConfig,
-            Val<SC>: PrimeField,
-            SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
-        {
-            fn add_lookup_columns(&mut self) -> Vec<usize> {
-                self.air_mut().$add_lookup_method()
-            }
-
-            fn get_lookups(
-                &mut self,
-            ) -> Vec<Lookup<<$builder as AirBuilder>::F>> {
-                self.air_mut().$get_lookup_method()
-            }
-        }
     };
 }
 
 impl_air_for_dynamic_entry!(
-    SymbolicAirBuilder<Val<SC>, SC::Challenge>,
+    InteractionSymbolicBuilder<Val<SC>, SC::Challenge>,
     eval_symbolic,
-    add_lookup_columns_symbolic,
-    get_lookups_symbolic
 );
 
 #[cfg(debug_assertions)]
@@ -170,7 +152,7 @@ impl_air_for_dynamic_entry!(
 #[cfg(debug_assertions)]
 pub trait BatchAir<SC>:
     BaseAir<Val<SC>>
-    + Air<SymbolicAirBuilder<Val<SC>, SC::Challenge>>
+    + Air<InteractionSymbolicBuilder<Val<SC>, SC::Challenge>>
     + for<'a> Air<DebugConstraintBuilder<'a, Val<SC>, SC::Challenge>>
     + for<'a> Air<ProverConstraintFolderWithLookups<'a, SC>>
     + for<'a> Air<VerifierConstraintFolderWithLookups<'a, SC>>
@@ -187,7 +169,7 @@ where
 #[cfg(not(debug_assertions))]
 pub trait BatchAir<SC>:
     BaseAir<Val<SC>>
-    + Air<SymbolicAirBuilder<Val<SC>, SC::Challenge>>
+    + Air<InteractionSymbolicBuilder<Val<SC>, SC::Challenge>>
     + for<'a> Air<ProverConstraintFolderWithLookups<'a, SC>>
     + for<'a> Air<VerifierConstraintFolderWithLookups<'a, SC>>
     + Send
@@ -203,45 +185,21 @@ macro_rules! impl_cloneable_batch_air_forwarding {
         $(#[$cfg:meta])?
         $lt:lifetime,
         $builder:ty,
-        $eval_method:ident,
-        $add_lookup_method:ident,
-        $get_lookup_method:ident
+        $eval_method:ident
     ) => {
         $(#[$cfg])?
         fn $eval_method<$lt>(&self, builder: &mut $builder) {
             <T as Air<$builder>>::eval(self, builder);
         }
-
-        $(#[$cfg])?
-        fn $add_lookup_method<$lt>(&mut self) -> Vec<usize> {
-            LookupAir::add_lookup_columns(self)
-        }
-
-        $(#[$cfg])?
-        fn $get_lookup_method<$lt>(&mut self) -> Vec<Lookup<Val<SC>>> {
-            LookupAir::get_lookups(self)
-        }
     };
     (
         $(#[$cfg:meta])?
         $builder:ty,
-        $eval_method:ident,
-        $add_lookup_method:ident,
-        $get_lookup_method:ident
+        $eval_method:ident
     ) => {
         $(#[$cfg])?
         fn $eval_method(&self, builder: &mut $builder) {
             <T as Air<$builder>>::eval(self, builder);
-        }
-
-        $(#[$cfg])?
-        fn $add_lookup_method(&mut self) -> Vec<usize> {
-            LookupAir::add_lookup_columns(self)
-        }
-
-        $(#[$cfg])?
-        fn $get_lookup_method(&mut self) -> Vec<Lookup<Val<SC>>> {
-            LookupAir::get_lookups(self)
         }
     };
 }
@@ -259,27 +217,15 @@ where
 
     #[cfg(debug_assertions)]
     fn eval_debug<'a>(&self, builder: &mut DebugConstraintBuilder<'a, Val<SC>, SC::Challenge>);
-    fn eval_symbolic(&self, builder: &mut SymbolicAirBuilder<Val<SC>, SC::Challenge>);
+    fn eval_symbolic(&self, builder: &mut InteractionSymbolicBuilder<Val<SC>, SC::Challenge>);
     fn eval_prover<'a>(&self, builder: &mut ProverConstraintFolderWithLookups<'a, SC>);
     fn eval_verifier<'a>(&self, builder: &mut VerifierConstraintFolderWithLookups<'a, SC>);
-
-    #[cfg(debug_assertions)]
-    fn add_lookup_columns_debug(&mut self) -> Vec<usize>;
-    fn add_lookup_columns_symbolic(&mut self) -> Vec<usize>;
-    fn add_lookup_columns_prover(&mut self) -> Vec<usize>;
-    fn add_lookup_columns_verifier(&mut self) -> Vec<usize>;
-
-    #[cfg(debug_assertions)]
-    fn get_lookups_debug(&mut self) -> Vec<Lookup<Val<SC>>>;
-    fn get_lookups_symbolic(&mut self) -> Vec<Lookup<Val<SC>>>;
-    fn get_lookups_prover(&mut self) -> Vec<Lookup<Val<SC>>>;
-    fn get_lookups_verifier(&mut self) -> Vec<Lookup<Val<SC>>>;
 }
 
 impl<SC, T> CloneableBatchAir<SC> for T
 where
     SC: StarkGenericConfig,
-    T: BatchAir<SC> + LookupAir<Val<SC>> + Clone + 'static,
+    T: BatchAir<SC> + Clone + 'static,
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
         Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
@@ -288,35 +234,27 @@ where
     }
 
     impl_cloneable_batch_air_forwarding!(
-        SymbolicAirBuilder<Val<SC>, SC::Challenge>,
-        eval_symbolic,
-        add_lookup_columns_symbolic,
-        get_lookups_symbolic
+        InteractionSymbolicBuilder<Val<SC>, SC::Challenge>,
+        eval_symbolic
     );
 
     #[cfg(debug_assertions)]
     impl_cloneable_batch_air_forwarding!(
         'a,
         DebugConstraintBuilder<'a, Val<SC>, SC::Challenge>,
-        eval_debug,
-        add_lookup_columns_debug,
-        get_lookups_debug
+        eval_debug
     );
 
     impl_cloneable_batch_air_forwarding!(
         'a,
         ProverConstraintFolderWithLookups<'a, SC>,
-        eval_prover,
-        add_lookup_columns_prover,
-        get_lookups_prover
+        eval_prover
     );
 
     impl_cloneable_batch_air_forwarding!(
         'a,
         VerifierConstraintFolderWithLookups<'a, SC>,
-        eval_verifier,
-        add_lookup_columns_verifier,
-        get_lookups_verifier
+        eval_verifier
     );
 }
 

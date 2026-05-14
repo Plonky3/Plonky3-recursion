@@ -19,22 +19,19 @@
 //! For each lane, there is one interaction with the witness bus:
 //! - send (index, value)
 
-use alloc::string::ToString;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::marker::PhantomData;
 
-use p3_air::{Air, AirBuilder, BaseAir};
+use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 use p3_circuit::tables::PublicTrace;
 use p3_field::{BasedVectorSpace, Field};
-use p3_lookup::LookupAir;
-use p3_lookup::lookup_traits::{Direction, Kind, Lookup};
+use p3_lookup::builder::InteractionBuilder;
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
 use tracing::instrument;
 
-use crate::air::column_layout::WITNESS_LOOKUP_PREP_LANE_WIDTH;
-use crate::air::utils::{create_symbolic_variables, get_index_lookups};
+use crate::air::column_layout::{WITNESS_LOOKUP_PREP_COL_MAP, WITNESS_LOOKUP_PREP_LANE_WIDTH};
 
 /// PublicAir: vector-valued public input binding with generic extension degree D.
 /// Layout per row: [value[0..D)] repeated `lanes` times.
@@ -46,8 +43,6 @@ pub struct PublicAir<F, const D: usize = 1> {
     pub lanes: usize,
     /// Preprocessed witness indices for the public inputs.
     pub preprocessed: Vec<F>,
-    /// Number of lookup columns registered by this AIR so far.
-    pub num_lookup_columns: usize,
     /// Minimum trace height (for FRI compatibility with higher log_final_poly_len).
     pub min_height: usize,
     _phantom: PhantomData<F>,
@@ -66,7 +61,6 @@ impl<F: Field, const D: usize> PublicAir<F, D> {
             num_ops,
             lanes,
             preprocessed: Vec::new(),
-            num_lookup_columns: 0,
             min_height: 1,
             _phantom: PhantomData,
         }
@@ -85,7 +79,6 @@ impl<F: Field, const D: usize> PublicAir<F, D> {
             num_ops,
             lanes,
             preprocessed,
-            num_lookup_columns: 0,
             min_height: 1,
             _phantom: PhantomData,
         }
@@ -175,6 +168,10 @@ impl<F: Field, const D: usize> BaseAir<F> for PublicAir<F, D> {
         self.total_width()
     }
 
+    fn preprocessed_width(&self) -> usize {
+        self.lanes * Self::preprocessed_lane_width()
+    }
+
     fn preprocessed_trace(&self) -> Option<RowMajorMatrix<F>> {
         let width = self.lanes * Self::preprocessed_lane_width();
         let mut mat = RowMajorMatrix::from_flat_padded(self.preprocessed.to_vec(), width, F::ZERO);
@@ -191,51 +188,37 @@ impl<F: Field, const D: usize> BaseAir<F> for PublicAir<F, D> {
     }
 }
 
-impl<AB: AirBuilder, const D: usize> Air<AB> for PublicAir<AB::F, D>
+impl<AB: AirBuilder + InteractionBuilder, const D: usize> Air<AB> for PublicAir<AB::F, D>
 where
     AB::F: Field,
 {
-    fn eval(&self, _builder: &mut AB) {
-        // No constraints for public inputs in Stage 1
-    }
-}
+    fn eval(&self, builder: &mut AB) {
+        let main = builder.main();
+        let main_local = main.current_slice();
+        let prep = builder.preprocessed().clone();
+        let prep_local = prep.current_slice();
 
-impl<F: Field, const D: usize> LookupAir<F> for PublicAir<F, D> {
-    fn add_lookup_columns(&mut self) -> Vec<usize> {
-        let new_idx = self.num_lookup_columns;
-        self.num_lookup_columns += 1;
-        vec![new_idx]
-    }
+        let lane_w = Self::lane_width();
+        let prep_lane_w = Self::preprocessed_lane_width();
 
-    fn get_lookups(&mut self) -> Vec<Lookup<F>> {
-        let mut lookups = Vec::new();
-        self.num_lookup_columns = 0;
-
-        let (symbolic_main_local, preprocessed_local) = create_symbolic_variables::<F>(
-            self.preprocessed_width(),
-            BaseAir::<F>::width(self),
-            self.lanes,
-            0,
-        );
-
+        // One WitnessChecks send per lane.
         for lane in 0..self.lanes {
-            let lane_offset = lane * Self::lane_width();
-            let preprocessed_lane_offset = lane * Self::preprocessed_lane_width();
+            let main_off = lane * lane_w;
+            let prep_off = lane * prep_lane_w;
 
-            let lane_lookup_inputs = get_index_lookups::<F, D>(
-                lane_offset,
-                preprocessed_lane_offset,
-                1,
-                &symbolic_main_local,
-                &preprocessed_local,
-                Direction::Receive,
-            );
+            let multiplicity: AB::Expr =
+                prep_local[prep_off + WITNESS_LOOKUP_PREP_COL_MAP.multiplicity].into();
+            let witness_idx: AB::Expr =
+                prep_local[prep_off + WITNESS_LOOKUP_PREP_COL_MAP.witness_idx].into();
 
-            lookups.extend(lane_lookup_inputs.into_iter().map(|inps| {
-                LookupAir::register_lookup(self, Kind::Global("WitnessChecks".to_string()), &[inps])
-            }));
+            let mut fields: Vec<AB::Expr> = Vec::with_capacity(1 + D);
+            fields.push(witness_idx);
+            for j in 0..D {
+                fields.push(main_local[main_off + j].into());
+            }
+
+            builder.push_interaction("WitnessChecks", fields, multiplicity, 1);
         }
-        lookups
     }
 }
 
@@ -248,11 +231,8 @@ mod tests {
     use p3_test_utils::baby_bear_params::{
         BabyBear as F, BinomialExtensionField, PrimeCharacteristicRing,
     };
-    use p3_uni_stark::{prove_with_preprocessed, setup_preprocessed, verify_with_preprocessed};
-    use p3_util::log2_ceil_usize;
 
     use super::*;
-    use crate::air::test_utils::build_test_config;
 
     type EF = BinomialExtensionField<F, 4>;
 
@@ -292,10 +272,7 @@ mod tests {
             assert_eq!(row_last[0], F::from_u64(n as u64)); // value
         }
 
-        let config = build_test_config();
         let air = PublicAir::<F, 1>::new_with_preprocessed(n, lanes, preprocessed_values);
-        let (prover_data, verifier_data) =
-            setup_preprocessed(&config, &air, log2_ceil_usize(matrix.height())).unwrap();
 
         // Check the correctness of preprocessed values.
         let preprocessed = air.preprocessed_trace().unwrap();
@@ -306,12 +283,6 @@ mod tests {
         assert_eq!(last_row[0], F::ONE); // ext_mult
         assert_eq!(row0[1], F::from_u64(0)); // first index
         assert_eq!(last_row[1], F::from_u64((n - 1) as u64)); // last index
-
-        let pis: Vec<F> = vec![];
-
-        let proof = prove_with_preprocessed(&config, &air, matrix, &pis, Some(&prover_data));
-        verify_with_preprocessed(&config, &air, &proof, &pis, Some(&verifier_data))
-            .expect("PublicAir base field verification failed");
     }
 
     #[test]
@@ -358,10 +329,7 @@ mod tests {
             }
         }
 
-        let config = build_test_config();
         let air = PublicAir::<F, 1>::new_with_preprocessed(n, lanes, preprocessed_values);
-        let (prover_data, verifier_data) =
-            setup_preprocessed(&config, &air, log2_ceil_usize(matrix.height())).unwrap();
 
         // Check the correctness of preprocessed values.
         let preprocessed = air.preprocessed_trace().unwrap();
@@ -377,12 +345,6 @@ mod tests {
             assert_eq!(row[0], F::ZERO); // padding
             assert_eq!(row[1], F::ZERO); // padding
         }
-
-        let pis: Vec<F> = vec![];
-
-        let proof = prove_with_preprocessed(&config, &air, matrix, &pis, Some(&prover_data));
-        verify_with_preprocessed(&config, &air, &proof, &pis, Some(&verifier_data))
-            .expect("PublicAir base field verification failed");
     }
 
     #[test]
@@ -435,10 +397,7 @@ mod tests {
             assert_eq!(&row1[0..4], b_coeffs);
         }
 
-        let config = build_test_config();
         let air = PublicAir::<F, 4>::new_with_preprocessed(2, lanes, preprocessed_values);
-        let (prover_data, verifier_data) =
-            setup_preprocessed(&config, &air, log2_ceil_usize(matrix.height())).unwrap();
 
         let prep = air.preprocessed_trace().unwrap();
         let row0 = prep.row_slice(0).unwrap();
@@ -449,12 +408,6 @@ mod tests {
         // D-scaled: WitnessId(10) → 10 * 4 = 40, WitnessId(20) → 20 * 4 = 80
         assert_eq!(row0[1], F::from_u64(40));
         assert_eq!(last_row[1], F::from_u64(80));
-
-        let pis: Vec<F> = vec![];
-
-        let proof = prove_with_preprocessed(&config, &air, matrix, &pis, Some(&prover_data));
-        verify_with_preprocessed(&config, &air, &proof, &pis, Some(&verifier_data))
-            .expect("PublicAir extension field verification failed");
     }
 
     #[test]

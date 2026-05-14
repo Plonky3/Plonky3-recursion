@@ -74,7 +74,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             ConstraintProfile::Standard,
         )
         .unwrap();
-    let (mut airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
+    let (airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
     let mut runner = circuit.runner();
 
     // Set public input
@@ -82,7 +82,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     runner.set_public_inputs(&[expected_fib])?;
 
     let traces = runner.run()?;
-    let prover_data = ProverData::from_airs_and_degrees(&config, &mut airs, &degrees);
+    let prover_data = ProverData::from_airs_and_degrees(&config, &airs, &degrees);
     let circuit_prover_data =
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
     let prover = BatchStarkProver::new(config).with_table_packing(table_packing);
