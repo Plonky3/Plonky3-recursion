@@ -1033,7 +1033,7 @@ where
         );
 
         let folded_mul = circuit.mul(folded_constraints, sels.inv_vanishing);
-        // circuit.connect(folded_mul, quotient);
+        circuit.connect(folded_mul, quotient);
 
         // Check that the global lookup cumulative values accumulate to the expected value.
         let mut global_cumulative = HashMap::<&String, Vec<_>>::new();

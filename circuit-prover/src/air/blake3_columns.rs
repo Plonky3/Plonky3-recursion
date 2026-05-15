@@ -31,6 +31,7 @@ pub struct Blake3Columns<T> {
     pub stark_row_idx: T,
 }
 
+#[repr(C)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Blake3State<T> {
     pub row1: [T; 8],
