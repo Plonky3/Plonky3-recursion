@@ -17,7 +17,9 @@ use p3_util::zip_eq::zip_eq;
 
 use super::{FriProofTargets, InputProofTargets};
 use crate::Target;
-use crate::pcs::{verify_batch_circuit, verify_batch_circuit_from_extension_opened};
+use crate::pcs::{
+    MmcsProofTargets, verify_batch_circuit, verify_batch_circuit_from_extension_opened,
+};
 use crate::traits::{ComsWithOpeningsTargets, Recursive, RecursiveExtensionMmcs, RecursiveMmcs};
 use crate::verifier::{ObservableCommitment, VerificationError};
 
@@ -1065,6 +1067,7 @@ fn open_input<F, EF, Comm>(
     log_blowup: usize,
     commitments_with_opening_points: &ComsWithOpeningsTargets<Comm, TwoAdicMultiplicativeCoset<F>>,
     batch_opened_values: &[Vec<Vec<Target>>], // Per batch -> per matrix -> per column
+    batch_salts: &[Vec<Vec<Target>>],         // Per batch -> per matrix -> salt (hiding MMCS)
     permutation_config: Option<Poseidon2Config>,
     pre_packed_input_caps: Option<&[Vec<Vec<Target>>]>,
 ) -> Result<(Vec<(usize, Target)>, Vec<NonPrimitiveOpId>), VerificationError>
@@ -1144,6 +1147,13 @@ where
                 })
                 .collect();
 
+            // Hiding MMCS appends a per-matrix salt to each leaf; non-hiding passes `None`.
+            let batch_salt = batch_salts.get(batch_idx);
+            let salts_for_batch = match batch_salt {
+                Some(s) if !s.is_empty() => Some(s.as_slice()),
+                _ => None,
+            };
+
             let op_ids = verify_batch_circuit::<F, EF>(
                 builder,
                 perm_config,
@@ -1151,6 +1161,7 @@ where
                 &dimensions,
                 index_bits,
                 batch_openings,
+                salts_for_batch,
             )
             .map_err(|e| {
                 VerificationError::InvalidProofShape(format!(
@@ -1355,7 +1366,9 @@ where
     EF: ExtensionField<F>,
     RecMmcs: RecursiveExtensionMmcs<F, EF>,
     RecMmcs::Commitment: ObservableCommitment,
+    RecMmcs::Proof: MmcsProofTargets,
     Inner: RecursiveMmcs<F, EF>,
+    Inner::Proof: MmcsProofTargets,
     Witness: Recursive<EF>,
     Comm: ObservableCommitment,
 {
@@ -1500,6 +1513,15 @@ where
             .map(|batch| batch.opened_values.clone())
             .collect();
 
+        // Per-batch hiding-MMCS salts (empty for a non-hiding `MerkleTreeMmcs`). These are
+        // appended to the leaf preimage during MMCS verification but never enter the FRI
+        // polynomial reduction, matching native `MerkleTreeHidingMmcs`.
+        let batch_salts: Vec<Vec<Vec<Target>>> = query_proof
+            .input_proof
+            .iter()
+            .map(|batch| batch.opening_proof.salt_targets().to_vec())
+            .collect();
+
         // Arithmetic `open_input` to get (height, ro) descending, plus MMCS op IDs
         let (reduced_by_height, input_mmcs_ops) = open_input::<F, EF, Comm>(
             builder,
@@ -1509,6 +1531,7 @@ where
             log_blowup,
             commitments_with_opening_points,
             &batch_opened_values,
+            &batch_salts,
             permutation_config,
             pre_packed_input_caps.as_deref(),
         )?;
@@ -1594,7 +1617,7 @@ where
             let mut bits_consumed = 0usize;
             let mut log_current_height = log_max_height;
 
-            for (phase_idx, (commit, _opening)) in fri_proof_targets
+            for (phase_idx, (commit, opening)) in fri_proof_targets
                 .commit_phase_commits
                 .iter()
                 .zip(query_proof.commit_phase_openings.iter())
@@ -1663,6 +1686,14 @@ where
                     parent_index_bits.push(zero);
                 }
 
+                // Hiding FRI MMCS salts the folded-codeword leaf; non-hiding passes `None`.
+                let phase_salts = opening.opening_proof.salt_targets();
+                let salts_for_phase = if phase_salts.is_empty() {
+                    None
+                } else {
+                    Some(phase_salts)
+                };
+
                 let commit_phase_ops = verify_batch_circuit_from_extension_opened::<F, EF>(
                     builder,
                     perm_config,
@@ -1670,6 +1701,7 @@ where
                     &dimensions,
                     &parent_index_bits,
                     core::slice::from_ref(&evals),
+                    salts_for_phase,
                 )
                 .map_err(|e| {
                     VerificationError::InvalidProofShape(format!(

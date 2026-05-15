@@ -13,9 +13,12 @@ use p3_field::{
     TwoAdicField,
 };
 use p3_fri::{CommitPhaseProofStep, FriProof, HidingFriPcs, QueryProof, TwoAdicFriPcs};
-use p3_merkle_tree::MerkleTreeMmcs;
+use p3_merkle_tree::{MerkleTreeHidingMmcs, MerkleTreeMmcs};
 use p3_symmetric::{CryptographicHasher, MerkleCap, PseudoCompressionFunction};
 use p3_uni_stark::{StarkGenericConfig, Val};
+use rand::Rng;
+use rand::distr::{Distribution, StandardUniform};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use super::{FriVerifierParams, verify_fri_circuit};
@@ -288,6 +291,7 @@ impl<F: Field, EF: ExtensionField<F> + BasedVectorSpace<F>, RecMmcs: RecursiveEx
             let coeffs = sibling_value.as_basis_coefficients_slice();
             values.extend(coeffs.iter().map(|&c| EF::from(c)));
         }
+        values.extend(RecMmcs::Proof::get_private_values(&input.opening_proof));
         values
     }
 }
@@ -334,6 +338,7 @@ impl<F: Field, EF: ExtensionField<F>, Inner: RecursiveMmcs<F, EF>> Recursive<EF>
             .opened_values
             .iter()
             .flat_map(|inner| inner.iter().map(|v| EF::from(*v)))
+            .chain(Inner::Proof::get_private_values(&input.opening_proof))
             .collect()
     }
 }
@@ -492,6 +497,115 @@ impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize, RecValMmcs: Rec
     type Proof = RecValMmcs::Proof;
 }
 
+/// Access to per-leaf salt targets carried by an MMCS opening proof.
+///
+/// `MerkleTreeMmcs` openings carry no salts (returns an empty slice), while
+/// `MerkleTreeHidingMmcs` openings carry `SALT_ELEMS` salt targets per matrix that must be
+/// appended to the leaf preimage when recomputing the Merkle path in-circuit.
+pub trait MmcsProofTargets {
+    /// Per-matrix salt targets, in the same matrix order as the batch opened values.
+    /// Empty when the underlying MMCS is non-hiding.
+    fn salt_targets(&self) -> &[Vec<Target>];
+}
+
+impl<F, const DIGEST_ELEMS: usize> MmcsProofTargets for HashProofTargets<F, DIGEST_ELEMS> {
+    fn salt_targets(&self) -> &[Vec<Target>] {
+        &[]
+    }
+}
+
+/// `Recursive` proof targets for a `MerkleTreeHidingMmcs` opening.
+///
+/// The native proof is `(salts, siblings)`. The sibling digests are supplied as MMCS
+/// non-primitive-op private data (exactly like the non-hiding `HashProofTargets`), while the
+/// per-matrix salts are allocated as circuit private inputs because they enter the leaf hash.
+pub struct HidingHashProofTargets<F, const DIGEST_ELEMS: usize> {
+    /// Per-matrix salt targets (circuit private inputs), one inner vec per opened matrix.
+    pub salts: Vec<Vec<Target>>,
+    _phantom: PhantomData<F>,
+}
+
+type HidingValMmcsProof<F, const DIGEST_ELEMS: usize> = (
+    Vec<Vec<<F as PackedValue>::Value>>,
+    Vec<[<F as PackedValue>::Value; DIGEST_ELEMS]>,
+);
+
+impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize> Recursive<EF>
+    for HidingHashProofTargets<F, DIGEST_ELEMS>
+{
+    type Input = HidingValMmcsProof<F, DIGEST_ELEMS>;
+
+    fn new(circuit: &mut CircuitBuilder<EF>, input: &Self::Input) -> Self {
+        let salts = input
+            .0
+            .iter()
+            .map(|salt| circuit.alloc_private_inputs(salt.len(), "hiding MMCS leaf salt"))
+            .collect();
+        Self {
+            salts,
+            _phantom: PhantomData,
+        }
+    }
+
+    fn get_values(_input: &Self::Input) -> Vec<EF> {
+        vec![]
+    }
+
+    fn get_private_values(input: &Self::Input) -> Vec<EF> {
+        input
+            .0
+            .iter()
+            .flat_map(|salt| salt.iter().map(|&v| EF::from(v)))
+            .collect()
+    }
+}
+
+impl<F, const DIGEST_ELEMS: usize> MmcsProofTargets for HidingHashProofTargets<F, DIGEST_ELEMS> {
+    fn salt_targets(&self) -> &[Vec<Target>] {
+        &self.salts
+    }
+}
+
+/// `Recursive` version of a `MerkleTreeHidingMmcs` where leaf and digest elements are base
+/// field values. Mirrors [`RecValMmcs`] but the leaves are salted (hiding commitment).
+pub struct RecValHidingMmcs<F: Field, const DIGEST_ELEMS: usize, const SALT_ELEMS: usize, H, C, R>
+where
+    H: CryptographicHasher<F, [F; DIGEST_ELEMS]>
+        + CryptographicHasher<F::Packing, [F::Packing; DIGEST_ELEMS]>
+        + Sync,
+{
+    pub hash: H,
+    pub compress: C,
+    _phantom: PhantomData<(F, R)>,
+}
+
+impl<
+    F: Field + Serialize + DeserializeOwned,
+    EF: ExtensionField<F>,
+    const DIGEST_ELEMS: usize,
+    const SALT_ELEMS: usize,
+    H,
+    C,
+    R,
+> RecursiveMmcs<F, EF> for RecValHidingMmcs<F, DIGEST_ELEMS, SALT_ELEMS, H, C, R>
+where
+    H: CryptographicHasher<F, [F; DIGEST_ELEMS]>
+        + CryptographicHasher<F::Packing, [F::Packing; DIGEST_ELEMS]>
+        + Sync,
+    C: PseudoCompressionFunction<[F; DIGEST_ELEMS], 2>
+        + PseudoCompressionFunction<[F::Packing; DIGEST_ELEMS], 2>
+        + Sync,
+    R: Rng + Clone + Send,
+    StandardUniform: Distribution<F>,
+    [F; DIGEST_ELEMS]: Serialize + for<'a> Deserialize<'a>,
+{
+    type Input = MerkleTreeHidingMmcs<F::Packing, F::Packing, H, C, R, 2, DIGEST_ELEMS, SALT_ELEMS>;
+
+    type Commitment = MerkleCapTargets<F, DIGEST_ELEMS>;
+
+    type Proof = HidingHashProofTargets<F, DIGEST_ELEMS>;
+}
+
 pub type InputProofTargets<F, EF, Inner> = Vec<BatchOpeningTargets<F, EF, Inner>>;
 
 pub type TwoAdicFriProofTargets<F, EF, RecMmcs, Inner> =
@@ -560,8 +674,10 @@ where
     FriMmcs: Mmcs<SC::Challenge>,
     Comm: Recursive<SC::Challenge> + ObservableCommitment,
     RecursiveInputMmcs: RecursiveMmcs<Val<SC>, SC::Challenge, Input = InputMmcs>,
+    RecursiveInputMmcs::Proof: MmcsProofTargets,
     RecursiveFriMmcs: RecursiveExtensionMmcs<Val<SC>, SC::Challenge, Input = FriMmcs>,
     RecursiveFriMmcs::Commitment: ObservableCommitment,
+    RecursiveFriMmcs::Proof: MmcsProofTargets,
     SC::Challenger: GrindingChallenger + CanObserve<FriMmcs::Commitment>,
 {
     type VerifierParams = FriVerifierParams;
@@ -965,8 +1081,10 @@ where
     FriMmcs: Mmcs<SC::Challenge>,
     Comm: Recursive<SC::Challenge> + ObservableCommitment + Clone,
     RecursiveInputMmcs: RecursiveMmcs<Val<SC>, SC::Challenge, Input = InputMmcs>,
+    RecursiveInputMmcs::Proof: MmcsProofTargets,
     RecursiveFriMmcs: RecursiveExtensionMmcs<Val<SC>, SC::Challenge, Input = FriMmcs>,
     RecursiveFriMmcs::Commitment: ObservableCommitment,
+    RecursiveFriMmcs::Proof: MmcsProofTargets,
     SC::Challenger: GrindingChallenger + CanObserve<FriMmcs::Commitment>,
 {
     type VerifierParams = FriVerifierParams;

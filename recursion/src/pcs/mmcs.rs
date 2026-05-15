@@ -32,11 +32,17 @@ use crate::Target;
 /// - `permutation_config`: Poseidon2 configuration
 /// - `base_coeffs`: Base field coefficient targets (in lifted representation)
 /// - `reset`: If true, starts a new hash chain (initial state = zeros)
+/// - `alu_recompose`: when `true`, base coefficients are recomposed into extension elements
+///   via the ALU `mul_add` chain instead of the recompose NPO table. This is required when
+///   the coefficients are private inputs whose only consumer is this hash (e.g. hiding-MMCS
+///   salts): the NPO path would never make them an ALU operand, leaving the WitnessChecks
+///   bus without a creator. The recomposed value is identical either way.
 fn add_hash_base_coeffs_overwrite<F, EF>(
     circuit: &mut CircuitBuilder<EF>,
     permutation_config: &Poseidon2Config,
     base_coeffs: &[Target],
     reset: bool,
+    alu_recompose: bool,
 ) -> Result<Vec<Target>, CircuitBuilderError>
 where
     F: Field + PrimeField64,
@@ -89,7 +95,11 @@ where
                     // Full extension element - just recompose our values
                     let ext_coeffs: Vec<_> =
                         (0..ext_degree).map(|i| chunk[base_start + i]).collect();
-                    inputs[ext_idx] = Some(circuit.recompose_base_coeffs_to_ext::<F>(&ext_coeffs)?);
+                    inputs[ext_idx] = Some(if alu_recompose {
+                        circuit.recompose_base_coeffs_to_ext_via_alu::<F>(&ext_coeffs)?
+                    } else {
+                        circuit.recompose_base_coeffs_to_ext::<F>(&ext_coeffs)?
+                    });
                 } else {
                     // Partial extension element - mix with previous output (overwrite mode)
                     // This is the key fix: unused positions keep previous permutation output
@@ -117,7 +127,11 @@ where
                         }
                     }
 
-                    inputs[ext_idx] = Some(circuit.recompose_base_coeffs_to_ext::<F>(&ext_coeffs)?);
+                    inputs[ext_idx] = Some(if alu_recompose {
+                        circuit.recompose_base_coeffs_to_ext_via_alu::<F>(&ext_coeffs)?
+                    } else {
+                        circuit.recompose_base_coeffs_to_ext::<F>(&ext_coeffs)?
+                    });
                 }
             }
         }
@@ -191,6 +205,7 @@ where
             permutation_config,
             &base_coeffs,
             reset,
+            false,
         );
     }
 
@@ -276,6 +291,10 @@ where
 /// - `dimensions`: Matrix dimensions (height used for tree structure)
 /// - `index_bits`: All Merkle path direction bits (length = `log_max_height`)
 /// - `opened_base_coeffs`: Base field coefficients per matrix (already decomposed)
+/// - `salts`: Optional per-matrix salt coefficients for a hiding MMCS. When `Some`, each
+///   matrix's salt is appended to that matrix's leaf preimage (matching the native
+///   `MerkleTreeHidingMmcs`, which commits `[row | salt]` per matrix). `None` for a
+///   non-hiding `MerkleTreeMmcs`.
 pub fn verify_batch_circuit<F, EF>(
     circuit: &mut CircuitBuilder<EF>,
     permutation_config: Poseidon2Config,
@@ -283,6 +302,7 @@ pub fn verify_batch_circuit<F, EF>(
     dimensions: &[Dimensions],
     index_bits: &[Target],
     opened_base_coeffs: &[Vec<Target>],
+    salts: Option<&[Vec<Target>]>,
 ) -> Result<Vec<NonPrimitiveOpId>, CircuitBuilderError>
 where
     F: Field + TwoAdicField + PrimeField64,
@@ -292,6 +312,15 @@ where
         return Err(CircuitBuilderError::WrongBatchSize {
             expected: dimensions.len(),
             got: opened_base_coeffs.len(),
+        });
+    }
+
+    if let Some(salts) = salts
+        && salts.len() != opened_base_coeffs.len()
+    {
+        return Err(CircuitBuilderError::WrongBatchSize {
+            expected: opened_base_coeffs.len(),
+            got: salts.len(),
         });
     }
 
@@ -333,22 +362,33 @@ where
     for (i, digest) in formatted_digests.iter_mut().enumerate() {
         let curr_height = 1 << (max_height_log - i);
 
-        // Collect all base coefficients from matrices at this height level
+        // Collect all base coefficients from matrices at this height level. For a hiding
+        // MMCS each matrix's leaf is `[row | salt]`, so the salt is appended directly after
+        // that matrix's coefficients before the next matrix in the height group.
         let all_base_coeffs: Vec<Target> = heights_tallest_first
             .peeking_take_while(|(_, dims)| dims.height.next_power_of_two() == curr_height)
-            .flat_map(|(mat_idx, _)| opened_base_coeffs[mat_idx].iter().copied())
+            .flat_map(|(mat_idx, _)| {
+                let mut coeffs: Vec<Target> = opened_base_coeffs[mat_idx].clone();
+                if let Some(salts) = salts {
+                    coeffs.extend(salts[mat_idx].iter().copied());
+                }
+                coeffs
+            })
             .collect();
 
         if all_base_coeffs.is_empty() {
             continue;
         }
 
-        // Hash using overwrite-mode sponge (matching native PaddingFreeSponge)
+        // Hash using overwrite-mode sponge (matching native PaddingFreeSponge). When salts
+        // are present the coefficients (incl. salt private inputs) must be recomposed via
+        // ALU so they appear as ALU operands on the WitnessChecks bus.
         *digest = add_hash_base_coeffs_overwrite::<F, EF>(
             circuit,
             &permutation_config,
             &all_base_coeffs,
             true,
+            salts.is_some(),
         )?;
     }
 
@@ -364,6 +404,10 @@ where
 
 /// Like `verify_batch_circuit` but opened values are already extension elements (no decompose).
 /// Use for FRI commit-phase where evals are extension and only the challenger needs base form.
+/// `salts` carries optional per-matrix hiding-MMCS salt coefficients. When `Some`, the
+/// extension leaf is flattened to base field coefficients and the salt is appended (matching
+/// native `ExtensionMmcs<_, _, MerkleTreeHidingMmcs>`, which flattens the row then salts it);
+/// `None` keeps the non-hiding extension-element hashing path.
 pub fn verify_batch_circuit_from_extension_opened<F, EF>(
     circuit: &mut CircuitBuilder<EF>,
     permutation_config: Poseidon2Config,
@@ -371,6 +415,7 @@ pub fn verify_batch_circuit_from_extension_opened<F, EF>(
     dimensions: &[Dimensions],
     index_bits: &[Target],
     opened_extension_values: &[Vec<Target>],
+    salts: Option<&[Vec<Target>]>,
 ) -> Result<Vec<NonPrimitiveOpId>, CircuitBuilderError>
 where
     F: Field + TwoAdicField + PrimeField64,
@@ -380,6 +425,15 @@ where
         return Err(CircuitBuilderError::WrongBatchSize {
             expected: dimensions.len(),
             got: opened_extension_values.len(),
+        });
+    }
+
+    if let Some(salts) = salts
+        && salts.len() != opened_extension_values.len()
+    {
+        return Err(CircuitBuilderError::WrongBatchSize {
+            expected: opened_extension_values.len(),
+            got: salts.len(),
         });
     }
 
@@ -412,17 +466,39 @@ where
     for (i, digest) in formatted_digests.iter_mut().enumerate() {
         let curr_height = 1 << (max_height_log - i);
 
-        let all_ext: Vec<Target> = heights_tallest_first
+        let mats_at_height: Vec<usize> = heights_tallest_first
             .peeking_take_while(|(_, dims)| dims.height.next_power_of_two() == curr_height)
-            .flat_map(|(mat_idx, _)| opened_extension_values[mat_idx].iter().copied())
+            .map(|(mat_idx, _)| mat_idx)
             .collect();
 
-        if all_ext.is_empty() {
+        if mats_at_height.is_empty() {
             continue;
         }
 
-        *digest =
-            add_hash_extension_elements::<F, EF>(circuit, &permutation_config, &all_ext, true)?;
+        *digest = if let Some(salts) = salts {
+            // Hiding extension MMCS: native flattens each extension row to base field
+            // coefficients then appends the per-matrix base-field salt before hashing.
+            let mut all_base: Vec<Target> = Vec::new();
+            for &mat_idx in &mats_at_height {
+                for &ext in &opened_extension_values[mat_idx] {
+                    all_base.extend(circuit.decompose_ext_to_base_coeffs::<F>(ext)?);
+                }
+                all_base.extend(salts[mat_idx].iter().copied());
+            }
+            add_hash_base_coeffs_overwrite::<F, EF>(
+                circuit,
+                &permutation_config,
+                &all_base,
+                true,
+                true,
+            )?
+        } else {
+            let all_ext: Vec<Target> = mats_at_height
+                .iter()
+                .flat_map(|&mat_idx| opened_extension_values[mat_idx].iter().copied())
+                .collect();
+            add_hash_extension_elements::<F, EF>(circuit, &permutation_config, &all_ext, true)?
+        };
     }
 
     circuit.add_mmcs_verify(
@@ -649,6 +725,104 @@ where
     )
 }
 
+/// Native salted MMCS proof: `(per-matrix salts, sibling digests)`.
+///
+/// Used by `MerkleTreeHidingMmcs` (and `ExtensionMmcs` wrapping it). Only the sibling
+/// digests are MMCS non-primitive-op private data; the salts flow as circuit private
+/// inputs (see [`HidingHashProofTargets`](crate::pcs::HidingHashProofTargets)).
+type SaltedMmcsProof<F, const DIGEST_ELEMS: usize> = (Vec<Vec<F>>, Vec<[F; DIGEST_ELEMS]>);
+
+/// Variant of [`set_fri_mmcs_private_data`] for a FRI proof whose input and commit-phase
+/// MMCSs are *hiding* (`MerkleTreeHidingMmcs`), i.e. their opening proof is
+/// `(salts, siblings)`. Sets the sibling digests as MMCS private data using only the
+/// `siblings` component; salts are supplied separately as circuit private inputs.
+pub fn set_salted_fri_mmcs_private_data<F, EF, FriMmcs, InputMmcs, const DIGEST_ELEMS: usize>(
+    runner: &mut CircuitRunner<'_, EF>,
+    op_ids: &[NonPrimitiveOpId],
+    fri_proof: &FriProof<EF, FriMmcs, F, Vec<BatchOpening<F, InputMmcs>>>,
+) -> Result<(), &'static str>
+where
+    F: Field,
+    EF: ExtensionField<F> + BasedVectorSpace<F>,
+    FriMmcs: Mmcs<EF, Proof = SaltedMmcsProof<F, DIGEST_ELEMS>>,
+    InputMmcs: Mmcs<F, Proof = SaltedMmcsProof<F, DIGEST_ELEMS>>,
+{
+    let mut op_idx = 0;
+
+    for query_proof in &fri_proof.query_proofs {
+        // Input batch MMCS proofs: `.1` is the sibling digests.
+        for batch_opening in &query_proof.input_proof {
+            let siblings = convert_merkle_proof_to_siblings::<F, EF, DIGEST_ELEMS>(
+                &batch_opening.opening_proof.1,
+            );
+            for sibling in siblings {
+                if op_idx >= op_ids.len() {
+                    return Err("More siblings in proof than op_ids provided");
+                }
+                runner
+                    .set_private_data(
+                        op_ids[op_idx],
+                        NpoPrivateData::new(Poseidon2PermPrivateData { sibling }),
+                    )
+                    .map_err(|_| "Failed to set private data for input batch MMCS")?;
+                op_idx += 1;
+            }
+        }
+
+        // Commit-phase MMCS proofs: `.1` is the sibling digests.
+        for phase_opening in &query_proof.commit_phase_openings {
+            let siblings = convert_merkle_proof_to_siblings::<F, EF, DIGEST_ELEMS>(
+                &phase_opening.opening_proof.1,
+            );
+            for sibling in siblings {
+                if op_idx >= op_ids.len() {
+                    return Err("More siblings in proof than op_ids provided");
+                }
+                runner
+                    .set_private_data(
+                        op_ids[op_idx],
+                        NpoPrivateData::new(Poseidon2PermPrivateData { sibling }),
+                    )
+                    .map_err(|_| "Failed to set private data for commit-phase MMCS")?;
+                op_idx += 1;
+            }
+        }
+    }
+
+    if op_idx != op_ids.len() {
+        return Err("Fewer siblings in proof than op_ids provided");
+    }
+
+    Ok(())
+}
+
+/// Variant of [`set_salted_fri_mmcs_private_data`] for [HidingFriPcs](p3_fri::HidingFriPcs)
+/// opening proofs (a `(random_opened_values, inner_fri_proof)` tuple) whose underlying
+/// input and commit-phase MMCSs are hiding.
+pub fn set_hiding_salted_fri_mmcs_private_data<
+    F,
+    EF,
+    FriMmcs,
+    InputMmcs,
+    const DIGEST_ELEMS: usize,
+>(
+    runner: &mut CircuitRunner<'_, EF>,
+    op_ids: &[NonPrimitiveOpId],
+    fri_proof: &HidingFriProof<F, EF, FriMmcs, InputMmcs>,
+) -> Result<(), &'static str>
+where
+    F: Field,
+    EF: ExtensionField<F> + BasedVectorSpace<F>,
+    FriMmcs: Mmcs<EF, Proof = SaltedMmcsProof<F, DIGEST_ELEMS>>,
+    InputMmcs: Mmcs<F, Proof = SaltedMmcsProof<F, DIGEST_ELEMS>>,
+{
+    set_salted_fri_mmcs_private_data::<F, EF, FriMmcs, InputMmcs, DIGEST_ELEMS>(
+        runner,
+        op_ids,
+        &fri_proof.1,
+    )
+}
+
 #[cfg(test)]
 mod test {
     use alloc::vec;
@@ -756,6 +930,7 @@ mod test {
                 &dimensions,
                 &directions_expr,
                 &openings,
+                None,
             )
             .unwrap();
 
@@ -1184,6 +1359,7 @@ mod test {
                 &dimensions,
                 &directions_expr,
                 &lifted_openings,
+                None,
             )
             .unwrap();
 
@@ -1340,6 +1516,7 @@ mod test {
                 &dimensions,
                 &directions_expr,
                 &lifted_openings,
+                None,
             )
             .unwrap();
 
