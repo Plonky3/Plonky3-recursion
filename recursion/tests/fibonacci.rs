@@ -5,7 +5,6 @@ use p3_circuit::CircuitBuilder;
 use p3_circuit::ops::{generate_poseidon2_trace, generate_recompose_trace};
 use p3_circuit::test_utils::{FibonacciAir, generate_trace_rows};
 use p3_field::PrimeCharacteristicRing;
-use p3_fri::FriParameters;
 use p3_poseidon2_circuit_air::BabyBearD4Width16;
 use p3_recursion::pcs::fri::{FriVerifierParams, InputProofTargets, MerkleCapTargets, RecValMmcs};
 use p3_recursion::pcs::set_fri_mmcs_private_data;
@@ -47,28 +46,21 @@ fn build_fibonacci_test_setup() -> FibonacciTestSetup {
     let n = 1 << 3;
     let x = 21;
 
-    let perm = default_babybear_poseidon2_16();
-    let hash = MyHash::new(perm.clone());
-    let compress = MyCompress::new(perm.clone());
-    let val_mmcs = MyMmcs::new(hash, compress, 0);
-    let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
-    let dft = Dft::default();
     let trace = generate_trace_rows::<F>(0, 1, n);
-    let log_final_poly_len = 0;
-    let fri_params = FriParameters::new_testing(challenge_mmcs, log_final_poly_len);
+
+    let config = make_test_config();
+    // Same default permutation make_test_config uses, for the recursive verifier circuit.
+    let perm = default_babybear_poseidon2_16();
 
     // Enable MMCS verification
+    let scalars = test_fri_scalars();
     let fri_verifier_params = FriVerifierParams::with_mmcs(
-        fri_params.log_blowup,
-        fri_params.log_final_poly_len,
-        fri_params.commit_proof_of_work_bits,
-        fri_params.query_proof_of_work_bits,
+        scalars.log_blowup,
+        scalars.log_final_poly_len,
+        scalars.commit_pow_bits,
+        scalars.query_pow_bits,
         Poseidon2Config::BabyBearD4Width16,
     );
-
-    let pcs = MyPcs::new(dft, val_mmcs, fri_params);
-    let challenger = Challenger::new(perm.clone());
-    let config = MyConfig::new(pcs, challenger);
     let pis = vec![F::ZERO, F::ONE, F::from_u64(x)];
     let air = FibonacciAir {};
     let proof = prove(&config, &air, trace, &pis);

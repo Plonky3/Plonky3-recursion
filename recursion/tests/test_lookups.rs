@@ -16,7 +16,6 @@ use p3_circuit_prover::{
     BatchStarkProof, BatchStarkProver, CircuitProverData, ConstraintProfile, Poseidon2Preprocessor,
     Poseidon2Prover, RecomposePreprocessor, TablePacking, TableProver, recompose_table_provers,
 };
-use p3_fri::FriParameters;
 use p3_lookup::LookupData;
 use p3_lookup::logup::LogUpGadget;
 use p3_poseidon2_circuit_air::BabyBearD4Width16;
@@ -638,37 +637,23 @@ fn get_test_circuit_proof() -> TestCircuitProofData {
 // Returns the proving configuration for the initial circuit.
 // Uses the default permutation to match the circuit's Fiat-Shamir challenger.
 fn get_proving_config() -> MyConfig {
-    let perm = default_babybear_poseidon2_16();
-    let hash = MyHash::new(perm.clone());
-    let compress = MyCompress::new(perm.clone());
-    let val_mmcs = MyMmcs::new(hash, compress, 0);
-    let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
-    let dft = Dft::default();
-
-    let fri_params = FriParameters::new_testing(challenge_mmcs, 0);
-
-    let pcs_proving = MyPcs::new(dft, val_mmcs, fri_params);
-    let challenger_proving = Challenger::new(perm);
-    MyConfig::new(pcs_proving, challenger_proving)
+    make_test_config()
 }
 
 // Returns the configuration and FRI verifier params for recursive verification.
 // Uses the default permutation to match the circuit's Fiat-Shamir challenger.
 fn get_recursive_config_and_params() -> (MyConfig, FriVerifierParams, usize, usize) {
-    let dft2 = Dft::default();
-    let perm2 = default_babybear_poseidon2_16();
-    let hash2 = MyHash::new(perm2.clone());
-    let compress2 = MyCompress::new(perm2.clone());
-    let val_mmcs2 = MyMmcs::new(hash2, compress2, 0);
-    let challenge_mmcs2 = ChallengeMmcs::new(val_mmcs2.clone());
-    let fri_params2 = FriParameters::new_testing(challenge_mmcs2, 0);
-    let fri_verifier_params = FriVerifierParams::from(&fri_params2);
-    let pow_bits = fri_params2.query_proof_of_work_bits;
-    let log_height_max = fri_params2.log_final_poly_len + fri_params2.log_blowup;
-    let pcs_verif = MyPcs::new(dft2, val_mmcs2, fri_params2);
-    let challenger_verif = Challenger::new(perm2);
+    let scalars = test_fri_scalars();
+    let fri_verifier_params = FriVerifierParams::arithmetic_only(
+        scalars.log_blowup,
+        scalars.log_final_poly_len,
+        scalars.commit_pow_bits,
+        scalars.query_pow_bits,
+    );
+    let pow_bits = scalars.query_pow_bits;
+    let log_height_max = scalars.log_final_poly_len + scalars.log_blowup;
     (
-        MyConfig::new(pcs_verif, challenger_verif),
+        make_test_config(),
         fri_verifier_params,
         pow_bits,
         log_height_max,

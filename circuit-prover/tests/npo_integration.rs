@@ -316,20 +316,10 @@ fn cube_npo_stark_proof() {
 /// confirming that the two degree-2 constraints are satisfied.
 #[test]
 fn cube_air_stark_proof() {
-    use p3_baby_bear::default_babybear_poseidon2_16;
     use p3_test_utils::baby_bear_params::*;
     use p3_uni_stark::{prove, verify};
 
-    let perm = default_babybear_poseidon2_16();
-    let hash = MyHash::new(perm.clone());
-    let compress = MyCompress::new(perm.clone());
-    let val_mmcs = MyMmcs::new(hash, compress, 0);
-    let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
-    let dft = Dft::default();
-    let fri_params = p3_fri::FriParameters::new_testing(challenge_mmcs, 0);
-    let pcs = MyPcs::new(dft, val_mmcs, fri_params);
-    let challenger = Challenger::new(perm);
-    let cfg = MyConfig::new(pcs, challenger);
+    let cfg = make_test_config();
 
     // Construct a single-row trace: [x, x^2, x^3]
     let x = BabyBear::from_u64(7);

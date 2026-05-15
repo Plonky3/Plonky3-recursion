@@ -18,7 +18,6 @@ use p3_circuit_prover::{
     BatchStarkProver, CircuitProverData, ConstraintProfile, Poseidon2Preprocessor,
     RecomposePreprocessor, TablePacking,
 };
-use p3_fri::FriParameters;
 use p3_lookup::logup::LogUpGadget;
 use p3_recursion::pcs::fri::{FriVerifierParams, InputProofTargets, MerkleCapTargets, RecValMmcs};
 use p3_recursion::pcs::set_fri_mmcs_private_data;
@@ -61,19 +60,6 @@ fn fibonacci_challenge(n: usize) -> Challenge {
     }
 
     b.into()
-}
-
-fn make_test_config() -> MyConfig {
-    let perm = default_koalabear_poseidon2_16();
-    let hash = MyHash::new(perm.clone());
-    let compress = MyCompress::new(perm.clone());
-    let val_mmcs = MyMmcs::new(hash, compress, 0);
-    let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
-    let dft = Dft::default();
-    let fri_params = FriParameters::new_testing(challenge_mmcs, 0);
-    let pcs = MyPcs::new(dft, val_mmcs, fri_params);
-    let challenger = Challenger::new(perm);
-    MyConfig::new(pcs, challenger)
 }
 
 #[test]
@@ -127,23 +113,15 @@ fn test_fibonacci_batch_verifier_quintic_koala() {
     // matches the committed AIR layout, so recursive verification consumes it directly.
     let common = &batch_stark_proof.stark_common;
 
-    let dft2 = Dft::default();
-    let perm2 = default_koalabear_poseidon2_16();
-    let hash2 = MyHash::new(perm2.clone());
-    let compress2 = MyCompress::new(perm2.clone());
-    let val_mmcs2 = MyMmcs::new(hash2, compress2, 0);
-    let challenge_mmcs2 = ChallengeMmcs::new(val_mmcs2.clone());
-    let fri_params2 = FriParameters::new_testing(challenge_mmcs2, 0);
+    let scalars = test_fri_scalars();
     let fri_verifier_params = FriVerifierParams::with_mmcs(
-        fri_params2.log_blowup,
-        fri_params2.log_final_poly_len,
-        fri_params2.commit_proof_of_work_bits,
-        fri_params2.query_proof_of_work_bits,
+        scalars.log_blowup,
+        scalars.log_final_poly_len,
+        scalars.commit_pow_bits,
+        scalars.query_pow_bits,
         Poseidon2Config::KoalaBearD1Width16,
     );
-    let pcs_verif = MyPcs::new(dft2, val_mmcs2, fri_params2);
-    let challenger_verif = Challenger::new(perm2);
-    let config = MyConfig::new(pcs_verif, challenger_verif);
+    let config = make_test_config();
 
     let batch_proof = &batch_stark_proof.proof;
     const TRACE_D: usize = 5;

@@ -5,7 +5,6 @@ mod common;
 use p3_baby_bear::default_babybear_poseidon2_16;
 use p3_circuit::CircuitBuilder;
 use p3_circuit::ops::{generate_poseidon2_trace, generate_recompose_trace};
-use p3_fri::FriParameters;
 use p3_matrix::Matrix;
 use p3_poseidon2_circuit_air::BabyBearD4Width16;
 use p3_recursion::pcs::fri::{FriVerifierParams, MerkleCapTargets};
@@ -23,22 +22,16 @@ type InnerFri = InnerFriGeneric<MyConfig, MyHash, MyCompress, DIGEST_ELEMS>;
 fn test_mul_verifier_circuit() -> Result<(), VerificationError> {
     let n = 1 << 3;
 
+    let scalars = test_fri_scalars();
+    let fri_verifier_params = FriVerifierParams::arithmetic_only(
+        scalars.log_blowup,
+        scalars.log_final_poly_len,
+        scalars.commit_pow_bits,
+        scalars.query_pow_bits,
+    );
+    let config = make_test_config();
+    // Same default permutation make_test_config uses, for the recursive verifier circuit.
     let perm = default_babybear_poseidon2_16();
-    let hash = MyHash::new(perm.clone());
-    let compress = MyCompress::new(perm.clone());
-    let val_mmcs = MyMmcs::new(hash, compress, 0);
-    let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
-    let dft = Dft::default();
-
-    let log_final_poly_len = 0;
-    let fri_params = FriParameters::new_testing(challenge_mmcs, log_final_poly_len);
-    let fri_verifier_params = FriVerifierParams::from(&fri_params);
-    let _log_height_max = fri_params.log_final_poly_len + fri_params.log_blowup;
-    let _pow_bits = fri_params.query_proof_of_work_bits;
-    let pcs = MyPcs::new(dft, val_mmcs, fri_params);
-    let challenger = Challenger::new(perm.clone());
-
-    let config = MyConfig::new(pcs, challenger);
     let pis = vec![];
 
     // Create AIR and generate valid trace

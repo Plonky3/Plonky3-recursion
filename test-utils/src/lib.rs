@@ -9,13 +9,39 @@ use core::marker::PhantomData;
 /// Maximum allowed constraint degree for AIR constraints.
 pub const MAX_TEST_CONSTRAINT_DEGREE: usize = 3;
 
+/// Scalar FRI parameters matching [`FriParameters::new_testing`] with `log_final_poly_len = 0`.
+///
+/// Tests that need `FriVerifierParams` cannot get them from a `p3-test-utils` helper, because
+/// `FriVerifierParams` lives in `p3-recursion`, which already depends on `p3-test-utils` (a
+/// dependency cycle). This struct lets such tests derive `FriVerifierParams` from a single
+/// canonical source without rebuilding the MMCS/PCS wiring.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TestFriScalars {
+    pub log_blowup: usize,
+    pub log_final_poly_len: usize,
+    pub commit_pow_bits: usize,
+    pub query_pow_bits: usize,
+}
+
+/// Returns the [`TestFriScalars`] used by the `make_test_config` helpers, read back from
+/// [`FriParameters::new_testing`] so the two never drift.
+pub fn test_fri_scalars() -> TestFriScalars {
+    let params = FriParameters::<()>::new_testing((), 0);
+    TestFriScalars {
+        log_blowup: params.log_blowup,
+        log_final_poly_len: params.log_final_poly_len,
+        commit_pow_bits: params.commit_proof_of_work_bits,
+        query_pow_bits: params.query_proof_of_work_bits,
+    }
+}
+
 pub use p3_challenger::DuplexChallenger;
 pub use p3_commit::ExtensionMmcs;
 pub use p3_dft::Radix2DitParallel;
 pub use p3_field::extension::BinomialExtensionField;
 use p3_field::extension::{QuinticTrinomialExtendable, QuinticTrinomialExtensionField};
 pub use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
-pub use p3_fri::TwoAdicFriPcs;
+pub use p3_fri::{FriParameters, TwoAdicFriPcs};
 pub use p3_lookup::Lookups;
 pub use p3_merkle_tree::MerkleTreeMmcs;
 use p3_symmetric::Permutation;
@@ -326,6 +352,18 @@ pub mod baby_bear_params {
     pub type Challenger = DuplexChallenger<F, Perm, WIDTH, RATE>;
     pub type MyPcs = TwoAdicFriPcs<F, Dft, MyMmcs, ChallengeMmcs>;
     pub type MyConfig = StarkConfig<MyPcs, Challenge, Challenger>;
+
+    /// Builds the standard test `MyConfig` (testing FRI params, default permutation).
+    pub fn make_test_config() -> MyConfig {
+        let perm = default_babybear_poseidon2_16();
+        let hash = MyHash::new(perm.clone());
+        let compress = MyCompress::new(perm.clone());
+        let val_mmcs = MyMmcs::new(hash, compress, 0);
+        let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
+        let fri_params = FriParameters::new_testing(challenge_mmcs, 0);
+        let pcs = MyPcs::new(Dft::default(), val_mmcs, fri_params);
+        MyConfig::new(pcs, Challenger::new(perm))
+    }
 }
 
 /// Common parameters for the KoalaBear field.
@@ -357,6 +395,45 @@ pub mod koala_bear_params {
     pub type Challenger = DuplexChallenger<F, Perm, WIDTH, RATE>;
     pub type MyPcs = TwoAdicFriPcs<F, Dft, MyMmcs, ChallengeMmcs>;
     pub type MyConfig = StarkConfig<MyPcs, Challenge, Challenger>;
+
+    /// Builds the standard test `MyConfig` (testing FRI params, default permutation).
+    pub fn make_test_config() -> MyConfig {
+        let perm = default_koalabear_poseidon2_16();
+        let hash = MyHash::new(perm.clone());
+        let compress = MyCompress::new(perm.clone());
+        let val_mmcs = MyMmcs::new(hash, compress, 0);
+        let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
+        let fri_params = FriParameters::new_testing(challenge_mmcs, 0);
+        let pcs = MyPcs::new(Dft::default(), val_mmcs, fri_params);
+        MyConfig::new(pcs, Challenger::new(perm))
+    }
+
+    /// Builds a test `MyConfig` with an explicit FRI shape (`log_blowup`, `max_log_arity`),
+    /// reusing `perm` for the Fiat-Shamir challenger. Used for aggregation tests that mix
+    /// proofs with different FRI shapes.
+    pub fn make_test_config_with_fri(
+        perm: &Perm,
+        log_blowup: usize,
+        max_log_arity: usize,
+    ) -> MyConfig {
+        let query_proof_of_work_bits = 16;
+        let num_queries = (100 - query_proof_of_work_bits) / log_blowup;
+        let hash = MyHash::new(perm.clone());
+        let compress = MyCompress::new(perm.clone());
+        let val_mmcs = MyMmcs::new(hash, compress, 0);
+        let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
+        let fri_params = FriParameters {
+            max_log_arity,
+            log_blowup,
+            log_final_poly_len: 0,
+            num_queries,
+            commit_proof_of_work_bits: 0,
+            query_proof_of_work_bits,
+            mmcs: challenge_mmcs,
+        };
+        let pcs = MyPcs::new(Dft::default(), val_mmcs, fri_params);
+        MyConfig::new(pcs, Challenger::new(perm.clone()))
+    }
 }
 
 /// KoalaBear with quintic trinomial challenge field (`D = 5`).
@@ -392,6 +469,18 @@ pub mod koala_bear_quintic_params {
 
     /// Base Poseidon2 permutation lifted to act on [`Challenge`] lanes (constant term only).
     pub type LiftKoalaPermForQuintic = super::LiftPermToQuintic<F, Perm, WIDTH>;
+
+    /// Builds the standard test `MyConfig` (testing FRI params, default permutation).
+    pub fn make_test_config() -> MyConfig {
+        let perm = default_koalabear_poseidon2_16();
+        let hash = MyHash::new(perm.clone());
+        let compress = MyCompress::new(perm.clone());
+        let val_mmcs = MyMmcs::new(hash, compress, 0);
+        let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
+        let fri_params = FriParameters::new_testing(challenge_mmcs, 0);
+        let pcs = MyPcs::new(Dft::default(), val_mmcs, fri_params);
+        MyConfig::new(pcs, Challenger::new(perm))
+    }
 }
 
 /// Common parameters for the Goldilocks field.
