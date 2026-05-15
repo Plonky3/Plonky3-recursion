@@ -146,7 +146,7 @@ impl<F: Field> MulAddFusion<F> {
     /// If `out` is already defined before `idx`, this is a "backwards" op (e.g. sub
     /// encoded as add). Record that `computed` is produced at `idx`.
     fn track_backwards_op(&mut self, idx: usize, out: WitnessId, computed: WitnessId) {
-        if !self.is_const(&out) && self.is_backwards(idx, &out) {
+        if self.is_backwards(idx, &out) {
             self.backwards_computed.insert(computed, idx);
             self.insert_def(computed, idx, OpDef::Other);
         }
@@ -478,6 +478,35 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn test_backwards_sub_with_const_out_not_fused() {
+        let const_w = WitnessId(0);
+        let factor = WitnessId(1);
+        let p = WitnessId(2);
+        let mul_out = WitnessId(3);
+        let x = WitnessId(4);
+        let addend = WitnessId(5);
+        let final_out = WitnessId(6);
+
+        let ops: Vec<Op<F>> = vec![
+            Op::Const {
+                out: const_w,
+                val: F::ONE,
+            },
+            Op::Const {
+                out: factor,
+                val: F::TWO,
+            },
+            Op::mul(p, factor, mul_out),
+            // Backwards add: solves `addend = const_w - x`. `out` is a const.
+            Op::add(x, addend, const_w),
+            Op::add(mul_out, addend, final_out),
+        ];
+
+        let fused = MulAddFusion::new(&ops).run(ops.clone());
+        assert_eq!(fused, ops);
     }
 
     #[test]
