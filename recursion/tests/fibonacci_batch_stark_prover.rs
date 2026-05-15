@@ -9,7 +9,6 @@ use p3_circuit_prover::{
     BatchStarkProver, CircuitProverData, ConstraintProfile, Poseidon2Preprocessor, Poseidon2Prover,
     RecomposePreprocessor, TablePacking, TableProver, recompose_table_provers,
 };
-use p3_fri::FriParameters;
 use p3_lookup::logup::LogUpGadget;
 use p3_poseidon2_circuit_air::KoalaBearD4Width16;
 use p3_recursion::Poseidon2Config;
@@ -67,20 +66,7 @@ fn test_fibonacci_batch_verifier() {
     let table_packing = TablePacking::new(2, 4);
 
     // Use the default permutation for proving to match circuit's Fiat-Shamir challenger
-    let perm = default_koalabear_poseidon2_16();
-    let hash = MyHash::new(perm.clone());
-    let compress = MyCompress::new(perm.clone());
-    let val_mmcs = MyMmcs::new(hash, compress, 0);
-    let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
-    let dft = Dft::default();
-
-    // Create test FRI params with log_final_poly_len = 0
-    let fri_params = FriParameters::new_testing(challenge_mmcs, 0);
-
-    // Create config for proving
-    let pcs_proving = MyPcs::new(dft, val_mmcs, fri_params);
-    let challenger_proving = Challenger::new(perm);
-    let config_proving = MyConfig::new(pcs_proving, challenger_proving);
+    let config_proving = make_test_config();
 
     let circuit = builder.build().unwrap();
     let (airs_degrees, primitive_columns, non_primitive_columns) =
@@ -118,23 +104,15 @@ fn test_fibonacci_batch_verifier() {
 
     // Now verify the batch STARK proof recursively
     // Use same permutation as proving to ensure Fiat-Shamir transcript compatibility
-    let dft2 = Dft::default();
-    let perm2 = default_koalabear_poseidon2_16();
-    let hash2 = MyHash::new(perm2.clone());
-    let compress2 = MyCompress::new(perm2.clone());
-    let val_mmcs2 = MyMmcs::new(hash2, compress2, 0);
-    let challenge_mmcs2 = ChallengeMmcs::new(val_mmcs2.clone());
-    let fri_params2 = FriParameters::new_testing(challenge_mmcs2, 0);
+    let scalars = test_fri_scalars();
     let fri_verifier_params = FriVerifierParams::with_mmcs(
-        fri_params2.log_blowup,
-        fri_params2.log_final_poly_len,
-        fri_params2.commit_proof_of_work_bits,
-        fri_params2.query_proof_of_work_bits,
+        scalars.log_blowup,
+        scalars.log_final_poly_len,
+        scalars.commit_pow_bits,
+        scalars.query_pow_bits,
         Poseidon2Config::KoalaBearD4Width16,
     );
-    let pcs_verif = MyPcs::new(dft2, val_mmcs2, fri_params2);
-    let challenger_verif = Challenger::new(perm2);
-    let config = MyConfig::new(pcs_verif, challenger_verif);
+    let config = make_test_config();
 
     // Extract proof components
     let batch_proof = &batch_stark_proof.proof;
@@ -246,16 +224,7 @@ fn test_fibonacci_batch_verifier() {
     let verification_traces = runner.run().unwrap();
 
     // Create a new config and prover for the verification circuit
-    let dft3 = Dft::default();
-    let perm3 = default_koalabear_poseidon2_16();
-    let hash3 = MyHash::new(perm3.clone());
-    let compress3 = MyCompress::new(perm3.clone());
-    let val_mmcs3 = MyMmcs::new(hash3, compress3, 0);
-    let challenge_mmcs3 = ChallengeMmcs::new(val_mmcs3.clone());
-    let fri_params3 = FriParameters::new_testing(challenge_mmcs3, 0);
-    let pcs3 = MyPcs::new(dft3, val_mmcs3, fri_params3);
-    let challenger3 = Challenger::new(perm3);
-    let config3 = MyConfig::new(pcs3, challenger3);
+    let config3 = make_test_config();
 
     let verification_prover_data =
         ProverData::from_airs_and_degrees(&config3, &verification_airs, &verification_degrees);

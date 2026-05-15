@@ -105,14 +105,7 @@ fn make_zk_config(seed: u64) -> MyConfigZk {
 }
 
 fn make_non_zk_config() -> MyConfig {
-    let perm = default_koalabear_poseidon2_16();
-    let hash = MyHash::new(perm.clone());
-    let compress = MyCompress::new(perm.clone());
-    let val_mmcs = MyMmcs::new(hash, compress, 0);
-    let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
-    let fri_params = FriParameters::new_testing(challenge_mmcs, 0);
-    let pcs = TwoAdicFriPcs::new(Dft::default(), val_mmcs, fri_params);
-    MyConfig::new(pcs, Challenger::new(perm))
+    make_test_config()
 }
 
 struct ZkProofData {

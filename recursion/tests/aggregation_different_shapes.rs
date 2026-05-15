@@ -13,7 +13,6 @@ use p3_circuit_prover::{
     BatchStarkProver, CircuitProverData, ConstraintProfile, Poseidon2Prover, TablePacking,
     TableProver,
 };
-use p3_fri::FriParameters;
 use p3_lookup::logup::LogUpGadget;
 use p3_poseidon2_circuit_air::KoalaBearD4Width16;
 use p3_recursion::pcs::fri::{FriVerifierParams, InputProofTargets, MerkleCapTargets, RecValMmcs};
@@ -29,28 +28,6 @@ type InnerFri = InnerFriGeneric<MyConfig, MyHash, MyCompress, DIGEST_ELEMS>;
 
 const TRACE_D: usize = 1;
 
-fn make_config(perm: &Perm, log_blowup: usize, max_log_arity: usize) -> MyConfig {
-    let log_final_poly_len = 0usize;
-    let query_pow_bits = 16usize;
-    let num_queries = (100 - query_pow_bits) / log_blowup;
-    let hash = MyHash::new(perm.clone());
-    let compress = MyCompress::new(perm.clone());
-    let val_mmcs = MyMmcs::new(hash, compress, 0);
-    let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
-    let fri_params = FriParameters {
-        max_log_arity,
-        log_blowup,
-        log_final_poly_len,
-        num_queries,
-        commit_proof_of_work_bits: 0,
-        query_proof_of_work_bits: query_pow_bits,
-        mmcs: challenge_mmcs,
-    };
-    let pcs = MyPcs::new(Dft::default(), val_mmcs, fri_params);
-    let challenger = Challenger::new(perm.clone());
-    MyConfig::new(pcs, challenger)
-}
-
 const fn fri_verifier_params(log_blowup: usize) -> FriVerifierParams {
     FriVerifierParams::with_mmcs(log_blowup, 0, 0, 16, Poseidon2Config::KoalaBearD4Width16)
 }
@@ -60,9 +37,9 @@ fn test_aggregation_with_different_shapes() -> Result<(), VerificationError> {
     let perm = default_koalabear_poseidon2_16();
 
     // Uni-Stark (Fibonacci) with log_blowup=2, max_arity_log=3.
-    let left_config = make_config(&perm, 2, 3);
+    let left_config = make_test_config_with_fri(&perm, 2, 3);
     // Batch-Stark (dummy circuit) with log_blowup=3, max_arity_log=4.
-    let right_config = make_config(&perm, 3, 4);
+    let right_config = make_test_config_with_fri(&perm, 3, 4);
     let right_config_verif = right_config.clone();
 
     // Generate the Fibonacci trace.
