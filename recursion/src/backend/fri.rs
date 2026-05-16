@@ -7,15 +7,18 @@ use alloc::{format, vec};
 
 use p3_circuit::{CircuitBuilder, CircuitRunner, NonPrimitiveOpId};
 use p3_circuit_prover::batch_stark_prover::{
-    poseidon2_air_builders, poseidon2_air_builders_d5, poseidon2_preprocessor,
-    poseidon2_table_provers_d5, recompose_air_builders, recompose_preprocessor,
+    poseidon1_air_builders, poseidon1_air_builders_d5, poseidon1_preprocessor,
+    poseidon1_table_provers_d5, poseidon2_air_builders, poseidon2_air_builders_d5,
+    poseidon2_preprocessor, poseidon2_table_provers_d5, recompose_air_builders,
+    recompose_preprocessor,
 };
 use p3_circuit_prover::common::{NpoAirBuilder, NpoPreprocessor};
 use p3_circuit_prover::config::StarkField;
 use p3_circuit_prover::field_params::ExtractBinomialW;
 use p3_circuit_prover::{
-    ConstraintProfile, Poseidon2Preprocessor, Poseidon2Prover, Poseidon2ProverD2,
-    RecomposePreprocessor, TableProver, recompose_table_provers,
+    ConstraintProfile, Poseidon1Preprocessor, Poseidon1Prover, Poseidon1ProverD2,
+    Poseidon2Preprocessor, Poseidon2Prover, Poseidon2ProverD2, RecomposePreprocessor, TableProver,
+    recompose_table_provers,
 };
 use p3_commit::Pcs;
 use p3_field::extension::BinomiallyExtendable;
@@ -105,11 +108,15 @@ where
 /// FRI-based recursion backend, holding the challenger permutation config.
 /// The verifier params come from the config via [`FriRecursionConfig::pcs_verifier_params`].
 /// `WIDTH` and `RATE` are the permutation circuit parameters (typically 16 and 8).
-// TODO: Make this generic over the challenger permutation config.
+/// `C` is the challenger permutation config (e.g. [`Poseidon2Config`] or `Poseidon1Config`).
 #[derive(Clone)]
-pub struct FriRecursionBackend<const WIDTH: usize = 16, const RATE: usize = 8> {
-    /// Poseidon2 configuration used for the Fiat-Shamir challenger permutation circuit.
-    pub challenger_perm_config: Poseidon2Config,
+pub struct FriRecursionBackend<
+    const WIDTH: usize = 16,
+    const RATE: usize = 8,
+    C: ChallengerPermConfig = Poseidon2Config,
+> {
+    /// Permutation configuration used for the Fiat-Shamir challenger permutation circuit.
+    pub challenger_perm_config: C,
     /// Number of recompose operations packed per AIR row.
     ///
     /// Increasing this reduces the recompose table height proportionally.
@@ -117,9 +124,11 @@ pub struct FriRecursionBackend<const WIDTH: usize = 16, const RATE: usize = 8> {
     pub recompose_lanes: usize,
 }
 
-impl<const WIDTH: usize, const RATE: usize> FriRecursionBackend<WIDTH, RATE> {
+impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
+    FriRecursionBackend<WIDTH, RATE, C>
+{
     /// Create a new backend with the given challenger permutation configuration.
-    pub const fn new(challenger_perm_config: Poseidon2Config) -> Self {
+    pub const fn new(challenger_perm_config: C) -> Self {
         Self {
             challenger_perm_config,
             recompose_lanes: 1,
@@ -135,7 +144,7 @@ impl<const WIDTH: usize, const RATE: usize> FriRecursionBackend<WIDTH, RATE> {
     /// Tag this backend for a fixed batch/extension degree `D` (typically `2` or `4`).
     pub const fn for_extension_degree<const D: usize>(
         self,
-    ) -> FriRecursionBackendForExt<D, WIDTH, RATE> {
+    ) -> FriRecursionBackendForExt<D, WIDTH, RATE, C> {
         FriRecursionBackendForExt(self)
     }
 
@@ -144,17 +153,13 @@ impl<const WIDTH: usize, const RATE: usize> FriRecursionBackend<WIDTH, RATE> {
     ///
     /// # Panics
     ///
-    /// Panics if `challenger_perm_config.d() != 1`. The quintic challenger operates
-    /// entirely in the base field, so the Poseidon2 config must be a D=1 variant
-    /// (e.g. `KoalaBearD1Width16`). Passing a D=4 config would cause a dimension
-    /// mismatch when the trace generator copies 5-element quintic coefficients into
-    /// 4-slot base-field state slices.
-    pub const fn new_d5(
-        challenger_perm_config: Poseidon2Config,
-    ) -> FriRecursionBackendD5<WIDTH, RATE> {
+    /// Panics if the challenger config is not D=1. The quintic challenger operates
+    /// entirely in the base field, so a D=1 (base-field) permutation config is
+    /// required (e.g. `KoalaBearD1Width16`).
+    pub fn new_d5(challenger_perm_config: C) -> FriRecursionBackendD5<WIDTH, RATE, C> {
         assert!(
-            challenger_perm_config.d() == 1,
-            "new_d5 requires a D=1 (base-field) Poseidon2 config; \
+            challenger_perm_config.extension_degree() == 1,
+            "new_d5 requires a D=1 (base-field) challenger config; \
              the quintic challenger operates in the base field"
         );
         FriRecursionBackendD5(Self::new(challenger_perm_config))
@@ -163,16 +168,25 @@ impl<const WIDTH: usize, const RATE: usize> FriRecursionBackend<WIDTH, RATE> {
 
 /// FRI recursion backend tagged with batch/extension field degree `D` (e.g. `2` or `4`).
 #[derive(Clone)]
-pub struct FriRecursionBackendForExt<const D: usize, const WIDTH: usize = 16, const RATE: usize = 8>(
+pub struct FriRecursionBackendForExt<
+    const D: usize,
+    const WIDTH: usize = 16,
+    const RATE: usize = 8,
+    C: ChallengerPermConfig = Poseidon2Config,
+>(
     /// The inner backend holding the challenger permutation config.
-    pub(crate) FriRecursionBackend<WIDTH, RATE>,
+    pub(crate) FriRecursionBackend<WIDTH, RATE, C>,
 );
 
 /// FRI backend for KoalaBear quintic extension (`D = 5`).
 #[derive(Clone)]
-pub struct FriRecursionBackendD5<const WIDTH: usize = 16, const RATE: usize = 8>(
+pub struct FriRecursionBackendD5<
+    const WIDTH: usize = 16,
+    const RATE: usize = 8,
+    C: ChallengerPermConfig = Poseidon2Config,
+>(
     /// The inner backend holding the challenger permutation config.
-    pub(crate) FriRecursionBackend<WIDTH, RATE>,
+    pub(crate) FriRecursionBackend<WIDTH, RATE, C>,
 );
 
 /// Verifier result from the FRI backend: either uni-stark or batch-stark builder + op_ids.
@@ -265,8 +279,8 @@ where
     }
 }
 
-fn build_verifier_circuit_impl<SC, A, const WIDTH: usize, const RATE: usize>(
-    backend: &FriRecursionBackend<WIDTH, RATE>,
+fn build_verifier_circuit_impl<SC, A, const WIDTH: usize, const RATE: usize, C>(
+    backend: &FriRecursionBackend<WIDTH, RATE, C>,
     prev: &RecursionInput<'_, SC, A>,
     config: &SC,
     circuit: &mut CircuitBuilder<SC::Challenge>,
@@ -275,6 +289,7 @@ fn build_verifier_circuit_impl<SC, A, const WIDTH: usize, const RATE: usize>(
 where
     SC: FriRecursionConfig + Send + Sync + 'static,
     A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
+    C: ChallengerPermConfig + Copy,
     Val<SC>: PrimeField64,
     SC::Challenge: BasedVectorSpace<Val<SC>>
         + From<Val<SC>>
@@ -426,12 +441,14 @@ where
     }
 }
 
-impl<SC, A, const WIDTH: usize, const RATE: usize> PcsRecursionBackend<SC, A, 2>
-    for FriRecursionBackendForExt<2, WIDTH, RATE>
+impl<SC, A, const WIDTH: usize, const RATE: usize, C> PcsRecursionBackend<SC, A, 2>
+    for FriRecursionBackendForExt<2, WIDTH, RATE, C>
 where
     SC: FriRecursionConfig + Send + Sync + 'static,
     A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
+    C: ChallengerPermConfig + Copy + 'static,
     Val<SC>: PrimeField64 + BinomiallyExtendable<2> + StarkField,
+    Poseidon1Preprocessor: NpoPreprocessor<Val<SC>>,
     Poseidon2Preprocessor: NpoPreprocessor<Val<SC>>,
     RecomposePreprocessor: NpoPreprocessor<Val<SC>>,
     SC::Challenge: BasedVectorSpace<Val<SC>>
@@ -493,19 +510,32 @@ where
     }
 
     fn non_primitive_preprocessors(&self) -> Vec<Box<dyn NpoPreprocessor<Val<SC>>>> {
-        let cl = self.0.challenger_perm_config.d() != 2;
-        vec![
-            poseidon2_preprocessor::<Val<SC>>(),
-            recompose_preprocessor::<Val<SC>>(cl),
-        ]
+        let cl = self.0.challenger_perm_config.extension_degree() != 2;
+        let perm_prep = if self.0.challenger_perm_config.as_poseidon1().is_some() {
+            poseidon1_preprocessor::<Val<SC>>()
+        } else {
+            poseidon2_preprocessor::<Val<SC>>()
+        };
+        vec![perm_prep, recompose_preprocessor::<Val<SC>>(cl)]
     }
 
     fn non_primitive_provers(&self, ext_degree: usize) -> Vec<Box<dyn TableProver<SC>>> {
         if ext_degree == 2 {
-            let cl = self.0.challenger_perm_config.d() != 2;
-            let mut provers: Vec<Box<dyn TableProver<SC>>> = vec![Box::new(
-                Poseidon2ProverD2::new(self.0.challenger_perm_config, ConstraintProfile::Standard),
-            )];
+            let cl = self.0.challenger_perm_config.extension_degree() != 2;
+            let mut provers: Vec<Box<dyn TableProver<SC>>> = match (
+                self.0.challenger_perm_config.as_poseidon1(),
+                self.0.challenger_perm_config.as_poseidon2(),
+            ) {
+                (Some(c), _) => vec![Box::new(Poseidon1ProverD2::new(
+                    *c,
+                    ConstraintProfile::Standard,
+                ))],
+                (_, Some(c)) => vec![Box::new(Poseidon2ProverD2::new(
+                    *c,
+                    ConstraintProfile::Standard,
+                ))],
+                _ => Vec::new(),
+            };
             provers.extend(recompose_table_provers::<SC, 2>(self.0.recompose_lanes, cl));
             provers
         } else {
@@ -514,19 +544,25 @@ where
     }
 
     fn non_primitive_air_builders(&self) -> Vec<Box<dyn NpoAirBuilder<SC, 2>>> {
-        let cl = self.0.challenger_perm_config.d() != 2;
-        let mut builders = poseidon2_air_builders::<SC, 2>();
+        let cl = self.0.challenger_perm_config.extension_degree() != 2;
+        let mut builders = if self.0.challenger_perm_config.as_poseidon1().is_some() {
+            poseidon1_air_builders::<SC, 2>()
+        } else {
+            poseidon2_air_builders::<SC, 2>()
+        };
         builders.extend(recompose_air_builders::<SC, 2>(self.0.recompose_lanes, cl));
         builders
     }
 }
 
-impl<SC, A, const WIDTH: usize, const RATE: usize> PcsRecursionBackend<SC, A, 4>
-    for FriRecursionBackendForExt<4, WIDTH, RATE>
+impl<SC, A, const WIDTH: usize, const RATE: usize, C> PcsRecursionBackend<SC, A, 4>
+    for FriRecursionBackendForExt<4, WIDTH, RATE, C>
 where
     SC: FriRecursionConfig + Send + Sync + 'static,
     A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
+    C: ChallengerPermConfig + Copy + 'static,
     Val<SC>: PrimeField64 + BinomiallyExtendable<4> + StarkField,
+    Poseidon1Preprocessor: NpoPreprocessor<Val<SC>>,
     Poseidon2Preprocessor: NpoPreprocessor<Val<SC>>,
     RecomposePreprocessor: NpoPreprocessor<Val<SC>>,
     SC::Challenge: BasedVectorSpace<Val<SC>>
@@ -588,20 +624,32 @@ where
     }
 
     fn non_primitive_preprocessors(&self) -> Vec<Box<dyn NpoPreprocessor<Val<SC>>>> {
-        let cl = self.0.challenger_perm_config.d() != 4;
-        vec![
-            poseidon2_preprocessor::<Val<SC>>(),
-            recompose_preprocessor::<Val<SC>>(cl),
-        ]
+        let cl = self.0.challenger_perm_config.extension_degree() != 4;
+        let perm_prep = if self.0.challenger_perm_config.as_poseidon1().is_some() {
+            poseidon1_preprocessor::<Val<SC>>()
+        } else {
+            poseidon2_preprocessor::<Val<SC>>()
+        };
+        vec![perm_prep, recompose_preprocessor::<Val<SC>>(cl)]
     }
 
     fn non_primitive_provers(&self, ext_degree: usize) -> Vec<Box<dyn TableProver<SC>>> {
         if ext_degree == 4 {
-            let cl = self.0.challenger_perm_config.d() != 4;
-            let mut provers: Vec<Box<dyn TableProver<SC>>> = vec![Box::new(Poseidon2Prover::new(
-                self.0.challenger_perm_config,
-                ConstraintProfile::Standard,
-            ))];
+            let cl = self.0.challenger_perm_config.extension_degree() != 4;
+            let mut provers: Vec<Box<dyn TableProver<SC>>> = match (
+                self.0.challenger_perm_config.as_poseidon1(),
+                self.0.challenger_perm_config.as_poseidon2(),
+            ) {
+                (Some(c), _) => vec![Box::new(Poseidon1Prover::new(
+                    *c,
+                    ConstraintProfile::Standard,
+                ))],
+                (_, Some(c)) => vec![Box::new(Poseidon2Prover::new(
+                    *c,
+                    ConstraintProfile::Standard,
+                ))],
+                _ => Vec::new(),
+            };
             provers.extend(recompose_table_provers::<SC, 4>(self.0.recompose_lanes, cl));
             provers
         } else {
@@ -610,19 +658,25 @@ where
     }
 
     fn non_primitive_air_builders(&self) -> Vec<Box<dyn NpoAirBuilder<SC, 4>>> {
-        let cl = self.0.challenger_perm_config.d() != 4;
-        let mut builders = poseidon2_air_builders::<SC, 4>();
+        let cl = self.0.challenger_perm_config.extension_degree() != 4;
+        let mut builders = if self.0.challenger_perm_config.as_poseidon1().is_some() {
+            poseidon1_air_builders::<SC, 4>()
+        } else {
+            poseidon2_air_builders::<SC, 4>()
+        };
         builders.extend(recompose_air_builders::<SC, 4>(self.0.recompose_lanes, cl));
         builders
     }
 }
 
-impl<SC, A, const WIDTH: usize, const RATE: usize> PcsRecursionBackend<SC, A, 5>
-    for FriRecursionBackendD5<WIDTH, RATE>
+impl<SC, A, const WIDTH: usize, const RATE: usize, C> PcsRecursionBackend<SC, A, 5>
+    for FriRecursionBackendD5<WIDTH, RATE, C>
 where
     SC: FriRecursionConfig + Send + Sync + 'static,
     A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
+    C: ChallengerPermConfig + Copy + 'static,
     Val<SC>: PrimeField64 + StarkField + BinomiallyExtendable<4>,
+    Poseidon1Preprocessor: NpoPreprocessor<Val<SC>>,
     Poseidon2Preprocessor: NpoPreprocessor<Val<SC>>,
     RecomposePreprocessor: NpoPreprocessor<Val<SC>>,
     SC::Challenge: BasedVectorSpace<Val<SC>>
@@ -684,17 +738,26 @@ where
     }
 
     fn non_primitive_preprocessors(&self) -> Vec<Box<dyn NpoPreprocessor<Val<SC>>>> {
-        let cl = self.0.challenger_perm_config.d() != 5;
-        vec![
-            poseidon2_preprocessor::<Val<SC>>(),
-            recompose_preprocessor::<Val<SC>>(cl),
-        ]
+        let cl = self.0.challenger_perm_config.extension_degree() != 5;
+        let perm_prep = if self.0.challenger_perm_config.as_poseidon1().is_some() {
+            poseidon1_preprocessor::<Val<SC>>()
+        } else {
+            poseidon2_preprocessor::<Val<SC>>()
+        };
+        vec![perm_prep, recompose_preprocessor::<Val<SC>>(cl)]
     }
 
     fn non_primitive_provers(&self, ext_degree: usize) -> Vec<Box<dyn TableProver<SC>>> {
         if ext_degree == 5 {
-            let cl = self.0.challenger_perm_config.d() != 5;
-            let mut provers = poseidon2_table_provers_d5(self.0.challenger_perm_config);
+            let cl = self.0.challenger_perm_config.extension_degree() != 5;
+            let mut provers = match (
+                self.0.challenger_perm_config.as_poseidon1(),
+                self.0.challenger_perm_config.as_poseidon2(),
+            ) {
+                (Some(c), _) => poseidon1_table_provers_d5(*c),
+                (_, Some(c)) => poseidon2_table_provers_d5(*c),
+                _ => Vec::new(),
+            };
             provers.extend(recompose_table_provers::<SC, 5>(self.0.recompose_lanes, cl));
             provers
         } else {
@@ -703,8 +766,12 @@ where
     }
 
     fn non_primitive_air_builders(&self) -> Vec<Box<dyn NpoAirBuilder<SC, 5>>> {
-        let cl = self.0.challenger_perm_config.d() != 5;
-        let mut builders = poseidon2_air_builders_d5();
+        let cl = self.0.challenger_perm_config.extension_degree() != 5;
+        let mut builders = if self.0.challenger_perm_config.as_poseidon1().is_some() {
+            poseidon1_air_builders_d5()
+        } else {
+            poseidon2_air_builders_d5()
+        };
         builders.extend(recompose_air_builders::<SC, 5>(self.0.recompose_lanes, cl));
         builders
     }
