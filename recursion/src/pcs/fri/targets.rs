@@ -398,7 +398,6 @@ impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize> Recursive<EF>
 }
 
 /// `HashProofTargets` corresponds to a Merkle tree `Proof` in the form of a vector of hashes with `DIGEST_ELEMS` digest elements.
-// TODO: This could be fully removed?
 pub struct HashProofTargets<F, const DIGEST_ELEMS: usize> {
     pub hash_proof_targets: Vec<[Target; DIGEST_ELEMS]>,
     _phantom: PhantomData<F>,

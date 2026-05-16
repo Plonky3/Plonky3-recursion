@@ -8,7 +8,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  CARGO_INCREMENTAL: 0 // reduce disk bloat
+  CARGO_INCREMENTAL: 0 # reduce disk bloat
 
 jobs:
   build_and_test:
@@ -74,6 +74,10 @@ jobs:
         env:
           RUST_LOG: debug
         run: cargo run --package p3-circuit --example allocation_log --features debugging
+
+      - name: Build benchmarks without running
+        if: ${{ !matrix.features }}
+        run: cargo bench --no-run --workspace
 
       - name: Disk usage (after)
         if: always()

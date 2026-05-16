@@ -19,7 +19,7 @@ use p3_commit::{Pcs, PolynomialSpace};
 use p3_field::{
     Algebra, BasedVectorSpace, ExtensionField, Field, PrimeCharacteristicRing, PrimeField64,
 };
-use p3_lookup::{Kind, Lookup, LookupData, LookupProtocol, Lookups};
+use p3_lookup::{Kind, Lookup, LookupData, LookupProtocol};
 use p3_uni_stark::{StarkGenericConfig, SymbolicExpression, SymbolicExpressionExt, Val};
 
 use super::{ObservableCommitment, VerificationError, recompose_quotient_from_chunks_circuit};
@@ -109,23 +109,6 @@ where
             Self::Alu(a) => P3Air::eval(a, builder),
             Self::Dynamic(inner) => P3Air::eval(inner, builder),
         }
-    }
-}
-
-/// Extract lookups for a verifier-side [`CircuitTablesAir`] via symbolic AIR evaluation.
-#[allow(dead_code)]
-pub fn circuit_tables_lookups<SC, const D: usize>(air: &CircuitTablesAir<SC, D>) -> Lookups<Val<SC>>
-where
-    SC: StarkGenericConfig,
-    Val<SC>: PrimeField64,
-    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
-        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
-{
-    match air {
-        CircuitTablesAir::Const(a) => Lookups::from_air::<SC::Challenge, _>(a),
-        CircuitTablesAir::Public(a) => Lookups::from_air::<SC::Challenge, _>(a),
-        CircuitTablesAir::Alu(a) => Lookups::from_air::<SC::Challenge, _>(a),
-        CircuitTablesAir::Dynamic(inner) => Lookups::from_air::<SC::Challenge, _>(inner),
     }
 }
 

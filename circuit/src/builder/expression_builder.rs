@@ -6,7 +6,6 @@
 //! - nodes represent field operations,
 //! - edges represent dependencies between expressions.
 
-#![allow(unused_variables)]
 #![allow(clippy::missing_const_for_fn)]
 
 use alloc::string::String;
@@ -769,6 +768,8 @@ where
     /// This expression represents a value produced by a non-primitive operation.
     /// The `call` parameter is the `ExprId` of the `NonPrimitiveCall` node, making
     /// the dependency explicit in the DAG structure.
+    // `op_type` is only consumed by the `debugging`-gated allocation log.
+    #[allow(unused_variables)]
     pub fn add_non_primitive_output(
         &mut self,
         op_type: &NpoTypeId,
@@ -846,6 +847,8 @@ where
     /// # Returns
     ///
     /// An [`ExprId`] handle to the newly created expression.
+    // `lhs`/`rhs` are only consumed by the `debugging`-gated allocation log.
+    #[allow(unused_variables)]
     #[inline(always)]
     fn add_bin_op(
         &mut self,
@@ -1011,6 +1014,8 @@ where
     /// # Arguments
     ///
     /// - `scope`: Human-readable scope name
+    // `scope` is only consumed under the `debugging`/`profiling` features.
+    #[allow(unused_variables)]
     pub fn push_scope(&mut self, scope: &str) {
         #[cfg(any(feature = "debugging", feature = "profiling"))]
         {
@@ -1074,6 +1079,8 @@ where
     /// Dumps the allocation log for specific `ExprId`s.
     ///
     /// If debug_assertions are not enabled, this is a no-op.
+    // `expr_ids` is only consumed by the `debugging`-gated allocation log.
+    #[allow(unused_variables)]
     pub fn dump_expr_ids(&self, expr_ids: &[ExprId]) {
         #[cfg(feature = "debugging")]
         self.allocation_log.dump_expr_ids(expr_ids);
