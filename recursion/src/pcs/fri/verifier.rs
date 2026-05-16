@@ -1421,6 +1421,14 @@ where
         )));
     }
 
+    // A zero-query proof is unsound and would also panic below on
+    // `index_bits_per_query[0]`. Reject it explicitly before any indexing.
+    if num_queries == 0 {
+        return Err(VerificationError::InvalidProofShape(
+            "FRI proof must have at least one query".to_string(),
+        ));
+    }
+
     let log_max_height = index_bits_per_query[0].len();
     if index_bits_per_query
         .iter()
@@ -1435,6 +1443,41 @@ where
         return Err(VerificationError::InvalidProofShape(
             "FRI must have at least one fold phase".to_string(),
         ));
+    }
+
+    // The global FRI schedule (`log_arities`) is derived from the first query proof
+    // only (see `FriProofTargets::new`). Every other query is *assumed* to share that
+    // schedule; a malformed proof can carry a different per-query schedule or
+    // mis-sized sibling vectors, which would otherwise produce silently dropped
+    // coefficients (`chunks_exact`) or wrong-shape fold arithmetic. Reject any query
+    // whose commit-phase opening count, `log_arity` sequence, or sibling coefficient
+    // count disagrees with the global schedule before building any constraints.
+    let ef_dim = EF::DIMENSION;
+    for (q, query_proof) in fri_proof_targets.query_proofs.iter().enumerate() {
+        if query_proof.commit_phase_openings.len() != num_phases {
+            return Err(VerificationError::InvalidProofShape(format!(
+                "query {q}: commit-phase opening count must equal number of phases: expected {}, got {}",
+                num_phases,
+                query_proof.commit_phase_openings.len()
+            )));
+        }
+        for (phase, opening) in query_proof.commit_phase_openings.iter().enumerate() {
+            let expected_log_arity = log_arities[phase];
+            if opening.log_arity != expected_log_arity {
+                return Err(VerificationError::InvalidProofShape(format!(
+                    "query {q} phase {phase}: log_arity disagrees with global FRI schedule: expected {expected_log_arity}, got {}",
+                    opening.log_arity
+                )));
+            }
+            let expected_coeffs = ((1usize << expected_log_arity) - 1) * ef_dim;
+            if opening.sibling_coefficients.len() != expected_coeffs {
+                return Err(VerificationError::InvalidProofShape(format!(
+                    "query {q} phase {phase}: sibling coefficient count must be \
+                     (2^log_arity - 1) * EF::DIMENSION = {expected_coeffs}, got {}",
+                    opening.sibling_coefficients.len()
+                )));
+            }
+        }
     }
 
     // With variable arity: log_max_height = total_log_reduction + log_final_poly_len + log_blowup

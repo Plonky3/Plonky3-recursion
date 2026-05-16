@@ -146,7 +146,12 @@ fn add_zk_batch_verifier_to_circuit(
         let val_mmcs = MyMmcs::new(hash, compress, 0);
         let challenge_mmcs = ChallengeMmcs::new(val_mmcs);
         let fri_params = FriParameters::new_testing(challenge_mmcs, 0);
-        FriVerifierParams::from(&fri_params)
+        FriVerifierParams::unsafe_arithmetic_only_for_tests(
+            fri_params.log_blowup,
+            fri_params.log_final_poly_len,
+            fri_params.commit_proof_of_work_bits,
+            fri_params.query_proof_of_work_bits,
+        )
     };
 
     let air_public_counts = vec![0usize; proof.opened_values.instances.len()];

@@ -644,7 +644,7 @@ fn get_proving_config() -> MyConfig {
 // Uses the default permutation to match the circuit's Fiat-Shamir challenger.
 fn get_recursive_config_and_params() -> (MyConfig, FriVerifierParams, usize, usize) {
     let scalars = test_fri_scalars();
-    let fri_verifier_params = FriVerifierParams::arithmetic_only(
+    let fri_verifier_params = FriVerifierParams::unsafe_arithmetic_only_for_tests(
         scalars.log_blowup,
         scalars.log_final_poly_len,
         scalars.commit_pow_bits,

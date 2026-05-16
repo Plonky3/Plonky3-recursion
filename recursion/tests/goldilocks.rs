@@ -147,8 +147,7 @@ fn test_goldilocks_mul_verifier_with_preprocessed() -> Result<(), VerificationEr
 
     let (_config, perm, _) = make_config();
 
-    // Use FriVerifierParams::from to skip MMCS verification (arithmetic only),
-    // matching the pattern in mul_air.rs.
+    // Skip MMCS verification (arithmetic only), matching the pattern in mul_air.rs.
     let (config2, _, fri_verifier_params) = {
         let perm2 = default_goldilocks_poseidon2_8();
         let hash2 = MyHash::new(perm2.clone());
@@ -156,7 +155,12 @@ fn test_goldilocks_mul_verifier_with_preprocessed() -> Result<(), VerificationEr
         let val_mmcs2 = MyMmcs::new(hash2, compress2, 0);
         let challenge_mmcs2 = ChallengeMmcs::new(val_mmcs2.clone());
         let fri_params2 = FriParameters::new_testing(challenge_mmcs2, 0);
-        let fri_verifier_params = FriVerifierParams::from(&fri_params2);
+        let fri_verifier_params = FriVerifierParams::unsafe_arithmetic_only_for_tests(
+            fri_params2.log_blowup,
+            fri_params2.log_final_poly_len,
+            fri_params2.commit_proof_of_work_bits,
+            fri_params2.query_proof_of_work_bits,
+        );
         let pcs2 = MyPcs::new(Dft::default(), val_mmcs2, fri_params2);
         let challenger2 = Challenger::new(perm2.clone());
         (MyConfig::new(pcs2, challenger2), perm2, fri_verifier_params)

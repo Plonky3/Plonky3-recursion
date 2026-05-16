@@ -999,6 +999,62 @@ mod baby_bear_d4 {
 
         assert!(traces.witness_trace.num_rows() > 0);
     }
+
+    #[test]
+    fn test_sample_bits_rejects_oversized_request() {
+        use p3_circuit::CircuitBuilderError;
+
+        let mut circuit = setup_circuit_with_poseidon2();
+        let mut circuit_challenger =
+            CircuitChallenger::<WIDTH, RATE, Poseidon2Config>::new_babybear();
+
+        let bf_bits = <F as p3_field::Field>::bits();
+
+        let err = RecursiveChallenger::<F, EF>::sample_bits(
+            &mut circuit_challenger,
+            &mut circuit,
+            bf_bits + 1,
+        )
+        .expect_err("num_bits > BF::bits() must be rejected");
+        assert!(
+            matches!(
+                err,
+                CircuitBuilderError::BinaryDecompositionTooManyBits { expected, n_bits }
+                    if expected == bf_bits && n_bits == bf_bits + 1
+            ),
+            "expected BinaryDecompositionTooManyBits, got {err:?}"
+        );
+    }
+
+    /// Oversized commit/query PoW bits flow through `check_pow_witness`, which
+    /// must surface the same recoverable error rather than panicking.
+    #[test]
+    fn test_check_pow_witness_rejects_oversized_pow_bits() {
+        use p3_circuit::CircuitBuilderError;
+
+        let mut circuit = setup_circuit_with_poseidon2();
+        let mut circuit_challenger =
+            CircuitChallenger::<WIDTH, RATE, Poseidon2Config>::new_babybear();
+
+        let bf_bits = <F as p3_field::Field>::bits();
+        let witness = circuit.define_const(EF::from(F::from_u64(7)));
+
+        let err = RecursiveChallenger::<F, EF>::check_pow_witness(
+            &mut circuit_challenger,
+            &mut circuit,
+            bf_bits + 1,
+            witness,
+        )
+        .expect_err("PoW witness_bits > BF::bits() must be rejected");
+        assert!(
+            matches!(
+                err,
+                CircuitBuilderError::BinaryDecompositionTooManyBits { expected, .. }
+                    if expected == bf_bits
+            ),
+            "expected BinaryDecompositionTooManyBits, got {err:?}"
+        );
+    }
 }
 
 // ============================================================================

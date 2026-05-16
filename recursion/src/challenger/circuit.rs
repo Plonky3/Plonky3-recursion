@@ -284,10 +284,19 @@ where
         circuit: &mut CircuitBuilder<EF>,
         num_bits: usize,
     ) -> Result<Vec<Target>, CircuitBuilderError> {
+        // A verifier parameter with `num_bits > BF::bits()` would panic on the
+        // `bits[..num_bits]` slice below, so we check and abort early if needed.
+        let bf_bits = BF::bits();
+        if num_bits > bf_bits {
+            return Err(CircuitBuilderError::BinaryDecompositionTooManyBits {
+                expected: bf_bits,
+                n_bits: num_bits,
+            });
+        }
         let base_sample = self.sample(circuit);
         // Decompose base field element to bits
         // We decompose the full base field bit width to ensure correct reconstruction
-        let bits = circuit.decompose_to_bits::<BF>(base_sample, BF::bits())?;
+        let bits = circuit.decompose_to_bits::<BF>(base_sample, bf_bits)?;
         Ok(bits[..num_bits].to_vec())
     }
 

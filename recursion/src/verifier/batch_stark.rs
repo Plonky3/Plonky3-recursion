@@ -241,6 +241,9 @@ where
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
         Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
+    proof
+        .validate()
+        .map_err(|e| VerificationError::InvalidProofShape(e.to_string()))?;
     assert_eq!(proof.ext_degree, TRACE_D, "trace extension degree mismatch");
     let rows: RowCounts = proof.rows;
     let packing = proof.table_packing.clone();
@@ -396,6 +399,38 @@ where
         return Err(VerificationError::InvalidProofShape(
             "Mismatch between number of AIRs, instances, public values, or degree bits".to_string(),
         ));
+    }
+
+    // `common` is consumed by per-instance indexing below (`common.lookups[i]`,
+    // `global.instances.instances[i]`, and `matrix_to_instance` lookups). Validate
+    // its lengths and bounds up front so malformed/mismatched `CommonData` returns
+    // a typed error instead of panicking during circuit construction.
+    if common.lookups.len() != airs.len() {
+        return Err(VerificationError::InvalidProofShape(format!(
+            "common-data lookups length must equal number of AIR instances: expected {}, got {}",
+            airs.len(),
+            common.lookups.len()
+        )));
+    }
+    if let Some(global) = &common.preprocessed {
+        if global.instances.instances.len() != airs.len() {
+            return Err(VerificationError::InvalidProofShape(format!(
+                "common-data preprocessed instance metadata length must equal number of AIR \
+                 instances: expected {}, got {}",
+                airs.len(),
+                global.instances.instances.len()
+            )));
+        }
+        if let Some(&bad) = global
+            .matrix_to_instance
+            .iter()
+            .find(|&&idx| idx >= airs.len())
+        {
+            return Err(VerificationError::InvalidProofShape(format!(
+                "common-data matrix_to_instance entry {bad} out of bounds for {} instances",
+                airs.len()
+            )));
+        }
     }
 
     let all_lookups = &common.lookups;
@@ -949,21 +984,31 @@ where
 
         let recompose = |circuit: &mut CircuitBuilder<SC::Challenge>,
                          flat: &[Target]|
-         -> Vec<Target> {
-            if aux_width == 0 {
-                return vec![];
-            }
+         -> Result<Vec<Target>, VerificationError> {
             let ext_degree = SC::Challenge::DIMENSION;
-            debug_assert!(
-                flat.len() == aux_width * ext_degree,
-                "flattened permutation opening length ({}) must equal aux_width ({}) * DIMENSION ({})",
-                flat.len(),
-                aux_width,
-                ext_degree
-            );
+            // Hard proof-shape check: a malformed proof can supply extra/missing
+            // flattened permutation coefficients. `chunks_exact` would silently
+            // drop a remainder in release builds, so reject any length that is
+            // not exactly `aux_width * DIMENSION` (including the `aux_width == 0`
+            // case, which requires an empty opening).
+            let expected = aux_width * ext_degree;
+            if flat.len() != expected {
+                return Err(VerificationError::InvalidProofShape(format!(
+                    "flattened permutation opening length ({}) must equal aux_width ({}) * \
+                     DIMENSION ({}) = {}",
+                    flat.len(),
+                    aux_width,
+                    ext_degree,
+                    expected
+                )));
+            }
+            if aux_width == 0 {
+                return Ok(vec![]);
+            }
             // Chunk the flattened coefficients into groups of size `dim`.
             // Each chunk represents the coefficients of one extension field element.
-            flat.chunks_exact(ext_degree)
+            Ok(flat
+                .chunks_exact(ext_degree)
                 .map(|coeffs| {
                     let mut sum = circuit.define_const(SC::Challenge::ZERO);
                     // Dot product: sum(coeff_j * basis_j)
@@ -976,11 +1021,11 @@ where
                     });
                     sum
                 })
-                .collect()
+                .collect())
         };
 
-        let local_permutation_values = recompose(circuit, &inst.permutation_local_targets);
-        let next_permutation_values = recompose(circuit, &inst.permutation_next_targets);
+        let local_permutation_values = recompose(circuit, &inst.permutation_local_targets)?;
+        let next_permutation_values = recompose(circuit, &inst.permutation_next_targets)?;
 
         let local_prep_values = match inst
             .opened_values_no_lookups

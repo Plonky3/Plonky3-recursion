@@ -27,6 +27,7 @@ type RecExt = RecExtensionValMmcs<F, Challenge, 8, RecVal>;
 
 // Bring the circuit we're testing.
 use p3_recursion::pcs::fri::verify_fri_circuit;
+use p3_recursion::verifier::VerificationError;
 
 /// Alias for FriProofTargets used for lens/value extraction and allocation
 type FriTargets =
@@ -793,4 +794,149 @@ fn test_circuit_fri_verifier_with_mmcs() {
     let groups = vec![vec![4u8, 5]];
     let setup = generate_setup(1, groups);
     run_fri_test_with_mmcs(setup);
+}
+
+/// Allocate `FriProofTargets` for `result` and wire `verify_fri_circuit`,
+/// returning the shape-validation result *without* building/running the circuit.
+fn try_build_fri_verifier(
+    result: &ProduceInputsResult,
+    log_blowup: usize,
+) -> Result<(), VerificationError> {
+    let num_phases = result.num_phases;
+    let log_max_height = result.log_max_height;
+    let num_queries = result.index_bits_per_query.len();
+
+    let mut builder = CircuitBuilder::<Challenge>::new();
+    let fri_targets = FriTargets::new(&mut builder, &result.fri_proof);
+
+    let alpha_t = builder.public_input();
+    let betas_t: Vec<_> = (0..num_phases).map(|_| builder.public_input()).collect();
+    let index_bits_t_per_query: Vec<Vec<_>> = (0..num_queries)
+        .map(|_| {
+            (0..log_max_height)
+                .map(|_| builder.public_input())
+                .collect()
+        })
+        .collect();
+
+    let mut commitments_with_opening_points_targets = Vec::new();
+    for (_commit_val, mats_data) in &result.commitments_with_points {
+        let commit_t = builder.public_input();
+        let mut mats_targets = Vec::new();
+        for (domain, points_and_values) in mats_data {
+            let mut pv_targets = Vec::new();
+            for (_z, fz) in points_and_values {
+                let z_t = builder.public_input();
+                let fz_t: Vec<_> = (0..fz.len()).map(|_| builder.public_input()).collect();
+                pv_targets.push((z_t, fz_t));
+            }
+            mats_targets.push((*domain, pv_targets));
+        }
+        commitments_with_opening_points_targets.push((commit_t, mats_targets));
+    }
+
+    verify_fri_circuit::<F, Challenge, RecExt, RecVal, RecWitness<F>, p3_recursion::Target>(
+        &mut builder,
+        &fri_targets,
+        alpha_t,
+        &betas_t,
+        &index_bits_t_per_query,
+        &commitments_with_opening_points_targets,
+        log_blowup,
+        None, // MMCS verification disabled; we only exercise shape validation.
+    )
+    .map(|_| ())
+}
+
+#[test]
+fn test_fri_verifier_rejects_per_query_schedule_mismatch() {
+    let setup = generate_setup(
+        0,
+        vec![vec![0u8, 5, 8, 8, 10], vec![8u8, 11], vec![4u8, 5, 8]],
+    );
+    let mut result = produce_inputs_multi(
+        &setup.pcs,
+        &setup.perm,
+        setup.log_blowup,
+        setup.log_final_poly_len,
+        (setup.commit_pow_bits, setup.query_pow_bits),
+        &setup.group_sizes,
+        0,
+    );
+
+    assert!(
+        result.fri_proof.query_proofs.len() >= 2,
+        "test requires at least two FRI queries to exercise per-query divergence"
+    );
+
+    // Sanity: the untampered proof passes shape validation.
+    try_build_fri_verifier(&result, setup.log_blowup)
+        .expect("untampered FRI proof must pass shape validation");
+
+    // --- Case 1: a non-first query's `log_arity` diverges from the global schedule
+    // (derived from query 0). This must be rejected with `InvalidProofShape`.
+    let mut tampered = produce_inputs_multi(
+        &setup.pcs,
+        &setup.perm,
+        setup.log_blowup,
+        setup.log_final_poly_len,
+        (setup.commit_pow_bits, setup.query_pow_bits),
+        &setup.group_sizes,
+        0,
+    );
+    {
+        let step = &mut tampered.fri_proof.query_proofs[1].commit_phase_openings[0];
+        // The testing schedule uses arity-2 (log_arity == 1); bump it so the
+        // second query no longer matches query 0's schedule.
+        step.log_arity += 1;
+    }
+    let err = try_build_fri_verifier(&tampered, setup.log_blowup)
+        .expect_err("per-query log_arity divergence must be rejected");
+    assert!(
+        matches!(err, VerificationError::InvalidProofShape(_)),
+        "expected InvalidProofShape, got {err:?}"
+    );
+
+    // --- Case 2: a non-first query drops a commit-phase opening, so its
+    // opening count no longer matches the number of phases.
+    result.fri_proof.query_proofs[1].commit_phase_openings.pop();
+    let err = try_build_fri_verifier(&result, setup.log_blowup)
+        .expect_err("per-query commit-phase opening count mismatch must be rejected");
+    assert!(
+        matches!(err, VerificationError::InvalidProofShape(_)),
+        "expected InvalidProofShape, got {err:?}"
+    );
+}
+
+#[test]
+fn test_fri_verifier_rejects_zero_query_proof() {
+    let setup = generate_setup(
+        0,
+        vec![vec![0u8, 5, 8, 8, 10], vec![8u8, 11], vec![4u8, 5, 8]],
+    );
+    let mut result = produce_inputs_multi(
+        &setup.pcs,
+        &setup.perm,
+        setup.log_blowup,
+        setup.log_final_poly_len,
+        (setup.commit_pow_bits, setup.query_pow_bits),
+        &setup.group_sizes,
+        0,
+    );
+
+    // Construct the degenerate zero-query / zero-phase proof. Before the explicit
+    // `num_queries > 0` check this panicked on `index_bits_per_query[0]` during
+    // circuit construction; it must now return a typed `InvalidProofShape`.
+    result.fri_proof.query_proofs.clear();
+    result.fri_proof.commit_phase_commits.clear();
+    result.fri_proof.commit_pow_witnesses.clear();
+    result.index_bits_per_query.clear();
+    result.num_phases = 0;
+
+    let err = try_build_fri_verifier(&result, setup.log_blowup)
+        .expect_err("zero-query FRI proof must be rejected, not panic");
+    assert!(
+        matches!(err, VerificationError::InvalidProofShape(_)),
+        "expected InvalidProofShape, got {err:?}"
+    );
 }

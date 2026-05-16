@@ -3,6 +3,8 @@ use alloc::vec::Vec;
 use p3_circuit::ops::NpoTypeId;
 use serde::{Deserialize, Serialize};
 
+use crate::ProofMetadataError;
+
 /// Configuration for packing multiple primitive operations into a single AIR row.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TablePacking {
@@ -132,6 +134,30 @@ impl TablePacking {
     /// Number of consecutive HornerAcc steps packed into one scheduled ALU row (lane 0).
     pub const fn horner_packed_steps(&self) -> usize {
         self.horner_packed_steps
+    }
+
+    /// Re-check the invariants the builder methods enforce, after deserialization.
+    pub fn validate(&self) -> Result<(), ProofMetadataError> {
+        if self.public_lanes == 0 {
+            return Err(ProofMetadataError::ZeroLanes("public_lanes"));
+        }
+        if self.alu_lanes == 0 {
+            return Err(ProofMetadataError::ZeroLanes("alu_lanes"));
+        }
+        for (op_type, lanes) in &self.npo_lanes {
+            if *lanes == 0 {
+                return Err(ProofMetadataError::ZeroNpoLanes(op_type.clone()));
+            }
+        }
+        if self.min_trace_height == 0 || !self.min_trace_height.is_power_of_two() {
+            return Err(ProofMetadataError::BadMinTraceHeight(self.min_trace_height));
+        }
+        if self.horner_packed_steps < 2 {
+            return Err(ProofMetadataError::BadHornerPackedSteps(
+                self.horner_packed_steps,
+            ));
+        }
+        Ok(())
     }
 }
 

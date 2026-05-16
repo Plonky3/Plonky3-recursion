@@ -1283,6 +1283,97 @@ mod test {
         }
     }
 
+    /// Build an MMCS-verify circuit whose claimed `root` has `root_len` limbs and
+    /// return the build-time result. The Merkle path itself is well-formed; only
+    /// the root length is varied.
+    fn try_add_mmcs_verify_with_root_len(
+        root_len: usize,
+    ) -> Result<Vec<NonPrimitiveOpId>, CircuitBuilderError> {
+        let mut rng = SmallRng::seed_from_u64(1);
+        let perm = Perm::new_from_rng_128(&mut rng);
+        let hash = MyHash::new(perm.clone());
+        let compress = MyCompress::new(perm);
+        let mmcs = MyMmcs::new(hash.clone(), compress, 0);
+
+        let mats = (0..4)
+            .map(|_| RowMajorMatrix::<F>::rand(&mut rng, 8, 1))
+            .collect_vec();
+        let dimensions = &(0..4)
+            .map(|_| Dimensions {
+                height: 8,
+                width: 1,
+            })
+            .collect_vec();
+
+        let (_commit, prover_data) = mmcs.commit(mats);
+
+        let mut builder = CircuitBuilder::<CF>::new();
+        let permutation_config = Poseidon2Config::KoalaBearD4Width16;
+        let perm = default_koalabear_poseidon2_16();
+        builder.enable_poseidon2_perm::<KoalaBearD4Width16, _>(
+            generate_poseidon2_trace::<CF, KoalaBearD4Width16>,
+            perm,
+        );
+        builder.enable_recompose::<F>(generate_recompose_trace::<F, CF>);
+
+        let index = 3;
+        let path_depth = 3;
+        let batch_opening = mmcs.open_batch(index, &prover_data);
+
+        let openings_digests = batch_opening
+            .opened_values
+            .iter()
+            .zip(dimensions)
+            .chunk_by(|(_, dimensions)| dimensions.height)
+            .into_iter()
+            .map(|(_, group)| hash.hash_iter(group.flat_map(|(x, _)| x.iter().copied())))
+            .collect_vec();
+        let dimensions = dimensions
+            .iter()
+            .chunk_by(|dimensions| dimensions.height)
+            .into_iter()
+            .map(|(height, _)| Dimensions { width: 0, height })
+            .collect_vec();
+
+        let openings = openings_digests
+            .iter()
+            .map(|mat_hash| {
+                mat_hash
+                    .iter()
+                    .map(|_| builder.public_input())
+                    .collect_vec()
+            })
+            .collect_vec();
+        let openings =
+            format_openings(&openings, &dimensions, path_depth, permutation_config).unwrap();
+        let directions_expr = builder.alloc_public_inputs(path_depth, "directions");
+        let root_exprs = builder.alloc_public_inputs(root_len, "root");
+
+        builder.add_mmcs_verify(permutation_config, &openings, &directions_expr, &root_exprs)
+    }
+
+    /// A claimed root with fewer/more limbs than the computed root digest.
+    #[test]
+    fn verify_rejects_mismatched_root_length() {
+        let rate_ext = Poseidon2Config::KoalaBearD4Width16.rate_ext();
+
+        // Sanity: the correct root length builds fine.
+        try_add_mmcs_verify_with_root_len(rate_ext).expect("matching root length must build");
+
+        for bad_len in [rate_ext - 1, rate_ext + 1] {
+            let err = try_add_mmcs_verify_with_root_len(bad_len)
+                .expect_err("mismatched root length must be rejected");
+            assert!(
+                matches!(
+                    err,
+                    CircuitBuilderError::InvalidDimension { expected, actual }
+                        if expected == rate_ext && actual == bad_len
+                ),
+                "expected InvalidDimension {{ expected: {rate_ext}, actual: {bad_len} }}, got {err:?}"
+            );
+        }
+    }
+
     /// Test MMCS verification using lifted representation (like FRI verifier does).
     /// This tests that `pack_lifted_to_ext` + `verify_batch_circuit` produces correct results.
     ///
