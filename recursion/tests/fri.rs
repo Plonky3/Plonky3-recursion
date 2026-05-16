@@ -907,3 +907,36 @@ fn test_fri_verifier_rejects_per_query_schedule_mismatch() {
         "expected InvalidProofShape, got {err:?}"
     );
 }
+
+#[test]
+fn test_fri_verifier_rejects_zero_query_proof() {
+    let setup = generate_setup(
+        0,
+        vec![vec![0u8, 5, 8, 8, 10], vec![8u8, 11], vec![4u8, 5, 8]],
+    );
+    let mut result = produce_inputs_multi(
+        &setup.pcs,
+        &setup.perm,
+        setup.log_blowup,
+        setup.log_final_poly_len,
+        (setup.commit_pow_bits, setup.query_pow_bits),
+        &setup.group_sizes,
+        0,
+    );
+
+    // Construct the degenerate zero-query / zero-phase proof. Before the explicit
+    // `num_queries > 0` check this panicked on `index_bits_per_query[0]` during
+    // circuit construction; it must now return a typed `InvalidProofShape`.
+    result.fri_proof.query_proofs.clear();
+    result.fri_proof.commit_phase_commits.clear();
+    result.fri_proof.commit_pow_witnesses.clear();
+    result.index_bits_per_query.clear();
+    result.num_phases = 0;
+
+    let err = try_build_fri_verifier(&result, setup.log_blowup)
+        .expect_err("zero-query FRI proof must be rejected, not panic");
+    assert!(
+        matches!(err, VerificationError::InvalidProofShape(_)),
+        "expected InvalidProofShape, got {err:?}"
+    );
+}

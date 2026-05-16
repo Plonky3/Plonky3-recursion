@@ -1421,6 +1421,14 @@ where
         )));
     }
 
+    // A zero-query proof is unsound and would also panic below on
+    // `index_bits_per_query[0]`. Reject it explicitly before any indexing.
+    if num_queries == 0 {
+        return Err(VerificationError::InvalidProofShape(
+            "FRI proof must have at least one query".to_string(),
+        ));
+    }
+
     let log_max_height = index_bits_per_query[0].len();
     if index_bits_per_query
         .iter()
