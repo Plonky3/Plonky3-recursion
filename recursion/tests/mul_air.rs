@@ -23,7 +23,7 @@ fn test_mul_verifier_circuit() -> Result<(), VerificationError> {
     let n = 1 << 3;
 
     let scalars = test_fri_scalars();
-    let fri_verifier_params = FriVerifierParams::arithmetic_only(
+    let fri_verifier_params = FriVerifierParams::unsafe_arithmetic_only_for_tests(
         scalars.log_blowup,
         scalars.log_final_poly_len,
         scalars.commit_pow_bits,

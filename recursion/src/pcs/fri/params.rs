@@ -1,5 +1,4 @@
 use p3_circuit::ops::Poseidon2Config;
-use p3_fri::FriParameters;
 
 /// FRI verifier parameters (subset needed for verification).
 ///
@@ -17,7 +16,9 @@ pub struct FriVerifierParams {
     pub query_pow_bits: usize,
     /// Poseidon2 permutation configuration for MMCS verification.
     /// When `Some`, recursive MMCS verification is performed.
-    /// When `None`, only arithmetic verification is performed (for testing).
+    /// When `None`, only arithmetic verification is performed — this is
+    /// **unsound** and only reachable via
+    /// [`Self::unsafe_arithmetic_only_for_tests`].
     pub permutation_config: Option<Poseidon2Config>,
 }
 
@@ -39,8 +40,22 @@ impl FriVerifierParams {
         }
     }
 
-    /// Create params without MMCS verification (arithmetic-only, for testing).
-    pub const fn arithmetic_only(
+    /// Create params **without MMCS verification** (arithmetic-only).
+    ///
+    /// # Safety / soundness
+    ///
+    /// A verifier built from these params checks the FRI arithmetic fold chain
+    /// but does **not** verify Merkle/MMCS commitment openings. This is
+    /// **unsound for production use**: a prover can open commitments to
+    /// arbitrary values without detection.
+    ///
+    /// This constructor exists only for tests that exercise the arithmetic path
+    /// in isolation. Production verifier builders must use [`Self::with_mmcs`],
+    /// which is the only safe constructor and the only way to obtain a
+    /// `permutation_config`. There is intentionally no `From<&FriParameters>`
+    /// (or other implicit) conversion, so MMCS verification cannot be disabled
+    /// accidentally.
+    pub const fn unsafe_arithmetic_only_for_tests(
         log_blowup: usize,
         log_final_poly_len: usize,
         commit_pow_bits: usize,
@@ -56,16 +71,32 @@ impl FriVerifierParams {
     }
 }
 
-impl<M> From<&FriParameters<M>> for FriVerifierParams {
-    /// Creates params without MMCS verification by default.
-    /// Use `with_mmcs` or set `permutation_config` manually to enable MMCS verification.
-    fn from(params: &FriParameters<M>) -> Self {
-        Self {
-            log_blowup: params.log_blowup,
-            log_final_poly_len: params.log_final_poly_len,
-            commit_pow_bits: params.commit_proof_of_work_bits,
-            query_pow_bits: params.query_proof_of_work_bits,
-            permutation_config: None,
-        }
+#[cfg(test)]
+mod tests {
+    use p3_circuit::ops::Poseidon2Config;
+
+    use super::*;
+
+    /// The only safe constructor must always produce MMCS-enabled params, so a
+    /// production verifier builder cannot accidentally skip commitment opening
+    /// checks.
+    #[test]
+    fn with_mmcs_always_enables_mmcs_verification() {
+        let params = FriVerifierParams::with_mmcs(1, 0, 0, 0, Poseidon2Config::KoalaBearD4Width16);
+        assert!(
+            params.permutation_config.is_some(),
+            "with_mmcs must enable MMCS verification"
+        );
+    }
+
+    /// Disabling MMCS verification must require the explicitly unsafe,
+    /// test-only constructor — there is no implicit (`From`/`into`) path.
+    #[test]
+    fn arithmetic_only_is_the_only_way_to_disable_mmcs() {
+        let params = FriVerifierParams::unsafe_arithmetic_only_for_tests(1, 0, 0, 0);
+        assert!(
+            params.permutation_config.is_none(),
+            "arithmetic-only params must not perform MMCS verification"
+        );
     }
 }

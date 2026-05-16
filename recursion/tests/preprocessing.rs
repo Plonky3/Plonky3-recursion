@@ -282,7 +282,7 @@ fn test_batch_verifier_with_mixed_preprocessed() -> Result<(), VerificationError
     let n = 1 << 3;
 
     let scalars = test_fri_scalars();
-    let fri_verifier_params = FriVerifierParams::arithmetic_only(
+    let fri_verifier_params = FriVerifierParams::unsafe_arithmetic_only_for_tests(
         scalars.log_blowup,
         scalars.log_final_poly_len,
         scalars.commit_pow_bits,
@@ -410,7 +410,7 @@ fn test_batch_verifier_with_public_values() -> Result<(), VerificationError> {
     let n = 1 << 3;
 
     let scalars = test_fri_scalars();
-    let fri_verifier_params = FriVerifierParams::arithmetic_only(
+    let fri_verifier_params = FriVerifierParams::unsafe_arithmetic_only_for_tests(
         scalars.log_blowup,
         scalars.log_final_poly_len,
         scalars.commit_pow_bits,
@@ -494,7 +494,7 @@ fn test_batch_verifier_wrong_public_values() {
     let n = 1 << 3;
 
     let scalars = test_fri_scalars();
-    let fri_verifier_params = FriVerifierParams::arithmetic_only(
+    let fri_verifier_params = FriVerifierParams::unsafe_arithmetic_only_for_tests(
         scalars.log_blowup,
         scalars.log_final_poly_len,
         scalars.commit_pow_bits,
