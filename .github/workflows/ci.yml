@@ -75,6 +75,10 @@ jobs:
           RUST_LOG: debug
         run: cargo run --package p3-circuit --example allocation_log --features debugging
 
+      - name: Build benchmarks without running
+        if: ${{ !matrix.features }}
+        run: cargo bench --no-run --workspace
+
       - name: Disk usage (after)
         if: always()
         run: |
