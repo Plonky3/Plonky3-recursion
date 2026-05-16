@@ -15,6 +15,7 @@ use crate::types::{ExprId, NonPrimitiveOpId, WitnessId};
 #[derive(Debug)]
 pub enum NonPrimitiveOpParams<F> {
     Poseidon2Perm { new_start: bool, merkle_path: bool },
+    Poseidon1Perm { new_start: bool, merkle_path: bool },
     Unconstrained { executor: Box<dyn HintExecutor<F>> },
     Recompose,
 }
@@ -24,6 +25,17 @@ impl<F> NonPrimitiveOpParams<F> {
     pub const fn as_poseidon2_perm(&self) -> Option<(bool, bool)> {
         match self {
             Self::Poseidon2Perm {
+                new_start,
+                merkle_path,
+            } => Some((*new_start, *merkle_path)),
+            _ => None,
+        }
+    }
+
+    /// Return the `(new_start, merkle_path)` flags if this is a Poseidon1 permutation.
+    pub const fn as_poseidon1_perm(&self) -> Option<(bool, bool)> {
+        match self {
+            Self::Poseidon1Perm {
                 new_start,
                 merkle_path,
             } => Some((*new_start, *merkle_path)),
@@ -44,6 +56,13 @@ impl<F: Field> Clone for NonPrimitiveOpParams<F> {
                 new_start,
                 merkle_path,
             } => Self::Poseidon2Perm {
+                new_start: *new_start,
+                merkle_path: *merkle_path,
+            },
+            Self::Poseidon1Perm {
+                new_start,
+                merkle_path,
+            } => Self::Poseidon1Perm {
                 new_start: *new_start,
                 merkle_path: *merkle_path,
             },
