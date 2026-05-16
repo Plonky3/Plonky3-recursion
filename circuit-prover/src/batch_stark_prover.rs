@@ -100,6 +100,16 @@ where
     pub air_variant: AirVariant,
 }
 
+impl<SC: StarkGenericConfig> NonPrimitiveTableEntry<SC> {
+    /// Re-check the lane-count invariant that constructors clamp, after deserialization.
+    pub fn validate(&self) -> Result<(), ProofMetadataError> {
+        if self.lanes == 0 {
+            return Err(ProofMetadataError::ZeroNpoLanes(self.op_type.clone()));
+        }
+        Ok(())
+    }
+}
+
 /// Combined data for circuit proving, including STARK prover data and preprocessed columns.
 ///
 /// This struct bundles the upstream [`ProverData`] with circuit-specific preprocessed data,
@@ -270,6 +280,14 @@ impl RowCounts {
             i += 1;
         }
         Self(rows)
+    }
+
+    /// Re-check the invariant [`RowCounts::new`] enforces, after deserialization.
+    pub fn validate(&self) -> Result<(), ProofMetadataError> {
+        if self.0.contains(&0) {
+            return Err(ProofMetadataError::ZeroRowCount);
+        }
+        Ok(())
     }
 }
 
@@ -454,6 +472,26 @@ where
     }
 }
 
+impl<SC> BatchStarkProof<SC>
+where
+    SC: StarkGenericConfig,
+{
+    /// Re-check the structural invariants that the prover enforces but
+    /// `#[derive(Deserialize)]` can bypass.
+    pub fn validate(&self) -> Result<(), ProofMetadataError> {
+        match self.ext_degree {
+            1 | 2 | 4 | 5 | 6 | 8 => {}
+            d => return Err(ProofMetadataError::UnsupportedExtDegree(d)),
+        }
+        self.rows.validate()?;
+        self.table_packing.validate()?;
+        for entry in &self.non_primitives {
+            entry.validate()?;
+        }
+        Ok(())
+    }
+}
+
 /// Produces a single batch STARK proof covering all circuit tables.
 pub struct BatchStarkProver<SC>
 where
@@ -467,6 +505,38 @@ where
     non_primitive_provers: Vec<Box<dyn TableProver<SC>>>,
     /// When true, run the lookup debugger before proving to report imbalanced multisets.
     debug_lookups: bool,
+}
+
+/// Errors raised when proof metadata fails the structural invariants that the
+/// type constructors enforce but `#[derive(Deserialize)]` can bypass.
+///
+/// Validated via [`BatchStarkProof::validate`] before native and recursive
+/// verification so malformed serialized metadata is rejected up front.
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum ProofMetadataError {
+    /// A primitive table row count is zero (constructors require non-zero).
+    #[error("primitive table row count must be non-zero")]
+    ZeroRowCount,
+
+    /// A primitive lane count is zero (`new`/`with_*` clamp to at least 1).
+    #[error("`{0}` lane count must be at least 1")]
+    ZeroLanes(&'static str),
+
+    /// A non-primitive table lane count is zero (defaults/clamps to at least 1).
+    #[error("non-primitive table `{0:?}` lane count must be at least 1")]
+    ZeroNpoLanes(NpoTypeId),
+
+    /// `min_trace_height` is not a non-zero power of two.
+    #[error("minimum trace height must be a non-zero power of two (got {0})")]
+    BadMinTraceHeight(usize),
+
+    /// `horner_packed_steps` is less than 2.
+    #[error("horner_packed_steps must be at least 2 (got {0})")]
+    BadHornerPackedSteps(usize),
+
+    /// `ext_degree` is not one of the supported values.
+    #[error("unsupported extension degree {0} (supported: 1,2,4,5,6,8)")]
+    UnsupportedExtDegree(usize),
 }
 
 /// Errors for the batch STARK table prover.
@@ -487,6 +557,10 @@ pub enum BatchStarkProverError {
     /// A non-primitive table entry references an op type for which no [`TableProver`] was registered.
     #[error("missing table prover for non-primitive op `{0:?}`")]
     MissingTableProver(NpoTypeId),
+
+    /// Proof metadata failed structural validation before verification.
+    #[error("invalid proof metadata: {0}")]
+    InvalidMetadata(#[from] ProofMetadataError),
 }
 
 impl<SC, const D: usize> BaseAir<Val<SC>> for CircuitTableAir<SC, D>
@@ -776,6 +850,7 @@ where
         &self,
         proof: &BatchStarkProof<SC>,
     ) -> Result<(), BatchStarkProverError> {
+        proof.validate()?;
         let common = &proof.stark_common;
         match proof.ext_degree {
             1 => self.verify::<1>(proof, None, common),

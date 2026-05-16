@@ -241,6 +241,9 @@ where
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
         Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
+    proof
+        .validate()
+        .map_err(|e| VerificationError::InvalidProofShape(e.to_string()))?;
     assert_eq!(proof.ext_degree, TRACE_D, "trace extension degree mismatch");
     let rows: RowCounts = proof.rows;
     let packing = proof.table_packing.clone();

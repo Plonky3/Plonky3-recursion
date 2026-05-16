@@ -996,3 +996,199 @@ fn test_stark_serialization_round_trip() {
         .verify_all_tables(&deserialized)
         .expect("verification uses proof.stark_common");
 }
+
+// --- Proof-metadata validation after deserialization ---------------------------
+//
+// `#[derive(Deserialize)]` bypasses the constructors that enforce structural
+// invariants (non-zero row counts, lane clamping, power-of-two minimum height,
+// `horner_packed_steps >= 2`). These tests deserialize/construct the invalid
+// states a malicious or corrupt serialized proof could carry and assert that
+// `validate()` rejects them before verification.
+
+/// Field-compatible mirror of `TablePacking` (same field order/types) used to
+/// forge invalid serialized packings. `postcard` is non-self-describing, so a
+/// structurally identical struct round-trips into the real `TablePacking`.
+#[derive(serde::Serialize)]
+struct PackingMirror {
+    public_lanes: usize,
+    alu_lanes: usize,
+    npo_lanes: Vec<(p3_circuit::ops::NpoTypeId, usize)>,
+    min_trace_height: usize,
+    horner_packed_steps: usize,
+}
+
+impl PackingMirror {
+    fn valid() -> Self {
+        Self {
+            public_lanes: 1,
+            alu_lanes: 1,
+            npo_lanes: Vec::new(),
+            min_trace_height: 1,
+            horner_packed_steps: 2,
+        }
+    }
+
+    fn into_table_packing(self) -> TablePacking {
+        let bytes = postcard::to_allocvec(&self).expect("serialize packing mirror");
+        postcard::from_bytes(&bytes).expect("deserialize into TablePacking")
+    }
+}
+
+#[test]
+fn validate_rejects_zero_serialized_row_count() {
+    // A `RowCounts` is a newtype over `[usize; N]`; derived `Deserialize` bypasses
+    // `RowCounts::new`'s non-zero assertion.
+    let bytes = postcard::to_allocvec(&[0usize, 1, 1]).expect("serialize raw row counts");
+    let rows: RowCounts = postcard::from_bytes(&bytes).expect("deserialize RowCounts");
+    assert_eq!(rows.validate(), Err(ProofMetadataError::ZeroRowCount));
+
+    let ok = postcard::to_allocvec(&[1usize, 1, 1]).expect("serialize raw row counts");
+    let rows: RowCounts = postcard::from_bytes(&ok).expect("deserialize RowCounts");
+    assert_eq!(rows.validate(), Ok(()));
+}
+
+#[test]
+fn validate_rejects_invalid_serialized_table_packing() {
+    // Sanity: a valid mirror round-trips and validates.
+    assert_eq!(
+        PackingMirror::valid().into_table_packing().validate(),
+        Ok(())
+    );
+
+    let zero_public = PackingMirror {
+        public_lanes: 0,
+        ..PackingMirror::valid()
+    };
+    assert_eq!(
+        zero_public.into_table_packing().validate(),
+        Err(ProofMetadataError::ZeroLanes("public_lanes"))
+    );
+
+    let zero_alu = PackingMirror {
+        alu_lanes: 0,
+        ..PackingMirror::valid()
+    };
+    assert_eq!(
+        zero_alu.into_table_packing().validate(),
+        Err(ProofMetadataError::ZeroLanes("alu_lanes"))
+    );
+
+    let op = p3_circuit::ops::NpoTypeId::new("test_op");
+    let zero_npo = PackingMirror {
+        npo_lanes: vec![(op.clone(), 0)],
+        ..PackingMirror::valid()
+    };
+    assert_eq!(
+        zero_npo.into_table_packing().validate(),
+        Err(ProofMetadataError::ZeroNpoLanes(op))
+    );
+
+    let bad_height = PackingMirror {
+        min_trace_height: 24, // not a power of two
+        ..PackingMirror::valid()
+    };
+    assert_eq!(
+        bad_height.into_table_packing().validate(),
+        Err(ProofMetadataError::BadMinTraceHeight(24))
+    );
+
+    let zero_height = PackingMirror {
+        min_trace_height: 0,
+        ..PackingMirror::valid()
+    };
+    assert_eq!(
+        zero_height.into_table_packing().validate(),
+        Err(ProofMetadataError::BadMinTraceHeight(0))
+    );
+
+    let bad_horner = PackingMirror {
+        horner_packed_steps: 1,
+        ..PackingMirror::valid()
+    };
+    assert_eq!(
+        bad_horner.into_table_packing().validate(),
+        Err(ProofMetadataError::BadHornerPackedSteps(1))
+    );
+}
+
+#[test]
+fn validate_rejects_zero_lane_npo_entry() {
+    // `NonPrimitiveTableEntry` has public fields, so deserialization can produce
+    // a zero-lane entry directly.
+    let op = p3_circuit::ops::NpoTypeId::new("test_op");
+    let entry = NonPrimitiveTableEntry::<BabyBearConfig> {
+        op_type: op.clone(),
+        rows: 4,
+        lanes: 0,
+        public_values: Vec::new(),
+        air_variant: AirVariant::Baseline,
+    };
+    assert_eq!(entry.validate(), Err(ProofMetadataError::ZeroNpoLanes(op)));
+}
+
+#[test]
+fn verify_all_tables_rejects_tampered_serialized_row_counts() {
+    // End-to-end: a real proof whose deserialized `rows` metadata was corrupted
+    // to a zero count must be rejected before any AIR is reconstructed from it.
+    let mut builder = CircuitBuilder::<BabyBear>::new();
+    let x = builder.public_input();
+    let expected = builder.public_input();
+    let c5 = builder.define_const(BabyBear::from_u64(5));
+    let c2 = builder.define_const(BabyBear::from_u64(2));
+    let mul_result = builder.mul(c5, c2);
+    let add_result = builder.add(x, mul_result);
+    let diff = builder.sub(add_result, expected);
+    builder.assert_zero(diff);
+
+    let circuit = builder.build().unwrap();
+    let cfg = config::baby_bear().build();
+    let (airs_degrees, primitive_columns, non_primitive_columns) =
+        get_airs_and_degrees_with_prep::<BabyBearConfig, _, 1>(
+            &circuit,
+            &TablePacking::default(),
+            &[],
+            &[],
+            ConstraintProfile::Standard,
+        )
+        .unwrap();
+    let (airs, log_degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
+    let prover_data = ProverData::from_airs_and_degrees(&cfg, &airs, &log_degrees);
+    let circuit_prover_data =
+        CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
+
+    let mut runner = circuit.runner();
+    runner
+        .set_public_inputs(&[BabyBear::from_u64(7), BabyBear::from_u64(17)])
+        .unwrap();
+    let traces = runner.run().unwrap();
+
+    let prover = BatchStarkProver::new(cfg);
+    let proof = prover
+        .prove_all_tables(&traces, &circuit_prover_data)
+        .unwrap();
+
+    // Forge a deserialized proof with a zero primitive row count by serializing
+    // raw counts and deserializing into `RowCounts` (a state `RowCounts::new`
+    // would have rejected, but derived `Deserialize` accepts).
+    let public_rows = proof.rows[PrimitiveTable::Public];
+    let alu_rows = proof.rows[PrimitiveTable::Alu];
+    let raw =
+        postcard::to_allocvec(&[0usize, public_rows, alu_rows]).expect("serialize raw row counts");
+    let tampered_rows: RowCounts =
+        postcard::from_bytes(&raw).expect("deserialize tampered RowCounts");
+    let tampered = BatchStarkProof {
+        rows: tampered_rows,
+        ..proof
+    };
+
+    let err = prover
+        .verify_all_tables(&tampered)
+        .expect_err("tampered row counts must be rejected before verification");
+    assert!(
+        matches!(
+            err,
+            BatchStarkProverError::InvalidMetadata(ProofMetadataError::ZeroRowCount)
+        ),
+        "unexpected error: {err:?}"
+    );
+}
