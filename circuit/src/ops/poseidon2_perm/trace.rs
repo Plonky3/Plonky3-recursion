@@ -58,7 +58,7 @@ pub struct BabyBearD1Width16;
 
 impl Poseidon2Params for BabyBearD1Width16 {
     type BaseField = p3_baby_bear::BabyBear;
-    const CONFIG: Poseidon2Config = Poseidon2Config::BabyBearD1Width16;
+    const CONFIG: Poseidon2Config = Poseidon2Config::BABY_BEAR_D1_W16;
 }
 
 /// KoalaBear D=1 Width=16 configuration for base field challenges.
@@ -69,7 +69,7 @@ pub struct KoalaBearD1Width16;
 
 impl Poseidon2Params for KoalaBearD1Width16 {
     type BaseField = p3_koala_bear::KoalaBear;
-    const CONFIG: Poseidon2Config = Poseidon2Config::KoalaBearD1Width16;
+    const CONFIG: Poseidon2Config = Poseidon2Config::KOALA_BEAR_D1_W16;
 }
 
 /// Goldilocks D=2 Width=8 configuration (matches Poseidon2Goldilocks<8>).
@@ -77,7 +77,7 @@ pub struct GoldilocksD2Width8;
 
 impl Poseidon2Params for GoldilocksD2Width8 {
     type BaseField = p3_goldilocks::Goldilocks;
-    const CONFIG: Poseidon2Config = Poseidon2Config::GoldilocksD2Width8;
+    const CONFIG: Poseidon2Config = Poseidon2Config::GOLDILOCKS_D2_W8;
 }
 
 /// Poseidon2 operation table row.

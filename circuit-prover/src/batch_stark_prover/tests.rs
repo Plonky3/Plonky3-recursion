@@ -41,7 +41,7 @@ fn test_babybear_batch_stark_base_field() {
     builder.assert_zero(diff);
 
     let circuit = builder.build().unwrap();
-    let cfg = config::baby_bear().build();
+    let cfg = config::baby_bear();
     let (airs_degrees, primitive_columns, non_primitive_columns) =
         get_airs_and_degrees_with_prep::<BabyBearConfig, _, 1>(
             &circuit,
@@ -77,7 +77,7 @@ fn test_babybear_batch_stark_base_field() {
 #[test]
 fn test_table_lookups() {
     let mut builder = CircuitBuilder::<BabyBear>::new();
-    let cfg = config::baby_bear().build();
+    let cfg = config::baby_bear();
 
     // x + 5*2 - 3 + (-1) == expected
     let x = builder.public_input();
@@ -165,7 +165,7 @@ fn test_table_lookups() {
 fn test_extension_field_batch_stark() {
     const D: usize = 4;
     type Ext4 = BinomialExtensionField<BabyBear, D>;
-    let cfg = config::baby_bear().build();
+    let cfg = config::baby_bear();
 
     let mut builder = CircuitBuilder::<Ext4>::new();
     let x = builder.public_input();
@@ -234,7 +234,7 @@ fn test_extension_field_batch_stark() {
 fn test_extension_field_table_lookups() {
     const D: usize = 4;
     type Ext4 = BinomialExtensionField<BabyBear, D>;
-    let cfg = config::baby_bear().build();
+    let cfg = config::baby_bear();
 
     let mut builder = CircuitBuilder::<Ext4>::new();
     let x = builder.public_input();
@@ -340,7 +340,7 @@ fn test_extension_field_table_lookups() {
 #[test]
 fn test_koalabear_batch_stark_base_field() {
     let mut builder = CircuitBuilder::<KoalaBear>::new();
-    let cfg = config::koala_bear().build();
+    let cfg = config::koala_bear();
 
     // a * b + 100 - (-1) == expected
     let a = builder.public_input();
@@ -394,7 +394,7 @@ fn test_koalabear_batch_stark_extension_field_d8() {
     const D: usize = 8;
     type KBExtField = BinomialExtensionField<KoalaBear, D>;
     let mut builder = CircuitBuilder::<KBExtField>::new();
-    let cfg = config::koala_bear().build();
+    let cfg = config::koala_bear();
 
     // x * y * z == expected
     let x = builder.public_input();
@@ -491,7 +491,7 @@ fn test_goldilocks_batch_stark_binomial_ext2() {
     const D: usize = 2;
     type Ext2 = BinomialExtensionField<Goldilocks, D>;
     let mut builder = CircuitBuilder::<Ext2>::new();
-    let cfg = config::goldilocks().build();
+    let cfg = config::goldilocks();
 
     // x * y + z == expected
     let x = builder.public_input();
@@ -562,7 +562,7 @@ fn test_goldilocks_poseidon2_circuit_build_and_run() {
         perm,
     );
     builder.enable_recompose::<Goldilocks>(generate_recompose_trace::<Goldilocks, Ext2>);
-    let poseidon2_config = Poseidon2Config::GoldilocksD2Width8;
+    let poseidon2_config = Poseidon2Config::GOLDILOCKS_D2_W8;
     let inputs = [builder.public_input(), builder.public_input()];
     let hash_outputs = builder
         .add_hash_slice(&poseidon2_config, &inputs, true)
@@ -646,7 +646,7 @@ fn test_babybear_modulus_constant() {
 fn test_mul_only_circuit_padding() {
     // Circuit with only mul operations; ALU table still needs correct padding/lanes handling.
     let mut builder = CircuitBuilder::<BabyBear>::new();
-    let cfg = config::baby_bear().build();
+    let cfg = config::baby_bear();
 
     let x = builder.public_input();
     let y = builder.public_input();
@@ -688,7 +688,7 @@ fn test_mul_only_circuit_padding() {
 fn test_add_only_circuit_padding() {
     // Circuit with only add operations; ALU table still needs correct padding/lanes handling.
     let mut builder = CircuitBuilder::<BabyBear>::new();
-    let cfg = config::baby_bear().build();
+    let cfg = config::baby_bear();
 
     let x = builder.public_input();
     let y = builder.public_input();
@@ -774,7 +774,7 @@ fn test_koalabear_quintic_trinomial_batch_stark_with_poseidon_d1() {
     perm_inputs[1] = Some(in_b);
     let (_pid, hash_outputs) = builder
         .add_poseidon2_perm_base(&Poseidon2PermCallBase {
-            config: Poseidon2Config::KoalaBearD1Width16,
+            config: Poseidon2Config::KOALA_BEAR_D1_W16,
             new_start: true,
             inputs: perm_inputs,
             // Only CTL-expose rate limbs that are wired into the rest of the circuit; unused
@@ -791,7 +791,7 @@ fn test_koalabear_quintic_trinomial_batch_stark_with_poseidon_d1() {
     builder.assert_zero(h1_diff);
 
     let circuit = builder.build().unwrap();
-    let cfg = config::koala_bear().build();
+    let cfg = config::koala_bear();
 
     let npo_prep: Vec<Box<dyn NpoPreprocessor<KoalaBear>>> = vec![Box::new(Poseidon2Preprocessor)];
     let air_builders = poseidon2_air_builders_d5::<KoalaBearConfig>();
@@ -815,7 +815,7 @@ fn test_koalabear_quintic_trinomial_batch_stark_with_poseidon_d1() {
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
 
     let mut prover = BatchStarkProver::new(cfg);
-    for p in poseidon2_table_provers_d5(Poseidon2Config::KoalaBearD1Width16) {
+    for p in poseidon2_table_provers_d5(Poseidon2Config::KOALA_BEAR_D1_W16) {
         prover.register_table_prover(p);
     }
 
@@ -861,7 +861,7 @@ fn test_koalabear_quintic_trinomial_batch_stark_poseidon_d1_sponge_chain() {
     perm0_inputs[1] = Some(in_b);
     let (_pid0, _hash0) = builder
         .add_poseidon2_perm_base(&Poseidon2PermCallBase {
-            config: Poseidon2Config::KoalaBearD1Width16,
+            config: Poseidon2Config::KOALA_BEAR_D1_W16,
             new_start: true,
             inputs: perm0_inputs,
             out_ctl: [false; 8],
@@ -872,7 +872,7 @@ fn test_koalabear_quintic_trinomial_batch_stark_poseidon_d1_sponge_chain() {
     let perm1_inputs: [Option<_>; 16] = [None; 16];
     let (_pid1, hash1_outputs) = builder
         .add_poseidon2_perm_base(&Poseidon2PermCallBase {
-            config: Poseidon2Config::KoalaBearD1Width16,
+            config: Poseidon2Config::KOALA_BEAR_D1_W16,
             new_start: false,
             inputs: perm1_inputs,
             out_ctl: [true; 8],
@@ -887,7 +887,7 @@ fn test_koalabear_quintic_trinomial_batch_stark_poseidon_d1_sponge_chain() {
     builder.assert_zero(h1_diff);
 
     let circuit = builder.build().unwrap();
-    let cfg = config::koala_bear().build();
+    let cfg = config::koala_bear();
 
     let npo_prep: Vec<Box<dyn NpoPreprocessor<KoalaBear>>> = vec![Box::new(Poseidon2Preprocessor)];
     let air_builders = poseidon2_air_builders_d5::<KoalaBearConfig>();
@@ -911,7 +911,7 @@ fn test_koalabear_quintic_trinomial_batch_stark_poseidon_d1_sponge_chain() {
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
 
     let mut prover = BatchStarkProver::new(cfg);
-    for p in poseidon2_table_provers_d5(Poseidon2Config::KoalaBearD1Width16) {
+    for p in poseidon2_table_provers_d5(Poseidon2Config::KOALA_BEAR_D1_W16) {
         prover.register_table_prover(p);
     }
 
@@ -938,7 +938,7 @@ fn test_stark_serialization_round_trip() {
     builder.assert_zero(diff);
 
     let circuit = builder.build().unwrap();
-    let cfg = config::baby_bear().build();
+    let cfg = config::baby_bear();
     let (airs_degrees, primitive_columns, non_primitive_columns) =
         get_airs_and_degrees_with_prep::<BabyBearConfig, _, 1>(
             &circuit,
@@ -1141,7 +1141,7 @@ fn verify_all_tables_rejects_tampered_serialized_row_counts() {
     builder.assert_zero(diff);
 
     let circuit = builder.build().unwrap();
-    let cfg = config::baby_bear().build();
+    let cfg = config::baby_bear();
     let (airs_degrees, primitive_columns, non_primitive_columns) =
         get_airs_and_degrees_with_prep::<BabyBearConfig, _, 1>(
             &circuit,

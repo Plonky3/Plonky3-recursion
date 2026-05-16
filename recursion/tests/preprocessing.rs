@@ -385,7 +385,7 @@ fn test_batch_verifier_with_mixed_preprocessed() -> Result<(), VerificationError
         &pcs_verifier_params,
         &verifier_inputs.common_data,
         &lookup_gadget,
-        Poseidon2Config::BabyBearD4Width16,
+        Poseidon2Config::BABY_BEAR_D4_W16,
     )?;
 
     // Build the circuit
@@ -499,7 +499,7 @@ fn run_with_tampered_common(
         &pcs_verifier_params,
         &verifier_inputs.common_data,
         &lookup_gadget,
-        Poseidon2Config::BabyBearD4Width16,
+        Poseidon2Config::BABY_BEAR_D4_W16,
     )
     .map(|_| ())
 }
@@ -656,7 +656,7 @@ fn run_with_tampered_proof(
         &pcs_verifier_params,
         &verifier_inputs.common_data,
         &lookup_gadget,
-        Poseidon2Config::BabyBearD4Width16,
+        Poseidon2Config::BABY_BEAR_D4_W16,
     )
     .map(|_| ())
 }
@@ -753,7 +753,7 @@ fn test_batch_verifier_with_public_values() -> Result<(), VerificationError> {
         &fri_verifier_params,
         &verifier_inputs.common_data,
         &lookup_gadget,
-        Poseidon2Config::BabyBearD4Width16,
+        Poseidon2Config::BABY_BEAR_D4_W16,
     )?;
 
     let circuit = circuit_builder.build()?;
@@ -835,7 +835,7 @@ fn test_batch_verifier_wrong_public_values() {
         &fri_verifier_params,
         &verifier_inputs.common_data,
         &lookup_gadget,
-        Poseidon2Config::BabyBearD4Width16,
+        Poseidon2Config::BABY_BEAR_D4_W16,
     )
     .unwrap();
 

@@ -119,7 +119,7 @@ fn test_fibonacci_batch_verifier_quintic_koala() {
         scalars.log_final_poly_len,
         scalars.commit_pow_bits,
         scalars.query_pow_bits,
-        Poseidon2Config::KoalaBearD1Width16,
+        Poseidon2Config::KOALA_BEAR_D1_W16,
     );
     let config = make_test_config();
 
@@ -159,9 +159,9 @@ fn test_fibonacci_batch_verifier_quintic_koala() {
         &fri_verifier_params,
         common,
         &lookup_gadget,
-        Poseidon2Config::KoalaBearD1Width16,
+        Poseidon2Config::KOALA_BEAR_D1_W16,
         &{
-            let mut tp = poseidon2_table_provers_d5(Poseidon2Config::KoalaBearD1Width16);
+            let mut tp = poseidon2_table_provers_d5(Poseidon2Config::KOALA_BEAR_D1_W16);
             tp.extend(recompose_table_provers::<MyConfig, 5>(1, true));
             tp
         },
@@ -230,7 +230,7 @@ fn test_fibonacci_batch_verifier_quintic_koala() {
 
     let mut verification_prover =
         BatchStarkProver::new(config3).with_table_packing(verification_table_packing);
-    verification_prover.register_poseidon2_table::<5>(Poseidon2Config::KoalaBearD1Width16);
+    verification_prover.register_poseidon2_table::<5>(Poseidon2Config::KOALA_BEAR_D1_W16);
     verification_prover.register_recompose_table::<5>(true);
 
     let verification_proof = verification_prover

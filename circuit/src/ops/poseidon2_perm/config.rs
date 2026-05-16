@@ -11,51 +11,155 @@ use crate::CircuitBuilderError;
 use crate::builder::NpoLoweringContext;
 use crate::types::{ExprId, WitnessId};
 
-/// Poseidon2 configuration used as a stable operation key and parameter source.
+/// Identifies the base field for a Poseidon2 configuration.
+///
+/// Used internally for dispatching to concrete field-specific AIR types.
+/// When adding support for a new prime field, add a variant here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd, Serialize, Deserialize)]
-pub enum Poseidon2Config {
-    /// BabyBear with extension degree D=1 (base field challenges), width 16.
-    BabyBearD1Width16,
-    BabyBearD4Width16,
-    BabyBearD4Width24,
-    /// KoalaBear with extension degree D=1 (base field challenges), width 16.
-    KoalaBearD1Width16,
-    KoalaBearD4Width16,
-    KoalaBearD4Width24,
-    /// Goldilocks with extension degree D=2, width 8 (matches Poseidon2Goldilocks<8>).
-    GoldilocksD2Width8,
+pub enum Poseidon2FieldId {
+    /// BabyBear (31-bit, p = 2^31 - 2^27 + 1).
+    BabyBear,
+    /// KoalaBear (31-bit, p = 2^31 - 2^24 + 1).
+    KoalaBear,
+    /// Goldilocks (64-bit, p = 2^64 - 2^32 + 1).
+    Goldilocks,
+}
+
+/// Poseidon2 configuration used as a stable operation key and parameter source.
+///
+/// This is a field-agnostic parameter bundle. The supported configurations are
+/// exposed as associated constants (e.g. [`Poseidon2Config::BABY_BEAR_D1_W16`]),
+/// which preserve the previous enum-variant identities (same [`variant_name`]
+/// strings, so `NpoTypeId` keys are unchanged across serialization).
+///
+/// [`variant_name`]: Poseidon2Config::variant_name
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd, Serialize, Deserialize)]
+pub struct Poseidon2Config {
+    /// Identifies which prime field this configuration targets.
+    field_id: Poseidon2FieldId,
+    /// Extension degree (1 = base field challenges, 2 = quadratic, 4 = quartic).
+    d: usize,
+    /// Permutation state width in base field elements (e.g. 8, 16, 24).
+    width: usize,
+    /// S-box polynomial degree.
+    sbox_degree: u64,
+    /// Number of S-box intermediate registers.
+    sbox_registers: usize,
+    /// Number of half full rounds.
+    half_full_rounds: usize,
+    /// Number of partial rounds.
+    partial_rounds: usize,
 }
 
 impl Poseidon2Config {
+    /// BabyBear with extension degree D=1 (base field challenges), width 16.
+    pub const BABY_BEAR_D1_W16: Self = Self {
+        field_id: Poseidon2FieldId::BabyBear,
+        d: 1,
+        width: 16,
+        sbox_degree: 7,
+        sbox_registers: 1,
+        half_full_rounds: 4,
+        partial_rounds: 13,
+    };
+
+    /// BabyBear with quartic extension (D=4), width 16.
+    pub const BABY_BEAR_D4_W16: Self = Self {
+        field_id: Poseidon2FieldId::BabyBear,
+        d: 4,
+        width: 16,
+        sbox_degree: 7,
+        sbox_registers: 1,
+        half_full_rounds: 4,
+        partial_rounds: 13,
+    };
+
+    /// BabyBear with quartic extension (D=4), width 24.
+    pub const BABY_BEAR_D4_W24: Self = Self {
+        field_id: Poseidon2FieldId::BabyBear,
+        d: 4,
+        width: 24,
+        sbox_degree: 7,
+        sbox_registers: 1,
+        half_full_rounds: 4,
+        partial_rounds: 21,
+    };
+
+    /// KoalaBear with extension degree D=1 (base field challenges), width 16.
+    pub const KOALA_BEAR_D1_W16: Self = Self {
+        field_id: Poseidon2FieldId::KoalaBear,
+        d: 1,
+        width: 16,
+        sbox_degree: 3,
+        sbox_registers: 0,
+        half_full_rounds: 4,
+        partial_rounds: 20,
+    };
+
+    /// KoalaBear with quartic extension (D=4), width 16.
+    pub const KOALA_BEAR_D4_W16: Self = Self {
+        field_id: Poseidon2FieldId::KoalaBear,
+        d: 4,
+        width: 16,
+        sbox_degree: 3,
+        sbox_registers: 0,
+        half_full_rounds: 4,
+        partial_rounds: 20,
+    };
+
+    /// KoalaBear with quartic extension (D=4), width 24.
+    pub const KOALA_BEAR_D4_W24: Self = Self {
+        field_id: Poseidon2FieldId::KoalaBear,
+        d: 4,
+        width: 24,
+        sbox_degree: 3,
+        sbox_registers: 0,
+        half_full_rounds: 4,
+        partial_rounds: 23,
+    };
+
+    /// Goldilocks with extension degree D=2, width 8 (matches Poseidon2Goldilocks<8>).
+    pub const GOLDILOCKS_D2_W8: Self = Self {
+        field_id: Poseidon2FieldId::Goldilocks,
+        d: 2,
+        width: 8,
+        sbox_degree: 7,
+        sbox_registers: 1,
+        half_full_rounds: 4,
+        partial_rounds: 22,
+    };
+
+    /// Returns `true` if this configuration targets BabyBear.
+    pub const fn is_baby_bear(self) -> bool {
+        matches!(self.field_id, Poseidon2FieldId::BabyBear)
+    }
+
+    /// Returns `true` if this configuration targets KoalaBear.
+    pub const fn is_koala_bear(self) -> bool {
+        matches!(self.field_id, Poseidon2FieldId::KoalaBear)
+    }
+
+    /// Returns `true` if this configuration targets Goldilocks.
+    pub const fn is_goldilocks(self) -> bool {
+        matches!(self.field_id, Poseidon2FieldId::Goldilocks)
+    }
+
     pub const fn d(self) -> usize {
-        match self {
-            Self::BabyBearD1Width16 | Self::KoalaBearD1Width16 => 1,
-            Self::GoldilocksD2Width8 => 2,
-            Self::BabyBearD4Width16
-            | Self::BabyBearD4Width24
-            | Self::KoalaBearD4Width16
-            | Self::KoalaBearD4Width24 => 4,
-        }
+        self.d
     }
 
     pub const fn width(self) -> usize {
-        match self {
-            Self::BabyBearD1Width16
-            | Self::BabyBearD4Width16
-            | Self::KoalaBearD1Width16
-            | Self::KoalaBearD4Width16 => 16,
-            Self::BabyBearD4Width24 | Self::KoalaBearD4Width24 => 24,
-            Self::GoldilocksD2Width8 => 8,
-        }
+        self.width
     }
 
     /// Rate in extension field elements (WIDTH / D for D=4, or WIDTH for D=1).
+    ///
+    /// For D=1: `width / 2`. For D>1: `width / d - capacity_ext`.
     pub const fn rate_ext(self) -> usize {
-        match self {
-            Self::BabyBearD1Width16 | Self::KoalaBearD1Width16 => 8,
-            Self::BabyBearD4Width16 | Self::KoalaBearD4Width16 => 2,
-            Self::BabyBearD4Width24 | Self::KoalaBearD4Width24 => 4,
-            Self::GoldilocksD2Width8 => 2,
+        if self.d == 1 {
+            self.width / 2
+        } else {
+            self.width / self.d - self.capacity_ext()
         }
     }
 
@@ -64,55 +168,26 @@ impl Poseidon2Config {
     }
 
     /// Capacity in extension field elements.
+    ///
+    /// For D=1: `width / 2`. For D>1: always 2.
     pub const fn capacity_ext(self) -> usize {
-        match self {
-            Self::BabyBearD1Width16 | Self::KoalaBearD1Width16 => 8,
-            Self::BabyBearD4Width16
-            | Self::BabyBearD4Width24
-            | Self::KoalaBearD4Width16
-            | Self::KoalaBearD4Width24 => 2,
-            Self::GoldilocksD2Width8 => 2,
-        }
+        if self.d == 1 { self.width / 2 } else { 2 }
     }
 
     pub const fn sbox_degree(self) -> u64 {
-        match self {
-            Self::BabyBearD1Width16 | Self::BabyBearD4Width16 | Self::BabyBearD4Width24 => 7,
-            Self::KoalaBearD1Width16 | Self::KoalaBearD4Width16 | Self::KoalaBearD4Width24 => 3,
-            Self::GoldilocksD2Width8 => 7,
-        }
+        self.sbox_degree
     }
 
     pub const fn sbox_registers(self) -> usize {
-        match self {
-            Self::BabyBearD1Width16
-            | Self::BabyBearD4Width16
-            | Self::BabyBearD4Width24
-            | Self::GoldilocksD2Width8 => 1,
-            Self::KoalaBearD1Width16 | Self::KoalaBearD4Width16 | Self::KoalaBearD4Width24 => 0,
-        }
+        self.sbox_registers
     }
 
     pub const fn half_full_rounds(self) -> usize {
-        match self {
-            Self::BabyBearD1Width16
-            | Self::BabyBearD4Width16
-            | Self::BabyBearD4Width24
-            | Self::KoalaBearD1Width16
-            | Self::KoalaBearD4Width16
-            | Self::KoalaBearD4Width24
-            | Self::GoldilocksD2Width8 => 4,
-        }
+        self.half_full_rounds
     }
 
     pub const fn partial_rounds(self) -> usize {
-        match self {
-            Self::BabyBearD1Width16 | Self::BabyBearD4Width16 => 13,
-            Self::BabyBearD4Width24 => 21,
-            Self::KoalaBearD1Width16 | Self::KoalaBearD4Width16 => 20,
-            Self::KoalaBearD4Width24 => 23,
-            Self::GoldilocksD2Width8 => 22,
-        }
+        self.partial_rounds
     }
 
     pub const fn width_ext(self) -> usize {
@@ -232,28 +307,40 @@ impl Poseidon2Config {
     }
 
     /// Stable string name for this config variant, used to build `NpoTypeId`.
+    ///
+    /// The format is `{field}_d{d}_w{width}`, matching the legacy enum variant
+    /// names so serialized `NpoTypeId` keys remain stable.
     pub const fn variant_name(self) -> &'static str {
-        match self {
-            Self::BabyBearD1Width16 => "baby_bear_d1_w16",
-            Self::BabyBearD4Width16 => "baby_bear_d4_w16",
-            Self::BabyBearD4Width24 => "baby_bear_d4_w24",
-            Self::KoalaBearD1Width16 => "koala_bear_d1_w16",
-            Self::KoalaBearD4Width16 => "koala_bear_d4_w16",
-            Self::KoalaBearD4Width24 => "koala_bear_d4_w24",
-            Self::GoldilocksD2Width8 => "goldilocks_d2_w8",
+        match self.field_id {
+            Poseidon2FieldId::BabyBear => match (self.d, self.width) {
+                (1, 16) => "baby_bear_d1_w16",
+                (4, 16) => "baby_bear_d4_w16",
+                (4, 24) => "baby_bear_d4_w24",
+                _ => panic!("unknown BabyBear Poseidon2 config"),
+            },
+            Poseidon2FieldId::KoalaBear => match (self.d, self.width) {
+                (1, 16) => "koala_bear_d1_w16",
+                (4, 16) => "koala_bear_d4_w16",
+                (4, 24) => "koala_bear_d4_w24",
+                _ => panic!("unknown KoalaBear Poseidon2 config"),
+            },
+            Poseidon2FieldId::Goldilocks => match (self.d, self.width) {
+                (2, 8) => "goldilocks_d2_w8",
+                _ => panic!("unknown Goldilocks Poseidon2 config"),
+            },
         }
     }
 
     /// Parse a `Poseidon2Config` from a variant name string.
     pub fn from_variant_name(name: &str) -> Option<Self> {
         match name {
-            "baby_bear_d1_w16" => Some(Self::BabyBearD1Width16),
-            "baby_bear_d4_w16" => Some(Self::BabyBearD4Width16),
-            "baby_bear_d4_w24" => Some(Self::BabyBearD4Width24),
-            "koala_bear_d1_w16" => Some(Self::KoalaBearD1Width16),
-            "koala_bear_d4_w16" => Some(Self::KoalaBearD4Width16),
-            "koala_bear_d4_w24" => Some(Self::KoalaBearD4Width24),
-            "goldilocks_d2_w8" => Some(Self::GoldilocksD2Width8),
+            "baby_bear_d1_w16" => Some(Self::BABY_BEAR_D1_W16),
+            "baby_bear_d4_w16" => Some(Self::BABY_BEAR_D4_W16),
+            "baby_bear_d4_w24" => Some(Self::BABY_BEAR_D4_W24),
+            "koala_bear_d1_w16" => Some(Self::KOALA_BEAR_D1_W16),
+            "koala_bear_d4_w16" => Some(Self::KOALA_BEAR_D4_W16),
+            "koala_bear_d4_w24" => Some(Self::KOALA_BEAR_D4_W24),
+            "goldilocks_d2_w8" => Some(Self::GOLDILOCKS_D2_W8),
             _ => None,
         }
     }
@@ -287,7 +374,7 @@ mod tests {
 
     #[test]
     fn validate_io_counts_d4_w16_ok() {
-        let cfg = Poseidon2Config::BabyBearD4Width16;
+        let cfg = Poseidon2Config::BABY_BEAR_D4_W16;
         // width_ext=4, rate_ext=2
         assert!(cfg.validate_io_counts(4 + 2, 2, false).is_ok()); // inputs=6, outputs=rate
         assert!(cfg.validate_io_counts(6, 4, true).is_ok()); // outputs=width
@@ -295,7 +382,7 @@ mod tests {
 
     #[test]
     fn validate_io_counts_d1_w16_ok() {
-        let cfg = Poseidon2Config::BabyBearD1Width16;
+        let cfg = Poseidon2Config::BABY_BEAR_D1_W16;
         assert!(cfg.validate_io_counts(16, 8, false).is_ok());
         assert!(cfg.validate_io_counts(16, 16, false).is_ok());
         assert!(cfg.validate_io_counts(18, 8, false).is_ok());
@@ -304,14 +391,14 @@ mod tests {
 
     #[test]
     fn validate_io_counts_d1_w16_merkle_ok() {
-        let cfg = Poseidon2Config::BabyBearD1Width16;
+        let cfg = Poseidon2Config::BABY_BEAR_D1_W16;
         assert!(cfg.validate_io_counts(18, 8, true).is_ok());
         assert!(cfg.validate_io_counts(18, 16, true).is_ok());
     }
 
     #[test]
     fn validate_io_counts_d1_merkle_wrong_input_len_errors() {
-        let cfg = Poseidon2Config::BabyBearD1Width16;
+        let cfg = Poseidon2Config::BABY_BEAR_D1_W16;
         let Err(CircuitBuilderError::NonPrimitiveOpArity { expected, got, .. }) =
             cfg.validate_io_counts(16, 8, true)
         else {
@@ -323,7 +410,7 @@ mod tests {
 
     #[test]
     fn validate_io_counts_wrong_inputs_errors() {
-        let cfg = Poseidon2Config::BabyBearD4Width16;
+        let cfg = Poseidon2Config::BABY_BEAR_D4_W16;
         let Err(CircuitBuilderError::NonPrimitiveOpArity { op, expected, got }) =
             cfg.validate_io_counts(3, 2, false)
         else {
@@ -336,7 +423,7 @@ mod tests {
 
     #[test]
     fn validate_io_counts_wrong_outputs_errors() {
-        let cfg = Poseidon2Config::BabyBearD4Width16;
+        let cfg = Poseidon2Config::BABY_BEAR_D4_W16;
         let Err(CircuitBuilderError::NonPrimitiveOpArity { op, expected, got }) =
             cfg.validate_io_counts(6, 3, false)
         else {
@@ -349,7 +436,7 @@ mod tests {
 
     #[test]
     fn validate_io_counts_d1_wrong_outputs_errors() {
-        let cfg = Poseidon2Config::BabyBearD1Width16;
+        let cfg = Poseidon2Config::BABY_BEAR_D1_W16;
         let Err(CircuitBuilderError::NonPrimitiveOpArity { op, expected, got }) =
             cfg.validate_io_counts(16, 5, false)
         else {
@@ -362,7 +449,7 @@ mod tests {
 
     #[test]
     fn lower_inputs_d4_produces_correct_structure() {
-        let cfg = Poseidon2Config::BabyBearD4Width16;
+        let cfg = Poseidon2Config::BABY_BEAR_D4_W16;
 
         let mut map = HashMap::new();
         for i in 0u32..6 {
@@ -385,7 +472,7 @@ mod tests {
 
     #[test]
     fn lower_inputs_d1_produces_flat_structure() {
-        let cfg = Poseidon2Config::BabyBearD1Width16;
+        let cfg = Poseidon2Config::BABY_BEAR_D1_W16;
 
         let mut map = HashMap::new();
         for i in 0u32..16 {
@@ -408,7 +495,7 @@ mod tests {
 
     #[test]
     fn lower_inputs_d1_merkle_matches_ext_layout() {
-        let cfg = Poseidon2Config::BabyBearD1Width16;
+        let cfg = Poseidon2Config::BABY_BEAR_D1_W16;
         let mut map = HashMap::new();
         for i in 0u32..18 {
             map.insert(ExprId(i), WitnessId(100 + i));
@@ -430,7 +517,7 @@ mod tests {
 
     #[test]
     fn lower_inputs_d1_non_merkle_18_slot_layout() {
-        let cfg = Poseidon2Config::BabyBearD1Width16;
+        let cfg = Poseidon2Config::BABY_BEAR_D1_W16;
         let mut map = HashMap::new();
         for i in 0u32..18 {
             map.insert(ExprId(i), WitnessId(200 + i));
@@ -452,7 +539,7 @@ mod tests {
 
     #[test]
     fn lower_inputs_d4_with_empty_slots() {
-        let cfg = Poseidon2Config::BabyBearD4Width16;
+        let cfg = Poseidon2Config::BABY_BEAR_D4_W16;
 
         let mut map = HashMap::new();
         map.insert(ExprId(10), WitnessId(50));
@@ -487,13 +574,13 @@ mod tests {
     #[test]
     fn variant_name_roundtrip_all_configs() {
         let configs = [
-            Poseidon2Config::BabyBearD1Width16,
-            Poseidon2Config::BabyBearD4Width16,
-            Poseidon2Config::BabyBearD4Width24,
-            Poseidon2Config::KoalaBearD1Width16,
-            Poseidon2Config::KoalaBearD4Width16,
-            Poseidon2Config::KoalaBearD4Width24,
-            Poseidon2Config::GoldilocksD2Width8,
+            Poseidon2Config::BABY_BEAR_D1_W16,
+            Poseidon2Config::BABY_BEAR_D4_W16,
+            Poseidon2Config::BABY_BEAR_D4_W24,
+            Poseidon2Config::KOALA_BEAR_D1_W16,
+            Poseidon2Config::KOALA_BEAR_D4_W16,
+            Poseidon2Config::KOALA_BEAR_D4_W24,
+            Poseidon2Config::GOLDILOCKS_D2_W8,
         ];
         for cfg in configs {
             let name = cfg.variant_name();

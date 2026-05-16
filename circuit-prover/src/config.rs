@@ -8,11 +8,8 @@
 //! use p3_circuit_prover::config;
 //!
 //! // Use a preconfigured setup
-//! let config = config::baby_bear()
-//!     .build();
+//! let config = config::baby_bear();
 //! ```
-
-use core::marker::PhantomData;
 
 use p3_baby_bear::{BabyBear, Poseidon2BabyBear, default_babybear_poseidon2_16};
 use p3_challenger::DuplexChallenger;
@@ -86,8 +83,13 @@ pub type Config<
     DuplexChallenger<F, PermHash, HASH_PERM_WIDTH, RATE>,
 >;
 
-/// Configuration builder for STARK provers.
-pub struct ConfigBuilder<
+/// Builds a STARK configuration directly from the hash and compression permutations.
+///
+/// This replaces the former `ConfigBuilder` (which was only ever used internally,
+/// immediately followed by `.build()`): the field factories below call this and
+/// return the concrete config, so callers no longer chain `.build()`.
+#[allow(clippy::type_complexity)]
+fn build_poseidon2_stark_config<
     F,
     PermHash,
     PermCompress,
@@ -97,79 +99,41 @@ pub struct ConfigBuilder<
     const OUT: usize,
     const COMPRESS_CHUNK: usize,
     const CHALLENGE_DEGREE: usize,
-> {
+>(
     perm_hash: PermHash,
     perm_compress: PermCompress,
-    _phantom: PhantomData<F>,
-}
-
-impl<
+) -> Config<
     F,
     PermHash,
     PermCompress,
-    const HASH_PERM_WIDTH: usize,
-    const COMPRESS_PERM_WIDTH: usize,
-    const RATE: usize,
-    const OUT: usize,
-    const COMPRESS_CHUNK: usize,
-    const CHALLENGE_DEGREE: usize,
+    HASH_PERM_WIDTH,
+    COMPRESS_PERM_WIDTH,
+    RATE,
+    OUT,
+    COMPRESS_CHUNK,
+    CHALLENGE_DEGREE,
 >
-    ConfigBuilder<
-        F,
-        PermHash,
-        PermCompress,
-        HASH_PERM_WIDTH,
-        COMPRESS_PERM_WIDTH,
-        RATE,
-        OUT,
-        COMPRESS_CHUNK,
-        CHALLENGE_DEGREE,
-    >
 where
     F: Field,
     PermHash: Clone + CryptographicPermutation<[F; HASH_PERM_WIDTH]>,
     PermCompress: Clone + CryptographicPermutation<[F; COMPRESS_PERM_WIDTH]>,
 {
-    const fn new(perm_hash: PermHash, perm_compress: PermCompress) -> Self {
-        Self {
-            perm_hash,
-            perm_compress,
-            _phantom: PhantomData,
-        }
-    }
+    type Hash<Perm, const PERM_WIDTH: usize, const RATE: usize, const OUT: usize> =
+        PaddingFreeSponge<Perm, PERM_WIDTH, RATE, OUT>;
+    type Compress<Perm, const PERM_WIDTH: usize, const COMPRESS_CHUNK: usize> =
+        TruncatedPermutation<Perm, COMPRESS_ARITY, COMPRESS_CHUNK, PERM_WIDTH>;
 
-    /// Builds the final STARK configuration.
-    pub fn build(
-        self,
-    ) -> Config<
-        F,
-        PermHash,
-        PermCompress,
-        HASH_PERM_WIDTH,
-        COMPRESS_PERM_WIDTH,
-        RATE,
-        OUT,
-        COMPRESS_CHUNK,
-        CHALLENGE_DEGREE,
-    > {
-        type Hash<Perm, const PERM_WIDTH: usize, const RATE: usize, const OUT: usize> =
-            PaddingFreeSponge<Perm, PERM_WIDTH, RATE, OUT>;
-        type Compress<Perm, const PERM_WIDTH: usize, const COMPRESS_CHUNK: usize> =
-            TruncatedPermutation<Perm, COMPRESS_ARITY, COMPRESS_CHUNK, PERM_WIDTH>;
+    let hash = Hash::<PermHash, HASH_PERM_WIDTH, RATE, OUT>::new(perm_hash.clone());
+    let compress =
+        Compress::<PermCompress, COMPRESS_PERM_WIDTH, COMPRESS_CHUNK>::new(perm_compress);
+    let val_mmcs = MerkleTreeMmcs::new(hash, compress, 3);
+    let challenge_mmcs = ExtensionMmcs::new(val_mmcs.clone());
+    let dft = Radix2DitParallel::default();
+    let fri_params = FriParameters::new_benchmark_high_arity(challenge_mmcs);
+    let pcs = TwoAdicFriPcs::new(dft, val_mmcs, fri_params);
+    let challenger = DuplexChallenger::new(perm_hash);
 
-        let hash = Hash::<PermHash, HASH_PERM_WIDTH, RATE, OUT>::new(self.perm_hash.clone());
-        let compress = Compress::<PermCompress, COMPRESS_PERM_WIDTH, COMPRESS_CHUNK>::new(
-            self.perm_compress.clone(),
-        );
-        let val_mmcs = MerkleTreeMmcs::new(hash, compress, 3);
-        let challenge_mmcs = ExtensionMmcs::new(val_mmcs.clone());
-        let dft = Radix2DitParallel::default();
-        let fri_params = FriParameters::new_benchmark_high_arity(challenge_mmcs);
-        let pcs = TwoAdicFriPcs::new(dft, val_mmcs, fri_params);
-        let challenger = DuplexChallenger::new(self.perm_hash);
-
-        StarkConfig::new(pcs, challenger)
-    }
+    StarkConfig::new(pcs, challenger)
 }
 
 /// Creates a standard BabyBear configuration.
@@ -186,14 +150,13 @@ where
 /// # Examples
 ///
 /// ```ignore
-/// let config = config::baby_bear().build();
+/// let config = config::baby_bear();
 /// let prover = BatchStarkProver::new(config);
 /// ```
 #[inline]
-pub fn baby_bear()
--> ConfigBuilder<BabyBear, Poseidon2BabyBear<16>, Poseidon2BabyBear<16>, 16, 16, 8, 8, 8, 4> {
+pub fn baby_bear() -> BabyBearConfig {
     let perm = default_babybear_poseidon2_16();
-    ConfigBuilder::new(perm.clone(), perm)
+    build_poseidon2_stark_config(perm.clone(), perm)
 }
 
 /// Creates a standard KoalaBear configuration.
@@ -210,14 +173,13 @@ pub fn baby_bear()
 /// # Examples
 ///
 /// ```ignore
-/// let config = config::koala_bear().build();
+/// let config = config::koala_bear();
 /// let prover = BatchStarkProver::new(config);
 /// ```
 #[inline]
-pub fn koala_bear()
--> ConfigBuilder<KoalaBear, Poseidon2KoalaBear<16>, Poseidon2KoalaBear<16>, 16, 16, 8, 8, 8, 4> {
+pub fn koala_bear() -> KoalaBearConfig {
     let perm = default_koalabear_poseidon2_16();
-    ConfigBuilder::new(perm.clone(), perm)
+    build_poseidon2_stark_config(perm.clone(), perm)
 }
 
 /// Creates a standard Goldilocks configuration.
@@ -234,16 +196,15 @@ pub fn koala_bear()
 /// # Examples
 ///
 /// ```ignore
-/// let config = config::goldilocks().build();
+/// let config = config::goldilocks();
 /// let prover = BatchStarkProver::new(config);
 /// ```
 #[inline]
-pub fn goldilocks()
--> ConfigBuilder<Goldilocks, Poseidon2Goldilocks<8>, Poseidon2Goldilocks<8>, 8, 8, 4, 4, 4, 2> {
+pub fn goldilocks() -> GoldilocksConfig {
     use rand::SeedableRng;
     let mut rng = rand::rngs::SmallRng::seed_from_u64(1);
     let perm = p3_goldilocks::Poseidon2Goldilocks::<8>::new_from_rng_128(&mut rng);
-    ConfigBuilder::new(perm.clone(), perm)
+    build_poseidon2_stark_config(perm.clone(), perm)
 }
 
 /// Type alias for BabyBear STARK configuration.
@@ -269,8 +230,8 @@ mod tests {
 
     #[test]
     fn all_fields_configs_compile() {
-        let _bb: BabyBearConfig = baby_bear().build();
-        let _kb: KoalaBearConfig = koala_bear().build();
-        let _gl: GoldilocksConfig = goldilocks().build();
+        let _bb: BabyBearConfig = baby_bear();
+        let _kb: KoalaBearConfig = koala_bear();
+        let _gl: GoldilocksConfig = goldilocks();
     }
 }

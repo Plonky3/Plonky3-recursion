@@ -29,7 +29,7 @@ type InnerFri = InnerFriGeneric<MyConfig, MyHash, MyCompress, DIGEST_ELEMS>;
 const TRACE_D: usize = 1;
 
 const fn fri_verifier_params(log_blowup: usize) -> FriVerifierParams {
-    FriVerifierParams::with_mmcs(log_blowup, 0, 0, 16, Poseidon2Config::KoalaBearD4Width16)
+    FriVerifierParams::with_mmcs(log_blowup, 0, 0, 16, Poseidon2Config::KOALA_BEAR_D4_W16)
 }
 
 #[test]
@@ -119,7 +119,7 @@ fn test_aggregation_with_different_shapes() -> Result<(), VerificationError> {
         &left_verifier_inputs.air_public_targets,
         &None,
         &left_fri_params,
-        Poseidon2Config::KoalaBearD4Width16,
+        Poseidon2Config::KOALA_BEAR_D4_W16,
     )?;
 
     // Build the verifier inputs for the Batch-Stark.
@@ -129,7 +129,7 @@ fn test_aggregation_with_different_shapes() -> Result<(), VerificationError> {
 
     let batch_poseidon_provers: Vec<Box<dyn TableProver<MyConfig>>> =
         vec![Box::new(Poseidon2Prover::new(
-            Poseidon2Config::KoalaBearD4Width16,
+            Poseidon2Config::KOALA_BEAR_D4_W16,
             ConstraintProfile::Standard,
         ))];
 
@@ -151,7 +151,7 @@ fn test_aggregation_with_different_shapes() -> Result<(), VerificationError> {
         &right_fri_params,
         common,
         &lookup_gadget,
-        Poseidon2Config::KoalaBearD4Width16,
+        Poseidon2Config::KOALA_BEAR_D4_W16,
         &batch_poseidon_provers,
     )?;
 
