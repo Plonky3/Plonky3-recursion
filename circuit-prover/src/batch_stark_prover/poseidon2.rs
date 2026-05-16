@@ -732,29 +732,30 @@ impl Poseidon2Prover {
 
     pub(crate) fn air_wrapper_for_config(config: Poseidon2Config) -> Poseidon2AirWrapperInner {
         match config {
-            Poseidon2Config::BabyBearD1Width16 => Poseidon2AirWrapperInner::BabyBearD1Width16Bus1(
+            Poseidon2Config::BABY_BEAR_D1_W16 => Poseidon2AirWrapperInner::BabyBearD1Width16Bus1(
                 Box::new(BabyBearD1Width16::default_air()),
             ),
-            Poseidon2Config::BabyBearD4Width16 => Poseidon2AirWrapperInner::BabyBearD4Width16(
+            Poseidon2Config::BABY_BEAR_D4_W16 => Poseidon2AirWrapperInner::BabyBearD4Width16(
                 Box::new(BabyBearD4Width16::default_air()),
             ),
-            Poseidon2Config::BabyBearD4Width24 => Poseidon2AirWrapperInner::BabyBearD4Width24(
+            Poseidon2Config::BABY_BEAR_D4_W24 => Poseidon2AirWrapperInner::BabyBearD4Width24(
                 Box::new(BabyBearD4Width24::default_air()),
             ),
-            Poseidon2Config::KoalaBearD1Width16 => {
-                Poseidon2AirWrapperInner::KoalaBearD1Width16Bus1(Box::new(
-                    KoalaBearD1Width16::default_air(),
-                ))
-            }
-            Poseidon2Config::KoalaBearD4Width16 => Poseidon2AirWrapperInner::KoalaBearD4Width16(
+            Poseidon2Config::KOALA_BEAR_D1_W16 => Poseidon2AirWrapperInner::KoalaBearD1Width16Bus1(
+                Box::new(KoalaBearD1Width16::default_air()),
+            ),
+            Poseidon2Config::KOALA_BEAR_D4_W16 => Poseidon2AirWrapperInner::KoalaBearD4Width16(
                 Box::new(KoalaBearD4Width16::default_air()),
             ),
-            Poseidon2Config::KoalaBearD4Width24 => Poseidon2AirWrapperInner::KoalaBearD4Width24(
+            Poseidon2Config::KOALA_BEAR_D4_W24 => Poseidon2AirWrapperInner::KoalaBearD4Width24(
                 Box::new(KoalaBearD4Width24::default_air()),
             ),
-            Poseidon2Config::GoldilocksD2Width8 => Poseidon2AirWrapperInner::GoldilocksD2Width8(
+            Poseidon2Config::GOLDILOCKS_D2_W8 => Poseidon2AirWrapperInner::GoldilocksD2Width8(
                 Box::new(goldilocks_d2_width8_default_air()),
             ),
+            // `Poseidon2Config` fields are private; only the seven public assoc
+            // consts above can be constructed, so this is unreachable.
+            _ => unreachable!("unsupported Poseidon2Config"),
         }
     }
 
@@ -765,7 +766,7 @@ impl Poseidon2Prover {
         circuit_extension_degree: u32,
     ) -> Option<Poseidon2AirWrapperInner> {
         let inner = match config {
-            Poseidon2Config::BabyBearD1Width16 => {
+            Poseidon2Config::BABY_BEAR_D1_W16 => {
                 assert!(F::from_u64(BABY_BEAR_MODULUS) == F::ZERO);
                 let prep = unsafe { transmute::<Vec<F>, Vec<BabyBear>>(preprocessed) };
                 match poseidon_d1_witness_bus_dim(circuit_extension_degree)? {
@@ -780,7 +781,7 @@ impl Poseidon2Prover {
                     _ => unreachable!(),
                 }
             }
-            Poseidon2Config::BabyBearD4Width16 => {
+            Poseidon2Config::BABY_BEAR_D4_W16 => {
                 assert!(F::from_u64(BABY_BEAR_MODULUS) == F::ZERO);
                 Poseidon2AirWrapperInner::BabyBearD4Width16(Box::new(
                     BabyBearD4Width16::default_air_with_preprocessed(
@@ -789,7 +790,7 @@ impl Poseidon2Prover {
                     ),
                 ))
             }
-            Poseidon2Config::BabyBearD4Width24 => {
+            Poseidon2Config::BABY_BEAR_D4_W24 => {
                 assert!(F::from_u64(BABY_BEAR_MODULUS) == F::ZERO);
                 Poseidon2AirWrapperInner::BabyBearD4Width24(Box::new(
                     BabyBearD4Width24::default_air_with_preprocessed(
@@ -798,7 +799,7 @@ impl Poseidon2Prover {
                     ),
                 ))
             }
-            Poseidon2Config::KoalaBearD1Width16 => {
+            Poseidon2Config::KOALA_BEAR_D1_W16 => {
                 assert!(F::from_u64(KOALA_BEAR_MODULUS) == F::ZERO);
                 let prep = unsafe { transmute::<Vec<F>, Vec<KoalaBear>>(preprocessed) };
                 match poseidon_d1_witness_bus_dim(circuit_extension_degree)? {
@@ -813,7 +814,7 @@ impl Poseidon2Prover {
                     _ => unreachable!(),
                 }
             }
-            Poseidon2Config::KoalaBearD4Width16 => {
+            Poseidon2Config::KOALA_BEAR_D4_W16 => {
                 assert!(F::from_u64(KOALA_BEAR_MODULUS) == F::ZERO);
                 Poseidon2AirWrapperInner::KoalaBearD4Width16(Box::new(
                     KoalaBearD4Width16::default_air_with_preprocessed(
@@ -822,7 +823,7 @@ impl Poseidon2Prover {
                     ),
                 ))
             }
-            Poseidon2Config::KoalaBearD4Width24 => {
+            Poseidon2Config::KOALA_BEAR_D4_W24 => {
                 assert!(F::from_u64(KOALA_BEAR_MODULUS) == F::ZERO);
                 Poseidon2AirWrapperInner::KoalaBearD4Width24(Box::new(
                     KoalaBearD4Width24::default_air_with_preprocessed(
@@ -831,12 +832,13 @@ impl Poseidon2Prover {
                     ),
                 ))
             }
-            Poseidon2Config::GoldilocksD2Width8 => Poseidon2AirWrapperInner::GoldilocksD2Width8(
+            Poseidon2Config::GOLDILOCKS_D2_W8 => Poseidon2AirWrapperInner::GoldilocksD2Width8(
                 Box::new(goldilocks_d2_width8_default_air_with_preprocessed(
                     unsafe { transmute::<Vec<F>, Vec<Goldilocks>>(preprocessed) },
                     min_height,
                 )),
             ),
+            _ => unreachable!("unsupported Poseidon2Config"),
         };
         Some(inner)
     }
@@ -867,27 +869,28 @@ impl Poseidon2Prover {
 
     pub const fn preprocessed_width_from_config(&self) -> usize {
         match self.config {
-            Poseidon2Config::BabyBearD1Width16 => {
+            Poseidon2Config::BABY_BEAR_D1_W16 => {
                 Poseidon2CircuitAirBabyBearD1Width16::preprocessed_width()
             }
-            Poseidon2Config::BabyBearD4Width16 => {
+            Poseidon2Config::BABY_BEAR_D4_W16 => {
                 Poseidon2CircuitAirBabyBearD4Width16::preprocessed_width()
             }
-            Poseidon2Config::BabyBearD4Width24 => {
+            Poseidon2Config::BABY_BEAR_D4_W24 => {
                 Poseidon2CircuitAirBabyBearD4Width24::preprocessed_width()
             }
-            Poseidon2Config::KoalaBearD1Width16 => {
+            Poseidon2Config::KOALA_BEAR_D1_W16 => {
                 Poseidon2CircuitAirKoalaBearD1Width16::preprocessed_width()
             }
-            Poseidon2Config::KoalaBearD4Width16 => {
+            Poseidon2Config::KOALA_BEAR_D4_W16 => {
                 Poseidon2CircuitAirKoalaBearD4Width16::preprocessed_width()
             }
-            Poseidon2Config::KoalaBearD4Width24 => {
+            Poseidon2Config::KOALA_BEAR_D4_W24 => {
                 Poseidon2CircuitAirKoalaBearD4Width24::preprocessed_width()
             }
-            Poseidon2Config::GoldilocksD2Width8 => {
+            Poseidon2Config::GOLDILOCKS_D2_W8 => {
                 Poseidon2CircuitAirGoldilocksD2Width8::preprocessed_width()
             }
+            _ => panic!("unsupported Poseidon2Config"),
         }
     }
 
@@ -959,7 +962,7 @@ impl Poseidon2Prover {
         padded_ops.resize(padded_rows, pad_filler);
 
         let (air, matrix) = match cfg {
-            Poseidon2Config::BabyBearD1Width16 => {
+            Poseidon2Config::BABY_BEAR_D1_W16 => {
                 let constants = BabyBearD1Width16::round_constants();
                 let wbus = poseidon_d1_witness_bus_dim(witness_ctl_scale)?;
                 let preprocessed = extract_preprocessed_from_operations::<16, 8, BabyBear, Val<SC>>(
@@ -1005,7 +1008,7 @@ impl Poseidon2Prover {
                     matrix,
                 )
             }
-            Poseidon2Config::BabyBearD4Width16 => {
+            Poseidon2Config::BABY_BEAR_D4_W16 => {
                 let constants = BabyBearD4Width16::round_constants();
                 let preprocessed = extract_preprocessed_from_operations::<4, 2, BabyBear, Val<SC>>(
                     &t.operations,
@@ -1025,7 +1028,7 @@ impl Poseidon2Prover {
                     matrix,
                 )
             }
-            Poseidon2Config::BabyBearD4Width24 => {
+            Poseidon2Config::BABY_BEAR_D4_W24 => {
                 let constants = BabyBearD4Width24::round_constants();
                 let preprocessed = extract_preprocessed_from_operations::<6, 4, BabyBear, Val<SC>>(
                     &t.operations,
@@ -1045,7 +1048,7 @@ impl Poseidon2Prover {
                     matrix,
                 )
             }
-            Poseidon2Config::KoalaBearD1Width16 => {
+            Poseidon2Config::KOALA_BEAR_D1_W16 => {
                 let constants = KoalaBearD1Width16::round_constants();
                 let wbus = poseidon_d1_witness_bus_dim(witness_ctl_scale)?;
                 let preprocessed = extract_preprocessed_from_operations::<16, 8, KoalaBear, Val<SC>>(
@@ -1091,7 +1094,7 @@ impl Poseidon2Prover {
                     matrix,
                 )
             }
-            Poseidon2Config::KoalaBearD4Width16 => {
+            Poseidon2Config::KOALA_BEAR_D4_W16 => {
                 let constants = KoalaBearD4Width16::round_constants();
                 let preprocessed = extract_preprocessed_from_operations::<4, 2, KoalaBear, Val<SC>>(
                     &t.operations,
@@ -1111,7 +1114,7 @@ impl Poseidon2Prover {
                     matrix,
                 )
             }
-            Poseidon2Config::KoalaBearD4Width24 => {
+            Poseidon2Config::KOALA_BEAR_D4_W24 => {
                 let constants = KoalaBearD4Width24::round_constants();
                 let preprocessed = extract_preprocessed_from_operations::<6, 4, KoalaBear, Val<SC>>(
                     &t.operations,
@@ -1131,7 +1134,7 @@ impl Poseidon2Prover {
                     matrix,
                 )
             }
-            Poseidon2Config::GoldilocksD2Width8 => {
+            Poseidon2Config::GOLDILOCKS_D2_W8 => {
                 let constants = goldilocks_d2_width8_round_constants();
                 let preprocessed = extract_preprocessed_from_operations::<4, 2, Goldilocks, Val<SC>>(
                     &t.operations,
@@ -1151,6 +1154,7 @@ impl Poseidon2Prover {
                     matrix,
                 )
             }
+            _ => unreachable!("unsupported Poseidon2Config"),
         };
 
         Some(BatchTableInstance {
@@ -1609,22 +1613,20 @@ pub(crate) fn poseidon2_config_for_air_builder<const D: usize>(
 ) -> Option<Poseidon2Config> {
     match D {
         2 => match config {
-            Poseidon2Config::GoldilocksD2Width8 => Some(config),
+            Poseidon2Config::GOLDILOCKS_D2_W8 => Some(config),
             _ => None,
         },
         4 => match config {
-            Poseidon2Config::BabyBearD1Width16
-            | Poseidon2Config::BabyBearD4Width16
-            | Poseidon2Config::BabyBearD4Width24
-            | Poseidon2Config::KoalaBearD1Width16
-            | Poseidon2Config::KoalaBearD4Width16
-            | Poseidon2Config::KoalaBearD4Width24 => Some(config),
+            Poseidon2Config::BABY_BEAR_D1_W16
+            | Poseidon2Config::BABY_BEAR_D4_W16
+            | Poseidon2Config::BABY_BEAR_D4_W24
+            | Poseidon2Config::KOALA_BEAR_D1_W16
+            | Poseidon2Config::KOALA_BEAR_D4_W16
+            | Poseidon2Config::KOALA_BEAR_D4_W24 => Some(config),
             _ => None,
         },
         5 => match config {
-            Poseidon2Config::BabyBearD1Width16 | Poseidon2Config::KoalaBearD1Width16 => {
-                Some(config)
-            }
+            Poseidon2Config::BABY_BEAR_D1_W16 | Poseidon2Config::KOALA_BEAR_D1_W16 => Some(config),
             _ => None,
         },
         _ => None,
@@ -1721,7 +1723,7 @@ where
         // For D=5 circuits the Poseidon2 permutation always operates in the base field
         // (the quintic challenger uses D=1 configs).
         let config = match config {
-            Poseidon2Config::BabyBearD1Width16 | Poseidon2Config::KoalaBearD1Width16 => config,
+            Poseidon2Config::BABY_BEAR_D1_W16 | Poseidon2Config::KOALA_BEAR_D1_W16 => config,
             _ => return None,
         };
         let prover = Poseidon2Prover::new(config, constraint_profile);

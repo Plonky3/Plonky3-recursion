@@ -272,7 +272,7 @@ fn cube_npo_stark_proof() {
     builder.assert_zero(zero);
 
     let circuit = builder.build().expect("build cube circuit");
-    let cfg = config::baby_bear().build();
+    let cfg = config::baby_bear();
 
     // Derive AIRs and preprocessed columns from the circuit.
     // The cube NPO has no dedicated table, so only primitive AIRs are generated.

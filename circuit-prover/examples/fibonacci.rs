@@ -35,7 +35,7 @@ type F = KoalaBear;
 fn main() -> Result<(), Box<dyn Error>> {
     init_logger();
 
-    let config = config::koala_bear().build();
+    let config = config::koala_bear();
 
     let n = env::args()
         .nth(1)

@@ -59,7 +59,7 @@ fn build_fibonacci_test_setup() -> FibonacciTestSetup {
         scalars.log_final_poly_len,
         scalars.commit_pow_bits,
         scalars.query_pow_bits,
-        Poseidon2Config::BabyBearD4Width16,
+        Poseidon2Config::BABY_BEAR_D4_W16,
     );
     let pis = vec![F::ZERO, F::ONE, F::from_u64(x)];
     let air = FibonacciAir {};
@@ -112,7 +112,7 @@ fn run_recursive_verifier(
         &verifier_inputs.air_public_targets,
         &None,
         &setup.fri_verifier_params,
-        Poseidon2Config::BabyBearD4Width16,
+        Poseidon2Config::BABY_BEAR_D4_W16,
     )?;
 
     // Build the circuit.
@@ -250,7 +250,7 @@ fn test_truncated_fri_proof() {
         &verifier_inputs.air_public_targets,
         &None,
         &setup.fri_verifier_params,
-        Poseidon2Config::BabyBearD4Width16,
+        Poseidon2Config::BABY_BEAR_D4_W16,
     )
     .unwrap();
     // Build the circuit.

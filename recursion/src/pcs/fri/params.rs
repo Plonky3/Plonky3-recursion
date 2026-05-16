@@ -82,7 +82,7 @@ mod tests {
     /// checks.
     #[test]
     fn with_mmcs_always_enables_mmcs_verification() {
-        let params = FriVerifierParams::with_mmcs(1, 0, 0, 0, Poseidon2Config::KoalaBearD4Width16);
+        let params = FriVerifierParams::with_mmcs(1, 0, 0, 0, Poseidon2Config::KOALA_BEAR_D4_W16);
         assert!(
             params.permutation_config.is_some(),
             "with_mmcs must enable MMCS verification"
