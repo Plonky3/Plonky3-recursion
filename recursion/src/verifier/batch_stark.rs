@@ -401,6 +401,38 @@ where
         ));
     }
 
+    // `common` is consumed by per-instance indexing below (`common.lookups[i]`,
+    // `global.instances.instances[i]`, and `matrix_to_instance` lookups). Validate
+    // its lengths and bounds up front so malformed/mismatched `CommonData` returns
+    // a typed error instead of panicking during circuit construction.
+    if common.lookups.len() != airs.len() {
+        return Err(VerificationError::InvalidProofShape(format!(
+            "common-data lookups length must equal number of AIR instances: expected {}, got {}",
+            airs.len(),
+            common.lookups.len()
+        )));
+    }
+    if let Some(global) = &common.preprocessed {
+        if global.instances.instances.len() != airs.len() {
+            return Err(VerificationError::InvalidProofShape(format!(
+                "common-data preprocessed instance metadata length must equal number of AIR \
+                 instances: expected {}, got {}",
+                airs.len(),
+                global.instances.instances.len()
+            )));
+        }
+        if let Some(&bad) = global
+            .matrix_to_instance
+            .iter()
+            .find(|&&idx| idx >= airs.len())
+        {
+            return Err(VerificationError::InvalidProofShape(format!(
+                "common-data matrix_to_instance entry {bad} out of bounds for {} instances",
+                airs.len()
+            )));
+        }
+    }
+
     let all_lookups = &common.lookups;
 
     let pcs = config.pcs();
