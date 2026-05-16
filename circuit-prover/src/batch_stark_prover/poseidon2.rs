@@ -719,11 +719,6 @@ unsafe impl Send for Poseidon2Prover {}
 unsafe impl Sync for Poseidon2Prover {}
 
 impl Poseidon2Prover {
-    #[allow(dead_code)] // Used by tests / future hooks; batch path uses `self.config` directly.
-    pub(crate) const fn config(&self) -> Poseidon2Config {
-        self.config
-    }
-
     pub(crate) fn poseidon2_op_type(&self) -> NpoTypeId {
         NpoTypeId::poseidon2_perm(self.config)
     }

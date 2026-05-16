@@ -79,7 +79,6 @@
 use alloc::vec;
 use alloc::vec::Vec;
 use core::borrow::{Borrow, BorrowMut};
-use core::marker::PhantomData;
 
 use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 use p3_circuit::tables::AluTrace;
@@ -136,7 +135,6 @@ pub struct AluAir<F: Copy, const D: usize = 1> {
     schedule: Option<Vec<ScheduleEntry>>,
     /// Pack size K for [`ScheduleEntry::PackedHorner`] (>= 2).
     pub(crate) horner_packed_steps: usize,
-    _phantom: PhantomData<F>,
 }
 
 impl<F: Field + PrimeCharacteristicRing + Copy, const D: usize> AluAir<F, D> {
@@ -155,7 +153,6 @@ impl<F: Field + PrimeCharacteristicRing + Copy, const D: usize> AluAir<F, D> {
             min_height: 1,
             schedule: None,
             horner_packed_steps: 2,
-            _phantom: PhantomData,
         }
     }
 
@@ -184,7 +181,6 @@ impl<F: Field + PrimeCharacteristicRing + Copy, const D: usize> AluAir<F, D> {
             min_height: 1,
             schedule,
             horner_packed_steps,
-            _phantom: PhantomData,
         }
     }
 
@@ -200,7 +196,6 @@ impl<F: Field + PrimeCharacteristicRing + Copy, const D: usize> AluAir<F, D> {
             min_height: 1,
             schedule: None,
             horner_packed_steps: 2,
-            _phantom: PhantomData,
         }
     }
 
@@ -227,7 +222,6 @@ impl<F: Field + PrimeCharacteristicRing + Copy, const D: usize> AluAir<F, D> {
             min_height: 1,
             schedule,
             horner_packed_steps,
-            _phantom: PhantomData,
         }
     }
 
@@ -243,7 +237,6 @@ impl<F: Field + PrimeCharacteristicRing + Copy, const D: usize> AluAir<F, D> {
             min_height: 1,
             schedule: None,
             horner_packed_steps: 2,
-            _phantom: PhantomData,
         }
     }
 
@@ -270,7 +263,6 @@ impl<F: Field + PrimeCharacteristicRing + Copy, const D: usize> AluAir<F, D> {
             min_height: 1,
             schedule,
             horner_packed_steps,
-            _phantom: PhantomData,
         }
     }
 
@@ -923,7 +915,6 @@ where
                         let a_s = &local[off_s..off_s + D];
                         let c_s = &local[off_s + D..off_s + 2 * D];
                         if s + 1 < kk {
-                            let c_s = &local[off_s + D..off_s + 2 * D];
                             let off_sp1 = ac_base + 2 * s * D;
                             let a_sp1 = &local[off_sp1..off_sp1 + D];
                             let c_sp1 = &local[off_sp1 + D..off_sp1 + 2 * D];

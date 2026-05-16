@@ -318,7 +318,13 @@ where
     }
 }
 
-// Implement Send + Sync for the plugin (required by NpoCircuitPlugin)
+// SAFETY: Every field is `Send + Sync` independently of `F`: `d: usize` and
+// `coeff_witness_ctl: bool` are trivially so; `trace_gen: TraceGeneratorFn<F>`
+// is a bare `fn` pointer (always `Send + Sync`); and `recompose_fn:
+// RecomposeFn<F>` is `Arc<dyn Fn(..) + Send + Sync>`. No `F` value is ever
+// stored, so these markers do not depend on `F: Send + Sync`. The explicit
+// impls are required because `NpoCircuitPlugin: Send + Sync` and the generic
+// `F` would otherwise make the auto-derived bounds conditional on `F`.
 unsafe impl<F: Field> Send for RecomposeCircuitPlugin<F> {}
 unsafe impl<F: Field> Sync for RecomposeCircuitPlugin<F> {}
 

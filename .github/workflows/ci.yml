@@ -8,7 +8,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  CARGO_INCREMENTAL: 0 // reduce disk bloat
+  CARGO_INCREMENTAL: 0 # reduce disk bloat
 
 jobs:
   build_and_test:
