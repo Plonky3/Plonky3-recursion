@@ -166,6 +166,14 @@ impl<F: Field> CircuitBuilder<F> {
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;
+
+        // The claimed root must have exactly as many limbs as the computed root digest.
+        if output.len() != root_expr.len() {
+            return Err(CircuitBuilderError::InvalidDimension {
+                expected: output.len(),
+                actual: root_expr.len(),
+            });
+        }
         for (o, r) in output.iter().zip(root_expr.iter()) {
             self.connect(*o, *r);
         }

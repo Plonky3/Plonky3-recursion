@@ -2,7 +2,9 @@ mod common;
 
 use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 use p3_baby_bear::default_babybear_poseidon2_16;
-use p3_batch_stark::{BatchProof, CommonData, ProverData, StarkInstance, prove_batch, verify_batch};
+use p3_batch_stark::{
+    BatchProof, CommonData, ProverData, StarkInstance, prove_batch, verify_batch,
+};
 use p3_circuit::CircuitBuilder;
 use p3_circuit::ops::{generate_poseidon2_trace, generate_recompose_trace};
 use p3_field::Field;
