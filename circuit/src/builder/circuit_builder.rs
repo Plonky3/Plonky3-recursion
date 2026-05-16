@@ -19,14 +19,16 @@ use super::compiler::{ExpressionLowerer, LoweringResult, Optimizer};
 use super::npo::{NonPrimitiveOpParams, NonPrimitiveOperationData, NpoCircuitPlugin};
 use super::{BuilderConfig, ExpressionBuilder, PublicInputTracker};
 use crate::circuit::Circuit;
-use crate::ops::poseidon1_perm::{Poseidon1CircuitPlugin, Poseidon1PermExec};
+use crate::ops::poseidon1_perm::{
+    Poseidon1CircuitPlugin, Poseidon1PermCallBase, Poseidon1PermExec,
+};
 use crate::ops::poseidon2_perm::{
     Poseidon2CircuitPlugin, Poseidon2PermCallBase, Poseidon2PermExec,
 };
 use crate::ops::recompose::RecomposeCircuitPlugin;
 use crate::ops::{
-    HintExecutor, NpoConfig, NpoRegistry, NpoTypeId, Poseidon1Params, Poseidon2Params,
-    Poseidon2PermCall,
+    HintExecutor, NpoConfig, NpoRegistry, NpoTypeId, Poseidon1Params, Poseidon1PermCall,
+    Poseidon2Params, Poseidon2PermCall,
 };
 use crate::tables::TraceGeneratorFn;
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};
@@ -1584,6 +1586,60 @@ where
 
         // Rate outputs (0-7) are CTL-verified; capacity outputs (8-15) are chained.
         let (_op_id, outputs) = self.add_poseidon2_perm_base(&Poseidon2PermCallBase {
+            config,
+            new_start,
+            inputs,
+            out_ctl: [true; 8],
+            return_all_outputs: true,
+        })?;
+
+        let output_exprs: [ExprId; 16] =
+            core::array::from_fn(|i| outputs[i].expect("output should exist"));
+
+        self.pop_scope();
+        Ok(output_exprs)
+    }
+
+    /// Poseidon1 challenger permutation (extension field, D>=2). Mirrors
+    /// [`Self::add_poseidon2_perm_for_challenger`].
+    pub fn add_poseidon1_perm_for_challenger(
+        &mut self,
+        config: crate::ops::Poseidon1Config,
+        inputs: &[ExprId],
+    ) -> Result<Vec<ExprId>, CircuitBuilderError> {
+        self.push_scope("poseidon1_perm_for_challenger");
+
+        let width_ext = config.width_ext();
+        let (_op_id, outputs) = self.add_poseidon1_perm(&Poseidon1PermCall {
+            config,
+            new_start: true,
+            merkle_path: false,
+            mmcs_bit: None,
+            inputs: inputs.iter().map(|&x| Some(x)).collect(),
+            out_ctl: vec![true; config.rate_ext()],
+            return_all_outputs: true,
+            mmcs_index_sum: None,
+        })?;
+
+        let output_exprs: Vec<ExprId> = (0..width_ext)
+            .map(|i| outputs[i].ok_or(CircuitBuilderError::MissingOutput))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        self.pop_scope();
+        Ok(output_exprs)
+    }
+
+    /// Poseidon1 challenger permutation (base field, D=1). Mirrors
+    /// [`Self::add_poseidon2_perm_for_challenger_base`].
+    pub fn add_poseidon1_perm_for_challenger_base(
+        &mut self,
+        config: crate::ops::Poseidon1Config,
+        new_start: bool,
+        inputs: [Option<ExprId>; 16],
+    ) -> Result<[ExprId; 16], CircuitBuilderError> {
+        self.push_scope("poseidon1_perm_for_challenger_base");
+
+        let (_op_id, outputs) = self.add_poseidon1_perm_base(&Poseidon1PermCallBase {
             config,
             new_start,
             inputs,

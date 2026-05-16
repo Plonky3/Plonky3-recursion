@@ -1424,6 +1424,94 @@ mod koala_bear_d1 {
 }
 
 // ============================================================================
+// KoalaBear D=1 Poseidon1, WIDTH=16, RATE=8 (recursively verify a native
+// Poseidon1 DuplexChallenger transcript)
+// ============================================================================
+
+mod koala_bear_d1_poseidon1 {
+    use p3_challenger::DuplexChallenger;
+    use p3_circuit::ops::poseidon1_perm::KoalaBearD1Width16;
+    use p3_circuit::ops::{Poseidon1Config, generate_poseidon1_trace};
+    use p3_field::PrimeCharacteristicRing;
+    use p3_koala_bear::default_koalabear_poseidon1_16;
+    use p3_test_utils::koala_bear_params::{KoalaBear, RATE, WIDTH};
+
+    use super::*;
+
+    type F = KoalaBear;
+
+    fn setup_circuit() -> CircuitBuilder<F> {
+        let mut circuit = CircuitBuilder::<F>::new();
+        let perm = default_koalabear_poseidon1_16();
+        circuit.enable_poseidon1_perm_base::<KoalaBearD1Width16, _>(
+            generate_poseidon1_trace::<F, KoalaBearD1Width16>,
+            perm,
+        );
+        circuit.enable_recompose::<F>(generate_recompose_trace::<F, F>);
+        circuit
+    }
+
+    const fn new_challenger() -> CircuitChallenger<WIDTH, RATE, Poseidon1Config> {
+        CircuitChallenger::new_koalabear_poseidon1_base()
+    }
+
+    #[test]
+    fn test_koalabear_d1_poseidon1_observe_sample() {
+        let perm = default_koalabear_poseidon1_16();
+        let mut native = DuplexChallenger::<F, _, WIDTH, RATE>::new(perm);
+        let mut circuit = setup_circuit();
+        let mut cc = new_challenger();
+
+        for i in 0..RATE {
+            let val = F::from_u64(i as u64 + 1);
+            native.observe(val);
+            let t = circuit.define_const(val);
+            RecursiveChallenger::<F, F>::observe(&mut cc, &mut circuit, t);
+        }
+
+        let native_s: F = native.sample();
+        let circuit_s = RecursiveChallenger::<F, F>::sample(&mut cc, &mut circuit);
+        let expected = circuit.define_const(native_s);
+        circuit.connect(circuit_s, expected);
+
+        circuit
+            .build()
+            .expect("circuit should build")
+            .runner()
+            .run()
+            .expect("KoalaBear D1 Poseidon1 observe/sample should match native");
+    }
+
+    #[test]
+    fn test_koalabear_d1_poseidon1_multiple_rounds() {
+        let perm = default_koalabear_poseidon1_16();
+        let mut native = DuplexChallenger::<F, _, WIDTH, RATE>::new(perm);
+        let mut circuit = setup_circuit();
+        let mut cc = new_challenger();
+
+        for round in 0..3u64 {
+            for i in 0..RATE {
+                let val = F::from_u64(round * 100 + i as u64 + 1);
+                native.observe(val);
+                let t = circuit.define_const(val);
+                RecursiveChallenger::<F, F>::observe(&mut cc, &mut circuit, t);
+            }
+            let ns: F = native.sample();
+            let cs = RecursiveChallenger::<F, F>::sample(&mut cc, &mut circuit);
+            let exp = circuit.define_const(ns);
+            circuit.connect(cs, exp);
+        }
+
+        circuit
+            .build()
+            .expect("circuit should build")
+            .runner()
+            .run()
+            .expect("KoalaBear D1 Poseidon1 multiple rounds should match native");
+    }
+}
+
+// ============================================================================
 // Goldilocks D=2, WIDTH=8, RATE=4
 // ============================================================================
 
