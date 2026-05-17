@@ -131,10 +131,9 @@ jobs:
           du -sh target || true
           du -sh ~/.cargo/registry ~/.cargo/git || true
 
-      - name: Run recursive examples
+      - name: Run recursive examples (recursive_fibonacci is run in performance checks already)
         run: |
           cargo run --release --features parallel --example recursive_aggregation -- --field koala-bear --num-recursive-layers 2
-          cargo run --release --features parallel --example recursive_fibonacci -- --field goldilocks --num-recursive-layers 2
           cargo run --release --features parallel --example recursive_keccak -- --field baby-bear -n 10 --num-recursive-layers 2
 
       - name: Disk usage (after)
