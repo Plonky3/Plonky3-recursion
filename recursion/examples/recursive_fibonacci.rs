@@ -64,6 +64,10 @@ struct Args {
     #[arg(long, default_value_t = false)]
     pub quintic: bool,
 
+    /// Hash backing the recursive challenger/MMCS.
+    #[arg(long, value_enum, ignore_case = true, default_value_t = HashOption::Poseidon2)]
+    pub hash: HashOption,
+
     #[arg(
         long,
         default_value_t = 2,
@@ -179,12 +183,12 @@ fn main() {
     assert_quintic_field(args.field, args.quintic);
 
     info!(
-        "Recursively proving {} Fibonacci iterations with field {:?}, quintic {}",
-        args.n, args.field, args.quintic
+        "Recursively proving {} Fibonacci iterations with field {:?}, quintic {}, hash {:?}",
+        args.n, args.field, args.quintic, args.hash
     );
 
-    match args.field {
-        FieldOption::KoalaBear if args.quintic => koala_bear_quintic::run(
+    match (args.hash, args.field, args.quintic) {
+        (HashOption::Poseidon2, FieldOption::KoalaBear, true) => koala_bear_quintic::run(
             args.n,
             args.num_recursive_layers,
             &fri_params,
@@ -192,16 +196,7 @@ fn main() {
             args.security_level,
             args.disable_recompose_npo,
         ),
-        FieldOption::KoalaBear => koala_bear::run(
-            args.n,
-            args.num_recursive_layers,
-            &fri_params,
-            &table_packing,
-            args.security_level,
-            args.zk,
-            args.disable_recompose_npo,
-        ),
-        FieldOption::BabyBear => baby_bear::run(
+        (HashOption::Poseidon2, FieldOption::KoalaBear, false) => koala_bear::run(
             args.n,
             args.num_recursive_layers,
             &fri_params,
@@ -210,7 +205,51 @@ fn main() {
             args.zk,
             args.disable_recompose_npo,
         ),
-        FieldOption::Goldilocks => goldilocks::run(
+        (HashOption::Poseidon2, FieldOption::BabyBear, _) => baby_bear::run(
+            args.n,
+            args.num_recursive_layers,
+            &fri_params,
+            &table_packing,
+            args.security_level,
+            args.zk,
+            args.disable_recompose_npo,
+        ),
+        (HashOption::Poseidon2, FieldOption::Goldilocks, _) => goldilocks::run(
+            args.n,
+            args.num_recursive_layers,
+            &fri_params,
+            &table_packing,
+            args.security_level,
+            args.zk,
+            args.disable_recompose_npo,
+        ),
+        (HashOption::Poseidon1, FieldOption::KoalaBear, true) => koala_bear_quintic_poseidon1::run(
+            args.n,
+            args.num_recursive_layers,
+            &fri_params,
+            &table_packing,
+            args.security_level,
+            args.disable_recompose_npo,
+        ),
+        (HashOption::Poseidon1, FieldOption::KoalaBear, false) => koala_bear_poseidon1::run(
+            args.n,
+            args.num_recursive_layers,
+            &fri_params,
+            &table_packing,
+            args.security_level,
+            args.zk,
+            args.disable_recompose_npo,
+        ),
+        (HashOption::Poseidon1, FieldOption::BabyBear, _) => baby_bear_poseidon1::run(
+            args.n,
+            args.num_recursive_layers,
+            &fri_params,
+            &table_packing,
+            args.security_level,
+            args.zk,
+            args.disable_recompose_npo,
+        ),
+        (HashOption::Poseidon1, FieldOption::Goldilocks, _) => goldilocks_poseidon1::run(
             args.n,
             args.num_recursive_layers,
             &fri_params,
@@ -237,7 +276,10 @@ macro_rules! define_field_module {
         $enable_poseidon2_fn:ident,
         $default_perm_circuit:path,
         $backend_width:expr,
-        $backend_rate:expr
+        $backend_rate:expr,
+        $register_fn:ident,
+        $gen_trace:ident,
+        $params_trait:path
     ) => {
         mod $mod_name {
             use super::*;
@@ -256,7 +298,9 @@ macro_rules! define_field_module {
                 $default_perm_circuit,
                 $backend_width,
                 $backend_rate,
-                enable_recompose
+                enable_recompose,
+                $gen_trace,
+                $params_trait
             );
 
             pub fn run(
@@ -294,7 +338,7 @@ macro_rules! define_field_module {
                 };
 
                 let backend =
-                    FriRecursionBackend::<$backend_width, $backend_rate>::new($poseidon2_config)
+                    FriRecursionBackend::<$backend_width, $backend_rate, _>::new($poseidon2_config)
                         .for_extension_degree::<$d>();
 
                 macro_rules! run_layers {
@@ -399,7 +443,7 @@ macro_rules! define_field_module {
                             report_proof_size(&out.0);
                             let mut prover = BatchStarkProver::new(config.clone())
                                 .with_table_packing(params.table_packing.clone());
-                            prover.register_poseidon2_table::<$d>($poseidon2_config);
+                            prover.$register_fn::<$d>($poseidon2_config);
                             if !disable_recompose_npo {
                                 prover.register_recompose_table::<$d>($poseidon2_config.d() != $d);
                             }
@@ -480,14 +524,18 @@ macro_rules! define_field_module_quintic {
         $rate:expr,
         $digest_elems:expr,
         $backend_width:expr,
-        $backend_rate:expr
+        $backend_rate:expr,
+        $register_fn:ident,
+        $enable_fn:ident,
+        $gen_trace:ident,
+        $params_trait:path
     ) => {
         mod $mod_name {
             use p3_batch_stark::ProverData;
 
             use super::*;
 
-            define_quintic_poseidon_perm_lift_and_types!(
+            define_field_module_types_quintic!(
                 $field,
                 $perm,
                 $default_perm,
@@ -496,8 +544,14 @@ macro_rules! define_field_module_quintic {
                 $width,
                 $rate,
                 $digest_elems,
+                || ::p3_test_utils::LiftPermToQuintic::<$field, $perm, $width>::new(
+                    $default_perm()
+                ),
                 $backend_width,
-                $backend_rate
+                $backend_rate,
+                $enable_fn,
+                $gen_trace,
+                $params_trait
             );
 
             pub fn run(
@@ -536,7 +590,7 @@ macro_rules! define_field_module_quintic {
                 };
 
                 let backend =
-                    FriRecursionBackend::<$backend_width, $backend_rate>::new_d5($poseidon2_config);
+                    FriRecursionBackend::<$backend_width, $backend_rate, _>::new_d5($poseidon2_config);
 
                 let config_0 = config_with_fri_params(fri_params, security_level, true);
                 let (airs_degrees_0, primitive_columns_0, non_primitive_columns_0) =
@@ -627,7 +681,7 @@ macro_rules! define_field_module_quintic {
                     report_proof_size(&out.0);
                     let mut prover = BatchStarkProver::new(config.clone())
                         .with_table_packing(params.table_packing.clone());
-                    prover.register_poseidon2_table::<D>($poseidon2_config);
+                    prover.$register_fn::<D>($poseidon2_config);
                     if !disable_recompose_npo {
                         prover.register_recompose_table::<D>($poseidon2_config.d() != D);
                     }
@@ -672,7 +726,29 @@ define_field_module_quintic!(
     8,
     8,
     16,
-    8
+    8,
+    register_poseidon2_table,
+    enable_poseidon2_perm_base,
+    generate_poseidon2_trace,
+    p3_circuit::ops::Poseidon2Params
+);
+
+define_field_module_quintic!(
+    koala_bear_quintic_poseidon1,
+    p3_koala_bear::KoalaBear,
+    p3_koala_bear::Poseidon1KoalaBear<16>,
+    p3_koala_bear::default_koalabear_poseidon1_16,
+    p3_circuit::ops::Poseidon1Config::KOALA_BEAR_D1_W16,
+    p3_circuit::ops::poseidon1_perm::KoalaBearD1Width16,
+    16,
+    8,
+    8,
+    16,
+    8,
+    register_poseidon1_table,
+    enable_poseidon1_perm_base,
+    generate_poseidon1_trace,
+    p3_circuit::ops::Poseidon1Params
 );
 
 define_field_module!(
@@ -689,7 +765,30 @@ define_field_module!(
     enable_poseidon2_perm,
     p3_koala_bear::default_koalabear_poseidon2_16,
     16,
-    8
+    8,
+    register_poseidon2_table,
+    generate_poseidon2_trace,
+    p3_circuit::ops::Poseidon2Params
+);
+
+define_field_module!(
+    koala_bear_poseidon1,
+    p3_koala_bear::KoalaBear,
+    p3_koala_bear::Poseidon1KoalaBear<16>,
+    p3_koala_bear::default_koalabear_poseidon1_16,
+    p3_circuit::ops::Poseidon1Config::KOALA_BEAR_D4_W16,
+    p3_circuit::ops::poseidon1_perm::KoalaBearD4Width16,
+    4,
+    16,
+    8,
+    8,
+    enable_poseidon1_perm,
+    p3_koala_bear::default_koalabear_poseidon1_16,
+    16,
+    8,
+    register_poseidon1_table,
+    generate_poseidon1_trace,
+    p3_circuit::ops::Poseidon1Params
 );
 
 define_field_module!(
@@ -706,7 +805,30 @@ define_field_module!(
     enable_poseidon2_perm,
     p3_baby_bear::default_babybear_poseidon2_16,
     16,
-    8
+    8,
+    register_poseidon2_table,
+    generate_poseidon2_trace,
+    p3_circuit::ops::Poseidon2Params
+);
+
+define_field_module!(
+    baby_bear_poseidon1,
+    p3_baby_bear::BabyBear,
+    p3_baby_bear::Poseidon1BabyBear<16>,
+    p3_baby_bear::default_babybear_poseidon1_16,
+    p3_circuit::ops::Poseidon1Config::BABY_BEAR_D4_W16,
+    p3_circuit::ops::poseidon1_perm::BabyBearD4Width16,
+    4,
+    16,
+    8,
+    8,
+    enable_poseidon1_perm,
+    p3_baby_bear::default_babybear_poseidon1_16,
+    16,
+    8,
+    register_poseidon1_table,
+    generate_poseidon1_trace,
+    p3_circuit::ops::Poseidon1Params
 );
 
 define_field_module!(
@@ -723,5 +845,28 @@ define_field_module!(
     enable_poseidon2_perm_width_8,
     default_goldilocks_poseidon2_8,
     8,
-    4
+    4,
+    register_poseidon2_table,
+    generate_poseidon2_trace,
+    p3_circuit::ops::Poseidon2Params
+);
+
+define_field_module!(
+    goldilocks_poseidon1,
+    p3_goldilocks::Goldilocks,
+    p3_goldilocks::poseidon1::Poseidon1Goldilocks<8>,
+    p3_goldilocks::poseidon1::default_goldilocks_poseidon1_8,
+    p3_circuit::ops::Poseidon1Config::GOLDILOCKS_D2_W8,
+    p3_circuit::ops::poseidon1_perm::GoldilocksD2Width8,
+    2,
+    8,
+    4,
+    4,
+    enable_poseidon1_perm_width_8,
+    p3_goldilocks::poseidon1::default_goldilocks_poseidon1_8,
+    8,
+    4,
+    register_poseidon1_table,
+    generate_poseidon1_trace,
+    p3_circuit::ops::Poseidon1Params
 );

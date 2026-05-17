@@ -7,7 +7,9 @@ pub use std::sync::Arc;
 
 pub use clap::{Args as ClapArgs, Parser, ValueEnum};
 pub use p3_challenger::DuplexChallenger;
-pub use p3_circuit::ops::{NpoTypeId, generate_poseidon2_trace, generate_recompose_trace};
+pub use p3_circuit::ops::{
+    NpoTypeId, generate_poseidon1_trace, generate_poseidon2_trace, generate_recompose_trace,
+};
 pub use p3_circuit::{CircuitBuilder, CircuitRunner, NonPrimitiveOpId};
 pub use p3_circuit_prover::batch_stark_prover::poseidon2_air_builders;
 pub use p3_circuit_prover::common::{NpoPreprocessor, get_airs_and_degrees_with_prep};
@@ -76,6 +78,15 @@ pub enum FieldOption {
     Goldilocks,
 }
 
+/// Hash/permutation backing the Fiat-Shamir challenger and MMCS in the recursive
+/// verifier. Add new variants here as additional hashes gain circuit support.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Default)]
+pub enum HashOption {
+    #[default]
+    Poseidon2,
+    Poseidon1,
+}
+
 /// Panics when `--quintic` is set with a base field that does not support the quintic challenge extension.
 #[inline]
 pub fn assert_quintic_field(field: FieldOption, quintic: bool) {
@@ -132,7 +143,9 @@ macro_rules! define_field_module_types {
         $default_perm_circuit:path,
         $backend_width:expr,
         $backend_rate:expr,
-        $enable_recompose_fn:ident
+        $enable_recompose_fn:ident,
+        $gen_trace:ident,
+        $params_trait:path
     ) => {
         pub type F = $field;
         pub const D: usize = $d;
@@ -283,7 +296,7 @@ macro_rules! define_field_module_types {
             ) -> Result<(), VerificationError> {
                 let perm = $default_perm_circuit();
                 circuit.$enable_poseidon2_fn::<$poseidon2_circuit_config, _>(
-                    generate_poseidon2_trace::<Challenge, $poseidon2_circuit_config>,
+                    $gen_trace::<Challenge, $poseidon2_circuit_config>,
                     perm,
                 );
                 if self.disable_recompose_npo {
@@ -291,7 +304,7 @@ macro_rules! define_field_module_types {
                 } else {
                     circuit.$enable_recompose_fn::<F>(generate_recompose_trace::<F, Challenge>);
                 }
-                if <$poseidon2_circuit_config as p3_circuit::ops::Poseidon2Params>::D == 1
+                if <$poseidon2_circuit_config as $params_trait>::D == 1
                     && <Challenge as ::p3_field::BasedVectorSpace<F>>::DIMENSION > 1
                 {
                     circuit.set_recompose_coeff_ctl_for_decompose_links(true);
@@ -368,7 +381,7 @@ macro_rules! define_field_module_types {
             ) -> Result<(), VerificationError> {
                 let perm = $default_perm_circuit();
                 circuit.$enable_poseidon2_fn::<$poseidon2_circuit_config, _>(
-                    generate_poseidon2_trace::<Challenge, $poseidon2_circuit_config>,
+                    $gen_trace::<Challenge, $poseidon2_circuit_config>,
                     perm,
                 );
                 if self.disable_recompose_npo {
@@ -376,7 +389,7 @@ macro_rules! define_field_module_types {
                 } else {
                     circuit.$enable_recompose_fn::<F>(generate_recompose_trace::<F, Challenge>);
                 }
-                if <$poseidon2_circuit_config as p3_circuit::ops::Poseidon2Params>::D == 1
+                if <$poseidon2_circuit_config as $params_trait>::D == 1
                     && <Challenge as ::p3_field::BasedVectorSpace<F>>::DIMENSION > 1
                 {
                     circuit.set_recompose_coeff_ctl_for_decompose_links(true);
@@ -529,7 +542,10 @@ macro_rules! define_field_module_types_quintic {
         $digest_elems:expr,
         $perm_circuit_constructor:expr,
         $backend_width:expr,
-        $backend_rate:expr
+        $backend_rate:expr,
+        $enable_fn:ident,
+        $gen_trace:ident,
+        $params_trait:path
     ) => {
         pub type F = $field;
         pub const D: usize = 5;
@@ -633,8 +649,8 @@ macro_rules! define_field_module_types_quintic {
                 circuit: &mut CircuitBuilder<Challenge>,
             ) -> Result<(), VerificationError> {
                 let perm = ($perm_circuit_constructor)();
-                circuit.enable_poseidon2_perm_base::<$poseidon2_circuit_config, _>(
-                    generate_poseidon2_trace::<Challenge, $poseidon2_circuit_config>,
+                circuit.$enable_fn::<$poseidon2_circuit_config, _>(
+                    $gen_trace::<Challenge, $poseidon2_circuit_config>,
                     perm,
                 );
                 if self.disable_recompose_npo {
@@ -642,7 +658,7 @@ macro_rules! define_field_module_types_quintic {
                 } else {
                     circuit.enable_recompose::<F>(generate_recompose_trace::<F, Challenge>);
                 }
-                if <$poseidon2_circuit_config as p3_circuit::ops::Poseidon2Params>::D == 1
+                if <$poseidon2_circuit_config as $params_trait>::D == 1
                     && <Challenge as ::p3_field::BasedVectorSpace<F>>::DIMENSION > 1
                 {
                     circuit.set_recompose_coeff_ctl_for_decompose_links(true);
@@ -754,7 +770,10 @@ macro_rules! define_quintic_poseidon_perm_lift_and_types {
             $digest_elems,
             || ::p3_test_utils::LiftPermToQuintic::<$field, $perm, $width>::new($default_perm()),
             $backend_width,
-            $backend_rate
+            $backend_rate,
+            enable_poseidon2_perm_base,
+            generate_poseidon2_trace,
+            p3_circuit::ops::Poseidon2Params
         );
     };
 }

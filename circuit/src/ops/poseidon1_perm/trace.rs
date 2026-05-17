@@ -47,6 +47,22 @@ impl Poseidon1Params for KoalaBearD1Width16 {
     const CONFIG: Poseidon1Config = Poseidon1Config::KOALA_BEAR_D1_W16;
 }
 
+/// BabyBear D=4 Width=16 configuration (quartic challenge extension).
+pub struct BabyBearD4Width16;
+
+impl Poseidon1Params for BabyBearD4Width16 {
+    type BaseField = p3_baby_bear::BabyBear;
+    const CONFIG: Poseidon1Config = Poseidon1Config::BABY_BEAR_D4_W16;
+}
+
+/// KoalaBear D=4 Width=16 configuration (quartic challenge extension).
+pub struct KoalaBearD4Width16;
+
+impl Poseidon1Params for KoalaBearD4Width16 {
+    type BaseField = p3_koala_bear::KoalaBear;
+    const CONFIG: Poseidon1Config = Poseidon1Config::KOALA_BEAR_D4_W16;
+}
+
 /// Goldilocks D=2 Width=8 configuration (matches Poseidon1Goldilocks<8>).
 pub struct GoldilocksD2Width8;
 
