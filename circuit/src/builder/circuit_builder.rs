@@ -1600,8 +1600,7 @@ where
         Ok(output_exprs)
     }
 
-    /// Poseidon1 challenger permutation (extension field, D>=2). Mirrors
-    /// [`Self::add_poseidon2_perm_for_challenger`].
+    /// Poseidon1 challenger permutation (extension field, D>=2).
     pub fn add_poseidon1_perm_for_challenger(
         &mut self,
         config: crate::ops::Poseidon1Config,
@@ -1629,8 +1628,7 @@ where
         Ok(output_exprs)
     }
 
-    /// Poseidon1 challenger permutation (base field, D=1). Mirrors
-    /// [`Self::add_poseidon2_perm_for_challenger_base`].
+    /// Poseidon1 challenger permutation (base field, D=1).
     pub fn add_poseidon1_perm_for_challenger_base(
         &mut self,
         config: crate::ops::Poseidon1Config,

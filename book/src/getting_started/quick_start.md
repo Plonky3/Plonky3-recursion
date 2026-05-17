@@ -68,4 +68,8 @@ cargo run --release --example recursive_fibonacci -- --field koala-bear --n 1000
 cargo run --release --example recursive_aggregation -- --field koala-bear
 ```
 
+Each example also accepts `--quintic` (KoalaBear only) and
+`--hash <poseidon2|poseidon1>` (default `poseidon2`), e.g.
+`--field baby-bear --hash poseidon1`.
+
 Add `--features parallel` and `RUSTFLAGS="-Ctarget-cpu=native"` for production-level performance.

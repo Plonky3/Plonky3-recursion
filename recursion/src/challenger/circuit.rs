@@ -200,7 +200,7 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
         }
     }
 
-    /// Poseidon1 D=1 duplexing. Mirrors [`Self::duplexing_base`].
+    /// Poseidon1 D=1 duplexing.
     fn duplexing_base_p1<EF>(
         &mut self,
         circuit: &mut CircuitBuilder<EF>,
@@ -220,7 +220,7 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
         self.state = outputs.to_vec();
     }
 
-    /// Poseidon1 D>=2 duplexing. Mirrors [`Self::duplexing_ext`].
+    /// Poseidon1 D>=2 duplexing.
     fn duplexing_ext_p1<BF, EF>(
         &mut self,
         circuit: &mut CircuitBuilder<EF>,
