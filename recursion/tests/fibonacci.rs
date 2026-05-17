@@ -138,7 +138,12 @@ fn run_recursive_verifier(
         MyHash,
         MyCompress,
         DIGEST_ELEMS,
-    >(&mut runner, &mmcs_op_ids, &proof.opening_proof)
+    >(
+        &mut runner,
+        &mmcs_op_ids,
+        &proof.opening_proof,
+        Poseidon2Config::BABY_BEAR_D4_W16,
+    )
     .map_err(|e| VerificationError::InvalidProofShape(e.to_string()))?;
 
     runner.run().map_err(VerificationError::Circuit)?;
@@ -275,7 +280,12 @@ fn test_truncated_fri_proof() {
         MyHash,
         MyCompress,
         DIGEST_ELEMS,
-    >(&mut runner, &mmcs_op_ids, &truncated_opening_proof)
+    >(
+        &mut runner,
+        &mmcs_op_ids,
+        &truncated_opening_proof,
+        Poseidon2Config::BABY_BEAR_D4_W16,
+    )
     .map_err(|e| VerificationError::InvalidProofShape(e.to_string()));
 
     assert!(

@@ -217,6 +217,7 @@ fn test_fibonacci_batch_verifier() {
         &mut runner,
         &mmcs_op_ids,
         &batch_stark_proof.proof.opening_proof,
+        Poseidon2Config::KOALA_BEAR_D4_W16,
     )
     .unwrap();
 

@@ -324,7 +324,7 @@ macro_rules! define_field_module_types {
                     MyHash,
                     MyCompress,
                     DIGEST_ELEMS,
-                >(runner, op_ids, opening_proof)
+                >(runner, op_ids, opening_proof, $poseidon2_config)
             }
         }
 
@@ -409,7 +409,7 @@ macro_rules! define_field_module_types {
                     MyHash,
                     MyCompress,
                     DIGEST_ELEMS,
-                >(runner, op_ids, opening_proof)
+                >(runner, op_ids, opening_proof, $poseidon2_config)
             }
         }
 
@@ -437,7 +437,7 @@ macro_rules! define_field_module_types {
             MyConfig::new(pcs, challenger)
         }
 
-        const fn create_fri_verifier_params(fp: &FriParams) -> FriVerifierParams {
+        fn create_fri_verifier_params(fp: &FriParams) -> FriVerifierParams {
             FriVerifierParams::with_mmcs(
                 fp.log_blowup,
                 fp.log_final_poly_len,
@@ -675,7 +675,7 @@ macro_rules! define_field_module_types_quintic {
                     MyHash,
                     MyCompress,
                     DIGEST_ELEMS,
-                >(runner, op_ids, opening_proof)
+                >(runner, op_ids, opening_proof, $poseidon2_config)
             }
         }
 
@@ -703,7 +703,7 @@ macro_rules! define_field_module_types_quintic {
             MyConfig::new(pcs, challenger)
         }
 
-        const fn create_fri_verifier_params(fp: &FriParams) -> FriVerifierParams {
+        fn create_fri_verifier_params(fp: &FriParams) -> FriVerifierParams {
             FriVerifierParams::with_mmcs(
                 fp.log_blowup,
                 fp.log_final_poly_len,
