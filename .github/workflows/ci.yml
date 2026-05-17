@@ -58,25 +58,117 @@ jobs:
       - name: Test documentation
         run: cargo test --verbose --workspace --doc
 
-      # Run examples only once (non-AVX2) to avoid duplicating heavy builds.
+      - name: Disk usage (after)
+        if: always()
+        run: |
+          set -eux
+          df -h
+          du -sh target || true
+          du -sh ~/.cargo/registry ~/.cargo/git || true
+
+  simple_examples:
+    name: Simple Examples
+    runs-on: ubuntu-latest
+    if: "! contains(toJSON(github.event.commits.*.message), '[skip-ci]')"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        id: rs-stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: examples
+          cache-on-failure: true
+
+      - name: Disk usage (before)
+        run: |
+          set -eux
+          df -h
+          du -sh target || true
+          du -sh ~/.cargo/registry ~/.cargo/git || true
+
       - name: Run examples
-        if: ${{ !matrix.features }}
         run: |
           cargo run --package p3-circuit-prover --example fibonacci
           cargo run --package p3-circuit-prover --example poseidon2_perm_chain
           cargo run --package p3-circuit-prover --example poseidon2_perm_merkle
-          cargo run --release --features parallel --example recursive_aggregation -- --field koala-bear --num-recursive-layers 2
-          cargo run --release --features parallel --example recursive_fibonacci -- --field goldilocks --num-recursive-layers 2
-          cargo run --release --features parallel --example recursive_keccak -- --field baby-bear -n 10 --num-recursive-layers 2
 
       - name: Run allocation_log example with debugging feature and debug logging
-        if: ${{ !matrix.features }}
         env:
           RUST_LOG: debug
         run: cargo run --package p3-circuit --example allocation_log --features debugging
 
+      - name: Disk usage (after)
+        if: always()
+        run: |
+          set -eux
+          df -h
+          du -sh target || true
+          du -sh ~/.cargo/registry ~/.cargo/git || true
+
+  recursive_examples:
+    name: Recursive Examples
+    runs-on: ubuntu-latest
+    if: "! contains(toJSON(github.event.commits.*.message), '[skip-ci]')"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        id: rs-stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: recursive-examples
+          cache-on-failure: true
+
+      - name: Disk usage (before)
+        run: |
+          set -eux
+          df -h
+          du -sh target || true
+          du -sh ~/.cargo/registry ~/.cargo/git || true
+
+      - name: Run recursive examples
+        run: |
+          cargo run --release --features parallel --example recursive_aggregation -- --field koala-bear --num-recursive-layers 2
+          cargo run --release --features parallel --example recursive_fibonacci -- --field goldilocks --num-recursive-layers 2
+          cargo run --release --features parallel --example recursive_keccak -- --field baby-bear -n 10 --num-recursive-layers 2
+
+      - name: Disk usage (after)
+        if: always()
+        run: |
+          set -eux
+          df -h
+          du -sh target || true
+          du -sh ~/.cargo/registry ~/.cargo/git || true
+
+  benchmarks:
+    name: Benchmarks
+    runs-on: ubuntu-latest
+    if: "! contains(toJSON(github.event.commits.*.message), '[skip-ci]')"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        id: rs-stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: benchmarks
+          cache-on-failure: true
+
+      - name: Disk usage (before)
+        run: |
+          set -eux
+          df -h
+          du -sh target || true
+          du -sh ~/.cargo/registry ~/.cargo/git || true
+
       - name: Build benchmarks without running
-        if: ${{ !matrix.features }}
         run: cargo bench --no-run --workspace
 
       - name: Disk usage (after)
