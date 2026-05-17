@@ -256,6 +256,9 @@ cargo run --release --example recursive_fibonacci -- --field koala-bear --n 1000
 # 2-to-1 aggregation (binary tree of proofs)
 cargo run --release --example recursive_aggregation -- --field koala-bear
 </code></pre>
+<p>Each example also accepts <code>--quintic</code> (KoalaBear only) and
+<code>--hash &lt;poseidon2|poseidon1&gt;</code> (default <code>poseidon2</code>), e.g.
+<code>--field baby-bear --hash poseidon1</code>.</p>
 <p>Add <code>--features parallel</code> and <code>RUSTFLAGS="-Ctarget-cpu=native"</code> for production-level performance.</p>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="examples"><a class="header" href="#examples">Examples</a></h1>
@@ -301,6 +304,17 @@ cargo run --release --example recursive_aggregation -- --field koala-bear
 <pre><code class="language-bash"># 4 base proofs, 2 aggregation levels
 cargo run --release --example recursive_aggregation -- \
     --field koala-bear --num-recursive-layers 2
+</code></pre>
+<h2 id="common-cli-flags"><a class="header" href="#common-cli-flags">Common CLI flags</a></h2>
+<p>All three examples accept the same selectors for the recursive verifier's field and hash:</p>
+<ul>
+<li><code>--field &lt;koala-bear|baby-bear|goldilocks&gt;</code> — base field (default <code>koala-bear</code>).</li>
+<li><code>--quintic</code> — use the quintic (<code>D = 5</code>) challenge extension (KoalaBear only).</li>
+<li><code>--hash &lt;poseidon2|poseidon1&gt;</code> — permutation backing the Fiat-Shamir
+challenger and MMCS (default <code>poseidon2</code>).</li>
+</ul>
+<pre><code class="language-bash">cargo run --release --example recursive_fibonacci -- \
+    --field baby-bear --hash poseidon1 --n 10000 --num-recursive-layers 3
 </code></pre>
 <h2 id="common-patterns-across-examples"><a class="header" href="#common-patterns-across-examples">Common patterns across examples</a></h2>
 <p>All three examples share the same setup pattern:</p>

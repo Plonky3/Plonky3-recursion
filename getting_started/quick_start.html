@@ -230,6 +230,9 @@ cargo run --release --example recursive_fibonacci -- --field koala-bear --n 1000
 # 2-to-1 aggregation (binary tree of proofs)
 cargo run --release --example recursive_aggregation -- --field koala-bear
 </code></pre>
+<p>Each example also accepts <code>--quintic</code> (KoalaBear only) and
+<code>--hash &lt;poseidon2|poseidon1&gt;</code> (default <code>poseidon2</code>), e.g.
+<code>--field baby-bear --hash poseidon1</code>.</p>
 <p>Add <code>--features parallel</code> and <code>RUSTFLAGS="-Ctarget-cpu=native"</code> for production-level performance.</p>
 
                     </main>
