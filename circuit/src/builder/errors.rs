@@ -61,6 +61,18 @@ pub enum CircuitBuilderError {
     #[error("Poseidon2 config mismatch: expected {expected}, got {got}")]
     Poseidon2ConfigMismatch { expected: String, got: String },
 
+    /// Merkle-path Poseidon1 rows require a direction bit.
+    #[error("Poseidon1Perm merkle_path=true requires mmcs_bit")]
+    Poseidon1MerkleMissingMmcsBit,
+
+    /// Non-merkle Poseidon1 rows should not have mmcs_bit set.
+    #[error("Poseidon1Perm merkle_path=false must not have mmcs_bit (it has no effect)")]
+    Poseidon1NonMerkleWithMmcsBit,
+
+    /// Poseidon1 configuration mismatch.
+    #[error("Poseidon1 config mismatch: expected {expected}, got {got}")]
+    Poseidon1ConfigMismatch { expected: String, got: String },
+
     /// Requested bit length exceeds the maximum allowed for binary decomposition.
     #[error("Too many bits for binary decomposition: expected at most {expected}, got {n_bits}")]
     BinaryDecompositionTooManyBits { expected: usize, n_bits: usize },

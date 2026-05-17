@@ -665,7 +665,7 @@ fn run_fri_test_with_mmcs(setup: FriSetup) {
         &index_bits_t_per_query,
         &commitments_with_opening_points_targets,
         log_blowup,
-        Some(Poseidon2Config::BABY_BEAR_D4_W16),
+        Some(Poseidon2Config::BABY_BEAR_D4_W16.into()),
     )
     .unwrap();
 

@@ -3,9 +3,7 @@ use alloc::vec::Vec;
 use core::cmp::{Reverse, min};
 
 use itertools::Itertools;
-use p3_circuit::ops::{
-    NpoPrivateData, Poseidon2Config, Poseidon2PermCall, Poseidon2PermPrivateData,
-};
+use p3_circuit::ops::{PermCall, PermConfig, perm_private_data};
 use p3_circuit::{CircuitBuilder, CircuitBuilderError, CircuitRunner, NonPrimitiveOpId};
 use p3_commit::{BatchOpening, Mmcs, OpenedValues};
 use p3_field::{BasedVectorSpace, ExtensionField, Field, PrimeField64, TwoAdicField};
@@ -39,7 +37,7 @@ use crate::Target;
 ///   bus without a creator. The recomposed value is identical either way.
 fn add_hash_base_coeffs_overwrite<F, EF>(
     circuit: &mut CircuitBuilder<EF>,
-    permutation_config: &Poseidon2Config,
+    permutation_config: &PermConfig,
     base_coeffs: &[Target],
     reset: bool,
     alu_recompose: bool,
@@ -137,16 +135,18 @@ where
         }
 
         // Add permutation
-        let (_, maybe_outputs) = circuit.add_poseidon2_perm(&Poseidon2PermCall {
-            config: *permutation_config,
-            new_start: if is_first { reset } else { false },
-            merkle_path: false,
-            mmcs_bit: None,
-            inputs,
-            out_ctl: vec![true; rate_ext],
-            return_all_outputs: false,
-            mmcs_index_sum: None,
-        })?;
+        let (_, maybe_outputs) = circuit.add_perm(
+            *permutation_config,
+            &PermCall {
+                new_start: if is_first { reset } else { false },
+                merkle_path: false,
+                mmcs_bit: None,
+                inputs,
+                out_ctl: vec![true; rate_ext],
+                return_all_outputs: false,
+                mmcs_index_sum: None,
+            },
+        )?;
 
         if !is_last {
             last_rate_outputs = Some(
@@ -177,7 +177,7 @@ where
 /// element came from `recompose_base_coeffs_to_ext` in the same circuit (see circuit builder).
 fn add_hash_extension_elements<F, EF>(
     circuit: &mut CircuitBuilder<EF>,
-    permutation_config: &Poseidon2Config,
+    permutation_config: &PermConfig,
     ext_elements: &[Target],
     reset: bool,
 ) -> Result<Vec<Target>, CircuitBuilderError>
@@ -234,16 +234,18 @@ where
             });
         }
 
-        let (_, maybe_outputs) = circuit.add_poseidon2_perm(&Poseidon2PermCall {
-            config: *permutation_config,
-            new_start: is_first && reset,
-            merkle_path: false,
-            mmcs_bit: None,
-            inputs,
-            out_ctl: vec![true; rate_ext],
-            return_all_outputs: false,
-            mmcs_index_sum: None,
-        })?;
+        let (_, maybe_outputs) = circuit.add_perm(
+            *permutation_config,
+            &PermCall {
+                new_start: is_first && reset,
+                merkle_path: false,
+                mmcs_bit: None,
+                inputs,
+                out_ctl: vec![true; rate_ext],
+                return_all_outputs: false,
+                mmcs_index_sum: None,
+            },
+        )?;
 
         if chunk.len() == rate_ext {
             last_rate_outputs = Some(
@@ -297,7 +299,7 @@ where
 ///   non-hiding `MerkleTreeMmcs`.
 pub fn verify_batch_circuit<F, EF>(
     circuit: &mut CircuitBuilder<EF>,
-    permutation_config: Poseidon2Config,
+    permutation_config: impl Into<PermConfig>,
     commitment_cap: &[Vec<Target>],
     dimensions: &[Dimensions],
     index_bits: &[Target],
@@ -308,6 +310,7 @@ where
     F: Field + TwoAdicField + PrimeField64,
     EF: ExtensionField<F>,
 {
+    let permutation_config: PermConfig = permutation_config.into();
     if dimensions.len() != opened_base_coeffs.len() {
         return Err(CircuitBuilderError::WrongBatchSize {
             expected: dimensions.len(),
@@ -410,7 +413,7 @@ where
 /// `None` keeps the non-hiding extension-element hashing path.
 pub fn verify_batch_circuit_from_extension_opened<F, EF>(
     circuit: &mut CircuitBuilder<EF>,
-    permutation_config: Poseidon2Config,
+    permutation_config: impl Into<PermConfig>,
     commitment_cap: &[Vec<Target>],
     dimensions: &[Dimensions],
     index_bits: &[Target],
@@ -421,6 +424,7 @@ where
     F: Field + TwoAdicField + PrimeField64,
     EF: ExtensionField<F>,
 {
+    let permutation_config: PermConfig = permutation_config.into();
     if dimensions.len() != opened_extension_values.len() {
         return Err(CircuitBuilderError::WrongBatchSize {
             expected: dimensions.len(),
@@ -623,6 +627,7 @@ pub fn set_fri_mmcs_private_data<F, EF, FriMmcs, InputMmcs, H, C, const DIGEST_E
     runner: &mut CircuitRunner<'_, EF>,
     op_ids: &[NonPrimitiveOpId],
     fri_proof: &FriProof<EF, FriMmcs, F, Vec<BatchOpening<F, InputMmcs>>>,
+    permutation_config: impl Into<PermConfig>,
 ) -> Result<(), &'static str>
 where
     F: Field,
@@ -636,6 +641,7 @@ where
         + PseudoCompressionFunction<[F::Packing; DIGEST_ELEMS], 2>
         + Sync,
 {
+    let permutation_config: PermConfig = permutation_config.into();
     let mut op_idx = 0;
 
     for query_proof in &fri_proof.query_proofs {
@@ -651,7 +657,7 @@ where
                 runner
                     .set_private_data(
                         op_ids[op_idx],
-                        NpoPrivateData::new(Poseidon2PermPrivateData { sibling }),
+                        perm_private_data(permutation_config, sibling),
                     )
                     .map_err(|_| "Failed to set private data for input batch MMCS")?;
                 op_idx += 1;
@@ -670,7 +676,7 @@ where
                 runner
                     .set_private_data(
                         op_ids[op_idx],
-                        NpoPrivateData::new(Poseidon2PermPrivateData { sibling }),
+                        perm_private_data(permutation_config, sibling),
                     )
                     .map_err(|_| "Failed to set private data for commit-phase MMCS")?;
                 op_idx += 1;
@@ -705,6 +711,7 @@ pub fn set_hiding_fri_mmcs_private_data<
     runner: &mut CircuitRunner<'_, EF>,
     op_ids: &[NonPrimitiveOpId],
     fri_proof: &HidingFriProof<F, EF, FriMmcs, InputMmcs>,
+    permutation_config: impl Into<PermConfig>,
 ) -> Result<(), &'static str>
 where
     F: Field,
@@ -722,6 +729,7 @@ where
         runner,
         op_ids,
         &fri_proof.1,
+        permutation_config,
     )
 }
 
@@ -740,6 +748,7 @@ pub fn set_salted_fri_mmcs_private_data<F, EF, FriMmcs, InputMmcs, const DIGEST_
     runner: &mut CircuitRunner<'_, EF>,
     op_ids: &[NonPrimitiveOpId],
     fri_proof: &FriProof<EF, FriMmcs, F, Vec<BatchOpening<F, InputMmcs>>>,
+    permutation_config: impl Into<PermConfig>,
 ) -> Result<(), &'static str>
 where
     F: Field,
@@ -747,6 +756,7 @@ where
     FriMmcs: Mmcs<EF, Proof = SaltedMmcsProof<F, DIGEST_ELEMS>>,
     InputMmcs: Mmcs<F, Proof = SaltedMmcsProof<F, DIGEST_ELEMS>>,
 {
+    let permutation_config: PermConfig = permutation_config.into();
     let mut op_idx = 0;
 
     for query_proof in &fri_proof.query_proofs {
@@ -762,7 +772,7 @@ where
                 runner
                     .set_private_data(
                         op_ids[op_idx],
-                        NpoPrivateData::new(Poseidon2PermPrivateData { sibling }),
+                        perm_private_data(permutation_config, sibling),
                     )
                     .map_err(|_| "Failed to set private data for input batch MMCS")?;
                 op_idx += 1;
@@ -781,7 +791,7 @@ where
                 runner
                     .set_private_data(
                         op_ids[op_idx],
-                        NpoPrivateData::new(Poseidon2PermPrivateData { sibling }),
+                        perm_private_data(permutation_config, sibling),
                     )
                     .map_err(|_| "Failed to set private data for commit-phase MMCS")?;
                 op_idx += 1;
@@ -809,6 +819,7 @@ pub fn set_hiding_salted_fri_mmcs_private_data<
     runner: &mut CircuitRunner<'_, EF>,
     op_ids: &[NonPrimitiveOpId],
     fri_proof: &HidingFriProof<F, EF, FriMmcs, InputMmcs>,
+    permutation_config: impl Into<PermConfig>,
 ) -> Result<(), &'static str>
 where
     F: Field,
@@ -820,6 +831,7 @@ where
         runner,
         op_ids,
         &fri_proof.1,
+        permutation_config,
     )
 }
 
@@ -829,7 +841,7 @@ mod test {
     use alloc::vec::Vec;
 
     use p3_circuit::ops::mmcs::format_openings;
-    use p3_circuit::ops::{generate_poseidon2_trace, generate_recompose_trace};
+    use p3_circuit::ops::{Poseidon2Config, generate_poseidon2_trace, generate_recompose_trace};
     use p3_matrix::Matrix;
     use p3_matrix::dense::{DenseMatrix, RowMajorMatrix};
     use p3_poseidon2_circuit_air::KoalaBearD4Width16;
@@ -848,7 +860,8 @@ mod test {
     type F = KoalaBear;
     type CF = BinomialExtensionField<F, 4>;
 
-    fn base_digest_to_ext(digest: &[F], permutation_config: Poseidon2Config) -> Vec<CF> {
+    fn base_digest_to_ext(digest: &[F], permutation_config: impl Into<PermConfig>) -> Vec<CF> {
+        let permutation_config: PermConfig = permutation_config.into();
         assert_eq!(
             digest.len(),
             permutation_config.rate(),
@@ -971,10 +984,7 @@ mod test {
 
             for (&op_id, sibling) in permutation_mmcs_ops.iter().zip(siblings) {
                 runner
-                    .set_private_data(
-                        op_id,
-                        NpoPrivateData::new(Poseidon2PermPrivateData { sibling }),
-                    )
+                    .set_private_data(op_id, perm_private_data(permutation_config, sibling))
                     .unwrap();
             }
 
@@ -1264,10 +1274,7 @@ mod test {
 
         for (&op_id, sibling) in permutation_mmcs_ops.iter().zip(siblings) {
             runner
-                .set_private_data(
-                    op_id,
-                    NpoPrivateData::new(Poseidon2PermPrivateData { sibling }),
-                )
+                .set_private_data(op_id, perm_private_data(permutation_config, sibling))
                 .unwrap();
         }
 
@@ -1489,10 +1496,7 @@ mod test {
 
             for (&op_id, sibling) in _permutation_mmcs_ops.iter().zip(siblings) {
                 runner
-                    .set_private_data(
-                        op_id,
-                        NpoPrivateData::new(Poseidon2PermPrivateData { sibling }),
-                    )
+                    .set_private_data(op_id, perm_private_data(permutation_config, sibling))
                     .unwrap();
             }
 
@@ -1645,10 +1649,7 @@ mod test {
 
             for (&op_id, sibling) in permutation_mmcs_ops.iter().zip(siblings) {
                 runner
-                    .set_private_data(
-                        op_id,
-                        NpoPrivateData::new(Poseidon2PermPrivateData { sibling }),
-                    )
+                    .set_private_data(op_id, perm_private_data(permutation_config, sibling))
                     .unwrap();
             }
 

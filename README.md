@@ -170,6 +170,11 @@ All examples use the unified API (`prove_next_layer`, `RecursionInput`, `FriRecu
   cargo run --profile optimized --example recursive_aggregation -- --field koala-bear --num-recursive-layers 4
   ```
 
+All three examples take `--field <koala-bear|baby-bear|goldilocks>`, `--quintic` (KoalaBear only), and `--hash <poseidon2|poseidon1>` (default `poseidon2`):
+```bash
+cargo run --profile optimized --example recursive_fibonacci -- --field baby-bear --hash poseidon1 --n 1000
+```
+
 ## API Overview
 
 ### Circuit Builder

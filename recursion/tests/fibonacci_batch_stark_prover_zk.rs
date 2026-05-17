@@ -192,6 +192,7 @@ fn test_batch_verifier_zk_hiding_fri() -> Result<(), VerificationError> {
             &mut verification_runner,
             &mmcs_op_ids,
             &batch_stark_proof.opening_proof.1,
+            Poseidon2Config::KOALA_BEAR_D4_W16,
         )
         .expect("Failed to set MMCS private data for ZK proof");
     }

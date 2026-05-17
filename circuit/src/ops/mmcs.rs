@@ -8,7 +8,7 @@ use p3_field::{Dup, Field};
 use p3_matrix::Dimensions;
 
 use crate::builder::{CircuitBuilder, CircuitBuilderError};
-use crate::ops::{NpoTypeId, Poseidon2Config, Poseidon2PermCall};
+use crate::ops::{PermCall, PermConfig};
 use crate::types::ExprId;
 use crate::{CircuitError, NonPrimitiveOpId};
 
@@ -20,11 +20,12 @@ pub fn format_openings<T: Dup + alloc::fmt::Debug>(
     openings: &[Vec<T>],
     dimensions: &[Dimensions],
     max_height_log: usize,
-    permutation_config: Poseidon2Config,
+    permutation_config: impl Into<PermConfig>,
 ) -> Result<Vec<Vec<T>>, CircuitError> {
+    let permutation_config: PermConfig = permutation_config.into();
     if openings.len() > 1 << max_height_log {
         return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
-            op: NpoTypeId::poseidon2_perm(permutation_config),
+            op: permutation_config.npo_type_id(),
             expected: format!("at most {}", max_height_log),
             got: openings.len(),
         });
@@ -79,11 +80,12 @@ impl<F: Field> CircuitBuilder<F> {
     /// where matrices at the cap level are injected after the final proof sibling.
     pub fn add_mmcs_verify(
         &mut self,
-        permutation_config: Poseidon2Config,
+        permutation_config: impl Into<PermConfig>,
         openings_expr: &[Vec<ExprId>],
         directions_expr: &[ExprId],
         root_expr: &[ExprId],
     ) -> Result<Vec<NonPrimitiveOpId>, CircuitBuilderError> {
+        let permutation_config: PermConfig = permutation_config.into();
         let width_ext = permutation_config.width_ext();
         let rate_ext = permutation_config.rate_ext();
         let mut op_ids = Vec::with_capacity(openings_expr.len());
@@ -105,16 +107,18 @@ impl<F: Field> CircuitBuilder<F> {
                 for (j, &d) in row_digest.iter().take(rate_ext).enumerate() {
                     inputs[rate_ext + j] = Some(d);
                 }
-                let _ = self.add_poseidon2_perm(&Poseidon2PermCall {
-                    config: permutation_config,
-                    new_start: false,
-                    merkle_path: true,
-                    mmcs_bit: Some(zero),
-                    inputs,
-                    out_ctl: vec![false; rate_ext],
-                    return_all_outputs: false,
-                    mmcs_index_sum: None,
-                })?;
+                let _ = self.add_perm(
+                    permutation_config,
+                    &PermCall {
+                        new_start: false,
+                        merkle_path: true,
+                        mmcs_bit: Some(zero),
+                        inputs,
+                        out_ctl: vec![false; rate_ext],
+                        return_all_outputs: false,
+                        mmcs_index_sum: None,
+                    },
+                )?;
             }
 
             let mut inputs = vec![None; width_ext];
@@ -123,16 +127,18 @@ impl<F: Field> CircuitBuilder<F> {
                     inputs[j] = Some(d);
                 }
             }
-            let (op_id, maybe_output) = self.add_poseidon2_perm(&Poseidon2PermCall {
-                config: permutation_config,
-                new_start: is_first,
-                merkle_path: true,
-                mmcs_bit: Some(*direction),
-                inputs,
-                out_ctl: vec![is_final; rate_ext],
-                return_all_outputs: false,
-                mmcs_index_sum: None,
-            })?;
+            let (op_id, maybe_output) = self.add_perm(
+                permutation_config,
+                &PermCall {
+                    new_start: is_first,
+                    merkle_path: true,
+                    mmcs_bit: Some(*direction),
+                    inputs,
+                    out_ctl: vec![is_final; rate_ext],
+                    return_all_outputs: false,
+                    mmcs_index_sum: None,
+                },
+            )?;
             op_ids.push(op_id);
             output = maybe_output;
         }
@@ -143,16 +149,18 @@ impl<F: Field> CircuitBuilder<F> {
             for (j, &t) in tail.iter().take(rate_ext).enumerate() {
                 inputs[rate_ext + j] = Some(t);
             }
-            let (_, tail_output) = self.add_poseidon2_perm(&Poseidon2PermCall {
-                config: permutation_config,
-                new_start: false,
-                merkle_path: true,
-                mmcs_bit: Some(zero),
-                inputs,
-                out_ctl: vec![true; rate_ext],
-                return_all_outputs: false,
-                mmcs_index_sum: None,
-            })?;
+            let (_, tail_output) = self.add_perm(
+                permutation_config,
+                &PermCall {
+                    new_start: false,
+                    merkle_path: true,
+                    mmcs_bit: Some(zero),
+                    inputs,
+                    out_ctl: vec![true; rate_ext],
+                    return_all_outputs: false,
+                    mmcs_index_sum: None,
+                },
+            )?;
             output = tail_output;
         }
 

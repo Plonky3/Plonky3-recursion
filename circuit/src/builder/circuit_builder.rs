@@ -19,12 +19,16 @@ use super::compiler::{ExpressionLowerer, LoweringResult, Optimizer};
 use super::npo::{NonPrimitiveOpParams, NonPrimitiveOperationData, NpoCircuitPlugin};
 use super::{BuilderConfig, ExpressionBuilder, PublicInputTracker};
 use crate::circuit::Circuit;
+use crate::ops::poseidon1_perm::{
+    Poseidon1CircuitPlugin, Poseidon1PermCallBase, Poseidon1PermExec,
+};
 use crate::ops::poseidon2_perm::{
     Poseidon2CircuitPlugin, Poseidon2PermCallBase, Poseidon2PermExec,
 };
 use crate::ops::recompose::RecomposeCircuitPlugin;
 use crate::ops::{
-    HintExecutor, NpoConfig, NpoRegistry, NpoTypeId, Poseidon2Params, Poseidon2PermCall,
+    HintExecutor, NpoConfig, NpoRegistry, NpoTypeId, Poseidon1Params, Poseidon1PermCall,
+    Poseidon2Params, Poseidon2PermCall,
 };
 use crate::tables::TraceGeneratorFn;
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};
@@ -269,6 +273,115 @@ where
         });
 
         let plugin = Poseidon2CircuitPlugin::new(Config::CONFIG, exec, trace_generator);
+        self.register_npo(plugin);
+    }
+
+    /// Enables Poseidon1 permutation operations (one perm per table row).
+    pub fn enable_poseidon1_perm<Config, P>(
+        &mut self,
+        trace_generator: TraceGeneratorFn<F>,
+        perm: P,
+    ) where
+        Config: Poseidon1Params,
+        F: Field + ExtensionField<Config::BaseField>,
+        P: Permutation<[Config::BaseField; 16]> + Clone + Send + Sync + 'static,
+    {
+        let d = Config::D;
+        let width_ext = Config::WIDTH_EXT;
+        let width = Config::WIDTH;
+        let exec: Poseidon1PermExec<F> = Arc::new(move |input: &[F]| {
+            let mut base_input = vec![Config::BaseField::ZERO; width];
+            for (i, ext_elem) in input.iter().enumerate() {
+                let coeffs = ext_elem.as_basis_coefficients_slice();
+                base_input[i * d..(i + 1) * d].copy_from_slice(coeffs);
+            }
+            let base_output = perm.permute(
+                base_input
+                    .try_into()
+                    .expect("base_input length must equal WIDTH"),
+            );
+            let mut output = Vec::with_capacity(width_ext);
+            for i in 0..width_ext {
+                let coeffs = &base_output[i * d..(i + 1) * d];
+                output.push(
+                    F::from_basis_coefficients_slice(coeffs)
+                        .expect("basis coefficients should be valid"),
+                );
+            }
+            output
+        });
+
+        let plugin = Poseidon1CircuitPlugin::new(Config::CONFIG, exec, trace_generator);
+        self.register_npo(plugin);
+    }
+
+    /// Enables Poseidon1 for configs with WIDTH=8 (e.g. Goldilocks).
+    pub fn enable_poseidon1_perm_width_8<Config, P>(
+        &mut self,
+        trace_generator: TraceGeneratorFn<F>,
+        perm: P,
+    ) where
+        Config: Poseidon1Params,
+        F: Field + ExtensionField<Config::BaseField>,
+        P: Permutation<[Config::BaseField; 8]> + Clone + Send + Sync + 'static,
+    {
+        assert!(
+            Config::WIDTH == 8,
+            "enable_poseidon1_perm_width_8 requires WIDTH=8"
+        );
+        let d = Config::D;
+        let width_ext = Config::WIDTH_EXT;
+        let exec: Poseidon1PermExec<F> = Arc::new(move |input: &[F]| {
+            let mut base_input = vec![Config::BaseField::ZERO; 8];
+            for (i, ext_elem) in input.iter().enumerate() {
+                let coeffs = ext_elem.as_basis_coefficients_slice();
+                base_input[i * d..(i + 1) * d].copy_from_slice(coeffs);
+            }
+            let base_output = perm.permute(
+                base_input
+                    .try_into()
+                    .expect("base_input length must equal 8"),
+            );
+            let mut output = Vec::with_capacity(width_ext);
+            for i in 0..width_ext {
+                let coeffs = &base_output[i * d..(i + 1) * d];
+                output.push(
+                    F::from_basis_coefficients_slice(coeffs)
+                        .expect("basis coefficients should be valid"),
+                );
+            }
+            output
+        });
+        let plugin = Poseidon1CircuitPlugin::new(Config::CONFIG, exec, trace_generator);
+        self.register_npo(plugin);
+    }
+
+    /// Enables the Poseidon1 permutation operation for base field challenges (D=1).
+    pub fn enable_poseidon1_perm_base<Config, P>(
+        &mut self,
+        trace_generator: TraceGeneratorFn<F>,
+        perm: P,
+    ) where
+        Config: Poseidon1Params,
+        F: Field,
+        P: Permutation<[F; 16]> + Clone + Send + Sync + 'static,
+    {
+        assert!(
+            Config::D == 1,
+            "enable_poseidon1_perm_base only supports extension degree D=1"
+        );
+        assert!(
+            Config::WIDTH == 16,
+            "enable_poseidon1_perm_base only supports WIDTH=16"
+        );
+
+        // For D=1, the exec closure converts slice to/from [F; 16]
+        let exec: Poseidon1PermExec<F> = Arc::new(move |input: &[F]| {
+            let arr: [F; 16] = input.try_into().expect("D=1 input must have 16 elements");
+            perm.permute(arr).to_vec()
+        });
+
+        let plugin = Poseidon1CircuitPlugin::new(Config::CONFIG, exec, trace_generator);
         self.register_npo(plugin);
     }
 
@@ -1473,6 +1586,58 @@ where
 
         // Rate outputs (0-7) are CTL-verified; capacity outputs (8-15) are chained.
         let (_op_id, outputs) = self.add_poseidon2_perm_base(&Poseidon2PermCallBase {
+            config,
+            new_start,
+            inputs,
+            out_ctl: [true; 8],
+            return_all_outputs: true,
+        })?;
+
+        let output_exprs: [ExprId; 16] =
+            core::array::from_fn(|i| outputs[i].expect("output should exist"));
+
+        self.pop_scope();
+        Ok(output_exprs)
+    }
+
+    /// Poseidon1 challenger permutation (extension field, D>=2).
+    pub fn add_poseidon1_perm_for_challenger(
+        &mut self,
+        config: crate::ops::Poseidon1Config,
+        inputs: &[ExprId],
+    ) -> Result<Vec<ExprId>, CircuitBuilderError> {
+        self.push_scope("poseidon1_perm_for_challenger");
+
+        let width_ext = config.width_ext();
+        let (_op_id, outputs) = self.add_poseidon1_perm(&Poseidon1PermCall {
+            config,
+            new_start: true,
+            merkle_path: false,
+            mmcs_bit: None,
+            inputs: inputs.iter().map(|&x| Some(x)).collect(),
+            out_ctl: vec![true; config.rate_ext()],
+            return_all_outputs: true,
+            mmcs_index_sum: None,
+        })?;
+
+        let output_exprs: Vec<ExprId> = (0..width_ext)
+            .map(|i| outputs[i].ok_or(CircuitBuilderError::MissingOutput))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        self.pop_scope();
+        Ok(output_exprs)
+    }
+
+    /// Poseidon1 challenger permutation (base field, D=1).
+    pub fn add_poseidon1_perm_for_challenger_base(
+        &mut self,
+        config: crate::ops::Poseidon1Config,
+        new_start: bool,
+        inputs: [Option<ExprId>; 16],
+    ) -> Result<[ExprId; 16], CircuitBuilderError> {
+        self.push_scope("poseidon1_perm_for_challenger_base");
+
+        let (_op_id, outputs) = self.add_poseidon1_perm_base(&Poseidon1PermCallBase {
             config,
             new_start,
             inputs,

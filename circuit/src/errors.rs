@@ -168,6 +168,12 @@ pub enum CircuitError {
     )]
     Poseidon2ChainMissingPreviousState { operation_index: NonPrimitiveOpId },
 
+    /// Poseidon1 chaining requires previous state but none was available.
+    #[error(
+        "Poseidon1 chain missing previous state for operation {operation_index} (new_start=false but no previous permutation)"
+    )]
+    Poseidon1ChainMissingPreviousState { operation_index: NonPrimitiveOpId },
+
     /// Poseidon2 merkle path mode requires a sibling input limb (which limbs are required depends on `mmcs_bit`).
     #[error(
         "Poseidon2 merkle path missing sibling input for operation {operation_index}, limb {limb}"

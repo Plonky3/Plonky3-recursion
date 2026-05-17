@@ -1,4 +1,4 @@
-use p3_circuit::ops::Poseidon2Config;
+use p3_circuit::ops::PermConfig;
 
 /// FRI verifier parameters (subset needed for verification).
 ///
@@ -14,29 +14,29 @@ pub struct FriVerifierParams {
     pub commit_pow_bits: usize,
     /// Number of query proof-of-work bits required
     pub query_pow_bits: usize,
-    /// Poseidon2 permutation configuration for MMCS verification.
+    /// Permutation configuration for MMCS verification (Poseidon1 or Poseidon2).
     /// When `Some`, recursive MMCS verification is performed.
     /// When `None`, only arithmetic verification is performed — this is
     /// **unsound** and only reachable via
     /// [`Self::unsafe_arithmetic_only_for_tests`].
-    pub permutation_config: Option<Poseidon2Config>,
+    pub permutation_config: Option<PermConfig>,
 }
 
 impl FriVerifierParams {
     /// Create params with MMCS verification enabled.
-    pub const fn with_mmcs(
+    pub fn with_mmcs(
         log_blowup: usize,
         log_final_poly_len: usize,
         commit_pow_bits: usize,
         query_pow_bits: usize,
-        permutation_config: Poseidon2Config,
+        permutation_config: impl Into<PermConfig>,
     ) -> Self {
         Self {
             log_blowup,
             log_final_poly_len,
             commit_pow_bits,
             query_pow_bits,
-            permutation_config: Some(permutation_config),
+            permutation_config: Some(permutation_config.into()),
         }
     }
 
@@ -77,12 +77,16 @@ mod tests {
 
     use super::*;
 
+    fn p2() -> PermConfig {
+        PermConfig::poseidon2(Poseidon2Config::KOALA_BEAR_D4_W16)
+    }
+
     /// The only safe constructor must always produce MMCS-enabled params, so a
     /// production verifier builder cannot accidentally skip commitment opening
     /// checks.
     #[test]
     fn with_mmcs_always_enables_mmcs_verification() {
-        let params = FriVerifierParams::with_mmcs(1, 0, 0, 0, Poseidon2Config::KOALA_BEAR_D4_W16);
+        let params = FriVerifierParams::with_mmcs(1, 0, 0, 0, p2());
         assert!(
             params.permutation_config.is_some(),
             "with_mmcs must enable MMCS verification"

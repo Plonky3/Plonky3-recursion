@@ -62,6 +62,20 @@ cargo run --release --example recursive_aggregation -- \
     --field koala-bear --num-recursive-layers 2
 ```
 
+## Common CLI flags
+
+All three examples accept the same selectors for the recursive verifier's field and hash:
+
+- `--field <koala-bear|baby-bear|goldilocks>` — base field (default `koala-bear`).
+- `--quintic` — use the quintic (`D = 5`) challenge extension (KoalaBear only).
+- `--hash <poseidon2|poseidon1>` — permutation backing the Fiat-Shamir
+  challenger and MMCS (default `poseidon2`).
+
+```bash
+cargo run --release --example recursive_fibonacci -- \
+    --field baby-bear --hash poseidon1 --n 10000 --num-recursive-layers 3
+```
+
 ## Common patterns across examples
 
 All three examples share the same setup pattern:

@@ -4,6 +4,7 @@ resolver = "2"
 members = [
     "circuit",
     "circuit-prover",
+    "poseidon1-circuit-air",
     "poseidon2-circuit-air",
     "recursion",
     "test-utils",
@@ -60,6 +61,9 @@ p3-lookup = { git = "https://github.com/Plonky3/Plonky3", rev = "56952503e1401a6
 p3-matrix = { git = "https://github.com/Plonky3/Plonky3", rev = "56952503e1401a62982ceaf952c5e4a829b61803" }
 p3-maybe-rayon = { git = "https://github.com/Plonky3/Plonky3", rev = "56952503e1401a62982ceaf952c5e4a829b61803" }
 p3-merkle-tree = { git = "https://github.com/Plonky3/Plonky3", rev = "56952503e1401a62982ceaf952c5e4a829b61803" }
+p3-monty-31 = { git = "https://github.com/Plonky3/Plonky3", rev = "56952503e1401a62982ceaf952c5e4a829b61803" }
+p3-poseidon1 = { git = "https://github.com/Plonky3/Plonky3", rev = "56952503e1401a62982ceaf952c5e4a829b61803" }
+p3-poseidon1-air = { git = "https://github.com/Plonky3/Plonky3", rev = "56952503e1401a62982ceaf952c5e4a829b61803" }
 p3-poseidon2 = { git = "https://github.com/Plonky3/Plonky3", rev = "56952503e1401a62982ceaf952c5e4a829b61803" }
 p3-poseidon2-air = { git = "https://github.com/Plonky3/Plonky3", rev = "56952503e1401a62982ceaf952c5e4a829b61803" }
 p3-symmetric = { git = "https://github.com/Plonky3/Plonky3", rev = "56952503e1401a62982ceaf952c5e4a829b61803" }
@@ -85,6 +89,7 @@ unroll = { version = "0.1.5", default-features = false }
 p3-challenger-air = { path = "challenger-air", version = "0.1.0" }
 p3-circuit = { path = "circuit", version = "0.1.0" }
 p3-circuit-prover = { path = "circuit-prover", version = "0.1.0" }
+p3-poseidon1-circuit-air = { path = "poseidon1-circuit-air", version = "0.1.0" }
 p3-poseidon2-circuit-air = { path = "poseidon2-circuit-air", version = "0.1.0" }
 p3-recursion = { path = "recursion", version = "0.1.0" }
 p3-test-utils = { path = "test-utils", version = "0.1.0" }

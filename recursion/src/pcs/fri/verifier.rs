@@ -8,7 +8,7 @@ use alloc::{format, vec};
 use core::iter;
 
 use hashbrown::HashMap;
-use p3_circuit::ops::Poseidon2Config;
+use p3_circuit::ops::PermConfig;
 use p3_circuit::{CircuitBuilder, NonPrimitiveOpId};
 use p3_field::coset::TwoAdicMultiplicativeCoset;
 use p3_field::{BasedVectorSpace, ExtensionField, Field, PrimeField64, TwoAdicField};
@@ -80,7 +80,7 @@ where
 /// packed, so each row has `rate_ext` targets matching the D=1 per-base MMCS hash path.
 fn commitment_cap_rows_from_lifted<F, EF>(
     builder: &mut CircuitBuilder<EF>,
-    perm_config: Poseidon2Config,
+    perm_config: PermConfig,
     lifted: &[Target],
 ) -> Vec<Vec<Target>>
 where
@@ -1068,7 +1068,7 @@ fn open_input<F, EF, Comm>(
     commitments_with_opening_points: &ComsWithOpeningsTargets<Comm, TwoAdicMultiplicativeCoset<F>>,
     batch_opened_values: &[Vec<Vec<Target>>], // Per batch -> per matrix -> per column
     batch_salts: &[Vec<Vec<Target>>],         // Per batch -> per matrix -> salt (hiding MMCS)
-    permutation_config: Option<Poseidon2Config>,
+    permutation_config: Option<PermConfig>,
     pre_packed_input_caps: Option<&[Vec<Vec<Target>>]>,
 ) -> Result<(Vec<(usize, Target)>, Vec<NonPrimitiveOpId>), VerificationError>
 where
@@ -1359,7 +1359,7 @@ pub fn verify_fri_circuit<F, EF, RecMmcs, Inner, Witness, Comm>(
     index_bits_per_query: &[Vec<Target>],
     commitments_with_opening_points: &ComsWithOpeningsTargets<Comm, TwoAdicMultiplicativeCoset<F>>,
     log_blowup: usize,
-    permutation_config: Option<Poseidon2Config>,
+    permutation_config: Option<PermConfig>,
 ) -> Result<Vec<NonPrimitiveOpId>, VerificationError>
 where
     F: Field + TwoAdicField + PrimeField64,

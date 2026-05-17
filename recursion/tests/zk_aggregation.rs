@@ -246,7 +246,12 @@ fn test_zk_aggregation() -> Result<(), VerificationError> {
             MyHash,
             MyCompress,
             DIGEST_ELEMS,
-        >(&mut runner, &left_op_ids, &left_data.proof.opening_proof.1)
+        >(
+            &mut runner,
+            &left_op_ids,
+            &left_data.proof.opening_proof.1,
+            Poseidon2Config::KOALA_BEAR_D4_W16,
+        )
         .map_err(|e| VerificationError::InvalidProofShape(e.to_string()))?;
     }
 
@@ -263,6 +268,7 @@ fn test_zk_aggregation() -> Result<(), VerificationError> {
             &mut runner,
             &right_op_ids,
             &right_data.proof.opening_proof.1,
+            Poseidon2Config::KOALA_BEAR_D4_W16,
         )
         .map_err(|e| VerificationError::InvalidProofShape(e.to_string()))?;
     }

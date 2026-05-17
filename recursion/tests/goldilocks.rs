@@ -131,7 +131,12 @@ fn test_goldilocks_fibonacci_verifier() -> Result<(), VerificationError> {
         MyHash,
         MyCompress,
         DIGEST_ELEMS,
-    >(&mut runner, &mmcs_op_ids, &proof.opening_proof)
+    >(
+        &mut runner,
+        &mmcs_op_ids,
+        &proof.opening_proof,
+        Poseidon2Config::GOLDILOCKS_D2_W8,
+    )
     .map_err(|e| VerificationError::InvalidProofShape(e.to_string()))?;
 
     runner.run().map_err(VerificationError::Circuit)?;

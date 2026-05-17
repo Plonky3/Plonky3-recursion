@@ -11,6 +11,7 @@ use hashbrown::HashMap;
 use serde::{Deserialize, Serialize};
 
 use super::executor::OpExecutionState;
+use super::poseidon1_perm::Poseidon1Config;
 use super::poseidon2_perm::Poseidon2Config;
 use crate::NpoCircuitPlugin;
 
@@ -35,6 +36,11 @@ impl NpoTypeId {
     /// Convenience: Poseidon2 permutation type ID for a given config.
     pub fn poseidon2_perm(config: Poseidon2Config) -> Self {
         Self::new(alloc::format!("poseidon2_perm/{}", config.variant_name()))
+    }
+
+    /// Convenience: Poseidon1 permutation type ID for a given config.
+    pub fn poseidon1_perm(config: Poseidon1Config) -> Self {
+        Self::new(alloc::format!("poseidon1_perm/{}", config.variant_name()))
     }
 
     /// Convenience: Recompose (BF→EF packing) operation type ID.

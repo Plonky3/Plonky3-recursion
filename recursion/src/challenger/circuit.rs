@@ -13,7 +13,7 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
-use p3_circuit::ops::Poseidon2Config;
+use p3_circuit::ops::{Poseidon1Config, Poseidon2Config};
 use p3_circuit::{CircuitBuilder, CircuitBuilderError};
 use p3_field::{ExtensionField, PrimeField64};
 
@@ -102,22 +102,30 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
         debug_assert!(self.initialized, "Challenger must be initialized");
         debug_assert!(self.input_buffer.len() <= RATE, "Input buffer exceeds RATE");
 
-        let poseidon2_config = *self
-            .config
-            .as_poseidon2()
-            .expect("only Poseidon2 challenger permutation is supported");
+        let p2_config = self.config.as_poseidon2().copied();
+        let p1_config = self.config.as_poseidon1().copied();
 
         // 1. Overwrite state[0..n] with inputs (NOT XOR, matches native)
         for (i, val) in self.input_buffer.drain(..).enumerate() {
             self.state[i] = val;
         }
 
-        // Branch by Poseidon2 NPO packing (`config.d()`), not `EF::DIMENSION`, so a
-        // quintic (or other) challenge field can still use base width-16 Poseidon2.
-        if poseidon2_config.d() == 1 {
-            self.duplexing_base(circuit, poseidon2_config);
+        // Branch by NPO packing (`config.d()`), not `EF::DIMENSION`, so a quintic
+        // (or other) challenge field can still use a base width-16 permutation.
+        if let Some(cfg) = p2_config {
+            if cfg.d() == 1 {
+                self.duplexing_base(circuit, cfg);
+            } else {
+                self.duplexing_ext::<BF, EF>(circuit, cfg);
+            }
+        } else if let Some(cfg) = p1_config {
+            if cfg.d() == 1 {
+                self.duplexing_base_p1(circuit, cfg);
+            } else {
+                self.duplexing_ext_p1::<BF, EF>(circuit, cfg);
+            }
         } else {
-            self.duplexing_ext::<BF, EF>(circuit, poseidon2_config);
+            panic!("unsupported challenger permutation");
         }
 
         // 5. Fill output buffer from state[0..RATE]
@@ -191,6 +199,61 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
             }
         }
     }
+
+    /// Poseidon1 D=1 duplexing.
+    fn duplexing_base_p1<EF>(
+        &mut self,
+        circuit: &mut CircuitBuilder<EF>,
+        poseidon1_config: Poseidon1Config,
+    ) where
+        EF: p3_field::Field,
+    {
+        let new_start = !self.duplexed_once;
+        let inputs: [Option<Target>; 16] =
+            core::array::from_fn(|i| if i < RATE { Some(self.state[i]) } else { None });
+        self.duplexed_once = true;
+
+        let outputs = circuit
+            .add_poseidon1_perm_for_challenger_base(poseidon1_config, new_start, inputs)
+            .expect("poseidon1 base permutation should succeed");
+
+        self.state = outputs.to_vec();
+    }
+
+    /// Poseidon1 D>=2 duplexing.
+    fn duplexing_ext_p1<BF, EF>(
+        &mut self,
+        circuit: &mut CircuitBuilder<EF>,
+        poseidon1_config: Poseidon1Config,
+    ) where
+        BF: PrimeField64,
+        EF: ExtensionField<BF>,
+    {
+        let num_ext_limbs = WIDTH / EF::DIMENSION;
+        let mut ext_inputs = Vec::with_capacity(num_ext_limbs);
+        for i in 0..num_ext_limbs {
+            let start = i * EF::DIMENSION;
+            let end = start + EF::DIMENSION;
+            let ext = circuit
+                .recompose_base_coeffs_to_ext::<BF>(&self.state[start..end])
+                .expect("recomposition should succeed");
+            ext_inputs.push(ext);
+        }
+
+        let ext_outputs = circuit
+            .add_poseidon1_perm_for_challenger(poseidon1_config, &ext_inputs)
+            .expect("poseidon1 permutation should succeed");
+
+        for (limb, &ext_out) in ext_outputs.iter().enumerate() {
+            let coeffs = circuit
+                .decompose_ext_to_base_coeffs::<BF>(ext_out)
+                .expect("decomposition should succeed");
+            let start = limb * EF::DIMENSION;
+            for (i, coeff) in coeffs.into_iter().enumerate() {
+                self.state[start + i] = coeff;
+            }
+        }
+    }
 }
 
 impl<const WIDTH: usize, const RATE: usize> CircuitChallenger<WIDTH, RATE, Poseidon2Config> {
@@ -219,6 +282,25 @@ impl CircuitChallenger<8, 4, Poseidon2Config> {
     /// Create a challenger with Goldilocks D2 Width8 configuration.
     pub const fn new_goldilocks() -> Self {
         Self::new(Poseidon2Config::GOLDILOCKS_D2_W8)
+    }
+}
+
+impl<const WIDTH: usize, const RATE: usize> CircuitChallenger<WIDTH, RATE, Poseidon1Config> {
+    /// Create a Poseidon1 challenger with BabyBear D1 Width16 (base field challenges).
+    pub const fn new_babybear_poseidon1_base() -> Self {
+        Self::new(Poseidon1Config::BABY_BEAR_D1_W16)
+    }
+
+    /// Create a Poseidon1 challenger with KoalaBear D1 Width16 (base field challenges).
+    pub const fn new_koalabear_poseidon1_base() -> Self {
+        Self::new(Poseidon1Config::KOALA_BEAR_D1_W16)
+    }
+}
+
+impl CircuitChallenger<8, 4, Poseidon1Config> {
+    /// Create a Poseidon1 challenger with Goldilocks D2 Width8 configuration.
+    pub const fn new_goldilocks_poseidon1() -> Self {
+        Self::new(Poseidon1Config::GOLDILOCKS_D2_W8)
     }
 }
 

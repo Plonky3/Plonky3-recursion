@@ -28,7 +28,7 @@ type InnerFri = InnerFriGeneric<MyConfig, MyHash, MyCompress, DIGEST_ELEMS>;
 
 const TRACE_D: usize = 1;
 
-const fn fri_verifier_params(log_blowup: usize) -> FriVerifierParams {
+fn fri_verifier_params(log_blowup: usize) -> FriVerifierParams {
     FriVerifierParams::with_mmcs(log_blowup, 0, 0, 16, Poseidon2Config::KOALA_BEAR_D4_W16)
 }
 
@@ -182,7 +182,12 @@ fn test_aggregation_with_different_shapes() -> Result<(), VerificationError> {
         MyHash,
         MyCompress,
         DIGEST_ELEMS,
-    >(&mut runner, &left_op_ids, &uni_proof.opening_proof)
+    >(
+        &mut runner,
+        &left_op_ids,
+        &uni_proof.opening_proof,
+        Poseidon2Config::KOALA_BEAR_D4_W16,
+    )
     .map_err(|e| VerificationError::InvalidProofShape(e.to_string()))?;
 
     // Set the MMCS private data for the Batch-Stark.
@@ -198,6 +203,7 @@ fn test_aggregation_with_different_shapes() -> Result<(), VerificationError> {
         &mut runner,
         &right_op_ids,
         &batch_stark_proof.proof.opening_proof,
+        Poseidon2Config::KOALA_BEAR_D4_W16,
     )
     .map_err(|e| VerificationError::InvalidProofShape(e.to_string()))?;
 
