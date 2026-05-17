@@ -58,38 +58,7 @@ jobs:
       - name: Test documentation
         run: cargo test --verbose --workspace --doc
 
-      - name: Disk usage (after)
-        if: always()
-        run: |
-          set -eux
-          df -h
-          du -sh target || true
-          du -sh ~/.cargo/registry ~/.cargo/git || true
-
-  simple_examples:
-    name: Simple Examples
-    runs-on: ubuntu-latest
-    if: "! contains(toJSON(github.event.commits.*.message), '[skip-ci]')"
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
-        id: rs-stable
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: examples
-          cache-on-failure: true
-
-      - name: Disk usage (before)
-        run: |
-          set -eux
-          df -h
-          du -sh target || true
-          du -sh ~/.cargo/registry ~/.cargo/git || true
-
-      - name: Run examples
+      - name: Run basic examples
         run: |
           cargo run --package p3-circuit-prover --example fibonacci
           cargo run --package p3-circuit-prover --example poseidon2_perm_chain
@@ -99,6 +68,9 @@ jobs:
         env:
           RUST_LOG: debug
         run: cargo run --package p3-circuit --example allocation_log --features debugging
+
+      - name: Build benchmarks without running
+        run: cargo bench --no-run --workspace
 
       - name: Disk usage (after)
         if: always()
@@ -135,40 +107,6 @@ jobs:
         run: |
           cargo run --release --features parallel --example recursive_aggregation -- --field koala-bear --num-recursive-layers 2
           cargo run --release --features parallel --example recursive_keccak -- --field baby-bear -n 10 --num-recursive-layers 2
-
-      - name: Disk usage (after)
-        if: always()
-        run: |
-          set -eux
-          df -h
-          du -sh target || true
-          du -sh ~/.cargo/registry ~/.cargo/git || true
-
-  benchmarks:
-    name: Benchmarks
-    runs-on: ubuntu-latest
-    if: "! contains(toJSON(github.event.commits.*.message), '[skip-ci]')"
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
-        id: rs-stable
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: benchmarks
-          cache-on-failure: true
-
-      - name: Disk usage (before)
-        run: |
-          set -eux
-          df -h
-          du -sh target || true
-          du -sh ~/.cargo/registry ~/.cargo/git || true
-
-      - name: Build benchmarks without running
-        run: cargo bench --no-run --workspace
 
       - name: Disk usage (after)
         if: always()
