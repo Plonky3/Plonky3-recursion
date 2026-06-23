@@ -13,7 +13,6 @@ pub mod trace;
 
 pub use call::{Poseidon1PermCall, Poseidon1PermCallBase};
 pub use config::Poseidon1Config;
-pub(crate) use config::Poseidon1PermExec;
 pub(crate) use plugin::Poseidon1CircuitPlugin;
 pub use state::Poseidon1PermPrivateData;
 pub use trace::{

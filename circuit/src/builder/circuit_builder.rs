@@ -19,12 +19,9 @@ use super::compiler::{ExpressionLowerer, LoweringResult, Optimizer};
 use super::npo::{NonPrimitiveOpParams, NonPrimitiveOperationData, NpoCircuitPlugin};
 use super::{BuilderConfig, ExpressionBuilder, PublicInputTracker};
 use crate::circuit::Circuit;
-use crate::ops::poseidon1_perm::{
-    Poseidon1CircuitPlugin, Poseidon1PermCallBase, Poseidon1PermExec,
-};
-use crate::ops::poseidon2_perm::{
-    Poseidon2CircuitPlugin, Poseidon2PermCallBase, Poseidon2PermExec,
-};
+use crate::ops::poseidon_perm::PoseidonPermExec;
+use crate::ops::poseidon1_perm::{Poseidon1CircuitPlugin, Poseidon1PermCallBase};
+use crate::ops::poseidon2_perm::{Poseidon2CircuitPlugin, Poseidon2PermCallBase};
 use crate::ops::recompose::RecomposeCircuitPlugin;
 use crate::ops::{
     HintExecutor, NpoConfig, NpoRegistry, NpoTypeId, Poseidon1Params, Poseidon1PermCall,
@@ -170,31 +167,12 @@ where
         F: Field + ExtensionField<Config::BaseField>,
         P: Permutation<[Config::BaseField; 16]> + Clone + Send + Sync + 'static,
     {
-        let d = Config::D;
-        let width_ext = Config::WIDTH_EXT;
-        let width = Config::WIDTH;
-        let exec: Poseidon2PermExec<F> = Arc::new(move |input: &[F]| {
-            let mut base_input = vec![Config::BaseField::ZERO; width];
-            for (i, ext_elem) in input.iter().enumerate() {
-                let coeffs = ext_elem.as_basis_coefficients_slice();
-                base_input[i * d..(i + 1) * d].copy_from_slice(coeffs);
-            }
-            let base_output = perm.permute(
-                base_input
-                    .try_into()
-                    .expect("base_input length must equal WIDTH"),
-            );
-            let mut output = Vec::with_capacity(width_ext);
-            for i in 0..width_ext {
-                let coeffs = &base_output[i * d..(i + 1) * d];
-                output.push(
-                    F::from_basis_coefficients_slice(coeffs)
-                        .expect("basis coefficients should be valid"),
-                );
-            }
-            output
-        });
-
+        let exec = packed_perm_exec::<F, Config::BaseField, P, 16>(
+            Config::D,
+            Config::WIDTH,
+            Config::WIDTH_EXT,
+            perm,
+        );
         let plugin = Poseidon2CircuitPlugin::new(Config::CONFIG, exec, trace_generator);
         self.register_npo(plugin);
     }
@@ -213,29 +191,12 @@ where
             Config::WIDTH == 8,
             "enable_poseidon2_perm_width_8 requires WIDTH=8"
         );
-        let d = Config::D;
-        let width_ext = Config::WIDTH_EXT;
-        let exec: Poseidon2PermExec<F> = Arc::new(move |input: &[F]| {
-            let mut base_input = vec![Config::BaseField::ZERO; 8];
-            for (i, ext_elem) in input.iter().enumerate() {
-                let coeffs = ext_elem.as_basis_coefficients_slice();
-                base_input[i * d..(i + 1) * d].copy_from_slice(coeffs);
-            }
-            let base_output = perm.permute(
-                base_input
-                    .try_into()
-                    .expect("base_input length must equal 8"),
-            );
-            let mut output = Vec::with_capacity(width_ext);
-            for i in 0..width_ext {
-                let coeffs = &base_output[i * d..(i + 1) * d];
-                output.push(
-                    F::from_basis_coefficients_slice(coeffs)
-                        .expect("basis coefficients should be valid"),
-                );
-            }
-            output
-        });
+        let exec = packed_perm_exec::<F, Config::BaseField, P, 8>(
+            Config::D,
+            Config::WIDTH,
+            Config::WIDTH_EXT,
+            perm,
+        );
         let plugin = Poseidon2CircuitPlugin::new(Config::CONFIG, exec, trace_generator);
         self.register_npo(plugin);
     }
@@ -265,13 +226,7 @@ where
             Config::WIDTH == 16,
             "enable_poseidon2_perm_base only supports WIDTH=16"
         );
-
-        // For D=1, the exec closure converts slice to/from [F; 16]
-        let exec: Poseidon2PermExec<F> = Arc::new(move |input: &[F]| {
-            let arr: [F; 16] = input.try_into().expect("D=1 input must have 16 elements");
-            perm.permute(arr).to_vec()
-        });
-
+        let exec = base_perm_exec::<F, P>(perm);
         let plugin = Poseidon2CircuitPlugin::new(Config::CONFIG, exec, trace_generator);
         self.register_npo(plugin);
     }
@@ -286,31 +241,12 @@ where
         F: Field + ExtensionField<Config::BaseField>,
         P: Permutation<[Config::BaseField; 16]> + Clone + Send + Sync + 'static,
     {
-        let d = Config::D;
-        let width_ext = Config::WIDTH_EXT;
-        let width = Config::WIDTH;
-        let exec: Poseidon1PermExec<F> = Arc::new(move |input: &[F]| {
-            let mut base_input = vec![Config::BaseField::ZERO; width];
-            for (i, ext_elem) in input.iter().enumerate() {
-                let coeffs = ext_elem.as_basis_coefficients_slice();
-                base_input[i * d..(i + 1) * d].copy_from_slice(coeffs);
-            }
-            let base_output = perm.permute(
-                base_input
-                    .try_into()
-                    .expect("base_input length must equal WIDTH"),
-            );
-            let mut output = Vec::with_capacity(width_ext);
-            for i in 0..width_ext {
-                let coeffs = &base_output[i * d..(i + 1) * d];
-                output.push(
-                    F::from_basis_coefficients_slice(coeffs)
-                        .expect("basis coefficients should be valid"),
-                );
-            }
-            output
-        });
-
+        let exec = packed_perm_exec::<F, Config::BaseField, P, 16>(
+            Config::D,
+            Config::WIDTH,
+            Config::WIDTH_EXT,
+            perm,
+        );
         let plugin = Poseidon1CircuitPlugin::new(Config::CONFIG, exec, trace_generator);
         self.register_npo(plugin);
     }
@@ -329,29 +265,12 @@ where
             Config::WIDTH == 8,
             "enable_poseidon1_perm_width_8 requires WIDTH=8"
         );
-        let d = Config::D;
-        let width_ext = Config::WIDTH_EXT;
-        let exec: Poseidon1PermExec<F> = Arc::new(move |input: &[F]| {
-            let mut base_input = vec![Config::BaseField::ZERO; 8];
-            for (i, ext_elem) in input.iter().enumerate() {
-                let coeffs = ext_elem.as_basis_coefficients_slice();
-                base_input[i * d..(i + 1) * d].copy_from_slice(coeffs);
-            }
-            let base_output = perm.permute(
-                base_input
-                    .try_into()
-                    .expect("base_input length must equal 8"),
-            );
-            let mut output = Vec::with_capacity(width_ext);
-            for i in 0..width_ext {
-                let coeffs = &base_output[i * d..(i + 1) * d];
-                output.push(
-                    F::from_basis_coefficients_slice(coeffs)
-                        .expect("basis coefficients should be valid"),
-                );
-            }
-            output
-        });
+        let exec = packed_perm_exec::<F, Config::BaseField, P, 8>(
+            Config::D,
+            Config::WIDTH,
+            Config::WIDTH_EXT,
+            perm,
+        );
         let plugin = Poseidon1CircuitPlugin::new(Config::CONFIG, exec, trace_generator);
         self.register_npo(plugin);
     }
@@ -374,13 +293,7 @@ where
             Config::WIDTH == 16,
             "enable_poseidon1_perm_base only supports WIDTH=16"
         );
-
-        // For D=1, the exec closure converts slice to/from [F; 16]
-        let exec: Poseidon1PermExec<F> = Arc::new(move |input: &[F]| {
-            let arr: [F; 16] = input.try_into().expect("D=1 input must have 16 elements");
-            perm.permute(arr).to_vec()
-        });
-
+        let exec = base_perm_exec::<F, P>(perm);
         let plugin = Poseidon1CircuitPlugin::new(Config::CONFIG, exec, trace_generator);
         self.register_npo(plugin);
     }
@@ -1837,6 +1750,56 @@ impl<BF: PrimeField64, EF: ExtensionField<BF>> HintExecutor<EF> for BinaryDecomp
     }
 }
 
+/// Builds the permutation exec closure for a `[BaseField; N]` permutation, packing each
+/// extension-field input into `D` base-field coordinates (and unpacking the output).
+fn packed_perm_exec<F, BF, P, const N: usize>(
+    d: usize,
+    width: usize,
+    width_ext: usize,
+    perm: P,
+) -> PoseidonPermExec<F>
+where
+    F: Field + ExtensionField<BF>,
+    BF: Field,
+    P: Permutation<[BF; N]> + Clone + Send + Sync + 'static,
+{
+    assert_eq!(width, N, "permutation width must equal N");
+    Arc::new(move |input: &[F]| {
+        let mut base_input = vec![BF::ZERO; N];
+        for (i, ext_elem) in input.iter().enumerate() {
+            let coeffs = ext_elem.as_basis_coefficients_slice();
+            base_input[i * d..(i + 1) * d].copy_from_slice(coeffs);
+        }
+        let base_output = perm.permute(
+            base_input
+                .try_into()
+                .expect("base_input length must equal N"),
+        );
+        let mut output = Vec::with_capacity(width_ext);
+        for i in 0..width_ext {
+            let coeffs = &base_output[i * d..(i + 1) * d];
+            output.push(
+                F::from_basis_coefficients_slice(coeffs)
+                    .expect("basis coefficients should be valid"),
+            );
+        }
+        output
+    })
+}
+
+/// Builds the permutation exec closure for the D=1 base-field case, where the permutation
+/// operates directly on `[F; 16]` without packing.
+fn base_perm_exec<F, P>(perm: P) -> PoseidonPermExec<F>
+where
+    F: Field,
+    P: Permutation<[F; 16]> + Clone + Send + Sync + 'static,
+{
+    Arc::new(move |input: &[F]| {
+        let arr: [F; 16] = input.try_into().expect("D=1 input must have 16 elements");
+        perm.permute(arr).to_vec()
+    })
+}
+
 #[cfg(test)]
 mod tests {
 
@@ -2114,13 +2077,13 @@ mod tests {
 
     #[test]
     fn test_non_primitive_outputs_ordering_and_dedup() {
-        use crate::ops::poseidon2_perm::Poseidon2PermExec;
+        use crate::ops::poseidon_perm::PoseidonPermExec;
         use crate::ops::{Poseidon2Config, Poseidon2PermCall};
 
         type Ext4 = BinomialExtensionField<BabyBear, 4>;
 
         let mut builder = CircuitBuilder::<Ext4>::new();
-        let dummy_exec: Poseidon2PermExec<Ext4> =
+        let dummy_exec: PoseidonPermExec<Ext4> =
             Arc::new(|_| panic!("should not be called in this test"));
         let plugin = Poseidon2CircuitPlugin::<Ext4>::new(
             Poseidon2Config::BABY_BEAR_D4_W16,
