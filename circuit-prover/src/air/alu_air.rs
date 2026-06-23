@@ -138,6 +138,39 @@ pub struct AluAir<F: Copy, const D: usize = 1> {
 }
 
 impl<F: Field + PrimeCharacteristicRing + Copy, const D: usize> AluAir<F, D> {
+    /// Core builder: no preprocessed data, default min height and packed-Horner length.
+    const fn from_reduction(num_ops: usize, lanes: usize, ext_mul_kind: AluExtMulKind<F>) -> Self {
+        Self {
+            num_ops,
+            lanes,
+            ext_mul_kind,
+            preprocessed: Vec::new(),
+            min_height: 1,
+            schedule: None,
+            horner_packed_steps: 2,
+        }
+    }
+
+    /// Core builder with preprocessed data, computing the packed-Horner schedule.
+    fn from_reduction_with_preprocessed(
+        num_ops: usize,
+        lanes: usize,
+        ext_mul_kind: AluExtMulKind<F>,
+        preprocessed: Vec<F>,
+        horner_packed_steps: usize,
+    ) -> Self {
+        let schedule = Self::compute_schedule(&preprocessed, lanes, horner_packed_steps);
+        Self {
+            num_ops,
+            lanes,
+            ext_mul_kind,
+            preprocessed,
+            min_height: 1,
+            schedule,
+            horner_packed_steps,
+        }
+    }
+
     /// Construct a new `AluAir` for base-field operations (D=1).
     pub const fn new(num_ops: usize, lanes: usize) -> Self {
         assert!(lanes > 0, "lane count must be non-zero");
@@ -145,15 +178,7 @@ impl<F: Field + PrimeCharacteristicRing + Copy, const D: usize> AluAir<F, D> {
             D == 1,
             "Base-field constructor requires D == 1; use new_binomial or new_quintic_trinomial"
         );
-        Self {
-            num_ops,
-            lanes,
-            ext_mul_kind: AluExtMulKind::Base,
-            preprocessed: Vec::new(),
-            min_height: 1,
-            schedule: None,
-            horner_packed_steps: 2,
-        }
+        Self::from_reduction(num_ops, lanes, AluExtMulKind::Base)
     }
 
     /// Construct a new `AluAir` for base-field operations with preprocessed data.
@@ -172,31 +197,20 @@ impl<F: Field + PrimeCharacteristicRing + Copy, const D: usize> AluAir<F, D> {
             horner_packed_steps >= 2,
             "horner_packed_steps must be at least 2"
         );
-        let schedule = Self::compute_schedule(&preprocessed, lanes, horner_packed_steps);
-        Self {
+        Self::from_reduction_with_preprocessed(
             num_ops,
             lanes,
-            ext_mul_kind: AluExtMulKind::Base,
+            AluExtMulKind::Base,
             preprocessed,
-            min_height: 1,
-            schedule,
             horner_packed_steps,
-        }
+        )
     }
 
     /// Construct a new `AluAir` for binomial extension-field operations (D > 1).
     pub const fn new_binomial(num_ops: usize, lanes: usize, w: F) -> Self {
         assert!(lanes > 0, "lane count must be non-zero");
         assert!(D >= 2, "Binomial constructor requires D >= 2");
-        Self {
-            num_ops,
-            lanes,
-            ext_mul_kind: AluExtMulKind::Binomial { w },
-            preprocessed: Vec::new(),
-            min_height: 1,
-            schedule: None,
-            horner_packed_steps: 2,
-        }
+        Self::from_reduction(num_ops, lanes, AluExtMulKind::Binomial { w })
     }
 
     /// Construct a new `AluAir` for binomial extension-field operations with preprocessed data.
@@ -213,31 +227,20 @@ impl<F: Field + PrimeCharacteristicRing + Copy, const D: usize> AluAir<F, D> {
             horner_packed_steps >= 2,
             "horner_packed_steps must be at least 2"
         );
-        let schedule = Self::compute_schedule(&preprocessed, lanes, horner_packed_steps);
-        Self {
+        Self::from_reduction_with_preprocessed(
             num_ops,
             lanes,
-            ext_mul_kind: AluExtMulKind::Binomial { w },
+            AluExtMulKind::Binomial { w },
             preprocessed,
-            min_height: 1,
-            schedule,
             horner_packed_steps,
-        }
+        )
     }
 
     /// Quintic trinomial extension (`X^5 + X^2 - 1`), `D = 5` only.
     pub const fn new_quintic_trinomial(num_ops: usize, lanes: usize) -> Self {
         assert!(lanes > 0, "lane count must be non-zero");
         assert!(D == 5, "Quintic trinomial ALU requires D = 5");
-        Self {
-            num_ops,
-            lanes,
-            ext_mul_kind: AluExtMulKind::QuinticTrinomial,
-            preprocessed: Vec::new(),
-            min_height: 1,
-            schedule: None,
-            horner_packed_steps: 2,
-        }
+        Self::from_reduction(num_ops, lanes, AluExtMulKind::QuinticTrinomial)
     }
 
     /// Quintic trinomial extension with preprocessed columns, `D = 5` only.
@@ -254,16 +257,13 @@ impl<F: Field + PrimeCharacteristicRing + Copy, const D: usize> AluAir<F, D> {
             "horner_packed_steps must be at least 2"
         );
 
-        let schedule = Self::compute_schedule(&preprocessed, lanes, horner_packed_steps);
-        Self {
+        Self::from_reduction_with_preprocessed(
             num_ops,
             lanes,
-            ext_mul_kind: AluExtMulKind::QuinticTrinomial,
+            AluExtMulKind::QuinticTrinomial,
             preprocessed,
-            min_height: 1,
-            schedule,
             horner_packed_steps,
-        }
+        )
     }
 
     /// Set the minimum trace height for FRI compatibility.
