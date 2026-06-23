@@ -791,6 +791,44 @@ where
     }
 }
 
+/// Dispatch a runtime extension degree to a `const D` monomorphization.
+///
+/// The single supported-degree list (1, 2, 4, 5, 6, 8) lives here so the prove and
+/// verify entry points cannot drift. `$body` is evaluated with `$d` bound as a
+/// `const usize` for each supported degree; any other degree yields
+/// [`BatchStarkProverError::UnsupportedDegree`].
+macro_rules! dispatch_by_ext_degree {
+    ($degree:expr, |$d:ident| $body:expr) => {
+        match $degree {
+            1 => {
+                const $d: usize = 1;
+                $body
+            }
+            2 => {
+                const $d: usize = 2;
+                $body
+            }
+            4 => {
+                const $d: usize = 4;
+                $body
+            }
+            5 => {
+                const $d: usize = 5;
+                $body
+            }
+            6 => {
+                const $d: usize = 6;
+                $body
+            }
+            8 => {
+                const $d: usize = 8;
+                $body
+            }
+            other => Err(BatchStarkProverError::UnsupportedDegree(other)),
+        }
+    };
+}
+
 impl<SC> BatchStarkProver<SC>
 where
     SC: StarkGenericConfig + 'static,
@@ -905,15 +943,8 @@ where
         SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
     {
         let w_opt = EF::extract_w();
-        match EF::DIMENSION {
-            1 => self.prove::<EF, 1>(traces, None, circuit_prover_data),
-            2 => self.prove::<EF, 2>(traces, w_opt, circuit_prover_data),
-            4 => self.prove::<EF, 4>(traces, w_opt, circuit_prover_data),
-            5 => self.prove::<EF, 5>(traces, w_opt, circuit_prover_data),
-            6 => self.prove::<EF, 6>(traces, w_opt, circuit_prover_data),
-            8 => self.prove::<EF, 8>(traces, w_opt, circuit_prover_data),
-            d => Err(BatchStarkProverError::UnsupportedDegree(d)),
-        }
+        dispatch_by_ext_degree!(EF::DIMENSION, |D| self
+            .prove::<EF, D>(traces, w_opt, circuit_prover_data))
     }
 
     /// Verify the unified batch STARK proof against all tables.
@@ -923,15 +954,8 @@ where
     ) -> Result<(), BatchStarkProverError> {
         proof.validate()?;
         let common = &proof.stark_common;
-        match proof.ext_degree {
-            1 => self.verify::<1>(proof, None, common),
-            2 => self.verify::<2>(proof, proof.w_binomial, common),
-            4 => self.verify::<4>(proof, proof.w_binomial, common),
-            5 => self.verify::<5>(proof, proof.w_binomial, common),
-            6 => self.verify::<6>(proof, proof.w_binomial, common),
-            8 => self.verify::<8>(proof, proof.w_binomial, common),
-            d => Err(BatchStarkProverError::UnsupportedDegree(d)),
-        }
+        dispatch_by_ext_degree!(proof.ext_degree, |D| self
+            .verify::<D>(proof, proof.w_binomial, common))
     }
 
     /// Generate a batch STARK proof for a specific extension field degree.
