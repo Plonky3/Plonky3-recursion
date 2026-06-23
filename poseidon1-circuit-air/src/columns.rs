@@ -4,6 +4,8 @@ use alloc::vec::Vec;
 use core::borrow::{Borrow, BorrowMut};
 use core::mem::size_of;
 
+use p3_poseidon1_air::Poseidon1Cols;
+
 /// Per-row input description for a Poseidon1 circuit operation.
 ///
 /// One entry per Poseidon1 permutation invocation; consumed by trace and
@@ -116,6 +118,34 @@ pub struct Poseidon1CircuitCols<T, P> {
 /// The struct size in bytes then equals the column count.
 pub const fn num_cols<P>() -> usize {
     size_of::<Poseidon1CircuitCols<u8, P>>()
+}
+
+/// Compile-time guard pinning the [`Poseidon1CircuitCols`] `#[repr(C)]` split.
+///
+/// The wrapper lays out the inner permutation block first, then the two
+/// circuit-specific value columns (`mmcs_bit`, `mmcs_index_sum`). The
+/// `align_to` casts in this module and the `circuit_ncols = ncols - p1_ncols`
+/// arithmetic in trace generation rely on that boundary, so this asserts the
+/// wrapper adds exactly two columns over [`p3_poseidon1_air::num_cols`].
+pub const fn assert_circuit_cols_split<
+    const WIDTH: usize,
+    const SBOX_DEGREE: u64,
+    const SBOX_REGISTERS: usize,
+    const HALF_FULL_ROUNDS: usize,
+    const PARTIAL_ROUNDS: usize,
+>() {
+    assert!(
+        num_cols::<
+            Poseidon1Cols<u8, WIDTH, SBOX_DEGREE, SBOX_REGISTERS, HALF_FULL_ROUNDS, PARTIAL_ROUNDS>,
+        >() == p3_poseidon1_air::num_cols::<
+            WIDTH,
+            SBOX_DEGREE,
+            SBOX_REGISTERS,
+            HALF_FULL_ROUNDS,
+            PARTIAL_ROUNDS,
+        >() + 2,
+        "Poseidon1CircuitCols must add exactly two circuit columns over the permutation block",
+    );
 }
 
 impl<T, P> Borrow<Poseidon1CircuitCols<T, P>> for [T] {

@@ -5,6 +5,7 @@ use core::borrow::{Borrow, BorrowMut};
 use core::mem::size_of;
 
 use p3_circuit::ops::{KoalaBearD1Width16, Poseidon2Params};
+use p3_poseidon2_air::Poseidon2Cols;
 
 /// Number of extension-field limbs for Poseidon2 input and output.
 ///
@@ -88,6 +89,34 @@ pub struct Poseidon2CircuitCols<T, P> {
 /// The struct size in bytes then equals the column count.
 pub const fn num_cols<P>() -> usize {
     size_of::<Poseidon2CircuitCols<u8, P>>()
+}
+
+/// Compile-time guard pinning the [`Poseidon2CircuitCols`] `#[repr(C)]` split.
+///
+/// The wrapper lays out the inner permutation block first, then the two
+/// circuit-specific value columns (`mmcs_bit`, `mmcs_index_sum`). The
+/// `align_to` casts in this module and the `circuit_ncols = ncols - p2_ncols`
+/// arithmetic in trace generation rely on that boundary, so this asserts the
+/// wrapper adds exactly two columns over [`p3_poseidon2_air::num_cols`].
+pub const fn assert_circuit_cols_split<
+    const WIDTH: usize,
+    const SBOX_DEGREE: u64,
+    const SBOX_REGISTERS: usize,
+    const HALF_FULL_ROUNDS: usize,
+    const PARTIAL_ROUNDS: usize,
+>() {
+    assert!(
+        num_cols::<
+            Poseidon2Cols<u8, WIDTH, SBOX_DEGREE, SBOX_REGISTERS, HALF_FULL_ROUNDS, PARTIAL_ROUNDS>,
+        >() == p3_poseidon2_air::num_cols::<
+            WIDTH,
+            SBOX_DEGREE,
+            SBOX_REGISTERS,
+            HALF_FULL_ROUNDS,
+            PARTIAL_ROUNDS,
+        >() + 2,
+        "Poseidon2CircuitCols must add exactly two circuit columns over the permutation block",
+    );
 }
 
 impl<T, P> Borrow<Poseidon2CircuitCols<T, P>> for [T] {

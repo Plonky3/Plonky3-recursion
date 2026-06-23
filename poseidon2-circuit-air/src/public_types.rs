@@ -27,7 +27,7 @@ use rand::distr::StandardUniform;
 use rand::rngs::SmallRng;
 use rand::{RngExt, SeedableRng};
 
-use crate::Poseidon2CircuitAir;
+use crate::{Poseidon2CircuitAir, assert_circuit_cols_split};
 
 /// Configuration for BabyBear with base-field (`D=1`) challenges and a
 /// 16-element Poseidon2 state (same permutation as quartic width-16).
@@ -468,3 +468,42 @@ pub fn goldilocks_d2_width8_default_air_with_preprocessed(
     )
     .with_min_height(min_height)
 }
+
+// Pin the circuit-vs-permutation column split for every supported permutation
+// shape. The `D` variants of a given width share the permutation layout, so one
+// instantiation per distinct shape covers the `D=1`/`D=4` aliases too.
+const _: () = assert_circuit_cols_split::<
+    { BabyBearD4Width16::WIDTH },
+    { BabyBearD4Width16::SBOX_DEGREE },
+    { BabyBearD4Width16::SBOX_REGISTERS },
+    { BabyBearD4Width16::HALF_FULL_ROUNDS },
+    { BabyBearD4Width16::PARTIAL_ROUNDS },
+>();
+const _: () = assert_circuit_cols_split::<
+    { BabyBearD4Width24::WIDTH },
+    { BabyBearD4Width24::SBOX_DEGREE },
+    { BabyBearD4Width24::SBOX_REGISTERS },
+    { BabyBearD4Width24::HALF_FULL_ROUNDS },
+    { BabyBearD4Width24::PARTIAL_ROUNDS },
+>();
+const _: () = assert_circuit_cols_split::<
+    { KoalaBearD4Width16::WIDTH },
+    { KoalaBearD4Width16::SBOX_DEGREE },
+    { KoalaBearD4Width16::SBOX_REGISTERS },
+    { KoalaBearD4Width16::HALF_FULL_ROUNDS },
+    { KoalaBearD4Width16::PARTIAL_ROUNDS },
+>();
+const _: () = assert_circuit_cols_split::<
+    { KoalaBearD4Width24::WIDTH },
+    { KoalaBearD4Width24::SBOX_DEGREE },
+    { KoalaBearD4Width24::SBOX_REGISTERS },
+    { KoalaBearD4Width24::HALF_FULL_ROUNDS },
+    { KoalaBearD4Width24::PARTIAL_ROUNDS },
+>();
+const _: () = assert_circuit_cols_split::<
+    { GoldilocksD2Width8::WIDTH },
+    { GoldilocksD2Width8::SBOX_DEGREE },
+    { GoldilocksD2Width8::SBOX_REGISTERS },
+    { GoldilocksD2Width8::HALF_FULL_ROUNDS },
+    { GoldilocksD2Width8::PARTIAL_ROUNDS },
+>();
