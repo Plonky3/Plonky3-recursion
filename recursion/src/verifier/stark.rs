@@ -120,6 +120,17 @@ where
         .as_ref()
         .map_or(0, |p| p.len());
 
+    // Lookups are not supported for recursive single STARK verification: the AIR
+    // is evaluated below with empty lookup contexts, which does not enforce any
+    // lookup argument. Reject AIRs that declare interactions rather than verifying
+    // them with their lookups silently unenforced.
+    if air.declares_interactions(preprocessed_width) {
+        return Err(VerificationError::InvalidProofShape(
+            "uni-stark recursive verifier does not support AIRs with lookup interactions"
+                .to_string(),
+        ));
+    }
+
     // Lookups are not supported for recursive single STARK verification.
     let log_quotient_degree = A::get_log_num_quotient_chunks(
         air,

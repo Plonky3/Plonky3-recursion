@@ -82,6 +82,14 @@ pub trait RecursiveAir<F: Field, EF: ExtensionField<F>, LG: LookupProtocol> {
         is_zk: usize,
         lookup_gadget: &LG,
     ) -> usize;
+
+    /// Returns `true` if the AIR declares any lookup interactions (global or local).
+    ///
+    /// The recursive single-STARK verifier evaluates the AIR with empty lookup
+    /// contexts and therefore does not enforce any lookup argument. An AIR that
+    /// declares interactions must be rejected rather than silently verified with
+    /// its lookups unenforced.
+    fn declares_interactions(&self, preprocessed_width: usize) -> bool;
 }
 
 impl<F: Field, EF: ExtensionField<F>, A, LG: LookupProtocol> RecursiveAir<F, EF, LG> for A
@@ -171,5 +179,79 @@ where
             ..Default::default()
         };
         get_log_num_quotient_chunks(self, layout, contexts, is_zk, lookup_gadget)
+    }
+
+    fn declares_interactions(&self, preprocessed_width: usize) -> bool {
+        let layout = AirLayout {
+            preprocessed_width,
+            main_width: self.width(),
+            num_public_values: self.num_public_values(),
+            ..Default::default()
+        };
+        let mut builder = InteractionSymbolicBuilder::<F, EF>::new(layout);
+        self.eval(&mut builder);
+        !builder.global_interactions().is_empty() || !builder.local_interactions().is_empty()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use p3_air::{AirBuilder, BaseAir};
+    use p3_baby_bear::BabyBear;
+    use p3_field::PrimeCharacteristicRing;
+    use p3_field::extension::BinomialExtensionField;
+    use p3_lookup::builder::InteractionBuilder;
+    use p3_lookup::logup::LogUpGadget;
+
+    use super::*;
+
+    type F = BabyBear;
+    type EF = BinomialExtensionField<BabyBear, 4>;
+    type Builder = InteractionSymbolicBuilder<F, EF>;
+
+    /// An AIR that emits no bus interactions.
+    struct PlainAir;
+    /// An AIR that emits one global bus interaction.
+    struct BusAir;
+
+    impl<T> BaseAir<T> for PlainAir {
+        fn width(&self) -> usize {
+            1
+        }
+    }
+
+    impl<AB: AirBuilder> Air<AB> for PlainAir {
+        fn eval(&self, _builder: &mut AB) {}
+    }
+
+    impl<T> BaseAir<T> for BusAir {
+        fn width(&self) -> usize {
+            1
+        }
+    }
+
+    impl Air<Builder> for BusAir {
+        fn eval(&self, builder: &mut Builder) {
+            builder.push_interaction(
+                "test_bus",
+                core::iter::once(<Builder as AirBuilder>::Expr::ONE),
+                <Builder as AirBuilder>::Expr::ONE,
+                1,
+            );
+        }
+    }
+
+    #[test]
+    fn plain_air_declares_no_interactions() {
+        assert!(!RecursiveAir::<F, EF, LogUpGadget>::declares_interactions(
+            &PlainAir, 0
+        ));
+    }
+
+    #[test]
+    fn interaction_air_is_detected() {
+        assert!(RecursiveAir::<F, EF, LogUpGadget>::declares_interactions(
+            &BusAir, 0
+        ));
     }
 }
