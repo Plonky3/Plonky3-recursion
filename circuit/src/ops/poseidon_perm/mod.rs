@@ -5,6 +5,7 @@
 //! private-data layout are identical and live here, parameterized over a
 //! zero-sized [`PoseidonVariant`] marker.
 
+mod call;
 mod executor;
 mod plugin;
 mod state;
@@ -15,6 +16,7 @@ use alloc::vec::Vec;
 use p3_field::Field;
 use p3_poseidon1_circuit_air::Poseidon1CircuitRow;
 
+pub(crate) use call::{PoseidonPermCall, PoseidonPermCallBase};
 pub(crate) use plugin::PoseidonCircuitPlugin;
 pub(crate) use state::PoseidonExecutionState;
 pub use state::PoseidonPermPrivateData;
@@ -35,7 +37,7 @@ pub(crate) type PoseidonPermExec<F> = Arc<dyn Fn(&[F]) -> Vec<F> + Send + Sync>;
 
 /// Plain field bundle assembled by the executor before constructing a variant's
 /// concrete trace row.
-pub(crate) struct PoseidonRowFields<F> {
+pub struct PoseidonRowFields<F> {
     pub new_start: bool,
     pub merkle_path: bool,
     pub mmcs_bit: bool,
@@ -50,7 +52,7 @@ pub(crate) struct PoseidonRowFields<F> {
 }
 
 /// Config methods consumed by the shared Poseidon plugin and executor.
-pub(crate) trait PoseidonConfigApi: Copy {
+pub trait PoseidonConfigApi: Copy {
     fn d(self) -> usize;
     fn width(self) -> usize;
     fn rate_ext(self) -> usize;
@@ -152,6 +154,10 @@ pub trait PoseidonVariant: Send + Sync + 'static {
     const OP_LABEL: &'static str;
     /// Short variant name used in the executor's chain-state trace log line.
     const DEBUG_NAME: &'static str;
+    /// Default configuration for the extension-mode call struct.
+    const DEFAULT_CALL_CONFIG: Self::Config;
+    /// Default configuration for the base-field (D=1) call struct.
+    const DEFAULT_BASE_CONFIG: Self::Config;
 
     /// Build the `NpoTypeId` for this variant and config (a soundness boundary:
     /// the two variants must produce distinct CTL bus keys).
@@ -188,6 +194,8 @@ impl PoseidonVariant for Poseidon1Variant {
 
     const OP_LABEL: &'static str = "Poseidon1Perm";
     const DEBUG_NAME: &'static str = "Poseidon1";
+    const DEFAULT_CALL_CONFIG: Self::Config = Poseidon1Config::BABY_BEAR_D4_W16;
+    const DEFAULT_BASE_CONFIG: Self::Config = Poseidon1Config::BABY_BEAR_D1_W16;
 
     fn npo_type_id(config: Self::Config) -> NpoTypeId {
         NpoTypeId::poseidon1_perm(config)
@@ -237,6 +245,8 @@ impl PoseidonVariant for Poseidon2Variant {
 
     const OP_LABEL: &'static str = "Poseidon2Perm";
     const DEBUG_NAME: &'static str = "Poseidon2";
+    const DEFAULT_CALL_CONFIG: Self::Config = Poseidon2Config::BABY_BEAR_D4_W16;
+    const DEFAULT_BASE_CONFIG: Self::Config = Poseidon2Config::BABY_BEAR_D1_W16;
 
     fn npo_type_id(config: Self::Config) -> NpoTypeId {
         NpoTypeId::poseidon2_perm(config)
