@@ -35,23 +35,11 @@ use p3_util::log2_ceil_usize;
 use super::dynamic_air::{BatchAir, BatchTableInstance, DynamicAirEntry, TableProver};
 use crate::batch_stark_prover::{
     BABY_BEAR_MODULUS, KOALA_BEAR_MODULUS, NonPrimitiveTableEntry, TablePacking,
+    poseidon_d1_witness_bus_dim,
 };
 use crate::common::{CircuitTableAir, NpoAirBuilder, NpoPreprocessor};
 use crate::config::{BabyBearConfig, GoldilocksConfig, KoalaBearConfig, StarkField};
 use crate::constraint_profile::ConstraintProfile;
-
-/// Returns the witness-bus dimension for a D=1 Poseidon1 config given the circuit's extension
-/// degree, or `None` if the scale is not supported.
-///
-/// Currently supported: 1 (base-field circuit) and 5 (KoalaBear quintic).
-#[inline]
-const fn poseidon_d1_witness_bus_dim(witness_ctl_scale: u32) -> Option<u32> {
-    match witness_ctl_scale {
-        1 => Some(1),
-        5 => Some(5),
-        _ => None,
-    }
-}
 
 pub enum Poseidon1AirWrapperInner {
     BabyBearD1Width16Bus1(Box<Poseidon1CircuitAirBabyBearD1Width16>),

@@ -63,6 +63,19 @@ pub const BABY_BEAR_MODULUS: u64 = 0x7800_0001;
 /// Prime modulus of the KoalaBear field (`2^31 - 2^24 + 1`).
 pub const KOALA_BEAR_MODULUS: u64 = 0x7f00_0001;
 
+/// Returns the witness-bus dimension for a D=1 Poseidon config given the circuit's extension
+/// degree, or `None` if the scale is not supported.
+///
+/// Currently supported: 1 (base-field circuit) and 5 (KoalaBear quintic).
+#[inline]
+const fn poseidon_d1_witness_bus_dim(witness_ctl_scale: u32) -> Option<u32> {
+    match witness_ctl_scale {
+        1 => Some(1),
+        5 => Some(5),
+        _ => None,
+    }
+}
+
 /// Opaque variant tag for a non-primitive AIR in a batch proof.
 ///
 /// Each [`NonPrimitiveTableEntry`] has one tag. The **meaning** of the tag is
