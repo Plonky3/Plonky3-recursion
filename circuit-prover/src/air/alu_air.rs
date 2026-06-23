@@ -107,13 +107,35 @@ enum ScheduleEntry {
 
 /// How extension multiplication is reduced in the MUL / MUL_ADD / Horner paths.
 #[derive(Clone, Copy, Debug)]
-pub(crate) enum AluExtMulKind<F: Copy> {
+pub enum AluExtMulKind<F: Copy> {
     /// Base field only (`D == 1`).
     Base,
     /// Binomial extension `x^D = W` for `D > 1`.
     Binomial { w: F },
     /// Quintic trinomial `X^5 + X^2 - 1` (KoalaBear-style), `D == 5` only.
     QuinticTrinomial,
+}
+
+impl<F: Copy> AluExtMulKind<F> {
+    /// Resolve the extension-multiplication reduction for degree `d`.
+    ///
+    /// `d == 1` is the base field; `d == 5` with `quintic_trinomial` uses the
+    /// quintic trinomial reduction; every other degree is a binomial reduction
+    /// `x^d = w` and therefore requires `w` to be present. Returns `None` when a
+    /// binomial reduction is needed but `w` is `None`, so callers map that to
+    /// their own missing-`W` error.
+    ///
+    /// This is the single source of truth for the `(degree, w, quintic flag)`
+    /// trichotomy shared by the prove, native-verify, and recursive-verify paths.
+    pub fn resolve(d: usize, w: Option<F>, quintic_trinomial: bool) -> Option<Self> {
+        if d == 1 {
+            Some(Self::Base)
+        } else if d == 5 && quintic_trinomial {
+            Some(Self::QuinticTrinomial)
+        } else {
+            w.map(|w| Self::Binomial { w })
+        }
+    }
 }
 
 /// AIR for proving unified arithmetic operations.
@@ -139,7 +161,7 @@ pub struct AluAir<F: Copy, const D: usize = 1> {
 
 impl<F: Field + PrimeCharacteristicRing + Copy, const D: usize> AluAir<F, D> {
     /// Core builder: no preprocessed data, default min height and packed-Horner length.
-    const fn from_reduction(num_ops: usize, lanes: usize, ext_mul_kind: AluExtMulKind<F>) -> Self {
+    pub const fn from_reduction(num_ops: usize, lanes: usize, ext_mul_kind: AluExtMulKind<F>) -> Self {
         Self {
             num_ops,
             lanes,
@@ -152,7 +174,7 @@ impl<F: Field + PrimeCharacteristicRing + Copy, const D: usize> AluAir<F, D> {
     }
 
     /// Core builder with preprocessed data, computing the packed-Horner schedule.
-    fn from_reduction_with_preprocessed(
+    pub fn from_reduction_with_preprocessed(
         num_ops: usize,
         lanes: usize,
         ext_mul_kind: AluExtMulKind<F>,

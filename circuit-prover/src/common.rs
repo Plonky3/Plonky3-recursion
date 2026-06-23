@@ -9,7 +9,7 @@ use p3_field::{Algebra, ExtensionField, Field, PrimeCharacteristicRing, PrimeFie
 use p3_uni_stark::{StarkGenericConfig, SymbolicExpression, SymbolicExpressionExt, Val};
 use p3_util::log2_ceil_usize;
 
-use crate::air::{AluAir, ConstAir, PublicAir};
+use crate::air::{AluAir, AluExtMulKind, ConstAir, PublicAir};
 use crate::config::StarkField;
 use crate::field_params::ExtractBinomialW;
 use crate::{ConstraintProfile, DynamicAirEntry, TablePacking};
@@ -297,38 +297,25 @@ where
                 let horner_k = packing.horner_packed_steps();
                 // Store the converted 13-col format before building the AIR.
                 base_prep[idx] = prep_13col;
-                let alu_air = if D == 1 {
-                    AluAir::new_with_preprocessed(
-                        num_ops,
-                        effective_alu_lanes,
-                        base_prep[idx].clone(),
-                        horner_k,
-                    )
-                    .with_min_height(min_height)
-                } else if D == 5 && ExtF::alu_is_quintic_trinomial() {
-                    AluAir::new_quintic_trinomial_with_preprocessed(
-                        num_ops,
-                        effective_alu_lanes,
-                        base_prep[idx].clone(),
-                        horner_k,
-                    )
-                    .with_min_height(min_height)
-                } else {
-                    let w = w_binomial.expect(
-                        "ALU preprocessed path needs binomial W when D>1 and the element field is \
-                         not the quintic-trinomial ALU variant. Use D=1 for base-field circuits \
-                         (ExtF = Val<SC>); for extension circuits use D = ExtF::DIMENSION and a \
-                         binomial or supported quintic ExtF.",
-                    );
-                    AluAir::new_binomial_with_preprocessed(
-                        num_ops,
-                        effective_alu_lanes,
-                        w,
-                        base_prep[idx].clone(),
-                        horner_k,
-                    )
-                    .with_min_height(min_height)
-                };
+                let reduction = AluExtMulKind::resolve(
+                    D,
+                    w_binomial,
+                    D == 5 && ExtF::alu_is_quintic_trinomial(),
+                )
+                .expect(
+                    "ALU preprocessed path needs binomial W when D>1 and the element field is \
+                     not the quintic-trinomial ALU variant. Use D=1 for base-field circuits \
+                     (ExtF = Val<SC>); for extension circuits use D = ExtF::DIMENSION and a \
+                     binomial or supported quintic ExtF.",
+                );
+                let alu_air = AluAir::from_reduction_with_preprocessed(
+                    num_ops,
+                    effective_alu_lanes,
+                    reduction,
+                    base_prep[idx].clone(),
+                    horner_k,
+                )
+                .with_min_height(min_height);
                 let num_entries = alu_air.scheduled_entry_count();
                 let num_rows = num_entries.div_ceil(effective_alu_lanes);
                 table_preps.push((CircuitTableAir::Alu(alu_air), compute_degree(num_rows)));

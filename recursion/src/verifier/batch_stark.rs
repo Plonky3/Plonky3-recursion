@@ -10,7 +10,7 @@ use p3_air::{Air as P3Air, BaseAir as P3BaseAir};
 use p3_batch_stark::CommonData;
 use p3_circuit::symbolic::ColumnsTargets;
 use p3_circuit::{CircuitBuilder, NonPrimitiveOpId};
-use p3_circuit_prover::air::{AluAir, ConstAir, PublicAir};
+use p3_circuit_prover::air::{AluAir, AluExtMulKind, ConstAir, PublicAir};
 use p3_circuit_prover::batch_stark_prover::{
     AirVariant, DynamicAirEntry, NUM_PRIMITIVE_TABLES, PrimitiveTable, RowCounts, TableProver,
 };
@@ -128,49 +128,24 @@ where
     F: Field + PrimeCharacteristicRing + Copy,
     EF: ExtensionField<F> + ExtractBinomialW<F>,
 {
-    if TRACE_D == 1 {
-        let preprocessed = if num_ops == 0 {
-            Vec::new()
-        } else {
-            vec![F::ZERO; num_ops * AluAir::<F, TRACE_D>::preprocessed_lane_width()]
-        };
-        AluAir::<F, TRACE_D>::new_with_preprocessed(
-            num_ops,
-            lanes,
-            preprocessed,
-            horner_packed_steps,
-        )
-    } else if TRACE_D == 5 && alu_quintic_trinomial {
-        let preprocessed = if num_ops == 0 {
-            Vec::new()
-        } else {
-            vec![F::ZERO; num_ops * AluAir::<F, TRACE_D>::preprocessed_lane_width()]
-        };
-        AluAir::<F, TRACE_D>::new_quintic_trinomial_with_preprocessed(
-            num_ops,
-            lanes,
-            preprocessed,
-            horner_packed_steps,
-        )
+    let preprocessed = if num_ops == 0 {
+        Vec::new()
     } else {
-        let w = binomial_w_for_alu::<F, EF>();
-        let preprocessed = if num_ops == 0 {
-            Vec::new()
-        } else {
-            vec![F::ZERO; num_ops * AluAir::<F, TRACE_D>::preprocessed_lane_width()]
-        };
-        AluAir::<F, TRACE_D>::new_binomial_with_preprocessed(
-            num_ops,
-            lanes,
-            w,
-            preprocessed,
-            horner_packed_steps,
-        )
-    }
-}
-
-fn binomial_w_for_alu<F: Field, EF: ExtensionField<F> + ExtractBinomialW<F>>() -> F {
-    EF::extract_w().expect("extension field must provide binomial W for ALU AIR")
+        vec![F::ZERO; num_ops * AluAir::<F, TRACE_D>::preprocessed_lane_width()]
+    };
+    let reduction = AluExtMulKind::resolve(
+        TRACE_D,
+        EF::extract_w(),
+        TRACE_D == 5 && alu_quintic_trinomial,
+    )
+    .expect("extension field must provide binomial W for ALU AIR");
+    AluAir::<F, TRACE_D>::from_reduction_with_preprocessed(
+        num_ops,
+        lanes,
+        reduction,
+        preprocessed,
+        horner_packed_steps,
+    )
 }
 
 /// Build and attach a recursive verifier circuit for a circuit-prover [`BatchStarkProof`].

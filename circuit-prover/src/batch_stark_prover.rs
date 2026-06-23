@@ -30,7 +30,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tracing::instrument;
 
-use crate::air::{AluAir, ConstAir, PublicAir};
+use crate::air::{AluAir, AluExtMulKind, ConstAir, PublicAir};
 use crate::batch_stark_prover::dynamic_air::transmute_traces;
 use crate::batch_stark_prover::packing::{AirTableShape, TraceTablesLayout};
 use crate::common::{CircuitTableAir, NpoAirBuilder, NpoPreprocessor};
@@ -1024,28 +1024,16 @@ where
         let alu_num_ops = alu_prep.len() / AluAir::<Val<SC>, D>::preprocessed_lane_width();
         let horner_k = packing.horner_packed_steps();
         let alu_quintic = D == 5 && EF::alu_is_quintic_trinomial();
-        let alu_air: AluAir<Val<SC>, D> = if D == 1 {
-            AluAir::<Val<SC>, D>::new_with_preprocessed(alu_num_ops, alu_lanes, alu_prep, horner_k)
-                .with_min_height(min_height)
-        } else if alu_quintic {
-            AluAir::<Val<SC>, D>::new_quintic_trinomial_with_preprocessed(
-                alu_num_ops,
-                alu_lanes,
-                alu_prep,
-                horner_k,
-            )
-            .with_min_height(min_height)
-        } else {
-            let w = w_binomial.ok_or(BatchStarkProverError::MissingWForExtension)?;
-            AluAir::<Val<SC>, D>::new_binomial_with_preprocessed(
-                alu_num_ops,
-                alu_lanes,
-                w,
-                alu_prep,
-                horner_k,
-            )
-            .with_min_height(min_height)
-        };
+        let reduction = AluExtMulKind::resolve(D, w_binomial, alu_quintic)
+            .ok_or(BatchStarkProverError::MissingWForExtension)?;
+        let alu_air: AluAir<Val<SC>, D> = AluAir::<Val<SC>, D>::from_reduction_with_preprocessed(
+            alu_num_ops,
+            alu_lanes,
+            reduction,
+            alu_prep,
+            horner_k,
+        )
+        .with_min_height(min_height);
         let alu_matrix: RowMajorMatrix<Val<SC>> =
             alu_air.trace_to_matrix(&traces.alu_trace, min_height);
         let alu_scheduled_entries = alu_air.scheduled_entry_count();
@@ -1370,29 +1358,14 @@ where
                 .with_min_height(min_height),
         );
         let horner_k = packing.horner_packed_steps();
-        let alu_air: CircuitTableAir<SC, D> = if D == 1 {
-            CircuitTableAir::Alu(
-                AluAir::<Val<SC>, D>::new(proof.rows[PrimitiveTable::Alu], alu_lanes)
-                    .with_horner_pack_k(horner_k)
-                    .with_min_height(min_height),
-            )
-        } else if D == 5 && proof.alu_quintic_trinomial {
-            CircuitTableAir::Alu(
-                AluAir::<Val<SC>, D>::new_quintic_trinomial(
-                    proof.rows[PrimitiveTable::Alu],
-                    alu_lanes,
-                )
+        let reduction =
+            AluExtMulKind::resolve(D, w_binomial, D == 5 && proof.alu_quintic_trinomial)
+                .ok_or(BatchStarkProverError::MissingWForExtension)?;
+        let alu_air: CircuitTableAir<SC, D> = CircuitTableAir::Alu(
+            AluAir::<Val<SC>, D>::from_reduction(proof.rows[PrimitiveTable::Alu], alu_lanes, reduction)
                 .with_horner_pack_k(horner_k)
                 .with_min_height(min_height),
-            )
-        } else {
-            let w = w_binomial.ok_or(BatchStarkProverError::MissingWForExtension)?;
-            CircuitTableAir::Alu(
-                AluAir::<Val<SC>, D>::new_binomial(proof.rows[PrimitiveTable::Alu], alu_lanes, w)
-                    .with_horner_pack_k(horner_k)
-                    .with_min_height(min_height),
-            )
-        };
+        );
         let mut airs = vec![const_air, public_air, alu_air];
         let mut pvs: Vec<Vec<Val<SC>>> =
             Vec::with_capacity(NUM_PRIMITIVE_TABLES + proof.non_primitives.len());
