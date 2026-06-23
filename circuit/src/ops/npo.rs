@@ -164,3 +164,60 @@ impl Debug for NpoPrivateData {
 /// This allows each operation type to maintain its own state without
 /// coupling `ExecutionContext` to specific operation implementations.
 pub type OpStateMap = BTreeMap<NpoTypeId, Box<dyn OpExecutionState>>;
+
+#[cfg(test)]
+mod tests {
+    use super::NpoTypeId;
+    use crate::ops::{Poseidon1Config, Poseidon2Config};
+
+    /// The Poseidon1 and Poseidon2 stacks prove DIFFERENT permutations yet share
+    /// byte-identical `variant_name()` strings. Their separation on the
+    /// WitnessChecks CTL bus relies SOLELY on the `poseidon1_perm/` vs
+    /// `poseidon2_perm/` prefix in the `NpoTypeId`. If that prefix ever collapsed,
+    /// a Poseidon1 row could satisfy a Poseidon2 receive (or vice-versa), silently
+    /// breaking soundness.
+    #[test]
+    fn poseidon1_and_poseidon2_type_ids_never_collide() {
+        let pairs = [
+            (
+                Poseidon1Config::BABY_BEAR_D1_W16,
+                Poseidon2Config::BABY_BEAR_D1_W16,
+            ),
+            (
+                Poseidon1Config::BABY_BEAR_D4_W16,
+                Poseidon2Config::BABY_BEAR_D4_W16,
+            ),
+            (
+                Poseidon1Config::BABY_BEAR_D4_W24,
+                Poseidon2Config::BABY_BEAR_D4_W24,
+            ),
+            (
+                Poseidon1Config::KOALA_BEAR_D1_W16,
+                Poseidon2Config::KOALA_BEAR_D1_W16,
+            ),
+            (
+                Poseidon1Config::KOALA_BEAR_D4_W16,
+                Poseidon2Config::KOALA_BEAR_D4_W16,
+            ),
+            (
+                Poseidon1Config::KOALA_BEAR_D4_W24,
+                Poseidon2Config::KOALA_BEAR_D4_W24,
+            ),
+            (
+                Poseidon1Config::GOLDILOCKS_D2_W8,
+                Poseidon2Config::GOLDILOCKS_D2_W8,
+            ),
+        ];
+        for (c1, c2) in pairs {
+            // The variant names collide by design (same field/degree/width)...
+            assert_eq!(c1.variant_name(), c2.variant_name());
+            // ...so only the table prefix keeps the two permutations on separate buses.
+            assert_ne!(
+                NpoTypeId::poseidon1_perm(c1),
+                NpoTypeId::poseidon2_perm(c2),
+                "NpoTypeId collision for variant {}",
+                c1.variant_name()
+            );
+        }
+    }
+}
