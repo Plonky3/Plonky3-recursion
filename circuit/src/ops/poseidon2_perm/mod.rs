@@ -2,7 +2,6 @@
 //!
 //! This module contains all Poseidon2 permutation related code:
 //! - Builder API ([`Poseidon2PermCall`], [`CircuitBuilder::add_poseidon2_perm`])
-//! - Executor ([`executor::Poseidon2PermExecutor`])
 //! - Execution state ([`state::Poseidon2ExecutionState`])
 //! - Private data ([`Poseidon2PermPrivateData`])
 //! - Trace generation types ([`Poseidon2Params`], [`Poseidon2CircuitRow`], [`Poseidon2Trace`])
@@ -22,7 +21,6 @@
 mod builder;
 pub mod call;
 pub(crate) mod config;
-pub(crate) mod executor;
 pub(crate) mod plugin;
 pub mod state;
 pub mod trace;

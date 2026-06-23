@@ -7,7 +7,6 @@
 mod builder;
 pub mod call;
 pub(crate) mod config;
-pub(crate) mod executor;
 pub(crate) mod plugin;
 pub mod state;
 pub mod trace;

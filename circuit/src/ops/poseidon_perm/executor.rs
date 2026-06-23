@@ -1,43 +1,70 @@
-//! Poseidon2 permutation executor.
+//! Poseidon permutation executor — generic over [`PoseidonVariant`].
 
 use alloc::boxed::Box;
 use alloc::string::ToString;
 use alloc::vec::Vec;
 use alloc::{format, vec};
+use core::fmt;
+use core::marker::PhantomData;
 
 use p3_field::Field;
 
-use crate::CircuitError;
-use crate::ops::poseidon2_perm::config::{
-    Poseidon2Config, Poseidon2PermConfigData, Poseidon2PermExec,
+use super::{
+    PoseidonConfigApi, PoseidonExecutionState, PoseidonPermExec, PoseidonPermPrivateData,
+    PoseidonRowFields, PoseidonVariant,
 };
-use crate::ops::poseidon2_perm::state::{Poseidon2ExecutionState, Poseidon2PermPrivateData};
-use crate::ops::poseidon2_perm::trace::Poseidon2CircuitRow;
+use crate::CircuitError;
 use crate::ops::{ExecutionContext, NonPrimitiveExecutor, NpoTypeId, PreprocessedWriter};
 use crate::types::WitnessId;
 
-/// Runtime executor for a single Poseidon2 permutation row.
+/// Runtime executor for a single Poseidon permutation row.
 ///
 /// Handles both D=1 (base field) and D>1 (extension field) modes,
 /// as well as standard hashing and Merkle-path verification.
-#[derive(Debug, Clone)]
-pub(crate) struct Poseidon2PermExecutor {
+pub(crate) struct PoseidonPermExecutor<V: PoseidonVariant> {
     /// Operation type identifier for config/state lookups.
     op_type: NpoTypeId,
-    /// Poseidon2 parameters (width, rate, extension degree, etc.).
-    config: Poseidon2Config,
+    /// Permutation parameters (width, rate, extension degree, etc.).
+    config: V::Config,
     /// When true, this row starts a fresh chain instead of continuing
     /// from the previous permutation output.
     pub(crate) new_start: bool,
     /// When true, the executor arranges inputs for Merkle-path verification
     /// and conditionally swaps left/right halves based on the direction bit.
     pub(crate) merkle_path: bool,
+    _variant: PhantomData<V>,
 }
 
-impl Poseidon2PermExecutor {
+impl<V: PoseidonVariant> Clone for PoseidonPermExecutor<V> {
+    fn clone(&self) -> Self {
+        Self {
+            op_type: self.op_type.clone(),
+            config: self.config,
+            new_start: self.new_start,
+            merkle_path: self.merkle_path,
+            _variant: PhantomData,
+        }
+    }
+}
+
+impl<V: PoseidonVariant> fmt::Debug for PoseidonPermExecutor<V>
+where
+    V::Config: fmt::Debug,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PoseidonPermExecutor")
+            .field("op_type", &self.op_type)
+            .field("config", &self.config)
+            .field("new_start", &self.new_start)
+            .field("merkle_path", &self.merkle_path)
+            .finish()
+    }
+}
+
+impl<V: PoseidonVariant> PoseidonPermExecutor<V> {
     pub const fn new(
         op_type: NpoTypeId,
-        config: Poseidon2Config,
+        config: V::Config,
         new_start: bool,
         merkle_path: bool,
     ) -> Self {
@@ -46,11 +73,12 @@ impl Poseidon2PermExecutor {
             config,
             new_start,
             merkle_path,
+            _variant: PhantomData,
         }
     }
 
     #[inline]
-    const fn compact_d1_preprocessed_layout(&self) -> bool {
+    fn compact_d1_preprocessed_layout(&self) -> bool {
         self.config.d() == 1 && self.config.width_ext() == 16 && self.config.rate_ext() == 8
     }
 
@@ -68,8 +96,8 @@ impl Poseidon2PermExecutor {
     ///
     /// # Errors
     ///
-    /// Returns `Poseidon2ChainMissingPreviousState` when chaining is
-    /// requested but no prior output exists.
+    /// Returns a chain-missing error when chaining is requested but no prior
+    /// output exists.
     fn init_chain_state<F: Field>(
         &self,
         last_output: Option<&[F]>,
@@ -82,9 +110,7 @@ impl Poseidon2PermExecutor {
             return Ok(resolved);
         }
 
-        let prev = last_output.ok_or_else(|| CircuitError::Poseidon2ChainMissingPreviousState {
-            operation_index: ctx.operation_id(),
-        })?;
+        let prev = last_output.ok_or_else(|| V::chain_missing_error(ctx.operation_id()))?;
 
         if self.merkle_path {
             let n = self.config.rate_ext().min(prev.len());
@@ -159,7 +185,7 @@ impl Poseidon2PermExecutor {
         let Ok(private_data) = ctx.get_private_data() else {
             return Ok(None);
         };
-        let Some(data) = private_data.downcast_ref::<Poseidon2PermPrivateData<F>>() else {
+        let Some(data) = private_data.downcast_ref::<PoseidonPermPrivateData<F>>() else {
             return Ok(None);
         };
         if !self.merkle_path {
@@ -219,7 +245,7 @@ impl Poseidon2PermExecutor {
         &self,
         ctx: &'a ExecutionContext<'_, F>,
     ) -> Option<&'a Vec<F>> {
-        ctx.get_op_state::<Poseidon2ExecutionState<F>>(&self.op_type)
+        ctx.get_op_state::<PoseidonExecutionState<V, F>>(&self.op_type)
             .and_then(|s| {
                 if self.merkle_path {
                     s.last_output_merkle.as_ref()
@@ -241,7 +267,7 @@ impl Poseidon2PermExecutor {
         mmcs_bit: bool,
         input_values: Vec<F>,
         ctx: &ExecutionContext<'_, F>,
-    ) -> Result<Poseidon2CircuitRow<F>, CircuitError> {
+    ) -> Result<V::Row<F>, CircuitError> {
         let width_ext = self.config.width_ext();
         let rate_ext = self.config.rate_ext();
 
@@ -278,7 +304,7 @@ impl Poseidon2PermExecutor {
             "Execution row must have width_ext input limbs"
         );
 
-        Ok(Poseidon2CircuitRow {
+        Ok(V::build_row(PoseidonRowFields {
             new_start: self.new_start,
             merkle_path: self.merkle_path,
             mmcs_bit,
@@ -290,20 +316,20 @@ impl Poseidon2PermExecutor {
             output_indices,
             mmcs_index_sum_idx,
             mmcs_ctl_enabled,
-        })
+        }))
     }
 
     /// Construct the circuit trace row for D=1 (base field) mode.
     ///
     /// One CTL flag and witness index per physical input slot (`WIDTH` = 16) and per
     /// rate output slot (`RATE` = 8), matching the preprocessed column layout for
-    /// width-16 / rate-8 Poseidon2 AIR.
+    /// width-16 / rate-8 Poseidon AIR.
     fn build_base_trace_row<F: Field>(
         &self,
         inputs: &[Vec<WitnessId>],
         outputs: &[Vec<WitnessId>],
         input_values: &[F],
-    ) -> Poseidon2CircuitRow<F> {
+    ) -> V::Row<F> {
         let width = self.config.width();
         let rate_ext = self.config.rate_ext();
         let mut in_ctl = vec![false; width];
@@ -333,7 +359,7 @@ impl Poseidon2PermExecutor {
             }
         }
 
-        Poseidon2CircuitRow {
+        V::build_row(PoseidonRowFields {
             new_start: self.new_start,
             merkle_path: false,
             mmcs_bit: false,
@@ -345,7 +371,7 @@ impl Poseidon2PermExecutor {
             output_indices,
             mmcs_index_sum_idx: 0,
             mmcs_ctl_enabled: false,
-        }
+        })
     }
 
     /// Store the permutation output in chain state and append the trace row.
@@ -355,18 +381,19 @@ impl Poseidon2PermExecutor {
         &self,
         ctx: &mut ExecutionContext<'_, F>,
         output: Vec<F>,
-        row: Poseidon2CircuitRow<F>,
+        row: V::Row<F>,
     ) {
         let op_id = ctx.operation_id();
-        let state = ctx.get_op_state_mut::<Poseidon2ExecutionState<F>>(&self.op_type);
+        let state = ctx.get_op_state_mut::<PoseidonExecutionState<V, F>>(&self.op_type);
         let slot = if self.merkle_path {
             &mut state.last_output_merkle
         } else {
             &mut state.last_output_normal
         };
         let kind = if self.merkle_path { "merkle" } else { "normal" };
+        let debug_name = V::DEBUG_NAME;
         tracing::trace!(
-            "Poseidon2 op {op_id:?}: updating last_output_{kind} from {prev:?} to {output:?}",
+            "{debug_name} op {op_id:?}: updating last_output_{kind} from {prev:?} to {output:?}",
             prev = slot.as_deref(),
         );
         *slot = Some(output);
@@ -695,8 +722,8 @@ impl Poseidon2PermExecutor {
         preprocessed: &mut dyn PreprocessedWriter<F>,
     ) -> Result<(), CircuitError> {
         let width_ext = self.config.width_ext();
-        // D=1 non-Merkle: keep the compact flag layout expected by the D=1 Poseidon2 AIR (covers
-        // both `add_poseidon2_perm_base` and `add_poseidon2_perm` empty MMCS slots).
+        // D=1 non-Merkle: keep the compact flag layout expected by the D=1 Poseidon AIR (covers
+        // both `add_poseidon_perm_base` and `add_poseidon_perm` empty MMCS slots).
         if self.config.d() == 1 && !self.merkle_path {
             preprocessed.register_non_primitive_preprocessed_no_read(&self.op_type, &[F::ZERO]);
             preprocessed.register_non_primitive_preprocessed_no_read(&self.op_type, &[F::ZERO]);
@@ -734,17 +761,16 @@ impl Poseidon2PermExecutor {
     }
 }
 
-impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for Poseidon2PermExecutor {
+impl<V: PoseidonVariant, F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F>
+    for PoseidonPermExecutor<V>
+{
     fn execute(
         &self,
         inputs: &[Vec<WitnessId>],
         outputs: &[Vec<WitnessId>],
         ctx: &mut ExecutionContext<'_, F>,
     ) -> Result<(), CircuitError> {
-        let exec: Poseidon2PermExec<F> = ctx
-            .get_config(&self.op_type)?
-            .downcast_ref::<Poseidon2PermConfigData<F>>()
-            .map(|cfg| cfg.exec.clone())
+        let exec: PoseidonPermExec<F> = V::exec_from_config(ctx.get_config(&self.op_type)?)
             .ok_or_else(|| CircuitError::InvalidNonPrimitiveOpConfiguration {
                 op: self.op_type.clone(),
             })?;
@@ -824,6 +850,10 @@ mod tests {
 
     use super::*;
     use crate::ops::npo::NpoPrivateData;
+    use crate::ops::poseidon_perm::Poseidon2Variant;
+    use crate::ops::poseidon2_perm::config::Poseidon2PermConfigData;
+    use crate::ops::poseidon2_perm::state::Poseidon2ExecutionState;
+    use crate::ops::poseidon2_perm::{Poseidon2CircuitRow, Poseidon2Config};
     use crate::types::NonPrimitiveOpId;
 
     type F = BabyBear;
@@ -839,8 +869,8 @@ mod tests {
         config: Poseidon2Config,
         new_start: bool,
         merkle_path: bool,
-    ) -> Poseidon2PermExecutor {
-        Poseidon2PermExecutor::new(
+    ) -> PoseidonPermExecutor<Poseidon2Variant> {
+        PoseidonPermExecutor::<Poseidon2Variant>::new(
             NpoTypeId::poseidon2_perm(config),
             config,
             new_start,

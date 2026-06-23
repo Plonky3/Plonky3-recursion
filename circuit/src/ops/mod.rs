@@ -8,6 +8,7 @@ pub mod mmcs;
 pub mod perm;
 pub mod poseidon1_perm;
 pub mod poseidon2_perm;
+pub(crate) mod poseidon_perm;
 pub mod recompose;
 
 pub use context::*;
