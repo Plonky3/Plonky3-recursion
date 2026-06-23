@@ -4,6 +4,7 @@ resolver = "2"
 members = [
     "circuit",
     "circuit-prover",
+    "poseidon-circuit-air",
     "poseidon1-circuit-air",
     "poseidon2-circuit-air",
     "recursion",
@@ -89,6 +90,7 @@ unroll = { version = "0.1.5", default-features = false }
 p3-challenger-air = { path = "challenger-air", version = "0.1.0" }
 p3-circuit = { path = "circuit", version = "0.1.0" }
 p3-circuit-prover = { path = "circuit-prover", version = "0.1.0" }
+p3-poseidon-circuit-air = { path = "poseidon-circuit-air", version = "0.1.0" }
 p3-poseidon1-circuit-air = { path = "poseidon1-circuit-air", version = "0.1.0" }
 p3-poseidon2-circuit-air = { path = "poseidon2-circuit-air", version = "0.1.0" }
 p3-recursion = { path = "recursion", version = "0.1.0" }

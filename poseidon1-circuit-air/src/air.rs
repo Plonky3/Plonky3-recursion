@@ -847,8 +847,8 @@ pub(crate) fn eval<
     //     will be fed into the next permutation. Chaining constraints
     //     tie these to the current output.
     let next_bit = next.mmcs_bit;
-    let local_out = &local.poseidon1.ending_full_rounds[HALF_FULL_ROUNDS - 1].post;
-    let next_in = &next.poseidon1.inputs;
+    let local_out = &local.perm.ending_full_rounds[HALF_FULL_ROUNDS - 1].post;
+    let next_in = &next.perm.inputs;
 
     // Boolean constraint
     //
@@ -1401,7 +1401,7 @@ fn eval_interactions<
             let mut input_idx_limb: Vec<AB::Expr> = Vec::with_capacity(WITNESS_EXT_D + 1);
             input_idx_limb.push(idx);
             for d in 0..D {
-                input_idx_limb.push(local.poseidon1.inputs[limb_idx * D + d].into());
+                input_idx_limb.push(local.perm.inputs[limb_idx * D + d].into());
             }
             for _ in 0..(WITNESS_EXT_D - D) {
                 input_idx_limb.push(AB::Expr::ZERO);
@@ -1420,7 +1420,7 @@ fn eval_interactions<
             output_idx_limb.push(idx);
             for d in 0..D {
                 output_idx_limb.push(
-                    local.poseidon1.ending_full_rounds[HALF_FULL_ROUNDS - 1].post[limb_idx * D + d]
+                    local.perm.ending_full_rounds[HALF_FULL_ROUNDS - 1].post[limb_idx * D + d]
                         .into(),
                 );
             }
@@ -1456,7 +1456,7 @@ fn eval_interactions<
             let mut input_idx_limb: Vec<AB::Expr> = Vec::with_capacity(WITNESS_EXT_D + 1);
             input_idx_limb.push(limb.idx.into());
             for d in 0..D {
-                input_idx_limb.push(local.poseidon1.inputs[limb_idx * D + d].into());
+                input_idx_limb.push(local.perm.inputs[limb_idx * D + d].into());
             }
             for _ in 0..(WITNESS_EXT_D - D) {
                 input_idx_limb.push(AB::Expr::ZERO);
@@ -1475,7 +1475,7 @@ fn eval_interactions<
             output_idx_limb.push(limb.idx.into());
             for d in 0..D {
                 output_idx_limb.push(
-                    local.poseidon1.ending_full_rounds[HALF_FULL_ROUNDS - 1].post[limb_idx * D + d]
+                    local.perm.ending_full_rounds[HALF_FULL_ROUNDS - 1].post[limb_idx * D + d]
                         .into(),
                 );
             }
