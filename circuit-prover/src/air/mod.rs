@@ -13,5 +13,5 @@ pub mod test_utils;
 
 pub use alu_air::{AluAir, AluExtMulKind};
 pub use const_air::ConstAir;
-pub use public_air::PublicAir;
+pub use public_air::{PublicAir, WitnessSendAir};
 pub use recompose_air::RecomposeAir;

@@ -1,9 +1,10 @@
-//! [`PublicAir`] stores public inputs either in the base field or the extension field (of extension degree `D`).
+//! [`WitnessSendAir`] sends witness values to the global witness bus, either in the base field
+//! or the extension field (of extension degree `D`).
 //!
 //! # Column Layout
 //!
-//! For each logical public input (lane) we allocate `D` base-field columns for the value.
-//! The runtime parameter `lanes` controls how many independent public inputs are packed
+//! For each logical witness send (lane) we allocate `D` base-field columns for the value.
+//! The runtime parameter `lanes` controls how many independent witness sends are packed
 //! side-by-side in a single row of the trace.
 //!
 //! We also allocate 2 preprocessed base-field columns per lane:
@@ -33,10 +34,13 @@ use tracing::instrument;
 
 use crate::air::column_layout::{WITNESS_LOOKUP_PREP_COL_MAP, WITNESS_LOOKUP_PREP_LANE_WIDTH};
 
-/// PublicAir: vector-valued public input binding with generic extension degree D.
+/// Lanes-parameterized witness-bus send with generic extension degree D.
+///
+/// [`PublicAir`] is an alias for this type; [`ConstAir`](super::const_air::ConstAir) wraps it with
+/// a single lane.
 /// Layout per row: [value[0..D)] repeated `lanes` times.
 #[derive(Debug, Clone)]
-pub struct PublicAir<F, const D: usize = 1> {
+pub struct WitnessSendAir<F, const D: usize = 1> {
     /// Total number of logical public input operations in the trace.
     pub num_ops: usize,
     /// Number of independent public inputs packed per trace row.
@@ -48,8 +52,11 @@ pub struct PublicAir<F, const D: usize = 1> {
     _phantom: PhantomData<F>,
 }
 
-impl<F: Field, const D: usize> PublicAir<F, D> {
-    /// Construct a new `PublicAir` instance.
+/// Public-input table: a [`WitnessSendAir`] whose lanes pack independent public inputs.
+pub type PublicAir<F, const D: usize = 1> = WitnessSendAir<F, D>;
+
+impl<F: Field, const D: usize> WitnessSendAir<F, D> {
+    /// Construct a new `WitnessSendAir` instance.
     ///
     /// - `num_ops`: total number of public input operations to be proven,
     /// - `lanes`: how many operations are packed side-by-side in each row.
@@ -66,7 +73,7 @@ impl<F: Field, const D: usize> PublicAir<F, D> {
         }
     }
 
-    /// Construct a new `PublicAir` instance with preprocessed data.
+    /// Construct a new `WitnessSendAir` instance with preprocessed data.
     ///
     /// - `num_ops`: total number of public input operations to be proven,
     /// - `lanes`: how many operations are packed side-by-side in each row.
@@ -117,7 +124,7 @@ impl<F: Field, const D: usize> PublicAir<F, D> {
 
     /// Flatten a PublicTrace over an extension into a base-field matrix with lanes packing.
     #[inline]
-    #[instrument(skip_all, name = "PublicAir::build_trace")]
+    #[instrument(skip_all, name = "WitnessSendAir::build_trace")]
     pub fn trace_to_matrix<ExtF: BasedVectorSpace<F>>(
         trace: &PublicTrace<ExtF>,
         lanes: usize,
@@ -163,7 +170,7 @@ impl<F: Field, const D: usize> PublicAir<F, D> {
     }
 }
 
-impl<F: Field, const D: usize> BaseAir<F> for PublicAir<F, D> {
+impl<F: Field, const D: usize> BaseAir<F> for WitnessSendAir<F, D> {
     fn width(&self) -> usize {
         self.total_width()
     }
@@ -188,7 +195,7 @@ impl<F: Field, const D: usize> BaseAir<F> for PublicAir<F, D> {
     }
 }
 
-impl<AB: AirBuilder + InteractionBuilder, const D: usize> Air<AB> for PublicAir<AB::F, D>
+impl<AB: AirBuilder + InteractionBuilder, const D: usize> Air<AB> for WitnessSendAir<AB::F, D>
 where
     AB::F: Field,
 {

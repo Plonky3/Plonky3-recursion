@@ -24,11 +24,9 @@
 //!
 //! - send `(index, value[0..D])` with multiplicity `ext_mult`
 
-use alloc::vec;
 use alloc::vec::Vec;
-use core::marker::PhantomData;
 
-use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
+use p3_air::{Air, AirBuilder, BaseAir};
 use p3_circuit::tables::ConstTrace;
 use p3_field::{BasedVectorSpace, Field};
 use p3_lookup::builder::InteractionBuilder;
@@ -36,7 +34,8 @@ use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
 use tracing::instrument;
 
-use crate::air::column_layout::{WITNESS_LOOKUP_PREP_COL_MAP, WITNESS_LOOKUP_PREP_LANE_WIDTH};
+use crate::air::column_layout::WITNESS_LOOKUP_PREP_LANE_WIDTH;
+use crate::air::public_air::WitnessSendAir;
 
 /// ConstAir: vector-valued constant binding with generic extension degree D.
 ///
@@ -44,41 +43,28 @@ use crate::air::column_layout::{WITNESS_LOOKUP_PREP_COL_MAP, WITNESS_LOOKUP_PREP
 /// It serves as the source of truth for constant values in the system, with each row
 /// representing a (value, index) pair where the index corresponds to a WitnessId.
 ///
+/// It is the single-lane case of [`WitnessSendAir`], which it wraps for the AIR behavior.
+///
 /// Layout per row: [value[0..D-1], index] → width = D + 1
 /// - value[0..D-1]: Extension field value represented as D base field coefficients
 /// - index: Preprocessed WitnessId that this constant binds to
 #[derive(Debug, Clone)]
-pub struct ConstAir<F, const D: usize = 1> {
-    /// Total number of constants defined in this trace.
-    pub height: usize,
-    /// Preprocessed values, corresponding to the indices in the trace.
-    pub preprocessed: Vec<F>,
-    /// Minimum trace height (for FRI compatibility with higher log_final_poly_len).
-    pub min_height: usize,
-    /// Marker tying this AIR to its base field.
-    _phantom: PhantomData<F>,
-}
+pub struct ConstAir<F, const D: usize = 1>(WitnessSendAir<F, D>);
 
 impl<F: Field, const D: usize> ConstAir<F, D> {
     /// Construct a new `ConstAir` instance.
     ///
     /// - `height`: The number of constant values to be exposed.
     pub const fn new(height: usize) -> Self {
-        Self {
-            height,
-            preprocessed: Vec::new(),
-            min_height: 1,
-            _phantom: PhantomData,
-        }
+        Self(WitnessSendAir::new(height, 1))
     }
 
     pub const fn new_with_preprocessed(height: usize, preprocessed: Vec<F>) -> Self {
-        Self {
+        Self(WitnessSendAir::new_with_preprocessed(
             height,
+            1,
             preprocessed,
-            min_height: 1,
-            _phantom: PhantomData,
-        }
+        ))
     }
 
     /// Set the minimum trace height for FRI compatibility.
@@ -86,7 +72,7 @@ impl<F: Field, const D: usize> ConstAir<F, D> {
     /// FRI requires: `log_trace_height > log_final_poly_len + log_blowup`
     /// So `min_height` should be >= `2^(log_final_poly_len + log_blowup + 1)`.
     pub const fn with_min_height(mut self, min_height: usize) -> Self {
-        self.min_height = min_height;
+        self.0.min_height = min_height;
         self
     }
 
@@ -142,26 +128,23 @@ impl<F: Field, const D: usize> ConstAir<F, D> {
 
 impl<F: Field, const D: usize> BaseAir<F> for ConstAir<F, D> {
     fn width(&self) -> usize {
-        D
+        self.0.width()
     }
 
     fn preprocessed_width(&self) -> usize {
-        WITNESS_LOOKUP_PREP_LANE_WIDTH
+        self.0.preprocessed_width()
     }
 
     fn preprocessed_trace(&self) -> Option<RowMajorMatrix<F>> {
-        let width = Self::preprocessed_width();
-        let mut mat = RowMajorMatrix::from_flat_padded(self.preprocessed.to_vec(), width, F::ZERO);
-        mat.pad_to_min_power_of_two_height(self.min_height, F::ZERO);
-        Some(mat)
+        self.0.preprocessed_trace()
     }
 
     fn main_next_row_columns(&self) -> Vec<usize> {
-        vec![]
+        self.0.main_next_row_columns()
     }
 
     fn preprocessed_next_row_columns(&self) -> Vec<usize> {
-        vec![]
+        self.0.preprocessed_next_row_columns()
     }
 }
 
@@ -170,21 +153,7 @@ where
     AB::F: Field,
 {
     fn eval(&self, builder: &mut AB) {
-        // No constraints for constants. Just emit the WitnessChecks send: the (witness_idx,
-        // value) tuple is published with the row's preprocessed multiplicity.
-        let main = builder.main();
-        let main_local = main.current_slice();
-        let prep = builder.preprocessed().clone();
-        let prep_local = prep.current_slice();
-
-        let multiplicity: AB::Expr = prep_local[WITNESS_LOOKUP_PREP_COL_MAP.multiplicity].into();
-        let witness_idx: AB::Expr = prep_local[WITNESS_LOOKUP_PREP_COL_MAP.witness_idx].into();
-
-        let mut fields: Vec<AB::Expr> = Vec::with_capacity(1 + D);
-        fields.push(witness_idx);
-        fields.extend(main_local[..D].iter().map(|&v| v.into()));
-
-        builder.push_interaction("WitnessChecks", fields, multiplicity, 1);
+        self.0.eval(builder);
     }
 }
 
