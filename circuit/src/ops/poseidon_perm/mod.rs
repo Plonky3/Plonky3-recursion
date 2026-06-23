@@ -5,6 +5,7 @@
 //! private-data layout are identical and live here, parameterized over a
 //! zero-sized [`PoseidonVariant`] marker.
 
+mod builder;
 mod call;
 mod executor;
 mod plugin;
@@ -169,6 +170,9 @@ pub trait PoseidonVariant: Send + Sync + 'static {
     /// Extract the `(new_start, merkle_path)` flags from the operation params.
     fn perm_params<F>(params: &NonPrimitiveOpParams<F>) -> Option<(bool, bool)>;
 
+    /// Build this variant's builder-side operation params for one perm row.
+    fn perm_op_params<F>(new_start: bool, merkle_path: bool) -> NonPrimitiveOpParams<F>;
+
     /// Wrap a permutation closure in this variant's `NpoConfig` payload.
     fn make_config_data<F: Field>(exec: PoseidonPermExec<F>) -> NpoConfig;
 
@@ -207,6 +211,13 @@ impl PoseidonVariant for Poseidon1Variant {
 
     fn perm_params<F>(params: &NonPrimitiveOpParams<F>) -> Option<(bool, bool)> {
         params.as_poseidon1_perm()
+    }
+
+    fn perm_op_params<F>(new_start: bool, merkle_path: bool) -> NonPrimitiveOpParams<F> {
+        NonPrimitiveOpParams::Poseidon1Perm {
+            new_start,
+            merkle_path,
+        }
     }
 
     fn make_config_data<F: Field>(exec: PoseidonPermExec<F>) -> NpoConfig {
@@ -258,6 +269,13 @@ impl PoseidonVariant for Poseidon2Variant {
 
     fn perm_params<F>(params: &NonPrimitiveOpParams<F>) -> Option<(bool, bool)> {
         params.as_poseidon2_perm()
+    }
+
+    fn perm_op_params<F>(new_start: bool, merkle_path: bool) -> NonPrimitiveOpParams<F> {
+        NonPrimitiveOpParams::Poseidon2Perm {
+            new_start,
+            merkle_path,
+        }
     }
 
     fn make_config_data<F: Field>(exec: PoseidonPermExec<F>) -> NpoConfig {
