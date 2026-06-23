@@ -7,6 +7,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use alloc::{format, vec};
 
+use hashbrown::HashMap;
 #[cfg(debug_assertions)]
 use p3_air::DebugConstraintBuilder;
 use p3_air::{Air, BaseAir};
@@ -16,14 +17,23 @@ use p3_circuit::ops::{
     NonPrimitivePreprocessedMap, NpoTypeId, Poseidon1Config, Poseidon2Config, PrimitiveOpType,
 };
 use p3_circuit::tables::Traces;
+use p3_circuit::{CircuitError, PreprocessedColumns};
 use p3_commit::Pcs;
 use p3_field::extension::{BinomialExtensionField, BinomiallyExtendable};
-use p3_field::{Algebra, BasedVectorSpace, Field, PrimeCharacteristicRing, PrimeField};
+use p3_field::{
+    Algebra, BasedVectorSpace, ExtensionField, Field, PrimeCharacteristicRing, PrimeField,
+    PrimeField64,
+};
 use p3_lookup::Lookups;
 use p3_lookup::folder::{ProverConstraintFolderWithLookups, VerifierConstraintFolderWithLookups};
 use p3_lookup::symbolic::InteractionSymbolicBuilder;
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
+use p3_poseidon_circuit_air::{
+    PoseidonPrepInputLimb, poseidon_d1_compact_preprocessed_header_cols,
+    poseidon_preprocessed_row_width, poseidon_preprocessed_row_width_for_air,
+    poseidon_uses_compact_d1_preprocessed,
+};
 use p3_uni_stark::{SymbolicExpression, SymbolicExpressionExt};
 use p3_util::log2_strict_usize;
 use serde::{Deserialize, Serialize};
@@ -74,6 +84,152 @@ const fn poseidon_d1_witness_bus_dim(witness_ctl_scale: u32) -> Option<u32> {
         5 => Some(5),
         _ => None,
     }
+}
+
+/// Applies a Poseidon variant's preprocessing pass to the generic preprocessed columns.
+///
+/// `prefix` is the variant's CTL bus prefix (e.g. `poseidon1_perm/`); only op types under it
+/// are touched. `parse_cfg` resolves a variant-name suffix to its `(d, width_ext, rate_ext)`.
+fn poseidon_preprocess_for_prover<F, ExtF, const D: usize>(
+    preprocessed: &mut PreprocessedColumns<ExtF, D>,
+    prefix: &str,
+    parse_cfg: impl Fn(&str) -> Option<(usize, usize, usize)>,
+) -> Result<NonPrimitivePreprocessedMap<F>, CircuitError>
+where
+    F: StarkField + PrimeField64,
+    ExtF: ExtensionField<F>,
+{
+    let neg_one = F::NEG_ONE;
+
+    // Phase 1: scan preprocessed data to count mmcs_index_sum conditional reads,
+    // and update `ext_reads` accordingly. This must happen before computing multiplicities.
+    for (op_type, prep) in preprocessed.non_primitive.iter() {
+        let op_str = op_type.as_str();
+        if !op_str.starts_with(prefix) {
+            continue;
+        }
+        let rest = op_str
+            .strip_prefix(prefix)
+            .ok_or(CircuitError::InvalidPreprocessedValues)?;
+        let (d, w_ext, r_ext) = parse_cfg(rest).ok_or(CircuitError::InvalidPreprocessedValues)?;
+        let prep_row_width = poseidon_preprocessed_row_width_for_air(d, w_ext, r_ext);
+
+        let prep_base: Vec<F> = prep
+            .iter()
+            .map(|v| v.as_base().ok_or(CircuitError::InvalidPreprocessedValues))
+            .collect::<Result<Vec<_>, CircuitError>>()?;
+
+        if !prep_base.len().is_multiple_of(prep_row_width) {
+            return Err(CircuitError::InvalidPreprocessedValues);
+        }
+
+        let num_rows = prep_base.len() / prep_row_width;
+        let trace_height = num_rows.next_power_of_two();
+        let has_padding = trace_height > num_rows;
+        let compact = poseidon_uses_compact_d1_preprocessed(d, w_ext, r_ext);
+        let tail = if compact {
+            poseidon_d1_compact_preprocessed_header_cols(r_ext) + w_ext + r_ext + r_ext
+        } else {
+            poseidon_preprocessed_row_width(w_ext, r_ext) - 4
+        };
+
+        for row_idx in 0..num_rows {
+            let row_start = row_idx * prep_row_width;
+            let mmcs_flag_off = row_start + tail + 1;
+            let current_mmcs_merkle_flag = prep_base[mmcs_flag_off];
+
+            // Check if next row exists and has new_start = 1.
+            // The Poseidon AIR pads the trace and sets new_start = 1 in the first
+            // padding row (only if padding exists), so the last real row can trigger a
+            // lookup if its mmcs_merkle_flag = 1 and there is padding.
+            let next_new_start = if row_idx + 1 < num_rows {
+                let next_start = (row_idx + 1) * prep_row_width;
+                prep_base[next_start + tail + 2]
+            } else if has_padding {
+                F::ONE
+            } else {
+                prep_base[tail + 2]
+            };
+
+            let multiplicity = current_mmcs_merkle_flag * next_new_start;
+            if multiplicity != F::ZERO {
+                let mmcs_idx_u64 = F::as_canonical_u64(&prep_base[row_start + tail]);
+                let mmcs_witness_idx = (mmcs_idx_u64 as usize) / D;
+
+                if mmcs_witness_idx >= preprocessed.ext_reads.len() {
+                    preprocessed.ext_reads.resize(mmcs_witness_idx + 1, 0);
+                }
+                preprocessed.ext_reads[mmcs_witness_idx] += 1;
+            }
+        }
+    }
+
+    // Phase 2: update out_ctl values in the base-field preprocessed data.
+    //
+    // Duplicate creators (from optimizer witness_rewrite deduplication)
+    // are recorded in plugin-owned metadata under this op_type. For those, out_ctl = -1
+    // (reader contribution). For first-occurrence creators, out_ctl = +ext_reads[wid].
+    let mut non_primitive_base: NonPrimitivePreprocessedMap<F> = HashMap::new();
+    for (op_type, prep) in preprocessed.non_primitive.iter() {
+        let op_str = op_type.as_str();
+        if !op_str.starts_with(prefix) {
+            continue;
+        }
+        let rest = op_str
+            .strip_prefix(prefix)
+            .ok_or(CircuitError::InvalidPreprocessedValues)?;
+        let (d, w_ext, r_ext) = parse_cfg(rest).ok_or(CircuitError::InvalidPreprocessedValues)?;
+        let prep_row_width = poseidon_preprocessed_row_width_for_air(d, w_ext, r_ext);
+
+        let dup_wids = preprocessed.dup_npo_outputs.get(op_type);
+
+        let mut prep_base: Vec<F> = prep
+            .iter()
+            .map(|v| v.as_base().ok_or(CircuitError::InvalidPreprocessedValues))
+            .collect::<Result<Vec<_>, CircuitError>>()?;
+
+        if !prep_base.len().is_multiple_of(prep_row_width) {
+            return Err(CircuitError::InvalidPreprocessedValues);
+        }
+
+        let num_rows = prep_base.len() / prep_row_width;
+        let compact = poseidon_uses_compact_d1_preprocessed(d, w_ext, r_ext);
+
+        for row_idx in 0..num_rows {
+            let row_start = row_idx * prep_row_width;
+            let out_base = if compact {
+                row_start + poseidon_d1_compact_preprocessed_header_cols(r_ext) + w_ext
+            } else {
+                row_start + w_ext * size_of::<PoseidonPrepInputLimb<u8>>()
+            };
+            for j in 0..r_ext {
+                let (o0, ctl_off) = if compact {
+                    (out_base + j, out_base + r_ext + j)
+                } else {
+                    let o = out_base + j * 2;
+                    (o, o + 1)
+                };
+                let out_ctl = prep_base[ctl_off];
+                if out_ctl != F::ZERO {
+                    let idx = prep_base[o0];
+                    let out_wid = F::as_canonical_u64(&idx) as usize / D;
+                    let is_dup = dup_wids
+                        .and_then(|d| d.get(out_wid).copied())
+                        .unwrap_or(false);
+                    prep_base[ctl_off] = if is_dup {
+                        neg_one
+                    } else {
+                        let n_reads = preprocessed.ext_reads.get(out_wid).copied().unwrap_or(0);
+                        F::from_u32(n_reads)
+                    };
+                }
+            }
+        }
+
+        non_primitive_base.insert(op_type.clone(), prep_base);
+    }
+
+    Ok(non_primitive_base)
 }
 
 /// Opaque variant tag for a non-primitive AIR in a batch proof.
