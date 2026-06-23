@@ -451,3 +451,106 @@ where
 
     Ok(Some(Box::new(RecomposeTrace { operations, kind })))
 }
+
+#[cfg(test)]
+mod tests {
+    use p3_test_utils::baby_bear_params::{BabyBear, PrimeCharacteristicRing};
+
+    use super::*;
+
+    type F = BabyBear;
+
+    /// One registration event recorded against the preprocessed writer.
+    #[derive(Debug, PartialEq)]
+    enum Reg {
+        OutputIndex(WitnessId),
+        Value(F),
+    }
+
+    /// Records the exact sequence of preprocessed registrations.
+    #[derive(Default)]
+    struct MockWriter {
+        events: Vec<Reg>,
+    }
+
+    impl PreprocessedWriter<F> for MockWriter {
+        fn witness_index_as_field(&self, _wid: WitnessId) -> F {
+            F::ZERO
+        }
+        fn increment_ext_reads(&mut self, _wids: &[WitnessId]) {}
+        fn register_non_primitive_output_index(&mut self, _op_type: &NpoTypeId, wids: &[WitnessId]) {
+            self.events
+                .extend(wids.iter().map(|&w| Reg::OutputIndex(w)));
+        }
+        fn register_non_primitive_witness_reads(
+            &mut self,
+            _op_type: &NpoTypeId,
+            _wids: &[WitnessId],
+        ) -> Result<(), CircuitError> {
+            Ok(())
+        }
+        fn register_non_primitive_preprocessed_no_read(&mut self, _op_type: &NpoTypeId, values: &[F]) {
+            self.events.extend(values.iter().map(|&v| Reg::Value(v)));
+        }
+    }
+
+    fn dummy_recompose_fn() -> RecomposeFn<F> {
+        Arc::new(|_: &[F]| F::ZERO)
+    }
+
+    /// Recompose has zero local AIR constraints; its soundness rests entirely on the
+    /// WitnessChecks CTL bus. The security-relevant code is which witness INDICES the
+    /// preprocess step advertises as bus creators (the multiplicity is a placeholder
+    /// overwritten prover-side). Pin that row shape so it cannot silently drift.
+    #[test]
+    fn standard_recompose_advertises_only_the_ef_output() {
+        let exec = RecomposeExecutor::new(4, dummy_recompose_fn(), NpoTypeId::recompose(), false);
+        let inputs = vec![vec![
+            WitnessId(10),
+            WitnessId(11),
+            WitnessId(12),
+            WitnessId(13),
+        ]];
+        let outputs = vec![vec![WitnessId(99)]];
+        let mut writer = MockWriter::default();
+        exec.preprocess(&inputs, &outputs, &mut writer).unwrap();
+        assert_eq!(
+            writer.events,
+            vec![Reg::OutputIndex(WitnessId(99)), Reg::Value(F::ONE)]
+        );
+    }
+
+    #[test]
+    fn coeff_recompose_advertises_output_then_each_coefficient() {
+        let exec = RecomposeExecutor::new(
+            4,
+            dummy_recompose_fn(),
+            NpoTypeId::recompose_with_coeff_lookups(),
+            true,
+        );
+        let inputs = vec![vec![
+            WitnessId(10),
+            WitnessId(11),
+            WitnessId(12),
+            WitnessId(13),
+        ]];
+        let outputs = vec![vec![WitnessId(99)]];
+        let mut writer = MockWriter::default();
+        exec.preprocess(&inputs, &outputs, &mut writer).unwrap();
+        assert_eq!(
+            writer.events,
+            vec![
+                Reg::OutputIndex(WitnessId(99)),
+                Reg::Value(F::ONE),
+                Reg::OutputIndex(WitnessId(10)),
+                Reg::Value(F::ONE),
+                Reg::OutputIndex(WitnessId(11)),
+                Reg::Value(F::ONE),
+                Reg::OutputIndex(WitnessId(12)),
+                Reg::Value(F::ONE),
+                Reg::OutputIndex(WitnessId(13)),
+                Reg::Value(F::ONE),
+            ]
+        );
+    }
+}
