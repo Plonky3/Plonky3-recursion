@@ -310,7 +310,9 @@ where
                         inst.base_opened_values
                             .trace_next
                             .clone()
-                            .expect("trace_next is always present"),
+                            .ok_or(GenerationError::InvalidProofShape(
+                                "opened values lack trace_next",
+                            ))?,
                     ),
                 ],
             ))

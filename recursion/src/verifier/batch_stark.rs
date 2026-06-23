@@ -227,7 +227,12 @@ where
     proof
         .validate()
         .map_err(|e| VerificationError::InvalidProofShape(e.to_string()))?;
-    assert_eq!(proof.ext_degree, TRACE_D, "trace extension degree mismatch");
+    if proof.ext_degree != TRACE_D {
+        return Err(VerificationError::InvalidProofShape(format!(
+            "trace extension degree mismatch: proof declares {} but verifier expects {TRACE_D}",
+            proof.ext_degree
+        )));
+    }
     let rows: RowCounts = proof.rows;
     let packing = proof.table_packing.clone();
     let public_lanes = packing.public_lanes();
