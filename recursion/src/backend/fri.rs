@@ -505,10 +505,6 @@ where
         })
     }
 
-    fn challenger_perm_config(&self) -> Option<Box<dyn ChallengerPermConfig>> {
-        Some(Box::new(self.0.challenger_perm_config))
-    }
-
     fn non_primitive_preprocessors(&self) -> Vec<Box<dyn NpoPreprocessor<Val<SC>>>> {
         let cl = self.0.challenger_perm_config.extension_degree() != 2;
         let perm_prep = if self.0.challenger_perm_config.as_poseidon1().is_some() {
@@ -619,10 +615,6 @@ where
         })
     }
 
-    fn challenger_perm_config(&self) -> Option<Box<dyn ChallengerPermConfig>> {
-        Some(Box::new(self.0.challenger_perm_config))
-    }
-
     fn non_primitive_preprocessors(&self) -> Vec<Box<dyn NpoPreprocessor<Val<SC>>>> {
         let cl = self.0.challenger_perm_config.extension_degree() != 4;
         let perm_prep = if self.0.challenger_perm_config.as_poseidon1().is_some() {
@@ -731,10 +723,6 @@ where
         SC::with_fri_opening_proof(prev, |opening_proof| {
             SC::set_fri_private_data(runner, op_ids, opening_proof)
         })
-    }
-
-    fn challenger_perm_config(&self) -> Option<Box<dyn ChallengerPermConfig>> {
-        Some(Box::new(self.0.challenger_perm_config))
     }
 
     fn non_primitive_preprocessors(&self) -> Vec<Box<dyn NpoPreprocessor<Val<SC>>>> {

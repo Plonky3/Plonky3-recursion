@@ -29,7 +29,7 @@ use tracing::instrument;
 use crate::traits::{LookupMetadata, RecursiveAir};
 use crate::types::RecursiveLagrangeSelectors;
 use crate::verifier::VerificationError;
-use crate::{ChallengerPermConfig, Target};
+use crate::Target;
 
 fn proof_shape_err(e: &impl ToString) -> VerificationError {
     VerificationError::InvalidProofShape(e.to_string())
@@ -169,11 +169,6 @@ where
         op_ids: &[NonPrimitiveOpId],
         prev: &RecursionInput<'_, SC, A>,
     ) -> Result<(), &'static str>;
-
-    /// Challenger permutation config for the in-circuit verifier (e.g. for Fiat–Shamir). Default none.
-    fn challenger_perm_config(&self) -> Option<Box<dyn ChallengerPermConfig>> {
-        None
-    }
 
     /// Non-primitive preprocessors for this extension degree (e.g. for NPOs that need preprocessing).
     fn non_primitive_preprocessors(&self) -> Vec<Box<dyn NpoPreprocessor<Val<SC>>>> {
