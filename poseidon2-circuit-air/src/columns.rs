@@ -1,8 +1,6 @@
 //! Column definitions for the Poseidon2 circuit AIR.
 
 use p3_poseidon_circuit_air::circuit_cols_add_two;
-use p3_poseidon2_air::Poseidon2Cols;
-
 pub use p3_poseidon_circuit_air::{
     POSEIDON_LIMBS as POSEIDON2_LIMBS,
     POSEIDON_PUBLIC_OUTPUT_LIMBS as POSEIDON2_PUBLIC_OUTPUT_LIMBS,
@@ -14,6 +12,7 @@ pub use p3_poseidon_circuit_air::{
     poseidon_preprocessed_row_width_for_air as poseidon2_preprocessed_row_width_for_air,
     poseidon_uses_compact_d1_preprocessed as poseidon2_uses_compact_d1_preprocessed,
 };
+use p3_poseidon2_air::Poseidon2Cols;
 
 /// Compile-time guard pinning the [`Poseidon2CircuitCols`] `#[repr(C)]` split.
 ///

@@ -48,7 +48,9 @@ impl<F: Field> CircuitBuilder<F> {
             op_type,
             input_exprs,
             output_labels,
-            Some(V::perm_op_params::<F>(call.new_start, call.merkle_path)),
+            // Extension-field perm rows carry no sponge length tag (the ext-field challenger
+            // applies prefix-free padding at the challenger level, not in the AIR).
+            Some(V::perm_op_params::<F>(call.new_start, call.merkle_path, 0)),
             tag,
         );
         Ok((op_id, outputs))
@@ -82,7 +84,11 @@ impl<F: Field> CircuitBuilder<F> {
             op_type,
             input_exprs.into(),
             output_labels.into(),
-            Some(V::perm_op_params::<F>(call.new_start, false)),
+            Some(V::perm_op_params::<F>(
+                call.new_start,
+                false,
+                call.absorb_len,
+            )),
             tag,
         );
 

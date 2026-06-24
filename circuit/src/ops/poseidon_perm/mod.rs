@@ -14,10 +14,9 @@ mod state;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
+pub(crate) use call::{PoseidonPermCall, PoseidonPermCallBase};
 use p3_field::Field;
 use p3_poseidon1_circuit_air::Poseidon1CircuitRow;
-
-pub(crate) use call::{PoseidonPermCall, PoseidonPermCallBase};
 pub(crate) use plugin::PoseidonCircuitPlugin;
 pub(crate) use state::PoseidonExecutionState;
 pub use state::PoseidonPermPrivateData;
@@ -167,11 +166,15 @@ pub trait PoseidonVariant: Send + Sync + 'static {
     /// Error returned when chaining is requested but no prior output exists.
     fn chain_missing_error(operation_index: NonPrimitiveOpId) -> CircuitError;
 
-    /// Extract the `(new_start, merkle_path)` flags from the operation params.
-    fn perm_params<F>(params: &NonPrimitiveOpParams<F>) -> Option<(bool, bool)>;
+    /// Extract the `(new_start, merkle_path, absorb_len)` row data from the operation params.
+    fn perm_params<F>(params: &NonPrimitiveOpParams<F>) -> Option<(bool, bool, usize)>;
 
     /// Build this variant's builder-side operation params for one perm row.
-    fn perm_op_params<F>(new_start: bool, merkle_path: bool) -> NonPrimitiveOpParams<F>;
+    fn perm_op_params<F>(
+        new_start: bool,
+        merkle_path: bool,
+        absorb_len: usize,
+    ) -> NonPrimitiveOpParams<F>;
 
     /// Wrap a permutation closure in this variant's `NpoConfig` payload.
     fn make_config_data<F: Field>(exec: PoseidonPermExec<F>) -> NpoConfig;
@@ -209,14 +212,19 @@ impl PoseidonVariant for Poseidon1Variant {
         CircuitError::Poseidon1ChainMissingPreviousState { operation_index }
     }
 
-    fn perm_params<F>(params: &NonPrimitiveOpParams<F>) -> Option<(bool, bool)> {
+    fn perm_params<F>(params: &NonPrimitiveOpParams<F>) -> Option<(bool, bool, usize)> {
         params.as_poseidon1_perm()
     }
 
-    fn perm_op_params<F>(new_start: bool, merkle_path: bool) -> NonPrimitiveOpParams<F> {
+    fn perm_op_params<F>(
+        new_start: bool,
+        merkle_path: bool,
+        absorb_len: usize,
+    ) -> NonPrimitiveOpParams<F> {
         NonPrimitiveOpParams::Poseidon1Perm {
             new_start,
             merkle_path,
+            absorb_len,
         }
     }
 
@@ -267,14 +275,19 @@ impl PoseidonVariant for Poseidon2Variant {
         CircuitError::Poseidon2ChainMissingPreviousState { operation_index }
     }
 
-    fn perm_params<F>(params: &NonPrimitiveOpParams<F>) -> Option<(bool, bool)> {
+    fn perm_params<F>(params: &NonPrimitiveOpParams<F>) -> Option<(bool, bool, usize)> {
         params.as_poseidon2_perm()
     }
 
-    fn perm_op_params<F>(new_start: bool, merkle_path: bool) -> NonPrimitiveOpParams<F> {
+    fn perm_op_params<F>(
+        new_start: bool,
+        merkle_path: bool,
+        absorb_len: usize,
+    ) -> NonPrimitiveOpParams<F> {
         NonPrimitiveOpParams::Poseidon2Perm {
             new_start,
             merkle_path,
+            absorb_len,
         }
     }
 

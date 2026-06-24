@@ -10,7 +10,7 @@ use p3_batch_stark::{BatchCommitments, BatchOpenedValues, BatchProof, CommonData
 use p3_circuit::CircuitBuilder;
 use p3_commit::Pcs;
 use p3_field::{ExtensionField, Field, PrimeField64};
-use p3_lookup::{Lookup, LookupData};
+use p3_lookup::Lookup;
 use p3_uni_stark::{OpenedValues, Proof, StarkGenericConfig, Val};
 
 use crate::Target;
@@ -55,10 +55,10 @@ pub struct BatchProofTargets<
     pub(crate) opened_values_targets: BatchOpenedValuesTargets<SC>,
     /// PCS opening proof
     pub opening_proof: OpeningProof,
-    /// Data necessary to verify the global lookup arguments across all instances
-    /// We need both the `Target` (so that the values can be used in the circuit) and the offset within the public values,
-    /// so we can compute the constraint evaluations using the associated symbolic expression
-    pub global_lookup_data: Vec<Vec<LookupData<Target>>>,
+    /// Per-AIR LogUp terminal targets: `Some` when the AIR declares lookups, `None` otherwise.
+    /// Each present terminal is a single extension-field value (the sum of that AIR's per-row
+    /// rational contributions); the cross-AIR sum is checked to be zero during verification.
+    pub lookup_terminals: Vec<Option<Target>>,
     /// Log₂ of the trace domain size for all instances in a batch-STARK proof
     pub degree_bits: Vec<usize>,
 }
@@ -333,21 +333,13 @@ impl<
         let commitments_targets = CommitmentTargets::new(circuit, &input.commitments);
         let opened_values_targets = BatchOpenedValuesTargets::new(circuit, &input.opened_values);
         let opening_proof = OpeningProof::new(circuit, &input.opening_proof);
-        let global_lookup_data = input
-            .global_lookup_data
+        let lookup_terminals = input
+            .lookup_terminals
             .iter()
-            .map(|instance_data| {
-                instance_data
-                    .iter()
-                    .map(|ld| {
-                        let target = circuit.alloc_public_input("global lookup data");
-                        LookupData {
-                            name: ld.name.clone(),
-                            aux_column: ld.aux_column,
-                            cumulative_sum: target,
-                        }
-                    })
-                    .collect::<Vec<_>>()
+            .map(|terminal| {
+                terminal
+                    .as_ref()
+                    .map(|_| circuit.alloc_public_input("lookup terminal"))
             })
             .collect::<Vec<_>>();
 
@@ -402,7 +394,7 @@ impl<
             opened_values_targets,
             flattened_opened_values_targets,
             opening_proof,
-            global_lookup_data,
+            lookup_terminals,
             degree_bits: input.degree_bits.clone(),
         }
     }
@@ -412,19 +404,14 @@ impl<
             commitments,
             opened_values: _,
             opening_proof,
-            global_lookup_data,
+            lookup_terminals,
             degree_bits: _,
         } = input;
 
         CommitmentTargets::<SC::Challenge, Comm>::get_values(commitments)
             .into_iter()
             .chain(OpeningProof::get_values(opening_proof))
-            .chain(
-                global_lookup_data
-                    .iter()
-                    .flatten()
-                    .map(|ld| ld.cumulative_sum),
-            )
+            .chain(lookup_terminals.iter().flatten().map(|t| t.0))
             .collect()
     }
 

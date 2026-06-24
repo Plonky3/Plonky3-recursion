@@ -10,8 +10,10 @@ use alloc::{format, vec};
 use hashbrown::HashMap;
 #[cfg(debug_assertions)]
 use p3_air::DebugConstraintBuilder;
+use p3_air::symbolic::AirLayout;
 use p3_air::{Air, BaseAir};
 use p3_batch_stark::common::{GlobalPreprocessed, PreprocessedInstanceMeta};
+use p3_batch_stark::symbolic::get_log_num_quotient_chunks;
 use p3_batch_stark::{BatchProof, CommonData, ProverData, StarkGenericConfig, StarkInstance, Val};
 use p3_circuit::ops::{
     NonPrimitivePreprocessedMap, NpoTypeId, Poseidon1Config, Poseidon2Config, PrimitiveOpType,
@@ -26,6 +28,7 @@ use p3_field::{
 };
 use p3_lookup::Lookups;
 use p3_lookup::folder::{ProverConstraintFolderWithLookups, VerifierConstraintFolderWithLookups};
+use p3_lookup::logup::LogUpGadget;
 use p3_lookup::symbolic::InteractionSymbolicBuilder;
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
@@ -851,6 +854,7 @@ where
 /// inner variant is needed to satisfy the AIR trait bound on the matched arms.
 pub(crate) fn lookups_for_circuit_table_air<SC, const D: usize>(
     air: &CircuitTableAir<SC, D>,
+    is_zk: usize,
 ) -> Lookups<Val<SC>>
 where
     SC: StarkGenericConfig,
@@ -858,11 +862,29 @@ where
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
         Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
+    // Derive lookups exactly as `ProverData::from_airs_and_degrees` does: build the unpacked
+    // lookups, then fold same-bus globals up to the degree budget that keeps the quotient-chunk
+    // count fixed. Prover and verifier must fold identically or the permutation width diverges.
+    let gadget = LogUpGadget::new();
+    macro_rules! pack {
+        ($a:expr) => {{
+            let unpacked = Lookups::from_air::<SC::Challenge, _>($a);
+            let log_chunks = get_log_num_quotient_chunks::<Val<SC>, SC::Challenge, _, LogUpGadget>(
+                $a,
+                AirLayout::from_air($a),
+                &unpacked,
+                is_zk,
+                &gadget,
+            );
+            let budget = (1usize << log_chunks) + 1 - is_zk;
+            unpacked.pack_same_bus(&gadget, budget)
+        }};
+    }
     match air {
-        CircuitTableAir::Const(a) => Lookups::from_air::<SC::Challenge, _>(a),
-        CircuitTableAir::Public(a) => Lookups::from_air::<SC::Challenge, _>(a),
-        CircuitTableAir::Alu(a) => Lookups::from_air::<SC::Challenge, _>(a),
-        CircuitTableAir::Dynamic(a) => Lookups::from_air::<SC::Challenge, _>(a),
+        CircuitTableAir::Const(a) => pack!(a),
+        CircuitTableAir::Public(a) => pack!(a),
+        CircuitTableAir::Alu(a) => pack!(a),
+        CircuitTableAir::Dynamic(a) => pack!(a),
     }
 }
 
@@ -1126,6 +1148,10 @@ where
     where
         EF: Field + BasedVectorSpace<Val<SC>> + ExtractBinomialW<Val<SC>>,
         SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
+        <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain: Send + Sync,
+        SC::Pcs: Sync,
+        <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::ProverData: Sync,
+        <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment: Sync,
     {
         let w_opt = EF::extract_w();
         dispatch_by_ext_degree!(EF::DIMENSION, |D| self.prove::<EF, D>(
@@ -1194,6 +1220,10 @@ where
     ) -> Result<BatchStarkProof<SC>, BatchStarkProverError>
     where
         EF: Field + BasedVectorSpace<Val<SC>> + ExtractBinomialW<Val<SC>>,
+        <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain: Send + Sync,
+        SC::Pcs: Sync,
+        <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::ProverData: Sync,
+        <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment: Sync,
     {
         let primitive = &circuit_prover_data.primitive_columns;
         let non_primitive = &circuit_prover_data.non_primitive_columns;
@@ -1483,7 +1513,9 @@ where
 
                 let debug_instance_lookups: Vec<Lookups<Val<SC>>> = instances
                     .iter()
-                    .map(|inst| lookups_for_circuit_table_air::<SC, D>(inst.air))
+                    .map(|inst| {
+                        lookups_for_circuit_table_air::<SC, D>(inst.air, self.config.is_zk())
+                    })
                     .collect();
                 let debug_instances: Vec<LookupDebugInstance<'_, Val<SC>>> = instances
                     .iter()
@@ -1619,7 +1651,7 @@ where
         // carries the preprocessed binding, not the lookup contexts.
         let lookups: Vec<Lookups<Val<SC>>> = airs
             .iter()
-            .map(|a| lookups_for_circuit_table_air::<SC, D>(a))
+            .map(|a| lookups_for_circuit_table_air::<SC, D>(a, self.config.is_zk()))
             .collect();
         let effective_common = CommonData::new(
             common.preprocessed.as_ref().map(|g| GlobalPreprocessed {

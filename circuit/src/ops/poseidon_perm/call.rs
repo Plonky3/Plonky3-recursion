@@ -72,6 +72,10 @@ pub struct PoseidonPermCallBase<V: PoseidonVariant> {
     /// When true, outputs 8-15 are also allocated and returned, but NOT CTL-verified
     /// (they are constrained only by the permutation itself).
     pub return_all_outputs: bool,
+    /// Prefix-free duplex-sponge length tag: the number of rate elements absorbed on this row,
+    /// bound into the first capacity element by the compact-D1 AIR. Zero for non-sponge rows
+    /// (Merkle, leaf hash) so their capacity stays zero / chained as before.
+    pub absorb_len: usize,
 }
 
 impl<V: PoseidonVariant> Default for PoseidonPermCallBase<V> {
@@ -82,6 +86,7 @@ impl<V: PoseidonVariant> Default for PoseidonPermCallBase<V> {
             inputs: [None; 16],
             out_ctl: [false; 8],
             return_all_outputs: false,
+            absorb_len: 0,
         }
     }
 }

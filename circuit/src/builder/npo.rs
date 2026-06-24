@@ -14,31 +14,45 @@ use crate::types::{ExprId, NonPrimitiveOpId, WitnessId};
 /// Per-op extra parameters that are not encoded in the op type.
 #[derive(Debug)]
 pub enum NonPrimitiveOpParams<F> {
-    Poseidon2Perm { new_start: bool, merkle_path: bool },
-    Poseidon1Perm { new_start: bool, merkle_path: bool },
-    Unconstrained { executor: Box<dyn HintExecutor<F>> },
+    Poseidon2Perm {
+        new_start: bool,
+        merkle_path: bool,
+        absorb_len: usize,
+    },
+    Poseidon1Perm {
+        new_start: bool,
+        merkle_path: bool,
+        absorb_len: usize,
+    },
+    Unconstrained {
+        executor: Box<dyn HintExecutor<F>>,
+    },
     Recompose,
 }
 
 impl<F> NonPrimitiveOpParams<F> {
-    /// Return the `(new_start, merkle_path)` flags if this is a Poseidon2 permutation.
-    pub const fn as_poseidon2_perm(&self) -> Option<(bool, bool)> {
+    /// Return the `(new_start, merkle_path, absorb_len)` row data if this is a Poseidon2
+    /// permutation. `absorb_len` is the prefix-free sponge length tag (0 for non-sponge rows).
+    pub const fn as_poseidon2_perm(&self) -> Option<(bool, bool, usize)> {
         match self {
             Self::Poseidon2Perm {
                 new_start,
                 merkle_path,
-            } => Some((*new_start, *merkle_path)),
+                absorb_len,
+            } => Some((*new_start, *merkle_path, *absorb_len)),
             _ => None,
         }
     }
 
-    /// Return the `(new_start, merkle_path)` flags if this is a Poseidon1 permutation.
-    pub const fn as_poseidon1_perm(&self) -> Option<(bool, bool)> {
+    /// Return the `(new_start, merkle_path, absorb_len)` row data if this is a Poseidon1
+    /// permutation. `absorb_len` is the prefix-free sponge length tag (0 for non-sponge rows).
+    pub const fn as_poseidon1_perm(&self) -> Option<(bool, bool, usize)> {
         match self {
             Self::Poseidon1Perm {
                 new_start,
                 merkle_path,
-            } => Some((*new_start, *merkle_path)),
+                absorb_len,
+            } => Some((*new_start, *merkle_path, *absorb_len)),
             _ => None,
         }
     }
@@ -55,16 +69,20 @@ impl<F: Field> Clone for NonPrimitiveOpParams<F> {
             Self::Poseidon2Perm {
                 new_start,
                 merkle_path,
+                absorb_len,
             } => Self::Poseidon2Perm {
                 new_start: *new_start,
                 merkle_path: *merkle_path,
+                absorb_len: *absorb_len,
             },
             Self::Poseidon1Perm {
                 new_start,
                 merkle_path,
+                absorb_len,
             } => Self::Poseidon1Perm {
                 new_start: *new_start,
                 merkle_path: *merkle_path,
+                absorb_len: *absorb_len,
             },
             Self::Unconstrained { executor } => Self::Unconstrained {
                 executor: executor.boxed(),
@@ -220,8 +238,9 @@ mod tests {
         let params: NonPrimitiveOpParams<F> = NonPrimitiveOpParams::Poseidon2Perm {
             new_start: true,
             merkle_path: false,
+            absorb_len: 0,
         };
-        assert_eq!(params.as_poseidon2_perm(), Some((true, false)));
+        assert_eq!(params.as_poseidon2_perm(), Some((true, false, 0)));
     }
 
     #[test]
@@ -241,6 +260,7 @@ mod tests {
         let params: NonPrimitiveOpParams<F> = NonPrimitiveOpParams::Poseidon2Perm {
             new_start: false,
             merkle_path: false,
+            absorb_len: 0,
         };
         assert!(!params.is_recompose());
     }

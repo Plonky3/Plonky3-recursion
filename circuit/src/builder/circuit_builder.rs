@@ -1488,6 +1488,7 @@ where
         config: crate::ops::Poseidon2Config,
         new_start: bool,
         inputs: [Option<ExprId>; 16],
+        absorb_len: usize,
     ) -> Result<[ExprId; 16], CircuitBuilderError> {
         self.push_scope("poseidon2_perm_for_challenger_base");
 
@@ -1498,6 +1499,7 @@ where
             inputs,
             out_ctl: [true; 8],
             return_all_outputs: true,
+            absorb_len,
         })?;
 
         let output_exprs: [ExprId; 16] =
@@ -1541,6 +1543,7 @@ where
         config: crate::ops::Poseidon1Config,
         new_start: bool,
         inputs: [Option<ExprId>; 16],
+        absorb_len: usize,
     ) -> Result<[ExprId; 16], CircuitBuilderError> {
         self.push_scope("poseidon1_perm_for_challenger_base");
 
@@ -1550,6 +1553,7 @@ where
             inputs,
             out_ctl: [true; 8],
             return_all_outputs: true,
+            absorb_len,
         })?;
 
         let output_exprs: [ExprId; 16] =

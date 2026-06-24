@@ -48,24 +48,18 @@ pub trait Recursive<F: Field> {
 }
 
 pub trait RecursiveLookupGadget<F: Field>: LookupProtocol {
-    fn verify_global_final_value_circuit(
-        &self,
-        circuit: &mut CircuitBuilder<F>,
-        all_expected_cumulative: &[Target],
-    );
+    /// Enforce the single-terminal LogUp cross-AIR check: the sum of every present per-AIR
+    /// terminal must be zero.
+    fn verify_terminal_sum_circuit(&self, circuit: &mut CircuitBuilder<F>, terminals: &[Target]);
 }
 
 impl<F: Field> RecursiveLookupGadget<F> for LogUpGadget {
-    fn verify_global_final_value_circuit(
-        &self,
-        circuit: &mut CircuitBuilder<F>,
-        all_expected_cumulative: &[Target],
-    ) {
-        let mut final_cumulative = circuit.define_const(F::ZERO);
-        for a_e_c in all_expected_cumulative {
-            final_cumulative = circuit.add(final_cumulative, *a_e_c);
+    fn verify_terminal_sum_circuit(&self, circuit: &mut CircuitBuilder<F>, terminals: &[Target]) {
+        let mut total = circuit.define_const(F::ZERO);
+        for terminal in terminals {
+            total = circuit.add(total, *terminal);
         }
 
-        circuit.assert_zero(final_cumulative);
+        circuit.assert_zero(total);
     }
 }

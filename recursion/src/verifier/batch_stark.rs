@@ -1,7 +1,7 @@
 #![allow(clippy::upper_case_acronyms)]
 
 use alloc::boxed::Box;
-use alloc::string::{String, ToString};
+use alloc::string::ToString;
 use alloc::vec::Vec;
 use alloc::{format, vec};
 
@@ -19,7 +19,7 @@ use p3_commit::{Pcs, PolynomialSpace};
 use p3_field::{
     Algebra, BasedVectorSpace, ExtensionField, Field, PrimeCharacteristicRing, PrimeField64,
 };
-use p3_lookup::{Kind, Lookup, LookupData, LookupProtocol};
+use p3_lookup::{Kind, Lookup, LookupProtocol};
 use p3_uni_stark::{StarkGenericConfig, SymbolicExpression, SymbolicExpressionExt, Val};
 
 use super::{ObservableCommitment, VerificationError, recompose_quotient_from_chunks_circuit};
@@ -344,7 +344,7 @@ where
         flattened_opened_values_targets: flattened,
         opened_values_targets,
         opening_proof,
-        global_lookup_data,
+        lookup_terminals,
         degree_bits,
     } = proof_targets;
     let instances = &opened_values_targets.instances;
@@ -415,12 +415,7 @@ where
     let mut preprocessed_widths = Vec::with_capacity(airs.len());
     let mut log_quotient_degrees = Vec::with_capacity(n_instances);
     let mut quotient_degrees = Vec::with_capacity(n_instances);
-    for (i, ((air, instance), public_vals)) in airs
-        .iter()
-        .zip(instances.iter())
-        .zip(public_values)
-        .enumerate()
-    {
+    for (i, (air, instance)) in airs.iter().zip(instances.iter()).enumerate() {
         let OpenedValuesTargets {
             trace_local_targets,
             trace_next_targets,
@@ -455,52 +450,11 @@ where
             )));
         }
 
-        let expected_global_count = all_lookups[i]
-            .iter()
-            .filter(|l| matches!(&l.kind, Kind::Global(_)))
-            .count();
-        let actual_global_count = global_lookup_data[i].len();
-        if actual_global_count < expected_global_count {
+        // Single-terminal layout: exactly one terminal is present iff the AIR declares any lookup.
+        let expected_present = !all_lookups[i].is_empty();
+        if lookup_terminals[i].is_some() != expected_present {
             return Err(VerificationError::InvalidProofShape(
-                "Expected cumulated value missing".to_string(),
-            ));
-        }
-        if actual_global_count > expected_global_count {
-            return Err(VerificationError::InvalidProofShape(
-                "Too many expected cumulated values provided".to_string(),
-            ));
-        }
-
-        let lookups_i = &all_lookups[i];
-        let global_lookups_i = &global_lookup_data[i];
-        let mut global_name_idx = 0;
-        for lookup in lookups_i {
-            match &lookup.kind {
-                Kind::Global(name) => {
-                    if global_name_idx >= global_lookups_i.len()
-                        || global_lookups_i[global_name_idx].name != *name
-                    {
-                        return Err(VerificationError::InvalidProofShape(
-                            "Global lookups are inconsistent with lookups".to_string(),
-                        ));
-                    }
-                    global_name_idx += 1;
-                }
-                Kind::Local => {}
-            }
-        }
-        if global_name_idx != global_lookups_i.len() {
-            return Err(VerificationError::InvalidProofShape(
-                "Global lookups are inconsistent with lookups".to_string(),
-            ));
-        }
-
-        let is_sorted_by_aux_column = global_lookup_data[i]
-            .windows(2)
-            .all(|w| w[0].aux_column <= w[1].aux_column);
-        if !is_sorted_by_aux_column {
-            return Err(VerificationError::InvalidProofShape(
-                "Expected cumulated values not sorted by auxiliary index".to_string(),
+                "Lookup terminal presence does not match the AIR's declared lookups".to_string(),
             ));
         }
 
@@ -508,7 +462,6 @@ where
             air,
             pre_w,
             &all_lookups[i],
-            &lookup_data_to_pv_index(&global_lookup_data[i], public_vals.len()),
             config.is_zk(),
             lookup_gadget,
         );
@@ -631,10 +584,8 @@ where
                 .expect("We checked that the commitment exists")
                 .to_observation_targets(),
         );
-        for instance_data in global_lookup_data {
-            for ld in instance_data {
-                challenger.observe_ext(circuit, ld.cumulative_sum);
-            }
+        for terminal in lookup_terminals.iter().flatten() {
+            challenger.observe_ext(circuit, *terminal);
         }
     }
 
@@ -928,13 +879,15 @@ where
 
         // Recompose permutation openings from base-flattened columns into extension field columns.
         // The permutation commitment is a base-flattened matrix with `width = aux_width * DIMENSION`.
-        // For constraint evaluation, we need an extension field matrix with width `aux_width``.
-        let aux_width = all_lookups[i]
-            .iter()
-            .map(|ctx| ctx.column)
-            .max()
-            .map(|m| m + 1)
-            .unwrap_or(0);
+        // For constraint evaluation, we need an extension field matrix with width `aux_width`.
+        //
+        // Single-terminal layout: column 0 is the shared accumulator and column `c + 1` is the
+        // fraction column for lookup `c`, so `aux_width = num_lookups + 1` (0 with no lookups).
+        let aux_width = if all_lookups[i].is_empty() {
+            0
+        } else {
+            all_lookups[i].len() + 1
+        };
 
         let recompose = |circuit: &mut CircuitBuilder<SC::Challenge>,
                          flat: &[Target]|
@@ -998,17 +951,16 @@ where
             None => &[],
         };
 
-        let expected_cumulated_values: Vec<Target> = global_lookup_data[i]
-            .iter()
-            .map(|ld| ld.cumulative_sum)
-            .collect();
+        // Single-terminal layout: the AIR's permutation value is its lookup terminal (one when the
+        // AIR declares lookups, none otherwise).
+        let permutation_values: Vec<Target> = lookup_terminals[i].into_iter().collect();
         let sels = pcs.selectors_at_point_circuit(circuit, trace_domain, &zeta);
         let columns_targets = ColumnsTargets {
             challenges: &challenges_per_instance[i],
             public_values,
             permutation_local_values: &local_permutation_values,
             permutation_next_values: &next_permutation_values,
-            permutation_values: &expected_cumulated_values,
+            permutation_values: &permutation_values,
             local_prep_values,
             next_prep_values,
             local_values: &inst.opened_values_no_lookups.trace_local_targets,
@@ -1017,7 +969,6 @@ where
 
         let lookup_metadata = LookupMetadata {
             contexts: &all_lookups[i],
-            lookup_data: &lookup_data_to_pv_index(&global_lookup_data[i], public_values.len()),
         };
         let folded_constraints = air.eval_folded_circuit(
             circuit,
@@ -1032,18 +983,9 @@ where
         circuit.connect(folded_mul, quotient);
     }
 
-    // Check that the global lookup cumulative values accumulate to the expected value.
-    let mut global_cumulative = HashMap::<&String, Vec<_>>::new();
-    for data in global_lookup_data.iter().flatten() {
-        global_cumulative
-            .entry(&data.name)
-            .or_default()
-            .push(data.cumulative_sum);
-    }
-
-    for all_expected_cumulative in global_cumulative.values() {
-        lookup_gadget.verify_global_final_value_circuit(circuit, all_expected_cumulative);
-    }
+    // Single-terminal LogUp cross-AIR check: the sum of every present per-AIR terminal is zero.
+    let present_terminals: Vec<Target> = lookup_terminals.iter().flatten().copied().collect();
+    lookup_gadget.verify_terminal_sum_circuit(circuit, &present_terminals);
 
     Ok(mmcs_op_ids)
 }
@@ -1064,55 +1006,76 @@ where
     Val<SC>: PrimeField64,
     SC::Challenge: ExtensionField<Val<SC>>,
 {
-    let num_challenges_per_lookup = lookup_gadget.num_challenges();
-    let approx_global_names: usize = all_lookups.iter().map(|contexts| contexts.len()).sum();
-    let mut global_perm_challenges = HashMap::with_capacity(approx_global_names);
+    assert_eq!(
+        lookup_gadget.num_challenges(),
+        2,
+        "single-pair bus-prefix challenge layout requires exactly two challenges per lookup"
+    );
 
-    all_lookups
-        .iter()
-        .map(|contexts| {
-            // Pre-allocate for the instance's challenges.
-            let num_challenges = contexts.len() * num_challenges_per_lookup;
-            let mut instance_challenges = Vec::with_capacity(num_challenges);
+    // Match native: no lookups anywhere ⇒ an empty challenge layout per instance, and no samples.
+    if !all_lookups.iter().any(|contexts| !contexts.is_empty()) {
+        return all_lookups.iter().map(|_| Vec::new()).collect();
+    }
 
-            for context in contexts {
-                match &context.kind {
-                    Kind::Global(name) => {
-                        // Get or create the global challenges (extension field elements).
-                        let challenges: &mut Vec<Target> =
-                            global_perm_challenges.entry(name).or_insert_with(|| {
-                                (0..num_challenges_per_lookup)
-                                    .map(|_| challenger.sample_ext(circuit))
-                                    .collect()
-                            });
-                        instance_challenges.extend_from_slice(challenges);
-                    }
-                    Kind::Local => {
-                        // Local challenges are extension field elements.
-                        instance_challenges.extend(
-                            (0..num_challenges_per_lookup).map(|_| challenger.sample_ext(circuit)),
-                        );
-                    }
-                }
+    // Draw the single `(alpha, beta)` pair for the whole batch (extension-field elements).
+    let alpha = challenger.sample_ext(circuit);
+    let beta = challenger.sample_ext(circuit);
+
+    // Assign each bus a stable id in iteration order: global buses dedup by name, locals fresh
+    // per occurrence. Track the widest message payload to place the bus offset above it.
+    let mut global_index: HashMap<&str, usize> = HashMap::new();
+    let mut next_bus = 0usize;
+    let mut max_message_width = 1usize;
+    let mut bus_ids: Vec<Vec<usize>> = Vec::with_capacity(all_lookups.len());
+    for contexts in all_lookups {
+        let mut instance_buses = Vec::with_capacity(contexts.len());
+        for context in contexts {
+            for tuple in &context.elements {
+                max_message_width = max_message_width.max(tuple.len());
             }
-            instance_challenges
+            let bus = match &context.kind {
+                Kind::Global(name) => *global_index.entry(name.as_str()).or_insert_with(|| {
+                    let id = next_bus;
+                    next_bus += 1;
+                    id
+                }),
+                Kind::Local => {
+                    let id = next_bus;
+                    next_bus += 1;
+                    id
+                }
+            };
+            instance_buses.push(bus);
+        }
+        bus_ids.push(instance_buses);
+    }
+
+    // gamma = beta^W (W = max message width) sits one power above every payload term, so the bus
+    // offset never collides with a payload coefficient.
+    let mut gamma = beta;
+    for _ in 1..max_message_width {
+        gamma = circuit.mul(gamma, beta);
+    }
+
+    // bus_prefix[i] = alpha + (i + 1) * gamma, accumulated to skip a multiply per bus.
+    let mut prefix = alpha;
+    let bus_prefix: Vec<Target> = (0..next_bus)
+        .map(|_| {
+            prefix = circuit.add(prefix, gamma);
+            prefix
+        })
+        .collect();
+
+    // Lay the challenges out per instance: `[bus_prefix[bus], beta]` for each lookup.
+    bus_ids
+        .iter()
+        .map(|instance_buses| {
+            instance_buses
+                .iter()
+                .flat_map(|&bus| [bus_prefix[bus], beta])
+                .collect()
         })
         .collect()
-}
-
-fn lookup_data_to_pv_index(
-    global_lookup_data: &[LookupData<Target>],
-    public_values_len: usize,
-) -> Vec<LookupData<usize>> {
-    global_lookup_data
-        .iter()
-        .enumerate()
-        .map(|(index, ld)| LookupData {
-            name: ld.name.clone(),
-            aux_column: ld.aux_column,
-            cumulative_sum: public_values_len + index,
-        })
-        .collect::<Vec<_>>()
 }
 
 /// Observe opened values in the circuit in the correct order to match native.

@@ -1,7 +1,6 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
-use hashbrown::HashMap;
 use p3_air::Air;
 use p3_air::symbolic::AirLayout;
 use p3_batch_stark::symbolic::get_log_num_quotient_chunks as get_batch_log_num_quotient_chunks;
@@ -11,7 +10,7 @@ use p3_commit::{BatchOpening, Mmcs, OpenedValues, Pcs, PolynomialSpace};
 use p3_field::{Algebra, BasedVectorSpace, PrimeCharacteristicRing, PrimeField, TwoAdicField};
 use p3_fri::{FriProof, HidingFriPcs, TwoAdicFriPcs};
 use p3_lookup::symbolic::InteractionSymbolicBuilder;
-use p3_lookup::{Kind, Lookup, LookupProtocol};
+use p3_lookup::{Lookup, LookupProtocol};
 use p3_uni_stark::{Domain, StarkGenericConfig, SymbolicExpression, SymbolicExpressionExt, Val};
 use thiserror::Error;
 
@@ -97,40 +96,18 @@ where
         commitments,
         opened_values,
         opening_proof,
-        global_lookup_data,
+        lookup_terminals,
         degree_bits,
     } = proof;
 
-    // Check that the global lookup data is consistent with the lookups.
+    // Single-terminal layout: each AIR commits exactly one terminal iff it declares any lookup.
     all_lookups
         .iter()
-        .zip(global_lookup_data)
-        .try_for_each(|(lookups, global_lookups)| {
-            let mut counter = 0;
-            lookups.iter().try_for_each(|lookup| match &lookup.kind {
-                Kind::Global(name) => {
-                    if counter >= global_lookups.len() || global_lookups[counter].name != *name {
-                        Err(GenerationError::InvalidProofShape(
-                            "Global lookups are inconsistent with lookups",
-                        ))
-                    } else {
-                        counter += 1;
-                        Ok(())
-                    }
-                }
-                Kind::Local => Ok(()),
-            })?;
-            if counter != global_lookups.len() {
+        .zip(lookup_terminals)
+        .try_for_each(|(lookups, terminal)| {
+            if lookups.is_empty() == terminal.is_some() {
                 return Err(GenerationError::InvalidProofShape(
-                    "Global lookups are inconsistent with lookups",
-                ));
-            }
-            let is_sorted = global_lookups
-                .windows(2)
-                .all(|w| w[0].aux_column <= w[1].aux_column);
-            if !is_sorted {
-                return Err(GenerationError::InvalidProofShape(
-                    "Expected cumulated values not sorted by auxiliary index",
+                    "Lookup terminal presence does not match the AIR's declared lookups",
                 ));
             }
             Ok(())
@@ -235,17 +212,18 @@ where
 
     let is_lookup = commitments.permutation.is_some();
 
-    // Fetch lookups and sample their challenges.
-    // We use `get_different_perm_challenges` to ensure we only store the newly created challenges, in their order of sampling.
-    let different_challenges = transcript
-        .sample_perm_challenges(all_lookups, lookup_gadget)
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>();
+    // Sample the batch's single permutation challenge pair on the transcript challenger. This has
+    // the same transcript effect as the native `sample_perm_challenges` (two `sample_algebra_element`
+    // draws) while returning the raw pair the in-circuit verifier samples and connects to.
+    let different_challenges = get_different_perm_challenges::<SC, LG, _>(
+        &mut transcript.challenger,
+        all_lookups,
+        lookup_gadget,
+    );
 
     // Then, observe the permutation tables, if any and sample the alpha challenge.
     let alpha = transcript
-        .observe_perm_and_sample_alpha(commitments.permutation.as_ref(), global_lookup_data);
+        .observe_perm_and_sample_alpha(commitments.permutation.as_ref(), lookup_terminals);
 
     transcript.observe_quotient_commitment(&commitments.quotient_chunks);
     if let Some(random_commit) = &commitments.random {
@@ -307,12 +285,9 @@ where
                     (zeta, inst.base_opened_values.trace_local.clone()),
                     (
                         zeta_next,
-                        inst.base_opened_values
-                            .trace_next
-                            .clone()
-                            .ok_or(GenerationError::InvalidProofShape(
-                                "opened values lack trace_next",
-                            ))?,
+                        inst.base_opened_values.trace_next.clone().ok_or(
+                            GenerationError::InvalidProofShape("opened values lack trace_next"),
+                        )?,
                     ),
                 ],
             ))
@@ -680,46 +655,34 @@ where
     }
 }
 
-/// Samples all the different permutation challenges in the right order.
-/// This method is used to generate values for the challenge public values, and so it must store
-/// only the newly created challenges, in their order of sampling.
-pub fn get_different_perm_challenges<SC: StarkGenericConfig, LG: LookupProtocol>(
+/// Samples the batch's single permutation challenge pair on the transcript challenger and returns
+/// it, so the generated challenge public values stay in the sampling order the in-circuit verifier
+/// reproduces. Returns an empty vector when no AIR declares a lookup (no pair is drawn), matching
+/// the native `sample_perm_challenges`.
+pub fn get_different_perm_challenges<SC, LG, L>(
     challenger: &mut SC::Challenger,
-    all_lookups: &[Vec<Lookup<Val<SC>>>],
+    all_lookups: &[L],
     lookup_gadget: &LG,
-) -> Vec<SC::Challenge> {
-    let num_challenges_per_lookup = lookup_gadget.num_challenges();
-    let approx_global_names: usize = all_lookups.iter().map(|contexts| contexts.len()).sum();
-    let approx_total_challenges: usize = all_lookups
-        .iter()
-        .map(|contexts| contexts.len() * num_challenges_per_lookup)
-        .sum();
-    let mut global_perm_names = HashMap::with_capacity(approx_global_names);
-    let mut different_challenges = Vec::with_capacity(approx_total_challenges);
+) -> Vec<SC::Challenge>
+where
+    SC: StarkGenericConfig,
+    LG: LookupProtocol,
+    L: AsRef<[Lookup<Val<SC>>]>,
+{
+    assert_eq!(
+        lookup_gadget.num_challenges(),
+        2,
+        "single-pair bus-prefix challenge layout requires exactly two challenges per lookup"
+    );
 
-    all_lookups.iter().for_each(|contexts| {
-        for context in contexts {
-            match &context.kind {
-                Kind::Global(name) => {
-                    // Get or create the global challenges.
-                    // We only store the newly created challenges, in `different_challenges`.
-                    // `global_perm_challenges` is just used to track the names already encountered, so
-                    // we only insert `(name, ())` when a new name is encountered.
-                    global_perm_names.entry(name).or_insert_with(|| {
-                        (0..num_challenges_per_lookup).for_each(|_| {
-                            let sampled = challenger.sample_algebra_element();
-                            different_challenges.push(sampled);
-                        });
-                    });
-                }
-                Kind::Local => {
-                    different_challenges.extend(
-                        (0..num_challenges_per_lookup)
-                            .map(|_| challenger.sample_algebra_element::<SC::Challenge>()),
-                    );
-                }
-            }
-        }
-    });
-    different_challenges
+    if !all_lookups
+        .iter()
+        .any(|contexts| !contexts.as_ref().is_empty())
+    {
+        return Vec::new();
+    }
+
+    let alpha = challenger.sample_algebra_element::<SC::Challenge>();
+    let beta = challenger.sample_algebra_element::<SC::Challenge>();
+    vec![alpha, beta]
 }

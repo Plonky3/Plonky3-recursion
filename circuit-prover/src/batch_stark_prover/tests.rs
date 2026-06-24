@@ -147,7 +147,7 @@ fn test_table_lookups() {
 
     // Check that the generated lookups are correct and consistent across tables.
     for air in airs.iter() {
-        let lookups = crate::batch_stark_prover::lookups_for_circuit_table_air(air);
+        let lookups = crate::batch_stark_prover::lookups_for_circuit_table_air(air, 0);
 
         match air {
             CircuitTableAir::Const(_) => {
@@ -157,14 +157,18 @@ fn test_table_lookups() {
                 assert_eq!(lookups.len(), 1, "Public table should have one lookup");
             }
             CircuitTableAir::Alu(_) => {
-                // ALU table sends 4 lookups per lane + 2 extra for double-step Horner a1/c1
-                let expected_num_lookups = default_packing.alu_lanes() * 4
+                // The ALU declares 4 WitnessChecks sends per lane + 2 extra for double-step Horner
+                // a1/c1, all on the same global bus. Same-bus packing folds them in pairs up to the
+                // degree budget, halving the column count.
+                let declared = default_packing.alu_lanes() * 4
                     + 2 * (default_packing.horner_packed_steps() - 1);
+                let expected_num_lookups = declared.div_ceil(2);
                 assert_eq!(
                     lookups.len(),
                     expected_num_lookups,
-                    "ALU table should have {} lookups, found {}",
+                    "ALU table should have {} packed lookups (declared {}), found {}",
                     expected_num_lookups,
+                    declared,
                     lookups.len()
                 );
             }
@@ -329,7 +333,7 @@ fn test_extension_field_table_lookups() {
 
     // Check that the generated lookups are correct and consistent across tables.
     for air in airs.iter() {
-        let lookups = crate::batch_stark_prover::lookups_for_circuit_table_air(air);
+        let lookups = crate::batch_stark_prover::lookups_for_circuit_table_air(air, 0);
 
         match air {
             CircuitTableAir::Const(_) => {
@@ -339,14 +343,18 @@ fn test_extension_field_table_lookups() {
                 assert_eq!(lookups.len(), 1, "Public table should have one lookup");
             }
             CircuitTableAir::Alu(_) => {
-                // ALU table sends 4 lookups per lane + 2 extra for double-step Horner a1/c1
-                let expected_num_lookups = default_packing.alu_lanes() * 4
+                // The ALU declares 4 WitnessChecks sends per lane + 2 extra for double-step Horner
+                // a1/c1, all on the same global bus. Same-bus packing folds them in pairs up to the
+                // degree budget, halving the column count.
+                let declared = default_packing.alu_lanes() * 4
                     + 2 * (default_packing.horner_packed_steps() - 1);
+                let expected_num_lookups = declared.div_ceil(2);
                 assert_eq!(
                     lookups.len(),
                     expected_num_lookups,
-                    "ALU table should have {} lookups, found {}",
+                    "ALU table should have {} packed lookups (declared {}), found {}",
                     expected_num_lookups,
+                    declared,
                     lookups.len()
                 );
             }
@@ -808,6 +816,7 @@ fn test_koalabear_quintic_trinomial_batch_stark_with_poseidon_d1() {
             // exposed outputs would leave WitnessChecks Receive contributions unmatched.
             out_ctl: [true; 8],
             return_all_outputs: false,
+            absorb_len: 0,
         })
         .unwrap();
     let e0 = builder.public_input();
@@ -895,6 +904,7 @@ fn test_koalabear_quintic_trinomial_batch_stark_poseidon_d1_sponge_chain() {
             inputs: perm0_inputs,
             out_ctl: [false; 8],
             return_all_outputs: false,
+            absorb_len: 0,
         })
         .unwrap();
 
@@ -906,6 +916,7 @@ fn test_koalabear_quintic_trinomial_batch_stark_poseidon_d1_sponge_chain() {
             inputs: perm1_inputs,
             out_ctl: [true; 8],
             return_all_outputs: false,
+            absorb_len: 0,
         })
         .unwrap();
     let e0 = builder.public_input();
@@ -1261,6 +1272,7 @@ fn test_koalabear_quintic_trinomial_batch_stark_with_poseidon1_d1() {
             inputs: perm_inputs,
             out_ctl: [true; 8],
             return_all_outputs: false,
+            absorb_len: 0,
         })
         .unwrap();
     let e0 = builder.public_input();

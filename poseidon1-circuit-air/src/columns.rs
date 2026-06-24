@@ -3,8 +3,6 @@
 use alloc::vec::Vec;
 
 use p3_poseidon_circuit_air::circuit_cols_add_two;
-use p3_poseidon1_air::Poseidon1Cols;
-
 pub use p3_poseidon_circuit_air::{
     POSEIDON_LIMBS as POSEIDON2_LIMBS,
     POSEIDON_PUBLIC_OUTPUT_LIMBS as POSEIDON2_PUBLIC_OUTPUT_LIMBS,
@@ -16,6 +14,7 @@ pub use p3_poseidon_circuit_air::{
     poseidon_preprocessed_row_width_for_air as poseidon1_preprocessed_row_width_for_air,
     poseidon_uses_compact_d1_preprocessed as poseidon1_uses_compact_d1_preprocessed,
 };
+use p3_poseidon1_air::Poseidon1Cols;
 
 /// Per-row input description for a Poseidon1 circuit operation.
 ///

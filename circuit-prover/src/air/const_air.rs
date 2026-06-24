@@ -29,7 +29,7 @@ use alloc::vec::Vec;
 use p3_air::{Air, AirBuilder, BaseAir};
 use p3_circuit::tables::ConstTrace;
 use p3_field::{BasedVectorSpace, Field};
-use p3_lookup::builder::InteractionBuilder;
+use p3_lookup::InteractionBuilder;
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
 use tracing::instrument;

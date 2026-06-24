@@ -61,7 +61,7 @@ impl<V: PoseidonVariant, F: Field> NpoCircuitPlugin<F> for PoseidonCircuitPlugin
         }
 
         // Extract the variant-specific per-row flags from the operation params.
-        let (new_start, merkle_path) = data
+        let (new_start, merkle_path, absorb_len) = data
             .params
             .as_ref()
             .and_then(|p| V::perm_params(p))
@@ -85,6 +85,7 @@ impl<V: PoseidonVariant, F: Field> NpoCircuitPlugin<F> for PoseidonCircuitPlugin
                 config,
                 new_start,
                 merkle_path,
+                absorb_len,
             )),
             op_id: data.op_id,
         })

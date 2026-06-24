@@ -29,7 +29,7 @@ use core::marker::PhantomData;
 
 use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 use p3_field::{Field, PrimeCharacteristicRing};
-use p3_lookup::builder::InteractionBuilder;
+use p3_lookup::{Count, InteractionBuilder};
 use p3_matrix::dense::RowMajorMatrix;
 use tracing::instrument;
 
@@ -170,7 +170,7 @@ where
             for j in 0..D {
                 values.push(main_local[main_off + j].into());
             }
-            builder.push_interaction("WitnessChecks", values, out_mult, 1);
+            builder.push_interaction("WitnessChecks", values, Count::bounded(out_mult, 1));
 
             // Coefficient Receive lookups: only when the circuit hosts a Poseidon2 permutation
             // whose D differs from the circuit extension degree.
@@ -187,7 +187,11 @@ where
                     for _ in 1..D {
                         coeff_values.push(AB::Expr::ZERO);
                     }
-                    builder.push_interaction("WitnessChecks", coeff_values, coeff_mult, 1);
+                    builder.push_interaction(
+                        "WitnessChecks",
+                        coeff_values,
+                        Count::bounded(coeff_mult, 1),
+                    );
                 }
             }
         }

@@ -83,7 +83,7 @@ use core::borrow::{Borrow, BorrowMut};
 use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 use p3_circuit::tables::AluTrace;
 use p3_field::{BasedVectorSpace, Dup, Field, PrimeCharacteristicRing};
-use p3_lookup::builder::InteractionBuilder;
+use p3_lookup::{Count, InteractionBuilder};
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
 use tracing::instrument;
@@ -1040,7 +1040,11 @@ fn eval_alu_interactions<AB: AirBuilder + InteractionBuilder, const D: usize>(
             for j in 0..D {
                 fields.push(operands[i][j].into());
             }
-            builder.push_interaction("WitnessChecks", fields, multiplicities[i].clone(), 1);
+            builder.push_interaction(
+                "WitnessChecks",
+                fields,
+                Count::bounded(multiplicities[i].clone(), 1),
+            );
         }
     }
 
@@ -1065,14 +1069,14 @@ fn eval_alu_interactions<AB: AirBuilder + InteractionBuilder, const D: usize>(
         for j in 0..D {
             a_inps.push(main_local[main_off + j].into());
         }
-        builder.push_interaction("WitnessChecks", a_inps, eff_mult_a, 1);
+        builder.push_interaction("WitnessChecks", a_inps, Count::bounded(eff_mult_a, 1));
 
         let mut c_inps: Vec<AB::Expr> = Vec::with_capacity(1 + D);
         c_inps.push(step.c_idx.into());
         for j in 0..D {
             c_inps.push(main_local[main_off + D + j].into());
         }
-        builder.push_interaction("WitnessChecks", c_inps, eff_mult_c, 1);
+        builder.push_interaction("WitnessChecks", c_inps, Count::bounded(eff_mult_c, 1));
     }
 }
 

@@ -275,8 +275,7 @@ impl<'a, F: Field> CircuitRunner<'a, F> {
                     out,
                     intermediate_out,
                 } => {
-                    let record =
-                        self.execute_alu_op(*kind, *a, *b, *c, *out, *intermediate_out)?;
+                    let record = self.execute_alu_op(*kind, *a, *b, *c, *out, *intermediate_out)?;
                     alu_records.push(record);
                 }
                 Op::Hint {
@@ -433,8 +432,7 @@ impl<'a, F: Field> CircuitRunner<'a, F> {
                 })
             }
             AluOpKind::HornerAcc => {
-                let acc_id =
-                    intermediate_out.expect("HornerAcc requires acc in intermediate_out");
+                let acc_id = intermediate_out.expect("HornerAcc requires acc in intermediate_out");
                 let c_id = c.expect("HornerAcc requires c operand");
                 let acc_val = self.get_witness(acc_id)?;
                 let a_val = self.get_witness(a)?;

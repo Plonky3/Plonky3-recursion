@@ -136,7 +136,6 @@ where
         air,
         preprocessed_width,
         &[],
-        &[],
         config.is_zk(),
         &lookup_gadget,
     );
@@ -294,10 +293,7 @@ where
         next_values: opened_trace_next_targets,
     };
 
-    let dummy_lookup_metadata = LookupMetadata {
-        contexts: &[],
-        lookup_data: &[],
-    };
+    let dummy_lookup_metadata = LookupMetadata { contexts: &[] };
     let folded_constraints = air.eval_folded_circuit(
         circuit,
         &sels,

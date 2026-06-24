@@ -5,7 +5,7 @@ use core::mem::MaybeUninit;
 use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 use p3_circuit::ops::Poseidon2CircuitRow;
 use p3_field::{Field, PrimeCharacteristicRing, PrimeField};
-use p3_lookup::builder::InteractionBuilder;
+use p3_lookup::{Count, InteractionBuilder};
 use p3_matrix::dense::RowMajorMatrix;
 use p3_maybe_rayon::prelude::*;
 use p3_poseidon2::GenericPoseidon2LinearLayers;
@@ -894,13 +894,22 @@ pub(crate) fn eval<
             }
         }
         let not_merkle = AB::Expr::ONE - next_merkle_path.into();
+        // Prefix-free sponge length tag, carried in the former `cap_in_ctl` slot. The first
+        // capacity element absorbs `+= cap_tag` on each chained sponge row; every other capacity
+        // element chains unchanged.
+        let cap_tag = s[RATE_EXT];
         for limb in RATE_EXT..WIDTH_EXT {
             let chain_en = cap_chain_enable * not_merkle.clone();
             for d in 0..D {
+                let tag = if limb == RATE_EXT && d == 0 {
+                    cap_tag.into()
+                } else {
+                    AB::Expr::ZERO
+                };
                 builder
                     .when_transition()
                     .when(chain_en.clone())
-                    .assert_zero(next_in[limb * D + d] - local_out[limb * D + d]);
+                    .assert_zero(next_in[limb * D + d] - local_out[limb * D + d] - tag);
             }
         }
 
@@ -924,15 +933,21 @@ pub(crate) fn eval<
             }
         }
 
-        // Sponge chain starts (next row new_start, not Merkle): capacity is never witness-fed;
-        // replacing the former zero-constant CTL sends for slots RATE_EXT..WIDTH_EXT.
+        // Sponge chain starts (next row new_start, not Merkle): capacity is never witness-fed.
+        // The first capacity element starts at the length tag (fresh capacity 0 `+= cap_tag`); the
+        // rest stay zero.
         for slot in RATE_EXT..WIDTH_EXT {
             for d in 0..D {
+                let tag = if slot == RATE_EXT && d == 0 {
+                    cap_tag.into()
+                } else {
+                    AB::Expr::ZERO
+                };
                 builder
                     .when_transition()
                     .when(next_new_start)
                     .when(not_merkle.clone())
-                    .assert_zero(next_in[slot * D + d]);
+                    .assert_zero(next_in[slot * D + d] - tag);
             }
         }
 
@@ -1428,7 +1443,7 @@ fn eval_interactions<
                 input_idx_limb.push(AB::Expr::ZERO);
             }
             let mult = in_ctl * not_merkle.clone();
-            builder.push_interaction("WitnessChecks", input_idx_limb, -mult, 1);
+            builder.push_interaction("WitnessChecks", input_idx_limb, Count::bounded(-mult, 1));
         }
 
         // Output limb receives
@@ -1448,7 +1463,7 @@ fn eval_interactions<
             for _ in 0..(WITNESS_EXT_D - D) {
                 output_idx_limb.push(AB::Expr::ZERO);
             }
-            builder.push_interaction("WitnessChecks", output_idx_limb, out_ctl, 1);
+            builder.push_interaction("WitnessChecks", output_idx_limb, Count::bounded(out_ctl, 1));
         }
 
         // MMCS accumulator send.
@@ -1461,7 +1476,11 @@ fn eval_interactions<
         for _ in 0..(WITNESS_EXT_D - 1) {
             mmcs_index_sum_lookup.push(AB::Expr::ZERO);
         }
-        builder.push_interaction("WitnessChecks", mmcs_index_sum_lookup, -multiplicity, 1);
+        builder.push_interaction(
+            "WitnessChecks",
+            mmcs_index_sum_lookup,
+            Count::bounded(-multiplicity, 1),
+        );
     } else {
         let local_pre: &Poseidon2PreprocessedRow<WIDTH_EXT, RATE_EXT, AB::Var> =
             local_preprocessed.borrow();
@@ -1485,7 +1504,7 @@ fn eval_interactions<
 
             let in_ctl: AB::Expr = limb.in_ctl.into();
             let mult = in_ctl * not_merkle.clone();
-            builder.push_interaction("WitnessChecks", input_idx_limb, -mult, 1);
+            builder.push_interaction("WitnessChecks", input_idx_limb, Count::bounded(-mult, 1));
         }
 
         // Output limb receives.
@@ -1504,7 +1523,11 @@ fn eval_interactions<
                 output_idx_limb.push(AB::Expr::ZERO);
             }
 
-            builder.push_interaction("WitnessChecks", output_idx_limb, limb.out_ctl.into(), 1);
+            builder.push_interaction(
+                "WitnessChecks",
+                output_idx_limb,
+                Count::bounded(limb.out_ctl.into(), 1),
+            );
         }
 
         // MMCS accumulator send.
@@ -1518,7 +1541,11 @@ fn eval_interactions<
         for _ in 0..(WITNESS_EXT_D - 1) {
             mmcs_index_sum_lookup.push(AB::Expr::ZERO);
         }
-        builder.push_interaction("WitnessChecks", mmcs_index_sum_lookup, -multiplicity, 1);
+        builder.push_interaction(
+            "WitnessChecks",
+            mmcs_index_sum_lookup,
+            Count::bounded(-multiplicity, 1),
+        );
     }
 }
 

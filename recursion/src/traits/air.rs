@@ -8,7 +8,7 @@ use p3_circuit::CircuitBuilder;
 use p3_circuit::symbolic::{ColumnsTargets, SymbolicCompiler};
 use p3_field::{Algebra, ExtensionField, Field};
 use p3_lookup::symbolic::InteractionSymbolicBuilder;
-use p3_lookup::{Kind, Lookup, LookupData, LookupProtocol};
+use p3_lookup::{Lookup, LookupProtocol};
 use p3_uni_stark::SymbolicExpression;
 
 use crate::Target;
@@ -17,10 +17,8 @@ use crate::types::RecursiveLagrangeSelectors;
 /// Structure holding lookup verification data:
 ///
 /// - `contexts`: Slice of lookup contexts used in the AIR.
-/// - `lookup_data`: Slice of lookup data for global lookups.
 pub struct LookupMetadata<'a, F: Field> {
     pub contexts: &'a [Lookup<F>],
-    pub lookup_data: &'a [LookupData<usize>],
 }
 /// Trait for evaluating AIR constraints within a recursive verification circuit.
 ///
@@ -78,7 +76,6 @@ pub trait RecursiveAir<F: Field, EF: ExtensionField<F>, LG: LookupProtocol> {
         &self,
         preprocessed_width: usize,
         contexts: &[Lookup<F>],
-        lookup_data: &[LookupData<usize>],
         is_zk: usize,
         lookup_gadget: &LG,
     ) -> usize;
@@ -112,16 +109,12 @@ where
     ) -> Target {
         builder.push_scope("eval_folded_circuit");
 
-        let LookupMetadata {
-            contexts,
-            lookup_data: _,
-        } = lookup_metadata;
+        let LookupMetadata { contexts } = lookup_metadata;
 
         let num_preprocessed = columns.local_prep_values.len();
-        let num_permutation_values = contexts
-            .iter()
-            .filter(|c| matches!(&c.kind, Kind::Global(_)))
-            .count();
+        // Single-terminal layout: one permutation value (the AIR terminal) when it declares any
+        // lookup, none otherwise. `get_symbolic_constraints` recomputes this from `contexts`.
+        let num_permutation_values = usize::from(!contexts.is_empty());
         let layout = AirLayout {
             preprocessed_width: num_preprocessed,
             main_width: self.width(),
@@ -162,7 +155,6 @@ where
         &self,
         preprocessed_width: usize,
         contexts: &[Lookup<F>],
-        _lookup_data: &[LookupData<usize>],
         is_zk: usize,
         lookup_gadget: &LG,
     ) -> usize
@@ -200,8 +192,8 @@ mod tests {
     use p3_baby_bear::BabyBear;
     use p3_field::PrimeCharacteristicRing;
     use p3_field::extension::BinomialExtensionField;
-    use p3_lookup::builder::InteractionBuilder;
     use p3_lookup::logup::LogUpGadget;
+    use p3_lookup::{Count, InteractionBuilder};
 
     use super::*;
 
@@ -235,8 +227,7 @@ mod tests {
             builder.push_interaction(
                 "test_bus",
                 core::iter::once(<Builder as AirBuilder>::Expr::ONE),
-                <Builder as AirBuilder>::Expr::ONE,
-                1,
+                Count::bounded(<Builder as AirBuilder>::Expr::ONE, 1),
             );
         }
     }

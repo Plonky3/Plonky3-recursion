@@ -27,7 +27,7 @@ use core::marker::PhantomData;
 use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 use p3_circuit::tables::PublicTrace;
 use p3_field::{BasedVectorSpace, Field};
-use p3_lookup::builder::InteractionBuilder;
+use p3_lookup::{Count, InteractionBuilder};
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
 use tracing::instrument;
@@ -224,7 +224,7 @@ where
                 fields.push(main_local[main_off + j].into());
             }
 
-            builder.push_interaction("WitnessChecks", fields, multiplicity, 1);
+            builder.push_interaction("WitnessChecks", fields, Count::bounded(multiplicity, 1));
         }
     }
 }

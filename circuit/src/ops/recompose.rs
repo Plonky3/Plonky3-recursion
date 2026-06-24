@@ -474,7 +474,11 @@ mod tests {
             F::ZERO
         }
         fn increment_ext_reads(&mut self, _wids: &[WitnessId]) {}
-        fn register_non_primitive_output_index(&mut self, _op_type: &NpoTypeId, wids: &[WitnessId]) {
+        fn register_non_primitive_output_index(
+            &mut self,
+            _op_type: &NpoTypeId,
+            wids: &[WitnessId],
+        ) {
             self.events
                 .extend(wids.iter().map(|&w| Reg::OutputIndex(w)));
         }
@@ -485,7 +489,11 @@ mod tests {
         ) -> Result<(), CircuitError> {
             Ok(())
         }
-        fn register_non_primitive_preprocessed_no_read(&mut self, _op_type: &NpoTypeId, values: &[F]) {
+        fn register_non_primitive_preprocessed_no_read(
+            &mut self,
+            _op_type: &NpoTypeId,
+            values: &[F],
+        ) {
             self.events.extend(values.iter().map(|&v| Reg::Value(v)));
         }
     }

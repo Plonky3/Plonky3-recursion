@@ -32,6 +32,9 @@ pub(crate) struct PoseidonPermExecutor<V: PoseidonVariant> {
     /// When true, the executor arranges inputs for Merkle-path verification
     /// and conditionally swaps left/right halves based on the direction bit.
     pub(crate) merkle_path: bool,
+    /// Prefix-free duplex-sponge length tag: the number of rate elements absorbed on this row,
+    /// bound into the first capacity element by the compact-D1 AIR. Zero for non-sponge rows.
+    pub(crate) absorb_len: usize,
     _variant: PhantomData<V>,
 }
 
@@ -42,6 +45,7 @@ impl<V: PoseidonVariant> Clone for PoseidonPermExecutor<V> {
             config: self.config,
             new_start: self.new_start,
             merkle_path: self.merkle_path,
+            absorb_len: self.absorb_len,
             _variant: PhantomData,
         }
     }
@@ -67,12 +71,14 @@ impl<V: PoseidonVariant> PoseidonPermExecutor<V> {
         config: V::Config,
         new_start: bool,
         merkle_path: bool,
+        absorb_len: usize,
     ) -> Self {
         Self {
             op_type,
             config,
             new_start,
             merkle_path,
+            absorb_len,
             _variant: PhantomData,
         }
     }
@@ -551,6 +557,13 @@ impl<V: PoseidonVariant> PoseidonPermExecutor<V> {
             }
         }
 
+        // Prefix-free sponge length tag: bind the absorbed length into the first capacity element
+        // before permuting, matching the compact-D1 AIR constraint (and native DuplexChallenger 0.6).
+        // Zero on non-sponge rows leaves the chained / zero capacity untouched.
+        if self.absorb_len > 0 {
+            resolved_inputs[self.config.rate_ext()] += F::from_u8(self.absorb_len as u8);
+        }
+
         let output = exec(&resolved_inputs);
         let row = self.build_base_trace_row(limbs, outputs, &resolved_inputs);
 
@@ -597,7 +610,10 @@ impl<V: PoseidonVariant> PoseidonPermExecutor<V> {
             for inp in inputs.iter().take(rate_ext) {
                 hdr.push(F::from_bool(Self::limb_ctl_enabled(inp)));
             }
-            hdr.push(F::ZERO);
+            // Reuse the former unused `cap_in_ctl` slot to carry the prefix-free sponge length tag:
+            // the first capacity element is bound to `+= absorb_len` by the compact-D1 AIR. Zero on
+            // non-sponge rows leaves the original zero-capacity / chain behaviour intact.
+            hdr.push(F::from_u8(self.absorb_len as u8));
             hdr.push(F::from_bool(cap_chain_enable));
             for inp in inputs.iter().take(rate_ext) {
                 let ctl = Self::limb_ctl_enabled(inp);
@@ -871,6 +887,7 @@ mod tests {
             config,
             new_start,
             merkle_path,
+            0,
         )
     }
 

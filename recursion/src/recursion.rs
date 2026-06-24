@@ -22,14 +22,14 @@ use p3_circuit_prover::{
 use p3_commit::Pcs;
 use p3_field::{Algebra, BasedVectorSpace, ExtensionField, Field, PrimeField64};
 use p3_lookup::logup::LogUpGadget;
-use p3_lookup::{Lookup, LookupData, LookupProtocol};
+use p3_lookup::{Lookup, LookupProtocol};
 use p3_uni_stark::{Proof, StarkGenericConfig, Val};
 use tracing::instrument;
 
+use crate::Target;
 use crate::traits::{LookupMetadata, RecursiveAir};
 use crate::types::RecursiveLagrangeSelectors;
 use crate::verifier::VerificationError;
-use crate::Target;
 
 fn proof_shape_err(e: &impl ToString) -> VerificationError {
     VerificationError::InvalidProofShape(e.to_string())
@@ -259,7 +259,6 @@ impl<F: Field, EF: ExtensionField<F>, LG: LookupProtocol> RecursiveAir<F, EF, LG
         &self,
         _preprocessed_width: usize,
         _contexts: &[Lookup<F>],
-        _lookup_data: &[LookupData<usize>],
         _is_zk: usize,
         _lookup_gadget: &LG,
     ) -> usize {
@@ -407,6 +406,10 @@ where
         + ExtractBinomialW<Val<SC>>,
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
         Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+    <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain: Send + Sync,
+    SC::Pcs: Sync,
+    <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::ProverData: Sync,
+    <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment: Sync,
 {
     if let Some(cached) = prep {
         let traces = {
@@ -504,6 +507,10 @@ where
         + ExtractBinomialW<Val<SC>>,
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
         Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+    <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain: Send + Sync,
+    SC::Pcs: Sync,
+    <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::ProverData: Sync,
+    <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment: Sync,
 {
     let (verification_circuit, verifier_result) =
         build_next_layer_circuit::<SC, A, B, D>(prev, config, backend)?;
@@ -657,6 +664,10 @@ where
         + ExtractBinomialW<Val<SC>>,
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
         Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+    <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain: Send + Sync,
+    SC::Pcs: Sync,
+    <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::ProverData: Sync,
+    <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment: Sync,
 {
     let current_fp = aggregation_circuit_fingerprint(verification_circuit);
     if let Some(ref mut cache_slot) = prep_cache
@@ -771,6 +782,10 @@ where
         + ExtractBinomialW<Val<SC>>,
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
         Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+    <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain: Send + Sync,
+    SC::Pcs: Sync,
+    <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::ProverData: Sync,
+    <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment: Sync,
 {
     let (verification_circuit, (left_result, right_result)) =
         build_aggregation_layer_circuit::<SC, A1, A2, B, D>(left, right, config, backend)?;

@@ -100,7 +100,8 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
         EF: ExtensionField<BF>,
     {
         debug_assert!(self.initialized, "Challenger must be initialized");
-        debug_assert!(self.input_buffer.len() <= RATE, "Input buffer exceeds RATE");
+        let num_absorbed = self.input_buffer.len();
+        debug_assert!(num_absorbed <= RATE, "Input buffer exceeds RATE");
 
         let p2_config = self.config.as_poseidon2().copied();
         let p1_config = self.config.as_poseidon1().copied();
@@ -110,17 +111,38 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
             self.state[i] = val;
         }
 
+        // The compact-D1 (base) path feeds capacity as `None` and binds the length tag inside the
+        // AIR via `absorb_len`; the extension-field path feeds the full state, so it must apply the
+        // tag to the tracked capacity element here.
+        let is_base =
+            p2_config.map_or_else(|| p1_config.is_some_and(|c| c.d() == 1), |c| c.d() == 1);
+
+        // 2. Prefix-free padding (matches native `DuplexChallenger` 0.6): on an absorb
+        // (`num_absorbed > 0`) zero the rate slots the inputs did not overwrite and bind the
+        // absorbed length into the first capacity element. An empty buffer is a squeeze: the
+        // state is permuted untouched.
+        if num_absorbed > 0 {
+            let zero = circuit.define_const(EF::ZERO);
+            for slot in self.state.iter_mut().take(RATE).skip(num_absorbed) {
+                *slot = zero;
+            }
+            if !is_base {
+                let length_tag = circuit.define_const(EF::from_u8(num_absorbed as u8));
+                self.state[RATE] = circuit.add(self.state[RATE], length_tag);
+            }
+        }
+
         // Branch by NPO packing (`config.d()`), not `EF::DIMENSION`, so a quintic
         // (or other) challenge field can still use a base width-16 permutation.
         if let Some(cfg) = p2_config {
             if cfg.d() == 1 {
-                self.duplexing_base(circuit, cfg);
+                self.duplexing_base(circuit, cfg, num_absorbed);
             } else {
                 self.duplexing_ext::<BF, EF>(circuit, cfg);
             }
         } else if let Some(cfg) = p1_config {
             if cfg.d() == 1 {
-                self.duplexing_base_p1(circuit, cfg);
+                self.duplexing_base_p1(circuit, cfg, num_absorbed);
             } else {
                 self.duplexing_ext_p1::<BF, EF>(circuit, cfg);
             }
@@ -143,6 +165,7 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
         &mut self,
         circuit: &mut CircuitBuilder<EF>,
         poseidon2_config: Poseidon2Config,
+        absorb_len: usize,
     ) where
         EF: p3_field::Field,
     {
@@ -160,7 +183,7 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
         self.duplexed_once = true;
 
         let outputs = circuit
-            .add_poseidon2_perm_for_challenger_base(poseidon2_config, new_start, inputs)
+            .add_poseidon2_perm_for_challenger_base(poseidon2_config, new_start, inputs, absorb_len)
             .expect("poseidon2 base permutation should succeed");
 
         self.state = outputs.to_vec();
@@ -205,6 +228,7 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
         &mut self,
         circuit: &mut CircuitBuilder<EF>,
         poseidon1_config: Poseidon1Config,
+        absorb_len: usize,
     ) where
         EF: p3_field::Field,
     {
@@ -214,7 +238,7 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
         self.duplexed_once = true;
 
         let outputs = circuit
-            .add_poseidon1_perm_for_challenger_base(poseidon1_config, new_start, inputs)
+            .add_poseidon1_perm_for_challenger_base(poseidon1_config, new_start, inputs, absorb_len)
             .expect("poseidon1 base permutation should succeed");
 
         self.state = outputs.to_vec();
