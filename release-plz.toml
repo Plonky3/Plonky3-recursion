@@ -1,0 +1,29 @@
+[workspace]
+changelog_config = "cliff.toml"
+pr_labels = ["release"]
+publish_timeout = "10m"
+dependencies_update = true
+
+[[package]]
+name = "p3-circuit"
+version_group = "plonky3"
+
+[[package]]
+name = "p3-circuit-prover"
+version_group = "plonky3"
+
+[[package]]
+name = "p3-poseidon-circuit-air"
+version_group = "plonky3"
+
+[[package]]
+name = "p3-poseidon1-circuit-air"
+version_group = "plonky3"
+
+[[package]]
+name = "p3-poseidon2-circuit-air"
+version_group = "plonky3"
+
+[[package]]
+name = "p3-recursion"
+version_group = "plonky3"
