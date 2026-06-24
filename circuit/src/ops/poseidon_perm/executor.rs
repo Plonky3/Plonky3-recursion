@@ -813,10 +813,6 @@ impl<V: PoseidonVariant, F: Field + Send + Sync + 'static> NonPrimitiveExecutor<
         &self.op_type
     }
 
-    fn as_any(&self) -> &dyn core::any::Any {
-        self
-    }
-
     fn num_exposed_outputs(&self) -> Option<usize> {
         Some(self.config.rate_ext())
     }

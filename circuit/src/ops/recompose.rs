@@ -164,10 +164,6 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for RecomposeExec
         &self.op_type
     }
 
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn preprocess(
         &self,
         inputs: &[Vec<WitnessId>],

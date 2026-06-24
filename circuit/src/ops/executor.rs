@@ -103,9 +103,6 @@ pub trait NonPrimitiveExecutor<F: Field>: Debug {
     /// Get operation type identifier (for config lookup, error reporting)
     fn op_type(&self) -> &NpoTypeId;
 
-    /// Allow downcasting to concrete executor types
-    fn as_any(&self) -> &dyn Any;
-
     /// Update the preprocessed values related to this operation. This consists of:
     /// - the preprocessed values for the associated table
     /// - the multiplicity for the `Witness` table.

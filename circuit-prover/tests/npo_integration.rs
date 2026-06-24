@@ -136,10 +136,6 @@ where
         &self.op_type
     }
 
-    fn as_any(&self) -> &dyn core::any::Any {
-        self
-    }
-
     fn preprocess(
         &self,
         _inputs: &[Vec<WitnessId>],
