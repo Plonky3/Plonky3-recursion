@@ -35,6 +35,35 @@ fn proof_shape_err(e: &impl ToString) -> VerificationError {
     VerificationError::InvalidProofShape(e.to_string())
 }
 
+/// Build the [`BatchStarkProver`] for a recursion layer from the resolved table packing,
+/// constraint profile, and the layer's non-primitive table provers.
+///
+/// `provers` is passed in already constructed so the helper stays agnostic to which AIR the
+/// aggregation site dispatches `non_primitive_provers` through.
+fn build_layer_prover<SC>(
+    config: &SC,
+    table_packing: &TablePacking,
+    constraint_profile: ConstraintProfile,
+    provers: Vec<Box<dyn TableProver<SC>>>,
+) -> BatchStarkProver<SC>
+where
+    SC: StarkGenericConfig + Clone + 'static,
+    Val<SC>: StarkField,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+{
+    let mut prover = BatchStarkProver::new(config.clone())
+        .with_table_packing(table_packing.clone())
+        .with_alu_variant(match constraint_profile {
+            ConstraintProfile::Standard => AirVariant::Baseline,
+            ConstraintProfile::RecursionOptimized => AirVariant::Optimized,
+        });
+    for p in provers {
+        prover.register_table_prover(p);
+    }
+    prover
+}
+
 /// Fingerprint for the compiled verification [`Circuit`].
 ///
 /// This is used to reject [`AggregationPrepCache`] hits when a new aggregation step builds a different
@@ -340,15 +369,12 @@ where
         non_primitive_columns,
     ));
 
-    let mut prover = BatchStarkProver::new(config.clone())
-        .with_table_packing(params.table_packing.clone())
-        .with_alu_variant(match params.constraint_profile {
-            ConstraintProfile::Standard => AirVariant::Baseline,
-            ConstraintProfile::RecursionOptimized => AirVariant::Optimized,
-        });
-    for p in backend.non_primitive_provers(D) {
-        prover.register_table_prover(p);
-    }
+    let prover = build_layer_prover(
+        config,
+        &params.table_packing,
+        params.constraint_profile,
+        backend.non_primitive_provers(D),
+    );
 
     Ok(NextLayerPrepCache {
         circuit_prover_data,
@@ -447,15 +473,12 @@ where
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns)
     };
 
-    let mut prover = BatchStarkProver::new(config.clone())
-        .with_table_packing(params.table_packing.clone())
-        .with_alu_variant(match params.constraint_profile {
-            ConstraintProfile::Standard => AirVariant::Baseline,
-            ConstraintProfile::RecursionOptimized => AirVariant::Optimized,
-        });
-    for p in backend.non_primitive_provers(D) {
-        prover.register_table_prover(p);
-    }
+    let prover = build_layer_prover(
+        config,
+        &params.table_packing,
+        params.constraint_profile,
+        backend.non_primitive_provers(D),
+    );
     let proof = prover
         .prove_all_tables(&traces, &circuit_prover_data)
         .map_err(|e| proof_shape_err(&e.to_string()))?;
@@ -692,15 +715,12 @@ where
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns)
     };
 
-    let mut prover = BatchStarkProver::new(config.clone())
-        .with_table_packing(params.table_packing.clone())
-        .with_alu_variant(match params.constraint_profile {
-            ConstraintProfile::Standard => AirVariant::Baseline,
-            ConstraintProfile::RecursionOptimized => AirVariant::Optimized,
-        });
-    for p in <B as PcsRecursionBackend<SC, A1, D>>::non_primitive_provers(backend, D) {
-        prover.register_table_prover(p);
-    }
+    let prover = build_layer_prover(
+        config,
+        &params.table_packing,
+        params.constraint_profile,
+        <B as PcsRecursionBackend<SC, A1, D>>::non_primitive_provers(backend, D),
+    );
     let proof = prover
         .prove_all_tables(&traces, &circuit_prover_data)
         .map_err(|e| proof_shape_err(&e.to_string()))?;
