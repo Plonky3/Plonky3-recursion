@@ -32,7 +32,7 @@ use p3_lookup::logup::LogUpGadget;
 use p3_lookup::symbolic::InteractionSymbolicBuilder;
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
-use p3_poseidon_circuit_air::{
+use p3_poseidon_circuit_cols::{
     PoseidonPrepInputLimb, poseidon_d1_compact_preprocessed_header_cols,
     poseidon_preprocessed_row_width, poseidon_preprocessed_row_width_for_air,
     poseidon_uses_compact_d1_preprocessed,

@@ -1,7 +1,7 @@
 //! Column definitions for the Poseidon2 circuit AIR.
 
-use p3_poseidon_circuit_air::circuit_cols_add_two;
-pub use p3_poseidon_circuit_air::{
+use p3_poseidon_circuit_cols::circuit_cols_add_two;
+pub use p3_poseidon_circuit_cols::{
     POSEIDON_LIMBS as POSEIDON2_LIMBS,
     POSEIDON_PUBLIC_OUTPUT_LIMBS as POSEIDON2_PUBLIC_OUTPUT_LIMBS,
     PoseidonCircuitCols as Poseidon2CircuitCols, PoseidonPrepInputLimb as Poseidon2PrepInputLimb,

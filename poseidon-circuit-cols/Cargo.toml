@@ -1,5 +1,5 @@
 [package]
-name = "p3-poseidon-circuit-air"
+name = "p3-poseidon-circuit-cols"
 description = "Shared column and preprocessed-row layout for the Poseidon circuit AIRs."
 version.workspace = true
 edition.workspace = true

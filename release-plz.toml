@@ -13,7 +13,7 @@ name = "p3-circuit-prover"
 version_group = "plonky3"
 
 [[package]]
-name = "p3-poseidon-circuit-air"
+name = "p3-poseidon-circuit-cols"
 version_group = "plonky3"
 
 [[package]]
