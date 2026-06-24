@@ -282,10 +282,23 @@ where
 }
 
 #[inline(always)]
+/// Reinterpret a `&Traces<FromEF>` as a `&Traces<ToEF>` to recover a const extension
+/// degree from a runtime one for the const-generic `batch_instance_d{1,2,4,5,6,8}` dispatch.
+///
 /// # Safety
 ///
-/// Caller must ensure that both `Traces<FromEF>` and `Traces<ToEF>` share an
-/// identical in-memory representation.
+/// Both of the following must hold:
+///
+/// 1. **Layout match.** `Traces<FromEF>` and `Traces<ToEF>` must have identical size and
+///    alignment. The field type only appears behind the value vectors and the boxed trait
+///    objects, so this holds whenever `FromEF` and `ToEF` have the same layout — in
+///    particular when the caller picks `ToEF` to match `FromEF`'s actual extension degree.
+/// 2. **Access discipline.** The returned reference must only be used to read
+///    `non_primitive_traces`, downcasting each boxed `dyn NonPrimitiveTrace` to the concrete
+///    trace type it was constructed as (which carries its own trace field, independent of
+///    `ToEF`). The `FromEF`-typed value vectors (`witness_trace`, `const_trace`,
+///    `public_trace`, `alu_trace`) must NOT be read through the `ToEF` view, since that would
+///    reinterpret `FromEF` field elements as `ToEF` ones.
 pub(crate) unsafe fn transmute_traces<FromEF, ToEF>(t: &Traces<FromEF>) -> &Traces<ToEF> {
     debug_assert_eq!(
         core::mem::size_of::<Traces<FromEF>>(),
