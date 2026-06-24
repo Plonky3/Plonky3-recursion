@@ -713,6 +713,22 @@ pub enum ProofMetadataError {
     /// `ext_degree` is not one of the supported values.
     #[error("unsupported extension degree {0} (supported: 1,2,4,5,6,8)")]
     UnsupportedExtDegree(usize),
+
+    /// The proof's declared extension degree does not match the verifier's expected trace field.
+    #[error(
+        "proof ext_degree {got} does not match the verifier's expected trace field (degree {expected})"
+    )]
+    ExtDegreeMismatch { expected: usize, got: usize },
+
+    /// The proof's binomial parameter `W` does not match the verifier's expected trace field.
+    #[error("proof binomial W does not match the verifier's expected trace field")]
+    BinomialWMismatch,
+
+    /// The proof's quintic-trinomial reduction flag does not match the verifier's expected trace field.
+    #[error(
+        "proof quintic-trinomial flag {got} does not match the verifier's expected trace field ({expected})"
+    )]
+    QuinticReductionMismatch { expected: bool, got: bool },
 }
 
 /// Errors for the batch STARK table prover.
@@ -1117,14 +1133,49 @@ where
     }
 
     /// Verify the unified batch STARK proof against all tables.
-    pub fn verify_all_tables(
+    ///
+    /// `EF` is the verifier's **expected trace element field**. Its degree and binomial/quintic
+    /// reduction parameters are derived verifier-side and bound against the proof's declared
+    /// `ext_degree`/`w_binomial`/`alu_quintic_trinomial` before any AIR is reconstructed, so the
+    /// verified extension-arithmetic relation is verifier-chosen rather than proof-chosen.
+    pub fn verify_all_tables<EF>(
         &self,
         proof: &BatchStarkProof<SC>,
-    ) -> Result<(), BatchStarkProverError> {
+    ) -> Result<(), BatchStarkProverError>
+    where
+        EF: Field + BasedVectorSpace<Val<SC>> + ExtractBinomialW<Val<SC>>,
+    {
         proof.validate()?;
+
+        // Reduction parameters as the prover would store them for this field (see `prove`).
+        let expected_w = if EF::DIMENSION > 1 {
+            EF::extract_w()
+        } else {
+            None
+        };
+        let expected_quintic = EF::DIMENSION == 5 && EF::alu_is_quintic_trinomial();
+
+        if proof.ext_degree != EF::DIMENSION {
+            return Err(ProofMetadataError::ExtDegreeMismatch {
+                expected: EF::DIMENSION,
+                got: proof.ext_degree,
+            }
+            .into());
+        }
+        if proof.w_binomial != expected_w {
+            return Err(ProofMetadataError::BinomialWMismatch.into());
+        }
+        if proof.alu_quintic_trinomial != expected_quintic {
+            return Err(ProofMetadataError::QuinticReductionMismatch {
+                expected: expected_quintic,
+                got: proof.alu_quintic_trinomial,
+            }
+            .into());
+        }
+
         let common = &proof.stark_common;
-        dispatch_by_ext_degree!(proof.ext_degree, |D| self
-            .verify::<D>(proof, proof.w_binomial, common))
+        dispatch_by_ext_degree!(EF::DIMENSION, |D| self
+            .verify::<D>(proof, expected_w, common))
     }
 
     /// Generate a batch STARK proof for a specific extension field degree.

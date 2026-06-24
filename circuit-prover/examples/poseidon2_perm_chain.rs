@@ -203,7 +203,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     prover.register_recompose_table::<4>(false);
 
     let proof = prover.prove_all_tables(&traces, &circuit_prover_data)?;
-    prover.verify_all_tables(&proof)?;
+    prover.verify_all_tables::<Ext4>(&proof)?;
 
     Ok(())
 }

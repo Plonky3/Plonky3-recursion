@@ -81,7 +81,7 @@ fn test_aggregation_with_different_shapes() -> Result<(), VerificationError> {
         .prove_all_tables(&traces, &circuit_prover_data)
         .unwrap();
     let common = circuit_prover_data.common_data();
-    prover.verify_all_tables(&batch_stark_proof).unwrap();
+    prover.verify_all_tables::<F>(&batch_stark_proof).unwrap();
 
     // Build the verification circuit.
     let mut circuit_builder = CircuitBuilder::new();

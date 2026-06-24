@@ -371,7 +371,7 @@ macro_rules! define_field_module {
                             .expect("Failed to prove base circuit");
                         report_proof_size(&proof_0);
                         prover_0
-                            .verify_all_tables(&proof_0)
+                            .verify_all_tables::<F>(&proof_0)
                             .expect("Failed to verify base proof");
 
                         if num_recursive_layers == 0 {
@@ -447,9 +447,11 @@ macro_rules! define_field_module {
                             if !disable_recompose_npo {
                                 prover.register_recompose_table::<$d>($poseidon2_config.d() != $d);
                             }
-                            prover.verify_all_tables(&out.0).unwrap_or_else(|e| {
-                                panic!("Failed to verify layer {layer}: {e:?}")
-                            });
+                            prover
+                                .verify_all_tables::<Challenge>(&out.0)
+                                .unwrap_or_else(|e| {
+                                    panic!("Failed to verify layer {layer}: {e:?}")
+                                });
 
                             output = out;
                         }
@@ -617,7 +619,7 @@ macro_rules! define_field_module_quintic {
                     .expect("Failed to prove base circuit");
                 report_proof_size(&proof_0);
                 prover_0
-                    .verify_all_tables(&proof_0)
+                    .verify_all_tables::<F>(&proof_0)
                     .expect("Failed to verify base proof");
 
                 if num_recursive_layers == 0 {
@@ -686,7 +688,7 @@ macro_rules! define_field_module_quintic {
                         prover.register_recompose_table::<D>($poseidon2_config.d() != D);
                     }
                     prover
-                        .verify_all_tables(&out.0)
+                        .verify_all_tables::<Challenge>(&out.0)
                         .unwrap_or_else(|e| panic!("Failed to verify layer {layer}: {e:?}"));
 
                     output = out;

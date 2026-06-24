@@ -31,7 +31,7 @@
 //! let cfg = build_standard_config_babybear();
 //! let prover = BatchStarkProver::new(cfg);
 //! let proof = prover.prove_all_tables(&traces).unwrap();
-//! prover.verify_all_tables(&proof).unwrap();
+//! prover.verify_all_tables::<BabyBear>(&proof).unwrap();
 //! ```
 #![no_std]
 

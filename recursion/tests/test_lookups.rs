@@ -64,7 +64,7 @@ fn test_arith_lookups() {
     } = get_test_circuit_proof();
     let common = circuit_prover_data.common_data();
 
-    prover.verify_all_tables(&batch_stark_proof).unwrap();
+    prover.verify_all_tables::<F>(&batch_stark_proof).unwrap();
 
     // Build the recursive verification circuit
     let mut circuit_builder = setup_circuit_builder();
@@ -891,7 +891,7 @@ fn test_poseidon2_ctl_lookups() {
         .unwrap();
 
     prover
-        .verify_all_tables(&proof)
+        .verify_all_tables::<Challenge>(&proof)
         .expect("Poseidon2 CTL lookup verification should succeed");
 }
 
@@ -1019,6 +1019,6 @@ fn test_poseidon2_chained_ctl_lookups() {
         .unwrap();
 
     prover
-        .verify_all_tables(&proof)
+        .verify_all_tables::<Challenge>(&proof)
         .expect("Chained Poseidon2 CTL lookup verification should succeed");
 }

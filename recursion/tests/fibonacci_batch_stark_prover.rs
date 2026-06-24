@@ -100,7 +100,7 @@ fn test_fibonacci_batch_verifier() {
         .unwrap();
 
     let common = circuit_prover_data.common_data();
-    prover.verify_all_tables(&batch_stark_proof).unwrap();
+    prover.verify_all_tables::<F>(&batch_stark_proof).unwrap();
 
     // Now verify the batch STARK proof recursively
     // Use same permutation as proving to ensure Fiat-Shamir transcript compatibility
@@ -247,7 +247,7 @@ fn test_fibonacci_batch_verifier() {
 
     // Verify the proof of the verification circuit
     verification_prover
-        .verify_all_tables(&verification_proof)
+        .verify_all_tables::<Challenge>(&verification_proof)
         .expect("Failed to verify proof of verification circuit");
 }
 

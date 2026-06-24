@@ -9,7 +9,7 @@ use p3_circuit::ops::{
     generate_poseidon2_trace, generate_recompose_trace,
 };
 use p3_field::PrimeCharacteristicRing;
-use p3_field::extension::QuinticTrinomialExtensionField;
+use p3_field::extension::{BinomialExtensionField, QuinticTrinomialExtensionField};
 use p3_goldilocks::{Goldilocks, Poseidon2Goldilocks};
 use p3_koala_bear::{KoalaBear, default_koalabear_poseidon1_16, default_koalabear_poseidon2_16};
 use p3_symmetric::{CryptographicHasher, PaddingFreeSponge, Permutation};
@@ -76,7 +76,19 @@ fn test_babybear_batch_stark_base_field() {
     assert_eq!(proof.ext_degree, 1);
     assert!(proof.w_binomial.is_none());
 
-    assert!(prover.verify_all_tables(&proof).is_ok());
+    assert!(prover.verify_all_tables::<BabyBear>(&proof).is_ok());
+
+    // Soundness (#1.1): the reduction is bound to the verifier's expected trace field, so
+    // verifying this D=1 proof against a D=4 field is rejected up front, before AIR rebuild.
+    assert!(matches!(
+        prover.verify_all_tables::<BinomialExtensionField<BabyBear, 4>>(&proof),
+        Err(BatchStarkProverError::InvalidMetadata(
+            ProofMetadataError::ExtDegreeMismatch {
+                expected: 4,
+                got: 1,
+            }
+        ))
+    ));
 }
 
 #[test]
@@ -131,7 +143,7 @@ fn test_table_lookups() {
     assert_eq!(proof.ext_degree, 1);
     assert!(proof.w_binomial.is_none());
 
-    assert!(prover.verify_all_tables(&proof).is_ok());
+    assert!(prover.verify_all_tables::<BabyBear>(&proof).is_ok());
 
     // Check that the generated lookups are correct and consistent across tables.
     for air in airs.iter() {
@@ -232,7 +244,9 @@ fn test_extension_field_batch_stark() {
     // Ensure W was captured
     let expected_w = <Ext4 as ExtractBinomialW<BabyBear>>::extract_w().unwrap();
     assert_eq!(proof.w_binomial, Some(expected_w));
-    prover.verify_all_tables(&proof).unwrap();
+    prover
+        .verify_all_tables::<BinomialExtensionField<BabyBear, 4>>(&proof)
+        .unwrap();
 }
 
 #[test]
@@ -307,7 +321,11 @@ fn test_extension_field_table_lookups() {
     let expected_w = <Ext4 as ExtractBinomialW<BabyBear>>::extract_w().unwrap();
     assert_eq!(proof.w_binomial, Some(expected_w));
 
-    assert!(prover.verify_all_tables(&proof).is_ok());
+    assert!(
+        prover
+            .verify_all_tables::<BinomialExtensionField<BabyBear, 4>>(&proof)
+            .is_ok()
+    );
 
     // Check that the generated lookups are correct and consistent across tables.
     for air in airs.iter() {
@@ -391,7 +409,7 @@ fn test_koalabear_batch_stark_base_field() {
         .unwrap();
     assert_eq!(proof.ext_degree, 1);
     assert!(proof.w_binomial.is_none());
-    prover.verify_all_tables(&proof).unwrap();
+    prover.verify_all_tables::<KoalaBear>(&proof).unwrap();
 }
 
 #[test]
@@ -488,7 +506,9 @@ fn test_koalabear_batch_stark_extension_field_d8() {
     assert_eq!(proof.ext_degree, 8);
     let expected_w = <KBExtField as ExtractBinomialW<KoalaBear>>::extract_w().unwrap();
     assert_eq!(proof.w_binomial, Some(expected_w));
-    prover.verify_all_tables(&proof).unwrap();
+    prover
+        .verify_all_tables::<BinomialExtensionField<KoalaBear, 8>>(&proof)
+        .unwrap();
 }
 
 #[test]
@@ -551,7 +571,9 @@ fn test_goldilocks_batch_stark_binomial_ext2() {
     assert_eq!(proof.ext_degree, 2);
     let expected_w = <Ext2 as ExtractBinomialW<Goldilocks>>::extract_w().unwrap();
     assert_eq!(proof.w_binomial, Some(expected_w));
-    prover.verify_all_tables(&proof).unwrap();
+    prover
+        .verify_all_tables::<BinomialExtensionField<Goldilocks, 2>>(&proof)
+        .unwrap();
 }
 
 #[test]
@@ -686,7 +708,7 @@ fn test_mul_only_circuit_padding() {
     let proof = prover
         .prove_all_tables(&traces, &circuit_prover_data)
         .unwrap();
-    prover.verify_all_tables(&proof).unwrap();
+    prover.verify_all_tables::<BabyBear>(&proof).unwrap();
 }
 
 #[test]
@@ -734,7 +756,7 @@ fn test_add_only_circuit_padding() {
     let proof = prover
         .prove_all_tables(&traces, &circuit_prover_data)
         .unwrap();
-    prover.verify_all_tables(&proof).unwrap();
+    prover.verify_all_tables::<BabyBear>(&proof).unwrap();
 }
 
 fn koala_ef5_lift(b: KoalaBear) -> QuinticTrinomialExtensionField<KoalaBear> {
@@ -830,7 +852,9 @@ fn test_koalabear_quintic_trinomial_batch_stark_with_poseidon_d1() {
     assert_eq!(proof.ext_degree, D);
     assert!(proof.w_binomial.is_none());
     assert!(proof.alu_quintic_trinomial);
-    prover.verify_all_tables(&proof).unwrap();
+    prover
+        .verify_all_tables::<QuinticTrinomialExtensionField<KoalaBear>>(&proof)
+        .unwrap();
 }
 
 /// Two D=1 Poseidon rows in an EF5 circuit: the second row uses `new_start=false` so the full
@@ -926,7 +950,9 @@ fn test_koalabear_quintic_trinomial_batch_stark_poseidon_d1_sponge_chain() {
     assert_eq!(proof.ext_degree, D);
     assert!(proof.w_binomial.is_none());
     assert!(proof.alu_quintic_trinomial);
-    prover.verify_all_tables(&proof).unwrap();
+    prover
+        .verify_all_tables::<QuinticTrinomialExtensionField<KoalaBear>>(&proof)
+        .unwrap();
 }
 
 #[test]
@@ -998,7 +1024,7 @@ fn test_stark_serialization_round_trip() {
     // Verification must succeed against the deserialized proof, relying only on the
     // proof's own `stark_common` for the preprocessed binding.
     prover
-        .verify_all_tables(&deserialized)
+        .verify_all_tables::<BabyBear>(&deserialized)
         .expect("verification uses proof.stark_common");
 }
 
@@ -1187,7 +1213,7 @@ fn verify_all_tables_rejects_tampered_serialized_row_counts() {
     };
 
     let err = prover
-        .verify_all_tables(&tampered)
+        .verify_all_tables::<BabyBear>(&tampered)
         .expect_err("tampered row counts must be rejected before verification");
     assert!(
         matches!(
@@ -1279,5 +1305,7 @@ fn test_koalabear_quintic_trinomial_batch_stark_with_poseidon1_d1() {
     assert_eq!(proof.ext_degree, D);
     assert!(proof.w_binomial.is_none());
     assert!(proof.alu_quintic_trinomial);
-    prover.verify_all_tables(&proof).unwrap();
+    prover
+        .verify_all_tables::<QuinticTrinomialExtensionField<KoalaBear>>(&proof)
+        .unwrap();
 }

@@ -279,7 +279,7 @@ fn test_batch_verifier_hiding_mmcs() -> Result<(), VerificationError> {
         .expect("Failed to prove hiding-MMCS verification circuit");
 
     verification_prover
-        .verify_all_tables(&verification_proof)
+        .verify_all_tables::<Challenge>(&verification_proof)
         .expect("Failed to verify proof of hiding-MMCS verification circuit");
 
     Ok(())

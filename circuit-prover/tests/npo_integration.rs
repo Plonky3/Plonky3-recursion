@@ -306,7 +306,7 @@ fn cube_npo_stark_proof() {
         .expect("prove_all_tables should succeed");
 
     prover
-        .verify_all_tables(&proof)
+        .verify_all_tables::<F>(&proof)
         .expect("verify_all_tables should succeed");
 }
 

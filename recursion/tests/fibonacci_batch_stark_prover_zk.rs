@@ -253,7 +253,7 @@ fn test_batch_verifier_zk_hiding_fri() -> Result<(), VerificationError> {
         .expect("Failed to prove ZK verification circuit");
 
     verification_prover
-        .verify_all_tables(&verification_proof)
+        .verify_all_tables::<Challenge>(&verification_proof)
         .expect("Failed to verify proof of ZK verification circuit");
 
     Ok(())

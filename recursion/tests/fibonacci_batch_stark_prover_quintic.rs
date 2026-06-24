@@ -107,7 +107,9 @@ fn test_fibonacci_batch_verifier_quintic_koala() {
     let batch_stark_proof = prover
         .prove_all_tables(&traces, &circuit_prover_data)
         .unwrap();
-    prover.verify_all_tables(&batch_stark_proof).unwrap();
+    prover
+        .verify_all_tables::<Challenge>(&batch_stark_proof)
+        .unwrap();
 
     // `prove_all_tables` may reduce lanes for dummy ALU/public tables; `stark_common` always
     // matches the committed AIR layout, so recursive verification consumes it directly.
@@ -239,6 +241,6 @@ fn test_fibonacci_batch_verifier_quintic_koala() {
         .expect("Failed to prove verification circuit");
 
     verification_prover
-        .verify_all_tables(&verification_proof)
+        .verify_all_tables::<Challenge>(&verification_proof)
         .expect("Failed to verify proof of verification circuit");
 }
