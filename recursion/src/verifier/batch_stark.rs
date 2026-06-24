@@ -689,19 +689,24 @@ where
         ));
     }
 
-    let trace_round: Vec<_> = ext_trace_domains
-        .iter()
-        .zip(trace_domains.iter())
-        .zip(instances.iter())
-        .map(|((ext_dom, trace_dom), inst)| {
+    // Trace-domain generator for `zeta_next = zeta * g`, where `g` advances the domain by one row.
+    let trace_domain_generator =
+        |trace_dom: &<SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain| {
             let first_point = pcs.first_point(trace_dom);
             let next_point = trace_dom.next_point(first_point).ok_or_else(|| {
                 VerificationError::InvalidProofShape(
                     "Trace domain does not provide next point".to_string(),
                 )
             })?;
-            let generator = next_point * first_point.inverse();
-            let generator_const = circuit.define_const(generator);
+            Ok::<_, VerificationError>(next_point * first_point.inverse())
+        };
+
+    let trace_round: Vec<_> = ext_trace_domains
+        .iter()
+        .zip(trace_domains.iter())
+        .zip(instances.iter())
+        .map(|((ext_dom, trace_dom), inst)| {
+            let generator_const = circuit.define_const(trace_domain_generator(trace_dom)?);
             let zeta_next = circuit.mul(zeta, generator_const);
             Ok((
                 *ext_dom,
@@ -823,14 +828,7 @@ where
 
             // Use the base trace domain for zeta_next computation.
             let trace_dom = &trace_domains[inst_idx];
-            let first_point = pcs.first_point(trace_dom);
-            let next_point = trace_dom.next_point(first_point).ok_or_else(|| {
-                VerificationError::InvalidProofShape(
-                    "Preprocessed domain does not provide next point".to_string(),
-                )
-            })?;
-            let generator = next_point * first_point.inverse();
-            let generator_const = circuit.define_const(generator);
+            let generator_const = circuit.define_const(trace_domain_generator(trace_dom)?);
             let zeta_next = circuit.mul(zeta, generator_const);
 
             pre_round.push((
@@ -864,14 +862,7 @@ where
 
             if !permutation_local.is_empty() {
                 let trace_dom = &trace_domains[i];
-                let first_point = pcs.first_point(trace_dom);
-                let next_point = trace_dom.next_point(first_point).ok_or_else(|| {
-                    VerificationError::InvalidProofShape(
-                        "Trace domain does not provide next point".to_string(),
-                    )
-                })?;
-                let generator = next_point * first_point.inverse();
-                let generator_const = circuit.define_const(generator);
+                let generator_const = circuit.define_const(trace_domain_generator(trace_dom)?);
                 let zeta_next = circuit.mul(zeta, generator_const);
 
                 permutation_round.push((
