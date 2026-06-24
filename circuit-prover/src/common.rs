@@ -14,6 +14,27 @@ use crate::config::StarkField;
 use crate::field_params::ExtractBinomialW;
 use crate::{ConstraintProfile, DynamicAirEntry, TablePacking};
 
+/// Force a table's lane count to 1 when it holds only dummy data.
+///
+/// Multi-lane padding interacts incorrectly with lookup constraints during recursive
+/// verification when a table has no real operations, so lanes are reduced to 1 (with a
+/// warning) in that case.
+pub(crate) fn reduce_lanes_if_dummy(
+    table: &str,
+    only_dummy: bool,
+    configured_lanes: usize,
+) -> usize {
+    if only_dummy && configured_lanes > 1 {
+        tracing::warn!(
+            "{table} table holds only dummy operations but lanes={configured_lanes} > 1. \
+             Reducing to lanes=1 to avoid recursive verification issues.",
+        );
+        1
+    } else {
+        configured_lanes
+    }
+}
+
 /// Plugin trait for NPO-owned preprocessing over generic circuits.
 ///
 /// Each implementation can update `PreprocessedColumns` (ext_reads, multiplicities, etc.)
@@ -129,31 +150,11 @@ where
     let alu_idx = PrimitiveOpType::Alu as usize;
 
     let public_rows = preprocessed.primitive[public_idx].len();
-    let public_trace_only_dummy = public_rows <= 1;
-    let effective_public_lanes = if public_trace_only_dummy && packing.public_lanes() > 1 {
-        tracing::warn!(
-            "Public table has <=1 row but public_lanes={} > 1. Reducing to public_lanes=1 to avoid \
-             recursive verification issues. Consider using public_lanes=1 when few public inputs \
-             are expected.",
-            packing.public_lanes()
-        );
-        1
-    } else {
-        packing.public_lanes()
-    };
+    let effective_public_lanes =
+        reduce_lanes_if_dummy("Public", public_rows <= 1, packing.public_lanes());
 
     let alu_empty = preprocessed.primitive[alu_idx].is_empty();
-    let effective_alu_lanes = if alu_empty && packing.alu_lanes() > 1 {
-        tracing::warn!(
-            "ALU table is empty but alu_lanes={} > 1. Reducing to alu_lanes=1 to avoid \
-             recursive verification issues. Consider using alu_lanes=1 when no additions \
-             are expected.",
-            packing.alu_lanes()
-        );
-        1
-    } else {
-        packing.alu_lanes()
-    };
+    let effective_alu_lanes = reduce_lanes_if_dummy("ALU", alu_empty, packing.alu_lanes());
 
     let w_binomial = ExtF::extract_w();
 

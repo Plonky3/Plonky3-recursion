@@ -161,7 +161,11 @@ pub struct AluAir<F: Copy, const D: usize = 1> {
 
 impl<F: Field + PrimeCharacteristicRing + Copy, const D: usize> AluAir<F, D> {
     /// Core builder: no preprocessed data, default min height and packed-Horner length.
-    pub const fn from_reduction(num_ops: usize, lanes: usize, ext_mul_kind: AluExtMulKind<F>) -> Self {
+    pub const fn from_reduction(
+        num_ops: usize,
+        lanes: usize,
+        ext_mul_kind: AluExtMulKind<F>,
+    ) -> Self {
         Self {
             num_ops,
             lanes,

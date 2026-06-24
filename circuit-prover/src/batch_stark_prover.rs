@@ -43,7 +43,7 @@ use tracing::instrument;
 use crate::air::{AluAir, AluExtMulKind, ConstAir, PublicAir};
 use crate::batch_stark_prover::dynamic_air::transmute_traces;
 use crate::batch_stark_prover::packing::{AirTableShape, TraceTablesLayout};
-use crate::common::{CircuitTableAir, NpoAirBuilder, NpoPreprocessor};
+use crate::common::{CircuitTableAir, NpoAirBuilder, NpoPreprocessor, reduce_lanes_if_dummy};
 use crate::config::StarkField;
 use crate::constraint_profile::ConstraintProfile;
 use crate::field_params::ExtractBinomialW;
@@ -1128,8 +1128,11 @@ where
         SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
     {
         let w_opt = EF::extract_w();
-        dispatch_by_ext_degree!(EF::DIMENSION, |D| self
-            .prove::<EF, D>(traces, w_opt, circuit_prover_data))
+        dispatch_by_ext_degree!(EF::DIMENSION, |D| self.prove::<EF, D>(
+            traces,
+            w_opt,
+            circuit_prover_data
+        ))
     }
 
     /// Verify the unified batch STARK proof against all tables.
@@ -1208,24 +1211,10 @@ where
         let packing = &self.table_packing;
         let min_height = packing.min_trace_height();
 
-        // Check if Alu table has only dummy operations (trace length <= 1).
-        // The table implementation adds a dummy row when empty, so we check for <= 1.
-        // Using lanes > 1 with only dummy operations causes issues in recursive verification
-        // due to a bug in how multi-lane padding interacts with lookup constraints.
-        // We automatically reduce lanes to 1 in these cases with a warning.
+        // The table implementation adds a dummy row when empty, so a trace length <= 1 means
+        // the Alu table has only dummy operations.
         let alu_trace_only_dummy = traces.alu_trace.op_kind.len() <= 1;
-
-        let alu_lanes = if alu_trace_only_dummy && packing.alu_lanes() > 1 {
-            tracing::warn!(
-                "ALu table has only dummy operations but alu_lanes={} > 1. Reducing to \
-                 alu_lanes=1 to avoid recursive verification issues. Consider using \
-                 alu_lanes=1 when no additions are expected.",
-                packing.alu_lanes()
-            );
-            1
-        } else {
-            packing.alu_lanes()
-        };
+        let alu_lanes = reduce_lanes_if_dummy("ALU", alu_trace_only_dummy, packing.alu_lanes());
 
         // Const — preprocessed is already in [ext_mult, index] 2-col format.
         let const_rows = traces.const_trace.values.len();
@@ -1237,17 +1226,8 @@ where
 
         // Public — reduce lanes to 1 if the table has only dummy operations.
         let public_trace_only_dummy = traces.public_trace.values.len() <= 1;
-        let public_lanes = if public_trace_only_dummy && packing.public_lanes() > 1 {
-            tracing::warn!(
-                "Public table has only dummy operations but public_lanes={} > 1. Reducing to \
-                 public_lanes=1 to avoid recursive verification issues. Consider using \
-                 public_lanes=1 when few public inputs are expected.",
-                packing.public_lanes()
-            );
-            1
-        } else {
-            packing.public_lanes()
-        };
+        let public_lanes =
+            reduce_lanes_if_dummy("Public", public_trace_only_dummy, packing.public_lanes());
 
         // Preprocessed is already in [ext_mult, index] 2-col format.
         let public_rows = traces.public_trace.values.len();
@@ -1606,9 +1586,13 @@ where
             AluExtMulKind::resolve(D, w_binomial, D == 5 && proof.alu_quintic_trinomial)
                 .ok_or(BatchStarkProverError::MissingWForExtension)?;
         let alu_air: CircuitTableAir<SC, D> = CircuitTableAir::Alu(
-            AluAir::<Val<SC>, D>::from_reduction(proof.rows[PrimitiveTable::Alu], alu_lanes, reduction)
-                .with_horner_pack_k(horner_k)
-                .with_min_height(min_height),
+            AluAir::<Val<SC>, D>::from_reduction(
+                proof.rows[PrimitiveTable::Alu],
+                alu_lanes,
+                reduction,
+            )
+            .with_horner_pack_k(horner_k)
+            .with_min_height(min_height),
         );
         let mut airs = vec![const_air, public_air, alu_air];
         let mut pvs: Vec<Vec<Val<SC>>> =
