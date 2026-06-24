@@ -313,18 +313,6 @@ where
     ///
     /// These are also in the extension field.
     pub preprocessed: Vec<EF>,
-
-    /// All Fiat–Shamir challenges used by the verifier.
-    ///
-    /// This typically includes:
-    /// - batching challenge,
-    /// - evaluation points for openings,
-    /// - FRI folding challenges,
-    /// - query indices.
-    pub challenges: Vec<EF>,
-
-    /// Number of FRI queries in the proof.
-    pub num_queries: usize,
 }
 
 impl<F, EF> StarkVerifierInputs<F, EF>
@@ -549,8 +537,6 @@ where
             air_public_values: air_public_values.to_vec(),
             proof_values: proof_values.to_vec(),
             preprocessed: preprocessed.to_vec(),
-            challenges: Vec::new(),
-            num_queries: 0,
         }
         .build()
     }
