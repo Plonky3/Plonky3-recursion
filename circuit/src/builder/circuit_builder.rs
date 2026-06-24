@@ -31,6 +31,20 @@ use crate::tables::TraceGeneratorFn;
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};
 use crate::{CircuitBuilderError, CircuitError};
 
+/// How `recompose_base_coeffs_to_ext` should lower a coefficient recomposition.
+///
+/// Replaces the previously open `(coeff_lookups, force_alu)` boolean pair, whose
+/// `(true, true)` combination was unreachable and silently ignored.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum RecomposeMode {
+    /// Use the recompose NPO table when enabled, without per-coefficient WitnessChecks receives.
+    Npo,
+    /// Use the `recompose/coeff` NPO table when enabled, emitting per-coefficient receives.
+    NpoWithCoeffLookups,
+    /// Always emit the ALU `mul_add` recomposition chain, even when the NPO table is enabled.
+    ForceAlu,
+}
+
 /// Builder for constructing circuits.
 pub struct CircuitBuilder<F: Field> {
     /// Expression graph builder
@@ -1143,7 +1157,7 @@ where
         BF: PrimeField64,
         F: ExtensionField<BF>,
     {
-        self.recompose_base_coeffs_to_ext_impl::<BF>(coeffs, false)
+        self.recompose_base_coeffs_to_ext_impl::<BF>(coeffs, RecomposeMode::Npo)
     }
 
     /// Like [`Self::recompose_base_coeffs_to_ext`], but uses the `recompose/coeff` table so the
@@ -1158,7 +1172,7 @@ where
         BF: PrimeField64,
         F: ExtensionField<BF>,
     {
-        self.recompose_base_coeffs_to_ext_impl::<BF>(coeffs, true)
+        self.recompose_base_coeffs_to_ext_impl::<BF>(coeffs, RecomposeMode::NpoWithCoeffLookups)
     }
 
     /// Like [`Self::recompose_base_coeffs_to_ext`], but always emits the ALU `mul_add`
@@ -1176,26 +1190,13 @@ where
         BF: PrimeField64,
         F: ExtensionField<BF>,
     {
-        self.recompose_base_coeffs_to_ext_impl_inner::<BF>(coeffs, false, true)
+        self.recompose_base_coeffs_to_ext_impl::<BF>(coeffs, RecomposeMode::ForceAlu)
     }
 
     fn recompose_base_coeffs_to_ext_impl<BF>(
         &mut self,
         coeffs: &[ExprId],
-        coeff_lookups: bool,
-    ) -> Result<ExprId, CircuitBuilderError>
-    where
-        BF: PrimeField64,
-        F: ExtensionField<BF>,
-    {
-        self.recompose_base_coeffs_to_ext_impl_inner::<BF>(coeffs, coeff_lookups, false)
-    }
-
-    fn recompose_base_coeffs_to_ext_impl_inner<BF>(
-        &mut self,
-        coeffs: &[ExprId],
-        coeff_lookups: bool,
-        force_alu: bool,
+        mode: RecomposeMode,
     ) -> Result<ExprId, CircuitBuilderError>
     where
         BF: PrimeField64,
@@ -1230,8 +1231,8 @@ where
             return Ok(result);
         }
 
-        let result = if self.recompose_npo_enabled && !force_alu {
-            self.recompose_via_npo(coeffs, coeff_lookups)?
+        let result = if self.recompose_npo_enabled && mode != RecomposeMode::ForceAlu {
+            self.recompose_via_npo(coeffs, mode == RecomposeMode::NpoWithCoeffLookups)?
         } else {
             self.push_scope("recompose_base_coeffs_to_ext");
 
