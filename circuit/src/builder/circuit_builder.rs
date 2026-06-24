@@ -594,43 +594,36 @@ where
             self.ext_select_sources.remove(&a);
             self.ext_select_sources.remove(&b);
         } else {
-            let ca = self.ext_recompose_coeffs.remove(&a);
-            let cb = self.ext_recompose_coeffs.remove(&b);
-            let merged = match (ca, cb) {
-                (Some(va), Some(vb)) => {
-                    debug_assert_eq!(
-                        va, vb,
-                        "connect: both sides carry recompose coeffs but they differ"
-                    );
-                    Some(va)
-                }
-                (Some(v), None) | (None, Some(v)) => Some(v),
-                (None, None) => None,
-            };
-            if let Some(v) = merged {
-                self.ext_recompose_coeffs.insert(a, v.clone());
-                self.ext_recompose_coeffs.insert(b, v);
-            }
-
-            let sa = self.ext_select_sources.remove(&a);
-            let sb = self.ext_select_sources.remove(&b);
-            let merged_select = match (sa, sb) {
-                (Some(va), Some(vb)) => {
-                    debug_assert_eq!(
-                        va, vb,
-                        "connect: both sides carry ext_select_sources but they differ"
-                    );
-                    Some(va)
-                }
-                (Some(v), None) | (None, Some(v)) => Some(v),
-                (None, None) => None,
-            };
-            if let Some(v) = merged_select {
-                self.ext_select_sources.insert(a, v);
-                self.ext_select_sources.insert(b, v);
-            }
+            Self::merge_provenance(&mut self.ext_recompose_coeffs, a, b, "recompose coeffs");
+            Self::merge_provenance(&mut self.ext_select_sources, a, b, "ext_select_sources");
         }
         self.expr_builder.connect(a, b);
+    }
+
+    /// Merge provenance attached to two `ExprId`s that are about to be connected, sharing the
+    /// single surviving entry between both keys.
+    ///
+    /// `connect` emits an enforced equality constraint between `a` and `b`, so provenance valid
+    /// for one side is valid for the other; the debug-assert guards against the (compile-time
+    /// only) case of two genuinely conflicting entries being merged.
+    fn merge_provenance<V: Clone + PartialEq + core::fmt::Debug>(
+        map: &mut HashMap<ExprId, V>,
+        a: ExprId,
+        b: ExprId,
+        what: &str,
+    ) {
+        let merged = match (map.remove(&a), map.remove(&b)) {
+            (Some(va), Some(vb)) => {
+                debug_assert_eq!(va, vb, "connect: both sides carry {what} but they differ");
+                Some(va)
+            }
+            (Some(v), None) | (None, Some(v)) => Some(v),
+            (None, None) => None,
+        };
+        if let Some(v) = merged {
+            map.insert(a, v.clone());
+            map.insert(b, v);
+        }
     }
 
     /// Selects between two values using selector `b`:
