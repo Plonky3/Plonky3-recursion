@@ -275,148 +275,9 @@ impl<'a, F: Field> CircuitRunner<'a, F> {
                     out,
                     intermediate_out,
                 } => {
-                    let kind = *kind;
-                    let a = *a;
-                    let b = *b;
-                    let c_index = c.unwrap_or(WitnessId(0));
-                    let out = *out;
-                    let intermediate_out = *intermediate_out;
-                    match kind {
-                        AluOpKind::Add => {
-                            let a_val = self.get_witness(a)?;
-                            if let Some(b_val) = self.witness_value(b) {
-                                let result = a_val + b_val;
-                                self.set_witness(out, result)?;
-                                alu_records.push(AluOpRecord {
-                                    kind,
-                                    a_index: a,
-                                    b_index: b,
-                                    c_index,
-                                    out_index: out,
-                                    a_val,
-                                    b_val,
-                                    c_val: F::ZERO,
-                                    out_val: result,
-                                });
-                            } else {
-                                let out_val = self.get_witness(out)?;
-                                let b_val = out_val - a_val;
-                                self.set_witness(b, b_val)?;
-                                alu_records.push(AluOpRecord {
-                                    kind,
-                                    a_index: a,
-                                    b_index: b,
-                                    c_index,
-                                    out_index: out,
-                                    a_val,
-                                    b_val,
-                                    c_val: F::ZERO,
-                                    out_val,
-                                });
-                            }
-                        }
-                        AluOpKind::Mul => {
-                            let a_val = self.get_witness(a)?;
-                            if let Some(b_val) = self.witness_value(b) {
-                                let result = a_val * b_val;
-                                self.set_witness(out, result)?;
-                                alu_records.push(AluOpRecord {
-                                    kind,
-                                    a_index: a,
-                                    b_index: b,
-                                    c_index,
-                                    out_index: out,
-                                    a_val,
-                                    b_val,
-                                    c_val: F::ZERO,
-                                    out_val: result,
-                                });
-                            } else {
-                                let result_val = self.get_witness(out)?;
-                                let a_inv =
-                                    a_val.try_inverse().ok_or(CircuitError::DivisionByZero)?;
-                                let b_val = result_val * a_inv;
-                                self.set_witness(b, b_val)?;
-                                alu_records.push(AluOpRecord {
-                                    kind,
-                                    a_index: a,
-                                    b_index: b,
-                                    c_index,
-                                    out_index: out,
-                                    a_val,
-                                    b_val,
-                                    c_val: F::ZERO,
-                                    out_val: result_val,
-                                });
-                            }
-                        }
-                        AluOpKind::BoolCheck => {
-                            let a_val = self.get_witness(a)?;
-                            self.set_witness(out, a_val)?;
-                            alu_records.push(AluOpRecord {
-                                kind,
-                                a_index: a,
-                                b_index: b,
-                                c_index,
-                                out_index: out,
-                                a_val,
-                                b_val: F::ZERO,
-                                c_val: a_val,
-                                out_val: a_val,
-                            });
-                        }
-                        AluOpKind::MulAdd => {
-                            let a_val = self.get_witness(a)?;
-                            let b_val = self.get_witness(b)?;
-                            let ab_product = a_val * b_val;
-                            let c_id_opt = *c;
-
-                            if let Some(io) = intermediate_out {
-                                self.set_witness(io, ab_product)?;
-                            }
-
-                            let c_val = if let Some(c_id) = c_id_opt {
-                                self.get_witness(c_id)?
-                            } else {
-                                F::ZERO
-                            };
-                            let out_val = ab_product + c_val;
-                            self.set_witness(out, out_val)?;
-                            alu_records.push(AluOpRecord {
-                                kind,
-                                a_index: a,
-                                b_index: b,
-                                c_index,
-                                out_index: out,
-                                a_val,
-                                b_val,
-                                c_val,
-                                out_val,
-                            });
-                        }
-                        AluOpKind::HornerAcc => {
-                            let acc_id = intermediate_out
-                                .expect("HornerAcc requires acc in intermediate_out");
-                            let c_id = c.expect("HornerAcc requires c operand");
-                            let acc_val = self.get_witness(acc_id)?;
-                            let a_val = self.get_witness(a)?;
-                            let b_val = self.get_witness(b)?;
-                            let c_val = self.get_witness(c_id)?;
-                            let result = acc_val * b_val + c_val - a_val;
-                            self.set_witness(out, result)?;
-                            alu_records.push(AluOpRecord {
-                                kind,
-                                a_index: a,
-                                b_index: b,
-                                c_index,
-                                out_index: out,
-                                a_val,
-                                b_val,
-                                c_val,
-                                out_val: result,
-                            });
-                        }
-                    }
+                    let record =
+                        self.execute_alu_op(*kind, *a, *b, *c, *out, *intermediate_out)?;
+                    alu_records.push(record);
                 }
                 Op::Hint {
                     inputs,
@@ -445,6 +306,155 @@ impl<'a, F: Field> CircuitRunner<'a, F> {
         }
 
         Ok(alu_records)
+    }
+
+    /// Execute a single ALU op against the current witness and return its trace record.
+    ///
+    /// Each [`AluOpKind`] produces exactly one [`AluOpRecord`]; the caller appends it in op order.
+    fn execute_alu_op(
+        &mut self,
+        kind: AluOpKind,
+        a: WitnessId,
+        b: WitnessId,
+        c: Option<WitnessId>,
+        out: WitnessId,
+        intermediate_out: Option<WitnessId>,
+    ) -> Result<AluOpRecord<F>, CircuitError> {
+        let c_index = c.unwrap_or(WitnessId(0));
+        match kind {
+            AluOpKind::Add => {
+                let a_val = self.get_witness(a)?;
+                if let Some(b_val) = self.witness_value(b) {
+                    let result = a_val + b_val;
+                    self.set_witness(out, result)?;
+                    Ok(AluOpRecord {
+                        kind,
+                        a_index: a,
+                        b_index: b,
+                        c_index,
+                        out_index: out,
+                        a_val,
+                        b_val,
+                        c_val: F::ZERO,
+                        out_val: result,
+                    })
+                } else {
+                    let out_val = self.get_witness(out)?;
+                    let b_val = out_val - a_val;
+                    self.set_witness(b, b_val)?;
+                    Ok(AluOpRecord {
+                        kind,
+                        a_index: a,
+                        b_index: b,
+                        c_index,
+                        out_index: out,
+                        a_val,
+                        b_val,
+                        c_val: F::ZERO,
+                        out_val,
+                    })
+                }
+            }
+            AluOpKind::Mul => {
+                let a_val = self.get_witness(a)?;
+                if let Some(b_val) = self.witness_value(b) {
+                    let result = a_val * b_val;
+                    self.set_witness(out, result)?;
+                    Ok(AluOpRecord {
+                        kind,
+                        a_index: a,
+                        b_index: b,
+                        c_index,
+                        out_index: out,
+                        a_val,
+                        b_val,
+                        c_val: F::ZERO,
+                        out_val: result,
+                    })
+                } else {
+                    let result_val = self.get_witness(out)?;
+                    let a_inv = a_val.try_inverse().ok_or(CircuitError::DivisionByZero)?;
+                    let b_val = result_val * a_inv;
+                    self.set_witness(b, b_val)?;
+                    Ok(AluOpRecord {
+                        kind,
+                        a_index: a,
+                        b_index: b,
+                        c_index,
+                        out_index: out,
+                        a_val,
+                        b_val,
+                        c_val: F::ZERO,
+                        out_val: result_val,
+                    })
+                }
+            }
+            AluOpKind::BoolCheck => {
+                let a_val = self.get_witness(a)?;
+                self.set_witness(out, a_val)?;
+                Ok(AluOpRecord {
+                    kind,
+                    a_index: a,
+                    b_index: b,
+                    c_index,
+                    out_index: out,
+                    a_val,
+                    b_val: F::ZERO,
+                    c_val: a_val,
+                    out_val: a_val,
+                })
+            }
+            AluOpKind::MulAdd => {
+                let a_val = self.get_witness(a)?;
+                let b_val = self.get_witness(b)?;
+                let ab_product = a_val * b_val;
+
+                if let Some(io) = intermediate_out {
+                    self.set_witness(io, ab_product)?;
+                }
+
+                let c_val = if let Some(c_id) = c {
+                    self.get_witness(c_id)?
+                } else {
+                    F::ZERO
+                };
+                let out_val = ab_product + c_val;
+                self.set_witness(out, out_val)?;
+                Ok(AluOpRecord {
+                    kind,
+                    a_index: a,
+                    b_index: b,
+                    c_index,
+                    out_index: out,
+                    a_val,
+                    b_val,
+                    c_val,
+                    out_val,
+                })
+            }
+            AluOpKind::HornerAcc => {
+                let acc_id =
+                    intermediate_out.expect("HornerAcc requires acc in intermediate_out");
+                let c_id = c.expect("HornerAcc requires c operand");
+                let acc_val = self.get_witness(acc_id)?;
+                let a_val = self.get_witness(a)?;
+                let b_val = self.get_witness(b)?;
+                let c_val = self.get_witness(c_id)?;
+                let result = acc_val * b_val + c_val - a_val;
+                self.set_witness(out, result)?;
+                Ok(AluOpRecord {
+                    kind,
+                    a_index: a,
+                    b_index: b,
+                    c_index,
+                    out_index: out,
+                    a_val,
+                    b_val,
+                    c_val,
+                    out_val: result,
+                })
+            }
+        }
     }
 
     /// Witness value if the slot exists and is set (`None` = unset or out of range).
