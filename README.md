@@ -45,7 +45,7 @@ let input = RecursionInput::UniStark {
     preprocessed_commit: None,
 };
 let backend = FriRecursionBackend::new(poseidon2_config);
-let params = ProveNextLayerParams { table_packing, use_poseidon2_in_circuit: true };
+let params = ProveNextLayerParams { table_packing, constraint_profile };
 let (verification_circuit, verifier_result) = build_next_layer_circuit(&input, &config, &backend)?;
 let output = prove_next_layer(
     &input,
@@ -54,6 +54,7 @@ let output = prove_next_layer(
     &config,
     &backend,
     &params,
+    None,
 )?;
 
 // Next layers: recurse on the previous batch proof
@@ -66,10 +67,11 @@ let output = prove_next_layer(
     &config,
     &backend,
     &params,
+    None,
 )?;
 ```
 
-`RecursionOutput` is `(BatchStarkProof, CircuitProverData)`; use `into_recursion_input::<BatchOnly>()` to chain further layers.
+`RecursionOutput` is `(BatchStarkProof, Rc<CircuitProverData>)`; use `into_recursion_input::<BatchOnly>()` to chain further layers.
 
 #### Recursive aggregation
 
@@ -91,23 +93,20 @@ let input_2 = RecursionInput::UniStark {
 };
 
 let backend = FriRecursionBackend::new(poseidon2_config);
-let params = ProveNextLayerParams { table_packing, use_poseidon2_in_circuit: true };
-let (verification_circuit, verifier_result_1, verifier_result_2) = build_aggregation_layer_circuit(&input_1, &input_2, &config, &backend)?;
-let output = prove_aggregation_layer(
+let params = ProveNextLayerParams { table_packing, constraint_profile };
+let output = build_and_prove_aggregation_layer(
     &input_1,
     &input_2,
-    verification_circuit,
-    &verifier_result_1,
-    &verifier_result_2,
     &config,
     &backend,
     &params,
+    None,
 )?;
 ```
 
 ### Low-level API
 
-For fine-grained control, you can build the verification circuit and run the prover pipeline yourself via `verify_p3_batch_proof_circuit` (batch) or `verify_circuit` (uni-stark):
+For fine-grained control, you can build the verification circuit and run the prover pipeline yourself via `verify_p3_batch_proof_circuit` (batch) or `verify_p3_uni_proof_circuit` (uni-stark):
 
 ```rust
 use p3_recursion::verifier::verify_p3_batch_proof_circuit;
@@ -165,7 +164,7 @@ All examples use the unified API (`prove_next_layer`, `RecursionInput`, `FriRecu
   cargo run --profile optimized --example recursive_keccak -- --field koala-bear --n 100 --num-recursive-layers 5
   ```
 
-- **`recursive_aggregation.rs`**: Base layer are dummy batch-stark circuits; recursive layers use `into_recursion_input::<BatchOnly>()` and `prove_next_aggregation` to fold 2 proofs into 1.
+- **`recursive_aggregation.rs`**: Base layer are dummy batch-stark circuits; recursive layers use `into_recursion_input::<BatchOnly>()` and `build_and_prove_aggregation_layer` to fold 2 proofs into 1.
   ```bash
   cargo run --profile optimized --example recursive_aggregation -- --field koala-bear --num-recursive-layers 4
   ```
