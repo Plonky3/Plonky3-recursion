@@ -72,18 +72,18 @@ p3-uni-stark = "0.6"
 p3-util = "0.6"
 
 # Other common dependencies
-clap = { version = "4.5", features = ["derive"] }
-hashbrown = "0.16.1"
-itertools = { version = "0.14.0", default-features = false, features = ["use_alloc"] }
-proptest = { version = "1.10", default-features = true }
-rand = { version = "0.10.0", default-features = false }
+clap = { version = "4.6", features = ["derive"] }
+hashbrown = "0.17.1"
+itertools = { version = "0.15.0", default-features = false, features = ["use_alloc"] }
+proptest = { version = "1.11", default-features = true }
+rand = { version = "0.10.1", default-features = false }
 serde = { version = "1.0", default-features = false, features = ["derive", "alloc"] }
 strum = { version = "0.28.0", default-features = false }
 strum_macros = "0.28.0"
 thiserror = { version = "2.0", default-features = false }
 tracing = { version = "0.1.44", default-features = false, features = ["attributes"] }
 tracing-forest = "0.3.1"
-tracing-subscriber = { version = "0.3.22", default-features = false, features = ["alloc"] }
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["alloc"] }
 unroll = { version = "0.1.5", default-features = false }
 
 # Local dependencies

@@ -31,7 +31,7 @@ tracing.workspace = true
 unroll.workspace = true
 
 [target.'cfg(target_family = "unix")'.dev-dependencies]
-tikv-jemallocator = "0.6"
+tikv-jemallocator = "0.7"
 
 [dev-dependencies]
 p3-batch-stark.workspace = true
