@@ -38,6 +38,14 @@ pub enum CircuitError {
     #[error("Witness not set for WitnessId({witness_id})")]
     WitnessNotSet { witness_id: WitnessId },
 
+    /// A private input was never claimed as a creator by any ALU op, which would leave the
+    /// WitnessChecks bus unbalanced.
+    #[error(
+        "Private input WitnessId({witness_id}) was never used as an ALU operand — cannot assign \
+         a bus creator; every private input must appear in at least one ALU op"
+    )]
+    UnclaimedPrivateInput { witness_id: WitnessId },
+
     /// WitnessId out of bounds.
     #[error("WitnessId({witness_id}) out of bounds")]
     WitnessIdOutOfBounds { witness_id: WitnessId },

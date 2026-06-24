@@ -500,13 +500,9 @@ impl<F: Field> Circuit<F> {
         // Safety: every private input must have been claimed as a creator by some ALU op,
         // or the WitnessChecks bus would be unbalanced.
         for &wid in &self.private_input_rows {
-            debug_assert!(
-                defined[wid.0 as usize],
-                "Private input WitnessId({}) was never used as an ALU operand — \
-                 cannot assign a bus creator. All private inputs must appear in \
-                 at least one ALU op.",
-                wid.0
-            );
+            if !defined[wid.0 as usize] {
+                return Err(CircuitError::UnclaimedPrivateInput { witness_id: wid });
+            }
         }
 
         Ok(preprocessed)
