@@ -142,9 +142,14 @@ impl<'a, F: PrimeCharacteristicRing + Eq> ExecutionContext<'a, F> {
         &mut self,
         op_type: &NpoTypeId,
     ) -> &mut T {
+        // Clone the key only on a miss; the common hot-path hit avoids cloning the inner id.
+        if !self.op_states.contains_key(op_type) {
+            self.op_states
+                .insert(op_type.clone(), Box::new(T::default()));
+        }
         self.op_states
-            .entry(op_type.clone())
-            .or_insert_with(|| Box::new(T::default()))
+            .get_mut(op_type)
+            .expect("entry was just inserted if missing")
             .downcast_mut::<T>()
             .expect("type mismatch in op state - this is a bug")
     }
