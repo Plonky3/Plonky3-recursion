@@ -793,6 +793,17 @@ where
             }
         }
     }
+
+    fn main_next_row_columns(&self) -> Vec<usize> {
+        match self {
+            Self::Const(a) => a.main_next_row_columns(),
+            Self::Public(a) => a.main_next_row_columns(),
+            Self::Alu(a) => a.main_next_row_columns(),
+            Self::Dynamic(a) => {
+                <dyn CloneableBatchAir<SC> as BaseAir<Val<SC>>>::main_next_row_columns(a.air())
+            }
+        }
+    }
 }
 
 macro_rules! impl_circuit_table_air_for_builder {

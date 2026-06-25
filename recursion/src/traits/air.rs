@@ -87,6 +87,14 @@ pub trait RecursiveAir<F: Field, EF: ExtensionField<F>, LG: LookupProtocol> {
     /// declares interactions must be rejected rather than silently verified with
     /// its lookups unenforced.
     fn declares_interactions(&self, preprocessed_width: usize) -> bool;
+
+    /// Returns `true` if the AIR's constraints access the next trace row, so the
+    /// trace must be opened at `zeta * g` in addition to `zeta`.
+    ///
+    /// This mirrors the native prover/verifier gating on
+    /// [`p3_air::BaseAir::main_next_row_columns`]: AIRs with no inter-row constraints
+    /// (e.g. constant, public, and recompose tables) omit the `trace_next` opening.
+    fn opens_trace_next(&self) -> bool;
 }
 
 impl<F: Field, EF: ExtensionField<F>, A, LG: LookupProtocol> RecursiveAir<F, EF, LG> for A
@@ -183,6 +191,10 @@ where
         let mut builder = InteractionSymbolicBuilder::<F, EF>::new(layout);
         self.eval(&mut builder);
         !builder.global_interactions().is_empty() || !builder.local_interactions().is_empty()
+    }
+
+    fn opens_trace_next(&self) -> bool {
+        !p3_air::BaseAir::<F>::main_next_row_columns(self).is_empty()
     }
 }
 

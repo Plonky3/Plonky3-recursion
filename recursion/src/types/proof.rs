@@ -479,11 +479,10 @@ impl<SC: StarkGenericConfig> Recursive<SC::Challenge> for OpenedValuesTargets<SC
         let trace_local_targets =
             circuit.alloc_private_inputs(trace_local_len, "trace local values");
 
-        let trace_next_len = input
-            .trace_next
-            .as_ref()
-            .expect("trace_next is always present")
-            .len();
+        // `trace_next` is absent for AIRs whose constraints do not access the next row
+        // (mirrors the native prover's `main_next_row_columns`-based gating); an empty
+        // target vector reflects that suppression.
+        let trace_next_len = input.trace_next.as_ref().map_or(0, |v| v.len());
         let trace_next_targets = circuit.alloc_private_inputs(trace_next_len, "trace next values");
 
         let preprocessed_local_targets = input
@@ -536,7 +535,9 @@ impl<SC: StarkGenericConfig> Recursive<SC::Challenge> for OpenedValuesTargets<SC
 
         let mut values = vec![];
         values.extend(trace_local);
-        values.extend(trace_next.as_ref().expect("trace_next is always present"));
+        if let Some(trace_next) = trace_next {
+            values.extend(trace_next);
+        }
         if let Some(preprocessed_local) = preprocessed_local {
             values.extend(preprocessed_local);
         }

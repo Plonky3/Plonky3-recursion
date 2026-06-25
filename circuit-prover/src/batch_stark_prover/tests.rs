@@ -92,6 +92,68 @@ fn test_babybear_batch_stark_base_field() {
 }
 
 #[test]
+fn test_trace_next_suppressed_for_next_row_free_tables() {
+    // Exercises Const, Public, and Alu tables. The Const and Public AIRs have no inter-row
+    // constraints (`main_next_row_columns` is empty), so their `trace_next` opening must be
+    // suppressed; the Alu AIR accesses the next row, so its `trace_next` is present. The native
+    // proof must match each AIR's `main_next_row_columns`, and the prover and verifier must agree
+    // on that shape (Fiat-Shamir bit-identity), which the final `verify_all_tables` confirms.
+    let mut builder = CircuitBuilder::<BabyBear>::new();
+    let x = builder.public_input();
+    let expected = builder.public_input();
+    let c5 = builder.define_const(BabyBear::from_u64(5));
+    let prod = builder.mul(x, c5);
+    let diff = builder.sub(prod, expected);
+    builder.assert_zero(diff);
+
+    let circuit = builder.build().unwrap();
+    let cfg = config::baby_bear();
+    let (airs_degrees, primitive_columns, non_primitive_columns) =
+        get_airs_and_degrees_with_prep::<BabyBearConfig, _, 1>(
+            &circuit,
+            &TablePacking::default(),
+            &[],
+            &[],
+            ConstraintProfile::Standard,
+        )
+        .unwrap();
+    let (airs, log_degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
+    let prover_data = ProverData::from_airs_and_degrees(&cfg, &airs, &log_degrees);
+    let circuit_prover_data =
+        CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
+
+    let mut runner = circuit.runner();
+    runner
+        .set_public_inputs(&[BabyBear::from_u64(7), BabyBear::from_u64(35)])
+        .unwrap();
+    let traces = runner.run().unwrap();
+
+    let prover = BatchStarkProver::new(cfg);
+    let proof = prover
+        .prove_all_tables(&traces, &circuit_prover_data)
+        .unwrap();
+
+    let (mut any_suppressed, mut any_present) = (false, false);
+    for (air, inst) in airs.iter().zip(proof.proof.opened_values.instances.iter()) {
+        let expects_next = !p3_air::BaseAir::<BabyBear>::main_next_row_columns(air).is_empty();
+        assert_eq!(
+            inst.base_opened_values.trace_next.is_some(),
+            expects_next,
+            "trace_next presence must match the AIR's main_next_row_columns"
+        );
+        any_suppressed |= !expects_next;
+        any_present |= expects_next;
+    }
+    assert!(
+        any_suppressed,
+        "Const/Public tables should suppress the trace_next opening"
+    );
+    assert!(any_present, "the Alu table should open trace_next");
+
+    assert!(prover.verify_all_tables::<BabyBear>(&proof).is_ok());
+}
+
+#[test]
 fn test_table_lookups() {
     let mut builder = CircuitBuilder::<BabyBear>::new();
     let cfg = config::baby_bear();

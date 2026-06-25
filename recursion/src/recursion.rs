@@ -268,6 +268,10 @@ impl<F: Field, EF: ExtensionField<F>, LG: LookupProtocol> RecursiveAir<F, EF, LG
     fn declares_interactions(&self, _preprocessed_width: usize) -> bool {
         false
     }
+
+    fn opens_trace_next(&self) -> bool {
+        false
+    }
 }
 
 /// Preprocessed prover data for a fixed verification circuit shape, produced offline by

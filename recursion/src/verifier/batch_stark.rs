@@ -80,6 +80,15 @@ where
             Self::Dynamic(a) => P3BaseAir::num_public_values(a),
         }
     }
+
+    fn main_next_row_columns(&self) -> Vec<usize> {
+        match self {
+            Self::Const(a) => P3BaseAir::main_next_row_columns(a),
+            Self::Public(a) => P3BaseAir::main_next_row_columns(a),
+            Self::Alu(a) => P3BaseAir::main_next_row_columns(a),
+            Self::Dynamic(a) => P3BaseAir::main_next_row_columns(a),
+        }
+    }
 }
 
 impl<SC, const D: usize>
@@ -441,10 +450,11 @@ where
             )));
         }
         let air_width = A::width(air);
-        if trace_local_targets.len() != air_width || trace_next_targets.len() != air_width {
+        // The next-row opening is suppressed (empty) for AIRs that do not access it.
+        let expected_next_len = if air.opens_trace_next() { air_width } else { 0 };
+        if trace_local_targets.len() != air_width || trace_next_targets.len() != expected_next_len {
             return Err(VerificationError::InvalidProofShape(format!(
-                "Instance has incorrect trace width: expected {}, got {} / {}",
-                air_width,
+                "Instance has incorrect trace width: expected {air_width} / {expected_next_len}, got {} / {}",
                 trace_local_targets.len(),
                 trace_next_targets.len()
             )));
@@ -656,22 +666,22 @@ where
         .iter()
         .zip(trace_domains.iter())
         .zip(instances.iter())
-        .map(|((ext_dom, trace_dom), inst)| {
-            let generator_const = circuit.define_const(trace_domain_generator(trace_dom)?);
-            let zeta_next = circuit.mul(zeta, generator_const);
-            Ok((
-                *ext_dom,
-                vec![
-                    (
-                        zeta,
-                        inst.opened_values_no_lookups.trace_local_targets.clone(),
-                    ),
-                    (
-                        zeta_next,
-                        inst.opened_values_no_lookups.trace_next_targets.clone(),
-                    ),
-                ],
-            ))
+        .zip(airs.iter())
+        .map(|(((ext_dom, trace_dom), inst), air)| {
+            let mut points = vec![(
+                zeta,
+                inst.opened_values_no_lookups.trace_local_targets.clone(),
+            )];
+            // The `zeta_next` opening is present only when the AIR accesses the next row.
+            if air.opens_trace_next() {
+                let generator_const = circuit.define_const(trace_domain_generator(trace_dom)?);
+                let zeta_next = circuit.mul(zeta, generator_const);
+                points.push((
+                    zeta_next,
+                    inst.opened_values_no_lookups.trace_next_targets.clone(),
+                ));
+            }
+            Ok((*ext_dom, points))
         })
         .collect::<Result<_, VerificationError>>()?;
     coms_to_verify.push((commitments_targets.trace_targets.clone(), trace_round));

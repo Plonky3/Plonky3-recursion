@@ -273,24 +273,19 @@ where
         .zip(trace_domains.iter())
         .zip(opened_values.instances.iter())
         .map(|((ext_dom, trace_dom), inst)| {
-            let zeta_next =
-                trace_dom
-                    .next_point(zeta)
-                    .ok_or(GenerationError::InvalidProofShape(
-                        "trace domain lacks next point",
-                    ))?;
-            Ok((
-                *ext_dom,
-                vec![
-                    (zeta, inst.base_opened_values.trace_local.clone()),
-                    (
-                        zeta_next,
-                        inst.base_opened_values.trace_next.clone().ok_or(
-                            GenerationError::InvalidProofShape("opened values lack trace_next"),
-                        )?,
-                    ),
-                ],
-            ))
+            // The `zeta_next` opening is present only when the AIR accesses the next row
+            // (mirrors the native prover's `main_next_row_columns` gating).
+            let mut points = vec![(zeta, inst.base_opened_values.trace_local.clone())];
+            if let Some(trace_next) = &inst.base_opened_values.trace_next {
+                let zeta_next =
+                    trace_dom
+                        .next_point(zeta)
+                        .ok_or(GenerationError::InvalidProofShape(
+                            "trace domain lacks next point",
+                        ))?;
+                points.push((zeta_next, trace_next.clone()));
+            }
+            Ok((*ext_dom, points))
         })
         .collect::<Result<Vec<_>, GenerationError>>()?;
     coms_to_verify.push((commitments.main.clone(), trace_round));
