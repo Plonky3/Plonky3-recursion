@@ -130,6 +130,7 @@ impl<F: Field> CircuitBuilder<F> {
                         new_start: false,
                         merkle_path: true,
                         mmcs_bit: Some(zero),
+                        mmcs_bit2: None,
                         inputs,
                         out_ctl: vec![false; rate_ext],
                         return_all_outputs: false,
@@ -150,6 +151,7 @@ impl<F: Field> CircuitBuilder<F> {
                     new_start: is_first,
                     merkle_path: true,
                     mmcs_bit: Some(*direction),
+                    mmcs_bit2: None,
                     inputs,
                     out_ctl: vec![is_final; rate_ext],
                     return_all_outputs: false,
@@ -172,6 +174,7 @@ impl<F: Field> CircuitBuilder<F> {
                     new_start: false,
                     merkle_path: true,
                     mmcs_bit: Some(zero),
+                    mmcs_bit2: None,
                     inputs,
                     out_ctl: vec![true; rate_ext],
                     return_all_outputs: false,
@@ -201,6 +204,144 @@ impl<F: Field> CircuitBuilder<F> {
         }
         for (o, r) in output.iter().zip(root_expr.iter()) {
             self.connect(*o, *r);
+        }
+        Ok(op_ids)
+    }
+
+    /// Verify a 4-to-1 (quaternary) MMCS Merkle path in the circuit.
+    ///
+    /// Issues `1 + directions_expr.len()` permutation rows in a single Merkle
+    /// chain, matching native arity-4 MMCS verification:
+    ///
+    /// 1. **Leaf-hash row** (`new_start = true`, `merkle_path = true`). Absorbs
+    ///    `leaf_data` directly into `inputs[0..len]`, runs the wide permutation,
+    ///    and the first `capacity_ext` extension limbs of the output become the
+    ///    level-0 running hash. The direction bits on this row are unused (no
+    ///    chain placement, no index update on `new_start`); they are pinned to a
+    ///    zero const.
+    /// 2. **Compression rows** (`new_start = false`, `merkle_path = true`, with
+    ///    `direction_pair[i]`). The previous row's running hash chains into chunk
+    ///    `pos = mmcs_bit + 2 · mmcs_bit2` via the AIR's arity-4 placement
+    ///    constraint, and the 3 sibling digests fill the other chunks (provided as
+    ///    [`Poseidon2PermPrivateData::sibling`] / [`Poseidon1PermPrivateData::sibling`],
+    ///    length `3 · capacity_ext` extension limbs). Their input slots stay empty
+    ///    (`in_ctl = false`).
+    ///
+    /// Returns the op-ids of those `1 + directions_expr.len()` rows in order. The
+    /// leaf-hash row gets no sibling private data (it has no siblings); each
+    /// compression row gets 3 sibling digests via [`perm_private_data`].
+    ///
+    /// # Parameters
+    /// * `permutation_config` — must satisfy `width_ext == 4 · capacity_ext`
+    ///   (e.g. `KOALA_BEAR_D1_W32` / `KOALA_BEAR_D4_W32`).
+    /// * `leaf_data` — flattened lifted-EF leaf row data. **Must** fit in
+    ///   `rate_ext` slots; multi-chunk leaf hashing is the caller's responsibility
+    ///   (the recursion layer sponges down to a single-row digest first).
+    /// * `directions_expr[i] = [low, high]` — 2-bit position selector at level `i`.
+    /// * `root_expr` — `capacity_ext` extension targets pinned to the native MMCS
+    ///   root (the first `capacity_ext · D = DIGEST_ELEMS` base elements form the
+    ///   native digest after recomposition).
+    pub fn add_mmcs_verify_arity4(
+        &mut self,
+        permutation_config: impl Into<PermConfig>,
+        leaf_data: &[ExprId],
+        directions_expr: &[[ExprId; 2]],
+        root_expr: &[ExprId],
+    ) -> Result<Vec<NonPrimitiveOpId>, CircuitBuilderError> {
+        let permutation_config: PermConfig = permutation_config.into();
+        let width_ext = permutation_config.width_ext();
+        let rate_ext = permutation_config.rate_ext();
+        let capacity_ext = permutation_config.capacity_ext();
+
+        if !permutation_config.is_arity4_shape() {
+            return Err(CircuitBuilderError::Poseidon2ConfigMismatch {
+                expected: "width_ext == 4 * capacity_ext for 4-to-1 MMCS".to_string(),
+                got: format!("width_ext = {width_ext}, capacity_ext = {capacity_ext}"),
+            });
+        }
+        if directions_expr.is_empty() {
+            return Err(CircuitBuilderError::Poseidon2ConfigMismatch {
+                expected: "at least one Merkle level".to_string(),
+                got: "no levels provided".to_string(),
+            });
+        }
+        if leaf_data.len() > rate_ext {
+            return Err(CircuitBuilderError::Poseidon2ConfigMismatch {
+                expected: format!("leaf_data.len() <= rate_ext ({rate_ext})"),
+                got: format!(
+                    "leaf_data.len() = {}; multi-chunk leaf hashing is not handled here",
+                    leaf_data.len()
+                ),
+            });
+        }
+        if root_expr.len() != capacity_ext {
+            return Err(CircuitBuilderError::InvalidDimension {
+                expected: capacity_ext,
+                actual: root_expr.len(),
+            });
+        }
+
+        let zero = self.define_const(F::ZERO);
+        let mut op_ids = Vec::with_capacity(1 + directions_expr.len());
+
+        // 1. Leaf-hash row. Absorbs `leaf_data`; its output is the level-0 running
+        //    hash. Direction bits are ignored on `new_start = true` rows by both
+        //    the placement constraint (gated by `merkle_chain_sel = 0`) and the
+        //    index-update recurrence (gated by `not_new_start = 0`); pin them to
+        //    zero so callers don't have to allocate dummies.
+        let mut leaf_inputs = vec![None; width_ext];
+        for (j, &d) in leaf_data.iter().enumerate() {
+            leaf_inputs[j] = Some(d);
+        }
+        let (op_id_leaf, _) = self.add_perm(
+            permutation_config,
+            &PermCall {
+                new_start: true,
+                merkle_path: true,
+                mmcs_bit: Some(zero),
+                mmcs_bit2: Some(zero),
+                inputs: leaf_inputs,
+                out_ctl: vec![false; rate_ext],
+                return_all_outputs: false,
+                mmcs_index_sum: None,
+            },
+        )?;
+        op_ids.push(op_id_leaf);
+
+        // 2. Compression rows. The previous row's running hash is chained into
+        //    chunk `pos = mmcs_bit + 2 · mmcs_bit2` by the AIR; sibling private
+        //    data fills the other 3 chunks. The last row exposes its output via
+        //    CTL so we can `connect(...)` it to `root_expr`.
+        let mut output: Vec<Option<ExprId>> = vec![None; width_ext];
+        for (level, direction_pair) in directions_expr.iter().enumerate() {
+            let is_last = level == directions_expr.len() - 1;
+            let (op_id, maybe_output) = self.add_perm(
+                permutation_config,
+                &PermCall {
+                    new_start: false,
+                    merkle_path: true,
+                    mmcs_bit: Some(direction_pair[0]),
+                    mmcs_bit2: Some(direction_pair[1]),
+                    inputs: vec![None; width_ext],
+                    out_ctl: vec![is_last; rate_ext],
+                    return_all_outputs: false,
+                    mmcs_index_sum: None,
+                },
+            )?;
+            op_ids.push(op_id);
+            output = maybe_output;
+        }
+
+        // 3. Connect the first `capacity_ext` EF limbs of the final output
+        //    (= the native arity-4 digest) to the root.
+        for (o, r) in output.iter().take(capacity_ext).zip(root_expr.iter()) {
+            self.connect(
+                o.ok_or_else(|| CircuitBuilderError::MalformedNonPrimitiveOutputs {
+                    op_id: *op_ids.last().unwrap(),
+                    details: "Expected output from last arity-4 Poseidon2Perm call".to_string(),
+                })?,
+                *r,
+            );
         }
         Ok(op_ids)
     }

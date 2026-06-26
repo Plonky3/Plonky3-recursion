@@ -18,7 +18,10 @@ use crate::columns::{
     poseidon2_d1_compact_preprocessed_header_cols, poseidon2_preprocessed_row_width_for_air,
     poseidon2_uses_compact_d1_preprocessed,
 };
-use crate::{Poseidon2CircuitCols, num_cols};
+use crate::{
+    ARITY4_BIT_X_BIT2_IDX, ARITY4_BIT2_IDX, ARITY4_EXTRA_COLS, Poseidon2CircuitCols, num_cols,
+    num_cols_arity4,
+};
 
 /// Poseidon2 circuit AIR for recursive proof composition.
 ///
@@ -362,11 +365,16 @@ impl<
         // right number of columns.
         let rows = trace_slice[..n * ncols].chunks_exact_mut(ncols);
 
+        // Arity-4 compression shapes carry the high direction bit and its
+        // product column; their index accumulator counts in base four.
+        let is_arity4 = 4 * CAPACITY_EXT == WIDTH_EXT;
+
         for (row_index, (op, row)) in sponge_ops.iter().zip(rows).enumerate() {
             let Poseidon2CircuitRow {
                 new_start,
                 merkle_path,
                 mmcs_bit,
+                mmcs_bit2,
                 mmcs_index_sum,
                 input_values,
                 ..
@@ -383,14 +391,22 @@ impl<
             // If this is a Merkle row that continues a chain (not the
             // first row, not a chain boundary), apply the recurrence:
             //
-            //     new_value = old_value × 2 + direction_bit
+            //     arity-2:  new_value = old_value × 2 + bit
+            //     arity-4:  new_value = old_value × 4 + bit + 2·bit2
             //
             // Otherwise reset the accumulator. This happens on:
             //   - The very first row (no previous value exists).
             //   - Chain boundaries (a new Merkle proof starts).
             //   - Non-Merkle rows (sponge mode, no index to track).
             if row_index > 0 && *merkle_path && !*new_start {
-                prev_mmcs_index_sum = prev_mmcs_index_sum.double() + F::from_bool(*mmcs_bit);
+                let bit = F::from_bool(*mmcs_bit);
+                if is_arity4 {
+                    prev_mmcs_index_sum = prev_mmcs_index_sum * F::from_u64(4)
+                        + bit
+                        + F::from_u64(2) * F::from_bool(*mmcs_bit2);
+                } else {
+                    prev_mmcs_index_sum = prev_mmcs_index_sum.double() + bit;
+                }
             } else {
                 prev_mmcs_index_sum = *mmcs_index_sum;
             }
@@ -402,14 +418,20 @@ impl<
                 row[i].write(val);
             }
 
-            // Write the two circuit columns at the end of the row.
+            // Write the circuit columns after the permutation block.
             //
-            // First circuit column: the direction bit (0 = left, 1 = right).
-            //
-            // Second circuit column: the running accumulator value.
+            // Arity-2: [ direction bit | accumulator ].
+            // Arity-4: [ direction bit | high bit | bit·high bit | accumulator ].
             let (_p2_part, circuit_part) = row.split_at_mut(p2_ncols);
             circuit_part[0].write(F::from_bool(*mmcs_bit));
-            circuit_part[1].write(prev_mmcs_index_sum);
+            if is_arity4 {
+                circuit_part[1 + ARITY4_BIT2_IDX].write(F::from_bool(*mmcs_bit2));
+                circuit_part[1 + ARITY4_BIT_X_BIT2_IDX]
+                    .write(F::from_bool(*mmcs_bit && *mmcs_bit2));
+                circuit_part[1 + ARITY4_EXTRA_COLS].write(prev_mmcs_index_sum);
+            } else {
+                circuit_part[1].write(prev_mmcs_index_sum);
+            }
         }
 
         // Pass 2: Parallel
@@ -532,13 +554,34 @@ impl<
     /// Includes all Poseidon2 permutation columns (input, round
     /// intermediates, output).
     ///
-    /// Also includes the two circuit-specific columns:
-    /// - The direction bit,
-    /// - The MMCS accumulator.
+    /// Also includes the circuit-specific columns. Arity-2 shapes
+    /// (`2·RATE_EXT == WIDTH_EXT`) add two (`mmcs_bit`, `mmcs_index_sum`).
+    /// Arity-4 compression shapes (`4·CAPACITY_EXT == WIDTH_EXT`) add four
+    /// (`mmcs_bit`, `mmcs_bit2`, `mmcs_bit_x_bit2`, `mmcs_index_sum`).
     fn width(&self) -> usize {
-        num_cols::<
-            Poseidon2Cols<u8, WIDTH, SBOX_DEGREE, SBOX_REGISTERS, HALF_FULL_ROUNDS, PARTIAL_ROUNDS>,
-        >()
+        if 4 * CAPACITY_EXT == WIDTH_EXT {
+            num_cols_arity4::<
+                Poseidon2Cols<
+                    u8,
+                    WIDTH,
+                    SBOX_DEGREE,
+                    SBOX_REGISTERS,
+                    HALF_FULL_ROUNDS,
+                    PARTIAL_ROUNDS,
+                >,
+            >()
+        } else {
+            num_cols::<
+                Poseidon2Cols<
+                    u8,
+                    WIDTH,
+                    SBOX_DEGREE,
+                    SBOX_REGISTERS,
+                    HALF_FULL_ROUNDS,
+                    PARTIAL_ROUNDS,
+                >,
+            >()
+        }
     }
 
     fn preprocessed_width(&self) -> usize {
@@ -815,30 +858,55 @@ pub(crate) fn eval<
         WITNESS_EXT_D,
     >,
     builder: &mut AB,
-    local: &Poseidon2CircuitCols<
-        AB::Var,
-        Poseidon2Cols<
-            AB::Var,
-            WIDTH,
-            SBOX_DEGREE,
-            SBOX_REGISTERS,
-            HALF_FULL_ROUNDS,
-            PARTIAL_ROUNDS,
-        >,
-    >,
-    next: &Poseidon2CircuitCols<
-        AB::Var,
-        Poseidon2Cols<
-            AB::Var,
-            WIDTH,
-            SBOX_DEGREE,
-            SBOX_REGISTERS,
-            HALF_FULL_ROUNDS,
-            PARTIAL_ROUNDS,
-        >,
-    >,
+    local_slice: &[AB::Var],
+    next_slice: &[AB::Var],
     next_preprocessed: &[AB::Var],
 ) {
+    // Arity-4 compression shapes (`4·CAPACITY_EXT == WIDTH_EXT`) carry two extra
+    // value columns and are never compact-D1 or arity-2, so they take a separate
+    // branch with the wider column view. Every other shape keeps the two-column
+    // view, so the arity-2 and compact-D1 constraints stay byte-identical.
+    if 4 * CAPACITY_EXT == WIDTH_EXT {
+        eval_arity4::<
+            AB,
+            LinearLayers,
+            D,
+            WIDTH,
+            WIDTH_EXT,
+            RATE_EXT,
+            CAPACITY_EXT,
+            SBOX_DEGREE,
+            SBOX_REGISTERS,
+            HALF_FULL_ROUNDS,
+            PARTIAL_ROUNDS,
+            WITNESS_EXT_D,
+        >(air, builder, local_slice, next_slice, next_preprocessed);
+        return;
+    }
+
+    let local: &Poseidon2CircuitCols<
+        AB::Var,
+        Poseidon2Cols<
+            AB::Var,
+            WIDTH,
+            SBOX_DEGREE,
+            SBOX_REGISTERS,
+            HALF_FULL_ROUNDS,
+            PARTIAL_ROUNDS,
+        >,
+    > = local_slice.borrow();
+    let next: &Poseidon2CircuitCols<
+        AB::Var,
+        Poseidon2Cols<
+            AB::Var,
+            WIDTH,
+            SBOX_DEGREE,
+            SBOX_REGISTERS,
+            HALF_FULL_ROUNDS,
+            PARTIAL_ROUNDS,
+        >,
+    > = next_slice.borrow();
+
     // Extract the three things we'll reference repeatedly:
     //
     //   - The direction bit from the next row (left vs right child).
@@ -1090,6 +1158,189 @@ pub(crate) fn eval<
     air.p3_poseidon2.eval(&mut sub_builder);
 }
 
+/// Evaluate the circuit-level constraints for an arity-4 compression shape.
+///
+/// Reached only when `4·CAPACITY_EXT == WIDTH_EXT`, which is compile-time
+/// mutually exclusive with both the compact-D1 layout and the arity-2 shape
+/// (`2·RATE_EXT == WIDTH_EXT`). The wider column view exposes the extra value
+/// columns `mmcs_bit2` and `mmcs_bit_x_bit2`.
+///
+/// # Constraint degrees
+///
+/// - Booleanity of `mmcs_bit` and `mmcs_bit2`: degree 2.
+/// - Product column `mmcs_bit_x_bit2 = mmcs_bit · mmcs_bit2`: degree 2.
+/// - Sponge chaining: degree 2 (preprocessed selector × residual).
+/// - Running-hash placement `merkle_chain_sel · h_k · residual`: degree 3
+///   (`h_k` is linear thanks to the product column).
+/// - Base-four index accumulator `not_new_start · merkle_path · residual`:
+///   degree 3 (`residual` is linear in the trace columns).
+#[unroll::unroll_for_loops]
+fn eval_arity4<
+    AB: AirBuilder,
+    LinearLayers: GenericPoseidon2LinearLayers<WIDTH>,
+    const D: usize,
+    const WIDTH: usize,
+    const WIDTH_EXT: usize,
+    const RATE_EXT: usize,
+    const CAPACITY_EXT: usize,
+    const SBOX_DEGREE: u64,
+    const SBOX_REGISTERS: usize,
+    const HALF_FULL_ROUNDS: usize,
+    const PARTIAL_ROUNDS: usize,
+    const WITNESS_EXT_D: usize,
+>(
+    air: &Poseidon2CircuitAir<
+        AB::F,
+        LinearLayers,
+        D,
+        WIDTH,
+        WIDTH_EXT,
+        RATE_EXT,
+        CAPACITY_EXT,
+        SBOX_DEGREE,
+        SBOX_REGISTERS,
+        HALF_FULL_ROUNDS,
+        PARTIAL_ROUNDS,
+        WITNESS_EXT_D,
+    >,
+    builder: &mut AB,
+    local_slice: &[AB::Var],
+    next_slice: &[AB::Var],
+    next_preprocessed: &[AB::Var],
+) {
+    let local: &Poseidon2CircuitCols<
+        AB::Var,
+        Poseidon2Cols<
+            AB::Var,
+            WIDTH,
+            SBOX_DEGREE,
+            SBOX_REGISTERS,
+            HALF_FULL_ROUNDS,
+            PARTIAL_ROUNDS,
+        >,
+        ARITY4_EXTRA_COLS,
+    > = local_slice.borrow();
+    let next: &Poseidon2CircuitCols<
+        AB::Var,
+        Poseidon2Cols<
+            AB::Var,
+            WIDTH,
+            SBOX_DEGREE,
+            SBOX_REGISTERS,
+            HALF_FULL_ROUNDS,
+            PARTIAL_ROUNDS,
+        >,
+        ARITY4_EXTRA_COLS,
+    > = next_slice.borrow();
+
+    let next_bit = next.mmcs_bit;
+    let next_bit2 = next.mmcs_extra[ARITY4_BIT2_IDX];
+    let next_bit_x_bit2 = next.mmcs_extra[ARITY4_BIT_X_BIT2_IDX];
+    let local_out = &local.perm.ending_full_rounds[HALF_FULL_ROUNDS - 1].post;
+    let next_in = &next.perm.inputs;
+
+    // Both direction bits are prover-supplied; constrain them boolean.
+    builder.assert_bool(local.mmcs_bit);
+    builder.assert_bool(local.mmcs_extra[ARITY4_BIT2_IDX]);
+
+    // Product column ties `mmcs_bit_x_bit2` to `mmcs_bit · mmcs_bit2`, which
+    // linearizes the four-way one-hot below so the placement gate stays degree 3.
+    builder.assert_zero(
+        local.mmcs_extra[ARITY4_BIT_X_BIT2_IDX]
+            - local.mmcs_bit.into() * local.mmcs_extra[ARITY4_BIT2_IDX].into(),
+    );
+
+    let next_prep: &Poseidon2PreprocessedRow<WIDTH_EXT, RATE_EXT, AB::Var> =
+        next_preprocessed.borrow();
+
+    // Sponge chaining. The compression table runs every row in Merkle mode, but
+    // the sponge selector is preprocessed and zero on those rows, so this is a
+    // no-op there and only guards any non-Merkle continuation row.
+    for limb in 0..WIDTH_EXT {
+        for d in 0..D {
+            let gate = next_prep.input_limbs[limb].normal_chain_sel;
+            builder
+                .when_transition()
+                .when(gate)
+                .assert_zero(next_in[limb * D + d] - local_out[limb * D + d]);
+        }
+    }
+
+    // Four-way one-hot over the position selector `pos = b0 + 2·b1 ∈ {0,1,2,3}`,
+    // expressed linearly via the product column:
+    //
+    //     h0 = 1 − b0 − b1 + b0·b1   h1 = b0 − b0·b1
+    //     h2 = b1 − b0·b1            h3 = b0·b1
+    let h0 = AB::Expr::ONE - next_bit.into() - next_bit2.into() + next_bit_x_bit2.into();
+    let h1 = next_bit.into() - next_bit_x_bit2.into();
+    let h2 = next_bit2.into() - next_bit_x_bit2.into();
+    let h3: AB::Expr = next_bit_x_bit2.into();
+    let h_chunks = [h0, h1, h2, h3];
+
+    // Running-hash placement. The next row's input is split into four chunks of
+    // `CAPACITY_EXT` limbs. Chunk `pos` receives the running digest (`h_pos = 1`);
+    // the other chunks hold free siblings supplied via private data when
+    // `merkle_chain_sel = 1`, or CTL-loaded slots (`merkle_chain_sel = 0`) when
+    // pinned by the witness bus.
+    //
+    // For a slot whose `merkle_chain_sel` is set (Merkle row, not chain start,
+    // not CTL-loaded), the placement constraint binds chunk `pos` (`h_k = 1`) to
+    // the current digest limb; the non-`pos` chunks (`h_k = 0`) stay free.
+    for chunk_k in 0..4 {
+        let h_k = h_chunks[chunk_k].clone();
+        for slot_in_chunk in 0..CAPACITY_EXT {
+            let global_slot = chunk_k * CAPACITY_EXT + slot_in_chunk;
+            let merkle_sel = next_prep.input_limbs[global_slot].merkle_chain_sel;
+            let place_gate = AB::Expr::from(merkle_sel) * h_k.clone();
+            for d in 0..D {
+                builder
+                    .when_transition()
+                    .when(place_gate.clone())
+                    .assert_zero(next_in[global_slot * D + d] - local_out[slot_in_chunk * D + d]);
+            }
+        }
+    }
+
+    // Base-four index accumulator: `next_sum = current_sum·4 + b0 + 2·b1`,
+    // gated on a Merkle continuation row.
+    let not_next_new_start = AB::Expr::ONE - next_prep.new_start.into();
+    builder
+        .when_transition()
+        .when(not_next_new_start)
+        .when(next_prep.merkle_path)
+        .assert_zero(
+            next.mmcs_index_sum
+                - (local.mmcs_index_sum * AB::Expr::from_u64(4)
+                    + next_bit.into()
+                    + AB::Expr::TWO * next_bit2.into()),
+        );
+
+    // Poseidon2 permutation, delegated to the inner AIR over the permutation
+    // columns only.
+    let p3_poseidon2_num_cols = p3_poseidon2_air::num_cols::<
+        WIDTH,
+        SBOX_DEGREE,
+        SBOX_REGISTERS,
+        HALF_FULL_ROUNDS,
+        PARTIAL_ROUNDS,
+    >();
+    let mut sub_builder = SubAirBuilder::<
+        AB,
+        Poseidon2Air<
+            AB::F,
+            LinearLayers,
+            WIDTH,
+            SBOX_DEGREE,
+            SBOX_REGISTERS,
+            HALF_FULL_ROUNDS,
+            PARTIAL_ROUNDS,
+        >,
+        AB::Var,
+    >::new(builder, 0..p3_poseidon2_num_cols);
+
+    air.p3_poseidon2.eval(&mut sub_builder);
+}
+
 /// Unchecked constraint evaluation with a concrete builder type.
 ///
 /// Exists to support the batch prover.
@@ -1146,28 +1397,8 @@ pub unsafe fn eval_unchecked_with_concrete<
         WITNESS_EXT_D,
     >,
     builder: &mut AB,
-    local: &Poseidon2CircuitCols<
-        AB::Var,
-        Poseidon2Cols<
-            AB::Var,
-            WIDTH,
-            SBOX_DEGREE,
-            SBOX_REGISTERS,
-            HALF_FULL_ROUNDS,
-            PARTIAL_ROUNDS,
-        >,
-    >,
-    next: &Poseidon2CircuitCols<
-        AB::Var,
-        Poseidon2Cols<
-            AB::Var,
-            WIDTH,
-            SBOX_DEGREE,
-            SBOX_REGISTERS,
-            HALF_FULL_ROUNDS,
-            PARTIAL_ROUNDS,
-        >,
-    >,
+    local_slice: &[AB::Var],
+    next_slice: &[AB::Var],
     next_preprocessed: &[AB::Var],
 ) where
     ABConcrete::F: PrimeField,
@@ -1180,8 +1411,8 @@ pub unsafe fn eval_unchecked_with_concrete<
     // trait bounds.
     unsafe {
         let builder_c = core::mem::transmute(builder);
-        let local_c = core::mem::transmute(local);
-        let next_c = core::mem::transmute(next);
+        let local_c = core::mem::transmute(local_slice);
+        let next_c = core::mem::transmute(next_slice);
         let next_preprocessed_c = core::mem::transmute(next_preprocessed);
         let air_c = core::mem::transmute(air);
         eval::<
@@ -1249,28 +1480,8 @@ pub unsafe fn eval_unchecked<
         WITNESS_EXT_D,
     >,
     builder: &mut AB,
-    local: &Poseidon2CircuitCols<
-        AB::Var,
-        Poseidon2Cols<
-            AB::Var,
-            WIDTH,
-            SBOX_DEGREE,
-            SBOX_REGISTERS,
-            HALF_FULL_ROUNDS,
-            PARTIAL_ROUNDS,
-        >,
-    >,
-    next: &Poseidon2CircuitCols<
-        AB::Var,
-        Poseidon2Cols<
-            AB::Var,
-            WIDTH,
-            SBOX_DEGREE,
-            SBOX_REGISTERS,
-            HALF_FULL_ROUNDS,
-            PARTIAL_ROUNDS,
-        >,
-    >,
+    local_slice: &[AB::Var],
+    next_slice: &[AB::Var],
     next_preprocessed: &[AB::Var],
 ) where
     AB::F: PrimeField,
@@ -1293,7 +1504,13 @@ pub unsafe fn eval_unchecked<
             HALF_FULL_ROUNDS,
             PARTIAL_ROUNDS,
             WITNESS_EXT_D,
-        >(air_transmuted, builder, local, next, next_preprocessed);
+        >(
+            air_transmuted,
+            builder,
+            local_slice,
+            next_slice,
+            next_preprocessed,
+        );
     }
 }
 
@@ -1332,15 +1549,11 @@ where
     fn eval(&self, builder: &mut AB) {
         // Get the main trace window.
         //
-        // It provides the current row and the next row as flat slices.
+        // It provides the current row and the next row as flat slices. Each
+        // constraint helper re-borrows them at the shape-correct column count.
         let main = builder.main();
-
-        // Reinterpret the flat slices as typed column structs.
-        //
-        // This is a zero-copy cast enabled by the `#[repr(C)]` layout
-        // and the `Borrow` implementations in the columns module.
-        let local = main.current_slice().borrow();
-        let next = main.next_slice().borrow();
+        let local_slice = main.current_slice();
+        let next_slice = main.next_slice();
 
         // Get the preprocessed trace window and extract both rows.
         //
@@ -1364,7 +1577,7 @@ where
             HALF_FULL_ROUNDS,
             PARTIAL_ROUNDS,
             WITNESS_EXT_D,
-        >(builder, local, local_preprocessed, next_preprocessed);
+        >(builder, local_slice, local_preprocessed, next_preprocessed);
 
         // Delegate to the core constraint function, which enforces all
         // five constraint groups.
@@ -1381,7 +1594,7 @@ where
             HALF_FULL_ROUNDS,
             PARTIAL_ROUNDS,
             WITNESS_EXT_D,
-        >(self, builder, local, next, next_preprocessed);
+        >(self, builder, local_slice, next_slice, next_preprocessed);
     }
 }
 
@@ -1402,6 +1615,89 @@ fn eval_interactions<
     const WITNESS_EXT_D: usize,
 >(
     builder: &mut AB,
+    local_slice: &[AB::Var],
+    local_preprocessed: &[AB::Var],
+    next_preprocessed: &[AB::Var],
+) where
+    AB::F: PrimeField,
+{
+    // The cross-table interactions read the permutation block (identical offset
+    // in every layout) and `mmcs_index_sum` (whose offset depends on the arity).
+    // Arity-4 compression shapes carry the wider column view.
+    if 4 * CAPACITY_EXT == WIDTH_EXT {
+        let local: &Poseidon2CircuitCols<
+            AB::Var,
+            Poseidon2Cols<
+                AB::Var,
+                WIDTH,
+                SBOX_DEGREE,
+                SBOX_REGISTERS,
+                HALF_FULL_ROUNDS,
+                PARTIAL_ROUNDS,
+            >,
+            ARITY4_EXTRA_COLS,
+        > = local_slice.borrow();
+        eval_interactions_inner::<
+            AB,
+            D,
+            WIDTH,
+            WIDTH_EXT,
+            RATE_EXT,
+            CAPACITY_EXT,
+            SBOX_DEGREE,
+            SBOX_REGISTERS,
+            HALF_FULL_ROUNDS,
+            PARTIAL_ROUNDS,
+            WITNESS_EXT_D,
+            ARITY4_EXTRA_COLS,
+        >(builder, local, local_preprocessed, next_preprocessed);
+        return;
+    }
+
+    let local: &Poseidon2CircuitCols<
+        AB::Var,
+        Poseidon2Cols<
+            AB::Var,
+            WIDTH,
+            SBOX_DEGREE,
+            SBOX_REGISTERS,
+            HALF_FULL_ROUNDS,
+            PARTIAL_ROUNDS,
+        >,
+    > = local_slice.borrow();
+    eval_interactions_inner::<
+        AB,
+        D,
+        WIDTH,
+        WIDTH_EXT,
+        RATE_EXT,
+        CAPACITY_EXT,
+        SBOX_DEGREE,
+        SBOX_REGISTERS,
+        HALF_FULL_ROUNDS,
+        PARTIAL_ROUNDS,
+        WITNESS_EXT_D,
+        0,
+    >(builder, local, local_preprocessed, next_preprocessed);
+}
+
+/// CTL interaction body shared by every arity, generic over the extra-column
+/// count `N_EXTRA` so the typed column view matches the row layout.
+fn eval_interactions_inner<
+    AB: AirBuilder + InteractionBuilder,
+    const D: usize,
+    const WIDTH: usize,
+    const WIDTH_EXT: usize,
+    const RATE_EXT: usize,
+    const CAPACITY_EXT: usize,
+    const SBOX_DEGREE: u64,
+    const SBOX_REGISTERS: usize,
+    const HALF_FULL_ROUNDS: usize,
+    const PARTIAL_ROUNDS: usize,
+    const WITNESS_EXT_D: usize,
+    const N_EXTRA: usize,
+>(
+    builder: &mut AB,
     local: &Poseidon2CircuitCols<
         AB::Var,
         Poseidon2Cols<
@@ -1412,6 +1708,7 @@ fn eval_interactions<
             HALF_FULL_ROUNDS,
             PARTIAL_ROUNDS,
         >,
+        N_EXTRA,
     >,
     local_preprocessed: &[AB::Var],
     next_preprocessed: &[AB::Var],
@@ -1419,6 +1716,7 @@ fn eval_interactions<
     AB::F: PrimeField,
 {
     let compact_d1 = poseidon2_uses_compact_d1_preprocessed(D, WIDTH_EXT, RATE_EXT);
+    let is_arity4 = WIDTH_EXT == 4 * CAPACITY_EXT;
 
     if compact_d1 {
         let hdr = poseidon2_d1_compact_preprocessed_header_cols(RATE_EXT);
@@ -1442,7 +1740,14 @@ fn eval_interactions<
             for _ in 0..(WITNESS_EXT_D - D) {
                 input_idx_limb.push(AB::Expr::ZERO);
             }
-            let mult = in_ctl * not_merkle.clone();
+            // Arity-4 merkle rows carry `in_ctl = 1` only on injected/pad slots, so the bare
+            // `in_ctl` send (degree 1) pins exactly those to their witnesses. Other shapes keep the
+            // `not_merkle` gate so Merkle siblings stay free.
+            let mult = if is_arity4 {
+                in_ctl
+            } else {
+                in_ctl * not_merkle.clone()
+            };
             builder.push_interaction("WitnessChecks", input_idx_limb, Count::bounded(-mult, 1));
         }
 
@@ -1503,7 +1808,17 @@ fn eval_interactions<
             }
 
             let in_ctl: AB::Expr = limb.in_ctl.into();
-            let mult = in_ctl * not_merkle.clone();
+            // Arity-4 merkle rows carry `in_ctl = 1` only on injected/pad slots, so the bare
+            // `in_ctl` send (degree 1) pins exactly those to their witnesses. Other shapes keep the
+            // `not_merkle` gate so Merkle siblings stay free.
+            // Arity-4 merkle rows carry `in_ctl = 1` only on injected/pad slots, so the bare
+            // `in_ctl` send (degree 1) pins exactly those to their witnesses. Other shapes keep the
+            // `not_merkle` gate so Merkle siblings stay free.
+            let mult = if is_arity4 {
+                in_ctl
+            } else {
+                in_ctl * not_merkle.clone()
+            };
             builder.push_interaction("WitnessChecks", input_idx_limb, Count::bounded(-mult, 1));
         }
 
@@ -1530,22 +1845,53 @@ fn eval_interactions<
             );
         }
 
-        // MMCS accumulator send.
-        let mmf: AB::Expr = local_pre.mmcs_merkle_flag.into();
-        let next_ns: AB::Expr = next_pre.new_start.into();
-        let multiplicity = mmf * next_ns;
+        if is_arity4 {
+            // Bind each direction bit to the sampled-index witness directly. The base-4 accumulator
+            // is unused on arity-4, so its idx / merkle-flag preprocessed slots carry the two
+            // bit-source witness indices. `merkle_path` gates the read so non-Merkle rows stay quiet.
+            let merkle: AB::Expr = local_pre.merkle_path.into();
+            let bit2_val: AB::Expr = local
+                .mmcs_extra
+                .get(ARITY4_BIT2_IDX)
+                .map_or(AB::Expr::ZERO, |v| (*v).into());
 
-        let mut mmcs_index_sum_lookup: Vec<AB::Expr> = Vec::with_capacity(WITNESS_EXT_D + 1);
-        mmcs_index_sum_lookup.push(local_pre.mmcs_index_sum_ctl_idx.into());
-        mmcs_index_sum_lookup.push(local.mmcs_index_sum.into());
-        for _ in 0..(WITNESS_EXT_D - 1) {
-            mmcs_index_sum_lookup.push(AB::Expr::ZERO);
+            let mut bit0_lookup: Vec<AB::Expr> = Vec::with_capacity(WITNESS_EXT_D + 1);
+            bit0_lookup.push(local_pre.mmcs_index_sum_ctl_idx.into());
+            bit0_lookup.push(local.mmcs_bit.into());
+            for _ in 0..(WITNESS_EXT_D - 1) {
+                bit0_lookup.push(AB::Expr::ZERO);
+            }
+            builder.push_interaction(
+                "WitnessChecks",
+                bit0_lookup,
+                Count::bounded(-merkle.clone(), 1),
+            );
+
+            let mut bit1_lookup: Vec<AB::Expr> = Vec::with_capacity(WITNESS_EXT_D + 1);
+            bit1_lookup.push(local_pre.mmcs_merkle_flag.into());
+            bit1_lookup.push(bit2_val);
+            for _ in 0..(WITNESS_EXT_D - 1) {
+                bit1_lookup.push(AB::Expr::ZERO);
+            }
+            builder.push_interaction("WitnessChecks", bit1_lookup, Count::bounded(-merkle, 1));
+        } else {
+            // MMCS accumulator send.
+            let mmf: AB::Expr = local_pre.mmcs_merkle_flag.into();
+            let next_ns: AB::Expr = next_pre.new_start.into();
+            let multiplicity = mmf * next_ns;
+
+            let mut mmcs_index_sum_lookup: Vec<AB::Expr> = Vec::with_capacity(WITNESS_EXT_D + 1);
+            mmcs_index_sum_lookup.push(local_pre.mmcs_index_sum_ctl_idx.into());
+            mmcs_index_sum_lookup.push(local.mmcs_index_sum.into());
+            for _ in 0..(WITNESS_EXT_D - 1) {
+                mmcs_index_sum_lookup.push(AB::Expr::ZERO);
+            }
+            builder.push_interaction(
+                "WitnessChecks",
+                mmcs_index_sum_lookup,
+                Count::bounded(-multiplicity, 1),
+            );
         }
-        builder.push_interaction(
-            "WitnessChecks",
-            mmcs_index_sum_lookup,
-            Count::bounded(-multiplicity, 1),
-        );
     }
 }
 
@@ -1555,6 +1901,7 @@ mod test {
 
     use p3_baby_bear::{BabyBear, Poseidon2BabyBear};
     use p3_field::extension::BinomialExtensionField;
+    use p3_koala_bear::KoalaBear;
     use p3_matrix::Matrix;
     use p3_poseidon2::ExternalLayerConstants;
     use p3_poseidon2_air::RoundConstants;
@@ -1564,8 +1911,12 @@ mod test {
     use rand::{RngExt, SeedableRng};
 
     use super::*;
-    use crate::Poseidon2CircuitAirBabyBearD4Width16;
     use crate::columns::{POSEIDON2_LIMBS, POSEIDON2_PUBLIC_OUTPUT_LIMBS};
+    use crate::{
+        BabyBearD4Width32, GoldilocksD2Width16, KoalaBearD1Width32, KoalaBearD4Width32,
+        Poseidon2CircuitAirBabyBearD4Width16, Poseidon2CircuitAirBabyBearD4Width32,
+        Poseidon2CircuitAirKoalaBearD1Width32, Poseidon2CircuitAirKoalaBearD4Width32,
+    };
 
     const WIDTH: usize = 16;
     type Val = BabyBear;
@@ -1602,6 +1953,7 @@ mod test {
                 new_start: true,
                 merkle_path: false,
                 mmcs_bit: false,
+                mmcs_bit2: false,
                 mmcs_index_sum: Val::ZERO,
                 input_values: Val::zero_vec(WIDTH),
                 in_ctl: vec![false; POSEIDON2_LIMBS],
@@ -1635,6 +1987,7 @@ mod test {
             new_start: true,
             merkle_path: false,
             mmcs_bit: false,
+            mmcs_bit2: false,
             mmcs_index_sum: Val::ZERO,
             input_values: state_a.to_vec(),
             in_ctl: vec![false; POSEIDON2_LIMBS],
@@ -1652,6 +2005,7 @@ mod test {
             new_start: false,
             merkle_path: false,
             mmcs_bit: true,
+            mmcs_bit2: false,
             mmcs_index_sum: Val::ZERO,
             input_values: state_b.to_vec(),
             in_ctl: vec![false; POSEIDON2_LIMBS],
@@ -1672,6 +2026,7 @@ mod test {
             new_start: false,
             merkle_path: true,
             mmcs_bit: false,
+            mmcs_bit2: false,
             mmcs_index_sum: Val::ZERO,
             input_values: state_c.to_vec(),
             in_ctl: vec![false; POSEIDON2_LIMBS],
@@ -1688,6 +2043,7 @@ mod test {
             new_start: false,
             merkle_path: false,
             mmcs_bit: false,
+            mmcs_bit2: false,
             mmcs_index_sum: Val::ZERO,
             input_values: state_d.to_vec(),
             in_ctl: vec![false; POSEIDON2_LIMBS],
@@ -1714,6 +2070,7 @@ mod test {
             new_start: true,
             merkle_path: false,
             mmcs_bit: false,
+            mmcs_bit2: false,
             mmcs_index_sum: Val::ZERO,
             input_values: state_a.to_vec(),
             in_ctl: vec![false; POSEIDON2_LIMBS],
@@ -1737,6 +2094,7 @@ mod test {
             new_start: false,
             merkle_path: true,
             mmcs_bit: true,
+            mmcs_bit2: false,
             mmcs_index_sum: Val::ZERO,
             input_values: state_b.to_vec(),
             in_ctl: vec![false; POSEIDON2_LIMBS],
@@ -1752,6 +2110,7 @@ mod test {
             new_start: false,
             merkle_path: false,
             mmcs_bit: false,
+            mmcs_bit2: false,
             mmcs_index_sum: Val::ZERO,
             input_values: output_b.to_vec(),
             in_ctl: vec![false; POSEIDON2_LIMBS],
@@ -1783,6 +2142,7 @@ mod test {
             new_start: true,
             merkle_path: true,
             mmcs_bit: bits[0],
+            mmcs_bit2: false,
             mmcs_index_sum: Val::ZERO,
             input_values: state_0.to_vec(),
             in_ctl: vec![false; POSEIDON2_LIMBS],
@@ -1802,6 +2162,7 @@ mod test {
             new_start: false,
             merkle_path: true,
             mmcs_bit: bits[1],
+            mmcs_bit2: false,
             mmcs_index_sum: Val::ZERO, // will be computed by generate_trace_rows
             input_values: state_1.to_vec(),
             in_ctl: vec![false; POSEIDON2_LIMBS],
@@ -1823,6 +2184,7 @@ mod test {
             new_start: false,
             merkle_path: true,
             mmcs_bit: bits[2],
+            mmcs_bit2: false,
             mmcs_index_sum: Val::ZERO,
             input_values: state_2.to_vec(),
             in_ctl: vec![false; POSEIDON2_LIMBS],
@@ -1836,6 +2198,108 @@ mod test {
         check_rows(vec![row_0, row_1, row_2], &constants);
     }
 
+    /// Arity-4 compression chain: a running digest is placed into one of four
+    /// `CAPACITY_EXT`-sized chunks per level via the linearized one-hot, the
+    /// three unused chunks are pinned to zero, and the base-four index
+    /// accumulator reconstructs the quaternary leaf index.
+    #[test]
+    fn prove_poseidon2_arity4_mmcs_chain() {
+        use p3_koala_bear::Poseidon2KoalaBear;
+
+        const W32: usize = 32;
+        const D: usize = 4;
+        const WIDTH_EXT: usize = 8;
+        const RATE_EXT: usize = 6;
+        const CAPACITY_EXT: usize = 2;
+
+        type KbVal = KoalaBear;
+        type KbEF = BinomialExtensionField<KbVal, 4>;
+
+        let mut rng = SmallRng::seed_from_u64(7);
+        let constants = KoalaBearD4Width32::round_constants();
+        let perm: Poseidon2KoalaBear<W32> = p3_koala_bear::default_koalabear_poseidon2_32();
+
+        // Build one arity-4 Merkle row that compresses `prev_output` at quaternary
+        // position `pos ∈ {0,1,2,3}`. The running digest (the first `CAPACITY_EXT`
+        // output limbs) is placed into chunk `pos` by the placement gate; the other
+        // three chunks carry free siblings (left zero here).
+        let make_merkle_row = |prev_output: &[KbVal; W32],
+                               pos: usize,
+                               new_start: bool|
+         -> (Poseidon2CircuitRow<KbVal>, [KbVal; W32]) {
+            let mut state = [KbVal::ZERO; W32];
+            let chunk_base = pos * CAPACITY_EXT * D;
+            state[chunk_base..chunk_base + CAPACITY_EXT * D]
+                .copy_from_slice(&prev_output[0..CAPACITY_EXT * D]);
+            let output = perm.permute(state);
+            let row = Poseidon2CircuitRow {
+                new_start,
+                merkle_path: true,
+                mmcs_bit: pos & 1 == 1,
+                mmcs_bit2: pos & 2 == 2,
+                mmcs_index_sum: KbVal::ZERO,
+                input_values: state.to_vec(),
+                in_ctl: vec![false; WIDTH_EXT],
+                input_indices: vec![0; WIDTH_EXT],
+                out_ctl: vec![false; RATE_EXT],
+                output_indices: vec![0; RATE_EXT],
+                mmcs_index_sum_idx: 0,
+                mmcs_ctl_enabled: true,
+            };
+            (row, output)
+        };
+
+        // Row 0: chain start that produces the leaf digest.
+        let state_0: [KbVal; W32] = core::array::from_fn(|_| rng.random());
+        let output_0 = perm.permute(state_0);
+        let row_0 = Poseidon2CircuitRow {
+            new_start: true,
+            merkle_path: true,
+            mmcs_bit: false,
+            mmcs_bit2: false,
+            mmcs_index_sum: KbVal::ZERO,
+            input_values: state_0.to_vec(),
+            in_ctl: vec![false; WIDTH_EXT],
+            input_indices: vec![0; WIDTH_EXT],
+            out_ctl: vec![false; RATE_EXT],
+            output_indices: vec![0; RATE_EXT],
+            mmcs_index_sum_idx: 0,
+            mmcs_ctl_enabled: true,
+        };
+
+        // Row 1 at pos=3 (both bits set) and row 2 at pos=2 (high bit only).
+        let (row_1, output_1) = make_merkle_row(&output_0, 3, false);
+        let (row_2, _output_2) = make_merkle_row(&output_1, 2, false);
+
+        let mut padded = vec![row_0, row_1, row_2];
+        let target_rows = 1usize << 5;
+        let filler = Poseidon2CircuitRow {
+            new_start: true,
+            merkle_path: false,
+            mmcs_bit: false,
+            mmcs_bit2: false,
+            mmcs_index_sum: KbVal::ZERO,
+            input_values: KbVal::zero_vec(W32),
+            in_ctl: vec![false; WIDTH_EXT],
+            input_indices: vec![0; WIDTH_EXT],
+            out_ctl: vec![false; RATE_EXT],
+            output_indices: vec![0; RATE_EXT],
+            mmcs_index_sum_idx: 0,
+            mmcs_ctl_enabled: false,
+        };
+        padded.resize(target_rows, filler);
+
+        let preprocessed = extract_preprocessed_from_operations::<WIDTH_EXT, RATE_EXT, KbVal, KbVal>(
+            &padded, 4, 4,
+        );
+        let air = Poseidon2CircuitAirKoalaBearD4Width32::new_with_preprocessed(
+            constants.clone(),
+            preprocessed,
+        );
+        let trace = air.generate_trace_rows(&padded, &constants, 0);
+        assert_air_satisfies::<KbVal, KbEF, _>(&air, &trace);
+    }
+
     #[test]
     fn test_air_constraint_degree() {
         let mut rng = SmallRng::seed_from_u64(1);
@@ -1843,6 +2307,85 @@ mod test {
 
         let air = Poseidon2CircuitAirBabyBearD4Width16::new(constants);
         p3_test_utils::assert_air_constraint_degree!(air, "Poseidon2CircuitAir");
+    }
+
+    /// Assert that every symbolic constraint of `air` (base and extension)
+    /// stays within `MAX_TEST_CONSTRAINT_DEGREE`. The shared degree macro is
+    /// pinned to BabyBear, so the W32/W16 arity-4 shapes are checked inline
+    /// against the same maximum.
+    fn assert_arity4_constraint_degree<F: p3_field::Field, ExtF: p3_field::ExtensionField<F>, A>(
+        air: &A,
+        label: &str,
+    ) where
+        A: p3_air::BaseAir<F> + p3_air::Air<p3_lookup::InteractionSymbolicBuilder<F, ExtF>>,
+        p3_air::symbolic::SymbolicExpressionExt<F, ExtF>: p3_field::Algebra<ExtF>,
+    {
+        use p3_air::AirLayout;
+        use p3_batch_stark::symbolic::get_symbolic_constraints;
+        use p3_lookup::Lookups;
+        use p3_lookup::logup::LogUpGadget;
+
+        let preprocessed_width = air.preprocessed_trace().map(|m| m.width()).unwrap_or(0);
+        let lookups: Lookups<F> = Lookups::from_air::<ExtF, _>(air);
+        let lookup_gadget = LogUpGadget::new();
+        let layout = AirLayout {
+            preprocessed_width,
+            main_width: BaseAir::<F>::width(air),
+            num_public_values: BaseAir::<F>::num_public_values(air),
+            permutation_width: 0,
+            num_permutation_challenges: 0,
+            num_permutation_values: 0,
+            num_periodic_columns: 0,
+        };
+
+        let (base_constraints, extension_constraints) =
+            get_symbolic_constraints::<F, ExtF, _, _>(air, layout, &lookups, &lookup_gadget);
+
+        for (i, constraint) in base_constraints.iter().enumerate() {
+            let degree = constraint.degree_multiple();
+            assert!(
+                degree <= p3_test_utils::MAX_TEST_CONSTRAINT_DEGREE,
+                "{label} base constraint {i} has degree {degree} exceeding maximum"
+            );
+        }
+        for (i, constraint) in extension_constraints.iter().enumerate() {
+            let degree = constraint.degree_multiple();
+            assert!(
+                degree <= p3_test_utils::MAX_TEST_CONSTRAINT_DEGREE,
+                "{label} extension constraint {i} has degree {degree} exceeding maximum"
+            );
+        }
+    }
+
+    #[test]
+    fn test_air_constraint_degree_arity4() {
+        use p3_goldilocks::Goldilocks;
+
+        // The arity-4 compression shape exercises `eval_arity4`: the product
+        // column, the linearized one-hot placement, and the base-four index
+        // accumulator must all stay within degree 3.
+        // All three new W32/W16 compression shapes are checked.
+        type KbF = KoalaBear;
+        type KbEF = BinomialExtensionField<KbF, 4>;
+        type BbF = BabyBear;
+        type BbEF = BinomialExtensionField<BbF, 4>;
+        type GlF = Goldilocks;
+        type GlEF = BinomialExtensionField<GlF, 2>;
+
+        let d1_w32 =
+            Poseidon2CircuitAirKoalaBearD1Width32::new(KoalaBearD1Width32::round_constants());
+        assert_arity4_constraint_degree::<KbF, KbEF, _>(&d1_w32, "KoalaBearD1Width32");
+
+        let d4_w32 =
+            Poseidon2CircuitAirKoalaBearD4Width32::new(KoalaBearD4Width32::round_constants());
+        assert_arity4_constraint_degree::<KbF, KbEF, _>(&d4_w32, "KoalaBearD4Width32");
+
+        let bb_d4_w32 =
+            Poseidon2CircuitAirBabyBearD4Width32::new(BabyBearD4Width32::round_constants());
+        assert_arity4_constraint_degree::<BbF, BbEF, _>(&bb_d4_w32, "BabyBearD4Width32");
+
+        let gl_d2_w16 = GoldilocksD2Width16::default_air();
+        assert_arity4_constraint_degree::<GlF, GlEF, _>(&gl_d2_w16, "GoldilocksD2Width16");
     }
 
     /// Build an AIR with the given preprocessed data and optional minimum

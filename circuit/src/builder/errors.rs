@@ -57,6 +57,14 @@ pub enum CircuitBuilderError {
     #[error("Poseidon2Perm merkle_path=false must not have mmcs_bit (it has no effect)")]
     Poseidon2NonMerkleWithMmcsBit,
 
+    /// Arity-4 compression Merkle rows require a second direction bit.
+    #[error("Poseidon2Perm arity-4 merkle_path=true requires mmcs_bit2")]
+    Poseidon2Arity4MissingMmcsBit2,
+
+    /// Only arity-4 compression Merkle rows may set the second direction bit.
+    #[error("Poseidon2Perm mmcs_bit2 is only valid on arity-4 merkle_path=true rows")]
+    Poseidon2UnexpectedMmcsBit2,
+
     /// Poseidon2 configuration mismatch.
     #[error("Poseidon2 config mismatch: expected {expected}, got {got}")]
     Poseidon2ConfigMismatch { expected: String, got: String },

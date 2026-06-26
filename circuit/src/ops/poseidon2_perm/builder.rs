@@ -28,6 +28,14 @@ impl<F: Field> CircuitBuilder<F> {
             return Err(CircuitBuilderError::Poseidon2NonMerkleWithMmcsBit);
         }
 
+        let arity4_merkle = call.config.is_arity4_shape() && call.merkle_path;
+        if arity4_merkle && call.mmcs_bit2.is_none() {
+            return Err(CircuitBuilderError::Poseidon2Arity4MissingMmcsBit2);
+        }
+        if !arity4_merkle && call.mmcs_bit2.is_some() {
+            return Err(CircuitBuilderError::Poseidon2UnexpectedMmcsBit2);
+        }
+
         self.add_poseidon_perm_inner(
             call,
             "poseidon2_perm_out",

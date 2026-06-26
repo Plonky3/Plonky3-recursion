@@ -18,7 +18,8 @@ use p3_util::zip_eq::zip_eq;
 use super::{FriProofTargets, InputProofTargets};
 use crate::Target;
 use crate::pcs::{
-    MmcsProofTargets, verify_batch_circuit, verify_batch_circuit_from_extension_opened,
+    MmcsProofTargets, verify_batch_circuit, verify_batch_circuit_arity4,
+    verify_batch_circuit_from_extension_opened, verify_batch_circuit_from_extension_opened_arity4,
 };
 use crate::traits::{ComsWithOpeningsTargets, Recursive, RecursiveExtensionMmcs, RecursiveMmcs};
 use crate::verifier::{ObservableCommitment, VerificationError};
@@ -74,10 +75,11 @@ where
 
 /// Build MMCS commitment-cap rows from Fiat–Shamir observation targets (lifted base scalars).
 ///
-/// For D=4-style configs, adjacent lifted coordinates are packed into one extension element via
-/// [`pack_lifted_to_ext`]. For D=1 width-16 configs over a high-degree challenge extension, the
-/// inner hash absorbs one base element per rate slot (lifted scalars); cap rows must **not** be
-/// packed, so each row has `rate_ext` targets matching the D=1 per-base MMCS hash path.
+/// Each cap entry holds one digest: `rate_ext` targets for the arity-2 compression shape and
+/// `capacity_ext` targets for the arity-4 shape (`4·capacity_ext == width_ext`). For D=4-style
+/// configs, adjacent lifted coordinates are packed into one extension element via
+/// [`pack_lifted_to_ext`]. For D=1 configs over a high-degree challenge extension the inner hash
+/// absorbs one base element per slot (lifted scalars); cap rows must **not** be packed.
 fn commitment_cap_rows_from_lifted<F, EF>(
     builder: &mut CircuitBuilder<EF>,
     perm_config: PermConfig,
@@ -87,17 +89,21 @@ where
     F: Field,
     EF: ExtensionField<F> + BasedVectorSpace<F>,
 {
-    let rate_ext = perm_config.rate_ext();
+    let chunk_ext = if perm_config.is_arity4_shape() {
+        perm_config.capacity_ext()
+    } else {
+        perm_config.rate_ext()
+    };
     if perm_config.d() == 1 && EF::DIMENSION > 1 {
         debug_assert_eq!(
-            lifted.len() % rate_ext,
+            lifted.len() % chunk_ext,
             0,
-            "lifted cap length should be a multiple of rate_ext"
+            "lifted cap length should be a multiple of the digest size"
         );
-        lifted.chunks(rate_ext).map(|c| c.to_vec()).collect()
+        lifted.chunks(chunk_ext).map(|c| c.to_vec()).collect()
     } else {
         let packed = pack_lifted_to_ext::<F, EF>(builder, lifted);
-        packed.chunks(rate_ext).map(|c| c.to_vec()).collect()
+        packed.chunks(chunk_ext).map(|c| c.to_vec()).collect()
     }
 }
 
@@ -1154,15 +1160,26 @@ where
                 _ => None,
             };
 
-            let op_ids = verify_batch_circuit::<F, EF>(
-                builder,
-                perm_config,
-                &commitment_cap,
-                &dimensions,
-                index_bits,
-                batch_openings,
-                salts_for_batch,
-            )
+            let op_ids = if perm_config.is_arity4_shape() {
+                verify_batch_circuit_arity4::<F, EF>(
+                    builder,
+                    perm_config,
+                    &commitment_cap,
+                    &dimensions,
+                    index_bits,
+                    batch_openings,
+                )
+            } else {
+                verify_batch_circuit::<F, EF>(
+                    builder,
+                    perm_config,
+                    &commitment_cap,
+                    &dimensions,
+                    index_bits,
+                    batch_openings,
+                    salts_for_batch,
+                )
+            }
             .map_err(|e| {
                 VerificationError::InvalidProofShape(format!(
                     "MMCS verification failed for batch {batch_idx}: {e:?}"
@@ -1737,15 +1754,26 @@ where
                     Some(phase_salts)
                 };
 
-                let commit_phase_ops = verify_batch_circuit_from_extension_opened::<F, EF>(
-                    builder,
-                    perm_config,
-                    &commitment_cap,
-                    &dimensions,
-                    &parent_index_bits,
-                    core::slice::from_ref(&evals),
-                    salts_for_phase,
-                )
+                let commit_phase_ops = if perm_config.is_arity4_shape() {
+                    verify_batch_circuit_from_extension_opened_arity4::<F, EF>(
+                        builder,
+                        perm_config,
+                        &commitment_cap,
+                        &dimensions,
+                        &parent_index_bits,
+                        core::slice::from_ref(&evals),
+                    )
+                } else {
+                    verify_batch_circuit_from_extension_opened::<F, EF>(
+                        builder,
+                        perm_config,
+                        &commitment_cap,
+                        &dimensions,
+                        &parent_index_bits,
+                        core::slice::from_ref(&evals),
+                        salts_for_phase,
+                    )
+                }
                 .map_err(|e| {
                     VerificationError::InvalidProofShape(format!(
                         "Commit-phase MMCS verification failed for query {q}, phase {phase_idx}: {e:?}"

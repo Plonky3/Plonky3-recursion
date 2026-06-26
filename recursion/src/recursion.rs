@@ -753,6 +753,128 @@ where
     }
 }
 
+/// Prove a 2-to-1 aggregation layer while verifying the input proofs under `InSC`
+/// and committing the aggregated proof under `OutSC`.
+///
+/// Mirrors [`prove_aggregation_layer`] but splits the verifier config from the output
+/// proof config. The two configs must share the same challenge field; this is the seam
+/// used to switch the output MMCS arity (e.g. verify arity-2 inputs, emit an arity-4 proof).
+#[instrument(skip_all)]
+#[allow(clippy::too_many_arguments)]
+pub fn prove_aggregation_layer_cross<InSC, OutSC, A1, A2, B, const D: usize>(
+    left: &RecursionInput<'_, InSC, A1>,
+    right: &RecursionInput<'_, InSC, A2>,
+    left_result: &<B as PcsRecursionBackend<InSC, A1, D>>::VerifierResult,
+    right_result: &<B as PcsRecursionBackend<InSC, A2, D>>::VerifierResult,
+    verification_circuit: &Circuit<InSC::Challenge>,
+    input_config: &InSC,
+    output_config: &OutSC,
+    backend: &B,
+    params: &ProveNextLayerParams,
+    mut prep_cache: Option<&mut Option<AggregationPrepCache<OutSC>>>,
+) -> Result<RecursionOutput<OutSC>, VerificationError>
+where
+    InSC: StarkGenericConfig + Send + Sync + Clone + 'static,
+    OutSC: StarkGenericConfig<Challenge = InSC::Challenge> + Send + Sync + Clone + 'static,
+    A1: RecursiveAir<Val<InSC>, InSC::Challenge, LogUpGadget>,
+    A2: RecursiveAir<Val<InSC>, InSC::Challenge, LogUpGadget>,
+    B: PcsRecursionBackend<InSC, A1, D>
+        + PcsRecursionBackend<InSC, A2, D>
+        + PcsRecursionBackend<OutSC, BatchOnly, D>,
+    Val<InSC>: PrimeField64,
+    InSC::Challenge: BasedVectorSpace<Val<InSC>> + From<Val<InSC>>,
+    Val<OutSC>: PrimeField64 + StarkField,
+    OutSC::Challenge: BasedVectorSpace<Val<OutSC>>
+        + From<Val<OutSC>>
+        + ExtensionField<Val<OutSC>>
+        + ExtractBinomialW<Val<OutSC>>,
+    SymbolicExpressionExt<Val<OutSC>, OutSC::Challenge>:
+        Algebra<SymbolicExpression<Val<OutSC>>> + Algebra<OutSC::Challenge>,
+    <OutSC::Pcs as Pcs<OutSC::Challenge, OutSC::Challenger>>::Domain: Send + Sync,
+    OutSC::Pcs: Sync,
+    <OutSC::Pcs as Pcs<OutSC::Challenge, OutSC::Challenger>>::ProverData: Sync,
+    <OutSC::Pcs as Pcs<OutSC::Challenge, OutSC::Challenger>>::Commitment: Sync,
+{
+    let current_fp = aggregation_circuit_fingerprint(verification_circuit);
+    if let Some(ref mut cache_slot) = prep_cache
+        && let Some(cached) = cache_slot.as_ref()
+        && cached.circuit_fingerprint == current_fp
+    {
+        let traces = run_aggregation_verification_circuit::<InSC, A1, A2, B, D>(
+            left,
+            right,
+            left_result,
+            right_result,
+            verification_circuit,
+            input_config,
+            backend,
+        )?;
+        let proof = cached
+            .prover
+            .prove_all_tables(&traces, &cached.circuit_prover_data)
+            .map_err(|e| proof_shape_err(&e.to_string()))?;
+        return Ok(RecursionOutput(
+            proof,
+            Rc::clone(&cached.circuit_prover_data),
+        ));
+    }
+
+    let (airs_degrees, primitive_columns, non_primitive_columns) = {
+        let preprocessors =
+            <B as PcsRecursionBackend<OutSC, BatchOnly, D>>::non_primitive_preprocessors(backend);
+        let air_builders =
+            <B as PcsRecursionBackend<OutSC, BatchOnly, D>>::non_primitive_air_builders(backend);
+        get_airs_and_degrees_with_prep::<OutSC, OutSC::Challenge, D>(
+            verification_circuit,
+            &params.table_packing,
+            &preprocessors,
+            &air_builders,
+            params.constraint_profile,
+        )
+        .map_err(VerificationError::Circuit)?
+    };
+
+    let (airs, degrees): (Vec<_>, Vec<_>) = airs_degrees.into_iter().unzip();
+    let ext_degrees: Vec<usize> = degrees.iter().map(|&d| d + output_config.is_zk()).collect();
+
+    let traces = run_aggregation_verification_circuit::<InSC, A1, A2, B, D>(
+        left,
+        right,
+        left_result,
+        right_result,
+        verification_circuit,
+        input_config,
+        backend,
+    )?;
+
+    let circuit_prover_data = {
+        let prover_data = ProverData::from_airs_and_degrees(output_config, &airs, &ext_degrees);
+        CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns)
+    };
+
+    let prover = build_layer_prover(
+        output_config,
+        &params.table_packing,
+        params.constraint_profile,
+        <B as PcsRecursionBackend<OutSC, BatchOnly, D>>::non_primitive_provers(backend, D),
+    );
+    let proof = prover
+        .prove_all_tables(&traces, &circuit_prover_data)
+        .map_err(|e| proof_shape_err(&e.to_string()))?;
+
+    if let Some(ref mut cache_slot) = prep_cache {
+        let circuit_prover_data_rc = Rc::new(circuit_prover_data);
+        **cache_slot = Some(AggregationPrepCache {
+            circuit_fingerprint: current_fp,
+            circuit_prover_data: Rc::clone(&circuit_prover_data_rc),
+            prover,
+        });
+        Ok(RecursionOutput(proof, circuit_prover_data_rc))
+    } else {
+        Ok(RecursionOutput(proof, Rc::new(circuit_prover_data)))
+    }
+}
+
 /// Convenience method to build and prove a 2-to-1 aggregation layer.
 ///
 /// The two inputs may be different `RecursionInput` variants (e.g. one `UniStark` left
@@ -801,6 +923,64 @@ where
         &right_result,
         &verification_circuit,
         config,
+        backend,
+        params,
+        prep_cache,
+    )
+}
+
+/// Convenience method to build and prove a cross-config 2-to-1 aggregation layer.
+///
+/// Verifies the input proofs under `input_config` (`InSC`) and commits the aggregated proof
+/// under `output_config` (`OutSC`). See [`prove_aggregation_layer_cross`].
+#[allow(clippy::too_many_arguments)]
+pub fn build_and_prove_aggregation_layer_cross<InSC, OutSC, A1, A2, B, const D: usize>(
+    left: &RecursionInput<'_, InSC, A1>,
+    right: &RecursionInput<'_, InSC, A2>,
+    input_config: &InSC,
+    output_config: &OutSC,
+    backend: &B,
+    params: &ProveNextLayerParams,
+    prep_cache: Option<&mut Option<AggregationPrepCache<OutSC>>>,
+) -> Result<RecursionOutput<OutSC>, VerificationError>
+where
+    InSC: StarkGenericConfig + Send + Sync + Clone + 'static,
+    OutSC: StarkGenericConfig<Challenge = InSC::Challenge> + Send + Sync + Clone + 'static,
+    A1: RecursiveAir<Val<InSC>, InSC::Challenge, LogUpGadget>,
+    A2: RecursiveAir<Val<InSC>, InSC::Challenge, LogUpGadget>,
+    B: PcsRecursionBackend<InSC, A1, D>
+        + PcsRecursionBackend<InSC, A2, D>
+        + PcsRecursionBackend<OutSC, BatchOnly, D>,
+    Val<InSC>: PrimeField64 + StarkField,
+    InSC::Challenge: BasedVectorSpace<Val<InSC>>
+        + From<Val<InSC>>
+        + ExtensionField<Val<InSC>>
+        + ExtractBinomialW<Val<InSC>>,
+    Val<OutSC>: PrimeField64 + StarkField,
+    OutSC::Challenge: BasedVectorSpace<Val<OutSC>>
+        + From<Val<OutSC>>
+        + ExtensionField<Val<OutSC>>
+        + ExtractBinomialW<Val<OutSC>>,
+    SymbolicExpressionExt<Val<InSC>, InSC::Challenge>:
+        Algebra<SymbolicExpression<Val<InSC>>> + Algebra<InSC::Challenge>,
+    SymbolicExpressionExt<Val<OutSC>, OutSC::Challenge>:
+        Algebra<SymbolicExpression<Val<OutSC>>> + Algebra<OutSC::Challenge>,
+    <OutSC::Pcs as Pcs<OutSC::Challenge, OutSC::Challenger>>::Domain: Send + Sync,
+    OutSC::Pcs: Sync,
+    <OutSC::Pcs as Pcs<OutSC::Challenge, OutSC::Challenger>>::ProverData: Sync,
+    <OutSC::Pcs as Pcs<OutSC::Challenge, OutSC::Challenger>>::Commitment: Sync,
+{
+    let (verification_circuit, (left_result, right_result)) =
+        build_aggregation_layer_circuit::<InSC, A1, A2, B, D>(left, right, input_config, backend)?;
+
+    prove_aggregation_layer_cross::<InSC, OutSC, A1, A2, B, D>(
+        left,
+        right,
+        &left_result,
+        &right_result,
+        &verification_circuit,
+        input_config,
+        output_config,
         backend,
         params,
         prep_cache,

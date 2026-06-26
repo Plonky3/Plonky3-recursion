@@ -11,7 +11,10 @@
 //!     KoalaBear   1                  16            20
 //!     KoalaBear   4                  16            20
 //!     KoalaBear   4                  24            23
+//!     KoalaBear   1                  32            31
+//!     KoalaBear   4                  32            31
 //!     Goldilocks  2                   8            22
+//!     Goldilocks  2                  16            22
 //! ```
 
 extern crate alloc;
@@ -27,7 +30,7 @@ use rand::distr::StandardUniform;
 use rand::rngs::SmallRng;
 use rand::{RngExt, SeedableRng};
 
-use crate::{Poseidon2CircuitAir, assert_circuit_cols_split};
+use crate::{Poseidon2CircuitAir, assert_circuit_cols_split, assert_circuit_cols_split_arity4};
 
 /// Configuration for BabyBear with base-field (`D=1`) challenges and a
 /// 16-element Poseidon2 state (same permutation as quartic width-16).
@@ -157,6 +160,43 @@ impl BabyBearD4Width24 {
         min_height: usize,
     ) -> Poseidon2CircuitAirBabyBearD4Width24 {
         Poseidon2CircuitAirBabyBearD4Width24::new_with_preprocessed(
+            Self::round_constants(),
+            preprocessed,
+        )
+        .with_min_height(min_height)
+    }
+}
+
+/// Configuration for BabyBear with a quartic extension (`D=4`) and a
+/// 32-element Poseidon2 state.
+///
+/// Arity-4 compression shape: `WIDTH_EXT = 8`, `CAPACITY_EXT = 2`,
+/// `RATE_EXT = 6`, so `4 · CAPACITY_EXT == WIDTH_EXT`.
+pub struct BabyBearD4Width32;
+
+impl Poseidon2Params for BabyBearD4Width32 {
+    type BaseField = BabyBear;
+    const CONFIG: Poseidon2Config = Poseidon2Config::BABY_BEAR_D4_W32;
+}
+
+impl BabyBearD4Width32 {
+    pub const fn round_constants() -> RoundConstants<BabyBear, 32, 4, 30> {
+        RoundConstants::new(
+            p3_baby_bear::BABYBEAR_POSEIDON2_RC_32_EXTERNAL_INITIAL,
+            p3_baby_bear::BABYBEAR_POSEIDON2_RC_32_INTERNAL,
+            p3_baby_bear::BABYBEAR_POSEIDON2_RC_32_EXTERNAL_FINAL,
+        )
+    }
+
+    pub const fn default_air() -> Poseidon2CircuitAirBabyBearD4Width32 {
+        Poseidon2CircuitAirBabyBearD4Width32::new(Self::round_constants())
+    }
+
+    pub fn default_air_with_preprocessed(
+        preprocessed: Vec<BabyBear>,
+        min_height: usize,
+    ) -> Poseidon2CircuitAirBabyBearD4Width32 {
+        Poseidon2CircuitAirBabyBearD4Width32::new_with_preprocessed(
             Self::round_constants(),
             preprocessed,
         )
@@ -296,6 +336,120 @@ impl KoalaBearD4Width24 {
     }
 }
 
+/// Configuration for KoalaBear with base-field (`D=1`) challenges and a
+/// 32-element Poseidon2 state.
+///
+/// Arity-4 compression shape: `WIDTH_EXT = 32`, `CAPACITY_EXT = 8`,
+/// `RATE_EXT = 24`, so `4 · CAPACITY_EXT == WIDTH_EXT`.
+pub struct KoalaBearD1Width32;
+
+impl Poseidon2Params for KoalaBearD1Width32 {
+    type BaseField = KoalaBear;
+    const CONFIG: Poseidon2Config = Poseidon2Config::KOALA_BEAR_D1_W32;
+}
+
+impl KoalaBearD1Width32 {
+    pub const fn round_constants() -> RoundConstants<KoalaBear, 32, 4, 31> {
+        RoundConstants::new(
+            p3_koala_bear::KOALABEAR_POSEIDON2_RC_32_EXTERNAL_INITIAL,
+            p3_koala_bear::KOALABEAR_POSEIDON2_RC_32_INTERNAL,
+            p3_koala_bear::KOALABEAR_POSEIDON2_RC_32_EXTERNAL_FINAL,
+        )
+    }
+
+    pub const fn default_air() -> Poseidon2CircuitAirKoalaBearD1Width32 {
+        Poseidon2CircuitAirKoalaBearD1Width32::new(Self::round_constants())
+    }
+
+    pub fn default_air_with_preprocessed(
+        preprocessed: Vec<KoalaBear>,
+        min_height: usize,
+    ) -> Poseidon2CircuitAirKoalaBearD1Width32 {
+        Poseidon2CircuitAirKoalaBearD1Width32::new_with_preprocessed(
+            Self::round_constants(),
+            preprocessed,
+        )
+        .with_min_height(min_height)
+    }
+
+    pub fn default_air_with_preprocessed_witness_bus5(
+        preprocessed: Vec<KoalaBear>,
+        min_height: usize,
+    ) -> Poseidon2CircuitAirKoalaBearD1Width32WitnessBus5 {
+        Poseidon2CircuitAirKoalaBearD1Width32WitnessBus5::new_with_preprocessed(
+            Self::round_constants(),
+            preprocessed,
+        )
+        .with_min_height(min_height)
+    }
+}
+
+/// Configuration for KoalaBear with a quartic extension (`D=4`) and a
+/// 32-element Poseidon2 state.
+///
+/// Arity-4 compression shape: `WIDTH_EXT = 8`, `CAPACITY_EXT = 2`,
+/// `RATE_EXT = 6`, so `4 · CAPACITY_EXT == WIDTH_EXT`.
+pub struct KoalaBearD4Width32;
+
+impl Poseidon2Params for KoalaBearD4Width32 {
+    type BaseField = KoalaBear;
+    const CONFIG: Poseidon2Config = Poseidon2Config::KOALA_BEAR_D4_W32;
+}
+
+impl KoalaBearD4Width32 {
+    pub const fn round_constants() -> RoundConstants<KoalaBear, 32, 4, 31> {
+        RoundConstants::new(
+            p3_koala_bear::KOALABEAR_POSEIDON2_RC_32_EXTERNAL_INITIAL,
+            p3_koala_bear::KOALABEAR_POSEIDON2_RC_32_INTERNAL,
+            p3_koala_bear::KOALABEAR_POSEIDON2_RC_32_EXTERNAL_FINAL,
+        )
+    }
+
+    pub const fn default_air() -> Poseidon2CircuitAirKoalaBearD4Width32 {
+        Poseidon2CircuitAirKoalaBearD4Width32::new(Self::round_constants())
+    }
+
+    pub fn default_air_with_preprocessed(
+        preprocessed: Vec<KoalaBear>,
+        min_height: usize,
+    ) -> Poseidon2CircuitAirKoalaBearD4Width32 {
+        Poseidon2CircuitAirKoalaBearD4Width32::new_with_preprocessed(
+            Self::round_constants(),
+            preprocessed,
+        )
+        .with_min_height(min_height)
+    }
+}
+
+/// Configuration for Goldilocks with quadratic extension (`D=2`) and a
+/// 16-element Poseidon2 state.
+///
+/// Arity-4 compression shape: `WIDTH_EXT = 8`, `CAPACITY_EXT = 2`,
+/// `RATE_EXT = 6`, so `4 · CAPACITY_EXT == WIDTH_EXT`.
+pub struct GoldilocksD2Width16;
+
+impl Poseidon2Params for GoldilocksD2Width16 {
+    type BaseField = Goldilocks;
+    const CONFIG: Poseidon2Config = Poseidon2Config::GOLDILOCKS_D2_W16;
+}
+
+impl GoldilocksD2Width16 {
+    pub fn default_air() -> Poseidon2CircuitAirGoldilocksD2Width16 {
+        Poseidon2CircuitAirGoldilocksD2Width16::new(goldilocks_d2_width16_round_constants())
+    }
+
+    pub fn default_air_with_preprocessed(
+        preprocessed: Vec<Goldilocks>,
+        min_height: usize,
+    ) -> Poseidon2CircuitAirGoldilocksD2Width16 {
+        Poseidon2CircuitAirGoldilocksD2Width16::new_with_preprocessed(
+            goldilocks_d2_width16_round_constants(),
+            preprocessed,
+        )
+        .with_min_height(min_height)
+    }
+}
+
 /// BabyBear Poseidon2 circuit AIR with `D=1` and 16-element state (base-field CTL slots).
 pub type Poseidon2CircuitAirBabyBearD1Width16 = Poseidon2CircuitAir<
     BabyBear,
@@ -424,6 +578,86 @@ pub type Poseidon2CircuitAirKoalaBearD4Width24 = Poseidon2CircuitAir<
     { KoalaBearD4Width24::D },
 >;
 
+/// KoalaBear Poseidon2 circuit AIR with `D=1` and 32-element state (arity-4 compression).
+pub type Poseidon2CircuitAirKoalaBearD1Width32 = Poseidon2CircuitAir<
+    KoalaBear,
+    GenericPoseidon2LinearLayersKoalaBear,
+    { KoalaBearD1Width32::D },
+    { KoalaBearD1Width32::WIDTH },
+    { KoalaBearD1Width32::WIDTH_EXT },
+    { KoalaBearD1Width32::RATE_EXT },
+    { KoalaBearD1Width32::CAPACITY_EXT },
+    { KoalaBearD1Width32::SBOX_DEGREE },
+    { KoalaBearD1Width32::SBOX_REGISTERS },
+    { KoalaBearD1Width32::HALF_FULL_ROUNDS },
+    { KoalaBearD1Width32::PARTIAL_ROUNDS },
+    { KoalaBearD1Width32::D },
+>;
+
+/// [`KoalaBearD1Width32`] with witness-bus keys padded to quintic width (for EF5 + base Poseidon).
+pub type Poseidon2CircuitAirKoalaBearD1Width32WitnessBus5 = Poseidon2CircuitAir<
+    KoalaBear,
+    GenericPoseidon2LinearLayersKoalaBear,
+    { KoalaBearD1Width32::D },
+    { KoalaBearD1Width32::WIDTH },
+    { KoalaBearD1Width32::WIDTH_EXT },
+    { KoalaBearD1Width32::RATE_EXT },
+    { KoalaBearD1Width32::CAPACITY_EXT },
+    { KoalaBearD1Width32::SBOX_DEGREE },
+    { KoalaBearD1Width32::SBOX_REGISTERS },
+    { KoalaBearD1Width32::HALF_FULL_ROUNDS },
+    { KoalaBearD1Width32::PARTIAL_ROUNDS },
+    5,
+>;
+
+/// KoalaBear Poseidon2 circuit AIR with quartic extension and 32-element state (arity-4 compression).
+pub type Poseidon2CircuitAirKoalaBearD4Width32 = Poseidon2CircuitAir<
+    KoalaBear,
+    GenericPoseidon2LinearLayersKoalaBear,
+    { KoalaBearD4Width32::D },
+    { KoalaBearD4Width32::WIDTH },
+    { KoalaBearD4Width32::WIDTH_EXT },
+    { KoalaBearD4Width32::RATE_EXT },
+    { KoalaBearD4Width32::CAPACITY_EXT },
+    { KoalaBearD4Width32::SBOX_DEGREE },
+    { KoalaBearD4Width32::SBOX_REGISTERS },
+    { KoalaBearD4Width32::HALF_FULL_ROUNDS },
+    { KoalaBearD4Width32::PARTIAL_ROUNDS },
+    { KoalaBearD4Width32::D },
+>;
+
+/// BabyBear Poseidon2 circuit AIR with quartic extension and 32-element state (arity-4 compression).
+pub type Poseidon2CircuitAirBabyBearD4Width32 = Poseidon2CircuitAir<
+    BabyBear,
+    GenericPoseidon2LinearLayersBabyBear,
+    { BabyBearD4Width32::D },
+    { BabyBearD4Width32::WIDTH },
+    { BabyBearD4Width32::WIDTH_EXT },
+    { BabyBearD4Width32::RATE_EXT },
+    { BabyBearD4Width32::CAPACITY_EXT },
+    { BabyBearD4Width32::SBOX_DEGREE },
+    { BabyBearD4Width32::SBOX_REGISTERS },
+    { BabyBearD4Width32::HALF_FULL_ROUNDS },
+    { BabyBearD4Width32::PARTIAL_ROUNDS },
+    { BabyBearD4Width32::D },
+>;
+
+/// Goldilocks Poseidon2 circuit AIR with quadratic extension and 16-element state (arity-4 compression).
+pub type Poseidon2CircuitAirGoldilocksD2Width16 = Poseidon2CircuitAir<
+    Goldilocks,
+    GenericPoseidon2LinearLayersGoldilocks,
+    { GoldilocksD2Width16::D },
+    { GoldilocksD2Width16::WIDTH },
+    { GoldilocksD2Width16::WIDTH_EXT },
+    { GoldilocksD2Width16::RATE_EXT },
+    { GoldilocksD2Width16::CAPACITY_EXT },
+    { GoldilocksD2Width16::SBOX_DEGREE },
+    { GoldilocksD2Width16::SBOX_REGISTERS },
+    { GoldilocksD2Width16::HALF_FULL_ROUNDS },
+    { GoldilocksD2Width16::PARTIAL_ROUNDS },
+    { GoldilocksD2Width16::D },
+>;
+
 /// Goldilocks Poseidon2 circuit AIR with quadratic extension and 8-element state.
 pub type Poseidon2CircuitAirGoldilocksD2Width8 = Poseidon2CircuitAir<
     Goldilocks,
@@ -443,6 +677,16 @@ pub type Poseidon2CircuitAirGoldilocksD2Width8 = Poseidon2CircuitAir<
 /// Generate deterministic round constants for the Goldilocks width-8
 /// configuration using a fixed seed.
 pub fn goldilocks_d2_width8_round_constants() -> RoundConstants<Goldilocks, 8, 4, 22> {
+    let mut rng = SmallRng::seed_from_u64(1);
+    let beginning_full = rng.sample(StandardUniform);
+    let ending_full = rng.sample(StandardUniform);
+    let partial = rng.sample(StandardUniform);
+    RoundConstants::new(beginning_full, partial, ending_full)
+}
+
+/// Generate deterministic round constants for the Goldilocks width-16
+/// configuration using a fixed seed.
+pub fn goldilocks_d2_width16_round_constants() -> RoundConstants<Goldilocks, 16, 4, 22> {
     let mut rng = SmallRng::seed_from_u64(1);
     let beginning_full = rng.sample(StandardUniform);
     let ending_full = rng.sample(StandardUniform);
@@ -506,4 +750,29 @@ const _: () = assert_circuit_cols_split::<
     { GoldilocksD2Width8::SBOX_REGISTERS },
     { GoldilocksD2Width8::HALF_FULL_ROUNDS },
     { GoldilocksD2Width8::PARTIAL_ROUNDS },
+>();
+
+// Pin the arity-4 circuit-vs-permutation column split for the compression-only
+// shapes. These add four circuit columns (`mmcs_bit`, `mmcs_bit2`,
+// `mmcs_bit_x_bit2`, `mmcs_index_sum`) over the permutation block.
+const _: () = assert_circuit_cols_split_arity4::<
+    { KoalaBearD4Width32::WIDTH },
+    { KoalaBearD4Width32::SBOX_DEGREE },
+    { KoalaBearD4Width32::SBOX_REGISTERS },
+    { KoalaBearD4Width32::HALF_FULL_ROUNDS },
+    { KoalaBearD4Width32::PARTIAL_ROUNDS },
+>();
+const _: () = assert_circuit_cols_split_arity4::<
+    { BabyBearD4Width32::WIDTH },
+    { BabyBearD4Width32::SBOX_DEGREE },
+    { BabyBearD4Width32::SBOX_REGISTERS },
+    { BabyBearD4Width32::HALF_FULL_ROUNDS },
+    { BabyBearD4Width32::PARTIAL_ROUNDS },
+>();
+const _: () = assert_circuit_cols_split_arity4::<
+    { GoldilocksD2Width16::WIDTH },
+    { GoldilocksD2Width16::SBOX_DEGREE },
+    { GoldilocksD2Width16::SBOX_REGISTERS },
+    { GoldilocksD2Width16::HALF_FULL_ROUNDS },
+    { GoldilocksD2Width16::PARTIAL_ROUNDS },
 >();

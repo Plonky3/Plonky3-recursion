@@ -97,7 +97,13 @@ pub struct Poseidon2CircuitRow<F> {
     /// Control: 0 → normal sponge/Challenger mode, 1 → Merkle-path mode.
     pub merkle_path: bool,
     /// Control: Direction bit for Merkle left/right hashing (only meaningful when merkle_path = 1).
+    ///
+    /// In arity-4 compression mode this is the low bit of the two-bit position selector
+    /// `pos = mmcs_bit + 2·mmcs_bit2`. In arity-2 mode it is the sole direction bit.
     pub mmcs_bit: bool,
+    /// Control: High direction bit for arity-4 Merkle compression (only meaningful when
+    /// `merkle_path = 1` on an arity-4 permutation shape). Must be `false` for arity-2 shapes.
+    pub mmcs_bit2: bool,
     /// Value: Optional MMCS accumulator (base field, encodes a u32-like integer).
     pub mmcs_index_sum: F,
     /// Inputs to the Poseidon2 permutation (flattened state).
@@ -220,6 +226,7 @@ pub fn generate_poseidon2_trace<
                 new_start: row.new_start,
                 merkle_path: row.merkle_path,
                 mmcs_bit: row.mmcs_bit,
+                mmcs_bit2: row.mmcs_bit2,
                 mmcs_index_sum,
                 input_values,
                 in_ctl: row.in_ctl.clone(),

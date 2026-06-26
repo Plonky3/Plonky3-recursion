@@ -9,8 +9,8 @@ use p3_circuit::{CircuitBuilder, CircuitRunner, NonPrimitiveOpId};
 use p3_circuit_prover::batch_stark_prover::{
     poseidon1_air_builders, poseidon1_air_builders_d5, poseidon1_preprocessor,
     poseidon1_table_provers_d5, poseidon2_air_builders, poseidon2_air_builders_d5,
-    poseidon2_preprocessor, poseidon2_table_provers_d5, recompose_air_builders,
-    recompose_preprocessor,
+    poseidon2_air_builders_for_configs, poseidon2_preprocessor, poseidon2_table_provers_d5,
+    recompose_air_builders, recompose_preprocessor,
 };
 use p3_circuit_prover::common::{NpoAirBuilder, NpoPreprocessor};
 use p3_circuit_prover::config::StarkField;
@@ -117,6 +117,9 @@ pub struct FriRecursionBackend<
 > {
     /// Permutation configuration used for the Fiat-Shamir challenger permutation circuit.
     pub challenger_perm_config: C,
+    /// Additional Poseidon2 table configs that may appear in input proofs verified
+    /// by this backend (e.g. a wide MMCS config distinct from the challenger).
+    pub extra_poseidon2_table_configs: Vec<Poseidon2Config>,
     /// Number of recompose operations packed per AIR row.
     ///
     /// Increasing this reduces the recompose table height proportionally.
@@ -131,8 +134,47 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
     pub const fn new(challenger_perm_config: C) -> Self {
         Self {
             challenger_perm_config,
+            extra_poseidon2_table_configs: Vec::new(),
             recompose_lanes: 1,
         }
+    }
+
+    /// Register an additional Poseidon2 table config that can appear in proofs
+    /// verified by circuits built with this backend (e.g. a wide MMCS config).
+    pub fn with_extra_poseidon2_table(mut self, config: Poseidon2Config) -> Self {
+        self.extra_poseidon2_table_configs.push(config);
+        self
+    }
+
+    /// Extra Poseidon2 table configs whose circuit extension degree equals
+    /// `table_degree`, de-duplicated and excluding the challenger config.
+    fn extra_poseidon2_table_configs_for_degree(
+        &self,
+        table_degree: usize,
+    ) -> Vec<Poseidon2Config> {
+        let challenger = self.challenger_perm_config.as_poseidon2().copied();
+        let mut configs = Vec::new();
+        for &config in &self.extra_poseidon2_table_configs {
+            if config.d() == table_degree
+                && Some(config) != challenger
+                && !configs.contains(&config)
+            {
+                configs.push(config);
+            }
+        }
+        configs
+    }
+
+    /// Full ordered list of Poseidon2 table configs for `table_degree`: the challenger config (if it
+    /// is Poseidon2) followed by the extra configs. Order matches `non_primitive_provers` so the
+    /// preprocessed AIRs line up one-to-one with the registered table provers.
+    fn poseidon2_air_configs_for_degree(&self, table_degree: usize) -> Vec<Poseidon2Config> {
+        let mut configs = Vec::new();
+        if let Some(c) = self.challenger_perm_config.as_poseidon2() {
+            configs.push(*c);
+        }
+        configs.extend(self.extra_poseidon2_table_configs_for_degree(table_degree));
+        configs
     }
 
     /// Override the number of recompose operations packed per AIR row.
@@ -188,6 +230,17 @@ pub struct FriRecursionBackendD5<
     /// The inner backend holding the challenger permutation config.
     pub(crate) FriRecursionBackend<WIDTH, RATE, C>,
 );
+
+impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
+    FriRecursionBackendD5<WIDTH, RATE, C>
+{
+    /// Register an additional D=1 Poseidon2 table config that can appear in
+    /// proofs verified by quintic recursive circuits (e.g. a wide MMCS config).
+    pub fn with_extra_poseidon2_table(mut self, config: Poseidon2Config) -> Self {
+        self.0 = self.0.with_extra_poseidon2_table(config);
+        self
+    }
+}
 
 /// Verifier result from the FRI backend: either uni-stark or batch-stark builder + op_ids.
 pub enum FriVerifierResult<SC>
@@ -532,6 +585,12 @@ where
                 ))],
                 _ => Vec::new(),
             };
+            for config in self.0.extra_poseidon2_table_configs_for_degree(2) {
+                provers.push(Box::new(Poseidon2ProverD2::new(
+                    config,
+                    ConstraintProfile::Standard,
+                )));
+            }
             provers.extend(recompose_table_provers::<SC, 2>(self.0.recompose_lanes, cl));
             provers
         } else {
@@ -543,8 +602,14 @@ where
         let cl = self.0.challenger_perm_config.extension_degree() != 2;
         let mut builders = if self.0.challenger_perm_config.as_poseidon1().is_some() {
             poseidon1_air_builders::<SC, 2>()
-        } else {
+        } else if self
+            .0
+            .extra_poseidon2_table_configs_for_degree(2)
+            .is_empty()
+        {
             poseidon2_air_builders::<SC, 2>()
+        } else {
+            poseidon2_air_builders_for_configs::<SC, 2>(self.0.poseidon2_air_configs_for_degree(2))
         };
         builders.extend(recompose_air_builders::<SC, 2>(self.0.recompose_lanes, cl));
         builders
@@ -642,6 +707,12 @@ where
                 ))],
                 _ => Vec::new(),
             };
+            for config in self.0.extra_poseidon2_table_configs_for_degree(4) {
+                provers.push(Box::new(Poseidon2Prover::new(
+                    config,
+                    ConstraintProfile::Standard,
+                )));
+            }
             provers.extend(recompose_table_provers::<SC, 4>(self.0.recompose_lanes, cl));
             provers
         } else {
@@ -653,8 +724,14 @@ where
         let cl = self.0.challenger_perm_config.extension_degree() != 4;
         let mut builders = if self.0.challenger_perm_config.as_poseidon1().is_some() {
             poseidon1_air_builders::<SC, 4>()
-        } else {
+        } else if self
+            .0
+            .extra_poseidon2_table_configs_for_degree(4)
+            .is_empty()
+        {
             poseidon2_air_builders::<SC, 4>()
+        } else {
+            poseidon2_air_builders_for_configs::<SC, 4>(self.0.poseidon2_air_configs_for_degree(4))
         };
         builders.extend(recompose_air_builders::<SC, 4>(self.0.recompose_lanes, cl));
         builders
@@ -746,6 +823,9 @@ where
                 (_, Some(c)) => poseidon2_table_provers_d5(*c),
                 _ => Vec::new(),
             };
+            for config in self.0.extra_poseidon2_table_configs_for_degree(1) {
+                provers.extend(poseidon2_table_provers_d5::<SC>(config));
+            }
             provers.extend(recompose_table_provers::<SC, 5>(self.0.recompose_lanes, cl));
             provers
         } else {
@@ -757,8 +837,14 @@ where
         let cl = self.0.challenger_perm_config.extension_degree() != 5;
         let mut builders = if self.0.challenger_perm_config.as_poseidon1().is_some() {
             poseidon1_air_builders_d5()
-        } else {
+        } else if self
+            .0
+            .extra_poseidon2_table_configs_for_degree(1)
+            .is_empty()
+        {
             poseidon2_air_builders_d5()
+        } else {
+            poseidon2_air_builders_for_configs::<SC, 5>(self.0.poseidon2_air_configs_for_degree(1))
         };
         builders.extend(recompose_air_builders::<SC, 5>(self.0.recompose_lanes, cl));
         builders

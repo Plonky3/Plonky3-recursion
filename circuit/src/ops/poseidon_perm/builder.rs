@@ -28,12 +28,15 @@ impl<F: Field> CircuitBuilder<F> {
         let width_ext = call.config.width_ext();
         let rate_ext = call.config.rate_ext();
 
-        let mut input_exprs: Vec<Vec<ExprId>> = Vec::with_capacity(width_ext + 2);
+        let mut input_exprs: Vec<Vec<ExprId>> = Vec::with_capacity(width_ext + 3);
         for limb in &call.inputs {
             input_exprs.push(limb.map_or_else(Vec::new, |v| vec![v]));
         }
         input_exprs.push(call.mmcs_index_sum.map_or_else(Vec::new, |v| vec![v]));
         input_exprs.push(call.mmcs_bit.map_or_else(Vec::new, |v| vec![v]));
+        if call.config.is_arity4_shape() && call.merkle_path {
+            input_exprs.push(call.mmcs_bit2.map_or_else(Vec::new, |v| vec![v]));
+        }
 
         let mut output_labels: Vec<Option<&'static str>> = Vec::with_capacity(width_ext);
         for i in 0..rate_ext {

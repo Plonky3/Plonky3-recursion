@@ -51,11 +51,23 @@ impl PermConfig {
         }
     }
 
+    pub const fn capacity_ext(self) -> usize {
+        match self {
+            Self::Poseidon1(c) => c.capacity_ext(),
+            Self::Poseidon2(c) => c.capacity_ext(),
+        }
+    }
+
     pub const fn width_ext(self) -> usize {
         match self {
             Self::Poseidon1(c) => c.width_ext(),
             Self::Poseidon2(c) => c.width_ext(),
         }
+    }
+
+    /// Returns `true` for the arity-4 compression shape (`4·capacity_ext == width_ext`).
+    pub const fn is_arity4_shape(self) -> bool {
+        4 * self.capacity_ext() == self.width_ext()
     }
 
     pub const fn as_poseidon1(self) -> Option<Poseidon1Config> {
@@ -99,6 +111,7 @@ pub struct PermCall {
     pub new_start: bool,
     pub merkle_path: bool,
     pub mmcs_bit: Option<ExprId>,
+    pub mmcs_bit2: Option<ExprId>,
     pub inputs: Vec<Option<ExprId>>,
     pub out_ctl: Vec<bool>,
     pub return_all_outputs: bool,
@@ -130,6 +143,7 @@ impl<F: Field> CircuitBuilder<F> {
                 new_start: call.new_start,
                 merkle_path: call.merkle_path,
                 mmcs_bit: call.mmcs_bit,
+                mmcs_bit2: None,
                 inputs: call.inputs.clone(),
                 out_ctl: call.out_ctl.clone(),
                 return_all_outputs: call.return_all_outputs,
@@ -140,6 +154,7 @@ impl<F: Field> CircuitBuilder<F> {
                 new_start: call.new_start,
                 merkle_path: call.merkle_path,
                 mmcs_bit: call.mmcs_bit,
+                mmcs_bit2: call.mmcs_bit2,
                 inputs: call.inputs.clone(),
                 out_ctl: call.out_ctl.clone(),
                 return_all_outputs: call.return_all_outputs,

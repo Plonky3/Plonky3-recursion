@@ -1,5 +1,5 @@
-use alloc::vec;
 use alloc::vec::Vec;
+use alloc::{format, vec};
 use core::cmp::{Reverse, min};
 
 use itertools::Itertools;
@@ -41,6 +41,7 @@ fn add_hash_base_coeffs_overwrite<F, EF>(
     base_coeffs: &[Target],
     reset: bool,
     alu_recompose: bool,
+    merkle_seed: bool,
 ) -> Result<Vec<Target>, CircuitBuilderError>
 where
     F: Field + PrimeField64,
@@ -58,6 +59,14 @@ where
     let width_ext = permutation_config.width_ext();
 
     let num_chunks = base_coeffs.len().div_ceil(rate);
+
+    // A single-chunk `merkle_seed` leaf is a Merkle-mode row: its digest lands directly in the
+    // merkle chain slot, which the first arity-4 compression inherits via the placement
+    // constraint. A multi-chunk leaf instead absorbs in normal mode across rows; the executor
+    // mirrors the final normal-mode digest into the merkle slot, so every absorb row stays a plain
+    // sponge row and only the last one seeds the chain.
+    let single_chunk_seed = merkle_seed && num_chunks == 1;
+    let merkle_bit = single_chunk_seed.then(|| circuit.define_const(EF::ZERO));
     let mut last_rate_outputs: Option<Vec<Target>> = None;
     let mut final_outputs: Vec<Option<Target>> = vec![None; width_ext];
 
@@ -139,8 +148,9 @@ where
             *permutation_config,
             &PermCall {
                 new_start: if is_first { reset } else { false },
-                merkle_path: false,
-                mmcs_bit: None,
+                merkle_path: single_chunk_seed,
+                mmcs_bit: merkle_bit,
+                mmcs_bit2: merkle_bit,
                 inputs,
                 out_ctl: vec![true; rate_ext],
                 return_all_outputs: false,
@@ -180,6 +190,7 @@ fn add_hash_extension_elements<F, EF>(
     permutation_config: &PermConfig,
     ext_elements: &[Target],
     reset: bool,
+    merkle_seed: bool,
 ) -> Result<Vec<Target>, CircuitBuilderError>
 where
     F: Field + PrimeField64,
@@ -206,6 +217,7 @@ where
             &base_coeffs,
             reset,
             false,
+            merkle_seed,
         );
     }
 
@@ -215,6 +227,12 @@ where
         let zero = circuit.define_const(EF::ZERO);
         return Ok(vec![zero; rate_ext]);
     }
+
+    let num_chunks = ext_elements.len().div_ceil(rate_ext);
+    // Single-chunk seeds are Merkle-mode rows whose digest lands directly in the merkle chain
+    // slot; multi-chunk leaves absorb in normal mode and rely on the executor mirroring the final
+    // normal-mode digest into that slot (see `add_hash_base_coeffs_overwrite`).
+    let single_chunk_seed = merkle_seed && num_chunks == 1;
 
     let zero = circuit.define_const(EF::ZERO);
     let mut last_rate_outputs: Option<Vec<Target>> = None;
@@ -238,8 +256,9 @@ where
             *permutation_config,
             &PermCall {
                 new_start: is_first && reset,
-                merkle_path: false,
-                mmcs_bit: None,
+                merkle_path: single_chunk_seed,
+                mmcs_bit: single_chunk_seed.then_some(zero),
+                mmcs_bit2: single_chunk_seed.then_some(zero),
                 inputs,
                 out_ctl: vec![true; rate_ext],
                 return_all_outputs: false,
@@ -392,6 +411,7 @@ where
             &all_base_coeffs,
             true,
             salts.is_some(),
+            false,
         )?;
     }
 
@@ -495,13 +515,20 @@ where
                 &all_base,
                 true,
                 true,
+                false,
             )?
         } else {
             let all_ext: Vec<Target> = mats_at_height
                 .iter()
                 .flat_map(|&mat_idx| opened_extension_values[mat_idx].iter().copied())
                 .collect();
-            add_hash_extension_elements::<F, EF>(circuit, &permutation_config, &all_ext, true)?
+            add_hash_extension_elements::<F, EF>(
+                circuit,
+                &permutation_config,
+                &all_ext,
+                true,
+                false,
+            )?
         };
     }
 
@@ -828,6 +855,678 @@ where
     InputMmcs: Mmcs<F, Proof = SaltedMmcsProof<F, DIGEST_ELEMS>>,
 {
     set_salted_fri_mmcs_private_data::<F, EF, FriMmcs, InputMmcs, DIGEST_ELEMS>(
+        runner,
+        op_ids,
+        &fri_proof.1,
+        permutation_config,
+    )
+}
+
+/// Round `raw_len` up to a multiple of `n`, mirroring native MMCS height padding.
+const fn padded_len(raw_len: usize, n: usize) -> usize {
+    if raw_len <= 1 {
+        raw_len
+    } else if raw_len >= n {
+        raw_len.div_ceil(n) * n
+    } else {
+        n
+    }
+}
+
+/// One level of the arity-4 Merkle path: a `step` (2 or 4) plus the matrices whose rows are
+/// injected after that level's compression (mixed-height batches).
+struct Arity4PathStep {
+    step: usize,
+    injection_rows: Vec<usize>,
+}
+
+/// Matrices present at the initial leaf layer (all rounding up to the tallest power-of-two height).
+fn arity4_leaf_rows(dimensions: &[Dimensions], max_height: usize) -> Vec<usize> {
+    let leaf_height_npt = max_height.next_power_of_two();
+    let mut heights_tallest_first = dimensions
+        .iter()
+        .enumerate()
+        .sorted_by_key(|(_, dims)| Reverse(dims.height))
+        .peekable();
+    heights_tallest_first
+        .peeking_take_while(|(_, dims)| dims.height.next_power_of_two() == leaf_height_npt)
+        .map(|(mat_idx, _)| mat_idx)
+        .collect()
+}
+
+/// Derive the per-level `step` (2 or 4) and injection schedule for an arity-4 Merkle path,
+/// matching native `arity_schedule`. Bridge (`step = 2`) levels arise when an intermediate
+/// matrix height lands between two quaternary layers.
+fn arity4_path_schedule(
+    dimensions: &[Dimensions],
+    max_height: usize,
+    num_roots: usize,
+) -> Vec<Arity4PathStep> {
+    let leaf_height_npt = max_height.next_power_of_two();
+    let mut heights_tallest_first = dimensions
+        .iter()
+        .enumerate()
+        .sorted_by_key(|(_, dims)| Reverse(dims.height))
+        .peekable();
+
+    // The leaf hash consumes every matrix row present at the initial leaf layer.
+    let _ = heights_tallest_first
+        .peeking_take_while(|(_, dims)| dims.height.next_power_of_two() == leaf_height_npt)
+        .count();
+
+    let mut steps = Vec::new();
+    let mut curr_height_padded = padded_len(max_height, 4);
+
+    // Walk to the root; the path is the prefix of compression steps reaching the cap layer, whose
+    // padded width equals `num_roots` (native `cap_len = min(product, layer.len())` always lands on
+    // a produced layer width). Higher layers live inside the verifier's cap.
+    while curr_height_padded > num_roots {
+        let step = if curr_height_padded < 4 {
+            2
+        } else {
+            let n_ary_target = (curr_height_padded / 4).next_power_of_two();
+            let has_intermediate = heights_tallest_first
+                .clone()
+                .any(|(_, dims)| dims.height.next_power_of_two() > n_ary_target);
+            if has_intermediate { 2 } else { 4 }
+        };
+
+        let logical_next = curr_height_padded / step;
+        curr_height_padded = padded_len(logical_next, 4);
+        let logical_next_npt = logical_next.next_power_of_two();
+        let next_height = heights_tallest_first
+            .peek()
+            .map(|(_, dims)| dims.height)
+            .filter(|h| h.next_power_of_two() == logical_next_npt);
+        let injection_rows = next_height.map_or_else(Vec::new, |next_height| {
+            heights_tallest_first
+                .peeking_take_while(|(_, dims)| dims.height == next_height)
+                .map(|(mat_idx, _)| mat_idx)
+                .collect()
+        });
+
+        steps.push(Arity4PathStep {
+            step,
+            injection_rows,
+        });
+    }
+
+    steps
+}
+
+/// Hash flattened base-field leaf rows with the wide (W32) overwrite-mode sponge and return the
+/// `capacity_ext` digest limbs that seed the arity-4 Merkle chain.
+///
+/// When `merkle_seed` is set the digest is recorded in the merkle chain slot so the first arity-4
+/// compression inherits it via the placement constraint; an injected matrix's digest (consumed as
+/// an explicit compression input) passes `false`.
+fn add_arity4_leaf_digest_from_base<F, EF>(
+    circuit: &mut CircuitBuilder<EF>,
+    permutation_config: PermConfig,
+    leaf_data: &[Target],
+    merkle_seed: bool,
+) -> Result<Vec<Target>, CircuitBuilderError>
+where
+    F: Field + PrimeField64,
+    EF: ExtensionField<F>,
+{
+    let digest = add_hash_base_coeffs_overwrite::<F, EF>(
+        circuit,
+        &permutation_config,
+        leaf_data,
+        true,
+        false,
+        merkle_seed,
+    )?;
+    Ok(digest
+        .into_iter()
+        .take(permutation_config.capacity_ext())
+        .collect())
+}
+
+/// Hash already-extension leaf rows with the wide sponge and return the `capacity_ext` digest limbs.
+///
+/// `merkle_seed` has the same meaning as in [`add_arity4_leaf_digest_from_base`].
+fn add_hash_packed_ext_leaf<F, EF>(
+    circuit: &mut CircuitBuilder<EF>,
+    permutation_config: PermConfig,
+    leaf_data: &[Target],
+    merkle_seed: bool,
+) -> Result<Vec<Target>, CircuitBuilderError>
+where
+    F: Field + PrimeField64,
+    EF: ExtensionField<F>,
+{
+    let digest = add_hash_extension_elements::<F, EF>(
+        circuit,
+        &permutation_config,
+        leaf_data,
+        true,
+        merkle_seed,
+    )?;
+    Ok(digest
+        .into_iter()
+        .take(permutation_config.capacity_ext())
+        .collect())
+}
+
+/// Emit one arity-4 compression row.
+///
+/// Chunk `k` spans lanes `[k·capacity_ext, (k+1)·capacity_ext)`. The previous row's running hash
+/// is chained into chunk `pos = mmcs_bit + 2·mmcs_bit2` by the AIR's placement constraint
+/// (`inputs = None` there, `in_ctl = 0`), and free sibling chunks are supplied via private data.
+///
+/// `step ∈ {2, 4}` selects how many chunks are active. The unused chunks of a `step = 2` bridge or
+/// an injection level are pinned to CTL-loaded zeros (`Some(zero)`, `in_ctl = 1`) so a tampered
+/// nonzero pad fails the witness/CTL bus equality. For an injection level chunk 1 carries the
+/// injected matrix's W32 leaf digest.
+fn add_arity4_compression_row<EF: Field>(
+    circuit: &mut CircuitBuilder<EF>,
+    permutation_config: PermConfig,
+    direction: [Target; 2],
+    step: usize,
+    injected_digest: Option<&[Target]>,
+    is_final: bool,
+    zero: Target,
+) -> Result<(NonPrimitiveOpId, Vec<Option<Target>>), CircuitBuilderError> {
+    let width_ext = permutation_config.width_ext();
+    let rate_ext = permutation_config.rate_ext();
+    let capacity_ext = permutation_config.capacity_ext();
+    let mut inputs = vec![None; width_ext];
+
+    // An injection level holds the running hash at chunk 0 and the injected digest at chunk 1;
+    // a `step = 2` bridge holds the running hash and one sibling across chunks 0,1. Both leave
+    // chunks 2,3 unused. A `step = 4` level fills all four chunks (no pads).
+    let active_chunks = if injected_digest.is_some() { 2 } else { step };
+
+    if let Some(digest) = injected_digest {
+        if digest.len() != capacity_ext {
+            return Err(CircuitBuilderError::Poseidon2ConfigMismatch {
+                expected: format!("injected digest len == capacity_ext ({capacity_ext})"),
+                got: format!("injected digest len = {}", digest.len()),
+            });
+        }
+        let base = capacity_ext;
+        for (j, &target) in digest.iter().enumerate() {
+            inputs[base + j] = Some(target);
+        }
+    }
+
+    for chunk_k in active_chunks..4 {
+        let base = chunk_k * capacity_ext;
+        for slot in inputs[base..base + capacity_ext].iter_mut() {
+            *slot = Some(zero);
+        }
+    }
+
+    circuit.add_perm(
+        permutation_config,
+        &PermCall {
+            new_start: false,
+            merkle_path: true,
+            mmcs_bit: Some(direction[0]),
+            mmcs_bit2: Some(direction[1]),
+            inputs,
+            out_ctl: vec![is_final; rate_ext],
+            return_all_outputs: false,
+            mmcs_index_sum: None,
+        },
+    )
+}
+
+/// Validate the per-level shape of an arity-4 batch and split `index_bits` into Merkle-path bits
+/// (low) and cap-selector bits (high), returning `(selected_root, path_bits, schedule, leaf_rows)`.
+fn arity4_prepare<EF: Field>(
+    circuit: &mut CircuitBuilder<EF>,
+    permutation_config: PermConfig,
+    commitment_cap: &[Vec<Target>],
+    dimensions: &[Dimensions],
+    index_bits: &[Target],
+) -> Result<(Vec<Target>, Vec<Arity4PathStep>, Vec<usize>), CircuitBuilderError> {
+    if !permutation_config.is_arity4_shape() {
+        return Err(CircuitBuilderError::Poseidon2ConfigMismatch {
+            expected: "width_ext == 4 * capacity_ext for 4-to-1 MMCS".into(),
+            got: format!(
+                "width_ext = {}, capacity_ext = {}",
+                permutation_config.width_ext(),
+                permutation_config.capacity_ext()
+            ),
+        });
+    }
+
+    assert!(
+        !commitment_cap.is_empty(),
+        "commitment cap must have at least one entry"
+    );
+
+    let mut heights_tallest_first = dimensions
+        .iter()
+        .enumerate()
+        .sorted_by_key(|(_, dims)| Reverse(dims.height))
+        .peekable();
+
+    if !heights_tallest_first
+        .clone()
+        .map(|(_, dims)| dims.height)
+        .tuple_windows()
+        .all(|(curr, next)| curr == next || curr.next_power_of_two() != next.next_power_of_two())
+    {
+        return Err(CircuitBuilderError::Poseidon2ConfigMismatch {
+            expected: "matrix heights that round up to the same power of two must be equal".into(),
+            got: "incompatible matrix heights".into(),
+        });
+    }
+
+    let max_height = heights_tallest_first
+        .peek()
+        .map(|(_, dims)| dims.height)
+        .unwrap_or(0);
+    if max_height == 0 {
+        return Err(CircuitBuilderError::Poseidon2ConfigMismatch {
+            expected: "at least one non-empty matrix".into(),
+            got: "empty batch".into(),
+        });
+    }
+
+    let num_roots = commitment_cap.len();
+    let cap_log2 = if num_roots == 1 {
+        0
+    } else {
+        log2_strict_usize(num_roots)
+    };
+
+    let leaf_rows = arity4_leaf_rows(dimensions, max_height);
+    let schedule = arity4_path_schedule(dimensions, max_height, num_roots);
+
+    // The cap strips whole compression steps, so the path can consume more direction bits than
+    // `index_bits` holds (the surplus high positions are implicit zeros). The leftover index bits,
+    // zero-extended to `cap_log2`, select the cap entry.
+    let path_bit_total: usize = schedule
+        .iter()
+        .map(|s| if s.step == 4 { 2 } else { 1 })
+        .sum();
+    let cap_index_bits: Vec<Target> = if cap_log2 == 0 {
+        Vec::new()
+    } else {
+        let zero = circuit.define_const(EF::ZERO);
+        (0..cap_log2)
+            .map(|i| index_bits.get(path_bit_total + i).copied().unwrap_or(zero))
+            .collect()
+    };
+
+    let selected_root = select_cap_entry(circuit, commitment_cap, &cap_index_bits);
+
+    Ok((selected_root, schedule, leaf_rows))
+}
+
+/// Walk the arity-4 schedule, emitting one compression row per level (plus an injection row
+/// where the schedule injects a matrix), and connect the recovered root to `selected_root`.
+fn arity4_emit_path<EF: Field>(
+    circuit: &mut CircuitBuilder<EF>,
+    permutation_config: PermConfig,
+    schedule: &[Arity4PathStep],
+    index_bits: &[Target],
+    leaf_digest: Vec<Target>,
+    injected_digests: &[Vec<Target>],
+    selected_root: &[Target],
+) -> Result<Vec<NonPrimitiveOpId>, CircuitBuilderError> {
+    let mut output: Vec<Option<Target>> = leaf_digest.iter().copied().map(Some).collect();
+    let mut op_ids = Vec::new();
+
+    let zero = circuit.define_const(EF::ZERO);
+    let mut bits_consumed = 0usize;
+    let mut injected_digest_idx = 0usize;
+    let n_steps = schedule.len();
+
+    for (i, path_step) in schedule.iter().enumerate() {
+        let step = path_step.step;
+        let step_bits = if step == 4 { 2 } else { 1 };
+        let direction = if step == 4 {
+            [
+                index_bits.get(bits_consumed).copied().unwrap_or(zero),
+                index_bits.get(bits_consumed + 1).copied().unwrap_or(zero),
+            ]
+        } else {
+            [index_bits.get(bits_consumed).copied().unwrap_or(zero), zero]
+        };
+        bits_consumed += step_bits;
+
+        let has_injection = !path_step.injection_rows.is_empty();
+        let is_last_step = i == n_steps - 1;
+
+        let (op_id, maybe_output) = add_arity4_compression_row(
+            circuit,
+            permutation_config,
+            direction,
+            step,
+            None,
+            is_last_step && !has_injection,
+            zero,
+        )?;
+        for _ in 0..(step - 1) {
+            op_ids.push(op_id);
+        }
+        output = maybe_output;
+
+        if has_injection {
+            let injected_digest = &injected_digests[injected_digest_idx];
+            injected_digest_idx += 1;
+            let (_, maybe_output) = add_arity4_compression_row(
+                circuit,
+                permutation_config,
+                [zero, zero],
+                step,
+                Some(injected_digest),
+                is_last_step,
+                zero,
+            )?;
+            output = maybe_output;
+        }
+    }
+
+    let output = output
+        .into_iter()
+        .take(permutation_config.capacity_ext())
+        .map(|x| x.ok_or(CircuitBuilderError::MissingOutput))
+        .collect::<Result<Vec<_>, _>>()?;
+    for (o, r) in output.iter().zip(selected_root.iter()) {
+        circuit.connect(*o, *r);
+    }
+    Ok(op_ids)
+}
+
+/// Arity-4 counterpart of [`verify_batch_circuit`].
+///
+/// Verifies an opened batch against a Merkle cap produced by a 4-to-1 MMCS
+/// (`MerkleTreeMmcs<…, 4, DIGEST_ELEMS>` with a single wide permutation serving both the leaf
+/// sponge and the 4-to-1 compression). `permutation_config` must satisfy
+/// `width_ext == 4 * capacity_ext` (e.g. `KOALA_BEAR_D1_W32` / `KOALA_BEAR_D4_W32`).
+///
+/// `index_bits` is the little-endian leaf index; each level consumes `log2(step)` bits, with
+/// `(index_bits[c], index_bits[c+1])` forming the `(low, high)` chunk selector for a `step = 4`
+/// level. Mixed-height batches are supported via the per-level injection schedule; multi-chunk
+/// leaf hashing is handled by the wide sponge. `commitment_cap[*]` and the recovered root are
+/// `capacity_ext` extension targets.
+pub fn verify_batch_circuit_arity4<F, EF>(
+    circuit: &mut CircuitBuilder<EF>,
+    permutation_config: impl Into<PermConfig>,
+    commitment_cap: &[Vec<Target>],
+    dimensions: &[Dimensions],
+    index_bits: &[Target],
+    opened_base_coeffs: &[Vec<Target>],
+) -> Result<Vec<NonPrimitiveOpId>, CircuitBuilderError>
+where
+    F: Field + TwoAdicField + PrimeField64,
+    EF: ExtensionField<F>,
+{
+    let permutation_config: PermConfig = permutation_config.into();
+    if dimensions.len() != opened_base_coeffs.len() {
+        return Err(CircuitBuilderError::WrongBatchSize {
+            expected: dimensions.len(),
+            got: opened_base_coeffs.len(),
+        });
+    }
+
+    let (selected_root, schedule, leaf_rows) = arity4_prepare::<EF>(
+        circuit,
+        permutation_config,
+        commitment_cap,
+        dimensions,
+        index_bits,
+    )?;
+
+    let mut injected_digests = Vec::new();
+    for step in &schedule {
+        if step.injection_rows.is_empty() {
+            continue;
+        }
+        let injected_leaf_data: Vec<Target> = step
+            .injection_rows
+            .iter()
+            .flat_map(|&mat_idx| opened_base_coeffs[mat_idx].iter().copied())
+            .collect();
+        injected_digests.push(add_arity4_leaf_digest_from_base::<F, EF>(
+            circuit,
+            permutation_config,
+            &injected_leaf_data,
+            false,
+        )?);
+    }
+
+    // Hash the initial leaf layer last so the first compression row chains directly from it; the
+    // injected digests were precomputed above and enter as explicit inputs.
+    let leaf_data: Vec<Target> = leaf_rows
+        .iter()
+        .flat_map(|&mat_idx| opened_base_coeffs[mat_idx].iter().copied())
+        .collect();
+    let leaf_digest =
+        add_arity4_leaf_digest_from_base::<F, EF>(circuit, permutation_config, &leaf_data, true)?;
+
+    arity4_emit_path::<EF>(
+        circuit,
+        permutation_config,
+        &schedule,
+        index_bits,
+        leaf_digest,
+        &injected_digests,
+        &selected_root,
+    )
+}
+
+/// Arity-4 counterpart of [`verify_batch_circuit_from_extension_opened`].
+///
+/// Same shape as [`verify_batch_circuit_arity4`], but accepts already-extension opened values —
+/// used by the FRI commit phase. For a D=1 permutation in a higher-degree extension, each element
+/// is flattened to its base coefficients before hashing (matching native `ExtensionMmcs`).
+pub fn verify_batch_circuit_from_extension_opened_arity4<F, EF>(
+    circuit: &mut CircuitBuilder<EF>,
+    permutation_config: impl Into<PermConfig>,
+    commitment_cap: &[Vec<Target>],
+    dimensions: &[Dimensions],
+    index_bits: &[Target],
+    opened_extension_values: &[Vec<Target>],
+) -> Result<Vec<NonPrimitiveOpId>, CircuitBuilderError>
+where
+    F: Field + TwoAdicField + PrimeField64,
+    EF: ExtensionField<F>,
+{
+    let permutation_config: PermConfig = permutation_config.into();
+    if dimensions.len() != opened_extension_values.len() {
+        return Err(CircuitBuilderError::WrongBatchSize {
+            expected: dimensions.len(),
+            got: opened_extension_values.len(),
+        });
+    }
+
+    let (selected_root, schedule, leaf_rows) = arity4_prepare::<EF>(
+        circuit,
+        permutation_config,
+        commitment_cap,
+        dimensions,
+        index_bits,
+    )?;
+
+    let ext_degree = <EF as BasedVectorSpace<F>>::DIMENSION;
+    let flatten_to_base = permutation_config.d() == 1 && ext_degree > 1;
+
+    let leaf_digest_from_ext = |circuit: &mut CircuitBuilder<EF>,
+                                mats: &[usize],
+                                merkle_seed: bool|
+     -> Result<Vec<Target>, CircuitBuilderError> {
+        if flatten_to_base {
+            // Force fresh per-limb decomposition: a folded-codeword leaf value can carry EF-select
+            // provenance whose coefficient-wise expansion would leave the internal subtraction's
+            // difference limb without a `WitnessChecks` creator. Routing every limb through fresh
+            // coefficients keeps the bus balanced for the D=1 extension-opened leaf.
+            let prev_skip = circuit.set_decompose_skip_select_provenance(true);
+            let mut data = Vec::new();
+            for &mat_idx in mats {
+                for &t in &opened_extension_values[mat_idx] {
+                    let coeffs = circuit.decompose_ext_to_base_coeffs::<F>(t);
+                    match coeffs {
+                        Ok(c) => data.extend(c),
+                        Err(e) => {
+                            circuit.set_decompose_skip_select_provenance(prev_skip);
+                            return Err(e);
+                        }
+                    }
+                }
+            }
+            circuit.set_decompose_skip_select_provenance(prev_skip);
+            add_arity4_leaf_digest_from_base::<F, EF>(
+                circuit,
+                permutation_config,
+                &data,
+                merkle_seed,
+            )
+        } else {
+            let data: Vec<Target> = mats
+                .iter()
+                .flat_map(|&mat_idx| opened_extension_values[mat_idx].iter().copied())
+                .collect();
+            add_hash_packed_ext_leaf::<F, EF>(circuit, permutation_config, &data, merkle_seed)
+        }
+    };
+
+    let mut injected_digests = Vec::new();
+    for step in &schedule {
+        if step.injection_rows.is_empty() {
+            continue;
+        }
+        injected_digests.push(leaf_digest_from_ext(circuit, &step.injection_rows, false)?);
+    }
+
+    let leaf_digest = leaf_digest_from_ext(circuit, &leaf_rows, true)?;
+
+    arity4_emit_path::<EF>(
+        circuit,
+        permutation_config,
+        &schedule,
+        index_bits,
+        leaf_digest,
+        &injected_digests,
+        &selected_root,
+    )
+}
+
+/// Set the sibling private data for one arity-4 MMCS opening proof.
+///
+/// Each compression op-id is repeated once per sibling in `op_ids` (3× for a `step = 4` level,
+/// 1× for a `step = 2` bridge). Consecutive equal op-ids are grouped, their sibling digests packed
+/// into a single payload, and short groups padded with zero limbs up to `3 · capacity_ext`.
+fn set_arity4_opening_private_data<F, EF, const DIGEST_ELEMS: usize>(
+    runner: &mut CircuitRunner<'_, EF>,
+    op_ids: &[NonPrimitiveOpId],
+    op_idx: &mut usize,
+    opening_proof: &[[F; DIGEST_ELEMS]],
+    permutation_config: PermConfig,
+) -> Result<(), &'static str>
+where
+    F: Field,
+    EF: ExtensionField<F> + BasedVectorSpace<F>,
+{
+    let siblings = convert_merkle_proof_to_siblings::<F, EF, DIGEST_ELEMS>(opening_proof);
+    let sibling_limb_len = siblings.first().map(Vec::len).unwrap_or(0);
+    let mut sibling_idx = 0usize;
+    while sibling_idx < siblings.len() {
+        if *op_idx >= op_ids.len() {
+            return Err("More arity-4 siblings in proof than op_ids provided");
+        }
+        let op_id = op_ids[*op_idx];
+        let mut flat = Vec::new();
+        let mut siblings_for_op = 0usize;
+        while *op_idx < op_ids.len() && op_ids[*op_idx] == op_id {
+            if sibling_idx >= siblings.len() {
+                return Err("Arity-4 op_id group has more entries than proof siblings");
+            }
+            flat.extend(siblings[sibling_idx].iter().copied());
+            sibling_idx += 1;
+            *op_idx += 1;
+            siblings_for_op += 1;
+            if siblings_for_op > 3 {
+                return Err("Arity-4 op_id group cannot contain more than 3 siblings");
+            }
+        }
+        for _ in siblings_for_op..3 {
+            flat.extend(vec![EF::ZERO; sibling_limb_len]);
+        }
+        runner
+            .set_private_data(op_id, perm_private_data(permutation_config, flat))
+            .map_err(|_| "Failed to set private data for arity-4 MMCS")?;
+    }
+
+    Ok(())
+}
+
+/// Arity-4 counterpart of [`set_fri_mmcs_private_data`].
+///
+/// Each arity-4 MMCS opening contributes one compression op-id per Merkle level (repeated once per
+/// proof sibling). This packs each native sibling group into the private payload consumed by the
+/// corresponding compression row.
+pub fn set_fri_mmcs_private_data_arity4<F, EF, FriMmcs, InputMmcs, const DIGEST_ELEMS: usize>(
+    runner: &mut CircuitRunner<'_, EF>,
+    op_ids: &[NonPrimitiveOpId],
+    fri_proof: &FriProof<EF, FriMmcs, F, Vec<BatchOpening<F, InputMmcs>>>,
+    permutation_config: impl Into<PermConfig>,
+) -> Result<(), &'static str>
+where
+    F: Field,
+    EF: ExtensionField<F> + BasedVectorSpace<F>,
+    FriMmcs: Mmcs<EF, Proof = Vec<[F; DIGEST_ELEMS]>>,
+    InputMmcs: Mmcs<F, Proof = Vec<[F; DIGEST_ELEMS]>>,
+{
+    let permutation_config: PermConfig = permutation_config.into();
+    let mut op_idx = 0;
+
+    for query_proof in &fri_proof.query_proofs {
+        for batch_opening in &query_proof.input_proof {
+            set_arity4_opening_private_data::<F, EF, DIGEST_ELEMS>(
+                runner,
+                op_ids,
+                &mut op_idx,
+                &batch_opening.opening_proof,
+                permutation_config,
+            )?;
+        }
+
+        for phase_opening in &query_proof.commit_phase_openings {
+            set_arity4_opening_private_data::<F, EF, DIGEST_ELEMS>(
+                runner,
+                op_ids,
+                &mut op_idx,
+                &phase_opening.opening_proof,
+                permutation_config,
+            )?;
+        }
+    }
+
+    if op_idx != op_ids.len() {
+        return Err("Fewer arity-4 siblings in proof than op_ids provided");
+    }
+
+    Ok(())
+}
+
+/// Arity-4 counterpart of [`set_hiding_fri_mmcs_private_data`].
+pub fn set_hiding_fri_mmcs_private_data_arity4<
+    F,
+    EF,
+    FriMmcs,
+    InputMmcs,
+    const DIGEST_ELEMS: usize,
+>(
+    runner: &mut CircuitRunner<'_, EF>,
+    op_ids: &[NonPrimitiveOpId],
+    fri_proof: &HidingFriProof<F, EF, FriMmcs, InputMmcs>,
+    permutation_config: impl Into<PermConfig>,
+) -> Result<(), &'static str>
+where
+    F: Field,
+    EF: ExtensionField<F> + BasedVectorSpace<F>,
+    FriMmcs: Mmcs<EF, Proof = Vec<[F; DIGEST_ELEMS]>>,
+    InputMmcs: Mmcs<F, Proof = Vec<[F; DIGEST_ELEMS]>>,
+{
+    set_fri_mmcs_private_data_arity4::<F, EF, FriMmcs, InputMmcs, DIGEST_ELEMS>(
         runner,
         op_ids,
         &fri_proof.1,

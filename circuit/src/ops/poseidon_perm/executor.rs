@@ -89,6 +89,11 @@ impl<V: PoseidonVariant> PoseidonPermExecutor<V> {
     }
 
     #[inline]
+    fn is_arity4(&self) -> bool {
+        self.config.is_arity4_shape()
+    }
+
+    #[inline]
     const fn limb_ctl_enabled(slot: &[WitnessId]) -> bool {
         !slot.is_empty()
     }
@@ -119,8 +124,13 @@ impl<V: PoseidonVariant> PoseidonPermExecutor<V> {
         let prev = last_output.ok_or_else(|| V::chain_missing_error(ctx.operation_id()))?;
 
         if self.merkle_path {
-            let n = self.config.rate_ext().min(prev.len());
-            resolved[..n].copy_from_slice(&prev[..n]);
+            if self.is_arity4() {
+                // Arity-4 placement needs the resolved direction bits; the running
+                // hash is written into chunk `pos` later by `place_arity4_running_hash`.
+            } else {
+                let n = self.config.rate_ext().min(prev.len());
+                resolved[..n].copy_from_slice(&prev[..n]);
+            }
         } else {
             let n = width_ext.min(prev.len());
             resolved[..n].copy_from_slice(&prev[..n]);
@@ -129,16 +139,69 @@ impl<V: PoseidonVariant> PoseidonPermExecutor<V> {
         Ok(resolved)
     }
 
-    /// Copy sibling hash limbs into the capacity portion of the state.
+    /// Place the previous row's running-hash digest into the arity-4 chunk indexed by
+    /// `pos = mmcs_bit + 2·mmcs_bit2`. The digest is the first `capacity_ext` limbs of
+    /// `last_output`. No-op for arity-2, sponge mode, or new-chain rows.
+    fn place_arity4_running_hash<F: Field>(
+        &self,
+        state: &mut [F],
+        last_output: Option<&[F]>,
+        mmcs_bit: bool,
+        mmcs_bit2: bool,
+    ) {
+        if !self.merkle_path || !self.is_arity4() || self.new_start {
+            return;
+        }
+        let Some(prev) = last_output else {
+            return;
+        };
+        let cap_ext = self.config.capacity_ext();
+        let pos = (mmcs_bit as usize) + 2 * (mmcs_bit2 as usize);
+        let base = pos * cap_ext;
+        let n = cap_ext.min(prev.len());
+        state[base..base + n].copy_from_slice(&prev[..n]);
+    }
+
+    /// Copy sibling hash limbs into the state.
     ///
     /// Only active when both Merkle mode is enabled and private data is provided.
-    /// Writes up to `capacity_ext` elements starting at index `rate_ext`.
-    fn fill_sibling_data<F: Field>(&self, state: &mut [F], private: Option<&[F]>) {
-        if let Some(private) = private
-            && self.merkle_path
-        {
+    /// - Arity-2: writes up to `capacity_ext` elements starting at index `rate_ext`.
+    /// - Arity-4: writes up to `3·capacity_ext` elements into the three chunks *not*
+    ///   indexed by `pos = mmcs_bit + 2·mmcs_bit2`, filling chunks in ascending order
+    ///   and skipping the running-hash chunk.
+    fn fill_sibling_data<F: Field>(
+        &self,
+        state: &mut [F],
+        private: Option<&[F]>,
+        mmcs_bit: bool,
+        mmcs_bit2: bool,
+    ) {
+        let Some(private) = private else {
+            return;
+        };
+        if !self.merkle_path {
+            return;
+        }
+        let cap_ext = self.config.capacity_ext();
+        if self.is_arity4() {
+            let pos = (mmcs_bit as usize) + 2 * (mmcs_bit2 as usize);
+            let mut written = 0usize;
+            for chunk_k in 0..4 {
+                if chunk_k == pos {
+                    continue;
+                }
+                let remaining = private.len() - written;
+                if remaining == 0 {
+                    break;
+                }
+                let n = cap_ext.min(remaining);
+                let base = chunk_k * cap_ext;
+                state[base..base + n].copy_from_slice(&private[written..written + n]);
+                written += n;
+            }
+        } else {
             let rate_ext = self.config.rate_ext();
-            let n = private.len().min(self.config.capacity_ext());
+            let n = private.len().min(cap_ext);
             state[rate_ext..rate_ext + n].copy_from_slice(&private[..n]);
         }
     }
@@ -161,13 +224,14 @@ impl<V: PoseidonVariant> PoseidonPermExecutor<V> {
         Ok(())
     }
 
-    /// Swap the two rate halves of the state in-place.
+    /// Swap the two rate halves of the state in-place (arity-2 placement only).
     ///
-    /// Active only when both Merkle mode is enabled and the direction bit is set.
-    /// This places the computed hash on the correct side (left vs right) before
-    /// the permutation.
+    /// Active only when arity-2 Merkle mode is enabled and the direction bit is set.
+    /// This places the computed hash on the correct side (left vs right) before the
+    /// permutation. Arity-4 placement is handled by [`Self::place_arity4_running_hash`]
+    /// and [`Self::fill_sibling_data`].
     fn apply_merkle_swap<F: Field>(&self, state: &mut [F], mmcs_bit: bool) {
-        if self.merkle_path && mmcs_bit {
+        if self.merkle_path && !self.is_arity4() && mmcs_bit {
             let rate_ext = self.config.rate_ext();
             for i in 0..rate_ext {
                 state.swap(i, rate_ext + i);
@@ -220,7 +284,36 @@ impl<V: PoseidonVariant> PoseidonPermExecutor<V> {
         ctx: &ExecutionContext<'_, F>,
     ) -> Result<bool, CircuitError> {
         let width_ext = self.config.width_ext();
-        if let Some(&wid) = inputs[width_ext + 1].first() {
+        self.resolve_boolean_witness(inputs, ctx, width_ext + 1, "mmcs_bit")
+    }
+
+    /// Read the second MMCS direction bit (`mmcs_bit2`) from the witness table.
+    ///
+    /// Only meaningful on arity-4 compression shapes; for all other shapes the slot
+    /// is absent and this returns `false`.
+    fn resolve_mmcs_bit2<F: Field>(
+        &self,
+        inputs: &[Vec<WitnessId>],
+        ctx: &ExecutionContext<'_, F>,
+    ) -> Result<bool, CircuitError> {
+        if !self.is_arity4() {
+            return Ok(false);
+        }
+        let width_ext = self.config.width_ext();
+        self.resolve_boolean_witness(inputs, ctx, width_ext + 2, "mmcs_bit2")
+    }
+
+    /// Read a boolean direction bit from `inputs[slot]`, validating it is 0 or 1.
+    ///
+    /// When the slot is empty and Merkle mode is off, defaults to false.
+    fn resolve_boolean_witness<F: Field>(
+        &self,
+        inputs: &[Vec<WitnessId>],
+        ctx: &ExecutionContext<'_, F>,
+        slot: usize,
+        label: &'static str,
+    ) -> Result<bool, CircuitError> {
+        if let Some(&wid) = inputs.get(slot).and_then(|v| v.first()) {
             let val = ctx.get_witness(wid)?;
             match val {
                 v if v == F::ZERO => Ok(false),
@@ -228,7 +321,7 @@ impl<V: PoseidonVariant> PoseidonPermExecutor<V> {
                 v => Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
                     op: self.op_type.clone(),
                     operation_index: ctx.operation_id(),
-                    expected: "boolean mmcs_bit (0 or 1)".into(),
+                    expected: format!("boolean {label} (0 or 1)"),
                     got: format!("{v:?}"),
                 }),
             }
@@ -236,8 +329,8 @@ impl<V: PoseidonVariant> PoseidonPermExecutor<V> {
             Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
                 op: self.op_type.clone(),
                 operation_index: ctx.operation_id(),
-                expected: "mmcs_bit must be provided when merkle_path=true".into(),
-                got: "missing mmcs_bit".into(),
+                expected: format!("{label} must be provided when merkle_path=true"),
+                got: format!("missing {label}"),
             })
         } else {
             Ok(false)
@@ -271,6 +364,7 @@ impl<V: PoseidonVariant> PoseidonPermExecutor<V> {
         inputs: &[Vec<WitnessId>],
         outputs: &[Vec<WitnessId>],
         mmcs_bit: bool,
+        mmcs_bit2: bool,
         input_values: Vec<F>,
         ctx: &ExecutionContext<'_, F>,
     ) -> Result<V::Row<F>, CircuitError> {
@@ -314,6 +408,7 @@ impl<V: PoseidonVariant> PoseidonPermExecutor<V> {
             new_start: self.new_start,
             merkle_path: self.merkle_path,
             mmcs_bit,
+            mmcs_bit2,
             mmcs_index_sum,
             input_values,
             in_ctl,
@@ -369,6 +464,7 @@ impl<V: PoseidonVariant> PoseidonPermExecutor<V> {
             new_start: self.new_start,
             merkle_path: false,
             mmcs_bit: false,
+            mmcs_bit2: false,
             mmcs_index_sum: F::ZERO,
             input_values: input_values.to_vec(),
             in_ctl,
@@ -390,6 +486,11 @@ impl<V: PoseidonVariant> PoseidonPermExecutor<V> {
         row: V::Row<F>,
     ) {
         let op_id = ctx.operation_id();
+        // An arity-4 leaf sponge absorbs in normal mode yet must seed the Merkle chain: mirror
+        // each normal-mode output into the Merkle slot so the final leaf-absorb digest is the one
+        // the first 4-to-1 compression inherits (earlier absorb rows are overwritten before any
+        // Merkle read). Arity-2 and base sponge rows leave the Merkle slot untouched.
+        let seed_merkle_chain = !self.merkle_path && self.is_arity4();
         let state = ctx.get_op_state_mut::<PoseidonExecutionState<V, F>>(&self.op_type);
         let slot = if self.merkle_path {
             &mut state.last_output_merkle
@@ -403,6 +504,9 @@ impl<V: PoseidonVariant> PoseidonPermExecutor<V> {
             prev = slot.as_deref(),
         );
         *slot = Some(output);
+        if seed_merkle_chain {
+            state.last_output_merkle = state.last_output_normal.clone();
+        }
         state.rows.push(row);
     }
 
@@ -414,7 +518,13 @@ impl<V: PoseidonVariant> PoseidonPermExecutor<V> {
     /// - 1 MMCS direction bit slot (0 or 1 element).
     fn validate_ext_inputs(&self, inputs: &[Vec<WitnessId>]) -> Result<(), CircuitError> {
         let width_ext = self.config.width_ext();
-        let expected_inputs = width_ext + 2;
+        // Arity-4 compression Merkle rows append a second direction bit slot.
+        let arity4_merkle = self.is_arity4() && self.merkle_path;
+        let expected_inputs = if arity4_merkle {
+            width_ext + 3
+        } else {
+            width_ext + 2
+        };
         if inputs.len() != expected_inputs {
             return Err(CircuitError::NonPrimitiveOpLayoutMismatch {
                 op: self.op_type.clone(),
@@ -443,6 +553,13 @@ impl<V: PoseidonVariant> PoseidonPermExecutor<V> {
                 op: self.op_type.clone(),
                 expected: "0 or 1 element for mmcs_bit".to_string(),
                 got: inputs[width_ext + 1].len(),
+            });
+        }
+        if arity4_merkle && inputs[width_ext + 2].len() > 1 {
+            return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
+                op: self.op_type.clone(),
+                expected: "0 or 1 element for mmcs_bit2".to_string(),
+                got: inputs[width_ext + 2].len(),
             });
         }
         Ok(())
@@ -493,7 +610,7 @@ impl<V: PoseidonVariant> PoseidonPermExecutor<V> {
 
     /// Execute the D=1 (base field) permutation.
     ///
-    /// Validates a 16-input / 8-or-16-output layout, resolves witness values,
+    /// Validates the input/output layout, resolves witness values,
     /// runs the permutation closure, records a trace row, and writes outputs.
     fn execute_base<F: Field + Send + Sync + 'static>(
         &self,
@@ -538,10 +655,11 @@ impl<V: PoseidonVariant> PoseidonPermExecutor<V> {
                 });
             }
         }
-        if outputs.len() != 8 && outputs.len() != 16 {
+        let capacity_ext = self.config.capacity_ext();
+        if outputs.len() != capacity_ext && outputs.len() != width {
             return Err(CircuitError::NonPrimitiveOpLayoutMismatch {
                 op: self.op_type.clone(),
-                expected: "8 or 16 output vectors for D=1 mode".to_string(),
+                expected: format!("{capacity_ext} or {width} output vectors for D=1 mode"),
                 got: outputs.len(),
             });
         }
@@ -656,10 +774,17 @@ impl<V: PoseidonVariant> PoseidonPermExecutor<V> {
                     &[F::ZERO, F::ZERO],
                 );
             } else if self.merkle_path {
-                preprocessed.register_non_primitive_preprocessed_no_read(
-                    &self.op_type,
-                    &[preprocessed.witness_index_as_field(inp[0])],
-                );
+                if self.config.is_arity4_shape() {
+                    // Arity-4 merkle rows emit a bare `in_ctl` input-limb send in the AIR, so the
+                    // creator multiplicity must see these injected/pad slots as reads to balance the
+                    // bus (pads -> zero const witness, injected slot -> W32 leaf-hash digest).
+                    preprocessed.register_non_primitive_witness_reads(&self.op_type, inp)?;
+                } else {
+                    preprocessed.register_non_primitive_preprocessed_no_read(
+                        &self.op_type,
+                        &[preprocessed.witness_index_as_field(inp[0])],
+                    );
+                }
                 preprocessed.register_non_primitive_preprocessed_no_read(&self.op_type, &[F::ONE]);
             } else {
                 preprocessed.register_non_primitive_witness_reads(&self.op_type, inp)?;
@@ -752,6 +877,22 @@ impl<V: PoseidonVariant> PoseidonPermExecutor<V> {
             return Ok(());
         }
 
+        // Arity-4 Merkle rows bind the two direction bits directly to the sampled-index witness; the
+        // base-4 accumulator is unused, so the accumulator idx / merkle-flag column slots carry the
+        // two bit-source witness indices, read on the WitnessChecks bus to balance the AIR's bit
+        // sends. The bit sources are always present (real index bit or the zero const).
+        if self.config.is_arity4_shape() && self.merkle_path {
+            preprocessed
+                .register_non_primitive_witness_reads(&self.op_type, &inputs[width_ext + 1])?;
+            preprocessed
+                .register_non_primitive_witness_reads(&self.op_type, &inputs[width_ext + 2])?;
+            preprocessed.register_non_primitive_preprocessed_no_read(
+                &self.op_type,
+                &[F::from_bool(self.new_start), F::from_bool(self.merkle_path)],
+            );
+            return Ok(());
+        }
+
         if inputs[width_ext].is_empty() {
             preprocessed.register_non_primitive_preprocessed_no_read(&self.op_type, &[F::ZERO]);
         } else {
@@ -803,22 +944,26 @@ impl<V: PoseidonVariant, F: Field + Send + Sync + 'static> NonPrimitiveExecutor<
         // Gather all auxiliary data needed to assemble the pre-permutation state.
         let private_inputs = self.resolve_private_data(ctx)?;
         let mmcs_bit = self.resolve_mmcs_bit(inputs, ctx)?;
+        let mmcs_bit2 = self.resolve_mmcs_bit2(inputs, ctx)?;
         let chain_output = self.get_chain_output(ctx);
+        let chain_output = chain_output.map(|v| v.as_slice());
 
         // Build the permutation input state:
         // 1. Start from zeros (new chain) or the previous output (continuation).
-        let mut state = self.init_chain_state(chain_output.map(|v| v.as_slice()), ctx)?;
-        // 2. In Merkle mode, place sibling limbs in the capacity portion.
-        self.fill_sibling_data(&mut state, private_inputs);
+        let mut state = self.init_chain_state(chain_output, ctx)?;
+        // 2a. Arity-4: place the running-hash digest into chunk `pos`.
+        self.place_arity4_running_hash(&mut state, chain_output, mmcs_bit, mmcs_bit2);
+        // 2b. In Merkle mode, place sibling limbs in the non-running chunk(s).
+        self.fill_sibling_data(&mut state, private_inputs, mmcs_bit, mmcs_bit2);
         // 3. Overwrite with any CTL-exposed witness values.
         self.apply_witness_values(&mut state, inputs, ctx)?;
-        // 4. Conditionally swap rate halves for the Merkle direction bit.
+        // 4. Conditionally swap rate halves for the arity-2 Merkle direction bit.
         self.apply_merkle_swap(&mut state, mmcs_bit);
 
         // Run the permutation and record the result.
         let output = exec(&state);
 
-        let row = self.build_trace_row(inputs, outputs, mmcs_bit, state, ctx)?;
+        let row = self.build_trace_row(inputs, outputs, mmcs_bit, mmcs_bit2, state, ctx)?;
         self.write_outputs(outputs, &output, ctx)?;
         self.update_chain_state(ctx, output, row);
 
@@ -972,7 +1117,7 @@ mod tests {
         let mut state = F::zero_vec(CONFIG_D4_W16.width_ext());
         let sibling = [F::from_u64(10), F::from_u64(20)];
 
-        exec.fill_sibling_data(&mut state, Some(&sibling));
+        exec.fill_sibling_data(&mut state, Some(&sibling), false, false);
 
         assert_eq!(
             state,
@@ -986,7 +1131,7 @@ mod tests {
         let width_ext = CONFIG_D4_W16.width_ext();
         let mut state = F::zero_vec(width_ext);
 
-        exec.fill_sibling_data(&mut state, Some(&[F::ONE, F::ONE]));
+        exec.fill_sibling_data(&mut state, Some(&[F::ONE, F::ONE]), false, false);
 
         assert!(state.iter().all(|&v| v == F::ZERO));
     }
@@ -997,7 +1142,7 @@ mod tests {
         let width_ext = CONFIG_D4_W16.width_ext();
         let mut state = F::zero_vec(width_ext);
 
-        exec.fill_sibling_data(&mut state, None);
+        exec.fill_sibling_data(&mut state, None, false, false);
 
         assert!(state.iter().all(|&v| v == F::ZERO));
     }
@@ -1347,7 +1492,7 @@ mod tests {
         let input_values: Vec<F> = (0..width_ext).map(|i| F::from_u64(i as u64)).collect();
 
         let row = exec
-            .build_trace_row(&inputs, &outputs, false, input_values, &ctx)
+            .build_trace_row(&inputs, &outputs, false, false, input_values, &ctx)
             .unwrap();
 
         assert_eq!(row.in_ctl, vec![true, false, true, false]);
@@ -1373,7 +1518,7 @@ mod tests {
         let input_values = F::zero_vec(width_ext);
 
         let row = exec
-            .build_trace_row(&inputs, &outputs, false, input_values, &ctx)
+            .build_trace_row(&inputs, &outputs, false, false, input_values, &ctx)
             .unwrap();
 
         assert!(!row.mmcs_ctl_enabled);
@@ -1422,6 +1567,7 @@ mod tests {
             new_start: true,
             merkle_path: false,
             mmcs_bit: false,
+            mmcs_bit2: false,
             mmcs_index_sum: F::ZERO,
             input_values: vec![],
             in_ctl: vec![],
@@ -1460,6 +1606,7 @@ mod tests {
             new_start: true,
             merkle_path: true,
             mmcs_bit: false,
+            mmcs_bit2: false,
             mmcs_index_sum: F::ZERO,
             input_values: vec![],
             in_ctl: vec![],

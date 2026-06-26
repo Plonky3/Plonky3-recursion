@@ -93,6 +93,15 @@ pub struct CircuitBuilder<F: Field> {
     /// Routes decomposition reconnect through `recompose/coeff` when set (see
     /// [`Self::set_recompose_coeff_ctl_for_decompose_links`]).
     recompose_coeff_ctl_for_decompose_links: bool,
+
+    /// When set, [`Self::decompose_ext_to_base_coeffs`] skips the EF-select coefficient-wise
+    /// optimization and always allocates fresh coefficient witnesses. The select optimization
+    /// emits `select(b, t_coeff, s_coeff)` per limb, whose internal `t_coeff - s_coeff`
+    /// subtraction relies on the minuend already being a bus creator; when the minuend is an
+    /// uncreated NPO-recompose coefficient the subtraction's difference limb is left without a
+    /// creator, unbalancing the `WitnessChecks` bus. The fresh path routes every coefficient
+    /// through `recompose/coeff`, which creates each limb explicitly.
+    decompose_skip_select_provenance: bool,
 }
 
 impl<F> Default for CircuitBuilder<F>
@@ -125,7 +134,15 @@ where
             ext_recompose_coeffs: HashMap::new(),
             ext_select_sources: HashMap::new(),
             recompose_coeff_ctl_for_decompose_links: false,
+            decompose_skip_select_provenance: false,
         }
+    }
+
+    /// Set whether [`Self::decompose_ext_to_base_coeffs`] skips the EF-select coefficient-wise
+    /// optimization, returning the previous value so callers can restore it. See
+    /// [`Self::decompose_skip_select_provenance`].
+    pub fn set_decompose_skip_select_provenance(&mut self, enabled: bool) -> bool {
+        core::mem::replace(&mut self.decompose_skip_select_provenance, enabled)
     }
 
     /// Toggle whether [`Self::decompose_ext_to_base_coeffs`] reconnects hinted coefficients via the
@@ -215,6 +232,30 @@ where
         self.register_npo(plugin);
     }
 
+    /// Enables Poseidon2 for the arity-4 compression configs with WIDTH=32.
+    pub fn enable_poseidon2_perm_width_32<Config, P>(
+        &mut self,
+        trace_generator: TraceGeneratorFn<F>,
+        perm: P,
+    ) where
+        Config: Poseidon2Params,
+        F: Field + ExtensionField<Config::BaseField>,
+        P: Permutation<[Config::BaseField; 32]> + Clone + Send + Sync + 'static,
+    {
+        assert!(
+            Config::WIDTH == 32,
+            "enable_poseidon2_perm_width_32 requires WIDTH=32"
+        );
+        let exec = packed_perm_exec::<F, Config::BaseField, P, 32>(
+            Config::D,
+            Config::WIDTH,
+            Config::WIDTH_EXT,
+            perm,
+        );
+        let plugin = Poseidon2CircuitPlugin::new(Config::CONFIG, exec, trace_generator);
+        self.register_npo(plugin);
+    }
+
     /// Enables the Poseidon2 permutation operation for base field challenges (D=1).
     ///
     /// This variant is for tests/circuits using base field as the challenge type.
@@ -240,7 +281,36 @@ where
             Config::WIDTH == 16,
             "enable_poseidon2_perm_base only supports WIDTH=16"
         );
-        let exec = base_perm_exec::<F, P>(perm);
+        let exec = base_perm_exec::<F, P, 16>(perm);
+        let plugin = Poseidon2CircuitPlugin::new(Config::CONFIG, exec, trace_generator);
+        self.register_npo(plugin);
+    }
+
+    /// Enables the Poseidon2 permutation operation for base field challenges (D=1) on the
+    /// width-32 arity-4 compression shape.
+    ///
+    /// This mirrors [`Self::enable_poseidon2_perm_base`] but for the W32 leaf-hash and 4-to-1
+    /// compression table. The permutation operates directly on 32 elements of the circuit field
+    /// `F`; for quintic recursion `perm` is a [`p3_test_utils::LiftPermToQuintic`] over the base
+    /// W32 permutation, so each lane carries the digest value in its constant coefficient.
+    pub fn enable_poseidon2_perm_base_width_32<Config, P>(
+        &mut self,
+        trace_generator: TraceGeneratorFn<F>,
+        perm: P,
+    ) where
+        Config: Poseidon2Params,
+        F: Field,
+        P: Permutation<[F; 32]> + Clone + Send + Sync + 'static,
+    {
+        assert!(
+            Config::D == 1,
+            "enable_poseidon2_perm_base_width_32 only supports extension degree D=1"
+        );
+        assert!(
+            Config::WIDTH == 32,
+            "enable_poseidon2_perm_base_width_32 requires WIDTH=32"
+        );
+        let exec = base_perm_exec::<F, P, 32>(perm);
         let plugin = Poseidon2CircuitPlugin::new(Config::CONFIG, exec, trace_generator);
         self.register_npo(plugin);
     }
@@ -307,7 +377,7 @@ where
             Config::WIDTH == 16,
             "enable_poseidon1_perm_base only supports WIDTH=16"
         );
-        let exec = base_perm_exec::<F, P>(perm);
+        let exec = base_perm_exec::<F, P, 16>(perm);
         let plugin = Poseidon1CircuitPlugin::new(Config::CONFIG, exec, trace_generator);
         self.register_npo(plugin);
     }
@@ -1342,7 +1412,10 @@ where
         // decompose coefficient-wise: coeff[i] = select(b, t_coeff[i], s_coeff[i]).
         // For the input without provenance, decompose it recursively (may generate witnesses).
         // This saves D witness allocations for every input that IS in the provenance cache.
-        if let Some((b, t, s)) = self.ext_select_sources.get(&x).copied() {
+        if let Some((b, t, s)) = (!self.decompose_skip_select_provenance)
+            .then(|| self.ext_select_sources.get(&x).copied())
+            .flatten()
+        {
             let t_coeffs_opt = self.ext_recompose_coeffs.get(&t).cloned();
             let s_coeffs_opt = self.ext_recompose_coeffs.get(&s).cloned();
             if t_coeffs_opt.is_some() || s_coeffs_opt.is_some() {
@@ -1445,6 +1518,7 @@ where
             new_start: true, // Each challenger permutation is independent
             merkle_path: false,
             mmcs_bit: None,
+            mmcs_bit2: None,
             inputs: inputs.iter().map(|&x| Some(x)).collect(),
             out_ctl: vec![true; config.rate_ext()],
             return_all_outputs: true,
@@ -1523,6 +1597,7 @@ where
             new_start: true,
             merkle_path: false,
             mmcs_bit: None,
+            mmcs_bit2: None,
             inputs: inputs.iter().map(|&x| Some(x)).collect(),
             out_ctl: vec![true; config.rate_ext()],
             return_all_outputs: true,
@@ -1786,14 +1861,14 @@ where
 }
 
 /// Builds the permutation exec closure for the D=1 base-field case, where the permutation
-/// operates directly on `[F; 16]` without packing.
-fn base_perm_exec<F, P>(perm: P) -> PoseidonPermExec<F>
+/// operates directly on `[F; N]` without packing.
+fn base_perm_exec<F, P, const N: usize>(perm: P) -> PoseidonPermExec<F>
 where
     F: Field,
-    P: Permutation<[F; 16]> + Clone + Send + Sync + 'static,
+    P: Permutation<[F; N]> + Clone + Send + Sync + 'static,
 {
     Arc::new(move |input: &[F]| {
-        let arr: [F; 16] = input.try_into().expect("D=1 input must have 16 elements");
+        let arr: [F; N] = input.try_into().expect("D=1 input must have N elements");
         perm.permute(arr).to_vec()
     })
 }
@@ -2097,6 +2172,7 @@ mod tests {
                 new_start: true,
                 merkle_path: false,
                 mmcs_bit: None,
+                mmcs_bit2: None,
                 inputs: vec![Some(z), Some(z), Some(z), Some(z)],
                 out_ctl: vec![true, true],
                 return_all_outputs: false,

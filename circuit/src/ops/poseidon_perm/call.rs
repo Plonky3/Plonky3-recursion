@@ -19,6 +19,12 @@ pub struct PoseidonPermCall<V: PoseidonVariant> {
     /// Required when `merkle_path = true`. When `merkle_path = false`, this may be omitted and
     /// defaults to 0 (not exposed via CTL).
     pub mmcs_bit: Option<ExprId>,
+    /// High MMCS direction bit for arity-4 compression (base field, boolean).
+    ///
+    /// Required when `merkle_path = true` on an arity-4 compression shape, and must be `None`
+    /// otherwise. Together with `mmcs_bit` it selects the running-hash chunk
+    /// `pos = mmcs_bit + 2·mmcs_bit2`.
+    pub mmcs_bit2: Option<ExprId>,
     /// Optional CTL exposure for each input limb (one extension element).
     /// If `None`, the limb is not exposed via CTL (in_ctl = 0).
     /// Note: For Merkle mode, unexposed limbs are provided via the private-data sibling.
@@ -45,6 +51,7 @@ impl<V: PoseidonVariant> Default for PoseidonPermCall<V> {
             new_start: false,
             merkle_path: false,
             mmcs_bit: None,
+            mmcs_bit2: None,
             inputs: vec![None; config.width_ext()],
             out_ctl: vec![false; config.rate_ext()],
             return_all_outputs: false,

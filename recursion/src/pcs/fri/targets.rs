@@ -474,6 +474,41 @@ where
     type Proof = HashProofTargets<F, DIGEST_ELEMS>;
 }
 
+/// Arity-4 counterpart of [`RecValMmcs`].
+///
+/// Binds `Input` to `MerkleTreeMmcs<…, 4, DIGEST_ELEMS>` so the recursive verifier can target
+/// proofs committed with the 4-to-1 native MMCS. Requires the compression function `C` to
+/// implement `PseudoCompressionFunction<…, 4>` (an arity-4 [`p3_symmetric::TruncatedPermutation`]);
+/// the leaf hasher `H` is unchanged.
+pub struct RecValMmcsArity4<F: Field, const DIGEST_ELEMS: usize, H, C>
+where
+    H: CryptographicHasher<F, [F; DIGEST_ELEMS]>
+        + CryptographicHasher<F::Packing, [F::Packing; DIGEST_ELEMS]>
+        + Sync,
+{
+    pub hash: H,
+    pub compress: C,
+    _phantom: PhantomData<F>,
+}
+
+impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize, H, C> RecursiveMmcs<F, EF>
+    for RecValMmcsArity4<F, DIGEST_ELEMS, H, C>
+where
+    H: CryptographicHasher<F, [F; DIGEST_ELEMS]>
+        + CryptographicHasher<F::Packing, [F::Packing; DIGEST_ELEMS]>
+        + Sync,
+    C: PseudoCompressionFunction<[F; DIGEST_ELEMS], 4>
+        + PseudoCompressionFunction<[F::Packing; DIGEST_ELEMS], 4>
+        + Sync,
+    [F; DIGEST_ELEMS]: Serialize + for<'a> Deserialize<'a>,
+{
+    type Input = MerkleTreeMmcs<F::Packing, F::Packing, H, C, 4, DIGEST_ELEMS>;
+
+    type Commitment = MerkleCapTargets<F, DIGEST_ELEMS>;
+
+    type Proof = HashProofTargets<F, DIGEST_ELEMS>;
+}
+
 /// `Recursive` version of an `ExtensionFieldMmcs` where the inner `Mmcs` is a `MerkleTreeMmcs`.
 pub struct RecExtensionValMmcs<
     F: Field,
@@ -488,6 +523,29 @@ pub struct RecExtensionValMmcs<
 
 impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize, RecValMmcs: RecursiveMmcs<F, EF>>
     RecursiveExtensionMmcs<F, EF> for RecExtensionValMmcs<F, EF, DIGEST_ELEMS, RecValMmcs>
+{
+    type Input = ExtensionMmcs<F, EF, RecValMmcs::Input>;
+
+    type Commitment = RecValMmcs::Commitment;
+
+    type Proof = RecValMmcs::Proof;
+}
+
+/// Arity-4 counterpart of [`RecExtensionValMmcs`]. The inner MMCS is the 4-to-1
+/// `MerkleTreeMmcs<…, 4, DIGEST_ELEMS>`.
+pub struct RecExtensionValMmcsArity4<
+    F: Field,
+    EF: ExtensionField<F>,
+    const DIGEST_ELEMS: usize,
+    MyMmcs: RecursiveMmcs<F, EF>,
+> {
+    _phantom: PhantomData<F>,
+    _phantom_ef: PhantomData<EF>,
+    _phantom_val: PhantomData<MyMmcs>,
+}
+
+impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize, RecValMmcs: RecursiveMmcs<F, EF>>
+    RecursiveExtensionMmcs<F, EF> for RecExtensionValMmcsArity4<F, EF, DIGEST_ELEMS, RecValMmcs>
 {
     type Input = ExtensionMmcs<F, EF, RecValMmcs::Input>;
 

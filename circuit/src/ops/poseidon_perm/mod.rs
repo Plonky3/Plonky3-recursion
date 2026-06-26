@@ -41,6 +41,7 @@ pub struct PoseidonRowFields<F> {
     pub new_start: bool,
     pub merkle_path: bool,
     pub mmcs_bit: bool,
+    pub mmcs_bit2: bool,
     pub mmcs_index_sum: F,
     pub input_values: Vec<F>,
     pub in_ctl: Vec<bool>,
@@ -58,6 +59,10 @@ pub trait PoseidonConfigApi: Copy {
     fn rate_ext(self) -> usize;
     fn capacity_ext(self) -> usize;
     fn width_ext(self) -> usize;
+    /// Returns `true` for the arity-4 compression shape (`4·capacity_ext == width_ext`).
+    fn is_arity4_shape(self) -> bool {
+        4 * self.capacity_ext() == self.width_ext()
+    }
     fn validate_io_counts(
         self,
         input_count: usize,
@@ -306,6 +311,7 @@ impl PoseidonVariant for Poseidon2Variant {
             new_start: fields.new_start,
             merkle_path: fields.merkle_path,
             mmcs_bit: fields.mmcs_bit,
+            mmcs_bit2: fields.mmcs_bit2,
             mmcs_index_sum: fields.mmcs_index_sum,
             input_values: fields.input_values,
             in_ctl: fields.in_ctl,

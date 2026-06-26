@@ -26,8 +26,9 @@ pub use p3_matrix::Matrix;
 pub use p3_matrix::dense::RowMajorMatrix;
 pub use p3_merkle_tree::MerkleTreeMmcs;
 pub use p3_recursion::pcs::{
-    HidingFriProofTargets, InputProofTargets, MerkleCapTargets, RecValMmcs,
-    set_fri_mmcs_private_data, set_hiding_fri_mmcs_private_data,
+    HidingFriProofTargets, InputProofTargets, MerkleCapTargets, RecExtensionValMmcsArity4,
+    RecValMmcs, RecValMmcsArity4, set_fri_mmcs_private_data, set_fri_mmcs_private_data_arity4,
+    set_hiding_fri_mmcs_private_data,
 };
 pub use p3_recursion::traits::{RecursiveAir, RecursivePcs};
 pub use p3_recursion::verifier::VerificationError;
@@ -35,8 +36,9 @@ pub use p3_recursion::{
     AggregationPrepCache, BatchOnly, BatchStarkVerifierInputsBuilder, FriRecursionBackend,
     FriRecursionBackendD5, FriRecursionConfig, FriVerifierParams, NextLayerPrepCache,
     Poseidon2Config, ProveNextLayerParams, RecursionInput, RecursionOutput,
-    build_and_prove_aggregation_layer, build_and_prove_next_layer, build_next_layer_circuit,
-    build_next_layer_prep, prove_next_layer, verify_batch_circuit,
+    build_and_prove_aggregation_layer, build_and_prove_aggregation_layer_cross,
+    build_and_prove_next_layer, build_next_layer_circuit, build_next_layer_prep, prove_next_layer,
+    verify_batch_circuit,
 };
 pub use p3_symmetric::{PaddingFreeSponge, Permutation, TruncatedPermutation};
 pub use p3_uni_stark::{StarkConfig, StarkGenericConfig, Val};
@@ -98,10 +100,43 @@ pub fn assert_quintic_field(field: FieldOption, quintic: bool) {
     }
 }
 
+/// Panics when `--arity4` is set with an unsupported field/hash combination.
+///
+/// The mixed-config arity-4 aggregation keeps the Fiat-Shamir challenger on the narrow Poseidon2
+/// table and runs the leaf hash and 4-to-1 compression on the wide table. KoalaBear and Goldilocks
+/// have the wired wide instances (`KOALA_BEAR_D{1,4}_W32`, `GOLDILOCKS_D2_W16`); Poseidon1 has no
+/// wide instance.
+#[inline]
+#[allow(dead_code)]
+pub fn assert_arity4_supported(arity4: bool, field: FieldOption, hash: HashOption) {
+    if !arity4 {
+        return;
+    }
+    let supported = hash == HashOption::Poseidon2
+        && matches!(
+            field,
+            FieldOption::KoalaBear | FieldOption::BabyBear | FieldOption::Goldilocks
+        );
+    if !supported {
+        panic!(
+            "--arity4 is only supported with --hash poseidon2 \
+             (got field {:?}, hash {:?})",
+            field, hash
+        );
+    }
+}
+
 pub fn default_goldilocks_poseidon2_8() -> p3_goldilocks::Poseidon2Goldilocks<8> {
     use rand::SeedableRng;
     let mut rng = rand::rngs::SmallRng::seed_from_u64(1);
     p3_goldilocks::Poseidon2Goldilocks::<8>::new_from_rng_128(&mut rng)
+}
+
+#[allow(dead_code)]
+pub fn default_goldilocks_poseidon2_16() -> p3_goldilocks::Poseidon2Goldilocks<16> {
+    use rand::SeedableRng;
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(1);
+    p3_goldilocks::Poseidon2Goldilocks::<16>::new_from_rng_128(&mut rng)
 }
 
 /// Report the size of the serialized proof.
@@ -775,5 +810,41 @@ macro_rules! define_quintic_poseidon_perm_lift_and_types {
             generate_poseidon2_trace,
             p3_circuit::ops::Poseidon2Params
         );
+    };
+}
+
+/// Emits the W32 MMCS-side type aliases for the mixed-config arity-4 recursive verifier.
+///
+/// The Fiat-Shamir challenger is left on the W16 table (it reuses `Challenger` from the base
+/// [`define_field_module_types!`] invocation in the same module); only the leaf hash, 4-to-1
+/// compression, and recursive MMCS move to the wide W32 permutation passed here.
+///
+/// Requires `F`, `Challenge`, and `Dft` to already be in scope.
+#[macro_export]
+macro_rules! define_field_module_types_arity4 {
+    ($perm_arity4:ty, $width_arity4:expr, $rate_arity4:expr, $digest_elems:expr) => {
+        type PermArity4 = $perm_arity4;
+        type MyHashArity4 =
+            PaddingFreeSponge<PermArity4, $width_arity4, $rate_arity4, $digest_elems>;
+        type MyCompressArity4 = TruncatedPermutation<PermArity4, 4, $digest_elems, $width_arity4>;
+        type MyMmcsArity4 = MerkleTreeMmcs<
+            <F as Field>::Packing,
+            <F as Field>::Packing,
+            MyHashArity4,
+            MyCompressArity4,
+            4,
+            $digest_elems,
+        >;
+        type ChallengeMmcsArity4 = ExtensionMmcs<F, Challenge, MyMmcsArity4>;
+        type MyPcsArity4 = TwoAdicFriPcs<F, Dft, MyMmcsArity4, ChallengeMmcsArity4>;
+        type RecInputMmcsArity4 =
+            RecValMmcsArity4<F, $digest_elems, MyHashArity4, MyCompressArity4>;
+        type InnerFriArity4 = p3_recursion::pcs::FriProofTargets<
+            F,
+            Challenge,
+            RecExtensionValMmcsArity4<F, Challenge, $digest_elems, RecInputMmcsArity4>,
+            InputProofTargets<F, Challenge, RecInputMmcsArity4>,
+            p3_recursion::pcs::Witness<F>,
+        >;
     };
 }

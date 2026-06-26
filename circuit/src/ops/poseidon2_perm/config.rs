@@ -85,6 +85,20 @@ impl Poseidon2Config {
         partial_rounds: 21,
     };
 
+    /// BabyBear with quartic extension (D=4), width 32.
+    ///
+    /// Arity-4 compression shape: `4 · capacity_ext == width_ext` with
+    /// `capacity_ext = 2`, `rate_ext = 6`.
+    pub const BABY_BEAR_D4_W32: Self = Self {
+        field_id: Poseidon2FieldId::BabyBear,
+        d: 4,
+        width: 32,
+        sbox_degree: 7,
+        sbox_registers: 1,
+        half_full_rounds: 4,
+        partial_rounds: 30,
+    };
+
     /// KoalaBear with extension degree D=1 (base field challenges), width 16.
     pub const KOALA_BEAR_D1_W16: Self = Self {
         field_id: Poseidon2FieldId::KoalaBear,
@@ -129,6 +143,48 @@ impl Poseidon2Config {
         partial_rounds: 22,
     };
 
+    /// KoalaBear with base-field (`D=1`) challenges and a 32-element state.
+    ///
+    /// Arity-4 compression shape: `4 · capacity_ext == width_ext` with
+    /// `capacity_ext = 8`, `rate_ext = 24`.
+    pub const KOALA_BEAR_D1_W32: Self = Self {
+        field_id: Poseidon2FieldId::KoalaBear,
+        d: 1,
+        width: 32,
+        sbox_degree: 3,
+        sbox_registers: 0,
+        half_full_rounds: 4,
+        partial_rounds: 31,
+    };
+
+    /// KoalaBear with quartic extension (D=4), width 32.
+    ///
+    /// Arity-4 compression shape: `4 · capacity_ext == width_ext` with
+    /// `capacity_ext = 2`, `rate_ext = 6`.
+    pub const KOALA_BEAR_D4_W32: Self = Self {
+        field_id: Poseidon2FieldId::KoalaBear,
+        d: 4,
+        width: 32,
+        sbox_degree: 3,
+        sbox_registers: 0,
+        half_full_rounds: 4,
+        partial_rounds: 31,
+    };
+
+    /// Goldilocks with extension degree D=2, width 16.
+    ///
+    /// Arity-4 compression shape: `4 · capacity_ext == width_ext` with
+    /// `capacity_ext = 2`, `rate_ext = 6`.
+    pub const GOLDILOCKS_D2_W16: Self = Self {
+        field_id: Poseidon2FieldId::Goldilocks,
+        d: 2,
+        width: 16,
+        sbox_degree: 7,
+        sbox_registers: 1,
+        half_full_rounds: 4,
+        partial_rounds: 22,
+    };
+
     /// Returns `true` if this configuration targets BabyBear.
     pub const fn is_baby_bear(self) -> bool {
         matches!(self.field_id, Poseidon2FieldId::BabyBear)
@@ -152,11 +208,27 @@ impl Poseidon2Config {
         self.width
     }
 
+    /// Returns `true` for the arity-4 compression shapes.
+    ///
+    /// These configurations satisfy `4 · capacity_ext == width_ext`, where the
+    /// capacity holds one 4-to-1 compression digest and the rate holds the four
+    /// input chunks. The W32 states (KoalaBear) and the Goldilocks width-16
+    /// state are the arity-4 shapes; all other states are arity-2.
+    pub const fn is_arity4_shape(self) -> bool {
+        match self.field_id {
+            Poseidon2FieldId::BabyBear | Poseidon2FieldId::KoalaBear => self.width == 32,
+            Poseidon2FieldId::Goldilocks => self.width == 16,
+        }
+    }
+
     /// Rate in extension field elements (WIDTH / D for D=4, or WIDTH for D=1).
     ///
     /// For D=1: `width / 2`. For D>1: `width / d - capacity_ext`.
+    /// For arity-4 shapes: `width_ext - capacity_ext = 3 · width_ext / 4`.
     pub const fn rate_ext(self) -> usize {
-        if self.d == 1 {
+        if self.is_arity4_shape() {
+            self.width / self.d - self.capacity_ext()
+        } else if self.d == 1 {
             self.width / 2
         } else {
             self.width / self.d - self.capacity_ext()
@@ -170,8 +242,15 @@ impl Poseidon2Config {
     /// Capacity in extension field elements.
     ///
     /// For D=1: `width / 2`. For D>1: always 2.
+    /// For arity-4 shapes: `width_ext / 4` (one compression digest).
     pub const fn capacity_ext(self) -> usize {
-        if self.d == 1 { self.width / 2 } else { 2 }
+        if self.is_arity4_shape() {
+            self.width / self.d / 4
+        } else if self.d == 1 {
+            self.width / 2
+        } else {
+            2
+        }
     }
 
     pub const fn sbox_degree(self) -> u64 {
@@ -211,7 +290,12 @@ impl Poseidon2Config {
         merkle_path: bool,
     ) -> Result<(), CircuitBuilderError> {
         let is_d1 = self.d() == 1;
-        let inputs_ok = if is_d1 {
+        // Arity-4 compression Merkle rows carry a second direction bit, so they
+        // supply `width_ext + 3` input slots (limbs + mmcs_index_sum + two bits).
+        let arity4_merkle = self.is_arity4_shape() && merkle_path;
+        let inputs_ok = if arity4_merkle {
+            input_count == self.width_ext() + 3
+        } else if is_d1 {
             if merkle_path {
                 input_count == self.width_ext() + 2
             } else {
@@ -221,7 +305,9 @@ impl Poseidon2Config {
             input_count == self.width_ext() + 2
         };
         if !inputs_ok {
-            let expected = if is_d1 {
+            let expected = if arity4_merkle {
+                format!("{} inputs", self.width_ext() + 3)
+            } else if is_d1 {
                 if merkle_path {
                     format!("{} inputs", self.width_ext() + 2)
                 } else {
@@ -303,6 +389,20 @@ impl Poseidon2Config {
             .expect("single-element slice must yield single-element vec");
         widx.push(mmcs_bit);
 
+        // Arity-4 compression Merkle rows carry a second direction bit in the slot
+        // following `mmcs_bit`; arity-2 layouts stop at `width_ext + 2`.
+        if self.is_arity4_shape() && merkle_path {
+            let [mmcs_bit2] = ctx
+                .lower_expr_slots(
+                    &input_exprs[width_ext + 2..=width_ext + 2],
+                    "Poseidon2Perm",
+                    "mmcs_bit2",
+                )?
+                .try_into()
+                .expect("single-element slice must yield single-element vec");
+            widx.push(mmcs_bit2);
+        }
+
         Ok(widx)
     }
 
@@ -316,16 +416,20 @@ impl Poseidon2Config {
                 (1, 16) => "baby_bear_d1_w16",
                 (4, 16) => "baby_bear_d4_w16",
                 (4, 24) => "baby_bear_d4_w24",
+                (4, 32) => "baby_bear_d4_w32",
                 _ => panic!("unknown BabyBear Poseidon2 config"),
             },
             Poseidon2FieldId::KoalaBear => match (self.d, self.width) {
                 (1, 16) => "koala_bear_d1_w16",
                 (4, 16) => "koala_bear_d4_w16",
                 (4, 24) => "koala_bear_d4_w24",
+                (1, 32) => "koala_bear_d1_w32",
+                (4, 32) => "koala_bear_d4_w32",
                 _ => panic!("unknown KoalaBear Poseidon2 config"),
             },
             Poseidon2FieldId::Goldilocks => match (self.d, self.width) {
                 (2, 8) => "goldilocks_d2_w8",
+                (2, 16) => "goldilocks_d2_w16",
                 _ => panic!("unknown Goldilocks Poseidon2 config"),
             },
         }
@@ -337,10 +441,14 @@ impl Poseidon2Config {
             "baby_bear_d1_w16" => Some(Self::BABY_BEAR_D1_W16),
             "baby_bear_d4_w16" => Some(Self::BABY_BEAR_D4_W16),
             "baby_bear_d4_w24" => Some(Self::BABY_BEAR_D4_W24),
+            "baby_bear_d4_w32" => Some(Self::BABY_BEAR_D4_W32),
             "koala_bear_d1_w16" => Some(Self::KOALA_BEAR_D1_W16),
             "koala_bear_d4_w16" => Some(Self::KOALA_BEAR_D4_W16),
             "koala_bear_d4_w24" => Some(Self::KOALA_BEAR_D4_W24),
+            "koala_bear_d1_w32" => Some(Self::KOALA_BEAR_D1_W32),
+            "koala_bear_d4_w32" => Some(Self::KOALA_BEAR_D4_W32),
             "goldilocks_d2_w8" => Some(Self::GOLDILOCKS_D2_W8),
+            "goldilocks_d2_w16" => Some(Self::GOLDILOCKS_D2_W16),
             _ => None,
         }
     }
@@ -577,10 +685,14 @@ mod tests {
             Poseidon2Config::BABY_BEAR_D1_W16,
             Poseidon2Config::BABY_BEAR_D4_W16,
             Poseidon2Config::BABY_BEAR_D4_W24,
+            Poseidon2Config::BABY_BEAR_D4_W32,
             Poseidon2Config::KOALA_BEAR_D1_W16,
             Poseidon2Config::KOALA_BEAR_D4_W16,
             Poseidon2Config::KOALA_BEAR_D4_W24,
+            Poseidon2Config::KOALA_BEAR_D1_W32,
+            Poseidon2Config::KOALA_BEAR_D4_W32,
             Poseidon2Config::GOLDILOCKS_D2_W8,
+            Poseidon2Config::GOLDILOCKS_D2_W16,
         ];
         for cfg in configs {
             let name = cfg.variant_name();

@@ -66,8 +66,9 @@ pub use poseidon1::{
     Poseidon1ProverD2, poseidon1_preprocessor, poseidon1_verifier_air_from_config,
 };
 pub use poseidon2::{
-    Poseidon2AirBuilder, Poseidon2AirWrapperInner, Poseidon2Preprocessor, Poseidon2Prover,
-    Poseidon2ProverD2, poseidon2_preprocessor, poseidon2_verifier_air_from_config,
+    Poseidon2AirBuilder, Poseidon2AirBuilderForConfig, Poseidon2AirWrapperInner,
+    Poseidon2Preprocessor, Poseidon2Prover, Poseidon2ProverD2, poseidon2_preprocessor,
+    poseidon2_verifier_air_from_config,
 };
 pub use recompose::{RecomposeAirBuilder, RecomposePreprocessor, RecomposeProver};
 
@@ -115,6 +116,15 @@ where
             .strip_prefix(prefix)
             .ok_or(CircuitError::InvalidPreprocessedValues)?;
         let (d, w_ext, r_ext) = parse_cfg(rest).ok_or(CircuitError::InvalidPreprocessedValues)?;
+
+        // Arity-4 tables bind each direction bit to the sampled index directly; the base-4
+        // accumulator is unused and its idx / merkle-flag column slots are repurposed to carry the
+        // bit-source witness indices (already counted in `ext_reads` during preprocessing). The
+        // accumulator read-counting below would misread those slots, so skip arity-4 op types.
+        if 4 * (w_ext - r_ext) == w_ext {
+            continue;
+        }
+
         let prep_row_width = poseidon_preprocessed_row_width_for_air(d, w_ext, r_ext);
 
         let prep_base: Vec<F> = prep
@@ -1688,6 +1698,29 @@ where
     Poseidon2AirBuilder<D>: NpoAirBuilder<SC, D>,
 {
     vec![Box::new(Poseidon2AirBuilder)]
+}
+
+/// Create one config-restricted Poseidon2 AIR builder per entry in `configs`, preserving order.
+///
+/// Use this when a circuit can contain more than one Poseidon2 table (e.g. a W16 challenger plus a
+/// W32 MMCS): the per-config builders keep the prover-data AIR order aligned with the matching
+/// `non_primitive_provers`, one AIR per registered table prover.
+pub fn poseidon2_air_builders_for_configs<SC, const D: usize>(
+    configs: Vec<Poseidon2Config>,
+) -> Vec<Box<dyn NpoAirBuilder<SC, D>>>
+where
+    SC: StarkGenericConfig + 'static + Send + Sync,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+    Poseidon2AirBuilderForConfig<D>: NpoAirBuilder<SC, D> + 'static,
+{
+    configs
+        .into_iter()
+        .map(|config| {
+            Box::new(Poseidon2AirBuilderForConfig::<D>::new(config))
+                as Box<dyn NpoAirBuilder<SC, D>>
+        })
+        .collect()
 }
 
 /// Create Poseidon2 table provers for D=4 (e.g. BabyBear, KoalaBear).

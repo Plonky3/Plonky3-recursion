@@ -107,6 +107,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             new_start: is_first,
             merkle_path: false,
             mmcs_bit: None,
+            mmcs_bit2: None,
             inputs,
             out_ctl: vec![is_last, is_last],
             return_all_outputs: false,
