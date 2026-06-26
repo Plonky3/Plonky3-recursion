@@ -1165,6 +1165,19 @@ mod test {
         test_lifted_openings_with_cap_height(vec![mat], 1);
     }
 
+    /// When the Merkle cap spans the entire tree (`cap_height == log_max_height`), the
+    /// authentication path is empty (`path_depth == 0`) and the leaf digest is itself the
+    /// committed root. Regression test: this used to apply a spurious compression and
+    /// produce a witness conflict during MMCS verification.
+    #[test]
+    fn lifted_verify_full_cap_no_path() {
+        init_logger();
+        let mut rng = SmallRng::seed_from_u64(7);
+        // Height 8 -> log_max_height = 3; cap_height = 3 makes the cap cover every leaf.
+        let mat = RowMajorMatrix::<F>::rand(&mut rng, 8, 3);
+        test_lifted_openings_with_cap_height(vec![mat], 3);
+    }
+
     #[test]
     fn verify_tampered_proof_fails() {
         let mut rng = SmallRng::seed_from_u64(1);

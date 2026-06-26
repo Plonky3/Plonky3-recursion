@@ -92,6 +92,23 @@ impl<F: Field> CircuitBuilder<F> {
         let mut output = vec![None; width_ext];
         let zero = self.define_const(F::ZERO);
 
+        // When the Merkle cap spans the entire tree there is no authentication path
+        // (`path_depth == 0`): the single leaf digest is itself the committed root, so it
+        // is connected directly to the claimed root with no compression.
+        if directions_expr.is_empty() {
+            let leaf: &[ExprId] = openings_expr.first().map_or(&[], Vec::as_slice);
+            if leaf.len() != root_expr.len() {
+                return Err(CircuitBuilderError::InvalidDimension {
+                    expected: leaf.len(),
+                    actual: root_expr.len(),
+                });
+            }
+            for (o, r) in leaf.iter().zip(root_expr.iter()) {
+                self.connect(*o, *r);
+            }
+            return Ok(op_ids);
+        }
+
         let has_tail = openings_expr.len() > directions_expr.len()
             && !openings_expr[directions_expr.len()].is_empty();
 
