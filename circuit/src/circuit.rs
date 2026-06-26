@@ -382,10 +382,13 @@ impl<F: Field> Circuit<F> {
                     // Private inputs can be b-creators even in the forward case.
                     let b_is_private_creator =
                         !b_already_defined && private_input_wids.contains(&b.0);
+                    // A hint output in the `out` slot is a backward op: the hint value is given,
+                    // so `b` is the witness this row solves for and takes the bus creator role
+                    // (the hint output itself is still created via `out_is_creator`).
+                    let out_is_backward = out_already_defined || hint_output_wids.contains(&out.0);
                     let out_is_creator = F::from_bool(!out_already_defined);
-                    let b_is_creator = F::from_bool(
-                        b_is_private_creator || out_already_defined && !b_already_defined,
-                    );
+                    let b_is_creator =
+                        F::from_bool(b_is_private_creator || out_is_backward && !b_already_defined);
 
                     preprocessed.primitive[PrimitiveOpType::Alu as usize].extend([
                         sel_add_vs_mul,
