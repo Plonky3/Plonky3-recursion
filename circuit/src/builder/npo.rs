@@ -28,6 +28,7 @@ pub enum NonPrimitiveOpParams<F> {
         executor: Box<dyn HintExecutor<F>>,
     },
     Recompose,
+    ExposeClaim,
 }
 
 impl<F> NonPrimitiveOpParams<F> {
@@ -88,6 +89,7 @@ impl<F: Field> Clone for NonPrimitiveOpParams<F> {
                 executor: executor.boxed(),
             },
             Self::Recompose => Self::Recompose,
+            Self::ExposeClaim => Self::ExposeClaim,
         }
     }
 }

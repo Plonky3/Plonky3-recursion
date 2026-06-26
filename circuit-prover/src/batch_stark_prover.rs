@@ -52,6 +52,7 @@ use crate::constraint_profile::ConstraintProfile;
 use crate::field_params::ExtractBinomialW;
 
 mod dynamic_air;
+mod expose_claim;
 mod packing;
 mod poseidon1;
 mod poseidon2;
@@ -69,6 +70,7 @@ pub use poseidon2::{
     Poseidon2AirBuilder, Poseidon2AirWrapperInner, Poseidon2Preprocessor, Poseidon2Prover,
     Poseidon2ProverD2, poseidon2_preprocessor, poseidon2_verifier_air_from_config,
 };
+pub use expose_claim::{ExposeClaimAirBuilder, ExposeClaimPreprocessor, ExposeClaimProver};
 pub use recompose::{RecomposeAirBuilder, RecomposePreprocessor, RecomposeProver};
 
 /// Prime modulus of the BabyBear field (`2^31 - 2^27 + 1`).
@@ -772,6 +774,17 @@ where
         }
     }
 
+    fn num_public_values(&self) -> usize {
+        match self {
+            Self::Const(a) => BaseAir::<Val<SC>>::num_public_values(a),
+            Self::Public(a) => BaseAir::<Val<SC>>::num_public_values(a),
+            Self::Alu(a) => BaseAir::<Val<SC>>::num_public_values(a),
+            Self::Dynamic(a) => {
+                <dyn CloneableBatchAir<SC> as BaseAir<Val<SC>>>::num_public_values(a.air())
+            }
+        }
+    }
+
     fn preprocessed_width(&self) -> usize {
         match self {
             Self::Const(a) => BaseAir::<Val<SC>>::preprocessed_width(a),
@@ -1123,6 +1136,21 @@ where
     {
         self.register_recompose_table::<D>(split_coeff_tables);
         self
+    }
+
+    /// Register the expose-claim table prover (the host-readable, bus-bound
+    /// public-value channel). The verifier needs it to interpret an
+    /// `expose_claim` non-primitive op in a proof.
+    pub fn register_expose_claim_table<const D: usize>(&mut self)
+    where
+        SC: Send + Sync,
+        Val<SC>: StarkField,
+        SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+            Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+    {
+        for prover in expose_claim_table_provers::<SC, D>() {
+            self.register_table_prover(prover);
+        }
     }
 
     /// Return the current [`TablePacking`] configuration.
@@ -1869,6 +1897,37 @@ where
     } else {
         vec![Box::new(RecomposeAirBuilder::<D>::new(lanes, false))]
     }
+}
+
+/// Expose-claim preprocessor for a given field.
+pub fn expose_claim_preprocessor<F>() -> Box<dyn NpoPreprocessor<F>>
+where
+    F: StarkField + PrimeField,
+    ExposeClaimPreprocessor: NpoPreprocessor<F>,
+{
+    Box::new(ExposeClaimPreprocessor::new())
+}
+
+/// Expose-claim table prover for a given extension field degree.
+pub fn expose_claim_table_provers<SC, const D: usize>() -> Vec<Box<dyn TableProver<SC>>>
+where
+    SC: StarkGenericConfig + 'static + Send + Sync,
+    Val<SC>: StarkField,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+{
+    vec![Box::new(ExposeClaimProver::<D>::new())]
+}
+
+/// Expose-claim AIR builder for a given extension field degree.
+pub fn expose_claim_air_builders<SC, const D: usize>() -> Vec<Box<dyn NpoAirBuilder<SC, D>>>
+where
+    SC: StarkGenericConfig + 'static + Send + Sync,
+    Val<SC>: StarkField,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+{
+    vec![Box::new(ExposeClaimAirBuilder::<D>::new())]
 }
 
 #[cfg(test)]

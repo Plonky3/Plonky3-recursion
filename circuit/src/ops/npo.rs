@@ -48,6 +48,11 @@ impl NpoTypeId {
         Self::new("recompose")
     }
 
+    /// Convenience: ExposeClaim (read witnesses → table public values) operation type ID.
+    pub fn expose_claim() -> Self {
+        Self::new("expose_claim")
+    }
+
     /// Recompose table variant that registers per-coefficient WitnessChecks receives.
     ///
     /// Used when a D=1 Poseidon2 (or similar) must read individual BF coefficients that came

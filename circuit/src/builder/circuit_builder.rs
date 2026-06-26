@@ -344,6 +344,49 @@ where
         self.recompose_npo_enabled = true;
     }
 
+    /// Enable the expose-claim NPO table.
+    ///
+    /// The expose-claim table reads existing witnesses off the `WitnessChecks`
+    /// bus (reader multiplicity `-1`) and surfaces their values as host-readable
+    /// `non_primitives[].public_values`, BOUND in-circuit to those genuine
+    /// witnesses. Use [`Self::expose_as_public_output`] to mark targets for
+    /// exposure after enabling.
+    pub fn enable_expose_claim<BF>(&mut self, trace_generator: TraceGeneratorFn<F>)
+    where
+        BF: PrimeField64,
+        F: ExtensionField<BF>,
+    {
+        let plugin = crate::ops::expose_claim::ExposeClaimCircuitPlugin::new(trace_generator);
+        self.register_npo(plugin);
+    }
+
+    /// Expose a set of targets as table public values, bound in-circuit to the
+    /// underlying witnesses via the `WitnessChecks` bus.
+    ///
+    /// All targets are exposed in ONE expose-claim table whose `public_values`
+    /// carry coeff-0 of each target in order. The FULL D-coeff ext tuple of each
+    /// target is read on the `WitnessChecks` bus and bus-bound to the genuine
+    /// witness; only coeff-0 is surfaced as the host-readable public value. The
+    /// higher coefficients are NOT constrained to zero (a witness may pack
+    /// genuinely-nonzero base lanes into one ext element, e.g. a Poseidon2 output
+    /// limb) — their soundness comes from the bus binding, not a local zero check.
+    ///
+    /// [`Self::enable_expose_claim`] must have been called first.
+    pub fn expose_as_public_output(&mut self, targets: &[ExprId]) {
+        if targets.is_empty() {
+            return;
+        }
+        self.push_scope("expose_as_public_output");
+        let _ = self.push_non_primitive_op_with_outputs(
+            NpoTypeId::expose_claim(),
+            vec![targets.to_vec()],
+            vec![],
+            Some(NonPrimitiveOpParams::ExposeClaim),
+            "expose_claim",
+        );
+        self.pop_scope();
+    }
+
     /// No-op recompose enablement: leaves `recompose_base_coeffs_to_ext` using
     /// the ALU fallback. Has the same signature as `enable_recompose` so it
     /// can be selected via a macro `$ident` parameter.

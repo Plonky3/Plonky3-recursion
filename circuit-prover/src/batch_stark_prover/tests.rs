@@ -5,8 +5,8 @@ use p3_circuit::ops::poseidon1_perm::{
 };
 use p3_circuit::ops::poseidon2_perm::{GoldilocksD2Width8, Poseidon2PermCallBase};
 use p3_circuit::ops::{
-    KoalaBearD1Width16, Poseidon1Config, Poseidon2Config, generate_poseidon1_trace,
-    generate_poseidon2_trace, generate_recompose_trace,
+    KoalaBearD1Width16, NpoTypeId, Poseidon1Config, Poseidon2Config, generate_expose_claim_trace,
+    generate_poseidon1_trace, generate_poseidon2_trace, generate_recompose_trace,
 };
 use p3_field::PrimeCharacteristicRing;
 use p3_field::extension::{BinomialExtensionField, QuinticTrinomialExtensionField};
@@ -19,8 +19,9 @@ use super::*;
 use crate::ConstraintProfile;
 use crate::batch_stark_prover::{
     BABY_BEAR_MODULUS, KOALA_BEAR_MODULUS, Poseidon1Preprocessor, Poseidon2Preprocessor,
-    poseidon1_air_builders_d5, poseidon1_table_provers_d5, poseidon2_air_builders,
-    poseidon2_air_builders_d5, poseidon2_table_provers_d5, recompose_air_builders,
+    expose_claim_air_builders, expose_claim_preprocessor, poseidon1_air_builders_d5,
+    poseidon1_table_provers_d5, poseidon2_air_builders, poseidon2_air_builders_d5,
+    poseidon2_table_provers_d5, recompose_air_builders,
 };
 use crate::common::{NpoPreprocessor, get_airs_and_degrees_with_prep};
 use crate::config::{self, BabyBearConfig, GoldilocksConfig, KoalaBearConfig};
@@ -1320,4 +1321,77 @@ fn test_koalabear_quintic_trinomial_batch_stark_with_poseidon1_d1() {
     prover
         .verify_all_tables::<QuinticTrinomialExtensionField<KoalaBear>>(&proof)
         .unwrap();
+}
+
+/// `expose_as_public_output` surfaces chosen in-circuit witnesses as host-readable
+/// table public values, BOUND to the genuine witnesses via the `WitnessChecks` bus.
+///
+/// This exercises the general public-output channel standalone (no recursion): a
+/// base-field circuit computes some witnesses, marks three of them for exposure,
+/// and after proving + verifying, the host reads them back out of
+/// `proof.non_primitives[].public_values` — provably equal to the genuine values
+/// the prover computed, not free prover-chosen scalars.
+#[test]
+fn test_babybear_expose_as_public_output() {
+    let mut builder = CircuitBuilder::<BabyBear>::new();
+    builder.enable_expose_claim::<BabyBear>(generate_expose_claim_trace::<BabyBear, BabyBear>);
+
+    // Ordinary circuit: a, b are inputs; sum and prod are internal computed witnesses.
+    let a = builder.public_input();
+    let b = builder.public_input();
+    let sum = builder.add(a, b);
+    let prod = builder.mul(a, b);
+
+    // Surface a mix of an input and two internal witnesses as bound public outputs.
+    builder.expose_as_public_output(&[a, sum, prod]);
+
+    let circuit = builder.build().unwrap();
+    let cfg = config::baby_bear();
+
+    let npo_prep: Vec<Box<dyn NpoPreprocessor<BabyBear>>> =
+        vec![expose_claim_preprocessor::<BabyBear>()];
+    let air_builders = expose_claim_air_builders::<BabyBearConfig, 1>();
+    let (airs_degrees, primitive_columns, non_primitive_columns) =
+        get_airs_and_degrees_with_prep::<BabyBearConfig, _, 1>(
+            &circuit,
+            &TablePacking::default(),
+            &npo_prep,
+            &air_builders,
+            ConstraintProfile::Standard,
+        )
+        .unwrap();
+    let (airs, log_degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
+
+    let mut runner = circuit.runner();
+    let a_val = BabyBear::from_u64(7);
+    let b_val = BabyBear::from_u64(5);
+    runner.set_public_inputs(&[a_val, b_val]).unwrap();
+    let traces = runner.run().unwrap();
+
+    let prover_data = ProverData::from_airs_and_degrees(&cfg, &airs, &log_degrees);
+    let circuit_prover_data =
+        CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
+
+    let mut prover = BatchStarkProver::new(cfg);
+    prover.register_expose_claim_table::<1>();
+
+    let proof = prover
+        .prove_all_tables(&traces, &circuit_prover_data)
+        .unwrap();
+
+    // The verifier accepts the proof (the bus stays balanced: the reader's `-1`
+    // multiplicity is matched by the creating table's send).
+    prover.verify_all_tables::<BabyBear>(&proof).unwrap();
+
+    // The host reads the exposed witnesses back out of the proof, in order.
+    let entry = proof
+        .non_primitives
+        .iter()
+        .find(|e| e.op_type == NpoTypeId::expose_claim())
+        .expect("expose_claim table present in proof");
+    assert_eq!(
+        entry.public_values,
+        vec![a_val, a_val + b_val, a_val * b_val],
+        "exposed public values must equal the genuine in-circuit witnesses"
+    );
 }
