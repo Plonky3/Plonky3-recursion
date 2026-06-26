@@ -50,6 +50,16 @@ pub(super) struct LoweringState<'a, F: Field> {
     /// Tracks which non-primitive operations have already been emitted,
     /// preventing duplicate emission from multiple output nodes.
     emitted_npo_ops: HashSet<NonPrimitiveOpId>,
+
+    /// `connect` pairs in which EXACTLY ONE side is a constant — normalized as
+    /// `(value_expr, const_expr)`. These are NOT fed to the DSU: aliasing a
+    /// value-bearing witness into a constant's shared slot is the unsound
+    /// representation behind the `WitnessId(0)` `assert_zero` collapse (a
+    /// genuinely-nonzero value-bearing witness gets the constant's slot and
+    /// clobbers it at witness-generation time). Instead each is lowered to a
+    /// per-target equality CONSTRAINT in [`Self::emit_deferred_const_connects`],
+    /// keeping the value in its own slot and the constant the sole writer of its.
+    deferred_const_connects: Vec<(ExprId, ExprId)>,
 }
 
 impl<'a, F: Field> LoweringState<'a, F> {
@@ -63,12 +73,43 @@ impl<'a, F: Field> LoweringState<'a, F> {
         let non_primitive_ops = lowerer.non_primitive_ops;
         let npo_registry = lowerer.npo_registry;
 
+        // Partition the declared connect pairs. A `connect(a, b)` whose two sides are BOTH
+        // value-bearing (or both constants of equal value — a no-op already skipped upstream)
+        // is a sound aliasing: both members compute the same value, so sharing one witness slot
+        // is free equality. But `connect(value, const)` (the dominant case being
+        // `assert_zero(x)` == `connect(x, ExprId::ZERO)`) is NOT sound to alias: it would give
+        // the value-bearing witness the constant's shared slot. When that value is genuinely
+        // nonzero at witness-generation time (e.g. a recursion verifier's reduced-opening
+        // accumulator that a forged/over-aligned proof leaves nonzero, OR — fatally — when
+        // many independent `assert_zero`s collapse through the single circuit-wide
+        // `ExprId::ZERO` class and one member is nonzero) its creator overwrites the constant's
+        // slot, raising `WitnessConflict { WitnessId(0) }`. We therefore DEFER each
+        // value↔const connect out of the DSU and re-emit it as a per-target equality CONSTRAINT
+        // (see `emit_deferred_const_connects`), so the value keeps its own slot, the constant
+        // stays the sole writer of its slot, and a mismatch fails LOCALLY and cleanly.
+        let mut aliasable_connects: Vec<(ExprId, ExprId)> =
+            Vec::with_capacity(lowerer.pending_connects.len());
+        let mut deferred_const_connects: Vec<(ExprId, ExprId)> = Vec::new();
+        for &(a, b) in lowerer.pending_connects.iter() {
+            let a_is_const = matches!(graph.get_expr(a), Expr::Const(_));
+            let b_is_const = matches!(graph.get_expr(b), Expr::Const(_));
+            // Exactly one side a constant ⇒ a value↔const equality: defer it.
+            if a_is_const ^ b_is_const {
+                // Normalize as (value_expr, const_expr).
+                let pair = if a_is_const { (b, a) } else { (a, b) };
+                deferred_const_connects.push(pair);
+            } else {
+                // value↔value (sound aliasing) or const↔const (equal-value no-op): keep in DSU.
+                aliasable_connects.push((a, b));
+            }
+        }
+
         Ok(Self {
             graph,
             npo_registry,
             non_primitive_ops,
-            // Build the DSU from declared connect pairs.
-            dsu: ConnectDsu::from_connects(lowerer.pending_connects),
+            // Build the DSU only from aliasable connects (value↔const pairs are deferred).
+            dsu: ConnectDsu::from_connects(&aliasable_connects),
             // Take ownership of the allocator for witness slot creation.
             witness_alloc: lowerer.witness_alloc,
             ops: Vec::new(),
@@ -80,6 +121,7 @@ impl<'a, F: Field> LoweringState<'a, F> {
             // Validate and cache the non-primitive output map (may fail).
             op_id_to_output_exprs: graph.build_npo_output_map()?,
             emitted_npo_ops: HashSet::new(),
+            deferred_const_connects,
         })
     }
 
@@ -533,6 +575,47 @@ impl<'a, F: Field> LoweringState<'a, F> {
                     });
                 }
             }
+        }
+        Ok(())
+    }
+
+    /// Emit a per-target equality CONSTRAINT for each deferred `connect(value, const)` pair.
+    ///
+    /// A `connect(x, c)` with `c` a constant (the dominant case being `assert_zero(x)` ==
+    /// `connect(x, ExprId::ZERO)`) is NOT aliased into the constant's class (that is the
+    /// unsound representation behind the circuit-wide `ExprId::ZERO` slot collapse). Instead
+    /// we enforce `x == c` as a row that keeps `x` in its OWN witness slot:
+    ///
+    /// ```text
+    ///   Op::MulAdd { a: x, b: ZERO, c: const, out: x }   // x*0 + c == x  ⇔  x == c
+    /// ```
+    ///
+    /// At witness generation `MulAdd` computes `x*0 + c = c` and writes `out == x`'s slot; if
+    /// `x` already holds a value `≠ c` the write conflicts on `x`'s OWN slot (a clean, LOCAL
+    /// failure — never the shared constant slot), and on the honest path (`x == c`) it agrees.
+    /// In the AIR this is a genuine `MulAdd` constraint binding `x` to the constant, so the
+    /// equality is enforced, not merely witness-aliased. WitnessChecks/`ext_reads` accounting
+    /// flows through the existing ALU reader/creator logic — no new bus path is needed (unlike
+    /// a second `Op::Const` writer, which `generate_preprocessed_columns` treats as a creator).
+    ///
+    /// Putting BOTH the target and the constant into the op (as `a`/`out` and `c`) keeps the
+    /// row distinct under the optimizer's ALU dedup (whose key includes these operands), so two
+    /// equalities with the same target but different constants are not collapsed.
+    pub fn emit_deferred_const_connects(&mut self) -> Result<(), CircuitBuilderError> {
+        if self.deferred_const_connects.is_empty() {
+            return Ok(());
+        }
+        let zero_widx = self.resolve_witness(ExprId::ZERO, "deferred const connect: zero const")?;
+        // Move out to satisfy the borrow checker (resolve_witness borrows &self).
+        let pairs = core::mem::take(&mut self.deferred_const_connects);
+        for &(value_expr, const_expr) in &pairs {
+            let value_widx =
+                self.resolve_witness(value_expr, "deferred const connect: value")?;
+            let const_widx =
+                self.resolve_witness(const_expr, "deferred const connect: const")?;
+            // x * 0 + c == x  ⇔  x == c, with the failure local to `value_widx`.
+            self.ops
+                .push(Op::mul_add(value_widx, zero_widx, const_widx, value_widx));
         }
         Ok(())
     }

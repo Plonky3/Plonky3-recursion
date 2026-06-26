@@ -76,6 +76,12 @@ impl<'a, F: Field> ExpressionLowerer<'a, F> {
         state.emit_operations()?;
         // Verify that no registered non-primitive operation was left unreachable.
         state.validate_all_npo_emitted()?;
+        // Emit per-target equality constraints for the deferred `connect(value, const)` pairs
+        // (the `assert_zero(x)` family): these are NOT aliased into the constant's class, so the
+        // value keeps its own slot and a mismatch fails locally instead of clobbering the shared
+        // constant slot (the `WitnessId(0)` collapse). Must run AFTER `emit_operations` (every
+        // value/const target now has a witness slot) and BEFORE `backfill_connect_mappings`.
+        state.emit_deferred_const_connects()?;
         // Fill in witness mappings for connect-class members not directly visited.
         state.backfill_connect_mappings();
         // Convert the accumulated mutable state into the immutable result.

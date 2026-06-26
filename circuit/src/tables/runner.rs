@@ -695,12 +695,26 @@ mod tests {
 
         let f = BabyBear::from_u64;
         let neg_111 = -f(111);
+        // `assert_zero(sub_result)` lowers to `connect(sub_result, ZERO)`, a value-vs-constant
+        // pair. It is NOT aliased into the constant's class: `sub_result` keeps its own witness
+        // slot (W5, holding 0) and an explicit equality `MulAdd(sub_result, ZERO, ZERO, sub_result)`
+        // binds it to zero. (Previously `sub_result` was aliased onto the shared `ZERO` slot, which
+        // collapses every `assert_zero` in a circuit into one slot and can raise a spurious
+        // `WitnessConflict { WitnessId(0) }`.) The `-111` constant therefore lands at W6.
         assert_eq!(
             traces,
             Traces {
-                witness_trace: WitnessTrace::new(vec![f(0), f(37), f(111), f(3), f(111), neg_111]),
+                witness_trace: WitnessTrace::new(vec![
+                    f(0),
+                    f(37),
+                    f(111),
+                    f(3),
+                    f(111),
+                    f(0),
+                    neg_111
+                ]),
                 const_trace: ConstTrace {
-                    index: vec![WitnessId(0), WitnessId(1), WitnessId(2), WitnessId(5)],
+                    index: vec![WitnessId(0), WitnessId(1), WitnessId(2), WitnessId(6)],
                     values: vec![f(0), f(37), f(111), neg_111],
                 },
                 public_trace: PublicTrace {
@@ -708,11 +722,16 @@ mod tests {
                     values: vec![],
                 },
                 alu_trace: AluTrace {
-                    op_kind: vec![AluOpKind::Mul, AluOpKind::Add],
-                    values: vec![[f(37), f(3), f(0), f(111)], [f(111), neg_111, f(0), f(0)]],
+                    op_kind: vec![AluOpKind::Mul, AluOpKind::Add, AluOpKind::MulAdd],
+                    values: vec![
+                        [f(37), f(3), f(0), f(111)],
+                        [f(111), neg_111, f(0), f(0)],
+                        [f(0), f(0), f(0), f(0)],
+                    ],
                     indices: vec![
                         [WitnessId(1), WitnessId(3), WitnessId(0), WitnessId(4)],
-                        [WitnessId(4), WitnessId(5), WitnessId(0), WitnessId(0)],
+                        [WitnessId(4), WitnessId(6), WitnessId(0), WitnessId(5)],
+                        [WitnessId(5), WitnessId(0), WitnessId(0), WitnessId(5)],
                     ],
                 },
                 non_primitive_traces: HashMap::new(),
