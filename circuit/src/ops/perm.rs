@@ -163,3 +163,173 @@ impl<F: Field> CircuitBuilder<F> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec::Vec;
+    use alloc::{format, vec};
+
+    use p3_baby_bear::BabyBear;
+    use proptest::prelude::*;
+
+    use super::*;
+    use crate::ops::{Poseidon1Config, Poseidon2Config};
+
+    type F = BabyBear;
+
+    #[test]
+    fn test_perm_config_poseidon1_accessors() {
+        let cfg = PermConfig::Poseidon1(Poseidon1Config::BABY_BEAR_D1_W16);
+        assert_eq!(cfg.d(), 1);
+        assert_eq!(cfg.width_ext(), cfg.rate_ext() + cfg.capacity_ext());
+        assert!(cfg.as_poseidon1().is_some());
+        assert!(cfg.as_poseidon2().is_none());
+    }
+
+    #[test]
+    fn test_perm_config_poseidon2_accessors() {
+        let cfg = PermConfig::Poseidon2(Poseidon2Config::BABY_BEAR_D1_W16);
+        assert_eq!(cfg.d(), 1);
+        assert_eq!(cfg.width_ext(), cfg.rate_ext() + cfg.capacity_ext());
+        assert!(cfg.as_poseidon1().is_none());
+        assert!(cfg.as_poseidon2().is_some());
+    }
+
+    #[test]
+    fn test_perm_config_from_poseidon1() {
+        let cfg = PermConfig::from(Poseidon1Config::BABY_BEAR_D1_W16);
+        assert_eq!(
+            cfg,
+            PermConfig::Poseidon1(Poseidon1Config::BABY_BEAR_D1_W16)
+        );
+        assert!(cfg.as_poseidon1().is_some());
+    }
+
+    #[test]
+    fn test_perm_config_from_poseidon2() {
+        let cfg = PermConfig::from(Poseidon2Config::BABY_BEAR_D1_W16);
+        assert_eq!(
+            cfg,
+            PermConfig::Poseidon2(Poseidon2Config::BABY_BEAR_D1_W16)
+        );
+        assert!(cfg.as_poseidon2().is_some());
+    }
+
+    #[test]
+    fn test_is_arity4_shape_false_for_standard() {
+        assert!(!PermConfig::Poseidon2(Poseidon2Config::BABY_BEAR_D1_W16).is_arity4_shape());
+    }
+
+    #[test]
+    fn test_is_arity4_shape_true() {
+        assert!(PermConfig::Poseidon2(Poseidon2Config::KOALA_BEAR_D1_W32).is_arity4_shape());
+    }
+
+    #[test]
+    fn test_width_ext_equals_rate_ext_plus_capacity_ext() {
+        let configs = [
+            PermConfig::Poseidon1(Poseidon1Config::BABY_BEAR_D1_W16),
+            PermConfig::Poseidon1(Poseidon1Config::BABY_BEAR_D4_W16),
+            PermConfig::Poseidon2(Poseidon2Config::BABY_BEAR_D1_W16),
+            PermConfig::Poseidon2(Poseidon2Config::KOALA_BEAR_D1_W32),
+            PermConfig::Poseidon2(Poseidon2Config::KOALA_BEAR_D4_W32),
+        ];
+        for cfg in configs {
+            assert_eq!(cfg.width_ext(), cfg.rate_ext() + cfg.capacity_ext());
+        }
+    }
+
+    #[test]
+    fn test_perm_private_data_poseidon1_type() {
+        let _ = perm_private_data(Poseidon1Config::BABY_BEAR_D1_W16, Vec::<F>::new());
+    }
+
+    #[test]
+    fn test_perm_private_data_poseidon2_type() {
+        let _ = perm_private_data(Poseidon2Config::BABY_BEAR_D1_W16, Vec::<F>::new());
+    }
+
+    #[test]
+    fn test_poseidon1_constructor_helper() {
+        let cfg = PermConfig::poseidon1(Poseidon1Config::BABY_BEAR_D1_W16);
+        assert_eq!(
+            cfg,
+            PermConfig::Poseidon1(Poseidon1Config::BABY_BEAR_D1_W16)
+        );
+    }
+
+    #[test]
+    fn test_poseidon2_constructor_helper() {
+        let cfg = PermConfig::poseidon2(Poseidon2Config::BABY_BEAR_D1_W16);
+        assert_eq!(
+            cfg,
+            PermConfig::Poseidon2(Poseidon2Config::BABY_BEAR_D1_W16)
+        );
+    }
+
+    #[test]
+    fn test_permconfig_debug() {
+        let cfg = PermConfig::Poseidon2(Poseidon2Config::BABY_BEAR_D1_W16);
+        let s = format!("{cfg:?}");
+        assert!(!s.is_empty());
+    }
+
+    proptest! {
+        #[test]
+        fn perm_config_width_ext_invariant(
+            cfg in prop_oneof![
+                Just(PermConfig::Poseidon1(Poseidon1Config::BABY_BEAR_D1_W16)),
+                Just(PermConfig::Poseidon1(Poseidon1Config::BABY_BEAR_D4_W16)),
+                Just(PermConfig::Poseidon1(Poseidon1Config::BABY_BEAR_D4_W24)),
+                Just(PermConfig::Poseidon1(Poseidon1Config::KOALA_BEAR_D1_W16)),
+                Just(PermConfig::Poseidon1(Poseidon1Config::KOALA_BEAR_D4_W16)),
+                Just(PermConfig::Poseidon1(Poseidon1Config::KOALA_BEAR_D4_W24)),
+                Just(PermConfig::Poseidon1(Poseidon1Config::GOLDILOCKS_D2_W8)),
+                Just(PermConfig::Poseidon2(Poseidon2Config::BABY_BEAR_D1_W16)),
+                Just(PermConfig::Poseidon2(Poseidon2Config::BABY_BEAR_D4_W16)),
+                Just(PermConfig::Poseidon2(Poseidon2Config::BABY_BEAR_D4_W24)),
+                Just(PermConfig::Poseidon2(Poseidon2Config::BABY_BEAR_D4_W32)),
+                Just(PermConfig::Poseidon2(Poseidon2Config::KOALA_BEAR_D1_W16)),
+                Just(PermConfig::Poseidon2(Poseidon2Config::KOALA_BEAR_D4_W16)),
+                Just(PermConfig::Poseidon2(Poseidon2Config::KOALA_BEAR_D4_W24)),
+                Just(PermConfig::Poseidon2(Poseidon2Config::GOLDILOCKS_D2_W8)),
+                Just(PermConfig::Poseidon2(Poseidon2Config::KOALA_BEAR_D1_W32)),
+                Just(PermConfig::Poseidon2(Poseidon2Config::KOALA_BEAR_D4_W32)),
+                Just(PermConfig::Poseidon2(Poseidon2Config::GOLDILOCKS_D2_W16)),
+            ]
+        ) {
+            prop_assert_eq!(cfg.width_ext(), cfg.rate_ext() + cfg.capacity_ext());
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn perm_config_arity4_shape_consistent(
+            cfg in prop_oneof![
+                Just(PermConfig::Poseidon1(Poseidon1Config::BABY_BEAR_D1_W16)),
+                Just(PermConfig::Poseidon1(Poseidon1Config::BABY_BEAR_D4_W16)),
+                Just(PermConfig::Poseidon1(Poseidon1Config::BABY_BEAR_D4_W24)),
+                Just(PermConfig::Poseidon1(Poseidon1Config::KOALA_BEAR_D1_W16)),
+                Just(PermConfig::Poseidon1(Poseidon1Config::KOALA_BEAR_D4_W16)),
+                Just(PermConfig::Poseidon1(Poseidon1Config::KOALA_BEAR_D4_W24)),
+                Just(PermConfig::Poseidon1(Poseidon1Config::GOLDILOCKS_D2_W8)),
+                Just(PermConfig::Poseidon2(Poseidon2Config::BABY_BEAR_D1_W16)),
+                Just(PermConfig::Poseidon2(Poseidon2Config::BABY_BEAR_D4_W16)),
+                Just(PermConfig::Poseidon2(Poseidon2Config::BABY_BEAR_D4_W24)),
+                Just(PermConfig::Poseidon2(Poseidon2Config::BABY_BEAR_D4_W32)),
+                Just(PermConfig::Poseidon2(Poseidon2Config::KOALA_BEAR_D1_W16)),
+                Just(PermConfig::Poseidon2(Poseidon2Config::KOALA_BEAR_D4_W16)),
+                Just(PermConfig::Poseidon2(Poseidon2Config::KOALA_BEAR_D4_W24)),
+                Just(PermConfig::Poseidon2(Poseidon2Config::GOLDILOCKS_D2_W8)),
+                Just(PermConfig::Poseidon2(Poseidon2Config::KOALA_BEAR_D1_W32)),
+                Just(PermConfig::Poseidon2(Poseidon2Config::KOALA_BEAR_D4_W32)),
+                Just(PermConfig::Poseidon2(Poseidon2Config::GOLDILOCKS_D2_W16)),
+            ]
+        ) {
+            prop_assert_eq!(
+                cfg.is_arity4_shape(),
+                4 * cfg.capacity_ext() == cfg.width_ext()
+            );
+        }
+    }
+}

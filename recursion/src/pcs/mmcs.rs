@@ -1076,6 +1076,7 @@ fn add_arity4_compression_row<EF: Field>(
 
 /// Validate the per-level shape of an arity-4 batch and split `index_bits` into Merkle-path bits
 /// (low) and cap-selector bits (high), returning `(selected_root, path_bits, schedule, leaf_rows)`.
+#[allow(clippy::type_complexity)]
 fn arity4_prepare<EF: Field>(
     circuit: &mut CircuitBuilder<EF>,
     permutation_config: PermConfig,
@@ -1166,7 +1167,7 @@ fn arity4_emit_path<EF: Field>(
     permutation_config: PermConfig,
     schedule: &[Arity4PathStep],
     index_bits: &[Target],
-    leaf_digest: Vec<Target>,
+    leaf_digest: &[Target],
     injected_digests: &[Vec<Target>],
     selected_root: &[Target],
 ) -> Result<Vec<NonPrimitiveOpId>, CircuitBuilderError> {
@@ -1307,7 +1308,7 @@ where
         permutation_config,
         &schedule,
         index_bits,
-        leaf_digest,
+        &leaf_digest,
         &injected_digests,
         &selected_root,
     )
@@ -1403,7 +1404,7 @@ where
         permutation_config,
         &schedule,
         index_bits,
-        leaf_digest,
+        &leaf_digest,
         &injected_digests,
         &selected_root,
     )

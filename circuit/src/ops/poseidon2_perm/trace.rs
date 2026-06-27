@@ -244,3 +244,92 @@ pub fn generate_poseidon2_trace<
         operations,
     })))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ops::NpoTypeId;
+    use crate::ops::poseidon2_perm::config::Poseidon2Config;
+
+    #[test]
+    fn test_baby_bear_d1_width_invariant() {
+        assert_eq!(
+            <BabyBearD1Width16 as Poseidon2Params>::D
+                * <BabyBearD1Width16 as Poseidon2Params>::WIDTH_EXT,
+            <BabyBearD1Width16 as Poseidon2Params>::WIDTH,
+        );
+    }
+
+    #[test]
+    fn test_koala_bear_d1_width_invariant() {
+        assert_eq!(
+            <KoalaBearD1Width16 as Poseidon2Params>::D
+                * <KoalaBearD1Width16 as Poseidon2Params>::WIDTH_EXT,
+            <KoalaBearD1Width16 as Poseidon2Params>::WIDTH,
+        );
+    }
+
+    #[test]
+    fn test_goldilocks_d2_width_invariant() {
+        assert_eq!(
+            <GoldilocksD2Width8 as Poseidon2Params>::D
+                * <GoldilocksD2Width8 as Poseidon2Params>::WIDTH_EXT,
+            <GoldilocksD2Width8 as Poseidon2Params>::WIDTH,
+        );
+    }
+
+    #[test]
+    fn test_baby_bear_d1_rate_capacity_sum() {
+        assert_eq!(
+            <BabyBearD1Width16 as Poseidon2Params>::RATE_EXT
+                + <BabyBearD1Width16 as Poseidon2Params>::CAPACITY_EXT,
+            <BabyBearD1Width16 as Poseidon2Params>::WIDTH_EXT,
+        );
+    }
+
+    #[test]
+    fn test_koala_bear_d1_rate_capacity_sum() {
+        assert_eq!(
+            <KoalaBearD1Width16 as Poseidon2Params>::RATE_EXT
+                + <KoalaBearD1Width16 as Poseidon2Params>::CAPACITY_EXT,
+            <KoalaBearD1Width16 as Poseidon2Params>::WIDTH_EXT,
+        );
+    }
+
+    #[test]
+    fn test_goldilocks_d2_rate_capacity_sum() {
+        assert_eq!(
+            <GoldilocksD2Width8 as Poseidon2Params>::RATE_EXT
+                + <GoldilocksD2Width8 as Poseidon2Params>::CAPACITY_EXT,
+            <GoldilocksD2Width8 as Poseidon2Params>::WIDTH_EXT,
+        );
+    }
+
+    #[test]
+    fn test_baby_bear_d1_capacity_size() {
+        assert_eq!(
+            <BabyBearD1Width16 as Poseidon2Params>::CAPACITY_SIZE,
+            <BabyBearD1Width16 as Poseidon2Params>::CAPACITY_EXT
+                * <BabyBearD1Width16 as Poseidon2Params>::D,
+        );
+    }
+
+    #[test]
+    fn test_poseidon2_trace_total_rows_empty() {
+        let trace = Poseidon2Trace::<p3_baby_bear::BabyBear> {
+            op_type: NpoTypeId::poseidon2_perm(Poseidon2Config::BABY_BEAR_D1_W16),
+            operations: alloc::vec![],
+        };
+        assert_eq!(trace.total_rows(), 0);
+    }
+
+    #[test]
+    fn test_baby_bear_d1_d_is_one() {
+        assert_eq!(<BabyBearD1Width16 as Poseidon2Params>::D, 1);
+    }
+
+    #[test]
+    fn test_goldilocks_d2_d_is_two() {
+        assert_eq!(<GoldilocksD2Width8 as Poseidon2Params>::D, 2);
+    }
+}

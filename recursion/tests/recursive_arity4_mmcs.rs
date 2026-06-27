@@ -475,7 +475,7 @@ fn recursive_arity4_mmcs_step2_bridge_tampered_sibling_fails() {
 
     builder.enable_poseidon2_perm_width_32::<KoalaBearD4Width32, _>(
         generate_poseidon2_trace::<CF, KoalaBearD4Width32>,
-        perm.clone(),
+        perm,
     );
     builder.enable_recompose::<F>(generate_recompose_trace::<F, CF>);
 
@@ -519,7 +519,7 @@ fn recursive_arity4_mmcs_step2_bridge_tampered_sibling_fails() {
         .set_public_inputs(&public_inputs)
         .expect("set public inputs");
 
-    let mut tampered_proof = batch_opening.opening_proof.clone();
+    let mut tampered_proof = batch_opening.opening_proof;
     tampered_proof[bridge_proof_idx][0] += F::ONE;
 
     set_sibling_private_data(
@@ -696,7 +696,7 @@ fn recursive_arity4_mmcs_flipped_direction_bit_fails() {
     let permutation_config = Poseidon2Config::KOALA_BEAR_D4_W32;
     builder.enable_poseidon2_perm_width_32::<KoalaBearD4Width32, _>(
         generate_poseidon2_trace::<CF, KoalaBearD4Width32>,
-        perm.clone(),
+        perm,
     );
     builder.enable_recompose::<F>(generate_recompose_trace::<F, CF>);
 
@@ -775,7 +775,7 @@ fn recursive_arity4_mmcs_tampered_injected_value_fails() {
     let capacity_ext = permutation_config.capacity_ext();
     builder.enable_poseidon2_perm_width_32::<KoalaBearD4Width32, _>(
         generate_poseidon2_trace::<CF, KoalaBearD4Width32>,
-        perm.clone(),
+        perm,
     );
     builder.enable_recompose::<F>(generate_recompose_trace::<F, CF>);
 

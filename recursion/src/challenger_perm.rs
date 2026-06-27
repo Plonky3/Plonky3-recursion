@@ -47,3 +47,56 @@ impl ChallengerPermConfig for Poseidon1Config {
         Some(self)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use p3_circuit::ops::{Poseidon1Config, Poseidon2Config};
+
+    use super::*;
+
+    #[test]
+    fn test_poseidon2_extension_degree_d1() {
+        assert_eq!(Poseidon2Config::BABY_BEAR_D1_W16.extension_degree(), 1);
+    }
+
+    #[test]
+    fn test_poseidon2_extension_degree_d4() {
+        assert_eq!(Poseidon2Config::BABY_BEAR_D4_W16.extension_degree(), 4);
+    }
+
+    #[test]
+    fn test_poseidon1_extension_degree_d1() {
+        assert_eq!(Poseidon1Config::BABY_BEAR_D1_W16.extension_degree(), 1);
+    }
+
+    #[test]
+    fn test_poseidon1_extension_degree_d4() {
+        assert_eq!(Poseidon1Config::BABY_BEAR_D4_W16.extension_degree(), 4);
+    }
+
+    #[test]
+    fn test_poseidon2_as_poseidon2_some() {
+        assert!(Poseidon2Config::BABY_BEAR_D1_W16.as_poseidon2().is_some());
+    }
+
+    #[test]
+    fn test_poseidon2_as_poseidon1_none() {
+        assert!(Poseidon2Config::BABY_BEAR_D1_W16.as_poseidon1().is_none());
+    }
+
+    #[test]
+    fn test_poseidon1_as_poseidon1_some() {
+        assert!(Poseidon1Config::BABY_BEAR_D1_W16.as_poseidon1().is_some());
+    }
+
+    #[test]
+    fn test_poseidon1_as_poseidon2_none() {
+        assert!(Poseidon1Config::BABY_BEAR_D1_W16.as_poseidon2().is_none());
+    }
+
+    #[test]
+    fn test_poseidon2_returns_self_reference() {
+        let cfg = Poseidon2Config::BABY_BEAR_D1_W16;
+        assert_eq!(*cfg.as_poseidon2().unwrap(), cfg);
+    }
+}

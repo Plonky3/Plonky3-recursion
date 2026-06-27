@@ -141,7 +141,7 @@ where
     /// Set whether [`Self::decompose_ext_to_base_coeffs`] skips the EF-select coefficient-wise
     /// optimization, returning the previous value so callers can restore it. See
     /// [`Self::decompose_skip_select_provenance`].
-    pub fn set_decompose_skip_select_provenance(&mut self, enabled: bool) -> bool {
+    pub const fn set_decompose_skip_select_provenance(&mut self, enabled: bool) -> bool {
         core::mem::replace(&mut self.decompose_skip_select_provenance, enabled)
     }
 

@@ -30,3 +30,49 @@ pub enum VerificationError {
     #[error("Generation error: {0}")]
     Generation(#[from] GenerationError),
 }
+
+#[cfg(test)]
+mod tests {
+    use alloc::string::ToString;
+
+    use p3_circuit::{CircuitBuilderError, CircuitError};
+
+    use super::*;
+    use crate::generation::GenerationError;
+
+    #[test]
+    fn test_invalid_proof_shape_display() {
+        let msg = VerificationError::InvalidProofShape("bad".into()).to_string();
+        assert!(msg.contains("bad") || msg.contains("Invalid"));
+    }
+
+    #[test]
+    fn test_randomization_error_display() {
+        assert!(!VerificationError::RandomizationError.to_string().is_empty());
+    }
+
+    #[test]
+    fn test_display_contains_descriptive_text() {
+        assert!(
+            !VerificationError::InvalidProofShape("x".into())
+                .to_string()
+                .is_empty()
+        );
+        assert!(!VerificationError::RandomizationError.to_string().is_empty());
+        assert!(
+            !VerificationError::Circuit(CircuitError::DivisionByZero)
+                .to_string()
+                .is_empty()
+        );
+        assert!(
+            !VerificationError::CircuitBuilder(CircuitBuilderError::MissingOutput)
+                .to_string()
+                .is_empty()
+        );
+        assert!(
+            !VerificationError::Generation(GenerationError::MissingParameterError)
+                .to_string()
+                .is_empty()
+        );
+    }
+}

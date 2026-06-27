@@ -50,7 +50,7 @@ pub const ARITY4_BIT_X_BIT2_IDX: usize = 1;
 ///
 /// - `N_EXTRA = 0` (default): arity-2 layout, two circuit columns
 ///   (`mmcs_bit`, `mmcs_index_sum`).
-/// - `N_EXTRA = `[`ARITY4_EXTRA_COLS`]: arity-4 layout, four circuit columns
+/// - <code>N_EXTRA = [ARITY4_EXTRA_COLS]</code>: arity-4 layout, four circuit columns
 ///   (`mmcs_bit`, `mmcs_bit2`, `mmcs_bit_x_bit2`, `mmcs_index_sum`).
 ///
 /// # Memory Layout
@@ -88,7 +88,7 @@ pub struct PoseidonCircuitCols<T, P, const N_EXTRA: usize = 0> {
     /// Arity-4 direction and product columns.
     ///
     /// Empty in the arity-2 layout (`N_EXTRA = 0`). In the arity-4 layout
-    /// (`N_EXTRA = `[`ARITY4_EXTRA_COLS`]) this holds, in order:
+    /// (<code>N_EXTRA = [ARITY4_EXTRA_COLS]</code>) this holds, in order:
     ///
     /// - `mmcs_bit2`: the high bit of the position selector
     ///   `pos = mmcs_bit + 2·mmcs_bit2`. Constrained to boolean.
@@ -173,5 +173,45 @@ impl<T, P, const N_EXTRA: usize> BorrowMut<PoseidonCircuitCols<T, P, N_EXTRA>> f
         debug_assert!(suffix.is_empty(), "Alignment should match");
         debug_assert_eq!(shorts.len(), 1);
         &mut shorts[0]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_circuit_cols_add_two_true() {
+        assert!(circuit_cols_add_two(7, 5));
+    }
+
+    #[test]
+    fn test_circuit_cols_add_two_false() {
+        assert!(!circuit_cols_add_two(8, 5));
+    }
+
+    #[test]
+    fn test_circuit_cols_add_four_true() {
+        assert!(circuit_cols_add_four(9, 5));
+    }
+
+    #[test]
+    fn test_circuit_cols_add_four_false() {
+        assert!(!circuit_cols_add_four(10, 5));
+    }
+
+    #[test]
+    fn test_num_cols_empty_perm() {
+        assert_eq!(num_cols::<[u8; 0]>(), 2);
+    }
+
+    #[test]
+    fn test_num_cols_arity4_empty_perm() {
+        assert_eq!(num_cols_arity4::<[u8; 0]>(), 4);
+    }
+
+    #[test]
+    fn test_num_cols_perm_width_4() {
+        assert_eq!(num_cols::<[u8; 4]>(), 6);
     }
 }

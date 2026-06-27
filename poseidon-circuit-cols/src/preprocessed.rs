@@ -277,3 +277,51 @@ impl<const INPUT_LIMBS: usize, const OUTPUT_LIMBS: usize, T>
         &mut rows[0]
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_uses_compact_d1_true() {
+        assert!(poseidon_uses_compact_d1_preprocessed(1, 16, 8));
+    }
+
+    #[test]
+    fn test_uses_compact_d1_false_wrong_d() {
+        assert!(!poseidon_uses_compact_d1_preprocessed(4, 16, 8));
+    }
+
+    #[test]
+    fn test_uses_compact_d1_false_wrong_width() {
+        assert!(!poseidon_uses_compact_d1_preprocessed(1, 8, 4));
+    }
+
+    #[test]
+    fn test_uses_compact_d1_false_wrong_rate() {
+        assert!(!poseidon_uses_compact_d1_preprocessed(1, 16, 4));
+    }
+
+    #[test]
+    fn test_d1_compact_header_cols() {
+        assert_eq!(poseidon_d1_compact_preprocessed_header_cols(8), 3 * 8 + 2);
+    }
+
+    #[test]
+    fn test_d1_compact_header_cols_12() {
+        assert_eq!(poseidon_d1_compact_preprocessed_header_cols(12), 3 * 12 + 2);
+    }
+
+    #[test]
+    fn test_preprocessed_row_width_zero_limbs() {
+        assert_eq!(poseidon_preprocessed_row_width(0, 0), 4);
+    }
+
+    #[test]
+    fn test_preprocessed_row_width_basic() {
+        // PoseidonPrepInputLimb<u8>: 4 fields × 1 byte = 4 bytes per limb
+        // PoseidonPrepOutputLimb<u8>: 2 fields × 1 byte = 2 bytes per limb
+        // 4 input limbs × 4 + 2 output limbs × 2 + 4 header = 24
+        assert_eq!(poseidon_preprocessed_row_width(4, 2), 24);
+    }
+}

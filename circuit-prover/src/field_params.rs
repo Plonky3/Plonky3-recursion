@@ -63,3 +63,52 @@ where
         true
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use p3_baby_bear::BabyBear;
+    use p3_field::extension::{BinomialExtensionField, QuinticTrinomialExtensionField};
+    use p3_koala_bear::KoalaBear;
+
+    use super::*;
+
+    #[test]
+    fn test_base_field_returns_none() {
+        assert!(<BabyBear as ExtractBinomialW<BabyBear>>::extract_w().is_none());
+    }
+
+    #[test]
+    fn test_binomial_extension_returns_some() {
+        assert!(
+            <BinomialExtensionField<BabyBear, 4> as ExtractBinomialW<BabyBear>>::extract_w()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn test_quintic_extension_returns_none() {
+        assert!(
+            <QuinticTrinomialExtensionField<KoalaBear> as ExtractBinomialW<KoalaBear>>::extract_w()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn test_quintic_is_trinomial_true() {
+        assert!(
+            <QuinticTrinomialExtensionField<KoalaBear> as ExtractBinomialW<KoalaBear>>::alu_is_quintic_trinomial()
+        );
+    }
+
+    #[test]
+    fn test_base_field_not_trinomial() {
+        assert!(!<BabyBear as ExtractBinomialW<BabyBear>>::alu_is_quintic_trinomial());
+    }
+
+    #[test]
+    fn test_binomial_extension_not_trinomial() {
+        assert!(!<BinomialExtensionField<BabyBear, 4> as ExtractBinomialW<
+            BabyBear,
+        >>::alu_is_quintic_trinomial());
+    }
+}

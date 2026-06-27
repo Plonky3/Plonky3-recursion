@@ -45,3 +45,43 @@ impl<V: PoseidonVariant, F: Field> fmt::Debug for PoseidonExecutionState<V, F> {
             .finish()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use p3_baby_bear::BabyBear;
+    use p3_field::PrimeCharacteristicRing;
+
+    use crate::ops::poseidon2_perm::state::Poseidon2PermPrivateData;
+
+    #[test]
+    fn test_private_data_debug() {
+        let d = Poseidon2PermPrivateData::<BabyBear> {
+            sibling: alloc::vec![],
+        };
+        let s = alloc::format!("{:?}", d);
+        assert!(!s.is_empty());
+    }
+
+    #[test]
+    fn test_private_data_eq() {
+        let a = Poseidon2PermPrivateData::<BabyBear> {
+            sibling: alloc::vec![],
+        };
+        let b = Poseidon2PermPrivateData::<BabyBear> {
+            sibling: alloc::vec![],
+        };
+        assert_eq!(a, b);
+        let c = Poseidon2PermPrivateData::<BabyBear> {
+            sibling: alloc::vec![BabyBear::ZERO],
+        };
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn test_private_data_empty_sibling() {
+        let d = Poseidon2PermPrivateData::<BabyBear> {
+            sibling: alloc::vec![],
+        };
+        assert!(d.sibling.is_empty());
+    }
+}

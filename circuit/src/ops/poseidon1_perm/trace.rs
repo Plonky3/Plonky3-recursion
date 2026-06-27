@@ -186,3 +186,69 @@ pub fn generate_poseidon1_trace<
         operations,
     })))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ops::NpoTypeId;
+    use crate::ops::poseidon1_perm::config::Poseidon1Config;
+
+    #[test]
+    fn test_baby_bear_d1_width_invariant() {
+        assert_eq!(
+            <BabyBearD1Width16 as Poseidon1Params>::D
+                * <BabyBearD1Width16 as Poseidon1Params>::WIDTH_EXT,
+            <BabyBearD1Width16 as Poseidon1Params>::WIDTH,
+        );
+    }
+
+    #[test]
+    fn test_baby_bear_d4_width_invariant() {
+        assert_eq!(
+            <BabyBearD4Width16 as Poseidon1Params>::D
+                * <BabyBearD4Width16 as Poseidon1Params>::WIDTH_EXT,
+            <BabyBearD4Width16 as Poseidon1Params>::WIDTH,
+        );
+    }
+
+    #[test]
+    fn test_koala_bear_d4_width_invariant() {
+        assert_eq!(
+            <KoalaBearD4Width16 as Poseidon1Params>::D
+                * <KoalaBearD4Width16 as Poseidon1Params>::WIDTH_EXT,
+            <KoalaBearD4Width16 as Poseidon1Params>::WIDTH,
+        );
+    }
+
+    #[test]
+    fn test_goldilocks_d2_width_invariant() {
+        assert_eq!(
+            <GoldilocksD2Width8 as Poseidon1Params>::D
+                * <GoldilocksD2Width8 as Poseidon1Params>::WIDTH_EXT,
+            <GoldilocksD2Width8 as Poseidon1Params>::WIDTH,
+        );
+    }
+
+    #[test]
+    fn test_baby_bear_d4_rate_capacity_sum() {
+        assert_eq!(
+            <BabyBearD4Width16 as Poseidon1Params>::RATE_EXT
+                + <BabyBearD4Width16 as Poseidon1Params>::CAPACITY_EXT,
+            <BabyBearD4Width16 as Poseidon1Params>::WIDTH_EXT,
+        );
+    }
+
+    #[test]
+    fn test_baby_bear_d4_d_is_four() {
+        assert_eq!(<BabyBearD4Width16 as Poseidon1Params>::D, 4);
+    }
+
+    #[test]
+    fn test_poseidon1_trace_total_rows_empty() {
+        let trace = Poseidon1Trace::<p3_baby_bear::BabyBear> {
+            op_type: NpoTypeId::poseidon1_perm(Poseidon1Config::BABY_BEAR_D1_W16),
+            operations: alloc::vec![],
+        };
+        assert_eq!(trace.total_rows(), 0);
+    }
+}

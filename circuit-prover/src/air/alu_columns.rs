@@ -178,3 +178,71 @@ const _: () = assert!(
 );
 const _: () = assert!(size_of::<AluMainLaneCols<u8, 1>>() == 4);
 const _: () = assert!(PACKED_HORNER_STEP_PREP_WIDTH == 6);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_prep_lane_width() {
+        assert_eq!(PREP_LANE_WIDTH, 13);
+    }
+
+    #[test]
+    fn test_packed_horner_step_prep_width() {
+        assert_eq!(PACKED_HORNER_STEP_PREP_WIDTH, 6);
+    }
+
+    #[test]
+    fn test_num_horner_intermediates_k2() {
+        assert_eq!(num_horner_intermediates(2), 0);
+    }
+
+    #[test]
+    fn test_num_horner_intermediates_k3() {
+        assert_eq!(num_horner_intermediates(3), 1);
+    }
+
+    #[test]
+    fn test_num_horner_intermediates_k4() {
+        assert_eq!(num_horner_intermediates(4), 1);
+    }
+
+    #[test]
+    fn test_num_horner_intermediates_k5() {
+        assert_eq!(num_horner_intermediates(5), 2);
+    }
+
+    #[test]
+    fn test_extra_prep_sel_k_idx_k2() {
+        assert_eq!(extra_prep_sel_k_idx(2), 0);
+    }
+
+    #[test]
+    fn test_extra_prep_sel_k_idx_k3() {
+        assert_eq!(extra_prep_sel_k_idx(3), 1);
+    }
+
+    #[test]
+    fn test_alu_main_lane_width_d1() {
+        assert_eq!(alu_main_lane_width::<1>(), 4);
+    }
+
+    #[test]
+    fn test_alu_main_lane_width_d4() {
+        assert_eq!(alu_main_lane_width::<4>(), 16);
+    }
+
+    #[test]
+    fn test_horner_extra_prep_width_k2() {
+        assert_eq!(
+            horner_extra_prep_width(2),
+            1 + PACKED_HORNER_STEP_PREP_WIDTH
+        );
+    }
+
+    #[test]
+    fn test_extra_prep_a_idx_for_step_t1_k2() {
+        assert_eq!(extra_prep_a_idx_for_step(1, 2), 1);
+    }
+}

@@ -84,7 +84,7 @@ fn run_arity4_round_trip(
     let leaf_hash = LeafHash::new(perm.clone());
     let compress = Compress4::new(perm.clone());
     // cap_height = 0 ⇒ the commitment cap is the single root.
-    let mmcs = Mmcs4::new(leaf_hash.clone(), compress, 0);
+    let mmcs = Mmcs4::new(leaf_hash, compress, 0);
 
     let values: Vec<F> = (0..(TREE_HEIGHT * MATRIX_WIDTH) as u64)
         .map(F::from_u64)

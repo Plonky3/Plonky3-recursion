@@ -513,3 +513,55 @@ pub mod goldilocks_params {
     pub type MyPcs = TwoAdicFriPcs<F, Dft, MyMmcs, ChallengeMmcs>;
     pub type MyConfig = StarkConfig<MyPcs, Challenge, Challenger>;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- TestFriScalars ---
+
+    #[test]
+    fn test_fri_scalars_log_blowup_positive() {
+        assert!(test_fri_scalars().log_blowup > 0);
+    }
+
+    #[test]
+    fn test_fri_scalars_query_pow_bits_nonzero() {
+        assert!(test_fri_scalars().query_pow_bits > 0);
+    }
+
+    #[test]
+    fn test_fri_scalars_is_copy() {
+        let a = test_fri_scalars();
+        let _b = a;
+        let _c = a;
+    }
+
+    #[test]
+    fn test_fri_scalars_eq() {
+        assert_eq!(test_fri_scalars(), test_fri_scalars());
+    }
+
+    #[test]
+    fn test_fri_scalars_debug() {
+        let s = alloc::format!("{:?}", test_fri_scalars());
+        assert!(!s.is_empty());
+    }
+
+    // --- LiftPermToQuintic ---
+
+    #[test]
+    fn test_lift_perm_into_inner_roundtrip() {
+        let perm = koala_bear_quintic_params::default_koalabear_poseidon2_16();
+        let lifted: koala_bear_quintic_params::LiftKoalaPermForQuintic =
+            LiftPermToQuintic::new(perm);
+        let _ = lifted.into_inner();
+    }
+
+    #[test]
+    fn test_lift_perm_new_does_not_panic() {
+        let perm = koala_bear_quintic_params::default_koalabear_poseidon2_16();
+        let _lifted: koala_bear_quintic_params::LiftKoalaPermForQuintic =
+            LiftPermToQuintic::new(perm);
+    }
+}

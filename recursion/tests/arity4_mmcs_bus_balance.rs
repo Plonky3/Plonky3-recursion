@@ -99,7 +99,7 @@ fn prove_verify_arity4(matrices: Vec<RowMajorMatrix<F>>, log_max_height: usize, 
     let capacity_ext = permutation_config.capacity_ext();
     builder.enable_poseidon2_perm_width_32::<KoalaBearD4Width32, _>(
         generate_poseidon2_trace::<CF, KoalaBearD4Width32>,
-        perm.clone(),
+        perm,
     );
     builder.enable_recompose::<F>(generate_recompose_trace::<F, CF>);
 

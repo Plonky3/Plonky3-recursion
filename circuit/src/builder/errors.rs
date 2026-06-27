@@ -105,3 +105,269 @@ pub enum CircuitBuilderError {
     #[error("Invalid dimension: expected {expected}, got {actual}")]
     InvalidDimension { expected: usize, actual: usize },
 }
+
+#[cfg(test)]
+mod tests {
+    use alloc::string::ToString;
+
+    use super::*;
+    use crate::ExprId;
+    use crate::ops::NpoTypeId;
+    use crate::types::NonPrimitiveOpId;
+
+    #[test]
+    fn unit_variants_display_non_empty() {
+        assert!(
+            !CircuitBuilderError::Poseidon2MerkleMissingMmcsBit
+                .to_string()
+                .is_empty()
+        );
+        assert!(
+            !CircuitBuilderError::Poseidon2NonMerkleWithMmcsBit
+                .to_string()
+                .is_empty()
+        );
+        assert!(
+            !CircuitBuilderError::Poseidon2Arity4MissingMmcsBit2
+                .to_string()
+                .is_empty()
+        );
+        assert!(
+            !CircuitBuilderError::Poseidon2UnexpectedMmcsBit2
+                .to_string()
+                .is_empty()
+        );
+        assert!(
+            !CircuitBuilderError::Poseidon1MerkleMissingMmcsBit
+                .to_string()
+                .is_empty()
+        );
+        assert!(
+            !CircuitBuilderError::Poseidon1NonMerkleWithMmcsBit
+                .to_string()
+                .is_empty()
+        );
+        assert!(!CircuitBuilderError::MissingOutput.to_string().is_empty());
+    }
+
+    #[test]
+    fn missing_expr_mapping_display() {
+        let err = CircuitBuilderError::MissingExprMapping {
+            expr_id: ExprId::ZERO,
+            context: "test_context".into(),
+        };
+        let s = err.to_string();
+        assert!(!s.is_empty());
+        assert!(s.contains("test_context"));
+    }
+
+    #[test]
+    fn non_primitive_op_arity_display() {
+        let err = CircuitBuilderError::NonPrimitiveOpArity {
+            op: "some_op",
+            expected: "2".into(),
+            got: 3,
+        };
+        let s = err.to_string();
+        assert!(!s.is_empty());
+        assert!(s.contains("some_op"));
+    }
+
+    #[test]
+    fn missing_non_primitive_op_display() {
+        let err = CircuitBuilderError::MissingNonPrimitiveOp {
+            op_id: NonPrimitiveOpId(0),
+        };
+        assert!(!err.to_string().is_empty());
+    }
+
+    #[test]
+    fn malformed_non_primitive_outputs_display() {
+        let err = CircuitBuilderError::MalformedNonPrimitiveOutputs {
+            op_id: NonPrimitiveOpId(1),
+            details: "gap at index 2".into(),
+        };
+        let s = err.to_string();
+        assert!(!s.is_empty());
+        assert!(s.contains("gap at index 2"));
+    }
+
+    #[test]
+    fn unanchored_non_primitive_op_display() {
+        let err = CircuitBuilderError::UnanchoredNonPrimitiveOp {
+            op_id: NonPrimitiveOpId(42),
+        };
+        assert!(!err.to_string().is_empty());
+    }
+
+    #[test]
+    fn npo_type_id_variants_display_non_empty() {
+        let op = NpoTypeId::new("test_op");
+        assert!(
+            !CircuitBuilderError::OpNotAllowed { op: op.clone() }
+                .to_string()
+                .is_empty()
+        );
+        assert!(
+            !CircuitBuilderError::UnsupportedNonPrimitiveOp { op: op.clone() }
+                .to_string()
+                .is_empty()
+        );
+        assert!(
+            !CircuitBuilderError::InvalidNonPrimitiveOpConfiguration { op: op.clone() }
+                .to_string()
+                .is_empty()
+        );
+        assert!(
+            !CircuitBuilderError::FormatOpeningsFailed {
+                op,
+                details: "some detail".into(),
+            }
+            .to_string()
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn simple_field_variants_display_non_empty() {
+        assert!(
+            !CircuitBuilderError::Poseidon2ConfigMismatch {
+                expected: "cfg_a".into(),
+                got: "cfg_b".into(),
+            }
+            .to_string()
+            .is_empty()
+        );
+        assert!(
+            !CircuitBuilderError::Poseidon1ConfigMismatch {
+                expected: "cfg_a".into(),
+                got: "cfg_b".into(),
+            }
+            .to_string()
+            .is_empty()
+        );
+        assert!(
+            !CircuitBuilderError::BinaryDecompositionTooManyBits {
+                expected: 32,
+                n_bits: 64,
+            }
+            .to_string()
+            .is_empty()
+        );
+        assert!(
+            !CircuitBuilderError::DuplicateTag {
+                tag: "my_tag".into()
+            }
+            .to_string()
+            .is_empty()
+        );
+        assert!(
+            !CircuitBuilderError::WrongBatchSize {
+                expected: 4,
+                got: 8
+            }
+            .to_string()
+            .is_empty()
+        );
+        assert!(
+            !CircuitBuilderError::InvalidDimension {
+                expected: 3,
+                actual: 5,
+            }
+            .to_string()
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn all_display_non_empty() {
+        let errors = [
+            CircuitBuilderError::MissingExprMapping {
+                expr_id: ExprId::ZERO,
+                context: "ctx".into(),
+            },
+            CircuitBuilderError::NonPrimitiveOpArity {
+                op: "op",
+                expected: "1".into(),
+                got: 0,
+            },
+            CircuitBuilderError::MissingNonPrimitiveOp {
+                op_id: NonPrimitiveOpId(0),
+            },
+            CircuitBuilderError::MalformedNonPrimitiveOutputs {
+                op_id: NonPrimitiveOpId(0),
+                details: "d".into(),
+            },
+            CircuitBuilderError::UnanchoredNonPrimitiveOp {
+                op_id: NonPrimitiveOpId(0),
+            },
+            CircuitBuilderError::Poseidon2MerkleMissingMmcsBit,
+            CircuitBuilderError::Poseidon2NonMerkleWithMmcsBit,
+            CircuitBuilderError::Poseidon2Arity4MissingMmcsBit2,
+            CircuitBuilderError::Poseidon2UnexpectedMmcsBit2,
+            CircuitBuilderError::Poseidon2ConfigMismatch {
+                expected: "a".into(),
+                got: "b".into(),
+            },
+            CircuitBuilderError::Poseidon1MerkleMissingMmcsBit,
+            CircuitBuilderError::Poseidon1NonMerkleWithMmcsBit,
+            CircuitBuilderError::Poseidon1ConfigMismatch {
+                expected: "a".into(),
+                got: "b".into(),
+            },
+            CircuitBuilderError::BinaryDecompositionTooManyBits {
+                expected: 8,
+                n_bits: 16,
+            },
+            CircuitBuilderError::MissingOutput,
+            CircuitBuilderError::DuplicateTag { tag: "t".into() },
+            CircuitBuilderError::WrongBatchSize {
+                expected: 1,
+                got: 2,
+            },
+            CircuitBuilderError::InvalidDimension {
+                expected: 1,
+                actual: 2,
+            },
+        ];
+        for err in &errors {
+            assert!(!err.to_string().is_empty(), "empty display for {err:?}");
+        }
+        // NpoTypeId variants (not Clone, so constructed separately)
+        assert!(
+            !CircuitBuilderError::OpNotAllowed {
+                op: NpoTypeId::new("x"),
+            }
+            .to_string()
+            .is_empty()
+        );
+        assert!(
+            !CircuitBuilderError::UnsupportedNonPrimitiveOp {
+                op: NpoTypeId::new("x"),
+            }
+            .to_string()
+            .is_empty()
+        );
+        assert!(
+            !CircuitBuilderError::InvalidNonPrimitiveOpConfiguration {
+                op: NpoTypeId::new("x"),
+            }
+            .to_string()
+            .is_empty()
+        );
+        assert!(
+            !CircuitBuilderError::FormatOpeningsFailed {
+                op: NpoTypeId::new("x"),
+                details: "d".into(),
+            }
+            .to_string()
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn debug_non_empty() {
+        let s = alloc::format!("{:?}", CircuitBuilderError::Poseidon2MerkleMissingMmcsBit);
+        assert!(!s.is_empty());
+    }
+}
