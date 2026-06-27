@@ -3,6 +3,7 @@
 mod batch_stark;
 mod errors;
 mod observable;
+mod periodic;
 mod quotient;
 mod stark;
 
@@ -11,5 +12,6 @@ pub use batch_stark::{
 };
 pub use errors::VerificationError;
 pub use observable::ObservableCommitment;
+pub(crate) use periodic::evaluate_periodic_columns_circuit;
 pub use quotient::recompose_quotient_from_chunks_circuit;
 pub use stark::verify_p3_uni_proof_circuit;

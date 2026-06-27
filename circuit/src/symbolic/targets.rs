@@ -35,6 +35,11 @@ pub struct ColumnsTargets<'a> {
     pub local_prep_values: &'a [ExprId],
     /// Preprocessed column values at the next row.
     pub next_prep_values: &'a [ExprId],
+    /// Periodic column values evaluated at the opening point.
+    ///
+    /// Periodic columns are single-row (the symbolic entry carries no row
+    /// offset), so one value per column suffices.
+    pub periodic_values: &'a [ExprId],
     /// Main trace column values at the current row.
     pub local_values: &'a [ExprId],
     /// Main trace column values at the next row.
@@ -44,12 +49,11 @@ pub struct ColumnsTargets<'a> {
 impl ColumnsTargets<'_> {
     /// Map a base-field variable to its circuit target.
     ///
-    /// Supports preprocessed, main trace, and public value entries.
+    /// Supports preprocessed, main trace, periodic, and public value entries.
     ///
     /// # Panics
     ///
-    /// - If the row offset exceeds 1 (only current and next rows are supported).
-    /// - If the entry is a periodic column (not yet supported).
+    /// If the row offset exceeds 1 (only current and next rows are supported).
     pub fn resolve_base_var(&self, entry: &BaseEntry, index: usize) -> ExprId {
         match entry {
             // Preprocessed columns: offset 0 = current row, offset 1 = next row.
@@ -60,9 +64,9 @@ impl ColumnsTargets<'_> {
             BaseEntry::Main { offset: 1 } => self.next_values[index],
             // Public values are not row-dependent.
             BaseEntry::Public => self.public_values[index],
-            BaseEntry::Periodic => {
-                unimplemented!("Periodic values are not supported.")
-            }
+            // Periodic columns are recomputed by the verifier and evaluated at
+            // the opening point; they carry no row offset.
+            BaseEntry::Periodic => self.periodic_values[index],
             // Only two-row windows (current + next) are supported.
             _ => panic!("Cannot have expressions involving more than two rows."),
         }
@@ -108,11 +112,12 @@ mod tests {
     /// - next_prep:               [12, 13]
     /// - local_values (main):     [14, 15]
     /// - next_values (main):      [16, 17]
-    fn make_ids() -> [ExprId; 18] {
+    /// - periodic_values:         [18, 19]
+    fn make_ids() -> [ExprId; 20] {
         core::array::from_fn(|i| ExprId(i as u32))
     }
 
-    fn make_columns(ids: &[ExprId; 18]) -> ColumnsTargets<'_> {
+    fn make_columns(ids: &[ExprId; 20]) -> ColumnsTargets<'_> {
         ColumnsTargets {
             challenges: &ids[0..2],
             public_values: &ids[2..4],
@@ -121,6 +126,7 @@ mod tests {
             permutation_values: &ids[8..10],
             local_prep_values: &ids[10..12],
             next_prep_values: &ids[12..14],
+            periodic_values: &ids[18..20],
             local_values: &ids[14..16],
             next_values: &ids[16..18],
         }
@@ -179,11 +185,11 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Periodic values are not supported")]
-    fn resolve_base_var_periodic_panics() {
+    fn resolve_base_var_periodic() {
         let ids = make_ids();
         let cols = make_columns(&ids);
-        cols.resolve_base_var(&BaseEntry::Periodic, 0);
+        assert_eq!(cols.resolve_base_var(&BaseEntry::Periodic, 0), ids[18]);
+        assert_eq!(cols.resolve_base_var(&BaseEntry::Periodic, 1), ids[19]);
     }
 
     #[test]

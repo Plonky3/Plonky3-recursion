@@ -1,5 +1,7 @@
 //! Trait for recursive AIR constraint evaluation.
 
+use alloc::vec::Vec;
+
 use hashbrown::HashMap;
 use p3_air::symbolic::AirLayout;
 use p3_air::{Air, SymbolicExpressionExt};
@@ -29,6 +31,16 @@ pub trait RecursiveAir<F: Field, EF: ExtensionField<F>, LG: LookupProtocol> {
     ///
     /// This corresponds to the width of the trace matrix.
     fn width(&self) -> usize;
+
+    /// Returns the number of periodic columns the AIR declares.
+    fn num_periodic_columns(&self) -> usize;
+
+    /// Returns the AIR's periodic column tables.
+    ///
+    /// Each entry is the length-`period` evaluation vector of one periodic
+    /// column. Periodic columns are verifier-recomputable AIR constants and are
+    /// never committed; the verifier evaluates them at the opening point.
+    fn periodic_columns(&self) -> Vec<Vec<F>>;
 
     /// Evaluate all AIR constraints and fold them into a single target.
     ///
@@ -106,6 +118,14 @@ where
         Self::width(self)
     }
 
+    fn num_periodic_columns(&self) -> usize {
+        p3_air::BaseAir::<F>::num_periodic_columns(self)
+    }
+
+    fn periodic_columns(&self) -> Vec<Vec<F>> {
+        p3_air::BaseAir::<F>::periodic_columns(self)
+    }
+
     fn eval_folded_circuit(
         &self,
         builder: &mut CircuitBuilder<EF>,
@@ -120,6 +140,11 @@ where
         let LookupMetadata { contexts } = lookup_metadata;
 
         let num_preprocessed = columns.local_prep_values.len();
+        debug_assert_eq!(
+            columns.periodic_values.len(),
+            p3_air::BaseAir::<F>::num_periodic_columns(self),
+            "periodic_values targets must match the AIR's declared periodic column count"
+        );
         // Single-terminal layout: one permutation value (the AIR terminal) when it declares any
         // lookup, none otherwise. `get_symbolic_constraints` recomputes this from `contexts`.
         let num_permutation_values = usize::from(!contexts.is_empty());
@@ -127,6 +152,7 @@ where
             preprocessed_width: num_preprocessed,
             main_width: self.width(),
             num_public_values: self.num_public_values(),
+            num_periodic_columns: p3_air::BaseAir::<F>::num_periodic_columns(self),
             num_permutation_values,
             ..Default::default()
         };
@@ -176,6 +202,7 @@ where
             preprocessed_width,
             main_width: self.width(),
             num_public_values: self.num_public_values(),
+            num_periodic_columns: p3_air::BaseAir::<F>::num_periodic_columns(self),
             ..Default::default()
         };
         get_log_num_quotient_chunks(self, layout, contexts, is_zk, lookup_gadget)

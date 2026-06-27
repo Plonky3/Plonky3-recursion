@@ -229,8 +229,8 @@ mod tests {
     use alloc::vec::Vec;
 
     use p3_air::{
-        Air, AirLayout, BaseAir, BaseEntry, BaseLeaf, ExtEntry, ExtLeaf, RowWindow,
-        SymbolicExpressionExt, SymbolicVariable, SymbolicVariableExt,
+        Air, AirBuilder, AirLayout, BaseAir, BaseEntry, BaseLeaf, ExtEntry, ExtLeaf, RowWindow,
+        SymbolicExpressionExt, SymbolicVariable, SymbolicVariableExt, WindowAccess,
     };
     use p3_field::Dup;
     use p3_matrix::dense::RowMajorMatrixView;
@@ -371,6 +371,7 @@ mod tests {
             permutation_values: &[],
             local_prep_values: &[],
             next_prep_values: &[],
+            periodic_values: &[],
             local_values: &circuit_local_values,
             next_values: &circuit_next_values,
         };
@@ -396,6 +397,154 @@ mod tests {
         let mut builder = builder.runner();
         builder.set_public_inputs(&all_public_values).unwrap();
         let _ = builder.run()?;
+
+        Ok(())
+    }
+
+    /// A minimal AIR with one periodic column and a single-row constraint that
+    /// references it (`main[0] == periodic[0]`). Used to check that periodic
+    /// columns are emitted, resolved, and folded consistently with the native
+    /// constraint folder.
+    struct PeriodicTestAir;
+
+    impl<T> BaseAir<T> for PeriodicTestAir {
+        fn width(&self) -> usize {
+            1
+        }
+
+        fn num_periodic_columns(&self) -> usize {
+            1
+        }
+    }
+
+    impl<AB: AirBuilder> Air<AB> for PeriodicTestAir {
+        fn eval(&self, builder: &mut AB) {
+            let periodic = builder.periodic_values()[0];
+            let main = builder.main();
+            let local = main.current_slice()[0];
+            builder.assert_eq(local, periodic);
+        }
+    }
+
+    /// Like `test_symbolic_compiler`, but for an AIR that reads a periodic
+    /// column: the compiled circuit must fold to the same value as the native
+    /// `VerifierConstraintFolder` when both are given identical periodic values.
+    #[test]
+    fn test_symbolic_compiler_periodic() -> Result<(), CircuitError> {
+        let mut rng = SmallRng::seed_from_u64(7);
+
+        let air = PeriodicTestAir;
+        let alpha = Challenge::from_u64(rng.next_u64());
+
+        // One main column, one periodic column; random current/next row values.
+        let trace_local = vec![Challenge::from_prime_subfield(rng.random())];
+        let trace_next = vec![Challenge::from_prime_subfield(rng.random())];
+        let periodic_vals = vec![Challenge::from_prime_subfield(rng.random())];
+
+        let main = VerticalPair::new(
+            RowMajorMatrixView::new_row(&trace_local),
+            RowMajorMatrixView::new_row(&trace_next),
+        );
+        let sels = [
+            Challenge::from_u64(rng.next_u64()),
+            Challenge::from_u64(rng.next_u64()),
+            Challenge::from_u64(rng.next_u64()),
+        ];
+        let preprocessed = VerticalPair::new(
+            RowMajorMatrixView::new(&[], 0),
+            RowMajorMatrixView::new(&[], 0),
+        );
+        let preprocessed_window =
+            RowWindow::from_two_rows(preprocessed.top.values, preprocessed.bottom.values);
+
+        // Reference folded value from the native folder, with periodic values supplied.
+        let mut folder: VerifierConstraintFolder<'_, MyConfig> = VerifierConstraintFolder {
+            main,
+            preprocessed,
+            preprocessed_window,
+            periodic_values: &periodic_vals,
+            public_values: &[],
+            is_first_row: sels[0],
+            is_last_row: sels[1],
+            is_transition: sels[2],
+            alpha,
+            accumulator: Challenge::ZERO,
+        };
+        air.eval(&mut folder);
+        let folded_constraints = folder.accumulator;
+
+        let layout = AirLayout {
+            preprocessed_width: 0,
+            main_width: BaseAir::<F>::width(&air),
+            num_public_values: 0,
+            permutation_width: 0,
+            num_permutation_challenges: 0,
+            num_permutation_values: 0,
+            num_periodic_columns: BaseAir::<F>::num_periodic_columns(&air),
+        };
+
+        let symbolic_constraints: Vec<SymbolicExpression<Challenge>> =
+            get_symbolic_constraints(&air, layout);
+        assert!(
+            !symbolic_constraints.is_empty(),
+            "periodic AIR should emit at least one constraint"
+        );
+
+        let folded_symbolic_constraints = {
+            let mut acc =
+                SymbolicExpression::<Challenge>::Leaf(BaseLeaf::Constant(Challenge::ZERO));
+            let ch = SymbolicExpression::Leaf(BaseLeaf::Constant(alpha));
+            for s_c in symbolic_constraints.iter() {
+                acc = ch.dup() * acc;
+                acc += s_c.dup();
+            }
+            acc
+        };
+
+        let mut circuit = CircuitBuilder::new();
+        let circuit_sels = [
+            circuit.public_input(),
+            circuit.public_input(),
+            circuit.public_input(),
+        ];
+        let circuit_periodic = [circuit.public_input()];
+        let circuit_local_values = [circuit.public_input()];
+        let circuit_next_values = [circuit.public_input()];
+
+        let row_selectors = RowSelectorsTargets {
+            is_first_row: circuit_sels[0],
+            is_last_row: circuit_sels[1],
+            is_transition: circuit_sels[2],
+        };
+        let columns = ColumnsTargets {
+            challenges: &[],
+            public_values: &[],
+            permutation_local_values: &[],
+            permutation_next_values: &[],
+            permutation_values: &[],
+            local_prep_values: &[],
+            next_prep_values: &[],
+            periodic_values: &circuit_periodic,
+            local_values: &circuit_local_values,
+            next_values: &circuit_next_values,
+        };
+
+        let compiler = SymbolicCompiler::new(row_selectors, &columns);
+        let mut cache = HashMap::new();
+        let sum = compiler.compile_base(&folded_symbolic_constraints, &mut circuit, &mut cache);
+
+        let final_result_const = circuit.define_const(folded_constraints);
+        circuit.connect(final_result_const, sum);
+
+        let mut all_public_values = sels.to_vec();
+        all_public_values.extend_from_slice(&periodic_vals);
+        all_public_values.push(trace_local[0]);
+        all_public_values.push(trace_next[0]);
+
+        let built = circuit.build().unwrap();
+        let mut runner = built.runner();
+        runner.set_public_inputs(&all_public_values).unwrap();
+        runner.run()?;
 
         Ok(())
     }
@@ -449,6 +598,7 @@ mod tests {
             permutation_values: &[],
             local_prep_values: &[],
             next_prep_values: &[],
+            periodic_values: &[],
             local_values: &local,
             next_values: &next,
         };
@@ -576,6 +726,7 @@ mod tests {
             permutation_values: &[],
             local_prep_values: &[],
             next_prep_values: &[],
+            periodic_values: &[],
             local_values: &local,
             next_values: &next,
         };
@@ -643,6 +794,7 @@ mod tests {
             permutation_values: &[],
             local_prep_values: &[],
             next_prep_values: &[],
+            periodic_values: &[],
             local_values: &[],
             next_values: &[],
         };
@@ -690,6 +842,7 @@ mod tests {
             permutation_values: &[],
             local_prep_values: &[],
             next_prep_values: &[],
+            periodic_values: &[],
             local_values: &[],
             next_values: &[],
         };
@@ -742,6 +895,7 @@ mod tests {
             permutation_values: &[],
             local_prep_values: &[],
             next_prep_values: &[],
+            periodic_values: &[],
             local_values: &[],
             next_values: &[],
         };
@@ -801,6 +955,7 @@ mod tests {
             permutation_values: &[],
             local_prep_values: &[],
             next_prep_values: &[],
+            periodic_values: &[],
             local_values: &[],
             next_values: &[],
         };

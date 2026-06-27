@@ -965,6 +965,16 @@ where
         // AIR declares lookups, none otherwise).
         let permutation_values: Vec<Target> = lookup_terminals[i].into_iter().collect();
         let sels = pcs.selectors_at_point_circuit(circuit, trace_domain, &zeta);
+        // Periodic columns are verifier-recomputed AIR constants, evaluated at the
+        // opening point. They are not committed, so this touches neither the
+        // transcript nor the proof shape (matching the native batch verifier).
+        let periodic_columns = air.periodic_columns();
+        let periodic_values = pcs.evaluate_periodic_columns_at_point_circuit(
+            circuit,
+            trace_domain,
+            &periodic_columns,
+            zeta,
+        )?;
         let columns_targets = ColumnsTargets {
             challenges: &challenges_per_instance[i],
             public_values,
@@ -973,6 +983,7 @@ where
             permutation_values: &permutation_values,
             local_prep_values,
             next_prep_values,
+            periodic_values: &periodic_values,
             local_values: &inst.opened_values_no_lookups.trace_local_targets,
             next_values: &inst.opened_values_no_lookups.trace_next_targets,
         };

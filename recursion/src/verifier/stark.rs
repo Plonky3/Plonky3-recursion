@@ -277,6 +277,15 @@ where
     // Evaluate AIR constraints at out-of-domain point
     // Note that lookups are not supported for recursive single STARK verification.
     let sels = pcs.selectors_at_point_circuit(circuit, &init_trace_domain, &zeta);
+    // Periodic columns are verifier-recomputed AIR constants, evaluated at the
+    // opening point over the same `init_trace_domain` the native verifier uses.
+    let periodic_columns = air.periodic_columns();
+    let periodic_values = pcs.evaluate_periodic_columns_at_point_circuit(
+        circuit,
+        &init_trace_domain,
+        &periodic_columns,
+        zeta,
+    )?;
     let columns_targets = ColumnsTargets {
         challenges: &[],
         public_values,
@@ -289,6 +298,7 @@ where
         next_prep_values: opt_opened_preprocessed_next_targets
             .as_ref()
             .map_or(&[], |p| p),
+        periodic_values: &periodic_values,
         local_values: opened_trace_local_targets,
         next_values: opened_trace_next_targets,
     };

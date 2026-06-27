@@ -243,6 +243,14 @@ impl<F: Field, EF: ExtensionField<F>, LG: LookupProtocol> RecursiveAir<F, EF, LG
         0
     }
 
+    fn num_periodic_columns(&self) -> usize {
+        0
+    }
+
+    fn periodic_columns(&self) -> Vec<Vec<F>> {
+        Vec::new()
+    }
+
     fn eval_folded_circuit(
         &self,
         builder: &mut CircuitBuilder<EF>,

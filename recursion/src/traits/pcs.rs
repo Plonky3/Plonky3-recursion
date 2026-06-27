@@ -3,7 +3,7 @@
 use alloc::vec::Vec;
 
 use p3_circuit::{CircuitBuilder, CircuitBuilderError, NonPrimitiveOpId};
-use p3_uni_stark::StarkGenericConfig;
+use p3_uni_stark::{StarkGenericConfig, Val};
 
 use super::Recursive;
 use crate::challenger_perm::ChallengerPermConfig;
@@ -110,6 +110,30 @@ pub trait RecursivePcs<
         domain: &Domain,
         point: &Target,
     ) -> RecursiveLagrangeSelectors;
+
+    /// Evaluate each periodic column at `point` within the circuit.
+    ///
+    /// Periodic columns are verifier-recomputable AIR constants (never
+    /// committed). The returned targets, aligned with `periodic_columns`, match
+    /// the native `PolynomialSpace::evaluate_periodic_column_at` over `domain`.
+    ///
+    /// # Parameters
+    /// - `circuit`: Circuit builder for creating operations
+    /// - `domain`: The trace domain the periodic columns repeat over
+    /// - `periodic_columns`: The AIR's periodic column tables (length-`period`
+    ///   evaluation vectors)
+    /// - `point`: The opening point (e.g. `zeta`)
+    ///
+    /// # Returns
+    /// One target per periodic column, or an error if a column length is not a
+    /// power of two or exceeds the trace domain size.
+    fn evaluate_periodic_columns_at_point_circuit(
+        &self,
+        circuit: &mut CircuitBuilder<SC::Challenge>,
+        domain: &Domain,
+        periodic_columns: &[Vec<Val<SC>>],
+        point: Target,
+    ) -> Result<Vec<Target>, VerificationError>;
 
     /// Create a disjoint domain for the quotient polynomial.
     ///

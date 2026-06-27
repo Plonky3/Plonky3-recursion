@@ -907,6 +907,16 @@ where
         }
     }
 
+    fn evaluate_periodic_columns_at_point_circuit(
+        &self,
+        circuit: &mut CircuitBuilder<SC::Challenge>,
+        domain: &TwoAdicMultiplicativeCoset<Val<SC>>,
+        periodic_columns: &[Vec<Val<SC>>],
+        point: Target,
+    ) -> Result<Vec<Target>, VerificationError> {
+        crate::verifier::evaluate_periodic_columns_circuit(circuit, domain, periodic_columns, point)
+    }
+
     fn create_disjoint_domain(
         &self,
         trace_domain: TwoAdicMultiplicativeCoset<Val<SC>>,
@@ -1296,6 +1306,16 @@ where
             row_selectors,
             inv_vanishing,
         }
+    }
+
+    fn evaluate_periodic_columns_at_point_circuit(
+        &self,
+        circuit: &mut CircuitBuilder<SC::Challenge>,
+        domain: &TwoAdicMultiplicativeCoset<Val<SC>>,
+        periodic_columns: &[Vec<Val<SC>>],
+        point: Target,
+    ) -> Result<Vec<Target>, VerificationError> {
+        crate::verifier::evaluate_periodic_columns_circuit(circuit, domain, periodic_columns, point)
     }
 
     fn create_disjoint_domain(
