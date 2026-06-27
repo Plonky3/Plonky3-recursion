@@ -162,6 +162,68 @@ pub mod air_satisfaction {
     use p3_matrix::dense::{RowMajorMatrix, RowMajorMatrixView};
     use p3_matrix::stack::ViewPair;
 
+    /// Evaluate the AIR constraints for one row. Returns `Some(failures)` if the row
+    /// violates any constraint, `None` if it satisfies all of them.
+    fn eval_air_row<F, EF, A>(
+        air: &A,
+        main: &RowMajorMatrix<F>,
+        preprocessed: &Option<RowMajorMatrix<F>>,
+        public_values: &[F],
+        row: usize,
+        height: usize,
+    ) -> Option<String>
+    where
+        F: Field,
+        EF: ExtensionField<F>,
+        A: for<'a> Air<DebugConstraintBuilder<'a, F, EF>>,
+    {
+        let next = (row + 1) % height;
+        let local = main.row_slice(row).unwrap();
+        let next_row = main.row_slice(next).unwrap();
+        let main_pair = ViewPair::new(
+            RowMajorMatrixView::new_row(&*local),
+            RowMajorMatrixView::new_row(&*next_row),
+        );
+
+        let (prep_local, prep_next) = preprocessed.as_ref().map_or((None, None), |p| {
+            (
+                Some(p.row_slice(row).unwrap()),
+                Some(p.row_slice(next).unwrap()),
+            )
+        });
+        let prep_pair = match (prep_local.as_ref(), prep_next.as_ref()) {
+            (Some(l), Some(n)) => ViewPair::new(
+                RowMajorMatrixView::new_row(&**l),
+                RowMajorMatrixView::new_row(&**n),
+            ),
+            _ => ViewPair::new(
+                RowMajorMatrixView::new(&[], 0),
+                RowMajorMatrixView::new(&[], 0),
+            ),
+        };
+
+        let periodic_row = air.periodic_values(row);
+        let perm_pair = ViewPair::<EF>::new(
+            RowMajorMatrixView::new(&[], 0),
+            RowMajorMatrixView::new(&[], 0),
+        );
+        let mut builder = DebugConstraintBuilder::<F, EF>::new_with_permutation(
+            row,
+            main_pair,
+            prep_pair,
+            public_values,
+            F::from_bool(row == 0),
+            F::from_bool(row == height - 1),
+            F::from_bool(row != height - 1),
+            perm_pair,
+            &[],
+            &[],
+            &periodic_row,
+        );
+        air.eval(&mut builder);
+        builder.has_failures().then(|| builder.formatted_failures())
+    }
+
     /// Run `air.eval` on every (row, row_next) pair and return the first row that violates a
     /// constraint, together with the formatted failure list.
     pub fn check_air_satisfies<F, EF, A>(
@@ -188,52 +250,10 @@ pub mod air_satisfaction {
         }
 
         for row in 0..height {
-            let next = (row + 1) % height;
-            let local = main.row_slice(row).unwrap();
-            let next_row = main.row_slice(next).unwrap();
-            let main_pair = ViewPair::new(
-                RowMajorMatrixView::new_row(&*local),
-                RowMajorMatrixView::new_row(&*next_row),
-            );
-
-            let (prep_local, prep_next) = preprocessed.as_ref().map_or((None, None), |p| {
-                (
-                    Some(p.row_slice(row).unwrap()),
-                    Some(p.row_slice(next).unwrap()),
-                )
-            });
-            let prep_pair = match (prep_local.as_ref(), prep_next.as_ref()) {
-                (Some(l), Some(n)) => ViewPair::new(
-                    RowMajorMatrixView::new_row(&**l),
-                    RowMajorMatrixView::new_row(&**n),
-                ),
-                _ => ViewPair::new(
-                    RowMajorMatrixView::new(&[], 0),
-                    RowMajorMatrixView::new(&[], 0),
-                ),
-            };
-
-            let periodic_row = air.periodic_values(row);
-            let perm_pair = ViewPair::<EF>::new(
-                RowMajorMatrixView::new(&[], 0),
-                RowMajorMatrixView::new(&[], 0),
-            );
-            let mut builder = DebugConstraintBuilder::<F, EF>::new_with_permutation(
-                row,
-                main_pair,
-                prep_pair,
-                public_values,
-                F::from_bool(row == 0),
-                F::from_bool(row == height - 1),
-                F::from_bool(row != height - 1),
-                perm_pair,
-                &[],
-                &[],
-                &periodic_row,
-            );
-            air.eval(&mut builder);
-            if builder.has_failures() {
-                return Err((row, builder.formatted_failures()));
+            if let Some(failures) =
+                eval_air_row::<F, EF, A>(air, main, &preprocessed, public_values, row, height)
+            {
+                return Err((row, failures));
             }
         }
         Ok(())
@@ -261,63 +281,18 @@ pub mod air_satisfaction {
     {
         let height = main.height();
         let preprocessed = air.preprocessed_trace();
-
-        let mut any_failure = false;
         let mut rendered: Vec<(usize, String)> = Vec::new();
 
         for row in 0..height {
-            let next = (row + 1) % height;
-            let local = main.row_slice(row).unwrap();
-            let next_row = main.row_slice(next).unwrap();
-            let main_pair = ViewPair::new(
-                RowMajorMatrixView::new_row(&*local),
-                RowMajorMatrixView::new_row(&*next_row),
-            );
-
-            let (prep_local, prep_next) = preprocessed.as_ref().map_or((None, None), |p| {
-                (
-                    Some(p.row_slice(row).unwrap()),
-                    Some(p.row_slice(next).unwrap()),
-                )
-            });
-            let prep_pair = match (prep_local.as_ref(), prep_next.as_ref()) {
-                (Some(l), Some(n)) => ViewPair::new(
-                    RowMajorMatrixView::new_row(&**l),
-                    RowMajorMatrixView::new_row(&**n),
-                ),
-                _ => ViewPair::new(
-                    RowMajorMatrixView::new(&[], 0),
-                    RowMajorMatrixView::new(&[], 0),
-                ),
-            };
-
-            let periodic_row = air.periodic_values(row);
-            let perm_pair = ViewPair::<EF>::new(
-                RowMajorMatrixView::new(&[], 0),
-                RowMajorMatrixView::new(&[], 0),
-            );
-            let mut builder = DebugConstraintBuilder::<F, EF>::new_with_permutation(
-                row,
-                main_pair,
-                prep_pair,
-                &[],
-                F::from_bool(row == 0),
-                F::from_bool(row == height - 1),
-                F::from_bool(row != height - 1),
-                perm_pair,
-                &[],
-                &[],
-                &periodic_row,
-            );
-            air.eval(&mut builder);
-            if builder.has_failures() {
-                any_failure = true;
-                rendered.push((row, builder.formatted_failures()));
+            if let Some(failures) =
+                eval_air_row::<F, EF, A>(air, main, &preprocessed, &[], row, height)
+            {
+                rendered.push((row, failures));
             }
         }
 
         assert!(
-            any_failure,
+            !rendered.is_empty(),
             "expected at least one constraint failure on the invalid trace, but every row satisfied the AIR ({} rows, formatted: {rendered:?})",
             height
         );
