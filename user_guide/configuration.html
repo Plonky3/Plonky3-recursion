@@ -254,12 +254,13 @@ assumptions used in these heuristics.</p>
 <p>The total row count of each table is <code>ceil(num_ops / num_lanes)</code>, padded to the next power of two. The <strong>maximum table height</strong> across all tables determines the FRI polynomial degree and dominates proving cost.</p>
 <h3 id="choosing-packing-values"><a class="header" href="#choosing-packing-values">Choosing packing values</a></h3>
 <p>The goal is to balance table heights so no single table forces a large power-of-two padding.</p>
-<p><strong>Example</strong> — a recursive verification circuit with ~65K witness ops, ~43K public ops, ~60K ALU ops:</p>
+<p><strong>Example</strong> — a recursive verification circuit with ~43K public ops and ~60K ALU ops
+(columns are <code>public_lanes, alu_lanes</code>):</p>
 <div class="table-wrapper"><table><thead><tr><th>Packing</th><th>Max height</th><th>Notes</th></tr></thead><tbody>
-<tr><td><code>(5, 1, 3)</code></td><td>2^16 = 65,536</td><td>Public table (43K/1 = 43K rows) forces 2^16</td></tr>
-<tr><td><code>(5, 2, 3)</code></td><td>2^15 = 32,768</td><td>Public drops to 21.5K, halving the max</td></tr>
-<tr><td><code>(5, 3, 3)</code></td><td>2^15 = 32,768</td><td>Public at 14.3K, ALU at 20K — both fit in 2^15</td></tr>
-<tr><td><code>(8, 4, 4)</code></td><td>2^14 = 16,384</td><td>Everything fits, but tables are very wide</td></tr>
+<tr><td><code>(1, 1)</code></td><td>2^16 = 65,536</td><td>Public table (43K/1 = 43K rows) forces 2^16</td></tr>
+<tr><td><code>(2, 1)</code></td><td>2^15 = 32,768</td><td>Public drops to 21.5K, halving the max</td></tr>
+<tr><td><code>(3, 2)</code></td><td>2^15 = 32,768</td><td>Public at 14.3K, ALU at 30K — both fit in 2^15</td></tr>
+<tr><td><code>(4, 4)</code></td><td>2^14 = 16,384</td><td>Everything fits, but tables are very wide</td></tr>
 </tbody></table>
 </div>
 <p>Halving the max table height cuts FRI proving time by roughly 40-50% (one fewer folding round, half the polynomial size).</p>

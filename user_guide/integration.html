@@ -220,7 +220,7 @@ struct MyRecursionConfig {
         }
     }
 
-    fn enable_poseidon2_on_circuit(
+    fn prepare_circuit_for_verification(
         &amp;self,
         circuit: &amp;mut CircuitBuilder&lt;Challenge&gt;,
     ) -&gt; Result&lt;(), VerificationError&gt; {
@@ -251,8 +251,18 @@ struct MyRecursionConfig {
 <p>To recursively verify a proof produced by a custom AIR, implement <code>RecursiveAir</code> for your AIR type:</p>
 <pre><code class="language-rust ignore">impl RecursiveAir&lt;F, EF, LogUpGadget&gt; for MyAir {
     fn width(&amp;self) -&gt; usize {
-        // Number of main trace columns in your AIR
+        // Number of main trace columns in your AIR.
         MY_AIR_WIDTH
+    }
+
+    fn num_periodic_columns(&amp;self) -&gt; usize {
+        // Number of periodic columns the AIR declares (0 if none).
+        0
+    }
+
+    fn periodic_columns(&amp;self) -&gt; Vec&lt;Vec&lt;F&gt;&gt; {
+        // Each entry is the evaluation vector of one periodic column.
+        Vec::new()
     }
 
     fn eval_folded_circuit(
@@ -273,7 +283,6 @@ struct MyRecursionConfig {
         &amp;self,
         preprocessed_width: usize,
         contexts: &amp;[Lookup&lt;F&gt;],
-        lookup_data: &amp;[LookupData&lt;usize&gt;],
         is_zk: usize,
         lookup_gadget: &amp;LogUpGadget,
     ) -&gt; usize {
@@ -281,7 +290,7 @@ struct MyRecursionConfig {
         // Must match what the native prover uses.
     }
 }</code></pre>
-<p>For AIRs built with Plonky3's <code>Air</code> trait, the symbolic constraint extraction and folding can be done generically using <code>get_symbolic_constraints</code> and <code>symbolic_to_circuit</code>, as described in <a href="./circuit_building.html#building-recursive-air-constraints">Circuit Building</a>.</p>
+<p>AIRs that implement Plonky3's <code>Air</code> trait get a blanket <code>RecursiveAir</code> implementation automatically — <code>num_periodic_columns</code>, <code>periodic_columns</code>, <code>eval_folded_circuit</code>, and <code>get_log_num_quotient_chunks</code> are all derived from the symbolic constraint system. You only need to implement <code>RecursiveAir</code> manually for AIRs that cannot be expressed symbolically.</p>
 <p>Then wrap your proof in <code>RecursionInput::UniStark</code>:</p>
 <pre><code class="language-rust ignore">let input = RecursionInput::UniStark {
     proof: &amp;my_proof,

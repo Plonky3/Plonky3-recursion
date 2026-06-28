@@ -187,7 +187,7 @@
         proof: &amp;'a Proof&lt;SC&gt;,
         air: &amp;'a A,
         public_inputs: Vec&lt;Val&lt;SC&gt;&gt;,
-        preprocessed_commit: Option&lt;Commitment&gt;,
+        preprocessed_commit: Option&lt;&lt;SC::Pcs as Pcs&lt;SC::Challenge, SC::Challenger&gt;&gt;::Commitment&gt;,
     },
     /// A batch STARK proof (e.g. from p3-batch-stark or circuit-prover).
     BatchStark {
@@ -199,49 +199,57 @@
 <p>Use <code>UniStark</code> when verifying an external Plonky3 proof (e.g. Keccak AIR). Use <code>BatchStark</code> when verifying a proof produced by this library's own prover.</p>
 <h3 id="recursionoutput"><a class="header" href="#recursionoutput"><code>RecursionOutput</code></a></h3>
 <p>The output of one recursion step:</p>
-<pre><code class="language-rust ignore">pub struct RecursionOutput&lt;SC&gt;(pub BatchStarkProof&lt;SC&gt;, pub CircuitProverData&lt;SC&gt;);</code></pre>
-<p>Contains the batch-STARK proof and the prover data needed for further chaining. Convert it to a <code>RecursionInput</code> for the next layer:</p>
+<pre><code class="language-rust ignore">pub struct RecursionOutput&lt;SC&gt;(pub BatchStarkProof&lt;SC&gt;, pub Rc&lt;CircuitProverData&lt;SC&gt;&gt;);</code></pre>
+<p>Contains the batch-STARK proof and the prover data (reference-counted for cheap cloning) needed for further chaining. Convert it to a <code>RecursionInput</code> for the next layer:</p>
 <pre><code class="language-rust ignore">let next_input = output.into_recursion_input::&lt;BatchOnly&gt;();</code></pre>
 <p>The <code>BatchOnly</code> marker type satisfies the <code>RecursiveAir</code> bound without carrying any AIR data — it's a no-op used when the next layer only needs to verify the recursive batch proof.</p>
 <h3 id="provenextlayerparams"><a class="header" href="#provenextlayerparams"><code>ProveNextLayerParams</code></a></h3>
 <p>Controls the proving pipeline:</p>
 <pre><code class="language-rust ignore">pub struct ProveNextLayerParams {
     pub table_packing: TablePacking,
-    pub use_poseidon2_in_circuit: bool,
+    pub constraint_profile: ConstraintProfile,
 }</code></pre>
 <ul>
 <li><code>table_packing</code>: How to distribute operations across table lanes. See <a href="./configuration.html#table-packing">Configuration</a>.</li>
-<li><code>use_poseidon2_in_circuit</code>: Whether to register the Poseidon2 non-primitive table. Should be <code>true</code> for FRI verification.</li>
+<li><code>constraint_profile</code>: Which AIR variants the prover uses for this layer (<code>ConstraintProfile::Standard</code> for normal use).</li>
 </ul>
+<p>The default is <code>TablePacking::new(1, 4)</code> with <code>ConstraintProfile::Standard</code>.</p>
 <h2 id="entry-points"><a class="header" href="#entry-points">Entry points</a></h2>
 <h3 id="build_and_prove_next_layer"><a class="header" href="#build_and_prove_next_layer"><code>build_and_prove_next_layer</code></a></h3>
 <p>The simplest way to prove one recursion step. Builds the verifier circuit, runs it, and proves it in one call:</p>
 <pre><code class="language-rust ignore">let output = build_and_prove_next_layer::&lt;SC, A, B, D&gt;(
     &amp;input, &amp;config, &amp;backend, &amp;params,
 )?;</code></pre>
-<h3 id="prove_next_layer"><a class="header" href="#prove_next_layer"><code>prove_next_layer</code></a></h3>
-<p>For better performance in production, separate circuit building from proving. The circuit only needs to be built once if the proof shape doesn't change between invocations:</p>
-<pre><code class="language-rust ignore">// Build once
-let (circuit, verifier_result) = build_next_layer_circuit(&amp;input, &amp;config, &amp;backend)?;
+<h3 id="prove_next_layer-split-buildprove"><a class="header" href="#prove_next_layer-split-buildprove"><code>prove_next_layer</code> (split build/prove)</a></h3>
+<p>For better performance across repeated invocations, separate circuit building, preprocessing, and proving. The circuit only needs to be built and preprocessed once when the proof shape is stable:</p>
+<pre><code class="language-rust ignore">// Build the circuit once (shape-dependent)
+let (circuit, verifier_result) = build_next_layer_circuit::&lt;SC, A, B, D&gt;(
+    &amp;input, &amp;config, &amp;backend,
+)?;
 
-// Prove (can be called multiple times with different inputs of the same shape)
+// Preprocess once (commits to constant columns; reusable for same circuit shape)
+let prep = build_next_layer_prep::&lt;SC, A, B, D&gt;(
+    &amp;circuit, &amp;config, &amp;backend, &amp;params,
+)?;
+
+// Prove repeatedly with different inputs of the same shape
 let output = prove_next_layer::&lt;SC, A, B, D&gt;(
     &amp;input, &amp;circuit, &amp;verifier_result, &amp;config, &amp;backend, &amp;params,
+    Some(&amp;prep),  // pass None to skip prep reuse
 )?;</code></pre>
+<p><code>NextLayerPrepCache</code> holds the committed preprocessed columns and the prover. Reusing it across same-shape layers avoids re-computing the LDE and Merkle-tree commitment on every call.</p>
 <h3 id="build_and_prove_aggregation_layer"><a class="header" href="#build_and_prove_aggregation_layer"><code>build_and_prove_aggregation_layer</code></a></h3>
 <p>Verifies two proofs in a single circuit. The two inputs can be different <code>RecursionInput</code> variants:</p>
 <pre><code class="language-rust ignore">let output = build_and_prove_aggregation_layer::&lt;SC, A1, A2, B, D&gt;(
     &amp;left, &amp;right, &amp;config, &amp;backend, &amp;params,
 )?;</code></pre>
 <h3 id="prove_aggregation_layer"><a class="header" href="#prove_aggregation_layer"><code>prove_aggregation_layer</code></a></h3>
-<p>The split build/prove variant for aggregation:</p>
-<pre><code class="language-rust ignore">let (circuit, (left_result, right_result)) =
-    build_aggregation_layer_circuit(&amp;left, &amp;right, &amp;config, &amp;backend)?;
-
-let output = prove_aggregation_layer::&lt;SC, A1, A2, B, D&gt;(
+<p>The split build/prove variant for aggregation. The circuit builder is private; use <code>prove_aggregation_layer</code> with a pre-built circuit when you need to re-prove the same aggregation shape:</p>
+<pre><code class="language-rust ignore">let output = prove_aggregation_layer::&lt;SC, A1, A2, B, D&gt;(
     &amp;left, &amp;right, &amp;left_result, &amp;right_result,
     circuit, &amp;config, &amp;backend, &amp;params,
 )?;</code></pre>
+<p>See the source of <code>build_and_prove_aggregation_layer</code> for how to obtain <code>left_result</code>, <code>right_result</code>, and <code>circuit</code> when splitting manually.</p>
 <h2 id="recursion-loop-pattern"><a class="header" href="#recursion-loop-pattern">Recursion loop pattern</a></h2>
 <p>A typical recursion loop looks like this:</p>
 <pre><code class="language-rust ignore">let backend = FriRecursionBackend::&lt;16, 8&gt;::new(Poseidon2Config::KoalaBearD4Width16);
@@ -257,18 +265,23 @@ for _ in 2..=num_layers {
 }</code></pre>
 <p>After enough layers, the recursive proof reaches a steady-state size — further layers don't meaningfully change the proof dimensions.</p>
 <h2 id="type-parameter-d"><a class="header" href="#type-parameter-d">Type parameter <code>D</code></a></h2>
-<p>The const generic <code>D</code> is the extension field degree. For all currently supported fields (BabyBear, KoalaBear), use <code>D = 4</code>.</p>
+<p>The const generic <code>D</code> is the extension field degree. For binomial extensions (BabyBear, KoalaBear), use <code>D = 4</code>. A quintic variant (<code>D = 5</code>, KoalaBear only) is supported via <code>FriRecursionBackendD5</code>.</p>
 <h2 id="frirecursionbackend"><a class="header" href="#frirecursionbackend">FriRecursionBackend</a></h2>
-<p>The <code>FriRecursionBackend&lt;WIDTH, RATE&gt;</code> implements <code>PcsRecursionBackend</code> for FRI-based configs. It handles:</p>
+<p>The <code>FriRecursionBackend&lt;WIDTH, RATE, C&gt;</code> implements <code>PcsRecursionBackend</code> for FRI-based configs. It handles:</p>
 <ul>
-<li>Enabling Poseidon2 on the circuit builder</li>
+<li>Preparing the circuit for verification (enabling the challenger permutation and NPOs)</li>
 <li>Building the verifier circuit (delegating to <code>verify_p3_uni_proof_circuit</code> or <code>verify_p3_batch_proof_circuit</code>)</li>
 <li>Packing public inputs</li>
 <li>Setting Merkle path private data</li>
 </ul>
-<p>Create one with:</p>
-<pre><code class="language-rust ignore">let backend = FriRecursionBackend::&lt;16, 8&gt;::new(Poseidon2Config::KoalaBearD4Width16);</code></pre>
-<p><code>WIDTH</code> and <code>RATE</code> are the Poseidon2 permutation parameters (typically 16 and 8 for 32-bit fields).</p>
+<p><code>WIDTH</code> and <code>RATE</code> are the permutation parameters (typically 16 and 8 for 32-bit fields). <code>C</code> is the challenger permutation config (defaults to <code>Poseidon2Config</code>).</p>
+<pre><code class="language-rust ignore">// Standard Poseidon2 backend
+let backend = FriRecursionBackend::&lt;16, 8&gt;::new(Poseidon2Config::KoalaBearD4Width16);
+
+// With an extra Poseidon2 table config for proofs that use a wider MMCS hash
+let backend = FriRecursionBackend::&lt;16, 8&gt;::new(Poseidon2Config::KoalaBearD4Width16)
+    .with_extra_poseidon2_table(Poseidon2Config::KoalaBearD4Width24);</code></pre>
+<p><code>FriRecursionBackendD5</code> is a type alias for the quintic (<code>D = 5</code>) variant and <code>FriRecursionBackendForExt</code> covers mixed-degree scenarios.</p>
 
                     </main>
 
