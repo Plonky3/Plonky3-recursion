@@ -76,29 +76,48 @@ let traces = runner.run()?;
 
 ## Proving the verification circuit
 
-Once you have traces, prove them with `BatchStarkProver`:
+Once you have traces, prove them with `BatchStarkProver`. The preprocessing step — which
+commits to constant (preprocessed) columns — is separate from trace-dependent proving and can
+be reused when the circuit shape is stable.
 
 ```rust,ignore
-use p3_circuit_prover::{BatchStarkProver, CircuitProverData};
-use p3_circuit_prover::common::get_airs_and_degrees_with_prep;
+use p3_circuit_prover::{BatchStarkProver, CircuitProverData, ConstraintProfile};
+use p3_circuit_prover::common::{get_airs_and_degrees_with_prep, NpoPreprocessor, NpoAirBuilder};
+use p3_batch_stark::ProverData;
 
-let (airs_degrees, preprocessed) = get_airs_and_degrees_with_prep::<SC, EF, D>(
-    &circuit, table_packing, &[Box::new(Poseidon2Prover::new(
-        poseidon2_config,
+// Build AIR descriptors and preprocessed columns.
+// Pass NPO preprocessors/air-builders for any non-primitive ops used in the circuit.
+let preprocessors: Vec<Box<dyn NpoPreprocessor<Val<SC>>>> = backend.non_primitive_preprocessors();
+let air_builders: Vec<Box<dyn NpoAirBuilder<SC, D>>> = backend.non_primitive_air_builders();
+
+let (airs_degrees, primitive_columns, non_primitive_columns) =
+    get_airs_and_degrees_with_prep::<SC, SC::Challenge, D>(
+        &circuit,
+        &table_packing,
+        &preprocessors,
+        &air_builders,
         ConstraintProfile::Standard,
-    ))],
-)?;
+    )?;
 
-let (mut airs, degrees): (Vec<_>, Vec<_>) = airs_degrees.into_iter().unzip();
-let prover_data = ProverData::from_airs_and_degrees(&config, &mut airs, &degrees);
-let circuit_prover_data = CircuitProverData::new(prover_data, preprocessed);
+let (airs, degrees): (Vec<_>, Vec<_>) = airs_degrees.into_iter().unzip();
+let ext_degrees: Vec<usize> = degrees.iter().map(|&d| d + config.is_zk()).collect();
 
+let prover_data = ProverData::from_airs_and_degrees(&config, &airs, &ext_degrees);
+let circuit_prover_data = CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
+
+// Build the prover; non-primitive table provers must match the ops enabled in the circuit.
 let mut prover = BatchStarkProver::new(config.clone())
     .with_table_packing(table_packing);
-prover.register_poseidon2_table::<4>(poseidon2_config);
+for np in backend.non_primitive_provers(D) {
+    prover.register_table_prover(np);
+}
 
 let proof = prover.prove_all_tables(&traces, &circuit_prover_data)?;
 ```
+
+In practice, prefer `build_next_layer_prep` (unified API) over calling `get_airs_and_degrees_with_prep`
+directly — it wires up backend preprocessors/air-builders automatically and returns a reusable
+`NextLayerPrepCache`.
 
 ## When to use the low-level API
 

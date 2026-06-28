@@ -73,34 +73,38 @@ let z = builder.mul(a, y);
 Using this function, we have implemented, for all AIRs, the automatic translation from their set of symbolic constraints to the circuit version of the folded constraints:
 
 ```rust,ignore
-// Transforms an AIR's symbolic constraints into its counterpart circuit version, 
+// Transforms an AIR's symbolic constraints into its counterpart circuit version,
 // and folds all the constraints in the circuit using the challenge `alpha`.
 fn eval_folded_circuit(
         // The AIR at hand.
         &self,
-        builder: &mut CircuitBuilder<F>,
-        // Circuit version of Langrange selectors.
+        builder: &mut CircuitBuilder<EF>,
+        // Circuit version of Lagrange selectors.
         sels: &RecursiveLagrangeSelectors,
         // Folding challenge.
-        alpha: &ExprId,
-        // All kind of columns that could be involved in constraints.
-        columns: ColumnsTargets,
+        alpha: &Target,
+        // Lookup contexts and data (empty for uni-STARK verification).
+        lookup_metadata: &LookupMetadata<'_, F>,
+        // All kinds of columns that could be involved in constraints.
+        columns: ColumnsTargets<'_>,
+        // Gadget for encoding lookup interactions in the circuit.
+        lookup_gadget: &LG,
     ) -> Target {
         // Get all the constraints in symbolic form.
-        let symbolic_constraints = 
+        let symbolic_constraints =
             get_symbolic_constraints(self, 0, columns.public_values.len());
 
         // Fold all the constraints using the folding challenge.
-        let mut acc = builder.define_const(F::ZERO);
+        let mut acc = builder.define_const(EF::ZERO);
         for s_c in symbolic_constraints {
             let mul_prev = builder.mul(acc, *alpha);
 
             // Get the current constraint in circuit form.
-            let constraints = 
+            let constraint =
                 symbolic_to_circuit(sels.row_selectors, &columns, &s_c, builder);
 
             // Fold the current constraint with the previous value.
-            acc = builder.add(mul_prev, constraints);
+            acc = builder.add(mul_prev, constraint);
         }
 
         acc
@@ -128,8 +132,8 @@ let prover = BatchStarkProver::new(config);
 // Generate traces
 let traces = runner.run()?;
 
-// Prove the program
-let proof = prover.prove_all_tables(&traces)?;
+// Prove the program (circuit_prover_data holds the preprocessed columns)
+let proof = prover.prove_all_tables(&traces, &circuit_prover_data)?;
 ```
 
 ## Key takeaways

@@ -109,14 +109,15 @@ The total row count of each table is `ceil(num_ops / num_lanes)`, padded to the 
 
 The goal is to balance table heights so no single table forces a large power-of-two padding.
 
-**Example** — a recursive verification circuit with ~65K witness ops, ~43K public ops, ~60K ALU ops:
+**Example** — a recursive verification circuit with ~43K public ops and ~60K ALU ops
+(columns are `public_lanes, alu_lanes`):
 
 | Packing | Max height | Notes |
 |---------|-----------|-------|
-| `(5, 1, 3)` | 2^16 = 65,536 | Public table (43K/1 = 43K rows) forces 2^16 |
-| `(5, 2, 3)` | 2^15 = 32,768 | Public drops to 21.5K, halving the max |
-| `(5, 3, 3)` | 2^15 = 32,768 | Public at 14.3K, ALU at 20K — both fit in 2^15 |
-| `(8, 4, 4)` | 2^14 = 16,384 | Everything fits, but tables are very wide |
+| `(1, 1)` | 2^16 = 65,536 | Public table (43K/1 = 43K rows) forces 2^16 |
+| `(2, 1)` | 2^15 = 32,768 | Public drops to 21.5K, halving the max |
+| `(3, 2)` | 2^15 = 32,768 | Public at 14.3K, ALU at 30K — both fit in 2^15 |
+| `(4, 4)` | 2^14 = 16,384 | Everything fits, but tables are very wide |
 
 Halving the max table height cuts FRI proving time by roughly 40-50% (one fewer folding round, half the polynomial size).
 

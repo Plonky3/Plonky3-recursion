@@ -15,7 +15,7 @@ pub enum RecursionInput<'a, SC, A> {
         proof: &'a Proof<SC>,
         air: &'a A,
         public_inputs: Vec<Val<SC>>,
-        preprocessed_commit: Option<Commitment>,
+        preprocessed_commit: Option<<SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment>,
     },
     /// A batch STARK proof (e.g. from p3-batch-stark or circuit-prover).
     BatchStark {
@@ -33,10 +33,10 @@ Use `UniStark` when verifying an external Plonky3 proof (e.g. Keccak AIR). Use `
 The output of one recursion step:
 
 ```rust,ignore
-pub struct RecursionOutput<SC>(pub BatchStarkProof<SC>, pub CircuitProverData<SC>);
+pub struct RecursionOutput<SC>(pub BatchStarkProof<SC>, pub Rc<CircuitProverData<SC>>);
 ```
 
-Contains the batch-STARK proof and the prover data needed for further chaining. Convert it to a `RecursionInput` for the next layer:
+Contains the batch-STARK proof and the prover data (reference-counted for cheap cloning) needed for further chaining. Convert it to a `RecursionInput` for the next layer:
 
 ```rust,ignore
 let next_input = output.into_recursion_input::<BatchOnly>();
@@ -51,12 +51,14 @@ Controls the proving pipeline:
 ```rust,ignore
 pub struct ProveNextLayerParams {
     pub table_packing: TablePacking,
-    pub use_poseidon2_in_circuit: bool,
+    pub constraint_profile: ConstraintProfile,
 }
 ```
 
 - `table_packing`: How to distribute operations across table lanes. See [Configuration](./configuration.md#table-packing).
-- `use_poseidon2_in_circuit`: Whether to register the Poseidon2 non-primitive table. Should be `true` for FRI verification.
+- `constraint_profile`: Which AIR variants the prover uses for this layer (`ConstraintProfile::Standard` for normal use).
+
+The default is `TablePacking::new(1, 4)` with `ConstraintProfile::Standard`.
 
 ## Entry points
 
@@ -70,19 +72,29 @@ let output = build_and_prove_next_layer::<SC, A, B, D>(
 )?;
 ```
 
-### `prove_next_layer`
+### `prove_next_layer` (split build/prove)
 
-For better performance in production, separate circuit building from proving. The circuit only needs to be built once if the proof shape doesn't change between invocations:
+For better performance across repeated invocations, separate circuit building, preprocessing, and proving. The circuit only needs to be built and preprocessed once when the proof shape is stable:
 
 ```rust,ignore
-// Build once
-let (circuit, verifier_result) = build_next_layer_circuit(&input, &config, &backend)?;
+// Build the circuit once (shape-dependent)
+let (circuit, verifier_result) = build_next_layer_circuit::<SC, A, B, D>(
+    &input, &config, &backend,
+)?;
 
-// Prove (can be called multiple times with different inputs of the same shape)
+// Preprocess once (commits to constant columns; reusable for same circuit shape)
+let prep = build_next_layer_prep::<SC, A, B, D>(
+    &circuit, &config, &backend, &params,
+)?;
+
+// Prove repeatedly with different inputs of the same shape
 let output = prove_next_layer::<SC, A, B, D>(
     &input, &circuit, &verifier_result, &config, &backend, &params,
+    Some(&prep),  // pass None to skip prep reuse
 )?;
 ```
+
+`NextLayerPrepCache` holds the committed preprocessed columns and the prover. Reusing it across same-shape layers avoids re-computing the LDE and Merkle-tree commitment on every call.
 
 ### `build_and_prove_aggregation_layer`
 
@@ -96,17 +108,16 @@ let output = build_and_prove_aggregation_layer::<SC, A1, A2, B, D>(
 
 ### `prove_aggregation_layer`
 
-The split build/prove variant for aggregation:
+The split build/prove variant for aggregation. The circuit builder is private; use `prove_aggregation_layer` with a pre-built circuit when you need to re-prove the same aggregation shape:
 
 ```rust,ignore
-let (circuit, (left_result, right_result)) =
-    build_aggregation_layer_circuit(&left, &right, &config, &backend)?;
-
 let output = prove_aggregation_layer::<SC, A1, A2, B, D>(
     &left, &right, &left_result, &right_result,
     circuit, &config, &backend, &params,
 )?;
 ```
+
+See the source of `build_and_prove_aggregation_layer` for how to obtain `left_result`, `right_result`, and `circuit` when splitting manually.
 
 ## Recursion loop pattern
 
@@ -130,21 +141,26 @@ After enough layers, the recursive proof reaches a steady-state size — further
 
 ## Type parameter `D`
 
-The const generic `D` is the extension field degree. For all currently supported fields (BabyBear, KoalaBear), use `D = 4`.
+The const generic `D` is the extension field degree. For binomial extensions (BabyBear, KoalaBear), use `D = 4`. A quintic variant (`D = 5`, KoalaBear only) is supported via `FriRecursionBackendD5`.
 
 ## FriRecursionBackend
 
-The `FriRecursionBackend<WIDTH, RATE>` implements `PcsRecursionBackend` for FRI-based configs. It handles:
+The `FriRecursionBackend<WIDTH, RATE, C>` implements `PcsRecursionBackend` for FRI-based configs. It handles:
 
-- Enabling Poseidon2 on the circuit builder
+- Preparing the circuit for verification (enabling the challenger permutation and NPOs)
 - Building the verifier circuit (delegating to `verify_p3_uni_proof_circuit` or `verify_p3_batch_proof_circuit`)
 - Packing public inputs
 - Setting Merkle path private data
 
-Create one with:
+`WIDTH` and `RATE` are the permutation parameters (typically 16 and 8 for 32-bit fields). `C` is the challenger permutation config (defaults to `Poseidon2Config`).
 
 ```rust,ignore
+// Standard Poseidon2 backend
 let backend = FriRecursionBackend::<16, 8>::new(Poseidon2Config::KoalaBearD4Width16);
+
+// With an extra Poseidon2 table config for proofs that use a wider MMCS hash
+let backend = FriRecursionBackend::<16, 8>::new(Poseidon2Config::KoalaBearD4Width16)
+    .with_extra_poseidon2_table(Poseidon2Config::KoalaBearD4Width24);
 ```
 
-`WIDTH` and `RATE` are the Poseidon2 permutation parameters (typically 16 and 8 for 32-bit fields).
+`FriRecursionBackendD5` is a type alias for the quintic (`D = 5`) variant and `FriRecursionBackendForExt` covers mixed-degree scenarios.

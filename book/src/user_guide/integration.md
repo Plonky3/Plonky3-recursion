@@ -58,7 +58,7 @@ impl FriRecursionConfig for MyRecursionConfig {
         }
     }
 
-    fn enable_poseidon2_on_circuit(
+    fn prepare_circuit_for_verification(
         &self,
         circuit: &mut CircuitBuilder<Challenge>,
     ) -> Result<(), VerificationError> {
@@ -95,8 +95,18 @@ To recursively verify a proof produced by a custom AIR, implement `RecursiveAir`
 ```rust,ignore
 impl RecursiveAir<F, EF, LogUpGadget> for MyAir {
     fn width(&self) -> usize {
-        // Number of main trace columns in your AIR
+        // Number of main trace columns in your AIR.
         MY_AIR_WIDTH
+    }
+
+    fn num_periodic_columns(&self) -> usize {
+        // Number of periodic columns the AIR declares (0 if none).
+        0
+    }
+
+    fn periodic_columns(&self) -> Vec<Vec<F>> {
+        // Each entry is the evaluation vector of one periodic column.
+        Vec::new()
     }
 
     fn eval_folded_circuit(
@@ -117,7 +127,6 @@ impl RecursiveAir<F, EF, LogUpGadget> for MyAir {
         &self,
         preprocessed_width: usize,
         contexts: &[Lookup<F>],
-        lookup_data: &[LookupData<usize>],
         is_zk: usize,
         lookup_gadget: &LogUpGadget,
     ) -> usize {
@@ -127,7 +136,7 @@ impl RecursiveAir<F, EF, LogUpGadget> for MyAir {
 }
 ```
 
-For AIRs built with Plonky3's `Air` trait, the symbolic constraint extraction and folding can be done generically using `get_symbolic_constraints` and `symbolic_to_circuit`, as described in [Circuit Building](./circuit_building.md#building-recursive-air-constraints).
+AIRs that implement Plonky3's `Air` trait get a blanket `RecursiveAir` implementation automatically — `num_periodic_columns`, `periodic_columns`, `eval_folded_circuit`, and `get_log_num_quotient_chunks` are all derived from the symbolic constraint system. You only need to implement `RecursiveAir` manually for AIRs that cannot be expressed symbolically.
 
 Then wrap your proof in `RecursionInput::UniStark`:
 
