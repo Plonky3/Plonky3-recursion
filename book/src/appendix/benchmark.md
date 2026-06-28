@@ -50,18 +50,16 @@ Running on a Apple M4 pro, 14 Cores, with **KoalaBear** field and extension of *
 
 - **Keccak AIR program:** (1,000 hashes)
   - Base uni-stark proof: 728 ms
-  - 1st recursion layer: 760 ms
-  - 2nd and 3rd recursion layers: 174 ms
-  - 4th and next recursion layers: 140 ms
+  - 1st recursion layer: 709 ms
+  - 2nd and 3rd recursion layers: 153 ms
+  - 4th and next recursion layers: 115 ms
 
 - **Fibonacci multi-AIR program:** (10,000th element)
-  - Base batch-stark proof: 82.6 ms
-  - 1st recursion layer: 149 ms
-  - 2nd and 3rd recursion layers: 175 ms
-  - 4th and next recursion layers: 141 ms
+  - Base batch-stark proof: 32.6 ms
+  - 1st and 2nd recursion layers: 154 ms
+  - 3rd and next recursion layers: 113 ms
 
 - **2-to-1 aggregation:**
-  - Base batch-stark proof: 28 ms
-  - 1st aggregation layer: 132 ms
-  - 2nd and 3rd aggregation layers: 232 ms
-  - 4th and next aggregation layers: 227 ms
+  - Base batch-stark proof: 14.1 ms
+  - 1st aggregation layer: 124 ms
+  - 2nd and next aggregation layers: 201 ms
