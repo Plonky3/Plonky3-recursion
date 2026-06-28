@@ -829,6 +829,10 @@ where
             let sel_muladd = prep_cur.sel_muladd;
             let sel_horner = prep_cur.sel_horner;
 
+            // `mult_a` is stored as -1 for active rows and 0 for padding (see
+            // `common.rs` generator). Negate to recover a {0,1} active selector.
+            // `sel_mul` is the residual after all other op selectors are subtracted:
+            // active = sel_mul + sel_bool + sel_muladd + sel_horner + sel_add.
             let active = AB::Expr::ZERO - mult_a;
             let sel_mul = active - sel_bool - sel_muladd - sel_horner - sel_add;
 

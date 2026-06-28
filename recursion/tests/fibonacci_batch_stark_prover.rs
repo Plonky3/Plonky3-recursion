@@ -6,8 +6,8 @@ use p3_circuit::ops::{generate_poseidon2_trace, generate_recompose_trace};
 use p3_circuit_prover::batch_stark_prover::{poseidon2_air_builders, recompose_air_builders};
 use p3_circuit_prover::common::{NpoPreprocessor, get_airs_and_degrees_with_prep};
 use p3_circuit_prover::{
-    BatchStarkProver, CircuitProverData, ConstraintProfile, Poseidon2Preprocessor, Poseidon2Prover,
-    RecomposePreprocessor, TablePacking, TableProver, recompose_table_provers,
+    BatchStarkProver, CircuitProverData, ConstraintProfile, Poseidon2Preprocessor,
+    RecomposePreprocessor, TablePacking,
 };
 use p3_lookup::logup::LogUpGadget;
 use p3_poseidon2_circuit_air::KoalaBearD4Width16;
@@ -155,14 +155,7 @@ fn test_fibonacci_batch_verifier() {
         common,
         &lookup_gadget,
         Poseidon2Config::KOALA_BEAR_D4_W16,
-        &{
-            let mut tp: Vec<Box<dyn TableProver<MyConfig>>> = vec![Box::new(Poseidon2Prover::new(
-                Poseidon2Config::KOALA_BEAR_D4_W16,
-                ConstraintProfile::Standard,
-            ))];
-            tp.extend(recompose_table_provers::<_, 4>(1, false));
-            tp
-        },
+        &[],
     )
     .unwrap();
 

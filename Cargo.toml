@@ -63,13 +63,16 @@ p3-matrix = "0.6"
 p3-maybe-rayon = "0.6"
 p3-merkle-tree = "0.6"
 p3-monty-31 = "0.6"
+p3-multilinear-util = "0.6"
 p3-poseidon1 = "0.6"
 p3-poseidon1-air = "0.6"
 p3-poseidon2 = "0.6"
 p3-poseidon2-air = "0.6"
+p3-sumcheck = "0.6"
 p3-symmetric = "0.6"
 p3-uni-stark = "0.6"
 p3-util = "0.6"
+p3-whir = "0.6"
 
 # Other common dependencies
 clap = { version = "4.6", features = ["derive"] }

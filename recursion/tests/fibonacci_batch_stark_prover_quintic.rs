@@ -9,10 +9,7 @@ use p3_circuit::CircuitBuilder;
 use p3_circuit::ops::{
     KoalaBearD1Width16, Poseidon2Config, generate_poseidon2_trace, generate_recompose_trace,
 };
-use p3_circuit_prover::batch_stark_prover::{
-    poseidon2_air_builders_d5, poseidon2_table_provers_d5, recompose_air_builders,
-    recompose_table_provers,
-};
+use p3_circuit_prover::batch_stark_prover::{poseidon2_air_builders_d5, recompose_air_builders};
 use p3_circuit_prover::common::{NpoPreprocessor, get_airs_and_degrees_with_prep};
 use p3_circuit_prover::{
     BatchStarkProver, CircuitProverData, ConstraintProfile, Poseidon2Preprocessor,
@@ -162,11 +159,7 @@ fn test_fibonacci_batch_verifier_quintic_koala() {
         common,
         &lookup_gadget,
         Poseidon2Config::KOALA_BEAR_D1_W16,
-        &{
-            let mut tp = poseidon2_table_provers_d5(Poseidon2Config::KOALA_BEAR_D1_W16);
-            tp.extend(recompose_table_provers::<MyConfig, 5>(1, true));
-            tp
-        },
+        &[],
     )
     .unwrap();
 

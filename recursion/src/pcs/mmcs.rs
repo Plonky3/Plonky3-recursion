@@ -1535,6 +1535,88 @@ where
     )
 }
 
+/// Set private data for WHIR MMCS verification operations.
+///
+/// Extracts Merkle sibling digests from a [`p3_whir::pcs::proof::WhirProof`] and
+/// sets them as private data for the circuit operations returned by
+/// [`crate::pcs::whir::verify_whir_circuit`].
+///
+/// # Operation ID order
+///
+/// Matches the order in which `verify_whir_circuit` emits `NonPrimitiveOpId`s:
+/// 1. For each intermediate round (in round order), for each STIR query:
+///    sibling digests along the Merkle path, leaf-to-root.
+/// 2. For each final STIR query: sibling digests along the Merkle path.
+pub fn set_whir_mmcs_private_data<F, EF, MT, const DIGEST_ELEMS: usize>(
+    runner: &mut CircuitRunner<'_, EF>,
+    op_ids: &[NonPrimitiveOpId],
+    proof: &p3_whir::pcs::proof::WhirProof<F, EF, MT>,
+    permutation_config: impl Into<PermConfig>,
+) -> Result<(), &'static str>
+where
+    F: Field,
+    EF: ExtensionField<F> + BasedVectorSpace<F>,
+    MT: p3_commit::Mmcs<F, Proof = Vec<[F; DIGEST_ELEMS]>>,
+{
+    let permutation_config: PermConfig = permutation_config.into();
+    let mut op_idx = 0;
+
+    let mut set_query = |op_ids: &[NonPrimitiveOpId],
+                         op_idx: &mut usize,
+                         opening_proof: &Vec<[F; DIGEST_ELEMS]>,
+                         label: &'static str|
+     -> Result<(), &'static str> {
+        let siblings = convert_merkle_proof_to_siblings::<F, EF, DIGEST_ELEMS>(opening_proof);
+        for sibling in siblings {
+            if *op_idx >= op_ids.len() {
+                return Err(label);
+            }
+            runner
+                .set_private_data(
+                    op_ids[*op_idx],
+                    perm_private_data(permutation_config, sibling),
+                )
+                .map_err(|_| label)?;
+            *op_idx += 1;
+        }
+        Ok(())
+    };
+
+    for round in &proof.rounds {
+        for query in &round.queries {
+            let opening_proof = match query {
+                p3_whir::pcs::proof::QueryOpening::Base { proof, .. } => proof,
+                p3_whir::pcs::proof::QueryOpening::Extension { proof, .. } => proof,
+            };
+            set_query(
+                op_ids,
+                &mut op_idx,
+                opening_proof,
+                "More siblings than op_ids (round query)",
+            )?;
+        }
+    }
+
+    for query in &proof.final_queries {
+        let opening_proof = match query {
+            p3_whir::pcs::proof::QueryOpening::Base { proof, .. } => proof,
+            p3_whir::pcs::proof::QueryOpening::Extension { proof, .. } => proof,
+        };
+        set_query(
+            op_ids,
+            &mut op_idx,
+            opening_proof,
+            "More siblings than op_ids (final query)",
+        )?;
+    }
+
+    if op_idx != op_ids.len() {
+        return Err("Fewer siblings in proof than op_ids provided");
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod test {
     use alloc::vec;

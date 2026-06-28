@@ -43,6 +43,7 @@ pub mod common;
 pub mod config;
 pub mod constraint_profile;
 pub mod field_params;
+pub mod manifest;
 
 // Re-export main API
 pub use batch_stark_prover::*;

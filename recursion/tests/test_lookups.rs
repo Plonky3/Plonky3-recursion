@@ -14,7 +14,7 @@ use p3_circuit_prover::batch_stark_prover::{
 use p3_circuit_prover::common::{NpoPreprocessor, get_airs_and_degrees_with_prep};
 use p3_circuit_prover::{
     BatchStarkProof, BatchStarkProver, CircuitProverData, ConstraintProfile, Poseidon2Preprocessor,
-    Poseidon2Prover, RecomposePreprocessor, TablePacking, TableProver, recompose_table_provers,
+    RecomposePreprocessor, TablePacking,
 };
 use p3_lookup::logup::LogUpGadget;
 use p3_poseidon2_circuit_air::BabyBearD4Width16;
@@ -472,14 +472,7 @@ fn get_verifier_inputs_and_challenges(
         common,
         lookup_gadget,
         Poseidon2Config::BABY_BEAR_D4_W16,
-        &{
-            let mut tp: Vec<Box<dyn TableProver<MyConfig>>> = vec![Box::new(Poseidon2Prover::new(
-                Poseidon2Config::BABY_BEAR_D4_W16,
-                ConstraintProfile::Standard,
-            ))];
-            tp.extend(recompose_table_provers::<_, 4>(1, false));
-            tp
-        },
+        &[],
     )
     .map(|(inputs, _mmcs_op_ids)| inputs);
 

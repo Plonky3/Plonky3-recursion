@@ -9,10 +9,7 @@ use p3_circuit::CircuitBuilder;
 use p3_circuit::ops::{generate_poseidon2_trace, generate_recompose_trace};
 use p3_circuit::test_utils::{FibonacciAir, generate_trace_rows};
 use p3_circuit_prover::common::get_airs_and_degrees_with_prep;
-use p3_circuit_prover::{
-    BatchStarkProver, CircuitProverData, ConstraintProfile, Poseidon2Prover, TablePacking,
-    TableProver,
-};
+use p3_circuit_prover::{BatchStarkProver, CircuitProverData, ConstraintProfile, TablePacking};
 use p3_lookup::logup::LogUpGadget;
 use p3_poseidon2_circuit_air::KoalaBearD4Width16;
 use p3_recursion::pcs::fri::{FriVerifierParams, InputProofTargets, MerkleCapTargets, RecValMmcs};
@@ -127,12 +124,6 @@ fn test_aggregation_with_different_shapes() -> Result<(), VerificationError> {
     let batch_proof = &batch_stark_proof.proof;
     let right_pis: Vec<Vec<F>> = vec![vec![]; 5];
 
-    let batch_poseidon_provers: Vec<Box<dyn TableProver<MyConfig>>> =
-        vec![Box::new(Poseidon2Prover::new(
-            Poseidon2Config::KOALA_BEAR_D4_W16,
-            ConstraintProfile::Standard,
-        ))];
-
     // Verify the Batch-Stark proof.
     let (right_verifier_inputs, right_op_ids) = verify_p3_batch_proof_circuit::<
         MyConfig,
@@ -152,7 +143,7 @@ fn test_aggregation_with_different_shapes() -> Result<(), VerificationError> {
         common,
         &lookup_gadget,
         Poseidon2Config::KOALA_BEAR_D4_W16,
-        &batch_poseidon_provers,
+        &[],
     )?;
 
     // Build the verification circuit.

@@ -742,6 +742,45 @@ pub enum ProofMetadataError {
         "proof quintic-trinomial flag {got} does not match the verifier's expected trace field ({expected})"
     )]
     QuinticReductionMismatch { expected: bool, got: bool },
+
+    /// The proof's `alu_variant` does not match the manifest's expected value.
+    #[error("alu_variant mismatch: expected {expected:?}, got {got:?}")]
+    AluVariantMismatch {
+        expected: AirVariant,
+        got: AirVariant,
+    },
+
+    /// The number of non-primitive tables does not match the manifest.
+    #[error("non-primitive table count mismatch: expected {expected}, got {got}")]
+    NpoCountMismatch { expected: usize, got: usize },
+
+    /// A non-primitive table's `op_type` does not match the manifest at position `index`.
+    #[error("non-primitive op_type mismatch at index {index}: expected {expected:?}, got {got:?}")]
+    NpoOpTypeMismatch {
+        index: usize,
+        expected: NpoTypeId,
+        got: NpoTypeId,
+    },
+
+    /// A non-primitive table's `air_variant` does not match the manifest at position `index`.
+    #[error(
+        "non-primitive air_variant mismatch at index {index}: expected {expected:?}, got {got:?}"
+    )]
+    NpoAirVariantMismatch {
+        index: usize,
+        expected: AirVariant,
+        got: AirVariant,
+    },
+
+    /// A non-primitive table's `public_values` length does not match the manifest at position `index`.
+    #[error(
+        "non-primitive public_values length mismatch at index {index}: expected {expected}, got {got}"
+    )]
+    NpoPublicValueLenMismatch {
+        index: usize,
+        expected: usize,
+        got: usize,
+    },
 }
 
 /// Errors for the batch STARK table prover.

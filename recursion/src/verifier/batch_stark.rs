@@ -248,16 +248,26 @@ where
         CircuitTablesAir::Alu(alu_air),
     ];
 
-    for entry in &proof.non_primitives {
-        let plugin = non_primitive_provers
-            .iter()
-            .find(|p| TableProver::op_type(p.as_ref()) == entry.op_type)
-            .ok_or_else(|| {
-                VerificationError::InvalidProofShape(format!(
-                    "unknown non-primitive op: {:?}",
-                    entry.op_type
-                ))
-            })?;
+    if proof.non_primitives.len() != non_primitive_provers.len() {
+        return Err(VerificationError::InvalidProofShape(format!(
+            "non-primitive table count mismatch: expected {}, got {}",
+            non_primitive_provers.len(),
+            proof.non_primitives.len()
+        )));
+    }
+    for (i, (entry, plugin)) in proof
+        .non_primitives
+        .iter()
+        .zip(non_primitive_provers.iter())
+        .enumerate()
+    {
+        let expected_op = TableProver::op_type(plugin.as_ref());
+        if entry.op_type != expected_op {
+            return Err(VerificationError::InvalidProofShape(format!(
+                "non-primitive op_type mismatch at index {i}: expected {expected_op:?}, got {:?}",
+                entry.op_type
+            )));
+        }
         let air = plugin
             .batch_air_from_table_entry(config, TRACE_D, proof.ext_degree as u32, entry)
             .map_err(VerificationError::InvalidProofShape)?;
@@ -461,7 +471,9 @@ where
         }
 
         // Single-terminal layout: exactly one terminal is present iff the AIR declares any lookup.
-        let expected_present = !all_lookups[i].is_empty();
+        // Derive from the AIR directly — `common.lookups` is prover-supplied and cannot be
+        // trusted to correctly report which instances use the lookup argument.
+        let expected_present = air.declares_interactions(pre_w);
         if lookup_terminals[i].is_some() != expected_present {
             return Err(VerificationError::InvalidProofShape(
                 "Lookup terminal presence does not match the AIR's declared lookups".to_string(),
