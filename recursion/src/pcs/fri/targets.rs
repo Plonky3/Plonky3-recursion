@@ -831,10 +831,17 @@ where
             log_final_poly_len,
             commit_pow_bits: _,
             query_pow_bits: _,
+            num_queries: required_num_queries,
             permutation_config,
         } = *params;
         let num_betas = opening_proof.commit_phase_commits.len();
         let num_queries = opening_proof.query_proofs.len();
+
+        if num_queries < required_num_queries {
+            return Err(VerificationError::InvalidProofShape(format!(
+                "FRI proof has {num_queries} queries but verifier params require at least {required_num_queries}"
+            )));
+        }
 
         let alpha = challenges[0];
         let betas = &challenges[1..1 + num_betas];
@@ -1230,11 +1237,18 @@ where
             log_final_poly_len,
             commit_pow_bits: _,
             query_pow_bits: _,
+            num_queries: required_num_queries,
             permutation_config,
         } = *params;
         let fri_proof = &opening_proof.inner_proof;
         let num_betas = fri_proof.commit_phase_commits.len();
         let num_queries = fri_proof.query_proofs.len();
+
+        if num_queries < required_num_queries {
+            return Err(VerificationError::InvalidProofShape(format!(
+                "FRI proof has {num_queries} queries but verifier params require at least {required_num_queries}"
+            )));
+        }
 
         let alpha = challenges[0];
         let betas = &challenges[1..1 + num_betas];

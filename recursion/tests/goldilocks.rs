@@ -48,6 +48,7 @@ fn make_config() -> (MyConfig, Perm, FriVerifierParams) {
         fri_params.log_final_poly_len,
         fri_params.commit_proof_of_work_bits,
         fri_params.query_proof_of_work_bits,
+        fri_params.num_queries,
         Poseidon2Config::GOLDILOCKS_D2_W8,
     );
 

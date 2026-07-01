@@ -118,6 +118,7 @@ fn test_fibonacci_batch_verifier_quintic_koala() {
         scalars.log_final_poly_len,
         scalars.commit_pow_bits,
         scalars.query_pow_bits,
+        scalars.num_queries,
         Poseidon2Config::KOALA_BEAR_D1_W16,
     );
     let config = make_test_config();

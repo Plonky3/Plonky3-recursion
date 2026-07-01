@@ -21,6 +21,7 @@ pub struct TestFriScalars {
     pub log_final_poly_len: usize,
     pub commit_pow_bits: usize,
     pub query_pow_bits: usize,
+    pub num_queries: usize,
 }
 
 /// Returns the [`TestFriScalars`] used by the `make_test_config` helpers, read back from
@@ -32,6 +33,7 @@ pub fn test_fri_scalars() -> TestFriScalars {
         log_final_poly_len: params.log_final_poly_len,
         commit_pow_bits: params.commit_proof_of_work_bits,
         query_pow_bits: params.query_proof_of_work_bits,
+        num_queries: params.num_queries,
     }
 }
 

@@ -59,6 +59,7 @@ fn build_fibonacci_test_setup() -> FibonacciTestSetup {
         scalars.log_final_poly_len,
         scalars.commit_pow_bits,
         scalars.query_pow_bits,
+        scalars.num_queries,
         Poseidon2Config::BABY_BEAR_D4_W16,
     );
     let pis = vec![F::ZERO, F::ONE, F::from_u64(x)];

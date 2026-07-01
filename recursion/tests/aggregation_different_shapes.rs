@@ -26,7 +26,15 @@ type InnerFri = InnerFriGeneric<MyConfig, MyHash, MyCompress, DIGEST_ELEMS>;
 const TRACE_D: usize = 1;
 
 fn fri_verifier_params(log_blowup: usize) -> FriVerifierParams {
-    FriVerifierParams::with_mmcs(log_blowup, 0, 0, 16, Poseidon2Config::KOALA_BEAR_D4_W16)
+    let num_queries = (100 - 16) / log_blowup;
+    FriVerifierParams::with_mmcs(
+        log_blowup,
+        0,
+        0,
+        16,
+        num_queries,
+        Poseidon2Config::KOALA_BEAR_D4_W16,
+    )
 }
 
 #[test]

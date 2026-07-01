@@ -1046,12 +1046,17 @@ macro_rules! arity4_mixed_config_impl {
             MyConfigArity4::new(pcs, challenger)
         }
 
-        fn create_fri_verifier_params_arity4(fp: &FriParams) -> FriVerifierParams {
+        fn create_fri_verifier_params_arity4(
+            fp: &FriParams,
+            security_level: usize,
+        ) -> FriVerifierParams {
+            let num_queries = (security_level - fp.query_pow_bits) / fp.log_blowup;
             FriVerifierParams::with_mmcs(
                 fp.log_blowup,
                 fp.log_final_poly_len,
                 fp.commit_pow_bits,
                 fp.query_pow_bits,
+                num_queries,
                 $poseidon2_config_arity4,
             )
         }
@@ -1063,7 +1068,7 @@ macro_rules! arity4_mixed_config_impl {
         ) -> ConfigWithFriParamsArity4 {
             ConfigWithFriParamsArity4 {
                 config: Arc::new(create_config_arity4(fp, security_level)),
-                fri_verifier_params: create_fri_verifier_params_arity4(fp),
+                fri_verifier_params: create_fri_verifier_params_arity4(fp, security_level),
                 disable_recompose_npo,
             }
         }
