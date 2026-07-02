@@ -6,6 +6,7 @@ use alloc::{format, vec};
 
 use hashbrown::HashMap;
 use p3_field::{Dup, Field};
+use p3_maybe_rayon::prelude::*;
 use tracing::instrument;
 
 use super::alu::{AluOpRecord, AluTrace};
@@ -225,19 +226,25 @@ impl<'a, F: Field> CircuitRunner<'a, F> {
         let public_trace = PublicTraceBuilder::new(&self.circuit.ops, &self.witness).build()?;
         let alu_trace = AluTrace::from_records(alu_records);
 
-        let mut non_primitive_traces: HashMap<NpoTypeId, Box<dyn NonPrimitiveTrace<F>>> =
-            HashMap::with_capacity(self.circuit.non_primitive_trace_generator_order.len());
-        // Iterate over generators in deterministic order (sorted by key)
+        // Iterate over generators in deterministic order (sorted by key). Generators only read
+        // the already-populated `op_states` and each writes an independent output, so they can
+        // run concurrently; insertion into the result map happens after, since order doesn't
+        // matter there.
         let _scope = tracing::debug_span!("generators").entered();
-
-        for op_type in &self.circuit.non_primitive_trace_generator_order {
-            let generator = &self.circuit.non_primitive_trace_generators[op_type];
-            if let Some(trace) = generator(&self.op_states)? {
-                let trace_op_type = trace.op_type();
-                non_primitive_traces.insert(trace_op_type, trace);
-            }
-        }
+        let generators = &self.circuit.non_primitive_trace_generators;
+        let generated: Vec<Option<Box<dyn NonPrimitiveTrace<F>>>> = self
+            .circuit
+            .non_primitive_trace_generator_order
+            .par_iter()
+            .map(|op_type| generators[op_type](&self.op_states))
+            .collect::<Result<Vec<_>, _>>()?;
         _scope.exit();
+
+        let mut non_primitive_traces: HashMap<NpoTypeId, Box<dyn NonPrimitiveTrace<F>>> =
+            HashMap::with_capacity(generated.len());
+        for trace in generated.into_iter().flatten() {
+            non_primitive_traces.insert(trace.op_type(), trace);
+        }
 
         Ok(Traces {
             witness_trace,
