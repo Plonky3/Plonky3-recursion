@@ -29,7 +29,7 @@ pub struct Optimizer<F>(core::marker::PhantomData<F>);
 
 impl<F: Field> Optimizer<F> {
     pub fn optimize(ops: Vec<Op<F>>) -> (Vec<Op<F>>, HashMap<WitnessId, WitnessId>) {
-        let (ops, rewrite) = Deduplicator::new().run(ops);
+        let (ops, rewrite) = Deduplicator::with_capacity(ops.len()).run(ops);
         let ops = MulAddFusion::new(&ops).run(ops);
         (ops, rewrite)
     }

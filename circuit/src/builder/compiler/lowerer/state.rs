@@ -62,6 +62,7 @@ impl<'a, F: Field> LoweringState<'a, F> {
         let graph = lowerer.graph;
         let non_primitive_ops = lowerer.non_primitive_ops;
         let npo_registry = lowerer.npo_registry;
+        let node_count = graph.nodes().len();
 
         Ok(Self {
             graph,
@@ -71,8 +72,9 @@ impl<'a, F: Field> LoweringState<'a, F> {
             dsu: ConnectDsu::from_connects(lowerer.pending_connects),
             // Take ownership of the allocator for witness slot creation.
             witness_alloc: lowerer.witness_alloc,
-            ops: Vec::new(),
-            expr_to_widx: HashMap::new(),
+            // One op is emitted per expression node in the common case.
+            ops: Vec::with_capacity(node_count),
+            expr_to_widx: HashMap::with_capacity(node_count),
             // Pre-size positional vectors with placeholder witness IDs.
             public_rows: vec![WitnessId(0); lowerer.public_input_count],
             private_input_rows: vec![WitnessId(0); lowerer.private_input_count],
