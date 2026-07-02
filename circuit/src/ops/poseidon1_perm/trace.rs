@@ -7,6 +7,7 @@ use alloc::vec::Vec;
 use core::any::Any;
 
 use p3_field::{ExtensionField, Field, PrimeCharacteristicRing, PrimeField};
+use p3_maybe_rayon::prelude::*;
 
 use crate::CircuitError;
 use crate::ops::NpoTypeId;
@@ -130,7 +131,7 @@ pub fn generate_poseidon1_trace<
 
     let operations: Vec<Poseidon1CircuitRow<Config::BaseField>> = state
         .rows
-        .iter()
+        .par_iter()
         .enumerate()
         .map(|(row_index, row)| -> Result<_, CircuitError> {
             let limb_count = Config::WIDTH / d;

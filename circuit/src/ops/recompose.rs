@@ -15,6 +15,7 @@ use core::any::Any;
 use core::fmt::Debug;
 
 use p3_field::{ExtensionField, Field, PrimeField64};
+use p3_maybe_rayon::prelude::*;
 
 use crate::CircuitError;
 use crate::builder::{CircuitBuilderError, NpoCircuitPlugin, NpoLoweringContext};
@@ -427,7 +428,7 @@ where
     // We extract c_j (the 0th basis coefficient) as a BF value, then re-embed as EF.
     let operations: Vec<RecomposeCircuitRow<BF>> = state
         .rows
-        .iter()
+        .par_iter()
         .map(|row| {
             let bf_values: Vec<BF> = row
                 .values
