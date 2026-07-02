@@ -196,7 +196,7 @@ impl<'a, F: Field> CircuitRunner<'a, F> {
     /// Run the circuit and generate traces
     #[instrument(skip_all)]
     pub fn run(mut self) -> Result<Traces<F>, CircuitError> {
-        let alu_records = self.execute_all()?;
+        let alu_trace = self.execute_all()?;
 
         if let Some(rewrite) = self.witness_rewrite.take() {
             let mut resolved: HashMap<WitnessId, WitnessId> = HashMap::with_capacity(rewrite.len());
@@ -226,7 +226,6 @@ impl<'a, F: Field> CircuitRunner<'a, F> {
 
         let const_trace = ConstTraceBuilder::new(&self.circuit.ops).build()?;
         let public_trace = PublicTraceBuilder::new(&self.circuit.ops, &self.witness).build()?;
-        let alu_trace = AluTrace::from_records(alu_records);
 
         // Iterate over generators in deterministic order (sorted by key). Generators only read
         // the already-populated `op_states` and each writes an independent output, so they can
@@ -263,8 +262,12 @@ impl<'a, F: Field> CircuitRunner<'a, F> {
     /// The circuit is already lowered into a valid execution order, so this function
     /// can blindly execute from index 0 to end.
     #[instrument(skip_all, level = "debug")]
-    pub fn execute_all(&mut self) -> Result<Vec<AluOpRecord<F>>, CircuitError> {
-        let mut alu_records = Vec::with_capacity(self.circuit.ops.len());
+    pub fn execute_all(&mut self) -> Result<AluTrace<F>, CircuitError> {
+        // Written directly from each AluOpRecord as it's produced, instead of collecting into
+        // an intermediate Vec<AluOpRecord> and re-scattering it into these columns afterward.
+        let mut op_kind = Vec::with_capacity(self.circuit.ops.len());
+        let mut values = Vec::with_capacity(self.circuit.ops.len());
+        let mut indices = Vec::with_capacity(self.circuit.ops.len());
 
         for op in &self.circuit.ops {
             match op {
@@ -285,7 +288,14 @@ impl<'a, F: Field> CircuitRunner<'a, F> {
                     intermediate_out,
                 } => {
                     let record = self.execute_alu_op(*kind, *a, *b, *c, *out, *intermediate_out)?;
-                    alu_records.push(record);
+                    op_kind.push(record.kind);
+                    values.push([record.a_val, record.b_val, record.c_val, record.out_val]);
+                    indices.push([
+                        record.a_index,
+                        record.b_index,
+                        record.c_index,
+                        record.out_index,
+                    ]);
                 }
                 Op::Hint {
                     inputs,
@@ -313,7 +323,18 @@ impl<'a, F: Field> CircuitRunner<'a, F> {
             }
         }
 
-        Ok(alu_records)
+        // If the trace is empty, add a dummy row: 0 + 0 = 0.
+        if op_kind.is_empty() {
+            op_kind.push(AluOpKind::Add);
+            values.push([F::ZERO, F::ZERO, F::ZERO, F::ZERO]);
+            indices.push([WitnessId(0), WitnessId(0), WitnessId(0), WitnessId(0)]);
+        }
+
+        Ok(AluTrace {
+            op_kind,
+            values,
+            indices,
+        })
     }
 
     /// Execute a single ALU op against the current witness and return its trace record.
