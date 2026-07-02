@@ -313,9 +313,17 @@ impl<SC: StarkGenericConfig> NonPrimitiveTableEntry<SC> {
 /// `PreprocessedColumns` are fully consumed during AIR construction in
 /// [`get_airs_and_degrees_with_prep`](crate::common::get_airs_and_degrees_with_prep)
 /// and are not needed here.
-/// Cached ALU packed-Horner schedule, keyed by the `(lanes, horner_packed_steps)` it was
-/// computed for.
-type AluScheduleCache = RefCell<Option<(usize, usize, Option<Vec<ScheduleEntry>>)>>;
+/// Cached ALU packed-Horner schedule and preprocessed trace matrix, keyed by the
+/// `(lanes, horner_packed_steps, min_height)` they were computed for.
+type AluScheduleCache<F> = RefCell<
+    Option<(
+        usize,
+        usize,
+        usize,
+        Option<Vec<ScheduleEntry>>,
+        Option<RowMajorMatrix<F>>,
+    )>,
+>;
 
 pub struct CircuitProverData<SC: StarkGenericConfig> {
     /// STARK prover data from p3_batch_stark.
@@ -324,9 +332,9 @@ pub struct CircuitProverData<SC: StarkGenericConfig> {
     pub primitive_columns: Vec<Vec<Val<SC>>>,
     /// Preprocessed columns for non-primitive operations.
     pub non_primitive_columns: NonPrimitivePreprocessedMap<Val<SC>>,
-    /// The schedule is a pure function of `primitive_columns[Alu]` and the cache key (not of
-    /// `D`), so it is computed once and reused across every proof for this circuit shape.
-    alu_schedule_cache: AluScheduleCache,
+    /// Both are a pure function of `primitive_columns[Alu]` and the cache key (not of `D`), so
+    /// they are computed once and reused across every proof for this circuit shape.
+    alu_schedule_cache: AluScheduleCache<Val<SC>>,
 }
 
 impl<SC: StarkGenericConfig> CircuitProverData<SC> {
@@ -1353,25 +1361,28 @@ where
         let alu_quintic = D == 5 && EF::alu_is_quintic_trinomial();
         let reduction = AluExtMulKind::resolve(D, w_binomial, alu_quintic)
             .ok_or(BatchStarkProverError::MissingWForExtension)?;
-        // The packed-Horner schedule depends only on (alu_prep, alu_lanes, horner_k), not on D,
-        // so it's cached in `circuit_prover_data` and reused across proofs of this circuit shape.
-        let alu_schedule = {
+        // The packed-Horner schedule and the resulting preprocessed trace matrix depend only on
+        // (alu_prep, alu_lanes, horner_k, min_height), not on D, so both are cached in
+        // `circuit_prover_data` and reused across proofs of this circuit shape.
+        let (alu_schedule, cached_prep_trace) = {
             let mut cache = circuit_prover_data.alu_schedule_cache.borrow_mut();
             match cache.as_ref() {
-                Some((cached_lanes, cached_k, schedule))
-                    if *cached_lanes == alu_lanes && *cached_k == horner_k =>
+                Some((cached_lanes, cached_k, cached_min_height, schedule, prep_trace))
+                    if *cached_lanes == alu_lanes
+                        && *cached_k == horner_k
+                        && *cached_min_height == min_height =>
                 {
-                    schedule.clone()
+                    (schedule.clone(), prep_trace.clone())
                 }
                 _ => {
                     let schedule =
                         AluAir::<Val<SC>, D>::compute_schedule_for(&alu_prep, alu_lanes, horner_k);
-                    *cache = Some((alu_lanes, horner_k, schedule.clone()));
-                    schedule
+                    *cache = Some((alu_lanes, horner_k, min_height, schedule.clone(), None));
+                    (schedule, None)
                 }
             }
         };
-        let alu_air: AluAir<Val<SC>, D> = AluAir::<Val<SC>, D>::from_reduction_with_schedule(
+        let mut alu_air: AluAir<Val<SC>, D> = AluAir::<Val<SC>, D>::from_reduction_with_schedule(
             alu_num_ops,
             alu_lanes,
             reduction,
@@ -1380,6 +1391,20 @@ where
             alu_schedule,
         )
         .with_min_height(min_height);
+        if let Some(prep_trace) = cached_prep_trace {
+            alu_air = alu_air.with_precomputed_prep_trace(prep_trace);
+        } else if let Some(prep_trace) = alu_air.preprocessed_trace() {
+            alu_air = alu_air.with_precomputed_prep_trace(prep_trace.clone());
+            let mut cache = circuit_prover_data.alu_schedule_cache.borrow_mut();
+            if let Some((cached_lanes, cached_k, cached_min_height, _, cached_prep_trace)) =
+                cache.as_mut()
+                && *cached_lanes == alu_lanes
+                && *cached_k == horner_k
+                && *cached_min_height == min_height
+            {
+                *cached_prep_trace = Some(prep_trace);
+            }
+        }
         let alu_matrix: RowMajorMatrix<Val<SC>> =
             alu_air.trace_to_matrix(&traces.alu_trace, min_height);
         let alu_scheduled_entries = alu_air.scheduled_entry_count();

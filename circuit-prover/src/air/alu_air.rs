@@ -157,6 +157,11 @@ pub struct AluAir<F: Copy, const D: usize = 1> {
     schedule: Option<Vec<ScheduleEntry>>,
     /// Pack size K for [`ScheduleEntry::PackedHorner`] (>= 2).
     pub(crate) horner_packed_steps: usize,
+    /// Precomputed preprocessed trace matrix, when the caller already built it for this
+    /// `(preprocessed, lanes, horner_packed_steps)` (e.g. once per circuit shape). When set,
+    /// [`Self::preprocessed_trace`] returns a clone of this instead of rebuilding from
+    /// `schedule`.
+    precomputed_prep_trace: Option<RowMajorMatrix<F>>,
 }
 
 impl<F: Field + PrimeCharacteristicRing + Copy, const D: usize> AluAir<F, D> {
@@ -174,6 +179,7 @@ impl<F: Field + PrimeCharacteristicRing + Copy, const D: usize> AluAir<F, D> {
             min_height: 1,
             schedule: None,
             horner_packed_steps: 2,
+            precomputed_prep_trace: None,
         }
     }
 
@@ -194,6 +200,7 @@ impl<F: Field + PrimeCharacteristicRing + Copy, const D: usize> AluAir<F, D> {
             min_height: 1,
             schedule,
             horner_packed_steps,
+            precomputed_prep_trace: None,
         }
     }
 
@@ -218,7 +225,19 @@ impl<F: Field + PrimeCharacteristicRing + Copy, const D: usize> AluAir<F, D> {
             min_height: 1,
             schedule,
             horner_packed_steps,
+            precomputed_prep_trace: None,
         }
+    }
+
+    /// Attach an already-built preprocessed trace matrix, so [`Self::preprocessed_trace`]
+    /// returns a clone of it instead of rebuilding from `schedule`.
+    ///
+    /// The caller is responsible for ensuring `trace` matches this instance's
+    /// `(preprocessed, lanes, horner_packed_steps, min_height)`.
+    #[must_use]
+    pub(crate) fn with_precomputed_prep_trace(mut self, trace: RowMajorMatrix<F>) -> Self {
+        self.precomputed_prep_trace = Some(trace);
+        self
     }
 
     /// Compute the packed-Horner lane schedule for the given preprocessed data.
@@ -724,6 +743,9 @@ impl<F: Field + Copy, const D: usize> BaseAir<F> for AluAir<F, D> {
     }
 
     fn preprocessed_trace(&self) -> Option<RowMajorMatrix<F>> {
+        if let Some(ref trace) = self.precomputed_prep_trace {
+            return Some(trace.clone());
+        }
         self.schedule.as_ref().map_or_else(
             || {
                 // No Horner scheduling: build the preprocessed trace at the
