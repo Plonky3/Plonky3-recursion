@@ -6,6 +6,7 @@ use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 use alloc::{format, vec};
+use core::cell::RefCell;
 
 use hashbrown::HashMap;
 #[cfg(debug_assertions)]
@@ -43,6 +44,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tracing::instrument;
 
+use crate::air::alu_air::ScheduleEntry;
 use crate::air::{AluAir, AluExtMulKind, ConstAir, PublicAir};
 use crate::batch_stark_prover::dynamic_air::transmute_traces;
 use crate::batch_stark_prover::packing::{AirTableShape, TraceTablesLayout};
@@ -311,6 +313,10 @@ impl<SC: StarkGenericConfig> NonPrimitiveTableEntry<SC> {
 /// `PreprocessedColumns` are fully consumed during AIR construction in
 /// [`get_airs_and_degrees_with_prep`](crate::common::get_airs_and_degrees_with_prep)
 /// and are not needed here.
+/// Cached ALU packed-Horner schedule, keyed by the `(lanes, horner_packed_steps)` it was
+/// computed for.
+type AluScheduleCache = RefCell<Option<(usize, usize, Option<Vec<ScheduleEntry>>)>>;
+
 pub struct CircuitProverData<SC: StarkGenericConfig> {
     /// STARK prover data from p3_batch_stark.
     pub prover_data: ProverData<SC>,
@@ -318,6 +324,9 @@ pub struct CircuitProverData<SC: StarkGenericConfig> {
     pub primitive_columns: Vec<Vec<Val<SC>>>,
     /// Preprocessed columns for non-primitive operations.
     pub non_primitive_columns: NonPrimitivePreprocessedMap<Val<SC>>,
+    /// The schedule is a pure function of `primitive_columns[Alu]` and the cache key (not of
+    /// `D`), so it is computed once and reused across every proof for this circuit shape.
+    alu_schedule_cache: AluScheduleCache,
 }
 
 impl<SC: StarkGenericConfig> CircuitProverData<SC> {
@@ -331,6 +340,7 @@ impl<SC: StarkGenericConfig> CircuitProverData<SC> {
             prover_data,
             primitive_columns,
             non_primitive_columns,
+            alu_schedule_cache: RefCell::new(None),
         }
     }
 
@@ -1343,12 +1353,31 @@ where
         let alu_quintic = D == 5 && EF::alu_is_quintic_trinomial();
         let reduction = AluExtMulKind::resolve(D, w_binomial, alu_quintic)
             .ok_or(BatchStarkProverError::MissingWForExtension)?;
-        let alu_air: AluAir<Val<SC>, D> = AluAir::<Val<SC>, D>::from_reduction_with_preprocessed(
+        // The packed-Horner schedule depends only on (alu_prep, alu_lanes, horner_k), not on D,
+        // so it's cached in `circuit_prover_data` and reused across proofs of this circuit shape.
+        let alu_schedule = {
+            let mut cache = circuit_prover_data.alu_schedule_cache.borrow_mut();
+            match cache.as_ref() {
+                Some((cached_lanes, cached_k, schedule))
+                    if *cached_lanes == alu_lanes && *cached_k == horner_k =>
+                {
+                    schedule.clone()
+                }
+                _ => {
+                    let schedule =
+                        AluAir::<Val<SC>, D>::compute_schedule_for(&alu_prep, alu_lanes, horner_k);
+                    *cache = Some((alu_lanes, horner_k, schedule.clone()));
+                    schedule
+                }
+            }
+        };
+        let alu_air: AluAir<Val<SC>, D> = AluAir::<Val<SC>, D>::from_reduction_with_schedule(
             alu_num_ops,
             alu_lanes,
             reduction,
             alu_prep,
             horner_k,
+            alu_schedule,
         )
         .with_min_height(min_height);
         let alu_matrix: RowMajorMatrix<Val<SC>> =

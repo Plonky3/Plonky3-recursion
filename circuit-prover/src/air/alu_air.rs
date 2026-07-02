@@ -96,7 +96,7 @@ use super::alu_columns::{
 
 /// Entry in the HornerAcc lane schedule.
 #[derive(Debug, Clone, Copy)]
-enum ScheduleEntry {
+pub(crate) enum ScheduleEntry {
     /// A real ALU op at the given original index.
     Op(usize),
     /// `k` consecutive HornerAcc ops with indices `first..first+k` in the original trace (`k >= 2`).
@@ -195,6 +195,43 @@ impl<F: Field + PrimeCharacteristicRing + Copy, const D: usize> AluAir<F, D> {
             schedule,
             horner_packed_steps,
         }
+    }
+
+    /// Core builder with preprocessed data and an already-computed packed-Horner schedule.
+    ///
+    /// The schedule depends only on `preprocessed`, `lanes`, and `horner_packed_steps` (not on
+    /// `D`), so callers that already computed it for the same `(lanes, horner_packed_steps)` —
+    /// e.g. once per circuit shape — can pass it here to skip [`Self::compute_schedule`].
+    pub(crate) const fn from_reduction_with_schedule(
+        num_ops: usize,
+        lanes: usize,
+        ext_mul_kind: AluExtMulKind<F>,
+        preprocessed: Vec<F>,
+        horner_packed_steps: usize,
+        schedule: Option<Vec<ScheduleEntry>>,
+    ) -> Self {
+        Self {
+            num_ops,
+            lanes,
+            ext_mul_kind,
+            preprocessed,
+            min_height: 1,
+            schedule,
+            horner_packed_steps,
+        }
+    }
+
+    /// Compute the packed-Horner lane schedule for the given preprocessed data.
+    ///
+    /// Exposed so callers can precompute and cache it once per circuit shape (it depends only
+    /// on `preprocessed`, `lanes`, and `pack_k`, not on `D`) and reuse it via
+    /// [`Self::from_reduction_with_schedule`] across every proof of that shape.
+    pub(crate) fn compute_schedule_for(
+        preprocessed: &[F],
+        lanes: usize,
+        pack_k: usize,
+    ) -> Option<Vec<ScheduleEntry>> {
+        Self::compute_schedule(preprocessed, lanes, pack_k)
     }
 
     /// Construct a new `AluAir` for base-field operations (D=1).
