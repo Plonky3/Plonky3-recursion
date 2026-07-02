@@ -13,7 +13,9 @@ use p3_circuit::{CircuitBuilder, NonPrimitiveOpId};
 use p3_circuit_prover::air::{AluAir, AluExtMulKind, ConstAir, PublicAir};
 use p3_circuit_prover::batch_stark_prover::{
     AirVariant, DynamicAirEntry, NUM_PRIMITIVE_TABLES, PrimitiveTable, RowCounts, TableProver,
+    lookups_for_circuit_table_air,
 };
+use p3_circuit_prover::common::CircuitTableAir;
 use p3_circuit_prover::field_params::ExtractBinomialW;
 use p3_commit::{Pcs, PolynomialSpace};
 use p3_field::{
@@ -56,6 +58,22 @@ pub enum CircuitTablesAir<SC: StarkGenericConfig, const D: usize> {
     Public(PublicAir<Val<SC>, D>),
     Alu(AluAir<Val<SC>, D>),
     Dynamic(DynRecursionAirEntry<SC>),
+}
+
+impl<SC: StarkGenericConfig, const D: usize> CircuitTablesAir<SC, D>
+where
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
+{
+    /// Bridge to the circuit-prover enum so the verifier can rebuild its own lookup
+    /// contexts from the reconstructed AIRs. Both enums wrap the identical inner AIRs.
+    fn to_table_air(&self) -> CircuitTableAir<SC, D> {
+        match self {
+            Self::Const(a) => CircuitTableAir::Const(a.clone()),
+            Self::Public(a) => CircuitTableAir::Public(a.clone()),
+            Self::Alu(a) => CircuitTableAir::Alu(a.clone()),
+            Self::Dynamic(a) => CircuitTableAir::Dynamic(a.clone()),
+        }
+    }
 }
 
 impl<SC, const D: usize> P3BaseAir<Val<SC>> for CircuitTablesAir<SC, D>
@@ -278,12 +296,24 @@ where
     for entry in &proof.non_primitives {
         air_public_counts.push(entry.public_values.len());
     }
-    let verifier_inputs = BatchStarkVerifierInputsBuilder::<SC, Comm, OpeningProof>::allocate(
+    let mut verifier_inputs = BatchStarkVerifierInputsBuilder::<SC, Comm, OpeningProof>::allocate(
         circuit,
         &proof.proof,
         common_data,
         &air_public_counts,
     );
+
+    // Rebuild the lookup contexts from the reconstructed (audited) AIRs instead of trusting
+    // the proof-supplied `common.lookups`, which drives the CTL folding, aux width, and
+    // challenge layout. For an honest proof these are identical (both derived from the same
+    // AIRs); a malformed or malicious lookup set is now ignored rather than believed.
+    verifier_inputs.common_data.lookups = circuit_airs
+        .iter()
+        .map(|air| {
+            lookups_for_circuit_table_air::<SC, TRACE_D>(&air.to_table_air(), config.is_zk())
+                .to_vec()
+        })
+        .collect();
 
     let common = &verifier_inputs.common_data;
 

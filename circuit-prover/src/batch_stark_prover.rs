@@ -912,7 +912,10 @@ where
 
 /// Extract the lookups for a `CircuitTableAir` by symbolic evaluation. The dispatch by
 /// inner variant is needed to satisfy the AIR trait bound on the matched arms.
-pub(crate) fn lookups_for_circuit_table_air<SC, const D: usize>(
+///
+/// Public so the recursive verifier can rebuild the lookup contexts from the AIRs it
+/// reconstructs, instead of trusting the proof-supplied `common.lookups`.
+pub fn lookups_for_circuit_table_air<SC, const D: usize>(
     air: &CircuitTableAir<SC, D>,
     is_zk: usize,
 ) -> Lookups<Val<SC>>
