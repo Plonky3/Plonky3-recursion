@@ -34,8 +34,9 @@ impl<'a, F: PrimeCharacteristicRing> ConstTraceBuilder<'a, F> {
 
     /// Builds the constant trace from circuit operations.
     pub fn build(self) -> Result<ConstTrace<F>, CircuitError> {
-        let mut index = Vec::with_capacity(1 << 9);
-        let mut values = Vec::with_capacity(1 << 9);
+        // `primitive_ops.len()` is a safe upper bound on the number of `Op::Const` entries.
+        let mut index = Vec::with_capacity(self.primitive_ops.len());
+        let mut values = Vec::with_capacity(self.primitive_ops.len());
 
         for prim in self.primitive_ops {
             if let Op::Const { out, val } = prim {
