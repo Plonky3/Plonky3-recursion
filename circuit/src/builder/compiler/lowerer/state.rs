@@ -50,6 +50,10 @@ pub(super) struct LoweringState<'a, F: Field> {
     /// Tracks which non-primitive operations have already been emitted,
     /// preventing duplicate emission from multiple output nodes.
     emitted_npo_ops: HashSet<NonPrimitiveOpId>,
+    /// Memoizes the synthetic negated-constant witness emitted by `emit_sub`'s `Mul - Const`
+    /// fast path, keyed by the negated value, so the same constant isn't re-emitted per
+    /// occurrence.
+    neg_const_cache: HashMap<F, WitnessId>,
 }
 
 impl<'a, F: Field> LoweringState<'a, F> {
@@ -82,6 +86,7 @@ impl<'a, F: Field> LoweringState<'a, F> {
             // Validate and cache the non-primitive output map (may fail).
             op_id_to_output_exprs: graph.build_npo_output_map()?,
             emitted_npo_ops: HashSet::new(),
+            neg_const_cache: HashMap::new(),
         })
     }
 
@@ -239,15 +244,22 @@ impl<'a, F: Field> LoweringState<'a, F> {
         let lhs_widx = self.resolve_witness(lhs, "Sub lhs (mul result)", expr_id)?;
 
         if let (Expr::Mul { .. }, Expr::Const(const_val)) = (lhs_expr, rhs_expr) {
-            // Fast path: emit a synthetic constant for the negated value.
-            // The synthetic ID is beyond the graph so it never collides with real expressions.
-            let synthetic_id = ExprId(self.graph.nodes().len() as u32);
-            let neg_const_widx = self
-                .dsu
-                .alloc_witness(synthetic_id, &mut self.witness_alloc);
-            self.ops.push(Op::Const {
-                out: neg_const_widx,
-                val: -(*const_val),
+            // Fast path: emit a synthetic constant for the negated value, memoized so repeated
+            // `Mul - <same const>` occurrences share one witness instead of re-emitting a Const
+            // op each time.
+            let neg_val = -(*const_val);
+            let neg_const_widx = *self.neg_const_cache.entry(neg_val).or_insert_with(|| {
+                // The synthetic ID is beyond the graph so it never collides with real
+                // expressions; it's never in a connect class, so this always allocates fresh.
+                let synthetic_id = ExprId(self.graph.nodes().len() as u32);
+                let widx = self
+                    .dsu
+                    .alloc_witness(synthetic_id, &mut self.witness_alloc);
+                self.ops.push(Op::Const {
+                    out: widx,
+                    val: neg_val,
+                });
+                widx
             });
             // Encode as forward add: result = lhs + (-c).
             self.ops
