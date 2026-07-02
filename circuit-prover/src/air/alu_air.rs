@@ -933,6 +933,19 @@ where
                     );
                 }
 
+                // Chain-head seed must be zero: a Horner chain's first step reads its
+                // accumulator positionally from the preceding row's `out`, which is a
+                // separator row. A separator has `mult_a = 0` whereas every real ALU op
+                // has `mult_a = -1`, so `next_sel_horner * (mult_a + 1)` is `1` exactly at
+                // a chain start (next is a Horner step, local is a separator) and `0`
+                // mid-chain or after a real op. Pinning that `out` to zero prevents a
+                // prover from injecting a nonzero accumulator, which would shift the
+                // evaluated polynomial by `seed * b^n`.
+                let chain_head_seed = next_sel_horner * (prep_cur.mult_a + AB::Expr::ONE);
+                for i in 0..D {
+                    builder.assert_zero(chain_head_seed.dup() * out[i]);
+                }
+
                 // 3) Intra-row packed legs (per arity selector sel_k, k >= 3)
                 for kk in 3..=k_max {
                     let sel_kk = prep_local[extra_prep + extra_prep_sel_k_idx(kk)];
@@ -1295,6 +1308,71 @@ mod tests {
         let air = AluAir::<Val, 1>::new_with_preprocessed(n, 1, preprocessed, 2);
         let matrix: RowMajorMatrix<Val> = air.trace_to_matrix(&trace, 1);
         assert_air_satisfies::<Val, EF, _>(&air, &matrix);
+    }
+
+    /// Regression for the chain-head-seed soundness fix: a Horner chain's first step
+    /// reads its accumulator from the preceding separator row's `out`, which must be
+    /// pinned to 0. Forging that seed nonzero and re-deriving each step's `out` keeps
+    /// every HORNER_ACC transition satisfied, so *before* the fix the forged trace
+    /// verified (shifting the evaluated polynomial); the new constraint must reject it.
+    /// Distinct `b` per step keeps every step a single (unpacked) row → one op per row.
+    #[test]
+    fn rejects_alu_horner_forged_chain_head_seed() {
+        let n = 3;
+        let steps = [
+            (Val::from_u64(1), Val::from_u64(2), Val::from_u64(5)),
+            (Val::ZERO, Val::from_u64(3), Val::from_u64(3)),
+            (Val::from_u64(1), Val::from_u64(5), Val::from_u64(2)),
+        ];
+
+        // Honest chain: seed = 0.
+        let mut prev = Val::ZERO;
+        let values: Vec<[Val; 4]> = steps
+            .iter()
+            .map(|&(a, b, c)| {
+                let out = prev * b + c - a;
+                prev = out;
+                [a, b, c, out]
+            })
+            .collect();
+
+        // Distinct witness indices per op (distinct `b_idx`) so the steps are NOT packed
+        // together — each becomes a single Horner row, giving a clean one-op-per-row layout.
+        let trace = AluTrace {
+            op_kind: vec![AluOpKind::HornerAcc; n],
+            values,
+            indices: vec![
+                [WitnessId(1), WitnessId(2), WitnessId(3), WitnessId(4)],
+                [WitnessId(5), WitnessId(6), WitnessId(7), WitnessId(8)],
+                [WitnessId(9), WitnessId(10), WitnessId(11), WitnessId(12)],
+            ],
+        };
+        let preprocessed = trace_to_preprocessed::<Val, _, 1>(&trace);
+        let air = AluAir::<Val, 1>::new_with_preprocessed(n, 1, preprocessed, 2);
+        let honest: RowMajorMatrix<Val> = air.trace_to_matrix(&trace, 1);
+        assert_air_satisfies::<Val, EF, _>(&air, &honest);
+
+        // The leading separator is row 0; for D=1 lane 0, `out` is column index 3.
+        let width = honest.width();
+        let out_col = 3;
+        assert_eq!(
+            honest.values[out_col],
+            Val::ZERO,
+            "separator seed is 0 when honest"
+        );
+
+        // Forge the separator seed to 1 and re-derive each step's `out` so every
+        // HORNER_ACC transition still holds — only the chain-head-seed constraint fails.
+        // (`honest` is not read past this point, so move it rather than clone.)
+        let mut forged = honest;
+        forged.values[out_col] = Val::ONE;
+        let mut acc = Val::ONE;
+        for (r, &(a, b, c)) in steps.iter().enumerate() {
+            let out = acc * b + c - a;
+            forged.values[(r + 1) * width + out_col] = out;
+            acc = out;
+        }
+        assert_air_rejects::<Val, EF, _>(&air, &forged);
     }
 
     #[test]
