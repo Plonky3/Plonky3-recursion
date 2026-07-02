@@ -272,7 +272,7 @@ where
             .iter()
             .enumerate()
             .map(|(i, &expr)| {
-                ctx.resolve_witness_id(expr, &format!("Recompose input coefficient {i}"))
+                ctx.resolve_witness_id(expr, || format!("Recompose input coefficient {i}"))
             })
             .collect::<Result<_, _>>()?;
 
@@ -284,7 +284,7 @@ where
             });
         }
         let (_, out_expr) = output_exprs[0];
-        let out_wid = ctx.resolve_witness_id(out_expr, "Recompose output")?;
+        let out_wid = ctx.resolve_witness_id(out_expr, || "Recompose output".into())?;
 
         let op_type = if self.coeff_witness_ctl {
             NpoTypeId::recompose_with_coeff_lookups()

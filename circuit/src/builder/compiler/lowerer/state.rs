@@ -92,12 +92,13 @@ impl<'a, F: Field> LoweringState<'a, F> {
     fn resolve_witness(
         &self,
         expr_id: ExprId,
-        context: &str,
+        label: &'static str,
+        parent_expr_id: ExprId,
     ) -> Result<WitnessId, CircuitBuilderError> {
         self.expr_to_widx.get(&expr_id).copied().ok_or_else(|| {
             CircuitBuilderError::MissingExprMapping {
                 expr_id,
-                context: context.into(),
+                context: format!("{label} for {parent_expr_id:?}"),
             }
         })
     }
@@ -202,8 +203,8 @@ impl<'a, F: Field> LoweringState<'a, F> {
         // Allocate a witness for the result (shared if in a connect class).
         let out_widx = self.dsu.alloc_witness(expr_id, &mut self.witness_alloc);
         // Resolve both operand witnesses (must have been emitted in an earlier phase).
-        let a_widx = self.resolve_witness(lhs, &format!("Add lhs for {expr_id:?}"))?;
-        let b_widx = self.resolve_witness(rhs, &format!("Add rhs for {expr_id:?}"))?;
+        let a_widx = self.resolve_witness(lhs, "Add lhs", expr_id)?;
+        let b_widx = self.resolve_witness(rhs, "Add rhs", expr_id)?;
         // Emit the forward add: out = a + b.
         self.ops.push(Op::add(a_widx, b_widx, out_widx));
         self.expr_to_widx.insert(expr_id, out_widx);
@@ -233,8 +234,7 @@ impl<'a, F: Field> LoweringState<'a, F> {
         let rhs_expr = self.graph.get_expr(rhs);
 
         let result_widx = self.dsu.alloc_witness(expr_id, &mut self.witness_alloc);
-        let lhs_widx =
-            self.resolve_witness(lhs, &format!("Sub lhs (mul result) for {expr_id:?}"))?;
+        let lhs_widx = self.resolve_witness(lhs, "Sub lhs (mul result)", expr_id)?;
 
         if let (Expr::Mul { .. }, Expr::Const(const_val)) = (lhs_expr, rhs_expr) {
             // Fast path: emit a synthetic constant for the negated value.
@@ -252,7 +252,7 @@ impl<'a, F: Field> LoweringState<'a, F> {
                 .push(Op::add(lhs_widx, neg_const_widx, result_widx));
         } else {
             // Generic path: encode result + rhs = lhs (backwards add).
-            let rhs_widx = self.resolve_witness(rhs, &format!("Sub rhs for {expr_id:?}"))?;
+            let rhs_widx = self.resolve_witness(rhs, "Sub rhs", expr_id)?;
             self.ops.push(Op::add(rhs_widx, result_widx, lhs_widx));
         }
         self.expr_to_widx.insert(expr_id, result_widx);
@@ -268,8 +268,8 @@ impl<'a, F: Field> LoweringState<'a, F> {
     ) -> Result<(), CircuitBuilderError> {
         // Allocate result witness and resolve both operands.
         let out_widx = self.dsu.alloc_witness(expr_id, &mut self.witness_alloc);
-        let a_widx = self.resolve_witness(lhs, &format!("Mul lhs for {expr_id:?}"))?;
-        let b_widx = self.resolve_witness(rhs, &format!("Mul rhs for {expr_id:?}"))?;
+        let a_widx = self.resolve_witness(lhs, "Mul lhs", expr_id)?;
+        let b_widx = self.resolve_witness(rhs, "Mul rhs", expr_id)?;
         // Emit the forward multiply: out = a * b.
         self.ops.push(Op::mul(a_widx, b_widx, out_widx));
         self.expr_to_widx.insert(expr_id, out_widx);
@@ -288,8 +288,8 @@ impl<'a, F: Field> LoweringState<'a, F> {
     ) -> Result<(), CircuitBuilderError> {
         // The quotient witness is allocated for this expression.
         let b_widx = self.dsu.alloc_witness(expr_id, &mut self.witness_alloc);
-        let out_widx = self.resolve_witness(lhs, &format!("Div lhs for {expr_id:?}"))?;
-        let a_widx = self.resolve_witness(rhs, &format!("Div rhs for {expr_id:?}"))?;
+        let out_widx = self.resolve_witness(lhs, "Div lhs", expr_id)?;
+        let a_widx = self.resolve_witness(rhs, "Div rhs", expr_id)?;
         // Emit rhs * quotient = lhs.
         self.ops.push(Op::mul(a_widx, b_widx, out_widx));
         self.expr_to_widx.insert(expr_id, b_widx);
@@ -310,13 +310,10 @@ impl<'a, F: Field> LoweringState<'a, F> {
         // Allocate the result witness.
         let out_widx = self.dsu.alloc_witness(expr_id, &mut self.witness_alloc);
         // Resolve all four input witnesses.
-        let acc_widx = self.resolve_witness(acc, &format!("HornerAcc acc for {expr_id:?}"))?;
-        let alpha_widx =
-            self.resolve_witness(alpha, &format!("HornerAcc alpha for {expr_id:?}"))?;
-        let p_at_z_widx =
-            self.resolve_witness(p_at_z, &format!("HornerAcc p_at_z for {expr_id:?}"))?;
-        let p_at_x_widx =
-            self.resolve_witness(p_at_x, &format!("HornerAcc p_at_x for {expr_id:?}"))?;
+        let acc_widx = self.resolve_witness(acc, "HornerAcc acc", expr_id)?;
+        let alpha_widx = self.resolve_witness(alpha, "HornerAcc alpha", expr_id)?;
+        let p_at_z_widx = self.resolve_witness(p_at_z, "HornerAcc p_at_z", expr_id)?;
+        let p_at_x_widx = self.resolve_witness(p_at_x, "HornerAcc p_at_x", expr_id)?;
         // Emit a single fused ALU op: out = acc * alpha + p_at_z - p_at_x.
         self.ops.push(Op::horner_acc(
             p_at_x_widx,
@@ -335,9 +332,9 @@ impl<'a, F: Field> LoweringState<'a, F> {
     /// The zero constant (always at position 0) is used as the `b` operand.
     fn emit_bool_check(&mut self, expr_id: ExprId, val: ExprId) -> Result<(), CircuitBuilderError> {
         let out_widx = self.dsu.alloc_witness(expr_id, &mut self.witness_alloc);
-        let val_widx = self.resolve_witness(val, &format!("BoolCheck val for {expr_id:?}"))?;
+        let val_widx = self.resolve_witness(val, "BoolCheck val", expr_id)?;
         // The zero constant is always the first expression in the graph.
-        let zero_widx = self.resolve_witness(ExprId::ZERO, "BoolCheck zero constant")?;
+        let zero_widx = self.resolve_witness(ExprId::ZERO, "BoolCheck zero constant", expr_id)?;
         self.ops.push(Op::Alu {
             kind: AluOpKind::BoolCheck,
             a: val_widx,
@@ -362,9 +359,9 @@ impl<'a, F: Field> LoweringState<'a, F> {
     ) -> Result<(), CircuitBuilderError> {
         // Allocate the result witness and resolve all three operands.
         let out_widx = self.dsu.alloc_witness(expr_id, &mut self.witness_alloc);
-        let a_widx = self.resolve_witness(a, &format!("MulAdd a for {expr_id:?}"))?;
-        let b_widx = self.resolve_witness(b, &format!("MulAdd b for {expr_id:?}"))?;
-        let c_widx = self.resolve_witness(c, &format!("MulAdd c for {expr_id:?}"))?;
+        let a_widx = self.resolve_witness(a, "MulAdd a", expr_id)?;
+        let b_widx = self.resolve_witness(b, "MulAdd b", expr_id)?;
+        let c_widx = self.resolve_witness(c, "MulAdd c", expr_id)?;
         // Emit a single fused ALU op: out = a * b + c.
         self.ops.push(Op::mul_add(a_widx, b_widx, c_widx, out_widx));
         self.expr_to_widx.insert(expr_id, out_widx);
@@ -442,7 +439,7 @@ impl<'a, F: Field> LoweringState<'a, F> {
         // Resolve each input expression to its witness slot.
         let flat_inputs: Vec<WitnessId> = data.input_exprs[0]
             .iter()
-            .map(|&expr| self.resolve_witness(expr, "Unconstrained operation input"))
+            .map(|&expr| self.resolve_witness(expr, "Unconstrained operation input", expr))
             .collect::<Result<_, _>>()?;
 
         // Ensure every output expression has a witness slot allocated.
