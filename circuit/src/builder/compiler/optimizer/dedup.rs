@@ -4,7 +4,7 @@ use hashbrown::HashMap;
 use p3_field::Field;
 
 use super::analysis::AluKey;
-use crate::ops::Op;
+use crate::ops::{AluOpKind, Op};
 use crate::types::WitnessId;
 
 /// Removes duplicate ALU operations by tracking a canonical output per `AluKey`.
@@ -13,7 +13,7 @@ use crate::types::WitnessId;
 /// Later ops see the canonical ID through `apply_witness_rewrite`.
 pub(super) struct Deduplicator {
     rewrite: HashMap<WitnessId, WitnessId>,
-    seen: HashMap<AluKey, WitnessId>,
+    seen: HashMap<(AluKey, Option<WitnessId>), WitnessId>,
 }
 
 impl Deduplicator {
@@ -51,7 +51,13 @@ impl Deduplicator {
     /// Returns `Some((duplicate_out, canonical_out))` when `op` duplicates an earlier ALU.
     fn detect_duplicate<F: Field>(&mut self, op: &Op<F>) -> Option<(WitnessId, WitnessId)> {
         let Op::Alu {
-            kind, a, b, c, out, ..
+            kind,
+            a,
+            b,
+            c,
+            out,
+            intermediate_out,
+            ..
         } = op
         else {
             return None;
@@ -63,11 +69,19 @@ impl Deduplicator {
             b.resolve(&self.rewrite),
             c.map(|id| id.resolve(&self.rewrite)),
         );
+        // HornerAcc's accumulator is an independent input (the previous step's output)
+        // that `AluKey` does not capture — unlike MulAdd's intermediate, which is fully
+        // determined by `a * b`. Fold it into the dedup discriminator so two Horner steps
+        // that differ only in their accumulator are never merged.
+        let acc = match kind {
+            AluOpKind::HornerAcc => intermediate_out.map(|id| id.resolve(&self.rewrite)),
+            _ => None,
+        };
 
-        if let Some(&canonical) = self.seen.get(&key) {
+        if let Some(&canonical) = self.seen.get(&(key, acc)) {
             Some((*out, canonical))
         } else {
-            self.seen.insert(key, *out);
+            self.seen.insert((key, acc), *out);
             None
         }
     }
@@ -237,5 +251,39 @@ mod tests {
         let (deduped, rewrite) = Deduplicator::new().run(ops.clone());
         assert_eq!(deduped, ops);
         assert!(rewrite.is_empty());
+    }
+
+    #[test]
+    fn horner_acc_distinct_accumulators_not_deduped() {
+        // Two HornerAcc ops with identical `(a, b, c)` but different accumulators must
+        // NOT merge: the accumulator (`intermediate_out`) is an independent input. When
+        // the dedup key ignored it, the second step was wrongly merged into the first,
+        // dropping its accumulator binding.
+        let (a, b, c) = (WitnessId(1), WitnessId(2), WitnessId(3));
+        let ops: Vec<Op<F>> = vec![
+            Op::horner_acc(a, b, c, WitnessId(20), WitnessId(10)),
+            Op::horner_acc(a, b, c, WitnessId(21), WitnessId(11)),
+        ];
+
+        let (deduped, rewrite) = Deduplicator::new().run(ops.clone());
+        assert_eq!(
+            deduped, ops,
+            "distinct accumulators must not be deduplicated"
+        );
+        assert!(rewrite.is_empty());
+    }
+
+    #[test]
+    fn horner_acc_same_accumulator_deduped() {
+        // Genuinely identical Horner steps (same `a, b, c` and accumulator) still dedup.
+        let (a, b, c, acc) = (WitnessId(1), WitnessId(2), WitnessId(3), WitnessId(10));
+        let ops: Vec<Op<F>> = vec![
+            Op::horner_acc(a, b, c, WitnessId(20), acc),
+            Op::horner_acc(a, b, c, WitnessId(21), acc),
+        ];
+
+        let (deduped, rewrite) = Deduplicator::new().run(ops);
+        assert_eq!(deduped.len(), 1, "identical Horner steps should dedup");
+        assert_eq!(rewrite.get(&WitnessId(21)), Some(&WitnessId(20)));
     }
 }
