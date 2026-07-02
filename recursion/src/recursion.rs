@@ -542,9 +542,14 @@ where
 ///
 /// The two inputs may be different `RecursionInput` variants (e.g. one `UniStark` left
 /// and one `BatchStark` right) or identical ones.
+///
+/// The resulting `VerifierResult`s hold only shape-dependent targets (not `left`/`right`'s
+/// actual values), so both the circuit and the results can be reused across every pair that
+/// shares this shape: pass them to [`prove_aggregation_layer`] once per pair, each with that
+/// pair's own `left`/`right`, instead of rebuilding the circuit per pair.
 #[instrument(skip_all)]
 #[allow(clippy::type_complexity)]
-fn build_aggregation_layer_circuit<SC, A1, A2, B, const D: usize>(
+pub fn build_aggregation_layer_circuit<SC, A1, A2, B, const D: usize>(
     left: &RecursionInput<'_, SC, A1>,
     right: &RecursionInput<'_, SC, A2>,
     config: &SC,

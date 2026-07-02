@@ -36,9 +36,10 @@ pub use p3_recursion::{
     AggregationPrepCache, BatchOnly, BatchStarkVerifierInputsBuilder, FriRecursionBackend,
     FriRecursionBackendD5, FriRecursionConfig, FriVerifierParams, NextLayerPrepCache,
     Poseidon2Config, ProveNextLayerParams, RecursionInput, RecursionOutput,
-    build_and_prove_aggregation_layer, build_and_prove_aggregation_layer_cross,
-    build_and_prove_next_layer, build_next_layer_circuit, build_next_layer_prep, prove_next_layer,
-    verify_batch_circuit,
+    build_aggregation_layer_circuit, build_and_prove_aggregation_layer,
+    build_and_prove_aggregation_layer_cross, build_and_prove_next_layer, build_next_layer_circuit,
+    build_next_layer_prep, prove_aggregation_layer, prove_aggregation_layer_cross,
+    prove_next_layer, verify_batch_circuit,
 };
 pub use p3_symmetric::{PaddingFreeSponge, Permutation, TruncatedPermutation};
 pub use p3_uni_stark::{StarkConfig, StarkGenericConfig, Val};
