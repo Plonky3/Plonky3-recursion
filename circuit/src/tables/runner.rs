@@ -39,24 +39,26 @@ impl<'a, F: Field> CircuitRunner<'a, F> {
     /// Creates circuit runner with empty witness storage.
     pub fn new(circuit: &'a Circuit<F>) -> Self {
         let witness = vec![None; circuit.witness_count as usize];
+
+        // Single pass over `circuit.ops`: collect each non-primitive op's (index, id) and track
+        // the max id, instead of scanning the full op list twice.
+        let mut non_primitive_op_positions: Vec<(usize, u32)> = Vec::new();
         let mut max_op_id: Option<u32> = None;
-        for op in &circuit.ops {
+        for (idx, op) in circuit.ops.iter().enumerate() {
             if let Op::NonPrimitiveOpWithExecutor { op_id, .. } = op {
                 max_op_id = Some(max_op_id.map_or(op_id.0, |cur| cur.max(op_id.0)));
+                non_primitive_op_positions.push((idx, op_id.0));
             }
         }
         let non_primitive_op_count = max_op_id.map_or(0, |m| m as usize + 1);
 
         let mut non_primitive_op_index_by_id = vec![None; non_primitive_op_count];
-        for (idx, op) in circuit.ops.iter().enumerate() {
-            if let Op::NonPrimitiveOpWithExecutor { op_id, .. } = op
-                && let Some(slot) = non_primitive_op_index_by_id.get_mut(op_id.0 as usize)
-            {
+        for (idx, op_id) in non_primitive_op_positions {
+            if let Some(slot) = non_primitive_op_index_by_id.get_mut(op_id as usize) {
                 #[cfg(debug_assertions)]
                 debug_assert!(
                     slot.is_none(),
-                    "duplicate NonPrimitiveOpId({}) in circuit.ops",
-                    op_id.0
+                    "duplicate NonPrimitiveOpId({op_id}) in circuit.ops",
                 );
                 // Keep the first occurrence if duplicates exist (release builds).
                 if slot.is_none() {
