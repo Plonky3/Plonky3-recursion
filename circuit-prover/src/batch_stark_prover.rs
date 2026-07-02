@@ -1489,9 +1489,7 @@ where
             non_primitives: dynamic_instances
                 .iter()
                 .map(|inst| {
-                    let prep_cols = BaseAir::preprocessed_trace(&inst.air)
-                        .map(|m| m.width())
-                        .unwrap_or(0);
+                    let prep_cols = BaseAir::preprocessed_width(&inst.air);
                     let rows = traces
                         .non_primitive_traces
                         .get(&inst.op_type)
