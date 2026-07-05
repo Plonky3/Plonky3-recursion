@@ -874,14 +874,14 @@ where
 
     fn num_public_values(&self) -> usize {
         match self {
-            Self::Const(a) => a.num_public_values(),
-            Self::Public(a) => a.num_public_values(),
-            Self::Alu(a) => a.num_public_values(),
-            Self::Dynamic(a) =>
-                <dyn CloneableBatchAir<SC> as BaseAir<Val<SC>>>::num_public_values(a.air()),
+            Self::Const(a) => BaseAir::<Val<SC>>::num_public_values(a),
+            Self::Public(a) => BaseAir::<Val<SC>>::num_public_values(a),
+            Self::Alu(a) => BaseAir::<Val<SC>>::num_public_values(a),
+            Self::Dynamic(a) => {
+                <dyn CloneableBatchAir<SC> as BaseAir<Val<SC>>>::num_public_values(a.air())
+            }
         }
     }
-}
 
 macro_rules! impl_circuit_table_air_for_builder {
     ($builder_ty:ty) => {
