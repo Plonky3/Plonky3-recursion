@@ -882,6 +882,7 @@ where
             }
         }
     }
+}
 
 macro_rules! impl_circuit_table_air_for_builder {
     ($builder_ty:ty) => {
