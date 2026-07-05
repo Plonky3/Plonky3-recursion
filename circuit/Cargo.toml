@@ -19,6 +19,7 @@ p3-goldilocks.workspace = true
 p3-keccak.workspace = true
 p3-koala-bear.workspace = true
 p3-matrix.workspace = true
+p3-maybe-rayon.workspace = true
 p3-poseidon1-circuit-air.workspace = true
 p3-symmetric.workspace = true
 p3-uni-stark.workspace = true
@@ -58,6 +59,7 @@ tracing-subscriber = { workspace = true, features = ["std", "env-filter"] }
 [features]
 debugging = []
 profiling = ["debugging"]
+parallel = ["p3-maybe-rayon/parallel"]
 
 [[bench]]
 name = "runner_traces"

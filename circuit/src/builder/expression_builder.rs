@@ -110,9 +110,10 @@ impl ProfilingState {
         // Global totals.
         f(&mut self.global);
 
-        // Per-scope totals (if a scope is active).
-        if let Some(scope) = self.scope_stack.last().cloned() {
-            let entry = self.per_scope.entry(scope).or_default();
+        // Per-scope totals (if a scope is active). `entry_ref` only clones the scope name on
+        // the (rare) first-write-to-this-scope case, unlike `entry` which needs an owned key.
+        if let Some(scope) = self.scope_stack.last() {
+            let entry = self.per_scope.entry_ref(scope.as_str()).or_default();
             f(entry);
         }
     }
@@ -172,8 +173,8 @@ impl ProfilingState {
             .or_default() += 1;
 
         // Per-scope totals (if a scope is active).
-        if let Some(scope) = self.scope_stack.last().cloned() {
-            let entry = self.per_scope.entry(scope).or_default();
+        if let Some(scope) = self.scope_stack.last() {
+            let entry = self.per_scope.entry_ref(scope.as_str()).or_default();
             *entry.non_primitives.entry(op_type).or_default() += 1;
         }
     }

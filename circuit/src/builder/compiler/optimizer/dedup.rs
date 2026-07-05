@@ -17,10 +17,12 @@ pub(super) struct Deduplicator {
 }
 
 impl Deduplicator {
-    pub(super) fn new() -> Self {
+    /// `capacity` is a hint for the number of ops to be deduplicated; `rewrite` and `seen` can
+    /// never hold more entries than that.
+    pub(super) fn with_capacity(capacity: usize) -> Self {
         Self {
-            rewrite: HashMap::new(),
-            seen: HashMap::new(),
+            rewrite: HashMap::with_capacity(capacity),
+            seen: HashMap::with_capacity(capacity),
         }
     }
 
@@ -114,7 +116,7 @@ mod tests {
             Op::add(mul_out, c, add_out),
         ];
 
-        let (deduped, rewrite) = Deduplicator::new().run(ops);
+        let (deduped, rewrite) = Deduplicator::with_capacity(ops.len()).run(ops);
 
         assert_eq!(
             deduped,
@@ -169,7 +171,7 @@ mod tests {
     #[test]
     fn test_empty_input() {
         let ops: Vec<Op<F>> = vec![];
-        let (deduped, rewrite) = Deduplicator::new().run(ops);
+        let (deduped, rewrite) = Deduplicator::with_capacity(ops.len()).run(ops);
         assert!(deduped.is_empty());
         assert!(rewrite.is_empty());
     }
@@ -187,7 +189,7 @@ mod tests {
             },
         ];
 
-        let (deduped, rewrite) = Deduplicator::new().run(ops.clone());
+        let (deduped, rewrite) = Deduplicator::with_capacity(ops.len()).run(ops.clone());
         assert_eq!(deduped, ops);
         assert!(rewrite.is_empty());
     }
@@ -200,7 +202,7 @@ mod tests {
             Op::add(b, a, WitnessId(3)), // same as above (commutative)
         ];
 
-        let (deduped, rewrite) = Deduplicator::new().run(ops);
+        let (deduped, rewrite) = Deduplicator::with_capacity(ops.len()).run(ops);
         assert_eq!(deduped, vec![Op::add(a, b, WitnessId(2))]);
         assert_eq!(rewrite.get(&WitnessId(3)), Some(&WitnessId(2)));
     }
@@ -210,7 +212,7 @@ mod tests {
         let (a, b) = (WitnessId(0), WitnessId(1));
         let ops: Vec<Op<F>> = vec![Op::mul(a, b, WitnessId(2)), Op::mul(b, a, WitnessId(3))];
 
-        let (deduped, rewrite) = Deduplicator::new().run(ops);
+        let (deduped, rewrite) = Deduplicator::with_capacity(ops.len()).run(ops);
         assert_eq!(deduped, vec![Op::mul(a, b, WitnessId(2))]);
         assert_eq!(rewrite.get(&WitnessId(3)), Some(&WitnessId(2)));
     }
@@ -229,7 +231,7 @@ mod tests {
             Op::add(WitnessId(2), a, WitnessId(5)),
         ];
 
-        let (deduped, rewrite) = Deduplicator::new().run(ops);
+        let (deduped, rewrite) = Deduplicator::with_capacity(ops.len()).run(ops);
         assert_eq!(
             deduped,
             vec![
@@ -248,7 +250,7 @@ mod tests {
             Op::mul(WitnessId(0), WitnessId(1), WitnessId(3)),
         ];
 
-        let (deduped, rewrite) = Deduplicator::new().run(ops.clone());
+        let (deduped, rewrite) = Deduplicator::with_capacity(ops.len()).run(ops.clone());
         assert_eq!(deduped, ops);
         assert!(rewrite.is_empty());
     }
@@ -265,7 +267,7 @@ mod tests {
             Op::horner_acc(a, b, c, WitnessId(21), WitnessId(11)),
         ];
 
-        let (deduped, rewrite) = Deduplicator::new().run(ops.clone());
+        let (deduped, rewrite) = Deduplicator::with_capacity(ops.len()).run(ops.clone());
         assert_eq!(
             deduped, ops,
             "distinct accumulators must not be deduplicated"
@@ -282,7 +284,7 @@ mod tests {
             Op::horner_acc(a, b, c, WitnessId(21), acc),
         ];
 
-        let (deduped, rewrite) = Deduplicator::new().run(ops);
+        let (deduped, rewrite) = Deduplicator::with_capacity(ops.len()).run(ops);
         assert_eq!(deduped.len(), 1, "identical Horner steps should dedup");
         assert_eq!(rewrite.get(&WitnessId(21)), Some(&WitnessId(20)));
     }

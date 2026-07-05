@@ -41,8 +41,9 @@ impl<'a, F: PrimeCharacteristicRing> PublicTraceBuilder<'a, F> {
 
     /// Builds the public input trace from circuit operations.
     pub fn build(self) -> Result<PublicTrace<F>, CircuitError> {
-        let mut index = Vec::with_capacity(1 << 15);
-        let mut values = Vec::with_capacity(1 << 15);
+        // `primitive_ops.len()` is a safe upper bound on the number of `Op::Public` entries.
+        let mut index = Vec::with_capacity(self.primitive_ops.len());
+        let mut values = Vec::with_capacity(self.primitive_ops.len());
 
         for prim in self.primitive_ops {
             if let Op::Public { out, public_pos: _ } = prim {

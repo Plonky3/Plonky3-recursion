@@ -1,5 +1,6 @@
 use alloc::boxed::Box;
 use alloc::format;
+use alloc::string::String;
 use alloc::vec::Vec;
 use core::marker::PhantomData;
 
@@ -138,12 +139,12 @@ impl<'a, F> NpoLoweringContext<'a, F> {
     pub fn resolve_witness_id(
         &self,
         expr_id: ExprId,
-        context: &str,
+        context: impl FnOnce() -> String,
     ) -> Result<WitnessId, CircuitBuilderError> {
         self.expr_to_widx.get(&expr_id).copied().ok_or_else(|| {
             CircuitBuilderError::MissingExprMapping {
                 expr_id,
-                context: context.into(),
+                context: context(),
             }
         })
     }
@@ -184,7 +185,7 @@ impl<'a, F> NpoLoweringContext<'a, F> {
             let witness_index = slot
                 .iter()
                 .map(|&expr| {
-                    self.resolve_witness_id(expr, &format!("{op_name} {context_prefix} {i}"))
+                    self.resolve_witness_id(expr, || format!("{op_name} {context_prefix} {i}"))
                 })
                 .collect::<Result<_, _>>()?;
             result.push(witness_index);
@@ -273,7 +274,7 @@ mod tests {
         let ctx = NpoLoweringContext::<F>::new(&mut map, &mut alloc);
 
         assert_eq!(
-            ctx.resolve_witness_id(ExprId(5), "test").unwrap(),
+            ctx.resolve_witness_id(ExprId(5), || "test".into()).unwrap(),
             WitnessId(42)
         );
     }
@@ -285,7 +286,7 @@ mod tests {
         let ctx = NpoLoweringContext::<F>::new(&mut map, &mut alloc);
 
         let Err(CircuitBuilderError::MissingExprMapping { expr_id, context }) =
-            ctx.resolve_witness_id(ExprId(99), "some context")
+            ctx.resolve_witness_id(ExprId(99), || "some context".into())
         else {
             panic!("expected MissingExprMapping");
         };

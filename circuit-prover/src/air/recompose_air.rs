@@ -31,6 +31,7 @@ use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 use p3_field::{Field, PrimeCharacteristicRing};
 use p3_lookup::{Count, InteractionBuilder};
 use p3_matrix::dense::RowMajorMatrix;
+use p3_maybe_rayon::prelude::*;
 use tracing::instrument;
 
 use super::recompose_columns::{RECOMPOSE_PREP_LANE_COL_MAP, RECOMPOSE_PREP_LANE_WIDTH};
@@ -103,14 +104,20 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> RecomposeAir<F, D> {
 
         let mut values = F::zero_vec(num_rows * row_width);
 
-        for (op_idx, row) in rows.iter().enumerate() {
-            let r = op_idx / lanes;
-            let l = op_idx % lanes;
-            let base = r * row_width + l * lane_w;
-            for (j, &val) in row.values.iter().enumerate() {
-                values[base + j] = val;
-            }
-        }
+        // Rows are independent (no cross-row state), so each row is filled in parallel from
+        // its `lanes` ops.
+        values
+            .par_chunks_mut(row_width)
+            .enumerate()
+            .for_each(|(r, row_slice)| {
+                for l in 0..lanes {
+                    let op_idx = r * lanes + l;
+                    if let Some(row) = rows.get(op_idx) {
+                        let base = l * lane_w;
+                        row_slice[base..base + row.values.len()].copy_from_slice(&row.values);
+                    }
+                }
+            });
 
         let mut mat = RowMajorMatrix::new(values, row_width);
         mat.pad_to_power_of_two_height(F::ZERO);

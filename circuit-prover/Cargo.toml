@@ -58,7 +58,7 @@ tracing-forest = { workspace = true, features = ["smallvec"] }
 tracing-subscriber = { workspace = true, features = ["std", "env-filter"] }
 
 [features]
-parallel = ["p3-maybe-rayon/parallel"]
+parallel = ["p3-maybe-rayon/parallel", "p3-circuit/parallel"]
 
 [[bench]]
 name = "prover"

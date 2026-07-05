@@ -444,13 +444,37 @@ macro_rules! define_field_module_aggregation_quintic {
                             let agg_config: $cfg_type = $config_agg(level as u64);
 
                             let mut next_level = Vec::with_capacity(pairs);
+                            // All pairs at a level share the same circuit shape, so build the
+                            // verifier circuit once (from the first pair) and reuse it for every
+                            // pair via `prove_aggregation_layer`, instead of rebuilding it per pair.
+                            let mut layer_circuit = None;
                             for pair_idx in 0..pairs {
                                 let li = pair_idx * 2;
                                 let left = proofs[li].into_recursion_input::<BatchOnly>();
                                 let right = proofs[li + 1].into_recursion_input::<BatchOnly>();
 
-                                let out = build_and_prove_aggregation_layer::<$cfg_type, _, _, _, D>(
-                                    &left, &right, &agg_config, &backend, &agg_params,
+                                if layer_circuit.is_none() {
+                                    layer_circuit = Some(
+                                        build_aggregation_layer_circuit::<$cfg_type, _, _, _, D>(
+                                            &left, &right, &agg_config, &backend,
+                                        )
+                                        .unwrap_or_else(|e| {
+                                            panic!("Failed to build circuit at level {level}: {e:?}")
+                                        }),
+                                    );
+                                }
+                                let (verification_circuit, (left_result, right_result)) =
+                                    layer_circuit.as_ref().unwrap();
+
+                                let out = prove_aggregation_layer::<$cfg_type, _, _, _, D>(
+                                    &left,
+                                    &right,
+                                    left_result,
+                                    right_result,
+                                    verification_circuit,
+                                    &agg_config,
+                                    &backend,
+                                    &agg_params,
                                     Some(&mut prep_cache),
                                 )
                                 .unwrap_or_else(|e| {
@@ -676,13 +700,37 @@ macro_rules! define_field_module {
                             let agg_config: $cfg_type = $config_agg(level as u64);
 
                             let mut next_level = Vec::with_capacity(pairs);
+                            // All pairs at a level share the same circuit shape, so build the
+                            // verifier circuit once (from the first pair) and reuse it for every
+                            // pair via `prove_aggregation_layer`, instead of rebuilding it per pair.
+                            let mut layer_circuit = None;
                             for pair_idx in 0..pairs {
                                 let li = pair_idx * 2;
                                 let left = proofs[li].into_recursion_input::<BatchOnly>();
                                 let right = proofs[li + 1].into_recursion_input::<BatchOnly>();
 
-                                let out = build_and_prove_aggregation_layer::<$cfg_type, _, _, _, D>(
-                                    &left, &right, &agg_config, &backend, &agg_params,
+                                if layer_circuit.is_none() {
+                                    layer_circuit = Some(
+                                        build_aggregation_layer_circuit::<$cfg_type, _, _, _, D>(
+                                            &left, &right, &agg_config, &backend,
+                                        )
+                                        .unwrap_or_else(|e| {
+                                            panic!("Failed to build circuit at level {level}: {e:?}")
+                                        }),
+                                    );
+                                }
+                                let (verification_circuit, (left_result, right_result)) =
+                                    layer_circuit.as_ref().unwrap();
+
+                                let out = prove_aggregation_layer::<$cfg_type, _, _, _, D>(
+                                    &left,
+                                    &right,
+                                    left_result,
+                                    right_result,
+                                    verification_circuit,
+                                    &agg_config,
+                                    &backend,
+                                    &agg_params,
                                     Some(&mut prep_cache),
                                 )
                                 .unwrap_or_else(|e| {
@@ -1183,11 +1231,32 @@ macro_rules! arity4_run {
                 None;
             let mut proofs: Vec<RecursionOutput<ConfigWithFriParamsArity4>> =
                 Vec::with_capacity(pairs);
+            // All pairs at this boundary share the same circuit shape, so build the verifier
+            // circuit once (from the first pair) and reuse it for every pair via
+            // `prove_aggregation_layer_cross`, instead of rebuilding it per pair.
+            let mut boundary_circuit = None;
             for pair_idx in 0..pairs {
                 let li = pair_idx * 2;
                 let left = base_proofs[li].into_recursion_input::<BatchOnly>();
                 let right = base_proofs[li + 1].into_recursion_input::<BatchOnly>();
-                let out = build_and_prove_aggregation_layer_cross::<
+
+                if boundary_circuit.is_none() {
+                    boundary_circuit = Some(
+                        build_aggregation_layer_circuit::<ConfigWithFriParams, _, _, _, D>(
+                            &left,
+                            &right,
+                            &input_config,
+                            &backend,
+                        )
+                        .unwrap_or_else(|e| {
+                            panic!("Failed to build circuit at level {level}: {e:?}")
+                        }),
+                    );
+                }
+                let (verification_circuit, (left_result, right_result)) =
+                    boundary_circuit.as_ref().unwrap();
+
+                let out = prove_aggregation_layer_cross::<
                     ConfigWithFriParams,
                     ConfigWithFriParamsArity4,
                     _,
@@ -1197,6 +1266,9 @@ macro_rules! arity4_run {
                 >(
                     &left,
                     &right,
+                    left_result,
+                    right_result,
+                    verification_circuit,
                     &input_config,
                     &output_config,
                     &backend,
@@ -1237,22 +1309,47 @@ macro_rules! arity4_run {
                 );
 
                 let mut next_level = Vec::with_capacity(pairs);
+                // All pairs at a level share the same circuit shape, so build the verifier
+                // circuit once (from the first pair) and reuse it for every pair via
+                // `prove_aggregation_layer`, instead of rebuilding it per pair.
+                let mut layer_circuit = None;
                 for pair_idx in 0..pairs {
                     let li = pair_idx * 2;
                     let left = proofs[li].into_recursion_input::<BatchOnly>();
                     let right = proofs[li + 1].into_recursion_input::<BatchOnly>();
-                    let out =
-                        build_and_prove_aggregation_layer::<ConfigWithFriParamsArity4, _, _, _, D>(
-                            &left,
-                            &right,
-                            &agg_config,
-                            &backend_arity4,
-                            &agg_params,
-                            Some(&mut prep_cache),
-                        )
-                        .unwrap_or_else(|e| {
-                            panic!("Failed at level {level}, pair {pair_idx}: {e:?}")
-                        });
+
+                    if layer_circuit.is_none() {
+                        layer_circuit =
+                            Some(
+                                build_aggregation_layer_circuit::<
+                                    ConfigWithFriParamsArity4,
+                                    _,
+                                    _,
+                                    _,
+                                    D,
+                                >(
+                                    &left, &right, &agg_config, &backend_arity4
+                                )
+                                .unwrap_or_else(|e| {
+                                    panic!("Failed to build circuit at level {level}: {e:?}")
+                                }),
+                            );
+                    }
+                    let (verification_circuit, (left_result, right_result)) =
+                        layer_circuit.as_ref().unwrap();
+
+                    let out = prove_aggregation_layer::<ConfigWithFriParamsArity4, _, _, _, D>(
+                        &left,
+                        &right,
+                        left_result,
+                        right_result,
+                        verification_circuit,
+                        &agg_config,
+                        &backend_arity4,
+                        &agg_params,
+                        Some(&mut prep_cache),
+                    )
+                    .unwrap_or_else(|e| panic!("Failed at level {level}, pair {pair_idx}: {e:?}"));
                     report_proof_size(&out.0);
                     let mut verifier = BatchStarkProver::new(agg_config.clone())
                         .with_table_packing(agg_params.table_packing.clone());
