@@ -882,6 +882,28 @@ where
             }
         }
     }
+
+    fn num_periodic_columns(&self) -> usize {
+        match self {
+            Self::Const(a) => BaseAir::<Val<SC>>::num_periodic_columns(a),
+            Self::Public(a) => BaseAir::<Val<SC>>::num_periodic_columns(a),
+            Self::Alu(a) => BaseAir::<Val<SC>>::num_periodic_columns(a),
+            Self::Dynamic(a) => {
+                <dyn CloneableBatchAir<SC> as BaseAir<Val<SC>>>::num_periodic_columns(a.air())
+            }
+        }
+    }
+
+    fn periodic_columns(&self) -> Vec<Vec<Val<SC>>> {
+        match self {
+            Self::Const(a) => BaseAir::<Val<SC>>::periodic_columns(a),
+            Self::Public(a) => BaseAir::<Val<SC>>::periodic_columns(a),
+            Self::Alu(a) => BaseAir::<Val<SC>>::periodic_columns(a),
+            Self::Dynamic(a) => {
+                <dyn CloneableBatchAir<SC> as BaseAir<Val<SC>>>::periodic_columns(a.air())
+            }
+        }
+    }
 }
 
 macro_rules! impl_circuit_table_air_for_builder {

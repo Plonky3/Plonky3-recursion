@@ -107,6 +107,24 @@ where
             Self::Dynamic(a) => P3BaseAir::main_next_row_columns(a),
         }
     }
+
+    fn num_periodic_columns(&self) -> usize {
+        match self {
+            Self::Const(a) => P3BaseAir::num_periodic_columns(a),
+            Self::Public(a) => P3BaseAir::num_periodic_columns(a),
+            Self::Alu(a) => P3BaseAir::num_periodic_columns(a),
+            Self::Dynamic(a) => P3BaseAir::num_periodic_columns(a),
+        }
+    }
+
+    fn periodic_columns(&self) -> Vec<Vec<Val<SC>>> {
+        match self {
+            Self::Const(a) => P3BaseAir::periodic_columns(a),
+            Self::Public(a) => P3BaseAir::periodic_columns(a),
+            Self::Alu(a) => P3BaseAir::periodic_columns(a),
+            Self::Dynamic(a) => P3BaseAir::periodic_columns(a),
+        }
+    }
 }
 
 impl<SC, const D: usize>

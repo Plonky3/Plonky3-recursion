@@ -86,6 +86,14 @@ where
     fn main_next_row_columns(&self) -> Vec<usize> {
         <dyn CloneableBatchAir<SC> as BaseAir<Val<SC>>>::main_next_row_columns(self.air())
     }
+
+    fn num_periodic_columns(&self) -> usize {
+        <dyn CloneableBatchAir<SC> as BaseAir<Val<SC>>>::num_periodic_columns(self.air())
+    }
+
+    fn periodic_columns(&self) -> Vec<Vec<Val<SC>>> {
+        <dyn CloneableBatchAir<SC> as BaseAir<Val<SC>>>::periodic_columns(self.air())
+    }
 }
 
 macro_rules! impl_air_for_dynamic_entry {

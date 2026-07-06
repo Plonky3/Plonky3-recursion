@@ -1383,3 +1383,66 @@ fn test_koalabear_quintic_trinomial_batch_stark_with_poseidon1_d1() {
         .verify_all_tables::<QuinticTrinomialExtensionField<KoalaBear>>(&proof)
         .unwrap();
 }
+
+/// Minimal non-primitive AIR that reports non-default values for every `BaseAir`
+/// method, used to pin that `CircuitTableAir` forwards each method to its `Dynamic`
+/// variant instead of silently returning the trait defaults.
+#[derive(Clone)]
+struct ForwardingProbeAir {
+    num_public: usize,
+    periodic: Vec<Vec<u64>>,
+}
+
+impl<F: PrimeCharacteristicRing> BaseAir<F> for ForwardingProbeAir {
+    fn width(&self) -> usize {
+        1
+    }
+
+    fn num_public_values(&self) -> usize {
+        self.num_public
+    }
+
+    fn num_periodic_columns(&self) -> usize {
+        self.periodic.len()
+    }
+
+    fn periodic_columns(&self) -> Vec<Vec<F>> {
+        self.periodic
+            .iter()
+            .map(|col| col.iter().map(|&v| F::from_u64(v)).collect())
+            .collect()
+    }
+}
+
+impl<AB: p3_air::AirBuilder> Air<AB> for ForwardingProbeAir {
+    fn eval(&self, _builder: &mut AB) {}
+}
+
+impl BatchAir<BabyBearConfig> for ForwardingProbeAir {}
+
+#[test]
+fn circuit_table_air_forwards_base_air_methods_to_dynamic() {
+    let probe = ForwardingProbeAir {
+        num_public: 2,
+        periodic: vec![vec![7, 9], vec![11, 13, 15, 17]],
+    };
+    let entry = DynamicAirEntry::<BabyBearConfig>::new(Box::new(probe));
+    let air: CircuitTableAir<BabyBearConfig, 4> = CircuitTableAir::Dynamic(entry);
+
+    // Without the Dynamic forwarding arm each of these returns the BaseAir default
+    // (0 / empty), so they lock the forwarding contract in place.
+    assert_eq!(BaseAir::<BabyBear>::num_public_values(&air), 2);
+    assert_eq!(BaseAir::<BabyBear>::num_periodic_columns(&air), 2);
+    assert_eq!(
+        BaseAir::<BabyBear>::periodic_columns(&air),
+        vec![
+            vec![BabyBear::from_u64(7), BabyBear::from_u64(9)],
+            vec![
+                BabyBear::from_u64(11),
+                BabyBear::from_u64(13),
+                BabyBear::from_u64(15),
+                BabyBear::from_u64(17),
+            ],
+        ],
+    );
+}
