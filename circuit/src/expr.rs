@@ -44,20 +44,9 @@ pub enum Expr<F> {
     /// Anchor node for a non-primitive operation in the expression DAG.
     ///
     /// This node has no witness value itself, but it fixes the relative execution order
-    /// of non-primitive ops w.r.t. other expressions during lowering.
-    ///
-    /// The `inputs` field contains all input expressions (flattened from witness_exprs),
-    /// making dependencies explicit in the DAG structure. This enables proper topological
-    /// analysis and ensures the lowerer emits ops after their inputs are available.
-    ///
-    /// For stateful ops (e.g., Poseidon2 perm chaining with `in_ctl=false`), `inputs` may
-    /// be empty since chained values flow internally and are not materialized in the
-    /// witness table. Execution order for such ops is determined by their position in
-    /// the ops list during lowering.
-    NonPrimitiveCall {
-        op_id: NonPrimitiveOpId,
-        inputs: Vec<ExprId>,
-    },
+    /// of non-primitive ops w.r.t. other expressions during lowering. The op's actual
+    /// input expressions live in `NonPrimitiveOperationData.input_exprs`, keyed by `op_id`.
+    NonPrimitiveCall { op_id: NonPrimitiveOpId },
     /// Output of a non-primitive operation.
     ///
     /// This node represents a value produced by a non-primitive op. The `call` field
@@ -203,7 +192,6 @@ mod tests {
         // Create a call node with no inputs.
         let call = graph.add_expr(Expr::NonPrimitiveCall {
             op_id: NonPrimitiveOpId(0),
-            inputs: Vec::new(),
         });
         // Insert outputs out of order to exercise the sorting logic.
         let out1 = graph.add_expr(Expr::NonPrimitiveOutput {
@@ -227,7 +215,6 @@ mod tests {
         let mut graph = ExpressionGraph::<MockExtField>::new();
         let call = graph.add_expr(Expr::NonPrimitiveCall {
             op_id: NonPrimitiveOpId(0),
-            inputs: Vec::new(),
         });
         // Create outputs at indices 0 and 2, leaving a gap at index 1.
         graph.add_expr(Expr::NonPrimitiveOutput {
@@ -255,7 +242,6 @@ mod tests {
         let mut graph = ExpressionGraph::<MockExtField>::new();
         let call = graph.add_expr(Expr::NonPrimitiveCall {
             op_id: NonPrimitiveOpId(0),
-            inputs: Vec::new(),
         });
         // Two outputs both claiming index 0 — a duplicate.
         graph.add_expr(Expr::NonPrimitiveOutput {

@@ -804,19 +804,18 @@ where
     /// explicit in the DAG structure. For stateful ops with chaining (e.g., `in_ctl=false`),
     /// `inputs` may be empty since chained values are not in the witness table.
     #[allow(unused)]
+    #[allow(unused_variables)]
     pub fn add_non_primitive_call(
         &mut self,
         op_id: NonPrimitiveOpId,
         op_type: &NpoTypeId,
-        inputs: Vec<ExprId>,
+        #[cfg(feature = "debugging")] inputs: &[ExprId],
         label: &'static str,
     ) -> ExprId {
         #[cfg(feature = "debugging")]
         let dependencies: Vec<Vec<ExprId>> = inputs.iter().map(|&id| vec![id]).collect();
 
-        let expr_id = self
-            .graph
-            .add_expr(Expr::NonPrimitiveCall { op_id, inputs });
+        let expr_id = self.graph.add_expr(Expr::NonPrimitiveCall { op_id });
 
         // Count non-primitive calls when profiling is enabled.
         #[cfg(feature = "profiling")]

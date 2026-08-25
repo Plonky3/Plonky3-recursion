@@ -759,10 +759,15 @@ where
     ) -> (NonPrimitiveOpId, ExprId, Vec<Option<ExprId>>) {
         let op_id = NonPrimitiveOpId(self.non_primitive_ops.len() as u32);
 
+        #[cfg(feature = "debugging")]
         let flattened_inputs: Vec<ExprId> = input_exprs.iter().flatten().copied().collect();
-        let call_expr_id =
-            self.expr_builder
-                .add_non_primitive_call(op_id, &op_type, flattened_inputs, label);
+        let call_expr_id = self.expr_builder.add_non_primitive_call(
+            op_id,
+            &op_type,
+            #[cfg(feature = "debugging")]
+            &flattened_inputs,
+            label,
+        );
 
         let mut output_exprs: Vec<Vec<ExprId>> = vec![Vec::new(); output_labels.len()];
         let mut outputs: Vec<Option<ExprId>> = vec![None; output_labels.len()];

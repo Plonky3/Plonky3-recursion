@@ -186,7 +186,7 @@ impl<'a, F: Field> LoweringState<'a, F> {
                 } => self.emit_horner_acc(expr_id, *acc, *alpha, *p_at_z, *p_at_x)?,
                 Expr::BoolCheck { val } => self.emit_bool_check(expr_id, *val)?,
                 Expr::MulAdd { a, b, c } => self.emit_mul_add(expr_id, *a, *b, *c)?,
-                Expr::NonPrimitiveCall { op_id, inputs: _ } => {
+                Expr::NonPrimitiveCall { op_id } => {
                     self.emit_npo_call(*op_id)?;
                 }
                 Expr::NonPrimitiveOutput {
