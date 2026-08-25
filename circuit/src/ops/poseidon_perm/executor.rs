@@ -169,45 +169,60 @@ impl<V: PoseidonVariant> PoseidonPermExecutor<V> {
     /// Copy sibling hash limbs into the state.
     ///
     /// Only active when both Merkle mode is enabled and private data is provided.
-    /// - Arity-2: writes up to `capacity_ext` elements starting at index `rate_ext`.
-    /// - Arity-4: writes up to `3·capacity_ext` elements into the three chunks *not*
+    /// - Arity-2: writes exactly `capacity_ext` elements starting at index `rate_ext`.
+    /// - Arity-4: writes exactly `3·capacity_ext` elements into the three chunks *not*
     ///   indexed by `pos = mmcs_bit + 2·mmcs_bit2`, filling chunks in ascending order
     ///   and skipping the running-hash chunk.
+    ///
+    /// # Errors
+    /// Returns an error if `private` is present but its length doesn't match the
+    /// expected sibling-limb count exactly, rather than silently truncating or
+    /// leaving part of the state unwritten.
     fn fill_sibling_data<F: Field>(
         &self,
         state: &mut [F],
         private: Option<&[F]>,
         mmcs_bit: bool,
         mmcs_bit2: bool,
-    ) {
+    ) -> Result<(), CircuitError> {
         let Some(private) = private else {
-            return;
+            return Ok(());
         };
         if !self.merkle_path {
-            return;
+            return Ok(());
         }
         let cap_ext = self.config.capacity_ext();
         if self.is_arity4() {
+            let expected = 3 * cap_ext;
+            if private.len() != expected {
+                return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
+                    op: self.op_type.clone(),
+                    expected: format!("{expected} sibling limbs (3 * capacity_ext)"),
+                    got: private.len(),
+                });
+            }
             let pos = (mmcs_bit as usize) + 2 * (mmcs_bit2 as usize);
             let mut written = 0usize;
             for chunk_k in 0..4 {
                 if chunk_k == pos {
                     continue;
                 }
-                let remaining = private.len() - written;
-                if remaining == 0 {
-                    break;
-                }
-                let n = cap_ext.min(remaining);
                 let base = chunk_k * cap_ext;
-                state[base..base + n].copy_from_slice(&private[written..written + n]);
-                written += n;
+                state[base..base + cap_ext].copy_from_slice(&private[written..written + cap_ext]);
+                written += cap_ext;
             }
         } else {
+            if private.len() != cap_ext {
+                return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
+                    op: self.op_type.clone(),
+                    expected: format!("{cap_ext} sibling limbs (capacity_ext)"),
+                    got: private.len(),
+                });
+            }
             let rate_ext = self.config.rate_ext();
-            let n = private.len().min(cap_ext);
-            state[rate_ext..rate_ext + n].copy_from_slice(&private[..n]);
+            state[rate_ext..rate_ext + cap_ext].copy_from_slice(private);
         }
+        Ok(())
     }
 
     /// Overwrite state elements with witness values from CTL-exposed input slots.
@@ -260,7 +275,12 @@ impl<V: PoseidonVariant> PoseidonPermExecutor<V> {
             return Ok(None);
         };
         let Some(data) = private_data.downcast_ref::<PoseidonPermPrivateData<F>>() else {
-            return Ok(None);
+            return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
+                op: self.op_type.clone(),
+                operation_index: ctx.operation_id(),
+                expected: "PoseidonPermPrivateData".to_string(),
+                got: "private data of a different non-primitive op type".to_string(),
+            });
         };
         if !self.merkle_path {
             return Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
@@ -958,7 +978,7 @@ impl<V: PoseidonVariant, F: Field + Send + Sync + 'static> NonPrimitiveExecutor<
         // 2a. Arity-4: place the running-hash digest into chunk `pos`.
         self.place_arity4_running_hash(&mut state, chain_output, mmcs_bit, mmcs_bit2);
         // 2b. In Merkle mode, place sibling limbs in the non-running chunk(s).
-        self.fill_sibling_data(&mut state, private_inputs, mmcs_bit, mmcs_bit2);
+        self.fill_sibling_data(&mut state, private_inputs, mmcs_bit, mmcs_bit2)?;
         // 3. Overwrite with any CTL-exposed witness values.
         self.apply_witness_values(&mut state, inputs, ctx)?;
         // 4. Conditionally swap rate halves for the arity-2 Merkle direction bit.
@@ -1121,7 +1141,8 @@ mod tests {
         let mut state = F::zero_vec(CONFIG_D4_W16.width_ext());
         let sibling = [F::from_u64(10), F::from_u64(20)];
 
-        exec.fill_sibling_data(&mut state, Some(&sibling), false, false);
+        exec.fill_sibling_data(&mut state, Some(&sibling), false, false)
+            .expect("sibling length matches capacity_ext");
 
         assert_eq!(
             state,
@@ -1135,7 +1156,8 @@ mod tests {
         let width_ext = CONFIG_D4_W16.width_ext();
         let mut state = F::zero_vec(width_ext);
 
-        exec.fill_sibling_data(&mut state, Some(&[F::ONE, F::ONE]), false, false);
+        exec.fill_sibling_data(&mut state, Some(&[F::ONE, F::ONE]), false, false)
+            .expect("non-Merkle mode is a no-op regardless of private data length");
 
         assert!(state.iter().all(|&v| v == F::ZERO));
     }
@@ -1146,9 +1168,49 @@ mod tests {
         let width_ext = CONFIG_D4_W16.width_ext();
         let mut state = F::zero_vec(width_ext);
 
-        exec.fill_sibling_data(&mut state, None, false, false);
+        exec.fill_sibling_data(&mut state, None, false, false)
+            .expect("no private data is a no-op");
 
         assert!(state.iter().all(|&v| v == F::ZERO));
+    }
+
+    #[test]
+    fn resolve_private_data_rejects_wrong_type() {
+        // A downcast failure means the caller wired the wrong private-data type to this op --
+        // a real mistake, and must not be indistinguishable from "no private data attached".
+        let exec = executor(CONFIG_D4_W16, false, true);
+        let mut witness = vec![];
+        let private_data = vec![Some(NpoPrivateData::new(42u32))];
+        let configs = HashMap::new();
+        let mut op_states = BTreeMap::new();
+        let ctx = make_ctx(&mut witness, &private_data, &configs, &mut op_states);
+
+        let err = exec
+            .resolve_private_data(&ctx)
+            .expect_err("wrong private-data type must be rejected");
+        assert!(matches!(
+            err,
+            CircuitError::IncorrectNonPrimitiveOpPrivateData { .. }
+        ));
+    }
+
+    #[test]
+    fn fill_sibling_data_rejects_wrong_length() {
+        // capacity_ext for CONFIG_D4_W16 is 2 (see the exact-length test above); neither too
+        // few nor too many sibling limbs should be silently truncated/zero-padded.
+        let exec = executor(CONFIG_D4_W16, true, true);
+        let width_ext = CONFIG_D4_W16.width_ext();
+
+        for sibling in [vec![F::from_u64(10)], vec![F::from_u64(10); 3]] {
+            let mut state = F::zero_vec(width_ext);
+            let err = exec
+                .fill_sibling_data(&mut state, Some(&sibling), false, false)
+                .expect_err("wrong-length sibling data must be rejected");
+            assert!(matches!(
+                err,
+                CircuitError::IncorrectNonPrimitiveOpPrivateDataSize { .. }
+            ));
+        }
     }
 
     #[test]
