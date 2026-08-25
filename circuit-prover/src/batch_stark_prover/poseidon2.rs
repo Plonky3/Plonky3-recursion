@@ -829,9 +829,6 @@ pub struct Poseidon2Prover {
     config: Poseidon2Config,
 }
 
-unsafe impl Send for Poseidon2Prover {}
-unsafe impl Sync for Poseidon2Prover {}
-
 impl Poseidon2Prover {
     pub(crate) fn poseidon2_op_type(&self) -> NpoTypeId {
         NpoTypeId::poseidon2_perm(self.config)
