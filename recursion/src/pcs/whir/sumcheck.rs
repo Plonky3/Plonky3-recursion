@@ -327,7 +327,7 @@ mod tests {
             let got = eval_gadget(&inputs, |b, ins| {
                 let init_t = ins[0];
                 let round_polys: Vec<[Target; 2]> =
-                    ins[1..1 + 2 * n].chunks_exact(2).map(|c| [c[0], c[1]]).collect();
+                    ins[1..1 + 2 * n].as_chunks::<2>().0.to_vec();
                 let challenges = &ins[1 + 2 * n..];
                 fold_sumcheck_claim(b, init_t, &round_polys, challenges)
             });
