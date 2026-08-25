@@ -17,6 +17,7 @@ use p3_test_utils::LiftPermToQuintic;
 
 use super::*;
 use crate::ConstraintProfile;
+use crate::batch_stark_prover::packing::MAX_SANE_LANES;
 use crate::batch_stark_prover::{
     BABY_BEAR_MODULUS, KOALA_BEAR_MODULUS, Poseidon1Preprocessor, Poseidon2Preprocessor,
     poseidon1_air_builders_d5, poseidon1_table_provers_d5, poseidon2_air_builders,
@@ -1212,6 +1213,64 @@ fn validate_rejects_invalid_serialized_table_packing() {
     assert_eq!(
         bad_horner.into_table_packing().validate(),
         Err(ProofMetadataError::BadHornerPackedSteps(1))
+    );
+}
+
+#[test]
+fn validate_rejects_oversized_serialized_table_packing() {
+    // Huge lane counts and horner_packed_steps drive downstream width arithmetic
+    // (`lanes * lane_width`) and unbounded loops; a corrupt or malicious serialized
+    // proof must be rejected here, not overflow/DoS the trace builder.
+    let huge_public = PackingMirror {
+        public_lanes: usize::MAX,
+        ..PackingMirror::valid()
+    };
+    assert_eq!(
+        huge_public.into_table_packing().validate(),
+        Err(ProofMetadataError::LanesTooLarge {
+            field: "public_lanes",
+            got: usize::MAX,
+            max: MAX_SANE_LANES,
+        })
+    );
+
+    let huge_alu = PackingMirror {
+        alu_lanes: usize::MAX,
+        ..PackingMirror::valid()
+    };
+    assert_eq!(
+        huge_alu.into_table_packing().validate(),
+        Err(ProofMetadataError::LanesTooLarge {
+            field: "alu_lanes",
+            got: usize::MAX,
+            max: MAX_SANE_LANES,
+        })
+    );
+
+    let op = p3_circuit::ops::NpoTypeId::new("test_op");
+    let huge_npo = PackingMirror {
+        npo_lanes: vec![(op.clone(), usize::MAX)],
+        ..PackingMirror::valid()
+    };
+    assert_eq!(
+        huge_npo.into_table_packing().validate(),
+        Err(ProofMetadataError::NpoLanesTooLarge {
+            op_type: op,
+            got: usize::MAX,
+            max: MAX_SANE_LANES,
+        })
+    );
+
+    let huge_horner = PackingMirror {
+        horner_packed_steps: usize::MAX,
+        ..PackingMirror::valid()
+    };
+    assert_eq!(
+        huge_horner.into_table_packing().validate(),
+        Err(ProofMetadataError::HornerPackedStepsTooLarge(
+            usize::MAX,
+            MAX_SANE_LANES,
+        ))
     );
 }
 

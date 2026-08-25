@@ -30,6 +30,14 @@ const fn default_horner_pack_k() -> usize {
     2
 }
 
+/// Sanity ceiling for lane counts and `horner_packed_steps` in [`TablePacking::validate`].
+///
+/// Far beyond any real packing (which uses single- to low-double-digit values), but small
+/// enough that every width computation derived from these fields (`lanes * lane_width`, and
+/// similar) stays comfortably within `usize` range instead of overflowing on proof-controlled
+/// metadata.
+pub(crate) const MAX_SANE_LANES: usize = 1 << 16;
+
 impl TablePacking {
     /// Create a new [`TablePacking`] with the given primitive lane counts (clamped to at least 1).
     ///
@@ -141,12 +149,33 @@ impl TablePacking {
         if self.public_lanes == 0 {
             return Err(ProofMetadataError::ZeroLanes("public_lanes"));
         }
+        if self.public_lanes > MAX_SANE_LANES {
+            return Err(ProofMetadataError::LanesTooLarge {
+                field: "public_lanes",
+                got: self.public_lanes,
+                max: MAX_SANE_LANES,
+            });
+        }
         if self.alu_lanes == 0 {
             return Err(ProofMetadataError::ZeroLanes("alu_lanes"));
+        }
+        if self.alu_lanes > MAX_SANE_LANES {
+            return Err(ProofMetadataError::LanesTooLarge {
+                field: "alu_lanes",
+                got: self.alu_lanes,
+                max: MAX_SANE_LANES,
+            });
         }
         for (op_type, lanes) in &self.npo_lanes {
             if *lanes == 0 {
                 return Err(ProofMetadataError::ZeroNpoLanes(op_type.clone()));
+            }
+            if *lanes > MAX_SANE_LANES {
+                return Err(ProofMetadataError::NpoLanesTooLarge {
+                    op_type: op_type.clone(),
+                    got: *lanes,
+                    max: MAX_SANE_LANES,
+                });
             }
         }
         if self.min_trace_height == 0 || !self.min_trace_height.is_power_of_two() {
@@ -155,6 +184,12 @@ impl TablePacking {
         if self.horner_packed_steps < 2 {
             return Err(ProofMetadataError::BadHornerPackedSteps(
                 self.horner_packed_steps,
+            ));
+        }
+        if self.horner_packed_steps > MAX_SANE_LANES {
+            return Err(ProofMetadataError::HornerPackedStepsTooLarge(
+                self.horner_packed_steps,
+                MAX_SANE_LANES,
             ));
         }
         Ok(())

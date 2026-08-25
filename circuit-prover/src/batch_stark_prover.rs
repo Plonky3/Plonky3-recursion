@@ -733,6 +733,28 @@ pub enum ProofMetadataError {
     #[error("non-primitive table `{0:?}` lane count must be at least 1")]
     ZeroNpoLanes(NpoTypeId),
 
+    /// A primitive lane count exceeds the sanity ceiling.
+    #[error("`{field}` lane count {got} exceeds the sanity ceiling of {max}")]
+    LanesTooLarge {
+        field: &'static str,
+        got: usize,
+        max: usize,
+    },
+
+    /// A non-primitive table lane count exceeds the sanity ceiling.
+    #[error(
+        "non-primitive table `{op_type:?}` lane count {got} exceeds the sanity ceiling of {max}"
+    )]
+    NpoLanesTooLarge {
+        op_type: NpoTypeId,
+        got: usize,
+        max: usize,
+    },
+
+    /// `horner_packed_steps` exceeds the sanity ceiling.
+    #[error("horner_packed_steps {0} exceeds the sanity ceiling of {1}")]
+    HornerPackedStepsTooLarge(usize, usize),
+
     /// `min_trace_height` is not a non-zero power of two.
     #[error("minimum trace height must be a non-zero power of two (got {0})")]
     BadMinTraceHeight(usize),
