@@ -39,6 +39,13 @@ jobs:
           shared-key: ${{ matrix.os }}-${{ matrix.features }}
           cache-on-failure: true
 
+      # nextest schedules every test from every binary in one pool instead of
+      # running binaries one at a time, so idle cores get filled by other
+      # crates' tests while a single long-running test is still executing.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
       - name: Disk usage (before)
         run: |
           set -eux
@@ -47,15 +54,16 @@ jobs:
           du -sh ~/.cargo/registry ~/.cargo/git || true
 
       - name: Test (workspace)
-        run: cargo test --verbose --workspace --all-targets
+        run: cargo nextest run --workspace --all-targets
 
       - name: Test (workspace, all-features)
-        run: cargo test --verbose --workspace --all-targets --all-features
+        run: cargo nextest run --workspace --all-targets --all-features
 
       - name: Check (release)
         run: cargo check --verbose --workspace --all-targets --release
 
       - name: Test documentation
+        # nextest doesn't run doctests, so cover them with plain `cargo test`.
         run: cargo test --verbose --workspace --doc
 
       - name: Run basic examples
