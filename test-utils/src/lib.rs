@@ -26,7 +26,7 @@ pub struct TestFriScalars {
 
 /// Returns the [`TestFriScalars`] used by the `make_test_config` helpers, read back from
 /// [`FriParameters::new_testing`] so the two never drift.
-pub fn test_fri_scalars() -> TestFriScalars {
+pub const fn test_fri_scalars() -> TestFriScalars {
     let params = FriParameters::<()>::new_testing((), 0);
     TestFriScalars {
         log_blowup: params.log_blowup,

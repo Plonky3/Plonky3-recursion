@@ -26,3 +26,6 @@ p3-matrix.workspace = true
 p3-merkle-tree.workspace = true
 p3-symmetric.workspace = true
 p3-uni-stark.workspace = true
+
+[lints]
+workspace = true
