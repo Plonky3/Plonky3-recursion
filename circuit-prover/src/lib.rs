@@ -44,6 +44,7 @@ pub mod config;
 pub mod constraint_profile;
 pub mod field_params;
 pub mod manifest;
+pub mod tuning;
 
 // Re-export main API
 pub use batch_stark_prover::*;
