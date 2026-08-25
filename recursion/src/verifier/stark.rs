@@ -206,17 +206,14 @@ where
         vec![]
     };
 
+    let mut trace_points = vec![(zeta, opened_trace_local_targets.clone())];
+    // The `zeta_next` opening is present only when the AIR accesses the next row.
+    if air.opens_trace_next() {
+        trace_points.push((zeta_next, opened_trace_next_targets.clone()));
+    }
+
     coms_to_verify.extend([
-        (
-            trace_targets.clone(),
-            vec![(
-                trace_domain,
-                vec![
-                    (zeta, opened_trace_local_targets.clone()),
-                    (zeta_next, opened_trace_next_targets.clone()),
-                ],
-            )],
-        ),
+        (trace_targets.clone(), vec![(trace_domain, trace_points)]),
         (
             quotient_chunks_targets.clone(),
             // Check the commitment on the randomized domains
@@ -458,10 +455,12 @@ where
         ..
     } = opened_values;
 
-    if opened_trace_local.len() != air_width || opened_trace_next.len() != air_width {
+    // The next-row opening is suppressed (empty) for AIRs that do not access it.
+    let expected_next_len = if air.opens_trace_next() { air_width } else { 0 };
+    if opened_trace_local.len() != air_width || opened_trace_next.len() != expected_next_len {
         return Err(VerificationError::InvalidProofShape(format!(
-            "Expected opened_trace_local and opened_trace_next to have length {}, got {} and {}",
-            air_width,
+            "Expected opened_trace_local and opened_trace_next to have length {air_width} and \
+             {expected_next_len}, got {} and {}",
             opened_trace_local.len(),
             opened_trace_next.len()
         )));
