@@ -1,7 +1,7 @@
 #![allow(clippy::upper_case_acronyms)]
 
 use alloc::boxed::Box;
-use alloc::string::ToString;
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use alloc::{format, vec};
 
@@ -163,12 +163,17 @@ where
 /// For D=5 with `alu_quintic_trinomial`, uses `new_quintic_trinomial_with_preprocessed`.
 /// Otherwise for D>1, uses `new_binomial_with_preprocessed` with `W` from `EF`.
 /// `horner_packed_steps` must match `BatchStarkProof.table_packing.horner_packed_steps` from the proof.
+///
+/// # Errors
+/// Returns an error if `TRACE_D` and `alu_quintic_trinomial` (both proof-controlled) don't
+/// resolve to a supported ALU extension-multiplication kind for `EF` — e.g. a quintic extension
+/// declared without the trinomial flag, which has no binomial `W`.
 fn create_alu_air<F, EF, const TRACE_D: usize>(
     num_ops: usize,
     lanes: usize,
     horner_packed_steps: usize,
     alu_quintic_trinomial: bool,
-) -> AluAir<F, TRACE_D>
+) -> Result<AluAir<F, TRACE_D>, String>
 where
     F: Field + PrimeCharacteristicRing + Copy,
     EF: ExtensionField<F> + ExtractBinomialW<F>,
@@ -183,14 +188,19 @@ where
         EF::extract_w(),
         TRACE_D == 5 && alu_quintic_trinomial,
     )
-    .expect("extension field must provide binomial W for ALU AIR");
-    AluAir::<F, TRACE_D>::from_reduction_with_preprocessed(
+    .ok_or_else(|| {
+        format!(
+            "unsupported ALU extension-multiplication kind for trace degree {TRACE_D} \
+             (alu_quintic_trinomial={alu_quintic_trinomial})"
+        )
+    })?;
+    Ok(AluAir::<F, TRACE_D>::from_reduction_with_preprocessed(
         num_ops,
         lanes,
         reduction,
         preprocessed,
         horner_packed_steps,
-    )
+    ))
 }
 
 /// Build and attach a recursive verifier circuit for a circuit-prover [`BatchStarkProof`].
@@ -270,6 +280,7 @@ where
                 packing.horner_packed_steps(),
                 proof.alu_quintic_trinomial,
             )
+            .map_err(VerificationError::InvalidProofShape)?
         }
     };
 
@@ -1320,5 +1331,32 @@ fn observe_opened_values_circuit<
                 mat_idx += 1;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod create_alu_air_tests {
+    use p3_field::extension::QuinticTrinomialExtensionField;
+    use p3_koala_bear::KoalaBear;
+
+    use super::create_alu_air;
+
+    /// A proof-controlled `alu_quintic_trinomial = false` against a quintic-trinomial `EF` has
+    /// no binomial `W` to fall back to; this must be a rejected proof shape, not a panic.
+    #[test]
+    fn quintic_without_trinomial_flag_is_rejected() {
+        let result = create_alu_air::<KoalaBear, QuinticTrinomialExtensionField<KoalaBear>, 5>(
+            4, 1, 4, false,
+        );
+        assert!(result.is_err());
+    }
+
+    /// The matching, honest `alu_quintic_trinomial = true` still succeeds.
+    #[test]
+    fn quintic_with_trinomial_flag_succeeds() {
+        let result = create_alu_air::<KoalaBear, QuinticTrinomialExtensionField<KoalaBear>, 5>(
+            4, 1, 4, true,
+        );
+        assert!(result.is_ok());
     }
 }
