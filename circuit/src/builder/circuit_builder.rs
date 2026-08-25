@@ -1046,7 +1046,7 @@ where
     ///
     /// # Parameters
     /// - `x`: The field element to decompose.
-    /// - `n_bits`: Number of bits in the decomposition (must be ≤ 64).
+    /// - `n_bits`: Number of bits in the decomposition (must be ≤ `F::bits()`).
     ///
     /// # Returns
     /// A vector of `n_bits` boolean [`ExprId`]s
@@ -1059,7 +1059,7 @@ where
     /// ```
     ///
     /// # Errors
-    /// Returns [`CircuitError::BinaryDecompositionTooManyBits`] if `n_bits > 64`.
+    /// Returns [`CircuitError::BinaryDecompositionTooManyBits`] if `n_bits > F::bits()`.
     ///
     /// # Cost
     /// `n_bits` witness hints + `n_bits` boolean constraints + reconstruction constraints.
@@ -1077,7 +1077,7 @@ where
         // We cannot request more bits than the extension field can represent.
         if n_bits > F::bits() {
             return Err(CircuitBuilderError::BinaryDecompositionTooManyBits {
-                expected: BF::bits(),
+                expected: F::bits(),
                 n_bits,
             });
         }
@@ -1100,12 +1100,16 @@ where
         let reconstructed = self.reconstruct_index_from_bits(&bits)?;
         self.connect(x, reconstructed);
 
-        // A full-width decomposition is otherwise non-canonical: for `BF` with modulus
-        // `p` in `(2^{bits-1}, 2^bits)`, a value `x < 2^bits - p` also decomposes as
-        // `x + p` (same field element, different bits). A prover could pick either — e.g.
-        // to shift a Fiat-Shamir query index by one. Pin it to the canonical value (`< p`).
-        if n_bits == BF::bits() {
-            self.assert_bits_canonical::<BF>(&bits);
+        // Each full-width limb is otherwise non-canonical: for `BF` with modulus `p` in
+        // `(2^{bits-1}, 2^bits)`, a value `x < 2^bits - p` also decomposes as `x + p`
+        // (same field element, different bits). A prover could pick either per limb — e.g.
+        // to shift a Fiat-Shamir query index by one. Pin every full-width limb to its
+        // canonical value (`< p`); a trailing partial limb has fewer than `BF::bits()` bits
+        // so its value is `< 2^{bits-1} < p` and needs no constraint.
+        for chunk in bits.chunks(BF::bits()) {
+            if chunk.len() == BF::bits() {
+                self.assert_bits_canonical::<BF>(chunk);
+            }
         }
 
         self.pop_scope();
@@ -2981,6 +2985,48 @@ mod proptests {
         runner
             .run()
             .expect("full-width decompose of a canonical value must succeed");
+    }
+
+    #[test]
+    fn decompose_to_bits_multi_limb_rejects_aliased_limb() {
+        // Regression test: a multi-limb decomposition must canonicalize *every* full-width
+        // limb, not just a single-limb (`n_bits == BF::bits()`) decomposition. Mirrors
+        // `decompose_to_bits`'s (fixed) per-chunk canonicity constraints, but — like
+        // `assert_bits_canonical_accepts_canonical_rejects_alias` — feeds the bits as public
+        // inputs instead of via the honest hint, since the hint can never produce a
+        // non-canonical decomposition on its own.
+        type Ext4 = BinomialExtensionField<BabyBear, 4>;
+        let limb_bits = BabyBear::bits();
+        let build_and_run = |limb0: u64, limb1: u64| {
+            let mut builder = CircuitBuilder::<Ext4>::new();
+            let bit_inputs: Vec<_> = (0..2 * limb_bits).map(|_| builder.public_input()).collect();
+            for chunk in bit_inputs.chunks(limb_bits) {
+                builder.assert_bits_canonical::<BabyBear>(chunk);
+            }
+            builder
+                .reconstruct_index_from_bits::<BabyBear>(&bit_inputs)
+                .expect("reconstruct");
+            let circuit = builder.build().expect("build");
+            let mut runner = circuit.runner();
+            let bit_vals: Vec<Ext4> = (0..limb_bits)
+                .map(|i| Ext4::from_u64((limb0 >> i) & 1))
+                .chain((0..limb_bits).map(|i| Ext4::from_u64((limb1 >> i) & 1)))
+                .collect();
+            runner
+                .set_public_inputs(&bit_vals)
+                .expect("set public inputs");
+            runner.run().is_ok()
+        };
+        let p = BabyBear::ORDER_U64;
+        assert!(build_and_run(5, 7), "two canonical limbs must be accepted");
+        assert!(
+            !build_and_run(5, 7 + p),
+            "a non-canonical alias in the second limb must be rejected"
+        );
+        assert!(
+            !build_and_run(5 + p, 7),
+            "a non-canonical alias in the first limb must be rejected"
+        );
     }
 
     #[test]
