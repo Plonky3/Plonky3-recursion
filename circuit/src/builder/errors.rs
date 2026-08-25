@@ -101,6 +101,11 @@ pub enum CircuitBuilderError {
     #[error("Failed to format openings for operation {op:?}: {details}")]
     FormatOpeningsFailed { op: NpoTypeId, details: String },
 
+    /// Proof-supplied Merkle cap has an invalid shape (empty, non-power-of-two length, or
+    /// taller than the tree it's a cap of).
+    #[error("Invalid Merkle commitment cap: {details}")]
+    InvalidMerkleCap { details: String },
+
     /// Invalid dimension: expected a specific number of elements.
     #[error("Invalid dimension: expected {expected}, got {actual}")]
     InvalidDimension { expected: usize, actual: usize },

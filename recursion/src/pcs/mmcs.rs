@@ -346,17 +346,7 @@ where
         });
     }
 
-    assert!(
-        !commitment_cap.is_empty(),
-        "commitment cap must have at least one entry"
-    );
-
-    // Derive cap_height from commitment size: cap has 2^cap_height entries
-    let cap_height = if commitment_cap.len() == 1 {
-        0
-    } else {
-        log2_strict_usize(commitment_cap.len())
-    };
+    let cap_height = validate_commitment_cap(commitment_cap, index_bits.len())?;
 
     let max_height_log = index_bits.len();
     let path_depth = max_height_log - cap_height;
@@ -461,16 +451,7 @@ where
         });
     }
 
-    assert!(
-        !commitment_cap.is_empty(),
-        "commitment cap must have at least one entry"
-    );
-
-    let cap_height = if commitment_cap.len() == 1 {
-        0
-    } else {
-        log2_strict_usize(commitment_cap.len())
-    };
+    let cap_height = validate_commitment_cap(commitment_cap, index_bits.len())?;
 
     let max_height_log = index_bits.len();
     let path_depth = max_height_log - cap_height;
@@ -538,6 +519,51 @@ where
         path_bits,
         &selected_root,
     )
+}
+
+/// Validates a proof-supplied Merkle commitment cap's length and returns its height (`log2` of
+/// its length, i.e. how many upper index bits select a cap entry instead of walking the tree).
+///
+/// A cap must be non-empty and have a power-of-two length -- proof-controlled shape properties
+/// that must be rejected as malformed rather than panicking downstream (`log2_strict_usize`
+/// asserts on a non-power-of-two length).
+fn validate_commitment_cap_len<T>(commitment_cap: &[T]) -> Result<usize, CircuitBuilderError> {
+    if commitment_cap.is_empty() {
+        return Err(CircuitBuilderError::InvalidMerkleCap {
+            details: "commitment cap must have at least one entry".into(),
+        });
+    }
+    if !commitment_cap.len().is_power_of_two() {
+        return Err(CircuitBuilderError::InvalidMerkleCap {
+            details: format!(
+                "commitment cap length must be a power of two, got {}",
+                commitment_cap.len()
+            ),
+        });
+    }
+    Ok(if commitment_cap.len() == 1 {
+        0
+    } else {
+        log2_strict_usize(commitment_cap.len())
+    })
+}
+
+/// Like [`validate_commitment_cap_len`], but also rejects a cap taller than the tree it caps
+/// (`tree_height`, the tree's own height in index bits) -- otherwise `tree_height - cap_height`
+/// underflows downstream.
+fn validate_commitment_cap<T>(
+    commitment_cap: &[T],
+    tree_height: usize,
+) -> Result<usize, CircuitBuilderError> {
+    let cap_height = validate_commitment_cap_len(commitment_cap)?;
+    if cap_height > tree_height {
+        return Err(CircuitBuilderError::InvalidMerkleCap {
+            details: format!(
+                "commitment cap height {cap_height} exceeds tree height {tree_height}"
+            ),
+        });
+    }
+    Ok(cap_height)
 }
 
 /// Select one cap entry from a Merkle cap using a binary tree multiplexer.
@@ -1095,10 +1121,7 @@ fn arity4_prepare<EF: Field>(
         });
     }
 
-    assert!(
-        !commitment_cap.is_empty(),
-        "commitment cap must have at least one entry"
-    );
+    let cap_log2 = validate_commitment_cap_len(commitment_cap)?;
 
     let mut heights_tallest_first = dimensions
         .iter()
@@ -1130,11 +1153,6 @@ fn arity4_prepare<EF: Field>(
     }
 
     let num_roots = commitment_cap.len();
-    let cap_log2 = if num_roots == 1 {
-        0
-    } else {
-        log2_strict_usize(num_roots)
-    };
 
     let leaf_rows = arity4_leaf_rows(dimensions, max_height);
     let schedule = arity4_path_schedule(dimensions, max_height, num_roots);
@@ -2568,5 +2586,43 @@ mod test {
             3, // 4 rows, 3 columns
         );
         test_lifted_openings(vec![mat0, mat1, mat2, mat3, mat4]);
+    }
+
+    #[test]
+    fn validate_commitment_cap_len_rejects_empty() {
+        let cap: Vec<()> = vec![];
+        let err = validate_commitment_cap_len(&cap).unwrap_err();
+        assert!(matches!(err, CircuitBuilderError::InvalidMerkleCap { .. }));
+    }
+
+    #[test]
+    fn validate_commitment_cap_len_rejects_non_power_of_two() {
+        // A cap must have a power-of-two length (`log2_strict_usize` would otherwise panic).
+        let cap = vec![(), (), ()];
+        let err = validate_commitment_cap_len(&cap).unwrap_err();
+        assert!(matches!(err, CircuitBuilderError::InvalidMerkleCap { .. }));
+    }
+
+    #[test]
+    fn validate_commitment_cap_len_accepts_powers_of_two() {
+        for log_len in 0..5 {
+            let cap = vec![(); 1 << log_len];
+            assert_eq!(validate_commitment_cap_len(&cap).unwrap(), log_len);
+        }
+    }
+
+    #[test]
+    fn validate_commitment_cap_rejects_cap_taller_than_tree() {
+        // A cap height greater than the tree height would underflow `tree_height - cap_height`
+        // downstream instead of being rejected as a malformed proof shape.
+        let cap = vec![(); 4]; // cap_height = 2
+        let err = validate_commitment_cap(&cap, 1).unwrap_err();
+        assert!(matches!(err, CircuitBuilderError::InvalidMerkleCap { .. }));
+    }
+
+    #[test]
+    fn validate_commitment_cap_accepts_cap_at_tree_height() {
+        let cap = vec![(); 4]; // cap_height = 2
+        assert_eq!(validate_commitment_cap(&cap, 2).unwrap(), 2);
     }
 }
