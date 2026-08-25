@@ -22,7 +22,9 @@ use p3_field::{
     Algebra, BasedVectorSpace, ExtensionField, Field, PrimeCharacteristicRing, PrimeField64,
 };
 use p3_lookup::{Kind, Lookup, LookupProtocol};
-use p3_uni_stark::{StarkGenericConfig, SymbolicExpression, SymbolicExpressionExt, Val};
+use p3_uni_stark::{
+    StarkGenericConfig, SymbolicExpression, SymbolicExpressionExt, Val, validate_degree_bits,
+};
 
 use super::{ObservableCommitment, VerificationError, recompose_quotient_from_chunks_circuit};
 use crate::challenger::CircuitChallenger;
@@ -440,6 +442,15 @@ where
         return Err(VerificationError::InvalidProofShape(
             "Mismatch between number of AIRs, instances, public values, or degree bits".to_string(),
         ));
+    }
+
+    // Proof-supplied degree_bits feed `1 << degree_bits` below; validate bounds up front
+    // (parity with native p3-batch-stark/p3-uni-stark) instead of shift-overflowing or
+    // building a degenerate domain from a crafted proof.
+    let pcs = config.pcs();
+    for (i, &db) in degree_bits.iter().enumerate() {
+        validate_degree_bits(Some(i), db, config.is_zk(), pcs.log_max_lde_height())
+            .map_err(|e| VerificationError::InvalidProofShape(e.to_string()))?;
     }
 
     // `common` is consumed by per-instance indexing below (`common.lookups[i]`,

@@ -8,7 +8,7 @@ use p3_circuit::{CircuitBuilder, CircuitBuilderError, NonPrimitiveOpId};
 use p3_commit::{Pcs, PolynomialSpace};
 use p3_field::{BasedVectorSpace, ExtensionField, Field, PrimeCharacteristicRing, PrimeField64};
 use p3_lookup::logup::LogUpGadget;
-use p3_uni_stark::{StarkGenericConfig, Val};
+use p3_uni_stark::{StarkGenericConfig, Val, validate_degree_bits};
 
 use super::{ObservableCommitment, VerificationError, recompose_quotient_from_chunks_circuit};
 use crate::Target;
@@ -114,6 +114,13 @@ where
         ..
     } = opened_values_targets;
 
+    // `degree_bits` feeds `1 << degree_bits` below; validate bounds up front (parity with
+    // native p3-uni-stark) instead of shift-overflowing or building a degenerate domain
+    // from a crafted proof.
+    let pcs = config.pcs();
+    validate_degree_bits(None, *degree_bits, config.is_zk(), pcs.log_max_lde_height())
+        .map_err(|e| VerificationError::InvalidProofShape(e.to_string()))?;
+
     let degree = 1 << degree_bits;
     let lookup_gadget = LogUpGadget {};
     let preprocessed_width = opt_opened_preprocessed_local_targets
@@ -141,7 +148,6 @@ where
     );
     let quotient_degree = 1 << (log_quotient_degree + config.is_zk());
 
-    let pcs = config.pcs();
     let trace_domain = pcs.natural_domain_for_degree(degree);
     let init_trace_domain = pcs.natural_domain_for_degree(degree >> (config.is_zk()));
 

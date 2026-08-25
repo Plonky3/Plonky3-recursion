@@ -692,6 +692,20 @@ fn test_batch_verifier_rejects_extra_next_permutation_coefficients() {
 }
 
 #[test]
+fn test_batch_verifier_rejects_degree_bits_too_large() {
+    let err = run_with_tampered_proof(|proof| {
+        // Any value overflowing `checked_pow2` (>= usize::BITS) must be rejected instead of
+        // shift-overflowing the `1 << degree_bits` used to derive the trace/quotient domains.
+        proof.degree_bits[0] = usize::MAX;
+    })
+    .expect_err("out-of-range degree_bits must be rejected");
+    assert!(
+        matches!(err, VerificationError::InvalidProofShape(_)),
+        "expected InvalidProofShape, got {err:?}"
+    );
+}
+
+#[test]
 fn test_batch_verifier_with_public_values() -> Result<(), VerificationError> {
     let n = 1 << 3;
 
