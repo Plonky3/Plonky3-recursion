@@ -85,7 +85,11 @@ impl<V: PoseidonVariant> PoseidonPermExecutor<V> {
 
     #[inline]
     fn compact_d1_preprocessed_layout(&self) -> bool {
-        self.config.d() == 1 && self.config.width_ext() == 16 && self.config.rate_ext() == 8
+        p3_poseidon_circuit_cols::poseidon_uses_compact_d1_preprocessed(
+            self.config.d(),
+            self.config.width_ext(),
+            self.config.rate_ext(),
+        )
     }
 
     #[inline]
