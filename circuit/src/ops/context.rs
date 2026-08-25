@@ -49,24 +49,11 @@ impl<'a, F: PrimeCharacteristicRing + Eq> ExecutionContext<'a, F> {
     pub fn get_witness(&self, widx: WitnessId) -> Result<F, CircuitError> {
         let idx = widx.0 as usize;
 
-        #[cfg(debug_assertions)]
-        {
-            self.witness
-                .get(idx)
-                .and_then(Option::as_ref)
-                .map(p3_field::Dup::dup)
-                .ok_or(CircuitError::WitnessNotSet { witness_id: widx })
-        }
-
-        #[cfg(not(debug_assertions))]
-        unsafe {
-            Ok(self
-                .witness
-                .get_unchecked(idx)
-                .as_ref()
-                .unwrap_unchecked()
-                .dup())
-        }
+        self.witness
+            .get(idx)
+            .and_then(Option::as_ref)
+            .map(p3_field::Dup::dup)
+            .ok_or(CircuitError::WitnessNotSet { witness_id: widx })
     }
 
     /// Set witness value at the given index.
@@ -74,16 +61,10 @@ impl<'a, F: PrimeCharacteristicRing + Eq> ExecutionContext<'a, F> {
     pub fn set_witness(&mut self, widx: WitnessId, value: F) -> Result<(), CircuitError> {
         let idx = widx.0 as usize;
 
-        #[cfg(debug_assertions)]
         let slot = self
             .witness
             .get_mut(idx)
             .ok_or(CircuitError::WitnessIdOutOfBounds { witness_id: widx })?;
-
-        #[cfg(not(debug_assertions))]
-        // SAFETY: `idx` is derived from a `WitnessId` allocated against this `witness`
-        // vector at circuit compile time; the slot is guaranteed to exist.
-        let slot = unsafe { self.witness.get_unchecked_mut(idx) };
 
         if let Some(existing_value) = slot {
             if *existing_value != value {
