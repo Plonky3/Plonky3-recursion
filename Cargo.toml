@@ -90,7 +90,6 @@ tracing-subscriber = { version = "0.3.23", default-features = false, features = 
 unroll = { version = "0.1.5", default-features = false }
 
 # Local dependencies
-p3-challenger-air = { path = "challenger-air", version = "0.1.0" }
 p3-circuit = { path = "circuit", version = "0.1.0" }
 p3-circuit-prover = { path = "circuit-prover", version = "0.1.0" }
 p3-poseidon-circuit-cols = { path = "poseidon-circuit-cols", version = "0.1.0" }

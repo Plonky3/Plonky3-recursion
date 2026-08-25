@@ -41,10 +41,6 @@ jobs:
           mkdir -p site
           cargo tarpaulin \
             --workspace \
-            --exclude field-air \
-            --exclude challenger-air \
-            --exclude interpolation-air \
-            --exclude fri-air \
             --out Html \
             --output-dir site
           mv site/tarpaulin-report.html site/index.html
