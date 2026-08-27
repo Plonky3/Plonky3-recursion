@@ -44,6 +44,10 @@ pub struct PreprocessedColumns<F, const D: usize> {
     /// across all such rows creates it; every later one reads it. This set records the
     /// witnesses whose first occurrence won the creator role, so the prover-side preprocessor
     /// can replay the same decision per row.
+    ///
+    /// The set is not keyed by op type while the replay runs per table, so a witness must not
+    /// appear in the arbitrated group of two different op types; a table replaying a creator
+    /// it does not carry trips the preprocessor's own check.
     pub recompose_coeff_creator_wids: hashbrown::HashSet<u32>,
 }
 
