@@ -948,9 +948,11 @@ pub(crate) fn eval<
             }
         }
 
-        // Sponge chain starts (next row new_start, not Merkle): capacity is never witness-fed.
+        // Sponge chain starts (new_start row, not Merkle): capacity is never witness-fed.
         // The first capacity element starts at the length tag (fresh capacity 0 `+= cap_tag`); the
-        // rest stay zero.
+        // rest stay zero. Gate and state both come from the `next` row, so the constraint is
+        // row-local and carries no transition selector: the wrap-around window reaches row 0,
+        // the row that opens the table's first chain and has no predecessor to reset against.
         for slot in RATE_EXT..WIDTH_EXT {
             for d in 0..D {
                 let tag = if slot == RATE_EXT && d == 0 {
@@ -959,7 +961,6 @@ pub(crate) fn eval<
                     AB::Expr::ZERO
                 };
                 builder
-                    .when_transition()
                     .when(next_new_start)
                     .when(not_merkle.clone())
                     .assert_zero(next_in[slot * D + d] - tag);
