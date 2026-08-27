@@ -65,8 +65,8 @@ pub use dynamic_air::{
 pub use packing::TablePacking;
 pub use poseidon1::{
     Poseidon1AirBuilder, Poseidon1AirBuilderForConfig, Poseidon1AirWrapperInner,
-    Poseidon1Preprocessor, Poseidon1Prover,
-    Poseidon1ProverD2, poseidon1_preprocessor, poseidon1_verifier_air_from_config,
+    Poseidon1Preprocessor, Poseidon1Prover, Poseidon1ProverD2, poseidon1_preprocessor,
+    poseidon1_verifier_air_from_config,
 };
 pub use poseidon2::{
     Poseidon2AirBuilder, Poseidon2AirBuilderForConfig, Poseidon2AirWrapperInner,

@@ -665,13 +665,18 @@ where
 
     fn non_primitive_air_builders(&self) -> Vec<Box<dyn NpoAirBuilder<SC, 2>>> {
         let cl = self.0.challenger_perm_config.extension_degree() != 2;
-        let mut builders = if let Some(c) = self.0.challenger_perm_config.as_poseidon1() {
-            poseidon1_air_builders_for_configs::<SC, 2>(
-                self.0.poseidon1_challenger_shape_configs(*c),
-            )
-        } else {
-            poseidon2_air_builders_for_configs::<SC, 2>(self.0.poseidon2_air_configs_for_degree(2))
-        };
+        let mut builders = self.0.challenger_perm_config.as_poseidon1().map_or_else(
+            || {
+                poseidon2_air_builders_for_configs::<SC, 2>(
+                    self.0.poseidon2_air_configs_for_degree(2),
+                )
+            },
+            |c| {
+                poseidon1_air_builders_for_configs::<SC, 2>(
+                    self.0.poseidon1_challenger_shape_configs(*c),
+                )
+            },
+        );
         builders.extend(recompose_air_builders::<SC, 2>(self.0.recompose_lanes, cl));
         builders
     }
@@ -792,13 +797,18 @@ where
 
     fn non_primitive_air_builders(&self) -> Vec<Box<dyn NpoAirBuilder<SC, 4>>> {
         let cl = self.0.challenger_perm_config.extension_degree() != 4;
-        let mut builders = if let Some(c) = self.0.challenger_perm_config.as_poseidon1() {
-            poseidon1_air_builders_for_configs::<SC, 4>(
-                self.0.poseidon1_challenger_shape_configs(*c),
-            )
-        } else {
-            poseidon2_air_builders_for_configs::<SC, 4>(self.0.poseidon2_air_configs_for_degree(4))
-        };
+        let mut builders = self.0.challenger_perm_config.as_poseidon1().map_or_else(
+            || {
+                poseidon2_air_builders_for_configs::<SC, 4>(
+                    self.0.poseidon2_air_configs_for_degree(4),
+                )
+            },
+            |c| {
+                poseidon1_air_builders_for_configs::<SC, 4>(
+                    self.0.poseidon1_challenger_shape_configs(*c),
+                )
+            },
+        );
         builders.extend(recompose_air_builders::<SC, 4>(self.0.recompose_lanes, cl));
         builders
     }
