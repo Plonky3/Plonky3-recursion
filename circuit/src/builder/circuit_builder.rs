@@ -3374,6 +3374,168 @@ mod proptests {
             .expect("the ALU lowering is always available");
     }
 
+    /// Enables both recompose tables on a builder over `Ext4`.
+    fn enable_recompose_tables(builder: &mut CircuitBuilder<BinomialExtensionField<BabyBear, 4>>) {
+        builder.enable_recompose::<BabyBear>(
+            crate::ops::recompose::generate_recompose_trace::<
+                BabyBear,
+                BinomialExtensionField<BabyBear, 4>,
+            >,
+        );
+    }
+
+    /// The extension basis element `w^i`.
+    fn basis(i: usize) -> BinomialExtensionField<BabyBear, 4> {
+        BinomialExtensionField::<BabyBear, 4>::from_basis_coefficients_fn(|j| {
+            if i == j {
+                BabyBear::ONE
+            } else {
+                BabyBear::ZERO
+            }
+        })
+    }
+
+    /// The shape `CommitPhaseProofStepTargets::pack_one_sibling` builds: prover-supplied
+    /// coefficients packed through the ALU `mul_add` chain, with the packed value recorded as
+    /// their recomposition.
+    fn pack_and_record_via_alu(
+        builder: &mut CircuitBuilder<BinomialExtensionField<BabyBear, 4>>,
+    ) -> (Vec<ExprId>, ExprId) {
+        let coeffs: Vec<ExprId> = (0..4)
+            .map(|_| builder.alloc_private_input("sibling_coeff"))
+            .collect();
+        let mut packed = coeffs[0];
+        for (i, &coeff) in coeffs.iter().enumerate().skip(1) {
+            let basis_const = builder.define_const(basis(i));
+            packed = builder.mul_add(coeff, basis_const, packed);
+        }
+        builder.hint_ext_recompose_coeffs(packed, &coeffs);
+        (coeffs, packed)
+    }
+
+    /// A recorded decomposition must not stand in for the per-coefficient receives.
+    ///
+    /// The record short-circuits the lowering, so it is the one way into the bound form that
+    /// never reaches a `recompose/coeff` row. The chain that produced it ties only
+    /// `sum(c_i * basis_i)`, which over an extension field leaves each coefficient `D - 1` free
+    /// base dimensions — the same silent substitution
+    /// `recompose_with_coeff_lookups_needs_the_recompose_table` refuses one level up.
+    #[test]
+    fn decompose_with_coeff_lookups_refuses_an_unbound_recorded_decomposition() {
+        let mut builder = CircuitBuilder::<BinomialExtensionField<BabyBear, 4>>::new();
+        enable_recompose_tables(&mut builder);
+        let (coeffs, packed) = pack_and_record_via_alu(&mut builder);
+
+        let err = builder
+            .decompose_ext_to_base_coeffs_with_coeff_lookups::<BabyBear>(packed)
+            .expect_err("nothing holds these coefficients to base-field elements");
+        assert!(matches!(err, CircuitBuilderError::CoefficientsNotBaseBound));
+
+        // The weaker form still gets the record's benefit: it promises only the weighted sum,
+        // which the chain above does constrain.
+        assert_eq!(
+            builder
+                .decompose_ext_to_base_coeffs_via_alu::<BabyBear>(packed)
+                .expect("the ALU form is served from the recorded decomposition"),
+            coeffs
+        );
+    }
+
+    /// Binding the same coefficients afterwards makes the record servable, which is what keeps
+    /// the guard from rejecting a decomposition the circuit does hold to base-field elements.
+    #[test]
+    fn decompose_with_coeff_lookups_serves_a_recorded_decomposition_once_a_row_binds_it() {
+        let mut builder = CircuitBuilder::<BinomialExtensionField<BabyBear, 4>>::new();
+        enable_recompose_tables(&mut builder);
+        let (coeffs, packed) = pack_and_record_via_alu(&mut builder);
+
+        builder
+            .recompose_base_coeffs_to_ext_with_coeff_lookups::<BabyBear>(&coeffs)
+            .expect("the recompose/coeff table is enabled");
+
+        assert_eq!(
+            builder
+                .decompose_ext_to_base_coeffs_with_coeff_lookups::<BabyBear>(packed)
+                .expect("a `recompose/coeff` row now holds each coefficient"),
+            coeffs
+        );
+    }
+
+    /// A decomposition the `recompose/coeff` table bound itself is served straight from the
+    /// record, which is the cost saving the record exists for.
+    #[test]
+    fn decompose_with_coeff_lookups_serves_the_decomposition_it_bound() {
+        let mut builder = CircuitBuilder::<BinomialExtensionField<BabyBear, 4>>::new();
+        enable_recompose_tables(&mut builder);
+        let coeffs: Vec<ExprId> = (0..4)
+            .map(|_| builder.alloc_private_input("coeff"))
+            .collect();
+        let packed = builder
+            .recompose_base_coeffs_to_ext_with_coeff_lookups::<BabyBear>(&coeffs)
+            .expect("the recompose/coeff table is enabled");
+
+        let rows_before = builder.non_primitive_ops.len();
+        assert_eq!(
+            builder
+                .decompose_ext_to_base_coeffs_with_coeff_lookups::<BabyBear>(packed)
+                .expect("the packing row already holds each coefficient"),
+            coeffs
+        );
+        assert_eq!(
+            builder.non_primitive_ops.len(),
+            rows_before,
+            "serving the record must not emit another row"
+        );
+    }
+
+    /// The constant fold binds its coefficients too: the const table pins each one to a
+    /// base-field element. This is the sponge chain start's own case — the challenger packs an
+    /// all-`Const` initial state and unpacks it again on the next duplex.
+    #[test]
+    fn decompose_with_coeff_lookups_serves_a_constant_folded_decomposition() {
+        let mut builder = CircuitBuilder::<BinomialExtensionField<BabyBear, 4>>::new();
+        enable_recompose_tables(&mut builder);
+        let coeffs: Vec<ExprId> = (0..4)
+            .map(|i| {
+                builder.define_const(BinomialExtensionField::<BabyBear, 4>::from(
+                    BabyBear::from_u64(i + 1),
+                ))
+            })
+            .collect();
+        let packed = builder
+            .recompose_base_coeffs_to_ext_with_coeff_lookups::<BabyBear>(&coeffs)
+            .expect("an all-`Const` recomposition folds");
+
+        assert_eq!(
+            builder
+                .decompose_ext_to_base_coeffs_with_coeff_lookups::<BabyBear>(packed)
+                .expect("the const table holds each coefficient"),
+            coeffs
+        );
+    }
+
+    /// The fold reads only each coefficient's first basis component, so a constant with more
+    /// than that is not the base-field element the recomposition claims to be built from.
+    #[test]
+    fn recompose_with_coeff_lookups_refuses_a_constant_outside_the_base_field() {
+        let mut builder = CircuitBuilder::<BinomialExtensionField<BabyBear, 4>>::new();
+        enable_recompose_tables(&mut builder);
+        let coeffs: Vec<ExprId> = (0..4)
+            .map(|i| {
+                builder.define_const(if i == 1 {
+                    basis(1)
+                } else {
+                    BinomialExtensionField::<BabyBear, 4>::from(BabyBear::from_u64(i + 1))
+                })
+            })
+            .collect();
+
+        let err = builder
+            .recompose_base_coeffs_to_ext_with_coeff_lookups::<BabyBear>(&coeffs)
+            .expect_err("one coefficient is pinned to a value outside the base field");
+        assert!(matches!(err, CircuitBuilderError::CoefficientsNotBaseBound));
+    }
+
     #[test]
     fn test_recompose_base_coeffs_to_ext() {
         type Ext4 = BinomialExtensionField<BabyBear, 4>;
