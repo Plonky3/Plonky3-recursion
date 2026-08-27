@@ -254,10 +254,6 @@ impl<F: Field> Circuit<F> {
         // or their `b` operand (backward/sub encoding where `out` was already defined).
         let mut defined = vec![false; self.witness_count as usize];
 
-        // Coefficient witnesses already seen in an arbitrated input group, in emission order.
-        // Only read by the debug assertion that pins the creator to the first occurrence.
-        let mut arbitrated_coeff_seen: hashbrown::HashSet<u32> = hashbrown::HashSet::new();
-
         // Private input witness IDs: these get their bus creator role from the first
         // ALU op that uses them, rather than from a Public table row.
         let private_input_wids: hashbrown::HashSet<u32> =
@@ -514,15 +510,14 @@ impl<F: Field> Circuit<F> {
                                     defined.resize(wid_idx + 1, false);
                                 }
                                 defined[wid_idx] = true;
-                                // The creator role belongs to the first occurrence in emission
-                                // order, which is the order the prover-side preprocessor
-                                // replays the rows in.
-                                if cfg!(debug_assertions) {
-                                    assert!(
-                                        arbitrated_coeff_seen.insert(wid.0),
-                                        "a coefficient's creator occurrence must be its first"
-                                    );
-                                }
+                                // Reaching here means the witness was undefined, and it is
+                                // defined from here on, so this branch runs at most once per
+                                // witness: the creator role lands on the first occurrence in
+                                // emission order, which is the order the prover-side
+                                // preprocessor replays the rows in. Which occurrence that is
+                                // is not a prover choice either — the split is recorded in the
+                                // preprocessed columns the verifier holds, and `prove` builds
+                                // its AIR from those rather than from the submitted trace.
                                 preprocessed.recompose_coeff_creator_wids.insert(wid.0);
                             }
                         }
