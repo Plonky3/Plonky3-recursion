@@ -1550,9 +1550,11 @@ where
     /// This operation is **CTL-verified** against the Poseidon2 AIR table for soundness.
     ///
     /// # CTL Verification
-    /// - Inputs 0-3: CTL-verified against witness table
-    /// - Outputs 0-1: CTL-verified against witness table (rate elements)
-    /// - Outputs 2-3: NOT CTL-verified (capacity elements, constrained by Poseidon2 AIR)
+    /// - All `width_ext` inputs: CTL-verified against the witness table.
+    /// - Outputs `0..rate_ext`: CTL-verified against the witness table (rate elements).
+    /// - Outputs `rate_ext..width_ext`: not exposed (capacity elements). The AIR constrains them
+    ///   as this row's permutation output, but every input limb is CTL-fed under
+    ///   `new_start = true`, so no chain constraint relates them to the next row's input.
     ///
     /// # Parameters
     /// - `config`: The Poseidon2 configuration to use
@@ -1570,10 +1572,8 @@ where
     ) -> Result<Vec<ExprId>, CircuitBuilderError> {
         self.push_scope("poseidon2_perm_for_challenger");
 
-        // Use add_poseidon2_perm with CTL verification for soundness
-        // - All 4 inputs are CTL-verified
-        // - Outputs 0-1 are CTL-verified (rate elements)
-        // - Outputs 2-3 are returned but NOT CTL-verified (capacity elements)
+        // All input limbs are CTL-verified; only the rate outputs are exposed on the bus.
+        // The capacity outputs are returned to the caller but carry no CTL exposure.
         let width_ext = config.width_ext();
         let (_op_id, outputs) = self.add_poseidon2_perm(&Poseidon2PermCall {
             config,

@@ -5,10 +5,17 @@
 //!
 //! # Soundness
 //!
-//! All Poseidon2 permutations in the challenger are CTL-verified against the Poseidon2 AIR table.
-//! The circuit builder's `add_poseidon2_perm_for_challenger` / `add_poseidon2_perm_for_challenger_base`
-//! (in `p3_circuit`) delegate to the standard Poseidon2 non-primitive op with full input and rate-output CTL exposure,
-//! and the executor runs the real permutation so the lookup argument enforces correctness.
+//! Every challenger permutation is a Poseidon2 (or Poseidon1) non-primitive op, so the AIR
+//! constrains the permutation itself and the lookup argument ties the CTL-exposed limbs to the
+//! witness bus. The two duplex paths differ in how the sponge state carries from one permutation
+//! to the next:
+//!
+//! - `duplexing_base` (`D == 1`) leaves the capacity slots empty and threads `new_start`, so the
+//!   compact D=1 AIR binds each row's capacity input to the previous row's capacity output.
+//! - `duplexing_ext` (`D >= 2`) packs the whole state into extension limbs and feeds every limb
+//!   over CTL with `new_start = true`, so the AIR's chain constraint never fires. Only the rate
+//!   limbs the permutation publishes on the bus are bound to it; the capacity limbs are not tied
+//!   to the permutation that produced them.
 
 use alloc::vec;
 use alloc::vec::Vec;
