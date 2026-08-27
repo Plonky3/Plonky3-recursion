@@ -7,10 +7,10 @@ use alloc::{format, vec};
 
 use p3_circuit::{CircuitBuilder, CircuitRunner, NonPrimitiveOpId};
 use p3_circuit_prover::batch_stark_prover::{
-    poseidon1_air_builders, poseidon1_air_builders_d5, poseidon1_preprocessor,
-    poseidon1_table_provers_d5, poseidon2_air_builders, poseidon2_air_builders_d5,
-    poseidon2_air_builders_for_configs, poseidon2_preprocessor, poseidon2_table_provers_d5,
-    recompose_air_builders, recompose_preprocessor,
+    poseidon1_air_builders_d5, poseidon1_air_builders_for_configs, poseidon1_preprocessor,
+    poseidon1_table_provers_d5, poseidon2_air_builders_d5, poseidon2_air_builders_for_configs,
+    poseidon2_preprocessor, poseidon2_table_provers_d5, recompose_air_builders,
+    recompose_preprocessor,
 };
 use p3_circuit_prover::common::{NpoAirBuilder, NpoPreprocessor};
 use p3_circuit_prover::config::StarkField;
@@ -26,7 +26,7 @@ use p3_field::{Algebra, BasedVectorSpace, ExtensionField, PrimeCharacteristicRin
 use p3_lookup::logup::LogUpGadget;
 use p3_uni_stark::{StarkGenericConfig, SymbolicExpressionExt, Val};
 
-use crate::ops::Poseidon2Config;
+use crate::ops::{Poseidon1Config, Poseidon2Config};
 use crate::public_inputs::{BatchStarkVerifierInputsBuilder, StarkVerifierInputsBuilder};
 use crate::recursion::{PcsRecursionBackend, RecursionInput, VerifierCircuitResult};
 use crate::traits::RecursiveAir;
@@ -125,6 +125,14 @@ pub struct FriRecursionBackend<
     /// Increasing this reduces the recompose table height proportionally.
     /// Must be kept in sync between prover and verifier. Defaults to 1.
     pub recompose_lanes: usize,
+    /// Whether MMCS and compression rows share the challenger permutation's shape.
+    ///
+    /// The challenger's duplex rows live on their own table so the AIR can chain their sponge
+    /// capacity, which leaves a second table for the rows of the same shape that MMCS and
+    /// compression emit. Mixed-shape circuits run those on a separately registered
+    /// configuration instead, so that second table carries no rows and must not be expected in
+    /// the proof; they clear this with [`Self::without_shared_challenger_perm_table`].
+    pub shares_challenger_perm_table: bool,
 }
 
 impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
@@ -136,7 +144,48 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
             challenger_perm_config,
             extra_poseidon2_table_configs: Vec::new(),
             recompose_lanes: 1,
+            shares_challenger_perm_table: true,
         }
+    }
+
+    /// Declare that MMCS and compression rows do not use the challenger's permutation shape.
+    ///
+    /// Set this for mixed-shape circuits (for example arity-4 recursion, where leaf hashing and
+    /// compression run on a wider separately registered configuration), so the shared table for
+    /// the challenger's own shape is not expected in the proof.
+    pub const fn without_shared_challenger_perm_table(mut self) -> Self {
+        self.shares_challenger_perm_table = false;
+        self
+    }
+
+    /// Ordered Poseidon2 table configurations for the challenger's permutation shape: the
+    /// challenger's own table first, then the table its MMCS and compression rows share.
+    ///
+    /// A base-field (`D == 1`) challenger has no dedicated table — the compact D=1 layout binds
+    /// its sponge capacity on the shared table already — so only the shared entry is returned.
+    fn poseidon2_challenger_shape_configs(&self, config: Poseidon2Config) -> Vec<Poseidon2Config> {
+        let mut configs = Vec::new();
+        if config.d() < 2 {
+            return vec![config];
+        }
+        configs.push(config.for_challenger());
+        if self.shares_challenger_perm_table {
+            configs.push(config);
+        }
+        configs
+    }
+
+    /// Poseidon1 counterpart of [`Self::poseidon2_challenger_shape_configs`].
+    fn poseidon1_challenger_shape_configs(&self, config: Poseidon1Config) -> Vec<Poseidon1Config> {
+        let mut configs = Vec::new();
+        if config.d() < 2 {
+            return vec![config];
+        }
+        configs.push(config.for_challenger());
+        if self.shares_challenger_perm_table {
+            configs.push(config);
+        }
+        configs
     }
 
     /// Register an additional Poseidon2 table config that can appear in proofs
@@ -165,13 +214,14 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
         configs
     }
 
-    /// Full ordered list of Poseidon2 table configs for `table_degree`: the challenger config (if it
-    /// is Poseidon2) followed by the extra configs. Order matches `non_primitive_provers` so the
-    /// preprocessed AIRs line up one-to-one with the registered table provers.
+    /// Full ordered list of Poseidon2 table configs for `table_degree`: the challenger config's
+    /// tables (if it is Poseidon2) followed by the extra configs. Order matches
+    /// `non_primitive_provers` so the preprocessed AIRs line up one-to-one with the registered
+    /// table provers.
     fn poseidon2_air_configs_for_degree(&self, table_degree: usize) -> Vec<Poseidon2Config> {
         let mut configs = Vec::new();
         if let Some(c) = self.challenger_perm_config.as_poseidon2() {
-            configs.push(*c);
+            configs.extend(self.poseidon2_challenger_shape_configs(*c));
         }
         configs.extend(self.extra_poseidon2_table_configs_for_degree(table_degree));
         configs
@@ -238,6 +288,12 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
     /// proofs verified by quintic recursive circuits (e.g. a wide MMCS config).
     pub fn with_extra_poseidon2_table(mut self, config: Poseidon2Config) -> Self {
         self.0 = self.0.with_extra_poseidon2_table(config);
+        self
+    }
+
+    /// See [`FriRecursionBackend::without_shared_challenger_perm_table`].
+    pub fn without_shared_challenger_perm_table(mut self) -> Self {
+        self.0 = self.0.without_shared_challenger_perm_table();
         self
     }
 }
@@ -571,20 +627,29 @@ where
     fn non_primitive_provers(&self, ext_degree: usize) -> Vec<Box<dyn TableProver<SC>>> {
         if ext_degree == 2 {
             let cl = self.0.challenger_perm_config.extension_degree() != 2;
-            let mut provers: Vec<Box<dyn TableProver<SC>>> = match (
+            let mut provers: Vec<Box<dyn TableProver<SC>>> = Vec::new();
+            match (
                 self.0.challenger_perm_config.as_poseidon1(),
                 self.0.challenger_perm_config.as_poseidon2(),
             ) {
-                (Some(c), _) => vec![Box::new(Poseidon1ProverD2::new(
-                    *c,
-                    ConstraintProfile::Standard,
-                ))],
-                (_, Some(c)) => vec![Box::new(Poseidon2ProverD2::new(
-                    *c,
-                    ConstraintProfile::Standard,
-                ))],
-                _ => Vec::new(),
-            };
+                (Some(c), _) => {
+                    for config in self.0.poseidon1_challenger_shape_configs(*c) {
+                        provers.push(Box::new(Poseidon1ProverD2::new(
+                            config,
+                            ConstraintProfile::Standard,
+                        )));
+                    }
+                }
+                (_, Some(c)) => {
+                    for config in self.0.poseidon2_challenger_shape_configs(*c) {
+                        provers.push(Box::new(Poseidon2ProverD2::new(
+                            config,
+                            ConstraintProfile::Standard,
+                        )));
+                    }
+                }
+                _ => {}
+            }
             for config in self.0.extra_poseidon2_table_configs_for_degree(2) {
                 provers.push(Box::new(Poseidon2ProverD2::new(
                     config,
@@ -600,14 +665,10 @@ where
 
     fn non_primitive_air_builders(&self) -> Vec<Box<dyn NpoAirBuilder<SC, 2>>> {
         let cl = self.0.challenger_perm_config.extension_degree() != 2;
-        let mut builders = if self.0.challenger_perm_config.as_poseidon1().is_some() {
-            poseidon1_air_builders::<SC, 2>()
-        } else if self
-            .0
-            .extra_poseidon2_table_configs_for_degree(2)
-            .is_empty()
-        {
-            poseidon2_air_builders::<SC, 2>()
+        let mut builders = if let Some(c) = self.0.challenger_perm_config.as_poseidon1() {
+            poseidon1_air_builders_for_configs::<SC, 2>(
+                self.0.poseidon1_challenger_shape_configs(*c),
+            )
         } else {
             poseidon2_air_builders_for_configs::<SC, 2>(self.0.poseidon2_air_configs_for_degree(2))
         };
@@ -693,20 +754,29 @@ where
     fn non_primitive_provers(&self, ext_degree: usize) -> Vec<Box<dyn TableProver<SC>>> {
         if ext_degree == 4 {
             let cl = self.0.challenger_perm_config.extension_degree() != 4;
-            let mut provers: Vec<Box<dyn TableProver<SC>>> = match (
+            let mut provers: Vec<Box<dyn TableProver<SC>>> = Vec::new();
+            match (
                 self.0.challenger_perm_config.as_poseidon1(),
                 self.0.challenger_perm_config.as_poseidon2(),
             ) {
-                (Some(c), _) => vec![Box::new(Poseidon1Prover::new(
-                    *c,
-                    ConstraintProfile::Standard,
-                ))],
-                (_, Some(c)) => vec![Box::new(Poseidon2Prover::new(
-                    *c,
-                    ConstraintProfile::Standard,
-                ))],
-                _ => Vec::new(),
-            };
+                (Some(c), _) => {
+                    for config in self.0.poseidon1_challenger_shape_configs(*c) {
+                        provers.push(Box::new(Poseidon1Prover::new(
+                            config,
+                            ConstraintProfile::Standard,
+                        )));
+                    }
+                }
+                (_, Some(c)) => {
+                    for config in self.0.poseidon2_challenger_shape_configs(*c) {
+                        provers.push(Box::new(Poseidon2Prover::new(
+                            config,
+                            ConstraintProfile::Standard,
+                        )));
+                    }
+                }
+                _ => {}
+            }
             for config in self.0.extra_poseidon2_table_configs_for_degree(4) {
                 provers.push(Box::new(Poseidon2Prover::new(
                     config,
@@ -722,14 +792,10 @@ where
 
     fn non_primitive_air_builders(&self) -> Vec<Box<dyn NpoAirBuilder<SC, 4>>> {
         let cl = self.0.challenger_perm_config.extension_degree() != 4;
-        let mut builders = if self.0.challenger_perm_config.as_poseidon1().is_some() {
-            poseidon1_air_builders::<SC, 4>()
-        } else if self
-            .0
-            .extra_poseidon2_table_configs_for_degree(4)
-            .is_empty()
-        {
-            poseidon2_air_builders::<SC, 4>()
+        let mut builders = if let Some(c) = self.0.challenger_perm_config.as_poseidon1() {
+            poseidon1_air_builders_for_configs::<SC, 4>(
+                self.0.poseidon1_challenger_shape_configs(*c),
+            )
         } else {
             poseidon2_air_builders_for_configs::<SC, 4>(self.0.poseidon2_air_configs_for_degree(4))
         };

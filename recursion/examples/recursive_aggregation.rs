@@ -1416,6 +1416,7 @@ mod koala_bear_arity4 {
             .for_extension_degree::<4>(),
         FriRecursionBackend::<16, 8, _>::new(Poseidon2Config::KOALA_BEAR_D4_W16)
             .with_extra_poseidon2_table(Poseidon2Config::KOALA_BEAR_D4_W32)
+            .without_shared_challenger_perm_table()
             .for_extension_degree::<4>()
     );
 }
@@ -1506,6 +1507,7 @@ mod goldilocks_arity4 {
             .for_extension_degree::<2>(),
         FriRecursionBackend::<8, 4, _>::new(Poseidon2Config::GOLDILOCKS_D2_W8)
             .with_extra_poseidon2_table(Poseidon2Config::GOLDILOCKS_D2_W16)
+            .without_shared_challenger_perm_table()
             .for_extension_degree::<2>()
     );
 }
@@ -1553,6 +1555,7 @@ mod baby_bear_arity4 {
             .for_extension_degree::<4>(),
         FriRecursionBackend::<16, 8, _>::new(Poseidon2Config::BABY_BEAR_D4_W16)
             .with_extra_poseidon2_table(Poseidon2Config::BABY_BEAR_D4_W32)
+            .without_shared_challenger_perm_table()
             .for_extension_degree::<4>()
     );
 }
