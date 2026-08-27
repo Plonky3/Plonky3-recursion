@@ -181,6 +181,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             out_ctl: vec![false, false],
             return_all_outputs: false,
             mmcs_index_sum: None,
+            absorb_len: 0,
         })?;
 
     let sibling1_inputs: Vec<Option<ExprId>> = vec![None; 4];
@@ -200,6 +201,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             out_ctl: vec![false, false],
             return_all_outputs: false,
             mmcs_index_sum: None,
+            absorb_len: 0,
         })?;
 
     let mmcs_bit_row2 = builder.alloc_const(Ext4::from_prime_subfield(Base::ZERO), "mmcs_bit_row2");
@@ -215,6 +217,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             out_ctl: vec![true, true],
             return_all_outputs: false,
             mmcs_index_sum: Some(mmcs_idx_sum_expr),
+            absorb_len: 0,
         })?;
     let row2_out0 = row2_outputs[0].ok_or("missing row2 out0")?;
     let row2_out1 = row2_outputs[1].ok_or("missing row2 out1")?;

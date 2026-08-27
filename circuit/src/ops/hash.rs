@@ -41,6 +41,7 @@ impl<F: Field> CircuitBuilder<F> {
                 out_ctl: vec![is_last; rate_ext],
                 return_all_outputs: false,
                 mmcs_index_sum: None,
+                absorb_len: 0,
             })?;
             outputs = maybe_outputs;
             last_op_id = op_id;

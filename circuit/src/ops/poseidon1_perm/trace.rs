@@ -115,7 +115,32 @@ pub fn generate_poseidon1_trace<
 >(
     op_states: &crate::ops::OpStateMap,
 ) -> Result<Option<Box<dyn NonPrimitiveTrace<F>>>, CircuitError> {
-    let op_type = NpoTypeId::poseidon1_perm(Config::CONFIG);
+    generate_poseidon1_trace_for::<F, Config>(op_states, NpoTypeId::poseidon1_perm(Config::CONFIG))
+}
+
+/// Generate the trace for the challenger's own Poseidon1 table.
+///
+/// Same conversion as [`generate_poseidon1_trace`], reading the rows the challenger
+/// permutation builder emits under its own operation type.
+pub fn generate_poseidon1_challenger_trace<
+    F: Field + ExtensionField<Config::BaseField>,
+    Config: Poseidon1Params,
+>(
+    op_states: &crate::ops::OpStateMap,
+) -> Result<Option<Box<dyn NonPrimitiveTrace<F>>>, CircuitError> {
+    generate_poseidon1_trace_for::<F, Config>(
+        op_states,
+        NpoTypeId::poseidon1_perm(Config::CONFIG.for_challenger()),
+    )
+}
+
+fn generate_poseidon1_trace_for<
+    F: Field + ExtensionField<Config::BaseField>,
+    Config: Poseidon1Params,
+>(
+    op_states: &crate::ops::OpStateMap,
+    op_type: NpoTypeId,
+) -> Result<Option<Box<dyn NonPrimitiveTrace<F>>>, CircuitError> {
     let Some(state) = op_states
         .get(&op_type)
         .and_then(|s| s.downcast_ref::<Poseidon1ExecutionState<F>>())

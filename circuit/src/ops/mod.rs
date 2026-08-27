@@ -26,7 +26,7 @@ pub use poseidon1_perm::{
     // Configuration
     Poseidon1PermPrivateData,
     Poseidon1Trace,
-    generate_poseidon1_trace,
+    generate_poseidon1_challenger_trace, generate_poseidon1_trace,
 };
 pub use poseidon2_perm::{
     // Preset configurations
@@ -42,7 +42,7 @@ pub use poseidon2_perm::{
     // Configuration
     Poseidon2PermPrivateData,
     Poseidon2Trace,
-    generate_poseidon2_trace,
+    generate_poseidon2_challenger_trace, generate_poseidon2_trace,
 };
 pub use recompose::{
     RecomposeCircuitRow, RecomposeTrace, RecomposeTraceKind, generate_recompose_coeff_trace,

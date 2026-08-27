@@ -41,6 +41,11 @@ pub struct PoseidonPermCall<V: PoseidonVariant> {
     pub return_all_outputs: bool,
     /// Optional MMCS index accumulator value to expose.
     pub mmcs_index_sum: Option<ExprId>,
+    /// Prefix-free duplex-sponge length tag: the number of rate elements absorbed on this row.
+    ///
+    /// The caller has already added it to the first capacity limb; the AIR re-applies it when
+    /// chaining that limb to the previous row's output. Zero on every non-sponge row.
+    pub absorb_len: usize,
 }
 
 impl<V: PoseidonVariant> Default for PoseidonPermCall<V> {
@@ -56,6 +61,7 @@ impl<V: PoseidonVariant> Default for PoseidonPermCall<V> {
             out_ctl: vec![false; config.rate_ext()],
             return_all_outputs: false,
             mmcs_index_sum: None,
+            absorb_len: 0,
         }
     }
 }

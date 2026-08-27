@@ -546,6 +546,7 @@ fn test_poseidon2_ctl_lookups() {
             out_ctl: vec![true, true],
             return_all_outputs: false,
             mmcs_index_sum: None,
+            absorb_len: 0,
         })
         .unwrap();
 
@@ -565,6 +566,7 @@ fn test_poseidon2_ctl_lookups() {
             out_ctl: vec![false, false],
             return_all_outputs: false,
             mmcs_index_sum: None,
+            absorb_len: 0,
         })
         .unwrap();
 
@@ -651,6 +653,7 @@ fn test_poseidon2_chained_ctl_lookups() {
             out_ctl: vec![false, false],
             return_all_outputs: false,
             mmcs_index_sum: None,
+            absorb_len: 0,
         })
         .unwrap();
 
@@ -666,6 +669,7 @@ fn test_poseidon2_chained_ctl_lookups() {
             out_ctl: vec![false, false],
             return_all_outputs: false,
             mmcs_index_sum: None,
+            absorb_len: 0,
         })
         .unwrap();
 
@@ -681,6 +685,7 @@ fn test_poseidon2_chained_ctl_lookups() {
             out_ctl: vec![true, true],
             return_all_outputs: false,
             mmcs_index_sum: None,
+            absorb_len: 0,
         })
         .unwrap();
 
@@ -697,6 +702,7 @@ fn test_poseidon2_chained_ctl_lookups() {
             out_ctl: vec![false, false],
             return_all_outputs: false,
             mmcs_index_sum: None,
+            absorb_len: 0,
         })
         .unwrap();
 

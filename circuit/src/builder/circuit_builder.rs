@@ -20,8 +20,12 @@ use super::npo::{NonPrimitiveOpParams, NonPrimitiveOperationData, NpoCircuitPlug
 use super::{BuilderConfig, ExpressionBuilder, PublicInputTracker};
 use crate::circuit::Circuit;
 use crate::ops::poseidon_perm::PoseidonPermExec;
-use crate::ops::poseidon1_perm::{Poseidon1CircuitPlugin, Poseidon1PermCallBase};
-use crate::ops::poseidon2_perm::{Poseidon2CircuitPlugin, Poseidon2PermCallBase};
+use crate::ops::poseidon1_perm::{
+    Poseidon1CircuitPlugin, Poseidon1PermCallBase, generate_poseidon1_challenger_trace,
+};
+use crate::ops::poseidon2_perm::{
+    Poseidon2CircuitPlugin, Poseidon2PermCallBase, generate_poseidon2_challenger_trace,
+};
 use crate::ops::recompose::RecomposeCircuitPlugin;
 use crate::ops::{
     HintExecutor, NpoConfig, NpoRegistry, NpoTypeId, Poseidon1Params, Poseidon1PermCall,
@@ -182,6 +186,46 @@ where
         self.config.enable_op(op.clone(), cfg);
     }
 
+    /// Register the challenger's own Poseidon2 table alongside the shared one.
+    ///
+    /// The challenger table holds nothing but duplex-sponge rows, so its rows are contiguous
+    /// and the AIR can chain each row's capacity input to the previous row's capacity output.
+    /// Shapes that cannot key a challenger table (base-field and arity-4 compression) get no
+    /// second registration.
+    fn register_poseidon2_challenger_npo<Config>(&mut self, exec: PoseidonPermExec<F>)
+    where
+        Config: Poseidon2Params,
+        F: Field + ExtensionField<Config::BaseField>,
+    {
+        if Config::CONFIG.d() < 2 || Config::CONFIG.is_arity4_shape() {
+            return;
+        }
+        self.register_npo(Poseidon2CircuitPlugin::new(
+            Config::CONFIG.for_challenger(),
+            exec,
+            generate_poseidon2_challenger_trace::<F, Config>,
+        ));
+    }
+
+    /// Register the challenger's own Poseidon1 table alongside the shared one.
+    ///
+    /// See [`Self::register_poseidon2_challenger_npo`].
+    fn register_poseidon1_challenger_npo<Config>(&mut self, exec: PoseidonPermExec<F>)
+    where
+        Config: Poseidon1Params,
+        F: Field + ExtensionField<Config::BaseField>,
+    {
+        if Config::CONFIG.d() < 2 || 4 * Config::CONFIG.capacity_ext() == Config::CONFIG.width_ext()
+        {
+            return;
+        }
+        self.register_npo(Poseidon1CircuitPlugin::new(
+            Config::CONFIG.for_challenger(),
+            exec,
+            generate_poseidon1_challenger_trace::<F, Config>,
+        ));
+    }
+
     /// Enables Poseidon2 permutation operations (one perm per table row).
     ///
     /// The current implementation only supports extension degree D=4 and WIDTH=16.
@@ -204,8 +248,9 @@ where
             Config::WIDTH_EXT,
             perm,
         );
-        let plugin = Poseidon2CircuitPlugin::new(Config::CONFIG, exec, trace_generator);
+        let plugin = Poseidon2CircuitPlugin::new(Config::CONFIG, exec.clone(), trace_generator);
         self.register_npo(plugin);
+        self.register_poseidon2_challenger_npo::<Config>(exec);
     }
 
     /// Enables Poseidon2 for configs with WIDTH=8 (e.g. Goldilocks).
@@ -228,8 +273,9 @@ where
             Config::WIDTH_EXT,
             perm,
         );
-        let plugin = Poseidon2CircuitPlugin::new(Config::CONFIG, exec, trace_generator);
+        let plugin = Poseidon2CircuitPlugin::new(Config::CONFIG, exec.clone(), trace_generator);
         self.register_npo(plugin);
+        self.register_poseidon2_challenger_npo::<Config>(exec);
     }
 
     /// Enables Poseidon2 for the arity-4 compression configs with WIDTH=32.
@@ -331,8 +377,9 @@ where
             Config::WIDTH_EXT,
             perm,
         );
-        let plugin = Poseidon1CircuitPlugin::new(Config::CONFIG, exec, trace_generator);
+        let plugin = Poseidon1CircuitPlugin::new(Config::CONFIG, exec.clone(), trace_generator);
         self.register_npo(plugin);
+        self.register_poseidon1_challenger_npo::<Config>(exec);
     }
 
     /// Enables Poseidon1 for configs with WIDTH=8 (e.g. Goldilocks).
@@ -355,8 +402,9 @@ where
             Config::WIDTH_EXT,
             perm,
         );
-        let plugin = Poseidon1CircuitPlugin::new(Config::CONFIG, exec, trace_generator);
+        let plugin = Poseidon1CircuitPlugin::new(Config::CONFIG, exec.clone(), trace_generator);
         self.register_npo(plugin);
+        self.register_poseidon1_challenger_npo::<Config>(exec);
     }
 
     /// Enables the Poseidon1 permutation operation for base field challenges (D=1).
@@ -1544,21 +1592,25 @@ where
         Ok(coeffs)
     }
 
-    /// Applies Poseidon2 permutation for the circuit challenger.
+    /// Applies one duplex step of the circuit challenger's Poseidon2 permutation.
     ///
-    /// Takes 4 extension element inputs and returns 4 extension element outputs.
-    /// This operation is **CTL-verified** against the Poseidon2 AIR table for soundness.
+    /// The row is keyed to `config`'s challenger table, which holds nothing but challenger
+    /// duplex rows and so keeps consecutive steps on adjacent trace rows.
     ///
     /// # CTL Verification
     /// - All `width_ext` inputs: CTL-verified against the witness table.
     /// - Outputs `0..rate_ext`: CTL-verified against the witness table (rate elements).
-    /// - Outputs `rate_ext..width_ext`: not exposed (capacity elements). The AIR constrains them
-    ///   as this row's permutation output, but every input limb is CTL-fed under
-    ///   `new_start = true`, so no chain constraint relates them to the next row's input.
+    /// - Outputs `rate_ext..width_ext`: not exposed (capacity elements). On a continuation row
+    ///   the AIR's sponge chain constraint ties each capacity input to the previous row's
+    ///   capacity output, so the CTL-fed capacity witness cannot be re-chosen.
     ///
     /// # Parameters
-    /// - `config`: The Poseidon2 configuration to use
+    /// - `config`: The Poseidon2 configuration to use (must be D>=2)
+    /// - `new_start`: `true` for the first duplex of a challenger instance, `false` for every
+    ///   continuation, which is what turns the capacity chain constraint on
     /// - `inputs`: width_ext extension element targets (the sponge state)
+    /// - `absorb_len`: the prefix-free length tag the caller already added to the first
+    ///   capacity limb, which the chain constraint re-applies
     ///
     /// # Returns
     /// width_ext extension element targets (the permuted state)
@@ -1568,16 +1620,19 @@ where
     pub fn add_poseidon2_perm_for_challenger(
         &mut self,
         config: crate::ops::Poseidon2Config,
+        new_start: bool,
         inputs: &[ExprId],
+        absorb_len: usize,
     ) -> Result<Vec<ExprId>, CircuitBuilderError> {
         self.push_scope("poseidon2_perm_for_challenger");
 
         // All input limbs are CTL-verified; only the rate outputs are exposed on the bus.
         // The capacity outputs are returned to the caller but carry no CTL exposure.
+        let config = config.for_challenger();
         let width_ext = config.width_ext();
         let (_op_id, outputs) = self.add_poseidon2_perm(&Poseidon2PermCall {
             config,
-            new_start: true, // Each challenger permutation is independent
+            new_start,
             merkle_path: false,
             mmcs_bit: None,
             mmcs_bit2: None,
@@ -1585,6 +1640,7 @@ where
             out_ctl: vec![true; config.rate_ext()],
             return_all_outputs: true,
             mmcs_index_sum: None,
+            absorb_len,
         })?;
 
         let output_exprs: Vec<ExprId> = (0..width_ext)
@@ -1646,17 +1702,24 @@ where
     }
 
     /// Poseidon1 challenger permutation (extension field, D>=2).
+    ///
+    /// Mirrors [`Self::add_poseidon2_perm_for_challenger`]: the row is keyed to `config`'s
+    /// challenger table and, on a continuation row, its capacity is chained to the previous
+    /// row's capacity output plus `absorb_len`.
     pub fn add_poseidon1_perm_for_challenger(
         &mut self,
         config: crate::ops::Poseidon1Config,
+        new_start: bool,
         inputs: &[ExprId],
+        absorb_len: usize,
     ) -> Result<Vec<ExprId>, CircuitBuilderError> {
         self.push_scope("poseidon1_perm_for_challenger");
 
+        let config = config.for_challenger();
         let width_ext = config.width_ext();
         let (_op_id, outputs) = self.add_poseidon1_perm(&Poseidon1PermCall {
             config,
-            new_start: true,
+            new_start,
             merkle_path: false,
             mmcs_bit: None,
             mmcs_bit2: None,
@@ -1664,6 +1727,7 @@ where
             out_ctl: vec![true; config.rate_ext()],
             return_all_outputs: true,
             mmcs_index_sum: None,
+            absorb_len,
         })?;
 
         let output_exprs: Vec<ExprId> = (0..width_ext)
@@ -2239,6 +2303,7 @@ mod tests {
                 out_ctl: vec![true, true],
                 return_all_outputs: false,
                 mmcs_index_sum: None,
+                absorb_len: 0,
             })
             .unwrap();
 

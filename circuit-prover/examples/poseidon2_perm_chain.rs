@@ -112,6 +112,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             out_ctl: vec![is_last, is_last],
             return_all_outputs: false,
             mmcs_index_sum: None,
+            absorb_len: 0,
         })?;
 
         if is_last {

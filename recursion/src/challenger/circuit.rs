@@ -13,9 +13,10 @@
 //! - `duplexing_base` (`D == 1`) leaves the capacity slots empty and threads `new_start`, so the
 //!   compact D=1 AIR binds each row's capacity input to the previous row's capacity output.
 //! - `duplexing_ext` (`D >= 2`) packs the whole state into extension limbs and feeds every limb
-//!   over CTL with `new_start = true`, so the AIR's chain constraint never fires. Only the rate
-//!   limbs the permutation publishes on the bus are bound to it; the capacity limbs are not tied
-//!   to the permutation that produced them.
+//!   over CTL, and threads `new_start` as well. The permutation rows go to the challenger's own
+//!   table, so consecutive duplex steps are adjacent rows and the AIR's sponge chain constraint
+//!   binds each row's capacity input to the previous row's capacity output plus the prefix-free
+//!   length tag.
 
 use alloc::vec;
 use alloc::vec::Vec;
@@ -54,11 +55,10 @@ pub struct CircuitChallenger<const WIDTH: usize, const RATE: usize, C: Challenge
     /// Whether the challenger has been initialized with zero state.
     initialized: bool,
 
-    /// Whether `duplexing_base` has been called at least once since the last init/clear.
+    /// Whether a permutation has run at least once since the last init/clear.
     ///
-    /// The first D=1 permutation uses `new_start=true` with rate slots CTL-verified and
-    /// capacity `None` (zeros enforced by the compact D=1 AIR). Later permutations use
-    /// `new_start=false` with the same capacity pattern and chaining.
+    /// The first permutation of an instance starts a fresh sponge chain (`new_start=true`);
+    /// every later one continues it, which is what turns the AIR's capacity chain constraint on.
     duplexed_once: bool,
 }
 
@@ -145,13 +145,13 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
             if cfg.d() == 1 {
                 self.duplexing_base(circuit, cfg, num_absorbed);
             } else {
-                self.duplexing_ext::<BF, EF>(circuit, cfg);
+                self.duplexing_ext::<BF, EF>(circuit, cfg, num_absorbed);
             }
         } else if let Some(cfg) = p1_config {
             if cfg.d() == 1 {
                 self.duplexing_base_p1(circuit, cfg, num_absorbed);
             } else {
-                self.duplexing_ext_p1::<BF, EF>(circuit, cfg);
+                self.duplexing_ext_p1::<BF, EF>(circuit, cfg, num_absorbed);
             }
         } else {
             panic!("unsupported challenger permutation");
@@ -196,14 +196,23 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
         self.state = outputs.to_vec();
     }
 
+    /// Duplexing for D>=2: the state is packed into `WIDTH / D` extension limbs.
+    ///
+    /// Every limb, capacity included, is CTL-verified. `new_start` is `true` only for the first
+    /// permutation of this instance, so the challenger table's AIR chains the capacity of each
+    /// later row to the previous row's capacity output plus `absorb_len`.
     fn duplexing_ext<BF, EF>(
         &mut self,
         circuit: &mut CircuitBuilder<EF>,
         poseidon2_config: Poseidon2Config,
+        absorb_len: usize,
     ) where
         BF: PrimeField64,
         EF: ExtensionField<BF>,
     {
+        let new_start = !self.duplexed_once;
+        self.duplexed_once = true;
+
         let num_ext_limbs = WIDTH / EF::DIMENSION;
         let mut ext_inputs = Vec::with_capacity(num_ext_limbs);
         for i in 0..num_ext_limbs {
@@ -216,7 +225,7 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
         }
 
         let ext_outputs = circuit
-            .add_poseidon2_perm_for_challenger(poseidon2_config, &ext_inputs)
+            .add_poseidon2_perm_for_challenger(poseidon2_config, new_start, &ext_inputs, absorb_len)
             .expect("poseidon2 permutation should succeed");
 
         for (limb, &ext_out) in ext_outputs.iter().enumerate() {
@@ -251,15 +260,19 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
         self.state = outputs.to_vec();
     }
 
-    /// Poseidon1 D>=2 duplexing.
+    /// Poseidon1 D>=2 duplexing. See [`Self::duplexing_ext`].
     fn duplexing_ext_p1<BF, EF>(
         &mut self,
         circuit: &mut CircuitBuilder<EF>,
         poseidon1_config: Poseidon1Config,
+        absorb_len: usize,
     ) where
         BF: PrimeField64,
         EF: ExtensionField<BF>,
     {
+        let new_start = !self.duplexed_once;
+        self.duplexed_once = true;
+
         let num_ext_limbs = WIDTH / EF::DIMENSION;
         let mut ext_inputs = Vec::with_capacity(num_ext_limbs);
         for i in 0..num_ext_limbs {
@@ -272,7 +285,7 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
         }
 
         let ext_outputs = circuit
-            .add_poseidon1_perm_for_challenger(poseidon1_config, &ext_inputs)
+            .add_poseidon1_perm_for_challenger(poseidon1_config, new_start, &ext_inputs, absorb_len)
             .expect("poseidon1 permutation should succeed");
 
         for (limb, &ext_out) in ext_outputs.iter().enumerate() {

@@ -18,5 +18,5 @@ pub use state::Poseidon1PermPrivateData;
 pub use trace::{
     BabyBearD1Width16, BabyBearD4Width16, GoldilocksD2Width8, KoalaBearD1Width16,
     KoalaBearD4Width16, Poseidon1CircuitRow, Poseidon1Params, Poseidon1Trace,
-    generate_poseidon1_trace,
+    generate_poseidon1_challenger_trace, generate_poseidon1_trace,
 };
