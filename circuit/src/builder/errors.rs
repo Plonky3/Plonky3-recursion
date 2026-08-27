@@ -117,6 +117,15 @@ pub enum CircuitBuilderError {
          chain constrains only the weighted sum, which leaves every coefficient free"
     )]
     RecomposeCoeffLookupsUnavailable,
+
+    /// A recomposition or decomposition with coefficient lookups was asked to work with
+    /// coefficients no constraint holds to base-field elements.
+    #[error(
+        "these coefficients are not held to base-field elements, so they cannot stand in for a \
+         base decomposition: they were recorded from a lowering that ties only the weighted \
+         sum, or pinned to a constant with a component outside the base field"
+    )]
+    CoefficientsNotBaseBound,
 }
 
 #[cfg(test)]

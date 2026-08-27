@@ -6,7 +6,7 @@ use alloc::{format, vec};
 use core::hash::Hash;
 use core::marker::PhantomData;
 
-use hashbrown::HashMap;
+use hashbrown::{HashMap, HashSet};
 use itertools::zip_eq;
 use p3_field::{
     BasedVectorSpace, Dup, ExtensionField, Field, PrimeCharacteristicRing, PrimeField64,
@@ -87,6 +87,17 @@ pub struct CircuitBuilder<F: Field> {
     /// Lets `decompose_ext_to_base_coeffs` return those nodes without extra decomposition hints.
     ext_recompose_coeffs: HashMap<ExprId, Vec<ExprId>>,
 
+    /// Coefficient wires a constraint pins to a base-field element: the inputs of a
+    /// `recompose/coeff` row, whose per-coefficient bus tuple is zero-padded, and `Const`s
+    /// holding a base-field element embedded in `F`.
+    ///
+    /// The `_with_coeff_lookups` entry points promise their caller that the coefficients are
+    /// the base decomposition of the value, and `ext_recompose_coeffs` alone cannot keep that
+    /// promise: it also records coefficients whose only tie to the value is the weighted sum
+    /// `sum(c_i * basis_i)`, which over an extension field leaves each of them `D - 1` free
+    /// base dimensions. Those entries are served to the weaker entry points and refused here.
+    base_bound_coeffs: HashSet<ExprId>,
+
     /// `select(b, t, s)` outputs mapped to their `(b, t, s)` triple.
     ///
     /// Lets `decompose_ext_to_base_coeffs` handle EF selects coefficient-wise when at least one
@@ -140,6 +151,7 @@ where
             tag_to_op: HashMap::new(),
             recompose_npo_enabled: false,
             ext_recompose_coeffs: HashMap::new(),
+            base_bound_coeffs: HashSet::new(),
             ext_select_sources: HashMap::new(),
             recompose_coeff_ctl_for_decompose_links: false,
             decompose_recompose_via_alu: false,
@@ -1290,6 +1302,10 @@ where
     /// The caller must ensure `result` equals the field recomposition of `coeffs`. In debug
     /// builds, conflicting provenance for the same `ExprId` or use of `ExprId::ZERO` is
     /// rejected via `debug_assert`.
+    ///
+    /// The record says nothing about the coefficients being base-field elements, so
+    /// [`Self::decompose_ext_to_base_coeffs_with_coeff_lookups`] refuses to serve it unless
+    /// some other row already holds each coefficient to one.
     pub fn hint_ext_recompose_coeffs(&mut self, result: ExprId, coeffs: &[ExprId]) {
         debug_assert_ne!(
             result,
@@ -1357,6 +1373,11 @@ where
     /// leaves each coefficient `D - 1` free base dimensions, so it is not a substitute.
     /// Callers that want that chain must ask for it by name, via
     /// [`Self::recompose_base_coeffs_to_ext_via_alu`].
+    ///
+    /// Returns [`CircuitBuilderError::CoefficientsNotBaseBound`] when every coefficient is a
+    /// `Const` but one of them is pinned to a value outside the base field: the constant fold
+    /// below reads only each coefficient's first basis component, so no row is emitted and the
+    /// rest of that constant would go unread.
     pub fn recompose_base_coeffs_to_ext_with_coeff_lookups<BF>(
         &mut self,
         coeffs: &[ExprId],
@@ -1414,6 +1435,16 @@ where
             })
             .collect();
         if let Some(bf_values) = bf_consts {
+            // The fold reads each coefficient's first basis component and drops the rest, so a
+            // `Const` stands for the base-field element the recomposition is built from exactly
+            // when the value it is pinned to has nothing in those other components.
+            let all_base = coeffs.iter().all(|&c| self.is_base_embedded_const::<BF>(c));
+            if mode == RecomposeMode::NpoWithCoeffLookups && !all_base {
+                return Err(CircuitBuilderError::CoefficientsNotBaseBound);
+            }
+            if all_base {
+                self.base_bound_coeffs.extend(coeffs.iter().copied());
+            }
             let folded =
                 F::from_basis_coefficients_slice(&bf_values).expect("basis coefficients are valid");
             let result = self.alloc_const(folded, "recompose_const_fold");
@@ -1432,7 +1463,14 @@ where
         }
 
         let result = if self.recompose_npo_enabled && mode != RecomposeMode::ForceAlu {
-            self.recompose_via_npo(coeffs, mode == RecomposeMode::NpoWithCoeffLookups)?
+            let coeff_lookups = mode == RecomposeMode::NpoWithCoeffLookups;
+            let out = self.recompose_via_npo(coeffs, coeff_lookups)?;
+            if coeff_lookups {
+                // The row publishes each coefficient as `[idx, v_i, 0, .., 0]`, so the bus
+                // holds it to a base-field element.
+                self.base_bound_coeffs.extend(coeffs.iter().copied());
+            }
+            out
         } else {
             self.push_scope("recompose_base_coeffs_to_ext");
 
@@ -1454,6 +1492,19 @@ where
 
         self.ext_recompose_coeffs.insert(result, coeffs.to_vec());
         Ok(result)
+    }
+
+    /// Whether `c` is a `Const` holding a base-field element embedded in `F`.
+    fn is_base_embedded_const<BF>(&self, c: ExprId) -> bool
+    where
+        BF: PrimeField64,
+        F: ExtensionField<BF>,
+    {
+        self.expr_builder.get_const_value(c).is_some_and(|ef| {
+            <F as BasedVectorSpace<BF>>::as_basis_coefficients_slice(&ef)[1..]
+                .iter()
+                .all(|component| component.is_zero())
+        })
     }
 
     /// Recompose via the dedicated NPO table (zero ALU cost).
@@ -1531,6 +1582,8 @@ where
                     self.alloc_const(embedded_ef, "decompose_const_fold")
                 })
                 .collect();
+            // Each coefficient is a `Const` pinned to one basis component embedded in `F`.
+            self.base_bound_coeffs.extend(coeffs.iter().copied());
             // Cache the provenance so a later recompose on these coeffs returns the same `x`.
             if x != ExprId::ZERO {
                 self.ext_recompose_coeffs.insert(x, coeffs.clone());
@@ -1660,6 +1713,12 @@ where
     /// [`Self::enable_recompose`]; see
     /// [`Self::recompose_base_coeffs_to_ext_with_coeff_lookups`].
     ///
+    /// Returns [`CircuitBuilderError::CoefficientsNotBaseBound`] when `x` already carries a
+    /// recorded decomposition (from [`Self::hint_ext_recompose_coeffs`], from the ALU chain, or
+    /// from the plain recompose table) whose coefficients nothing holds to base-field elements.
+    /// That record short-circuits the lowering, so serving it would hand back exactly the
+    /// weighted-sum-only binding this form exists to avoid.
+    ///
     /// # Cost
     /// D witness hints + 1 `recompose/coeff` row, in place of the D `mul_add` rows.
     pub fn decompose_ext_to_base_coeffs_with_coeff_lookups<BF>(
@@ -1670,6 +1729,14 @@ where
         BF: PrimeField64,
         F: ExtensionField<BF>,
     {
+        // A recorded decomposition short-circuits the lowering entirely, so it is the one way
+        // into this call that never reaches a `recompose/coeff` row. Serve it only when every
+        // coefficient it returns is already held to a base-field element.
+        if let Some(coeffs) = self.ext_recompose_coeffs.get(&x)
+            && !coeffs.iter().all(|c| self.base_bound_coeffs.contains(c))
+        {
+            return Err(CircuitBuilderError::CoefficientsNotBaseBound);
+        }
         let saved_alu = core::mem::replace(&mut self.decompose_recompose_via_alu, false);
         let saved_ctl = core::mem::replace(&mut self.recompose_coeff_ctl_for_decompose_links, true);
         let coeffs = self.decompose_ext_to_base_coeffs::<BF>(x);
