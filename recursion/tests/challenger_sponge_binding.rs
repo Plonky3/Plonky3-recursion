@@ -14,14 +14,20 @@
 //! challenger table's sponge chain constraint, which holds regardless of which row writes the
 //! witness they are fed from.
 //!
-//! These tests build the transcript circuit with the real [`CircuitChallenger`], then edit
-//! the compiled [`Circuit`] in ways that leave `generate_preprocessed_columns` byte-identical
-//! (asserted in every test) and only change prover-side data: the hint executor behind
-//! `decompose_ext_to_base_coeffs`, the witness slots a permutation writes for limbs it does
-//! not publish on the bus, and the witness slots a `recompose` row reads. Every such edit is
-//! a choice a prover assembling trace polynomials directly would be free to make. The
-//! resulting traces are then proved against the *unedited* circuit's prover data and
-//! verified, so acceptance means the verifier's constraint system does not bind the limb.
+//! These tests build the transcript circuit with the real [`CircuitChallenger`], then edit the
+//! compiled [`Circuit`] and prove the resulting traces against the *unedited* circuit's prover
+//! data. Most edits change only prover-side data — the hint executor behind
+//! `decompose_ext_to_base_coeffs`, the witness slots a permutation writes for limbs it does not
+//! publish on the bus, the witness slots a `recompose` row reads — and are asserted to leave
+//! `generate_preprocessed_columns` byte-identical, so they are choices a prover assembling
+//! trace polynomials directly would be free to make and acceptance means the verifier's
+//! constraint system does not bind the limb.
+//!
+//! `rate_limb_is_bound_across_permutations_npo_table` is the exception: its edit re-points a
+//! `recompose/coeff` row, which advertises each coefficient's witness index in the preprocessed
+//! columns, so it asserts that `generate_preprocessed_columns` *changes*. That difference is
+//! itself the binding being tested, and the same edit against the plain `recompose` table would
+//! leave the columns identical.
 //!
 //! `control_corrupted_const_value_is_rejected` pins down that this harness is a real
 //! oracle: the same pipeline rejects a value the bus does bind.
