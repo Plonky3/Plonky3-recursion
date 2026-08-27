@@ -109,6 +109,14 @@ pub enum CircuitBuilderError {
     /// Invalid dimension: expected a specific number of elements.
     #[error("Invalid dimension: expected {expected}, got {actual}")]
     InvalidDimension { expected: usize, actual: usize },
+
+    /// A recomposition that must publish its coefficients on the bus was requested while the
+    /// `recompose/coeff` table is not enabled on the builder.
+    #[error(
+        "recomposition with coefficient lookups needs `enable_recompose`: the ALU `mul_add` \
+         chain constrains only the weighted sum, which leaves every coefficient free"
+    )]
+    RecomposeCoeffLookupsUnavailable,
 }
 
 #[cfg(test)]

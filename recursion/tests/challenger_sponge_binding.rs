@@ -64,12 +64,34 @@ const CAPACITY_LIMB: usize = RATE_EXT;
 /// Width of the query index the transcript is asked for.
 const QUERY_INDEX_BITS: usize = 8;
 
-/// How `recompose_base_coeffs_to_ext` is lowered: through the dedicated recompose table,
-/// or through the ALU `mul_add` chain.
+/// How the challenger packs its sponge state: through the `recompose/coeff` table, or through
+/// the ALU `mul_add` chain.
+///
+/// Both are selected explicitly. The builder refuses a `recompose/coeff` call when that table
+/// is not enabled rather than substituting the chain, so [`RecomposeMode::AluChain`] has to say
+/// so through [`CircuitChallenger::with_alu_state_packing`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RecomposeMode {
     NpoTable,
     AluChain,
+}
+
+/// Enables `mode`'s recompose tables on `circuit` and returns a challenger lowered to match.
+fn challenger_for(
+    mode: RecomposeMode,
+    circuit: &mut CircuitBuilder<EF>,
+) -> CircuitChallenger<WIDTH, RATE, Poseidon2Config> {
+    let challenger = CircuitChallenger::<WIDTH, RATE, Poseidon2Config>::new_koalabear();
+    match mode {
+        RecomposeMode::NpoTable => {
+            circuit.enable_recompose::<F>(generate_recompose_trace::<F, EF>);
+            challenger
+        }
+        RecomposeMode::AluChain => {
+            circuit.noop_enable_recompose::<F>(generate_recompose_trace::<F, EF>);
+            challenger.with_alu_state_packing()
+        }
+    }
 }
 
 /// Absorb `RATE` values, then squeeze past the output buffer so a second duplex step runs.
@@ -87,16 +109,7 @@ fn build_transcript_circuit_observing(mode: RecomposeMode, first: u64) -> Circui
         generate_poseidon2_trace::<EF, KoalaBearD4Width16>,
         perm,
     );
-    match mode {
-        RecomposeMode::NpoTable => {
-            circuit.enable_recompose::<F>(generate_recompose_trace::<F, EF>);
-        }
-        RecomposeMode::AluChain => {
-            circuit.noop_enable_recompose::<F>(generate_recompose_trace::<F, EF>);
-        }
-    }
-
-    let mut challenger = CircuitChallenger::<WIDTH, RATE, Poseidon2Config>::new_koalabear();
+    let mut challenger = challenger_for(mode, &mut circuit);
     for i in 0..RATE {
         let t = circuit.define_const(EF::from_u64(first + i as u64));
         RecursiveChallenger::<F, EF>::observe(&mut challenger, &mut circuit, t);
@@ -122,16 +135,7 @@ fn build_absorbing_transcript_circuit(mode: RecomposeMode) -> Circuit<EF> {
         generate_poseidon2_trace::<EF, KoalaBearD4Width16>,
         perm,
     );
-    match mode {
-        RecomposeMode::NpoTable => {
-            circuit.enable_recompose::<F>(generate_recompose_trace::<F, EF>);
-        }
-        RecomposeMode::AluChain => {
-            circuit.noop_enable_recompose::<F>(generate_recompose_trace::<F, EF>);
-        }
-    }
-
-    let mut challenger = CircuitChallenger::<WIDTH, RATE, Poseidon2Config>::new_koalabear();
+    let mut challenger = challenger_for(mode, &mut circuit);
     for _ in 0..2 * RATE {
         let t = circuit.public_input();
         RecursiveChallenger::<F, EF>::observe(&mut challenger, &mut circuit, t);
@@ -371,6 +375,43 @@ fn honest_transcript_proves_and_verifies() {
         prove_and_verify(&circuit, &traces)
             .unwrap_or_else(|e| panic!("{mode:?}: honest transcript must verify: {e}"));
     }
+}
+
+/// A challenger built on a circuit without the `recompose/coeff` table refuses to build.
+///
+/// The ALU `mul_add` chain is the lowering [`RecomposeMode::AluChain`] selects on purpose, and
+/// it does not bind the transcript's coefficients; substituting it for a circuit that simply
+/// never enabled the table would hand a caller who asked for the binding lowering an unbound
+/// transcript, with nothing to tell them apart.
+#[test]
+fn a_challenger_without_the_coeff_table_refuses_to_build() {
+    let outcome = std::panic::catch_unwind(|| {
+        let perm = default_koalabear_poseidon2_16();
+        let mut circuit = CircuitBuilder::<EF>::new();
+        circuit.enable_poseidon2_perm::<KoalaBearD4Width16, _>(
+            generate_poseidon2_trace::<EF, KoalaBearD4Width16>,
+            perm,
+        );
+        circuit.noop_enable_recompose::<F>(generate_recompose_trace::<F, EF>);
+
+        let mut challenger = CircuitChallenger::<WIDTH, RATE, Poseidon2Config>::new_koalabear();
+        for _ in 0..RATE {
+            let t = circuit.public_input();
+            RecursiveChallenger::<F, EF>::observe(&mut challenger, &mut circuit, t);
+        }
+        RecursiveChallenger::<F, EF>::sample_ext(&mut challenger, &mut circuit)
+    });
+
+    let panic = outcome.expect_err("the challenger must not build");
+    let message = panic
+        .downcast_ref::<String>()
+        .cloned()
+        .or_else(|| panic.downcast_ref::<&str>().map(|m| (*m).to_string()))
+        .unwrap_or_default();
+    assert!(
+        message.contains("enable_recompose"),
+        "the failure must name what is missing, got: {message}"
+    );
 }
 
 /// The harness rejects a value the `WitnessChecks` bus does bind, so acceptance in the
@@ -824,16 +865,7 @@ fn build_sampling_transcript_circuit(mode: RecomposeMode) -> Circuit<EF> {
         generate_poseidon2_trace::<EF, KoalaBearD4Width16>,
         perm,
     );
-    match mode {
-        RecomposeMode::NpoTable => {
-            circuit.enable_recompose::<F>(generate_recompose_trace::<F, EF>);
-        }
-        RecomposeMode::AluChain => {
-            circuit.noop_enable_recompose::<F>(generate_recompose_trace::<F, EF>);
-        }
-    }
-
-    let mut challenger = CircuitChallenger::<WIDTH, RATE, Poseidon2Config>::new_koalabear();
+    let mut challenger = challenger_for(mode, &mut circuit);
     for i in 0..RATE {
         let t = circuit.define_const(EF::from_u64(1_000 + i as u64));
         RecursiveChallenger::<F, EF>::observe(&mut challenger, &mut circuit, t);

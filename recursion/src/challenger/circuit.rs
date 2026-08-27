@@ -27,7 +27,10 @@
 //! `mul_add` chain publishes each coefficient as a bus-bound operand but constrains only
 //! `sum(c_i · basis_i)`, which over an extension field still leaves each coefficient `D - 1`
 //! free base dimensions — enough to move a squeezed challenge or a query index while every
-//! permutation limb stays put.
+//! permutation limb stays put. The builder refuses the `recompose/coeff` calls outright when
+//! that table is not enabled, so neither weaker lowering can stand in for it silently;
+//! [`CircuitChallenger::with_alu_state_packing`] selects the chain explicitly, and only the
+//! sponge-chain regression tests do.
 
 use alloc::vec;
 use alloc::vec::Vec;
@@ -71,6 +74,10 @@ pub struct CircuitChallenger<const WIDTH: usize, const RATE: usize, C: Challenge
     /// The first permutation of an instance starts a fresh sponge chain (`new_start=true`);
     /// every later one continues it, which is what turns the AIR's capacity chain constraint on.
     duplexed_once: bool,
+
+    /// Whether the sponge state is packed through the ALU `mul_add` chain rather than the
+    /// `recompose/coeff` table. See [`CircuitChallenger::with_alu_state_packing`].
+    alu_state_packing: bool,
 }
 
 impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
@@ -90,7 +97,50 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
             output_buffer: Vec::new(),
             initialized: false,
             duplexed_once: false,
+            alu_state_packing: false,
         }
+    }
+
+    /// Packs and unpacks the sponge state through the ALU `mul_add` chain instead of the
+    /// `recompose/coeff` table.
+    ///
+    /// **A transcript lowered this way does not bind its own coefficients.** The chain ties
+    /// only `sum(c_i · basis_i)` per limb, which over an extension field leaves each
+    /// coefficient `D - 1` free base dimensions — enough to move a squeezed challenge or a
+    /// query index while every permutation limb stays put. It exists so the sponge-chain
+    /// regression tests can exercise the AIR's capacity constraints under a second lowering.
+    #[must_use]
+    pub const fn with_alu_state_packing(mut self) -> Self {
+        self.alu_state_packing = true;
+        self
+    }
+
+    /// Packs `coeffs` into one extension limb under this challenger's chosen lowering.
+    fn pack_limb<BF, EF>(&self, circuit: &mut CircuitBuilder<EF>, coeffs: &[Target]) -> Target
+    where
+        BF: PrimeField64,
+        EF: ExtensionField<BF>,
+    {
+        if self.alu_state_packing {
+            circuit.recompose_base_coeffs_to_ext_via_alu::<BF>(coeffs)
+        } else {
+            circuit.recompose_base_coeffs_to_ext_with_coeff_lookups::<BF>(coeffs)
+        }
+        .expect("the challenger's sponge packing needs `enable_recompose`")
+    }
+
+    /// Unpacks one extension limb into base coefficients under the same lowering.
+    fn unpack_limb<BF, EF>(&self, circuit: &mut CircuitBuilder<EF>, limb: Target) -> Vec<Target>
+    where
+        BF: PrimeField64,
+        EF: ExtensionField<BF>,
+    {
+        if self.alu_state_packing {
+            circuit.decompose_ext_to_base_coeffs_via_alu::<BF>(limb)
+        } else {
+            circuit.decompose_ext_to_base_coeffs_with_coeff_lookups::<BF>(limb)
+        }
+        .expect("the challenger's sponge unpacking needs `enable_recompose`")
     }
 
     /// Initialize the challenger state with zeros.
@@ -230,9 +280,7 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
         for i in 0..num_ext_limbs {
             let start = i * EF::DIMENSION;
             let end = start + EF::DIMENSION;
-            let ext = circuit
-                .recompose_base_coeffs_to_ext_with_coeff_lookups::<BF>(&self.state[start..end])
-                .expect("recomposition should succeed");
+            let ext = self.pack_limb::<BF, EF>(circuit, &self.state[start..end]);
             ext_inputs.push(ext);
         }
 
@@ -241,9 +289,7 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
             .expect("poseidon2 permutation should succeed");
 
         for (limb, &ext_out) in ext_outputs.iter().enumerate() {
-            let coeffs = circuit
-                .decompose_ext_to_base_coeffs_with_coeff_lookups::<BF>(ext_out)
-                .expect("decomposition should succeed");
+            let coeffs = self.unpack_limb::<BF, EF>(circuit, ext_out);
             let start = limb * EF::DIMENSION;
             for (i, coeff) in coeffs.into_iter().enumerate() {
                 self.state[start + i] = coeff;
@@ -290,9 +336,7 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
         for i in 0..num_ext_limbs {
             let start = i * EF::DIMENSION;
             let end = start + EF::DIMENSION;
-            let ext = circuit
-                .recompose_base_coeffs_to_ext_with_coeff_lookups::<BF>(&self.state[start..end])
-                .expect("recomposition should succeed");
+            let ext = self.pack_limb::<BF, EF>(circuit, &self.state[start..end]);
             ext_inputs.push(ext);
         }
 
@@ -301,9 +345,7 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
             .expect("poseidon1 permutation should succeed");
 
         for (limb, &ext_out) in ext_outputs.iter().enumerate() {
-            let coeffs = circuit
-                .decompose_ext_to_base_coeffs_with_coeff_lookups::<BF>(ext_out)
-                .expect("decomposition should succeed");
+            let coeffs = self.unpack_limb::<BF, EF>(circuit, ext_out);
             let start = limb * EF::DIMENSION;
             for (i, coeff) in coeffs.into_iter().enumerate() {
                 self.state[start + i] = coeff;
@@ -397,9 +439,7 @@ where
 
     fn observe_ext(&mut self, circuit: &mut CircuitBuilder<EF>, value: Target) {
         // Decompose extension element to D base coefficients
-        let coeffs = circuit
-            .decompose_ext_to_base_coeffs_with_coeff_lookups::<BF>(value)
-            .expect("decomposition should succeed");
+        let coeffs = self.unpack_limb::<BF, EF>(circuit, value);
 
         // Observe each coefficient (matches native observe_algebra_element)
         for coeff in coeffs {
@@ -412,9 +452,7 @@ where
         let coeffs: Vec<_> = (0..EF::DIMENSION).map(|_| self.sample(circuit)).collect();
 
         // Recompose into extension element
-        circuit
-            .recompose_base_coeffs_to_ext_with_coeff_lookups::<BF>(&coeffs)
-            .expect("recomposition should succeed")
+        self.pack_limb::<BF, EF>(circuit, &coeffs)
     }
 
     fn sample_bits(
