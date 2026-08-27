@@ -49,6 +49,13 @@ pub struct Poseidon2Config {
     half_full_rounds: usize,
     /// Number of partial rounds.
     partial_rounds: usize,
+    /// Whether this configuration keys the Fiat-Shamir challenger's own permutation table.
+    ///
+    /// The challenger table holds nothing but duplex-sponge rows, so its rows are contiguous
+    /// and the AIR can chain each row's capacity input to the previous row's capacity output.
+    /// Rows of the same permutation shape used for MMCS and compression live on the table
+    /// keyed by the same configuration with this flag clear.
+    challenger: bool,
 }
 
 impl Poseidon2Config {
@@ -60,6 +67,7 @@ impl Poseidon2Config {
         sbox_degree: 7,
         sbox_registers: 1,
         half_full_rounds: 4,
+        challenger: false,
         partial_rounds: 13,
     };
 
@@ -71,6 +79,7 @@ impl Poseidon2Config {
         sbox_degree: 7,
         sbox_registers: 1,
         half_full_rounds: 4,
+        challenger: false,
         partial_rounds: 13,
     };
 
@@ -82,6 +91,7 @@ impl Poseidon2Config {
         sbox_degree: 7,
         sbox_registers: 1,
         half_full_rounds: 4,
+        challenger: false,
         partial_rounds: 21,
     };
 
@@ -96,6 +106,7 @@ impl Poseidon2Config {
         sbox_degree: 7,
         sbox_registers: 1,
         half_full_rounds: 4,
+        challenger: false,
         partial_rounds: 30,
     };
 
@@ -107,6 +118,7 @@ impl Poseidon2Config {
         sbox_degree: 3,
         sbox_registers: 0,
         half_full_rounds: 4,
+        challenger: false,
         partial_rounds: 20,
     };
 
@@ -118,6 +130,7 @@ impl Poseidon2Config {
         sbox_degree: 3,
         sbox_registers: 0,
         half_full_rounds: 4,
+        challenger: false,
         partial_rounds: 20,
     };
 
@@ -129,6 +142,7 @@ impl Poseidon2Config {
         sbox_degree: 3,
         sbox_registers: 0,
         half_full_rounds: 4,
+        challenger: false,
         partial_rounds: 23,
     };
 
@@ -140,6 +154,7 @@ impl Poseidon2Config {
         sbox_degree: 7,
         sbox_registers: 1,
         half_full_rounds: 4,
+        challenger: false,
         partial_rounds: 22,
     };
 
@@ -154,6 +169,7 @@ impl Poseidon2Config {
         sbox_degree: 3,
         sbox_registers: 0,
         half_full_rounds: 4,
+        challenger: false,
         partial_rounds: 31,
     };
 
@@ -168,6 +184,7 @@ impl Poseidon2Config {
         sbox_degree: 3,
         sbox_registers: 0,
         half_full_rounds: 4,
+        challenger: false,
         partial_rounds: 31,
     };
 
@@ -182,6 +199,7 @@ impl Poseidon2Config {
         sbox_degree: 7,
         sbox_registers: 1,
         half_full_rounds: 4,
+        challenger: false,
         partial_rounds: 22,
     };
 
@@ -198,6 +216,40 @@ impl Poseidon2Config {
     /// Returns `true` if this configuration targets Goldilocks.
     pub const fn is_goldilocks(self) -> bool {
         matches!(self.field_id, Poseidon2FieldId::Goldilocks)
+    }
+
+    /// The challenger-table flavour of this configuration.
+    ///
+    /// # Panics
+    ///
+    /// Panics unless the shape can key a challenger table: the duplex sponge packs its state
+    /// into extension limbs (`d >= 2`) and never uses the arity-4 compression layout.
+    pub const fn for_challenger(self) -> Self {
+        assert!(
+            self.d >= 2,
+            "the challenger table keys extension-limb sponge rows only"
+        );
+        assert!(
+            !self.is_arity4_shape(),
+            "the challenger table never uses the arity-4 compression layout"
+        );
+        Self {
+            challenger: true,
+            ..self
+        }
+    }
+
+    /// The same permutation shape keyed for the table shared by MMCS and compression rows.
+    pub const fn without_challenger_role(self) -> Self {
+        Self {
+            challenger: false,
+            ..self
+        }
+    }
+
+    /// Whether this configuration keys the challenger's own permutation table.
+    pub const fn is_challenger(self) -> bool {
+        self.challenger
     }
 
     pub const fn d(self) -> usize {
@@ -411,6 +463,24 @@ impl Poseidon2Config {
     /// The format is `{field}_d{d}_w{width}`, matching the legacy enum variant
     /// names so serialized `NpoTypeId` keys remain stable.
     pub const fn variant_name(self) -> &'static str {
+        if self.challenger {
+            return match self.field_id {
+                Poseidon2FieldId::BabyBear => match (self.d, self.width) {
+                    (4, 16) => "baby_bear_d4_w16_challenger",
+                    (4, 24) => "baby_bear_d4_w24_challenger",
+                    _ => panic!("unknown BabyBear Poseidon2 challenger config"),
+                },
+                Poseidon2FieldId::KoalaBear => match (self.d, self.width) {
+                    (4, 16) => "koala_bear_d4_w16_challenger",
+                    (4, 24) => "koala_bear_d4_w24_challenger",
+                    _ => panic!("unknown KoalaBear Poseidon2 challenger config"),
+                },
+                Poseidon2FieldId::Goldilocks => match (self.d, self.width) {
+                    (2, 8) => "goldilocks_d2_w8_challenger",
+                    _ => panic!("unknown Goldilocks Poseidon2 challenger config"),
+                },
+            };
+        }
         match self.field_id {
             Poseidon2FieldId::BabyBear => match (self.d, self.width) {
                 (1, 16) => "baby_bear_d1_w16",
@@ -449,6 +519,11 @@ impl Poseidon2Config {
             "koala_bear_d4_w32" => Some(Self::KOALA_BEAR_D4_W32),
             "goldilocks_d2_w8" => Some(Self::GOLDILOCKS_D2_W8),
             "goldilocks_d2_w16" => Some(Self::GOLDILOCKS_D2_W16),
+            "baby_bear_d4_w16_challenger" => Some(Self::BABY_BEAR_D4_W16.for_challenger()),
+            "baby_bear_d4_w24_challenger" => Some(Self::BABY_BEAR_D4_W24.for_challenger()),
+            "koala_bear_d4_w16_challenger" => Some(Self::KOALA_BEAR_D4_W16.for_challenger()),
+            "koala_bear_d4_w24_challenger" => Some(Self::KOALA_BEAR_D4_W24.for_challenger()),
+            "goldilocks_d2_w8_challenger" => Some(Self::GOLDILOCKS_D2_W8.for_challenger()),
             _ => None,
         }
     }
@@ -693,6 +768,11 @@ mod tests {
             Poseidon2Config::KOALA_BEAR_D4_W32,
             Poseidon2Config::GOLDILOCKS_D2_W8,
             Poseidon2Config::GOLDILOCKS_D2_W16,
+            Poseidon2Config::BABY_BEAR_D4_W16.for_challenger(),
+            Poseidon2Config::BABY_BEAR_D4_W24.for_challenger(),
+            Poseidon2Config::KOALA_BEAR_D4_W16.for_challenger(),
+            Poseidon2Config::KOALA_BEAR_D4_W24.for_challenger(),
+            Poseidon2Config::GOLDILOCKS_D2_W8.for_challenger(),
         ];
         for cfg in configs {
             let name = cfg.variant_name();
