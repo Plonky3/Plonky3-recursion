@@ -61,6 +61,56 @@ pub enum Poseidon2AirWrapperInner {
 }
 
 impl Poseidon2AirWrapperInner {
+    /// Declare whether the wrapped table holds nothing but challenger duplex-sponge rows.
+    ///
+    /// The AIR emits the sponge chain-start capacity constraint only when it does.
+    fn with_challenger_role(self, challenger: bool) -> Self {
+        match self {
+            Self::BabyBearD1Width16Bus1(air) => {
+                Self::BabyBearD1Width16Bus1(Box::new((*air).with_challenger_role(challenger)))
+            }
+            Self::BabyBearD1Width16Bus5(air) => {
+                Self::BabyBearD1Width16Bus5(Box::new((*air).with_challenger_role(challenger)))
+            }
+            Self::BabyBearD4Width16(air) => {
+                Self::BabyBearD4Width16(Box::new((*air).with_challenger_role(challenger)))
+            }
+            Self::BabyBearD4Width24(air) => {
+                Self::BabyBearD4Width24(Box::new((*air).with_challenger_role(challenger)))
+            }
+            Self::BabyBearD4Width32(air) => {
+                Self::BabyBearD4Width32(Box::new((*air).with_challenger_role(challenger)))
+            }
+            Self::KoalaBearD1Width16Bus1(air) => {
+                Self::KoalaBearD1Width16Bus1(Box::new((*air).with_challenger_role(challenger)))
+            }
+            Self::KoalaBearD1Width16Bus5(air) => {
+                Self::KoalaBearD1Width16Bus5(Box::new((*air).with_challenger_role(challenger)))
+            }
+            Self::KoalaBearD4Width16(air) => {
+                Self::KoalaBearD4Width16(Box::new((*air).with_challenger_role(challenger)))
+            }
+            Self::KoalaBearD4Width24(air) => {
+                Self::KoalaBearD4Width24(Box::new((*air).with_challenger_role(challenger)))
+            }
+            Self::KoalaBearD1Width32Bus1(air) => {
+                Self::KoalaBearD1Width32Bus1(Box::new((*air).with_challenger_role(challenger)))
+            }
+            Self::KoalaBearD1Width32Bus5(air) => {
+                Self::KoalaBearD1Width32Bus5(Box::new((*air).with_challenger_role(challenger)))
+            }
+            Self::KoalaBearD4Width32(air) => {
+                Self::KoalaBearD4Width32(Box::new((*air).with_challenger_role(challenger)))
+            }
+            Self::GoldilocksD2Width8(air) => {
+                Self::GoldilocksD2Width8(Box::new((*air).with_challenger_role(challenger)))
+            }
+            Self::GoldilocksD2Width16(air) => {
+                Self::GoldilocksD2Width16(Box::new((*air).with_challenger_role(challenger)))
+            }
+        }
+    }
+
     pub fn width(&self) -> usize {
         match self {
             Self::BabyBearD1Width16Bus1(air) => air.width(),
@@ -842,7 +892,7 @@ impl Poseidon2Prover {
     }
 
     pub(crate) fn air_wrapper_for_config(config: Poseidon2Config) -> Poseidon2AirWrapperInner {
-        match config.without_challenger_role() {
+        let inner = match config.without_challenger_role() {
             Poseidon2Config::BABY_BEAR_D1_W16 => Poseidon2AirWrapperInner::BabyBearD1Width16Bus1(
                 Box::new(BabyBearD1Width16::default_air()),
             ),
@@ -879,7 +929,8 @@ impl Poseidon2Prover {
             // `Poseidon2Config` fields are private; only the seven public assoc
             // consts above can be constructed, so this is unreachable.
             _ => unreachable!("unsupported Poseidon2Config"),
-        }
+        };
+        inner.with_challenger_role(config.is_challenger())
     }
 
     fn air_wrapper_for_config_with_preprocessed<F: Field>(
@@ -1002,7 +1053,7 @@ impl Poseidon2Prover {
             ),
             _ => unreachable!("unsupported Poseidon2Config"),
         };
-        Some(inner)
+        Some(inner.with_challenger_role(config.is_challenger()))
     }
 
     pub fn wrapper_from_config_with_preprocessed<SC>(
