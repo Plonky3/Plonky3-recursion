@@ -17,6 +17,15 @@
 //!   table, so consecutive duplex steps are adjacent rows and the AIR's sponge chain constraint
 //!   binds each row's capacity input to the previous row's capacity output plus the prefix-free
 //!   length tag.
+//!
+//! Every packing and unpacking the challenger performs goes through the ALU `mul_add` chain
+//! (`recompose_base_coeffs_to_ext_via_alu` / `decompose_ext_to_base_coeffs_via_alu`), never the
+//! recompose table. The table's row holds the coefficients in free main-trace columns and
+//! publishes only its packed output on the `WitnessChecks` bus, which would leave every state
+//! coefficient — and so every absorbed value, every squeezed challenge and the limbs each
+//! permutation reads — a value the prover picks independently of the permutation that produced
+//! it. The ALU chain reads each coefficient as a bus-bound operand instead, so the whole
+//! transcript is tied to the witnesses it is derived from.
 
 use alloc::vec;
 use alloc::vec::Vec;
@@ -220,7 +229,7 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
             let start = i * EF::DIMENSION;
             let end = start + EF::DIMENSION;
             let ext = circuit
-                .recompose_base_coeffs_to_ext::<BF>(&self.state[start..end])
+                .recompose_base_coeffs_to_ext_via_alu::<BF>(&self.state[start..end])
                 .expect("recomposition should succeed");
             ext_inputs.push(ext);
         }
@@ -231,7 +240,7 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
 
         for (limb, &ext_out) in ext_outputs.iter().enumerate() {
             let coeffs = circuit
-                .decompose_ext_to_base_coeffs::<BF>(ext_out)
+                .decompose_ext_to_base_coeffs_via_alu::<BF>(ext_out)
                 .expect("decomposition should succeed");
             let start = limb * EF::DIMENSION;
             for (i, coeff) in coeffs.into_iter().enumerate() {
@@ -280,7 +289,7 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
             let start = i * EF::DIMENSION;
             let end = start + EF::DIMENSION;
             let ext = circuit
-                .recompose_base_coeffs_to_ext::<BF>(&self.state[start..end])
+                .recompose_base_coeffs_to_ext_via_alu::<BF>(&self.state[start..end])
                 .expect("recomposition should succeed");
             ext_inputs.push(ext);
         }
@@ -291,7 +300,7 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
 
         for (limb, &ext_out) in ext_outputs.iter().enumerate() {
             let coeffs = circuit
-                .decompose_ext_to_base_coeffs::<BF>(ext_out)
+                .decompose_ext_to_base_coeffs_via_alu::<BF>(ext_out)
                 .expect("decomposition should succeed");
             let start = limb * EF::DIMENSION;
             for (i, coeff) in coeffs.into_iter().enumerate() {
@@ -387,7 +396,7 @@ where
     fn observe_ext(&mut self, circuit: &mut CircuitBuilder<EF>, value: Target) {
         // Decompose extension element to D base coefficients
         let coeffs = circuit
-            .decompose_ext_to_base_coeffs::<BF>(value)
+            .decompose_ext_to_base_coeffs_via_alu::<BF>(value)
             .expect("decomposition should succeed");
 
         // Observe each coefficient (matches native observe_algebra_element)
@@ -402,7 +411,7 @@ where
 
         // Recompose into extension element
         circuit
-            .recompose_base_coeffs_to_ext::<BF>(&coeffs)
+            .recompose_base_coeffs_to_ext_via_alu::<BF>(&coeffs)
             .expect("recomposition should succeed")
     }
 

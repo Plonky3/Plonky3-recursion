@@ -31,9 +31,11 @@ use crate::Target;
 /// - `base_coeffs`: Base field coefficient targets (in lifted representation)
 /// - `reset`: If true, starts a new hash chain (initial state = zeros)
 /// - `alu_recompose`: when `true`, base coefficients are recomposed into extension elements
-///   via the ALU `mul_add` chain instead of the recompose NPO table. The ALU chain reads every
-///   coefficient as a bus-bound `mul_add` operand, so each packed limb the sponge absorbs stays
-///   tied to its coefficient witnesses. The NPO table publishes only its own output on the
+///   via the ALU `mul_add` chain instead of the recompose NPO table, and a partial chunk's
+///   carry-over coefficients are unpacked the same way. The ALU chain reads every coefficient as
+///   a bus-bound `mul_add` operand, so each packed limb the sponge absorbs stays tied to its
+///   coefficient witnesses and each carried-over coefficient stays tied to the previous
+///   permutation output it was unpacked from. The NPO table publishes only its own output on the
 ///   WitnessChecks bus and leaves the packed limb as free main-trace columns, so coefficients
 ///   whose only consumer is this hash (opened leaf values, hiding-MMCS salt private inputs) end
 ///   up with no bus creator. The recomposed value is identical either way.
@@ -114,7 +116,12 @@ where
                     // This is the key fix: unused positions keep previous permutation output
                     let prev_coeffs: Option<Vec<Target>> = if !is_first {
                         if let Some(ref prev_rate) = last_rate_outputs {
-                            Some(circuit.decompose_ext_to_base_coeffs::<F>(prev_rate[ext_idx])?)
+                            Some(if alu_recompose {
+                                circuit
+                                    .decompose_ext_to_base_coeffs_via_alu::<F>(prev_rate[ext_idx])?
+                            } else {
+                                circuit.decompose_ext_to_base_coeffs::<F>(prev_rate[ext_idx])?
+                            })
                         } else {
                             None
                         }

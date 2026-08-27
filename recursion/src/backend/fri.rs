@@ -7,10 +7,10 @@ use alloc::{format, vec};
 
 use p3_circuit::{CircuitBuilder, CircuitRunner, NonPrimitiveOpId};
 use p3_circuit_prover::batch_stark_prover::{
-    poseidon1_air_builders_d5, poseidon1_air_builders_for_configs, poseidon1_preprocessor,
-    poseidon1_table_provers_d5, poseidon2_air_builders_d5, poseidon2_air_builders_for_configs,
-    poseidon2_preprocessor, poseidon2_table_provers_d5, recompose_air_builders,
-    recompose_preprocessor,
+    RecomposeAirBuilder, RecomposeProver, poseidon1_air_builders_d5,
+    poseidon1_air_builders_for_configs, poseidon1_preprocessor, poseidon1_table_provers_d5,
+    poseidon2_air_builders_d5, poseidon2_air_builders_for_configs, poseidon2_preprocessor,
+    poseidon2_table_provers_d5, recompose_preprocessor,
 };
 use p3_circuit_prover::common::{NpoAirBuilder, NpoPreprocessor};
 use p3_circuit_prover::config::StarkField;
@@ -18,7 +18,6 @@ use p3_circuit_prover::field_params::ExtractBinomialW;
 use p3_circuit_prover::{
     ConstraintProfile, Poseidon1Preprocessor, Poseidon1Prover, Poseidon1ProverD2,
     Poseidon2Preprocessor, Poseidon2Prover, Poseidon2ProverD2, RecomposePreprocessor, TableProver,
-    recompose_table_provers,
 };
 use p3_commit::Pcs;
 use p3_field::extension::BinomiallyExtendable;
@@ -626,6 +625,10 @@ where
 
     fn non_primitive_provers(&self, ext_degree: usize) -> Vec<Box<dyn TableProver<SC>>> {
         if ext_degree == 2 {
+            // Every extension limb the verifier packs or unpacks goes through the ALU chain
+            // except the coefficients a lower-degree permutation reads directly, which need the
+            // `recompose/coeff` receives. The plain recompose table therefore never carries a
+            // row, and a table with no rows is absent from the proof.
             let cl = self.0.challenger_perm_config.extension_degree() != 2;
             let mut provers: Vec<Box<dyn TableProver<SC>>> = Vec::new();
             match (
@@ -656,7 +659,12 @@ where
                     ConstraintProfile::Standard,
                 )));
             }
-            provers.extend(recompose_table_provers::<SC, 2>(self.0.recompose_lanes, cl));
+            if cl {
+                provers.push(Box::new(RecomposeProver::<2>::new(
+                    self.0.recompose_lanes,
+                    true,
+                )));
+            }
             provers
         } else {
             Vec::new()
@@ -677,7 +685,12 @@ where
                 )
             },
         );
-        builders.extend(recompose_air_builders::<SC, 2>(self.0.recompose_lanes, cl));
+        if cl {
+            builders.push(Box::new(RecomposeAirBuilder::<2>::new(
+                self.0.recompose_lanes,
+                true,
+            )));
+        }
         builders
     }
 }
@@ -758,6 +771,10 @@ where
 
     fn non_primitive_provers(&self, ext_degree: usize) -> Vec<Box<dyn TableProver<SC>>> {
         if ext_degree == 4 {
+            // Every extension limb the verifier packs or unpacks goes through the ALU chain
+            // except the coefficients a lower-degree permutation reads directly, which need the
+            // `recompose/coeff` receives. The plain recompose table therefore never carries a
+            // row, and a table with no rows is absent from the proof.
             let cl = self.0.challenger_perm_config.extension_degree() != 4;
             let mut provers: Vec<Box<dyn TableProver<SC>>> = Vec::new();
             match (
@@ -788,7 +805,12 @@ where
                     ConstraintProfile::Standard,
                 )));
             }
-            provers.extend(recompose_table_provers::<SC, 4>(self.0.recompose_lanes, cl));
+            if cl {
+                provers.push(Box::new(RecomposeProver::<4>::new(
+                    self.0.recompose_lanes,
+                    true,
+                )));
+            }
             provers
         } else {
             Vec::new()
@@ -809,7 +831,12 @@ where
                 )
             },
         );
-        builders.extend(recompose_air_builders::<SC, 4>(self.0.recompose_lanes, cl));
+        if cl {
+            builders.push(Box::new(RecomposeAirBuilder::<4>::new(
+                self.0.recompose_lanes,
+                true,
+            )));
+        }
         builders
     }
 }
@@ -890,6 +917,10 @@ where
 
     fn non_primitive_provers(&self, ext_degree: usize) -> Vec<Box<dyn TableProver<SC>>> {
         if ext_degree == 5 {
+            // Every extension limb the verifier packs or unpacks goes through the ALU chain
+            // except the coefficients a lower-degree permutation reads directly, which need the
+            // `recompose/coeff` receives. The plain recompose table therefore never carries a
+            // row, and a table with no rows is absent from the proof.
             let cl = self.0.challenger_perm_config.extension_degree() != 5;
             let mut provers = match (
                 self.0.challenger_perm_config.as_poseidon1(),
@@ -902,7 +933,12 @@ where
             for config in self.0.extra_poseidon2_table_configs_for_degree(1) {
                 provers.extend(poseidon2_table_provers_d5::<SC>(config));
             }
-            provers.extend(recompose_table_provers::<SC, 5>(self.0.recompose_lanes, cl));
+            if cl {
+                provers.push(Box::new(RecomposeProver::<5>::new(
+                    self.0.recompose_lanes,
+                    true,
+                )));
+            }
             provers
         } else {
             Vec::new()
@@ -922,7 +958,12 @@ where
         } else {
             poseidon2_air_builders_for_configs::<SC, 5>(self.0.poseidon2_air_configs_for_degree(1))
         };
-        builders.extend(recompose_air_builders::<SC, 5>(self.0.recompose_lanes, cl));
+        if cl {
+            builders.push(Box::new(RecomposeAirBuilder::<5>::new(
+                self.0.recompose_lanes,
+                true,
+            )));
+        }
         builders
     }
 }
