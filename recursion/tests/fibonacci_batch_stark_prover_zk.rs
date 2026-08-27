@@ -4,7 +4,9 @@ use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 use p3_batch_stark::{ProverData, StarkInstance, prove_batch, verify_batch};
 use p3_circuit::CircuitBuilder;
 use p3_circuit::ops::{generate_poseidon2_trace, generate_recompose_trace};
-use p3_circuit_prover::batch_stark_prover::{poseidon2_air_builders, recompose_air_builders};
+use p3_circuit_prover::batch_stark_prover::{
+    poseidon2_air_builders_for_configs, recompose_air_builders,
+};
 use p3_circuit_prover::common::{NpoPreprocessor, get_airs_and_degrees_with_prep};
 use p3_circuit_prover::{
     BatchStarkProver, CircuitProverData, ConstraintProfile, Poseidon2Preprocessor,
@@ -218,7 +220,10 @@ fn test_batch_verifier_zk_hiding_fri() -> Result<(), VerificationError> {
         Box::new(Poseidon2Preprocessor),
         Box::new(RecomposePreprocessor::default()),
     ];
-    let mut air_builders = poseidon2_air_builders::<_, 4>();
+    let mut air_builders = poseidon2_air_builders_for_configs::<_, 4>(vec![
+        poseidon2_config.for_challenger(),
+        poseidon2_config,
+    ]);
     air_builders.extend(recompose_air_builders(1, false));
     let (
         verification_airs_degrees,
@@ -245,6 +250,7 @@ fn test_batch_verifier_zk_hiding_fri() -> Result<(), VerificationError> {
 
     let mut verification_prover =
         BatchStarkProver::new(config3).with_table_packing(verification_table_packing);
+    verification_prover.register_poseidon2_table::<4>(poseidon2_config.for_challenger());
     verification_prover.register_poseidon2_table::<4>(poseidon2_config);
     verification_prover.register_recompose_table::<4>(false);
 

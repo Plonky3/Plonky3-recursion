@@ -7,11 +7,12 @@
 //! the permutation of step `k` produced, as seen by the verifier — i.e. tied together on
 //! the `WitnessChecks` bus, not merely equal in an honestly generated witness.
 //!
-//! A permutation limb is verifier-bound only when some table *creates* it on the bus with
-//! the permutation's own value. `add_poseidon2_perm_for_challenger` requests
-//! `out_ctl = [true; rate_ext]`, so only the rate limbs are created by the Poseidon2 table;
-//! the capacity limbs are created by whatever downstream row happens to write them, whose
-//! main-trace columns are prover-chosen.
+//! A permutation limb is verifier-bound either when some table *creates* it on the bus with
+//! the permutation's own value, or when an AIR constraint ties it to the permutation's output
+//! column directly. `add_poseidon2_perm_for_challenger` requests `out_ctl = [true; rate_ext]`,
+//! so only the rate limbs are created on the bus; the capacity limbs are bound instead by the
+//! challenger table's sponge chain constraint, which holds regardless of which row writes the
+//! witness they are fed from.
 //!
 //! These tests build the transcript circuit with the real [`CircuitChallenger`], then edit
 //! the compiled [`Circuit`] in ways that leave `generate_preprocessed_columns` byte-identical
@@ -33,7 +34,9 @@ use p3_circuit::ops::{
 };
 use p3_circuit::tables::Traces;
 use p3_circuit::{Circuit, CircuitBuilder, CircuitError, WitnessId};
-use p3_circuit_prover::batch_stark_prover::{poseidon2_air_builders, recompose_air_builders};
+use p3_circuit_prover::batch_stark_prover::{
+    poseidon2_air_builders_for_configs, recompose_air_builders,
+};
 use p3_circuit_prover::common::{NpoPreprocessor, get_airs_and_degrees_with_prep};
 use p3_circuit_prover::config::KoalaBearConfig;
 use p3_circuit_prover::{
@@ -187,7 +190,8 @@ fn prove_and_verify(circuit: &Circuit<EF>, traces: &Traces<EF>) -> Result<(), St
         Box::new(Poseidon2Preprocessor),
         Box::new(RecomposePreprocessor::default()),
     ];
-    let mut air_builders = poseidon2_air_builders::<KoalaBearConfig, D>();
+    let mut air_builders =
+        poseidon2_air_builders_for_configs::<KoalaBearConfig, D>(vec![CFG.for_challenger(), CFG]);
     air_builders.extend(recompose_air_builders::<KoalaBearConfig, D>(1, false));
 
     let (airs_degrees, primitive_columns, non_primitive_columns) =
@@ -205,6 +209,7 @@ fn prove_and_verify(circuit: &Circuit<EF>, traces: &Traces<EF>) -> Result<(), St
     let circuit_prover_data =
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
     let mut prover = BatchStarkProver::new(stark_config).with_table_packing(table_packing);
+    prover.register_poseidon2_table::<D>(CFG.for_challenger());
     prover.register_poseidon2_table::<D>(CFG);
     prover.register_recompose_table::<D>(false);
 
@@ -332,13 +337,11 @@ fn capacity_limb_binding(mode: RecomposeMode) {
 }
 
 #[test]
-#[ignore = "known-failing: open soundness gap, see CAPACITY_FIX_REPORT.md"]
 fn capacity_limb_is_bound_across_permutations_alu_chain() {
     capacity_limb_binding(RecomposeMode::AluChain);
 }
 
 #[test]
-#[ignore = "known-failing: open soundness gap, see CAPACITY_FIX_REPORT.md"]
 fn capacity_limb_is_bound_across_permutations_npo_table() {
     capacity_limb_binding(RecomposeMode::NpoTable);
 }

@@ -9,7 +9,7 @@ use p3_circuit::ops::{
 };
 use p3_circuit_prover::air::{AluAir, ConstAir, PublicAir};
 use p3_circuit_prover::batch_stark_prover::{
-    PrimitiveTable, poseidon2_air_builders, recompose_air_builders,
+    PrimitiveTable, poseidon2_air_builders_for_configs, recompose_air_builders,
 };
 use p3_circuit_prover::common::{NpoPreprocessor, get_airs_and_degrees_with_prep};
 use p3_circuit_prover::{
@@ -579,7 +579,10 @@ fn test_poseidon2_ctl_lookups() {
         Box::new(Poseidon2Preprocessor),
         Box::new(RecomposePreprocessor::default()),
     ];
-    let mut air_builders = poseidon2_air_builders::<_, 4>();
+    let mut air_builders = poseidon2_air_builders_for_configs::<_, 4>(vec![
+        poseidon2_config.for_challenger(),
+        poseidon2_config,
+    ]);
     air_builders.extend(recompose_air_builders(1, false));
     let (airs_degrees, primitive_columns, non_primitive_columns) =
         get_airs_and_degrees_with_prep::<MyConfig, Challenge, 4>(
@@ -606,6 +609,7 @@ fn test_poseidon2_ctl_lookups() {
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
 
     let mut prover = BatchStarkProver::new(config_proving).with_table_packing(table_packing);
+    prover.register_poseidon2_table::<4>(poseidon2_config.for_challenger());
     prover.register_poseidon2_table::<4>(poseidon2_config);
     prover.register_recompose_table::<4>(false);
 
@@ -715,7 +719,10 @@ fn test_poseidon2_chained_ctl_lookups() {
         Box::new(Poseidon2Preprocessor),
         Box::new(RecomposePreprocessor::default()),
     ];
-    let mut air_builders = poseidon2_air_builders::<_, 4>();
+    let mut air_builders = poseidon2_air_builders_for_configs::<_, 4>(vec![
+        poseidon2_config.for_challenger(),
+        poseidon2_config,
+    ]);
     air_builders.extend(recompose_air_builders(1, false));
     let (airs_degrees, primitive_columns, non_primitive_columns) =
         get_airs_and_degrees_with_prep::<MyConfig, Challenge, 4>(
@@ -742,6 +749,7 @@ fn test_poseidon2_chained_ctl_lookups() {
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
 
     let mut prover = BatchStarkProver::new(config_proving).with_table_packing(table_packing);
+    prover.register_poseidon2_table::<4>(poseidon2_config.for_challenger());
     prover.register_poseidon2_table::<4>(poseidon2_config);
     prover.register_recompose_table::<4>(false);
 
