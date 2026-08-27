@@ -14,20 +14,37 @@
 //! challenger table's sponge chain constraint, which holds regardless of which row writes the
 //! witness they are fed from.
 //!
-//! These tests build the transcript circuit with the real [`CircuitChallenger`], then edit the
-//! compiled [`Circuit`] and prove the resulting traces against the *unedited* circuit's prover
-//! data. Most edits change only prover-side data — the hint executor behind
-//! `decompose_ext_to_base_coeffs`, the witness slots a permutation writes for limbs it does not
-//! publish on the bus, the witness slots a `recompose` row reads — and are asserted to leave
-//! `generate_preprocessed_columns` byte-identical, so they are choices a prover assembling
-//! trace polynomials directly would be free to make and acceptance means the verifier's
-//! constraint system does not bind the limb.
+//! These tests build the transcript circuit with the real [`CircuitChallenger`], then edit
+//! either the compiled [`Circuit`] or the trace it produces, and prove the result against the
+//! *unedited* circuit's prover data. What an edit is worth as evidence depends on how much of
+//! it the verifier can see, so what each test claims about
+//! `generate_preprocessed_columns` differs:
 //!
-//! `rate_limb_is_bound_across_permutations_npo_table` is the exception: its edit re-points a
-//! `recompose/coeff` row, which advertises each coefficient's witness index in the preprocessed
-//! columns, so it asserts that `generate_preprocessed_columns` *changes*. That difference is
-//! itself the binding being tested, and the same edit against the plain `recompose` table would
-//! leave the columns identical.
+//! - `capacity_limb_is_bound_across_permutations_{alu_chain,npo_table}`,
+//!   `non_base_capacity_coefficients_are_rejected` and
+//!   `a_non_base_coefficient_cannot_move_a_squeezed_challenge` assert it stays byte-identical.
+//!   Their edits touch only prover-side data — the hint executor behind
+//!   `decompose_ext_to_base_coeffs`, the witness slots a permutation writes for limbs it does
+//!   not publish on the bus — so they are choices a prover assembling trace polynomials
+//!   directly would be free to make, and acceptance would mean the constraint system does not
+//!   bind the limb.
+//! - `rate_limb_is_bound_across_permutations_npo_table` asserts the opposite, that it
+//!   *changes*: the edit re-points a `recompose/coeff` row, which advertises each coefficient's
+//!   witness index in the preprocessed columns, and that visibility is itself the binding being
+//!   tested. The same edit against the plain `recompose` table would leave the columns
+//!   identical.
+//! - `absorbed_limb_is_bound_{npo_table,alu_chain}` assert neither. What they pin down is the
+//!   query index the transcript yields, under both lowerings, and both lowerings put the edit
+//!   on a row whose operand indices the preprocessed columns already carry.
+//! - `control_corrupted_const_value_is_rejected` and
+//!   `chain_start_capacity_is_bound_{alu_chain,npo_table}` edit a trace value rather than the
+//!   circuit, so there are no two constraint systems to compare. (Chain start also has a branch
+//!   for a repacking that leaves a `recompose` row to re-point instead, which asserts
+//!   byte-identity; no lowering reaches it today, because the sponge's initial state folds to a
+//!   `Const`.)
+//! - `honest_transcript_proves_and_verifies`,
+//!   `a_challenger_without_the_coeff_table_refuses_to_build` and
+//!   `alu_chain_repacking_reuses_the_permutation_output_witness` edit nothing.
 //!
 //! `control_corrupted_const_value_is_rejected` pins down that this harness is a real
 //! oracle: the same pipeline rejects a value the bus does bind.
@@ -578,9 +595,11 @@ fn rate_limb_is_bound_across_permutations_npo_table() {
 /// The second permutation of [`build_absorbing_transcript_circuit`] reads limbs packed from the
 /// second batch of observed public inputs. Pointing that packing at a different, already
 /// computed coefficient group changes the sampled bits, so a verifier that accepts it accepts a
-/// FRI query index the prover chose. Which writer the packing lowers to decides how visible the
-/// edit is — a `recompose` row leaves the preprocessed columns untouched, an ALU `mul_add`
-/// pins its operand indices there — but either way the resulting proof must not verify.
+/// FRI query index the prover chose. Which writer the packing lowers to decides which row the
+/// edit lands on — a `recompose/coeff` row under [`RecomposeMode::NpoTable`], an ALU `mul_add`
+/// under [`RecomposeMode::AluChain`] — and both carry their operand witness indices in the
+/// preprocessed columns, so this test claims nothing about those columns either way and asks
+/// only that the resulting proof not verify.
 fn absorbed_limb_binding(mode: RecomposeMode) {
     let publics = absorbed_publics();
     let honest = build_absorbing_transcript_circuit(mode);
