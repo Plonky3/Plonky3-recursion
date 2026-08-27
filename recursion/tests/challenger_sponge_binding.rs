@@ -448,38 +448,20 @@ fn alu_chain_repacking_reuses_the_permutation_output_witness() {
 
 /// The capacity the *first* permutation reads must be a value the verifier fixes.
 ///
-/// Every sponge chain constraint is `when_transition` on the next row, so none of them reaches
-/// the row that opens the chain: its capacity input is held by the `WitnessChecks` bus alone.
-/// That is sound only while the witness the bus points it at is one the prover cannot choose.
-/// It is one today because the challenger starts from `define_const(EF::ZERO)` and the builder
-/// folds an all-`Const` limb repacking back into a `Const` instead of allocating a fresh
-/// witness — a builder property, not a constraint. Were that fold to stop applying, the chain
-/// start would read its capacity from a `recompose` row whose `v` columns carry no lookup of
-/// their own, exactly as the rate limbs do in
-/// [`rate_limb_is_bound_across_permutations_npo_table`], and the sponge IV would become
-/// prover-chosen with nothing left to catch it.
+/// Nothing carries a sponge IV forward into the chain start — there is no earlier row for the
+/// chain constraint to chain it from — so the transcript binds only if the verifier fixes that
+/// capacity outright. The challenger table's AIR pins it to the sponge's initial state on every
+/// `new_start` row, and the `WitnessChecks` bus pins the witness the limb is fed from; this test
+/// covers the bus half end to end, against the real prove-and-verify pipeline.
 ///
-/// So both halves are pinned down: that the chain start reads its capacity from constants, and
-/// that re-choosing such a constant is rejected by the real prove-and-verify pipeline.
+/// The tamper follows whichever writer the builder produced for that witness, so the test says
+/// nothing about how the limb repacking is lowered: an all-`Const` repacking folds back into a
+/// `Const` whose value the `Const` table pins, and any other lowering leaves a `recompose` row
+/// that can be pointed at a different coefficient group instead.
 fn chain_start_capacity_binding(mode: RecomposeMode) {
     let honest = build_transcript_circuit_observing(mode, 1_000);
     let perms = perm_op_positions(&honest);
     let (first_inputs, _) = npo_io(&honest, perms[0]);
-
-    for (limb, group) in first_inputs
-        .iter()
-        .enumerate()
-        .take(WIDTH_EXT)
-        .skip(CAPACITY_LIMB)
-    {
-        let fed = group[0];
-        assert!(
-            const_position_writing(&honest, fed).is_some(),
-            "{mode:?}: the chain start reads capacity limb {limb} from {fed:?}, which no \
-             `Op::Const` writes; nothing constrains a chain-start capacity beyond the witness \
-             it is fed from, so a prover-chosen witness there is a free sponge IV"
-        );
-    }
 
     // The length tag, and nothing else, so the rejection below can only come from this limb.
     let tagged = first_inputs[CAPACITY_LIMB][0];
@@ -489,15 +471,42 @@ fn chain_start_capacity_binding(mode: RecomposeMode) {
         "{mode:?}: {tagged:?} must feed the chain start's capacity and nothing else"
     );
 
-    let mut traces = run(&honest);
-    let row = traces
-        .const_trace
-        .index
-        .iter()
-        .position(|i| *i == tagged)
-        .expect("a const row feeding the chain start's capacity");
-    traces.const_trace.values[row] += EF::ONE;
+    if const_position_writing(&honest, tagged).is_some() {
+        let mut traces = run(&honest);
+        let row = traces
+            .const_trace
+            .index
+            .iter()
+            .position(|i| *i == tagged)
+            .expect("a const row feeding the chain start's capacity");
+        traces.const_trace.values[row] += EF::ONE;
 
+        assert!(
+            prove_and_verify(&honest, &traces).is_err(),
+            "{mode:?}: the capacity the first permutation absorbs must not be freely re-chosen"
+        );
+        return;
+    }
+
+    let target_row = recompose_position_writing(&honest, tagged);
+    let donor_row = recompose_position_writing(&honest, first_inputs[0][0]);
+    let (donor_inputs, _) = npo_io(&honest, donor_row);
+
+    let mut edited = honest.clone();
+    match &mut edited.ops[target_row] {
+        Op::NonPrimitiveOpWithExecutor { inputs, .. } => *inputs = donor_inputs,
+        _ => unreachable!(),
+    }
+    assert_same_constraint_system(&honest, &edited);
+
+    let honest_witness = witness_values(&honest);
+    let edited_witness = witness_values(&edited);
+    assert_ne!(
+        edited_witness[tagged.0 as usize], honest_witness[tagged.0 as usize],
+        "{mode:?}: the edit must actually change the sponge IV"
+    );
+
+    let traces = run(&edited);
     assert!(
         prove_and_verify(&honest, &traces).is_err(),
         "{mode:?}: the capacity the first permutation absorbs must not be freely re-chosen"
