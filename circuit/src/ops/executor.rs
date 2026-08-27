@@ -130,6 +130,17 @@ pub trait NonPrimitiveExecutor<F: Field>: Debug {
         None
     }
 
+    /// Which input group this operation also advertises on the witness-checks bus, one lookup
+    /// per witness, so that `generate_preprocessed_columns` arbitrates the creator/reader role
+    /// of those witnesses the same way it does for outputs.
+    ///
+    /// The first occurrence of a witness in that group creates it, later occurrences read it.
+    /// Override only when the table really registers one bus lookup per witness of the group,
+    /// in the group's own order. Default: no input group.
+    fn arbitrated_coeff_input_group(&self) -> Option<usize> {
+        None
+    }
+
     /// Clone as trait object
     fn boxed(&self) -> Box<dyn NonPrimitiveExecutor<F>>;
 }

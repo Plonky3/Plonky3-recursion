@@ -33,11 +33,18 @@ pub struct PreprocessedColumns<F, const D: usize> {
     pub dup_npo_outputs: HashMap<NpoTypeId, Vec<bool>>,
     /// WitnessId.0 values for all `Op::Hint` outputs in the circuit.
     ///
-    /// Used by prover preprocessors (e.g. `recompose_preprocess_impl`) to distinguish
-    /// hint-derived witnesses (which need to be created on the WitnessChecks bus by the
-    /// owning NPO table) from already-defined witnesses (e.g. Poseidon2 rate outputs that
-    /// are also passed as recompose coefficients via `sample_ext`).
+    /// A hint output is emitted by no AIR table, so it takes its `WitnessChecks` creator role
+    /// from the first operation that uses it rather than from a table of its own.
     pub hint_output_wids: hashbrown::HashSet<u32>,
+    /// WitnessId.0 values whose `WitnessChecks` creator is a coefficient lookup of an NPO row
+    /// rather than a Const, Public, ALU or NPO output.
+    ///
+    /// An op that returns an [`crate::ops::NonPrimitiveExecutor::arbitrated_coeff_input_group`]
+    /// registers one bus lookup per witness of that group. The first occurrence of a witness
+    /// across all such rows creates it; every later one reads it. This set records the
+    /// witnesses whose first occurrence won the creator role, so the prover-side preprocessor
+    /// can replay the same decision per row.
+    pub recompose_coeff_creator_wids: hashbrown::HashSet<u32>,
 }
 
 impl<F: PartialEq, const D: usize> PartialEq for PreprocessedColumns<F, D> {
@@ -47,6 +54,7 @@ impl<F: PartialEq, const D: usize> PartialEq for PreprocessedColumns<F, D> {
             && self.non_primitive == other.non_primitive
             && self.dup_npo_outputs == other.dup_npo_outputs
             && self.hint_output_wids == other.hint_output_wids
+            && self.recompose_coeff_creator_wids == other.recompose_coeff_creator_wids
     }
 }
 
@@ -60,6 +68,7 @@ impl<F: Field + Clone, const D: usize> Clone for PreprocessedColumns<F, D> {
             ext_reads: self.ext_reads.clone(),
             dup_npo_outputs: self.dup_npo_outputs.clone(),
             hint_output_wids: self.hint_output_wids.clone(),
+            recompose_coeff_creator_wids: self.recompose_coeff_creator_wids.clone(),
         }
     }
 }
@@ -74,6 +83,7 @@ impl<F: Field, const D: usize> PreprocessedColumns<F, D> {
             ext_reads: Vec::new(),
             dup_npo_outputs: HashMap::new(),
             hint_output_wids: hashbrown::HashSet::new(),
+            recompose_coeff_creator_wids: hashbrown::HashSet::new(),
         }
     }
 }
@@ -244,6 +254,10 @@ impl<F: Field> Circuit<F> {
         // or their `b` operand (backward/sub encoding where `out` was already defined).
         let mut defined = vec![false; self.witness_count as usize];
 
+        // Coefficient witnesses already seen in an arbitrated input group, in emission order.
+        // Only read by the debug assertion that pins the creator to the first occurrence.
+        let mut arbitrated_coeff_seen: hashbrown::HashSet<u32> = hashbrown::HashSet::new();
+
         // Private input witness IDs: these get their bus creator role from the first
         // ALU op that uses them, rather than from a Public table row.
         let private_input_wids: hashbrown::HashSet<u32> =
@@ -252,9 +266,6 @@ impl<F: Field> Circuit<F> {
         // Hint output witness IDs: like private inputs, they are not emitted by any AIR
         // table and must have their bus creator role assigned by the first ALU op that
         // uses them.  Collect them in a pre-pass so the main loop can check membership.
-        // Also stored in `preprocessed.hint_output_wids` for use by prover preprocessors
-        // (e.g. `recompose_preprocess_impl`) that need to distinguish hint-derived witnesses
-        // from already-defined ones (e.g. Poseidon2 outputs used as recompose coefficients).
         //
         // Important: when `assert_zero(x)` connects a hint output to `ExprId::ZERO`, the
         // hint output alias gets WitnessId(0), which is the Const-defined zero. We must
@@ -487,6 +498,35 @@ impl<F: Field> Circuit<F> {
                             }
                         }
                     }
+
+                    // Same arbitration for an input group the table advertises one bus lookup
+                    // per witness for: the first occurrence creates the witness, every later
+                    // one reads it. A witness already defined elsewhere is always a reader.
+                    if let Some(group) = executor.arbitrated_coeff_input_group()
+                        && let Some(coeffs) = inputs.get(group)
+                    {
+                        for wid in coeffs {
+                            let wid_idx = wid.0 as usize;
+                            if wid_idx < defined.len() && defined[wid_idx] {
+                                preprocessed.increment_ext_reads(&[*wid]);
+                            } else {
+                                if wid_idx >= defined.len() {
+                                    defined.resize(wid_idx + 1, false);
+                                }
+                                defined[wid_idx] = true;
+                                // The creator role belongs to the first occurrence in emission
+                                // order, which is the order the prover-side preprocessor
+                                // replays the rows in.
+                                if cfg!(debug_assertions) {
+                                    assert!(
+                                        arbitrated_coeff_seen.insert(wid.0),
+                                        "a coefficient's creator occurrence must be its first"
+                                    );
+                                }
+                                preprocessed.recompose_coeff_creator_wids.insert(wid.0);
+                            }
+                        }
+                    }
                 }
                 Op::Hint { .. } => {
                     // Hints do not participate in preprocessed columns or table-backed ops.
@@ -521,6 +561,8 @@ impl<F: Field> Circuit<F> {
 
 #[cfg(test)]
 mod tests {
+    use alloc::boxed::Box;
+    use alloc::sync::Arc;
     use alloc::vec;
 
     use hashbrown::HashMap;
@@ -539,6 +581,53 @@ mod tests {
         circuit
     }
 
+    /// A `recompose/coeff` op over `wids`, writing `out`.
+    fn coeff_recompose(wids: &[WitnessId], out: WitnessId) -> Op<F> {
+        Op::NonPrimitiveOpWithExecutor {
+            inputs: vec![wids.to_vec()],
+            outputs: vec![vec![out]],
+            executor: Box::new(crate::ops::recompose::RecomposeExecutor::new(
+                wids.len(),
+                Arc::new(|_: &[F]| F::ZERO),
+                NpoTypeId::recompose_with_coeff_lookups(),
+                true,
+            )),
+            op_id: crate::types::NonPrimitiveOpId(0),
+        }
+    }
+
+    /// A coefficient that two `recompose/coeff` rows share is created once and read once, and a
+    /// coefficient another table already created is only read.
+    ///
+    /// This is what lets the same witness be the output of one row's unpacking and an input of a
+    /// later row's packing — the shape the challenger's sponge state cycles through. Creating it
+    /// twice, or leaving the second occurrence inert, unbalances the `WitnessChecks` bus or
+    /// leaves the witness tied to nothing.
+    #[test]
+    fn a_shared_coefficient_is_created_by_its_first_occurrence_only() {
+        let mut circuit: Circuit<F> = make_circuit(vec![
+            Op::Const {
+                val: F::ZERO,
+                out: WitnessId(0),
+            },
+            coeff_recompose(&[WitnessId(1), WitnessId(2)], WitnessId(3)),
+            coeff_recompose(&[WitnessId(1), WitnessId(0)], WitnessId(4)),
+        ]);
+        circuit.witness_count = 5;
+        let prep = circuit.generate_preprocessed_columns::<2>().unwrap();
+
+        assert_eq!(
+            prep.recompose_coeff_creator_wids,
+            [1, 2].into_iter().collect::<hashbrown::HashSet<u32>>(),
+            "only the coefficients no earlier op defined take the creator role"
+        );
+        assert_eq!(
+            prep.ext_reads,
+            vec![1, 1, 0, 0, 0],
+            "the second occurrence of a coefficient, and one the Const table created, are reads"
+        );
+    }
+
     #[test]
     fn test_empty_circuit() {
         let mut circuit: Circuit<F> = make_circuit(vec![]);
@@ -553,6 +642,7 @@ mod tests {
                 ext_reads: vec![0],
                 dup_npo_outputs: HashMap::new(),
                 hint_output_wids: hashbrown::HashSet::new(),
+                recompose_coeff_creator_wids: hashbrown::HashSet::new(),
             }
         );
     }
@@ -642,6 +732,7 @@ mod tests {
                 ext_reads: vec![1, 1, 2, 1, 1],
                 dup_npo_outputs: HashMap::new(),
                 hint_output_wids: hashbrown::HashSet::new(),
+                recompose_coeff_creator_wids: hashbrown::HashSet::new(),
             }
         );
     }
@@ -689,6 +780,7 @@ mod tests {
                 ext_reads: vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
                 dup_npo_outputs: HashMap::new(),
                 hint_output_wids: hashbrown::HashSet::new(),
+                recompose_coeff_creator_wids: hashbrown::HashSet::new(),
             }
         );
     }
@@ -745,6 +837,7 @@ mod tests {
                 ext_reads: vec![1, 1, 1],
                 dup_npo_outputs: HashMap::new(),
                 hint_output_wids: hashbrown::HashSet::new(),
+                recompose_coeff_creator_wids: hashbrown::HashSet::new(),
             }
         );
     }

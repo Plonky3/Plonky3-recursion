@@ -191,6 +191,10 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for RecomposeExec
         Some(1)
     }
 
+    fn arbitrated_coeff_input_group(&self) -> Option<usize> {
+        self.coeff_witness_ctl.then_some(0)
+    }
+
     fn boxed(&self) -> Box<dyn NonPrimitiveExecutor<F>> {
         Box::new(self.clone())
     }

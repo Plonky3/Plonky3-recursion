@@ -319,6 +319,11 @@ where
     let neg_one = F::ZERO - F::ONE;
     let num_rows = prep_base.len() / prep_width;
 
+    // Replays `generate_preprocessed_columns`'s coefficient arbitration: the rows below are in
+    // the order the ops emitted them, so a coefficient whose creator is one of these rows is
+    // created by its first occurrence here and read by every later one.
+    let mut created_here: hashbrown::HashSet<u32> = hashbrown::HashSet::new();
+
     for row_idx in 0..num_rows {
         let row_start = row_idx * prep_width;
 
@@ -342,15 +347,29 @@ where
             for i in 0..D {
                 let coeff_idx_val = prep_base[row_start + 2 + i * 2];
                 let coeff_wid = F::as_canonical_u64(&coeff_idx_val) as usize / D;
-                let n_coeff_reads = if prep.hint_output_wids.contains(&(coeff_wid as u32)) {
-                    prep.ext_reads.get(coeff_wid).copied().unwrap_or(0)
+                let is_creator = prep
+                    .recompose_coeff_creator_wids
+                    .contains(&(coeff_wid as u32))
+                    && created_here.insert(coeff_wid as u32);
+                prep_base[row_start + 2 + i * 2 + 1] = if is_creator {
+                    F::from_u32(prep.ext_reads.get(coeff_wid).copied().unwrap_or(0))
                 } else {
-                    0
+                    neg_one
                 };
-                prep_base[row_start + 2 + i * 2 + 1] = F::from_u32(n_coeff_reads);
             }
         }
     }
+
+    // Every coefficient the circuit handed the creator role to must have been reached by one of
+    // this table's rows; if it was not, the rows here are not the ones the arbitration saw.
+    debug_assert!(
+        !coeff_lookups
+            || prep
+                .recompose_coeff_creator_wids
+                .iter()
+                .all(|wid| created_here.contains(wid)),
+        "a coefficient creator was arbitrated on a row this table does not carry"
+    );
 
     let mut result = HashMap::new();
     result.insert(op_type.clone(), prep_base);
