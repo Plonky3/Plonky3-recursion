@@ -1613,7 +1613,7 @@ mod test {
     use p3_field::extension::BinomialExtensionField;
     use p3_matrix::Matrix;
     use p3_symmetric::Permutation;
-    use p3_test_utils::air_satisfaction::assert_air_satisfies;
+    use p3_test_utils::air_satisfaction::{assert_air_rejects, assert_air_satisfies};
     use rand::rngs::SmallRng;
     use rand::{RngExt, SeedableRng};
 
@@ -1668,6 +1668,122 @@ mod test {
             preprocessed,
         );
         let trace = air.generate_trace_rows(&padded, full, partial, 0);
+        assert_air_satisfies::<Val, EF, _>(&air, &trace);
+    }
+
+    /// Two challenger duplex rows: a chain start absorbing `ABSORB_LEN` rate elements from a
+    /// capacity of `[ABSORB_LEN, 0, ...]`, then a squeeze chaining the whole state forward.
+    /// `capacity_shift` opens the sponge from a different initial state, as a prover choosing
+    /// its own Fiat-Shamir IV would; every later row still follows from it honestly.
+    fn challenger_duplex_rows(
+        rng: &mut SmallRng,
+        perm: &Poseidon1BabyBear<WIDTH>,
+        capacity_shift: Val,
+    ) -> Vec<Poseidon1CircuitRow<Val>> {
+        const D: usize = 4;
+        const RATE: usize = 2 * D;
+        const ABSORB_LEN: usize = 5;
+
+        let mut start = [Val::ZERO; WIDTH];
+        for slot in start.iter_mut().take(ABSORB_LEN) {
+            *slot = rng.random();
+        }
+        // The capacity the row opens from: the sponge's initial state plus the prefix-free
+        // length tag, shifted by whatever the prover picked. Everything downstream follows
+        // from it honestly, so the opening itself is the only thing left to catch.
+        let mut opened = start;
+        opened[RATE] = Val::from_usize(ABSORB_LEN) + capacity_shift;
+        let squeezed = perm.permute(opened);
+
+        // The squeeze overwrites nothing, so it chains the full state forward with no tag.
+        let row =
+            |new_start: bool, input_values: [Val; WIDTH], absorb_len: usize| Poseidon1CircuitRow {
+                new_start,
+                merkle_path: false,
+                mmcs_bit: false,
+                mmcs_index_sum: Val::ZERO,
+                input_values: input_values.to_vec(),
+                in_ctl: vec![true; POSEIDON2_LIMBS],
+                input_indices: vec![0; POSEIDON2_LIMBS],
+                out_ctl: vec![false; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
+                output_indices: vec![0; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
+                mmcs_index_sum_idx: 0,
+                mmcs_ctl_enabled: false,
+                absorb_len,
+            };
+
+        vec![row(true, opened, ABSORB_LEN), row(false, squeezed, 0)]
+    }
+
+    /// Pad, build the preprocessed trace and the AIR for a table keyed to the given role, and
+    /// materialize the main trace.
+    fn challenger_air_and_trace(
+        rows: Vec<Poseidon1CircuitRow<Val>>,
+        constants: &OptimizedConstants<Val, WIDTH>,
+        challenger: bool,
+    ) -> (
+        Poseidon1CircuitAirBabyBearD4Width16,
+        p3_matrix::dense::RowMajorMatrix<Val>,
+    ) {
+        let target_rows = 1usize << 5;
+        let mut padded = rows;
+        let filler = Poseidon1CircuitRow {
+            new_start: true,
+            merkle_path: false,
+            mmcs_bit: false,
+            mmcs_index_sum: Val::ZERO,
+            input_values: Val::zero_vec(WIDTH),
+            in_ctl: vec![false; POSEIDON2_LIMBS],
+            input_indices: vec![0; POSEIDON2_LIMBS],
+            out_ctl: vec![false; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
+            output_indices: vec![0; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
+            mmcs_index_sum_idx: 0,
+            mmcs_ctl_enabled: false,
+            absorb_len: 0,
+        };
+        padded.resize(target_rows, filler);
+
+        let preprocessed =
+            extract_preprocessed_from_operations::<4, 2, Val, Val>(&padded, 4, 4, challenger);
+        let (full, partial) = constants;
+        let air = Poseidon1CircuitAirBabyBearD4Width16::new_with_preprocessed(
+            full.clone(),
+            partial.clone(),
+            preprocessed,
+        )
+        .with_challenger_role(challenger);
+        let trace = air.generate_trace_rows(&padded, full, partial, 0);
+        (air, trace)
+    }
+
+    #[test]
+    fn satisfies_challenger_sponge_chain_start() {
+        let mut rng = SmallRng::seed_from_u64(7);
+        let (constants, perm) = make_constants_and_perm();
+        let rows = challenger_duplex_rows(&mut rng, &perm, Val::ZERO);
+        let (air, trace) = challenger_air_and_trace(rows, &constants, true);
+        assert_air_satisfies::<Val, EF, _>(&air, &trace);
+    }
+
+    /// The sponge IV is the one the AIR fixes, on the row that opens the chain as much as on
+    /// any later one — including row 0, which no transition window has a predecessor for.
+    #[test]
+    fn rejects_challenger_sponge_opened_from_a_chosen_capacity() {
+        let mut rng = SmallRng::seed_from_u64(7);
+        let (constants, perm) = make_constants_and_perm();
+        let rows = challenger_duplex_rows(&mut rng, &perm, Val::ONE);
+        let (air, trace) = challenger_air_and_trace(rows, &constants, true);
+        assert_air_rejects::<Val, EF, _>(&air, &trace);
+    }
+
+    /// A table that also carries Merkle, compression or caller-supplied permutation rows keeps
+    /// its old contract: a chain start's capacity is whatever the caller fed it.
+    #[test]
+    fn a_non_challenger_table_leaves_its_chain_start_capacity_free() {
+        let mut rng = SmallRng::seed_from_u64(7);
+        let (constants, perm) = make_constants_and_perm();
+        let rows = challenger_duplex_rows(&mut rng, &perm, Val::ONE);
+        let (air, trace) = challenger_air_and_trace(rows, &constants, false);
         assert_air_satisfies::<Val, EF, _>(&air, &trace);
     }
 
