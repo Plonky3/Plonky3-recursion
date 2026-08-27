@@ -31,10 +31,12 @@ use crate::Target;
 /// - `base_coeffs`: Base field coefficient targets (in lifted representation)
 /// - `reset`: If true, starts a new hash chain (initial state = zeros)
 /// - `alu_recompose`: when `true`, base coefficients are recomposed into extension elements
-///   via the ALU `mul_add` chain instead of the recompose NPO table. This is required when
-///   the coefficients are private inputs whose only consumer is this hash (e.g. hiding-MMCS
-///   salts): the NPO path would never make them an ALU operand, leaving the WitnessChecks
-///   bus without a creator. The recomposed value is identical either way.
+///   via the ALU `mul_add` chain instead of the recompose NPO table. The ALU chain reads every
+///   coefficient as a bus-bound `mul_add` operand, so each packed limb the sponge absorbs stays
+///   tied to its coefficient witnesses. The NPO table publishes only its own output on the
+///   WitnessChecks bus and leaves the packed limb as free main-trace columns, so coefficients
+///   whose only consumer is this hash (opened leaf values, hiding-MMCS salt private inputs) end
+///   up with no bus creator. The recomposed value is identical either way.
 fn add_hash_base_coeffs_overwrite<F, EF>(
     circuit: &mut CircuitBuilder<EF>,
     permutation_config: &PermConfig,
@@ -216,7 +218,7 @@ where
             permutation_config,
             &base_coeffs,
             reset,
-            false,
+            true,
             merkle_seed,
         );
     }
@@ -392,15 +394,15 @@ where
             continue;
         }
 
-        // Hash using overwrite-mode sponge (matching native PaddingFreeSponge). When salts
-        // are present the coefficients (incl. salt private inputs) must be recomposed via
-        // ALU so they appear as ALU operands on the WitnessChecks bus.
+        // Hash using overwrite-mode sponge (matching native PaddingFreeSponge). The
+        // coefficients (opened values and any salt private inputs) are recomposed via ALU so
+        // they appear as ALU operands on the WitnessChecks bus.
         *digest = add_hash_base_coeffs_overwrite::<F, EF>(
             circuit,
             &permutation_config,
             &all_base_coeffs,
             true,
-            salts.is_some(),
+            true,
             false,
         )?;
     }
@@ -1001,7 +1003,7 @@ where
         &permutation_config,
         leaf_data,
         true,
-        false,
+        true,
         merkle_seed,
     )?;
     Ok(digest
