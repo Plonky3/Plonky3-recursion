@@ -72,6 +72,13 @@ enum RecomposeMode {
 
 /// Absorb `RATE` values, then squeeze past the output buffer so a second duplex step runs.
 fn build_transcript_circuit(mode: RecomposeMode) -> Circuit<EF> {
+    build_transcript_circuit_observing(mode, 1)
+}
+
+/// As [`build_transcript_circuit`], with the observed values counting up from `first`.
+/// Shifting them keeps the sponge length tag clear of every observed constant, which
+/// constant pooling would otherwise fold onto a single witness.
+fn build_transcript_circuit_observing(mode: RecomposeMode, first: u64) -> Circuit<EF> {
     let perm = default_koalabear_poseidon2_16();
     let mut circuit = CircuitBuilder::<EF>::new();
     circuit.enable_poseidon2_perm::<KoalaBearD4Width16, _>(
@@ -89,7 +96,7 @@ fn build_transcript_circuit(mode: RecomposeMode) -> Circuit<EF> {
 
     let mut challenger = CircuitChallenger::<WIDTH, RATE, Poseidon2Config>::new_koalabear();
     for i in 0..RATE {
-        let t = circuit.define_const(EF::from_u64(i as u64 + 1));
+        let t = circuit.define_const(EF::from_u64(first + i as u64));
         RecursiveChallenger::<F, EF>::observe(&mut challenger, &mut circuit, t);
     }
     // `RATE` samples drain the output buffer; the next one forces a second permutation.
@@ -142,6 +149,31 @@ fn recompose_position_writing(circuit: &Circuit<EF>, wid: WitnessId) -> usize {
             _ => false,
         })
         .unwrap_or_else(|| panic!("no recompose row writing {wid:?}"))
+}
+
+/// Position of the `Op::Const` that writes `wid`, if one does.
+fn const_position_writing(circuit: &Circuit<EF>, wid: WitnessId) -> Option<usize> {
+    (0..circuit.ops.len())
+        .find(|&i| matches!(&circuit.ops[i], Op::Const { out, .. } if *out == wid))
+}
+
+/// How many operand slots in the whole circuit read `wid`.
+fn operand_reads(circuit: &Circuit<EF>, wid: WitnessId) -> usize {
+    circuit
+        .ops
+        .iter()
+        .map(|op| match op {
+            Op::Const { .. } | Op::Public { .. } => 0,
+            Op::Alu { a, b, c, .. } => {
+                usize::from(*a == wid) + usize::from(*b == wid) + usize::from(*c == Some(wid))
+            }
+            Op::Hint { inputs, .. } => inputs.iter().filter(|&&w| w == wid).count(),
+            Op::NonPrimitiveOpWithExecutor { inputs, .. } => inputs
+                .iter()
+                .map(|g| g.iter().filter(|&&w| w == wid).count())
+                .sum(),
+        })
+        .sum()
 }
 
 /// Hint that ignores its input and writes fixed base-embedded coefficients.
@@ -408,4 +440,76 @@ fn alu_chain_repacking_reuses_the_permutation_output_witness() {
             "limb {limb} must be carried on one witness id, not repacked onto a new one"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Chain start
+// ---------------------------------------------------------------------------
+
+/// The capacity the *first* permutation reads must be a value the verifier fixes.
+///
+/// Every sponge chain constraint is `when_transition` on the next row, so none of them reaches
+/// the row that opens the chain: its capacity input is held by the `WitnessChecks` bus alone.
+/// That is sound only while the witness the bus points it at is one the prover cannot choose.
+/// It is one today because the challenger starts from `define_const(EF::ZERO)` and the builder
+/// folds an all-`Const` limb repacking back into a `Const` instead of allocating a fresh
+/// witness — a builder property, not a constraint. Were that fold to stop applying, the chain
+/// start would read its capacity from a `recompose` row whose `v` columns carry no lookup of
+/// their own, exactly as the rate limbs do in
+/// [`rate_limb_is_bound_across_permutations_npo_table`], and the sponge IV would become
+/// prover-chosen with nothing left to catch it.
+///
+/// So both halves are pinned down: that the chain start reads its capacity from constants, and
+/// that re-choosing such a constant is rejected by the real prove-and-verify pipeline.
+fn chain_start_capacity_binding(mode: RecomposeMode) {
+    let honest = build_transcript_circuit_observing(mode, 1_000);
+    let perms = perm_op_positions(&honest);
+    let (first_inputs, _) = npo_io(&honest, perms[0]);
+
+    for (limb, group) in first_inputs
+        .iter()
+        .enumerate()
+        .take(WIDTH_EXT)
+        .skip(CAPACITY_LIMB)
+    {
+        let fed = group[0];
+        assert!(
+            const_position_writing(&honest, fed).is_some(),
+            "{mode:?}: the chain start reads capacity limb {limb} from {fed:?}, which no \
+             `Op::Const` writes; nothing constrains a chain-start capacity beyond the witness \
+             it is fed from, so a prover-chosen witness there is a free sponge IV"
+        );
+    }
+
+    // The length tag, and nothing else, so the rejection below can only come from this limb.
+    let tagged = first_inputs[CAPACITY_LIMB][0];
+    assert_eq!(
+        operand_reads(&honest, tagged),
+        1,
+        "{mode:?}: {tagged:?} must feed the chain start's capacity and nothing else"
+    );
+
+    let mut traces = run(&honest);
+    let row = traces
+        .const_trace
+        .index
+        .iter()
+        .position(|i| *i == tagged)
+        .expect("a const row feeding the chain start's capacity");
+    traces.const_trace.values[row] += EF::ONE;
+
+    assert!(
+        prove_and_verify(&honest, &traces).is_err(),
+        "{mode:?}: the capacity the first permutation absorbs must not be freely re-chosen"
+    );
+}
+
+#[test]
+fn chain_start_capacity_is_bound_alu_chain() {
+    chain_start_capacity_binding(RecomposeMode::AluChain);
+}
+
+#[test]
+fn chain_start_capacity_is_bound_npo_table() {
+    chain_start_capacity_binding(RecomposeMode::NpoTable);
 }
