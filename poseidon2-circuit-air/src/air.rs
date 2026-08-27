@@ -115,6 +115,14 @@ pub struct Poseidon2CircuitAir<
     /// The actual height is the maximum of the natural row count (rounded
     /// up to a power of two) and this value.
     min_height: usize,
+
+    /// Whether this table holds nothing but challenger duplex-sponge rows.
+    ///
+    /// Such a table's `new_start` rows are always sponge chain starts, so the AIR can pin
+    /// their capacity to the sponge's initial state. On a table that also carries Merkle,
+    /// compression or caller-supplied permutation rows, a `new_start` row's capacity is
+    /// whatever the caller fed it, so the constraint is not emitted.
+    challenger: bool,
 }
 
 impl<
@@ -151,6 +159,7 @@ impl<
             p3_poseidon2: self.p3_poseidon2.clone(),
             preprocessed: self.preprocessed.clone(),
             min_height: self.min_height,
+            challenger: self.challenger,
         }
     }
 }
@@ -207,7 +216,19 @@ impl<
             p3_poseidon2: Poseidon2Air::new(constants),
             preprocessed: Vec::new(),
             min_height: 1,
+            challenger: false,
         }
+    }
+
+    /// Declare that this table holds nothing but challenger duplex-sponge rows.
+    ///
+    /// Set it from the table's own configuration (`Poseidon{1,2}Config::is_challenger`). It
+    /// turns on the sponge chain-start constraint that pins a `new_start` row's capacity to
+    /// the sponge's initial state, which is only sound on a table whose every row is a
+    /// challenger duplex.
+    pub const fn with_challenger_role(mut self, challenger: bool) -> Self {
+        self.challenger = challenger;
+        self
     }
 
     /// Set the minimum trace height.
@@ -246,6 +267,7 @@ impl<
             p3_poseidon2: Poseidon2Air::new(constants),
             preprocessed,
             min_height: 1,
+            challenger: false,
         }
     }
 
@@ -1090,6 +1112,27 @@ pub(crate) fn eval<
                     .when_transition()
                     .when(gate)
                     .assert_zero(next_in[limb * D + d] - local_out[limb * D + d] - tag);
+            }
+        }
+
+        // Sponge chain starts on the challenger's own table. Every row there is a duplex step,
+        // so a `new_start` row opens a fresh sponge: its capacity is the sponge's initial state,
+        // zero everywhere except the prefix-free length tag on the first capacity element. Gate
+        // and state both come from the `next` row, so the constraint is row-local and carries no
+        // transition selector: the wrap-around window reaches row 0, the row that opens the
+        // table's first chain and has no predecessor to chain against.
+        if air.challenger {
+            for limb in RATE_EXT..WIDTH_EXT {
+                for d in 0..D {
+                    let tag = if limb == RATE_EXT && d == 0 {
+                        cap_tag.into()
+                    } else {
+                        AB::Expr::ZERO
+                    };
+                    builder
+                        .when(next_prep.new_start)
+                        .assert_zero(next_in[limb * D + d] - tag);
+                }
             }
         }
 
