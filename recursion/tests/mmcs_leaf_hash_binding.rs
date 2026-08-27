@@ -30,6 +30,9 @@ const D: usize = 4;
 const CFG: Poseidon2Config = Poseidon2Config::KOALA_BEAR_D4_W16;
 /// Leaf width in base-field coefficients: one full sponge rate, i.e. `rate_ext` full limbs.
 const LEAF_WIDTH: usize = 8;
+/// Leaf width that spans two sponge rate chunks with a tail shorter than one limb, so the
+/// second absorb mixes the tail with coefficients carried over from the first permutation.
+const PARTIAL_CHUNK_LEAF_WIDTH: usize = LEAF_WIDTH + 2;
 
 /// A single-matrix `verify_batch_circuit` over a leaf of `LEAF_WIDTH` opened coefficients.
 ///
@@ -38,6 +41,10 @@ const LEAF_WIDTH: usize = 8;
 /// enabled here, and therefore that the leaf hash's lowering is a choice rather than a
 /// consequence of the table being absent.
 fn build_leaf_hash_circuit() -> Circuit<EF> {
+    build_leaf_hash_circuit_of_width(LEAF_WIDTH)
+}
+
+fn build_leaf_hash_circuit_of_width(leaf_width: usize) -> Circuit<EF> {
     let perm = default_koalabear_poseidon2_16();
     let mut builder = CircuitBuilder::<EF>::new();
     builder.enable_poseidon2_perm::<KoalaBearD4Width16, _>(
@@ -57,11 +64,11 @@ fn build_leaf_hash_circuit() -> Circuit<EF> {
             .collect(),
     ];
     let dimensions = [Dimensions {
-        width: LEAF_WIDTH,
+        width: leaf_width,
         height: 4,
     }];
     let index_bits: Vec<Target> = (0..2).map(|_| builder.public_input()).collect();
-    let opened: Vec<Vec<Target>> = vec![(0..LEAF_WIDTH).map(|_| builder.public_input()).collect()];
+    let opened: Vec<Vec<Target>> = vec![(0..leaf_width).map(|_| builder.public_input()).collect()];
 
     verify_batch_circuit::<F, EF>(
         &mut builder,
@@ -189,4 +196,60 @@ fn re_pointing_a_leaf_hash_packing_is_visible_to_the_verifier() {
         "re-pointing the packing that feeds the leaf hash must change the constraint system \
          the verifier derives, not just prover-side data"
     );
+}
+
+/// A leaf that spans more than one rate chunk carries the tail limb's remaining coefficients
+/// over from the previous permutation's output.
+///
+/// Those carry-over coefficients are decomposition hints. Reconstructing them through the
+/// recompose NPO table pins the row's own free columns to the previous output and leaves the
+/// hint witnesses — the values that actually get absorbed — unrelated to it, so the sponge
+/// would absorb a state the prover picks. The ALU `mul_add` chain reads each hint as a
+/// bus-bound operand and constrains their weighted sum to the previous output instead.
+#[test]
+fn partial_chunk_carry_over_coefficients_are_packed_by_the_alu_chain() {
+    let circuit = build_leaf_hash_circuit_of_width(PARTIAL_CHUNK_LEAF_WIDTH);
+
+    assert!(
+        circuit.ops.iter().any(|op| is_npo_type(op, "recompose")),
+        "the recompose NPO table must be enabled for this test to say anything"
+    );
+
+    let perm_inputs = permutation_input_witnesses(&circuit);
+    let perm_count = circuit
+        .ops
+        .iter()
+        .filter(|op| is_npo_type(op, "poseidon2_perm"))
+        .count();
+    assert!(
+        perm_count >= 2,
+        "the leaf must absorb across at least two permutations to reach the partial-chunk path"
+    );
+
+    for wid in perm_inputs {
+        let writer = &circuit.ops[writer_position(&circuit, wid)];
+        assert!(
+            !is_npo_type(writer, "recompose"),
+            "a permutation reads {wid:?}, whose only writer is a recompose row: its packed \
+             value is a free main-trace column"
+        );
+    }
+
+    // The carry-over decomposition itself must be reconstructed through the ALU, not the table:
+    // every hint output in the circuit is read by some ALU op.
+    for op in &circuit.ops {
+        if let Op::Hint { outputs, .. } = op {
+            for out in outputs {
+                assert!(
+                    circuit.ops.iter().any(|other| matches!(
+                        other,
+                        Op::Alu { a, b, c, .. }
+                            if a == out || b == out || c.as_ref() == Some(out)
+                    )),
+                    "hint output {out:?} is never read by an ALU op, so nothing on the bus \
+                     ties it to the value it was decomposed from"
+                );
+            }
+        }
+    }
 }
