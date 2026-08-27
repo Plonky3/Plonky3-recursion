@@ -43,8 +43,8 @@ use p3_circuit_prover::{
     BatchStarkProver, CircuitProverData, ConstraintProfile, Poseidon2Preprocessor,
     RecomposePreprocessor, TablePacking, config,
 };
-use p3_field::PrimeCharacteristicRing;
 use p3_field::extension::BinomialExtensionField;
+use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
 use p3_koala_bear::{KoalaBear, default_koalabear_poseidon2_16};
 use p3_poseidon2_circuit_air::KoalaBearD4Width16;
 use p3_recursion::challenger::CircuitChallenger;
@@ -302,11 +302,11 @@ fn prove_and_verify(circuit: &Circuit<EF>, traces: &Traces<EF>) -> Result<(), St
     let stark_config = config::koala_bear();
     let npo_preprocessors: Vec<Box<dyn NpoPreprocessor<F>>> = vec![
         Box::new(Poseidon2Preprocessor),
-        Box::new(RecomposePreprocessor::default()),
+        Box::new(RecomposePreprocessor::new(true)),
     ];
     let mut air_builders =
         poseidon2_air_builders_for_configs::<KoalaBearConfig, D>(vec![CFG.for_challenger(), CFG]);
-    air_builders.extend(recompose_air_builders::<KoalaBearConfig, D>(1, false));
+    air_builders.extend(recompose_air_builders::<KoalaBearConfig, D>(1, true));
 
     let (airs_degrees, primitive_columns, non_primitive_columns) =
         get_airs_and_degrees_with_prep::<KoalaBearConfig, EF, D>(
@@ -325,7 +325,7 @@ fn prove_and_verify(circuit: &Circuit<EF>, traces: &Traces<EF>) -> Result<(), St
     let mut prover = BatchStarkProver::new(stark_config).with_table_packing(table_packing);
     prover.register_poseidon2_table::<D>(CFG.for_challenger());
     prover.register_poseidon2_table::<D>(CFG);
-    prover.register_recompose_table::<D>(false);
+    prover.register_recompose_table::<D>(true);
 
     // An unsatisfied constraint or an unbalanced bus surfaces either as a prover-side panic
     // (both debuggers run under `debug_assertions`) or as a verification failure; all count as
@@ -462,15 +462,15 @@ fn capacity_limb_is_bound_across_permutations_npo_table() {
 }
 
 /// The rate limb the second permutation reads must be the rate limb the first permutation
-/// produced.
+/// produced, and which coefficients it is packed from must not be the prover's choice.
 ///
-/// A `recompose` row creates its own witness from `v_0..v_{D-1}` columns that carry no bus
-/// lookup, so whenever one writes the limb the row can be pointed at a different, already
-/// computed coefficient group without the verifier's preprocessed columns changing — a free
-/// choice of the whole sponge state. This test rejects that: it takes whichever writer the
-/// builder produced for the limb, and requires either that there is nothing to re-point (the
-/// repacking dedupes back onto the permutation's own output witness) or that re-pointing it is
-/// rejected end to end.
+/// The packing row is a `recompose/coeff` row, so it advertises each coefficient's witness
+/// index in the preprocessed columns next to the packed output. Pointing it at a different,
+/// already computed coefficient group is therefore not a free choice: the edit moves the
+/// verifier's own preprocessed data, and a trace built for it does not satisfy the constraint
+/// system the verifier holds. Both halves are asserted, because the first is what makes the
+/// second something other than an accident — the plain `recompose` table publishes only the
+/// packed output, and the same edit against it leaves the preprocessed columns byte-identical.
 #[test]
 fn rate_limb_is_bound_across_permutations_npo_table() {
     let honest = build_transcript_circuit(RecomposeMode::NpoTable);
@@ -486,14 +486,7 @@ fn rate_limb_is_bound_across_permutations_npo_table() {
         "the honest witness must carry the rate limb forward unchanged"
     );
 
-    let Some(target_row) = recompose_position_writing_opt(&honest, consumed) else {
-        assert_eq!(
-            consumed, produced,
-            "a rate limb no packing row writes must be the permutation's own output witness"
-        );
-        return;
-    };
-
+    let target_row = recompose_position_writing(&honest, consumed);
     let donor_row = recompose_position_writing(&honest, second_inputs[1][0]);
     let (donor_inputs, _) = npo_io(&honest, donor_row);
 
@@ -502,7 +495,17 @@ fn rate_limb_is_bound_across_permutations_npo_table() {
         Op::NonPrimitiveOpWithExecutor { inputs, .. } => *inputs = donor_inputs,
         _ => unreachable!(),
     }
-    assert_same_constraint_system(&honest, &edited);
+
+    let honest_prep = honest
+        .generate_preprocessed_columns::<D>()
+        .expect("honest preprocessed columns");
+    let edited_prep = edited
+        .generate_preprocessed_columns::<D>()
+        .expect("edited preprocessed columns");
+    assert!(
+        honest_prep != edited_prep,
+        "the coefficients a packing row reads must be fixed by the verifier's preprocessed data"
+    );
 
     let edited_witness = witness_values(&edited);
     assert_ne!(
@@ -696,4 +699,259 @@ fn chain_start_capacity_is_bound_alu_chain() {
 #[test]
 fn chain_start_capacity_is_bound_npo_table() {
     chain_start_capacity_binding(RecomposeMode::NpoTable);
+}
+
+// ---------------------------------------------------------------------------
+// Coefficients that are not base-field elements
+// ---------------------------------------------------------------------------
+
+/// Tag under which [`build_sampling_transcript_circuit`] records its squeezed challenge.
+const CHALLENGE_TAG: &str = "squeezed_challenge";
+
+/// The extension basis element `w^i`.
+fn basis(i: usize) -> EF {
+    let mut coeffs = [F::ZERO; D];
+    coeffs[i] = F::ONE;
+    <EF as BasedVectorSpace<F>>::from_basis_coefficients_slice(&coeffs)
+        .expect("basis coefficients are valid")
+}
+
+/// `c` embedded in the extension field.
+fn embed(c: F) -> EF {
+    let mut coeffs = [F::ZERO; D];
+    coeffs[0] = c;
+    <EF as BasedVectorSpace<F>>::from_basis_coefficients_slice(&coeffs)
+        .expect("basis coefficients are valid")
+}
+
+/// Whether `v` is a base-field element embedded in the extension field.
+fn is_base(v: EF) -> bool {
+    <EF as BasedVectorSpace<F>>::as_basis_coefficients_slice(&v)[1..]
+        .iter()
+        .all(|c| *c == F::ZERO)
+}
+
+/// `sum(coeffs[i] * w^i)` — the value a recomposition constraint ties back to.
+fn weighted_sum(coeffs: &[EF]) -> EF {
+    coeffs.iter().enumerate().map(|(i, &c)| c * basis(i)).sum()
+}
+
+/// The honest base decomposition of `x`, as extension elements.
+fn base_decomposition(x: EF) -> Vec<EF> {
+    <EF as BasedVectorSpace<F>>::as_basis_coefficients_slice(&x)
+        .iter()
+        .map(|&c| embed(c))
+        .collect()
+}
+
+/// Hint that writes a fixed list of coefficient values, whatever its input.
+///
+/// Unlike [`ChosenCoefficients`] it does not need to read the value it stands in for, so it
+/// still works when the edit stops the permutation from writing that witness at all.
+#[derive(Debug, Clone)]
+struct FixedCoefficients(Vec<EF>);
+
+impl HintExecutor<EF> for FixedCoefficients {
+    fn execute(
+        &self,
+        _inputs: &[WitnessId],
+        outputs: &[WitnessId],
+        witness: &mut [Option<EF>],
+    ) -> Result<(), CircuitError> {
+        assert_eq!(outputs.len(), self.0.len());
+        for (&out, &value) in outputs.iter().zip(self.0.iter()) {
+            witness[out.0 as usize] = Some(value);
+        }
+        Ok(())
+    }
+
+    fn boxed(&self) -> Box<dyn HintExecutor<EF>> {
+        Box::new(self.clone())
+    }
+}
+
+/// Hint that decomposes its input honestly, then moves a purely non-base amount between two
+/// coefficient slots.
+///
+/// `c_1 += a·w` and `c_0 -= a·w²`. The two shifts cancel in `sum(c_i·w^i)`, so any constraint
+/// that only ties that sum back to the decomposed value is satisfied; and neither shift has a
+/// `w⁰` component, so the base decomposition the coefficients stand for is unchanged too. What
+/// changes is the extension value each coefficient *witness* holds — the freedom a repacking
+/// that reads coefficients as extension operands hands the prover.
+#[derive(Debug, Clone)]
+struct NonBaseCoefficientShift(u64);
+
+impl HintExecutor<EF> for NonBaseCoefficientShift {
+    fn execute(
+        &self,
+        inputs: &[WitnessId],
+        outputs: &[WitnessId],
+        witness: &mut [Option<EF>],
+    ) -> Result<(), CircuitError> {
+        let x = witness[inputs[0].0 as usize].expect("the decomposed value is witnessed");
+        let mut coeffs = base_decomposition(x);
+        let shift = EF::from_u64(self.0);
+        coeffs[0] -= shift * basis(2);
+        coeffs[1] += shift * basis(1);
+        for (&out, &value) in outputs.iter().zip(coeffs.iter()) {
+            witness[out.0 as usize] = Some(value);
+        }
+        Ok(())
+    }
+
+    fn boxed(&self) -> Box<dyn HintExecutor<EF>> {
+        Box::new(self.clone())
+    }
+}
+
+/// The output witnesses of the `Op::Hint` at `pos`.
+fn hint_outputs(circuit: &Circuit<EF>, pos: usize) -> Vec<WitnessId> {
+    match &circuit.ops[pos] {
+        Op::Hint { outputs, .. } => outputs.clone(),
+        _ => panic!("op {pos} is not a hint"),
+    }
+}
+
+/// Absorb `RATE` values, then squeeze one extension challenge and tag it.
+///
+/// `sample_ext` draws `D` base elements off the output buffer and packs them into an extension
+/// challenge, so the tagged witness is exactly the kind of value a Fiat-Shamir round yields:
+/// `alpha`, `beta`, or the out-of-domain point.
+fn build_sampling_transcript_circuit(mode: RecomposeMode) -> Circuit<EF> {
+    let perm = default_koalabear_poseidon2_16();
+    let mut circuit = CircuitBuilder::<EF>::new();
+    circuit.enable_poseidon2_perm::<KoalaBearD4Width16, _>(
+        generate_poseidon2_trace::<EF, KoalaBearD4Width16>,
+        perm,
+    );
+    match mode {
+        RecomposeMode::NpoTable => {
+            circuit.enable_recompose::<F>(generate_recompose_trace::<F, EF>);
+        }
+        RecomposeMode::AluChain => {
+            circuit.noop_enable_recompose::<F>(generate_recompose_trace::<F, EF>);
+        }
+    }
+
+    let mut challenger = CircuitChallenger::<WIDTH, RATE, Poseidon2Config>::new_koalabear();
+    for i in 0..RATE {
+        let t = circuit.define_const(EF::from_u64(1_000 + i as u64));
+        RecursiveChallenger::<F, EF>::observe(&mut challenger, &mut circuit, t);
+    }
+    let challenge = RecursiveChallenger::<F, EF>::sample_ext(&mut challenger, &mut circuit);
+    circuit.tag(challenge, CHALLENGE_TAG).expect("tagging");
+
+    circuit.build().expect("sampling transcript circuit builds")
+}
+
+/// The limb `sample_ext` draws its coefficients from: `sample` pops the output buffer, which
+/// holds `state[0..RATE]`, so the `D` values it takes are the last limb of the rate.
+const SAMPLED_LIMB: usize = RATE_EXT - 1;
+
+/// A capacity limb must be the base recomposition of the coefficients that stand for it, not
+/// merely *some* extension values whose weighted sum matches.
+///
+/// The edit hands the decomposition hint coefficients whose weighted sum is exactly the limb the
+/// permutation produced — so a constraint that only ties `sum(c_i·w^i)` back to the limb is
+/// satisfied — but where `c_0` is not a base-field element. A verifier that reads each
+/// coefficient as a base value recomposes those coefficients to a *different* limb, and the
+/// sponge chain then rejects the proof. One that only ever sees the weighted sum accepts.
+///
+/// The permutation's own write of the limb is dropped first, exactly as
+/// [`capacity_limb_binding`] does: the challenger table publishes no capacity output, so the
+/// edit is invisible to the verifier and leaves the recomposition as the limb's only writer.
+#[test]
+fn non_base_capacity_coefficients_are_rejected() {
+    let honest = build_transcript_circuit(RecomposeMode::NpoTable);
+    let perms = perm_op_positions(&honest);
+    let (_, first_outputs) = npo_io(&honest, perms[0]);
+    let produced = first_outputs[CAPACITY_LIMB][0];
+    let hint_pos = decomposition_hint_position(&honest, produced);
+    let honest_witness = witness_values(&honest);
+    let limb = honest_witness[produced.0 as usize].expect("the capacity limb is witnessed");
+
+    let shift = EF::from_u64(7);
+    let mut forged = base_decomposition(limb);
+    forged[0] += shift * basis(1);
+    forged[1] -= shift;
+    assert_eq!(
+        weighted_sum(&forged),
+        limb,
+        "the forged coefficients must still recompose to the honest limb"
+    );
+    assert!(
+        !is_base(forged[0]),
+        "the forgery must rest on a coefficient that is not a base-field element"
+    );
+
+    let mut edited = honest.clone();
+    match &mut edited.ops[perms[0]] {
+        Op::NonPrimitiveOpWithExecutor { outputs, .. } => {
+            outputs[CAPACITY_LIMB].clear();
+        }
+        _ => unreachable!(),
+    }
+    match &mut edited.ops[hint_pos] {
+        Op::Hint { executor, .. } => *executor = Box::new(FixedCoefficients(forged)),
+        _ => unreachable!(),
+    }
+    assert_same_constraint_system(&honest, &edited);
+
+    let traces = run(&edited);
+    assert!(
+        prove_and_verify(&honest, &traces).is_err(),
+        "coefficients whose weighted sum matches the limb but which are not base-field \
+         elements must not stand in for its base decomposition"
+    );
+}
+
+/// A squeezed extension challenge must follow from the base decomposition of the sponge state,
+/// not from whatever extension values the coefficient witnesses happen to hold.
+///
+/// [`NonBaseCoefficientShift`] leaves both the weighted sum and every coefficient's base part
+/// alone, so the honest runner accepts it and the proof still verifies — the point is what the
+/// squeezed challenge comes out as. `sample_ext` packs the coefficients back in the order it
+/// popped them, which is the reverse of the order they were unpacked in, so the two shifts no
+/// longer cancel: a packing that reads them as extension operands yields a different challenge,
+/// one the prover chose. A packing that reads their base parts yields the honest challenge.
+#[test]
+fn a_non_base_coefficient_cannot_move_a_squeezed_challenge() {
+    let honest = build_sampling_transcript_circuit(RecomposeMode::NpoTable);
+    let perms = perm_op_positions(&honest);
+    let (_, outputs) = npo_io(&honest, perms[0]);
+    let produced = outputs[SAMPLED_LIMB][0];
+    let hint_pos = decomposition_hint_position(&honest, produced);
+    let coeff_wids = hint_outputs(&honest, hint_pos);
+
+    let mut edited = honest.clone();
+    match &mut edited.ops[hint_pos] {
+        Op::Hint { executor, .. } => *executor = Box::new(NonBaseCoefficientShift(7)),
+        _ => unreachable!(),
+    }
+    assert_same_constraint_system(&honest, &edited);
+
+    let honest_witness = witness_values(&honest);
+    let edited_witness = witness_values(&edited);
+    assert_ne!(
+        edited_witness[coeff_wids[0].0 as usize], honest_witness[coeff_wids[0].0 as usize],
+        "the edit must actually change the coefficient witness"
+    );
+    assert!(
+        !is_base(edited_witness[coeff_wids[0].0 as usize].expect("coefficient is witnessed")),
+        "the edit must leave a coefficient that is not a base-field element"
+    );
+
+    let challenge_wid = honest.tag_to_witness[CHALLENGE_TAG];
+    assert_eq!(
+        edited_witness[challenge_wid.0 as usize], honest_witness[challenge_wid.0 as usize],
+        "an extension challenge must be squeezed from the base decomposition of the sponge \
+         state, so a non-base coefficient cannot move it"
+    );
+
+    // The tampered witness is a real option for the prover — it passes witness generation and
+    // the verifier accepts it — which is what makes the equality above load-bearing rather
+    // than a statement about an unreachable state.
+    let traces = run(&edited);
+    prove_and_verify(&honest, &traces)
+        .expect("a shift no table can see must leave the proof valid");
 }
