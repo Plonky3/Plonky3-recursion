@@ -733,6 +733,8 @@ pub fn extract_preprocessed_from_operations<
                         ),
                         // Sponge rows have no Merkle selector, so the first capacity limb's slot
                         // carries the prefix-free length tag the chain constraint re-applies.
+                        // Only a challenger row sets a non-zero tag; every other caller passes
+                        // `absorb_len = 0`, which leaves that slot at zero exactly as before.
                         merkle_chain_sel: if *merkle_path {
                             F::from_bool(!*new_start && !ctl)
                         } else if i == OL {
@@ -989,13 +991,15 @@ pub(crate) fn eval<
         // The sponge chain selector gates the constraint. It is only
         // active on continuation rows in sponge mode. On chain boundaries and
         // Merkle rows the selector is zero and the constraint is trivially
-        // satisfied; so it is on a limb whose value arrives over CTL, except on
-        // the challenger's own table, where the capacity is both looked up and
-        // chained.
+        // satisfied. It is also zero on a limb whose value arrives over CTL,
+        // except on the challenger's own table, where the capacity is both
+        // looked up and chained.
 
         // Prefix-free sponge length tag, carried in the first capacity limb's Merkle-chain
-        // slot (Merkle rows never take the sponge chain selector). It is zero on every row
-        // that is not a duplex-sponge absorb.
+        // slot (Merkle rows never take the sponge chain selector). Only a challenger row
+        // sets it; on every other row it is zero — including the MMCS leaf hash, which is a
+        // duplex sponge too — so the term below drops out and the chain constraint is the
+        // plain `next_in == local_out` it was without the tag.
         let cap_tag = next_prep.input_limbs[RATE_EXT.min(WIDTH_EXT - 1)].merkle_chain_sel;
 
         for limb in 0..WIDTH_EXT {
