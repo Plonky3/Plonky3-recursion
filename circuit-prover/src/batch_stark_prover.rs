@@ -64,7 +64,8 @@ pub use dynamic_air::{
 };
 pub use packing::TablePacking;
 pub use poseidon1::{
-    Poseidon1AirBuilder, Poseidon1AirWrapperInner, Poseidon1Preprocessor, Poseidon1Prover,
+    Poseidon1AirBuilder, Poseidon1AirBuilderForConfig, Poseidon1AirWrapperInner,
+    Poseidon1Preprocessor, Poseidon1Prover,
     Poseidon1ProverD2, poseidon1_preprocessor, poseidon1_verifier_air_from_config,
 };
 pub use poseidon2::{
@@ -1943,6 +1944,28 @@ where
     Poseidon1AirBuilder<D>: NpoAirBuilder<SC, D>,
 {
     vec![Box::new(Poseidon1AirBuilder)]
+}
+
+/// Poseidon1 AIR builders for an explicit, ordered list of table configs.
+///
+/// Use this instead of [`poseidon1_air_builders`] when a circuit carries more than one Poseidon1
+/// table. The order must match the corresponding table provers.
+pub fn poseidon1_air_builders_for_configs<SC, const D: usize>(
+    configs: Vec<Poseidon1Config>,
+) -> Vec<Box<dyn NpoAirBuilder<SC, D>>>
+where
+    SC: StarkGenericConfig + 'static + Send + Sync,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+    Poseidon1AirBuilderForConfig<D>: NpoAirBuilder<SC, D> + 'static,
+{
+    configs
+        .into_iter()
+        .map(|config| {
+            Box::new(Poseidon1AirBuilderForConfig::<D>::new(config))
+                as Box<dyn NpoAirBuilder<SC, D>>
+        })
+        .collect()
 }
 
 /// Create Poseidon1 table provers for D=4 (e.g. BabyBear, KoalaBear).

@@ -842,7 +842,7 @@ impl Poseidon2Prover {
     }
 
     pub(crate) fn air_wrapper_for_config(config: Poseidon2Config) -> Poseidon2AirWrapperInner {
-        match config {
+        match config.without_challenger_role() {
             Poseidon2Config::BABY_BEAR_D1_W16 => Poseidon2AirWrapperInner::BabyBearD1Width16Bus1(
                 Box::new(BabyBearD1Width16::default_air()),
             ),
@@ -888,7 +888,7 @@ impl Poseidon2Prover {
         min_height: usize,
         circuit_extension_degree: u32,
     ) -> Option<Poseidon2AirWrapperInner> {
-        let inner = match config {
+        let inner = match config.without_challenger_role() {
             Poseidon2Config::BABY_BEAR_D1_W16 => {
                 assert!(F::from_u64(BABY_BEAR_MODULUS) == F::ZERO);
                 let prep = unsafe { transmute::<Vec<F>, Vec<BabyBear>>(preprocessed) };
@@ -1030,7 +1030,7 @@ impl Poseidon2Prover {
     }
 
     pub const fn preprocessed_width_from_config(&self) -> usize {
-        match self.config {
+        match self.config.without_challenger_role() {
             Poseidon2Config::BABY_BEAR_D1_W16 => {
                 Poseidon2CircuitAirBabyBearD1Width16::preprocessed_width()
             }
@@ -1137,7 +1137,7 @@ impl Poseidon2Prover {
         let mut padded_ops = t.operations.clone();
         padded_ops.resize(padded_rows, pad_filler);
 
-        let (air, matrix) = match cfg {
+        let (air, matrix) = match cfg.without_challenger_role() {
             Poseidon2Config::BABY_BEAR_D1_W16 => {
                 let constants = BabyBearD1Width16::round_constants();
                 let wbus = poseidon_d1_witness_bus_dim(witness_ctl_scale)?;
@@ -1771,12 +1771,13 @@ impl NpoPreprocessor<Goldilocks> for Poseidon2Preprocessor {
 pub(crate) fn poseidon2_config_for_air_builder<const D: usize>(
     config: Poseidon2Config,
 ) -> Option<Poseidon2Config> {
+    let shape = config.without_challenger_role();
     match D {
-        2 => match config {
+        2 => match shape {
             Poseidon2Config::GOLDILOCKS_D2_W8 | Poseidon2Config::GOLDILOCKS_D2_W16 => Some(config),
             _ => None,
         },
-        4 => match config {
+        4 => match shape {
             Poseidon2Config::BABY_BEAR_D1_W16
             | Poseidon2Config::BABY_BEAR_D4_W16
             | Poseidon2Config::BABY_BEAR_D4_W24
@@ -1787,7 +1788,7 @@ pub(crate) fn poseidon2_config_for_air_builder<const D: usize>(
             | Poseidon2Config::KOALA_BEAR_D4_W32 => Some(config),
             _ => None,
         },
-        5 => match config {
+        5 => match shape {
             Poseidon2Config::BABY_BEAR_D1_W16
             | Poseidon2Config::KOALA_BEAR_D1_W16
             | Poseidon2Config::KOALA_BEAR_D1_W32 => Some(config),
@@ -1886,7 +1887,7 @@ where
         let config = Poseidon2Config::from_variant_name(suffix)?;
         // For D=5 circuits the Poseidon2 permutation always operates in the base field
         // (the quintic challenger uses D=1 configs).
-        let config = match config {
+        let config = match config.without_challenger_role() {
             Poseidon2Config::BABY_BEAR_D1_W16
             | Poseidon2Config::KOALA_BEAR_D1_W16
             | Poseidon2Config::KOALA_BEAR_D1_W32 => config,
@@ -1988,7 +1989,7 @@ where
         self.matches_op_type(op_type).then_some(())?;
         // For D=5 circuits the Poseidon2 permutation always operates in the base field
         // (the quintic challenger uses D=1 configs).
-        let config = match self.config {
+        let config = match self.config.without_challenger_role() {
             Poseidon2Config::BABY_BEAR_D1_W16
             | Poseidon2Config::KOALA_BEAR_D1_W16
             | Poseidon2Config::KOALA_BEAR_D1_W32 => self.config,

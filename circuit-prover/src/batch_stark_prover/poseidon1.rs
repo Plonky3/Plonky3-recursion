@@ -707,7 +707,7 @@ impl Poseidon1Prover {
     }
 
     pub(crate) fn air_wrapper_for_config(config: Poseidon1Config) -> Poseidon1AirWrapperInner {
-        match config {
+        match config.without_challenger_role() {
             Poseidon1Config::BABY_BEAR_D1_W16 => Poseidon1AirWrapperInner::BabyBearD1Width16Bus1(
                 Box::new(BabyBearD1Width16::default_air()),
             ),
@@ -741,7 +741,7 @@ impl Poseidon1Prover {
         min_height: usize,
         circuit_extension_degree: u32,
     ) -> Option<Poseidon1AirWrapperInner> {
-        let inner = match config {
+        let inner = match config.without_challenger_role() {
             Poseidon1Config::BABY_BEAR_D1_W16 => {
                 assert!(F::from_u64(BABY_BEAR_MODULUS) == F::ZERO);
                 let prep = unsafe { transmute::<Vec<F>, Vec<BabyBear>>(preprocessed) };
@@ -844,7 +844,7 @@ impl Poseidon1Prover {
     }
 
     pub const fn preprocessed_width_from_config(&self) -> usize {
-        match self.config {
+        match self.config.without_challenger_role() {
             Poseidon1Config::BABY_BEAR_D1_W16 => {
                 Poseidon1CircuitAirBabyBearD1Width16::preprocessed_width()
             }
@@ -938,7 +938,7 @@ impl Poseidon1Prover {
         let mut padded_ops = t.operations.clone();
         padded_ops.resize(padded_rows, pad_filler);
 
-        let (air, matrix) = match cfg {
+        let (air, matrix) = match cfg.without_challenger_role() {
             Poseidon1Config::BABY_BEAR_D1_W16 => {
                 let (full_constants, partial_constants) = BabyBearD1Width16::round_constants();
                 let wbus = poseidon_d1_witness_bus_dim(witness_ctl_scale)?;
@@ -1471,12 +1471,13 @@ impl NpoPreprocessor<Goldilocks> for Poseidon1Preprocessor {
 pub(crate) fn poseidon1_config_for_air_builder<const D: usize>(
     config: Poseidon1Config,
 ) -> Option<Poseidon1Config> {
+    let shape = config.without_challenger_role();
     match D {
-        2 => match config {
+        2 => match shape {
             Poseidon1Config::GOLDILOCKS_D2_W8 => Some(config),
             _ => None,
         },
-        4 => match config {
+        4 => match shape {
             Poseidon1Config::BABY_BEAR_D1_W16
             | Poseidon1Config::BABY_BEAR_D4_W16
             | Poseidon1Config::BABY_BEAR_D4_W24
@@ -1485,7 +1486,7 @@ pub(crate) fn poseidon1_config_for_air_builder<const D: usize>(
             | Poseidon1Config::KOALA_BEAR_D4_W24 => Some(config),
             _ => None,
         },
-        5 => match config {
+        5 => match shape {
             Poseidon1Config::BABY_BEAR_D1_W16 | Poseidon1Config::KOALA_BEAR_D1_W16 => Some(config),
             _ => None,
         },
@@ -1582,7 +1583,7 @@ where
         let config = Poseidon1Config::from_variant_name(suffix)?;
         // For D=5 circuits the Poseidon1 permutation always operates in the base field
         // (the quintic challenger uses D=1 configs).
-        let config = match config {
+        let config = match config.without_challenger_role() {
             Poseidon1Config::BABY_BEAR_D1_W16 | Poseidon1Config::KOALA_BEAR_D1_W16 => config,
             _ => return None,
         };
@@ -1597,6 +1598,70 @@ where
                 .max(min_height.next_power_of_two()),
         );
         Some((CircuitTableAir::Dynamic(wrapper), degree))
+    }
+}
+
+/// Poseidon1 NPO AIR builder restricted to one concrete Poseidon1 config.
+///
+/// Mixed circuits can contain more than one Poseidon1 table (for example the challenger's own
+/// table plus the table its MMCS and compression rows share). One builder per config keeps the
+/// prover-data table order aligned with the registered table provers.
+#[derive(Clone, Copy)]
+pub struct Poseidon1AirBuilderForConfig<const D: usize> {
+    config: Poseidon1Config,
+}
+
+impl<const D: usize> Poseidon1AirBuilderForConfig<D> {
+    /// Build a config-restricted Poseidon1 AIR builder.
+    pub const fn new(config: Poseidon1Config) -> Self {
+        Self { config }
+    }
+
+    fn matches_op_type(&self, op_type: &NpoTypeId) -> bool {
+        let Some(suffix) = op_type.as_str().strip_prefix("poseidon1_perm/") else {
+            return false;
+        };
+        Poseidon1Config::from_variant_name(suffix) == Some(self.config)
+    }
+}
+
+impl<SC> NpoAirBuilder<SC, 2> for Poseidon1AirBuilderForConfig<2>
+where
+    SC: StarkGenericConfig + 'static + Send + Sync,
+    Val<SC>: StarkField + BinomiallyExtendable<2>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+{
+    fn try_build(
+        &self,
+        op_type: &NpoTypeId,
+        prep_base: &[Val<SC>],
+        min_height: usize,
+        _lanes: usize,
+        constraint_profile: ConstraintProfile,
+    ) -> Option<(CircuitTableAir<SC, 2>, usize)> {
+        self.matches_op_type(op_type).then_some(())?;
+        poseidon1_air_try_build::<SC, 2>(op_type, prep_base, min_height, constraint_profile)
+    }
+}
+
+impl<SC> NpoAirBuilder<SC, 4> for Poseidon1AirBuilderForConfig<4>
+where
+    SC: StarkGenericConfig + 'static + Send + Sync,
+    Val<SC>: StarkField + BinomiallyExtendable<4>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+{
+    fn try_build(
+        &self,
+        op_type: &NpoTypeId,
+        prep_base: &[Val<SC>],
+        min_height: usize,
+        _lanes: usize,
+        constraint_profile: ConstraintProfile,
+    ) -> Option<(CircuitTableAir<SC, 4>, usize)> {
+        self.matches_op_type(op_type).then_some(())?;
+        poseidon1_air_try_build::<SC, 4>(op_type, prep_base, min_height, constraint_profile)
     }
 }
 
