@@ -489,7 +489,7 @@ macro_rules! define_field_module_aggregation_quintic {
                                 }
                                 verifier.$register_fn::<D>($poseidon2_config);
                                 if !disable_recompose_npo {
-                                    verifier.register_recompose_table::<D>($poseidon2_config.d() != D);
+                                    verifier.register_recompose_table::<D>(true);
                                 }
                                 verifier
                                     .verify_all_tables::<Challenge>(&out.0)
@@ -748,7 +748,7 @@ macro_rules! define_field_module {
                                 }
                                 verifier.$register_fn::<$d>($poseidon2_config);
                                 if !disable_recompose_npo {
-                                    verifier.register_recompose_table::<$d>($poseidon2_config.d() != $d);
+                                    verifier.register_recompose_table::<$d>(true);
                                 }
                                 verifier
                                     .verify_all_tables::<Challenge>(&out.0)
@@ -1291,7 +1291,7 @@ macro_rules! arity4_run {
                 verifier.register_poseidon2_table::<D>($poseidon2_config);
                 verifier.register_poseidon2_table::<D>($poseidon2_config_arity4);
                 if !disable_recompose_npo {
-                    verifier.register_recompose_table::<D>($poseidon2_config.d() != D);
+                    verifier.register_recompose_table::<D>(true);
                 }
                 verifier
                     .verify_all_tables::<Challenge>(&out.0)
@@ -1368,7 +1368,7 @@ macro_rules! arity4_run {
                     verifier.register_poseidon2_table::<D>($poseidon2_config);
                     verifier.register_poseidon2_table::<D>($poseidon2_config_arity4);
                     if !disable_recompose_npo {
-                        verifier.register_recompose_table::<D>($poseidon2_config.d() != D);
+                        verifier.register_recompose_table::<D>(true);
                     }
                     verifier
                         .verify_all_tables::<Challenge>(&out.0)

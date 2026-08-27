@@ -446,7 +446,7 @@ macro_rules! define_field_module_keccak_quintic {
                     }
                     prover.$register_fn::<D>($poseidon2_config);
                     if !disable_recompose_npo {
-                        prover.register_recompose_table::<D>($poseidon2_config.d() != D);
+                        prover.register_recompose_table::<D>(true);
                     }
                     prover
                         .verify_all_tables::<Challenge>(&out.0)
@@ -644,7 +644,7 @@ macro_rules! define_field_module {
                     }
                     prover.$register_fn::<$d>($poseidon2_config);
                     if !disable_recompose_npo {
-                        prover.register_recompose_table::<$d>($poseidon2_config.d() != $d);
+                        prover.register_recompose_table::<$d>(true);
                     }
                     prover
                         .verify_all_tables::<Challenge>(&out.0)

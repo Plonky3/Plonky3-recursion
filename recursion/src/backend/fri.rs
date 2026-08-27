@@ -614,22 +614,20 @@ where
     }
 
     fn non_primitive_preprocessors(&self) -> Vec<Box<dyn NpoPreprocessor<Val<SC>>>> {
-        let cl = self.0.challenger_perm_config.extension_degree() != 2;
         let perm_prep = if self.0.challenger_perm_config.as_poseidon1().is_some() {
             poseidon1_preprocessor::<Val<SC>>()
         } else {
             poseidon2_preprocessor::<Val<SC>>()
         };
-        vec![perm_prep, recompose_preprocessor::<Val<SC>>(cl)]
+        vec![perm_prep, recompose_preprocessor::<Val<SC>>(true)]
     }
 
     fn non_primitive_provers(&self, ext_degree: usize) -> Vec<Box<dyn TableProver<SC>>> {
         if ext_degree == 2 {
-            // Every extension limb the verifier packs or unpacks goes through the ALU chain
-            // except the coefficients a lower-degree permutation reads directly, which need the
-            // `recompose/coeff` receives. The plain recompose table therefore never carries a
-            // row, and a table with no rows is absent from the proof.
-            let cl = self.0.challenger_perm_config.extension_degree() != 2;
+            // Every extension limb the verifier packs or unpacks goes through the
+            // `recompose/coeff` table, which publishes each coefficient on the bus alongside
+            // the packed limb. The plain recompose table therefore never carries a row, and a
+            // table with no rows is absent from the proof.
             let mut provers: Vec<Box<dyn TableProver<SC>>> = Vec::new();
             match (
                 self.0.challenger_perm_config.as_poseidon1(),
@@ -659,12 +657,10 @@ where
                     ConstraintProfile::Standard,
                 )));
             }
-            if cl {
-                provers.push(Box::new(RecomposeProver::<2>::new(
-                    self.0.recompose_lanes,
-                    true,
-                )));
-            }
+            provers.push(Box::new(RecomposeProver::<2>::new(
+                self.0.recompose_lanes,
+                true,
+            )));
             provers
         } else {
             Vec::new()
@@ -672,7 +668,6 @@ where
     }
 
     fn non_primitive_air_builders(&self) -> Vec<Box<dyn NpoAirBuilder<SC, 2>>> {
-        let cl = self.0.challenger_perm_config.extension_degree() != 2;
         let mut builders = self.0.challenger_perm_config.as_poseidon1().map_or_else(
             || {
                 poseidon2_air_builders_for_configs::<SC, 2>(
@@ -685,12 +680,10 @@ where
                 )
             },
         );
-        if cl {
-            builders.push(Box::new(RecomposeAirBuilder::<2>::new(
-                self.0.recompose_lanes,
-                true,
-            )));
-        }
+        builders.push(Box::new(RecomposeAirBuilder::<2>::new(
+            self.0.recompose_lanes,
+            true,
+        )));
         builders
     }
 }
@@ -760,22 +753,20 @@ where
     }
 
     fn non_primitive_preprocessors(&self) -> Vec<Box<dyn NpoPreprocessor<Val<SC>>>> {
-        let cl = self.0.challenger_perm_config.extension_degree() != 4;
         let perm_prep = if self.0.challenger_perm_config.as_poseidon1().is_some() {
             poseidon1_preprocessor::<Val<SC>>()
         } else {
             poseidon2_preprocessor::<Val<SC>>()
         };
-        vec![perm_prep, recompose_preprocessor::<Val<SC>>(cl)]
+        vec![perm_prep, recompose_preprocessor::<Val<SC>>(true)]
     }
 
     fn non_primitive_provers(&self, ext_degree: usize) -> Vec<Box<dyn TableProver<SC>>> {
         if ext_degree == 4 {
-            // Every extension limb the verifier packs or unpacks goes through the ALU chain
-            // except the coefficients a lower-degree permutation reads directly, which need the
-            // `recompose/coeff` receives. The plain recompose table therefore never carries a
-            // row, and a table with no rows is absent from the proof.
-            let cl = self.0.challenger_perm_config.extension_degree() != 4;
+            // Every extension limb the verifier packs or unpacks goes through the
+            // `recompose/coeff` table, which publishes each coefficient on the bus alongside
+            // the packed limb. The plain recompose table therefore never carries a row, and a
+            // table with no rows is absent from the proof.
             let mut provers: Vec<Box<dyn TableProver<SC>>> = Vec::new();
             match (
                 self.0.challenger_perm_config.as_poseidon1(),
@@ -805,12 +796,10 @@ where
                     ConstraintProfile::Standard,
                 )));
             }
-            if cl {
-                provers.push(Box::new(RecomposeProver::<4>::new(
-                    self.0.recompose_lanes,
-                    true,
-                )));
-            }
+            provers.push(Box::new(RecomposeProver::<4>::new(
+                self.0.recompose_lanes,
+                true,
+            )));
             provers
         } else {
             Vec::new()
@@ -818,7 +807,6 @@ where
     }
 
     fn non_primitive_air_builders(&self) -> Vec<Box<dyn NpoAirBuilder<SC, 4>>> {
-        let cl = self.0.challenger_perm_config.extension_degree() != 4;
         let mut builders = self.0.challenger_perm_config.as_poseidon1().map_or_else(
             || {
                 poseidon2_air_builders_for_configs::<SC, 4>(
@@ -831,12 +819,10 @@ where
                 )
             },
         );
-        if cl {
-            builders.push(Box::new(RecomposeAirBuilder::<4>::new(
-                self.0.recompose_lanes,
-                true,
-            )));
-        }
+        builders.push(Box::new(RecomposeAirBuilder::<4>::new(
+            self.0.recompose_lanes,
+            true,
+        )));
         builders
     }
 }
@@ -906,22 +892,20 @@ where
     }
 
     fn non_primitive_preprocessors(&self) -> Vec<Box<dyn NpoPreprocessor<Val<SC>>>> {
-        let cl = self.0.challenger_perm_config.extension_degree() != 5;
         let perm_prep = if self.0.challenger_perm_config.as_poseidon1().is_some() {
             poseidon1_preprocessor::<Val<SC>>()
         } else {
             poseidon2_preprocessor::<Val<SC>>()
         };
-        vec![perm_prep, recompose_preprocessor::<Val<SC>>(cl)]
+        vec![perm_prep, recompose_preprocessor::<Val<SC>>(true)]
     }
 
     fn non_primitive_provers(&self, ext_degree: usize) -> Vec<Box<dyn TableProver<SC>>> {
         if ext_degree == 5 {
-            // Every extension limb the verifier packs or unpacks goes through the ALU chain
-            // except the coefficients a lower-degree permutation reads directly, which need the
-            // `recompose/coeff` receives. The plain recompose table therefore never carries a
-            // row, and a table with no rows is absent from the proof.
-            let cl = self.0.challenger_perm_config.extension_degree() != 5;
+            // Every extension limb the verifier packs or unpacks goes through the
+            // `recompose/coeff` table, which publishes each coefficient on the bus alongside
+            // the packed limb. The plain recompose table therefore never carries a row, and a
+            // table with no rows is absent from the proof.
             let mut provers = match (
                 self.0.challenger_perm_config.as_poseidon1(),
                 self.0.challenger_perm_config.as_poseidon2(),
@@ -933,12 +917,10 @@ where
             for config in self.0.extra_poseidon2_table_configs_for_degree(1) {
                 provers.extend(poseidon2_table_provers_d5::<SC>(config));
             }
-            if cl {
-                provers.push(Box::new(RecomposeProver::<5>::new(
-                    self.0.recompose_lanes,
-                    true,
-                )));
-            }
+            provers.push(Box::new(RecomposeProver::<5>::new(
+                self.0.recompose_lanes,
+                true,
+            )));
             provers
         } else {
             Vec::new()
@@ -946,7 +928,6 @@ where
     }
 
     fn non_primitive_air_builders(&self) -> Vec<Box<dyn NpoAirBuilder<SC, 5>>> {
-        let cl = self.0.challenger_perm_config.extension_degree() != 5;
         let mut builders = if self.0.challenger_perm_config.as_poseidon1().is_some() {
             poseidon1_air_builders_d5()
         } else if self
@@ -958,12 +939,10 @@ where
         } else {
             poseidon2_air_builders_for_configs::<SC, 5>(self.0.poseidon2_air_configs_for_degree(1))
         };
-        if cl {
-            builders.push(Box::new(RecomposeAirBuilder::<5>::new(
-                self.0.recompose_lanes,
-                true,
-            )));
-        }
+        builders.push(Box::new(RecomposeAirBuilder::<5>::new(
+            self.0.recompose_lanes,
+            true,
+        )));
         builders
     }
 }

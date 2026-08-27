@@ -1347,8 +1347,12 @@ where
 
     /// Like [`Self::recompose_base_coeffs_to_ext`], but uses the `recompose/coeff` table so the
     /// BF coefficients appear on the WitnessChecks bus (per-coefficient receives).
-    /// Required for soundness when those coefficients are consumed by a D=1 Poseidon2 (or similar)
-    /// inside a higher-degree circuit.
+    /// Required for soundness when those coefficients are consumed as base-field values — by a
+    /// D=1 Poseidon2 inside a higher-degree circuit, or by a later repacking — since the
+    /// per-coefficient receive is what makes each one a base-field element.
+    ///
+    /// Without [`Self::enable_recompose`] this falls back to the ALU `mul_add` chain, which
+    /// ties only the weighted sum and leaves each coefficient `D - 1` free base dimensions.
     pub fn recompose_base_coeffs_to_ext_with_coeff_lookups<BF>(
         &mut self,
         coeffs: &[ExprId],
@@ -1626,6 +1630,35 @@ where
         let saved = core::mem::replace(&mut self.decompose_recompose_via_alu, true);
         let coeffs = self.decompose_ext_to_base_coeffs::<BF>(x);
         self.decompose_recompose_via_alu = saved;
+        coeffs
+    }
+
+    /// Like [`Self::decompose_ext_to_base_coeffs`], but reconstructs through the
+    /// `recompose/coeff` table for this call only.
+    ///
+    /// The `mul_add` chain of [`Self::decompose_ext_to_base_coeffs_via_alu`] constrains
+    /// `sum(c_i · basis_i) == x` over the extension field, which leaves each returned
+    /// coefficient free to be any extension element as long as the weighted sum lands on `x`.
+    /// The `recompose/coeff` row instead publishes each coefficient as `[idx, v_i, 0, .., 0]`,
+    /// so the coefficient a caller gets back is a base-field element by construction. Callers
+    /// that hand the returned targets to something that reads them as base values — a
+    /// transcript, a repacking, a bit decomposition — need this form.
+    ///
+    /// # Cost
+    /// D witness hints + 1 `recompose/coeff` row, in place of the D `mul_add` rows.
+    pub fn decompose_ext_to_base_coeffs_with_coeff_lookups<BF>(
+        &mut self,
+        x: ExprId,
+    ) -> Result<Vec<ExprId>, CircuitBuilderError>
+    where
+        BF: PrimeField64,
+        F: ExtensionField<BF>,
+    {
+        let saved_alu = core::mem::replace(&mut self.decompose_recompose_via_alu, false);
+        let saved_ctl = core::mem::replace(&mut self.recompose_coeff_ctl_for_decompose_links, true);
+        let coeffs = self.decompose_ext_to_base_coeffs::<BF>(x);
+        self.recompose_coeff_ctl_for_decompose_links = saved_ctl;
+        self.decompose_recompose_via_alu = saved_alu;
         coeffs
     }
 

@@ -218,13 +218,13 @@ fn test_batch_verifier_zk_hiding_fri() -> Result<(), VerificationError> {
     let poseidon2_config = Poseidon2Config::KOALA_BEAR_D4_W16;
     let npo_prep: Vec<Box<dyn NpoPreprocessor<F>>> = vec![
         Box::new(Poseidon2Preprocessor),
-        Box::new(RecomposePreprocessor::default()),
+        Box::new(RecomposePreprocessor::new(true)),
     ];
     let mut air_builders = poseidon2_air_builders_for_configs::<_, 4>(vec![
         poseidon2_config.for_challenger(),
         poseidon2_config,
     ]);
-    air_builders.extend(recompose_air_builders(1, false));
+    air_builders.extend(recompose_air_builders(1, true));
     let (
         verification_airs_degrees,
         verification_primitive_columns,
@@ -252,7 +252,7 @@ fn test_batch_verifier_zk_hiding_fri() -> Result<(), VerificationError> {
         BatchStarkProver::new(config3).with_table_packing(verification_table_packing);
     verification_prover.register_poseidon2_table::<4>(poseidon2_config.for_challenger());
     verification_prover.register_poseidon2_table::<4>(poseidon2_config);
-    verification_prover.register_recompose_table::<4>(false);
+    verification_prover.register_recompose_table::<4>(true);
 
     let verification_proof = verification_prover
         .prove_all_tables(&verification_traces, &verification_circuit_prover_data)

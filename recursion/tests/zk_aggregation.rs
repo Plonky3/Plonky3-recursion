@@ -284,13 +284,13 @@ fn test_zk_aggregation() -> Result<(), VerificationError> {
     let table_packing = TablePacking::new(1, 8);
     let npo_prep: Vec<Box<dyn NpoPreprocessor<F>>> = vec![
         Box::new(Poseidon2Preprocessor),
-        Box::new(RecomposePreprocessor::default()),
+        Box::new(RecomposePreprocessor::new(true)),
     ];
     let mut air_builders = poseidon2_air_builders_for_configs::<_, 4>(vec![
         poseidon2_config.for_challenger(),
         poseidon2_config,
     ]);
-    air_builders.extend(recompose_air_builders(1, false));
+    air_builders.extend(recompose_air_builders(1, true));
     let (airs_degrees, primitive_columns, non_primitive_columns) =
         get_airs_and_degrees_with_prep::<MyConfig, _, 4>(
             &aggregation_circuit,
@@ -309,7 +309,7 @@ fn test_zk_aggregation() -> Result<(), VerificationError> {
     let mut prover = BatchStarkProver::new(config_outer).with_table_packing(table_packing);
     prover.register_poseidon2_table::<4>(poseidon2_config.for_challenger());
     prover.register_poseidon2_table::<4>(poseidon2_config);
-    prover.register_recompose_table::<4>(false);
+    prover.register_recompose_table::<4>(true);
 
     let aggregated_proof = prover
         .prove_all_tables(&aggregation_traces, &circuit_prover_data)
