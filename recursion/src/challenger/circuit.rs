@@ -119,8 +119,9 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
         }
 
         // The compact-D1 (base) path feeds capacity as `None` and binds the length tag inside the
-        // AIR via `absorb_len`; the extension-field path feeds the full state, so it must apply the
-        // tag to the tracked capacity element here.
+        // AIR via `absorb_len`; the extension-field path feeds the full state over CTL, so it
+        // applies the tag to the tracked capacity element here and passes the length on so the
+        // AIR's chain constraint expects it there too.
         let is_base =
             p2_config.map_or_else(|| p1_config.is_some_and(|c| c.d() == 1), |c| c.d() == 1);
 

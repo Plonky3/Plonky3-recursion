@@ -773,7 +773,9 @@ pub fn extract_preprocessed_from_operations<
 ///
 /// 2. **Sponge chaining** — when the sponge chain selector is active,
 ///    the next row's input equals the current row's output for that limb.
-///    Checked element by element across the extension degree.
+///    Checked element by element across the extension degree. The first
+///    capacity element additionally absorbs the row's prefix-free duplex
+///    length tag.
 ///
 /// 3. **Merkle-path chaining** — when the Merkle chain selector is
 ///    active, the chaining direction depends on the direction bit:
@@ -985,9 +987,11 @@ pub(crate) fn eval<
         // elements (the extension degree), so we loop over all of them.
         //
         // The sponge chain selector gates the constraint. It is only
-        // active on continuation rows in sponge mode. On chain boundaries,
-        // Merkle rows, or CTL-loaded limbs, the selector is zero and the
-        // constraint is trivially satisfied.
+        // active on continuation rows in sponge mode. On chain boundaries and
+        // Merkle rows the selector is zero and the constraint is trivially
+        // satisfied; so it is on a limb whose value arrives over CTL, except on
+        // the challenger's own table, where the capacity is both looked up and
+        // chained.
 
         // Prefix-free sponge length tag, carried in the first capacity limb's Merkle-chain
         // slot (Merkle rows never take the sponge chain selector). It is zero on every row
@@ -1607,7 +1611,8 @@ mod test {
             padded.resize(target_rows, filler);
         }
 
-        let preprocessed = extract_preprocessed_from_operations::<4, 2, Val, Val>(&padded, 4, 4, false);
+        let preprocessed =
+            extract_preprocessed_from_operations::<4, 2, Val, Val>(&padded, 4, 4, false);
         let (full, partial) = constants;
         let air = Poseidon1CircuitAirBabyBearD4Width16::new_with_preprocessed(
             full.clone(),

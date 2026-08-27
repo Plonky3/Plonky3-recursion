@@ -213,8 +213,9 @@ fn prove_and_verify(circuit: &Circuit<EF>, traces: &Traces<EF>) -> Result<(), St
     prover.register_poseidon2_table::<D>(CFG);
     prover.register_recompose_table::<D>(false);
 
-    // A bus imbalance surfaces either as a prover-side panic (the lookup debugger runs under
-    // `debug_assertions`) or as a verification failure; both count as rejection.
+    // An unsatisfied constraint or an unbalanced bus surfaces either as a prover-side panic
+    // (both debuggers run under `debug_assertions`) or as a verification failure; all count as
+    // rejection.
     std::panic::catch_unwind(AssertUnwindSafe(|| {
         let proof = prover
             .prove_all_tables(traces, &circuit_prover_data)
@@ -223,7 +224,7 @@ fn prove_and_verify(circuit: &Circuit<EF>, traces: &Traces<EF>) -> Result<(), St
             .verify_all_tables::<EF>(&proof)
             .map_err(|e| format!("verify: {e:?}"))
     }))
-    .unwrap_or_else(|_| Err("prover panicked on an unbalanced bus".to_string()))
+    .unwrap_or_else(|_| Err("prover panicked on the tampered trace".to_string()))
 }
 
 fn assert_same_constraint_system(honest: &Circuit<EF>, edited: &Circuit<EF>) {
