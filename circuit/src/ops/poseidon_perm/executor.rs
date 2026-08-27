@@ -441,6 +441,7 @@ impl<V: PoseidonVariant> PoseidonPermExecutor<V> {
             output_indices,
             mmcs_index_sum_idx,
             mmcs_ctl_enabled,
+            absorb_len: self.absorb_len,
         }))
     }
 
@@ -497,6 +498,7 @@ impl<V: PoseidonVariant> PoseidonPermExecutor<V> {
             output_indices,
             mmcs_index_sum_idx: 0,
             mmcs_ctl_enabled: false,
+            absorb_len: self.absorb_len,
         })
     }
 
@@ -752,9 +754,9 @@ impl<V: PoseidonVariant> PoseidonPermExecutor<V> {
             for inp in inputs.iter().take(rate_ext) {
                 hdr.push(F::from_bool(Self::limb_ctl_enabled(inp)));
             }
-            // Reuse the former unused `cap_in_ctl` slot to carry the prefix-free sponge length tag:
-            // the first capacity element is bound to `+= absorb_len` by the compact-D1 AIR. Zero on
-            // non-sponge rows leaves the original zero-capacity / chain behaviour intact.
+            // Prefix-free sponge length tag: the first capacity element is bound to
+            // `+= absorb_len` by the compact-D1 AIR. Zero on non-sponge rows leaves the
+            // zero-capacity / chain behaviour intact.
             hdr.push(F::from_u8(self.absorb_len as u8));
             hdr.push(F::from_bool(cap_chain_enable));
             for inp in inputs.iter().take(rate_ext) {
@@ -791,7 +793,23 @@ impl<V: PoseidonVariant> PoseidonPermExecutor<V> {
             return Ok(());
         }
 
-        for inp in inputs[0..width_ext].iter() {
+        let challenger = self.config.is_challenger();
+        if challenger {
+            for (limb, inp) in inputs[0..width_ext].iter().enumerate() {
+                if !Self::limb_ctl_enabled(inp) {
+                    return Err(CircuitError::NonPrimitiveOpLayoutMismatch {
+                        op: self.op_type.clone(),
+                        expected: format!(
+                            "challenger sponge limb {limb} fed over CTL: chain starts carry the \
+                             zero state and continuations carry the previous output plus the tag"
+                        ),
+                        got: inp.len(),
+                    });
+                }
+            }
+        }
+
+        for (limb, inp) in inputs[0..width_ext].iter().enumerate() {
             if inp.is_empty() {
                 preprocessed.register_non_primitive_preprocessed_no_read(
                     &self.op_type,
@@ -814,14 +832,25 @@ impl<V: PoseidonVariant> PoseidonPermExecutor<V> {
                 preprocessed.register_non_primitive_witness_reads(&self.op_type, inp)?;
                 preprocessed.register_non_primitive_preprocessed_no_read(&self.op_type, &[F::ONE]);
             }
-            let normal_chain_sel =
-                F::from_bool(!self.new_start && !self.merkle_path && inp.is_empty());
+            // Challenger rows feed every limb over CTL, so the capacity chain selector cannot be
+            // inferred from an empty slot; it is on for every continuation row.
+            let capacity_chain = challenger && limb >= rate_ext;
+            let normal_chain_sel = F::from_bool(
+                !self.new_start && !self.merkle_path && (capacity_chain || inp.is_empty()),
+            );
 
             preprocessed
                 .register_non_primitive_preprocessed_no_read(&self.op_type, &[normal_chain_sel]);
 
-            let merkle_chain_sel =
-                F::from_bool(!self.new_start && self.merkle_path && inp.is_empty());
+            // Sponge rows have no Merkle selector, so the first capacity limb's slot carries the
+            // prefix-free length tag the chain constraint re-applies.
+            let merkle_chain_sel = if self.merkle_path {
+                F::from_bool(!self.new_start && inp.is_empty())
+            } else if limb == rate_ext {
+                F::from_u8(self.absorb_len as u8)
+            } else {
+                F::ZERO
+            };
             preprocessed
                 .register_non_primitive_preprocessed_no_read(&self.op_type, &[merkle_chain_sel]);
         }
@@ -1642,6 +1671,7 @@ mod tests {
             output_indices: vec![],
             mmcs_index_sum_idx: 0,
             mmcs_ctl_enabled: false,
+            absorb_len: 0,
         };
 
         exec.update_chain_state(&mut ctx, output.clone(), row);
@@ -1681,6 +1711,7 @@ mod tests {
             output_indices: vec![],
             mmcs_index_sum_idx: 0,
             mmcs_ctl_enabled: false,
+            absorb_len: 0,
         };
 
         exec.update_chain_state(&mut ctx, output.clone(), row);

@@ -122,6 +122,12 @@ pub struct Poseidon2CircuitRow<F> {
     pub mmcs_index_sum_idx: u32,
     /// Whether mmcs_index_sum CTL is enabled. When false, the mmcs_index_sum lookup is disabled.
     pub mmcs_ctl_enabled: bool,
+    /// Prefix-free duplex-sponge length tag: the number of rate elements absorbed on this row.
+    ///
+    /// The permutation input already carries the tag in its first capacity element; the AIR
+    /// re-applies it when chaining that element to the previous row's output. Zero on every
+    /// non-sponge row (Merkle, leaf hash, compression).
+    pub absorb_len: usize,
 }
 
 /// Poseidon2 trace for all hash operations in the circuit.
@@ -236,6 +242,7 @@ pub fn generate_poseidon2_trace<
                 output_indices: row.output_indices.clone(),
                 mmcs_index_sum_idx: row.mmcs_index_sum_idx,
                 mmcs_ctl_enabled: row.mmcs_ctl_enabled,
+                absorb_len: row.absorb_len,
             })
         })
         .collect::<Result<Vec<_>, CircuitError>>()?;

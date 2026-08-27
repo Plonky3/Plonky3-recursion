@@ -627,7 +627,7 @@ impl<
 /// # Compact D=1 width-16 / rate-8 layout
 ///
 /// When `IL == 16`, `OL == 8`, and `poseidon_extension_degree == 1`, rows use a compact layout:
-/// `OL` per-rate-limb `in_ctl`, `cap_in_ctl` (always zero; column retained for layout), `cap_chain_enable`,
+/// `OL` per-rate-limb `in_ctl`, the prefix-free duplex length tag, `cap_chain_enable`,
 /// `OL` sponge chain helpers `(1 − new_start)(1 − merkle_path)(1 − in_ctl_i)`, `OL` Merkle chain helpers
 /// `(1 − new_start)(merkle_path)(1 − in_ctl_i)`, then `IL` input indices, `OL` output indices,
 /// `OL` per-limb `out_ctl`, then four tail flags. Rate `in_ctl` may vary (e.g. partial-chunk overwrite).
@@ -658,6 +658,7 @@ pub fn extract_preprocessed_from_operations<
     operations: &[Poseidon1CircuitRow<OF>],
     d: u32,
     poseidon_extension_degree: usize,
+    challenger: bool,
 ) -> Vec<F> {
     let row_width = poseidon1_preprocessed_row_width_for_air(poseidon_extension_degree, IL, OL);
     let mut preprocessed = Vec::with_capacity(operations.len() * row_width);
@@ -674,6 +675,7 @@ pub fn extract_preprocessed_from_operations<
             mmcs_ctl_enabled,
             new_start,
             merkle_path,
+            absorb_len,
             ..
         } = operation;
 
@@ -695,7 +697,7 @@ pub fn extract_preprocessed_from_operations<
                 }
             }
             let cap_chain_enable = !*new_start;
-            preprocessed.push(F::ZERO);
+            preprocessed.push(F::from_u8(*absorb_len as u8));
             preprocessed.push(F::from_bool(cap_chain_enable));
             for ctl in in_ctl.iter().take(OL) {
                 preprocessed.push(F::from_bool(!*new_start && !*merkle_path && !ctl));
@@ -720,11 +722,24 @@ pub fn extract_preprocessed_from_operations<
             let row = Poseidon1PreprocessedRow::<IL, OL, F> {
                 input_limbs: core::array::from_fn(|i| {
                     let ctl = in_ctl[i];
+                    // Challenger rows feed every limb over CTL, so the capacity chain selector
+                    // cannot be inferred from an empty slot; it is on for every continuation row.
+                    let capacity_chain = challenger && i >= OL;
                     Poseidon1PrepInputLimb {
                         idx: F::from_u32(input_indices[i] * d),
                         in_ctl: F::from_bool(ctl),
-                        normal_chain_sel: F::from_bool(!*new_start && !*merkle_path && !ctl),
-                        merkle_chain_sel: F::from_bool(!*new_start && *merkle_path && !ctl),
+                        normal_chain_sel: F::from_bool(
+                            !*new_start && !*merkle_path && (capacity_chain || !ctl),
+                        ),
+                        // Sponge rows have no Merkle selector, so the first capacity limb's slot
+                        // carries the prefix-free length tag the chain constraint re-applies.
+                        merkle_chain_sel: if *merkle_path {
+                            F::from_bool(!*new_start && !ctl)
+                        } else if i == OL {
+                            F::from_u8(*absorb_len as u8)
+                        } else {
+                            F::ZERO
+                        },
                     }
                 }),
 
@@ -890,7 +905,7 @@ pub(crate) fn eval<
             }
         }
         let not_merkle = AB::Expr::ONE - next_merkle_path.into();
-        // Prefix-free sponge length tag, carried in the former `cap_in_ctl` slot. The first
+        // Prefix-free sponge length tag. The first
         // capacity element absorbs `+= cap_tag` on each chained sponge row; every other capacity
         // element chains unchanged.
         let cap_tag = s[RATE_EXT];
@@ -974,13 +989,23 @@ pub(crate) fn eval<
         // Merkle rows, or CTL-loaded limbs, the selector is zero and the
         // constraint is trivially satisfied.
 
+        // Prefix-free sponge length tag, carried in the first capacity limb's Merkle-chain
+        // slot (Merkle rows never take the sponge chain selector). It is zero on every row
+        // that is not a duplex-sponge absorb.
+        let cap_tag = next_prep.input_limbs[RATE_EXT.min(WIDTH_EXT - 1)].merkle_chain_sel;
+
         for limb in 0..WIDTH_EXT {
             for d in 0..D {
                 let gate = next_prep.input_limbs[limb].normal_chain_sel;
+                let tag = if limb == RATE_EXT && d == 0 {
+                    cap_tag.into()
+                } else {
+                    AB::Expr::ZERO
+                };
                 builder
                     .when_transition()
                     .when(gate)
-                    .assert_zero(next_in[limb * D + d] - local_out[limb * D + d]);
+                    .assert_zero(next_in[limb * D + d] - local_out[limb * D + d] - tag);
             }
         }
 
@@ -1577,11 +1602,12 @@ mod test {
                 output_indices: vec![0; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
                 mmcs_index_sum_idx: 0,
                 mmcs_ctl_enabled: false,
+                absorb_len: 0,
             };
             padded.resize(target_rows, filler);
         }
 
-        let preprocessed = extract_preprocessed_from_operations::<4, 2, Val, Val>(&padded, 4, 4);
+        let preprocessed = extract_preprocessed_from_operations::<4, 2, Val, Val>(&padded, 4, 4, false);
         let (full, partial) = constants;
         let air = Poseidon1CircuitAirBabyBearD4Width16::new_with_preprocessed(
             full.clone(),
@@ -1612,6 +1638,7 @@ mod test {
             output_indices: vec![0; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
             mmcs_index_sum_idx: 0,
             mmcs_ctl_enabled: false,
+            absorb_len: 0,
         };
 
         // Row B: new_start=false, sponge mode - chain from output_a.
@@ -1629,6 +1656,7 @@ mod test {
             output_indices: vec![0; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
             mmcs_index_sum_idx: 0,
             mmcs_ctl_enabled: false,
+            absorb_len: 0,
         };
 
         // Row C: merkle mode, mmcs_bit=false. Prev digest chains into limbs 0..1; sibling
@@ -1649,6 +1677,7 @@ mod test {
             output_indices: vec![0; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
             mmcs_index_sum_idx: 0,
             mmcs_ctl_enabled: false,
+            absorb_len: 0,
         };
 
         // Row D: sponge mode chaining from output_c.
@@ -1665,6 +1694,7 @@ mod test {
             output_indices: vec![0; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
             mmcs_index_sum_idx: 0,
             mmcs_ctl_enabled: false,
+            absorb_len: 0,
         };
 
         check_rows(vec![sponge_a, sponge_b, sponge_c, sponge_d], &constants);
@@ -1691,6 +1721,7 @@ mod test {
             output_indices: vec![0; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
             mmcs_index_sum_idx: 0,
             mmcs_ctl_enabled: false,
+            absorb_len: 0,
         };
 
         // Row B: merkle mode, mmcs_bit=true (right child).
@@ -1714,6 +1745,7 @@ mod test {
             output_indices: vec![0; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
             mmcs_index_sum_idx: 0,
             mmcs_ctl_enabled: false,
+            absorb_len: 0,
         };
 
         // Row C: sponge chaining from output_b.
@@ -1729,6 +1761,7 @@ mod test {
             output_indices: vec![0; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
             mmcs_index_sum_idx: 0,
             mmcs_ctl_enabled: false,
+            absorb_len: 0,
         };
 
         check_rows(vec![row_a, row_b, row_c], &constants);
@@ -1760,6 +1793,7 @@ mod test {
             output_indices: vec![0; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
             mmcs_index_sum_idx: 0,
             mmcs_ctl_enabled: true,
+            absorb_len: 0,
         };
 
         // Row 1: left child (mmcs_bit=0), chain output[0..2D] → input[0..2D].
@@ -1779,6 +1813,7 @@ mod test {
             output_indices: vec![0; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
             mmcs_index_sum_idx: 0,
             mmcs_ctl_enabled: true,
+            absorb_len: 0,
         };
 
         // Row 2: right child (mmcs_bit=1), output[0..D]→input[2D..3D], output[D..2D]→input[3D..4D].
@@ -1800,6 +1835,7 @@ mod test {
             output_indices: vec![0; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
             mmcs_index_sum_idx: 0,
             mmcs_ctl_enabled: true,
+            absorb_len: 0,
         };
 
         check_rows(vec![row_0, row_1, row_2], &constants);

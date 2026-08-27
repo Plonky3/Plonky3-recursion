@@ -178,6 +178,7 @@ pub fn generate_poseidon1_trace<
                 output_indices: row.output_indices.clone(),
                 mmcs_index_sum_idx: row.mmcs_index_sum_idx,
                 mmcs_ctl_enabled: row.mmcs_ctl_enabled,
+                absorb_len: row.absorb_len,
             })
         })
         .collect::<Result<Vec<_>, CircuitError>>()?;

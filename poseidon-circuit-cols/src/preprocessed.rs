@@ -66,6 +66,10 @@ pub struct PoseidonPrepInputLimb<T> {
     ///
     /// The last two limbs reuse the first two selectors, gated on the
     /// opposite direction.
+    ///
+    /// On sponge rows no limb carries a Merkle selector, so the first
+    /// capacity limb's column instead holds the prefix-free duplex length
+    /// tag that the sponge chain constraint adds to that limb.
     pub merkle_chain_sel: T,
 }
 
@@ -120,7 +124,7 @@ pub const fn poseidon_uses_compact_d1_preprocessed(
 }
 
 /// Scalar columns before input indices in the compact D=1 layout: `rate_ext` per-limb `in_ctl`,
-/// unused `cap_in_ctl` (always zero; kept for fixed offset), `cap_chain_enable`, then `rate_ext`
+/// the prefix-free duplex length tag, `cap_chain_enable`, then `rate_ext`
 /// sponge-chain helpers `(1 − new_start) * (1 − merkle_path) * (1 − in_ctl_i)` and `rate_ext`
 /// Merkle-chain helpers `(1 − new_start) * merkle_path * (1 − in_ctl_i)` so transition gates stay degree-3.
 #[inline]
@@ -136,7 +140,7 @@ pub const fn poseidon_preprocessed_row_width_for_air(
     rate_ext: usize,
 ) -> usize {
     if poseidon_uses_compact_d1_preprocessed(poseidon_d, width_ext, rate_ext) {
-        // Compact D=1: per-rate-limb in_ctl + cap_in_ctl (zero) + cap_chain + input idx + output idx +
+        // Compact D=1: per-rate-limb in_ctl + length tag + cap_chain + input idx + output idx +
         // per-limb out_ctl (out_ctl stays per limb for prover multiplicity pass).
         poseidon_d1_compact_preprocessed_header_cols(rate_ext) + width_ext + rate_ext + rate_ext + 4
     } else {

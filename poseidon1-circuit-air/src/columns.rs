@@ -44,6 +44,12 @@ pub struct Poseidon1CircuitRow<F> {
     pub mmcs_index_sum_idx: u32,
     /// Whether the `mmcs_index_sum` CTL is enabled.
     pub mmcs_ctl_enabled: bool,
+    /// Prefix-free duplex-sponge length tag: the number of rate elements absorbed on this row.
+    ///
+    /// The permutation input already carries the tag in its first capacity element; the AIR
+    /// re-applies it when chaining that element to the previous row's output. Zero on every
+    /// non-sponge row (Merkle, leaf hash, compression).
+    pub absorb_len: usize,
 }
 
 /// Compile-time guard pinning the [`Poseidon1CircuitCols`] `#[repr(C)]` split.

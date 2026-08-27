@@ -50,11 +50,14 @@ pub struct PoseidonRowFields<F> {
     pub output_indices: Vec<u32>,
     pub mmcs_index_sum_idx: u32,
     pub mmcs_ctl_enabled: bool,
+    pub absorb_len: usize,
 }
 
 /// Config methods consumed by the shared Poseidon plugin and executor.
 pub trait PoseidonConfigApi: Copy {
     fn d(self) -> usize;
+    /// Whether this configuration keys the challenger's own permutation table.
+    fn is_challenger(self) -> bool;
     fn width(self) -> usize;
     fn rate_ext(self) -> usize;
     fn capacity_ext(self) -> usize;
@@ -80,6 +83,9 @@ pub trait PoseidonConfigApi: Copy {
 impl PoseidonConfigApi for Poseidon1Config {
     fn d(self) -> usize {
         Self::d(self)
+    }
+    fn is_challenger(self) -> bool {
+        Self::is_challenger(self)
     }
     fn width(self) -> usize {
         Self::width(self)
@@ -114,6 +120,9 @@ impl PoseidonConfigApi for Poseidon1Config {
 impl PoseidonConfigApi for Poseidon2Config {
     fn d(self) -> usize {
         Self::d(self)
+    }
+    fn is_challenger(self) -> bool {
+        Self::is_challenger(self)
     }
     fn width(self) -> usize {
         Self::width(self)
@@ -256,6 +265,7 @@ impl PoseidonVariant for Poseidon1Variant {
             output_indices: fields.output_indices,
             mmcs_index_sum_idx: fields.mmcs_index_sum_idx,
             mmcs_ctl_enabled: fields.mmcs_ctl_enabled,
+            absorb_len: fields.absorb_len,
         }
     }
 }
@@ -320,6 +330,7 @@ impl PoseidonVariant for Poseidon2Variant {
             output_indices: fields.output_indices,
             mmcs_index_sum_idx: fields.mmcs_index_sum_idx,
             mmcs_ctl_enabled: fields.mmcs_ctl_enabled,
+            absorb_len: fields.absorb_len,
         }
     }
 }

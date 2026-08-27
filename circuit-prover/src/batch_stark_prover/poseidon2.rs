@@ -1132,6 +1132,7 @@ impl Poseidon2Prover {
             output_indices: vec![0; rate_ext],
             mmcs_index_sum_idx: 0,
             mmcs_ctl_enabled: false,
+            absorb_len: 0,
         };
         let mut padded_ops = t.operations.clone();
         padded_ops.resize(padded_rows, pad_filler);
@@ -1144,6 +1145,7 @@ impl Poseidon2Prover {
                     &t.operations,
                     witness_ctl_scale,
                     1,
+                    cfg.is_challenger(),
                 );
                 let (inner, matrix_f) = match wbus {
                     1 => {
@@ -1189,6 +1191,7 @@ impl Poseidon2Prover {
                     &t.operations,
                     witness_ctl_scale,
                     cfg.d(),
+                    cfg.is_challenger(),
                 );
                 let air =
                     BabyBearD4Width16::default_air_with_preprocessed(preprocessed, min_height);
@@ -1209,6 +1212,7 @@ impl Poseidon2Prover {
                     &t.operations,
                     witness_ctl_scale,
                     cfg.d(),
+                    cfg.is_challenger(),
                 );
                 let air =
                     BabyBearD4Width24::default_air_with_preprocessed(preprocessed, min_height);
@@ -1229,6 +1233,7 @@ impl Poseidon2Prover {
                     &t.operations,
                     witness_ctl_scale,
                     cfg.d(),
+                    cfg.is_challenger(),
                 );
                 let air =
                     BabyBearD4Width32::default_air_with_preprocessed(preprocessed, min_height);
@@ -1250,6 +1255,7 @@ impl Poseidon2Prover {
                     &t.operations,
                     witness_ctl_scale,
                     1,
+                    cfg.is_challenger(),
                 );
                 let (inner, matrix_f) = match wbus {
                     1 => {
@@ -1295,6 +1301,7 @@ impl Poseidon2Prover {
                     &t.operations,
                     witness_ctl_scale,
                     cfg.d(),
+                    cfg.is_challenger(),
                 );
                 let air =
                     KoalaBearD4Width16::default_air_with_preprocessed(preprocessed, min_height);
@@ -1315,6 +1322,7 @@ impl Poseidon2Prover {
                     &t.operations,
                     witness_ctl_scale,
                     cfg.d(),
+                    cfg.is_challenger(),
                 );
                 let air =
                     KoalaBearD4Width24::default_air_with_preprocessed(preprocessed, min_height);
@@ -1336,6 +1344,7 @@ impl Poseidon2Prover {
                     &t.operations,
                     witness_ctl_scale,
                     1,
+                    cfg.is_challenger(),
                 );
                 let (inner, matrix_f) = match wbus {
                     1 => {
@@ -1381,6 +1390,7 @@ impl Poseidon2Prover {
                     &t.operations,
                     witness_ctl_scale,
                     cfg.d(),
+                    cfg.is_challenger(),
                 );
                 let air =
                     KoalaBearD4Width32::default_air_with_preprocessed(preprocessed, min_height);
@@ -1401,6 +1411,7 @@ impl Poseidon2Prover {
                     &t.operations,
                     witness_ctl_scale,
                     cfg.d(),
+                    cfg.is_challenger(),
                 );
                 let air =
                     goldilocks_d2_width8_default_air_with_preprocessed(preprocessed, min_height);
@@ -1421,6 +1432,7 @@ impl Poseidon2Prover {
                     &t.operations,
                     witness_ctl_scale,
                     cfg.d(),
+                    cfg.is_challenger(),
                 );
                 let air =
                     GoldilocksD2Width16::default_air_with_preprocessed(preprocessed, min_height);
