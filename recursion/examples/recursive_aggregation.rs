@@ -484,6 +484,9 @@ macro_rules! define_field_module_aggregation_quintic {
                                 report_proof_size(&out.0);
                                 let mut verifier = BatchStarkProver::new(agg_config.clone())
                                     .with_table_packing(agg_params.table_packing.clone());
+                                if $poseidon2_config.d() >= 2 {
+                                    verifier.$register_fn::<D>($poseidon2_config.for_challenger());
+                                }
                                 verifier.$register_fn::<D>($poseidon2_config);
                                 if !disable_recompose_npo {
                                     verifier.register_recompose_table::<D>($poseidon2_config.d() != D);
@@ -740,6 +743,9 @@ macro_rules! define_field_module {
                                 report_proof_size(&out.0);
                                 let mut verifier = BatchStarkProver::new(agg_config.clone())
                                     .with_table_packing(agg_params.table_packing.clone());
+                                if $poseidon2_config.d() >= 2 {
+                                    verifier.$register_fn::<$d>($poseidon2_config.for_challenger());
+                                }
                                 verifier.$register_fn::<$d>($poseidon2_config);
                                 if !disable_recompose_npo {
                                     verifier.register_recompose_table::<$d>($poseidon2_config.d() != $d);
@@ -1279,6 +1285,9 @@ macro_rules! arity4_run {
                 report_proof_size(&out.0);
                 let mut verifier = BatchStarkProver::new(output_config.clone())
                     .with_table_packing(agg_params.table_packing.clone());
+                if $poseidon2_config.d() >= 2 {
+                    verifier.register_poseidon2_table::<D>($poseidon2_config.for_challenger());
+                }
                 verifier.register_poseidon2_table::<D>($poseidon2_config);
                 verifier.register_poseidon2_table::<D>($poseidon2_config_arity4);
                 if !disable_recompose_npo {
@@ -1353,6 +1362,9 @@ macro_rules! arity4_run {
                     report_proof_size(&out.0);
                     let mut verifier = BatchStarkProver::new(agg_config.clone())
                         .with_table_packing(agg_params.table_packing.clone());
+                    if $poseidon2_config.d() >= 2 {
+                        verifier.register_poseidon2_table::<D>($poseidon2_config.for_challenger());
+                    }
                     verifier.register_poseidon2_table::<D>($poseidon2_config);
                     verifier.register_poseidon2_table::<D>($poseidon2_config_arity4);
                     if !disable_recompose_npo {
