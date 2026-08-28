@@ -154,6 +154,13 @@ struct Args {
     /// with `--hash poseidon2` (binomial `D=4` or `--quintic` `D=5`).
     #[arg(long, default_value_t = false)]
     pub arity4: bool,
+
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "Build/prove aggregation levels >= 2 via a fixed RecursionLayerProfile instead of deriving shape from the previous proof"
+    )]
+    pub profile: bool,
 }
 
 impl Args {
@@ -197,6 +204,10 @@ fn main() {
             !args.zk,
             "--arity4 is not yet wired with --zk in recursive_aggregation"
         );
+        assert!(
+            !args.profile,
+            "--profile is not yet wired with --arity4 in recursive_aggregation"
+        );
         match (args.field, args.quintic) {
             (FieldOption::KoalaBear, true) => koala_bear_quintic_arity4::run(
                 args.num_recursive_layers,
@@ -238,6 +249,7 @@ fn main() {
             args.security_level,
             args.zk,
             args.disable_recompose_npo,
+            args.profile,
         ),
         (HashOption::Poseidon2, FieldOption::KoalaBear, false) => koala_bear::run(
             args.num_recursive_layers,
@@ -246,6 +258,7 @@ fn main() {
             args.security_level,
             args.zk,
             args.disable_recompose_npo,
+            args.profile,
         ),
         (HashOption::Poseidon2, FieldOption::BabyBear, _) => baby_bear::run(
             args.num_recursive_layers,
@@ -254,6 +267,7 @@ fn main() {
             args.security_level,
             args.zk,
             args.disable_recompose_npo,
+            args.profile,
         ),
         (HashOption::Poseidon2, FieldOption::Goldilocks, _) => goldilocks::run(
             args.num_recursive_layers,
@@ -262,6 +276,7 @@ fn main() {
             args.security_level,
             args.zk,
             args.disable_recompose_npo,
+            args.profile,
         ),
         (HashOption::Poseidon1, FieldOption::KoalaBear, true) => koala_bear_quintic_poseidon1::run(
             args.num_recursive_layers,
@@ -270,6 +285,7 @@ fn main() {
             args.security_level,
             args.zk,
             args.disable_recompose_npo,
+            args.profile,
         ),
         (HashOption::Poseidon1, FieldOption::KoalaBear, false) => koala_bear_poseidon1::run(
             args.num_recursive_layers,
@@ -278,6 +294,7 @@ fn main() {
             args.security_level,
             args.zk,
             args.disable_recompose_npo,
+            args.profile,
         ),
         (HashOption::Poseidon1, FieldOption::BabyBear, _) => baby_bear_poseidon1::run(
             args.num_recursive_layers,
@@ -286,6 +303,7 @@ fn main() {
             args.security_level,
             args.zk,
             args.disable_recompose_npo,
+            args.profile,
         ),
         (HashOption::Poseidon1, FieldOption::Goldilocks, _) => goldilocks_poseidon1::run(
             args.num_recursive_layers,
@@ -294,6 +312,7 @@ fn main() {
             args.security_level,
             args.zk,
             args.disable_recompose_npo,
+            args.profile,
         ),
     }
 }
@@ -390,6 +409,7 @@ macro_rules! define_field_module_aggregation_quintic {
                 security_level: usize,
                 zk: bool,
                 disable_recompose_npo: bool,
+                profile: bool,
             ) {
                 if zk {
                     tracing::warn!(
@@ -420,6 +440,19 @@ macro_rules! define_field_module_aggregation_quintic {
                             .collect();
 
                         let mut prep_cache: Option<AggregationPrepCache<$cfg_type>> = None;
+                        // `--profile` path: a `RecursionLayerProfile` fixed point is searched for
+                        // starting from level 1's proofs, re-solving (from the first pair) against
+                        // each new level's own output until the profile stops changing (mirroring
+                        // `solve_fixed_point`'s own documented cross-layer contract, applied at
+                        // level granularity since every pair within a level shares the same
+                        // circuit shape). Every level builds its own prover setup once, reused for
+                        // that level's remaining pairs (`level_prep` below) even while the profile
+                        // is still moving; once a solve leaves the profile unchanged across two
+                        // consecutive levels, that prep is promoted to `agg_profile_prep` and
+                        // reused for every remaining level too.
+                        let mut agg_profile_config: Option<$cfg_type> = None;
+                        let mut agg_current_profile: Option<RecursionLayerProfile> = None;
+                        let mut agg_profile_prep: Option<ProfilePrepCache<$cfg_type>> = None;
                         let mut level = 0u32;
                         while proofs.len() > 1 {
                             level += 1;
@@ -428,6 +461,122 @@ macro_rules! define_field_module_aggregation_quintic {
                                 "Aggregation level {level}: {} proofs -> {pairs}",
                                 proofs.len()
                             );
+
+                            if profile && level >= 2 {
+                                let config = agg_profile_config.get_or_insert_with(|| $config_agg(0));
+
+                                let mut next_level = Vec::with_capacity(pairs);
+                                let mut layer_circuit = None;
+                                let mut level_prof: Option<RecursionLayerProfile> = None;
+                                // Populated once per level for this level's own resolved profile,
+                                // separately from `agg_profile_prep`'s cross-level cache (which
+                                // only holds a profile confirmed stable across two levels).
+                                let mut level_prep: Option<ProfilePrepCache<$cfg_type>> = None;
+                                for pair_idx in 0..pairs {
+                                    let li = pair_idx * 2;
+                                    let left = proofs[li].into_recursion_input::<BatchOnly>();
+                                    let right = proofs[li + 1].into_recursion_input::<BatchOnly>();
+
+                                    if layer_circuit.is_none() {
+                                        layer_circuit = Some(
+                                            build_aggregation_layer_circuit::<$cfg_type, _, _, _, D>(
+                                                &left, &right, config, &backend,
+                                            )
+                                            .unwrap_or_else(|e| {
+                                                panic!("Failed to build circuit at level {level}: {e:?}")
+                                            }),
+                                        );
+
+                                        let (circuit_for_solve, _) = layer_circuit.as_ref().unwrap();
+                                        let resolved = if let Some(prep) = agg_profile_prep.as_ref() {
+                                            prep.profile.clone()
+                                        } else {
+                                            let seed = agg_current_profile.clone().unwrap_or_else(|| {
+                                                RecursionLayerProfile {
+                                                    table_packing: table_packing.clone().with_fri_params(
+                                                        fri_params.log_final_poly_len,
+                                                        fri_params.log_blowup,
+                                                    ),
+                                                    hash: HashProfile::default(),
+                                                    transcript: TranscriptKind::BaseDuplex,
+                                                }
+                                            });
+                                            let resolved = solve_fixed_point_for_circuit::<$cfg_type, BatchOnly, _, D>(
+                                                seed.clone(),
+                                                circuit_for_solve,
+                                                &backend,
+                                                ConstraintProfile::Standard,
+                                                8,
+                                            );
+                                            let already_stable = agg_current_profile.as_ref() == Some(&resolved);
+                                            agg_current_profile = Some(resolved.clone());
+                                            // This level's own pairs all share `resolved`, so
+                                            // build its prover setup once regardless of whether
+                                            // it also turns out to hold for the next level.
+                                            let inner = build_next_layer_prep::<$cfg_type, BatchOnly, _, D>(
+                                                circuit_for_solve,
+                                                config,
+                                                &backend,
+                                                &ProveNextLayerParams {
+                                                    table_packing: resolved.table_packing.clone(),
+                                                    constraint_profile: ConstraintProfile::Standard,
+                                                },
+                                            )
+                                            .unwrap_or_else(|e| {
+                                                panic!("Failed to build prep cache at level {level}: {e:?}")
+                                            });
+                                            let prep = ProfilePrepCache {
+                                                profile: resolved.clone(),
+                                                inner,
+                                            };
+                                            if already_stable {
+                                                agg_profile_prep = Some(prep);
+                                            } else {
+                                                level_prep = Some(prep);
+                                            }
+                                            resolved
+                                        };
+                                        level_prof = Some(resolved);
+                                    }
+                                    let (verification_circuit, (left_result, right_result)) =
+                                        layer_circuit.as_ref().unwrap();
+                                    let prof = level_prof.as_ref().unwrap();
+
+                                    let out = prove_aggregation_layer_with_profile::<$cfg_type, _, _, _, D>(
+                                        prof,
+                                        &left,
+                                        &right,
+                                        left_result,
+                                        right_result,
+                                        verification_circuit,
+                                        config,
+                                        &backend,
+                                        agg_profile_prep.as_ref().or(level_prep.as_ref()),
+                                    )
+                                    .unwrap_or_else(|e| {
+                                        panic!("Failed at level {level}, pair {pair_idx}: {e:?}")
+                                    });
+
+                                    report_proof_size(&out.0);
+                                    let mut verifier = BatchStarkProver::new(config.clone())
+                                        .with_table_packing(prof.table_packing.clone());
+                                    if $poseidon2_config.d() >= 2 {
+                                        verifier.$register_fn::<D>($poseidon2_config.for_challenger());
+                                    }
+                                    verifier.$register_fn::<D>($poseidon2_config);
+                                    if !disable_recompose_npo {
+                                        verifier.register_recompose_table::<D>(true);
+                                    }
+                                    verifier
+                                        .verify_all_tables::<Challenge>(&out.0)
+                                        .unwrap_or_else(|e| {
+                                            panic!("Verification failed at level {level}, pair {pair_idx}: {e:?}")
+                                        });
+                                    next_level.push(out);
+                                }
+                                proofs = next_level;
+                                continue;
+                            }
 
                             let agg_params = ProveNextLayerParams {
                                 table_packing: if level == 1 {
@@ -655,6 +804,7 @@ macro_rules! define_field_module {
                 security_level: usize,
                 zk: bool,
                 disable_recompose_npo: bool,
+                profile: bool,
             ) {
                 let base_table_packing = TablePacking::new(1, 1)
                     .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup);
@@ -679,6 +829,19 @@ macro_rules! define_field_module {
                             .collect();
 
                         let mut prep_cache: Option<AggregationPrepCache<$cfg_type>> = None;
+                        // `--profile` path: a `RecursionLayerProfile` fixed point is searched for
+                        // starting from level 1's proofs, re-solving (from the first pair) against
+                        // each new level's own output until the profile stops changing (mirroring
+                        // `solve_fixed_point`'s own documented cross-layer contract, applied at
+                        // level granularity since every pair within a level shares the same
+                        // circuit shape). Every level builds its own prover setup once, reused for
+                        // that level's remaining pairs (`level_prep` below) even while the profile
+                        // is still moving; once a solve leaves the profile unchanged across two
+                        // consecutive levels, that prep is promoted to `agg_profile_prep` and
+                        // reused for every remaining level too.
+                        let mut agg_profile_config: Option<$cfg_type> = None;
+                        let mut agg_current_profile: Option<RecursionLayerProfile> = None;
+                        let mut agg_profile_prep: Option<ProfilePrepCache<$cfg_type>> = None;
                         let mut level = 0u32;
                         while proofs.len() > 1 {
                             level += 1;
@@ -687,6 +850,122 @@ macro_rules! define_field_module {
                                 "Aggregation level {level}: {} proofs -> {pairs}",
                                 proofs.len()
                             );
+
+                            if profile && level >= 2 {
+                                let config = agg_profile_config.get_or_insert_with(|| $config_agg(0));
+
+                                let mut next_level = Vec::with_capacity(pairs);
+                                let mut layer_circuit = None;
+                                let mut level_prof: Option<RecursionLayerProfile> = None;
+                                // Populated once per level for this level's own resolved profile,
+                                // separately from `agg_profile_prep`'s cross-level cache (which
+                                // only holds a profile confirmed stable across two levels).
+                                let mut level_prep: Option<ProfilePrepCache<$cfg_type>> = None;
+                                for pair_idx in 0..pairs {
+                                    let li = pair_idx * 2;
+                                    let left = proofs[li].into_recursion_input::<BatchOnly>();
+                                    let right = proofs[li + 1].into_recursion_input::<BatchOnly>();
+
+                                    if layer_circuit.is_none() {
+                                        layer_circuit = Some(
+                                            build_aggregation_layer_circuit::<$cfg_type, _, _, _, D>(
+                                                &left, &right, config, &backend,
+                                            )
+                                            .unwrap_or_else(|e| {
+                                                panic!("Failed to build circuit at level {level}: {e:?}")
+                                            }),
+                                        );
+
+                                        let (circuit_for_solve, _) = layer_circuit.as_ref().unwrap();
+                                        let resolved = if let Some(prep) = agg_profile_prep.as_ref() {
+                                            prep.profile.clone()
+                                        } else {
+                                            let seed = agg_current_profile.clone().unwrap_or_else(|| {
+                                                RecursionLayerProfile {
+                                                    table_packing: table_packing.clone().with_fri_params(
+                                                        fri_params.log_final_poly_len,
+                                                        fri_params.log_blowup,
+                                                    ),
+                                                    hash: HashProfile::default(),
+                                                    transcript: TranscriptKind::BaseDuplex,
+                                                }
+                                            });
+                                            let resolved = solve_fixed_point_for_circuit::<$cfg_type, BatchOnly, _, D>(
+                                                seed.clone(),
+                                                circuit_for_solve,
+                                                &backend,
+                                                ConstraintProfile::Standard,
+                                                8,
+                                            );
+                                            let already_stable = agg_current_profile.as_ref() == Some(&resolved);
+                                            agg_current_profile = Some(resolved.clone());
+                                            // This level's own pairs all share `resolved`, so
+                                            // build its prover setup once regardless of whether
+                                            // it also turns out to hold for the next level.
+                                            let inner = build_next_layer_prep::<$cfg_type, BatchOnly, _, D>(
+                                                circuit_for_solve,
+                                                config,
+                                                &backend,
+                                                &ProveNextLayerParams {
+                                                    table_packing: resolved.table_packing.clone(),
+                                                    constraint_profile: ConstraintProfile::Standard,
+                                                },
+                                            )
+                                            .unwrap_or_else(|e| {
+                                                panic!("Failed to build prep cache at level {level}: {e:?}")
+                                            });
+                                            let prep = ProfilePrepCache {
+                                                profile: resolved.clone(),
+                                                inner,
+                                            };
+                                            if already_stable {
+                                                agg_profile_prep = Some(prep);
+                                            } else {
+                                                level_prep = Some(prep);
+                                            }
+                                            resolved
+                                        };
+                                        level_prof = Some(resolved);
+                                    }
+                                    let (verification_circuit, (left_result, right_result)) =
+                                        layer_circuit.as_ref().unwrap();
+                                    let prof = level_prof.as_ref().unwrap();
+
+                                    let out = prove_aggregation_layer_with_profile::<$cfg_type, _, _, _, D>(
+                                        prof,
+                                        &left,
+                                        &right,
+                                        left_result,
+                                        right_result,
+                                        verification_circuit,
+                                        config,
+                                        &backend,
+                                        agg_profile_prep.as_ref().or(level_prep.as_ref()),
+                                    )
+                                    .unwrap_or_else(|e| {
+                                        panic!("Failed at level {level}, pair {pair_idx}: {e:?}")
+                                    });
+
+                                    report_proof_size(&out.0);
+                                    let mut verifier = BatchStarkProver::new(config.clone())
+                                        .with_table_packing(prof.table_packing.clone());
+                                    if $poseidon2_config.d() >= 2 {
+                                        verifier.$register_fn::<$d>($poseidon2_config.for_challenger());
+                                    }
+                                    verifier.$register_fn::<$d>($poseidon2_config);
+                                    if !disable_recompose_npo {
+                                        verifier.register_recompose_table::<$d>(true);
+                                    }
+                                    verifier
+                                        .verify_all_tables::<Challenge>(&out.0)
+                                        .unwrap_or_else(|e| {
+                                            panic!("Verification failed at level {level}, pair {pair_idx}: {e:?}")
+                                        });
+                                    next_level.push(out);
+                                }
+                                proofs = next_level;
+                                continue;
+                            }
 
                             let agg_params = ProveNextLayerParams {
                                 table_packing: if level == 1 {

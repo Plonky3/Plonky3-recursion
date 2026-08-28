@@ -40,7 +40,7 @@ fn proof_shape_err(e: &impl ToString) -> VerificationError {
 ///
 /// `provers` is passed in already constructed so the helper stays agnostic to which AIR the
 /// aggregation site dispatches `non_primitive_provers` through.
-fn build_layer_prover<SC>(
+pub(crate) fn build_layer_prover<SC>(
     config: &SC,
     table_packing: &TablePacking,
     constraint_profile: ConstraintProfile,
@@ -594,7 +594,7 @@ where
     Ok((verification_circuit, (left_result, right_result)))
 }
 
-fn run_aggregation_verification_circuit<SC, A1, A2, B, const D: usize>(
+pub(crate) fn run_aggregation_verification_circuit<SC, A1, A2, B, const D: usize>(
     left: &RecursionInput<'_, SC, A1>,
     right: &RecursionInput<'_, SC, A2>,
     left_result: &<B as PcsRecursionBackend<SC, A1, D>>::VerifierResult,

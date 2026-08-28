@@ -155,6 +155,13 @@ struct Args {
 
     #[arg(long, default_value_t = false, help = "Enable ZK mode (HidingFriPcs)")]
     pub zk: bool,
+
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "Build/prove recursion layers >= 2 via a fixed RecursionLayerProfile instead of deriving shape from the previous proof"
+    )]
+    pub profile: bool,
 }
 
 impl Args {
@@ -203,6 +210,7 @@ fn main() {
             args.security_level,
             args.zk,
             args.disable_recompose_npo,
+            args.profile,
         ),
         (HashOption::Poseidon2, FieldOption::KoalaBear, false) => koala_bear::run(
             args.num_hashes,
@@ -212,6 +220,7 @@ fn main() {
             args.security_level,
             args.zk,
             args.disable_recompose_npo,
+            args.profile,
         ),
         (HashOption::Poseidon2, FieldOption::BabyBear, _) => baby_bear::run(
             args.num_hashes,
@@ -221,6 +230,7 @@ fn main() {
             args.security_level,
             args.zk,
             args.disable_recompose_npo,
+            args.profile,
         ),
         (HashOption::Poseidon2, FieldOption::Goldilocks, _) => goldilocks::run(
             args.num_hashes,
@@ -230,6 +240,7 @@ fn main() {
             args.security_level,
             args.zk,
             args.disable_recompose_npo,
+            args.profile,
         ),
         (HashOption::Poseidon1, FieldOption::KoalaBear, true) => koala_bear_quintic_poseidon1::run(
             args.num_hashes,
@@ -239,6 +250,7 @@ fn main() {
             args.security_level,
             args.zk,
             args.disable_recompose_npo,
+            args.profile,
         ),
         (HashOption::Poseidon1, FieldOption::KoalaBear, false) => koala_bear_poseidon1::run(
             args.num_hashes,
@@ -248,6 +260,7 @@ fn main() {
             args.security_level,
             args.zk,
             args.disable_recompose_npo,
+            args.profile,
         ),
         (HashOption::Poseidon1, FieldOption::BabyBear, _) => baby_bear_poseidon1::run(
             args.num_hashes,
@@ -257,6 +270,7 @@ fn main() {
             args.security_level,
             args.zk,
             args.disable_recompose_npo,
+            args.profile,
         ),
         (HashOption::Poseidon1, FieldOption::Goldilocks, _) => goldilocks_poseidon1::run(
             args.num_hashes,
@@ -266,6 +280,7 @@ fn main() {
             args.security_level,
             args.zk,
             args.disable_recompose_npo,
+            args.profile,
         ),
     }
 }
@@ -311,6 +326,7 @@ macro_rules! define_field_module_keccak_quintic {
                 $params_trait
             );
 
+            #[allow(clippy::too_many_arguments)]
             pub fn run(
                 num_hashes: usize,
                 num_recursive_layers: usize,
@@ -319,6 +335,7 @@ macro_rules! define_field_module_keccak_quintic {
                 security_level: usize,
                 zk: bool,
                 disable_recompose_npo: bool,
+                profile: bool,
             ) {
                 let keccak_air = KeccakAir {};
                 let min_trace_rows: usize =
@@ -361,7 +378,140 @@ macro_rules! define_field_module_keccak_quintic {
                 let mut prev_witness_count: Option<u32> = None;
                 let mut stable_prep: Option<NextLayerPrepCache<ConfigWithFriParams>> = None;
 
+                // `--profile` path: a `RecursionLayerProfile` fixed point is searched for
+                // starting from layer 1's proof, re-solving against each new layer's own output
+                // until the profile stops changing (mirroring `solve_fixed_point`'s own
+                // documented cross-layer contract: one call only fits the single proof it
+                // solved against, so reaching a true fixed point requires solving again against
+                // a layer actually proved under the candidate). Once a solve leaves the profile
+                // unchanged, that layer's prep is cached and reused for every remaining layer.
+                let mut profile_config: Option<ConfigWithFriParams> = None;
+                let mut current_profile: Option<RecursionLayerProfile> = None;
+                let mut profile_prep: Option<ProfilePrepCache<ConfigWithFriParams>> = None;
+
                 for layer in 1..=num_recursive_layers {
+                    if profile && layer >= 2 {
+                        let config = profile_config.get_or_insert_with(|| {
+                            config_with_fri_params(fri_params, security_level, disable_recompose_npo)
+                        });
+                        let input = output.as_ref().unwrap().into_recursion_input::<BatchOnly>();
+
+                        if let Some(prep) = profile_prep.as_ref() {
+                            let prof = &prep.profile;
+                            let (verification_circuit, verifier_result) =
+                                build_layer_circuit::<ConfigWithFriParams, BatchOnly, _, D>(
+                                    prof, &input, config, &backend,
+                                )
+                                .unwrap_or_else(|e| {
+                                    panic!("Failed to build circuit layer {layer}: {e:?}")
+                                });
+                            let out = prove_layer::<ConfigWithFriParams, BatchOnly, _, D>(
+                                prof,
+                                &input,
+                                &verification_circuit,
+                                &verifier_result,
+                                config,
+                                &backend,
+                                Some(prep),
+                            )
+                            .unwrap_or_else(|e| panic!("Failed to prove layer {layer}: {e:?}"));
+
+                            report_proof_size(&out.0);
+                            let mut prover = BatchStarkProver::new(config.clone())
+                                .with_table_packing(prof.table_packing.clone());
+                            if $poseidon2_config.d() >= 2 {
+                                prover.$register_fn::<D>($poseidon2_config.for_challenger());
+                            }
+                            prover.$register_fn::<D>($poseidon2_config);
+                            if !disable_recompose_npo {
+                                prover.register_recompose_table::<D>(true);
+                            }
+                            prover
+                                .verify_all_tables::<Challenge>(&out.0)
+                                .unwrap_or_else(|e| panic!("Failed to verify layer {layer}: {e:?}"));
+
+                            output = Some(out);
+                            continue;
+                        }
+
+                        let seed = current_profile.clone().unwrap_or_else(|| RecursionLayerProfile {
+                            table_packing: table_packing.clone().with_fri_params(
+                                fri_params.log_final_poly_len,
+                                fri_params.log_blowup,
+                            ),
+                            hash: HashProfile::default(),
+                            transcript: TranscriptKind::BaseDuplex,
+                        });
+                        let resolved = solve_fixed_point::<ConfigWithFriParams, BatchOnly, _, D>(
+                            seed.clone(),
+                            &input,
+                            config,
+                            &backend,
+                            ConstraintProfile::Standard,
+                            8,
+                        )
+                        .unwrap_or_else(|e| {
+                            panic!("solve_fixed_point failed before layer {layer}: {e:?}")
+                        });
+                        let already_stable = current_profile.as_ref() == Some(&resolved);
+                        current_profile = Some(resolved.clone());
+
+                        let (verification_circuit, verifier_result) =
+                            build_layer_circuit::<ConfigWithFriParams, BatchOnly, _, D>(
+                                &resolved, &input, config, &backend,
+                            )
+                            .unwrap_or_else(|e| {
+                                panic!("Failed to build circuit layer {layer}: {e:?}")
+                            });
+
+                        if already_stable {
+                            let inner = build_next_layer_prep::<ConfigWithFriParams, BatchOnly, _, D>(
+                                &verification_circuit,
+                                config,
+                                &backend,
+                                &ProveNextLayerParams {
+                                    table_packing: resolved.table_packing.clone(),
+                                    constraint_profile: ConstraintProfile::Standard,
+                                },
+                            )
+                            .unwrap_or_else(|e| {
+                                panic!("Failed to build prep cache for layer {layer}: {e:?}")
+                            });
+                            profile_prep = Some(ProfilePrepCache {
+                                profile: resolved.clone(),
+                                inner,
+                            });
+                        }
+
+                        let out = prove_layer::<ConfigWithFriParams, BatchOnly, _, D>(
+                            &resolved,
+                            &input,
+                            &verification_circuit,
+                            &verifier_result,
+                            config,
+                            &backend,
+                            profile_prep.as_ref(),
+                        )
+                        .unwrap_or_else(|e| panic!("Failed to prove layer {layer}: {e:?}"));
+
+                        report_proof_size(&out.0);
+                        let mut prover = BatchStarkProver::new(config.clone())
+                            .with_table_packing(resolved.table_packing.clone());
+                        if $poseidon2_config.d() >= 2 {
+                            prover.$register_fn::<D>($poseidon2_config.for_challenger());
+                        }
+                        prover.$register_fn::<D>($poseidon2_config);
+                        if !disable_recompose_npo {
+                            prover.register_recompose_table::<D>(true);
+                        }
+                        prover
+                            .verify_all_tables::<Challenge>(&out.0)
+                            .unwrap_or_else(|e| panic!("Failed to verify layer {layer}: {e:?}"));
+
+                        output = Some(out);
+                        continue;
+                    }
+
                     let layer_table_packing = {
                         let p = if layer == 1 {
                             let mut p = TablePacking::new(1, 2)
@@ -503,6 +653,7 @@ macro_rules! define_field_module {
                 $params_trait
             );
 
+            #[allow(clippy::too_many_arguments)]
             pub fn run(
                 num_hashes: usize,
                 num_recursive_layers: usize,
@@ -511,6 +662,7 @@ macro_rules! define_field_module {
                 security_level: usize,
                 zk: bool,
                 disable_recompose_npo: bool,
+                profile: bool,
             ) {
                 let keccak_air = KeccakAir {};
                 let min_trace_rows: usize =
@@ -559,7 +711,140 @@ macro_rules! define_field_module {
                 let mut prev_witness_count: Option<u32> = None;
                 let mut stable_prep: Option<NextLayerPrepCache<ConfigWithFriParams>> = None;
 
+                // `--profile` path: a `RecursionLayerProfile` fixed point is searched for
+                // starting from layer 1's proof, re-solving against each new layer's own output
+                // until the profile stops changing (mirroring `solve_fixed_point`'s own
+                // documented cross-layer contract: one call only fits the single proof it
+                // solved against, so reaching a true fixed point requires solving again against
+                // a layer actually proved under the candidate). Once a solve leaves the profile
+                // unchanged, that layer's prep is cached and reused for every remaining layer.
+                let mut profile_config: Option<ConfigWithFriParams> = None;
+                let mut current_profile: Option<RecursionLayerProfile> = None;
+                let mut profile_prep: Option<ProfilePrepCache<ConfigWithFriParams>> = None;
+
                 for layer in 1..=num_recursive_layers {
+                    if profile && layer >= 2 {
+                        let config = profile_config.get_or_insert_with(|| {
+                            config_with_fri_params(fri_params, security_level, disable_recompose_npo)
+                        });
+                        let input = output.as_ref().unwrap().into_recursion_input::<BatchOnly>();
+
+                        if let Some(prep) = profile_prep.as_ref() {
+                            let prof = &prep.profile;
+                            let (verification_circuit, verifier_result) =
+                                build_layer_circuit::<ConfigWithFriParams, BatchOnly, _, D>(
+                                    prof, &input, config, &backend,
+                                )
+                                .unwrap_or_else(|e| {
+                                    panic!("Failed to build circuit layer {layer}: {e:?}")
+                                });
+                            let out = prove_layer::<ConfigWithFriParams, BatchOnly, _, D>(
+                                prof,
+                                &input,
+                                &verification_circuit,
+                                &verifier_result,
+                                config,
+                                &backend,
+                                Some(prep),
+                            )
+                            .unwrap_or_else(|e| panic!("Failed to prove layer {layer}: {e:?}"));
+
+                            report_proof_size(&out.0);
+                            let mut prover = BatchStarkProver::new(config.clone())
+                                .with_table_packing(prof.table_packing.clone());
+                            if $poseidon2_config.d() >= 2 {
+                                prover.$register_fn::<$d>($poseidon2_config.for_challenger());
+                            }
+                            prover.$register_fn::<$d>($poseidon2_config);
+                            if !disable_recompose_npo {
+                                prover.register_recompose_table::<$d>(true);
+                            }
+                            prover
+                                .verify_all_tables::<Challenge>(&out.0)
+                                .unwrap_or_else(|e| panic!("Failed to verify layer {layer}: {e:?}"));
+
+                            output = Some(out);
+                            continue;
+                        }
+
+                        let seed = current_profile.clone().unwrap_or_else(|| RecursionLayerProfile {
+                            table_packing: table_packing.clone().with_fri_params(
+                                fri_params.log_final_poly_len,
+                                fri_params.log_blowup,
+                            ),
+                            hash: HashProfile::default(),
+                            transcript: TranscriptKind::BaseDuplex,
+                        });
+                        let resolved = solve_fixed_point::<ConfigWithFriParams, BatchOnly, _, D>(
+                            seed.clone(),
+                            &input,
+                            config,
+                            &backend,
+                            ConstraintProfile::Standard,
+                            8,
+                        )
+                        .unwrap_or_else(|e| {
+                            panic!("solve_fixed_point failed before layer {layer}: {e:?}")
+                        });
+                        let already_stable = current_profile.as_ref() == Some(&resolved);
+                        current_profile = Some(resolved.clone());
+
+                        let (verification_circuit, verifier_result) =
+                            build_layer_circuit::<ConfigWithFriParams, BatchOnly, _, D>(
+                                &resolved, &input, config, &backend,
+                            )
+                            .unwrap_or_else(|e| {
+                                panic!("Failed to build circuit layer {layer}: {e:?}")
+                            });
+
+                        if already_stable {
+                            let inner = build_next_layer_prep::<ConfigWithFriParams, BatchOnly, _, D>(
+                                &verification_circuit,
+                                config,
+                                &backend,
+                                &ProveNextLayerParams {
+                                    table_packing: resolved.table_packing.clone(),
+                                    constraint_profile: ConstraintProfile::Standard,
+                                },
+                            )
+                            .unwrap_or_else(|e| {
+                                panic!("Failed to build prep cache for layer {layer}: {e:?}")
+                            });
+                            profile_prep = Some(ProfilePrepCache {
+                                profile: resolved.clone(),
+                                inner,
+                            });
+                        }
+
+                        let out = prove_layer::<ConfigWithFriParams, BatchOnly, _, D>(
+                            &resolved,
+                            &input,
+                            &verification_circuit,
+                            &verifier_result,
+                            config,
+                            &backend,
+                            profile_prep.as_ref(),
+                        )
+                        .unwrap_or_else(|e| panic!("Failed to prove layer {layer}: {e:?}"));
+
+                        report_proof_size(&out.0);
+                        let mut prover = BatchStarkProver::new(config.clone())
+                            .with_table_packing(resolved.table_packing.clone());
+                        if $poseidon2_config.d() >= 2 {
+                            prover.$register_fn::<$d>($poseidon2_config.for_challenger());
+                        }
+                        prover.$register_fn::<$d>($poseidon2_config);
+                        if !disable_recompose_npo {
+                            prover.register_recompose_table::<$d>(true);
+                        }
+                        prover
+                            .verify_all_tables::<Challenge>(&out.0)
+                            .unwrap_or_else(|e| panic!("Failed to verify layer {layer}: {e:?}"));
+
+                        output = Some(out);
+                        continue;
+                    }
+
                     let layer_table_packing = {
                         let p = if layer == 1 {
                             let mut p = TablePacking::new(1, 2)

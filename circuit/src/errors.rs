@@ -203,6 +203,20 @@ pub enum CircuitError {
     /// Unknown tag: the tag was not registered during circuit construction.
     #[error("Unknown tag: '{tag}'")]
     UnknownTag { tag: String },
+
+    /// A table's natural row count exceeds its configured height while strict
+    /// (non-clamping) padding is enabled.
+    #[error("table {table} needs height {needed} but the profile only allows {allowed}")]
+    ProfileOverflow {
+        table: String,
+        needed: usize,
+        allowed: usize,
+    },
+
+    /// A `TablePacking` configuration failed structural validation before its
+    /// heights were used to build or pad a trace.
+    #[error("invalid table packing: {0}")]
+    InvalidTablePacking(String),
 }
 
 impl From<CircuitBuilderError> for CircuitError {

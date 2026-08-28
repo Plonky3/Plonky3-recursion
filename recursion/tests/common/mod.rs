@@ -1,13 +1,37 @@
 #![allow(unused)]
 
+use std::sync::Arc;
+
 use itertools::Itertools;
 use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
+use p3_batch_stark::ProverData;
+use p3_circuit::ops::{generate_poseidon2_trace, generate_recompose_trace};
+use p3_circuit::{CircuitBuilder, CircuitRunner, NonPrimitiveOpId};
+use p3_circuit_prover::batch_stark_prover::BatchStarkProver;
+use p3_circuit_prover::common::get_airs_and_degrees_with_prep;
+use p3_circuit_prover::{BatchStarkProof, CircuitProverData, ConstraintProfile, TablePacking};
+use p3_commit::Pcs;
 use p3_field::{Field, PrimeCharacteristicRing};
+use p3_lookup::logup::LogUpGadget;
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
+use p3_poseidon2_circuit_air::KoalaBearD4Width16;
 use p3_recursion::pcs::{
-    FriProofTargets, InputProofTargets, RecExtensionValMmcs, RecValMmcs, Witness,
+    FriProofTargets, InputProofTargets, MerkleCapTargets, RecExtensionValMmcs, RecValMmcs, Witness,
+    set_fri_mmcs_private_data,
 };
+use p3_recursion::profile::{
+    HashProfile, ProfilePrepCache, RecursionLayerProfile, TranscriptKind, build_layer_circuit,
+    prove_layer, solve_fixed_point,
+};
+use p3_recursion::traits::{RecursiveAir, RecursivePcs};
+use p3_recursion::verifier::VerificationError;
+use p3_recursion::{
+    BatchOnly, FriRecursionBackend, FriRecursionBackendForExt, FriRecursionConfig,
+    FriVerifierParams, Poseidon2Config, ProveNextLayerParams, RecursionInput, RecursionOutput,
+    build_next_layer_prep,
+};
+use p3_test_utils::koala_bear_params::*;
 use p3_uni_stark::{StarkGenericConfig, Val};
 use rand::distr::{Distribution, StandardUniform};
 use rand::rngs::SmallRng;
@@ -157,4 +181,332 @@ where
                 .assert_eq(a + AB::Expr::from_u8(REPETITIONS as u8), next_a);
         }
     }
+}
+
+/// `OpeningProof` type for a KoalaBear D4 `TwoAdicFriPcs` recursion-layer verifier circuit.
+pub(crate) type KoalaBearD4InnerFri = InnerFriGeneric<MyConfig, MyHash, MyCompress, DIGEST_ELEMS>;
+
+/// FRI-recursion config for the standard KoalaBear D4 test STARK config
+/// ([`p3_test_utils::koala_bear_params::MyConfig`]), holding the FRI verifier parameters a
+/// recursion-layer verifier circuit needs. `Arc`-wrapped so cloning (required by
+/// `build_next_layer_circuit`/`build_next_layer_prep`) is cheap.
+#[derive(Clone)]
+pub(crate) struct KoalaBearD4RecursionConfig {
+    config: Arc<MyConfig>,
+    fri_verifier_params: FriVerifierParams,
+}
+
+impl core::ops::Deref for KoalaBearD4RecursionConfig {
+    type Target = MyConfig;
+    fn deref(&self) -> &MyConfig {
+        &self.config
+    }
+}
+
+impl StarkGenericConfig for KoalaBearD4RecursionConfig {
+    type Challenge = Challenge;
+    type Challenger = Challenger;
+    type Pcs = MyPcs;
+    fn pcs(&self) -> &MyPcs {
+        self.config.pcs()
+    }
+    fn initialise_challenger(&self) -> Challenger {
+        self.config.initialise_challenger()
+    }
+}
+
+impl FriRecursionConfig for KoalaBearD4RecursionConfig
+where
+    MyPcs: RecursivePcs<
+            Self,
+            InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>>,
+            KoalaBearD4InnerFri,
+            MerkleCapTargets<F, DIGEST_ELEMS>,
+            <MyPcs as Pcs<Challenge, Challenger>>::Domain,
+        >,
+{
+    type Commitment = MerkleCapTargets<F, DIGEST_ELEMS>;
+    type InputProof =
+        InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>>;
+    type OpeningProof = KoalaBearD4InnerFri;
+    type RawOpeningProof = <MyPcs as Pcs<Challenge, Challenger>>::Proof;
+    const DIGEST_ELEMS: usize = DIGEST_ELEMS;
+
+    fn with_fri_opening_proof<'a, A, R>(
+        prev: &RecursionInput<'a, Self, A>,
+        f: impl FnOnce(&Self::RawOpeningProof) -> R,
+    ) -> R
+    where
+        A: RecursiveAir<Val<Self>, Self::Challenge, LogUpGadget>,
+    {
+        match prev {
+            RecursionInput::UniStark { proof, .. } => f(&proof.opening_proof),
+            RecursionInput::BatchStark { proof, .. } => f(&proof.proof.opening_proof),
+        }
+    }
+
+    fn prepare_circuit_for_verification(
+        &self,
+        circuit: &mut CircuitBuilder<Challenge>,
+    ) -> Result<(), VerificationError> {
+        let perm = default_koalabear_poseidon2_16();
+        circuit.enable_poseidon2_perm::<KoalaBearD4Width16, _>(
+            generate_poseidon2_trace::<Challenge, KoalaBearD4Width16>,
+            perm,
+        );
+        circuit.enable_recompose::<F>(generate_recompose_trace::<F, Challenge>);
+        Ok(())
+    }
+
+    fn pcs_verifier_params(
+        &self,
+    ) -> &<MyPcs as RecursivePcs<
+        Self,
+        InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>>,
+        KoalaBearD4InnerFri,
+        MerkleCapTargets<F, DIGEST_ELEMS>,
+        <MyPcs as Pcs<Challenge, Challenger>>::Domain,
+    >>::VerifierParams {
+        &self.fri_verifier_params
+    }
+
+    fn set_fri_private_data(
+        runner: &mut CircuitRunner<'_, Challenge>,
+        op_ids: &[NonPrimitiveOpId],
+        opening_proof: &Self::RawOpeningProof,
+    ) -> Result<(), &'static str> {
+        set_fri_mmcs_private_data::<
+            F,
+            Challenge,
+            ChallengeMmcs,
+            MyMmcs,
+            MyHash,
+            MyCompress,
+            DIGEST_ELEMS,
+        >(
+            runner,
+            op_ids,
+            opening_proof,
+            Poseidon2Config::KOALA_BEAR_D4_W16,
+        )
+    }
+}
+
+/// Backend type for a KoalaBear D4 recursion layer (spelled out so callers can turbofish it,
+/// e.g. `build_next_layer_prep::<KoalaBearD4RecursionConfig, BatchOnly, KoalaBearD4Backend, 4>`).
+pub(crate) type KoalaBearD4Backend = FriRecursionBackendForExt<4, 16, 8, Poseidon2Config>;
+
+/// Everything [`solve_fixed_point`](p3_recursion::solve_fixed_point) needs to build/probe a
+/// first recursion layer over a KoalaBear D4 base batch-STARK proof.
+pub(crate) struct KoalaBearD4FirstLayerFixture {
+    pub(crate) layer_config: KoalaBearD4RecursionConfig,
+    pub(crate) backend: KoalaBearD4Backend,
+    pub(crate) base_proof: BatchStarkProof<KoalaBearD4RecursionConfig>,
+}
+
+impl KoalaBearD4FirstLayerFixture {
+    /// Build the `RecursionInput::BatchStark` for this fixture's base proof.
+    pub(crate) fn recursion_input(
+        &self,
+    ) -> RecursionInput<'_, KoalaBearD4RecursionConfig, BatchOnly> {
+        let num_tables = self.base_proof.proof.opened_values.instances.len();
+        RecursionInput::BatchStark {
+            proof: &self.base_proof,
+            common_data: &self.base_proof.stark_common,
+            table_public_inputs: vec![vec![]; num_tables],
+        }
+    }
+}
+
+fn compute_fibonacci_classical(n: usize) -> F {
+    if n == 0 {
+        return F::ZERO;
+    }
+    if n == 1 {
+        return F::ONE;
+    }
+    let mut a = F::ZERO;
+    let mut b = F::ONE;
+    for _i in 2..=n {
+        let next = a + b;
+        a = b;
+        b = next;
+    }
+    b
+}
+
+/// Build a base KoalaBear D4 Fibonacci batch-STARK proof (mirroring
+/// `fibonacci_batch_stark_prover.rs`'s base-proof setup) and wrap it as the fixture for a first
+/// recursion layer: `solve_fixed_point` can build/probe a verifier circuit over it directly via
+/// `[layer_config]`/`[backend]`/`[recursion_input]`.
+pub(crate) fn build_koala_bear_d4_first_layer_input() -> KoalaBearD4FirstLayerFixture {
+    build_koala_bear_d4_first_layer_input_with_pow_bits(test_fri_scalars().query_pow_bits)
+}
+
+/// Same as [`build_koala_bear_d4_first_layer_input`] but with explicit FRI PoW bits (applied to
+/// both `commit_proof_of_work_bits` and `query_proof_of_work_bits`) instead of
+/// `test_fri_scalars()`'s. Callers that need a deterministic `grind` -- e.g. comparing two
+/// independently-produced proofs byte-for-byte -- can pass `pow_bits = 0`.
+pub(crate) fn build_koala_bear_d4_first_layer_input_with_pow_bits(
+    pow_bits: usize,
+) -> KoalaBearD4FirstLayerFixture {
+    let n: usize = 100;
+
+    let mut builder = CircuitBuilder::new();
+    let expected_result = builder.alloc_public_input("expected_result");
+    let mut a = builder.alloc_const(F::ZERO, "F(0)");
+    let mut b = builder.alloc_const(F::ONE, "F(1)");
+    for _i in 2..=n {
+        let next = builder.add(a, b);
+        a = b;
+        b = next;
+    }
+    builder.connect(b, expected_result);
+
+    let table_packing = TablePacking::new(2, 4);
+
+    let scalars = test_fri_scalars();
+    let fri_verifier_params = FriVerifierParams::with_mmcs(
+        scalars.log_blowup,
+        scalars.log_final_poly_len,
+        pow_bits,
+        pow_bits,
+        scalars.num_queries,
+        Poseidon2Config::KOALA_BEAR_D4_W16,
+    );
+    let layer_config = KoalaBearD4RecursionConfig {
+        config: Arc::new(make_test_config_with_pow_bits(pow_bits)),
+        fri_verifier_params,
+    };
+
+    let circuit = builder.build().unwrap();
+    let (airs_degrees, primitive_columns, non_primitive_columns) =
+        get_airs_and_degrees_with_prep::<KoalaBearD4RecursionConfig, _, 1>(
+            &circuit,
+            &table_packing,
+            &[],
+            &[],
+            ConstraintProfile::Standard,
+        )
+        .unwrap();
+    let (airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
+    let mut runner = circuit.runner();
+
+    let expected_fib = compute_fibonacci_classical(n);
+    runner.set_public_inputs(&[expected_fib]).unwrap();
+    let traces = runner.run().unwrap();
+
+    let prover_data = ProverData::from_airs_and_degrees(&layer_config, &airs, &degrees);
+    let circuit_prover_data =
+        CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
+
+    let prover = BatchStarkProver::new(layer_config.clone()).with_table_packing(table_packing);
+    let base_proof = prover
+        .prove_all_tables(&traces, &circuit_prover_data)
+        .unwrap();
+    prover.verify_all_tables::<F>(&base_proof).unwrap();
+
+    let backend = FriRecursionBackend::<16, 8, _>::new(Poseidon2Config::KOALA_BEAR_D4_W16)
+        .for_extension_degree::<4>();
+
+    KoalaBearD4FirstLayerFixture {
+        layer_config,
+        backend,
+        base_proof,
+    }
+}
+
+/// A solved [`RecursionLayerProfile`] for a KoalaBear D4 first recursion layer, together with
+/// the config/backend that solved it and the `RecursionInput` it was solved against.
+///
+/// The underlying fixture is leaked so the returned `RecursionInput` (which borrows from it)
+/// can outlive this function; test processes are short-lived, so this is a one-shot leak per
+/// call rather than something that accumulates across a long-running program.
+pub(crate) fn solved_koala_bear_d4_profile() -> (
+    KoalaBearD4RecursionConfig,
+    KoalaBearD4Backend,
+    RecursionInput<'static, KoalaBearD4RecursionConfig, BatchOnly>,
+    RecursionLayerProfile,
+) {
+    // PoW bits pinned to 0 so `GrindingChallenger::grind` is deterministic: downstream
+    // consumers of this profile compare independently-produced proofs byte-for-byte, which
+    // requires every proof in the chain to grind to the same (trivial) witness.
+    let fixture: &'static KoalaBearD4FirstLayerFixture = Box::leak(Box::new(
+        build_koala_bear_d4_first_layer_input_with_pow_bits(0),
+    ));
+    let prev_input = fixture.recursion_input();
+
+    // Same undersized seed as `profile_fixed_point.rs`: no per-table height overrides, so
+    // convergence requires real iteration against this layer's actual table shapes.
+    let seed = RecursionLayerProfile {
+        table_packing: TablePacking::new(1, 3).with_horner_pack_k(4),
+        hash: HashProfile::default(),
+        transcript: TranscriptKind::default(),
+    };
+    let profile = solve_fixed_point::<_, _, _, 4>(
+        seed,
+        &prev_input,
+        &fixture.layer_config,
+        &fixture.backend,
+        ConstraintProfile::Standard,
+        8,
+    )
+    .expect(
+        "solve_fixed_point should converge within 8 iterations for the KoalaBear D4 first layer",
+    );
+
+    (
+        fixture.layer_config.clone(),
+        fixture.backend.clone(),
+        prev_input,
+        profile,
+    )
+}
+
+/// Build and prove one recursion layer entirely under `profile`: the verifier circuit is built
+/// with [`build_layer_circuit`] and proved with [`prove_layer`] using a freshly built
+/// [`ProfilePrepCache`], so both the circuit and the proof are self-consistent with `profile`.
+/// Returns the layer's output together with the prep cache used to produce it.
+pub(crate) fn prove_one_layer(
+    profile: &RecursionLayerProfile,
+    prev_input: &RecursionInput<'_, KoalaBearD4RecursionConfig, BatchOnly>,
+    config: &KoalaBearD4RecursionConfig,
+    backend: &KoalaBearD4Backend,
+) -> (
+    RecursionOutput<KoalaBearD4RecursionConfig>,
+    ProfilePrepCache<KoalaBearD4RecursionConfig>,
+) {
+    let (circuit, verifier_result) =
+        build_layer_circuit::<_, _, _, 4>(profile, prev_input, config, backend)
+            .expect("build_layer_circuit should succeed");
+
+    let inner =
+        build_next_layer_prep::<KoalaBearD4RecursionConfig, BatchOnly, KoalaBearD4Backend, 4>(
+            &circuit,
+            config,
+            backend,
+            &ProveNextLayerParams {
+                table_packing: profile.table_packing.clone(),
+                constraint_profile: ConstraintProfile::Standard,
+            },
+        )
+        .expect("build_next_layer_prep should succeed for a profile-resolved table packing");
+
+    let prep = ProfilePrepCache {
+        profile: profile.clone(),
+        inner,
+    };
+
+    let output = prove_layer::<_, _, _, 4>(
+        profile,
+        prev_input,
+        &circuit,
+        &verifier_result,
+        config,
+        backend,
+        Some(&prep),
+    )
+    .expect("prove_layer should succeed under its own profile");
+
+    (output, prep)
 }

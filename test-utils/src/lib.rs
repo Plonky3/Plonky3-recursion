@@ -385,6 +385,25 @@ pub mod koala_bear_params {
         MyConfig::new(pcs, Challenger::new(perm))
     }
 
+    /// Builds a test `MyConfig` matching [`FriParameters::new_testing`]'s shape but with
+    /// `pow_bits` applied to both `commit_proof_of_work_bits` and `query_proof_of_work_bits`.
+    /// Used by tests that need a deterministic `grind` (e.g. `pow_bits = 0`), such as ones that
+    /// compare two independently-produced proofs byte-for-byte.
+    pub fn make_test_config_with_pow_bits(pow_bits: usize) -> MyConfig {
+        let perm = default_koalabear_poseidon2_16();
+        let hash = MyHash::new(perm.clone());
+        let compress = MyCompress::new(perm.clone());
+        let val_mmcs = MyMmcs::new(hash, compress, 0);
+        let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
+        let fri_params = FriParameters {
+            commit_proof_of_work_bits: pow_bits,
+            query_proof_of_work_bits: pow_bits,
+            ..FriParameters::new_testing(challenge_mmcs, 0)
+        };
+        let pcs = MyPcs::new(Dft::default(), val_mmcs, fri_params);
+        MyConfig::new(pcs, Challenger::new(perm))
+    }
+
     /// Builds a test `MyConfig` with an explicit FRI shape (`log_blowup`, `max_log_arity`),
     /// reusing `perm` for the Fiat-Shamir challenger. Used for aggregation tests that mix
     /// proofs with different FRI shapes.

@@ -58,6 +58,7 @@ mod packing;
 mod poseidon1;
 mod poseidon2;
 mod recompose;
+mod shape;
 
 pub use dynamic_air::{
     BatchAir, BatchTableInstance, CloneableBatchAir, DynamicAirEntry, TableProver,
@@ -74,6 +75,7 @@ pub use poseidon2::{
     poseidon2_verifier_air_from_config,
 };
 pub use recompose::{RecomposeAirBuilder, RecomposePreprocessor, RecomposeProver};
+pub use shape::RecursionTableShape;
 
 /// Prime modulus of the BabyBear field (`2^31 - 2^27 + 1`).
 pub const BABY_BEAR_MODULUS: u64 = 0x7800_0001;
@@ -791,6 +793,25 @@ pub enum ProofMetadataError {
         got: AirVariant,
     },
 
+    /// A table's natural row count exceeds its configured height while strict
+    /// (non-clamping) padding is enabled.
+    #[error("table {table} needs height {needed} but the profile only allows {allowed}")]
+    ProfileOverflow {
+        table: String,
+        needed: usize,
+        allowed: usize,
+    },
+
+    /// A per-table minimum-height override is set below the global `min_trace_height` floor.
+    #[error(
+        "table `{table}` has a minimum height override of {override_height} which is below the global floor of {floor}"
+    )]
+    PerTableHeightBelowFloor {
+        table: String,
+        override_height: usize,
+        floor: usize,
+    },
+
     /// The number of non-primitive tables does not match the manifest.
     #[error("non-primitive table count mismatch: expected {expected}, got {got}")]
     NpoCountMismatch { expected: usize, got: usize },
@@ -822,6 +843,23 @@ pub enum ProofMetadataError {
         expected: usize,
         got: usize,
     },
+}
+
+impl From<ProofMetadataError> for CircuitError {
+    fn from(err: ProofMetadataError) -> Self {
+        match err {
+            ProofMetadataError::ProfileOverflow {
+                table,
+                needed,
+                allowed,
+            } => Self::ProfileOverflow {
+                table,
+                needed,
+                allowed,
+            },
+            other => Self::InvalidTablePacking(format!("{other}")),
+        }
+    }
 }
 
 /// Errors for the batch STARK table prover.
@@ -1362,6 +1400,11 @@ where
         <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::ProverData: Sync,
         <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment: Sync,
     {
+        // Reject a misconfigured packing (e.g. a per-table override below the global
+        // min-height floor) before any table height derived from it is used to build or
+        // pad a trace, rather than only catching it later via `BatchStarkProof::validate`.
+        self.table_packing.validate()?;
+
         let primitive = &circuit_prover_data.primitive_columns;
         let non_primitive = &circuit_prover_data.non_primitive_columns;
         let prover_data = &circuit_prover_data.prover_data;
@@ -1376,7 +1419,14 @@ where
 
         // Build matrices and AIRs per table.
         let packing = &self.table_packing;
-        let min_height = packing.min_trace_height();
+        // IMPORTANT: this per-table resolution (getter + `unwrap_or(global_min_height)`) must
+        // stay identical to the one in `get_airs_and_degrees_with_prep` (common.rs), which
+        // computes the degree the preprocessed data was committed at. A divergence here would
+        // silently miscommit a table's height.
+        let global_min_height = packing.min_trace_height();
+        let const_min_height = packing.const_min_height().unwrap_or(global_min_height);
+        let public_min_height = packing.public_min_height().unwrap_or(global_min_height);
+        let alu_min_height = packing.alu_min_height().unwrap_or(global_min_height);
 
         // The table implementation adds a dummy row when empty, so a trace length <= 1 means
         // the Alu table has only dummy operations.
@@ -1387,9 +1437,9 @@ where
         let const_rows = traces.const_trace.values.len();
         let const_prep = primitive[PrimitiveOpType::Const as usize].clone();
         let const_air = ConstAir::<Val<SC>, D>::new_with_preprocessed(const_rows, const_prep)
-            .with_min_height(min_height);
+            .with_min_height(const_min_height);
         let const_matrix: RowMajorMatrix<Val<SC>> =
-            ConstAir::<Val<SC>, D>::trace_to_matrix(&traces.const_trace, min_height);
+            ConstAir::<Val<SC>, D>::trace_to_matrix(&traces.const_trace, const_min_height);
 
         // Public — reduce lanes to 1 if the table has only dummy operations.
         let public_trace_only_dummy = traces.public_trace.values.len() <= 1;
@@ -1401,11 +1451,11 @@ where
         let public_prep = primitive[PrimitiveOpType::Public as usize].clone();
         let public_air =
             PublicAir::<Val<SC>, D>::new_with_preprocessed(public_rows, public_lanes, public_prep)
-                .with_min_height(min_height);
+                .with_min_height(public_min_height);
         let public_matrix: RowMajorMatrix<Val<SC>> = PublicAir::<Val<SC>, D>::trace_to_matrix(
             &traces.public_trace,
             public_lanes,
-            min_height,
+            public_min_height,
         );
 
         // ALU — preprocessed is already in 10-col format (with multiplicities) from
@@ -1418,7 +1468,7 @@ where
         let reduction = AluExtMulKind::resolve(D, w_binomial, alu_quintic)
             .ok_or(BatchStarkProverError::MissingWForExtension)?;
         // The packed-Horner schedule and the resulting preprocessed trace matrix depend only on
-        // (alu_prep, alu_lanes, horner_k, min_height), not on D, so both are cached in
+        // (alu_prep, alu_lanes, horner_k, alu_min_height), not on D, so both are cached in
         // `circuit_prover_data` and reused across proofs of this circuit shape.
         let (alu_schedule, cached_prep_trace) = {
             let mut cache = circuit_prover_data.alu_schedule_cache.borrow_mut();
@@ -1426,14 +1476,14 @@ where
                 Some((cached_lanes, cached_k, cached_min_height, schedule, prep_trace))
                     if *cached_lanes == alu_lanes
                         && *cached_k == horner_k
-                        && *cached_min_height == min_height =>
+                        && *cached_min_height == alu_min_height =>
                 {
                     (schedule.clone(), prep_trace.clone())
                 }
                 _ => {
                     let schedule =
                         AluAir::<Val<SC>, D>::compute_schedule_for(&alu_prep, alu_lanes, horner_k);
-                    *cache = Some((alu_lanes, horner_k, min_height, schedule.clone(), None));
+                    *cache = Some((alu_lanes, horner_k, alu_min_height, schedule.clone(), None));
                     (schedule, None)
                 }
             }
@@ -1446,7 +1496,7 @@ where
             horner_k,
             alu_schedule,
         )
-        .with_min_height(min_height);
+        .with_min_height(alu_min_height);
         if let Some(prep_trace) = cached_prep_trace {
             alu_air = alu_air.with_precomputed_prep_trace(prep_trace);
         } else if let Some(prep_trace) = alu_air.preprocessed_trace() {
@@ -1456,13 +1506,13 @@ where
                 cache.as_mut()
                 && *cached_lanes == alu_lanes
                 && *cached_k == horner_k
-                && *cached_min_height == min_height
+                && *cached_min_height == alu_min_height
             {
                 *cached_prep_trace = Some(prep_trace);
             }
         }
         let alu_matrix: RowMajorMatrix<Val<SC>> =
-            alu_air.trace_to_matrix(&traces.alu_trace, min_height);
+            alu_air.trace_to_matrix(&traces.alu_trace, alu_min_height);
         let alu_scheduled_entries = alu_air.scheduled_entry_count();
 
         // We first handle all non-primitive tables dynamically, which will then be batched alongside primitive ones.
@@ -1537,9 +1587,12 @@ where
                 && let Some(&pi) = prover_index_by_type.get(&instance.op_type)
             {
                 let p = &self.non_primitive_provers[pi];
+                let npo_min_height = packing
+                    .npo_min_height(&instance.op_type)
+                    .unwrap_or(global_min_height);
                 if let Some(new_air) = p.air_with_committed_preprocessed(
                     committed_prep.clone(),
-                    min_height,
+                    npo_min_height,
                     instance.lanes,
                     D as u32,
                 ) {
@@ -1548,7 +1601,7 @@ where
             }
         }
 
-        TraceTablesLayout {
+        let trace_tables_layout = TraceTablesLayout {
             const_: AirTableShape {
                 main_cols: BaseAir::width(&const_air),
                 prep_cols: ConstAir::<Val<SC>, D>::preprocessed_width(),
@@ -1587,8 +1640,8 @@ where
                     )
                 })
                 .collect(),
-        }
-        .log();
+        };
+        trace_tables_layout.log();
 
         // Wrap AIRs in enum for heterogeneous batching and build instances in fixed order.
         let mut air_storage: Vec<CircuitTableAir<SC, D>> =
@@ -1623,7 +1676,10 @@ where
                 rows,
             } = instance;
             air_storage.push(CircuitTableAir::Dynamic(air));
-            trace.pad_to_min_power_of_two_height(min_height, Val::<SC>::ZERO);
+            let npo_min_height = packing
+                .npo_min_height(&op_type)
+                .unwrap_or(global_min_height);
+            trace.pad_to_min_power_of_two_height(npo_min_height, Val::<SC>::ZERO);
             trace_storage.push(trace);
             public_storage.push(public_values);
             non_primitive_meta.push((op_type, rows, lanes, AirVariant::Baseline));
@@ -1671,7 +1727,7 @@ where
                         if let Some(prover) = prover
                             && let Some(air) = prover.air_with_committed_preprocessed(
                                 committed_prep.clone(),
-                                min_height,
+                                packing.npo_min_height(op_type).unwrap_or(global_min_height),
                                 *lanes,
                                 D as u32,
                             )

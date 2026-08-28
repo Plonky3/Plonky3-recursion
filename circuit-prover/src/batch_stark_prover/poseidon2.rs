@@ -1132,16 +1132,17 @@ impl Poseidon2Prover {
         SymbolicExpressionExt<Val<SC>, SC::Challenge>:
             Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
     {
-        let t = traces.non_primitive_trace::<Poseidon2Trace<Val<SC>>>(
-            &NpoTypeId::poseidon2_perm(self.config),
-        )?;
+        let op_type = NpoTypeId::poseidon2_perm(self.config);
+        let t = traces.non_primitive_trace::<Poseidon2Trace<Val<SC>>>(&op_type)?;
 
         let rows = t.total_rows();
         if rows == 0 {
             return None;
         }
 
-        let min_height = packing.min_trace_height();
+        let min_height = packing
+            .npo_min_height(&op_type)
+            .unwrap_or_else(|| packing.min_trace_height());
         let witness_ctl_scale = <CF as BasedVectorSpace<Val<SC>>>::DIMENSION as u32;
         self.batch_instance_base_impl::<SC>(t, min_height, witness_ctl_scale)
     }
@@ -1558,14 +1559,15 @@ where
         packing: &TablePacking,
         traces: &Traces<QuinticTrinomialExtensionField<Val<SC>>>,
     ) -> Option<BatchTableInstance<SC>> {
-        let t = traces.non_primitive_trace::<Poseidon2Trace<Val<SC>>>(
-            &NpoTypeId::poseidon2_perm(self.config),
-        )?;
+        let op_type = NpoTypeId::poseidon2_perm(self.config);
+        let t = traces.non_primitive_trace::<Poseidon2Trace<Val<SC>>>(&op_type)?;
         let rows = t.total_rows();
         if rows == 0 {
             return None;
         }
-        let min_height = packing.min_trace_height();
+        let min_height = packing
+            .npo_min_height(&op_type)
+            .unwrap_or_else(|| packing.min_trace_height());
         self.batch_instance_base_impl::<SC>(t, min_height, 5)
     }
 

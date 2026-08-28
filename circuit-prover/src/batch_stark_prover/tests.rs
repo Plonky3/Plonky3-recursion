@@ -93,6 +93,61 @@ fn test_babybear_batch_stark_base_field() {
 }
 
 #[test]
+fn prove_all_tables_rejects_below_floor_table_packing_independent_of_prep() {
+    // Prep is built with a VALID packing, so `get_airs_and_degrees_with_prep` (and the
+    // preprocessed-column commitment it feeds) succeeds normally.
+    let mut builder = CircuitBuilder::<BabyBear>::new();
+    let x = builder.public_input();
+    let expected = builder.public_input();
+    let c5 = builder.define_const(BabyBear::from_u64(5));
+    let prod = builder.mul(x, c5);
+    let diff = builder.sub(prod, expected);
+    builder.assert_zero(diff);
+
+    let circuit = builder.build().unwrap();
+    let cfg = config::baby_bear();
+    let (airs_degrees, primitive_columns, non_primitive_columns) =
+        get_airs_and_degrees_with_prep::<BabyBearConfig, _, 1>(
+            &circuit,
+            &TablePacking::default(),
+            &[],
+            &[],
+            ConstraintProfile::Standard,
+        )
+        .unwrap();
+    let (airs, log_degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
+    let prover_data = ProverData::from_airs_and_degrees(&cfg, &airs, &log_degrees);
+    let circuit_prover_data =
+        CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
+
+    let mut runner = circuit.runner();
+    runner
+        .set_public_inputs(&[BabyBear::from_u64(7), BabyBear::from_u64(35)])
+        .unwrap();
+    let traces = runner.run().unwrap();
+
+    // The prover's OWN table packing is invalid (a below-floor override), independent
+    // of the packing used to build prep above. `prove_all_tables` must reject it
+    // directly -- via `prove`'s own `validate()` call -- rather than silently padding
+    // the main trace to a height inconsistent with the already-committed prep.
+    let bad_packing = TablePacking::new(1, 1)
+        .with_min_trace_height(32)
+        .with_alu_min_height(4); // valid power of two, but below the 32 floor
+    let prover = BatchStarkProver::new(cfg).with_table_packing(bad_packing);
+
+    let result = prover.prove_all_tables(&traces, &circuit_prover_data);
+    assert!(
+        matches!(
+            &result,
+            Err(BatchStarkProverError::InvalidMetadata(
+                ProofMetadataError::PerTableHeightBelowFloor { .. }
+            ))
+        ),
+        "expected PerTableHeightBelowFloor, got {result:?}"
+    );
+}
+
+#[test]
 fn test_trace_next_suppressed_for_next_row_free_tables() {
     // Exercises Const, Public, and Alu tables. The Const and Public AIRs have no inter-row
     // constraints (`main_next_row_columns` is empty), so their `trace_next` opening must be
@@ -1029,6 +1084,109 @@ fn test_koalabear_quintic_trinomial_batch_stark_poseidon_d1_sponge_chain() {
         .unwrap();
 }
 
+/// Strict mode must reach non-primitive (NPO) tables too, not only the three primitive
+/// tables: a Poseidon2 NPO table whose natural row count outgrows its configured
+/// `npo_min_height` must be rejected with `ProfileOverflow { table: <the NPO's own
+/// type-id string>, .. }`, exactly like the primitive-table case in `common.rs`'s
+/// `strict_overflow_tests`.
+#[test]
+fn strict_packing_reports_npo_table_name_when_it_outgrows_its_configured_height() {
+    use alloc::string::ToString;
+
+    // Reuses the D=1 (base-field) Poseidon2 config inside a D=5 (quintic) outer circuit --
+    // the only Poseidon2 wiring already proven to compile in this file (see
+    // `test_koalabear_quintic_trinomial_batch_stark_poseidon_d1_sponge_chain` above);
+    // `Poseidon2AirBuilder<D>` has no impl for outer `D=1`. No witness is ever executed
+    // here (only the structural preprocessed-column path is exercised), so the actual
+    // permutation values are irrelevant.
+    type EF5 = QuinticTrinomialExtensionField<KoalaBear>;
+    let inner_perm = default_koalabear_poseidon2_16();
+    let lift_perm = LiftPermToQuintic::new(inner_perm);
+    let mut builder = CircuitBuilder::<EF5>::new();
+    builder.enable_poseidon2_perm_base::<KoalaBearD1Width16, _>(
+        generate_poseidon2_trace::<EF5, KoalaBearD1Width16>,
+        lift_perm,
+    );
+
+    let in_a = builder.public_input();
+    let in_b = builder.public_input();
+    let mut perm0_inputs: [Option<_>; 16] = [None; 16];
+    perm0_inputs[0] = Some(in_a);
+    perm0_inputs[1] = Some(in_b);
+    builder
+        .add_poseidon2_perm_base(&Poseidon2PermCallBase {
+            config: Poseidon2Config::KOALA_BEAR_D1_W16,
+            new_start: true,
+            inputs: perm0_inputs,
+            out_ctl: [false; 8],
+            return_all_outputs: false,
+            absorb_len: 0,
+        })
+        .unwrap();
+
+    // 3 more chained rows (`new_start=false`), no outputs exposed yet.
+    for _ in 0..3 {
+        builder
+            .add_poseidon2_perm_base(&Poseidon2PermCallBase {
+                config: Poseidon2Config::KOALA_BEAR_D1_W16,
+                new_start: false,
+                inputs: [None; 16],
+                out_ctl: [false; 8],
+                return_all_outputs: false,
+                absorb_len: 0,
+            })
+            .unwrap();
+    }
+
+    // Final row: expose 2 outputs so nothing is left dangling.
+    let (_pid, outputs) = builder
+        .add_poseidon2_perm_base(&Poseidon2PermCallBase {
+            config: Poseidon2Config::KOALA_BEAR_D1_W16,
+            new_start: false,
+            inputs: [None; 16],
+            out_ctl: [true, true, false, false, false, false, false, false],
+            return_all_outputs: false,
+            absorb_len: 0,
+        })
+        .unwrap();
+    let e0 = builder.public_input();
+    let e1 = builder.public_input();
+    let h0_diff = builder.sub(outputs[0].unwrap(), e0);
+    let h1_diff = builder.sub(outputs[1].unwrap(), e1);
+    builder.assert_zero(h0_diff);
+    builder.assert_zero(h1_diff);
+
+    let circuit = builder.build().unwrap();
+
+    // 5 Poseidon2 rows -> natural height 8, which exceeds the too-small override below
+    // (itself still at or above the global floor, so `validate()` accepts it).
+    let poseidon2_op_type =
+        p3_circuit::ops::NpoTypeId::poseidon2_perm(Poseidon2Config::KOALA_BEAR_D1_W16);
+    let packing = TablePacking::new(1, 1)
+        .with_min_trace_height(4) // covers PUBLIC's natural height (4 public inputs)
+        .with_npo_min_height(poseidon2_op_type.clone(), 4) // still < Poseidon2's natural (8)
+        .with_strict_heights();
+
+    let npo_prep: Vec<Box<dyn NpoPreprocessor<KoalaBear>>> = vec![Box::new(Poseidon2Preprocessor)];
+    let air_builders = poseidon2_air_builders_d5::<KoalaBearConfig>();
+
+    let result = get_airs_and_degrees_with_prep::<KoalaBearConfig, _, 5>(
+        &circuit,
+        &packing,
+        &npo_prep,
+        &air_builders,
+        ConstraintProfile::Standard,
+    );
+
+    match result {
+        Err(CircuitError::ProfileOverflow { table, .. }) => {
+            assert_eq!(table, poseidon2_op_type.to_string());
+        }
+        Ok(_) => panic!("expected ProfileOverflow on the Poseidon2 NPO table, got Ok"),
+        Err(other) => panic!("expected ProfileOverflow, got a different error: {other}"),
+    }
+}
+
 #[test]
 fn test_stark_serialization_round_trip() {
     let mut builder = CircuitBuilder::<BabyBear>::new();
@@ -1118,8 +1276,13 @@ struct PackingMirror {
     public_lanes: usize,
     alu_lanes: usize,
     npo_lanes: Vec<(p3_circuit::ops::NpoTypeId, usize)>,
+    alu_min_height: Option<usize>,
+    public_min_height: Option<usize>,
+    const_min_height: Option<usize>,
+    npo_min_heights: Vec<(p3_circuit::ops::NpoTypeId, usize)>,
     min_trace_height: usize,
     horner_packed_steps: usize,
+    strict: bool,
 }
 
 impl PackingMirror {
@@ -1128,8 +1291,13 @@ impl PackingMirror {
             public_lanes: 1,
             alu_lanes: 1,
             npo_lanes: Vec::new(),
+            alu_min_height: None,
+            public_min_height: None,
+            const_min_height: None,
+            npo_min_heights: Vec::new(),
             min_trace_height: 1,
             horner_packed_steps: 2,
+            strict: false,
         }
     }
 
@@ -1186,6 +1354,25 @@ fn validate_rejects_invalid_serialized_table_packing() {
     assert_eq!(
         zero_npo.into_table_packing().validate(),
         Err(ProofMetadataError::ZeroNpoLanes(op))
+    );
+
+    let bad_alu_min_height = PackingMirror {
+        alu_min_height: Some(24), // not a power of two
+        ..PackingMirror::valid()
+    };
+    assert_eq!(
+        bad_alu_min_height.into_table_packing().validate(),
+        Err(ProofMetadataError::BadMinTraceHeight(24))
+    );
+
+    let op = p3_circuit::ops::NpoTypeId::new("test_op");
+    let zero_npo_min_height = PackingMirror {
+        npo_min_heights: vec![(op, 0)],
+        ..PackingMirror::valid()
+    };
+    assert_eq!(
+        zero_npo_min_height.into_table_packing().validate(),
+        Err(ProofMetadataError::BadMinTraceHeight(0))
     );
 
     let bad_height = PackingMirror {

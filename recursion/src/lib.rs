@@ -10,6 +10,7 @@ pub mod challenger_perm;
 pub mod generation;
 pub mod pcs;
 pub mod prelude;
+pub mod profile;
 pub mod public_inputs;
 pub mod recursion;
 pub mod traits;
@@ -26,6 +27,7 @@ pub use generation::{GenerationError, PcsGeneration, generate_batch_challenges};
 pub use p3_circuit::ops;
 pub use p3_circuit::ops::{PermConfig, Poseidon2Config};
 pub use pcs::fri::FriVerifierParams;
+pub use profile::{FixedPointError, RecursionLayerProfile, solve_fixed_point};
 pub use public_inputs::{
     BatchStarkVerifierInputsBuilder, CommitmentOpening, FriVerifierInputs, PublicInputBuilder,
     StarkVerifierInputs, StarkVerifierInputsBuilder, construct_batch_stark_verifier_inputs,

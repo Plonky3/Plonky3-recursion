@@ -6,20 +6,23 @@ pub use std::rc::Rc;
 pub use std::sync::Arc;
 
 pub use clap::{Args as ClapArgs, Parser, ValueEnum};
+pub use p3_air::{SymbolicExpression, SymbolicExpressionExt};
 pub use p3_challenger::DuplexChallenger;
 pub use p3_circuit::ops::{
     NpoTypeId, generate_poseidon1_trace, generate_poseidon2_trace, generate_recompose_trace,
 };
-pub use p3_circuit::{CircuitBuilder, CircuitRunner, NonPrimitiveOpId};
+pub use p3_circuit::{Circuit, CircuitBuilder, CircuitError, CircuitRunner, NonPrimitiveOpId};
 pub use p3_circuit_prover::batch_stark_prover::poseidon2_air_builders;
 pub use p3_circuit_prover::common::{NpoPreprocessor, get_airs_and_degrees_with_prep};
+pub use p3_circuit_prover::config::StarkField;
+pub use p3_circuit_prover::field_params::ExtractBinomialW;
 pub use p3_circuit_prover::{
     BatchStarkProver, CircuitProverData, ConstraintProfile, Poseidon2Preprocessor, TablePacking,
 };
 pub use p3_commit::{ExtensionMmcs, Pcs};
 pub use p3_dft::Radix2DitParallel;
 pub use p3_field::extension::{BinomialExtensionField, QuinticTrinomialExtensionField};
-pub use p3_field::{ExtensionField, Field, PrimeCharacteristicRing};
+pub use p3_field::{Algebra, ExtensionField, Field, PrimeCharacteristicRing, PrimeField64};
 pub use p3_fri::{FriParameters, HidingFriPcs, TwoAdicFriPcs};
 pub use p3_lookup::logup::LogUpGadget;
 pub use p3_matrix::Matrix;
@@ -30,12 +33,17 @@ pub use p3_recursion::pcs::{
     RecValMmcs, RecValMmcsArity4, set_fri_mmcs_private_data, set_fri_mmcs_private_data_arity4,
     set_hiding_fri_mmcs_private_data,
 };
+pub use p3_recursion::profile::{
+    HashProfile, ProfilePrepCache, RecursionLayerProfile, TranscriptKind, build_layer_circuit,
+    prove_aggregation_layer_cross_with_profile, prove_aggregation_layer_with_profile, prove_layer,
+    solve_fixed_point,
+};
 pub use p3_recursion::traits::{RecursiveAir, RecursivePcs};
 pub use p3_recursion::verifier::VerificationError;
 pub use p3_recursion::{
     AggregationPrepCache, BatchOnly, BatchStarkVerifierInputsBuilder, FriRecursionBackend,
     FriRecursionBackendD5, FriRecursionConfig, FriVerifierParams, NextLayerPrepCache,
-    Poseidon2Config, ProveNextLayerParams, RecursionInput, RecursionOutput,
+    PcsRecursionBackend, Poseidon2Config, ProveNextLayerParams, RecursionInput, RecursionOutput,
     build_aggregation_layer_circuit, build_and_prove_aggregation_layer,
     build_and_prove_aggregation_layer_cross, build_and_prove_next_layer, build_next_layer_circuit,
     build_next_layer_prep, prove_aggregation_layer, prove_aggregation_layer_cross,
@@ -145,6 +153,71 @@ pub fn default_goldilocks_poseidon2_16() -> p3_goldilocks::Poseidon2Goldilocks<1
 pub fn report_proof_size<S: Serialize>(proof: &S) {
     let proof_bytes = postcard::to_allocvec(proof).expect("Failed to serialize proof");
     println!("Proof size: {} bytes", proof_bytes.len());
+}
+
+/// Mirrors `p3_recursion::profile::solve_fixed_point`'s convergence loop against an
+/// already-built verifier circuit, rather than building one itself from a single `prev` proof.
+/// `solve_fixed_point` only builds single-input circuits (via `build_next_layer_circuit`), so it
+/// cannot solve a fixed point for a 2-to-1 aggregation circuit (built via
+/// `build_aggregation_layer_circuit`); this works against either since the circuit is supplied
+/// directly.
+#[allow(dead_code)]
+pub fn solve_fixed_point_for_circuit<SC, A, B, const D: usize>(
+    seed: RecursionLayerProfile,
+    circuit: &Circuit<SC::Challenge>,
+    backend: &B,
+    constraint_profile: ConstraintProfile,
+    max_iterations: usize,
+) -> RecursionLayerProfile
+where
+    SC: StarkGenericConfig + 'static + Send + Sync,
+    A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
+    B: PcsRecursionBackend<SC, A, D>,
+    Val<SC>: PrimeField64 + StarkField,
+    SC::Challenge: ExtensionField<Val<SC>> + ExtractBinomialW<Val<SC>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
+{
+    let preprocessors = backend.non_primitive_preprocessors();
+    let air_builders = backend.non_primitive_air_builders();
+    let mut table_packing = seed.table_packing.with_strict_heights();
+
+    for _ in 0..max_iterations {
+        match get_airs_and_degrees_with_prep::<SC, SC::Challenge, D>(
+            circuit,
+            &table_packing,
+            &preprocessors,
+            &air_builders,
+            constraint_profile,
+        ) {
+            Ok(_) => {
+                return RecursionLayerProfile {
+                    table_packing,
+                    hash: seed.hash,
+                    transcript: seed.transcript,
+                };
+            }
+            Err(CircuitError::ProfileOverflow { table, needed, .. }) => {
+                table_packing = bump_table_height(table_packing, &table, needed);
+            }
+            Err(other) => panic!("unexpected error while solving a fixed point: {other:?}"),
+        }
+    }
+    panic!(
+        "fixed point did not converge within {max_iterations} iterations, last packing: {table_packing:?}"
+    );
+}
+
+/// Mirrors `p3_recursion::profile`'s private `bump_table_height` growth rule for a strict
+/// `TablePacking` probe; duplicated here since that helper isn't part of the crate's public
+/// surface.
+#[allow(dead_code)]
+fn bump_table_height(packing: TablePacking, table: &str, needed: usize) -> TablePacking {
+    match table {
+        "ALU" => packing.with_alu_min_height(needed),
+        "PUBLIC" => packing.with_public_min_height(needed),
+        "CONST" => packing.with_const_min_height(needed),
+        other => packing.with_npo_min_height(NpoTypeId::new(other), needed),
+    }
 }
 
 /// Expands to all shared field-specific types and helper functions used by every
