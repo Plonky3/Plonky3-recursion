@@ -1047,18 +1047,12 @@ pub(crate) fn eval<
         // transition selector: the wrap-around window reaches row 0, the row that opens the
         // table's first chain and has no predecessor to chain against.
         if air.challenger {
-            for limb in RATE_EXT..WIDTH_EXT {
-                for d in 0..D {
-                    let tag = if limb == RATE_EXT && d == 0 {
-                        cap_tag.into()
-                    } else {
-                        AB::Expr::ZERO
-                    };
-                    builder
-                        .when(next_prep.new_start)
-                        .assert_zero(next_in[limb * D + d] - tag);
-                }
-            }
+            eval_challenger_chain_start::<AB, D, WIDTH_EXT, RATE_EXT>(
+                builder,
+                next_prep.new_start,
+                next_in,
+                cap_tag,
+            );
         }
 
         // Merkle-path chaining: first `RATE_EXT` logical limbs of the output
@@ -1153,6 +1147,36 @@ pub(crate) fn eval<
     >::new(builder, 0..p3_poseidon1_num_cols);
 
     air.p3_poseidon1.eval(&mut sub_builder);
+}
+
+/// Sponge chain start on the challenger's own table: pin a fresh `new_start` row's capacity to
+/// the sponge's initial state (zero, plus the prefix-free length tag on the first capacity
+/// element). Kept out of `eval`'s body (`#[inline(never)]`) so this challenger-only branch
+/// doesn't get duplicated into every field/width monomorphization of the much hotter shared path.
+#[inline(never)]
+fn eval_challenger_chain_start<
+    AB: AirBuilder,
+    const D: usize,
+    const WIDTH_EXT: usize,
+    const RATE_EXT: usize,
+>(
+    builder: &mut AB,
+    new_start: AB::Var,
+    next_in: &[AB::Var],
+    cap_tag: AB::Var,
+) {
+    for limb in RATE_EXT..WIDTH_EXT {
+        for d in 0..D {
+            let tag = if limb == RATE_EXT && d == 0 {
+                cap_tag.into()
+            } else {
+                AB::Expr::ZERO
+            };
+            builder
+                .when(new_start)
+                .assert_zero(next_in[limb * D + d] - tag);
+        }
+    }
 }
 
 /// Unchecked constraint evaluation with a concrete builder type.

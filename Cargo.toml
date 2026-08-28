@@ -105,5 +105,5 @@ debug = true
 [profile.optimized]
 inherits = "release"
 lto = "thin"
-codegen-units = 1
+codegen-units = 16
 opt-level = 3
