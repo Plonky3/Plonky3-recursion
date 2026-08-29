@@ -52,6 +52,7 @@ fn fixed_point_converges_on_koala_bear_d4_first_layer_and_the_profile_actually_p
         table_packing: TablePacking::new(1, 3).with_horner_pack_k(4),
         hash: HashProfile::default(),
         transcript: TranscriptKind::default(),
+        constraint_profile: ConstraintProfile::default(),
     };
 
     // `solve_fixed_point` needs at most (number of tables that overflow) + 1 probes: one bump
@@ -69,7 +70,6 @@ fn fixed_point_converges_on_koala_bear_d4_first_layer_and_the_profile_actually_p
         &prev_input,
         &fixture.layer_config,
         &fixture.backend,
-        ConstraintProfile::Standard,
         max_iterations,
     )
     .expect("fixed point should converge within max_iterations");

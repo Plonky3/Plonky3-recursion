@@ -65,6 +65,7 @@ fn solve_fixed_point_for_aggregation(
                     table_packing,
                     hash: seed.hash,
                     transcript: seed.transcript,
+                    constraint_profile: seed.constraint_profile,
                 };
             }
             Err(CircuitError::ProfileOverflow { table, needed, .. }) => {
@@ -111,6 +112,7 @@ fn aggregation_layer_profile_converges_and_proves() {
         table_packing: TablePacking::new(1, 3).with_horner_pack_k(4),
         hash: HashProfile::default(),
         transcript: TranscriptKind::default(),
+        constraint_profile: ConstraintProfile::default(),
     };
 
     let profile = solve_fixed_point_for_aggregation(&seed, &verification_circuit, &backend, 8);
@@ -194,6 +196,7 @@ fn aggregation_layer_profile_proves_without_prep_cache() {
         table_packing: TablePacking::new(1, 3).with_horner_pack_k(4),
         hash: HashProfile::default(),
         transcript: TranscriptKind::default(),
+        constraint_profile: ConstraintProfile::default(),
     };
     let profile = solve_fixed_point_for_aggregation(&seed, &verification_circuit, &backend, 8);
 
@@ -267,6 +270,7 @@ fn aggregation_layer_profile_ignores_stale_prep_cache() {
         table_packing: TablePacking::new(1, 3).with_horner_pack_k(4),
         hash: HashProfile::default(),
         transcript: TranscriptKind::default(),
+        constraint_profile: ConstraintProfile::default(),
     };
     let profile = solve_fixed_point_for_aggregation(&seed, &verification_circuit, &backend, 8);
 
@@ -276,6 +280,7 @@ fn aggregation_layer_profile_ignores_stale_prep_cache() {
         table_packing: bump_table_height(profile.table_packing.clone(), "ALU", 65536),
         hash: profile.hash,
         transcript: profile.transcript,
+        constraint_profile: profile.constraint_profile,
     };
     assert_ne!(
         stale_profile, profile,

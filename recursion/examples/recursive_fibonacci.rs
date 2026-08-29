@@ -470,13 +470,13 @@ macro_rules! define_field_module {
                                     ),
                                     hash: HashProfile::default(),
                                     transcript: TranscriptKind::BaseDuplex,
+                                    constraint_profile: ConstraintProfile::Standard,
                                 });
                                 let resolved = solve_fixed_point::<$cfg_type, BatchOnly, _, D>(
                                     seed.clone(),
                                     &input,
                                     config,
                                     &backend,
-                                    ConstraintProfile::Standard,
                                     8,
                                 )
                                 .unwrap_or_else(|e| {
@@ -854,13 +854,13 @@ macro_rules! define_field_module_quintic {
                             ),
                             hash: HashProfile::default(),
                             transcript: TranscriptKind::BaseDuplex,
+                            constraint_profile: ConstraintProfile::Standard,
                         });
                         let resolved = solve_fixed_point::<ConfigWithFriParams, BatchOnly, _, D>(
                             seed.clone(),
                             &input,
                             config,
                             &backend,
-                            ConstraintProfile::Standard,
                             8,
                         )
                         .unwrap_or_else(|e| {

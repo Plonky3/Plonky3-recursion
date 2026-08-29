@@ -442,13 +442,13 @@ pub(crate) fn solved_koala_bear_d4_profile() -> (
         table_packing: TablePacking::new(1, 3).with_horner_pack_k(4),
         hash: HashProfile::default(),
         transcript: TranscriptKind::default(),
+        constraint_profile: ConstraintProfile::default(),
     };
     let profile = solve_fixed_point::<_, _, _, 4>(
         seed,
         &prev_input,
         &fixture.layer_config,
         &fixture.backend,
-        ConstraintProfile::Standard,
         8,
     )
     .expect(

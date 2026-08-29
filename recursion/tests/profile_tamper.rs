@@ -15,6 +15,7 @@ fn wrong_table_set_in_proof_is_rejected_as_invalid_shape() {
         table_packing: profile.table_packing.clone().with_public_alu_lanes(1, 5),
         hash: profile.hash,
         transcript: profile.transcript,
+        constraint_profile: profile.constraint_profile,
     };
     let (mismatched_output, _prep) =
         crate::common::prove_one_layer(&mismatched_profile, &prev_input, &config, &backend);

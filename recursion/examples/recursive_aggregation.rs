@@ -499,13 +499,13 @@ macro_rules! define_field_module_aggregation_quintic {
                                                     ),
                                                     hash: HashProfile::default(),
                                                     transcript: TranscriptKind::BaseDuplex,
+                                                    constraint_profile: ConstraintProfile::Standard,
                                                 }
                                             });
                                             let resolved = solve_fixed_point_for_circuit::<$cfg_type, BatchOnly, _, D>(
                                                 seed.clone(),
                                                 circuit_for_solve,
                                                 &backend,
-                                                ConstraintProfile::Standard,
                                                 8,
                                             );
                                             let already_stable = agg_current_profile.as_ref() == Some(&resolved);
@@ -888,13 +888,13 @@ macro_rules! define_field_module {
                                                     ),
                                                     hash: HashProfile::default(),
                                                     transcript: TranscriptKind::BaseDuplex,
+                                                    constraint_profile: ConstraintProfile::Standard,
                                                 }
                                             });
                                             let resolved = solve_fixed_point_for_circuit::<$cfg_type, BatchOnly, _, D>(
                                                 seed.clone(),
                                                 circuit_for_solve,
                                                 &backend,
-                                                ConstraintProfile::Standard,
                                                 8,
                                             );
                                             let already_stable = agg_current_profile.as_ref() == Some(&resolved);

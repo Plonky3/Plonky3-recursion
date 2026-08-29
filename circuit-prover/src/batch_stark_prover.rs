@@ -58,7 +58,6 @@ mod packing;
 mod poseidon1;
 mod poseidon2;
 mod recompose;
-mod shape;
 
 pub use dynamic_air::{
     BatchAir, BatchTableInstance, CloneableBatchAir, DynamicAirEntry, TableProver,
@@ -75,7 +74,6 @@ pub use poseidon2::{
     poseidon2_verifier_air_from_config,
 };
 pub use recompose::{RecomposeAirBuilder, RecomposePreprocessor, RecomposeProver};
-pub use shape::RecursionTableShape;
 
 /// Prime modulus of the BabyBear field (`2^31 - 2^27 + 1`).
 pub const BABY_BEAR_MODULUS: u64 = 0x7800_0001;
@@ -1601,7 +1599,7 @@ where
             }
         }
 
-        let trace_tables_layout = TraceTablesLayout {
+        TraceTablesLayout {
             const_: AirTableShape {
                 main_cols: BaseAir::width(&const_air),
                 prep_cols: ConstAir::<Val<SC>, D>::preprocessed_width(),
@@ -1640,8 +1638,8 @@ where
                     )
                 })
                 .collect(),
-        };
-        trace_tables_layout.log();
+        }
+        .log();
 
         // Wrap AIRs in enum for heterogeneous batching and build instances in fixed order.
         let mut air_storage: Vec<CircuitTableAir<SC, D>> =
@@ -1830,15 +1828,22 @@ where
         let packing = &proof.table_packing;
         let public_lanes = packing.public_lanes();
         let alu_lanes = packing.alu_lanes();
-        let min_height = packing.min_trace_height();
+        // IMPORTANT: this per-table resolution (getter + `unwrap_or(global_min_height)`) must
+        // stay identical to the one in `prove_all_tables` and in `get_airs_and_degrees_with_prep`
+        // (common.rs), which computes the degree the preprocessed data was committed at. A
+        // divergence here would silently miscommit a table's height.
+        let global_min_height = packing.min_trace_height();
+        let const_min_height = packing.const_min_height().unwrap_or(global_min_height);
+        let public_min_height = packing.public_min_height().unwrap_or(global_min_height);
+        let alu_min_height = packing.alu_min_height().unwrap_or(global_min_height);
 
         let const_air = CircuitTableAir::Const(
             ConstAir::<Val<SC>, D>::new(proof.rows[PrimitiveTable::Const])
-                .with_min_height(min_height),
+                .with_min_height(const_min_height),
         );
         let public_air = CircuitTableAir::Public(
             PublicAir::<Val<SC>, D>::new(proof.rows[PrimitiveTable::Public], public_lanes)
-                .with_min_height(min_height),
+                .with_min_height(public_min_height),
         );
         let horner_k = packing.horner_packed_steps();
         let reduction =
@@ -1851,7 +1856,7 @@ where
                 reduction,
             )
             .with_horner_pack_k(horner_k)
-            .with_min_height(min_height),
+            .with_min_height(alu_min_height),
         );
         let mut airs = vec![const_air, public_air, alu_air];
         let mut pvs: Vec<Vec<Val<SC>>> =

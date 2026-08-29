@@ -66,22 +66,16 @@ impl Default for HashProfile {
 
 /// Which Fiat-Shamir transcript a recursion layer's verifier circuit replays.
 ///
-/// [`BaseDuplex`](TranscriptKind::BaseDuplex) is the base-field duplex sponge
-/// ([`CircuitChallenger`](crate::CircuitChallenger)): the sponge's rate holds base elements, so
-/// observing an extension element decomposes it into its `D` coefficients and sampling one
-/// recomposes `D` squeezed elements. [`ExtLimbDuplex`](TranscriptKind::ExtLimbDuplex) names an
-/// extension-limb sponge whose rate holds whole `D`-coefficient limbs and which therefore needs
-/// neither decomposition around the sponge, but has no implementation wired into this profile
-/// path yet -- selecting it is not supported.
+/// `BaseDuplex` is the base-field duplex sponge ([`CircuitChallenger`](crate::CircuitChallenger)):
+/// the sponge's rate holds base elements, so observing an extension element decomposes it into
+/// its `D` coefficients and sampling one recomposes `D` squeezed elements.
 ///
 /// A layer verifying a proof produced outside this recursion tree has no choice: it must replay
-/// the transcript that proof was generated under, which is `BaseDuplex`. Only a layer verifying a
-/// previous recursion layer -- whose transcript this profile also governs -- can pick either.
+/// the transcript that proof was generated under, which is `BaseDuplex`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TranscriptKind {
     #[default]
     BaseDuplex,
-    ExtLimbDuplex,
 }
 
 /// Everything a recursion-layer verifier circuit's *table shape* depends on.
@@ -94,6 +88,7 @@ pub struct RecursionLayerProfile {
     pub table_packing: TablePacking,
     pub hash: HashProfile,
     pub transcript: TranscriptKind,
+    pub constraint_profile: ConstraintProfile,
 }
 
 /// Returned (formatted into a [`VerificationError::InvalidProofShape`]) when
@@ -130,17 +125,15 @@ pub struct FixedPointError {
 /// converges in at most (number of tables that overflow the seed) + 1 probes: one bump per
 /// overflowing table, plus a final clean re-probe that finds nothing left to bump.
 ///
-/// `constraint_profile` is threaded into every internal probe and is not itself recorded on
-/// the returned [`RecursionLayerProfile`]: the resolved heights are only valid for
+/// `seed.constraint_profile` is threaded into every internal probe and is carried through onto
+/// the returned [`RecursionLayerProfile`] unchanged: the resolved heights are only valid for
 /// proving/verifying under this same `ConstraintProfile`, since it affects table shape
 /// (`ConstraintProfile::RecursionOptimized` maps to a different AIR variant than `Standard`).
-/// Callers must remember which one they solved with.
 pub fn solve_fixed_point<SC, A, B, const D: usize>(
     seed: RecursionLayerProfile,
     prev: &RecursionInput<'_, SC, A>,
     config: &SC,
     backend: &B,
-    constraint_profile: ConstraintProfile,
     max_iterations: usize,
 ) -> Result<RecursionLayerProfile, VerificationError>
 where
@@ -164,7 +157,7 @@ where
     for iteration in 0..max_iterations {
         let params = ProveNextLayerParams {
             table_packing: table_packing.clone(),
-            constraint_profile,
+            constraint_profile: seed.constraint_profile,
         };
 
         match build_next_layer_prep::<SC, A, B, D>(&circuit, config, backend, &params) {
@@ -178,6 +171,7 @@ where
                     table_packing,
                     hash: seed.hash,
                     transcript: seed.transcript,
+                    constraint_profile: seed.constraint_profile,
                 });
             }
             Err(VerificationError::Circuit(CircuitError::ProfileOverflow {
@@ -311,7 +305,7 @@ where
 {
     let params = ProveNextLayerParams {
         table_packing: profile.table_packing.clone(),
-        constraint_profile: ConstraintProfile::default(),
+        constraint_profile: profile.constraint_profile,
     };
 
     let valid_prep = prep.filter(|cached| &cached.profile == profile);
@@ -378,7 +372,7 @@ where
 {
     let params = ProveNextLayerParams {
         table_packing: profile.table_packing.clone(),
-        constraint_profile: ConstraintProfile::default(),
+        constraint_profile: profile.constraint_profile,
     };
 
     let valid_prep = prep.filter(|cached| &cached.profile == profile);
@@ -496,7 +490,7 @@ where
 {
     let params = ProveNextLayerParams {
         table_packing: profile.table_packing.clone(),
-        constraint_profile: ConstraintProfile::default(),
+        constraint_profile: profile.constraint_profile,
     };
 
     let valid_prep = prep.filter(|cached| &cached.profile == profile);
@@ -585,11 +579,13 @@ mod tests {
             table_packing: TablePacking::new(1, 3),
             hash: HashProfile::default(),
             transcript: TranscriptKind::default(),
+            constraint_profile: ConstraintProfile::default(),
         };
         let b = RecursionLayerProfile {
             table_packing: TablePacking::new(1, 3),
             hash: HashProfile::default(),
             transcript: TranscriptKind::default(),
+            constraint_profile: ConstraintProfile::default(),
         };
         assert_eq!(a, b);
     }
@@ -600,11 +596,13 @@ mod tests {
             table_packing: TablePacking::new(1, 3),
             hash: HashProfile::default(),
             transcript: TranscriptKind::default(),
+            constraint_profile: ConstraintProfile::default(),
         };
         let b = RecursionLayerProfile {
             table_packing: TablePacking::new(1, 4),
             hash: HashProfile::default(),
             transcript: TranscriptKind::default(),
+            constraint_profile: ConstraintProfile::default(),
         };
         assert_ne!(a, b);
     }
@@ -615,11 +613,13 @@ mod tests {
             table_packing: TablePacking::new(1, 3),
             hash: HashProfile::default(),
             transcript: TranscriptKind::default(),
+            constraint_profile: ConstraintProfile::default(),
         };
         let b = RecursionLayerProfile {
             table_packing: TablePacking::new(1, 3).with_alu_min_height(65536),
             hash: HashProfile::default(),
             transcript: TranscriptKind::default(),
+            constraint_profile: ConstraintProfile::default(),
         };
         assert_ne!(a, b);
     }
@@ -630,6 +630,7 @@ mod tests {
             table_packing: TablePacking::new(1, 3),
             hash: HashProfile::default(),
             transcript: TranscriptKind::default(),
+            constraint_profile: ConstraintProfile::default(),
         };
         assert_eq!(profile.hash.arity, MerkleArity::Two);
         assert_eq!(profile.hash.cap_height, 0);
@@ -641,21 +642,8 @@ mod tests {
             table_packing: TablePacking::new(1, 3),
             hash: HashProfile::default(),
             transcript: TranscriptKind::default(),
+            constraint_profile: ConstraintProfile::default(),
         };
         assert_eq!(profile.transcript, TranscriptKind::BaseDuplex);
-    }
-
-    #[test]
-    fn different_transcript_kinds_produce_unequal_profiles() {
-        let a = RecursionLayerProfile {
-            table_packing: TablePacking::new(1, 3),
-            hash: HashProfile::default(),
-            transcript: TranscriptKind::BaseDuplex,
-        };
-        let b = RecursionLayerProfile {
-            transcript: TranscriptKind::ExtLimbDuplex,
-            ..a.clone()
-        };
-        assert_ne!(a, b);
     }
 }

@@ -166,7 +166,6 @@ pub fn solve_fixed_point_for_circuit<SC, A, B, const D: usize>(
     seed: RecursionLayerProfile,
     circuit: &Circuit<SC::Challenge>,
     backend: &B,
-    constraint_profile: ConstraintProfile,
     max_iterations: usize,
 ) -> RecursionLayerProfile
 where
@@ -187,13 +186,14 @@ where
             &table_packing,
             &preprocessors,
             &air_builders,
-            constraint_profile,
+            seed.constraint_profile,
         ) {
             Ok(_) => {
                 return RecursionLayerProfile {
                     table_packing,
                     hash: seed.hash,
                     transcript: seed.transcript,
+                    constraint_profile: seed.constraint_profile,
                 };
             }
             Err(CircuitError::ProfileOverflow { table, needed, .. }) => {

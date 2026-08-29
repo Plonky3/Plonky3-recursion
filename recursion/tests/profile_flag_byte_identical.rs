@@ -81,16 +81,13 @@ fn profile_path_matches_plain_path_once_fixed_point_is_reached() {
 
         let is_stable = {
             let next_input = out.into_recursion_input::<BatchOnly>();
-            let resolved =
-                solve_fixed_point::<KoalaBearD4RecursionConfig, BatchOnly, KoalaBearD4Backend, 4>(
-                    candidate.clone(),
-                    &next_input,
-                    &config,
-                    &backend,
-                    ConstraintProfile::Standard,
-                    8,
-                )
-                .expect("re-solving against this layer's own output should converge");
+            let resolved = solve_fixed_point::<
+                KoalaBearD4RecursionConfig,
+                BatchOnly,
+                KoalaBearD4Backend,
+                4,
+            >(candidate.clone(), &next_input, &config, &backend, 8)
+            .expect("re-solving against this layer's own output should converge");
             let is_stable = resolved == candidate;
             candidate = resolved;
             is_stable
