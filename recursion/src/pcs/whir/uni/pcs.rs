@@ -232,14 +232,30 @@ where
         )
     }
 
-    /// Filled by Task 4.
+    /// Evaluations of committed matrix `idx` over `domain`.
+    ///
+    /// The commitment stores coefficients, so this zero-extends them to the
+    /// requested height and runs one coset DFT at the domain's shift.
+    ///
+    /// # Panics
+    /// Panics if `domain` is smaller than the committed matrix.
     fn evaluations_on_domain(
         &self,
-        _prover_data: &WhirUniProverData<F, EF, MT, L>,
-        _idx: usize,
-        _domain: TwoAdicMultiplicativeCoset<F>,
+        prover_data: &WhirUniProverData<F, EF, MT, L>,
+        idx: usize,
+        domain: TwoAdicMultiplicativeCoset<F>,
     ) -> RowMajorMatrix<F> {
-        unimplemented!("get_evaluations_on_domain lands in Task 4")
+        let coeffs = &prover_data.coeffs[idx];
+        let width = coeffs.width();
+        assert!(
+            domain.size() >= coeffs.height(),
+            "requested domain is smaller than the committed matrix"
+        );
+        let mut values = coeffs.values.clone();
+        values.resize(domain.size() * width, F::ZERO);
+        self.dft
+            .coset_dft_batch(RowMajorMatrix::new(values, width), domain.shift())
+            .to_row_major_matrix()
     }
 
     /// Filled by Task 5.
@@ -385,6 +401,7 @@ mod tests {
 
     use p3_baby_bear::{BabyBear, Poseidon2BabyBear};
     use p3_challenger::DuplexChallenger;
+    use p3_commit::PolynomialSpace;
     use p3_dft::{Radix2DFTSmallBatch, TwoAdicSubgroupDft};
     use p3_field::coset::TwoAdicMultiplicativeCoset;
     use p3_field::extension::BinomialExtensionField;
@@ -483,5 +500,58 @@ mod tests {
             <MyPcs as p3_commit::Pcs<EF, MyChallenger>>::natural_domain_for_degree(&pcs, 1 << 7);
         assert_eq!(d.size(), 1 << 7);
         assert_eq!(d.shift(), F::ONE);
+    }
+
+    /// Evaluations returned for a larger, shifted domain must equal a direct
+    /// coset LDE of the stored coefficients.
+    #[test]
+    fn evaluations_on_domain_matches_a_direct_coset_lde() {
+        let pcs = test_pcs();
+        let dft = MyDft::default();
+        let mut rng = SmallRng::seed_from_u64(5);
+
+        let trace_domain = TwoAdicMultiplicativeCoset::<F>::new(F::ONE, 5).unwrap();
+        let mat = RowMajorMatrix::<F>::rand(&mut rng, 1 << 5, 2);
+        let (_c, data) =
+            <MyPcs as p3_commit::Pcs<EF, MyChallenger>>::commit(&pcs, vec![(trace_domain, mat)]);
+
+        // Quotient domain: 4x larger, disjoint coset.
+        let quotient_domain = trace_domain.create_disjoint_domain(1 << 7);
+        let got = <MyPcs as p3_commit::Pcs<EF, MyChallenger>>::get_evaluations_on_domain(
+            &pcs,
+            &data,
+            0,
+            quotient_domain,
+        );
+
+        // Reference: pad the coefficients to the quotient height, then coset-DFT.
+        let mut coeffs = data.coeffs[0].clone();
+        let width = coeffs.width();
+        coeffs.values.resize(quotient_domain.size() * width, F::ZERO);
+        let want = dft
+            .coset_dft_batch(
+                RowMajorMatrix::new(coeffs.values, width),
+                quotient_domain.shift(),
+            )
+            .to_row_major_matrix();
+
+        assert_eq!(got.height(), quotient_domain.size());
+        assert_eq!(got.values, want.values);
+    }
+
+    /// Asking for the committed domain itself must return the original evaluations.
+    #[test]
+    fn evaluations_on_the_committed_domain_round_trip() {
+        let pcs = test_pcs();
+        let mut rng = SmallRng::seed_from_u64(6);
+        let domain = TwoAdicMultiplicativeCoset::<F>::new(F::GENERATOR, 4).unwrap();
+        let mat = RowMajorMatrix::<F>::rand(&mut rng, 1 << 4, 3);
+        let (_c, data) =
+            <MyPcs as p3_commit::Pcs<EF, MyChallenger>>::commit(&pcs, vec![(domain, mat.clone())]);
+
+        let got = <MyPcs as p3_commit::Pcs<EF, MyChallenger>>::get_evaluations_on_domain(
+            &pcs, &data, 0, domain,
+        );
+        assert_eq!(got.values, mat.values);
     }
 }
