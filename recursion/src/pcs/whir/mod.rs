@@ -10,6 +10,7 @@ pub mod gadgets;
 pub mod params;
 pub mod sumcheck;
 pub mod targets;
+pub mod uni;
 pub mod verifier;
 
 pub use gadgets::{
