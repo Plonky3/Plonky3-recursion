@@ -32,7 +32,10 @@ use crate::verifier::{ObservableCommitment, VerificationError};
 /// For `BinomialExtensionField<F, D>`, the packing is:
 /// `packed[i] = lifted[i*D] + lifted[i*D+1]*X + lifted[i*D+2]*X^2 + ...`
 /// where `X` is the extension basis element.
-fn pack_lifted_to_ext<F, EF>(builder: &mut CircuitBuilder<EF>, lifted: &[Target]) -> Vec<Target>
+pub(crate) fn pack_lifted_to_ext<F, EF>(
+    builder: &mut CircuitBuilder<EF>,
+    lifted: &[Target],
+) -> Vec<Target>
 where
     F: Field,
     EF: ExtensionField<F> + BasedVectorSpace<F>,
@@ -80,7 +83,7 @@ where
 /// configs, adjacent lifted coordinates are packed into one extension element via
 /// [`pack_lifted_to_ext`]. For D=1 configs over a high-degree challenge extension the inner hash
 /// absorbs one base element per slot (lifted scalars); cap rows must **not** be packed.
-fn commitment_cap_rows_from_lifted<F, EF>(
+pub(crate) fn commitment_cap_rows_from_lifted<F, EF>(
     builder: &mut CircuitBuilder<EF>,
     perm_config: PermConfig,
     lifted: &[Target],

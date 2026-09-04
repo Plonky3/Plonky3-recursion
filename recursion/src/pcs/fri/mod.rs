@@ -13,4 +13,5 @@ pub use targets::{
     RecursiveFriInputOpenings, RecursiveMultiProofTargets, TwoAdicFriProofTargets, Witness,
     fri_proof_num_queries,
 };
+pub(crate) use verifier::commitment_cap_rows_from_lifted;
 pub use verifier::verify_fri_circuit;

@@ -12,16 +12,21 @@
 //! the flattened equality points receive the batching powers in that same
 //! order.
 
+use alloc::format;
 use alloc::vec::Vec;
 
-use p3_circuit::{CircuitBuilder, CircuitBuilderError};
-use p3_field::{ExtensionField, PrimeField64};
+use p3_circuit::{CircuitBuilder, CircuitBuilderError, NonPrimitiveOpId};
+use p3_field::coset::TwoAdicMultiplicativeCoset;
+use p3_field::{ExtensionField, PrimeField64, TwoAdicField};
 
 use crate::Target;
 use crate::pcs::whir::gadgets::{ConstraintWeightData, eval_powers_combination};
 use crate::pcs::whir::uni::bridge::univariate_eq_point_circuit;
 use crate::pcs::whir::uni::plan::{PaddedArity, StackedPlan, padded_arity};
-use crate::traits::RecursiveChallenger;
+use crate::pcs::whir::uni::recursive_pcs::{DummyChallenger, WhirUniVerifierParams};
+use crate::pcs::whir::uni::targets::WhirRoundTargets;
+use crate::traits::{ComsWithOpeningsTargets, RecursiveChallenger};
+use crate::verifier::{ObservableCommitment, VerificationError};
 
 /// One committed matrix's public opening shape.
 pub struct MatrixOpenings<'a> {
@@ -182,6 +187,88 @@ where
 /// Index of matrix `m`'s first opening batch in `iter_openings()` order.
 fn round_evals_offset(matrices: &[MatrixOpenings<'_>], m: usize) -> usize {
     matrices[..m].iter().map(|x| x.points.len()).sum()
+}
+
+/// Verifies every commitment's WHIR argument in-circuit.
+///
+/// Each commitment is handled independently against the running transcript, in
+/// the order the STARK verifier supplies it: the claims are assembled with
+/// [`build_round_claims`], then [`verify_whir_circuit`](crate::pcs::whir::verify_whir_circuit)
+/// replays that commitment's proximity argument. The commitment cap is not
+/// observed here — the STARK verifier absorbs each commitment before sampling
+/// its own challenges, exactly as `PrescribedPointPcs::verify_at` expects.
+///
+/// # Errors
+/// Returns [`VerificationError::InvalidProofShape`] if the proof carries a
+/// different number of WHIR arguments than there are commitments, or if a
+/// circuit operation fails.
+pub fn verify_whir_uni_circuit<BF, EF, Ch, Comm>(
+    circuit: &mut CircuitBuilder<EF>,
+    challenger: &mut Ch,
+    params: &WhirUniVerifierParams<BF>,
+    commitments_with_opening_points: &ComsWithOpeningsTargets<Comm, TwoAdicMultiplicativeCoset<BF>>,
+    rounds: &[WhirRoundTargets],
+) -> Result<Vec<NonPrimitiveOpId>, VerificationError>
+where
+    BF: PrimeField64 + TwoAdicField,
+    EF: ExtensionField<BF> + TwoAdicField,
+    Ch: RecursiveChallenger<BF, EF>,
+    Comm: ObservableCommitment,
+{
+    if rounds.len() != commitments_with_opening_points.len() {
+        return Err(VerificationError::InvalidProofShape(format!(
+            "WHIR proof carries {} arguments for {} commitments",
+            rounds.len(),
+            commitments_with_opening_points.len()
+        )));
+    }
+
+    let mut op_ids = Vec::new();
+    for ((commitment, matrices), round) in commitments_with_opening_points.iter().zip(rounds) {
+        let openings: Vec<MatrixOpenings<'_>> = matrices
+            .iter()
+            .map(|(domain, points)| MatrixOpenings {
+                log_height: domain.log_size(),
+                points: points.as_slice(),
+            })
+            .collect();
+
+        let claims = build_round_claims::<BF, EF, Ch>(
+            circuit,
+            challenger,
+            &openings,
+            &round.evals,
+            &round.whir.initial_ood_answers,
+            params.folding,
+        )
+        .map_err(|e| VerificationError::InvalidProofShape(format!("{e:?}")))?;
+
+        let vp = params.round_params::<EF, DummyChallenger<BF>>(claims.stacked_num_variables);
+
+        // The MMCS gadget wants each cap entry as packed extension targets; the
+        // commitment's observation targets are lifted base scalars.
+        let cap: Vec<Vec<Target>> = match params.permutation_config {
+            Some(perm) => {
+                let lifted = commitment.to_observation_targets();
+                crate::pcs::fri::commitment_cap_rows_from_lifted::<BF, EF>(circuit, perm, &lifted)
+            }
+            None => alloc::vec![alloc::vec![circuit.define_const(EF::ZERO)]],
+        };
+
+        let round_ops = crate::pcs::whir::verify_whir_circuit::<BF, EF, Ch>(
+            circuit,
+            challenger,
+            &vp,
+            &round.whir,
+            &cap,
+            claims.constraint,
+            claims.claimed_eval,
+        )
+        .map_err(|e| VerificationError::InvalidProofShape(format!("{e:?}")))?;
+        op_ids.extend(round_ops);
+    }
+
+    Ok(op_ids)
 }
 
 #[cfg(test)]
@@ -532,5 +619,45 @@ mod tests {
             &[],
             4,
         );
+    }
+
+    /// A round's verifier params must be derived for the arity the claim
+    /// assembly computed, and must carry the requested MMCS mode.
+    #[test]
+    fn round_params_track_the_stacked_arity_and_mmcs_mode() {
+        use p3_circuit::ops::Poseidon2Config;
+        use p3_sumcheck::layout::{Layout, PrefixProver};
+        use p3_whir::parameters::{FoldingFactor, ProtocolParameters, SecurityAssumption};
+
+        use crate::pcs::whir::uni::recursive_pcs::WhirUniVerifierParams;
+
+        let protocol_params = ProtocolParameters {
+            security_level: 32,
+            pow_bits: 0,
+            round_log_inv_rates: vec![4],
+            folding_factor: FoldingFactor::Constant(4),
+            soundness_type: SecurityAssumption::CapacityBound,
+            starting_log_inv_rate: 1,
+        };
+
+        let arithmetic_only = WhirUniVerifierParams::<BF>::new(
+            protocol_params.clone(),
+            PrefixProver::<BF, EF>::variable_order(),
+            None,
+        );
+        let vp = arithmetic_only
+            .round_params::<EF, DuplexChallenger<BF, Poseidon2BabyBear<16>, 16, 8>>(12);
+        assert_eq!(vp.num_variables, 12);
+        assert!(vp.permutation_config.is_none());
+
+        let with_mmcs = WhirUniVerifierParams::<BF>::new(
+            protocol_params,
+            PrefixProver::<BF, EF>::variable_order(),
+            Some(Poseidon2Config::BABY_BEAR_D4_W16.into()),
+        );
+        let vp =
+            with_mmcs.round_params::<EF, DuplexChallenger<BF, Poseidon2BabyBear<16>, 16, 8>>(12);
+        assert!(vp.permutation_config.is_some());
+        assert_eq!(vp.n_rounds(), 1);
     }
 }
