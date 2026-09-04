@@ -1,5 +1,7 @@
 #![allow(unused)]
 
+pub mod whir_config;
+
 use std::sync::Arc;
 
 use itertools::Itertools;
