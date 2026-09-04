@@ -44,6 +44,14 @@ where
     L: Layout<F, EF>,
 {
     /// Evaluation domain each committed matrix was supplied on, in commit order.
+    ///
+    /// For a quotient commitment (built via
+    /// [`WhirUniPcs::commit_quotient_coefficient_matrices`]) this holds a
+    /// unit-shift placeholder coset per chunk — its `size()` is the chunk's
+    /// real height, but its `shift()` is always `F::ONE`, not the chunk's
+    /// actual coset shift. The univariate interface drops the real domains
+    /// before that method runs, so only the height survives; callers must not
+    /// read `shift()` from an entry produced this way.
     pub domains: Vec<TwoAdicMultiplicativeCoset<F>>,
     /// Coefficient matrix per committed matrix: height `2^log_height`, width
     /// equal to the matrix width, column `j` holding polynomial `j`'s
@@ -347,7 +355,10 @@ where
     ) -> Vec<RowMajorMatrix<F>> {
         evaluations
             .into_iter()
-            .map(|(domain, evals)| self.dft.coset_idft_batch(evals, domain.shift()))
+            .map(|(domain, evals)| {
+                debug_assert_eq!(evals.height(), domain.size());
+                self.dft.coset_idft_batch(evals, domain.shift())
+            })
             .collect()
     }
 
@@ -704,8 +715,6 @@ mod tests {
     /// interpolation of that chunk's evaluations would.
     #[test]
     fn quotient_chunks_are_committed_as_chunk_coefficients() {
-        use p3_commit::PolynomialSpace;
-
         let pcs = test_pcs();
         let dft = MyDft::default();
         let mut rng = SmallRng::seed_from_u64(13);
@@ -728,6 +737,15 @@ mod tests {
             let want = dft.coset_idft_batch(se, sd.shift());
             assert_eq!(data.coeffs[i].values, want.values, "chunk {i}");
         }
+
+        // The recorded domains are unit-shift height-only placeholders, one
+        // per chunk: real chunk height, but not the chunk's actual shift.
+        assert_eq!(data.domains.len(), num_chunks);
+        for (i, domain) in data.domains.iter().enumerate() {
+            assert_eq!(domain.shift(), F::ONE, "chunk {i}");
+            assert_eq!(domain.size(), data.coeffs[i].height(), "chunk {i}");
+        }
+
         // 4 chunks x 2^4 rows x 1 column = 64 -> stacked arity 6.
         assert_eq!(data.stacked_num_variables, 6);
     }
