@@ -2,7 +2,10 @@
 
 pub mod fri;
 pub mod mmcs;
+mod pruned_paths;
 pub mod whir;
+
+pub use pruned_paths::restore_and_recompute_paths;
 
 pub use fri::{
     BatchOpeningTargets, CommitPhaseProofStepTargets, FriProofTargets, FriVerifierParams,

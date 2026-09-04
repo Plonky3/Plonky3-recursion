@@ -1,5 +1,6 @@
 #![allow(clippy::upper_case_acronyms)]
 
+use alloc::borrow::Cow;
 use alloc::boxed::Box;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
@@ -119,7 +120,7 @@ where
         }
     }
 
-    fn periodic_columns(&self) -> Vec<Vec<Val<SC>>> {
+    fn periodic_columns(&self) -> Cow<'_, [Vec<Val<SC>>]> {
         match self {
             Self::Const(a) => P3BaseAir::periodic_columns(a),
             Self::Public(a) => P3BaseAir::periodic_columns(a),
@@ -296,6 +297,11 @@ where
         )),
         CircuitTablesAir::Alu(alu_air),
     ];
+    let mut trace_lens = vec![
+        rows[PrimitiveTable::Const],
+        rows[PrimitiveTable::Public],
+        rows[PrimitiveTable::Alu],
+    ];
 
     if proof.non_primitives.len() != non_primitive_provers.len() {
         return Err(VerificationError::InvalidProofShape(format!(
@@ -321,6 +327,7 @@ where
             .batch_air_from_table_entry(config, TRACE_D, proof.ext_degree as u32, entry)
             .map_err(VerificationError::InvalidProofShape)?;
         circuit_airs.push(CircuitTablesAir::Dynamic(air));
+        trace_lens.push(entry.rows);
     }
 
     let mut air_public_counts = vec![0usize; NUM_PRIMITIVE_TABLES];
@@ -340,9 +347,14 @@ where
     // AIRs); a malformed or malicious lookup set is now ignored rather than believed.
     verifier_inputs.common_data.lookups = circuit_airs
         .iter()
-        .map(|air| {
-            lookups_for_circuit_table_air::<SC, TRACE_D>(&air.to_table_air(), config.is_zk())
-                .to_vec()
+        .zip(trace_lens.iter())
+        .map(|(air, &trace_len)| {
+            lookups_for_circuit_table_air::<SC, TRACE_D>(
+                &air.to_table_air(),
+                trace_len,
+                config.is_zk(),
+            )
+            .to_vec()
         })
         .collect();
 
@@ -550,9 +562,15 @@ where
             ));
         }
 
+        let base_db = degree_bits[i].checked_sub(config.is_zk()).ok_or_else(|| {
+            VerificationError::InvalidProofShape(
+                "Extended degree bits smaller than ZK adjustment".to_string(),
+            )
+        })?;
         let log_qd = A::get_log_num_quotient_chunks(
             air,
             pre_w,
+            1usize << base_db,
             &all_lookups[i],
             config.is_zk(),
             lookup_gadget,

@@ -178,9 +178,15 @@ where
             num_public_values: air.num_public_values(),
             ..Default::default()
         };
+        let base_db = degree_bits[i]
+            .checked_sub(config.is_zk())
+            .ok_or(GenerationError::InvalidProofShape(
+                "extended degree smaller than zk adjustment",
+            ))?;
         let log_qd = get_batch_log_num_quotient_chunks(
             air,
             batch_layout,
+            1usize << base_db,
             &all_lookups[i],
             config.is_zk(),
             lookup_gadget,

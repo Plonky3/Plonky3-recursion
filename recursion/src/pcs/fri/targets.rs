@@ -16,8 +16,8 @@ use p3_fri::{CommitPhaseProofStep, FriProof, HidingFriPcs, QueryProof, TwoAdicFr
 use p3_merkle_tree::{MerkleTreeHidingMmcs, MerkleTreeMmcs};
 use p3_symmetric::{CryptographicHasher, MerkleCap, PseudoCompressionFunction};
 use p3_uni_stark::{StarkGenericConfig, Val};
-use rand::Rng;
 use rand::distr::{Distribution, StandardUniform};
+use rand::{CryptoRng, Rng, SeedableRng};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
@@ -652,7 +652,7 @@ where
     C: PseudoCompressionFunction<[F; DIGEST_ELEMS], 2>
         + PseudoCompressionFunction<[F::Packing; DIGEST_ELEMS], 2>
         + Sync,
-    R: Rng + Clone + Send,
+    R: Rng + Clone + Send + SeedableRng + CryptoRng,
     StandardUniform: Distribution<F>,
     [F; DIGEST_ELEMS]: Serialize + for<'a> Deserialize<'a>,
 {

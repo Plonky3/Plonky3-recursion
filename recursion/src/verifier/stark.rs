@@ -142,6 +142,7 @@ where
     let log_quotient_degree = A::get_log_num_quotient_chunks(
         air,
         preprocessed_width,
+        degree >> config.is_zk(),
         &[],
         config.is_zk(),
         &lookup_gadget,

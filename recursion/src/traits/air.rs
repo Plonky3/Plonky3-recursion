@@ -1,5 +1,6 @@
 //! Trait for recursive AIR constraint evaluation.
 
+use alloc::borrow::Cow;
 use alloc::vec::Vec;
 
 use hashbrown::HashMap;
@@ -40,7 +41,7 @@ pub trait RecursiveAir<F: Field, EF: ExtensionField<F>, LG: LookupProtocol> {
     /// Each entry is the length-`period` evaluation vector of one periodic
     /// column. Periodic columns are verifier-recomputable AIR constants and are
     /// never committed; the verifier evaluates them at the opening point.
-    fn periodic_columns(&self) -> Vec<Vec<F>>;
+    fn periodic_columns(&self) -> Cow<'_, [Vec<F>]>;
 
     /// Evaluate all AIR constraints and fold them into a single target.
     ///
@@ -80,6 +81,8 @@ pub trait RecursiveAir<F: Field, EF: ExtensionField<F>, LG: LookupProtocol> {
     ///
     /// # Parameters
     /// - `num_public_values`: Number of public input values
+    /// - `trace_len`: Base (unextended) trace length, used to size periodic columns when the
+    ///   AIR doesn't provide a constant `max_constraint_degree()` hint
     /// - `is_zk`: Whether ZK mode is enabled (0 or 1)
     ///
     /// # Returns
@@ -87,6 +90,7 @@ pub trait RecursiveAir<F: Field, EF: ExtensionField<F>, LG: LookupProtocol> {
     fn get_log_num_quotient_chunks(
         &self,
         preprocessed_width: usize,
+        trace_len: usize,
         contexts: &[Lookup<F>],
         is_zk: usize,
         lookup_gadget: &LG,
@@ -122,7 +126,7 @@ where
         p3_air::BaseAir::<F>::num_periodic_columns(self)
     }
 
-    fn periodic_columns(&self) -> Vec<Vec<F>> {
+    fn periodic_columns(&self) -> Cow<'_, [Vec<F>]> {
         p3_air::BaseAir::<F>::periodic_columns(self)
     }
 
@@ -188,6 +192,7 @@ where
     fn get_log_num_quotient_chunks(
         &self,
         preprocessed_width: usize,
+        trace_len: usize,
         contexts: &[Lookup<F>],
         is_zk: usize,
         lookup_gadget: &LG,
@@ -205,7 +210,7 @@ where
             num_periodic_columns: p3_air::BaseAir::<F>::num_periodic_columns(self),
             ..Default::default()
         };
-        get_log_num_quotient_chunks(self, layout, contexts, is_zk, lookup_gadget)
+        get_log_num_quotient_chunks(self, layout, trace_len, contexts, is_zk, lookup_gadget)
     }
 
     fn declares_interactions(&self, preprocessed_width: usize) -> bool {

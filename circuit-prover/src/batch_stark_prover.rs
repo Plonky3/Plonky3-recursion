@@ -1,6 +1,7 @@
 //! Batch STARK prover and verifier that unifies all circuit tables
 //! into a single batched STARK proof using `p3-batch-stark`.
 
+use alloc::borrow::Cow;
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
@@ -953,7 +954,7 @@ where
         }
     }
 
-    fn periodic_columns(&self) -> Vec<Vec<Val<SC>>> {
+    fn periodic_columns(&self) -> Cow<'_, [Vec<Val<SC>>]> {
         match self {
             Self::Const(a) => BaseAir::<Val<SC>>::periodic_columns(a),
             Self::Public(a) => BaseAir::<Val<SC>>::periodic_columns(a),
@@ -1027,6 +1028,7 @@ where
 /// reconstructs, instead of trusting the proof-supplied `common.lookups`.
 pub fn lookups_for_circuit_table_air<SC, const D: usize>(
     air: &CircuitTableAir<SC, D>,
+    trace_len: usize,
     is_zk: usize,
 ) -> Lookups<Val<SC>>
 where
@@ -1045,6 +1047,7 @@ where
             let log_chunks = get_log_num_quotient_chunks::<Val<SC>, SC::Challenge, _, LogUpGadget>(
                 $a,
                 AirLayout::from_air($a),
+                trace_len,
                 &unpacked,
                 is_zk,
                 &gadget,
@@ -1739,7 +1742,11 @@ where
                 let debug_instance_lookups: Vec<Lookups<Val<SC>>> = instances
                     .iter()
                     .map(|inst| {
-                        lookups_for_circuit_table_air::<SC, D>(inst.air, self.config.is_zk())
+                        lookups_for_circuit_table_air::<SC, D>(
+                            inst.air,
+                            inst.trace.height(),
+                            self.config.is_zk(),
+                        )
                     })
                     .collect();
                 let debug_instances: Vec<LookupDebugInstance<'_, Val<SC>>> = instances
@@ -1859,6 +1866,11 @@ where
             .with_min_height(alu_min_height),
         );
         let mut airs = vec![const_air, public_air, alu_air];
+        let mut trace_lens = vec![
+            proof.rows[PrimitiveTable::Const],
+            proof.rows[PrimitiveTable::Public],
+            proof.rows[PrimitiveTable::Alu],
+        ];
         let mut pvs: Vec<Vec<Val<SC>>> =
             Vec::with_capacity(NUM_PRIMITIVE_TABLES + proof.non_primitives.len());
         pvs.resize_with(NUM_PRIMITIVE_TABLES, Vec::new);
@@ -1875,6 +1887,7 @@ where
                 .batch_air_from_table_entry(&self.config, D, proof.ext_degree as u32, entry)
                 .map_err(BatchStarkProverError::Verify)?;
             airs.push(CircuitTableAir::Dynamic(air));
+            trace_lens.push(entry.rows);
             pvs.push(entry.public_values.clone());
         }
 
@@ -1883,7 +1896,10 @@ where
         // carries the preprocessed binding, not the lookup contexts.
         let lookups: Vec<Lookups<Val<SC>>> = airs
             .iter()
-            .map(|a| lookups_for_circuit_table_air::<SC, D>(a, self.config.is_zk()))
+            .zip(trace_lens.iter())
+            .map(|(a, &trace_len)| {
+                lookups_for_circuit_table_air::<SC, D>(a, trace_len, self.config.is_zk())
+            })
             .collect();
         let effective_common = CommonData::new(
             common.preprocessed.as_ref().map(|g| GlobalPreprocessed {

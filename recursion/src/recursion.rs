@@ -1,5 +1,6 @@
 //! Unified recursion API: one entry point to prove the next layer over a uni-stark or batch-stark proof.
 
+use alloc::borrow::Cow;
 use alloc::boxed::Box;
 use alloc::rc::Rc;
 use alloc::string::ToString;
@@ -247,8 +248,8 @@ impl<F: Field, EF: ExtensionField<F>, LG: LookupProtocol> RecursiveAir<F, EF, LG
         0
     }
 
-    fn periodic_columns(&self) -> Vec<Vec<F>> {
-        Vec::new()
+    fn periodic_columns(&self) -> Cow<'_, [Vec<F>]> {
+        Cow::Borrowed(&[])
     }
 
     fn eval_folded_circuit(
@@ -266,6 +267,7 @@ impl<F: Field, EF: ExtensionField<F>, LG: LookupProtocol> RecursiveAir<F, EF, LG
     fn get_log_num_quotient_chunks(
         &self,
         _preprocessed_width: usize,
+        _trace_len: usize,
         _contexts: &[Lookup<F>],
         _is_zk: usize,
         _lookup_gadget: &LG,
