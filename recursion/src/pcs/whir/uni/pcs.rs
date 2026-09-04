@@ -14,13 +14,17 @@ use alloc::vec::Vec;
 use core::marker::PhantomData;
 
 use p3_challenger::{CanObserve, CanSampleUniformBits, FieldChallenger, GrindingChallenger};
-use p3_commit::{Mmcs, MultilinearPcs};
+use p3_commit::{Mmcs, MultilinearPcs, OpenedValues};
 use p3_dft::TwoAdicSubgroupDft;
 use p3_field::coset::TwoAdicMultiplicativeCoset;
 use p3_field::{ExtensionField, TwoAdicField};
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
+use p3_multilinear_util::point::Point;
 use p3_sumcheck::layout::{Layout, Table};
+use p3_sumcheck::{
+    OpeningBatch, OpeningProtocol, OpeningRequest, PrescribedPointPcs, TableShape, TableSpec,
+};
 use p3_util::log2_strict_usize;
 use p3_whir::parameters::{FoldingFactor, ProtocolParameters, WhirConfig};
 use p3_whir::pcs::WhirProverData;
@@ -28,6 +32,7 @@ use p3_whir::pcs::proof::PcsProof;
 use p3_whir::pcs::prover::WhirProver;
 use serde::{Deserialize, Serialize};
 
+use crate::pcs::whir::uni::bridge::univariate_eq_point;
 use crate::pcs::whir::uni::plan::{PaddedArity, StackedPlan, padded_arity};
 
 /// Prover state behind one WHIR-backed univariate commitment.
@@ -99,6 +104,77 @@ pub struct WhirUniProof<F: Send + Sync + Clone, EF, MT: Mmcs<F>> {
     pub rounds: Vec<PcsProof<F, EF, MT>>,
 }
 
+/// Opening schedule and per-(matrix, point) bridge scales for one commitment.
+pub(crate) struct RoundSchedule<EF> {
+    /// One table spec per committed matrix, one batch per opening point.
+    pub(crate) protocol: OpeningProtocol,
+    /// Substituted equality points, in `protocol.iter_openings()` order.
+    pub(crate) points: Vec<Point<EF>>,
+    /// Bridge scale per `[matrix][point]`, consumed by the verifier's
+    /// rescaling check.
+    #[allow(dead_code)]
+    pub(crate) scales: Vec<Vec<EF>>,
+    /// Arity of the stacked polynomial this commitment covers.
+    pub(crate) stacked_num_variables: usize,
+}
+
+/// Builds the opening schedule for one commitment from public data only.
+///
+/// `shapes` gives each matrix's unpadded `(log height, width)`;
+/// `points_per_matrix[m]` lists the univariate points matrix `m` is opened at.
+/// Every column of a matrix is opened at every one of its points, so each
+/// (matrix, point) pair becomes one batch naming all of that matrix's columns.
+pub(crate) fn round_schedule<F, EF>(
+    shapes: &[(usize, usize)],
+    points_per_matrix: &[Vec<EF>],
+    folding: usize,
+) -> RoundSchedule<EF>
+where
+    F: TwoAdicField,
+    EF: ExtensionField<F>,
+{
+    assert_eq!(shapes.len(), points_per_matrix.len());
+
+    let specs: Vec<TableSpec> = shapes
+        .iter()
+        .zip(points_per_matrix)
+        .map(|(&(log_height, width), points)| {
+            let schedule: Vec<OpeningRequest> = points
+                .iter()
+                .map(|_| OpeningBatch::new((0..width).collect(), Vec::new()))
+                .collect();
+            TableSpec::new(TableShape::new(log_height, width), schedule)
+        })
+        .collect();
+    let protocol = OpeningProtocol::new(specs).pad_to_min_num_variables(folding);
+
+    let mut points = Vec::new();
+    let mut scales = Vec::with_capacity(shapes.len());
+    for (&(log_height, _width), zetas) in shapes.iter().zip(points_per_matrix) {
+        let arity = padded_arity(log_height, folding).get();
+        let mut row = Vec::with_capacity(zetas.len());
+        for &zeta in zetas {
+            let (point, scale) = univariate_eq_point(zeta, arity);
+            points.push(point);
+            row.push(scale);
+        }
+        scales.push(row);
+    }
+
+    let padded: Vec<(PaddedArity, usize)> = shapes
+        .iter()
+        .map(|&(log_height, width)| (padded_arity(log_height, folding), width))
+        .collect();
+    let stacked_num_variables = StackedPlan::new(&padded).num_variables;
+
+    RoundSchedule {
+        protocol,
+        points,
+        scales,
+        stacked_num_variables,
+    }
+}
+
 /// WHIR behind the univariate PCS interface.
 #[derive(Clone, Debug)]
 pub struct WhirUniPcs<EF, F, Dft, MT, Challenger, L> {
@@ -125,12 +201,13 @@ where
     EF: ExtensionField<F> + TwoAdicField,
     Dft: TwoAdicSubgroupDft<F> + Clone,
     MT: Mmcs<F> + Clone,
+    MT::ProverData<RowMajorMatrix<F>>: Clone,
     Challenger: FieldChallenger<F>
         + GrindingChallenger<Witness = F>
         + CanSampleUniformBits<F>
         + CanObserve<MT::Commitment>
         + Clone,
-    L: Layout<F, EF>,
+    L: Layout<F, EF> + Clone,
 {
     /// Builds an instance from WHIR protocol parameters.
     ///
@@ -293,14 +370,63 @@ where
         self.commit_coefficient_matrices(domains, coeffs)
     }
 
-    /// Filled by Task 6.
+    /// Opens every commitment at its points, one WHIR argument per commitment.
+    ///
+    /// The reported values are the true univariate evaluations; each WHIR
+    /// argument binds the corresponding multilinear value, which rescales to
+    /// them by the bridge's scale factor.
     #[allow(clippy::type_complexity)]
     fn open_rounds(
         &self,
-        _rounds: Vec<(&WhirUniProverData<F, EF, MT, L>, Vec<Vec<EF>>)>,
-        _challenger: &mut Challenger,
-    ) -> (p3_commit::OpenedValues<EF>, WhirUniProof<F, EF, MT>) {
-        unimplemented!("open lands in Task 6")
+        rounds: Vec<(&WhirUniProverData<F, EF, MT, L>, Vec<Vec<EF>>)>,
+        challenger: &mut Challenger,
+    ) -> (OpenedValues<EF>, WhirUniProof<F, EF, MT>) {
+        let mut opened = Vec::with_capacity(rounds.len());
+        let mut proofs = Vec::with_capacity(rounds.len());
+
+        for (data, points_per_matrix) in rounds {
+            let shapes: Vec<(usize, usize)> = data
+                .coeffs
+                .iter()
+                .map(|m| (log2_strict_usize(m.height()), m.width()))
+                .collect();
+            let schedule = round_schedule::<F, EF>(&shapes, &points_per_matrix, self.folding);
+            debug_assert_eq!(schedule.stacked_num_variables, data.stacked_num_variables);
+
+            let prover = WhirProver::<EF, F, Dft, MT, Challenger, L>::new(
+                self.whir_config(data.stacked_num_variables),
+                self.dft.clone(),
+                self.mmcs.clone(),
+            );
+            let proof = prover.open_at(
+                data.whir.clone(),
+                &schedule.protocol,
+                &schedule.points,
+                challenger,
+            );
+
+            let mut round_values = Vec::with_capacity(data.coeffs.len());
+            for (m, zetas) in points_per_matrix.iter().enumerate() {
+                let coeffs = &data.coeffs[m];
+                let width = coeffs.width();
+                let mut matrix_values = Vec::with_capacity(zetas.len());
+                for &zeta in zetas {
+                    let point_values: Vec<EF> = (0..width)
+                        .map(|col| {
+                            (0..coeffs.height()).rev().fold(EF::ZERO, |acc, i| {
+                                acc * zeta + coeffs.values[i * width + col]
+                            })
+                        })
+                        .collect();
+                    matrix_values.push(point_values);
+                }
+                round_values.push(matrix_values);
+            }
+            opened.push(round_values);
+            proofs.push(proof);
+        }
+
+        (opened, WhirUniProof { rounds: proofs })
     }
 
     /// Filled by Task 7.
@@ -325,6 +451,7 @@ where
     EF: ExtensionField<F> + TwoAdicField,
     Dft: TwoAdicSubgroupDft<F> + Clone,
     MT: Mmcs<F> + Clone,
+    MT::ProverData<RowMajorMatrix<F>>: Clone,
     MT::Commitment: Serialize + for<'de> Deserialize<'de>,
     MT::MultiProof: Serialize + for<'de> Deserialize<'de>,
     Challenger: FieldChallenger<F>
@@ -332,7 +459,7 @@ where
         + CanSampleUniformBits<F>
         + CanObserve<MT::Commitment>
         + Clone,
-    L: Layout<F, EF>,
+    L: Layout<F, EF> + Clone,
 {
     type Domain = TwoAdicMultiplicativeCoset<F>;
     type Commitment = MT::Commitment;
@@ -603,5 +730,65 @@ mod tests {
         }
         // 4 chunks x 2^4 rows x 1 column = 64 -> stacked arity 6.
         assert_eq!(data.stacked_num_variables, 6);
+    }
+
+    /// The schedule must place one opening batch per point per matrix, in
+    /// matrix-then-point order, with points padded to the folding depth.
+    #[test]
+    fn round_schedule_lists_one_batch_per_point() {
+        use super::round_schedule;
+
+        let z0 = EF::from_u32(11);
+        let z1 = EF::from_u32(13);
+        // Matrix 0: 2^6 rows, 3 cols, opened at z0 and z1. Matrix 1: 2^2 rows,
+        // 2 cols (below the folding depth of 4), opened at z0 only.
+        let schedule = round_schedule::<F, EF>(&[(6, 3), (2, 2)], &[vec![z0, z1], vec![z0]], 4);
+
+        assert_eq!(schedule.protocol.num_openings(), 3);
+        assert_eq!(schedule.points.len(), 3);
+        assert_eq!(schedule.points[0].num_variables(), 6);
+        assert_eq!(schedule.points[1].num_variables(), 6);
+        // Matrix 1 is padded from arity 2 up to the folding depth 4.
+        assert_eq!(schedule.points[2].num_variables(), 4);
+        assert_eq!(schedule.scales.len(), 2);
+        assert_eq!(schedule.scales[0].len(), 2);
+        assert_eq!(schedule.scales[1].len(), 1);
+    }
+
+    /// `open` must report the true univariate evaluations, and the WHIR
+    /// argument's own multilinear values must rescale to exactly those.
+    #[test]
+    fn open_reports_univariate_evaluations_consistent_with_the_whir_claim() {
+        let pcs = test_pcs();
+        let mut rng = SmallRng::seed_from_u64(21);
+
+        let domain = TwoAdicMultiplicativeCoset::<F>::new(F::ONE, 6).unwrap();
+        let mat = RowMajorMatrix::<F>::rand(&mut rng, 1 << 6, 2);
+        let (_c, data) =
+            <MyPcs as p3_commit::Pcs<EF, MyChallenger>>::commit(&pcs, vec![(domain, mat)]);
+
+        let zeta = EF::from_u32(9_999);
+        let mut challenger = pcs.challenger_proto.clone();
+        let (opened, proof) = <MyPcs as p3_commit::Pcs<EF, MyChallenger>>::open(
+            &pcs,
+            vec![(&data, vec![vec![zeta]])],
+            &mut challenger,
+        );
+
+        // Reference: Horner over the stored coefficients.
+        let coeffs = &data.coeffs[0];
+        for (col, &got) in opened[0][0][0].iter().enumerate() {
+            let want = (0..coeffs.height()).rev().fold(EF::ZERO, |acc, i| {
+                acc * zeta + coeffs.values[i * coeffs.width() + col]
+            });
+            assert_eq!(got, want, "column {col}");
+        }
+
+        // The WHIR argument bound the rescaled multilinear values.
+        let schedule = super::round_schedule::<F, EF>(&[(6, 2)], &[vec![zeta]], pcs.folding());
+        let batch = &proof.rounds[0].evals[0];
+        for (col, &want) in opened[0][0][0].iter().enumerate() {
+            assert_eq!(batch.current()[col] * schedule.scales[0][0], want);
+        }
     }
 }
