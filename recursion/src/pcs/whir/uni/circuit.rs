@@ -189,19 +189,47 @@ fn round_evals_offset(matrices: &[MatrixOpenings<'_>], m: usize) -> usize {
     matrices[..m].iter().map(|x| x.points.len()).sum()
 }
 
+/// Arity of the stacked polynomial a commitment's opening shapes would
+/// produce, mirroring `build_round_claims`'s internal `StackedPlan`
+/// derivation.
+///
+/// Needed ahead of calling [`build_round_claims`] itself: deriving this
+/// commitment's `WhirVerifierParams` — and so cross-checking the proof's
+/// self-reported shape against it, see [`verify_whir_uni_circuit`] — requires
+/// the arity, but `build_round_claims` only returns it after it has already
+/// consumed the OOD-answer slice and driven the challenger.
+fn stacked_num_variables(matrices: &[MatrixOpenings<'_>], folding: usize) -> usize {
+    let shapes: Vec<(PaddedArity, usize)> = matrices
+        .iter()
+        .map(|m| {
+            let width = m.points.first().map_or(0, |(_, values)| values.len());
+            (padded_arity(m.log_height, folding), width)
+        })
+        .collect();
+    StackedPlan::new(&shapes).num_variables
+}
+
 /// Verifies every commitment's WHIR argument in-circuit.
 ///
-/// Each commitment is handled independently against the running transcript, in
-/// the order the STARK verifier supplies it: the claims are assembled with
-/// [`build_round_claims`], then [`verify_whir_circuit`](crate::pcs::whir::verify_whir_circuit)
-/// replays that commitment's proximity argument. The commitment cap is not
-/// observed here — the STARK verifier absorbs each commitment before sampling
-/// its own challenges, exactly as `PrescribedPointPcs::verify_at` expects.
+/// Each commitment is handled independently against the running transcript,
+/// in the order the STARK verifier supplies it. Per commitment, this
+/// function first derives that commitment's own `WhirVerifierParams` (from
+/// its opening shapes) and cross-checks the proof's self-reported allocation
+/// sizes against it — `WhirUniProofTargets`'s own allocation trusts the
+/// proof's shape, so this is where that trust gets verified — before
+/// assembling claims with [`build_round_claims`] and replaying the
+/// proximity argument with
+/// [`verify_whir_circuit`](crate::pcs::whir::verify_whir_circuit). The
+/// commitment cap is not observed here — the STARK verifier absorbs each
+/// commitment before sampling its own challenges, exactly as
+/// `PrescribedPointPcs::verify_at` expects.
 ///
 /// # Errors
 /// Returns [`VerificationError::InvalidProofShape`] if the proof carries a
-/// different number of WHIR arguments than there are commitments, or if a
-/// circuit operation fails.
+/// different number of WHIR arguments than there are commitments, if a
+/// commitment's initial OOD answer count, initial sumcheck round count, or
+/// final polynomial length disagrees with what its own stacked arity
+/// requires, or if a circuit operation fails.
 pub fn verify_whir_uni_circuit<BF, EF, Ch, Comm>(
     circuit: &mut CircuitBuilder<EF>,
     challenger: &mut Ch,
@@ -233,6 +261,46 @@ where
             })
             .collect();
 
+        let stacked_num_variables = stacked_num_variables(&openings, params.folding);
+        let vp = params.round_params::<EF, DummyChallenger<BF>>(stacked_num_variables);
+
+        // The commitment fixes how many initial OOD answers exist; a wrong
+        // count would desync Fiat-Shamir instead of being rejected, exactly
+        // as native `verify_at` guards against (`InitialOodAnswerCountMismatch`).
+        if round.whir.initial_ood_answers.len() != vp.commitment_ood_samples {
+            return Err(VerificationError::InvalidProofShape(format!(
+                "WHIR commitment expects {} initial OOD answers, proof supplies {}",
+                vp.commitment_ood_samples,
+                round.whir.initial_ood_answers.len()
+            )));
+        }
+
+        // The initial sumcheck folds `min(folding, stacked_num_variables)`
+        // variables — the first entry `FoldingFactor::Constant`'s own
+        // `compute_folding_schedule` produces for this arity — so a
+        // differently-sized `round_polys` would desync Fiat-Shamir the same
+        // way a wrong OOD count would.
+        let expected_initial_rounds = params.folding.min(stacked_num_variables);
+        if round.whir.initial_sumcheck.round_polys.len() != expected_initial_rounds {
+            return Err(VerificationError::InvalidProofShape(format!(
+                "WHIR initial sumcheck expects {expected_initial_rounds} rounds for a \
+                 {stacked_num_variables}-variable stacked polynomial, proof supplies {}",
+                round.whir.initial_sumcheck.round_polys.len()
+            )));
+        }
+
+        // The final polynomial's hypercube evaluation count is fixed by the
+        // number of variables left after all folding.
+        let expected_final_poly_len = 1usize << vp.final_poly_num_variables;
+        if round.whir.final_poly.len() != expected_final_poly_len {
+            return Err(VerificationError::InvalidProofShape(format!(
+                "WHIR final polynomial expects {expected_final_poly_len} evaluations \
+                 ({} variables), proof supplies {}",
+                vp.final_poly_num_variables,
+                round.whir.final_poly.len()
+            )));
+        }
+
         let claims = build_round_claims::<BF, EF, Ch>(
             circuit,
             challenger,
@@ -242,8 +310,7 @@ where
             params.folding,
         )
         .map_err(|e| VerificationError::InvalidProofShape(format!("{e:?}")))?;
-
-        let vp = params.round_params::<EF, DummyChallenger<BF>>(claims.stacked_num_variables);
+        debug_assert_eq!(claims.stacked_num_variables, stacked_num_variables);
 
         // The MMCS gadget wants each cap entry as packed extension targets; the
         // commitment's observation targets are lifted base scalars.
@@ -659,5 +726,132 @@ mod tests {
             with_mmcs.round_params::<EF, DuplexChallenger<BF, Poseidon2BabyBear<16>, 16, 8>>(12);
         assert!(vp.permutation_config.is_some());
         assert_eq!(vp.n_rounds(), 1);
+    }
+
+    /// Hand-built `commitments_with_opening_points` shape for driver tests
+    /// that never reach a real prover.
+    type TestCommitments = Vec<(
+        Target,
+        Vec<(
+            p3_field::coset::TwoAdicMultiplicativeCoset<BF>,
+            Vec<(Target, Vec<Target>)>,
+        )>,
+    )>;
+
+    fn test_whir_uni_verifier_params() -> super::WhirUniVerifierParams<BF> {
+        use p3_whir::parameters::{FoldingFactor, ProtocolParameters, SecurityAssumption};
+
+        let protocol_params = ProtocolParameters {
+            security_level: 32,
+            pow_bits: 0,
+            round_log_inv_rates: vec![4],
+            folding_factor: FoldingFactor::Constant(4),
+            soundness_type: SecurityAssumption::CapacityBound,
+            starting_log_inv_rate: 1,
+        };
+        super::WhirUniVerifierParams::<BF>::new(
+            protocol_params,
+            PrefixProver::<BF, EF>::variable_order(),
+            None,
+        )
+    }
+
+    /// A WHIR argument count that disagrees with the commitment count must be
+    /// rejected before either slice is otherwise touched.
+    #[test]
+    fn commitment_and_round_count_mismatch_is_rejected() {
+        use p3_field::coset::TwoAdicMultiplicativeCoset;
+
+        use crate::traits::ComsWithOpeningsTargets;
+        use crate::verifier::VerificationError;
+
+        let params = test_whir_uni_verifier_params();
+        let mut builder = CircuitBuilder::<EF>::new();
+        let commitment = builder.define_const(EF::ZERO);
+        let commitments_with_opening_points: TestCommitments = vec![(commitment, Vec::new())];
+        let coms: &ComsWithOpeningsTargets<Target, TwoAdicMultiplicativeCoset<BF>> =
+            &commitments_with_opening_points;
+
+        let result = super::verify_whir_uni_circuit::<BF, EF, _, Target>(
+            &mut builder,
+            &mut NeverCalledChallenger,
+            &params,
+            coms,
+            // Zero WHIR arguments for one commitment: a length mismatch.
+            &[],
+        );
+
+        assert!(matches!(
+            result,
+            Err(VerificationError::InvalidProofShape(_))
+        ));
+    }
+
+    /// A commitment whose proof declares a different number of initial OOD
+    /// answers than its own stacked arity requires must be rejected — a wrong
+    /// count would otherwise silently desync every later Fiat-Shamir sample
+    /// instead of failing.
+    #[test]
+    fn initial_ood_answer_count_mismatch_is_rejected() {
+        use p3_field::coset::TwoAdicMultiplicativeCoset;
+
+        use crate::pcs::whir::targets::{SumcheckDataTargets, WhirProofTargets};
+        use crate::pcs::whir::uni::targets::WhirRoundTargets;
+        use crate::traits::ComsWithOpeningsTargets;
+        use crate::verifier::VerificationError;
+
+        let params = test_whir_uni_verifier_params();
+
+        // One matrix, single column: stacked_num_variables == LOG_HEIGHT (already
+        // above the folding factor, so no further padding), matching the arity
+        // `round_params_track_the_stacked_arity_and_mmcs_mode` already exercises
+        // against this same `protocol_params`.
+        const LOG_HEIGHT: usize = 12;
+        let expected_ood = params
+            .round_params::<EF, DuplexChallenger<BF, Poseidon2BabyBear<16>, 16, 8>>(LOG_HEIGHT)
+            .commitment_ood_samples;
+
+        let mut builder = CircuitBuilder::<EF>::new();
+        let commitment = builder.define_const(EF::ZERO);
+        let zeta = builder.define_const(EF::ZERO);
+        let value = builder.define_const(EF::ZERO);
+        let domain = TwoAdicMultiplicativeCoset::new(BF::ONE, LOG_HEIGHT).unwrap();
+        let commitments_with_opening_points: TestCommitments =
+            vec![(commitment, vec![(domain, vec![(zeta, vec![value])])])];
+        let coms: &ComsWithOpeningsTargets<Target, TwoAdicMultiplicativeCoset<BF>> =
+            &commitments_with_opening_points;
+
+        // Deliberately wrong by construction, regardless of `expected_ood`'s value.
+        let wrong_ood_answers = (0..=expected_ood)
+            .map(|_| builder.define_const(EF::ZERO))
+            .collect::<Vec<_>>();
+        let round = WhirRoundTargets {
+            evals: alloc::vec![alloc::vec![value]],
+            whir: WhirProofTargets {
+                initial_ood_answers: wrong_ood_answers,
+                initial_sumcheck: SumcheckDataTargets {
+                    round_polys: Vec::new(),
+                    pow_witnesses: Vec::new(),
+                },
+                rounds: Vec::new(),
+                final_poly: Vec::new(),
+                final_pow_witness: builder.define_const(EF::ZERO),
+                final_queries: Vec::new(),
+                final_sumcheck: None,
+            },
+        };
+
+        let result = super::verify_whir_uni_circuit::<BF, EF, _, Target>(
+            &mut builder,
+            &mut NeverCalledChallenger,
+            &params,
+            coms,
+            core::slice::from_ref(&round),
+        );
+
+        assert!(matches!(
+            result,
+            Err(VerificationError::InvalidProofShape(_))
+        ));
     }
 }

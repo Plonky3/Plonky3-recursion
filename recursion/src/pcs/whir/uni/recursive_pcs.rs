@@ -32,6 +32,13 @@ pub struct WhirUniVerifierParams<F> {
 impl<F: TwoAdicField> WhirUniVerifierParams<F> {
     /// Builds the shared parameters.
     ///
+    /// `permutation_config: None` skips MMCS verification for every
+    /// commitment this configuration derives params for — **unsound for
+    /// production use**, since a prover could then open WHIR commitments to
+    /// arbitrary values without detection. Pass `None` only for tests that
+    /// isolate the WHIR arithmetic path; production callers must pass
+    /// `Some(_)`.
+    ///
     /// # Panics
     /// Panics unless the folding factor is
     /// [`p3_whir::parameters::FoldingFactor::Constant`].
