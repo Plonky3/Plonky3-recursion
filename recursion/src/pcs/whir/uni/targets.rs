@@ -44,6 +44,27 @@ pub struct WhirRoundTargets {
 }
 
 /// Circuit-target mirror of [`WhirUniProof`].
+///
+/// # Shape
+///
+/// Every allocation size here is read from the **prover-supplied proof**, not
+/// from [`WhirVerifierParams`](super::super::params::WhirVerifierParams):
+/// `input.rounds.len()`, each `cap.num_roots()`, `ood_answers.len()`,
+/// `sumcheck.pow_witnesses.len()`, `evals[*].current().len()`,
+/// `final_poly.num_evals()`, whether `commitment` / `final_poly` /
+/// `final_sumcheck` are `Some`, and which [`QueryOpenings`] variant
+/// (`Base`/`Extension`) is present on each round. That mirrors how the FRI
+/// targets allocate from `FriProof`'s own shape, but it means a proof whose
+/// self-reported shape is internally consistent yet wrong (e.g. a shorter
+/// `pow_witnesses` than `pow_bits > 0` requires, an OOD-answer count that
+/// disagrees with the round's committed `ood_samples`, or a query opening in
+/// the wrong `Base`/`Extension` variant for its round) allocates a
+/// self-consistent but incorrect circuit. The verifier built on these targets
+/// (`verify_whir_uni_circuit`) is responsible for independently cross-checking
+/// every one of these against the trusted `WhirVerifierParams` before trusting
+/// the allocated shape — this type only guarantees that its own allocation and
+/// value extraction agree with *each other*, not that either agrees with the
+/// protocol parameters.
 pub struct WhirUniProofTargets<F, EF, MT, const DIGEST_ELEMS: usize> {
     /// One entry per commitment, in commit order.
     pub rounds: Vec<WhirRoundTargets>,
