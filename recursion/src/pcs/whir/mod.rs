@@ -31,19 +31,19 @@ pub(crate) mod test_util {
     use alloc::format;
     use alloc::vec::Vec;
 
-    use p3_baby_bear::BabyBear;
     use p3_circuit::CircuitBuilder;
 
     use crate::Target;
 
-    /// Build a single-output gadget over `BabyBear`, drive it with runtime
-    /// public inputs (so nothing is const-folded away and the real ALU witness
-    /// path is exercised), and return the witnessed output value.
-    pub(crate) fn eval_gadget<G>(inputs: &[BabyBear], build: G) -> BabyBear
+    /// Build a single-output gadget, drive it with runtime public inputs (so
+    /// nothing is const-folded away and the real ALU witness path is
+    /// exercised), and return the witnessed output value.
+    pub(crate) fn eval_gadget<F, G>(inputs: &[F], build: G) -> F
     where
-        G: FnOnce(&mut CircuitBuilder<BabyBear>, &[Target]) -> Target,
+        F: p3_field::Field,
+        G: FnOnce(&mut CircuitBuilder<F>, &[Target]) -> Target,
     {
-        let mut builder = CircuitBuilder::<BabyBear>::new();
+        let mut builder = CircuitBuilder::<F>::new();
         let in_targets: Vec<Target> = (0..inputs.len()).map(|_| builder.public_input()).collect();
         let out = build(&mut builder, &in_targets);
         builder.tag(out, "out").unwrap();
@@ -57,11 +57,12 @@ pub(crate) mod test_util {
 
     /// Like [`eval_gadget`] but for a gadget producing several outputs; returns
     /// them in order.
-    pub(crate) fn eval_gadget_multi<G>(inputs: &[BabyBear], build: G) -> Vec<BabyBear>
+    pub(crate) fn eval_gadget_multi<F, G>(inputs: &[F], build: G) -> Vec<F>
     where
-        G: FnOnce(&mut CircuitBuilder<BabyBear>, &[Target]) -> Vec<Target>,
+        F: p3_field::Field,
+        G: FnOnce(&mut CircuitBuilder<F>, &[Target]) -> Vec<Target>,
     {
-        let mut builder = CircuitBuilder::<BabyBear>::new();
+        let mut builder = CircuitBuilder::<F>::new();
         let in_targets: Vec<Target> = (0..inputs.len()).map(|_| builder.public_input()).collect();
         let outs = build(&mut builder, &in_targets);
         let n = outs.len();
