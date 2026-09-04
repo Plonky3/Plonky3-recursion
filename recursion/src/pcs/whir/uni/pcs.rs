@@ -440,18 +440,93 @@ where
         (opened, WhirUniProof { rounds: proofs })
     }
 
-    /// Filled by Task 7.
+    /// Verifies every commitment's WHIR argument and the claimed evaluations.
+    ///
+    /// Each round rebuilds the same opening schedule the prover used from
+    /// public data, replays the WHIR argument through
+    /// [`PrescribedPointPcs::verify_at`] — which deliberately does not absorb
+    /// the commitment, the STARK verifier having already done so — and then
+    /// rescales the bound multilinear values into univariate ones and compares
+    /// them against the claims.
     #[allow(clippy::type_complexity)]
     fn verify_rounds(
         &self,
-        _commitments: Vec<(
+        commitments: Vec<(
             MT::Commitment,
             Vec<(TwoAdicMultiplicativeCoset<F>, Vec<(EF, Vec<EF>)>)>,
         )>,
-        _proof: &WhirUniProof<F, EF, MT>,
-        _challenger: &mut Challenger,
+        proof: &WhirUniProof<F, EF, MT>,
+        challenger: &mut Challenger,
     ) -> Result<(), WhirUniPcsError> {
-        unimplemented!("verify lands in Task 7")
+        if proof.rounds.len() != commitments.len() {
+            return Err(WhirUniPcsError::RoundCountMismatch {
+                expected: commitments.len(),
+                actual: proof.rounds.len(),
+            });
+        }
+
+        for (round, ((commitment, matrices), round_proof)) in
+            commitments.into_iter().zip(&proof.rounds).enumerate()
+        {
+            let mut shapes = Vec::with_capacity(matrices.len());
+            let mut points_per_matrix = Vec::with_capacity(matrices.len());
+            for (domain, openings) in &matrices {
+                let width = openings
+                    .first()
+                    .map(|(_, values)| values.len())
+                    .ok_or(WhirUniPcsError::ShapeMismatch { round })?;
+                if openings.iter().any(|(_, values)| values.len() != width) {
+                    return Err(WhirUniPcsError::ShapeMismatch { round });
+                }
+                shapes.push((domain.log_size(), width));
+                points_per_matrix.push(openings.iter().map(|&(z, _)| z).collect::<Vec<EF>>());
+            }
+
+            let schedule = round_schedule::<F, EF>(&shapes, &points_per_matrix, self.folding);
+            let prover = WhirProver::<EF, F, Dft, MT, Challenger, L>::new(
+                self.whir_config(schedule.stacked_num_variables),
+                self.dft.clone(),
+                self.mmcs.clone(),
+            );
+            let evals = prover
+                .verify_at(
+                    &commitment,
+                    round_proof,
+                    &schedule.protocol,
+                    &schedule.points,
+                    challenger,
+                )
+                .map_err(|source| WhirUniPcsError::Whir { round, source })?;
+
+            // `evals` follows `protocol.iter_openings()` order: matrix-major,
+            // then point, matching how the schedule laid out its scales.
+            let mut batch = 0usize;
+            for (m, (_domain, openings)) in matrices.iter().enumerate() {
+                for (p, (_zeta, claimed)) in openings.iter().enumerate() {
+                    let scale = schedule.scales[m][p];
+                    let bound = evals
+                        .get(batch)
+                        .ok_or(WhirUniPcsError::ShapeMismatch { round })?;
+                    if bound.current().len() != claimed.len() {
+                        return Err(WhirUniPcsError::ShapeMismatch { round });
+                    }
+                    for (column, (&bound_value, &claimed_value)) in
+                        bound.current().iter().zip(claimed).enumerate()
+                    {
+                        if bound_value * scale != claimed_value {
+                            return Err(WhirUniPcsError::OpeningValueMismatch {
+                                round,
+                                batch,
+                                column,
+                            });
+                        }
+                    }
+                    batch += 1;
+                }
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -554,6 +629,7 @@ where
 mod tests {
     extern crate std;
     use alloc::vec;
+    use alloc::vec::Vec;
 
     use p3_baby_bear::{BabyBear, Poseidon2BabyBear};
     use p3_challenger::DuplexChallenger;
@@ -808,5 +884,94 @@ mod tests {
         for (col, &want) in opened[0][0][0].iter().enumerate() {
             assert_eq!(batch.current()[col] * schedule.scales[0][0], want);
         }
+    }
+
+    /// Builds an honest commit/open pair over two matrices at two points and
+    /// returns everything `verify` needs.
+    #[allow(clippy::type_complexity)]
+    fn open_two_matrices() -> (
+        MyPcs,
+        <MyMmcs as p3_commit::Mmcs<F>>::Commitment,
+        Vec<(TwoAdicMultiplicativeCoset<F>, Vec<(EF, Vec<EF>)>)>,
+        super::WhirUniProof<F, EF, MyMmcs>,
+    ) {
+        let pcs = test_pcs();
+        let mut rng = SmallRng::seed_from_u64(31);
+        let d0 = TwoAdicMultiplicativeCoset::<F>::new(F::ONE, 6).unwrap();
+        let d1 = TwoAdicMultiplicativeCoset::<F>::new(F::ONE, 5).unwrap();
+        let m0 = RowMajorMatrix::<F>::rand(&mut rng, 1 << 6, 2);
+        let m1 = RowMajorMatrix::<F>::rand(&mut rng, 1 << 5, 1);
+        let (commit, data) = <MyPcs as p3_commit::Pcs<EF, MyChallenger>>::commit(
+            &pcs,
+            vec![(d0, m0), (d1, m1)],
+        );
+
+        let zeta = EF::from_u32(777);
+        let zeta_next = zeta * EF::from(d0.subgroup_generator());
+        let points = vec![vec![zeta, zeta_next], vec![zeta]];
+
+        let mut challenger = pcs.challenger_proto.clone();
+        let (opened, proof) = <MyPcs as p3_commit::Pcs<EF, MyChallenger>>::open(
+            &pcs,
+            vec![(&data, points)],
+            &mut challenger,
+        );
+
+        let coms = vec![(
+            d0,
+            vec![(zeta, opened[0][0][0].clone()), (zeta_next, opened[0][0][1].clone())],
+        ), (
+            d1,
+            vec![(zeta, opened[0][1][0].clone())],
+        )];
+        (pcs, commit, coms, proof)
+    }
+
+    #[test]
+    fn verify_accepts_an_honest_opening() {
+        let (pcs, commit, coms, proof) = open_two_matrices();
+        let mut challenger = pcs.challenger_proto.clone();
+        <MyPcs as p3_commit::Pcs<EF, MyChallenger>>::verify(
+            &pcs,
+            vec![(commit, coms)],
+            &proof,
+            &mut challenger,
+        )
+        .expect("honest opening verifies");
+    }
+
+    #[test]
+    fn verify_rejects_a_tampered_opened_value() {
+        let (pcs, commit, mut coms, proof) = open_two_matrices();
+        coms[0].1[0].1[0] += EF::ONE;
+        let mut challenger = pcs.challenger_proto.clone();
+        assert!(
+            <MyPcs as p3_commit::Pcs<EF, MyChallenger>>::verify(
+                &pcs,
+                vec![(commit, coms)],
+                &proof,
+                &mut challenger,
+            )
+            .is_err(),
+            "a tampered opened value must be rejected"
+        );
+    }
+
+    #[test]
+    fn verify_rejects_a_tampered_final_polynomial() {
+        let (pcs, commit, coms, mut proof) = open_two_matrices();
+        let poly = proof.rounds[0].whir.final_poly.as_mut().expect("final poly");
+        poly.as_mut_slice()[0] += EF::ONE;
+        let mut challenger = pcs.challenger_proto.clone();
+        assert!(
+            <MyPcs as p3_commit::Pcs<EF, MyChallenger>>::verify(
+                &pcs,
+                vec![(commit, coms)],
+                &proof,
+                &mut challenger,
+            )
+            .is_err(),
+            "a tampered final polynomial must be rejected"
+        );
     }
 }
