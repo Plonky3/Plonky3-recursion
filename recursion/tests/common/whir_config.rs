@@ -14,15 +14,25 @@ use p3_whir::parameters::{FoldingFactor, ProtocolParameters, SecurityAssumption}
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
 
+/// The base field for BabyBear WHIR test configurations.
 pub type BbF = BabyBear;
+/// The extension field WHIR-backed proofs are challenged and opened over.
 pub type BbEF = BinomialExtensionField<BabyBear, 4>;
+/// The Poseidon2 permutation shared by the hasher, compressor and challenger.
 pub type BbPerm = Poseidon2BabyBear<16>;
+/// The leaf hasher for the Merkle commitment scheme WHIR test configurations use.
 pub type BbHash = PaddingFreeSponge<BbPerm, 16, 8, 8>;
+/// The two-to-one compressor for the Merkle commitment scheme WHIR test configurations use.
 pub type BbCompress = TruncatedPermutation<BbPerm, 2, 8, 16>;
+/// The base field's packed SIMD representation, as required by [`BbMmcs`].
 pub type BbPacked = <BbF as Field>::Packing;
+/// The Merkle commitment scheme WHIR test configurations use.
 pub type BbMmcs = MerkleTreeMmcs<BbPacked, BbPacked, BbHash, BbCompress, 2, 8>;
+/// The FFT engine WHIR test configurations use to encode committed codewords.
 pub type BbDft = Radix2DFTSmallBatch<BbF>;
+/// The Fiat-Shamir challenger WHIR test configurations use.
 pub type BbChallenger = DuplexChallenger<BbF, BbPerm, 16, 8>;
+/// The WHIR-backed univariate polynomial commitment scheme under test.
 pub type BbWhirPcs = WhirUniPcs<BbEF, BbF, BbDft, BbMmcs, BbChallenger, PrefixProver<BbF, BbEF>>;
 
 /// Number of base-field elements in one Merkle digest.
