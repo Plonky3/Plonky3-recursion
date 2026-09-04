@@ -18,19 +18,23 @@ use p3_dft::Radix2DFTSmallBatch;
 use p3_field::extension::BinomialExtensionField;
 use p3_field::{Field, PrimeCharacteristicRing};
 use p3_koala_bear::{KoalaBear, Poseidon2KoalaBear};
+use p3_matrix::dense::RowMajorMatrix;
 use p3_merkle_tree::MerkleTreeMmcs;
+use p3_multilinear_util::point::Point;
 use p3_multilinear_util::poly::Poly;
 use p3_recursion::Target;
 use p3_recursion::pcs::whir::{
     ConstraintWeightData, WhirProofTargets, WhirVerifierParams, verify_whir_circuit,
 };
 use p3_recursion::traits::RecursiveChallenger;
+use p3_sumcheck::constraints::{Constraint, Statements};
 use p3_sumcheck::layout::{Layout, PrefixProver, Table, Verifier};
-use p3_sumcheck::{OpeningProtocol, TableShape, TableSpec};
+use p3_sumcheck::{OpeningBatch, OpeningProtocol, TableShape, TableSpec};
 use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
 use p3_util::log2_strict_usize;
 use p3_whir::fiat_shamir::domain_separator::DomainSeparator;
 use p3_whir::parameters::{FoldingFactor, ProtocolParameters, SecurityAssumption, WhirConfig};
+use p3_whir::pcs::proof::QueryOpenings;
 use p3_whir::pcs::prover::WhirProver;
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
@@ -136,6 +140,78 @@ macro_rules! whir_arithmetic_test {
                 indices
             }
 
+            /// Builds the single-column `Table` the test protocol commits to.
+            ///
+            /// `Table` stores one polynomial per matrix row, so a single polynomial is a
+            /// one-row matrix whose width is its hypercube size.
+            fn single_poly_table(poly: &Poly<BF>) -> Table<BF> {
+                let values = poly.as_slice();
+                Table::new(RowMajorMatrix::new(values.to_vec(), values.len()))
+            }
+
+            /// Returns the batching challenge `γ` that weights the constraint's statements.
+            ///
+            /// `challenge_powers(shift)` yields `γ^shift, γ^{shift+1}, …`, so the first
+            /// element at `shift = 1` is `γ` itself.
+            fn constraint_challenge(constraint: &Constraint<BF, EF>) -> EF {
+                constraint
+                    .challenge_powers(1)
+                    .next()
+                    .expect("challenge_powers is an infinite sequence")
+            }
+
+            /// Collects the constraint's equality points in batching-power order.
+            ///
+            /// The native combiner walks the statement groups in order and advances the
+            /// challenge exponent by each group's constraint count, so flattening every
+            /// `Eq` group's points reproduces the `γ^0, γ^1, …` assignment that
+            /// `ConstraintWeightData` applies to `eq_points`. That alignment only holds
+            /// while every group is an `Eq` group; a `Next` or `Select` group would consume
+            /// powers this flattening cannot see, and neither has an in-circuit weight
+            /// gadget.
+            fn constraint_eq_points(constraint: &Constraint<BF, EF>) -> Vec<&Point<EF>> {
+                constraint
+                    .statements()
+                    .iter()
+                    .flat_map(|statement| {
+                        let Statements::Eq(eq_statement) = statement else {
+                            panic!("WHIR initial constraint must hold only equality statements");
+                        };
+                        eq_statement.iter().map(|(point, _eval)| point)
+                    })
+                    .collect()
+            }
+
+            /// Appends one round's opened leaf rows to the circuit's private inputs, in
+            /// query order.
+            ///
+            /// `is_base_round` mirrors the pairing the native `verify_merkle_proof`
+            /// enforces: round 0 opens the base-field initial commitment, every later round
+            /// opens an extension-field folded commitment. `WhirProofTargets::alloc`
+            /// allocates its leaf targets from the same rule, and both variants allocate the
+            /// same number of targets, so a variant that disagrees with the round would
+            /// authenticate the rows under the wrong leaf encoding instead of being caught
+            /// by an input-count check.
+            fn push_opening_rows<P>(
+                openings: &QueryOpenings<BF, EF, P>,
+                is_base_round: bool,
+                out: &mut Vec<EF>,
+            ) {
+                match (openings, is_base_round) {
+                    (QueryOpenings::Base(opening), true) => {
+                        for row in &opening.rows {
+                            out.extend(row.iter().map(|&v| EF::from(v)));
+                        }
+                    }
+                    (QueryOpenings::Extension(opening), false) => {
+                        for row in &opening.rows {
+                            out.extend(row.iter().copied());
+                        }
+                    }
+                    _ => panic!("query openings field does not match the round"),
+                }
+            }
+
             #[test]
             fn arithmetic_only_passes() {
                 const NUM_VARIABLES: usize = $num_vars;
@@ -147,11 +223,14 @@ macro_rules! whir_arithmetic_test {
                 let mmcs = MyMmcs::new(hash, compress, 0);
                 let dft = MyDft::default();
 
-                let spec = TableSpec::new(TableShape::new(NUM_VARIABLES, 1), vec![vec![0]]);
+                let spec = TableSpec::new(
+                    TableShape::new(NUM_VARIABLES, 1),
+                    vec![OpeningBatch::new(vec![0], Vec::new())],
+                );
                 let protocol = OpeningProtocol::new(vec![spec]).pad_to_min_num_variables(FOLDING);
                 let poly = Poly::<BF>::rand(&mut SmallRng::seed_from_u64(42), NUM_VARIABLES);
                 let witness =
-                    PrefixProver::<BF, EF>::new_witness(vec![Table::new(vec![poly])], FOLDING);
+                    PrefixProver::<BF, EF>::new_witness(vec![single_poly_table(&poly)], FOLDING);
 
                 let whir_params = ProtocolParameters {
                     security_level: 32,
@@ -197,7 +276,8 @@ macro_rules! whir_arithmetic_test {
                         lv.add_virtual_eval(eval, &mut ch);
                     }
                     for ((table_idx, polys), evals) in protocol.iter_openings().zip(&proof.evals) {
-                        lv.add_claim(table_idx, polys, evals, &mut ch);
+                        lv.add_claim(table_idx, polys, evals, &mut ch)
+                            .expect("proof evaluations match the opening schedule shape");
                     }
                     let alpha: EF = ch.sample_algebra_element();
                     let constraint = lv.constraint(alpha);
@@ -277,11 +357,9 @@ macro_rules! whir_arithmetic_test {
                 let mut circuit = CircuitBuilder::<EF>::new();
                 let proof_targets = WhirProofTargets::alloc::<BF, EF>(&mut circuit, &vp, 1, 1);
                 let initial_cap: Vec<Vec<Target>> = vec![vec![circuit.define_const(EF::ZERO)]];
-                let gamma_target = circuit.define_const(initial_constraint.challenge);
-                let eq_points: Vec<Vec<Target>> = initial_constraint
-                    .eq_statement
-                    .points
-                    .iter()
+                let gamma_target = circuit.define_const(constraint_challenge(&initial_constraint));
+                let eq_points: Vec<Vec<Target>> = constraint_eq_points(&initial_constraint)
+                    .into_iter()
                     .map(|pt| {
                         pt.as_slice()
                             .iter()
@@ -290,7 +368,7 @@ macro_rules! whir_arithmetic_test {
                     })
                     .collect();
                 let circuit_constraint = ConstraintWeightData {
-                    num_variables: initial_constraint.eq_statement.num_variables(),
+                    num_variables: initial_constraint.num_variables(),
                     eq_points,
                     sel_scalars: vec![],
                     gamma: gamma_target,
@@ -358,36 +436,16 @@ macro_rules! whir_arithmetic_test {
 
                 // Private inputs: query leaf values across all rounds.
                 let mut private_inputs: Vec<EF> = Vec::new();
-                for r in &proof.whir.rounds {
-                    for q in &r.queries {
-                        match q {
-                            p3_whir::pcs::proof::QueryOpening::Base { values, .. } => {
-                                for &v in values {
-                                    private_inputs.push(EF::from(v));
-                                }
-                            }
-                            p3_whir::pcs::proof::QueryOpening::Extension { values, .. } => {
-                                for &v in values {
-                                    private_inputs.push(v);
-                                }
-                            }
-                        }
-                    }
+                for (round_index, r) in proof.whir.rounds.iter().enumerate() {
+                    push_opening_rows(&r.openings, round_index == 0, &mut private_inputs);
                 }
-                for q in &proof.whir.final_queries {
-                    match q {
-                        p3_whir::pcs::proof::QueryOpening::Base { values, .. } => {
-                            for &v in values {
-                                private_inputs.push(EF::from(v));
-                            }
-                        }
-                        p3_whir::pcs::proof::QueryOpening::Extension { values, .. } => {
-                            for &v in values {
-                                private_inputs.push(v);
-                            }
-                        }
-                    }
-                }
+                // The final openings sit one round past the last round, so they are
+                // base-field only when the protocol has no intermediate rounds at all.
+                push_opening_rows(
+                    &proof.whir.final_openings,
+                    proof.whir.rounds.is_empty(),
+                    &mut private_inputs,
+                );
 
                 let mut runner = circuit.runner();
                 runner

@@ -1,16 +1,29 @@
 use alloc::vec::Vec;
 use alloc::{format, vec};
 use core::cmp::{Reverse, min};
+use core::marker::PhantomData;
 
 use itertools::Itertools;
+use p3_challenger::{CanObserve, FieldChallenger, GrindingChallenger};
 use p3_circuit::ops::{PermCall, PermConfig, perm_private_data};
 use p3_circuit::{CircuitBuilder, CircuitBuilderError, CircuitRunner, NonPrimitiveOpId};
-use p3_commit::{BatchOpening, Mmcs, OpenedValues};
-use p3_field::{BasedVectorSpace, ExtensionField, Field, PrimeField64, TwoAdicField};
-use p3_fri::FriProof;
+use p3_commit::Mmcs;
+use p3_field::coset::TwoAdicMultiplicativeCoset;
+use p3_field::{BasedVectorSpace, ExtensionField, Field, PackedValue, PrimeField64, TwoAdicField};
+use p3_fri::verifier::{FriError, fold_query, open_inputs};
+use p3_fri::{
+    BatchMultiOpening, CommitmentWithOpeningPoints, FriFoldingStrategy, FriParameters, FriProof,
+    TwoAdicFriFolding, TwoAdicFriFoldingForMmcs,
+};
 use p3_matrix::Dimensions;
+use p3_merkle_tree::{MerkleTreeError, MerkleTreeHidingMmcs, MerkleTreeMmcs, PrunedMerklePaths};
 use p3_symmetric::{CryptographicHasher, PseudoCompressionFunction};
 use p3_util::log2_strict_usize;
+use p3_whir::pcs::proof::QueryOpenings;
+use rand::distr::{Distribution, StandardUniform};
+use rand::{CryptoRng, SeedableRng};
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 
 use crate::Target;
 
@@ -667,15 +680,731 @@ where
         .collect()
 }
 
+/// The Merkle authentication paths one FRI query needs, in the order the verifier circuit's MMCS
+/// operations consume them.
+///
+/// A FRI proof authenticates every query into a given tree with one shared, pruned multiproof
+/// ([`p3_merkle_tree::PrunedMerklePaths`]), while the in-circuit MMCS gadget walks one full
+/// authentication path per query. These are the per-query chains that multiproof stands for:
+/// `input[b]` authenticates this query's rows in input batch `b`, and `commit_phase[r]`
+/// authenticates its row in commit-phase round `r`. Each chain is flat and level-major, leaf
+/// level first — the shape a single-query [`p3_commit::Mmcs::Proof`] has.
+///
+/// Restoring them needs more than the proof carries — the queried leaf indices come from the
+/// Fiat-Shamir transcript, and a commit-phase leaf digest covers the query's full reconstructed
+/// evaluation row, whose own entry is the folded value the fold chain carries forward — so
+/// [`restore_fri_query_paths`] replays the verifier's transcript to produce them.
+#[derive(Clone, Debug)]
+pub struct FriQueryPaths<F, const DIGEST_ELEMS: usize> {
+    /// One full sibling chain per input batch, in batch order.
+    pub input: Vec<Vec<[F; DIGEST_ELEMS]>>,
+    /// One full sibling chain per commit-phase round, in round order.
+    pub commit_phase: Vec<Vec<[F; DIGEST_ELEMS]>>,
+}
+
+/// The `MerkleTreeMmcs` a FRI instance commits with, over base field `Val`.
+type FriTreeMmcs<Val, H, C, const N: usize, const DIGEST_ELEMS: usize> =
+    MerkleTreeMmcs<<Val as Field>::Packing, <Val as Field>::Packing, H, C, N, DIGEST_ELEMS>;
+
+/// Everything a FRI proof's queries depend on that the proof itself does not carry.
+///
+/// A pruned multiproof authenticates a leaf only against the index it is opened at, and a
+/// commit-phase leaf covers the query's full reconstructed evaluation row — whose own entry is the
+/// folded value the fold chain carries forward. Both come out of the verifier's transcript, which
+/// [`replay_fri_query_layout`] walks.
+#[derive(Clone, Debug)]
+pub struct FriQueryLayout<Challenge> {
+    /// The sampled query index into the tallest committed domain, one per query.
+    pub indices: Vec<usize>,
+    /// `log2` of the tallest committed input height, before any folding.
+    pub log_global_max_height: usize,
+    /// The validated log-arity schedule, one entry per commit-phase round.
+    pub log_arities: Vec<usize>,
+    /// Per round, per query: the index of the group the query's row belongs to.
+    pub group_indices_by_round: Vec<Vec<usize>>,
+    /// Per round, per query: the reconstructed evaluation row(s) that round's leaf covers.
+    pub rows_by_round: Vec<Vec<Vec<Vec<Challenge>>>>,
+}
+
+/// Replay the FRI verifier's transcript, returning what its queries depend on.
+///
+/// This walks the same steps [`p3_fri::verifier::verify_fri`] does — sampling `alpha`, the
+/// per-round `beta`s, and the query indices, then running [`p3_fri::verifier::open_inputs`] and
+/// [`p3_fri::verifier::fold_query`] — so a caller that has to rebuild per-query Merkle paths from
+/// a shared pruned multiproof knows which leaves to rebuild and what they contain.
+///
+/// `challenger` must be in the state `verify_fri` expects: every opened value observed, nothing
+/// sampled since.
+pub fn replay_fri_query_layout<Val, Challenge, InputMmcs, FriMmcs, Challenger>(
+    params: &FriParameters<FriMmcs>,
+    input_mmcs: &InputMmcs,
+    proof: &FriProof<
+        Challenge,
+        FriMmcs,
+        Challenger::Witness,
+        Vec<BatchMultiOpening<Val, InputMmcs>>,
+    >,
+    challenger: &mut Challenger,
+    commitments_with_opening_points: &[CommitmentWithOpeningPoints<
+        Challenge,
+        InputMmcs::Commitment,
+        TwoAdicMultiplicativeCoset<Val>,
+    >],
+) -> Result<FriQueryLayout<Challenge>, FriError<FriMmcs::Error, InputMmcs::Error>>
+where
+    Val: TwoAdicField,
+    Challenge: ExtensionField<Val>,
+    // The folding strategy carries the input proof and its error type across the fold chain, so
+    // both have to be shareable.
+    InputMmcs: Mmcs<Val, MultiProof: Sync, Error: Sync>,
+    FriMmcs: Mmcs<Challenge>,
+    Challenger: FieldChallenger<Val> + GrindingChallenger + CanObserve<FriMmcs::Commitment>,
+{
+    type Folding<Val, InputMmcs> = TwoAdicFriFoldingForMmcs<Val, InputMmcs>;
+    let folding: Folding<Val, InputMmcs> = TwoAdicFriFolding(PhantomData);
+
+    // Reject a vacuous instance before any transcript work, mirroring `verify_fri`: with zero
+    // queries the per-query loop never runs, so any final polynomial would otherwise pass.
+    if params.num_queries == 0 {
+        return Err(FriError::ZeroQueries);
+    }
+
+    // Transcript replay, mirroring `verify_fri` step for step: a challenger that diverges here
+    // samples different query indices, and the frontier walk is bound to those indices.
+    let alpha: Challenge = challenger.sample_algebra_element();
+
+    let expected_rounds = proof.commit_phase_commits.len();
+    if proof.commit_phase_openings.len() != expected_rounds {
+        return Err(FriError::CommitPhaseOpeningsCountMismatch {
+            expected: expected_rounds,
+            got: proof.commit_phase_openings.len(),
+        });
+    }
+
+    let log_arities: Vec<usize> = proof
+        .commit_phase_openings
+        .iter()
+        .enumerate()
+        .map(|(round, opening)| {
+            opening
+                .checked_log_arity(params.max_log_arity)
+                .ok_or(FriError::InvalidLogArity {
+                    round,
+                    log_arity: opening.log_arity as usize,
+                    max: params.max_log_arity,
+                })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    for (round, opening) in proof.commit_phase_openings.iter().enumerate() {
+        if opening.sibling_values.len() != params.num_queries {
+            return Err(FriError::CommitPhaseQueryCountMismatch {
+                round,
+                expected: params.num_queries,
+                got: opening.sibling_values.len(),
+            });
+        }
+    }
+
+    let log_global_max_height: usize =
+        log_arities.iter().sum::<usize>() + params.log_blowup + params.log_final_poly_len;
+
+    // Bound the global height by the field two-adicity before using it: the query phase
+    // evaluates the final polynomial at a 2^log_global_max_height-th root of unity, which
+    // does not exist past the two-adicity and would panic. When the input has no commitments
+    // the cross-check below is skipped, so for a malformed proof this is the only guard
+    // standing between us and that panic.
+    if log_global_max_height > Val::TWO_ADICITY {
+        return Err(FriError::GlobalMaxHeightTooLarge {
+            log_global_max_height,
+            two_adicity: Val::TWO_ADICITY,
+        });
+    }
+
+    // Cross-check: the global log-height has two independent derivations which must agree
+    // (Ben-Sasson et al., "Fast RS IOPP", ICALP 2018, §2.1.1):
+    //   H_in   = max committed log_2(domain.size) + log_blowup
+    //   H_fold = sum(per-round log-arities) + log_blowup + log_final_poly_len
+    let expected_log_global_max_height = commitments_with_opening_points
+        .iter()
+        .flat_map(|(_, mats)| {
+            mats.iter()
+                .map(|(domain, _)| log2_strict_usize(domain.size()) + params.log_blowup)
+        })
+        .max();
+    if let Some(expected) = expected_log_global_max_height
+        && log_global_max_height != expected
+    {
+        return Err(FriError::GlobalMaxHeightMismatch {
+            expected,
+            got: log_global_max_height,
+        });
+    }
+
+    if proof.commit_pow_witnesses.len() != proof.commit_phase_commits.len() {
+        return Err(FriError::CommitPowWitnessCountMismatch {
+            expected: proof.commit_phase_commits.len(),
+            got: proof.commit_pow_witnesses.len(),
+        });
+    }
+
+    let betas: Vec<Challenge> = proof
+        .commit_phase_commits
+        .iter()
+        .zip(&proof.commit_pow_witnesses)
+        .map(|(comm, witness)| {
+            challenger.observe(comm.clone());
+            if !challenger.check_witness(params.commit_proof_of_work_bits, *witness) {
+                return Err(FriError::InvalidPowWitness);
+            }
+            Ok(challenger.sample_algebra_element())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    if proof.final_poly.len() != params.final_poly_len() {
+        return Err(FriError::FinalPolyLengthMismatch {
+            expected: params.final_poly_len(),
+            got: proof.final_poly.len(),
+        });
+    }
+    challenger.observe_algebra_slice(&proof.final_poly);
+
+    for &log_arity in &log_arities {
+        challenger.observe(Val::from_usize(log_arity));
+    }
+
+    if !challenger.check_witness(params.query_proof_of_work_bits, proof.query_pow_witness) {
+        return Err(FriError::InvalidPowWitness);
+    }
+
+    let log_final_height = params.log_blowup + params.log_final_poly_len;
+
+    let extra_query_index_bits =
+        FriFoldingStrategy::<Val, Challenge>::extra_query_index_bits(&folding);
+    let indices: Vec<usize> = core::iter::repeat_with(|| {
+        challenger.sample_bits(log_global_max_height + extra_query_index_bits)
+    })
+    .take(params.num_queries)
+    .collect();
+
+    let reduced_openings = open_inputs::<Val, Challenge, _, FriMmcs>(
+        params,
+        log_global_max_height,
+        &indices,
+        &proof.input_openings,
+        alpha,
+        input_mmcs,
+        commitments_with_opening_points,
+    )?;
+
+    // Walk every query's fold chain, recording each round's group index and reconstructed row.
+    let num_rounds = proof.commit_phase_commits.len();
+    let mut group_indices_by_round: Vec<Vec<usize>> = vec![Vec::new(); num_rounds];
+    let mut rows_by_round: Vec<Vec<Vec<Vec<Challenge>>>> = vec![Vec::new(); num_rounds];
+    for (query, (&index, ro)) in indices.iter().zip(reduced_openings).enumerate() {
+        let mut domain_index = index >> extra_query_index_bits;
+        fold_query(
+            &folding,
+            query,
+            &mut domain_index,
+            &betas,
+            &log_arities,
+            &proof.commit_phase_openings,
+            ro,
+            log_global_max_height,
+            log_final_height,
+            &mut group_indices_by_round,
+            &mut rows_by_round,
+        )?;
+    }
+
+    Ok(FriQueryLayout {
+        indices,
+        log_global_max_height,
+        log_arities,
+        group_indices_by_round,
+        rows_by_round,
+    })
+}
+
+/// The committed dimensions and per-query leaf indices of one FRI input batch.
+///
+/// Both are rederived from the verifier-known opening points exactly as
+/// [`p3_fri::verifier::open_inputs`] derives them; the proof contributes only each matrix's
+/// opened width.
+#[expect(clippy::type_complexity)]
+fn input_batch_layout<Val, Challenge, E1: core::fmt::Debug, E2: core::fmt::Debug>(
+    params: &FriParameters<impl Mmcs<Challenge>>,
+    batch: usize,
+    log_global_max_height: usize,
+    indices: &[usize],
+    mats: &[(
+        TwoAdicMultiplicativeCoset<Val>,
+        Vec<(Challenge, Vec<Challenge>)>,
+    )],
+) -> Result<(Vec<Dimensions>, Vec<usize>), FriError<E1, E2>>
+where
+    Val: TwoAdicField,
+    Challenge: ExtensionField<Val>,
+{
+    let batch_heights: Vec<usize> = mats
+        .iter()
+        .map(|(domain, _)| domain.size() << params.log_blowup)
+        .collect();
+    let batch_dims = batch_heights
+        .iter()
+        .zip(mats)
+        .enumerate()
+        .map(|(matrix, (&height, (_, points_and_values)))| {
+            let (_, values) = points_and_values
+                .first()
+                .ok_or(FriError::MatrixWithoutOpeningPoints { batch, matrix })?;
+            Ok(Dimensions {
+                width: values.len(),
+                height,
+            })
+        })
+        .collect::<Result<Vec<_>, FriError<E1, E2>>>()?;
+
+    let reduced_indices: Vec<usize> = batch_heights
+        .iter()
+        .max()
+        .map(|&h| {
+            let bits_reduced = log_global_max_height - log2_strict_usize(h);
+            indices.iter().map(|&index| index >> bits_reduced).collect()
+        })
+        .unwrap_or_else(|| vec![0; indices.len()]);
+
+    Ok((batch_dims, reduced_indices))
+}
+
+/// The dimensions of one commit-phase round's committed matrix: `arity` extension columns
+/// flattened to base field, over the folded domain.
+const fn commit_phase_dims<Challenge: BasedVectorSpace<Val>, Val: Field>(
+    log_arity: usize,
+    log_folded_height: usize,
+) -> Dimensions {
+    Dimensions {
+        width: (1 << log_arity) * Challenge::DIMENSION,
+        height: 1 << log_folded_height,
+    }
+}
+
+/// Assemble per-query [`FriQueryPaths`] from per-batch and per-round chain sets.
+fn transpose_query_paths<Val, const DIGEST_ELEMS: usize>(
+    num_queries: usize,
+    input_paths_by_batch: &[Vec<Vec<[Val; DIGEST_ELEMS]>>],
+    commit_phase_paths_by_round: &[Vec<Vec<[Val; DIGEST_ELEMS]>>],
+) -> Vec<FriQueryPaths<Val, DIGEST_ELEMS>>
+where
+    Val: Clone,
+{
+    (0..num_queries)
+        .map(|query| FriQueryPaths {
+            input: input_paths_by_batch
+                .iter()
+                .map(|batch| batch[query].clone())
+                .collect(),
+            commit_phase: commit_phase_paths_by_round
+                .iter()
+                .map(|round| round[query].clone())
+                .collect(),
+        })
+        .collect()
+}
+
+/// Restore every FRI query's per-tree Merkle authentication paths from the proof's shared,
+/// pruned multiproofs.
+///
+/// This replays the verifier's own transcript — the same steps
+/// [`p3_fri::verifier::verify_fri`] takes — because the restoration is driven by data the proof
+/// does not carry: the queried leaf indices, and, for a commit-phase round, the query's full
+/// reconstructed evaluation row (whose own entry is the folded value the fold chain carries
+/// forward). [`p3_fri::verifier::open_inputs`] and [`p3_fri::verifier::fold_query`] produce both,
+/// and `MerkleTreeMmcs::restore_and_recompute_paths` recomputes each digest the multiproof
+/// omitted from them.
+///
+/// `challenger` must be in the state `verify_fri` expects: every opened value observed, nothing
+/// sampled since. `commit_phase_mmcs` is the base-field tree the commit-phase
+/// [`p3_commit::ExtensionMmcs`] wraps, which that wrapper does not expose.
+///
+/// The returned paths are in query order, each ready for
+/// [`set_fri_mmcs_private_data`] / [`set_fri_mmcs_private_data_arity4`].
+#[expect(clippy::type_complexity)]
+pub fn restore_fri_query_paths<
+    Val,
+    Challenge,
+    FriMmcs,
+    Challenger,
+    H,
+    C,
+    const N: usize,
+    const DIGEST_ELEMS: usize,
+>(
+    params: &FriParameters<FriMmcs>,
+    input_mmcs: &FriTreeMmcs<Val, H, C, N, DIGEST_ELEMS>,
+    commit_phase_mmcs: &FriTreeMmcs<Val, H, C, N, DIGEST_ELEMS>,
+    proof: &FriProof<
+        Challenge,
+        FriMmcs,
+        Challenger::Witness,
+        Vec<BatchMultiOpening<Val, FriTreeMmcs<Val, H, C, N, DIGEST_ELEMS>>>,
+    >,
+    challenger: &mut Challenger,
+    commitments_with_opening_points: &[CommitmentWithOpeningPoints<
+        Challenge,
+        <FriTreeMmcs<Val, H, C, N, DIGEST_ELEMS> as Mmcs<Val>>::Commitment,
+        TwoAdicMultiplicativeCoset<Val>,
+    >],
+) -> Result<Vec<FriQueryPaths<Val, DIGEST_ELEMS>>, FriError<MerkleTreeError, MerkleTreeError>>
+where
+    Val: TwoAdicField + Serialize + DeserializeOwned,
+    Challenge: ExtensionField<Val>,
+    FriMmcs:
+        Mmcs<Challenge, MultiProof = PrunedMerklePaths<Val, DIGEST_ELEMS>, Error = MerkleTreeError>,
+    Challenger: FieldChallenger<Val> + GrindingChallenger + CanObserve<FriMmcs::Commitment>,
+    H: CryptographicHasher<Val, [Val; DIGEST_ELEMS]>
+        + CryptographicHasher<Val::Packing, [Val::Packing; DIGEST_ELEMS]>
+        + Sync,
+    C: PseudoCompressionFunction<[Val; DIGEST_ELEMS], N>
+        + PseudoCompressionFunction<[Val::Packing; DIGEST_ELEMS], N>
+        + Sync,
+    [Val; DIGEST_ELEMS]: Serialize + DeserializeOwned,
+{
+    let layout = replay_fri_query_layout(
+        params,
+        input_mmcs,
+        proof,
+        challenger,
+        commitments_with_opening_points,
+    )?;
+
+    // Input batches: the opened rows are explicit, so only the leaf indices and the committed
+    // dimensions have to be rederived — exactly as `open_inputs` derives them.
+    let mut input_paths_by_batch: Vec<Vec<Vec<[Val; DIGEST_ELEMS]>>> =
+        Vec::with_capacity(proof.input_openings.len());
+    for (batch, (batch_opening, (_, mats))) in proof
+        .input_openings
+        .iter()
+        .zip(commitments_with_opening_points)
+        .enumerate()
+    {
+        let (batch_dims, reduced_indices) = input_batch_layout::<Val, Challenge, _, _>(
+            params,
+            batch,
+            layout.log_global_max_height,
+            &layout.indices,
+            mats,
+        )?;
+
+        input_paths_by_batch.push(
+            input_mmcs
+                .restore_and_recompute_paths(
+                    &batch_dims,
+                    &reduced_indices,
+                    &batch_opening.opened_values,
+                    &batch_opening.opening_proof,
+                )
+                .map_err(FriError::InputError)?
+                .into_iter()
+                .map(|path| path.siblings)
+                .collect(),
+        );
+    }
+
+    // Commit-phase rounds: one matrix of `arity` extension columns per round, flattened to base
+    // field the way the round's `ExtensionMmcs` commits it.
+    let mut commit_phase_paths_by_round: Vec<Vec<Vec<[Val; DIGEST_ELEMS]>>> =
+        Vec::with_capacity(layout.log_arities.len());
+    let mut log_current_height = layout.log_global_max_height;
+    for (round, (opening, &log_arity)) in proof
+        .commit_phase_openings
+        .iter()
+        .zip(&layout.log_arities)
+        .enumerate()
+    {
+        let log_folded_height = log_current_height - log_arity;
+        let dims = [commit_phase_dims::<Challenge, Val>(
+            log_arity,
+            log_folded_height,
+        )];
+        let opened_values: Vec<Vec<Vec<Val>>> = layout.rows_by_round[round]
+            .iter()
+            .map(|rows| {
+                rows.iter()
+                    .map(|row| Challenge::flatten_to_base(row.clone()))
+                    .collect()
+            })
+            .collect();
+
+        commit_phase_paths_by_round.push(
+            commit_phase_mmcs
+                .restore_and_recompute_paths(
+                    &dims,
+                    &layout.group_indices_by_round[round],
+                    &opened_values,
+                    &opening.opening_proof,
+                )
+                .map_err(FriError::CommitPhaseMmcsError)?
+                .into_iter()
+                .map(|path| path.siblings)
+                .collect(),
+        );
+        log_current_height = log_folded_height;
+    }
+
+    Ok(transpose_query_paths(
+        params.num_queries,
+        &input_paths_by_batch,
+        &commit_phase_paths_by_round,
+    ))
+}
+
+/// Hiding counterpart of [`restore_fri_query_paths`], for a FRI instance whose input and
+/// commit-phase MMCSs are salted [`p3_merkle_tree::MerkleTreeHidingMmcs`] trees.
+///
+/// A hiding tree commits each leaf as `row ++ salt`, so its pruned multiproof travels as
+/// `(salts, paths)` and the restoration has to widen every committed dimension by `SALT_ELEMS`
+/// and re-append each query's salt before walking the tree. `input_tree` and `commit_phase_tree`
+/// are the plain [`MerkleTreeMmcs`] the hiding wrappers are built over — same hasher, compression
+/// function and cap height — because a hiding MMCS does not expose the tree underneath it.
+#[expect(clippy::type_complexity)]
+pub fn restore_hiding_fri_query_paths<
+    Val,
+    Challenge,
+    FriMmcs,
+    Challenger,
+    R,
+    H,
+    C,
+    const N: usize,
+    const DIGEST_ELEMS: usize,
+    const SALT_ELEMS: usize,
+>(
+    params: &FriParameters<FriMmcs>,
+    input_mmcs: &HidingTreeMmcs<Val, H, C, R, N, DIGEST_ELEMS, SALT_ELEMS>,
+    input_tree: &FriTreeMmcs<Val, H, C, N, DIGEST_ELEMS>,
+    commit_phase_tree: &FriTreeMmcs<Val, H, C, N, DIGEST_ELEMS>,
+    proof: &FriProof<
+        Challenge,
+        FriMmcs,
+        Challenger::Witness,
+        Vec<BatchMultiOpening<Val, HidingTreeMmcs<Val, H, C, R, N, DIGEST_ELEMS, SALT_ELEMS>>>,
+    >,
+    challenger: &mut Challenger,
+    commitments_with_opening_points: &[CommitmentWithOpeningPoints<
+        Challenge,
+        <HidingTreeMmcs<Val, H, C, R, N, DIGEST_ELEMS, SALT_ELEMS> as Mmcs<Val>>::Commitment,
+        TwoAdicMultiplicativeCoset<Val>,
+    >],
+) -> Result<Vec<FriQueryPaths<Val, DIGEST_ELEMS>>, FriError<MerkleTreeError, MerkleTreeError>>
+where
+    Val: TwoAdicField + Serialize + DeserializeOwned,
+    Challenge: ExtensionField<Val>,
+    FriMmcs: Mmcs<
+            Challenge,
+            MultiProof = (Vec<Vec<Vec<Val>>>, PrunedMerklePaths<Val, DIGEST_ELEMS>),
+            Error = MerkleTreeError,
+        >,
+    Challenger: FieldChallenger<Val> + GrindingChallenger + CanObserve<FriMmcs::Commitment>,
+    R: CryptoRng + SeedableRng + Send,
+    H: CryptographicHasher<Val, [Val; DIGEST_ELEMS]>
+        + CryptographicHasher<Val::Packing, [Val::Packing; DIGEST_ELEMS]>
+        + Sync,
+    C: PseudoCompressionFunction<[Val; DIGEST_ELEMS], N>
+        + PseudoCompressionFunction<[Val::Packing; DIGEST_ELEMS], N>
+        + Sync,
+    StandardUniform: Distribution<Val>,
+    [Val; DIGEST_ELEMS]: Serialize + DeserializeOwned,
+{
+    let layout = replay_fri_query_layout(
+        params,
+        input_mmcs,
+        proof,
+        challenger,
+        commitments_with_opening_points,
+    )?;
+
+    let mut input_paths_by_batch: Vec<Vec<Vec<[Val; DIGEST_ELEMS]>>> =
+        Vec::with_capacity(proof.input_openings.len());
+    for (batch, (batch_opening, (_, mats))) in proof
+        .input_openings
+        .iter()
+        .zip(commitments_with_opening_points)
+        .enumerate()
+    {
+        let (batch_dims, reduced_indices) = input_batch_layout::<Val, Challenge, _, _>(
+            params,
+            batch,
+            layout.log_global_max_height,
+            &layout.indices,
+            mats,
+        )?;
+        let (salts, paths) = &batch_opening.opening_proof;
+        let salted_dims = salted_dimensions::<SALT_ELEMS>(&batch_dims);
+        let salted_values =
+            salt_opened_values::<Val, SALT_ELEMS>(&batch_opening.opened_values, salts)
+                .map_err(FriError::InputError)?;
+
+        input_paths_by_batch.push(
+            input_tree
+                .restore_and_recompute_paths(&salted_dims, &reduced_indices, &salted_values, paths)
+                .map_err(FriError::InputError)?
+                .into_iter()
+                .map(|path| path.siblings)
+                .collect(),
+        );
+    }
+
+    let mut commit_phase_paths_by_round: Vec<Vec<Vec<[Val; DIGEST_ELEMS]>>> =
+        Vec::with_capacity(layout.log_arities.len());
+    let mut log_current_height = layout.log_global_max_height;
+    for (round, (opening, &log_arity)) in proof
+        .commit_phase_openings
+        .iter()
+        .zip(&layout.log_arities)
+        .enumerate()
+    {
+        let log_folded_height = log_current_height - log_arity;
+        let dims = [commit_phase_dims::<Challenge, Val>(
+            log_arity,
+            log_folded_height,
+        )];
+        let opened_values: Vec<Vec<Vec<Val>>> = layout.rows_by_round[round]
+            .iter()
+            .map(|rows| {
+                rows.iter()
+                    .map(|row| Challenge::flatten_to_base(row.clone()))
+                    .collect()
+            })
+            .collect();
+        let (salts, paths) = &opening.opening_proof;
+        let salted_dims = salted_dimensions::<SALT_ELEMS>(&dims);
+        let salted_values = salt_opened_values::<Val, SALT_ELEMS>(&opened_values, salts)
+            .map_err(FriError::CommitPhaseMmcsError)?;
+
+        commit_phase_paths_by_round.push(
+            commit_phase_tree
+                .restore_and_recompute_paths(
+                    &salted_dims,
+                    &layout.group_indices_by_round[round],
+                    &salted_values,
+                    paths,
+                )
+                .map_err(FriError::CommitPhaseMmcsError)?
+                .into_iter()
+                .map(|path| path.siblings)
+                .collect(),
+        );
+        log_current_height = log_folded_height;
+    }
+
+    Ok(transpose_query_paths(
+        params.num_queries,
+        &input_paths_by_batch,
+        &commit_phase_paths_by_round,
+    ))
+}
+
+/// The `MerkleTreeHidingMmcs` a hiding FRI instance commits with, over base field `Val`.
+type HidingTreeMmcs<
+    Val,
+    H,
+    C,
+    R,
+    const N: usize,
+    const DIGEST_ELEMS: usize,
+    const SALT_ELEMS: usize,
+> = MerkleTreeHidingMmcs<
+    <Val as Field>::Packing,
+    <Val as Field>::Packing,
+    H,
+    C,
+    R,
+    N,
+    DIGEST_ELEMS,
+    SALT_ELEMS,
+>;
+
+/// Widen every committed dimension by the salt columns a hiding tree appends to each leaf.
+fn salted_dimensions<const SALT_ELEMS: usize>(dimensions: &[Dimensions]) -> Vec<Dimensions> {
+    dimensions
+        .iter()
+        .map(|dims| Dimensions {
+            width: dims.width + SALT_ELEMS,
+            height: dims.height,
+        })
+        .collect()
+}
+
+/// Rebuild the salted leaf rows a hiding tree hashes: each opened row with its salt appended.
+fn salt_opened_values<Val: Clone, const SALT_ELEMS: usize>(
+    opened_values: &[Vec<Vec<Val>>],
+    salts: &[Vec<Vec<Val>>],
+) -> Result<Vec<Vec<Vec<Val>>>, MerkleTreeError> {
+    if salts.len() != opened_values.len() {
+        return Err(MerkleTreeError::WrongBatchSize);
+    }
+    opened_values
+        .iter()
+        .zip(salts)
+        .map(|(rows, query_salts)| {
+            if query_salts.len() != rows.len() {
+                return Err(MerkleTreeError::WrongBatchSize);
+            }
+            rows.iter()
+                .zip(query_salts)
+                .map(|(row, salt)| {
+                    if salt.len() != SALT_ELEMS {
+                        return Err(MerkleTreeError::WrongBatchSize);
+                    }
+                    Ok(row.iter().chain(salt).cloned().collect())
+                })
+                .collect()
+        })
+        .collect()
+}
+
+/// Assign one Merkle sibling digest per operation id, consuming `op_ids` from `op_idx`.
+fn set_path_private_data<F, EF, const DIGEST_ELEMS: usize>(
+    runner: &mut CircuitRunner<'_, EF>,
+    op_ids: &[NonPrimitiveOpId],
+    op_idx: &mut usize,
+    path: &[[F; DIGEST_ELEMS]],
+    permutation_config: PermConfig,
+    label: &'static str,
+) -> Result<(), &'static str>
+where
+    F: Field,
+    EF: ExtensionField<F> + BasedVectorSpace<F>,
+{
+    for sibling in convert_merkle_proof_to_siblings::<F, EF, DIGEST_ELEMS>(path) {
+        if *op_idx >= op_ids.len() {
+            return Err("More siblings in proof than op_ids provided");
+        }
+        runner
+            .set_private_data(
+                op_ids[*op_idx],
+                perm_private_data(permutation_config, sibling),
+            )
+            .map_err(|_| label)?;
+        *op_idx += 1;
+    }
+    Ok(())
+}
+
 /// Set private data for FRI MMCS verification operations.
 ///
-/// This function extracts Merkle sibling values from a FRI proof and sets them
-/// as private data for the circuit operations returned by `verify_fri_circuit`.
+/// Feeds each query's restored Merkle sibling chains to the circuit operations returned by
+/// `verify_fri_circuit`. A hiding MMCS needs no separate entry point: its salts enter the leaf
+/// preimage as circuit private inputs (see
+/// [`HidingHashProofTargets`](crate::pcs::HidingHashProofTargets)), so the chains here carry
+/// sibling digests either way.
 ///
 /// # Parameters
 /// - `runner`: The circuit runner to set private data on
 /// - `op_ids`: Operation IDs returned by `verify_fri_circuit`
-/// - `fri_proof`: The FRI proof containing Merkle proofs
+/// - `query_paths`: One [`FriQueryPaths`] per FRI query, in query order
 ///
 /// # Returns
 /// `Ok(())` if all private data was set successfully, or an error if there was a mismatch.
@@ -685,64 +1414,40 @@ where
 /// 1. For each query:
 ///    - Input batch MMCS ops (one per batch, each with `path_depth` siblings)
 ///    - Commit-phase MMCS ops (one per phase, each with `phase_depth` siblings)
-pub fn set_fri_mmcs_private_data<F, EF, FriMmcs, InputMmcs, H, C, const DIGEST_ELEMS: usize>(
+pub fn set_fri_mmcs_private_data<F, EF, const DIGEST_ELEMS: usize>(
     runner: &mut CircuitRunner<'_, EF>,
     op_ids: &[NonPrimitiveOpId],
-    fri_proof: &FriProof<EF, FriMmcs, F, Vec<BatchOpening<F, InputMmcs>>>,
+    query_paths: &[FriQueryPaths<F, DIGEST_ELEMS>],
     permutation_config: impl Into<PermConfig>,
 ) -> Result<(), &'static str>
 where
     F: Field,
     EF: ExtensionField<F> + BasedVectorSpace<F>,
-    FriMmcs: Mmcs<EF, Proof = Vec<[F; DIGEST_ELEMS]>>,
-    InputMmcs: Mmcs<F, Proof = Vec<[F; DIGEST_ELEMS]>>,
-    H: CryptographicHasher<F, [F; DIGEST_ELEMS]>
-        + CryptographicHasher<F::Packing, [F::Packing; DIGEST_ELEMS]>
-        + Sync,
-    C: PseudoCompressionFunction<[F; DIGEST_ELEMS], 2>
-        + PseudoCompressionFunction<[F::Packing; DIGEST_ELEMS], 2>
-        + Sync,
 {
     let permutation_config: PermConfig = permutation_config.into();
     let mut op_idx = 0;
 
-    for query_proof in &fri_proof.query_proofs {
-        // Input batch MMCS proofs
-        for batch_opening in &query_proof.input_proof {
-            let siblings = convert_merkle_proof_to_siblings::<F, EF, DIGEST_ELEMS>(
-                &batch_opening.opening_proof,
-            );
-            for sibling in siblings {
-                if op_idx >= op_ids.len() {
-                    return Err("More siblings in proof than op_ids provided");
-                }
-                runner
-                    .set_private_data(
-                        op_ids[op_idx],
-                        perm_private_data(permutation_config, sibling),
-                    )
-                    .map_err(|_| "Failed to set private data for input batch MMCS")?;
-                op_idx += 1;
-            }
+    for query in query_paths {
+        for path in &query.input {
+            set_path_private_data::<F, EF, DIGEST_ELEMS>(
+                runner,
+                op_ids,
+                &mut op_idx,
+                path,
+                permutation_config,
+                "Failed to set private data for input batch MMCS",
+            )?;
         }
 
-        // Commit-phase MMCS proofs
-        for phase_opening in &query_proof.commit_phase_openings {
-            let siblings = convert_merkle_proof_to_siblings::<F, EF, DIGEST_ELEMS>(
-                &phase_opening.opening_proof,
-            );
-            for sibling in siblings {
-                if op_idx >= op_ids.len() {
-                    return Err("More siblings in proof than op_ids provided");
-                }
-                runner
-                    .set_private_data(
-                        op_ids[op_idx],
-                        perm_private_data(permutation_config, sibling),
-                    )
-                    .map_err(|_| "Failed to set private data for commit-phase MMCS")?;
-                op_idx += 1;
-            }
+        for path in &query.commit_phase {
+            set_path_private_data::<F, EF, DIGEST_ELEMS>(
+                runner,
+                op_ids,
+                &mut op_idx,
+                path,
+                permutation_config,
+                "Failed to set private data for commit-phase MMCS",
+            )?;
         }
     }
 
@@ -751,150 +1456,6 @@ where
     }
 
     Ok(())
-}
-
-/// [HidingFriPcs](p3_fri::HidingFriPcs) wraps the inner FRI proof as
-/// `(random_opened_values, inner_fri_proof)`.
-pub(crate) type HidingFriProof<F, EF, FriMmcs, InputMmcs> = (
-    OpenedValues<EF>,
-    FriProof<EF, FriMmcs, F, Vec<BatchOpening<F, InputMmcs>>>,
-);
-
-/// Variant of [`set_fri_mmcs_private_data`] for [HidingFriPcs](p3_fri::HidingFriPcs) opening proofs.
-pub fn set_hiding_fri_mmcs_private_data<
-    F,
-    EF,
-    FriMmcs,
-    InputMmcs,
-    H,
-    C,
-    const DIGEST_ELEMS: usize,
->(
-    runner: &mut CircuitRunner<'_, EF>,
-    op_ids: &[NonPrimitiveOpId],
-    fri_proof: &HidingFriProof<F, EF, FriMmcs, InputMmcs>,
-    permutation_config: impl Into<PermConfig>,
-) -> Result<(), &'static str>
-where
-    F: Field,
-    EF: ExtensionField<F> + BasedVectorSpace<F>,
-    FriMmcs: Mmcs<EF, Proof = Vec<[F; DIGEST_ELEMS]>>,
-    InputMmcs: Mmcs<F, Proof = Vec<[F; DIGEST_ELEMS]>>,
-    H: CryptographicHasher<F, [F; DIGEST_ELEMS]>
-        + CryptographicHasher<F::Packing, [F::Packing; DIGEST_ELEMS]>
-        + Sync,
-    C: PseudoCompressionFunction<[F; DIGEST_ELEMS], 2>
-        + PseudoCompressionFunction<[F::Packing; DIGEST_ELEMS], 2>
-        + Sync,
-{
-    set_fri_mmcs_private_data::<F, EF, FriMmcs, InputMmcs, H, C, DIGEST_ELEMS>(
-        runner,
-        op_ids,
-        &fri_proof.1,
-        permutation_config,
-    )
-}
-
-/// Native salted MMCS proof: `(per-matrix salts, sibling digests)`.
-///
-/// Used by `MerkleTreeHidingMmcs` (and `ExtensionMmcs` wrapping it). Only the sibling
-/// digests are MMCS non-primitive-op private data; the salts flow as circuit private
-/// inputs (see [`HidingHashProofTargets`](crate::pcs::HidingHashProofTargets)).
-type SaltedMmcsProof<F, const DIGEST_ELEMS: usize> = (Vec<Vec<F>>, Vec<[F; DIGEST_ELEMS]>);
-
-/// Variant of [`set_fri_mmcs_private_data`] for a FRI proof whose input and commit-phase
-/// MMCSs are *hiding* (`MerkleTreeHidingMmcs`), i.e. their opening proof is
-/// `(salts, siblings)`. Sets the sibling digests as MMCS private data using only the
-/// `siblings` component; salts are supplied separately as circuit private inputs.
-pub fn set_salted_fri_mmcs_private_data<F, EF, FriMmcs, InputMmcs, const DIGEST_ELEMS: usize>(
-    runner: &mut CircuitRunner<'_, EF>,
-    op_ids: &[NonPrimitiveOpId],
-    fri_proof: &FriProof<EF, FriMmcs, F, Vec<BatchOpening<F, InputMmcs>>>,
-    permutation_config: impl Into<PermConfig>,
-) -> Result<(), &'static str>
-where
-    F: Field,
-    EF: ExtensionField<F> + BasedVectorSpace<F>,
-    FriMmcs: Mmcs<EF, Proof = SaltedMmcsProof<F, DIGEST_ELEMS>>,
-    InputMmcs: Mmcs<F, Proof = SaltedMmcsProof<F, DIGEST_ELEMS>>,
-{
-    let permutation_config: PermConfig = permutation_config.into();
-    let mut op_idx = 0;
-
-    for query_proof in &fri_proof.query_proofs {
-        // Input batch MMCS proofs: `.1` is the sibling digests.
-        for batch_opening in &query_proof.input_proof {
-            let siblings = convert_merkle_proof_to_siblings::<F, EF, DIGEST_ELEMS>(
-                &batch_opening.opening_proof.1,
-            );
-            for sibling in siblings {
-                if op_idx >= op_ids.len() {
-                    return Err("More siblings in proof than op_ids provided");
-                }
-                runner
-                    .set_private_data(
-                        op_ids[op_idx],
-                        perm_private_data(permutation_config, sibling),
-                    )
-                    .map_err(|_| "Failed to set private data for input batch MMCS")?;
-                op_idx += 1;
-            }
-        }
-
-        // Commit-phase MMCS proofs: `.1` is the sibling digests.
-        for phase_opening in &query_proof.commit_phase_openings {
-            let siblings = convert_merkle_proof_to_siblings::<F, EF, DIGEST_ELEMS>(
-                &phase_opening.opening_proof.1,
-            );
-            for sibling in siblings {
-                if op_idx >= op_ids.len() {
-                    return Err("More siblings in proof than op_ids provided");
-                }
-                runner
-                    .set_private_data(
-                        op_ids[op_idx],
-                        perm_private_data(permutation_config, sibling),
-                    )
-                    .map_err(|_| "Failed to set private data for commit-phase MMCS")?;
-                op_idx += 1;
-            }
-        }
-    }
-
-    if op_idx != op_ids.len() {
-        return Err("Fewer siblings in proof than op_ids provided");
-    }
-
-    Ok(())
-}
-
-/// Variant of [`set_salted_fri_mmcs_private_data`] for [HidingFriPcs](p3_fri::HidingFriPcs)
-/// opening proofs (a `(random_opened_values, inner_fri_proof)` tuple) whose underlying
-/// input and commit-phase MMCSs are hiding.
-pub fn set_hiding_salted_fri_mmcs_private_data<
-    F,
-    EF,
-    FriMmcs,
-    InputMmcs,
-    const DIGEST_ELEMS: usize,
->(
-    runner: &mut CircuitRunner<'_, EF>,
-    op_ids: &[NonPrimitiveOpId],
-    fri_proof: &HidingFriProof<F, EF, FriMmcs, InputMmcs>,
-    permutation_config: impl Into<PermConfig>,
-) -> Result<(), &'static str>
-where
-    F: Field,
-    EF: ExtensionField<F> + BasedVectorSpace<F>,
-    FriMmcs: Mmcs<EF, Proof = SaltedMmcsProof<F, DIGEST_ELEMS>>,
-    InputMmcs: Mmcs<F, Proof = SaltedMmcsProof<F, DIGEST_ELEMS>>,
-{
-    set_salted_fri_mmcs_private_data::<F, EF, FriMmcs, InputMmcs, DIGEST_ELEMS>(
-        runner,
-        op_ids,
-        &fri_proof.1,
-        permutation_config,
-    )
 }
 
 /// Round `raw_len` up to a multiple of `n`, mirroring native MMCS height padding.
@@ -1489,40 +2050,38 @@ where
 /// Arity-4 counterpart of [`set_fri_mmcs_private_data`].
 ///
 /// Each arity-4 MMCS opening contributes one compression op-id per Merkle level (repeated once per
-/// proof sibling). This packs each native sibling group into the private payload consumed by the
+/// proof sibling). This packs each restored sibling group into the private payload consumed by the
 /// corresponding compression row.
-pub fn set_fri_mmcs_private_data_arity4<F, EF, FriMmcs, InputMmcs, const DIGEST_ELEMS: usize>(
+pub fn set_fri_mmcs_private_data_arity4<F, EF, const DIGEST_ELEMS: usize>(
     runner: &mut CircuitRunner<'_, EF>,
     op_ids: &[NonPrimitiveOpId],
-    fri_proof: &FriProof<EF, FriMmcs, F, Vec<BatchOpening<F, InputMmcs>>>,
+    query_paths: &[FriQueryPaths<F, DIGEST_ELEMS>],
     permutation_config: impl Into<PermConfig>,
 ) -> Result<(), &'static str>
 where
     F: Field,
     EF: ExtensionField<F> + BasedVectorSpace<F>,
-    FriMmcs: Mmcs<EF, Proof = Vec<[F; DIGEST_ELEMS]>>,
-    InputMmcs: Mmcs<F, Proof = Vec<[F; DIGEST_ELEMS]>>,
 {
     let permutation_config: PermConfig = permutation_config.into();
     let mut op_idx = 0;
 
-    for query_proof in &fri_proof.query_proofs {
-        for batch_opening in &query_proof.input_proof {
+    for query in query_paths {
+        for path in &query.input {
             set_arity4_opening_private_data::<F, EF, DIGEST_ELEMS>(
                 runner,
                 op_ids,
                 &mut op_idx,
-                &batch_opening.opening_proof,
+                path,
                 permutation_config,
             )?;
         }
 
-        for phase_opening in &query_proof.commit_phase_openings {
+        for path in &query.commit_phase {
             set_arity4_opening_private_data::<F, EF, DIGEST_ELEMS>(
                 runner,
                 op_ids,
                 &mut op_idx,
-                &phase_opening.opening_proof,
+                path,
                 permutation_config,
             )?;
         }
@@ -1535,38 +2094,86 @@ where
     Ok(())
 }
 
-/// Arity-4 counterpart of [`set_hiding_fri_mmcs_private_data`].
-pub fn set_hiding_fri_mmcs_private_data_arity4<
-    F,
-    EF,
-    FriMmcs,
-    InputMmcs,
-    const DIGEST_ELEMS: usize,
->(
-    runner: &mut CircuitRunner<'_, EF>,
-    op_ids: &[NonPrimitiveOpId],
-    fri_proof: &HidingFriProof<F, EF, FriMmcs, InputMmcs>,
-    permutation_config: impl Into<PermConfig>,
-) -> Result<(), &'static str>
+/// Restore every STIR query's Merkle authentication path from one WHIR opening's shared,
+/// pruned multiproof.
+///
+/// A WHIR commitment holds a single matrix and the opening carries every queried row
+/// explicitly, so recomputing the sibling digests the multiproof omitted needs nothing beyond
+/// the verifier's own tree geometry and its queried indices. An extension-field opening's rows
+/// are flattened to base field and its width widened by `EF::DIMENSION`, matching the
+/// `ExtensionMmcs` the native verifier authenticates such a round with.
+///
+/// `dimensions` is the committed matrix's shape in the opening's own field:
+/// `height = domain_size >> folding_factor`, `width = 1 << folding_factor`.
+pub fn restore_whir_query_paths<P, PW, EF, H, C, const N: usize, const DIGEST_ELEMS: usize>(
+    mmcs: &MerkleTreeMmcs<P, PW, H, C, N, DIGEST_ELEMS>,
+    openings: &QueryOpenings<P::Value, EF, PrunedMerklePaths<PW::Value, DIGEST_ELEMS>>,
+    dimensions: &[Dimensions],
+    indices: &[usize],
+) -> Result<Vec<Vec<[PW::Value; DIGEST_ELEMS]>>, MerkleTreeError>
 where
-    F: Field,
-    EF: ExtensionField<F> + BasedVectorSpace<F>,
-    FriMmcs: Mmcs<EF, Proof = Vec<[F; DIGEST_ELEMS]>>,
-    InputMmcs: Mmcs<F, Proof = Vec<[F; DIGEST_ELEMS]>>,
+    P: PackedValue,
+    P::Value: Field,
+    PW: PackedValue,
+    PW::Value: Eq + Clone,
+    EF: ExtensionField<P::Value>,
+    H: CryptographicHasher<P::Value, [PW::Value; DIGEST_ELEMS]>
+        + CryptographicHasher<P, [PW; DIGEST_ELEMS]>
+        + Sync,
+    C: PseudoCompressionFunction<[PW::Value; DIGEST_ELEMS], N>
+        + PseudoCompressionFunction<[PW; DIGEST_ELEMS], N>
+        + Sync,
+    [PW::Value; DIGEST_ELEMS]: Serialize + for<'de> Deserialize<'de>,
 {
-    set_fri_mmcs_private_data_arity4::<F, EF, FriMmcs, InputMmcs, DIGEST_ELEMS>(
-        runner,
-        op_ids,
-        &fri_proof.1,
-        permutation_config,
-    )
+    let (opened_values, proof, width_scale) = match openings {
+        QueryOpenings::Base(opening) => (
+            opening
+                .rows
+                .iter()
+                .map(|row| vec![row.clone()])
+                .collect::<Vec<_>>(),
+            &opening.proof,
+            1,
+        ),
+        QueryOpenings::Extension(opening) => (
+            opening
+                .rows
+                .iter()
+                .map(|row| vec![EF::flatten_to_base(row.clone())])
+                .collect::<Vec<_>>(),
+            &opening.proof,
+            EF::DIMENSION,
+        ),
+    };
+
+    let base_dimensions: Vec<Dimensions> = dimensions
+        .iter()
+        .map(|dims| Dimensions {
+            width: dims.width * width_scale,
+            height: dims.height,
+        })
+        .collect();
+
+    Ok(mmcs
+        .restore_and_recompute_paths(&base_dimensions, indices, &opened_values, proof)?
+        .into_iter()
+        .map(|path| path.siblings)
+        .collect())
 }
 
 /// Set private data for WHIR MMCS verification operations.
 ///
-/// Extracts Merkle sibling digests from a [`p3_whir::pcs::proof::WhirProof`] and
-/// sets them as private data for the circuit operations returned by
-/// [`crate::pcs::whir::verify_whir_circuit`].
+/// Feeds each STIR query's restored Merkle sibling chain to the circuit operations returned by
+/// [`crate::pcs::whir::verify_whir_circuit`]. A WHIR round authenticates all of its queries with
+/// one shared, pruned multiproof
+/// ([`p3_whir::pcs::proof::SharedProofOpening::proof`]); the chains here are the per-query
+/// authentication paths that multiproof stands for, as
+/// `MerkleTreeMmcs::restore_and_recompute_paths` reconstructs them from the round's queried
+/// indices and its explicitly opened rows.
+///
+/// # Parameters
+/// - `round_paths`: `round_paths[round][query]` — the chain for that round's `query`-th STIR query
+/// - `final_paths`: `final_paths[query]` — the chain for the `query`-th final STIR query
 ///
 /// # Operation ID order
 ///
@@ -1574,65 +2181,40 @@ where
 /// 1. For each intermediate round (in round order), for each STIR query:
 ///    sibling digests along the Merkle path, leaf-to-root.
 /// 2. For each final STIR query: sibling digests along the Merkle path.
-pub fn set_whir_mmcs_private_data<F, EF, MT, const DIGEST_ELEMS: usize>(
+pub fn set_whir_mmcs_private_data<F, EF, const DIGEST_ELEMS: usize>(
     runner: &mut CircuitRunner<'_, EF>,
     op_ids: &[NonPrimitiveOpId],
-    proof: &p3_whir::pcs::proof::WhirProof<F, EF, MT>,
+    round_paths: &[Vec<Vec<[F; DIGEST_ELEMS]>>],
+    final_paths: &[Vec<[F; DIGEST_ELEMS]>],
     permutation_config: impl Into<PermConfig>,
 ) -> Result<(), &'static str>
 where
     F: Field,
     EF: ExtensionField<F> + BasedVectorSpace<F>,
-    MT: p3_commit::Mmcs<F, Proof = Vec<[F; DIGEST_ELEMS]>>,
 {
     let permutation_config: PermConfig = permutation_config.into();
     let mut op_idx = 0;
 
-    let mut set_query = |op_ids: &[NonPrimitiveOpId],
-                         op_idx: &mut usize,
-                         opening_proof: &Vec<[F; DIGEST_ELEMS]>,
-                         label: &'static str|
-     -> Result<(), &'static str> {
-        let siblings = convert_merkle_proof_to_siblings::<F, EF, DIGEST_ELEMS>(opening_proof);
-        for sibling in siblings {
-            if *op_idx >= op_ids.len() {
-                return Err(label);
-            }
-            runner
-                .set_private_data(
-                    op_ids[*op_idx],
-                    perm_private_data(permutation_config, sibling),
-                )
-                .map_err(|_| label)?;
-            *op_idx += 1;
-        }
-        Ok(())
-    };
-
-    for round in &proof.rounds {
-        for query in &round.queries {
-            let opening_proof = match query {
-                p3_whir::pcs::proof::QueryOpening::Base { proof, .. } => proof,
-                p3_whir::pcs::proof::QueryOpening::Extension { proof, .. } => proof,
-            };
-            set_query(
+    for round in round_paths {
+        for path in round {
+            set_path_private_data::<F, EF, DIGEST_ELEMS>(
+                runner,
                 op_ids,
                 &mut op_idx,
-                opening_proof,
+                path,
+                permutation_config,
                 "More siblings than op_ids (round query)",
             )?;
         }
     }
 
-    for query in &proof.final_queries {
-        let opening_proof = match query {
-            p3_whir::pcs::proof::QueryOpening::Base { proof, .. } => proof,
-            p3_whir::pcs::proof::QueryOpening::Extension { proof, .. } => proof,
-        };
-        set_query(
+    for path in final_paths {
+        set_path_private_data::<F, EF, DIGEST_ELEMS>(
+            runner,
             op_ids,
             &mut op_idx,
-            opening_proof,
+            path,
+            permutation_config,
             "More siblings than op_ids (final query)",
         )?;
     }
@@ -1649,8 +2231,10 @@ mod test {
     use alloc::vec;
     use alloc::vec::Vec;
 
+    use p3_challenger::CanSampleBits;
     use p3_circuit::ops::mmcs::format_openings;
     use p3_circuit::ops::{Poseidon2Config, generate_poseidon2_trace, generate_recompose_trace};
+    use p3_commit::{Mmcs, Pcs};
     use p3_matrix::Matrix;
     use p3_matrix::dense::{DenseMatrix, RowMajorMatrix};
     use p3_poseidon2_circuit_air::KoalaBearD4Width16;
@@ -2633,5 +3217,248 @@ mod test {
     fn validate_commitment_cap_accepts_cap_at_tree_height() {
         let cap = vec![(); 4]; // cap_height = 2
         assert_eq!(validate_commitment_cap(&cap, 2).unwrap(), 2);
+    }
+
+    /// Cross-checks [`restore_fri_query_paths`] against the trusted single-query
+    /// [`p3_commit::Mmcs::verify_batch`]: every restored chain must, on its own, authenticate
+    /// its query's rows against the real commitment — proving the restored siblings are the true
+    /// ones, not merely self-consistent. This is what the in-circuit MMCS gadget relies on, since
+    /// it walks one full path per query and has no notion of a shared proof.
+    ///
+    /// The batch is mixed-height, so restoring an input path has to fold the shorter matrix's
+    /// injected digest; and the query count is high enough that the pruned proof really does omit
+    /// digests other queries' own paths cover.
+    #[test]
+    fn restore_fri_query_paths_matches_single_query_verification() {
+        type Pcs4 = p3_fri::TwoAdicFriPcs<F, Dft, MyMmcs, ChallengeMmcs>;
+
+        let perm = default_koalabear_poseidon2_16();
+        let hash = MyHash::new(perm.clone());
+        let compress = MyCompress::new(perm.clone());
+        let val_mmcs = MyMmcs::new(hash, compress, 0);
+        let fri_params = FriParameters {
+            num_queries: 6,
+            commit_proof_of_work_bits: 0,
+            query_proof_of_work_bits: 0,
+            ..FriParameters::new_testing(ChallengeMmcs::new(val_mmcs.clone()), 0)
+        };
+        let pcs = Pcs4::new(Dft::default(), val_mmcs.clone(), fri_params.clone());
+
+        let mut rng = SmallRng::seed_from_u64(11);
+        let log_degrees = [5usize, 3];
+        let evals: Vec<_> = log_degrees
+            .iter()
+            .map(|&log_degree| {
+                let domain = <Pcs4 as Pcs<Challenge, Challenger>>::natural_domain_for_degree(
+                    &pcs,
+                    1 << log_degree,
+                );
+                (
+                    domain,
+                    RowMajorMatrix::<F>::rand_nonzero(&mut rng, 1 << log_degree, 3),
+                )
+            })
+            .collect();
+        let domains: Vec<_> = evals.iter().map(|(domain, _)| *domain).collect();
+
+        let (commitment, prover_data) = <Pcs4 as Pcs<Challenge, Challenger>>::commit(&pcs, evals);
+
+        let mut p_challenger = Challenger::new(perm.clone());
+        p_challenger.observe(commitment.clone());
+        let zeta: Challenge = p_challenger.sample_algebra_element();
+        let (opened_values, proof) = <Pcs4 as Pcs<Challenge, Challenger>>::open(
+            &pcs,
+            vec![(&prover_data, vec![vec![zeta]; log_degrees.len()])],
+            &mut p_challenger,
+        );
+
+        // Verifier transcript, replayed up to the point `verify_fri` starts from.
+        let mut challenger = Challenger::new(perm);
+        challenger.observe(commitment.clone());
+        let v_zeta: Challenge = challenger.sample_algebra_element();
+        assert_eq!(v_zeta, zeta);
+        let cwop = vec![(
+            commitment.clone(),
+            domains
+                .iter()
+                .zip(&opened_values[0])
+                .map(|(domain, mat)| (*domain, vec![(zeta, mat[0].clone())]))
+                .collect::<Vec<_>>(),
+        )];
+        for (_, round) in &cwop {
+            for (_, mat) in round {
+                for (_, point) in mat {
+                    challenger.observe_algebra_slice(point);
+                }
+            }
+        }
+
+        let query_paths = restore_fri_query_paths(
+            &fri_params,
+            &val_mmcs,
+            &val_mmcs,
+            &proof,
+            &mut challenger.clone(),
+            &cwop,
+        )
+        .expect("restoration succeeds for an honest proof");
+        assert_eq!(query_paths.len(), fri_params.num_queries);
+
+        // Independently rederive the queried leaf indices and each round's reconstructed row, so
+        // every restored chain can be checked against the commitment it claims to open.
+        let (indices, group_indices_by_round, rows_by_round, log_global_max_height) =
+            replay_fri_queries(&fri_params, &val_mmcs, &proof, &mut challenger, &cwop);
+
+        // Input batch: compare against the paths a per-query opening would have produced.
+        let max_height = 1usize << (log_degrees[0] + fri_params.log_blowup);
+        let bits_reduced = log_global_max_height - log2_strict_usize(max_height);
+        for (query, &index) in indices.iter().enumerate() {
+            let reduced_index = index >> bits_reduced;
+            let expected = val_mmcs.open_batch(reduced_index, &prover_data).unpack().1;
+            assert_eq!(
+                query_paths[query].input[0], expected,
+                "restored input path for query {query} differs from its individual opening"
+            );
+            val_mmcs
+                .verify_batch(
+                    &commitment,
+                    &[
+                        Dimensions {
+                            width: 3,
+                            height: 1 << (log_degrees[0] + fri_params.log_blowup),
+                        },
+                        Dimensions {
+                            width: 3,
+                            height: 1 << (log_degrees[1] + fri_params.log_blowup),
+                        },
+                    ],
+                    reduced_index,
+                    p3_commit::BatchOpeningRef::new(
+                        &proof.input_openings[0].opened_values[query],
+                        &query_paths[query].input[0],
+                    ),
+                )
+                .expect("a restored input path must authenticate its query on its own");
+        }
+
+        // Commit phase: one matrix of `arity` extension columns per round, flattened to base.
+        let mut log_current_height = log_global_max_height;
+        for (round, opening) in proof.commit_phase_openings.iter().enumerate() {
+            let log_arity = opening.log_arity as usize;
+            let arity = 1usize << log_arity;
+            let log_folded_height = log_current_height - log_arity;
+            let dims = [Dimensions {
+                width: arity * <Challenge as BasedVectorSpace<F>>::DIMENSION,
+                height: 1 << log_folded_height,
+            }];
+            for query in 0..fri_params.num_queries {
+                let row = vec![Challenge::flatten_to_base(
+                    rows_by_round[round][query][0].clone(),
+                )];
+                val_mmcs
+                    .verify_batch(
+                        &proof.commit_phase_commits[round],
+                        &dims,
+                        group_indices_by_round[round][query],
+                        p3_commit::BatchOpeningRef::new(
+                            &row,
+                            &query_paths[query].commit_phase[round],
+                        ),
+                    )
+                    .expect("a restored commit-phase path must authenticate its query on its own");
+            }
+            log_current_height = log_folded_height;
+        }
+    }
+
+    /// Replays the FRI verifier's query phase, returning the sampled indices, each round's
+    /// per-query group index and reconstructed evaluation row, and the global log height.
+    #[expect(clippy::type_complexity)]
+    fn replay_fri_queries(
+        params: &FriParameters<ChallengeMmcs>,
+        input_mmcs: &MyMmcs,
+        proof: &FriProof<Challenge, ChallengeMmcs, F, Vec<BatchMultiOpening<F, MyMmcs>>>,
+        challenger: &mut Challenger,
+        cwop: &[CommitmentWithOpeningPoints<
+            Challenge,
+            <MyMmcs as Mmcs<F>>::Commitment,
+            p3_field::coset::TwoAdicMultiplicativeCoset<F>,
+        >],
+    ) -> (
+        Vec<usize>,
+        Vec<Vec<usize>>,
+        Vec<Vec<Vec<Vec<Challenge>>>>,
+        usize,
+    ) {
+        let folding: TwoAdicFriFoldingForMmcs<F, MyMmcs> = TwoAdicFriFolding(PhantomData);
+        let alpha: Challenge = challenger.sample_algebra_element();
+        let log_arities: Vec<usize> = proof
+            .commit_phase_openings
+            .iter()
+            .map(|opening| opening.log_arity as usize)
+            .collect();
+        let log_global_max_height =
+            log_arities.iter().sum::<usize>() + params.log_blowup + params.log_final_poly_len;
+
+        let betas: Vec<Challenge> = proof
+            .commit_phase_commits
+            .iter()
+            .zip(&proof.commit_pow_witnesses)
+            .map(|(comm, witness)| {
+                challenger.observe(comm.clone());
+                assert!(challenger.check_witness(params.commit_proof_of_work_bits, *witness));
+                challenger.sample_algebra_element()
+            })
+            .collect();
+
+        challenger.observe_algebra_slice(&proof.final_poly);
+        for &log_arity in &log_arities {
+            challenger.observe(F::from_usize(log_arity));
+        }
+        assert!(challenger.check_witness(params.query_proof_of_work_bits, proof.query_pow_witness));
+
+        let indices: Vec<usize> =
+            core::iter::repeat_with(|| challenger.sample_bits(log_global_max_height))
+                .take(params.num_queries)
+                .collect();
+
+        let reduced_openings = open_inputs::<F, Challenge, MyMmcs, ChallengeMmcs>(
+            params,
+            log_global_max_height,
+            &indices,
+            &proof.input_openings,
+            alpha,
+            input_mmcs,
+            cwop,
+        )
+        .expect("input openings verify");
+
+        let num_rounds = proof.commit_phase_commits.len();
+        let mut group_indices_by_round = vec![Vec::new(); num_rounds];
+        let mut rows_by_round = vec![Vec::new(); num_rounds];
+        for (query, (&index, ro)) in indices.iter().zip(reduced_openings).enumerate() {
+            let mut domain_index = index;
+            let _folded = fold_query::<_, F, Challenge, ChallengeMmcs>(
+                &folding,
+                query,
+                &mut domain_index,
+                &betas,
+                &log_arities,
+                &proof.commit_phase_openings,
+                ro,
+                log_global_max_height,
+                params.log_blowup + params.log_final_poly_len,
+                &mut group_indices_by_round,
+                &mut rows_by_round,
+            )
+            .expect("fold chain replays");
+        }
+
+        (
+            indices,
+            group_indices_by_round,
+            rows_by_round,
+            log_global_max_height,
+        )
     }
 }

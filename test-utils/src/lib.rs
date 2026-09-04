@@ -330,16 +330,23 @@ pub mod baby_bear_params {
     pub type MyPcs = TwoAdicFriPcs<F, Dft, MyMmcs, ChallengeMmcs>;
     pub type MyConfig = StarkConfig<MyPcs, Challenge, Challenger>;
 
+    /// The FRI instance [`make_test_config`] commits with: the base-field Merkle MMCS and the
+    /// FRI parameters built over it.
+    ///
+    /// Restoring the per-query Merkle paths a pruned FRI proof shares needs both, and they are
+    /// not reachable through [`MyConfig`], so they are built here once for both users.
+    pub fn test_fri_instance() -> (MyMmcs, FriParameters<ChallengeMmcs>) {
+        let perm = default_babybear_poseidon2_16();
+        let val_mmcs = MyMmcs::new(MyHash::new(perm.clone()), MyCompress::new(perm), 0);
+        let fri_params = FriParameters::new_testing(ChallengeMmcs::new(val_mmcs.clone()), 0);
+        (val_mmcs, fri_params)
+    }
+
     /// Builds the standard test `MyConfig` (testing FRI params, default permutation).
     pub fn make_test_config() -> MyConfig {
-        let perm = default_babybear_poseidon2_16();
-        let hash = MyHash::new(perm.clone());
-        let compress = MyCompress::new(perm.clone());
-        let val_mmcs = MyMmcs::new(hash, compress, 0);
-        let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
-        let fri_params = FriParameters::new_testing(challenge_mmcs, 0);
+        let (val_mmcs, fri_params) = test_fri_instance();
         let pcs = MyPcs::new(Dft::default(), val_mmcs, fri_params);
-        MyConfig::new(pcs, Challenger::new(perm))
+        MyConfig::new(pcs, Challenger::new(default_babybear_poseidon2_16()))
     }
 }
 
@@ -373,16 +380,59 @@ pub mod koala_bear_params {
     pub type MyPcs = TwoAdicFriPcs<F, Dft, MyMmcs, ChallengeMmcs>;
     pub type MyConfig = StarkConfig<MyPcs, Challenge, Challenger>;
 
+    /// The FRI instance [`make_test_config`] commits with: the base-field Merkle MMCS and the
+    /// FRI parameters built over it.
+    ///
+    /// Restoring the per-query Merkle paths a pruned FRI proof shares needs both, and they are
+    /// not reachable through [`MyConfig`], so they are built here once for both users.
+    pub fn test_fri_instance() -> (MyMmcs, FriParameters<ChallengeMmcs>) {
+        let perm = default_koalabear_poseidon2_16();
+        let val_mmcs = MyMmcs::new(MyHash::new(perm.clone()), MyCompress::new(perm), 0);
+        let fri_params = FriParameters::new_testing(ChallengeMmcs::new(val_mmcs.clone()), 0);
+        (val_mmcs, fri_params)
+    }
+
+    /// Counterpart of [`test_fri_instance`] for [`make_test_config_with_pow_bits`].
+    pub fn test_fri_instance_with_pow_bits(
+        pow_bits: usize,
+    ) -> (MyMmcs, FriParameters<ChallengeMmcs>) {
+        let (val_mmcs, fri_params) = test_fri_instance();
+        (
+            val_mmcs,
+            FriParameters {
+                commit_proof_of_work_bits: pow_bits,
+                query_proof_of_work_bits: pow_bits,
+                ..fri_params
+            },
+        )
+    }
+
+    /// Counterpart of [`test_fri_instance`] for [`make_test_config_with_fri`].
+    pub fn test_fri_instance_with_fri(
+        perm: &Perm,
+        log_blowup: usize,
+        max_log_arity: usize,
+    ) -> (MyMmcs, FriParameters<ChallengeMmcs>) {
+        let query_proof_of_work_bits = 16;
+        let num_queries = (100 - query_proof_of_work_bits) / log_blowup;
+        let val_mmcs = MyMmcs::new(MyHash::new(perm.clone()), MyCompress::new(perm.clone()), 0);
+        let fri_params = FriParameters {
+            max_log_arity,
+            log_blowup,
+            log_final_poly_len: 0,
+            num_queries,
+            commit_proof_of_work_bits: 0,
+            query_proof_of_work_bits,
+            mmcs: ChallengeMmcs::new(val_mmcs.clone()),
+        };
+        (val_mmcs, fri_params)
+    }
+
     /// Builds the standard test `MyConfig` (testing FRI params, default permutation).
     pub fn make_test_config() -> MyConfig {
-        let perm = default_koalabear_poseidon2_16();
-        let hash = MyHash::new(perm.clone());
-        let compress = MyCompress::new(perm.clone());
-        let val_mmcs = MyMmcs::new(hash, compress, 0);
-        let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
-        let fri_params = FriParameters::new_testing(challenge_mmcs, 0);
+        let (val_mmcs, fri_params) = test_fri_instance();
         let pcs = MyPcs::new(Dft::default(), val_mmcs, fri_params);
-        MyConfig::new(pcs, Challenger::new(perm))
+        MyConfig::new(pcs, Challenger::new(default_koalabear_poseidon2_16()))
     }
 
     /// Builds a test `MyConfig` matching [`FriParameters::new_testing`]'s shape but with
@@ -390,18 +440,9 @@ pub mod koala_bear_params {
     /// Used by tests that need a deterministic `grind` (e.g. `pow_bits = 0`), such as ones that
     /// compare two independently-produced proofs byte-for-byte.
     pub fn make_test_config_with_pow_bits(pow_bits: usize) -> MyConfig {
-        let perm = default_koalabear_poseidon2_16();
-        let hash = MyHash::new(perm.clone());
-        let compress = MyCompress::new(perm.clone());
-        let val_mmcs = MyMmcs::new(hash, compress, 0);
-        let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
-        let fri_params = FriParameters {
-            commit_proof_of_work_bits: pow_bits,
-            query_proof_of_work_bits: pow_bits,
-            ..FriParameters::new_testing(challenge_mmcs, 0)
-        };
+        let (val_mmcs, fri_params) = test_fri_instance_with_pow_bits(pow_bits);
         let pcs = MyPcs::new(Dft::default(), val_mmcs, fri_params);
-        MyConfig::new(pcs, Challenger::new(perm))
+        MyConfig::new(pcs, Challenger::new(default_koalabear_poseidon2_16()))
     }
 
     /// Builds a test `MyConfig` with an explicit FRI shape (`log_blowup`, `max_log_arity`),
@@ -412,21 +453,7 @@ pub mod koala_bear_params {
         log_blowup: usize,
         max_log_arity: usize,
     ) -> MyConfig {
-        let query_proof_of_work_bits = 16;
-        let num_queries = (100 - query_proof_of_work_bits) / log_blowup;
-        let hash = MyHash::new(perm.clone());
-        let compress = MyCompress::new(perm.clone());
-        let val_mmcs = MyMmcs::new(hash, compress, 0);
-        let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
-        let fri_params = FriParameters {
-            max_log_arity,
-            log_blowup,
-            log_final_poly_len: 0,
-            num_queries,
-            commit_proof_of_work_bits: 0,
-            query_proof_of_work_bits,
-            mmcs: challenge_mmcs,
-        };
+        let (val_mmcs, fri_params) = test_fri_instance_with_fri(perm, log_blowup, max_log_arity);
         let pcs = MyPcs::new(Dft::default(), val_mmcs, fri_params);
         MyConfig::new(pcs, Challenger::new(perm.clone()))
     }
@@ -466,16 +493,23 @@ pub mod koala_bear_quintic_params {
     /// Base Poseidon2 permutation lifted to act on [`Challenge`] lanes (constant term only).
     pub type LiftKoalaPermForQuintic = super::LiftPermToQuintic<F, Perm, WIDTH>;
 
+    /// The FRI instance [`make_test_config`] commits with: the base-field Merkle MMCS and the
+    /// FRI parameters built over it.
+    ///
+    /// Restoring the per-query Merkle paths a pruned FRI proof shares needs both, and they are
+    /// not reachable through [`MyConfig`], so they are built here once for both users.
+    pub fn test_fri_instance() -> (MyMmcs, FriParameters<ChallengeMmcs>) {
+        let perm = default_koalabear_poseidon2_16();
+        let val_mmcs = MyMmcs::new(MyHash::new(perm.clone()), MyCompress::new(perm), 0);
+        let fri_params = FriParameters::new_testing(ChallengeMmcs::new(val_mmcs.clone()), 0);
+        (val_mmcs, fri_params)
+    }
+
     /// Builds the standard test `MyConfig` (testing FRI params, default permutation).
     pub fn make_test_config() -> MyConfig {
-        let perm = default_koalabear_poseidon2_16();
-        let hash = MyHash::new(perm.clone());
-        let compress = MyCompress::new(perm.clone());
-        let val_mmcs = MyMmcs::new(hash, compress, 0);
-        let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
-        let fri_params = FriParameters::new_testing(challenge_mmcs, 0);
+        let (val_mmcs, fri_params) = test_fri_instance();
         let pcs = MyPcs::new(Dft::default(), val_mmcs, fri_params);
-        MyConfig::new(pcs, Challenger::new(perm))
+        MyConfig::new(pcs, Challenger::new(default_koalabear_poseidon2_16()))
     }
 }
 

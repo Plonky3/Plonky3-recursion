@@ -30,8 +30,8 @@ pub use p3_matrix::dense::RowMajorMatrix;
 pub use p3_merkle_tree::MerkleTreeMmcs;
 pub use p3_recursion::pcs::{
     HidingFriProofTargets, InputProofTargets, MerkleCapTargets, RecExtensionValMmcsArity4,
-    RecValMmcs, RecValMmcsArity4, set_fri_mmcs_private_data, set_fri_mmcs_private_data_arity4,
-    set_hiding_fri_mmcs_private_data,
+    RecValMmcs, RecValMmcsArity4, restore_fri_query_paths, set_fri_mmcs_private_data,
+    set_fri_mmcs_private_data_arity4,
 };
 pub use p3_recursion::profile::{
     HashProfile, ProfilePrepCache, RecursionLayerProfile, TranscriptKind, build_layer_circuit,
@@ -43,16 +43,16 @@ pub use p3_recursion::verifier::VerificationError;
 pub use p3_recursion::{
     AggregationPrepCache, BatchOnly, BatchStarkVerifierInputsBuilder, FriRecursionBackend,
     FriRecursionBackendD5, FriRecursionConfig, FriVerifierParams, NextLayerPrepCache,
-    PcsRecursionBackend, Poseidon2Config, ProveNextLayerParams, RecursionInput, RecursionOutput,
-    build_aggregation_layer_circuit, build_and_prove_aggregation_layer,
+    OpeningTranscript, PcsRecursionBackend, Poseidon2Config, ProveNextLayerParams, RecursionInput,
+    RecursionOutput, build_aggregation_layer_circuit, build_and_prove_aggregation_layer,
     build_and_prove_aggregation_layer_cross, build_and_prove_next_layer, build_next_layer_circuit,
-    build_next_layer_prep, prove_aggregation_layer, prove_aggregation_layer_cross,
-    prove_next_layer, verify_batch_circuit,
+    build_next_layer_prep, merge_hiding_random_openings, observe_opened_values,
+    prove_aggregation_layer, prove_aggregation_layer_cross, prove_next_layer, verify_batch_circuit,
 };
 pub use p3_symmetric::{PaddingFreeSponge, Permutation, TruncatedPermutation};
 pub use p3_uni_stark::{StarkConfig, StarkGenericConfig, Val};
 pub use rand::SeedableRng;
-pub use rand::rngs::SmallRng;
+pub use rand::rngs::{SmallRng, StdRng};
 pub use serde::Serialize;
 pub use tracing::info;
 pub use tracing_forest::ForestLayer;
@@ -294,7 +294,7 @@ macro_rules! define_field_module_types {
         >;
 
         #[allow(dead_code)]
-        type MyPcsZk = HidingFriPcs<F, Dft, MyMmcs, ChallengeMmcs, SmallRng>;
+        type MyPcsZk = HidingFriPcs<F, Dft, MyMmcs, ChallengeMmcs, StdRng>;
         #[allow(dead_code)]
         type MyConfigZk = StarkConfig<MyPcsZk, Challenge, Challenger>;
 
@@ -317,6 +317,10 @@ macro_rules! define_field_module_types {
             config: Arc<MyConfig>,
             fri_verifier_params: FriVerifierParams,
             disable_recompose_npo: bool,
+            /// The base-field Merkle MMCS and FRI parameters `config` commits with. The PCS does
+            /// not expose them, and restoring the per-query Merkle chains a pruned FRI proof
+            /// shares needs both.
+            fri_instance: Arc<(MyMmcs, FriParameters<ChallengeMmcs>)>,
         }
 
         #[allow(dead_code)]
@@ -325,6 +329,8 @@ macro_rules! define_field_module_types {
             config: Arc<MyConfigZk>,
             fri_verifier_params: FriVerifierParams,
             disable_recompose_npo: bool,
+            /// See [`ConfigWithFriParams`].
+            fri_instance: Arc<(MyMmcs, FriParameters<ChallengeMmcs>)>,
         }
 
         impl core::ops::Deref for ConfigWithFriParams {
@@ -434,19 +440,32 @@ macro_rules! define_field_module_types {
             }
 
             fn set_fri_private_data(
+                config: &Self,
                 runner: &mut CircuitRunner<'_, Challenge>,
                 op_ids: &[NonPrimitiveOpId],
                 opening_proof: &Self::RawOpeningProof,
+                transcript: OpeningTranscript<Self>,
             ) -> Result<(), &'static str> {
-                set_fri_mmcs_private_data::<
-                    F,
-                    Challenge,
-                    ChallengeMmcs,
-                    MyMmcs,
-                    MyHash,
-                    MyCompress,
-                    DIGEST_ELEMS,
-                >(runner, op_ids, opening_proof, $poseidon2_config)
+                let OpeningTranscript {
+                    mut challenger,
+                    commitments_with_opening_points,
+                } = transcript;
+                observe_opened_values::<Self>(&mut challenger, &commitments_with_opening_points);
+                let query_paths = restore_fri_query_paths(
+                    &config.fri_instance.1,
+                    &config.fri_instance.0,
+                    &config.fri_instance.0,
+                    opening_proof,
+                    &mut challenger,
+                    &commitments_with_opening_points,
+                )
+                .map_err(|_| "Failed to restore the FRI proof's per-query Merkle paths")?;
+                set_fri_mmcs_private_data::<F, Challenge, DIGEST_ELEMS>(
+                    runner,
+                    op_ids,
+                    &query_paths,
+                    $poseidon2_config,
+                )
             }
         }
 
@@ -519,29 +538,53 @@ macro_rules! define_field_module_types {
             }
 
             fn set_fri_private_data(
+                config: &Self,
                 runner: &mut CircuitRunner<'_, Challenge>,
                 op_ids: &[NonPrimitiveOpId],
                 opening_proof: &Self::RawOpeningProof,
+                transcript: OpeningTranscript<Self>,
             ) -> Result<(), &'static str> {
-                set_hiding_fri_mmcs_private_data::<
-                    F,
-                    Challenge,
-                    ChallengeMmcs,
-                    MyMmcs,
-                    MyHash,
-                    MyCompress,
-                    DIGEST_ELEMS,
-                >(runner, op_ids, opening_proof, $poseidon2_config)
+                let OpeningTranscript {
+                    mut challenger,
+                    mut commitments_with_opening_points,
+                } = transcript;
+                // A hiding PCS proof is `(random openings, inner FRI proof)`; the inner verifier
+                // sees the public openings with the random ones appended.
+                merge_hiding_random_openings::<Self>(
+                    &mut commitments_with_opening_points,
+                    &opening_proof.0,
+                )
+                .map_err(|_| "Hiding random openings do not match the public ones")?;
+                observe_opened_values::<Self>(&mut challenger, &commitments_with_opening_points);
+                let query_paths = restore_fri_query_paths(
+                    &config.fri_instance.1,
+                    &config.fri_instance.0,
+                    &config.fri_instance.0,
+                    &opening_proof.1,
+                    &mut challenger,
+                    &commitments_with_opening_points,
+                )
+                .map_err(|_| "Failed to restore the FRI proof's per-query Merkle paths")?;
+                set_fri_mmcs_private_data::<F, Challenge, DIGEST_ELEMS>(
+                    runner,
+                    op_ids,
+                    &query_paths,
+                    $poseidon2_config,
+                )
             }
         }
 
-        fn create_config(fp: &FriParams, security_level: usize) -> MyConfig {
+        /// The base-field Merkle MMCS and FRI parameters the configs below commit with. The PCS
+        /// keeps them private, so they are built here once for both it and the recursive
+        /// verifier's Merkle-path restoration.
+        fn create_fri_instance(
+            fp: &FriParams,
+            security_level: usize,
+        ) -> (MyMmcs, FriParameters<ChallengeMmcs>) {
             let perm = $default_perm();
             let hash = MyHash::new(perm.clone());
-            let compress = MyCompress::new(perm.clone());
+            let compress = MyCompress::new(perm);
             let val_mmcs = MyMmcs::new(hash, compress, fp.cap_height);
-            let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
-            let dft = Dft::default();
 
             let num_queries = (security_level - fp.query_pow_bits) / fp.log_blowup;
 
@@ -552,11 +595,15 @@ macro_rules! define_field_module_types {
                 num_queries,
                 commit_proof_of_work_bits: fp.commit_pow_bits,
                 query_proof_of_work_bits: fp.query_pow_bits,
-                mmcs: challenge_mmcs,
+                mmcs: ChallengeMmcs::new(val_mmcs.clone()),
             };
-            let pcs = MyPcs::new(dft, val_mmcs, fri_params);
-            let challenger = Challenger::new(perm);
-            MyConfig::new(pcs, challenger)
+            (val_mmcs, fri_params)
+        }
+
+        fn create_config(fp: &FriParams, security_level: usize) -> MyConfig {
+            let (val_mmcs, fri_params) = create_fri_instance(fp, security_level);
+            let pcs = MyPcs::new(Dft::default(), val_mmcs, fri_params);
+            MyConfig::new(pcs, Challenger::new($default_perm()))
         }
 
         fn create_fri_verifier_params(fp: &FriParams, security_level: usize) -> FriVerifierParams {
@@ -580,38 +627,21 @@ macro_rules! define_field_module_types {
                 config: Arc::new(create_config(fp, security_level)),
                 fri_verifier_params: create_fri_verifier_params(fp, security_level),
                 disable_recompose_npo,
+                fri_instance: Arc::new(create_fri_instance(fp, security_level)),
             }
         }
 
         #[allow(dead_code)]
         fn create_config_zk(fp: &FriParams, security_level: usize, rng_seed: u64) -> MyConfigZk {
-            let perm = $default_perm();
-            let hash = MyHash::new(perm.clone());
-            let compress = MyCompress::new(perm.clone());
-            let val_mmcs = MyMmcs::new(hash, compress, fp.cap_height);
-            let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
-            let dft = Dft::default();
-
-            let num_queries = (security_level - fp.query_pow_bits) / fp.log_blowup;
-
-            let fri_params = FriParameters {
-                max_log_arity: fp.max_log_arity,
-                log_blowup: fp.log_blowup,
-                log_final_poly_len: fp.log_final_poly_len,
-                num_queries,
-                commit_proof_of_work_bits: fp.commit_pow_bits,
-                query_proof_of_work_bits: fp.query_pow_bits,
-                mmcs: challenge_mmcs,
-            };
+            let (val_mmcs, fri_params) = create_fri_instance(fp, security_level);
             let pcs = MyPcsZk::new(
-                dft,
+                Dft::default(),
                 val_mmcs,
                 fri_params,
                 2,
-                SmallRng::seed_from_u64(rng_seed),
+                StdRng::seed_from_u64(rng_seed),
             );
-            let challenger = Challenger::new(perm);
-            MyConfigZk::new(pcs, challenger)
+            MyConfigZk::new(pcs, Challenger::new($default_perm()))
         }
 
         #[allow(dead_code)]
@@ -625,6 +655,7 @@ macro_rules! define_field_module_types {
                 config: Arc::new(create_config_zk(fp, security_level, rng_seed)),
                 fri_verifier_params: create_fri_verifier_params(fp, security_level),
                 disable_recompose_npo,
+                fri_instance: Arc::new(create_fri_instance(fp, security_level)),
             }
         }
     };
@@ -700,6 +731,10 @@ macro_rules! define_field_module_types_quintic {
             config: Arc<MyConfig>,
             fri_verifier_params: FriVerifierParams,
             disable_recompose_npo: bool,
+            /// The base-field Merkle MMCS and FRI parameters `config` commits with. The PCS does
+            /// not expose them, and restoring the per-query Merkle chains a pruned FRI proof
+            /// shares needs both.
+            fri_instance: Arc<(MyMmcs, FriParameters<ChallengeMmcs>)>,
         }
 
         impl core::ops::Deref for ConfigWithFriParams {
@@ -790,29 +825,46 @@ macro_rules! define_field_module_types_quintic {
             }
 
             fn set_fri_private_data(
+                config: &Self,
                 runner: &mut CircuitRunner<'_, Challenge>,
                 op_ids: &[NonPrimitiveOpId],
                 opening_proof: &Self::RawOpeningProof,
+                transcript: OpeningTranscript<Self>,
             ) -> Result<(), &'static str> {
-                set_fri_mmcs_private_data::<
-                    F,
-                    Challenge,
-                    ChallengeMmcs,
-                    MyMmcs,
-                    MyHash,
-                    MyCompress,
-                    DIGEST_ELEMS,
-                >(runner, op_ids, opening_proof, $poseidon2_config)
+                let OpeningTranscript {
+                    mut challenger,
+                    commitments_with_opening_points,
+                } = transcript;
+                observe_opened_values::<Self>(&mut challenger, &commitments_with_opening_points);
+                let query_paths = restore_fri_query_paths(
+                    &config.fri_instance.1,
+                    &config.fri_instance.0,
+                    &config.fri_instance.0,
+                    opening_proof,
+                    &mut challenger,
+                    &commitments_with_opening_points,
+                )
+                .map_err(|_| "Failed to restore the FRI proof's per-query Merkle paths")?;
+                set_fri_mmcs_private_data::<F, Challenge, DIGEST_ELEMS>(
+                    runner,
+                    op_ids,
+                    &query_paths,
+                    $poseidon2_config,
+                )
             }
         }
 
-        fn create_config(fp: &FriParams, security_level: usize) -> MyConfig {
+        /// The base-field Merkle MMCS and FRI parameters the configs below commit with. The PCS
+        /// keeps them private, so they are built here once for both it and the recursive
+        /// verifier's Merkle-path restoration.
+        fn create_fri_instance(
+            fp: &FriParams,
+            security_level: usize,
+        ) -> (MyMmcs, FriParameters<ChallengeMmcs>) {
             let perm = $default_perm();
             let hash = MyHash::new(perm.clone());
-            let compress = MyCompress::new(perm.clone());
+            let compress = MyCompress::new(perm);
             let val_mmcs = MyMmcs::new(hash, compress, fp.cap_height);
-            let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
-            let dft = Dft::default();
 
             let num_queries = (security_level - fp.query_pow_bits) / fp.log_blowup;
 
@@ -823,11 +875,15 @@ macro_rules! define_field_module_types_quintic {
                 num_queries,
                 commit_proof_of_work_bits: fp.commit_pow_bits,
                 query_proof_of_work_bits: fp.query_pow_bits,
-                mmcs: challenge_mmcs,
+                mmcs: ChallengeMmcs::new(val_mmcs.clone()),
             };
-            let pcs = MyPcs::new(dft, val_mmcs, fri_params);
-            let challenger = Challenger::new(perm);
-            MyConfig::new(pcs, challenger)
+            (val_mmcs, fri_params)
+        }
+
+        fn create_config(fp: &FriParams, security_level: usize) -> MyConfig {
+            let (val_mmcs, fri_params) = create_fri_instance(fp, security_level);
+            let pcs = MyPcs::new(Dft::default(), val_mmcs, fri_params);
+            MyConfig::new(pcs, Challenger::new($default_perm()))
         }
 
         fn create_fri_verifier_params(fp: &FriParams, security_level: usize) -> FriVerifierParams {
@@ -851,6 +907,7 @@ macro_rules! define_field_module_types_quintic {
                 config: Arc::new(create_config(fp, security_level)),
                 fri_verifier_params: create_fri_verifier_params(fp, security_level),
                 disable_recompose_npo,
+                fri_instance: Arc::new(create_fri_instance(fp, security_level)),
             }
         }
     };

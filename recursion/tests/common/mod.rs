@@ -18,7 +18,7 @@ use p3_matrix::dense::RowMajorMatrix;
 use p3_poseidon2_circuit_air::KoalaBearD4Width16;
 use p3_recursion::pcs::{
     FriProofTargets, InputProofTargets, MerkleCapTargets, RecExtensionValMmcs, RecValMmcs, Witness,
-    set_fri_mmcs_private_data,
+    restore_fri_query_paths, set_fri_mmcs_private_data,
 };
 use p3_recursion::profile::{
     HashProfile, ProfilePrepCache, RecursionLayerProfile, TranscriptKind, build_layer_circuit,
@@ -28,8 +28,8 @@ use p3_recursion::traits::{RecursiveAir, RecursivePcs};
 use p3_recursion::verifier::VerificationError;
 use p3_recursion::{
     BatchOnly, FriRecursionBackend, FriRecursionBackendForExt, FriRecursionConfig,
-    FriVerifierParams, Poseidon2Config, ProveNextLayerParams, RecursionInput, RecursionOutput,
-    build_next_layer_prep,
+    FriVerifierParams, OpeningTranscript, Poseidon2Config, ProveNextLayerParams, RecursionInput,
+    RecursionOutput, build_next_layer_prep, observe_opened_values,
 };
 use p3_test_utils::koala_bear_params::*;
 use p3_uni_stark::{StarkGenericConfig, Val};
@@ -194,6 +194,10 @@ pub(crate) type KoalaBearD4InnerFri = InnerFriGeneric<MyConfig, MyHash, MyCompre
 pub(crate) struct KoalaBearD4RecursionConfig {
     config: Arc<MyConfig>,
     fri_verifier_params: FriVerifierParams,
+    /// The base-field MMCS and FRI parameters `config` commits with. `MyConfig` does not expose
+    /// them, and restoring a pruned FRI proof's per-query Merkle paths needs both.
+    val_mmcs: MyMmcs,
+    fri_params: FriParameters<ChallengeMmcs>,
 }
 
 impl core::ops::Deref for KoalaBearD4RecursionConfig {
@@ -271,22 +275,30 @@ where
     }
 
     fn set_fri_private_data(
+        config: &Self,
         runner: &mut CircuitRunner<'_, Challenge>,
         op_ids: &[NonPrimitiveOpId],
         opening_proof: &Self::RawOpeningProof,
+        transcript: OpeningTranscript<Self>,
     ) -> Result<(), &'static str> {
-        set_fri_mmcs_private_data::<
-            F,
-            Challenge,
-            ChallengeMmcs,
-            MyMmcs,
-            MyHash,
-            MyCompress,
-            DIGEST_ELEMS,
-        >(
+        let OpeningTranscript {
+            mut challenger,
+            commitments_with_opening_points,
+        } = transcript;
+        observe_opened_values::<Self>(&mut challenger, &commitments_with_opening_points);
+        let query_paths = restore_fri_query_paths(
+            &config.fri_params,
+            &config.val_mmcs,
+            &config.val_mmcs,
+            opening_proof,
+            &mut challenger,
+            &commitments_with_opening_points,
+        )
+        .map_err(|_| "Failed to restore the FRI proof's per-query Merkle paths")?;
+        set_fri_mmcs_private_data::<F, Challenge, DIGEST_ELEMS>(
             runner,
             op_ids,
-            opening_proof,
+            &query_paths,
             Poseidon2Config::KOALA_BEAR_D4_W16,
         )
     }
@@ -374,9 +386,12 @@ pub(crate) fn build_koala_bear_d4_first_layer_input_with_pow_bits(
         scalars.num_queries,
         Poseidon2Config::KOALA_BEAR_D4_W16,
     );
+    let (val_mmcs, fri_params) = test_fri_instance_with_pow_bits(pow_bits);
     let layer_config = KoalaBearD4RecursionConfig {
         config: Arc::new(make_test_config_with_pow_bits(pow_bits)),
         fri_verifier_params,
+        val_mmcs,
+        fri_params,
     };
 
     let circuit = builder.build().unwrap();

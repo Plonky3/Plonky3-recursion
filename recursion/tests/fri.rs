@@ -11,11 +11,12 @@ use p3_fri::FriParameters;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_poseidon2_circuit_air::BabyBearD4Width16;
 // Recursive target graph pieces
-use p3_recursion::pcs::convert_merkle_proof_to_siblings;
+use p3_recursion::pcs::fri::fri_proof_num_queries;
 use p3_recursion::pcs::fri::{
     FriProofTargets, InputProofTargets, MerkleCapTargets, RecExtensionValMmcs, RecValMmcs,
     Witness as RecWitness,
 };
+use p3_recursion::pcs::{FriQueryPaths, restore_fri_query_paths, set_fri_mmcs_private_data};
 use p3_recursion::public_inputs::{CommitmentOpening, FriVerifierInputs};
 use p3_recursion::{Poseidon2Config, Recursive};
 use p3_test_utils::baby_bear_params::*;
@@ -84,11 +85,15 @@ struct ProduceInputsResult {
     log_max_height: usize,
     /// The FRI proof
     fri_proof: <MyPcs as Pcs<Challenge, Challenger>>::Proof,
+    /// The per-query Merkle authentication chains restored from the proof's shared pruned
+    /// multiproofs — what the in-circuit MMCS gadget consumes.
+    query_paths: Vec<FriQueryPaths<F, DIGEST_ELEMS>>,
 }
 
 /// Produce all public inputs for a recursive FRI verification circuit over **multiple input batches**.
 ///
 /// `group_sizes` is a list of groups, each group is a list of log2 degrees.
+#[allow(clippy::too_many_arguments)]
 fn produce_inputs_multi(
     pcs: &MyPcs,
     perm: &Perm,
@@ -98,6 +103,8 @@ fn produce_inputs_multi(
     pow_bits: (usize, usize),
     group_sizes: &[Vec<u8>],
     seed_base: u64,
+    val_mmcs: &MyMmcs,
+    fri_params: &FriParameters<ChallengeMmcs>,
 ) -> ProduceInputsResult {
     // Build per-group evals and commit
     let mut groups_evals = Vec::new();
@@ -161,10 +168,11 @@ fn produce_inputs_multi(
     // Extract proof pieces
     let p3_fri::FriProof {
         commit_phase_commits,
-        ref query_proofs,
+        commit_pow_witnesses,
+        input_openings,
+        commit_phase_openings,
         final_poly,
         query_pow_witness,
-        commit_pow_witnesses,
     } = fri_proof.clone();
 
     // Observe all opened evaluation values (same order)
@@ -173,6 +181,36 @@ fn produce_inputs_multi(
             v_challenger.observe_algebra_element(opening);
         }
     }
+
+    // The challenger is now in the state `verify_fri` starts from, which is what restoring the
+    // per-query Merkle chains out of the proof's shared pruned multiproofs needs.
+    let mut pv_idx_for_paths = 0;
+    let restore_cwop: Vec<_> = group_sizes
+        .iter()
+        .zip(&commitments_and_data)
+        .map(|(sizes, (commitment, _))| {
+            let mats: Vec<_> = sizes
+                .iter()
+                .map(|&log_size| {
+                    let domain = TwoAdicMultiplicativeCoset::new(F::GENERATOR, log_size as usize)
+                        .expect("valid domain");
+                    let points = vec![(zeta, point_values_flat[pv_idx_for_paths].clone())];
+                    pv_idx_for_paths += 1;
+                    (domain, points)
+                })
+                .collect();
+            (commitment.clone(), mats)
+        })
+        .collect();
+    let query_paths = restore_fri_query_paths(
+        fri_params,
+        val_mmcs,
+        val_mmcs,
+        &fri_proof,
+        &mut v_challenger.clone(),
+        &restore_cwop,
+    )
+    .expect("an honest proof's Merkle paths restore");
 
     // α (batch combiner)
     let alpha: Challenge = v_challenger.sample_algebra_element();
@@ -194,10 +232,8 @@ fn produce_inputs_multi(
 
     // Bind the variable-arity schedule into the transcript before query grinding,
     // matching the native FRI verifier in Plonky3.
-    if let Some(first_qp) = query_proofs.first() {
-        for step in &first_qp.commit_phase_openings {
-            v_challenger.observe(F::from_usize(step.log_arity as usize));
-        }
+    for step in &commit_phase_openings {
+        v_challenger.observe(F::from_usize(step.log_arity as usize));
     }
 
     // PoW check
@@ -206,7 +242,7 @@ fn produce_inputs_multi(
     // Query indices
     let num_phases = commit_phase_commits.len();
     let log_max_height = num_phases + log_blowup + log_final_poly_len;
-    let num_queries = query_proofs.len();
+    let num_queries = fri_proof_num_queries(&fri_proof);
     let mut indices: Vec<usize> = Vec::with_capacity(num_queries);
     for _ in 0..num_queries {
         indices.push(v_challenger.sample_bits(log_max_height));
@@ -248,10 +284,11 @@ fn produce_inputs_multi(
 
     let fri_values: Vec<Challenge> = FriTargets::get_values(&p3_fri::FriProof {
         commit_phase_commits,
-        query_proofs: query_proofs.clone(),
+        commit_pow_witnesses,
+        input_openings,
+        commit_phase_openings,
         final_poly,
         query_pow_witness,
-        commit_pow_witnesses,
     });
 
     ProduceInputsResult {
@@ -263,6 +300,7 @@ fn produce_inputs_multi(
         num_phases,
         log_max_height,
         fri_proof,
+        query_paths,
     }
 }
 
@@ -309,9 +347,14 @@ struct FriSetup {
     query_pow_bits: usize,
     commit_pow_bits: usize,
     group_sizes: Vec<Vec<u8>>,
+    /// The base-field Merkle MMCS and FRI parameters `pcs` commits with. `MyPcs` does not expose
+    /// them, and restoring the per-query Merkle chains a pruned FRI proof shares needs both.
+    val_mmcs: MyMmcs,
+    fri_params: FriParameters<ChallengeMmcs>,
 }
 
 impl FriSetup {
+    #[allow(clippy::too_many_arguments)]
     const fn new(
         pcs: MyPcs,
         perm: Perm,
@@ -320,6 +363,8 @@ impl FriSetup {
         query_pow_bits: usize,
         commit_pow_bits: usize,
         group_sizes: Vec<Vec<u8>>,
+        val_mmcs: MyMmcs,
+        fri_params: FriParameters<ChallengeMmcs>,
     ) -> Self {
         Self {
             pcs,
@@ -329,6 +374,8 @@ impl FriSetup {
             query_pow_bits,
             commit_pow_bits,
             group_sizes,
+            val_mmcs,
+            fri_params,
         }
     }
 }
@@ -347,7 +394,7 @@ fn generate_setup(log_final_poly_len: usize, group_sizes: Vec<Vec<u8>>) -> FriSe
     let log_final_poly_len = fri_params.log_final_poly_len;
     let query_pow_bits = fri_params.query_proof_of_work_bits;
     let commit_pow_bits = fri_params.commit_proof_of_work_bits;
-    let pcs = MyPcs::new(dft, val_mmcs, fri_params);
+    let pcs = MyPcs::new(dft, val_mmcs.clone(), fri_params.clone());
 
     FriSetup::new(
         pcs,
@@ -357,6 +404,8 @@ fn generate_setup(log_final_poly_len: usize, group_sizes: Vec<Vec<u8>>) -> FriSe
         query_pow_bits,
         commit_pow_bits,
         group_sizes,
+        val_mmcs,
+        fri_params,
     )
 }
 
@@ -369,6 +418,8 @@ fn run_fri_test(setup: FriSetup, build_only: bool) {
         query_pow_bits,
         commit_pow_bits,
         group_sizes,
+        val_mmcs,
+        fri_params,
     } = setup;
 
     // Produce two proofs with different inputs (same shape), to reuse one circuit
@@ -380,6 +431,8 @@ fn run_fri_test(setup: FriSetup, build_only: bool) {
         (commit_pow_bits, query_pow_bits),
         &group_sizes,
         /*seed_base=*/ 0,
+        &val_mmcs,
+        &fri_params,
     );
 
     let result_2 = produce_inputs_multi(
@@ -390,6 +443,8 @@ fn run_fri_test(setup: FriSetup, build_only: bool) {
         (commit_pow_bits, query_pow_bits),
         &group_sizes,
         /*seed_base=*/ 1,
+        &val_mmcs,
+        &fri_params,
     );
 
     // Shape checks (must match so we can reuse one circuit)
@@ -555,6 +610,8 @@ fn run_fri_test_with_mmcs(setup: FriSetup) {
         query_pow_bits,
         commit_pow_bits,
         group_sizes,
+        val_mmcs,
+        fri_params,
     } = setup;
 
     // Produce a proof
@@ -566,6 +623,8 @@ fn run_fri_test_with_mmcs(setup: FriSetup) {
         (commit_pow_bits, query_pow_bits),
         &group_sizes,
         /*seed_base=*/ 42,
+        &val_mmcs,
+        &fri_params,
     );
 
     let num_phases = result.num_phases;
@@ -726,63 +785,15 @@ fn run_fri_test_with_mmcs(setup: FriSetup) {
         mmcs_op_ids.len()
     );
 
-    // Set MMCS private data from the FRI proof
-    // This sets siblings for both input batch MMCS and commit-phase MMCS
-    let log_max_height = result.log_max_height;
-
-    let mut op_idx = 0;
-    for query_proof in &result.fri_proof.query_proofs {
-        // Input batch MMCS proofs
-        for batch_opening in &query_proof.input_proof {
-            let siblings = convert_merkle_proof_to_siblings::<F, Challenge, DIGEST_ELEMS>(
-                &batch_opening.opening_proof,
-            );
-            for sibling in siblings {
-                runner
-                    .set_private_data(
-                        mmcs_op_ids[op_idx],
-                        p3_circuit::NpoPrivateData::new(
-                            p3_circuit::ops::Poseidon2PermPrivateData { sibling },
-                        ),
-                    )
-                    .expect("Failed to set input batch MMCS private data");
-                op_idx += 1;
-            }
-        }
-
-        // Commit-phase MMCS proofs
-        for (phase_idx, phase_opening) in query_proof.commit_phase_openings.iter().enumerate() {
-            let log_folded_height = log_max_height.saturating_sub(phase_idx + 1);
-
-            // Only set data if there's a tree to verify (height > 0)
-            if log_folded_height > 0 {
-                let prefix: Vec<[F; DIGEST_ELEMS]> = phase_opening
-                    .opening_proof
-                    .iter()
-                    .take(log_folded_height)
-                    .copied()
-                    .collect();
-                let siblings =
-                    convert_merkle_proof_to_siblings::<F, Challenge, DIGEST_ELEMS>(&prefix);
-                for sibling in siblings {
-                    runner
-                        .set_private_data(
-                            mmcs_op_ids[op_idx],
-                            p3_circuit::NpoPrivateData::new(
-                                p3_circuit::ops::Poseidon2PermPrivateData { sibling },
-                            ),
-                        )
-                        .expect("Failed to set commit-phase MMCS private data");
-                    op_idx += 1;
-                }
-            }
-        }
-    }
-    assert_eq!(
-        op_idx,
-        mmcs_op_ids.len(),
-        "Should have set private data for all MMCS ops"
-    );
+    // Set MMCS private data from the FRI proof: the per-query chains restored from its shared
+    // pruned multiproofs, for both the input batches and the commit-phase rounds.
+    set_fri_mmcs_private_data::<F, Challenge, DIGEST_ELEMS>(
+        &mut runner,
+        &mmcs_op_ids,
+        &result.query_paths,
+        Poseidon2Config::BABY_BEAR_D4_W16,
+    )
+    .expect("Should have set private data for all MMCS ops");
 
     // Run the circuit
     runner.run().expect("FRI+MMCS circuit execution failed");
@@ -802,12 +813,26 @@ fn try_build_fri_verifier(
     result: &ProduceInputsResult,
     log_blowup: usize,
 ) -> Result<(), VerificationError> {
+    try_build_fri_verifier_with(result, log_blowup, |_| {})
+}
+
+/// [`try_build_fri_verifier`], with a hook to corrupt the allocated targets first.
+///
+/// The proof carries its fold schedule once per round, so no native proof can give two queries
+/// different schedules; `FriProofTargets` keeps an independent per-query view, so that is the
+/// level at which the divergence the verifier guards against can be expressed at all.
+fn try_build_fri_verifier_with(
+    result: &ProduceInputsResult,
+    log_blowup: usize,
+    tamper: impl FnOnce(&mut FriTargets),
+) -> Result<(), VerificationError> {
     let num_phases = result.num_phases;
     let log_max_height = result.log_max_height;
     let num_queries = result.index_bits_per_query.len();
 
     let mut builder = CircuitBuilder::<Challenge>::new();
-    let fri_targets = FriTargets::new(&mut builder, &result.fri_proof);
+    let mut fri_targets = FriTargets::new(&mut builder, &result.fri_proof);
+    tamper(&mut fri_targets);
 
     let alpha_t = builder.public_input();
     let betas_t: Vec<_> = (0..num_phases).map(|_| builder.public_input()).collect();
@@ -848,13 +873,22 @@ fn try_build_fri_verifier(
     .map(|_| ())
 }
 
+/// A query whose commit-phase targets disagree with the global fold schedule must be rejected as
+/// a shape error.
+///
+/// `FriProofTargets` holds the schedule (`log_arities`) and each query's commit-phase openings as
+/// separate public fields, and the fold loop walks a query's openings while indexing the schedule
+/// by the same position. A disagreement would therefore index out of bounds or split sibling
+/// coefficients into the wrong chunks, so the verifier has to catch it before building
+/// constraints. Corrupting the targets is what expresses that here: the native proof carries its
+/// schedule once per *round*, so no proof can give two queries different schedules.
 #[test]
 fn test_fri_verifier_rejects_per_query_schedule_mismatch() {
     let setup = generate_setup(
         0,
         vec![vec![0u8, 5, 8, 8, 10], vec![8u8, 11], vec![4u8, 5, 8]],
     );
-    let mut result = produce_inputs_multi(
+    let result = produce_inputs_multi(
         &setup.pcs,
         &setup.perm,
         setup.log_blowup,
@@ -862,10 +896,12 @@ fn test_fri_verifier_rejects_per_query_schedule_mismatch() {
         (setup.commit_pow_bits, setup.query_pow_bits),
         &setup.group_sizes,
         0,
+        &setup.val_mmcs,
+        &setup.fri_params,
     );
 
     assert!(
-        result.fri_proof.query_proofs.len() >= 2,
+        result.index_bits_per_query.len() >= 2,
         "test requires at least two FRI queries to exercise per-query divergence"
     );
 
@@ -873,35 +909,37 @@ fn test_fri_verifier_rejects_per_query_schedule_mismatch() {
     try_build_fri_verifier(&result, setup.log_blowup)
         .expect("untampered FRI proof must pass shape validation");
 
-    // --- Case 1: a non-first query's `log_arity` diverges from the global schedule
-    // (derived from query 0). This must be rejected with `InvalidProofShape`.
-    let mut tampered = produce_inputs_multi(
-        &setup.pcs,
-        &setup.perm,
-        setup.log_blowup,
-        setup.log_final_poly_len,
-        (setup.commit_pow_bits, setup.query_pow_bits),
-        &setup.group_sizes,
-        0,
-    );
-    {
-        let step = &mut tampered.fri_proof.query_proofs[1].commit_phase_openings[0];
-        // The testing schedule uses arity-2 (log_arity == 1); bump it so the
-        // second query no longer matches query 0's schedule.
-        step.log_arity += 1;
-    }
-    let err = try_build_fri_verifier(&tampered, setup.log_blowup)
-        .expect_err("per-query log_arity divergence must be rejected");
+    // --- Case 1: a non-first query's `log_arity` diverges from the global schedule.
+    let err = try_build_fri_verifier_with(&result, setup.log_blowup, |targets| {
+        // The testing schedule uses arity-2 (log_arity == 1); bump it so the second query no
+        // longer matches the schedule the rest of the proof is verified against.
+        targets.query_proofs[1].commit_phase_openings[0].log_arity += 1;
+    })
+    .expect_err("per-query log_arity divergence must be rejected");
     assert!(
         matches!(err, VerificationError::InvalidProofShape(_)),
         "expected InvalidProofShape, got {err:?}"
     );
 
-    // --- Case 2: a non-first query drops a commit-phase opening, so its
-    // opening count no longer matches the number of phases.
-    result.fri_proof.query_proofs[1].commit_phase_openings.pop();
-    let err = try_build_fri_verifier(&result, setup.log_blowup)
-        .expect_err("per-query commit-phase opening count mismatch must be rejected");
+    // --- Case 2: a non-first query drops a commit-phase opening, so its opening count no longer
+    // matches the number of phases.
+    let err = try_build_fri_verifier_with(&result, setup.log_blowup, |targets| {
+        targets.query_proofs[1].commit_phase_openings.pop();
+    })
+    .expect_err("per-query commit-phase opening count mismatch must be rejected");
+    assert!(
+        matches!(err, VerificationError::InvalidProofShape(_)),
+        "expected InvalidProofShape, got {err:?}"
+    );
+
+    // --- Case 3: a non-first query's sibling coefficients no longer split evenly into the
+    // arity's worth of extension elements the fold arithmetic reads.
+    let err = try_build_fri_verifier_with(&result, setup.log_blowup, |targets| {
+        targets.query_proofs[1].commit_phase_openings[0]
+            .sibling_coefficients
+            .pop();
+    })
+    .expect_err("per-query sibling coefficient count mismatch must be rejected");
     assert!(
         matches!(err, VerificationError::InvalidProofShape(_)),
         "expected InvalidProofShape, got {err:?}"
@@ -922,14 +960,19 @@ fn test_fri_verifier_rejects_zero_query_proof() {
         (setup.commit_pow_bits, setup.query_pow_bits),
         &setup.group_sizes,
         0,
+        &setup.val_mmcs,
+        &setup.fri_params,
     );
 
     // Construct the degenerate zero-query / zero-phase proof. Before the explicit
     // `num_queries > 0` check this panicked on `index_bits_per_query[0]` during
     // circuit construction; it must now return a typed `InvalidProofShape`.
-    result.fri_proof.query_proofs.clear();
     result.fri_proof.commit_phase_commits.clear();
     result.fri_proof.commit_pow_witnesses.clear();
+    result.fri_proof.commit_phase_openings.clear();
+    for batch in &mut result.fri_proof.input_openings {
+        batch.opened_values.clear();
+    }
     result.index_bits_per_query.clear();
     result.num_phases = 0;
 

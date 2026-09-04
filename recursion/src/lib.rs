@@ -20,10 +20,17 @@ pub mod verifier;
 /// Implement for your StarkConfig (or a wrapper holding FRI verifier params) to use [`FriRecursionBackend`].
 pub use backend::fri::FriRecursionConfig;
 /// FRI PCS backend for the unified recursion API. Use with [`prove_next_layer`] and a config implementing [`FriRecursionConfig`].
-pub use backend::{FriRecursionBackend, FriRecursionBackendD5, FriRecursionBackendForExt};
+pub use backend::{
+    FriRecursionBackend, FriRecursionBackendD5, FriRecursionBackendForExt,
+    replay_batch_layer_transcript, replay_recursion_input_transcript,
+};
 pub use challenger::CircuitChallenger;
 pub use challenger_perm::ChallengerPermConfig;
-pub use generation::{GenerationError, PcsGeneration, generate_batch_challenges};
+pub use generation::{
+    GenerationError, OpeningTranscript, PcsGeneration, generate_batch_challenges,
+    merge_hiding_random_openings, observe_opened_values, replay_batch_stark_transcript,
+    replay_uni_stark_transcript,
+};
 pub use p3_circuit::ops;
 pub use p3_circuit::ops::{PermConfig, Poseidon2Config};
 pub use pcs::fri::FriVerifierParams;

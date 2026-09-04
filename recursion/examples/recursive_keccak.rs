@@ -48,6 +48,7 @@ mod common;
 use common::*;
 use p3_keccak_air::KeccakAir;
 use p3_uni_stark::{prove, verify};
+use rand::RngExt;
 
 #[derive(Parser, Debug)]
 #[command(version, about = "Recursive Keccak proof verification example")]
@@ -345,8 +346,14 @@ macro_rules! define_field_module_keccak_quintic {
                 if effective_num_hashes != num_hashes {
                     tracing::warn!("Number of equivalent Keccak hashes after mandatory padding: {effective_num_hashes}");
                 }
-                let trace =
-                    keccak_air.generate_trace_rows(effective_num_hashes, fri_params.log_blowup);
+                let mut trace_rng = SmallRng::seed_from_u64(1);
+                let keccak_inputs: Vec<[u64; 25]> = (0..effective_num_hashes)
+                    .map(|_| trace_rng.random())
+                    .collect();
+                let trace = p3_keccak_air::generate_trace_rows::<F>(
+                    keccak_inputs,
+                    fri_params.log_blowup,
+                );
 
                 let config_0 = config_with_fri_params(fri_params, security_level, disable_recompose_npo);
                 let pis: Vec<F> = vec![];
@@ -672,8 +679,14 @@ macro_rules! define_field_module {
                 if effective_num_hashes != num_hashes {
                     tracing::warn!("Number of equivalent Keccak hashes after mandatory padding: {effective_num_hashes}");
                 }
-                let trace =
-                    keccak_air.generate_trace_rows(effective_num_hashes, fri_params.log_blowup);
+                let mut trace_rng = SmallRng::seed_from_u64(1);
+                let keccak_inputs: Vec<[u64; 25]> = (0..effective_num_hashes)
+                    .map(|_| trace_rng.random())
+                    .collect();
+                let trace = p3_keccak_air::generate_trace_rows::<F>(
+                    keccak_inputs,
+                    fri_params.log_blowup,
+                );
 
                 // The base Keccak layer always uses non-ZK uni-stark (p3-uni-stark has no ZK support).
                 let config_0 = config_with_fri_params(fri_params, security_level, disable_recompose_npo);

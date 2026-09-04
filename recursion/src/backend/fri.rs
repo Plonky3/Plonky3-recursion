@@ -25,6 +25,8 @@ use p3_field::{Algebra, BasedVectorSpace, ExtensionField, PrimeCharacteristicRin
 use p3_lookup::logup::LogUpGadget;
 use p3_uni_stark::{StarkGenericConfig, SymbolicExpressionExt, Val};
 
+use crate::backend::transcript::replay_recursion_input_transcript;
+use crate::generation::OpeningTranscript;
 use crate::ops::{Poseidon1Config, Poseidon2Config};
 use crate::public_inputs::{BatchStarkVerifierInputsBuilder, StarkVerifierInputsBuilder};
 use crate::recursion::{PcsRecursionBackend, RecursionInput, VerifierCircuitResult};
@@ -95,12 +97,28 @@ where
         <Self::Pcs as Pcs<Self::Challenge, Self::Challenger>>::Domain,
     >>::VerifierParams;
 
-    /// Set FRI Merkle path private data on the runner. Implement by calling
-    /// [`crate::pcs::set_fri_mmcs_private_data`] with your concrete MMCS/hasher types.
+    /// Set FRI Merkle path private data on the runner.
+    ///
+    /// A FRI proof authenticates all of its queries into one tree with a single pruned
+    /// multiproof, while the in-circuit MMCS gadget walks one full authentication path per query.
+    /// Implement this by restoring those per-query paths with
+    /// [`crate::pcs::restore_fri_query_paths`] and handing them to
+    /// [`crate::pcs::set_fri_mmcs_private_data`], both instantiated with your concrete
+    /// MMCS/hasher types.
+    ///
+    /// `transcript` is this proof's verifier transcript replayed off-circuit, in the state
+    /// [`p3_commit::Pcs::verify`] is entered with — the restoration needs it because the queried
+    /// leaf indices and each commit-phase round's reconstructed row come out of the transcript,
+    /// not out of the proof. Advance it with
+    /// [`observe_opened_values`](crate::generation::observe_opened_values) (and, for a hiding PCS,
+    /// [`merge_hiding_random_openings`](crate::generation::merge_hiding_random_openings) first)
+    /// exactly as your PCS's own `verify` does before entering the FRI verifier.
     fn set_fri_private_data(
+        config: &Self,
         runner: &mut CircuitRunner<'_, Self::Challenge>,
         op_ids: &[NonPrimitiveOpId],
         opening_proof: &Self::RawOpeningProof,
+        transcript: OpeningTranscript<Self>,
     ) -> Result<(), &'static str>;
 }
 
@@ -607,9 +625,18 @@ where
         op_ids: &[NonPrimitiveOpId],
         prev: &RecursionInput<'_, SC, A>,
     ) -> Result<(), &'static str> {
-        let _ = config;
-        SC::with_fri_opening_proof(prev, |opening_proof| {
-            SC::set_fri_private_data(runner, op_ids, opening_proof)
+        // The same plugin list `build_verifier_circuit` used, so the transcript is replayed
+        // against the AIRs the circuit was built for.
+        let provers = match prev {
+            RecursionInput::BatchStark { proof, .. } => {
+                PcsRecursionBackend::<SC, A, 2>::non_primitive_provers(self, proof.ext_degree)
+            }
+            _ => Vec::new(),
+        };
+        let transcript = replay_recursion_input_transcript(config, prev, &provers)
+            .map_err(|_| "Failed to replay the input proof's verifier transcript")?;
+        SC::with_fri_opening_proof(prev, move |opening_proof| {
+            SC::set_fri_private_data(config, runner, op_ids, opening_proof, transcript)
         })
     }
 
@@ -746,9 +773,18 @@ where
         op_ids: &[NonPrimitiveOpId],
         prev: &RecursionInput<'_, SC, A>,
     ) -> Result<(), &'static str> {
-        let _ = config;
-        SC::with_fri_opening_proof(prev, |opening_proof| {
-            SC::set_fri_private_data(runner, op_ids, opening_proof)
+        // The same plugin list `build_verifier_circuit` used, so the transcript is replayed
+        // against the AIRs the circuit was built for.
+        let provers = match prev {
+            RecursionInput::BatchStark { proof, .. } => {
+                PcsRecursionBackend::<SC, A, 4>::non_primitive_provers(self, proof.ext_degree)
+            }
+            _ => Vec::new(),
+        };
+        let transcript = replay_recursion_input_transcript(config, prev, &provers)
+            .map_err(|_| "Failed to replay the input proof's verifier transcript")?;
+        SC::with_fri_opening_proof(prev, move |opening_proof| {
+            SC::set_fri_private_data(config, runner, op_ids, opening_proof, transcript)
         })
     }
 
@@ -885,9 +921,18 @@ where
         op_ids: &[NonPrimitiveOpId],
         prev: &RecursionInput<'_, SC, A>,
     ) -> Result<(), &'static str> {
-        let _ = config;
-        SC::with_fri_opening_proof(prev, |opening_proof| {
-            SC::set_fri_private_data(runner, op_ids, opening_proof)
+        // The same plugin list `build_verifier_circuit` used, so the transcript is replayed
+        // against the AIRs the circuit was built for.
+        let provers = match prev {
+            RecursionInput::BatchStark { proof, .. } => {
+                PcsRecursionBackend::<SC, A, 5>::non_primitive_provers(self, proof.ext_degree)
+            }
+            _ => Vec::new(),
+        };
+        let transcript = replay_recursion_input_transcript(config, prev, &provers)
+            .map_err(|_| "Failed to replay the input proof's verifier transcript")?;
+        SC::with_fri_opening_proof(prev, move |opening_proof| {
+            SC::set_fri_private_data(config, runner, op_ids, opening_proof, transcript)
         })
     }
 

@@ -13,9 +13,12 @@ use p3_circuit_prover::{BatchStarkProver, CircuitProverData, ConstraintProfile, 
 use p3_lookup::logup::LogUpGadget;
 use p3_poseidon2_circuit_air::KoalaBearD4Width16;
 use p3_recursion::pcs::fri::{FriVerifierParams, InputProofTargets, MerkleCapTargets, RecValMmcs};
-use p3_recursion::pcs::set_fri_mmcs_private_data;
+use p3_recursion::pcs::{restore_fri_query_paths, set_fri_mmcs_private_data};
 use p3_recursion::verifier::{verify_p3_batch_proof_circuit, verify_p3_uni_proof_circuit};
-use p3_recursion::{Poseidon2Config, StarkVerifierInputsBuilder, VerificationError};
+use p3_recursion::{
+    OpeningTranscript, Poseidon2Config, StarkVerifierInputsBuilder, VerificationError,
+    observe_opened_values, replay_batch_layer_transcript, replay_uni_stark_transcript,
+};
 use p3_test_utils::koala_bear_params::*;
 use p3_uni_stark::{prove, verify};
 
@@ -92,7 +95,7 @@ fn test_aggregation_with_different_shapes() -> Result<(), VerificationError> {
     let mut circuit_builder = CircuitBuilder::new();
     circuit_builder.enable_poseidon2_perm::<KoalaBearD4Width16, _>(
         generate_poseidon2_trace::<Challenge, KoalaBearD4Width16>,
-        perm,
+        perm.clone(),
     );
     circuit_builder.enable_recompose::<F>(generate_recompose_trace::<F, Challenge>);
 
@@ -172,36 +175,58 @@ fn test_aggregation_with_different_shapes() -> Result<(), VerificationError> {
         .set_private_inputs(&private_inputs)
         .map_err(VerificationError::Circuit)?;
 
-    // Set the MMCS private data for the Uni-Stark.
-    set_fri_mmcs_private_data::<
-        F,
-        Challenge,
-        ChallengeMmcs,
-        MyMmcs,
-        MyHash,
-        MyCompress,
-        DIGEST_ELEMS,
-    >(
+    // Set the MMCS private data for the Uni-Stark. Each proof shares one pruned Merkle
+    // multiproof across its queries, so the per-query chains the circuit walks come from
+    // replaying that proof's own transcript — under its own FRI shape.
+    let (left_val_mmcs, left_fri) = test_fri_instance_with_fri(&perm, 2, 3);
+    let OpeningTranscript {
+        mut challenger,
+        commitments_with_opening_points,
+    } = replay_uni_stark_transcript(&left_config, &air, &uni_proof, &pis, None)
+        .map_err(|e| VerificationError::InvalidProofShape(e.to_string()))?;
+    observe_opened_values::<MyConfig>(&mut challenger, &commitments_with_opening_points);
+    let left_query_paths = restore_fri_query_paths(
+        &left_fri,
+        &left_val_mmcs,
+        &left_val_mmcs,
+        &uni_proof.opening_proof,
+        &mut challenger,
+        &commitments_with_opening_points,
+    )
+    .map_err(|e| VerificationError::InvalidProofShape(format!("{e:?}")))?;
+    set_fri_mmcs_private_data::<F, Challenge, DIGEST_ELEMS>(
         &mut runner,
         &left_op_ids,
-        &uni_proof.opening_proof,
+        &left_query_paths,
         Poseidon2Config::KOALA_BEAR_D4_W16,
     )
     .map_err(|e| VerificationError::InvalidProofShape(e.to_string()))?;
 
     // Set the MMCS private data for the Batch-Stark.
-    set_fri_mmcs_private_data::<
-        F,
-        Challenge,
-        ChallengeMmcs,
-        MyMmcs,
-        MyHash,
-        MyCompress,
-        DIGEST_ELEMS,
-    >(
+    let (right_val_mmcs, right_fri) = test_fri_instance_with_fri(&perm, 3, 4);
+    let OpeningTranscript {
+        mut challenger,
+        commitments_with_opening_points,
+    } = replay_batch_layer_transcript::<MyConfig, TRACE_D>(
+        &right_config_verif,
+        &batch_stark_proof,
+        common,
+        &[],
+    )?;
+    observe_opened_values::<MyConfig>(&mut challenger, &commitments_with_opening_points);
+    let right_query_paths = restore_fri_query_paths(
+        &right_fri,
+        &right_val_mmcs,
+        &right_val_mmcs,
+        &batch_stark_proof.proof.opening_proof,
+        &mut challenger,
+        &commitments_with_opening_points,
+    )
+    .map_err(|e| VerificationError::InvalidProofShape(format!("{e:?}")))?;
+    set_fri_mmcs_private_data::<F, Challenge, DIGEST_ELEMS>(
         &mut runner,
         &right_op_ids,
-        &batch_stark_proof.proof.opening_proof,
+        &right_query_paths,
         Poseidon2Config::KOALA_BEAR_D4_W16,
     )
     .map_err(|e| VerificationError::InvalidProofShape(e.to_string()))?;

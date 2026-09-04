@@ -10,6 +10,7 @@ pub use targets::{
     HidingFriProofTargets, HidingHashProofTargets, HidingOpenedValuesTargets, InputProofTargets,
     MerkleCapTargets, MmcsProofTargets, QueryProofTargets, RecExtensionValMmcs,
     RecExtensionValMmcsArity4, RecValHidingMmcs, RecValMmcs, RecValMmcsArity4,
-    TwoAdicFriProofTargets, Witness,
+    RecursiveFriInputOpenings, RecursiveMultiProofTargets, TwoAdicFriProofTargets, Witness,
+    fri_proof_num_queries,
 };
 pub use verifier::verify_fri_circuit;

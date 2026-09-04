@@ -1462,13 +1462,13 @@ where
         ));
     }
 
-    // The global FRI schedule (`log_arities`) is derived from the first query proof
-    // only (see `FriProofTargets::new`). Every other query is *assumed* to share that
-    // schedule; a malformed proof can carry a different per-query schedule or
-    // mis-sized sibling vectors, which would otherwise produce silently dropped
-    // coefficients (`chunks_exact`) or wrong-shape fold arithmetic. Reject any query
-    // whose commit-phase opening count, `log_arity` sequence, or sibling coefficient
-    // count disagrees with the global schedule before building any constraints.
+    // The global FRI schedule (`log_arities`) and each query's commit-phase openings are
+    // separate public fields of `FriProofTargets`, so nothing in the type ties them together.
+    // The fold loop below iterates a query's openings while indexing `log_arities` by the same
+    // position, and splits each opening's `sibling_coefficients` with `chunks_exact`, so a query
+    // whose opening count, `log_arity` sequence, or coefficient count disagrees with the global
+    // schedule would panic or silently drop coefficients. Reject it as a shape error instead,
+    // before building any constraints.
     let ef_dim = EF::DIMENSION;
     for (q, query_proof) in fri_proof_targets.query_proofs.iter().enumerate() {
         if query_proof.commit_phase_openings.len() != num_phases {

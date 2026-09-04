@@ -4,8 +4,8 @@
 //! counterpart so the recursive verifier computes byte-identical values:
 //!
 //! - [`expand_from_univariate`] mirrors `p3_multilinear_util::point::Point::expand_from_univariate`
-//! - [`eq_eval`] mirrors `Point::eval_eq` / `Point::eq_poly`
-//! - [`select_eval`] mirrors `Point::select_poly`
+//! - [`eq_eval`] mirrors `Point::eval_eq`
+//! - [`select_eval`] mirrors `Point::eval_select`
 
 use alloc::vec::Vec;
 
@@ -74,7 +74,7 @@ pub fn eq_eval<F: Field>(builder: &mut CircuitBuilder<F>, a: &[Target], b: &[Tar
 /// Evaluates the selection polynomial `select(point, z)` that the WHIR verifier
 /// uses to turn a univariate opening into a multilinear weight.
 ///
-/// Mirrors `Point::select_poly`: the coordinates of `point` are consumed in
+/// Mirrors `Point::eval_select`: the coordinates of `point` are consumed in
 /// reverse order and paired with the powers `z, z^2, z^4, …` (squaring `z` each
 /// step), producing `∏_k (point[n-1-k]·(z^(2^k) - 1) + 1)`. The product of zero
 /// factors is `1`.
@@ -354,7 +354,7 @@ mod tests {
         let p = f(9);
         let z = f(40);
         let got = eval_gadget(&[p, z], |b, ins| select_eval(b, &ins[0..1], ins[1]));
-        let expected = Point::new(alloc::vec![p]).select_poly::<F>(z);
+        let expected = Point::<F>::eval_select(z, &[p]);
         assert_eq!(got, expected);
         assert_eq!(expected, p * (z - F::ONE) + F::ONE);
     }
@@ -427,7 +427,7 @@ mod tests {
             let (x, rest) = ins.split_at(2);
             eval_constraint_weight(b, x, &[&rest[0..2]], &[], rest[2])
         });
-        let expected = Point::new(alloc::vec![x0, x1]).eq_poly(&Point::new(alloc::vec![z0, z1]));
+        let expected = Point::<F>::eval_eq(&[x0, x1], &[z0, z1]);
         assert_eq!(got, expected);
     }
 
@@ -455,7 +455,7 @@ mod tests {
             let av: Vec<F> = a.iter().map(|&x| f(x)).collect();
             let bv: Vec<F> = b.iter().map(|&x| f(x)).collect();
 
-            let native = Point::new(av.clone()).eq_poly(&Point::new(bv.clone()));
+            let native = Point::<F>::eval_eq(&av, &bv);
 
             let mut inputs = av;
             inputs.extend(bv);
@@ -466,7 +466,7 @@ mod tests {
             prop_assert_eq!(got, native);
         }
 
-        /// `select_eval` matches `Point::select_poly` (reversed-iteration order).
+        /// `select_eval` matches `Point::eval_select` (reversed-iteration order).
         #[test]
         fn prop_select_matches_native(
             point in proptest::collection::vec(0u32..1_000_000, 1..7),
@@ -476,7 +476,7 @@ mod tests {
             let zf = f(z);
             let n = pv.len();
 
-            let native = Point::new(pv.clone()).select_poly::<F>(zf);
+            let native = Point::<F>::eval_select(zf, &pv);
 
             let mut inputs = pv;
             inputs.push(zf);
@@ -574,13 +574,12 @@ mod tests {
             let g = f(gamma);
 
             // Native reference: Σ_i γ^i·eq(X, z_eq_i) + Σ_j γ^{n_eq+j}·select(X, z_sel_j).
-            let xp = Point::new(xv.clone());
             let mut values = Vec::new();
             for z in &eqv {
-                values.push(xp.eq_poly(&Point::new(z.clone())));
+                values.push(Point::<F>::eval_eq(&xv, z));
             }
             for &z in &selv {
-                values.push(xp.select_poly::<F>(z));
+                values.push(Point::<F>::eval_select(z, &xv));
             }
             let mut native = F::ZERO;
             let mut power = F::ONE;

@@ -342,21 +342,28 @@ mod tests {
     use p3_dft::Radix2DFTSmallBatch;
     use p3_field::extension::BinomialExtensionField;
     use p3_field::{Field, PrimeCharacteristicRing};
+    use p3_matrix::Dimensions;
+    use p3_matrix::dense::RowMajorMatrix;
     use p3_merkle_tree::MerkleTreeMmcs;
+    use p3_multilinear_util::point::Point;
     use p3_multilinear_util::poly::Poly;
     use p3_poseidon2_circuit_air::BabyBearD4Width16;
+    use p3_sumcheck::constraints::{Constraint, Statements};
     use p3_sumcheck::layout::{Layout, PrefixProver, Table, Verifier};
-    use p3_sumcheck::{OpeningProtocol, TableShape, TableSpec};
+    use p3_sumcheck::{OpeningBatch, OpeningProtocol, TableShape, TableSpec};
     use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
     use p3_util::log2_strict_usize;
     use p3_whir::fiat_shamir::domain_separator::DomainSeparator;
     use p3_whir::parameters::{FoldingFactor, ProtocolParameters, SecurityAssumption, WhirConfig};
+    use p3_whir::pcs::proof::QueryOpenings;
     use p3_whir::pcs::prover::WhirProver;
     use rand::SeedableRng;
     use rand::rngs::SmallRng;
 
     use crate::Target;
-    use crate::pcs::mmcs::{convert_merkle_proof_to_siblings, set_whir_mmcs_private_data};
+    use crate::pcs::mmcs::{
+        convert_merkle_proof_to_siblings, restore_whir_query_paths, set_whir_mmcs_private_data,
+    };
     use crate::pcs::whir::gadgets::ConstraintWeightData;
     use crate::pcs::whir::params::WhirVerifierParams;
     use crate::pcs::whir::targets::WhirProofTargets;
@@ -454,6 +461,74 @@ mod tests {
         indices
     }
 
+    /// Builds the single-column `Table` the test protocol commits to.
+    fn single_poly_table(poly: &Poly<BF>) -> Table<BF> {
+        // `Table` stores one polynomial per matrix row, so a single polynomial is a
+        // one-row matrix whose width is its hypercube size.
+        let values = poly.as_slice();
+        Table::new(RowMajorMatrix::new(values.to_vec(), values.len()))
+    }
+
+    /// Returns the batching challenge `γ` that weights the constraint's statements.
+    ///
+    /// `challenge_powers(shift)` yields `γ^shift, γ^{shift+1}, …`, so the first element
+    /// at `shift = 1` is `γ` itself.
+    fn constraint_challenge(constraint: &Constraint<BF, EF>) -> EF {
+        constraint
+            .challenge_powers(1)
+            .next()
+            .expect("challenge_powers is an infinite sequence")
+    }
+
+    /// Collects the constraint's equality points in batching-power order.
+    ///
+    /// The native combiner walks the statement groups in order and advances the challenge
+    /// exponent by each group's constraint count, so flattening every `Eq` group's points
+    /// reproduces the `γ^0, γ^1, …` assignment that [`ConstraintWeightData`] applies to
+    /// `eq_points`. That alignment only holds while every group is an `Eq` group; a `Next`
+    /// or `Select` group would consume powers this flattening cannot see, and neither has
+    /// an in-circuit weight gadget.
+    fn constraint_eq_points(constraint: &Constraint<BF, EF>) -> Vec<&Point<EF>> {
+        constraint
+            .statements()
+            .iter()
+            .flat_map(|statement| {
+                let Statements::Eq(eq_statement) = statement else {
+                    panic!("WHIR initial constraint must hold only equality statements");
+                };
+                eq_statement.iter().map(|(point, _eval)| point)
+            })
+            .collect()
+    }
+
+    /// Appends one round's opened leaf rows to the circuit's private inputs, in query order.
+    ///
+    /// `is_base_round` mirrors the pairing the native `verify_merkle_proof` enforces: round 0
+    /// opens the base-field initial commitment, every later round — the final openings
+    /// included — opens an extension-field folded commitment. `WhirProofTargets::alloc`
+    /// allocates its leaf targets from the same rule, and both variants allocate the same
+    /// number of targets, so a variant that disagrees with the round would authenticate the
+    /// rows under the wrong leaf encoding instead of being caught by an input-count check.
+    fn push_opening_rows<P>(
+        openings: &QueryOpenings<BF, EF, P>,
+        is_base_round: bool,
+        out: &mut Vec<EF>,
+    ) {
+        match (openings, is_base_round) {
+            (QueryOpenings::Base(opening), true) => {
+                for row in &opening.rows {
+                    out.extend(row.iter().map(|&v| EF::from(v)));
+                }
+            }
+            (QueryOpenings::Extension(opening), false) => {
+                for row in &opening.rows {
+                    out.extend(row.iter().copied());
+                }
+            }
+            _ => panic!("query openings field does not match the round"),
+        }
+    }
+
     /// Builds the WHIR arithmetic-only circuit and assembles its witness.
     ///
     /// Returns `(built_circuit, public_inputs, private_inputs)` ready for
@@ -468,10 +543,13 @@ mod tests {
         let mmcs = MyMmcs::new(hash, compress, 0);
         let dft = MyDft::default();
 
-        let spec = TableSpec::new(TableShape::new(NUM_VARIABLES, 1), vec![vec![0]]);
+        let spec = TableSpec::new(
+            TableShape::new(NUM_VARIABLES, 1),
+            vec![OpeningBatch::new(vec![0], Vec::new())],
+        );
         let protocol = OpeningProtocol::new(vec![spec]).pad_to_min_num_variables(FOLDING);
         let poly = Poly::<BF>::rand(&mut SmallRng::seed_from_u64(42), NUM_VARIABLES);
-        let table = Table::new(vec![poly]);
+        let table = single_poly_table(&poly);
         let witness = PrefixProver::<BF, EF>::new_witness(vec![table], FOLDING);
 
         let whir_params = ProtocolParameters {
@@ -515,7 +593,8 @@ mod tests {
                 lv.add_virtual_eval(eval, &mut ch);
             }
             for ((table_idx, polys), evals) in protocol.iter_openings().zip(&proof.evals) {
-                lv.add_claim(table_idx, polys, evals, &mut ch);
+                lv.add_claim(table_idx, polys, evals, &mut ch)
+                    .expect("proof evaluations match the opening schedule shape");
             }
             let alpha: EF = ch.sample_algebra_element();
             let constraint = lv.constraint(alpha);
@@ -588,11 +667,9 @@ mod tests {
         let mut circuit = CircuitBuilder::<EF>::new();
         let proof_targets = WhirProofTargets::alloc::<BF, EF>(&mut circuit, &vp, 1, 1);
         let initial_cap: Vec<Vec<Target>> = vec![vec![circuit.define_const(EF::ZERO)]];
-        let gamma_target = circuit.define_const(initial_constraint.challenge);
-        let eq_points: Vec<Vec<Target>> = initial_constraint
-            .eq_statement
-            .points
-            .iter()
+        let gamma_target = circuit.define_const(constraint_challenge(&initial_constraint));
+        let eq_points: Vec<Vec<Target>> = constraint_eq_points(&initial_constraint)
+            .into_iter()
             .map(|pt| {
                 pt.as_slice()
                     .iter()
@@ -601,7 +678,7 @@ mod tests {
             })
             .collect();
         let circuit_constraint = ConstraintWeightData {
-            num_variables: initial_constraint.eq_statement.num_variables(),
+            num_variables: initial_constraint.num_variables(),
             eq_points,
             sel_scalars: vec![],
             gamma: gamma_target,
@@ -664,34 +741,10 @@ mod tests {
         }
 
         let mut private_inputs: Vec<EF> = Vec::new();
-        for q in &proof.whir.rounds[0].queries {
-            match q {
-                p3_whir::pcs::proof::QueryOpening::Base { values, .. } => {
-                    for &v in values {
-                        private_inputs.push(EF::from(v));
-                    }
-                }
-                p3_whir::pcs::proof::QueryOpening::Extension { values, .. } => {
-                    for &v in values {
-                        private_inputs.push(v);
-                    }
-                }
-            }
-        }
-        for q in &proof.whir.final_queries {
-            match q {
-                p3_whir::pcs::proof::QueryOpening::Base { values, .. } => {
-                    for &v in values {
-                        private_inputs.push(EF::from(v));
-                    }
-                }
-                p3_whir::pcs::proof::QueryOpening::Extension { values, .. } => {
-                    for &v in values {
-                        private_inputs.push(v);
-                    }
-                }
-            }
-        }
+        // Round 0 opens the base-field initial commitment; the final openings sit at round
+        // index 1 here, so they carry extension-field rows.
+        push_opening_rows(&proof.whir.rounds[0].openings, true, &mut private_inputs);
+        push_opening_rows(&proof.whir.final_openings, false, &mut private_inputs);
 
         (circuit, public_inputs, private_inputs)
     }
@@ -759,10 +812,13 @@ mod tests {
         let mmcs = MyMmcs::new(hash, compress, 0);
         let dft = MyDft::default();
 
-        let spec = TableSpec::new(TableShape::new(NUM_VARIABLES, 1), vec![vec![0]]);
+        let spec = TableSpec::new(
+            TableShape::new(NUM_VARIABLES, 1),
+            vec![OpeningBatch::new(vec![0], Vec::new())],
+        );
         let protocol = OpeningProtocol::new(vec![spec]).pad_to_min_num_variables(FOLDING);
         let poly = Poly::<BF>::rand(&mut SmallRng::seed_from_u64(42), NUM_VARIABLES);
-        let table = Table::new(vec![poly]);
+        let table = single_poly_table(&poly);
         let witness = PrefixProver::<BF, EF>::new_witness(vec![table], FOLDING);
 
         let whir_params = ProtocolParameters {
@@ -774,7 +830,7 @@ mod tests {
             starting_log_inv_rate: 1,
         };
         let config = WhirConfig::<EF, BF, MyChallenger>::new(NUM_VARIABLES, whir_params).unwrap();
-        let pcs = TestPcs::new(config.clone(), dft, mmcs);
+        let pcs = TestPcs::new(config.clone(), dft, mmcs.clone());
 
         let (commitment, proof) = {
             let mut ch = make_challenger();
@@ -806,7 +862,8 @@ mod tests {
                 lv.add_virtual_eval(eval, &mut ch);
             }
             for ((table_idx, polys), evals) in protocol.iter_openings().zip(&proof.evals) {
-                lv.add_claim(table_idx, polys, evals, &mut ch);
+                lv.add_claim(table_idx, polys, evals, &mut ch)
+                    .expect("proof evaluations match the opening schedule shape");
             }
             let alpha: EF = ch.sample_algebra_element();
             let constraint = lv.constraint(alpha);
@@ -824,7 +881,7 @@ mod tests {
             vc.observe_algebra_element(cinf);
             ext_samples.push(vc.sample_algebra_element());
         }
-        {
+        let round0_indices = {
             let rproof = &proof.whir.rounds[0];
             vc.observe(rproof.commitment.as_ref().unwrap().clone());
             for &answer in &rproof.ood_answers {
@@ -848,8 +905,9 @@ mod tests {
                 vc.observe_algebra_element(cinf);
                 ext_samples.push(vc.sample_algebra_element());
             }
-        }
-        {
+            round0_indices
+        };
+        let final_indices = {
             let final_poly = proof.whir.final_poly.as_ref().unwrap();
             vc.observe_algebra_slice(final_poly.as_slice());
             let final_indices = sample_stir_indices(
@@ -868,7 +926,8 @@ mod tests {
                     ext_samples.push(vc.sample_algebra_element());
                 }
             }
-        }
+            final_indices
+        };
 
         // Build circuit with real MMCS verification enabled.
         let vp = WhirVerifierParams::<BF>::from_config::<EF, MyChallenger>(
@@ -897,11 +956,9 @@ mod tests {
             })
             .collect();
 
-        let gamma_target = circuit.define_const(initial_constraint.challenge);
-        let eq_points: Vec<Vec<Target>> = initial_constraint
-            .eq_statement
-            .points
-            .iter()
+        let gamma_target = circuit.define_const(constraint_challenge(&initial_constraint));
+        let eq_points: Vec<Vec<Target>> = constraint_eq_points(&initial_constraint)
+            .into_iter()
             .map(|pt| {
                 pt.as_slice()
                     .iter()
@@ -910,7 +967,7 @@ mod tests {
             })
             .collect();
         let circuit_constraint = ConstraintWeightData {
-            num_variables: initial_constraint.eq_statement.num_variables(),
+            num_variables: initial_constraint.num_variables(),
             eq_points,
             sel_scalars: vec![],
             gamma: gamma_target,
@@ -974,34 +1031,10 @@ mod tests {
 
         // Assemble private inputs (query leaf values).
         let mut private_inputs: Vec<EF> = Vec::new();
-        for q in &proof.whir.rounds[0].queries {
-            match q {
-                p3_whir::pcs::proof::QueryOpening::Base { values, .. } => {
-                    for &v in values {
-                        private_inputs.push(EF::from(v));
-                    }
-                }
-                p3_whir::pcs::proof::QueryOpening::Extension { values, .. } => {
-                    for &v in values {
-                        private_inputs.push(v);
-                    }
-                }
-            }
-        }
-        for q in &proof.whir.final_queries {
-            match q {
-                p3_whir::pcs::proof::QueryOpening::Base { values, .. } => {
-                    for &v in values {
-                        private_inputs.push(EF::from(v));
-                    }
-                }
-                p3_whir::pcs::proof::QueryOpening::Extension { values, .. } => {
-                    for &v in values {
-                        private_inputs.push(v);
-                    }
-                }
-            }
-        }
+        // Round 0 opens the base-field initial commitment; the final openings sit at round
+        // index 1 here, so they carry extension-field rows.
+        push_opening_rows(&proof.whir.rounds[0].openings, true, &mut private_inputs);
+        push_opening_rows(&proof.whir.final_openings, false, &mut private_inputs);
 
         let mut runner = circuit.runner();
         runner
@@ -1010,10 +1043,34 @@ mod tests {
         runner
             .set_private_inputs(&private_inputs)
             .expect("set_private_inputs");
-        set_whir_mmcs_private_data::<BF, EF, MyMmcs, DIGEST_ELEMS>(
+        let round0_paths =
+            restore_whir_query_paths::<PackedBF, PackedBF, EF, _, _, 2, DIGEST_ELEMS>(
+                &mmcs,
+                &proof.whir.rounds[0].openings,
+                &[Dimensions {
+                    height: rp0.domain_size >> rp0.folding_factor,
+                    width: 1 << rp0.folding_factor,
+                }],
+                &round0_indices,
+            )
+            .expect("round 0 path restoration");
+        let final_indices_dims = Dimensions {
+            height: config.final_round_config().domain_size >> config.final_sumcheck_rounds,
+            width: 1 << config.final_sumcheck_rounds,
+        };
+        let final_paths =
+            restore_whir_query_paths::<PackedBF, PackedBF, EF, _, _, 2, DIGEST_ELEMS>(
+                &mmcs,
+                &proof.whir.final_openings,
+                &[final_indices_dims],
+                &final_indices,
+            )
+            .expect("final path restoration");
+        set_whir_mmcs_private_data::<BF, EF, DIGEST_ELEMS>(
             &mut runner,
             &op_ids,
-            &proof.whir,
+            &[round0_paths],
+            &final_paths,
             p3_circuit::ops::Poseidon2Config::BABY_BEAR_D4_W16,
         )
         .expect("set_whir_mmcs_private_data failed");
@@ -1035,10 +1092,13 @@ mod tests {
         let mmcs = MyMmcs::new(hash, compress, 0);
         let dft = MyDft::default();
 
-        let spec = TableSpec::new(TableShape::new(NUM_VARIABLES, 1), vec![vec![0]]);
+        let spec = TableSpec::new(
+            TableShape::new(NUM_VARIABLES, 1),
+            vec![OpeningBatch::new(vec![0], Vec::new())],
+        );
         let protocol = OpeningProtocol::new(vec![spec]).pad_to_min_num_variables(FOLDING);
         let poly = Poly::<BF>::rand(&mut SmallRng::seed_from_u64(42), NUM_VARIABLES);
-        let table = Table::new(vec![poly]);
+        let table = single_poly_table(&poly);
         let witness = PrefixProver::<BF, EF>::new_witness(vec![table], FOLDING);
 
         let whir_params = ProtocolParameters {
@@ -1050,7 +1110,7 @@ mod tests {
             starting_log_inv_rate: 1,
         };
         let config = WhirConfig::<EF, BF, MyChallenger>::new(NUM_VARIABLES, whir_params).unwrap();
-        let pcs = TestPcs::new(config.clone(), dft, mmcs);
+        let pcs = TestPcs::new(config.clone(), dft, mmcs.clone());
 
         let (commitment, proof) = {
             let mut ch = make_challenger();
@@ -1082,7 +1142,8 @@ mod tests {
                 lv.add_virtual_eval(eval, &mut ch);
             }
             for ((table_idx, polys), evals) in protocol.iter_openings().zip(&proof.evals) {
-                lv.add_claim(table_idx, polys, evals, &mut ch);
+                lv.add_claim(table_idx, polys, evals, &mut ch)
+                    .expect("proof evaluations match the opening schedule shape");
             }
             let alpha: EF = ch.sample_algebra_element();
             let constraint = lv.constraint(alpha);
@@ -1099,7 +1160,7 @@ mod tests {
             vc.observe_algebra_element(cinf);
             ext_samples.push(vc.sample_algebra_element());
         }
-        {
+        let round0_indices = {
             let rproof = &proof.whir.rounds[0];
             vc.observe(rproof.commitment.as_ref().unwrap().clone());
             for &answer in &rproof.ood_answers {
@@ -1123,8 +1184,9 @@ mod tests {
                 vc.observe_algebra_element(cinf);
                 ext_samples.push(vc.sample_algebra_element());
             }
-        }
-        {
+            round0_indices
+        };
+        let final_indices = {
             let final_poly = proof.whir.final_poly.as_ref().unwrap();
             vc.observe_algebra_slice(final_poly.as_slice());
             let final_indices = sample_stir_indices(
@@ -1143,7 +1205,8 @@ mod tests {
                     ext_samples.push(vc.sample_algebra_element());
                 }
             }
-        }
+            final_indices
+        };
 
         let vp = WhirVerifierParams::<BF>::from_config::<EF, MyChallenger>(
             &config,
@@ -1170,11 +1233,9 @@ mod tests {
             })
             .collect();
 
-        let gamma_target = circuit.define_const(initial_constraint.challenge);
-        let eq_points: Vec<Vec<Target>> = initial_constraint
-            .eq_statement
-            .points
-            .iter()
+        let gamma_target = circuit.define_const(constraint_challenge(&initial_constraint));
+        let eq_points: Vec<Vec<Target>> = constraint_eq_points(&initial_constraint)
+            .into_iter()
             .map(|pt| {
                 pt.as_slice()
                     .iter()
@@ -1183,7 +1244,7 @@ mod tests {
             })
             .collect();
         let circuit_constraint = ConstraintWeightData {
-            num_variables: initial_constraint.eq_statement.num_variables(),
+            num_variables: initial_constraint.num_variables(),
             eq_points,
             sel_scalars: vec![],
             gamma: gamma_target,
@@ -1241,34 +1302,10 @@ mod tests {
         }
 
         let mut private_inputs: Vec<EF> = Vec::new();
-        for q in &proof.whir.rounds[0].queries {
-            match q {
-                p3_whir::pcs::proof::QueryOpening::Base { values, .. } => {
-                    for &v in values {
-                        private_inputs.push(EF::from(v));
-                    }
-                }
-                p3_whir::pcs::proof::QueryOpening::Extension { values, .. } => {
-                    for &v in values {
-                        private_inputs.push(v);
-                    }
-                }
-            }
-        }
-        for q in &proof.whir.final_queries {
-            match q {
-                p3_whir::pcs::proof::QueryOpening::Base { values, .. } => {
-                    for &v in values {
-                        private_inputs.push(EF::from(v));
-                    }
-                }
-                p3_whir::pcs::proof::QueryOpening::Extension { values, .. } => {
-                    for &v in values {
-                        private_inputs.push(v);
-                    }
-                }
-            }
-        }
+        // Round 0 opens the base-field initial commitment; the final openings sit at round
+        // index 1 here, so they carry extension-field rows.
+        push_opening_rows(&proof.whir.rounds[0].openings, true, &mut private_inputs);
+        push_opening_rows(&proof.whir.final_openings, false, &mut private_inputs);
 
         // Corrupt the first leaf value — the Merkle hash will disagree with the path.
         private_inputs[0] += EF::ONE;
@@ -1280,10 +1317,34 @@ mod tests {
         runner
             .set_private_inputs(&private_inputs)
             .expect("set_private_inputs");
-        set_whir_mmcs_private_data::<BF, EF, MyMmcs, DIGEST_ELEMS>(
+        let round0_paths =
+            restore_whir_query_paths::<PackedBF, PackedBF, EF, _, _, 2, DIGEST_ELEMS>(
+                &mmcs,
+                &proof.whir.rounds[0].openings,
+                &[Dimensions {
+                    height: rp0.domain_size >> rp0.folding_factor,
+                    width: 1 << rp0.folding_factor,
+                }],
+                &round0_indices,
+            )
+            .expect("round 0 path restoration");
+        let final_indices_dims = Dimensions {
+            height: config.final_round_config().domain_size >> config.final_sumcheck_rounds,
+            width: 1 << config.final_sumcheck_rounds,
+        };
+        let final_paths =
+            restore_whir_query_paths::<PackedBF, PackedBF, EF, _, _, 2, DIGEST_ELEMS>(
+                &mmcs,
+                &proof.whir.final_openings,
+                &[final_indices_dims],
+                &final_indices,
+            )
+            .expect("final path restoration");
+        set_whir_mmcs_private_data::<BF, EF, DIGEST_ELEMS>(
             &mut runner,
             &op_ids,
-            &proof.whir,
+            &[round0_paths],
+            &final_paths,
             p3_circuit::ops::Poseidon2Config::BABY_BEAR_D4_W16,
         )
         .expect("set_whir_mmcs_private_data failed");

@@ -12,7 +12,7 @@ use p3_batch_stark::{
     BatchProof, CommonData, ProverData, StarkInstance, prove_batch, verify_batch,
 };
 use p3_circuit::ops::{Poseidon2Config, generate_poseidon2_trace, generate_recompose_trace};
-use p3_circuit::{CircuitBuilder, NonPrimitiveOpId};
+use p3_circuit::{CircuitBuilder, CircuitRunner, NonPrimitiveOpId};
 use p3_circuit_prover::batch_stark_prover::{
     poseidon2_air_builders_for_configs, recompose_air_builders,
 };
@@ -30,16 +30,20 @@ use p3_recursion::pcs::fri::{
     FriVerifierParams, HidingFriProofTargets, InputProofTargets, MerkleCapTargets,
     RecExtensionValMmcs, RecValMmcs, Witness,
 };
-use p3_recursion::pcs::set_fri_mmcs_private_data;
-use p3_recursion::{BatchStarkVerifierInputsBuilder, VerificationError, verify_batch_circuit};
+use p3_recursion::pcs::{restore_fri_query_paths, set_fri_mmcs_private_data};
+use p3_recursion::{
+    BatchStarkVerifierInputsBuilder, OpeningTranscript, VerificationError,
+    merge_hiding_random_openings, observe_opened_values, replay_batch_stark_transcript,
+    verify_batch_circuit,
+};
 use p3_test_utils::koala_bear_params::*;
 use rand::SeedableRng;
-use rand::rngs::SmallRng;
+use rand::rngs::StdRng;
 
 // Non-ZK config used for the outer aggregated proof of both verification circuits.
 type MyConfig = StarkConfig<TwoAdicFriPcs<F, Dft, MyMmcs, ChallengeMmcs>, Challenge, Challenger>;
 
-type MyPcsZk = HidingFriPcs<F, Dft, MyMmcs, ChallengeMmcs, SmallRng>;
+type MyPcsZk = HidingFriPcs<F, Dft, MyMmcs, ChallengeMmcs, StdRng>;
 type MyConfigZk = StarkConfig<MyPcsZk, Challenge, Challenger>;
 type InnerFriZk = HidingFriProofTargets<
     F,
@@ -101,9 +105,58 @@ fn make_zk_config(seed: u64) -> MyConfigZk {
         val_mmcs,
         fri_params,
         2,
-        SmallRng::seed_from_u64(seed),
+        StdRng::seed_from_u64(seed),
     );
     MyConfigZk::new(pcs, Challenger::new(default_koalabear_poseidon2_16()))
+}
+
+/// Restores one ZK batch proof's per-query Merkle chains and feeds them to its MMCS operations.
+fn set_zk_mmcs_private_data(
+    runner: &mut CircuitRunner<'_, Challenge>,
+    op_ids: &[NonPrimitiveOpId],
+    config: &MyConfigZk,
+    proof: &BatchProof<MyConfigZk>,
+    common: &CommonData<MyConfigZk>,
+) -> Result<(), VerificationError> {
+    let OpeningTranscript {
+        mut challenger,
+        mut commitments_with_opening_points,
+    } = replay_batch_stark_transcript(
+        &[AddAir],
+        config,
+        proof,
+        &[vec![]],
+        common,
+        &LogUpGadget::new(),
+    )
+    .map_err(|e| VerificationError::InvalidProofShape(e.to_string()))?
+    .0;
+    merge_hiding_random_openings::<MyConfigZk>(
+        &mut commitments_with_opening_points,
+        &proof.opening_proof.0,
+    )
+    .map_err(|e| VerificationError::InvalidProofShape(e.to_string()))?;
+    observe_opened_values::<MyConfigZk>(&mut challenger, &commitments_with_opening_points);
+
+    let perm = default_koalabear_poseidon2_16();
+    let val_mmcs = MyMmcs::new(MyHash::new(perm.clone()), MyCompress::new(perm), 0);
+    let fri_params = FriParameters::new_testing(ChallengeMmcs::new(val_mmcs.clone()), 0);
+    let query_paths = restore_fri_query_paths(
+        &fri_params,
+        &val_mmcs,
+        &val_mmcs,
+        &proof.opening_proof.1,
+        &mut challenger,
+        &commitments_with_opening_points,
+    )
+    .map_err(|e| VerificationError::InvalidProofShape(format!("{e:?}")))?;
+    set_fri_mmcs_private_data::<F, Challenge, DIGEST_ELEMS>(
+        runner,
+        op_ids,
+        &query_paths,
+        Poseidon2Config::KOALA_BEAR_D4_W16,
+    )
+    .map_err(|e| VerificationError::InvalidProofShape(e.to_string()))
 }
 
 fn make_non_zk_config() -> MyConfig {
@@ -238,41 +291,28 @@ fn test_zk_aggregation() -> Result<(), VerificationError> {
         .set_private_inputs(&private_inputs)
         .map_err(VerificationError::Circuit)?;
 
-    // HidingFriPcs proof is (random_opened_values, inner_fri_proof); pass the inner part.
+    // HidingFriPcs proof is (random_opened_values, inner_fri_proof). The inner FRI verifier sees
+    // the public openings with the random ones appended, and its queries share one pruned Merkle
+    // multiproof, so each proof's transcript is replayed and merged before the per-query chains
+    // the circuit walks can be restored.
     if !left_op_ids.is_empty() {
-        set_fri_mmcs_private_data::<
-            F,
-            Challenge,
-            ChallengeMmcs,
-            MyMmcs,
-            MyHash,
-            MyCompress,
-            DIGEST_ELEMS,
-        >(
+        set_zk_mmcs_private_data(
             &mut runner,
             &left_op_ids,
-            &left_data.proof.opening_proof.1,
-            Poseidon2Config::KOALA_BEAR_D4_W16,
-        )
-        .map_err(|e| VerificationError::InvalidProofShape(e.to_string()))?;
+            &config_zk_left,
+            &left_data.proof,
+            common_left,
+        )?;
     }
 
     if !right_op_ids.is_empty() {
-        set_fri_mmcs_private_data::<
-            F,
-            Challenge,
-            ChallengeMmcs,
-            MyMmcs,
-            MyHash,
-            MyCompress,
-            DIGEST_ELEMS,
-        >(
+        set_zk_mmcs_private_data(
             &mut runner,
             &right_op_ids,
-            &right_data.proof.opening_proof.1,
-            Poseidon2Config::KOALA_BEAR_D4_W16,
-        )
-        .map_err(|e| VerificationError::InvalidProofShape(e.to_string()))?;
+            &config_zk_right,
+            &right_data.proof,
+            common_right,
+        )?;
     }
 
     let aggregation_traces = runner.run().map_err(VerificationError::Circuit)?;

@@ -31,18 +31,20 @@ use p3_recursion::pcs::fri::{
     FriVerifierParams, HidingFriProofTargets, InputProofTargets, MerkleCapTargets,
     RecExtensionValMmcs, RecValHidingMmcs, Witness,
 };
-use p3_recursion::pcs::set_hiding_salted_fri_mmcs_private_data;
+use p3_recursion::pcs::{restore_hiding_fri_query_paths, set_fri_mmcs_private_data};
 use p3_recursion::{
-    BatchStarkVerifierInputsBuilder, Poseidon2Config, VerificationError, verify_batch_circuit,
+    BatchStarkVerifierInputsBuilder, OpeningTranscript, Poseidon2Config, VerificationError,
+    merge_hiding_random_openings, observe_opened_values, replay_batch_stark_transcript,
+    verify_batch_circuit,
 };
 use p3_test_utils::koala_bear_params::*;
 use rand::SeedableRng;
-use rand::rngs::SmallRng;
+use rand::rngs::StdRng;
 
 /// Number of random salt elements appended to each Merkle leaf by the hiding MMCS.
 const SALT_ELEMS: usize = 4;
 
-type Rng = SmallRng;
+type Rng = StdRng;
 
 // Hiding (salted) MMCSs for the inner ZK proof.
 type HidingValMmcs = MerkleTreeHidingMmcs<
@@ -121,11 +123,11 @@ fn test_batch_verifier_hiding_mmcs() -> Result<(), VerificationError> {
     let perm = default_koalabear_poseidon2_16();
     let hash = MyHash::new(perm.clone());
     let compress = MyCompress::new(perm.clone());
-    let val_mmcs = HidingValMmcs::new(hash, compress, 0, SmallRng::seed_from_u64(11));
+    let val_mmcs = HidingValMmcs::new(hash, compress, 0, StdRng::seed_from_u64(11));
     let challenge_mmcs = HidingChallengeMmcs::new(val_mmcs.clone());
     let dft = Dft::default();
     let fri_params = FriParameters::new_testing(challenge_mmcs, 0);
-    let pcs_proving = MyPcsZk::new(dft, val_mmcs, fri_params, 2, SmallRng::seed_from_u64(1));
+    let pcs_proving = MyPcsZk::new(dft, val_mmcs, fri_params, 2, StdRng::seed_from_u64(1));
     let challenger_proving = Challenger::new(perm);
     let config_proving = MyConfigZk::new(pcs_proving, challenger_proving);
 
@@ -145,7 +147,7 @@ fn test_batch_verifier_hiding_mmcs() -> Result<(), VerificationError> {
     let perm2 = default_koalabear_poseidon2_16();
     let hash2 = MyHash::new(perm2.clone());
     let compress2 = MyCompress::new(perm2.clone());
-    let val_mmcs2 = HidingValMmcs::new(hash2, compress2, 0, SmallRng::seed_from_u64(22));
+    let val_mmcs2 = HidingValMmcs::new(hash2, compress2, 0, StdRng::seed_from_u64(22));
     let challenge_mmcs2 = HidingChallengeMmcs::new(val_mmcs2.clone());
     let dft2 = Dft::default();
     let fri_params2 = FriParameters::new_testing(challenge_mmcs2, 0);
@@ -158,7 +160,7 @@ fn test_batch_verifier_hiding_mmcs() -> Result<(), VerificationError> {
         fri_params2.num_queries,
         Poseidon2Config::KOALA_BEAR_D4_W16,
     );
-    let pcs_verif = MyPcsZk::new(dft2, val_mmcs2, fri_params2, 2, SmallRng::seed_from_u64(2));
+    let pcs_verif = MyPcsZk::new(dft2, val_mmcs2, fri_params2, 2, StdRng::seed_from_u64(2));
     let challenger_verif = Challenger::new(perm2.clone());
     let config = MyConfigZk::new(pcs_verif, challenger_verif);
 
@@ -207,22 +209,63 @@ fn test_batch_verifier_hiding_mmcs() -> Result<(), VerificationError> {
         .set_private_inputs(&private_inputs)
         .unwrap();
 
-    // The hiding MMCS opening proof is `(salts, siblings)`; the salts are circuit private
-    // inputs (set above), while the sibling digests are MMCS private data set here.
+    // The hiding MMCS opening proof is `(salts, pruned paths)`; the salts are circuit private
+    // inputs (set above), while the sibling digests are MMCS private data set here. Restoring
+    // them means re-salting each leaf exactly as the hiding tree committed it, and that needs the
+    // plain tree the hiding wrapper is built over — which a `MerkleTreeHidingMmcs` does not
+    // expose, so it is rebuilt here from the same hasher, compression function and cap height.
     assert!(
         !mmcs_op_ids.is_empty(),
         "hiding MMCS test must exercise Merkle openings"
     );
-    set_hiding_salted_fri_mmcs_private_data::<
-        F,
-        Challenge,
-        HidingChallengeMmcs,
-        HidingValMmcs,
-        DIGEST_ELEMS,
-    >(
+    let OpeningTranscript {
+        mut challenger,
+        mut commitments_with_opening_points,
+    } = replay_batch_stark_transcript(
+        &[air],
+        &config,
+        &batch_stark_proof,
+        &pvs,
+        common,
+        &lookup_gadget,
+    )
+    .expect("the proof's transcript replays")
+    .0;
+    merge_hiding_random_openings::<MyConfigZk>(
+        &mut commitments_with_opening_points,
+        &batch_stark_proof.opening_proof.0,
+    )
+    .expect("the random openings match the public ones");
+    observe_opened_values::<MyConfigZk>(&mut challenger, &commitments_with_opening_points);
+
+    let restore_perm = default_koalabear_poseidon2_16();
+    let restore_hiding_mmcs = HidingValMmcs::new(
+        MyHash::new(restore_perm.clone()),
+        MyCompress::new(restore_perm.clone()),
+        0,
+        StdRng::seed_from_u64(33),
+    );
+    let restore_tree = MyMmcs::new(
+        MyHash::new(restore_perm.clone()),
+        MyCompress::new(restore_perm),
+        0,
+    );
+    let restore_fri_params =
+        FriParameters::new_testing(HidingChallengeMmcs::new(restore_hiding_mmcs.clone()), 0);
+    let query_paths = restore_hiding_fri_query_paths(
+        &restore_fri_params,
+        &restore_hiding_mmcs,
+        &restore_tree,
+        &restore_tree,
+        &batch_stark_proof.opening_proof.1,
+        &mut challenger,
+        &commitments_with_opening_points,
+    )
+    .expect("an honest proof's salted Merkle paths restore");
+    set_fri_mmcs_private_data::<F, Challenge, DIGEST_ELEMS>(
         &mut verification_runner,
         &mmcs_op_ids,
-        &batch_stark_proof.opening_proof,
+        &query_paths,
         Poseidon2Config::KOALA_BEAR_D4_W16,
     )
     .expect("Failed to set MMCS private data for hiding ZK proof");

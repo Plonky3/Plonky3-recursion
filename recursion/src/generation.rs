@@ -6,13 +6,20 @@ use p3_air::symbolic::AirLayout;
 use p3_batch_stark::symbolic::get_log_num_quotient_chunks as get_batch_log_num_quotient_chunks;
 use p3_batch_stark::{BatchProof, BatchTranscript, CommonData};
 use p3_challenger::{CanObserve, CanSample, CanSampleBits, FieldChallenger, GrindingChallenger};
-use p3_commit::{BatchOpening, Mmcs, OpenedValues, Pcs, PolynomialSpace};
+use p3_commit::{Mmcs, OpenedValues, Pcs, PolynomialSpace};
 use p3_field::{Algebra, BasedVectorSpace, PrimeCharacteristicRing, PrimeField, TwoAdicField};
-use p3_fri::{FriProof, HidingFriPcs, TwoAdicFriPcs};
+use p3_fri::{BatchMultiOpening, FriProof, HidingFriPcs, TwoAdicFriPcs};
+use p3_lookup::logup::LogUpGadget;
 use p3_lookup::symbolic::InteractionSymbolicBuilder;
 use p3_lookup::{Lookup, LookupProtocol};
-use p3_uni_stark::{Domain, StarkGenericConfig, SymbolicExpression, SymbolicExpressionExt, Val};
+use p3_uni_stark::{
+    Domain, StarkGenericConfig, SymbolicExpression, SymbolicExpressionExt, Val,
+    validate_degree_bits,
+};
 use thiserror::Error;
+
+use crate::pcs::fri::fri_proof_num_queries;
+use crate::traits::RecursiveAir;
 
 #[derive(Debug, Error)]
 pub enum GenerationError {
@@ -44,7 +51,7 @@ type PointOpening<SC> = (
 type DomainOpenings<SC> = Vec<(Domain<SC>, Vec<PointOpening<SC>>)>;
 
 /// A type alias for a commitment and its associated domain openings.
-type CommitmentWithOpenings<SC> = (
+pub type CommitmentWithOpenings<SC> = (
     <<SC as StarkGenericConfig>::Pcs as Pcs<
         <SC as StarkGenericConfig>::Challenge,
         <SC as StarkGenericConfig>::Challenger,
@@ -53,7 +60,75 @@ type CommitmentWithOpenings<SC> = (
 );
 
 /// The final type alias for a slice of commitments with their openings.
-type ComsWithOpenings<SC> = [CommitmentWithOpenings<SC>];
+pub type ComsWithOpenings<SC> = [CommitmentWithOpenings<SC>];
+
+/// A STARK verifier's transcript replayed to the point its PCS opening argument begins.
+///
+/// The two fields are exactly the two arguments
+/// [`Pcs::verify`] is called with: the challenger in the state that
+/// call enters with, and the commitments the opening argument is checked against. Producing
+/// them off-circuit is what lets a witness generator rerun the PCS's own verification steps —
+/// FRI's query-index sampling and fold chain, say — for data the proof does not carry.
+pub struct OpeningTranscript<SC: StarkGenericConfig> {
+    /// The challenger in the state [`Pcs::verify`] is entered with:
+    /// every commitment and public value observed, no opened value observed yet.
+    pub challenger: SC::Challenger,
+    /// The commitments and their opening points, in the order the PCS observes them.
+    pub commitments_with_opening_points: Vec<CommitmentWithOpenings<SC>>,
+}
+
+/// Observe every opened value, mirroring the loop
+/// [`TwoAdicFriPcs::verify`](p3_fri::TwoAdicFriPcs) runs before entering `verify_fri`.
+///
+/// Advances a challenger from the state [`OpeningTranscript`] holds to the one the FRI verifier
+/// itself starts from.
+pub fn observe_opened_values<SC: StarkGenericConfig>(
+    challenger: &mut SC::Challenger,
+    coms_to_verify: &ComsWithOpenings<SC>,
+) {
+    for (_, round) in coms_to_verify {
+        for (_, mat) in round {
+            for (_, point) in mat {
+                challenger.observe_algebra_slice(point);
+            }
+        }
+    }
+}
+
+/// Append a hiding PCS's random-codeword openings onto the public ones, mirroring
+/// [`HidingFriPcs::verify`](p3_fri::HidingFriPcs).
+///
+/// A hiding FRI proof splits every opening in two: the public half travels in the STARK's opened
+/// values, the hidden half beside the proof as random codewords. The inner FRI verifier is given
+/// the merged openings, so anything replaying its transcript must merge them the same way.
+pub fn merge_hiding_random_openings<SC: StarkGenericConfig>(
+    coms_to_verify: &mut [CommitmentWithOpenings<SC>],
+    random_openings: &OpenedValues<SC::Challenge>,
+) -> Result<(), GenerationError> {
+    if random_openings.len() != coms_to_verify.len() {
+        return Err(GenerationError::InvalidProofShape(
+            "hiding random openings do not cover every round",
+        ));
+    }
+    for (round, rand_round) in coms_to_verify.iter_mut().zip(random_openings) {
+        if rand_round.len() != round.1.len() {
+            return Err(GenerationError::InvalidProofShape(
+                "hiding random openings do not cover every matrix",
+            ));
+        }
+        for (mat, rand_mat) in round.1.iter_mut().zip(rand_round) {
+            if rand_mat.len() != mat.1.len() {
+                return Err(GenerationError::InvalidProofShape(
+                    "hiding random openings do not cover every opening point",
+                ));
+            }
+            for (point, rand_point) in mat.1.iter_mut().zip(rand_mat) {
+                point.1.extend(rand_point);
+            }
+        }
+    }
+    Ok(())
+}
 
 /// Trait which defines the methods necessary
 /// for a Pcs to generate challenge values.
@@ -90,14 +165,53 @@ where
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
         Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
+    let (mut transcript, mut challenges) = replay_batch_stark_transcript::<SC, A, LG>(
+        airs,
+        config,
+        proof,
+        public_values,
+        common_data,
+        lookup_gadget,
+    )?;
+
+    let pcs_challenges = config.pcs().generate_challenges(
+        config,
+        &mut transcript.challenger,
+        &transcript.commitments_with_opening_points,
+        &proof.opening_proof,
+        extra_params,
+    )?;
+    challenges.extend(pcs_challenges);
+
+    Ok(challenges)
+}
+
+/// Replays a batch-STARK verifier's transcript up to the PCS opening argument.
+///
+/// Returns the [`OpeningTranscript`] and the challenges sampled along the way, in the order the
+/// in-circuit verifier connects them: the lookup permutation challenges, then `alpha`, then
+/// `zeta`.
+pub fn replay_batch_stark_transcript<SC: StarkGenericConfig, A, LG: LookupProtocol>(
+    airs: &[A],
+    config: &SC,
+    proof: &BatchProof<SC>,
+    public_values: &[Vec<Val<SC>>],
+    common_data: &CommonData<SC>,
+    lookup_gadget: &LG,
+) -> Result<(OpeningTranscript<SC>, Vec<SC::Challenge>), GenerationError>
+where
+    A: Air<InteractionSymbolicBuilder<Val<SC>, SC::Challenge>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+{
     let all_lookups = &common_data.lookups;
 
     let BatchProof {
         commitments,
         opened_values,
-        opening_proof,
         lookup_terminals,
         degree_bits,
+        ..
     } = proof;
 
     // Single-terminal layout: each AIR commits exactly one terminal iff it declares any lookup.
@@ -178,11 +292,9 @@ where
             num_public_values: air.num_public_values(),
             ..Default::default()
         };
-        let base_db = degree_bits[i]
-            .checked_sub(config.is_zk())
-            .ok_or(GenerationError::InvalidProofShape(
-                "extended degree smaller than zk adjustment",
-            ))?;
+        let base_db = degree_bits[i].checked_sub(config.is_zk()).ok_or(
+            GenerationError::InvalidProofShape("extended degree smaller than zk adjustment"),
+        )?;
         let log_qd = get_batch_log_num_quotient_chunks(
             air,
             batch_layout,
@@ -429,28 +541,182 @@ where
         coms_to_verify.push((permutation_commit, permutation_round));
     }
 
-    let pcs_challenges = pcs.generate_challenges(
-        config,
-        &mut transcript.challenger,
-        &coms_to_verify,
-        opening_proof,
-        extra_params,
-    )?;
-
-    let mut challenges = Vec::with_capacity(2 + pcs_challenges.len());
+    let mut challenges = Vec::with_capacity(2 + different_challenges.len());
     challenges.extend(different_challenges);
     challenges.push(alpha);
     challenges.push(zeta);
-    challenges.extend(pcs_challenges);
 
-    Ok(challenges)
+    Ok((
+        OpeningTranscript {
+            challenger: transcript.challenger,
+            commitments_with_opening_points: coms_to_verify,
+        },
+        challenges,
+    ))
+}
+
+/// Replays a single-instance (uni-STARK) verifier's transcript up to the PCS opening argument.
+///
+/// The observation order mirrors [`p3_uni_stark::verify`], and the shape the transcript binds —
+/// the preprocessed width, the quotient-chunk count, and which openings each commitment carries —
+/// is derived exactly as [`verify_p3_uni_proof_circuit`](crate::verify_p3_uni_proof_circuit)
+/// derives it, so the replayed transcript is the one the recursive verifier reproduces in-circuit.
+pub fn replay_uni_stark_transcript<SC: StarkGenericConfig, A>(
+    config: &SC,
+    air: &A,
+    proof: &p3_uni_stark::Proof<SC>,
+    public_values: &[Val<SC>],
+    preprocessed_commit: Option<&<SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment>,
+) -> Result<OpeningTranscript<SC>, GenerationError>
+where
+    A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
+{
+    let pcs = config.pcs();
+    let is_zk = config.is_zk();
+    let degree_bits = proof.degree_bits;
+    validate_degree_bits(None, degree_bits, is_zk, pcs.log_max_lde_height())
+        .map_err(|_| GenerationError::InvalidProofShape("invalid degree bits"))?;
+
+    let commitments = &proof.commitments;
+    let opened_values = &proof.opened_values;
+
+    // The recursive verifier reads the preprocessed width off the opened values rather than off a
+    // verifier key, so the transcript binding must be read the same way here.
+    let preprocessed_width = opened_values
+        .preprocessed_local
+        .as_ref()
+        .map_or(0, |v| v.len());
+    if (preprocessed_width > 0) != preprocessed_commit.is_some() {
+        return Err(GenerationError::InvalidProofShape(
+            "preprocessed commitment presence does not match the opened preprocessed width",
+        ));
+    }
+
+    let degree = 1usize << degree_bits;
+    let base_degree = degree >> is_zk;
+    let trace_domain = pcs.natural_domain_for_degree(degree);
+    let init_trace_domain = pcs.natural_domain_for_degree(base_degree);
+
+    // Lookups are not supported for recursive single-STARK verification, so the quotient degree is
+    // derived with empty lookup contexts — matching the in-circuit verifier.
+    let log_quotient_degree =
+        air.get_log_num_quotient_chunks(preprocessed_width, base_degree, &[], is_zk, &LogUpGadget);
+    let quotient_degree = 1 << (log_quotient_degree + is_zk);
+    let quotient_domain =
+        trace_domain.create_disjoint_domain(1 << (degree_bits + log_quotient_degree));
+    let randomized_quotient_chunks_domains: Vec<_> = quotient_domain
+        .split_domains(quotient_degree)
+        .iter()
+        .map(|domain| pcs.natural_domain_for_degree(domain.size() << is_zk))
+        .collect();
+
+    let mut challenger = config.initialise_challenger();
+    challenger.observe(Val::<SC>::from_usize(degree_bits));
+    challenger.observe(Val::<SC>::from_usize(degree_bits - is_zk));
+    challenger.observe(Val::<SC>::from_usize(preprocessed_width));
+    challenger.observe(commitments.trace.clone());
+    if let Some(prep_commit) = preprocessed_commit
+        && preprocessed_width > 0
+    {
+        challenger.observe(prep_commit.clone());
+    }
+    challenger.observe_slice(public_values);
+
+    let _alpha: SC::Challenge = challenger.sample_algebra_element();
+    challenger.observe(commitments.quotient_chunks.clone());
+    if let Some(random_commit) = commitments.random.clone() {
+        challenger.observe(random_commit);
+    }
+    let zeta: SC::Challenge = challenger.sample_algebra_element();
+    let zeta_next =
+        init_trace_domain
+            .next_point(zeta)
+            .ok_or(GenerationError::InvalidProofShape(
+                "trace domain lacks next point",
+            ))?;
+
+    let mut coms_to_verify = if let Some(random_commit) = &commitments.random {
+        let random_values = opened_values
+            .random
+            .as_ref()
+            .ok_or(GenerationError::RandomizationError)?;
+        vec![(
+            random_commit.clone(),
+            vec![(trace_domain, vec![(zeta, random_values.clone())])],
+        )]
+    } else {
+        vec![]
+    };
+
+    let mut trace_points = vec![(zeta, opened_values.trace_local.clone())];
+    // The `zeta_next` opening is present only when the AIR accesses the next row.
+    if air.opens_trace_next() {
+        let trace_next =
+            opened_values
+                .trace_next
+                .as_ref()
+                .ok_or(GenerationError::InvalidProofShape(
+                    "AIR opens the next trace row but the proof carries no such opening",
+                ))?;
+        trace_points.push((zeta_next, trace_next.clone()));
+    }
+    coms_to_verify.push((
+        commitments.trace.clone(),
+        vec![(trace_domain, trace_points)],
+    ));
+
+    if randomized_quotient_chunks_domains.len() != opened_values.quotient_chunks.len() {
+        return Err(GenerationError::InvalidProofShape(
+            "quotient chunk count mismatch",
+        ));
+    }
+    coms_to_verify.push((
+        commitments.quotient_chunks.clone(),
+        randomized_quotient_chunks_domains
+            .iter()
+            .zip(&opened_values.quotient_chunks)
+            .map(|(domain, values)| (*domain, vec![(zeta, values.clone())]))
+            .collect(),
+    ));
+
+    if preprocessed_width > 0 {
+        let local =
+            opened_values
+                .preprocessed_local
+                .as_ref()
+                .ok_or(GenerationError::InvalidProofShape(
+                    "preprocessed local values should exist",
+                ))?;
+        let next =
+            opened_values
+                .preprocessed_next
+                .as_ref()
+                .ok_or(GenerationError::InvalidProofShape(
+                    "preprocessed next values should exist",
+                ))?;
+        coms_to_verify.push((
+            preprocessed_commit
+                .expect("presence checked against the preprocessed width above")
+                .clone(),
+            vec![(
+                trace_domain,
+                vec![(zeta, local.clone()), (zeta_next, next.clone())],
+            )],
+        ));
+    }
+
+    Ok(OpeningTranscript {
+        challenger,
+        commitments_with_opening_points: coms_to_verify,
+    })
 }
 
 type InnerFriProof<SC, InputMmcs, FriMmcs> = FriProof<
     <SC as StarkGenericConfig>::Challenge,
     FriMmcs,
     Val<SC>,
-    Vec<BatchOpening<Val<SC>, InputMmcs>>,
+    Vec<BatchMultiOpening<Val<SC>, InputMmcs>>,
 >;
 
 impl<SC: StarkGenericConfig, Dft, InputMmcs: Mmcs<Val<SC>>, FriMmcs: Mmcs<SC::Challenge>>
@@ -517,10 +783,8 @@ where
 
         // Bind the variable-arity schedule into the transcript before query grinding,
         // matching the native FRI verifier in Plonky3.
-        if let Some(first_qp) = opening_proof.query_proofs.first() {
-            for step in &first_qp.commit_phase_openings {
-                challenger.observe(Val::<SC>::from_usize(step.log_arity as usize));
-            }
+        for step in &opening_proof.commit_phase_openings {
+            challenger.observe(Val::<SC>::from_usize(step.log_arity as usize));
         }
 
         let params = extra_params.ok_or(GenerationError::MissingParameterError)?;
@@ -540,8 +804,8 @@ where
 
         let log_height_max = params[1];
         let log_global_max_height = opening_proof.commit_phase_commits.len() + log_height_max;
-        for _ in &opening_proof.query_proofs {
-            // For each query proof, we start by generating the random index.
+        for _ in 0..fri_proof_num_queries(opening_proof) {
+            // For each query, we start by generating the random index.
             challenges.push(SC::Challenge::from_usize(
                 challenger.sample_bits(log_global_max_height),
             ));
@@ -555,7 +819,7 @@ where
         _extra_params: Option<&[usize]>,
     ) -> Result<usize, GenerationError> {
         let num_challenges =
-            1 + opening_proof.commit_phase_commits.len() + opening_proof.query_proofs.len();
+            1 + opening_proof.commit_phase_commits.len() + fri_proof_num_queries(opening_proof);
 
         Ok(num_challenges)
     }
@@ -620,10 +884,8 @@ where
             .iter()
             .for_each(|x| challenger.observe_algebra_element(*x));
 
-        if let Some(first_qp) = inner_proof.query_proofs.first() {
-            for step in &first_qp.commit_phase_openings {
-                challenger.observe(Val::<SC>::from_usize(step.log_arity as usize));
-            }
+        for step in &inner_proof.commit_phase_openings {
+            challenger.observe(Val::<SC>::from_usize(step.log_arity as usize));
         }
 
         let params = extra_params.ok_or(GenerationError::MissingParameterError)?;
@@ -638,7 +900,7 @@ where
 
         let log_height_max = params[1];
         let log_global_max_height = inner_proof.commit_phase_commits.len() + log_height_max;
-        for _ in &inner_proof.query_proofs {
+        for _ in 0..fri_proof_num_queries(inner_proof) {
             challenges.push(SC::Challenge::from_usize(
                 challenger.sample_bits(log_global_max_height),
             ));
@@ -652,7 +914,7 @@ where
         _extra_params: Option<&[usize]>,
     ) -> Result<usize, GenerationError> {
         let inner_proof = &opening_proof.1;
-        Ok(1 + inner_proof.commit_phase_commits.len() + inner_proof.query_proofs.len())
+        Ok(1 + inner_proof.commit_phase_commits.len() + fri_proof_num_queries(inner_proof))
     }
 }
 

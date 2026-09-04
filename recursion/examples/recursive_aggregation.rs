@@ -1252,6 +1252,10 @@ macro_rules! arity4_mixed_config_impl {
             config: Arc<MyConfigArity4>,
             fri_verifier_params: FriVerifierParams,
             disable_recompose_npo: bool,
+            /// The W32 arity-4 Merkle MMCS and FRI parameters `config` commits with. The PCS does
+            /// not expose them, and restoring the per-query Merkle chains a pruned FRI proof
+            /// shares needs both.
+            fri_instance: Arc<(MyMmcsArity4, FriParameters<ChallengeMmcsArity4>)>,
         }
 
         impl core::ops::Deref for ConfigWithFriParamsArity4 {
@@ -1340,28 +1344,46 @@ macro_rules! arity4_mixed_config_impl {
             }
 
             fn set_fri_private_data(
+                config: &Self,
                 runner: &mut CircuitRunner<'_, Challenge>,
                 op_ids: &[NonPrimitiveOpId],
                 opening_proof: &Self::RawOpeningProof,
+                transcript: OpeningTranscript<Self>,
             ) -> Result<(), &'static str> {
-                set_fri_mmcs_private_data_arity4::<
-                    F,
-                    Challenge,
-                    ChallengeMmcsArity4,
-                    MyMmcsArity4,
-                    $digest_elems,
-                >(runner, op_ids, opening_proof, $poseidon2_config_arity4)
+                let OpeningTranscript {
+                    mut challenger,
+                    commitments_with_opening_points,
+                } = transcript;
+                observe_opened_values::<Self>(&mut challenger, &commitments_with_opening_points);
+                let query_paths = restore_fri_query_paths(
+                    &config.fri_instance.1,
+                    &config.fri_instance.0,
+                    &config.fri_instance.0,
+                    opening_proof,
+                    &mut challenger,
+                    &commitments_with_opening_points,
+                )
+                .map_err(|_| "Failed to restore the FRI proof's per-query Merkle paths")?;
+                set_fri_mmcs_private_data_arity4::<F, Challenge, $digest_elems>(
+                    runner,
+                    op_ids,
+                    &query_paths,
+                    $poseidon2_config_arity4,
+                )
             }
         }
 
-        fn create_config_arity4(fp: &FriParams, security_level: usize) -> MyConfigArity4 {
-            let challenger_perm = $default_perm();
+        /// The W32 arity-4 Merkle MMCS and FRI parameters the arity-4 config commits with. The
+        /// PCS keeps them private, so they are built here once for both it and the recursive
+        /// verifier's Merkle-path restoration.
+        fn create_fri_instance_arity4(
+            fp: &FriParams,
+            security_level: usize,
+        ) -> (MyMmcsArity4, FriParameters<ChallengeMmcsArity4>) {
             let mmcs_perm = $default_perm_arity4();
             let hash = MyHashArity4::new(mmcs_perm.clone());
-            let compress = MyCompressArity4::new(mmcs_perm.clone());
+            let compress = MyCompressArity4::new(mmcs_perm);
             let val_mmcs = MyMmcsArity4::new(hash, compress, fp.cap_height);
-            let challenge_mmcs = ChallengeMmcsArity4::new(val_mmcs.clone());
-            let dft = Dft::default();
 
             let num_queries = (security_level - fp.query_pow_bits) / fp.log_blowup;
 
@@ -1372,11 +1394,15 @@ macro_rules! arity4_mixed_config_impl {
                 num_queries,
                 commit_proof_of_work_bits: fp.commit_pow_bits,
                 query_proof_of_work_bits: fp.query_pow_bits,
-                mmcs: challenge_mmcs,
+                mmcs: ChallengeMmcsArity4::new(val_mmcs.clone()),
             };
-            let pcs = MyPcsArity4::new(dft, val_mmcs, fri_params);
-            let challenger = Challenger::new(challenger_perm);
-            MyConfigArity4::new(pcs, challenger)
+            (val_mmcs, fri_params)
+        }
+
+        fn create_config_arity4(fp: &FriParams, security_level: usize) -> MyConfigArity4 {
+            let (val_mmcs, fri_params) = create_fri_instance_arity4(fp, security_level);
+            let pcs = MyPcsArity4::new(Dft::default(), val_mmcs, fri_params);
+            MyConfigArity4::new(pcs, Challenger::new($default_perm()))
         }
 
         fn create_fri_verifier_params_arity4(
@@ -1403,6 +1429,7 @@ macro_rules! arity4_mixed_config_impl {
                 config: Arc::new(create_config_arity4(fp, security_level)),
                 fri_verifier_params: create_fri_verifier_params_arity4(fp, security_level),
                 disable_recompose_npo,
+                fri_instance: Arc::new(create_fri_instance_arity4(fp, security_level)),
             }
         }
     };

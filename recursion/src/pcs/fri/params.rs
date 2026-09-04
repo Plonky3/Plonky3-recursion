@@ -16,7 +16,7 @@ pub struct FriVerifierParams {
     pub query_pow_bits: usize,
     /// Minimum number of FRI query proofs required for soundness.
     ///
-    /// The recursive verifier enforces `proof.query_proofs.len() >= num_queries`
+    /// The recursive verifier enforces `fri_proof_num_queries(proof) >= num_queries`
     /// at circuit-construction time. A circuit built from a proof with fewer
     /// queries than this threshold is rejected with `InvalidProofShape`.
     ///
@@ -124,7 +124,7 @@ mod tests {
     }
 
     /// `with_mmcs` must store the caller-supplied `num_queries` unchanged.
-    /// The recursive verifier enforces `proof.query_proofs.len() >= num_queries`
+    /// The recursive verifier enforces `fri_proof_num_queries(proof) >= num_queries`
     /// at circuit-construction time; an incorrect stored value silently weakens
     /// FRI soundness.
     #[test]

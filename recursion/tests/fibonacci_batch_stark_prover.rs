@@ -13,10 +13,12 @@ use p3_circuit_prover::{
 };
 use p3_lookup::logup::LogUpGadget;
 use p3_poseidon2_circuit_air::KoalaBearD4Width16;
-use p3_recursion::Poseidon2Config;
 use p3_recursion::pcs::fri::{FriVerifierParams, InputProofTargets, MerkleCapTargets, RecValMmcs};
-use p3_recursion::pcs::set_fri_mmcs_private_data;
+use p3_recursion::pcs::{restore_fri_query_paths, set_fri_mmcs_private_data};
 use p3_recursion::verifier::verify_p3_batch_proof_circuit;
+use p3_recursion::{
+    OpeningTranscript, Poseidon2Config, observe_opened_values, replay_batch_layer_transcript,
+};
 use p3_test_utils::koala_bear_params::*;
 use tracing_forest::ForestLayer;
 use tracing_forest::util::LevelFilter;
@@ -203,19 +205,34 @@ fn test_fibonacci_batch_verifier() {
     runner.set_public_inputs(&public_inputs).unwrap();
     runner.set_private_inputs(&private_inputs).unwrap();
 
-    // Set MMCS private data for the verification circuit
-    set_fri_mmcs_private_data::<
-        F,
-        Challenge,
-        ChallengeMmcs,
-        MyMmcs,
-        MyHash,
-        MyCompress,
-        DIGEST_ELEMS,
-    >(
+    // Set MMCS private data for the verification circuit. The FRI proof shares one pruned
+    // Merkle multiproof across all queries, so the per-query chains the circuit walks are
+    // restored from the proof's own verifier transcript first.
+    let OpeningTranscript {
+        mut challenger,
+        commitments_with_opening_points,
+    } = replay_batch_layer_transcript::<MyConfig, TRACE_D>(
+        &config,
+        &batch_stark_proof,
+        common,
+        &[],
+    )
+    .unwrap();
+    observe_opened_values::<MyConfig>(&mut challenger, &commitments_with_opening_points);
+    let (val_mmcs, fri_params) = test_fri_instance();
+    let query_paths = restore_fri_query_paths(
+        &fri_params,
+        &val_mmcs,
+        &val_mmcs,
+        &batch_stark_proof.proof.opening_proof,
+        &mut challenger,
+        &commitments_with_opening_points,
+    )
+    .unwrap();
+    set_fri_mmcs_private_data::<F, Challenge, DIGEST_ELEMS>(
         &mut runner,
         &mmcs_op_ids,
-        &batch_stark_proof.proof.opening_proof,
+        &query_paths,
         Poseidon2Config::KOALA_BEAR_D4_W16,
     )
     .unwrap();

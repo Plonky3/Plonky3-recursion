@@ -69,7 +69,7 @@ where
 {
     /// Bridge to the circuit-prover enum so the verifier can rebuild its own lookup
     /// contexts from the reconstructed AIRs. Both enums wrap the identical inner AIRs.
-    fn to_table_air(&self) -> CircuitTableAir<SC, D> {
+    pub(crate) fn to_table_air(&self) -> CircuitTableAir<SC, D> {
         match self {
             Self::Const(a) => CircuitTableAir::Const(a.clone()),
             Self::Public(a) => CircuitTableAir::Public(a.clone()),
@@ -206,6 +206,115 @@ where
     ))
 }
 
+/// The batch-STARK tables a recursion-layer proof describes, rebuilt from the proof's own
+/// metadata (packing, row counts, non-primitive manifest) rather than trusted from it.
+pub struct ReconstructedBatchTables<SC: StarkGenericConfig, const D: usize> {
+    /// One AIR per table, in the order the proof's instances appear.
+    pub airs: Vec<CircuitTablesAir<SC, D>>,
+    /// Each table's trace length, as the proof declares it.
+    pub trace_lens: Vec<usize>,
+    /// Each table's public values: empty for the primitive tables, the manifest entry's own for
+    /// the non-primitive ones.
+    pub public_values: Vec<Vec<Val<SC>>>,
+}
+
+/// Rebuild the AIRs a recursion-layer batch proof was produced against.
+///
+/// The proof carries only a manifest — table packing, per-table row counts, and one entry per
+/// non-primitive table — so the AIRs themselves are derived here and never taken from the proof.
+/// `non_primitive_provers` supplies the plugins that turn each manifest entry into an AIR; the
+/// entry's declared op type is checked against the plugin's before it is used.
+pub fn reconstruct_batch_tables<SC: StarkGenericConfig + 'static, const TRACE_D: usize>(
+    config: &SC,
+    proof: &p3_circuit_prover::batch_stark_prover::BatchStarkProof<SC>,
+    non_primitive_provers: &[Box<dyn TableProver<SC>>],
+) -> Result<ReconstructedBatchTables<SC, TRACE_D>, VerificationError>
+where
+    Val<SC>: PrimeField64,
+    SC::Challenge: ExtensionField<Val<SC>> + ExtractBinomialW<Val<SC>>,
+{
+    proof
+        .validate()
+        .map_err(|e| VerificationError::InvalidProofShape(e.to_string()))?;
+    if proof.ext_degree != TRACE_D {
+        return Err(VerificationError::InvalidProofShape(format!(
+            "trace extension degree mismatch: proof declares {} but verifier expects {TRACE_D}",
+            proof.ext_degree
+        )));
+    }
+    let rows: RowCounts = proof.rows;
+    let packing = proof.table_packing.clone();
+    let public_lanes = packing.public_lanes();
+    let alu_lanes = packing.alu_lanes();
+
+    // Create AluAir with appropriate constructor based on TRACE_D and the stored
+    // primitive ALU variant used during proving.
+    // For now both variants share the same AIR type; this hook allows us to swap
+    // in a different ALU AIR in the future based on `proof.alu_variant`.
+    let alu_air = match proof.alu_variant {
+        AirVariant::Baseline | AirVariant::Optimized => {
+            create_alu_air::<Val<SC>, SC::Challenge, TRACE_D>(
+                rows[PrimitiveTable::Alu],
+                alu_lanes,
+                packing.horner_packed_steps(),
+                proof.alu_quintic_trinomial,
+            )
+            .map_err(VerificationError::InvalidProofShape)?
+        }
+    };
+
+    let mut airs: Vec<CircuitTablesAir<SC, TRACE_D>> = vec![
+        CircuitTablesAir::Const(ConstAir::<Val<SC>, TRACE_D>::new(
+            rows[PrimitiveTable::Const],
+        )),
+        CircuitTablesAir::Public(PublicAir::<Val<SC>, TRACE_D>::new(
+            rows[PrimitiveTable::Public],
+            public_lanes,
+        )),
+        CircuitTablesAir::Alu(alu_air),
+    ];
+    let mut trace_lens = vec![
+        rows[PrimitiveTable::Const],
+        rows[PrimitiveTable::Public],
+        rows[PrimitiveTable::Alu],
+    ];
+    let mut public_values: Vec<Vec<Val<SC>>> = vec![Vec::new(); NUM_PRIMITIVE_TABLES];
+
+    if proof.non_primitives.len() != non_primitive_provers.len() {
+        return Err(VerificationError::InvalidProofShape(format!(
+            "non-primitive table count mismatch: expected {}, got {}",
+            non_primitive_provers.len(),
+            proof.non_primitives.len()
+        )));
+    }
+    for (i, (entry, plugin)) in proof
+        .non_primitives
+        .iter()
+        .zip(non_primitive_provers.iter())
+        .enumerate()
+    {
+        let expected_op = TableProver::op_type(plugin.as_ref());
+        if entry.op_type != expected_op {
+            return Err(VerificationError::InvalidProofShape(format!(
+                "non-primitive op_type mismatch at index {i}: expected {expected_op:?}, got {:?}",
+                entry.op_type
+            )));
+        }
+        let air = plugin
+            .batch_air_from_table_entry(config, TRACE_D, proof.ext_degree as u32, entry)
+            .map_err(VerificationError::InvalidProofShape)?;
+        airs.push(CircuitTablesAir::Dynamic(air));
+        trace_lens.push(entry.rows);
+        public_values.push(entry.public_values.clone());
+    }
+
+    Ok(ReconstructedBatchTables {
+        airs,
+        trace_lens,
+        public_values,
+    })
+}
+
 /// Build and attach a recursive verifier circuit for a circuit-prover [`BatchStarkProof`].
 ///
 /// This reconstructs the circuit table AIRs from the proof metadata (rows + packing) so callers
@@ -257,83 +366,14 @@ where
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
         Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
-    proof
-        .validate()
-        .map_err(|e| VerificationError::InvalidProofShape(e.to_string()))?;
-    if proof.ext_degree != TRACE_D {
-        return Err(VerificationError::InvalidProofShape(format!(
-            "trace extension degree mismatch: proof declares {} but verifier expects {TRACE_D}",
-            proof.ext_degree
-        )));
-    }
-    let rows: RowCounts = proof.rows;
-    let packing = proof.table_packing.clone();
-    let public_lanes = packing.public_lanes();
-    let alu_lanes = packing.alu_lanes();
+    let tables = reconstruct_batch_tables::<SC, TRACE_D>(config, proof, non_primitive_provers)?;
+    let ReconstructedBatchTables {
+        airs: circuit_airs,
+        trace_lens,
+        public_values,
+    } = &tables;
 
-    // Create AluAir with appropriate constructor based on TRACE_D and the stored
-    // primitive ALU variant used during proving.
-    // For now both variants share the same AIR type; this hook allows us to swap
-    // in a different ALU AIR in the future based on `proof.alu_variant`.
-    let alu_air = match proof.alu_variant {
-        AirVariant::Baseline | AirVariant::Optimized => {
-            create_alu_air::<Val<SC>, SC::Challenge, TRACE_D>(
-                rows[PrimitiveTable::Alu],
-                alu_lanes,
-                packing.horner_packed_steps(),
-                proof.alu_quintic_trinomial,
-            )
-            .map_err(VerificationError::InvalidProofShape)?
-        }
-    };
-
-    let mut circuit_airs: Vec<CircuitTablesAir<SC, TRACE_D>> = vec![
-        CircuitTablesAir::Const(ConstAir::<Val<SC>, TRACE_D>::new(
-            rows[PrimitiveTable::Const],
-        )),
-        CircuitTablesAir::Public(PublicAir::<Val<SC>, TRACE_D>::new(
-            rows[PrimitiveTable::Public],
-            public_lanes,
-        )),
-        CircuitTablesAir::Alu(alu_air),
-    ];
-    let mut trace_lens = vec![
-        rows[PrimitiveTable::Const],
-        rows[PrimitiveTable::Public],
-        rows[PrimitiveTable::Alu],
-    ];
-
-    if proof.non_primitives.len() != non_primitive_provers.len() {
-        return Err(VerificationError::InvalidProofShape(format!(
-            "non-primitive table count mismatch: expected {}, got {}",
-            non_primitive_provers.len(),
-            proof.non_primitives.len()
-        )));
-    }
-    for (i, (entry, plugin)) in proof
-        .non_primitives
-        .iter()
-        .zip(non_primitive_provers.iter())
-        .enumerate()
-    {
-        let expected_op = TableProver::op_type(plugin.as_ref());
-        if entry.op_type != expected_op {
-            return Err(VerificationError::InvalidProofShape(format!(
-                "non-primitive op_type mismatch at index {i}: expected {expected_op:?}, got {:?}",
-                entry.op_type
-            )));
-        }
-        let air = plugin
-            .batch_air_from_table_entry(config, TRACE_D, proof.ext_degree as u32, entry)
-            .map_err(VerificationError::InvalidProofShape)?;
-        circuit_airs.push(CircuitTablesAir::Dynamic(air));
-        trace_lens.push(entry.rows);
-    }
-
-    let mut air_public_counts = vec![0usize; NUM_PRIMITIVE_TABLES];
-    for entry in &proof.non_primitives {
-        air_public_counts.push(entry.public_values.len());
-    }
+    let air_public_counts: Vec<usize> = public_values.iter().map(Vec::len).collect();
     let mut verifier_inputs = BatchStarkVerifierInputsBuilder::<SC, Comm, OpeningProof>::allocate(
         circuit,
         &proof.proof,
@@ -372,7 +412,7 @@ where
         RATE,
     >(
         config,
-        &circuit_airs,
+        circuit_airs,
         circuit,
         &verifier_inputs.proof_targets,
         &verifier_inputs.air_public_targets,

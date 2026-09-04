@@ -13,9 +13,12 @@ use p3_fri::FriParameters;
 use p3_goldilocks::Poseidon2Goldilocks;
 use p3_matrix::Matrix;
 use p3_recursion::pcs::fri::{FriVerifierParams, InputProofTargets, MerkleCapTargets, RecValMmcs};
-use p3_recursion::pcs::set_fri_mmcs_private_data;
+use p3_recursion::pcs::{restore_fri_query_paths, set_fri_mmcs_private_data};
 use p3_recursion::public_inputs::StarkVerifierInputsBuilder;
-use p3_recursion::{Poseidon2Config, VerificationError, verify_p3_uni_proof_circuit};
+use p3_recursion::{
+    OpeningTranscript, Poseidon2Config, VerificationError, observe_opened_values,
+    replay_uni_stark_transcript, verify_p3_uni_proof_circuit,
+};
 use p3_test_utils::goldilocks_params::*;
 use p3_uni_stark::{
     prove, prove_with_preprocessed, setup_preprocessed, verify, verify_with_preprocessed,
@@ -33,7 +36,13 @@ fn default_goldilocks_poseidon2_8() -> Poseidon2Goldilocks<8> {
     Poseidon2Goldilocks::<8>::new_from_rng_128(&mut rng)
 }
 
-fn make_config() -> (MyConfig, Perm, FriVerifierParams) {
+fn make_config() -> (
+    MyConfig,
+    Perm,
+    FriVerifierParams,
+    MyMmcs,
+    FriParameters<ChallengeMmcs>,
+) {
     let perm = default_goldilocks_poseidon2_8();
     let hash = MyHash::new(perm.clone());
     let compress = MyCompress::new(perm.clone());
@@ -52,10 +61,10 @@ fn make_config() -> (MyConfig, Perm, FriVerifierParams) {
         Poseidon2Config::GOLDILOCKS_D2_W8,
     );
 
-    let pcs = MyPcs::new(dft, val_mmcs, fri_params);
+    let pcs = MyPcs::new(dft, val_mmcs.clone(), fri_params.clone());
     let challenger = Challenger::new(perm.clone());
     let config = MyConfig::new(pcs, challenger);
-    (config, perm, fri_verifier_params)
+    (config, perm, fri_verifier_params, val_mmcs, fri_params)
 }
 
 /// Verifies a Fibonacci proof recursively over Goldilocks, exercising the
@@ -65,7 +74,7 @@ fn test_goldilocks_fibonacci_verifier() -> Result<(), VerificationError> {
     let n = 1 << 3;
     let x = 21u64;
 
-    let (config, perm, fri_verifier_params) = make_config();
+    let (config, perm, fri_verifier_params, val_mmcs, fri_params) = make_config();
 
     let trace = generate_trace_rows::<F>(0, 1, n);
     let pis = vec![F::ZERO, F::ONE, F::from_u64(x)];
@@ -123,19 +132,27 @@ fn test_goldilocks_fibonacci_verifier() -> Result<(), VerificationError> {
         .set_private_inputs(&private_inputs)
         .map_err(VerificationError::Circuit)?;
 
-    // Set MMCS private data from the FRI proof
-    set_fri_mmcs_private_data::<
-        F,
-        Challenge,
-        ChallengeMmcs,
-        MyMmcs,
-        MyHash,
-        MyCompress,
-        DIGEST_ELEMS,
-    >(
+    // Set MMCS private data from the FRI proof. Its queries share one pruned Merkle multiproof,
+    // so the per-query chains the circuit walks come from replaying the proof's own transcript.
+    let OpeningTranscript {
+        mut challenger,
+        commitments_with_opening_points,
+    } = replay_uni_stark_transcript(&config, &air, &proof, &pis, None)
+        .map_err(|e| VerificationError::InvalidProofShape(e.to_string()))?;
+    observe_opened_values::<MyConfig>(&mut challenger, &commitments_with_opening_points);
+    let query_paths = restore_fri_query_paths(
+        &fri_params,
+        &val_mmcs,
+        &val_mmcs,
+        &proof.opening_proof,
+        &mut challenger,
+        &commitments_with_opening_points,
+    )
+    .map_err(|e| VerificationError::InvalidProofShape(format!("{e:?}")))?;
+    set_fri_mmcs_private_data::<F, Challenge, DIGEST_ELEMS>(
         &mut runner,
         &mmcs_op_ids,
-        &proof.opening_proof,
+        &query_paths,
         Poseidon2Config::GOLDILOCKS_D2_W8,
     )
     .map_err(|e| VerificationError::InvalidProofShape(e.to_string()))?;
@@ -151,7 +168,7 @@ fn test_goldilocks_fibonacci_verifier() -> Result<(), VerificationError> {
 fn test_goldilocks_mul_verifier_with_preprocessed() -> Result<(), VerificationError> {
     let n = 1 << 3;
 
-    let (_config, perm, _) = make_config();
+    let (_config, perm, ..) = make_config();
 
     // Skip MMCS verification (arithmetic only), matching the pattern in mul_air.rs.
     let (config2, _, fri_verifier_params) = {
