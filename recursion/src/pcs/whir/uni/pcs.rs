@@ -258,21 +258,39 @@ where
             .to_row_major_matrix()
     }
 
-    /// Filled by Task 5.
+    /// Coefficient matrices for the quotient chunks.
+    ///
+    /// Each `(domain, evaluations)` pair is one chunk on its own sub-coset;
+    /// interpolating at that coset's shift recovers the chunk polynomial's
+    /// coefficients, which is what the commitment stores.
     fn quotient_coefficient_matrices(
         &self,
-        _evaluations: impl IntoIterator<Item = (TwoAdicMultiplicativeCoset<F>, RowMajorMatrix<F>)>,
+        evaluations: impl IntoIterator<Item = (TwoAdicMultiplicativeCoset<F>, RowMajorMatrix<F>)>,
         _num_chunks: usize,
     ) -> Vec<RowMajorMatrix<F>> {
-        unimplemented!("get_quotient_ldes lands in Task 5")
+        evaluations
+            .into_iter()
+            .map(|(domain, evals)| self.dft.coset_idft_batch(evals, domain.shift()))
+            .collect()
     }
 
-    /// Filled by Task 5.
+    /// Commits coefficient matrices produced by [`Self::quotient_coefficient_matrices`].
+    ///
+    /// The univariate interface drops the domains between producing these
+    /// matrices and committing them; the commitment needs only each matrix's
+    /// height, so a unit-shift coset of that height stands in for the domain.
     fn commit_quotient_coefficient_matrices(
         &self,
-        _coeffs: Vec<RowMajorMatrix<F>>,
+        coeffs: Vec<RowMajorMatrix<F>>,
     ) -> (MT::Commitment, WhirUniProverData<F, EF, MT, L>) {
-        unimplemented!("commit_ldes lands in Task 5")
+        let domains = coeffs
+            .iter()
+            .map(|m| {
+                TwoAdicMultiplicativeCoset::new(F::ONE, log2_strict_usize(m.height()))
+                    .expect("chunk height is within the field's two-adicity")
+            })
+            .collect();
+        self.commit_coefficient_matrices(domains, coeffs)
     }
 
     /// Filled by Task 6.
@@ -553,5 +571,37 @@ mod tests {
             &pcs, &data, 0, domain,
         );
         assert_eq!(got.values, mat.values);
+    }
+
+    /// A quotient commitment must open each chunk to the same values a direct
+    /// interpolation of that chunk's evaluations would.
+    #[test]
+    fn quotient_chunks_are_committed_as_chunk_coefficients() {
+        use p3_commit::PolynomialSpace;
+
+        let pcs = test_pcs();
+        let dft = MyDft::default();
+        let mut rng = SmallRng::seed_from_u64(13);
+
+        let quotient_domain = TwoAdicMultiplicativeCoset::<F>::new(F::GENERATOR, 6).unwrap();
+        let evals = RowMajorMatrix::<F>::rand(&mut rng, 1 << 6, 1);
+        let num_chunks = 4;
+
+        let (_c, data) = <MyPcs as p3_commit::Pcs<EF, MyChallenger>>::commit_quotient(
+            &pcs,
+            quotient_domain,
+            evals.clone(),
+            num_chunks,
+        );
+
+        let sub_domains = quotient_domain.split_domains(num_chunks);
+        let sub_evals = quotient_domain.split_evals(num_chunks, evals);
+        assert_eq!(data.coeffs.len(), num_chunks);
+        for (i, (sd, se)) in sub_domains.iter().zip(sub_evals).enumerate() {
+            let want = dft.coset_idft_batch(se, sd.shift());
+            assert_eq!(data.coeffs[i].values, want.values, "chunk {i}");
+        }
+        // 4 chunks x 2^4 rows x 1 column = 64 -> stacked arity 6.
+        assert_eq!(data.stacked_num_variables, 6);
     }
 }
