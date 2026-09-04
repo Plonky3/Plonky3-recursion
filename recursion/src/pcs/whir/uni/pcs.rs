@@ -120,7 +120,6 @@ pub(crate) struct RoundSchedule<EF> {
     pub(crate) points: Vec<Point<EF>>,
     /// Bridge scale per `[matrix][point]`, consumed by the verifier's
     /// rescaling check.
-    #[allow(dead_code)]
     pub(crate) scales: Vec<Vec<EF>>,
     /// Arity of the stacked polynomial this commitment covers.
     pub(crate) stacked_num_variables: usize,
@@ -448,6 +447,20 @@ where
     /// the commitment, the STARK verifier having already done so — and then
     /// rescales the bound multilinear values into univariate ones and compares
     /// them against the claims.
+    ///
+    /// # Precondition
+    ///
+    /// `commitments` must carry, per matrix and in commit order, the
+    /// `(log height, width)` that was actually committed: the height from
+    /// each `domain`'s `log_size()` and the width implied by the opening
+    /// values' lengths. This function does not authenticate those shapes
+    /// against `commitment` itself — the WHIR Merkle root only pins the
+    /// *stacked* arity, and distinct per-matrix shape vectors can pad to the
+    /// same stacked arity — so it only checks that the WHIR argument is
+    /// internally consistent with whatever shapes it is given. Callers must
+    /// independently establish that the supplied shapes match what was
+    /// committed; `p3_uni_stark::verify` satisfies this by fixing widths from
+    /// the AIR and reconstructing domains before calling into this PCS.
     #[allow(clippy::type_complexity)]
     fn verify_rounds(
         &self,
@@ -759,7 +772,9 @@ mod tests {
         // Reference: pad the coefficients to the quotient height, then coset-DFT.
         let mut coeffs = data.coeffs[0].clone();
         let width = coeffs.width();
-        coeffs.values.resize(quotient_domain.size() * width, F::ZERO);
+        coeffs
+            .values
+            .resize(quotient_domain.size() * width, F::ZERO);
         let want = dft
             .coset_dft_batch(
                 RowMajorMatrix::new(coeffs.values, width),
@@ -901,10 +916,8 @@ mod tests {
         let d1 = TwoAdicMultiplicativeCoset::<F>::new(F::ONE, 5).unwrap();
         let m0 = RowMajorMatrix::<F>::rand(&mut rng, 1 << 6, 2);
         let m1 = RowMajorMatrix::<F>::rand(&mut rng, 1 << 5, 1);
-        let (commit, data) = <MyPcs as p3_commit::Pcs<EF, MyChallenger>>::commit(
-            &pcs,
-            vec![(d0, m0), (d1, m1)],
-        );
+        let (commit, data) =
+            <MyPcs as p3_commit::Pcs<EF, MyChallenger>>::commit(&pcs, vec![(d0, m0), (d1, m1)]);
 
         let zeta = EF::from_u32(777);
         let zeta_next = zeta * EF::from(d0.subgroup_generator());
@@ -917,13 +930,16 @@ mod tests {
             &mut challenger,
         );
 
-        let coms = vec![(
-            d0,
-            vec![(zeta, opened[0][0][0].clone()), (zeta_next, opened[0][0][1].clone())],
-        ), (
-            d1,
-            vec![(zeta, opened[0][1][0].clone())],
-        )];
+        let coms = vec![
+            (
+                d0,
+                vec![
+                    (zeta, opened[0][0][0].clone()),
+                    (zeta_next, opened[0][0][1].clone()),
+                ],
+            ),
+            (d1, vec![(zeta, opened[0][1][0].clone())]),
+        ];
         (pcs, commit, coms, proof)
     }
 
@@ -945,33 +961,46 @@ mod tests {
         let (pcs, commit, mut coms, proof) = open_two_matrices();
         coms[0].1[0].1[0] += EF::ONE;
         let mut challenger = pcs.challenger_proto.clone();
+        let err = <MyPcs as p3_commit::Pcs<EF, MyChallenger>>::verify(
+            &pcs,
+            vec![(commit, coms)],
+            &proof,
+            &mut challenger,
+        )
+        .expect_err("a tampered opened value must be rejected");
         assert!(
-            <MyPcs as p3_commit::Pcs<EF, MyChallenger>>::verify(
-                &pcs,
-                vec![(commit, coms)],
-                &proof,
-                &mut challenger,
-            )
-            .is_err(),
-            "a tampered opened value must be rejected"
+            matches!(
+                err,
+                super::WhirUniPcsError::OpeningValueMismatch {
+                    round: 0,
+                    batch: 0,
+                    column: 0,
+                }
+            ),
+            "expected an OpeningValueMismatch at round 0, batch 0, column 0, got {err:?}"
         );
     }
 
     #[test]
     fn verify_rejects_a_tampered_final_polynomial() {
         let (pcs, commit, coms, mut proof) = open_two_matrices();
-        let poly = proof.rounds[0].whir.final_poly.as_mut().expect("final poly");
+        let poly = proof.rounds[0]
+            .whir
+            .final_poly
+            .as_mut()
+            .expect("final poly");
         poly.as_mut_slice()[0] += EF::ONE;
         let mut challenger = pcs.challenger_proto.clone();
+        let err = <MyPcs as p3_commit::Pcs<EF, MyChallenger>>::verify(
+            &pcs,
+            vec![(commit, coms)],
+            &proof,
+            &mut challenger,
+        )
+        .expect_err("a tampered final polynomial must be rejected");
         assert!(
-            <MyPcs as p3_commit::Pcs<EF, MyChallenger>>::verify(
-                &pcs,
-                vec![(commit, coms)],
-                &proof,
-                &mut challenger,
-            )
-            .is_err(),
-            "a tampered final polynomial must be rejected"
+            matches!(err, super::WhirUniPcsError::Whir { round: 0, .. }),
+            "expected a Whir error at round 0, got {err:?}"
         );
     }
 }
