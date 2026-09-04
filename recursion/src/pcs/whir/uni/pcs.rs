@@ -639,7 +639,7 @@ where
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     extern crate std;
     use alloc::vec;
     use alloc::vec::Vec;
@@ -668,10 +668,10 @@ mod tests {
     type MyHash = PaddingFreeSponge<Perm, 16, 8, 8>;
     type MyCompress = TruncatedPermutation<Perm, 2, 8, 16>;
     type PackedF = <F as Field>::Packing;
-    type MyMmcs = MerkleTreeMmcs<PackedF, PackedF, MyHash, MyCompress, 2, 8>;
+    pub(crate) type MyMmcs = MerkleTreeMmcs<PackedF, PackedF, MyHash, MyCompress, 2, 8>;
     type MyDft = Radix2DFTSmallBatch<F>;
-    type MyChallenger = DuplexChallenger<F, Perm, 16, 8>;
-    type MyPcs = WhirUniPcs<EF, F, MyDft, MyMmcs, MyChallenger, PrefixProver<F, EF>>;
+    pub(crate) type MyChallenger = DuplexChallenger<F, Perm, 16, 8>;
+    pub(crate) type MyPcs = WhirUniPcs<EF, F, MyDft, MyMmcs, MyChallenger, PrefixProver<F, EF>>;
 
     pub(super) fn test_pcs() -> MyPcs {
         let mut rng = SmallRng::seed_from_u64(1);
@@ -904,7 +904,7 @@ mod tests {
     /// Builds an honest commit/open pair over two matrices at two points and
     /// returns everything `verify` needs.
     #[allow(clippy::type_complexity)]
-    fn open_two_matrices() -> (
+    pub(crate) fn open_two_matrices() -> (
         MyPcs,
         <MyMmcs as p3_commit::Mmcs<F>>::Commitment,
         Vec<(TwoAdicMultiplicativeCoset<F>, Vec<(EF, Vec<EF>)>)>,
