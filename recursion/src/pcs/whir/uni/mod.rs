@@ -10,6 +10,8 @@ pub mod targets;
 use alloc::format;
 use alloc::vec::Vec;
 
+pub use bridge::{univariate_eq_point, univariate_eq_point_circuit};
+pub use circuit::{MatrixOpenings, RoundClaims, build_round_claims};
 use p3_challenger::{
     CanObserve, CanSample, CanSampleUniformBits, FieldChallenger, GrindingChallenger,
 };
@@ -23,9 +25,6 @@ use p3_uni_stark::{StarkGenericConfig, SymbolicExpression, SymbolicExpressionExt
 use p3_util::log2_strict_usize;
 use p3_whir::parameters::{ProtocolParameters, WhirConfig};
 use p3_whir::pcs::utils::get_challenge_stir_queries;
-
-pub use bridge::{univariate_eq_point, univariate_eq_point_circuit};
-pub use circuit::{MatrixOpenings, RoundClaims, build_round_claims};
 pub use pcs::{WhirUniPcs, WhirUniPcsError, WhirUniProof, WhirUniProverData};
 pub use plan::{StackedPlacement, StackedPlan, StackedSelector, padded_arity};
 pub use recursive_pcs::WhirUniVerifierParams;
@@ -77,6 +76,30 @@ pub struct WhirQueryIndices {
 /// no `Layout` type parameter of its own, it derives `reverse_selectors`
 /// from `variable_order` under that same correspondence — the only two
 /// `Layout` implementations this crate ships.
+///
+/// Only AIRs with no preprocessed columns are supported: the call into
+/// [`replay_uni_stark_transcript`] always passes `None` for the preprocessed
+/// commitment. An AIR whose opened values carry a preprocessed part fails
+/// there with an `InvalidProofShape`-style error about a commitment/width
+/// mismatch, not a dedicated error variant for this specific limitation.
+///
+/// # Errors
+///
+/// Returns [`VerificationError::InvalidProofShape`] wherever the proof's
+/// shape (commitment count, opening counts/widths, OOD/round/final-poly
+/// lengths, PoW witnesses) disagrees with what `protocol_params` and the
+/// public inputs imply, or wherever replaying a sub-step
+/// ([`replay_uni_stark_transcript`], [`Verifier::add_claim_at`],
+/// [`p3_sumcheck::data::SumcheckData::verify_rounds`],
+/// [`verify_final_sumcheck_rounds`]) itself fails.
+///
+/// # Panics
+///
+/// Panics if a committed matrix's domain size is not a power of two
+/// ([`log2_strict_usize`]), or if [`Verifier::add_claim_at`]'s own internal
+/// invariants (matched variable counts, non-empty opening batches) are
+/// violated by a claim this function's own shape checks did not already
+/// reject.
 pub fn replay_whir_query_indices<SC, A, MT>(
     config: &SC,
     air: &A,

@@ -412,3 +412,26 @@ fn whir_recursive_verifier_rejects_a_tampered_query_leaf() {
     let pis = setup.pis.clone();
     run_whir_recursive_verifier_with_mmcs(&setup, &setup.proof, &pis, &paths).unwrap();
 }
+
+/// A tampered Merkle sibling digest must fail the circuit's own Merkle
+/// constraints, with an entirely honest proof and honest queried indices —
+/// only the restored sibling chain itself is wrong.
+///
+/// The leaf-tamper test above cannot, on its own, distinguish "the circuit's
+/// Merkle-path check caught this" from "some other, unrelated check happened
+/// to catch it too": a corrupted leaf value also desyncs the arithmetic
+/// values `verify_whir_circuit`'s final consistency check depends on. A
+/// sibling digest, by contrast, is a private input that reaches the circuit
+/// only through Merkle-path verification — it plays no part in any leaf
+/// value, `fold_vals`, or `claimed_eval` computation — so a rejection here
+/// can only come from the circuit's own root-equality connect.
+#[test]
+#[should_panic(expected = "WitnessConflict")]
+fn whir_recursive_verifier_rejects_a_tampered_sibling_digest() {
+    let setup = build_whir_setup(10, vec![4]);
+    let mut paths = restore_whir_uni_paths(&setup, &setup.proof, &setup.pis);
+
+    paths[0].rounds[0][0][0][0] += BbF::ONE;
+
+    run_whir_recursive_verifier_with_mmcs(&setup, &setup.proof, &setup.pis, &paths).unwrap();
+}
