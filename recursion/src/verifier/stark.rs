@@ -401,9 +401,12 @@ where
         permutation_next_targets: vec![],
     };
 
-    // Observe opened values before getting PCS challenges.
-    // For single-STARK with one instance, the standard observation order is correct.
-    opened_values_no_lookups.observe(circuit, &mut challenger);
+    // Observe opened values before getting PCS challenges, when this PCS's native
+    // transcript expects them pre-observed (FRI). WHIR observes them itself,
+    // interleaved with its own per-commitment challenges, inside verify_circuit.
+    if SC::Pcs::PRE_OBSERVES_OPENED_VALUES {
+        opened_values_no_lookups.observe(circuit, &mut challenger);
+    }
 
     // Get PCS-specific challenges (FRI betas, query indices, etc.)
     let pcs_challenges = SC::Pcs::get_challenges_circuit::<WIDTH, RATE, CP>(

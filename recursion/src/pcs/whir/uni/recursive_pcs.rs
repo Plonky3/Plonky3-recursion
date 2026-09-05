@@ -167,8 +167,16 @@ where
     type VerifierParams = WhirUniVerifierParams<Val<SC>>;
     type RecursiveProof = WhirUniProofTargets<Val<SC>, SC::Challenge, MT, DIGEST_ELEMS>;
 
+    /// WHIR's native `verify_at` interleaves per-commitment OOD sampling with its
+    /// own opened-value observation (see `verify_whir_uni_circuit`/`build_round_claims`),
+    /// so the generic caller must not pre-observe opened values on WHIR's behalf.
+    const PRE_OBSERVES_OPENED_VALUES: bool = false;
+
     /// WHIR interleaves every challenge with a proof observation, so all of them
-    /// are sampled inside [`Self::verify_circuit`]; nothing is produced here.
+    /// are sampled inside [`Self::verify_circuit`]; nothing is produced here. This
+    /// is correct precisely because [`Self::PRE_OBSERVES_OPENED_VALUES`] is `false`:
+    /// the generic caller has not touched the transcript with opened values before
+    /// this is called, so there is nothing to compensate for here.
     fn get_challenges_circuit<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>(
         _circuit: &mut CircuitBuilder<SC::Challenge>,
         _challenger: &mut CircuitChallenger<WIDTH, RATE, C>,

@@ -979,20 +979,24 @@ where
         coms_to_verify.push((permutation_commit, permutation_round));
     }
 
-    // Observe opened values in the correct order (matching native).
+    // Observe opened values in the correct order (matching native), when this PCS's
+    // native transcript expects them pre-observed (FRI). WHIR observes them itself,
+    // interleaved with its own per-commitment challenges, inside verify_circuit.
     // For HidingFriPcs, the native verifier merges FRI-level random opened values into
     // each point's values before observing. We must do the same here to keep the
     // Fiat-Shamir transcript in sync with the prover/verifier.
-    let fri_random_rounds = SC::Pcs::get_fri_random_opened_values(&proof_targets.opening_proof);
-    observe_opened_values_circuit::<SC, CP, WIDTH, RATE>(
-        circuit,
-        &mut challenger,
-        instances,
-        &quotient_degrees,
-        fri_random_rounds,
-        common.preprocessed.is_some(),
-        is_lookup,
-    );
+    if SC::Pcs::PRE_OBSERVES_OPENED_VALUES {
+        let fri_random_rounds = SC::Pcs::get_fri_random_opened_values(&proof_targets.opening_proof);
+        observe_opened_values_circuit::<SC, CP, WIDTH, RATE>(
+            circuit,
+            &mut challenger,
+            instances,
+            &quotient_degrees,
+            fri_random_rounds,
+            common.preprocessed.is_some(),
+            is_lookup,
+        );
+    }
 
     let pcs_challenges = SC::Pcs::get_challenges_circuit::<WIDTH, RATE, CP>(
         circuit,

@@ -37,6 +37,19 @@ pub trait RecursivePcs<
     /// Recursive proof type (may differ from OpeningProof for some schemes).
     type RecursiveProof;
 
+    /// Whether the generic caller (`stark.rs`/`batch_stark.rs`) must pre-observe
+    /// opened values into the transcript before calling `get_challenges_circuit`.
+    ///
+    /// FRI's native `Pcs::verify` observes every opened value up front, before any
+    /// FRI-specific sampling, so the generic caller performs that observe once for
+    /// both single- and batch-STARK (this is FRI's own transcript contract, lifted
+    /// to the caller — see `fri/targets.rs`'s `get_challenges_circuit` doc comment).
+    /// WHIR's native `verify_at` interleaves per-commitment OOD sampling with its
+    /// own opened-value observation, so it observes those values itself, at the
+    /// correct point, inside `verify_circuit` — the generic caller must not
+    /// pre-observe them for WHIR, or it desyncs the transcript.
+    const PRE_OBSERVES_OPENED_VALUES: bool = true;
+
     /// Generate PCS-specific challenges (e.g., FRI beta challenges, query indices).
     ///
     /// This method observes the opened values and opening proof, then samples
