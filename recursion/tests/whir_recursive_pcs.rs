@@ -5,22 +5,25 @@ use p3_circuit::ops::{generate_poseidon2_trace, generate_recompose_trace};
 use p3_circuit::test_utils::{FibonacciAir, generate_trace_rows};
 use p3_commit::Pcs;
 use p3_field::PrimeCharacteristicRing;
-use p3_matrix::Dimensions;
 use p3_poseidon2_circuit_air::BabyBearD4Width16;
+use p3_recursion::backend::replay_recursion_input_transcript;
 use p3_recursion::pcs::fri::MerkleCapTargets;
-use p3_recursion::pcs::whir::uni::{WhirUniProofTargets, WhirUniVerifierParams};
-use p3_recursion::pcs::{restore_whir_query_paths, set_whir_mmcs_private_data};
+use p3_recursion::pcs::set_whir_mmcs_private_data;
+use p3_recursion::pcs::whir::uni::{
+    WhirRoundPaths, WhirUniProofTargets, WhirUniVerifierParams, restore_whir_recursion_paths,
+    whir_round_paths_op_count,
+};
 use p3_recursion::public_inputs::StarkVerifierInputsBuilder;
+use p3_recursion::recursion::RecursionInput;
 use p3_recursion::traits::RecursivePcs;
 use p3_recursion::{Poseidon2Config, VerificationError, verify_p3_uni_proof_circuit};
 use p3_sumcheck::layout::{Layout, PrefixProver};
 use p3_uni_stark::{StarkGenericConfig, prove, verify};
-use p3_whir::parameters::WhirConfig;
 use p3_whir::pcs::proof::QueryOpenings;
 
 use crate::common::whir_config::{
-    BB_DIGEST_ELEMS, BbChallenger, BbEF, BbF, BbMmcs, BbWhirConfig, BbWhirPcs, bb_whir_mmcs,
-    bb_whir_perm, bb_whir_protocol_params,
+    BB_DIGEST_ELEMS, BbEF, BbF, BbMmcs, BbWhirConfig, BbWhirPcs, bb_whir_mmcs, bb_whir_perm,
+    bb_whir_protocol_params,
 };
 
 /// The WHIR PCS must satisfy the exact `RecursivePcs` bound
@@ -180,106 +183,37 @@ fn whir_fibonacci_recursive_verifier_rejects_tampered_opened_value() {
     run_whir_recursive_verifier(&setup, &setup.proof, &pis).unwrap();
 }
 
-/// Restored Merkle chains for one commitment's WHIR argument.
-pub struct WhirRoundPaths {
-    /// `rounds[i][q]` is the chain for intermediate round `i`'s query `q`.
-    pub rounds: Vec<Vec<Vec<[BbF; BB_DIGEST_ELEMS]>>>,
-    /// `final_paths[q]` is the chain for final query `q`.
-    pub final_paths: Vec<Vec<[BbF; BB_DIGEST_ELEMS]>>,
-}
-
-/// Number of sibling digests one commitment's chains consume, which is exactly
-/// the number of non-primitive ops `verify_whir_circuit` emits for it.
-fn op_count(paths: &WhirRoundPaths) -> usize {
-    paths
-        .rounds
-        .iter()
-        .flatten()
-        .map(Vec::len)
-        .chain(paths.final_paths.iter().map(Vec::len))
-        .sum()
-}
-
-/// Restores every commitment's per-query Merkle chains.
+/// Test-local wrapper: builds the `RecursionInput`/transcript plumbing
+/// `restore_whir_recursion_paths` needs, from this file's own `WhirSetup` shape.
 ///
-/// The queried indices are not in the proof: they come out of the WHIR
-/// transcript, so this replays a native verification of the same proof and
-/// records the indices each round sampled.
+/// `restore_whir_recursion_paths` is generic over the base-field Merkle tree's own
+/// components (`P`/`PW`/`H`/`C`/`N`) rather than over a single `Mmcs`-bound type — see its doc
+/// comment for why — so this wrapper leaves them to be inferred from `BbMmcs`, the concrete
+/// alias this test file's proofs use.
 pub fn restore_whir_uni_paths(
     setup: &WhirSetup,
     proof: &p3_uni_stark::Proof<BbWhirConfig>,
     pis: &[BbF],
-) -> Vec<WhirRoundPaths> {
+) -> Vec<WhirRoundPaths<BbF, BB_DIGEST_ELEMS>> {
     let mmcs = bb_whir_mmcs();
     let protocol_params = bb_whir_protocol_params(setup.round_log_inv_rates.clone());
-    let folding = 4usize;
-
-    // Replay the native verifier to recover the per-round queried indices.
-    let transcript = p3_recursion::generation::replay_uni_stark_transcript(
-        &setup.config,
-        &setup.air,
+    let recursion_input = RecursionInput::UniStark {
         proof,
-        pis,
-        None,
-    )
-    .expect("an honest proof's transcript replays");
-    let indices = p3_recursion::pcs::whir::uni::replay_whir_query_indices::<BbWhirConfig, BbMmcs>(
+        air: &setup.air,
+        public_inputs: pis.to_vec(),
+        preprocessed_commit: None,
+    };
+    let transcript = replay_recursion_input_transcript(&setup.config, &recursion_input, &[])
+        .expect("an honest proof's transcript replays");
+    restore_whir_recursion_paths::<BbWhirConfig, _, _, _, _, _, BB_DIGEST_ELEMS>(
+        &mmcs,
         transcript,
         &proof.opening_proof,
         &protocol_params,
-        folding,
+        4,
         PrefixProver::<BbF, BbEF>::variable_order(),
     )
-    .expect("an honest proof's transcript replays");
-
-    let mut out = Vec::with_capacity(proof.opening_proof.rounds.len());
-    for (round_idx, round) in proof.opening_proof.rounds.iter().enumerate() {
-        let cfg = WhirConfig::<BbEF, BbF, BbChallenger>::new(
-            indices[round_idx].stacked_num_variables,
-            protocol_params.clone(),
-        )
-        .expect("the replayed arity yields a valid WHIR config");
-
-        let mut rounds = Vec::new();
-        for (i, rp) in cfg.round_parameters.iter().enumerate() {
-            let dims = [Dimensions {
-                height: rp.domain_size >> rp.folding_factor,
-                width: 1 << rp.folding_factor,
-            }];
-            rounds.push(
-                restore_whir_query_paths::<_, _, BbEF, _, _, 2, BB_DIGEST_ELEMS>(
-                    &mmcs,
-                    &round.whir.rounds[i].openings,
-                    &dims,
-                    &indices[round_idx].rounds[i],
-                )
-                .expect("round path restoration"),
-            );
-        }
-
-        // `folding_factor` here — not `final_sumcheck_rounds` — is the fold
-        // applied to enter the final phase; see the Step 0 fix in
-        // `recursion/src/pcs/whir/{params,verifier}.rs` for why these two
-        // quantities are not interchangeable.
-        let final_cfg = cfg.final_round_config();
-        let final_dims = [Dimensions {
-            height: final_cfg.domain_size >> final_cfg.folding_factor,
-            width: 1 << final_cfg.folding_factor,
-        }];
-        let final_paths = restore_whir_query_paths::<_, _, BbEF, _, _, 2, BB_DIGEST_ELEMS>(
-            &mmcs,
-            &round.whir.final_openings,
-            &final_dims,
-            &indices[round_idx].final_queries,
-        )
-        .expect("final path restoration");
-
-        out.push(WhirRoundPaths {
-            rounds,
-            final_paths,
-        });
-    }
-    out
+    .expect("an honest proof's transcript replays")
 }
 
 /// Recursive verification with in-circuit Merkle checking enabled.
@@ -287,7 +221,7 @@ pub fn run_whir_recursive_verifier_with_mmcs(
     setup: &WhirSetup,
     proof: &p3_uni_stark::Proof<BbWhirConfig>,
     pis: &[BbF],
-    paths: &[WhirRoundPaths],
+    paths: &[WhirRoundPaths<BbF, BB_DIGEST_ELEMS>],
 ) -> Result<(), VerificationError> {
     let mut builder = CircuitBuilder::new();
     builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
@@ -342,7 +276,7 @@ pub fn run_whir_recursive_verifier_with_mmcs(
     // commit order, so the op-id list splits by each commitment's sibling count.
     let mut offset = 0usize;
     for round_paths in paths {
-        let count = op_count(round_paths);
+        let count = whir_round_paths_op_count(round_paths);
         set_whir_mmcs_private_data::<BbF, BbEF, BB_DIGEST_ELEMS>(
             &mut runner,
             &op_ids[offset..offset + count],

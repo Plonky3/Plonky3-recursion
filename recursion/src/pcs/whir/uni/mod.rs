@@ -4,6 +4,7 @@ pub mod bridge;
 pub mod circuit;
 pub mod pcs;
 pub mod plan;
+pub mod recursion_data;
 pub mod recursive_pcs;
 pub mod targets;
 
@@ -18,7 +19,8 @@ use p3_challenger::{
 use p3_commit::{Mmcs, PolynomialSpace};
 use p3_field::{Algebra, PrimeCharacteristicRing, PrimeField64, TwoAdicField};
 use p3_sumcheck::layout::{LayoutStrategy, Verifier};
-use p3_sumcheck::strategy::{Basis, VariableOrder};
+use p3_sumcheck::strategy::Basis;
+pub use p3_sumcheck::strategy::VariableOrder;
 use p3_sumcheck::verify_final_sumcheck_rounds;
 use p3_uni_stark::{StarkGenericConfig, SymbolicExpression, SymbolicExpressionExt, Val};
 use p3_util::log2_strict_usize;
@@ -26,6 +28,7 @@ use p3_whir::parameters::{ProtocolParameters, WhirConfig};
 use p3_whir::pcs::utils::get_challenge_stir_queries;
 pub use pcs::{WhirUniPcs, WhirUniPcsError, WhirUniProof, WhirUniProverData};
 pub use plan::{StackedPlacement, StackedPlan, StackedSelector, padded_arity};
+pub use recursion_data::{WhirRoundPaths, restore_whir_recursion_paths, whir_round_paths_op_count};
 pub use recursive_pcs::WhirUniVerifierParams;
 pub use targets::{WhirRoundTargets, WhirUniProofTargets, packed_digest_len};
 
