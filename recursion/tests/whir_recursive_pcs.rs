@@ -523,3 +523,127 @@ fn whir_recursive_verifier_rejects_a_tampered_sumcheck_round() {
 
     run_whir_recursive_verifier_with_mmcs(&setup, &setup.proof, &setup.pis, &paths).unwrap();
 }
+
+/// Two intermediate WHIR rounds exercise the round loop and the
+/// extension-field leaf path that only appears from round 1 onward.
+#[test]
+fn whir_recursive_verifier_two_rounds() -> Result<(), VerificationError> {
+    let setup = build_whir_setup(14, vec![4, 4]);
+    let paths = restore_whir_uni_paths(&setup, &setup.proof, &setup.pis);
+    run_whir_recursive_verifier_with_mmcs(&setup, &setup.proof, &setup.pis, &paths)
+}
+
+/// A tampered query leaf in the second round must still be rejected: round 1
+/// authenticates extension-field leaves through a different MMCS path than
+/// round 0's base-field leaves.
+///
+/// `p3_uni_stark::Proof` does not implement `Clone`, so — matching
+/// `whir_recursive_verifier_rejects_a_tampered_query_leaf`'s pattern — the
+/// honest paths are restored first, then `setup.proof` is tampered in place.
+#[test]
+#[should_panic(expected = "WitnessConflict")]
+fn whir_recursive_verifier_two_rounds_rejects_a_tampered_round1_leaf() {
+    let mut setup = build_whir_setup(14, vec![4, 4]);
+    let paths = restore_whir_uni_paths(&setup, &setup.proof, &setup.pis);
+
+    match &mut setup.proof.opening_proof.rounds[0].whir.rounds[1].openings {
+        QueryOpenings::Base(opening) => opening.rows[0][0] += BbF::ONE,
+        QueryOpenings::Extension(opening) => opening.rows[0][0] += BbEF::ONE,
+    }
+    run_whir_recursive_verifier_with_mmcs(&setup, &setup.proof, &setup.pis, &paths).unwrap();
+}
+
+mod koala_bear {
+    use p3_circuit::CircuitBuilder;
+    use p3_circuit::ops::{generate_poseidon2_trace, generate_recompose_trace};
+    use p3_circuit::test_utils::{FibonacciAir, generate_trace_rows};
+    use p3_field::PrimeCharacteristicRing;
+    use p3_poseidon2_circuit_air::KoalaBearD4Width16;
+    use p3_recursion::pcs::fri::MerkleCapTargets;
+    use p3_recursion::pcs::whir::uni::{WhirUniProofTargets, WhirUniVerifierParams};
+    use p3_recursion::public_inputs::StarkVerifierInputsBuilder;
+    use p3_recursion::{Poseidon2Config, VerificationError, verify_p3_uni_proof_circuit};
+    use p3_sumcheck::layout::{Layout, PrefixProver};
+    use p3_uni_stark::{prove, verify};
+
+    use crate::common::whir_config::{
+        KB_DIGEST_ELEMS, KbEF, KbF, KbMmcs, KbWhirConfig, kb_whir_config, kb_whir_perm,
+        kb_whir_protocol_params,
+    };
+
+    /// The same recursive verification over KoalaBear, confirming the adapter
+    /// is generic in the field rather than specialised to BabyBear.
+    #[test]
+    fn whir_fibonacci_recursive_verifier_koala_bear() -> Result<(), VerificationError> {
+        let trace = generate_trace_rows::<KbF>(0, 1, 1 << 10);
+        let pis = vec![KbF::ZERO, KbF::ONE, fibonacci_output(1 << 10)];
+        let air = FibonacciAir {};
+        let config = kb_whir_config(vec![4]);
+        let proof = prove(&config, &air, trace, &pis);
+        assert!(verify(&config, &air, &proof, &pis).is_ok());
+
+        let mut builder = CircuitBuilder::new();
+        builder.enable_poseidon2_perm::<KoalaBearD4Width16, _>(
+            generate_poseidon2_trace::<KbEF, KoalaBearD4Width16>,
+            kb_whir_perm(),
+        );
+        builder.enable_recompose::<KbF>(generate_recompose_trace::<KbF, KbEF>);
+
+        let params = WhirUniVerifierParams::<KbF>::new(
+            kb_whir_protocol_params(vec![4]),
+            PrefixProver::<KbF, KbEF>::variable_order(),
+            None,
+        );
+
+        let verifier_inputs = StarkVerifierInputsBuilder::<
+            KbWhirConfig,
+            MerkleCapTargets<KbF, KB_DIGEST_ELEMS>,
+            WhirUniProofTargets<KbF, KbEF, KbMmcs, KB_DIGEST_ELEMS>,
+        >::allocate(&mut builder, &proof, None, pis.len());
+
+        verify_p3_uni_proof_circuit::<
+            FibonacciAir,
+            KbWhirConfig,
+            MerkleCapTargets<KbF, KB_DIGEST_ELEMS>,
+            (),
+            WhirUniProofTargets<KbF, KbEF, KbMmcs, KB_DIGEST_ELEMS>,
+            _,
+            16,
+            8,
+        >(
+            &config,
+            &air,
+            &mut builder,
+            &verifier_inputs.proof_targets,
+            &verifier_inputs.air_public_targets,
+            &None,
+            &params,
+            Poseidon2Config::KOALA_BEAR_D4_W16,
+        )?;
+
+        let circuit = builder.build()?;
+        let mut runner = circuit.runner();
+        let (public_inputs, private_inputs) = verifier_inputs.pack_values(&pis, &proof, &None);
+        runner
+            .set_public_inputs(&public_inputs)
+            .map_err(VerificationError::Circuit)?;
+        runner
+            .set_private_inputs(&private_inputs)
+            .map_err(VerificationError::Circuit)?;
+        runner.run().map_err(VerificationError::Circuit)?;
+        Ok(())
+    }
+
+    /// The value [`generate_trace_rows::<KbF>(0, 1, n)`]'s last row claims as
+    /// its output, i.e. `F(n)` for the sequence started at `F(0) = 0`,
+    /// `F(1) = 1`, over `KbF`.
+    fn fibonacci_output(n: usize) -> KbF {
+        let (mut a, mut b) = (KbF::ZERO, KbF::ONE);
+        for _ in 1..n {
+            let next = a + b;
+            a = b;
+            b = next;
+        }
+        b
+    }
+}
