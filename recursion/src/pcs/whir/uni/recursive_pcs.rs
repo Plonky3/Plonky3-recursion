@@ -19,7 +19,7 @@ use p3_whir::parameters::{ProtocolParameters, WhirConfig};
 use crate::Target;
 use crate::challenger::CircuitChallenger;
 use crate::challenger_perm::ChallengerPermConfig;
-use crate::pcs::whir::params::WhirVerifierParams;
+use crate::pcs::whir::params::{WhirVerifierParams, WhirVerifierParamsError};
 use crate::pcs::whir::uni::circuit::verify_whir_uni_circuit;
 use crate::pcs::whir::uni::pcs::WhirUniPcs;
 use crate::pcs::whir::uni::targets::WhirUniProofTargets;
@@ -84,7 +84,13 @@ impl<F: TwoAdicField> WhirUniVerifierParams<F> {
     ///
     /// # Panics
     /// Panics if the protocol parameters are invalid for that arity.
-    pub fn round_params<EF, Ch>(&self, stacked_num_variables: usize) -> WhirVerifierParams<F>
+    ///
+    /// # Errors
+    /// See [`WhirVerifierParams::from_config`].
+    pub fn round_params<EF, Ch>(
+        &self,
+        stacked_num_variables: usize,
+    ) -> Result<WhirVerifierParams<F>, WhirVerifierParamsError>
     where
         EF: ExtensionField<F> + TwoAdicField,
         Ch: FieldChallenger<F> + GrindingChallenger<Witness = F>,

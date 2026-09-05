@@ -6,6 +6,7 @@ use p3_circuit::{CircuitBuilderError, CircuitError};
 use thiserror::Error;
 
 use crate::generation::GenerationError;
+use crate::pcs::whir::params::WhirVerifierParamsError;
 
 /// Errors that can occur during recursive STARK verification.
 #[derive(Debug, Error)]
@@ -29,6 +30,10 @@ pub enum VerificationError {
     /// Error from challenge generation
     #[error("Generation error: {0}")]
     Generation(#[from] GenerationError),
+
+    /// Error deriving in-circuit WHIR verifier parameters from a `WhirConfig`
+    #[error("WHIR verifier params error: {0}")]
+    WhirVerifierParams(#[from] WhirVerifierParamsError),
 }
 
 #[cfg(test)]

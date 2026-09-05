@@ -262,7 +262,7 @@ where
             .collect();
 
         let stacked_num_variables = stacked_num_variables(&openings, params.folding);
-        let vp = params.round_params::<EF, DummyChallenger<BF>>(stacked_num_variables);
+        let vp = params.round_params::<EF, DummyChallenger<BF>>(stacked_num_variables)?;
 
         // The commitment fixes how many initial OOD answers exist; a wrong
         // count would desync Fiat-Shamir instead of being rejected, exactly
@@ -713,7 +713,8 @@ mod tests {
             None,
         );
         let vp = arithmetic_only
-            .round_params::<EF, DuplexChallenger<BF, Poseidon2BabyBear<16>, 16, 8>>(12);
+            .round_params::<EF, DuplexChallenger<BF, Poseidon2BabyBear<16>, 16, 8>>(12)
+            .expect("non-saturating STIR query counts at this arity");
         assert_eq!(vp.num_variables, 12);
         assert!(vp.permutation_config.is_none());
 
@@ -722,8 +723,9 @@ mod tests {
             PrefixProver::<BF, EF>::variable_order(),
             Some(Poseidon2Config::BABY_BEAR_D4_W16.into()),
         );
-        let vp =
-            with_mmcs.round_params::<EF, DuplexChallenger<BF, Poseidon2BabyBear<16>, 16, 8>>(12);
+        let vp = with_mmcs
+            .round_params::<EF, DuplexChallenger<BF, Poseidon2BabyBear<16>, 16, 8>>(12)
+            .expect("non-saturating STIR query counts at this arity");
         assert!(vp.permutation_config.is_some());
         assert_eq!(vp.n_rounds(), 1);
     }
@@ -809,6 +811,7 @@ mod tests {
         const LOG_HEIGHT: usize = 12;
         let expected_ood = params
             .round_params::<EF, DuplexChallenger<BF, Poseidon2BabyBear<16>, 16, 8>>(LOG_HEIGHT)
+            .expect("non-saturating STIR query counts at this arity")
             .commitment_ood_samples;
 
         let mut builder = CircuitBuilder::<EF>::new();
