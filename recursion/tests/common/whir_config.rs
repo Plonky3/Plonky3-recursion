@@ -2,13 +2,27 @@
 
 use p3_baby_bear::{BabyBear, Poseidon2BabyBear};
 use p3_challenger::DuplexChallenger;
+use p3_circuit::ops::{generate_poseidon2_trace, generate_recompose_trace};
+use p3_circuit::{CircuitBuilder, CircuitRunner, NonPrimitiveOpId};
 use p3_dft::Radix2DFTSmallBatch;
 use p3_field::Field;
 use p3_field::extension::BinomialExtensionField;
 use p3_koala_bear::{KoalaBear, Poseidon2KoalaBear};
+use p3_lookup::logup::LogUpGadget;
 use p3_merkle_tree::MerkleTreeMmcs;
-use p3_recursion::pcs::whir::uni::WhirUniPcs;
-use p3_sumcheck::layout::PrefixProver;
+use p3_poseidon2_circuit_air::{BabyBearD4Width16, KoalaBearD4Width16};
+use p3_recursion::backend::whir::WhirRecursionConfig;
+use p3_recursion::generation::OpeningTranscript;
+use p3_recursion::pcs::fri::MerkleCapTargets;
+use p3_recursion::pcs::set_whir_mmcs_private_data;
+use p3_recursion::pcs::whir::uni::{
+    WhirUniPcs, WhirUniProof, WhirUniProofTargets, WhirUniVerifierParams,
+    restore_whir_recursion_paths, whir_round_paths_op_count,
+};
+use p3_recursion::recursion::RecursionInput;
+use p3_recursion::traits::RecursiveAir;
+use p3_recursion::{Poseidon2Config, VerificationError};
+use p3_sumcheck::layout::{Layout, PrefixProver};
 use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
 use p3_uni_stark::StarkGenericConfig;
 use p3_whir::parameters::{FoldingFactor, ProtocolParameters, SecurityAssumption};
@@ -69,20 +83,34 @@ pub const fn bb_whir_protocol_params(round_log_inv_rates: Vec<usize>) -> Protoco
 pub struct BbWhirConfig {
     pcs: BbWhirPcs,
     challenger: BbChallenger,
+    /// Shared WHIR verifier parameters, held so [`WhirRecursionConfig::pcs_verifier_params`] and
+    /// [`WhirRecursionConfig::set_whir_private_data`] can both read the round schedule the
+    /// config's own `pcs` was built with.
+    whir_verifier_params: WhirUniVerifierParams<BbF>,
 }
 
 /// Builds the configuration for the given WHIR round schedule.
 pub fn bb_whir_config(round_log_inv_rates: Vec<usize>) -> BbWhirConfig {
     let perm = bb_whir_perm();
     let challenger = BbChallenger::new(perm);
+    let protocol_params = bb_whir_protocol_params(round_log_inv_rates);
     let pcs = WhirUniPcs::new(
-        bb_whir_protocol_params(round_log_inv_rates),
+        protocol_params.clone(),
         BbDft::default(),
         bb_whir_mmcs(),
         challenger.clone(),
         20,
     );
-    BbWhirConfig { pcs, challenger }
+    let whir_verifier_params = WhirUniVerifierParams::<BbF>::new(
+        protocol_params,
+        PrefixProver::<BbF, BbEF>::variable_order(),
+        Some(Poseidon2Config::BABY_BEAR_D4_W16.into()),
+    );
+    BbWhirConfig {
+        pcs,
+        challenger,
+        whir_verifier_params,
+    }
 }
 
 impl StarkGenericConfig for BbWhirConfig {
@@ -96,6 +124,81 @@ impl StarkGenericConfig for BbWhirConfig {
 
     fn initialise_challenger(&self) -> Self::Challenger {
         self.challenger.clone()
+    }
+}
+
+impl WhirRecursionConfig for BbWhirConfig {
+    type Commitment = MerkleCapTargets<BbF, BB_DIGEST_ELEMS>;
+    type InputProof = ();
+    type OpeningProof = WhirUniProofTargets<BbF, BbEF, BbMmcs, BB_DIGEST_ELEMS>;
+    type RawOpeningProof = WhirUniProof<BbF, BbEF, BbMmcs>;
+
+    fn with_whir_opening_proof<'a, A, R>(
+        prev: &RecursionInput<'a, Self, A>,
+        f: impl FnOnce(&Self::RawOpeningProof) -> R,
+    ) -> R
+    where
+        A: RecursiveAir<BbF, BbEF, LogUpGadget>,
+    {
+        match prev {
+            RecursionInput::UniStark { proof, .. } => f(&proof.opening_proof),
+            RecursionInput::BatchStark { .. } => {
+                panic!("with_whir_opening_proof called on a batch-STARK recursion input")
+            }
+        }
+    }
+
+    fn prepare_circuit_for_verification(
+        &self,
+        circuit: &mut CircuitBuilder<BbEF>,
+    ) -> Result<(), VerificationError> {
+        circuit.enable_poseidon2_perm::<BabyBearD4Width16, _>(
+            generate_poseidon2_trace::<BbEF, BabyBearD4Width16>,
+            bb_whir_perm(),
+        );
+        circuit.enable_recompose::<BbF>(generate_recompose_trace::<BbF, BbEF>);
+        Ok(())
+    }
+
+    fn pcs_verifier_params(&self) -> &WhirUniVerifierParams<BbF> {
+        &self.whir_verifier_params
+    }
+
+    fn set_whir_private_data(
+        config: &Self,
+        runner: &mut CircuitRunner<'_, BbEF>,
+        op_ids: &[NonPrimitiveOpId],
+        opening_proof: &Self::RawOpeningProof,
+        transcript: OpeningTranscript<Self>,
+    ) -> Result<(), &'static str> {
+        let mmcs = bb_whir_mmcs();
+        let params = config.pcs_verifier_params();
+        let paths = restore_whir_recursion_paths::<Self, _, _, _, _, _, BB_DIGEST_ELEMS>(
+            &mmcs,
+            transcript,
+            opening_proof,
+            &params.protocol_params,
+            params.folding,
+            params.variable_order,
+        )
+        .map_err(|_| "Failed to restore WHIR Merkle paths")?;
+
+        let mut offset = 0usize;
+        for round_paths in &paths {
+            let count = whir_round_paths_op_count(round_paths);
+            set_whir_mmcs_private_data::<BbF, BbEF, BB_DIGEST_ELEMS>(
+                runner,
+                &op_ids[offset..offset + count],
+                &round_paths.rounds,
+                &round_paths.final_paths,
+                Poseidon2Config::BABY_BEAR_D4_W16,
+            )?;
+            offset += count;
+        }
+        if offset != op_ids.len() {
+            return Err("op-id accounting mismatch in BbWhirConfig::set_whir_private_data");
+        }
+        Ok(())
     }
 }
 
@@ -153,20 +256,34 @@ pub const fn kb_whir_protocol_params(round_log_inv_rates: Vec<usize>) -> Protoco
 pub struct KbWhirConfig {
     pcs: KbWhirPcs,
     challenger: KbChallenger,
+    /// Shared WHIR verifier parameters, held so [`WhirRecursionConfig::pcs_verifier_params`] and
+    /// [`WhirRecursionConfig::set_whir_private_data`] can both read the round schedule the
+    /// config's own `pcs` was built with.
+    whir_verifier_params: WhirUniVerifierParams<KbF>,
 }
 
 /// Builds the configuration for the given WHIR round schedule.
 pub fn kb_whir_config(round_log_inv_rates: Vec<usize>) -> KbWhirConfig {
     let perm = kb_whir_perm();
     let challenger = KbChallenger::new(perm);
+    let protocol_params = kb_whir_protocol_params(round_log_inv_rates);
     let pcs = WhirUniPcs::new(
-        kb_whir_protocol_params(round_log_inv_rates),
+        protocol_params.clone(),
         KbDft::default(),
         kb_whir_mmcs(),
         challenger.clone(),
         20,
     );
-    KbWhirConfig { pcs, challenger }
+    let whir_verifier_params = WhirUniVerifierParams::<KbF>::new(
+        protocol_params,
+        PrefixProver::<KbF, KbEF>::variable_order(),
+        Some(Poseidon2Config::KOALA_BEAR_D4_W16.into()),
+    );
+    KbWhirConfig {
+        pcs,
+        challenger,
+        whir_verifier_params,
+    }
 }
 
 impl StarkGenericConfig for KbWhirConfig {
@@ -180,5 +297,80 @@ impl StarkGenericConfig for KbWhirConfig {
 
     fn initialise_challenger(&self) -> Self::Challenger {
         self.challenger.clone()
+    }
+}
+
+impl WhirRecursionConfig for KbWhirConfig {
+    type Commitment = MerkleCapTargets<KbF, KB_DIGEST_ELEMS>;
+    type InputProof = ();
+    type OpeningProof = WhirUniProofTargets<KbF, KbEF, KbMmcs, KB_DIGEST_ELEMS>;
+    type RawOpeningProof = WhirUniProof<KbF, KbEF, KbMmcs>;
+
+    fn with_whir_opening_proof<'a, A, R>(
+        prev: &RecursionInput<'a, Self, A>,
+        f: impl FnOnce(&Self::RawOpeningProof) -> R,
+    ) -> R
+    where
+        A: RecursiveAir<KbF, KbEF, LogUpGadget>,
+    {
+        match prev {
+            RecursionInput::UniStark { proof, .. } => f(&proof.opening_proof),
+            RecursionInput::BatchStark { .. } => {
+                panic!("with_whir_opening_proof called on a batch-STARK recursion input")
+            }
+        }
+    }
+
+    fn prepare_circuit_for_verification(
+        &self,
+        circuit: &mut CircuitBuilder<KbEF>,
+    ) -> Result<(), VerificationError> {
+        circuit.enable_poseidon2_perm::<KoalaBearD4Width16, _>(
+            generate_poseidon2_trace::<KbEF, KoalaBearD4Width16>,
+            kb_whir_perm(),
+        );
+        circuit.enable_recompose::<KbF>(generate_recompose_trace::<KbF, KbEF>);
+        Ok(())
+    }
+
+    fn pcs_verifier_params(&self) -> &WhirUniVerifierParams<KbF> {
+        &self.whir_verifier_params
+    }
+
+    fn set_whir_private_data(
+        config: &Self,
+        runner: &mut CircuitRunner<'_, KbEF>,
+        op_ids: &[NonPrimitiveOpId],
+        opening_proof: &Self::RawOpeningProof,
+        transcript: OpeningTranscript<Self>,
+    ) -> Result<(), &'static str> {
+        let mmcs = kb_whir_mmcs();
+        let params = config.pcs_verifier_params();
+        let paths = restore_whir_recursion_paths::<Self, _, _, _, _, _, KB_DIGEST_ELEMS>(
+            &mmcs,
+            transcript,
+            opening_proof,
+            &params.protocol_params,
+            params.folding,
+            params.variable_order,
+        )
+        .map_err(|_| "Failed to restore WHIR Merkle paths")?;
+
+        let mut offset = 0usize;
+        for round_paths in &paths {
+            let count = whir_round_paths_op_count(round_paths);
+            set_whir_mmcs_private_data::<KbF, KbEF, KB_DIGEST_ELEMS>(
+                runner,
+                &op_ids[offset..offset + count],
+                &round_paths.rounds,
+                &round_paths.final_paths,
+                Poseidon2Config::KOALA_BEAR_D4_W16,
+            )?;
+            offset += count;
+        }
+        if offset != op_ids.len() {
+            return Err("op-id accounting mismatch in KbWhirConfig::set_whir_private_data");
+        }
+        Ok(())
     }
 }
