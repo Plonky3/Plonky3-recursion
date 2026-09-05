@@ -100,8 +100,13 @@ where
         let round_proof = &proof.rounds[round_idx];
 
         // 1. Observe round commitment cap (public inputs, already in transcript order).
+        //
+        //    Native `CanObserve<MerkleCap<F, [F; DIGEST_ELEMS]>>` absorbs each digest one
+        //    base element at a time. A cap entry holds that digest packed into extension
+        //    elements (`packed_digest_len`), so absorbing the entry as extension elements
+        //    unpacks each back into its base coefficients and reproduces that order.
         for cap_entry in &round_proof.commitment_cap {
-            challenger.observe_slice(circuit, cap_entry);
+            challenger.observe_ext_slice(circuit, cap_entry);
         }
 
         // 2. OOD: sample univariate point, expand, observe answer — one per OOD sample.
