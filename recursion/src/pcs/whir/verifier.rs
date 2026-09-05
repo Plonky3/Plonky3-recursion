@@ -236,12 +236,15 @@ where
         challenger.check_pow_witness(circuit, params.final_pow_bits, proof.final_pow_witness)?;
     }
 
-    // Final STIR queries: domain = final_round_config.domain_size >> final_sumcheck_rounds.
-    let final_folded_size = params.final_domain_size >> params.final_sumcheck_rounds;
+    // Final STIR queries: domain = final_round_config.domain_size >> final_round_config.folding_factor.
+    // `final_folding_factor` is the fold applied to *enter* the final phase; it is
+    // distinct from `final_sumcheck_rounds`, the plain-sumcheck length performed
+    // *after* that fold, and the two coincide only for specific arities.
+    let final_folded_size = params.final_domain_size >> params.final_folding_factor;
     let final_domain_bits = p3_util::log2_strict_usize(final_folded_size);
     let final_dims = vec![Dimensions {
         height: final_folded_size,
-        width: 1usize << params.final_sumcheck_rounds,
+        width: 1usize << params.final_folding_factor,
     }];
 
     let final_query_r: Vec<Target> = if is_suffix {
@@ -629,7 +632,7 @@ mod tests {
             vc.observe_algebra_slice(final_poly.as_slice());
             let final_indices = get_challenge_stir_queries::<MyChallenger, BF>(
                 config.final_round_config().domain_size,
-                config.final_sumcheck_rounds,
+                config.final_round_config().folding_factor,
                 config.final_queries,
                 &mut vc,
             );
@@ -899,7 +902,7 @@ mod tests {
             vc.observe_algebra_slice(final_poly.as_slice());
             let final_indices = get_challenge_stir_queries::<MyChallenger, BF>(
                 config.final_round_config().domain_size,
-                config.final_sumcheck_rounds,
+                config.final_round_config().folding_factor,
                 config.final_queries,
                 &mut vc,
             );
@@ -1043,8 +1046,9 @@ mod tests {
             )
             .expect("round 0 path restoration");
         let final_indices_dims = Dimensions {
-            height: config.final_round_config().domain_size >> config.final_sumcheck_rounds,
-            width: 1 << config.final_sumcheck_rounds,
+            height: config.final_round_config().domain_size
+                >> config.final_round_config().folding_factor,
+            width: 1 << config.final_round_config().folding_factor,
         };
         let final_paths =
             restore_whir_query_paths::<PackedBF, PackedBF, EF, _, _, 2, DIGEST_ELEMS>(
@@ -1179,7 +1183,7 @@ mod tests {
             vc.observe_algebra_slice(final_poly.as_slice());
             let final_indices = get_challenge_stir_queries::<MyChallenger, BF>(
                 config.final_round_config().domain_size,
-                config.final_sumcheck_rounds,
+                config.final_round_config().folding_factor,
                 config.final_queries,
                 &mut vc,
             );
@@ -1318,8 +1322,9 @@ mod tests {
             )
             .expect("round 0 path restoration");
         let final_indices_dims = Dimensions {
-            height: config.final_round_config().domain_size >> config.final_sumcheck_rounds,
-            width: 1 << config.final_sumcheck_rounds,
+            height: config.final_round_config().domain_size
+                >> config.final_round_config().folding_factor,
+            width: 1 << config.final_round_config().folding_factor,
         };
         let final_paths =
             restore_whir_query_paths::<PackedBF, PackedBF, EF, _, _, 2, DIGEST_ELEMS>(

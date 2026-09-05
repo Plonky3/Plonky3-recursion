@@ -307,7 +307,7 @@ macro_rules! whir_arithmetic_test {
                     let fin_rc = config.final_round_config();
                     let final_indices = get_challenge_stir_queries::<MyChallenger, BF>(
                         fin_rc.domain_size,
-                        config.final_sumcheck_rounds,
+                        fin_rc.folding_factor,
                         config.final_queries,
                         &mut vc,
                     );

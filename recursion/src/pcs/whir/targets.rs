@@ -230,7 +230,12 @@ impl WhirProofTargets {
         let initial_folding_factor = if params.n_rounds() > 0 {
             params.round_params[0].folding_factor
         } else {
-            params.final_sumcheck_rounds
+            // No intermediate rounds: the initial fold *is* the fold that enters
+            // the final phase, so its length is `final_folding_factor`, not
+            // `final_sumcheck_rounds` (the plain-sumcheck length performed after
+            // that fold — a distinct quantity that coincides with it only for
+            // specific arities).
+            params.final_folding_factor
         };
         let initial_sumcheck = SumcheckDataTargets::alloc(
             circuit,
@@ -262,11 +267,12 @@ impl WhirProofTargets {
             circuit.alloc_public_inputs(final_poly_len, "WHIR final polynomial evaluations");
         let final_pow_witness = circuit.alloc_public_input("WHIR final PoW witness");
 
-        let final_leaf_len = if params.n_rounds() > 0 {
-            1usize << params.round_params.last().unwrap().folding_factor
-        } else {
-            1usize << initial_folding_factor
-        };
+        // The final phase's leaf width is `2^final_folding_factor` regardless of
+        // `n_rounds()`: `round_params.last().folding_factor` (the *last
+        // intermediate* round's fold) is a different quantity in general and only
+        // coincides with it when the folding schedule's last two entries happen
+        // to match.
+        let final_leaf_len = 1usize << params.final_folding_factor;
         let final_queries = (0..params.final_queries)
             .map(|_| {
                 if params.n_rounds() == 0 {

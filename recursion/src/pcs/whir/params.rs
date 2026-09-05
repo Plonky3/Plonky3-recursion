@@ -96,6 +96,14 @@ pub struct WhirVerifierParams<F> {
     pub final_pow_bits: usize,
     /// Number of sumcheck rounds in the final phase (`0` means no final sumcheck).
     pub final_sumcheck_rounds: usize,
+    /// Number of variables folded to enter the final phase
+    /// (= `final_round_config().folding_factor`).
+    ///
+    /// This is the quantity `WhirVerifier::verify_stir_challenges` uses to size the
+    /// final STIR query domain and Merkle leaf width. It is distinct from
+    /// `final_sumcheck_rounds`, which counts the plain-sumcheck rounds performed
+    /// *after* that fold; the two coincide only for specific arities.
+    pub final_folding_factor: usize,
     /// PoW bits for the final folding sumcheck.
     pub final_folding_pow_bits: usize,
     /// Folding variable order (Prefix or Suffix).
@@ -158,7 +166,7 @@ impl<F: Field> WhirVerifierParams<F> {
 
         let final_round_config = config.final_round_config();
         let final_folded_domain_size =
-            final_round_config.domain_size >> config.final_sumcheck_rounds;
+            final_round_config.domain_size >> final_round_config.folding_factor;
         if config.final_queries >= final_folded_domain_size {
             return Err(WhirVerifierParamsError::SaturatingQueryCountUnsupported {
                 phase: WhirPhase::Final,
@@ -176,6 +184,7 @@ impl<F: Field> WhirVerifierParams<F> {
             final_queries: config.final_queries,
             final_pow_bits: config.final_pow_bits,
             final_sumcheck_rounds: config.final_sumcheck_rounds,
+            final_folding_factor: final_round_config.folding_factor,
             final_folding_pow_bits: config.final_folding_pow_bits,
             variable_order,
             final_domain_size: final_round_config.domain_size,
@@ -221,7 +230,10 @@ impl<F: Field> WhirVerifierParams<F> {
     /// Folding factor (= round sumcheck length) for the given round index.
     ///
     /// - Round `0..n_rounds()`: the initial folding factor is the length of `initial_sumcheck`.
-    /// - Round `n_rounds()`: the final sumcheck length.
+    /// - Round `n_rounds()`: the folding factor applied to enter the final phase
+    ///   (`final_folding_factor`), *not* the final plain-sumcheck length
+    ///   (`final_sumcheck_rounds`) — the two are distinct quantities that coincide
+    ///   only for specific arities.
     ///
     /// The initial folding factor is stored implicitly via the `initial_sumcheck` length in the proof.
     /// This method queries the `round_params[i].folding_factor` for intermediate rounds.
@@ -229,7 +241,7 @@ impl<F: Field> WhirVerifierParams<F> {
         if round < self.n_rounds() {
             self.round_params[round].folding_factor
         } else {
-            self.final_sumcheck_rounds
+            self.final_folding_factor
         }
     }
 }
@@ -249,11 +261,12 @@ mod tests {
     type BF = BabyBear;
     type EF = BinomialExtensionField<BF, 4>;
 
-    /// `NUM_VARIABLES = 4` with this schedule has zero intermediate rounds and a
-    /// final phase with `final_queries = 35` against a folded domain of 32
-    /// positions: `35 >= 32`, so native sampling would enumerate the whole
-    /// domain with no challenger draws, which the in-circuit verifier does not
-    /// yet mirror.
+    /// `NUM_VARIABLES = 4` with this schedule has zero intermediate rounds: the
+    /// only fold (factor 4) takes the starting domain (32 positions) straight
+    /// into the final phase, leaving a folded domain of `32 >> 4 = 2`
+    /// positions. `final_queries = 35 >= 2`, so native sampling would enumerate
+    /// the whole domain with no challenger draws, which the in-circuit verifier
+    /// does not yet mirror.
     fn saturating_protocol_params() -> ProtocolParameters {
         ProtocolParameters {
             security_level: 32,
@@ -295,14 +308,14 @@ mod tests {
             PrefixProver::<BF, EF>::variable_order(),
             p3_circuit::ops::Poseidon2Config::BABY_BEAR_D4_W16,
         )
-        .expect_err("final_queries=35 >= folded_domain_size=32 must be rejected");
+        .expect_err("final_queries=35 >= folded_domain_size=2 must be rejected");
 
         assert_eq!(
             err,
             WhirVerifierParamsError::SaturatingQueryCountUnsupported {
                 phase: WhirPhase::Final,
                 num_queries: 35,
-                folded_domain_size: 32,
+                folded_domain_size: 2,
             }
         );
     }
