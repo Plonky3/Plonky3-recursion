@@ -206,3 +206,49 @@ jobs:
 
       - name: Format
         run: cargo +nightly fmt --all -- --check
+
+  vendored_p3_whir:
+    name: Vendored p3-whir
+    runs-on: ubuntu-latest
+    if: "! contains(toJSON(github.event.commits.*.message), '[skip-ci]')"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+        id: rs-stable
+
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: vendored-p3-whir
+          cache-on-failure: true
+
+      # vendor/p3-whir patches one function (the STIR query-index sampler) in
+      # the pinned p3-whir 0.7.0 release via [patch.crates-io]. It is not a
+      # workspace member, so none of the jobs above build, test, or lint it.
+      # This job re-fetches the exact upstream release, checks it against the
+      # crates.io index checksum, and diffs it against vendor/p3-whir to keep
+      # that patch surgical and auditable, then runs the vendored crate's own
+      # test/clippy/fmt the same way the workspace jobs do for everything else.
+      - name: Verify vendoring integrity against upstream crates.io release
+        run: ./scripts/verify_vendored_p3_whir.sh
+
+      # --lib only: this repo's own .cargo/config.toml sets a katex
+      # rustdocflags path relative to the repo root (for the workspace's own
+      # docs), which cargo also applies here since config discovery walks up
+      # from vendor/p3-whir regardless of its own [workspace] table. That
+      # breaks vendor/p3-whir's doctests specifically, not its unit tests.
+      - name: Test (vendored p3-whir)
+        run: cargo +stable test --manifest-path vendor/p3-whir/Cargo.toml --lib
+
+      - name: Clippy (vendored p3-whir)
+        run: cargo +stable clippy --manifest-path vendor/p3-whir/Cargo.toml --all-targets -- -D warnings
+
+      - name: Format (vendored p3-whir)
+        run: cargo +nightly fmt --manifest-path vendor/p3-whir/Cargo.toml -- --check
