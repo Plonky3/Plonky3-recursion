@@ -500,6 +500,56 @@ pub(crate) mod tests_support {
             num_variables,
         }
     }
+
+    /// Builds a single-matrix, single-point, zero-OOD claim circuit whose
+    /// opening claim is one field element off from `bound * scale` — the
+    /// bridge identity [`build_round_claims`] enforces via `circuit.mul` +
+    /// `circuit.connect` — and returns the built circuit's own `run()`
+    /// result instead of unwrapping it, so the caller can assert on the
+    /// failure.
+    pub(crate) fn tampered_claim_rejected_by_circuit(
+        log_height: usize,
+        folding: usize,
+        zeta: EF,
+        bound_value: EF,
+    ) -> Result<(), p3_circuit::CircuitError> {
+        let scale = super::super::bridge::univariate_eq_point::<EF>(
+            zeta,
+            super::super::plan::padded_arity(log_height, folding).get(),
+        )
+        .1;
+
+        let mut builder = CircuitBuilder::<EF>::new();
+        let zeta_t = builder.define_const(zeta);
+        let bound_t = builder.define_const(bound_value);
+        // Deliberately wrong: the honest claim is `bound_value * scale`.
+        let wrong_claimed = builder.define_const(bound_value * scale + EF::ONE);
+
+        let points = [(zeta_t, alloc::vec![wrong_claimed])];
+        let matrices = [MatrixOpenings {
+            log_height,
+            points: &points,
+        }];
+        let round_evals = alloc::vec![alloc::vec![bound_t]];
+
+        let mut challenger = StubChallenger {
+            ext: alloc::vec![EF::ZERO].into(),
+        };
+        build_round_claims::<BF, EF, _>(
+            &mut builder,
+            &mut challenger,
+            &matrices,
+            &round_evals,
+            &[],
+            folding,
+        )
+        .unwrap();
+
+        let circuit = builder.build().unwrap();
+        let mut runner = circuit.runner();
+        runner.set_public_inputs(&[]).unwrap();
+        runner.run().map(|_| ())
+    }
 }
 
 #[cfg(test)]
@@ -615,6 +665,34 @@ mod tests {
         assert_eq!(got.claimed_eval, native_sum);
         assert_eq!(got.num_variables, native_constraint.num_variables());
         assert_eq!(got.eq_points, native_eq_points);
+    }
+
+    /// `build_round_claims`'s `circuit.mul` + `circuit.connect` binding
+    /// `bound * scale == claimed` (the bridge tying a STARK opening value to
+    /// the WHIR argument's bound multilinear value) is the only place in the
+    /// entire recursive verifier that constrains this identity: under WHIR,
+    /// opened values are never pre-observed into the transcript
+    /// (`PRE_OBSERVES_OPENED_VALUES = false`), so without this connect the
+    /// only other thing tying an opened value down is the outer AIR-level
+    /// `connect(folded_mul, quotient)` in `verifier/stark.rs`, which does not
+    /// see the WHIR-side `bound` value at all. Deleting this connect leaves
+    /// every test in this workspace passing (confirmed by deletion during
+    /// review), so this test pins the identity in isolation, with no prover
+    /// run required: a `claimed` value one field element off from
+    /// `bound * scale` must fail with `WitnessConflict`.
+    #[test]
+    fn build_round_claims_rejects_a_claim_that_does_not_match_bound_times_scale() {
+        let err = super::tests_support::tampered_claim_rejected_by_circuit(
+            5,
+            4,
+            EF::from_u32(101),
+            EF::from_u32(11),
+        )
+        .expect_err("a claimed value off from bound * scale must be rejected");
+        assert!(
+            matches!(err, p3_circuit::CircuitError::WitnessConflict { .. }),
+            "expected WitnessConflict, got {err:?}"
+        );
     }
 
     /// A never-invoked challenger stub for tests that panic before any

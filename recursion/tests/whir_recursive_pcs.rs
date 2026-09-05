@@ -504,7 +504,12 @@ fn whir_recursive_verifier_rejects_a_tampered_final_poly() {
     run_whir_recursive_verifier_with_mmcs(&setup, &setup.proof, &setup.pis, &paths).unwrap();
 }
 
-/// A tampered sumcheck round polynomial breaks the folded claim.
+/// A tampered sumcheck round polynomial desyncs the transcript from the
+/// values the prover used, so the tamper is caught downstream, at the same
+/// witness slot (confirmed by witness-id comparison) as
+/// `whir_recursive_verifier_rejects_a_tampered_sibling_digest`'s MMCS
+/// root-equality check — not, as the name alone might suggest, an
+/// independent check of the sumcheck's own folded claim.
 #[test]
 #[should_panic(expected = "WitnessConflict")]
 fn whir_recursive_verifier_rejects_a_tampered_sumcheck_round() {
