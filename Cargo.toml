@@ -98,6 +98,9 @@ p3-poseidon2-circuit-air = { path = "poseidon2-circuit-air", version = "0.1.0" }
 p3-recursion = { path = "recursion", version = "0.1.0" }
 p3-test-utils = { path = "test-utils", version = "0.1.0" }
 
+[patch.crates-io]
+p3-whir = { path = "vendor/p3-whir" }
+
 [profile.profiling]
 inherits = "release"
 debug = true
