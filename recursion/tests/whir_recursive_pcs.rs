@@ -154,3 +154,24 @@ fn whir_fibonacci_recursive_verifier_rejects_wrong_public_inputs() {
     wrong[2] += BbF::ONE;
     run_whir_recursive_verifier(&setup, &setup.proof, &wrong).unwrap();
 }
+
+/// A tampered opened value (proof data, not a caller-supplied public input)
+/// must also break a circuit constraint.
+///
+/// This exercises a different code path than
+/// `whir_fibonacci_recursive_verifier_rejects_wrong_public_inputs`: the
+/// quotient commitment's own WHIR opening-claim binding (`add_claim_at`'s
+/// absorption of the claimed evaluation into the transcript, and the
+/// resulting `claimed_eval` checked against the proof's fixed initial
+/// sumcheck data), rather than the outer STARK's public-value transcript
+/// absorption. See the Phase 4 report for the witness-id evidence pinning
+/// exactly where this fails and why it is not the outer AIR-level
+/// `circuit.connect(folded_mul, quotient)` check.
+#[test]
+#[should_panic(expected = "WitnessConflict")]
+fn whir_fibonacci_recursive_verifier_rejects_tampered_opened_value() {
+    let mut setup = build_whir_setup(10, vec![4]);
+    setup.proof.opened_values.quotient_chunks[0][0] += BbEF::ONE;
+    let pis = setup.pis.clone();
+    run_whir_recursive_verifier(&setup, &setup.proof, &pis).unwrap();
+}
