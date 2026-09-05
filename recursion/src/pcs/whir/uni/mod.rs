@@ -15,9 +15,8 @@ pub use circuit::{MatrixOpenings, RoundClaims, build_round_claims};
 use p3_challenger::{
     CanObserve, CanSample, CanSampleUniformBits, FieldChallenger, GrindingChallenger,
 };
-use p3_commit::{Mmcs, Pcs as PcsTrait, PolynomialSpace};
+use p3_commit::{Mmcs, PolynomialSpace};
 use p3_field::{Algebra, PrimeCharacteristicRing, PrimeField64, TwoAdicField};
-use p3_lookup::logup::LogUpGadget;
 use p3_sumcheck::layout::{LayoutStrategy, Verifier};
 use p3_sumcheck::strategy::{Basis, VariableOrder};
 use p3_sumcheck::verify_final_sumcheck_rounds;
@@ -31,8 +30,6 @@ pub use recursive_pcs::WhirUniVerifierParams;
 pub use targets::{WhirRoundTargets, WhirUniProofTargets, packed_digest_len};
 
 use crate::VerificationError;
-use crate::generation::replay_uni_stark_transcript;
-use crate::traits::RecursiveAir;
 
 /// Queried STIR indices one commitment's WHIR argument sampled.
 ///
@@ -50,24 +47,32 @@ pub struct WhirQueryIndices {
     pub final_queries: Vec<usize>,
 }
 
-/// Replays a WHIR-backed uni-STARK proof's transcript to recover every
-/// commitment's STIR query indices.
+/// Replays a WHIR-backed proof's transcript to recover every commitment's
+/// STIR query indices.
 ///
 /// Native `WhirVerifier::verify` samples these indices internally
 /// ([`get_challenge_stir_queries`]) and never returns them — its job is to
 /// check a proof, not report intermediate transcript state. This function
-/// walks the identical sequence of transcript operations
-/// ([`p3_uni_stark::verify`]'s prefix via [`replay_uni_stark_transcript`],
-/// then, per commitment, [`p3_sumcheck::layout::Verifier`]'s opening-claim
-/// absorption from `p3-whir`'s `PrescribedPointPcs::verify_at`, then
-/// `WhirVerifier::verify`'s own round loop), reusing the same public
-/// sub-functions native verification does, but records the indices at each
-/// STIR-sampling point instead of discarding them.
+/// walks the identical sequence of transcript operations (per commitment,
+/// [`p3_sumcheck::layout::Verifier`]'s opening-claim absorption from
+/// `p3-whir`'s `PrescribedPointPcs::verify_at`, then `WhirVerifier::verify`'s
+/// own round loop), reusing the same public sub-functions native
+/// verification does, but records the indices at each STIR-sampling point
+/// instead of discarding them.
+///
+/// `transcript` must be in the state [`crate::generation::OpeningTranscript`]
+/// documents — every commitment and public value observed, no opened value
+/// observed yet — exactly what
+/// [`crate::backend::replay_recursion_input_transcript`] produces for either
+/// a uni-STARK or a batch-STARK recursion input. `opening_proof` is the WHIR
+/// opening proof's own data (`proof.opening_proof` for a uni-STARK
+/// `Proof<SC>`, or the equivalent field on a batch-STARK proof), supplied
+/// separately because it is not part of the transcript.
 ///
 /// This does not re-verify the proof's arithmetic (sumcheck claims, the
 /// final consistency check): it trusts a proof that has already verified
-/// (via [`p3_uni_stark::verify`]) and only needs to reproduce the *shape* of
-/// the transcript walk to land on the same challenger states.
+/// and only needs to reproduce the *shape* of the transcript walk to land on
+/// the same challenger states.
 ///
 /// `variable_order` must match the [`p3_sumcheck::layout::Layout`] the proof
 /// was produced under. Every current caller uses
@@ -77,20 +82,13 @@ pub struct WhirQueryIndices {
 /// from `variable_order` under that same correspondence — the only two
 /// `Layout` implementations this crate ships.
 ///
-/// Only AIRs with no preprocessed columns are supported: the call into
-/// [`replay_uni_stark_transcript`] always passes `None` for the preprocessed
-/// commitment. An AIR whose opened values carry a preprocessed part fails
-/// there with an `InvalidProofShape`-style error about a commitment/width
-/// mismatch, not a dedicated error variant for this specific limitation.
-///
 /// # Errors
 ///
 /// Returns [`VerificationError::InvalidProofShape`] wherever the proof's
 /// shape (commitment count, opening counts/widths, OOD/round/final-poly
-/// lengths, PoW witnesses) disagrees with what `protocol_params` and the
-/// public inputs imply, or wherever replaying a sub-step
-/// ([`replay_uni_stark_transcript`], [`Verifier::add_claim_at`],
-/// [`p3_sumcheck::data::SumcheckData::verify_rounds`],
+/// lengths, PoW witnesses) disagrees with what `protocol_params` and
+/// `transcript` imply, or wherever replaying a sub-step
+/// ([`Verifier::add_claim_at`], [`p3_sumcheck::data::SumcheckData::verify_rounds`],
 /// [`verify_final_sumcheck_rounds`]) itself fails.
 ///
 /// # Panics
@@ -100,33 +98,27 @@ pub struct WhirQueryIndices {
 /// invariants (matched variable counts, non-empty opening batches) are
 /// violated by a claim this function's own shape checks did not already
 /// reject.
-pub fn replay_whir_query_indices<SC, A, MT>(
-    config: &SC,
-    air: &A,
-    proof: &p3_uni_stark::Proof<SC>,
-    public_values: &[Val<SC>],
+pub fn replay_whir_query_indices<SC, MT>(
+    transcript: crate::generation::OpeningTranscript<SC>,
+    opening_proof: &WhirUniProof<Val<SC>, SC::Challenge, MT>,
     protocol_params: &ProtocolParameters,
     folding: usize,
     variable_order: VariableOrder,
 ) -> Result<Vec<WhirQueryIndices>, VerificationError>
 where
     SC: StarkGenericConfig,
-    SC::Pcs:
-        PcsTrait<SC::Challenge, SC::Challenger, Proof = WhirUniProof<Val<SC>, SC::Challenge, MT>>,
     Val<SC>: TwoAdicField + PrimeField64,
     SC::Challenge: TwoAdicField,
     SC::Challenger: FieldChallenger<Val<SC>>
         + GrindingChallenger<Witness = Val<SC>>
         + CanSampleUniformBits<Val<SC>>
         + CanObserve<MT::Commitment>,
-    A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
     SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
     MT: Mmcs<Val<SC>>,
 {
     type F<SC> = Val<SC>;
     type EF<SC> = <SC as StarkGenericConfig>::Challenge;
 
-    let transcript = replay_uni_stark_transcript(config, air, proof, public_values, None)?;
     let mut challenger = transcript.challenger;
 
     let reverse_selectors = match variable_order {
@@ -135,19 +127,19 @@ where
     };
     let strategy = LayoutStrategy::new(reverse_selectors, variable_order);
 
-    if transcript.commitments_with_opening_points.len() != proof.opening_proof.rounds.len() {
+    if transcript.commitments_with_opening_points.len() != opening_proof.rounds.len() {
         return Err(VerificationError::InvalidProofShape(format!(
             "WHIR commitment count mismatch: transcript expects {}, proof carries {}",
             transcript.commitments_with_opening_points.len(),
-            proof.opening_proof.rounds.len()
+            opening_proof.rounds.len()
         )));
     }
 
-    let mut out = Vec::with_capacity(proof.opening_proof.rounds.len());
+    let mut out = Vec::with_capacity(opening_proof.rounds.len());
     for ((_commitment, matrices), round_proof) in transcript
         .commitments_with_opening_points
         .iter()
-        .zip(&proof.opening_proof.rounds)
+        .zip(&opening_proof.rounds)
     {
         // Rebuild the opening schedule from public data only, exactly as
         // `WhirUniPcs::verify_rounds` does.

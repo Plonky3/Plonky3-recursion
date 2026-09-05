@@ -215,15 +215,17 @@ pub fn restore_whir_uni_paths(
     let folding = 4usize;
 
     // Replay the native verifier to recover the per-round queried indices.
-    let indices = p3_recursion::pcs::whir::uni::replay_whir_query_indices::<
-        BbWhirConfig,
-        FibonacciAir,
-        BbMmcs,
-    >(
+    let transcript = p3_recursion::generation::replay_uni_stark_transcript(
         &setup.config,
         &setup.air,
         proof,
         pis,
+        None,
+    )
+    .expect("an honest proof's transcript replays");
+    let indices = p3_recursion::pcs::whir::uni::replay_whir_query_indices::<BbWhirConfig, BbMmcs>(
+        transcript,
+        &proof.opening_proof,
         &protocol_params,
         folding,
         PrefixProver::<BbF, BbEF>::variable_order(),
