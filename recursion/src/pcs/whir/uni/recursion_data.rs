@@ -126,6 +126,11 @@ where
             );
         }
 
+        // The final phase's folded-domain size and STIR index bit-width are sized by the
+        // fold applied to *enter* the final phase (`final_cfg.folding_factor`), not by
+        // `final_sumcheck_rounds` (the number of plain-sumcheck rounds performed *after*
+        // that fold) — these are different quantities that happen to coincide only for
+        // specific arities.
         let final_cfg = cfg.final_round_config();
         let final_dims = [Dimensions {
             height: final_cfg.domain_size >> final_cfg.folding_factor,
