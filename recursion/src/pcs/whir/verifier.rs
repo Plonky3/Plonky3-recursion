@@ -105,6 +105,12 @@ where
         //    base element at a time. A cap entry holds that digest packed into extension
         //    elements (`packed_digest_len`), so absorbing the entry as extension elements
         //    unpacks each back into its base coefficients and reproduces that order.
+        //
+        //    This assumes `packed_digest_len` actually packed: EF::DIMENSION == 1, or
+        //    EF::DIMENSION evenly divides DIGEST_ELEMS. `WhirUniProofTargets::new`
+        //    (`uni/targets.rs`) debug-asserts that precondition where DIGEST_ELEMS is
+        //    known; outside it, a cap entry holds unpacked lifted base elements and
+        //    absorbing it here as extension elements would observe spurious zeros.
         for cap_entry in &round_proof.commitment_cap {
             challenger.observe_ext_slice(circuit, cap_entry);
         }
@@ -338,9 +344,7 @@ mod tests {
     use alloc::vec::Vec;
 
     use p3_baby_bear::{BabyBear, Poseidon2BabyBear};
-    use p3_challenger::{
-        CanObserve, CanSample, CanSampleUniformBits, DuplexChallenger, FieldChallenger,
-    };
+    use p3_challenger::{CanObserve, CanSample, DuplexChallenger, FieldChallenger};
     use p3_circuit::ops::{generate_poseidon2_trace, generate_recompose_trace};
     use p3_circuit::{CircuitBuilder, CircuitBuilderError};
     use p3_commit::MultilinearPcs;
@@ -357,11 +361,11 @@ mod tests {
     use p3_sumcheck::layout::{Layout, PrefixProver, Table, Verifier};
     use p3_sumcheck::{OpeningBatch, OpeningProtocol, TableShape, TableSpec};
     use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
-    use p3_util::log2_strict_usize;
     use p3_whir::fiat_shamir::domain_separator::DomainSeparator;
     use p3_whir::parameters::{FoldingFactor, ProtocolParameters, SecurityAssumption, WhirConfig};
     use p3_whir::pcs::proof::QueryOpenings;
     use p3_whir::pcs::prover::WhirProver;
+    use p3_whir::pcs::utils::get_challenge_stir_queries;
     use rand::SeedableRng;
     use rand::rngs::SmallRng;
 
@@ -441,28 +445,6 @@ mod tests {
         }
 
         fn clear(&mut self, _: &mut CircuitBuilder<EF>) {}
-    }
-
-    /// Mirror of `get_challenge_stir_queries` from p3-whir (pub(crate) there).
-    fn sample_stir_indices(
-        vc: &mut MyChallenger,
-        domain_size: usize,
-        folding_factor: usize,
-        num_queries: usize,
-    ) -> Vec<usize> {
-        let folded_domain_size = domain_size >> folding_factor;
-        let k = log2_strict_usize(folded_domain_size);
-        let target = num_queries.min(folded_domain_size);
-        if target == folded_domain_size {
-            // Saturation opens every position; no challenger draws.
-            return (0..folded_domain_size).collect();
-        }
-        (0..target)
-            .map(|_| {
-                vc.sample_uniform_bits::<true>(k)
-                    .expect("RESAMPLE=true never errors")
-            })
-            .collect()
     }
 
     /// Builds the single-column `Table` the test protocol commits to.
@@ -626,11 +608,11 @@ mod tests {
             }
             let checkpoint: BF = CanSample::sample(&mut vc);
             base_samples.push(checkpoint);
-            let round0_indices = sample_stir_indices(
-                &mut vc,
+            let round0_indices = get_challenge_stir_queries::<MyChallenger, BF>(
                 rp0.domain_size,
                 rp0.folding_factor,
                 rp0.num_queries,
+                &mut vc,
             );
             for &idx in &round0_indices {
                 base_samples.push(BF::from_u64(idx as u64));
@@ -645,11 +627,11 @@ mod tests {
         {
             let final_poly = proof.whir.final_poly.as_ref().expect("final_poly");
             vc.observe_algebra_slice(final_poly.as_slice());
-            let final_indices = sample_stir_indices(
-                &mut vc,
+            let final_indices = get_challenge_stir_queries::<MyChallenger, BF>(
                 config.final_round_config().domain_size,
                 config.final_sumcheck_rounds,
                 config.final_queries,
+                &mut vc,
             );
             for &idx in &final_indices {
                 base_samples.push(BF::from_u64(idx as u64));
@@ -667,7 +649,8 @@ mod tests {
             &config,
             PrefixProver::<BF, EF>::variable_order(),
             p3_circuit::ops::Poseidon2Config::BABY_BEAR_D4_W16,
-        );
+        )
+        .expect("non-saturating STIR query counts at this arity");
         let mut circuit = CircuitBuilder::<EF>::new();
         let proof_targets = WhirProofTargets::alloc::<BF, EF>(&mut circuit, &vp, 1, 1);
         let initial_cap: Vec<Vec<Target>> = vec![vec![circuit.define_const(EF::ZERO)]];
@@ -894,11 +877,11 @@ mod tests {
             }
             let checkpoint: BF = CanSample::sample(&mut vc);
             base_samples.push(checkpoint);
-            let round0_indices = sample_stir_indices(
-                &mut vc,
+            let round0_indices = get_challenge_stir_queries::<MyChallenger, BF>(
                 rp0.domain_size,
                 rp0.folding_factor,
                 rp0.num_queries,
+                &mut vc,
             );
             for &idx in &round0_indices {
                 base_samples.push(BF::from_u64(idx as u64));
@@ -914,11 +897,11 @@ mod tests {
         let final_indices = {
             let final_poly = proof.whir.final_poly.as_ref().unwrap();
             vc.observe_algebra_slice(final_poly.as_slice());
-            let final_indices = sample_stir_indices(
-                &mut vc,
+            let final_indices = get_challenge_stir_queries::<MyChallenger, BF>(
                 config.final_round_config().domain_size,
                 config.final_sumcheck_rounds,
                 config.final_queries,
+                &mut vc,
             );
             for &idx in &final_indices {
                 base_samples.push(BF::from_u64(idx as u64));
@@ -938,7 +921,8 @@ mod tests {
             &config,
             PrefixProver::<BF, EF>::variable_order(),
             p3_circuit::ops::Poseidon2Config::BABY_BEAR_D4_W16,
-        );
+        )
+        .expect("non-saturating STIR query counts at this arity");
 
         let mut circuit = CircuitBuilder::<EF>::new();
         circuit.enable_poseidon2_perm::<BabyBearD4Width16, _>(
@@ -1173,11 +1157,11 @@ mod tests {
             }
             let checkpoint: BF = CanSample::sample(&mut vc);
             base_samples.push(checkpoint);
-            let round0_indices = sample_stir_indices(
-                &mut vc,
+            let round0_indices = get_challenge_stir_queries::<MyChallenger, BF>(
                 rp0.domain_size,
                 rp0.folding_factor,
                 rp0.num_queries,
+                &mut vc,
             );
             for &idx in &round0_indices {
                 base_samples.push(BF::from_u64(idx as u64));
@@ -1193,11 +1177,11 @@ mod tests {
         let final_indices = {
             let final_poly = proof.whir.final_poly.as_ref().unwrap();
             vc.observe_algebra_slice(final_poly.as_slice());
-            let final_indices = sample_stir_indices(
-                &mut vc,
+            let final_indices = get_challenge_stir_queries::<MyChallenger, BF>(
                 config.final_round_config().domain_size,
                 config.final_sumcheck_rounds,
                 config.final_queries,
+                &mut vc,
             );
             for &idx in &final_indices {
                 base_samples.push(BF::from_u64(idx as u64));
@@ -1216,7 +1200,8 @@ mod tests {
             &config,
             PrefixProver::<BF, EF>::variable_order(),
             p3_circuit::ops::Poseidon2Config::BABY_BEAR_D4_W16,
-        );
+        )
+        .expect("non-saturating STIR query counts at this arity");
 
         let mut circuit = CircuitBuilder::<EF>::new();
         circuit.enable_poseidon2_perm::<BabyBearD4Width16, _>(
