@@ -229,4 +229,53 @@ mod tests {
             .verify(&mmcs, &commitment, &dimensions, &indices)
             .expect("pruned-multiproof verification must accept repeated, unsorted indices");
     }
+
+    #[test]
+    fn shared_proof_opening_rejects_disagreeing_duplicate_openings() {
+        // Same repeated-index setup as above, but the two claimed rows for
+        // index 3 are made to disagree. The pruned-multiproof format
+        // deduplicates queries by leaf, so it must catch two claims about the
+        // same leaf that disagree rather than silently picking one.
+        use p3_field::PrimeCharacteristicRing;
+        use p3_merkle_tree::{MerkleTreeError, PrunedProofError};
+
+        let mut rng = SmallRng::seed_from_u64(0);
+        let perm = Perm::new_from_rng_128(&mut rng);
+        let mmcs = MyMmcs::new(MyHash::new(perm.clone()), MyCompress::new(perm), 0);
+
+        let height = 64usize;
+        let width = 4usize;
+        let matrix = RowMajorMatrix::new(
+            (0..height * width).map(|_| rng.random::<F>()).collect(),
+            width,
+        );
+        let (commitment, prover_data) = mmcs.commit_matrix(matrix);
+
+        let indices = [3usize, 61, 3, 40, 61, 0];
+        let mut opening = SharedProofOpening::<F, <MyMmcs as p3_commit::Mmcs<F>>::MultiProof>::open(
+            &mmcs,
+            &indices,
+            &prover_data,
+        );
+
+        // Corrupt the second claimed opening of index 3 (`rows[2]`) so it
+        // disagrees with the first (`rows[0]`); the multiproof itself (built
+        // from the honest rows) is untouched.
+        opening.rows[2][0] += F::ONE;
+        assert_ne!(opening.rows[0], opening.rows[2]);
+
+        let dimensions = [Dimensions { width, height }];
+        let err = opening
+            .verify(&mmcs, &commitment, &dimensions, &indices)
+            .expect_err("disagreeing duplicate openings for the same leaf must be rejected");
+        assert!(
+            matches!(
+                err,
+                MerkleTreeError::MalformedPrunedProof(
+                    PrunedProofError::InconsistentDuplicateOpenings { .. }
+                )
+            ),
+            "expected InconsistentDuplicateOpenings, got {err:?}"
+        );
+    }
 }
