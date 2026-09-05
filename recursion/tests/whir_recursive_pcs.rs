@@ -553,6 +553,32 @@ fn whir_recursive_verifier_two_rounds_rejects_a_tampered_round1_leaf() {
     run_whir_recursive_verifier_with_mmcs(&setup, &setup.proof, &setup.pis, &paths).unwrap();
 }
 
+/// A tampered Merkle sibling digest in round 1 must fail the circuit's own
+/// Merkle constraints, with an entirely honest proof and honest queried
+/// indices — only the restored sibling chain itself is wrong.
+///
+/// The leaf-tamper test above cannot, on its own, distinguish "round 1's own
+/// Merkle-path check caught this" from "some other check happened to catch
+/// it too": a corrupted round-1 leaf value also desyncs the arithmetic
+/// values the WHIR argument's final consistency check depends on, so a
+/// leaf-only tamper is rejected even with in-circuit MMCS verification
+/// entirely disabled. A sibling digest, by contrast, is a private input that
+/// reaches the circuit only through Merkle-path verification — it plays no
+/// part in any leaf value, `fold_vals`, or `claimed_eval` computation — so a
+/// rejection here can only come from round 1's own root-equality connect,
+/// mirroring `whir_recursive_verifier_rejects_a_tampered_sibling_digest`'s
+/// round-0 coverage (Task 14) at round 1 instead.
+#[test]
+#[should_panic(expected = "WitnessConflict")]
+fn whir_recursive_verifier_two_rounds_rejects_a_tampered_round1_sibling_digest() {
+    let setup = build_whir_setup(14, vec![4, 4]);
+    let mut paths = restore_whir_uni_paths(&setup, &setup.proof, &setup.pis);
+
+    paths[0].rounds[1][0][0][0] += BbF::ONE;
+
+    run_whir_recursive_verifier_with_mmcs(&setup, &setup.proof, &setup.pis, &paths).unwrap();
+}
+
 mod koala_bear {
     use p3_circuit::CircuitBuilder;
     use p3_circuit::ops::{generate_poseidon2_trace, generate_recompose_trace};
