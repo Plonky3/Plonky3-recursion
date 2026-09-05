@@ -46,7 +46,7 @@ where
     /// Evaluation domain each committed matrix was supplied on, in commit order.
     ///
     /// For a quotient commitment (built via
-    /// [`WhirUniPcs::commit_quotient_coefficient_matrices`]) this holds a
+    /// `WhirUniPcs::commit_quotient_coefficient_matrices`) this holds a
     /// unit-shift placeholder coset per chunk — its `size()` is the chunk's
     /// real height, but its `shift()` is always `F::ONE`, not the chunk's
     /// actual coset shift. The univariate interface drops the real domains

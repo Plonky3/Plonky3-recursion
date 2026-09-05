@@ -52,10 +52,18 @@ pub trait RecursivePcs<
 
     /// Generate PCS-specific challenges (e.g., FRI beta challenges, query indices).
     ///
-    /// This method observes the opened values and opening proof, then samples
-    /// challenges needed for verification. For FRI, this includes:
-    /// - Beta challenges for each folding round
-    /// - Query indices for spot-checking
+    /// When [`Self::PRE_OBSERVES_OPENED_VALUES`] is `true`, the caller has already
+    /// observed `opened_values` into the transcript before this call, and this
+    /// method samples challenges needed for verification — for FRI, beta
+    /// challenges for each folding round and query indices for spot-checking.
+    /// When it is `false`, the caller has observed nothing: this method (or
+    /// `verify_circuit`, whichever the scheme's protocol calls for) must observe
+    /// `opened_values` itself, at its protocol's correct point, before sampling
+    /// any challenge that depends on them. A scheme whose transcript interleaves
+    /// observation with sampling (as WHIR's does) may return no challenges here
+    /// at all and do everything inside `verify_circuit` instead, sourcing opened
+    /// values from `commitments_with_opening_points` there rather than from the
+    /// `opened_values` parameter (which `verify_circuit` does not receive).
     ///
     /// # Parameters
     /// - `circuit`: Circuit builder for creating operations
@@ -81,6 +89,13 @@ pub trait RecursivePcs<
     ///
     /// Query indices (e.g., for FRI) are sampled in-circuit from the challenger
     /// to ensure soundness—they must be derived from the transcript, not passed in.
+    ///
+    /// This method never receives `opened_values` directly — only
+    /// `commitments_with_opening_points`, which carries the same values paired
+    /// with their commitments and points. When [`Self::PRE_OBSERVES_OPENED_VALUES`]
+    /// is `false`, this is where those values must be observed into the
+    /// transcript, at the protocol's correct point, before any challenge that
+    /// depends on them is sampled here.
     ///
     /// # Parameters
     /// - `circuit`: Circuit builder for creating operations

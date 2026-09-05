@@ -524,8 +524,10 @@ fn whir_recursive_verifier_rejects_a_tampered_sumcheck_round() {
     run_whir_recursive_verifier_with_mmcs(&setup, &setup.proof, &setup.pis, &paths).unwrap();
 }
 
-/// Two intermediate WHIR rounds exercise the round loop and the
-/// extension-field leaf path that only appears from round 1 onward.
+/// Two intermediate WHIR rounds exercise the multi-iteration round loop and
+/// its rolling `prev_cap`, where each round's Merkle root-equality check is
+/// bound against the previous round's own commitment cap rather than the
+/// initial one.
 #[test]
 fn whir_recursive_verifier_two_rounds() -> Result<(), VerificationError> {
     let setup = build_whir_setup(14, vec![4, 4]);
@@ -533,9 +535,12 @@ fn whir_recursive_verifier_two_rounds() -> Result<(), VerificationError> {
     run_whir_recursive_verifier_with_mmcs(&setup, &setup.proof, &setup.pis, &paths)
 }
 
-/// A tampered query leaf in the second round must still be rejected: round 1
-/// authenticates extension-field leaves through a different MMCS path than
-/// round 0's base-field leaves.
+/// A tampered query leaf in the second round must still be rejected — though
+/// not necessarily by round 1's own Merkle check specifically: a corrupted
+/// leaf also desyncs the arithmetic values the WHIR argument's final
+/// consistency check depends on, so this alone cannot distinguish that check
+/// from the sibling-digest test below, which isolates it. See that test's
+/// doc comment for the distinction.
 ///
 /// `p3_uni_stark::Proof` does not implement `Clone`, so — matching
 /// `whir_recursive_verifier_rejects_a_tampered_query_leaf`'s pattern — the
@@ -597,8 +602,12 @@ mod koala_bear {
         kb_whir_protocol_params,
     };
 
-    /// The same recursive verification over KoalaBear, confirming the adapter
-    /// is generic in the field rather than specialised to BabyBear.
+    /// The arithmetic-only recursive verification (`permutation_config: None`,
+    /// no in-circuit MMCS) over KoalaBear, confirming the adapter and its
+    /// Fiat-Shamir challenger are generic in the field rather than
+    /// specialised to BabyBear — a wrong permutation here would desync the
+    /// transcript and fail. KoalaBear's own Merkle-path verification has no
+    /// equivalent coverage.
     #[test]
     fn whir_fibonacci_recursive_verifier_koala_bear() -> Result<(), VerificationError> {
         let trace = generate_trace_rows::<KbF>(0, 1, 1 << 10);
