@@ -166,3 +166,67 @@ impl<F: Clone + Send + Sync, EF, MT: Mmcs<F>> WhirProof<F, EF, MT> {
             .map(|round| round.pow_witness.clone())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use p3_baby_bear::{BabyBear, Poseidon2BabyBear};
+    use p3_field::Field;
+    use p3_matrix::dense::RowMajorMatrix;
+    use p3_merkle_tree::MerkleTreeMmcs;
+    use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
+    use rand::rngs::SmallRng;
+    use rand::{RngExt, SeedableRng};
+
+    use super::*;
+
+    type F = BabyBear;
+    type Perm = Poseidon2BabyBear<16>;
+    type MyHash = PaddingFreeSponge<Perm, 16, 8, 8>;
+    type MyCompress = TruncatedPermutation<Perm, 2, 8, 16>;
+    type PackedF = <F as Field>::Packing;
+    type MyMmcs = MerkleTreeMmcs<PackedF, PackedF, MyHash, MyCompress, 2, 8>;
+
+    #[test]
+    fn shared_proof_opening_accepts_repeated_indices() {
+        // Independent-draw STIR sampling (`get_challenge_stir_queries`, the
+        // caller of this opening's `open`/`verify`) allows the same index
+        // to appear more than once in one query list. The pruned-multiproof
+        // MMCS format this opening delegates to must accept that, and must
+        // return the same row content for every occurrence of a repeated
+        // index.
+        let mut rng = SmallRng::seed_from_u64(0);
+        let perm = Perm::new_from_rng_128(&mut rng);
+        let mmcs = MyMmcs::new(MyHash::new(perm.clone()), MyCompress::new(perm), 0);
+
+        let height = 64usize;
+        let width = 4usize;
+        let matrix = RowMajorMatrix::new(
+            (0..height * width).map(|_| rng.random::<F>()).collect(),
+            width,
+        );
+        let (commitment, prover_data) = mmcs.commit_matrix(matrix);
+
+        // A repeated-index query list: 3 and 61 each appear twice, unsorted.
+        let indices = [3usize, 61, 3, 40, 61, 0];
+        let opening = SharedProofOpening::<F, <MyMmcs as p3_commit::Mmcs<F>>::MultiProof>::open(
+            &mmcs,
+            &indices,
+            &prover_data,
+        );
+
+        // Every occurrence of a repeated index opens to the same row.
+        assert_eq!(
+            opening.rows[0], opening.rows[2],
+            "both openings of index 3 must agree"
+        );
+        assert_eq!(
+            opening.rows[1], opening.rows[4],
+            "both openings of index 61 must agree"
+        );
+
+        let dimensions = [Dimensions { width, height }];
+        opening
+            .verify(&mmcs, &commitment, &dimensions, &indices)
+            .expect("pruned-multiproof verification must accept repeated, unsorted indices");
+    }
+}

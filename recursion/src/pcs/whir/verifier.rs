@@ -453,17 +453,16 @@ mod tests {
         let folded_domain_size = domain_size >> folding_factor;
         let k = log2_strict_usize(folded_domain_size);
         let target = num_queries.min(folded_domain_size);
-        let mut indices: Vec<usize> = Vec::new();
-        while indices.len() < target {
-            let q = vc
-                .sample_uniform_bits::<true>(k)
-                .expect("RESAMPLE=true never errors");
-            if !indices.contains(&q) {
-                indices.push(q);
-            }
+        if target == folded_domain_size {
+            // Saturation opens every position; no challenger draws.
+            return (0..folded_domain_size).collect();
         }
-        indices.sort_unstable();
-        indices
+        (0..target)
+            .map(|_| {
+                vc.sample_uniform_bits::<true>(k)
+                    .expect("RESAMPLE=true never errors")
+            })
+            .collect()
     }
 
     /// Builds the single-column `Table` the test protocol commits to.

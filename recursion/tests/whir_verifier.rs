@@ -127,17 +127,16 @@ macro_rules! whir_arithmetic_test {
                 let folded = domain_size >> folding_factor;
                 let k = log2_strict_usize(folded);
                 let target = num_queries.min(folded);
-                let mut indices: Vec<usize> = Vec::new();
-                while indices.len() < target {
-                    let q = vc
-                        .sample_uniform_bits::<true>(k)
-                        .expect("sample_uniform_bits");
-                    if !indices.contains(&q) {
-                        indices.push(q);
-                    }
+                if target == folded {
+                    // Saturation opens every position; no challenger draws.
+                    return (0..folded).collect();
                 }
-                indices.sort_unstable();
-                indices
+                (0..target)
+                    .map(|_| {
+                        vc.sample_uniform_bits::<true>(k)
+                            .expect("sample_uniform_bits")
+                    })
+                    .collect()
             }
 
             /// Builds the single-column `Table` the test protocol commits to.
