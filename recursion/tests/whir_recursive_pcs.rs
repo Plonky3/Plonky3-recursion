@@ -435,3 +435,86 @@ fn whir_recursive_verifier_rejects_a_tampered_sibling_digest() {
 
     run_whir_recursive_verifier_with_mmcs(&setup, &setup.proof, &setup.pis, &paths).unwrap();
 }
+
+/// A tampered trace commitment desynchronises the Fiat-Shamir transcript from
+/// the values the prover used, so a downstream circuit constraint fails —
+/// with in-circuit Merkle verification enabled and genuine sibling witnesses
+/// (restored from the honest proof before the mutation) supplied, so only
+/// the committed root itself is wrong.
+#[test]
+#[should_panic(expected = "WitnessConflict")]
+fn whir_recursive_verifier_rejects_a_tampered_trace_commitment() {
+    let mut setup = build_whir_setup(10, vec![4]);
+    let paths = restore_whir_uni_paths(&setup, &setup.proof, &setup.pis);
+
+    let mut roots = setup.proof.commitments.trace.into_roots();
+    roots[0][0] += BbF::ONE;
+    setup.proof.commitments.trace = roots.into();
+
+    run_whir_recursive_verifier_with_mmcs(&setup, &setup.proof, &setup.pis, &paths).unwrap();
+}
+
+/// A tampered opened trace value breaks the `bound * scale == claimed`
+/// binding that ties the STARK's claim to what the WHIR argument proves,
+/// with in-circuit Merkle verification enabled and genuine sibling witnesses
+/// supplied.
+#[test]
+#[should_panic(expected = "WitnessConflict")]
+fn whir_recursive_verifier_rejects_a_tampered_opened_trace_value() {
+    let mut setup = build_whir_setup(10, vec![4]);
+    let paths = restore_whir_uni_paths(&setup, &setup.proof, &setup.pis);
+
+    setup.proof.opened_values.trace_local[0] += BbEF::ONE;
+
+    run_whir_recursive_verifier_with_mmcs(&setup, &setup.proof, &setup.pis, &paths).unwrap();
+}
+
+/// A tampered bound multilinear value breaks the same binding from the other
+/// side: the proof's own claimed evaluation no longer rescales to the
+/// STARK's opened value.
+#[test]
+#[should_panic(expected = "WitnessConflict")]
+fn whir_recursive_verifier_rejects_a_tampered_bound_eval() {
+    let mut setup = build_whir_setup(10, vec![4]);
+    let paths = restore_whir_uni_paths(&setup, &setup.proof, &setup.pis);
+
+    let batch = &mut setup.proof.opening_proof.rounds[0].evals[0];
+    let mut current = batch.current().to_vec();
+    current[0] += BbEF::ONE;
+    let next = batch.next().to_vec();
+    *batch = p3_sumcheck::OpeningBatch::new(current, next);
+
+    run_whir_recursive_verifier_with_mmcs(&setup, &setup.proof, &setup.pis, &paths).unwrap();
+}
+
+/// A tampered final polynomial breaks WHIR's final consistency identity.
+#[test]
+#[should_panic(expected = "WitnessConflict")]
+fn whir_recursive_verifier_rejects_a_tampered_final_poly() {
+    let mut setup = build_whir_setup(10, vec![4]);
+    let paths = restore_whir_uni_paths(&setup, &setup.proof, &setup.pis);
+
+    setup.proof.opening_proof.rounds[0]
+        .whir
+        .final_poly
+        .as_mut()
+        .expect("final polynomial")
+        .as_mut_slice()[0] += BbEF::ONE;
+
+    run_whir_recursive_verifier_with_mmcs(&setup, &setup.proof, &setup.pis, &paths).unwrap();
+}
+
+/// A tampered sumcheck round polynomial breaks the folded claim.
+#[test]
+#[should_panic(expected = "WitnessConflict")]
+fn whir_recursive_verifier_rejects_a_tampered_sumcheck_round() {
+    let mut setup = build_whir_setup(10, vec![4]);
+    let paths = restore_whir_uni_paths(&setup, &setup.proof, &setup.pis);
+
+    setup.proof.opening_proof.rounds[0]
+        .whir
+        .initial_sumcheck
+        .polynomial_evaluations[0][0] += BbEF::ONE;
+
+    run_whir_recursive_verifier_with_mmcs(&setup, &setup.proof, &setup.pis, &paths).unwrap();
+}
