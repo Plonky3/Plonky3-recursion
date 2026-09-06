@@ -1,6 +1,8 @@
 //! Common code for all recursive examples.
 
-#![allow(unused_imports)]
+#![allow(unused_imports, dead_code)]
+
+pub mod whir;
 
 pub use std::rc::Rc;
 pub use std::sync::Arc;
