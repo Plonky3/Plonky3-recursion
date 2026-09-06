@@ -393,10 +393,16 @@ impl<F: Field> Circuit<F> {
                     // Private inputs can be b-creators even in the forward case.
                     let b_is_private_creator =
                         !b_already_defined && private_input_wids.contains(&b.0);
-                    // A hint output in the `out` slot is a backward op: the hint value is given,
-                    // so `b` is the witness this row solves for and takes the bus creator role
-                    // (the hint output itself is still created via `out_is_creator`).
-                    let out_is_backward = out_already_defined || hint_output_wids.contains(&out.0);
+                    // A hint output or a private input in the `out` slot is a backward op: that
+                    // value is given, so `b` is the witness this row solves for and takes the bus
+                    // creator role (the given witness itself is still created via
+                    // `out_is_creator`). A private input reaches the `out` slot when a `sub`
+                    // whose minuend is a private input is the first ALU row to touch it — the
+                    // lowering is `Add { a: subtrahend, b: difference, out: minuend }` — and
+                    // without this the difference has no creator at all on the bus.
+                    let out_is_backward = out_already_defined
+                        || hint_output_wids.contains(&out.0)
+                        || private_input_wids.contains(&out.0);
                     let out_is_creator = F::from_bool(!out_already_defined);
                     let b_is_creator =
                         F::from_bool(b_is_private_creator || out_is_backward && !b_already_defined);
@@ -624,6 +630,39 @@ mod tests {
             prep.ext_reads,
             vec![1, 1, 0, 0, 0],
             "the second occurrence of a coefficient, and one the Const table created, are reads"
+        );
+    }
+
+    /// A `sub` whose minuend is a private input solves for the difference, so the row must take
+    /// the difference's `WitnessChecks` creator role.
+    ///
+    /// `sub(minuend, subtrahend)` lowers to `Add { a: subtrahend, b: difference, out: minuend }`.
+    /// A private input's value is supplied before execution, so the unknown this row solves for
+    /// is `b` — exactly as when a hint output sits in the `out` slot. Reading `b` instead would
+    /// leave the difference with no creator anywhere (nothing else produces it), the bus
+    /// unbalanced, and the circuit unprovable.
+    #[test]
+    fn a_sub_on_a_private_minuend_creates_the_difference() {
+        let mut circuit: Circuit<F> = make_circuit(vec![
+            Op::add(WitnessId(1), WitnessId(2), WitnessId(0)),
+            Op::mul(WitnessId(2), WitnessId(2), WitnessId(3)),
+        ]);
+        circuit.witness_count = 4;
+        circuit.private_input_rows = vec![WitnessId(0), WitnessId(1)];
+        let prep = circuit.generate_preprocessed_columns::<1>().unwrap();
+
+        let alu = &prep.primitive[PrimitiveOpType::Alu as usize];
+        let (b_is_creator, out_is_creator) = (alu[9], alu[11]);
+        assert_eq!(
+            (b_is_creator, out_is_creator),
+            (F::ONE, F::ONE),
+            "the row creates both the private minuend and the difference it solves for"
+        );
+        assert_eq!(
+            prep.ext_reads,
+            vec![0, 0, 2, 0],
+            "both private inputs are created by this row; only the difference is read, \
+             twice, by the following `mul`"
         );
     }
 
