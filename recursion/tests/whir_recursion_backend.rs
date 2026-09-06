@@ -6,7 +6,8 @@ use p3_field::PrimeCharacteristicRing;
 use p3_recursion::Poseidon2Config;
 use p3_recursion::backend::whir::{WhirRecursionBackend, WhirRecursionBackendForExt};
 use p3_recursion::recursion::{
-    PcsRecursionBackend, ProveNextLayerParams, RecursionInput, build_and_prove_next_layer,
+    BatchOnly, PcsRecursionBackend, ProveNextLayerParams, RecursionInput,
+    build_and_prove_next_layer,
 };
 use p3_uni_stark::{prove, verify};
 
@@ -84,6 +85,58 @@ fn whir_recursion_backend_proves_a_real_next_layer() {
     prover
         .verify_all_tables::<BbEF>(&output.0)
         .expect("the recursion layer's own proof verifies");
+}
+
+/// A second WHIR-backed recursion layer verifies the *first* layer's own batch-STARK proof.
+///
+/// `RecursionInput::BatchStark` is only ever constructed from a prior layer's
+/// `RecursionOutput` (`RecursionOutput::into_recursion_input` is this codebase's sole
+/// construction site), so batch-STARK support in `WhirRecursionBackend` means exactly this:
+/// multi-layer chaining, where layer 2 is a verifier circuit over layer 1's batch proof.
+#[test]
+fn whir_recursion_backend_proves_a_batch_stark_next_layer() {
+    let log_n = 10;
+    let n = 1 << log_n;
+    let trace = generate_trace_rows::<BbF>(0, 1, n);
+    let pis = vec![BbF::ZERO, BbF::ONE, fibonacci_output(n)];
+    let air = FibonacciAir {};
+    // An empty round schedule lets each WHIR commit derive its own round count from the size
+    // of the polynomial being committed, which one config serving three differently-sized
+    // roles (the base proof, layer 1's own commit, layer 2's own commit) requires.
+    let config = bb_whir_config(vec![]);
+    let proof = prove(&config, &air, trace, &pis);
+    assert!(verify(&config, &air, &proof, &pis).is_ok());
+
+    let backend = WhirRecursionBackend::<16, 8>::new(Poseidon2Config::BABY_BEAR_D4_W16)
+        .for_extension_degree::<4>();
+    let params = ProveNextLayerParams::default();
+
+    let layer1 = build_and_prove_next_layer(
+        &RecursionInput::UniStark {
+            proof: &proof,
+            air: &air,
+            public_inputs: pis,
+            preprocessed_commit: None,
+        },
+        &config,
+        &backend,
+        &params,
+    )
+    .expect("the first recursion layer proves");
+
+    let layer2_input = layer1.into_recursion_input::<BatchOnly>();
+    let layer2 = build_and_prove_next_layer(&layer2_input, &config, &backend, &params)
+        .expect("the second recursion layer proves over the first layer's batch-STARK proof");
+
+    // As in the single-layer test: the layer's own proof has to verify, registering the same
+    // non-primitive tables the backend used.
+    let mut prover = BatchStarkProver::new(config).with_table_packing(params.table_packing);
+    prover.register_poseidon2_table::<4>(Poseidon2Config::BABY_BEAR_D4_W16.for_challenger());
+    prover.register_poseidon2_table::<4>(Poseidon2Config::BABY_BEAR_D4_W16);
+    prover.register_recompose_table::<4>(true);
+    prover
+        .verify_all_tables::<BbEF>(&layer2.0)
+        .expect("the second recursion layer's own proof verifies");
 }
 
 /// A tampered input proof must be rejected before a next-layer proof is ever produced,

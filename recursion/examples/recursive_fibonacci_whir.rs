@@ -8,15 +8,14 @@
 //!
 //! ## Current scope
 //!
-//! Unlike `recursive_fibonacci.rs`, this example proves exactly **one** recursion layer.
-//! `WhirRecursionBackend` only supports [`RecursionInput::UniStark`] today (see
-//! `WhirRecursionBackendForExt`'s `PcsRecursionBackend` impl in `recursion/src/backend/whir.rs`);
-//! it returns an error on [`RecursionInput::BatchStark`], which is what
-//! `RecursionOutput::into_recursion_input` produces for chaining a second layer. So the base
-//! proof here is a raw `p3_uni_stark` proof over `FibonacciAir` (matching the pattern proven in
+//! Unlike `recursive_fibonacci.rs`, this example proves exactly **one** recursion layer, and its
+//! base proof is a raw `p3_uni_stark` proof over `FibonacciAir` (matching the pattern proven in
 //! `recursion/tests/whir_recursion_backend.rs`), not the `CircuitBuilder`-based Fibonacci circuit
 //! `recursive_fibonacci.rs` uses for its own layer 0. Consequently `--n` here is the base proof's
-//! trace length (must be a power of two), not a Fibonacci index.
+//! trace length (must be a power of two), not a Fibonacci index. Chaining a further layer off
+//! this one's `RecursionOutput` — the [`RecursionInput::BatchStark`] shape
+//! `RecursionOutput::into_recursion_input` produces — is covered by
+//! `whir_recursion_backend_proves_a_batch_stark_next_layer` in that same test file.
 //!
 //! ## Usage
 //!

@@ -153,9 +153,7 @@ impl WhirRecursionConfig for BbWhirConfig {
     {
         match prev {
             RecursionInput::UniStark { proof, .. } => f(&proof.opening_proof),
-            RecursionInput::BatchStark { .. } => {
-                panic!("with_whir_opening_proof called on a batch-STARK recursion input")
-            }
+            RecursionInput::BatchStark { proof, .. } => f(&proof.proof.opening_proof),
         }
     }
 
@@ -333,9 +331,7 @@ impl WhirRecursionConfig for KbWhirConfig {
     {
         match prev {
             RecursionInput::UniStark { proof, .. } => f(&proof.opening_proof),
-            RecursionInput::BatchStark { .. } => {
-                panic!("with_whir_opening_proof called on a batch-STARK recursion input")
-            }
+            RecursionInput::BatchStark { proof, .. } => f(&proof.proof.opening_proof),
         }
     }
 

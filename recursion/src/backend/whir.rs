@@ -2,8 +2,8 @@
 
 use alloc::boxed::Box;
 use alloc::string::ToString;
-use alloc::vec;
 use alloc::vec::Vec;
+use alloc::{format, vec};
 
 use p3_circuit::{CircuitBuilder, CircuitRunner, NonPrimitiveOpId};
 use p3_circuit_prover::batch_stark_prover::{
@@ -27,10 +27,13 @@ use p3_uni_stark::{StarkGenericConfig, SymbolicExpressionExt, Val};
 use crate::backend::transcript::replay_recursion_input_transcript;
 use crate::generation::OpeningTranscript;
 use crate::ops::Poseidon2Config;
-use crate::public_inputs::StarkVerifierInputsBuilder;
+use crate::public_inputs::{BatchStarkVerifierInputsBuilder, StarkVerifierInputsBuilder};
 use crate::recursion::{PcsRecursionBackend, RecursionInput, VerifierCircuitResult};
 use crate::traits::RecursiveAir;
-use crate::verifier::{ObservableCommitment, VerificationError, verify_p3_uni_proof_circuit};
+use crate::verifier::{
+    ObservableCommitment, VerificationError, verify_p3_batch_proof_circuit,
+    verify_p3_uni_proof_circuit,
+};
 use crate::{ChallengerPermConfig, Recursive, RecursivePcs};
 
 /// Config that uses WHIR with Merkle-tree MMCS. Implement this for your `StarkGenericConfig`
@@ -172,11 +175,11 @@ pub struct WhirRecursionBackendForExt<
     pub(crate) WhirRecursionBackend<WIDTH, RATE, C>,
 );
 
-/// Verifier result from the WHIR backend: the uni-stark builder + op_ids. `set_private_data`
-/// derives restored Merkle paths itself by calling `SC::set_whir_private_data`, so this type
-/// carries nothing PCS-specific beyond the builder and op_ids, exactly mirroring
-/// [`crate::backend::fri::FriVerifierResult`]'s shape.
-pub struct WhirVerifierResult<SC>
+/// Verifier result from the WHIR backend: either the uni-stark or the batch-stark builder, plus
+/// op_ids. `set_private_data` derives restored Merkle paths itself by calling
+/// `SC::set_whir_private_data`, so this type carries nothing PCS-specific beyond the builder and
+/// op_ids, exactly mirroring [`crate::backend::fri::FriVerifierResult`]'s shape.
+pub enum WhirVerifierResult<SC>
 where
     SC: WhirRecursionConfig,
     SC::Pcs: RecursivePcs<
@@ -187,8 +190,16 @@ where
             <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain,
         >,
 {
-    builder: StarkVerifierInputsBuilder<SC, SC::Commitment, SC::OpeningProof>,
-    op_ids: Vec<NonPrimitiveOpId>,
+    /// Result for a single-instance (uni-STARK) input proof.
+    UniStark(
+        StarkVerifierInputsBuilder<SC, SC::Commitment, SC::OpeningProof>,
+        Vec<NonPrimitiveOpId>,
+    ),
+    /// Result for a batch-STARK input proof.
+    BatchStark(
+        BatchStarkVerifierInputsBuilder<SC, SC::Commitment, SC::OpeningProof>,
+        Vec<NonPrimitiveOpId>,
+    ),
 }
 
 impl<SC, A> VerifierCircuitResult<SC, A> for WhirVerifierResult<SC>
@@ -209,17 +220,26 @@ where
         &self,
         prev: &RecursionInput<'_, SC, A>,
     ) -> Result<Vec<SC::Challenge>, VerificationError> {
-        match prev {
-            RecursionInput::UniStark {
-                proof,
-                public_inputs,
-                preprocessed_commit,
-                ..
-            } => Ok(self
-                .builder
-                .pack_public_values(public_inputs, proof, preprocessed_commit)),
-            RecursionInput::BatchStark { .. } => Err(VerificationError::InvalidProofShape(
-                "WhirRecursionBackend does not yet support batch-STARK inputs".to_string(),
+        match (self, prev) {
+            (
+                Self::UniStark(builder, _),
+                RecursionInput::UniStark {
+                    proof,
+                    public_inputs,
+                    preprocessed_commit,
+                    ..
+                },
+            ) => Ok(builder.pack_public_values(public_inputs, proof, preprocessed_commit)),
+            (
+                Self::BatchStark(builder, _),
+                RecursionInput::BatchStark {
+                    proof,
+                    common_data,
+                    table_public_inputs,
+                },
+            ) => Ok(builder.pack_public_values(table_public_inputs, &proof.proof, common_data)),
+            _ => Err(VerificationError::InvalidProofShape(
+                "RecursionInput variant does not match verifier result".to_string(),
             )),
         }
     }
@@ -228,16 +248,23 @@ where
         &self,
         prev: &RecursionInput<'_, SC, A>,
     ) -> Result<Vec<SC::Challenge>, VerificationError> {
-        match prev {
-            RecursionInput::UniStark { proof, .. } => Ok(self.builder.pack_private_values(proof)),
-            RecursionInput::BatchStark { .. } => Err(VerificationError::InvalidProofShape(
-                "WhirRecursionBackend does not yet support batch-STARK inputs".to_string(),
+        match (self, prev) {
+            (Self::UniStark(builder, _), RecursionInput::UniStark { proof, .. }) => {
+                Ok(builder.pack_private_values(proof))
+            }
+            (Self::BatchStark(builder, _), RecursionInput::BatchStark { proof, .. }) => {
+                Ok(builder.pack_private_values(&proof.proof))
+            }
+            _ => Err(VerificationError::InvalidProofShape(
+                "RecursionInput variant does not match verifier result".to_string(),
             )),
         }
     }
 
     fn op_ids(&self) -> &[NonPrimitiveOpId] {
-        &self.op_ids
+        match self {
+            Self::UniStark(_, ids) | Self::BatchStark(_, ids) => ids,
+        }
     }
 }
 
@@ -316,14 +343,44 @@ where
                     config.pcs_verifier_params(),
                     self.0.challenger_perm_config,
                 )?;
-                Ok(WhirVerifierResult {
-                    builder: verifier_inputs,
-                    op_ids,
-                })
+                Ok(WhirVerifierResult::UniStark(verifier_inputs, op_ids))
             }
-            RecursionInput::BatchStark { .. } => Err(VerificationError::InvalidProofShape(
-                "WhirRecursionBackend does not yet support batch-STARK inputs".to_string(),
-            )),
+            RecursionInput::BatchStark {
+                proof,
+                common_data,
+                table_public_inputs: _,
+            } => {
+                if proof.ext_degree != 4 {
+                    return Err(VerificationError::InvalidProofShape(format!(
+                        "WhirRecursionBackend supports batch proofs of ext_degree 4, got {}",
+                        proof.ext_degree
+                    )));
+                }
+                let provers =
+                    PcsRecursionBackend::<SC, A, 4>::non_primitive_provers(self, proof.ext_degree);
+                let lookup_gadget = LogUpGadget::new();
+                let (verifier_inputs, op_ids) = verify_p3_batch_proof_circuit::<
+                    SC,
+                    SC::Commitment,
+                    SC::InputProof,
+                    SC::OpeningProof,
+                    _,
+                    _,
+                    WIDTH,
+                    RATE,
+                    4,
+                >(
+                    config,
+                    circuit,
+                    proof,
+                    config.pcs_verifier_params(),
+                    common_data,
+                    &lookup_gadget,
+                    self.0.challenger_perm_config,
+                    &provers,
+                )?;
+                Ok(WhirVerifierResult::BatchStark(verifier_inputs, op_ids))
+            }
         }
     }
 
@@ -334,18 +391,19 @@ where
         op_ids: &[NonPrimitiveOpId],
         prev: &RecursionInput<'_, SC, A>,
     ) -> Result<(), &'static str> {
-        match prev {
-            RecursionInput::UniStark { .. } => {
-                let transcript = replay_recursion_input_transcript(config, prev, &[])
-                    .map_err(|_| "Failed to replay the input proof's verifier transcript")?;
-                SC::with_whir_opening_proof(prev, move |opening_proof| {
-                    SC::set_whir_private_data(config, runner, op_ids, opening_proof, transcript)
-                })
+        // The same plugin list `build_verifier_circuit` used, so the transcript is replayed
+        // against the AIRs the circuit was built for.
+        let provers = match prev {
+            RecursionInput::BatchStark { proof, .. } => {
+                PcsRecursionBackend::<SC, A, 4>::non_primitive_provers(self, proof.ext_degree)
             }
-            RecursionInput::BatchStark { .. } => {
-                Err("WhirRecursionBackend does not yet support batch-STARK inputs")
-            }
-        }
+            RecursionInput::UniStark { .. } => Vec::new(),
+        };
+        let transcript = replay_recursion_input_transcript(config, prev, &provers)
+            .map_err(|_| "Failed to replay the input proof's verifier transcript")?;
+        SC::with_whir_opening_proof(prev, move |opening_proof| {
+            SC::set_whir_private_data(config, runner, op_ids, opening_proof, transcript)
+        })
     }
 
     fn non_primitive_preprocessors(&self) -> Vec<Box<dyn NpoPreprocessor<Val<SC>>>> {
