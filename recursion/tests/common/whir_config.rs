@@ -1,13 +1,13 @@
 //! A `StarkGenericConfig` whose polynomial commitment scheme is WHIR.
 
-use p3_baby_bear::{BabyBear, Poseidon2BabyBear};
+use p3_baby_bear::{BabyBear, Poseidon2BabyBear, default_babybear_poseidon2_16};
 use p3_challenger::DuplexChallenger;
 use p3_circuit::ops::{generate_poseidon2_trace, generate_recompose_trace};
 use p3_circuit::{CircuitBuilder, CircuitRunner, NonPrimitiveOpId};
 use p3_dft::Radix2DFTSmallBatch;
 use p3_field::Field;
 use p3_field::extension::BinomialExtensionField;
-use p3_koala_bear::{KoalaBear, Poseidon2KoalaBear};
+use p3_koala_bear::{KoalaBear, Poseidon2KoalaBear, default_koalabear_poseidon2_16};
 use p3_lookup::logup::LogUpGadget;
 use p3_merkle_tree::MerkleTreeMmcs;
 use p3_poseidon2_circuit_air::{BabyBearD4Width16, KoalaBearD4Width16};
@@ -26,8 +26,6 @@ use p3_sumcheck::layout::{Layout, PrefixProver};
 use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
 use p3_uni_stark::StarkGenericConfig;
 use p3_whir::parameters::{FoldingFactor, ProtocolParameters, SecurityAssumption};
-use rand::SeedableRng;
-use rand::rngs::SmallRng;
 
 /// The base field for BabyBear WHIR test configurations.
 pub type BbF = BabyBear;
@@ -53,10 +51,17 @@ pub type BbWhirPcs = WhirUniPcs<BbEF, BbF, BbDft, BbMmcs, BbChallenger, PrefixPr
 /// Number of base-field elements in one Merkle digest.
 pub const BB_DIGEST_ELEMS: usize = 8;
 
-/// Deterministic permutation shared by the hasher, compressor and challenger.
+/// Permutation shared by the hasher, compressor and challenger.
+///
+/// These are the canonical BabyBear width-16 round constants, the ones
+/// [`BabyBearD4Width16::round_constants`] hard-codes into the Poseidon2 AIR. A configuration
+/// whose circuit is proven — not merely witness-checked — has to use them: the AIR recomputes
+/// every permutation row from its own constants, so a different permutation makes each row's
+/// output disagree with the witness the circuit built from it, and the challenger table's
+/// sponge chain (each row's capacity input against the previous row's capacity output) is the
+/// first constraint to break.
 pub fn bb_whir_perm() -> BbPerm {
-    let mut rng = SmallRng::seed_from_u64(1);
-    BbPerm::new_from_rng_128(&mut rng)
+    default_babybear_poseidon2_16()
 }
 
 /// Merkle scheme used by every WHIR commitment in the tests.
@@ -229,10 +234,12 @@ pub type KbWhirPcs = WhirUniPcs<KbEF, KbF, KbDft, KbMmcs, KbChallenger, PrefixPr
 /// Number of base-field elements in one Merkle digest.
 pub const KB_DIGEST_ELEMS: usize = 8;
 
-/// Deterministic permutation shared by the hasher, compressor and challenger.
+/// Permutation shared by the hasher, compressor and challenger.
+///
+/// The canonical KoalaBear width-16 round constants, for the reason
+/// [`bb_whir_perm`] documents.
 pub fn kb_whir_perm() -> KbPerm {
-    let mut rng = SmallRng::seed_from_u64(1);
-    KbPerm::new_from_rng_128(&mut rng)
+    default_koalabear_poseidon2_16()
 }
 
 /// Merkle scheme used by every WHIR commitment in the tests.
