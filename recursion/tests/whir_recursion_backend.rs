@@ -212,10 +212,10 @@ fn build_honest_first_layer() -> (
 
 /// Tampering an opened value inside the FIRST layer's own batch-STARK proof -- before it is fed
 /// into a SECOND WHIR recursion layer -- must be rejected: the second layer's own verifier
-/// circuit recomputes this value from the replayed transcript and checks it against the claimed
-/// opening, so a mismatch here is a genuine circuit-constraint failure of the second layer's own
-/// batch-STARK verification, not merely "the tampered data was silently passed through
-/// untouched" (there is no untampered redundant copy for it to fall back on).
+/// circuit connects this STARK-side opened value to the untampered copy carried inside the WHIR
+/// PCS proof's own openings, so a mismatch here is a genuine circuit-constraint failure of the
+/// second layer's own batch-STARK verification -- the `bound * scale == claimed` binding that
+/// ties the two copies together, not a recomputation from the transcript.
 #[test]
 #[should_panic(expected = "WitnessConflict")]
 fn whir_recursion_backend_rejects_a_tampered_first_layer_opened_value() {
