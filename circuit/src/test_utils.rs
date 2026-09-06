@@ -4,6 +4,7 @@ use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 use p3_field::PrimeField64;
 use p3_matrix::dense::RowMajorMatrix;
 
+#[derive(Clone)]
 pub struct FibonacciAir {}
 
 pub const NUM_FIBONACCI_COLS: usize = 2;
