@@ -186,9 +186,12 @@ impl WhirRecursionConfig for BbWhirConfig {
         let mut offset = 0usize;
         for round_paths in &paths {
             let count = whir_round_paths_op_count(round_paths);
+            let op_ids_slice = op_ids
+                .get(offset..offset + count)
+                .ok_or("Not enough op_ids for the restored WHIR Merkle paths")?;
             set_whir_mmcs_private_data::<BbF, BbEF, BB_DIGEST_ELEMS>(
                 runner,
-                &op_ids[offset..offset + count],
+                op_ids_slice,
                 &round_paths.rounds,
                 &round_paths.final_paths,
                 Poseidon2Config::BABY_BEAR_D4_W16,
@@ -359,9 +362,12 @@ impl WhirRecursionConfig for KbWhirConfig {
         let mut offset = 0usize;
         for round_paths in &paths {
             let count = whir_round_paths_op_count(round_paths);
+            let op_ids_slice = op_ids
+                .get(offset..offset + count)
+                .ok_or("Not enough op_ids for the restored WHIR Merkle paths")?;
             set_whir_mmcs_private_data::<KbF, KbEF, KB_DIGEST_ELEMS>(
                 runner,
-                &op_ids[offset..offset + count],
+                op_ids_slice,
                 &round_paths.rounds,
                 &round_paths.final_paths,
                 Poseidon2Config::KOALA_BEAR_D4_W16,

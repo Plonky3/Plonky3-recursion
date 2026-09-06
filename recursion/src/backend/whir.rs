@@ -145,6 +145,21 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
     }
 }
 
+/// Poseidon2 table configs for the challenger's permutation shape: the challenger's own table
+/// first, then the table its MMCS and compression rows share. WHIR's MMCS path verification
+/// always runs the challenger's own permutation shape, so the two are always shared here (unlike
+/// [`crate::backend::fri::FriRecursionBackend`], which can disable sharing for mixed-shape
+/// circuits — nothing in this backend's scope needs that).
+///
+/// A base-field (`D == 1`) challenger has no dedicated table — the compact D=1 layout binds its
+/// sponge capacity on the shared table already — so only the shared entry is returned.
+fn poseidon2_challenger_shape_configs(config: Poseidon2Config) -> Vec<Poseidon2Config> {
+    if config.d() < 2 {
+        return vec![config];
+    }
+    vec![config.for_challenger(), config]
+}
+
 /// WHIR recursion backend tagged with batch/extension field degree `D` (only `4` is supported).
 #[derive(Clone)]
 pub struct WhirRecursionBackendForExt<
@@ -157,10 +172,10 @@ pub struct WhirRecursionBackendForExt<
     pub(crate) WhirRecursionBackend<WIDTH, RATE, C>,
 );
 
-/// Verifier result from the WHIR backend: the uni-stark builder + op_ids. Unlike an `FRI`-style
-/// result, this does NOT cache restored Merkle paths — `set_private_data` derives them itself by
-/// calling `SC::set_whir_private_data`, exactly mirroring how FRI's `FriVerifierResult` also
-/// carries nothing PCS-specific beyond the builder and op_ids.
+/// Verifier result from the WHIR backend: the uni-stark builder + op_ids. `set_private_data`
+/// derives restored Merkle paths itself by calling `SC::set_whir_private_data`, so this type
+/// carries nothing PCS-specific beyond the builder and op_ids, exactly mirroring
+/// [`crate::backend::fri::FriVerifierResult`]'s shape.
 pub struct WhirVerifierResult<SC>
 where
     SC: WhirRecursionConfig,
@@ -342,16 +357,21 @@ where
 
     fn non_primitive_provers(&self, ext_degree: usize) -> Vec<Box<dyn TableProver<SC>>> {
         if ext_degree == 4 {
-            let mut provers: Vec<Box<dyn TableProver<SC>>> = vec![Box::new(Poseidon2Prover::new(
-                self.0
-                    .challenger_perm_config
-                    .as_poseidon2()
-                    .copied()
-                    .unwrap_or_else(|| {
-                        panic!("WhirRecursionBackend requires a Poseidon2 challenger config")
-                    }),
-                ConstraintProfile::Standard,
-            ))];
+            let challenger = self
+                .0
+                .challenger_perm_config
+                .as_poseidon2()
+                .copied()
+                .unwrap_or_else(|| {
+                    panic!("WhirRecursionBackend requires a Poseidon2 challenger config")
+                });
+            let mut provers: Vec<Box<dyn TableProver<SC>>> = Vec::new();
+            for config in poseidon2_challenger_shape_configs(challenger) {
+                provers.push(Box::new(Poseidon2Prover::new(
+                    config,
+                    ConstraintProfile::Standard,
+                )));
+            }
             provers.push(Box::new(RecomposeProver::<4>::new(1, true)));
             provers
         } else {
@@ -368,7 +388,9 @@ where
             .unwrap_or_else(|| {
                 panic!("WhirRecursionBackend requires a Poseidon2 challenger config")
             });
-        let mut builders = poseidon2_air_builders_for_configs::<SC, 4>(vec![challenger]);
+        let mut builders = poseidon2_air_builders_for_configs::<SC, 4>(
+            poseidon2_challenger_shape_configs(challenger),
+        );
         builders.push(Box::new(RecomposeAirBuilder::<4>::new(1, true)));
         builders
     }
