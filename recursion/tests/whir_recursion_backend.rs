@@ -10,6 +10,7 @@ use p3_recursion::recursion::{
     build_and_prove_next_layer,
 };
 use p3_uni_stark::{prove, verify};
+use p3_whir::pcs::proof::QueryOpenings;
 
 use crate::common::whir_config::{BbEF, BbF, BbWhirConfig, bb_whir_config};
 
@@ -166,6 +167,94 @@ fn whir_recursion_backend_rejects_a_tampered_input_proof() {
 
     build_and_prove_next_layer(
         &recursion_input,
+        &config,
+        &backend,
+        &ProveNextLayerParams::default(),
+    )
+    .unwrap();
+}
+
+/// Builds an honest first WHIR recursion layer over a Fibonacci base proof, ready to be fed
+/// (honest or tampered) into a second recursion layer.
+fn build_honest_first_layer() -> (
+    BbWhirConfig,
+    WhirRecursionBackendForExt<4>,
+    p3_recursion::recursion::RecursionOutput<BbWhirConfig>,
+) {
+    let log_n = 10;
+    let n = 1 << log_n;
+    let trace = generate_trace_rows::<BbF>(0, 1, n);
+    let pis = vec![BbF::ZERO, BbF::ONE, fibonacci_output(n)];
+    let air = FibonacciAir {};
+    let config = bb_whir_config(vec![]);
+    let proof = prove(&config, &air, trace, &pis);
+    assert!(verify(&config, &air, &proof, &pis).is_ok());
+
+    let backend = WhirRecursionBackend::<16, 8>::new(Poseidon2Config::BABY_BEAR_D4_W16)
+        .for_extension_degree::<4>();
+    let params = ProveNextLayerParams::default();
+
+    let layer1 = build_and_prove_next_layer(
+        &RecursionInput::UniStark {
+            proof: &proof,
+            air: &air,
+            public_inputs: pis,
+            preprocessed_commit: None,
+        },
+        &config,
+        &backend,
+        &params,
+    )
+    .expect("the first recursion layer proves");
+
+    (config, backend, layer1)
+}
+
+/// Tampering an opened value inside the FIRST layer's own batch-STARK proof -- before it is fed
+/// into a SECOND WHIR recursion layer -- must be rejected: the second layer's own verifier
+/// circuit recomputes this value from the replayed transcript and checks it against the claimed
+/// opening, so a mismatch here is a genuine circuit-constraint failure of the second layer's own
+/// batch-STARK verification, not merely "the tampered data was silently passed through
+/// untouched" (there is no untampered redundant copy for it to fall back on).
+#[test]
+#[should_panic(expected = "WitnessConflict")]
+fn whir_recursion_backend_rejects_a_tampered_first_layer_opened_value() {
+    let (config, backend, mut layer1) = build_honest_first_layer();
+
+    layer1.0.proof.opened_values.instances[0]
+        .base_opened_values
+        .quotient_chunks[0][0] += BbEF::ONE;
+
+    let layer2_input = layer1.into_recursion_input::<BatchOnly>();
+    build_and_prove_next_layer(
+        &layer2_input,
+        &config,
+        &backend,
+        &ProveNextLayerParams::default(),
+    )
+    .unwrap();
+}
+
+/// A tampered Merkle sibling digest in the FIRST layer's own batch-STARK proof must fail the
+/// SECOND layer's own MMCS check specifically, isolated from any arithmetic check: unlike an
+/// opened leaf value, a sibling digest plays no part in any transcript absorption or claimed-value
+/// computation the second layer's circuit performs -- it only reaches the circuit through Merkle
+/// path verification, so a rejection here can only come from the root-equality connect that check
+/// makes. Mirrors `whir_recursive_verifier_rejects_a_tampered_sibling_digest` in
+/// `whir_recursive_pcs.rs`, at the batch-STARK backend seam instead of the raw circuit-helper one.
+#[test]
+#[should_panic(expected = "WitnessConflict")]
+fn whir_recursion_backend_rejects_a_tampered_first_layer_sibling_digest() {
+    let (config, backend, mut layer1) = build_honest_first_layer();
+
+    match &mut layer1.0.proof.opening_proof.rounds[0].whir.final_openings {
+        QueryOpenings::Base(opening) => opening.proof.sibling_hashes[0][0] += BbF::ONE,
+        QueryOpenings::Extension(opening) => opening.proof.sibling_hashes[0][0] += BbF::ONE,
+    }
+
+    let layer2_input = layer1.into_recursion_input::<BatchOnly>();
+    build_and_prove_next_layer(
+        &layer2_input,
         &config,
         &backend,
         &ProveNextLayerParams::default(),
