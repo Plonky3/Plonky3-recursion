@@ -89,10 +89,10 @@ fn whir_recursion_backend_proves_a_real_next_layer() {
 
 /// A second WHIR-backed recursion layer verifies the *first* layer's own batch-STARK proof.
 ///
-/// `RecursionInput::BatchStark` is only ever constructed from a prior layer's
-/// `RecursionOutput` (`RecursionOutput::into_recursion_input` is this codebase's sole
-/// construction site), so batch-STARK support in `WhirRecursionBackend` means exactly this:
-/// multi-layer chaining, where layer 2 is a verifier circuit over layer 1's batch proof.
+/// `RecursionInput::BatchStark` is only ever constructed from a `BatchStarkProver` output
+/// (`RecursionOutput::into_recursion_input` is the production path), so batch-STARK support
+/// in `WhirRecursionBackend` means exactly this: multi-layer chaining, where layer 2 is a
+/// verifier circuit over layer 1's batch proof.
 #[test]
 fn whir_recursion_backend_proves_a_batch_stark_next_layer() {
     let log_n = 10;
