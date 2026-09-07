@@ -39,3 +39,7 @@ CLAUDE.md
 
 .claude/
 .codex/
+
+# Superpowers subagent-driven-development workspaces
+.worktrees/
+.superpowers/
