@@ -1778,7 +1778,12 @@ fn verify_all_tables_rejects_a_forged_constant_value() {
     // `check_constraints` inside `p3_batch_stark::prove` before a proof is ever returned) or
     // as a verification failure; both count as rejection of the forged constant. Same
     // `catch_unwind`-based oracle as `recursion/tests/challenger_sponge_binding.rs`'s
-    // `prove_and_verify`.
+    // `prove_and_verify`. The caught panic's payload is checked against the exact text
+    // `p3_batch_stark::check_constraints::check_constraints` panics with
+    // (`panic!("constraints not satisfied on row {row_index}: failed constraints =
+    // {rendered}")`, observed verbatim as `constraints not satisfied on row 1: failed
+    // constraints = [#0]` when this test's forged trace is proved) so an unrelated panic
+    // elsewhere in `prove_all_tables` cannot masquerade as this constraint being enforced.
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let forged_proof = prover
             .prove_all_tables(&forged_traces, &circuit_prover_data)
@@ -1787,7 +1792,16 @@ fn verify_all_tables_rejects_a_forged_constant_value() {
             .verify_all_tables::<KoalaBear>(&forged_proof)
             .map_err(|e| alloc::format!("verify: {e:?}"))
     }))
-    .unwrap_or_else(|_| {
+    .unwrap_or_else(|payload| {
+        let msg = payload
+            .downcast_ref::<alloc::string::String>()
+            .map(alloc::string::String::as_str)
+            .or_else(|| payload.downcast_ref::<&str>().copied())
+            .unwrap_or("<non-string panic>");
+        assert!(
+            msg.contains("constraints not satisfied on row"),
+            "expected the ConstAir constraint-violation panic, got a different panic: {msg}"
+        );
         Err(alloc::string::String::from(
             "prover panicked on the forged constant",
         ))
