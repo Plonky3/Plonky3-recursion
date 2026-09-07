@@ -42,7 +42,7 @@ Each chip encodes its multiplicities differently:
 
 ### ConstAir
 
-`ConstAir` has two preprocessed columns per row: `[multiplicity, index]`. Both the index and the value are fully preprocessed (the entire constant table is known before proving). Each row **sends** `(index, value)` with the preprocessed multiplicity, which equals the number of times that constant slot is read by other chips.
+`ConstAir` has `2 + D` preprocessed columns per row: `[multiplicity, index, value[0..D)]`. Both the index and the value are fully preprocessed (the entire constant table is known before proving, and an AIR constraint binds the main-trace value to its preprocessed copy, so a trace cannot claim a different value than the circuit's constant). Each row **sends** `(index, value)` with the preprocessed multiplicity, which equals the number of times that constant slot is read by other chips. Because the value lives in the preprocessed columns, changing a constant's value changes the circuit's preprocessed commitment.
 
 ### PublicAir
 

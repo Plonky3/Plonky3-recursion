@@ -1765,6 +1765,44 @@ fn verify_all_tables_rejects_a_forged_constant_value() {
         "circuits differing only in a constant's value must have different preprocessing"
     );
 
+    // This is the build-profile-independent version of the check above: it holds whether or
+    // not debug_assertions catches the mismatch earlier during proving. `cfg` was already
+    // moved into `prover` above, so this rebuilds an equivalent (deterministic) config.
+    let forged_cfg = config::koala_bear();
+    let (forged_airs_degrees, forged_primitive_columns, forged_non_primitive_columns) =
+        get_airs_and_degrees_with_prep::<KoalaBearConfig, _, 1>(
+            &forged,
+            &TablePacking::default(),
+            &[],
+            &[],
+            ConstraintProfile::Standard,
+        )
+        .unwrap();
+    let (forged_airs, forged_log_degrees): (Vec<_>, Vec<usize>) =
+        forged_airs_degrees.into_iter().unzip();
+    let forged_prover_data =
+        ProverData::from_airs_and_degrees(&forged_cfg, &forged_airs, &forged_log_degrees);
+    let forged_circuit_prover_data = CircuitProverData::new(
+        forged_prover_data,
+        forged_primitive_columns,
+        forged_non_primitive_columns,
+    );
+    assert_ne!(
+        circuit_prover_data
+            .common_data()
+            .preprocessed
+            .as_ref()
+            .unwrap()
+            .commitment,
+        forged_circuit_prover_data
+            .common_data()
+            .preprocessed
+            .as_ref()
+            .unwrap()
+            .commitment,
+        "circuits differing only in a constant's value must commit to different preprocessed data"
+    );
+
     let mut forged_runner = forged.runner();
     forged_runner
         .set_public_inputs(&[KoalaBear::from_u32(43)])
