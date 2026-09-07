@@ -314,7 +314,7 @@ impl<F: Field> Circuit<F> {
                 Op::Const { out, val } => {
                     let idx = out.base_field_index::<F, D>();
                     preprocessed.primitive[PrimitiveOpType::Const as usize].push(idx);
-                    preprocessed.const_values.push(val.clone());
+                    preprocessed.const_values.push(*val);
                     let out_idx = out.0 as usize;
                     if out_idx >= defined.len() {
                         defined.resize(out_idx + 1, false);
