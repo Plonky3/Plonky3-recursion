@@ -36,3 +36,6 @@ CLAUDE.md
 # Added by cargo
 
 /target
+
+.claude/
+.codex/
