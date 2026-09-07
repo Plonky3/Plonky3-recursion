@@ -48,7 +48,7 @@ pub type BbMmcs = MerkleTreeMmcs<BbPacked, BbPacked, BbHash, BbCompress, 2, 8>;
 pub type BbDft = Radix2DFTSmallBatch<BbF>;
 /// The Fiat-Shamir challenger WHIR example configurations use.
 pub type BbChallenger = DuplexChallenger<BbF, BbPerm, 16, 8>;
-/// The WHIR-backed univariate polynomial commitment scheme under example.
+/// The WHIR-backed univariate polynomial commitment scheme under test.
 pub type BbWhirPcs = WhirUniPcs<BbEF, BbF, BbDft, BbMmcs, BbChallenger, PrefixProver<BbF, BbEF>>;
 
 /// Number of base-field elements in one Merkle digest.
@@ -232,7 +232,7 @@ pub type KbMmcs = MerkleTreeMmcs<KbPacked, KbPacked, KbHash, KbCompress, 2, 8>;
 pub type KbDft = Radix2DFTSmallBatch<KbF>;
 /// The Fiat-Shamir challenger WHIR example configurations use.
 pub type KbChallenger = DuplexChallenger<KbF, KbPerm, 16, 8>;
-/// The WHIR-backed univariate polynomial commitment scheme under example.
+/// The WHIR-backed univariate polynomial commitment scheme under test.
 pub type KbWhirPcs = WhirUniPcs<KbEF, KbF, KbDft, KbMmcs, KbChallenger, PrefixProver<KbF, KbEF>>;
 
 /// Number of base-field elements in one Merkle digest.

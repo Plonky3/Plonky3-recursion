@@ -13,6 +13,11 @@
 //! `--num-recursive-layers` sets `tree_depth` (default 2, i.e. 4 base proofs / 2 aggregation
 //! levels), so the default run already chains multiple WHIR recursion layers.
 //!
+//! Raise it in small steps: the leaves are deliberately of distinct trace lengths, leaf `i` getting
+//! `1 << (10 + i)` rows, so the largest leaf of a depth-`d` tree has `1 << (10 + 2^d - 1)` rows.
+//! Depth 2 tops out at a 2^13-row leaf, depth 3 at 2^17, and depth 4 already needs a 2^25-row leaf
+//! -- past depth 3 the base proofs, not the aggregation layers, dominate the run's cost.
+//!
 //! ## What this proves
 //!
 //! The root proof attests that every base proof in the tree is valid. Every leaf has a distinct

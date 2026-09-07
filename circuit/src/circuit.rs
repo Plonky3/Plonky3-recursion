@@ -658,11 +658,19 @@ mod tests {
             (F::ONE, F::ONE),
             "the row creates both the private minuend and the difference it solves for"
         );
+        // Second ALU row (12 columns per row), `a_state` slot: the following `mul`'s view of the
+        // difference. `F::ONE` is "defined, so read it"; a row that had left the difference
+        // undefined would put `F::ZERO` here — skip — and the value would be tied to nothing.
+        assert_eq!(
+            alu[20],
+            F::ONE,
+            "the difference the `sub` row created is a defined value the following `mul` reads"
+        );
         assert_eq!(
             prep.ext_reads,
             vec![0, 0, 2, 0],
-            "both private inputs are created by this row; only the difference is read, \
-             twice, by the following `mul`"
+            "the difference accounts for every read in the circuit; neither private input is \
+             read anywhere"
         );
     }
 
