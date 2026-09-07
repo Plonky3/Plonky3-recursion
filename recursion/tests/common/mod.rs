@@ -433,6 +433,16 @@ pub(crate) fn build_koala_bear_d4_first_layer_input_with_pow_bits(
     }
 }
 
+/// Same as [`build_koala_bear_d4_first_layer_input`] but with the FRI verifier params'
+/// `permutation_config` set to `None` -- the unsound, arithmetic-only test mode. Used only to
+/// exercise `FriRecursionBackend`'s rejection of that mode.
+pub(crate) fn build_koala_bear_d4_first_layer_input_arithmetic_only() -> KoalaBearD4FirstLayerFixture
+{
+    let mut fixture = build_koala_bear_d4_first_layer_input();
+    fixture.layer_config.fri_verifier_params.permutation_config = None;
+    fixture
+}
+
 /// A solved [`RecursionLayerProfile`] for a KoalaBear D4 first recursion layer, together with
 /// the config/backend that solved it and the `RecursionInput` it was solved against.
 ///

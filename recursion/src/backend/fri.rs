@@ -28,6 +28,7 @@ use p3_uni_stark::{StarkGenericConfig, SymbolicExpressionExt, Val};
 use crate::backend::transcript::replay_recursion_input_transcript;
 use crate::generation::OpeningTranscript;
 use crate::ops::{Poseidon1Config, Poseidon2Config};
+use crate::pcs::fri::FriVerifierParams;
 use crate::public_inputs::{BatchStarkVerifierInputsBuilder, StarkVerifierInputsBuilder};
 use crate::recursion::{PcsRecursionBackend, RecursionInput, VerifierCircuitResult};
 use crate::traits::RecursiveAir;
@@ -591,15 +592,28 @@ where
             SC::OpeningProof,
             SC::Commitment,
             <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain,
+            VerifierParams = FriVerifierParams,
         >,
 {
     type VerifierResult = FriVerifierResult<SC>;
 
+    /// # Errors
+    /// Returns [`VerificationError::InvalidProofShape`] when the config's
+    /// [`FriVerifierParams::permutation_config`] is `None`, the arithmetic-only mode that skips
+    /// in-circuit MMCS verification entirely; a recursion layer built that way would accept FRI
+    /// openings to arbitrary values.
     fn prepare_circuit(
         &self,
         config: &SC,
         circuit: &mut CircuitBuilder<SC::Challenge>,
     ) -> Result<(), VerificationError> {
+        if config.pcs_verifier_params().permutation_config.is_none() {
+            return Err(VerificationError::InvalidProofShape(
+                "FriRecursionBackend requires a sound (Some) permutation_config — None is an \
+                 unsound, arithmetic-only test mode that skips in-circuit MMCS verification"
+                    .to_string(),
+            ));
+        }
         config.prepare_circuit_for_verification(circuit)
     }
 
@@ -739,15 +753,28 @@ where
             SC::OpeningProof,
             SC::Commitment,
             <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain,
+            VerifierParams = FriVerifierParams,
         >,
 {
     type VerifierResult = FriVerifierResult<SC>;
 
+    /// # Errors
+    /// Returns [`VerificationError::InvalidProofShape`] when the config's
+    /// [`FriVerifierParams::permutation_config`] is `None`, the arithmetic-only mode that skips
+    /// in-circuit MMCS verification entirely; a recursion layer built that way would accept FRI
+    /// openings to arbitrary values.
     fn prepare_circuit(
         &self,
         config: &SC,
         circuit: &mut CircuitBuilder<SC::Challenge>,
     ) -> Result<(), VerificationError> {
+        if config.pcs_verifier_params().permutation_config.is_none() {
+            return Err(VerificationError::InvalidProofShape(
+                "FriRecursionBackend requires a sound (Some) permutation_config — None is an \
+                 unsound, arithmetic-only test mode that skips in-circuit MMCS verification"
+                    .to_string(),
+            ));
+        }
         config.prepare_circuit_for_verification(circuit)
     }
 
@@ -887,15 +914,28 @@ where
             SC::OpeningProof,
             SC::Commitment,
             <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain,
+            VerifierParams = FriVerifierParams,
         >,
 {
     type VerifierResult = FriVerifierResult<SC>;
 
+    /// # Errors
+    /// Returns [`VerificationError::InvalidProofShape`] when the config's
+    /// [`FriVerifierParams::permutation_config`] is `None`, the arithmetic-only mode that skips
+    /// in-circuit MMCS verification entirely; a recursion layer built that way would accept FRI
+    /// openings to arbitrary values.
     fn prepare_circuit(
         &self,
         config: &SC,
         circuit: &mut CircuitBuilder<SC::Challenge>,
     ) -> Result<(), VerificationError> {
+        if config.pcs_verifier_params().permutation_config.is_none() {
+            return Err(VerificationError::InvalidProofShape(
+                "FriRecursionBackend requires a sound (Some) permutation_config — None is an \
+                 unsound, arithmetic-only test mode that skips in-circuit MMCS verification"
+                    .to_string(),
+            ));
+        }
         config.prepare_circuit_for_verification(circuit)
     }
 
