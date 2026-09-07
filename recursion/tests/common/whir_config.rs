@@ -94,7 +94,10 @@ pub struct BbWhirConfig {
     whir_verifier_params: WhirUniVerifierParams<BbF>,
 }
 
-/// Builds the configuration for the given WHIR round schedule.
+/// Builds the configuration for the given WHIR round schedule. Pass `vec![]` to auto-derive the
+/// round schedule per commit, which is required whenever a config serves commits of more than
+/// one round-count bucket (e.g. a small base proof's opening and a larger verifier circuit's own
+/// trace).
 pub fn bb_whir_config(round_log_inv_rates: Vec<usize>) -> BbWhirConfig {
     let perm = bb_whir_perm();
     let challenger = BbChallenger::new(perm);
@@ -116,6 +119,18 @@ pub fn bb_whir_config(round_log_inv_rates: Vec<usize>) -> BbWhirConfig {
         challenger,
         whir_verifier_params,
     }
+}
+
+/// The same configuration as [`bb_whir_config`], but with no permutation config on its WHIR
+/// verifier params: the arithmetic-only mode that skips in-circuit MMCS verification.
+///
+/// This mode is unsound — a prover can open the WHIR commitments to arbitrary values, since
+/// nothing in the circuit ties an opened leaf to its Merkle root. It exists for tests that
+/// isolate the WHIR arithmetic, and for asserting that the recursion backend refuses it.
+pub fn bb_whir_config_arithmetic_only(round_log_inv_rates: Vec<usize>) -> BbWhirConfig {
+    let mut config = bb_whir_config(round_log_inv_rates);
+    config.whir_verifier_params.permutation_config = None;
+    config
 }
 
 impl StarkGenericConfig for BbWhirConfig {
@@ -270,7 +285,10 @@ pub struct KbWhirConfig {
     whir_verifier_params: WhirUniVerifierParams<KbF>,
 }
 
-/// Builds the configuration for the given WHIR round schedule.
+/// Builds the configuration for the given WHIR round schedule. Pass `vec![]` to auto-derive the
+/// round schedule per commit, which is required whenever a config serves commits of more than
+/// one round-count bucket (e.g. a small base proof's opening and a larger verifier circuit's own
+/// trace).
 pub fn kb_whir_config(round_log_inv_rates: Vec<usize>) -> KbWhirConfig {
     let perm = kb_whir_perm();
     let challenger = KbChallenger::new(perm);

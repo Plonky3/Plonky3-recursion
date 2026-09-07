@@ -3,16 +3,19 @@ mod common;
 use p3_circuit::test_utils::{FibonacciAir, generate_trace_rows};
 use p3_circuit_prover::batch_stark_prover::BatchStarkProver;
 use p3_field::PrimeCharacteristicRing;
-use p3_recursion::Poseidon2Config;
 use p3_recursion::backend::whir::{WhirRecursionBackend, WhirRecursionBackendForExt};
 use p3_recursion::recursion::{
     BatchOnly, PcsRecursionBackend, ProveNextLayerParams, RecursionInput,
     build_and_prove_next_layer,
 };
+use p3_recursion::{Poseidon2Config, VerificationError};
 use p3_uni_stark::{prove, verify};
 use p3_whir::pcs::proof::QueryOpenings;
 
-use crate::common::whir_config::{BbEF, BbF, BbWhirConfig, bb_whir_config};
+use crate::common::whir_config::{
+    BbEF, BbF, BbWhirConfig, KbEF, KbF, bb_whir_config, bb_whir_config_arithmetic_only,
+    kb_whir_config,
+};
 
 /// `WhirRecursionBackendForExt<4, ...>` must satisfy the exact `PcsRecursionBackend` bound
 /// `recursion.rs`'s pipeline functions require; this fails to compile otherwise.
@@ -32,8 +35,10 @@ fn whir_recursion_backend_satisfies_the_pcs_recursion_backend_bound() {
     assert_bound::<WhirRecursionBackendForExt<4>, BbWhirConfig, FibonacciAir>();
 }
 
-fn fibonacci_output(n: usize) -> BbF {
-    let (mut a, mut b) = (BbF::ZERO, BbF::ONE);
+/// The value `generate_trace_rows::<F>(0, 1, n)`'s last row claims as its output, i.e. `F(n)` for
+/// the sequence started at `F(0) = 0`, `F(1) = 1`.
+fn fibonacci_output<F: PrimeCharacteristicRing + Copy>(n: usize) -> F {
+    let (mut a, mut b) = (F::ZERO, F::ONE);
     for _ in 1..n {
         let next = a + b;
         a = b;
@@ -86,6 +91,94 @@ fn whir_recursion_backend_proves_a_real_next_layer() {
     prover
         .verify_all_tables::<BbEF>(&output.0)
         .expect("the recursion layer's own proof verifies");
+}
+
+/// The KoalaBear counterpart of `whir_recursion_backend_proves_a_real_next_layer`.
+///
+/// A config whose permutation disagrees with the round constants its Poseidon2 AIR recomputes
+/// each row from is invisible to a witness check: the witness the circuit builds from the
+/// permutation is self-consistent whichever permutation produced it, and only a real
+/// batch-STARK proof makes the AIR's own constants contradict it. KoalaBear's only other
+/// end-to-end coverage, `whir_fibonacci_recursive_verifier_koala_bear` in
+/// `whir_recursive_pcs.rs`, stops at `CircuitRunner::run()`, so this test is what holds the
+/// KoalaBear side of `common/whir_config.rs` to the constants
+/// `p3_poseidon2_circuit_air::KoalaBearD4Width16` hard-codes.
+#[test]
+fn whir_recursion_backend_proves_a_real_next_layer_koala_bear() {
+    let log_n = 10;
+    let n = 1 << log_n;
+    let trace = generate_trace_rows::<KbF>(0, 1, n);
+    let pis = vec![KbF::ZERO, KbF::ONE, fibonacci_output::<KbF>(n)];
+    let air = FibonacciAir {};
+    let config = kb_whir_config(vec![]);
+    let proof = prove(&config, &air, trace, &pis);
+    assert!(verify(&config, &air, &proof, &pis).is_ok());
+
+    let recursion_input = RecursionInput::UniStark {
+        proof: &proof,
+        air: &air,
+        public_inputs: pis,
+        preprocessed_commit: None,
+    };
+
+    let backend = WhirRecursionBackend::<16, 8>::new(Poseidon2Config::KOALA_BEAR_D4_W16)
+        .for_extension_degree::<4>();
+    let params = ProveNextLayerParams::default();
+
+    let output = build_and_prove_next_layer(&recursion_input, &config, &backend, &params)
+        .expect("the recursion layer proves");
+
+    // Same real-proof bar as the BabyBear test: register the non-primitive tables the backend
+    // used (both Poseidon2 challenger-shape tables plus recompose) on a fresh `BatchStarkProver`
+    // and verify the layer's own proof.
+    let mut prover = BatchStarkProver::new(config).with_table_packing(params.table_packing);
+    prover.register_poseidon2_table::<4>(Poseidon2Config::KOALA_BEAR_D4_W16.for_challenger());
+    prover.register_poseidon2_table::<4>(Poseidon2Config::KOALA_BEAR_D4_W16);
+    prover.register_recompose_table::<4>(true);
+    prover
+        .verify_all_tables::<KbEF>(&output.0)
+        .expect("the recursion layer's own proof verifies");
+}
+
+/// A config carrying no permutation config on its WHIR verifier params must be refused.
+///
+/// That setting skips in-circuit MMCS verification for every commitment, so nothing ties a WHIR
+/// opening to its Merkle root and a prover can open to arbitrary values. It is a legitimate mode
+/// for the lower-level tests that isolate the WHIR arithmetic, but a recursion layer built on it
+/// is unsound, and neither the type system nor the circuit's own constraints signal that -- the
+/// backend has to.
+#[test]
+fn whir_recursion_backend_rejects_an_arithmetic_only_permutation_config() {
+    let log_n = 10;
+    let n = 1 << log_n;
+    let trace = generate_trace_rows::<BbF>(0, 1, n);
+    let pis = vec![BbF::ZERO, BbF::ONE, fibonacci_output::<BbF>(n)];
+    let air = FibonacciAir {};
+    let config = bb_whir_config_arithmetic_only(vec![]);
+    let proof = prove(&config, &air, trace, &pis);
+    assert!(verify(&config, &air, &proof, &pis).is_ok());
+
+    let result = build_and_prove_next_layer(
+        &RecursionInput::UniStark {
+            proof: &proof,
+            air: &air,
+            public_inputs: pis,
+            preprocessed_commit: None,
+        },
+        &config,
+        &WhirRecursionBackend::<16, 8>::new(Poseidon2Config::BABY_BEAR_D4_W16)
+            .for_extension_degree::<4>(),
+        &ProveNextLayerParams::default(),
+    );
+
+    match result {
+        Err(VerificationError::InvalidProofShape(message)) => assert!(
+            message.contains("permutation_config"),
+            "rejected for the permutation config specifically, got: {message}"
+        ),
+        Err(other) => panic!("expected InvalidProofShape, got {other:?}"),
+        Ok(_) => panic!("a permutation-config-less WHIR config must not produce a recursion layer"),
+    }
 }
 
 /// A second WHIR-backed recursion layer verifies the *first* layer's own batch-STARK proof.
