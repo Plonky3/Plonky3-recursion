@@ -27,6 +27,7 @@ use p3_uni_stark::{StarkGenericConfig, SymbolicExpressionExt, Val};
 use crate::backend::transcript::replay_recursion_input_transcript;
 use crate::generation::OpeningTranscript;
 use crate::ops::Poseidon2Config;
+use crate::pcs::whir::uni::WhirUniVerifierParams;
 use crate::public_inputs::{BatchStarkVerifierInputsBuilder, StarkVerifierInputsBuilder};
 use crate::recursion::{PcsRecursionBackend, RecursionInput, VerifierCircuitResult};
 use crate::traits::RecursiveAir;
@@ -120,6 +121,12 @@ where
 }
 
 /// WHIR-based recursion backend, holding the challenger permutation config.
+///
+/// `C` is bounded by [`ChallengerPermConfig`], which
+/// [`crate::ops::Poseidon1Config`] also satisfies, but this backend only supports Poseidon2:
+/// its non-primitive provers and AIR builders are Poseidon2 tables, so a non-Poseidon2 `C`
+/// panics in [`PcsRecursionBackend::non_primitive_provers`] and
+/// [`PcsRecursionBackend::non_primitive_air_builders`].
 #[derive(Clone)]
 pub struct WhirRecursionBackend<
     const WIDTH: usize = 16,
@@ -292,15 +299,28 @@ where
             SC::OpeningProof,
             SC::Commitment,
             <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain,
+            VerifierParams = WhirUniVerifierParams<Val<SC>>,
         >,
 {
     type VerifierResult = WhirVerifierResult<SC>;
 
+    /// # Errors
+    /// Returns [`VerificationError::InvalidProofShape`] when the config's
+    /// [`WhirUniVerifierParams::permutation_config`] is `None`, the arithmetic-only mode that
+    /// skips in-circuit MMCS verification entirely; a recursion layer built that way would
+    /// accept WHIR openings to arbitrary values.
     fn prepare_circuit(
         &self,
         config: &SC,
         circuit: &mut CircuitBuilder<SC::Challenge>,
     ) -> Result<(), VerificationError> {
+        if config.pcs_verifier_params().permutation_config.is_none() {
+            return Err(VerificationError::InvalidProofShape(
+                "WhirRecursionBackend requires a sound (Some) permutation_config — None is an \
+                 unsound, arithmetic-only test mode that skips in-circuit MMCS verification"
+                    .to_string(),
+            ));
+        }
         config.prepare_circuit_for_verification(circuit)
     }
 
