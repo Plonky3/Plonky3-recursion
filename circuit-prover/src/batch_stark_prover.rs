@@ -1434,7 +1434,7 @@ where
         let alu_trace_only_dummy = traces.alu_trace.op_kind.len() <= 1;
         let alu_lanes = reduce_lanes_if_dummy("ALU", alu_trace_only_dummy, packing.alu_lanes());
 
-        // Const — preprocessed is already in [ext_mult, index] 2-col format.
+        // Const — preprocessed is already in [ext_mult, index, value_0..value_{D-1}] format.
         let const_rows = traces.const_trace.values.len();
         let const_prep = primitive[PrimitiveOpType::Const as usize].clone();
         let const_air = ConstAir::<Val<SC>, D>::new_with_preprocessed(const_rows, const_prep)
