@@ -20,6 +20,13 @@ use crate::{AluOpKind, CircuitError};
 #[derive(Debug)]
 pub struct PreprocessedColumns<F, const D: usize> {
     pub primitive: Vec<Vec<F>>,
+    /// Literal values of each `Op::Const` in the circuit, in the same order as
+    /// `primitive[PrimitiveOpType::Const as usize]` records their indices.
+    ///
+    /// Kept separate from `primitive` because a constant's own value is not always
+    /// base-embeddable (unlike an index): `F` may be a genuine extension field, and only
+    /// consumers with a `BasedVectorSpace` bound can safely decompose it.
+    pub const_values: Vec<F>,
     pub non_primitive: NonPrimitivePreprocessedMap<F>,
     /// Ext-field read counts per witness index (indexed by `WitnessId.0`).
     ///
@@ -54,6 +61,7 @@ pub struct PreprocessedColumns<F, const D: usize> {
 impl<F: PartialEq, const D: usize> PartialEq for PreprocessedColumns<F, D> {
     fn eq(&self, other: &Self) -> bool {
         self.primitive == other.primitive
+            && self.const_values == other.const_values
             && self.ext_reads == other.ext_reads
             && self.non_primitive == other.non_primitive
             && self.dup_npo_outputs == other.dup_npo_outputs
@@ -68,6 +76,7 @@ impl<F: Field + Clone, const D: usize> Clone for PreprocessedColumns<F, D> {
     fn clone(&self) -> Self {
         Self {
             primitive: self.primitive.clone(),
+            const_values: self.const_values.clone(),
             non_primitive: self.non_primitive.clone(),
             ext_reads: self.ext_reads.clone(),
             dup_npo_outputs: self.dup_npo_outputs.clone(),
@@ -83,6 +92,7 @@ impl<F: Field, const D: usize> PreprocessedColumns<F, D> {
         const { assert!(D >= 1, "extension degree must be at least 1") };
         Self {
             primitive: vec![vec![]; PrimitiveOpType::COUNT],
+            const_values: Vec::new(),
             non_primitive: NonPrimitivePreprocessedMap::new(),
             ext_reads: Vec::new(),
             dup_npo_outputs: HashMap::new(),
@@ -301,9 +311,10 @@ impl<F: Field> Circuit<F> {
             match op {
                 // Const: creates the output witness value. Store D-scaled out index.
                 // No ext_reads increment: Const is a creator, not a reader.
-                Op::Const { out, .. } => {
+                Op::Const { out, val } => {
                     let idx = out.base_field_index::<F, D>();
                     preprocessed.primitive[PrimitiveOpType::Const as usize].push(idx);
+                    preprocessed.const_values.push(val.clone());
                     let out_idx = out.0 as usize;
                     if out_idx >= defined.len() {
                         defined.resize(out_idx + 1, false);
@@ -674,6 +685,35 @@ mod tests {
         );
     }
 
+    /// `const_values` must record each constant's literal value, in the same order as
+    /// `primitive[Const]` records its index — a later consumer zips the two to bind each
+    /// constant's value into its preprocessed row.
+    #[test]
+    fn const_values_track_the_circuits_compile_time_constants() {
+        let ops = vec![
+            Op::Const {
+                out: WitnessId(0),
+                val: F::from_u64(42),
+            },
+            Op::Public {
+                out: WitnessId(1),
+                public_pos: 0,
+            },
+            Op::Const {
+                out: WitnessId(2),
+                val: F::from_u64(7),
+            },
+        ];
+        let circuit = make_circuit(ops);
+        let prep = circuit.generate_preprocessed_columns::<1>().unwrap();
+
+        assert_eq!(
+            prep.const_values,
+            vec![F::from_u64(42), F::from_u64(7)],
+            "const_values must record each constant's literal value, in op order"
+        );
+    }
+
     #[test]
     fn test_empty_circuit() {
         let mut circuit: Circuit<F> = make_circuit(vec![]);
@@ -684,6 +724,7 @@ mod tests {
             result,
             PreprocessedColumns {
                 primitive: vec![vec![]; PrimitiveOpType::COUNT],
+                const_values: vec![],
                 non_primitive: HashMap::new(),
                 ext_reads: vec![0],
                 dup_npo_outputs: HashMap::new(),
@@ -773,6 +814,7 @@ mod tests {
                         F::ONE,
                     ],
                 ],
+                const_values: vec![F::from_u64(100), F::from_u64(200)],
                 non_primitive: HashMap::new(),
                 // ext_reads: op1 reads a=0,b=1; op2 reads a=3,b=2; op3 reads a=4,b=2
                 ext_reads: vec![1, 1, 2, 1, 1],
@@ -821,6 +863,7 @@ mod tests {
                         F::ONE,
                     ],
                 ],
+                const_values: vec![],
                 non_primitive: HashMap::new(),
                 //                    0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15
                 ext_reads: vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
@@ -878,6 +921,7 @@ mod tests {
                         F::ONE,
                     ],
                 ],
+                const_values: vec![F::from_u64(3), F::from_u64(5), F::from_u64(7)],
                 non_primitive: HashMap::new(),
                 // ext_reads: 0(a)=1, 1(b)=1, 2(c)=1
                 ext_reads: vec![1, 1, 1],
