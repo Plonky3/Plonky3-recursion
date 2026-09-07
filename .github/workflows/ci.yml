@@ -26,6 +26,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Test benchmark script
+        run: python3 -m unittest discover -s scripts/tests -p 'test_*.py'
+
       - uses: dtolnay/rust-toolchain@stable
         id: rs-stable
 

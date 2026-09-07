@@ -15,7 +15,8 @@ set -euo pipefail
 #
 # aggregation:
 #   - within each run, for each Aggregation level K, average all prove_aggregation_layer timings
-#   - if runs > 1: skip the first prove_aggregation_layer per level per run (cold / no caching)
+#   - if runs > 1 and a level has multiple samples: skip its first sample per run
+#   - retain singleton level timings, including the root
 #   - then stats across runs on those per-run means: min/mean/median/max
 
 example="${1:-}"
@@ -41,7 +42,7 @@ run_fib_or_keccak() {
   {
     for ((r=1; r<=runs; r++)); do
       echo "###RUN ${r}###"
-      RUST_LOG=info cargo run --profile optimized --example "${ex}" -q --features parallel -- "${args[@]}" || true
+      RUST_LOG=info cargo run --profile optimized --example "${ex}" -q --features parallel -- "${args[@]}"
     done
   } | perl -ne '
     use strict;
@@ -117,21 +118,21 @@ run_aggregation() {
   {
     for ((r=1; r<=runs; r++)); do
       echo "###RUN ${r}###"
-      RUST_LOG=info cargo run --profile optimized --example recursive_aggregation -q --features parallel -- --num-recursive-layers 5 || true
+      RUST_LOG=info cargo run --profile optimized --example recursive_aggregation -q --features parallel -- --num-recursive-layers 5
     done
   } | BENCHMARK_AGG_RUNS="$runs" perl -ne '
     use strict;
     use warnings;
 
     our ($run, $cur_level, $skip_cold_first);
-    our (%run_sum, %run_cnt, %seen_first);
+    our (%run_sum, %run_cnt, %first_sample);
     our (%vals, %minv, %maxv);
 
     BEGIN {
       $run = 0;
       $skip_cold_first = ($ENV{BENCHMARK_AGG_RUNS} // 1) > 1;
       undef $cur_level;
-      %run_sum=(); %run_cnt=(); %seen_first=();
+      %run_sum=(); %run_cnt=(); %first_sample=();
       %vals=(); %minv=(); %maxv=();
     }
 
@@ -165,12 +166,17 @@ run_aggregation() {
     sub finalize_run {
       for my $lvl (keys %run_sum) {
         next unless $run_cnt{$lvl};
-        my $mean = $run_sum{$lvl} / $run_cnt{$lvl};
-        upd_stats($lvl, $mean);
+        my $sum = $run_sum{$lvl};
+        my $count = $run_cnt{$lvl};
+        if ($skip_cold_first && $count > 1) {
+          $sum -= $first_sample{$lvl};
+          $count--;
+        }
+        upd_stats($lvl, $sum / $count);
       }
       %run_sum = ();
       %run_cnt = ();
-      %seen_first = ();
+      %first_sample = ();
       undef $cur_level;
     }
 
@@ -196,12 +202,7 @@ run_aggregation() {
       next;
     }
 
-    # --- Skip first aggregation per level when runs>1 (cold / no caching) ---
-    if ($skip_cold_first && !exists $seen_first{$cur_level}) {
-      $seen_first{$cur_level} = 1;
-      next;
-    }
-
+    $first_sample{$cur_level} = $ms unless exists $first_sample{$cur_level};
     $run_sum{$cur_level} += $ms;
     $run_cnt{$cur_level} += 1;
 
