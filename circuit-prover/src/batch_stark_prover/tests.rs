@@ -1,3 +1,5 @@
+extern crate std;
+
 use p3_baby_bear::BabyBear;
 use p3_circuit::builder::CircuitBuilder;
 use p3_circuit::ops::poseidon1_perm::{
@@ -5,7 +7,7 @@ use p3_circuit::ops::poseidon1_perm::{
 };
 use p3_circuit::ops::poseidon2_perm::{GoldilocksD2Width8, Poseidon2PermCallBase};
 use p3_circuit::ops::{
-    KoalaBearD1Width16, Poseidon1Config, Poseidon2Config, generate_poseidon1_trace,
+    KoalaBearD1Width16, Op, Poseidon1Config, Poseidon2Config, generate_poseidon1_trace,
     generate_poseidon2_trace, generate_recompose_trace,
 };
 use p3_field::PrimeCharacteristicRing;
@@ -1694,5 +1696,105 @@ fn circuit_table_air_forwards_base_air_methods_to_dynamic() {
                 BabyBear::from_u64(17),
             ],
         ],
+    );
+}
+
+#[test]
+fn verify_all_tables_rejects_a_forged_constant_value() {
+    // Regression test for the constant-binding soundness bug: a circuit's compile-time
+    // constant (`alloc_const`) must be part of its committed preprocessing, not a free
+    // per-proof witness. Before the fix, a trace generated from a circuit whose constant had
+    // been swapped (42 -> 43) verified successfully against the *original* circuit's
+    // preprocessed commitment, because `ConstAir`'s preprocessed columns carried only the
+    // witness index, never the value.
+    let mut builder = CircuitBuilder::<KoalaBear>::new();
+    let c = builder.define_const(KoalaBear::from_u32(42));
+    let x = builder.public_input();
+    builder.connect(c, x);
+    let circuit = builder.build().unwrap();
+
+    let cfg = config::koala_bear();
+    let (airs_degrees, primitive_columns, non_primitive_columns) =
+        get_airs_and_degrees_with_prep::<KoalaBearConfig, _, 1>(
+            &circuit,
+            &TablePacking::default(),
+            &[],
+            &[],
+            ConstraintProfile::Standard,
+        )
+        .unwrap();
+    let (airs, log_degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
+    let prover_data = ProverData::from_airs_and_degrees(&cfg, &airs, &log_degrees);
+    let circuit_prover_data =
+        CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
+
+    let mut honest_runner = circuit.runner();
+    honest_runner
+        .set_public_inputs(&[KoalaBear::from_u32(42)])
+        .unwrap();
+    let honest_traces = honest_runner.run().unwrap();
+
+    let prover = BatchStarkProver::new(cfg);
+    let honest_proof = prover
+        .prove_all_tables(&honest_traces, &circuit_prover_data)
+        .unwrap();
+    assert!(prover.verify_all_tables::<KoalaBear>(&honest_proof).is_ok());
+
+    // Forge a circuit that requires x=43 by mutating the compiled `Op::Const` directly
+    // (bypassing `CircuitBuilder`, the way a malicious prover with access to the circuit
+    // representation would).
+    let mut forged = circuit.clone();
+    let mut changes = 0;
+    for op in &mut forged.ops {
+        let Op::Const { val, .. } = op else {
+            continue;
+        };
+        if *val != KoalaBear::from_u32(42) {
+            continue;
+        }
+        *val = KoalaBear::from_u32(43);
+        changes += 1;
+    }
+    assert_eq!(changes, 1, "exactly one Const op should carry the value 42");
+
+    // The two circuits must now commit to different preprocessed data — this is the fix's
+    // core property: the constant's value is part of what's committed, not free.
+    assert_ne!(
+        circuit.generate_preprocessed_columns::<1>().unwrap(),
+        forged.generate_preprocessed_columns::<1>().unwrap(),
+        "circuits differing only in a constant's value must have different preprocessing"
+    );
+
+    let mut forged_runner = forged.runner();
+    forged_runner
+        .set_public_inputs(&[KoalaBear::from_u32(43)])
+        .unwrap();
+    let forged_traces = forged_runner.run().unwrap();
+
+    // Prove the forged trace against the ORIGINAL (x=42) circuit's prover data — this is the
+    // exploit: reusing preprocessing that no longer matches the trace's constant.
+    //
+    // An unsatisfied constraint surfaces either as a prover-side panic (debug builds run
+    // `check_constraints` inside `p3_batch_stark::prove` before a proof is ever returned) or
+    // as a verification failure; both count as rejection of the forged constant. Same
+    // `catch_unwind`-based oracle as `recursion/tests/challenger_sponge_binding.rs`'s
+    // `prove_and_verify`.
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let forged_proof = prover
+            .prove_all_tables(&forged_traces, &circuit_prover_data)
+            .map_err(|e| alloc::format!("prove: {e:?}"))?;
+        prover
+            .verify_all_tables::<KoalaBear>(&forged_proof)
+            .map_err(|e| alloc::format!("verify: {e:?}"))
+    }))
+    .unwrap_or_else(|_| {
+        Err(alloc::string::String::from(
+            "prover panicked on the forged constant",
+        ))
+    });
+
+    assert!(
+        result.is_err(),
+        "a trace asserting the wrong value for a compile-time constant must be rejected"
     );
 }
