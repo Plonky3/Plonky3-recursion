@@ -379,7 +379,7 @@ where
         &proof.proof,
         common_data,
         &air_public_counts,
-    );
+    )?;
 
     // Rebuild the lookup contexts from the reconstructed (audited) AIRs instead of trusting
     // the proof-supplied `common.lookups`, which drives the CTL folding, aux width, and
@@ -494,6 +494,14 @@ where
         return Err(VerificationError::InvalidProofShape(
             "Mismatch between number of AIRs, instances, public values, or degree bits".to_string(),
         ));
+    }
+
+    if lookup_terminals.len() != instances.len() {
+        return Err(VerificationError::InvalidProofShape(format!(
+            "lookup terminal count mismatch: expected {}, got {}",
+            instances.len(),
+            lookup_terminals.len()
+        )));
     }
 
     // Proof-supplied degree_bits feed `1 << degree_bits` below; validate bounds up front

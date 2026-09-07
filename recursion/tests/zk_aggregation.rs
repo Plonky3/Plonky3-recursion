@@ -214,7 +214,7 @@ fn add_zk_batch_verifier_to_circuit(
         MyConfigZk,
         MerkleCapTargets<F, DIGEST_ELEMS>,
         InnerFriZk,
-    >::allocate(circuit_builder, proof, common, &air_public_counts);
+    >::allocate(circuit_builder, proof, common, &air_public_counts)?;
 
     let lookup_gadget = LogUpGadget::new();
     let mmcs_op_ids = verify_batch_circuit::<_, _, _, _, _, _, _, WIDTH, RATE>(

@@ -182,7 +182,7 @@ fn test_batch_verifier_hiding_mmcs() -> Result<(), VerificationError> {
         &batch_stark_proof,
         common,
         &air_public_counts,
-    );
+    )?;
     let mmcs_op_ids = verify_batch_circuit::<_, _, _, _, _, _, _, WIDTH, RATE>(
         &config,
         &[air],

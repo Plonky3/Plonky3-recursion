@@ -14,8 +14,8 @@ use p3_matrix::dense::RowMajorMatrix;
 use p3_poseidon2_circuit_air::BabyBearD4Width16;
 use p3_recursion::pcs::MerkleCapTargets;
 use p3_recursion::{
-    BatchStarkVerifierInputsBuilder, FriVerifierParams, Poseidon2Config, VerificationError,
-    verify_batch_circuit,
+    BatchProofTargets, BatchStarkVerifierInputsBuilder, FriVerifierParams, Poseidon2Config,
+    VerificationError, verify_batch_circuit,
 };
 use p3_test_utils::baby_bear_params::*;
 use rand::distr::{Distribution, StandardUniform};
@@ -367,7 +367,7 @@ fn test_batch_verifier_with_mixed_preprocessed() -> Result<(), VerificationError
         &batch_proof,
         common_data,
         &air_public_counts,
-    );
+    )?;
 
     // Create PCS verifier params from FRI verifier params
     let pcs_verifier_params = fri_verifier_params;
@@ -487,7 +487,7 @@ fn run_with_tampered_common(
         &batch_proof,
         common_data,
         &air_public_counts,
-    );
+    )?;
 
     let pcs_verifier_params = fri_verifier_params;
     verify_batch_circuit::<_, _, _, _, _, _, _, WIDTH, RATE>(
@@ -568,11 +568,13 @@ fn test_batch_verifier_rejects_out_of_bounds_matrix_to_instance() {
     );
 }
 
-/// Same flow as [`run_with_tampered_common`], but the corruption is applied to the
-/// `BatchProof` (the permutation openings are sized from it during target
-/// allocation) so we can exercise the permutation-opening width check.
+/// Same flow as [`run_with_tampered_common`], with separate hooks to corrupt the raw proof before
+/// allocation or its allocated targets before low-level verification.
 fn run_with_tampered_proof(
     tamper: impl FnOnce(&mut BatchProof<MyConfig>),
+    tamper_targets: impl FnOnce(
+        &mut BatchProofTargets<MyConfig, MerkleCapTargets<F, DIGEST_ELEMS>, InnerFri>,
+    ),
 ) -> Result<(), VerificationError> {
     let n = 1 << 3;
 
@@ -624,7 +626,8 @@ fn run_with_tampered_proof(
     let airs = vec![mixed_air1, mixed_air2, mixed_air3];
     let common_data = &prover_data.common;
 
-    // Corrupt the proof the verifier targets are allocated from.
+    // Corrupt the proof the verifier targets are allocated from, then optionally corrupt the
+    // allocated targets to exercise low-level checks independently of allocator validation.
     tamper(&mut batch_proof);
 
     let mut circuit_builder = CircuitBuilder::new();
@@ -635,7 +638,7 @@ fn run_with_tampered_proof(
     circuit_builder.enable_recompose::<F>(generate_recompose_trace::<F, Challenge>);
 
     let air_public_counts = vec![0usize; batch_proof.opened_values.instances.len()];
-    let verifier_inputs = BatchStarkVerifierInputsBuilder::<
+    let mut verifier_inputs = BatchStarkVerifierInputsBuilder::<
         MyConfig,
         MerkleCapTargets<F, DIGEST_ELEMS>,
         InnerFri,
@@ -644,7 +647,8 @@ fn run_with_tampered_proof(
         &batch_proof,
         common_data,
         &air_public_counts,
-    );
+    )?;
+    tamper_targets(&mut verifier_inputs.proof_targets);
 
     let pcs_verifier_params = fri_verifier_params;
     verify_batch_circuit::<_, _, _, _, _, _, _, WIDTH, RATE>(
@@ -663,13 +667,16 @@ fn run_with_tampered_proof(
 
 #[test]
 fn test_batch_verifier_rejects_extra_local_permutation_coefficients() {
-    let err = run_with_tampered_proof(|proof| {
-        // These AIRs have no lookups (aux_width == 0), so a valid permutation
-        // opening is empty; any extra coefficient must be rejected.
-        proof.opened_values.instances[0]
-            .permutation_local
-            .push(Challenge::ONE);
-    })
+    let err = run_with_tampered_proof(
+        |proof| {
+            // These AIRs have no lookups (aux_width == 0), so a valid permutation
+            // opening is empty; any extra coefficient must be rejected.
+            proof.opened_values.instances[0]
+                .permutation_local
+                .push(Challenge::ONE);
+        },
+        |_| {},
+    )
     .expect_err("extra local permutation coefficients must be rejected");
     assert!(
         matches!(err, VerificationError::InvalidProofShape(_)),
@@ -679,11 +686,14 @@ fn test_batch_verifier_rejects_extra_local_permutation_coefficients() {
 
 #[test]
 fn test_batch_verifier_rejects_extra_next_permutation_coefficients() {
-    let err = run_with_tampered_proof(|proof| {
-        proof.opened_values.instances[2]
-            .permutation_next
-            .push(Challenge::ONE);
-    })
+    let err = run_with_tampered_proof(
+        |proof| {
+            proof.opened_values.instances[2]
+                .permutation_next
+                .push(Challenge::ONE);
+        },
+        |_| {},
+    )
     .expect_err("extra next permutation coefficients must be rejected");
     assert!(
         matches!(err, VerificationError::InvalidProofShape(_)),
@@ -693,16 +703,135 @@ fn test_batch_verifier_rejects_extra_next_permutation_coefficients() {
 
 #[test]
 fn test_batch_verifier_rejects_degree_bits_too_large() {
-    let err = run_with_tampered_proof(|proof| {
-        // Any value overflowing `checked_pow2` (>= usize::BITS) must be rejected instead of
-        // shift-overflowing the `1 << degree_bits` used to derive the trace/quotient domains.
-        proof.degree_bits[0] = usize::MAX;
-    })
+    let err = run_with_tampered_proof(
+        |proof| {
+            // Any value overflowing `checked_pow2` (>= usize::BITS) must be rejected instead of
+            // shift-overflowing the `1 << degree_bits` used to derive the trace/quotient domains.
+            proof.degree_bits[0] = usize::MAX;
+        },
+        |_| {},
+    )
     .expect_err("out-of-range degree_bits must be rejected");
     assert!(
         matches!(err, VerificationError::InvalidProofShape(_)),
         "expected InvalidProofShape, got {err:?}"
     );
+}
+
+#[test]
+fn test_batch_verifier_rejects_short_lookup_terminals() {
+    let err = run_with_tampered_proof(
+        |_| {},
+        |targets| {
+            targets.lookup_terminals.pop();
+        },
+    )
+    .expect_err("too few lookup terminals must be rejected");
+    assert!(matches!(
+        err,
+        VerificationError::InvalidProofShape(ref message) if message.contains("lookup terminal")
+    ));
+}
+
+#[test]
+fn test_batch_verifier_rejects_surplus_lookup_terminals() {
+    let err = run_with_tampered_proof(
+        |_| {},
+        |targets| {
+            targets.lookup_terminals.push(None);
+        },
+    )
+    .expect_err("too many lookup terminals must be rejected");
+    assert!(matches!(
+        err,
+        VerificationError::InvalidProofShape(ref message) if message.contains("lookup terminal")
+    ));
+}
+
+fn assert_batch_allocation_rejected_without_mutation(
+    proof: &BatchProof<MyConfig>,
+    common: &CommonData<MyConfig>,
+    air_public_counts: &[usize],
+    message_fragment: &str,
+) {
+    let mut builder = CircuitBuilder::new();
+    let before = builder.public_input();
+    let result = BatchStarkVerifierInputsBuilder::<
+        MyConfig,
+        MerkleCapTargets<F, DIGEST_ELEMS>,
+        InnerFri,
+    >::allocate(&mut builder, proof, common, air_public_counts);
+    let after = builder.public_input();
+
+    let err = match result {
+        Err(err) => err,
+        Ok(_) => panic!("malformed batch cardinality must be rejected"),
+    };
+    assert!(matches!(
+        err,
+        VerificationError::InvalidProofShape(ref message)
+            if message.contains(message_fragment)
+    ));
+    assert_eq!(after.0, before.0 + 1);
+}
+
+#[test]
+fn test_batch_allocation_validates_cardinalities_before_mutating_builder() {
+    let n = 1 << 3;
+    let config = make_test_config();
+    let air = PublicValueAir { rows: n };
+    let (trace, public_values) = air.generate_trace::<F>();
+    let instances = [StarkInstance {
+        air: &air,
+        trace: &trace,
+        public_values,
+    }];
+    let prover_data = ProverData::from_instances(&config, &instances);
+    let mut proof = prove_batch(&config, &instances, &prover_data);
+    let common = &prover_data.common;
+    let valid_counts = [1];
+
+    let opened_values = core::mem::take(&mut proof.opened_values.instances);
+    assert_batch_allocation_rejected_without_mutation(&proof, common, &[], "at least one");
+    proof.opened_values.instances = opened_values;
+
+    assert_batch_allocation_rejected_without_mutation(&proof, common, &[], "public input");
+    assert_batch_allocation_rejected_without_mutation(&proof, common, &[1, 0], "public input");
+
+    let degree_bits = proof.degree_bits.pop().expect("proof has one degree bit");
+    assert_batch_allocation_rejected_without_mutation(&proof, common, &valid_counts, "degree bit");
+    proof.degree_bits.push(degree_bits);
+    proof.degree_bits.push(degree_bits);
+    assert_batch_allocation_rejected_without_mutation(&proof, common, &valid_counts, "degree bit");
+    proof.degree_bits.pop();
+
+    let terminal = proof
+        .lookup_terminals
+        .pop()
+        .expect("proof has one lookup terminal entry");
+    assert_batch_allocation_rejected_without_mutation(
+        &proof,
+        common,
+        &valid_counts,
+        "lookup terminal",
+    );
+    proof.lookup_terminals.push(terminal);
+    proof.lookup_terminals.push(None);
+    assert_batch_allocation_rejected_without_mutation(
+        &proof,
+        common,
+        &valid_counts,
+        "lookup terminal",
+    );
+    proof.lookup_terminals.pop();
+
+    let mut builder = CircuitBuilder::new();
+    let result = BatchStarkVerifierInputsBuilder::<
+        MyConfig,
+        MerkleCapTargets<F, DIGEST_ELEMS>,
+        InnerFri,
+    >::allocate(&mut builder, &proof, common, &valid_counts);
+    assert!(result.is_ok(), "valid batch allocation must succeed");
 }
 
 #[test]
@@ -756,7 +885,7 @@ fn test_batch_verifier_with_public_values() -> Result<(), VerificationError> {
         &batch_proof,
         common_data,
         &air_public_counts,
-    );
+    )?;
 
     verify_batch_circuit::<_, _, _, _, _, _, _, WIDTH, RATE>(
         &config,
@@ -838,7 +967,8 @@ fn test_batch_verifier_wrong_public_values() {
         &batch_proof,
         common_data,
         &air_public_counts,
-    );
+    )
+    .expect("valid proof shape must allocate verifier inputs");
 
     verify_batch_circuit::<_, _, _, _, _, _, _, WIDTH, RATE>(
         &config,

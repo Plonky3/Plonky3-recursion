@@ -8,7 +8,7 @@ use p3_circuit_prover::batch_stark_prover::{
 };
 use p3_circuit_prover::common::{NpoPreprocessor, get_airs_and_degrees_with_prep};
 use p3_circuit_prover::{
-    BatchStarkProver, CircuitProverData, ConstraintProfile, Poseidon2Preprocessor,
+    BatchStarkProof, BatchStarkProver, CircuitProverData, ConstraintProfile, Poseidon2Preprocessor,
     RecomposePreprocessor, TablePacking,
 };
 use p3_lookup::logup::LogUpGadget;
@@ -17,7 +17,8 @@ use p3_recursion::pcs::fri::{FriVerifierParams, InputProofTargets, MerkleCapTarg
 use p3_recursion::pcs::{restore_fri_query_paths, set_fri_mmcs_private_data};
 use p3_recursion::verifier::verify_p3_batch_proof_circuit;
 use p3_recursion::{
-    OpeningTranscript, Poseidon2Config, observe_opened_values, replay_batch_layer_transcript,
+    OpeningTranscript, Poseidon2Config, VerificationError, observe_opened_values,
+    replay_batch_layer_transcript,
 };
 use p3_test_utils::koala_bear_params::*;
 use tracing_forest::ForestLayer;
@@ -41,37 +42,21 @@ fn init_logger() {
         .init();
 }
 
-#[test]
-fn test_fibonacci_batch_verifier() {
-    init_logger();
-
-    let n: usize = 100;
-
+fn prove_fibonacci_batch(n: usize) -> (BatchStarkProof<MyConfig>, CircuitProverData<MyConfig>) {
     let mut builder = CircuitBuilder::new();
 
-    // Public input: expected F(n)
     let expected_result = builder.alloc_public_input("expected_result");
-
-    // Compute F(n) iteratively
     let mut a = builder.alloc_const(F::ZERO, "F(0)");
     let mut b = builder.alloc_const(F::ONE, "F(1)");
-
-    for _i in 2..=n {
+    for _ in 2..=n {
         let next = builder.add(a, b);
         a = b;
         b = next;
     }
-
-    // Assert computed F(n) equals expected result
     builder.connect(b, expected_result);
 
-    builder.dump_allocation_log();
-
     let table_packing = TablePacking::new(2, 4);
-
-    // Use the default permutation for proving to match circuit's Fiat-Shamir challenger
-    let config_proving = make_test_config();
-
+    let config = make_test_config();
     let circuit = builder.build().unwrap();
     let (airs_degrees, primitive_columns, non_primitive_columns) =
         get_airs_and_degrees_with_prep::<MyConfig, _, 1>(
@@ -84,27 +69,30 @@ fn test_fibonacci_batch_verifier() {
         .unwrap();
     let (airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
     let mut runner = circuit.runner();
-
-    // Set public input
-    let expected_fib = compute_fibonacci_classical(n);
-    runner.set_public_inputs(&[expected_fib]).unwrap();
-
+    runner
+        .set_public_inputs(&[compute_fibonacci_classical(n)])
+        .unwrap();
     let traces = runner.run().unwrap();
 
-    // Create prover data for proving and verifying.
-    let prover_data = ProverData::from_airs_and_degrees(&config_proving, &airs, &degrees);
+    let prover_data = ProverData::from_airs_and_degrees(&config, &airs, &degrees);
     let circuit_prover_data =
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
-
-    let prover = BatchStarkProver::new(config_proving).with_table_packing(table_packing);
-
-    let lookup_gadget = LogUpGadget::new();
-    let batch_stark_proof = prover
+    let prover = BatchStarkProver::new(config).with_table_packing(table_packing);
+    let proof = prover
         .prove_all_tables(&traces, &circuit_prover_data)
         .unwrap();
+    prover.verify_all_tables::<F>(&proof).unwrap();
+    (proof, circuit_prover_data)
+}
 
+#[test]
+fn test_fibonacci_batch_verifier() {
+    init_logger();
+
+    let n: usize = 100;
+    let lookup_gadget = LogUpGadget::new();
+    let (batch_stark_proof, circuit_prover_data) = prove_fibonacci_batch(n);
     let common = circuit_prover_data.common_data();
-    prover.verify_all_tables::<F>(&batch_stark_proof).unwrap();
 
     // Now verify the batch STARK proof recursively
     // Use same permutation as proving to ensure Fiat-Shamir transcript compatibility
@@ -266,6 +254,63 @@ fn test_fibonacci_batch_verifier() {
     verification_prover
         .verify_all_tables::<Challenge>(&verification_proof)
         .expect("Failed to verify proof of verification circuit");
+}
+
+#[test]
+fn test_highlevel_batch_verifier_rejects_instance_count_mismatch_before_allocation() {
+    let (mut batch_stark_proof, circuit_prover_data) = prove_fibonacci_batch(8);
+    batch_stark_proof
+        .proof
+        .opened_values
+        .instances
+        .pop()
+        .expect("Fibonacci proof has multiple instances");
+
+    let scalars = test_fri_scalars();
+    let fri_verifier_params = FriVerifierParams::with_mmcs(
+        scalars.log_blowup,
+        scalars.log_final_poly_len,
+        scalars.commit_pow_bits,
+        scalars.query_pow_bits,
+        scalars.num_queries,
+        Poseidon2Config::KOALA_BEAR_D4_W16,
+    );
+    let config = make_test_config();
+    let lookup_gadget = LogUpGadget::new();
+    let mut circuit_builder = CircuitBuilder::new();
+    let before = circuit_builder.public_input();
+
+    let result = verify_p3_batch_proof_circuit::<
+        MyConfig,
+        MerkleCapTargets<F, DIGEST_ELEMS>,
+        InputProofTargets<F, Challenge, RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>>,
+        InnerFri,
+        LogUpGadget,
+        _,
+        WIDTH,
+        RATE,
+        1,
+    >(
+        &config,
+        &mut circuit_builder,
+        &batch_stark_proof,
+        &fri_verifier_params,
+        circuit_prover_data.common_data(),
+        &lookup_gadget,
+        Poseidon2Config::KOALA_BEAR_D4_W16,
+        &[],
+    );
+    let after = circuit_builder.public_input();
+
+    let err = match result {
+        Err(err) => err,
+        Ok(_) => panic!("mismatched instance count must be rejected"),
+    };
+    assert!(matches!(
+        err,
+        VerificationError::InvalidProofShape(ref message) if message.contains("instances")
+    ));
+    assert_eq!(after.0, before.0 + 1);
 }
 
 fn compute_fibonacci_classical(n: usize) -> F {

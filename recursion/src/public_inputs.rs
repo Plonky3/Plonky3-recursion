@@ -1,6 +1,7 @@
 //! This module provides type-safe builders and helper functions
 //! for constructing public inputs for recursive verification circuits.
 
+use alloc::format;
 use alloc::vec::Vec;
 
 use p3_batch_stark::{BatchProof, CommonData};
@@ -10,7 +11,7 @@ use p3_field::{BasedVectorSpace, Field, PrimeField64};
 use p3_uni_stark::{Proof, StarkGenericConfig, Val};
 
 use crate::traits::Recursive;
-use crate::{BatchProofTargets, CommonDataTargets, ProofTargets};
+use crate::{BatchProofTargets, CommonDataTargets, ProofTargets, VerificationError};
 
 /// Builder for constructing a flat public input vector in a canonical order.
 ///
@@ -617,20 +618,39 @@ where
     /// - `proof`: Reference batch proof used only for its structure.
     /// - `air_public_counts`: Number of public inputs per AIR instance.
     ///
-    /// # Panics
-    /// Panics if `air_public_counts.len()` does not match the number of instances in the batch proof.
+    /// # Errors
+    /// Returns [`VerificationError::InvalidProofShape`] if the batch is empty or if the number of
+    /// public-input counts, degree bits, or lookup terminals differs from the number of instances.
     pub fn allocate(
         circuit: &mut CircuitBuilder<SC::Challenge>,
         proof: &BatchProof<SC>,
         common_data: &CommonData<SC>,
         air_public_counts: &[usize],
-    ) -> Self {
-        // Ensure we have one public count per instance.
-        assert_eq!(
-            air_public_counts.len(),
-            proof.opened_values.instances.len(),
-            "public input count must match number of instances"
-        );
+    ) -> Result<Self, VerificationError> {
+        let instances = proof.opened_values.instances.len();
+        if instances == 0 {
+            return Err(VerificationError::InvalidProofShape(
+                "batch-STARK allocation requires at least one instance".into(),
+            ));
+        }
+        if air_public_counts.len() != instances {
+            return Err(VerificationError::InvalidProofShape(format!(
+                "public input count for instances mismatch: expected {instances}, got {}",
+                air_public_counts.len()
+            )));
+        }
+        if proof.degree_bits.len() != instances {
+            return Err(VerificationError::InvalidProofShape(format!(
+                "degree bit count mismatch: expected {instances}, got {}",
+                proof.degree_bits.len()
+            )));
+        }
+        if proof.lookup_terminals.len() != instances {
+            return Err(VerificationError::InvalidProofShape(format!(
+                "lookup terminal count mismatch: expected {instances}, got {}",
+                proof.lookup_terminals.len()
+            )));
+        }
 
         // For each instance, allocate `count` public input targets.
         let air_public_targets = air_public_counts
@@ -643,11 +663,11 @@ where
 
         let common_data = CommonDataTargets::<SC, Comm>::new(circuit, common_data);
 
-        Self {
+        Ok(Self {
             air_public_targets,
             proof_targets,
             common_data,
-        }
+        })
     }
 
     /// Packs concrete values into public inputs for batch verification.
