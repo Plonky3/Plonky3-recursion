@@ -7,7 +7,8 @@ pub mod whir;
 pub use fri::{
     BatchOpeningTargets, CommitPhaseProofStepTargets, FriProofTargets, FriVerifierParams,
     HashProofTargets, HidingFriProofTargets, HidingHashProofTargets, HidingOpenedValuesTargets,
-    InputProofTargets, MerkleCapTargets, MmcsProofTargets, QueryProofTargets, RecExtensionValMmcs,
+    InputProofTargets, MerkleCapTargets, MmcsProofTargets, PreparedRecursiveFriInputOpenings,
+    PreparedRecursiveMultiProofTargets, QueryProofTargets, RecExtensionValMmcs,
     RecExtensionValMmcsArity4, RecValHidingMmcs, RecValMmcs, RecValMmcsArity4,
     RecursiveFriInputOpenings, RecursiveMultiProofTargets, TwoAdicFriProofTargets, Witness,
     fri_proof_num_queries, verify_fri_circuit,

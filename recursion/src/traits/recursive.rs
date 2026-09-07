@@ -7,6 +7,7 @@ use p3_lookup::LookupProtocol;
 use p3_lookup::logup::LogUpGadget;
 
 use crate::Target;
+use crate::verifier::VerificationError;
 
 /// Trait for converting a non-recursive type into its circuit representation.
 ///
@@ -45,6 +46,28 @@ pub trait Recursive<F: Field> {
     /// # Parameters
     /// - `input`: The non-recursive input to extract public values from
     fn get_values(input: &Self::Input) -> Vec<F>;
+}
+
+/// Explicit, trusted semantic contract for reusing a recursive target shape.
+///
+/// Equal shapes must guarantee that the two native inputs select exactly the same
+/// input-dependent allocations, branches, loop counts, constants, layouts, and runtime value
+/// extraction boundaries used by both target construction and recursive verification. A native
+/// scalar, enum discriminant, or other value belongs in the shape whenever it selects compiled
+/// circuit behavior, even if it looks like witness data. Only values whose changes leave all of
+/// those behaviors unchanged are dynamic witnesses and may be excluded.
+///
+/// Shape capture must be a pure inspection of the native input. It must not pack values, allocate
+/// a trial circuit, or recover/replay a transcript. Malformed native structures should be rejected
+/// here before target allocation. Implementing this trait for a custom recursive target is an
+/// explicit opt-in whose completeness is trusted in the same way as the target's recursive
+/// verification implementation.
+pub trait PreparedRecursive<F: Field>: Recursive<F> {
+    /// Native semantic shape used to decide whether a prepared circuit may be reused.
+    type Shape: Clone + PartialEq;
+
+    /// Capture the complete reuse-relevant native shape under the contract above.
+    fn input_shape(input: &Self::Input) -> Result<Self::Shape, VerificationError>;
 }
 
 pub trait RecursiveLookupGadget<F: Field>: LookupProtocol {

@@ -15,23 +15,31 @@
 //!   - a negative test: tampering the sibling of a step-2 bridge level makes the recovered
 //!     root diverge from the native cap, surfacing a witness conflict at the root `connect`.
 
+use p3_challenger::DuplexChallenger;
 use p3_circuit::CircuitBuilder;
 use p3_circuit::ops::{
     Poseidon2Config, generate_poseidon2_trace, generate_recompose_trace, perm_private_data,
 };
-use p3_commit::{BatchOpeningRef, ExtensionMmcs, Mmcs};
+use p3_commit::{BatchOpeningRef, ExtensionMmcs, Mmcs, Pcs};
+use p3_dft::Radix2DitParallel;
 use p3_field::extension::BinomialExtensionField;
 use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
+use p3_fri::{FriParameters, TwoAdicFriPcs};
 use p3_koala_bear::{KoalaBear, Poseidon2KoalaBear, default_koalabear_poseidon2_32};
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_merkle_tree::MerkleTreeMmcs;
 use p3_poseidon2_circuit_air::KoalaBearD4Width32;
-use p3_recursion::Target;
+use p3_recursion::pcs::fri::{
+    FriProofTargets, InputProofTargets, MerkleCapTargets, RecExtensionValMmcsArity4,
+    RecValMmcsArity4, Witness,
+};
 use p3_recursion::pcs::{
     verify_batch_circuit_arity4, verify_batch_circuit_from_extension_opened_arity4,
 };
+use p3_recursion::{PreparedRecursive, RecursivePcs, Target};
 use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
+use p3_uni_stark::StarkConfig;
 
 type F = KoalaBear;
 type CF = BinomialExtensionField<F, 4>;
@@ -43,6 +51,30 @@ type LeafHash = PaddingFreeSponge<Perm32, 32, 24, 8>;
 type Compress4 = TruncatedPermutation<Perm32, 4, 8, 32>;
 type Mmcs4 = MerkleTreeMmcs<F, F, LeafHash, Compress4, 4, 8>;
 type ExtMmcs4 = ExtensionMmcs<F, CF, Mmcs4>;
+type PcsMmcs4 = MerkleTreeMmcs<
+    <F as p3_field::Field>::Packing,
+    <F as p3_field::Field>::Packing,
+    LeafHash,
+    Compress4,
+    4,
+    8,
+>;
+type PcsExtMmcs4 = ExtensionMmcs<F, CF, PcsMmcs4>;
+type Challenger32 = DuplexChallenger<F, Perm32, 32, 24>;
+type Dft4 = Radix2DitParallel<F>;
+type Pcs4 = TwoAdicFriPcs<F, Dft4, PcsMmcs4, PcsExtMmcs4>;
+type Config4 = StarkConfig<Pcs4, CF, Challenger32>;
+type RecMmcs4 = RecValMmcsArity4<F, 8, LeafHash, Compress4>;
+type RecExtMmcs4 = RecExtensionValMmcsArity4<F, CF, 8, RecMmcs4>;
+type FriTargets4 =
+    FriProofTargets<F, CF, RecExtMmcs4, InputProofTargets<F, CF, RecMmcs4>, Witness<F>>;
+type SelectedFriTargets4 = <Pcs4 as RecursivePcs<
+    Config4,
+    InputProofTargets<F, CF, RecMmcs4>,
+    FriTargets4,
+    MerkleCapTargets<F, 8>,
+    <Pcs4 as Pcs<CF, Challenger32>>::Domain,
+>>::RecursiveProof;
 
 /// Pack `D` lifted-base extension targets into one packed extension target via `Σ t_i · X^i`.
 fn pack_lifted_targets(builder: &mut CircuitBuilder<CF>, lifted: &[Target]) -> Vec<Target> {
@@ -750,6 +782,27 @@ fn recursive_arity4_mmcs_flipped_direction_bit_fails() {
         ),
         "a direction bit disagreeing with the sampled index must fail the root check, got: {result:?}"
     );
+}
+
+#[test]
+fn prepared_fri_arity4_selected_target_captures_real_proof() {
+    let perm = default_koalabear_poseidon2_32();
+    let mmcs = PcsMmcs4::new(LeafHash::new(perm.clone()), Compress4::new(perm.clone()), 0);
+    let fri_params = FriParameters::new_testing(PcsExtMmcs4::new(mmcs.clone()), 0);
+    let pcs = Pcs4::new(Dft4::default(), mmcs, fri_params);
+    let domain = <Pcs4 as Pcs<CF, Challenger32>>::natural_domain_for_degree(&pcs, 16);
+    let matrix = RowMajorMatrix::new((0..32).map(F::from_usize).collect(), 2);
+    let (_commitment, prover_data) =
+        <Pcs4 as Pcs<CF, Challenger32>>::commit(&pcs, vec![(domain, matrix)]);
+    let mut challenger = Challenger32::new(perm);
+    let (_opened_values, proof) = <Pcs4 as Pcs<CF, Challenger32>>::open(
+        &pcs,
+        vec![(&prover_data, vec![vec![CF::ONE]])],
+        &mut challenger,
+    );
+
+    let _shape = SelectedFriTargets4::input_shape(&proof)
+        .expect("an honest arity-4 FRI proof has a capturable prepared shape");
 }
 
 /// SOUNDNESS NEGATIVE: tampering an injected matrix's opened value changes its in-circuit

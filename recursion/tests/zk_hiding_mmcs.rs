@@ -20,7 +20,7 @@ use p3_circuit_prover::{
     BatchStarkProver, CircuitProverData, ConstraintProfile, Poseidon2Preprocessor,
     RecomposePreprocessor, TablePacking,
 };
-use p3_commit::ExtensionMmcs;
+use p3_commit::{ExtensionMmcs, Pcs};
 use p3_field::Field;
 use p3_fri::{FriParameters, HidingFriPcs, TwoAdicFriPcs};
 use p3_lookup::logup::LogUpGadget;
@@ -33,9 +33,9 @@ use p3_recursion::pcs::fri::{
 };
 use p3_recursion::pcs::{restore_hiding_fri_query_paths, set_fri_mmcs_private_data};
 use p3_recursion::{
-    BatchStarkVerifierInputsBuilder, OpeningTranscript, Poseidon2Config, VerificationError,
-    merge_hiding_random_openings, observe_opened_values, replay_batch_stark_transcript,
-    verify_batch_circuit,
+    BatchStarkVerifierInputsBuilder, OpeningTranscript, Poseidon2Config, PreparedRecursive,
+    RecursivePcs, VerificationError, merge_hiding_random_openings, observe_opened_values,
+    replay_batch_stark_transcript, verify_batch_circuit,
 };
 use p3_test_utils::koala_bear_params::*;
 use rand::SeedableRng;
@@ -142,6 +142,16 @@ fn test_batch_verifier_hiding_mmcs() -> Result<(), VerificationError> {
     let batch_stark_proof = prove_batch(&config_proving, &instances, &prover_data);
 
     verify_batch(&config_proving, &[air], &batch_stark_proof, &pvs, common).unwrap();
+
+    type OpeningTargets = <MyPcsZk as RecursivePcs<
+        MyConfigZk,
+        InputProofTargets<F, Challenge, RecHidingValMmcs>,
+        InnerFriZk,
+        MerkleCapTargets<F, DIGEST_ELEMS>,
+        <MyPcsZk as Pcs<Challenge, Challenger>>::Domain,
+    >>::RecursiveProof;
+    let _shape = OpeningTargets::input_shape(&batch_stark_proof.opening_proof)
+        .expect("an honest hiding FRI proof has a capturable prepared shape");
 
     // --- Step 2: Build the recursive verification circuit ---
     let perm2 = default_koalabear_poseidon2_16();

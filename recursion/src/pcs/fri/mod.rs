@@ -8,7 +8,8 @@ pub use params::FriVerifierParams;
 pub use targets::{
     BatchOpeningTargets, CommitPhaseProofStepTargets, FriProofTargets, HashProofTargets,
     HidingFriProofTargets, HidingHashProofTargets, HidingOpenedValuesTargets, InputProofTargets,
-    MerkleCapTargets, MmcsProofTargets, QueryProofTargets, RecExtensionValMmcs,
+    MerkleCapTargets, MmcsProofTargets, PreparedRecursiveFriInputOpenings,
+    PreparedRecursiveMultiProofTargets, QueryProofTargets, RecExtensionValMmcs,
     RecExtensionValMmcsArity4, RecValHidingMmcs, RecValMmcs, RecValMmcsArity4,
     RecursiveFriInputOpenings, RecursiveMultiProofTargets, TwoAdicFriProofTargets, Witness,
     fri_proof_num_queries,

@@ -24,9 +24,13 @@ use serde::{Deserialize, Serialize};
 use super::{FriVerifierParams, verify_fri_circuit};
 use crate::Target;
 use crate::challenger::CircuitChallenger;
+use crate::input_contract::fri::{
+    FriCommitStepShape, FriInputBatchShape, FriShape, HidingFriShape, HidingOpeningAdviceShape,
+    MerkleCapShape,
+};
 use crate::traits::{
-    ComsWithOpeningsTargets, Recursive, RecursiveChallenger, RecursiveExtensionMmcs, RecursiveMmcs,
-    RecursivePcs,
+    ComsWithOpeningsTargets, PreparedRecursive, Recursive, RecursiveChallenger,
+    RecursiveExtensionMmcs, RecursiveMmcs, RecursivePcs,
 };
 use crate::types::{OpenedValuesTargetsWithLookups, RecursiveLagrangeSelectors};
 use crate::verifier::{ObservableCommitment, VerificationError};
@@ -61,6 +65,28 @@ pub trait RecursiveMultiProofTargets<EF: Field>: Recursive<EF> {
     }
 }
 
+/// Trusted native shape capture for the shared proof behind per-query MMCS targets.
+///
+/// This applies [`PreparedRecursive`]'s full equality and pure-inspection contract to every
+/// per-query allocation, public/private extraction boundary, branch, constant, layout, loop, and
+/// recursive MMCS-verification use selected by the multiproof. Native values that select compiled
+/// behavior must be captured; only values that remain runtime witnesses may be omitted. A custom
+/// implementation is an explicit trusted semantic opt-in.
+///
+/// Ordinary compressed Merkle frontier contents and `sibling_hashes` lengths remain dynamic: they
+/// allocate no targets and are restored as runtime private data, and transcript query overlap may
+/// change their deduplicated length without changing the prepared circuit shape.
+pub trait PreparedRecursiveMultiProofTargets<EF: Field>: RecursiveMultiProofTargets<EF> {
+    /// Complete reuse-relevant multiproof structure.
+    type Shape: Clone + PartialEq;
+
+    /// Purely inspect the native multiproof and validate its expected query/matrix axes.
+    fn multiproof_shape(
+        proof: &Self::MultiProof,
+        query_matrix_counts: &[usize],
+    ) -> Result<Self::Shape, VerificationError>;
+}
+
 /// Per-query view of the FRI input-batch openings.
 ///
 /// Every input commitment is opened for all queries at once, so a single query's input proof is
@@ -85,6 +111,26 @@ pub trait RecursiveFriInputOpenings<EF: Field>: Sized {
 
     /// Private values for one query's share of `input`, in allocation order.
     fn get_private_values_for_query(input: &Self::MultiOpenings, query: usize) -> Vec<EF>;
+}
+
+/// Trusted native shape capture for all FRI input-batch openings.
+///
+/// This applies [`PreparedRecursive`]'s full equality and pure-inspection contract to the
+/// per-query target allocation, public/private extraction, and recursive FRI verification driven
+/// by every input batch. Equal shapes must preserve every branch, loop count, constant, layout,
+/// and extraction boundary, including native values that select compiled behavior. Dynamic
+/// witness values alone may be excluded. A custom implementation is an explicit trusted semantic
+/// opt-in and must compose the corresponding multiproof contract rather than assuming row totals
+/// are sufficient.
+pub trait PreparedRecursiveFriInputOpenings<EF: Field>: RecursiveFriInputOpenings<EF> {
+    /// Complete reuse-relevant input-opening structure.
+    type Shape: Clone + PartialEq;
+
+    /// Purely inspect every input batch and capture every reuse-relevant query/matrix partition.
+    fn openings_shape(input: &Self::MultiOpenings) -> Result<Self::Shape, VerificationError>;
+
+    /// Report the query count of every input batch.
+    fn query_counts(input: &Self::MultiOpenings) -> Vec<usize>;
 }
 
 /// Number of queries a FRI proof opens, given the per-round and per-batch opening counts.
@@ -259,6 +305,96 @@ where
                 )
             })
             .collect()
+    }
+}
+
+impl<
+    F: Field,
+    EF: ExtensionField<F>,
+    RecMmcs: RecursiveExtensionMmcs<F, EF>,
+    InputProof: Recursive<EF> + PreparedRecursiveFriInputOpenings<EF>,
+    Witness: PreparedRecursive<EF>,
+> PreparedRecursive<EF> for FriProofTargets<F, EF, RecMmcs, InputProof, Witness>
+where
+    RecMmcs::Commitment: PreparedRecursive<EF>,
+    RecMmcs::Proof: PreparedRecursiveMultiProofTargets<
+            EF,
+            MultiProof = <RecMmcs::Input as Mmcs<EF>>::MultiProof,
+        >,
+{
+    type Shape = FriShape<
+        <RecMmcs::Commitment as PreparedRecursive<EF>>::Shape,
+        InputProof::Shape,
+        <RecMmcs::Proof as PreparedRecursiveMultiProofTargets<EF>>::Shape,
+        Witness::Shape,
+    >;
+
+    fn input_shape(input: &Self::Input) -> Result<Self::Shape, VerificationError> {
+        let FriProof {
+            commit_phase_commits,
+            commit_pow_witnesses,
+            input_openings,
+            commit_phase_openings,
+            final_poly,
+            query_pow_witness,
+        } = input;
+
+        let mut counts = InputProof::query_counts(input_openings);
+        counts.extend(
+            commit_phase_openings
+                .iter()
+                .map(|step| step.sibling_values.len()),
+        );
+        if counts
+            .first()
+            .is_some_and(|first| counts.iter().any(|count| count != first))
+        {
+            return Err(VerificationError::InvalidProofShape(
+                "FRI query counts disagree".into(),
+            ));
+        }
+
+        for step in commit_phase_openings {
+            let siblings = 1usize
+                .checked_shl(u32::from(step.log_arity))
+                .and_then(|arity| arity.checked_sub(1))
+                .filter(|_| step.log_arity > 0)
+                .ok_or_else(|| {
+                    VerificationError::InvalidProofShape("invalid FRI log_arity".into())
+                })?;
+            if step.sibling_values.iter().any(|row| row.len() != siblings) {
+                return Err(VerificationError::InvalidProofShape(
+                    "FRI sibling arity mismatch".into(),
+                ));
+            }
+        }
+
+        Ok(FriShape {
+            commit_phase_commits: commit_phase_commits
+                .iter()
+                .map(RecMmcs::Commitment::input_shape)
+                .collect::<Result<_, _>>()?,
+            commit_pow_witnesses: commit_pow_witnesses
+                .iter()
+                .map(Witness::input_shape)
+                .collect::<Result<_, _>>()?,
+            input_openings: InputProof::openings_shape(input_openings)?,
+            commit_phase_openings: commit_phase_openings
+                .iter()
+                .map(|step| {
+                    Ok(FriCommitStepShape {
+                        log_arity: step.log_arity,
+                        sibling_values: step.sibling_values.iter().map(Vec::len).collect(),
+                        opening_advice: RecMmcs::Proof::multiproof_shape(
+                            &step.opening_proof,
+                            &vec![1; step.sibling_values.len()],
+                        )?,
+                    })
+                })
+                .collect::<Result<_, VerificationError>>()?,
+            final_poly: final_poly.len(),
+            query_pow_witness: Witness::input_shape(query_pow_witness)?,
+        })
     }
 }
 
@@ -599,6 +735,18 @@ impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize> Recursive<EF>
     }
 }
 
+impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize> PreparedRecursive<EF>
+    for MerkleCapTargets<F, DIGEST_ELEMS>
+{
+    type Shape = MerkleCapShape;
+
+    fn input_shape(input: &Self::Input) -> Result<Self::Shape, VerificationError> {
+        Ok(MerkleCapShape {
+            roots: input.num_roots(),
+        })
+    }
+}
+
 /// `HashProofTargets` corresponds to a Merkle tree `Proof` in the form of a vector of hashes with `DIGEST_ELEMS` digest elements.
 pub struct HashProofTargets<F, const DIGEST_ELEMS: usize> {
     pub hash_proof_targets: Vec<[Target; DIGEST_ELEMS]>,
@@ -643,6 +791,19 @@ impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize> RecursiveMultiP
     }
 }
 
+impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize>
+    PreparedRecursiveMultiProofTargets<EF> for HashProofTargets<F, DIGEST_ELEMS>
+{
+    type Shape = ();
+
+    fn multiproof_shape(
+        _proof: &Self::MultiProof,
+        _query_matrix_counts: &[usize],
+    ) -> Result<Self::Shape, VerificationError> {
+        Ok(())
+    }
+}
+
 /// In TwoAdicFriPcs, the POW witness is just a base field element.
 pub struct Witness<F> {
     pub witness: Target,
@@ -661,6 +822,14 @@ impl<F: Field, EF: ExtensionField<F>> Recursive<EF> for Witness<F> {
 
     fn get_values(input: &Self::Input) -> Vec<EF> {
         vec![EF::from(*input)]
+    }
+}
+
+impl<F: Field, EF: ExtensionField<F>> PreparedRecursive<EF> for Witness<F> {
+    type Shape = ();
+
+    fn input_shape(_input: &Self::Input) -> Result<Self::Shape, VerificationError> {
+        Ok(())
     }
 }
 
@@ -886,6 +1055,36 @@ impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize> RecursiveMultiP
     }
 }
 
+impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize>
+    PreparedRecursiveMultiProofTargets<EF> for HidingHashProofTargets<F, DIGEST_ELEMS>
+{
+    type Shape = HidingOpeningAdviceShape;
+
+    fn multiproof_shape(
+        proof: &Self::MultiProof,
+        query_matrix_counts: &[usize],
+    ) -> Result<Self::Shape, VerificationError> {
+        if proof.0.len() != query_matrix_counts.len()
+            || proof
+                .0
+                .iter()
+                .zip(query_matrix_counts)
+                .any(|(matrices, &expected)| matrices.len() != expected)
+        {
+            return Err(VerificationError::InvalidProofShape(
+                "hiding FRI salt query/matrix shape mismatch".into(),
+            ));
+        }
+        Ok(HidingOpeningAdviceShape {
+            salts: proof
+                .0
+                .iter()
+                .map(|matrices| matrices.iter().map(Vec::len).collect())
+                .collect(),
+        })
+    }
+}
+
 /// `Recursive` version of a `MerkleTreeHidingMmcs` where leaf and digest elements are base
 /// field values. Mirrors [`RecValMmcs`] but the leaves are salted (hiding commitment).
 pub struct RecValHidingMmcs<F: Field, const DIGEST_ELEMS: usize, const SALT_ELEMS: usize, H, C, R>
@@ -1003,6 +1202,44 @@ where
             .flat_map(|batch| {
                 BatchOpeningTargets::<F, EF, Inner>::get_private_values_for_query(batch, query)
             })
+            .collect()
+    }
+}
+
+impl<F: Field, EF: ExtensionField<F>, Inner: RecursiveMmcs<F, EF>>
+    PreparedRecursiveFriInputOpenings<EF> for InputProofTargets<F, EF, Inner>
+where
+    Inner::Proof:
+        PreparedRecursiveMultiProofTargets<EF, MultiProof = <Inner::Input as Mmcs<F>>::MultiProof>,
+{
+    type Shape =
+        Vec<FriInputBatchShape<<Inner::Proof as PreparedRecursiveMultiProofTargets<EF>>::Shape>>;
+
+    fn openings_shape(input: &Self::MultiOpenings) -> Result<Self::Shape, VerificationError> {
+        input
+            .iter()
+            .map(|batch| {
+                let query_matrix_counts =
+                    batch.opened_values.iter().map(Vec::len).collect::<Vec<_>>();
+                Ok(FriInputBatchShape {
+                    opened_values: batch
+                        .opened_values
+                        .iter()
+                        .map(|matrices| matrices.iter().map(Vec::len).collect())
+                        .collect(),
+                    opening_advice: Inner::Proof::multiproof_shape(
+                        &batch.opening_proof,
+                        &query_matrix_counts,
+                    )?,
+                })
+            })
+            .collect()
+    }
+
+    fn query_counts(input: &Self::MultiOpenings) -> Vec<usize> {
+        input
+            .iter()
+            .map(|batch| batch.opened_values.len())
             .collect()
     }
 }
@@ -1324,6 +1561,22 @@ impl<EF: Field> Recursive<EF> for HidingOpenedValuesTargets<EF> {
     }
 }
 
+impl<EF: Field> PreparedRecursive<EF> for HidingOpenedValuesTargets<EF> {
+    type Shape = Vec<Vec<Vec<usize>>>;
+
+    fn input_shape(input: &Self::Input) -> Result<Self::Shape, VerificationError> {
+        Ok(input
+            .iter()
+            .map(|round| {
+                round
+                    .iter()
+                    .map(|matrix| matrix.iter().map(Vec::len).collect())
+                    .collect()
+            })
+            .collect())
+    }
+}
+
 /// Recursive proof targets for `HidingFriPcs`.
 ///
 /// This wraps:
@@ -1376,6 +1629,35 @@ where
                 ),
             )
             .collect()
+    }
+}
+
+impl<
+    F: Field,
+    EF: ExtensionField<F>,
+    RecMmcs: RecursiveExtensionMmcs<F, EF>,
+    InputProof: Recursive<EF> + PreparedRecursiveFriInputOpenings<EF>,
+    PowWitness: PreparedRecursive<EF>,
+> PreparedRecursive<EF> for HidingFriProofTargets<F, EF, RecMmcs, InputProof, PowWitness>
+where
+    RecMmcs::Commitment: PreparedRecursive<EF>,
+    RecMmcs::Proof: PreparedRecursiveMultiProofTargets<
+            EF,
+            MultiProof = <RecMmcs::Input as Mmcs<EF>>::MultiProof,
+        >,
+{
+    type Shape = HidingFriShape<
+        <FriProofTargets<F, EF, RecMmcs, InputProof, PowWitness> as PreparedRecursive<EF>>::Shape,
+    >;
+
+    fn input_shape(input: &Self::Input) -> Result<Self::Shape, VerificationError> {
+        let (random_opened_values, inner_proof) = input;
+        Ok(HidingFriShape {
+            random_openings: HidingOpenedValuesTargets::<EF>::input_shape(random_opened_values)?,
+            inner: FriProofTargets::<F, EF, RecMmcs, InputProof, PowWitness>::input_shape(
+                inner_proof,
+            )?,
+        })
     }
 }
 
@@ -1688,5 +1970,214 @@ where
         >,
     ) -> &[Vec<Vec<Vec<Target>>>] {
         &proof.random_opened_values.rounds
+    }
+}
+
+#[cfg(test)]
+mod prepared_shape_tests {
+    use p3_field::PrimeCharacteristicRing;
+    use p3_fri::{BatchMultiOpening, CommitPhaseMultiStep, FriProof};
+    use p3_merkle_tree::{MerkleTreeHidingMmcs, PrunedMerklePaths};
+    use p3_symmetric::MerkleCap;
+    use p3_test_utils::koala_bear_params::{
+        Challenge, DIGEST_ELEMS, F, MyCompress, MyHash, MyMmcs,
+    };
+    use rand::rngs::StdRng;
+
+    use super::*;
+    use crate::input_contract::fri::FriShape;
+    use crate::traits::PreparedRecursive;
+
+    type RecInputMmcs = RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>;
+    type RecFriMmcs = RecExtensionValMmcs<F, Challenge, DIGEST_ELEMS, RecInputMmcs>;
+    type OpeningTargets = FriProofTargets<
+        F,
+        Challenge,
+        RecFriMmcs,
+        InputProofTargets<F, Challenge, RecInputMmcs>,
+        Witness<F>,
+    >;
+    type Opening = <OpeningTargets as Recursive<Challenge>>::Input;
+
+    type NativeHidingMmcs = MerkleTreeHidingMmcs<
+        <F as Field>::Packing,
+        <F as Field>::Packing,
+        MyHash,
+        MyCompress,
+        StdRng,
+        2,
+        DIGEST_ELEMS,
+        4,
+    >;
+    type RecHidingMmcs = RecValHidingMmcs<F, DIGEST_ELEMS, 4, MyHash, MyCompress, StdRng>;
+    type RecHidingFriMmcs = RecExtensionValMmcs<F, Challenge, DIGEST_ELEMS, RecHidingMmcs>;
+    type HidingOpeningTargets = HidingFriProofTargets<
+        F,
+        Challenge,
+        RecHidingFriMmcs,
+        InputProofTargets<F, Challenge, RecHidingMmcs>,
+        Witness<F>,
+    >;
+    type HidingOpening = <HidingOpeningTargets as Recursive<Challenge>>::Input;
+
+    fn cap(roots: usize) -> MerkleCap<F, [F; DIGEST_ELEMS]> {
+        MerkleCap::new(vec![[F::ZERO; DIGEST_ELEMS]; roots])
+    }
+
+    fn frontier(count: usize) -> PrunedMerklePaths<F, DIGEST_ELEMS> {
+        PrunedMerklePaths {
+            sibling_hashes: vec![[F::ZERO; DIGEST_ELEMS]; count],
+        }
+    }
+
+    fn ordinary_opening(widths: &[usize]) -> Opening {
+        FriProof {
+            commit_phase_commits: vec![cap(1)],
+            commit_pow_witnesses: vec![F::ZERO],
+            input_openings: vec![BatchMultiOpening::<F, MyMmcs> {
+                opened_values: vec![widths.iter().map(|&width| vec![F::ZERO; width]).collect()],
+                opening_proof: frontier(0),
+            }],
+            commit_phase_openings: vec![CommitPhaseMultiStep {
+                log_arity: 1,
+                sibling_values: vec![vec![Challenge::ZERO]],
+                opening_proof: frontier(0),
+            }],
+            final_poly: vec![Challenge::ZERO],
+            query_pow_witness: F::ZERO,
+        }
+    }
+
+    fn hiding_frontier(
+        salts: Vec<Vec<Vec<F>>>,
+        count: usize,
+    ) -> <NativeHidingMmcs as Mmcs<F>>::MultiProof {
+        (salts, frontier(count))
+    }
+
+    fn hiding_opening(salt_widths: &[usize], random_widths: &[usize]) -> HidingOpening {
+        let inner = FriProof {
+            commit_phase_commits: vec![cap(1)],
+            commit_pow_witnesses: vec![F::ZERO],
+            input_openings: vec![BatchMultiOpening::<F, NativeHidingMmcs> {
+                opened_values: vec![salt_widths.iter().map(|_| vec![F::ZERO]).collect()],
+                opening_proof: hiding_frontier(
+                    vec![
+                        salt_widths
+                            .iter()
+                            .map(|&width| vec![F::ZERO; width])
+                            .collect(),
+                    ],
+                    0,
+                ),
+            }],
+            commit_phase_openings: vec![CommitPhaseMultiStep {
+                log_arity: 1,
+                sibling_values: vec![vec![Challenge::ZERO]],
+                opening_proof: hiding_frontier(vec![vec![vec![F::ZERO; 4]]], 0),
+            }],
+            final_poly: vec![Challenge::ZERO],
+            query_pow_witness: F::ZERO,
+        };
+        let random_opened_values = vec![vec![
+            random_widths
+                .iter()
+                .map(|&width| vec![Challenge::ZERO; width])
+                .collect(),
+        ]];
+        (random_opened_values, inner)
+    }
+
+    fn assert_different_shapes<Fld: Field, T: PreparedRecursive<Fld>>(
+        left: &T::Input,
+        right: &T::Input,
+    ) {
+        assert!(T::input_shape(left).unwrap() != T::input_shape(right).unwrap());
+    }
+
+    #[test]
+    fn prepared_fri_equal_total_matrix_partition_differs() {
+        let left = ordinary_opening(&[1, 3]);
+        let right = ordinary_opening(&[2, 2]);
+
+        assert_different_shapes::<Challenge, OpeningTargets>(&left, &right);
+    }
+
+    #[test]
+    fn prepared_fri_rejects_nonminimum_query_tail() {
+        let mut input = ordinary_opening(&[1, 3]);
+        input.input_openings.push(BatchMultiOpening::<F, MyMmcs> {
+            opened_values: vec![vec![vec![F::ZERO]], vec![vec![F::ZERO]]],
+            opening_proof: frontier(0),
+        });
+
+        assert!(matches!(
+            OpeningTargets::input_shape(&input),
+            Err(VerificationError::InvalidProofShape(_))
+        ));
+    }
+
+    #[test]
+    fn prepared_fri_rejects_bad_sibling_arity() {
+        let mut input = ordinary_opening(&[1, 3]);
+        input.commit_phase_openings[0].log_arity = 2;
+
+        assert!(matches!(
+            OpeningTargets::input_shape(&input),
+            Err(VerificationError::InvalidProofShape(_))
+        ));
+
+        let mut zero_arity = ordinary_opening(&[1, 3]);
+        zero_arity.commit_phase_openings[0].log_arity = 0;
+        assert!(matches!(
+            OpeningTargets::input_shape(&zero_arity),
+            Err(VerificationError::InvalidProofShape(_))
+        ));
+    }
+
+    #[test]
+    fn prepared_fri_cap_and_final_poly_lengths_bind() {
+        let baseline = ordinary_opening(&[1, 3]);
+        let mut wider_cap = ordinary_opening(&[1, 3]);
+        wider_cap.commit_phase_commits[0] = cap(2);
+        let mut longer_final_poly = ordinary_opening(&[1, 3]);
+        longer_final_poly.final_poly.push(Challenge::ONE);
+
+        assert_different_shapes::<Challenge, OpeningTargets>(&baseline, &wider_cap);
+        assert_different_shapes::<Challenge, OpeningTargets>(&baseline, &longer_final_poly);
+    }
+
+    #[test]
+    fn prepared_hiding_fri_salt_partition_binds() {
+        let left = hiding_opening(&[1, 3], &[1, 3]);
+        let right = hiding_opening(&[2, 2], &[1, 3]);
+
+        assert_different_shapes::<Challenge, HidingOpeningTargets>(&left, &right);
+
+        let mut malformed = hiding_opening(&[1, 3], &[1, 3]);
+        malformed.1.input_openings[0].opening_proof.0[0].pop();
+        assert!(matches!(
+            HidingOpeningTargets::input_shape(&malformed),
+            Err(VerificationError::InvalidProofShape(_))
+        ));
+    }
+
+    #[test]
+    fn prepared_hiding_fri_random_point_partition_binds() {
+        let left = hiding_opening(&[1, 3], &[1, 3]);
+        let right = hiding_opening(&[1, 3], &[2, 2]);
+
+        assert_different_shapes::<Challenge, HidingOpeningTargets>(&left, &right);
+    }
+
+    #[test]
+    fn prepared_fri_frontier_length_is_dynamic() {
+        let left = ordinary_opening(&[1, 3]);
+        let mut right = ordinary_opening(&[1, 3]);
+        right.input_openings[0].opening_proof = frontier(5);
+
+        let left_shape: FriShape<_, _, _, _> = OpeningTargets::input_shape(&left).unwrap();
+        let right_shape = OpeningTargets::input_shape(&right).unwrap();
+        assert!(left_shape == right_shape);
     }
 }

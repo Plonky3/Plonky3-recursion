@@ -8,6 +8,7 @@ pub mod backend;
 pub mod challenger;
 pub mod challenger_perm;
 pub mod generation;
+pub mod input_contract;
 pub mod pcs;
 pub mod prelude;
 pub mod profile;
@@ -49,8 +50,8 @@ pub use recursion::{
     prove_next_layer,
 };
 pub use traits::{
-    Recursive, RecursiveAir, RecursiveChallenger, RecursiveExtensionMmcs, RecursiveMmcs,
-    RecursivePcs,
+    PreparedRecursive, Recursive, RecursiveAir, RecursiveChallenger, RecursiveExtensionMmcs,
+    RecursiveMmcs, RecursivePcs,
 };
 pub use types::{
     BatchProofTargets, CommitmentTargets, CommonDataTargets, OpenedValuesTargets, ProofTargets,
