@@ -369,19 +369,30 @@ where
                 table_preps.push((CircuitTableAir::Public(public_air), public_degree));
             }
             PrimitiveOpType::Const => {
-                // Const preprocessed per op from circuit.rs: 1 value (D-scaled out_idx).
-                // Convert to [ext_mult, out_idx] pairs using ext_reads.
-                let mut prep_2col: Vec<Val<SC>> = Vec::with_capacity(base_prep[idx].len() * 2);
-                for &out_idx in &base_prep[idx] {
+                // Const preprocessed per op from circuit.rs: 1 index (D-scaled out_idx) plus
+                // one entry in `preprocessed.const_values` (the constant's own value, same
+                // order). Convert to [ext_mult, out_idx, value_0, ..., value_{D-1}] rows using
+                // ext_reads and the constant's basis-coefficient decomposition.
+                let row_width = 2 + D;
+                let mut prep_rows: Vec<Val<SC>> =
+                    Vec::with_capacity(base_prep[idx].len() * row_width);
+                for (&out_idx, val) in base_prep[idx].iter().zip(preprocessed.const_values.iter()) {
                     let out_wid = out_idx.as_canonical_u64() as usize / D;
                     let n_reads = preprocessed.ext_reads.get(out_wid).copied().unwrap_or(0);
-                    prep_2col.push(<Val<SC>>::from_u32(n_reads));
-                    prep_2col.push(out_idx);
+                    prep_rows.push(<Val<SC>>::from_u32(n_reads));
+                    prep_rows.push(out_idx);
+                    let coeffs = val.as_basis_coefficients_slice();
+                    debug_assert_eq!(
+                        coeffs.len(),
+                        D,
+                        "constant value coefficient count must match D"
+                    );
+                    prep_rows.extend_from_slice(coeffs);
                 }
 
-                let height = prep_2col.len() / 2;
-                // Store the converted 2-col format before building the AIR.
-                base_prep[idx] = prep_2col;
+                let height = prep_rows.len() / row_width;
+                // Store the converted row format before building the AIR.
+                base_prep[idx] = prep_rows;
                 let const_air = ConstAir::new_with_preprocessed(height, base_prep[idx].clone())
                     .with_min_height(packing.const_min_height().unwrap_or(min_height));
                 let const_degree = compute_degree(height, packing.const_min_height(), "CONST")?;

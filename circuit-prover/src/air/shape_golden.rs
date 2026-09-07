@@ -31,9 +31,9 @@ fn public_shape<const D: usize>(lanes: usize) -> (usize, usize) {
 
 #[test]
 fn const_air_shape_is_stable() {
-    assert_eq!(const_shape::<1>(), (1, 2));
-    assert_eq!(const_shape::<4>(), (4, 2));
-    assert_eq!(const_shape::<5>(), (5, 2));
+    assert_eq!(const_shape::<1>(), (1, 3));
+    assert_eq!(const_shape::<4>(), (4, 6));
+    assert_eq!(const_shape::<5>(), (5, 7));
 }
 
 #[test]
