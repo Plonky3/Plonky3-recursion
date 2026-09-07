@@ -36,10 +36,14 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Set flags (AVX2)
+        if: ${{ matrix.features }}
+        run: echo "RUSTFLAGS=-Ctarget-feature=${{ matrix.features }}" >> "$GITHUB_ENV"
+
       - name: Cache cargo/target
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: perf-gate
+          shared-key: perf-gate-${{ matrix.os }}-${{ matrix.features }}
           cache-on-failure: true
 
       - name: Run performance gate
