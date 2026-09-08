@@ -2,9 +2,11 @@ mod common;
 
 use p3_circuit::test_utils::{FibonacciAir, generate_trace_rows};
 use p3_field::PrimeCharacteristicRing;
+use p3_recursion::pcs::whir::uni::WhirUniProofTargets;
+use p3_recursion::traits::PreparedRecursive;
 use p3_uni_stark::{prove, verify};
 
-use crate::common::whir_config::{BbF, bb_whir_config};
+use crate::common::whir_config::{BB_DIGEST_ELEMS, BbEF, BbF, BbMmcs, bb_whir_config};
 
 /// The value [`generate_trace_rows::<BbF>(0, 1, n)`]'s last row claims as its
 /// output, i.e. `F(n)` for the sequence started at `F(0) = 0`, `F(1) = 1`.
@@ -34,6 +36,10 @@ fn fibonacci_uni_stark_over_whir_round_trips() {
     // One intermediate WHIR round.
     let config = bb_whir_config(vec![4]);
     let proof = prove(&config, &air, trace, &pis);
+    let _shape = WhirUniProofTargets::<BbF, BbEF, BbMmcs, BB_DIGEST_ELEMS>::input_shape(
+        &proof.opening_proof,
+    )
+    .expect("honest uni-STARK WHIR shape capture succeeds");
     verify(&config, &air, &proof, &pis).expect("WHIR-backed uni-STARK verifies");
 }
 

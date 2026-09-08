@@ -17,10 +17,12 @@ use p3_merkle_tree::MerkleCap;
 use p3_whir::pcs::proof::QueryOpenings;
 
 use crate::Target;
+use crate::input_contract::MerkleCapShape;
+use crate::input_contract::whir::{WhirUniShape, capture_whir_uni_shape};
 use crate::pcs::mmcs::convert_merkle_proof_to_siblings;
 use crate::pcs::whir::targets::{QueryOpeningTargets, SumcheckDataTargets, WhirProofTargets};
 use crate::pcs::whir::uni::pcs::WhirUniProof;
-use crate::traits::Recursive;
+use crate::traits::{PreparedRecursive, Recursive};
 
 /// Number of extension targets one Merkle digest occupies in-circuit.
 ///
@@ -281,6 +283,20 @@ where
             push(&round.whir.final_openings, &mut out);
         }
         out
+    }
+}
+
+impl<F, EF, MT, const DIGEST_ELEMS: usize> PreparedRecursive<EF>
+    for WhirUniProofTargets<F, EF, MT, DIGEST_ELEMS>
+where
+    F: Field,
+    EF: ExtensionField<F> + BasedVectorSpace<F>,
+    MT: Mmcs<F, Commitment = MerkleCap<F, [F; DIGEST_ELEMS]>>,
+{
+    type Shape = WhirUniShape<MerkleCapShape>;
+
+    fn input_shape(input: &Self::Input) -> Result<Self::Shape, crate::VerificationError> {
+        capture_whir_uni_shape::<F, EF, MT, DIGEST_ELEMS>(input)
     }
 }
 

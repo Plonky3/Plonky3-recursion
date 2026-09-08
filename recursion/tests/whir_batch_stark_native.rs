@@ -3,8 +3,10 @@ mod common;
 use p3_batch_stark::{ProverData, StarkInstance, prove_batch, verify_batch};
 use p3_circuit::test_utils::{FibonacciAir, generate_trace_rows};
 use p3_field::PrimeCharacteristicRing;
+use p3_recursion::pcs::whir::uni::WhirUniProofTargets;
+use p3_recursion::traits::PreparedRecursive;
 
-use crate::common::whir_config::{BbF, bb_whir_config};
+use crate::common::whir_config::{BB_DIGEST_ELEMS, BbEF, BbF, BbMmcs, bb_whir_config};
 
 /// The value [`generate_trace_rows::<BbF>(0, 1, n)`]'s last row claims as its
 /// output, i.e. `F(n)` for the sequence started at `F(0) = 0`, `F(1) = 1`.
@@ -51,6 +53,10 @@ fn whir_backed_batch_stark_proves_two_instances() {
     let prover_data = ProverData::from_instances(&config, &instances);
     let common = &prover_data.common;
     let proof = prove_batch(&config, &instances, &prover_data);
+    let _shape = WhirUniProofTargets::<BbF, BbEF, BbMmcs, BB_DIGEST_ELEMS>::input_shape(
+        &proof.opening_proof,
+    )
+    .expect("honest batch-STARK WHIR shape capture succeeds");
 
     let airs = vec![air; 2];
     let pvs = vec![pis1, pis2];
