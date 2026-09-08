@@ -313,6 +313,34 @@ where
 /// e.g. `build_next_layer_prep::<KoalaBearD4RecursionConfig, BatchOnly, KoalaBearD4Backend, 4>`).
 pub(crate) type KoalaBearD4Backend = FriRecursionBackendForExt<4, 16, 8, Poseidon2Config>;
 
+fn koala_bear_d4_recursion_config(pow_bits: usize) -> KoalaBearD4RecursionConfig {
+    let scalars = test_fri_scalars();
+    let fri_verifier_params = FriVerifierParams::with_mmcs(
+        scalars.log_blowup,
+        scalars.log_final_poly_len,
+        pow_bits,
+        pow_bits,
+        scalars.num_queries,
+        Poseidon2Config::KOALA_BEAR_D4_W16,
+    );
+    let (val_mmcs, fri_params) = test_fri_instance_with_pow_bits(pow_bits);
+    KoalaBearD4RecursionConfig {
+        config: Arc::new(make_test_config_with_pow_bits(pow_bits)),
+        fri_verifier_params,
+        val_mmcs,
+        fri_params,
+    }
+}
+
+pub(crate) fn koala_bear_d4_recursion_config_and_backend()
+-> (KoalaBearD4RecursionConfig, KoalaBearD4Backend) {
+    let pow_bits = test_fri_scalars().query_pow_bits;
+    let config = koala_bear_d4_recursion_config(pow_bits);
+    let backend = FriRecursionBackend::<16, 8, _>::new(Poseidon2Config::KOALA_BEAR_D4_W16)
+        .for_extension_degree::<4>();
+    (config, backend)
+}
+
 /// Everything [`solve_fixed_point`](p3_recursion::solve_fixed_point) needs to build/probe a
 /// first recursion layer over a KoalaBear D4 base batch-STARK proof.
 pub(crate) struct KoalaBearD4FirstLayerFixture {
@@ -335,15 +363,15 @@ impl KoalaBearD4FirstLayerFixture {
     }
 }
 
-fn compute_fibonacci_classical(n: usize) -> F {
+fn compute_fibonacci_classical(n: usize, start_a: u64, start_b: u64) -> F {
     if n == 0 {
-        return F::ZERO;
+        return F::from_u64(start_a);
     }
     if n == 1 {
-        return F::ONE;
+        return F::from_u64(start_b);
     }
-    let mut a = F::ZERO;
-    let mut b = F::ONE;
+    let mut a = F::from_u64(start_a);
+    let mut b = F::from_u64(start_b);
     for _i in 2..=n {
         let next = a + b;
         a = b;
@@ -357,7 +385,25 @@ fn compute_fibonacci_classical(n: usize) -> F {
 /// recursion layer: `solve_fixed_point` can build/probe a verifier circuit over it directly via
 /// `[layer_config]`/`[backend]`/`[recursion_input]`.
 pub(crate) fn build_koala_bear_d4_first_layer_input() -> KoalaBearD4FirstLayerFixture {
-    build_koala_bear_d4_first_layer_input_with_pow_bits(test_fri_scalars().query_pow_bits)
+    build_koala_bear_d4_first_layer_input_with_pow_bits_and_starts(
+        test_fri_scalars().query_pow_bits,
+        0,
+        1,
+        false,
+    )
+}
+
+/// Build the same first-layer fixture with different honest Fibonacci witness values.
+pub(crate) fn build_koala_bear_d4_first_layer_input_with_starts(
+    start_a: u64,
+    start_b: u64,
+) -> KoalaBearD4FirstLayerFixture {
+    build_koala_bear_d4_first_layer_input_with_pow_bits_and_starts(
+        test_fri_scalars().query_pow_bits,
+        start_a,
+        start_b,
+        true,
+    )
 }
 
 /// Same as [`build_koala_bear_d4_first_layer_input`] but with explicit FRI PoW bits (applied to
@@ -367,12 +413,30 @@ pub(crate) fn build_koala_bear_d4_first_layer_input() -> KoalaBearD4FirstLayerFi
 pub(crate) fn build_koala_bear_d4_first_layer_input_with_pow_bits(
     pow_bits: usize,
 ) -> KoalaBearD4FirstLayerFixture {
+    build_koala_bear_d4_first_layer_input_with_pow_bits_and_starts(pow_bits, 0, 1, false)
+}
+
+fn build_koala_bear_d4_first_layer_input_with_pow_bits_and_starts(
+    pow_bits: usize,
+    start_a: u64,
+    start_b: u64,
+    witness_starts: bool,
+) -> KoalaBearD4FirstLayerFixture {
     let n: usize = 100;
 
     let mut builder = CircuitBuilder::new();
     let expected_result = builder.alloc_public_input("expected_result");
-    let mut a = builder.alloc_const(F::ZERO, "F(0)");
-    let mut b = builder.alloc_const(F::ONE, "F(1)");
+    let (mut a, mut b) = if witness_starts {
+        (
+            builder.alloc_public_input("F(0)"),
+            builder.alloc_public_input("F(1)"),
+        )
+    } else {
+        (
+            builder.alloc_const(F::ZERO, "F(0)"),
+            builder.alloc_const(F::ONE, "F(1)"),
+        )
+    };
     for _i in 2..=n {
         let next = builder.add(a, b);
         a = b;
@@ -382,22 +446,7 @@ pub(crate) fn build_koala_bear_d4_first_layer_input_with_pow_bits(
 
     let table_packing = TablePacking::new(2, 4);
 
-    let scalars = test_fri_scalars();
-    let fri_verifier_params = FriVerifierParams::with_mmcs(
-        scalars.log_blowup,
-        scalars.log_final_poly_len,
-        pow_bits,
-        pow_bits,
-        scalars.num_queries,
-        Poseidon2Config::KOALA_BEAR_D4_W16,
-    );
-    let (val_mmcs, fri_params) = test_fri_instance_with_pow_bits(pow_bits);
-    let layer_config = KoalaBearD4RecursionConfig {
-        config: Arc::new(make_test_config_with_pow_bits(pow_bits)),
-        fri_verifier_params,
-        val_mmcs,
-        fri_params,
-    };
+    let layer_config = koala_bear_d4_recursion_config(pow_bits);
 
     let circuit = builder.build().unwrap();
     let (airs_degrees, primitive_columns, non_primitive_columns) =
@@ -412,8 +461,14 @@ pub(crate) fn build_koala_bear_d4_first_layer_input_with_pow_bits(
     let (airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
     let mut runner = circuit.runner();
 
-    let expected_fib = compute_fibonacci_classical(n);
-    runner.set_public_inputs(&[expected_fib]).unwrap();
+    let expected_fib = compute_fibonacci_classical(n, start_a, start_b);
+    if witness_starts {
+        runner
+            .set_public_inputs(&[expected_fib, F::from_u64(start_a), F::from_u64(start_b)])
+            .unwrap();
+    } else {
+        runner.set_public_inputs(&[expected_fib]).unwrap();
+    }
     let traces = runner.run().unwrap();
 
     let prover_data = ProverData::from_airs_and_degrees(&layer_config, &airs, &degrees);

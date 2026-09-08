@@ -79,7 +79,6 @@ impl<'p, SC: StarkGenericConfig> PreparedSource<'static, 'p, SC, BatchOnly> {
 }
 
 impl<'air, 'p, SC: StarkGenericConfig, A> PreparedSource<'air, 'p, SC, A> {
-    #[allow(dead_code)] // Consumed by the prepared owner introduced in the next milestone task.
     pub(crate) const fn as_input(&self) -> PreparedInput<'_, SC> {
         match self {
             Self::UniStark {
@@ -105,7 +104,6 @@ impl<'air, 'p, SC: StarkGenericConfig, A> PreparedSource<'air, 'p, SC, A> {
     }
 }
 
-#[allow(dead_code)] // Consumed by the prepared owner introduced in the next milestone task.
 pub(crate) fn legacy_input<'a, 'p: 'a, SC, A>(
     air: Option<&'a A>,
     input: &'a PreparedInput<'p, SC>,

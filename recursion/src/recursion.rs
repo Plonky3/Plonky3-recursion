@@ -28,6 +28,7 @@ use p3_uni_stark::{Proof, StarkGenericConfig, Val};
 use tracing::instrument;
 
 use crate::Target;
+use crate::prepared::prover::prepare_prover;
 use crate::traits::{LookupMetadata, RecursiveAir};
 use crate::types::RecursiveLagrangeSelectors;
 use crate::verifier::VerificationError;
@@ -363,35 +364,9 @@ where
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
         Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
-    let (airs_degrees, primitive_columns, non_primitive_columns) = {
-        let preprocessors = backend.non_primitive_preprocessors();
-        let air_builders = backend.non_primitive_air_builders();
-        get_airs_and_degrees_with_prep::<SC, SC::Challenge, D>(
-            verification_circuit,
-            &params.table_packing,
-            &preprocessors,
-            &air_builders,
-            params.constraint_profile,
-        )
-        .map_err(VerificationError::Circuit)?
-    };
-
-    let (airs, degrees): (Vec<_>, Vec<_>) = airs_degrees.into_iter().unzip();
-    let ext_degrees: Vec<usize> = degrees.iter().map(|&d| d + config.is_zk()).collect();
-
-    let prover_data = ProverData::from_airs_and_degrees(config, &airs, &ext_degrees);
-    let circuit_prover_data = Rc::new(CircuitProverData::new(
-        prover_data,
-        primitive_columns,
-        non_primitive_columns,
-    ));
-
-    let prover = build_layer_prover(
-        config,
-        &params.table_packing,
-        params.constraint_profile,
-        backend.non_primitive_provers(D),
-    );
+    let (circuit_prover_data, prover) =
+        prepare_prover::<SC, A, B, D>(verification_circuit, config, backend, params)?
+            .into_legacy_parts();
 
     Ok(NextLayerPrepCache {
         circuit_prover_data,

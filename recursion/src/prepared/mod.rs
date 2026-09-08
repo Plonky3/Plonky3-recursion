@@ -1,11 +1,16 @@
 //! Prepared-verifier native input contracts and borrowed input views.
 
 pub(crate) mod input;
+mod layer;
+pub(crate) mod prover;
 
 use p3_lookup::logup::LogUpGadget;
 use p3_uni_stark::{StarkGenericConfig, Val};
 
 pub use input::{NativeCommitment, PreparedInput, PreparedSource};
+pub use layer::PreparedLayer;
+use p3_lookup::logup::LogUpGadget;
+use p3_uni_stark::{StarkGenericConfig, Val};
 
 use crate::recursion::{PcsRecursionBackend, RecursionInput};
 use crate::traits::RecursiveAir;
