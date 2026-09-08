@@ -29,9 +29,11 @@ use crate::backend::transcript::replay_recursion_input_transcript;
 use crate::generation::OpeningTranscript;
 use crate::ops::{Poseidon1Config, Poseidon2Config};
 use crate::pcs::fri::FriVerifierParams;
+use crate::prepared::input::{capture_builtin_input_contract, validate_builtin_prepared_input};
+use crate::prepared::{PreparedInput, PreparedPcsRecursionBackend};
 use crate::public_inputs::{BatchStarkVerifierInputsBuilder, StarkVerifierInputsBuilder};
 use crate::recursion::{PcsRecursionBackend, RecursionInput, VerifierCircuitResult};
-use crate::traits::RecursiveAir;
+use crate::traits::{PreparedRecursive, RecursiveAir};
 use crate::verifier::{
     ObservableCommitment, VerificationError, verify_p3_batch_proof_circuit,
     verify_p3_uni_proof_circuit,
@@ -1031,3 +1033,83 @@ where
         builders
     }
 }
+
+macro_rules! impl_prepared_fri_backend {
+    ($backend:ty, $d:literal, $binomial_bound:path) => {
+        impl<SC, A, const WIDTH: usize, const RATE: usize, C> PreparedPcsRecursionBackend<SC, A, $d>
+            for $backend
+        where
+            SC: FriRecursionConfig + Send + Sync + 'static,
+            A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
+            C: ChallengerPermConfig + Copy + 'static,
+            Val<SC>: PrimeField64 + StarkField + $binomial_bound,
+            Poseidon1Preprocessor: NpoPreprocessor<Val<SC>>,
+            Poseidon2Preprocessor: NpoPreprocessor<Val<SC>>,
+            RecomposePreprocessor: NpoPreprocessor<Val<SC>>,
+            SC::Challenge: BasedVectorSpace<Val<SC>>
+                + From<Val<SC>>
+                + ExtensionField<Val<SC>>
+                + PrimeCharacteristicRing
+                + ExtractBinomialW<Val<SC>>,
+            <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain: Clone,
+            SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+                From<p3_uni_stark::SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+            SC::Pcs: RecursivePcs<
+                    SC,
+                    SC::InputProof,
+                    SC::OpeningProof,
+                    SC::Commitment,
+                    <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain,
+                    VerifierParams = FriVerifierParams,
+                >,
+            SC::Commitment: PreparedRecursive<SC::Challenge>,
+            SC::OpeningProof: PreparedRecursive<SC::Challenge>,
+        {
+            type InputContract = crate::input_contract::InputContract<
+                Val<SC>,
+                <SC::Commitment as PreparedRecursive<SC::Challenge>>::Shape,
+                <SC::OpeningProof as PreparedRecursive<SC::Challenge>>::Shape,
+            >;
+
+            fn capture_input_contract(
+                &self,
+                config: &SC,
+                source: &RecursionInput<'_, SC, A>,
+            ) -> Result<Self::InputContract, VerificationError> {
+                capture_builtin_input_contract::<SC, A, SC::Commitment, SC::OpeningProof>(
+                    config,
+                    source,
+                    false,
+                    |degree| PcsRecursionBackend::<SC, A, $d>::non_primitive_provers(self, degree),
+                )
+            }
+
+            fn validate_prepared_input(
+                &self,
+                _config: &SC,
+                contract: &Self::InputContract,
+                input: &PreparedInput<'_, SC>,
+            ) -> Result<(), VerificationError> {
+                validate_builtin_prepared_input::<SC, SC::Commitment, SC::OpeningProof>(
+                    contract, input,
+                )
+            }
+        }
+    };
+}
+
+impl_prepared_fri_backend!(
+    FriRecursionBackendForExt<2, WIDTH, RATE, C>,
+    2,
+    BinomiallyExtendable<2>
+);
+impl_prepared_fri_backend!(
+    FriRecursionBackendForExt<4, WIDTH, RATE, C>,
+    4,
+    BinomiallyExtendable<4>
+);
+impl_prepared_fri_backend!(
+    FriRecursionBackendD5<WIDTH, RATE, C>,
+    5,
+    BinomiallyExtendable<4>
+);

@@ -240,6 +240,10 @@ impl Default for ProveNextLayerParams {
 pub struct BatchOnly;
 
 impl<F: Field, EF: ExtensionField<F>, LG: LookupProtocol> RecursiveAir<F, EF, LG> for BatchOnly {
+    fn expected_public_input_count(&self) -> Option<usize> {
+        Some(0)
+    }
+
     fn width(&self) -> usize {
         0
     }

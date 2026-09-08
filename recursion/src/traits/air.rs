@@ -28,6 +28,13 @@ pub struct LookupMetadata<'a, F: Field> {
 /// This trait provides methods for computing constraint evaluations over circuit targets
 /// rather than concrete field values.
 pub trait RecursiveAir<F: Field, EF: ExtensionField<F>, LG: LookupProtocol> {
+    /// Exact number of public inputs this AIR expects when it is used as a trusted prepared
+    /// verifier reference. Direct implementations default to unknown and therefore fail closed
+    /// in the prepared API; the legacy uncached API is unaffected.
+    fn expected_public_input_count(&self) -> Option<usize> {
+        None
+    }
+
     /// Returns the number of columns in the AIR's execution trace.
     ///
     /// This corresponds to the width of the trace matrix.
@@ -118,6 +125,10 @@ where
     A: Air<InteractionSymbolicBuilder<F, EF>>,
     SymbolicExpressionExt<F, EF>: Algebra<SymbolicExpression<F>> + Algebra<EF>,
 {
+    fn expected_public_input_count(&self) -> Option<usize> {
+        Some(p3_air::BaseAir::<F>::num_public_values(self))
+    }
+
     fn width(&self) -> usize {
         Self::width(self)
     }

@@ -1,5 +1,7 @@
 //! A `StarkGenericConfig` whose polynomial commitment scheme is WHIR.
 
+use std::vec::Vec;
+
 use p3_baby_bear::{BabyBear, Poseidon2BabyBear, default_babybear_poseidon2_16};
 use p3_challenger::DuplexChallenger;
 use p3_circuit::ops::{generate_poseidon2_trace, generate_recompose_trace};

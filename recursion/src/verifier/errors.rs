@@ -15,6 +15,10 @@ pub enum VerificationError {
     #[error("Invalid proof shape: {0}")]
     InvalidProofShape(String),
 
+    /// A native input is well formed but cannot reuse a prepared verifier's circuit shape.
+    #[error("prepared input does not match {component}")]
+    PreparedInputMismatch { component: &'static str },
+
     /// ZK randomization is inconsistent (random commitment exists but no opened values)
     #[error("Missing random opened values for existing random commitment")]
     RandomizationError,

@@ -3,6 +3,10 @@
 #![no_std]
 
 extern crate alloc;
+#[cfg(test)]
+extern crate self as p3_recursion;
+#[cfg(test)]
+extern crate std;
 
 pub mod backend;
 pub mod challenger;
@@ -11,6 +15,7 @@ pub mod generation;
 pub mod input_contract;
 pub mod pcs;
 pub mod prelude;
+pub mod prepared;
 pub mod profile;
 pub mod public_inputs;
 pub mod recursion;
@@ -35,6 +40,7 @@ pub use generation::{
 pub use p3_circuit::ops;
 pub use p3_circuit::ops::{PermConfig, Poseidon2Config};
 pub use pcs::fri::FriVerifierParams;
+pub use prepared::{NativeCommitment, PreparedInput, PreparedPcsRecursionBackend, PreparedSource};
 pub use profile::{FixedPointError, RecursionLayerProfile, solve_fixed_point};
 pub use public_inputs::{
     BatchStarkVerifierInputsBuilder, CommitmentOpening, FriVerifierInputs, PublicInputBuilder,

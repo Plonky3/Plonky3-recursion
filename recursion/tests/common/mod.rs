@@ -2,7 +2,10 @@
 
 pub mod whir_config;
 
+use std::boxed::Box;
 use std::sync::Arc;
+use std::vec;
+use std::vec::Vec;
 
 use itertools::Itertools;
 use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
