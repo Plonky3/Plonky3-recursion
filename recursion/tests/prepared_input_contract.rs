@@ -274,7 +274,7 @@ fn custom_uni_arity_is_fail_closed_and_explicitly_extensible() {
     )
     .expect("zero is a known exact public-input count");
 
-    let source = p3_recursion::RecursionInput::<Config, BatchOnly>::UniStark {
+    let source = p3_recursion::RecursionInput::UniStark {
         proof: &proof,
         air: &BatchOnly,
         public_inputs: vec![],
@@ -292,7 +292,7 @@ fn custom_uni_arity_is_fail_closed_and_explicitly_extensible() {
 fn batch_reference_never_queries_the_placeholder_air_arity() {
     let fixture = common::build_koala_bear_d4_first_layer_input();
     let table_public_inputs = vec![vec![]; fixture.base_proof.proof.opened_values.instances.len()];
-    let source = p3_recursion::RecursionInput::<Config, UnknownArityAir>::BatchStark {
+    let source = p3_recursion::RecursionInput::BatchStark {
         proof: &fixture.base_proof,
         common_data: &fixture.base_proof.stark_common,
         table_public_inputs,
