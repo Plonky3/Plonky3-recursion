@@ -453,7 +453,7 @@ where
     }
 }
 
-fn source_air<'air, SC, A>(source: &PreparedSource<'air, '_, SC, A>) -> Option<&'air A>
+const fn source_air<'air, SC, A>(source: &PreparedSource<'air, '_, SC, A>) -> Option<&'air A>
 where
     SC: StarkGenericConfig,
 {

@@ -1,5 +1,6 @@
 //! Structural descriptors for native STARK inputs used by prepared recursive verifiers.
 
+use alloc::boxed::Box;
 use alloc::vec::Vec;
 
 use p3_circuit::ops::NpoTypeId;
@@ -95,5 +96,5 @@ pub enum InputContract<F, C, O> {
     /// A uni-STARK input contract.
     Uni(UniInputContract<C, O>),
     /// A batch-STARK input contract.
-    Batch(BatchInputContract<F, C, O>),
+    Batch(Box<BatchInputContract<F, C, O>>),
 }

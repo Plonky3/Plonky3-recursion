@@ -18,10 +18,6 @@ use crate::recursion::{
 use crate::traits::RecursiveAir;
 use crate::verifier::VerificationError;
 
-#[cfg(test)]
-#[path = "../../tests/common/mod.rs"]
-mod test_common;
-
 /// An owned single-layer verifier whose proving method accepts witness data only.
 ///
 /// The construction proof is borrowed only for the duration of [`Self::new`]; the returned owner
@@ -270,8 +266,7 @@ mod tests {
     use p3_uni_stark::{StarkGenericConfig, Val, prove, verify};
 
     use super::*;
-
-    use super::test_common;
+    use crate::prepared::test_common;
 
     type Config = test_common::KoalaBearD4RecursionConfig;
     type Backend = test_common::KoalaBearD4Backend;

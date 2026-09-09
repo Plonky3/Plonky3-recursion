@@ -5,8 +5,9 @@ pub(crate) mod input;
 mod layer;
 pub(crate) mod prover;
 
-use p3_lookup::logup::LogUpGadget;
-use p3_uni_stark::{StarkGenericConfig, Val};
+#[cfg(test)]
+#[path = "../../tests/common/mod.rs"]
+pub(crate) mod test_common;
 
 pub use aggregation::{PreparedAggregation, PreparedAggregationCross};
 pub use input::{NativeCommitment, PreparedInput, PreparedSource};

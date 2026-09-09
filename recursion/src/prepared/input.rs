@@ -20,15 +20,15 @@ use crate::recursion::{BatchOnly, RecursionInput};
 use crate::traits::{PreparedRecursive, Recursive, RecursiveAir};
 use crate::verifier::{ReconstructedBatchTables, VerificationError, reconstruct_batch_tables};
 
-#[cfg(test)]
-#[path = "../../tests/common/mod.rs"]
-mod test_common;
-
 /// Native PCS commitment type selected by a STARK configuration.
 pub type NativeCommitment<SC> = <<SC as StarkGenericConfig>::Pcs as Pcs<
     <SC as StarkGenericConfig>::Challenge,
     <SC as StarkGenericConfig>::Challenger,
 >>::Commitment;
+
+/// Result of capturing a native input contract shape for one commitment/opening pair.
+pub(crate) type CaptureShapeResult<SC, CommShape, OpeningShape> =
+    Result<InputContract<Val<SC>, CommShape, OpeningShape>, VerificationError>;
 
 /// Borrowed witness view accepted by a prepared verifier.
 pub enum PreparedInput<'p, SC: StarkGenericConfig> {
@@ -46,6 +46,14 @@ pub enum PreparedInput<'p, SC: StarkGenericConfig> {
     },
 }
 
+impl<'p, SC: StarkGenericConfig> Clone for PreparedInput<'p, SC> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<'p, SC: StarkGenericConfig> Copy for PreparedInput<'p, SC> {}
+
 /// Borrowed trusted source used while constructing a prepared verifier.
 pub enum PreparedSource<'air, 'p, SC: StarkGenericConfig, A> {
     /// A uni-STARK source retaining the original AIR separately from the proof lifetime.
@@ -62,6 +70,14 @@ pub enum PreparedSource<'air, 'p, SC: StarkGenericConfig, A> {
         table_public_inputs: &'p [Vec<Val<SC>>],
     },
 }
+
+impl<'air, 'p, SC: StarkGenericConfig, A> Clone for PreparedSource<'air, 'p, SC, A> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<'air, 'p, SC: StarkGenericConfig, A> Copy for PreparedSource<'air, 'p, SC, A> {}
 
 impl<'p, SC: StarkGenericConfig> PreparedSource<'static, 'p, SC, BatchOnly> {
     /// Construct a batch-only source without a placeholder AIR value.
@@ -166,7 +182,7 @@ fn opened_values_shape<EF>(values: &p3_uni_stark::OpenedValues<EF>) -> OpenedVal
 /// Capture every native input property that affects target allocation or compiled verification.
 pub(crate) fn capture_input_shape<SC, Comm, Opening>(
     input: &PreparedInput<'_, SC>,
-) -> Result<InputContract<Val<SC>, Comm::Shape, Opening::Shape>, VerificationError>
+) -> CaptureShapeResult<SC, Comm::Shape, Opening::Shape>
 where
     SC: StarkGenericConfig,
     Comm: Recursive<SC::Challenge, Input = NativeCommitment<SC>> + PreparedRecursive<SC::Challenge>,
@@ -331,7 +347,7 @@ where
                     })
                 })
                 .transpose()?;
-            Ok(InputContract::Batch(BatchInputContract {
+            Ok(InputContract::Batch(Box::new(BatchInputContract {
                 degree_bits: degree_bits.clone(),
                 public_inputs: table_public_inputs.iter().map(Vec::len).collect(),
                 commitments,
@@ -346,7 +362,7 @@ where
                 alu_quintic_trinomial: *alu_quintic_trinomial,
                 non_primitives,
                 preprocessed,
-            }))
+            })))
         }
     }
 }
@@ -477,7 +493,7 @@ pub(crate) fn capture_builtin_input_contract<SC, A, Comm, Opening>(
     source: &RecursionInput<'_, SC, A>,
     whir_degree_four_only: bool,
     make_non_primitive_provers: impl FnOnce(usize) -> Vec<Box<dyn TableProver<SC>>>,
-) -> Result<InputContract<Val<SC>, Comm::Shape, Opening::Shape>, VerificationError>
+) -> CaptureShapeResult<SC, Comm::Shape, Opening::Shape>
 where
     SC: StarkGenericConfig + 'static,
     A: RecursiveAir<Val<SC>, SC::Challenge, p3_lookup::logup::LogUpGadget>,
@@ -633,9 +649,8 @@ mod tests {
         NonPrimitiveContract, OpenedValuesShape, OpenedValuesWithLookupsShape,
         PreprocessedInstanceShape,
     };
+    use crate::prepared::test_common as common;
     use crate::verifier::{CircuitTablesAir, ReconstructedBatchTables, VerificationError};
-
-    use super::test_common as common;
 
     fn contains_constant<F: Field + Copy>(
         expression: &SymbolicExpr<BaseLeaf<F>>,
@@ -665,7 +680,7 @@ mod tests {
     }
 
     fn contract() -> InputContract<u32, usize, usize> {
-        InputContract::Batch(BatchInputContract {
+        InputContract::Batch(Box::new(BatchInputContract {
             degree_bits: vec![8, 9],
             public_inputs: vec![1, 3],
             commitments: CommitmentsShape {
@@ -723,7 +738,7 @@ mod tests {
                 ],
                 matrix_to_instance: vec![0],
             }),
-        })
+        }))
     }
 
     fn assert_component(
@@ -805,8 +820,10 @@ mod tests {
 
     #[test]
     fn all_batch_compile_metadata_is_bound() {
+        type Mutation = fn(&mut BatchInputContract<u32, usize, usize>);
+
         let expected = contract();
-        let mutations: [fn(&mut BatchInputContract<u32, usize, usize>); 16] = [
+        let mutations: [Mutation; 16] = [
             |c| c.rows = RowCounts::new([16, 16, 32]),
             |c| c.table_packing = TablePacking::new(1, 4),
             |c| c.table_packing = c.table_packing.clone().with_min_trace_height(32),
@@ -830,7 +847,7 @@ mod tests {
                     .with_public_min_height(16)
                     .with_const_min_height(16)
                     .with_npo_lanes(NpoTypeId::new("plugin"), 2)
-                    .with_npo_min_height(NpoTypeId::new("plugin"), 16)
+                    .with_npo_min_height(NpoTypeId::new("plugin"), 16);
             },
         ];
         for mutate in mutations {

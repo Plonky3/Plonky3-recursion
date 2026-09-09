@@ -194,7 +194,7 @@ fn fri_uni_reference_enforces_exact_air_arity_but_values_stay_dynamic() {
         ));
     }
 
-    let mut changed_values = public_inputs.clone();
+    let mut changed_values = public_inputs;
     changed_values[2] += Val::<Config>::ONE;
     let input = PreparedInput::UniStark {
         proof: &proof,

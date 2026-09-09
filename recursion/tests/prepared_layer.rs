@@ -145,7 +145,7 @@ fn fri_uni_prepared_layer_reuses_varied_witnesses_after_reference_drop() {
                 preprocessed_commit: None,
             },
             config.clone(),
-            backend.clone(),
+            backend,
             params.clone(),
         )
         .expect("the trusted reference prepares");
@@ -252,7 +252,7 @@ fn whir_uni_prepared_layer_reuses_varied_witnesses_after_reference_drop() {
                 preprocessed_commit: None,
             },
             config.clone(),
-            backend.clone(),
+            backend,
             params.clone(),
         )
         .expect("the trusted WHIR proof prepares");
