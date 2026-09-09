@@ -104,7 +104,8 @@ impl TablePacking {
 
     /// Override the lane count for a specific non-primitive op type (builder-style).
     ///
-    /// Any NPO not listed falls back to the lane count returned by its [`TableProver`].
+    /// Any NPO not listed falls back to the lane count returned by its
+    /// [`TableProver`](super::TableProver).
     /// Not every table can pack: an override above 1 for a single-lane table (the Poseidon1
     /// and Poseidon2 permutations) is rejected by [`Self::validate`].
     #[must_use]
