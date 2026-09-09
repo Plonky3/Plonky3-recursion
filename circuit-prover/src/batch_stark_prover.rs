@@ -753,6 +753,13 @@ pub enum ProofMetadataError {
         max: usize,
     },
 
+    /// A non-primitive table lane override above 1 was requested for a table whose AIR
+    /// proves exactly one operation per row.
+    #[error(
+        "non-primitive table `{op_type:?}` does not support multi-lane packing (requested {lanes})"
+    )]
+    NpoLanesUnsupported { op_type: NpoTypeId, lanes: usize },
+
     /// `horner_packed_steps` exceeds the sanity ceiling.
     #[error("horner_packed_steps {0} exceeds the sanity ceiling of {1}")]
     HornerPackedStepsTooLarge(usize, usize),

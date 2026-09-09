@@ -60,6 +60,10 @@ const fn default_horner_pack_k() -> usize {
 /// metadata.
 pub(crate) const MAX_SANE_LANES: usize = 1 << 16;
 
+/// [`NpoTypeId`] prefixes whose tables prove exactly one operation per AIR row and so cannot
+/// honour a [`TablePacking::with_npo_lanes`] override above 1.
+const SINGLE_LANE_NPO_PREFIXES: [&str; 2] = ["poseidon1_perm/", "poseidon2_perm/"];
+
 impl TablePacking {
     /// Create a new [`TablePacking`] with the given primitive lane counts (clamped to at least 1).
     ///
@@ -101,6 +105,8 @@ impl TablePacking {
     /// Override the lane count for a specific non-primitive op type (builder-style).
     ///
     /// Any NPO not listed falls back to the lane count returned by its [`TableProver`].
+    /// Not every table can pack: an override above 1 for a single-lane table (the Poseidon1
+    /// and Poseidon2 permutations) is rejected by [`Self::validate`].
     #[must_use]
     pub fn with_npo_lanes(mut self, op_type: impl Into<NpoTypeId>, lanes: usize) -> Self {
         let op_type = op_type.into();
@@ -297,6 +303,16 @@ impl TablePacking {
                     op_type: op_type.clone(),
                     got: *lanes,
                     max: MAX_SANE_LANES,
+                });
+            }
+            if *lanes > 1
+                && SINGLE_LANE_NPO_PREFIXES
+                    .iter()
+                    .any(|prefix| op_type.as_str().starts_with(prefix))
+            {
+                return Err(ProofMetadataError::NpoLanesUnsupported {
+                    op_type: op_type.clone(),
+                    lanes: *lanes,
                 });
             }
         }
@@ -543,5 +559,45 @@ mod tests {
                 floor: 32,
             })
         );
+    }
+
+    #[test]
+    fn validate_rejects_multi_lane_packing_for_poseidon_tables() {
+        use p3_circuit::ops::{NpoTypeId, Poseidon1Config, Poseidon2Config};
+
+        // The Poseidon provers emit exactly one permutation per row, so honouring a lane
+        // override is impossible; the request must surface as an error rather than being
+        // dropped into a proof that silently ignores it.
+        for (op, lanes) in [
+            (
+                NpoTypeId::poseidon2_perm(Poseidon2Config::KOALA_BEAR_D4_W16),
+                4,
+            ),
+            (
+                NpoTypeId::poseidon1_perm(Poseidon1Config::BABY_BEAR_D4_W16),
+                2,
+            ),
+        ] {
+            let bad = TablePacking::new(1, 1).with_npo_lanes(op.clone(), lanes);
+            assert_eq!(
+                bad.validate(),
+                Err(ProofMetadataError::NpoLanesUnsupported { op_type: op, lanes })
+            );
+        }
+    }
+
+    #[test]
+    fn validate_accepts_single_lane_poseidon_and_packed_recompose() {
+        use p3_circuit::ops::{NpoTypeId, Poseidon2Config};
+
+        // Lanes of 1 match what the Poseidon tables actually prove, and `recompose` honours
+        // its override, so neither is rejected.
+        let ok = TablePacking::new(1, 1)
+            .with_npo_lanes(
+                NpoTypeId::poseidon2_perm(Poseidon2Config::KOALA_BEAR_D4_W16),
+                1,
+            )
+            .with_npo_lanes(NpoTypeId::recompose(), 8);
+        assert_eq!(ok.validate(), Ok(()));
     }
 }
