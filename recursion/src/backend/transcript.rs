@@ -123,6 +123,7 @@ where
         airs,
         trace_lens,
         public_values,
+        ..
     } = reconstruct_batch_tables::<SC, D>(config, proof, non_primitive_provers)?;
 
     let lookups = airs
