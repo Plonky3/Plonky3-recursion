@@ -22,7 +22,7 @@ use p3_commit::{Pcs, PolynomialSpace};
 use p3_field::{
     Algebra, BasedVectorSpace, ExtensionField, Field, PrimeCharacteristicRing, PrimeField64,
 };
-use p3_lookup::{Kind, Lookup, LookupProtocol};
+use p3_lookup::{Kind, Lookup, LookupProtocol, Lookups};
 use p3_uni_stark::{
     StarkGenericConfig, SymbolicExpression, SymbolicExpressionExt, Val, validate_degree_bits,
 };
@@ -216,6 +216,9 @@ pub struct ReconstructedBatchTables<SC: StarkGenericConfig, const D: usize> {
     /// Each table's public values: empty for the primitive tables, the manifest entry's own for
     /// the non-primitive ones.
     pub public_values: Vec<Vec<Val<SC>>>,
+    /// Each table's lookup contexts, derived from the reconstructed AIRs rather
+    /// than taken from the proof.
+    pub lookups: Vec<Lookups<Val<SC>>>,
 }
 
 /// Rebuild the AIRs a recursion-layer batch proof was produced against.
@@ -232,6 +235,8 @@ pub fn reconstruct_batch_tables<SC: StarkGenericConfig + 'static, const TRACE_D:
 where
     Val<SC>: PrimeField64,
     SC::Challenge: ExtensionField<Val<SC>> + ExtractBinomialW<Val<SC>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
     proof
         .validate()
@@ -308,10 +313,27 @@ where
         public_values.push(entry.public_values.clone());
     }
 
+    // Rebuild the lookup contexts from the reconstructed (audited) AIRs instead of trusting
+    // the proof-supplied `common.lookups`, which drives the CTL folding, aux width, and
+    // challenge layout. For an honest proof these are identical (both derived from the same
+    // AIRs); a malformed or malicious lookup set is now ignored rather than believed.
+    let lookups = airs
+        .iter()
+        .zip(trace_lens.iter())
+        .map(|(air, &trace_len)| {
+            lookups_for_circuit_table_air::<SC, TRACE_D>(
+                &air.to_table_air(),
+                trace_len,
+                config.is_zk(),
+            )
+        })
+        .collect();
+
     Ok(ReconstructedBatchTables {
         airs,
         trace_lens,
         public_values,
+        lookups,
     })
 }
 
@@ -369,8 +391,9 @@ where
     let tables = reconstruct_batch_tables::<SC, TRACE_D>(config, proof, non_primitive_provers)?;
     let ReconstructedBatchTables {
         airs: circuit_airs,
-        trace_lens,
         public_values,
+        lookups,
+        ..
     } = &tables;
 
     let air_public_counts: Vec<usize> = public_values.iter().map(Vec::len).collect();
@@ -381,22 +404,8 @@ where
         &air_public_counts,
     )?;
 
-    // Rebuild the lookup contexts from the reconstructed (audited) AIRs instead of trusting
-    // the proof-supplied `common.lookups`, which drives the CTL folding, aux width, and
-    // challenge layout. For an honest proof these are identical (both derived from the same
-    // AIRs); a malformed or malicious lookup set is now ignored rather than believed.
-    verifier_inputs.common_data.lookups = circuit_airs
-        .iter()
-        .zip(trace_lens.iter())
-        .map(|(air, &trace_len)| {
-            lookups_for_circuit_table_air::<SC, TRACE_D>(
-                &air.to_table_air(),
-                trace_len,
-                config.is_zk(),
-            )
-            .to_vec()
-        })
-        .collect();
+    // Set the audited lookups from reconstructed tables.
+    verifier_inputs.common_data.lookups = lookups.iter().map(|l| l.to_vec()).collect();
 
     let common = &verifier_inputs.common_data;
 
