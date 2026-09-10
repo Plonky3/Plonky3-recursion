@@ -8,8 +8,8 @@ use p3_circuit_prover::batch_stark_prover::{NUM_PRIMITIVE_TABLES, TableProver};
 use p3_circuit_prover::field_params::ExtractBinomialW;
 use p3_circuit_prover::{BatchStarkProof, CircuitVerifier};
 use p3_commit::Pcs;
-use p3_field::{ExtensionField, PrimeField64};
-use p3_uni_stark::{Proof, StarkGenericConfig, Val};
+use p3_field::{Algebra, ExtensionField, PrimeField64};
+use p3_uni_stark::{Proof, StarkGenericConfig, SymbolicExpression, SymbolicExpressionExt, Val};
 
 use crate::input_contract::stark::{validate_batch_native, validate_uni_native};
 use crate::input_contract::{
@@ -600,6 +600,8 @@ where
     SC: StarkGenericConfig + 'static,
     Val<SC>: PrimeField64,
     SC::Challenge: ExtensionField<Val<SC>> + ExtractBinomialW<Val<SC>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
     let reconstructed =
         reconstruct_batch_tables::<SC, TRACE_D>(config, proof, non_primitive_provers)?;
@@ -622,6 +624,8 @@ where
         + PreparedRecursive<SC::Challenge>,
     Val<SC>: PrimeField64,
     SC::Challenge: ExtensionField<Val<SC>> + ExtractBinomialW<Val<SC>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
     let input = match source {
         RecursionInput::UniStark {
@@ -1267,6 +1271,7 @@ mod tests {
             airs: vec![CircuitTablesAir::Dynamic(air)],
             trace_lens: vec![entry.rows],
             public_values: vec![vec![constant]],
+            lookups: vec![],
         };
         validate_reconstructed_public_inputs(&reconstructed, &[vec![constant]])
             .expect("the manifest value and AIR public arity agree");
