@@ -26,13 +26,14 @@ use p3_uni_stark::{StarkGenericConfig, SymbolicExpressionExt, Val};
 
 use crate::backend::transcript::replay_recursion_input_transcript;
 use crate::generation::OpeningTranscript;
+use crate::input_contract::stark::validate_batch_proof_native;
 use crate::ops::Poseidon2Config;
 use crate::pcs::whir::uni::WhirUniVerifierParams;
 use crate::prepared::input::{capture_builtin_input_contract, validate_builtin_prepared_input};
 use crate::prepared::{PreparedInput, PreparedPcsRecursionBackend};
 use crate::public_inputs::{BatchStarkVerifierInputsBuilder, StarkVerifierInputsBuilder};
 use crate::recursion::{PcsRecursionBackend, RecursionInput, VerifierCircuitResult};
-use crate::traits::{PreparedRecursive, RecursiveAir};
+use crate::traits::{CheckedRecursive, PreparedRecursive, RecursiveAir};
 use crate::verifier::{
     ObservableCommitment, VerificationError, verify_p3_batch_proof_circuit,
     verify_p3_uni_proof_circuit,
@@ -58,6 +59,7 @@ where
             Self::Challenge,
             Input = <Self::Pcs as Pcs<Self::Challenge, Self::Challenger>>::Commitment,
         > + Clone
+        + CheckedRecursive<Self::Challenge>
         + ObservableCommitment;
 
     /// Input proof type for the PCS (unit type for WHIR, which needs no per-opening input proof).
@@ -67,7 +69,7 @@ where
     type OpeningProof: Recursive<
             Self::Challenge,
             Input = <Self::Pcs as Pcs<Self::Challenge, Self::Challenger>>::Proof,
-        >;
+        > + CheckedRecursive<Self::Challenge>;
 
     /// Raw WHIR opening proof type (value type, not circuit targets). Used to set private data.
     type RawOpeningProof;
@@ -238,7 +240,7 @@ where
                     preprocessed_commit,
                     ..
                 },
-            ) => Ok(builder.pack_public_values(public_inputs, proof, preprocessed_commit)),
+            ) => builder.try_pack_public_values(public_inputs, proof, preprocessed_commit),
             (
                 Self::BatchStark(builder, _),
                 RecursionInput::BatchStark {
@@ -246,7 +248,7 @@ where
                     common_data,
                     table_public_inputs,
                 },
-            ) => Ok(builder.pack_public_values(table_public_inputs, &proof.proof, common_data)),
+            ) => builder.try_pack_public_values(table_public_inputs, &proof.proof, common_data),
             _ => Err(VerificationError::InvalidProofShape(
                 "RecursionInput variant does not match verifier result".to_string(),
             )),
@@ -259,10 +261,10 @@ where
     ) -> Result<Vec<SC::Challenge>, VerificationError> {
         match (self, prev) {
             (Self::UniStark(builder, _), RecursionInput::UniStark { proof, .. }) => {
-                Ok(builder.pack_private_values(proof))
+                builder.try_pack_private_values(proof)
             }
             (Self::BatchStark(builder, _), RecursionInput::BatchStark { proof, .. }) => {
-                Ok(builder.pack_private_values(&proof.proof))
+                builder.try_pack_private_values(&proof.proof)
             }
             _ => Err(VerificationError::InvalidProofShape(
                 "RecursionInput variant does not match verifier result".to_string(),
@@ -339,13 +341,16 @@ where
                 public_inputs,
                 preprocessed_commit,
             } => {
-                let verifier_inputs =
-                    StarkVerifierInputsBuilder::<SC, SC::Commitment, SC::OpeningProof>::allocate(
-                        circuit,
-                        proof,
-                        preprocessed_commit.as_ref(),
-                        public_inputs.len(),
-                    );
+                let verifier_inputs = StarkVerifierInputsBuilder::<
+                    SC,
+                    SC::Commitment,
+                    SC::OpeningProof,
+                >::try_allocate(
+                    circuit,
+                    proof,
+                    preprocessed_commit.as_ref(),
+                    public_inputs.len(),
+                )?;
                 let op_ids = verify_p3_uni_proof_circuit::<
                     A,
                     SC,
@@ -372,6 +377,7 @@ where
                 common_data,
                 table_public_inputs: _,
             } => {
+                validate_batch_proof_native::<SC, SC::Commitment, SC::OpeningProof>(&proof.proof)?;
                 if proof.ext_degree != 4 {
                     return Err(VerificationError::InvalidProofShape(format!(
                         "WhirRecursionBackend supports batch proofs of ext_degree 4, got {}",

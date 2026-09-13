@@ -29,7 +29,7 @@ use crate::input_contract::fri::{
     MerkleCapShape,
 };
 use crate::traits::{
-    ComsWithOpeningsTargets, PreparedRecursive, Recursive, RecursiveChallenger,
+    CheckedRecursive, ComsWithOpeningsTargets, PreparedRecursive, Recursive, RecursiveChallenger,
     RecursiveExtensionMmcs, RecursiveMmcs, RecursivePcs,
 };
 use crate::types::{OpenedValuesTargetsWithLookups, RecursiveLagrangeSelectors};
@@ -339,6 +339,8 @@ where
             query_pow_witness,
         } = input;
 
+        validate_fri_structure::<F, EF, RecMmcs, InputProof, Witness>(input)?;
+
         let mut counts = InputProof::query_counts(input_openings);
         counts.extend(
             commit_phase_openings
@@ -396,6 +398,122 @@ where
             query_pow_witness: Witness::input_shape(query_pow_witness)?,
         })
     }
+}
+
+impl<
+    F: Field,
+    EF: ExtensionField<F>,
+    RecMmcs: RecursiveExtensionMmcs<F, EF>,
+    InputProof: Recursive<EF> + PreparedRecursiveFriInputOpenings<EF>,
+    Witness: Recursive<EF>,
+> CheckedRecursive<EF> for FriProofTargets<F, EF, RecMmcs, InputProof, Witness>
+where
+    RecMmcs::Commitment: CheckedRecursive<EF>,
+    RecMmcs::Proof: PreparedRecursiveMultiProofTargets<
+            EF,
+            MultiProof = <RecMmcs::Input as Mmcs<EF>>::MultiProof,
+        >,
+{
+    fn validate_input(input: &Self::Input) -> Result<(), VerificationError> {
+        validate_fri_input::<F, EF, RecMmcs, InputProof, Witness>(input)
+    }
+}
+
+/// Validate all shape choices consumed by the built-in FRI target allocator.
+///
+/// This is intentionally independent of verifier parameters: checks involving the
+/// committed statement (query floors, final polynomial degree, and domain geometry)
+/// belong to the PCS/backend boundary. The helper nevertheless covers every raw
+/// relationship that the allocator and value extraction rely on.
+pub(crate) fn validate_fri_input<
+    F: Field,
+    EF: ExtensionField<F>,
+    RecMmcs: RecursiveExtensionMmcs<F, EF>,
+    InputProof: Recursive<EF> + PreparedRecursiveFriInputOpenings<EF>,
+    Witness: Recursive<EF>,
+>(
+    input: &FriProof<EF, RecMmcs::Input, Witness::Input, InputProof::MultiOpenings>,
+) -> Result<(), VerificationError>
+where
+    RecMmcs::Commitment: CheckedRecursive<EF>,
+    RecMmcs::Proof: PreparedRecursiveMultiProofTargets<
+            EF,
+            MultiProof = <RecMmcs::Input as Mmcs<EF>>::MultiProof,
+        >,
+{
+    validate_fri_structure::<F, EF, RecMmcs, InputProof, Witness>(input)?;
+    for commitment in &input.commit_phase_commits {
+        RecMmcs::Commitment::validate_input(commitment)?;
+    }
+    Ok(())
+}
+
+fn validate_fri_structure<
+    F: Field,
+    EF: ExtensionField<F>,
+    RecMmcs: RecursiveExtensionMmcs<F, EF>,
+    InputProof: Recursive<EF> + PreparedRecursiveFriInputOpenings<EF>,
+    Witness: Recursive<EF>,
+>(
+    input: &FriProof<EF, RecMmcs::Input, Witness::Input, InputProof::MultiOpenings>,
+) -> Result<(), VerificationError>
+where
+    RecMmcs::Proof: PreparedRecursiveMultiProofTargets<
+            EF,
+            MultiProof = <RecMmcs::Input as Mmcs<EF>>::MultiProof,
+        >,
+{
+    let phases = input.commit_phase_commits.len();
+    if phases != input.commit_phase_openings.len() {
+        return Err(VerificationError::InvalidProofShape(
+            "FRI commitment/opening round count mismatch".into(),
+        ));
+    }
+    if phases != input.commit_pow_witnesses.len() {
+        return Err(VerificationError::InvalidProofShape(
+            "FRI commitment/PoW witness round count mismatch".into(),
+        ));
+    }
+    if input.final_poly.is_empty() {
+        return Err(VerificationError::InvalidProofShape(
+            "FRI proof missing final polynomial".into(),
+        ));
+    }
+
+    let mut query_count = InputProof::num_queries(&input.input_openings);
+    for step in &input.commit_phase_openings {
+        let Some(arity) = (1usize)
+            .checked_shl(u32::from(step.log_arity))
+            .and_then(|arity| arity.checked_sub(1))
+            .filter(|_| step.log_arity > 0)
+        else {
+            return Err(VerificationError::InvalidProofShape(
+                "invalid FRI log_arity".into(),
+            ));
+        };
+        if step.sibling_values.iter().any(|row| row.len() != arity) {
+            return Err(VerificationError::InvalidProofShape(
+                "FRI sibling arity mismatch".into(),
+            ));
+        }
+        if let Some(expected) = query_count {
+            if expected != step.sibling_values.len() {
+                return Err(VerificationError::InvalidProofShape(
+                    "FRI query counts disagree".into(),
+                ));
+            }
+        } else {
+            query_count = Some(step.sibling_values.len());
+        }
+        // The built-in multiproof validators check hiding salts and all matrix axes.
+        let matrix_counts = vec![1; step.sibling_values.len()];
+        RecMmcs::Proof::multiproof_shape(&step.opening_proof, &matrix_counts)?;
+    }
+
+    // This also checks each input multiproof's query/matrix cardinality before
+    // `new_for_query` starts allocating per-query targets.
+    InputProof::openings_shape(&input.input_openings)?;
+    Ok(())
 }
 
 /// Targets for the share of a FRI proof belonging to a single query.
@@ -744,6 +862,20 @@ impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize> PreparedRecursi
         Ok(MerkleCapShape {
             roots: input.num_roots(),
         })
+    }
+}
+
+impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize> CheckedRecursive<EF>
+    for MerkleCapTargets<F, DIGEST_ELEMS>
+{
+    fn validate_input(input: &Self::Input) -> Result<(), VerificationError> {
+        let roots = input.num_roots();
+        if roots == 0 || !roots.is_power_of_two() {
+            return Err(VerificationError::InvalidProofShape(
+                "MMCS commitment cap must have a non-empty power-of-two root count".into(),
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -1661,6 +1793,25 @@ where
     }
 }
 
+impl<
+    F: Field,
+    EF: ExtensionField<F>,
+    RecMmcs: RecursiveExtensionMmcs<F, EF>,
+    InputProof: Recursive<EF> + PreparedRecursiveFriInputOpenings<EF>,
+    PowWitness: Recursive<EF>,
+> CheckedRecursive<EF> for HidingFriProofTargets<F, EF, RecMmcs, InputProof, PowWitness>
+where
+    RecMmcs::Commitment: CheckedRecursive<EF>,
+    RecMmcs::Proof: PreparedRecursiveMultiProofTargets<
+            EF,
+            MultiProof = <RecMmcs::Input as Mmcs<EF>>::MultiProof,
+        >,
+{
+    fn validate_input(input: &Self::Input) -> Result<(), VerificationError> {
+        FriProofTargets::<F, EF, RecMmcs, InputProof, PowWitness>::validate_input(&input.1)
+    }
+}
+
 type RecursiveHidingFriProof<SC, RecursiveFriMmcs, RecursiveInputProof> = HidingFriProofTargets<
     Val<SC>,
     <SC as StarkGenericConfig>::Challenge,
@@ -2131,6 +2282,21 @@ mod prepared_shape_tests {
         zero_arity.commit_phase_openings[0].log_arity = 0;
         assert!(matches!(
             OpeningTargets::input_shape(&zero_arity),
+            Err(VerificationError::InvalidProofShape(_))
+        ));
+    }
+
+    #[test]
+    fn prepared_fri_rejects_commitment_round_cardinality_mismatch() {
+        let mut input = ordinary_opening(&[1, 3]);
+        input.commit_phase_openings.push(CommitPhaseMultiStep {
+            log_arity: 1,
+            sibling_values: vec![vec![Challenge::ZERO]],
+            opening_proof: frontier(0),
+        });
+
+        assert!(matches!(
+            OpeningTargets::input_shape(&input),
             Err(VerificationError::InvalidProofShape(_))
         ));
     }

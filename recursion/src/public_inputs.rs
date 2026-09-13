@@ -10,7 +10,10 @@ use p3_commit::Pcs;
 use p3_field::{BasedVectorSpace, Field, PrimeField64};
 use p3_uni_stark::{Proof, StarkGenericConfig, Val};
 
-use crate::traits::Recursive;
+use crate::input_contract::stark::{
+    validate_batch_native, validate_batch_proof_native, validate_uni_native,
+};
+use crate::traits::{CheckedRecursive, Recursive};
 use crate::{BatchProofTargets, CommonDataTargets, ProofTargets, VerificationError};
 
 /// Builder for constructing a flat public input vector in a canonical order.
@@ -498,6 +501,30 @@ where
         }
     }
 
+    /// Checked allocation path for audited built-in commitment and opening targets.
+    ///
+    /// Unlike [`Self::allocate`], this validates every native proof component before
+    /// mutating the circuit builder. The legacy method remains available for trusted
+    /// custom recursive integrations.
+    pub fn try_allocate(
+        circuit: &mut CircuitBuilder<SC::Challenge>,
+        proof: &Proof<SC>,
+        preprocessed_commit: Option<&Com<SC>>,
+        num_air_public_inputs: usize,
+    ) -> Result<Self, VerificationError>
+    where
+        Comm: CheckedRecursive<SC::Challenge>,
+        OpeningProof: CheckedRecursive<SC::Challenge>,
+    {
+        validate_uni_native::<SC, Comm, OpeningProof>(proof, preprocessed_commit)?;
+        Ok(Self::allocate(
+            circuit,
+            proof,
+            preprocessed_commit,
+            num_air_public_inputs,
+        ))
+    }
+
     /// Packs concrete values into public inputs in the canonical order.
     ///
     /// This must be called in the execution phase, after proof data is known.
@@ -542,6 +569,23 @@ where
         .build()
     }
 
+    /// Checked public packing path that validates before extracting or cloning values.
+    pub fn try_pack_public_values(
+        &self,
+        air_public_values: &[Val<SC>],
+        proof: &Proof<SC>,
+        preprocessed_commit: &Option<Com<SC>>,
+    ) -> Result<Vec<SC::Challenge>, VerificationError>
+    where
+        Val<SC>: PrimeField64,
+        SC::Challenge: BasedVectorSpace<Val<SC>> + From<Val<SC>>,
+        Comm: CheckedRecursive<SC::Challenge>,
+        OpeningProof: CheckedRecursive<SC::Challenge>,
+    {
+        validate_uni_native::<SC, Comm, OpeningProof>(proof, preprocessed_commit.as_ref())?;
+        Ok(self.pack_public_values(air_public_values, proof, preprocessed_commit))
+    }
+
     /// Pack private input values (opened values, FRI siblings, etc.) for the verifier circuit.
     pub fn pack_private_values(&self, proof: &Proof<SC>) -> Vec<SC::Challenge>
     where
@@ -549,6 +593,21 @@ where
         SC::Challenge: BasedVectorSpace<Val<SC>> + From<Val<SC>>,
     {
         ProofTargets::<SC, Comm, OpeningProof>::get_private_values(proof)
+    }
+
+    /// Checked private packing path that validates before extracting values.
+    pub fn try_pack_private_values(
+        &self,
+        proof: &Proof<SC>,
+    ) -> Result<Vec<SC::Challenge>, VerificationError>
+    where
+        Val<SC>: PrimeField64,
+        SC::Challenge: BasedVectorSpace<Val<SC>> + From<Val<SC>>,
+        Comm: CheckedRecursive<SC::Challenge>,
+        OpeningProof: CheckedRecursive<SC::Challenge>,
+    {
+        validate_uni_native::<SC, Comm, OpeningProof>(proof, None)?;
+        Ok(self.pack_private_values(proof))
     }
 
     /// Pack both public and private input values for the verifier circuit.
@@ -566,6 +625,23 @@ where
         let private_values = self.pack_private_values(proof);
 
         (public_values, private_values)
+    }
+
+    /// Checked public/private packing in one operation.
+    pub fn try_pack_values(
+        &self,
+        air_public_values: &[Val<SC>],
+        proof: &Proof<SC>,
+        preprocessed_commit: &Option<Com<SC>>,
+    ) -> Result<(Vec<SC::Challenge>, Vec<SC::Challenge>), VerificationError>
+    where
+        Val<SC>: PrimeField64,
+        SC::Challenge: BasedVectorSpace<Val<SC>> + From<Val<SC>>,
+        Comm: CheckedRecursive<SC::Challenge>,
+        OpeningProof: CheckedRecursive<SC::Challenge>,
+    {
+        validate_uni_native::<SC, Comm, OpeningProof>(proof, preprocessed_commit.as_ref())?;
+        Ok(self.pack_values(air_public_values, proof, preprocessed_commit))
     }
 }
 
@@ -670,6 +746,22 @@ where
         })
     }
 
+    /// Checked batch allocation path. Native validation runs before any target
+    /// allocation or circuit-builder mutation.
+    pub fn try_allocate(
+        circuit: &mut CircuitBuilder<SC::Challenge>,
+        proof: &BatchProof<SC>,
+        common_data: &CommonData<SC>,
+        air_public_counts: &[usize],
+    ) -> Result<Self, VerificationError>
+    where
+        Comm: CheckedRecursive<SC::Challenge>,
+        OpeningProof: CheckedRecursive<SC::Challenge>,
+    {
+        validate_batch_native::<SC, Comm, OpeningProof>(proof, common_data, air_public_counts)?;
+        Self::allocate(circuit, proof, common_data, air_public_counts)
+    }
+
     /// Packs concrete values into public inputs for batch verification.
     ///
     /// # Parameters
@@ -699,6 +791,24 @@ where
         construct_batch_stark_verifier_inputs(air_public_values, &proof_values, &common_data)
     }
 
+    /// Checked batch public packing path.
+    pub fn try_pack_public_values(
+        &self,
+        air_public_values: &[Vec<Val<SC>>],
+        proof: &BatchProof<SC>,
+        common: &CommonData<SC>,
+    ) -> Result<Vec<SC::Challenge>, VerificationError>
+    where
+        Val<SC>: PrimeField64,
+        SC::Challenge: BasedVectorSpace<Val<SC>> + From<Val<SC>>,
+        Comm: CheckedRecursive<SC::Challenge>,
+        OpeningProof: CheckedRecursive<SC::Challenge>,
+    {
+        let air_public_counts = air_public_values.iter().map(Vec::len).collect::<Vec<_>>();
+        validate_batch_native::<SC, Comm, OpeningProof>(proof, common, &air_public_counts)?;
+        Ok(self.pack_public_values(air_public_values, proof, common))
+    }
+
     /// Pack private input values (opened values, FRI siblings, etc.) for the verifier circuit.
     pub fn pack_private_values(&self, proof: &BatchProof<SC>) -> Vec<SC::Challenge>
     where
@@ -706,6 +816,21 @@ where
         SC::Challenge: BasedVectorSpace<Val<SC>> + From<Val<SC>>,
     {
         BatchProofTargets::<SC, Comm, OpeningProof>::get_private_values(proof)
+    }
+
+    /// Checked batch private packing path.
+    pub fn try_pack_private_values(
+        &self,
+        proof: &BatchProof<SC>,
+    ) -> Result<Vec<SC::Challenge>, VerificationError>
+    where
+        Val<SC>: PrimeField64,
+        SC::Challenge: BasedVectorSpace<Val<SC>> + From<Val<SC>>,
+        Comm: CheckedRecursive<SC::Challenge>,
+        OpeningProof: CheckedRecursive<SC::Challenge>,
+    {
+        validate_batch_proof_native::<SC, Comm, OpeningProof>(proof)?;
+        Ok(self.pack_private_values(proof))
     }
 
     /// Pack both public and private input values for the verifier circuit.
@@ -723,6 +848,24 @@ where
         let private_values = self.pack_private_values(proof);
 
         (public_values, private_values)
+    }
+
+    /// Checked batch public/private packing in one operation.
+    pub fn try_pack_values(
+        &self,
+        air_public_values: &[Vec<Val<SC>>],
+        proof: &BatchProof<SC>,
+        common: &CommonData<SC>,
+    ) -> Result<(Vec<SC::Challenge>, Vec<SC::Challenge>), VerificationError>
+    where
+        Val<SC>: PrimeField64,
+        SC::Challenge: BasedVectorSpace<Val<SC>> + From<Val<SC>>,
+        Comm: CheckedRecursive<SC::Challenge>,
+        OpeningProof: CheckedRecursive<SC::Challenge>,
+    {
+        let public_values = self.try_pack_public_values(air_public_values, proof, common)?;
+        let private_values = self.try_pack_private_values(proof)?;
+        Ok((public_values, private_values))
     }
 }
 

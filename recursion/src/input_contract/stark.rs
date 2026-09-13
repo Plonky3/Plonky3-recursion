@@ -3,8 +3,119 @@
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 
+use p3_batch_stark::{BatchProof, CommonData};
 use p3_circuit::ops::NpoTypeId;
 use p3_circuit_prover::{AirVariant, RowCounts, TablePacking};
+use p3_commit::Pcs;
+use p3_uni_stark::{Proof, StarkGenericConfig};
+
+use crate::traits::{CheckedRecursive, Recursive};
+use crate::verifier::VerificationError;
+
+/// Validate a uni-STARK proof and all commitment inputs before target allocation.
+pub(crate) fn validate_uni_native<SC, Comm, Opening>(
+    proof: &Proof<SC>,
+    preprocessed_commit: Option<&<SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment>,
+) -> Result<(), VerificationError>
+where
+    SC: StarkGenericConfig,
+    Comm: CheckedRecursive<SC::Challenge>
+        + Recursive<
+            SC::Challenge,
+            Input = <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment,
+        >,
+    Opening: CheckedRecursive<SC::Challenge>
+        + Recursive<SC::Challenge, Input = <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Proof>,
+{
+    Comm::validate_input(&proof.commitments.trace)?;
+    Comm::validate_input(&proof.commitments.quotient_chunks)?;
+    if let Some(random) = &proof.commitments.random {
+        Comm::validate_input(random)?;
+    }
+    if let Some(preprocessed) = preprocessed_commit {
+        Comm::validate_input(preprocessed)?;
+    }
+    Opening::validate_input(&proof.opening_proof)
+}
+
+/// Validate a batch-STARK proof, commitment inputs, and basic cardinality before
+/// any batch target or reconstructed-table allocation.
+pub(crate) fn validate_batch_native<SC, Comm, Opening>(
+    proof: &BatchProof<SC>,
+    common_data: &CommonData<SC>,
+    air_public_counts: &[usize],
+) -> Result<(), VerificationError>
+where
+    SC: StarkGenericConfig,
+    Comm: CheckedRecursive<SC::Challenge>
+        + Recursive<
+            SC::Challenge,
+            Input = <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment,
+        >,
+    Opening: CheckedRecursive<SC::Challenge>
+        + Recursive<SC::Challenge, Input = <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Proof>,
+{
+    let instances = proof.opened_values.instances.len();
+    if instances == 0 {
+        return Err(VerificationError::InvalidProofShape(
+            "batch-STARK allocation requires at least one instance".into(),
+        ));
+    }
+    if air_public_counts.len() != instances {
+        return Err(VerificationError::InvalidProofShape(
+            "batch-STARK public input count cardinality mismatch".into(),
+        ));
+    }
+    if proof.degree_bits.len() != instances {
+        return Err(VerificationError::InvalidProofShape(
+            "batch-STARK degree bit cardinality mismatch".into(),
+        ));
+    }
+    if proof.lookup_terminals.len() != instances {
+        return Err(VerificationError::InvalidProofShape(
+            "batch-STARK lookup terminal cardinality mismatch".into(),
+        ));
+    }
+
+    Comm::validate_input(&proof.commitments.main)?;
+    if let Some(permutation) = &proof.commitments.permutation {
+        Comm::validate_input(permutation)?;
+    }
+    Comm::validate_input(&proof.commitments.quotient_chunks)?;
+    if let Some(random) = &proof.commitments.random {
+        Comm::validate_input(random)?;
+    }
+    if let Some(preprocessed) = &common_data.preprocessed {
+        Comm::validate_input(&preprocessed.commitment)?;
+    }
+    Opening::validate_input(&proof.opening_proof)
+}
+
+/// Validate only the proof-owned parts of a batch proof. This is used by checked
+/// private packing, whose API has no common-data or AIR-count arguments.
+pub(crate) fn validate_batch_proof_native<SC, Comm, Opening>(
+    proof: &BatchProof<SC>,
+) -> Result<(), VerificationError>
+where
+    SC: StarkGenericConfig,
+    Comm: CheckedRecursive<SC::Challenge>
+        + Recursive<
+            SC::Challenge,
+            Input = <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment,
+        >,
+    Opening: CheckedRecursive<SC::Challenge>
+        + Recursive<SC::Challenge, Input = <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Proof>,
+{
+    Comm::validate_input(&proof.commitments.main)?;
+    if let Some(permutation) = &proof.commitments.permutation {
+        Comm::validate_input(permutation)?;
+    }
+    Comm::validate_input(&proof.commitments.quotient_chunks)?;
+    if let Some(random) = &proof.commitments.random {
+        Comm::validate_input(random)?;
+    }
+    Opening::validate_input(&proof.opening_proof)
+}
 
 /// Allocation-relevant opened-value partitions for one STARK instance.
 #[derive(Clone, PartialEq, Eq)]

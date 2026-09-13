@@ -48,6 +48,17 @@ pub trait Recursive<F: Field> {
     fn get_values(input: &Self::Input) -> Vec<F>;
 }
 
+/// Explicit opt-in for recursive targets that validate their complete native input
+/// before allocation or value extraction.
+///
+/// `Recursive::new` remains the compatibility path for trusted custom targets. Only
+/// audited built-in targets implement this trait; implementing `Recursive` alone does
+/// not imply that malformed native input is rejected.
+pub trait CheckedRecursive<F: Field>: Recursive<F> {
+    /// Validate the native input without constructing recursive targets or extracting values.
+    fn validate_input(input: &Self::Input) -> Result<(), VerificationError>;
+}
+
 /// Explicit, trusted semantic contract for reusing a recursive target shape.
 ///
 /// Equal shapes must guarantee that the two native inputs select exactly the same

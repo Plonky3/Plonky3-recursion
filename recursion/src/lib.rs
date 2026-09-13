@@ -57,8 +57,8 @@ pub use recursion::{
     prove_aggregation_layer, prove_aggregation_layer_cross, prove_next_layer,
 };
 pub use traits::{
-    PreparedRecursive, Recursive, RecursiveAir, RecursiveChallenger, RecursiveExtensionMmcs,
-    RecursiveMmcs, RecursivePcs,
+    CheckedRecursive, PreparedRecursive, Recursive, RecursiveAir, RecursiveChallenger,
+    RecursiveExtensionMmcs, RecursiveMmcs, RecursivePcs,
 };
 pub use types::{
     BatchProofTargets, CommitmentTargets, CommonDataTargets, OpenedValuesTargets, ProofTargets,

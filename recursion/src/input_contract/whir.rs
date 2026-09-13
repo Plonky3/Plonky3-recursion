@@ -98,6 +98,50 @@ fn validate_digest_packing(
     Ok(())
 }
 
+/// Validate raw WHIR proof structure before target allocation.
+///
+/// These checks cover only relationships visible in the proof itself. Round counts,
+/// widths, and polynomial lengths derived from the committed statement are checked by
+/// the PCS/backend once its verifier parameters and native commitment layout are known.
+pub(crate) fn validate_whir_uni_input<F, EF, MT, const DIGEST_ELEMS: usize>(
+    input: &WhirUniProof<F, EF, MT>,
+) -> Result<(), VerificationError>
+where
+    F: Field,
+    EF: ExtensionField<F> + BasedVectorSpace<F>,
+    MT: Mmcs<F, Commitment = MerkleCap<F, [F; DIGEST_ELEMS]>>,
+{
+    validate_digest_packing(DIGEST_ELEMS, <EF as BasedVectorSpace<F>>::DIMENSION)?;
+    for round in &input.rounds {
+        for batch in &round.evals {
+            if !batch.next().is_empty() {
+                return Err(VerificationError::InvalidProofShape(
+                    "WHIR uni openings use no next group".into(),
+                ));
+            }
+        }
+        for step in &round.whir.rounds {
+            let commitment = step.commitment.as_ref().ok_or_else(|| {
+                VerificationError::InvalidProofShape(
+                    "WHIR proof missing intermediate round commitment".into(),
+                )
+            })?;
+            let roots = commitment.num_roots();
+            if roots == 0 || !roots.is_power_of_two() {
+                return Err(VerificationError::InvalidProofShape(
+                    "WHIR commitment cap must have a non-empty power-of-two root count".into(),
+                ));
+            }
+        }
+        if round.whir.final_poly.is_none() {
+            return Err(VerificationError::InvalidProofShape(
+                "WHIR proof missing final polynomial".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Captures every native proof choice that changes WHIR target allocation.
 pub(crate) fn capture_whir_uni_shape<F, EF, MT, const DIGEST_ELEMS: usize>(
     input: &WhirUniProof<F, EF, MT>,
@@ -107,7 +151,7 @@ where
     EF: ExtensionField<F> + BasedVectorSpace<F>,
     MT: Mmcs<F, Commitment = MerkleCap<F, [F; DIGEST_ELEMS]>>,
 {
-    validate_digest_packing(DIGEST_ELEMS, <EF as BasedVectorSpace<F>>::DIMENSION)?;
+    validate_whir_uni_input::<F, EF, MT, DIGEST_ELEMS>(input)?;
 
     let rounds = input
         .rounds
@@ -185,7 +229,7 @@ mod tests {
     use crate::pcs::whir::uni::pcs::WhirUniProof;
     use crate::pcs::whir::uni::pcs::tests::{MyMmcs, open_two_matrices};
     use crate::pcs::whir::uni::targets::WhirUniProofTargets;
-    use crate::traits::PreparedRecursive;
+    use crate::traits::{CheckedRecursive, PreparedRecursive};
     use crate::verifier::VerificationError;
 
     type F = BabyBear;
@@ -227,6 +271,17 @@ mod tests {
 
         assert!(matches!(
             Targets::input_shape(&native),
+            Err(VerificationError::InvalidProofShape(_))
+        ));
+    }
+
+    #[test]
+    fn checked_whir_rejects_missing_final_polynomial_before_allocation() {
+        let mut native = whir_fixture();
+        native.rounds[0].whir.final_poly = None;
+
+        assert!(matches!(
+            <Targets as CheckedRecursive<EF>>::validate_input(&native),
             Err(VerificationError::InvalidProofShape(_))
         ));
     }

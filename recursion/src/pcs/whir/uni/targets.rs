@@ -18,11 +18,11 @@ use p3_whir::pcs::proof::QueryOpenings;
 
 use crate::Target;
 use crate::input_contract::MerkleCapShape;
-use crate::input_contract::whir::{WhirUniShape, capture_whir_uni_shape};
+use crate::input_contract::whir::{WhirUniShape, capture_whir_uni_shape, validate_whir_uni_input};
 use crate::pcs::mmcs::convert_merkle_proof_to_siblings;
 use crate::pcs::whir::targets::{QueryOpeningTargets, SumcheckDataTargets, WhirProofTargets};
 use crate::pcs::whir::uni::pcs::WhirUniProof;
-use crate::traits::{PreparedRecursive, Recursive};
+use crate::traits::{CheckedRecursive, PreparedRecursive, Recursive};
 
 /// Number of extension targets one Merkle digest occupies in-circuit.
 ///
@@ -297,6 +297,18 @@ where
 
     fn input_shape(input: &Self::Input) -> Result<Self::Shape, crate::VerificationError> {
         capture_whir_uni_shape::<F, EF, MT, DIGEST_ELEMS>(input)
+    }
+}
+
+impl<F, EF, MT, const DIGEST_ELEMS: usize> CheckedRecursive<EF>
+    for WhirUniProofTargets<F, EF, MT, DIGEST_ELEMS>
+where
+    F: Field,
+    EF: ExtensionField<F> + BasedVectorSpace<F>,
+    MT: Mmcs<F, Commitment = MerkleCap<F, [F; DIGEST_ELEMS]>>,
+{
+    fn validate_input(input: &Self::Input) -> Result<(), crate::VerificationError> {
+        validate_whir_uni_input::<F, EF, MT, DIGEST_ELEMS>(input)
     }
 }
 
