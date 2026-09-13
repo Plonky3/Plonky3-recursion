@@ -27,7 +27,7 @@ use crate::traits::{ComsWithOpeningsTargets, Recursive, RecursivePcs};
 use crate::types::{OpenedValuesTargetsWithLookups, RecursiveLagrangeSelectors};
 use crate::verifier::{ObservableCommitment, VerificationError};
 
-fn validate_round_config_inputs(
+pub(crate) fn validate_round_config_inputs(
     stacked_num_variables: usize,
     protocol_params: &ProtocolParameters,
 ) -> Result<(), WhirVerifierParamsError> {
@@ -74,20 +74,25 @@ fn validate_round_config_inputs(
             },
         ));
     }
-    if protocol_params.round_log_inv_rates.is_empty() {
-        let mut next_rate = rate;
-        for &factor in schedule.iter().take(num_rounds) {
-            next_rate =
-                next_rate
-                    .checked_add(factor - 1)
-                    .ok_or(WhirVerifierParamsError::InvalidConfig(
-                        p3_whir::parameters::WhirConfigError::InitialDomainExceedsUsize {
-                            num_variables: stacked_num_variables,
-                            starting_log_inv_rate: rate,
-                            usize_bits: usize::BITS as usize,
-                        },
-                    ))?;
+    let mut previous_rate = rate;
+    for (round, &factor) in schedule.iter().take(num_rounds).enumerate() {
+        let max_next_rate = previous_rate
+            .checked_add(factor)
+            .ok_or(WhirVerifierParamsError::RateArithmeticOverflow { round })?;
+        let next_rate = protocol_params
+            .round_log_inv_rates
+            .get(round)
+            .copied()
+            .unwrap_or_else(|| previous_rate + (factor - 1));
+        if next_rate > max_next_rate {
+            // WhirConfig::new reports this semantic mismatch. Returning the
+            // same typed variant here keeps its constructor panic-free even
+            // for caller-mutated protocol values.
+            return Err(WhirVerifierParamsError::InvalidConfig(
+                p3_whir::parameters::WhirConfigError::RateGrowsDomain { round },
+            ));
         }
+        previous_rate = next_rate;
     }
     Ok(())
 }

@@ -43,6 +43,9 @@ pub enum WhirVerifierParamsError {
     /// The stacked polynomial arity cannot be represented by WHIR's integer geometry.
     #[error("stacked WHIR arity {arity} cannot form an initial domain with rate {rate}")]
     InvalidStackedArity { arity: usize, rate: usize },
+    /// A derived round rate would overflow integer arithmetic.
+    #[error("WHIR rate arithmetic overflows while deriving round {round}")]
+    RateArithmeticOverflow { round: usize },
     /// A caller supplied a derived config that no longer matches its source parameters.
     #[error("WHIR derived configuration is inconsistent in {component}")]
     InconsistentDerivedConfig { component: &'static str },
@@ -169,6 +172,10 @@ impl<F: Field> WhirVerifierParams<F> {
         if variable_order != VariableOrder::Prefix {
             return Err(WhirVerifierParamsError::UnsupportedVariableOrder { variable_order });
         }
+        crate::pcs::whir::uni::recursive_pcs::validate_round_config_inputs(
+            config.num_variables,
+            &config.params,
+        )?;
         // `WhirConfig` exposes its derived fields publicly for prover use.
         // Re-derive and compare before touching `final_round_config`, whose
         // unchecked arithmetic assumes those fields are internally coherent.
@@ -423,6 +430,24 @@ mod tests {
         assert!(matches!(
             err,
             WhirVerifierParamsError::InconsistentDerivedConfig { .. }
+        ));
+    }
+
+    #[test]
+    fn from_config_rejects_tampered_protocol_arithmetic_without_panicking() {
+        let mut config =
+            WhirConfig::<EF, BF, DummyChallenger<BF>>::new(12, non_saturating_protocol_params())
+                .expect("config is valid");
+        config.params.starting_log_inv_rate = usize::MAX;
+        let err = WhirVerifierParams::<BF>::from_config(
+            &config,
+            PrefixProver::<BF, EF>::variable_order(),
+            p3_circuit::ops::Poseidon2Config::BABY_BEAR_D4_W16,
+        )
+        .expect_err("invalid protocol arithmetic must be rejected before re-derivation");
+        assert!(matches!(
+            err,
+            WhirVerifierParamsError::InvalidStackedArity { .. }
         ));
     }
 }
