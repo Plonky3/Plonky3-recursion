@@ -51,10 +51,6 @@
 
 #[path = "common/rejection_oracle.rs"]
 mod rejection_oracle;
-#[cfg(debug_assertions)]
-use rejection_oracle::run_with_debug_oracle;
-use rejection_oracle::{ProofCheckError, assert_rejected};
-
 use p3_batch_stark::ProverData;
 use p3_circuit::ops::{
     HintExecutor, Op, Poseidon2Config, generate_poseidon2_trace, generate_recompose_trace,
@@ -76,6 +72,9 @@ use p3_koala_bear::{KoalaBear, default_koalabear_poseidon2_16};
 use p3_poseidon2_circuit_air::KoalaBearD4Width16;
 use p3_recursion::challenger::CircuitChallenger;
 use p3_recursion::traits::RecursiveChallenger;
+#[cfg(debug_assertions)]
+use rejection_oracle::run_with_debug_oracle;
+use rejection_oracle::{ProofCheckError, assert_rejected};
 
 type F = KoalaBear;
 type EF = BinomialExtensionField<F, 4>;

@@ -20,10 +20,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 #[path = "common/rejection_oracle.rs"]
 mod rejection_oracle;
-#[cfg(debug_assertions)]
-use rejection_oracle::run_with_debug_oracle;
-use rejection_oracle::{ProofCheckError, assert_rejected};
-
 use p3_batch_stark::ProverData;
 use p3_circuit::ops::{
     KoalaBearD1Width16, NpoTypeId, Poseidon2Config, Poseidon2Trace, generate_poseidon2_trace,
@@ -40,6 +36,9 @@ use p3_recursion::challenger::CircuitChallenger;
 use p3_recursion::traits::RecursiveChallenger;
 use p3_symmetric::Permutation;
 use p3_test_utils::koala_bear_quintic_params::*;
+#[cfg(debug_assertions)]
+use rejection_oracle::run_with_debug_oracle;
+use rejection_oracle::{ProofCheckError, assert_rejected};
 
 const WIDTH: usize = 16;
 const RATE: usize = 8;
