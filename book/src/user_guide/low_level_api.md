@@ -118,6 +118,9 @@ let proof = prover.prove_all_tables(&traces, &circuit_prover_data)?;
 For repeated proving, prefer `PreparedLayer` (unified API) over manually calling
 `get_airs_and_degrees_with_prep`: it wires up backend preprocessors/air-builders automatically,
 retains the circuit/configuration/prover together, and validates each borrowed native input.
+That validation is shape-only; a prepared owner is not a portable trusted relation verifier and
+does not bind child keys, recursion statements, or public claims. Pin those relations explicitly
+before reusing an owner across trust-boundary changes.
 
 ## When to use the low-level API
 

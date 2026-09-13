@@ -26,52 +26,54 @@ This library provides a **fixed recursive verifier** for Plonky3 STARK (both `p3
 
 #### Recursive verification
 
-For most use cases, use the **unified API**: a single entry point works for both uni-stark (e.g. Keccak) and batch-stark (e.g. Fibonacci) proofs. Implement [`FriRecursionConfig`] for your config (or a wrapper that holds FRI verifier params), then call [`prove_next_layer`] in a loop.
+For most use cases, use the **unified API**: a single owner type works for both uni-stark (e.g. Keccak) and batch-stark (e.g. Fibonacci) proofs. Implement [`FriRecursionConfig`] for your config (or a wrapper that holds FRI verifier params), then construct a [`PreparedLayer`] for repeated proving. Use [`build_and_prove_next_layer`] for a one-shot step.
 
 [`FriRecursionConfig`]: https://docs.rs/p3-recursion/latest/p3_recursion/trait.FriRecursionConfig.html
 [`prove_next_layer`]: https://docs.rs/p3-recursion/latest/p3_recursion/fn.prove_next_layer.html
+[`build_and_prove_next_layer`]: https://docs.rs/p3-recursion/latest/p3_recursion/fn.build_and_prove_next_layer.html
 
 ```rust
 use p3_recursion::{
-    FriRecursionBackend, FriRecursionConfig, ProveNextLayerParams, RecursionInput, RecursionOutput,
-    prove_next_layer,
+    FriRecursionBackend, FriRecursionConfig, PreparedInput, PreparedLayer, PreparedSource,
+    ProveNextLayerParams,
 };
 
-// First layer: recurse on a uni-stark proof (e.g. Keccak)
-let input = RecursionInput::UniStark {
+// First layer: recurse on a uni-stark proof (e.g. Keccak), retaining the owner for reuse.
+let source = PreparedSource::UniStark {
     proof: &base_proof,
     air: &keccak_air,
-    public_inputs: pis.clone(),
+    public_inputs: &pis,
     preprocessed_commit: None,
 };
 let backend = FriRecursionBackend::new(poseidon2_config);
 let params = ProveNextLayerParams { table_packing, constraint_profile };
-let (verification_circuit, verifier_result) = build_next_layer_circuit(&input, &config, &backend)?;
-let output = prove_next_layer(
-    &input,
-    &verification_circuit,
-    &verifier_result,
-    &config,
-    &backend,
-    &params,
-    None,
-)?;
+let owner = PreparedLayer::new(source, config.clone(), backend.clone(), params.clone())?;
+let output = owner.prove(PreparedInput::UniStark {
+    proof: &base_proof,
+    public_inputs: &pis,
+    preprocessed_commit: None,
+})?;
 
-// Next layers: recurse on the previous batch proof
-let input = output.into_recursion_input::<BatchOnly>();
-let (verification_circuit, verifier_result) = build_next_layer_circuit(&input, &config, &backend)?;
-let output = prove_next_layer(
-    &input,
-    &verification_circuit,
-    &verifier_result,
-    &config,
-    &backend,
-    &params,
-    None,
+// Next layers: prepare an owner from the previous batch proof, then check before each reuse.
+let table_public_inputs = vec![vec![]; output.0.proof.opened_values.instances.len()];
+let owner = PreparedLayer::new(
+    PreparedSource::batch(&output.0, &output.0.stark_common, &table_public_inputs),
+    config.clone(),
+    backend.clone(),
+    params,
 )?;
+let input = PreparedInput::BatchStark {
+    proof: &output.0,
+    common_data: &output.0.stark_common,
+    table_public_inputs: &table_public_inputs,
+};
+owner.check_input(&input)?;
+let output = owner.prove(input)?;
 ```
 
-`RecursionOutput` is `(BatchStarkProof, Rc<CircuitProverData>)`; use `into_recursion_input::<BatchOnly>()` to chain further layers.
+`PreparedLayer` retains the circuit and prepared prover data. For a changing native contract, construct a new owner explicitly; a matching contract can be checked and proved repeatedly.
+The compatibility check is shape-only: this owner does not bind child proving keys, recursion
+statements, or public claims. Those trust relations require explicit policy before reuse.
 
 #### Recursive aggregation
 
@@ -106,7 +108,7 @@ let output = build_and_prove_aggregation_layer(
 
 ### Low-level API
 
-For fine-grained control, you can build the verification circuit and run the prover pipeline yourself via `verify_p3_batch_proof_circuit` (batch) or `verify_p3_uni_proof_circuit` (uni-stark):
+For fine-grained control, you can build the verification circuit and run the prover pipeline yourself via `verify_p3_batch_proof_circuit` (batch) or `verify_p3_uni_proof_circuit` (uni-stark). For ordinary repeated proving, prefer `PreparedLayer` or `PreparedAggregation` so the circuit and preprocessing remain with the owner:
 
 ```rust
 use p3_recursion::verifier::verify_p3_batch_proof_circuit;
@@ -152,19 +154,19 @@ let traces = runner.run()?;
 
 ### Examples
 
-All examples use the unified API (`prove_next_layer`, `RecursionInput`, `FriRecursionBackend`):
+All examples use the unified API (`PreparedLayer`, `PreparedAggregation`, borrowed `PreparedInput`, and `FriRecursionBackend`):
 
-- **`recursive_fibonacci.rs`**: Base layer is a batch-stark circuit (Fibonacci); recursive layers use `into_recursion_input::<BatchOnly>()` and `prove_next_layer`.
+- **`recursive_fibonacci.rs`**: Base layer is a batch-stark circuit (Fibonacci); recursive layers retain a prepared owner and validate each borrowed batch input before proving.
   ```bash
   cargo run --profile optimized --example recursive_fibonacci -- --field koala-bear --n 1000 --num-recursive-layers 5
   ```
 
-- **`recursive_keccak.rs`**: Base layer is a uni-stark Keccak proof; layer 1 uses `RecursionInput::UniStark`, then further layers use `into_recursion_input::<BatchOnly>()` and `prove_next_layer`.
+- **`recursive_keccak.rs`**: Base layer is a uni-stark Keccak proof; the prepared owner retains the uni-stark AIR for layer 1 and uses borrowed batch inputs for later layers.
   ```bash
   cargo run --profile optimized --example recursive_keccak -- --field koala-bear --n 100 --num-recursive-layers 5
   ```
 
-- **`recursive_aggregation.rs`**: Base layer are dummy batch-stark circuits; recursive layers use `into_recursion_input::<BatchOnly>()` and `build_and_prove_aggregation_layer` to fold 2 proofs into 1.
+- **`recursive_aggregation.rs`**: Base layer are dummy batch-stark circuits; recursive levels use prepared aggregation owners and validate both borrowed inputs before folding 2 proofs into 1.
   ```bash
   cargo run --profile optimized --example recursive_aggregation -- --field koala-bear --num-recursive-layers 4
   ```

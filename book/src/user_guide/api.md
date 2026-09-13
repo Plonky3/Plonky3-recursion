@@ -91,6 +91,10 @@ let output = owner.prove(input)?;
 
 `PreparedLayer` owns the committed preprocessed columns and prover, and rejects malformed or incompatible native inputs before proving. Use a new owner when the native contract changes.
 
+This compatibility check is shape-only: a prepared owner is not a portable trusted relation
+verifier and does not bind child proving keys, recursion statements, or public claims. Later
+trust-boundary work must pin those relations before an owner can be reused across such changes.
+
 ### `build_and_prove_aggregation_layer`
 
 Verifies two proofs in a single circuit. The two inputs can be different `RecursionInput` variants:
@@ -100,6 +104,39 @@ let output = build_and_prove_aggregation_layer::<SC, A1, A2, B, D>(
     &left, &right, &config, &backend, &params,
 )?;
 ```
+
+### `PreparedAggregation` (repeated aggregation)
+
+For repeated aggregation at one compatible level, retain both verifier results and prepared
+proving data in an owner. Check both borrowed inputs before each reuse; construct a new owner when
+either native contract changes:
+
+```rust,ignore
+let owner = PreparedAggregation::new(
+    PreparedSource::batch(&left_proof, &left_common_data, &left_table_public_inputs),
+    PreparedSource::batch(&right_proof, &right_common_data, &right_table_public_inputs),
+    config,
+    backend,
+    params,
+)?;
+
+let left = PreparedInput::BatchStark {
+    proof: &left_proof,
+    common_data: &left_common_data,
+    table_public_inputs: &left_table_public_inputs,
+};
+let right = PreparedInput::BatchStark {
+    proof: &right_proof,
+    common_data: &right_common_data,
+    table_public_inputs: &right_table_public_inputs,
+};
+owner.check_inputs(&left, &right)?;
+let output = owner.prove(left, right)?;
+```
+
+As with `PreparedLayer`, this owner checks native shape compatibility only. It does not itself
+bind child keys or statements, so relation and claim changes require explicit trust-boundary
+policy rather than owner reuse.
 
 ### `prove_aggregation_layer`
 
