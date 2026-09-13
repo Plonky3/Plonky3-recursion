@@ -180,6 +180,33 @@ where
         backend: B,
         params: ProveNextLayerParams,
     ) -> Result<Self, VerificationError> {
+        Self::new_inner(source, config, backend, params, None)
+    }
+
+    /// Capture a trusted native input contract, build its verifier circuit, and prepare proving
+    /// under the supplied profile. The profile's shape is checked against every output proof.
+    /// Its hash and transcript fields remain descriptive labels here; they do not reconfigure the
+    /// supplied configuration or backend.
+    pub fn new_with_profile(
+        source: PreparedSource<'air, '_, SC, A>,
+        config: SC,
+        backend: B,
+        profile: RecursionLayerProfile,
+    ) -> Result<Self, VerificationError> {
+        let params = ProveNextLayerParams {
+            table_packing: profile.table_packing.clone(),
+            constraint_profile: profile.constraint_profile,
+        };
+        Self::new_inner(source, config, backend, params, Some(profile))
+    }
+
+    fn new_inner(
+        source: PreparedSource<'air, '_, SC, A>,
+        config: SC,
+        backend: B,
+        params: ProveNextLayerParams,
+        profile: Option<RecursionLayerProfile>,
+    ) -> Result<Self, VerificationError> {
         let air = match &source {
             PreparedSource::UniStark { air, .. } => Some(*air),
             PreparedSource::BatchStark { .. } => None,
@@ -198,7 +225,7 @@ where
             config,
             backend,
             params,
-            profile: None,
+            profile,
             prep,
         })
     }
@@ -235,7 +262,11 @@ where
         )
         .map_err(|message| VerificationError::InvalidProofShape(message.into()))?;
         let traces = runner.run().map_err(VerificationError::Circuit)?;
-        self.prep.prove(&traces)
+        let output = self.prep.prove(&traces)?;
+        if let Some(profile) = &self.profile {
+            profile.check_proof_shape(&output.0)?;
+        }
+        Ok(output)
     }
 
     /// Parameters fixed when this verifier was prepared.

@@ -30,6 +30,7 @@ use p3_recursion::pcs::fri::{
 use p3_recursion::pcs::{
     restore_fri_query_paths, set_fri_mmcs_private_data, set_fri_mmcs_private_data_arity4,
 };
+use p3_recursion::profile::{HashProfile, RecursionLayerProfile, TranscriptKind};
 use p3_recursion::{
     BatchOnly, FriRecursionBackend, FriRecursionConfig, FriVerifierParams, OpeningTranscript,
     PcsRecursionBackend, Poseidon2Config, PreparedAggregation, PreparedAggregationCross,
@@ -1003,6 +1004,77 @@ fn same_config_batch_aggregation_reuses_preparation_for_varied_pairs() {
 }
 
 #[test]
+fn same_config_profile_aggregation_reuses_preparation_for_varied_pairs() {
+    let left_first = common::build_koala_bear_d4_first_layer_input_with_starts(0, 1);
+    let right_first = common::build_koala_bear_d4_first_layer_input_with_starts(2, 3);
+    let left_second = common::build_koala_bear_d4_first_layer_input_with_starts(4, 5);
+    let right_second = common::build_koala_bear_d4_first_layer_input_with_starts(6, 7);
+    let public_inputs = vec![vec![]; left_first.base_proof.proof.opened_values.instances.len()];
+    let config = left_first.layer_config.clone();
+    let profile = RecursionLayerProfile {
+        table_packing: TablePacking::default(),
+        hash: HashProfile::default(),
+        transcript: TranscriptKind::default(),
+        constraint_profile: ConstraintProfile::RecursionOptimized,
+    };
+
+    let prepared = PreparedAggregation::<_, BatchOnly, BatchOnly, _, 4>::new_with_profile(
+        PreparedSource::batch(
+            &left_first.base_proof,
+            &left_first.base_proof.stark_common,
+            &public_inputs,
+        ),
+        PreparedSource::batch(
+            &right_first.base_proof,
+            &right_first.base_proof.stark_common,
+            &public_inputs,
+        ),
+        config,
+        left_first.backend.clone(),
+        profile.clone(),
+    )
+    .expect("the profile-owned aggregation verifier prepares");
+    let first = prepared
+        .prove(
+            PreparedInput::BatchStark {
+                proof: &left_first.base_proof,
+                common_data: &left_first.base_proof.stark_common,
+                table_public_inputs: &public_inputs,
+            },
+            PreparedInput::BatchStark {
+                proof: &right_first.base_proof,
+                common_data: &right_first.base_proof.stark_common,
+                table_public_inputs: &public_inputs,
+            },
+        )
+        .expect("the first profile-owned pair proves");
+    drop(left_first);
+    drop(right_first);
+    let second = prepared
+        .prove(
+            PreparedInput::BatchStark {
+                proof: &left_second.base_proof,
+                common_data: &left_second.base_proof.stark_common,
+                table_public_inputs: &public_inputs,
+            },
+            PreparedInput::BatchStark {
+                proof: &right_second.base_proof,
+                common_data: &right_second.base_proof.stark_common,
+                table_public_inputs: &public_inputs,
+            },
+        )
+        .expect("the second profile-owned pair proves");
+
+    assert_eq!(prepared.profile(), Some(&profile));
+    assert_eq!(prepared.params().table_packing, profile.table_packing);
+    assert_eq!(
+        prepared.params().constraint_profile,
+        profile.constraint_profile
+    );
+    assert!(Rc::ptr_eq(&first.1, &second.1));
+}
+
+#[test]
 fn cross_config_aggregation_verifies_arity2_inputs_and_emits_arity4_outputs() {
     let left_first = common::build_koala_bear_d4_first_layer_input_with_starts(0, 1);
     let right_first = common::build_koala_bear_d4_first_layer_input_with_starts(2, 3);
@@ -1071,6 +1143,64 @@ fn cross_config_aggregation_verifies_arity2_inputs_and_emits_arity4_outputs() {
     assert_eq!(prepared.params().table_packing, params.table_packing);
     arity4_output::verify(output_config.clone(), &params, &out1);
     arity4_output::verify(output_config, &params, &out2);
+}
+
+#[test]
+fn cross_config_profile_aggregation_verifies_arity2_inputs_and_emits_arity4_outputs() {
+    let left = common::build_koala_bear_d4_first_layer_input_with_starts(0, 1);
+    let right = common::build_koala_bear_d4_first_layer_input_with_starts(2, 3);
+    let table_public_inputs = vec![vec![]; left.base_proof.proof.opened_values.instances.len()];
+    let input_config = left.layer_config.clone();
+    let output_config = arity4_output::config();
+    let backend = FriRecursionBackend::<16, 8, _>::new(Poseidon2Config::KOALA_BEAR_D4_W16)
+        .with_extra_poseidon2_table(Poseidon2Config::KOALA_BEAR_D4_W32)
+        .for_extension_degree::<4>();
+    let profile = RecursionLayerProfile {
+        table_packing: TablePacking::default(),
+        hash: HashProfile::default(),
+        transcript: TranscriptKind::default(),
+        constraint_profile: ConstraintProfile::Standard,
+    };
+
+    let prepared = PreparedAggregationCross::<_, _, BatchOnly, BatchOnly, _, 4>::new_with_profile(
+        PreparedSource::batch(
+            &left.base_proof,
+            &left.base_proof.stark_common,
+            &table_public_inputs,
+        ),
+        PreparedSource::batch(
+            &right.base_proof,
+            &right.base_proof.stark_common,
+            &table_public_inputs,
+        ),
+        input_config,
+        output_config.clone(),
+        backend,
+        profile.clone(),
+    )
+    .expect("the profile-owned cross-config verifier prepares");
+    let output = prepared
+        .prove(
+            PreparedInput::BatchStark {
+                proof: &left.base_proof,
+                common_data: &left.base_proof.stark_common,
+                table_public_inputs: &table_public_inputs,
+            },
+            PreparedInput::BatchStark {
+                proof: &right.base_proof,
+                common_data: &right.base_proof.stark_common,
+                table_public_inputs: &table_public_inputs,
+            },
+        )
+        .expect("the profile-owned cross-config pair proves");
+
+    assert_eq!(prepared.profile(), Some(&profile));
+    assert_eq!(prepared.params().table_packing, profile.table_packing);
+    assert_eq!(
+        prepared.params().constraint_profile,
+        profile.constraint_profile
+    );
+    arity4_output::verify(output_config, prepared.params(), &output);
 }
 
 #[test]

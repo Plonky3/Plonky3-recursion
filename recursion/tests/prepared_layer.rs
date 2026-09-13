@@ -5,8 +5,10 @@ use std::rc::Rc;
 use common::whir_config::{BbEF, BbF, BbWhirConfig, bb_whir_config};
 use p3_circuit::test_utils::{FibonacciAir, generate_trace_rows};
 use p3_circuit_prover::batch_stark_prover::BatchStarkProver;
+use p3_circuit_prover::{ConstraintProfile, TablePacking};
 use p3_field::PrimeCharacteristicRing;
 use p3_recursion::backend::whir::{WhirRecursionBackend, WhirRecursionBackendForExt};
+use p3_recursion::profile::{HashProfile, RecursionLayerProfile, TranscriptKind};
 use p3_recursion::{
     BatchOnly, Poseidon2Config, PreparedInput, PreparedLayer, PreparedSource, ProveNextLayerParams,
     RecursionInput, RecursionOutput, build_and_prove_next_layer,
@@ -188,6 +190,74 @@ fn fri_uni_prepared_layer_reuses_varied_witnesses_after_reference_drop() {
     );
     verify_fri_output(config.clone(), &params, &out1);
     verify_fri_output(config, &params, &out2);
+}
+
+#[test]
+fn fri_uni_profile_prepared_layer_reuses_varied_witnesses() {
+    let log_n = 10;
+    let n = 1 << log_n;
+    let air = FibonacciAir {};
+    let (config, backend) = common::koala_bear_d4_recursion_config_and_backend();
+    let profile = RecursionLayerProfile {
+        table_packing: TablePacking::default().with_horner_pack_k(4),
+        hash: HashProfile::default(),
+        transcript: TranscriptKind::default(),
+        constraint_profile: ConstraintProfile::Standard,
+    };
+
+    let first_pis = vec![F::ZERO, F::ONE, fibonacci_output::<F>(0, 1, n)];
+    let first = prove(&config, &air, generate_trace_rows::<F>(0, 1, n), &first_pis);
+    let prepared = PreparedLayer::<
+        common::KoalaBearD4RecursionConfig,
+        FibonacciAir,
+        common::KoalaBearD4Backend,
+        4,
+    >::new_with_profile(
+        PreparedSource::UniStark {
+            air: &air,
+            proof: &first,
+            public_inputs: &first_pis,
+            preprocessed_commit: None,
+        },
+        config.clone(),
+        backend,
+        profile.clone(),
+    )
+    .expect("the profile-owned verifier prepares");
+
+    let first_output = prepared
+        .prove(PreparedInput::UniStark {
+            proof: &first,
+            public_inputs: &first_pis,
+            preprocessed_commit: None,
+        })
+        .expect("the first profile-owned witness proves");
+    let second_pis = vec![
+        F::from_u64(2),
+        F::from_u64(3),
+        fibonacci_output::<F>(2, 3, n),
+    ];
+    let second = prove(
+        &config,
+        &air,
+        generate_trace_rows::<F>(2, 3, n),
+        &second_pis,
+    );
+    let second_output = prepared
+        .prove(PreparedInput::UniStark {
+            proof: &second,
+            public_inputs: &second_pis,
+            preprocessed_commit: None,
+        })
+        .expect("the second profile-owned witness proves");
+
+    assert_eq!(prepared.profile(), Some(&profile));
+    assert_eq!(prepared.params().table_packing, profile.table_packing);
+    assert_eq!(
+        prepared.params().constraint_profile,
+        profile.constraint_profile
+    );
+    assert!(Rc::ptr_eq(&first_output.1, &second_output.1));
 }
 
 #[test]

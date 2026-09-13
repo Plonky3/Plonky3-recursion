@@ -124,6 +124,35 @@ where
         backend: B,
         params: ProveNextLayerParams,
     ) -> Result<Self, VerificationError> {
+        Self::new_inner(left, right, config, backend, params, None)
+    }
+
+    /// Capture both trusted input contracts, build the verifier circuit, and prepare proving
+    /// under the supplied profile. The profile's shape is checked against every output proof.
+    /// Its hash and transcript fields remain descriptive labels here; they do not reconfigure the
+    /// supplied configuration or backend.
+    pub fn new_with_profile(
+        left: PreparedSource<'left_air, '_, SC, A1>,
+        right: PreparedSource<'right_air, '_, SC, A2>,
+        config: SC,
+        backend: B,
+        profile: RecursionLayerProfile,
+    ) -> Result<Self, VerificationError> {
+        let params = ProveNextLayerParams {
+            table_packing: profile.table_packing.clone(),
+            constraint_profile: profile.constraint_profile,
+        };
+        Self::new_inner(left, right, config, backend, params, Some(profile))
+    }
+
+    fn new_inner(
+        left: PreparedSource<'left_air, '_, SC, A1>,
+        right: PreparedSource<'right_air, '_, SC, A2>,
+        config: SC,
+        backend: B,
+        params: ProveNextLayerParams,
+        profile: Option<RecursionLayerProfile>,
+    ) -> Result<Self, VerificationError> {
         let left_air = source_air(&left);
         let right_air = source_air(&right);
         let left_input = left.as_input();
@@ -160,7 +189,7 @@ where
             config,
             backend,
             params,
-            profile: None,
+            profile,
             prep,
         })
     }
@@ -204,7 +233,11 @@ where
             &self.config,
             &self.backend,
         )?;
-        self.prep.prove(&traces)
+        let output = self.prep.prove(&traces)?;
+        if let Some(profile) = &self.profile {
+            profile.check_proof_shape(&output.0)?;
+        }
+        Ok(output)
     }
 
     /// Parameters fixed when this aggregation verifier was prepared.
@@ -353,6 +386,53 @@ where
         backend: B,
         params: ProveNextLayerParams,
     ) -> Result<Self, VerificationError> {
+        Self::new_inner(
+            left,
+            right,
+            input_config,
+            output_config,
+            backend,
+            params,
+            None,
+        )
+    }
+
+    /// Capture both trusted input contracts, build the verifier circuit, and prepare the output
+    /// PCS under the supplied profile. The profile's shape is checked against every output proof.
+    /// Its hash and transcript fields remain descriptive labels here; they do not reconfigure the
+    /// supplied configuration or backend.
+    pub fn new_with_profile(
+        left: PreparedSource<'left_air, '_, InSC, A1>,
+        right: PreparedSource<'right_air, '_, InSC, A2>,
+        input_config: InSC,
+        output_config: OutSC,
+        backend: B,
+        profile: RecursionLayerProfile,
+    ) -> Result<Self, VerificationError> {
+        let params = ProveNextLayerParams {
+            table_packing: profile.table_packing.clone(),
+            constraint_profile: profile.constraint_profile,
+        };
+        Self::new_inner(
+            left,
+            right,
+            input_config,
+            output_config,
+            backend,
+            params,
+            Some(profile),
+        )
+    }
+
+    fn new_inner(
+        left: PreparedSource<'left_air, '_, InSC, A1>,
+        right: PreparedSource<'right_air, '_, InSC, A2>,
+        input_config: InSC,
+        output_config: OutSC,
+        backend: B,
+        params: ProveNextLayerParams,
+        profile: Option<RecursionLayerProfile>,
+    ) -> Result<Self, VerificationError> {
         let left_air = source_air(&left);
         let right_air = source_air(&right);
         let left_input = left.as_input();
@@ -395,7 +475,7 @@ where
             output_config,
             backend,
             params,
-            profile: None,
+            profile,
             prep,
         })
     }
@@ -439,7 +519,11 @@ where
             &self.input_config,
             &self.backend,
         )?;
-        self.prep.prove(&traces)
+        let output = self.prep.prove(&traces)?;
+        if let Some(profile) = &self.profile {
+            profile.check_proof_shape(&output.0)?;
+        }
+        Ok(output)
     }
 
     /// Parameters fixed when this aggregation verifier was prepared.
