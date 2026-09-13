@@ -75,9 +75,12 @@ fn is_constraint_failures(rendered: &str) -> bool {
         let Some(after_hash) = entries.strip_prefix('#') else {
             return false;
         };
-        let Some((_, mut tail)) = take_decimal(after_hash) else {
+        let Some((index, mut tail)) = take_decimal(after_hash) else {
             return false;
         };
+        if !is_usize_decimal(index) {
+            return false;
+        }
 
         if tail.starts_with(' ') {
             let Some((_, after_label)) = take_debug_quoted(&tail[1..]) else {
@@ -229,12 +232,66 @@ fn take_debug_quoted(input: &str) -> Option<(&str, &str)> {
         }
         match byte {
             b'\\' => escaped = true,
-            b'"' => return Some((&input[1..offset], &input[offset + 1..])),
+            b'"' => {
+                let token = &input[..offset + 1];
+                let decoded = decode_debug_string(&input[1..offset])?;
+                if format!("{decoded:?}") == token {
+                    return Some((&input[1..offset], &input[offset + 1..]));
+                }
+                return None;
+            }
             byte if byte.is_ascii_control() => return None,
             _ => {}
         }
     }
     None
+}
+
+#[cfg(debug_assertions)]
+fn decode_debug_string(raw: &str) -> Option<String> {
+    let mut decoded = String::new();
+    let mut chars = raw.chars();
+    while let Some(character) = chars.next() {
+        if character != '\\' {
+            if character.is_control() {
+                return None;
+            }
+            decoded.push(character);
+            continue;
+        }
+
+        match chars.next()? {
+            '\\' => decoded.push('\\'),
+            '"' => decoded.push('"'),
+            '0' => decoded.push('\0'),
+            'n' => decoded.push('\n'),
+            'r' => decoded.push('\r'),
+            't' => decoded.push('\t'),
+            'u' => {
+                if chars.next()? != '{' {
+                    return None;
+                }
+                let mut digits = String::new();
+                loop {
+                    let character = chars.next()?;
+                    if character == '}' {
+                        break;
+                    }
+                    if !character.is_ascii_hexdigit() {
+                        return None;
+                    }
+                    digits.push(character);
+                    if digits.len() > 6 {
+                        return None;
+                    }
+                }
+                let code_point = u32::from_str_radix(&digits, 16).ok()?;
+                decoded.push(char::from_u32(code_point)?);
+            }
+            _ => return None,
+        }
+    }
+    Some(decoded)
 }
 
 #[cfg(debug_assertions)]
@@ -289,5 +346,37 @@ mod tests {
     #[test]
     fn near_miss_lookup_diagnostic_is_not_accepted() {
         assert_unknown_panic_propagates("Lookup mismatch (unrelated)");
+    }
+
+    #[test]
+    fn oversized_constraint_index_is_not_accepted() {
+        assert_unknown_panic_propagates(
+            "constraints not satisfied on row 1: failed constraints = [#18446744073709551616]",
+        );
+    }
+
+    #[test]
+    fn noncanonical_debug_escape_is_not_accepted() {
+        assert_unknown_panic_propagates(
+            "constraints not satisfied on row 1: failed constraints = [#0 \"bad\\q\"]",
+        );
+    }
+
+    #[test]
+    fn raw_control_after_debug_escape_is_not_accepted() {
+        assert_unknown_panic_propagates(
+            "constraints not satisfied on row 1: failed constraints = [#0 \"bad\\\x01\"]",
+        );
+    }
+
+    #[test]
+    fn canonical_debug_label_is_accepted() {
+        let label = "quote \" slash \\ newline\n control\u{7} unicode λ";
+        let message =
+            format!("constraints not satisfied on row 1: failed constraints = [#0 {label:?}]");
+        assert_eq!(
+            super::classify_debug_panic(&message),
+            Some(super::DebugRejectionKind::Constraint)
+        );
     }
 }
