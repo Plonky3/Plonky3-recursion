@@ -102,7 +102,6 @@ let output = build_and_prove_aggregation_layer(
     &config,
     &backend,
     &params,
-    None,
 )?;
 ```
 

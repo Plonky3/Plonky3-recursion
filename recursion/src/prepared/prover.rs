@@ -56,12 +56,6 @@ where
     }
 }
 
-impl<SC: StarkGenericConfig + 'static> PreparedProver<SC> {
-    pub(crate) fn into_legacy_parts(self) -> (Rc<CircuitProverData<SC>>, BatchStarkProver<SC>) {
-        (self.circuit_prover_data, self.prover)
-    }
-}
-
 #[instrument(name = "build_next_layer_prep", skip_all)]
 pub(crate) fn prepare_prover<SC, A, B, const D: usize>(
     circuit: &Circuit<SC::Challenge>,

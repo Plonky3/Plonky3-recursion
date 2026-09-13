@@ -1,17 +1,15 @@
 mod common;
 
+use std::rc::Rc;
+
 use p3_circuit::CircuitError;
 use p3_circuit::ops::NpoTypeId;
 use p3_circuit_prover::common::get_airs_and_degrees_with_prep;
 use p3_circuit_prover::{ConstraintProfile, TablePacking};
 use p3_recursion::profile::{
-    HashProfile, ProfilePrepCache, RecursionLayerProfile, TranscriptKind,
-    prove_aggregation_layer_with_profile,
+    HashProfile, RecursionLayerProfile, TranscriptKind, prove_aggregation_layer_with_profile,
 };
-use p3_recursion::{
-    BatchOnly, PcsRecursionBackend, ProveNextLayerParams, build_aggregation_layer_circuit,
-    build_next_layer_prep,
-};
+use p3_recursion::{BatchOnly, PcsRecursionBackend, build_aggregation_layer_circuit};
 use p3_test_utils::koala_bear_params::Challenge;
 
 use crate::common::{
@@ -81,6 +79,27 @@ fn solve_fixed_point_for_aggregation(
     );
 }
 
+fn verify_output(
+    output: &p3_recursion::RecursionOutput<KoalaBearD4RecursionConfig>,
+    config: &KoalaBearD4RecursionConfig,
+    backend: &KoalaBearD4Backend,
+    packing: TablePacking,
+) {
+    let mut verifier =
+        p3_circuit_prover::BatchStarkProver::new(config.clone()).with_table_packing(packing);
+    for prover in <KoalaBearD4Backend as PcsRecursionBackend<
+        KoalaBearD4RecursionConfig,
+        BatchOnly,
+        4,
+    >>::non_primitive_provers(backend, 4)
+    {
+        verifier.register_table_prover(prover);
+    }
+    verifier
+        .verify_all_tables::<Challenge>(&output.0)
+        .expect("the aggregation layer proof must verify");
+}
+
 /// `solve_fixed_point` must converge on a real 2-to-1 aggregation verifier circuit (aggregating
 /// two KoalaBear D4 base batch-STARK proofs), and `prove_aggregation_layer_with_profile` must
 /// actually prove and verify under the resulting profile, with the proof's committed
@@ -122,23 +141,6 @@ fn aggregation_layer_profile_converges_and_proves() {
         "the resolved aggregation profile must carry a strict TablePacking"
     );
 
-    let inner =
-        build_next_layer_prep::<KoalaBearD4RecursionConfig, BatchOnly, KoalaBearD4Backend, 4>(
-            &verification_circuit,
-            &config,
-            &backend,
-            &ProveNextLayerParams {
-                table_packing: profile.table_packing.clone(),
-                constraint_profile: ConstraintProfile::Standard,
-            },
-        )
-        .expect("resolved profile must not overflow when building prep for the aggregation layer");
-
-    let prep = ProfilePrepCache {
-        profile: profile.clone(),
-        inner,
-    };
-
     let output = prove_aggregation_layer_with_profile::<
         KoalaBearD4RecursionConfig,
         BatchOnly,
@@ -154,7 +156,6 @@ fn aggregation_layer_profile_converges_and_proves() {
         &verification_circuit,
         &config,
         &backend,
-        Some(&prep),
     )
     .expect("prove_aggregation_layer_with_profile should succeed under its own resolved profile");
 
@@ -163,17 +164,12 @@ fn aggregation_layer_profile_converges_and_proves() {
         "the proof's committed table_packing must match the resolved profile"
     );
 
-    prep.inner
-        .prover
-        .verify_all_tables::<Challenge>(&output.0)
-        .expect("the aggregation layer proven under the resolved profile must verify");
+    verify_output(&output, &config, &backend, profile.table_packing);
 }
 
-/// `prove_aggregation_layer_with_profile` must also succeed when no prep cache is supplied at
-/// all, exercising the uncached branch (fresh `get_airs_and_degrees_with_prep` +
-/// `ProverData::from_airs_and_degrees`) rather than a cached prover.
+/// `prove_aggregation_layer_with_profile` prepares fresh proving data for each call.
 #[test]
-fn aggregation_layer_profile_proves_without_prep_cache() {
+fn aggregation_layer_profile_prepares_fresh() {
     let left_fixture = build_koala_bear_d4_first_layer_input();
     let right_fixture = build_koala_bear_d4_first_layer_input();
     let left_input = left_fixture.recursion_input();
@@ -215,39 +211,43 @@ fn aggregation_layer_profile_proves_without_prep_cache() {
         &verification_circuit,
         &config,
         &backend,
-        None,
     )
-    .expect("prove_aggregation_layer_with_profile should succeed with no prep cache supplied");
+    .expect("prove_aggregation_layer_with_profile should prepare fresh and succeed");
+
+    let repeat = prove_aggregation_layer_with_profile::<
+        KoalaBearD4RecursionConfig,
+        BatchOnly,
+        BatchOnly,
+        KoalaBearD4Backend,
+        4,
+    >(
+        &profile,
+        &left_input,
+        &right_input,
+        &left_result,
+        &right_result,
+        &verification_circuit,
+        &config,
+        &backend,
+    )
+    .expect("a repeated profile call should prepare independently and succeed");
+    assert_ne!(
+        Rc::as_ptr(&output.1),
+        Rc::as_ptr(&repeat.1),
+        "expert free profile calls must not retain detached preparation between calls"
+    );
 
     assert_eq!(
         output.0.table_packing, profile.table_packing,
         "the proof's committed table_packing must match the resolved profile"
     );
 
-    let verifier =
-        build_next_layer_prep::<KoalaBearD4RecursionConfig, BatchOnly, KoalaBearD4Backend, 4>(
-            &verification_circuit,
-            &config,
-            &backend,
-            &ProveNextLayerParams {
-                table_packing: profile.table_packing,
-                constraint_profile: ConstraintProfile::Standard,
-            },
-        )
-        .expect("resolved profile must not overflow when building a verifying prover");
-
-    verifier
-        .prover
-        .verify_all_tables::<Challenge>(&output.0)
-        .expect("the aggregation layer proven with no prep cache must verify");
+    verify_output(&output, &config, &backend, profile.table_packing);
 }
 
-/// A prep cache built under a DIFFERENT (but still non-overflowing) profile than the one being
-/// proven under must be ignored: `prove_aggregation_layer_with_profile` must fall back to
-/// solving fresh rather than misusing the stale cache's prover/circuit prover data, and the
-/// resulting proof must still be committed under -- and verify under -- the requested profile.
+/// Repeated profile calls independently prepare proving data and retain the requested output shape.
 #[test]
-fn aggregation_layer_profile_ignores_stale_prep_cache() {
+fn aggregation_layer_profile_repeated_call_preserves_shape() {
     let left_fixture = build_koala_bear_d4_first_layer_input();
     let right_fixture = build_koala_bear_d4_first_layer_input();
     let left_input = left_fixture.recursion_input();
@@ -274,35 +274,6 @@ fn aggregation_layer_profile_ignores_stale_prep_cache() {
     };
     let profile = solve_fixed_point_for_aggregation(&seed, &verification_circuit, &backend, 8);
 
-    // Larger than anything this small aggregation circuit needs, so it builds without
-    // overflowing, yet still differs from `profile`'s resolved (tight) table_packing.
-    let stale_profile = RecursionLayerProfile {
-        table_packing: bump_table_height(profile.table_packing.clone(), "ALU", 65536),
-        hash: profile.hash,
-        transcript: profile.transcript,
-        constraint_profile: profile.constraint_profile,
-    };
-    assert_ne!(
-        stale_profile, profile,
-        "the stale profile must actually differ from the resolved one for this to be a real test"
-    );
-
-    let stale_inner =
-        build_next_layer_prep::<KoalaBearD4RecursionConfig, BatchOnly, KoalaBearD4Backend, 4>(
-            &verification_circuit,
-            &config,
-            &backend,
-            &ProveNextLayerParams {
-                table_packing: stale_profile.table_packing.clone(),
-                constraint_profile: ConstraintProfile::Standard,
-            },
-        )
-        .expect("the larger stale profile must not overflow either");
-    let stale_prep = ProfilePrepCache {
-        profile: stale_profile,
-        inner: stale_inner,
-    };
-
     let output = prove_aggregation_layer_with_profile::<
         KoalaBearD4RecursionConfig,
         BatchOnly,
@@ -318,32 +289,13 @@ fn aggregation_layer_profile_ignores_stale_prep_cache() {
         &verification_circuit,
         &config,
         &backend,
-        Some(&stale_prep),
     )
-    .expect(
-        "prove_aggregation_layer_with_profile should fall back to a fresh solve when the \
-         supplied prep cache was built under a different profile",
-    );
+    .expect("prove_aggregation_layer_with_profile should prepare fresh and succeed");
 
     assert_eq!(
         output.0.table_packing, profile.table_packing,
-        "the proof must be committed under the requested profile's table_packing, not the stale cache's"
+        "the proof must be committed under the requested profile's table_packing"
     );
 
-    let verifier =
-        build_next_layer_prep::<KoalaBearD4RecursionConfig, BatchOnly, KoalaBearD4Backend, 4>(
-            &verification_circuit,
-            &config,
-            &backend,
-            &ProveNextLayerParams {
-                table_packing: profile.table_packing,
-                constraint_profile: ConstraintProfile::Standard,
-            },
-        )
-        .expect("resolved profile must not overflow when building a verifying prover");
-
-    verifier
-        .prover
-        .verify_all_tables::<Challenge>(&output.0)
-        .expect("the aggregation layer proven with a stale prep cache must still verify");
+    verify_output(&output, &config, &backend, profile.table_packing);
 }

@@ -11,28 +11,25 @@
 //! the precise contract of what one call computes.
 
 use alloc::format;
-use alloc::rc::Rc;
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::vec::Vec;
 
 use p3_air::{SymbolicExpression, SymbolicExpressionExt};
-use p3_batch_stark::ProverData;
 use p3_circuit::ops::NpoTypeId;
 use p3_circuit::{Circuit, CircuitError};
-use p3_circuit_prover::common::get_airs_and_degrees_with_prep;
 use p3_circuit_prover::config::StarkField;
 use p3_circuit_prover::field_params::ExtractBinomialW;
-use p3_circuit_prover::{BatchStarkProof, CircuitProverData, ConstraintProfile, TablePacking};
+use p3_circuit_prover::{BatchStarkProof, ConstraintProfile, TablePacking};
 use p3_commit::Pcs;
 use p3_field::{Algebra, BasedVectorSpace, ExtensionField, PrimeField64};
 use p3_lookup::logup::LogUpGadget;
 use p3_uni_stark::{StarkGenericConfig, Val};
 use tracing::instrument;
 
+use crate::prepared::prover::prepare_prover;
 use crate::recursion::{
-    BatchOnly, NextLayerPrepCache, PcsRecursionBackend, ProveNextLayerParams, RecursionInput,
-    RecursionOutput, build_layer_prover, build_next_layer_circuit, build_next_layer_prep,
-    prove_next_layer, run_aggregation_verification_circuit,
+    BatchOnly, PcsRecursionBackend, ProveNextLayerParams, RecursionInput, RecursionOutput,
+    build_next_layer_circuit, prove_aggregation_layer, prove_next_layer,
 };
 use crate::traits::RecursiveAir;
 use crate::verifier::VerificationError;
@@ -80,9 +77,7 @@ pub enum TranscriptKind {
 
 /// Everything a recursion-layer verifier circuit's *table shape* depends on.
 ///
-/// Comparing two profiles with `==` is the prep-cache validity check — this
-/// mirrors how `AggregationCircuitFingerprint` is already compared today (a
-/// single cached slot, not a hash-map key).
+/// Comparing two profiles with `==` checks whether their complete committed shape matches.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecursionLayerProfile {
     pub table_packing: TablePacking,
@@ -120,7 +115,7 @@ pub struct FixedPointError {
 ///
 /// The verifier circuit built from `prev`, `config`, and `backend` has a fixed op-list shape
 /// that does not depend on the table packing, so it is built once; only the packing changes
-/// across iterations, each one bumping whichever table [`build_next_layer_prep`] reports as
+/// across iterations, each one bumping whichever table the private preparation probe reports as
 /// overflowing (via strict-mode `CircuitError::ProfileOverflow`) until a probe succeeds. This
 /// converges in at most (number of tables that overflow the seed) + 1 probes: one bump per
 /// overflowing table, plus a final clean re-probe that finds nothing left to bump.
@@ -160,7 +155,7 @@ where
             constraint_profile: seed.constraint_profile,
         };
 
-        match build_next_layer_prep::<SC, A, B, D>(&circuit, config, backend, &params) {
+        match prepare_prover::<SC, A, B, D>(&circuit, config, backend, &params) {
             Ok(_) => {
                 tracing::info!(
                     iteration,
@@ -229,16 +224,6 @@ impl RecursionLayerProfile {
     }
 }
 
-/// Prep cache for the profile path, keyed by the [`RecursionLayerProfile`] it was built under.
-///
-/// Wraps a [`NextLayerPrepCache`] with the profile it was built from so [`prove_layer`] can
-/// detect a stale cache (built under a different profile) and fall back to the uncached path
-/// instead of silently proving under a table packing that doesn't match the requested profile.
-pub struct ProfilePrepCache<SC: StarkGenericConfig + 'static> {
-    pub profile: RecursionLayerProfile,
-    pub inner: NextLayerPrepCache<SC>,
-}
-
 /// Build a recursion layer's verifier circuit for the profile path.
 ///
 /// The verifier circuit's op-list shape does not depend on `profile` today (only the table
@@ -271,13 +256,7 @@ where
 ///
 /// Runs the verifier circuit and proves it with batch STARK under `profile`'s table packing,
 /// then rejects the resulting proof (via [`RecursionLayerProfile::check_proof_shape`]) if its
-/// committed shape doesn't actually match `profile` -- this guards against a caller-supplied
-/// `prep` or backend silently producing a proof under a different packing than requested.
-///
-/// `prep`, if supplied, is only reused when it was built under this same `profile`; a prep
-/// cache from a different profile is ignored and the uncached path in [`prove_next_layer`] runs
-/// instead, mirroring how a stale [`AggregationPrepCache`](crate::recursion::AggregationPrepCache)
-/// is ignored when its fingerprint no longer matches.
+/// committed shape doesn't actually match `profile`.
 pub fn prove_layer<SC, A, B, const D: usize>(
     profile: &RecursionLayerProfile,
     prev: &RecursionInput<'_, SC, A>,
@@ -285,7 +264,6 @@ pub fn prove_layer<SC, A, B, const D: usize>(
     verifier_result: &B::VerifierResult,
     config: &SC,
     backend: &B,
-    prep: Option<&ProfilePrepCache<SC>>,
 ) -> Result<RecursionOutput<SC>, VerificationError>
 where
     SC: StarkGenericConfig + Send + Sync + Clone + 'static,
@@ -308,8 +286,6 @@ where
         constraint_profile: profile.constraint_profile,
     };
 
-    let valid_prep = prep.filter(|cached| &cached.profile == profile);
-
     let output = prove_next_layer::<SC, A, B, D>(
         prev,
         verification_circuit,
@@ -317,7 +293,6 @@ where
         config,
         backend,
         &params,
-        valid_prep.map(|cached| &cached.inner),
     )?;
 
     profile.check_proof_shape(&output.0)?;
@@ -334,12 +309,6 @@ where
 /// resulting proof (via [`RecursionLayerProfile::check_proof_shape`]) if its committed shape
 /// doesn't actually match `profile`.
 ///
-/// `prep`, if supplied, is only reused when it was built under this same `profile`; a prep
-/// cache from a different profile is ignored and this function rebuilds the prover data from
-/// scratch instead, mirroring [`prove_layer`]'s own stale-cache handling. Unlike
-/// [`prove_aggregation_layer`](crate::recursion::prove_aggregation_layer)'s self-managing
-/// [`AggregationPrepCache`](crate::recursion::AggregationPrepCache) (keyed by a circuit-shape
-/// fingerprint), validity here is `profile` equality, matching [`ProfilePrepCache`].
 #[instrument(skip_all)]
 #[allow(clippy::too_many_arguments)]
 pub fn prove_aggregation_layer_with_profile<SC, A1, A2, B, const D: usize>(
@@ -351,7 +320,6 @@ pub fn prove_aggregation_layer_with_profile<SC, A1, A2, B, const D: usize>(
     verification_circuit: &Circuit<SC::Challenge>,
     config: &SC,
     backend: &B,
-    prep: Option<&ProfilePrepCache<SC>>,
 ) -> Result<RecursionOutput<SC>, VerificationError>
 where
     SC: StarkGenericConfig + Send + Sync + Clone + 'static,
@@ -375,70 +343,16 @@ where
         constraint_profile: profile.constraint_profile,
     };
 
-    let valid_prep = prep.filter(|cached| &cached.profile == profile);
-
-    let output = if let Some(cached) = valid_prep {
-        let traces = run_aggregation_verification_circuit::<SC, A1, A2, B, D>(
-            left,
-            right,
-            left_result,
-            right_result,
-            verification_circuit,
-            config,
-            backend,
-        )?;
-        let proof = cached
-            .inner
-            .prover
-            .prove_all_tables(&traces, &cached.inner.circuit_prover_data)
-            .map_err(|e| VerificationError::InvalidProofShape(e.to_string()))?;
-        RecursionOutput(proof, Rc::clone(&cached.inner.circuit_prover_data))
-    } else {
-        let (airs_degrees, primitive_columns, non_primitive_columns) = {
-            let preprocessors =
-                <B as PcsRecursionBackend<SC, A1, D>>::non_primitive_preprocessors(backend);
-            let air_builders =
-                <B as PcsRecursionBackend<SC, A1, D>>::non_primitive_air_builders(backend);
-            get_airs_and_degrees_with_prep::<SC, SC::Challenge, D>(
-                verification_circuit,
-                &params.table_packing,
-                &preprocessors,
-                &air_builders,
-                params.constraint_profile,
-            )
-            .map_err(VerificationError::Circuit)?
-        };
-
-        let (airs, degrees): (Vec<_>, Vec<_>) = airs_degrees.into_iter().unzip();
-        let ext_degrees: Vec<usize> = degrees.iter().map(|&d| d + config.is_zk()).collect();
-
-        let traces = run_aggregation_verification_circuit::<SC, A1, A2, B, D>(
-            left,
-            right,
-            left_result,
-            right_result,
-            verification_circuit,
-            config,
-            backend,
-        )?;
-
-        let circuit_prover_data = {
-            let prover_data = ProverData::from_airs_and_degrees(config, &airs, &ext_degrees);
-            CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns)
-        };
-
-        let prover = build_layer_prover(
-            config,
-            &params.table_packing,
-            params.constraint_profile,
-            <B as PcsRecursionBackend<SC, A1, D>>::non_primitive_provers(backend, D),
-        );
-        let proof = prover
-            .prove_all_tables(&traces, &circuit_prover_data)
-            .map_err(|e| VerificationError::InvalidProofShape(e.to_string()))?;
-
-        RecursionOutput(proof, Rc::new(circuit_prover_data))
-    };
+    let output = prove_aggregation_layer::<SC, A1, A2, B, D>(
+        left,
+        right,
+        left_result,
+        right_result,
+        verification_circuit,
+        config,
+        backend,
+        &params,
+    )?;
 
     profile.check_proof_shape(&output.0)?;
 
@@ -464,7 +378,6 @@ pub fn prove_aggregation_layer_cross_with_profile<InSC, OutSC, A1, A2, B, const 
     input_config: &InSC,
     output_config: &OutSC,
     backend: &B,
-    prep: Option<&ProfilePrepCache<OutSC>>,
 ) -> Result<RecursionOutput<OutSC>, VerificationError>
 where
     InSC: StarkGenericConfig + Send + Sync + Clone + 'static,
@@ -493,74 +406,17 @@ where
         constraint_profile: profile.constraint_profile,
     };
 
-    let valid_prep = prep.filter(|cached| &cached.profile == profile);
-
-    let output = if let Some(cached) = valid_prep {
-        let traces = run_aggregation_verification_circuit::<InSC, A1, A2, B, D>(
-            left,
-            right,
-            left_result,
-            right_result,
-            verification_circuit,
-            input_config,
-            backend,
-        )?;
-        let proof = cached
-            .inner
-            .prover
-            .prove_all_tables(&traces, &cached.inner.circuit_prover_data)
-            .map_err(|e| VerificationError::InvalidProofShape(e.to_string()))?;
-        RecursionOutput(proof, Rc::clone(&cached.inner.circuit_prover_data))
-    } else {
-        let (airs_degrees, primitive_columns, non_primitive_columns) = {
-            let preprocessors =
-                <B as PcsRecursionBackend<OutSC, BatchOnly, D>>::non_primitive_preprocessors(
-                    backend,
-                );
-            let air_builders =
-                <B as PcsRecursionBackend<OutSC, BatchOnly, D>>::non_primitive_air_builders(
-                    backend,
-                );
-            get_airs_and_degrees_with_prep::<OutSC, OutSC::Challenge, D>(
-                verification_circuit,
-                &params.table_packing,
-                &preprocessors,
-                &air_builders,
-                params.constraint_profile,
-            )
-            .map_err(VerificationError::Circuit)?
-        };
-
-        let (airs, degrees): (Vec<_>, Vec<_>) = airs_degrees.into_iter().unzip();
-        let ext_degrees: Vec<usize> = degrees.iter().map(|&d| d + output_config.is_zk()).collect();
-
-        let traces = run_aggregation_verification_circuit::<InSC, A1, A2, B, D>(
-            left,
-            right,
-            left_result,
-            right_result,
-            verification_circuit,
-            input_config,
-            backend,
-        )?;
-
-        let circuit_prover_data = {
-            let prover_data = ProverData::from_airs_and_degrees(output_config, &airs, &ext_degrees);
-            CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns)
-        };
-
-        let prover = build_layer_prover(
-            output_config,
-            &params.table_packing,
-            params.constraint_profile,
-            <B as PcsRecursionBackend<OutSC, BatchOnly, D>>::non_primitive_provers(backend, D),
-        );
-        let proof = prover
-            .prove_all_tables(&traces, &circuit_prover_data)
-            .map_err(|e| VerificationError::InvalidProofShape(e.to_string()))?;
-
-        RecursionOutput(proof, Rc::new(circuit_prover_data))
-    };
+    let output = crate::recursion::prove_aggregation_layer_cross::<InSC, OutSC, A1, A2, B, D>(
+        left,
+        right,
+        left_result,
+        right_result,
+        verification_circuit,
+        input_config,
+        output_config,
+        backend,
+        &params,
+    )?;
 
     profile.check_proof_shape(&output.0)?;
 
