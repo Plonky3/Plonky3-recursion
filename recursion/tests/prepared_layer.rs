@@ -261,6 +261,63 @@ fn fri_uni_profile_prepared_layer_reuses_varied_witnesses() {
 }
 
 #[test]
+fn fri_uni_profile_owner_matches_params_owner_bytes() {
+    let n = 1 << 10;
+    let air = FibonacciAir {};
+    let (config, backend) = common::koala_bear_d4_recursion_config_and_backend();
+    let pis = vec![F::ZERO, F::ONE, fibonacci_output::<F>(0, 1, n)];
+    let proof = prove(&config, &air, generate_trace_rows::<F>(0, 1, n), &pis);
+    let params = ProveNextLayerParams {
+        table_packing: TablePacking::default(),
+        constraint_profile: ConstraintProfile::Standard,
+    };
+    let profile = RecursionLayerProfile {
+        table_packing: params.table_packing.clone(),
+        hash: HashProfile::default(),
+        transcript: TranscriptKind::default(),
+        constraint_profile: params.constraint_profile,
+    };
+    let source = || PreparedSource::UniStark {
+        air: &air,
+        proof: &proof,
+        public_inputs: &pis,
+        preprocessed_commit: None,
+    };
+    let input = || PreparedInput::UniStark {
+        proof: &proof,
+        public_inputs: &pis,
+        preprocessed_commit: None,
+    };
+
+    let params_owner = PreparedLayer::<
+        common::KoalaBearD4RecursionConfig,
+        FibonacciAir,
+        common::KoalaBearD4Backend,
+        4,
+    >::new(source(), config.clone(), backend.clone(), params)
+    .expect("the params-owned verifier prepares");
+    let profile_owner = PreparedLayer::<
+        common::KoalaBearD4RecursionConfig,
+        FibonacciAir,
+        common::KoalaBearD4Backend,
+        4,
+    >::new_with_profile(source(), config, backend, profile)
+    .expect("the profile-owned verifier prepares");
+
+    let params_output = params_owner
+        .prove(input())
+        .expect("the params-owned witness proves");
+    let profile_output = profile_owner
+        .prove(input())
+        .expect("the profile-owned witness proves");
+    assert_eq!(
+        postcard::to_allocvec(&params_output.0).expect("serialize params-owned proof"),
+        postcard::to_allocvec(&profile_output.0).expect("serialize profile-owned proof"),
+        "identical ordinary-FRI owners must produce byte-identical proofs"
+    );
+}
+
+#[test]
 fn fri_batch_prepared_layer_reuses_prover_data() {
     let fixture = common::build_koala_bear_d4_first_layer_input_with_starts(0, 1);
     let second = common::build_koala_bear_d4_first_layer_input_with_starts(2, 3);
