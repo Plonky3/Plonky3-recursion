@@ -65,6 +65,11 @@ jobs:
       - name: Check (release)
         run: cargo check --verbose --workspace --all-targets --release
 
+      - name: Test challenger rejection oracles (release)
+        run: |
+          cargo test --verbose --release -p p3-recursion --test challenger_sponge_binding
+          cargo test --verbose --release -p p3-recursion --test challenger_base_sponge_binding
+
       - name: Test documentation
         # nextest doesn't run doctests, so cover them with plain `cargo test`.
         run: cargo test --verbose --workspace --doc
