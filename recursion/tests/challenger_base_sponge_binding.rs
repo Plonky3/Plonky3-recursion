@@ -15,9 +15,14 @@
 //! against the unshifted build's constraint system, whose preprocessed columns are asserted
 //! byte-identical.
 
-use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+
+#[path = "common/rejection_oracle.rs"]
+mod rejection_oracle;
+#[cfg(debug_assertions)]
+use rejection_oracle::run_with_debug_oracle;
+use rejection_oracle::{ProofCheckError, assert_rejected};
 
 use p3_batch_stark::ProverData;
 use p3_circuit::ops::{
@@ -107,7 +112,7 @@ fn run(circuit: &Circuit<Challenge>) -> Traces<Challenge> {
 fn prove_and_verify(
     circuit: &Circuit<Challenge>,
     traces: &Traces<Challenge>,
-) -> Result<(), String> {
+) -> Result<(), ProofCheckError> {
     let table_packing = TablePacking::new(1, 8);
     let npo_preprocessors: Vec<Box<dyn NpoPreprocessor<F>>> = vec![Box::new(Poseidon2Preprocessor)];
     let air_builders = poseidon2_air_builders_d5::<MyConfig>();
@@ -130,18 +135,49 @@ fn prove_and_verify(
     let mut prover = BatchStarkProver::new(stark_config).with_table_packing(table_packing);
     prover.register_poseidon2_table::<5>(CFG);
 
-    // An unsatisfied constraint surfaces either as a prover-side panic (the debug constraint
-    // checker runs under `debug_assertions`) or as a verification failure; both count as
-    // rejection.
-    std::panic::catch_unwind(AssertUnwindSafe(|| {
+    #[cfg(debug_assertions)]
+    let result = run_with_debug_oracle(|| {
         let proof = prover
             .prove_all_tables(traces, &circuit_prover_data)
-            .map_err(|e| format!("prove: {e:?}"))?;
+            .map_err(ProofCheckError::Prove)?;
         prover
             .verify_all_tables::<Challenge>(&proof)
-            .map_err(|e| format!("verify: {e:?}"))
-    }))
-    .unwrap_or_else(|_| Err("prover panicked on the tampered trace".to_string()))
+            .map_err(ProofCheckError::Verify)
+    });
+
+    #[cfg(not(debug_assertions))]
+    let result = {
+        let proof = prover
+            .prove_all_tables(traces, &circuit_prover_data)
+            .map_err(ProofCheckError::Prove)?;
+        prover
+            .verify_all_tables::<Challenge>(&proof)
+            .map_err(ProofCheckError::Verify)
+    };
+
+    #[cfg(debug_assertions)]
+    return match result {
+        Ok(result) => result,
+        Err(kind) => Err(ProofCheckError::DebugPanic(kind)),
+    };
+
+    #[cfg(not(debug_assertions))]
+    result
+}
+
+#[cfg(debug_assertions)]
+#[test]
+fn unrelated_panic_is_not_accepted_as_rejection_oracle() {
+    let outcome = std::panic::catch_unwind(|| {
+        let _ = rejection_oracle::run_with_debug_oracle(|| panic!("unrelated panic"));
+    });
+    let payload = outcome.expect_err("an unrelated panic must propagate out of the oracle");
+    let message = payload
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| payload.downcast_ref::<&str>().copied())
+        .unwrap_or("non-string panic payload");
+    assert_eq!(message, "unrelated panic");
 }
 
 fn perm_trace(traces: &Traces<Challenge>) -> Poseidon2Trace<F> {
@@ -213,8 +249,8 @@ fn base_chain_start_capacity_is_bound() {
         "the forged IV must actually move the transcript"
     );
 
-    assert!(
-        prove_and_verify(&honest, &forged_traces).is_err(),
-        "a transcript opened from a prover-chosen sponge IV must be rejected"
+    assert_rejected(
+        prove_and_verify(&honest, &forged_traces),
+        "a transcript opened from a prover-chosen sponge IV must be rejected",
     );
 }

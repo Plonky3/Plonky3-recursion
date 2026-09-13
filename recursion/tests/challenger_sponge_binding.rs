@@ -49,7 +49,11 @@
 //! `control_corrupted_const_value_is_rejected` pins down that this harness is a real
 //! oracle: the same pipeline rejects a value the bus does bind.
 
-use std::panic::AssertUnwindSafe;
+#[path = "common/rejection_oracle.rs"]
+mod rejection_oracle;
+#[cfg(debug_assertions)]
+use rejection_oracle::run_with_debug_oracle;
+use rejection_oracle::{ProofCheckError, assert_rejected};
 
 use p3_batch_stark::ProverData;
 use p3_circuit::ops::{
@@ -324,7 +328,7 @@ fn witness_values_with(circuit: &Circuit<EF>, publics: &[EF]) -> Vec<Option<EF>>
 }
 
 /// Prove `traces` against the constraint system of `circuit`, then verify.
-fn prove_and_verify(circuit: &Circuit<EF>, traces: &Traces<EF>) -> Result<(), String> {
+fn prove_and_verify(circuit: &Circuit<EF>, traces: &Traces<EF>) -> Result<(), ProofCheckError> {
     let table_packing = TablePacking::new(1, 1);
     let stark_config = config::koala_bear();
     let npo_preprocessors: Vec<Box<dyn NpoPreprocessor<F>>> = vec![
@@ -354,18 +358,49 @@ fn prove_and_verify(circuit: &Circuit<EF>, traces: &Traces<EF>) -> Result<(), St
     prover.register_poseidon2_table::<D>(CFG);
     prover.register_recompose_table::<D>(true);
 
-    // An unsatisfied constraint or an unbalanced bus surfaces either as a prover-side panic
-    // (both debuggers run under `debug_assertions`) or as a verification failure; all count as
-    // rejection.
-    std::panic::catch_unwind(AssertUnwindSafe(|| {
+    #[cfg(debug_assertions)]
+    let result = run_with_debug_oracle(|| {
         let proof = prover
             .prove_all_tables(traces, &circuit_prover_data)
-            .map_err(|e| format!("prove: {e:?}"))?;
+            .map_err(ProofCheckError::Prove)?;
         prover
             .verify_all_tables::<EF>(&proof)
-            .map_err(|e| format!("verify: {e:?}"))
-    }))
-    .unwrap_or_else(|_| Err("prover panicked on the tampered trace".to_string()))
+            .map_err(ProofCheckError::Verify)
+    });
+
+    #[cfg(not(debug_assertions))]
+    let result = {
+        let proof = prover
+            .prove_all_tables(traces, &circuit_prover_data)
+            .map_err(ProofCheckError::Prove)?;
+        prover
+            .verify_all_tables::<EF>(&proof)
+            .map_err(ProofCheckError::Verify)
+    };
+
+    #[cfg(debug_assertions)]
+    return match result {
+        Ok(result) => result,
+        Err(kind) => Err(ProofCheckError::DebugPanic(kind)),
+    };
+
+    #[cfg(not(debug_assertions))]
+    result
+}
+
+#[cfg(debug_assertions)]
+#[test]
+fn unrelated_panic_is_not_accepted_as_rejection_oracle() {
+    let outcome = std::panic::catch_unwind(|| {
+        let _ = rejection_oracle::run_with_debug_oracle(|| panic!("unrelated panic"));
+    });
+    let payload = outcome.expect_err("an unrelated panic must propagate out of the oracle");
+    let message = payload
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| payload.downcast_ref::<&str>().copied())
+        .unwrap_or("non-string panic payload");
+    assert_eq!(message, "unrelated panic");
 }
 
 fn assert_same_constraint_system(honest: &Circuit<EF>, edited: &Circuit<EF>) {
@@ -455,9 +490,9 @@ fn control_corrupted_const_value_is_rejected() {
         .expect("a const row feeding the first permutation");
     traces.const_trace.values[row] += EF::ONE;
 
-    assert!(
-        prove_and_verify(&circuit, &traces).is_err(),
-        "a const value read over the bus must not be freely re-chosen"
+    assert_rejected(
+        prove_and_verify(&circuit, &traces),
+        "a const value read over the bus must not be freely re-chosen",
     );
 }
 
@@ -508,10 +543,12 @@ fn capacity_limb_binding(mode: RecomposeMode) {
     );
 
     let traces = run(&edited);
-    assert!(
-        prove_and_verify(&honest, &traces).is_err(),
-        "{mode:?}: a proof whose second permutation reads a capacity limb the first \
-         permutation never produced must be rejected"
+    assert_rejected(
+        prove_and_verify(&honest, &traces),
+        &format!(
+            "{mode:?}: a proof whose second permutation reads a capacity limb the first \
+             permutation never produced must be rejected"
+        ),
     );
 }
 
@@ -578,10 +615,10 @@ fn rate_limb_is_bound_across_permutations_npo_table() {
     );
 
     let traces = run(&edited);
-    assert!(
-        prove_and_verify(&honest, &traces).is_err(),
+    assert_rejected(
+        prove_and_verify(&honest, &traces),
         "a proof whose second permutation reads a rate limb the first permutation never \
-         produced must be rejected"
+         produced must be rejected",
     );
 }
 
@@ -654,9 +691,11 @@ fn absorbed_limb_binding(mode: RecomposeMode) {
     );
 
     let traces = run_with(&edited, &publics);
-    assert!(
-        prove_and_verify(&honest, &traces).is_err(),
-        "{mode:?}: a query index drawn from limbs the transcript never absorbed must be rejected"
+    assert_rejected(
+        prove_and_verify(&honest, &traces),
+        &format!(
+            "{mode:?}: a query index drawn from limbs the transcript never absorbed must be rejected"
+        ),
     );
 }
 
@@ -725,9 +764,11 @@ fn chain_start_capacity_binding(mode: RecomposeMode) {
             .expect("a const row feeding the chain start's capacity");
         traces.const_trace.values[row] += EF::ONE;
 
-        assert!(
-            prove_and_verify(&honest, &traces).is_err(),
-            "{mode:?}: the capacity the first permutation absorbs must not be freely re-chosen"
+        assert_rejected(
+            prove_and_verify(&honest, &traces),
+            &format!(
+                "{mode:?}: the capacity the first permutation absorbs must not be freely re-chosen"
+            ),
         );
         return;
     }
@@ -751,9 +792,11 @@ fn chain_start_capacity_binding(mode: RecomposeMode) {
     );
 
     let traces = run(&edited);
-    assert!(
-        prove_and_verify(&honest, &traces).is_err(),
-        "{mode:?}: the capacity the first permutation absorbs must not be freely re-chosen"
+    assert_rejected(
+        prove_and_verify(&honest, &traces),
+        &format!(
+            "{mode:?}: the capacity the first permutation absorbs must not be freely re-chosen"
+        ),
     );
 }
 
@@ -955,10 +998,10 @@ fn non_base_capacity_coefficients_are_rejected() {
     assert_same_constraint_system(&honest, &edited);
 
     let traces = run(&edited);
-    assert!(
-        prove_and_verify(&honest, &traces).is_err(),
+    assert_rejected(
+        prove_and_verify(&honest, &traces),
         "coefficients whose weighted sum matches the limb but which are not base-field \
-         elements must not stand in for its base decomposition"
+         elements must not stand in for its base decomposition",
     );
 }
 
