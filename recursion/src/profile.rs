@@ -257,6 +257,8 @@ where
 /// Runs the verifier circuit and proves it with batch STARK under `profile`'s table packing,
 /// then rejects the resulting proof (via [`RecursionLayerProfile::check_proof_shape`]) if its
 /// committed shape doesn't actually match `profile`.
+/// Preparation is rebuilt on every call. For repeated proofs with retained preparation, use
+/// [`crate::prepared::PreparedLayer`].
 pub fn prove_layer<SC, A, B, const D: usize>(
     profile: &RecursionLayerProfile,
     prev: &RecursionInput<'_, SC, A>,
@@ -308,6 +310,8 @@ where
 /// proves the result with batch STARK under `profile`'s table packing, then rejects the
 /// resulting proof (via [`RecursionLayerProfile::check_proof_shape`]) if its committed shape
 /// doesn't actually match `profile`.
+/// Preparation is rebuilt on every call. For repeated proofs with retained preparation, use
+/// [`crate::prepared::PreparedAggregation`].
 ///
 #[instrument(skip_all)]
 #[allow(clippy::too_many_arguments)]
@@ -366,6 +370,8 @@ where
 /// output proof config, exactly as
 /// [`prove_aggregation_layer_cross`](crate::recursion::prove_aggregation_layer_cross) does for
 /// the non-profile path.
+/// Preparation is rebuilt on every call. For repeated proofs with retained preparation, use
+/// [`crate::prepared::PreparedAggregationCross`].
 #[instrument(skip_all)]
 #[allow(clippy::too_many_arguments)]
 pub fn prove_aggregation_layer_cross_with_profile<InSC, OutSC, A1, A2, B, const D: usize>(

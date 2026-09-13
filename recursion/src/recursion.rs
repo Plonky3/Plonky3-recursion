@@ -488,6 +488,9 @@ where
 /// Prove a 2-to-1 aggregation layer: build verifier circuits for both `left` and `right`
 /// in a single circuit, run it, and produce one aggregated batch STARK proof.
 ///
+/// Preparation is rebuilt on every call. For repeated proofs with retained preparation, use
+/// [`crate::prepared::PreparedAggregation`].
+///
 /// The two inputs may be different `RecursionInput` variants (e.g. one `UniStark` left
 /// and one `BatchStark` right) or identical ones.
 #[instrument(skip_all)]
@@ -538,6 +541,8 @@ where
 /// Mirrors [`prove_aggregation_layer`] but splits the verifier config from the output
 /// proof config. The two configs must share the same challenge field; this is the seam
 /// used to switch the output MMCS arity (e.g. verify arity-2 inputs, emit an arity-4 proof).
+/// Preparation is rebuilt on every call. For repeated proofs with retained preparation, use
+/// [`crate::prepared::PreparedAggregationCross`].
 #[instrument(skip_all)]
 #[allow(clippy::too_many_arguments)]
 pub fn prove_aggregation_layer_cross<InSC, OutSC, A1, A2, B, const D: usize>(
