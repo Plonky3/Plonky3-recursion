@@ -115,9 +115,9 @@ for np in backend.non_primitive_provers(D) {
 let proof = prover.prove_all_tables(&traces, &circuit_prover_data)?;
 ```
 
-In practice, prefer `build_next_layer_prep` (unified API) over calling `get_airs_and_degrees_with_prep`
-directly — it wires up backend preprocessors/air-builders automatically and returns a reusable
-`NextLayerPrepCache`.
+For repeated proving, prefer `PreparedLayer` (unified API) over manually calling
+`get_airs_and_degrees_with_prep`: it wires up backend preprocessors/air-builders automatically,
+retains the circuit/configuration/prover together, and validates each borrowed native input.
 
 ## When to use the low-level API
 

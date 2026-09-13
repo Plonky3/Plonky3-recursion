@@ -26,15 +26,14 @@ use p3_recursion::pcs::{
     restore_fri_query_paths, set_fri_mmcs_private_data,
 };
 use p3_recursion::profile::{
-    HashProfile, ProfilePrepCache, RecursionLayerProfile, TranscriptKind, build_layer_circuit,
-    prove_layer, solve_fixed_point,
+    HashProfile, RecursionLayerProfile, TranscriptKind, solve_fixed_point,
 };
 use p3_recursion::traits::{RecursiveAir, RecursivePcs};
 use p3_recursion::verifier::VerificationError;
 use p3_recursion::{
     BatchOnly, FriRecursionBackend, FriRecursionBackendForExt, FriRecursionConfig,
-    FriVerifierParams, OpeningTranscript, Poseidon2Config, ProveNextLayerParams, RecursionInput,
-    RecursionOutput, build_next_layer_prep, observe_opened_values,
+    FriVerifierParams, OpeningTranscript, Poseidon2Config, PreparedInput, PreparedLayer,
+    PreparedSource, ProveNextLayerParams, RecursionInput, RecursionOutput, observe_opened_values,
 };
 use p3_test_utils::koala_bear_params::*;
 use p3_uni_stark::{StarkGenericConfig, Val};
@@ -193,8 +192,8 @@ pub(crate) type KoalaBearD4InnerFri = InnerFriGeneric<MyConfig, MyHash, MyCompre
 
 /// FRI-recursion config for the standard KoalaBear D4 test STARK config
 /// ([`p3_test_utils::koala_bear_params::MyConfig`]), holding the FRI verifier parameters a
-/// recursion-layer verifier circuit needs. `Arc`-wrapped so cloning (required by
-/// `build_next_layer_circuit`/`build_next_layer_prep`) is cheap.
+/// recursion-layer verifier circuit needs. `Arc`-wrapped so cloning (required by prepared
+/// recursion owners) is cheap.
 #[derive(Clone)]
 pub(crate) struct KoalaBearD4RecursionConfig {
     config: Arc<MyConfig>,
@@ -309,8 +308,8 @@ where
     }
 }
 
-/// Backend type for a KoalaBear D4 recursion layer (spelled out so callers can turbofish it,
-/// e.g. `build_next_layer_prep::<KoalaBearD4RecursionConfig, BatchOnly, KoalaBearD4Backend, 4>`).
+/// Backend type for a KoalaBear D4 recursion layer (spelled out so callers can turbofish it when
+/// constructing a prepared recursion owner).
 pub(crate) type KoalaBearD4Backend = FriRecursionBackendForExt<4, 16, 8, Poseidon2Config>;
 
 fn koala_bear_d4_recursion_config(pow_bits: usize) -> KoalaBearD4RecursionConfig {
@@ -548,10 +547,8 @@ pub(crate) fn solved_koala_bear_d4_profile() -> (
     )
 }
 
-/// Build and prove one recursion layer entirely under `profile`: the verifier circuit is built
-/// with [`build_layer_circuit`] and proved with [`prove_layer`] using a freshly built
-/// [`ProfilePrepCache`], so both the circuit and the proof are self-consistent with `profile`.
-/// Returns the layer's output together with the prep cache used to produce it.
+/// Build and prove one recursion layer entirely under `profile` using an owner that retains the
+/// verifier circuit, configuration, profile, and prepared proving data together.
 pub(crate) fn prove_one_layer(
     profile: &RecursionLayerProfile,
     prev_input: &RecursionInput<'_, KoalaBearD4RecursionConfig, BatchOnly>,
@@ -559,39 +556,31 @@ pub(crate) fn prove_one_layer(
     backend: &KoalaBearD4Backend,
 ) -> (
     RecursionOutput<KoalaBearD4RecursionConfig>,
-    ProfilePrepCache<KoalaBearD4RecursionConfig>,
+    PreparedLayer<'static, KoalaBearD4RecursionConfig, BatchOnly, KoalaBearD4Backend, 4>,
 ) {
-    let (circuit, verifier_result) =
-        build_layer_circuit::<_, _, _, 4>(profile, prev_input, config, backend)
-            .expect("build_layer_circuit should succeed");
-
-    let inner =
-        build_next_layer_prep::<KoalaBearD4RecursionConfig, BatchOnly, KoalaBearD4Backend, 4>(
-            &circuit,
-            config,
-            backend,
-            &ProveNextLayerParams {
-                table_packing: profile.table_packing.clone(),
-                constraint_profile: ConstraintProfile::Standard,
-            },
-        )
-        .expect("build_next_layer_prep should succeed for a profile-resolved table packing");
-
-    let prep = ProfilePrepCache {
-        profile: profile.clone(),
-        inner,
+    let RecursionInput::BatchStark {
+        proof,
+        common_data,
+        table_public_inputs,
+    } = prev_input
+    else {
+        panic!("the profile fixture must use a batch input");
     };
-
-    let output = prove_layer::<_, _, _, 4>(
-        profile,
-        prev_input,
-        &circuit,
-        &verifier_result,
-        config,
-        backend,
-        Some(&prep),
+    let owner = PreparedLayer::new_with_profile(
+        PreparedSource::batch(proof, common_data, table_public_inputs),
+        config.clone(),
+        backend.clone(),
+        profile.clone(),
     )
-    .expect("prove_layer should succeed under its own profile");
+    .expect("prepared profile owner should succeed");
+    let input = PreparedInput::BatchStark {
+        proof,
+        common_data,
+        table_public_inputs,
+    };
+    let output = owner
+        .prove(input)
+        .expect("prepared profile owner should prove");
 
-    (output, prep)
+    (output, owner)
 }

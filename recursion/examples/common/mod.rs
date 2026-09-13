@@ -36,20 +36,19 @@ pub use p3_recursion::pcs::{
     set_fri_mmcs_private_data_arity4,
 };
 pub use p3_recursion::profile::{
-    HashProfile, ProfilePrepCache, RecursionLayerProfile, TranscriptKind, build_layer_circuit,
-    prove_aggregation_layer_cross_with_profile, prove_aggregation_layer_with_profile, prove_layer,
-    solve_fixed_point,
+    HashProfile, RecursionLayerProfile, TranscriptKind, solve_fixed_point,
 };
 pub use p3_recursion::traits::{RecursiveAir, RecursivePcs};
 pub use p3_recursion::verifier::VerificationError;
 pub use p3_recursion::{
-    AggregationPrepCache, BatchOnly, BatchStarkVerifierInputsBuilder, FriRecursionBackend,
-    FriRecursionBackendD5, FriRecursionConfig, FriVerifierParams, NextLayerPrepCache,
-    OpeningTranscript, PcsRecursionBackend, Poseidon2Config, ProveNextLayerParams, RecursionInput,
-    RecursionOutput, build_aggregation_layer_circuit, build_and_prove_aggregation_layer,
-    build_and_prove_aggregation_layer_cross, build_and_prove_next_layer, build_next_layer_circuit,
-    build_next_layer_prep, merge_hiding_random_openings, observe_opened_values,
-    prove_aggregation_layer, prove_aggregation_layer_cross, prove_next_layer, verify_batch_circuit,
+    BatchOnly, BatchStarkVerifierInputsBuilder, FriRecursionBackend, FriRecursionBackendD5,
+    FriRecursionConfig, FriVerifierParams, OpeningTranscript, PcsRecursionBackend, Poseidon2Config,
+    PreparedAggregation, PreparedAggregationCross, PreparedInput, PreparedLayer, PreparedSource,
+    ProveNextLayerParams, RecursionInput, RecursionOutput, build_aggregation_layer_circuit,
+    build_and_prove_aggregation_layer, build_and_prove_aggregation_layer_cross,
+    build_and_prove_next_layer, build_next_layer_circuit, merge_hiding_random_openings,
+    observe_opened_values, prove_aggregation_layer, prove_aggregation_layer_cross,
+    prove_next_layer, verify_batch_circuit,
 };
 pub use p3_symmetric::{PaddingFreeSponge, Permutation, TruncatedPermutation};
 pub use p3_uni_stark::{StarkConfig, StarkGenericConfig, Val};
@@ -155,6 +154,40 @@ pub fn default_goldilocks_poseidon2_16() -> p3_goldilocks::Poseidon2Goldilocks<1
 pub fn report_proof_size<S: Serialize>(proof: &S) {
     let proof_bytes = postcard::to_allocvec(proof).expect("Failed to serialize proof");
     println!("Proof size: {} bytes", proof_bytes.len());
+}
+
+/// Build the borrowed batch witness view used by prepared recursion owners.
+pub fn batch_prepared_input<'a, SC>(
+    output: &'a RecursionOutput<SC>,
+    table_public_inputs: &'a [Vec<Val<SC>>],
+) -> PreparedInput<'a, SC>
+where
+    SC: StarkGenericConfig,
+{
+    PreparedInput::BatchStark {
+        proof: &output.0,
+        common_data: &output.0.stark_common,
+        table_public_inputs,
+    }
+}
+
+/// Build a trusted batch source for constructing a prepared recursion owner.
+pub fn batch_prepared_source<'a, SC>(
+    output: &'a RecursionOutput<SC>,
+    table_public_inputs: &'a [Vec<Val<SC>>],
+) -> PreparedSource<'static, 'a, SC, BatchOnly>
+where
+    SC: StarkGenericConfig,
+{
+    PreparedSource::batch(&output.0, &output.0.stark_common, table_public_inputs)
+}
+
+/// Allocate the empty per-table public-input vectors expected by batch recursion.
+pub fn batch_table_public_inputs<SC>(output: &RecursionOutput<SC>) -> Vec<Vec<Val<SC>>>
+where
+    SC: StarkGenericConfig,
+{
+    vec![vec![]; output.0.proof.opened_values.instances.len()]
 }
 
 /// Mirrors `p3_recursion::profile::solve_fixed_point`'s convergence loop against an

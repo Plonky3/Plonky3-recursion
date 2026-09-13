@@ -72,29 +72,24 @@ let output = build_and_prove_next_layer::<SC, A, B, D>(
 )?;
 ```
 
-### `prove_next_layer` (split build/prove)
+### `PreparedLayer` (repeated proving)
 
-For better performance across repeated invocations, separate circuit building, preprocessing, and proving. The circuit only needs to be built and preprocessed once when the proof shape is stable:
+For repeated invocations, let an owner capture the native input contract and retain the verifier circuit, configuration, and prepared proving data together:
 
 ```rust,ignore
-// Build the circuit once (shape-dependent)
-let (circuit, verifier_result) = build_next_layer_circuit::<SC, A, B, D>(
-    &input, &config, &backend,
+let owner = PreparedLayer::<SC, A, B, D>::new(
+    PreparedSource::UniStark { air, proof, public_inputs, preprocessed_commit },
+    config,
+    backend,
+    params,
 )?;
 
-// Preprocess once (commits to constant columns; reusable for same circuit shape)
-let prep = build_next_layer_prep::<SC, A, B, D>(
-    &circuit, &config, &backend, &params,
-)?;
-
-// Prove repeatedly with different inputs of the same shape
-let output = prove_next_layer::<SC, A, B, D>(
-    &input, &circuit, &verifier_result, &config, &backend, &params,
-    Some(&prep),  // pass None to skip prep reuse
-)?;
+// Check the native contract before each repeated proof.
+owner.check_input(&input)?;
+let output = owner.prove(input)?;
 ```
 
-`NextLayerPrepCache` holds the committed preprocessed columns and the prover. Reusing it across same-shape layers avoids re-computing the LDE and Merkle-tree commitment on every call.
+`PreparedLayer` owns the committed preprocessed columns and prover, and rejects malformed or incompatible native inputs before proving. Use a new owner when the native contract changes.
 
 ### `build_and_prove_aggregation_layer`
 

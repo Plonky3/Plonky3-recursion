@@ -111,20 +111,26 @@ macro_rules! define_whir_field_module {
                 report_proof_size(&proof);
                 info!("Base WHIR Fibonacci proof verified successfully");
 
-                let recursion_input = RecursionInput::UniStark {
-                    proof: &proof,
-                    air: &air,
-                    public_inputs: pis,
-                    preprocessed_commit: None,
-                };
-
                 let backend = WhirRecursionBackend::<16, 8>::new($poseidon2_config)
                     .for_extension_degree::<4>();
                 let params = ProveNextLayerParams::default();
-
-                let output =
-                    build_and_prove_next_layer(&recursion_input, &config, &backend, &params)
-                        .expect("Failed to prove the WHIR recursion layer");
+                let source = PreparedSource::UniStark {
+                    air: &air,
+                    proof: &proof,
+                    public_inputs: &pis,
+                    preprocessed_commit: None,
+                };
+                let input = PreparedInput::UniStark {
+                    proof: &proof,
+                    public_inputs: &pis,
+                    preprocessed_commit: None,
+                };
+                let owner =
+                    PreparedLayer::new(source, config.clone(), backend.clone(), params.clone())
+                        .expect("Failed to prepare the WHIR recursion layer");
+                let output = owner
+                    .prove(input)
+                    .expect("Failed to prove the WHIR recursion layer");
                 report_proof_size(&output.0);
 
                 let mut prover =

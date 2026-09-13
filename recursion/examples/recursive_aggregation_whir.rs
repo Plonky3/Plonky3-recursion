@@ -6,9 +6,9 @@
 //!    proved directly via `p3_uni_stark::prove` (the same base proof `recursive_fibonacci_whir.rs`
 //!    uses for its own single layer).
 //! 2. **Levels 1..tree_depth+1**: pairwise 2-to-1 aggregation up the tree, via
-//!    [`build_and_prove_aggregation_layer`], until a single root proof remains. Level 1 aggregates
-//!    pairs of uni-STARK leaves; every level after that aggregates pairs of the *previous* level's
-//!    own batch-STARK output (`RecursionOutput::into_recursion_input::<BatchOnly>`).
+//!    `PreparedAggregation` owners, until a single root proof remains. Level 1 aggregates pairs
+//!    of uni-STARK leaves; every level after that aggregates pairs of the *previous* level's own
+//!    batch-STARK output (`RecursionOutput::into_recursion_input::<BatchOnly>`).
 //!
 //! `--num-recursive-layers` sets `tree_depth` (default 2, i.e. 4 base proofs / 2 aggregation
 //! levels), so the default run already chains multiple WHIR recursion layers.
@@ -201,27 +201,42 @@ macro_rules! define_whir_aggregation_module {
                 for pair_idx in 0..pairs_l1 {
                     let (proof_l, air_l, pis_l) = &base_proofs[pair_idx * 2];
                     let (proof_r, air_r, pis_r) = &base_proofs[pair_idx * 2 + 1];
-                    let left = RecursionInput::UniStark {
-                        proof: proof_l,
+                    let left_source = PreparedSource::UniStark {
                         air: air_l,
-                        public_inputs: pis_l.clone(),
+                        proof: proof_l,
+                        public_inputs: pis_l,
                         preprocessed_commit: None,
                     };
-                    let right = RecursionInput::UniStark {
-                        proof: proof_r,
+                    let right_source = PreparedSource::UniStark {
                         air: air_r,
-                        public_inputs: pis_r.clone(),
+                        proof: proof_r,
+                        public_inputs: pis_r,
                         preprocessed_commit: None,
                     };
-
-                    let out = build_and_prove_aggregation_layer::<
-                        $config_ty,
-                        FibonacciAir,
-                        FibonacciAir,
-                        _,
-                        4,
-                    >(&left, &right, &config, &backend, &agg_params, None)
-                    .unwrap_or_else(|e| panic!("Failed at level 1, pair {pair_idx}: {e:?}"));
+                    let left_input = PreparedInput::UniStark {
+                        proof: proof_l,
+                        public_inputs: pis_l,
+                        preprocessed_commit: None,
+                    };
+                    let right_input = PreparedInput::UniStark {
+                        proof: proof_r,
+                        public_inputs: pis_r,
+                        preprocessed_commit: None,
+                    };
+                    let owner =
+                        PreparedAggregation::<$config_ty, FibonacciAir, FibonacciAir, _, 4>::new(
+                            left_source,
+                            right_source,
+                            config.clone(),
+                            backend.clone(),
+                            agg_params.clone(),
+                        )
+                        .unwrap_or_else(|e| {
+                            panic!("Failed to prepare level 1, pair {pair_idx}: {e:?}")
+                        });
+                    let out = owner
+                        .prove(left_input, right_input)
+                        .unwrap_or_else(|e| panic!("Failed at level 1, pair {pair_idx}: {e:?}"));
 
                     report_proof_size(&out.0);
                     verify_layer(&config, &agg_params.table_packing, &out.0);
@@ -245,18 +260,39 @@ macro_rules! define_whir_aggregation_module {
                     let mut next_level = Vec::with_capacity(pairs);
                     for pair_idx in 0..pairs {
                         let li = pair_idx * 2;
-                        let left = proofs[li].into_recursion_input::<BatchOnly>();
-                        let right = proofs[li + 1].into_recursion_input::<BatchOnly>();
-
-                        let out = build_and_prove_aggregation_layer::<$config_ty, _, _, _, 4>(
-                            &left,
-                            &right,
-                            &config,
-                            &backend,
-                            &agg_params,
-                            None,
+                        let left_output = &proofs[li];
+                        let right_output = &proofs[li + 1];
+                        let left_table = batch_table_public_inputs(left_output);
+                        let right_table = batch_table_public_inputs(right_output);
+                        let left_source = PreparedSource::BatchStark {
+                            proof: &left_output.0,
+                            common_data: &left_output.0.stark_common,
+                            table_public_inputs: &left_table,
+                        };
+                        let right_source = PreparedSource::BatchStark {
+                            proof: &right_output.0,
+                            common_data: &right_output.0.stark_common,
+                            table_public_inputs: &right_table,
+                        };
+                        let left_input = batch_prepared_input(left_output, &left_table);
+                        let right_input = batch_prepared_input(right_output, &right_table);
+                        let owner = PreparedAggregation::<
+                            $config_ty,
+                            FibonacciAir,
+                            FibonacciAir,
+                            _,
+                            4,
+                        >::new(
+                            left_source,
+                            right_source,
+                            config.clone(),
+                            backend.clone(),
+                            agg_params.clone(),
                         )
                         .unwrap_or_else(|e| {
+                            panic!("Failed to prepare level {level}, pair {pair_idx}: {e:?}")
+                        });
+                        let out = owner.prove(left_input, right_input).unwrap_or_else(|e| {
                             panic!("Failed at level {level}, pair {pair_idx}: {e:?}")
                         });
 

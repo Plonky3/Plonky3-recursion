@@ -1,13 +1,13 @@
 mod common;
 
 use p3_circuit::ops::NpoTypeId;
-use p3_circuit_prover::{ConstraintProfile, TablePacking};
+use p3_circuit_prover::{BatchStarkProver, ConstraintProfile, TablePacking};
 use p3_recursion::profile::{
     HashProfile, RecursionLayerProfile, TranscriptKind, solve_fixed_point,
 };
 use p3_recursion::{
-    BatchOnly, Poseidon2Config, ProveNextLayerParams, build_next_layer_circuit,
-    build_next_layer_prep, prove_next_layer,
+    BatchOnly, PcsRecursionBackend, Poseidon2Config, PreparedInput, PreparedLayer, PreparedSource,
+    RecursionInput,
 };
 use p3_test_utils::koala_bear_params::Challenge;
 use tracing_forest::ForestLayer;
@@ -129,40 +129,41 @@ fn fixed_point_converges_on_koala_bear_d4_first_layer_and_the_profile_actually_p
     // The actual fixed-point property: an INDEPENDENT rebuild of this layer's verifier circuit
     // -- not reusing anything solve_fixed_point built internally -- must accept the resolved
     // profile without any table overflowing, and the layer must actually prove and verify.
-    let (verification_circuit, verifier_result) = build_next_layer_circuit::<_, _, _, 4>(
-        &prev_input,
-        &fixture.layer_config,
-        &fixture.backend,
-    )
-    .expect("rebuilding the verifier circuit must succeed");
-
-    let params = ProveNextLayerParams {
-        table_packing: profile.table_packing,
-        constraint_profile: ConstraintProfile::Standard,
+    let RecursionInput::BatchStark {
+        proof,
+        common_data,
+        table_public_inputs,
+    } = &prev_input
+    else {
+        panic!("the fixed-point fixture must be a batch input");
     };
-
-    let prep_cache =
-        build_next_layer_prep::<KoalaBearD4RecursionConfig, BatchOnly, KoalaBearD4Backend, 4>(
-            &verification_circuit,
-            &fixture.layer_config,
-            &fixture.backend,
-            &params,
-        )
-        .expect("resolved profile must not overflow any table when re-probed independently");
-
-    let output = prove_next_layer::<_, _, _, 4>(
-        &prev_input,
-        &verification_circuit,
-        &verifier_result,
-        &fixture.layer_config,
-        &fixture.backend,
-        &params,
-        Some(&prep_cache),
+    let owner = PreparedLayer::new_with_profile(
+        PreparedSource::batch(proof, common_data, table_public_inputs),
+        fixture.layer_config.clone(),
+        fixture.backend.clone(),
+        profile.clone(),
     )
-    .expect("resolved profile must actually prove the recursion layer");
+    .expect("resolved profile must prepare without overflowing any table");
+    let input = PreparedInput::BatchStark {
+        proof,
+        common_data,
+        table_public_inputs,
+    };
+    let output = owner
+        .prove(input)
+        .expect("resolved profile must actually prove the recursion layer");
 
-    prep_cache
-        .prover
+    let mut verifier = BatchStarkProver::new(fixture.layer_config.clone())
+        .with_table_packing(owner.params().table_packing.clone());
+    for prover in <KoalaBearD4Backend as PcsRecursionBackend<
+        KoalaBearD4RecursionConfig,
+        BatchOnly,
+        4,
+    >>::non_primitive_provers(&fixture.backend, 4)
+    {
+        verifier.register_table_prover(prover);
+    }
+    verifier
         .verify_all_tables::<Challenge>(&output.0)
         .expect("the layer proven under the resolved profile must verify");
 }

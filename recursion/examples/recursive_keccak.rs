@@ -382,8 +382,8 @@ macro_rules! define_field_module_keccak_quintic {
 
                 let mut output: Option<RecursionOutput<ConfigWithFriParams>> = None;
 
-                let mut prev_witness_count: Option<u32> = None;
-                let mut stable_prep: Option<NextLayerPrepCache<ConfigWithFriParams>> = None;
+                let mut pending_owner: Option<PreparedLayer<'_, ConfigWithFriParams, KeccakAir, _, D>> = None;
+                let mut stable_owner: Option<PreparedLayer<'_, ConfigWithFriParams, KeccakAir, _, D>> = None;
 
                 // `--profile` path: a `RecursionLayerProfile` fixed point is searched for
                 // starting from layer 1's proof, re-solving against each new layer's own output
@@ -391,54 +391,46 @@ macro_rules! define_field_module_keccak_quintic {
                 // documented cross-layer contract: one call only fits the single proof it
                 // solved against, so reaching a true fixed point requires solving again against
                 // a layer actually proved under the candidate). Once a solve leaves the profile
-                // unchanged, that layer's prep is cached and reused for every remaining layer.
+                // unchanged, that layer's owner is retained and reused only after input checks.
                 let mut profile_config: Option<ConfigWithFriParams> = None;
                 let mut current_profile: Option<RecursionLayerProfile> = None;
-                let mut profile_prep: Option<ProfilePrepCache<ConfigWithFriParams>> = None;
+                let mut profile_owner: Option<PreparedLayer<'_, ConfigWithFriParams, KeccakAir, _, D>> = None;
 
                 for layer in 1..=num_recursive_layers {
                     if profile && layer >= 2 {
                         let config = profile_config.get_or_insert_with(|| {
                             config_with_fri_params(fri_params, security_level, disable_recompose_npo)
                         });
-                        let input = output.as_ref().unwrap().into_recursion_input::<BatchOnly>();
+                        let previous = output.as_ref().unwrap();
+                        let table_public_inputs = batch_table_public_inputs(previous);
+                        let input = batch_prepared_input(previous, &table_public_inputs);
+                        let recursion_input = previous.into_recursion_input::<BatchOnly>();
 
-                        if let Some(prep) = profile_prep.as_ref() {
-                            let prof = &prep.profile;
-                            let (verification_circuit, verifier_result) =
-                                build_layer_circuit::<ConfigWithFriParams, BatchOnly, _, D>(
-                                    prof, &input, config, &backend,
-                                )
-                                .unwrap_or_else(|e| {
-                                    panic!("Failed to build circuit layer {layer}: {e:?}")
-                                });
-                            let out = prove_layer::<ConfigWithFriParams, BatchOnly, _, D>(
-                                prof,
-                                &input,
-                                &verification_circuit,
-                                &verifier_result,
-                                config,
-                                &backend,
-                                Some(prep),
-                            )
-                            .unwrap_or_else(|e| panic!("Failed to prove layer {layer}: {e:?}"));
-
-                            report_proof_size(&out.0);
-                            let mut prover = BatchStarkProver::new(config.clone())
-                                .with_table_packing(prof.table_packing.clone());
-                            if $poseidon2_config.d() >= 2 {
-                                prover.$register_fn::<D>($poseidon2_config.for_challenger());
+                        if let Some(owner) = profile_owner.as_ref() {
+                            match owner.check_input(&input) {
+                                Ok(()) => {
+                                    let out = owner.prove(input).unwrap_or_else(|e| {
+                                        panic!("Failed to prove layer {layer}: {e:?}")
+                                    });
+                                    report_proof_size(&out.0);
+                                    let mut prover = BatchStarkProver::new(config.clone())
+                                        .with_table_packing(owner.params().table_packing.clone());
+                                    if $poseidon2_config.d() >= 2 {
+                                        prover.$register_fn::<D>($poseidon2_config.for_challenger());
+                                    }
+                                    prover.$register_fn::<D>($poseidon2_config);
+                                    if !disable_recompose_npo {
+                                        prover.register_recompose_table::<D>(true);
+                                    }
+                                    prover.verify_all_tables::<Challenge>(&out.0).unwrap_or_else(|e| {
+                                        panic!("Failed to verify layer {layer}: {e:?}")
+                                    });
+                                    output = Some(out);
+                                    continue;
+                                }
+                                Err(VerificationError::PreparedInputMismatch { .. }) => {}
+                                Err(e) => panic!("Failed to validate layer {layer}: {e:?}"),
                             }
-                            prover.$register_fn::<D>($poseidon2_config);
-                            if !disable_recompose_npo {
-                                prover.register_recompose_table::<D>(true);
-                            }
-                            prover
-                                .verify_all_tables::<Challenge>(&out.0)
-                                .unwrap_or_else(|e| panic!("Failed to verify layer {layer}: {e:?}"));
-
-                            output = Some(out);
-                            continue;
                         }
 
                         let seed = current_profile.clone().unwrap_or_else(|| RecursionLayerProfile {
@@ -452,7 +444,7 @@ macro_rules! define_field_module_keccak_quintic {
                         });
                         let resolved = solve_fixed_point::<ConfigWithFriParams, BatchOnly, _, D>(
                             seed.clone(),
-                            &input,
+                            &recursion_input,
                             config,
                             &backend,
                             8,
@@ -463,43 +455,21 @@ macro_rules! define_field_module_keccak_quintic {
                         let already_stable = current_profile.as_ref() == Some(&resolved);
                         current_profile = Some(resolved.clone());
 
-                        let (verification_circuit, verifier_result) =
-                            build_layer_circuit::<ConfigWithFriParams, BatchOnly, _, D>(
-                                &resolved, &input, config, &backend,
-                            )
-                            .unwrap_or_else(|e| {
-                                panic!("Failed to build circuit layer {layer}: {e:?}")
-                            });
-
-                        if already_stable {
-                            let inner = build_next_layer_prep::<ConfigWithFriParams, BatchOnly, _, D>(
-                                &verification_circuit,
-                                config,
-                                &backend,
-                                &ProveNextLayerParams {
-                                    table_packing: resolved.table_packing.clone(),
-                                    constraint_profile: ConstraintProfile::Standard,
-                                },
-                            )
-                            .unwrap_or_else(|e| {
-                                panic!("Failed to build prep cache for layer {layer}: {e:?}")
-                            });
-                            profile_prep = Some(ProfilePrepCache {
-                                profile: resolved.clone(),
-                                inner,
-                            });
-                        }
-
-                        let out = prove_layer::<ConfigWithFriParams, BatchOnly, _, D>(
-                            &resolved,
-                            &input,
-                            &verification_circuit,
-                            &verifier_result,
-                            config,
-                            &backend,
-                            profile_prep.as_ref(),
+                        let source = PreparedSource::BatchStark {
+                            proof: &previous.0,
+                            common_data: &previous.0.stark_common,
+                            table_public_inputs: &table_public_inputs,
+                        };
+                        let owner = PreparedLayer::new_with_profile(
+                            source,
+                            config.clone(),
+                            backend.clone(),
+                            resolved.clone(),
                         )
-                        .unwrap_or_else(|e| panic!("Failed to prove layer {layer}: {e:?}"));
+                        .unwrap_or_else(|e| panic!("Failed to prepare layer {layer}: {e:?}"));
+                        let out = owner.prove(input).unwrap_or_else(|e| {
+                            panic!("Failed to prove layer {layer}: {e:?}")
+                        });
 
                         report_proof_size(&out.0);
                         let mut prover = BatchStarkProver::new(config.clone())
@@ -516,6 +486,9 @@ macro_rules! define_field_module_keccak_quintic {
                             .unwrap_or_else(|e| panic!("Failed to verify layer {layer}: {e:?}"));
 
                         output = Some(out);
+                        if already_stable {
+                            profile_owner = Some(owner);
+                        }
                         continue;
                     }
 
@@ -541,59 +514,85 @@ macro_rules! define_field_module_keccak_quintic {
                         config_with_fri_params(fri_params, security_level, disable_recompose_npo);
 
                     let out = if layer == 1 {
-                        let input = RecursionInput::UniStark {
+                        let input = PreparedInput::UniStark {
                             proof: &proof_0,
-                            air: &keccak_air,
-                            public_inputs: pis.clone(),
+                            public_inputs: &pis,
                             preprocessed_commit: None,
                         };
-                        build_and_prove_next_layer::<ConfigWithFriParams, _, _, D>(
-                            &input,
-                            &config,
-                            &backend,
-                            &params,
+                        let source = PreparedSource::UniStark {
+                            air: &keccak_air,
+                            proof: &proof_0,
+                            public_inputs: &pis,
+                            preprocessed_commit: None,
+                        };
+                        let owner = PreparedLayer::new(
+                            source,
+                            config.clone(),
+                            backend.clone(),
+                            params.clone(),
                         )
-                        .unwrap_or_else(|e| panic!("Failed to prove layer {layer}: {e:?}"))
+                        .unwrap_or_else(|e| panic!("Failed to prepare layer {layer}: {e:?}"));
+                        let out = owner.prove(input);
+                        pending_owner = Some(owner);
+                        out
                     } else {
-                        let input = output.as_ref().unwrap().into_recursion_input::<BatchOnly>();
-
-                        let (verification_circuit, verifier_result) =
-                            build_next_layer_circuit::<ConfigWithFriParams, BatchOnly, _, D>(
-                                &input, &config, &backend,
+                        let previous = output.as_ref().unwrap();
+                        let table_public_inputs = batch_table_public_inputs(previous);
+                        let input = batch_prepared_input(previous, &table_public_inputs);
+                        if let Some(owner) = stable_owner.as_ref() {
+                            match owner.check_input(&input) {
+                                Ok(()) => owner.prove(input),
+                                Err(VerificationError::PreparedInputMismatch { .. }) => {
+                                    let source = PreparedSource::BatchStark {
+                                        proof: &previous.0,
+                                        common_data: &previous.0.stark_common,
+                                        table_public_inputs: &table_public_inputs,
+                                    };
+                                    let owner = PreparedLayer::new(
+                                        source,
+                                        config.clone(),
+                                        backend.clone(),
+                                        params.clone(),
+                                    )
+                                    .unwrap_or_else(|e| panic!("Failed to reprepare layer {layer}: {e:?}"));
+                                    let out = owner.prove(input);
+                                    stable_owner = Some(owner);
+                                    out
+                                }
+                                Err(e) => panic!("Failed to validate layer {layer}: {e:?}"),
+                            }
+                        } else {
+                            let source = PreparedSource::BatchStark {
+                                proof: &previous.0,
+                                common_data: &previous.0.stark_common,
+                                table_public_inputs: &table_public_inputs,
+                            };
+                            let owner = PreparedLayer::new(
+                                source,
+                                config.clone(),
+                                backend.clone(),
+                                params.clone(),
                             )
-                            .unwrap_or_else(|e| {
-                                panic!("Failed to build circuit layer {layer}: {e:?}")
-                            });
-
-                        let current_witness_count = verification_circuit.witness_count;
-                        let is_stable = prev_witness_count == Some(current_witness_count);
-                        prev_witness_count = Some(current_witness_count);
-
-                        if is_stable && stable_prep.is_none() {
-                            stable_prep = Some(
-                                build_next_layer_prep::<ConfigWithFriParams, BatchOnly, _, D>(
-                                    &verification_circuit,
-                                    &config,
-                                    &backend,
-                                    &params,
-                                )
-                                .unwrap_or_else(|e| {
-                                    panic!("Failed to build prep cache: {e:?}")
-                                }),
-                            );
+                            .unwrap_or_else(|e| panic!("Failed to prepare layer {layer}: {e:?}"));
+                            let matches_previous = match pending_owner.as_ref() {
+                                Some(previous_owner) => match previous_owner.check_input(&input) {
+                                    Ok(()) => true,
+                                    Err(VerificationError::PreparedInputMismatch { .. }) => false,
+                                    Err(e) => panic!("Failed to validate layer {layer}: {e:?}"),
+                                },
+                                None => false,
+                            };
+                            let out = owner.prove(input);
+                            if matches_previous {
+                                stable_owner = Some(owner);
+                                pending_owner = None;
+                            } else {
+                                pending_owner = Some(owner);
+                            }
+                            out
                         }
-
-                        prove_next_layer::<ConfigWithFriParams, BatchOnly, _, D>(
-                            &input,
-                            &verification_circuit,
-                            &verifier_result,
-                            &config,
-                            &backend,
-                            &params,
-                            stable_prep.as_ref(),
-                        )
-                        .unwrap_or_else(|e| panic!("Failed to prove layer {layer}: {e:?}"))
-                    };
+                    }
+                    .unwrap_or_else(|e| panic!("Failed to prove layer {layer}: {e:?}"));
 
                     report_proof_size(&out.0);
                     let mut prover = BatchStarkProver::new(config.clone())
@@ -721,8 +720,8 @@ macro_rules! define_field_module {
 
                 let mut output: Option<RecursionOutput<ConfigWithFriParams>> = None;
 
-                let mut prev_witness_count: Option<u32> = None;
-                let mut stable_prep: Option<NextLayerPrepCache<ConfigWithFriParams>> = None;
+                let mut pending_owner: Option<PreparedLayer<'_, ConfigWithFriParams, KeccakAir, _, D>> = None;
+                let mut stable_owner: Option<PreparedLayer<'_, ConfigWithFriParams, KeccakAir, _, D>> = None;
 
                 // `--profile` path: a `RecursionLayerProfile` fixed point is searched for
                 // starting from layer 1's proof, re-solving against each new layer's own output
@@ -730,54 +729,46 @@ macro_rules! define_field_module {
                 // documented cross-layer contract: one call only fits the single proof it
                 // solved against, so reaching a true fixed point requires solving again against
                 // a layer actually proved under the candidate). Once a solve leaves the profile
-                // unchanged, that layer's prep is cached and reused for every remaining layer.
+                // unchanged, that layer's owner is retained and reused only after input checks.
                 let mut profile_config: Option<ConfigWithFriParams> = None;
                 let mut current_profile: Option<RecursionLayerProfile> = None;
-                let mut profile_prep: Option<ProfilePrepCache<ConfigWithFriParams>> = None;
+                let mut profile_owner: Option<PreparedLayer<'_, ConfigWithFriParams, KeccakAir, _, D>> = None;
 
                 for layer in 1..=num_recursive_layers {
                     if profile && layer >= 2 {
                         let config = profile_config.get_or_insert_with(|| {
                             config_with_fri_params(fri_params, security_level, disable_recompose_npo)
                         });
-                        let input = output.as_ref().unwrap().into_recursion_input::<BatchOnly>();
+                        let previous = output.as_ref().unwrap();
+                        let table_public_inputs = batch_table_public_inputs(previous);
+                        let input = batch_prepared_input(previous, &table_public_inputs);
+                        let recursion_input = previous.into_recursion_input::<BatchOnly>();
 
-                        if let Some(prep) = profile_prep.as_ref() {
-                            let prof = &prep.profile;
-                            let (verification_circuit, verifier_result) =
-                                build_layer_circuit::<ConfigWithFriParams, BatchOnly, _, D>(
-                                    prof, &input, config, &backend,
-                                )
-                                .unwrap_or_else(|e| {
-                                    panic!("Failed to build circuit layer {layer}: {e:?}")
-                                });
-                            let out = prove_layer::<ConfigWithFriParams, BatchOnly, _, D>(
-                                prof,
-                                &input,
-                                &verification_circuit,
-                                &verifier_result,
-                                config,
-                                &backend,
-                                Some(prep),
-                            )
-                            .unwrap_or_else(|e| panic!("Failed to prove layer {layer}: {e:?}"));
-
-                            report_proof_size(&out.0);
-                            let mut prover = BatchStarkProver::new(config.clone())
-                                .with_table_packing(prof.table_packing.clone());
-                            if $poseidon2_config.d() >= 2 {
-                                prover.$register_fn::<$d>($poseidon2_config.for_challenger());
+                        if let Some(owner) = profile_owner.as_ref() {
+                            match owner.check_input(&input) {
+                                Ok(()) => {
+                                    let out = owner.prove(input).unwrap_or_else(|e| {
+                                        panic!("Failed to prove layer {layer}: {e:?}")
+                                    });
+                                    report_proof_size(&out.0);
+                                    let mut prover = BatchStarkProver::new(config.clone())
+                                        .with_table_packing(owner.params().table_packing.clone());
+                                    if $poseidon2_config.d() >= 2 {
+                                        prover.$register_fn::<$d>($poseidon2_config.for_challenger());
+                                    }
+                                    prover.$register_fn::<$d>($poseidon2_config);
+                                    if !disable_recompose_npo {
+                                        prover.register_recompose_table::<$d>(true);
+                                    }
+                                    prover.verify_all_tables::<Challenge>(&out.0).unwrap_or_else(|e| {
+                                        panic!("Failed to verify layer {layer}: {e:?}")
+                                    });
+                                    output = Some(out);
+                                    continue;
+                                }
+                                Err(VerificationError::PreparedInputMismatch { .. }) => {}
+                                Err(e) => panic!("Failed to validate layer {layer}: {e:?}"),
                             }
-                            prover.$register_fn::<$d>($poseidon2_config);
-                            if !disable_recompose_npo {
-                                prover.register_recompose_table::<$d>(true);
-                            }
-                            prover
-                                .verify_all_tables::<Challenge>(&out.0)
-                                .unwrap_or_else(|e| panic!("Failed to verify layer {layer}: {e:?}"));
-
-                            output = Some(out);
-                            continue;
                         }
 
                         let seed = current_profile.clone().unwrap_or_else(|| RecursionLayerProfile {
@@ -791,7 +782,7 @@ macro_rules! define_field_module {
                         });
                         let resolved = solve_fixed_point::<ConfigWithFriParams, BatchOnly, _, D>(
                             seed.clone(),
-                            &input,
+                            &recursion_input,
                             config,
                             &backend,
                             8,
@@ -802,43 +793,21 @@ macro_rules! define_field_module {
                         let already_stable = current_profile.as_ref() == Some(&resolved);
                         current_profile = Some(resolved.clone());
 
-                        let (verification_circuit, verifier_result) =
-                            build_layer_circuit::<ConfigWithFriParams, BatchOnly, _, D>(
-                                &resolved, &input, config, &backend,
-                            )
-                            .unwrap_or_else(|e| {
-                                panic!("Failed to build circuit layer {layer}: {e:?}")
-                            });
-
-                        if already_stable {
-                            let inner = build_next_layer_prep::<ConfigWithFriParams, BatchOnly, _, D>(
-                                &verification_circuit,
-                                config,
-                                &backend,
-                                &ProveNextLayerParams {
-                                    table_packing: resolved.table_packing.clone(),
-                                    constraint_profile: ConstraintProfile::Standard,
-                                },
-                            )
-                            .unwrap_or_else(|e| {
-                                panic!("Failed to build prep cache for layer {layer}: {e:?}")
-                            });
-                            profile_prep = Some(ProfilePrepCache {
-                                profile: resolved.clone(),
-                                inner,
-                            });
-                        }
-
-                        let out = prove_layer::<ConfigWithFriParams, BatchOnly, _, D>(
-                            &resolved,
-                            &input,
-                            &verification_circuit,
-                            &verifier_result,
-                            config,
-                            &backend,
-                            profile_prep.as_ref(),
+                        let source = PreparedSource::BatchStark {
+                            proof: &previous.0,
+                            common_data: &previous.0.stark_common,
+                            table_public_inputs: &table_public_inputs,
+                        };
+                        let owner = PreparedLayer::new_with_profile(
+                            source,
+                            config.clone(),
+                            backend.clone(),
+                            resolved.clone(),
                         )
-                        .unwrap_or_else(|e| panic!("Failed to prove layer {layer}: {e:?}"));
+                        .unwrap_or_else(|e| panic!("Failed to prepare layer {layer}: {e:?}"));
+                        let out = owner.prove(input).unwrap_or_else(|e| {
+                            panic!("Failed to prove layer {layer}: {e:?}")
+                        });
 
                         report_proof_size(&out.0);
                         let mut prover = BatchStarkProver::new(config.clone())
@@ -855,6 +824,9 @@ macro_rules! define_field_module {
                             .unwrap_or_else(|e| panic!("Failed to verify layer {layer}: {e:?}"));
 
                         output = Some(out);
+                        if already_stable {
+                            profile_owner = Some(owner);
+                        }
                         continue;
                     }
 
@@ -880,59 +852,85 @@ macro_rules! define_field_module {
                         config_with_fri_params(fri_params, security_level, disable_recompose_npo);
 
                     let out = if layer == 1 {
-                        let input = RecursionInput::UniStark {
+                        let input = PreparedInput::UniStark {
                             proof: &proof_0,
-                            air: &keccak_air,
-                            public_inputs: pis.clone(),
+                            public_inputs: &pis,
                             preprocessed_commit: None,
                         };
-                        build_and_prove_next_layer::<ConfigWithFriParams, _, _, D>(
-                            &input,
-                            &config,
-                            &backend,
-                            &params,
+                        let source = PreparedSource::UniStark {
+                            air: &keccak_air,
+                            proof: &proof_0,
+                            public_inputs: &pis,
+                            preprocessed_commit: None,
+                        };
+                        let owner = PreparedLayer::new(
+                            source,
+                            config.clone(),
+                            backend.clone(),
+                            params.clone(),
                         )
-                        .unwrap_or_else(|e| panic!("Failed to prove layer {layer}: {e:?}"))
+                        .unwrap_or_else(|e| panic!("Failed to prepare layer {layer}: {e:?}"));
+                        let out = owner.prove(input);
+                        pending_owner = Some(owner);
+                        out
                     } else {
-                        let input = output.as_ref().unwrap().into_recursion_input::<BatchOnly>();
-
-                        let (verification_circuit, verifier_result) =
-                            build_next_layer_circuit::<ConfigWithFriParams, BatchOnly, _, D>(
-                                &input, &config, &backend,
+                        let previous = output.as_ref().unwrap();
+                        let table_public_inputs = batch_table_public_inputs(previous);
+                        let input = batch_prepared_input(previous, &table_public_inputs);
+                        if let Some(owner) = stable_owner.as_ref() {
+                            match owner.check_input(&input) {
+                                Ok(()) => owner.prove(input),
+                                Err(VerificationError::PreparedInputMismatch { .. }) => {
+                                    let source = PreparedSource::BatchStark {
+                                        proof: &previous.0,
+                                        common_data: &previous.0.stark_common,
+                                        table_public_inputs: &table_public_inputs,
+                                    };
+                                    let owner = PreparedLayer::new(
+                                        source,
+                                        config.clone(),
+                                        backend.clone(),
+                                        params.clone(),
+                                    )
+                                    .unwrap_or_else(|e| panic!("Failed to reprepare layer {layer}: {e:?}"));
+                                    let out = owner.prove(input);
+                                    stable_owner = Some(owner);
+                                    out
+                                }
+                                Err(e) => panic!("Failed to validate layer {layer}: {e:?}"),
+                            }
+                        } else {
+                            let source = PreparedSource::BatchStark {
+                                proof: &previous.0,
+                                common_data: &previous.0.stark_common,
+                                table_public_inputs: &table_public_inputs,
+                            };
+                            let owner = PreparedLayer::new(
+                                source,
+                                config.clone(),
+                                backend.clone(),
+                                params.clone(),
                             )
-                            .unwrap_or_else(|e| {
-                                panic!("Failed to build circuit layer {layer}: {e:?}")
-                            });
-
-                        let current_witness_count = verification_circuit.witness_count;
-                        let is_stable = prev_witness_count == Some(current_witness_count);
-                        prev_witness_count = Some(current_witness_count);
-
-                        if is_stable && stable_prep.is_none() {
-                            stable_prep = Some(
-                                build_next_layer_prep::<ConfigWithFriParams, BatchOnly, _, D>(
-                                    &verification_circuit,
-                                    &config,
-                                    &backend,
-                                    &params,
-                                )
-                                .unwrap_or_else(|e| {
-                                    panic!("Failed to build prep cache: {e:?}")
-                                }),
-                            );
+                            .unwrap_or_else(|e| panic!("Failed to prepare layer {layer}: {e:?}"));
+                            let matches_previous = match pending_owner.as_ref() {
+                                Some(previous_owner) => match previous_owner.check_input(&input) {
+                                    Ok(()) => true,
+                                    Err(VerificationError::PreparedInputMismatch { .. }) => false,
+                                    Err(e) => panic!("Failed to validate layer {layer}: {e:?}"),
+                                },
+                                None => false,
+                            };
+                            let out = owner.prove(input);
+                            if matches_previous {
+                                stable_owner = Some(owner);
+                                pending_owner = None;
+                            } else {
+                                pending_owner = Some(owner);
+                            }
+                            out
                         }
-
-                        prove_next_layer::<ConfigWithFriParams, BatchOnly, _, D>(
-                            &input,
-                            &verification_circuit,
-                            &verifier_result,
-                            &config,
-                            &backend,
-                            &params,
-                            stable_prep.as_ref(),
-                        )
-                        .unwrap_or_else(|e| panic!("Failed to prove layer {layer}: {e:?}"))
-                    };
+                    }
+                    .unwrap_or_else(|e| panic!("Failed to prove layer {layer}: {e:?}"));
 
                     report_proof_size(&out.0);
                     let mut prover = BatchStarkProver::new(config.clone())

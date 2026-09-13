@@ -1,12 +1,10 @@
 mod common;
 
 use p3_circuit_prover::ConstraintProfile;
-use p3_recursion::profile::{
-    ProfilePrepCache, build_layer_circuit, prove_layer, solve_fixed_point,
-};
+use p3_recursion::profile::solve_fixed_point;
 use p3_recursion::{
-    BatchOnly, ProveNextLayerParams, RecursionOutput, build_next_layer_circuit,
-    build_next_layer_prep, prove_next_layer,
+    BatchOnly, PreparedInput, PreparedLayer, PreparedSource, ProveNextLayerParams, RecursionInput,
+    RecursionOutput,
 };
 
 use crate::common::{KoalaBearD4Backend, KoalaBearD4RecursionConfig, solved_koala_bear_d4_profile};
@@ -35,47 +33,53 @@ fn profile_path_matches_plain_path_once_fixed_point_is_reached() {
         #[allow(clippy::option_if_let_else)]
         let out = match &current_output {
             None => {
-                let (circuit, verifier_result) = build_layer_circuit::<
-                    KoalaBearD4RecursionConfig,
-                    BatchOnly,
-                    KoalaBearD4Backend,
-                    4,
-                >(
-                    &candidate, &layer1_prev, &config, &backend
+                let RecursionInput::BatchStark {
+                    proof,
+                    common_data,
+                    table_public_inputs,
+                } = &layer1_prev
+                else {
+                    panic!("the profile fixture must be a batch input");
+                };
+                let owner = PreparedLayer::new_with_profile(
+                    PreparedSource::batch(proof, common_data, table_public_inputs),
+                    config.clone(),
+                    backend.clone(),
+                    candidate.clone(),
                 )
-                .expect("building the verifier circuit under the candidate profile should succeed");
-                prove_layer::<KoalaBearD4RecursionConfig, BatchOnly, KoalaBearD4Backend, 4>(
-                    &candidate,
-                    &layer1_prev,
-                    &circuit,
-                    &verifier_result,
-                    &config,
-                    &backend,
-                    None,
-                )
-                .expect("proving under the candidate profile should succeed")
+                .expect("preparing under the candidate profile should succeed");
+                owner
+                    .prove(PreparedInput::BatchStark {
+                        proof,
+                        common_data,
+                        table_public_inputs,
+                    })
+                    .expect("proving under the candidate profile should succeed")
             }
             Some(prev_out) => {
                 let input = prev_out.into_recursion_input::<BatchOnly>();
-                let (circuit, verifier_result) = build_layer_circuit::<
-                    KoalaBearD4RecursionConfig,
-                    BatchOnly,
-                    KoalaBearD4Backend,
-                    4,
-                >(
-                    &candidate, &input, &config, &backend
+                let RecursionInput::BatchStark {
+                    proof,
+                    common_data,
+                    table_public_inputs,
+                } = &input
+                else {
+                    panic!("the bootstrap output must be a batch input");
+                };
+                let owner = PreparedLayer::new_with_profile(
+                    PreparedSource::batch(proof, common_data, table_public_inputs),
+                    config.clone(),
+                    backend.clone(),
+                    candidate.clone(),
                 )
-                .expect("building the verifier circuit under the candidate profile should succeed");
-                prove_layer::<KoalaBearD4RecursionConfig, BatchOnly, KoalaBearD4Backend, 4>(
-                    &candidate,
-                    &input,
-                    &circuit,
-                    &verifier_result,
-                    &config,
-                    &backend,
-                    None,
-                )
-                .expect("proving under the candidate profile should succeed")
+                .expect("preparing under the candidate profile should succeed");
+                owner
+                    .prove(PreparedInput::BatchStark {
+                        proof,
+                        common_data,
+                        table_public_inputs,
+                    })
+                    .expect("proving under the candidate profile should succeed")
             }
         };
 
@@ -108,68 +112,49 @@ fn profile_path_matches_plain_path_once_fixed_point_is_reached() {
     let prev_input = last_output.into_recursion_input::<BatchOnly>();
 
     // Prove one more layer two ways under the now-confirmed-stable profile and assert
-    // byte-identical output: once via the profile path (build_layer_circuit + prove_layer, with
-    // a prep cache built from this layer's own circuit), once via the plain path
-    // (build_next_layer_circuit + prove_next_layer) using the identical resolved table_packing.
-    let (profile_circuit, profile_verifier_result) =
-        build_layer_circuit::<KoalaBearD4RecursionConfig, BatchOnly, KoalaBearD4Backend, 4>(
-            &fixed_profile,
-            &prev_input,
-            &config,
-            &backend,
-        )
-        .expect("building the verifier circuit under the fixed profile should succeed");
-
-    let prep_inner =
-        build_next_layer_prep::<KoalaBearD4RecursionConfig, BatchOnly, KoalaBearD4Backend, 4>(
-            &profile_circuit,
-            &config,
-            &backend,
-            &ProveNextLayerParams {
-                table_packing: fixed_profile.table_packing.clone(),
-                constraint_profile: ConstraintProfile::Standard,
-            },
-        )
-        .expect("the confirmed-stable profile must not overflow any table");
-    let prep = ProfilePrepCache {
-        profile: fixed_profile.clone(),
-        inner: prep_inner,
+    // byte-identical output: once via the profile-owned path, once via the params-owned path,
+    // both using the same native input contract and resolved table packing.
+    let RecursionInput::BatchStark {
+        proof,
+        common_data,
+        table_public_inputs,
+    } = &prev_input
+    else {
+        panic!("the fixed-point output must be a batch input");
     };
-
-    let profile_path_out =
-        prove_layer::<KoalaBearD4RecursionConfig, BatchOnly, KoalaBearD4Backend, 4>(
-            &fixed_profile,
-            &prev_input,
-            &profile_circuit,
-            &profile_verifier_result,
-            &config,
-            &backend,
-            Some(&prep),
-        )
-        .expect("prove_layer should succeed under the confirmed-stable profile");
+    let profile_owner = PreparedLayer::new_with_profile(
+        PreparedSource::batch(proof, common_data, table_public_inputs),
+        config.clone(),
+        backend.clone(),
+        fixed_profile.clone(),
+    )
+    .expect("the confirmed-stable profile must not overflow any table");
+    let profile_path_out = profile_owner
+        .prove(PreparedInput::BatchStark {
+            proof,
+            common_data,
+            table_public_inputs,
+        })
+        .expect("the profile-owned path should succeed under the confirmed-stable profile");
 
     let plain_params = ProveNextLayerParams {
         table_packing: fixed_profile.table_packing,
         constraint_profile: ConstraintProfile::Standard,
     };
-    let (plain_circuit, plain_verifier_result) = build_next_layer_circuit::<
-        KoalaBearD4RecursionConfig,
-        BatchOnly,
-        KoalaBearD4Backend,
-        4,
-    >(&prev_input, &config, &backend)
-    .expect("building the verifier circuit via the plain path should succeed");
-    let plain_path_out =
-        prove_next_layer::<KoalaBearD4RecursionConfig, BatchOnly, KoalaBearD4Backend, 4>(
-            &prev_input,
-            &plain_circuit,
-            &plain_verifier_result,
-            &config,
-            &backend,
-            &plain_params,
-            None,
-        )
-        .expect("proving via the plain path should succeed");
+    let plain_owner = PreparedLayer::new(
+        PreparedSource::batch(proof, common_data, table_public_inputs),
+        config,
+        backend,
+        plain_params,
+    )
+    .expect("building the params-owned verifier should succeed");
+    let plain_path_out = plain_owner
+        .prove(PreparedInput::BatchStark {
+            proof,
+            common_data,
+            table_public_inputs,
+        })
+        .expect("proving via the params-owned path should succeed");
 
     let profile_path_bytes =
         postcard::to_allocvec(&profile_path_out.0).expect("serializing the profile-path proof");
@@ -178,8 +163,7 @@ fn profile_path_matches_plain_path_once_fixed_point_is_reached() {
 
     assert_eq!(
         profile_path_bytes, plain_path_bytes,
-        "the profile path (build_layer_circuit/prove_layer under a confirmed-stable profile) \
-         must produce byte-identical output to the plain (non-profile) path proving under the \
-         same resolved table_packing"
+        "the profile-owned path must produce byte-identical output to the params-owned path \
+         proving under the same resolved table_packing"
     );
 }
