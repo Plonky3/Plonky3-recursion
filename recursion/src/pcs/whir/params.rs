@@ -7,7 +7,7 @@ use p3_challenger::{FieldChallenger, GrindingChallenger};
 use p3_circuit::ops::PermConfig;
 use p3_field::{ExtensionField, Field, TwoAdicField};
 use p3_sumcheck::strategy::VariableOrder;
-use p3_whir::parameters::WhirConfig;
+use p3_whir::parameters::{RoundConfig, WhirConfig, WhirConfigError};
 use thiserror::Error;
 
 /// Which phase of the WHIR protocol a verifier-params derivation error occurred in.
@@ -29,8 +29,23 @@ impl fmt::Display for WhirPhase {
 }
 
 /// Errors deriving in-circuit WHIR verifier parameters from a `WhirConfig`.
-#[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
+#[derive(Debug, Error)]
 pub enum WhirVerifierParamsError {
+    /// The supplied protocol parameters cannot derive a WHIR configuration.
+    #[error("invalid WHIR configuration: {0}")]
+    InvalidConfig(#[from] WhirConfigError),
+    /// The recursive adapter currently supports only a nonzero constant fold.
+    #[error("WHIR recursive verifier requires a nonzero constant folding factor")]
+    UnsupportedFoldingFactor,
+    /// The recursive adapter's stacked layout is implemented for Prefix only.
+    #[error("WHIR recursive verifier does not support variable order {variable_order:?}")]
+    UnsupportedVariableOrder { variable_order: VariableOrder },
+    /// The stacked polynomial arity cannot be represented by WHIR's integer geometry.
+    #[error("stacked WHIR arity {arity} cannot form an initial domain with rate {rate}")]
+    InvalidStackedArity { arity: usize, rate: usize },
+    /// A caller supplied a derived config that no longer matches its source parameters.
+    #[error("WHIR derived configuration is inconsistent in {component}")]
+    InconsistentDerivedConfig { component: &'static str },
     /// A phase's STIR query count meets or exceeds its folded domain size.
     ///
     /// Native `get_challenge_stir_queries` enumerates the whole folded domain
@@ -119,6 +134,18 @@ pub struct WhirVerifierParams<F> {
 }
 
 impl<F: Field> WhirVerifierParams<F> {
+    fn round_config_matches(a: &RoundConfig<F>, b: &RoundConfig<F>) -> bool {
+        a.pow_bits == b.pow_bits
+            && a.folding_pow_bits == b.folding_pow_bits
+            && a.num_queries == b.num_queries
+            && a.ood_samples == b.ood_samples
+            && a.num_variables == b.num_variables
+            && a.folding_factor == b.folding_factor
+            && a.log_inv_rate == b.log_inv_rate
+            && a.domain_size == b.domain_size
+            && a.folded_domain_gen == b.folded_domain_gen
+    }
+
     /// Derive verifier params from a concrete `WhirConfig`.
     ///
     /// # Errors
@@ -139,6 +166,34 @@ impl<F: Field> WhirVerifierParams<F> {
         EF: ExtensionField<F> + TwoAdicField,
         Ch: FieldChallenger<F> + GrindingChallenger<Witness = F>,
     {
+        if variable_order != VariableOrder::Prefix {
+            return Err(WhirVerifierParamsError::UnsupportedVariableOrder { variable_order });
+        }
+        // `WhirConfig` exposes its derived fields publicly for prover use.
+        // Re-derive and compare before touching `final_round_config`, whose
+        // unchecked arithmetic assumes those fields are internally coherent.
+        let canonical = WhirConfig::<EF, F, Ch>::new(config.num_variables, config.params.clone())?;
+        if config.num_variables != canonical.num_variables
+            || config.folding_schedule != canonical.folding_schedule
+            || config.commitment_ood_samples != canonical.commitment_ood_samples
+            || config.starting_folding_pow_bits != canonical.starting_folding_pow_bits
+            || config.final_queries != canonical.final_queries
+            || config.final_pow_bits != canonical.final_pow_bits
+            || config.final_sumcheck_rounds != canonical.final_sumcheck_rounds
+            || config.final_folding_pow_bits != canonical.final_folding_pow_bits
+            || config.round_parameters.len() != canonical.round_parameters.len()
+            || config
+                .round_parameters
+                .iter()
+                .zip(&canonical.round_parameters)
+                .any(|(a, b)| !Self::round_config_matches(a, b))
+        {
+            return Err(WhirVerifierParamsError::InconsistentDerivedConfig {
+                component: "derived round schedule",
+            });
+        }
+
+        let config = &canonical;
         let n_rounds = config.n_rounds();
         let round_params = (0..n_rounds)
             .map(|i| {
@@ -310,14 +365,14 @@ mod tests {
         )
         .expect_err("final_queries=35 >= folded_domain_size=2 must be rejected");
 
-        assert_eq!(
+        assert!(matches!(
             err,
             WhirVerifierParamsError::SaturatingQueryCountUnsupported {
                 phase: WhirPhase::Final,
                 num_queries: 35,
                 folded_domain_size: 2,
             }
-        );
+        ));
     }
 
     #[test]
@@ -333,5 +388,41 @@ mod tests {
             p3_circuit::ops::Poseidon2Config::BABY_BEAR_D4_W16,
         )
         .expect("this arity does not saturate any phase");
+    }
+
+    #[test]
+    fn from_config_rejects_tampered_derived_schedule() {
+        let mut config =
+            WhirConfig::<EF, BF, DummyChallenger<BF>>::new(12, non_saturating_protocol_params())
+                .expect("config is valid");
+        config.folding_schedule.clear();
+        let err = WhirVerifierParams::<BF>::from_config(
+            &config,
+            PrefixProver::<BF, EF>::variable_order(),
+            p3_circuit::ops::Poseidon2Config::BABY_BEAR_D4_W16,
+        )
+        .expect_err("tampered derived fields must be rejected");
+        assert!(matches!(
+            err,
+            WhirVerifierParamsError::InconsistentDerivedConfig { .. }
+        ));
+    }
+
+    #[test]
+    fn from_config_rejects_tampered_round_fold_before_indexing() {
+        let mut config =
+            WhirConfig::<EF, BF, DummyChallenger<BF>>::new(12, non_saturating_protocol_params())
+                .expect("config is valid");
+        config.round_parameters[0].folding_factor = usize::BITS as usize;
+        let err = WhirVerifierParams::<BF>::from_config(
+            &config,
+            PrefixProver::<BF, EF>::variable_order(),
+            p3_circuit::ops::Poseidon2Config::BABY_BEAR_D4_W16,
+        )
+        .expect_err("tampered round fields must be rejected");
+        assert!(matches!(
+            err,
+            WhirVerifierParamsError::InconsistentDerivedConfig { .. }
+        ));
     }
 }

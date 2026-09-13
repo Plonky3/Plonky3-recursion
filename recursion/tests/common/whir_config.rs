@@ -115,7 +115,8 @@ pub fn bb_whir_config(round_log_inv_rates: Vec<usize>) -> BbWhirConfig {
         protocol_params,
         PrefixProver::<BbF, BbEF>::variable_order(),
         Some(Poseidon2Config::BABY_BEAR_D4_W16.into()),
-    );
+    )
+    .expect("valid WHIR test configuration");
     BbWhirConfig {
         pcs,
         challenger,
@@ -306,7 +307,8 @@ pub fn kb_whir_config(round_log_inv_rates: Vec<usize>) -> KbWhirConfig {
         protocol_params,
         PrefixProver::<KbF, KbEF>::variable_order(),
         Some(Poseidon2Config::KOALA_BEAR_D4_W16.into()),
-    );
+    )
+    .expect("valid WHIR test configuration");
     KbWhirConfig {
         pcs,
         challenger,

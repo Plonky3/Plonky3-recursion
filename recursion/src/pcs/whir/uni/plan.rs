@@ -23,7 +23,31 @@
 
 use alloc::vec::Vec;
 
-use p3_util::{log2_ceil_usize, reverse_bits_len};
+use p3_util::reverse_bits_len;
+use thiserror::Error;
+
+/// Overflow or inconsistent geometry while sizing a stacked WHIR polynomial.
+#[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
+pub enum StackedArityError {
+    /// A table's row count cannot be represented as a `usize` shift.
+    #[error("stacked table arity {arity} cannot be shifted into a usize")]
+    ShiftOverflow { arity: usize },
+    /// A table's width times its row count overflows.
+    #[error("stacked table width {width} times row size 2^{arity} overflows")]
+    ProductOverflow { arity: usize, width: usize },
+    /// The sum of table contributions overflows.
+    #[error("stacked table sizes overflow while being summed")]
+    SumOverflow,
+    /// The next representable power of two is larger than `usize`.
+    #[error("stacked polynomial size {total} has no representable next power of two")]
+    RoundedDomainOverflow { total: usize },
+    /// A non-empty table would need more selector variables than the stack has.
+    #[error("table arity {arity} exceeds stacked arity {stacked_num_variables}")]
+    ArityExceedsStack {
+        arity: usize,
+        stacked_num_variables: usize,
+    },
+}
 
 /// A table's arity after normalising to the protocol's preprocessing depth.
 ///
@@ -57,6 +81,36 @@ pub const fn padded_arity(log_height: usize, folding: usize) -> PaddedArity {
     })
 }
 
+/// Computes stacked polynomial arity without allocating a layout plan.
+pub fn checked_stacked_num_variables<I>(shapes: I) -> Result<usize, StackedArityError>
+where
+    I: IntoIterator<Item = (PaddedArity, usize)>,
+{
+    let mut total = 0usize;
+    for (arity, width) in shapes {
+        if width == 0 {
+            continue;
+        }
+        let arity = arity.get();
+        let row_size = 1usize
+            .checked_shl(arity as u32)
+            .ok_or(StackedArityError::ShiftOverflow { arity })?;
+        let contribution = width
+            .checked_mul(row_size)
+            .ok_or(StackedArityError::ProductOverflow { arity, width })?;
+        total = total
+            .checked_add(contribution)
+            .ok_or(StackedArityError::SumOverflow)?;
+    }
+    if total == 0 {
+        return Ok(0);
+    }
+    let rounded = total
+        .checked_next_power_of_two()
+        .ok_or(StackedArityError::RoundedDomainOverflow { total })?;
+    Ok(rounded.trailing_zeros() as usize)
+}
+
 /// Boolean selector addressing one column's slot in the stacked polynomial.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StackedSelector {
@@ -74,7 +128,7 @@ impl StackedSelector {
     /// Panics if `index` does not fit in `num_variables` bits.
     pub const fn new(num_variables: usize, index: usize) -> Self {
         assert!(
-            index < (1 << num_variables),
+            num_variables < usize::BITS as usize && index < (1usize << num_variables),
             "selector index out of range for its bit-width"
         );
         Self {
@@ -131,23 +185,38 @@ impl StackedPlan {
     /// `PrefixProver`'s native stacking does before appending it as a suffix
     /// of the local point (see [`StackedSelector::lift_prefix`]).
     pub fn new(shapes: &[(PaddedArity, usize)]) -> Self {
+        Self::try_new(shapes).expect("stacked geometry must fit in usize")
+    }
+
+    /// Plans the layout after validating all integer geometry before any
+    /// selector/order allocation.
+    pub fn try_new(shapes: &[(PaddedArity, usize)]) -> Result<Self, StackedArityError> {
+        let num_variables = checked_stacked_num_variables(shapes.iter().copied())?;
         let mut order: Vec<usize> = (0..shapes.len()).collect();
         order.sort_by_key(|&i| shapes[i].0.get());
-
-        let num_variables = log2_ceil_usize(
-            shapes
-                .iter()
-                .map(|&(arity, width)| width * (1usize << arity.get()))
-                .sum::<usize>(),
-        );
 
         let mut offset = 0usize;
         let mut placements = Vec::with_capacity(shapes.len());
         for &table_idx in order.iter().rev() {
             let (arity, width) = shapes[table_idx];
             let arity = arity.get();
-            let slot_size = 1usize << arity;
-            let selector_variables = num_variables - arity;
+            if width == 0 {
+                placements.push(StackedPlacement {
+                    table_idx,
+                    selectors: Vec::new(),
+                });
+                continue;
+            }
+            let slot_size = 1usize
+                .checked_shl(arity as u32)
+                .ok_or(StackedArityError::ShiftOverflow { arity })?;
+            let selector_variables =
+                num_variables
+                    .checked_sub(arity)
+                    .ok_or(StackedArityError::ArityExceedsStack {
+                        arity,
+                        stacked_num_variables: num_variables,
+                    })?;
             let selectors = (0..width)
                 .map(|_| {
                     let raw_index = offset >> arity;
@@ -163,10 +232,10 @@ impl StackedPlan {
             });
         }
 
-        Self {
+        Ok(Self {
             num_variables,
             placements,
-        }
+        })
     }
 
     /// Arity of the source table at `table_idx`.
@@ -207,9 +276,49 @@ mod tests {
     use rand::SeedableRng;
     use rand::rngs::SmallRng;
 
-    use super::{PaddedArity, StackedPlan, padded_arity};
+    use super::{
+        PaddedArity, StackedArityError, StackedPlan, checked_stacked_num_variables, padded_arity,
+    };
 
     type F = BabyBear;
+
+    #[test]
+    fn stacked_arity_rejects_shift_overflow_before_allocating() {
+        assert_eq!(
+            checked_stacked_num_variables([(PaddedArity(usize::BITS as usize), 1)]),
+            Err(StackedArityError::ShiftOverflow {
+                arity: usize::BITS as usize
+            })
+        );
+    }
+
+    #[test]
+    fn stacked_arity_rejects_product_sum_and_rounding_overflow() {
+        assert!(matches!(
+            checked_stacked_num_variables([(PaddedArity(usize::BITS as usize - 1), 3)]),
+            Err(StackedArityError::ProductOverflow { .. })
+        ));
+        assert_eq!(
+            checked_stacked_num_variables([
+                (PaddedArity(usize::BITS as usize - 1), 1),
+                (PaddedArity(0), usize::MAX),
+            ]),
+            Err(StackedArityError::SumOverflow)
+        );
+        assert_eq!(
+            checked_stacked_num_variables([(PaddedArity(0), usize::MAX)]),
+            Err(StackedArityError::RoundedDomainOverflow { total: usize::MAX })
+        );
+    }
+
+    #[test]
+    fn zero_width_geometry_does_not_shift_or_underflow() {
+        let shapes = [(PaddedArity(usize::BITS as usize), 0)];
+        assert_eq!(checked_stacked_num_variables(shapes), Ok(0));
+        let plan = StackedPlan::try_new(&shapes).expect("empty table has zero geometry");
+        assert_eq!(plan.num_variables, 0);
+        assert!(plan.placements[0].selectors.is_empty());
+    }
 
     /// Builds a `Table` whose row `j` is column `j`'s hypercube evaluations.
     fn rand_table(rng: &mut SmallRng, width: usize, arity: usize) -> Table<F> {

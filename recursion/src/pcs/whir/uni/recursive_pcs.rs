@@ -27,6 +27,71 @@ use crate::traits::{ComsWithOpeningsTargets, Recursive, RecursivePcs};
 use crate::types::{OpenedValuesTargetsWithLookups, RecursiveLagrangeSelectors};
 use crate::verifier::{ObservableCommitment, VerificationError};
 
+fn validate_round_config_inputs(
+    stacked_num_variables: usize,
+    protocol_params: &ProtocolParameters,
+) -> Result<(), WhirVerifierParamsError> {
+    let rate = protocol_params.starting_log_inv_rate;
+    let exponent = stacked_num_variables.checked_add(rate).ok_or(
+        WhirVerifierParamsError::InvalidStackedArity {
+            arity: stacked_num_variables,
+            rate,
+        },
+    )?;
+    if exponent >= usize::BITS as usize {
+        return Err(WhirVerifierParamsError::InvalidStackedArity {
+            arity: stacked_num_variables,
+            rate,
+        });
+    }
+
+    let schedule = protocol_params
+        .folding_factor
+        .compute_folding_schedule(stacked_num_variables)
+        .map_err(|error| {
+            WhirVerifierParamsError::InvalidConfig(
+                p3_whir::parameters::WhirConfigError::FoldingFactor(error),
+            )
+        })?;
+    let num_rounds = schedule.len() - 1;
+    if !protocol_params.round_log_inv_rates.is_empty()
+        && protocol_params.round_log_inv_rates.len() != num_rounds
+    {
+        return Err(WhirVerifierParamsError::InvalidConfig(
+            p3_whir::parameters::WhirConfigError::RoundRateCountMismatch {
+                expected: num_rounds,
+                actual: protocol_params.round_log_inv_rates.len(),
+            },
+        ));
+    }
+    if let p3_whir::parameters::FoldingFactor::PerRound(factors) = &protocol_params.folding_factor
+        && factors.len() != num_rounds + 1
+    {
+        return Err(WhirVerifierParamsError::InvalidConfig(
+            p3_whir::parameters::WhirConfigError::FoldingFactorCountMismatch {
+                expected: num_rounds + 1,
+                actual: factors.len(),
+            },
+        ));
+    }
+    if protocol_params.round_log_inv_rates.is_empty() {
+        let mut next_rate = rate;
+        for &factor in schedule.iter().take(num_rounds) {
+            next_rate =
+                next_rate
+                    .checked_add(factor - 1)
+                    .ok_or(WhirVerifierParamsError::InvalidConfig(
+                        p3_whir::parameters::WhirConfigError::InitialDomainExceedsUsize {
+                            num_variables: stacked_num_variables,
+                            starting_log_inv_rate: rate,
+                            usize_bits: usize::BITS as usize,
+                        },
+                    ))?;
+        }
+    }
+    Ok(())
+}
+
 /// WHIR parameters shared by every commitment a proof carries.
 ///
 /// A commitment's WHIR configuration depends on the arity of the stacked
@@ -58,35 +123,37 @@ impl<F: TwoAdicField> WhirUniVerifierParams<F> {
     /// isolate the WHIR arithmetic path; production callers must pass
     /// `Some(_)`.
     ///
-    /// # Panics
-    /// Panics unless the folding factor is
-    /// [`p3_whir::parameters::FoldingFactor::Constant`].
+    /// Returns an error unless the folding factor is a nonzero constant.
     pub fn new(
         protocol_params: ProtocolParameters,
         variable_order: VariableOrder,
         permutation_config: Option<PermConfig>,
-    ) -> Self {
+    ) -> Result<Self, WhirVerifierParamsError> {
+        if variable_order != VariableOrder::Prefix {
+            return Err(WhirVerifierParamsError::UnsupportedVariableOrder { variable_order });
+        }
         let p3_whir::parameters::FoldingFactor::Constant(folding) = protocol_params.folding_factor
         else {
-            panic!("WhirUniVerifierParams requires FoldingFactor::Constant");
+            return Err(WhirVerifierParamsError::UnsupportedFoldingFactor);
         };
-        Self {
+        if folding == 0 {
+            return Err(WhirVerifierParamsError::UnsupportedFoldingFactor);
+        }
+        Ok(Self {
             protocol_params,
             folding,
             variable_order,
             permutation_config,
             _marker: core::marker::PhantomData,
-        }
+        })
     }
 
     /// WHIR verifier parameters for a commitment whose stacked polynomial has
     /// the given arity.
     ///
-    /// # Panics
-    /// Panics if the protocol parameters are invalid for that arity.
-    ///
     /// # Errors
-    /// See [`WhirVerifierParams::from_config`].
+    /// Returns a typed error for invalid arithmetic/configuration or an
+    /// unsupported saturating STIR query phase.
     pub fn round_params<EF, Ch>(
         &self,
         stacked_num_variables: usize,
@@ -95,9 +162,9 @@ impl<F: TwoAdicField> WhirUniVerifierParams<F> {
         EF: ExtensionField<F> + TwoAdicField,
         Ch: FieldChallenger<F> + GrindingChallenger<Witness = F>,
     {
+        validate_round_config_inputs(stacked_num_variables, &self.protocol_params)?;
         let config =
-            WhirConfig::<EF, F, Ch>::new(stacked_num_variables, self.protocol_params.clone())
-                .expect("WHIR parameters are valid for the committed arity");
+            WhirConfig::<EF, F, Ch>::new(stacked_num_variables, self.protocol_params.clone())?;
         #[allow(clippy::option_if_let_else)]
         match self.permutation_config {
             Some(perm) => WhirVerifierParams::from_config(&config, self.variable_order, perm),
@@ -107,6 +174,122 @@ impl<F: TwoAdicField> WhirUniVerifierParams<F> {
                 Poseidon2Config::BABY_BEAR_D4_W16,
             ),
         }
+    }
+}
+
+#[cfg(test)]
+mod validation_tests {
+    use alloc::vec;
+    use alloc::vec::Vec;
+
+    use p3_sumcheck::strategy::VariableOrder;
+    use p3_whir::parameters::{FoldingFactor, SecurityAssumption};
+
+    use super::*;
+
+    #[test]
+    fn nonconstant_folding_is_rejected_without_panicking() {
+        let protocol = ProtocolParameters {
+            starting_log_inv_rate: 1,
+            round_log_inv_rates: Vec::new(),
+            folding_factor: FoldingFactor::ConstantFromSecondRound(2, 2),
+            soundness_type: SecurityAssumption::CapacityBound,
+            security_level: 32,
+            pow_bits: 0,
+        };
+        let result = std::panic::catch_unwind(|| {
+            WhirUniVerifierParams::<p3_baby_bear::BabyBear>::new(
+                protocol,
+                VariableOrder::Prefix,
+                None,
+            )
+        });
+        let result = result.expect("invalid configuration must not panic");
+        assert!(matches!(
+            result,
+            Err(WhirVerifierParamsError::UnsupportedFoldingFactor)
+        ));
+    }
+
+    #[test]
+    fn zero_folding_is_rejected_as_a_typed_error() {
+        let protocol = ProtocolParameters {
+            starting_log_inv_rate: 1,
+            round_log_inv_rates: Vec::new(),
+            folding_factor: FoldingFactor::Constant(0),
+            soundness_type: SecurityAssumption::CapacityBound,
+            security_level: 32,
+            pow_bits: 0,
+        };
+        let result = WhirUniVerifierParams::<p3_baby_bear::BabyBear>::new(
+            protocol,
+            VariableOrder::Prefix,
+            None,
+        );
+        assert!(matches!(
+            result,
+            Err(WhirVerifierParamsError::UnsupportedFoldingFactor)
+        ));
+    }
+
+    #[test]
+    fn suffix_variable_order_is_rejected_for_prefix_stacking() {
+        let protocol = ProtocolParameters {
+            starting_log_inv_rate: 1,
+            round_log_inv_rates: Vec::new(),
+            folding_factor: FoldingFactor::Constant(4),
+            soundness_type: SecurityAssumption::CapacityBound,
+            security_level: 32,
+            pow_bits: 0,
+        };
+        let result = WhirUniVerifierParams::<p3_baby_bear::BabyBear>::new(
+            protocol,
+            VariableOrder::Suffix,
+            None,
+        );
+        assert!(matches!(
+            result,
+            Err(WhirVerifierParamsError::UnsupportedVariableOrder {
+                variable_order: VariableOrder::Suffix
+            })
+        ));
+    }
+
+    #[test]
+    fn round_params_rejects_arity_and_explicit_rate_errors() {
+        use p3_field::extension::BinomialExtensionField;
+
+        type Base = p3_baby_bear::BabyBear;
+        type Ext = BinomialExtensionField<Base, 4>;
+        let protocol = ProtocolParameters {
+            starting_log_inv_rate: 1,
+            round_log_inv_rates: vec![4, 4],
+            folding_factor: FoldingFactor::Constant(4),
+            soundness_type: SecurityAssumption::CapacityBound,
+            security_level: 32,
+            pow_bits: 0,
+        };
+        let params = WhirUniVerifierParams::<Base>::new(protocol, VariableOrder::Prefix, None)
+            .expect("constructor only validates the scalar fold mode");
+        assert!(matches!(
+            params.round_params::<Ext, DummyChallenger<Base>>(usize::BITS as usize),
+            Err(WhirVerifierParamsError::InvalidStackedArity { .. })
+        ));
+
+        let protocol = ProtocolParameters {
+            starting_log_inv_rate: 1,
+            round_log_inv_rates: vec![4, 4],
+            folding_factor: FoldingFactor::Constant(4),
+            soundness_type: SecurityAssumption::CapacityBound,
+            security_level: 32,
+            pow_bits: 0,
+        };
+        let params = WhirUniVerifierParams::<Base>::new(protocol, VariableOrder::Prefix, None)
+            .expect("constructor only validates the scalar fold mode");
+        assert!(matches!(
+            params.round_params::<Ext, DummyChallenger<Base>>(12),
+            Err(WhirVerifierParamsError::InvalidConfig(_))
+        ));
     }
 }
 

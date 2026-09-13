@@ -33,7 +33,9 @@ use p3_whir::pcs::prover::WhirProver;
 use serde::{Deserialize, Serialize};
 
 use crate::pcs::whir::uni::bridge::univariate_eq_point;
-use crate::pcs::whir::uni::plan::{PaddedArity, StackedPlan, padded_arity};
+use crate::pcs::whir::uni::plan::{
+    PaddedArity, StackedPlan, checked_stacked_num_variables, padded_arity,
+};
 
 /// Prover state behind one WHIR-backed univariate commitment.
 pub struct WhirUniProverData<F, EF, MT, L>
@@ -142,6 +144,17 @@ where
 {
     assert_eq!(shapes.len(), points_per_matrix.len());
 
+    // Check all shifts/products/sums before constructing the opening
+    // protocol or any selector-bearing layout state. Trusted prover callers
+    // retain this infallible wrapper, while proof-facing callers perform the
+    // same arithmetic check before reaching this helper.
+    let stacked_num_variables = checked_stacked_num_variables(
+        shapes
+            .iter()
+            .map(|&(log_height, width)| (padded_arity(log_height, folding), width)),
+    )
+    .expect("native WHIR stacked geometry must fit in usize");
+
     let specs: Vec<TableSpec> = shapes
         .iter()
         .zip(points_per_matrix)
@@ -167,12 +180,6 @@ where
         }
         scales.push(row);
     }
-
-    let padded: Vec<(PaddedArity, usize)> = shapes
-        .iter()
-        .map(|&(log_height, width)| (padded_arity(log_height, folding), width))
-        .collect();
-    let stacked_num_variables = StackedPlan::new(&padded).num_variables;
 
     RoundSchedule {
         protocol,

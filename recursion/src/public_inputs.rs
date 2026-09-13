@@ -628,6 +628,7 @@ where
     }
 
     /// Checked public/private packing in one operation.
+    #[allow(clippy::type_complexity)]
     pub fn try_pack_values(
         &self,
         air_public_values: &[Val<SC>],
@@ -851,6 +852,7 @@ where
     }
 
     /// Checked batch public/private packing in one operation.
+    #[allow(clippy::type_complexity)]
     pub fn try_pack_values(
         &self,
         air_public_values: &[Vec<Val<SC>>],

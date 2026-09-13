@@ -13,6 +13,7 @@
 //! order.
 
 use alloc::format;
+use alloc::string::ToString;
 use alloc::vec::Vec;
 
 use p3_circuit::{CircuitBuilder, CircuitBuilderError, NonPrimitiveOpId};
@@ -22,7 +23,9 @@ use p3_field::{ExtensionField, PrimeField64, TwoAdicField};
 use crate::Target;
 use crate::pcs::whir::gadgets::{ConstraintWeightData, eval_powers_combination};
 use crate::pcs::whir::uni::bridge::univariate_eq_point_circuit;
-use crate::pcs::whir::uni::plan::{PaddedArity, StackedPlan, padded_arity};
+use crate::pcs::whir::uni::plan::{
+    PaddedArity, StackedPlan, checked_stacked_num_variables, padded_arity,
+};
 use crate::pcs::whir::uni::recursive_pcs::{DummyChallenger, WhirUniVerifierParams};
 use crate::pcs::whir::uni::targets::WhirRoundTargets;
 use crate::traits::{ComsWithOpeningsTargets, RecursiveChallenger};
@@ -198,7 +201,10 @@ fn round_evals_offset(matrices: &[MatrixOpenings<'_>], m: usize) -> usize {
 /// self-reported shape against it, see [`verify_whir_uni_circuit`] — requires
 /// the arity, but `build_round_claims` only returns it after it has already
 /// consumed the OOD-answer slice and driven the challenger.
-fn stacked_num_variables(matrices: &[MatrixOpenings<'_>], folding: usize) -> usize {
+fn stacked_num_variables(
+    matrices: &[MatrixOpenings<'_>],
+    folding: usize,
+) -> Result<usize, VerificationError> {
     let shapes: Vec<(PaddedArity, usize)> = matrices
         .iter()
         .map(|m| {
@@ -206,7 +212,8 @@ fn stacked_num_variables(matrices: &[MatrixOpenings<'_>], folding: usize) -> usi
             (padded_arity(m.log_height, folding), width)
         })
         .collect();
-    StackedPlan::new(&shapes).num_variables
+    checked_stacked_num_variables(shapes.iter().copied())
+        .map_err(|error| VerificationError::InvalidProofShape(error.to_string()))
 }
 
 /// Verifies every commitment's WHIR argument in-circuit.
@@ -261,7 +268,7 @@ where
             })
             .collect();
 
-        let stacked_num_variables = stacked_num_variables(&openings, params.folding);
+        let stacked_num_variables = stacked_num_variables(&openings, params.folding)?;
         let vp = params.round_params::<EF, DummyChallenger<BF>>(stacked_num_variables)?;
 
         // The commitment fixes how many initial OOD answers exist; a wrong
@@ -789,7 +796,8 @@ mod tests {
             protocol_params.clone(),
             PrefixProver::<BF, EF>::variable_order(),
             None,
-        );
+        )
+        .expect("valid WHIR test configuration");
         let vp = arithmetic_only
             .round_params::<EF, DuplexChallenger<BF, Poseidon2BabyBear<16>, 16, 8>>(12)
             .expect("non-saturating STIR query counts at this arity");
@@ -800,7 +808,8 @@ mod tests {
             protocol_params,
             PrefixProver::<BF, EF>::variable_order(),
             Some(Poseidon2Config::BABY_BEAR_D4_W16.into()),
-        );
+        )
+        .expect("valid WHIR test configuration");
         let vp = with_mmcs
             .round_params::<EF, DuplexChallenger<BF, Poseidon2BabyBear<16>, 16, 8>>(12)
             .expect("non-saturating STIR query counts at this arity");
@@ -834,6 +843,7 @@ mod tests {
             PrefixProver::<BF, EF>::variable_order(),
             None,
         )
+        .expect("valid WHIR test configuration")
     }
 
     /// A WHIR argument count that disagrees with the commitment count must be

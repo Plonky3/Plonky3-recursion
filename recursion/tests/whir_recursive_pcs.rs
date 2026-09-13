@@ -104,7 +104,8 @@ pub fn run_whir_recursive_verifier(
         bb_whir_protocol_params(setup.round_log_inv_rates.clone()),
         PrefixProver::<BbF, BbEF>::variable_order(),
         None,
-    );
+    )
+    .expect("valid WHIR test configuration");
 
     let verifier_inputs = StarkVerifierInputsBuilder::<
         BbWhirConfig,
@@ -234,7 +235,8 @@ pub fn run_whir_recursive_verifier_with_mmcs(
         bb_whir_protocol_params(setup.round_log_inv_rates.clone()),
         PrefixProver::<BbF, BbEF>::variable_order(),
         Some(Poseidon2Config::BABY_BEAR_D4_W16.into()),
-    );
+    )
+    .expect("valid WHIR test configuration");
 
     let verifier_inputs = StarkVerifierInputsBuilder::<
         BbWhirConfig,
@@ -564,7 +566,8 @@ mod koala_bear {
             kb_whir_protocol_params(vec![4]),
             PrefixProver::<KbF, KbEF>::variable_order(),
             None,
-        );
+        )
+        .expect("valid WHIR test configuration");
 
         let verifier_inputs = StarkVerifierInputsBuilder::<
             KbWhirConfig,
