@@ -2,6 +2,7 @@
 
 #![allow(unused_imports, dead_code)]
 
+mod prepared_reuse;
 pub mod whir;
 
 pub use std::rc::Rc;
@@ -52,6 +53,7 @@ pub use p3_recursion::{
 };
 pub use p3_symmetric::{PaddingFreeSponge, Permutation, TruncatedPermutation};
 pub use p3_uni_stark::{StarkConfig, StarkGenericConfig, Val};
+pub(crate) use prepared_reuse::is_prepared_input_mismatch;
 pub use rand::SeedableRng;
 pub use rand::rngs::{SmallRng, StdRng};
 pub use serde::Serialize;

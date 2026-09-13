@@ -428,7 +428,7 @@ macro_rules! define_field_module_keccak_quintic {
                                     output = Some(out);
                                     continue;
                                 }
-                                Err(VerificationError::PreparedInputMismatch { .. }) => {}
+                                Err(error) if is_prepared_input_mismatch(&error) => {}
                                 Err(e) => panic!("Failed to validate layer {layer}: {e:?}"),
                             }
                         }
@@ -542,7 +542,7 @@ macro_rules! define_field_module_keccak_quintic {
                         if let Some(owner) = stable_owner.as_ref() {
                             match owner.check_input(&input) {
                                 Ok(()) => owner.prove(input),
-                                Err(VerificationError::PreparedInputMismatch { .. }) => {
+                                Err(error) if is_prepared_input_mismatch(&error) => {
                                     let source = PreparedSource::BatchStark {
                                         proof: &previous.0,
                                         common_data: &previous.0.stark_common,
@@ -577,7 +577,7 @@ macro_rules! define_field_module_keccak_quintic {
                             let matches_previous = match pending_owner.as_ref() {
                                 Some(previous_owner) => match previous_owner.check_input(&input) {
                                     Ok(()) => true,
-                                    Err(VerificationError::PreparedInputMismatch { .. }) => false,
+                                    Err(error) if is_prepared_input_mismatch(&error) => false,
                                     Err(e) => panic!("Failed to validate layer {layer}: {e:?}"),
                                 },
                                 None => false,
@@ -766,7 +766,7 @@ macro_rules! define_field_module {
                                     output = Some(out);
                                     continue;
                                 }
-                                Err(VerificationError::PreparedInputMismatch { .. }) => {}
+                                Err(error) if is_prepared_input_mismatch(&error) => {}
                                 Err(e) => panic!("Failed to validate layer {layer}: {e:?}"),
                             }
                         }
@@ -880,7 +880,7 @@ macro_rules! define_field_module {
                         if let Some(owner) = stable_owner.as_ref() {
                             match owner.check_input(&input) {
                                 Ok(()) => owner.prove(input),
-                                Err(VerificationError::PreparedInputMismatch { .. }) => {
+                                Err(error) if is_prepared_input_mismatch(&error) => {
                                     let source = PreparedSource::BatchStark {
                                         proof: &previous.0,
                                         common_data: &previous.0.stark_common,
@@ -915,7 +915,7 @@ macro_rules! define_field_module {
                             let matches_previous = match pending_owner.as_ref() {
                                 Some(previous_owner) => match previous_owner.check_input(&input) {
                                     Ok(()) => true,
-                                    Err(VerificationError::PreparedInputMismatch { .. }) => false,
+                                    Err(error) if is_prepared_input_mismatch(&error) => false,
                                     Err(e) => panic!("Failed to validate layer {layer}: {e:?}"),
                                 },
                                 None => false,

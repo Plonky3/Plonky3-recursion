@@ -458,9 +458,7 @@ macro_rules! define_field_module {
                                             output = out;
                                             continue;
                                         }
-                                        Err(VerificationError::PreparedInputMismatch {
-                                            ..
-                                        }) => {}
+                                        Err(error) if is_prepared_input_mismatch(&error) => {}
                                         Err(e) => panic!("Failed to validate layer {layer}: {e:?}"),
                                     }
                                 }
@@ -543,7 +541,7 @@ macro_rules! define_field_module {
                                 let owner = stable_owner.as_ref().unwrap();
                                 match owner.check_input(&input) {
                                     Ok(()) => owner.prove(input),
-                                    Err(VerificationError::PreparedInputMismatch { .. }) => {
+                                    Err(error) if is_prepared_input_mismatch(&error) => {
                                         let source =
                                             batch_prepared_source(&output, &table_public_inputs);
                                         let owner = PreparedLayer::new(
@@ -575,9 +573,7 @@ macro_rules! define_field_module {
                                 let matches_previous = match pending_owner.as_ref() {
                                     Some(previous) => match previous.check_input(&input) {
                                         Ok(()) => true,
-                                        Err(VerificationError::PreparedInputMismatch {
-                                            ..
-                                        }) => false,
+                                        Err(error) if is_prepared_input_mismatch(&error) => false,
                                         Err(e) => panic!("Failed to validate layer {layer}: {e:?}"),
                                     },
                                     None => false,
@@ -836,7 +832,7 @@ macro_rules! define_field_module_quintic {
                                     output = out;
                                     continue;
                                 }
-                                Err(VerificationError::PreparedInputMismatch { .. }) => {}
+                                Err(error) if is_prepared_input_mismatch(&error) => {}
                                 Err(e) => panic!("Failed to validate layer {layer}: {e:?}"),
                             }
                         }
@@ -912,7 +908,7 @@ macro_rules! define_field_module_quintic {
                         let owner = stable_owner.as_ref().unwrap();
                         match owner.check_input(&input) {
                             Ok(()) => owner.prove(input),
-                            Err(VerificationError::PreparedInputMismatch { .. }) => {
+                            Err(error) if is_prepared_input_mismatch(&error) => {
                                 let source = batch_prepared_source(&output, &table_public_inputs);
                                 let owner = PreparedLayer::new(
                                     source,
@@ -939,7 +935,7 @@ macro_rules! define_field_module_quintic {
                         let matches_previous = match pending_owner.as_ref() {
                             Some(previous) => match previous.check_input(&input) {
                                 Ok(()) => true,
-                                Err(VerificationError::PreparedInputMismatch { .. }) => false,
+                                Err(error) if is_prepared_input_mismatch(&error) => false,
                                 Err(e) => panic!("Failed to validate layer {layer}: {e:?}"),
                             },
                             None => false,

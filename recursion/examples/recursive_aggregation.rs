@@ -498,7 +498,7 @@ macro_rules! define_field_module_aggregation_quintic {
                                     let out = if let Some(owner) = level_owner.as_ref() {
                                         match owner.check_inputs(&left_input, &right_input) {
                                             Ok(()) => owner.prove(left_input, right_input),
-                                            Err(VerificationError::PreparedInputMismatch { .. }) => {
+                                            Err(error) if is_prepared_input_mismatch(&error) => {
                                                 let left_source = PreparedSource::batch(
                                                     &left_output.0, &left_output.0.stark_common, &left_table,
                                                 );
@@ -576,7 +576,7 @@ macro_rules! define_field_module_aggregation_quintic {
                                 let out = if let Some(owner) = level_owner.as_ref() {
                                     match owner.check_inputs(&left_input, &right_input) {
                                         Ok(()) => owner.prove(left_input, right_input),
-                                        Err(VerificationError::PreparedInputMismatch { .. }) => {
+                                        Err(error) if is_prepared_input_mismatch(&error) => {
                                             let owner = PreparedAggregation::new(
                                                 PreparedSource::batch(&left_output.0, &left_output.0.stark_common, &left_table),
                                                 PreparedSource::batch(&right_output.0, &right_output.0.stark_common, &right_table),
@@ -859,7 +859,7 @@ macro_rules! define_field_module {
                                     let out = if let Some(owner) = level_owner.as_ref() {
                                         match owner.check_inputs(&left_input, &right_input) {
                                             Ok(()) => owner.prove(left_input, right_input),
-                                            Err(VerificationError::PreparedInputMismatch { .. }) => {
+                                            Err(error) if is_prepared_input_mismatch(&error) => {
                                                 let owner = PreparedAggregation::new_with_profile(
                                                     PreparedSource::batch(&left_output.0, &left_output.0.stark_common, &left_table),
                                                     PreparedSource::batch(&right_output.0, &right_output.0.stark_common, &right_table),
@@ -933,7 +933,7 @@ macro_rules! define_field_module {
                                 let out = if let Some(owner) = level_owner.as_ref() {
                                     match owner.check_inputs(&left_input, &right_input) {
                                         Ok(()) => owner.prove(left_input, right_input),
-                                        Err(VerificationError::PreparedInputMismatch { .. }) => {
+                                        Err(error) if is_prepared_input_mismatch(&error) => {
                                             let owner = PreparedAggregation::new(
                                                 PreparedSource::batch(&left_output.0, &left_output.0.stark_common, &left_table),
                                                 PreparedSource::batch(&right_output.0, &right_output.0.stark_common, &right_table),
@@ -1504,7 +1504,7 @@ macro_rules! arity4_run {
                 let out = if let Some(owner) = boundary_owner.as_ref() {
                     match owner.check_inputs(&left_input, &right_input) {
                         Ok(()) => owner.prove(left_input, right_input),
-                        Err(VerificationError::PreparedInputMismatch { .. }) => {
+                        Err(error) if is_prepared_input_mismatch(&error) => {
                             let owner = PreparedAggregationCross::new(
                                 PreparedSource::batch(
                                     &left_output.0,
@@ -1614,7 +1614,7 @@ macro_rules! arity4_run {
                     let out = if let Some(owner) = level_owner.as_ref() {
                         match owner.check_inputs(&left_input, &right_input) {
                             Ok(()) => owner.prove(left_input, right_input),
-                            Err(VerificationError::PreparedInputMismatch { .. }) => {
+                            Err(error) if is_prepared_input_mismatch(&error) => {
                                 let owner = PreparedAggregation::new(
                                     PreparedSource::batch(
                                         &left_output.0,

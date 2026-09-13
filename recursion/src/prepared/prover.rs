@@ -16,6 +16,7 @@ use p3_commit::Pcs;
 use p3_field::{Algebra, BasedVectorSpace, ExtensionField, PrimeField64};
 use p3_lookup::logup::LogUpGadget;
 use p3_uni_stark::{StarkGenericConfig, Val};
+use tracing::instrument;
 
 use crate::recursion::{
     PcsRecursionBackend, ProveNextLayerParams, RecursionOutput, build_layer_prover,
@@ -61,6 +62,7 @@ impl<SC: StarkGenericConfig + 'static> PreparedProver<SC> {
     }
 }
 
+#[instrument(name = "build_next_layer_prep", skip_all)]
 pub(crate) fn prepare_prover<SC, A, B, const D: usize>(
     circuit: &Circuit<SC::Challenge>,
     config: &SC,

@@ -1,8 +1,12 @@
 mod common;
 
+#[path = "../examples/common/prepared_reuse.rs"]
+mod example_prepared_reuse;
+
 use std::rc::Rc;
 
 use common::whir_config::{BbEF, BbF, BbWhirConfig, bb_whir_config};
+use example_prepared_reuse::is_prepared_input_mismatch;
 use p3_circuit::test_utils::{FibonacciAir, generate_trace_rows};
 use p3_circuit_prover::batch_stark_prover::BatchStarkProver;
 use p3_circuit_prover::{ConstraintProfile, TablePacking};
@@ -11,7 +15,7 @@ use p3_recursion::backend::whir::{WhirRecursionBackend, WhirRecursionBackendForE
 use p3_recursion::profile::{HashProfile, RecursionLayerProfile, TranscriptKind};
 use p3_recursion::{
     BatchOnly, Poseidon2Config, PreparedInput, PreparedLayer, PreparedSource, ProveNextLayerParams,
-    RecursionInput, RecursionOutput, build_and_prove_next_layer,
+    RecursionInput, RecursionOutput, VerificationError, build_and_prove_next_layer,
 };
 use p3_test_utils::koala_bear_params::{Challenge, F};
 use p3_uni_stark::{prove, verify};
@@ -356,6 +360,116 @@ fn fri_batch_prepared_layer_reuses_prover_data() {
     assert!(Rc::ptr_eq(&out1.1, &out2.1));
     verify_fri_output(config.clone(), &params, &out1);
     verify_fri_output(config, &params, &out2);
+}
+
+#[test]
+fn batch_example_policy_rebuilds_only_on_contract_mismatch() {
+    // This mirrors the examples' retained-owner branch: validate a borrowed input first,
+    // reuse the owner on a matching contract, and rebuild only for PreparedInputMismatch.
+    let first = common::build_koala_bear_d4_first_layer_input_with_starts(0, 1);
+    let second = common::build_koala_bear_d4_first_layer_input_with_starts(2, 3);
+    let mut mismatch = common::build_koala_bear_d4_first_layer_input();
+    let table_public_inputs = vec![vec![]; first.base_proof.proof.opened_values.instances.len()];
+    let mismatch_table = vec![vec![]; mismatch.base_proof.proof.opened_values.instances.len()];
+    let config = first.layer_config.clone();
+    let backend = first.backend.clone();
+    let params = ProveNextLayerParams::default();
+
+    let mut owner = Some(
+        PreparedLayer::<_, BatchOnly, _, 4>::new(
+            PreparedSource::batch(
+                &first.base_proof,
+                &first.base_proof.stark_common,
+                &table_public_inputs,
+            ),
+            config.clone(),
+            backend.clone(),
+            params.clone(),
+        )
+        .expect("the first trusted input prepares"),
+    );
+    let mut rebuilds = 1;
+
+    let first_input = PreparedInput::BatchStark {
+        proof: &first.base_proof,
+        common_data: &first.base_proof.stark_common,
+        table_public_inputs: &table_public_inputs,
+    };
+    owner
+        .as_ref()
+        .unwrap()
+        .check_input(&first_input)
+        .expect("the first input matches the retained contract");
+    let first_output = owner
+        .as_ref()
+        .unwrap()
+        .prove(first_input)
+        .expect("the first matching input proves");
+
+    let second_input = PreparedInput::BatchStark {
+        proof: &second.base_proof,
+        common_data: &second.base_proof.stark_common,
+        table_public_inputs: &table_public_inputs,
+    };
+    match owner.as_ref().unwrap().check_input(&second_input) {
+        Ok(()) => {}
+        Err(error) if is_prepared_input_mismatch(&error) => {
+            panic!("matching native contracts must reuse the retained owner")
+        }
+        Err(error) => panic!("unexpected matching-input validation error: {error:?}"),
+    }
+    let second_output = owner
+        .as_ref()
+        .unwrap()
+        .prove(second_input)
+        .expect("the second matching input proves");
+    assert!(Rc::ptr_eq(&first_output.1, &second_output.1));
+    assert_eq!(rebuilds, 1, "matching calls must not rebuild preparation");
+
+    let mismatched_input = PreparedInput::BatchStark {
+        proof: &mismatch.base_proof,
+        common_data: &mismatch.base_proof.stark_common,
+        table_public_inputs: &mismatch_table,
+    };
+    match owner.as_ref().unwrap().check_input(&mismatched_input) {
+        Err(error) if is_prepared_input_mismatch(&error) => {
+            owner = Some(
+                PreparedLayer::new(
+                    PreparedSource::batch(
+                        &mismatch.base_proof,
+                        &mismatch.base_proof.stark_common,
+                        &mismatch_table,
+                    ),
+                    config.clone(),
+                    backend.clone(),
+                    params,
+                )
+                .expect("the mismatched contract can be explicitly reprepared"),
+            );
+            rebuilds += 1;
+        }
+        Ok(()) => panic!("the deliberately different contract must not match"),
+        Err(error) => panic!("unexpected mismatch validation error: {error:?}"),
+    }
+    assert_eq!(
+        rebuilds, 2,
+        "only the explicit mismatch may rebuild preparation"
+    );
+
+    mismatch.base_proof.proof.degree_bits.pop();
+    let malformed_input = PreparedInput::BatchStark {
+        proof: &mismatch.base_proof,
+        common_data: &mismatch.base_proof.stark_common,
+        table_public_inputs: &mismatch_table,
+    };
+    let error = owner.as_ref().unwrap().check_input(&malformed_input);
+    match error {
+        Err(error) if is_prepared_input_mismatch(&error) => rebuilds += 1,
+        Err(VerificationError::InvalidProofShape(_)) => {}
+        Err(error) => panic!("unexpected malformed-input error: {error:?}"),
+        Ok(()) => panic!("malformed input must be rejected"),
+    }
+    assert_eq!(rebuilds, 2, "malformed input must not rebuild preparation");
 }
 
 #[test]

@@ -345,7 +345,6 @@ where
 /// **Important**: if using `HidingFriPcs` (ZK mode), the same config (including PCS seed)
 /// must be used for every `prove_next_layer` call that reuses this cache, because the
 /// preprocessed commitment is bound to the PCS randomness.
-#[instrument(skip_all)]
 pub fn build_next_layer_prep<SC, A, B, const D: usize>(
     verification_circuit: &Circuit<SC::Challenge>,
     config: &SC,
