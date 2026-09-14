@@ -1,4 +1,7 @@
 mod common;
+#[path = "common/rejection_oracle.rs"]
+#[allow(dead_code)]
+mod rejection_oracle;
 
 use p3_baby_bear::default_babybear_poseidon2_16;
 use p3_batch_stark::{CommonData, ProverData};
@@ -135,7 +138,6 @@ fn test_arith_lookups() {
 }
 
 #[test]
-#[should_panic]
 fn test_wrong_multiplicities() {
     let n = 10;
 
@@ -185,58 +187,85 @@ fn test_wrong_multiplicities() {
 
     let prover = BatchStarkProver::new(config_proving).with_table_packing(table_packing);
 
-    // Prove the circuit.
-    let lookup_gadget = LogUpGadget::new();
-    let batch_stark_proof = prover
-        .prove_all_tables(&traces, &circuit_prover_data)
-        .unwrap();
-    let common = circuit_prover_data.common_data();
+    // Debug proving evaluates lookup balance before returning a proof. Accept only the exact
+    // upstream lookup diagnostic; the shared parser resumes every unknown panic.
+    #[cfg(debug_assertions)]
+    match rejection_oracle::run_with_debug_oracle(|| {
+        prover.prove_all_tables(&traces, &circuit_prover_data)
+    }) {
+        Err(rejection_oracle::DebugRejectionKind::Lookup) => return,
+        Err(other) => panic!(
+            "wrong Const-table multiplicity must emit the exact lookup diagnostic, got {other:?}"
+        ),
+        Ok(result) => panic!(
+            "wrong Const-table multiplicity unexpectedly passed the debug lookup check: {result:?}"
+        ),
+    }
 
-    // Now verify the batch STARK proof recursively
-    let (config, fri_verifier_params, pow_bits, log_height_max) = get_recursive_config_and_params();
+    #[cfg(not(debug_assertions))]
+    {
+        // Release proving must actually return a proof, which the recursive verifier then
+        // rejects at the OOD consistency equations.
+        let lookup_gadget = LogUpGadget::new();
+        let batch_stark_proof = prover
+            .prove_all_tables(&traces, &circuit_prover_data)
+            .expect("release proving must produce the deliberately wrong-multiplicity proof");
+        let common = circuit_prover_data.common_data();
 
-    // Build the recursive verification circuit
-    let mut circuit_builder = setup_circuit_builder();
+        // Now verify the batch STARK proof recursively
+        let (config, fri_verifier_params, pow_bits, log_height_max) =
+            get_recursive_config_and_params();
 
-    // Public values (empty for all 4 circuit tables, using base field)
-    let pis: Vec<Vec<F>> = vec![vec![]; 4];
+        // Build the recursive verification circuit
+        let mut circuit_builder = setup_circuit_builder();
 
-    // Attach verifier without manually building circuit_airs
-    let params = Parameters {
-        fri_verifier_params,
-        pow_bits,
-        log_height_max,
-    };
-    let (verifier_inputs, _all_challenges) = get_verifier_inputs_and_challenges(
-        &mut circuit_builder,
-        &config,
-        &params,
-        &batch_stark_proof,
-        common,
-        &pis,
-        &lookup_gadget,
-    );
+        // Public values (empty for all 4 circuit tables, using base field)
+        let pis: Vec<Vec<F>> = vec![vec![]; 4];
 
-    // Build the circuit
-    let verification_circuit = circuit_builder.build().unwrap();
-    let expected_public_input_len = verification_circuit.public_flat_len;
+        // Attach verifier without manually building circuit_airs
+        let params = Parameters {
+            fri_verifier_params,
+            pow_bits,
+            log_height_max,
+        };
+        let (verifier_inputs, _all_challenges) = get_verifier_inputs_and_challenges(
+            &mut circuit_builder,
+            &config,
+            &params,
+            &batch_stark_proof,
+            common,
+            &pis,
+            &lookup_gadget,
+        );
 
-    // Pack values using the builder
-    let batch_proof = &batch_stark_proof.proof;
-    let (builder, _mmcs_op_ids) = verifier_inputs.as_ref().unwrap();
-    let (public_inputs, private_inputs) = builder.pack_values(&pis, batch_proof, common);
+        // Build the circuit
+        let verification_circuit = circuit_builder.build().unwrap();
+        let expected_public_input_len = verification_circuit.public_flat_len;
 
-    assert_eq!(public_inputs.len(), expected_public_input_len);
-    assert!(!public_inputs.is_empty());
+        // Pack values using the builder
+        let batch_proof = &batch_stark_proof.proof;
+        let (builder, _mmcs_op_ids) = verifier_inputs.as_ref().unwrap();
+        let (public_inputs, private_inputs) = builder.pack_values(&pis, batch_proof, common);
 
-    // Actually run the circuit to ensure constraints are satisfiable
-    let mut runner = verification_circuit.runner();
-    runner.set_public_inputs(&public_inputs).unwrap();
-    runner.set_private_inputs(&private_inputs).unwrap();
+        assert_eq!(public_inputs.len(), expected_public_input_len);
+        assert!(!public_inputs.is_empty());
 
-    // This line fails because the proof was generated with wrong multiplicities.
-    // Thus, we have an OOD evaluation mismatch, resulting in a `WitnessConflict` in the circuit.
-    let _traces = runner.run().unwrap();
+        // Actually run the circuit to ensure constraints are satisfiable
+        let mut runner = verification_circuit.runner();
+        runner.set_public_inputs(&public_inputs).unwrap();
+        runner.set_private_inputs(&private_inputs).unwrap();
+
+        // The proof was generated with a deliberately changed Const-table multiplicity in
+        // preprocessing. Recursive verification must reach the OOD consistency equations and
+        // reject specifically with a witness conflict; an unrelated panic is not acceptance.
+        match runner.run() {
+            Err(p3_circuit::CircuitError::WitnessConflict { .. }) => {}
+            other => panic!(
+                "wrong Const-table multiplicity must reach recursive OOD verification and return \
+                 CircuitError::WitnessConflict, got {other:?}"
+            ),
+        }
+    }
 }
 
 #[test]

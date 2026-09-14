@@ -1969,6 +1969,33 @@ where
         <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::ProverData: Sync,
         <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment: Sync,
     {
+        self.prove_with_trace_matrix_transform::<EF, D, _>(
+            traces,
+            w_binomial,
+            circuit_prover_data,
+            trusted_relation,
+            |_| {},
+        )
+    }
+
+    /// Internal seam used by proof-level assurance tests to alter already-materialized main
+    /// matrices while keeping the circuit's AIRs and committed preprocessing fixed.
+    fn prove_with_trace_matrix_transform<EF, const D: usize, M>(
+        &self,
+        traces: &Traces<EF>,
+        w_binomial: Option<Val<SC>>,
+        circuit_prover_data: &CircuitProverData<SC>,
+        trusted_relation: Option<&CircuitRelation<Val<SC>>>,
+        transform: M,
+    ) -> Result<BatchStarkProof<SC>, BatchStarkProverError>
+    where
+        EF: Field + BasedVectorSpace<Val<SC>> + ExtractBinomialW<Val<SC>>,
+        M: FnOnce(&mut [RowMajorMatrix<Val<SC>>]),
+        <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain: Send + Sync,
+        SC::Pcs: Sync,
+        <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::ProverData: Sync,
+        <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment: Sync,
+    {
         // Reject a misconfigured packing (e.g. a per-table override below the global
         // min-height floor) before any table height derived from it is used to build or
         // pad a trace, rather than only catching it later via `BatchStarkProof::validate`.
@@ -2313,6 +2340,8 @@ where
                 )));
             }
         }
+
+        transform(&mut trace_storage);
 
         // Use the pre-computed ProverData when the AIR structure is unchanged (common case).
         // Recompute only when lane reduction altered the lookup layout, since the number of

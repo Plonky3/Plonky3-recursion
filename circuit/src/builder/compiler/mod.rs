@@ -78,7 +78,11 @@ mod assurance_tests {
         let mut builder = CircuitBuilder::<F>::new();
         let public = builder.alloc_public_input("assurance-dag-public");
         let boolean = builder.alloc_public_input("assurance-dag-boolean");
+        let public_alias = builder.alloc_public_input("assurance-dag-public-alias");
         let private = builder.alloc_private_input("assurance-dag-private");
+        let private_alias = builder.alloc_private_input("assurance-dag-private-alias");
+        builder.connect(public, public_alias);
+        builder.connect(private, private_alias);
         let divisor = builder.alloc_const(divisor_value, "assurance-dag-nonzero-divisor");
         let zero = builder.define_const(F::ZERO);
         let mut nodes = vec![(public, public_value), (private, private_value)];
@@ -89,8 +93,14 @@ mod assurance_tests {
         tagged(&mut builder, &mut tags, sum, sum_value, case_seed, 0);
         nodes.push((sum, sum_value));
 
-        // A repeated expression must remain observable through two aliases after optimization.
-        let alias = builder.add(public, private);
+        // The operands are distinct graph nodes but become equivalent only through `connect`.
+        // Their outputs therefore reach lowering as distinct witnesses and exercise optimizer
+        // deduplication plus tag rewriting instead of ExpressionBuilder CSE.
+        let alias = builder.add(public_alias, private_alias);
+        assert_ne!(
+            sum, alias,
+            "family=compiler-dag field=BabyBear/D1 seed={case_seed} op=1 mutation=none expected-stage=distinct-pre-dedup-outputs"
+        );
         builder.connect(sum, alias);
         tagged(&mut builder, &mut tags, alias, sum_value, case_seed, 1);
 
@@ -189,14 +199,14 @@ mod assurance_tests {
         });
         let mut runner = circuit.runner();
         runner
-            .set_public_inputs(&[public_value, bool_value])
+            .set_public_inputs(&[public_value, bool_value, public_value])
             .unwrap_or_else(|error| {
                 panic!(
                     "family=compiler-dag field=BabyBear/D1 seed={case_seed} op=inputs mutation=none expected-stage=set-public-inputs error={error:?}"
                 )
             });
         runner
-            .set_private_inputs(&[private_value])
+            .set_private_inputs(&[private_value, private_value])
             .unwrap_or_else(|error| {
                 panic!(
                     "family=compiler-dag field=BabyBear/D1 seed={case_seed} op=inputs mutation=none expected-stage=set-private-inputs error={error:?}"
@@ -215,6 +225,47 @@ mod assurance_tests {
                 "family=compiler-dag field=BabyBear/D1 seed={case_seed} op={op} mutation=none expected-stage=direct-field-equality tag={tag}"
             );
         }
+    }
+
+    #[test]
+    fn assurance_connected_private_duplicate_rewrites_to_canonical_output() {
+        let mut builder = CircuitBuilder::<F>::new();
+        let lhs = builder.alloc_public_input("lhs");
+        let lhs_alias = builder.alloc_public_input("lhs-alias");
+        let rhs = builder.define_const(F::from_u64(9));
+        let supplied_output = builder.alloc_private_input("supplied-output");
+        builder.connect(lhs, lhs_alias);
+
+        let canonical = builder.add(lhs, rhs);
+        let duplicate = builder.add(lhs_alias, rhs);
+        assert_ne!(
+            canonical, duplicate,
+            "connected inputs must bypass expression CSE"
+        );
+        builder.connect(supplied_output, duplicate);
+        builder.tag(canonical, "canonical-output").unwrap();
+        builder.tag(duplicate, "duplicate-output").unwrap();
+
+        let circuit = builder.build().unwrap();
+        let canonical_witness = circuit.tag_to_witness["canonical-output"];
+        assert_eq!(
+            circuit.tag_to_witness["duplicate-output"], canonical_witness,
+            "duplicate tag must resolve to the retained canonical output"
+        );
+        assert_eq!(
+            circuit.private_input_rows,
+            vec![canonical_witness],
+            "the preinitialized private row must resolve through the dedup rewrite"
+        );
+
+        let mut runner = circuit.runner();
+        runner
+            .set_public_inputs(&[F::from_u64(4), F::from_u64(4)])
+            .unwrap();
+        runner.set_private_inputs(&[F::from_u64(13)]).unwrap();
+        let traces = runner.run().unwrap();
+        assert_eq!(traces.probe("canonical-output"), Some(&F::from_u64(13)));
+        assert_eq!(traces.probe("duplicate-output"), Some(&F::from_u64(13)));
     }
 
     #[test]

@@ -11,8 +11,8 @@ use p3_circuit::ops::poseidon1_perm::{
 };
 use p3_circuit::ops::poseidon2_perm::{GoldilocksD2Width8, Poseidon2PermCallBase};
 use p3_circuit::ops::{
-    KoalaBearD1Width16, NpoTypeId, Op, Poseidon1Config, Poseidon2Config, generate_poseidon1_trace,
-    generate_poseidon2_trace, generate_recompose_trace,
+    KoalaBearD1Width16, NpoTypeId, Op, Poseidon1Config, Poseidon2Config, PrimitiveOpType,
+    generate_poseidon1_trace, generate_poseidon2_trace, generate_recompose_trace,
 };
 use p3_commit::{ExtensionMmcs, Pcs, PeriodicLdeTable, PolynomialSpace};
 use p3_field::PrimeCharacteristicRing;
@@ -20,6 +20,7 @@ use p3_field::extension::{BinomialExtensionField, QuinticTrinomialExtensionField
 use p3_fri::{FriParameters, HidingFriPcs};
 use p3_goldilocks::{Goldilocks, Poseidon2Goldilocks};
 use p3_koala_bear::{KoalaBear, default_koalabear_poseidon1_16, default_koalabear_poseidon2_16};
+use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_merkle_tree::MerkleTreeHidingMmcs;
 use p3_symmetric::{CryptographicHasher, PaddingFreeSponge, Permutation};
@@ -27,6 +28,8 @@ use p3_test_utils::LiftPermToQuintic;
 use p3_test_utils::koala_bear_params::{
     Challenge, Challenger, DIGEST_ELEMS, Dft, MyCompress, MyHash,
 };
+#[cfg(debug_assertions)]
+use p3_test_utils::rejection_oracle::{DebugRejectionKind, classify_debug_diagnostic};
 use p3_uni_stark::StarkConfig;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
@@ -594,6 +597,66 @@ fn trusted_preparation_reuses_the_finalized_setup_for_repeated_proofs() {
             .as_ref()
             .unwrap()
             .commitment
+    );
+}
+
+#[derive(Debug)]
+enum AlgebraicProofCheckError {
+    Prove(BatchStarkProverError),
+    Verify(BatchStarkProverError),
+    #[cfg(debug_assertions)]
+    DebugPanic(DebugRejectionKind),
+}
+
+impl core::fmt::Display for AlgebraicProofCheckError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Prove(error) => write!(f, "prover error: {error}"),
+            Self::Verify(error) => write!(f, "verifier error: {error}"),
+            #[cfg(debug_assertions)]
+            Self::DebugPanic(kind) => write!(f, "debug rejection: {kind:?}"),
+        }
+    }
+}
+
+#[cfg(debug_assertions)]
+fn run_with_strict_debug_oracle<T>(f: impl FnOnce() -> T) -> Result<T, DebugRejectionKind> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+        Ok(value) => Ok(value),
+        Err(payload) => {
+            let message = payload
+                .downcast_ref::<alloc::string::String>()
+                .map(alloc::string::String::as_str)
+                .or_else(|| payload.downcast_ref::<&str>().copied());
+            match message.and_then(classify_debug_diagnostic) {
+                Some(kind) => Err(kind),
+                None => std::panic::resume_unwind(payload),
+            }
+        }
+    }
+}
+
+fn assert_algebraic_rejection(result: Result<(), AlgebraicProofCheckError>, context: &str) {
+    #[cfg(debug_assertions)]
+    assert!(
+        matches!(
+            result,
+            Err(AlgebraicProofCheckError::DebugPanic(
+                DebugRejectionKind::Constraint | DebugRejectionKind::Lookup
+            ))
+        ),
+        "{context}: forged trace must hit a recognized debug rejection, got {result:?}"
+    );
+
+    #[cfg(not(debug_assertions))]
+    assert!(
+        matches!(
+            result,
+            Err(AlgebraicProofCheckError::Verify(
+                BatchStarkProverError::Verify(_)
+            ))
+        ),
+        "{context}: forged trace must prove and reach verifier algebraic rejection, got {result:?}"
     );
 }
 
@@ -2375,7 +2438,9 @@ fn verify_all_tables_rejects_a_forged_constant_value() {
     let honest_proof = prover
         .prove_all_tables(&honest_traces, &circuit_prover_data)
         .unwrap();
-    assert!(prover.verify_all_tables::<KoalaBear>(&honest_proof).is_ok());
+    prover
+        .verify_all_tables::<KoalaBear>(&honest_proof)
+        .expect("honest fixed-key constant proof must verify");
 
     // Forge a circuit that requires x=43 by mutating the compiled `Op::Const` directly
     // (bypassing `CircuitBuilder`, the way a malicious prover with access to the circuit
@@ -2449,41 +2514,317 @@ fn verify_all_tables_rejects_a_forged_constant_value() {
     // Prove the forged trace against the ORIGINAL (x=42) circuit's prover data — this is the
     // exploit: reusing preprocessing that no longer matches the trace's constant.
     //
-    // An unsatisfied constraint surfaces either as a prover-side panic (debug builds run
-    // `check_constraints` inside `p3_batch_stark::prove` before a proof is ever returned) or
-    // as a verification failure; both count as rejection of the forged constant. Same
-    // `catch_unwind`-based oracle as `recursion/tests/challenger_sponge_binding.rs`'s
-    // `prove_and_verify`. The caught panic's payload is checked against the exact text
-    // `p3_batch_stark::check_constraints::check_constraints` panics with
-    // (`panic!("constraints not satisfied on row {row_index}: failed constraints =
-    // {rendered}")`, observed verbatim as `constraints not satisfied on row 1: failed
-    // constraints = [#0]` when this test's forged trace is proved) so an unrelated panic
-    // elsewhere in `prove_all_tables` cannot masquerade as this constraint being enforced.
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    #[cfg(debug_assertions)]
+    let result = match run_with_strict_debug_oracle(|| {
         let forged_proof = prover
             .prove_all_tables(&forged_traces, &circuit_prover_data)
-            .map_err(|e| alloc::format!("prove: {e:?}"))?;
+            .map_err(AlgebraicProofCheckError::Prove)?;
         prover
             .verify_all_tables::<KoalaBear>(&forged_proof)
-            .map_err(|e| alloc::format!("verify: {e:?}"))
-    }))
-    .unwrap_or_else(|payload| {
-        let msg = payload
-            .downcast_ref::<alloc::string::String>()
-            .map(alloc::string::String::as_str)
-            .or_else(|| payload.downcast_ref::<&str>().copied())
-            .unwrap_or("<non-string panic>");
-        assert!(
-            msg.contains("constraints not satisfied on row"),
-            "expected the ConstAir constraint-violation panic, got a different panic: {msg}"
-        );
-        Err(alloc::string::String::from(
-            "prover panicked on the forged constant",
-        ))
-    });
+            .map_err(AlgebraicProofCheckError::Verify)
+    }) {
+        Ok(result) => result,
+        Err(kind) => Err(AlgebraicProofCheckError::DebugPanic(kind)),
+    };
 
+    #[cfg(not(debug_assertions))]
+    let result = {
+        let forged_proof = prover
+            .prove_all_tables(&forged_traces, &circuit_prover_data)
+            .map_err(AlgebraicProofCheckError::Prove);
+        match forged_proof {
+            Ok(proof) => prover
+                .verify_all_tables::<KoalaBear>(&proof)
+                .map_err(AlgebraicProofCheckError::Verify),
+            Err(error) => Err(error),
+        }
+    };
+
+    #[cfg(debug_assertions)]
     assert!(
-        result.is_err(),
-        "a trace asserting the wrong value for a compile-time constant must be rejected"
+        matches!(
+            &result,
+            Err(AlgebraicProofCheckError::DebugPanic(
+                DebugRejectionKind::Constraint
+            ))
+        ),
+        "forged constant must reject specifically at its AIR constraint: {result:?}"
+    );
+    assert_algebraic_rejection(result, "forged constant 42 -> 43 at Const trace row 0");
+}
+
+#[test]
+fn verify_all_tables_rejects_alu_bus_only_operand_swap() {
+    let mut builder = CircuitBuilder::<KoalaBear>::new();
+    let a = builder.public_input();
+    let b = builder.public_input();
+    let expected = builder.public_input();
+    let sum = builder.add(a, b);
+    builder.connect(sum, expected);
+    let circuit = builder.build().unwrap();
+
+    let cfg = config::koala_bear();
+    let packing = TablePacking::default();
+    let (airs_degrees, primitive_columns, non_primitive_columns) =
+        get_airs_and_degrees_with_prep::<KoalaBearConfig, _, 1>(
+            &circuit,
+            &packing,
+            &[],
+            &[],
+            ConstraintProfile::Standard,
+        )
+        .unwrap();
+    let alu_prep = primitive_columns[PrimitiveOpType::Alu as usize].clone();
+    assert!(!alu_prep.is_empty(), "ALU preprocessing must be nonempty");
+    let (airs, degrees): (Vec<_>, Vec<_>) = airs_degrees.into_iter().unzip();
+    let prover_data = ProverData::from_airs_and_degrees(&cfg, &airs, &degrees);
+    let circuit_prover_data =
+        CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
+
+    let mut runner = circuit.runner();
+    let expected_values = [
+        KoalaBear::from_u32(3),
+        KoalaBear::from_u32(5),
+        KoalaBear::from_u32(8),
+    ];
+    runner.set_public_inputs(&expected_values).unwrap();
+    let traces = runner.run().unwrap();
+    assert!(
+        !traces.alu_trace.values.is_empty(),
+        "ALU trace must be nonempty"
+    );
+
+    let air = crate::air::AluAir::<KoalaBear, 1>::new_with_preprocessed(
+        traces.alu_trace.values.len(),
+        1,
+        alu_prep.clone(),
+        packing.horner_packed_steps(),
+    );
+    let honest_matrix = air.trace_to_matrix(&traces.alu_trace, 1);
+    crate::air::test_utils::assert_air_satisfies::<KoalaBear, KoalaBear, _>(&air, &honest_matrix);
+    let mut locally_valid_forgery = honest_matrix.clone();
+    let width = locally_valid_forgery.width();
+    let matches: Vec<_> = (0..locally_valid_forgery.height())
+        .filter(|&row| {
+            locally_valid_forgery.values[row * width] == expected_values[0]
+                && locally_valid_forgery.values[row * width + 1] == expected_values[1]
+                && locally_valid_forgery.values[row * width + 3] == expected_values[2]
+        })
+        .collect();
+    assert_eq!(matches, vec![0], "expected one Add row at ALU row 0");
+    locally_valid_forgery.values.swap(0, 1);
+    crate::air::test_utils::assert_air_satisfies::<KoalaBear, KoalaBear, _>(
+        &air,
+        &locally_valid_forgery,
+    );
+
+    let prover = BatchStarkProver::new(cfg);
+    let honest_proof = prover
+        .prove_all_tables(&traces, &circuit_prover_data)
+        .expect("honest ALU proof must be produced");
+    prover
+        .verify_all_tables::<KoalaBear>(&honest_proof)
+        .expect("honest ALU proof must verify");
+
+    #[cfg(debug_assertions)]
+    let result = match run_with_strict_debug_oracle(|| {
+        let proof = prover
+            .prove_with_trace_matrix_transform::<KoalaBear, 1, _>(
+                &traces,
+                None,
+                &circuit_prover_data,
+                None,
+                |matrices| matrices[PrimitiveOpType::Alu as usize].values.swap(0, 1),
+            )
+            .map_err(AlgebraicProofCheckError::Prove)?;
+        prover
+            .verify_all_tables::<KoalaBear>(&proof)
+            .map_err(AlgebraicProofCheckError::Verify)
+    }) {
+        Ok(result) => result,
+        Err(kind) => Err(AlgebraicProofCheckError::DebugPanic(kind)),
+    };
+
+    #[cfg(not(debug_assertions))]
+    let result = match prover.prove_with_trace_matrix_transform::<KoalaBear, 1, _>(
+        &traces,
+        None,
+        &circuit_prover_data,
+        None,
+        |matrices| matrices[PrimitiveOpType::Alu as usize].values.swap(0, 1),
+    ) {
+        Ok(proof) => prover
+            .verify_all_tables::<KoalaBear>(&proof)
+            .map_err(AlgebraicProofCheckError::Verify),
+        Err(error) => Err(AlgebraicProofCheckError::Prove(error)),
+    };
+
+    #[cfg(debug_assertions)]
+    assert!(
+        matches!(
+            &result,
+            Err(AlgebraicProofCheckError::DebugPanic(
+                DebugRejectionKind::Lookup
+            ))
+        ),
+        "locally valid operand swap must reject specifically at lookup balance: {result:?}"
+    );
+    assert_eq!(
+        circuit_prover_data.primitive_columns[PrimitiveOpType::Alu as usize],
+        alu_prep,
+        "the fixed WitnessChecks preprocessing must remain unchanged"
+    );
+    assert_algebraic_rejection(result, "ALU row 0 columns a=0 and b=1 swapped");
+}
+
+#[test]
+fn verify_all_tables_rejects_forged_horner_chain_head_seed() {
+    let mut builder = CircuitBuilder::<KoalaBear>::new();
+    let zero = builder.define_const(KoalaBear::ZERO);
+    let a0 = builder.define_const(KoalaBear::from_u32(1));
+    let b0 = builder.public_input();
+    let c0 = builder.define_const(KoalaBear::from_u32(5));
+    let a1 = builder.define_const(KoalaBear::ZERO);
+    let b1 = builder.public_input();
+    let c1 = builder.define_const(KoalaBear::from_u32(3));
+    let a2 = builder.define_const(KoalaBear::from_u32(1));
+    let b2 = builder.public_input();
+    let c2 = builder.define_const(KoalaBear::from_u32(2));
+    let out0 = builder.horner_acc_step(zero, b0, c0, a0);
+    let out1 = builder.horner_acc_step(out0, b1, c1, a1);
+    let out2 = builder.horner_acc_step(out1, b2, c2, a2);
+    let expected = builder.public_input();
+    builder.connect(out2, expected);
+    let circuit = builder.build().unwrap();
+
+    let cfg = config::koala_bear();
+    let packing = TablePacking::default();
+    let (airs_degrees, primitive_columns, non_primitive_columns) =
+        get_airs_and_degrees_with_prep::<KoalaBearConfig, _, 1>(
+            &circuit,
+            &packing,
+            &[],
+            &[],
+            ConstraintProfile::Standard,
+        )
+        .unwrap();
+    let alu_prep = primitive_columns[PrimitiveOpType::Alu as usize].clone();
+    assert!(
+        !alu_prep.is_empty(),
+        "Horner preprocessing must be nonempty"
+    );
+    let (airs, degrees): (Vec<_>, Vec<_>) = airs_degrees.into_iter().unzip();
+    let prover_data = ProverData::from_airs_and_degrees(&cfg, &airs, &degrees);
+    let circuit_prover_data =
+        CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
+    let mut runner = circuit.runner();
+    runner
+        .set_public_inputs(&[
+            KoalaBear::from_u32(2),
+            KoalaBear::from_u32(3),
+            KoalaBear::from_u32(5),
+            KoalaBear::from_u32(76),
+        ])
+        .unwrap();
+    let traces = runner.run().unwrap();
+    assert_eq!(
+        traces.alu_trace.values.len(),
+        3,
+        "three Horner ops required; compiled ops={:?}",
+        circuit.ops
+    );
+
+    let air = crate::air::AluAir::<KoalaBear, 1>::new_with_preprocessed(
+        traces.alu_trace.values.len(),
+        1,
+        alu_prep,
+        packing.horner_packed_steps(),
+    );
+    let honest_matrix = air.trace_to_matrix(&traces.alu_trace, 1);
+    crate::air::test_utils::assert_air_satisfies::<KoalaBear, KoalaBear, _>(&air, &honest_matrix);
+    let width = honest_matrix.width();
+    assert!(width >= 4, "D1 ALU must expose lane-0 out at column 3");
+    let steps = [
+        (
+            KoalaBear::ONE,
+            KoalaBear::from_u32(2),
+            KoalaBear::from_u32(5),
+        ),
+        (
+            KoalaBear::ZERO,
+            KoalaBear::from_u32(3),
+            KoalaBear::from_u32(3),
+        ),
+        (
+            KoalaBear::ONE,
+            KoalaBear::from_u32(5),
+            KoalaBear::from_u32(2),
+        ),
+    ];
+    let mutate = |matrix: &mut RowMajorMatrix<KoalaBear>| {
+        matrix.values[3] = KoalaBear::ONE;
+        let mut acc = KoalaBear::ONE;
+        for (row, &(a, b, c)) in steps.iter().enumerate() {
+            acc = acc * b + c - a;
+            matrix.values[(row + 1) * width + 3] = acc;
+        }
+    };
+    let mut forged_matrix = honest_matrix;
+    mutate(&mut forged_matrix);
+    crate::air::test_utils::assert_air_rejects::<KoalaBear, KoalaBear, _>(&air, &forged_matrix);
+
+    let prover = BatchStarkProver::new(cfg);
+    let honest_proof = prover
+        .prove_all_tables(&traces, &circuit_prover_data)
+        .expect("honest Horner proof must be produced");
+    prover
+        .verify_all_tables::<KoalaBear>(&honest_proof)
+        .expect("honest Horner proof must verify");
+
+    #[cfg(debug_assertions)]
+    let result = match run_with_strict_debug_oracle(|| {
+        let proof = prover
+            .prove_with_trace_matrix_transform::<KoalaBear, 1, _>(
+                &traces,
+                None,
+                &circuit_prover_data,
+                None,
+                |matrices| mutate(&mut matrices[PrimitiveOpType::Alu as usize]),
+            )
+            .map_err(AlgebraicProofCheckError::Prove)?;
+        prover
+            .verify_all_tables::<KoalaBear>(&proof)
+            .map_err(AlgebraicProofCheckError::Verify)
+    }) {
+        Ok(result) => result,
+        Err(kind) => Err(AlgebraicProofCheckError::DebugPanic(kind)),
+    };
+
+    #[cfg(not(debug_assertions))]
+    let result = match prover.prove_with_trace_matrix_transform::<KoalaBear, 1, _>(
+        &traces,
+        None,
+        &circuit_prover_data,
+        None,
+        |matrices| mutate(&mut matrices[PrimitiveOpType::Alu as usize]),
+    ) {
+        Ok(proof) => prover
+            .verify_all_tables::<KoalaBear>(&proof)
+            .map_err(AlgebraicProofCheckError::Verify),
+        Err(error) => Err(AlgebraicProofCheckError::Prove(error)),
+    };
+    #[cfg(debug_assertions)]
+    assert!(
+        matches!(
+            &result,
+            Err(AlgebraicProofCheckError::DebugPanic(
+                DebugRejectionKind::Constraint
+            ))
+        ),
+        "forged Horner seed must reject specifically at the chain-head constraint: {result:?}"
+    );
+    assert_algebraic_rejection(
+        result,
+        "ALU separator row 0 out column 3 changed 0 -> 1 with rows 1..=3 recomputed",
     );
 }
