@@ -3,10 +3,9 @@ use std::any::Any;
 #[cfg(debug_assertions)]
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 
-use p3_circuit::StatementSchema;
 use p3_circuit::ops::{NpoTypeId, StatementTrace, generate_recompose_trace};
 use p3_circuit::tables::Traces;
-use p3_circuit::{CircuitBuilder, StatementExport, StatementField};
+use p3_circuit::{CircuitBuilder, StatementExport, StatementField, StatementSchema};
 use p3_circuit_prover::batch_stark_prover::{
     BatchStarkProver, CircuitProverData, RecomposePreprocessor, StatementAirBuilder,
     StatementPreprocessor, StatementProver, TablePacking, recompose_air_builders,
