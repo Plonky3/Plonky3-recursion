@@ -248,6 +248,8 @@ where
         Algebra<SymbolicExpression<Val<InSC>>> + Algebra<InSC::Challenge>,
     SymbolicExpressionExt<Val<OutSC>, OutSC::Challenge>:
         Algebra<SymbolicExpression<Val<OutSC>>> + Algebra<OutSC::Challenge>,
+    <InSC::Pcs as Pcs<InSC::Challenge, InSC::Challenger>>::Domain:
+        PolynomialSpace<Val = Val<OutSC>>,
     <InSC::Pcs as Pcs<InSC::Challenge, InSC::Challenger>>::Commitment: Clone,
     <OutSC::Pcs as Pcs<OutSC::Challenge, OutSC::Challenger>>::Domain: Send + Sync,
     OutSC::Pcs: Sync,
