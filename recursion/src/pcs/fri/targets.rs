@@ -1610,6 +1610,11 @@ where
         candidate_layout: FriOpeningLayout<'_>,
         input_caps: &[&<RI::Commitment as Recursive<EF>>::Input],
     ) -> Result<(), VerificationError> {
+        validate_builtin_fri_raw::<F, EF, RF, RI, W>(
+            input,
+            <RI::Input as NativeFriSaltWidth>::SALT_ELEMS,
+            <RF::Input as NativeFriSaltWidth>::SALT_ELEMS,
+        )?;
         validate_fri_replacement_with_caps::<
             F,
             EF,
@@ -1689,6 +1694,11 @@ where
         candidate_layout: FriOpeningLayout<'_>,
         input_caps: &[&<RI::Commitment as Recursive<EF>>::Input],
     ) -> Result<(), VerificationError> {
+        validate_builtin_fri_raw::<F, EF, RF, RI, W>(
+            &input.1,
+            <RI::Input as NativeFriSaltWidth>::SALT_ELEMS,
+            <RF::Input as NativeFriSaltWidth>::SALT_ELEMS,
+        )?;
         validate_fri_replacement_with_caps::<
             F,
             EF,
@@ -3394,6 +3404,19 @@ mod prepared_shape_tests {
                 )
                 .is_err()
             );
+            assert!(
+                <HidingOpeningTargets as CheckedFriOpening<
+                    Challenge,
+                    <RecHidingMmcs as RecursiveMmcs<F, Challenge>>::Commitment,
+                >>::validate_fri_replacement(
+                    &bad,
+                    &old,
+                    baseline_layout.opening_view(),
+                    &baseline_cap_refs,
+                )
+                .is_err(),
+                "replacement must reject malformed input salt widths"
+            );
 
             let mut bad_phase = baseline.clone();
             bad_phase.1.commit_phase_openings[2].opening_proof.0[3][0] = vec![F::ZERO; width];
@@ -3410,7 +3433,81 @@ mod prepared_shape_tests {
                 )
                 .is_err()
             );
+            assert!(
+                <HidingOpeningTargets as CheckedFriOpening<
+                    Challenge,
+                    <RecHidingMmcs as RecursiveMmcs<F, Challenge>>::Commitment,
+                >>::validate_fri_replacement(
+                    &bad_phase,
+                    &old,
+                    baseline_layout.opening_view(),
+                    &baseline_cap_refs,
+                )
+                .is_err(),
+                "replacement must reject malformed phase salt widths"
+            );
         }
+
+        let mut bad_input_axis = baseline.clone();
+        bad_input_axis.1.input_openings[0].opening_proof.0[3].pop();
+        assert!(
+            <HidingOpeningTargets as CheckedFriOpening<
+                Challenge,
+                <RecHidingMmcs as RecursiveMmcs<F, Challenge>>::Commitment,
+            >>::validate_fri_context(
+                &bad_input_axis,
+                &native,
+                &recursive,
+                baseline_layout.opening_view(),
+                &baseline_cap_refs,
+            )
+            .is_err()
+        );
+        assert!(
+            <HidingOpeningTargets as CheckedFriOpening<
+                Challenge,
+                <RecHidingMmcs as RecursiveMmcs<F, Challenge>>::Commitment,
+            >>::validate_fri_replacement(
+                &bad_input_axis,
+                &old,
+                baseline_layout.opening_view(),
+                &baseline_cap_refs,
+            )
+            .is_err(),
+            "replacement must reject malformed input salt axes"
+        );
+
+        let mut bad_phase_axis = baseline.clone();
+        bad_phase_axis.1.commit_phase_openings[2]
+            .opening_proof
+            .0
+            .pop();
+        assert!(
+            <HidingOpeningTargets as CheckedFriOpening<
+                Challenge,
+                <RecHidingMmcs as RecursiveMmcs<F, Challenge>>::Commitment,
+            >>::validate_fri_context(
+                &bad_phase_axis,
+                &native,
+                &recursive,
+                baseline_layout.opening_view(),
+                &baseline_cap_refs,
+            )
+            .is_err()
+        );
+        assert!(
+            <HidingOpeningTargets as CheckedFriOpening<
+                Challenge,
+                <RecHidingMmcs as RecursiveMmcs<F, Challenge>>::Commitment,
+            >>::validate_fri_replacement(
+                &bad_phase_axis,
+                &old,
+                baseline_layout.opening_view(),
+                &baseline_cap_refs,
+            )
+            .is_err(),
+            "replacement must reject malformed phase salt axes"
+        );
 
         let mut repartition = baseline.clone();
         for query in 0..4 {
