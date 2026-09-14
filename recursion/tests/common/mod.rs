@@ -11,9 +11,11 @@ use itertools::Itertools;
 use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 use p3_batch_stark::ProverData;
 use p3_circuit::ops::{generate_poseidon2_trace, generate_recompose_trace};
-use p3_circuit::{CircuitBuilder, CircuitRunner, NonPrimitiveOpId};
-use p3_circuit_prover::batch_stark_prover::BatchStarkProver;
-use p3_circuit_prover::common::get_airs_and_degrees_with_prep;
+use p3_circuit::{Circuit, CircuitBuilder, CircuitRunner, NonPrimitiveOpId, StatementExport};
+use p3_circuit_prover::batch_stark_prover::{
+    BatchStarkProver, StatementAirBuilder, StatementPreprocessor, StatementProver,
+};
+use p3_circuit_prover::common::{NpoAirBuilder, NpoPreprocessor, get_airs_and_degrees_with_prep};
 use p3_circuit_prover::{
     BatchStarkProof, CircuitProverData, CircuitVerifier, ConstraintProfile, TablePacking,
 };
@@ -442,6 +444,63 @@ pub(crate) struct KoalaBearD4FirstLayerFixture {
     pub(crate) backend: KoalaBearD4Backend,
     pub(crate) base_proof: BatchStarkProof<KoalaBearD4RecursionConfig>,
     pub(crate) verifier: CircuitVerifier<KoalaBearD4RecursionConfig>,
+}
+
+/// One trusted circuit relation whose audited Statement values can vary between proofs.
+pub(crate) struct KoalaBearD4StatementFixture {
+    pub(crate) layer_config: KoalaBearD4RecursionConfig,
+    pub(crate) backend: KoalaBearD4Backend,
+    circuit: Circuit<Challenge>,
+    prepared: p3_circuit_prover::PreparedCircuitProver<KoalaBearD4RecursionConfig>,
+}
+
+impl KoalaBearD4StatementFixture {
+    pub(crate) fn new() -> Self {
+        let (layer_config, backend) = koala_bear_d4_recursion_config_and_backend_with_pow_bits(0);
+        let mut builder = CircuitBuilder::<Challenge>::new();
+        let first = builder.public_input();
+        let second = builder.public_input();
+        let schema = builder
+            .set_statement_exports::<F>(&[
+                StatementExport::Base(first),
+                StatementExport::Base(second),
+            ])
+            .unwrap();
+        let circuit = builder.build().unwrap();
+        let preprocessors: Vec<Box<dyn NpoPreprocessor<F>>> =
+            vec![Box::new(StatementPreprocessor::new(schema.clone()))];
+        let air_builders: Vec<Box<dyn NpoAirBuilder<KoalaBearD4RecursionConfig, 4>>> =
+            vec![Box::new(StatementAirBuilder::<4>::new(schema.clone()))];
+        let mut prover = BatchStarkProver::new(layer_config.clone());
+        prover.register_table_prover(Box::new(StatementProver::<4>::new(schema)));
+        let prepared = prover
+            .prepare_circuit::<Challenge, 4>(
+                &circuit,
+                &preprocessors,
+                &air_builders,
+                ConstraintProfile::Standard,
+            )
+            .unwrap();
+        Self {
+            layer_config,
+            backend,
+            circuit,
+            prepared,
+        }
+    }
+
+    pub(crate) fn prove(&self, statement: [u64; 2]) -> BatchStarkProof<KoalaBearD4RecursionConfig> {
+        let values = statement.map(F::from_u64);
+        let mut runner = self.circuit.runner();
+        runner
+            .set_public_inputs(&values.map(Challenge::from))
+            .unwrap();
+        self.prepared.prove(&runner.run().unwrap()).unwrap()
+    }
+
+    pub(crate) fn verifier(&self) -> CircuitVerifier<KoalaBearD4RecursionConfig> {
+        self.prepared.verifier()
+    }
 }
 
 impl KoalaBearD4FirstLayerFixture {

@@ -4,9 +4,9 @@ use alloc::string::ToString;
 use alloc::vec::Vec;
 
 use p3_batch_stark::CommonData;
-use p3_circuit_prover::BatchStarkProof;
-use p3_circuit_prover::batch_stark_prover::TableProver;
+use p3_circuit_prover::batch_stark_prover::{NUM_PRIMITIVE_TABLES, TableProver};
 use p3_circuit_prover::field_params::ExtractBinomialW;
+use p3_circuit_prover::{BatchStarkProof, CircuitVerifier};
 use p3_commit::Pcs;
 use p3_field::{ExtensionField, PrimeField64};
 use p3_uni_stark::{Proof, StarkGenericConfig, Val};
@@ -362,6 +362,7 @@ where
                 w_binomial: *w_binomial,
                 alu_quintic_trinomial: *alu_quintic_trinomial,
                 non_primitives,
+                statement_instance: None,
                 preprocessed,
             })))
         }
@@ -453,7 +454,27 @@ pub(crate) fn compare_input_contract<F: PartialEq, C: PartialEq, O: PartialEq>(
                 b.alu_quintic_trinomial,
                 "input.metadata"
             );
-            same!(a.non_primitives, b.non_primitives, "input.metadata");
+            if a.non_primitives.len() != b.non_primitives.len()
+                || a.non_primitives
+                    .iter()
+                    .zip(&b.non_primitives)
+                    .enumerate()
+                    .any(|(index, (expected, actual))| {
+                        expected.op_type != actual.op_type
+                            || expected.rows != actual.rows
+                            || expected.lanes != actual.lanes
+                            || expected.air_variant != actual.air_variant
+                            || if a.statement_instance == Some(NUM_PRIMITIVE_TABLES + index) {
+                                expected.public_values.len() != actual.public_values.len()
+                            } else {
+                                expected.public_values != actual.public_values
+                            }
+                    })
+            {
+                return Err(VerificationError::PreparedInputMismatch {
+                    component: "input.metadata",
+                });
+            }
             same!(a.preprocessed, b.preprocessed, "input.preprocessed");
         }
         _ => {
@@ -463,6 +484,66 @@ pub(crate) fn compare_input_contract<F: PartialEq, C: PartialEq, O: PartialEq>(
         }
     }
     Ok(())
+}
+
+/// Capture a trusted batch input contract from retained verifier authority. Only the verifier's
+/// audited Statement instance is dynamic-by-length; every ordinary NPO value remains exact.
+pub(crate) fn capture_trusted_batch_input_contract<SC, Comm, Opening>(
+    verifier: &CircuitVerifier<SC>,
+    proof: &BatchStarkProof<SC>,
+    expected_statement: &[Val<SC>],
+) -> CaptureShapeResult<SC, Comm::Shape, Opening::Shape>
+where
+    SC: StarkGenericConfig + 'static,
+    Comm: Recursive<SC::Challenge, Input = NativeCommitment<SC>> + PreparedRecursive<SC::Challenge>,
+    Opening: Recursive<SC::Challenge, Input = <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Proof>
+        + PreparedRecursive<SC::Challenge>,
+    Val<SC>: PrimeField64 + p3_circuit_prover::config::StarkField,
+    SC::Challenge: ExtensionField<Val<SC>> + ExtractBinomialW<Val<SC>>,
+    p3_air::SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        p3_field::Algebra<p3_air::SymbolicExpression<Val<SC>>> + p3_field::Algebra<SC::Challenge>,
+{
+    verifier
+        .verify(proof, expected_statement)
+        .map_err(|error| VerificationError::InvalidProofShape(error.to_string()))?;
+    let table_public_inputs = verifier
+        .table_public_values(expected_statement)
+        .map_err(|error| VerificationError::InvalidProofShape(error.to_string()))?;
+    let mut contract = capture_input_shape::<SC, Comm, Opening>(&PreparedInput::BatchStark {
+        proof,
+        common_data: verifier.common_data(),
+        table_public_inputs: &table_public_inputs,
+    })?;
+    let InputContract::Batch(batch) = &mut contract else {
+        unreachable!()
+    };
+    batch.statement_instance = verifier.statement_layout().table_instance();
+    Ok(contract)
+}
+
+/// Validate a later trusted batch witness against a contract minted from the retained verifier.
+pub(crate) fn validate_trusted_batch_input<SC, Comm, Opening>(
+    verifier: &CircuitVerifier<SC>,
+    contract: &InputContract<Val<SC>, Comm::Shape, Opening::Shape>,
+    proof: &BatchStarkProof<SC>,
+    expected_statement: &[Val<SC>],
+) -> Result<(), VerificationError>
+where
+    SC: StarkGenericConfig + 'static,
+    Comm: Recursive<SC::Challenge, Input = NativeCommitment<SC>> + PreparedRecursive<SC::Challenge>,
+    Opening: Recursive<SC::Challenge, Input = <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Proof>
+        + PreparedRecursive<SC::Challenge>,
+    Val<SC>: PrimeField64 + p3_circuit_prover::config::StarkField,
+    SC::Challenge: ExtensionField<Val<SC>> + ExtractBinomialW<Val<SC>>,
+    p3_air::SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        p3_field::Algebra<p3_air::SymbolicExpression<Val<SC>>> + p3_field::Algebra<SC::Challenge>,
+{
+    let actual = capture_trusted_batch_input_contract::<SC, Comm, Opening>(
+        verifier,
+        proof,
+        expected_statement,
+    )?;
+    compare_input_contract(contract, &actual)
 }
 
 pub(crate) fn validate_manifest_public_inputs<SC: StarkGenericConfig>(
@@ -764,6 +845,7 @@ mod tests {
                     public_values: vec![7],
                 },
             ],
+            statement_instance: None,
             preprocessed: Some(GlobalPreprocessedShape {
                 commitment: 2,
                 instances: vec![
@@ -900,6 +982,38 @@ mod tests {
                 "input.metadata",
             );
         }
+    }
+
+    #[test]
+    fn trusted_statement_contract_varies_only_designated_values_at_fixed_length() {
+        let mut expected = contract();
+        let InputContract::Batch(expected_batch) = &mut expected else {
+            unreachable!()
+        };
+        expected_batch.statement_instance = Some(3);
+
+        let mut changed_statement = expected.clone();
+        let InputContract::Batch(changed_statement_batch) = &mut changed_statement else {
+            unreachable!()
+        };
+        changed_statement_batch.non_primitives[0].public_values = vec![17, 19];
+        assert!(compare_input_contract(&expected, &changed_statement).is_ok());
+
+        let mut wrong_statement_len = expected.clone();
+        let InputContract::Batch(wrong_statement_len_batch) = &mut wrong_statement_len else {
+            unreachable!()
+        };
+        wrong_statement_len_batch.non_primitives[0]
+            .public_values
+            .push(23);
+        assert_component(&expected, &wrong_statement_len, "input.metadata");
+
+        let mut changed_static = expected.clone();
+        let InputContract::Batch(changed_static_batch) = &mut changed_static else {
+            unreachable!()
+        };
+        changed_static_batch.non_primitives[1].public_values[0] = 29;
+        assert_component(&expected, &changed_static, "input.metadata");
     }
 
     #[test]

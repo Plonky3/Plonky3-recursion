@@ -44,7 +44,10 @@ use crate::pcs::fri::{
     CheckedFriCommitment, CheckedFriOpening, FriVerifierParams, NativeFriParams,
     ValidatedFriContext,
 };
-use crate::prepared::input::{capture_builtin_input_contract, validate_builtin_prepared_input};
+use crate::prepared::input::{
+    capture_builtin_input_contract, capture_trusted_batch_input_contract,
+    validate_builtin_prepared_input, validate_trusted_batch_input,
+};
 use crate::prepared::{
     ConstrainConstantCommitment, NativeCommitment, PreparedInput, PreparedPcsRecursionBackend,
     TrustedPcsRecursionBackend,
@@ -777,7 +780,7 @@ where
             "built-in FRI recursion requires native validation parameters".into(),
         )
     })?;
-    let tables = trusted_batch_tables::<SC, TRACE_D>(verifier)?;
+    let tables = trusted_batch_tables::<SC, TRACE_D>(verifier, statement)?;
     let lookups = tables
         .airs
         .iter()
@@ -823,7 +826,7 @@ where
     )?;
     Ok((
         context,
-        capture_trusted_batch_authority(verifier),
+        capture_trusted_batch_authority(verifier, statement)?,
         StarkLayoutPolicy {
             is_zk: config.is_zk(),
             log_max_lde_height: config.pcs().log_max_lde_height(),
@@ -2006,6 +2009,40 @@ macro_rules! impl_prepared_fri_backend {
                 )
             }
 
+            fn capture_trusted_batch_input_contract(
+                &self,
+                verifier: &CircuitVerifier<SC>,
+                proof: &BatchStarkProof<SC>,
+                expected_statement: &[Val<SC>],
+            ) -> Result<Self::InputContract, VerificationError> {
+                <Self as TrustedPcsRecursionBackend<SC, A, $d>>::preflight_trusted_batch(
+                    self, verifier, proof,
+                )?;
+                capture_trusted_batch_input_contract::<SC, SC::Commitment, SC::OpeningProof>(
+                    verifier,
+                    proof,
+                    expected_statement,
+                )
+            }
+
+            fn validate_trusted_batch_input(
+                &self,
+                verifier: &CircuitVerifier<SC>,
+                contract: &Self::InputContract,
+                proof: &BatchStarkProof<SC>,
+                expected_statement: &[Val<SC>],
+            ) -> Result<(), VerificationError> {
+                <Self as TrustedPcsRecursionBackend<SC, A, $d>>::preflight_trusted_batch(
+                    self, verifier, proof,
+                )?;
+                validate_trusted_batch_input::<SC, SC::Commitment, SC::OpeningProof>(
+                    verifier,
+                    contract,
+                    proof,
+                    expected_statement,
+                )
+            }
+
             fn build_trusted_batch_verifier_circuit(
                 &self,
                 verifier: &CircuitVerifier<SC>,
@@ -2018,10 +2055,10 @@ macro_rules! impl_prepared_fri_backend {
                 )?;
                 let degree = verifier.relation().ext_degree();
                 let table_public_inputs = match degree {
-                    1 => trusted_batch_tables::<SC, 1>(verifier)?.public_values,
-                    2 => trusted_batch_tables::<SC, 2>(verifier)?.public_values,
-                    4 => trusted_batch_tables::<SC, 4>(verifier)?.public_values,
-                    5 => trusted_batch_tables::<SC, 5>(verifier)?.public_values,
+                    1 => trusted_batch_tables::<SC, 1>(verifier, statement)?.public_values,
+                    2 => trusted_batch_tables::<SC, 2>(verifier, statement)?.public_values,
+                    4 => trusted_batch_tables::<SC, 4>(verifier, statement)?.public_values,
+                    5 => trusted_batch_tables::<SC, 5>(verifier, statement)?.public_values,
                     degree => {
                         return Err(VerificationError::InvalidProofShape(format!(
                             "unsupported trusted batch verifier ext_degree {degree}"
@@ -2090,22 +2127,25 @@ macro_rules! impl_prepared_fri_backend {
                 runner: &mut CircuitRunner<'_, SC::Challenge>,
                 op_ids: &[NonPrimitiveOpId],
             ) -> Result<(), VerificationError> {
+                <Self as TrustedPcsRecursionBackend<SC, A, $d>>::preflight_trusted_batch(
+                    self, verifier, proof,
+                )?;
                 let (transcript, table_public_inputs) = match verifier.relation().ext_degree() {
                     1 => (
                         replay_trusted_batch_layer_transcript::<SC, 1>(verifier, proof, statement)?,
-                        trusted_batch_tables::<SC, 1>(verifier)?.public_values,
+                        trusted_batch_tables::<SC, 1>(verifier, statement)?.public_values,
                     ),
                     2 => (
                         replay_trusted_batch_layer_transcript::<SC, 2>(verifier, proof, statement)?,
-                        trusted_batch_tables::<SC, 2>(verifier)?.public_values,
+                        trusted_batch_tables::<SC, 2>(verifier, statement)?.public_values,
                     ),
                     4 => (
                         replay_trusted_batch_layer_transcript::<SC, 4>(verifier, proof, statement)?,
-                        trusted_batch_tables::<SC, 4>(verifier)?.public_values,
+                        trusted_batch_tables::<SC, 4>(verifier, statement)?.public_values,
                     ),
                     5 => (
                         replay_trusted_batch_layer_transcript::<SC, 5>(verifier, proof, statement)?,
-                        trusted_batch_tables::<SC, 5>(verifier)?.public_values,
+                        trusted_batch_tables::<SC, 5>(verifier, statement)?.public_values,
                     ),
                     degree => {
                         return Err(VerificationError::InvalidProofShape(format!(

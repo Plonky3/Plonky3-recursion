@@ -198,6 +198,9 @@ pub struct BatchInputContract<F, C, O> {
     pub(crate) w_binomial: Option<F>,
     pub(crate) alu_quintic_trinomial: bool,
     pub(crate) non_primitives: Vec<NonPrimitiveContract<F>>,
+    /// Exact batch-table position whose public values are runtime-bound by an audited Statement
+    /// AIR. `None` preserves the legacy expert contract's fully static NPO comparison.
+    pub(crate) statement_instance: Option<usize>,
     pub(crate) preprocessed: Option<GlobalPreprocessedShape<C>>,
 }
 

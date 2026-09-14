@@ -89,6 +89,10 @@ where
         <dyn CloneableBatchAir<SC> as BaseAir<Val<SC>>>::main_next_row_columns(self.air())
     }
 
+    fn preprocessed_next_row_columns(&self) -> Vec<usize> {
+        <dyn CloneableBatchAir<SC> as BaseAir<Val<SC>>>::preprocessed_next_row_columns(self.air())
+    }
+
     fn num_periodic_columns(&self) -> usize {
         <dyn CloneableBatchAir<SC> as BaseAir<Val<SC>>>::num_periodic_columns(self.air())
     }

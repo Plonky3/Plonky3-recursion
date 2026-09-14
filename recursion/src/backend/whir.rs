@@ -42,7 +42,10 @@ use crate::input_contract::{CheckedWhirOpening, ValidatedWhirContext};
 use crate::ops::Poseidon2Config;
 use crate::pcs::fri::CheckedFriCommitment;
 use crate::pcs::whir::uni::WhirUniVerifierParams;
-use crate::prepared::input::{capture_builtin_input_contract, validate_builtin_prepared_input};
+use crate::prepared::input::{
+    capture_builtin_input_contract, capture_trusted_batch_input_contract,
+    validate_builtin_prepared_input, validate_trusted_batch_input,
+};
 use crate::prepared::{
     ConstrainConstantCommitment, NativeCommitment, PreparedInput, PreparedPcsRecursionBackend,
     TrustedPcsRecursionBackend,
@@ -639,7 +642,7 @@ where
             "WhirRecursionBackend supports only binary Merkle commitments".into(),
         ));
     }
-    let tables = trusted_batch_tables::<SC, 4>(verifier)?;
+    let tables = trusted_batch_tables::<SC, 4>(verifier, statement)?;
     let lookups = tables
         .airs
         .iter()
@@ -681,7 +684,7 @@ where
     )?;
     Ok((
         context,
-        capture_trusted_batch_authority(verifier),
+        capture_trusted_batch_authority(verifier, statement)?,
         StarkLayoutPolicy {
             is_zk: config.is_zk(),
             log_max_lde_height: config.pcs().log_max_lde_height(),
@@ -1395,6 +1398,40 @@ where
         )
     }
 
+    fn capture_trusted_batch_input_contract(
+        &self,
+        verifier: &CircuitVerifier<SC>,
+        proof: &BatchStarkProof<SC>,
+        expected_statement: &[Val<SC>],
+    ) -> Result<Self::InputContract, VerificationError> {
+        <Self as TrustedPcsRecursionBackend<SC, A, 4>>::preflight_trusted_batch(
+            self, verifier, proof,
+        )?;
+        capture_trusted_batch_input_contract::<SC, SC::Commitment, SC::OpeningProof>(
+            verifier,
+            proof,
+            expected_statement,
+        )
+    }
+
+    fn validate_trusted_batch_input(
+        &self,
+        verifier: &CircuitVerifier<SC>,
+        contract: &Self::InputContract,
+        proof: &BatchStarkProof<SC>,
+        expected_statement: &[Val<SC>],
+    ) -> Result<(), VerificationError> {
+        <Self as TrustedPcsRecursionBackend<SC, A, 4>>::preflight_trusted_batch(
+            self, verifier, proof,
+        )?;
+        validate_trusted_batch_input::<SC, SC::Commitment, SC::OpeningProof>(
+            verifier,
+            contract,
+            proof,
+            expected_statement,
+        )
+    }
+
     fn build_trusted_batch_verifier_circuit(
         &self,
         verifier: &CircuitVerifier<SC>,
@@ -1405,7 +1442,7 @@ where
         <Self as TrustedPcsRecursionBackend<SC, A, 4>>::preflight_trusted_batch(
             self, verifier, proof,
         )?;
-        let public_values = trusted_batch_tables::<SC, 4>(verifier)?.public_values;
+        let public_values = trusted_batch_tables::<SC, 4>(verifier, statement)?.public_values;
         preflight_basic_whir_input(
             &self.0.limits,
             &RecursionInput::<SC, A>::BatchStark {
@@ -1452,12 +1489,15 @@ where
         runner: &mut CircuitRunner<'_, SC::Challenge>,
         op_ids: &[NonPrimitiveOpId],
     ) -> Result<(), VerificationError> {
+        <Self as TrustedPcsRecursionBackend<SC, A, 4>>::preflight_trusted_batch(
+            self, verifier, proof,
+        )?;
         let transcript =
             replay_trusted_batch_layer_transcript::<SC, 4>(verifier, proof, statement)?;
         let prev = RecursionInput::<SC, A>::BatchStark {
             proof,
             common_data: verifier.common_data(),
-            table_public_inputs: trusted_batch_tables::<SC, 4>(verifier)?.public_values,
+            table_public_inputs: trusted_batch_tables::<SC, 4>(verifier, statement)?.public_values,
         };
         SC::with_whir_opening_proof(&prev, |opening_proof| {
             SC::set_whir_private_data(verifier.config(), runner, op_ids, opening_proof, transcript)

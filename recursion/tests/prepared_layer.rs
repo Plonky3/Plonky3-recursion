@@ -8,7 +8,11 @@ use std::rc::Rc;
 use common::whir_config::{BbEF, BbF, BbWhirConfig, bb_whir_config};
 use example_prepared_reuse::is_prepared_input_mismatch;
 use p3_circuit::test_utils::{FibonacciAir, generate_trace_rows};
-use p3_circuit_prover::batch_stark_prover::BatchStarkProver;
+use p3_circuit::{CircuitBuilder, StatementExport};
+use p3_circuit_prover::batch_stark_prover::{
+    BatchStarkProver, StatementAirBuilder, StatementPreprocessor, StatementProver,
+};
+use p3_circuit_prover::common::{NpoAirBuilder, NpoPreprocessor};
 use p3_circuit_prover::{ConstraintProfile, TablePacking};
 use p3_field::PrimeCharacteristicRing;
 use p3_recursion::backend::whir::{WhirRecursionBackend, WhirRecursionBackendForExt};
@@ -125,6 +129,79 @@ fn build_whir_first_layer(
         params,
     )
     .expect("the first WHIR recursion layer proves")
+}
+
+#[test]
+fn whir_trusted_batch_statement_replay_uses_each_caller_expected_vector() {
+    let config = bb_whir_config(vec![]);
+    let backend = WhirRecursionBackend::<16, 8>::new(Poseidon2Config::BABY_BEAR_D4_W16)
+        .for_extension_degree::<4>();
+    let mut builder = CircuitBuilder::<BbEF>::new();
+    let first = builder.public_input();
+    let second = builder.public_input();
+    let schema = builder
+        .set_statement_exports::<BbF>(&[
+            StatementExport::Base(first),
+            StatementExport::Base(second),
+        ])
+        .unwrap();
+    let circuit = builder.build().unwrap();
+    let preprocessors: Vec<Box<dyn NpoPreprocessor<BbF>>> =
+        vec![Box::new(StatementPreprocessor::new(schema.clone()))];
+    let air_builders: Vec<Box<dyn NpoAirBuilder<BbWhirConfig, 4>>> =
+        vec![Box::new(StatementAirBuilder::<4>::new(schema.clone()))];
+    let mut child_prover = BatchStarkProver::new(config.clone());
+    child_prover.register_table_prover(Box::new(StatementProver::<4>::new(schema)));
+    let child_prepared = child_prover
+        .prepare_circuit::<BbEF, 4>(
+            &circuit,
+            &preprocessors,
+            &air_builders,
+            ConstraintProfile::Standard,
+        )
+        .unwrap();
+    let prove_child = |statement: [BbF; 2]| {
+        let mut runner = circuit.runner();
+        runner
+            .set_public_inputs(&statement.map(BbEF::from))
+            .unwrap();
+        child_prepared.prove(&runner.run().unwrap()).unwrap()
+    };
+    let first_statement = [BbF::from_u64(7), BbF::from_u64(9)];
+    let second_statement = [BbF::from_u64(11), BbF::from_u64(13)];
+    let first_proof = prove_child(first_statement);
+    let second_proof = prove_child(second_statement);
+    let child_verifier = child_prepared.verifier();
+    let params = ProveNextLayerParams::default();
+    let owner = TrustedPreparedLayer::<BbWhirConfig, BbWhirConfig, BatchOnly, _, 4>::new(
+        TrustedPreparedSource::BatchStark {
+            verifier: child_verifier,
+            proof: &first_proof,
+            statement: &first_statement,
+        },
+        config.clone(),
+        backend,
+        params.clone(),
+    )
+    .unwrap();
+
+    let first_output = owner
+        .prove(TrustedPreparedInput::BatchStark {
+            proof: &first_proof,
+            statement: &first_statement,
+        })
+        .unwrap();
+    let second_output = owner
+        .prove(TrustedPreparedInput::BatchStark {
+            proof: &second_proof,
+            statement: &second_statement,
+        })
+        .unwrap();
+
+    owner.verifier().verify(&first_output.0, &[]).unwrap();
+    owner.verifier().verify(&second_output.0, &[]).unwrap();
+    verify_whir_output(config.clone(), &params, &first_output);
+    verify_whir_output(config, &params, &second_output);
 }
 
 #[test]

@@ -1,9 +1,12 @@
+use alloc::string::ToString;
 use alloc::vec::Vec;
 
+use p3_air::{SymbolicExpression, SymbolicExpressionExt};
 use p3_circuit_prover::air::AluExtMulKind;
+use p3_circuit_prover::batch_stark_prover::NUM_PRIMITIVE_TABLES;
 use p3_circuit_prover::{AirVariant, BatchStarkProof, CircuitVerifier, RowCounts, TablePacking};
 use p3_commit::Pcs;
-use p3_field::{ExtensionField, PrimeCharacteristicRing, PrimeField64};
+use p3_field::{Algebra, ExtensionField, PrimeCharacteristicRing, PrimeField64};
 use p3_lookup::logup::LogUpGadget;
 use p3_uni_stark::{OpenedValues, Proof, StarkGenericConfig, Val};
 
@@ -393,6 +396,7 @@ pub(crate) enum StarkPackingAuthority<F> {
         w_binomial: Option<F>,
         alu_quintic_trinomial: bool,
         non_primitives: Vec<NonPrimitiveContract<F>>,
+        statement_instance: Option<usize>,
         preprocessed: Option<GlobalPreprocessedShape<()>>,
     },
 }
@@ -436,6 +440,7 @@ where
                     public_values: entry.public_values.clone(),
                 })
                 .collect(),
+            statement_instance: None,
             preprocessed: common_data
                 .preprocessed
                 .as_ref()
@@ -463,25 +468,25 @@ where
 /// Capture batch packing authority from a retained verifier descriptor, never witness metadata.
 pub(crate) fn capture_trusted_batch_authority<SC>(
     verifier: &CircuitVerifier<SC>,
-) -> StarkPackingAuthority<Val<SC>>
+    expected_statement: &[Val<SC>],
+) -> Result<StarkPackingAuthority<Val<SC>>, VerificationError>
 where
     SC: StarkGenericConfig + 'static,
+    Val<SC>: p3_circuit_prover::config::StarkField,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
     let relation = verifier.relation();
+    let public_values = verifier
+        .table_public_values(expected_statement)
+        .map_err(|error| VerificationError::InvalidProofShape(error.to_string()))?;
     let (w_binomial, alu_quintic_trinomial) = match relation.reduction() {
         AluExtMulKind::Base => (None, false),
         AluExtMulKind::Binomial { w } => (Some(w), false),
         AluExtMulKind::QuinticTrinomial => (None, true),
     };
-    StarkPackingAuthority::Batch {
-        public_inputs: core::iter::repeat_n(0, 3)
-            .chain(
-                relation
-                    .non_primitives()
-                    .iter()
-                    .map(|entry| entry.public_values().len()),
-            )
-            .collect(),
+    Ok(StarkPackingAuthority::Batch {
+        public_inputs: public_values.iter().map(Vec::len).collect(),
         table_packing: relation.table_packing().clone(),
         rows: *relation.rows(),
         alu_variant: relation.alu_variant(),
@@ -491,14 +496,16 @@ where
         non_primitives: relation
             .non_primitives()
             .iter()
-            .map(|entry| NonPrimitiveContract {
+            .zip(public_values.iter().skip(3))
+            .map(|(entry, values)| NonPrimitiveContract {
                 op_type: entry.op_type().clone(),
                 rows: entry.rows(),
                 lanes: entry.lanes(),
                 air_variant: entry.air_variant(),
-                public_values: entry.public_values().to_vec(),
+                public_values: values.clone(),
             })
             .collect(),
+        statement_instance: verifier.statement_layout().table_instance(),
         preprocessed: verifier.common_data().preprocessed.as_ref().map(|global| {
             GlobalPreprocessedShape {
                 commitment: (),
@@ -518,7 +525,7 @@ where
                 matrix_to_instance: global.matrix_to_instance.clone(),
             }
         }),
-    }
+    })
 }
 
 pub(crate) fn input_caps<'a, SC, A>(
@@ -630,6 +637,7 @@ where
                 w_binomial,
                 alu_quintic_trinomial,
                 non_primitives,
+                statement_instance,
                 preprocessed,
             },
             RecursionInput::BatchStark {
@@ -671,12 +679,17 @@ where
                 && non_primitives
                     .iter()
                     .zip(&proof.non_primitives)
-                    .all(|(expected, actual)| {
+                    .enumerate()
+                    .all(|(index, (expected, actual))| {
                         expected.op_type == actual.op_type
                             && expected.rows == actual.rows
                             && expected.lanes == actual.lanes
                             && expected.air_variant == actual.air_variant
-                            && expected.public_values == actual.public_values
+                            && if *statement_instance == Some(NUM_PRIMITIVE_TABLES + index) {
+                                expected.public_values.len() == actual.public_values.len()
+                            } else {
+                                expected.public_values == actual.public_values
+                            }
                     })
                 && preprocessed_matches;
             if !metadata_matches {

@@ -182,7 +182,7 @@ where
         airs,
         trace_lens: _,
         public_values,
-    } = trusted_batch_tables::<SC, D>(verifier)?;
+    } = trusted_batch_tables::<SC, D>(verifier, statement)?;
     let (transcript, _) = replay_batch_stark_transcript(
         &airs,
         verifier.config(),

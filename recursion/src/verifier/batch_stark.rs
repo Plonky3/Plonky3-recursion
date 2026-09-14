@@ -521,6 +521,7 @@ where
 /// Unlike [`reconstruct_batch_tables`], no relation metadata is read from the witness proof.
 pub fn trusted_batch_tables<SC: StarkGenericConfig + 'static, const TRACE_D: usize>(
     verifier: &CircuitVerifier<SC>,
+    expected_statement: &[Val<SC>],
 ) -> Result<ReconstructedBatchTables<SC, TRACE_D>, VerificationError>
 where
     Val<SC>: PrimeField64 + p3_circuit_prover::config::StarkField,
@@ -561,13 +562,9 @@ where
                 })
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let mut public_values = vec![Vec::new(); NUM_PRIMITIVE_TABLES];
-    public_values.extend(
-        relation
-            .non_primitives()
-            .iter()
-            .map(|entry| entry.public_values().to_vec()),
-    );
+    let public_values = verifier
+        .table_public_values(expected_statement)
+        .map_err(|error| VerificationError::InvalidProofShape(error.to_string()))?;
     if public_values.len() != airs.len() {
         return Err(VerificationError::InvalidProofShape(
             "trusted verifier AIR/public-value cardinality mismatch".into(),
@@ -578,6 +575,62 @@ where
         trace_lens,
         public_values,
     })
+}
+
+#[cfg(test)]
+mod trusted_statement_tables_tests {
+    use alloc::boxed::Box;
+    use alloc::vec;
+    use alloc::vec::Vec;
+
+    use p3_baby_bear::BabyBear;
+    use p3_circuit::{CircuitBuilder, StatementExport};
+    use p3_circuit_prover::batch_stark_prover::{
+        BatchStarkProver, StatementAirBuilder, StatementPreprocessor, StatementProver,
+    };
+    use p3_circuit_prover::common::{NpoAirBuilder, NpoPreprocessor};
+    use p3_circuit_prover::{ConstraintProfile, TablePacking, config};
+    use p3_field::PrimeCharacteristicRing;
+
+    use super::trusted_batch_tables;
+
+    #[test]
+    fn trusted_tables_use_caller_statement_values_in_exact_batch_position() {
+        type EF = p3_field::extension::BinomialExtensionField<BabyBear, 4>;
+        type SC = config::BabyBearConfig;
+
+        let mut builder = CircuitBuilder::<EF>::new();
+        let first = builder.public_input();
+        let second = builder.public_input();
+        let schema = builder
+            .set_statement_exports::<BabyBear>(&[
+                StatementExport::Base(first),
+                StatementExport::Base(second),
+            ])
+            .unwrap();
+        let circuit = builder.build().unwrap();
+        let preprocessors: Vec<Box<dyn NpoPreprocessor<BabyBear>>> =
+            vec![Box::new(StatementPreprocessor::new(schema.clone()))];
+        let air_builders: Vec<Box<dyn NpoAirBuilder<SC, 4>>> =
+            vec![Box::new(StatementAirBuilder::<4>::new(schema.clone()))];
+        let mut prover =
+            BatchStarkProver::new(config::baby_bear()).with_table_packing(TablePacking::default());
+        prover.register_table_prover(Box::new(StatementProver::<4>::new(schema)));
+        let prepared = prover
+            .prepare_circuit::<EF, 4>(
+                &circuit,
+                &preprocessors,
+                &air_builders,
+                ConstraintProfile::Standard,
+            )
+            .unwrap();
+        let verifier = prepared.verifier();
+        let expected = [BabyBear::from_u64(7), BabyBear::from_u64(9)];
+
+        let tables = trusted_batch_tables::<SC, 4>(&verifier, &expected).unwrap();
+        let statement_instance = verifier.statement_layout().table_instance().unwrap();
+        assert_eq!(tables.public_values[statement_instance], expected);
+    }
 }
 
 /// Build and attach a recursive verifier circuit for a circuit-prover [`BatchStarkProof`].
@@ -705,7 +758,7 @@ where
     verifier
         .verify(proof, statement)
         .map_err(|error| VerificationError::InvalidProofShape(error.to_string()))?;
-    let tables = trusted_batch_tables::<SC, TRACE_D>(verifier)?;
+    let tables = trusted_batch_tables::<SC, TRACE_D>(verifier, statement)?;
     verify_p3_batch_proof_circuit_with_tables::<
         SC,
         Comm,

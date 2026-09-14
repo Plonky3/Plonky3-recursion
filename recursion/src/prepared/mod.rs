@@ -13,8 +13,7 @@ pub(crate) mod test_common;
 pub use aggregation::{PreparedAggregation, PreparedAggregationCross};
 pub use input::{NativeCommitment, PreparedInput, PreparedSource};
 pub use layer::PreparedLayer;
-use p3_circuit::CircuitBuilder;
-use p3_circuit::{CircuitRunner, NonPrimitiveOpId};
+use p3_circuit::{CircuitBuilder, CircuitRunner, NonPrimitiveOpId};
 use p3_circuit_prover::{BatchStarkProof, CircuitVerifier};
 use p3_field::Field;
 use p3_lookup::logup::LogUpGadget;
@@ -138,6 +137,24 @@ where
         &self,
         verifier: &CircuitVerifier<SC>,
         proof: &BatchStarkProof<SC>,
+    ) -> Result<(), VerificationError>;
+
+    /// Capture allocation-relevant input shape from retained batch-verifier authority while
+    /// keeping only its audited Statement values runtime-dynamic.
+    fn capture_trusted_batch_input_contract(
+        &self,
+        verifier: &CircuitVerifier<SC>,
+        proof: &BatchStarkProof<SC>,
+        expected_statement: &[Val<SC>],
+    ) -> Result<Self::InputContract, VerificationError>;
+
+    /// Validate a later trusted batch witness against the retained dynamic-statement contract.
+    fn validate_trusted_batch_input(
+        &self,
+        verifier: &CircuitVerifier<SC>,
+        contract: &Self::InputContract,
+        proof: &BatchStarkProof<SC>,
+        expected_statement: &[Val<SC>],
     ) -> Result<(), VerificationError>;
 
     /// Build the batch verifier branch from retained descriptor/common authority.

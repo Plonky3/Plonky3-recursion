@@ -1,5 +1,4 @@
 use alloc::string::ToString;
-use alloc::{vec, vec::Vec};
 
 use p3_air::{SymbolicExpression, SymbolicExpressionExt};
 use p3_circuit::{Circuit, CircuitBuilder};
@@ -76,7 +75,6 @@ where
     },
     Batch {
         verifier: CircuitVerifier<SC>,
-        table_public_inputs: Vec<Vec<Val<SC>>>,
     },
 }
 
@@ -119,23 +117,10 @@ where
                 verifier,
                 proof,
                 statement,
-            } => {
-                let mut table_public_inputs = vec![Vec::new(); 3];
-                table_public_inputs.extend(
-                    verifier
-                        .relation()
-                        .non_primitives()
-                        .iter()
-                        .map(|entry| entry.public_values().to_vec()),
-                );
-                Ok(Self {
-                    authority: TrustedChildAuthority::Batch {
-                        verifier,
-                        table_public_inputs,
-                    },
-                    input: TrustedPreparedInput::BatchStark { proof, statement },
-                })
-            }
+            } => Ok(Self {
+                authority: TrustedChildAuthority::Batch { verifier },
+                input: TrustedPreparedInput::BatchStark { proof, statement },
+            }),
         }
     }
 }
@@ -169,47 +154,6 @@ where
         }
     }
 
-    fn prepared_input<'a, 'p: 'a>(
-        &'a self,
-        input: &'a TrustedPreparedInput<'p, SC>,
-    ) -> Result<PreparedInput<'a, SC>, VerificationError> {
-        match (self, input) {
-            (
-                Self::Uni {
-                    preprocessed_commit,
-                    ..
-                },
-                TrustedPreparedInput::UniStark {
-                    proof,
-                    public_inputs,
-                },
-            ) => Ok(PreparedInput::UniStark {
-                proof,
-                public_inputs,
-                preprocessed_commit: preprocessed_commit.as_ref(),
-            }),
-            (
-                Self::Batch {
-                    verifier,
-                    table_public_inputs,
-                },
-                TrustedPreparedInput::BatchStark { proof, statement },
-            ) => {
-                verifier
-                    .verify(proof, statement)
-                    .map_err(|error| VerificationError::InvalidProofShape(error.to_string()))?;
-                Ok(PreparedInput::BatchStark {
-                    proof,
-                    common_data: verifier.common_data(),
-                    table_public_inputs,
-                })
-            }
-            _ => Err(VerificationError::PreparedInputMismatch {
-                component: "input.kind",
-            }),
-        }
-    }
-
     fn recursion_input<'a, 'p: 'a>(
         &'a self,
         input: &'a TrustedPreparedInput<'p, SC>,
@@ -234,20 +178,17 @@ where
                 public_inputs: public_inputs.to_vec(),
                 preprocessed_commit: preprocessed_commit.clone(),
             }),
-            (
-                Self::Batch {
-                    verifier,
-                    table_public_inputs,
-                },
-                TrustedPreparedInput::BatchStark { proof, statement },
-            ) => {
+            (Self::Batch { verifier }, TrustedPreparedInput::BatchStark { proof, statement }) => {
                 verifier
                     .verify(proof, statement)
+                    .map_err(|error| VerificationError::InvalidProofShape(error.to_string()))?;
+                let table_public_inputs = verifier
+                    .table_public_values(statement)
                     .map_err(|error| VerificationError::InvalidProofShape(error.to_string()))?;
                 Ok(RecursionInput::BatchStark {
                     proof,
                     common_data: verifier.common_data(),
-                    table_public_inputs: table_public_inputs.clone(),
+                    table_public_inputs,
                 })
             }
             _ => Err(VerificationError::PreparedInputMismatch {
@@ -329,7 +270,12 @@ where
         }
         let source = TrustedConstruction::<InSC, A>::new(source)?;
         let prev = source.authority.recursion_input(&source.input)?;
-        let contract = backend.capture_input_contract(source.authority.config(), &prev)?;
+        let contract = capture_trusted_input_contract::<InSC, A, B, D>(
+            &backend,
+            &source.authority,
+            &source.input,
+            &prev,
+        )?;
 
         let mut builder = CircuitBuilder::new();
         <B as PcsRecursionBackend<InSC, A, D>>::prepare_circuit(
@@ -375,9 +321,13 @@ where
         &self,
         input: &TrustedPreparedInput<'_, InSC>,
     ) -> Result<(), VerificationError> {
-        let prepared = self.child.prepared_input(input)?;
-        self.backend
-            .validate_prepared_input(self.child.config(), &self.contract, &prepared)
+        preflight_trusted_input::<InSC, A, B, D>(&self.backend, &self.child, input)?;
+        validate_trusted_input_contract::<InSC, A, B, D>(
+            &self.backend,
+            &self.child,
+            &self.contract,
+            input,
+        )
     }
 
     pub fn prove(
@@ -498,18 +448,18 @@ where
         let right = TrustedConstruction::<InSC, A2>::new(right)?;
         let left_prev = left.authority.recursion_input(&left.input)?;
         let right_prev = right.authority.recursion_input(&right.input)?;
-        let left_contract =
-            <B as PreparedPcsRecursionBackend<InSC, A1, D>>::capture_input_contract(
-                &backend,
-                left.authority.config(),
-                &left_prev,
-            )?;
-        let right_contract =
-            <B as PreparedPcsRecursionBackend<InSC, A2, D>>::capture_input_contract(
-                &backend,
-                right.authority.config(),
-                &right_prev,
-            )?;
+        let left_contract = capture_trusted_input_contract::<InSC, A1, B, D>(
+            &backend,
+            &left.authority,
+            &left.input,
+            &left_prev,
+        )?;
+        let right_contract = capture_trusted_input_contract::<InSC, A2, B, D>(
+            &backend,
+            &right.authority,
+            &right.input,
+            &right_prev,
+        )?;
 
         let mut builder = CircuitBuilder::new();
         <B as PcsRecursionBackend<InSC, A1, D>>::prepare_circuit(
@@ -572,19 +522,19 @@ where
         left: &TrustedPreparedInput<'_, InSC>,
         right: &TrustedPreparedInput<'_, InSC>,
     ) -> Result<(), VerificationError> {
-        let left = self.left.prepared_input(left)?;
-        let right = self.right.prepared_input(right)?;
-        <B as PreparedPcsRecursionBackend<InSC, A1, D>>::validate_prepared_input(
+        preflight_trusted_input::<InSC, A1, B, D>(&self.backend, &self.left, left)?;
+        preflight_trusted_input::<InSC, A2, B, D>(&self.backend, &self.right, right)?;
+        validate_trusted_input_contract::<InSC, A1, B, D>(
             &self.backend,
-            self.left.config(),
+            &self.left,
             &self.left_contract,
-            &left,
+            left,
         )?;
-        <B as PreparedPcsRecursionBackend<InSC, A2, D>>::validate_prepared_input(
+        validate_trusted_input_contract::<InSC, A2, B, D>(
             &self.backend,
-            self.right.config(),
+            &self.right,
             &self.right_contract,
-            &right,
+            right,
         )
     }
 
@@ -634,6 +584,119 @@ where
 
     pub fn verifier(&self) -> CircuitVerifier<OutSC> {
         self.prep.verifier()
+    }
+}
+
+fn capture_trusted_input_contract<'air, 'p, SC, A, B, const D: usize>(
+    backend: &B,
+    authority: &TrustedChildAuthority<'air, SC, A>,
+    input: &TrustedPreparedInput<'p, SC>,
+    recursion_input: &RecursionInput<'_, SC, A>,
+) -> Result<B::InputContract, VerificationError>
+where
+    SC: StarkGenericConfig + 'static,
+    A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
+    B: TrustedPcsRecursionBackend<SC, A, D>,
+    Val<SC>: PrimeField64 + StarkField,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+{
+    match (authority, input) {
+        (TrustedChildAuthority::Uni { .. }, TrustedPreparedInput::UniStark { .. }) => {
+            backend.capture_input_contract(authority.config(), recursion_input)
+        }
+        (
+            TrustedChildAuthority::Batch { verifier },
+            TrustedPreparedInput::BatchStark { proof, statement },
+        ) => backend.capture_trusted_batch_input_contract(verifier, proof, statement),
+        _ => Err(VerificationError::PreparedInputMismatch {
+            component: "input.kind",
+        }),
+    }
+}
+
+fn validate_trusted_input_contract<'air, 'p, SC, A, B, const D: usize>(
+    backend: &B,
+    authority: &TrustedChildAuthority<'air, SC, A>,
+    contract: &B::InputContract,
+    input: &TrustedPreparedInput<'p, SC>,
+) -> Result<(), VerificationError>
+where
+    SC: StarkGenericConfig + 'static,
+    A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
+    B: TrustedPcsRecursionBackend<SC, A, D>,
+    Val<SC>: PrimeField64 + StarkField,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+{
+    match (authority, input) {
+        (
+            TrustedChildAuthority::Uni {
+                preprocessed_commit,
+                ..
+            },
+            TrustedPreparedInput::UniStark {
+                proof,
+                public_inputs,
+            },
+        ) => backend.validate_prepared_input(
+            authority.config(),
+            contract,
+            &PreparedInput::UniStark {
+                proof,
+                public_inputs,
+                preprocessed_commit: preprocessed_commit.as_ref(),
+            },
+        ),
+        (
+            TrustedChildAuthority::Batch { verifier },
+            TrustedPreparedInput::BatchStark { proof, statement },
+        ) => backend.validate_trusted_batch_input(verifier, contract, proof, statement),
+        _ => Err(VerificationError::PreparedInputMismatch {
+            component: "input.kind",
+        }),
+    }
+}
+
+fn preflight_trusted_input<'air, 'p, SC, A, B, const D: usize>(
+    backend: &B,
+    authority: &TrustedChildAuthority<'air, SC, A>,
+    input: &TrustedPreparedInput<'p, SC>,
+) -> Result<(), VerificationError>
+where
+    SC: StarkGenericConfig + 'static,
+    A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
+    B: TrustedPcsRecursionBackend<SC, A, D>,
+    Val<SC>: PrimeField64 + StarkField,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+{
+    match (authority, input) {
+        (
+            TrustedChildAuthority::Uni {
+                preprocessed_commit,
+                ..
+            },
+            TrustedPreparedInput::UniStark {
+                proof,
+                public_inputs,
+            },
+        ) => <B as PreparedPcsRecursionBackend<SC, A, D>>::preflight_input(
+            backend,
+            authority.config(),
+            &PreparedInput::UniStark {
+                proof,
+                public_inputs,
+                preprocessed_commit: preprocessed_commit.as_ref(),
+            },
+        ),
+        (
+            TrustedChildAuthority::Batch { verifier },
+            TrustedPreparedInput::BatchStark { proof, .. },
+        ) => backend.preflight_trusted_batch(verifier, proof),
+        _ => Err(VerificationError::PreparedInputMismatch {
+            component: "input.kind",
+        }),
     }
 }
 
@@ -741,11 +804,14 @@ where
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec;
+    use alloc::vec::Vec;
     use std::any::Any;
     use std::panic::{AssertUnwindSafe, catch_unwind};
     use std::string::String;
 
     use p3_circuit::tables::WitnessTrace;
+    use p3_field::PrimeCharacteristicRing;
     use p3_test_utils::koala_bear_params::{Challenge, DIGEST_ELEMS, F};
     use p3_test_utils::rejection_oracle::classify_debug_diagnostic;
 
@@ -753,6 +819,344 @@ mod tests {
     use crate::pcs::fri::MerkleCapTargets;
     use crate::prepared::test_common;
     use crate::traits::Recursive;
+    use crate::verifier::VerifierLimits;
+
+    #[test]
+    fn fri_trusted_layer_reuses_one_child_relation_for_two_runtime_statements() {
+        let fixture = test_common::KoalaBearD4StatementFixture::new();
+        let first_statement = [F::from_u64(7), F::from_u64(9)];
+        let second_statement = [F::from_u64(11), F::from_u64(13)];
+        let first_proof = fixture.prove([7, 9]);
+        let second_proof = fixture.prove([11, 13]);
+        let child_verifier = fixture.verifier();
+        child_verifier
+            .verify(&first_proof, &first_statement)
+            .unwrap();
+        child_verifier
+            .verify(&second_proof, &second_statement)
+            .unwrap();
+
+        let owner = TrustedPreparedLayer::<_, _, BatchOnly, _, 4>::new(
+            TrustedPreparedSource::BatchStark {
+                verifier: child_verifier,
+                proof: &first_proof,
+                statement: &first_statement,
+            },
+            fixture.layer_config.clone(),
+            fixture.backend.clone(),
+            ProveNextLayerParams::default(),
+        )
+        .unwrap();
+        let first = owner
+            .prove(TrustedPreparedInput::BatchStark {
+                proof: &first_proof,
+                statement: &first_statement,
+            })
+            .unwrap();
+        let second = owner
+            .prove(TrustedPreparedInput::BatchStark {
+                proof: &second_proof,
+                statement: &second_statement,
+            })
+            .unwrap();
+
+        let parent_verifier = owner.verifier();
+        parent_verifier.verify(&first.0, &[]).unwrap();
+        parent_verifier.verify(&second.0, &[]).unwrap();
+    }
+
+    #[test]
+    fn trusted_layer_preflights_an_over_limit_replacement_before_native_validation() {
+        type SC = test_common::KoalaBearD4RecursionConfig;
+
+        let fixture = test_common::KoalaBearD4StatementFixture::new();
+        let statement = [F::from_u64(7), F::from_u64(9)];
+        let proof = fixture.prove([7, 9]);
+        let exact_final_poly = proof.proof.opening_proof.final_poly.len();
+        let backend = fixture.backend.clone().with_limits(VerifierLimits {
+            max_final_poly_evaluations: exact_final_poly,
+            ..VerifierLimits::default()
+        });
+        let owner = TrustedPreparedLayer::<SC, SC, BatchOnly, _, 4>::new(
+            TrustedPreparedSource::BatchStark {
+                verifier: fixture.verifier(),
+                proof: &proof,
+                statement: &statement,
+            },
+            fixture.layer_config.clone(),
+            backend,
+            ProveNextLayerParams::default(),
+        )
+        .unwrap();
+
+        let encoded = postcard::to_allocvec(&proof).unwrap();
+        let mut oversized: BatchStarkProof<SC> = postcard::from_bytes(&encoded).unwrap();
+        oversized
+            .proof
+            .opening_proof
+            .final_poly
+            .push(Challenge::ZERO);
+        let error = owner
+            .check_input(&TrustedPreparedInput::BatchStark {
+                proof: &oversized,
+                statement: &statement,
+            })
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            VerificationError::ResourceLimitExceeded {
+                component: "final polynomial evaluations",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn trusted_aggregation_preflights_right_before_validating_left() {
+        type SC = test_common::KoalaBearD4RecursionConfig;
+
+        let fixture = test_common::KoalaBearD4StatementFixture::new();
+        let statement = [F::from_u64(7), F::from_u64(9)];
+        let wrong_left_statement = [F::from_u64(9), F::from_u64(7)];
+        let proof = fixture.prove([7, 9]);
+        let exact_final_poly = proof.proof.opening_proof.final_poly.len();
+        let backend = fixture.backend.clone().with_limits(VerifierLimits {
+            max_final_poly_evaluations: exact_final_poly,
+            ..VerifierLimits::default()
+        });
+        let owner = TrustedPreparedAggregation::<SC, SC, BatchOnly, BatchOnly, _, 4>::new(
+            TrustedPreparedSource::BatchStark {
+                verifier: fixture.verifier(),
+                proof: &proof,
+                statement: &statement,
+            },
+            TrustedPreparedSource::BatchStark {
+                verifier: fixture.verifier(),
+                proof: &proof,
+                statement: &statement,
+            },
+            fixture.layer_config.clone(),
+            backend,
+            ProveNextLayerParams::default(),
+        )
+        .unwrap();
+
+        let encoded = postcard::to_allocvec(&proof).unwrap();
+        let mut oversized_right: BatchStarkProof<SC> = postcard::from_bytes(&encoded).unwrap();
+        oversized_right
+            .proof
+            .opening_proof
+            .final_poly
+            .push(Challenge::ZERO);
+        let error = owner
+            .check_inputs(
+                &TrustedPreparedInput::BatchStark {
+                    proof: &proof,
+                    statement: &wrong_left_statement,
+                },
+                &TrustedPreparedInput::BatchStark {
+                    proof: &oversized_right,
+                    statement: &statement,
+                },
+            )
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            VerificationError::ResourceLimitExceeded {
+                component: "final polynomial evaluations",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn fri_trusted_layer_rejects_wrong_statement_value_order_length_and_metadata() {
+        type SC = test_common::KoalaBearD4RecursionConfig;
+
+        let fixture = test_common::KoalaBearD4StatementFixture::new();
+        let statement = [F::from_u64(7), F::from_u64(9)];
+        let proof = fixture.prove([7, 9]);
+        let owner = TrustedPreparedLayer::<_, _, BatchOnly, _, 4>::new(
+            TrustedPreparedSource::BatchStark {
+                verifier: fixture.verifier(),
+                proof: &proof,
+                statement: &statement,
+            },
+            fixture.layer_config.clone(),
+            fixture.backend.clone(),
+            ProveNextLayerParams::default(),
+        )
+        .unwrap();
+
+        for wrong in [
+            vec![F::from_u64(8), F::from_u64(9)],
+            vec![F::from_u64(9), F::from_u64(7)],
+            vec![F::from_u64(7)],
+        ] {
+            let error = owner
+                .check_input(&TrustedPreparedInput::BatchStark {
+                    proof: &proof,
+                    statement: &wrong,
+                })
+                .unwrap_err();
+            assert!(matches!(error, VerificationError::InvalidProofShape(_)));
+        }
+
+        let bytes = postcard::to_allocvec(&proof).unwrap();
+        let mut replaced_metadata: BatchStarkProof<SC> = postcard::from_bytes(&bytes).unwrap();
+        replaced_metadata
+            .non_primitives
+            .iter_mut()
+            .find(|entry| entry.op_type == p3_circuit::ops::NpoTypeId::statement())
+            .unwrap()
+            .public_values = vec![F::from_u64(11), F::from_u64(13)];
+        let error = owner
+            .check_input(&TrustedPreparedInput::BatchStark {
+                proof: &replaced_metadata,
+                statement: &statement,
+            })
+            .unwrap_err();
+        assert!(matches!(error, VerificationError::InvalidProofShape(_)));
+    }
+
+    #[test]
+    fn fri_fixed_parent_rejects_wrong_packed_statement_after_host_bypass() {
+        type SC = test_common::KoalaBearD4RecursionConfig;
+
+        let fixture = test_common::KoalaBearD4StatementFixture::new();
+        let statement = [F::from_u64(7), F::from_u64(9)];
+        let proof = fixture.prove([7, 9]);
+        let owner = TrustedPreparedLayer::<SC, SC, BatchOnly, _, 4>::new(
+            TrustedPreparedSource::BatchStark {
+                verifier: fixture.verifier(),
+                proof: &proof,
+                statement: &statement,
+            },
+            fixture.layer_config.clone(),
+            fixture.backend.clone(),
+            ProveNextLayerParams::default(),
+        )
+        .unwrap();
+        let input = TrustedPreparedInput::BatchStark {
+            proof: &proof,
+            statement: &statement,
+        };
+        let prev = owner.child.recursion_input(&input).unwrap();
+        let public = owner.result.pack_public_inputs(&prev).unwrap();
+        let private = owner.result.pack_private_inputs(&prev).unwrap();
+        let mut runner = owner.circuit.runner();
+        runner.set_public_inputs(&public).unwrap();
+        runner.set_private_inputs(&private).unwrap();
+        set_trusted_child_private::<SC, BatchOnly, _, 4>(
+            &owner.backend,
+            &owner.child,
+            &input,
+            &prev,
+            &owner.result,
+            &mut runner,
+        )
+        .unwrap();
+        let mut forged_traces = runner.run().unwrap();
+        let honest = owner.prep.prove(&forged_traces).unwrap();
+        let fixed_parent = owner.verifier();
+        fixed_parent.verify(&honest.0, &[]).unwrap();
+
+        let TrustedChildAuthority::Batch { verifier } = &owner.child else {
+            unreachable!()
+        };
+        let wrong_statement = [F::from_u64(9), F::from_u64(7)];
+        let wrong_prev: RecursionInput<'_, SC, BatchOnly> = RecursionInput::BatchStark {
+            proof: &proof,
+            common_data: verifier.common_data(),
+            table_public_inputs: verifier.table_public_values(&wrong_statement).unwrap(),
+        };
+        let wrong_public = owner.result.inner.pack_public_inputs(&wrong_prev).unwrap();
+        assert_eq!(wrong_public.len(), public.len());
+        assert_ne!(wrong_public, public);
+
+        let mut witness_values = (0..forged_traces.witness_trace.num_rows())
+            .map(|index| {
+                *forged_traces
+                    .witness_trace
+                    .get_value(p3_circuit::WitnessId(index as u32))
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        for (position, value) in wrong_public.iter().copied().enumerate() {
+            witness_values[owner.circuit.public_rows[position].0 as usize] = value;
+        }
+        forged_traces.witness_trace = WitnessTrace::new(witness_values);
+        forged_traces.public_trace.values = wrong_public;
+
+        let attempt = catch_unwind(AssertUnwindSafe(|| owner.prep.prove(&forged_traces)));
+        match attempt {
+            Ok(Ok(forged)) => assert!(
+                fixed_parent.verify(&forged.0, &[]).is_err(),
+                "the original parent key must reject the directly packed wrong statement"
+            ),
+            Ok(Err(error)) => panic!("forged trace must reach proof construction: {error:?}"),
+            Err(payload) => assert!(
+                classify_panic(payload.as_ref()).is_some(),
+                "debug rejection must be an exact strict constraint/lookup failure"
+            ),
+        }
+    }
+
+    #[test]
+    fn trusted_aggregation_keeps_left_and_right_runtime_statements_in_input_order() {
+        type SC = test_common::KoalaBearD4RecursionConfig;
+
+        let fixture = test_common::KoalaBearD4StatementFixture::new();
+        let left_statement = [F::from_u64(7), F::from_u64(9)];
+        let right_statement = [F::from_u64(11), F::from_u64(13)];
+        let left_proof = fixture.prove([7, 9]);
+        let right_proof = fixture.prove([11, 13]);
+        let params = ProveNextLayerParams::default();
+        let owner = TrustedPreparedAggregation::<SC, SC, BatchOnly, BatchOnly, _, 4>::new(
+            TrustedPreparedSource::BatchStark {
+                verifier: fixture.verifier(),
+                proof: &left_proof,
+                statement: &left_statement,
+            },
+            TrustedPreparedSource::BatchStark {
+                verifier: fixture.verifier(),
+                proof: &right_proof,
+                statement: &right_statement,
+            },
+            fixture.layer_config.clone(),
+            fixture.backend.clone(),
+            params,
+        )
+        .unwrap();
+
+        let output = owner
+            .prove(
+                TrustedPreparedInput::BatchStark {
+                    proof: &left_proof,
+                    statement: &left_statement,
+                },
+                TrustedPreparedInput::BatchStark {
+                    proof: &right_proof,
+                    statement: &right_statement,
+                },
+            )
+            .unwrap();
+        owner.verifier().verify(&output.0, &[]).unwrap();
+
+        let error = owner
+            .check_inputs(
+                &TrustedPreparedInput::BatchStark {
+                    proof: &left_proof,
+                    statement: &right_statement,
+                },
+                &TrustedPreparedInput::BatchStark {
+                    proof: &right_proof,
+                    statement: &left_statement,
+                },
+            )
+            .unwrap_err();
+        assert!(matches!(error, VerificationError::InvalidProofShape(_)));
+    }
 
     #[test]
     fn fri_fixed_parent_rejects_actual_wrong_child_root_after_host_bypass() {
