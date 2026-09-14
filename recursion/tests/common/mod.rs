@@ -1,5 +1,6 @@
 #![allow(unused)]
 
+pub mod transcript_snapshot;
 pub mod whir_config;
 
 use std::boxed::Box;
