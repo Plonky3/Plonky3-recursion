@@ -1,4 +1,193 @@
 use p3_circuit::ops::PermConfig;
+use p3_field::{PrimeField64, TwoAdicField};
+use p3_fri::FriParameters;
+use thiserror::Error;
+
+/// Errors found while copying native FRI scalar configuration into the
+/// recursive verifier's declaration.
+#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
+pub enum FriInputError {
+    #[error("native FRI must require at least one query")]
+    ZeroQueries,
+    #[error("native FRI max folding arity must be positive")]
+    ZeroMaxLogArity,
+    #[error("native FRI log parameter {name} is not representable")]
+    LogNotRepresentable { name: &'static str },
+    #[error("native FRI height logs overflow")]
+    HeightOverflow,
+    #[error("native FRI height exceeds field two-adicity")]
+    HeightExceedsTwoAdicity,
+    #[error("native FRI max arity exceeds field two-adicity")]
+    MaxArityExceedsTwoAdicity,
+    #[error("native FRI {name} proof-of-work bits are not supported by the field/word limits")]
+    PowBitsOutOfRange { name: &'static str },
+    #[error("native FRI scalar {name} does not match recursive parameters")]
+    ScalarMismatch { name: &'static str },
+    #[error("native FRI has {native} queries but recursive verifier requires {minimum}")]
+    QueryFloor { native: usize, minimum: usize },
+}
+
+/// The checked scalar FRI declaration retained by built-in recursion configs.
+///
+/// This is deliberately only scalar metadata.  It does not clone or expose a
+/// PCS, MMCS, RNG, challenger, or proof.  A config implementation still
+/// promises that this declaration describes its opaque PCS; the constructor
+/// validates that the declaration itself is safe to use.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NativeFriParams {
+    log_blowup: usize,
+    log_final_poly_len: usize,
+    max_log_arity: usize,
+    num_queries: usize,
+    commit_pow_bits: usize,
+    query_pow_bits: usize,
+}
+
+impl NativeFriParams {
+    /// Copy and validate scalar metadata from the exact native parameters used
+    /// to construct a PCS.
+    pub fn try_from_native<F, M>(params: &FriParameters<M>) -> Result<Self, FriInputError>
+    where
+        F: PrimeField64 + TwoAdicField,
+    {
+        if params.num_queries == 0 {
+            return Err(FriInputError::ZeroQueries);
+        }
+        if params.max_log_arity == 0 {
+            return Err(FriInputError::ZeroMaxLogArity);
+        }
+        for (name, value) in [
+            ("log_blowup", params.log_blowup),
+            ("log_final_poly_len", params.log_final_poly_len),
+            ("max_log_arity", params.max_log_arity),
+        ] {
+            if value >= usize::BITS as usize || u32::try_from(value).is_err() {
+                return Err(FriInputError::LogNotRepresentable { name });
+            }
+        }
+        for (name, bits) in [
+            ("commit", params.commit_proof_of_work_bits),
+            ("query", params.query_proof_of_work_bits),
+        ] {
+            if bits >= usize::BITS as usize
+                || (bits != 0
+                    && (1u64.checked_shl(bits as u32).is_none()
+                        || 1u64.checked_shl(bits as u32).unwrap() >= F::ORDER_U64))
+            {
+                return Err(FriInputError::PowBitsOutOfRange { name });
+            }
+        }
+        let snapshot = Self {
+            log_blowup: params.log_blowup,
+            log_final_poly_len: params.log_final_poly_len,
+            max_log_arity: params.max_log_arity,
+            num_queries: params.num_queries,
+            commit_pow_bits: params.commit_proof_of_work_bits,
+            query_pow_bits: params.query_proof_of_work_bits,
+        };
+        snapshot.validate_field::<F>()?;
+        Ok(snapshot)
+    }
+
+    pub const fn log_blowup(&self) -> usize {
+        self.log_blowup
+    }
+
+    pub const fn log_final_poly_len(&self) -> usize {
+        self.log_final_poly_len
+    }
+
+    pub const fn max_log_arity(&self) -> usize {
+        self.max_log_arity
+    }
+
+    pub const fn num_queries(&self) -> usize {
+        self.num_queries
+    }
+
+    pub const fn commit_pow_bits(&self) -> usize {
+        self.commit_pow_bits
+    }
+
+    pub const fn query_pow_bits(&self) -> usize {
+        self.query_pow_bits
+    }
+
+    /// Revalidate the scalar snapshot against the actual base field used by a
+    /// verifier.  This is required when metadata crosses an erased config
+    /// boundary and prevents reusing a snapshot under an incompatible field.
+    pub fn validate_field<F>(&self) -> Result<(), FriInputError>
+    where
+        F: PrimeField64 + TwoAdicField,
+    {
+        for (name, value) in [
+            ("log_blowup", self.log_blowup),
+            ("log_final_poly_len", self.log_final_poly_len),
+            ("max_log_arity", self.max_log_arity),
+        ] {
+            if value >= usize::BITS as usize || u32::try_from(value).is_err() {
+                return Err(FriInputError::LogNotRepresentable { name });
+            }
+        }
+        let height = self
+            .log_blowup
+            .checked_add(self.log_final_poly_len)
+            .ok_or(FriInputError::HeightOverflow)?;
+        if height > F::TWO_ADICITY {
+            return Err(FriInputError::HeightExceedsTwoAdicity);
+        }
+        if self.max_log_arity > F::TWO_ADICITY {
+            return Err(FriInputError::MaxArityExceedsTwoAdicity);
+        }
+        for (name, bits) in [
+            ("commit", self.commit_pow_bits),
+            ("query", self.query_pow_bits),
+        ] {
+            if bits >= usize::BITS as usize
+                || (bits != 0
+                    && (1u64.checked_shl(bits as u32).is_none()
+                        || 1u64.checked_shl(bits as u32).unwrap() >= F::ORDER_U64))
+            {
+                return Err(FriInputError::PowBitsOutOfRange { name });
+            }
+        }
+        Ok(())
+    }
+
+    /// Compare the native declaration with recursive parameters.  Native Q
+    /// is exact; recursive Q is a documented minimum floor.
+    pub fn validate_recursive(&self, recursive: &FriVerifierParams) -> Result<(), FriInputError> {
+        for (name, native, recursive) in [
+            ("log_blowup", self.log_blowup, recursive.log_blowup),
+            (
+                "log_final_poly_len",
+                self.log_final_poly_len,
+                recursive.log_final_poly_len,
+            ),
+            (
+                "commit_pow_bits",
+                self.commit_pow_bits,
+                recursive.commit_pow_bits,
+            ),
+            (
+                "query_pow_bits",
+                self.query_pow_bits,
+                recursive.query_pow_bits,
+            ),
+        ] {
+            if native != recursive {
+                return Err(FriInputError::ScalarMismatch { name });
+            }
+        }
+        if self.num_queries < recursive.num_queries {
+            return Err(FriInputError::QueryFloor {
+                native: self.num_queries,
+                minimum: recursive.num_queries,
+            });
+        }
+        Ok(())
+    }
+}
 
 /// FRI verifier parameters (subset needed for verification).
 ///
@@ -92,7 +281,9 @@ impl FriVerifierParams {
 
 #[cfg(test)]
 mod tests {
+    use p3_baby_bear::BabyBear;
     use p3_circuit::ops::Poseidon2Config;
+    use p3_fri::FriParameters;
 
     use super::*;
 
@@ -144,6 +335,90 @@ mod tests {
         assert_eq!(
             params.num_queries, 0,
             "unsafe_arithmetic_only_for_tests must disable the query-count check"
+        );
+    }
+
+    fn native(
+        log_blowup: usize,
+        log_final_poly_len: usize,
+        max_log_arity: usize,
+        num_queries: usize,
+        commit_pow_bits: usize,
+        query_pow_bits: usize,
+    ) -> FriParameters<()> {
+        FriParameters {
+            log_blowup,
+            log_final_poly_len,
+            max_log_arity,
+            num_queries,
+            commit_proof_of_work_bits: commit_pow_bits,
+            query_proof_of_work_bits: query_pow_bits,
+            mmcs: (),
+        }
+    }
+
+    #[test]
+    fn native_snapshot_rejects_zero_folds_queries_and_field_pow() {
+        assert_eq!(
+            NativeFriParams::try_from_native::<BabyBear, _>(&native(1, 0, 0, 2, 0, 0)),
+            Err(FriInputError::ZeroMaxLogArity)
+        );
+        assert_eq!(
+            NativeFriParams::try_from_native::<BabyBear, _>(&native(1, 0, 1, 0, 0, 0)),
+            Err(FriInputError::ZeroQueries)
+        );
+        assert_eq!(
+            NativeFriParams::try_from_native::<BabyBear, _>(&native(1, 0, 1, 2, 31, 0)),
+            Err(FriInputError::PowBitsOutOfRange { name: "commit" })
+        );
+    }
+
+    #[test]
+    fn native_snapshot_preserves_exact_queries_and_recursive_floor() {
+        let snapshot =
+            NativeFriParams::try_from_native::<BabyBear, _>(&native(1, 0, 1, 4, 0, 0)).unwrap();
+        assert_eq!(snapshot.num_queries(), 4);
+        assert!(snapshot.validate_field::<BabyBear>().is_ok());
+        let recursive = FriVerifierParams::with_mmcs(1, 0, 0, 0, 2, p2());
+        assert!(snapshot.validate_recursive(&recursive).is_ok());
+        let too_high = FriVerifierParams::with_mmcs(1, 0, 0, 0, 5, p2());
+        assert_eq!(
+            snapshot.validate_recursive(&too_high),
+            Err(FriInputError::QueryFloor {
+                native: 4,
+                minimum: 5,
+            })
+        );
+    }
+
+    #[test]
+    fn native_snapshot_rejects_height_overflow_and_field_height() {
+        assert_eq!(
+            NativeFriParams::try_from_native::<BabyBear, _>(&native(usize::MAX, 1, 1, 2, 0, 0)),
+            Err(FriInputError::LogNotRepresentable { name: "log_blowup" })
+        );
+        assert_eq!(
+            NativeFriParams::try_from_native::<BabyBear, _>(&native(
+                BabyBear::TWO_ADICITY,
+                1,
+                1,
+                2,
+                0,
+                0
+            )),
+            Err(FriInputError::HeightExceedsTwoAdicity)
+        );
+        let word_limited = NativeFriParams {
+            log_blowup: usize::BITS as usize,
+            log_final_poly_len: 0,
+            max_log_arity: 1,
+            num_queries: 1,
+            commit_pow_bits: 0,
+            query_pow_bits: 0,
+        };
+        assert_eq!(
+            word_limited.validate_field::<BabyBear>(),
+            Err(FriInputError::LogNotRepresentable { name: "log_blowup" })
         );
     }
 }

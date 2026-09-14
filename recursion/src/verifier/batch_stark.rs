@@ -1649,23 +1649,22 @@ mod create_alu_air_tests {
         >>::opens_preprocessed_next(&reconstructed));
     }
 
-    fn assert_alu_metadata_parity<F, EF, const D: usize>(old: AluAir<F, D>, actual: AluAir<F, D>)
+    fn assert_alu_metadata_parity<F, const D: usize>(old: &AluAir<F, D>, actual: &AluAir<F, D>)
     where
         F: Field + p3_field::PrimeCharacteristicRing + Copy,
-        EF: p3_field::ExtensionField<F> + ExtractBinomialW<F>,
     {
-        assert_eq!(BaseAir::<F>::width(&old), BaseAir::<F>::width(&actual));
+        assert_eq!(BaseAir::<F>::width(old), BaseAir::<F>::width(actual));
         assert_eq!(
-            BaseAir::<F>::preprocessed_width(&old),
-            BaseAir::<F>::preprocessed_width(&actual)
+            BaseAir::<F>::preprocessed_width(old),
+            BaseAir::<F>::preprocessed_width(actual)
         );
         assert_eq!(
-            BaseAir::<F>::main_next_row_columns(&old),
-            BaseAir::<F>::main_next_row_columns(&actual)
+            BaseAir::<F>::main_next_row_columns(old),
+            BaseAir::<F>::main_next_row_columns(actual)
         );
         assert_eq!(
-            BaseAir::<F>::preprocessed_next_row_columns(&old),
-            BaseAir::<F>::preprocessed_next_row_columns(&actual)
+            BaseAir::<F>::preprocessed_next_row_columns(old),
+            BaseAir::<F>::preprocessed_next_row_columns(actual)
         );
     }
 
@@ -1762,7 +1761,7 @@ mod create_alu_air_tests {
             let prep = vec![KoalaBear::ZERO; 8 * AluAir::<KoalaBear, 1>::preprocessed_lane_width()];
             let old = AluAir::<KoalaBear, 1>::new_with_preprocessed(8, 2, prep, k);
             let actual = create_alu_air::<KoalaBear, KoalaBear, 1>(8, 2, k, false).unwrap();
-            assert_alu_metadata_parity::<KoalaBear, KoalaBear, 1>(old.clone(), actual.clone());
+            assert_alu_metadata_parity::<KoalaBear, 1>(&old, &actual);
             assert_alu_packed_metadata_parity::<KoalaBearD4RecursionConfig, 1>(old, actual);
         }
     }
@@ -1776,7 +1775,7 @@ mod create_alu_air_tests {
             let prep = vec![F::ZERO; 8 * AluAir::<F, 2>::preprocessed_lane_width()];
             let old = AluAir::<F, 2>::new_binomial_with_preprocessed(8, 2, w, prep, k);
             let actual = create_alu_air::<F, EF, 2>(8, 2, k, false).unwrap();
-            assert_alu_metadata_parity::<F, EF, 2>(old.clone(), actual.clone());
+            assert_alu_metadata_parity::<F, 2>(&old, &actual);
             assert_alu_packed_metadata_parity::<GoldilocksRecursionConfig, 2>(old, actual);
         }
     }
@@ -1790,7 +1789,7 @@ mod create_alu_air_tests {
             let prep = vec![F::ZERO; 8 * AluAir::<F, 4>::preprocessed_lane_width()];
             let old = AluAir::<F, 4>::new_binomial_with_preprocessed(8, 2, w, prep, k);
             let actual = create_alu_air::<F, EF, 4>(8, 2, k, false).unwrap();
-            assert_alu_metadata_parity::<F, EF, 4>(old.clone(), actual.clone());
+            assert_alu_metadata_parity::<F, 4>(&old, &actual);
             assert_alu_packed_metadata_parity::<KoalaBearD4RecursionConfig, 4>(old, actual);
         }
     }
@@ -1803,7 +1802,7 @@ mod create_alu_air_tests {
             let prep = vec![F::ZERO; 8 * AluAir::<F, 5>::preprocessed_lane_width()];
             let old = AluAir::<F, 5>::new_quintic_trinomial_with_preprocessed(8, 2, prep, k);
             let actual = create_alu_air::<F, EF, 5>(8, 2, k, true).unwrap();
-            assert_alu_metadata_parity::<F, EF, 5>(old.clone(), actual.clone());
+            assert_alu_metadata_parity::<F, 5>(&old, &actual);
             assert_alu_packed_metadata_parity::<KoalaBearQuinticRecursionConfig, 5>(old, actual);
         }
     }
@@ -2046,6 +2045,18 @@ mod create_alu_air_tests {
         })
         .collect::<Vec<_>>();
         assert_eq!(native_descriptor, layout_descriptor);
+
+        // Check the pre-PCS checkpoint on cloned challengers before either
+        // consumer observes opening values.  The later comparisons retain
+        // the actual PCS observation path and fold-alpha behavior.
+        let mut native_pre_pcs = native_prefix.challenger.clone();
+        let mut replay_pre_pcs = replay.challenger.clone();
+        for _ in 0..2 {
+            assert_eq!(
+                native_pre_pcs.sample_algebra_element::<EF>(),
+                replay_pre_pcs.sample_algebra_element::<EF>()
+            );
+        }
 
         // Pcs::verify is the independent evaluation consumer.  Its malformed
         // FRI proof reaches this typed stop only after opening observation and

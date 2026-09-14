@@ -43,13 +43,13 @@ pub use p3_recursion::traits::{RecursiveAir, RecursivePcs};
 pub use p3_recursion::verifier::VerificationError;
 pub use p3_recursion::{
     BatchOnly, BatchStarkVerifierInputsBuilder, FriRecursionBackend, FriRecursionBackendD5,
-    FriRecursionConfig, FriVerifierParams, OpeningTranscript, PcsRecursionBackend, Poseidon2Config,
-    PreparedAggregation, PreparedAggregationCross, PreparedInput, PreparedLayer, PreparedSource,
-    ProveNextLayerParams, RecursionInput, RecursionOutput, build_aggregation_layer_circuit,
-    build_and_prove_aggregation_layer, build_and_prove_aggregation_layer_cross,
-    build_and_prove_next_layer, build_next_layer_circuit, merge_hiding_random_openings,
-    observe_opened_values, prove_aggregation_layer, prove_aggregation_layer_cross,
-    prove_next_layer, verify_batch_circuit,
+    FriRecursionConfig, FriVerifierParams, NativeFriParams, OpeningTranscript, PcsRecursionBackend,
+    Poseidon2Config, PreparedAggregation, PreparedAggregationCross, PreparedInput, PreparedLayer,
+    PreparedSource, ProveNextLayerParams, RecursionInput, RecursionOutput,
+    build_aggregation_layer_circuit, build_and_prove_aggregation_layer,
+    build_and_prove_aggregation_layer_cross, build_and_prove_next_layer, build_next_layer_circuit,
+    merge_hiding_random_openings, observe_opened_values, prove_aggregation_layer,
+    prove_aggregation_layer_cross, prove_next_layer, verify_batch_circuit,
 };
 pub use p3_symmetric::{PaddingFreeSponge, Permutation, TruncatedPermutation};
 pub use p3_uni_stark::{StarkConfig, StarkGenericConfig, Val};
@@ -353,6 +353,7 @@ macro_rules! define_field_module_types {
         struct ConfigWithFriParams {
             config: Arc<MyConfig>,
             fri_verifier_params: FriVerifierParams,
+            native_fri_params: NativeFriParams,
             disable_recompose_npo: bool,
             /// The base-field Merkle MMCS and FRI parameters `config` commits with. The PCS does
             /// not expose them, and restoring the per-query Merkle chains a pruned FRI proof
@@ -365,6 +366,7 @@ macro_rules! define_field_module_types {
         struct ConfigWithFriParamsZk {
             config: Arc<MyConfigZk>,
             fri_verifier_params: FriVerifierParams,
+            native_fri_params: NativeFriParams,
             disable_recompose_npo: bool,
             /// See [`ConfigWithFriParams`].
             fri_instance: Arc<(MyMmcs, FriParameters<ChallengeMmcs>)>,
@@ -428,6 +430,10 @@ macro_rules! define_field_module_types {
             type OpeningProof = InnerFri;
             type RawOpeningProof = <MyPcs as Pcs<Challenge, Challenger>>::Proof;
             const DIGEST_ELEMS: usize = $digest_elems;
+
+            fn native_fri_validation_params(&self) -> Option<NativeFriParams> {
+                Some(self.native_fri_params)
+            }
 
             fn with_fri_opening_proof<'a, A, R>(
                 prev: &RecursionInput<'a, Self, A>,
@@ -527,6 +533,10 @@ macro_rules! define_field_module_types {
             type RawOpeningProof = <MyPcsZk as Pcs<Challenge, Challenger>>::Proof;
             const DIGEST_ELEMS: usize = $digest_elems;
 
+            fn native_fri_validation_params(&self) -> Option<NativeFriParams> {
+                Some(self.native_fri_params)
+            }
+
             fn with_fri_opening_proof<'a, A, R>(
                 prev: &RecursionInput<'a, Self, A>,
                 f: impl FnOnce(&Self::RawOpeningProof) -> R,
@@ -623,7 +633,10 @@ macro_rules! define_field_module_types {
             let compress = MyCompress::new(perm);
             let val_mmcs = MyMmcs::new(hash, compress, fp.cap_height);
 
-            let num_queries = (security_level - fp.query_pow_bits) / fp.log_blowup;
+            let num_queries = security_level
+                .checked_sub(fp.query_pow_bits)
+                .and_then(|remaining| (fp.log_blowup != 0).then_some(remaining / fp.log_blowup))
+                .expect("FRI security level must cover query PoW and use nonzero blowup");
 
             let fri_params = FriParameters {
                 max_log_arity: fp.max_log_arity,
@@ -637,6 +650,7 @@ macro_rules! define_field_module_types {
             (val_mmcs, fri_params)
         }
 
+        #[allow(dead_code)]
         fn create_config(fp: &FriParams, security_level: usize) -> MyConfig {
             let (val_mmcs, fri_params) = create_fri_instance(fp, security_level);
             let pcs = MyPcs::new(Dft::default(), val_mmcs, fri_params);
@@ -644,7 +658,10 @@ macro_rules! define_field_module_types {
         }
 
         fn create_fri_verifier_params(fp: &FriParams, security_level: usize) -> FriVerifierParams {
-            let num_queries = (security_level - fp.query_pow_bits) / fp.log_blowup;
+            let num_queries = security_level
+                .checked_sub(fp.query_pow_bits)
+                .and_then(|remaining| (fp.log_blowup != 0).then_some(remaining / fp.log_blowup))
+                .expect("FRI security level must cover query PoW and use nonzero blowup");
             FriVerifierParams::with_mmcs(
                 fp.log_blowup,
                 fp.log_final_poly_len,
@@ -660,11 +677,16 @@ macro_rules! define_field_module_types {
             security_level: usize,
             disable_recompose_npo: bool,
         ) -> ConfigWithFriParams {
+            let (val_mmcs, fri_params) = create_fri_instance(fp, security_level);
+            let native_fri_params = NativeFriParams::try_from_native::<F, _>(&fri_params).unwrap();
+            let restore_mmcs = val_mmcs.clone();
+            let pcs = MyPcs::new(Dft::default(), val_mmcs, fri_params.clone());
             ConfigWithFriParams {
-                config: Arc::new(create_config(fp, security_level)),
+                config: Arc::new(MyConfig::new(pcs, Challenger::new($default_perm()))),
                 fri_verifier_params: create_fri_verifier_params(fp, security_level),
+                native_fri_params,
                 disable_recompose_npo,
-                fri_instance: Arc::new(create_fri_instance(fp, security_level)),
+                fri_instance: Arc::new((restore_mmcs, fri_params)),
             }
         }
 
@@ -688,11 +710,22 @@ macro_rules! define_field_module_types {
             disable_recompose_npo: bool,
             rng_seed: u64,
         ) -> ConfigWithFriParamsZk {
+            let (val_mmcs, fri_params) = create_fri_instance(fp, security_level);
+            let native_fri_params = NativeFriParams::try_from_native::<F, _>(&fri_params).unwrap();
+            let restore_mmcs = val_mmcs.clone();
+            let pcs = MyPcsZk::new(
+                Dft::default(),
+                val_mmcs,
+                fri_params.clone(),
+                2,
+                StdRng::seed_from_u64(rng_seed),
+            );
             ConfigWithFriParamsZk {
-                config: Arc::new(create_config_zk(fp, security_level, rng_seed)),
+                config: Arc::new(MyConfigZk::new(pcs, Challenger::new($default_perm()))),
                 fri_verifier_params: create_fri_verifier_params(fp, security_level),
+                native_fri_params,
                 disable_recompose_npo,
-                fri_instance: Arc::new(create_fri_instance(fp, security_level)),
+                fri_instance: Arc::new((restore_mmcs, fri_params)),
             }
         }
     };
@@ -767,6 +800,7 @@ macro_rules! define_field_module_types_quintic {
         struct ConfigWithFriParams {
             config: Arc<MyConfig>,
             fri_verifier_params: FriVerifierParams,
+            native_fri_params: NativeFriParams,
             disable_recompose_npo: bool,
             /// The base-field Merkle MMCS and FRI parameters `config` commits with. The PCS does
             /// not expose them, and restoring the per-query Merkle chains a pruned FRI proof
@@ -813,6 +847,10 @@ macro_rules! define_field_module_types_quintic {
             type OpeningProof = InnerFri;
             type RawOpeningProof = <MyPcs as Pcs<Challenge, Challenger>>::Proof;
             const DIGEST_ELEMS: usize = $digest_elems;
+
+            fn native_fri_validation_params(&self) -> Option<NativeFriParams> {
+                Some(self.native_fri_params)
+            }
 
             fn with_fri_opening_proof<'a, A, R>(
                 prev: &RecursionInput<'a, Self, A>,
@@ -903,7 +941,10 @@ macro_rules! define_field_module_types_quintic {
             let compress = MyCompress::new(perm);
             let val_mmcs = MyMmcs::new(hash, compress, fp.cap_height);
 
-            let num_queries = (security_level - fp.query_pow_bits) / fp.log_blowup;
+            let num_queries = security_level
+                .checked_sub(fp.query_pow_bits)
+                .and_then(|remaining| (fp.log_blowup != 0).then_some(remaining / fp.log_blowup))
+                .expect("FRI security level must cover query PoW and use nonzero blowup");
 
             let fri_params = FriParameters {
                 max_log_arity: fp.max_log_arity,
@@ -917,6 +958,7 @@ macro_rules! define_field_module_types_quintic {
             (val_mmcs, fri_params)
         }
 
+        #[allow(dead_code)]
         fn create_config(fp: &FriParams, security_level: usize) -> MyConfig {
             let (val_mmcs, fri_params) = create_fri_instance(fp, security_level);
             let pcs = MyPcs::new(Dft::default(), val_mmcs, fri_params);
@@ -924,7 +966,10 @@ macro_rules! define_field_module_types_quintic {
         }
 
         fn create_fri_verifier_params(fp: &FriParams, security_level: usize) -> FriVerifierParams {
-            let num_queries = (security_level - fp.query_pow_bits) / fp.log_blowup;
+            let num_queries = security_level
+                .checked_sub(fp.query_pow_bits)
+                .and_then(|remaining| (fp.log_blowup != 0).then_some(remaining / fp.log_blowup))
+                .expect("FRI security level must cover query PoW and use nonzero blowup");
             FriVerifierParams::with_mmcs(
                 fp.log_blowup,
                 fp.log_final_poly_len,
@@ -940,11 +985,16 @@ macro_rules! define_field_module_types_quintic {
             security_level: usize,
             disable_recompose_npo: bool,
         ) -> ConfigWithFriParams {
+            let (val_mmcs, fri_params) = create_fri_instance(fp, security_level);
+            let native_fri_params = NativeFriParams::try_from_native::<F, _>(&fri_params).unwrap();
+            let restore_mmcs = val_mmcs.clone();
+            let pcs = MyPcs::new(Dft::default(), val_mmcs, fri_params.clone());
             ConfigWithFriParams {
-                config: Arc::new(create_config(fp, security_level)),
+                config: Arc::new(MyConfig::new(pcs, Challenger::new($default_perm()))),
                 fri_verifier_params: create_fri_verifier_params(fp, security_level),
+                native_fri_params,
                 disable_recompose_npo,
-                fri_instance: Arc::new(create_fri_instance(fp, security_level)),
+                fri_instance: Arc::new((restore_mmcs, fri_params)),
             }
         }
     };

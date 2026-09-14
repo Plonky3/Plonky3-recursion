@@ -32,11 +32,11 @@ use p3_recursion::pcs::{
 };
 use p3_recursion::profile::{HashProfile, RecursionLayerProfile, TranscriptKind};
 use p3_recursion::{
-    BatchOnly, FriRecursionBackend, FriRecursionConfig, FriVerifierParams, OpeningTranscript,
-    PcsRecursionBackend, Poseidon2Config, PreparedAggregation, PreparedAggregationCross,
-    PreparedInput, PreparedPcsRecursionBackend, PreparedSource, ProveNextLayerParams,
-    RecursionInput, RecursiveAir, RecursivePcs, VerificationError, VerifierCircuitResult,
-    merge_hiding_random_openings, observe_opened_values,
+    BatchOnly, FriRecursionBackend, FriRecursionConfig, FriVerifierParams, NativeFriParams,
+    OpeningTranscript, PcsRecursionBackend, Poseidon2Config, PreparedAggregation,
+    PreparedAggregationCross, PreparedInput, PreparedPcsRecursionBackend, PreparedSource,
+    ProveNextLayerParams, RecursionInput, RecursiveAir, RecursivePcs, VerificationError,
+    VerifierCircuitResult, merge_hiding_random_openings, observe_opened_values,
 };
 use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
 use p3_test_utils::koala_bear_params::{
@@ -279,6 +279,7 @@ mod arity4_output {
     pub(super) struct Config {
         config: Arc<NativeConfig>,
         verifier_params: FriVerifierParams,
+        native_fri_params: NativeFriParams,
         fri_instance: Arc<(ValMmcs, FriParameters<ChallengeMmcs>)>,
     }
 
@@ -311,6 +312,10 @@ mod arity4_output {
         type OpeningProof = OpeningTargets;
         type RawOpeningProof = <Pcs4 as Pcs<Challenge, Challenger>>::Proof;
         const DIGEST_ELEMS: usize = 8;
+
+        fn native_fri_validation_params(&self) -> Option<NativeFriParams> {
+            Some(self.native_fri_params)
+        }
 
         fn with_fri_opening_proof<'a, A, R>(
             prev: &RecursionInput<'a, Self, A>,
@@ -399,6 +404,7 @@ mod arity4_output {
             fri_params.num_queries,
             Poseidon2Config::KOALA_BEAR_D4_W32,
         );
+        let native_fri_params = NativeFriParams::try_from_native::<F, _>(&fri_params).unwrap();
         let pcs = Pcs4::new(
             Radix2DitParallel::default(),
             val_mmcs.clone(),
@@ -410,6 +416,7 @@ mod arity4_output {
                 Challenger::new(default_koalabear_poseidon2_16()),
             )),
             verifier_params,
+            native_fri_params,
             fri_instance: Arc::new((val_mmcs, fri_params)),
         }
     }
@@ -450,6 +457,7 @@ mod hiding_fri {
     pub(super) struct Config {
         config: Arc<NativeConfig>,
         verifier_params: FriVerifierParams,
+        native_fri_params: NativeFriParams,
         val_mmcs: MyMmcs,
         fri_params: FriParameters<ChallengeMmcs>,
     }
@@ -483,6 +491,10 @@ mod hiding_fri {
         type OpeningProof = OpeningTargets;
         type RawOpeningProof = <HidingPcs as Pcs<Challenge, Challenger>>::Proof;
         const DIGEST_ELEMS: usize = 8;
+
+        fn native_fri_validation_params(&self) -> Option<NativeFriParams> {
+            Some(self.native_fri_params)
+        }
 
         fn with_fri_opening_proof<'a, A, R>(
             prev: &RecursionInput<'a, Self, A>,
@@ -572,6 +584,7 @@ mod hiding_fri {
             fri_params.num_queries,
             Poseidon2Config::KOALA_BEAR_D4_W16,
         );
+        let native_fri_params = NativeFriParams::try_from_native::<F, _>(&fri_params).unwrap();
         let pcs = HidingPcs::new(
             Dft::default(),
             val_mmcs.clone(),
@@ -582,6 +595,7 @@ mod hiding_fri {
         Config {
             config: Arc::new(NativeConfig::new(pcs, Challenger::new(permutation))),
             verifier_params,
+            native_fri_params,
             val_mmcs,
             fri_params,
         }

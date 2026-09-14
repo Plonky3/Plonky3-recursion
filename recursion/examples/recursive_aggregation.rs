@@ -1191,6 +1191,7 @@ macro_rules! arity4_mixed_config_impl {
         struct ConfigWithFriParamsArity4 {
             config: Arc<MyConfigArity4>,
             fri_verifier_params: FriVerifierParams,
+            native_fri_params: NativeFriParams,
             disable_recompose_npo: bool,
             /// The W32 arity-4 Merkle MMCS and FRI parameters `config` commits with. The PCS does
             /// not expose them, and restoring the per-query Merkle chains a pruned FRI proof
@@ -1232,6 +1233,10 @@ macro_rules! arity4_mixed_config_impl {
             type OpeningProof = InnerFriArity4;
             type RawOpeningProof = <MyPcsArity4 as Pcs<Challenge, Challenger>>::Proof;
             const DIGEST_ELEMS: usize = $digest_elems;
+
+            fn native_fri_validation_params(&self) -> Option<NativeFriParams> {
+                Some(self.native_fri_params)
+            }
 
             fn with_fri_opening_proof<'a, A, R>(
                 prev: &RecursionInput<'a, Self, A>,
@@ -1325,7 +1330,10 @@ macro_rules! arity4_mixed_config_impl {
             let compress = MyCompressArity4::new(mmcs_perm);
             let val_mmcs = MyMmcsArity4::new(hash, compress, fp.cap_height);
 
-            let num_queries = (security_level - fp.query_pow_bits) / fp.log_blowup;
+            let num_queries = security_level
+                .checked_sub(fp.query_pow_bits)
+                .and_then(|remaining| (fp.log_blowup != 0).then_some(remaining / fp.log_blowup))
+                .expect("FRI security level must cover query PoW and use nonzero blowup");
 
             let fri_params = FriParameters {
                 max_log_arity: fp.max_log_arity,
@@ -1339,6 +1347,7 @@ macro_rules! arity4_mixed_config_impl {
             (val_mmcs, fri_params)
         }
 
+        #[allow(dead_code)]
         fn create_config_arity4(fp: &FriParams, security_level: usize) -> MyConfigArity4 {
             let (val_mmcs, fri_params) = create_fri_instance_arity4(fp, security_level);
             let pcs = MyPcsArity4::new(Dft::default(), val_mmcs, fri_params);
@@ -1349,7 +1358,10 @@ macro_rules! arity4_mixed_config_impl {
             fp: &FriParams,
             security_level: usize,
         ) -> FriVerifierParams {
-            let num_queries = (security_level - fp.query_pow_bits) / fp.log_blowup;
+            let num_queries = security_level
+                .checked_sub(fp.query_pow_bits)
+                .and_then(|remaining| (fp.log_blowup != 0).then_some(remaining / fp.log_blowup))
+                .expect("FRI security level must cover query PoW and use nonzero blowup");
             FriVerifierParams::with_mmcs(
                 fp.log_blowup,
                 fp.log_final_poly_len,
@@ -1365,11 +1377,16 @@ macro_rules! arity4_mixed_config_impl {
             security_level: usize,
             disable_recompose_npo: bool,
         ) -> ConfigWithFriParamsArity4 {
+            let (val_mmcs, fri_params) = create_fri_instance_arity4(fp, security_level);
+            let native_fri_params = NativeFriParams::try_from_native::<F, _>(&fri_params).unwrap();
+            let restore_mmcs = val_mmcs.clone();
+            let pcs = MyPcsArity4::new(Dft::default(), val_mmcs, fri_params.clone());
             ConfigWithFriParamsArity4 {
-                config: Arc::new(create_config_arity4(fp, security_level)),
+                config: Arc::new(MyConfigArity4::new(pcs, Challenger::new($default_perm()))),
                 fri_verifier_params: create_fri_verifier_params_arity4(fp, security_level),
+                native_fri_params,
                 disable_recompose_npo,
-                fri_instance: Arc::new(create_fri_instance_arity4(fp, security_level)),
+                fri_instance: Arc::new((restore_mmcs, fri_params)),
             }
         }
     };

@@ -29,7 +29,7 @@ use crate::backend::transcript::replay_recursion_input_transcript;
 use crate::generation::OpeningTranscript;
 use crate::input_contract::stark::validate_batch_proof_native;
 use crate::ops::{Poseidon1Config, Poseidon2Config};
-use crate::pcs::fri::FriVerifierParams;
+use crate::pcs::fri::{FriVerifierParams, NativeFriParams};
 use crate::prepared::input::{capture_builtin_input_contract, validate_builtin_prepared_input};
 use crate::prepared::{PreparedInput, PreparedPcsRecursionBackend};
 use crate::public_inputs::{BatchStarkVerifierInputsBuilder, StarkVerifierInputsBuilder};
@@ -53,6 +53,13 @@ where
             <Self::Pcs as Pcs<Self::Challenge, Self::Challenger>>::Domain,
         >,
 {
+    /// Checked scalar metadata copied from the native FRI parameters used by
+    /// this config's opaque PCS. Custom configs may leave this unset and stay
+    /// on the explicitly trusted legacy entrypoints.
+    fn native_fri_validation_params(&self) -> Option<NativeFriParams> {
+        None
+    }
+
     /// Commitment type used in the verifier circuit (e.g. HashTargets).
     type Commitment: Recursive<
             Self::Challenge,

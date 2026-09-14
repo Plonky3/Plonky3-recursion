@@ -32,8 +32,9 @@ use p3_recursion::traits::{RecursiveAir, RecursivePcs};
 use p3_recursion::verifier::VerificationError;
 use p3_recursion::{
     BatchOnly, FriRecursionBackend, FriRecursionBackendForExt, FriRecursionConfig,
-    FriVerifierParams, OpeningTranscript, Poseidon2Config, PreparedInput, PreparedLayer,
-    PreparedSource, ProveNextLayerParams, RecursionInput, RecursionOutput, observe_opened_values,
+    FriVerifierParams, NativeFriParams, OpeningTranscript, Poseidon2Config, PreparedInput,
+    PreparedLayer, PreparedSource, ProveNextLayerParams, RecursionInput, RecursionOutput,
+    observe_opened_values,
 };
 use p3_test_utils::koala_bear_params::*;
 use p3_uni_stark::{StarkGenericConfig, Val};
@@ -264,6 +265,7 @@ pub(crate) type KoalaBearD4InnerFri = InnerFriGeneric<MyConfig, MyHash, MyCompre
 pub(crate) struct KoalaBearD4RecursionConfig {
     config: Arc<MyConfig>,
     fri_verifier_params: FriVerifierParams,
+    native_fri_params: NativeFriParams,
     /// The base-field MMCS and FRI parameters `config` commits with. `MyConfig` does not expose
     /// them, and restoring a pruned FRI proof's per-query Merkle paths needs both.
     val_mmcs: MyMmcs,
@@ -305,6 +307,10 @@ where
     type OpeningProof = KoalaBearD4InnerFri;
     type RawOpeningProof = <MyPcs as Pcs<Challenge, Challenger>>::Proof;
     const DIGEST_ELEMS: usize = DIGEST_ELEMS;
+
+    fn native_fri_validation_params(&self) -> Option<NativeFriParams> {
+        Some(self.native_fri_params)
+    }
 
     fn with_fri_opening_proof<'a, A, R>(
         prev: &RecursionInput<'a, Self, A>,
@@ -389,9 +395,15 @@ fn koala_bear_d4_recursion_config(pow_bits: usize) -> KoalaBearD4RecursionConfig
         Poseidon2Config::KOALA_BEAR_D4_W16,
     );
     let (val_mmcs, fri_params) = test_fri_instance_with_pow_bits(pow_bits);
+    let native_fri_params = NativeFriParams::try_from_native::<F, _>(&fri_params).unwrap();
+    let pcs = MyPcs::new(Dft::default(), val_mmcs.clone(), fri_params.clone());
     KoalaBearD4RecursionConfig {
-        config: Arc::new(make_test_config_with_pow_bits(pow_bits)),
+        config: Arc::new(MyConfig::new(
+            pcs,
+            Challenger::new(default_koalabear_poseidon2_16()),
+        )),
         fri_verifier_params,
+        native_fri_params,
         val_mmcs,
         fri_params,
     }

@@ -4,7 +4,7 @@ mod params;
 mod targets;
 mod verifier;
 
-pub use params::FriVerifierParams;
+pub use params::{FriInputError, FriVerifierParams, NativeFriParams};
 pub use targets::{
     BatchOpeningTargets, CommitPhaseProofStepTargets, FriProofTargets, HashProofTargets,
     HidingFriProofTargets, HidingHashProofTargets, HidingOpenedValuesTargets, InputProofTargets,

@@ -39,7 +39,7 @@ pub use generation::{
 };
 pub use p3_circuit::ops;
 pub use p3_circuit::ops::{PermConfig, Poseidon2Config};
-pub use pcs::fri::FriVerifierParams;
+pub use pcs::fri::{FriInputError, FriVerifierParams, NativeFriParams};
 pub use prepared::{
     NativeCommitment, PreparedAggregation, PreparedAggregationCross, PreparedInput, PreparedLayer,
     PreparedPcsRecursionBackend, PreparedSource,
