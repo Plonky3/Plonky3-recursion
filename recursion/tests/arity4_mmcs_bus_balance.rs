@@ -296,6 +296,8 @@ fn arity4_shared_geometry_matches_native_controls() {
     let tall = RowMajorMatrix::new((0..16u64).map(F::from_u64).collect(), 1);
     let short = RowMajorMatrix::new((100..108u64).map(F::from_u64).collect(), 1);
     prove_verify_arity4(vec![tall.clone(), short.clone()], 4, 0, 0, false, false);
+    prove_verify_arity4(vec![tall.clone(), short.clone()], 4, 15, 0, false, false);
+    prove_verify_arity4(vec![tall.clone(), short.clone()], 4, 0, 1, false, false);
     prove_verify_arity4(vec![tall, short], 4, 15, 1, false, false);
 
     let height_two = RowMajorMatrix::new((0..2u64).map(F::from_u64).collect(), 1);

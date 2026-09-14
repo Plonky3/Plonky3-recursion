@@ -470,12 +470,13 @@ where
     RI::Proof: FriPrivateAdvice<EF, MultiProof = <RI::Input as Mmcs<F>>::MultiProof>,
 {
     fn validate_input(input: &Self::Input) -> Result<(), VerificationError> {
-        validate_builtin_fri_raw::<F, EF, RecMmcs, RI, Witness<F>>(
+        validate_counted_fri_raw::<F, EF, RI, RecMmcs>(
             input,
+            None,
             <RI::Input as NativeFriSaltWidth>::SALT_ELEMS,
             <RecMmcs::Input as NativeFriSaltWidth>::SALT_ELEMS,
-        )?;
-        validate_counted_fri_raw::<F, EF, RI, RecMmcs>(input, None).map(|_| ())
+        )
+        .map(|_| ())
     }
 }
 
@@ -1563,7 +1564,7 @@ pub type TwoAdicFriProofTargets<F, EF, RecMmcs, Inner> =
     FriProofTargets<F, EF, RecMmcs, InputProofTargets<F, EF, Inner>, Target>;
 
 #[allow(clippy::type_complexity)]
-fn validate_builtin_fri_raw<F, EF, RF, RI, W>(
+pub(crate) fn validate_builtin_fri_raw<F, EF, RF, RI, W>(
     input: &FriProof<EF, RF::Input, W::Input, Vec<BatchMultiOpening<F, RI::Input>>>,
     input_salt_elems: Option<usize>,
     phase_salt_elems: Option<usize>,
@@ -1630,11 +1631,6 @@ where
         layout: FriOpeningLayout<'_>,
         input_caps: &[&<RI::Commitment as Recursive<EF>>::Input],
     ) -> Result<ValidatedFriContext, VerificationError> {
-        validate_builtin_fri_raw::<F, EF, RF, RI, Witness<F>>(
-            input,
-            <RI::Input as NativeFriSaltWidth>::SALT_ELEMS,
-            <RF::Input as NativeFriSaltWidth>::SALT_ELEMS,
-        )?;
         validate_fri_context_with_caps::<F, EF, RI, RF>(
             input,
             native,
@@ -1653,11 +1649,6 @@ where
         candidate_layout: FriOpeningLayout<'_>,
         input_caps: &[&<RI::Commitment as Recursive<EF>>::Input],
     ) -> Result<(), VerificationError> {
-        validate_builtin_fri_raw::<F, EF, RF, RI, Witness<F>>(
-            input,
-            <RI::Input as NativeFriSaltWidth>::SALT_ELEMS,
-            <RF::Input as NativeFriSaltWidth>::SALT_ELEMS,
-        )?;
         validate_fri_replacement_with_caps::<F, EF, RI, RF>(
             input,
             &expected.native_params(),
@@ -1695,11 +1686,6 @@ where
         layout: FriOpeningLayout<'_>,
         input_caps: &[&<RI::Commitment as Recursive<EF>>::Input],
     ) -> Result<ValidatedFriContext, VerificationError> {
-        validate_builtin_fri_raw::<F, EF, RF, RI, Witness<F>>(
-            &input.1,
-            <RI::Input as NativeFriSaltWidth>::SALT_ELEMS,
-            <RF::Input as NativeFriSaltWidth>::SALT_ELEMS,
-        )?;
         validate_fri_context_with_caps::<F, EF, RI, RF>(
             &input.1,
             native,
@@ -1718,11 +1704,6 @@ where
         candidate_layout: FriOpeningLayout<'_>,
         input_caps: &[&<RI::Commitment as Recursive<EF>>::Input],
     ) -> Result<(), VerificationError> {
-        validate_builtin_fri_raw::<F, EF, RF, RI, Witness<F>>(
-            &input.1,
-            <RI::Input as NativeFriSaltWidth>::SALT_ELEMS,
-            <RF::Input as NativeFriSaltWidth>::SALT_ELEMS,
-        )?;
         validate_fri_replacement_with_caps::<F, EF, RI, RF>(
             &input.1,
             &expected.native_params(),
@@ -2308,12 +2289,13 @@ where
     RI::Proof: FriPrivateAdvice<EF, MultiProof = <RI::Input as Mmcs<F>>::MultiProof>,
 {
     fn validate_input(input: &Self::Input) -> Result<(), VerificationError> {
-        validate_builtin_fri_raw::<F, EF, RecMmcs, RI, Witness<F>>(
+        validate_counted_fri_raw::<F, EF, RI, RecMmcs>(
             &input.1,
+            Some(&input.0),
             <RI::Input as NativeFriSaltWidth>::SALT_ELEMS,
             <RecMmcs::Input as NativeFriSaltWidth>::SALT_ELEMS,
-        )?;
-        validate_counted_fri_raw::<F, EF, RI, RecMmcs>(&input.1, Some(&input.0)).map(|_| ())
+        )
+        .map(|_| ())
     }
 }
 
@@ -2879,6 +2861,8 @@ mod prepared_shape_tests {
             )
             .is_err()
         );
+        assert!(crate::pcs::mmcs::validate_binary_cap_count(0, 1).is_err());
+        assert!(crate::pcs::mmcs::validate_binary_cap_count(3, 1).is_err());
         let too_tall = cap(4);
         assert!(
             validate_merkle_cap_context::<F, Challenge, DIGEST_ELEMS, _>(
@@ -3015,6 +2999,24 @@ mod prepared_shape_tests {
             .is_err()
         );
 
+        // Native F groups stream independently, while recursive grouped
+        // buffers are measured in Target elements.  Preserve that distinction
+        // at the actual Target byte boundary: equal-height groups whose sum is
+        // representable pass, and a different-height overrun is rejected.
+        let target_limit = isize::MAX as usize / core::mem::size_of::<Target>();
+        let first_group = target_limit / 2;
+        let second_group = target_limit - first_group;
+        let same_height_sum = checked_add_len(first_group, second_group, "same-height groups")
+            .expect("exact Target boundary addition");
+        assert!(check_vec_len::<Target>(same_height_sum, "same-height groups").is_ok());
+        let different_height_sum = checked_add_len(target_limit, 1, "different-height groups")
+            .expect("different-height group arithmetic itself is representable");
+        assert!(matches!(
+            check_vec_len::<Target>(different_height_sum, "different-height groups"),
+            Err(VerificationError::InvalidProofShape(message))
+                if message.contains("different-height groups byte length")
+        ));
+
         assert_eq!(checked_input_counts(5, 2, 4).unwrap(), (7, 11));
         assert!(checked_input_counts(usize::MAX, 1, 0).is_err());
         assert!(checked_input_counts(usize::MAX - 1, 1, 1).is_err());
@@ -3036,8 +3038,58 @@ mod prepared_shape_tests {
         let public_limit = isize::MAX as usize / core::mem::size_of::<Challenge>();
         assert!(checked_flat_value_totals::<Challenge>(0, 0, 0, public_limit - 3, 1, 1,).is_ok());
         assert!(checked_flat_value_totals::<Challenge>(0, 0, 0, public_limit - 2, 1, 1,).is_err());
+
+        let tail_overflow = checked_flat_value_totals::<Challenge>(1, 0, usize::MAX, 0, 0, 0)
+            .expect_err("late hiding-tail addition must reject");
+        assert!(matches!(
+            tail_overflow,
+            VerificationError::InvalidProofShape(message)
+                if message.contains("private tail total length overflows")
+        ));
+        let tail_byte_overrun = checked_flat_value_totals::<Challenge>(0, 0, q_limit + 1, 0, 0, 0)
+            .expect_err("hiding-tail EF byte bound must reject");
+        assert!(matches!(
+            tail_byte_overrun,
+            VerificationError::InvalidProofShape(message)
+                if message.contains("FRI private values byte length")
+        ));
+        let phase_cap_overflow = checked_flat_value_totals::<Challenge>(0, 0, 0, usize::MAX, 1, 0)
+            .expect_err("phase-cap aggregate addition must reject");
+        assert!(matches!(
+            phase_cap_overflow,
+            VerificationError::InvalidProofShape(message)
+                if message.contains("public phase caps and witnesses length overflows")
+        ));
+        let final_overflow = checked_flat_value_totals::<Challenge>(0, 0, 0, 0, 1, usize::MAX)
+            .expect_err("final-polynomial addition must reject");
+        assert!(matches!(
+            final_overflow,
+            VerificationError::InvalidProofShape(message)
+                if message.contains("public final polynomial length overflows")
+        ));
+        let query_overflow = checked_flat_value_totals::<Challenge>(0, 0, 0, 0, 1, usize::MAX - 1)
+            .expect_err("query witness addition must reject");
+        assert!(matches!(
+            query_overflow,
+            VerificationError::InvalidProofShape(message)
+                if message.contains("public query witness length overflows")
+        ));
         assert!(checked_cap_public_values_len::<Challenge>(2, 4,).is_ok());
         assert!(checked_cap_public_values_len::<Challenge>(q_limit / 4 + 1, 4,).is_err());
+        let cap_product_overflow = checked_cap_public_values_len::<Challenge>(usize::MAX, 2)
+            .expect_err("cap roots times digest width must reject");
+        assert!(matches!(
+            cap_product_overflow,
+            VerificationError::InvalidProofShape(message)
+                if message.contains("cap lifted public values length overflows")
+        ));
+        let cap_byte_overrun = checked_cap_public_values_len::<Challenge>(q_limit + 1, 1)
+            .expect_err("cap EF byte bound must reject");
+        assert!(matches!(
+            cap_byte_overrun,
+            VerificationError::InvalidProofShape(message)
+                if message.contains("cap lifted public values byte length")
+        ));
         let actual_cap = cap(2);
         assert_eq!(
             <MerkleCapTargets<F, DIGEST_ELEMS> as CheckedFriCommitment<Challenge>>::
@@ -3106,9 +3158,10 @@ mod prepared_shape_tests {
         let baseline = retention_opening([2, 1, 1], [1, 2]);
         let baseline_caps = retention_caps([1, 1, 1]);
         let baseline_cap_refs = [&baseline_caps[0], &baseline_caps[1], &baseline_caps[2]];
-        let counts =
-            validate_counted_fri_raw::<F, Challenge, RecInputMmcs, RecFriMmcs>(&baseline, None)
-                .expect("ordinary counted collector accepts the fixture");
+        let counts = validate_counted_fri_raw::<F, Challenge, RecInputMmcs, RecFriMmcs>(
+            &baseline, None, None, None,
+        )
+        .expect("ordinary counted collector accepts the fixture");
         assert_eq!(counts.private_values(), 136);
         assert_eq!(counts.public_values(), 29);
         assert!(<OpeningTargets as CheckedRecursive<Challenge>>::validate_input(&baseline).is_ok());
@@ -3125,6 +3178,92 @@ mod prepared_shape_tests {
         .expect("baseline fixture is fresh-valid");
         assert_eq!(OpeningTargets::get_private_values(&baseline).len(), 136);
         assert_eq!(OpeningTargets::get_values(&baseline).len(), 29);
+
+        let assert_rejected = |proof: &Opening,
+                               candidate_layout: FriOpeningLayout<'_>,
+                               candidate_caps: &[&<<RecInputMmcs as RecursiveMmcs<
+            F,
+            Challenge,
+        >>::Commitment as Recursive<Challenge>>::Input]| {
+            assert!(
+                <OpeningTargets as CheckedFriOpening<
+                    Challenge,
+                    <RecInputMmcs as RecursiveMmcs<F, Challenge>>::Commitment,
+                >>::validate_fri_context(
+                    proof,
+                    &native,
+                    &recursive,
+                    candidate_layout,
+                    candidate_caps,
+                )
+                .is_err()
+            );
+            assert!(
+                <OpeningTargets as CheckedFriOpening<
+                    Challenge,
+                    <RecInputMmcs as RecursiveMmcs<F, Challenge>>::Commitment,
+                >>::validate_fri_replacement(
+                    proof, &old, candidate_layout, candidate_caps,
+                )
+                .is_err()
+            );
+        };
+
+        let mut query3 = baseline.clone();
+        for batch in &mut query3.input_openings {
+            batch.opened_values.pop();
+        }
+        for phase in &mut query3.commit_phase_openings {
+            phase.sibling_values.pop();
+        }
+        assert_rejected(&query3, baseline_layout.opening_view(), &baseline_cap_refs);
+
+        let mut last_width = baseline.clone();
+        last_width.input_openings[2].opened_values[3][1].pop();
+        assert_rejected(
+            &last_width,
+            baseline_layout.opening_view(),
+            &baseline_cap_refs,
+        );
+        let mut last_axis = baseline.clone();
+        last_axis.input_openings[2].opened_values[3].pop();
+        assert_rejected(
+            &last_axis,
+            baseline_layout.opening_view(),
+            &baseline_cap_refs,
+        );
+
+        let missing_caps = [&baseline_caps[0], &baseline_caps[1]];
+        assert_rejected(&baseline, baseline_layout.opening_view(), &missing_caps);
+        let extra_caps = [
+            &baseline_caps[0],
+            &baseline_caps[1],
+            &baseline_caps[2],
+            &baseline_caps[0],
+        ];
+        assert_rejected(&baseline, baseline_layout.opening_view(), &extra_caps);
+
+        let mut final_poly = baseline.clone();
+        final_poly.final_poly.pop();
+        assert_rejected(
+            &final_poly,
+            baseline_layout.opening_view(),
+            &baseline_cap_refs,
+        );
+        let mut pow_short = baseline.clone();
+        pow_short.commit_pow_witnesses.pop();
+        assert_rejected(
+            &pow_short,
+            baseline_layout.opening_view(),
+            &baseline_cap_refs,
+        );
+        let mut pow_long = baseline.clone();
+        pow_long.commit_pow_witnesses.push(F::ZERO);
+        assert_rejected(
+            &pow_long,
+            baseline_layout.opening_view(),
+            &baseline_cap_refs,
+        );
 
         let schedule = retention_opening([1, 2, 1], [1, 2]);
         assert!(
@@ -3338,6 +3477,100 @@ mod prepared_shape_tests {
             .is_err()
         );
 
+        let assert_compatible = |label: &str,
+                                 candidate: &Opening,
+                                 candidate_caps: &[&<<RecInputMmcs as RecursiveMmcs<
+            F,
+            Challenge,
+        >>::Commitment as Recursive<Challenge>>::Input]| {
+            assert!(
+                <OpeningTargets as CheckedFriOpening<
+                    Challenge,
+                    <RecInputMmcs as RecursiveMmcs<F, Challenge>>::Commitment,
+                >>::validate_fri_context(
+                    candidate,
+                    &native,
+                    &recursive,
+                    baseline_layout.opening_view(),
+                    candidate_caps,
+                )
+                .is_ok(),
+                "fresh compatibility failed for {label}"
+            );
+            assert!(
+                <OpeningTargets as CheckedFriOpening<
+                    Challenge,
+                    <RecInputMmcs as RecursiveMmcs<F, Challenge>>::Commitment,
+                >>::validate_fri_replacement(
+                    candidate,
+                    &old,
+                    baseline_layout.opening_view(),
+                    candidate_caps,
+                )
+                .is_ok(),
+                "replacement compatibility failed for {label}"
+            );
+        };
+
+        let mut input_cap_digest = baseline_caps[0].clone();
+        let mut input_cap_roots = input_cap_digest.into_roots();
+        input_cap_roots[0][0] = F::ONE;
+        input_cap_digest = MerkleCap::new(input_cap_roots);
+        let input_cap_digest_refs = [&input_cap_digest, &baseline_caps[1], &baseline_caps[2]];
+        assert!(
+            <OpeningTargets as CheckedFriOpening<
+                Challenge,
+                <RecInputMmcs as RecursiveMmcs<F, Challenge>>::Commitment,
+            >>::validate_fri_context(
+                &baseline,
+                &native,
+                &recursive,
+                baseline_layout.opening_view(),
+                &input_cap_digest_refs,
+            )
+            .is_ok()
+        );
+
+        let mut input_frontier = baseline.clone();
+        input_frontier.input_openings[0].opening_proof = frontier(1);
+        assert_compatible("input frontier", &input_frontier, &baseline_cap_refs);
+
+        let mut phase_sibling = baseline.clone();
+        phase_sibling.commit_phase_openings[2].sibling_values[3][0] = Challenge::ONE;
+        assert_compatible("phase sibling", &phase_sibling, &baseline_cap_refs);
+
+        let mut phase_frontier = baseline.clone();
+        phase_frontier.commit_phase_openings[1].opening_proof = frontier(3);
+        assert_compatible("phase frontier", &phase_frontier, &baseline_cap_refs);
+
+        let mut phase_cap_digest = baseline.clone();
+        phase_cap_digest.commit_phase_commits[0] = cap(2);
+        assert!(
+            <OpeningTargets as CheckedFriOpening<
+                Challenge,
+                <RecInputMmcs as RecursiveMmcs<F, Challenge>>::Commitment,
+            >>::validate_fri_context(
+                &phase_cap_digest,
+                &native,
+                &recursive,
+                baseline_layout.opening_view(),
+                &baseline_cap_refs,
+            )
+            .is_ok()
+        );
+
+        let mut commit_scalar = baseline.clone();
+        commit_scalar.commit_pow_witnesses[2] = F::ONE;
+        assert_compatible("commit scalar", &commit_scalar, &baseline_cap_refs);
+
+        let mut final_scalar = baseline.clone();
+        final_scalar.final_poly[0] = Challenge::ONE;
+        assert_compatible("final scalar", &final_scalar, &baseline_cap_refs);
+
+        let mut query_scalar = baseline.clone();
+        query_scalar.query_pow_witness = F::ONE;
+        assert_compatible("query scalar", &query_scalar, &baseline_cap_refs);
+
         let mut witness_only = baseline.clone();
         witness_only.input_openings[2].opened_values[3][1][0] = F::ONE;
         witness_only.commit_phase_openings[2].sibling_values[3][0] = Challenge::ONE;
@@ -3389,6 +3622,8 @@ mod prepared_shape_tests {
         let counts = validate_counted_fri_raw::<F, Challenge, RecHidingMmcs, RecHidingFriMmcs>(
             &baseline.1,
             Some(&baseline.0),
+            Some(4),
+            Some(4),
         )
         .expect("hiding counted collector accepts the fixture");
         assert_eq!(counts.private_values(), 310);
@@ -3413,6 +3648,71 @@ mod prepared_shape_tests {
             310
         );
         assert_eq!(HidingOpeningTargets::get_values(&baseline).len(), 29);
+
+        for extra in [false, true] {
+            let mut bad_tails = baseline.clone();
+            if extra {
+                bad_tails.0[2][1].push(vec![]);
+            } else {
+                bad_tails.0[2][1].pop();
+            }
+            assert!(
+                <HidingOpeningTargets as CheckedFriOpening<
+                    Challenge,
+                    <RecHidingMmcs as RecursiveMmcs<F, Challenge>>::Commitment,
+                >>::validate_fri_context(
+                    &bad_tails,
+                    &native,
+                    &recursive,
+                    baseline_layout.opening_view(),
+                    &baseline_cap_refs,
+                )
+                .is_err()
+            );
+            assert!(
+                <HidingOpeningTargets as CheckedFriOpening<
+                    Challenge,
+                    <RecHidingMmcs as RecursiveMmcs<F, Challenge>>::Commitment,
+                >>::validate_fri_replacement(
+                    &bad_tails,
+                    &old,
+                    baseline_layout.opening_view(),
+                    &baseline_cap_refs,
+                )
+                .is_err()
+            );
+        }
+
+        for (row_width, salt_width) in [(3usize, 3usize), (1usize, 5usize)] {
+            let mut compensated = baseline.clone();
+            compensated.1.input_openings[2].opened_values[3][1] = vec![F::ZERO; row_width];
+            compensated.1.input_openings[2].opening_proof.0[3][1] = vec![F::ZERO; salt_width];
+            assert!(
+                <HidingOpeningTargets as CheckedFriOpening<
+                    Challenge,
+                    <RecHidingMmcs as RecursiveMmcs<F, Challenge>>::Commitment,
+                >>::validate_fri_context(
+                    &compensated,
+                    &native,
+                    &recursive,
+                    baseline_layout.opening_view(),
+                    &baseline_cap_refs,
+                )
+                .is_err()
+            );
+            assert!(
+                <HidingOpeningTargets as CheckedFriOpening<
+                    Challenge,
+                    <RecHidingMmcs as RecursiveMmcs<F, Challenge>>::Commitment,
+                >>::validate_fri_replacement(
+                    &compensated,
+                    &old,
+                    baseline_layout.opening_view(),
+                    &baseline_cap_refs,
+                )
+                .is_err()
+            );
+        }
 
         let mut base_only = baseline.clone();
         base_only.1.input_openings[0].opened_values[3][1] = vec![F::ZERO; 2];
@@ -3656,6 +3956,64 @@ mod prepared_shape_tests {
             .is_err()
         );
 
+        let assert_hiding_compatible = |label: &str, candidate: &HidingOpening| {
+            assert!(
+                <HidingOpeningTargets as CheckedFriOpening<
+                    Challenge,
+                    <RecHidingMmcs as RecursiveMmcs<F, Challenge>>::Commitment,
+                >>::validate_fri_context(
+                    candidate,
+                    &native,
+                    &recursive,
+                    baseline_layout.opening_view(),
+                    &baseline_cap_refs,
+                )
+                .is_ok(),
+                "fresh hiding compatibility failed for {label}"
+            );
+            assert!(
+                <HidingOpeningTargets as CheckedFriOpening<
+                    Challenge,
+                    <RecHidingMmcs as RecursiveMmcs<F, Challenge>>::Commitment,
+                >>::validate_fri_replacement(
+                    candidate,
+                    &old,
+                    baseline_layout.opening_view(),
+                    &baseline_cap_refs,
+                )
+                .is_ok(),
+                "replacement hiding compatibility failed for {label}"
+            );
+        };
+
+        let mut input_salt_only = baseline.clone();
+        input_salt_only.1.input_openings[2].opening_proof.0[3][1][0] = F::ONE;
+        assert_hiding_compatible("input salt", &input_salt_only);
+
+        let mut phase_salt_only = baseline.clone();
+        phase_salt_only.1.commit_phase_openings[2].opening_proof.0[3][0][0] = F::ONE;
+        assert_hiding_compatible("phase salt", &phase_salt_only);
+
+        let mut tail_only = baseline.clone();
+        tail_only.0[0][0][0][0] = Challenge::ONE;
+        assert_hiding_compatible("hiding tail", &tail_only);
+
+        let mut phase_sibling_only = baseline.clone();
+        phase_sibling_only.1.commit_phase_openings[2].sibling_values[3][0] = Challenge::ONE;
+        assert_hiding_compatible("phase sibling", &phase_sibling_only);
+
+        let mut commit_scalar_only = baseline.clone();
+        commit_scalar_only.1.commit_pow_witnesses[2] = F::ONE;
+        assert_hiding_compatible("commit scalar", &commit_scalar_only);
+
+        let mut final_scalar_only = baseline.clone();
+        final_scalar_only.1.final_poly[0] = Challenge::ONE;
+        assert_hiding_compatible("final scalar", &final_scalar_only);
+
+        let mut query_scalar_only = baseline.clone();
+        query_scalar_only.1.query_pow_witness = F::ONE;
+        assert_hiding_compatible("query scalar", &query_scalar_only);
+
         let mut witness_only = baseline.clone();
         witness_only.1.input_openings[2].opened_values[3][1][0] = F::ONE;
         witness_only.1.input_openings[2].opening_proof.0[3][1][0] = F::ONE;
@@ -3688,6 +4046,207 @@ mod prepared_shape_tests {
             )
             .is_ok()
         );
+    }
+
+    #[test]
+    fn counted_fri_finisher_is_reached_by_raw_fresh_and_replacement_paths() {
+        use crate::pcs::fri::context::{
+            CheckedFriOpening, fri_finisher_calls, reset_fri_finisher_calls,
+        };
+
+        const MAP01: &[usize] = &[0, 1];
+        let (native, recursive) = retention_params();
+        let layout = retention_layout([1, 2], [4, 1], true, MAP01);
+        let caps = retention_caps([1, 1, 1]);
+        let cap_refs = [&caps[0], &caps[1], &caps[2]];
+
+        let ordinary = retention_opening([2, 1, 1], [1, 2]);
+        reset_fri_finisher_calls();
+        assert!(<OpeningTargets as CheckedRecursive<Challenge>>::validate_input(&ordinary).is_ok());
+        assert_eq!(fri_finisher_calls(), 1);
+
+        let ordinary_old = <OpeningTargets as CheckedFriOpening<
+            Challenge,
+            <RecInputMmcs as RecursiveMmcs<F, Challenge>>::Commitment,
+        >>::validate_fri_context(
+            &ordinary,
+            &native,
+            &recursive,
+            layout.opening_view(),
+            &cap_refs,
+        )
+        .expect("ordinary fresh context is valid");
+        reset_fri_finisher_calls();
+        assert!(
+            <OpeningTargets as CheckedFriOpening<
+                Challenge,
+                <RecInputMmcs as RecursiveMmcs<F, Challenge>>::Commitment,
+            >>::validate_fri_context(
+                &ordinary,
+                &native,
+                &recursive,
+                layout.opening_view(),
+                &cap_refs,
+            )
+            .is_ok()
+        );
+        assert_eq!(fri_finisher_calls(), 1);
+        reset_fri_finisher_calls();
+        assert!(
+            <OpeningTargets as CheckedFriOpening<
+                Challenge,
+                <RecInputMmcs as RecursiveMmcs<F, Challenge>>::Commitment,
+            >>::validate_fri_replacement(
+                &ordinary,
+                &ordinary_old,
+                layout.opening_view(),
+                &cap_refs,
+            )
+            .is_ok()
+        );
+        assert_eq!(fri_finisher_calls(), 1);
+
+        let hiding = retention_hiding_opening();
+        reset_fri_finisher_calls();
+        assert!(
+            <HidingOpeningTargets as CheckedRecursive<Challenge>>::validate_input(&hiding).is_ok()
+        );
+        assert_eq!(fri_finisher_calls(), 1);
+        let hiding_old = <HidingOpeningTargets as CheckedFriOpening<
+            Challenge,
+            <RecHidingMmcs as RecursiveMmcs<F, Challenge>>::Commitment,
+        >>::validate_fri_context(
+            &hiding,
+            &native,
+            &recursive,
+            layout.opening_view(),
+            &cap_refs,
+        )
+        .expect("hiding fresh context is valid");
+        reset_fri_finisher_calls();
+        assert!(
+            <HidingOpeningTargets as CheckedFriOpening<
+                Challenge,
+                <RecHidingMmcs as RecursiveMmcs<F, Challenge>>::Commitment,
+            >>::validate_fri_context(
+                &hiding,
+                &native,
+                &recursive,
+                layout.opening_view(),
+                &cap_refs,
+            )
+            .is_ok()
+        );
+        assert_eq!(fri_finisher_calls(), 1);
+        reset_fri_finisher_calls();
+        assert!(
+            <HidingOpeningTargets as CheckedFriOpening<
+                Challenge,
+                <RecHidingMmcs as RecursiveMmcs<F, Challenge>>::Commitment,
+            >>::validate_fri_replacement(
+                &hiding, &hiding_old, layout.opening_view(), &cap_refs,
+            )
+            .is_ok()
+        );
+        assert_eq!(fri_finisher_calls(), 1);
+    }
+
+    #[test]
+    fn retained_equal_geometry_preprocessed_order_is_provenance_only() {
+        use crate::pcs::fri::context::CheckedFriOpening;
+
+        const MAP01: &[usize] = &[0, 1];
+        const MAP10: &[usize] = &[1, 0];
+        let (native, recursive) = retention_params();
+        let proof = retention_equal_geometry_opening();
+        let caps = retention_caps([1, 1, 1]);
+        let cap_refs = [&caps[0], &caps[1], &caps[2]];
+        let old_layout = retention_layout_with_pre_widths([4, 4], [4, 4], [1, 1], false, MAP01);
+        let reordered_layout =
+            retention_layout_with_pre_widths([4, 4], [4, 4], [1, 1], false, MAP10);
+        let old = <OpeningTargets as CheckedFriOpening<
+            Challenge,
+            <RecInputMmcs as RecursiveMmcs<F, Challenge>>::Commitment,
+        >>::validate_fri_context(
+            &proof,
+            &native,
+            &recursive,
+            old_layout.opening_view(),
+            &cap_refs,
+        )
+        .expect("equal-geometry original order is fresh-valid");
+        assert!(
+            <OpeningTargets as CheckedFriOpening<
+                Challenge,
+                <RecInputMmcs as RecursiveMmcs<F, Challenge>>::Commitment,
+            >>::validate_fri_context(
+                &proof,
+                &native,
+                &recursive,
+                reordered_layout.opening_view(),
+                &cap_refs,
+            )
+            .is_ok()
+        );
+        assert!(
+            <OpeningTargets as CheckedFriOpening<
+                Challenge,
+                <RecInputMmcs as RecursiveMmcs<F, Challenge>>::Commitment,
+            >>::validate_fri_replacement(
+                &proof, &old, reordered_layout.opening_view(), &cap_refs,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn contextual_fri_rejects_skipped_landing_and_excess_log_arity() {
+        use crate::pcs::fri::context::CheckedFriOpening;
+
+        const MAP01: &[usize] = &[0, 1];
+        let (native, recursive) = retention_params();
+        let layout = retention_layout([1, 2], [4, 1], true, MAP01);
+        let caps = retention_caps([1, 1, 1]);
+        let cap_refs = [&caps[0], &caps[1], &caps[2]];
+
+        let skipped = retention_opening([1, 1, 2], [1, 2]);
+        let skipped_error = <OpeningTargets as CheckedFriOpening<
+            Challenge,
+            <RecInputMmcs as RecursiveMmcs<F, Challenge>>::Commitment,
+        >>::validate_fri_context(
+            &skipped,
+            &native,
+            &recursive,
+            layout.opening_view(),
+            &cap_refs,
+        )
+        .expect_err("a coherent schedule that skips the LDE landing must reject");
+        assert!(matches!(
+            skipped_error,
+            VerificationError::InvalidProofShape(message)
+                if message.contains("not reached")
+        ));
+
+        let mut excess = retention_opening([3, 1, 1], [1, 2]);
+        excess.commit_phase_commits.pop();
+        excess.commit_pow_witnesses.pop();
+        excess.commit_phase_openings.pop();
+        let excess_error = <OpeningTargets as CheckedFriOpening<
+            Challenge,
+            <RecInputMmcs as RecursiveMmcs<F, Challenge>>::Commitment,
+        >>::validate_fri_context(
+            &excess,
+            &native,
+            &recursive,
+            layout.opening_view(),
+            &cap_refs,
+        )
+        .expect_err("log arity above maxarity must reject");
+        assert!(matches!(
+            excess_error,
+            VerificationError::InvalidProofShape(message)
+                if message.contains("invalid log_arity")
+        ));
     }
 
     fn frontier(count: usize) -> PrunedMerklePaths<F, DIGEST_ELEMS> {
@@ -4270,6 +4829,22 @@ mod prepared_shape_tests {
         pre_next: bool,
         preprocessed_order: &'static [usize],
     ) -> NativeStarkLayout<'static> {
+        retention_layout_with_pre_widths(
+            trace_widths,
+            ext_logs,
+            [1, 2],
+            pre_next,
+            preprocessed_order,
+        )
+    }
+
+    fn retention_layout_with_pre_widths(
+        trace_widths: [usize; 2],
+        ext_logs: [usize; 2],
+        pre_widths: [usize; 2],
+        pre_next: bool,
+        preprocessed_order: &'static [usize],
+    ) -> NativeStarkLayout<'static> {
         NativeStarkLayout::new(
             vec![
                 InstanceLayout {
@@ -4278,7 +4853,7 @@ mod prepared_shape_tests {
                     base_log: ext_logs[0],
                     trace_width: trace_widths[0],
                     trace_next: false,
-                    pre_width: 1,
+                    pre_width: pre_widths[0],
                     pre_next: false,
                     quotient_log: 0,
                     quotient_chunks: 1,
@@ -4290,7 +4865,7 @@ mod prepared_shape_tests {
                     base_log: ext_logs[1],
                     trace_width: trace_widths[1],
                     trace_next: false,
-                    pre_width: 2,
+                    pre_width: pre_widths[1],
                     pre_next,
                     quotient_log: 0,
                     quotient_chunks: 1,
@@ -4362,6 +4937,14 @@ mod prepared_shape_tests {
             final_poly: vec![Challenge::ZERO],
             query_pow_witness: F::ZERO,
         }
+    }
+
+    fn retention_equal_geometry_opening() -> Opening {
+        let mut proof = retention_opening([2, 1, 1], [4, 4]);
+        for query in &mut proof.input_openings[2].opened_values {
+            query[1] = vec![F::ZERO; 1];
+        }
+        proof
     }
 
     fn retention_caps(roots: [usize; 3]) -> [MerkleCap<F, [F; DIGEST_ELEMS]>; 3] {

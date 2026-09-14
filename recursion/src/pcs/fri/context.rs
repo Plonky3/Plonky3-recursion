@@ -3,6 +3,8 @@
 use alloc::format;
 use alloc::string::ToString;
 use alloc::vec::Vec;
+#[cfg(test)]
+use core::cell::Cell;
 
 use p3_commit::{Mmcs, OpenedValues};
 use p3_field::{ExtensionField, PrimeField64, TwoAdicField};
@@ -16,6 +18,21 @@ use crate::ops::PermConfig;
 use crate::pcs::fri::targets::{FriPrivateAdvice, InputProofTargets, MerkleCapTargets};
 use crate::traits::{CheckedRecursive, RecursiveExtensionMmcs, RecursiveMmcs};
 use crate::verifier::VerificationError;
+
+#[cfg(test)]
+std::thread_local! {
+    static FRI_FINISHER_CALLS: Cell<usize> = const { Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_fri_finisher_calls() {
+    FRI_FINISHER_CALLS.with(|calls| calls.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn fri_finisher_calls() -> usize {
+    FRI_FINISHER_CALLS.with(Cell::get)
+}
 
 /// The scalar/layout result of the legacy context checker.
 ///
@@ -84,8 +101,10 @@ impl ValidatedFriContext {
 
 /// Checked commitment geometry used by the complete FRI adapter.
 ///
-/// The implementation deliberately receives a borrowed cap and returns only
-/// its root count.  It never copies cap entries or acquires an MMCS instance.
+/// `checked_fri_public_values_len` is the exact length of this commitment's
+/// `Recursive::get_values` output. Implementations must validate the borrowed
+/// cap without extraction, copying, allocation, or PCS/MMCS access; custom
+/// implementations are trusted declarations of that contract.
 pub trait CheckedFriCommitment<EF: p3_field::Field>: CheckedRecursive<EF> {
     fn checked_fri_public_values_len(input: &Self::Input) -> Result<usize, VerificationError>;
 
@@ -139,6 +158,7 @@ where
     EF: ExtensionField<F>,
 {
     fn checked_fri_public_values_len(input: &Self::Input) -> Result<usize, VerificationError> {
+        <Self as CheckedRecursive<EF>>::validate_input(input)?;
         checked_cap_public_values_len::<EF>(input.num_roots(), DIGEST_ELEMS)
     }
 
@@ -157,7 +177,7 @@ where
             index_bit_len,
             heights,
         )?;
-        checked_cap_public_values_len::<EF>(input.num_roots(), DIGEST_ELEMS)?;
+        <Self as CheckedFriCommitment<EF>>::checked_fri_public_values_len(input)?;
         Ok(input.num_roots())
     }
 }
@@ -255,6 +275,8 @@ pub(crate) fn checked_flat_value_totals<EF: p3_field::Field>(
     commit_witness_count: usize,
     final_poly_len: usize,
 ) -> Result<FriValueCounts, VerificationError> {
+    #[cfg(test)]
+    FRI_FINISHER_CALLS.with(|calls| calls.set(calls.get().saturating_add(1)));
     let private_values = checked_add_len(
         input_private_total,
         phase_private_total,
@@ -280,6 +302,8 @@ pub(crate) fn checked_flat_value_totals<EF: p3_field::Field>(
 pub(crate) fn validate_counted_fri_raw<F, EF, RI, RF>(
     proof: &FriProof<EF, RF::Input, F, Vec<BatchMultiOpening<F, RI::Input>>>,
     hiding_tails: Option<&OpenedValues<EF>>,
+    input_salt_elems: Option<usize>,
+    phase_salt_elems: Option<usize>,
 ) -> Result<FriValueCounts, VerificationError>
 where
     F: p3_field::Field,
@@ -290,6 +314,11 @@ where
     RF::Proof: FriPrivateAdvice<EF, MultiProof = <RF::Input as Mmcs<EF>>::MultiProof>,
     RF::Commitment: CheckedFriCommitment<EF, Input = <RF::Input as Mmcs<EF>>::Commitment>,
 {
+    super::targets::validate_builtin_fri_raw::<F, EF, RF, RI, crate::pcs::fri::targets::Witness<F>>(
+        proof,
+        input_salt_elems,
+        phase_salt_elems,
+    )?;
     crate::pcs::fri::targets::validate_fri_input::<
         F,
         EF,
@@ -639,7 +668,8 @@ where
             }
         }
         for width in grouped_leaf_widths {
-            check_vec_len::<F>(width, "grouped input leaf")?;
+            // Native hash groups stream their F slices; only the recursive grouped target
+            // buffer is materialized and therefore needs a target-byte bound.
             check_vec_len::<Target>(width, "grouped target input leaf")?;
         }
     }
@@ -751,7 +781,12 @@ where
     RI::Commitment: CheckedFriCommitment<EF>,
     RF::Commitment: CheckedFriCommitment<EF, Input = <RF::Input as Mmcs<EF>>::Commitment>,
 {
-    validate_counted_fri_raw::<F, EF, RI, RF>(proof, hiding_tails)?;
+    validate_counted_fri_raw::<F, EF, RI, RF>(
+        proof,
+        hiding_tails,
+        input_salt_elems,
+        phase_salt_elems,
+    )?;
     let permutation = recursive.permutation_config.ok_or_else(|| {
         invalid("checked FRI context requires a recursive MMCS permutation configuration")
     })?;
