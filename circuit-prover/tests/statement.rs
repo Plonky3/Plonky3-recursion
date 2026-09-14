@@ -14,8 +14,10 @@ use p3_circuit_prover::batch_stark_prover::{
 use p3_circuit_prover::common::{NpoAirBuilder, NpoPreprocessor, get_airs_and_degrees_with_prep};
 use p3_circuit_prover::{BatchStarkProverError, ConstraintProfile, config};
 use p3_commit::ExtensionMmcs;
+use p3_field::extension::QuinticTrinomialExtensionField;
 use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
 use p3_fri::{FriParameters, HidingFriPcs};
+use p3_goldilocks::Goldilocks;
 use p3_koala_bear::{KoalaBear, default_koalabear_poseidon2_16};
 use p3_merkle_tree::MerkleTreeHidingMmcs;
 use p3_test_utils::baby_bear_params::{BabyBear, BinomialExtensionField};
@@ -186,6 +188,85 @@ fn statement_base_and_extension_prove_with_actual_public_values() {
     assert_eq!(statement_entry.rows, 1);
     assert_eq!(statement_entry.lanes, 1);
 }
+
+macro_rules! statement_extension_field_case {
+    ($name:ident, $bf:ty, $ef:ty, $config_ty:ty, $d:literal, $config:expr, $coefficients:expr) => {
+        #[test]
+        fn $name() {
+            let coefficients: Vec<$bf> = $coefficients;
+            let extension_value =
+                <$ef>::from_basis_coefficients_slice(&coefficients).expect("valid coefficients");
+            let mut builder = CircuitBuilder::<$ef>::new();
+            builder.enable_recompose::<$bf>(generate_recompose_trace::<$bf, $ef>);
+            let extension = builder.public_input();
+            let schema = builder
+                .set_statement_exports::<$bf>(&[StatementExport::Extension(extension)])
+                .unwrap();
+            let circuit = builder.build().unwrap();
+            let packing = TablePacking::default().with_npo_min_height(NpoTypeId::statement(), 4);
+            let preprocessors: Vec<Box<dyn NpoPreprocessor<$bf>>> = vec![
+                Box::new(RecomposePreprocessor::new(true)),
+                Box::new(StatementPreprocessor::new(schema.clone())),
+            ];
+            let mut air_builders: Vec<Box<dyn NpoAirBuilder<$config_ty, $d>>> =
+                recompose_air_builders(1, true);
+            air_builders.push(Box::new(StatementAirBuilder::<$d>::new(schema.clone())));
+            let (airs_degrees, primitive, non_primitive) =
+                get_airs_and_degrees_with_prep::<$config_ty, _, $d>(
+                    &circuit,
+                    &packing,
+                    &preprocessors,
+                    &air_builders,
+                    ConstraintProfile::Standard,
+                )
+                .unwrap();
+            let mut runner = circuit.runner();
+            runner.set_public_inputs(&[extension_value]).unwrap();
+            let traces = runner.run().unwrap();
+            let statement = traces
+                .non_primitive_trace::<StatementTrace<$bf>>(&NpoTypeId::statement())
+                .unwrap();
+            assert_eq!(statement.values, coefficients);
+
+            let cfg = $config;
+            let (airs, degrees): (Vec<_>, Vec<_>) = airs_degrees.into_iter().unzip();
+            let prover_data =
+                p3_batch_stark::ProverData::from_airs_and_degrees(&cfg, &airs, &degrees);
+            let prepared = CircuitProverData::new(prover_data, primitive, non_primitive);
+            let mut prover = BatchStarkProver::new(cfg).with_table_packing(packing);
+            prover.register_recompose_table::<$d>(true);
+            prover.register_table_prover(Box::new(StatementProver::<$d>::new(schema)));
+            let proof = prover.prove_all_tables(&traces, &prepared).unwrap();
+            prover.verify_all_tables::<$ef>(&proof).unwrap();
+        }
+    };
+}
+
+statement_extension_field_case!(
+    statement_extension_is_canonical_for_goldilocks_d2,
+    Goldilocks,
+    BinomialExtensionField<Goldilocks, 2>,
+    config::GoldilocksConfig,
+    2,
+    config::goldilocks(),
+    vec![Goldilocks::from_u64(31), Goldilocks::from_u64(37)]
+);
+
+statement_extension_field_case!(
+    statement_extension_is_canonical_for_koalabear_d5,
+    KoalaBear,
+    QuinticTrinomialExtensionField<KoalaBear>,
+    config::KoalaBearConfig,
+    5,
+    config::koala_bear(),
+    vec![
+        KoalaBear::from_u64(41),
+        KoalaBear::from_u64(43),
+        KoalaBear::from_u64(47),
+        KoalaBear::from_u64(53),
+        KoalaBear::from_u64(59),
+    ]
+);
 
 /// Statement's fixed one-row shape remains sound when the PCS adds ZK hiding rows.
 #[test]
