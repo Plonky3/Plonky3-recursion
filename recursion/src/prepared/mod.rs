@@ -16,7 +16,8 @@ pub use aggregation::{PreparedAggregation, PreparedAggregationCross};
 pub use input::{NativeCommitment, PreparedInput, PreparedSource};
 pub use layer::PreparedLayer;
 use p3_circuit::{
-    CircuitBuilder, CircuitRunner, NonPrimitiveOpId, StatementField, StatementSchema,
+    AggregationStatementLayout, CircuitBuilder, CircuitRunner, NonPrimitiveOpId, StatementField,
+    StatementSchema,
 };
 use p3_circuit_prover::{BatchStarkProof, CircuitVerifier, StatementLayout};
 use p3_field::{ExtensionField, Field, PrimeField64};
@@ -144,6 +145,34 @@ impl VerifiedStatementTargets {
             builder.set_statement_base_targets::<BF>(self.schema, &self.base_targets)?;
         }
         Ok(())
+    }
+
+    pub(crate) fn install_ordered_aggregation<BF, EF>(
+        left: Self,
+        right: Self,
+        builder: &mut CircuitBuilder<EF>,
+    ) -> Result<AggregationStatementLayout, VerificationError>
+    where
+        BF: PrimeField64,
+        EF: ExtensionField<BF>,
+    {
+        let left_schema = left.schema;
+        let right_schema = right.schema;
+        let output = StatementSchema::concat(&left_schema, &right_schema).map_err(|error| {
+            VerificationError::InvalidProofShape(alloc::format!(
+                "ordered aggregation statement schema is invalid: {error}"
+            ))
+        })?;
+        let mut base_targets = left.base_targets;
+        base_targets.extend(right.base_targets);
+        Self {
+            schema: output,
+            base_targets,
+        }
+        .install::<BF, EF>(builder)?;
+        builder
+            .set_aggregation_statement_layout(left_schema, right_schema)
+            .map_err(VerificationError::CircuitBuilder)
     }
 }
 
@@ -402,13 +431,17 @@ mod trusted_commitment_tests {
 
 #[cfg(test)]
 mod verified_statement_target_tests {
-    use alloc::vec;
+    use alloc::{vec, vec::Vec};
 
     use p3_baby_bear::BabyBear;
-    use p3_circuit::{CircuitBuilder, StatementField, StatementSchema};
+    use p3_circuit::ops::NpoTypeId;
+    use p3_circuit::{CircuitBuilder, Op, StatementField, StatementSchema};
     use p3_field::extension::BinomialExtensionField;
 
-    use super::{ConsumedStatementTargets, TrustedChildStatementLayout, checked_statement_targets};
+    use super::{
+        ConsumedStatementTargets, TrustedChildStatementLayout, VerifiedStatementTargets,
+        checked_statement_targets,
+    };
 
     /// Returning host copies, allocating lookalike inputs, or relabelling the source schema would
     /// make the selected IDs or finalized schema differ here.
@@ -470,5 +503,54 @@ mod verified_statement_target_tests {
             checked_statement_targets(ConsumedStatementTargets::Batch(&short_tables), &source)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn ordered_verified_targets_install_one_left_then_right_statement_sink() {
+        type Ext4 = BinomialExtensionField<BabyBear, 4>;
+
+        let mut builder = CircuitBuilder::<Ext4>::new();
+        let left_targets = vec![builder.public_input(), builder.public_input()];
+        let right_targets = vec![builder.public_input()];
+        let left_schema =
+            StatementSchema::try_new(vec![StatementField::Extension { degree: 2 }]).unwrap();
+        let right_schema = StatementSchema::try_new(vec![StatementField::Base]).unwrap();
+        let left = VerifiedStatementTargets {
+            schema: left_schema.clone(),
+            base_targets: left_targets.clone(),
+        };
+        let right = VerifiedStatementTargets {
+            schema: right_schema.clone(),
+            base_targets: right_targets.clone(),
+        };
+
+        let layout = VerifiedStatementTargets::install_ordered_aggregation::<BabyBear, Ext4>(
+            left,
+            right,
+            &mut builder,
+        )
+        .unwrap();
+        let circuit = builder.build().unwrap();
+        let sinks = circuit
+            .ops
+            .iter()
+            .filter_map(|op| match op {
+                Op::NonPrimitiveOpWithExecutor {
+                    inputs, executor, ..
+                } if *executor.op_type() == NpoTypeId::statement() => Some(inputs[0].as_slice()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let expected = left_targets
+            .into_iter()
+            .chain(right_targets)
+            .map(|target| circuit.expr_to_widx[&target])
+            .collect::<Vec<_>>();
+
+        assert_eq!(sinks, vec![expected.as_slice()]);
+        assert_eq!(layout.left(), &left_schema);
+        assert_eq!(layout.right(), &right_schema);
+        assert_eq!(layout.split_at(), 2);
+        assert_eq!(circuit.aggregation_statement_layout(), Some(&layout));
     }
 }
