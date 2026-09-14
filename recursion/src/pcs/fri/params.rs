@@ -393,6 +393,11 @@ mod tests {
                 minimum: 2,
             })
         );
+
+        let positive =
+            NativeFriParams::try_from_native::<BabyBear, _>(&native(1, 0, 1, 4, 0, 0)).unwrap();
+        assert_eq!(positive.num_queries(), 4);
+        assert!(positive.validate_recursive(&local_floor).is_ok());
     }
 
     #[test]
@@ -469,8 +474,15 @@ mod tests {
 
     #[test]
     fn native_snapshot_revalidates_against_the_actual_field() {
-        let snapshot =
-            NativeFriParams::try_from_native::<Goldilocks, _>(&native(32, 0, 1, 2, 0, 0)).unwrap();
+        let snapshot = NativeFriParams::try_from_native::<Goldilocks, _>(&native(
+            BabyBear::TWO_ADICITY + 1,
+            0,
+            1,
+            2,
+            0,
+            0,
+        ))
+        .unwrap();
         assert!(snapshot.validate_field::<Goldilocks>().is_ok());
         assert_eq!(
             snapshot.validate_field::<BabyBear>(),
