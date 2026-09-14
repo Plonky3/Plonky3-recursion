@@ -92,7 +92,7 @@ impl<F: Field> VerifiedStatementTargets<F> {
     {
         builder.set_statement_base_targets::<BF>(
             &self.builder_capability,
-            self.schema,
+            &self.schema,
             &self.base_targets,
         )
     }
@@ -640,7 +640,7 @@ where
                 StatementExport::Base(expr) | StatementExport::Extension(expr) => expr,
             })
             .collect();
-        self.install_statement_sink::<BF>(schema.clone(), flattened, sources);
+        self.install_statement_sink::<BF>(&schema, flattened, sources);
 
         Ok(schema)
     }
@@ -648,7 +648,7 @@ where
     fn set_statement_base_targets<BF>(
         &mut self,
         capability: &Arc<()>,
-        schema: StatementSchema,
+        schema: &StatementSchema,
         targets: &[ExprId],
     ) -> Result<(), CircuitBuilderError>
     where
@@ -671,7 +671,7 @@ where
 
     fn install_statement_sink<BF>(
         &mut self,
-        schema: StatementSchema,
+        schema: &StatementSchema,
         flattened: Vec<ExprId>,
         sources: Vec<ExprId>,
     ) where

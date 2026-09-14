@@ -245,9 +245,9 @@ fn aggregation_layer_profile_prepares_fresh() {
     verify_output(&output, &config, &backend, profile.table_packing);
 }
 
-/// Repeated profile calls independently prepare proving data and retain the requested output shape.
+/// A profile call prepares proving data and retains the requested output shape.
 #[test]
-fn aggregation_layer_profile_repeated_call_preserves_shape() {
+fn aggregation_layer_profile_single_call_preserves_shape() {
     let left_fixture = build_koala_bear_d4_first_layer_input();
     let right_fixture = build_koala_bear_d4_first_layer_input();
     let left_input = left_fixture.recursion_input();
