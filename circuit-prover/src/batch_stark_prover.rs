@@ -333,6 +333,12 @@ type AluScheduleCache<F> = RefCell<
     )>,
 >;
 
+/// Low-level proving data for the expert, proof-shaped API.
+///
+/// This type does not carry a verifier-authoritative relation. Direct callers pair it with
+/// [`BatchStarkProver::prove_all_tables`], whose output records the rows, packing, NPO identity,
+/// and common preprocessing data later consumed by the legacy verifier. Call
+/// [`BatchStarkProver::prepare_circuit`] when the relation must be fixed independently of proofs.
 pub struct CircuitProverData<SC: StarkGenericConfig> {
     /// STARK prover data from p3_batch_stark.
     pub prover_data: ProverData<SC>,
@@ -346,7 +352,10 @@ pub struct CircuitProverData<SC: StarkGenericConfig> {
 }
 
 impl<SC: StarkGenericConfig> CircuitProverData<SC> {
-    /// Create new circuit prover data from components.
+    /// Create low-level prover data from caller-selected components.
+    ///
+    /// This constructor does not create a trusted verifier key. Use
+    /// [`BatchStarkProver::prepare_circuit`] for verifier-authoritative preparation.
     pub const fn new(
         prover_data: ProverData<SC>,
         primitive_columns: Vec<Vec<Val<SC>>>,
@@ -1043,6 +1052,19 @@ where
         }
     }
 
+    fn preprocessed_next_row_columns(&self) -> Vec<usize> {
+        match self {
+            Self::Const(a) => BaseAir::<Val<SC>>::preprocessed_next_row_columns(a),
+            Self::Public(a) => BaseAir::<Val<SC>>::preprocessed_next_row_columns(a),
+            Self::Alu(a) => BaseAir::<Val<SC>>::preprocessed_next_row_columns(a),
+            Self::Dynamic(a) => {
+                <dyn CloneableBatchAir<SC> as BaseAir<Val<SC>>>::preprocessed_next_row_columns(
+                    a.air(),
+                )
+            }
+        }
+    }
+
     fn num_public_values(&self) -> usize {
         match self {
             Self::Const(a) => BaseAir::<Val<SC>>::num_public_values(a),
@@ -1425,7 +1447,13 @@ where
         self
     }
 
-    /// Generate a unified batch STARK proof for all circuit tables.
+    /// Generate a unified batch STARK proof for all circuit tables using low-level caller-owned
+    /// proving data.
+    ///
+    /// This expert API does not retain an independently chosen verifier relation: rows, packing,
+    /// NPO identity, and preprocessing common data are emitted into the resulting proof for the
+    /// paired legacy [`Self::verify_all_tables`] path. Use [`Self::prepare_circuit`] and
+    /// [`CircuitVerifier::verify`] when the verifier must own the relation independently.
     #[instrument(skip_all)]
     pub fn prove_all_tables<EF>(
         &self,
@@ -1479,7 +1507,11 @@ where
         ))
     }
 
-    /// Verify the unified batch STARK proof against all tables.
+    /// Legacy expert verifier for a proof-selected batch relation.
+    ///
+    /// This method verifies the extension field against `EF`, but takes preprocessing common
+    /// data, rows, packing, and NPO identity from `proof` itself. It is therefore not a trusted
+    /// relation/key boundary. Direct trusted callers must use [`CircuitVerifier::verify`].
     ///
     /// `EF` is the verifier's **expected trace element field**. Its degree and binomial/quintic
     /// reduction parameters are derived verifier-side and bound against the proof's declared
@@ -2269,6 +2301,21 @@ where
 
     fn validate_metadata(&self, proof: &BatchStarkProof<SC>) -> Result<(), BatchStarkProverError> {
         let relation = &self.inner.relation;
+        let (expected_w, expected_quintic) = match relation.reduction() {
+            AluExtMulKind::Base => (None, false),
+            AluExtMulKind::Binomial { w } => (Some(w), false),
+            AluExtMulKind::QuinticTrinomial => (None, true),
+        };
+        if proof.w_binomial != expected_w {
+            return Err(ProofMetadataError::BinomialWMismatch.into());
+        }
+        if proof.alu_quintic_trinomial != expected_quintic {
+            return Err(ProofMetadataError::QuinticReductionMismatch {
+                expected: expected_quintic,
+                got: proof.alu_quintic_trinomial,
+            }
+            .into());
+        }
         let proof_reduction = AluExtMulKind::resolve(
             proof.ext_degree,
             proof.w_binomial,

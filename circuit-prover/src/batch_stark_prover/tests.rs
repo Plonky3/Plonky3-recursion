@@ -377,36 +377,52 @@ fn trusted_verifier_rejects_empty_present_next_rows_before_native_verification()
         .unwrap();
     let verifier = prepared.verifier();
     let mut proof = trusted_relation_proof(&prepared, &circuit, 4, 8);
+    assert!(
+        proof.proof.opened_values.instances[1]
+            .base_opened_values
+            .trace_next
+            .is_none()
+    );
+    assert!(
+        proof.proof.opened_values.instances[1]
+            .base_opened_values
+            .preprocessed_next
+            .is_none()
+    );
     verifier.verify(&proof, &[]).unwrap();
 
-    proof.proof.opened_values.instances[0]
+    proof.proof.opened_values.instances[1]
         .base_opened_values
         .trace_next = Some(Vec::new());
     assert!(matches!(
         verifier.verify(&proof, &[]),
         Err(BatchStarkProverError::InvalidMetadata(
             ProofMetadataError::UnsupportedEmptyNextRow {
-                table: 0,
+                table: 1,
                 kind: NextRowOpeningKind::Trace,
             }
         ))
     ));
 
-    proof.proof.opened_values.instances[0]
+    proof.proof.opened_values.instances[1]
         .base_opened_values
         .trace_next = None;
-    proof.proof.opened_values.instances[0]
+    proof.proof.opened_values.instances[1]
         .base_opened_values
         .preprocessed_next = Some(Vec::new());
     assert!(matches!(
         verifier.verify(&proof, &[]),
         Err(BatchStarkProverError::InvalidMetadata(
             ProofMetadataError::UnsupportedEmptyNextRow {
-                table: 0,
+                table: 1,
                 kind: NextRowOpeningKind::Preprocessed,
             }
         ))
     ));
+    proof.proof.opened_values.instances[1]
+        .base_opened_values
+        .preprocessed_next = None;
+    verifier.verify(&proof, &[]).unwrap();
 }
 
 #[test]
@@ -442,11 +458,14 @@ fn trusted_verifier_rejects_primitive_metadata_and_nonempty_statements() {
     assert!(verifier.validate_metadata(&proof).is_err());
     proof.proof.degree_bits[0] -= 1;
 
-    proof.ext_degree = 2;
     proof.w_binomial = Some(BabyBear::TWO);
     assert!(verifier.validate_metadata(&proof).is_err());
-    proof.ext_degree = 1;
     proof.w_binomial = None;
+
+    proof.alu_quintic_trinomial = true;
+    assert!(verifier.validate_metadata(&proof).is_err());
+    proof.alu_quintic_trinomial = false;
+    verifier.verify(&proof, &[]).unwrap();
 
     proof.alu_variant = match proof.alu_variant {
         AirVariant::Baseline => AirVariant::Optimized,
@@ -1502,6 +1521,10 @@ fn test_koalabear_quintic_trinomial_batch_stark_with_poseidon_d1() {
     trusted_proof.alu_quintic_trinomial = false;
     assert!(verifier.validate_metadata(&trusted_proof).is_err());
     trusted_proof.alu_quintic_trinomial = true;
+    trusted_proof.w_binomial = Some(KoalaBear::TWO);
+    assert!(verifier.validate_metadata(&trusted_proof).is_err());
+    trusted_proof.w_binomial = None;
+    verifier.verify(&trusted_proof, &[]).unwrap();
     trusted_proof.non_primitives[0].rows += 1;
     assert!(verifier.validate_metadata(&trusted_proof).is_err());
     trusted_proof.non_primitives[0].rows -= 1;
