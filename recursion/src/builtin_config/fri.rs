@@ -23,6 +23,8 @@ use super::{BuiltinConfigError, FriConfigV1, SuiteIdV1};
 use crate::pcs::fri::{FriVerifierParams, NativeFriParams};
 use crate::verifier::VerifierLimits;
 
+mod recursion;
+
 pub(crate) type OrdinaryMmcs<
     F,
     Perm,
