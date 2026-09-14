@@ -35,9 +35,10 @@ use p3_recursion::{
     BatchOnly, FriRecursionBackend, FriRecursionConfig, FriVerifierParams, NativeFriParams,
     OpeningTranscript, PcsRecursionBackend, Poseidon2Config, PreparedAggregation,
     PreparedAggregationCross, PreparedInput, PreparedPcsRecursionBackend, PreparedSource,
-    ProveNextLayerParams, RecursionInput, RecursiveAir, RecursivePcs, VerificationError,
-    VerifierCircuitResult, VerifierLimits, build_aggregation_layer_circuit,
-    build_next_layer_circuit, merge_hiding_random_openings, observe_opened_values,
+    ProveNextLayerParams, RecursionInput, RecursiveAir, RecursivePcs, TrustedPreparedAggregation,
+    TrustedPreparedInput, TrustedPreparedSource, VerificationError, VerifierCircuitResult,
+    VerifierLimits, build_aggregation_layer_circuit, build_next_layer_circuit,
+    merge_hiding_random_openings, observe_opened_values,
 };
 use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
 use p3_test_utils::koala_bear_params::{
@@ -1192,6 +1193,61 @@ fn same_config_batch_aggregation_reuses_preparation_for_varied_pairs() {
     assert_eq!(prepared.params().table_packing, params.table_packing);
     verify_output(config.clone(), &params, &first);
     verify_output(config, &params, &second);
+}
+
+#[test]
+fn trusted_aggregation_retains_each_child_runtime_config_and_pins_both_roots() {
+    let left = common::build_koala_bear_d4_first_layer_input();
+    let right = common::build_koala_bear_d4_first_layer_input_with_pow_bits(0);
+    let params = ProveNextLayerParams::default();
+    let output_config = left.layer_config.clone();
+    assert_eq!(
+        left.verifier
+            .common_data()
+            .preprocessed
+            .as_ref()
+            .map(|group| &group.commitment),
+        right
+            .verifier
+            .common_data()
+            .preprocessed
+            .as_ref()
+            .map(|group| &group.commitment),
+        "the regression requires both child constraints to pin the same cap"
+    );
+
+    let prepared = TrustedPreparedAggregation::<_, _, BatchOnly, BatchOnly, _, 4>::new(
+        TrustedPreparedSource::BatchStark {
+            verifier: left.verifier.clone(),
+            proof: &left.base_proof,
+            statement: &[],
+        },
+        TrustedPreparedSource::BatchStark {
+            verifier: right.verifier.clone(),
+            proof: &right.base_proof,
+            statement: &[],
+        },
+        output_config.clone(),
+        left.backend.clone(),
+        params.clone(),
+    )
+    .expect("the independently configured trusted children prepare");
+
+    let output = prepared
+        .prove(
+            TrustedPreparedInput::BatchStark {
+                proof: &left.base_proof,
+                statement: &[],
+            },
+            TrustedPreparedInput::BatchStark {
+                proof: &right.base_proof,
+                statement: &[],
+            },
+        )
+        .expect("each child is replayed under its own retained runtime config");
+
+    prepared.verifier().verify(&output.0, &[]).unwrap();
+    verify_output(output_config, &params, &output);
 }
 
 #[test]

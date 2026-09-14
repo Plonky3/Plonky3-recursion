@@ -1089,11 +1089,15 @@ impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize> ConstrainConsta
         }
         for (target, value) in targets.zip(values) {
             let constant = circuit.alloc_const(value, "trusted child preprocessing");
-            // Connecting two independently-produced values aliases their witness slots. Enforce
-            // equality through a zero difference so the public commitment and constant remain
-            // distinct producers in the circuit's global witness lookup.
+            // Connecting the public target directly to a constant aliases values produced by two
+            // different tables. Also, connecting every difference to the one global ZERO target
+            // makes equal constants in two child verifiers lower to duplicate ALU operations.
+            // Give each limb its own algebraic zero instead: both connected expressions are ALU
+            // outputs, while `target + (-target)` makes the equality exactly target == constant.
             let difference = circuit.sub(target, constant);
-            circuit.connect(difference, Target::ZERO);
+            let negative = circuit.sub(Target::ZERO, target);
+            let zero = circuit.add(target, negative);
+            circuit.connect(difference, zero);
         }
         Ok(())
     }

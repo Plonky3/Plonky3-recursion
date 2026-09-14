@@ -1,9 +1,7 @@
 use alloc::vec::Vec;
 
 use p3_circuit_prover::air::AluExtMulKind;
-use p3_circuit_prover::{
-    AirVariant, BatchStarkProof, CircuitVerifier, RowCounts, TablePacking,
-};
+use p3_circuit_prover::{AirVariant, BatchStarkProof, CircuitVerifier, RowCounts, TablePacking};
 use p3_commit::Pcs;
 use p3_field::{ExtensionField, PrimeCharacteristicRing, PrimeField64};
 use p3_lookup::logup::LogUpGadget;

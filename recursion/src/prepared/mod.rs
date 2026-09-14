@@ -19,7 +19,9 @@ use p3_circuit_prover::{BatchStarkProof, CircuitVerifier};
 use p3_field::Field;
 use p3_lookup::logup::LogUpGadget;
 use p3_uni_stark::{StarkGenericConfig, Val};
-pub use trusted::{TrustedPreparedInput, TrustedPreparedLayer, TrustedPreparedSource};
+pub use trusted::{
+    TrustedPreparedAggregation, TrustedPreparedInput, TrustedPreparedLayer, TrustedPreparedSource,
+};
 
 use crate::recursion::{PcsRecursionBackend, RecursionInput};
 use crate::traits::RecursiveAir;
@@ -130,6 +132,14 @@ where
     SC: StarkGenericConfig,
     A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
 {
+    /// Walk all adversarial batch witness resources before descriptor-derived allocation, cloning,
+    /// native verification, plugin construction, or packing.
+    fn preflight_trusted_batch(
+        &self,
+        verifier: &CircuitVerifier<SC>,
+        proof: &BatchStarkProof<SC>,
+    ) -> Result<(), VerificationError>;
+
     /// Build the batch verifier branch from retained descriptor/common authority.
     fn build_trusted_batch_verifier_circuit(
         &self,

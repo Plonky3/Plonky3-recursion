@@ -120,9 +120,6 @@ where
                 proof,
                 statement,
             } => {
-                verifier
-                    .verify(proof, statement)
-                    .map_err(|error| VerificationError::InvalidProofShape(error.to_string()))?;
                 let mut table_public_inputs = vec![Vec::new(); 3];
                 table_public_inputs.extend(
                     verifier
@@ -310,13 +307,27 @@ where
         backend: B,
         params: ProveNextLayerParams,
     ) -> Result<Self, VerificationError> {
+        match &source {
+            TrustedPreparedSource::UniStark {
+                config,
+                proof,
+                public_inputs,
+                preprocessed_commit,
+                ..
+            } => <B as PreparedPcsRecursionBackend<InSC, A, D>>::preflight_input(
+                &backend,
+                config,
+                &PreparedInput::UniStark {
+                    proof,
+                    public_inputs,
+                    preprocessed_commit: preprocessed_commit.as_ref(),
+                },
+            )?,
+            TrustedPreparedSource::BatchStark {
+                verifier, proof, ..
+            } => backend.preflight_trusted_batch(verifier, proof)?,
+        }
         let source = TrustedConstruction::<InSC, A>::new(source)?;
-        let prepared = source.authority.prepared_input(&source.input)?;
-        <B as PreparedPcsRecursionBackend<InSC, A, D>>::preflight_input(
-            &backend,
-            source.authority.config(),
-            &prepared,
-        )?;
         let prev = source.authority.recursion_input(&source.input)?;
         let contract = backend.capture_input_contract(source.authority.config(), &prev)?;
 
@@ -417,5 +428,465 @@ where
 
     pub fn verifier(&self) -> CircuitVerifier<OutSC> {
         self.prep.verifier()
+    }
+}
+
+/// A trusted two-child recursive verifier whose two input authorities and output configuration
+/// are retained independently.
+pub struct TrustedPreparedAggregation<'left_air, 'right_air, InSC, OutSC, A1, A2, B, const D: usize>
+where
+    InSC: StarkGenericConfig + 'static,
+    OutSC: StarkGenericConfig<Challenge = InSC::Challenge> + 'static,
+    A1: RecursiveAir<Val<InSC>, InSC::Challenge, LogUpGadget>,
+    A2: RecursiveAir<Val<InSC>, InSC::Challenge, LogUpGadget>,
+    B: TrustedPcsRecursionBackend<InSC, A1, D> + TrustedPcsRecursionBackend<InSC, A2, D>,
+{
+    left: TrustedChildAuthority<'left_air, InSC, A1>,
+    right: TrustedChildAuthority<'right_air, InSC, A2>,
+    left_contract: <B as PreparedPcsRecursionBackend<InSC, A1, D>>::InputContract,
+    right_contract: <B as PreparedPcsRecursionBackend<InSC, A2, D>>::InputContract,
+    circuit: Circuit<InSC::Challenge>,
+    left_result: <B as PcsRecursionBackend<InSC, A1, D>>::VerifierResult,
+    right_result: <B as PcsRecursionBackend<InSC, A2, D>>::VerifierResult,
+    backend: B,
+    params: ProveNextLayerParams,
+    prep: PreparedProver<OutSC>,
+}
+
+impl<'left_air, 'right_air, InSC, OutSC, A1, A2, B, const D: usize>
+    TrustedPreparedAggregation<'left_air, 'right_air, InSC, OutSC, A1, A2, B, D>
+where
+    InSC: StarkGenericConfig + Send + Sync + Clone + 'static,
+    OutSC: StarkGenericConfig<Challenge = InSC::Challenge> + Send + Sync + Clone + 'static,
+    A1: RecursiveAir<Val<InSC>, InSC::Challenge, LogUpGadget>,
+    A2: RecursiveAir<Val<InSC>, InSC::Challenge, LogUpGadget>,
+    B: TrustedPcsRecursionBackend<InSC, A1, D>
+        + TrustedPcsRecursionBackend<InSC, A2, D>
+        + PcsRecursionBackend<OutSC, BatchOnly, D>,
+    Val<InSC>: PrimeField64 + StarkField,
+    Val<OutSC>: PrimeField64 + StarkField,
+    InSC::Challenge: BasedVectorSpace<Val<InSC>>
+        + BasedVectorSpace<Val<OutSC>>
+        + From<Val<InSC>>
+        + From<Val<OutSC>>
+        + ExtensionField<Val<InSC>>
+        + ExtensionField<Val<OutSC>>
+        + ExtractBinomialW<Val<InSC>>
+        + ExtractBinomialW<Val<OutSC>>,
+    SymbolicExpressionExt<Val<InSC>, InSC::Challenge>:
+        Algebra<SymbolicExpression<Val<InSC>>> + Algebra<InSC::Challenge>,
+    SymbolicExpressionExt<Val<OutSC>, OutSC::Challenge>:
+        Algebra<SymbolicExpression<Val<OutSC>>> + Algebra<OutSC::Challenge>,
+    <InSC::Pcs as Pcs<InSC::Challenge, InSC::Challenger>>::Commitment: Clone,
+    <OutSC::Pcs as Pcs<OutSC::Challenge, OutSC::Challenger>>::Domain: Send + Sync,
+    OutSC::Pcs: Sync,
+    <OutSC::Pcs as Pcs<OutSC::Challenge, OutSC::Challenger>>::ProverData: Sync,
+    <OutSC::Pcs as Pcs<OutSC::Challenge, OutSC::Challenger>>::Commitment: Sync,
+{
+    /// Preflight both unmaterialized sources before cloning or natively verifying either child.
+    pub fn new(
+        left: TrustedPreparedSource<'left_air, '_, InSC, A1>,
+        right: TrustedPreparedSource<'right_air, '_, InSC, A2>,
+        output_config: OutSC,
+        backend: B,
+        params: ProveNextLayerParams,
+    ) -> Result<Self, VerificationError> {
+        preflight_trusted_source::<InSC, A1, B, D>(&backend, &left)?;
+        preflight_trusted_source::<InSC, A2, B, D>(&backend, &right)?;
+
+        let left = TrustedConstruction::<InSC, A1>::new(left)?;
+        let right = TrustedConstruction::<InSC, A2>::new(right)?;
+        let left_prev = left.authority.recursion_input(&left.input)?;
+        let right_prev = right.authority.recursion_input(&right.input)?;
+        let left_contract =
+            <B as PreparedPcsRecursionBackend<InSC, A1, D>>::capture_input_contract(
+                &backend,
+                left.authority.config(),
+                &left_prev,
+            )?;
+        let right_contract =
+            <B as PreparedPcsRecursionBackend<InSC, A2, D>>::capture_input_contract(
+                &backend,
+                right.authority.config(),
+                &right_prev,
+            )?;
+
+        let mut builder = CircuitBuilder::new();
+        <B as PcsRecursionBackend<InSC, A1, D>>::prepare_circuit(
+            &backend,
+            left.authority.config(),
+            &mut builder,
+        )?;
+        <B as PcsRecursionBackend<InSC, A2, D>>::prepare_circuit(
+            &backend,
+            right.authority.config(),
+            &mut builder,
+        )?;
+        let left_result = build_trusted_child::<InSC, A1, B, D>(
+            &backend,
+            &left.authority,
+            &left.input,
+            &left_prev,
+            &mut builder,
+        )?;
+        let right_result = build_trusted_child::<InSC, A2, B, D>(
+            &backend,
+            &right.authority,
+            &right.input,
+            &right_prev,
+            &mut builder,
+        )?;
+        <B as TrustedPcsRecursionBackend<InSC, A1, D>>::constrain_trusted_preprocessing(
+            &backend,
+            &mut builder,
+            &left_result,
+            left.authority.expected_preprocessed(),
+        )?;
+        <B as TrustedPcsRecursionBackend<InSC, A2, D>>::constrain_trusted_preprocessing(
+            &backend,
+            &mut builder,
+            &right_result,
+            right.authority.expected_preprocessed(),
+        )?;
+        let circuit = builder.build().map_err(VerificationError::CircuitBuilder)?;
+        let prep =
+            prepare_prover::<OutSC, BatchOnly, B, D>(&circuit, &output_config, &backend, &params)?;
+
+        Ok(Self {
+            left: left.authority,
+            right: right.authority,
+            left_contract,
+            right_contract,
+            circuit,
+            left_result,
+            right_result,
+            backend,
+            params,
+            prep,
+        })
+    }
+
+    /// Validate both witness-only inputs before either result packs witness values.
+    pub fn check_inputs(
+        &self,
+        left: &TrustedPreparedInput<'_, InSC>,
+        right: &TrustedPreparedInput<'_, InSC>,
+    ) -> Result<(), VerificationError> {
+        let left = self.left.prepared_input(left)?;
+        let right = self.right.prepared_input(right)?;
+        <B as PreparedPcsRecursionBackend<InSC, A1, D>>::validate_prepared_input(
+            &self.backend,
+            self.left.config(),
+            &self.left_contract,
+            &left,
+        )?;
+        <B as PreparedPcsRecursionBackend<InSC, A2, D>>::validate_prepared_input(
+            &self.backend,
+            self.right.config(),
+            &self.right_contract,
+            &right,
+        )
+    }
+
+    /// Prove one aggregation layer under the retained child authorities and output config.
+    pub fn prove(
+        &self,
+        left: TrustedPreparedInput<'_, InSC>,
+        right: TrustedPreparedInput<'_, InSC>,
+    ) -> Result<RecursionOutput<OutSC>, VerificationError> {
+        self.check_inputs(&left, &right)?;
+        let left_prev = self.left.recursion_input(&left)?;
+        let right_prev = self.right.recursion_input(&right)?;
+        let mut public = self.left_result.pack_public_inputs(&left_prev)?;
+        public.extend(self.right_result.pack_public_inputs(&right_prev)?);
+        let mut private = self.left_result.pack_private_inputs(&left_prev)?;
+        private.extend(self.right_result.pack_private_inputs(&right_prev)?);
+        let mut runner = self.circuit.runner();
+        runner
+            .set_public_inputs(&public)
+            .map_err(VerificationError::Circuit)?;
+        runner
+            .set_private_inputs(&private)
+            .map_err(VerificationError::Circuit)?;
+        set_trusted_child_private::<InSC, A1, B, D>(
+            &self.backend,
+            &self.left,
+            &left,
+            &left_prev,
+            &self.left_result,
+            &mut runner,
+        )?;
+        set_trusted_child_private::<InSC, A2, B, D>(
+            &self.backend,
+            &self.right,
+            &right,
+            &right_prev,
+            &self.right_result,
+            &mut runner,
+        )?;
+        let traces = runner.run().map_err(VerificationError::Circuit)?;
+        self.prep.prove(&traces)
+    }
+
+    pub const fn params(&self) -> &ProveNextLayerParams {
+        &self.params
+    }
+
+    pub fn verifier(&self) -> CircuitVerifier<OutSC> {
+        self.prep.verifier()
+    }
+}
+
+fn preflight_trusted_source<SC, A, B, const D: usize>(
+    backend: &B,
+    source: &TrustedPreparedSource<'_, '_, SC, A>,
+) -> Result<(), VerificationError>
+where
+    SC: StarkGenericConfig + 'static,
+    A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
+    B: TrustedPcsRecursionBackend<SC, A, D>,
+    Val<SC>: PrimeField64 + StarkField,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+{
+    match source {
+        TrustedPreparedSource::UniStark {
+            config,
+            proof,
+            public_inputs,
+            preprocessed_commit,
+            ..
+        } => <B as PreparedPcsRecursionBackend<SC, A, D>>::preflight_input(
+            backend,
+            config,
+            &PreparedInput::UniStark {
+                proof,
+                public_inputs,
+                preprocessed_commit: preprocessed_commit.as_ref(),
+            },
+        ),
+        TrustedPreparedSource::BatchStark {
+            verifier, proof, ..
+        } => backend.preflight_trusted_batch(verifier, proof),
+    }
+}
+
+fn build_trusted_child<'air, 'p, SC, A, B, const D: usize>(
+    backend: &B,
+    authority: &TrustedChildAuthority<'air, SC, A>,
+    input: &TrustedPreparedInput<'p, SC>,
+    prev: &RecursionInput<'_, SC, A>,
+    builder: &mut CircuitBuilder<SC::Challenge>,
+) -> Result<B::VerifierResult, VerificationError>
+where
+    SC: StarkGenericConfig + 'static,
+    A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
+    B: TrustedPcsRecursionBackend<SC, A, D>,
+    Val<SC>: PrimeField64 + StarkField,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+{
+    match (authority, input) {
+        (TrustedChildAuthority::Uni { .. }, TrustedPreparedInput::UniStark { .. }) => {
+            backend.build_verifier_circuit(prev, authority.config(), builder)
+        }
+        (
+            TrustedChildAuthority::Batch { verifier, .. },
+            TrustedPreparedInput::BatchStark { proof, statement },
+        ) => backend.build_trusted_batch_verifier_circuit(verifier, proof, statement, builder),
+        _ => unreachable!(),
+    }
+}
+
+fn set_trusted_child_private<'air, 'p, SC, A, B, const D: usize>(
+    backend: &B,
+    authority: &TrustedChildAuthority<'air, SC, A>,
+    input: &TrustedPreparedInput<'p, SC>,
+    prev: &RecursionInput<'_, SC, A>,
+    result: &B::VerifierResult,
+    runner: &mut p3_circuit::CircuitRunner<'_, SC::Challenge>,
+) -> Result<(), VerificationError>
+where
+    SC: StarkGenericConfig + 'static,
+    A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
+    B: TrustedPcsRecursionBackend<SC, A, D>,
+    Val<SC>: PrimeField64 + StarkField,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+{
+    match (authority, input) {
+        (TrustedChildAuthority::Uni { .. }, TrustedPreparedInput::UniStark { .. }) => {
+            <B as PcsRecursionBackend<SC, A, D>>::set_private_data_for_result(
+                backend,
+                authority.config(),
+                runner,
+                result,
+                prev,
+            )
+            .map_err(|message| VerificationError::InvalidProofShape(message.into()))
+        }
+        (
+            TrustedChildAuthority::Batch { verifier, .. },
+            TrustedPreparedInput::BatchStark { proof, statement },
+        ) => backend.set_private_data_for_trusted_batch(
+            verifier,
+            proof,
+            statement,
+            runner,
+            result.op_ids(),
+        ),
+        _ => unreachable!(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::any::Any;
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+    use std::string::String;
+
+    use p3_circuit::tables::WitnessTrace;
+    use p3_test_utils::koala_bear_params::{Challenge, DIGEST_ELEMS, F};
+    use p3_test_utils::rejection_oracle::classify_debug_diagnostic;
+
+    use super::*;
+    use crate::pcs::fri::MerkleCapTargets;
+    use crate::prepared::test_common;
+    use crate::traits::Recursive;
+
+    #[test]
+    fn fri_fixed_parent_rejects_actual_wrong_child_root_after_host_bypass() {
+        type SC = test_common::KoalaBearD4RecursionConfig;
+
+        let child_a = test_common::build_koala_bear_d4_first_layer_input();
+        let child_b =
+            test_common::build_koala_bear_d4_first_layer_input_with_different_alu_relation();
+        child_b
+            .verifier
+            .verify(&child_b.base_proof, &[])
+            .expect("child B is valid under its own native verifier");
+        assert_ne!(
+            child_a
+                .verifier
+                .common_data()
+                .preprocessed
+                .as_ref()
+                .map(|group| &group.commitment),
+            child_b
+                .verifier
+                .common_data()
+                .preprocessed
+                .as_ref()
+                .map(|group| &group.commitment),
+            "the negative requires a different actual child preprocessing root"
+        );
+
+        let owner = TrustedPreparedLayer::<SC, SC, BatchOnly, _, 4>::new(
+            TrustedPreparedSource::BatchStark {
+                verifier: child_a.verifier.clone(),
+                proof: &child_a.base_proof,
+                statement: &[],
+            },
+            child_a.layer_config.clone(),
+            child_a.backend.clone(),
+            ProveNextLayerParams::default(),
+        )
+        .expect("the original parent A circuit and preparation are created once");
+
+        let input_a = TrustedPreparedInput::BatchStark {
+            proof: &child_a.base_proof,
+            statement: &[],
+        };
+        let prev_a = owner.child.recursion_input(&input_a).unwrap();
+        let public_a = owner.result.pack_public_inputs(&prev_a).unwrap();
+        let private_a = owner.result.pack_private_inputs(&prev_a).unwrap();
+        let mut runner = owner.circuit.runner();
+        runner.set_public_inputs(&public_a).unwrap();
+        runner.set_private_inputs(&private_a).unwrap();
+        set_trusted_child_private::<SC, BatchOnly, _, 4>(
+            &owner.backend,
+            &owner.child,
+            &input_a,
+            &prev_a,
+            &owner.result,
+            &mut runner,
+        )
+        .unwrap();
+        let honest_traces = runner.run().unwrap();
+        let honest = owner.prep.prove(&honest_traces).unwrap();
+        let fixed_parent = owner.verifier();
+        fixed_parent
+            .verify(&honest.0, &[])
+            .expect("honest A passes the exact low-level fixed-parent route");
+
+        // Deliberately bypass TrustedPreparedLayer::check_input. Packing through the raw verifier
+        // result preserves B's actual proof commitment; no A root is substituted here.
+        let source_b =
+            TrustedConstruction::<SC, BatchOnly>::new(TrustedPreparedSource::BatchStark {
+                verifier: child_b.verifier.clone(),
+                proof: &child_b.base_proof,
+                statement: &[],
+            })
+            .unwrap();
+        let prev_b = source_b.authority.recursion_input(&source_b.input).unwrap();
+        let public_b = owner.result.inner.pack_public_inputs(&prev_b).unwrap();
+        assert_eq!(public_b.len(), public_a.len(), "child B must be same-shape");
+        let actual_b_root = &child_b
+            .verifier
+            .common_data()
+            .preprocessed
+            .as_ref()
+            .unwrap()
+            .commitment;
+        let encoded_b_root =
+            <MerkleCapTargets<F, DIGEST_ELEMS> as Recursive<Challenge>>::get_values(actual_b_root);
+        assert!(
+            public_b
+                .windows(encoded_b_root.len())
+                .any(|window| window == encoded_b_root),
+            "the bypass packing must contain child B's complete actual cap encoding"
+        );
+        assert_ne!(
+            public_b, public_a,
+            "packing child B must carry its actual differing public commitment"
+        );
+
+        let mut forged_traces = honest_traces;
+        let mut witness_values = (0..forged_traces.witness_trace.num_rows())
+            .map(|index| {
+                *forged_traces
+                    .witness_trace
+                    .get_value(p3_circuit::WitnessId(index as u32))
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        for (position, value) in public_b.iter().copied().enumerate() {
+            witness_values[owner.circuit.public_rows[position].0 as usize] = value;
+        }
+        forged_traces.witness_trace = WitnessTrace::new(witness_values);
+        forged_traces.public_trace.values = public_b;
+
+        let attempt = catch_unwind(AssertUnwindSafe(|| owner.prep.prove(&forged_traces)));
+        match attempt {
+            Ok(Ok(forged)) => assert!(
+                fixed_parent.verify(&forged.0, &[]).is_err(),
+                "the original parent A verifier must reject child B's actual root"
+            ),
+            Ok(Err(error)) => panic!("forged trace must reach proof construction: {error:?}"),
+            Err(payload) => assert!(
+                classify_panic(payload.as_ref()).is_some(),
+                "debug rejection must match the shared strict constraint/lookup oracle"
+            ),
+        }
+    }
+
+    fn classify_panic(
+        payload: &(dyn Any + Send),
+    ) -> Option<p3_test_utils::rejection_oracle::DebugRejectionKind> {
+        let message = payload
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| payload.downcast_ref::<&str>().copied())?;
+        classify_debug_diagnostic(message)
     }
 }

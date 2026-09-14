@@ -28,9 +28,10 @@ use p3_uni_stark::{StarkGenericConfig, SymbolicExpressionExt, Val};
 
 use crate::backend::CheckedVerifierResult;
 use crate::backend::context::{
-    StarkLayoutPolicy, StarkPackingAuthority, capture_stark_authority, check_batch_stark_resources,
-    capture_trusted_batch_authority, check_trusted_batch_stark_resources,
-    check_uni_stark_resources, input_caps, validate_stark_replacement,
+    StarkLayoutPolicy, StarkPackingAuthority, capture_stark_authority,
+    capture_trusted_batch_authority, check_batch_stark_resources,
+    check_trusted_batch_stark_resources, check_uni_stark_resources, input_caps,
+    validate_stark_replacement,
 };
 use crate::backend::transcript::{
     replay_recursion_input_transcript, replay_trusted_batch_layer_transcript,
@@ -1360,7 +1361,9 @@ where
             Val<SC>,
             SC::Challenge,
             SC::Commitment,
-        >>::check_whir_resources(&proof.proof.opening_proof, &self.0.limits)?;
+        >>::check_whir_resources(
+            &proof.proof.opening_proof, &self.0.limits
+        )?;
         let mut usage = check_trusted_batch_stark_resources::<SC, SC::Commitment>(
             &self.0.limits,
             verifier,

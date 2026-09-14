@@ -485,6 +485,19 @@ pub(crate) fn build_koala_bear_d4_first_layer_input() -> KoalaBearD4FirstLayerFi
         0,
         1,
         false,
+        false,
+    )
+}
+
+/// Build a same-shape child relation whose first recurrence row uses multiplication.
+pub(crate) fn build_koala_bear_d4_first_layer_input_with_different_alu_relation()
+-> KoalaBearD4FirstLayerFixture {
+    build_koala_bear_d4_first_layer_input_with_pow_bits_and_starts(
+        test_fri_scalars().query_pow_bits,
+        0,
+        1,
+        false,
+        true,
     )
 }
 
@@ -498,6 +511,7 @@ pub(crate) fn build_koala_bear_d4_first_layer_input_with_starts(
         start_a,
         start_b,
         true,
+        false,
     )
 }
 
@@ -508,7 +522,7 @@ pub(crate) fn build_koala_bear_d4_first_layer_input_with_starts(
 pub(crate) fn build_koala_bear_d4_first_layer_input_with_pow_bits(
     pow_bits: usize,
 ) -> KoalaBearD4FirstLayerFixture {
-    build_koala_bear_d4_first_layer_input_with_pow_bits_and_starts(pow_bits, 0, 1, false)
+    build_koala_bear_d4_first_layer_input_with_pow_bits_and_starts(pow_bits, 0, 1, false, false)
 }
 
 fn build_koala_bear_d4_first_layer_input_with_pow_bits_and_starts(
@@ -516,6 +530,7 @@ fn build_koala_bear_d4_first_layer_input_with_pow_bits_and_starts(
     start_a: u64,
     start_b: u64,
     witness_starts: bool,
+    different_alu_relation: bool,
 ) -> KoalaBearD4FirstLayerFixture {
     let n: usize = 100;
 
@@ -532,8 +547,12 @@ fn build_koala_bear_d4_first_layer_input_with_pow_bits_and_starts(
             builder.alloc_const(F::ONE, "F(1)"),
         )
     };
-    for _i in 2..=n {
-        let next = builder.add(a, b);
+    for i in 2..=n {
+        let next = if different_alu_relation && i == 2 {
+            builder.mul(a, b)
+        } else {
+            builder.add(a, b)
+        };
         a = b;
         b = next;
     }
@@ -546,7 +565,18 @@ fn build_koala_bear_d4_first_layer_input_with_pow_bits_and_starts(
     let circuit = builder.build().unwrap();
     let mut runner = circuit.runner();
 
-    let expected_fib = compute_fibonacci_classical(n, start_a, start_b);
+    let expected_fib = if different_alu_relation {
+        let mut a = F::from_u64(start_a);
+        let mut b = F::from_u64(start_b);
+        for i in 2..=n {
+            let next = if i == 2 { a * b } else { a + b };
+            a = b;
+            b = next;
+        }
+        b
+    } else {
+        compute_fibonacci_classical(n, start_a, start_b)
+    };
     if witness_starts {
         runner
             .set_public_inputs(&[expected_fib, F::from_u64(start_a), F::from_u64(start_b)])
