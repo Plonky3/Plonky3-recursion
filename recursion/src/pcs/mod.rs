@@ -11,7 +11,8 @@ pub use fri::{
     NativeFriParams, PreparedRecursiveFriInputOpenings, PreparedRecursiveMultiProofTargets,
     QueryProofTargets, RecExtensionValMmcs, RecExtensionValMmcsArity4, RecValHidingMmcs,
     RecValMmcs, RecValMmcsArity4, RecursiveFriInputOpenings, RecursiveMultiProofTargets,
-    TwoAdicFriProofTargets, Witness, fri_proof_num_queries, verify_fri_circuit,
+    TwoAdicFriProofTargets, ValidatedFriContext, Witness, fri_proof_num_queries,
+    validate_fri_context, verify_fri_circuit,
 };
 pub use mmcs::{
     FriQueryLayout, FriQueryPaths, convert_merkle_proof_to_siblings, replay_fri_query_layout,

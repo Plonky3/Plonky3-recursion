@@ -99,7 +99,65 @@ pub(crate) struct NativeStarkLayout<'a> {
     pub(crate) has_permutation: bool,
 }
 
+/// Read-only public view of the compact FRI opening geometry.
+///
+/// The planner and routing metadata remain private; callers can inspect only
+/// the commitment ordinal and matrix dimensions needed by contextual checks.
+#[derive(Clone, Copy)]
+pub struct FriOpeningLayout<'a> {
+    inner: &'a NativeStarkLayout<'a>,
+}
+
+/// One matrix's compact opening geometry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FriMatrixGeometry {
+    log_height: usize,
+    width: usize,
+    point_count: usize,
+}
+
+impl FriMatrixGeometry {
+    pub const fn log_height(self) -> usize {
+        self.log_height
+    }
+
+    pub const fn width(self) -> usize {
+        self.width
+    }
+
+    pub const fn point_count(self) -> usize {
+        self.point_count
+    }
+}
+
+impl<'a> FriOpeningLayout<'a> {
+    #[allow(dead_code)]
+    pub(crate) const fn new(inner: &'a NativeStarkLayout<'a>) -> Self {
+        Self { inner }
+    }
+
+    pub fn commitment_count(self) -> usize {
+        self.inner.commitment_count()
+    }
+
+    pub fn matrices(self, ordinal: usize) -> impl Iterator<Item = FriMatrixGeometry> + 'a {
+        let role = self.inner.commitment_role(ordinal);
+        role.into_iter().flat_map(move |role| {
+            self.inner.matrices(role).map(|matrix| FriMatrixGeometry {
+                log_height: matrix.log_height,
+                width: matrix.width,
+                point_count: matrix.point_count,
+            })
+        })
+    }
+}
+
 impl<'a> NativeStarkLayout<'a> {
+    #[allow(dead_code)]
+    pub(crate) const fn opening_view(&'a self) -> FriOpeningLayout<'a> {
+        FriOpeningLayout::new(self)
+    }
+
     pub(crate) fn new(
         instances: alloc::vec::Vec<InstanceLayout>,
         preprocessed_order: &'a [usize],
@@ -336,6 +394,16 @@ mod tests {
             layout.matrices(CommitmentRole::Permutation).collect();
         assert_eq!(permutation[0].point_count, 2);
         assert_eq!(permutation[0].next_step_log, Some(7));
+    }
+
+    #[test]
+    fn public_fri_view_is_read_only_and_ordinal_based() {
+        let layout =
+            NativeStarkLayout::new(alloc::vec![instance(1)], &[], false, false, false).unwrap();
+        let view = layout.opening_view();
+        assert_eq!(view.commitment_count(), 2);
+        assert_eq!(view.matrices(0).next().unwrap().width(), 3);
+        assert!(view.matrices(99).next().is_none());
     }
 
     #[test]

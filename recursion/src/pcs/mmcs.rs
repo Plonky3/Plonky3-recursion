@@ -549,7 +549,9 @@ where
 /// A cap must be non-empty and have a power-of-two length -- proof-controlled shape properties
 /// that must be rejected as malformed rather than panicking downstream (`log2_strict_usize`
 /// asserts on a non-power-of-two length).
-fn validate_commitment_cap_len<T>(commitment_cap: &[T]) -> Result<usize, CircuitBuilderError> {
+pub(crate) fn validate_commitment_cap_len<T>(
+    commitment_cap: &[T],
+) -> Result<usize, CircuitBuilderError> {
     if commitment_cap.is_empty() {
         return Err(CircuitBuilderError::InvalidMerkleCap {
             details: "commitment cap must have at least one entry".into(),
@@ -570,10 +572,24 @@ fn validate_commitment_cap_len<T>(commitment_cap: &[T]) -> Result<usize, Circuit
     })
 }
 
+pub(crate) fn validate_commitment_cap_count(roots: usize) -> Result<usize, CircuitBuilderError> {
+    if roots == 0 {
+        return Err(CircuitBuilderError::InvalidMerkleCap {
+            details: "commitment cap must have at least one entry".into(),
+        });
+    }
+    if !roots.is_power_of_two() {
+        return Err(CircuitBuilderError::InvalidMerkleCap {
+            details: format!("commitment cap length must be a power of two, got {roots}"),
+        });
+    }
+    Ok(roots.trailing_zeros() as usize)
+}
+
 /// Like [`validate_commitment_cap_len`], but also rejects a cap taller than the tree it caps
 /// (`tree_height`, the tree's own height in index bits) -- otherwise `tree_height - cap_height`
 /// underflows downstream.
-fn validate_commitment_cap<T>(
+pub(crate) fn validate_commitment_cap<T>(
     commitment_cap: &[T],
     tree_height: usize,
 ) -> Result<usize, CircuitBuilderError> {
@@ -586,6 +602,132 @@ fn validate_commitment_cap<T>(
         });
     }
     Ok(cap_height)
+}
+
+/// Integer-only binary cap validation for contextual FRI preflight.
+pub(crate) fn validate_binary_cap_count(
+    roots: usize,
+    tree_height: usize,
+) -> Result<usize, CircuitBuilderError> {
+    let cap_height = validate_commitment_cap_count(roots)?;
+    if cap_height > tree_height {
+        return Err(CircuitBuilderError::InvalidMerkleCap {
+            details: format!(
+                "commitment cap height {cap_height} exceeds tree height {tree_height}"
+            ),
+        });
+    }
+    Ok(cap_height)
+}
+
+fn checked_next_power_of_two(value: usize) -> Result<usize, CircuitBuilderError> {
+    value
+        .checked_next_power_of_two()
+        .ok_or_else(|| CircuitBuilderError::InvalidMerkleCap {
+            details: "matrix height cannot be rounded to a power of two".into(),
+        })
+}
+
+fn checked_padded_len(raw_len: usize) -> Result<usize, CircuitBuilderError> {
+    if raw_len <= 1 {
+        Ok(raw_len)
+    } else if raw_len < 4 {
+        Ok(4)
+    } else {
+        raw_len
+            .div_ceil(4)
+            .checked_mul(4)
+            .ok_or_else(|| CircuitBuilderError::InvalidMerkleCap {
+                details: "padded arity-4 matrix height overflows".into(),
+            })
+    }
+}
+
+/// Walk native arity-4 cap geometry without rows, targets, or proof values.
+///
+/// The returned value is the number of path bits consumed before the selected
+/// cap layer.  Equal-height groups are consumed at their native bridge layer;
+/// surplus cap roots and implicit high zero bits remain valid.
+pub(crate) fn validate_arity4_cap_geometry(
+    heights: &[usize],
+    roots: usize,
+) -> Result<usize, CircuitBuilderError> {
+    let _cap_height = validate_binary_cap_count(roots, usize::MAX)?;
+    if heights.is_empty() || heights.iter().all(|height| *height == 0) {
+        return Err(CircuitBuilderError::Poseidon2ConfigMismatch {
+            expected: "at least one non-empty matrix".into(),
+            got: "empty batch".into(),
+        });
+    }
+    let mut sorted = heights.to_vec();
+    sorted.sort_unstable_by(|left, right| right.cmp(left));
+    for pair in sorted.windows(2) {
+        let left = checked_next_power_of_two(pair[0])?;
+        let right = checked_next_power_of_two(pair[1])?;
+        if left == right && pair[0] != pair[1] {
+            return Err(CircuitBuilderError::Poseidon2ConfigMismatch {
+                expected: "matrix heights that round up to the same power of two must be equal"
+                    .into(),
+                got: "incompatible matrix heights".into(),
+            });
+        }
+    }
+    let max_height = sorted[0];
+    let mut curr = checked_padded_len(max_height)?;
+    let mut consumed = vec![false; sorted.len()];
+    let max_height_npt = checked_next_power_of_two(max_height)?;
+    for (index, height) in sorted.iter().enumerate() {
+        if checked_next_power_of_two(*height)? == max_height_npt {
+            consumed[index] = true;
+        }
+    }
+    let mut path_bits = 0usize;
+    while curr > roots {
+        let step = if curr < 4 {
+            2
+        } else {
+            let target = checked_next_power_of_two(curr / 4)?;
+            if sorted.iter().enumerate().any(|(index, height)| {
+                !consumed[index]
+                    && checked_next_power_of_two(*height).is_ok_and(|next| next > target)
+            }) {
+                2
+            } else {
+                4
+            }
+        };
+        let logical_next = curr / step;
+        let next = checked_padded_len(logical_next)?;
+        let logical_next_npt = checked_next_power_of_two(logical_next)?;
+        let injection_height = sorted
+            .iter()
+            .enumerate()
+            .find(|(index, height)| {
+                !consumed[*index]
+                    && checked_next_power_of_two(**height).ok() == Some(logical_next_npt)
+            })
+            .map(|(_, height)| *height);
+        let injected = injection_height.is_some_and(|injection_height| {
+            for (index, height) in sorted.iter().enumerate() {
+                if !consumed[index] && *height == injection_height {
+                    consumed[index] = true;
+                }
+            }
+            true
+        });
+        if next == curr && !injected {
+            return Err(CircuitBuilderError::InvalidMerkleCap {
+                details: "arity-4 cap walk made no progress".into(),
+            });
+        }
+        curr = next;
+        path_bits = path_bits
+            .checked_add(if step == 4 { 2 } else { 1 })
+            .ok_or_else(|| CircuitBuilderError::InvalidMerkleCap {
+                details: "arity-4 path bit count overflows".into(),
+            })?;
+    }
+    Ok(path_bits)
 }
 
 /// Select one cap entry from a Merkle cap using a binary tree multiplexer.
@@ -3217,6 +3359,25 @@ mod test {
     fn validate_commitment_cap_accepts_cap_at_tree_height() {
         let cap = vec![(); 4]; // cap_height = 2
         assert_eq!(validate_commitment_cap(&cap, 2).unwrap(), 2);
+    }
+
+    #[test]
+    fn numeric_binary_cap_boundaries_are_allocation_free() {
+        assert_eq!(validate_commitment_cap_count(1).unwrap(), 0);
+        assert_eq!(validate_commitment_cap_count(2).unwrap(), 1);
+        assert!(validate_commitment_cap_count(0).is_err());
+        assert!(validate_commitment_cap_count(3).is_err());
+        assert!(validate_binary_cap_count(4, 1).is_err());
+        assert_eq!(validate_binary_cap_count(2, 1).unwrap(), 1);
+    }
+
+    #[test]
+    fn numeric_arity4_bridge_and_padding_rules_match_native() {
+        assert_eq!(validate_arity4_cap_geometry(&[16, 8], 1).unwrap(), 5);
+        assert_eq!(validate_arity4_cap_geometry(&[16, 8], 4).unwrap(), 3);
+        assert_eq!(validate_arity4_cap_geometry(&[2], 4).unwrap(), 0);
+        assert!(validate_arity4_cap_geometry(&[5, 6], 1).is_err());
+        assert!(validate_arity4_cap_geometry(&[8], 0).is_err());
     }
 
     /// Cross-checks [`restore_fri_query_paths`] against the trusted single-query

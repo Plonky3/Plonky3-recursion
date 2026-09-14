@@ -4,6 +4,7 @@ use alloc::{format, vec};
 use core::marker::PhantomData;
 
 use p3_challenger::{CanObserve, GrindingChallenger};
+use p3_circuit::ops::PermConfig;
 use p3_circuit::symbolic::RowSelectorsTargets;
 use p3_circuit::{CircuitBuilder, CircuitBuilderError, NonPrimitiveOpId};
 use p3_commit::{BatchOpening, ExtensionMmcs, Mmcs, OpenedValues, PolynomialSpace};
@@ -826,6 +827,79 @@ impl<F, const DIGEST_ELEMS: usize> ObservableCommitment for MerkleCapTargets<F, 
 
 type ValMmcsCommitment<F, const DIGEST_ELEMS: usize> =
     MerkleCap<<F as PackedValue>::Value, [<F as PackedValue>::Value; DIGEST_ELEMS]>;
+
+/// Validate a borrowed built-in Merkle cap against the actual recursive
+/// permutation shape and its planned tree heights.  This is value-only
+/// geometry: no target rows, PCS, MMCS, RNG, or proof contents are allocated.
+#[allow(dead_code)]
+pub(crate) fn validate_merkle_cap_context<F, EF, const DIGEST_ELEMS: usize, I>(
+    cap: &ValMmcsCommitment<F, DIGEST_ELEMS>,
+    permutation_config: PermConfig,
+    index_bit_len: usize,
+    heights: I,
+) -> Result<(), VerificationError>
+where
+    F: Field,
+    EF: ExtensionField<F>,
+    I: Iterator<Item = usize> + Clone,
+{
+    let roots = cap.num_roots();
+    let heights: Vec<_> = heights.collect();
+    if heights.is_empty() {
+        return Err(VerificationError::InvalidProofShape(
+            "MMCS commitment cap has no planned matrices".into(),
+        ));
+    }
+    let max_height = heights.iter().copied().max().unwrap_or(0);
+    if max_height == 0 {
+        return Err(VerificationError::InvalidProofShape(
+            "MMCS commitment cap has only empty matrices".into(),
+        ));
+    }
+    let cap_height = if permutation_config.is_arity4_shape() {
+        crate::pcs::mmcs::validate_arity4_cap_geometry(&heights, roots)
+            .map_err(|error| VerificationError::InvalidProofShape(error.to_string()))?
+    } else {
+        if !max_height.is_power_of_two() {
+            return Err(VerificationError::InvalidProofShape(
+                "binary MMCS matrix height must be a power of two".into(),
+            ));
+        }
+        let tree_height = max_height.trailing_zeros() as usize;
+        crate::pcs::mmcs::validate_binary_cap_count(roots, tree_height)
+            .map_err(|error| VerificationError::InvalidProofShape(error.to_string()))?
+    };
+    if !permutation_config.is_arity4_shape() && cap_height > index_bit_len {
+        return Err(VerificationError::InvalidProofShape(
+            "binary MMCS cap needs more index bits than the checked query layout".into(),
+        ));
+    }
+    let chunk_ext = if permutation_config.is_arity4_shape() {
+        permutation_config.capacity_ext()
+    } else {
+        permutation_config.rate_ext()
+    };
+    let expected_digest_elems = if permutation_config.d() == 1 && EF::DIMENSION > 1 {
+        chunk_ext
+    } else {
+        chunk_ext.checked_mul(EF::DIMENSION).ok_or_else(|| {
+            VerificationError::InvalidProofShape("MMCS digest width overflows".into())
+        })?
+    };
+    if DIGEST_ELEMS != expected_digest_elems {
+        return Err(VerificationError::InvalidProofShape(format!(
+            "MMCS digest packing mismatch: expected {expected_digest_elems}, got {DIGEST_ELEMS}"
+        )));
+    }
+    roots
+        .checked_mul(DIGEST_ELEMS)
+        .and_then(|elements| elements.checked_mul(core::mem::size_of::<Target>()))
+        .filter(|bytes| *bytes <= isize::MAX as usize)
+        .ok_or_else(|| {
+            VerificationError::InvalidProofShape("MMCS cap allocation overflows".into())
+        })?;
+    Ok(())
+}
 
 impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize> Recursive<EF>
     for MerkleCapTargets<F, DIGEST_ELEMS>
@@ -2131,7 +2205,7 @@ mod prepared_shape_tests {
     use p3_merkle_tree::{MerkleTreeHidingMmcs, PrunedMerklePaths};
     use p3_symmetric::MerkleCap;
     use p3_test_utils::koala_bear_params::{
-        Challenge, DIGEST_ELEMS, F, MyCompress, MyHash, MyMmcs,
+        Challenge, ChallengeMmcs, DIGEST_ELEMS, F, MyCompress, MyHash, MyMmcs,
     };
     use rand::rngs::StdRng;
 
@@ -2175,10 +2249,134 @@ mod prepared_shape_tests {
         MerkleCap::new(vec![[F::ZERO; DIGEST_ELEMS]; roots])
     }
 
+    #[test]
+    fn borrowed_cap_context_checks_binary_packing_and_height() {
+        let one_root_cap = cap(1);
+        let perm = PermConfig::poseidon2(crate::ops::Poseidon2Config::KOALA_BEAR_D4_W16);
+        assert!(
+            validate_merkle_cap_context::<F, Challenge, DIGEST_ELEMS, _>(
+                &one_root_cap,
+                perm,
+                1,
+                [2usize].into_iter(),
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_merkle_cap_context::<F, Challenge, DIGEST_ELEMS, _>(
+                &one_root_cap,
+                perm,
+                1,
+                [0usize].into_iter(),
+            )
+            .is_err()
+        );
+        let too_tall = cap(4);
+        assert!(
+            validate_merkle_cap_context::<F, Challenge, DIGEST_ELEMS, _>(
+                &too_tall,
+                perm,
+                2,
+                [2usize].into_iter(),
+            )
+            .is_err()
+        );
+    }
+
     fn frontier(count: usize) -> PrunedMerklePaths<F, DIGEST_ELEMS> {
         PrunedMerklePaths {
             sibling_hashes: vec![[F::ZERO; DIGEST_ELEMS]; count],
         }
+    }
+
+    #[test]
+    fn contextual_fri_validator_accepts_a_tiny_native_shape() {
+        use crate::input_contract::stark_layout::{InstanceLayout, NativeStarkLayout};
+        use crate::pcs::fri::{FriVerifierParams, NativeFriParams, validate_fri_context};
+
+        let params = p3_fri::FriParameters {
+            log_blowup: 1,
+            log_final_poly_len: 0,
+            max_log_arity: 1,
+            num_queries: 1,
+            commit_proof_of_work_bits: 0,
+            query_proof_of_work_bits: 0,
+            mmcs: (),
+        };
+        let native = NativeFriParams::try_from_native::<F, _>(&params).unwrap();
+        let recursive = FriVerifierParams::with_mmcs(
+            1,
+            0,
+            0,
+            0,
+            1,
+            crate::ops::Poseidon2Config::KOALA_BEAR_D4_W16,
+        );
+        let proof = FriProof::<Challenge, ChallengeMmcs, F, Vec<BatchMultiOpening<F, MyMmcs>>> {
+            commit_phase_commits: vec![cap(1)],
+            commit_pow_witnesses: vec![F::ZERO],
+            input_openings: vec![
+                BatchMultiOpening {
+                    opened_values: vec![vec![vec![F::ZERO]]],
+                    opening_proof: frontier(0),
+                },
+                BatchMultiOpening {
+                    opened_values: vec![vec![vec![F::ZERO]]],
+                    opening_proof: frontier(0),
+                },
+            ],
+            commit_phase_openings: vec![CommitPhaseMultiStep {
+                log_arity: 1,
+                sibling_values: vec![vec![Challenge::ZERO]],
+                opening_proof: frontier(0),
+            }],
+            final_poly: vec![Challenge::ZERO],
+            query_pow_witness: F::ZERO,
+        };
+        let layout = NativeStarkLayout::new(
+            vec![InstanceLayout {
+                challenge_width: 1,
+                ext_log: 1,
+                base_log: 1,
+                trace_width: 1,
+                trace_next: false,
+                pre_width: 0,
+                pre_next: false,
+                quotient_log: 0,
+                quotient_chunks: 1,
+                permutation_width: 0,
+            }],
+            &[],
+            false,
+            false,
+            false,
+        )
+        .unwrap();
+        assert!(
+            validate_fri_context(
+                &proof,
+                &native,
+                &recursive,
+                layout.opening_view(),
+                PermConfig::poseidon2(crate::ops::Poseidon2Config::KOALA_BEAR_D4_W16),
+                None,
+            )
+            .is_ok()
+        );
+
+        let mut malformed = proof.clone();
+        malformed.commit_phase_openings[0].sibling_values[0].clear();
+        assert!(
+            validate_fri_context(
+                &malformed,
+                &native,
+                &recursive,
+                layout.opening_view(),
+                PermConfig::poseidon2(crate::ops::Poseidon2Config::KOALA_BEAR_D4_W16),
+                None,
+            )
+            .is_err()
+        );
     }
 
     fn ordinary_opening(widths: &[usize]) -> Opening {

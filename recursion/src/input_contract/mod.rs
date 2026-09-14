@@ -14,6 +14,7 @@ pub use stark::{
     NonPrimitiveContract, OpenedValuesShape, OpenedValuesWithLookupsShape,
     PreprocessedInstanceShape, UniInputContract,
 };
+pub use stark_layout::{FriMatrixGeometry, FriOpeningLayout};
 pub use whir::{
     OpeningBatchShape, QueryOpeningsShape, SumcheckShape, WhirPcsRoundShape, WhirShape,
     WhirStepShape, WhirUniShape,
