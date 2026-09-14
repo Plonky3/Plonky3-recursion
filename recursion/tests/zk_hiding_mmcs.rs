@@ -8,10 +8,17 @@
 
 mod common;
 
+#[path = "common/rejection_oracle.rs"]
+mod rejection_oracle;
+
 use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
-use p3_batch_stark::{ProverData, StarkInstance, prove_batch, verify_batch};
-use p3_circuit::CircuitBuilder;
-use p3_circuit::ops::{generate_poseidon2_trace, generate_recompose_trace};
+use p3_batch_stark::{
+    BatchVerificationError, ProverData, StarkInstance, prove_batch, verify_batch,
+};
+use p3_circuit::ops::{
+    AluOpKind, NpoTypeId, Poseidon2Trace, generate_poseidon2_trace, generate_recompose_trace,
+};
+use p3_circuit::{CircuitBuilder, CircuitError, Traces, WitnessId};
 use p3_circuit_prover::batch_stark_prover::{
     poseidon2_air_builders_for_configs, recompose_air_builders,
 };
@@ -40,6 +47,9 @@ use p3_recursion::{
 use p3_test_utils::koala_bear_params::*;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
+#[cfg(debug_assertions)]
+use rejection_oracle::run_with_debug_oracle;
+use rejection_oracle::{ProofCheckError, assert_rejected};
 
 /// Number of random salt elements appended to each Merkle leaf by the hiding MMCS.
 const SALT_ELEMS: usize = 4;
@@ -108,6 +118,125 @@ fn generate_add_trace<Val: Field>(rows: usize) -> RowMajorMatrix<Val> {
     RowMajorMatrix::new(values, width)
 }
 
+fn mutate_first_restored_sibling(
+    paths: &mut [p3_recursion::pcs::FriQueryPaths<F, DIGEST_ELEMS>],
+) -> bool {
+    for query in paths {
+        for path in query.input.iter_mut().chain(&mut query.commit_phase) {
+            if let Some(digest) = path.first_mut() {
+                digest[0] += F::ONE;
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn mutate_salt_leaf_poseidon_trace(
+    traces: &mut Traces<Challenge>,
+    proof: &p3_batch_stark::BatchProof<MyConfigZk>,
+) {
+    let opening = &proof.opening_proof.1.input_openings[0];
+    let opened_rows = &opening.opened_values[0];
+    let salts = &opening.opening_proof.0[0];
+    assert_eq!(opened_rows.len(), salts.len());
+    assert!(!opened_rows.is_empty());
+    assert_eq!(salts[0].len(), SALT_ELEMS);
+
+    let salted_leaf = opened_rows
+        .iter()
+        .zip(salts)
+        .flat_map(|(opened, salt)| opened.iter().chain(salt))
+        .copied()
+        .collect::<Vec<_>>();
+    let first_salt_offset = opened_rows[0].len();
+    let salt_chunk_index = first_salt_offset / RATE;
+    let salt_offset_in_chunk = first_salt_offset % RATE;
+    let salt_chunk = salted_leaf
+        .chunks(RATE)
+        .nth(salt_chunk_index)
+        .expect("salt coordinate belongs to one leaf-hash chunk");
+    let op_type = NpoTypeId::poseidon2_perm(Poseidon2Config::KOALA_BEAR_D4_W16);
+    let mut poseidon = traces
+        .non_primitive_trace::<Poseidon2Trace<F>>(&op_type)
+        .expect("hiding MMCS circuit emits the physical Poseidon2 table")
+        .clone();
+    let leaf_row = poseidon
+        .operations
+        .iter_mut()
+        .find(|row| {
+            !row.merkle_path
+                && row
+                    .input_values
+                    .get(..salt_chunk.len())
+                    .is_some_and(|prefix| prefix == salt_chunk)
+        })
+        .expect("the restored hiding-MMCS salt chunk is present in the Poseidon2 trace");
+    assert_eq!(leaf_row.input_values[salt_offset_in_chunk], salts[0][0]);
+    leaf_row.input_values[salt_offset_in_chunk] += F::ONE;
+    traces
+        .non_primitive_traces
+        .insert(op_type, Box::new(poseidon));
+}
+
+fn mutate_salt_alu_bus_row(traces: &mut Traces<Challenge>, salt_witness: WitnessId) {
+    let (row, operand) = traces
+        .alu_trace
+        .indices
+        .iter()
+        .enumerate()
+        .find_map(|(row, indices)| {
+            indices[..3]
+                .iter()
+                .position(|&index| index == salt_witness)
+                .map(|operand| (row, operand))
+        })
+        .expect("the salt private input is consumed by an ALU packing row");
+    traces.alu_trace.values[row][operand] += Challenge::ONE;
+    let [a, b, c, _] = traces.alu_trace.values[row];
+    traces.alu_trace.values[row][3] = match traces.alu_trace.op_kind[row] {
+        AluOpKind::Add => a + b,
+        AluOpKind::Mul => a * b,
+        AluOpKind::MulAdd => a * b + c,
+        kind => panic!("salt packing must use a locally recomputable ALU row, got {kind:?}"),
+    };
+}
+
+fn prove_and_verify_outer_trace(
+    prover: &mut BatchStarkProver<MyConfig>,
+    prover_data: &CircuitProverData<MyConfig>,
+    traces: &Traces<Challenge>,
+) -> Result<(), ProofCheckError> {
+    #[cfg(debug_assertions)]
+    let result = run_with_debug_oracle(|| {
+        let proof = prover
+            .prove_all_tables(traces, prover_data)
+            .map_err(ProofCheckError::Prove)?;
+        prover
+            .verify_all_tables::<Challenge>(&proof)
+            .map_err(ProofCheckError::Verify)
+    });
+
+    #[cfg(not(debug_assertions))]
+    let result = {
+        let proof = prover
+            .prove_all_tables(traces, prover_data)
+            .map_err(ProofCheckError::Prove)?;
+        prover
+            .verify_all_tables::<Challenge>(&proof)
+            .map_err(ProofCheckError::Verify)
+    };
+
+    #[cfg(debug_assertions)]
+    return match result {
+        Ok(result) => result,
+        Err(kind) => Err(ProofCheckError::DebugPanic(kind)),
+    };
+
+    #[cfg(not(debug_assertions))]
+    result
+}
+
 /// End-to-end recursive verification of a ZK proof committed with hiding MMCSs.
 ///
 /// Proves an `AddAir` statement with `HidingFriPcs` + `MerkleTreeHidingMmcs`, builds and
@@ -139,7 +268,7 @@ fn test_batch_verifier_hiding_mmcs() -> Result<(), VerificationError> {
     let instances = vec![instance];
     let prover_data = ProverData::from_instances(&config_proving, &instances);
     let common = &prover_data.common;
-    let batch_stark_proof = prove_batch(&config_proving, &instances, &prover_data);
+    let mut batch_stark_proof = prove_batch(&config_proving, &instances, &prover_data);
 
     verify_batch(&config_proving, &[air], &batch_stark_proof, &pvs, common).unwrap();
 
@@ -282,6 +411,84 @@ fn test_batch_verifier_hiding_mmcs() -> Result<(), VerificationError> {
 
     let verification_traces = verification_runner.run().unwrap();
 
+    // Mutate exactly input-batch 0, query 0, matrix 0, salt coordinate 0. The commitment,
+    // statement, common data and AIR are unchanged. Native verification must reject the same
+    // proof before we reuse its private-value packing against the already-built circuit.
+    let honest_private_inputs = private_inputs.clone();
+    let salt = &mut batch_stark_proof.opening_proof.1.input_openings[0]
+        .opening_proof
+        .0[0][0][0];
+    let honest_salt = *salt;
+    *salt += F::ONE;
+    let native_error = verify_batch(&config_proving, &[air], &batch_stark_proof, &pvs, common)
+        .expect_err("a one-coordinate salt mutation must fail native verification");
+    assert!(matches!(
+        native_error,
+        BatchVerificationError::Verification(
+            p3_uni_stark::VerificationError::InvalidOpeningArgument(_)
+        )
+    ));
+    let (mutated_public_inputs, mutated_private_inputs) =
+        verifier_inputs.pack_values(&pvs, &batch_stark_proof, common);
+    batch_stark_proof.opening_proof.1.input_openings[0]
+        .opening_proof
+        .0[0][0][0] = honest_salt;
+    assert_eq!(mutated_public_inputs, public_inputs);
+    let changed_private_indices = honest_private_inputs
+        .iter()
+        .zip(&mutated_private_inputs)
+        .enumerate()
+        .filter_map(|(index, (honest, mutated))| (honest != mutated).then_some(index))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        changed_private_indices.len(),
+        1,
+        "salt-only mutation must change exactly one circuit-private coordinate"
+    );
+    let mutated_salt_private_index = changed_private_indices[0];
+
+    let mut salt_runner = verification_circuit.runner();
+    salt_runner.set_public_inputs(&public_inputs).unwrap();
+    salt_runner
+        .set_private_inputs(&mutated_private_inputs)
+        .unwrap();
+    set_fri_mmcs_private_data::<F, Challenge, DIGEST_ELEMS>(
+        &mut salt_runner,
+        &mmcs_op_ids,
+        &query_paths,
+        Poseidon2Config::KOALA_BEAR_D4_W16,
+    )
+    .expect("honest restored paths populate the salt-mutation runner");
+    assert!(matches!(
+        salt_runner.run(),
+        Err(CircuitError::WitnessConflict { .. })
+    ));
+
+    // The path mutation is independent: use the honest proof/private inputs and change exactly
+    // one coefficient in one already-restored sibling digest. Host restoration is deliberately
+    // complete before this mutation, so rejection comes from the recursive Merkle check.
+    let mut mutated_paths = query_paths.clone();
+    assert!(
+        mutate_first_restored_sibling(&mut mutated_paths),
+        "genuine hiding-MMCS fixture must contain a restored sibling"
+    );
+    let mut sibling_runner = verification_circuit.runner();
+    sibling_runner.set_public_inputs(&public_inputs).unwrap();
+    sibling_runner
+        .set_private_inputs(&honest_private_inputs)
+        .unwrap();
+    set_fri_mmcs_private_data::<F, Challenge, DIGEST_ELEMS>(
+        &mut sibling_runner,
+        &mmcs_op_ids,
+        &mutated_paths,
+        Poseidon2Config::KOALA_BEAR_D4_W16,
+    )
+    .expect("mutated restored path has the honest path shape");
+    assert!(matches!(
+        sibling_runner.run(),
+        Err(CircuitError::WitnessConflict { .. })
+    ));
+
     // --- Step 4: Prove the verification circuit itself (non-ZK outer proof) ---
     let perm3 = default_koalabear_poseidon2_16();
     let hash3 = MyHash::new(perm3.clone());
@@ -341,6 +548,48 @@ fn test_batch_verifier_hiding_mmcs() -> Result<(), VerificationError> {
     verification_prover
         .verify_all_tables::<Challenge>(&verification_proof)
         .expect("Failed to verify proof of hiding-MMCS verification circuit");
+
+    let mut local_air_mutation = verification_traces.clone();
+    mutate_salt_leaf_poseidon_trace(&mut local_air_mutation, &batch_stark_proof);
+    let local_result = prove_and_verify_outer_trace(
+        &mut verification_prover,
+        &verification_circuit_prover_data,
+        &local_air_mutation,
+    );
+    #[cfg(debug_assertions)]
+    assert!(matches!(
+        &local_result,
+        Err(ProofCheckError::DebugPanic(
+            rejection_oracle::DebugRejectionKind::Constraint
+        ))
+    ));
+    assert_rejected(
+        local_result,
+        "a changed salt coefficient in the physical leaf-hash row",
+    );
+
+    let salt_witness = verification_circuit.private_input_rows[mutated_salt_private_index];
+    let mut global_lookup_mutation = verification_traces.clone();
+    mutate_salt_alu_bus_row(&mut global_lookup_mutation, salt_witness);
+    let global_result = prove_and_verify_outer_trace(
+        &mut verification_prover,
+        &verification_circuit_prover_data,
+        &global_lookup_mutation,
+    );
+    #[cfg(debug_assertions)]
+    assert!(
+        matches!(
+            &global_result,
+            Err(ProofCheckError::DebugPanic(
+                rejection_oracle::DebugRejectionKind::Lookup
+            ))
+        ),
+        "salt witness-only mutation must reach the global lookup oracle, got {global_result:?}"
+    );
+    assert_rejected(
+        global_result,
+        "a changed salt witness disconnected from the honest physical leaf-hash row",
+    );
 
     Ok(())
 }
