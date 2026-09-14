@@ -340,6 +340,47 @@ where
 }
 
 /// Verify a WHIR proof in-circuit with mandatory MMCS authentication.
+///
+/// The arithmetic-only parameter wrapper is defined only inside this module's private
+/// `cfg(test)` unit-test lane and cannot be named by downstream code, even when all crate features
+/// are enabled. This example uses its exact internal source path and is rejected because `tests`
+/// is unavailable outside that lane; the production entry point accepts only
+/// [`WhirVerifierParams`]. This checks API separation, while the MMCS tests separately establish
+/// cryptographic path and cap binding.
+///
+/// ```compile_fail,E0432
+/// use p3_circuit::CircuitBuilder;
+/// use p3_field::{ExtensionField, PrimeField64, TwoAdicField};
+/// use p3_recursion::pcs::whir::verifier::tests::WhirArithmeticParams;
+/// use p3_recursion::pcs::whir::{
+///     ConstraintWeightData, WhirProofTargets, verify_whir_circuit,
+/// };
+/// use p3_recursion::{RecursiveChallenger, Target};
+///
+/// fn pass_arithmetic_params_to_production<BF, EF, Ch>(
+///     circuit: &mut CircuitBuilder<EF>,
+///     challenger: &mut Ch,
+///     params: &WhirArithmeticParams<BF>,
+///     proof: &WhirProofTargets,
+///     initial_commitment_cap: &[Vec<Target>],
+///     initial_constraint: ConstraintWeightData,
+///     initial_claimed_eval: Target,
+/// ) where
+///     BF: PrimeField64 + TwoAdicField,
+///     EF: ExtensionField<BF> + TwoAdicField,
+///     Ch: RecursiveChallenger<BF, EF>,
+/// {
+///     let _ = verify_whir_circuit(
+///         circuit,
+///         challenger,
+///         params,
+///         proof,
+///         initial_commitment_cap,
+///         initial_constraint,
+///         initial_claimed_eval,
+///     );
+/// }
+/// ```
 pub fn verify_whir_circuit<BF, EF, Ch>(
     circuit: &mut CircuitBuilder<EF>,
     challenger: &mut Ch,

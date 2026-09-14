@@ -71,6 +71,25 @@ pub enum WhirVerifierParamsError {
 }
 
 /// Per-round configuration extracted from a `WhirConfig` for in-circuit use.
+///
+/// Instances are obtained from the checked [`WhirVerifierParams::round_params`] view. Their fields
+/// remain private so callers cannot mutate or destructure the validated round schedule.
+///
+/// ```compile_fail,E0616
+/// use p3_recursion::pcs::whir::WhirRoundParams;
+///
+/// fn mutate_query_count<F>(params: &mut WhirRoundParams<F>) {
+///     params.num_queries = 0;
+/// }
+/// ```
+///
+/// ```compile_fail,E0451
+/// use p3_recursion::pcs::whir::WhirRoundParams;
+///
+/// fn destructure_round<F>(params: WhirRoundParams<F>) {
+///     let WhirRoundParams { num_queries, .. } = params;
+/// }
+/// ```
 #[derive(Clone, Debug)]
 pub struct WhirRoundParams<F> {
     /// Number of out-of-domain evaluation samples for this round.
