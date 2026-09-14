@@ -503,9 +503,11 @@ where
 
     /// Checked allocation path for audited built-in commitment and opening targets.
     ///
-    /// Unlike [`Self::allocate`], this validates every native proof component before
-    /// mutating the circuit builder. The legacy method remains available for trusted
-    /// custom recursive integrations.
+    /// Unlike [`Self::allocate`], this validates every proof-owned raw component supported by
+    /// the checked commitment/opening adapters before mutating the circuit builder. It does not
+    /// authenticate AIR/layout or PCS-parameter compatibility; built-in verifier entrypoints
+    /// perform those contextual checks once their trusted statement is available. The legacy
+    /// method remains available for trusted custom recursive integrations.
     pub fn try_allocate(
         circuit: &mut CircuitBuilder<SC::Challenge>,
         proof: &Proof<SC>,
@@ -569,7 +571,9 @@ where
         .build()
     }
 
-    /// Checked public packing path that validates before extracting or cloning values.
+    /// Checked public packing path that validates raw proof-owned structure before extracting or
+    /// cloning values. AIR/layout and PCS-parameter compatibility remain contextual verifier
+    /// responsibilities.
     pub fn try_pack_public_values(
         &self,
         air_public_values: &[Val<SC>],
@@ -595,7 +599,8 @@ where
         ProofTargets::<SC, Comm, OpeningProof>::get_private_values(proof)
     }
 
-    /// Checked private packing path that validates before extracting values.
+    /// Checked private packing path that validates raw proof-owned structure before extracting
+    /// values. It does not replace contextual AIR/layout/PCS validation.
     pub fn try_pack_private_values(
         &self,
         proof: &Proof<SC>,
@@ -792,7 +797,8 @@ where
         construct_batch_stark_verifier_inputs(air_public_values, &proof_values, &common_data)
     }
 
-    /// Checked batch public packing path.
+    /// Checked batch public packing path. The guard covers raw proof/common-data transport shape;
+    /// contextual AIR/layout/PCS checks belong to the built-in verifier path.
     pub fn try_pack_public_values(
         &self,
         air_public_values: &[Vec<Val<SC>>],
@@ -819,7 +825,8 @@ where
         BatchProofTargets::<SC, Comm, OpeningProof>::get_private_values(proof)
     }
 
-    /// Checked batch private packing path.
+    /// Checked batch private packing path. It validates raw proof-owned structure before value
+    /// extraction, not the trusted AIR/layout/PCS relationship.
     pub fn try_pack_private_values(
         &self,
         proof: &BatchProof<SC>,

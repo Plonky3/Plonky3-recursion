@@ -2833,6 +2833,10 @@ mod prepared_shape_tests {
         fn get_values(_: &Self::Input) -> Vec<Challenge> {
             panic!("phase multiproof value extraction must not run")
         }
+
+        fn get_private_values(_: &Self::Input) -> Vec<Challenge> {
+            panic!("phase multiproof private value extraction must not run")
+        }
     }
 
     impl RecursiveMultiProofTargets<Challenge> for ProbePhaseProof {
@@ -2844,6 +2848,14 @@ mod prepared_shape_tests {
             _: usize,
         ) -> Self {
             panic!("phase multiproof target allocation must not run")
+        }
+
+        fn get_values_for_query(_: &Self::MultiProof, _: usize) -> Vec<Challenge> {
+            panic!("phase multiproof query value extraction must not run")
+        }
+
+        fn get_private_values_for_query(_: &Self::MultiProof, _: usize) -> Vec<Challenge> {
+            panic!("phase multiproof query private value extraction must not run")
         }
     }
 
@@ -3810,7 +3822,6 @@ mod prepared_shape_tests {
         }
 
         let mut inconsistent_last_points = baseline.clone();
-        inconsistent_last_points.0[2][0][0] = vec![Challenge::ZERO];
         inconsistent_last_points.0[2][1][0] = vec![Challenge::ZERO; 2];
         assert_tail_rejected(&inconsistent_last_points);
 

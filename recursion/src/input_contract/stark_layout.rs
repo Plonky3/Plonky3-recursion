@@ -70,6 +70,9 @@ pub(crate) enum LayoutError {
     DuplicatePreprocessedIndex { index: usize },
     #[error("preprocessed matrix route points to zero-width instance {index}")]
     PreprocessedWidthZero { index: usize },
+    /// The presence flag, positive-width metadata, and instance map disagree.
+    #[error("preprocessed metadata and matrix_to_instance map are not a complete bijection")]
+    PreprocessedMetadataMismatch,
     #[error("STARK commitment ordinal {ordinal} is out of bounds")]
     InvalidCommitmentOrdinal { ordinal: usize },
 }
@@ -192,6 +195,19 @@ impl<'a> NativeStarkLayout<'a> {
             if preprocessed_order[..position].contains(&index) {
                 return Err(LayoutError::DuplicatePreprocessedIndex { index });
             }
+        }
+        let positive_preprocessed: alloc::vec::Vec<usize> = instances
+            .iter()
+            .enumerate()
+            .filter_map(|(index, instance)| (instance.pre_width != 0).then_some(index))
+            .collect();
+        if has_preprocessed != !preprocessed_order.is_empty()
+            || positive_preprocessed.len() != preprocessed_order.len()
+            || positive_preprocessed
+                .iter()
+                .any(|index| !preprocessed_order.contains(index))
+        {
+            return Err(LayoutError::PreprocessedMetadataMismatch);
         }
         for instance in &instances {
             let quotient_log = instance.ext_log.checked_add(instance.quotient_log).ok_or(
@@ -442,8 +458,17 @@ mod tests {
 
     #[test]
     fn public_fri_view_is_read_only_and_ordinal_based() {
-        let layout =
-            NativeStarkLayout::new(alloc::vec![instance(1)], &[], false, false, false).unwrap();
+        let layout = NativeStarkLayout::new(
+            alloc::vec![InstanceLayout {
+                pre_width: 0,
+                ..instance(1)
+            }],
+            &[],
+            false,
+            false,
+            false,
+        )
+        .unwrap();
         let view = layout.opening_view();
         assert_eq!(view.commitment_count(), 2);
         assert_eq!(view.matrices(0).next().unwrap().width(), 3);
@@ -454,6 +479,7 @@ mod tests {
     fn routes_preserve_single_point_accesses_and_sparse_maps() {
         let mut first = instance(0);
         first.trace_next = false;
+        first.pre_width = 0;
         first.pre_next = false;
         first.permutation_width = 0;
         let mut second = instance(1);
@@ -494,6 +520,7 @@ mod tests {
 
         // An increasing sparse map must not synthesize an opening for the
         // omitted middle instance.
+        first.pre_width = 2;
         let mut third = instance(1);
         third.pre_width = 3;
         third.pre_next = false;
@@ -555,6 +582,14 @@ mod tests {
         assert!(matches!(
             NativeStarkLayout::new(instances, &[0, 0], false, true, false),
             Err(LayoutError::DuplicatePreprocessedIndex { .. })
+        ));
+        assert!(matches!(
+            NativeStarkLayout::new(alloc::vec![instance(1)], &[], false, true, false),
+            Err(LayoutError::PreprocessedMetadataMismatch)
+        ));
+        assert!(matches!(
+            NativeStarkLayout::new(alloc::vec![instance(1)], &[], false, false, false,),
+            Err(LayoutError::PreprocessedMetadataMismatch)
         ));
     }
 }

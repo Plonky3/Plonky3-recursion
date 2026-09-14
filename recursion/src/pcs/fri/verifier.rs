@@ -1136,6 +1136,25 @@ where
     )?
     .enumerate()
     {
+        // Native `open_inputs` right-shifts a global query index for a shorter
+        // input batch before authenticating its Merkle path. `index_bits` is
+        // little-endian, so dropping the low `bits_reduced` entries is the
+        // circuit equivalent of that integer shift. Keep the global bits for
+        // FRI arithmetic and only reduce this MMCS argument.
+        let batch_log_height = mats
+            .iter()
+            .map(|(domain, _)| domain.log_size() + log_blowup)
+            .max()
+            .unwrap_or(0);
+        if batch_log_height > log_global_max_height {
+            return Err(VerificationError::InvalidProofShape(format!(
+                "FRI input batch {batch_idx} height {batch_log_height} exceeds global height \
+                 {log_global_max_height}"
+            )));
+        }
+        let bits_reduced = log_global_max_height - batch_log_height;
+        let batch_index_bits = &index_bits[bits_reduced..];
+
         // Recursive MMCS verification for this batch
         if let Some(perm_config) = permutation_config {
             // Use pre-packed cap if available, otherwise pack on the fly
@@ -1169,7 +1188,7 @@ where
                     perm_config,
                     &commitment_cap,
                     &dimensions,
-                    index_bits,
+                    batch_index_bits,
                     batch_openings,
                 )
             } else {
@@ -1178,7 +1197,7 @@ where
                     perm_config,
                     &commitment_cap,
                     &dimensions,
-                    index_bits,
+                    batch_index_bits,
                     batch_openings,
                     salts_for_batch,
                 )
@@ -1392,13 +1411,15 @@ where
     Witness: Recursive<EF>,
     Comm: ObservableCommitment,
 {
-    builder.push_scope("verify_fri");
-
     let num_phases = betas.len();
     let num_queries = fri_proof_targets.query_proofs.len();
     let log_arities = &fri_proof_targets.log_arities;
 
-    let total_log_reduction: usize = log_arities.iter().sum();
+    let total_log_reduction = log_arities.iter().try_fold(0usize, |sum, &arity| {
+        sum.checked_add(arity).ok_or_else(|| {
+            VerificationError::InvalidProofShape("FRI fold arity sum overflows usize".to_string())
+        })
+    })?;
 
     tracing::debug!(
         "verify_fri_circuit: num_phases={}, num_queries={}, log_blowup={}, log_arities={:?}",
@@ -1450,6 +1471,12 @@ where
     }
 
     let log_max_height = index_bits_per_query[0].len();
+    if log_max_height > F::TWO_ADICITY {
+        return Err(VerificationError::InvalidProofShape(format!(
+            "FRI global query height {log_max_height} exceeds field two-adicity {}",
+            F::TWO_ADICITY
+        )));
+    }
     if index_bits_per_query
         .iter()
         .any(|v| v.len() != log_max_height)
@@ -1489,7 +1516,16 @@ where
                     opening.log_arity
                 )));
             }
-            let expected_coeffs = ((1usize << expected_log_arity) - 1) * ef_dim;
+            let expected_coeffs = u32::try_from(expected_log_arity)
+                .ok()
+                .and_then(|shift| 1usize.checked_shl(shift))
+                .and_then(|size| size.checked_sub(1))
+                .and_then(|siblings| siblings.checked_mul(ef_dim))
+                .ok_or_else(|| {
+                    VerificationError::InvalidProofShape(format!(
+                        "query {q} phase {phase}: log_arity {expected_log_arity} exceeds checked usize geometry"
+                    ))
+                })?;
             if opening.sibling_coefficients.len() != expected_coeffs {
                 return Err(VerificationError::InvalidProofShape(format!(
                     "query {q} phase {phase}: sibling coefficient count must be \
@@ -1511,7 +1547,14 @@ where
             )
         })?;
 
-    let expected_final_poly_len = 1 << log_final_poly_len;
+    let expected_final_poly_len = u32::try_from(log_final_poly_len)
+        .ok()
+        .and_then(|shift| 1usize.checked_shl(shift))
+        .ok_or_else(|| {
+            VerificationError::InvalidProofShape(format!(
+                "FRI final polynomial exponent {log_final_poly_len} exceeds checked usize geometry"
+            ))
+        })?;
     let actual_final_poly_len = fri_proof_targets.final_poly.len();
 
     if actual_final_poly_len != expected_final_poly_len {
@@ -1525,7 +1568,15 @@ where
     let mut cumulative_bits = Vec::with_capacity(num_phases + 1);
     cumulative_bits.push(0usize);
     for &la in log_arities {
-        cumulative_bits.push(cumulative_bits.last().unwrap() + la);
+        let next = cumulative_bits
+            .last()
+            .and_then(|&sum| sum.checked_add(la))
+            .ok_or_else(|| {
+                VerificationError::InvalidProofShape(
+                    "FRI cumulative fold arity overflows usize".to_string(),
+                )
+            })?;
+        cumulative_bits.push(next);
     }
 
     // Precompute the folded height after each phase for roll-in mapping.
@@ -1533,6 +1584,8 @@ where
     let folded_height_after: Vec<usize> = (0..num_phases)
         .map(|i| log_max_height - cumulative_bits[i + 1])
         .collect();
+
+    builder.push_scope("verify_fri");
 
     // Precompute shared beta powers and generator powers used across queries.
     let beta_pows_per_phase = precompute_beta_powers_per_phase(builder, betas, log_arities);

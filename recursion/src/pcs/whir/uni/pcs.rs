@@ -32,6 +32,7 @@ use p3_whir::pcs::proof::PcsProof;
 use p3_whir::pcs::prover::WhirProver;
 use serde::{Deserialize, Serialize};
 
+use crate::input_contract::whir::{WhirContextParams, validate_whir_pcs_context};
 use crate::pcs::whir::uni::bridge::univariate_eq_point;
 use crate::pcs::whir::uni::plan::{
     PaddedArity, StackedPlan, checked_stacked_num_variables, padded_arity,
@@ -502,9 +503,34 @@ where
                 points_per_matrix.push(openings.iter().map(|&(z, _)| z).collect::<Vec<EF>>());
             }
 
+            let stacked_num_variables = checked_stacked_num_variables(
+                shapes
+                    .iter()
+                    .map(|&(log_height, width)| (padded_arity(log_height, self.folding), width)),
+            )
+            .map_err(|_| WhirUniPcsError::ShapeMismatch { round })?;
+            let config = WhirConfig::<EF, F, Challenger>::new(
+                stacked_num_variables,
+                self.protocol_params.clone(),
+            )
+            .map_err(|_| WhirUniPcsError::ShapeMismatch { round })?;
+            let context_params = WhirContextParams::from_native(&config);
+            validate_whir_pcs_context::<F, EF, MT>(
+                round_proof,
+                &context_params,
+                &matrices
+                    .iter()
+                    .zip(&points_per_matrix)
+                    .map(|((domain, openings), points)| {
+                        (domain.log_size(), openings[0].1.len(), points.len())
+                    })
+                    .collect::<Vec<_>>(),
+            )
+            .map_err(|_| WhirUniPcsError::ShapeMismatch { round })?;
+
             let schedule = round_schedule::<F, EF>(&shapes, &points_per_matrix, self.folding);
             let prover = WhirProver::<EF, F, Dft, MT, Challenger, L>::new(
-                self.whir_config(schedule.stacked_num_variables),
+                config,
                 self.dft.clone(),
                 self.mmcs.clone(),
             );

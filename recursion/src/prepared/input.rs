@@ -11,13 +11,14 @@ use p3_commit::Pcs;
 use p3_field::{ExtensionField, PrimeField64};
 use p3_uni_stark::{Proof, StarkGenericConfig, Val};
 
+use crate::input_contract::stark::{validate_batch_native, validate_uni_native};
 use crate::input_contract::{
     BatchInputContract, CommitmentsShape, GlobalPreprocessedShape, InputContract,
     NonPrimitiveContract, OpenedValuesShape, OpenedValuesWithLookupsShape,
     PreprocessedInstanceShape, UniInputContract,
 };
 use crate::recursion::{BatchOnly, RecursionInput};
-use crate::traits::{PreparedRecursive, Recursive, RecursiveAir};
+use crate::traits::{CheckedRecursive, PreparedRecursive, Recursive, RecursiveAir};
 use crate::verifier::{ReconstructedBatchTables, VerificationError, reconstruct_batch_tables};
 
 /// Native PCS commitment type selected by a STARK configuration.
@@ -364,6 +365,43 @@ where
                 preprocessed,
             })))
         }
+    }
+}
+
+/// Run the built-in raw guards on a recursion input before backend setup.
+///
+/// This deliberately validates only proof-owned structure and commitment/opening transport.
+/// AIR/layout/PCS parameter compatibility is checked by the built-in verifier path after its
+/// trusted context is available; this helper must not be documented or used as that context.
+pub(crate) fn validate_builtin_input_raw<SC, A, Comm, Opening>(
+    source: &RecursionInput<'_, SC, A>,
+) -> Result<(), VerificationError>
+where
+    SC: StarkGenericConfig,
+    A: RecursiveAir<Val<SC>, SC::Challenge, p3_lookup::logup::LogUpGadget>,
+    Comm: CheckedRecursive<SC::Challenge>
+        + Recursive<
+            SC::Challenge,
+            Input = <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment,
+        >,
+    Opening: CheckedRecursive<SC::Challenge>
+        + Recursive<SC::Challenge, Input = <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Proof>,
+{
+    match source {
+        RecursionInput::UniStark {
+            proof,
+            preprocessed_commit,
+            ..
+        } => validate_uni_native::<SC, Comm, Opening>(proof, preprocessed_commit.as_ref()),
+        RecursionInput::BatchStark {
+            proof,
+            common_data,
+            table_public_inputs,
+        } => validate_batch_native::<SC, Comm, Opening>(
+            &proof.proof,
+            common_data,
+            &table_public_inputs.iter().map(Vec::len).collect::<Vec<_>>(),
+        ),
     }
 }
 

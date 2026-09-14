@@ -149,6 +149,18 @@ where
     /// Opaque verifier result returned by `build_verifier_circuit`.
     type VerifierResult: VerifierCircuitResult<SC, A>;
 
+    /// Validate the input before backend preparation, plugin construction, or circuit
+    /// allocation. Custom backends retain the historical trusted no-op default; audited built-in
+    /// backends override this with their raw input guards and perform contextual PCS checks in
+    /// their verifier construction path.
+    fn validate_input(
+        &self,
+        _config: &SC,
+        _prev: &RecursionInput<'_, SC, A>,
+    ) -> Result<(), VerificationError> {
+        Ok(())
+    }
+
     /// Prepare the circuit before building the verifier (e.g. enable challenger permutation and NPOs). Called before `build_verifier_circuit`.
     fn prepare_circuit(
         &self,
@@ -285,6 +297,7 @@ where
         Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
     let mut circuit_builder = CircuitBuilder::new();
+    backend.validate_input(config, prev)?;
     backend.prepare_circuit(config, &mut circuit_builder)?;
 
     // Build verifier constraints.
@@ -422,6 +435,10 @@ where
         Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
     let mut circuit_builder = CircuitBuilder::new();
+
+    // Validate both inputs before either backend prepares plugins or allocates verifier targets.
+    <B as PcsRecursionBackend<SC, A1, D>>::validate_input(backend, config, left)?;
+    <B as PcsRecursionBackend<SC, A2, D>>::validate_input(backend, config, right)?;
 
     <B as PcsRecursionBackend<SC, A1, D>>::prepare_circuit(backend, config, &mut circuit_builder)?;
     <B as PcsRecursionBackend<SC, A2, D>>::prepare_circuit(backend, config, &mut circuit_builder)?;

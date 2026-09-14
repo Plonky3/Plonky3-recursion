@@ -21,7 +21,9 @@ use p3_field::coset::TwoAdicMultiplicativeCoset;
 use p3_field::{ExtensionField, PrimeField64, TwoAdicField};
 
 use crate::Target;
+use crate::input_contract::whir::WhirContextParams;
 use crate::pcs::whir::gadgets::{ConstraintWeightData, eval_powers_combination};
+use crate::pcs::whir::targets::QueryOpeningTargets;
 use crate::pcs::whir::uni::bridge::univariate_eq_point_circuit;
 use crate::pcs::whir::uni::plan::{
     PaddedArity, StackedPlan, checked_stacked_num_variables, padded_arity,
@@ -47,6 +49,197 @@ pub struct RoundClaims {
     pub claimed_eval: Target,
     /// Arity of the stacked polynomial for this commitment.
     pub stacked_num_variables: usize,
+}
+
+fn checked_target_pow2(log: usize, label: &str) -> Result<usize, VerificationError> {
+    let shift = u32::try_from(log).map_err(|_| {
+        VerificationError::InvalidProofShape(format!(
+            "WHIR {label} exponent {log} does not fit in u32"
+        ))
+    })?;
+    1usize.checked_shl(shift).ok_or_else(|| {
+        VerificationError::InvalidProofShape(format!(
+            "WHIR {label} exponent {log} exceeds the usize word width"
+        ))
+    })
+}
+
+fn validate_target_sumcheck(
+    rounds: usize,
+    pow_bits: usize,
+    actual_rounds: usize,
+    actual_pow: usize,
+    label: &str,
+) -> Result<(), VerificationError> {
+    if actual_rounds != rounds {
+        return Err(VerificationError::InvalidProofShape(format!(
+            "WHIR {label} sumcheck expects {rounds} rounds, got {actual_rounds}"
+        )));
+    }
+    // As in native SumcheckData, PoW witnesses are consumed only when the
+    // phase has nonzero PoW. Present ignored fields remain allocation shape.
+    if pow_bits > 0 && actual_pow != rounds {
+        return Err(VerificationError::InvalidProofShape(format!(
+            "WHIR {label} sumcheck expects {rounds} PoW witnesses, got {actual_pow}"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_target_query(
+    opening: &QueryOpeningTargets,
+    extension: bool,
+    queries: usize,
+    width: usize,
+    label: &str,
+) -> Result<(), VerificationError> {
+    let actual_extension = matches!(opening, QueryOpeningTargets::Extension { .. });
+    if actual_extension != extension {
+        return Err(VerificationError::InvalidProofShape(format!(
+            "WHIR {label} query field variant disagrees with its round"
+        )));
+    }
+    // Each target list is one query row; the outer vector is checked by the
+    // caller, while this helper validates the leaf width without allocating.
+    if opening.leaf_values().len() != width {
+        return Err(VerificationError::InvalidProofShape(format!(
+            "WHIR {label} query leaf expects width {width}, got {}",
+            opening.leaf_values().len()
+        )));
+    }
+    if queries == 0 {
+        return Err(VerificationError::InvalidProofShape(format!(
+            "WHIR {label} query count must be positive"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_target_round_shape(
+    round: &WhirRoundTargets,
+    vp: &WhirContextParams,
+    matrices: &[MatrixOpenings<'_>],
+    evals: &[Vec<Target>],
+) -> Result<(), VerificationError> {
+    if matrices.is_empty() || matrices.iter().any(|m| m.points.is_empty()) {
+        return Err(VerificationError::InvalidProofShape(
+            "WHIR commitment must have nonempty matrices and points".into(),
+        ));
+    }
+    let expected_batches = matrices.iter().try_fold(0usize, |sum, matrix| {
+        sum.checked_add(matrix.points.len()).ok_or_else(|| {
+            VerificationError::InvalidProofShape("WHIR opening batch count overflows usize".into())
+        })
+    })?;
+    if evals.len() != expected_batches {
+        return Err(VerificationError::InvalidProofShape(format!(
+            "WHIR opening batch count expects {expected_batches}, got {}",
+            evals.len()
+        )));
+    }
+    let expected_widths = matrices
+        .iter()
+        .flat_map(|matrix| matrix.points.iter().map(|(_, values)| values.len()));
+    for (batch, (expected, actual)) in expected_widths.zip(evals).enumerate() {
+        if expected == 0 || actual.len() != expected {
+            return Err(VerificationError::InvalidProofShape(format!(
+                "WHIR opening batch {batch} expects positive width {expected}, got {}",
+                actual.len()
+            )));
+        }
+    }
+    if round.whir.rounds.len() != vp.rounds.len() {
+        return Err(VerificationError::InvalidProofShape(format!(
+            "WHIR intermediate round count expects {}, got {}",
+            vp.rounds.len(),
+            round.whir.rounds.len()
+        )));
+    }
+    if round.whir.initial_ood_answers.len() != vp.commitment_ood_samples {
+        return Err(VerificationError::InvalidProofShape(
+            "WHIR initial OOD answer count disagrees with canonical parameters".into(),
+        ));
+    }
+    validate_target_sumcheck(
+        vp.starting_folding_factor,
+        vp.starting_folding_pow_bits,
+        round.whir.initial_sumcheck.round_polys.len(),
+        round.whir.initial_sumcheck.pow_witnesses.len(),
+        "initial",
+    )?;
+    for (round_idx, (proof_round, params)) in round.whir.rounds.iter().zip(&vp.rounds).enumerate() {
+        if proof_round.commitment_cap.is_empty() {
+            return Err(VerificationError::InvalidProofShape(format!(
+                "WHIR intermediate round {round_idx} has an empty commitment cap"
+            )));
+        }
+        if proof_round.ood_answers.len() != params.ood_samples {
+            return Err(VerificationError::InvalidProofShape(format!(
+                "WHIR intermediate round {round_idx} OOD count disagrees with canonical parameters"
+            )));
+        }
+        if proof_round.queries.len() != params.num_queries {
+            return Err(VerificationError::InvalidProofShape(format!(
+                "WHIR intermediate round {round_idx} query count disagrees with canonical parameters"
+            )));
+        }
+        let width = checked_target_pow2(params.folding_factor, "intermediate leaf")?;
+        for query in &proof_round.queries {
+            validate_target_query(
+                query,
+                round_idx != 0,
+                params.num_queries,
+                width,
+                "intermediate",
+            )?;
+        }
+        validate_target_sumcheck(
+            vp.rounds
+                .get(round_idx + 1)
+                .map_or(vp.final_folding_factor, |next| next.folding_factor),
+            params.folding_pow_bits,
+            proof_round.sumcheck.round_polys.len(),
+            proof_round.sumcheck.pow_witnesses.len(),
+            "intermediate",
+        )?;
+    }
+    let expected_poly = checked_target_pow2(vp.final_poly_num_variables, "final polynomial")?;
+    if round.whir.final_poly.len() != expected_poly {
+        return Err(VerificationError::InvalidProofShape(
+            "WHIR final polynomial length disagrees with canonical parameters".into(),
+        ));
+    }
+    if round.whir.final_queries.len() != vp.final_queries {
+        return Err(VerificationError::InvalidProofShape(
+            "WHIR final query count disagrees with canonical parameters".into(),
+        ));
+    }
+    let final_width = checked_target_pow2(vp.final_folding_factor, "final leaf")?;
+    for query in &round.whir.final_queries {
+        validate_target_query(
+            query,
+            !vp.rounds.is_empty(),
+            vp.final_queries,
+            final_width,
+            "final",
+        )?;
+    }
+    match (&round.whir.final_sumcheck, vp.final_sumcheck_rounds) {
+        (Some(sumcheck), rounds) => validate_target_sumcheck(
+            rounds,
+            vp.final_folding_pow_bits,
+            sumcheck.round_polys.len(),
+            sumcheck.pow_witnesses.len(),
+            "final",
+        )?,
+        (None, 0) => {}
+        (None, _) => {
+            return Err(VerificationError::InvalidProofShape(
+                "WHIR final sumcheck is required by canonical parameters".into(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Assembles one commitment round's WHIR claim.
@@ -270,6 +463,9 @@ where
 
         let stacked_num_variables = stacked_num_variables(&openings, params.folding)?;
         let vp = params.round_params::<EF, DummyChallenger<BF>>(stacked_num_variables)?;
+
+        let context_params = WhirContextParams::from_recursive(&vp);
+        validate_target_round_shape(round, &context_params, &openings, &round.evals)?;
 
         // The commitment fixes how many initial OOD answers exist; a wrong
         // count would desync Fiat-Shamir instead of being rejected, exactly

@@ -92,8 +92,9 @@ where
             continue;
         }
         let arity = arity.get();
+        let shift = u32::try_from(arity).map_err(|_| StackedArityError::ShiftOverflow { arity })?;
         let row_size = 1usize
-            .checked_shl(arity as u32)
+            .checked_shl(shift)
             .ok_or(StackedArityError::ShiftOverflow { arity })?;
         let contribution = width
             .checked_mul(row_size)
@@ -207,8 +208,10 @@ impl StackedPlan {
                 });
                 continue;
             }
+            let shift =
+                u32::try_from(arity).map_err(|_| StackedArityError::ShiftOverflow { arity })?;
             let slot_size = 1usize
-                .checked_shl(arity as u32)
+                .checked_shl(shift)
                 .ok_or(StackedArityError::ShiftOverflow { arity })?;
             let selector_variables =
                 num_variables
@@ -318,6 +321,17 @@ mod tests {
         let plan = StackedPlan::try_new(&shapes).expect("empty table has zero geometry");
         assert_eq!(plan.num_variables, 0);
         assert!(plan.placements[0].selectors.is_empty());
+    }
+
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn stacked_arity_rejects_exponents_beyond_u32_without_truncation() {
+        assert_eq!(
+            checked_stacked_num_variables([(PaddedArity(u32::MAX as usize + 1), 1)]),
+            Err(StackedArityError::ShiftOverflow {
+                arity: u32::MAX as usize + 1
+            })
+        );
     }
 
     /// Builds a `Table` whose row `j` is column `j`'s hypercube evaluations.

@@ -308,6 +308,16 @@ where
 {
     type VerifierResult = WhirVerifierResult<SC>;
 
+    fn validate_input(
+        &self,
+        _config: &SC,
+        prev: &RecursionInput<'_, SC, A>,
+    ) -> Result<(), VerificationError> {
+        crate::prepared::input::validate_builtin_input_raw::<SC, A, SC::Commitment, SC::OpeningProof>(
+            prev,
+        )
+    }
+
     /// # Errors
     /// Returns [`VerificationError::InvalidProofShape`] when the config's
     /// [`WhirUniVerifierParams::permutation_config`] is `None`, the arithmetic-only mode that
