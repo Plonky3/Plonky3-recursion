@@ -8,6 +8,7 @@ extern crate self as p3_recursion;
 #[cfg(test)]
 extern crate std;
 
+pub mod artifact;
 pub mod backend;
 pub mod challenger;
 pub mod challenger_perm;
