@@ -496,7 +496,7 @@ where
         non_primitives: relation
             .non_primitives()
             .iter()
-            .zip(public_values.iter().skip(3))
+            .zip(public_values.iter().skip(NUM_PRIMITIVE_TABLES))
             .map(|(entry, values)| NonPrimitiveContract {
                 op_type: entry.op_type().clone(),
                 rows: entry.rows(),

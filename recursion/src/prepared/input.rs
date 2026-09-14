@@ -449,6 +449,7 @@ pub(crate) fn compare_input_contract<F: PartialEq, C: PartialEq, O: PartialEq>(
             same!(a.alu_variant, b.alu_variant, "input.metadata");
             same!(a.ext_degree, b.ext_degree, "input.metadata");
             same!(a.w_binomial, b.w_binomial, "input.metadata");
+            same!(a.statement_instance, b.statement_instance, "input.metadata");
             same!(
                 a.alu_quintic_trinomial,
                 b.alu_quintic_trinomial,
@@ -751,7 +752,8 @@ mod tests {
     use p3_circuit::ops::NpoTypeId;
     use p3_circuit::tables::Traces;
     use p3_circuit_prover::batch_stark_prover::{
-        BatchAir, BatchTableInstance, DynamicAirEntry, NonPrimitiveTableEntry, TableProver,
+        BatchAir, BatchTableInstance, DynamicAirEntry, NUM_PRIMITIVE_TABLES,
+        NonPrimitiveTableEntry, TableProver,
     };
     use p3_circuit_prover::{AirVariant, RowCounts, TablePacking};
     use p3_field::extension::{BinomialExtensionField, QuinticTrinomialExtensionField};
@@ -990,7 +992,15 @@ mod tests {
         let InputContract::Batch(expected_batch) = &mut expected else {
             unreachable!()
         };
-        expected_batch.statement_instance = Some(3);
+        expected_batch.statement_instance = Some(NUM_PRIMITIVE_TABLES);
+
+        let mut wrong_statement_instance = expected.clone();
+        let InputContract::Batch(wrong_statement_instance_batch) = &mut wrong_statement_instance
+        else {
+            unreachable!()
+        };
+        wrong_statement_instance_batch.statement_instance = Some(NUM_PRIMITIVE_TABLES + 1);
+        assert_component(&expected, &wrong_statement_instance, "input.metadata");
 
         let mut changed_statement = expected.clone();
         let InputContract::Batch(changed_statement_batch) = &mut changed_statement else {
