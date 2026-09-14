@@ -700,8 +700,8 @@ mod tests {
     use p3_field::PrimeCharacteristicRing;
 
     use crate::artifact::{
-        ArtifactLimits, CanonicalStatement, ExpectedVerifierArtifact, PortableArtifactExport,
-        PortableVerifier,
+        ArtifactError, ArtifactLimits, CanonicalStatement, ExpectedVerifierArtifact,
+        PortableArtifactExport, PortableVerifier,
     };
     use crate::builtin_config::{FriConfigV1, SuiteIdV1, baby_bear_d4_poseidon2_binary};
 
@@ -749,8 +749,12 @@ mod tests {
 
     #[test]
     fn generated_proof_survives_dropping_all_native_owners() {
-        let limits = ArtifactLimits::default();
         let (verifier_bytes, proof_bytes) = exported_double_circuit(2, 4);
+        let limits = ArtifactLimits {
+            max_verifier_bytes: verifier_bytes.len(),
+            max_proof_bytes: proof_bytes.len(),
+            ..ArtifactLimits::default()
+        };
 
         let imported = PortableVerifier::decode(
             &verifier_bytes,
@@ -761,6 +765,78 @@ mod tests {
         imported
             .verify_encoded(&proof_bytes, CanonicalStatement::new(&[], 0))
             .unwrap();
+
+        let verifier_below = ArtifactLimits {
+            max_verifier_bytes: verifier_bytes.len() - 1,
+            ..limits
+        };
+        assert_eq!(
+            PortableVerifier::decode(
+                &verifier_bytes,
+                ExpectedVerifierArtifact::from_trusted_bytes(&verifier_bytes),
+                verifier_below,
+            )
+            .err()
+            .unwrap(),
+            ArtifactError::DecodeLimitExceeded {
+                component: "artifact bytes",
+                actual: verifier_bytes.len(),
+                limit: verifier_bytes.len() - 1,
+            }
+        );
+
+        let proof_below = ArtifactLimits {
+            max_proof_bytes: proof_bytes.len() - 1,
+            ..limits
+        };
+        let imported = PortableVerifier::decode(
+            &verifier_bytes,
+            ExpectedVerifierArtifact::from_trusted_bytes(&verifier_bytes),
+            proof_below,
+        )
+        .unwrap();
+        assert_eq!(
+            imported
+                .verify_encoded(&proof_bytes, CanonicalStatement::new(&[], 0))
+                .unwrap_err(),
+            ArtifactError::DecodeLimitExceeded {
+                component: "artifact bytes",
+                actual: proof_bytes.len(),
+                limit: proof_bytes.len() - 1,
+            }
+        );
+    }
+
+    #[test]
+    fn public_import_rejects_truncated_trailing_and_non_artifact_proofs() {
+        let limits = ArtifactLimits::default();
+        let (verifier_bytes, proof_bytes) = exported_double_circuit(2, 4);
+        let imported = PortableVerifier::decode(
+            &verifier_bytes,
+            ExpectedVerifierArtifact::from_trusted_bytes(&verifier_bytes),
+            limits,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            imported.verify_encoded(
+                &proof_bytes[..proof_bytes.len() - 1],
+                CanonicalStatement::new(&[], 0),
+            ),
+            Err(ArtifactError::Truncated)
+        ));
+        let mut trailing = proof_bytes.clone();
+        trailing.push(0);
+        assert!(matches!(
+            imported.verify_encoded(&trailing, CanonicalStatement::new(&[], 0)),
+            Err(ArtifactError::TrailingBytes)
+        ));
+        assert_eq!(
+            imported
+                .verify_encoded(&[0; 32], CanonicalStatement::new(&[], 0))
+                .unwrap_err(),
+            ArtifactError::BadMagic
+        );
     }
 
     #[test]
