@@ -29,8 +29,20 @@ pub struct Optimizer<F>(core::marker::PhantomData<F>);
 
 impl<F: Field> Optimizer<F> {
     pub fn optimize(ops: Vec<Op<F>>) -> (Vec<Op<F>>, HashMap<WitnessId, WitnessId>) {
+        Self::optimize_with_preinitialized(ops, &[])
+    }
+
+    /// Optimize while preserving the execution-time availability of externally populated slots.
+    pub(crate) fn optimize_with_preinitialized(
+        ops: Vec<Op<F>>,
+        preinitialized: &[WitnessId],
+    ) -> (Vec<Op<F>>, HashMap<WitnessId, WitnessId>) {
         let (ops, rewrite) = Deduplicator::with_capacity(ops.len()).run(ops);
-        let ops = MulAddFusion::new(&ops).run(ops);
+        let preinitialized: Vec<_> = preinitialized
+            .iter()
+            .map(|id| id.resolve(&rewrite))
+            .collect();
+        let ops = MulAddFusion::with_preinitialized(&ops, &preinitialized).run(ops);
         (ops, rewrite)
     }
 }
@@ -60,6 +72,27 @@ mod tests {
 
         let (optimized, _) = Optimizer::optimize(ops.clone());
         assert_eq!(optimized, ops);
+    }
+
+    #[test]
+    fn test_tagged_sub_of_mul_from_private_input_runs() {
+        let mut builder = CircuitBuilder::<F>::new();
+        let lhs = builder.alloc_private_input("lhs");
+        let factor_a = builder.alloc_public_input("factor-a");
+        let factor_b = builder.alloc_public_input("factor-b");
+        let product = builder.mul(factor_a, factor_b);
+        let result = builder.sub(lhs, product);
+        builder.tag(result, "difference").unwrap();
+
+        let circuit = builder.build().unwrap();
+        let mut runner = circuit.runner();
+        runner
+            .set_public_inputs(&[F::from_u64(3), F::from_u64(4)])
+            .unwrap();
+        runner.set_private_inputs(&[F::from_u64(17)]).unwrap();
+        let traces = runner.run().unwrap();
+
+        assert_eq!(traces.probe("difference"), Some(&F::from_u64(5)));
     }
 
     #[test]

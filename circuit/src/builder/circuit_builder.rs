@@ -1153,7 +1153,7 @@ where
         } = lowerer.lower()?;
 
         // Stage 2: IR transformations and optimizations
-        let (ops, rewrite) = Optimizer::optimize(ops);
+        let (ops, rewrite) = Optimizer::optimize_with_preinitialized(ops, &private_input_rows);
 
         let resolve = |id: WitnessId| id.resolve(&rewrite);
         let expr_to_widx = expr_to_widx

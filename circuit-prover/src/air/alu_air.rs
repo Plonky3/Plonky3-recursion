@@ -1158,19 +1158,27 @@ fn eval_alu_interactions<AB: AirBuilder + InteractionBuilder, const D: usize>(
 
 #[cfg(test)]
 mod tests {
+    extern crate std;
+
     use alloc::vec;
     use alloc::vec::Vec;
 
     use p3_circuit::WitnessId;
     use p3_circuit::ops::AluOpKind;
-    use p3_field::BasedVectorSpace;
+    use p3_field::extension::{BinomiallyExtendable, QuinticTrinomialExtensionField};
+    use p3_field::{BasedVectorSpace, ExtensionField};
     use p3_matrix::Matrix;
     use p3_test_utils::baby_bear_params::{
         BabyBear as Val, BinomialExtensionField, PrimeCharacteristicRing,
     };
+    use p3_test_utils::corpus::{
+        CaseRng, CorpusSpec, DEFAULT_CASES, MAX_CASES, derive_family_seed, for_each_case,
+    };
+    use p3_test_utils::goldilocks_params::Goldilocks;
+    use p3_test_utils::koala_bear_params::KoalaBear;
 
     use super::*;
-    use crate::air::test_utils::{assert_air_rejects, assert_air_satisfies};
+    use crate::air::test_utils::{assert_air_rejects, assert_air_satisfies, check_air_satisfies};
 
     /// Convert an `AluTrace` to preprocessed values (13 columns per op) for standalone tests.
     fn trace_to_preprocessed<F: Field, ExtF: BasedVectorSpace<F>, const D: usize>(
@@ -1210,6 +1218,230 @@ mod tests {
     }
 
     type EF = BinomialExtensionField<Val, 4>;
+
+    fn assurance_corpus_spec() -> CorpusSpec {
+        let start_seed = std::env::var("P3_ASSURANCE_START_SEED")
+            .ok()
+            .map_or(0, |value| {
+                value.parse().unwrap_or_else(|_| {
+                    panic!("P3_ASSURANCE_START_SEED must be a u64, got {value:?}")
+                })
+            });
+        let cases = std::env::var("P3_ASSURANCE_CASES")
+            .ok()
+            .map_or(DEFAULT_CASES, |value| {
+                value
+                    .parse()
+                    .unwrap_or_else(|_| panic!("P3_ASSURANCE_CASES must be a u32, got {value:?}"))
+            });
+        assert!(
+            (1..=MAX_CASES).contains(&cases),
+            "P3_ASSURANCE_CASES must be in 1..={MAX_CASES}, got {cases}"
+        );
+        CorpusSpec { start_seed, cases }
+    }
+
+    fn for_assurance_cases(run: impl FnMut(u64)) {
+        for_each_case(assurance_corpus_spec(), run);
+    }
+
+    fn full_nonzero_value<F, ExtF, const D: usize>(rng: &mut CaseRng) -> ExtF
+    where
+        F: Field,
+        ExtF: ExtensionField<F>,
+    {
+        let mut coefficients = [F::ZERO; D];
+        for (index, coefficient) in coefficients.iter_mut().enumerate() {
+            *coefficient = F::from_u64(rng.next_u64());
+            if *coefficient == F::ZERO {
+                *coefficient = F::from_usize(index + 1);
+            }
+        }
+        ExtF::from_basis_coefficients_slice(&coefficients).unwrap()
+    }
+
+    fn generated_alu_trace<F, ExtF, const D: usize>(
+        case_seed: u64,
+        family_tag: u64,
+    ) -> AluTrace<ExtF>
+    where
+        F: Field,
+        ExtF: ExtensionField<F>,
+    {
+        let mut rng = CaseRng::new(derive_family_seed(case_seed, family_tag));
+        let zero = ExtF::ZERO;
+        let a_add = full_nonzero_value::<F, ExtF, D>(&mut rng);
+        let b_add = full_nonzero_value::<F, ExtF, D>(&mut rng);
+        let add_out = a_add + b_add;
+
+        let a_mul = full_nonzero_value::<F, ExtF, D>(&mut rng);
+        let b_mul = full_nonzero_value::<F, ExtF, D>(&mut rng);
+        let mul_out = a_mul * b_mul;
+
+        let a_ma = full_nonzero_value::<F, ExtF, D>(&mut rng);
+        let b_ma = full_nonzero_value::<F, ExtF, D>(&mut rng);
+        let c_ma = full_nonzero_value::<F, ExtF, D>(&mut rng);
+        let ma_out = a_ma * b_ma + c_ma;
+
+        let horner_alpha = full_nonzero_value::<F, ExtF, D>(&mut rng);
+        let mut accumulator = ExtF::ZERO;
+        let mut horner_rows = Vec::with_capacity(4);
+        for _ in 0..4 {
+            let a = full_nonzero_value::<F, ExtF, D>(&mut rng);
+            let c = full_nonzero_value::<F, ExtF, D>(&mut rng);
+            let out = accumulator * horner_alpha + c - a;
+            horner_rows.push([a, horner_alpha, c, out]);
+            accumulator = out;
+        }
+
+        let mut values = vec![
+            [a_add, b_add, zero, add_out],
+            [a_mul, b_mul, zero, mul_out],
+            [a_ma, b_ma, c_ma, ma_out],
+        ];
+        values.extend(horner_rows);
+        AluTrace {
+            op_kind: vec![
+                AluOpKind::Add,
+                AluOpKind::Mul,
+                AluOpKind::MulAdd,
+                AluOpKind::HornerAcc,
+                AluOpKind::HornerAcc,
+                AluOpKind::HornerAcc,
+                AluOpKind::HornerAcc,
+            ],
+            values,
+            indices: vec![[WitnessId(1), WitnessId(2), WitnessId(3), WitnessId(4)]; 7],
+        }
+    }
+
+    fn assert_alu_trace_matches_reference<ExtF: Field>(
+        trace: &AluTrace<ExtF>,
+        case_seed: u64,
+        field_label: &str,
+    ) {
+        let mut horner_accumulator = ExtF::ZERO;
+        let mut previous_was_horner = false;
+        for (op, (kind, operands)) in trace.op_kind.iter().zip(&trace.values).enumerate() {
+            if !matches!(kind, AluOpKind::HornerAcc) {
+                horner_accumulator = ExtF::ZERO;
+                previous_was_horner = false;
+            }
+            let [a, b, c, actual] = *operands;
+            let expected = match kind {
+                AluOpKind::Add => a + b,
+                AluOpKind::Mul => a * b,
+                AluOpKind::MulAdd => a * b + c,
+                AluOpKind::HornerAcc => {
+                    if !previous_was_horner {
+                        horner_accumulator = ExtF::ZERO;
+                    }
+                    let expected = horner_accumulator * b + c - a;
+                    horner_accumulator = actual;
+                    previous_was_horner = true;
+                    expected
+                }
+                AluOpKind::BoolCheck => a,
+            };
+            assert_eq!(
+                actual, expected,
+                "family=alu-reference field={field_label} seed={case_seed} op={op} mutation=none expected-stage=direct-field-equality"
+            );
+        }
+    }
+
+    fn assurance_lanes_and_horner_k(case_seed: u64) -> (usize, usize) {
+        let lanes = [1, 2, 4][case_seed as usize % 3];
+        let horner_k = if case_seed & 1 == 0 { 2 } else { 4 };
+        (lanes, horner_k)
+    }
+
+    fn run_assurance_alu_koalabear_d1(case_seed: u64) {
+        const TAG: u64 = 0x414c_554b_4231_0001;
+        let trace = generated_alu_trace::<KoalaBear, KoalaBear, 1>(case_seed, TAG);
+        assert_alu_trace_matches_reference(&trace, case_seed, "KoalaBear/D1");
+        let (lanes, horner_k) = assurance_lanes_and_horner_k(case_seed);
+        let preprocessed = trace_to_preprocessed::<KoalaBear, _, 1>(&trace);
+        let air = AluAir::<KoalaBear, 1>::new_with_preprocessed(
+            trace.values.len(),
+            lanes,
+            preprocessed,
+            horner_k,
+        );
+        let matrix = air.trace_to_matrix(&trace, 1);
+        if let Err((row, failures)) =
+            check_air_satisfies::<KoalaBear, KoalaBear, _>(&air, &matrix, &[])
+        {
+            panic!(
+                "family=alu-reference field=KoalaBear/D1 seed={case_seed} op=row-{row} mutation=none expected-stage=local-air-satisfaction failures={failures}"
+            );
+        }
+    }
+
+    fn run_assurance_alu_goldilocks_d2(case_seed: u64) {
+        const TAG: u64 = 0x414c_5547_4c32_0002;
+        type Ext = BinomialExtensionField<Goldilocks, 2>;
+        let trace = generated_alu_trace::<Goldilocks, Ext, 2>(case_seed, TAG);
+        assert_alu_trace_matches_reference(&trace, case_seed, "Goldilocks/D2");
+        let (lanes, horner_k) = assurance_lanes_and_horner_k(case_seed);
+        let preprocessed = trace_to_preprocessed::<Goldilocks, _, 2>(&trace);
+        let air = AluAir::<Goldilocks, 2>::new_binomial_with_preprocessed(
+            trace.values.len(),
+            lanes,
+            <Goldilocks as BinomiallyExtendable<2>>::W,
+            preprocessed,
+            horner_k,
+        );
+        let matrix = air.trace_to_matrix(&trace, 1);
+        if let Err((row, failures)) = check_air_satisfies::<Goldilocks, Ext, _>(&air, &matrix, &[])
+        {
+            panic!(
+                "family=alu-reference field=Goldilocks/D2 seed={case_seed} op=row-{row} mutation=none expected-stage=local-air-satisfaction failures={failures}"
+            );
+        }
+    }
+
+    fn run_assurance_alu_babybear_d4(case_seed: u64) {
+        const TAG: u64 = 0x414c_5542_4234_0004;
+        let trace = generated_alu_trace::<Val, EF, 4>(case_seed, TAG);
+        assert_alu_trace_matches_reference(&trace, case_seed, "BabyBear/D4");
+        let (lanes, horner_k) = assurance_lanes_and_horner_k(case_seed);
+        let preprocessed = trace_to_preprocessed::<Val, _, 4>(&trace);
+        let air = AluAir::<Val, 4>::new_binomial_with_preprocessed(
+            trace.values.len(),
+            lanes,
+            <Val as BinomiallyExtendable<4>>::W,
+            preprocessed,
+            horner_k,
+        );
+        let matrix = air.trace_to_matrix(&trace, 1);
+        if let Err((row, failures)) = check_air_satisfies::<Val, EF, _>(&air, &matrix, &[]) {
+            panic!(
+                "family=alu-reference field=BabyBear/D4 seed={case_seed} op=row-{row} mutation=none expected-stage=local-air-satisfaction failures={failures}"
+            );
+        }
+    }
+
+    fn run_assurance_alu_koalabear_d5(case_seed: u64) {
+        const TAG: u64 = 0x414c_554b_4235_0005;
+        type Ext = QuinticTrinomialExtensionField<KoalaBear>;
+        let trace = generated_alu_trace::<KoalaBear, Ext, 5>(case_seed, TAG);
+        assert_alu_trace_matches_reference(&trace, case_seed, "KoalaBear/D5");
+        let (lanes, horner_k) = assurance_lanes_and_horner_k(case_seed);
+        let preprocessed = trace_to_preprocessed::<KoalaBear, _, 5>(&trace);
+        let air = AluAir::<KoalaBear, 5>::new_quintic_trinomial_with_preprocessed(
+            trace.values.len(),
+            lanes,
+            preprocessed,
+            horner_k,
+        );
+        let matrix = air.trace_to_matrix(&trace, 1);
+        if let Err((row, failures)) = check_air_satisfies::<KoalaBear, Ext, _>(&air, &matrix, &[]) {
+            panic!(
+                "family=alu-reference field=KoalaBear/D5 seed={case_seed} op=row-{row} mutation=none expected-stage=local-air-satisfaction failures={failures}"
+            );
+        }
+    }
 
     #[test]
     fn satisfies_alu_add_base_field() {
@@ -1547,6 +1779,26 @@ mod tests {
         let air = AluAir::<Val, 4>::new_binomial_with_preprocessed(n, 1, w, preprocessed, 2);
         let matrix: RowMajorMatrix<Val> = air.trace_to_matrix(&trace, 1);
         assert_air_rejects::<Val, EF, _>(&air, &matrix);
+    }
+
+    #[test]
+    fn assurance_alu_reference_koalabear_d1() {
+        for_assurance_cases(run_assurance_alu_koalabear_d1);
+    }
+
+    #[test]
+    fn assurance_alu_reference_goldilocks_d2() {
+        for_assurance_cases(run_assurance_alu_goldilocks_d2);
+    }
+
+    #[test]
+    fn assurance_alu_reference_babybear_d4() {
+        for_assurance_cases(run_assurance_alu_babybear_d4);
+    }
+
+    #[test]
+    fn assurance_alu_reference_koalabear_d5() {
+        for_assurance_cases(run_assurance_alu_koalabear_d5);
     }
 
     #[test]

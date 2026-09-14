@@ -4,6 +4,8 @@
 
 extern crate alloc;
 
+pub mod corpus;
+
 use core::marker::PhantomData;
 
 /// Maximum allowed constraint degree for AIR constraints.
@@ -153,7 +155,10 @@ macro_rules! assert_air_constraint_degree {
     }};
 }
 
-/// Single-AIR satisfaction helpers.
+/// Single-AIR satisfaction helpers for **local AIR constraints only**.
+///
+/// These helpers call `air.eval` with empty permutation/challenge data. They do not construct or
+/// validate the global lookup multiset and therefore do **not** validate lookup/CTL balance.
 pub mod air_satisfaction {
     use alloc::string::String;
     use alloc::vec::Vec;

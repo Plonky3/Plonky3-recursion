@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 
-use hashbrown::HashMap;
+use hashbrown::{HashMap, HashSet};
 use p3_field::Field;
 
 use super::analysis::{IndexedDef, OpDef};
@@ -20,15 +20,23 @@ pub(super) struct MulAddFusion<F> {
     use_counts: HashMap<WitnessId, usize>,
     defs: HashMap<WitnessId, IndexedDef<F>>,
     backwards_computed: HashMap<WitnessId, usize>,
+    preinitialized: HashSet<WitnessId>,
 }
 
 impl<F: Field> MulAddFusion<F> {
     /// Scans `ops` to build use-counts, definitions, and backwards-op tracking.
+    #[cfg(test)]
     pub(super) fn new(ops: &[Op<F>]) -> Self {
+        Self::with_preinitialized(ops, &[])
+    }
+
+    /// Scans `ops`, treating the supplied witness slots as populated before execution.
+    pub(super) fn with_preinitialized(ops: &[Op<F>], preinitialized: &[WitnessId]) -> Self {
         let mut fusion = Self {
             use_counts: HashMap::new(),
             defs: HashMap::with_capacity(ops.len()),
             backwards_computed: HashMap::new(),
+            preinitialized: preinitialized.iter().copied().collect(),
         };
         fusion.scan_use_counts(ops);
         fusion.scan_defs(ops);
@@ -55,12 +63,12 @@ impl<F: Field> MulAddFusion<F> {
     }
 
     fn is_backwards(&self, idx: usize, out: &WitnessId) -> bool {
-        self.def_idx(out).is_some_and(|i| i < idx)
+        self.preinitialized.contains(out) || self.def_idx(out).is_some_and(|i| i < idx)
     }
 
-    /// Inserts a def unless the witness is already a Const (connect aliasing).
+    /// Inserts a def unless the witness is constant or populated before op execution.
     fn insert_def(&mut self, id: WitnessId, idx: usize, def: OpDef<F>) {
-        if !self.is_const(&id) {
+        if !self.preinitialized.contains(&id) && !self.is_const(&id) {
             self.defs.insert(id, IndexedDef::new(idx, def));
         }
     }

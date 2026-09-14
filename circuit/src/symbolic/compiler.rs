@@ -225,17 +225,22 @@ impl<'a> SymbolicCompiler<'a> {
 
 #[cfg(test)]
 mod tests {
-    use alloc::vec;
+    extern crate std;
+
     use alloc::vec::Vec;
+    use alloc::{format, vec};
 
     use p3_air::{
         Air, AirBuilder, AirLayout, BaseAir, BaseEntry, BaseLeaf, ExtEntry, ExtLeaf, RowWindow,
         SymbolicExpressionExt, SymbolicVariable, SymbolicVariableExt, WindowAccess,
     };
-    use p3_field::Dup;
+    use p3_field::{BasedVectorSpace, Dup};
     use p3_matrix::dense::RowMajorMatrixView;
     use p3_matrix::stack::VerticalPair;
     use p3_test_utils::baby_bear_params::*;
+    use p3_test_utils::corpus::{
+        CaseRng, CorpusSpec, DEFAULT_CASES, MAX_CASES, derive_family_seed,
+    };
     use p3_uni_stark::{SymbolicExpression, VerifierConstraintFolder, get_symbolic_constraints};
     use rand::rngs::SmallRng;
     use rand::{Rng, RngExt, SeedableRng};
@@ -546,6 +551,225 @@ mod tests {
         runner.set_public_inputs(&all_public_values).unwrap();
         runner.run()?;
 
+        Ok(())
+    }
+
+    #[test]
+    fn assurance_symbolic_fold_mixed_leaves_babybear_d4() -> Result<(), CircuitError> {
+        let spec = assurance_corpus_spec();
+        let mut result = Ok(());
+        p3_test_utils::corpus::for_each_case(spec, |seed| {
+            if result.is_ok() {
+                result = run_assurance_symbolic_fold_case(seed);
+            }
+        });
+        result
+    }
+
+    struct AssuranceMixedLeafAir;
+
+    impl<T> BaseAir<T> for AssuranceMixedLeafAir {
+        fn width(&self) -> usize {
+            2
+        }
+
+        fn preprocessed_width(&self) -> usize {
+            2
+        }
+
+        fn num_public_values(&self) -> usize {
+            1
+        }
+
+        fn num_periodic_columns(&self) -> usize {
+            1
+        }
+    }
+
+    impl<AB: AirBuilder> Air<AB> for AssuranceMixedLeafAir {
+        fn eval(&self, builder: &mut AB) {
+            let main = builder.main();
+            let local = main.current_slice();
+            let next = main.next_slice();
+            let prep = builder.preprocessed().clone();
+            let prep_local = prep.current_slice();
+            let prep_next = prep.next_slice();
+            let public: AB::Expr = builder.public_values()[0].into();
+            let periodic: AB::Expr = builder.periodic_values()[0].into();
+            let shared: AB::Expr = local[0] + prep_local[0] - public.dup();
+            let nested = shared.dup() * shared.dup() + (next[1] - prep_next[1]) * periodic.dup()
+                - shared.dup();
+            builder.assert_zero(nested);
+
+            let transition = builder.is_transition();
+            let cross = (local[1] * prep_next[0] - next[0]) * transition;
+            builder.assert_zero(cross);
+
+            let selected = shared * builder.is_first_row() + periodic * builder.is_last_row();
+            builder.assert_zero(AB::Expr::ZERO - selected);
+        }
+    }
+
+    fn assurance_corpus_spec() -> CorpusSpec {
+        let start_seed = std::env::var("P3_ASSURANCE_START_SEED")
+            .ok()
+            .map_or(0, |value| {
+                value.parse().unwrap_or_else(|_| {
+                    panic!("P3_ASSURANCE_START_SEED must be a u64, got {value:?}")
+                })
+            });
+        let cases = std::env::var("P3_ASSURANCE_CASES")
+            .ok()
+            .map_or(DEFAULT_CASES, |value| {
+                value
+                    .parse()
+                    .unwrap_or_else(|_| panic!("P3_ASSURANCE_CASES must be a u32, got {value:?}"))
+            });
+        assert!(
+            (1..=MAX_CASES).contains(&cases),
+            "P3_ASSURANCE_CASES must be in 1..={MAX_CASES}, got {cases}"
+        );
+        CorpusSpec { start_seed, cases }
+    }
+
+    fn random_full_challenge(rng: &mut CaseRng) -> Challenge {
+        let mut coefficients = [F::ZERO; 4];
+        for (index, coefficient) in coefficients.iter_mut().enumerate() {
+            *coefficient = F::from_u64(rng.next_u64());
+            if *coefficient == F::ZERO {
+                *coefficient = F::from_usize(index + 1);
+            }
+        }
+        Challenge::from_basis_coefficients_slice(&coefficients).unwrap()
+    }
+
+    fn run_assurance_symbolic_fold_case(case_seed: u64) -> Result<(), CircuitError> {
+        const FAMILY_TAG: u64 = 0x5359_4d42_464f_4c44;
+        let mut rng = CaseRng::new(derive_family_seed(case_seed, FAMILY_TAG));
+        let air = AssuranceMixedLeafAir;
+        let alpha = random_full_challenge(&mut rng);
+        let main_local = vec![
+            random_full_challenge(&mut rng),
+            random_full_challenge(&mut rng),
+        ];
+        let main_next = vec![
+            random_full_challenge(&mut rng),
+            random_full_challenge(&mut rng),
+        ];
+        let prep_local = vec![
+            random_full_challenge(&mut rng),
+            random_full_challenge(&mut rng),
+        ];
+        let prep_next = vec![
+            random_full_challenge(&mut rng),
+            random_full_challenge(&mut rng),
+        ];
+        let periodic = vec![random_full_challenge(&mut rng)];
+        let public = vec![F::from_u64(rng.next_u64())];
+        let selectors = [
+            random_full_challenge(&mut rng),
+            random_full_challenge(&mut rng),
+            random_full_challenge(&mut rng),
+        ];
+
+        let main = VerticalPair::new(
+            RowMajorMatrixView::new_row(&main_local),
+            RowMajorMatrixView::new_row(&main_next),
+        );
+        let preprocessed = VerticalPair::new(
+            RowMajorMatrixView::new_row(&prep_local),
+            RowMajorMatrixView::new_row(&prep_next),
+        );
+        let preprocessed_window =
+            RowWindow::from_two_rows(preprocessed.top.values, preprocessed.bottom.values);
+        let mut folder: VerifierConstraintFolder<'_, MyConfig> = VerifierConstraintFolder {
+            main,
+            preprocessed,
+            preprocessed_window,
+            periodic_values: &periodic,
+            public_values: &public,
+            is_first_row: selectors[0],
+            is_last_row: selectors[1],
+            is_transition: selectors[2],
+            alpha,
+            accumulator: Challenge::ZERO,
+        };
+        air.eval(&mut folder);
+        let expected = folder.accumulator;
+
+        let layout = AirLayout {
+            preprocessed_width: 2,
+            main_width: 2,
+            num_public_values: 1,
+            permutation_width: 0,
+            num_permutation_challenges: 0,
+            num_permutation_values: 0,
+            num_periodic_columns: 1,
+        };
+        let constraints: Vec<SymbolicExpression<Challenge>> =
+            get_symbolic_constraints(&air, layout);
+        let folded = constraints.iter().fold(
+            SymbolicExpression::Leaf(BaseLeaf::Constant(Challenge::ZERO)),
+            |acc, constraint| {
+                SymbolicExpression::Leaf(BaseLeaf::Constant(alpha)) * acc + constraint.dup()
+            },
+        );
+
+        let mut circuit = CircuitBuilder::<Challenge>::new();
+        let selector_targets = [
+            circuit.public_input(),
+            circuit.public_input(),
+            circuit.public_input(),
+        ];
+        let public_targets = [circuit.public_input()];
+        let prep_local_targets = [circuit.public_input(), circuit.public_input()];
+        let prep_next_targets = [circuit.public_input(), circuit.public_input()];
+        let periodic_targets = [circuit.public_input()];
+        let main_local_targets = [circuit.public_input(), circuit.public_input()];
+        let main_next_targets = [circuit.public_input(), circuit.public_input()];
+        let columns = ColumnsTargets {
+            challenges: &[],
+            public_values: &public_targets,
+            permutation_local_values: &[],
+            permutation_next_values: &[],
+            permutation_values: &[],
+            local_prep_values: &prep_local_targets,
+            next_prep_values: &prep_next_targets,
+            periodic_values: &periodic_targets,
+            local_values: &main_local_targets,
+            next_values: &main_next_targets,
+        };
+        let row_selectors = RowSelectorsTargets {
+            is_first_row: selector_targets[0],
+            is_last_row: selector_targets[1],
+            is_transition: selector_targets[2],
+        };
+        let compiler = SymbolicCompiler::new(row_selectors, &columns);
+        let mut cache = HashMap::new();
+        let actual = compiler.compile_base(&folded, &mut circuit, &mut cache);
+        circuit.tag(actual, format!("assurance-symbolic-fold-{case_seed}"))?;
+        let expected_target = circuit.define_const(expected);
+        circuit.connect(actual, expected_target);
+
+        let mut inputs = selectors.to_vec();
+        inputs.push(Challenge::from_prime_subfield(public[0]));
+        inputs.extend_from_slice(&prep_local);
+        inputs.extend_from_slice(&prep_next);
+        inputs.extend_from_slice(&periodic);
+        inputs.extend_from_slice(&main_local);
+        inputs.extend_from_slice(&main_next);
+        let built = circuit.build().unwrap_or_else(|error| {
+            panic!(
+                "family=symbolic-fold field=BabyBear/D4 seed={case_seed} op=build mutation=none expected-stage=build-success error={error:?}"
+            )
+        });
+        let mut runner = built.runner();
+        runner.set_public_inputs(&inputs)?;
+        runner.run().unwrap_or_else(|error| {
+            panic!(
+                "family=symbolic-fold field=BabyBear/D4 seed={case_seed} op=fold mutation=none expected-stage=native-folder-equality error={error:?}"
+            )
+        });
         Ok(())
     }
 
