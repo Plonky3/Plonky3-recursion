@@ -10,6 +10,7 @@ extern crate std;
 
 pub mod artifact;
 pub mod backend;
+pub mod builtin_config;
 pub mod challenger;
 pub mod challenger_perm;
 pub mod generation;
