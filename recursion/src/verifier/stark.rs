@@ -236,20 +236,18 @@ where
 
     // Add preprocessed commitment verification if present
     if preprocessed_width > 0 {
+        let mut points = vec![(zeta, opt_opened_preprocessed_local_targets.clone().unwrap())];
+        if air.opens_preprocessed_next() {
+            points.push((
+                zeta_next,
+                opt_opened_preprocessed_next_targets.clone().unwrap(),
+            ));
+        }
         coms_to_verify.push((
             preprocessed_commit
                 .clone()
                 .expect("We checked in validate_proof_shape that the commit exists"),
-            vec![(
-                trace_domain,
-                vec![
-                    (zeta, opt_opened_preprocessed_local_targets.clone().unwrap()),
-                    (
-                        zeta_next,
-                        opt_opened_preprocessed_next_targets.clone().unwrap(),
-                    ),
-                ],
-            )],
+            vec![(trace_domain, points)],
         ));
     }
 
@@ -472,10 +470,15 @@ where
 
     let preprocessed_local_len = opened_prep_local.as_ref().map_or(0, |v| v.len());
     let preprocessed_next_len = opened_prep_next.as_ref().map_or(0, |v| v.len());
-    if preprocessed_width != preprocessed_local_len || preprocessed_width != preprocessed_next_len {
+    let expected_next_len = if air.opens_preprocessed_next() {
+        preprocessed_width
+    } else {
+        0
+    };
+    if preprocessed_width != preprocessed_local_len || expected_next_len != preprocessed_next_len {
         // Verifier expects preprocessed trace while proof does not have it, or vice versa
         return Err(VerificationError::InvalidProofShape(format!(
-            "Expected preprocessed width {preprocessed_width} but local has length {preprocessed_local_len} and next has length {preprocessed_next_len}"
+            "Expected preprocessed width {preprocessed_width} and next width {expected_next_len} but local has length {preprocessed_local_len} and next has length {preprocessed_next_len}"
         )));
     }
 

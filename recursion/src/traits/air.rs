@@ -118,6 +118,15 @@ pub trait RecursiveAir<F: Field, EF: ExtensionField<F>, LG: LookupProtocol> {
     /// [`p3_air::BaseAir::main_next_row_columns`]: AIRs with no inter-row constraints
     /// (e.g. constant, public, and recompose tables) omit the `trace_next` opening.
     fn opens_trace_next(&self) -> bool;
+
+    /// Returns `true` if the AIR accesses the next preprocessed row.
+    ///
+    /// Direct custom implementations retain the historical two-point
+    /// convention. Native AIRs use the blanket implementation below to
+    /// mirror `BaseAir::preprocessed_next_row_columns` exactly.
+    fn opens_preprocessed_next(&self) -> bool {
+        true
+    }
 }
 
 impl<F: Field, EF: ExtensionField<F>, A, LG: LookupProtocol> RecursiveAir<F, EF, LG> for A
@@ -238,6 +247,10 @@ where
 
     fn opens_trace_next(&self) -> bool {
         !p3_air::BaseAir::<F>::main_next_row_columns(self).is_empty()
+    }
+
+    fn opens_preprocessed_next(&self) -> bool {
+        !p3_air::BaseAir::<F>::preprocessed_next_row_columns(self).is_empty()
     }
 }
 

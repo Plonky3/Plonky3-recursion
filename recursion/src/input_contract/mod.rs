@@ -2,6 +2,7 @@
 
 pub mod fri;
 pub mod stark;
+pub(crate) mod stark_layout;
 pub mod whir;
 
 pub use fri::{

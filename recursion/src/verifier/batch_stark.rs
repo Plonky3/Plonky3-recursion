@@ -30,6 +30,9 @@ use p3_uni_stark::{
 use super::{ObservableCommitment, VerificationError, recompose_quotient_from_chunks_circuit};
 use crate::challenger::CircuitChallenger;
 use crate::challenger_perm::ChallengerPermConfig;
+use crate::input_contract::stark_layout::{
+    CommitmentRole, InstanceLayout, MatrixRoute, NativeStarkLayout,
+};
 use crate::traits::{
     LookupMetadata, Recursive, RecursiveAir, RecursiveChallenger, RecursiveLookupGadget,
     RecursivePcs,
@@ -90,6 +93,15 @@ where
             Self::Public(a) => P3BaseAir::width(a),
             Self::Alu(a) => P3BaseAir::width(a),
             Self::Dynamic(a) => P3BaseAir::width(a),
+        }
+    }
+
+    fn preprocessed_width(&self) -> usize {
+        match self {
+            Self::Const(a) => P3BaseAir::preprocessed_width(a),
+            Self::Public(a) => P3BaseAir::preprocessed_width(a),
+            Self::Alu(a) => P3BaseAir::preprocessed_width(a),
+            Self::Dynamic(a) => P3BaseAir::preprocessed_width(a),
         }
     }
 
@@ -181,11 +193,12 @@ where
     F: Field + PrimeCharacteristicRing + Copy,
     EF: ExtensionField<F> + ExtractBinomialW<F>,
 {
-    let preprocessed = if num_ops == 0 {
-        Vec::new()
-    } else {
-        vec![F::ZERO; num_ops * AluAir::<F, TRACE_D>::preprocessed_lane_width()]
-    };
+    if lanes == 0 {
+        return Err("ALU lane count must be non-zero".to_string());
+    }
+    if horner_packed_steps < 2 {
+        return Err("packed Horner step count must be at least two".to_string());
+    }
     let reduction = AluExtMulKind::resolve(
         TRACE_D,
         EF::extract_w(),
@@ -197,13 +210,10 @@ where
              (alu_quintic_trinomial={alu_quintic_trinomial})"
         )
     })?;
-    Ok(AluAir::<F, TRACE_D>::from_reduction_with_preprocessed(
-        num_ops,
-        lanes,
-        reduction,
-        preprocessed,
-        horner_packed_steps,
-    ))
+    Ok(
+        AluAir::<F, TRACE_D>::from_reduction(num_ops, lanes, reduction)
+            .with_horner_pack_k(horner_packed_steps),
+    )
 }
 
 /// The batch-STARK tables a recursion-layer proof describes, rebuilt from the proof's own
@@ -241,6 +251,27 @@ where
             "trace extension degree mismatch: proof declares {} but verifier expects {TRACE_D}",
             proof.ext_degree
         )));
+    }
+    if proof.non_primitives.len() != non_primitive_provers.len() {
+        return Err(VerificationError::InvalidProofShape(format!(
+            "non-primitive table count mismatch: expected {}, got {}",
+            non_primitive_provers.len(),
+            proof.non_primitives.len()
+        )));
+    }
+    for (i, (entry, plugin)) in proof
+        .non_primitives
+        .iter()
+        .zip(non_primitive_provers.iter())
+        .enumerate()
+    {
+        let expected_op = TableProver::op_type(plugin.as_ref());
+        if entry.op_type != expected_op {
+            return Err(VerificationError::InvalidProofShape(format!(
+                "non-primitive op_type mismatch at index {i}: expected {expected_op:?}, got {:?}",
+                entry.op_type
+            )));
+        }
     }
     let rows: RowCounts = proof.rows;
     let packing = proof.table_packing.clone();
@@ -280,26 +311,11 @@ where
     ];
     let mut public_values: Vec<Vec<Val<SC>>> = vec![Vec::new(); NUM_PRIMITIVE_TABLES];
 
-    if proof.non_primitives.len() != non_primitive_provers.len() {
-        return Err(VerificationError::InvalidProofShape(format!(
-            "non-primitive table count mismatch: expected {}, got {}",
-            non_primitive_provers.len(),
-            proof.non_primitives.len()
-        )));
-    }
-    for (i, (entry, plugin)) in proof
+    for (entry, plugin) in proof
         .non_primitives
         .iter()
         .zip(non_primitive_provers.iter())
-        .enumerate()
     {
-        let expected_op = TableProver::op_type(plugin.as_ref());
-        if entry.op_type != expected_op {
-            return Err(VerificationError::InvalidProofShape(format!(
-                "non-primitive op_type mismatch at index {i}: expected {expected_op:?}, got {:?}",
-                entry.op_type
-            )));
-        }
         let air = plugin
             .batch_air_from_table_entry(config, TRACE_D, proof.ext_degree as u32, entry)
             .map_err(VerificationError::InvalidProofShape)?;
@@ -584,9 +600,14 @@ where
 
         let local_prep_len = preprocessed_local_targets.as_ref().map_or(0, |v| v.len());
         let next_prep_len = preprocessed_next_targets.as_ref().map_or(0, |v| v.len());
-        if local_prep_len != pre_w || next_prep_len != pre_w {
+        let expected_next_prep_len = if air.opens_preprocessed_next() {
+            pre_w
+        } else {
+            0
+        };
+        if local_prep_len != pre_w || next_prep_len != expected_next_prep_len {
             return Err(VerificationError::InvalidProofShape(format!(
-                "Instance has incorrect preprocessed width: expected {pre_w}, got {local_prep_len} / {next_prep_len}"
+                "Instance has incorrect preprocessed width: expected {pre_w} / {expected_next_prep_len}, got {local_prep_len} / {next_prep_len}"
             )));
         }
         let air_width = A::width(air);
@@ -653,6 +674,52 @@ where
         log_quotient_degrees.push(log_qd);
         quotient_degrees.push(quotient_degree);
     }
+
+    let layout_instances: Vec<InstanceLayout> = airs
+        .iter()
+        .zip(instances.iter())
+        .zip(degree_bits.iter().zip(log_quotient_degrees.iter()))
+        .enumerate()
+        .map(
+            |(i, ((air, instance), (&ext_log, &quotient_log)))| InstanceLayout {
+                ext_log,
+                base_log: ext_log - config.is_zk(),
+                trace_width: air.width(),
+                trace_next: air.opens_trace_next(),
+                pre_width: preprocessed_widths[i],
+                pre_next: air.opens_preprocessed_next(),
+                quotient_log,
+                quotient_chunks: quotient_degrees[i],
+                permutation_width: instance.permutation_local_targets.len(),
+            },
+        )
+        .collect();
+    let preprocessed_order = common
+        .preprocessed
+        .as_ref()
+        .map_or(&[][..], |global| global.matrix_to_instance.as_slice());
+    let layout = NativeStarkLayout::new(
+        layout_instances,
+        preprocessed_order,
+        commitments_targets.random_commit.is_some(),
+        common.preprocessed.is_some(),
+        commitments_targets.permutation_targets.is_some(),
+    )
+    .map_err(|error| VerificationError::InvalidProofShape(error.to_string()))?;
+    if layout.commitment_count()
+        != usize::from(commitments_targets.random_commit.is_some())
+            + 2
+            + usize::from(common.preprocessed.is_some())
+            + usize::from(commitments_targets.permutation_targets.is_some())
+    {
+        return Err(VerificationError::InvalidProofShape(
+            "STARK opening commitment layout mismatch".to_string(),
+        ));
+    }
+    debug_assert_eq!(
+        layout.commitment_role(usize::from(layout.has_random)),
+        Some(CommitmentRole::Trace)
+    );
 
     // Challenger initialisation mirrors the native batch-STARK verifier transcript.
     // Native uses observe_base_as_algebra_element which decomposes to D coefficients,
@@ -907,15 +974,7 @@ where
                         "Missing preprocessed local columns".to_string(),
                     )
                 })?;
-            let next = inst
-                .opened_values_no_lookups
-                .preprocessed_next_targets
-                .as_ref()
-                .ok_or_else(|| {
-                    VerificationError::InvalidProofShape(
-                        "Missing preprocessed next columns".to_string(),
-                    )
-                })?;
+            let mut points = vec![(zeta, local.clone())];
             // Validate that the preprocessed data's degree metadata matches this instance.
             let ext_db = degree_bits[inst_idx];
 
@@ -940,10 +999,20 @@ where
             let generator_const = circuit.define_const(trace_domain_generator(trace_dom)?);
             let zeta_next = circuit.mul(zeta, generator_const);
 
-            pre_round.push((
-                pre_domain,
-                vec![(zeta, local.clone()), (zeta_next, next.clone())],
-            ));
+            if airs[inst_idx].opens_preprocessed_next() {
+                let next = inst
+                    .opened_values_no_lookups
+                    .preprocessed_next_targets
+                    .as_ref()
+                    .ok_or_else(|| {
+                        VerificationError::InvalidProofShape(
+                            "Missing preprocessed next columns".to_string(),
+                        )
+                    })?;
+                points.push((zeta_next, next.clone()));
+            }
+
+            pre_round.push((pre_domain, points));
         }
 
         coms_to_verify.push((global.commitment.clone(), pre_round));
@@ -995,6 +1064,10 @@ where
     // Fiat-Shamir transcript in sync with the prover/verifier.
     if SC::Pcs::PRE_OBSERVES_OPENED_VALUES {
         let fri_random_rounds = SC::Pcs::get_fri_random_opened_values(&proof_targets.opening_proof);
+        let preprocessed_next: Vec<bool> = airs
+            .iter()
+            .map(|air| air.opens_preprocessed_next())
+            .collect();
         observe_opened_values_circuit::<SC, CP, WIDTH, RATE>(
             circuit,
             &mut challenger,
@@ -1003,6 +1076,8 @@ where
             fri_random_rounds,
             common.preprocessed.is_some(),
             is_lookup,
+            Some(&layout),
+            &preprocessed_next,
         );
     }
 
@@ -1278,6 +1353,8 @@ fn observe_opened_values_circuit<
     fri_random_rounds: &[Vec<Vec<Vec<Target>>>],
     has_preprocessed: bool,
     is_lookup: bool,
+    preprocessed_layout: Option<&NativeStarkLayout<'_>>,
+    preprocessed_next: &[bool],
 ) where
     SC: StarkGenericConfig,
     Val<SC>: PrimeField64,
@@ -1365,7 +1442,17 @@ fn observe_opened_values_circuit<
     if has_preprocessed {
         let rand_round = fri_random_rounds.get(round_idx);
         let mut mat_idx: usize = 0;
-        for inst in instances {
+        for matrix in preprocessed_layout
+            .expect("preprocessed round")
+            .matrices(CommitmentRole::Preprocessed)
+        {
+            let MatrixRoute::Preprocessed {
+                instance: inst_idx, ..
+            } = matrix.route
+            else {
+                unreachable!("preprocessed planner emits only preprocessed routes")
+            };
+            let inst = &instances[inst_idx];
             if let Some(prep_local) = &inst.opened_values_no_lookups.preprocessed_local_targets {
                 let fri_rand_local = rand_round
                     .and_then(|r| r.get(mat_idx))
@@ -1374,7 +1461,10 @@ fn observe_opened_values_circuit<
                     .and_then(|r| r.get(mat_idx))
                     .and_then(|m| m.get(1));
                 observe_point(circuit, challenger, prep_local, fri_rand_local);
-                if let Some(prep_next) = &inst.opened_values_no_lookups.preprocessed_next_targets {
+                if preprocessed_next[inst_idx]
+                    && let Some(prep_next) =
+                        &inst.opened_values_no_lookups.preprocessed_next_targets
+                {
                     observe_point(circuit, challenger, prep_next, fri_rand_next);
                 }
                 mat_idx += 1;
@@ -1417,10 +1507,17 @@ fn observe_opened_values_circuit<
 
 #[cfg(test)]
 mod create_alu_air_tests {
+    use p3_air::BaseAir;
+    use p3_circuit_prover::air::PublicAir;
+    use p3_circuit_prover::common::CircuitTableAir;
     use p3_field::extension::QuinticTrinomialExtensionField;
     use p3_koala_bear::KoalaBear;
+    use p3_lookup::logup::LogUpGadget;
+    use p3_uni_stark::{StarkGenericConfig, Val};
 
-    use super::create_alu_air;
+    use super::{CircuitTablesAir, create_alu_air};
+    use crate::prepared::test_common::KoalaBearD4RecursionConfig;
+    use crate::traits::RecursiveAir;
 
     /// A proof-controlled `alu_quintic_trinomial = false` against a quintic-trinomial `EF` has
     /// no binomial `W` to fall back to; this must be a rejected proof shape, not a panic.
@@ -1439,5 +1536,30 @@ mod create_alu_air_tests {
             4, 1, 4, true,
         );
         assert!(result.is_ok());
+    }
+
+    /// The reconstructed verifier wrapper must preserve the producer wrapper's metadata-based
+    /// default: a preprocessed trace with no explicit override opens every column at the next row.
+    #[test]
+    fn reconstructed_public_air_preserves_preprocessed_opening_policy() {
+        type Config = KoalaBearD4RecursionConfig;
+        type F = Val<Config>;
+        let inner = PublicAir::<F, 4>::new(2, 1);
+        let producer = CircuitTableAir::<Config, 4>::Public(inner.clone());
+        let reconstructed = CircuitTablesAir::<Config, 4>::Public(inner);
+
+        assert_eq!(
+            BaseAir::<F>::preprocessed_width(&producer),
+            BaseAir::<F>::preprocessed_width(&reconstructed)
+        );
+        assert_eq!(
+            BaseAir::<F>::preprocessed_next_row_columns(&producer),
+            BaseAir::<F>::preprocessed_next_row_columns(&reconstructed)
+        );
+        assert!(<CircuitTablesAir<Config, 4> as RecursiveAir<
+            F,
+            <Config as StarkGenericConfig>::Challenge,
+            LogUpGadget,
+        >>::opens_preprocessed_next(&reconstructed));
     }
 }

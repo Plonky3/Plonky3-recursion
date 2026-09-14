@@ -18,6 +18,9 @@ use p3_uni_stark::{
 };
 use thiserror::Error;
 
+use crate::input_contract::stark_layout::{
+    CommitmentRole, InstanceLayout, MatrixRoute, NativeStarkLayout,
+};
 use crate::pcs::fri::fri_proof_num_queries;
 use crate::traits::RecursiveAir;
 
@@ -330,6 +333,35 @@ where
 
     let is_lookup = commitments.permutation.is_some();
 
+    let layout_instances: Vec<InstanceLayout> = airs
+        .iter()
+        .zip(degree_bits.iter().zip(log_quotient_degrees.iter()))
+        .enumerate()
+        .map(|(i, (air, (&ext_log, &quotient_log)))| InstanceLayout {
+            ext_log,
+            base_log: ext_log - config.is_zk(),
+            trace_width: air.width(),
+            trace_next: !p3_air::BaseAir::<Val<SC>>::main_next_row_columns(air).is_empty(),
+            pre_width: preprocessed_widths[i],
+            pre_next: !p3_air::BaseAir::<Val<SC>>::preprocessed_next_row_columns(air).is_empty(),
+            quotient_log,
+            quotient_chunks: quotient_degrees[i],
+            permutation_width: 0,
+        })
+        .collect();
+    let preprocessed_order = common_data
+        .preprocessed
+        .as_ref()
+        .map_or(&[][..], |global| global.matrix_to_instance.as_slice());
+    let layout = NativeStarkLayout::new(
+        layout_instances,
+        preprocessed_order,
+        commitments.random.is_some(),
+        common_data.preprocessed.is_some(),
+        is_lookup,
+    )
+    .map_err(|_| GenerationError::InvalidProofShape("invalid STARK opening layout"))?;
+
     // Sample the batch's single permutation challenge pair on the transcript challenger. This has
     // the same transcript effect as the native `sample_perm_challenges` (two `sample_algebra_element`
     // draws) while returning the raw pair the in-circuit verifier samples and connects to.
@@ -463,7 +495,14 @@ where
     if let Some(global) = &common_data.preprocessed {
         let mut pre_round = Vec::with_capacity(global.matrix_to_instance.len());
 
-        for (matrix_index, &inst_idx) in global.matrix_to_instance.iter().enumerate() {
+        for matrix in layout.matrices(CommitmentRole::Preprocessed) {
+            let MatrixRoute::Preprocessed {
+                instance: inst_idx,
+                matrix: matrix_index,
+            } = matrix.route
+            else {
+                unreachable!("preprocessed planner emits only preprocessed routes")
+            };
             let pre_w = preprocessed_widths[inst_idx];
             if pre_w == 0 {
                 return Err(GenerationError::InvalidProofShape(
@@ -472,16 +511,26 @@ where
             }
 
             let inst = &opened_values.instances[inst_idx];
+            let ext_db = degree_bits[inst_idx];
+            let base_db = ext_db;
+            let pre_domain = pcs.natural_domain_for_degree(1 << base_db);
+            let zeta_next_i = trace_domains[inst_idx].next_point(zeta).ok_or(
+                GenerationError::InvalidProofShape("Preprocessed domain lacks next point"),
+            )?;
             let local = inst.base_opened_values.preprocessed_local.as_ref().ok_or(
                 GenerationError::InvalidProofShape("preprocessed local values should exist"),
             )?;
-            let next = inst.base_opened_values.preprocessed_next.as_ref().ok_or(
-                GenerationError::InvalidProofShape("preprocessed next values should exist"),
-            )?;
+            let mut points = vec![(zeta, local.clone())];
+            if !p3_air::BaseAir::<Val<SC>>::preprocessed_next_row_columns(&airs[inst_idx])
+                .is_empty()
+            {
+                let next = inst.base_opened_values.preprocessed_next.as_ref().ok_or(
+                    GenerationError::InvalidProofShape("preprocessed next values should exist"),
+                )?;
+                points.push((zeta_next_i, next.clone()));
+            }
 
             // Validate that the preprocessed data's degree metadata matches this instance.
-            let ext_db = degree_bits[inst_idx];
-
             let meta =
                 global.instances[inst_idx]
                     .as_ref()
@@ -494,16 +543,7 @@ where
                 ));
             }
 
-            let base_db = meta.degree_bits;
-            let pre_domain = pcs.natural_domain_for_degree(1 << base_db);
-            let zeta_next_i = trace_domains[inst_idx].next_point(zeta).ok_or(
-                GenerationError::InvalidProofShape("Preprocessed domain lacks next point"),
-            )?;
-
-            pre_round.push((
-                pre_domain,
-                vec![(zeta, local.clone()), (zeta_next_i, next.clone())],
-            ));
+            pre_round.push((pre_domain, points));
         }
 
         coms_to_verify.push((global.commitment.clone(), pre_round));
@@ -688,21 +728,18 @@ where
                 .ok_or(GenerationError::InvalidProofShape(
                     "preprocessed local values should exist",
                 ))?;
-        let next =
-            opened_values
-                .preprocessed_next
-                .as_ref()
-                .ok_or(GenerationError::InvalidProofShape(
-                    "preprocessed next values should exist",
-                ))?;
+        let mut points = vec![(zeta, local.clone())];
+        if air.opens_preprocessed_next() {
+            let next = opened_values.preprocessed_next.as_ref().ok_or(
+                GenerationError::InvalidProofShape("preprocessed next values should exist"),
+            )?;
+            points.push((zeta_next, next.clone()));
+        }
         coms_to_verify.push((
             preprocessed_commit
                 .expect("presence checked against the preprocessed width above")
                 .clone(),
-            vec![(
-                trace_domain,
-                vec![(zeta, local.clone()), (zeta_next, next.clone())],
-            )],
+            vec![(trace_domain, points)],
         ));
     }
 
