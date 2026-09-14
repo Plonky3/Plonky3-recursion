@@ -60,6 +60,73 @@ pub enum Poseidon2AirWrapperInner {
     GoldilocksD2Width16(Box<Poseidon2CircuitAirGoldilocksD2Width16>),
 }
 
+#[cfg(test)]
+mod width_tests {
+    use super::*;
+
+    #[test]
+    fn poseidon_width_lookup_matches_every_constructed_air() {
+        let configs = [
+            Poseidon2Config::BABY_BEAR_D1_W16,
+            Poseidon2Config::BABY_BEAR_D4_W16,
+            Poseidon2Config::BABY_BEAR_D4_W24,
+            Poseidon2Config::BABY_BEAR_D4_W32,
+            Poseidon2Config::KOALA_BEAR_D1_W16,
+            Poseidon2Config::KOALA_BEAR_D4_W16,
+            Poseidon2Config::KOALA_BEAR_D4_W24,
+            Poseidon2Config::KOALA_BEAR_D1_W32,
+            Poseidon2Config::KOALA_BEAR_D4_W32,
+            Poseidon2Config::GOLDILOCKS_D2_W8,
+            Poseidon2Config::GOLDILOCKS_D2_W16,
+            Poseidon2Config::BABY_BEAR_D4_W16.for_challenger(),
+            Poseidon2Config::BABY_BEAR_D4_W24.for_challenger(),
+            Poseidon2Config::KOALA_BEAR_D4_W16.for_challenger(),
+            Poseidon2Config::KOALA_BEAR_D4_W24.for_challenger(),
+            Poseidon2Config::GOLDILOCKS_D2_W8.for_challenger(),
+        ];
+        for config in configs {
+            let prover = Poseidon2Prover::new(config, ConstraintProfile::Standard);
+            let air = Poseidon2Prover::air_wrapper_for_config(config);
+            assert_eq!(prover.main_width_from_config(), air.width());
+            assert_eq!(
+                prover.preprocessed_width_from_config(),
+                air.preprocessed_width()
+            );
+        }
+
+        for (config, modulus_is_baby_bear) in [
+            (Poseidon2Config::BABY_BEAR_D1_W16, true),
+            (Poseidon2Config::KOALA_BEAR_D1_W16, false),
+            (Poseidon2Config::KOALA_BEAR_D1_W32, false),
+        ] {
+            let expected =
+                Poseidon2Prover::new(config, ConstraintProfile::Standard).main_width_from_config();
+            for witness_bus in [1, 5] {
+                let width = if modulus_is_baby_bear {
+                    Poseidon2Prover::air_wrapper_for_config_with_preprocessed::<BabyBear>(
+                        config,
+                        Vec::new(),
+                        1,
+                        witness_bus,
+                    )
+                    .unwrap()
+                    .width()
+                } else {
+                    Poseidon2Prover::air_wrapper_for_config_with_preprocessed::<KoalaBear>(
+                        config,
+                        Vec::new(),
+                        1,
+                        witness_bus,
+                    )
+                    .unwrap()
+                    .width()
+                };
+                assert_eq!(expected, width);
+            }
+        }
+    }
+}
+
 impl Poseidon2AirWrapperInner {
     /// Declare whether the wrapped table holds nothing but challenger duplex-sponge rows.
     ///
@@ -1132,6 +1199,37 @@ impl Poseidon2Prover {
             }
             Poseidon2Config::GOLDILOCKS_D2_W16 => {
                 Poseidon2CircuitAirGoldilocksD2Width16::preprocessed_width()
+            }
+            _ => panic!("unsupported Poseidon2Config"),
+        }
+    }
+
+    pub const fn main_width_from_config(&self) -> usize {
+        match self.config.without_challenger_role() {
+            Poseidon2Config::BABY_BEAR_D1_W16 => Poseidon2CircuitAirBabyBearD1Width16::main_width(),
+            Poseidon2Config::BABY_BEAR_D4_W16 => Poseidon2CircuitAirBabyBearD4Width16::main_width(),
+            Poseidon2Config::BABY_BEAR_D4_W24 => Poseidon2CircuitAirBabyBearD4Width24::main_width(),
+            Poseidon2Config::BABY_BEAR_D4_W32 => Poseidon2CircuitAirBabyBearD4Width32::main_width(),
+            Poseidon2Config::KOALA_BEAR_D1_W16 => {
+                Poseidon2CircuitAirKoalaBearD1Width16::main_width()
+            }
+            Poseidon2Config::KOALA_BEAR_D4_W16 => {
+                Poseidon2CircuitAirKoalaBearD4Width16::main_width()
+            }
+            Poseidon2Config::KOALA_BEAR_D4_W24 => {
+                Poseidon2CircuitAirKoalaBearD4Width24::main_width()
+            }
+            Poseidon2Config::KOALA_BEAR_D1_W32 => {
+                Poseidon2CircuitAirKoalaBearD1Width32::main_width()
+            }
+            Poseidon2Config::KOALA_BEAR_D4_W32 => {
+                Poseidon2CircuitAirKoalaBearD4Width32::main_width()
+            }
+            Poseidon2Config::GOLDILOCKS_D2_W8 => {
+                Poseidon2CircuitAirGoldilocksD2Width8::main_width()
+            }
+            Poseidon2Config::GOLDILOCKS_D2_W16 => {
+                Poseidon2CircuitAirGoldilocksD2Width16::main_width()
             }
             _ => panic!("unsupported Poseidon2Config"),
         }

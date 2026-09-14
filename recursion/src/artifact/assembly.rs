@@ -1,9 +1,11 @@
 use alloc::boxed::Box;
+use alloc::string::String;
 use alloc::vec::Vec;
 
 use p3_baby_bear::BabyBear;
+use p3_circuit::ops::NpoTypeId;
 use p3_circuit::{StatementError, StatementSchema};
-use p3_circuit_prover::{BatchStarkProof, CircuitVerifier, NonPrimitiveTableEntry};
+use p3_circuit_prover::{BatchStarkProof, CircuitVerifier, NonPrimitiveTableEntry, TablePacking};
 use p3_field::extension::{BinomialExtensionField, QuinticTrinomialExtensionField};
 use p3_field::{Algebra, BasedVectorSpace, PrimeField64};
 use p3_goldilocks::Goldilocks;
@@ -464,6 +466,49 @@ where
     limits: ArtifactLimits,
 }
 
+fn try_copy_slice<T: Copy>(
+    reader: &mut Reader<'_>,
+    values: &[T],
+    component: &'static str,
+) -> Result<Vec<T>, ArtifactError> {
+    reader.charge_conversion_vec::<T>(values.len())?;
+    let mut copied = Vec::new();
+    copied
+        .try_reserve_exact(values.len())
+        .map_err(|_| ArtifactError::AllocationFailed { component })?;
+    copied.extend_from_slice(values);
+    Ok(copied)
+}
+
+fn try_copy_npo_id(reader: &mut Reader<'_>, id: &NpoTypeId) -> Result<NpoTypeId, ArtifactError> {
+    reader.charge_conversion_vec::<u8>(id.as_str().len())?;
+    let mut owned = String::new();
+    owned
+        .try_reserve_exact(id.as_str().len())
+        .map_err(|_| ArtifactError::AllocationFailed {
+            component: "NPO identifier copy",
+        })?;
+    owned.push_str(id.as_str());
+    Ok(NpoTypeId::new(owned))
+}
+
+fn charge_table_packing_copy(
+    reader: &mut Reader<'_>,
+    packing: &TablePacking,
+) -> Result<(), ArtifactError> {
+    let lane_count = packing.npo_lanes_iter().count();
+    reader.charge_conversion_vec::<(NpoTypeId, usize)>(lane_count)?;
+    for (id, _) in packing.npo_lanes_iter() {
+        reader.charge_conversion_vec::<u8>(id.as_str().len())?;
+    }
+    let height_count = packing.npo_min_heights().count();
+    reader.charge_conversion_vec::<(NpoTypeId, usize)>(height_count)?;
+    for (id, _) in packing.npo_min_heights() {
+        reader.charge_conversion_vec::<u8>(id.as_str().len())?;
+    }
+    Ok(())
+}
+
 impl<SC> PortableVerifierInner for TypedPortableVerifier<SC>
 where
     SC: BuiltinArtifactConfig,
@@ -481,13 +526,7 @@ where
         bytes: &[u8],
         expected: CanonicalStatement<'_>,
     ) -> Result<(), ArtifactError> {
-        let expected_statement = decode_canonical_statement::<p3_batch_stark::Val<SC>>(
-            expected,
-            self.schema(),
-            SC::field_encoding(),
-            &self.limits,
-        )?;
-        let proof = decode_framed(
+        let (native, expected_statement) = decode_framed(
             bytes,
             ArtifactKind::Proof,
             &self.limits,
@@ -498,6 +537,12 @@ where
                 {
                     return Err(ArtifactError::NonCanonicalMetadata);
                 }
+                let expected_statement = decode_canonical_statement::<p3_batch_stark::Val<SC>>(
+                    expected,
+                    self.schema(),
+                    SC::field_encoding(),
+                    reader,
+                )?;
                 let attached = reader.read_vec_exact(
                     "attached statement",
                     self.schema().base_len(),
@@ -510,44 +555,64 @@ where
                     SC::read_commitment,
                     SC::read_opening_proof,
                 )?;
-                Ok((attached, proof))
+                let relation = self.verifier.relation();
+                reader.charge_conversion_vec::<NonPrimitiveTableEntry<SC>>(
+                    relation.non_primitives().len(),
+                )?;
+                let mut non_primitives = Vec::new();
+                non_primitives
+                    .try_reserve_exact(relation.non_primitives().len())
+                    .map_err(|_| ArtifactError::AllocationFailed {
+                        component: "proof NPO conversion",
+                    })?;
+                let statement_index = self
+                    .verifier
+                    .statement_layout()
+                    .table_instance()
+                    .and_then(|index| index.checked_sub(p3_circuit_prover::NUM_PRIMITIVE_TABLES));
+                let mut attached = Some(attached);
+                for (index, npo) in relation.non_primitives().iter().enumerate() {
+                    let public_values = if statement_index == Some(index) {
+                        attached.take().ok_or(ArtifactError::NonCanonicalMetadata)?
+                    } else {
+                        try_copy_slice(reader, npo.public_values(), "NPO public values copy")?
+                    };
+                    non_primitives.push(NonPrimitiveTableEntry {
+                        op_type: try_copy_npo_id(reader, npo.op_type())?,
+                        rows: npo.rows(),
+                        lanes: npo.lanes(),
+                        public_values,
+                        air_variant: npo.air_variant(),
+                    });
+                }
+                charge_table_packing_copy(reader, relation.table_packing())?;
+                let table_packing =
+                    relation
+                        .table_packing()
+                        .try_clone_for_artifact()
+                        .map_err(|_| ArtifactError::AllocationFailed {
+                            component: "table packing copy",
+                        })?;
+                reader.charge_conversion_vec::<()>(0)?;
+                let (w_binomial, alu_quintic_trinomial) = match relation.reduction() {
+                    p3_circuit_prover::air::AluExtMulKind::Base => (None, false),
+                    p3_circuit_prover::air::AluExtMulKind::Binomial { w } => (Some(w), false),
+                    p3_circuit_prover::air::AluExtMulKind::QuinticTrinomial => (None, true),
+                };
+                let native = BatchStarkProof {
+                    proof,
+                    table_packing,
+                    rows: *relation.rows(),
+                    alu_variant: relation.alu_variant(),
+                    ext_degree: relation.ext_degree(),
+                    w_binomial,
+                    alu_quintic_trinomial,
+                    non_primitives,
+                    stark_common: p3_batch_stark::CommonData::new(None, Vec::new()),
+                };
+                Ok((native, expected_statement))
             },
         )?;
-        let relation = self.verifier.relation();
-        let non_primitives = relation
-            .non_primitives()
-            .iter()
-            .enumerate()
-            .map(|(index, npo)| NonPrimitiveTableEntry {
-                op_type: npo.op_type().clone(),
-                rows: npo.rows(),
-                lanes: npo.lanes(),
-                public_values: if self.verifier.statement_layout().table_instance()
-                    == Some(p3_circuit_prover::NUM_PRIMITIVE_TABLES + index)
-                {
-                    proof.0.clone()
-                } else {
-                    npo.public_values().to_vec()
-                },
-                air_variant: npo.air_variant(),
-            })
-            .collect();
-        let (w_binomial, alu_quintic_trinomial) = match relation.reduction() {
-            p3_circuit_prover::air::AluExtMulKind::Base => (None, false),
-            p3_circuit_prover::air::AluExtMulKind::Binomial { w } => (Some(w), false),
-            p3_circuit_prover::air::AluExtMulKind::QuinticTrinomial => (None, true),
-        };
-        let native = BatchStarkProof {
-            proof: proof.1,
-            table_packing: relation.table_packing().clone(),
-            rows: *relation.rows(),
-            alu_variant: relation.alu_variant(),
-            ext_degree: relation.ext_degree(),
-            w_binomial,
-            alu_quintic_trinomial,
-            non_primitives,
-            stark_common: p3_batch_stark::CommonData::new(None, Vec::new()),
-        };
         self.verifier
             .verify(&native, &expected_statement)
             .map_err(|_| ArtifactError::VerificationRejected)
@@ -558,7 +623,7 @@ fn decode_canonical_statement<F: PrimeField64>(
     expected: CanonicalStatement<'_>,
     schema: &StatementSchema,
     field: FieldEncoding<F>,
-    limits: &ArtifactLimits,
+    reader: &mut Reader<'_>,
 ) -> Result<Vec<F>, ArtifactError> {
     if expected.element_count != schema.base_len() {
         return Err(ArtifactError::Statement(
@@ -568,15 +633,14 @@ fn decode_canonical_statement<F: PrimeField64>(
             },
         ));
     }
-    let mut reader = Reader::new(expected.canonical_bytes, limits);
-    let values = reader.read_exact_items(
-        "expected statement",
-        expected.element_count,
-        field.encoded_bytes(),
-        |reader| reader.read_field(field),
-    )?;
-    reader.finish()?;
-    Ok(values)
+    reader.read_alternate_slice(expected.canonical_bytes, |reader| {
+        reader.read_exact_items(
+            "expected statement",
+            expected.element_count,
+            field.encoded_bytes(),
+            |reader| reader.read_field(field),
+        )
+    })
 }
 
 pub(crate) fn decode_portable_verifier(
@@ -687,13 +751,15 @@ where
 mod tests {
     use alloc::vec::Vec;
     use core::convert::Infallible;
+    use core::mem::size_of;
     use core::sync::atomic::{AtomicUsize, Ordering};
 
     use p3_baby_bear::BabyBear;
     use p3_circuit::CircuitBuilder;
+    use p3_circuit::ops::NpoTypeId;
     use p3_circuit_prover::{
-        BatchStarkProof, BatchStarkProver, CircuitVerifier, ConstraintProfile,
-        NonPrimitiveTableEntry, TablePacking,
+        BatchStarkProof, BatchStarkProver, BuiltinArtifactNpo, CircuitVerifier, ConstraintProfile,
+        NonPrimitiveTableEntry, Poseidon1Prover, Poseidon2Prover, TablePacking,
     };
     use p3_field::PrimeCharacteristicRing;
     use p3_field::extension::BinomialExtensionField;
@@ -703,7 +769,8 @@ mod tests {
 
     use super::super::descriptor::{
         BuiltinNpoV1, NpoDescriptorV1, NpoPublicValuesV1, RelationDescriptorV1, read_common,
-        read_config, read_relation, write_common, write_config, write_relation,
+        read_config, read_relation, read_relation_without_trusted_conversion_charge, write_common,
+        write_config, write_relation,
     };
     use super::super::native::{read_merkle_cap, write_merkle_cap};
     use super::super::wire::{FieldEncoding, Reader, Writer, decode_framed, encode_framed};
@@ -723,6 +790,10 @@ mod tests {
     };
 
     static VERIFICATION_RNG_DRAWS: AtomicUsize = AtomicUsize::new(0);
+
+    const fn accounted_vec_allocation<T>(entries: usize) -> usize {
+        size_of::<Vec<T>>() + entries * size_of::<T>()
+    }
 
     #[derive(Debug)]
     struct AuditedRng(StdRng);
@@ -921,7 +992,7 @@ mod tests {
             ),
             Err(ArtifactError::Truncated)
         ));
-        let mut trailing = proof_bytes.clone();
+        let mut trailing = proof_bytes;
         trailing.push(0);
         assert!(matches!(
             imported.verify_encoded(&trailing, CanonicalStatement::new(&[], 0)),
@@ -1016,9 +1087,75 @@ mod tests {
     }
 
     #[test]
+    fn nonempty_adapter_copy_charges_before_reserving() {
+        let values = [BabyBear::from_u32(1), BabyBear::from_u32(2)];
+        let exact_allocation = accounted_vec_allocation::<BabyBear>(values.len());
+        let exact_limits = ArtifactLimits {
+            max_decoded_bytes: exact_allocation,
+            ..ArtifactLimits::default()
+        };
+        let mut exact_reader = Reader::new(&[], &exact_limits);
+        assert_eq!(
+            super::try_copy_slice(&mut exact_reader, &values, "test adapter copy").unwrap(),
+            values
+        );
+        assert_eq!(exact_reader.requested_allocation_bytes(), exact_allocation);
+
+        let mut below_limits = exact_limits;
+        below_limits.max_decoded_bytes -= 1;
+        let mut below_reader = Reader::new(&[], &below_limits);
+        assert!(matches!(
+            super::try_copy_slice(&mut below_reader, &values, "test adapter copy"),
+            Err(ArtifactError::DecodeLimitExceeded {
+                component: "decoded allocation bytes",
+                actual,
+                limit,
+            }) if actual == exact_allocation && limit + 1 == exact_allocation
+        ));
+    }
+
+    #[test]
     fn trusted_candidate_rejects_unsafe_relation_geometry_before_air_construction() {
         let limits = ArtifactLimits::default();
         let (verifier_bytes, _) = exported_double_circuit(2, 4);
+
+        let zero_lanes = rewrite_baby_bear_verifier_relation(&verifier_bytes, limits, |relation| {
+            relation.non_primitives.push(NpoDescriptorV1 {
+                kind: BuiltinNpoV1::Recompose,
+                rows: 1,
+                lanes: 0,
+                air_variant: p3_circuit_prover::AirVariant::Baseline,
+                public_values: NpoPublicValuesV1::Static(Vec::new()),
+            });
+            relation.trace_degree_bits.push(5);
+        });
+        assert!(matches!(
+            PortableVerifier::decode(
+                &zero_lanes,
+                ExpectedVerifierArtifact::from_trusted_bytes(&zero_lanes),
+                limits,
+            ),
+            Err(ArtifactError::NonCanonicalMetadata)
+        ));
+
+        let zero_rows = rewrite_baby_bear_verifier_relation(&verifier_bytes, limits, |relation| {
+            relation.non_primitives.push(NpoDescriptorV1 {
+                kind: BuiltinNpoV1::Recompose,
+                rows: 0,
+                lanes: u32::MAX as usize,
+                air_variant: p3_circuit_prover::AirVariant::Baseline,
+                public_values: NpoPublicValuesV1::Static(Vec::new()),
+            });
+            relation.trace_degree_bits.push(5);
+        });
+        assert!(matches!(
+            PortableVerifier::decode(
+                &zero_rows,
+                ExpectedVerifierArtifact::from_trusted_bytes(&zero_rows),
+                limits,
+            ),
+            Err(ArtifactError::NonCanonicalMetadata)
+        ));
 
         let bad_lanes = rewrite_baby_bear_verifier_relation(&verifier_bytes, limits, |relation| {
             relation.non_primitives.push(NpoDescriptorV1 {
@@ -1045,7 +1182,7 @@ mod tests {
         ));
 
         let bad_degree = rewrite_baby_bear_verifier_relation(&verifier_bytes, limits, |relation| {
-            relation.trace_degree_bits[0] = 33
+            relation.trace_degree_bits[0] = 33;
         });
         assert!(matches!(
             PortableVerifier::decode(
@@ -1151,6 +1288,12 @@ mod tests {
         let right_proof = fixture.prove([11, 13]);
         let output_config = fixture.layer_config.clone();
         let native_params = output_config.native_fri_validation_params().unwrap();
+        let output_params = ProveNextLayerParams {
+            table_packing: TablePacking::new(1, 4)
+                .with_npo_lanes(NpoTypeId::recompose(), 1)
+                .with_npo_min_height(NpoTypeId::recompose(), 32),
+            ..ProveNextLayerParams::default()
+        };
         let owner = TrustedPreparedAggregation::<
             InputConfig,
             InputConfig,
@@ -1171,7 +1314,7 @@ mod tests {
             },
             output_config,
             fixture.backend.clone(),
-            ProveNextLayerParams::default(),
+            output_params,
         )
         .unwrap();
         let output = owner
@@ -1207,6 +1350,72 @@ mod tests {
         let portable_config =
             koala_bear_d4_poseidon2_binary(&descriptor, &limits.verifier).unwrap();
         let relation = RelationDescriptorV1::from_native(parent.relation()).unwrap();
+        let trusted_npo_count = relation.non_primitives.len();
+        assert!(trusted_npo_count > 1);
+        let native_relation = parent.relation();
+        let statement_npo = native_relation
+            .statement_layout()
+            .table_instance()
+            .map(|instance| instance - p3_circuit_prover::NUM_PRIMITIVE_TABLES);
+        let npo_adapter_allocation = accounted_vec_allocation::<
+            NonPrimitiveTableEntry<PortableConfig>,
+        >(native_relation.non_primitives().len())
+            + native_relation
+                .non_primitives()
+                .iter()
+                .enumerate()
+                .map(|(index, npo)| {
+                    accounted_vec_allocation::<u8>(npo.op_type().as_str().len())
+                        + if statement_npo == Some(index) {
+                            0
+                        } else {
+                            accounted_vec_allocation::<KoalaBear>(npo.public_values().len())
+                        }
+                })
+                .sum::<usize>();
+        let packing = native_relation.table_packing();
+        let lane_overrides = packing.npo_lanes_iter().collect::<Vec<_>>();
+        let height_overrides = packing.npo_min_heights().collect::<Vec<_>>();
+        assert!(!lane_overrides.is_empty());
+        assert!(!height_overrides.is_empty());
+        let packing_adapter_allocation =
+            accounted_vec_allocation::<(NpoTypeId, usize)>(lane_overrides.len())
+                + lane_overrides
+                    .iter()
+                    .map(|(id, _)| accounted_vec_allocation::<u8>(id.as_str().len()))
+                    .sum::<usize>()
+                + accounted_vec_allocation::<(NpoTypeId, usize)>(height_overrides.len())
+                + height_overrides
+                    .iter()
+                    .map(|(id, _)| accounted_vec_allocation::<u8>(id.as_str().len()))
+                    .sum::<usize>();
+        let proof_adapter_allocation = npo_adapter_allocation
+            + packing_adapter_allocation
+            + accounted_vec_allocation::<KoalaBear>(4)
+            + accounted_vec_allocation::<()>(0);
+        let expected_poseidon_width = relation
+            .non_primitives
+            .iter()
+            .filter_map(|npo| {
+                let per_lane = match npo.kind {
+                    BuiltinNpoV1::Poseidon1(config) => {
+                        let prover = Poseidon1Prover::new(config, relation.constraint_profile);
+                        prover
+                            .main_width_from_config()
+                            .max(prover.preprocessed_width_from_config())
+                    }
+                    BuiltinNpoV1::Poseidon2(config) => {
+                        let prover = Poseidon2Prover::new(config, relation.constraint_profile);
+                        prover
+                            .main_width_from_config()
+                            .max(prover.preprocessed_width_from_config())
+                    }
+                    _ => return None,
+                };
+                Some(npo.lanes * per_lane)
+            })
+            .max()
+            .unwrap();
 
         let mut common_writer = Writer::new(limits.max_verifier_bytes);
         write_common::<InputConfig>(
@@ -1292,6 +1501,32 @@ mod tests {
         let proof_bytes = portable_native_verifier
             .encode_proof_artifact(&portable_native_proof, limits)
             .unwrap();
+        let bare_wire_allocation = decode_framed(
+            &proof_bytes,
+            ArtifactKind::Proof,
+            &limits,
+            |raw| raw == SuiteIdV1::KoalaBearD4Poseidon2BinaryFri.as_u16(),
+            |_, reader| {
+                reader.read_u16().unwrap();
+                reader
+                    .read_vec_exact(
+                        "attached statement",
+                        parent.statement_layout().schema().base_len(),
+                        FieldEncoding::<KoalaBear>::u32().encoded_bytes(),
+                        |reader| reader.read_field(FieldEncoding::<KoalaBear>::u32()),
+                    )
+                    .unwrap();
+                super::read_batch_proof::<PortableConfig, KoalaBear>(
+                    reader,
+                    FieldEncoding::u32(),
+                    <PortableConfig as super::BuiltinArtifactConfig>::read_commitment,
+                    <PortableConfig as super::BuiltinArtifactConfig>::read_opening_proof,
+                )
+                .unwrap();
+                Ok(reader.requested_allocation_bytes())
+            },
+        )
+        .unwrap();
 
         drop(portable_native_proof);
         drop(portable_native_verifier);
@@ -1301,19 +1536,139 @@ mod tests {
         drop(right_proof);
         drop(fixture);
 
-        let imported = PortableVerifier::decode(
+        let mut lower_width = 0;
+        let mut upper_width = limits.verifier.max_matrix_width;
+        while lower_width < upper_width {
+            let candidate = lower_width + (upper_width - lower_width) / 2;
+            let mut bounded = limits;
+            bounded.verifier.max_matrix_width = candidate;
+            if PortableVerifier::decode(
+                &verifier_bytes,
+                ExpectedVerifierArtifact::from_trusted_bytes(&verifier_bytes),
+                bounded,
+            )
+            .is_ok()
+            {
+                upper_width = candidate;
+            } else {
+                lower_width = candidate + 1;
+            }
+        }
+        assert_eq!(lower_width, expected_poseidon_width);
+        let mut below_poseidon_width = limits;
+        below_poseidon_width.verifier.max_matrix_width = expected_poseidon_width - 1;
+        assert!(matches!(
+            PortableVerifier::decode(
+                &verifier_bytes,
+                ExpectedVerifierArtifact::from_trusted_bytes(&verifier_bytes),
+                below_poseidon_width,
+            ),
+            Err(ArtifactError::DecodeLimitExceeded {
+                component: "NPO matrix width",
+                actual,
+                limit,
+            }) if actual == expected_poseidon_width && limit + 1 == expected_poseidon_width
+        ));
+
+        let conversion_allocation = size_of::<Vec<BuiltinArtifactNpo<KoalaBear>>>()
+            + trusted_npo_count * size_of::<BuiltinArtifactNpo<KoalaBear>>();
+        let bare_verifier_allocation = decode_framed(
             &verifier_bytes,
-            ExpectedVerifierArtifact::from_trusted_bytes(&verifier_bytes),
-            limits,
+            ArtifactKind::Verifier,
+            &limits,
+            |raw| raw == SuiteIdV1::KoalaBearD4Poseidon2BinaryFri.as_u16(),
+            |_, reader| {
+                reader.read_u16().unwrap();
+                read_config(reader, SuiteIdV1::KoalaBearD4Poseidon2BinaryFri).unwrap();
+                read_relation_without_trusted_conversion_charge(
+                    reader,
+                    FieldEncoding::<KoalaBear>::u32(),
+                )
+                .unwrap();
+                read_common::<PortableConfig>(
+                    reader,
+                    <PortableConfig as super::BuiltinArtifactConfig>::read_commitment,
+                )
+                .unwrap();
+                Ok(reader.requested_allocation_bytes())
+            },
         )
         .unwrap();
+        let exact_allocation = bare_verifier_allocation + conversion_allocation;
+        let mut exact_limits = limits;
+        exact_limits.max_decoded_bytes = exact_allocation;
+        PortableVerifier::decode(
+            &verifier_bytes,
+            ExpectedVerifierArtifact::from_trusted_bytes(&verifier_bytes),
+            exact_limits,
+        )
+        .unwrap();
+        let mut below_exact = exact_limits;
+        below_exact.max_decoded_bytes -= 1;
+        assert!(matches!(
+            PortableVerifier::decode(
+                &verifier_bytes,
+                ExpectedVerifierArtifact::from_trusted_bytes(&verifier_bytes),
+                below_exact,
+            ),
+            Err(ArtifactError::DecodeLimitExceeded {
+                component: "decoded allocation bytes",
+                actual,
+                limit,
+            }) if actual == exact_allocation && limit + 1 == exact_allocation
+        ));
         let expected = [7_u32, 9, 11, 13]
             .into_iter()
             .flat_map(u32::to_le_bytes)
             .collect::<Vec<_>>();
+        let exact_proof_allocation = bare_wire_allocation + proof_adapter_allocation;
+        let mut exact_proof_limits = limits;
+        exact_proof_limits.max_decoded_bytes = exact_proof_allocation;
+        let imported = PortableVerifier::decode(
+            &verifier_bytes,
+            ExpectedVerifierArtifact::from_trusted_bytes(&verifier_bytes),
+            exact_proof_limits,
+        )
+        .unwrap();
         imported
             .verify_encoded(&proof_bytes, CanonicalStatement::new(&expected, 4))
             .unwrap();
+        let mut trailing_expected = expected.clone();
+        trailing_expected.push(0);
+        assert_eq!(
+            imported
+                .verify_encoded(&proof_bytes, CanonicalStatement::new(&trailing_expected, 4),)
+                .unwrap_err(),
+            ArtifactError::TrailingBytes
+        );
+        let mut noncanonical_expected = expected.clone();
+        noncanonical_expected[..4]
+            .copy_from_slice(&(p3_circuit_prover::KOALA_BEAR_MODULUS as u32).to_le_bytes());
+        assert_eq!(
+            imported
+                .verify_encoded(
+                    &proof_bytes,
+                    CanonicalStatement::new(&noncanonical_expected, 4),
+                )
+                .unwrap_err(),
+            ArtifactError::NonCanonicalField
+        );
+        let mut below_proof_allocation = exact_proof_limits;
+        below_proof_allocation.max_decoded_bytes -= 1;
+        let below = PortableVerifier::decode(
+            &verifier_bytes,
+            ExpectedVerifierArtifact::from_trusted_bytes(&verifier_bytes),
+            below_proof_allocation,
+        )
+        .unwrap();
+        assert!(matches!(
+            below.verify_encoded(&proof_bytes, CanonicalStatement::new(&expected, 4)),
+            Err(ArtifactError::DecodeLimitExceeded {
+                component: "decoded allocation bytes",
+                actual,
+                limit,
+            }) if actual == exact_proof_allocation && limit + 1 == exact_proof_allocation
+        ));
         let swapped = [11_u32, 13, 7, 9]
             .into_iter()
             .flat_map(u32::to_le_bytes)

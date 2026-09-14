@@ -52,6 +52,68 @@ pub enum Poseidon1AirWrapperInner {
     GoldilocksD2Width8(Box<Poseidon1CircuitAirGoldilocksD2Width8>),
 }
 
+#[cfg(test)]
+mod width_tests {
+    use super::*;
+
+    #[test]
+    fn poseidon_width_lookup_matches_every_constructed_air() {
+        let configs = [
+            Poseidon1Config::BABY_BEAR_D1_W16,
+            Poseidon1Config::BABY_BEAR_D4_W16,
+            Poseidon1Config::BABY_BEAR_D4_W24,
+            Poseidon1Config::KOALA_BEAR_D1_W16,
+            Poseidon1Config::KOALA_BEAR_D4_W16,
+            Poseidon1Config::KOALA_BEAR_D4_W24,
+            Poseidon1Config::GOLDILOCKS_D2_W8,
+            Poseidon1Config::BABY_BEAR_D4_W16.for_challenger(),
+            Poseidon1Config::BABY_BEAR_D4_W24.for_challenger(),
+            Poseidon1Config::KOALA_BEAR_D4_W16.for_challenger(),
+            Poseidon1Config::KOALA_BEAR_D4_W24.for_challenger(),
+            Poseidon1Config::GOLDILOCKS_D2_W8.for_challenger(),
+        ];
+        for config in configs {
+            let prover = Poseidon1Prover::new(config, ConstraintProfile::Standard);
+            let air = Poseidon1Prover::air_wrapper_for_config(config);
+            assert_eq!(prover.main_width_from_config(), air.width());
+            assert_eq!(
+                prover.preprocessed_width_from_config(),
+                air.preprocessed_width()
+            );
+        }
+
+        for (config, modulus_is_baby_bear) in [
+            (Poseidon1Config::BABY_BEAR_D1_W16, true),
+            (Poseidon1Config::KOALA_BEAR_D1_W16, false),
+        ] {
+            let expected =
+                Poseidon1Prover::new(config, ConstraintProfile::Standard).main_width_from_config();
+            for witness_bus in [1, 5] {
+                let width = if modulus_is_baby_bear {
+                    Poseidon1Prover::air_wrapper_for_config_with_preprocessed::<BabyBear>(
+                        config,
+                        Vec::new(),
+                        1,
+                        witness_bus,
+                    )
+                    .unwrap()
+                    .width()
+                } else {
+                    Poseidon1Prover::air_wrapper_for_config_with_preprocessed::<KoalaBear>(
+                        config,
+                        Vec::new(),
+                        1,
+                        witness_bus,
+                    )
+                    .unwrap()
+                    .width()
+                };
+                assert_eq!(expected, width);
+            }
+        }
+    }
+}
+
 impl Poseidon1AirWrapperInner {
     /// Declare whether the wrapped table holds nothing but challenger duplex-sponge rows.
     ///
@@ -919,6 +981,27 @@ impl Poseidon1Prover {
             }
             Poseidon1Config::GOLDILOCKS_D2_W8 => {
                 Poseidon1CircuitAirGoldilocksD2Width8::preprocessed_width()
+            }
+            _ => panic!("unsupported Poseidon1Config"),
+        }
+    }
+
+    pub const fn main_width_from_config(&self) -> usize {
+        match self.config.without_challenger_role() {
+            Poseidon1Config::BABY_BEAR_D1_W16 => Poseidon1CircuitAirBabyBearD1Width16::main_width(),
+            Poseidon1Config::BABY_BEAR_D4_W16 => Poseidon1CircuitAirBabyBearD4Width16::main_width(),
+            Poseidon1Config::BABY_BEAR_D4_W24 => Poseidon1CircuitAirBabyBearD4Width24::main_width(),
+            Poseidon1Config::KOALA_BEAR_D1_W16 => {
+                Poseidon1CircuitAirKoalaBearD1Width16::main_width()
+            }
+            Poseidon1Config::KOALA_BEAR_D4_W16 => {
+                Poseidon1CircuitAirKoalaBearD4Width16::main_width()
+            }
+            Poseidon1Config::KOALA_BEAR_D4_W24 => {
+                Poseidon1CircuitAirKoalaBearD4Width24::main_width()
+            }
+            Poseidon1Config::GOLDILOCKS_D2_W8 => {
+                Poseidon1CircuitAirGoldilocksD2Width8::main_width()
             }
             _ => panic!("unsupported Poseidon1Config"),
         }

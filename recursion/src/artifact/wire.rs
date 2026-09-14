@@ -331,6 +331,35 @@ impl<'a> Reader<'a> {
         Ok(())
     }
 
+    pub(crate) fn charge_conversion_vec<T>(&mut self, count: usize) -> Result<(), ArtifactError> {
+        self.charge_container::<T>(count)
+    }
+
+    pub(crate) fn read_alternate_slice<T>(
+        &mut self,
+        bytes: &[u8],
+        read: impl FnOnce(&mut Reader<'_>) -> Result<T, ArtifactError>,
+    ) -> Result<T, ArtifactError> {
+        let mut alternate = Reader {
+            bytes,
+            position: 0,
+            limits: self.limits,
+            requested_allocation_bytes: self.requested_allocation_bytes,
+            container_entries: self.container_entries,
+            scalar_elements: self.scalar_elements,
+        };
+        let value = read(&mut alternate);
+        let consumed_all = alternate.position == alternate.bytes.len();
+        self.requested_allocation_bytes = alternate.requested_allocation_bytes;
+        self.container_entries = alternate.container_entries;
+        self.scalar_elements = alternate.scalar_elements;
+        let value = value?;
+        if !consumed_all {
+            return Err(ArtifactError::TrailingBytes);
+        }
+        Ok(value)
+    }
+
     pub(crate) fn read_vec<T>(
         &mut self,
         component: &'static str,

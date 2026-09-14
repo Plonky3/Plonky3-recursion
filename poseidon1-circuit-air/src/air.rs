@@ -264,6 +264,13 @@ impl<
         poseidon1_preprocessed_row_width_for_air(D, WIDTH_EXT, RATE_EXT)
     }
 
+    /// Return the number of main-trace columns per row.
+    pub const fn main_width() -> usize {
+        num_cols::<
+            Poseidon1Cols<u8, WIDTH, SBOX_DEGREE, SBOX_REGISTERS, HALF_FULL_ROUNDS, PARTIAL_ROUNDS>,
+        >()
+    }
+
     /// Generate the execution trace matrix from a sequence of circuit rows.
     ///
     /// # Two-Pass Strategy
@@ -556,9 +563,7 @@ impl<
     /// - The direction bit,
     /// - The MMCS accumulator.
     fn width(&self) -> usize {
-        num_cols::<
-            Poseidon1Cols<u8, WIDTH, SBOX_DEGREE, SBOX_REGISTERS, HALF_FULL_ROUNDS, PARTIAL_ROUNDS>,
-        >()
+        Self::main_width()
     }
 
     fn preprocessed_width(&self) -> usize {

@@ -1,4 +1,5 @@
-use alloc::string::ToString;
+use alloc::collections::TryReserveError;
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 use p3_circuit::ops::NpoTypeId;
@@ -65,6 +66,40 @@ pub(crate) const MAX_SANE_LANES: usize = 1 << 16;
 const SINGLE_LANE_NPO_PREFIXES: [&str; 2] = ["poseidon1_perm/", "poseidon2_perm/"];
 
 impl TablePacking {
+    /// Fallibly clone the owned packing metadata used by artifact verification adapters.
+    pub fn try_clone_for_artifact(&self) -> Result<Self, TryReserveError> {
+        fn clone_id(id: &NpoTypeId) -> Result<NpoTypeId, TryReserveError> {
+            let mut owned = String::new();
+            owned.try_reserve_exact(id.as_str().len())?;
+            owned.push_str(id.as_str());
+            Ok(NpoTypeId::new(owned))
+        }
+
+        fn clone_entries(
+            entries: &[(NpoTypeId, usize)],
+        ) -> Result<Vec<(NpoTypeId, usize)>, TryReserveError> {
+            let mut cloned = Vec::new();
+            cloned.try_reserve_exact(entries.len())?;
+            for (id, value) in entries {
+                cloned.push((clone_id(id)?, *value));
+            }
+            Ok(cloned)
+        }
+
+        Ok(Self {
+            public_lanes: self.public_lanes,
+            alu_lanes: self.alu_lanes,
+            npo_lanes: clone_entries(&self.npo_lanes)?,
+            alu_min_height: self.alu_min_height,
+            public_min_height: self.public_min_height,
+            const_min_height: self.const_min_height,
+            npo_min_heights: clone_entries(&self.npo_min_heights)?,
+            min_trace_height: self.min_trace_height,
+            horner_packed_steps: self.horner_packed_steps,
+            strict: self.strict,
+        })
+    }
+
     /// Borrow the configured NPO lane overrides without cloning packing metadata.
     pub fn npo_lanes_iter(&self) -> impl Iterator<Item = (&NpoTypeId, usize)> {
         self.npo_lanes.iter().map(|(op, lanes)| (op, *lanes))

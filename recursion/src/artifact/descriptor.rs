@@ -6,7 +6,8 @@ use p3_circuit::ops::{NpoTypeId, Poseidon1Config, Poseidon2Config};
 use p3_circuit::{StatementField, StatementSchema};
 use p3_circuit_prover::air::AluExtMulKind;
 use p3_circuit_prover::{
-    AirVariant, CircuitRelation, ConstraintProfile, NpoRelation, RowCounts, TablePacking,
+    AirVariant, CircuitRelation, ConstraintProfile, NpoRelation, Poseidon1Prover, Poseidon2Prover,
+    RowCounts, TablePacking,
 };
 use p3_field::PrimeField64;
 
@@ -200,12 +201,16 @@ impl<F: Copy> RelationDescriptorV1<F> {
     pub(crate) fn into_trusted(
         self,
     ) -> Result<p3_circuit_prover::TrustedBuiltinArtifactRelation<F>, ArtifactError> {
-        let non_primitives = self
-            .non_primitives
-            .into_iter()
-            .map(|npo| match npo.public_values {
+        let mut non_primitives = Vec::new();
+        non_primitives
+            .try_reserve_exact(self.non_primitives.len())
+            .map_err(|_| ArtifactError::AllocationFailed {
+                component: "trusted NPO conversion",
+            })?;
+        for npo in self.non_primitives {
+            let trusted = match npo.public_values {
                 NpoPublicValuesV1::Statement { width } => {
-                    Ok(p3_circuit_prover::BuiltinArtifactNpo::statement(width))
+                    p3_circuit_prover::BuiltinArtifactNpo::statement(width)
                 }
                 NpoPublicValuesV1::Static(public_values) => {
                     let air = match npo.kind {
@@ -221,16 +226,17 @@ impl<F: Copy> RelationDescriptorV1<F> {
                             p3_circuit_prover::BuiltinArtifactAir::Poseidon2(config)
                         }
                     };
-                    Ok(p3_circuit_prover::BuiltinArtifactNpo::static_values(
+                    p3_circuit_prover::BuiltinArtifactNpo::static_values(
                         air,
                         npo.rows,
                         npo.lanes,
                         npo.air_variant,
                         public_values,
-                    ))
+                    )
                 }
-            })
-            .collect::<Result<Vec<_>, ArtifactError>>()?;
+            };
+            non_primitives.push(trusted);
+        }
         p3_circuit_prover::TrustedBuiltinArtifactRelation::try_new(
             self.table_packing,
             self.rows,
@@ -554,6 +560,22 @@ pub(crate) fn read_relation<F: PrimeField64>(
     reader: &mut Reader<'_>,
     field: super::wire::FieldEncoding<F>,
 ) -> Result<RelationDescriptorV1<F>, ArtifactError> {
+    read_relation_inner(reader, field, true)
+}
+
+#[cfg(test)]
+pub(crate) fn read_relation_without_trusted_conversion_charge<F: PrimeField64>(
+    reader: &mut Reader<'_>,
+    field: super::wire::FieldEncoding<F>,
+) -> Result<RelationDescriptorV1<F>, ArtifactError> {
+    read_relation_inner(reader, field, false)
+}
+
+fn read_relation_inner<F: PrimeField64>(
+    reader: &mut Reader<'_>,
+    field: super::wire::FieldEncoding<F>,
+    charge_trusted_conversion: bool,
+) -> Result<RelationDescriptorV1<F>, ArtifactError> {
     let table_packing = read_packing(reader)?;
     let mut row_values = [0usize; p3_circuit_prover::NUM_PRIMITIVE_TABLES];
     for row in &mut row_values {
@@ -646,6 +668,11 @@ pub(crate) fn read_relation<F: PrimeField64>(
     };
     validate_relation_descriptor(&relation)?;
     validate_relation_geometry(&relation, &reader.limits().verifier)?;
+    if charge_trusted_conversion {
+        reader.charge_conversion_vec::<p3_circuit_prover::BuiltinArtifactNpo<F>>(
+            relation.non_primitives.len(),
+        )?;
+    }
     Ok(relation)
 }
 
@@ -787,6 +814,11 @@ fn validate_relation_geometry<F: Copy>(
     }
 
     for (index, npo) in relation.non_primitives.iter().enumerate() {
+        if matches!(npo.public_values, NpoPublicValuesV1::Static(_))
+            && (npo.rows == 0 || npo.lanes == 0)
+        {
+            return Err(ArtifactError::NonCanonicalMetadata);
+        }
         check_geometry_limit("NPO rows", npo.rows, limits.max_total_scalar_elements)?;
         let per_lane_width = match npo.kind {
             BuiltinNpoV1::Statement => match npo.public_values {
@@ -804,13 +836,19 @@ fn validate_relation_geometry<F: Copy>(
                 if npo.lanes != 1 {
                     return Err(ArtifactError::NonCanonicalMetadata);
                 }
-                config.width()
+                let prover = Poseidon1Prover::new(config, relation.constraint_profile);
+                prover
+                    .main_width_from_config()
+                    .max(prover.preprocessed_width_from_config())
             }
             BuiltinNpoV1::Poseidon2(config) => {
                 if npo.lanes != 1 {
                     return Err(ArtifactError::NonCanonicalMetadata);
                 }
-                config.width()
+                let prover = Poseidon2Prover::new(config, relation.constraint_profile);
+                prover
+                    .main_width_from_config()
+                    .max(prover.preprocessed_width_from_config())
             }
         };
         let matrix_width = checked_geometry_product(npo.lanes, per_lane_width)?;
@@ -1122,12 +1160,16 @@ pub(crate) fn read_common<SC: StarkGenericConfig>(
 #[cfg(test)]
 mod tests {
     use alloc::vec;
+    use alloc::vec::Vec;
+    use core::mem::size_of;
 
     use p3_baby_bear::BabyBear;
     use p3_circuit::ops::NpoTypeId;
     use p3_circuit::{StatementField, StatementSchema};
     use p3_circuit_prover::air::AluExtMulKind;
-    use p3_circuit_prover::{AirVariant, ConstraintProfile, RowCounts, TablePacking};
+    use p3_circuit_prover::{
+        AirVariant, BuiltinArtifactNpo, ConstraintProfile, RowCounts, TablePacking,
+    };
     use p3_field::PrimeCharacteristicRing;
 
     use super::{
@@ -1264,6 +1306,19 @@ mod tests {
 
         let mut reader = Reader::new(&bytes, &limits);
         let decoded = read_relation(&mut reader, field).unwrap();
+        let vec_allocation =
+            |entries: usize, element_size: usize| size_of::<Vec<usize>>() + entries * element_size;
+        let expected_allocation = 2 * vec_allocation(1, size_of::<(BuiltinNpoV1, usize)>())
+            + vec_allocation(2, size_of::<NpoDescriptorV1<BabyBear>>())
+            + vec_allocation(1, size_of::<BabyBear>())
+            + vec_allocation(2, size_of::<StatementField>())
+            + vec_allocation(1, size_of::<StatementField>())
+            + vec_allocation(1, size_of::<StatementField>())
+            + vec_allocation(2, size_of::<StatementField>())
+            + vec_allocation(5, size_of::<usize>())
+            + vec_allocation(2, size_of::<BuiltinArtifactNpo<BabyBear>>());
+        assert_eq!(reader.requested_allocation_bytes(), expected_allocation);
+        assert_eq!(reader.container_entries(), 28);
         reader.finish().unwrap();
         assert_eq!(decoded, expected);
 
