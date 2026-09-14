@@ -1,3 +1,4 @@
+use alloc::string::String;
 use alloc::vec::Vec;
 
 use p3_batch_stark::common::{GlobalPreprocessed, PreprocessedInstanceMeta};
@@ -63,22 +64,30 @@ const POSEIDON2_CONFIGS: [Poseidon2Config; 16] = [
 
 impl BuiltinNpoV1 {
     fn from_native(op_type: &NpoTypeId) -> Result<Self, ArtifactError> {
-        if op_type == &NpoTypeId::statement() {
+        if op_type.as_str() == "statement" {
             return Ok(Self::Statement);
         }
-        if op_type == &NpoTypeId::recompose() {
+        if op_type.as_str() == "recompose" {
             return Ok(Self::Recompose);
         }
-        if op_type == &NpoTypeId::recompose_with_coeff_lookups() {
+        if op_type.as_str() == "recompose/coeff" {
             return Ok(Self::RecomposeWithCoefficientLookups);
         }
         for config in POSEIDON1_CONFIGS {
-            if op_type == &NpoTypeId::poseidon1_perm(config) {
+            if op_type
+                .as_str()
+                .strip_prefix("poseidon1_perm/")
+                .is_some_and(|variant| variant == config.variant_name())
+            {
                 return Ok(Self::Poseidon1(config));
             }
         }
         for config in POSEIDON2_CONFIGS {
-            if op_type == &NpoTypeId::poseidon2_perm(config) {
+            if op_type
+                .as_str()
+                .strip_prefix("poseidon2_perm/")
+                .is_some_and(|variant| variant == config.variant_name())
+            {
                 return Ok(Self::Poseidon2(config));
             }
         }
@@ -124,15 +133,43 @@ impl BuiltinNpoV1 {
         }
     }
 
-    fn op_type(self) -> NpoTypeId {
+    const fn op_type_parts(self) -> (&'static str, &'static str) {
         match self {
-            Self::Statement => NpoTypeId::statement(),
-            Self::Recompose => NpoTypeId::recompose(),
-            Self::RecomposeWithCoefficientLookups => NpoTypeId::recompose_with_coeff_lookups(),
-            Self::Poseidon1(config) => NpoTypeId::poseidon1_perm(config),
-            Self::Poseidon2(config) => NpoTypeId::poseidon2_perm(config),
+            Self::Statement => ("statement", ""),
+            Self::Recompose => ("recompose", ""),
+            Self::RecomposeWithCoefficientLookups => ("recompose/coeff", ""),
+            Self::Poseidon1(config) => ("poseidon1_perm/", config.variant_name()),
+            Self::Poseidon2(config) => ("poseidon2_perm/", config.variant_name()),
         }
     }
+
+    fn matches_op_type(self, op_type: &NpoTypeId) -> bool {
+        let (prefix, suffix) = self.op_type_parts();
+        op_type
+            .as_str()
+            .strip_prefix(prefix)
+            .is_some_and(|remainder| remainder == suffix)
+    }
+}
+
+fn read_builtin_npo_type(
+    reader: &mut Reader<'_>,
+    kind: BuiltinNpoV1,
+) -> Result<NpoTypeId, ArtifactError> {
+    let (prefix, suffix) = kind.op_type_parts();
+    let len = prefix
+        .len()
+        .checked_add(suffix.len())
+        .ok_or(ArtifactError::LengthOverflow)?;
+    reader.charge_conversion_vec::<u8>(len)?;
+    let mut id = String::new();
+    id.try_reserve_exact(len)
+        .map_err(|_| ArtifactError::AllocationFailed {
+            component: "NPO packing identifier",
+        })?;
+    id.push_str(prefix);
+    id.push_str(suffix);
+    Ok(NpoTypeId::new(id))
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -368,15 +405,16 @@ fn read_packing(reader: &mut Reader<'_>) -> Result<TablePacking, ArtifactError> 
         if lanes == 0 {
             return Err(ArtifactError::NonCanonicalMetadata);
         }
-        Ok((kind, lanes))
+        Ok((read_builtin_npo_type(reader, kind)?, lanes))
     })?;
     reject_duplicate_npo_keys(&npo_lanes)?;
     let alu_min_height = read_option_u32(reader, "ALU minimum height")?;
     let public_min_height = read_option_u32(reader, "public minimum height")?;
     let const_min_height = read_option_u32(reader, "constant minimum height")?;
     let npo_heights = reader.read_vec("NPO minimum-height overrides", 6, |reader| {
+        let kind = BuiltinNpoV1::from_wire(reader.read_u16()?)?;
         Ok((
-            BuiltinNpoV1::from_wire(reader.read_u16()?)?,
+            read_builtin_npo_type(reader, kind)?,
             read_count_value(reader)?,
         ))
     })?;
@@ -397,34 +435,22 @@ fn read_packing(reader: &mut Reader<'_>) -> Result<TablePacking, ArtifactError> 
     {
         return Err(ArtifactError::NonCanonicalMetadata);
     }
-    let mut packing = TablePacking::new(public_lanes, alu_lanes)
-        .with_min_trace_height(min_trace_height)
-        .with_horner_pack_k(horner_packed_steps);
-    for (kind, lanes) in npo_lanes {
-        packing = packing.with_npo_lanes(kind.op_type(), lanes);
-    }
-    if let Some(height) = alu_min_height {
-        packing = packing.with_alu_min_height(height);
-    }
-    if let Some(height) = public_min_height {
-        packing = packing.with_public_min_height(height);
-    }
-    if let Some(height) = const_min_height {
-        packing = packing.with_const_min_height(height);
-    }
-    for (kind, height) in npo_heights {
-        packing = packing.with_npo_min_height(kind.op_type(), height);
-    }
-    if strict {
-        packing = packing.with_strict_heights();
-    }
-    packing
-        .validate()
-        .map_err(|_| ArtifactError::NonCanonicalMetadata)?;
-    Ok(packing)
+    TablePacking::try_from_artifact_parts(
+        public_lanes,
+        alu_lanes,
+        npo_lanes,
+        alu_min_height,
+        public_min_height,
+        const_min_height,
+        npo_heights,
+        min_trace_height,
+        horner_packed_steps,
+        strict,
+    )
+    .map_err(|_| ArtifactError::NonCanonicalMetadata)
 }
 
-fn reject_duplicate_npo_keys<T>(values: &[(BuiltinNpoV1, T)]) -> Result<(), ArtifactError> {
+fn reject_duplicate_npo_keys<K: PartialEq, T>(values: &[(K, T)]) -> Result<(), ArtifactError> {
     for (index, (kind, _)) in values.iter().enumerate() {
         if values[..index].iter().any(|(previous, _)| previous == kind) {
             return Err(ArtifactError::NonCanonicalMetadata);
@@ -855,7 +881,8 @@ fn validate_relation_geometry<F: Copy>(
         check_matrix_width("NPO matrix width", matrix_width, limits)?;
         let degree = relation.trace_degree_bits[p3_circuit_prover::NUM_PRIMITIVE_TABLES + index];
         let minimum = packing
-            .npo_min_height(&npo.kind.op_type())
+            .npo_min_heights()
+            .find_map(|(op_type, height)| npo.kind.matches_op_type(op_type).then_some(height))
             .unwrap_or_else(|| packing.min_trace_height());
         validate_table_height(npo.rows, npo.lanes, minimum, degree, limits)?;
     }
@@ -1308,7 +1335,10 @@ mod tests {
         let decoded = read_relation(&mut reader, field).unwrap();
         let vec_allocation =
             |entries: usize, element_size: usize| size_of::<Vec<usize>>() + entries * element_size;
-        let expected_allocation = 2 * vec_allocation(1, size_of::<(BuiltinNpoV1, usize)>())
+        let packing_id_allocation = vec_allocation("recompose".len(), size_of::<u8>())
+            + vec_allocation("statement".len(), size_of::<u8>());
+        let expected_allocation = 2 * vec_allocation(1, size_of::<(NpoTypeId, usize)>())
+            + packing_id_allocation
             + vec_allocation(2, size_of::<NpoDescriptorV1<BabyBear>>())
             + vec_allocation(1, size_of::<BabyBear>())
             + vec_allocation(2, size_of::<StatementField>())
@@ -1318,9 +1348,25 @@ mod tests {
             + vec_allocation(5, size_of::<usize>())
             + vec_allocation(2, size_of::<BuiltinArtifactNpo<BabyBear>>());
         assert_eq!(reader.requested_allocation_bytes(), expected_allocation);
-        assert_eq!(reader.container_entries(), 28);
+        assert_eq!(reader.container_entries(), 48);
         reader.finish().unwrap();
         assert_eq!(decoded, expected);
+
+        let mut exact_limits = limits;
+        exact_limits.max_decoded_bytes = expected_allocation;
+        let mut exact_reader = Reader::new(&bytes, &exact_limits);
+        read_relation(&mut exact_reader, field).unwrap();
+        exact_reader.finish().unwrap();
+        exact_limits.max_decoded_bytes -= 1;
+        let mut below_reader = Reader::new(&bytes, &exact_limits);
+        assert!(matches!(
+            read_relation(&mut below_reader, field),
+            Err(ArtifactError::DecodeLimitExceeded {
+                component: "decoded allocation bytes",
+                actual,
+                limit,
+            }) if actual == expected_allocation && limit + 1 == expected_allocation
+        ));
 
         let mut canonical = Writer::new(4096);
         write_relation(&mut canonical, &decoded, field).unwrap();

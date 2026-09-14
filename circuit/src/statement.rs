@@ -167,7 +167,20 @@ impl AggregationStatementLayout {
                 got: split_at,
             });
         }
-        if output != StatementSchema::concat(&left, &right)? {
+        let output_base_len = left
+            .base_len()
+            .checked_add(right.base_len())
+            .ok_or(StatementError::LengthOverflow)?;
+        let output_field_len = left
+            .fields()
+            .len()
+            .checked_add(right.fields().len())
+            .ok_or(StatementError::LengthOverflow)?;
+        if output.base_len() != output_base_len
+            || output.fields().len() != output_field_len
+            || output.fields()[..left.fields().len()] != *left.fields()
+            || output.fields()[left.fields().len()..] != *right.fields()
+        {
             return Err(StatementError::AggregationOutputSchemaMismatch);
         }
         Ok(Self {

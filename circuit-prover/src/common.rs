@@ -371,20 +371,22 @@ impl<F: Copy> TrustedBuiltinArtifactRelation<F> {
         }
         let statement_index = statement_table_instance
             .and_then(|instance| instance.checked_sub(NUM_PRIMITIVE_TABLES));
-        let dynamic_positions = non_primitives
+        let mut dynamic_positions = non_primitives
             .iter()
             .enumerate()
             .filter_map(|(index, npo)| {
                 matches!(npo, BuiltinArtifactNpo::Statement { .. }).then_some(index)
-            })
-            .collect::<Vec<_>>();
+            });
+        let first_dynamic_position = dynamic_positions.next();
+        let has_second_dynamic_position = dynamic_positions.next().is_some();
         if statement_schema.base_len() == 0 {
-            if statement_table_instance.is_some() || !dynamic_positions.is_empty() {
+            if statement_table_instance.is_some() || first_dynamic_position.is_some() {
                 return Err(ProofMetadataError::TrustedArtifactRelation(
                     "empty schema must not carry a Statement table",
                 ));
             }
-        } else if dynamic_positions.as_slice() != statement_index.as_slice()
+        } else if first_dynamic_position != statement_index
+            || has_second_dynamic_position
             || statement_index.is_none()
         {
             return Err(ProofMetadataError::TrustedArtifactRelation(
@@ -429,6 +431,80 @@ impl<F: Copy> TrustedBuiltinArtifactRelation<F> {
             aggregation_statement_layout,
             trace_degree_bits,
         })
+    }
+}
+
+#[cfg(test)]
+mod trusted_artifact_relation_tests {
+    use alloc::vec;
+    use alloc::vec::Vec;
+
+    use p3_baby_bear::BabyBear;
+    use p3_circuit::{StatementField, StatementSchema};
+
+    use super::{BuiltinArtifactAir, BuiltinArtifactNpo, TrustedBuiltinArtifactRelation};
+    use crate::{
+        AirVariant, ConstraintProfile, NUM_PRIMITIVE_TABLES, ProofMetadataError, RowCounts,
+        TablePacking,
+    };
+
+    fn statement_relation(
+        non_primitives: Vec<BuiltinArtifactNpo<BabyBear>>,
+        statement_index: usize,
+    ) -> Result<TrustedBuiltinArtifactRelation<BabyBear>, ProofMetadataError> {
+        let trace_degree_bits = vec![0; NUM_PRIMITIVE_TABLES + non_primitives.len()];
+        TrustedBuiltinArtifactRelation::try_new(
+            TablePacking::default(),
+            RowCounts::new([1, 1, 1]),
+            1,
+            crate::air::AluExtMulKind::Base,
+            AirVariant::Baseline,
+            ConstraintProfile::Standard,
+            non_primitives,
+            StatementSchema::try_new(vec![StatementField::Base]).unwrap(),
+            Some(NUM_PRIMITIVE_TABLES + statement_index),
+            None,
+            trace_degree_bits,
+        )
+    }
+
+    #[test]
+    fn trusted_constructor_requires_one_statement_at_the_declared_position() {
+        statement_relation(vec![BuiltinArtifactNpo::statement(1)], 0).unwrap();
+
+        let duplicate = statement_relation(
+            vec![
+                BuiltinArtifactNpo::statement(1),
+                BuiltinArtifactNpo::statement(1),
+            ],
+            0,
+        );
+        assert!(matches!(
+            duplicate,
+            Err(ProofMetadataError::TrustedArtifactRelation(
+                "Statement table position does not match the schema layout"
+            ))
+        ));
+
+        let wrong_position = statement_relation(
+            vec![
+                BuiltinArtifactNpo::static_values(
+                    BuiltinArtifactAir::Recompose,
+                    1,
+                    1,
+                    AirVariant::Baseline,
+                    Vec::new(),
+                ),
+                BuiltinArtifactNpo::statement(1),
+            ],
+            0,
+        );
+        assert!(matches!(
+            wrong_position,
+            Err(ProofMetadataError::TrustedArtifactRelation(
+                "Statement table position does not match the schema layout"
+            ))
+        ));
     }
 }
 

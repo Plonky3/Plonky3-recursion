@@ -66,6 +66,37 @@ pub(crate) const MAX_SANE_LANES: usize = 1 << 16;
 const SINGLE_LANE_NPO_PREFIXES: [&str; 2] = ["poseidon1_perm/", "poseidon2_perm/"];
 
 impl TablePacking {
+    /// Reconstruct artifact-owned packing metadata without cloning its already checked buffers.
+    #[doc(hidden)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn try_from_artifact_parts(
+        public_lanes: usize,
+        alu_lanes: usize,
+        npo_lanes: Vec<(NpoTypeId, usize)>,
+        alu_min_height: Option<usize>,
+        public_min_height: Option<usize>,
+        const_min_height: Option<usize>,
+        npo_min_heights: Vec<(NpoTypeId, usize)>,
+        min_trace_height: usize,
+        horner_packed_steps: usize,
+        strict: bool,
+    ) -> Result<Self, ProofMetadataError> {
+        let packing = Self {
+            public_lanes,
+            alu_lanes,
+            npo_lanes,
+            alu_min_height,
+            public_min_height,
+            const_min_height,
+            npo_min_heights,
+            min_trace_height,
+            horner_packed_steps,
+            strict,
+        };
+        packing.validate()?;
+        Ok(packing)
+    }
+
     /// Fallibly clone the owned packing metadata used by artifact verification adapters.
     pub fn try_clone_for_artifact(&self) -> Result<Self, TryReserveError> {
         fn clone_id(id: &NpoTypeId) -> Result<NpoTypeId, TryReserveError> {
