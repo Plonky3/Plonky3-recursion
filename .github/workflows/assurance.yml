@@ -1,0 +1,52 @@
+name: Verifier assurance
+
+on:
+  schedule:
+    - cron: "23 5 * * 1"
+  workflow_dispatch:
+    inputs:
+      start_seed:
+        description: First deterministic assurance corpus seed
+        required: false
+        default: "0"
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  P3_ASSURANCE_START_SEED: ${{ inputs.start_seed || '0' }}
+  P3_ASSURANCE_CASES: 64
+  P3_ASSURANCE_PROOF_CASES: 4
+
+jobs:
+  baseline:
+    name: Seeded baseline
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: verifier-assurance
+          cache-on-failure: true
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
+      - name: Fetch locked dependencies
+        run: cargo fetch --locked
+
+      - name: Run bounded seeded assurance corpus
+        run: |
+          cargo nextest run --offline -p p3-circuit --lib -E 'test(/(^|::)assurance_/)'
+          cargo nextest run --offline -p p3-circuit-prover --lib -E 'test(/(^|::)assurance_/)'
+          cargo nextest run --offline -p p3-circuit-prover --test assurance_algebraic -E 'test(/(^|::)assurance_/)'
+          cargo nextest run --offline -p p3-recursion --test assurance_transcript --test assurance_backend -E 'test(/(^|::)assurance_/)'

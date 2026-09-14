@@ -66,9 +66,16 @@ jobs:
         run: cargo check --verbose --workspace --all-targets --release
 
       - name: Test challenger rejection oracles (release)
+        if: ${{ !matrix.features }}
         run: |
           cargo test --verbose --release -p p3-recursion --test challenger_sponge_binding
           cargo test --verbose --release -p p3-recursion --test challenger_base_sponge_binding
+          cargo test --verbose --release -p p3-circuit-prover --test assurance_algebraic
+          cargo test --verbose --release -p p3-circuit-prover --lib batch_stark_prover::tests::verify_all_tables_rejects_a_forged_constant_value -- --exact
+          cargo test --verbose --release -p p3-circuit-prover --lib batch_stark_prover::tests::verify_all_tables_rejects_alu_bus_only_operand_swap -- --exact
+          cargo test --verbose --release -p p3-circuit-prover --lib batch_stark_prover::tests::verify_all_tables_rejects_forged_horner_chain_head_seed -- --exact
+          cargo test --verbose --release -p p3-recursion --test test_lookups test_wrong_multiplicities -- --exact
+          cargo test --verbose --release -p p3-recursion --test zk_hiding_mmcs test_batch_verifier_hiding_mmcs -- --exact
 
       - name: Test documentation
         # nextest doesn't run doctests, so cover them with plain `cargo test`.
