@@ -1,6 +1,5 @@
-use alloc::format;
-use alloc::vec;
 use alloc::vec::Vec;
+use alloc::{format, vec};
 
 use p3_baby_bear::BabyBear;
 use p3_field::PrimeCharacteristicRing;

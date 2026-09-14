@@ -82,7 +82,24 @@ fn whir_backend_restoration_budget_accepts_exact_and_rejects_one_below() {
                 + query_count(&argument.whir.final_openings)
         })
         .sum::<usize>();
-    let depth = proof.degree_bits
+    let max_width_sum = proof
+        .opening_proof
+        .rounds
+        .iter()
+        .map(|argument| {
+            argument
+                .evals
+                .iter()
+                .map(|batch| batch.current().len().max(batch.next().len()))
+                .sum::<usize>()
+        })
+        .max()
+        .unwrap();
+    let width_log = usize::BITS as usize - (max_width_sum - 1).leading_zeros() as usize;
+    let depth = proof
+        .degree_bits
+        .max(config.pcs_verifier_params().folding())
+        + width_log
         + config
             .pcs_verifier_params()
             .protocol_params()

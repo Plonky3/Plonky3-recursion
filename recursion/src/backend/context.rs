@@ -28,6 +28,9 @@ fn add_opened_values<SC: StarkGenericConfig>(
         quotient_chunks,
         random,
     } = values;
+    // Each quotient chunk owns a separately allocated row even when that row
+    // contains no scalars, so charge the container axis before walking it.
+    usage.add_metadata_entries(limits, quotient_chunks.len())?;
     for row in core::iter::once(trace_local)
         .chain(trace_next.iter())
         .chain(preprocessed_local.iter())
@@ -296,8 +299,18 @@ impl StarkLayoutPolicy {
 
 #[cfg(test)]
 mod policy_tests {
-    use super::StarkLayoutPolicy;
-    use crate::verifier::VerificationError;
+    use alloc::vec;
+
+    use p3_baby_bear::BabyBear;
+    use p3_field::extension::BinomialExtensionField;
+    use p3_uni_stark::{OpenedValues, StarkConfig};
+
+    use super::{StarkLayoutPolicy, add_opened_values};
+    use crate::pcs::whir::uni::pcs::tests::{MyChallenger, MyPcs};
+    use crate::verifier::{InputResourceUsage, VerificationError, VerifierLimits};
+
+    type Challenge = BinomialExtensionField<BabyBear, 4>;
+    type Config = StarkConfig<MyPcs, Challenge, MyChallenger>;
 
     #[test]
     fn retained_stark_policy_rejects_each_runtime_policy_mismatch() {
@@ -324,6 +337,43 @@ mod policy_tests {
                 })
             ));
         }
+    }
+
+    #[test]
+    fn opened_values_charge_empty_quotient_chunk_containers() {
+        let values = OpenedValues::<Challenge> {
+            trace_local: vec![],
+            trace_next: None,
+            preprocessed_local: None,
+            preprocessed_next: None,
+            quotient_chunks: vec![vec![], vec![], vec![]],
+            random: None,
+        };
+        let exact = VerifierLimits {
+            max_metadata_entries: 3,
+            ..VerifierLimits::default()
+        };
+        let mut usage = InputResourceUsage::default();
+
+        add_opened_values::<Config>(&mut usage, &exact, &values)
+            .expect("three empty quotient chunk rows fit exactly");
+        assert_eq!(usage.metadata_entries, 3);
+
+        assert!(matches!(
+            add_opened_values::<Config>(
+                &mut InputResourceUsage::default(),
+                &VerifierLimits {
+                    max_metadata_entries: 2,
+                    ..exact
+                },
+                &values,
+            ),
+            Err(VerificationError::ResourceLimitExceeded {
+                component: "metadata entries",
+                actual: 3,
+                limit: 2,
+            })
+        ));
     }
 }
 

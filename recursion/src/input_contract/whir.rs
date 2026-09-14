@@ -211,6 +211,7 @@ where
     match openings {
         QueryOpenings::Base(opening) => {
             usage.add_query_round(limits, opening.rows.len())?;
+            usage.add_metadata_entries(limits, opening.rows.len())?;
             for row in &opening.rows {
                 usage.check_matrix_width(limits, row.len())?;
                 usage.add_scalar_elements(limits, row.len())?;
@@ -219,6 +220,7 @@ where
         }
         QueryOpenings::Extension(opening) => {
             usage.add_query_round(limits, opening.rows.len())?;
+            usage.add_metadata_entries(limits, opening.rows.len())?;
             for row in &opening.rows {
                 usage.check_matrix_width(limits, row.len())?;
                 usage.add_scalar_elements(limits, row.len())?;
@@ -241,6 +243,15 @@ where
     let mut usage = InputResourceUsage::default();
     usage.add_rounds(limits, input.rounds.len())?;
     for argument in &input.rounds {
+        usage.add_metadata_entries(limits, argument.evals.len())?;
+        let opening_width_sum = argument.evals.iter().try_fold(0usize, |sum, batch| {
+            InputResourceUsage::checked_add(
+                "WHIR opening batch widths",
+                sum,
+                batch.current().len().max(batch.next().len()),
+            )
+        })?;
+        usage.max_whir_opening_width_sum = usage.max_whir_opening_width_sum.max(opening_width_sum);
         for batch in &argument.evals {
             usage.check_matrix_width(limits, batch.current().len())?;
             usage.check_matrix_width(limits, batch.next().len())?;
@@ -944,7 +955,7 @@ mod tests {
             max_rounds: 3,
             max_queries_per_round: 6,
             max_matrix_width: 256,
-            max_final_poly_evaluations: 5,
+            max_final_poly_evaluations: 4,
             max_cap_roots: 1,
             max_total_scalar_elements: 3653,
             max_compressed_frontier_hashes: 5,
@@ -957,8 +968,9 @@ mod tests {
         .expect("literal exact boundaries are accepted");
         assert_eq!(usage.rounds, 3);
         assert_eq!(usage.cap_roots, 1);
-        assert_eq!(usage.final_poly_evaluations, 5);
+        assert_eq!(usage.final_poly_evaluations, 4);
         assert_eq!(usage.compressed_frontier_hashes, 5);
+        assert_eq!(usage.max_whir_opening_width_sum, 128);
 
         for (limits, component) in [
             (
@@ -984,7 +996,7 @@ mod tests {
             ),
             (
                 VerifierLimits {
-                    max_final_poly_evaluations: 4,
+                    max_final_poly_evaluations: 3,
                     ..exact
                 },
                 "final polynomial evaluations",
@@ -1021,6 +1033,58 @@ mod tests {
                     if actual == component
             ));
         }
+    }
+
+    #[test]
+    fn whir_resource_walk_counts_empty_eval_batches() {
+        let mut proof = whir_fixture();
+        proof.rounds.truncate(1);
+        let argument = &mut proof.rounds[0];
+        argument.evals = (0..4)
+            .map(|_| OpeningBatch::new(vec![EF::ZERO], vec![]))
+            .collect();
+        argument.whir.rounds.clear();
+        set_query_rows(&mut argument.whir.final_openings, &[]);
+        let exact = VerifierLimits {
+            max_metadata_entries: 4,
+            ..VerifierLimits::default()
+        };
+
+        let usage = <Targets as CheckedWhirOpening<F, EF, CapTargets>>::check_whir_resources(
+            &proof, &exact,
+        )
+        .expect("empty opening batches fit their exact combined container budget");
+        assert_eq!(usage.metadata_entries, 4);
+
+        assert!(matches!(
+            <Targets as CheckedWhirOpening<F, EF, CapTargets>>::check_whir_resources(
+                &proof,
+                &VerifierLimits {
+                    max_metadata_entries: 3,
+                    ..exact
+                },
+            ),
+            Err(VerificationError::ResourceLimitExceeded {
+                component: "metadata entries",
+                actual: 4,
+                limit: 3,
+            })
+        ));
+    }
+
+    #[test]
+    fn whir_final_polynomial_limit_is_individual_across_arguments() {
+        let (proof, _params, _layout, _caps) = canonical_two_argument_fixture();
+        let usage = <Targets as CheckedWhirOpening<F, EF, CapTargets>>::check_whir_resources(
+            &proof,
+            &VerifierLimits {
+                max_final_poly_evaluations: 4,
+                ..VerifierLimits::default()
+            },
+        )
+        .expect("each final polynomial independently fits the four-evaluation limit");
+
+        assert_eq!(usage.final_poly_evaluations, 4);
     }
 
     fn set_query_rows(

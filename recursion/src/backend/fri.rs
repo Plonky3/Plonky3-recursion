@@ -299,6 +299,7 @@ where
             component: "restored authentication-path hashes",
         },
     )?;
+    usage.check_log_degree(limits, depth)?;
     let queries = usage.queries;
     usage.add_restored_authentication_path_hashes(limits, queries, depth)
 }

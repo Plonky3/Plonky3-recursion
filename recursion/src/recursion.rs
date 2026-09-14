@@ -498,6 +498,12 @@ where
     B: PcsRecursionBackend<SC, A1, D> + PcsRecursionBackend<SC, A2, D>,
     Val<SC>: PrimeField64,
 {
+    // A reusable circuit may be paired with new proof values. Reject either
+    // side's resource excess before extracting or allocating values for the
+    // other side.
+    <B as PcsRecursionBackend<SC, A1, D>>::preflight_input(backend, config, left)?;
+    <B as PcsRecursionBackend<SC, A2, D>>::preflight_input(backend, config, right)?;
+
     let mut public_inputs = left_result.pack_public_inputs(left)?;
     public_inputs.extend(right_result.pack_public_inputs(right)?);
 

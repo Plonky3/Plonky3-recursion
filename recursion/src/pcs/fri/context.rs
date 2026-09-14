@@ -221,10 +221,13 @@ where
             .max(proof.commit_phase_commits.len())
             .max(proof.commit_pow_witnesses.len()),
     )?;
+    usage.add_metadata_entries(limits, proof.input_openings.len())?;
 
     for batch in &proof.input_openings {
         usage.add_query_round(limits, batch.opened_values.len())?;
+        usage.add_metadata_entries(limits, batch.opened_values.len())?;
         for query in &batch.opened_values {
+            usage.add_metadata_entries(limits, query.len())?;
             for row in query {
                 usage.check_matrix_width(limits, row.len())?;
                 usage.add_scalar_elements(limits, row.len())?;
@@ -244,6 +247,7 @@ where
     for step in &proof.commit_phase_openings {
         usage.check_log_degree(limits, step.log_arity as usize)?;
         usage.add_query_round(limits, step.sibling_values.len())?;
+        usage.add_metadata_entries(limits, step.sibling_values.len())?;
         for row in &step.sibling_values {
             usage.check_matrix_width(limits, row.len())?;
             let coefficients = row.len().checked_mul(EF::DIMENSION).ok_or(
@@ -276,8 +280,11 @@ where
     }
 
     if let Some(tails) = hiding_tails {
+        usage.add_metadata_entries(limits, tails.len())?;
         for round in tails {
+            usage.add_metadata_entries(limits, round.len())?;
             for matrix in round {
+                usage.add_metadata_entries(limits, matrix.len())?;
                 for point in matrix {
                     usage.check_matrix_width(limits, point.len())?;
                     usage.add_scalar_elements(limits, point.len())?;

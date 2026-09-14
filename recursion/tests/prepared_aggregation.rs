@@ -38,7 +38,7 @@ use p3_recursion::{
     ProveNextLayerParams, RecursionInput, RecursiveAir, RecursivePcs, TrustedPreparedAggregation,
     TrustedPreparedInput, TrustedPreparedSource, VerificationError, VerifierCircuitResult,
     VerifierLimits, build_aggregation_layer_circuit, build_next_layer_circuit,
-    merge_hiding_random_openings, observe_opened_values,
+    merge_hiding_random_openings, observe_opened_values, prove_aggregation_layer,
 };
 use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
 use p3_test_utils::koala_bear_params::{
@@ -1107,6 +1107,136 @@ fn aggregation_rejects_either_mismatch_before_packing_or_private_setup() {
     ));
     assert_side_counters_zero(&uni);
     assert_side_counters_zero(&batch);
+}
+
+#[test]
+fn reusable_aggregation_preflights_both_replacements_before_either_pack() {
+    let air = FibonacciAir {};
+    let n = 1 << 10;
+    let (config, inner) = common::koala_bear_d4_recursion_config_and_backend();
+    let right = common::build_koala_bear_d4_first_layer_input_with_starts(0, 1);
+    let right_public = vec![vec![]; right.base_proof.proof.opened_values.instances.len()];
+    let left_public = vec![F::ZERO, F::ONE, fibonacci_output::<F>(0, 1, n)];
+    let left_proof = prove(
+        &config,
+        &air,
+        generate_trace_rows::<F>(0, 1, n),
+        &left_public,
+    );
+    let exact_final_poly = left_proof
+        .opening_proof
+        .final_poly
+        .len()
+        .max(right.base_proof.proof.opening_proof.final_poly.len());
+    let uni = Rc::new(SideCounters::default());
+    let batch = Rc::new(SideCounters::default());
+    let backend = CountingBackend {
+        inner: inner.with_limits(VerifierLimits {
+            max_final_poly_evaluations: exact_final_poly,
+            ..VerifierLimits::default()
+        }),
+        uni: Rc::clone(&uni),
+        batch: Rc::clone(&batch),
+        uni_output_preparations: Rc::new(Cell::new(0)),
+        batch_output_preparations: Rc::new(Cell::new(0)),
+    };
+    let left_input = RecursionInput::UniStark {
+        proof: &left_proof,
+        air: &air,
+        public_inputs: left_public,
+        preprocessed_commit: None,
+    };
+    let right_input: RecursionInput<'_, common::KoalaBearD4RecursionConfig, BatchOnly> =
+        RecursionInput::BatchStark {
+            proof: &right.base_proof,
+            common_data: &right.base_proof.stark_common,
+            table_public_inputs: right_public.clone(),
+        };
+    let (circuit, (left_result, right_result)) = build_aggregation_layer_circuit::<_, _, _, _, 4>(
+        &left_input,
+        &right_input,
+        &config,
+        &backend,
+    )
+    .expect("the reference pair builds");
+
+    let mut malformed_right = common::build_koala_bear_d4_first_layer_input();
+    malformed_right.base_proof.proof.opening_proof.final_poly =
+        vec![Challenge::ZERO; exact_final_poly + 1];
+    let malformed_right_input: RecursionInput<'_, common::KoalaBearD4RecursionConfig, BatchOnly> =
+        RecursionInput::BatchStark {
+            proof: &malformed_right.base_proof,
+            common_data: &malformed_right.base_proof.stark_common,
+            table_public_inputs: right_public,
+        };
+    let error = match prove_aggregation_layer::<_, _, _, _, 4>(
+        &left_input,
+        &malformed_right_input,
+        &left_result,
+        &right_result,
+        &circuit,
+        &config,
+        &backend,
+        &ProveNextLayerParams::default(),
+    ) {
+        Ok(_) => panic!("the over-limit right replacement must reject before packing"),
+        Err(error) => error,
+    };
+
+    assert!(matches!(
+        error,
+        VerificationError::ResourceLimitExceeded {
+            component: "final polynomial evaluations",
+            ..
+        }
+    ));
+    assert_side_counters_zero(&uni);
+    assert_side_counters_zero(&batch);
+}
+
+#[test]
+fn fri_preflight_checks_the_encoded_lde_log() {
+    let first = common::build_koala_bear_d4_first_layer_input();
+    let degree = first
+        .base_proof
+        .proof
+        .degree_bits
+        .iter()
+        .copied()
+        .max()
+        .unwrap();
+    let blowup = first
+        .layer_config
+        .native_fri_validation_params()
+        .unwrap()
+        .log_blowup();
+    assert!(blowup > 0);
+    let backend = FriRecursionBackend::<16, 8, _>::new(Poseidon2Config::KOALA_BEAR_D4_W16)
+        .for_extension_degree::<4>()
+        .with_limits(VerifierLimits {
+            max_log_domain_or_degree: degree,
+            ..VerifierLimits::default()
+        });
+    let table_public_inputs = vec![vec![]; first.base_proof.proof.opened_values.instances.len()];
+    let input: RecursionInput<'_, common::KoalaBearD4RecursionConfig, BatchOnly> =
+        RecursionInput::BatchStark {
+            proof: &first.base_proof,
+            common_data: &first.base_proof.stark_common,
+            table_public_inputs,
+        };
+
+    assert!(matches!(
+        <_ as PcsRecursionBackend<_, BatchOnly, 4>>::preflight_input(
+            &backend,
+            &first.layer_config,
+            &input,
+        ),
+        Err(VerificationError::ResourceLimitExceeded {
+            component: "log domain or degree",
+            actual,
+            limit,
+        }) if actual == degree + blowup && limit == degree
+    ));
 }
 
 fn assert_side_counters_zero(counters: &SideCounters) {

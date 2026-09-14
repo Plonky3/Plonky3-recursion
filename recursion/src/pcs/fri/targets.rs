@@ -1570,7 +1570,9 @@ impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize> FriPrivateAdvic
         usage: &mut InputResourceUsage,
         limits: &VerifierLimits,
     ) -> Result<(), VerificationError> {
+        usage.add_metadata_entries(limits, proof.0.len())?;
         for query in &proof.0 {
+            usage.add_metadata_entries(limits, query.len())?;
             for matrix in query {
                 usage.check_matrix_width(limits, matrix.len())?;
                 usage.add_scalar_elements(limits, matrix.len())?;
@@ -5224,6 +5226,46 @@ mod prepared_shape_tests {
         ));
     }
 
+    #[test]
+    fn fri_resource_walk_counts_empty_input_container_axes() {
+        let mut proof = ordinary_opening(&[]);
+        proof.commit_phase_commits.clear();
+        proof.commit_pow_witnesses.clear();
+        proof.commit_phase_openings.clear();
+        proof.input_openings[0].opened_values = vec![vec![vec![], vec![]], vec![vec![]]];
+        let exact = VerifierLimits {
+            max_metadata_entries: 6,
+            ..VerifierLimits::default()
+        };
+
+        let usage = <OpeningTargets as CheckedFriOpening<
+            Challenge,
+            <RecInputMmcs as RecursiveMmcs<F, Challenge>>::Commitment,
+        >>::check_fri_resources(&proof, &exact)
+        .expect("input batch, aggregate query, and per-query matrix axes fit exactly");
+        assert_eq!(usage.metadata_entries, 6);
+
+        let error = <OpeningTargets as CheckedFriOpening<
+            Challenge,
+            <RecInputMmcs as RecursiveMmcs<F, Challenge>>::Commitment,
+        >>::check_fri_resources(
+            &proof,
+            &VerifierLimits {
+                max_metadata_entries: 5,
+                ..exact
+            },
+        )
+        .expect_err("one-below combined container budget must reject empty rows");
+        assert!(matches!(
+            error,
+            VerificationError::ResourceLimitExceeded {
+                component: "metadata entries",
+                actual: 6,
+                limit: 5,
+            }
+        ));
+    }
+
     fn hiding_frontier(
         salts: Vec<Vec<Vec<F>>>,
         count: usize,
@@ -5284,6 +5326,46 @@ mod prepared_shape_tests {
                 }) if actual == component
             ));
         }
+    }
+
+    #[test]
+    fn hiding_fri_resource_walk_counts_empty_salt_and_tail_containers() {
+        let mut proof = hiding_opening(&[4], &[1]);
+        proof.1.commit_phase_commits.clear();
+        proof.1.commit_pow_witnesses.clear();
+        proof.1.commit_phase_openings.clear();
+        proof.1.input_openings[0].opened_values.clear();
+        proof.1.input_openings[0].opening_proof.0 = vec![vec![], vec![vec![], vec![]]];
+        proof.0 = vec![vec![], vec![vec![], vec![vec![], vec![]]]];
+        let exact = VerifierLimits {
+            max_metadata_entries: 11,
+            ..VerifierLimits::default()
+        };
+
+        let usage = <HidingOpeningTargets as CheckedFriOpening<
+            Challenge,
+            <RecHidingMmcs as RecursiveMmcs<F, Challenge>>::Commitment,
+        >>::check_fri_resources(&proof, &exact)
+        .expect("independent salt and tail container axes fit exactly");
+        assert_eq!(usage.metadata_entries, 11);
+
+        assert!(matches!(
+            <HidingOpeningTargets as CheckedFriOpening<
+                Challenge,
+                <RecHidingMmcs as RecursiveMmcs<F, Challenge>>::Commitment,
+            >>::check_fri_resources(
+                &proof,
+                &VerifierLimits {
+                    max_metadata_entries: 10,
+                    ..exact
+                },
+            ),
+            Err(VerificationError::ResourceLimitExceeded {
+                component: "metadata entries",
+                actual: 11,
+                limit: 10,
+            })
+        ));
     }
 
     fn retention_layout(

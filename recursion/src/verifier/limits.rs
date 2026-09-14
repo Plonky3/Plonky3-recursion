@@ -56,6 +56,13 @@ pub struct InputResourceUsage {
     pub restored_authentication_path_hashes: usize,
     pub cap_roots: usize,
     pub final_poly_evaluations: usize,
+    /// Maximum sum of WHIR opening-batch widths for one commitment.
+    ///
+    /// This is retained as allocation-free geometry for the backend's
+    /// conservative stacked-domain restoration bound; it is not itself a
+    /// separately configured policy axis.
+    #[doc(hidden)]
+    pub max_whir_opening_width_sum: usize,
 }
 
 impl InputResourceUsage {
@@ -215,16 +222,8 @@ impl InputResourceUsage {
                 limit: limits.max_final_poly_evaluations,
             });
         }
-        self.final_poly_evaluations = Self::checked_add(
-            "final polynomial evaluations",
-            self.final_poly_evaluations,
-            count,
-        )?;
-        self.check_component(
-            "final polynomial evaluations",
-            self.final_poly_evaluations,
-            limits.max_final_poly_evaluations,
-        )
+        self.final_poly_evaluations = self.final_poly_evaluations.max(count);
+        Ok(())
     }
 
     pub fn add_compressed_frontier_hashes(
@@ -308,6 +307,9 @@ impl InputResourceUsage {
         )?;
         self.add_cap_roots(limits, other.cap_roots)?;
         self.add_final_poly_evaluations(limits, other.final_poly_evaluations)?;
+        self.max_whir_opening_width_sum = self
+            .max_whir_opening_width_sum
+            .max(other.max_whir_opening_width_sum);
         Ok(())
     }
 
@@ -543,6 +545,40 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn final_polynomial_limit_is_per_polynomial_not_aggregate() {
+        let limits = VerifierLimits {
+            max_final_poly_evaluations: 2,
+            max_total_scalar_elements: 4,
+            ..VerifierLimits::default()
+        };
+        let mut usage = InputResourceUsage::default();
+
+        usage.add_final_poly_evaluations(&limits, 2).unwrap();
+        usage.add_scalar_elements(&limits, 2).unwrap();
+        usage.add_final_poly_evaluations(&limits, 2).unwrap();
+        usage.add_scalar_elements(&limits, 2).unwrap();
+
+        assert_eq!(usage.final_poly_evaluations, 2);
+        assert_eq!(usage.scalar_elements, 4);
+    }
+
+    #[test]
+    fn whir_width_summary_defaults_to_zero_and_merges_by_max() {
+        let limits = VerifierLimits::default();
+        let mut usage = InputResourceUsage::default();
+        assert_eq!(usage.max_whir_opening_width_sum, 0);
+
+        let mut other = InputResourceUsage::default();
+        other.max_whir_opening_width_sum = 7;
+        other
+            .check(&limits)
+            .expect("the geometry summary is checked by the WHIR backend, not as a direct axis");
+        usage.merge(&limits, other).unwrap();
+
+        assert_eq!(usage.max_whir_opening_width_sum, 7);
     }
 
     #[test]

@@ -5,7 +5,7 @@ use p3_field::PrimeCharacteristicRing;
 use p3_uni_stark::{prove, verify};
 use p3_whir::pcs::proof::QueryOpenings;
 
-use super::{WhirRecursionBackend, WhirRecursionBackendForExt};
+use super::{WhirRecursionBackend, WhirRecursionBackendForExt, WhirRecursionConfig};
 use crate::Poseidon2Config;
 use crate::pcs::whir::uni::acceptance_probe::{Counters, measure};
 use crate::prepared::{PreparedInput, PreparedLayer, PreparedSource};
@@ -13,6 +13,7 @@ use crate::recursion::{
     PcsRecursionBackend, ProveNextLayerParams, RecursionInput, VerifierCircuitResult,
     build_next_layer_circuit,
 };
+use crate::verifier::{VerificationError, VerifierLimits};
 
 #[allow(dead_code)]
 #[path = "../../../tests/common/whir_config.rs"]
@@ -159,6 +160,139 @@ fn checked_caller_rejects_malformed_last_argument_before_all_later_stages() {
     });
     assert!(prepared_result.is_err());
     assert_no_later_work(prepared_counts, "prepared replacement");
+}
+
+#[test]
+fn whir_preflight_bounds_wide_stacked_geometry_before_restoration() {
+    let log_n = 10;
+    let n = 1 << log_n;
+    let trace = generate_trace_rows::<BbF>(0, 1, n);
+    let public_inputs = vec![BbF::ZERO, BbF::ONE, fibonacci_output(n)];
+    let air = FibonacciAir {};
+    let config = bb_whir_config(vec![]);
+    let proof = prove(&config, &air, trace, &public_inputs);
+    verify(&config, &air, &proof, &public_inputs).expect("the native control proof verifies");
+    let degree = proof.degree_bits;
+
+    let width_sum = proof
+        .opening_proof
+        .rounds
+        .iter()
+        .map(|argument| {
+            argument
+                .evals
+                .iter()
+                .map(|batch| batch.current().len())
+                .sum::<usize>()
+        })
+        .max()
+        .unwrap();
+    let width_log = usize::BITS as usize - (width_sum - 1).leading_zeros() as usize;
+    let params = config.pcs_verifier_params().protocol_params();
+    let stacked = degree.max(config.pcs_verifier_params().folding()) + width_log;
+    assert!(
+        stacked > degree,
+        "fixture must exercise stacked width amplification"
+    );
+    let encoded_log = stacked + params.starting_log_inv_rate;
+    let queries = proof
+        .opening_proof
+        .rounds
+        .iter()
+        .map(|argument| {
+            argument
+                .whir
+                .rounds
+                .iter()
+                .map(|round| match &round.openings {
+                    QueryOpenings::Base(opening) => opening.rows.len(),
+                    QueryOpenings::Extension(opening) => opening.rows.len(),
+                })
+                .sum::<usize>()
+                + match &argument.whir.final_openings {
+                    QueryOpenings::Base(opening) => opening.rows.len(),
+                    QueryOpenings::Extension(opening) => opening.rows.len(),
+                }
+        })
+        .sum::<usize>();
+    let input = RecursionInput::UniStark {
+        proof: &proof,
+        air: &air,
+        public_inputs,
+        preprocessed_commit: None,
+    };
+
+    let exact: WhirRecursionBackendForExt<4> =
+        WhirRecursionBackend::<16, 8>::new(Poseidon2Config::BABY_BEAR_D4_W16)
+            .for_extension_degree::<4>()
+            .with_limits(VerifierLimits {
+                max_log_domain_or_degree: encoded_log,
+                max_restored_authentication_path_hashes: queries * encoded_log,
+                ..VerifierLimits::default()
+            });
+    <_ as PcsRecursionBackend<BbWhirConfig, _, 4>>::preflight_input(&exact, &config, &input)
+        .expect("the exact stacked-domain and restoration bounds are accepted");
+
+    let log_limited: WhirRecursionBackendForExt<4> =
+        WhirRecursionBackend::<16, 8>::new(Poseidon2Config::BABY_BEAR_D4_W16)
+            .for_extension_degree::<4>()
+            .with_limits(VerifierLimits {
+                max_log_domain_or_degree: stacked - 1,
+                ..VerifierLimits::default()
+            });
+    assert!(matches!(
+        <_ as PcsRecursionBackend<BbWhirConfig, _, 4>>::preflight_input(
+            &log_limited,
+            &config,
+            &input,
+        ),
+        Err(VerificationError::ResourceLimitExceeded {
+            component: "log domain or degree",
+            actual,
+            limit,
+        }) if actual == stacked && limit == stacked - 1
+    ));
+
+    let encoded_log_limited: WhirRecursionBackendForExt<4> =
+        WhirRecursionBackend::<16, 8>::new(Poseidon2Config::BABY_BEAR_D4_W16)
+            .for_extension_degree::<4>()
+            .with_limits(VerifierLimits {
+                max_log_domain_or_degree: stacked,
+                ..VerifierLimits::default()
+            });
+    assert!(matches!(
+        <_ as PcsRecursionBackend<BbWhirConfig, _, 4>>::preflight_input(
+            &encoded_log_limited,
+            &config,
+            &input,
+        ),
+        Err(VerificationError::ResourceLimitExceeded {
+            component: "log domain or degree",
+            actual,
+            limit,
+        }) if actual == encoded_log && limit == stacked
+    ));
+
+    let old_narrow_budget = queries * (degree + params.starting_log_inv_rate);
+    let restoration_limited: WhirRecursionBackendForExt<4> =
+        WhirRecursionBackend::<16, 8>::new(Poseidon2Config::BABY_BEAR_D4_W16)
+            .for_extension_degree::<4>()
+            .with_limits(VerifierLimits {
+                max_restored_authentication_path_hashes: old_narrow_budget,
+                ..VerifierLimits::default()
+            });
+    assert!(matches!(
+        <_ as PcsRecursionBackend<BbWhirConfig, _, 4>>::preflight_input(
+            &restoration_limited,
+            &config,
+            &input,
+        ),
+        Err(VerificationError::ResourceLimitExceeded {
+            component: "restored authentication-path hashes",
+            actual,
+            limit,
+        }) if actual == queries * encoded_log && limit == old_narrow_budget
+    ));
 }
 
 fn fibonacci_output<F: PrimeCharacteristicRing + Copy>(n: usize) -> F {

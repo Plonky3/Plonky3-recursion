@@ -704,6 +704,7 @@ pub(crate) mod tests {
     use alloc::vec;
     use alloc::vec::Vec;
     use core::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
 
     use p3_baby_bear::{BabyBear, Poseidon2BabyBear};
     use p3_challenger::DuplexChallenger;
@@ -720,7 +721,6 @@ pub(crate) mod tests {
     use p3_whir::parameters::{FoldingFactor, ProtocolParameters, SecurityAssumption};
     use rand::SeedableRng;
     use rand::rngs::SmallRng;
-    use std::sync::Arc;
 
     use super::WhirUniPcs;
 

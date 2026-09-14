@@ -818,6 +818,28 @@ mod tests {
             metadata_entries +=
                 preprocessed.instances.len() + preprocessed.matrix_to_instance.len();
         }
+        metadata_entries += proof
+            .proof
+            .opened_values
+            .instances
+            .iter()
+            .map(|instance| instance.base_opened_values.quotient_chunks.len())
+            .sum::<usize>();
+        let fri = &proof.proof.opening_proof;
+        metadata_entries += fri.input_openings.len()
+            + fri
+                .input_openings
+                .iter()
+                .map(|batch| {
+                    batch.opened_values.len()
+                        + batch.opened_values.iter().map(Vec::len).sum::<usize>()
+                })
+                .sum::<usize>()
+            + fri
+                .commit_phase_openings
+                .iter()
+                .map(|step| step.sibling_values.len())
+                .sum::<usize>();
         assert!(metadata_entries > 0);
         let exact_limits = VerifierLimits {
             max_metadata_entries: metadata_entries,

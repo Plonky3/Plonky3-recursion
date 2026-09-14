@@ -335,16 +335,29 @@ where
             VerifierParams = WhirUniVerifierParams<Val<SC>>,
         >,
 {
-    let depth = degree_bits
-        .checked_add(
-            config
-                .pcs_verifier_params()
-                .protocol_params()
-                .starting_log_inv_rate,
-        )
+    let params = config.pcs_verifier_params();
+    let padded_degree = degree_bits.max(params.folding());
+    let width_log = if usage.max_whir_opening_width_sum <= 1 {
+        0
+    } else {
+        usize::BITS as usize - (usage.max_whir_opening_width_sum - 1).leading_zeros() as usize
+    };
+    // A valid WHIR argument stacks each committed matrix column into a
+    // separate 2^padded_degree slot. Summing every opening-batch width can
+    // repeat a matrix opened at several points, but cannot underestimate the
+    // true stack, so this arity safely dominates every restored tree.
+    let stacked_num_variables = padded_degree.checked_add(width_log).ok_or(
+        VerificationError::ResourceArithmeticOverflow {
+            component: "WHIR stacked domain log",
+        },
+    )?;
+    usage.check_log_degree(limits, stacked_num_variables)?;
+    let depth = stacked_num_variables
+        .checked_add(params.protocol_params().starting_log_inv_rate)
         .ok_or(VerificationError::ResourceArithmeticOverflow {
             component: "restored authentication-path hashes",
         })?;
+    usage.check_log_degree(limits, depth)?;
     let queries = usage.queries;
     usage.add_restored_authentication_path_hashes(limits, queries, depth)
 }
