@@ -378,8 +378,28 @@ fn test_batch_verifier_with_mixed_preprocessed() -> Result<(), VerificationError
 
     verify_batch(&config, &airs, &batch_proof, &pvs, common_data).unwrap();
 
+    let (replay, _) = p3_recursion::replay_batch_stark_transcript(
+        &airs,
+        &config,
+        &batch_proof,
+        &pvs,
+        common_data,
+        &lookup_gadget,
+    )
+    .unwrap();
+    let pre_round = replay.commitments_with_opening_points.last().unwrap();
+    assert_eq!(pre_round.1.len(), 2);
+    assert_eq!(
+        pre_round
+            .1
+            .iter()
+            .map(|(_, points)| points.len())
+            .collect::<Vec<_>>(),
+        vec![2, 2]
+    );
+
     // The next-row-using MulAir control rejects a missing preprocessing-next
-    // opening before recursive backend construction.
+    // opening at target verification after input allocation.
     let required_next = batch_proof.opened_values.instances[0]
         .base_opened_values
         .preprocessed_next
@@ -398,20 +418,22 @@ fn test_batch_verifier_with_mixed_preprocessed() -> Result<(), VerificationError
         MerkleCapTargets<F, DIGEST_ELEMS>,
         InnerFri,
     >::allocate(&mut shape_builder, &batch_proof, common_data, &[0, 0, 0])?;
-    assert!(
-        verify_batch_circuit::<_, _, _, _, _, _, _, WIDTH, RATE>(
-            &config,
-            &airs,
-            &mut shape_builder,
-            &shape_inputs.proof_targets,
-            &shape_inputs.air_public_targets,
-            &fri_verifier_params,
-            &shape_inputs.common_data,
-            &lookup_gadget,
-            Poseidon2Config::BABY_BEAR_D4_W16,
-        )
-        .is_err()
+    let missing = verify_batch_circuit::<_, _, _, _, _, _, _, WIDTH, RATE>(
+        &config,
+        &airs,
+        &mut shape_builder,
+        &shape_inputs.proof_targets,
+        &shape_inputs.air_public_targets,
+        &fri_verifier_params,
+        &shape_inputs.common_data,
+        &lookup_gadget,
+        Poseidon2Config::BABY_BEAR_D4_W16,
     );
+    assert!(matches!(
+        missing,
+        Err(VerificationError::InvalidProofShape(message))
+            if message.contains("preprocessed") && message.contains("width")
+    ));
     batch_proof.opened_values.instances[0]
         .base_opened_values
         .preprocessed_next = required_next;
@@ -551,6 +573,25 @@ fn test_batch_verifier_with_local_only_preprocessed() -> Result<(), Verification
     batch_proof.opened_values.instances[0]
         .base_opened_values
         .preprocessed_next = Some(Vec::new());
+    // Upstream native verification currently requires the canonical `None`
+    // encoding in its constraint-window builder; `Some(empty)` passes its
+    // shape check but panics before PCS verification.  Verify that canonical
+    // native proof, while exercising the raw empty representation through
+    // recursive shape validation and the runner below.
+    batch_proof.opened_values.instances[0]
+        .base_opened_values
+        .preprocessed_next = None;
+    verify_batch(
+        &config,
+        &[air],
+        &batch_proof,
+        &[public_values.clone()],
+        &prover_data.common,
+    )
+    .unwrap();
+    batch_proof.opened_values.instances[0]
+        .base_opened_values
+        .preprocessed_next = Some(Vec::new());
     let shape_result = |proof: &BatchProof<MyConfig>| -> Result<(), VerificationError> {
         let mut shape_builder = CircuitBuilder::<Challenge>::new();
         shape_builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
@@ -582,10 +623,14 @@ fn test_batch_verifier_with_local_only_preprocessed() -> Result<(), Verification
     batch_proof.opened_values.instances[0]
         .base_opened_values
         .preprocessed_next = Some(vec![Challenge::ZERO]);
-    assert!(shape_result(&batch_proof).is_err());
+    assert!(matches!(
+        shape_result(&batch_proof),
+        Err(VerificationError::InvalidProofShape(message))
+            if message.contains("preprocessed") && message.contains("width")
+    ));
     batch_proof.opened_values.instances[0]
         .base_opened_values
-        .preprocessed_next = original_next;
+        .preprocessed_next = Some(Vec::new());
 
     let mut circuit_builder = CircuitBuilder::<Challenge>::new();
     circuit_builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
@@ -625,6 +670,9 @@ fn test_batch_verifier_with_local_only_preprocessed() -> Result<(), Verification
         .set_private_inputs(&private_inputs)
         .map_err(VerificationError::Circuit)?;
     runner.run().map_err(VerificationError::Circuit)?;
+    batch_proof.opened_values.instances[0]
+        .base_opened_values
+        .preprocessed_next = original_next;
     Ok(())
 }
 

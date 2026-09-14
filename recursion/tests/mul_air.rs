@@ -66,7 +66,8 @@ fn test_mul_verifier_circuit() -> Result<(), VerificationError> {
     assert_eq!(pre_round.1.len(), 1);
     assert_eq!(pre_round.1[0].1.len(), 2);
 
-    // The next-row-using control must reject a missing required opening.
+    // The next-row-using control must reject a missing required opening. This
+    // target check occurs after input allocation; Stage5D preflight is separate.
     let required_next = proof.opened_values.preprocessed_next.take();
     proof.opened_values.preprocessed_next = None;
     let mut shape_builder = CircuitBuilder::new();
@@ -85,19 +86,21 @@ fn test_mul_verifier_circuit() -> Result<(), VerificationError> {
         preprocessed_vk.as_ref().map(|vk| &vk.commitment),
         pis.len(),
     );
-    assert!(
-        verify_p3_uni_proof_circuit::<_, _, _, _, _, _, WIDTH, RATE>(
-            &config,
-            &air,
-            &mut shape_builder,
-            &shape_inputs.proof_targets,
-            &shape_inputs.air_public_targets,
-            &shape_inputs.preprocessed_commit,
-            &fri_verifier_params,
-            Poseidon2Config::BABY_BEAR_D4_W16,
-        )
-        .is_err()
+    let missing = verify_p3_uni_proof_circuit::<_, _, _, _, _, _, WIDTH, RATE>(
+        &config,
+        &air,
+        &mut shape_builder,
+        &shape_inputs.proof_targets,
+        &shape_inputs.air_public_targets,
+        &shape_inputs.preprocessed_commit,
+        &fri_verifier_params,
+        Poseidon2Config::BABY_BEAR_D4_W16,
     );
+    assert!(matches!(
+        missing,
+        Err(VerificationError::InvalidProofShape(message))
+            if message.contains("preprocessed") && message.contains("width")
+    ));
     proof.opened_values.preprocessed_next = required_next;
 
     let mut circuit_builder = CircuitBuilder::new();
@@ -193,6 +196,14 @@ fn test_local_only_mul_verifier_circuit_uses_one_preprocessed_point()
     // extra opening must still be rejected by the actual target verifier.
     let original_next = proof.opened_values.preprocessed_next.take();
     proof.opened_values.preprocessed_next = Some(Vec::new());
+    // Upstream native verification currently accepts the canonical `None`
+    // encoding but panics on `Some(empty)` while building its constraint
+    // window.  Keep the production native positive on that safe encoding and
+    // exercise the raw `Some(empty)` representation through recursive shape
+    // validation and the runner below.
+    proof.opened_values.preprocessed_next = None;
+    verify_with_preprocessed(&config, &air, &proof, &pis, preprocessed_vk.as_ref()).unwrap();
+    proof.opened_values.preprocessed_next = Some(Vec::new());
     let mut shape_builder = CircuitBuilder::new();
     shape_builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
         generate_poseidon2_trace::<Challenge, BabyBearD4Width16>,
@@ -209,19 +220,17 @@ fn test_local_only_mul_verifier_circuit_uses_one_preprocessed_point()
         preprocessed_vk.as_ref().map(|vk| &vk.commitment),
         pis.len(),
     );
-    assert!(
-        verify_p3_uni_proof_circuit::<_, _, _, _, _, _, WIDTH, RATE>(
-            &config,
-            &air,
-            &mut shape_builder,
-            &shape_inputs.proof_targets,
-            &shape_inputs.air_public_targets,
-            &shape_inputs.preprocessed_commit,
-            &fri_verifier_params,
-            Poseidon2Config::BABY_BEAR_D4_W16,
-        )
-        .is_ok()
-    );
+    verify_p3_uni_proof_circuit::<_, _, _, _, _, _, WIDTH, RATE>(
+        &config,
+        &air,
+        &mut shape_builder,
+        &shape_inputs.proof_targets,
+        &shape_inputs.air_public_targets,
+        &shape_inputs.preprocessed_commit,
+        &fri_verifier_params,
+        Poseidon2Config::BABY_BEAR_D4_W16,
+    )
+    .unwrap();
     proof.opened_values.preprocessed_next = Some(vec![Challenge::ZERO]);
     let mut extra_builder = CircuitBuilder::new();
     extra_builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
@@ -239,20 +248,22 @@ fn test_local_only_mul_verifier_circuit_uses_one_preprocessed_point()
         preprocessed_vk.as_ref().map(|vk| &vk.commitment),
         pis.len(),
     );
-    assert!(
-        verify_p3_uni_proof_circuit::<_, _, _, _, _, _, WIDTH, RATE>(
-            &config,
-            &air,
-            &mut extra_builder,
-            &extra_inputs.proof_targets,
-            &extra_inputs.air_public_targets,
-            &extra_inputs.preprocessed_commit,
-            &fri_verifier_params,
-            Poseidon2Config::BABY_BEAR_D4_W16,
-        )
-        .is_err()
+    let extra = verify_p3_uni_proof_circuit::<_, _, _, _, _, _, WIDTH, RATE>(
+        &config,
+        &air,
+        &mut extra_builder,
+        &extra_inputs.proof_targets,
+        &extra_inputs.air_public_targets,
+        &extra_inputs.preprocessed_commit,
+        &fri_verifier_params,
+        Poseidon2Config::BABY_BEAR_D4_W16,
     );
-    proof.opened_values.preprocessed_next = original_next;
+    assert!(matches!(
+        extra,
+        Err(VerificationError::InvalidProofShape(message))
+            if message.contains("preprocessed") && message.contains("width")
+    ));
+    proof.opened_values.preprocessed_next = Some(Vec::new());
 
     let perm = default_babybear_poseidon2_16();
     let mut circuit_builder = CircuitBuilder::new();
@@ -292,5 +303,6 @@ fn test_local_only_mul_verifier_circuit_uses_one_preprocessed_point()
         .set_private_inputs(&private_inputs)
         .map_err(VerificationError::Circuit)?;
     runner.run().map_err(VerificationError::Circuit)?;
+    proof.opened_values.preprocessed_next = original_next;
     Ok(())
 }

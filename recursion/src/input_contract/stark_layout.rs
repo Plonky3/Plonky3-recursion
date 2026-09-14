@@ -429,8 +429,9 @@ mod tests {
             Err(LayoutError::QuotientCountOverflow { .. })
         ));
         if usize::BITS > 32 {
+            let too_large = usize::try_from(u64::from(u32::MAX) + 1).unwrap();
             assert!(matches!(
-                checked_power_of_two(u32::MAX as usize + 1),
+                checked_power_of_two(too_large),
                 Err(LayoutError::QuotientCountOverflow { .. })
             ));
         }

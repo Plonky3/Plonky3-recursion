@@ -1530,7 +1530,7 @@ mod create_alu_air_tests {
     use alloc::vec::Vec;
 
     use p3_air::symbolic::AirLayout;
-    use p3_air::{Air, AirBuilder, BaseAir};
+    use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
     use p3_batch_stark::common::{GlobalPreprocessed, PreprocessedInstanceMeta};
     use p3_batch_stark::symbolic::get_log_num_quotient_chunks;
     use p3_batch_stark::verifier::commitments_with_opening_points;
@@ -1545,7 +1545,6 @@ mod create_alu_air_tests {
     use p3_circuit_prover::common::CircuitTableAir;
     use p3_circuit_prover::field_params::ExtractBinomialW;
     use p3_commit::Pcs as PcsTrait;
-    use p3_field::coset::TwoAdicMultiplicativeCoset;
     use p3_field::extension::{BinomialExtensionField, QuinticTrinomialExtensionField};
     use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
     use p3_fri::FriProof;
@@ -1555,14 +1554,13 @@ mod create_alu_air_tests {
     use p3_lookup::logup::LogUpGadget;
     use p3_matrix::dense::RowMajorMatrix;
     use p3_poseidon2_circuit_air::KoalaBearD4Width16;
-    use p3_symmetric::MerkleCap;
     use p3_test_utils::goldilocks_params::MyConfig as GoldilocksRecursionConfig;
     use p3_test_utils::koala_bear_quintic_params::MyConfig as KoalaBearQuinticRecursionConfig;
     use p3_uni_stark::{OpenedValues, StarkGenericConfig, Val};
 
     use super::{CircuitTablesAir, create_alu_air, observe_opened_values_circuit};
     use crate::challenger::CircuitChallenger;
-    use crate::input_contract::stark_layout::{InstanceLayout, NativeStarkLayout};
+    use crate::input_contract::stark_layout::{CommitmentRole, InstanceLayout, NativeStarkLayout};
     use crate::prepared::test_common::KoalaBearD4RecursionConfig;
     use crate::traits::{RecursiveAir, RecursiveChallenger};
     use crate::types::{OpenedValuesTargets, OpenedValuesTargetsWithLookups};
@@ -1599,7 +1597,12 @@ mod create_alu_air_tests {
     where
         AB::F: Field,
     {
-        fn eval(&self, _builder: &mut AB) {}
+        fn eval(&self, builder: &mut AB) {
+            // A cubic constraint keeps quotient metadata non-zero in this
+            // tiny prefix, exercising committed chunk-domain geometry.
+            let value = builder.main().current_slice()[0];
+            builder.assert_zero(value * value * value);
+        }
     }
 
     /// A proof-controlled `alu_quintic_trinomial = false` against a quintic-trinomial `EF` has
@@ -1671,13 +1674,45 @@ mod create_alu_air_tests {
         actual: AluAir<Val<SC>, D>,
     ) where
         SC: StarkGenericConfig,
-        Val<SC>: p3_field::PrimeField,
+        Val<SC>: p3_field::PrimeField + p3_field::PrimeField64,
         SC::Challenge: p3_field::ExtensionField<Val<SC>>,
         p3_uni_stark::SymbolicExpressionExt<Val<SC>, SC::Challenge>: p3_field::Algebra<p3_uni_stark::SymbolicExpression<Val<SC>>>
             + p3_field::Algebra<SC::Challenge>,
     {
         let old_outer = CircuitTableAir::<SC, D>::Alu(old);
         let actual_outer = CircuitTableAir::<SC, D>::Alu(actual);
+        let reconstructed = CircuitTablesAir::<SC, D>::Alu(match &actual_outer {
+            CircuitTableAir::Alu(air) => air.clone(),
+            _ => unreachable!(),
+        });
+        assert_eq!(
+            BaseAir::<Val<SC>>::num_public_values(&old_outer),
+            BaseAir::<Val<SC>>::num_public_values(&reconstructed)
+        );
+        assert_eq!(
+            BaseAir::<Val<SC>>::num_periodic_columns(&old_outer),
+            BaseAir::<Val<SC>>::num_periodic_columns(&reconstructed)
+        );
+        assert_eq!(
+            BaseAir::<Val<SC>>::periodic_columns(&old_outer),
+            BaseAir::<Val<SC>>::periodic_columns(&reconstructed)
+        );
+        assert_eq!(
+            BaseAir::<Val<SC>>::width(&old_outer),
+            BaseAir::<Val<SC>>::width(&reconstructed)
+        );
+        assert_eq!(
+            BaseAir::<Val<SC>>::preprocessed_width(&old_outer),
+            BaseAir::<Val<SC>>::preprocessed_width(&reconstructed)
+        );
+        assert_eq!(
+            BaseAir::<Val<SC>>::main_next_row_columns(&old_outer),
+            BaseAir::<Val<SC>>::main_next_row_columns(&reconstructed)
+        );
+        assert_eq!(
+            BaseAir::<Val<SC>>::preprocessed_next_row_columns(&old_outer),
+            BaseAir::<Val<SC>>::preprocessed_next_row_columns(&reconstructed)
+        );
         let old_packed = lookups_for_circuit_table_air(&old_outer, 4, 0);
         let actual_packed = lookups_for_circuit_table_air(&actual_outer, 4, 0);
         assert_eq!(
@@ -1702,6 +1737,19 @@ mod create_alu_air_tests {
             &gadget,
         );
         assert_eq!(old_q, actual_q);
+        let reconstructed_q = <CircuitTablesAir<SC, D> as RecursiveAir<
+            Val<SC>,
+            SC::Challenge,
+            LogUpGadget,
+        >>::get_log_num_quotient_chunks(
+            &reconstructed,
+            BaseAir::<Val<SC>>::preprocessed_width(&reconstructed),
+            4,
+            &actual_packed,
+            0,
+            &gadget,
+        );
+        assert_eq!(actual_q, reconstructed_q);
         assert_eq!(
             (old_packed.len() + 1) * SC::Challenge::DIMENSION,
             (actual_packed.len() + 1) * SC::Challenge::DIMENSION
@@ -1757,184 +1805,6 @@ mod create_alu_air_tests {
             let actual = create_alu_air::<F, EF, 5>(8, 2, k, true).unwrap();
             assert_alu_metadata_parity::<F, EF, 5>(old.clone(), actual.clone());
             assert_alu_packed_metadata_parity::<KoalaBearQuinticRecursionConfig, 5>(old, actual);
-        }
-    }
-
-    #[test]
-    fn reordered_preprocessed_observation_matches_native_replay() {
-        type Config = p3_test_utils::koala_bear_params::MyConfig;
-        type F = Val<Config>;
-        type EF = <Config as StarkGenericConfig>::Challenge;
-        const WIDTH: usize = 16;
-        const RATE: usize = 8;
-
-        let config = p3_test_utils::koala_bear_params::make_test_config();
-        let domain = TwoAdicMultiplicativeCoset::new(F::GENERATOR, 3).unwrap();
-        let commitment = MerkleCap::new(vec![[F::ZERO; 8]]);
-        let pre_commitment = commitment.clone();
-        let coms = vec![
-            (
-                commitment.clone(),
-                vec![
-                    (domain, vec![(EF::ZERO, vec![EF::from_u64(3)])]),
-                    (domain, vec![(EF::ZERO, vec![EF::from_u64(4)])]),
-                ],
-            ),
-            (
-                commitment.clone(),
-                vec![
-                    (domain, vec![(EF::ZERO, vec![EF::from_u64(5)])]),
-                    (domain, vec![(EF::ZERO, vec![EF::from_u64(6)])]),
-                ],
-            ),
-            (
-                pre_commitment,
-                vec![
-                    (
-                        domain,
-                        vec![(EF::ZERO, vec![EF::from_u64(21), EF::from_u64(22)])],
-                    ),
-                    (domain, vec![(EF::ZERO, vec![EF::from_u64(31)])]),
-                ],
-            ),
-        ];
-        let mut native = config.initialise_challenger();
-        crate::generation::observe_opened_values::<Config>(&mut native, &coms);
-
-        let mut circuit = CircuitBuilder::<EF>::new();
-        circuit.enable_poseidon2_perm::<KoalaBearD4Width16, _>(
-            generate_poseidon2_trace::<EF, KoalaBearD4Width16>,
-            p3_test_utils::koala_bear_params::default_koalabear_poseidon2_16(),
-        );
-        circuit.enable_recompose::<F>(generate_recompose_trace::<F, EF>);
-        let mut instances = Vec::new();
-        for (trace, pre) in [(3usize, 31usize), (4, 21)] {
-            let mut define = |value: usize| circuit.define_const(EF::from_usize(value));
-            instances.push(OpenedValuesTargetsWithLookups {
-                opened_values_no_lookups: OpenedValuesTargets {
-                    trace_local_targets: vec![define(trace)],
-                    trace_next_targets: Vec::new(),
-                    preprocessed_local_targets: Some(if pre == 31 {
-                        vec![define(31)]
-                    } else {
-                        vec![define(21), define(22)]
-                    }),
-                    preprocessed_next_targets: None,
-                    quotient_chunks_targets: vec![vec![define(trace + 2)]],
-                    random_targets: None,
-                    _phantom: core::marker::PhantomData,
-                },
-                permutation_local_targets: Vec::new(),
-                permutation_next_targets: Vec::new(),
-            });
-        }
-        let map = [1usize, 0];
-        let layout = NativeStarkLayout::new(
-            vec![
-                InstanceLayout {
-                    ext_log: 3,
-                    base_log: 3,
-                    challenge_width: 4,
-                    trace_width: 1,
-                    trace_next: false,
-                    pre_width: 1,
-                    pre_next: false,
-                    quotient_log: 0,
-                    quotient_chunks: 1,
-                    permutation_width: 0,
-                },
-                InstanceLayout {
-                    ext_log: 3,
-                    base_log: 3,
-                    challenge_width: 4,
-                    trace_width: 1,
-                    trace_next: false,
-                    pre_width: 2,
-                    pre_next: false,
-                    quotient_log: 0,
-                    quotient_chunks: 1,
-                    permutation_width: 0,
-                },
-            ],
-            &map,
-            false,
-            true,
-            false,
-        )
-        .unwrap();
-        let mut circuit_challenger =
-            CircuitChallenger::<WIDTH, RATE, Poseidon2Config>::new_koalabear();
-        observe_opened_values_circuit::<Config, Poseidon2Config, WIDTH, RATE>(
-            &mut circuit,
-            &mut circuit_challenger,
-            &instances,
-            &[],
-            &layout,
-        );
-        let native_a = native.sample_algebra_element::<EF>();
-        let circuit_a =
-            RecursiveChallenger::<F, EF>::sample_ext(&mut circuit_challenger, &mut circuit);
-        let expected_a = circuit.define_const(native_a);
-        circuit.connect(circuit_a, expected_a);
-        let native_b = native.sample_algebra_element::<EF>();
-        let circuit_b =
-            RecursiveChallenger::<F, EF>::sample_ext(&mut circuit_challenger, &mut circuit);
-        let expected_b = circuit.define_const(native_b);
-        circuit.connect(circuit_b, expected_b);
-        circuit.build().unwrap().runner().run().unwrap();
-    }
-
-    #[test]
-    fn native_pcs_observes_openings_before_typed_count_error() {
-        type Config = p3_test_utils::koala_bear_params::MyConfig;
-        type F = Val<Config>;
-        type EF = <Config as StarkGenericConfig>::Challenge;
-        type PcsType = <Config as StarkGenericConfig>::Pcs;
-        type Challenger = <Config as StarkGenericConfig>::Challenger;
-        let config = p3_test_utils::koala_bear_params::make_test_config();
-        let domain = TwoAdicMultiplicativeCoset::new(F::GENERATOR, 3).unwrap();
-        let commitment = MerkleCap::new(vec![[F::ZERO; 8]]);
-        let coms = vec![(
-            commitment.clone(),
-            vec![(domain, vec![(EF::ZERO, vec![EF::from_u64(11)])])],
-        )];
-        let probe: <PcsType as PcsTrait<EF, Challenger>>::Proof = FriProof {
-            commit_phase_commits: vec![commitment],
-            commit_pow_witnesses: Vec::new(),
-            input_openings: Vec::new(),
-            commit_phase_openings: Vec::new(),
-            final_poly: Vec::new(),
-            query_pow_witness: F::ZERO,
-        };
-        let mut challenger = config.initialise_challenger();
-        let result = <PcsType as PcsTrait<EF, Challenger>>::verify(
-            config.pcs(),
-            coms.clone(),
-            &probe,
-            &mut challenger,
-        );
-        assert!(matches!(
-            result,
-            Err(
-                p3_fri::verifier::FriError::CommitPhaseOpeningsCountMismatch {
-                    expected: 1,
-                    got: 0
-                }
-            )
-        ));
-
-        // The count error is deliberately reached after the PCS has absorbed
-        // every supplied opening and sampled its first fold challenge.  The
-        // replay consumer must therefore discard exactly that one challenge
-        // before its subsequent samples can be compared with native PCS.
-        let mut replay = config.initialise_challenger();
-        crate::generation::observe_opened_values::<Config>(&mut replay, &coms);
-        let _replay_alpha = replay.sample_algebra_element::<EF>();
-        for _ in 0..2 {
-            assert_eq!(
-                challenger.sample_algebra_element::<EF>(),
-                replay.sample_algebra_element::<EF>()
-            );
         }
     }
 
@@ -2112,6 +1982,71 @@ mod create_alu_air_tests {
         .unwrap()
         .0;
 
+        // Compare the actual upstream argument geometry with the shared lazy
+        // layout.  This checks domain height, matrix width, and point count
+        // without deriving any geometry from proof-vector lengths.
+        let native_descriptor = native_argument
+            .iter()
+            .flat_map(|(_, matrices)| {
+                matrices.iter().map(|(domain, points)| {
+                    (
+                        domain.log_size(),
+                        points.first().map_or(0, |(_, values)| values.len()),
+                        points.len(),
+                    )
+                })
+            })
+            .collect::<Vec<(usize, usize, usize)>>();
+        let replay_descriptor = replay
+            .commitments_with_opening_points
+            .iter()
+            .flat_map(|(_, matrices)| {
+                matrices.iter().map(|(domain, points)| {
+                    (
+                        domain.log_size(),
+                        points.first().map_or(0, |(_, values)| values.len()),
+                        points.len(),
+                    )
+                })
+            })
+            .collect::<Vec<(usize, usize, usize)>>();
+        assert_eq!(native_descriptor, replay_descriptor);
+        let layout = NativeStarkLayout::new(
+            airs.iter()
+                .zip(log_q.iter())
+                .map(|(air, &quotient_log)| InstanceLayout {
+                    ext_log: DEGREE_BITS,
+                    base_log: DEGREE_BITS,
+                    challenge_width: <EF as BasedVectorSpace<F>>::DIMENSION,
+                    trace_width: BaseAir::<F>::width(air),
+                    trace_next: false,
+                    pre_width: air.prep_width,
+                    pre_next: air.prep_next,
+                    quotient_log,
+                    quotient_chunks: 1 << quotient_log,
+                    permutation_width: 0,
+                })
+                .collect(),
+            map,
+            false,
+            true,
+            false,
+        )
+        .unwrap();
+        let layout_descriptor = [
+            CommitmentRole::Trace,
+            CommitmentRole::Quotient,
+            CommitmentRole::Preprocessed,
+        ]
+        .into_iter()
+        .flat_map(|role| {
+            layout
+                .matrices(role)
+                .map(|matrix| (matrix.log_height, matrix.width, matrix.point_count))
+        })
+        .collect::<Vec<_>>();
+        assert_eq!(native_descriptor, layout_descriptor);
+
         // Pcs::verify is the independent evaluation consumer.  Its malformed
         // FRI proof reaches this typed stop only after opening observation and
         // one alpha sample (the test config has nonzero query count).
@@ -2219,28 +2154,6 @@ mod create_alu_air_tests {
         let native_zeta_target = define(&mut circuit, native_zeta);
         circuit.connect(circuit_zeta, native_zeta_target);
 
-        let layout = NativeStarkLayout::new(
-            airs.iter()
-                .zip(log_q.iter())
-                .map(|(air, &quotient_log)| InstanceLayout {
-                    ext_log: DEGREE_BITS,
-                    base_log: DEGREE_BITS,
-                    challenge_width: <EF as BasedVectorSpace<F>>::DIMENSION,
-                    trace_width: BaseAir::<F>::width(air),
-                    trace_next: false,
-                    pre_width: air.prep_width,
-                    pre_next: air.prep_next,
-                    quotient_log,
-                    quotient_chunks: 1 << quotient_log,
-                    permutation_width: 0,
-                })
-                .collect(),
-            map,
-            false,
-            true,
-            false,
-        )
-        .unwrap();
         let target_instances = proof
             .opened_values
             .instances
