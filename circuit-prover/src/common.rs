@@ -297,10 +297,12 @@ impl<SC: StarkGenericConfig, const D: usize> FinalizedCircuitTables<SC, D>
 where
     SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
 {
+    #[cfg(test)]
     pub(crate) fn airs_and_base_degree_bits(&self) -> &CircuitAirsWithDegrees<SC, D> {
         &self.airs_and_base_degree_bits
     }
 
+    #[cfg(test)]
     pub(crate) const fn relation(&self) -> &CircuitRelation<Val<SC>> {
         &self.relation
     }

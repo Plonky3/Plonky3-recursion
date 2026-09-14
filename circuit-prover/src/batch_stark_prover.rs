@@ -732,6 +732,7 @@ where
     prover: BatchStarkProver<SC>,
     circuit_prover_data: Rc<CircuitProverData<SC>>,
     relation: CircuitRelation<Val<SC>>,
+    verifier: CircuitVerifier<SC>,
 }
 
 impl<SC> PreparedCircuitProver<SC>
@@ -742,6 +743,67 @@ where
     pub const fn relation(&self) -> &CircuitRelation<Val<SC>> {
         &self.relation
     }
+
+    /// Export a cheap, independently owned verifier handle.
+    pub fn verifier(&self) -> CircuitVerifier<SC> {
+        self.verifier.clone()
+    }
+}
+
+/// Verifier for one trusted circuit relation, independent of all proving data.
+pub struct CircuitVerifier<SC>
+where
+    SC: StarkGenericConfig + 'static,
+{
+    inner: Rc<CircuitVerifierData<SC>>,
+}
+
+struct CircuitVerifierData<SC>
+where
+    SC: StarkGenericConfig + 'static,
+{
+    config: SC,
+    relation: CircuitRelation<Val<SC>>,
+    common: CommonData<SC>,
+    non_primitive_airs: Vec<DynamicAirEntry<SC>>,
+}
+
+impl<SC> Clone for CircuitVerifier<SC>
+where
+    SC: StarkGenericConfig + 'static,
+{
+    fn clone(&self) -> Self {
+        Self {
+            inner: Rc::clone(&self.inner),
+        }
+    }
+}
+
+impl<SC> CircuitVerifier<SC>
+where
+    SC: StarkGenericConfig + 'static,
+{
+    /// Verifier-selected protocol configuration.
+    pub fn config(&self) -> &SC {
+        &self.inner.config
+    }
+
+    /// Exact circuit relation fixed during trusted preparation.
+    pub fn relation(&self) -> &CircuitRelation<Val<SC>> {
+        &self.inner.relation
+    }
+
+    /// Exact preprocessing commitment, mapping, and lookups fixed during preparation.
+    pub fn common_data(&self) -> &CommonData<SC> {
+        &self.inner.common
+    }
+}
+
+/// Which optional next-row opening used the unsupported present-but-empty representation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NextRowOpeningKind {
+    Trace,
+    Preprocessed,
 }
 
 /// Errors raised when proof metadata fails the structural invariants that the
@@ -876,6 +938,14 @@ pub enum ProofMetadataError {
         index: usize,
         expected: usize,
         got: usize,
+    },
+
+    /// Upstream native verification cannot safely interpret `Some(empty)` for a positive-width
+    /// local row; honest native proofs encode this case as `None`.
+    #[error("table {table} has an empty present {kind:?} next-row opening")]
+    UnsupportedEmptyNextRow {
+        table: usize,
+        kind: NextRowOpeningKind,
     },
 }
 
@@ -2099,6 +2169,209 @@ where
     }
 }
 
+/// Reconstruct all verifier AIRs solely from retained trusted relation data.
+pub fn reconstruct_circuit_table_airs<SC, const D: usize>(
+    relation: &CircuitRelation<Val<SC>>,
+    non_primitive_airs: &[DynamicAirEntry<SC>],
+) -> Result<Vec<CircuitTableAir<SC, D>>, BatchStarkProverError>
+where
+    SC: StarkGenericConfig + 'static,
+    Val<SC>: StarkField,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+{
+    if D != relation.ext_degree() {
+        return Err(BatchStarkProverError::RelationMismatch(format!(
+            "requested AIR degree {D} does not match retained degree {}",
+            relation.ext_degree()
+        )));
+    }
+    if non_primitive_airs.len() != relation.non_primitives().len() {
+        return Err(BatchStarkProverError::RelationMismatch(format!(
+            "retained NPO AIR count is {}, relation count is {}",
+            non_primitive_airs.len(),
+            relation.non_primitives().len()
+        )));
+    }
+
+    let packing = relation.table_packing();
+    let global_min_height = packing.min_trace_height();
+    let const_air = CircuitTableAir::Const(
+        ConstAir::<Val<SC>, D>::new(relation.rows()[PrimitiveTable::Const])
+            .with_min_height(packing.const_min_height().unwrap_or(global_min_height)),
+    );
+    let public_air = CircuitTableAir::Public(
+        PublicAir::<Val<SC>, D>::new(
+            relation.rows()[PrimitiveTable::Public],
+            packing.public_lanes(),
+        )
+        .with_min_height(packing.public_min_height().unwrap_or(global_min_height)),
+    );
+    let alu_air = CircuitTableAir::Alu(
+        AluAir::<Val<SC>, D>::from_reduction(
+            relation.rows()[PrimitiveTable::Alu],
+            packing.alu_lanes(),
+            relation.reduction(),
+        )
+        .with_horner_pack_k(packing.horner_packed_steps())
+        .with_min_height(packing.alu_min_height().unwrap_or(global_min_height)),
+    );
+
+    let mut airs = Vec::with_capacity(NUM_PRIMITIVE_TABLES + non_primitive_airs.len());
+    airs.extend([const_air, public_air, alu_air]);
+    airs.extend(
+        non_primitive_airs
+            .iter()
+            .cloned()
+            .map(CircuitTableAir::Dynamic),
+    );
+    Ok(airs)
+}
+
+impl<SC> CircuitVerifier<SC>
+where
+    SC: StarkGenericConfig + 'static,
+    Val<SC>: StarkField,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+{
+    /// Reconstruct verifier AIRs for the retained extension degree.
+    pub fn table_airs<const D: usize>(
+        &self,
+    ) -> Result<Vec<CircuitTableAir<SC, D>>, BatchStarkProverError> {
+        reconstruct_circuit_table_airs::<SC, D>(
+            &self.inner.relation,
+            &self.inner.non_primitive_airs,
+        )
+    }
+
+    /// Verify against the retained trusted relation and preprocessing commitment.
+    ///
+    /// `proof.stark_common` is legacy transport metadata and is deliberately ignored here.
+    /// Tasks 8–10 define an empty external statement; non-empty statements are rejected.
+    pub fn verify(
+        &self,
+        proof: &BatchStarkProof<SC>,
+        statement: &[Val<SC>],
+    ) -> Result<(), BatchStarkProverError> {
+        if !statement.is_empty() {
+            return Err(BatchStarkProverError::RelationMismatch(
+                "external statements are not supported by this relation".into(),
+            ));
+        }
+        proof.validate()?;
+        self.validate_metadata(proof)?;
+        dispatch_by_ext_degree!(self.inner.relation.ext_degree(), |D| self
+            .verify_degree::<D>(proof))
+    }
+
+    fn validate_metadata(&self, proof: &BatchStarkProof<SC>) -> Result<(), BatchStarkProverError> {
+        let relation = &self.inner.relation;
+        let proof_reduction = AluExtMulKind::resolve(
+            proof.ext_degree,
+            proof.w_binomial,
+            proof.alu_quintic_trinomial,
+        )
+        .ok_or(BatchStarkProverError::MissingWForExtension)?;
+        if &proof.table_packing != relation.table_packing()
+            || &proof.rows != relation.rows()
+            || proof.ext_degree != relation.ext_degree()
+            || proof_reduction != relation.reduction()
+            || proof.alu_variant != relation.alu_variant()
+            || proof.proof.degree_bits != relation.trace_degree_bits()
+        {
+            return Err(BatchStarkProverError::RelationMismatch(
+                "submitted primitive metadata differs from the retained relation".into(),
+            ));
+        }
+        if proof.non_primitives.len() != relation.non_primitives().len() {
+            return Err(BatchStarkProverError::RelationMismatch(format!(
+                "submitted NPO count is {}, expected {}",
+                proof.non_primitives.len(),
+                relation.non_primitives().len()
+            )));
+        }
+        for (index, (submitted, expected)) in proof
+            .non_primitives
+            .iter()
+            .zip(relation.non_primitives())
+            .enumerate()
+        {
+            if &submitted.op_type != expected.op_type()
+                || submitted.rows != expected.rows()
+                || submitted.lanes != expected.lanes()
+                || submitted.air_variant != expected.air_variant()
+                || submitted.public_values != expected.public_values()
+            {
+                return Err(BatchStarkProverError::RelationMismatch(format!(
+                    "submitted NPO metadata differs at index {index}"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    fn verify_degree<const D: usize>(
+        &self,
+        proof: &BatchStarkProof<SC>,
+    ) -> Result<(), BatchStarkProverError> {
+        let airs = self.table_airs::<D>()?;
+        if proof.proof.opened_values.instances.len() != airs.len() {
+            return Err(BatchStarkProverError::RelationMismatch(format!(
+                "opened instance count is {}, expected {}",
+                proof.proof.opened_values.instances.len(),
+                airs.len()
+            )));
+        }
+        for (table, (opened, air)) in proof
+            .proof
+            .opened_values
+            .instances
+            .iter()
+            .zip(&airs)
+            .enumerate()
+        {
+            let opened = &opened.base_opened_values;
+            if BaseAir::<Val<SC>>::width(air) > 0
+                && opened.trace_next.as_ref().is_some_and(Vec::is_empty)
+            {
+                return Err(ProofMetadataError::UnsupportedEmptyNextRow {
+                    table,
+                    kind: NextRowOpeningKind::Trace,
+                }
+                .into());
+            }
+            if BaseAir::<Val<SC>>::preprocessed_width(air) > 0
+                && opened.preprocessed_next.as_ref().is_some_and(Vec::is_empty)
+            {
+                return Err(ProofMetadataError::UnsupportedEmptyNextRow {
+                    table,
+                    kind: NextRowOpeningKind::Preprocessed,
+                }
+                .into());
+            }
+        }
+
+        let mut public_values = Vec::with_capacity(airs.len());
+        public_values.resize_with(NUM_PRIMITIVE_TABLES, Vec::new);
+        public_values.extend(
+            self.inner
+                .relation
+                .non_primitives()
+                .iter()
+                .map(|entry| entry.public_values().to_vec()),
+        );
+        p3_batch_stark::verify_batch(
+            &self.inner.config,
+            &airs,
+            &proof.proof,
+            &public_values,
+            &self.inner.common,
+        )
+        .map_err(|error| BatchStarkProverError::Verify(format!("{error:?}")))
+    }
+}
+
 impl<SC> BatchStarkProver<SC>
 where
     SC: StarkGenericConfig + Send + Sync + 'static,
@@ -2141,6 +2414,57 @@ where
             ProverData::from_airs_and_degrees(&self.config, &airs, relation.trace_degree_bits());
         self.table_packing = relation.table_packing().clone();
 
+        let mut non_primitive_airs = Vec::with_capacity(relation.non_primitives().len());
+        let mut last_registration = None;
+        for descriptor in relation.non_primitives() {
+            let matching: Vec<_> = self
+                .non_primitive_provers
+                .iter()
+                .enumerate()
+                .filter(|(_, prover)| prover.op_type() == *descriptor.op_type())
+                .collect();
+            if matching.len() != 1 {
+                return Err(BatchStarkProverError::RelationMismatch(format!(
+                    "trusted NPO {:?} has {} registered table provers",
+                    descriptor.op_type(),
+                    matching.len()
+                )));
+            }
+            let (registration, table_prover) = matching[0];
+            if last_registration.is_some_and(|previous| registration <= previous) {
+                return Err(BatchStarkProverError::RelationMismatch(
+                    "trusted NPO AIR builders and table provers use different ordering".into(),
+                ));
+            }
+            last_registration = Some(registration);
+            let entry = NonPrimitiveTableEntry {
+                op_type: descriptor.op_type().clone(),
+                rows: descriptor.rows(),
+                lanes: descriptor.lanes(),
+                public_values: descriptor.public_values().to_vec(),
+                air_variant: descriptor.air_variant(),
+            };
+            let air = table_prover
+                .batch_air_from_table_entry(&self.config, D, D as u32, &entry)
+                .map_err(BatchStarkProverError::RelationMismatch)?;
+            if BaseAir::<Val<SC>>::num_public_values(&air) != descriptor.public_values().len() {
+                return Err(BatchStarkProverError::RelationMismatch(format!(
+                    "trusted NPO {:?} public-value width disagrees with its AIR",
+                    descriptor.op_type()
+                )));
+            }
+            non_primitive_airs.push(air);
+        }
+
+        let verifier = CircuitVerifier {
+            inner: Rc::new(CircuitVerifierData {
+                config: self.config.clone(),
+                relation: relation.clone(),
+                common: clone_common_data(&prover_data.common),
+                non_primitive_airs,
+            }),
+        };
+
         Ok(PreparedCircuitProver {
             prover: self,
             circuit_prover_data: Rc::new(CircuitProverData::new(
@@ -2149,6 +2473,7 @@ where
                 non_primitive_columns,
             )),
             relation,
+            verifier,
         })
     }
 }

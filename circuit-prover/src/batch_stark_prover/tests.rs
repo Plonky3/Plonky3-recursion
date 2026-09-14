@@ -1,5 +1,9 @@
 extern crate std;
 
+use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use p3_baby_bear::BabyBear;
 use p3_circuit::builder::CircuitBuilder;
 use p3_circuit::ops::poseidon1_perm::{
@@ -7,15 +11,25 @@ use p3_circuit::ops::poseidon1_perm::{
 };
 use p3_circuit::ops::poseidon2_perm::{GoldilocksD2Width8, Poseidon2PermCallBase};
 use p3_circuit::ops::{
-    KoalaBearD1Width16, Op, Poseidon1Config, Poseidon2Config, generate_poseidon1_trace,
+    KoalaBearD1Width16, NpoTypeId, Op, Poseidon1Config, Poseidon2Config, generate_poseidon1_trace,
     generate_poseidon2_trace, generate_recompose_trace,
 };
+use p3_commit::{ExtensionMmcs, Pcs, PeriodicLdeTable, PolynomialSpace};
 use p3_field::PrimeCharacteristicRing;
 use p3_field::extension::{BinomialExtensionField, QuinticTrinomialExtensionField};
+use p3_fri::{FriParameters, HidingFriPcs};
 use p3_goldilocks::{Goldilocks, Poseidon2Goldilocks};
 use p3_koala_bear::{KoalaBear, default_koalabear_poseidon1_16, default_koalabear_poseidon2_16};
+use p3_matrix::dense::RowMajorMatrix;
+use p3_merkle_tree::MerkleTreeHidingMmcs;
 use p3_symmetric::{CryptographicHasher, PaddingFreeSponge, Permutation};
 use p3_test_utils::LiftPermToQuintic;
+use p3_test_utils::koala_bear_params::{
+    Challenge, Challenger, DIGEST_ELEMS, Dft, MyCompress, MyHash,
+};
+use p3_uni_stark::StarkConfig;
+use rand::SeedableRng;
+use rand::rngs::StdRng;
 
 use super::*;
 use crate::ConstraintProfile;
@@ -25,8 +39,421 @@ use crate::batch_stark_prover::{
     poseidon1_air_builders_d5, poseidon1_table_provers_d5, poseidon2_air_builders,
     poseidon2_air_builders_d5, poseidon2_table_provers_d5, recompose_air_builders,
 };
-use crate::common::{NpoPreprocessor, get_airs_and_degrees_with_prep};
+use crate::common::{NpoAirBuilder, NpoPreprocessor, get_airs_and_degrees_with_prep};
 use crate::config::{self, BabyBearConfig, GoldilocksConfig, KoalaBearConfig};
+
+#[derive(Clone)]
+struct CountingPcs<P> {
+    inner: P,
+    preprocessing_commits: Arc<AtomicUsize>,
+}
+
+impl<P> CountingPcs<P> {
+    fn new(inner: P) -> (Self, Arc<AtomicUsize>) {
+        let preprocessing_commits = Arc::new(AtomicUsize::new(0));
+        (
+            Self {
+                inner,
+                preprocessing_commits: preprocessing_commits.clone(),
+            },
+            preprocessing_commits,
+        )
+    }
+}
+
+impl<P, ChallengeField, Challenger> Pcs<ChallengeField, Challenger> for CountingPcs<P>
+where
+    P: Pcs<ChallengeField, Challenger>,
+    ChallengeField: p3_field::ExtensionField<<P::Domain as PolynomialSpace>::Val>,
+{
+    type Domain = P::Domain;
+    type Commitment = P::Commitment;
+    type ProverData = P::ProverData;
+    type EvaluationsOnDomain<'a> = P::EvaluationsOnDomain<'a>;
+    type Proof = P::Proof;
+    type Error = P::Error;
+
+    const ZK: bool = P::ZK;
+
+    fn natural_domain_for_degree(&self, degree: usize) -> Self::Domain {
+        self.inner.natural_domain_for_degree(degree)
+    }
+
+    fn log_max_lde_height(&self) -> usize {
+        self.inner.log_max_lde_height()
+    }
+
+    fn commit(
+        &self,
+        evaluations: impl IntoIterator<
+            Item = (
+                Self::Domain,
+                RowMajorMatrix<<Self::Domain as PolynomialSpace>::Val>,
+            ),
+        >,
+    ) -> (Self::Commitment, Self::ProverData) {
+        self.inner.commit(evaluations)
+    }
+
+    fn commit_preprocessing(
+        &self,
+        evaluations: impl IntoIterator<
+            Item = (
+                Self::Domain,
+                RowMajorMatrix<<Self::Domain as PolynomialSpace>::Val>,
+            ),
+        >,
+    ) -> (Self::Commitment, Self::ProverData) {
+        self.preprocessing_commits.fetch_add(1, Ordering::SeqCst);
+        self.inner.commit_preprocessing(evaluations)
+    }
+
+    fn get_quotient_ldes(
+        &self,
+        evaluations: impl IntoIterator<
+            Item = (
+                Self::Domain,
+                RowMajorMatrix<<Self::Domain as PolynomialSpace>::Val>,
+            ),
+        >,
+        num_chunks: usize,
+    ) -> Vec<RowMajorMatrix<<Self::Domain as PolynomialSpace>::Val>> {
+        self.inner.get_quotient_ldes(evaluations, num_chunks)
+    }
+
+    fn commit_ldes(
+        &self,
+        ldes: Vec<RowMajorMatrix<<Self::Domain as PolynomialSpace>::Val>>,
+    ) -> (Self::Commitment, Self::ProverData) {
+        self.inner.commit_ldes(ldes)
+    }
+
+    fn get_evaluations_on_domain<'a>(
+        &self,
+        prover_data: &'a Self::ProverData,
+        idx: usize,
+        domain: Self::Domain,
+    ) -> Self::EvaluationsOnDomain<'a> {
+        self.inner
+            .get_evaluations_on_domain(prover_data, idx, domain)
+    }
+
+    fn get_evaluations_on_domain_no_random<'a>(
+        &self,
+        prover_data: &'a Self::ProverData,
+        idx: usize,
+        domain: Self::Domain,
+    ) -> Self::EvaluationsOnDomain<'a> {
+        self.inner
+            .get_evaluations_on_domain_no_random(prover_data, idx, domain)
+    }
+
+    fn open(
+        &self,
+        commitment_data_with_opening_points: Vec<(&Self::ProverData, Vec<Vec<ChallengeField>>)>,
+        fiat_shamir_challenger: &mut Challenger,
+    ) -> (p3_commit::OpenedValues<ChallengeField>, Self::Proof) {
+        self.inner
+            .open(commitment_data_with_opening_points, fiat_shamir_challenger)
+    }
+
+    fn open_with_preprocessing(
+        &self,
+        commitment_data_with_opening_points: Vec<(&Self::ProverData, Vec<Vec<ChallengeField>>)>,
+        fiat_shamir_challenger: &mut Challenger,
+        is_preprocessing: bool,
+    ) -> (p3_commit::OpenedValues<ChallengeField>, Self::Proof) {
+        self.inner.open_with_preprocessing(
+            commitment_data_with_opening_points,
+            fiat_shamir_challenger,
+            is_preprocessing,
+        )
+    }
+
+    fn verify(
+        &self,
+        commitments_with_opening_points: Vec<(
+            Self::Commitment,
+            Vec<(Self::Domain, Vec<(ChallengeField, Vec<ChallengeField>)>)>,
+        )>,
+        proof: &Self::Proof,
+        fiat_shamir_challenger: &mut Challenger,
+    ) -> Result<(), Self::Error> {
+        self.inner.verify(
+            commitments_with_opening_points,
+            proof,
+            fiat_shamir_challenger,
+        )
+    }
+
+    fn get_opt_randomization_poly_commitment(
+        &self,
+        domain: impl IntoIterator<Item = Self::Domain>,
+    ) -> Option<(Self::Commitment, Self::ProverData)> {
+        self.inner.get_opt_randomization_poly_commitment(domain)
+    }
+
+    fn build_periodic_lde_table(
+        &self,
+        periodic_cols: &[Vec<<Self::Domain as PolynomialSpace>::Val>],
+        trace_domain: Self::Domain,
+        quotient_domain: Self::Domain,
+    ) -> PeriodicLdeTable<<Self::Domain as PolynomialSpace>::Val>
+    where
+        Self::Domain: Clone,
+        <Self::Domain as PolynomialSpace>::Val: Clone,
+    {
+        self.inner
+            .build_periodic_lde_table(periodic_cols, trace_domain, quotient_domain)
+    }
+}
+
+fn trusted_relation_circuit(multiplier: u32) -> p3_circuit::Circuit<BabyBear> {
+    let mut builder = CircuitBuilder::<BabyBear>::new();
+    let input = builder.public_input();
+    let multiplier = builder.define_const(BabyBear::from_u32(multiplier));
+    let expected = builder.public_input();
+    let product = builder.mul(input, multiplier);
+    builder.connect(product, expected);
+    builder.build().unwrap()
+}
+
+fn trusted_relation_proof(
+    prepared: &PreparedCircuitProver<BabyBearConfig>,
+    circuit: &p3_circuit::Circuit<BabyBear>,
+    input: u32,
+    output: u32,
+) -> BatchStarkProof<BabyBearConfig> {
+    let mut runner = circuit.runner();
+    runner
+        .set_public_inputs(&[BabyBear::from_u32(input), BabyBear::from_u32(output)])
+        .unwrap();
+    prepared.prove(&runner.run().unwrap()).unwrap()
+}
+
+#[test]
+fn hiding_trusted_preparation_reuses_one_salted_setup_with_fresh_proof_randomness() {
+    const SALT_ELEMS: usize = 4;
+    type HidingValMmcs = MerkleTreeHidingMmcs<
+        <KoalaBear as p3_field::Field>::Packing,
+        <KoalaBear as p3_field::Field>::Packing,
+        MyHash,
+        MyCompress,
+        StdRng,
+        2,
+        DIGEST_ELEMS,
+        SALT_ELEMS,
+    >;
+    type HidingChallengeMmcs = ExtensionMmcs<KoalaBear, Challenge, HidingValMmcs>;
+    type HidingPcs = HidingFriPcs<KoalaBear, Dft, HidingValMmcs, HidingChallengeMmcs, StdRng>;
+    type HidingConfig = StarkConfig<CountingPcs<HidingPcs>, Challenge, Challenger>;
+
+    let permutation = default_koalabear_poseidon2_16();
+    let value_mmcs = HidingValMmcs::new(
+        MyHash::new(permutation.clone()),
+        MyCompress::new(permutation.clone()),
+        0,
+        StdRng::seed_from_u64(11),
+    );
+    let fri_params = FriParameters::new_testing(HidingChallengeMmcs::new(value_mmcs.clone()), 0);
+    let pcs = HidingPcs::new(
+        Dft::default(),
+        value_mmcs,
+        fri_params,
+        2,
+        StdRng::seed_from_u64(7),
+    );
+    let (pcs, preprocessing_commits) = CountingPcs::new(pcs);
+    let config = HidingConfig::new(pcs, Challenger::new(permutation));
+
+    let mut builder = CircuitBuilder::<KoalaBear>::new();
+    let _ = builder.define_const(KoalaBear::TWO);
+    let circuit = builder.build().unwrap();
+    let traces = circuit.runner().run().unwrap();
+    let prepared = BatchStarkProver::new(config)
+        .with_table_packing(TablePacking::new(4, 4).with_min_trace_height(32))
+        .prepare_circuit::<KoalaBear, 1>(&circuit, &[], &[], ConstraintProfile::Standard)
+        .unwrap();
+    assert_eq!(preprocessing_commits.load(Ordering::SeqCst), 1);
+    let verifier = prepared.verifier();
+
+    let first = prepared.prove(&traces).unwrap();
+    assert_eq!(preprocessing_commits.load(Ordering::SeqCst), 1);
+    let second = prepared.prove(&traces).unwrap();
+    assert_eq!(preprocessing_commits.load(Ordering::SeqCst), 1);
+    verifier.verify(&first, &[]).unwrap();
+    verifier.verify(&second, &[]).unwrap();
+
+    let setup = &verifier
+        .common_data()
+        .preprocessed
+        .as_ref()
+        .unwrap()
+        .commitment;
+    assert_eq!(
+        &first.stark_common.preprocessed.as_ref().unwrap().commitment,
+        setup
+    );
+    assert_eq!(
+        &second
+            .stark_common
+            .preprocessed
+            .as_ref()
+            .unwrap()
+            .commitment,
+        setup
+    );
+    assert_ne!(first.proof.commitments.main, second.proof.commitments.main);
+}
+
+#[test]
+fn trusted_recompose_descriptor_keeps_raw_operation_rows() {
+    let builder = RecomposeAirBuilder::<1>::new(2, false);
+    let preprocessed_lane_width =
+        crate::air::RecomposeAir::<BabyBear, 1>::preprocessed_lane_width_for(false);
+    let preprocessed = vec![BabyBear::ZERO; 3 * preprocessed_lane_width];
+    let built = <RecomposeAirBuilder<1> as NpoAirBuilder<BabyBearConfig, 1>>::try_build_trusted(
+        &builder,
+        &NpoTypeId::recompose(),
+        &preprocessed,
+        8,
+        2,
+        ConstraintProfile::Standard,
+    )
+    .unwrap();
+
+    assert_eq!(built.descriptor.rows(), 3);
+    assert_eq!(built.descriptor.lanes(), 2);
+    assert_eq!(built.base_degree_bits, 3);
+}
+
+#[test]
+fn trusted_verifier_outlives_prover_and_ignores_embedded_common() {
+    let circuit_a = trusted_relation_circuit(2);
+    let prepared_a = BatchStarkProver::new(config::baby_bear())
+        .prepare_circuit::<BabyBear, 1>(&circuit_a, &[], &[], ConstraintProfile::Standard)
+        .unwrap();
+    let verifier_a = prepared_a.verifier();
+    let weak_proving_data = Rc::downgrade(&prepared_a.circuit_prover_data);
+    let mut proof_a = trusted_relation_proof(&prepared_a, &circuit_a, 4, 8);
+
+    let circuit_b = trusted_relation_circuit(3);
+    let prepared_b = BatchStarkProver::new(config::baby_bear())
+        .prepare_circuit::<BabyBear, 1>(&circuit_b, &[], &[], ConstraintProfile::Standard)
+        .unwrap();
+    let proof_b = trusted_relation_proof(&prepared_b, &circuit_b, 4, 12);
+    proof_a.stark_common = proof_b.stark_common;
+
+    drop(prepared_a);
+    assert!(
+        weak_proving_data.upgrade().is_none(),
+        "the verifier must not retain CircuitProverData"
+    );
+    verifier_a.verify(&proof_a, &[]).unwrap();
+}
+
+#[test]
+fn trusted_verifier_rejects_a_same_shape_foreign_relation() {
+    let circuit_a = trusted_relation_circuit(2);
+    let prepared_a = BatchStarkProver::new(config::baby_bear())
+        .prepare_circuit::<BabyBear, 1>(&circuit_a, &[], &[], ConstraintProfile::Standard)
+        .unwrap();
+    let circuit_b = trusted_relation_circuit(3);
+    let prepared_b = BatchStarkProver::new(config::baby_bear())
+        .prepare_circuit::<BabyBear, 1>(&circuit_b, &[], &[], ConstraintProfile::Standard)
+        .unwrap();
+    assert_eq!(prepared_a.relation(), prepared_b.relation());
+
+    let proof_b = trusted_relation_proof(&prepared_b, &circuit_b, 4, 12);
+    prepared_b.verifier().verify(&proof_b, &[]).unwrap();
+    assert!(prepared_a.verifier().verify(&proof_b, &[]).is_err());
+}
+
+#[test]
+fn trusted_verifier_rejects_empty_present_next_rows_before_native_verification() {
+    let circuit = trusted_relation_circuit(2);
+    let prepared = BatchStarkProver::new(config::baby_bear())
+        .prepare_circuit::<BabyBear, 1>(&circuit, &[], &[], ConstraintProfile::Standard)
+        .unwrap();
+    let verifier = prepared.verifier();
+    let mut proof = trusted_relation_proof(&prepared, &circuit, 4, 8);
+    verifier.verify(&proof, &[]).unwrap();
+
+    proof.proof.opened_values.instances[0]
+        .base_opened_values
+        .trace_next = Some(Vec::new());
+    assert!(matches!(
+        verifier.verify(&proof, &[]),
+        Err(BatchStarkProverError::InvalidMetadata(
+            ProofMetadataError::UnsupportedEmptyNextRow {
+                table: 0,
+                kind: NextRowOpeningKind::Trace,
+            }
+        ))
+    ));
+
+    proof.proof.opened_values.instances[0]
+        .base_opened_values
+        .trace_next = None;
+    proof.proof.opened_values.instances[0]
+        .base_opened_values
+        .preprocessed_next = Some(Vec::new());
+    assert!(matches!(
+        verifier.verify(&proof, &[]),
+        Err(BatchStarkProverError::InvalidMetadata(
+            ProofMetadataError::UnsupportedEmptyNextRow {
+                table: 0,
+                kind: NextRowOpeningKind::Preprocessed,
+            }
+        ))
+    ));
+}
+
+#[test]
+fn trusted_verifier_rejects_primitive_metadata_and_nonempty_statements() {
+    let circuit = trusted_relation_circuit(2);
+    let prepared = BatchStarkProver::new(config::baby_bear())
+        .prepare_circuit::<BabyBear, 1>(&circuit, &[], &[], ConstraintProfile::Standard)
+        .unwrap();
+    let verifier = prepared.verifier();
+    let mut proof = trusted_relation_proof(&prepared, &circuit, 4, 8);
+    verifier.verify(&proof, &[]).unwrap();
+
+    assert!(verifier.verify(&proof, &[BabyBear::ONE]).is_err());
+
+    let packing = proof.table_packing.clone();
+    proof.table_packing = packing.clone().with_public_alu_lanes(2, 1);
+    assert!(matches!(
+        verifier.validate_metadata(&proof),
+        Err(BatchStarkProverError::RelationMismatch(_))
+    ));
+    proof.table_packing = packing;
+
+    let rows = proof.rows;
+    proof.rows = RowCounts::new([
+        rows[PrimitiveTable::Const] + 1,
+        rows[PrimitiveTable::Public],
+        rows[PrimitiveTable::Alu],
+    ]);
+    assert!(verifier.validate_metadata(&proof).is_err());
+    proof.rows = rows;
+
+    proof.proof.degree_bits[0] += 1;
+    assert!(verifier.validate_metadata(&proof).is_err());
+    proof.proof.degree_bits[0] -= 1;
+
+    proof.ext_degree = 2;
+    proof.w_binomial = Some(BabyBear::TWO);
+    assert!(verifier.validate_metadata(&proof).is_err());
+    proof.ext_degree = 1;
+    proof.w_binomial = None;
+
+    proof.alu_variant = match proof.alu_variant {
+        AirVariant::Baseline => AirVariant::Optimized,
+        AirVariant::Optimized => AirVariant::Baseline,
+    };
+    assert!(verifier.validate_metadata(&proof).is_err());
+}
 
 #[test]
 fn trusted_preparation_reuses_the_finalized_setup_for_repeated_proofs() {
@@ -970,9 +1397,13 @@ fn test_koalabear_quintic_trinomial_batch_stark_with_poseidon_d1() {
         generate_poseidon2_trace::<EF5, KoalaBearD1Width16>,
         lift_perm,
     );
+    builder.enable_recompose::<KoalaBear>(generate_recompose_trace::<KoalaBear, EF5>);
 
     let in_a = builder.public_input();
     let in_b = builder.public_input();
+    builder
+        .decompose_ext_to_base_coeffs::<KoalaBear>(in_a)
+        .unwrap();
     let mut perm_inputs: [Option<_>; 16] = [None; 16];
     perm_inputs[0] = Some(in_a);
     perm_inputs[1] = Some(in_b);
@@ -998,8 +1429,12 @@ fn test_koalabear_quintic_trinomial_batch_stark_with_poseidon_d1() {
     let circuit = builder.build().unwrap();
     let cfg = config::koala_bear();
 
-    let npo_prep: Vec<Box<dyn NpoPreprocessor<KoalaBear>>> = vec![Box::new(Poseidon2Preprocessor)];
-    let air_builders = poseidon2_air_builders_d5::<KoalaBearConfig>();
+    let npo_prep: Vec<Box<dyn NpoPreprocessor<KoalaBear>>> = vec![
+        Box::new(Poseidon2Preprocessor),
+        Box::new(RecomposePreprocessor::new(false)),
+    ];
+    let mut air_builders = poseidon2_air_builders_d5::<KoalaBearConfig>();
+    air_builders.extend(recompose_air_builders::<KoalaBearConfig, D>(1, false));
     let (airs_degrees, primitive_columns, non_primitive_columns) =
         get_airs_and_degrees_with_prep::<KoalaBearConfig, _, D>(
             &circuit,
@@ -1023,6 +1458,7 @@ fn test_koalabear_quintic_trinomial_batch_stark_with_poseidon_d1() {
     for p in poseidon2_table_provers_d5(Poseidon2Config::KOALA_BEAR_D1_W16) {
         prover.register_table_prover(p);
     }
+    prover.register_table_prover(Box::new(RecomposeProver::<D>::new(1, false)));
 
     let proof = prover
         .prove_all_tables(&traces, &circuit_prover_data)
@@ -1033,6 +1469,61 @@ fn test_koalabear_quintic_trinomial_batch_stark_with_poseidon_d1() {
     prover
         .verify_all_tables::<QuinticTrinomialExtensionField<KoalaBear>>(&proof)
         .unwrap();
+
+    let mut trusted = BatchStarkProver::new(config::koala_bear());
+    for table_prover in poseidon2_table_provers_d5(Poseidon2Config::KOALA_BEAR_D1_W16) {
+        trusted.register_table_prover(table_prover);
+    }
+    trusted.register_table_prover(Box::new(RecomposeProver::<D>::new(1, false)));
+    let prepared = trusted
+        .prepare_circuit::<EF5, D>(
+            &circuit,
+            &npo_prep,
+            &air_builders,
+            ConstraintProfile::Standard,
+        )
+        .unwrap();
+    let mut trusted_proof = prepared.prove(&traces).unwrap();
+    let descriptor = &prepared.relation().non_primitives()[0];
+    assert_eq!(
+        descriptor.op_type(),
+        &NpoTypeId::poseidon2_perm(Poseidon2Config::KOALA_BEAR_D1_W16)
+    );
+    assert_eq!(descriptor.rows(), trusted_proof.non_primitives[0].rows);
+    assert_eq!(
+        descriptor.rows(),
+        1 << prepared.relation().trace_degree_bits()[3],
+        "Poseidon descriptors retain the padded table height"
+    );
+    let verifier = prepared.verifier();
+    verifier.verify(&trusted_proof, &[]).unwrap();
+    assert_eq!(trusted_proof.non_primitives.len(), 2);
+
+    trusted_proof.alu_quintic_trinomial = false;
+    assert!(verifier.validate_metadata(&trusted_proof).is_err());
+    trusted_proof.alu_quintic_trinomial = true;
+    trusted_proof.non_primitives[0].rows += 1;
+    assert!(verifier.validate_metadata(&trusted_proof).is_err());
+    trusted_proof.non_primitives[0].rows -= 1;
+    trusted_proof.non_primitives[0].lanes += 1;
+    assert!(verifier.validate_metadata(&trusted_proof).is_err());
+    trusted_proof.non_primitives[0].lanes -= 1;
+    trusted_proof.non_primitives[0].air_variant = AirVariant::Optimized;
+    assert!(verifier.validate_metadata(&trusted_proof).is_err());
+    trusted_proof.non_primitives[0].air_variant = AirVariant::Baseline;
+    let op_type = trusted_proof.non_primitives[0].op_type.clone();
+    trusted_proof.non_primitives[0].op_type = NpoTypeId::new("foreign");
+    assert!(verifier.validate_metadata(&trusted_proof).is_err());
+    trusted_proof.non_primitives[0].op_type = op_type;
+    trusted_proof.non_primitives[0]
+        .public_values
+        .push(KoalaBear::ONE);
+    assert!(verifier.validate_metadata(&trusted_proof).is_err());
+    trusted_proof.non_primitives[0].public_values.clear();
+    trusted_proof.non_primitives.swap(0, 1);
+    assert!(verifier.validate_metadata(&trusted_proof).is_err());
+    trusted_proof.non_primitives.swap(0, 1);
+    verifier.verify(&trusted_proof, &[]).unwrap();
 }
 
 /// Two D=1 Poseidon rows in an EF5 circuit: the second row uses `new_start=false` so the full
