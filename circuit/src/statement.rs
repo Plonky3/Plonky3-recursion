@@ -62,7 +62,7 @@ impl StatementSchema {
     }
 
     /// Check a flattened statement value vector against this schema.
-    pub fn validate_values<F>(&self, values: &[F]) -> Result<(), StatementError> {
+    pub const fn validate_values<F>(&self, values: &[F]) -> Result<(), StatementError> {
         if values.len() != self.base_len {
             return Err(StatementError::ValueLengthMismatch {
                 expected: self.base_len,
@@ -80,4 +80,51 @@ pub enum StatementError {
     LengthOverflow,
     #[error("statement value length mismatch: expected {expected}, got {got}")]
     ValueLengthMismatch { expected: usize, got: usize },
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec;
+
+    use super::{StatementError, StatementField, StatementSchema};
+
+    #[test]
+    fn schema_concat_preserves_fields_and_checks_flattened_values() {
+        let left = StatementSchema::new(vec![
+            StatementField::Base,
+            StatementField::Extension { degree: 2 },
+        ])
+        .unwrap();
+        let right = StatementSchema::new(vec![StatementField::Base]).unwrap();
+        let combined = StatementSchema::concat(&left, &right).unwrap();
+
+        assert_eq!(
+            combined.fields(),
+            &[
+                StatementField::Base,
+                StatementField::Extension { degree: 2 },
+                StatementField::Base,
+            ]
+        );
+        assert_eq!(combined.base_len(), 4);
+        assert_eq!(combined.validate_values(&[1, 2, 3, 4]), Ok(()));
+        assert_eq!(
+            combined.validate_values(&[1, 2, 3]),
+            Err(StatementError::ValueLengthMismatch {
+                expected: 4,
+                got: 3,
+            })
+        );
+    }
+
+    #[test]
+    fn schema_rejects_flattened_length_overflow() {
+        assert_eq!(
+            StatementSchema::new(vec![
+                StatementField::Extension { degree: usize::MAX },
+                StatementField::Base,
+            ]),
+            Err(StatementError::LengthOverflow)
+        );
+    }
 }

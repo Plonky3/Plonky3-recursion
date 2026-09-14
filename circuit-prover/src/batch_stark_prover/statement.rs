@@ -240,7 +240,7 @@ where
     if base[0] != F::ONE {
         return Err(CircuitError::InvalidStatementConfiguration);
     }
-    Ok([(NpoTypeId::statement(), base)].into_iter().collect())
+    Ok(core::iter::once((NpoTypeId::statement(), base)).collect())
 }
 
 #[derive(Clone)]

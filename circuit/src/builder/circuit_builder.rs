@@ -99,6 +99,11 @@ pub struct CircuitBuilder<F: Field> {
     /// base dimensions. Those entries are served to the weaker entry points and refused here.
     base_bound_coeffs: HashSet<ExprId>,
 
+    /// Coefficient-aware recompose rows that normalize a value already represented by another
+    /// expression. Retained across cache hits/connect aliases so Statement source accounting does
+    /// not mistake an earlier normalization row for an independent producer of its source.
+    ext_recompose_normalization_ops: HashMap<ExprId, HashSet<NonPrimitiveOpId>>,
+
     /// `select(b, t, s)` outputs mapped to their `(b, t, s)` triple.
     ///
     /// Lets `decompose_ext_to_base_coeffs` handle EF selects coefficient-wise when at least one
@@ -160,6 +165,7 @@ where
             recompose_npo_enabled: false,
             ext_recompose_coeffs: HashMap::new(),
             base_bound_coeffs: HashSet::new(),
+            ext_recompose_normalization_ops: HashMap::new(),
             ext_select_sources: HashMap::new(),
             recompose_coeff_ctl_for_decompose_links: false,
             decompose_recompose_via_alu: false,
@@ -537,6 +543,9 @@ where
                     let before = self.non_primitive_ops.len();
                     let coeffs =
                         self.decompose_ext_to_base_coeffs_with_coeff_lookups::<BF>(expr)?;
+                    if let Some(cached_ops) = self.ext_recompose_normalization_ops.get(&expr) {
+                        normalization_ops.extend(cached_ops.iter().copied());
+                    }
                     normalization_ops.extend(
                         self.non_primitive_ops[before..]
                             .iter()
@@ -832,10 +841,13 @@ where
         if a == ExprId::ZERO || b == ExprId::ZERO {
             self.ext_recompose_coeffs.remove(&a);
             self.ext_recompose_coeffs.remove(&b);
+            self.ext_recompose_normalization_ops.remove(&a);
+            self.ext_recompose_normalization_ops.remove(&b);
             self.ext_select_sources.remove(&a);
             self.ext_select_sources.remove(&b);
         } else {
             Self::merge_provenance(&mut self.ext_recompose_coeffs, a, b, "recompose coeffs");
+            Self::merge_set_provenance(&mut self.ext_recompose_normalization_ops, a, b);
             Self::merge_provenance(&mut self.ext_select_sources, a, b, "ext_select_sources");
         }
         self.expr_builder.connect(a, b);
@@ -864,6 +876,21 @@ where
         if let Some(v) = merged {
             map.insert(a, v.clone());
             map.insert(b, v);
+        }
+    }
+
+    fn merge_set_provenance<V: Clone + Eq + core::hash::Hash>(
+        map: &mut HashMap<ExprId, HashSet<V>>,
+        a: ExprId,
+        b: ExprId,
+    ) {
+        let mut merged = map.remove(&a).unwrap_or_default();
+        if let Some(other) = map.remove(&b) {
+            merged.extend(other);
+        }
+        if !merged.is_empty() {
+            map.insert(a, merged.clone());
+            map.insert(b, merged);
         }
     }
 
@@ -1843,11 +1870,21 @@ where
         {
             return Err(CircuitBuilderError::CoefficientsNotBaseBound);
         }
+        let before = self.non_primitive_ops.len();
         let saved_alu = core::mem::replace(&mut self.decompose_recompose_via_alu, false);
         let saved_ctl = core::mem::replace(&mut self.recompose_coeff_ctl_for_decompose_links, true);
         let coeffs = self.decompose_ext_to_base_coeffs::<BF>(x);
         self.recompose_coeff_ctl_for_decompose_links = saved_ctl;
         self.decompose_recompose_via_alu = saved_alu;
+        if coeffs.is_ok() {
+            let normalization_ops = self.non_primitive_ops[before..]
+                .iter()
+                .map(|operation| operation.op_id);
+            self.ext_recompose_normalization_ops
+                .entry(x)
+                .or_default()
+                .extend(normalization_ops);
+        }
         coeffs
     }
 
@@ -4015,6 +4052,48 @@ mod proptests {
         ));
     }
 
+    #[derive(Clone, Debug)]
+    struct StatementOnlyHint;
+
+    impl HintExecutor<BabyBear> for StatementOnlyHint {
+        fn execute(
+            &self,
+            inputs: &[WitnessId],
+            outputs: &[WitnessId],
+            witness: &mut [Option<BabyBear>],
+        ) -> Result<(), CircuitError> {
+            assert!(inputs.is_empty());
+            assert_eq!(outputs.len(), 1);
+            witness[outputs[0].0 as usize] = Some(BabyBear::ONE);
+            Ok(())
+        }
+
+        fn boxed(&self) -> Box<dyn HintExecutor<BabyBear>> {
+            Box::new(self.clone())
+        }
+    }
+
+    /// A hint output consumed only by Statement remains unauthenticated and must be rejected.
+    #[test]
+    fn statement_rejects_a_hint_only_export() {
+        let mut builder = CircuitBuilder::<BabyBear>::new();
+        let hinted = builder
+            .push_unconstrained_op(vec![vec![]], 1, StatementOnlyHint, "statement-only hint")
+            .2[0]
+            .unwrap();
+        builder
+            .set_statement_exports::<BabyBear>(&[crate::StatementExport::Base(hinted)])
+            .unwrap();
+        let circuit = builder.build().unwrap();
+        assert!(matches!(
+            circuit.generate_preprocessed_columns::<1>(),
+            Err(CircuitError::UnsourcedStatementExport {
+                export_index: 0,
+                ..
+            })
+        ));
+    }
+
     /// Extension normalization cannot manufacture provenance for its original private source.
     #[test]
     fn statement_rejects_an_extension_sourced_only_by_its_own_normalization() {
@@ -4034,5 +4113,73 @@ mod proptests {
                 ..
             })
         ));
+    }
+
+    /// Pre-caching coefficient-aware normalization must not turn a raw private extension into an
+    /// independently sourced value when Statement later reuses those coefficient targets.
+    #[test]
+    fn statement_rejects_an_unsourced_extension_with_cached_normalization() {
+        type Ext4 = BinomialExtensionField<BabyBear, 4>;
+
+        let mut builder = CircuitBuilder::<Ext4>::new();
+        enable_recompose_tables(&mut builder);
+        let private = builder.alloc_private_input("cached unsourced extension statement");
+        builder
+            .decompose_ext_to_base_coeffs_with_coeff_lookups::<BabyBear>(private)
+            .unwrap();
+        builder
+            .set_statement_exports::<BabyBear>(&[crate::StatementExport::Extension(private)])
+            .unwrap();
+        let circuit = builder.build().unwrap();
+        assert!(matches!(
+            circuit.generate_preprocessed_columns::<4>(),
+            Err(CircuitError::UnsourcedStatementExport {
+                export_index: 0,
+                ..
+            })
+        ));
+    }
+
+    /// Excluding cached normalization rows must retain a genuine Public producer for the source.
+    #[test]
+    fn statement_accepts_a_sourced_extension_with_cached_normalization() {
+        type Ext4 = BinomialExtensionField<BabyBear, 4>;
+
+        let mut builder = CircuitBuilder::<Ext4>::new();
+        enable_recompose_tables(&mut builder);
+        let public = builder.public_input();
+        builder
+            .decompose_ext_to_base_coeffs_with_coeff_lookups::<BabyBear>(public)
+            .unwrap();
+        builder
+            .set_statement_exports::<BabyBear>(&[crate::StatementExport::Extension(public)])
+            .unwrap();
+        builder
+            .build()
+            .unwrap()
+            .generate_preprocessed_columns::<4>()
+            .expect("the Public row independently sources the cached extension");
+    }
+
+    /// A coefficient-aware recompose called as a constructor is a genuine NPO producer, not a
+    /// normalization of an existing value, and remains a supported Statement source.
+    #[test]
+    fn statement_accepts_an_npo_created_extension() {
+        type Ext4 = BinomialExtensionField<BabyBear, 4>;
+
+        let mut builder = CircuitBuilder::<Ext4>::new();
+        enable_recompose_tables(&mut builder);
+        let coefficients = builder.alloc_public_inputs(4, "extension coefficients");
+        let extension = builder
+            .recompose_base_coeffs_to_ext_with_coeff_lookups::<BabyBear>(&coefficients)
+            .unwrap();
+        builder
+            .set_statement_exports::<BabyBear>(&[crate::StatementExport::Extension(extension)])
+            .unwrap();
+        builder
+            .build()
+            .unwrap()
+            .generate_preprocessed_columns::<4>()
+            .expect("the coefficient-aware NPO independently sources its output");
     }
 }

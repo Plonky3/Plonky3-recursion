@@ -19,7 +19,7 @@ pub struct StatementAir<F, const D: usize> {
 }
 
 impl<F: Field + PrimeCharacteristicRing, const D: usize> StatementAir<F, D> {
-    pub fn new_with_preprocessed(
+    pub const fn new_with_preprocessed(
         public_len: usize,
         preprocessed: Vec<F>,
         min_height: usize,
