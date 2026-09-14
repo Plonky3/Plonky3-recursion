@@ -31,7 +31,8 @@ use super::{ObservableCommitment, VerificationError, recompose_quotient_from_chu
 use crate::challenger::CircuitChallenger;
 use crate::challenger_perm::ChallengerPermConfig;
 use crate::input_contract::stark_layout::{
-    CommitmentRole, InstanceLayout, MatrixRoute, NativeStarkLayout,
+    CommitmentRole, InstanceLayout, MatrixRoute, NativeStarkLayout, checked_power_of_two,
+    validate_preprocessed_metadata,
 };
 use crate::traits::{
     LookupMetadata, Recursive, RecursiveAir, RecursiveChallenger, RecursiveLookupGadget,
@@ -57,6 +58,168 @@ pub type PcsVerifierParams<SC, InputProof, OpeningProof, Comm> =
 
 /// Type-erased recursive AIR entry for non-primitive tables.
 pub type DynRecursionAirEntry<SC> = DynamicAirEntry<SC>;
+
+/// Derive and validate a batch STARK's native PCS opening layout before
+/// target allocation or transcript work. `lookups` must come from the trusted
+/// reconstructed AIRs, not from proof-supplied common data.
+pub(crate) fn plan_batch_native_layout<SC, A, LG>(
+    config: &SC,
+    airs: &[A],
+    proof: &p3_batch_stark::BatchProof<SC>,
+    public_value_counts: &[usize],
+    common: &CommonData<SC>,
+    lookups: &[Vec<Lookup<Val<SC>>>],
+    lookup_gadget: &LG,
+) -> Result<NativeStarkLayout<'static>, VerificationError>
+where
+    SC: StarkGenericConfig,
+    A: RecursiveAir<Val<SC>, SC::Challenge, LG>,
+    LG: RecursiveLookupGadget<SC::Challenge>,
+    Val<SC>: PrimeField64,
+    SC::Challenge: ExtensionField<Val<SC>> + PrimeCharacteristicRing,
+{
+    let instances = &proof.opened_values.instances;
+    let count = airs.len();
+    if count == 0
+        || instances.len() != count
+        || proof.degree_bits.len() != count
+        || proof.lookup_terminals.len() != count
+        || public_value_counts.len() != count
+        || lookups.len() != count
+    {
+        return Err(VerificationError::InvalidProofShape(
+            "batch-STARK trusted layout cardinality mismatch".into(),
+        ));
+    }
+    for (air, &actual) in airs.iter().zip(public_value_counts) {
+        if air.expected_public_input_count() != Some(actual) {
+            return Err(VerificationError::InvalidProofShape(
+                "batch-STARK public input count disagrees with reconstructed AIR".into(),
+            ));
+        }
+    }
+    for (index, &degree) in proof.degree_bits.iter().enumerate() {
+        validate_degree_bits(
+            Some(index),
+            degree,
+            config.is_zk(),
+            config.pcs().log_max_lde_height(),
+        )
+        .map_err(|error| VerificationError::InvalidProofShape(error.to_string()))?;
+    }
+    if let Some(global) = &common.preprocessed {
+        let metadata = global
+            .instances
+            .iter()
+            .map(|entry| {
+                entry
+                    .as_ref()
+                    .map(|meta| (meta.matrix_index, meta.width, meta.degree_bits))
+            })
+            .collect::<Vec<_>>();
+        validate_preprocessed_metadata(&metadata, &global.matrix_to_instance, &proof.degree_bits)
+            .map_err(|error| VerificationError::InvalidProofShape(error.to_string()))?;
+    }
+
+    let mut planned = Vec::with_capacity(count);
+    for (index, ((air, opened), lookup_set)) in airs.iter().zip(instances).zip(lookups).enumerate()
+    {
+        let ext_log = proof.degree_bits[index];
+        let base_log = ext_log.checked_sub(config.is_zk()).ok_or_else(|| {
+            VerificationError::InvalidProofShape(
+                "extended degree smaller than zk adjustment".into(),
+            )
+        })?;
+        let pre_width = common
+            .preprocessed
+            .as_ref()
+            .and_then(|global| global.instances[index].as_ref().map(|meta| meta.width))
+            .unwrap_or(0);
+        let base = &opened.base_opened_values;
+        let permutation_width = if lookup_set.is_empty() {
+            0
+        } else {
+            lookup_set
+                .len()
+                .checked_add(1)
+                .and_then(|width| width.checked_mul(SC::Challenge::DIMENSION))
+                .ok_or_else(|| {
+                    VerificationError::InvalidProofShape(
+                        "packed permutation width overflows".into(),
+                    )
+                })?
+        };
+        let log_quotient = air.get_log_num_quotient_chunks(
+            pre_width,
+            checked_power_of_two(base_log)
+                .map_err(|error| VerificationError::InvalidProofShape(error.to_string()))?,
+            lookup_set,
+            config.is_zk(),
+            lookup_gadget,
+        );
+        let quotient_chunks =
+            checked_power_of_two(log_quotient.checked_add(config.is_zk()).ok_or_else(|| {
+                VerificationError::InvalidProofShape("quotient log overflows".into())
+            })?)
+            .map_err(|error| VerificationError::InvalidProofShape(error.to_string()))?;
+        if base.trace_local.len() != air.width()
+            || base.trace_next.as_ref().map_or(0, Vec::len)
+                != air.width() * usize::from(air.opens_trace_next())
+            || base.preprocessed_local.as_ref().map_or(0, Vec::len) != pre_width
+            || base.preprocessed_next.as_ref().map_or(0, Vec::len)
+                != pre_width * usize::from(air.opens_preprocessed_next())
+            || base.quotient_chunks.len() != quotient_chunks
+            || base
+                .quotient_chunks
+                .iter()
+                .any(|chunk| chunk.len() != SC::Challenge::DIMENSION)
+            || opened.permutation_local.len() != permutation_width
+            || opened.permutation_next.len() != permutation_width
+            || proof.lookup_terminals[index].is_some() != air.declares_interactions(pre_width)
+        {
+            return Err(VerificationError::InvalidProofShape(
+                "batch-STARK openings disagree with reconstructed AIR metadata".into(),
+            ));
+        }
+        planned.push(InstanceLayout {
+            ext_log,
+            base_log,
+            challenge_width: SC::Challenge::DIMENSION,
+            trace_width: air.width(),
+            trace_next: air.opens_trace_next(),
+            pre_width,
+            pre_next: air.opens_preprocessed_next(),
+            quotient_log: log_quotient,
+            quotient_chunks,
+            permutation_width,
+        });
+    }
+    let has_permutation = planned
+        .iter()
+        .any(|instance| instance.permutation_width != 0);
+    if proof.commitments.permutation.is_some() != has_permutation
+        || proof.commitments.random.is_some() != SC::Pcs::ZK
+        || instances
+            .iter()
+            .any(|instance| instance.base_opened_values.random.is_some() != SC::Pcs::ZK)
+    {
+        return Err(VerificationError::InvalidProofShape(
+            "batch-STARK commitment presence disagrees with the trusted layout".into(),
+        ));
+    }
+    NativeStarkLayout::new(
+        planned,
+        common
+            .preprocessed
+            .as_ref()
+            .map_or(&[][..], |global| global.matrix_to_instance.as_slice()),
+        proof.commitments.random.is_some(),
+        common.preprocessed.is_some(),
+        has_permutation,
+    )
+    .map(|layout| layout.to_owned_layout())
+    .map_err(|error| VerificationError::InvalidProofShape(error.to_string()))
+}
 
 /// Wrapper enum for heterogeneous circuit table AIRs used by circuit-prover tables.
 pub enum CircuitTablesAir<SC: StarkGenericConfig, const D: usize> {
@@ -541,24 +704,18 @@ where
         )));
     }
     if let Some(global) = &common.preprocessed {
-        if global.instances.instances.len() != airs.len() {
-            return Err(VerificationError::InvalidProofShape(format!(
-                "common-data preprocessed instance metadata length must equal number of AIR \
-                 instances: expected {}, got {}",
-                airs.len(),
-                global.instances.instances.len()
-            )));
-        }
-        if let Some(&bad) = global
-            .matrix_to_instance
+        let metadata = global
+            .instances
+            .instances
             .iter()
-            .find(|&&idx| idx >= airs.len())
-        {
-            return Err(VerificationError::InvalidProofShape(format!(
-                "common-data matrix_to_instance entry {bad} out of bounds for {} instances",
-                airs.len()
-            )));
-        }
+            .map(|entry| {
+                entry
+                    .as_ref()
+                    .map(|meta| (meta.matrix_index, meta.width, meta.degree_bits))
+            })
+            .collect::<Vec<_>>();
+        validate_preprocessed_metadata(&metadata, &global.matrix_to_instance, degree_bits)
+            .map_err(|error| VerificationError::InvalidProofShape(error.to_string()))?;
     }
 
     let all_lookups = &common.lookups;

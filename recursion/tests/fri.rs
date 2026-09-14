@@ -562,6 +562,31 @@ fn run_fri_test(setup: FriSetup, build_only: bool) {
         &fri_params,
     );
 
+    let max_batch_log = group_sizes
+        .iter()
+        .filter_map(|batch| batch.iter().copied().max())
+        .max()
+        .unwrap_or(0) as usize;
+    if log_final_poly_len == 0
+        && group_sizes
+            .iter()
+            .filter_map(|batch| batch.iter().copied().max())
+            .any(|height| height as usize != max_batch_log)
+    {
+        assert!(
+            group_sizes.iter().any(|batch| {
+                let local = batch.iter().copied().max().unwrap_or(0) as usize;
+                local < max_batch_log
+                    && result_1.index_bits_per_query.iter().any(|bits| {
+                        bits[..max_batch_log - local]
+                            .iter()
+                            .any(|bit| *bit != Challenge::ZERO)
+                    })
+            }),
+            "unequal-height fixture must exercise a nonzero discarded low query bit"
+        );
+    }
+
     // Shape checks (must match so we can reuse one circuit)
     assert_eq!(result_1.num_phases, result_2.num_phases);
     assert_eq!(result_1.log_max_height, result_2.log_max_height);

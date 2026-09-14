@@ -7,7 +7,7 @@ use alloc::{format, vec};
 
 use p3_circuit::{CircuitBuilder, CircuitRunner, NonPrimitiveOpId};
 use p3_circuit_prover::batch_stark_prover::{
-    RecomposeAirBuilder, RecomposeProver, poseidon1_air_builders_d5,
+    RecomposeAirBuilder, RecomposeProver, lookups_for_circuit_table_air, poseidon1_air_builders_d5,
     poseidon1_air_builders_for_configs, poseidon1_preprocessor, poseidon1_table_provers_d5,
     poseidon2_air_builders_d5, poseidon2_air_builders_for_configs, poseidon2_preprocessor,
     poseidon2_table_provers_d5, recompose_preprocessor,
@@ -22,14 +22,23 @@ use p3_circuit_prover::{
 use p3_commit::Pcs;
 use p3_field::extension::BinomiallyExtendable;
 use p3_field::{Algebra, BasedVectorSpace, ExtensionField, PrimeCharacteristicRing, PrimeField64};
+use p3_lookup::Lookup;
 use p3_lookup::logup::LogUpGadget;
 use p3_uni_stark::{StarkGenericConfig, SymbolicExpressionExt, Val};
 
+use crate::backend::CheckedVerifierResult;
+use crate::backend::context::{
+    StarkLayoutPolicy, StarkPackingAuthority, capture_stark_authority, input_caps,
+    validate_stark_replacement,
+};
 use crate::backend::transcript::replay_recursion_input_transcript;
 use crate::generation::OpeningTranscript;
 use crate::input_contract::stark::validate_batch_proof_native;
 use crate::ops::{Poseidon1Config, Poseidon2Config};
-use crate::pcs::fri::{FriVerifierParams, NativeFriParams};
+use crate::pcs::fri::{
+    CheckedFriCommitment, CheckedFriOpening, FriVerifierParams, NativeFriParams,
+    ValidatedFriContext,
+};
 use crate::prepared::input::{capture_builtin_input_contract, validate_builtin_prepared_input};
 use crate::prepared::{PreparedInput, PreparedPcsRecursionBackend};
 use crate::public_inputs::{BatchStarkVerifierInputsBuilder, StarkVerifierInputsBuilder};
@@ -37,6 +46,7 @@ use crate::recursion::{PcsRecursionBackend, RecursionInput, VerifierCircuitResul
 use crate::traits::{CheckedRecursive, PreparedRecursive, RecursiveAir};
 use crate::verifier::{
     InputResourceUsage, ObservableCommitment, VerificationError, VerifierLimits,
+    plan_batch_native_layout, plan_uni_native_layout, reconstruct_batch_tables,
     verify_p3_batch_proof_circuit, verify_p3_uni_proof_circuit,
 };
 use crate::{ChallengerPermConfig, Recursive, RecursivePcs};
@@ -207,14 +217,14 @@ where
                 usage.scalar_elements,
                 proof.proof.degree_bits.len(),
             )?;
-            if let Some(&degree) = proof.proof.degree_bits.iter().max() {
-                if degree > limits.max_log_domain_or_degree {
-                    return Err(VerificationError::ResourceLimitExceeded {
-                        component: "log domain or degree",
-                        actual: degree,
-                        limit: limits.max_log_domain_or_degree,
-                    });
-                }
+            if let Some(&degree) = proof.proof.degree_bits.iter().max()
+                && degree > limits.max_log_domain_or_degree
+            {
+                return Err(VerificationError::ResourceLimitExceeded {
+                    component: "log domain or degree",
+                    actual: degree,
+                    limit: limits.max_log_domain_or_degree,
+                });
             }
         }
     }
@@ -248,14 +258,14 @@ where
         PreparedInput::BatchStark { proof, .. } => {
             usage.instances = proof.proof.opened_values.instances.len();
             usage.metadata_entries = proof.non_primitives.len();
-            if let Some(&degree) = proof.proof.degree_bits.iter().max() {
-                if degree > limits.max_log_domain_or_degree {
-                    return Err(VerificationError::ResourceLimitExceeded {
-                        component: "log domain or degree",
-                        actual: degree,
-                        limit: limits.max_log_domain_or_degree,
-                    });
-                }
+            if let Some(&degree) = proof.proof.degree_bits.iter().max()
+                && degree > limits.max_log_domain_or_degree
+            {
+                return Err(VerificationError::ResourceLimitExceeded {
+                    component: "log domain or degree",
+                    actual: degree,
+                    limit: limits.max_log_domain_or_degree,
+                });
             }
         }
     }
@@ -310,7 +320,7 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
 
     /// Override the finite verifier-owned operational policy.
     #[must_use]
-    pub fn with_limits(mut self, limits: VerifierLimits) -> Self {
+    pub const fn with_limits(mut self, limits: VerifierLimits) -> Self {
         self.limits = limits;
         self
     }
@@ -453,6 +463,154 @@ pub struct FriRecursionBackendD5<
     pub(crate) FriRecursionBackend<WIDTH, RATE, C>,
 );
 
+fn plan_fri_batch_for_degree<SC, A, const TRACE_D: usize>(
+    config: &SC,
+    prev: &RecursionInput<'_, SC, A>,
+    provers: &[Box<dyn TableProver<SC>>],
+) -> Result<crate::input_contract::stark_layout::NativeStarkLayout<'static>, VerificationError>
+where
+    SC: FriRecursionConfig + 'static,
+    A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
+    Val<SC>: PrimeField64,
+    SC::Challenge: ExtensionField<Val<SC>> + PrimeCharacteristicRing + ExtractBinomialW<Val<SC>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        From<p3_uni_stark::SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+    SC::Pcs: RecursivePcs<
+            SC,
+            SC::InputProof,
+            SC::OpeningProof,
+            SC::Commitment,
+            <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain,
+        >,
+{
+    let RecursionInput::BatchStark {
+        proof,
+        common_data,
+        table_public_inputs,
+    } = prev
+    else {
+        unreachable!()
+    };
+    let tables = reconstruct_batch_tables::<SC, TRACE_D>(config, proof, provers)?;
+    if tables.public_values.as_slice() != table_public_inputs {
+        return Err(VerificationError::InvalidProofShape(
+            "batch table public inputs disagree with reconstructed AIR metadata".into(),
+        ));
+    }
+    let lookups: Vec<Vec<Lookup<Val<SC>>>> = tables
+        .airs
+        .iter()
+        .zip(&tables.trace_lens)
+        .map(|(air, &trace_len)| {
+            lookups_for_circuit_table_air::<SC, TRACE_D>(
+                &air.to_table_air(),
+                trace_len,
+                config.is_zk(),
+            )
+            .to_vec()
+        })
+        .collect();
+    let public_counts = table_public_inputs.iter().map(Vec::len).collect::<Vec<_>>();
+    plan_batch_native_layout(
+        config,
+        &tables.airs,
+        &proof.proof,
+        &public_counts,
+        common_data,
+        &lookups,
+        &LogUpGadget,
+    )
+}
+
+fn preflight_fri_context<SC, A>(
+    config: &SC,
+    prev: &RecursionInput<'_, SC, A>,
+    provers: &[Box<dyn TableProver<SC>>],
+) -> Result<
+    (
+        ValidatedFriContext,
+        StarkPackingAuthority<Val<SC>>,
+        StarkLayoutPolicy,
+    ),
+    VerificationError,
+>
+where
+    SC: FriRecursionConfig + 'static,
+    A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
+    Val<SC>: PrimeField64,
+    SC::Challenge: BasedVectorSpace<Val<SC>>
+        + ExtensionField<Val<SC>>
+        + PrimeCharacteristicRing
+        + ExtractBinomialW<Val<SC>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        From<p3_uni_stark::SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+    SC::Commitment: CheckedFriCommitment<SC::Challenge>,
+    SC::OpeningProof: CheckedFriOpening<SC::Challenge, SC::Commitment>,
+    SC::Pcs: RecursivePcs<
+            SC,
+            SC::InputProof,
+            SC::OpeningProof,
+            SC::Commitment,
+            <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain,
+            VerifierParams = FriVerifierParams,
+        >,
+{
+    crate::prepared::input::validate_builtin_input_raw::<SC, A, SC::Commitment, SC::OpeningProof>(
+        prev,
+    )?;
+    let native = config.native_fri_validation_params().ok_or_else(|| {
+        VerificationError::InvalidProofShape(
+            "built-in FRI recursion requires native validation parameters".into(),
+        )
+    })?;
+    let layout = match prev {
+        RecursionInput::UniStark {
+            proof,
+            air,
+            public_inputs,
+            preprocessed_commit,
+        } => plan_uni_native_layout(
+            config,
+            *air,
+            proof,
+            public_inputs.len(),
+            preprocessed_commit.as_ref(),
+        )?,
+        RecursionInput::BatchStark { proof, .. } => match proof.ext_degree {
+            1 => plan_fri_batch_for_degree::<SC, A, 1>(config, prev, provers)?,
+            2 => plan_fri_batch_for_degree::<SC, A, 2>(config, prev, provers)?,
+            4 => plan_fri_batch_for_degree::<SC, A, 4>(config, prev, provers)?,
+            5 => plan_fri_batch_for_degree::<SC, A, 5>(config, prev, provers)?,
+            degree => {
+                return Err(VerificationError::InvalidProofShape(format!(
+                    "unsupported batch proof ext_degree {degree}"
+                )));
+            }
+        },
+    };
+    let caps = input_caps(prev, &layout)?;
+    let opening = match prev {
+        RecursionInput::UniStark { proof, .. } => &proof.opening_proof,
+        RecursionInput::BatchStark { proof, .. } => &proof.proof.opening_proof,
+    };
+    let context = <SC::OpeningProof as CheckedFriOpening<
+        SC::Challenge,
+        SC::Commitment,
+    >>::validate_fri_context(
+        opening,
+        &native,
+        config.pcs_verifier_params(),
+        layout.opening_view(),
+        &caps,
+    )?;
+    let authority = capture_stark_authority(prev);
+    let policy = StarkLayoutPolicy {
+        is_zk: config.is_zk(),
+        log_max_lde_height: config.pcs().log_max_lde_height(),
+    };
+    Ok((context, authority, policy))
+}
+
 impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
     FriRecursionBackendD5<WIDTH, RATE, C>
 {
@@ -494,6 +652,90 @@ where
         Vec<NonPrimitiveOpId>,
         VerifierLimits,
     ),
+}
+
+/// Checked built-in FRI result. The raw [`FriVerifierResult`] remains an
+/// explicitly low-level result without retained contextual authority.
+pub type CheckedFriVerifierResult<SC> =
+    CheckedVerifierResult<FriVerifierResult<SC>, ValidatedFriContext, Val<SC>>;
+
+impl<SC, A> VerifierCircuitResult<SC, A> for CheckedFriVerifierResult<SC>
+where
+    SC: FriRecursionConfig,
+    SC::Pcs: RecursivePcs<
+            SC,
+            SC::InputProof,
+            SC::OpeningProof,
+            SC::Commitment,
+            <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain,
+            VerifierParams = FriVerifierParams,
+        >,
+    SC::Commitment: CheckedFriCommitment<SC::Challenge>,
+    SC::OpeningProof: CheckedFriOpening<SC::Challenge, SC::Commitment>,
+    A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
+    Val<SC>: PrimeField64,
+    SC::Challenge: BasedVectorSpace<Val<SC>>
+        + From<Val<SC>>
+        + ExtensionField<Val<SC>>
+        + PrimeCharacteristicRing,
+{
+    fn pack_public_inputs(
+        &self,
+        prev: &RecursionInput<'_, SC, A>,
+    ) -> Result<Vec<SC::Challenge>, VerificationError> {
+        self.validate_replacement(prev)?;
+        self.inner.pack_public_inputs(prev)
+    }
+
+    fn pack_private_inputs(
+        &self,
+        prev: &RecursionInput<'_, SC, A>,
+    ) -> Result<Vec<SC::Challenge>, VerificationError> {
+        self.validate_replacement(prev)?;
+        self.inner.pack_private_inputs(prev)
+    }
+
+    fn op_ids(&self) -> &[NonPrimitiveOpId] {
+        <FriVerifierResult<SC> as VerifierCircuitResult<SC, A>>::op_ids(&self.inner)
+    }
+}
+
+impl<SC> CheckedFriVerifierResult<SC>
+where
+    SC: FriRecursionConfig,
+    SC::Pcs: RecursivePcs<
+            SC,
+            SC::InputProof,
+            SC::OpeningProof,
+            SC::Commitment,
+            <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain,
+            VerifierParams = FriVerifierParams,
+        >,
+    SC::Commitment: CheckedFriCommitment<SC::Challenge>,
+    SC::OpeningProof: CheckedFriOpening<SC::Challenge, SC::Commitment>,
+{
+    fn validate_replacement<A>(
+        &self,
+        prev: &RecursionInput<'_, SC, A>,
+    ) -> Result<(), VerificationError>
+    where
+        A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
+        Val<SC>: PrimeField64,
+        SC::Challenge: ExtensionField<Val<SC>> + PrimeCharacteristicRing,
+    {
+        validate_stark_replacement(&self.stark, self.pcs.layout(), self.policy, prev)?;
+        let caps = input_caps(prev, self.pcs.layout())?;
+        let opening = match prev {
+            RecursionInput::UniStark { proof, .. } => &proof.opening_proof,
+            RecursionInput::BatchStark { proof, .. } => &proof.proof.opening_proof,
+        };
+        <SC::OpeningProof as CheckedFriOpening<SC::Challenge, SC::Commitment>>::validate_fri_replacement(
+            opening,
+            &self.pcs,
+            self.pcs.layout().opening_view(),
+            &caps,
+        )
+    }
 }
 
 impl<SC, A> VerifierCircuitResult<SC, A> for FriVerifierResult<SC>
@@ -609,7 +851,7 @@ fn build_verifier_circuit_impl<SC, A, const WIDTH: usize, const RATE: usize, C>(
     config: &SC,
     circuit: &mut CircuitBuilder<SC::Challenge>,
     non_primitive_provers: &[Box<dyn TableProver<SC>>],
-) -> Result<FriVerifierResult<SC>, VerificationError>
+) -> Result<CheckedFriVerifierResult<SC>, VerificationError>
 where
     SC: FriRecursionConfig + Send + Sync + 'static,
     A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
@@ -629,8 +871,13 @@ where
             SC::OpeningProof,
             SC::Commitment,
             <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain,
+            VerifierParams = FriVerifierParams,
         >,
+    SC::Commitment: CheckedFriCommitment<SC::Challenge>,
+    SC::OpeningProof: CheckedFriOpening<SC::Challenge, SC::Commitment>,
 {
+    let (pcs_context, stark_authority, policy) =
+        preflight_fri_context(config, prev, non_primitive_provers)?;
     match prev {
         RecursionInput::UniStark {
             proof,
@@ -664,10 +911,11 @@ where
                 config.pcs_verifier_params(),
                 backend.challenger_perm_config,
             )?;
-            Ok(FriVerifierResult::UniStark(
-                verifier_inputs,
-                op_ids,
-                backend.limits,
+            Ok(CheckedVerifierResult::new(
+                FriVerifierResult::UniStark(verifier_inputs, op_ids, backend.limits),
+                pcs_context,
+                stark_authority,
+                policy,
             ))
         }
         RecursionInput::BatchStark {
@@ -765,10 +1013,11 @@ where
                     )));
                 }
             };
-            Ok(FriVerifierResult::BatchStark(
-                verifier_inputs,
-                op_ids,
-                backend.limits,
+            Ok(CheckedVerifierResult::new(
+                FriVerifierResult::BatchStark(verifier_inputs, op_ids, backend.limits),
+                pcs_context,
+                stark_authority,
+                policy,
             ))
         }
     }
@@ -800,17 +1049,23 @@ where
             <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain,
             VerifierParams = FriVerifierParams,
         >,
+    SC::Commitment: CheckedFriCommitment<SC::Challenge>,
+    SC::OpeningProof: CheckedFriOpening<SC::Challenge, SC::Commitment>,
 {
-    type VerifierResult = FriVerifierResult<SC>;
+    type VerifierResult = CheckedFriVerifierResult<SC>;
 
     fn validate_input(
         &self,
-        _config: &SC,
+        config: &SC,
         prev: &RecursionInput<'_, SC, A>,
     ) -> Result<(), VerificationError> {
-        crate::prepared::input::validate_builtin_input_raw::<SC, A, SC::Commitment, SC::OpeningProof>(
-            prev,
-        )
+        let provers = match prev {
+            RecursionInput::BatchStark { proof, .. } => {
+                PcsRecursionBackend::<SC, A, 2>::non_primitive_provers(self, proof.ext_degree)
+            }
+            _ => Vec::new(),
+        };
+        preflight_fri_context(config, prev, &provers).map(|_| ())
     }
 
     fn preflight_input(
@@ -837,6 +1092,7 @@ where
         config: &SC,
         circuit: &mut CircuitBuilder<SC::Challenge>,
     ) -> Result<Self::VerifierResult, VerificationError> {
+        preflight_basic_fri_input(&self.0.limits, prev)?;
         let provers = match prev {
             RecursionInput::BatchStark { proof, .. } => {
                 PcsRecursionBackend::<SC, A, 2>::non_primitive_provers(self, proof.ext_degree)
@@ -866,6 +1122,30 @@ where
         SC::with_fri_opening_proof(prev, move |opening_proof| {
             SC::set_fri_private_data(config, runner, op_ids, opening_proof, transcript)
         })
+    }
+
+    fn set_private_data_for_result(
+        &self,
+        config: &SC,
+        runner: &mut CircuitRunner<'_, SC::Challenge>,
+        result: &Self::VerifierResult,
+        prev: &RecursionInput<'_, SC, A>,
+    ) -> Result<(), &'static str> {
+        if config.native_fri_validation_params() != Some(result.pcs.native_params())
+            || config.pcs_verifier_params() != &result.pcs.recursive_params()
+        {
+            return Err("FRI verifier configuration differs from retained authority");
+        }
+        result
+            .validate_replacement(prev)
+            .map_err(|_| "FRI replacement input failed retained contextual validation")?;
+        <Self as PcsRecursionBackend<SC, A, 2>>::set_private_data(
+            self,
+            config,
+            runner,
+            <Self::VerifierResult as VerifierCircuitResult<SC, A>>::op_ids(result),
+            prev,
+        )
     }
 
     fn non_primitive_preprocessors(&self) -> Vec<Box<dyn NpoPreprocessor<Val<SC>>>> {
@@ -969,17 +1249,23 @@ where
             <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain,
             VerifierParams = FriVerifierParams,
         >,
+    SC::Commitment: CheckedFriCommitment<SC::Challenge>,
+    SC::OpeningProof: CheckedFriOpening<SC::Challenge, SC::Commitment>,
 {
-    type VerifierResult = FriVerifierResult<SC>;
+    type VerifierResult = CheckedFriVerifierResult<SC>;
 
     fn validate_input(
         &self,
-        _config: &SC,
+        config: &SC,
         prev: &RecursionInput<'_, SC, A>,
     ) -> Result<(), VerificationError> {
-        crate::prepared::input::validate_builtin_input_raw::<SC, A, SC::Commitment, SC::OpeningProof>(
-            prev,
-        )
+        let provers = match prev {
+            RecursionInput::BatchStark { proof, .. } => {
+                PcsRecursionBackend::<SC, A, 4>::non_primitive_provers(self, proof.ext_degree)
+            }
+            _ => Vec::new(),
+        };
+        preflight_fri_context(config, prev, &provers).map(|_| ())
     }
 
     fn preflight_input(
@@ -1006,6 +1292,7 @@ where
         config: &SC,
         circuit: &mut CircuitBuilder<SC::Challenge>,
     ) -> Result<Self::VerifierResult, VerificationError> {
+        preflight_basic_fri_input(&self.0.limits, prev)?;
         let provers = match prev {
             RecursionInput::BatchStark { proof, .. } => {
                 PcsRecursionBackend::<SC, A, 4>::non_primitive_provers(self, proof.ext_degree)
@@ -1035,6 +1322,30 @@ where
         SC::with_fri_opening_proof(prev, move |opening_proof| {
             SC::set_fri_private_data(config, runner, op_ids, opening_proof, transcript)
         })
+    }
+
+    fn set_private_data_for_result(
+        &self,
+        config: &SC,
+        runner: &mut CircuitRunner<'_, SC::Challenge>,
+        result: &Self::VerifierResult,
+        prev: &RecursionInput<'_, SC, A>,
+    ) -> Result<(), &'static str> {
+        if config.native_fri_validation_params() != Some(result.pcs.native_params())
+            || config.pcs_verifier_params() != &result.pcs.recursive_params()
+        {
+            return Err("FRI verifier configuration differs from retained authority");
+        }
+        result
+            .validate_replacement(prev)
+            .map_err(|_| "FRI replacement input failed retained contextual validation")?;
+        <Self as PcsRecursionBackend<SC, A, 4>>::set_private_data(
+            self,
+            config,
+            runner,
+            <Self::VerifierResult as VerifierCircuitResult<SC, A>>::op_ids(result),
+            prev,
+        )
     }
 
     fn non_primitive_preprocessors(&self) -> Vec<Box<dyn NpoPreprocessor<Val<SC>>>> {
@@ -1138,17 +1449,23 @@ where
             <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain,
             VerifierParams = FriVerifierParams,
         >,
+    SC::Commitment: CheckedFriCommitment<SC::Challenge>,
+    SC::OpeningProof: CheckedFriOpening<SC::Challenge, SC::Commitment>,
 {
-    type VerifierResult = FriVerifierResult<SC>;
+    type VerifierResult = CheckedFriVerifierResult<SC>;
 
     fn validate_input(
         &self,
-        _config: &SC,
+        config: &SC,
         prev: &RecursionInput<'_, SC, A>,
     ) -> Result<(), VerificationError> {
-        crate::prepared::input::validate_builtin_input_raw::<SC, A, SC::Commitment, SC::OpeningProof>(
-            prev,
-        )
+        let provers = match prev {
+            RecursionInput::BatchStark { proof, .. } => {
+                PcsRecursionBackend::<SC, A, 5>::non_primitive_provers(self, proof.ext_degree)
+            }
+            _ => Vec::new(),
+        };
+        preflight_fri_context(config, prev, &provers).map(|_| ())
     }
 
     fn preflight_input(
@@ -1175,6 +1492,7 @@ where
         config: &SC,
         circuit: &mut CircuitBuilder<SC::Challenge>,
     ) -> Result<Self::VerifierResult, VerificationError> {
+        preflight_basic_fri_input(&self.0.limits, prev)?;
         let provers = match prev {
             RecursionInput::BatchStark { proof, .. } => {
                 PcsRecursionBackend::<SC, A, 5>::non_primitive_provers(self, proof.ext_degree)
@@ -1204,6 +1522,30 @@ where
         SC::with_fri_opening_proof(prev, move |opening_proof| {
             SC::set_fri_private_data(config, runner, op_ids, opening_proof, transcript)
         })
+    }
+
+    fn set_private_data_for_result(
+        &self,
+        config: &SC,
+        runner: &mut CircuitRunner<'_, SC::Challenge>,
+        result: &Self::VerifierResult,
+        prev: &RecursionInput<'_, SC, A>,
+    ) -> Result<(), &'static str> {
+        if config.native_fri_validation_params() != Some(result.pcs.native_params())
+            || config.pcs_verifier_params() != &result.pcs.recursive_params()
+        {
+            return Err("FRI verifier configuration differs from retained authority");
+        }
+        result
+            .validate_replacement(prev)
+            .map_err(|_| "FRI replacement input failed retained contextual validation")?;
+        <Self as PcsRecursionBackend<SC, A, 5>>::set_private_data(
+            self,
+            config,
+            runner,
+            <Self::VerifierResult as VerifierCircuitResult<SC, A>>::op_ids(result),
+            prev,
+        )
     }
 
     fn non_primitive_preprocessors(&self) -> Vec<Box<dyn NpoPreprocessor<Val<SC>>>> {
@@ -1290,6 +1632,8 @@ macro_rules! impl_prepared_fri_backend {
                     <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain,
                     VerifierParams = FriVerifierParams,
                 >,
+            SC::Commitment: CheckedFriCommitment<SC::Challenge>,
+            SC::OpeningProof: CheckedFriOpening<SC::Challenge, SC::Commitment>,
             SC::Commitment: PreparedRecursive<SC::Challenge>,
             SC::OpeningProof: PreparedRecursive<SC::Challenge>,
         {
@@ -1304,11 +1648,22 @@ macro_rules! impl_prepared_fri_backend {
                 config: &SC,
                 source: &RecursionInput<'_, SC, A>,
             ) -> Result<Self::InputContract, VerificationError> {
+                preflight_basic_fri_input(&self.0.limits, source)?;
+                let provers = match source {
+                    RecursionInput::BatchStark { proof, .. } => {
+                        PcsRecursionBackend::<SC, A, $d>::non_primitive_provers(
+                            self,
+                            proof.ext_degree,
+                        )
+                    }
+                    _ => Vec::new(),
+                };
+                preflight_fri_context(config, source, &provers)?;
                 capture_builtin_input_contract::<SC, A, SC::Commitment, SC::OpeningProof>(
                     config,
                     source,
                     false,
-                    |degree| PcsRecursionBackend::<SC, A, $d>::non_primitive_provers(self, degree),
+                    |_| provers,
                 )
             }
 

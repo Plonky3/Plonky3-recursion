@@ -57,6 +57,7 @@ use crate::traits::RecursiveChallenger;
 /// order they were verified (initial-round queries first, then per-round, then
 /// final-round queries).  The caller must supply private path data for each ID.
 ///
+#[allow(clippy::too_many_arguments)]
 fn verify_whir_circuit_engine<BF, EF, Ch>(
     circuit: &mut CircuitBuilder<EF>,
     challenger: &mut Ch,

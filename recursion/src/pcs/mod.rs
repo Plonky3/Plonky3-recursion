@@ -21,3 +21,4 @@ pub use mmcs::{
     verify_batch_circuit, verify_batch_circuit_arity4, verify_batch_circuit_from_extension_opened,
     verify_batch_circuit_from_extension_opened_arity4,
 };
+pub use whir::{CheckedWhirOpening, ValidatedWhirContext};

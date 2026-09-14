@@ -1086,14 +1086,12 @@ where
             .map(|(domain, _)| domain.log_size() + log_blowup)
             .max()
             .unwrap_or(0);
-        if batch_log_height > log_global_max_height {
-            return Err(VerificationError::InvalidProofShape(format!(
-                "FRI input batch {batch_idx} height {batch_log_height} exceeds global height \
-                 {log_global_max_height}"
-            )));
-        }
-        let bits_reduced = log_global_max_height - batch_log_height;
-        let batch_index_bits = &index_bits[bits_reduced..];
+        let batch_index_bits = local_mmcs_index_bits(
+            index_bits,
+            batch_log_height,
+            log_global_max_height,
+            batch_idx,
+        )?;
 
         // Recursive MMCS verification for this batch.
         {
@@ -1311,6 +1309,21 @@ where
     Ok((reduced_list, mmcs_op_ids))
 }
 
+fn local_mmcs_index_bits(
+    global_bits: &[Target],
+    local_log_height: usize,
+    global_log_height: usize,
+    batch: usize,
+) -> Result<&[Target], VerificationError> {
+    if global_bits.len() != global_log_height || local_log_height > global_log_height {
+        return Err(VerificationError::InvalidProofShape(format!(
+            "FRI input batch {batch} height {local_log_height} is incompatible with global height \
+             {global_log_height}"
+        )));
+    }
+    Ok(&global_bits[global_log_height - local_log_height..])
+}
+
 /// Shared implementation for the production FRI verifier.
 ///
 /// Supports variable-arity FRI folding: each phase may fold by a different arity
@@ -1401,7 +1414,7 @@ where
     }
 
     let log_max_height = index_bits_per_query[0].len();
-    if log_max_height > F::TWO_ADICITY {
+    if log_max_height > F::TWO_ADICITY || log_max_height >= usize::BITS as usize {
         return Err(VerificationError::InvalidProofShape(format!(
             "FRI global query height {log_max_height} exceeds field two-adicity {}",
             F::TWO_ADICITY
@@ -1420,6 +1433,16 @@ where
         return Err(VerificationError::InvalidProofShape(
             "FRI must have at least one fold phase".to_string(),
         ));
+    }
+
+    // `open_input` materializes `2^(domain log + blowup)` for every matrix.
+    // Reject fabricated target metadata whose addition or shift would exceed
+    // the host word before the builder is touched.
+    for (commitment, matrices) in commitments_with_opening_points {
+        let _ = commitment;
+        for (domain, _) in matrices {
+            checked_input_lde_log(domain.log_size(), log_blowup)?;
+        }
     }
 
     // The global FRI schedule (`log_arities`) and each query's commit-phase openings are
@@ -1759,6 +1782,17 @@ where
     Ok(all_mmcs_op_ids)
 }
 
+fn checked_input_lde_log(log_domain: usize, log_blowup: usize) -> Result<usize, VerificationError> {
+    log_domain
+        .checked_add(log_blowup)
+        .filter(|&height| height < usize::BITS as usize)
+        .ok_or_else(|| {
+            VerificationError::InvalidProofShape(
+                "FRI input matrix LDE height exceeds checked usize geometry".into(),
+            )
+        })
+}
+
 /// Production FRI verifier entry point. MMCS authentication is mandatory.
 pub fn verify_fri_circuit<F, EF, RecMmcs, Inner, Witness, Comm>(
     builder: &mut CircuitBuilder<EF>,
@@ -1791,4 +1825,162 @@ where
         log_blowup,
         permutation_config,
     )
+}
+
+#[cfg(test)]
+mod checked_geometry_tests {
+    use alloc::vec;
+    use alloc::vec::Vec;
+
+    use p3_baby_bear::BabyBear;
+    use p3_circuit::CircuitBuilder;
+    use p3_circuit::ops::{Poseidon2Config, generate_poseidon2_trace, generate_recompose_trace};
+    use p3_commit::Mmcs;
+    use p3_field::coset::TwoAdicMultiplicativeCoset;
+    use p3_field::extension::BinomialExtensionField;
+    use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
+    use p3_koala_bear::{KoalaBear, Poseidon2KoalaBear, default_koalabear_poseidon2_32};
+    use p3_matrix::dense::RowMajorMatrix;
+    use p3_merkle_tree::MerkleTreeMmcs;
+    use p3_poseidon2_circuit_air::KoalaBearD4Width32;
+    use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
+
+    use super::{checked_input_lde_log, local_mmcs_index_bits, open_input};
+    use crate::pcs::{FriQueryPaths, set_fri_mmcs_private_data_arity4};
+
+    #[test]
+    fn direct_target_input_height_rejects_addition_and_word_bit_overflow() {
+        assert!(checked_input_lde_log(7, 3).is_ok());
+        assert!(checked_input_lde_log(usize::MAX, 1).is_err());
+        assert!(checked_input_lde_log(usize::BITS as usize - 1, 1).is_err());
+        assert!(checked_input_lde_log(usize::BITS as usize, 0).is_err());
+    }
+
+    #[test]
+    fn unequal_height_mmcs_routing_discards_the_little_endian_prefix() {
+        let mut builder = CircuitBuilder::<BabyBear>::new();
+        let global = builder.alloc_public_inputs(6, "query bits");
+        let local = local_mmcs_index_bits(&global, 4, 6, 1).unwrap();
+        assert_eq!(local, &global[2..]);
+        assert_ne!(local[0], global[0]);
+        assert!(local_mmcs_index_bits(&global, 7, 6, 1).is_err());
+    }
+
+    #[test]
+    fn arity4_open_input_authenticates_short_batch_at_shifted_native_index() {
+        type F = KoalaBear;
+        type EF = BinomialExtensionField<F, 4>;
+        type Perm = Poseidon2KoalaBear<32>;
+        type LeafHash = PaddingFreeSponge<Perm, 32, 24, 8>;
+        type Compress = TruncatedPermutation<Perm, 4, 8, 32>;
+        type Tree = MerkleTreeMmcs<F, F, LeafHash, Compress, 4, 8>;
+
+        let perm = default_koalabear_poseidon2_32();
+        let mmcs = Tree::new(LeafHash::new(perm.clone()), Compress::new(perm.clone()), 0);
+        let tall = RowMajorMatrix::new((0..8).map(F::from_usize).collect(), 1);
+        let short = RowMajorMatrix::new((20..24).map(F::from_usize).collect(), 1);
+        let (tall_cap, tall_data) = mmcs.commit(vec![tall]);
+        let (short_cap, short_data) = mmcs.commit(vec![short]);
+
+        // Global query 5 has little-endian bits [1, 0, 1]. The short batch is
+        // one bit lower, so native authentication uses 5 >> 1 == 2. The
+        // discarded bit is deliberately nonzero.
+        let global_index = 5usize;
+        let tall_opening = mmcs.open_batch(global_index, &tall_data);
+        let short_opening = mmcs.open_batch(global_index >> 1, &short_data);
+
+        let mut builder = CircuitBuilder::<EF>::new();
+        let permutation = Poseidon2Config::KOALA_BEAR_D4_W32;
+        builder.enable_poseidon2_perm_width_32::<KoalaBearD4Width32, _>(
+            generate_poseidon2_trace::<EF, KoalaBearD4Width32>,
+            perm,
+        );
+        builder.enable_recompose::<F>(generate_recompose_trace::<F, EF>);
+
+        let tall_row = vec![builder.public_input()];
+        let short_row = vec![builder.public_input()];
+        let index_bits = builder.alloc_public_inputs(3, "global query bits");
+        let cap_targets: Vec<Vec<Vec<_>>> = [tall_cap.num_roots(), short_cap.num_roots()]
+            .into_iter()
+            .map(|roots| {
+                (0..roots)
+                    .map(|_| {
+                        (0..permutation.capacity_ext())
+                            .map(|_| builder.public_input())
+                            .collect()
+                    })
+                    .collect()
+            })
+            .collect();
+
+        let point = builder.define_const(EF::ONE);
+        let value = builder.define_const(EF::ZERO);
+        let commitments = vec![
+            (
+                builder.define_const(EF::ZERO),
+                vec![(
+                    TwoAdicMultiplicativeCoset::new(F::GENERATOR, 2).unwrap(),
+                    vec![(point, vec![value])],
+                )],
+            ),
+            (
+                builder.define_const(EF::ZERO),
+                vec![(
+                    TwoAdicMultiplicativeCoset::new(F::GENERATOR, 1).unwrap(),
+                    vec![(point, vec![value])],
+                )],
+            ),
+        ];
+        let openings = vec![vec![tall_row], vec![short_row]];
+        let salts = vec![Vec::new(), Vec::new()];
+        let alpha = builder.define_const(EF::ONE);
+        let (_, op_ids) = open_input::<F, EF, _>(
+            &mut builder,
+            3,
+            &index_bits,
+            alpha,
+            1,
+            &commitments,
+            &openings,
+            &salts,
+            permutation.into(),
+            &cap_targets,
+        )
+        .expect("valid unequal-height input geometry");
+
+        let circuit = builder.build().unwrap();
+        let mut runner = circuit.runner();
+        let mut public = vec![
+            EF::from(tall_opening.opened_values[0][0]),
+            EF::from(short_opening.opened_values[0][0]),
+            EF::ONE,
+            EF::ZERO,
+            EF::ONE,
+        ];
+        for cap in [&tall_cap, &short_cap] {
+            for root in cap.roots() {
+                public.extend(
+                    root.chunks(<EF as BasedVectorSpace<F>>::DIMENSION)
+                        .map(|chunk| {
+                            EF::from_basis_coefficients_slice(chunk)
+                                .expect("full packed digest limb")
+                        }),
+                );
+            }
+        }
+        runner.set_public_inputs(&public).unwrap();
+        set_fri_mmcs_private_data_arity4(
+            &mut runner,
+            &op_ids,
+            &[FriQueryPaths {
+                input: vec![tall_opening.opening_proof, short_opening.opening_proof],
+                commit_phase: Vec::new(),
+            }],
+            permutation,
+        )
+        .unwrap();
+        runner
+            .run()
+            .expect("FRI open_input must use the native shifted index for the short batch");
+    }
 }

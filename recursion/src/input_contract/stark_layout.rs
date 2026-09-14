@@ -97,6 +97,41 @@ pub(crate) fn checked_quotient_matrix_count(
     })
 }
 
+/// Validate the original optional preprocessing metadata and its inverse map
+/// as one complete bijection.  This deliberately runs before callers reduce
+/// `None` and `Some(width = 0)` to the same numeric width.
+pub(crate) fn validate_preprocessed_metadata(
+    metadata: &[Option<(usize, usize, usize)>],
+    matrix_to_instance: &[usize],
+    degree_bits: &[usize],
+) -> Result<(), LayoutError> {
+    if metadata.len() != degree_bits.len() || matrix_to_instance.is_empty() {
+        return Err(LayoutError::PreprocessedMetadataMismatch);
+    }
+    for &instance in matrix_to_instance {
+        if instance >= metadata.len() {
+            return Err(LayoutError::PreprocessedIndexOutOfBounds { index: instance });
+        }
+    }
+    let present = metadata.iter().filter(|entry| entry.is_some()).count();
+    if present != matrix_to_instance.len() {
+        return Err(LayoutError::PreprocessedMetadataMismatch);
+    }
+    for (instance, entry) in metadata.iter().enumerate() {
+        let Some((matrix_index, width, degree)) = entry else {
+            continue;
+        };
+        if *width == 0
+            || *degree != degree_bits[instance]
+            || *matrix_index >= matrix_to_instance.len()
+            || matrix_to_instance[*matrix_index] != instance
+        {
+            return Err(LayoutError::PreprocessedMetadataMismatch);
+        }
+    }
+    Ok(())
+}
+
 /// The shared integer opening layout.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct NativeStarkLayout<'a> {
@@ -398,6 +433,38 @@ impl Iterator for MatrixLayoutIter<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn complete_preprocessed_metadata_rejects_zero_partial_and_mismatched_entries() {
+        let degrees = [8, 9, 10];
+        let valid = [None, Some((0, 3, 9)), Some((1, 4, 10))];
+        assert!(validate_preprocessed_metadata(&valid, &[1, 2], &degrees).is_ok());
+
+        let cases = [
+            ([None, None, None], alloc::vec![]),
+            ([Some((0, 0, 8)), None, None], alloc::vec![]),
+            ([None, Some((0, 3, 9)), Some((1, 4, 10))], alloc::vec![1]),
+            ([None, Some((0, 3, 9)), Some((1, 4, 10))], alloc::vec![]),
+            ([None, Some((1, 3, 9)), Some((0, 4, 10))], alloc::vec![1, 2]),
+            ([None, Some((0, 3, 8)), Some((1, 4, 10))], alloc::vec![1, 2]),
+            ([None, Some((0, 3, 9)), Some((1, 4, 10))], alloc::vec![1, 1]),
+        ];
+        for (metadata, map) in cases {
+            assert!(matches!(
+                validate_preprocessed_metadata(&metadata, &map, &degrees),
+                Err(LayoutError::PreprocessedMetadataMismatch)
+            ));
+        }
+
+        assert!(matches!(
+            validate_preprocessed_metadata(&valid, &[1, 3], &degrees),
+            Err(LayoutError::PreprocessedIndexOutOfBounds { index: 3 })
+        ));
+        assert!(matches!(
+            validate_preprocessed_metadata(&valid[..2], &[1], &degrees),
+            Err(LayoutError::PreprocessedMetadataMismatch)
+        ));
+    }
 
     fn instance(quotient_chunks: usize) -> InstanceLayout {
         InstanceLayout {

@@ -15,7 +15,7 @@ use crate::Target;
 use crate::challenger::CircuitChallenger;
 use crate::challenger_perm::ChallengerPermConfig;
 use crate::input_contract::stark_layout::{
-    CommitmentRole, InstanceLayout, MatrixRoute, NativeStarkLayout,
+    CommitmentRole, InstanceLayout, MatrixRoute, NativeStarkLayout, checked_power_of_two,
 };
 use crate::traits::{LookupMetadata, Recursive, RecursiveAir, RecursivePcs};
 use crate::types::{
@@ -40,6 +40,129 @@ type PcsDomain<SC> = <<SC as StarkGenericConfig>::Pcs as Pcs<
     <SC as StarkGenericConfig>::Challenge,
     <SC as StarkGenericConfig>::Challenger,
 >>::Domain;
+
+/// Derive and validate the native uni-STARK opening layout without allocating
+/// targets or touching a challenger.
+pub(crate) fn plan_uni_native_layout<SC, A>(
+    config: &SC,
+    air: &A,
+    proof: &p3_uni_stark::Proof<SC>,
+    public_value_count: usize,
+    preprocessed_commit: Option<&<SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment>,
+) -> Result<NativeStarkLayout<'static>, VerificationError>
+where
+    SC: StarkGenericConfig,
+    A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
+    Val<SC>: PrimeField64,
+    SC::Challenge: ExtensionField<Val<SC>> + PrimeCharacteristicRing,
+{
+    plan_uni_native_layout_with_policy(
+        config.is_zk(),
+        config.pcs().log_max_lde_height(),
+        air,
+        proof,
+        public_value_count,
+        preprocessed_commit,
+    )
+}
+
+pub(crate) fn plan_uni_native_layout_with_policy<SC, A>(
+    is_zk: usize,
+    log_max_lde_height: usize,
+    air: &A,
+    proof: &p3_uni_stark::Proof<SC>,
+    public_value_count: usize,
+    preprocessed_commit: Option<&<SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment>,
+) -> Result<NativeStarkLayout<'static>, VerificationError>
+where
+    SC: StarkGenericConfig,
+    A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
+    Val<SC>: PrimeField64,
+    SC::Challenge: ExtensionField<Val<SC>> + PrimeCharacteristicRing,
+{
+    if air.expected_public_input_count() != Some(public_value_count) {
+        return Err(VerificationError::InvalidProofShape(
+            "uni-STARK public input count disagrees with the AIR".into(),
+        ));
+    }
+    let degree_bits = proof.degree_bits;
+    validate_degree_bits(None, degree_bits, is_zk, log_max_lde_height)
+        .map_err(|error| VerificationError::InvalidProofShape(error.to_string()))?;
+    let base_log = degree_bits.checked_sub(is_zk).ok_or_else(|| {
+        VerificationError::InvalidProofShape(
+            "extended degree smaller than zk adjustment".to_string(),
+        )
+    })?;
+    let opened = &proof.opened_values;
+    let preprocessed_width = opened.preprocessed_local.as_ref().map_or(0, Vec::len);
+    if (preprocessed_width != 0) != preprocessed_commit.is_some() {
+        return Err(VerificationError::InvalidProofShape(
+            "preprocessed commitment presence disagrees with its opening".into(),
+        ));
+    }
+    if air.declares_interactions(preprocessed_width) {
+        return Err(VerificationError::InvalidProofShape(
+            "uni-stark recursive verifier does not support AIR lookup interactions".into(),
+        ));
+    }
+    let log_quotient_degree = air.get_log_num_quotient_chunks(
+        preprocessed_width,
+        checked_power_of_two(base_log)
+            .map_err(|error| VerificationError::InvalidProofShape(error.to_string()))?,
+        &[],
+        is_zk,
+        &LogUpGadget,
+    );
+    let quotient_log = log_quotient_degree
+        .checked_add(is_zk)
+        .ok_or_else(|| VerificationError::InvalidProofShape("quotient log overflows".into()))?;
+    let quotient_chunks = checked_power_of_two(quotient_log)
+        .map_err(|error| VerificationError::InvalidProofShape(error.to_string()))?;
+    let expected_trace_next = air.width() * usize::from(air.opens_trace_next());
+    let expected_pre_next = preprocessed_width * usize::from(air.opens_preprocessed_next());
+    if opened.trace_local.len() != air.width()
+        || opened.trace_next.as_ref().map_or(0, Vec::len) != expected_trace_next
+        || opened.preprocessed_next.as_ref().map_or(0, Vec::len) != expected_pre_next
+        || opened.quotient_chunks.len() != quotient_chunks
+        || opened
+            .quotient_chunks
+            .iter()
+            .any(|chunk| chunk.len() != SC::Challenge::DIMENSION)
+        || opened
+            .random
+            .as_ref()
+            .is_some_and(|values| values.len() != SC::Challenge::DIMENSION)
+    {
+        return Err(VerificationError::InvalidProofShape(
+            "uni-STARK openings disagree with the trusted layout".into(),
+        ));
+    }
+    if (proof.commitments.random.is_some() != (is_zk != 0))
+        || (opened.random.is_some() != (is_zk != 0))
+    {
+        return Err(VerificationError::RandomizationError);
+    }
+    NativeStarkLayout::new(
+        vec![InstanceLayout {
+            ext_log: degree_bits,
+            base_log,
+            challenge_width: SC::Challenge::DIMENSION,
+            trace_width: air.width(),
+            trace_next: air.opens_trace_next(),
+            pre_width: preprocessed_width,
+            pre_next: air.opens_preprocessed_next(),
+            quotient_log: log_quotient_degree,
+            quotient_chunks,
+            permutation_width: 0,
+        }],
+        if preprocessed_width == 0 { &[] } else { &[0] },
+        proof.commitments.random.is_some(),
+        preprocessed_width != 0,
+        false,
+    )
+    .map(|layout| layout.to_owned_layout())
+    .map_err(|error| VerificationError::InvalidProofShape(error.to_string()))
+}
 
 /// Verifies a STARK proof within a circuit.
 ///

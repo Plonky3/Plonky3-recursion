@@ -11,9 +11,12 @@ use p3_sumcheck::SumcheckData;
 use p3_whir::parameters::WhirConfig;
 use p3_whir::pcs::proof::{PcsProof, QueryOpenings};
 
-use super::MerkleCapShape;
+use super::{FriOpeningLayout, MerkleCapShape};
+use crate::PermConfig;
 use crate::pcs::whir::params::WhirVerifierParams;
+use crate::pcs::whir::uni::WhirUniVerifierParams;
 use crate::pcs::whir::uni::pcs::WhirUniProof;
+use crate::traits::CheckedRecursive;
 use crate::verifier::VerificationError;
 
 /// Allocation-relevant structure of one sumcheck transcript.
@@ -81,7 +84,7 @@ pub(crate) struct WhirContextShape {
     pub(crate) opening_batches: usize,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct WhirRoundContext {
     pub(crate) ood_samples: usize,
     pub(crate) num_queries: usize,
@@ -90,7 +93,7 @@ pub(crate) struct WhirRoundContext {
     pub(crate) domain_size: usize,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct WhirContextParams {
     pub(crate) num_variables: usize,
     pub(crate) commitment_ood_samples: usize,
@@ -103,6 +106,57 @@ pub(crate) struct WhirContextParams {
     pub(crate) final_folding_factor: usize,
     pub(crate) final_folding_pow_bits: usize,
     pub(crate) final_domain_size: usize,
+}
+
+/// Compact authority produced by a complete, cap-aware WHIR input pass.
+///
+/// It retains only canonical integer parameters, cap cardinalities, and the
+/// proof choices that affect target allocation. Proof values, Merkle
+/// frontiers, challengers, PCS objects, and configs are deliberately absent.
+#[derive(Clone, PartialEq, Eq)]
+pub struct ValidatedWhirContext<F> {
+    pub(crate) layout: super::stark_layout::NativeStarkLayout<'static>,
+    pub(crate) permutation: PermConfig,
+    pub(crate) canonical: Vec<WhirContextParams>,
+    pub(crate) outside_cap_roots: Vec<usize>,
+    pub(crate) shape: WhirUniShape<MerkleCapShape>,
+    pub(crate) _field: core::marker::PhantomData<F>,
+}
+
+impl<F> ValidatedWhirContext<F> {
+    pub(crate) const fn layout(&self) -> &super::stark_layout::NativeStarkLayout<'static> {
+        &self.layout
+    }
+
+    pub(crate) const fn permutation(&self) -> PermConfig {
+        self.permutation
+    }
+
+    pub(crate) fn canonical(&self) -> &[WhirContextParams] {
+        &self.canonical
+    }
+}
+
+/// Checked capability implemented by concrete WHIR opening target adapters.
+pub trait CheckedWhirOpening<F, EF, C>: CheckedRecursive<EF>
+where
+    F: Field,
+    EF: ExtensionField<F>,
+    C: CheckedRecursive<EF>,
+{
+    fn validate_whir_context(
+        input: &Self::Input,
+        params: &WhirUniVerifierParams<F>,
+        layout: FriOpeningLayout<'_>,
+        caps: &[&C::Input],
+    ) -> Result<ValidatedWhirContext<F>, VerificationError>;
+
+    fn validate_whir_replacement(
+        input: &Self::Input,
+        expected: &ValidatedWhirContext<F>,
+        layout: FriOpeningLayout<'_>,
+        caps: &[&C::Input],
+    ) -> Result<(), VerificationError>;
 }
 
 impl WhirContextParams {
@@ -267,27 +321,52 @@ where
     EF: ExtensionField<F> + BasedVectorSpace<F>,
     MT: Mmcs<F>,
 {
-    if matrix_shapes.is_empty() {
+    validate_whir_pcs_context_iter::<F, EF, MT, _>(proof, params, matrix_shapes.iter().copied())
+}
+
+/// Iterator form used by production layout planners so quotient matrices stay
+/// lazy instead of materializing a proof-sized shape vector.
+pub(crate) fn validate_whir_pcs_context_iter<F, EF, MT, I>(
+    proof: &PcsProof<F, EF, MT>,
+    params: &WhirContextParams,
+    matrix_shapes: I,
+) -> Result<WhirContextShape, VerificationError>
+where
+    F: Field,
+    EF: ExtensionField<F> + BasedVectorSpace<F>,
+    MT: Mmcs<F>,
+    I: Iterator<Item = (usize, usize, usize)> + Clone,
+{
+    if matrix_shapes.clone().next().is_none() {
         return Err(VerificationError::InvalidProofShape(
             "WHIR commitment must contain at least one matrix".into(),
         ));
     }
     if matrix_shapes
-        .iter()
-        .any(|&(_, width, points)| width == 0 || points == 0)
+        .clone()
+        .any(|(_, width, points)| width == 0 || points == 0)
     {
         return Err(VerificationError::InvalidProofShape(
             "WHIR matrices require positive widths and point counts".into(),
         ));
     }
-    if proof.evals.len() != matrix_shapes.iter().map(|&(_, _, p)| p).sum::<usize>() {
+    let expected_batches = matrix_shapes
+        .clone()
+        .try_fold(0usize, |sum, (_, _, points)| {
+            sum.checked_add(points).ok_or_else(|| {
+                VerificationError::InvalidProofShape(
+                    "WHIR opening batch count overflows usize".into(),
+                )
+            })
+        })?;
+    if proof.evals.len() != expected_batches {
         return Err(VerificationError::InvalidProofShape(
             "WHIR opening batch count disagrees with the statement layout".into(),
         ));
     }
     let batch_widths = matrix_shapes
-        .iter()
-        .flat_map(|&(_, width, points)| core::iter::repeat_n(width, points));
+        .clone()
+        .flat_map(|(_, width, points)| core::iter::repeat_n(width, points));
     for (batch, (width, eval)) in batch_widths.zip(proof.evals.iter()).enumerate() {
         if eval.current().len() != width || !eval.next().is_empty() {
             return Err(VerificationError::InvalidProofShape(format!(
@@ -296,7 +375,7 @@ where
         }
     }
 
-    let shapes = matrix_shapes.iter().map(|&(log_height, width, _)| {
+    let shapes = matrix_shapes.map(|(log_height, width, _)| {
         (
             crate::pcs::whir::uni::plan::padded_arity(log_height, params.starting_folding_factor),
             width,
@@ -389,6 +468,10 @@ where
         "final",
     )?;
     match (&proof.whir.final_sumcheck, params.final_sumcheck_rounds) {
+        // Native WHIR returns before reading an optional payload when the
+        // configured final sumcheck has no rounds. Keep the payload in the
+        // retained allocation shape, but do not assign it semantic counts.
+        (Some(_), 0) => {}
         (Some(sumcheck), rounds) => {
             validate_sumcheck(sumcheck, rounds, params.final_folding_pow_bits, "final")?;
         }
@@ -561,11 +644,19 @@ mod tests {
     use p3_baby_bear::BabyBear;
     use p3_field::PrimeCharacteristicRing;
     use p3_field::extension::BinomialExtensionField;
-    use p3_merkle_tree::MerkleCap;
+    use p3_merkle_tree::{MerkleCap, PrunedMerklePaths};
+    use p3_multilinear_util::poly::Poly;
     use p3_sumcheck::OpeningBatch;
+    use p3_sumcheck::strategy::VariableOrder;
+    use p3_whir::parameters::{FoldingFactor, ProtocolParameters, SecurityAssumption};
     use p3_whir::pcs::proof::{QueryOpenings, SharedProofOpening, WhirRoundProof};
 
-    use super::{WhirContextParams, validate_digest_packing, validate_whir_pcs_context};
+    use super::{
+        CheckedWhirOpening, WhirContextParams, validate_digest_packing, validate_whir_pcs_context,
+    };
+    use crate::input_contract::stark_layout::{InstanceLayout, NativeStarkLayout};
+    use crate::pcs::fri::MerkleCapTargets;
+    use crate::pcs::whir::uni::WhirUniVerifierParams;
     use crate::pcs::whir::uni::pcs::WhirUniProof;
     use crate::pcs::whir::uni::pcs::tests::{MyMmcs, open_two_matrices};
     use crate::pcs::whir::uni::targets::WhirUniProofTargets;
@@ -575,6 +666,125 @@ mod tests {
     type F = BabyBear;
     type EF = BinomialExtensionField<F, 4>;
     type Targets = WhirUniProofTargets<F, EF, MyMmcs, 8>;
+    type CapTargets = MerkleCapTargets<F, 8>;
+
+    fn zero_cap() -> MerkleCap<F, [F; 8]> {
+        MerkleCap::new(vec![[F::ZERO; 8]])
+    }
+
+    fn zero_frontier() -> PrunedMerklePaths<F, 8> {
+        PrunedMerklePaths {
+            sibling_hashes: vec![],
+        }
+    }
+
+    fn sc(rounds: usize, witnesses: usize) -> p3_sumcheck::SumcheckData<F, EF> {
+        p3_sumcheck::SumcheckData {
+            polynomial_evaluations: vec![[EF::ZERO; 2]; rounds],
+            pow_witnesses: vec![F::ZERO; witnesses],
+        }
+    }
+
+    fn base_opening(queries: usize, width: usize) -> QueryOpenings<F, EF, PrunedMerklePaths<F, 8>> {
+        QueryOpenings::Base(SharedProofOpening {
+            rows: vec![vec![F::ZERO; width]; queries],
+            proof: zero_frontier(),
+        })
+    }
+
+    fn extension_opening(
+        queries: usize,
+        width: usize,
+    ) -> QueryOpenings<F, EF, PrunedMerklePaths<F, 8>> {
+        QueryOpenings::Extension(SharedProofOpening {
+            rows: vec![vec![EF::ZERO; width]; queries],
+            proof: zero_frontier(),
+        })
+    }
+
+    fn canonical_two_argument_fixture() -> (
+        WhirUniProof<F, EF, MyMmcs>,
+        WhirUniVerifierParams<F>,
+        NativeStarkLayout<'static>,
+        Vec<MerkleCap<F, [F; 8]>>,
+    ) {
+        let protocol = ProtocolParameters {
+            starting_log_inv_rate: 6,
+            round_log_inv_rates: vec![],
+            folding_factor: FoldingFactor::Constant(8),
+            soundness_type: SecurityAssumption::CapacityBound,
+            security_level: 32,
+            pow_bits: 0,
+        };
+        let params = WhirUniVerifierParams::new(
+            protocol,
+            VariableOrder::Prefix,
+            crate::Poseidon2Config::BABY_BEAR_D4_W16,
+        )
+        .unwrap();
+        let layout = NativeStarkLayout::new(
+            vec![InstanceLayout {
+                challenge_width: 4,
+                ext_log: 8,
+                base_log: 8,
+                trace_width: 3,
+                trace_next: true,
+                pre_width: 0,
+                pre_next: false,
+                quotient_log: 5,
+                quotient_chunks: 32,
+                permutation_width: 0,
+            }],
+            &[],
+            false,
+            false,
+            false,
+        )
+        .unwrap();
+        let trace = p3_whir::pcs::proof::PcsProof {
+            whir: p3_whir::pcs::proof::WhirProof {
+                initial_ood_answers: vec![EF::ZERO],
+                initial_sumcheck: sc(8, 0),
+                rounds: vec![],
+                final_poly: Some(Poly::new(vec![EF::ZERO; 4])),
+                final_pow_witness: F::ZERO,
+                final_openings: base_opening(6, 256),
+                final_sumcheck: Some(sc(2, 0)),
+            },
+            evals: vec![
+                OpeningBatch::new(vec![EF::ZERO; 3], vec![]),
+                OpeningBatch::new(vec![EF::ZERO; 3], vec![]),
+            ],
+        };
+        let quotient = p3_whir::pcs::proof::PcsProof {
+            whir: p3_whir::pcs::proof::WhirProof {
+                initial_ood_answers: vec![EF::ZERO],
+                initial_sumcheck: sc(8, 0),
+                rounds: vec![WhirRoundProof {
+                    commitment: Some(zero_cap()),
+                    ood_answers: vec![EF::ZERO],
+                    pow_witness: F::ZERO,
+                    openings: base_opening(6, 256),
+                    sumcheck: sc(7, 0),
+                }],
+                final_poly: Some(Poly::new(vec![EF::ZERO; 1])),
+                final_pow_witness: F::ZERO,
+                final_openings: extension_opening(3, 128),
+                final_sumcheck: None,
+            },
+            evals: (0..32)
+                .map(|_| OpeningBatch::new(vec![EF::ZERO; 4], vec![]))
+                .collect(),
+        };
+        (
+            WhirUniProof {
+                rounds: vec![trace, quotient],
+            },
+            params,
+            layout,
+            vec![zero_cap(), zero_cap()],
+        )
+    }
 
     fn whir_fixture() -> WhirUniProof<F, EF, MyMmcs> {
         let (_pcs, commitment, _coms, mut proof) = open_two_matrices();
@@ -770,5 +980,129 @@ mod tests {
             validate_whir_pcs_context::<F, EF, MyMmcs>(&proof.rounds[0], &context, &shapes,),
             Err(VerificationError::InvalidProofShape(_))
         ));
+    }
+
+    #[test]
+    fn checked_whir_n10_n15_context_binds_last_argument_and_ignored_payload_shape() {
+        let (proof, params, layout, caps) = canonical_two_argument_fixture();
+        let cap_refs = caps.iter().collect::<Vec<_>>();
+        let retained = <Targets as CheckedWhirOpening<F, EF, CapTargets>>::validate_whir_context(
+            &proof,
+            &params,
+            layout.opening_view(),
+            &cap_refs,
+        )
+        .expect("canonical N=10/N=15 structure and following-phase caps validate");
+
+        let mut bad_last = proof.clone();
+        match &mut bad_last.rounds[1].whir.final_openings {
+            QueryOpenings::Extension(opening) => opening.rows.last_mut().unwrap().pop(),
+            QueryOpenings::Base(_) => unreachable!(),
+        };
+        assert!(
+            <Targets as CheckedWhirOpening<F, EF, CapTargets>>::validate_whir_context(
+                &bad_last,
+                &params,
+                layout.opening_view(),
+                &cap_refs,
+            )
+            .is_err()
+        );
+
+        let mut fresh_ignored = proof.clone();
+        fresh_ignored.rounds[1].whir.final_sumcheck = Some(sc(3, 5));
+        assert!(
+            <Targets as CheckedWhirOpening<F, EF, CapTargets>>::validate_whir_context(
+                &fresh_ignored,
+                &params,
+                layout.opening_view(),
+                &cap_refs,
+            )
+            .is_ok(),
+            "zero-round final payload is semantically ignored"
+        );
+        assert!(
+            <Targets as CheckedWhirOpening<F, EF, CapTargets>>::validate_whir_replacement(
+                &fresh_ignored,
+                &retained,
+                layout.opening_view(),
+                &cap_refs,
+            )
+            .is_err(),
+            "a fresh-valid ignored payload still changes an existing circuit's allocation"
+        );
+
+        let mut alternate_cap = proof.clone();
+        alternate_cap.rounds[1].whir.rounds[0].commitment =
+            Some(MerkleCap::new(vec![[F::ZERO; 8]; 2]));
+        assert!(
+            <Targets as CheckedWhirOpening<F, EF, CapTargets>>::validate_whir_context(
+                &alternate_cap,
+                &params,
+                layout.opening_view(),
+                &cap_refs,
+            )
+            .is_ok(),
+            "two roots fit the following phase's 2^13 tree"
+        );
+        assert!(
+            <Targets as CheckedWhirOpening<F, EF, CapTargets>>::validate_whir_replacement(
+                &alternate_cap,
+                &retained,
+                layout.opening_view(),
+                &cap_refs,
+            )
+            .is_err(),
+            "fresh-valid alternate cap cardinality cannot replace retained authority"
+        );
+
+        let mut ignored_pow = proof.clone();
+        ignored_pow.rounds[1]
+            .whir
+            .initial_sumcheck
+            .pow_witnesses
+            .push(F::ZERO);
+        assert!(
+            <Targets as CheckedWhirOpening<F, EF, CapTargets>>::validate_whir_context(
+                &ignored_pow,
+                &params,
+                layout.opening_view(),
+                &cap_refs,
+            )
+            .is_ok()
+        );
+        assert!(
+            <Targets as CheckedWhirOpening<F, EF, CapTargets>>::validate_whir_replacement(
+                &ignored_pow,
+                &retained,
+                layout.opening_view(),
+                &cap_refs,
+            )
+            .is_err()
+        );
+
+        let mut wrong_eval = proof.clone();
+        wrong_eval.rounds[1].evals.pop();
+        let mut wrong_ood = proof.clone();
+        wrong_ood.rounds[1].whir.initial_ood_answers.clear();
+        let mut wrong_fold = proof.clone();
+        wrong_fold.rounds[1].whir.rounds[0]
+            .sumcheck
+            .polynomial_evaluations
+            .push([EF::ZERO; 2]);
+        let mut wrong_final = proof.clone();
+        wrong_final.rounds[1].whir.final_poly = Some(Poly::new(vec![EF::ZERO; 2]));
+        for malformed in [wrong_eval, wrong_ood, wrong_fold, wrong_final] {
+            assert!(
+                <Targets as CheckedWhirOpening<F, EF, CapTargets>>::validate_whir_context(
+                    &malformed,
+                    &params,
+                    layout.opening_view(),
+                    &cap_refs,
+                )
+                .is_err(),
+                "a malformed last commitment must fail the whole-input pass"
+            );
+        }
     }
 }

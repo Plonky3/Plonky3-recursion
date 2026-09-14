@@ -37,6 +37,7 @@ use crate::pcs::whir::uni::bridge::univariate_eq_point;
 use crate::pcs::whir::uni::plan::{
     PaddedArity, StackedPlan, checked_stacked_num_variables, padded_arity,
 };
+use crate::pcs::whir::uni::recursive_pcs::validate_round_config_inputs;
 
 /// Prover state behind one WHIR-backed univariate commitment.
 pub struct WhirUniProverData<F, EF, MT, L>
@@ -486,6 +487,46 @@ where
             });
         }
 
+        // Validate the complete statement/proof vector before the challenger
+        // or any native verifier sees the first argument. A malformed later
+        // commitment must not cause earlier transcript or MMCS work.
+        for (round, ((_commitment, matrices), round_proof)) in
+            commitments.iter().zip(&proof.rounds).enumerate()
+        {
+            let mut shapes = Vec::with_capacity(matrices.len());
+            let mut context_shapes = Vec::with_capacity(matrices.len());
+            for (domain, openings) in matrices {
+                let width = openings
+                    .first()
+                    .map(|(_, values)| values.len())
+                    .ok_or(WhirUniPcsError::ShapeMismatch { round })?;
+                if openings.iter().any(|(_, values)| values.len() != width) {
+                    return Err(WhirUniPcsError::ShapeMismatch { round });
+                }
+                shapes.push((domain.log_size(), width));
+                context_shapes.push((domain.log_size(), width, openings.len()));
+            }
+            let stacked_num_variables = checked_stacked_num_variables(
+                shapes
+                    .iter()
+                    .map(|&(log_height, width)| (padded_arity(log_height, self.folding), width)),
+            )
+            .map_err(|_| WhirUniPcsError::ShapeMismatch { round })?;
+            validate_round_config_inputs(stacked_num_variables, &self.protocol_params)
+                .map_err(|_| WhirUniPcsError::ShapeMismatch { round })?;
+            let config = WhirConfig::<EF, F, Challenger>::new(
+                stacked_num_variables,
+                self.protocol_params.clone(),
+            )
+            .map_err(|_| WhirUniPcsError::ShapeMismatch { round })?;
+            validate_whir_pcs_context::<F, EF, MT>(
+                round_proof,
+                &WhirContextParams::from_native(&config),
+                &context_shapes,
+            )
+            .map_err(|_| WhirUniPcsError::ShapeMismatch { round })?;
+        }
+
         for (round, ((commitment, matrices), round_proof)) in
             commitments.into_iter().zip(&proof.rounds).enumerate()
         {
@@ -514,20 +555,6 @@ where
                 self.protocol_params.clone(),
             )
             .map_err(|_| WhirUniPcsError::ShapeMismatch { round })?;
-            let context_params = WhirContextParams::from_native(&config);
-            validate_whir_pcs_context::<F, EF, MT>(
-                round_proof,
-                &context_params,
-                &matrices
-                    .iter()
-                    .zip(&points_per_matrix)
-                    .map(|((domain, openings), points)| {
-                        (domain.log_size(), openings[0].1.len(), points.len())
-                    })
-                    .collect::<Vec<_>>(),
-            )
-            .map_err(|_| WhirUniPcsError::ShapeMismatch { round })?;
-
             let schedule = round_schedule::<F, EF>(&shapes, &points_per_matrix, self.folding);
             let prover = WhirProver::<EF, F, Dft, MT, Challenger, L>::new(
                 config,

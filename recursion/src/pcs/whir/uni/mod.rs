@@ -9,6 +9,7 @@ pub mod recursive_pcs;
 pub mod targets;
 
 use alloc::format;
+use alloc::string::ToString;
 use alloc::vec::Vec;
 
 pub use bridge::{univariate_eq_point, univariate_eq_point_circuit};
@@ -33,6 +34,9 @@ pub use recursive_pcs::WhirUniVerifierParams;
 pub use targets::{WhirRoundTargets, WhirUniProofTargets, packed_digest_len};
 
 use crate::VerificationError;
+use crate::input_contract::whir::{WhirContextParams, validate_whir_pcs_context};
+use crate::pcs::whir::uni::plan::checked_stacked_num_variables;
+use crate::pcs::whir::uni::recursive_pcs::validate_round_config_inputs;
 
 /// Queried STIR indices one commitment's WHIR argument sampled.
 ///
@@ -122,8 +126,6 @@ where
     type F<SC> = Val<SC>;
     type EF<SC> = <SC as StarkGenericConfig>::Challenge;
 
-    let mut challenger = transcript.challenger;
-
     let reverse_selectors = match variable_order {
         VariableOrder::Prefix => true,
         VariableOrder::Suffix => false,
@@ -137,6 +139,53 @@ where
             opening_proof.rounds.len()
         )));
     }
+
+    // Preflight the entire proof before taking ownership of, or sampling,
+    // the replay challenger. This prevents a malformed later commitment from
+    // causing any transcript work for an earlier one.
+    for ((_commitment, matrices), round_proof) in transcript
+        .commitments_with_opening_points
+        .iter()
+        .zip(&opening_proof.rounds)
+    {
+        let mut shapes = Vec::with_capacity(matrices.len());
+        for (domain, openings) in matrices {
+            let width = openings
+                .first()
+                .map(|(_, values)| values.len())
+                .ok_or_else(|| {
+                    VerificationError::InvalidProofShape("WHIR commitment has no openings".into())
+                })?;
+            if openings.iter().any(|(_, values)| values.len() != width) {
+                return Err(VerificationError::InvalidProofShape(
+                    "WHIR opening width mismatch within one commitment".into(),
+                ));
+            }
+            shapes.push((log2_strict_usize(domain.size()), width, openings.len()));
+        }
+        let stacked_num_variables = checked_stacked_num_variables(
+            shapes
+                .iter()
+                .map(|&(log_height, width, _)| (padded_arity(log_height, folding), width)),
+        )
+        .map_err(|error| VerificationError::InvalidProofShape(error.to_string()))?;
+        validate_round_config_inputs(stacked_num_variables, protocol_params)
+            .map_err(|error| VerificationError::InvalidProofShape(error.to_string()))?;
+        let config = WhirConfig::<EF<SC>, F<SC>, SC::Challenger>::new(
+            stacked_num_variables,
+            protocol_params.clone(),
+        )
+        .map_err(|error| {
+            VerificationError::InvalidProofShape(format!("invalid WHIR config: {error:?}"))
+        })?;
+        validate_whir_pcs_context::<F<SC>, EF<SC>, MT>(
+            round_proof,
+            &WhirContextParams::from_native(&config),
+            &shapes,
+        )?;
+    }
+
+    let mut challenger = transcript.challenger;
 
     let mut out = Vec::with_capacity(opening_proof.rounds.len());
     for ((_commitment, matrices), round_proof) in transcript

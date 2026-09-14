@@ -225,6 +225,7 @@ fn validate_target_round_shape(
         )?;
     }
     match (&round.whir.final_sumcheck, vp.final_sumcheck_rounds) {
+        (Some(_), 0) => {}
         (Some(sumcheck), rounds) => validate_target_sumcheck(
             rounds,
             vp.final_folding_pow_bits,
@@ -451,8 +452,11 @@ where
         )));
     }
 
-    let mut op_ids = Vec::new();
-    for ((commitment, matrices), round) in commitments_with_opening_points.iter().zip(rounds) {
+    // Establish every commitment's canonical geometry before the first claim
+    // samples a challenge or mutates the builder. This makes a malformed last
+    // argument fail without partial target/transcript work.
+    let mut verified_params = Vec::with_capacity(rounds.len());
+    for ((_commitment, matrices), round) in commitments_with_opening_points.iter().zip(rounds) {
         let openings: Vec<MatrixOpenings<'_>> = matrices
             .iter()
             .map(|(domain, points)| MatrixOpenings {
@@ -466,43 +470,23 @@ where
 
         let context_params = WhirContextParams::from_recursive(&vp);
         validate_target_round_shape(round, &context_params, &openings, &round.evals)?;
+        verified_params.push(vp);
+    }
 
-        // The commitment fixes how many initial OOD answers exist; a wrong
-        // count would desync Fiat-Shamir instead of being rejected, exactly
-        // as native `verify_at` guards against (`InitialOodAnswerCountMismatch`).
-        if round.whir.initial_ood_answers.len() != vp.commitment_ood_samples() {
-            return Err(VerificationError::InvalidProofShape(format!(
-                "WHIR commitment expects {} initial OOD answers, proof supplies {}",
-                vp.commitment_ood_samples(),
-                round.whir.initial_ood_answers.len()
-            )));
-        }
-
-        // The initial sumcheck folds `min(folding, stacked_num_variables)`
-        // variables — the first entry `FoldingFactor::Constant`'s own
-        // `compute_folding_schedule` produces for this arity — so a
-        // differently-sized `round_polys` would desync Fiat-Shamir the same
-        // way a wrong OOD count would.
-        let expected_initial_rounds = params.folding().min(stacked_num_variables);
-        if round.whir.initial_sumcheck.round_polys.len() != expected_initial_rounds {
-            return Err(VerificationError::InvalidProofShape(format!(
-                "WHIR initial sumcheck expects {expected_initial_rounds} rounds for a \
-                 {stacked_num_variables}-variable stacked polynomial, proof supplies {}",
-                round.whir.initial_sumcheck.round_polys.len()
-            )));
-        }
-
-        // The final polynomial's hypercube evaluation count is fixed by the
-        // number of variables left after all folding.
-        let expected_final_poly_len = 1usize << vp.final_poly_num_variables();
-        if round.whir.final_poly.len() != expected_final_poly_len {
-            return Err(VerificationError::InvalidProofShape(format!(
-                "WHIR final polynomial expects {expected_final_poly_len} evaluations \
-                 ({} variables), proof supplies {}",
-                vp.final_poly_num_variables(),
-                round.whir.final_poly.len()
-            )));
-        }
+    let mut op_ids = Vec::new();
+    for (((commitment, matrices), round), vp) in commitments_with_opening_points
+        .iter()
+        .zip(rounds)
+        .zip(&verified_params)
+    {
+        let openings: Vec<MatrixOpenings<'_>> = matrices
+            .iter()
+            .map(|(domain, points)| MatrixOpenings {
+                log_height: domain.log_size(),
+                points: points.as_slice(),
+            })
+            .collect();
+        let stacked_num_variables = stacked_num_variables(&openings, params.folding())?;
 
         let claims = build_round_claims::<BF, EF, Ch>(
             circuit,
@@ -527,7 +511,7 @@ where
         let round_ops = crate::pcs::whir::verify_whir_circuit::<BF, EF, Ch>(
             circuit,
             challenger,
-            &vp,
+            vp,
             &round.whir,
             &cap,
             claims.constraint,

@@ -266,6 +266,7 @@ pub(crate) struct KoalaBearD4RecursionConfig {
     config: Arc<MyConfig>,
     fri_verifier_params: FriVerifierParams,
     native_fri_params: NativeFriParams,
+    native_fri_snapshot_enabled: bool,
     /// The base-field MMCS and FRI parameters `config` commits with. `MyConfig` does not expose
     /// them, and restoring a pruned FRI proof's per-query Merkle paths needs both.
     val_mmcs: MyMmcs,
@@ -276,6 +277,13 @@ impl core::ops::Deref for KoalaBearD4RecursionConfig {
     type Target = MyConfig;
     fn deref(&self) -> &MyConfig {
         &self.config
+    }
+}
+
+impl KoalaBearD4RecursionConfig {
+    pub(crate) fn without_native_fri_snapshot(mut self) -> Self {
+        self.native_fri_snapshot_enabled = false;
+        self
     }
 }
 
@@ -309,7 +317,8 @@ where
     const DIGEST_ELEMS: usize = DIGEST_ELEMS;
 
     fn native_fri_validation_params(&self) -> Option<NativeFriParams> {
-        Some(self.native_fri_params)
+        self.native_fri_snapshot_enabled
+            .then_some(self.native_fri_params)
     }
 
     fn with_fri_opening_proof<'a, A, R>(
@@ -403,6 +412,7 @@ fn koala_bear_d4_recursion_config(pow_bits: usize) -> KoalaBearD4RecursionConfig
         )),
         fri_verifier_params,
         native_fri_params,
+        native_fri_snapshot_enabled: true,
         val_mmcs,
         fri_params,
     }

@@ -36,7 +36,8 @@ use p3_recursion::{
     OpeningTranscript, PcsRecursionBackend, Poseidon2Config, PreparedAggregation,
     PreparedAggregationCross, PreparedInput, PreparedPcsRecursionBackend, PreparedSource,
     ProveNextLayerParams, RecursionInput, RecursiveAir, RecursivePcs, VerificationError,
-    VerifierCircuitResult, merge_hiding_random_openings, observe_opened_values,
+    VerifierCircuitResult, build_aggregation_layer_circuit, merge_hiding_random_openings,
+    observe_opened_values,
 };
 use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
 use p3_test_utils::koala_bear_params::{
@@ -66,6 +67,9 @@ fn fibonacci_output<Fld: PrimeCharacteristicRing + Copy>(
 
 #[derive(Default)]
 struct SideCounters {
+    validations: Cell<usize>,
+    preparations: Cell<usize>,
+    builds: Cell<usize>,
     public_packs: Cell<usize>,
     private_packs: Cell<usize>,
     private_setups: Cell<usize>,
@@ -140,6 +144,7 @@ macro_rules! impl_counting_backend {
                 config: &common::KoalaBearD4RecursionConfig,
                 prev: &RecursionInput<'_, common::KoalaBearD4RecursionConfig, $air>,
             ) -> Result<(), VerificationError> {
+                self.$side.validations.set(self.$side.validations.get() + 1);
                 <common::KoalaBearD4Backend as PcsRecursionBackend<
                     common::KoalaBearD4RecursionConfig,
                     $air,
@@ -152,6 +157,9 @@ macro_rules! impl_counting_backend {
                 config: &common::KoalaBearD4RecursionConfig,
                 circuit: &mut CircuitBuilder<Challenge>,
             ) -> Result<(), VerificationError> {
+                self.$side
+                    .preparations
+                    .set(self.$side.preparations.get() + 1);
                 <common::KoalaBearD4Backend as PcsRecursionBackend<
                     common::KoalaBearD4RecursionConfig,
                     $air,
@@ -165,6 +173,7 @@ macro_rules! impl_counting_backend {
                 config: &common::KoalaBearD4RecursionConfig,
                 circuit: &mut CircuitBuilder<Challenge>,
             ) -> Result<Self::VerifierResult, VerificationError> {
+                self.$side.builds.set(self.$side.builds.get() + 1);
                 let inner = <common::KoalaBearD4Backend as PcsRecursionBackend<
                     common::KoalaBearD4RecursionConfig,
                     $air,
@@ -191,6 +200,25 @@ macro_rules! impl_counting_backend {
                     $air,
                     4,
                 >>::set_private_data(&self.inner, config, runner, op_ids, prev)
+            }
+
+            fn set_private_data_for_result(
+                &self,
+                config: &common::KoalaBearD4RecursionConfig,
+                runner: &mut CircuitRunner<'_, Challenge>,
+                result: &Self::VerifierResult,
+                prev: &RecursionInput<'_, common::KoalaBearD4RecursionConfig, $air>,
+            ) -> Result<(), &'static str> {
+                self.$side
+                    .private_setups
+                    .set(self.$side.private_setups.get() + 1);
+                <common::KoalaBearD4Backend as PcsRecursionBackend<
+                    common::KoalaBearD4RecursionConfig,
+                    $air,
+                    4,
+                >>::set_private_data_for_result(
+                    &self.inner, config, runner, &result.inner, prev
+                )
             }
 
             fn non_primitive_preprocessors(&self) -> Vec<Box<dyn NpoPreprocessor<F>>> {
@@ -775,7 +803,7 @@ fn aggregation_rejects_either_mismatch_before_packing_or_private_setup() {
     let short_n = 1 << 9;
     let (config, inner) = common::koala_bear_d4_recursion_config_and_backend();
     let right_reference = common::build_koala_bear_d4_first_layer_input_with_starts(0, 1);
-    let right_mismatch = common::build_koala_bear_d4_first_layer_input();
+    let mut right_mismatch = common::build_koala_bear_d4_first_layer_input();
     let right_public = vec![
         vec![];
         right_reference
@@ -807,6 +835,67 @@ fn aggregation_rejects_either_mismatch_before_packing_or_private_setup() {
         batch_output_preparations: Rc::clone(&batch_preparations),
     };
     let params = ProveNextLayerParams::default();
+
+    let left_input = RecursionInput::UniStark {
+        proof: &left_proof,
+        air: &air,
+        public_inputs: left_pis.clone(),
+        preprocessed_commit: None,
+    };
+    let valid_right_input: RecursionInput<'_, common::KoalaBearD4RecursionConfig, BatchOnly> =
+        RecursionInput::BatchStark {
+            proof: &right_reference.base_proof,
+            common_data: &right_reference.base_proof.stark_common,
+            table_public_inputs: right_public.clone(),
+        };
+    assert!(
+        build_aggregation_layer_circuit::<_, _, _, _, 4>(
+            &left_input,
+            &valid_right_input,
+            &config.clone().without_native_fri_snapshot(),
+            &backend,
+        )
+        .is_err(),
+        "the built-in FRI boundary must fail closed without a native snapshot"
+    );
+    assert_eq!(uni.validations.get(), 1);
+    assert_eq!(batch.validations.get(), 0);
+    assert_eq!(uni.preparations.get(), 0);
+    assert_eq!(batch.preparations.get(), 0);
+    assert_eq!(uni.builds.get(), 0);
+    assert_eq!(batch.builds.get(), 0);
+    uni.validations.set(0);
+
+    right_mismatch
+        .base_proof
+        .proof
+        .opening_proof
+        .final_poly
+        .push(Challenge::ZERO);
+    let bad_right_input: RecursionInput<'_, common::KoalaBearD4RecursionConfig, BatchOnly> =
+        RecursionInput::BatchStark {
+            proof: &right_mismatch.base_proof,
+            common_data: &right_mismatch.base_proof.stark_common,
+            table_public_inputs: right_public.clone(),
+        };
+    assert!(
+        build_aggregation_layer_circuit::<_, _, _, _, 4>(
+            &left_input,
+            &bad_right_input,
+            &config,
+            &backend,
+        )
+        .is_err()
+    );
+    assert_eq!(uni.validations.get(), 1);
+    assert_eq!(batch.validations.get(), 1);
+    assert_eq!(uni.preparations.get(), 0);
+    assert_eq!(batch.preparations.get(), 0);
+    assert_eq!(uni.builds.get(), 0);
+    assert_eq!(batch.builds.get(), 0);
+
+    uni.validations.set(0);
+    batch.validations.set(0);
     let prepared = PreparedAggregation::<_, FibonacciAir, BatchOnly, _, 4>::new(
         PreparedSource::UniStark {
             air: &air,

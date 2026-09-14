@@ -7,6 +7,7 @@
 //! leaf rows are private and their Merkle siblings arrive through the
 //! non-primitive-op channel.
 
+use alloc::string::ToString;
 use alloc::vec::Vec;
 use core::marker::PhantomData;
 
@@ -17,11 +18,17 @@ use p3_merkle_tree::MerkleCap;
 use p3_whir::pcs::proof::QueryOpenings;
 
 use crate::Target;
-use crate::input_contract::MerkleCapShape;
-use crate::input_contract::whir::{WhirUniShape, capture_whir_uni_shape, validate_whir_uni_input};
+use crate::input_contract::whir::{
+    CheckedWhirOpening, ValidatedWhirContext, WhirContextParams, WhirUniShape,
+    capture_whir_uni_shape, validate_whir_pcs_context_iter, validate_whir_uni_input,
+};
+use crate::input_contract::{FriOpeningLayout, MerkleCapShape};
+use crate::pcs::fri::CheckedFriCommitment;
 use crate::pcs::mmcs::convert_merkle_proof_to_siblings;
 use crate::pcs::whir::targets::{QueryOpeningTargets, SumcheckDataTargets, WhirProofTargets};
+use crate::pcs::whir::uni::WhirUniVerifierParams;
 use crate::pcs::whir::uni::pcs::WhirUniProof;
+use crate::pcs::whir::uni::recursive_pcs::DummyChallenger;
 use crate::traits::{CheckedRecursive, PreparedRecursive, Recursive};
 
 /// Number of extension targets one Merkle digest occupies in-circuit.
@@ -309,6 +316,206 @@ where
 {
     fn validate_input(input: &Self::Input) -> Result<(), crate::VerificationError> {
         validate_whir_uni_input::<F, EF, MT, DIGEST_ELEMS>(input)
+    }
+}
+
+fn checked_tree_height(log_height: usize) -> Result<usize, crate::VerificationError> {
+    1usize
+        .checked_shl(u32::try_from(log_height).map_err(|_| {
+            crate::VerificationError::InvalidProofShape(
+                "WHIR Merkle tree exponent does not fit in u32".into(),
+            )
+        })?)
+        .ok_or_else(|| {
+            crate::VerificationError::InvalidProofShape(
+                "WHIR Merkle tree height overflows usize".into(),
+            )
+        })
+}
+
+fn consumed_tree_log(
+    domain_size: usize,
+    folding_factor: usize,
+) -> Result<usize, crate::VerificationError> {
+    let height = domain_size
+        .checked_shr(u32::try_from(folding_factor).map_err(|_| {
+            crate::VerificationError::InvalidProofShape(
+                "WHIR folding factor does not fit in u32".into(),
+            )
+        })?)
+        .ok_or_else(|| {
+            crate::VerificationError::InvalidProofShape(
+                "WHIR folding factor exceeds the domain word width".into(),
+            )
+        })?;
+    if height == 0 || !height.is_power_of_two() {
+        return Err(crate::VerificationError::InvalidProofShape(
+            "WHIR queried Merkle tree height must be a positive power of two".into(),
+        ));
+    }
+    Ok(height.trailing_zeros() as usize)
+}
+
+impl<F, EF, MT, C, const DIGEST_ELEMS: usize> CheckedWhirOpening<F, EF, C>
+    for WhirUniProofTargets<F, EF, MT, DIGEST_ELEMS>
+where
+    F: p3_field::PrimeField64 + p3_field::TwoAdicField,
+    EF: ExtensionField<F> + BasedVectorSpace<F> + p3_field::TwoAdicField,
+    MT: Mmcs<F, Commitment = MerkleCap<F, [F; DIGEST_ELEMS]>>,
+    C: CheckedFriCommitment<EF, Input = MerkleCap<F, [F; DIGEST_ELEMS]>>,
+{
+    fn validate_whir_context(
+        input: &Self::Input,
+        params: &WhirUniVerifierParams<F>,
+        layout: FriOpeningLayout<'_>,
+        caps: &[&C::Input],
+    ) -> Result<ValidatedWhirContext<F>, crate::VerificationError> {
+        <Self as CheckedRecursive<EF>>::validate_input(input)?;
+        if input.rounds.len() != layout.commitment_count()
+            || caps.len() != layout.commitment_count()
+        {
+            return Err(crate::VerificationError::InvalidProofShape(
+                "WHIR proof, cap, and statement commitment counts disagree".into(),
+            ));
+        }
+
+        let permutation = params.permutation_config();
+        if permutation.is_arity4_shape() {
+            return Err(crate::VerificationError::InvalidProofShape(
+                "recursive WHIR supports only binary Merkle commitments".into(),
+            ));
+        }
+        let mut canonical = Vec::with_capacity(input.rounds.len());
+        let mut outside_cap_roots = Vec::with_capacity(input.rounds.len());
+        for (ordinal, (round, cap)) in input.rounds.iter().zip(caps).enumerate() {
+            let matrices = layout
+                .matrices(ordinal)
+                .map(|matrix| (matrix.log_height(), matrix.width(), matrix.point_count()));
+            let stacked_num_variables = crate::pcs::whir::uni::plan::checked_stacked_num_variables(
+                matrices.clone().map(|(log_height, width, _)| {
+                    (
+                        crate::pcs::whir::uni::plan::padded_arity(log_height, params.folding()),
+                        width,
+                    )
+                }),
+            )
+            .map_err(|error| crate::VerificationError::InvalidProofShape(error.to_string()))?;
+            let verifier_params = params
+                .round_params::<EF, DummyChallenger<F>>(stacked_num_variables)
+                .map_err(|error| crate::VerificationError::InvalidProofShape(error.to_string()))?;
+            let context = WhirContextParams::from_recursive(&verifier_params);
+            validate_whir_pcs_context_iter::<F, EF, MT, _>(round, &context, matrices)?;
+
+            let outside_log = context.rounds.first().map_or_else(
+                || consumed_tree_log(context.final_domain_size, context.final_folding_factor),
+                |first| consumed_tree_log(first.domain_size, first.folding_factor),
+            )?;
+            let outside_height = checked_tree_height(outside_log)?;
+            outside_cap_roots.push(C::validate_fri_cap(
+                cap,
+                permutation,
+                outside_log,
+                core::iter::once(outside_height),
+            )?);
+
+            for (step, next) in round.whir.rounds.iter().zip(0..) {
+                let commitment = step.commitment.as_ref().ok_or_else(|| {
+                    crate::VerificationError::InvalidProofShape(
+                        "WHIR intermediate commitment is missing".into(),
+                    )
+                })?;
+                let tree_log = context.rounds.get(next + 1).map_or_else(
+                    || consumed_tree_log(context.final_domain_size, context.final_folding_factor),
+                    |round| consumed_tree_log(round.domain_size, round.folding_factor),
+                )?;
+                let tree_height = checked_tree_height(tree_log)?;
+                crate::pcs::fri::validate_merkle_cap_context::<F, EF, DIGEST_ELEMS, _>(
+                    commitment,
+                    permutation,
+                    tree_log,
+                    core::iter::once(tree_height),
+                )?;
+            }
+            canonical.push(context);
+        }
+        let shape = capture_whir_uni_shape::<F, EF, MT, DIGEST_ELEMS>(input)?;
+        Ok(ValidatedWhirContext {
+            layout: layout.to_owned_layout(),
+            permutation,
+            canonical,
+            outside_cap_roots,
+            shape,
+            _field: PhantomData,
+        })
+    }
+
+    fn validate_whir_replacement(
+        input: &Self::Input,
+        expected: &ValidatedWhirContext<F>,
+        layout: FriOpeningLayout<'_>,
+        caps: &[&C::Input],
+    ) -> Result<(), crate::VerificationError> {
+        <Self as CheckedRecursive<EF>>::validate_input(input)?;
+        if !layout.matches_layout(expected.layout()) {
+            return Err(crate::VerificationError::InvalidProofShape(
+                "WHIR replacement statement layout changed".into(),
+            ));
+        }
+        if input.rounds.len() != expected.canonical().len()
+            || caps.len() != expected.canonical().len()
+        {
+            return Err(crate::VerificationError::InvalidProofShape(
+                "WHIR replacement commitment count changed".into(),
+            ));
+        }
+        let mut outside_cap_roots = Vec::with_capacity(input.rounds.len());
+        for (ordinal, ((round, cap), context)) in input
+            .rounds
+            .iter()
+            .zip(caps)
+            .zip(expected.canonical())
+            .enumerate()
+        {
+            let matrices = layout
+                .matrices(ordinal)
+                .map(|matrix| (matrix.log_height(), matrix.width(), matrix.point_count()));
+            validate_whir_pcs_context_iter::<F, EF, MT, _>(round, context, matrices)?;
+            let outside_log = context.rounds.first().map_or_else(
+                || consumed_tree_log(context.final_domain_size, context.final_folding_factor),
+                |first| consumed_tree_log(first.domain_size, first.folding_factor),
+            )?;
+            outside_cap_roots.push(C::validate_fri_cap(
+                cap,
+                expected.permutation(),
+                outside_log,
+                core::iter::once(checked_tree_height(outside_log)?),
+            )?);
+            for (step, next) in round.whir.rounds.iter().zip(0..) {
+                let commitment = step.commitment.as_ref().ok_or_else(|| {
+                    crate::VerificationError::InvalidProofShape(
+                        "WHIR intermediate commitment is missing".into(),
+                    )
+                })?;
+                let tree_log = context.rounds.get(next + 1).map_or_else(
+                    || consumed_tree_log(context.final_domain_size, context.final_folding_factor),
+                    |round| consumed_tree_log(round.domain_size, round.folding_factor),
+                )?;
+                crate::pcs::fri::validate_merkle_cap_context::<F, EF, DIGEST_ELEMS, _>(
+                    commitment,
+                    expected.permutation(),
+                    tree_log,
+                    core::iter::once(checked_tree_height(tree_log)?),
+                )?;
+            }
+        }
+        if outside_cap_roots != expected.outside_cap_roots
+            || capture_whir_uni_shape::<F, EF, MT, DIGEST_ELEMS>(input)? != expected.shape
+        {
+            return Err(crate::VerificationError::InvalidProofShape(
+                "WHIR replacement allocation or cap authority changed".into(),
+            ));
+        }
+        Ok(())
     }
 }
 

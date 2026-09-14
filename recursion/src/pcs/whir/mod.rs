@@ -27,6 +27,8 @@ pub use targets::{
 pub use uni::{WhirUniPcs, WhirUniProof, WhirUniProverData};
 pub use verifier::verify_whir_circuit;
 
+pub use crate::input_contract::{CheckedWhirOpening, ValidatedWhirContext};
+
 #[cfg(test)]
 pub(crate) mod test_util {
     use alloc::format;

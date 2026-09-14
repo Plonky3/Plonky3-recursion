@@ -19,7 +19,7 @@ use p3_uni_stark::{
 use thiserror::Error;
 
 use crate::input_contract::stark_layout::{
-    CommitmentRole, InstanceLayout, MatrixRoute, NativeStarkLayout,
+    CommitmentRole, InstanceLayout, MatrixRoute, NativeStarkLayout, validate_preprocessed_metadata,
 };
 use crate::pcs::fri::fri_proof_num_queries;
 use crate::traits::RecursiveAir;
@@ -249,6 +249,20 @@ where
         || (commitments.random.is_some() != SC::Pcs::ZK)
     {
         return Err(GenerationError::RandomizationError);
+    }
+
+    if let Some(global) = &common_data.preprocessed {
+        let metadata = global
+            .instances
+            .iter()
+            .map(|entry| {
+                entry
+                    .as_ref()
+                    .map(|meta| (meta.matrix_index, meta.width, meta.degree_bits))
+            })
+            .collect::<Vec<_>>();
+        validate_preprocessed_metadata(&metadata, &global.matrix_to_instance, degree_bits)
+            .map_err(|_| GenerationError::InvalidProofShape("invalid preprocessed metadata"))?;
     }
 
     let pcs = config.pcs();

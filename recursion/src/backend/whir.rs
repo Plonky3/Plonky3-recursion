@@ -7,8 +7,8 @@ use alloc::{format, vec};
 
 use p3_circuit::{CircuitBuilder, CircuitRunner, NonPrimitiveOpId};
 use p3_circuit_prover::batch_stark_prover::{
-    RecomposeAirBuilder, RecomposeProver, poseidon2_air_builders_for_configs,
-    poseidon2_preprocessor, recompose_preprocessor,
+    RecomposeAirBuilder, RecomposeProver, lookups_for_circuit_table_air,
+    poseidon2_air_builders_for_configs, poseidon2_preprocessor, recompose_preprocessor,
 };
 use p3_circuit_prover::common::{NpoAirBuilder, NpoPreprocessor};
 use p3_circuit_prover::config::StarkField;
@@ -21,12 +21,19 @@ use p3_field::extension::BinomiallyExtendable;
 use p3_field::{
     Algebra, BasedVectorSpace, ExtensionField, PrimeCharacteristicRing, PrimeField64, TwoAdicField,
 };
+use p3_lookup::Lookup;
 use p3_lookup::logup::LogUpGadget;
 use p3_uni_stark::{StarkGenericConfig, SymbolicExpressionExt, Val};
 
+use crate::backend::CheckedVerifierResult;
+use crate::backend::context::{
+    StarkLayoutPolicy, StarkPackingAuthority, capture_stark_authority, input_caps,
+    validate_stark_replacement,
+};
 use crate::backend::transcript::replay_recursion_input_transcript;
 use crate::generation::OpeningTranscript;
 use crate::input_contract::stark::validate_batch_proof_native;
+use crate::input_contract::{CheckedWhirOpening, ValidatedWhirContext};
 use crate::ops::Poseidon2Config;
 use crate::pcs::whir::uni::WhirUniVerifierParams;
 use crate::prepared::input::{capture_builtin_input_contract, validate_builtin_prepared_input};
@@ -36,6 +43,7 @@ use crate::recursion::{PcsRecursionBackend, RecursionInput, VerifierCircuitResul
 use crate::traits::{CheckedRecursive, PreparedRecursive, RecursiveAir};
 use crate::verifier::{
     InputResourceUsage, ObservableCommitment, VerificationError, VerifierLimits,
+    plan_batch_native_layout, plan_uni_native_layout, reconstruct_batch_tables,
     verify_p3_batch_proof_circuit, verify_p3_uni_proof_circuit,
 };
 use crate::{ChallengerPermConfig, Recursive, RecursivePcs};
@@ -161,7 +169,7 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
     }
 
     #[must_use]
-    pub fn with_limits(mut self, limits: VerifierLimits) -> Self {
+    pub const fn with_limits(mut self, limits: VerifierLimits) -> Self {
         self.limits = limits;
         self
     }
@@ -229,14 +237,14 @@ where
                     entry.op_type.as_str().len(),
                 )?;
             }
-            if let Some(&degree) = proof.proof.degree_bits.iter().max() {
-                if degree > limits.max_log_domain_or_degree {
-                    return Err(VerificationError::ResourceLimitExceeded {
-                        component: "log domain or degree",
-                        actual: degree,
-                        limit: limits.max_log_domain_or_degree,
-                    });
-                }
+            if let Some(&degree) = proof.proof.degree_bits.iter().max()
+                && degree > limits.max_log_domain_or_degree
+            {
+                return Err(VerificationError::ResourceLimitExceeded {
+                    component: "log domain or degree",
+                    actual: degree,
+                    limit: limits.max_log_domain_or_degree,
+                });
             }
         }
     }
@@ -270,14 +278,14 @@ where
         PreparedInput::BatchStark { proof, .. } => {
             usage.instances = proof.proof.opened_values.instances.len();
             usage.metadata_entries = proof.non_primitives.len();
-            if let Some(&degree) = proof.proof.degree_bits.iter().max() {
-                if degree > limits.max_log_domain_or_degree {
-                    return Err(VerificationError::ResourceLimitExceeded {
-                        component: "log domain or degree",
-                        actual: degree,
-                        limit: limits.max_log_domain_or_degree,
-                    });
-                }
+            if let Some(&degree) = proof.proof.degree_bits.iter().max()
+                && degree > limits.max_log_domain_or_degree
+            {
+                return Err(VerificationError::ResourceLimitExceeded {
+                    component: "log domain or degree",
+                    actual: degree,
+                    limit: limits.max_log_domain_or_degree,
+                });
             }
         }
     }
@@ -297,6 +305,155 @@ fn poseidon2_challenger_shape_configs(config: Poseidon2Config) -> Vec<Poseidon2C
         return vec![config];
     }
     vec![config.for_challenger(), config]
+}
+
+fn plan_whir_batch<SC, A>(
+    config: &SC,
+    prev: &RecursionInput<'_, SC, A>,
+    provers: &[Box<dyn TableProver<SC>>],
+) -> Result<crate::input_contract::stark_layout::NativeStarkLayout<'static>, VerificationError>
+where
+    SC: WhirRecursionConfig + 'static,
+    A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
+    Val<SC>: PrimeField64 + TwoAdicField,
+    SC::Challenge: ExtensionField<Val<SC>> + PrimeCharacteristicRing + ExtractBinomialW<Val<SC>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        From<p3_uni_stark::SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+    SC::Pcs: RecursivePcs<
+            SC,
+            SC::InputProof,
+            SC::OpeningProof,
+            SC::Commitment,
+            <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain,
+        >,
+{
+    let RecursionInput::BatchStark {
+        proof,
+        common_data,
+        table_public_inputs,
+    } = prev
+    else {
+        unreachable!()
+    };
+    if proof.ext_degree != 4 {
+        return Err(VerificationError::InvalidProofShape(format!(
+            "WhirRecursionBackend supports batch proofs of ext_degree 4, got {}",
+            proof.ext_degree
+        )));
+    }
+    let tables = reconstruct_batch_tables::<SC, 4>(config, proof, provers)?;
+    if tables.public_values.as_slice() != table_public_inputs {
+        return Err(VerificationError::InvalidProofShape(
+            "batch table public inputs disagree with reconstructed AIR metadata".into(),
+        ));
+    }
+    let lookups: Vec<Vec<Lookup<Val<SC>>>> = tables
+        .airs
+        .iter()
+        .zip(&tables.trace_lens)
+        .map(|(air, &trace_len)| {
+            lookups_for_circuit_table_air::<SC, 4>(&air.to_table_air(), trace_len, config.is_zk())
+                .to_vec()
+        })
+        .collect();
+    let public_counts = table_public_inputs.iter().map(Vec::len).collect::<Vec<_>>();
+    plan_batch_native_layout(
+        config,
+        &tables.airs,
+        &proof.proof,
+        &public_counts,
+        common_data,
+        &lookups,
+        &LogUpGadget,
+    )
+}
+
+#[allow(clippy::type_complexity)]
+fn preflight_whir_context<SC, A>(
+    config: &SC,
+    prev: &RecursionInput<'_, SC, A>,
+    provers: &[Box<dyn TableProver<SC>>],
+) -> Result<
+    (
+        ValidatedWhirContext<Val<SC>>,
+        StarkPackingAuthority<Val<SC>>,
+        StarkLayoutPolicy,
+    ),
+    VerificationError,
+>
+where
+    SC: WhirRecursionConfig + 'static,
+    A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
+    Val<SC>: PrimeField64 + TwoAdicField,
+    SC::Challenge: BasedVectorSpace<Val<SC>>
+        + ExtensionField<Val<SC>>
+        + PrimeCharacteristicRing
+        + ExtractBinomialW<Val<SC>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        From<p3_uni_stark::SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+    SC::OpeningProof: CheckedWhirOpening<Val<SC>, SC::Challenge, SC::Commitment>,
+    SC::Pcs: RecursivePcs<
+            SC,
+            SC::InputProof,
+            SC::OpeningProof,
+            SC::Commitment,
+            <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain,
+            VerifierParams = WhirUniVerifierParams<Val<SC>>,
+        >,
+{
+    crate::prepared::input::validate_builtin_input_raw::<SC, A, SC::Commitment, SC::OpeningProof>(
+        prev,
+    )?;
+    if config.is_zk() != 0 {
+        return Err(VerificationError::InvalidProofShape(
+            "WhirRecursionBackend supports only non-ZK STARK inputs".into(),
+        ));
+    }
+    if config
+        .pcs_verifier_params()
+        .permutation_config()
+        .is_arity4_shape()
+    {
+        return Err(VerificationError::InvalidProofShape(
+            "WhirRecursionBackend supports only binary Merkle commitments".into(),
+        ));
+    }
+    let layout = match prev {
+        RecursionInput::UniStark {
+            proof,
+            air,
+            public_inputs,
+            preprocessed_commit,
+        } => plan_uni_native_layout(
+            config,
+            *air,
+            proof,
+            public_inputs.len(),
+            preprocessed_commit.as_ref(),
+        )?,
+        RecursionInput::BatchStark { .. } => plan_whir_batch(config, prev, provers)?,
+    };
+    let caps = input_caps(prev, &layout)?;
+    let opening = match prev {
+        RecursionInput::UniStark { proof, .. } => &proof.opening_proof,
+        RecursionInput::BatchStark { proof, .. } => &proof.proof.opening_proof,
+    };
+    let context = <SC::OpeningProof as CheckedWhirOpening<
+        Val<SC>,
+        SC::Challenge,
+        SC::Commitment,
+    >>::validate_whir_context(
+        opening,
+        config.pcs_verifier_params(),
+        layout.opening_view(),
+        &caps,
+    )?;
+    let authority = capture_stark_authority(prev);
+    let policy = StarkLayoutPolicy {
+        is_zk: config.is_zk(),
+        log_max_lde_height: config.pcs().log_max_lde_height(),
+    };
+    Ok((context, authority, policy))
 }
 
 /// WHIR recursion backend tagged with batch/extension field degree `D` (only `4` is supported).
@@ -338,6 +495,133 @@ where
         Vec<NonPrimitiveOpId>,
         VerifierLimits,
     ),
+}
+
+/// Checked built-in WHIR result retaining canonical proof, cap, and packing authority.
+pub type CheckedWhirVerifierResult<SC> =
+    CheckedVerifierResult<WhirVerifierResult<SC>, ValidatedWhirContext<Val<SC>>, Val<SC>>;
+
+impl<SC, A> VerifierCircuitResult<SC, A> for CheckedWhirVerifierResult<SC>
+where
+    SC: WhirRecursionConfig,
+    SC::Pcs: RecursivePcs<
+            SC,
+            SC::InputProof,
+            SC::OpeningProof,
+            SC::Commitment,
+            <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain,
+            VerifierParams = WhirUniVerifierParams<Val<SC>>,
+        >,
+    SC::OpeningProof: CheckedWhirOpening<Val<SC>, SC::Challenge, SC::Commitment>,
+    A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
+    Val<SC>: PrimeField64,
+    SC::Challenge: BasedVectorSpace<Val<SC>>
+        + From<Val<SC>>
+        + ExtensionField<Val<SC>>
+        + PrimeCharacteristicRing,
+{
+    fn pack_public_inputs(
+        &self,
+        prev: &RecursionInput<'_, SC, A>,
+    ) -> Result<Vec<SC::Challenge>, VerificationError> {
+        self.validate_replacement(prev)?;
+        self.inner.pack_public_inputs(prev)
+    }
+
+    fn pack_private_inputs(
+        &self,
+        prev: &RecursionInput<'_, SC, A>,
+    ) -> Result<Vec<SC::Challenge>, VerificationError> {
+        self.validate_replacement(prev)?;
+        self.inner.pack_private_inputs(prev)
+    }
+
+    fn op_ids(&self) -> &[NonPrimitiveOpId] {
+        <WhirVerifierResult<SC> as VerifierCircuitResult<SC, A>>::op_ids(&self.inner)
+    }
+}
+
+impl<SC> CheckedWhirVerifierResult<SC>
+where
+    SC: WhirRecursionConfig,
+    SC::Pcs: RecursivePcs<
+            SC,
+            SC::InputProof,
+            SC::OpeningProof,
+            SC::Commitment,
+            <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain,
+            VerifierParams = WhirUniVerifierParams<Val<SC>>,
+        >,
+    SC::OpeningProof: CheckedWhirOpening<Val<SC>, SC::Challenge, SC::Commitment>,
+{
+    fn validate_config(&self, config: &SC) -> Result<(), VerificationError>
+    where
+        Val<SC>: PrimeField64 + TwoAdicField,
+        SC::Challenge: ExtensionField<Val<SC>> + TwoAdicField,
+    {
+        let params = config.pcs_verifier_params();
+        if self.pcs.permutation() != params.permutation_config()
+            || self.pcs.canonical().len() != self.pcs.layout().commitment_count()
+        {
+            return Err(VerificationError::PreparedInputMismatch {
+                component: "input.whir_params",
+            });
+        }
+        for (ordinal, expected) in self.pcs.canonical().iter().enumerate() {
+            let stacked = crate::pcs::whir::uni::plan::checked_stacked_num_variables(
+                self.pcs
+                    .layout()
+                    .opening_view()
+                    .matrices(ordinal)
+                    .map(|matrix| {
+                        (
+                            crate::pcs::whir::uni::plan::padded_arity(
+                                matrix.log_height(),
+                                params.folding(),
+                            ),
+                            matrix.width(),
+                        )
+                    }),
+            )
+            .map_err(|error| VerificationError::InvalidProofShape(error.to_string()))?;
+            let actual = params
+                .round_params::<SC::Challenge, crate::pcs::whir::uni::recursive_pcs::DummyChallenger<Val<SC>>>(stacked)?;
+            if crate::input_contract::whir::WhirContextParams::from_recursive(&actual) != *expected
+            {
+                return Err(VerificationError::PreparedInputMismatch {
+                    component: "input.whir_params",
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_replacement<A>(
+        &self,
+        prev: &RecursionInput<'_, SC, A>,
+    ) -> Result<(), VerificationError>
+    where
+        A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
+        Val<SC>: PrimeField64,
+        SC::Challenge: ExtensionField<Val<SC>> + PrimeCharacteristicRing,
+    {
+        validate_stark_replacement(&self.stark, self.pcs.layout(), self.policy, prev)?;
+        let caps = input_caps(prev, self.pcs.layout())?;
+        let opening = match prev {
+            RecursionInput::UniStark { proof, .. } => &proof.opening_proof,
+            RecursionInput::BatchStark { proof, .. } => &proof.proof.opening_proof,
+        };
+        <SC::OpeningProof as CheckedWhirOpening<
+            Val<SC>,
+            SC::Challenge,
+            SC::Commitment,
+        >>::validate_whir_replacement(
+            opening,
+            &self.pcs,
+            self.pcs.layout().opening_view(),
+            &caps,
+        )
+    }
 }
 
 impl<SC, A> VerifierCircuitResult<SC, A> for WhirVerifierResult<SC>
@@ -473,17 +757,22 @@ where
             <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain,
             VerifierParams = WhirUniVerifierParams<Val<SC>>,
         >,
+    SC::OpeningProof: CheckedWhirOpening<Val<SC>, SC::Challenge, SC::Commitment>,
 {
-    type VerifierResult = WhirVerifierResult<SC>;
+    type VerifierResult = CheckedWhirVerifierResult<SC>;
 
     fn validate_input(
         &self,
-        _config: &SC,
+        config: &SC,
         prev: &RecursionInput<'_, SC, A>,
     ) -> Result<(), VerificationError> {
-        crate::prepared::input::validate_builtin_input_raw::<SC, A, SC::Commitment, SC::OpeningProof>(
-            prev,
-        )
+        let provers = match prev {
+            RecursionInput::BatchStark { proof, .. } => {
+                PcsRecursionBackend::<SC, A, 4>::non_primitive_provers(self, proof.ext_degree)
+            }
+            RecursionInput::UniStark { .. } => Vec::new(),
+        };
+        preflight_whir_context(config, prev, &provers).map(|_| ())
     }
 
     fn preflight_input(
@@ -508,7 +797,16 @@ where
         config: &SC,
         circuit: &mut CircuitBuilder<SC::Challenge>,
     ) -> Result<Self::VerifierResult, VerificationError> {
-        match prev {
+        preflight_basic_whir_input(&self.0.limits, prev)?;
+        let provers = match prev {
+            RecursionInput::BatchStark { proof, .. } => {
+                PcsRecursionBackend::<SC, A, 4>::non_primitive_provers(self, proof.ext_degree)
+            }
+            RecursionInput::UniStark { .. } => Vec::new(),
+        };
+        let (pcs_context, stark_authority, policy) =
+            preflight_whir_context(config, prev, &provers)?;
+        let inner: WhirVerifierResult<SC> = match prev {
             RecursionInput::UniStark {
                 proof,
                 air,
@@ -544,7 +842,7 @@ where
                     config.pcs_verifier_params(),
                     self.0.challenger_perm_config,
                 )?;
-                Ok(WhirVerifierResult::UniStark(
+                Ok::<_, VerificationError>(WhirVerifierResult::UniStark(
                     verifier_inputs,
                     op_ids,
                     self.0.limits,
@@ -562,8 +860,6 @@ where
                         proof.ext_degree
                     )));
                 }
-                let provers =
-                    PcsRecursionBackend::<SC, A, 4>::non_primitive_provers(self, proof.ext_degree);
                 let lookup_gadget = LogUpGadget::new();
                 let (verifier_inputs, op_ids) = verify_p3_batch_proof_circuit::<
                     SC,
@@ -585,13 +881,19 @@ where
                     self.0.challenger_perm_config,
                     &provers,
                 )?;
-                Ok(WhirVerifierResult::BatchStark(
+                Ok::<_, VerificationError>(WhirVerifierResult::BatchStark(
                     verifier_inputs,
                     op_ids,
                     self.0.limits,
                 ))
             }
-        }
+        }?;
+        Ok(CheckedVerifierResult::new(
+            inner,
+            pcs_context,
+            stark_authority,
+            policy,
+        ))
     }
 
     fn set_private_data(
@@ -614,6 +916,24 @@ where
         SC::with_whir_opening_proof(prev, move |opening_proof| {
             SC::set_whir_private_data(config, runner, op_ids, opening_proof, transcript)
         })
+    }
+
+    fn set_private_data_for_result(
+        &self,
+        config: &SC,
+        runner: &mut CircuitRunner<'_, SC::Challenge>,
+        result: &Self::VerifierResult,
+        prev: &RecursionInput<'_, SC, A>,
+    ) -> Result<(), &'static str> {
+        result
+            .validate_config(config)
+            .map_err(|_| "WHIR verifier parameters changed after circuit construction")?;
+        result
+            .validate_replacement(prev)
+            .map_err(|_| "WHIR replacement input failed retained validation")?;
+        let op_ids =
+            <CheckedWhirVerifierResult<SC> as VerifierCircuitResult<SC, A>>::op_ids(result);
+        self.set_private_data(config, runner, op_ids, prev)
     }
 
     fn non_primitive_preprocessors(&self) -> Vec<Box<dyn NpoPreprocessor<Val<SC>>>> {
@@ -691,7 +1011,8 @@ where
             VerifierParams = WhirUniVerifierParams<Val<SC>>,
         >,
     SC::Commitment: PreparedRecursive<SC::Challenge>,
-    SC::OpeningProof: PreparedRecursive<SC::Challenge>,
+    SC::OpeningProof: PreparedRecursive<SC::Challenge>
+        + CheckedWhirOpening<Val<SC>, SC::Challenge, SC::Commitment>,
 {
     type InputContract = crate::input_contract::InputContract<
         Val<SC>,
@@ -704,11 +1025,19 @@ where
         config: &SC,
         source: &RecursionInput<'_, SC, A>,
     ) -> Result<Self::InputContract, VerificationError> {
+        preflight_basic_whir_input(&self.0.limits, source)?;
+        let provers = match source {
+            RecursionInput::BatchStark { proof, .. } => {
+                PcsRecursionBackend::<SC, A, 4>::non_primitive_provers(self, proof.ext_degree)
+            }
+            RecursionInput::UniStark { .. } => Vec::new(),
+        };
+        preflight_whir_context(config, source, &provers)?;
         capture_builtin_input_contract::<SC, A, SC::Commitment, SC::OpeningProof>(
             config,
             source,
             true,
-            |degree| PcsRecursionBackend::<SC, A, 4>::non_primitive_provers(self, degree),
+            |_| provers,
         )
     }
 

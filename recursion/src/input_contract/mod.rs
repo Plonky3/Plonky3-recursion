@@ -16,6 +16,6 @@ pub use stark::{
 };
 pub use stark_layout::{FriMatrixGeometry, FriOpeningLayout};
 pub use whir::{
-    OpeningBatchShape, QueryOpeningsShape, SumcheckShape, WhirPcsRoundShape, WhirShape,
-    WhirStepShape, WhirUniShape,
+    CheckedWhirOpening, OpeningBatchShape, QueryOpeningsShape, SumcheckShape, ValidatedWhirContext,
+    WhirPcsRoundShape, WhirShape, WhirStepShape, WhirUniShape,
 };

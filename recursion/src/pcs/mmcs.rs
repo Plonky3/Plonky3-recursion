@@ -924,10 +924,6 @@ where
         return Err(FriError::ZeroQueries);
     }
 
-    // Transcript replay, mirroring `verify_fri` step for step: a challenger that diverges here
-    // samples different query indices, and the frontier walk is bound to those indices.
-    let alpha: Challenge = challenger.sample_algebra_element();
-
     let expected_rounds = proof.commit_phase_commits.len();
     if proof.commit_phase_openings.len() != expected_rounds {
         return Err(FriError::CommitPhaseOpeningsCountMismatch {
@@ -959,17 +955,45 @@ where
                 got: opening.sibling_values.len(),
             });
         }
+        let expected_siblings = opening
+            .checked_log_arity(params.max_log_arity)
+            .and_then(|log| 1usize.checked_shl(log as u32))
+            .and_then(|arity| arity.checked_sub(1))
+            .ok_or(FriError::InvalidLogArity {
+                round,
+                log_arity: opening.log_arity as usize,
+                max: params.max_log_arity,
+            })?;
+        if let Some(actual) = opening
+            .sibling_values
+            .iter()
+            .map(Vec::len)
+            .find(|&actual| actual != expected_siblings)
+        {
+            return Err(FriError::SiblingValuesLengthMismatch {
+                round,
+                expected: expected_siblings,
+                got: actual,
+            });
+        }
     }
 
-    let log_global_max_height: usize =
-        log_arities.iter().sum::<usize>() + params.log_blowup + params.log_final_poly_len;
+    let log_global_max_height = log_arities
+        .iter()
+        .try_fold(0usize, |sum, &arity| sum.checked_add(arity))
+        .and_then(|sum| sum.checked_add(params.log_blowup))
+        .and_then(|sum| sum.checked_add(params.log_final_poly_len))
+        .ok_or(FriError::GlobalMaxHeightTooLarge {
+            log_global_max_height: usize::MAX,
+            two_adicity: Val::TWO_ADICITY,
+        })?;
 
     // Bound the global height by the field two-adicity before using it: the query phase
     // evaluates the final polynomial at a 2^log_global_max_height-th root of unity, which
     // does not exist past the two-adicity and would panic. When the input has no commitments
     // the cross-check below is skipped, so for a malformed proof this is the only guard
     // standing between us and that panic.
-    if log_global_max_height > Val::TWO_ADICITY {
+    if log_global_max_height > Val::TWO_ADICITY || log_global_max_height >= usize::BITS as usize {
         return Err(FriError::GlobalMaxHeightTooLarge {
             log_global_max_height,
             two_adicity: Val::TWO_ADICITY,
@@ -980,13 +1004,20 @@ where
     // (Ben-Sasson et al., "Fast RS IOPP", ICALP 2018, §2.1.1):
     //   H_in   = max committed log_2(domain.size) + log_blowup
     //   H_fold = sum(per-round log-arities) + log_blowup + log_final_poly_len
-    let expected_log_global_max_height = commitments_with_opening_points
-        .iter()
-        .flat_map(|(_, mats)| {
-            mats.iter()
-                .map(|(domain, _)| log2_strict_usize(domain.size()) + params.log_blowup)
-        })
-        .max();
+    let mut expected_log_global_max_height = None;
+    for (_, matrices) in commitments_with_opening_points {
+        for (domain, _) in matrices {
+            let height = log2_strict_usize(domain.size())
+                .checked_add(params.log_blowup)
+                .filter(|&height| height < usize::BITS as usize)
+                .ok_or(FriError::GlobalMaxHeightTooLarge {
+                    log_global_max_height: usize::MAX,
+                    two_adicity: Val::TWO_ADICITY,
+                })?;
+            expected_log_global_max_height =
+                Some(expected_log_global_max_height.map_or(height, |old: usize| old.max(height)));
+        }
+    }
     if let Some(expected) = expected_log_global_max_height
         && log_global_max_height != expected
     {
@@ -1003,6 +1034,82 @@ where
         });
     }
 
+    if proof.final_poly.len() != params.final_poly_len() {
+        return Err(FriError::FinalPolyLengthMismatch {
+            expected: params.final_poly_len(),
+            got: proof.final_poly.len(),
+        });
+    }
+
+    let log_final_height = params
+        .log_blowup
+        .checked_add(params.log_final_poly_len)
+        .filter(|&height| height < usize::BITS as usize)
+        .ok_or(FriError::GlobalMaxHeightTooLarge {
+            log_global_max_height: usize::MAX,
+            two_adicity: Val::TWO_ADICITY,
+        })?;
+
+    let extra_query_index_bits =
+        FriFoldingStrategy::<Val, Challenge>::extra_query_index_bits(&folding);
+    let query_index_bits = log_global_max_height
+        .checked_add(extra_query_index_bits)
+        .filter(|&bits| bits < usize::BITS as usize)
+        .ok_or(FriError::GlobalMaxHeightTooLarge {
+            log_global_max_height: usize::MAX,
+            two_adicity: Val::TWO_ADICITY,
+        })?;
+
+    if proof.input_openings.len() != commitments_with_opening_points.len() {
+        return Err(FriError::InputProofBatchCountMismatch {
+            expected: commitments_with_opening_points.len(),
+            got: proof.input_openings.len(),
+        });
+    }
+    for (batch, (opening, (_, matrices))) in proof
+        .input_openings
+        .iter()
+        .zip(commitments_with_opening_points)
+        .enumerate()
+    {
+        if opening.opened_values.len() != params.num_queries {
+            return Err(FriError::InputOpeningsQueryCountMismatch {
+                batch,
+                expected: params.num_queries,
+                got: opening.opened_values.len(),
+            });
+        }
+        for rows in &opening.opened_values {
+            if rows.len() != matrices.len() {
+                return Err(FriError::BatchOpenedValuesCountMismatch {
+                    batch,
+                    expected: matrices.len(),
+                    got: rows.len(),
+                });
+            }
+            for (matrix, (row, (_, points))) in rows.iter().zip(matrices).enumerate() {
+                if points.is_empty() {
+                    return Err(FriError::MatrixWithoutOpeningPoints { batch, matrix });
+                }
+                for (point, (_, claimed)) in points.iter().enumerate() {
+                    if row.len() != claimed.len() {
+                        return Err(FriError::PointEvaluationCountMismatch {
+                            batch,
+                            matrix,
+                            point,
+                            expected: row.len(),
+                            got: claimed.len(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    // Only after the complete borrowed schedule/proof preflight may transcript
+    // replay begin.
+    let alpha: Challenge = challenger.sample_algebra_element();
+
     let betas: Vec<Challenge> = proof
         .commit_phase_commits
         .iter()
@@ -1016,12 +1123,6 @@ where
         })
         .collect::<Result<Vec<_>, _>>()?;
 
-    if proof.final_poly.len() != params.final_poly_len() {
-        return Err(FriError::FinalPolyLengthMismatch {
-            expected: params.final_poly_len(),
-            got: proof.final_poly.len(),
-        });
-    }
     challenger.observe_algebra_slice(&proof.final_poly);
 
     for &log_arity in &log_arities {
@@ -1032,15 +1133,9 @@ where
         return Err(FriError::InvalidPowWitness);
     }
 
-    let log_final_height = params.log_blowup + params.log_final_poly_len;
-
-    let extra_query_index_bits =
-        FriFoldingStrategy::<Val, Challenge>::extra_query_index_bits(&folding);
-    let indices: Vec<usize> = core::iter::repeat_with(|| {
-        challenger.sample_bits(log_global_max_height + extra_query_index_bits)
-    })
-    .take(params.num_queries)
-    .collect();
+    let indices: Vec<usize> = core::iter::repeat_with(|| challenger.sample_bits(query_index_bits))
+        .take(params.num_queries)
+        .collect();
 
     let reduced_openings = open_inputs::<Val, Challenge, _, FriMmcs>(
         params,

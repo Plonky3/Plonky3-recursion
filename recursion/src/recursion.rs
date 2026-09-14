@@ -196,6 +196,19 @@ where
         prev: &RecursionInput<'_, SC, A>,
     ) -> Result<(), &'static str>;
 
+    /// Result-aware private setup. Built-in checked backends override this to
+    /// validate replacement authority before plugin creation or transcript
+    /// replay; custom backends retain their explicit legacy lane.
+    fn set_private_data_for_result(
+        &self,
+        config: &SC,
+        runner: &mut CircuitRunner<'_, SC::Challenge>,
+        result: &Self::VerifierResult,
+        prev: &RecursionInput<'_, SC, A>,
+    ) -> Result<(), &'static str> {
+        self.set_private_data(config, runner, result.op_ids(), prev)
+    }
+
     /// Non-primitive preprocessors for this extension degree (e.g. for NPOs that need preprocessing).
     fn non_primitive_preprocessors(&self) -> Vec<Box<dyn NpoPreprocessor<Val<SC>>>> {
         Vec::new()
@@ -308,8 +321,8 @@ where
         Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
     let mut circuit_builder = CircuitBuilder::new();
-    backend.validate_input(config, prev)?;
     backend.preflight_input(config, prev)?;
+    backend.validate_input(config, prev)?;
     backend.prepare_circuit(config, &mut circuit_builder)?;
 
     // Build verifier constraints.
@@ -362,7 +375,7 @@ where
             .map_err(VerificationError::Circuit)?;
 
         backend
-            .set_private_data(config, &mut runner, verifier_result.op_ids(), prev)
+            .set_private_data_for_result(config, &mut runner, verifier_result, prev)
             .map_err(|e| proof_shape_err(&e))?;
 
         runner.run().map_err(VerificationError::Circuit)?
@@ -449,10 +462,10 @@ where
     let mut circuit_builder = CircuitBuilder::new();
 
     // Validate both inputs before either backend prepares plugins or allocates verifier targets.
-    <B as PcsRecursionBackend<SC, A1, D>>::validate_input(backend, config, left)?;
-    <B as PcsRecursionBackend<SC, A2, D>>::validate_input(backend, config, right)?;
     <B as PcsRecursionBackend<SC, A1, D>>::preflight_input(backend, config, left)?;
     <B as PcsRecursionBackend<SC, A2, D>>::preflight_input(backend, config, right)?;
+    <B as PcsRecursionBackend<SC, A1, D>>::validate_input(backend, config, left)?;
+    <B as PcsRecursionBackend<SC, A2, D>>::validate_input(backend, config, right)?;
 
     <B as PcsRecursionBackend<SC, A1, D>>::prepare_circuit(backend, config, &mut circuit_builder)?;
     <B as PcsRecursionBackend<SC, A2, D>>::prepare_circuit(backend, config, &mut circuit_builder)?;
@@ -499,20 +512,20 @@ where
         .set_private_inputs(&private_inputs)
         .map_err(VerificationError::Circuit)?;
 
-    <B as PcsRecursionBackend<SC, A1, D>>::set_private_data(
+    <B as PcsRecursionBackend<SC, A1, D>>::set_private_data_for_result(
         backend,
         config,
         &mut runner,
-        left_result.op_ids(),
+        left_result,
         left,
     )
     .map_err(|e| proof_shape_err(&e.to_string()))?;
 
-    <B as PcsRecursionBackend<SC, A2, D>>::set_private_data(
+    <B as PcsRecursionBackend<SC, A2, D>>::set_private_data_for_result(
         backend,
         config,
         &mut runner,
-        right_result.op_ids(),
+        right_result,
         right,
     )
     .map_err(|e| proof_shape_err(&e.to_string()))?;

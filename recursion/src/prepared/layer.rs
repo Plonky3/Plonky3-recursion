@@ -254,11 +254,11 @@ where
         runner
             .set_private_inputs(&private)
             .map_err(VerificationError::Circuit)?;
-        <B as PcsRecursionBackend<SC, A, D>>::set_private_data(
+        <B as PcsRecursionBackend<SC, A, D>>::set_private_data_for_result(
             &self.backend,
             &self.config,
             &mut runner,
-            self.verifier_result.op_ids(),
+            &self.verifier_result,
             &prev,
         )
         .map_err(|message| VerificationError::InvalidProofShape(message.into()))?;
@@ -408,6 +408,18 @@ mod tests {
         ) -> Result<(), &'static str> {
             self.setup_calls.set(self.setup_calls.get() + 1);
             self.inner.set_private_data(config, runner, op_ids, prev)
+        }
+
+        fn set_private_data_for_result(
+            &self,
+            config: &SC,
+            runner: &mut CircuitRunner<'_, SC::Challenge>,
+            result: &Self::VerifierResult,
+            prev: &crate::recursion::RecursionInput<'_, SC, A>,
+        ) -> Result<(), &'static str> {
+            self.setup_calls.set(self.setup_calls.get() + 1);
+            self.inner
+                .set_private_data_for_result(config, runner, &result.inner, prev)
         }
 
         fn non_primitive_preprocessors(&self) -> Vec<Box<dyn NpoPreprocessor<Val<SC>>>> {
