@@ -488,6 +488,8 @@ where
             .collect();
         let stacked_num_variables = stacked_num_variables(&openings, params.folding())?;
 
+        #[cfg(test)]
+        crate::pcs::whir::uni::acceptance_probe::target_challenger();
         let claims = build_round_claims::<BF, EF, Ch>(
             circuit,
             challenger,

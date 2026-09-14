@@ -1,5 +1,7 @@
 //! Bridge from WHIR's multilinear PCS to the univariate STARK machinery.
 
+#[cfg(test)]
+pub(crate) mod acceptance_probe;
 pub mod bridge;
 pub mod circuit;
 pub mod pcs;
@@ -185,6 +187,8 @@ where
         )?;
     }
 
+    #[cfg(test)]
+    acceptance_probe::query_replay();
     let mut challenger = transcript.challenger;
 
     let mut out = Vec::with_capacity(opening_proof.rounds.len());

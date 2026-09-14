@@ -128,6 +128,8 @@ where
     type Input = WhirUniProof<F, EF, MT>;
 
     fn new(circuit: &mut CircuitBuilder<EF>, input: &Self::Input) -> Self {
+        #[cfg(test)]
+        crate::pcs::whir::uni::acceptance_probe::target_new();
         let dimension = <EF as BasedVectorSpace<F>>::DIMENSION;
         // `verify_whir_circuit`'s round-cap absorption (`observe_ext_slice`)
         // unpacks each cap-entry target into `dimension` base coefficients and
@@ -227,6 +229,8 @@ where
     }
 
     fn get_values(input: &Self::Input) -> Vec<EF> {
+        #[cfg(test)]
+        crate::pcs::whir::uni::acceptance_probe::get_values();
         let mut out = Vec::new();
         for round in &input.rounds {
             for batch in &round.evals {
@@ -271,6 +275,8 @@ where
     }
 
     fn get_private_values(input: &Self::Input) -> Vec<EF> {
+        #[cfg(test)]
+        crate::pcs::whir::uni::acceptance_probe::get_private_values();
         let mut out = Vec::new();
         let push =
             |openings: &QueryOpenings<F, EF, MT::MultiProof>, out: &mut Vec<EF>| match openings {
@@ -567,23 +573,39 @@ mod tests {
 
         let (_pcs, _commit, _coms, proof) = open_two_matrices();
 
-        let mut builder = CircuitBuilder::<EF>::new();
-        let before_public = builder.public_input_count();
-        let before_private = builder.private_input_count();
-        let _targets =
-            <WhirUniProofTargets<F, EF, MyMmcs, 8> as Recursive<EF>>::new(&mut builder, &proof);
-        let public_allocated = builder.public_input_count() - before_public;
-        let private_allocated = builder.private_input_count() - before_private;
+        let ((public_allocated, private_allocated, public_values, private_values), counters) =
+            crate::pcs::whir::uni::acceptance_probe::measure(|| {
+                let mut builder = CircuitBuilder::<EF>::new();
+                let before_public = builder.public_input_count();
+                let before_private = builder.private_input_count();
+                let _targets = <WhirUniProofTargets<F, EF, MyMmcs, 8> as Recursive<EF>>::new(
+                    &mut builder,
+                    &proof,
+                );
+                let public_allocated = builder.public_input_count() - before_public;
+                let private_allocated = builder.private_input_count() - before_private;
 
-        let public_values =
-            <WhirUniProofTargets<F, EF, MyMmcs, 8> as Recursive<EF>>::get_values(&proof);
-        let private_values =
-            <WhirUniProofTargets<F, EF, MyMmcs, 8> as Recursive<EF>>::get_private_values(&proof);
+                let public_values =
+                    <WhirUniProofTargets<F, EF, MyMmcs, 8> as Recursive<EF>>::get_values(&proof);
+                let private_values =
+                    <WhirUniProofTargets<F, EF, MyMmcs, 8> as Recursive<EF>>::get_private_values(
+                        &proof,
+                    );
+                (
+                    public_allocated,
+                    private_allocated,
+                    public_values,
+                    private_values,
+                )
+            });
 
         assert_eq!(public_allocated, public_values.len());
         assert_eq!(private_allocated, private_values.len());
         assert!(!public_values.is_empty());
         assert!(!private_values.is_empty());
-        let _ = (before_public, before_private, vec![EF::ZERO]);
+        assert_eq!(counters.target_new, 1);
+        assert_eq!(counters.get_values, 1);
+        assert_eq!(counters.get_private_values, 1);
+        let _ = vec![EF::ZERO];
     }
 }

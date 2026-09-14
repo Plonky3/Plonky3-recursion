@@ -51,6 +51,8 @@ where
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
         Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
+    #[cfg(test)]
+    crate::pcs::whir::uni::acceptance_probe::transcript_replay();
     match prev {
         RecursionInput::UniStark {
             proof,

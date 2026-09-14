@@ -100,6 +100,8 @@ where
         folding,
         variable_order,
     )?;
+    #[cfg(test)]
+    crate::pcs::whir::uni::acceptance_probe::restoration();
 
     let mut out = Vec::with_capacity(opening_proof.rounds.len());
     for (round_idx, round) in opening_proof.rounds.iter().enumerate() {

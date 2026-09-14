@@ -703,6 +703,7 @@ pub(crate) mod tests {
     extern crate std;
     use alloc::vec;
     use alloc::vec::Vec;
+    use core::sync::atomic::{AtomicUsize, Ordering};
 
     use p3_baby_bear::{BabyBear, Poseidon2BabyBear};
     use p3_challenger::DuplexChallenger;
@@ -719,6 +720,7 @@ pub(crate) mod tests {
     use p3_whir::parameters::{FoldingFactor, ProtocolParameters, SecurityAssumption};
     use rand::SeedableRng;
     use rand::rngs::SmallRng;
+    use std::sync::Arc;
 
     use super::WhirUniPcs;
 
@@ -732,6 +734,97 @@ pub(crate) mod tests {
     type MyDft = Radix2DFTSmallBatch<F>;
     pub(crate) type MyChallenger = DuplexChallenger<F, Perm, 16, 8>;
     pub(crate) type MyPcs = WhirUniPcs<EF, F, MyDft, MyMmcs, MyChallenger, PrefixProver<F, EF>>;
+
+    #[derive(Clone)]
+    struct CountingChallenger<C> {
+        inner: C,
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl<C> CountingChallenger<C> {
+        fn new(inner: C, calls: Arc<AtomicUsize>) -> Self {
+            Self { inner, calls }
+        }
+
+        fn count(&self) {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    impl<C, T> p3_challenger::CanObserve<T> for CountingChallenger<C>
+    where
+        C: p3_challenger::CanObserve<T>,
+    {
+        fn observe(&mut self, value: T) {
+            self.count();
+            self.inner.observe(value);
+        }
+    }
+
+    impl<C, T> p3_challenger::CanSample<T> for CountingChallenger<C>
+    where
+        C: p3_challenger::CanSample<T>,
+    {
+        fn sample(&mut self) -> T {
+            self.count();
+            self.inner.sample()
+        }
+    }
+
+    impl<C, T> p3_challenger::CanSampleBits<T> for CountingChallenger<C>
+    where
+        C: p3_challenger::CanSampleBits<T>,
+    {
+        fn sample_bits(&mut self, bits: usize) -> T {
+            self.count();
+            self.inner.sample_bits(bits)
+        }
+    }
+
+    impl<C> p3_challenger::CanSampleUniformBits<F> for CountingChallenger<C>
+    where
+        C: p3_challenger::CanSampleUniformBits<F>,
+    {
+        fn sample_uniform_bits<const RESAMPLE: bool>(
+            &mut self,
+            bits: usize,
+        ) -> Result<usize, p3_challenger::ResamplingError> {
+            self.count();
+            self.inner.sample_uniform_bits::<RESAMPLE>(bits)
+        }
+    }
+
+    impl<C> p3_challenger::GrindingChallenger for CountingChallenger<C>
+    where
+        C: p3_challenger::GrindingChallenger<Witness = F>,
+    {
+        type Witness = F;
+
+        fn grind(&mut self, bits: usize) -> Self::Witness {
+            self.count();
+            self.inner.grind(bits)
+        }
+    }
+
+    impl<C> p3_challenger::FieldChallenger<F> for CountingChallenger<C> where
+        C: p3_challenger::FieldChallenger<F>
+    {
+    }
+
+    type CountingPcs =
+        WhirUniPcs<EF, F, MyDft, MyMmcs, CountingChallenger<MyChallenger>, PrefixProver<F, EF>>;
+    type CountingConfig =
+        p3_uni_stark::StarkConfig<CountingPcs, EF, CountingChallenger<MyChallenger>>;
+
+    fn counting_pcs(base: &MyPcs, calls: Arc<AtomicUsize>) -> CountingPcs {
+        WhirUniPcs::new(
+            base.protocol_params.clone(),
+            base.dft.clone(),
+            base.mmcs.clone(),
+            CountingChallenger::new(base.challenger_proto.clone(), calls),
+            base.log_max_lde_height,
+        )
+    }
 
     pub(super) fn test_pcs() -> MyPcs {
         let mut rng = SmallRng::seed_from_u64(1);
@@ -1014,6 +1107,134 @@ pub(crate) mod tests {
             &mut challenger,
         )
         .expect("honest opening verifies");
+    }
+
+    #[test]
+    fn verify_rejects_a_malformed_last_argument_before_any_challenger_use() {
+        let (base_pcs, commitment, matrices, proof) = open_two_matrices();
+        let mut malformed_last = proof.rounds[0].clone();
+        match &mut malformed_last.whir.final_openings {
+            p3_whir::pcs::proof::QueryOpenings::Base(opening) => {
+                opening.rows.last_mut().unwrap().pop();
+            }
+            p3_whir::pcs::proof::QueryOpenings::Extension(opening) => {
+                opening.rows.last_mut().unwrap().pop();
+            }
+        }
+        let two_round_proof = super::WhirUniProof {
+            rounds: vec![proof.rounds[0].clone(), malformed_last],
+        };
+        let commitments = vec![
+            (commitment.clone(), matrices.clone()),
+            (commitment, matrices),
+        ];
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut challenger =
+            CountingChallenger::new(base_pcs.challenger_proto.clone(), Arc::clone(&calls));
+        let pcs = counting_pcs(&base_pcs, Arc::clone(&calls));
+
+        let error = <_ as p3_commit::Pcs<EF, CountingChallenger<MyChallenger>>>::verify(
+            &pcs,
+            commitments,
+            &two_round_proof,
+            &mut challenger,
+        )
+        .expect_err("the malformed last WHIR argument must reject");
+
+        assert!(matches!(
+            error,
+            super::WhirUniPcsError::ShapeMismatch { round: 1 }
+        ));
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "native verify_rounds must finish the whole structural pass before challenger work"
+        );
+    }
+
+    #[test]
+    fn direct_replay_and_restoration_preflight_the_malformed_last_argument() {
+        let (base_pcs, commitment, matrices, proof) = open_two_matrices();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counting = counting_pcs(&base_pcs, Arc::clone(&calls));
+        let honest_transcript = crate::generation::OpeningTranscript::<CountingConfig> {
+            challenger: CountingChallenger::new(
+                base_pcs.challenger_proto.clone(),
+                Arc::clone(&calls),
+            ),
+            commitments_with_opening_points: vec![(commitment.clone(), matrices.clone())],
+        };
+        let (honest, positive) = crate::pcs::whir::uni::acceptance_probe::measure(|| {
+            crate::pcs::whir::uni::restore_whir_recursion_paths::<
+                CountingConfig,
+                PackedF,
+                PackedF,
+                MyHash,
+                MyCompress,
+                2,
+                8,
+            >(
+                &counting.mmcs,
+                honest_transcript,
+                &proof,
+                &counting.protocol_params,
+                counting.folding(),
+                p3_sumcheck::strategy::VariableOrder::Prefix,
+            )
+        });
+        honest.expect("the genuine WHIR proof replays and restores its paths");
+        assert_eq!(positive.query_replay, 1);
+        assert_eq!(positive.restoration, 1);
+        assert!(
+            calls.load(Ordering::SeqCst) > 0,
+            "the positive replay must exercise the wrapped challenger"
+        );
+
+        calls.store(0, Ordering::SeqCst);
+        let mut malformed_last = proof.rounds[0].clone();
+        match &mut malformed_last.whir.final_openings {
+            p3_whir::pcs::proof::QueryOpenings::Base(opening) => {
+                opening.rows.last_mut().unwrap().pop();
+            }
+            p3_whir::pcs::proof::QueryOpenings::Extension(opening) => {
+                opening.rows.last_mut().unwrap().pop();
+            }
+        }
+        let malformed_proof = super::WhirUniProof {
+            rounds: vec![proof.rounds[0].clone(), malformed_last],
+        };
+        let malformed_transcript = crate::generation::OpeningTranscript::<CountingConfig> {
+            challenger: CountingChallenger::new(
+                base_pcs.challenger_proto.clone(),
+                Arc::clone(&calls),
+            ),
+            commitments_with_opening_points: vec![
+                (commitment.clone(), matrices.clone()),
+                (commitment, matrices),
+            ],
+        };
+        let (malformed, negative) = crate::pcs::whir::uni::acceptance_probe::measure(|| {
+            crate::pcs::whir::uni::restore_whir_recursion_paths::<
+                CountingConfig,
+                PackedF,
+                PackedF,
+                MyHash,
+                MyCompress,
+                2,
+                8,
+            >(
+                &counting.mmcs,
+                malformed_transcript,
+                &malformed_proof,
+                &counting.protocol_params,
+                counting.folding(),
+                p3_sumcheck::strategy::VariableOrder::Prefix,
+            )
+        });
+        assert!(malformed.is_err());
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert_eq!(negative.query_replay, 0);
+        assert_eq!(negative.restoration, 0);
     }
 
     #[test]

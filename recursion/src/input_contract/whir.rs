@@ -648,6 +648,10 @@ fn validate_digest_packing(
     Ok(())
 }
 
+#[cfg(test)]
+#[path = "whir/context_acceptance_tests.rs"]
+mod context_acceptance_tests;
+
 /// Validate raw WHIR proof structure before target allocation.
 ///
 /// These checks cover only relationships visible in the proof itself. Round counts,

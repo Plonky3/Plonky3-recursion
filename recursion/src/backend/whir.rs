@@ -1247,6 +1247,10 @@ where
     }
 }
 
+#[cfg(test)]
+#[path = "whir/acceptance_counter_tests.rs"]
+mod acceptance_counter_tests;
+
 impl<SC, A, const WIDTH: usize, const RATE: usize, C> PreparedPcsRecursionBackend<SC, A, 4>
     for WhirRecursionBackendForExt<4, WIDTH, RATE, C>
 where
