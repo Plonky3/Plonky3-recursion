@@ -696,14 +696,31 @@ mod tests {
 
     use p3_baby_bear::BabyBear;
     use p3_circuit::CircuitBuilder;
-    use p3_circuit_prover::{BatchStarkProver, ConstraintProfile, TablePacking};
+    use p3_circuit_prover::{
+        BatchStarkProof, BatchStarkProver, CircuitVerifier, ConstraintProfile,
+        NonPrimitiveTableEntry, TablePacking,
+    };
     use p3_field::PrimeCharacteristicRing;
+    use p3_field::extension::BinomialExtensionField;
+    use p3_koala_bear::KoalaBear;
 
     use crate::artifact::{
         ArtifactError, ArtifactLimits, CanonicalStatement, ExpectedVerifierArtifact,
         PortableArtifactExport, PortableVerifier,
     };
-    use crate::builtin_config::{FriConfigV1, SuiteIdV1, baby_bear_d4_poseidon2_binary};
+    use crate::builtin_config::{
+        FriConfigV1, KoalaBearD4Poseidon2BinaryConfig, SuiteIdV1, baby_bear_d4_poseidon2_binary,
+        koala_bear_d4_poseidon2_binary,
+    };
+    use crate::prepared::test_common;
+    use crate::{
+        BatchOnly, FriRecursionConfig, ProveNextLayerParams, TrustedPreparedAggregation,
+        TrustedPreparedInput, TrustedPreparedSource,
+    };
+
+    use super::super::descriptor::{RelationDescriptorV1, read_common, write_common};
+    use super::super::native::{read_merkle_cap, write_merkle_cap};
+    use super::super::wire::{FieldEncoding, Reader, Writer};
 
     fn exported_double_circuit(multiplier: u32, input_value: u32) -> (Vec<u8>, Vec<u8>) {
         let limits = ArtifactLimits::default();
@@ -867,6 +884,193 @@ mod tests {
         assert!(
             imported_a
                 .verify_encoded(&proof_b, CanonicalStatement::new(&[], 0))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn trusted_recursive_aggregation_roundtrips_after_proving_owners_are_dropped() {
+        type InputConfig = test_common::KoalaBearD4RecursionConfig;
+        type PortableConfig = KoalaBearD4Poseidon2BinaryConfig;
+
+        let limits = ArtifactLimits::default();
+        let fixture = test_common::KoalaBearD4StatementFixture::new();
+        let left_statement = [KoalaBear::from_u64(7), KoalaBear::from_u64(9)];
+        let right_statement = [KoalaBear::from_u64(11), KoalaBear::from_u64(13)];
+        let left_proof = fixture.prove([7, 9]);
+        let right_proof = fixture.prove([11, 13]);
+        let output_config = fixture.layer_config.clone();
+        let native_params = output_config.native_fri_validation_params().unwrap();
+        let owner = TrustedPreparedAggregation::<
+            InputConfig,
+            InputConfig,
+            BatchOnly,
+            BatchOnly,
+            _,
+            4,
+        >::new(
+            TrustedPreparedSource::BatchStark {
+                verifier: fixture.verifier(),
+                proof: &left_proof,
+                statement: &left_statement,
+            },
+            TrustedPreparedSource::BatchStark {
+                verifier: fixture.verifier(),
+                proof: &right_proof,
+                statement: &right_statement,
+            },
+            output_config,
+            fixture.backend.clone(),
+            ProveNextLayerParams::default(),
+        )
+        .unwrap();
+        let output = owner
+            .prove(
+                TrustedPreparedInput::BatchStark {
+                    proof: &left_proof,
+                    statement: &left_statement,
+                },
+                TrustedPreparedInput::BatchStark {
+                    proof: &right_proof,
+                    statement: &right_statement,
+                },
+            )
+            .unwrap();
+        let parent = owner.verifier();
+        let layout = parent.aggregation_statement_layout().unwrap();
+        assert_eq!(layout.split_at(), 2);
+        assert_eq!(layout.output().base_len(), 4);
+
+        let descriptor = FriConfigV1::new(
+            SuiteIdV1::KoalaBearD4Poseidon2BinaryFri,
+            native_params.log_blowup() as u32,
+            native_params.log_final_poly_len() as u32,
+            native_params.max_log_arity() as u32,
+            native_params.num_queries() as u32,
+            native_params.commit_pow_bits() as u32,
+            native_params.query_pow_bits() as u32,
+            0,
+            0,
+            0,
+            0,
+        );
+        let portable_config =
+            koala_bear_d4_poseidon2_binary(&descriptor, &limits.verifier).unwrap();
+        let relation = RelationDescriptorV1::from_native(parent.relation()).unwrap();
+
+        let mut common_writer = Writer::new(limits.max_verifier_bytes);
+        write_common::<InputConfig>(
+            &mut common_writer,
+            parent.common_data(),
+            |writer, commitment| {
+                write_merkle_cap::<KoalaBear, 8>(writer, commitment, FieldEncoding::u32())
+            },
+        )
+        .unwrap();
+        let common_bytes = common_writer.finish().unwrap();
+        let mut common_reader = Reader::new(&common_bytes, &limits);
+        let common = read_common::<PortableConfig>(&mut common_reader, |reader| {
+            read_merkle_cap::<KoalaBear, 8>(reader, FieldEncoding::u32())
+        })
+        .unwrap();
+        common_reader.finish().unwrap();
+        let portable_native_verifier =
+            CircuitVerifier::from_independently_trusted_builtin_artifact(
+                portable_config,
+                relation.into_trusted().unwrap(),
+                common,
+            )
+            .unwrap();
+
+        let recursive_proof = output.0;
+        let mut proof_writer = Writer::new(limits.max_proof_bytes);
+        super::write_batch_proof::<InputConfig, KoalaBear>(
+            &mut proof_writer,
+            &recursive_proof.proof,
+            FieldEncoding::u32(),
+            |writer, commitment| {
+                write_merkle_cap::<KoalaBear, 8>(writer, commitment, FieldEncoding::u32())
+            },
+            |writer, proof| {
+                let codec = super::MerkleMmcsCodec::<KoalaBear, 8>::new(FieldEncoding::u32());
+                super::write_fri_proof::<
+                    KoalaBear,
+                    BinomialExtensionField<KoalaBear, 4>,
+                    _,
+                    _,
+                    _,
+                    _,
+                >(writer, proof, FieldEncoding::u32(), &codec, &codec)
+            },
+        )
+        .unwrap();
+        let proof_core_bytes = proof_writer.finish().unwrap();
+        let mut proof_reader = Reader::new(&proof_core_bytes, &limits);
+        let portable_proof_core = super::read_batch_proof::<PortableConfig, KoalaBear>(
+            &mut proof_reader,
+            FieldEncoding::u32(),
+            <PortableConfig as super::BuiltinArtifactConfig>::read_commitment,
+            <PortableConfig as super::BuiltinArtifactConfig>::read_opening_proof,
+        )
+        .unwrap();
+        proof_reader.finish().unwrap();
+        let portable_non_primitives = recursive_proof
+            .non_primitives
+            .into_iter()
+            .map(|entry| NonPrimitiveTableEntry::<PortableConfig> {
+                op_type: entry.op_type,
+                rows: entry.rows,
+                lanes: entry.lanes,
+                public_values: entry.public_values,
+                air_variant: entry.air_variant,
+            })
+            .collect();
+        let portable_native_proof = BatchStarkProof::<PortableConfig> {
+            proof: portable_proof_core,
+            table_packing: recursive_proof.table_packing,
+            rows: recursive_proof.rows,
+            alu_variant: recursive_proof.alu_variant,
+            ext_degree: recursive_proof.ext_degree,
+            w_binomial: recursive_proof.w_binomial,
+            alu_quintic_trinomial: recursive_proof.alu_quintic_trinomial,
+            non_primitives: portable_non_primitives,
+            stark_common: p3_batch_stark::CommonData::new(None, Vec::new()),
+        };
+        let verifier_bytes = portable_native_verifier
+            .encode_verifier_artifact(limits)
+            .unwrap();
+        let proof_bytes = portable_native_verifier
+            .encode_proof_artifact(&portable_native_proof, limits)
+            .unwrap();
+
+        drop(portable_native_proof);
+        drop(portable_native_verifier);
+        drop(parent);
+        drop(owner);
+        drop(left_proof);
+        drop(right_proof);
+        drop(fixture);
+
+        let imported = PortableVerifier::decode(
+            &verifier_bytes,
+            ExpectedVerifierArtifact::from_trusted_bytes(&verifier_bytes),
+            limits,
+        )
+        .unwrap();
+        let expected = [7_u32, 9, 11, 13]
+            .into_iter()
+            .flat_map(u32::to_le_bytes)
+            .collect::<Vec<_>>();
+        imported
+            .verify_encoded(&proof_bytes, CanonicalStatement::new(&expected, 4))
+            .unwrap();
+        let swapped = [11_u32, 13, 7, 9]
+            .into_iter()
+            .flat_map(u32::to_le_bytes)
+            .collect::<Vec<_>>();
+        assert!(
+            imported
+                .verify_encoded(&proof_bytes, CanonicalStatement::new(&swapped, 4))
                 .is_err()
         );
     }
