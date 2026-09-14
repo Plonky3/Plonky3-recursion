@@ -1,7 +1,9 @@
+mod descriptor;
 pub(crate) mod native;
 pub(crate) mod wire;
 
 use crate::VerifierLimits;
+use crate::builtin_config::BuiltinConfigError;
 
 /// The physical artifact carried by a V1 frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -46,6 +48,8 @@ pub enum ArtifactError {
     UnsupportedVersion(u16),
     #[error("artifact suite {0} is unsupported")]
     UnsupportedSuite(u16),
+    #[error("artifact built-in AIR tag {0} is unsupported")]
+    UnsupportedBuiltinAir(u16),
     #[error("artifact is truncated")]
     Truncated,
     #[error("artifact has trailing bytes")]
@@ -68,4 +72,6 @@ pub enum ArtifactError {
     },
     #[error("artifact allocation failed for {component}")]
     AllocationFailed { component: &'static str },
+    #[error("artifact contains an invalid built-in configuration: {0}")]
+    BuiltinConfig(#[from] BuiltinConfigError),
 }
