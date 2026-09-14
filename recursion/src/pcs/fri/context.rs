@@ -13,8 +13,8 @@ use crate::Target;
 use crate::input_contract::FriOpeningLayout;
 use crate::input_contract::stark_layout::NativeStarkLayout;
 use crate::ops::PermConfig;
-use crate::pcs::fri::targets::MerkleCapTargets;
-use crate::traits::CheckedRecursive;
+use crate::pcs::fri::targets::{FriPrivateAdvice, InputProofTargets, MerkleCapTargets};
+use crate::traits::{CheckedRecursive, RecursiveExtensionMmcs, RecursiveMmcs};
 use crate::verifier::VerificationError;
 
 /// The scalar/layout result of the legacy context checker.
@@ -87,6 +87,8 @@ impl ValidatedFriContext {
 /// The implementation deliberately receives a borrowed cap and returns only
 /// its root count.  It never copies cap entries or acquires an MMCS instance.
 pub trait CheckedFriCommitment<EF: p3_field::Field>: CheckedRecursive<EF> {
+    fn checked_fri_public_values_len(input: &Self::Input) -> Result<usize, VerificationError>;
+
     fn validate_fri_cap<I>(
         input: &Self::Input,
         permutation: PermConfig,
@@ -95,6 +97,15 @@ pub trait CheckedFriCommitment<EF: p3_field::Field>: CheckedRecursive<EF> {
     ) -> Result<usize, VerificationError>
     where
         I: Iterator<Item = usize> + Clone;
+}
+
+pub(crate) fn checked_cap_public_values_len<EF: p3_field::Field>(
+    roots: usize,
+    digest_elements: usize,
+) -> Result<usize, VerificationError> {
+    let count = checked_mul_len(roots, digest_elements, "cap lifted public values")?;
+    check_vec_len::<EF>(count, "cap lifted public values")?;
+    Ok(count)
 }
 
 /// Narrow checked opening capability for the built-in FRI target composition.
@@ -127,6 +138,10 @@ where
     F: p3_field::Field,
     EF: ExtensionField<F>,
 {
+    fn checked_fri_public_values_len(input: &Self::Input) -> Result<usize, VerificationError> {
+        checked_cap_public_values_len::<EF>(input.num_roots(), DIGEST_ELEMS)
+    }
+
     fn validate_fri_cap<I>(
         input: &Self::Input,
         permutation: PermConfig,
@@ -142,6 +157,7 @@ where
             index_bit_len,
             heights,
         )?;
+        checked_cap_public_values_len::<EF>(input.num_roots(), DIGEST_ELEMS)?;
         Ok(input.num_roots())
     }
 }
@@ -213,23 +229,137 @@ pub(crate) fn checked_phase_counts(
     Ok((full_base, sibling_coefficients, private_values))
 }
 
-#[allow(dead_code)]
-pub(crate) fn checked_flat_value_totals(
-    query_count: usize,
-    input_per_query: usize,
-    phase_per_query: usize,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct FriValueCounts {
+    private_values: usize,
+    public_values: usize,
+}
+
+impl FriValueCounts {
+    #[allow(dead_code)]
+    pub(crate) const fn private_values(self) -> usize {
+        self.private_values
+    }
+
+    #[allow(dead_code)]
+    pub(crate) const fn public_values(self) -> usize {
+        self.public_values
+    }
+}
+
+pub(crate) fn checked_flat_value_totals<EF: p3_field::Field>(
+    input_private_total: usize,
+    phase_private_total: usize,
     hiding_tail_total: usize,
-    phase_cap_values: usize,
-    phase_count: usize,
+    phase_cap_public_total: usize,
+    commit_witness_count: usize,
     final_poly_len: usize,
-) -> Result<(usize, usize), VerificationError> {
-    let per_query = checked_add_len(input_per_query, phase_per_query, "private per-query")?;
-    let private_values = checked_mul_len(query_count, per_query, "private value total")?;
+) -> Result<FriValueCounts, VerificationError> {
+    let private_values = checked_add_len(
+        input_private_total,
+        phase_private_total,
+        "private input and phase values",
+    )?;
     let private_values = checked_add_len(private_values, hiding_tail_total, "private tail total")?;
-    let public_values = checked_add_len(phase_cap_values, phase_count, "public phase values")?;
+    let public_values = checked_add_len(
+        phase_cap_public_total,
+        commit_witness_count,
+        "public phase caps and witnesses",
+    )?;
     let public_values = checked_add_len(public_values, final_poly_len, "public final polynomial")?;
     let public_values = checked_add_len(public_values, 1, "public query witness")?;
-    Ok((private_values, public_values))
+    check_vec_len::<EF>(private_values, "FRI private values")?;
+    check_vec_len::<EF>(public_values, "FRI public values")?;
+    Ok(FriValueCounts {
+        private_values,
+        public_values,
+    })
+}
+
+#[allow(clippy::type_complexity)]
+pub(crate) fn validate_counted_fri_raw<F, EF, RI, RF>(
+    proof: &FriProof<EF, RF::Input, F, Vec<BatchMultiOpening<F, RI::Input>>>,
+    hiding_tails: Option<&OpenedValues<EF>>,
+) -> Result<FriValueCounts, VerificationError>
+where
+    F: p3_field::Field,
+    EF: ExtensionField<F>,
+    RI: crate::traits::RecursiveMmcs<F, EF>,
+    RF: crate::traits::RecursiveExtensionMmcs<F, EF>,
+    RI::Proof: FriPrivateAdvice<EF, MultiProof = <RI::Input as Mmcs<F>>::MultiProof>,
+    RF::Proof: FriPrivateAdvice<EF, MultiProof = <RF::Input as Mmcs<EF>>::MultiProof>,
+    RF::Commitment: CheckedFriCommitment<EF, Input = <RF::Input as Mmcs<EF>>::Commitment>,
+{
+    crate::pcs::fri::targets::validate_fri_input::<
+        F,
+        EF,
+        RF,
+        InputProofTargets<F, EF, RI>,
+        crate::pcs::fri::targets::Witness<F>,
+    >(proof)?;
+
+    let mut input_private_total = 0usize;
+    for batch in &proof.input_openings {
+        for query in &batch.opened_values {
+            for row in query {
+                input_private_total =
+                    checked_add_len(input_private_total, row.len(), "FRI input row values")?;
+            }
+        }
+        input_private_total = checked_add_len(
+            input_private_total,
+            <RI::Proof as FriPrivateAdvice<EF>>::checked_private_values_len(&batch.opening_proof)?,
+            "FRI input advice values",
+        )?;
+    }
+
+    let mut phase_private_total = 0usize;
+    for step in &proof.commit_phase_openings {
+        for row in &step.sibling_values {
+            let coefficients =
+                checked_mul_len(row.len(), EF::DIMENSION, "FRI phase sibling coefficients")?;
+            phase_private_total = checked_add_len(
+                phase_private_total,
+                coefficients,
+                "FRI phase sibling values",
+            )?;
+        }
+        phase_private_total = checked_add_len(
+            phase_private_total,
+            <RF::Proof as FriPrivateAdvice<EF>>::checked_private_values_len(&step.opening_proof)?,
+            "FRI phase advice values",
+        )?;
+    }
+
+    let mut hiding_tail_total = 0usize;
+    if let Some(tails) = hiding_tails {
+        for round in tails {
+            for matrix in round {
+                for point in matrix {
+                    hiding_tail_total =
+                        checked_add_len(hiding_tail_total, point.len(), "FRI hiding tail values")?;
+                }
+            }
+        }
+    }
+
+    let mut phase_cap_public_total = 0usize;
+    for cap in &proof.commit_phase_commits {
+        phase_cap_public_total = checked_add_len(
+            phase_cap_public_total,
+            RF::Commitment::checked_fri_public_values_len(cap)?,
+            "FRI phase cap public values",
+        )?;
+    }
+
+    checked_flat_value_totals::<EF>(
+        input_private_total,
+        phase_private_total,
+        hiding_tail_total,
+        phase_cap_public_total,
+        proof.commit_pow_witnesses.len(),
+        proof.final_poly.len(),
+    )
 }
 
 fn validate_hiding_tail_partition(
@@ -600,13 +730,13 @@ where
 /// Complete, cap-authoritative context validation used by checked FRI entry
 /// points.  The old scalar checker is intentionally kept separate so legacy
 /// arithmetic-only tests cannot mint this authority without real caps.
-#[allow(clippy::too_many_arguments)]
-fn validate_fri_borrowed_with_caps<F, EF, IM, FM, W, C, PC>(
-    proof: &FriProof<EF, FM, W, Vec<BatchMultiOpening<F, IM>>>,
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn validate_fri_borrowed_with_caps<F, EF, RI, RF>(
+    proof: &FriProof<EF, RF::Input, F, Vec<BatchMultiOpening<F, RI::Input>>>,
     native: &NativeFriParams,
     recursive: &FriVerifierParams,
     layout: FriOpeningLayout<'_>,
-    input_caps: &[&C::Input],
+    input_caps: &[&<RI::Commitment as crate::traits::Recursive<EF>>::Input],
     input_salt_elems: Option<usize>,
     phase_salt_elems: Option<usize>,
     hiding_tails: Option<&OpenedValues<EF>>,
@@ -614,11 +744,14 @@ fn validate_fri_borrowed_with_caps<F, EF, IM, FM, W, C, PC>(
 where
     F: TwoAdicField + PrimeField64,
     EF: ExtensionField<F>,
-    IM: Mmcs<F, Commitment = C::Input>,
-    FM: Mmcs<EF, Commitment = PC::Input>,
-    C: CheckedFriCommitment<EF>,
-    PC: CheckedFriCommitment<EF>,
+    RI: RecursiveMmcs<F, EF>,
+    RF: RecursiveExtensionMmcs<F, EF>,
+    RI::Proof: FriPrivateAdvice<EF, MultiProof = <RI::Input as Mmcs<F>>::MultiProof>,
+    RF::Proof: FriPrivateAdvice<EF, MultiProof = <RF::Input as Mmcs<EF>>::MultiProof>,
+    RI::Commitment: CheckedFriCommitment<EF>,
+    RF::Commitment: CheckedFriCommitment<EF, Input = <RF::Input as Mmcs<EF>>::Commitment>,
 {
+    validate_counted_fri_raw::<F, EF, RI, RF>(proof, hiding_tails)?;
     let permutation = recursive.permutation_config.ok_or_else(|| {
         invalid("checked FRI context requires a recursive MMCS permutation configuration")
     })?;
@@ -664,7 +797,8 @@ where
                 .unwrap_or(0);
             checked_pow2(log_height, "input cap height").unwrap_or(0)
         });
-        input_roots[ordinal] = C::validate_fri_cap(cap, permutation, index_bit_len, heights)?;
+        input_roots[ordinal] =
+            RI::Commitment::validate_fri_cap(cap, permutation, index_bit_len, heights)?;
     }
 
     let mut phase_roots = [0usize; usize::BITS as usize];
@@ -675,8 +809,12 @@ where
             .checked_sub(arity)
             .ok_or_else(|| invalid("FRI phase schedule underflows"))?;
         let height = checked_pow2(current, "phase cap height")?;
-        phase_roots[round] =
-            PC::validate_fri_cap(cap, permutation, index_bit_len, [height].into_iter())?;
+        phase_roots[round] = RF::Commitment::validate_fri_cap(
+            cap,
+            permutation,
+            index_bit_len,
+            [height].into_iter(),
+        )?;
     }
 
     Ok(CapValidation {
@@ -689,12 +827,13 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn validate_fri_context_with_caps<F, EF, IM, FM, W, C, PC>(
-    proof: &FriProof<EF, FM, W, Vec<BatchMultiOpening<F, IM>>>,
+#[allow(clippy::type_complexity)]
+pub(crate) fn validate_fri_context_with_caps<F, EF, RI, RF>(
+    proof: &FriProof<EF, RF::Input, F, Vec<BatchMultiOpening<F, RI::Input>>>,
     native: &NativeFriParams,
     recursive: &FriVerifierParams,
     layout: FriOpeningLayout<'_>,
-    input_caps: &[&C::Input],
+    input_caps: &[&<RI::Commitment as crate::traits::Recursive<EF>>::Input],
     input_salt_elems: Option<usize>,
     phase_salt_elems: Option<usize>,
     hiding_tails: Option<&OpenedValues<EF>>,
@@ -702,15 +841,17 @@ pub(crate) fn validate_fri_context_with_caps<F, EF, IM, FM, W, C, PC>(
 where
     F: TwoAdicField + PrimeField64,
     EF: ExtensionField<F>,
-    IM: Mmcs<F, Commitment = C::Input>,
-    FM: Mmcs<EF, Commitment = PC::Input>,
-    C: CheckedFriCommitment<EF>,
-    PC: CheckedFriCommitment<EF>,
+    RI: RecursiveMmcs<F, EF>,
+    RF: RecursiveExtensionMmcs<F, EF>,
+    RI::Proof: FriPrivateAdvice<EF, MultiProof = <RI::Input as Mmcs<F>>::MultiProof>,
+    RF::Proof: FriPrivateAdvice<EF, MultiProof = <RF::Input as Mmcs<EF>>::MultiProof>,
+    RI::Commitment: CheckedFriCommitment<EF>,
+    RF::Commitment: CheckedFriCommitment<EF, Input = <RF::Input as Mmcs<EF>>::Commitment>,
 {
     let permutation = recursive.permutation_config.ok_or_else(|| {
         invalid("checked FRI context requires a recursive MMCS permutation configuration")
     })?;
-    let validated = validate_fri_borrowed_with_caps::<F, EF, IM, FM, W, C, PC>(
+    let validated = validate_fri_borrowed_with_caps::<F, EF, RI, RF>(
         proof,
         native,
         recursive,
@@ -803,13 +944,14 @@ fn validate_hiding_tail_compatibility(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn validate_fri_replacement_with_caps<F, EF, IM, FM, W, C, PC>(
-    proof: &FriProof<EF, FM, W, Vec<BatchMultiOpening<F, IM>>>,
+#[allow(clippy::type_complexity)]
+pub(crate) fn validate_fri_replacement_with_caps<F, EF, RI, RF>(
+    proof: &FriProof<EF, RF::Input, F, Vec<BatchMultiOpening<F, RI::Input>>>,
     native: &NativeFriParams,
     recursive: &FriVerifierParams,
     expected: &ValidatedFriContext,
     candidate_layout: FriOpeningLayout<'_>,
-    input_caps: &[&C::Input],
+    input_caps: &[&<RI::Commitment as crate::traits::Recursive<EF>>::Input],
     input_salt_elems: Option<usize>,
     phase_salt_elems: Option<usize>,
     hiding_tails: Option<&OpenedValues<EF>>,
@@ -817,15 +959,17 @@ pub(crate) fn validate_fri_replacement_with_caps<F, EF, IM, FM, W, C, PC>(
 where
     F: TwoAdicField + PrimeField64,
     EF: ExtensionField<F>,
-    IM: Mmcs<F, Commitment = C::Input>,
-    FM: Mmcs<EF, Commitment = PC::Input>,
-    C: CheckedFriCommitment<EF>,
-    PC: CheckedFriCommitment<EF>,
+    RI: RecursiveMmcs<F, EF>,
+    RF: RecursiveExtensionMmcs<F, EF>,
+    RI::Proof: FriPrivateAdvice<EF, MultiProof = <RI::Input as Mmcs<F>>::MultiProof>,
+    RF::Proof: FriPrivateAdvice<EF, MultiProof = <RF::Input as Mmcs<EF>>::MultiProof>,
+    RI::Commitment: CheckedFriCommitment<EF>,
+    RF::Commitment: CheckedFriCommitment<EF, Input = <RF::Input as Mmcs<EF>>::Commitment>,
 {
     if !candidate_layout.matches_layout(expected.layout()) {
         return Err(invalid("FRI retained layout mismatch"));
     }
-    let validated = validate_fri_borrowed_with_caps::<F, EF, IM, FM, W, C, PC>(
+    let validated = validate_fri_borrowed_with_caps::<F, EF, RI, RF>(
         proof,
         native,
         recursive,

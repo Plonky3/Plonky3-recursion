@@ -23,8 +23,8 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use super::context::{
-    CheckedFriCommitment, CheckedFriOpening, ValidatedFriContext, validate_fri_context_with_caps,
-    validate_fri_replacement_with_caps,
+    CheckedFriCommitment, CheckedFriOpening, ValidatedFriContext, validate_counted_fri_raw,
+    validate_fri_context_with_caps, validate_fri_replacement_with_caps,
 };
 use super::{FriVerifierParams, NativeFriParams, verify_fri_circuit};
 use crate::Target;
@@ -110,6 +110,20 @@ pub trait PreparedRecursiveMultiProofTargets<EF: Field>: RecursiveMultiProofTarg
         let counts: Vec<_> = query_matrix_counts.collect();
         Self::multiproof_shape(proof, &counts).map(|_| ())
     }
+}
+
+mod sealed {
+    pub trait FriPrivateAdvice {}
+}
+
+/// Exact private advice count for the two built-in Merkle multiproof targets.
+///
+/// This is deliberately sealed: a native MMCS type or arbitrary custom target cannot acquire
+/// the checked packing guarantee merely by having a similarly shaped proof.
+pub(crate) trait FriPrivateAdvice<EF: Field>:
+    PreparedRecursiveMultiProofTargets<EF> + sealed::FriPrivateAdvice
+{
+    fn checked_private_values_len(proof: &Self::MultiProof) -> Result<usize, VerificationError>;
 }
 
 /// Per-query view of the FRI input-batch openings.
@@ -446,18 +460,22 @@ impl<
     F: Field,
     EF: ExtensionField<F>,
     RecMmcs: RecursiveExtensionMmcs<F, EF>,
-    InputProof: Recursive<EF> + PreparedRecursiveFriInputOpenings<EF>,
-    Witness: Recursive<EF>,
-> CheckedRecursive<EF> for FriProofTargets<F, EF, RecMmcs, InputProof, Witness>
+    RI: RecursiveMmcs<F, EF>,
+> CheckedRecursive<EF> for FriProofTargets<F, EF, RecMmcs, InputProofTargets<F, EF, RI>, Witness<F>>
 where
-    RecMmcs::Commitment: CheckedRecursive<EF>,
-    RecMmcs::Proof: PreparedRecursiveMultiProofTargets<
-            EF,
-            MultiProof = <RecMmcs::Input as Mmcs<EF>>::MultiProof,
-        >,
+    RecMmcs::Commitment: CheckedFriCommitment<EF, Input = <RecMmcs::Input as Mmcs<EF>>::Commitment>,
+    RecMmcs::Proof: FriPrivateAdvice<EF, MultiProof = <RecMmcs::Input as Mmcs<EF>>::MultiProof>,
+    RecMmcs::Input: NativeFriSaltWidth,
+    RI::Input: NativeFriSaltWidth,
+    RI::Proof: FriPrivateAdvice<EF, MultiProof = <RI::Input as Mmcs<F>>::MultiProof>,
 {
     fn validate_input(input: &Self::Input) -> Result<(), VerificationError> {
-        validate_fri_input::<F, EF, RecMmcs, InputProof, Witness>(input)
+        validate_builtin_fri_raw::<F, EF, RecMmcs, RI, Witness<F>>(
+            input,
+            <RI::Input as NativeFriSaltWidth>::SALT_ELEMS,
+            <RecMmcs::Input as NativeFriSaltWidth>::SALT_ELEMS,
+        )?;
+        validate_counted_fri_raw::<F, EF, RI, RecMmcs>(input, None).map(|_| ())
     }
 }
 
@@ -1121,6 +1139,19 @@ impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize>
     }
 }
 
+impl<F: Field, const DIGEST_ELEMS: usize> sealed::FriPrivateAdvice
+    for HashProofTargets<F, DIGEST_ELEMS>
+{
+}
+
+impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize> FriPrivateAdvice<EF>
+    for HashProofTargets<F, DIGEST_ELEMS>
+{
+    fn checked_private_values_len(_proof: &Self::MultiProof) -> Result<usize, VerificationError> {
+        Ok(0)
+    }
+}
+
 /// In TwoAdicFriPcs, the POW witness is just a base field element.
 pub struct Witness<F> {
     pub witness: Target,
@@ -1437,6 +1468,29 @@ impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize>
     }
 }
 
+impl<F: Field, const DIGEST_ELEMS: usize> sealed::FriPrivateAdvice
+    for HidingHashProofTargets<F, DIGEST_ELEMS>
+{
+}
+
+impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize> FriPrivateAdvice<EF>
+    for HidingHashProofTargets<F, DIGEST_ELEMS>
+{
+    fn checked_private_values_len(proof: &Self::MultiProof) -> Result<usize, VerificationError> {
+        let mut total = 0usize;
+        for query in &proof.0 {
+            for matrix in query {
+                total = crate::pcs::fri::context::checked_add_len(
+                    total,
+                    matrix.len(),
+                    "hiding MMCS salt advice",
+                )?;
+            }
+        }
+        Ok(total)
+    }
+}
+
 /// `Recursive` version of a `MerkleTreeHidingMmcs` where leaf and digest elements are base
 /// field values. Mirrors [`RecValMmcs`] but the leaves are salted (hiding commitment).
 pub struct RecValHidingMmcs<F: Field, const DIGEST_ELEMS: usize, const SALT_ELEMS: usize, H, C, R>
@@ -1553,22 +1607,19 @@ where
     Ok(())
 }
 
-impl<F, EF, RF, RI, W> CheckedFriOpening<EF, RI::Commitment>
-    for FriProofTargets<F, EF, RF, InputProofTargets<F, EF, RI>, W>
+impl<F, EF, RF, RI> CheckedFriOpening<EF, RI::Commitment>
+    for FriProofTargets<F, EF, RF, InputProofTargets<F, EF, RI>, Witness<F>>
 where
     F: TwoAdicField + PrimeField64,
     EF: ExtensionField<F>,
     RF: RecursiveExtensionMmcs<F, EF>,
     RI: RecursiveMmcs<F, EF>,
-    W: Recursive<EF>,
     RI::Input: NativeFriSaltWidth,
     RF::Input: NativeFriSaltWidth,
     RI::Commitment: CheckedFriCommitment<EF, Input = <RI::Input as Mmcs<F>>::Commitment>,
     RF::Commitment: CheckedFriCommitment<EF, Input = <RF::Input as Mmcs<EF>>::Commitment>,
-    RI::Proof:
-        PreparedRecursiveMultiProofTargets<EF, MultiProof = <RI::Input as Mmcs<F>>::MultiProof>,
-    RF::Proof:
-        PreparedRecursiveMultiProofTargets<EF, MultiProof = <RF::Input as Mmcs<EF>>::MultiProof>,
+    RI::Proof: FriPrivateAdvice<EF, MultiProof = <RI::Input as Mmcs<F>>::MultiProof>,
+    RF::Proof: FriPrivateAdvice<EF, MultiProof = <RF::Input as Mmcs<EF>>::MultiProof>,
 {
     type PhaseCommitment = RF::Commitment;
 
@@ -1579,20 +1630,12 @@ where
         layout: FriOpeningLayout<'_>,
         input_caps: &[&<RI::Commitment as Recursive<EF>>::Input],
     ) -> Result<ValidatedFriContext, VerificationError> {
-        validate_builtin_fri_raw::<F, EF, RF, RI, W>(
+        validate_builtin_fri_raw::<F, EF, RF, RI, Witness<F>>(
             input,
             <RI::Input as NativeFriSaltWidth>::SALT_ELEMS,
             <RF::Input as NativeFriSaltWidth>::SALT_ELEMS,
         )?;
-        validate_fri_context_with_caps::<
-            F,
-            EF,
-            RI::Input,
-            RF::Input,
-            W::Input,
-            RI::Commitment,
-            RF::Commitment,
-        >(
+        validate_fri_context_with_caps::<F, EF, RI, RF>(
             input,
             native,
             recursive,
@@ -1610,20 +1653,12 @@ where
         candidate_layout: FriOpeningLayout<'_>,
         input_caps: &[&<RI::Commitment as Recursive<EF>>::Input],
     ) -> Result<(), VerificationError> {
-        validate_builtin_fri_raw::<F, EF, RF, RI, W>(
+        validate_builtin_fri_raw::<F, EF, RF, RI, Witness<F>>(
             input,
             <RI::Input as NativeFriSaltWidth>::SALT_ELEMS,
             <RF::Input as NativeFriSaltWidth>::SALT_ELEMS,
         )?;
-        validate_fri_replacement_with_caps::<
-            F,
-            EF,
-            RI::Input,
-            RF::Input,
-            W::Input,
-            RI::Commitment,
-            RF::Commitment,
-        >(
+        validate_fri_replacement_with_caps::<F, EF, RI, RF>(
             input,
             &expected.native_params(),
             &expected.recursive_params(),
@@ -1637,22 +1672,19 @@ where
     }
 }
 
-impl<F, EF, RF, RI, W> CheckedFriOpening<EF, RI::Commitment>
-    for HidingFriProofTargets<F, EF, RF, InputProofTargets<F, EF, RI>, W>
+impl<F, EF, RF, RI> CheckedFriOpening<EF, RI::Commitment>
+    for HidingFriProofTargets<F, EF, RF, InputProofTargets<F, EF, RI>, Witness<F>>
 where
     F: TwoAdicField + PrimeField64,
     EF: ExtensionField<F>,
     RF: RecursiveExtensionMmcs<F, EF>,
     RI: RecursiveMmcs<F, EF>,
-    W: Recursive<EF>,
     RI::Input: NativeFriSaltWidth,
     RF::Input: NativeFriSaltWidth,
     RI::Commitment: CheckedFriCommitment<EF, Input = <RI::Input as Mmcs<F>>::Commitment>,
     RF::Commitment: CheckedFriCommitment<EF, Input = <RF::Input as Mmcs<EF>>::Commitment>,
-    RI::Proof:
-        PreparedRecursiveMultiProofTargets<EF, MultiProof = <RI::Input as Mmcs<F>>::MultiProof>,
-    RF::Proof:
-        PreparedRecursiveMultiProofTargets<EF, MultiProof = <RF::Input as Mmcs<EF>>::MultiProof>,
+    RI::Proof: FriPrivateAdvice<EF, MultiProof = <RI::Input as Mmcs<F>>::MultiProof>,
+    RF::Proof: FriPrivateAdvice<EF, MultiProof = <RF::Input as Mmcs<EF>>::MultiProof>,
 {
     type PhaseCommitment = RF::Commitment;
 
@@ -1663,20 +1695,12 @@ where
         layout: FriOpeningLayout<'_>,
         input_caps: &[&<RI::Commitment as Recursive<EF>>::Input],
     ) -> Result<ValidatedFriContext, VerificationError> {
-        validate_builtin_fri_raw::<F, EF, RF, RI, W>(
+        validate_builtin_fri_raw::<F, EF, RF, RI, Witness<F>>(
             &input.1,
             <RI::Input as NativeFriSaltWidth>::SALT_ELEMS,
             <RF::Input as NativeFriSaltWidth>::SALT_ELEMS,
         )?;
-        validate_fri_context_with_caps::<
-            F,
-            EF,
-            RI::Input,
-            RF::Input,
-            W::Input,
-            RI::Commitment,
-            RF::Commitment,
-        >(
+        validate_fri_context_with_caps::<F, EF, RI, RF>(
             &input.1,
             native,
             recursive,
@@ -1694,20 +1718,12 @@ where
         candidate_layout: FriOpeningLayout<'_>,
         input_caps: &[&<RI::Commitment as Recursive<EF>>::Input],
     ) -> Result<(), VerificationError> {
-        validate_builtin_fri_raw::<F, EF, RF, RI, W>(
+        validate_builtin_fri_raw::<F, EF, RF, RI, Witness<F>>(
             &input.1,
             <RI::Input as NativeFriSaltWidth>::SALT_ELEMS,
             <RF::Input as NativeFriSaltWidth>::SALT_ELEMS,
         )?;
-        validate_fri_replacement_with_caps::<
-            F,
-            EF,
-            RI::Input,
-            RF::Input,
-            W::Input,
-            RI::Commitment,
-            RF::Commitment,
-        >(
+        validate_fri_replacement_with_caps::<F, EF, RI, RF>(
             &input.1,
             &expected.native_params(),
             &expected.recursive_params(),
@@ -2281,18 +2297,23 @@ impl<
     F: Field,
     EF: ExtensionField<F>,
     RecMmcs: RecursiveExtensionMmcs<F, EF>,
-    InputProof: Recursive<EF> + PreparedRecursiveFriInputOpenings<EF>,
-    PowWitness: Recursive<EF>,
-> CheckedRecursive<EF> for HidingFriProofTargets<F, EF, RecMmcs, InputProof, PowWitness>
+    RI: RecursiveMmcs<F, EF>,
+> CheckedRecursive<EF>
+    for HidingFriProofTargets<F, EF, RecMmcs, InputProofTargets<F, EF, RI>, Witness<F>>
 where
-    RecMmcs::Commitment: CheckedRecursive<EF>,
-    RecMmcs::Proof: PreparedRecursiveMultiProofTargets<
-            EF,
-            MultiProof = <RecMmcs::Input as Mmcs<EF>>::MultiProof,
-        >,
+    RecMmcs::Commitment: CheckedFriCommitment<EF, Input = <RecMmcs::Input as Mmcs<EF>>::Commitment>,
+    RecMmcs::Proof: FriPrivateAdvice<EF, MultiProof = <RecMmcs::Input as Mmcs<EF>>::MultiProof>,
+    RecMmcs::Input: NativeFriSaltWidth,
+    RI::Input: NativeFriSaltWidth,
+    RI::Proof: FriPrivateAdvice<EF, MultiProof = <RI::Input as Mmcs<F>>::MultiProof>,
 {
     fn validate_input(input: &Self::Input) -> Result<(), VerificationError> {
-        FriProofTargets::<F, EF, RecMmcs, InputProof, PowWitness>::validate_input(&input.1)
+        validate_builtin_fri_raw::<F, EF, RecMmcs, RI, Witness<F>>(
+            &input.1,
+            <RI::Input as NativeFriSaltWidth>::SALT_ELEMS,
+            <RecMmcs::Input as NativeFriSaltWidth>::SALT_ELEMS,
+        )?;
+        validate_counted_fri_raw::<F, EF, RI, RecMmcs>(&input.1, Some(&input.0)).map(|_| ())
     }
 }
 
@@ -2973,8 +2994,8 @@ mod prepared_shape_tests {
     #[test]
     fn fri_allocation_units_and_flattened_totals_have_checked_goldens() {
         use crate::pcs::fri::context::{
-            check_vec_len, checked_add_len, checked_flat_value_totals, checked_input_counts,
-            checked_mul_len, checked_phase_counts,
+            CheckedFriCommitment, check_vec_len, checked_add_len, checked_cap_public_values_len,
+            checked_flat_value_totals, checked_input_counts, checked_mul_len, checked_phase_counts,
         };
 
         fn check_units<T>(label: &str) {
@@ -3002,24 +3023,28 @@ mod prepared_shape_tests {
         assert!(checked_phase_counts(usize::MAX / 4 + 1, 4, 0).is_err());
         assert!(checked_phase_counts(1, 1, usize::MAX).is_err());
 
-        assert_eq!(
-            checked_flat_value_totals(4, 14, 20, 0, 24, 3, 1).unwrap(),
-            (136, 29)
-        );
-        assert_eq!(
-            checked_flat_value_totals(4, 44, 32, 6, 24, 3, 1).unwrap(),
-            (310, 29)
-        );
-        assert!(checked_flat_value_totals(usize::MAX, 2, 0, 0, 0, 0, 0).is_err());
+        let ordinary_counts = checked_flat_value_totals::<Challenge>(56, 80, 0, 24, 3, 1).unwrap();
+        assert_eq!(ordinary_counts.private_values(), 136);
+        assert_eq!(ordinary_counts.public_values(), 29);
+        let hiding_counts = checked_flat_value_totals::<Challenge>(176, 128, 6, 24, 3, 1).unwrap();
+        assert_eq!(hiding_counts.private_values(), 310);
+        assert_eq!(hiding_counts.public_values(), 29);
+        assert!(checked_flat_value_totals::<Challenge>(usize::MAX, 1, 0, 0, 0, 0).is_err());
         let q_limit = isize::MAX as usize / core::mem::size_of::<Challenge>();
-        let q_total = checked_flat_value_totals(q_limit, 1, 0, 0, 0, 0, 0)
-            .unwrap()
-            .0;
-        assert!(check_vec_len::<Challenge>(q_total, "private total").is_ok());
-        let q_over = checked_flat_value_totals(q_limit + 1, 1, 0, 0, 0, 0, 0)
-            .unwrap()
-            .0;
-        assert!(check_vec_len::<Challenge>(q_over, "private total").is_err());
+        assert!(checked_flat_value_totals::<Challenge>(q_limit, 0, 0, 0, 0, 0).is_ok());
+        assert!(checked_flat_value_totals::<Challenge>(q_limit + 1, 0, 0, 0, 0, 0).is_err());
+        let public_limit = isize::MAX as usize / core::mem::size_of::<Challenge>();
+        assert!(checked_flat_value_totals::<Challenge>(0, 0, 0, public_limit - 3, 1, 1,).is_ok());
+        assert!(checked_flat_value_totals::<Challenge>(0, 0, 0, public_limit - 2, 1, 1,).is_err());
+        assert!(checked_cap_public_values_len::<Challenge>(2, 4,).is_ok());
+        assert!(checked_cap_public_values_len::<Challenge>(q_limit / 4 + 1, 4,).is_err());
+        let actual_cap = cap(2);
+        assert_eq!(
+            <MerkleCapTargets<F, DIGEST_ELEMS> as CheckedFriCommitment<Challenge>>::
+                checked_fri_public_values_len(&actual_cap)
+                .unwrap(),
+            2 * DIGEST_ELEMS
+        );
         assert!(checked_add_len(usize::MAX, 1, "test").is_err());
         assert!(checked_mul_len(usize::MAX, 2, "test").is_err());
     }
@@ -3072,7 +3097,7 @@ mod prepared_shape_tests {
 
     #[test]
     fn retained_ordinary_context_uses_old_authority_without_candidate_capture() {
-        use crate::pcs::fri::context::CheckedFriOpening;
+        use crate::pcs::fri::context::{CheckedFriOpening, validate_counted_fri_raw};
 
         const MAP01: &[usize] = &[0, 1];
         const MAP10: &[usize] = &[1, 0];
@@ -3081,6 +3106,12 @@ mod prepared_shape_tests {
         let baseline = retention_opening([2, 1, 1], [1, 2]);
         let baseline_caps = retention_caps([1, 1, 1]);
         let baseline_cap_refs = [&baseline_caps[0], &baseline_caps[1], &baseline_caps[2]];
+        let counts =
+            validate_counted_fri_raw::<F, Challenge, RecInputMmcs, RecFriMmcs>(&baseline, None)
+                .expect("ordinary counted collector accepts the fixture");
+        assert_eq!(counts.private_values(), 136);
+        assert_eq!(counts.public_values(), 29);
+        assert!(<OpeningTargets as CheckedRecursive<Challenge>>::validate_input(&baseline).is_ok());
         let old = <OpeningTargets as CheckedFriOpening<
             Challenge,
             <RecInputMmcs as RecursiveMmcs<F, Challenge>>::Commitment,
@@ -3346,7 +3377,7 @@ mod prepared_shape_tests {
 
     #[test]
     fn retained_hiding_context_checks_tail_partition_and_salt_axes() {
-        use crate::pcs::fri::context::CheckedFriOpening;
+        use crate::pcs::fri::context::{CheckedFriOpening, validate_counted_fri_raw};
 
         const MAP01: &[usize] = &[0, 1];
         const MAP10: &[usize] = &[1, 0];
@@ -3355,6 +3386,17 @@ mod prepared_shape_tests {
         let baseline = retention_hiding_opening();
         let baseline_caps = retention_caps([1, 1, 1]);
         let baseline_cap_refs = [&baseline_caps[0], &baseline_caps[1], &baseline_caps[2]];
+        let counts = validate_counted_fri_raw::<F, Challenge, RecHidingMmcs, RecHidingFriMmcs>(
+            &baseline.1,
+            Some(&baseline.0),
+        )
+        .expect("hiding counted collector accepts the fixture");
+        assert_eq!(counts.private_values(), 310);
+        assert_eq!(counts.public_values(), 29);
+        assert!(
+            <HidingOpeningTargets as CheckedRecursive<Challenge>>::validate_input(&baseline)
+                .is_ok()
+        );
         let old = <HidingOpeningTargets as CheckedFriOpening<
             Challenge,
             <RecHidingMmcs as RecursiveMmcs<F, Challenge>>::Commitment,
@@ -3417,6 +3459,10 @@ mod prepared_shape_tests {
                 .is_err(),
                 "replacement must reject malformed input salt widths"
             );
+            assert!(
+                <HidingOpeningTargets as CheckedRecursive<Challenge>>::validate_input(&bad)
+                    .is_err()
+            );
 
             let mut bad_phase = baseline.clone();
             bad_phase.1.commit_phase_openings[2].opening_proof.0[3][0] = vec![F::ZERO; width];
@@ -3445,6 +3491,10 @@ mod prepared_shape_tests {
                 )
                 .is_err(),
                 "replacement must reject malformed phase salt widths"
+            );
+            assert!(
+                <HidingOpeningTargets as CheckedRecursive<Challenge>>::validate_input(&bad_phase)
+                    .is_err()
             );
         }
 
