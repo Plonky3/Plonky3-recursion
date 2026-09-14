@@ -831,7 +831,7 @@ type ValMmcsCommitment<F, const DIGEST_ELEMS: usize> =
 /// Validate a borrowed built-in Merkle cap against the actual recursive
 /// permutation shape and its planned tree heights.  This is value-only
 /// geometry: no target rows, PCS, MMCS, RNG, or proof contents are allocated.
-#[allow(dead_code)]
+#[allow(dead_code, clippy::needless_pass_by_value)]
 pub(crate) fn validate_merkle_cap_context<F, EF, const DIGEST_ELEMS: usize, I>(
     cap: &ValMmcsCommitment<F, DIGEST_ELEMS>,
     permutation_config: PermConfig,
@@ -844,30 +844,40 @@ where
     I: Iterator<Item = usize> + Clone,
 {
     let roots = cap.num_roots();
-    let heights: Vec<_> = heights.collect();
-    if heights.is_empty() {
+    let mut max_height = 0usize;
+    let mut has_height = false;
+    let height_scan = heights.clone();
+    for height in height_scan {
+        if height == 0 {
+            continue;
+        }
+        has_height = true;
+        max_height = max_height.max(height);
+    }
+    if !has_height {
         return Err(VerificationError::InvalidProofShape(
-            "MMCS commitment cap has no planned matrices".into(),
+            "MMCS commitment cap has no positive planned matrices".into(),
         ));
     }
-    let max_height = heights.iter().copied().max().unwrap_or(0);
-    if max_height == 0 {
-        return Err(VerificationError::InvalidProofShape(
-            "MMCS commitment cap has only empty matrices".into(),
-        ));
-    }
-    let cap_height = if permutation_config.is_arity4_shape() {
-        crate::pcs::mmcs::validate_arity4_cap_geometry(&heights, roots)
-            .map_err(|error| VerificationError::InvalidProofShape(error.to_string()))?
+    let (cap_height, path_bits) = if permutation_config.is_arity4_shape() {
+        let path_bits = crate::pcs::mmcs::visit_arity4_path(heights, roots, |_| {})
+            .map_err(|error| VerificationError::InvalidProofShape(error.to_string()))?;
+        let cap_height = crate::pcs::mmcs::validate_commitment_cap_count(roots)
+            .map_err(|error| VerificationError::InvalidProofShape(error.to_string()))?;
+        (cap_height, path_bits)
     } else {
-        if !max_height.is_power_of_two() {
-            return Err(VerificationError::InvalidProofShape(
-                "binary MMCS matrix height must be a power of two".into(),
-            ));
+        let raw_heights = heights;
+        for height in raw_heights {
+            if height == 0 || !height.is_power_of_two() {
+                return Err(VerificationError::InvalidProofShape(
+                    "binary MMCS matrix heights must be positive powers of two".into(),
+                ));
+            }
         }
         let tree_height = max_height.trailing_zeros() as usize;
-        crate::pcs::mmcs::validate_binary_cap_count(roots, tree_height)
-            .map_err(|error| VerificationError::InvalidProofShape(error.to_string()))?
+        let cap_height = crate::pcs::mmcs::validate_binary_cap_count(roots, tree_height)
+            .map_err(|error| VerificationError::InvalidProofShape(error.to_string()))?;
+        (cap_height, tree_height - cap_height)
     };
     if !permutation_config.is_arity4_shape() && cap_height > index_bit_len {
         return Err(VerificationError::InvalidProofShape(
@@ -879,10 +889,34 @@ where
     } else {
         permutation_config.rate_ext()
     };
-    let expected_digest_elems = if permutation_config.d() == 1 && EF::DIMENSION > 1 {
+    validate_cap_packing::<DIGEST_ELEMS>(
+        roots,
+        chunk_ext,
+        permutation_config.d() == 1 && EF::DIMENSION > 1,
+        EF::DIMENSION,
+        cap_height,
+        path_bits,
+    )?;
+    Ok(())
+}
+
+fn validate_cap_packing<const DIGEST_ELEMS: usize>(
+    roots: usize,
+    chunk_ext: usize,
+    lifted_d1: bool,
+    extension_dimension: usize,
+    cap_height: usize,
+    path_bits: usize,
+) -> Result<(), VerificationError> {
+    if chunk_ext == 0 || extension_dimension == 0 {
+        return Err(VerificationError::InvalidProofShape(
+            "MMCS digest packing has a zero chunk or extension width".into(),
+        ));
+    }
+    let expected_digest_elems = if lifted_d1 {
         chunk_ext
     } else {
-        chunk_ext.checked_mul(EF::DIMENSION).ok_or_else(|| {
+        chunk_ext.checked_mul(extension_dimension).ok_or_else(|| {
             VerificationError::InvalidProofShape("MMCS digest width overflows".into())
         })?
     };
@@ -891,13 +925,27 @@ where
             "MMCS digest packing mismatch: expected {expected_digest_elems}, got {DIGEST_ELEMS}"
         )));
     }
-    roots
-        .checked_mul(DIGEST_ELEMS)
-        .and_then(|elements| elements.checked_mul(core::mem::size_of::<Target>()))
-        .filter(|bytes| *bytes <= isize::MAX as usize)
-        .ok_or_else(|| {
-            VerificationError::InvalidProofShape("MMCS cap allocation overflows".into())
-        })?;
+    let flat_digest = roots.checked_mul(DIGEST_ELEMS).ok_or_else(|| {
+        VerificationError::InvalidProofShape("MMCS cap digest count overflows".into())
+    })?;
+    let flat_chunk = roots.checked_mul(chunk_ext).ok_or_else(|| {
+        VerificationError::InvalidProofShape("MMCS cap chunk count overflows".into())
+    })?;
+    let target_size = core::mem::size_of::<Target>();
+    for (label, elements) in [("digest", flat_digest), ("chunk", flat_chunk)] {
+        if elements
+            .checked_mul(target_size)
+            .filter(|bytes| *bytes <= isize::MAX as usize)
+            .is_none()
+        {
+            return Err(VerificationError::InvalidProofShape(format!(
+                "MMCS cap {label} target size overflows"
+            )));
+        }
+    }
+    cap_height.checked_add(path_bits).ok_or_else(|| {
+        VerificationError::InvalidProofShape("MMCS cap and path bits overflow".into())
+    })?;
     Ok(())
 }
 
@@ -2281,6 +2329,64 @@ mod prepared_shape_tests {
             )
             .is_err()
         );
+
+        let arity4 = PermConfig::poseidon2(crate::ops::Poseidon2Config::KOALA_BEAR_D4_W32);
+        let arity4_cap = cap(1);
+        assert!(
+            validate_merkle_cap_context::<F, Challenge, DIGEST_ELEMS, _>(
+                &arity4_cap,
+                arity4,
+                4,
+                [16usize, 8].into_iter(),
+            )
+            .is_ok()
+        );
+        let surplus_cap = cap(8);
+        assert!(
+            validate_merkle_cap_context::<F, Challenge, DIGEST_ELEMS, _>(
+                &surplus_cap,
+                arity4,
+                4,
+                [16usize, 8].into_iter(),
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn cap_packing_covers_d2_d4_and_lifted_d5_lanes() {
+        let d4_binary = PermConfig::poseidon2(crate::ops::Poseidon2Config::KOALA_BEAR_D4_W16);
+        assert!(
+            validate_cap_packing::<DIGEST_ELEMS>(
+                1,
+                d4_binary.rate_ext(),
+                false,
+                <Challenge as BasedVectorSpace<F>>::DIMENSION,
+                0,
+                0,
+            )
+            .is_ok()
+        );
+
+        let d4_arity4 = PermConfig::poseidon2(crate::ops::Poseidon2Config::KOALA_BEAR_D4_W32);
+        assert!(
+            validate_cap_packing::<DIGEST_ELEMS>(
+                1,
+                d4_arity4.capacity_ext(),
+                false,
+                <Challenge as BasedVectorSpace<F>>::DIMENSION,
+                0,
+                0,
+            )
+            .is_ok()
+        );
+
+        // These metadata-only controls cover the supported degree-2 and
+        // D=1-permutation-over-degree-5 packing lanes without allocating a
+        // giant native cap.
+        assert!(validate_cap_packing::<8>(1, 4, false, 2, 0, 0).is_ok());
+        assert!(validate_cap_packing::<8>(1, 8, true, 5, 0, 0).is_ok());
+        assert!(validate_cap_packing::<7>(1, 2, false, 4, 0, 0).is_err());
     }
 
     fn frontier(count: usize) -> PrunedMerklePaths<F, DIGEST_ELEMS> {

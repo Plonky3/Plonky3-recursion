@@ -19,7 +19,7 @@ use p3_circuit_prover::{
     BatchStarkProver, CircuitProverData, ConstraintProfile, Poseidon2Preprocessor,
     RecomposePreprocessor, TablePacking, config,
 };
-use p3_commit::Mmcs;
+use p3_commit::{BatchOpeningRef, Mmcs};
 use p3_field::extension::BinomialExtensionField;
 use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
 use p3_koala_bear::{KoalaBear, Poseidon2KoalaBear, default_koalabear_poseidon2_32};
@@ -29,7 +29,7 @@ use p3_merkle_tree::MerkleTreeMmcs;
 use p3_poseidon2_circuit_air::KoalaBearD4Width32;
 use p3_recursion::Target;
 use p3_recursion::pcs::verify_batch_circuit_arity4;
-use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
+use p3_symmetric::{MerkleCap, PaddingFreeSponge, TruncatedPermutation};
 
 type F = KoalaBear;
 type CF = BinomialExtensionField<F, 4>;
@@ -84,15 +84,41 @@ fn set_sibling_private_data(
 
 /// Build an arity-4 verify-batch circuit over `matrices`, witness it at `index`, then prove and
 /// verify the resulting tables. Returns `Ok(())` only when the full bus balances.
-fn prove_verify_arity4(matrices: Vec<RowMajorMatrix<F>>, log_max_height: usize, index: usize) {
+fn prove_verify_arity4(
+    matrices: Vec<RowMajorMatrix<F>>,
+    log_max_height: usize,
+    index: usize,
+    cap_height: usize,
+    append_surplus_roots: bool,
+    prove_tables: bool,
+) {
     let perm = default_koalabear_poseidon2_32();
     let leaf_hash = LeafHash::new(perm.clone());
     let compress = Compress4::new(perm.clone());
-    let mmcs = Mmcs4::new(leaf_hash, compress, 0);
+    let mmcs = Mmcs4::new(leaf_hash, compress, cap_height);
 
     let dimensions: Vec<_> = matrices.iter().map(Matrix::dimensions).collect();
     let (commit, prover_data) = mmcs.commit(matrices);
     let batch_opening = mmcs.open_batch(index, &prover_data);
+    let verification_commit = if append_surplus_roots {
+        assert_eq!(
+            commit.num_roots(),
+            4,
+            "surplus control starts with cap height 1"
+        );
+        let mut roots = commit.roots().to_vec();
+        roots.extend([[F::ZERO; 8]; 4]);
+        MerkleCap::new(roots)
+    } else {
+        commit.clone()
+    };
+    mmcs.verify_batch(
+        &verification_commit,
+        &dimensions,
+        index,
+        BatchOpeningRef::new(&batch_opening.opened_values, &batch_opening.opening_proof),
+    )
+    .expect("native arity-4 opening must verify against the selected cap root");
 
     let mut builder = CircuitBuilder::<CF>::new();
     let permutation_config = Poseidon2Config::KOALA_BEAR_D4_W32;
@@ -108,24 +134,30 @@ fn prove_verify_arity4(matrices: Vec<RowMajorMatrix<F>>, log_max_height: usize, 
         .map(|dims| (0..dims.width).map(|_| builder.public_input()).collect())
         .collect();
     let directions_expr = builder.alloc_public_inputs(log_max_height, "arity4 directions");
-    let lifted_cap: Vec<Target> = (0..(capacity_ext * <CF as BasedVectorSpace<F>>::DIMENSION))
-        .map(|_| builder.public_input())
-        .collect();
+    let roots = verification_commit.num_roots();
+    let lifted_cap: Vec<Target> =
+        (0..(roots * capacity_ext * <CF as BasedVectorSpace<F>>::DIMENSION))
+            .map(|_| builder.public_input())
+            .collect();
     let d = <CF as BasedVectorSpace<F>>::DIMENSION;
-    let cap_packed: Vec<Target> = lifted_cap
-        .chunks(d)
-        .map(|chunk| {
-            let mut acc = builder.define_const(CF::ZERO);
-            for (i, &t) in chunk.iter().enumerate() {
-                let mut basis = vec![F::ZERO; d];
-                basis[i] = F::ONE;
-                let b = builder.define_const(CF::from_basis_coefficients_slice(&basis).unwrap());
-                acc = builder.mul_add(t, b, acc);
-            }
-            acc
+    let cap_exprs: Vec<Vec<Target>> = lifted_cap
+        .chunks(capacity_ext * d)
+        .map(|root| {
+            root.chunks(d)
+                .map(|chunk| {
+                    let mut acc = builder.define_const(CF::ZERO);
+                    for (i, &t) in chunk.iter().enumerate() {
+                        let mut basis = vec![F::ZERO; d];
+                        basis[i] = F::ONE;
+                        let b = builder
+                            .define_const(CF::from_basis_coefficients_slice(&basis).unwrap());
+                        acc = builder.mul_add(t, b, acc);
+                    }
+                    acc
+                })
+                .collect()
         })
         .collect();
-    let cap_exprs: Vec<Vec<Target>> = vec![cap_packed];
 
     let mmcs_op_ids = verify_batch_circuit_arity4::<F, CF>(
         &mut builder,
@@ -136,7 +168,12 @@ fn prove_verify_arity4(matrices: Vec<RowMajorMatrix<F>>, log_max_height: usize, 
         &opened,
     )
     .expect("verify_batch_circuit_arity4 should succeed");
-    assert_eq!(mmcs_op_ids.len(), batch_opening.opening_proof.len());
+    let native_schedule = mmcs
+        .proof_arity_schedule(&dimensions)
+        .expect("native arity schedule");
+    let native_siblings: usize = native_schedule.iter().map(|step| step - 1).sum();
+    assert_eq!(batch_opening.opening_proof.len(), native_siblings);
+    assert_eq!(mmcs_op_ids.len(), native_siblings);
 
     let circuit = builder.build().expect("circuit build");
     let mut runner = circuit.runner();
@@ -147,7 +184,12 @@ fn prove_verify_arity4(matrices: Vec<RowMajorMatrix<F>>, log_max_height: usize, 
         .flat_map(|row| row.iter().map(|&v| CF::from(v)))
         .collect();
     public_inputs.extend((0..log_max_height).map(|k| CF::from_bool((index >> k) & 1 == 1)));
-    public_inputs.extend(commit.roots()[0].iter().map(|&v| CF::from(v)));
+    public_inputs.extend(
+        verification_commit
+            .roots()
+            .iter()
+            .flat_map(|root| root.iter().map(|&v| CF::from(v))),
+    );
     runner
         .set_public_inputs(&public_inputs)
         .expect("set public inputs");
@@ -162,6 +204,10 @@ fn prove_verify_arity4(matrices: Vec<RowMajorMatrix<F>>, log_max_height: usize, 
     let traces = runner
         .run()
         .expect("runner should witness the arity-4 circuit");
+
+    if !prove_tables {
+        return;
+    }
 
     // Prove and verify the W32 Poseidon2 + recompose tables. A balanced WitnessChecks bus is the
     // assertion: an imbalance from the bridge/injection pad slots or the bit binding surfaces here
@@ -210,7 +256,7 @@ fn arity4_bus_balance_bridge_only() {
     let values: Vec<F> = (0..(height * width) as u64).map(F::from_u64).collect();
     let matrix = RowMajorMatrix::new(values, width);
     for index in [0usize, 1, 5, 511] {
-        prove_verify_arity4(vec![matrix.clone()], 9, index);
+        prove_verify_arity4(vec![matrix.clone()], 9, index, 0, false, true);
     }
 }
 
@@ -223,6 +269,27 @@ fn arity4_bus_balance_injection_only() {
     let short: Vec<F> = (0..256u64).map(|i| F::from_u64(1_000_000 + i)).collect();
     let m_short = RowMajorMatrix::new(short, 1);
     for index in [0usize, 1, 5, 1023] {
-        prove_verify_arity4(vec![m_tall.clone(), m_short.clone()], 10, index);
+        prove_verify_arity4(
+            vec![m_tall.clone(), m_short.clone()],
+            10,
+            index,
+            0,
+            false,
+            true,
+        );
     }
+}
+
+/// Small native/target geometry controls for the shared scalar walk.  The
+/// mixed-height pair exercises the step-2 bridge and the cap-height-1 prefix;
+/// the short single matrix exercises native padding to four roots.
+#[test]
+fn arity4_shared_geometry_matches_native_controls() {
+    let tall = RowMajorMatrix::new((0..16u64).map(F::from_u64).collect(), 1);
+    let short = RowMajorMatrix::new((100..108u64).map(F::from_u64).collect(), 1);
+    prove_verify_arity4(vec![tall.clone(), short.clone()], 4, 0, 0, false, false);
+    prove_verify_arity4(vec![tall, short], 4, 15, 1, false, false);
+
+    let height_two = RowMajorMatrix::new((0..2u64).map(F::from_u64).collect(), 1);
+    prove_verify_arity4(vec![height_two], 1, 0, 10, false, false);
 }

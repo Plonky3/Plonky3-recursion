@@ -552,24 +552,7 @@ where
 pub(crate) fn validate_commitment_cap_len<T>(
     commitment_cap: &[T],
 ) -> Result<usize, CircuitBuilderError> {
-    if commitment_cap.is_empty() {
-        return Err(CircuitBuilderError::InvalidMerkleCap {
-            details: "commitment cap must have at least one entry".into(),
-        });
-    }
-    if !commitment_cap.len().is_power_of_two() {
-        return Err(CircuitBuilderError::InvalidMerkleCap {
-            details: format!(
-                "commitment cap length must be a power of two, got {}",
-                commitment_cap.len()
-            ),
-        });
-    }
-    Ok(if commitment_cap.len() == 1 {
-        0
-    } else {
-        log2_strict_usize(commitment_cap.len())
-    })
+    validate_commitment_cap_count(commitment_cap.len())
 }
 
 pub(crate) fn validate_commitment_cap_count(roots: usize) -> Result<usize, CircuitBuilderError> {
@@ -593,15 +576,7 @@ pub(crate) fn validate_commitment_cap<T>(
     commitment_cap: &[T],
     tree_height: usize,
 ) -> Result<usize, CircuitBuilderError> {
-    let cap_height = validate_commitment_cap_len(commitment_cap)?;
-    if cap_height > tree_height {
-        return Err(CircuitBuilderError::InvalidMerkleCap {
-            details: format!(
-                "commitment cap height {cap_height} exceeds tree height {tree_height}"
-            ),
-        });
-    }
-    Ok(cap_height)
+    validate_binary_cap_count(commitment_cap.len(), tree_height)
 }
 
 /// Integer-only binary cap validation for contextual FRI preflight.
@@ -620,7 +595,7 @@ pub(crate) fn validate_binary_cap_count(
     Ok(cap_height)
 }
 
-fn checked_next_power_of_two(value: usize) -> Result<usize, CircuitBuilderError> {
+pub(crate) fn checked_next_power_of_two(value: usize) -> Result<usize, CircuitBuilderError> {
     value
         .checked_next_power_of_two()
         .ok_or_else(|| CircuitBuilderError::InvalidMerkleCap {
@@ -628,7 +603,7 @@ fn checked_next_power_of_two(value: usize) -> Result<usize, CircuitBuilderError>
         })
 }
 
-fn checked_padded_len(raw_len: usize) -> Result<usize, CircuitBuilderError> {
+pub(crate) fn checked_padded_len(raw_len: usize) -> Result<usize, CircuitBuilderError> {
     if raw_len <= 1 {
         Ok(raw_len)
     } else if raw_len < 4 {
@@ -643,83 +618,117 @@ fn checked_padded_len(raw_len: usize) -> Result<usize, CircuitBuilderError> {
     }
 }
 
-/// Walk native arity-4 cap geometry without rows, targets, or proof values.
-///
-/// The returned value is the number of path bits consumed before the selected
-/// cap layer.  Equal-height groups are consumed at their native bridge layer;
-/// surplus cap roots and implicit high zero bits remain valid.
-pub(crate) fn validate_arity4_cap_geometry(
-    heights: &[usize],
+/// One scalar level of the arity-4 Merkle walk.  The target builder uses this
+/// same value-only decision to materialize its operation schedule.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Arity4StepGeometry {
+    pub(crate) step: usize,
+    pub(crate) injection_height: Option<usize>,
+}
+
+/// Visit native arity-4 cap geometry without rows, targets, proof values, or
+/// height-count allocations.  Repeated scans retain the input order for the
+/// target caller while the scalar state only tracks the next unconsumed power
+/// bucket.  Equal next-power buckets must have equal raw heights, so one
+/// bucket value is sufficient to represent a consumed group.
+#[allow(clippy::needless_pass_by_value)]
+pub(crate) fn visit_arity4_path<I, V>(
+    heights: I,
     roots: usize,
-) -> Result<usize, CircuitBuilderError> {
-    let _cap_height = validate_binary_cap_count(roots, usize::MAX)?;
-    if heights.is_empty() || heights.iter().all(|height| *height == 0) {
+    mut visit: V,
+) -> Result<usize, CircuitBuilderError>
+where
+    I: Iterator<Item = usize> + Clone,
+    V: FnMut(Arity4StepGeometry),
+{
+    validate_commitment_cap_count(roots)?;
+
+    let scan = heights.clone();
+    let mut max_height = 0usize;
+    let mut has_height = false;
+    for height in scan {
+        if height == 0 {
+            continue;
+        }
+        has_height = true;
+        max_height = max_height.max(height);
+    }
+    if !has_height {
         return Err(CircuitBuilderError::Poseidon2ConfigMismatch {
             expected: "at least one non-empty matrix".into(),
             got: "empty batch".into(),
         });
     }
-    let mut sorted = heights.to_vec();
-    sorted.sort_unstable_by(|left, right| right.cmp(left));
-    for pair in sorted.windows(2) {
-        let left = checked_next_power_of_two(pair[0])?;
-        let right = checked_next_power_of_two(pair[1])?;
-        if left == right && pair[0] != pair[1] {
-            return Err(CircuitBuilderError::Poseidon2ConfigMismatch {
-                expected: "matrix heights that round up to the same power of two must be equal"
-                    .into(),
-                got: "incompatible matrix heights".into(),
-            });
+
+    // Validate every next-power computation and reject unequal raw heights in
+    // one native bucket without sorting or collecting the input iterator.
+    let mut outer = heights.clone();
+    while let Some(height) = outer.next() {
+        if height == 0 {
+            continue;
+        }
+        let bucket = checked_next_power_of_two(height)?;
+        let later = outer.clone();
+        for other in later {
+            if other != 0 && checked_next_power_of_two(other)? == bucket && other != height {
+                return Err(CircuitBuilderError::Poseidon2ConfigMismatch {
+                    expected: "matrix heights that round up to the same power of two must be equal"
+                        .into(),
+                    got: "incompatible matrix heights".into(),
+                });
+            }
         }
     }
-    let max_height = sorted[0];
+
     let mut curr = checked_padded_len(max_height)?;
-    let mut consumed = vec![false; sorted.len()];
-    let max_height_npt = checked_next_power_of_two(max_height)?;
-    for (index, height) in sorted.iter().enumerate() {
-        if checked_next_power_of_two(*height)? == max_height_npt {
-            consumed[index] = true;
-        }
-    }
+    let mut consumed_below = checked_next_power_of_two(max_height)?;
     let mut path_bits = 0usize;
     while curr > roots {
         let step = if curr < 4 {
             2
         } else {
             let target = checked_next_power_of_two(curr / 4)?;
-            if sorted.iter().enumerate().any(|(index, height)| {
-                !consumed[index]
-                    && checked_next_power_of_two(*height).is_ok_and(|next| next > target)
-            }) {
-                2
-            } else {
-                4
-            }
-        };
-        let logical_next = curr / step;
-        let next = checked_padded_len(logical_next)?;
-        let logical_next_npt = checked_next_power_of_two(logical_next)?;
-        let injection_height = sorted
-            .iter()
-            .enumerate()
-            .find(|(index, height)| {
-                !consumed[*index]
-                    && checked_next_power_of_two(**height).ok() == Some(logical_next_npt)
-            })
-            .map(|(_, height)| *height);
-        let injected = injection_height.is_some_and(|injection_height| {
-            for (index, height) in sorted.iter().enumerate() {
-                if !consumed[index] && *height == injection_height {
-                    consumed[index] = true;
+            let mut has_intermediate = false;
+            let remaining = heights.clone();
+            for height in remaining {
+                if height != 0 {
+                    let bucket = checked_next_power_of_two(height)?;
+                    if bucket < consumed_below && bucket > target {
+                        has_intermediate = true;
+                        break;
+                    }
                 }
             }
-            true
-        });
-        if next == curr && !injected {
+            if has_intermediate { 2 } else { 4 }
+        };
+
+        let logical_next = curr / step;
+        let next = checked_padded_len(logical_next)?;
+        let logical_next_bucket = checked_next_power_of_two(logical_next)?;
+        let mut injection_height = None;
+        let remaining = heights.clone();
+        for height in remaining {
+            if height != 0
+                && checked_next_power_of_two(height)? == logical_next_bucket
+                && logical_next_bucket < consumed_below
+            {
+                injection_height = Some(height);
+                break;
+            }
+        }
+        if injection_height.is_some() {
+            consumed_below = logical_next_bucket;
+        }
+        if next == curr && injection_height.is_none() {
             return Err(CircuitBuilderError::InvalidMerkleCap {
                 details: "arity-4 cap walk made no progress".into(),
             });
         }
+
+        visit(Arity4StepGeometry {
+            step,
+            injection_height,
+        });
         curr = next;
         path_bits = path_bits
             .checked_add(if step == 4 { 2 } else { 1 })
@@ -728,6 +737,14 @@ pub(crate) fn validate_arity4_cap_geometry(
             })?;
     }
     Ok(path_bits)
+}
+
+/// Walk native arity-4 cap geometry without allocating a height table.
+pub(crate) fn validate_arity4_cap_geometry(
+    heights: &[usize],
+    roots: usize,
+) -> Result<usize, CircuitBuilderError> {
+    visit_arity4_path(heights.iter().copied(), roots, |_| {})
 }
 
 /// Select one cap entry from a Merkle cap using a binary tree multiplexer.
@@ -1600,17 +1617,6 @@ where
     Ok(())
 }
 
-/// Round `raw_len` up to a multiple of `n`, mirroring native MMCS height padding.
-const fn padded_len(raw_len: usize, n: usize) -> usize {
-    if raw_len <= 1 {
-        raw_len
-    } else if raw_len >= n {
-        raw_len.div_ceil(n) * n
-    } else {
-        n
-    }
-}
-
 /// One level of the arity-4 Merkle path: a `step` (2 or 4) plus the matrices whose rows are
 /// injected after that level's compression (mixed-height batches).
 struct Arity4PathStep {
@@ -1619,16 +1625,27 @@ struct Arity4PathStep {
 }
 
 /// Matrices present at the initial leaf layer (all rounding up to the tallest power-of-two height).
-fn arity4_leaf_rows(dimensions: &[Dimensions], max_height: usize) -> Vec<usize> {
-    let leaf_height_npt = max_height.next_power_of_two();
-    let mut heights_tallest_first = dimensions
+fn arity4_leaf_rows(dimensions: &[Dimensions]) -> Result<Vec<usize>, CircuitBuilderError> {
+    let max_height = dimensions.iter().map(|dims| dims.height).max().unwrap_or(0);
+    let leaf_height_npt = crate::pcs::mmcs::checked_next_power_of_two(max_height)?;
+    dimensions
         .iter()
         .enumerate()
-        .sorted_by_key(|(_, dims)| Reverse(dims.height))
-        .peekable();
-    heights_tallest_first
-        .peeking_take_while(|(_, dims)| dims.height.next_power_of_two() == leaf_height_npt)
-        .map(|(mat_idx, _)| mat_idx)
+        .filter_map(|(mat_idx, dims)| {
+            if dims.height == 0 {
+                None
+            } else {
+                Some(
+                    crate::pcs::mmcs::checked_next_power_of_two(dims.height)
+                        .map(|height| (mat_idx, height)),
+                )
+            }
+        })
+        .filter_map(|result| match result {
+            Ok((mat_idx, height)) if height == leaf_height_npt => Some(Ok(mat_idx)),
+            Ok(_) => None,
+            Err(error) => Some(Err(error)),
+        })
         .collect()
 }
 
@@ -1637,59 +1654,28 @@ fn arity4_leaf_rows(dimensions: &[Dimensions], max_height: usize) -> Vec<usize> 
 /// matrix height lands between two quaternary layers.
 fn arity4_path_schedule(
     dimensions: &[Dimensions],
-    max_height: usize,
     num_roots: usize,
-) -> Vec<Arity4PathStep> {
-    let leaf_height_npt = max_height.next_power_of_two();
-    let mut heights_tallest_first = dimensions
-        .iter()
-        .enumerate()
-        .sorted_by_key(|(_, dims)| Reverse(dims.height))
-        .peekable();
-
-    // The leaf hash consumes every matrix row present at the initial leaf layer.
-    let _ = heights_tallest_first
-        .peeking_take_while(|(_, dims)| dims.height.next_power_of_two() == leaf_height_npt)
-        .count();
-
+) -> Result<Vec<Arity4PathStep>, CircuitBuilderError> {
     let mut steps = Vec::new();
-    let mut curr_height_padded = padded_len(max_height, 4);
-
-    // Walk to the root; the path is the prefix of compression steps reaching the cap layer, whose
-    // padded width equals `num_roots` (native `cap_len = min(product, layer.len())` always lands on
-    // a produced layer width). Higher layers live inside the verifier's cap.
-    while curr_height_padded > num_roots {
-        let step = if curr_height_padded < 4 {
-            2
-        } else {
-            let n_ary_target = (curr_height_padded / 4).next_power_of_two();
-            let has_intermediate = heights_tallest_first
-                .clone()
-                .any(|(_, dims)| dims.height.next_power_of_two() > n_ary_target);
-            if has_intermediate { 2 } else { 4 }
-        };
-
-        let logical_next = curr_height_padded / step;
-        curr_height_padded = padded_len(logical_next, 4);
-        let logical_next_npt = logical_next.next_power_of_two();
-        let next_height = heights_tallest_first
-            .peek()
-            .map(|(_, dims)| dims.height)
-            .filter(|h| h.next_power_of_two() == logical_next_npt);
-        let injection_rows = next_height.map_or_else(Vec::new, |next_height| {
-            heights_tallest_first
-                .peeking_take_while(|(_, dims)| dims.height == next_height)
-                .map(|(mat_idx, _)| mat_idx)
-                .collect()
-        });
-
-        steps.push(Arity4PathStep {
-            step,
-            injection_rows,
-        });
-    }
-
-    steps
+    crate::pcs::mmcs::visit_arity4_path(
+        dimensions.iter().map(|dims| dims.height),
+        num_roots,
+        |geometry| {
+            let injection_rows = geometry.injection_height.map_or_else(Vec::new, |height| {
+                dimensions
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(mat_idx, dims)| (dims.height == height).then_some(mat_idx))
+                    .collect()
+            });
+            let step = geometry.step;
+            steps.push(Arity4PathStep {
+                step,
+                injection_rows,
+            });
+        },
+    )?;
+    Ok(steps)
 }
 
 /// Hash flattened base-field leaf rows with the wide (W32) overwrite-mode sponge and return the
@@ -1835,53 +1821,35 @@ fn arity4_prepare<EF: Field>(
 
     let cap_log2 = validate_commitment_cap_len(commitment_cap)?;
 
-    let mut heights_tallest_first = dimensions
-        .iter()
-        .enumerate()
-        .sorted_by_key(|(_, dims)| Reverse(dims.height))
-        .peekable();
-
-    if !heights_tallest_first
-        .clone()
-        .map(|(_, dims)| dims.height)
-        .tuple_windows()
-        .all(|(curr, next)| curr == next || curr.next_power_of_two() != next.next_power_of_two())
-    {
-        return Err(CircuitBuilderError::Poseidon2ConfigMismatch {
-            expected: "matrix heights that round up to the same power of two must be equal".into(),
-            got: "incompatible matrix heights".into(),
-        });
-    }
-
-    let max_height = heights_tallest_first
-        .peek()
-        .map(|(_, dims)| dims.height)
-        .unwrap_or(0);
-    if max_height == 0 {
-        return Err(CircuitBuilderError::Poseidon2ConfigMismatch {
-            expected: "at least one non-empty matrix".into(),
-            got: "empty batch".into(),
-        });
-    }
-
     let num_roots = commitment_cap.len();
 
-    let leaf_rows = arity4_leaf_rows(dimensions, max_height);
-    let schedule = arity4_path_schedule(dimensions, max_height, num_roots);
+    // Run the shared scalar visitor before defining zero targets or selecting a
+    // cap entry.  The schedule and leaf rows below only materialize its already
+    // checked integer decisions.
+    let leaf_rows = arity4_leaf_rows(dimensions)?;
+    let schedule = arity4_path_schedule(dimensions, num_roots)?;
 
     // The cap strips whole compression steps, so the path can consume more direction bits than
     // `index_bits` holds (the surplus high positions are implicit zeros). The leftover index bits,
     // zero-extended to `cap_log2`, select the cap entry.
-    let path_bit_total: usize = schedule
-        .iter()
-        .map(|s| if s.step == 4 { 2 } else { 1 })
-        .sum();
+    let path_bit_total = schedule.iter().try_fold(0usize, |total, step| {
+        total
+            .checked_add(if step.step == 4 { 2 } else { 1 })
+            .ok_or_else(|| CircuitBuilderError::InvalidMerkleCap {
+                details: "arity-4 path bit count overflows".into(),
+            })
+    })?;
     let cap_index_bits: Vec<Target> = if cap_log2 == 0 {
         Vec::new()
     } else {
         let zero = circuit.define_const(EF::ZERO);
         (0..cap_log2)
-            .map(|i| index_bits.get(path_bit_total + i).copied().unwrap_or(zero))
+            .map(|i| {
+                path_bit_total
+                    .checked_add(i)
+                    .and_then(|index| index_bits.get(index).copied())
+                    .unwrap_or(zero)
+            })
             .collect()
     };
 
@@ -3378,6 +3346,17 @@ mod test {
         assert_eq!(validate_arity4_cap_geometry(&[2], 4).unwrap(), 0);
         assert!(validate_arity4_cap_geometry(&[5, 6], 1).is_err());
         assert!(validate_arity4_cap_geometry(&[8], 0).is_err());
+    }
+
+    #[test]
+    fn numeric_arity4_overflow_and_empty_boundaries_are_typed_errors() {
+        assert!(validate_arity4_cap_geometry(&[], 1).is_err());
+        assert!(validate_arity4_cap_geometry(&[0], 1).is_err());
+        assert!(validate_arity4_cap_geometry(&[usize::MAX], 1).is_err());
+        assert!(checked_next_power_of_two(usize::MAX).is_err());
+        assert!(checked_padded_len(usize::MAX).is_err());
+        assert!(checked_padded_len(usize::MAX - 2).is_err());
+        assert_eq!(checked_padded_len(usize::MAX - 3).unwrap(), usize::MAX - 3);
     }
 
     /// Cross-checks [`restore_fri_query_paths`] against the trusted single-query
