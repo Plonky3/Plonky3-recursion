@@ -199,6 +199,77 @@ where
         RecursionInput::BatchStark { proof, .. } => {
             usage.instances = proof.proof.opened_values.instances.len();
             usage.metadata_entries = proof.non_primitives.len();
+            for (op_type, _) in proof.table_packing.npo_lanes_iter() {
+                usage.metadata_entries =
+                    InputResourceUsage::checked_add("metadata entries", usage.metadata_entries, 1)?;
+                usage.metadata_string_bytes = InputResourceUsage::checked_add(
+                    "metadata string bytes",
+                    usage.metadata_string_bytes,
+                    op_type.as_str().len(),
+                )?;
+            }
+            for (op_type, _) in proof.table_packing.npo_min_heights() {
+                usage.metadata_entries =
+                    InputResourceUsage::checked_add("metadata entries", usage.metadata_entries, 1)?;
+                usage.metadata_string_bytes = InputResourceUsage::checked_add(
+                    "metadata string bytes",
+                    usage.metadata_string_bytes,
+                    op_type.as_str().len(),
+                )?;
+            }
+            for entry in &proof.non_primitives {
+                usage.scalar_elements = InputResourceUsage::checked_add(
+                    "scalar elements",
+                    usage.scalar_elements,
+                    entry.public_values.len(),
+                )?;
+                usage.metadata_string_bytes = InputResourceUsage::checked_add(
+                    "metadata string bytes",
+                    usage.metadata_string_bytes,
+                    entry.op_type.as_str().len(),
+                )?;
+            }
+            if let Some(&degree) = proof.proof.degree_bits.iter().max() {
+                if degree > limits.max_log_domain_or_degree {
+                    return Err(VerificationError::ResourceLimitExceeded {
+                        component: "log domain or degree",
+                        actual: degree,
+                        limit: limits.max_log_domain_or_degree,
+                    });
+                }
+            }
+        }
+    }
+    usage.check(limits)
+}
+
+fn preflight_basic_whir_prepared<SC>(
+    limits: &VerifierLimits,
+    input: &PreparedInput<'_, SC>,
+) -> Result<(), VerificationError>
+where
+    SC: StarkGenericConfig,
+{
+    let mut usage = InputResourceUsage::default();
+    match input {
+        PreparedInput::UniStark {
+            proof,
+            public_inputs,
+            ..
+        } => {
+            usage.instances = 1;
+            usage.scalar_elements = public_inputs.len();
+            if proof.degree_bits > limits.max_log_domain_or_degree {
+                return Err(VerificationError::ResourceLimitExceeded {
+                    component: "log domain or degree",
+                    actual: proof.degree_bits,
+                    limit: limits.max_log_domain_or_degree,
+                });
+            }
+        }
+        PreparedInput::BatchStark { proof, .. } => {
+            usage.instances = proof.proof.opened_values.instances.len();
+            usage.metadata_entries = proof.non_primitives.len();
             if let Some(&degree) = proof.proof.degree_bits.iter().max() {
                 if degree > limits.max_log_domain_or_degree {
                     return Err(VerificationError::ResourceLimitExceeded {
@@ -259,11 +330,13 @@ where
     UniStark(
         StarkVerifierInputsBuilder<SC, SC::Commitment, SC::OpeningProof>,
         Vec<NonPrimitiveOpId>,
+        VerifierLimits,
     ),
     /// Result for a batch-STARK input proof.
     BatchStark(
         BatchStarkVerifierInputsBuilder<SC, SC::Commitment, SC::OpeningProof>,
         Vec<NonPrimitiveOpId>,
+        VerifierLimits,
     ),
 }
 
@@ -287,22 +360,47 @@ where
     ) -> Result<Vec<SC::Challenge>, VerificationError> {
         match (self, prev) {
             (
-                Self::UniStark(builder, _),
+                Self::UniStark(builder, _, limits),
                 RecursionInput::UniStark {
                     proof,
                     public_inputs,
                     preprocessed_commit,
                     ..
                 },
-            ) => builder.try_pack_public_values(public_inputs, proof, preprocessed_commit),
+            ) => {
+                let values =
+                    builder.try_pack_public_values(public_inputs, proof, preprocessed_commit)?;
+                if values.len() > limits.max_total_scalar_elements {
+                    return Err(VerificationError::ResourceLimitExceeded {
+                        component: "packed scalar elements",
+                        actual: values.len(),
+                        limit: limits.max_total_scalar_elements,
+                    });
+                }
+                Ok(values)
+            }
             (
-                Self::BatchStark(builder, _),
+                Self::BatchStark(builder, _, limits),
                 RecursionInput::BatchStark {
                     proof,
                     common_data,
                     table_public_inputs,
                 },
-            ) => builder.try_pack_public_values(table_public_inputs, &proof.proof, common_data),
+            ) => {
+                let values = builder.try_pack_public_values(
+                    table_public_inputs,
+                    &proof.proof,
+                    common_data,
+                )?;
+                if values.len() > limits.max_total_scalar_elements {
+                    return Err(VerificationError::ResourceLimitExceeded {
+                        component: "packed scalar elements",
+                        actual: values.len(),
+                        limit: limits.max_total_scalar_elements,
+                    });
+                }
+                Ok(values)
+            }
             _ => Err(VerificationError::InvalidProofShape(
                 "RecursionInput variant does not match verifier result".to_string(),
             )),
@@ -314,11 +412,27 @@ where
         prev: &RecursionInput<'_, SC, A>,
     ) -> Result<Vec<SC::Challenge>, VerificationError> {
         match (self, prev) {
-            (Self::UniStark(builder, _), RecursionInput::UniStark { proof, .. }) => {
-                builder.try_pack_private_values(proof)
+            (Self::UniStark(builder, _, limits), RecursionInput::UniStark { proof, .. }) => {
+                let values = builder.try_pack_private_values(proof)?;
+                if values.len() > limits.max_total_scalar_elements {
+                    return Err(VerificationError::ResourceLimitExceeded {
+                        component: "packed scalar elements",
+                        actual: values.len(),
+                        limit: limits.max_total_scalar_elements,
+                    });
+                }
+                Ok(values)
             }
-            (Self::BatchStark(builder, _), RecursionInput::BatchStark { proof, .. }) => {
-                builder.try_pack_private_values(&proof.proof)
+            (Self::BatchStark(builder, _, limits), RecursionInput::BatchStark { proof, .. }) => {
+                let values = builder.try_pack_private_values(&proof.proof)?;
+                if values.len() > limits.max_total_scalar_elements {
+                    return Err(VerificationError::ResourceLimitExceeded {
+                        component: "packed scalar elements",
+                        actual: values.len(),
+                        limit: limits.max_total_scalar_elements,
+                    });
+                }
+                Ok(values)
             }
             _ => Err(VerificationError::InvalidProofShape(
                 "RecursionInput variant does not match verifier result".to_string(),
@@ -328,7 +442,7 @@ where
 
     fn op_ids(&self) -> &[NonPrimitiveOpId] {
         match self {
-            Self::UniStark(_, ids) | Self::BatchStark(_, ids) => ids,
+            Self::UniStark(_, ids, _) | Self::BatchStark(_, ids, _) => ids,
         }
     }
 }
@@ -442,7 +556,11 @@ where
                     config.pcs_verifier_params(),
                     self.0.challenger_perm_config,
                 )?;
-                Ok(WhirVerifierResult::UniStark(verifier_inputs, op_ids))
+                Ok(WhirVerifierResult::UniStark(
+                    verifier_inputs,
+                    op_ids,
+                    self.0.limits,
+                ))
             }
             RecursionInput::BatchStark {
                 proof,
@@ -479,7 +597,11 @@ where
                     self.0.challenger_perm_config,
                     &provers,
                 )?;
-                Ok(WhirVerifierResult::BatchStark(verifier_inputs, op_ids))
+                Ok(WhirVerifierResult::BatchStark(
+                    verifier_inputs,
+                    op_ids,
+                    self.0.limits,
+                ))
             }
         }
     }
@@ -609,5 +731,13 @@ where
         input: &PreparedInput<'_, SC>,
     ) -> Result<(), VerificationError> {
         validate_builtin_prepared_input::<SC, SC::Commitment, SC::OpeningProof>(contract, input)
+    }
+
+    fn preflight_input(
+        &self,
+        _config: &SC,
+        input: &PreparedInput<'_, SC>,
+    ) -> Result<(), VerificationError> {
+        preflight_basic_whir_prepared(&self.0.limits, input)
     }
 }

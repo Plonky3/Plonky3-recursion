@@ -110,3 +110,51 @@ impl InputResourceUsage {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn defaults_match_the_operational_policy() {
+        let limits = VerifierLimits::default();
+        assert_eq!(limits.max_instances, 4096);
+        assert_eq!(limits.max_rounds, 64);
+        assert_eq!(limits.max_queries_per_round, 4096);
+        assert_eq!(limits.max_log_domain_or_degree, 32);
+        assert_eq!(limits.max_matrix_width, 1 << 20);
+        assert_eq!(limits.max_final_poly_evaluations, 1 << 20);
+        assert_eq!(limits.max_cap_roots, 1 << 16);
+        assert_eq!(limits.max_total_scalar_elements, 1 << 24);
+        assert_eq!(limits.max_metadata_entries, 1 << 16);
+        assert_eq!(limits.max_metadata_string_bytes, 1 << 20);
+        assert_eq!(limits.max_compressed_frontier_hashes, 1 << 20);
+        assert_eq!(limits.max_restored_authentication_path_hashes, 1 << 22);
+    }
+
+    #[test]
+    fn boundaries_and_overflow_are_typed() {
+        let limits = VerifierLimits {
+            max_instances: 2,
+            ..VerifierLimits::default()
+        };
+        let mut usage = InputResourceUsage::default();
+        usage.instances = 2;
+        usage.check(&limits).expect("exact boundary is accepted");
+        usage.instances = 3;
+        assert!(matches!(
+            usage.check(&limits),
+            Err(VerificationError::ResourceLimitExceeded {
+                component: "instances",
+                actual: 3,
+                limit: 2
+            })
+        ));
+        assert!(matches!(
+            InputResourceUsage::checked_add("queries", usize::MAX, 1),
+            Err(VerificationError::ResourceArithmeticOverflow {
+                component: "queries"
+            })
+        ));
+    }
+}

@@ -65,6 +65,18 @@ pub(crate) const MAX_SANE_LANES: usize = 1 << 16;
 const SINGLE_LANE_NPO_PREFIXES: [&str; 2] = ["poseidon1_perm/", "poseidon2_perm/"];
 
 impl TablePacking {
+    /// Borrow the configured NPO lane overrides without cloning packing metadata.
+    pub fn npo_lanes_iter(&self) -> impl Iterator<Item = (&NpoTypeId, usize)> {
+        self.npo_lanes.iter().map(|(op, lanes)| (op, *lanes))
+    }
+
+    /// Borrow the configured NPO minimum-height overrides without cloning metadata.
+    pub fn npo_min_heights(&self) -> impl Iterator<Item = (&NpoTypeId, usize)> {
+        self.npo_min_heights
+            .iter()
+            .map(|(op, height)| (op, *height))
+    }
+
     /// Create a new [`TablePacking`] with the given primitive lane counts (clamped to at least 1).
     ///
     /// NPO lanes default to 1. Use [`with_npo_lanes`](Self::with_npo_lanes) to override per op type.
