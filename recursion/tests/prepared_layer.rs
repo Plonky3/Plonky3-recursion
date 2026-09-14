@@ -198,10 +198,14 @@ fn whir_trusted_batch_statement_replay_uses_each_caller_expected_vector() {
         })
         .unwrap();
 
-    owner.verifier().verify(&first_output.0, &[]).unwrap();
-    owner.verifier().verify(&second_output.0, &[]).unwrap();
-    verify_whir_output(config.clone(), &params, &first_output);
-    verify_whir_output(config, &params, &second_output);
+    owner
+        .verifier()
+        .verify(&first_output.0, &first_statement)
+        .unwrap();
+    owner
+        .verifier()
+        .verify(&second_output.0, &second_statement)
+        .unwrap();
 }
 
 #[test]
@@ -307,8 +311,8 @@ fn trusted_fri_uni_layer_exports_each_original_air_statement() {
             public_inputs: &first_statement,
         },
         config.clone(),
-        backend,
-        params,
+        backend.clone(),
+        params.clone(),
     )
     .expect("the trusted FRI leaf prepares");
 
@@ -366,6 +370,85 @@ fn trusted_fri_uni_layer_exports_each_original_air_statement() {
         unreachable!()
     };
     assert_eq!(table_public_inputs[statement_table], first_statement);
+
+    let middle = TrustedPreparedLayer::<
+        common::KoalaBearD4RecursionConfig,
+        common::KoalaBearD4RecursionConfig,
+        BatchOnly,
+        _,
+        4,
+    >::new(
+        TrustedPreparedSource::BatchStark {
+            verifier: verifier.clone(),
+            proof: &first_output.0,
+            statement: &first_statement,
+        },
+        config.clone(),
+        backend.clone(),
+        params.clone(),
+    )
+    .expect("the first batch wrapper prepares from the retained leaf verifier");
+    let first_middle = middle
+        .prove(TrustedPreparedInput::BatchStark {
+            proof: &first_output.0,
+            statement: &first_statement,
+        })
+        .unwrap();
+    let second_middle = middle
+        .prove(TrustedPreparedInput::BatchStark {
+            proof: &second_output.0,
+            statement: &second_statement,
+        })
+        .unwrap();
+    let middle_verifier = middle.verifier();
+    middle_verifier
+        .verify(&first_middle.0, &first_statement)
+        .unwrap();
+    middle_verifier
+        .verify(&second_middle.0, &second_statement)
+        .unwrap();
+
+    let outer = TrustedPreparedLayer::<
+        common::KoalaBearD4RecursionConfig,
+        common::KoalaBearD4RecursionConfig,
+        BatchOnly,
+        _,
+        4,
+    >::new(
+        TrustedPreparedSource::BatchStark {
+            verifier: middle_verifier.clone(),
+            proof: &first_middle.0,
+            statement: &first_statement,
+        },
+        config,
+        backend,
+        params,
+    )
+    .expect("the second batch wrapper prepares from the retained middle verifier");
+    let first_outer = outer
+        .prove(TrustedPreparedInput::BatchStark {
+            proof: &first_middle.0,
+            statement: &first_statement,
+        })
+        .unwrap();
+    let second_outer = outer
+        .prove(TrustedPreparedInput::BatchStark {
+            proof: &second_middle.0,
+            statement: &second_statement,
+        })
+        .unwrap();
+    let outer_verifier = outer.verifier();
+    outer_verifier
+        .verify(&first_outer.0, &first_statement)
+        .unwrap();
+    outer_verifier
+        .verify(&second_outer.0, &second_statement)
+        .unwrap();
+    assert!(
+        outer_verifier
+            .verify(&second_outer.0, &first_statement)
+            .is_err()
+    );
 }
 
 #[test]
@@ -759,6 +842,71 @@ fn whir_uni_prepared_layer_reuses_varied_witnesses_after_reference_drop() {
     assert!(Rc::ptr_eq(&out1.1, &out2.1));
     verify_whir_output(config.clone(), &params, &out1);
     verify_whir_output(config, &params, &out2);
+}
+
+/// Exercises the WHIR `UniStark` verifier-result branch with public values belonging to a
+/// realistic AIR. The trusted parent must expose the values consumed by that verifier rather
+/// than freezing the reference witness or emitting an empty statement.
+#[test]
+fn trusted_whir_uni_layer_exports_each_original_air_statement() {
+    let n = 1 << 10;
+    let air = FibonacciAir {};
+    let config = bb_whir_config(vec![]);
+    let backend = WhirRecursionBackend::<16, 8>::new(Poseidon2Config::BABY_BEAR_D4_W16)
+        .for_extension_degree::<4>();
+    let params = ProveNextLayerParams::default();
+    let first_statement = vec![BbF::ZERO, BbF::ONE, fibonacci_output::<BbF>(0, 1, n)];
+    let first_proof = prove(
+        &config,
+        &air,
+        generate_trace_rows::<BbF>(0, 1, n),
+        &first_statement,
+    );
+    let owner = TrustedPreparedLayer::<BbWhirConfig, BbWhirConfig, FibonacciAir, _, 4>::new(
+        TrustedPreparedSource::UniStark {
+            config: config.clone(),
+            air: &air,
+            preprocessed_commit: None,
+            proof: &first_proof,
+            public_inputs: &first_statement,
+        },
+        config.clone(),
+        backend,
+        params,
+    )
+    .expect("the trusted WHIR leaf prepares");
+
+    let first_output = owner
+        .prove(TrustedPreparedInput::UniStark {
+            proof: &first_proof,
+            public_inputs: &first_statement,
+        })
+        .expect("the first WHIR leaf statement proves");
+    let second_statement = vec![
+        BbF::from_u64(2),
+        BbF::from_u64(3),
+        fibonacci_output::<BbF>(2, 3, n),
+    ];
+    let second_proof = prove(
+        &config,
+        &air,
+        generate_trace_rows::<BbF>(2, 3, n),
+        &second_statement,
+    );
+    let second_output = owner
+        .prove(TrustedPreparedInput::UniStark {
+            proof: &second_proof,
+            public_inputs: &second_statement,
+        })
+        .expect("the second WHIR leaf statement proves under the same preparation");
+
+    let verifier = owner.verifier();
+    assert_eq!(verifier.statement_layout().schema().base_len(), 3);
+    verifier.verify(&first_output.0, &first_statement).unwrap();
+    verifier
+        .verify(&second_output.0, &second_statement)
+        .unwrap();
+    assert!(verifier.verify(&second_output.0, &first_statement).is_err());
 }
 
 #[test]

@@ -882,8 +882,10 @@ mod tests {
             .unwrap();
 
         let parent_verifier = owner.verifier();
-        parent_verifier.verify(&first.0, &[]).unwrap();
-        parent_verifier.verify(&second.0, &[]).unwrap();
+        parent_verifier.verify(&first.0, &first_statement).unwrap();
+        parent_verifier
+            .verify(&second.0, &second_statement)
+            .unwrap();
     }
 
     #[test]
@@ -1080,7 +1082,7 @@ mod tests {
         let mut forged_traces = runner.run().unwrap();
         let honest = owner.prep.prove(&forged_traces).unwrap();
         let fixed_parent = owner.verifier();
-        fixed_parent.verify(&honest.0, &[]).unwrap();
+        fixed_parent.verify(&honest.0, &statement).unwrap();
 
         let TrustedChildAuthority::Batch { verifier } = &owner.child else {
             unreachable!()
@@ -1112,7 +1114,7 @@ mod tests {
         let attempt = catch_unwind(AssertUnwindSafe(|| owner.prep.prove(&forged_traces)));
         match attempt {
             Ok(Ok(forged)) => assert!(
-                fixed_parent.verify(&forged.0, &[]).is_err(),
+                fixed_parent.verify(&forged.0, &statement).is_err(),
                 "the original parent key must reject the directly packed wrong statement"
             ),
             Ok(Err(error)) => panic!("forged trace must reach proof construction: {error:?}"),
