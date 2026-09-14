@@ -153,6 +153,10 @@ impl<'a> FriOpeningLayout<'a> {
         self.inner.to_owned_layout()
     }
 
+    pub(crate) fn matches_layout(self, expected: &NativeStarkLayout<'_>) -> bool {
+        self.inner == expected
+    }
+
     pub fn matrices(self, ordinal: usize) -> impl Iterator<Item = FriMatrixGeometry> + Clone + 'a {
         let role = self.inner.commitment_role(ordinal);
         role.into_iter().flat_map(move |role| {

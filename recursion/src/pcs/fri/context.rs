@@ -9,6 +9,7 @@ use p3_field::{ExtensionField, PrimeField64, TwoAdicField};
 use p3_fri::{BatchMultiOpening, FriProof};
 
 use super::{FriVerifierParams, NativeFriParams};
+use crate::Target;
 use crate::input_contract::FriOpeningLayout;
 use crate::input_contract::stark_layout::NativeStarkLayout;
 use crate::ops::PermConfig;
@@ -72,28 +73,12 @@ impl ValidatedFriContext {
         &self.layout
     }
 
-    pub(crate) fn input_cap_roots(&self) -> &[usize] {
-        &self.input_cap_roots
-    }
-
-    pub(crate) fn phase_cap_roots(&self) -> &[usize] {
-        &self.phase_cap_roots
-    }
-
     pub(crate) const fn native_params(&self) -> NativeFriParams {
         self.native
     }
 
     pub(crate) const fn recursive_params(&self) -> FriVerifierParams {
         self.recursive
-    }
-
-    pub(crate) const fn input_salt_elems(&self) -> Option<usize> {
-        self.input_salt_elems
-    }
-
-    pub(crate) const fn phase_salt_elems(&self) -> Option<usize> {
-        self.phase_salt_elems
     }
 }
 
@@ -174,6 +159,79 @@ fn checked_pow2(value: usize, label: &str) -> Result<usize, VerificationError> {
         .ok_or_else(|| invalid(format!("FRI {label} height overflows")))
 }
 
+pub(crate) fn checked_add_len(
+    left: usize,
+    right: usize,
+    label: &str,
+) -> Result<usize, VerificationError> {
+    left.checked_add(right)
+        .ok_or_else(|| invalid(format!("FRI {label} length overflows")))
+}
+
+pub(crate) fn checked_mul_len(
+    left: usize,
+    right: usize,
+    label: &str,
+) -> Result<usize, VerificationError> {
+    left.checked_mul(right)
+        .ok_or_else(|| invalid(format!("FRI {label} length overflows")))
+}
+
+pub(crate) fn check_vec_len<T>(len: usize, label: &str) -> Result<(), VerificationError> {
+    let bytes = checked_mul_len(len, core::mem::size_of::<T>(), label)?;
+    if bytes > isize::MAX as usize {
+        return Err(invalid(format!(
+            "FRI {label} byte length is not representable"
+        )));
+    }
+    Ok(())
+}
+
+pub(crate) fn checked_input_counts(
+    base_width: usize,
+    tail_width: usize,
+    salt_width: usize,
+) -> Result<(usize, usize), VerificationError> {
+    let raw = checked_add_len(base_width, tail_width, "input raw width")?;
+    let salted = checked_add_len(raw, salt_width, "input salted width")?;
+    Ok((raw, salted))
+}
+
+pub(crate) fn checked_phase_counts(
+    arity: usize,
+    extension_dimension: usize,
+    salt_width: usize,
+) -> Result<(usize, usize, usize), VerificationError> {
+    let full_base = checked_mul_len(arity, extension_dimension, "phase full width")?;
+    let full_base = checked_add_len(full_base, salt_width, "phase salted width")?;
+    let sibling_count = arity
+        .checked_sub(1)
+        .ok_or_else(|| invalid("FRI phase sibling count underflows"))?;
+    let sibling_coefficients =
+        checked_mul_len(sibling_count, extension_dimension, "phase sibling width")?;
+    let private_values = checked_add_len(sibling_coefficients, salt_width, "phase private width")?;
+    Ok((full_base, sibling_coefficients, private_values))
+}
+
+#[allow(dead_code)]
+pub(crate) fn checked_flat_value_totals(
+    query_count: usize,
+    input_per_query: usize,
+    phase_per_query: usize,
+    hiding_tail_total: usize,
+    phase_cap_values: usize,
+    phase_count: usize,
+    final_poly_len: usize,
+) -> Result<(usize, usize), VerificationError> {
+    let per_query = checked_add_len(input_per_query, phase_per_query, "private per-query")?;
+    let private_values = checked_mul_len(query_count, per_query, "private value total")?;
+    let private_values = checked_add_len(private_values, hiding_tail_total, "private tail total")?;
+    let public_values = checked_add_len(phase_cap_values, phase_count, "public phase values")?;
+    let public_values = checked_add_len(public_values, final_poly_len, "public final polynomial")?;
+    let public_values = checked_add_len(public_values, 1, "public query witness")?;
+    Ok((private_values, public_values))
+}
+
 fn validate_hiding_tail_partition(
     layout: FriOpeningLayout<'_>,
     tails: &OpenedValues<impl p3_field::Field>,
@@ -217,6 +275,48 @@ struct CoreValidation {
     max_input_log: usize,
     total_reduction: usize,
     has_input_matrix: bool,
+}
+
+const MAX_FRI_COMMITMENTS: usize = 5;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct CapValidation {
+    core: CoreValidation,
+    input_roots: [usize; MAX_FRI_COMMITMENTS],
+    input_root_count: usize,
+    phase_roots: [usize; usize::BITS as usize],
+    phase_root_count: usize,
+}
+
+fn validate_hiding_tail_partition_borrowed(
+    layout: FriOpeningLayout<'_>,
+    tails: &OpenedValues<impl p3_field::Field>,
+) -> Result<(), VerificationError> {
+    if tails.len() != layout.commitment_count() {
+        return Err(invalid("Hiding FRI tail commitment count mismatch"));
+    }
+    for (ordinal, tail_round) in tails.iter().enumerate() {
+        let expected = layout
+            .matrix_count(ordinal)
+            .map_err(|error| invalid(error.to_string()))?;
+        if tail_round.len() != expected {
+            return Err(invalid(format!(
+                "Hiding FRI tail matrix count mismatch at commitment {ordinal}"
+            )));
+        }
+        for (matrix, (geometry, points)) in layout.matrices(ordinal).zip(tail_round).enumerate() {
+            if geometry.point_count() != points.len() {
+                return Err(invalid(format!(
+                    "Hiding FRI tail point count mismatch at commitment {ordinal} matrix {matrix}"
+                )));
+            }
+            let width = points.first().map_or(0, Vec::len);
+            if points.iter().any(|point| point.len() != width) {
+                return Err(invalid("Hiding FRI tail point widths disagree"));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Validate the complete native-vs-recursive FRI shape without transcript work,
@@ -291,6 +391,10 @@ where
     native
         .validate_recursive(recursive)
         .map_err(|error| invalid(format!("native/recursive FRI mismatch: {error}")))?;
+
+    if let Some(tails) = hiding_tails {
+        validate_hiding_tail_partition_borrowed(layout, tails)?;
+    }
 
     let query_count = native.num_queries();
     if proof.commit_phase_commits.len() != proof.commit_phase_openings.len()
@@ -382,20 +486,10 @@ where
             } else {
                 0
             };
-            let effective_base_width = geometry
-                .width()
-                .checked_add(tail_width)
-                .ok_or_else(|| invalid("FRI effective input width overflows"))?;
-            let effective_leaf_width = effective_base_width
-                .checked_add(input_salt_elems.unwrap_or(0))
-                .ok_or_else(|| invalid("FRI salted input width overflows"))?;
-            if effective_leaf_width
-                .checked_mul(core::mem::size_of::<F>())
-                .filter(|bytes| *bytes <= isize::MAX as usize)
-                .is_none()
-            {
-                return Err(invalid("FRI input leaf byte width overflows"));
-            }
+            let (effective_base_width, effective_leaf_width) =
+                checked_input_counts(geometry.width(), tail_width, input_salt_elems.unwrap_or(0))?;
+            check_vec_len::<F>(effective_leaf_width, "input leaf")?;
+            check_vec_len::<EF>(effective_leaf_width, "lifted input private")?;
             grouped_leaf_widths[lde_height] = grouped_leaf_widths[lde_height]
                 .checked_add(effective_leaf_width)
                 .ok_or_else(|| invalid("FRI grouped input leaf width overflows"))?;
@@ -414,12 +508,9 @@ where
                 }
             }
         }
-        if grouped_leaf_widths.iter().any(|width| {
-            width
-                .checked_mul(core::mem::size_of::<F>())
-                .is_none_or(|bytes| bytes > isize::MAX as usize)
-        }) {
-            return Err(invalid("FRI grouped input leaf byte width overflows"));
+        for width in grouped_leaf_widths {
+            check_vec_len::<F>(width, "grouped input leaf")?;
+            check_vec_len::<Target>(width, "grouped target input leaf")?;
         }
     }
     if !has_input_matrix {
@@ -452,17 +543,12 @@ where
         {
             return Err(invalid(format!("FRI round {round} sibling width mismatch")));
         }
-        let phase_leaf_width = checked_pow2(arity, "fold arity")?
-            .checked_mul(EF::DIMENSION)
-            .and_then(|width| width.checked_add(phase_salt_elems.unwrap_or(0)))
-            .ok_or_else(|| invalid("FRI phase leaf width overflows"))?;
-        if phase_leaf_width
-            .checked_mul(core::mem::size_of::<EF>())
-            .filter(|bytes| *bytes <= isize::MAX as usize)
-            .is_none()
-        {
-            return Err(invalid("FRI phase leaf byte width overflows"));
-        }
+        let arity_width = checked_pow2(arity, "fold arity")?;
+        let (phase_leaf_width, sibling_coefficients, private_values) =
+            checked_phase_counts(arity_width, EF::DIMENSION, phase_salt_elems.unwrap_or(0))?;
+        check_vec_len::<F>(phase_leaf_width, "phase base leaf")?;
+        check_vec_len::<EF>(private_values, "phase private values")?;
+        check_vec_len::<Target>(sibling_coefficients, "phase sibling targets")?;
         total_reduction = total_reduction
             .checked_add(arity)
             .ok_or_else(|| invalid("FRI fold schedule overflows"))?;
@@ -515,6 +601,94 @@ where
 /// points.  The old scalar checker is intentionally kept separate so legacy
 /// arithmetic-only tests cannot mint this authority without real caps.
 #[allow(clippy::too_many_arguments)]
+fn validate_fri_borrowed_with_caps<F, EF, IM, FM, W, C, PC>(
+    proof: &FriProof<EF, FM, W, Vec<BatchMultiOpening<F, IM>>>,
+    native: &NativeFriParams,
+    recursive: &FriVerifierParams,
+    layout: FriOpeningLayout<'_>,
+    input_caps: &[&C::Input],
+    input_salt_elems: Option<usize>,
+    phase_salt_elems: Option<usize>,
+    hiding_tails: Option<&OpenedValues<EF>>,
+) -> Result<CapValidation, VerificationError>
+where
+    F: TwoAdicField + PrimeField64,
+    EF: ExtensionField<F>,
+    IM: Mmcs<F, Commitment = C::Input>,
+    FM: Mmcs<EF, Commitment = PC::Input>,
+    C: CheckedFriCommitment<EF>,
+    PC: CheckedFriCommitment<EF>,
+{
+    let permutation = recursive.permutation_config.ok_or_else(|| {
+        invalid("checked FRI context requires a recursive MMCS permutation configuration")
+    })?;
+    let commitment_count = layout.commitment_count();
+    if commitment_count > MAX_FRI_COMMITMENTS {
+        return Err(invalid("FRI commitment role count exceeds checked maximum"));
+    }
+    if input_caps.len() != commitment_count {
+        return Err(invalid(format!(
+            "FRI input cap count mismatch: expected {commitment_count}, got {}",
+            input_caps.len()
+        )));
+    }
+    let phase_cap_count = proof.commit_phase_commits.len();
+    if phase_cap_count > usize::BITS as usize {
+        return Err(invalid(
+            "FRI phase count exceeds checked machine-word bound",
+        ));
+    }
+
+    let core = validate_fri_borrowed(
+        proof,
+        native,
+        recursive,
+        layout,
+        permutation,
+        hiding_tails,
+        input_salt_elems,
+        phase_salt_elems,
+    )?;
+    let index_bit_len = core
+        .total_reduction
+        .checked_add(native.log_blowup())
+        .and_then(|total| total.checked_add(native.log_final_poly_len()))
+        .ok_or_else(|| invalid("FRI index-bit length overflows"))?;
+
+    let mut input_roots = [0usize; MAX_FRI_COMMITMENTS];
+    for (ordinal, cap) in input_caps.iter().enumerate() {
+        let heights = layout.matrices(ordinal).map(|matrix| {
+            let log_height = matrix
+                .log_height()
+                .checked_add(native.log_blowup())
+                .unwrap_or(0);
+            checked_pow2(log_height, "input cap height").unwrap_or(0)
+        });
+        input_roots[ordinal] = C::validate_fri_cap(cap, permutation, index_bit_len, heights)?;
+    }
+
+    let mut phase_roots = [0usize; usize::BITS as usize];
+    let mut current = index_bit_len;
+    for (round, cap) in proof.commit_phase_commits.iter().enumerate() {
+        let arity = proof.commit_phase_openings[round].log_arity as usize;
+        current = current
+            .checked_sub(arity)
+            .ok_or_else(|| invalid("FRI phase schedule underflows"))?;
+        let height = checked_pow2(current, "phase cap height")?;
+        phase_roots[round] =
+            PC::validate_fri_cap(cap, permutation, index_bit_len, [height].into_iter())?;
+    }
+
+    Ok(CapValidation {
+        core,
+        input_roots,
+        input_root_count: commitment_count,
+        phase_roots,
+        phase_root_count: phase_cap_count,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn validate_fri_context_with_caps<F, EF, IM, FM, W, C, PC>(
     proof: &FriProof<EF, FM, W, Vec<BatchMultiOpening<F, IM>>>,
     native: &NativeFriParams,
@@ -536,55 +710,16 @@ where
     let permutation = recursive.permutation_config.ok_or_else(|| {
         invalid("checked FRI context requires a recursive MMCS permutation configuration")
     })?;
-    let view = layout;
-    if input_caps.len() != view.commitment_count() {
-        return Err(invalid(format!(
-            "FRI input cap count mismatch: expected {}, got {}",
-            view.commitment_count(),
-            input_caps.len()
-        )));
-    }
-    let phase_cap_count = proof.commit_phase_commits.len();
-    let core = validate_fri_borrowed(
+    let validated = validate_fri_borrowed_with_caps::<F, EF, IM, FM, W, C, PC>(
         proof,
         native,
         recursive,
-        view,
-        permutation,
-        hiding_tails,
+        layout,
+        input_caps,
         input_salt_elems,
         phase_salt_elems,
+        hiding_tails,
     )?;
-
-    let index_bit_len = core
-        .total_reduction
-        .checked_add(native.log_blowup())
-        .and_then(|total| total.checked_add(native.log_final_poly_len()))
-        .ok_or_else(|| invalid("FRI index-bit length overflows"))?;
-    let mut input_cap_roots = Vec::with_capacity(input_caps.len());
-    for (ordinal, cap) in input_caps.iter().enumerate() {
-        let heights = view.matrices(ordinal).map(|matrix| {
-            let log_height = matrix
-                .log_height()
-                .checked_add(native.log_blowup())
-                .unwrap_or(0);
-            checked_pow2(log_height, "input cap height").unwrap_or(0)
-        });
-        let roots = C::validate_fri_cap(cap, permutation, index_bit_len, heights)?;
-        input_cap_roots.push(roots);
-    }
-
-    let mut phase_cap_roots = Vec::with_capacity(phase_cap_count);
-    let mut current = index_bit_len;
-    for (round, cap) in proof.commit_phase_commits.iter().enumerate() {
-        let arity = proof.commit_phase_openings[round].log_arity as usize;
-        current = current
-            .checked_sub(arity)
-            .ok_or_else(|| invalid("FRI phase schedule underflows"))?;
-        let height = checked_pow2(current, "phase cap height")?;
-        let roots = PC::validate_fri_cap(cap, permutation, index_bit_len, [height].into_iter())?;
-        phase_cap_roots.push(roots);
-    }
 
     // Salt metadata is static adapter authority; actual rows are checked by
     // the built-in raw multiproof adapters before this function is called.
@@ -594,11 +729,12 @@ where
     }
 
     let hiding_tail_shape = hiding_tails
-        .map(|tails| validate_hiding_tail_partition(view, tails))
+        .map(|tails| validate_hiding_tail_partition(layout, tails))
         .transpose()?;
-    let input_matrix_counts = (0..view.commitment_count())
+    let input_matrix_counts = (0..layout.commitment_count())
         .map(|ordinal| {
-            view.matrix_count(ordinal)
+            layout
+                .matrix_count(ordinal)
                 .map_err(|error| invalid(error.to_string()))
         })
         .collect::<Result<_, _>>()?;
@@ -608,17 +744,124 @@ where
         recursive: *recursive,
         layout: layout.to_owned_layout(),
         permutation,
-        native_query_count: core.query_count,
+        native_query_count: validated.core.query_count,
         log_arities: proof
             .commit_phase_openings
             .iter()
             .map(|opening| opening.log_arity as usize)
             .collect(),
         input_matrix_counts,
-        input_cap_roots,
-        phase_cap_roots,
+        input_cap_roots: validated.input_roots[..validated.input_root_count].to_vec(),
+        phase_cap_roots: validated.phase_roots[..validated.phase_root_count].to_vec(),
         input_salt_elems,
         phase_salt_elems,
         hiding_tail_shape,
     })
+}
+
+fn validate_hiding_tail_compatibility(
+    tails: Option<&OpenedValues<impl p3_field::Field>>,
+    expected: &Option<Vec<Vec<Vec<usize>>>>,
+) -> Result<(), VerificationError> {
+    match (tails, expected) {
+        (None, None) => Ok(()),
+        (Some(_), None) | (None, Some(_)) => {
+            Err(invalid("FRI retained hiding-tail presence mismatch"))
+        }
+        (Some(tails), Some(expected)) => {
+            if tails.len() != expected.len() {
+                return Err(invalid(
+                    "FRI retained hiding-tail commitment count mismatch",
+                ));
+            }
+            for (ordinal, (tail_round, expected_round)) in
+                tails.iter().zip(expected.iter()).enumerate()
+            {
+                if tail_round.len() != expected_round.len() {
+                    return Err(invalid(format!(
+                        "FRI retained hiding-tail matrix count mismatch at commitment {ordinal}"
+                    )));
+                }
+                for (matrix, (points, expected_points)) in
+                    tail_round.iter().zip(expected_round.iter()).enumerate()
+                {
+                    if points.len() != expected_points.len()
+                        || points
+                            .iter()
+                            .zip(expected_points.iter())
+                            .any(|(point, width)| point.len() != *width)
+                    {
+                        return Err(invalid(format!(
+                            "FRI retained hiding-tail point partition mismatch at commitment {ordinal} matrix {matrix}"
+                        )));
+                    }
+                }
+            }
+            Ok(())
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn validate_fri_replacement_with_caps<F, EF, IM, FM, W, C, PC>(
+    proof: &FriProof<EF, FM, W, Vec<BatchMultiOpening<F, IM>>>,
+    native: &NativeFriParams,
+    recursive: &FriVerifierParams,
+    expected: &ValidatedFriContext,
+    candidate_layout: FriOpeningLayout<'_>,
+    input_caps: &[&C::Input],
+    input_salt_elems: Option<usize>,
+    phase_salt_elems: Option<usize>,
+    hiding_tails: Option<&OpenedValues<EF>>,
+) -> Result<(), VerificationError>
+where
+    F: TwoAdicField + PrimeField64,
+    EF: ExtensionField<F>,
+    IM: Mmcs<F, Commitment = C::Input>,
+    FM: Mmcs<EF, Commitment = PC::Input>,
+    C: CheckedFriCommitment<EF>,
+    PC: CheckedFriCommitment<EF>,
+{
+    if !candidate_layout.matches_layout(expected.layout()) {
+        return Err(invalid("FRI retained layout mismatch"));
+    }
+    let validated = validate_fri_borrowed_with_caps::<F, EF, IM, FM, W, C, PC>(
+        proof,
+        native,
+        recursive,
+        candidate_layout,
+        input_caps,
+        input_salt_elems,
+        phase_salt_elems,
+        hiding_tails,
+    )?;
+    if validated.core.query_count != expected.native_query_count
+        || input_salt_elems != expected.input_salt_elems
+        || phase_salt_elems != expected.phase_salt_elems
+    {
+        return Err(invalid("FRI retained scalar metadata mismatch"));
+    }
+    if validated.input_roots[..validated.input_root_count] != expected.input_cap_roots
+        || validated.phase_roots[..validated.phase_root_count] != expected.phase_cap_roots
+    {
+        return Err(invalid("FRI retained cap root count mismatch"));
+    }
+    if proof.commit_phase_openings.len() != expected.log_arities.len()
+        || proof
+            .commit_phase_openings
+            .iter()
+            .map(|opening| opening.log_arity as usize)
+            .ne(expected.log_arities.iter().copied())
+    {
+        return Err(invalid("FRI retained fold schedule mismatch"));
+    }
+    if candidate_layout.commitment_count() != expected.input_matrix_counts.len()
+        || (0..candidate_layout.commitment_count()).any(|ordinal| {
+            candidate_layout.matrix_count(ordinal).ok()
+                != expected.input_matrix_counts.get(ordinal).copied()
+        })
+    {
+        return Err(invalid("FRI retained matrix partition mismatch"));
+    }
+    validate_hiding_tail_compatibility(hiding_tails, &expected.hiding_tail_shape)
 }
