@@ -6,7 +6,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use p3_circuit::StatementSchema;
 use p3_circuit::ops::{NpoTypeId, StatementTrace, generate_recompose_trace};
 use p3_circuit::tables::Traces;
-use p3_circuit::{CircuitBuilder, StatementExport};
+use p3_circuit::{CircuitBuilder, StatementExport, StatementField};
 use p3_circuit_prover::batch_stark_prover::{
     BatchStarkProver, CircuitProverData, RecomposePreprocessor, StatementAirBuilder,
     StatementPreprocessor, StatementProver, TablePacking, recompose_air_builders,
@@ -15,7 +15,7 @@ use p3_circuit_prover::common::{NpoAirBuilder, NpoPreprocessor, get_airs_and_deg
 use p3_circuit_prover::{BatchStarkProverError, ConstraintProfile, config};
 use p3_commit::ExtensionMmcs;
 use p3_field::extension::QuinticTrinomialExtensionField;
-use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
+use p3_field::{BasedVectorSpace, ExtensionField, PrimeCharacteristicRing};
 use p3_fri::{FriParameters, HidingFriPcs};
 use p3_goldilocks::Goldilocks;
 use p3_koala_bear::{KoalaBear, default_koalabear_poseidon2_16};
@@ -30,9 +30,52 @@ use p3_test_utils::rejection_oracle::classify_debug_diagnostic;
 use p3_uni_stark::StarkConfig;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
+use serde::Serialize;
 
 type EF = BinomialExtensionField<BabyBear, 4>;
 const D: usize = 4;
+
+#[derive(Serialize)]
+struct UncheckedStatementSchema {
+    fields: Vec<StatementField>,
+    base_len: usize,
+}
+
+#[test]
+fn statement_schema_deserialization_recomputes_and_validates_width() {
+    let malformed = UncheckedStatementSchema {
+        fields: vec![StatementField::Extension { degree: 4 }],
+        base_len: 1,
+    };
+    let encoded = postcard::to_allocvec(&malformed).unwrap();
+    assert!(postcard::from_bytes::<StatementSchema>(&encoded).is_err());
+
+    let overflowing = UncheckedStatementSchema {
+        fields: vec![
+            StatementField::Extension { degree: usize::MAX },
+            StatementField::Base,
+        ],
+        base_len: usize::MAX,
+    };
+    let encoded = postcard::to_allocvec(&overflowing).unwrap();
+    assert!(postcard::from_bytes::<StatementSchema>(&encoded).is_err());
+
+    let mut builder = CircuitBuilder::<EF>::new();
+    builder.enable_recompose::<BabyBear>(generate_recompose_trace::<BabyBear, EF>);
+    let base = builder.public_input();
+    let extension = builder.public_input();
+    let schema = builder
+        .set_statement_exports::<BabyBear>(&[
+            StatementExport::Base(base),
+            StatementExport::Extension(extension),
+        ])
+        .unwrap();
+    let encoded = postcard::to_allocvec(&schema).unwrap();
+    assert_eq!(
+        postcard::from_bytes::<StatementSchema>(&encoded).unwrap(),
+        schema
+    );
+}
 
 fn base_statement_fixture(
     value: BabyBear,
@@ -187,6 +230,96 @@ fn statement_base_and_extension_prove_with_actual_public_values() {
     assert_eq!(statement_entry.public_values, statement.values);
     assert_eq!(statement_entry.rows, 1);
     assert_eq!(statement_entry.lanes, 1);
+}
+
+/// The strong coefficient-normalizer lookups reject the kernel substitution that a weighted-sum
+/// extension relation alone would accept: `c0 += w`, `c1 -= 1` leaves `sum(c_i w^i)` unchanged.
+#[test]
+fn statement_extension_rejects_nonbase_coefficients_with_unchanged_weighted_sum() {
+    let mut builder = CircuitBuilder::<EF>::new();
+    builder.enable_recompose::<BabyBear>(generate_recompose_trace::<BabyBear, EF>);
+    let coefficients = builder.alloc_public_inputs(D, "statement extension coefficients");
+    let extension = builder
+        .recompose_base_coeffs_to_ext_with_coeff_lookups::<BabyBear>(&coefficients)
+        .unwrap();
+    let schema = builder
+        .set_statement_exports::<BabyBear>(&[StatementExport::Extension(extension)])
+        .unwrap();
+    let circuit = builder.build().unwrap();
+    let packing = TablePacking::default().with_npo_min_height(NpoTypeId::statement(), 4);
+    let preprocessors: Vec<Box<dyn NpoPreprocessor<BabyBear>>> = vec![
+        Box::new(RecomposePreprocessor::new(true)),
+        Box::new(StatementPreprocessor::new(schema.clone())),
+    ];
+    let mut air_builders: Vec<Box<dyn NpoAirBuilder<config::BabyBearConfig, D>>> =
+        recompose_air_builders(1, true);
+    air_builders.push(Box::new(StatementAirBuilder::<D>::new(schema.clone())));
+    let (airs_degrees, primitive, non_primitive) =
+        get_airs_and_degrees_with_prep::<config::BabyBearConfig, _, D>(
+            &circuit,
+            &packing,
+            &preprocessors,
+            &air_builders,
+            ConstraintProfile::Standard,
+        )
+        .unwrap();
+
+    let honest_coefficients = [5, 7, 11, 13].map(BabyBear::from_u64);
+    let mut runner = circuit.runner();
+    runner
+        .set_public_inputs(&honest_coefficients.map(EF::from))
+        .unwrap();
+    let traces = runner.run().unwrap();
+    let cfg = config::baby_bear();
+    let (airs, degrees): (Vec<_>, Vec<_>) = airs_degrees.into_iter().unzip();
+    let prover_data = p3_batch_stark::ProverData::from_airs_and_degrees(&cfg, &airs, &degrees);
+    let prepared = CircuitProverData::new(prover_data, primitive, non_primitive);
+    let mut prover = BatchStarkProver::new(cfg).with_table_packing(packing);
+    prover.register_recompose_table::<D>(true);
+    prover.register_table_prover(Box::new(StatementProver::<D>::new(schema)));
+
+    let honest_proof = prover.prove_all_tables(&traces, &prepared).unwrap();
+    prover.verify_all_tables::<EF>(&honest_proof).unwrap();
+
+    let basis_one = EF::from_basis_coefficients_slice(&[
+        BabyBear::ZERO,
+        BabyBear::ONE,
+        BabyBear::ZERO,
+        BabyBear::ZERO,
+    ])
+    .unwrap();
+    let basis = core::array::from_fn::<_, D, _>(|i| {
+        EF::from_basis_coefficients_fn(|j| BabyBear::from_bool(i == j))
+    });
+    let weighted_sum = |values: &[EF; D]| {
+        values
+            .iter()
+            .zip(basis)
+            .fold(EF::ZERO, |sum, (&value, weight)| sum + value * weight)
+    };
+    let honest_ext_coefficients = honest_coefficients.map(EF::from);
+    let mut forged_ext_coefficients = honest_ext_coefficients;
+    forged_ext_coefficients[0] += basis_one;
+    forged_ext_coefficients[1] -= EF::ONE;
+    assert_eq!(
+        weighted_sum(&forged_ext_coefficients),
+        weighted_sum(&honest_ext_coefficients),
+        "the forged coefficients must stay in the weak weighted-sum relation's kernel"
+    );
+    assert!(<EF as ExtensionField<BabyBear>>::as_base(&forged_ext_coefficients[0]).is_none());
+
+    let mut forged_traces = traces;
+    forged_traces.public_trace.values[..D].copy_from_slice(&forged_ext_coefficients);
+    assert_rejected_as(
+        "non-base extension coefficient substitution",
+        DebugRejectionKind::Lookup,
+        || {
+            let proof = prover
+                .prove_all_tables(&forged_traces, &prepared)
+                .expect("the algebraic prover constructs a forged proof candidate");
+            prover.verify_all_tables::<EF>(&proof)
+        },
+    );
 }
 
 macro_rules! statement_extension_field_case {

@@ -100,9 +100,10 @@ pub struct CircuitBuilder<F: Field> {
     base_bound_coeffs: HashSet<ExprId>,
 
     /// Coefficient-aware recompose rows that normalize a value already represented by another
-    /// expression. Retained across cache hits/connect aliases so Statement source accounting does
-    /// not mistake an earlier normalization row for an independent producer of its source.
-    ext_recompose_normalization_ops: HashMap<ExprId, HashSet<NonPrimitiveOpId>>,
+    /// expression, keyed to that original value. The source expression is resolved only after all
+    /// connects and optimizer rewrites, so Statement source accounting is independent of whether
+    /// normalization happened before or after the export was declared or aliased.
+    coefficient_normalization_sources: HashMap<NonPrimitiveOpId, ExprId>,
 
     /// `select(b, t, s)` outputs mapped to their `(b, t, s)` triple.
     ///
@@ -132,8 +133,6 @@ pub struct CircuitBuilder<F: Field> {
     statement_schema: Option<StatementSchema>,
     /// Original typed export expressions, before extension normalization creates coefficient rows.
     statement_source_exprs: Vec<ExprId>,
-    /// NPOs emitted solely to normalize extension exports into constrained base coefficients.
-    statement_normalization_ops: HashSet<NonPrimitiveOpId>,
 }
 
 impl<F> Default for CircuitBuilder<F>
@@ -165,14 +164,13 @@ where
             recompose_npo_enabled: false,
             ext_recompose_coeffs: HashMap::new(),
             base_bound_coeffs: HashSet::new(),
-            ext_recompose_normalization_ops: HashMap::new(),
+            coefficient_normalization_sources: HashMap::new(),
             ext_select_sources: HashMap::new(),
             recompose_coeff_ctl_for_decompose_links: false,
             decompose_recompose_via_alu: false,
             decompose_skip_select_provenance: false,
             statement_schema: None,
             statement_source_exprs: Vec::new(),
-            statement_normalization_ops: HashSet::new(),
         }
     }
 
@@ -529,7 +527,6 @@ where
 
         let mut fields = Vec::with_capacity(exports.len());
         let mut flattened = Vec::new();
-        let mut normalization_ops = HashSet::new();
         for export in exports {
             match *export {
                 StatementExport::Base(expr) => {
@@ -540,17 +537,8 @@ where
                     fields.push(StatementField::Extension {
                         degree: F::DIMENSION,
                     });
-                    let before = self.non_primitive_ops.len();
                     let coeffs =
                         self.decompose_ext_to_base_coeffs_with_coeff_lookups::<BF>(expr)?;
-                    if let Some(cached_ops) = self.ext_recompose_normalization_ops.get(&expr) {
-                        normalization_ops.extend(cached_ops.iter().copied());
-                    }
-                    normalization_ops.extend(
-                        self.non_primitive_ops[before..]
-                            .iter()
-                            .map(|operation| operation.op_id),
-                    );
                     flattened.extend(coeffs);
                 }
             }
@@ -565,8 +553,6 @@ where
                 StatementExport::Base(expr) | StatementExport::Extension(expr) => expr,
             })
             .collect();
-        self.statement_normalization_ops = normalization_ops;
-
         if !flattened.is_empty() {
             let plugin = StatementCircuitPlugin::new(
                 schema.clone(),
@@ -841,13 +827,10 @@ where
         if a == ExprId::ZERO || b == ExprId::ZERO {
             self.ext_recompose_coeffs.remove(&a);
             self.ext_recompose_coeffs.remove(&b);
-            self.ext_recompose_normalization_ops.remove(&a);
-            self.ext_recompose_normalization_ops.remove(&b);
             self.ext_select_sources.remove(&a);
             self.ext_select_sources.remove(&b);
         } else {
             Self::merge_provenance(&mut self.ext_recompose_coeffs, a, b, "recompose coeffs");
-            Self::merge_set_provenance(&mut self.ext_recompose_normalization_ops, a, b);
             Self::merge_provenance(&mut self.ext_select_sources, a, b, "ext_select_sources");
         }
         self.expr_builder.connect(a, b);
@@ -876,21 +859,6 @@ where
         if let Some(v) = merged {
             map.insert(a, v.clone());
             map.insert(b, v);
-        }
-    }
-
-    fn merge_set_provenance<V: Clone + Eq + core::hash::Hash>(
-        map: &mut HashMap<ExprId, HashSet<V>>,
-        a: ExprId,
-        b: ExprId,
-    ) {
-        let mut merged = map.remove(&a).unwrap_or_default();
-        if let Some(other) = map.remove(&b) {
-            merged.extend(other);
-        }
-        if !merged.is_empty() {
-            map.insert(a, merged.clone());
-            map.insert(b, merged);
         }
     }
 
@@ -1209,7 +1177,21 @@ where
                 })
             })
             .collect::<Result<_, _>>()?;
-        circuit.statement_normalization_ops = self.statement_normalization_ops;
+        circuit.statement_normalization_sources = self
+            .coefficient_normalization_sources
+            .into_iter()
+            .map(|(op_id, expr)| {
+                circuit
+                    .expr_to_widx
+                    .get(&expr)
+                    .copied()
+                    .map(|source| (op_id, source))
+                    .ok_or_else(|| CircuitBuilderError::MissingExprMapping {
+                        expr_id: expr,
+                        context: "coefficient normalization source".into(),
+                    })
+            })
+            .collect::<Result<_, _>>()?;
         if !rewrite.is_empty() {
             circuit.witness_rewrite = Some(rewrite);
         }
@@ -1877,13 +1859,11 @@ where
         self.recompose_coeff_ctl_for_decompose_links = saved_ctl;
         self.decompose_recompose_via_alu = saved_alu;
         if coeffs.is_ok() {
-            let normalization_ops = self.non_primitive_ops[before..]
-                .iter()
-                .map(|operation| operation.op_id);
-            self.ext_recompose_normalization_ops
-                .entry(x)
-                .or_default()
-                .extend(normalization_ops);
+            self.coefficient_normalization_sources.extend(
+                self.non_primitive_ops[before..]
+                    .iter()
+                    .map(|operation| (operation.op_id, x)),
+            );
         }
         coeffs
     }
@@ -4140,6 +4120,83 @@ mod proptests {
         ));
     }
 
+    /// Normalization provenance applies to the normalized source even when it is exported as Base.
+    #[test]
+    fn statement_rejects_an_unsourced_base_with_precached_normalization() {
+        type Ext4 = BinomialExtensionField<BabyBear, 4>;
+
+        let mut builder = CircuitBuilder::<Ext4>::new();
+        enable_recompose_tables(&mut builder);
+        let private = builder.alloc_private_input("base export with cached normalization");
+        builder
+            .decompose_ext_to_base_coeffs_with_coeff_lookups::<BabyBear>(private)
+            .unwrap();
+        builder
+            .set_statement_exports::<BabyBear>(&[crate::StatementExport::Base(private)])
+            .unwrap();
+        let circuit = builder.build().unwrap();
+        assert!(matches!(
+            circuit.generate_preprocessed_columns::<4>(),
+            Err(CircuitError::UnsourcedStatementExport {
+                export_index: 0,
+                ..
+            })
+        ));
+    }
+
+    /// Final connect classes, rather than the provenance state at connect time, identify a
+    /// normalization row whose source was aliased before the decomposition was cached.
+    #[test]
+    fn statement_rejects_normalization_cached_after_source_connect() {
+        type Ext4 = BinomialExtensionField<BabyBear, 4>;
+
+        let mut builder = CircuitBuilder::<Ext4>::new();
+        enable_recompose_tables(&mut builder);
+        let exported = builder.alloc_private_input("exported alias");
+        let normalized = builder.alloc_private_input("normalized alias");
+        builder.connect(exported, normalized);
+        builder
+            .decompose_ext_to_base_coeffs_with_coeff_lookups::<BabyBear>(normalized)
+            .unwrap();
+        builder
+            .set_statement_exports::<BabyBear>(&[crate::StatementExport::Base(exported)])
+            .unwrap();
+        let circuit = builder.build().unwrap();
+        assert!(matches!(
+            circuit.generate_preprocessed_columns::<4>(),
+            Err(CircuitError::UnsourcedStatementExport {
+                export_index: 0,
+                ..
+            })
+        ));
+    }
+
+    /// Final connect classes also retain a normalization cached before its source is aliased.
+    #[test]
+    fn statement_rejects_normalization_cached_before_source_connect() {
+        type Ext4 = BinomialExtensionField<BabyBear, 4>;
+
+        let mut builder = CircuitBuilder::<Ext4>::new();
+        enable_recompose_tables(&mut builder);
+        let normalized = builder.alloc_private_input("normalized alias");
+        let exported = builder.alloc_private_input("exported alias");
+        builder
+            .decompose_ext_to_base_coeffs_with_coeff_lookups::<BabyBear>(normalized)
+            .unwrap();
+        builder.connect(normalized, exported);
+        builder
+            .set_statement_exports::<BabyBear>(&[crate::StatementExport::Base(exported)])
+            .unwrap();
+        let circuit = builder.build().unwrap();
+        assert!(matches!(
+            circuit.generate_preprocessed_columns::<4>(),
+            Err(CircuitError::UnsourcedStatementExport {
+                export_index: 0,
+                ..
+            })
+        ));
+    }
+
     /// Excluding cached normalization rows must retain a genuine Public producer for the source.
     #[test]
     fn statement_accepts_a_sourced_extension_with_cached_normalization() {
@@ -4181,5 +4238,29 @@ mod proptests {
             .unwrap()
             .generate_preprocessed_columns::<4>()
             .expect("the coefficient-aware NPO independently sources its output");
+    }
+
+    /// A constructor `recompose/coeff` row remains a genuine producer for a Base export too.
+    #[test]
+    fn statement_accepts_a_base_from_a_constructor_npo() {
+        type Ext4 = BinomialExtensionField<BabyBear, 4>;
+
+        let mut builder = CircuitBuilder::<Ext4>::new();
+        enable_recompose_tables(&mut builder);
+        let mut coefficients = builder.alloc_public_inputs(4, "extension coefficients");
+        coefficients[1] = ExprId::ZERO;
+        coefficients[2] = ExprId::ZERO;
+        coefficients[3] = ExprId::ZERO;
+        let extension = builder
+            .recompose_base_coeffs_to_ext_with_coeff_lookups::<BabyBear>(&coefficients)
+            .unwrap();
+        builder
+            .set_statement_exports::<BabyBear>(&[crate::StatementExport::Base(extension)])
+            .unwrap();
+        builder
+            .build()
+            .unwrap()
+            .generate_preprocessed_columns::<4>()
+            .expect("a constructor NPO independently sources its base-valued output");
     }
 }

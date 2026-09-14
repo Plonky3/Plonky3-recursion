@@ -206,8 +206,8 @@ pub struct Circuit<F> {
     pub(crate) statement_schema: Option<StatementSchema>,
     /// Canonical witnesses of the original typed exports (before extension normalization).
     pub(crate) statement_source_wids: Vec<WitnessId>,
-    /// Operations emitted only to normalize extension exports into constrained coefficients.
-    pub(crate) statement_normalization_ops: hashbrown::HashSet<NonPrimitiveOpId>,
+    /// Coefficient-normalization operations mapped to the canonical witness they normalize.
+    pub(crate) statement_normalization_sources: HashMap<NonPrimitiveOpId, WitnessId>,
 }
 
 impl<F: Field + Clone> Clone for Circuit<F> {
@@ -228,7 +228,7 @@ impl<F: Field + Clone> Clone for Circuit<F> {
             witness_rewrite: self.witness_rewrite.clone(),
             statement_schema: self.statement_schema.clone(),
             statement_source_wids: self.statement_source_wids.clone(),
-            statement_normalization_ops: self.statement_normalization_ops.clone(),
+            statement_normalization_sources: self.statement_normalization_sources.clone(),
         }
     }
 }
@@ -252,7 +252,7 @@ impl<F: Field> Circuit<F> {
             witness_rewrite: None,
             statement_schema: None,
             statement_source_wids: Vec::new(),
-            statement_normalization_ops: hashbrown::HashSet::new(),
+            statement_normalization_sources: HashMap::new(),
         }
     }
 
@@ -285,6 +285,8 @@ impl<F: Field> Circuit<F> {
         // or their `b` operand (backward/sub encoding where `out` was already defined).
         let mut defined = vec![false; self.witness_count as usize];
         let mut independently_sourced_statement_wids = hashbrown::HashSet::new();
+        let statement_source_wids: hashbrown::HashSet<u32> =
+            self.statement_source_wids.iter().map(|wid| wid.0).collect();
         let mut statement_operations = 0usize;
 
         // Private input witness IDs: these get their bus creator role from the first
@@ -522,7 +524,11 @@ impl<F: Field> Circuit<F> {
                     // subsequent occurrences are treated as readers on WitnessChecks.
                     let op_type = executor.op_type();
                     let n_exposed = executor.num_exposed_outputs().unwrap_or(outputs.len());
-                    if !self.statement_normalization_ops.contains(op_id) {
+                    let normalizes_statement_source = self
+                        .statement_normalization_sources
+                        .get(op_id)
+                        .is_some_and(|source| statement_source_wids.contains(&source.0));
+                    if !normalizes_statement_source {
                         independently_sourced_statement_wids
                             .extend(outputs.iter().take(n_exposed).flatten().map(|wid| wid.0));
                         if let Some(group) = executor.arbitrated_coeff_input_group()

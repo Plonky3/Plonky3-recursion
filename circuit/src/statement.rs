@@ -1,3 +1,4 @@
+use alloc::format;
 use alloc::vec::Vec;
 
 use serde::{Deserialize, Serialize};
@@ -22,10 +23,33 @@ pub enum StatementField {
 }
 
 /// Ordered statement schema with an overflow-checked flattened base-field width.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct StatementSchema {
     fields: Vec<StatementField>,
     base_len: usize,
+}
+
+#[derive(Deserialize)]
+struct UncheckedStatementSchema {
+    fields: Vec<StatementField>,
+    base_len: usize,
+}
+
+impl<'de> Deserialize<'de> for StatementSchema {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let unchecked = UncheckedStatementSchema::deserialize(deserializer)?;
+        let schema = Self::new(unchecked.fields).map_err(serde::de::Error::custom)?;
+        if schema.base_len != unchecked.base_len {
+            return Err(serde::de::Error::custom(format!(
+                "statement schema base_len mismatch: expected {}, got {}",
+                schema.base_len, unchecked.base_len
+            )));
+        }
+        Ok(schema)
+    }
 }
 
 impl StatementSchema {
