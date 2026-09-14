@@ -1,8 +1,17 @@
+use alloc::vec::Vec;
+
 use crate::builtin_config::{
     BuiltinConfigDescriptorV1, FriConfigV1, SuiteIdV1, WhirConfigV1, WhirRateModeV1,
 };
 use p3_batch_stark::common::{GlobalPreprocessed, PreprocessedInstanceMeta};
 use p3_batch_stark::{CommonData, StarkGenericConfig};
+use p3_circuit::ops::{NpoTypeId, Poseidon1Config, Poseidon2Config};
+use p3_circuit::{StatementField, StatementSchema};
+use p3_circuit_prover::air::AluExtMulKind;
+use p3_circuit_prover::{
+    AirVariant, CircuitRelation, ConstraintProfile, NpoRelation, RowCounts, TablePacking,
+};
+use p3_field::PrimeField64;
 
 use super::ArtifactError;
 use super::wire::{Reader, Writer};
@@ -174,7 +183,7 @@ impl<F: Copy> RelationDescriptorV1<F> {
             .collect::<Result<Vec<_>, _>>()?;
         Ok(Self {
             table_packing: relation.table_packing().clone(),
-            rows: relation.rows().clone(),
+            rows: *relation.rows(),
             ext_degree: relation.ext_degree(),
             reduction: relation.reduction(),
             alu_variant: relation.alu_variant(),
@@ -259,11 +268,10 @@ fn npo_from_native<F: Copy>(
         rows: relation.rows(),
         lanes: relation.lanes(),
         air_variant: relation.air_variant(),
-        public_values: if let Some(width) = statement_width {
-            NpoPublicValuesV1::Statement { width }
-        } else {
-            NpoPublicValuesV1::Static(relation.public_values().to_vec())
-        },
+        public_values: statement_width.map_or_else(
+            || NpoPublicValuesV1::Static(relation.public_values().to_vec()),
+            |width| NpoPublicValuesV1::Statement { width },
+        ),
     })
 }
 
@@ -1116,12 +1124,3 @@ mod tests {
         );
     }
 }
-use alloc::vec::Vec;
-
-use p3_circuit::ops::{NpoTypeId, Poseidon1Config, Poseidon2Config};
-use p3_circuit::{StatementField, StatementSchema};
-use p3_circuit_prover::air::AluExtMulKind;
-use p3_circuit_prover::{
-    AirVariant, CircuitRelation, ConstraintProfile, NpoRelation, RowCounts, TablePacking,
-};
-use p3_field::PrimeField64;

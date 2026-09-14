@@ -293,10 +293,7 @@ impl<'a> Reader<'a> {
                 }
             }
         });
-        match error {
-            Some(err) => Err(err),
-            None => Ok(value),
-        }
+        error.map_or_else(|| Ok(value), Err)
     }
 
     fn charge_container<T>(&mut self, count: usize) -> Result<(), ArtifactError> {
@@ -450,7 +447,7 @@ impl<'a> Reader<'a> {
         self.limits
     }
 
-    pub(crate) fn finish(self) -> Result<(), ArtifactError> {
+    pub(crate) const fn finish(self) -> Result<(), ArtifactError> {
         if self.position == self.bytes.len() {
             Ok(())
         } else {
@@ -722,8 +719,10 @@ mod tests {
 
     #[test]
     fn counts_check_minimum_body_and_charge_empty_containers() {
-        let mut limits = ArtifactLimits::default();
-        limits.max_container_entries = 3;
+        let limits = ArtifactLimits {
+            max_container_entries: 3,
+            ..ArtifactLimits::default()
+        };
         let excessive_count = 4_u32.to_le_bytes();
         let mut reader = Reader::new(&excessive_count, &limits);
         assert_eq!(
@@ -735,8 +734,10 @@ mod tests {
             })
         );
 
-        let mut limits = ArtifactLimits::default();
-        limits.max_container_entries = 6;
+        let limits = ArtifactLimits {
+            max_container_entries: 6,
+            ..ArtifactLimits::default()
+        };
         let bytes = [
             2_u32.to_le_bytes(),
             0_u32.to_le_bytes(),
@@ -770,8 +771,10 @@ mod tests {
         ]
         .concat();
 
-        let mut exact = ArtifactLimits::default();
-        exact.max_decoded_bytes = vec_cost;
+        let exact = ArtifactLimits {
+            max_decoded_bytes: vec_cost,
+            ..ArtifactLimits::default()
+        };
         let mut reader = Reader::new(&bytes, &exact);
         assert_eq!(
             reader.read_vec("values", 8, |r| r.read_u64()).unwrap(),
@@ -839,8 +842,10 @@ mod tests {
             writer.write_string("", "metadata").unwrap();
         }
         let bytes = writer.finish().unwrap();
-        let mut limits = ArtifactLimits::default();
-        limits.max_container_entries = 8;
+        let limits = ArtifactLimits {
+            max_container_entries: 8,
+            ..ArtifactLimits::default()
+        };
         let mut reader = Reader::new(&bytes, &limits);
         assert_eq!(
             reader.read_vec::<alloc::string::String>("strings", 4, |reader| {

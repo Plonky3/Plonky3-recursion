@@ -547,7 +547,7 @@ where
         let native = BatchStarkProof {
             proof: proof.1,
             table_packing: relation.table_packing().clone(),
-            rows: relation.rows().clone(),
+            rows: *relation.rows(),
             alu_variant: relation.alu_variant(),
             ext_degree: relation.ext_degree(),
             w_binomial,
@@ -692,6 +692,8 @@ where
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec::Vec;
+
     use p3_baby_bear::BabyBear;
     use p3_circuit::CircuitBuilder;
     use p3_circuit_prover::{BatchStarkProver, ConstraintProfile, TablePacking};
@@ -703,8 +705,7 @@ mod tests {
     };
     use crate::builtin_config::{FriConfigV1, SuiteIdV1, baby_bear_d4_poseidon2_binary};
 
-    #[test]
-    fn generated_proof_survives_dropping_all_native_owners() {
+    fn exported_double_circuit(multiplier: u32, input_value: u32) -> (Vec<u8>, Vec<u8>) {
         let limits = ArtifactLimits::default();
         let suite = SuiteIdV1::BabyBearD4Poseidon2BinaryFri;
         let descriptor = FriConfigV1::new(suite, 1, 0, 2, 2, 0, 0, 0, 0, 0, 0);
@@ -712,14 +713,17 @@ mod tests {
 
         let mut builder = CircuitBuilder::<BabyBear>::new();
         let input = builder.public_input();
-        let multiplier = builder.define_const(BabyBear::TWO);
+        let multiplier_target = builder.define_const(BabyBear::from_u32(multiplier));
         let output = builder.public_input();
-        let product = builder.mul(input, multiplier);
+        let product = builder.mul(input, multiplier_target);
         builder.connect(product, output);
         let circuit = builder.build().unwrap();
         let mut runner = circuit.runner();
         runner
-            .set_public_inputs(&[BabyBear::from_u32(4), BabyBear::from_u32(8)])
+            .set_public_inputs(&[
+                BabyBear::from_u32(input_value),
+                BabyBear::from_u32(input_value * multiplier),
+            ])
             .unwrap();
         let traces = runner.run().unwrap();
 
@@ -740,6 +744,14 @@ mod tests {
         drop(traces);
         drop(circuit);
 
+        (verifier_bytes, proof_bytes)
+    }
+
+    #[test]
+    fn generated_proof_survives_dropping_all_native_owners() {
+        let limits = ArtifactLimits::default();
+        let (verifier_bytes, proof_bytes) = exported_double_circuit(2, 4);
+
         let imported = PortableVerifier::decode(
             &verifier_bytes,
             ExpectedVerifierArtifact::from_trusted_bytes(&verifier_bytes),
@@ -749,5 +761,37 @@ mod tests {
         imported
             .verify_encoded(&proof_bytes, CanonicalStatement::new(&[], 0))
             .unwrap();
+    }
+
+    #[test]
+    fn pinned_verifier_and_proof_substitution_are_rejected() {
+        let limits = ArtifactLimits::default();
+        let (verifier_a, proof_a) = exported_double_circuit(2, 4);
+        let (verifier_b, proof_b) = exported_double_circuit(3, 4);
+        assert_ne!(verifier_a, verifier_b);
+
+        assert!(
+            PortableVerifier::decode(
+                &verifier_b,
+                ExpectedVerifierArtifact::from_trusted_bytes(&verifier_a),
+                limits,
+            )
+            .is_err()
+        );
+
+        let imported_a = PortableVerifier::decode(
+            &verifier_a,
+            ExpectedVerifierArtifact::from_trusted_bytes(&verifier_a),
+            limits,
+        )
+        .unwrap();
+        imported_a
+            .verify_encoded(&proof_a, CanonicalStatement::new(&[], 0))
+            .unwrap();
+        assert!(
+            imported_a
+                .verify_encoded(&proof_b, CanonicalStatement::new(&[], 0))
+                .is_err()
+        );
     }
 }

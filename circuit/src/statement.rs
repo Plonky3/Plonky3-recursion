@@ -23,7 +23,7 @@ pub enum StatementField {
 }
 
 /// Ordered statement schema with an overflow-checked flattened base-field width.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct StatementSchema {
     fields: Vec<StatementField>,
     base_len: usize,
@@ -87,15 +87,6 @@ impl<'de> Deserialize<'de> for StatementSchema {
             )));
         }
         Ok(schema)
-    }
-}
-
-impl Default for StatementSchema {
-    fn default() -> Self {
-        Self {
-            fields: Vec::new(),
-            base_len: 0,
-        }
     }
 }
 

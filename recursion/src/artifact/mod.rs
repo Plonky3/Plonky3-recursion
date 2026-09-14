@@ -196,8 +196,6 @@ pub enum ArtifactError {
 
 #[cfg(test)]
 mod identity_tests {
-    use alloc::vec;
-
     use super::{
         ArtifactError, ArtifactKind, ArtifactLimits, ExpectedVerifierArtifact,
         check_expected_verifier_candidate,
@@ -228,7 +226,7 @@ mod identity_tests {
         assert_eq!(
             check_expected_verifier_candidate(
                 b"not-artifact",
-                ExpectedVerifierArtifact::from_trusted_bytes(&vec![0; 17]),
+                ExpectedVerifierArtifact::from_trusted_bytes(&[0; 17]),
                 &limits,
             ),
             Err(ArtifactError::BadMagic)

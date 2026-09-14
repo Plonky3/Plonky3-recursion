@@ -923,7 +923,7 @@ where
                     let min_height = parts
                         .table_packing
                         .npo_min_height(&op_type)
-                        .unwrap_or(parts.table_packing.min_trace_height());
+                        .unwrap_or_else(|| parts.table_packing.min_trace_height());
                     let dynamic = builtin_artifact_air::<SC, D>(*air, *lanes, min_height)?;
                     let descriptor = NpoRelation::new(
                         op_type,
@@ -946,7 +946,7 @@ where
                     let min_height = parts
                         .table_packing
                         .npo_min_height(&op_type)
-                        .unwrap_or(parts.table_packing.min_trace_height());
+                        .unwrap_or_else(|| parts.table_packing.min_trace_height());
                     let dynamic = DynamicAirEntry::new(Box::new(
                         StatementAir::<Val<SC>, D>::new_with_preprocessed(
                             *public_width,

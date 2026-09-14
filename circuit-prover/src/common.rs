@@ -278,7 +278,7 @@ pub enum BuiltinArtifactAir {
 }
 
 /// Checked input describing one built-in NPO in an independently trusted verifier artifact.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BuiltinArtifactNpo<F: Copy> {
     Static {
         air: BuiltinArtifactAir,
@@ -293,7 +293,7 @@ pub enum BuiltinArtifactNpo<F: Copy> {
 }
 
 impl<F: Copy> BuiltinArtifactNpo<F> {
-    pub fn static_values(
+    pub const fn static_values(
         air: BuiltinArtifactAir,
         rows: usize,
         lanes: usize,

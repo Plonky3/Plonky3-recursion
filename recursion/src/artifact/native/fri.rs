@@ -11,6 +11,8 @@ use super::mmcs::MmcsCodec;
 
 type NativeFriProof<F, EF, InputMmcs, FriMmcs> =
     FriProof<EF, FriMmcs, F, Vec<BatchMultiOpening<F, InputMmcs>>>;
+type HidingFriProof<F, EF, InputMmcs, FriMmcs> =
+    (OpenedValues<EF>, NativeFriProof<F, EF, InputMmcs, FriMmcs>);
 
 pub(crate) fn write_fri_proof<F, EF, InputMmcs, FriMmcs, InputCodec, FriCodec>(
     writer: &mut Writer,
@@ -239,7 +241,7 @@ where
 
 pub(crate) fn write_hiding_fri_proof<F, EF, InputMmcs, FriMmcs, InputCodec, FriCodec>(
     writer: &mut Writer,
-    proof: &(OpenedValues<EF>, NativeFriProof<F, EF, InputMmcs, FriMmcs>),
+    proof: &HidingFriProof<F, EF, InputMmcs, FriMmcs>,
     field: FieldEncoding<F>,
     input_codec: &InputCodec,
     fri_codec: &FriCodec,
@@ -261,7 +263,7 @@ pub(crate) fn read_hiding_fri_proof<F, EF, InputMmcs, FriMmcs, InputCodec, FriCo
     field: FieldEncoding<F>,
     input_codec: &InputCodec,
     fri_codec: &FriCodec,
-) -> Result<(OpenedValues<EF>, NativeFriProof<F, EF, InputMmcs, FriMmcs>), ArtifactError>
+) -> Result<HidingFriProof<F, EF, InputMmcs, FriMmcs>, ArtifactError>
 where
     F: PrimeField64,
     EF: ExtensionField<F>,

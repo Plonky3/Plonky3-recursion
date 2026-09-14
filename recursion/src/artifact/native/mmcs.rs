@@ -8,6 +8,9 @@ use p3_symmetric::MerkleCap;
 use crate::artifact::ArtifactError;
 use crate::artifact::wire::{FieldEncoding, Reader, Writer};
 
+type SaltedMultiProof<F, const DIGEST_ELEMS: usize> =
+    (Vec<Vec<Vec<F>>>, PrunedMerklePaths<F, DIGEST_ELEMS>);
+
 pub(crate) trait MmcsCodec<T, M: Mmcs<T>>
 where
     T: Send + Sync + Clone,
@@ -167,7 +170,7 @@ pub(crate) fn read_salted_multi_proof<
 >(
     reader: &mut Reader<'_>,
     field: FieldEncoding<F>,
-) -> Result<(Vec<Vec<Vec<F>>>, PrunedMerklePaths<F, DIGEST_ELEMS>), ArtifactError> {
+) -> Result<SaltedMultiProof<F, DIGEST_ELEMS>, ArtifactError> {
     let max_queries = reader.limits().verifier.max_queries_per_round;
     let max_matrices = reader.limits().verifier.max_instances;
     let salts = reader.read_vec_limited("salt query rows", max_queries, 4, |reader| {
