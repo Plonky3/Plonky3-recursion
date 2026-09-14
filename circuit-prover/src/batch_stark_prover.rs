@@ -4,7 +4,8 @@
 use alloc::borrow::Cow;
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
-use alloc::string::String;
+use alloc::rc::Rc;
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use alloc::{format, vec};
 use core::cell::RefCell;
@@ -49,7 +50,10 @@ use crate::air::alu_air::ScheduleEntry;
 use crate::air::{AluAir, AluExtMulKind, ConstAir, PublicAir};
 use crate::batch_stark_prover::dynamic_air::transmute_traces;
 use crate::batch_stark_prover::packing::{AirTableShape, TraceTablesLayout};
-use crate::common::{CircuitTableAir, NpoAirBuilder, NpoPreprocessor, reduce_lanes_if_dummy};
+use crate::common::{
+    CircuitRelation, CircuitTableAir, NpoAirBuilder, NpoPreprocessor, finalize_circuit_tables,
+    reduce_lanes_if_dummy,
+};
 use crate::config::StarkField;
 use crate::constraint_profile::ConstraintProfile;
 use crate::field_params::ExtractBinomialW;
@@ -716,6 +720,30 @@ where
     debug_lookups: bool,
 }
 
+/// Opaque proving owner created by committing one finalized, trusted circuit relation.
+///
+/// Unlike [`CircuitProverData::new`], construction is only available through
+/// [`BatchStarkProver::prepare_circuit`], which derives the relation from the circuit and
+/// audited preprocessing builders before committing it.
+pub struct PreparedCircuitProver<SC>
+where
+    SC: StarkGenericConfig + 'static,
+{
+    prover: BatchStarkProver<SC>,
+    circuit_prover_data: Rc<CircuitProverData<SC>>,
+    relation: CircuitRelation<Val<SC>>,
+}
+
+impl<SC> PreparedCircuitProver<SC>
+where
+    SC: StarkGenericConfig + 'static,
+{
+    /// The exact relation fixed by this preparation.
+    pub const fn relation(&self) -> &CircuitRelation<Val<SC>> {
+        &self.relation
+    }
+}
+
 /// Errors raised when proof metadata fails the structural invariants that the
 /// type constructors enforce but `#[derive(Deserialize)]` can bypass.
 ///
@@ -890,6 +918,10 @@ pub enum BatchStarkProverError {
     /// Proof metadata failed structural validation before verification.
     #[error("invalid proof metadata: {0}")]
     InvalidMetadata(#[from] ProofMetadataError),
+
+    /// Trusted circuit preparation or a prepared proof disagreed with its finalized relation.
+    #[error("trusted circuit relation mismatch: {0}")]
+    RelationMismatch(String),
 }
 
 impl<SC, const D: usize> BaseAir<Val<SC>> for CircuitTableAir<SC, D>
@@ -1340,7 +1372,38 @@ where
         dispatch_by_ext_degree!(EF::DIMENSION, |D| self.prove::<EF, D>(
             traces,
             w_opt,
-            circuit_prover_data
+            circuit_prover_data,
+            None,
+        ))
+    }
+
+    fn prove_prepared_all_tables<EF>(
+        &self,
+        traces: &Traces<EF>,
+        circuit_prover_data: &CircuitProverData<SC>,
+        relation: &CircuitRelation<Val<SC>>,
+    ) -> Result<BatchStarkProof<SC>, BatchStarkProverError>
+    where
+        EF: Field + BasedVectorSpace<Val<SC>> + ExtractBinomialW<Val<SC>>,
+        SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
+        <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain: Send + Sync,
+        SC::Pcs: Sync,
+        <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::ProverData: Sync,
+        <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment: Sync,
+    {
+        if EF::DIMENSION != relation.ext_degree() {
+            return Err(BatchStarkProverError::RelationMismatch(format!(
+                "prepared extension degree is {}, trace degree is {}",
+                relation.ext_degree(),
+                EF::DIMENSION
+            )));
+        }
+        let w_opt = EF::extract_w();
+        dispatch_by_ext_degree!(EF::DIMENSION, |D| self.prove::<EF, D>(
+            traces,
+            w_opt,
+            circuit_prover_data,
+            Some(relation),
         ))
     }
 
@@ -1400,6 +1463,7 @@ where
         traces: &Traces<EF>,
         w_binomial: Option<Val<SC>>,
         circuit_prover_data: &CircuitProverData<SC>,
+        trusted_relation: Option<&CircuitRelation<Val<SC>>>,
     ) -> Result<BatchStarkProof<SC>, BatchStarkProverError>
     where
         EF: Field + BasedVectorSpace<Val<SC>> + ExtractBinomialW<Val<SC>>,
@@ -1693,11 +1757,75 @@ where
             non_primitive_meta.push((op_type, rows, lanes, AirVariant::Baseline));
         }
 
+        if let Some(relation) = trusted_relation {
+            if packing != relation.table_packing() {
+                return Err(BatchStarkProverError::RelationMismatch(
+                    "prepared prover packing changed after setup".into(),
+                ));
+            }
+            let actual_rows = RowCounts::new([
+                const_rows.max(1),
+                public_rows.max(1),
+                traces.alu_trace.op_kind.len().max(1),
+            ]);
+            if &actual_rows != relation.rows() {
+                return Err(BatchStarkProverError::RelationMismatch(format!(
+                    "primitive row metadata changed: expected {:?}, got {:?}",
+                    relation.rows(),
+                    actual_rows
+                )));
+            }
+            if reduction != relation.reduction() || self.alu_variant != relation.alu_variant() {
+                return Err(BatchStarkProverError::RelationMismatch(
+                    "extension reduction or ALU variant changed".into(),
+                ));
+            }
+            if non_primitive_meta.len() != relation.non_primitives().len() {
+                return Err(BatchStarkProverError::RelationMismatch(format!(
+                    "non-primitive table count changed: expected {}, got {}",
+                    relation.non_primitives().len(),
+                    non_primitive_meta.len()
+                )));
+            }
+            for (index, ((op_type, rows, lanes, variant), descriptor)) in non_primitive_meta
+                .iter()
+                .zip(relation.non_primitives())
+                .enumerate()
+            {
+                if op_type != descriptor.op_type()
+                    || *rows != descriptor.rows()
+                    || *lanes != descriptor.lanes()
+                    || *variant != descriptor.air_variant()
+                    || public_storage[NUM_PRIMITIVE_TABLES + index] != descriptor.public_values()
+                {
+                    return Err(BatchStarkProverError::RelationMismatch(format!(
+                        "non-primitive table metadata changed at index {index}"
+                    )));
+                }
+            }
+            let actual_degree_bits: Vec<usize> = trace_storage
+                .iter()
+                .map(|matrix| log2_strict_usize(matrix.height()) + self.config.is_zk())
+                .collect();
+            if actual_degree_bits != relation.trace_degree_bits() {
+                return Err(BatchStarkProverError::RelationMismatch(format!(
+                    "trace heights changed: expected {:?}, got {:?}",
+                    relation.trace_degree_bits(),
+                    actual_degree_bits
+                )));
+            }
+        }
+
         // Use the pre-computed ProverData when the AIR structure is unchanged (common case).
         // Recompute only when lane reduction altered the lookup layout, since the number of
         // lookups per table depends on lane count.
         let lanes_reduced = (alu_trace_only_dummy && packing.alu_lanes() > 1)
             || (public_trace_only_dummy && packing.public_lanes() > 1);
+        if trusted_relation.is_some() && lanes_reduced {
+            return Err(BatchStarkProverError::RelationMismatch(
+                "trace requested lane reduction after trusted preparation".into(),
+            ));
+        }
         let recomputed_data: Option<ProverData<SC>> = if lanes_reduced {
             let trace_ext_degree_bits: Vec<usize> = trace_storage
                 .iter()
@@ -1775,7 +1903,7 @@ where
         };
 
         let dynamic_public_values = public_storage.drain(NUM_PRIMITIVE_TABLES..);
-        let non_primitives: Vec<NonPrimitiveTableEntry<SC>> = non_primitive_meta
+        let runtime_non_primitives: Vec<NonPrimitiveTableEntry<SC>> = non_primitive_meta
             .into_iter()
             .zip(dynamic_public_values)
             .map(
@@ -1797,24 +1925,73 @@ where
 
         // Store the effective packing (reduced lanes if applicable) so the verifier matches
         // proving. Clone full config so `horner_packed_steps`, NPO lane overrides, etc. are preserved.
-        let effective_packing = self
+        let runtime_effective_packing = self
             .table_packing
             .clone()
             .with_public_alu_lanes(public_lanes, alu_lanes);
 
         // Populate `stark_common` so the proof is self-binding to the preprocessed metadata.
-        let stark_common = recomputed_data
-            .map(|pd| pd.common)
-            .unwrap_or_else(|| clone_common_data(&prover_data.common));
+        let stark_common = if trusted_relation.is_some() {
+            clone_common_data(&prover_data.common)
+        } else {
+            recomputed_data
+                .map(|pd| pd.common)
+                .unwrap_or_else(|| clone_common_data(&prover_data.common))
+        };
+
+        let (
+            table_packing,
+            rows,
+            alu_variant,
+            ext_degree,
+            w_binomial,
+            alu_quintic_trinomial,
+            non_primitives,
+        ) = if let Some(relation) = trusted_relation {
+            let (w, quintic) = match relation.reduction() {
+                AluExtMulKind::Base => (None, false),
+                AluExtMulKind::Binomial { w } => (Some(w), false),
+                AluExtMulKind::QuinticTrinomial => (None, true),
+            };
+            (
+                relation.table_packing().clone(),
+                *relation.rows(),
+                relation.alu_variant(),
+                relation.ext_degree(),
+                w,
+                quintic,
+                relation
+                    .non_primitives()
+                    .iter()
+                    .map(|entry| NonPrimitiveTableEntry {
+                        op_type: entry.op_type().clone(),
+                        rows: entry.rows(),
+                        lanes: entry.lanes(),
+                        public_values: entry.public_values().to_vec(),
+                        air_variant: entry.air_variant(),
+                    })
+                    .collect(),
+            )
+        } else {
+            (
+                runtime_effective_packing,
+                RowCounts::new([const_rows_padded, public_rows_padded, alu_rows_padded]),
+                self.alu_variant,
+                D,
+                if D > 1 { w_binomial } else { None },
+                alu_quintic,
+                runtime_non_primitives,
+            )
+        };
 
         Ok(BatchStarkProof {
             proof,
-            table_packing: effective_packing,
-            rows: RowCounts::new([const_rows_padded, public_rows_padded, alu_rows_padded]),
-            alu_variant: self.alu_variant,
-            ext_degree: D,
-            w_binomial: if D > 1 { w_binomial } else { None },
-            alu_quintic_trinomial: alu_quintic,
+            table_packing,
+            rows,
+            alu_variant,
+            ext_degree,
+            w_binomial,
+            alu_quintic_trinomial,
             non_primitives,
             stark_common,
         })
@@ -1919,6 +2096,84 @@ where
 
         p3_batch_stark::verify_batch(&self.config, &airs, &proof.proof, &pvs, &effective_common)
             .map_err(|e| BatchStarkProverError::Verify(format!("{e:?}")))
+    }
+}
+
+impl<SC> BatchStarkProver<SC>
+where
+    SC: StarkGenericConfig + Send + Sync + 'static,
+    Val<SC>: PrimeField64 + StarkField,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+{
+    /// Finalize a circuit relation, commit its preprocessing exactly once, and return an opaque
+    /// reusable proving owner. Custom NPO builders must explicitly implement trusted metadata.
+    pub fn prepare_circuit<EF, const D: usize>(
+        mut self,
+        circuit: &p3_circuit::Circuit<EF>,
+        preprocessors: &[Box<dyn NpoPreprocessor<Val<SC>>>],
+        air_builders: &[Box<dyn NpoAirBuilder<SC, D>>],
+        constraint_profile: ConstraintProfile,
+    ) -> Result<PreparedCircuitProver<SC>, BatchStarkProverError>
+    where
+        EF: Field + ExtensionField<Val<SC>> + ExtractBinomialW<Val<SC>>,
+    {
+        if D != EF::DIMENSION {
+            return Err(BatchStarkProverError::RelationMismatch(format!(
+                "const extension degree {D} does not match circuit field degree {}",
+                EF::DIMENSION
+            )));
+        }
+        let finalized = finalize_circuit_tables::<SC, EF, D>(
+            circuit,
+            &self.table_packing,
+            preprocessors,
+            air_builders,
+            constraint_profile,
+            self.alu_variant,
+            self.config.is_zk() != 0,
+        )
+        .map_err(|error| BatchStarkProverError::RelationMismatch(error.to_string()))?;
+        let (airs_and_degrees, relation, primitive_columns, non_primitive_columns) =
+            finalized.into_parts();
+        let (airs, _base_degrees): (Vec<_>, Vec<_>) = airs_and_degrees.into_iter().unzip();
+        let prover_data =
+            ProverData::from_airs_and_degrees(&self.config, &airs, relation.trace_degree_bits());
+        self.table_packing = relation.table_packing().clone();
+
+        Ok(PreparedCircuitProver {
+            prover: self,
+            circuit_prover_data: Rc::new(CircuitProverData::new(
+                prover_data,
+                primitive_columns,
+                non_primitive_columns,
+            )),
+            relation,
+        })
+    }
+}
+
+impl<SC> PreparedCircuitProver<SC>
+where
+    SC: StarkGenericConfig + Send + Sync + 'static,
+    Val<SC>: PrimeField64 + StarkField,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+{
+    /// Prove one witness against the already committed relation.
+    pub fn prove<EF>(
+        &self,
+        traces: &Traces<EF>,
+    ) -> Result<BatchStarkProof<SC>, BatchStarkProverError>
+    where
+        EF: Field + BasedVectorSpace<Val<SC>> + ExtractBinomialW<Val<SC>>,
+        <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain: Send + Sync,
+        SC::Pcs: Sync,
+        <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::ProverData: Sync,
+        <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment: Sync,
+    {
+        self.prover
+            .prove_prepared_all_tables(traces, &self.circuit_prover_data, &self.relation)
     }
 }
 

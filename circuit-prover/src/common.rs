@@ -13,7 +13,9 @@ use p3_util::log2_ceil_usize;
 use crate::air::{AluAir, AluExtMulKind, ConstAir, PublicAir};
 use crate::config::StarkField;
 use crate::field_params::ExtractBinomialW;
-use crate::{ConstraintProfile, DynamicAirEntry, ProofMetadataError, TablePacking};
+use crate::{
+    AirVariant, ConstraintProfile, DynamicAirEntry, ProofMetadataError, RowCounts, TablePacking,
+};
 
 /// Force a table's lane count to 1 when it holds only dummy data.
 ///
@@ -82,6 +84,30 @@ where
         lanes: usize,
         constraint_profile: ConstraintProfile,
     ) -> Option<(CircuitTableAir<SC, D>, usize)>;
+
+    /// Explicit audit marker for builders whose legacy `rows` value is the padded AIR height.
+    fn trusted_rows_are_padded_height(&self) -> bool {
+        false
+    }
+
+    /// Build this table for the trusted preparation path and emit its exact proof metadata.
+    ///
+    /// The default keeps existing custom builders available to the legacy low-level API while
+    /// requiring an explicit audit before they can participate in trusted preparation.
+    fn try_build_trusted(
+        &self,
+        op_type: &NpoTypeId,
+        prep_base: &[Val<SC>],
+        min_height: usize,
+        lanes: usize,
+        constraint_profile: ConstraintProfile,
+    ) -> Option<BuiltNpoTable<SC, D>> {
+        if !self.trusted_rows_are_padded_height() {
+            return None;
+        }
+        let built = self.try_build(op_type, prep_base, min_height, lanes, constraint_profile)?;
+        Some(BuiltNpoTable::poseidon(op_type.clone(), lanes, built))
+    }
 }
 
 /// Enum wrapper to allow heterogeneous table AIRs in a single batch STARK aggregation.
@@ -115,6 +141,187 @@ where
     }
 }
 
+/// Exact, fixed metadata for a non-primitive table in a trusted circuit relation.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NpoRelation<F: Copy> {
+    op_type: NpoTypeId,
+    rows: usize,
+    lanes: usize,
+    air_variant: AirVariant,
+    public_values: Vec<F>,
+}
+
+impl<F: Copy> NpoRelation<F> {
+    pub fn new(
+        op_type: NpoTypeId,
+        rows: usize,
+        lanes: usize,
+        air_variant: AirVariant,
+        public_values: Vec<F>,
+    ) -> Self {
+        Self {
+            op_type,
+            rows,
+            lanes,
+            air_variant,
+            public_values,
+        }
+    }
+
+    pub const fn op_type(&self) -> &NpoTypeId {
+        &self.op_type
+    }
+
+    pub const fn rows(&self) -> usize {
+        self.rows
+    }
+
+    pub const fn lanes(&self) -> usize {
+        self.lanes
+    }
+
+    pub const fn air_variant(&self) -> AirVariant {
+        self.air_variant
+    }
+
+    pub fn public_values(&self) -> &[F] {
+        &self.public_values
+    }
+}
+
+/// Verifier-authoritative relation finalized before the preprocessing commitment is made.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CircuitRelation<F: Copy> {
+    table_packing: TablePacking,
+    rows: RowCounts,
+    ext_degree: usize,
+    reduction: AluExtMulKind<F>,
+    alu_variant: AirVariant,
+    constraint_profile: ConstraintProfile,
+    non_primitives: Vec<NpoRelation<F>>,
+    trace_degree_bits: Vec<usize>,
+}
+
+impl<F: Copy> CircuitRelation<F> {
+    pub const fn table_packing(&self) -> &TablePacking {
+        &self.table_packing
+    }
+
+    pub const fn rows(&self) -> &RowCounts {
+        &self.rows
+    }
+
+    pub const fn ext_degree(&self) -> usize {
+        self.ext_degree
+    }
+
+    pub const fn reduction(&self) -> AluExtMulKind<F> {
+        self.reduction
+    }
+
+    pub const fn alu_variant(&self) -> AirVariant {
+        self.alu_variant
+    }
+
+    pub const fn constraint_profile(&self) -> ConstraintProfile {
+        self.constraint_profile
+    }
+
+    pub fn non_primitives(&self) -> &[NpoRelation<F>] {
+        &self.non_primitives
+    }
+
+    pub fn trace_degree_bits(&self) -> &[usize] {
+        &self.trace_degree_bits
+    }
+}
+
+/// Named result produced by an audited NPO builder for trusted preparation.
+pub struct BuiltNpoTable<SC: StarkGenericConfig, const D: usize>
+where
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
+{
+    pub air: CircuitTableAir<SC, D>,
+    pub base_degree_bits: usize,
+    pub descriptor: NpoRelation<Val<SC>>,
+}
+
+impl<SC: StarkGenericConfig, const D: usize> BuiltNpoTable<SC, D>
+where
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
+{
+    pub fn new(
+        air: CircuitTableAir<SC, D>,
+        base_degree_bits: usize,
+        descriptor: NpoRelation<Val<SC>>,
+    ) -> Self {
+        Self {
+            air,
+            base_degree_bits,
+            descriptor,
+        }
+    }
+
+    /// Built-in Poseidon tables use their fully padded AIR height as legacy `rows` metadata.
+    pub fn poseidon(
+        op_type: NpoTypeId,
+        lanes: usize,
+        (air, base_degree_bits): (CircuitTableAir<SC, D>, usize),
+    ) -> Self {
+        Self::new(
+            air,
+            base_degree_bits,
+            NpoRelation::new(
+                op_type,
+                1usize << base_degree_bits,
+                lanes,
+                AirVariant::Baseline,
+                Vec::new(),
+            ),
+        )
+    }
+}
+
+/// Complete static table preparation, before `ProverData` consumes the AIRs exactly once.
+pub(crate) struct FinalizedCircuitTables<SC: StarkGenericConfig, const D: usize>
+where
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
+{
+    airs_and_base_degree_bits: CircuitAirsWithDegrees<SC, D>,
+    relation: CircuitRelation<Val<SC>>,
+    primitive_columns: Vec<Vec<Val<SC>>>,
+    non_primitive_columns: NonPrimitivePreprocessedMap<Val<SC>>,
+}
+
+impl<SC: StarkGenericConfig, const D: usize> FinalizedCircuitTables<SC, D>
+where
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
+{
+    pub(crate) fn airs_and_base_degree_bits(&self) -> &CircuitAirsWithDegrees<SC, D> {
+        &self.airs_and_base_degree_bits
+    }
+
+    pub(crate) const fn relation(&self) -> &CircuitRelation<Val<SC>> {
+        &self.relation
+    }
+
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        CircuitAirsWithDegrees<SC, D>,
+        CircuitRelation<Val<SC>>,
+        Vec<Vec<Val<SC>>>,
+        NonPrimitivePreprocessedMap<Val<SC>>,
+    ) {
+        (
+            self.airs_and_base_degree_bits,
+            self.relation,
+            self.primitive_columns,
+            self.non_primitive_columns,
+        )
+    }
+}
+
 /// Type alias for a vector of circuit table AIRs paired with their respective degrees (log of their trace height).
 type CircuitAirsWithDegrees<SC, const D: usize> = Vec<(CircuitTableAir<SC, D>, usize)>;
 
@@ -140,6 +347,67 @@ where
     SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
     Val<SC>: StarkField,
 {
+    let finalized = build_circuit_tables(
+        circuit,
+        packing,
+        non_primitive_preprocessors,
+        non_primitive_air_builders,
+        constraint_profile,
+        AirVariant::Optimized,
+        false,
+        false,
+    )?;
+    let (airs, _, primitive, non_primitive) = finalized.into_parts();
+    Ok((airs, primitive, non_primitive))
+}
+
+pub(crate) fn finalize_circuit_tables<
+    SC: StarkGenericConfig + 'static + Send + Sync,
+    ExtF: Field + ExtensionField<Val<SC>> + ExtractBinomialW<Val<SC>>,
+    const D: usize,
+>(
+    circuit: &Circuit<ExtF>,
+    packing: &TablePacking,
+    non_primitive_preprocessors: &[Box<dyn NpoPreprocessor<Val<SC>>>],
+    non_primitive_air_builders: &[Box<dyn NpoAirBuilder<SC, D>>],
+    constraint_profile: ConstraintProfile,
+    alu_variant: AirVariant,
+    is_zk: bool,
+) -> Result<FinalizedCircuitTables<SC, D>, CircuitError>
+where
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
+    Val<SC>: StarkField,
+{
+    build_circuit_tables(
+        circuit,
+        packing,
+        non_primitive_preprocessors,
+        non_primitive_air_builders,
+        constraint_profile,
+        alu_variant,
+        is_zk,
+        true,
+    )
+}
+
+fn build_circuit_tables<
+    SC: StarkGenericConfig + 'static + Send + Sync,
+    ExtF: Field + ExtensionField<Val<SC>> + ExtractBinomialW<Val<SC>>,
+    const D: usize,
+>(
+    circuit: &Circuit<ExtF>,
+    packing: &TablePacking,
+    non_primitive_preprocessors: &[Box<dyn NpoPreprocessor<Val<SC>>>],
+    non_primitive_air_builders: &[Box<dyn NpoAirBuilder<SC, D>>],
+    constraint_profile: ConstraintProfile,
+    alu_variant: AirVariant,
+    is_zk: bool,
+    trusted: bool,
+) -> Result<FinalizedCircuitTables<SC, D>, CircuitError>
+where
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
+    Val<SC>: StarkField,
+{
     // Reject a misconfigured packing (e.g. a per-table override below the global
     // min-height floor) before any table height derived from it is used to build or
     // pad the preprocessed trace, rather than only catching it later via
@@ -156,12 +424,18 @@ where
     let public_idx = PrimitiveOpType::Public as usize;
     let alu_idx = PrimitiveOpType::Alu as usize;
 
+    let const_rows = preprocessed.primitive[PrimitiveOpType::Const as usize].len();
     let public_rows = preprocessed.primitive[public_idx].len();
     let effective_public_lanes =
         reduce_lanes_if_dummy("Public", public_rows <= 1, packing.public_lanes());
 
-    let alu_empty = preprocessed.primitive[alu_idx].is_empty();
-    let effective_alu_lanes = reduce_lanes_if_dummy("ALU", alu_empty, packing.alu_lanes());
+    let alu_raw_rows = preprocessed.primitive[alu_idx].len() / 12;
+    let alu_empty = alu_raw_rows == 0;
+    let effective_alu_lanes = reduce_lanes_if_dummy("ALU", alu_raw_rows <= 1, packing.alu_lanes());
+
+    let effective_packing = packing
+        .clone()
+        .with_public_alu_lanes(effective_public_lanes, effective_alu_lanes);
 
     let w_binomial = ExtF::extract_w();
 
@@ -208,8 +482,15 @@ where
         Ok(log2_ceil_usize(natural_height.max(effective_min)))
     };
 
+    let reduction =
+        AluExtMulKind::resolve(D, w_binomial, D == 5 && ExtF::alu_is_quintic_trinomial()).expect(
+            "ALU preprocessed path needs binomial W when D>1 and the element field is not the \
+         quintic-trinomial ALU variant",
+        );
+
     let mut table_preps: Vec<(CircuitTableAir<SC, D>, usize)> =
         Vec::with_capacity(base_prep.len() + non_primitive_base.len());
+    let mut npo_relations = Vec::with_capacity(non_primitive_base.len());
 
     #[allow(clippy::needless_range_loop)]
     for idx in 0..base_prep.len() {
@@ -318,17 +599,6 @@ where
                 let horner_k = packing.horner_packed_steps();
                 // Store the converted 13-col format before building the AIR.
                 base_prep[idx] = prep_13col;
-                let reduction = AluExtMulKind::resolve(
-                    D,
-                    w_binomial,
-                    D == 5 && ExtF::alu_is_quintic_trinomial(),
-                )
-                .expect(
-                    "ALU preprocessed path needs binomial W when D>1 and the element field is \
-                     not the quintic-trinomial ALU variant. Use D=1 for base-field circuits \
-                     (ExtF = Val<SC>); for extension circuits use D = ExtF::DIMENSION and a \
-                     binomial or supported quintic ExtF.",
-                );
                 let alu_air = AluAir::from_reduction_with_preprocessed(
                     num_ops,
                     effective_alu_lanes,
@@ -410,13 +680,41 @@ where
                 .npo_lanes(op_type)
                 .unwrap_or_else(|| builder.lanes());
             let npo_min_height = packing.npo_min_height(op_type).unwrap_or(min_height);
-            if let Some((air, degree)) = builder.try_build(
-                op_type,
-                prep_base,
-                npo_min_height,
-                lanes,
-                constraint_profile,
-            ) {
+            let built = if trusted {
+                builder.try_build_trusted(
+                    op_type,
+                    prep_base,
+                    npo_min_height,
+                    lanes,
+                    constraint_profile,
+                )
+            } else {
+                builder
+                    .try_build(
+                        op_type,
+                        prep_base,
+                        npo_min_height,
+                        lanes,
+                        constraint_profile,
+                    )
+                    .map(|(air, base_degree_bits)| BuiltNpoTable {
+                        air,
+                        base_degree_bits,
+                        descriptor: NpoRelation::new(
+                            op_type.clone(),
+                            1,
+                            lanes,
+                            AirVariant::Baseline,
+                            Vec::new(),
+                        ),
+                    })
+            };
+            if let Some(BuiltNpoTable {
+                air,
+                base_degree_bits: degree,
+                descriptor,
+            }) = built
+            {
                 // Every current `NpoAirBuilder` impl computes `degree` as
                 // `log2_ceil(max(natural_rows.next_pow2, npo_min_height.next_pow2))`, so the
                 // built height exceeds the allowed height iff the table's natural row count
@@ -433,12 +731,40 @@ where
                     }));
                 }
                 table_preps.push((air, degree));
+                npo_relations.push(descriptor);
                 break;
             }
         }
     }
 
-    Ok((table_preps, base_prep, non_primitive_base))
+    if trusted && npo_relations.len() != non_primitive_base.len() {
+        return Err(CircuitError::InvalidTablePacking(
+            "trusted preparation requires exact metadata from every non-primitive AIR builder"
+                .to_string(),
+        ));
+    }
+
+    let trace_degree_bits = table_preps
+        .iter()
+        .map(|(_, degree)| degree + usize::from(is_zk))
+        .collect();
+    let relation = CircuitRelation {
+        table_packing: effective_packing,
+        rows: RowCounts::new([const_rows.max(1), public_rows.max(1), alu_raw_rows.max(1)]),
+        ext_degree: D,
+        reduction,
+        alu_variant,
+        constraint_profile,
+        non_primitives: npo_relations,
+        trace_degree_bits,
+    };
+
+    Ok(FinalizedCircuitTables {
+        airs_and_base_degree_bits: table_preps,
+        relation,
+        primitive_columns: base_prep,
+        non_primitive_columns: non_primitive_base,
+    })
 }
 
 #[cfg(test)]
@@ -528,6 +854,52 @@ mod per_table_height_tests {
                 "preprocessed trace height must match the returned degree"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod trusted_preparation_tests {
+    use alloc::vec::Vec;
+
+    use p3_circuit::CircuitBuilder;
+    use p3_field::PrimeCharacteristicRing;
+    use p3_test_utils::koala_bear_params::{F, MyConfig};
+
+    use super::finalize_circuit_tables;
+    use crate::{AirVariant, ConstraintProfile, PrimitiveTable, TablePacking};
+
+    /// Regression target: changing the static ALU predicate back to `is_empty()` would leave
+    /// this one-operation circuit at four lanes during setup, while proving reduces it to one.
+    #[test]
+    fn trusted_preparation_finalizes_dummy_and_single_alu_lanes_before_commitment() {
+        let mut builder = CircuitBuilder::<F>::new();
+        let a = builder.define_const(F::from_u32(2));
+        let b = builder.define_const(F::from_u32(3));
+        let _ = builder.mul(a, b);
+        let circuit = builder.build().unwrap();
+
+        let finalized = finalize_circuit_tables::<MyConfig, F, 1>(
+            &circuit,
+            &TablePacking::new(4, 4),
+            &[],
+            &[],
+            ConstraintProfile::Standard,
+            AirVariant::Optimized,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(finalized.relation().table_packing().public_lanes(), 1);
+        assert_eq!(finalized.relation().table_packing().alu_lanes(), 1);
+        assert_eq!(finalized.relation().rows()[PrimitiveTable::Alu], 1);
+        assert_eq!(
+            finalized.relation().trace_degree_bits(),
+            finalized
+                .airs_and_base_degree_bits()
+                .iter()
+                .map(|(_, degree)| *degree)
+                .collect::<Vec<_>>()
+        );
     }
 }
 

@@ -1890,6 +1890,10 @@ where
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
         Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
+    fn trusted_rows_are_padded_height(&self) -> bool {
+        true
+    }
+
     fn try_build(
         &self,
         op_type: &NpoTypeId,
@@ -1909,6 +1913,10 @@ where
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
         Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
+    fn trusted_rows_are_padded_height(&self) -> bool {
+        true
+    }
+
     fn try_build(
         &self,
         op_type: &NpoTypeId,
@@ -1928,6 +1936,10 @@ where
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
         Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
+    fn trusted_rows_are_padded_height(&self) -> bool {
+        true
+    }
+
     fn try_build(
         &self,
         op_type: &NpoTypeId,
@@ -1991,6 +2003,10 @@ where
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
         Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
+    fn trusted_rows_are_padded_height(&self) -> bool {
+        true
+    }
+
     fn try_build(
         &self,
         op_type: &NpoTypeId,
@@ -2011,6 +2027,10 @@ where
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
         Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
+    fn trusted_rows_are_padded_height(&self) -> bool {
+        true
+    }
+
     fn try_build(
         &self,
         op_type: &NpoTypeId,
@@ -2031,6 +2051,10 @@ where
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
         Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
+    fn trusted_rows_are_padded_height(&self) -> bool {
+        true
+    }
+
     fn try_build(
         &self,
         op_type: &NpoTypeId,

@@ -29,6 +29,53 @@ use crate::common::{NpoPreprocessor, get_airs_and_degrees_with_prep};
 use crate::config::{self, BabyBearConfig, GoldilocksConfig, KoalaBearConfig};
 
 #[test]
+fn trusted_preparation_reuses_the_finalized_setup_for_repeated_proofs() {
+    let mut builder = CircuitBuilder::<BabyBear>::new();
+    let input = builder.public_input();
+    let two = builder.define_const(BabyBear::TWO);
+    let expected = builder.public_input();
+    let doubled = builder.mul(input, two);
+    builder.connect(doubled, expected);
+    let circuit = builder.build().unwrap();
+
+    let prepared = BatchStarkProver::new(config::baby_bear())
+        .with_table_packing(TablePacking::new(4, 4))
+        .prepare_circuit::<BabyBear, 1>(&circuit, &[], &[], ConstraintProfile::Standard)
+        .unwrap();
+
+    assert_eq!(prepared.relation().table_packing().public_lanes(), 4);
+    assert_eq!(prepared.relation().table_packing().alu_lanes(), 1);
+
+    let mut first_runner = circuit.runner();
+    first_runner
+        .set_public_inputs(&[BabyBear::from_u32(3), BabyBear::from_u32(6)])
+        .unwrap();
+    let first = prepared.prove(&first_runner.run().unwrap()).unwrap();
+    let mut second_runner = circuit.runner();
+    second_runner
+        .set_public_inputs(&[BabyBear::from_u32(5), BabyBear::from_u32(10)])
+        .unwrap();
+    let second = prepared.prove(&second_runner.run().unwrap()).unwrap();
+
+    assert_eq!(first.table_packing, *prepared.relation().table_packing());
+    assert_eq!(first.rows, *prepared.relation().rows());
+    assert_eq!(
+        first.proof.degree_bits,
+        prepared.relation().trace_degree_bits()
+    );
+    assert_eq!(second.proof.degree_bits, first.proof.degree_bits);
+    assert_eq!(
+        first.stark_common.preprocessed.as_ref().unwrap().commitment,
+        second
+            .stark_common
+            .preprocessed
+            .as_ref()
+            .unwrap()
+            .commitment
+    );
+}
+
+#[test]
 fn test_babybear_batch_stark_base_field() {
     let mut builder = CircuitBuilder::<BabyBear>::new();
 

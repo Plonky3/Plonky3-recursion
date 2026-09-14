@@ -21,9 +21,9 @@ use p3_util::log2_ceil_usize;
 use super::dynamic_air::{
     BatchAir, BatchTableInstance, DynamicAirEntry, TableProver, transmute_traces,
 };
-use super::{NonPrimitiveTableEntry, TablePacking};
+use super::{AirVariant, NonPrimitiveTableEntry, TablePacking};
 use crate::air::RecomposeAir;
-use crate::common::{CircuitTableAir, NpoAirBuilder, NpoPreprocessor};
+use crate::common::{BuiltNpoTable, CircuitTableAir, NpoAirBuilder, NpoPreprocessor, NpoRelation};
 use crate::config::StarkField;
 use crate::{ConstraintProfile, impl_table_prover_batch_instances_from_base};
 
@@ -449,6 +449,30 @@ where
         Some((
             CircuitTableAir::Dynamic(DynamicAirEntry::new(Box::new(air))),
             degree,
+        ))
+    }
+
+    fn try_build_trusted(
+        &self,
+        op_type: &NpoTypeId,
+        prep_base: &[Val<SC>],
+        min_height: usize,
+        lanes: usize,
+        constraint_profile: ConstraintProfile,
+    ) -> Option<BuiltNpoTable<SC, D>> {
+        let built = self.try_build(op_type, prep_base, min_height, lanes, constraint_profile)?;
+        let prep_lane_width =
+            RecomposeAir::<Val<SC>, D>::preprocessed_lane_width_for(self.coeff_lookups);
+        Some(BuiltNpoTable::new(
+            built.0,
+            built.1,
+            NpoRelation::new(
+                op_type.clone(),
+                prep_base.len() / prep_lane_width,
+                lanes,
+                AirVariant::Baseline,
+                Vec::new(),
+            ),
         ))
     }
 }
