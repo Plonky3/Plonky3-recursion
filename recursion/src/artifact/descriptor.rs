@@ -1181,6 +1181,7 @@ pub(crate) fn read_common<SC: StarkGenericConfig>(
             });
         }
     };
+    reader.charge_conversion_vec::<()>(0)?;
     Ok(CommonData::new(preprocessed, Vec::new()))
 }
 
@@ -1198,10 +1199,11 @@ mod tests {
         AirVariant, BuiltinArtifactNpo, ConstraintProfile, RowCounts, TablePacking,
     };
     use p3_field::PrimeCharacteristicRing;
+    use p3_test_utils::koala_bear_params::MyConfig;
 
     use super::{
-        BuiltinNpoV1, NpoDescriptorV1, NpoPublicValuesV1, RelationDescriptorV1, read_config,
-        read_relation, validate_relation_descriptor, write_config, write_relation,
+        BuiltinNpoV1, NpoDescriptorV1, NpoPublicValuesV1, RelationDescriptorV1, read_common,
+        read_config, read_relation, validate_relation_descriptor, write_config, write_relation,
     };
     use crate::artifact::wire::{Reader, Writer};
     use crate::artifact::{ArtifactError, ArtifactLimits};
@@ -1265,6 +1267,40 @@ mod tests {
             read_config(&mut reader, SuiteIdV1::KoalaBearD4Poseidon2BinaryFri),
             Err(ArtifactError::NonCanonicalMetadata)
         );
+    }
+
+    #[test]
+    fn empty_common_data_charges_its_owned_empty_container() {
+        let bytes = [0];
+        let expected_allocation = size_of::<Vec<()>>();
+        let limits = ArtifactLimits::default();
+        let mut reader = Reader::new(&bytes, &limits);
+        read_common::<MyConfig>(&mut reader, |_| unreachable!()).unwrap();
+        assert_eq!(reader.requested_allocation_bytes(), expected_allocation);
+        assert_eq!(reader.container_entries(), 1);
+        reader.finish().unwrap();
+
+        let exact_limits = ArtifactLimits {
+            max_decoded_bytes: expected_allocation,
+            ..limits
+        };
+        let mut exact_reader = Reader::new(&bytes, &exact_limits);
+        read_common::<MyConfig>(&mut exact_reader, |_| unreachable!()).unwrap();
+        exact_reader.finish().unwrap();
+
+        let below_limits = ArtifactLimits {
+            max_decoded_bytes: expected_allocation - 1,
+            ..limits
+        };
+        let mut below_reader = Reader::new(&bytes, &below_limits);
+        assert!(matches!(
+            read_common::<MyConfig>(&mut below_reader, |_| unreachable!()),
+            Err(ArtifactError::DecodeLimitExceeded {
+                component: "decoded allocation bytes",
+                actual,
+                limit,
+            }) if actual == expected_allocation && limit + 1 == expected_allocation
+        ));
     }
 
     fn relation() -> RelationDescriptorV1<BabyBear> {
