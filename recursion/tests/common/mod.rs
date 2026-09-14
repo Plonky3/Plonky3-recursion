@@ -411,6 +411,12 @@ fn koala_bear_d4_recursion_config(pow_bits: usize) -> KoalaBearD4RecursionConfig
 pub(crate) fn koala_bear_d4_recursion_config_and_backend()
 -> (KoalaBearD4RecursionConfig, KoalaBearD4Backend) {
     let pow_bits = test_fri_scalars().query_pow_bits;
+    koala_bear_d4_recursion_config_and_backend_with_pow_bits(pow_bits)
+}
+
+pub(crate) fn koala_bear_d4_recursion_config_and_backend_with_pow_bits(
+    pow_bits: usize,
+) -> (KoalaBearD4RecursionConfig, KoalaBearD4Backend) {
     let config = koala_bear_d4_recursion_config(pow_bits);
     let backend = FriRecursionBackend::<16, 8, _>::new(Poseidon2Config::KOALA_BEAR_D4_W16)
         .for_extension_degree::<4>();

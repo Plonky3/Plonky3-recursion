@@ -268,7 +268,9 @@ fn fri_uni_profile_prepared_layer_reuses_varied_witnesses() {
 fn fri_uni_profile_owner_matches_params_owner_bytes() {
     let n = 1 << 10;
     let air = FibonacciAir {};
-    let (config, backend) = common::koala_bear_d4_recursion_config_and_backend();
+    // Parallel PoW grinding may choose different valid nonzero witnesses. This byte-for-byte
+    // ownership comparison needs a deterministic transcript, so disable PoW for this fixture.
+    let (config, backend) = common::koala_bear_d4_recursion_config_and_backend_with_pow_bits(0);
     let pis = vec![F::ZERO, F::ONE, fibonacci_output::<F>(0, 1, n)];
     let proof = prove(&config, &air, generate_trace_rows::<F>(0, 1, n), &pis);
     let params = ProveNextLayerParams {
