@@ -42,7 +42,7 @@ impl<'de> Deserialize<'de> for StatementSchema {
         D: serde::Deserializer<'de>,
     {
         let unchecked = UncheckedStatementSchema::deserialize(deserializer)?;
-        let schema = Self::new(unchecked.fields).map_err(serde::de::Error::custom)?;
+        let schema = Self::try_new(unchecked.fields).map_err(serde::de::Error::custom)?;
         if schema.base_len != unchecked.base_len {
             return Err(serde::de::Error::custom(format!(
                 "statement schema base_len mismatch: expected {}, got {}",
@@ -63,10 +63,14 @@ impl Default for StatementSchema {
 }
 
 impl StatementSchema {
-    pub(crate) fn new(fields: Vec<StatementField>) -> Result<Self, StatementError> {
+    /// Build a schema from its ordered semantic fields, checking every flattened width.
+    pub fn try_new(fields: Vec<StatementField>) -> Result<Self, StatementError> {
         let base_len = fields.iter().try_fold(0usize, |len, field| {
             let width = match field {
                 StatementField::Base => 1,
+                StatementField::Extension { degree: 0 } => {
+                    return Err(StatementError::ZeroExtensionDegree);
+                }
                 StatementField::Extension { degree } => *degree,
             };
             len.checked_add(width).ok_or(StatementError::LengthOverflow)
@@ -92,7 +96,7 @@ impl StatementSchema {
         let mut fields = Vec::with_capacity(left.fields.len() + right.fields.len());
         fields.extend_from_slice(&left.fields);
         fields.extend_from_slice(&right.fields);
-        Self::new(fields)
+        Self::try_new(fields)
     }
 
     /// Check a flattened statement value vector against this schema.
@@ -110,6 +114,8 @@ impl StatementSchema {
 /// Schema-level statement errors independent of a circuit's field type.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum StatementError {
+    #[error("statement extension degree must be nonzero")]
+    ZeroExtensionDegree,
     #[error("statement flattened length overflow")]
     LengthOverflow,
     #[error("statement value length mismatch: expected {expected}, got {got}")]
@@ -171,12 +177,12 @@ mod tests {
 
     #[test]
     fn schema_concat_preserves_fields_and_checks_flattened_values() {
-        let left = StatementSchema::new(vec![
+        let left = StatementSchema::try_new(vec![
             StatementField::Base,
             StatementField::Extension { degree: 2 },
         ])
         .unwrap();
-        let right = StatementSchema::new(vec![StatementField::Base]).unwrap();
+        let right = StatementSchema::try_new(vec![StatementField::Base]).unwrap();
         let combined = StatementSchema::concat(&left, &right).unwrap();
 
         assert_eq!(
@@ -201,7 +207,7 @@ mod tests {
     #[test]
     fn schema_rejects_flattened_length_overflow() {
         assert_eq!(
-            StatementSchema::new(vec![
+            StatementSchema::try_new(vec![
                 StatementField::Extension { degree: usize::MAX },
                 StatementField::Base,
             ]),

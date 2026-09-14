@@ -544,7 +544,7 @@ where
             }
         }
 
-        let schema = StatementSchema::new(fields)?;
+        let schema = StatementSchema::try_new(fields)?;
         debug_assert_eq!(schema.base_len(), flattened.len());
         self.statement_schema = Some(schema.clone());
         self.statement_source_exprs = exports
