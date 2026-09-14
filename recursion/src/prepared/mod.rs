@@ -10,12 +10,16 @@ mod trusted;
 #[path = "../../tests/common/mod.rs"]
 pub(crate) mod test_common;
 
+use alloc::vec::Vec;
+
 pub use aggregation::{PreparedAggregation, PreparedAggregationCross};
 pub use input::{NativeCommitment, PreparedInput, PreparedSource};
 pub use layer::PreparedLayer;
-use p3_circuit::{CircuitBuilder, CircuitRunner, NonPrimitiveOpId};
-use p3_circuit_prover::{BatchStarkProof, CircuitVerifier};
-use p3_field::Field;
+use p3_circuit::{
+    CircuitBuilder, CircuitRunner, NonPrimitiveOpId, StatementField, StatementSchema,
+};
+use p3_circuit_prover::{BatchStarkProof, CircuitVerifier, StatementLayout};
+use p3_field::{ExtensionField, Field, PrimeField64};
 use p3_lookup::logup::LogUpGadget;
 use p3_uni_stark::{StarkGenericConfig, Val};
 pub use trusted::{
@@ -25,6 +29,167 @@ pub use trusted::{
 use crate::recursion::{PcsRecursionBackend, RecursionInput};
 use crate::traits::RecursiveAir;
 use crate::verifier::VerificationError;
+
+/// Kind of child relation whose public statement is exported by a trusted recursive verifier.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TrustedChildStatementKind {
+    Uni,
+    Batch,
+}
+
+/// Trusted description of the exact child statement targets consumed by a verifier circuit.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TrustedChildStatementLayout {
+    kind: TrustedChildStatementKind,
+    schema: StatementSchema,
+    public_values_len: usize,
+    table_instance: Option<usize>,
+}
+
+impl TrustedChildStatementLayout {
+    pub(crate) fn uni(
+        public_values_len: usize,
+        schema: StatementSchema,
+    ) -> Result<Self, VerificationError> {
+        if schema.base_len() != public_values_len
+            || schema
+                .fields()
+                .iter()
+                .any(|field| *field != StatementField::Base)
+        {
+            return Err(VerificationError::InvalidProofShape(
+                "trusted uni statement schema must contain one Base field per AIR public value"
+                    .into(),
+            ));
+        }
+        Ok(Self {
+            kind: TrustedChildStatementKind::Uni,
+            schema,
+            public_values_len,
+            table_instance: None,
+        })
+    }
+
+    pub(crate) fn batch(layout: &StatementLayout) -> Self {
+        Self {
+            kind: TrustedChildStatementKind::Batch,
+            schema: layout.schema().clone(),
+            public_values_len: layout.schema().base_len(),
+            table_instance: layout.table_instance(),
+        }
+    }
+
+    pub const fn kind(&self) -> TrustedChildStatementKind {
+        self.kind
+    }
+
+    pub const fn schema(&self) -> &StatementSchema {
+        &self.schema
+    }
+
+    pub const fn public_values_len(&self) -> usize {
+        self.public_values_len
+    }
+
+    pub const fn table_instance(&self) -> Option<usize> {
+        self.table_instance
+    }
+}
+
+/// Opaque statement export whose targets have been checked against the verifier result that
+/// actually consumes them.
+pub struct VerifiedStatementTargets {
+    schema: StatementSchema,
+    base_targets: Vec<crate::Target>,
+}
+
+impl VerifiedStatementTargets {
+    /// Construct a verified-target token for an explicitly trusted custom backend.
+    ///
+    /// # Safety
+    ///
+    /// `base_targets` must be the exact existing targets consumed as AIR public values by
+    /// `result` in that backend's `verified_statement_targets` implementation. They must match
+    /// `schema` in canonical flattened order and must not be new lookalike public inputs.
+    pub unsafe fn new_unchecked(
+        schema: StatementSchema,
+        base_targets: Vec<crate::Target>,
+    ) -> Result<Self, VerificationError> {
+        schema.validate_values(&base_targets).map_err(|error| {
+            VerificationError::InvalidProofShape(alloc::format!(
+                "verified statement target length does not match schema: {error}"
+            ))
+        })?;
+        Ok(Self {
+            schema,
+            base_targets,
+        })
+    }
+
+    pub const fn schema(&self) -> &StatementSchema {
+        &self.schema
+    }
+
+    pub(crate) fn install<BF, EF>(
+        self,
+        builder: &mut CircuitBuilder<EF>,
+    ) -> Result<(), VerificationError>
+    where
+        BF: PrimeField64,
+        EF: ExtensionField<BF>,
+    {
+        // SAFETY: the only safe constructors are the checked built-in selector below; custom
+        // backends can construct this opaque token only through an explicit unsafe promise.
+        unsafe {
+            builder.set_statement_base_targets::<BF>(self.schema, &self.base_targets)?;
+        }
+        Ok(())
+    }
+}
+
+pub(crate) enum ConsumedStatementTargets<'a> {
+    Uni(&'a [crate::Target]),
+    Batch(&'a [Vec<crate::Target>]),
+}
+
+pub(crate) fn checked_statement_targets(
+    consumed: ConsumedStatementTargets<'_>,
+    source: &TrustedChildStatementLayout,
+) -> Result<VerifiedStatementTargets, VerificationError> {
+    let targets = match (consumed, source.kind) {
+        (ConsumedStatementTargets::Uni(targets), TrustedChildStatementKind::Uni) => targets,
+        (ConsumedStatementTargets::Batch(_), TrustedChildStatementKind::Uni)
+        | (ConsumedStatementTargets::Uni(_), TrustedChildStatementKind::Batch) => {
+            return Err(VerificationError::InvalidProofShape(
+                "trusted statement source kind does not match verifier result branch".into(),
+            ));
+        }
+        (ConsumedStatementTargets::Batch(_), TrustedChildStatementKind::Batch)
+            if source.table_instance.is_none() =>
+        {
+            &[]
+        }
+        (ConsumedStatementTargets::Batch(all), TrustedChildStatementKind::Batch) => all
+            .get(source.table_instance.expect("checked above"))
+            .map(Vec::as_slice)
+            .ok_or_else(|| {
+                VerificationError::InvalidProofShape(
+                    "trusted statement table instance is absent from verifier inputs".into(),
+                )
+            })?,
+    };
+    if targets.len() != source.public_values_len {
+        return Err(VerificationError::InvalidProofShape(alloc::format!(
+            "trusted statement verifier target length mismatch: expected {}, got {}",
+            source.public_values_len,
+            targets.len()
+        )));
+    }
+    Ok(VerifiedStatementTargets {
+        schema: source.schema.clone(),
+        base_targets: targets.to_vec(),
+    })
+}
 
 /// Explicit opt-in for recursive commitment targets whose complete native identity can be
 /// constrained to constants.
@@ -224,5 +389,44 @@ mod trusted_commitment_tests {
             runner.set_public_inputs(&wrong).unwrap();
             assert!(runner.run().is_err(), "unbound cap limb {limb}");
         }
+    }
+}
+
+#[cfg(test)]
+mod verified_statement_target_tests {
+    use alloc::vec;
+
+    use p3_baby_bear::BabyBear;
+    use p3_circuit::{CircuitBuilder, StatementExport};
+    use p3_field::extension::BinomialExtensionField;
+
+    use super::{ConsumedStatementTargets, TrustedChildStatementLayout, checked_statement_targets};
+
+    /// Returning host copies, allocating lookalike inputs, or relabelling the source schema would
+    /// make the selected IDs or finalized schema differ here.
+    #[test]
+    fn checked_statement_targets_retain_consumed_ids_and_source_schema() {
+        type Ext4 = BinomialExtensionField<BabyBear, 4>;
+
+        let mut schema_builder = CircuitBuilder::<BabyBear>::new();
+        let first = schema_builder.public_input();
+        let second = schema_builder.public_input();
+        let schema = schema_builder
+            .set_statement_exports::<BabyBear>(&[
+                StatementExport::Base(first),
+                StatementExport::Base(second),
+            ])
+            .unwrap();
+        let source = TrustedChildStatementLayout::uni(2, schema.clone()).unwrap();
+
+        let mut wrapper = CircuitBuilder::<Ext4>::new();
+        let consumed = vec![wrapper.public_input(), wrapper.public_input()];
+        let verified =
+            checked_statement_targets(ConsumedStatementTargets::Uni(&consumed), &source).unwrap();
+
+        assert_eq!(verified.base_targets, consumed);
+        verified.install::<BabyBear, Ext4>(&mut wrapper).unwrap();
+        let circuit = wrapper.build().unwrap();
+        assert_eq!(circuit.statement_schema(), Some(&schema));
     }
 }

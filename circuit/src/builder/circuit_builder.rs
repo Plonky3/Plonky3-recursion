@@ -552,13 +552,60 @@ where
 
         let schema = StatementSchema::try_new(fields)?;
         debug_assert_eq!(schema.base_len(), flattened.len());
-        self.statement_schema = Some(schema.clone());
-        self.statement_source_exprs = exports
+        let sources = exports
             .iter()
             .map(|export| match *export {
                 StatementExport::Base(expr) | StatementExport::Extension(expr) => expr,
             })
             .collect();
+        self.install_statement_sink::<BF>(schema.clone(), flattened, sources);
+
+        Ok(schema)
+    }
+
+    /// Install a statement sink over already-flattened, verifier-consumed base targets while
+    /// preserving the originating statement schema.
+    ///
+    /// This is an internal integration seam for the recursion crate's opaque checked-target
+    /// token. Application-facing callers should use [`Self::set_statement_exports`] so extension
+    /// values are decomposed through coefficient-aware lookups.
+    ///
+    /// # Safety
+    ///
+    /// Every target must be an already-flattened base-field slot consumed by the verified child
+    /// relation described by `schema`. Callers must not use unrelated or newly allocated targets.
+    #[doc(hidden)]
+    pub unsafe fn set_statement_base_targets<BF>(
+        &mut self,
+        schema: StatementSchema,
+        targets: &[ExprId],
+    ) -> Result<(), CircuitBuilderError>
+    where
+        BF: PrimeField64,
+        F: ExtensionField<BF>,
+    {
+        if self.statement_schema.is_some() {
+            return Err(CircuitBuilderError::StatementAlreadyDefined);
+        }
+        if self.npo_registry.contains_key(&NpoTypeId::statement()) {
+            return Err(CircuitBuilderError::StatementNpoAlreadyRegistered);
+        }
+        schema.validate_values(targets)?;
+        self.install_statement_sink::<BF>(schema, targets.to_vec(), targets.to_vec());
+        Ok(())
+    }
+
+    fn install_statement_sink<BF>(
+        &mut self,
+        schema: StatementSchema,
+        flattened: Vec<ExprId>,
+        sources: Vec<ExprId>,
+    ) where
+        BF: PrimeField64,
+        F: ExtensionField<BF>,
+    {
+        self.statement_schema = Some(schema.clone());
+        self.statement_source_exprs = sources;
         if !flattened.is_empty() {
             let plugin = StatementCircuitPlugin::new(
                 schema.clone(),
@@ -578,8 +625,6 @@ where
                 "statement",
             );
         }
-
-        Ok(schema)
     }
 
     /// Retain the semantic left/right boundary for an already-defined aggregation statement.
@@ -4059,6 +4104,35 @@ mod proptests {
         let circuit = builder.build().unwrap();
         assert_eq!(circuit.statement_schema(), Some(layout.output()));
         assert_eq!(circuit.aggregation_statement_layout(), Some(&layout));
+    }
+
+    /// Flattened recursive propagation must retain the originating semantic grouping instead of
+    /// relabelling every base slot as an independent field in the wrapper's extension degree.
+    #[test]
+    fn statement_base_targets_preserve_the_supplied_schema() {
+        type Ext4 = BinomialExtensionField<BabyBear, 4>;
+
+        let mut builder = CircuitBuilder::<Ext4>::new();
+        let targets = (0..3).map(|_| builder.public_input()).collect::<Vec<_>>();
+        let schema = crate::StatementSchema::try_new(vec![
+            crate::StatementField::Extension { degree: 2 },
+            crate::StatementField::Base,
+        ])
+        .unwrap();
+
+        // SAFETY: the test passes the exact existing targets represented by the supplied schema.
+        unsafe { builder.set_statement_base_targets::<BabyBear>(schema.clone(), &targets) }
+            .expect("verified flattened targets are accepted");
+        let circuit = builder.build().unwrap();
+
+        assert_eq!(circuit.statement_schema(), Some(&schema));
+        assert_eq!(
+            circuit.statement_schema().unwrap().fields(),
+            &[
+                crate::StatementField::Extension { degree: 2 },
+                crate::StatementField::Base,
+            ]
+        );
     }
 
     /// Deduplicating the sink inputs or recording pre-optimizer expression numbers would make the
