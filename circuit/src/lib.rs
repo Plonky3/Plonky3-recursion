@@ -19,7 +19,7 @@ pub mod types;
 pub use alloc_entry::{AllocationEntry, AllocationLog, AllocationType};
 pub use builder::{
     CircuitBuilder, CircuitBuilderError, NonPrimitiveOperationData, NpoCircuitPlugin,
-    NpoLoweringContext,
+    NpoLoweringContext, VerifiedStatementTargets,
 };
 pub use circuit::{Circuit, PreprocessedColumns};
 pub use errors::CircuitError;

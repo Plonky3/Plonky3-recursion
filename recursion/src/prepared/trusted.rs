@@ -319,8 +319,8 @@ where
             source.authority.expected_preprocessed(),
         )?;
         backend
-            .verified_statement_targets(&result, &statement_layout)?
-            .install::<Val<OutSC>, InSC::Challenge>(&mut builder)?;
+            .verified_statement_targets(&result, &statement_layout, &builder)?
+            .install::<Val<OutSC>>(&mut builder)?;
         let circuit = builder.build().map_err(VerificationError::CircuitBuilder)?;
         let prep = prepare_prover_with_statement::<OutSC, BatchOnly, B, D>(
             &circuit,
@@ -531,17 +531,20 @@ where
                 &backend,
                 &left_result,
                 &left_statement,
+                &builder,
             )?;
         let right_targets =
             <B as TrustedPcsRecursionBackend<InSC, A2, D>>::verified_statement_targets(
                 &backend,
                 &right_result,
                 &right_statement,
+                &builder,
             )?;
-        let aggregation_layout = VerifiedStatementTargets::install_ordered_aggregation::<
-            Val<InSC>,
-            InSC::Challenge,
-        >(left_targets, right_targets, &mut builder)?;
+        let aggregation_layout = VerifiedStatementTargets::install_ordered_aggregation::<Val<InSC>>(
+            left_targets,
+            right_targets,
+            &mut builder,
+        )?;
         let circuit = builder.build().map_err(VerificationError::CircuitBuilder)?;
         let prep = prepare_prover_with_statement::<OutSC, BatchOnly, B, D>(
             &circuit,

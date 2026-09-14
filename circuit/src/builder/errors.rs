@@ -135,6 +135,10 @@ pub enum CircuitBuilderError {
     #[error("the reserved built-in `statement` operation identifier is already registered")]
     StatementNpoAlreadyRegistered,
 
+    /// A verified flattened-target capability was used with a different circuit builder.
+    #[error("verified statement targets belong to a different circuit builder")]
+    StatementTargetCapabilityMismatch,
+
     /// Aggregation metadata was attached before defining the circuit's Statement exports.
     #[error("aggregation statement metadata requires an explicitly defined Statement schema")]
     AggregationStatementMissing,

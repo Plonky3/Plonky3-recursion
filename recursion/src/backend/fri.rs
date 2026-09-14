@@ -2175,7 +2175,8 @@ macro_rules! impl_prepared_fri_backend {
                 &self,
                 result: &Self::VerifierResult,
                 source: &TrustedChildStatementLayout,
-            ) -> Result<VerifiedStatementTargets, VerificationError> {
+                builder: &CircuitBuilder<SC::Challenge>,
+            ) -> Result<VerifiedStatementTargets<SC::Challenge>, VerificationError> {
                 let consumed = match &result.inner {
                     FriVerifierResult::UniStark(builder, ..) => {
                         ConsumedStatementTargets::Uni(&builder.air_public_targets)
@@ -2184,7 +2185,7 @@ macro_rules! impl_prepared_fri_backend {
                         ConsumedStatementTargets::Batch(&builder.air_public_targets)
                     }
                 };
-                checked_statement_targets(consumed, source)
+                checked_statement_targets(consumed, source, builder)
             }
 
             fn constrain_trusted_preprocessing(

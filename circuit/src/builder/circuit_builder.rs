@@ -53,6 +53,85 @@ enum RecomposeMode {
     ForceAlu,
 }
 
+/// Opaque capability for installing already-flattened statement targets checked by a trusted
+/// verifier integration.
+pub struct VerifiedStatementTargets<F: Field> {
+    schema: StatementSchema,
+    base_targets: Vec<ExprId>,
+    builder_capability: Arc<()>,
+    _field: PhantomData<fn() -> F>,
+}
+
+impl<F: Field> VerifiedStatementTargets<F> {
+    /// Construct a verified-target capability for an explicitly trusted integration.
+    ///
+    /// # Safety
+    ///
+    /// `base_targets` must be the exact existing targets allocated by `builder` and consumed as
+    /// AIR public values by the verifier result audited by the caller. They must match `schema` in
+    /// canonical flattened order and must not be new lookalike public inputs.
+    pub unsafe fn new_unchecked(
+        builder: &CircuitBuilder<F>,
+        schema: StatementSchema,
+        base_targets: Vec<ExprId>,
+    ) -> Result<Self, CircuitBuilderError> {
+        schema.validate_values(&base_targets)?;
+        Ok(Self {
+            schema,
+            base_targets,
+            builder_capability: Arc::clone(&builder.statement_target_capability),
+            _field: PhantomData,
+        })
+    }
+
+    /// Consume this capability to install its one Statement sink into its originating builder.
+    pub fn install<BF>(self, builder: &mut CircuitBuilder<F>) -> Result<(), CircuitBuilderError>
+    where
+        BF: PrimeField64,
+        F: ExtensionField<BF> + PrimeCharacteristicRing + Eq + Hash,
+    {
+        builder.set_statement_base_targets::<BF>(
+            &self.builder_capability,
+            self.schema,
+            &self.base_targets,
+        )
+    }
+
+    /// Consume two capabilities to install one ordered left-then-right aggregation statement.
+    pub fn install_ordered_aggregation<BF>(
+        left: Self,
+        right: Self,
+        builder: &mut CircuitBuilder<F>,
+    ) -> Result<AggregationStatementLayout, CircuitBuilderError>
+    where
+        BF: PrimeField64,
+        F: ExtensionField<BF> + PrimeCharacteristicRing + Eq + Hash,
+    {
+        if !Arc::ptr_eq(
+            &left.builder_capability,
+            &builder.statement_target_capability,
+        ) || !Arc::ptr_eq(
+            &right.builder_capability,
+            &builder.statement_target_capability,
+        ) {
+            return Err(CircuitBuilderError::StatementTargetCapabilityMismatch);
+        }
+        let left_schema = left.schema;
+        let right_schema = right.schema;
+        let output = StatementSchema::concat(&left_schema, &right_schema)?;
+        let mut base_targets = left.base_targets;
+        base_targets.extend(right.base_targets);
+        Self {
+            schema: output,
+            base_targets,
+            builder_capability: left.builder_capability,
+            _field: PhantomData,
+        }
+        .install::<BF>(builder)?;
+        builder.set_aggregation_statement_layout(left_schema, right_schema)
+    }
+}
+
 /// Builder for constructing circuits.
 pub struct CircuitBuilder<F: Field> {
     /// Expression graph builder
@@ -134,6 +213,8 @@ pub struct CircuitBuilder<F: Field> {
 
     /// `Some` after the circuit's ordered statement has been defined, including the empty schema.
     statement_schema: Option<StatementSchema>,
+    /// Unforgeable identity binding verified flattened-target capabilities to this builder.
+    statement_target_capability: Arc<()>,
     /// Checked semantic child boundary for a circuit that aggregates two statements.
     aggregation_statement_layout: Option<AggregationStatementLayout>,
     /// Original typed export expressions, before extension normalization creates coefficient rows.
@@ -175,6 +256,7 @@ where
             decompose_recompose_via_alu: false,
             decompose_skip_select_provenance: false,
             statement_schema: None,
+            statement_target_capability: Arc::new(()),
             aggregation_statement_layout: None,
             statement_source_exprs: Vec::new(),
         }
@@ -563,20 +645,9 @@ where
         Ok(schema)
     }
 
-    /// Install a statement sink over already-flattened, verifier-consumed base targets while
-    /// preserving the originating statement schema.
-    ///
-    /// This is an internal integration seam for the recursion crate's opaque checked-target
-    /// token. Application-facing callers should use [`Self::set_statement_exports`] so extension
-    /// values are decomposed through coefficient-aware lookups.
-    ///
-    /// # Safety
-    ///
-    /// Every target must be an already-flattened base-field slot consumed by the verified child
-    /// relation described by `schema`. Callers must not use unrelated or newly allocated targets.
-    #[doc(hidden)]
-    pub unsafe fn set_statement_base_targets<BF>(
+    fn set_statement_base_targets<BF>(
         &mut self,
+        capability: &Arc<()>,
         schema: StatementSchema,
         targets: &[ExprId],
     ) -> Result<(), CircuitBuilderError>
@@ -584,6 +655,9 @@ where
         BF: PrimeField64,
         F: ExtensionField<BF>,
     {
+        if !Arc::ptr_eq(capability, &self.statement_target_capability) {
+            return Err(CircuitBuilderError::StatementTargetCapabilityMismatch);
+        }
         if self.statement_schema.is_some() {
             return Err(CircuitBuilderError::StatementAlreadyDefined);
         }
@@ -4121,8 +4195,10 @@ mod proptests {
         .unwrap();
 
         // SAFETY: the test passes the exact existing targets represented by the supplied schema.
-        unsafe { builder.set_statement_base_targets::<BabyBear>(schema.clone(), &targets) }
-            .expect("verified flattened targets are accepted");
+        let verified =
+            unsafe { VerifiedStatementTargets::new_unchecked(&builder, schema.clone(), targets) }
+                .expect("verified flattened targets are accepted");
+        verified.install::<BabyBear>(&mut builder).unwrap();
         let circuit = builder.build().unwrap();
 
         assert_eq!(circuit.statement_schema(), Some(&schema));
@@ -4133,6 +4209,25 @@ mod proptests {
                 crate::StatementField::Base,
             ]
         );
+    }
+
+    #[test]
+    fn verified_statement_targets_are_bound_to_the_originating_builder() {
+        let mut source = CircuitBuilder::<BabyBear>::new();
+        let target = source.public_input();
+        let schema = StatementSchema::try_new(vec![crate::StatementField::Base]).unwrap();
+        // SAFETY: `target` is an existing flattened base target allocated by `source`.
+        let verified = unsafe {
+            crate::VerifiedStatementTargets::new_unchecked(&source, schema, vec![target])
+        }
+        .unwrap();
+
+        let mut unrelated = CircuitBuilder::<BabyBear>::new();
+        unrelated.public_input();
+        assert!(matches!(
+            verified.install::<BabyBear>(&mut unrelated),
+            Err(CircuitBuilderError::StatementTargetCapabilityMismatch)
+        ));
     }
 
     /// Deduplicating the sink inputs or recording pre-optimizer expression numbers would make the

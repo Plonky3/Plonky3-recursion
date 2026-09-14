@@ -8,7 +8,7 @@ mod expression_builder;
 pub(crate) mod npo;
 mod public_input_tracker;
 
-pub use circuit_builder::CircuitBuilder;
+pub use circuit_builder::{CircuitBuilder, VerifiedStatementTargets};
 pub use config::BuilderConfig;
 pub use errors::CircuitBuilderError;
 pub use expression_builder::ExpressionBuilder;

@@ -23,6 +23,20 @@ pub enum StatementField {
 }
 
 /// Ordered statement schema with an overflow-checked flattened base-field width.
+///
+/// Raw flattened statement targets cannot be installed through the public builder API. Trusted
+/// integrations must hold the opaque verified-target capability instead.
+///
+/// ```compile_fail
+/// use p3_baby_bear::BabyBear;
+/// use p3_circuit::{CircuitBuilder, StatementSchema};
+///
+/// let mut builder = CircuitBuilder::<BabyBear>::new();
+/// let target = builder.public_input();
+/// unsafe {
+///     builder.set_statement_base_targets::<BabyBear>(StatementSchema::default(), &[target]);
+/// }
+/// ```
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct StatementSchema {
     fields: Vec<StatementField>,

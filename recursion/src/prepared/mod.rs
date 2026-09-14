@@ -15,12 +15,12 @@ use alloc::vec::Vec;
 pub use aggregation::{PreparedAggregation, PreparedAggregationCross};
 pub use input::{NativeCommitment, PreparedInput, PreparedSource};
 pub use layer::PreparedLayer;
+pub use p3_circuit::VerifiedStatementTargets;
 use p3_circuit::{
-    AggregationStatementLayout, CircuitBuilder, CircuitRunner, NonPrimitiveOpId, StatementField,
-    StatementSchema,
+    CircuitBuilder, CircuitRunner, NonPrimitiveOpId, StatementField, StatementSchema,
 };
 use p3_circuit_prover::{BatchStarkProof, CircuitVerifier, StatementLayout};
-use p3_field::{ExtensionField, Field, PrimeField64};
+use p3_field::Field;
 use p3_lookup::logup::LogUpGadget;
 use p3_uni_stark::{StarkGenericConfig, Val};
 pub use trusted::{
@@ -97,94 +97,16 @@ impl TrustedChildStatementLayout {
     }
 }
 
-/// Opaque statement export whose targets have been checked against the verifier result that
-/// actually consumes them.
-pub struct VerifiedStatementTargets {
-    schema: StatementSchema,
-    base_targets: Vec<crate::Target>,
-}
-
-impl VerifiedStatementTargets {
-    /// Construct a verified-target token for an explicitly trusted custom backend.
-    ///
-    /// # Safety
-    ///
-    /// `base_targets` must be the exact existing targets consumed as AIR public values by
-    /// `result` in that backend's `verified_statement_targets` implementation. They must match
-    /// `schema` in canonical flattened order and must not be new lookalike public inputs.
-    pub unsafe fn new_unchecked(
-        schema: StatementSchema,
-        base_targets: Vec<crate::Target>,
-    ) -> Result<Self, VerificationError> {
-        schema.validate_values(&base_targets).map_err(|error| {
-            VerificationError::InvalidProofShape(alloc::format!(
-                "verified statement target length does not match schema: {error}"
-            ))
-        })?;
-        Ok(Self {
-            schema,
-            base_targets,
-        })
-    }
-
-    pub const fn schema(&self) -> &StatementSchema {
-        &self.schema
-    }
-
-    pub(crate) fn install<BF, EF>(
-        self,
-        builder: &mut CircuitBuilder<EF>,
-    ) -> Result<(), VerificationError>
-    where
-        BF: PrimeField64,
-        EF: ExtensionField<BF>,
-    {
-        // SAFETY: the only safe constructors are the checked built-in selector below; custom
-        // backends can construct this opaque token only through an explicit unsafe promise.
-        unsafe {
-            builder.set_statement_base_targets::<BF>(self.schema, &self.base_targets)?;
-        }
-        Ok(())
-    }
-
-    pub(crate) fn install_ordered_aggregation<BF, EF>(
-        left: Self,
-        right: Self,
-        builder: &mut CircuitBuilder<EF>,
-    ) -> Result<AggregationStatementLayout, VerificationError>
-    where
-        BF: PrimeField64,
-        EF: ExtensionField<BF>,
-    {
-        let left_schema = left.schema;
-        let right_schema = right.schema;
-        let output = StatementSchema::concat(&left_schema, &right_schema).map_err(|error| {
-            VerificationError::InvalidProofShape(alloc::format!(
-                "ordered aggregation statement schema is invalid: {error}"
-            ))
-        })?;
-        let mut base_targets = left.base_targets;
-        base_targets.extend(right.base_targets);
-        Self {
-            schema: output,
-            base_targets,
-        }
-        .install::<BF, EF>(builder)?;
-        builder
-            .set_aggregation_statement_layout(left_schema, right_schema)
-            .map_err(VerificationError::CircuitBuilder)
-    }
-}
-
 pub(crate) enum ConsumedStatementTargets<'a> {
     Uni(&'a [crate::Target]),
     Batch(&'a [Vec<crate::Target>]),
 }
 
-pub(crate) fn checked_statement_targets(
+pub(crate) fn checked_statement_targets<F: Field>(
     consumed: ConsumedStatementTargets<'_>,
     source: &TrustedChildStatementLayout,
-) -> Result<VerifiedStatementTargets, VerificationError> {
+    builder: &CircuitBuilder<F>,
+) -> Result<VerifiedStatementTargets<F>, VerificationError> {
     let targets = match (consumed, source.kind) {
         (ConsumedStatementTargets::Uni(targets), TrustedChildStatementKind::Uni) => targets,
         (ConsumedStatementTargets::Batch(_), TrustedChildStatementKind::Uni)
@@ -214,10 +136,12 @@ pub(crate) fn checked_statement_targets(
             targets.len()
         )));
     }
-    Ok(VerifiedStatementTargets {
-        schema: source.schema.clone(),
-        base_targets: targets.to_vec(),
-    })
+    // SAFETY: `targets` are selected directly from the audited verifier result built in
+    // `builder`; the checks above bind their branch, table, flattened length, and source schema.
+    unsafe {
+        VerifiedStatementTargets::new_unchecked(builder, source.schema.clone(), targets.to_vec())
+    }
+    .map_err(VerificationError::CircuitBuilder)
 }
 
 /// Explicit opt-in for recursive commitment targets whose complete native identity can be
@@ -372,12 +296,13 @@ where
     ) -> Result<(), VerificationError>;
 
     /// Return the exact existing AIR-public targets consumed by `result`, checked against the
-    /// retained trusted child statement layout.
+    /// retained trusted child statement layout and bound to the originating `builder` capability.
     fn verified_statement_targets(
         &self,
         result: &Self::VerifierResult,
         source: &TrustedChildStatementLayout,
-    ) -> Result<VerifiedStatementTargets, VerificationError>;
+        builder: &CircuitBuilder<SC::Challenge>,
+    ) -> Result<VerifiedStatementTargets<SC::Challenge>, VerificationError>;
 
     /// Constrain the preprocessing commitment allocated by `result` to `expected`, including
     /// enforcing equal presence and the complete commitment's exact root/limb cardinality.
@@ -457,11 +382,26 @@ mod verified_statement_target_tests {
         let mut wrapper = CircuitBuilder::<Ext4>::new();
         let consumed = vec![wrapper.public_input(), wrapper.public_input()];
         let verified =
-            checked_statement_targets(ConsumedStatementTargets::Uni(&consumed), &source).unwrap();
+            checked_statement_targets(ConsumedStatementTargets::Uni(&consumed), &source, &wrapper)
+                .unwrap();
 
-        assert_eq!(verified.base_targets, consumed);
-        verified.install::<BabyBear, Ext4>(&mut wrapper).unwrap();
+        verified.install::<BabyBear>(&mut wrapper).unwrap();
         let circuit = wrapper.build().unwrap();
+        let statement_inputs = circuit
+            .ops
+            .iter()
+            .find_map(|op| match op {
+                Op::NonPrimitiveOpWithExecutor {
+                    inputs, executor, ..
+                } if *executor.op_type() == NpoTypeId::statement() => Some(&inputs[0]),
+                _ => None,
+            })
+            .unwrap();
+        let expected = consumed
+            .iter()
+            .map(|target| circuit.expr_to_widx[target])
+            .collect::<Vec<_>>();
+        assert_eq!(statement_inputs, &expected);
         assert_eq!(circuit.statement_schema(), Some(&schema));
     }
 
@@ -492,18 +432,44 @@ mod verified_statement_target_tests {
         ];
 
         let verified =
-            checked_statement_targets(ConsumedStatementTargets::Batch(&tables), &source).unwrap();
-        assert_eq!(verified.base_targets, tables[1]);
-        assert_eq!(verified.schema(), &schema);
+            checked_statement_targets(ConsumedStatementTargets::Batch(&tables), &source, &builder)
+                .unwrap();
 
         assert!(
-            checked_statement_targets(ConsumedStatementTargets::Uni(&tables[1]), &source).is_err()
+            checked_statement_targets(
+                ConsumedStatementTargets::Uni(&tables[1]),
+                &source,
+                &builder,
+            )
+            .is_err()
         );
         let short_tables = vec![vec![], vec![builder.public_input()]];
         assert!(
-            checked_statement_targets(ConsumedStatementTargets::Batch(&short_tables), &source)
-                .is_err()
+            checked_statement_targets(
+                ConsumedStatementTargets::Batch(&short_tables),
+                &source,
+                &builder,
+            )
+            .is_err()
         );
+        verified.install::<BabyBear>(&mut builder).unwrap();
+        let circuit = builder.build().unwrap();
+        let statement_inputs = circuit
+            .ops
+            .iter()
+            .find_map(|op| match op {
+                Op::NonPrimitiveOpWithExecutor {
+                    inputs, executor, ..
+                } if *executor.op_type() == NpoTypeId::statement() => Some(&inputs[0]),
+                _ => None,
+            })
+            .unwrap();
+        let expected = tables[1]
+            .iter()
+            .map(|target| circuit.expr_to_widx[target])
+            .collect::<Vec<_>>();
+        assert_eq!(statement_inputs, &expected);
+        assert_eq!(circuit.statement_schema(), Some(&schema));
     }
 
     #[test]
@@ -516,16 +482,26 @@ mod verified_statement_target_tests {
         let left_schema =
             StatementSchema::try_new(vec![StatementField::Extension { degree: 2 }]).unwrap();
         let right_schema = StatementSchema::try_new(vec![StatementField::Base]).unwrap();
-        let left = VerifiedStatementTargets {
-            schema: left_schema.clone(),
-            base_targets: left_targets.clone(),
-        };
-        let right = VerifiedStatementTargets {
-            schema: right_schema.clone(),
-            base_targets: right_targets.clone(),
-        };
+        // SAFETY: both vectors are exact existing flattened targets from this builder.
+        let left = unsafe {
+            VerifiedStatementTargets::new_unchecked(
+                &builder,
+                left_schema.clone(),
+                left_targets.clone(),
+            )
+        }
+        .unwrap();
+        // SAFETY: both vectors are exact existing flattened targets from this builder.
+        let right = unsafe {
+            VerifiedStatementTargets::new_unchecked(
+                &builder,
+                right_schema.clone(),
+                right_targets.clone(),
+            )
+        }
+        .unwrap();
 
-        let layout = VerifiedStatementTargets::install_ordered_aggregation::<BabyBear, Ext4>(
+        let layout = VerifiedStatementTargets::install_ordered_aggregation::<BabyBear>(
             left,
             right,
             &mut builder,
