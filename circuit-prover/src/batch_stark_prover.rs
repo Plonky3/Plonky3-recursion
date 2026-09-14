@@ -8,6 +8,7 @@ use alloc::rc::Rc;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use alloc::{format, vec};
+use core::any::TypeId;
 use core::cell::RefCell;
 
 use hashbrown::HashMap;
@@ -22,7 +23,7 @@ use p3_circuit::ops::{
     NonPrimitivePreprocessedMap, NpoTypeId, Poseidon1Config, Poseidon2Config, PrimitiveOpType,
 };
 use p3_circuit::tables::Traces;
-use p3_circuit::{CircuitError, PreprocessedColumns};
+use p3_circuit::{CircuitError, PreprocessedColumns, StatementError};
 use p3_commit::Pcs;
 use p3_field::extension::{BinomialExtensionField, BinomiallyExtendable};
 use p3_field::{
@@ -51,8 +52,8 @@ use crate::air::{AluAir, AluExtMulKind, ConstAir, PublicAir};
 use crate::batch_stark_prover::dynamic_air::transmute_traces;
 use crate::batch_stark_prover::packing::{AirTableShape, TraceTablesLayout};
 use crate::common::{
-    CircuitRelation, CircuitTableAir, NpoAirBuilder, NpoPreprocessor, finalize_circuit_tables,
-    reduce_lanes_if_dummy,
+    CircuitRelation, CircuitTableAir, NpoAirBuilder, NpoPreprocessor, StatementLayout,
+    finalize_circuit_tables, reduce_lanes_if_dummy,
 };
 use crate::config::StarkField;
 use crate::constraint_profile::ConstraintProfile;
@@ -807,6 +808,11 @@ where
     /// Exact preprocessing commitment, mapping, and lookups fixed during preparation.
     pub fn common_data(&self) -> &CommonData<SC> {
         &self.inner.common
+    }
+
+    /// Ordered statement schema and exact table position fixed during preparation.
+    pub fn statement_layout(&self) -> &StatementLayout {
+        self.inner.relation.statement_layout()
     }
 }
 
@@ -1900,7 +1906,8 @@ where
                     || *rows != descriptor.rows()
                     || *lanes != descriptor.lanes()
                     || *variant != descriptor.air_variant()
-                    || public_storage[NUM_PRIMITIVE_TABLES + index] != descriptor.public_values()
+                    || !descriptor
+                        .accepts_public_values(&public_storage[NUM_PRIMITIVE_TABLES + index])
                 {
                     return Err(BatchStarkProverError::RelationMismatch(format!(
                         "non-primitive table metadata changed at index {index}"
@@ -2067,11 +2074,12 @@ where
                 relation
                     .non_primitives()
                     .iter()
-                    .map(|entry| NonPrimitiveTableEntry {
+                    .zip(runtime_non_primitives)
+                    .map(|(entry, runtime)| NonPrimitiveTableEntry {
                         op_type: entry.op_type().clone(),
                         rows: entry.rows(),
                         lanes: entry.lanes(),
-                        public_values: entry.public_values().to_vec(),
+                        public_values: runtime.public_values,
                         air_variant: entry.air_variant(),
                     })
                     .collect(),
@@ -2286,17 +2294,46 @@ where
     pub fn verify(
         &self,
         proof: &BatchStarkProof<SC>,
-        statement: &[Val<SC>],
+        expected_statement: &[Val<SC>],
     ) -> Result<(), BatchStarkProverError> {
-        if !statement.is_empty() {
-            return Err(BatchStarkProverError::RelationMismatch(
-                "external statements are not supported by this relation".into(),
-            ));
-        }
+        let table_public_values = self
+            .table_public_values(expected_statement)
+            .map_err(|error| BatchStarkProverError::RelationMismatch(error.to_string()))?;
         proof.validate()?;
         self.validate_metadata(proof)?;
+        if let Some(statement_instance) = self.statement_layout().table_instance()
+            && proof.non_primitives[statement_instance - NUM_PRIMITIVE_TABLES].public_values
+                != expected_statement
+        {
+            return Err(BatchStarkProverError::RelationMismatch(
+                "attached Statement values differ from the caller's expected statement".into(),
+            ));
+        }
         dispatch_by_ext_degree!(self.inner.relation.ext_degree(), |D| self
-            .verify_degree::<D>(proof))
+            .verify_degree::<D>(proof, &table_public_values))
+    }
+
+    /// Derive every table's public vector from the retained relation and caller expectation.
+    pub fn table_public_values(
+        &self,
+        expected_statement: &[Val<SC>],
+    ) -> Result<Vec<Vec<Val<SC>>>, StatementError> {
+        self.statement_layout()
+            .schema()
+            .validate_values(expected_statement)?;
+        let mut values =
+            Vec::with_capacity(NUM_PRIMITIVE_TABLES + self.inner.relation.non_primitives().len());
+        values.resize_with(NUM_PRIMITIVE_TABLES, Vec::new);
+        values.extend(self.inner.relation.non_primitives().iter().enumerate().map(
+            |(index, entry)| {
+                if self.statement_layout().table_instance() == Some(NUM_PRIMITIVE_TABLES + index) {
+                    expected_statement.to_vec()
+                } else {
+                    entry.public_values().to_vec()
+                }
+            },
+        ));
+        Ok(values)
     }
 
     fn validate_metadata(&self, proof: &BatchStarkProof<SC>) -> Result<(), BatchStarkProverError> {
@@ -2350,7 +2387,7 @@ where
                 || submitted.rows != expected.rows()
                 || submitted.lanes != expected.lanes()
                 || submitted.air_variant != expected.air_variant()
-                || submitted.public_values != expected.public_values()
+                || !expected.accepts_public_values(&submitted.public_values)
             {
                 return Err(BatchStarkProverError::RelationMismatch(format!(
                     "submitted NPO metadata differs at index {index}"
@@ -2363,6 +2400,7 @@ where
     fn verify_degree<const D: usize>(
         &self,
         proof: &BatchStarkProof<SC>,
+        public_values: &[Vec<Val<SC>>],
     ) -> Result<(), BatchStarkProverError> {
         let airs = self.table_airs::<D>()?;
         if proof.proof.opened_values.instances.len() != airs.len() {
@@ -2401,20 +2439,11 @@ where
             }
         }
 
-        let mut public_values = Vec::with_capacity(airs.len());
-        public_values.resize_with(NUM_PRIMITIVE_TABLES, Vec::new);
-        public_values.extend(
-            self.inner
-                .relation
-                .non_primitives()
-                .iter()
-                .map(|entry| entry.public_values().to_vec()),
-        );
         p3_batch_stark::verify_batch(
             &self.inner.config,
             &airs,
             &proof.proof,
-            &public_values,
+            public_values,
             &self.inner.common,
         )
         .map_err(|error| BatchStarkProverError::Verify(format!("{error:?}")))
@@ -2480,6 +2509,14 @@ where
                 )));
             }
             let (registration, table_prover) = matching[0];
+            if descriptor.is_audited_statement()
+                && table_prover.as_ref().type_id() != TypeId::of::<StatementProver<D>>()
+            {
+                return Err(BatchStarkProverError::RelationMismatch(
+                    "only the built-in Statement table prover may consume dynamic statement policy"
+                        .into(),
+                ));
+            }
             if last_registration.is_some_and(|previous| registration <= previous) {
                 return Err(BatchStarkProverError::RelationMismatch(
                     "trusted NPO AIR builders and table provers use different ordering".into(),
@@ -2490,13 +2527,13 @@ where
                 op_type: descriptor.op_type().clone(),
                 rows: descriptor.rows(),
                 lanes: descriptor.lanes(),
-                public_values: descriptor.public_values().to_vec(),
+                public_values: descriptor.preparation_public_values(),
                 air_variant: descriptor.air_variant(),
             };
             let air = table_prover
                 .batch_air_from_table_entry(&self.config, D, D as u32, &entry)
                 .map_err(BatchStarkProverError::RelationMismatch)?;
-            if BaseAir::<Val<SC>>::num_public_values(&air) != descriptor.public_values().len() {
+            if BaseAir::<Val<SC>>::num_public_values(&air) != descriptor.public_values_len() {
                 return Err(BatchStarkProverError::RelationMismatch(format!(
                     "trusted NPO {:?} public-value width disagrees with its AIR",
                     descriptor.op_type()

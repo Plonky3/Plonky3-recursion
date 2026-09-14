@@ -48,5 +48,5 @@ pub mod tuning;
 
 // Re-export main API
 pub use batch_stark_prover::*;
-pub use common::{CircuitRelation, NpoRelation};
+pub use common::{CircuitRelation, NpoRelation, StatementLayout};
 pub use constraint_profile::ConstraintProfile;

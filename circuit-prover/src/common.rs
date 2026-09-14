@@ -1,11 +1,11 @@
 use alloc::boxed::Box;
 use alloc::string::ToString;
 use alloc::vec::Vec;
-use core::any::Any;
+use core::any::{Any, TypeId};
 
 use hashbrown::HashMap;
 use p3_circuit::ops::{NonPrimitivePreprocessedMap, NpoTypeId, PrimitiveOpType};
-use p3_circuit::{Circuit, CircuitError};
+use p3_circuit::{Circuit, CircuitError, StatementSchema};
 use p3_field::{Algebra, ExtensionField, Field, PrimeCharacteristicRing, PrimeField64};
 use p3_uni_stark::{StarkGenericConfig, SymbolicExpression, SymbolicExpressionExt, Val};
 use p3_util::log2_ceil_usize;
@@ -14,7 +14,8 @@ use crate::air::{AluAir, AluExtMulKind, ConstAir, PublicAir};
 use crate::config::StarkField;
 use crate::field_params::ExtractBinomialW;
 use crate::{
-    AirVariant, ConstraintProfile, DynamicAirEntry, ProofMetadataError, RowCounts, TablePacking,
+    AirVariant, ConstraintProfile, DynamicAirEntry, NUM_PRIMITIVE_TABLES, ProofMetadataError,
+    RowCounts, TablePacking,
 };
 
 /// Force a table's lane count to 1 when it holds only dummy data.
@@ -42,7 +43,7 @@ pub(crate) fn reduce_lanes_if_dummy(
 ///
 /// Each implementation can update `PreprocessedColumns` (ext_reads, multiplicities, etc.)
 /// and return base-field non-primitive preprocessed rows for its own `NpoTypeId`s.
-pub trait NpoPreprocessor<F>: Send + Sync
+pub trait NpoPreprocessor<F>: Send + Sync + Any
 where
     F: StarkField + PrimeField64,
 {
@@ -60,7 +61,7 @@ where
 /// Builds (AIR, degree) from preprocessed base data for a given NPO op_type.
 /// Used by `get_airs_and_degrees_with_prep` so that AIR construction is plugin-driven
 /// without requiring generic methods on the preprocessor trait (object safety).
-pub trait NpoAirBuilder<SC, const D: usize>: Send + Sync
+pub trait NpoAirBuilder<SC, const D: usize>: Send + Sync + Any
 where
     SC: StarkGenericConfig,
     SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
@@ -148,7 +149,13 @@ pub struct NpoRelation<F: Copy> {
     rows: usize,
     lanes: usize,
     air_variant: AirVariant,
-    public_values: Vec<F>,
+    public_values: NpoPublicValues<F>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum NpoPublicValues<F: Copy> {
+    Static(Vec<F>),
+    Statement { public_len: usize },
 }
 
 impl<F: Copy> NpoRelation<F> {
@@ -164,7 +171,7 @@ impl<F: Copy> NpoRelation<F> {
             rows,
             lanes,
             air_variant,
-            public_values,
+            public_values: NpoPublicValues::Static(public_values),
         }
     }
 
@@ -185,7 +192,83 @@ impl<F: Copy> NpoRelation<F> {
     }
 
     pub fn public_values(&self) -> &[F] {
-        &self.public_values
+        match &self.public_values {
+            NpoPublicValues::Static(values) => values,
+            NpoPublicValues::Statement { .. } => &[],
+        }
+    }
+
+    pub(crate) fn audited_statement(
+        op_type: NpoTypeId,
+        rows: usize,
+        lanes: usize,
+        air_variant: AirVariant,
+        public_len: usize,
+    ) -> Self {
+        Self {
+            op_type,
+            rows,
+            lanes,
+            air_variant,
+            public_values: NpoPublicValues::Statement { public_len },
+        }
+    }
+
+    pub(crate) const fn public_values_len(&self) -> usize {
+        match &self.public_values {
+            NpoPublicValues::Static(values) => values.len(),
+            NpoPublicValues::Statement { public_len } => *public_len,
+        }
+    }
+
+    pub(crate) fn accepts_public_values(&self, values: &[F]) -> bool
+    where
+        F: PartialEq,
+    {
+        match &self.public_values {
+            NpoPublicValues::Static(expected) => expected == values,
+            NpoPublicValues::Statement { public_len } => values.len() == *public_len,
+        }
+    }
+
+    pub(crate) const fn is_audited_statement(&self) -> bool {
+        matches!(self.public_values, NpoPublicValues::Statement { .. })
+    }
+
+    pub(crate) fn preparation_public_values(&self) -> Vec<F>
+    where
+        F: Default,
+    {
+        match &self.public_values {
+            NpoPublicValues::Static(values) => values.clone(),
+            NpoPublicValues::Statement { public_len } => core::iter::repeat_with(F::default)
+                .take(*public_len)
+                .collect(),
+        }
+    }
+}
+
+/// Verifier-owned schema and exact batch position of the audited Statement table.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StatementLayout {
+    schema: StatementSchema,
+    table_instance: Option<usize>,
+}
+
+impl StatementLayout {
+    pub(crate) const fn new(schema: StatementSchema, table_instance: Option<usize>) -> Self {
+        Self {
+            schema,
+            table_instance,
+        }
+    }
+
+    pub const fn schema(&self) -> &StatementSchema {
+        &self.schema
+    }
+
+    pub const fn table_instance(&self) -> Option<usize> {
+        self.table_instance
     }
 }
 
@@ -199,6 +282,7 @@ pub struct CircuitRelation<F: Copy> {
     alu_variant: AirVariant,
     constraint_profile: ConstraintProfile,
     non_primitives: Vec<NpoRelation<F>>,
+    statement_layout: StatementLayout,
     trace_degree_bits: Vec<usize>,
 }
 
@@ -229,6 +313,10 @@ impl<F: Copy> CircuitRelation<F> {
 
     pub fn non_primitives(&self) -> &[NpoRelation<F>] {
         &self.non_primitives
+    }
+
+    pub const fn statement_layout(&self) -> &StatementLayout {
+        &self.statement_layout
     }
 
     pub fn trace_degree_bits(&self) -> &[usize] {
@@ -417,6 +505,10 @@ where
     packing.validate()?;
 
     let mut preprocessed = circuit.generate_preprocessed_columns::<D>()?;
+    let statement_id = NpoTypeId::statement();
+    let canonical_statement_preprocessed = trusted
+        .then(|| preprocessed.non_primitive.get(&statement_id).cloned())
+        .flatten();
 
     // Check if Public/Alu tables are empty and lanes > 1.
     // Using lanes > 1 with empty tables causes issues in recursive verification
@@ -458,7 +550,25 @@ where
     let preprocessed_any: &mut dyn Any = &mut preprocessed;
     for plugin in non_primitive_preprocessors {
         let plugin_prep = plugin.preprocess(circuit_any, preprocessed_any)?;
+        if trusted
+            && plugin_prep.contains_key(&statement_id)
+            && plugin.as_ref().type_id()
+                != TypeId::of::<crate::batch_stark_prover::StatementPreprocessor>()
+        {
+            return Err(CircuitError::InvalidTablePacking(
+                "only the built-in Statement preprocessor may register statement preprocessing"
+                    .to_string(),
+            ));
+        }
         non_primitive_base.extend(plugin_prep);
+    }
+    if trusted
+        && preprocessed.non_primitive.get(&statement_id)
+            != canonical_statement_preprocessed.as_ref()
+    {
+        return Err(CircuitError::InvalidTablePacking(
+            "trusted NPO preprocessing changed the circuit-minted Statement mapping".to_string(),
+        ));
     }
 
     // Get min_height from packing configuration and pass it to AIRs
@@ -717,6 +827,16 @@ where
                 descriptor,
             }) = built
             {
+                if trusted
+                    && descriptor.is_audited_statement()
+                    && builder.as_ref().type_id()
+                        != TypeId::of::<crate::batch_stark_prover::StatementAirBuilder<D>>()
+                {
+                    return Err(CircuitError::InvalidTablePacking(
+                        "only the built-in Statement AIR builder may mint dynamic statement policy"
+                            .to_string(),
+                    ));
+                }
                 // Every current `NpoAirBuilder` impl computes `degree` as
                 // `log2_ceil(max(natural_rows.next_pow2, npo_min_height.next_pow2))`, so the
                 // built height exceeds the allowed height iff the table's natural row count
@@ -746,6 +866,39 @@ where
         ));
     }
 
+    let statement_schema = circuit.statement_schema().cloned().unwrap_or_default();
+    let named_statement = npo_relations
+        .iter()
+        .enumerate()
+        .filter(|(_, relation)| relation.op_type() == &NpoTypeId::statement())
+        .collect::<Vec<_>>();
+    let statement_layout = if !trusted {
+        StatementLayout::new(statement_schema, None)
+    } else if statement_schema.base_len() == 0 {
+        if !named_statement.is_empty() {
+            return Err(CircuitError::InvalidTablePacking(
+                "the reserved Statement table may only be registered by a nonempty circuit statement"
+                    .to_string(),
+            ));
+        }
+        StatementLayout::new(statement_schema, None)
+    } else {
+        if named_statement.len() != 1 || !named_statement[0].1.is_audited_statement() {
+            return Err(CircuitError::InvalidTablePacking(
+                "the circuit statement requires exactly one audited built-in Statement table"
+                    .to_string(),
+            ));
+        }
+        let (index, relation) = named_statement[0];
+        if relation.public_values_len() != statement_schema.base_len() {
+            return Err(CircuitError::InvalidTablePacking(
+                "the audited Statement public-value width differs from its circuit schema"
+                    .to_string(),
+            ));
+        }
+        StatementLayout::new(statement_schema, Some(NUM_PRIMITIVE_TABLES + index))
+    };
+
     let trace_degree_bits = table_preps
         .iter()
         .map(|(_, degree)| degree + usize::from(is_zk))
@@ -758,6 +911,7 @@ where
         alu_variant,
         constraint_profile,
         non_primitives: npo_relations,
+        statement_layout,
         trace_degree_bits,
     };
 

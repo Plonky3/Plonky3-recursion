@@ -300,7 +300,13 @@ where
         Some(BuiltNpoTable::new(
             air,
             degree,
-            NpoRelation::new(op_type.clone(), 1, 1, AirVariant::Baseline, Vec::new()),
+            NpoRelation::audited_statement(
+                op_type.clone(),
+                1,
+                1,
+                AirVariant::Baseline,
+                self.schema.base_len(),
+            ),
         ))
     }
 }

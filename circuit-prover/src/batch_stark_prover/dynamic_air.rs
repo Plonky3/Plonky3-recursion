@@ -2,6 +2,7 @@ use alloc::borrow::Cow;
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
+use core::any::Any;
 
 #[cfg(debug_assertions)]
 use p3_air::DebugConstraintBuilder;
@@ -330,7 +331,7 @@ pub(crate) unsafe fn transmute_traces<FromEF, ToEF>(t: &Traces<FromEF>) -> &Trac
 /// Implementors would typically delegate to an existing AIR type, define a base case
 /// for base-field traces, and then use the [`impl_table_prover_batch_instances_from_base!`]
 /// macro to generate the degree-specific implementations.
-pub trait TableProver<SC>: Send + Sync
+pub trait TableProver<SC>: Send + Sync + Any
 where
     SC: StarkGenericConfig + 'static,
 {

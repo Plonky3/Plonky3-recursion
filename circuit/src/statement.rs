@@ -52,6 +52,15 @@ impl<'de> Deserialize<'de> for StatementSchema {
     }
 }
 
+impl Default for StatementSchema {
+    fn default() -> Self {
+        Self {
+            fields: Vec::new(),
+            base_len: 0,
+        }
+    }
+}
+
 impl StatementSchema {
     pub(crate) fn new(fields: Vec<StatementField>) -> Result<Self, StatementError> {
         let base_len = fields.iter().try_fold(0usize, |len, field| {
