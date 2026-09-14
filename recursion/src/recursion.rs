@@ -4,7 +4,6 @@ use alloc::borrow::Cow;
 use alloc::boxed::Box;
 use alloc::rc::Rc;
 use alloc::string::ToString;
-use alloc::vec;
 use alloc::vec::Vec;
 
 use p3_air::{SymbolicExpression, SymbolicExpressionExt};
@@ -12,13 +11,13 @@ use p3_batch_stark::CommonData;
 use p3_circuit::symbolic::ColumnsTargets;
 use p3_circuit::tables::Traces;
 use p3_circuit::{Circuit, CircuitBuilder, CircuitRunner, NonPrimitiveOpId};
-use p3_circuit_prover::batch_stark_prover::TableProver;
+use p3_circuit_prover::batch_stark_prover::{NUM_PRIMITIVE_TABLES, TableProver};
 use p3_circuit_prover::common::{NpoAirBuilder, NpoPreprocessor};
 use p3_circuit_prover::config::StarkField;
 use p3_circuit_prover::field_params::ExtractBinomialW;
 use p3_circuit_prover::{
-    AirVariant, BatchStarkProof, BatchStarkProver, CircuitProverData, ConstraintProfile,
-    TablePacking,
+    AirVariant, BatchStarkProof, BatchStarkProver, CircuitProverData, CircuitVerifier,
+    ConstraintProfile, TablePacking,
 };
 use p3_commit::Pcs;
 use p3_field::{Algebra, BasedVectorSpace, ExtensionField, Field, PrimeField64};
@@ -96,19 +95,59 @@ impl<SC> RecursionOutput<SC>
 where
     SC: StarkGenericConfig,
 {
-    /// Convert this output into a `RecursionInput::BatchStark` for the next recursion layer.
+    /// Convert this output into an expert `RecursionInput::BatchStark` for the next recursion
+    /// layer, transporting the proof-attached NPO public vectors in their exact table order.
+    ///
+    /// Those attached values are untrusted convenience metadata: this helper does not authorize
+    /// the proof's relation or statement. Use [`Self::into_trusted_recursion_input`] with a
+    /// retained verifier and caller-supplied expected statement for trusted chaining.
     /// The type parameter `A` is only used for the recursion input type; use `BatchOnly` when
     /// chaining batch-to-batch (see [`BatchOnly`]).
     pub fn into_recursion_input<A>(&self) -> RecursionInput<'_, SC, A>
     where
         A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
     {
-        let num_tables = self.0.proof.opened_values.instances.len();
+        let mut table_public_inputs =
+            Vec::with_capacity(NUM_PRIMITIVE_TABLES + self.0.non_primitives.len());
+        table_public_inputs.resize_with(NUM_PRIMITIVE_TABLES, Vec::new);
+        table_public_inputs.extend(
+            self.0
+                .non_primitives
+                .iter()
+                .map(|entry| entry.public_values.clone()),
+        );
         RecursionInput::BatchStark {
             proof: &self.0,
             common_data: &self.0.stark_common,
-            table_public_inputs: vec![vec![]; num_tables],
+            table_public_inputs,
         }
+    }
+
+    /// Construct a trusted next-layer input from retained verifier authority and an independently
+    /// supplied expected statement.
+    ///
+    /// Every per-table vector is derived from the verifier's static-vs-statement policy. Proof
+    /// attachments are never adopted as authority by this path.
+    pub fn into_trusted_recursion_input<'a, A>(
+        &'a self,
+        verifier: &'a CircuitVerifier<SC>,
+        expected_statement: &[Val<SC>],
+    ) -> Result<RecursionInput<'a, SC, A>, VerificationError>
+    where
+        A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
+        Val<SC>: PrimeField64 + StarkField,
+        SC::Challenge: ExtensionField<Val<SC>> + ExtractBinomialW<Val<SC>>,
+        SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+            Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+    {
+        let table_public_inputs = verifier
+            .table_public_values(expected_statement)
+            .map_err(|error| VerificationError::InvalidProofShape(error.to_string()))?;
+        Ok(RecursionInput::BatchStark {
+            proof: &self.0,
+            common_data: verifier.common_data(),
+            table_public_inputs,
+        })
     }
 }
 

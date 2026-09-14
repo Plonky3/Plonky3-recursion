@@ -277,6 +277,97 @@ fn fri_uni_prepared_layer_reuses_varied_witnesses_after_reference_drop() {
     verify_fri_output(config, &params, &out2);
 }
 
+/// Omitting the verifier-consumed public targets from the parent Statement sink, copying only the
+/// reference host values, or freezing the first statement into the key would make this fail.
+#[test]
+fn trusted_fri_uni_layer_exports_each_original_air_statement() {
+    let n = 1 << 10;
+    let air = FibonacciAir {};
+    let (config, backend) = common::koala_bear_d4_recursion_config_and_backend();
+    let params = ProveNextLayerParams::default();
+    let first_statement = vec![F::ZERO, F::ONE, fibonacci_output::<F>(0, 1, n)];
+    let first_proof = prove(
+        &config,
+        &air,
+        generate_trace_rows::<F>(0, 1, n),
+        &first_statement,
+    );
+    let owner = TrustedPreparedLayer::<
+        common::KoalaBearD4RecursionConfig,
+        common::KoalaBearD4RecursionConfig,
+        FibonacciAir,
+        _,
+        4,
+    >::new(
+        TrustedPreparedSource::UniStark {
+            config: config.clone(),
+            air: &air,
+            preprocessed_commit: None,
+            proof: &first_proof,
+            public_inputs: &first_statement,
+        },
+        config.clone(),
+        backend,
+        params,
+    )
+    .expect("the trusted FRI leaf prepares");
+
+    let first_output = owner
+        .prove(TrustedPreparedInput::UniStark {
+            proof: &first_proof,
+            public_inputs: &first_statement,
+        })
+        .expect("the first leaf statement proves");
+    let second_statement = vec![
+        F::from_u64(2),
+        F::from_u64(3),
+        fibonacci_output::<F>(2, 3, n),
+    ];
+    let second_proof = prove(
+        &config,
+        &air,
+        generate_trace_rows::<F>(2, 3, n),
+        &second_statement,
+    );
+    let second_output = owner
+        .prove(TrustedPreparedInput::UniStark {
+            proof: &second_proof,
+            public_inputs: &second_statement,
+        })
+        .expect("the second leaf statement proves under the same preparation");
+
+    let verifier = owner.verifier();
+    assert_eq!(verifier.statement_layout().schema().base_len(), 3);
+    verifier.verify(&first_output.0, &first_statement).unwrap();
+    verifier
+        .verify(&second_output.0, &second_statement)
+        .unwrap();
+    assert!(verifier.verify(&second_output.0, &first_statement).is_err());
+
+    let statement_table = verifier.statement_layout().table_instance().unwrap();
+    let trusted_next = first_output
+        .into_trusted_recursion_input::<BatchOnly>(&verifier, &first_statement)
+        .unwrap();
+    let RecursionInput::BatchStark {
+        table_public_inputs,
+        ..
+    } = trusted_next
+    else {
+        unreachable!()
+    };
+    assert_eq!(table_public_inputs[statement_table], first_statement);
+
+    let transported = first_output.into_recursion_input::<BatchOnly>();
+    let RecursionInput::BatchStark {
+        table_public_inputs,
+        ..
+    } = transported
+    else {
+        unreachable!()
+    };
+    assert_eq!(table_public_inputs[statement_table], first_statement);
+}
+
 #[test]
 fn fri_uni_profile_prepared_layer_reuses_varied_witnesses() {
     let log_n = 10;

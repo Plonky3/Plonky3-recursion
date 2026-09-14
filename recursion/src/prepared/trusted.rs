@@ -1,16 +1,17 @@
 use alloc::string::ToString;
+use alloc::vec;
 
 use p3_air::{SymbolicExpression, SymbolicExpressionExt};
-use p3_circuit::{Circuit, CircuitBuilder};
+use p3_circuit::{Circuit, CircuitBuilder, StatementField, StatementSchema};
 use p3_circuit_prover::config::StarkField;
 use p3_circuit_prover::field_params::ExtractBinomialW;
-use p3_circuit_prover::{BatchStarkProof, CircuitVerifier};
+use p3_circuit_prover::{BatchStarkProof, CircuitVerifier, StatementPreprocessor};
 use p3_commit::Pcs;
 use p3_field::{Algebra, BasedVectorSpace, ExtensionField, PrimeField64};
 use p3_lookup::logup::LogUpGadget;
 use p3_uni_stark::{Proof, StarkGenericConfig, Val};
 
-use super::prover::{PreparedProver, prepare_prover};
+use super::prover::{PreparedProver, prepare_prover, prepare_prover_with_statement};
 use super::{
     NativeCommitment, PreparedInput, PreparedPcsRecursionBackend, TrustedPcsRecursionBackend,
 };
@@ -241,6 +242,7 @@ where
     OutSC::Pcs: Sync,
     <OutSC::Pcs as Pcs<OutSC::Challenge, OutSC::Challenger>>::ProverData: Sync,
     <OutSC::Pcs as Pcs<OutSC::Challenge, OutSC::Challenger>>::Commitment: Sync,
+    StatementPreprocessor: p3_circuit_prover::common::NpoPreprocessor<Val<OutSC>>,
 {
     pub fn new(
         source: TrustedPreparedSource<'air, '_, InSC, A>,
@@ -268,6 +270,17 @@ where
                 verifier, proof, ..
             } => backend.preflight_trusted_batch(verifier, proof)?,
         }
+        let statement_layout = match &source {
+            TrustedPreparedSource::UniStark { public_inputs, .. } => {
+                let schema =
+                    StatementSchema::try_new(vec![StatementField::Base; public_inputs.len()])
+                        .map_err(|error| VerificationError::InvalidProofShape(error.to_string()))?;
+                super::TrustedChildStatementLayout::uni(public_inputs.len(), schema)?
+            }
+            TrustedPreparedSource::BatchStark { verifier, .. } => {
+                super::TrustedChildStatementLayout::batch(verifier.statement_layout())
+            }
+        };
         let source = TrustedConstruction::<InSC, A>::new(source)?;
         let prev = source.authority.recursion_input(&source.input)?;
         let contract = capture_trusted_input_contract::<InSC, A, B, D>(
@@ -303,9 +316,17 @@ where
             &result,
             source.authority.expected_preprocessed(),
         )?;
+        backend
+            .verified_statement_targets(&result, &statement_layout)?
+            .install::<Val<OutSC>, InSC::Challenge>(&mut builder)?;
         let circuit = builder.build().map_err(VerificationError::CircuitBuilder)?;
-        let prep =
-            prepare_prover::<OutSC, BatchOnly, B, D>(&circuit, &output_config, &backend, &params)?;
+        let prep = prepare_prover_with_statement::<OutSC, BatchOnly, B, D>(
+            &circuit,
+            &output_config,
+            &backend,
+            &params,
+            statement_layout.schema(),
+        )?;
         Ok(Self {
             child: source.authority,
             contract,
