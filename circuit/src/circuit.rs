@@ -11,7 +11,7 @@ use crate::ops::{
 };
 use crate::tables::{CircuitRunner, TraceGeneratorFn};
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessId};
-use crate::{AluOpKind, CircuitError, StatementSchema};
+use crate::{AggregationStatementLayout, AluOpKind, CircuitError, StatementSchema};
 
 /// Preprocessed data for primitive and non-primitive operation tables.
 ///
@@ -204,6 +204,8 @@ pub struct Circuit<F> {
     pub witness_rewrite: Option<HashMap<WitnessId, WitnessId>>,
     /// Library-issued marker and schema for the built-in Statement sink.
     pub(crate) statement_schema: Option<StatementSchema>,
+    /// Checked left/right semantic boundary for an aggregation Statement sink.
+    pub(crate) aggregation_statement_layout: Option<AggregationStatementLayout>,
     /// Canonical witnesses of the original typed exports (before extension normalization).
     pub(crate) statement_source_wids: Vec<WitnessId>,
     /// Coefficient-normalization operations mapped to the canonical witness they normalize.
@@ -227,6 +229,7 @@ impl<F: Field + Clone> Clone for Circuit<F> {
             tag_to_op_id: self.tag_to_op_id.clone(),
             witness_rewrite: self.witness_rewrite.clone(),
             statement_schema: self.statement_schema.clone(),
+            aggregation_statement_layout: self.aggregation_statement_layout.clone(),
             statement_source_wids: self.statement_source_wids.clone(),
             statement_normalization_sources: self.statement_normalization_sources.clone(),
         }
@@ -251,6 +254,7 @@ impl<F: Field> Circuit<F> {
             tag_to_op_id: HashMap::new(),
             witness_rewrite: None,
             statement_schema: None,
+            aggregation_statement_layout: None,
             statement_source_wids: Vec::new(),
             statement_normalization_sources: HashMap::new(),
         }
@@ -259,6 +263,11 @@ impl<F: Field> Circuit<F> {
     /// Return the circuit's once-defined statement schema, including an empty schema.
     pub const fn statement_schema(&self) -> Option<&StatementSchema> {
         self.statement_schema.as_ref()
+    }
+
+    /// Return the checked semantic child boundary for an aggregation statement, when present.
+    pub const fn aggregation_statement_layout(&self) -> Option<&AggregationStatementLayout> {
+        self.aggregation_statement_layout.as_ref()
     }
 
     /// Generates preprocessed columns for all primitive operation types.

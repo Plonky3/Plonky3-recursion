@@ -797,3 +797,57 @@ fn empty_schema_has_no_statement_table_and_rejects_nonempty_expectation() {
     verifier.verify(&proof, &[]).unwrap();
     assert!(verifier.verify(&proof, &[BabyBear::ONE]).is_err());
 }
+
+#[test]
+fn native_verifier_retains_nonempty_ordered_aggregation_schema_boundary() {
+    let mut left_builder = CircuitBuilder::<EF>::new();
+    let left_value = left_builder.public_input();
+    let left = left_builder
+        .set_statement_exports::<BabyBear>(&[StatementExport::Base(left_value)])
+        .unwrap();
+
+    let mut right_builder = CircuitBuilder::<EF>::new();
+    right_builder.enable_recompose::<BabyBear>(generate_recompose_trace::<BabyBear, EF>);
+    let right_value = right_builder.public_input();
+    let right = right_builder
+        .set_statement_exports::<BabyBear>(&[StatementExport::Extension(right_value)])
+        .unwrap();
+
+    let mut builder = CircuitBuilder::<EF>::new();
+    builder.enable_recompose::<BabyBear>(generate_recompose_trace::<BabyBear, EF>);
+    let base = builder.public_input();
+    let extension = builder.public_input();
+    let schema = builder
+        .set_statement_exports::<BabyBear>(&[
+            StatementExport::Base(base),
+            StatementExport::Extension(extension),
+        ])
+        .unwrap();
+    let layout = builder
+        .set_aggregation_statement_layout(left, right)
+        .expect("the parent schema is the exact ordered child concatenation");
+    let circuit = builder.build().unwrap();
+
+    let preprocessors: Vec<Box<dyn NpoPreprocessor<BabyBear>>> = vec![
+        Box::new(RecomposePreprocessor::new(true)),
+        Box::new(StatementPreprocessor::new(schema.clone())),
+    ];
+    let mut air_builders: Vec<Box<dyn NpoAirBuilder<SC, D>>> = recompose_air_builders(1, true);
+    air_builders.push(Box::new(StatementAirBuilder::<D>::new(schema.clone())));
+    let mut prover = BatchStarkProver::new(config::baby_bear());
+    prover.register_recompose_table::<D>(true);
+    prover.register_table_prover(Box::new(StatementProver::<D>::new(schema)));
+    let prepared = prover
+        .prepare_circuit::<EF, D>(
+            &circuit,
+            &preprocessors,
+            &air_builders,
+            ConstraintProfile::Standard,
+        )
+        .unwrap();
+
+    assert_eq!(
+        prepared.verifier().aggregation_statement_layout(),
+        Some(&layout)
+    );
+}

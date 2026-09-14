@@ -5,7 +5,7 @@ use core::any::{Any, TypeId};
 
 use hashbrown::HashMap;
 use p3_circuit::ops::{NonPrimitivePreprocessedMap, NpoTypeId, PrimitiveOpType};
-use p3_circuit::{Circuit, CircuitError, StatementSchema};
+use p3_circuit::{AggregationStatementLayout, Circuit, CircuitError, StatementSchema};
 use p3_field::{Algebra, ExtensionField, Field, PrimeCharacteristicRing, PrimeField64};
 use p3_uni_stark::{StarkGenericConfig, SymbolicExpression, SymbolicExpressionExt, Val};
 use p3_util::log2_ceil_usize;
@@ -449,6 +449,7 @@ pub struct CircuitRelation<F: Copy> {
     constraint_profile: ConstraintProfile,
     non_primitives: Vec<NpoRelation<F>>,
     statement_layout: StatementLayout,
+    aggregation_statement_layout: Option<AggregationStatementLayout>,
     trace_degree_bits: Vec<usize>,
 }
 
@@ -503,6 +504,11 @@ impl<F: Copy> CircuitRelation<F> {
 
     pub const fn statement_layout(&self) -> &StatementLayout {
         &self.statement_layout
+    }
+
+    /// Checked semantic left/right boundary when this relation aggregates two statements.
+    pub const fn aggregation_statement_layout(&self) -> Option<&AggregationStatementLayout> {
+        self.aggregation_statement_layout.as_ref()
     }
 
     pub fn trace_degree_bits(&self) -> &[usize] {
@@ -1084,6 +1090,27 @@ where
         }
         StatementLayout::new(statement_schema, Some(NUM_PRIMITIVE_TABLES + index))
     };
+    let aggregation_statement_layout = circuit
+        .aggregation_statement_layout()
+        .map(|layout| {
+            AggregationStatementLayout::try_new(
+                layout.left().clone(),
+                layout.right().clone(),
+                layout.split_at(),
+                layout.output().clone(),
+            )
+            .map_err(|error| CircuitError::InvalidTablePacking(error.to_string()))
+        })
+        .transpose()?;
+    if aggregation_statement_layout
+        .as_ref()
+        .is_some_and(|layout| layout.output() != statement_layout.schema())
+    {
+        return Err(CircuitError::InvalidTablePacking(
+            "aggregation statement output schema differs from the finalized Statement relation"
+                .to_string(),
+        ));
+    }
 
     let trace_degree_bits = table_preps
         .iter()
@@ -1098,6 +1125,7 @@ where
         constraint_profile,
         non_primitives: npo_relations,
         statement_layout,
+        aggregation_statement_layout,
         trace_degree_bits,
     };
 
@@ -1203,7 +1231,7 @@ mod per_table_height_tests {
 mod trusted_preparation_tests {
     use alloc::vec::Vec;
 
-    use p3_circuit::CircuitBuilder;
+    use p3_circuit::{CircuitBuilder, StatementSchema};
     use p3_field::PrimeCharacteristicRing;
     use p3_test_utils::koala_bear_params::{F, MyConfig};
 
@@ -1241,6 +1269,45 @@ mod trusted_preparation_tests {
                 .iter()
                 .map(|(_, degree)| *degree)
                 .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn trusted_preparation_retains_an_explicit_empty_aggregation_boundary() {
+        let mut builder = CircuitBuilder::<F>::new();
+        builder
+            .set_statement_exports::<F>(&[])
+            .expect("the empty statement is explicitly defined");
+        let layout = builder
+            .set_aggregation_statement_layout(
+                StatementSchema::default(),
+                StatementSchema::default(),
+            )
+            .expect("two empty child schemas form one empty aggregation statement");
+        let circuit = builder.build().unwrap();
+
+        let finalized = finalize_circuit_tables::<MyConfig, F, 1>(
+            &circuit,
+            &TablePacking::new(1, 1),
+            &[],
+            &[],
+            ConstraintProfile::Standard,
+            AirVariant::Optimized,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(
+            finalized.relation().aggregation_statement_layout(),
+            Some(&layout)
+        );
+        assert_eq!(
+            finalized.relation().statement_layout().schema(),
+            layout.output()
+        );
+        assert_eq!(
+            finalized.relation().statement_layout().table_instance(),
+            None
         );
     }
 }

@@ -53,3 +53,4 @@ pub use common::{
     TrustedBuiltinArtifactRelation,
 };
 pub use constraint_profile::ConstraintProfile;
+pub use p3_circuit::AggregationStatementLayout;

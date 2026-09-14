@@ -34,7 +34,10 @@ use crate::ops::{
 };
 use crate::tables::TraceGeneratorFn;
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};
-use crate::{CircuitBuilderError, CircuitError, StatementExport, StatementField, StatementSchema};
+use crate::{
+    AggregationStatementLayout, CircuitBuilderError, CircuitError, StatementExport, StatementField,
+    StatementSchema,
+};
 
 /// How `recompose_base_coeffs_to_ext` should lower a coefficient recomposition.
 ///
@@ -131,6 +134,8 @@ pub struct CircuitBuilder<F: Field> {
 
     /// `Some` after the circuit's ordered statement has been defined, including the empty schema.
     statement_schema: Option<StatementSchema>,
+    /// Checked semantic child boundary for a circuit that aggregates two statements.
+    aggregation_statement_layout: Option<AggregationStatementLayout>,
     /// Original typed export expressions, before extension normalization creates coefficient rows.
     statement_source_exprs: Vec<ExprId>,
 }
@@ -170,6 +175,7 @@ where
             decompose_recompose_via_alu: false,
             decompose_skip_select_provenance: false,
             statement_schema: None,
+            aggregation_statement_layout: None,
             statement_source_exprs: Vec::new(),
         }
     }
@@ -574,6 +580,31 @@ where
         }
 
         Ok(schema)
+    }
+
+    /// Retain the semantic left/right boundary for an already-defined aggregation statement.
+    ///
+    /// The output is derived as the exact ordered concatenation and must match the circuit's
+    /// existing Statement schema. This metadata may be assigned only once. An explicitly defined
+    /// empty statement is valid even though it emits no Statement NPO.
+    pub fn set_aggregation_statement_layout(
+        &mut self,
+        left: StatementSchema,
+        right: StatementSchema,
+    ) -> Result<AggregationStatementLayout, CircuitBuilderError> {
+        if self.aggregation_statement_layout.is_some() {
+            return Err(CircuitBuilderError::AggregationStatementAlreadyDefined);
+        }
+        let output = StatementSchema::concat(&left, &right)?;
+        match &self.statement_schema {
+            Some(schema) if schema == &output => {}
+            Some(_) => return Err(CircuitBuilderError::AggregationStatementSchemaMismatch),
+            None => return Err(CircuitBuilderError::AggregationStatementMissing),
+        }
+        let split_at = left.base_len();
+        let layout = AggregationStatementLayout::try_new(left, right, split_at, output)?;
+        self.aggregation_statement_layout = Some(layout.clone());
+        Ok(layout)
     }
 
     /// Checks whether an op type is enabled on this builder.
@@ -1165,6 +1196,7 @@ where
         circuit.private_input_rows = private_input_rows;
         circuit.private_flat_len = self.private_input_tracker.count();
         circuit.statement_schema = self.statement_schema;
+        circuit.aggregation_statement_layout = self.aggregation_statement_layout;
         circuit.statement_source_wids = self
             .statement_source_exprs
             .iter()
@@ -3965,6 +3997,67 @@ mod proptests {
             builder.set_statement_exports::<BabyBear>(&[]),
             Err(CircuitBuilderError::StatementAlreadyDefined)
         ));
+    }
+
+    #[test]
+    fn aggregation_layout_requires_and_retains_the_exact_defined_statement() {
+        let left = StatementSchema::new(vec![crate::StatementField::Base]).unwrap();
+        let right = StatementSchema::new(vec![crate::StatementField::Base]).unwrap();
+
+        let mut missing = CircuitBuilder::<BabyBear>::new();
+        assert!(matches!(
+            missing.set_aggregation_statement_layout(left.clone(), right.clone()),
+            Err(CircuitBuilderError::AggregationStatementMissing)
+        ));
+
+        let mut mismatched = CircuitBuilder::<BabyBear>::new();
+        let first = mismatched.public_input();
+        let second = mismatched.public_input();
+        mismatched
+            .set_statement_exports::<BabyBear>(&[
+                crate::StatementExport::Base(first),
+                crate::StatementExport::Base(second),
+            ])
+            .unwrap();
+        assert!(matches!(
+            mismatched.set_aggregation_statement_layout(
+                StatementSchema::new(vec![crate::StatementField::Extension { degree: 2 }]).unwrap(),
+                StatementSchema::default(),
+            ),
+            Err(CircuitBuilderError::AggregationStatementSchemaMismatch)
+        ));
+
+        let layout = mismatched
+            .set_aggregation_statement_layout(left.clone(), right.clone())
+            .expect("the exact ordered statement schema matches");
+        assert_eq!(layout.left(), &left);
+        assert_eq!(layout.right(), &right);
+        assert_eq!(layout.split_at(), 1);
+        assert!(matches!(
+            mismatched.set_aggregation_statement_layout(left, right),
+            Err(CircuitBuilderError::AggregationStatementAlreadyDefined)
+        ));
+
+        let circuit = mismatched.build().unwrap();
+        assert_eq!(circuit.aggregation_statement_layout(), Some(&layout));
+    }
+
+    #[test]
+    fn aggregation_layout_accepts_an_explicitly_defined_empty_statement() {
+        let mut builder = CircuitBuilder::<BabyBear>::new();
+        builder
+            .set_statement_exports::<BabyBear>(&[])
+            .expect("the empty statement is explicitly defined");
+        let layout = builder
+            .set_aggregation_statement_layout(
+                StatementSchema::default(),
+                StatementSchema::default(),
+            )
+            .expect("two empty child schemas form a valid empty aggregation");
+
+        let circuit = builder.build().unwrap();
+        assert_eq!(circuit.statement_schema(), Some(layout.output()));
+        assert_eq!(circuit.aggregation_statement_layout(), Some(&layout));
     }
 
     /// Deduplicating the sink inputs or recording pre-optimizer expression numbers would make the

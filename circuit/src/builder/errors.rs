@@ -135,6 +135,18 @@ pub enum CircuitBuilderError {
     #[error("the reserved built-in `statement` operation identifier is already registered")]
     StatementNpoAlreadyRegistered,
 
+    /// Aggregation metadata was attached before defining the circuit's Statement exports.
+    #[error("aggregation statement metadata requires an explicitly defined Statement schema")]
+    AggregationStatementMissing,
+
+    /// Aggregation metadata's ordered output schema differs from the circuit's Statement sink.
+    #[error("aggregation statement output schema differs from the defined Statement sink")]
+    AggregationStatementSchemaMismatch,
+
+    /// A circuit may retain only one ordered aggregation boundary.
+    #[error("aggregation statement metadata is already defined for this circuit")]
+    AggregationStatementAlreadyDefined,
+
     /// The statement schema's flattened length overflowed `usize`.
     #[error(transparent)]
     StatementSchema(#[from] crate::StatementError),

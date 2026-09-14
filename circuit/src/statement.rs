@@ -29,6 +29,43 @@ pub struct StatementSchema {
     base_len: usize,
 }
 
+/// Ordered two-child statement boundary retained with an aggregation relation.
+///
+/// Construction checks both redundant fields so neither an incorrect split nor an unrelated
+/// flattened schema can be attached to the trusted parent relation.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct AggregationStatementLayout {
+    left: StatementSchema,
+    right: StatementSchema,
+    split_at: usize,
+    output: StatementSchema,
+}
+
+#[derive(Deserialize)]
+#[serde(rename = "AggregationStatementLayout")]
+struct UncheckedAggregationStatementLayout {
+    left: StatementSchema,
+    right: StatementSchema,
+    split_at: usize,
+    output: StatementSchema,
+}
+
+impl<'de> Deserialize<'de> for AggregationStatementLayout {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let unchecked = UncheckedAggregationStatementLayout::deserialize(deserializer)?;
+        Self::try_new(
+            unchecked.left,
+            unchecked.right,
+            unchecked.split_at,
+            unchecked.output,
+        )
+        .map_err(serde::de::Error::custom)
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(rename = "StatementSchema")]
 struct UncheckedStatementSchema {
@@ -111,6 +148,52 @@ impl StatementSchema {
     }
 }
 
+impl AggregationStatementLayout {
+    /// Reconstruct an ordered aggregation boundary after checking every redundant field.
+    pub fn try_new(
+        left: StatementSchema,
+        right: StatementSchema,
+        split_at: usize,
+        output: StatementSchema,
+    ) -> Result<Self, StatementError> {
+        if split_at != left.base_len() {
+            return Err(StatementError::AggregationSplitMismatch {
+                expected: left.base_len(),
+                got: split_at,
+            });
+        }
+        if output != StatementSchema::concat(&left, &right)? {
+            return Err(StatementError::AggregationOutputSchemaMismatch);
+        }
+        Ok(Self {
+            left,
+            right,
+            split_at,
+            output,
+        })
+    }
+
+    /// Schema of the authorized left child.
+    pub const fn left(&self) -> &StatementSchema {
+        &self.left
+    }
+
+    /// Schema of the authorized right child.
+    pub const fn right(&self) -> &StatementSchema {
+        &self.right
+    }
+
+    /// Flattened base-field index at which the right child begins.
+    pub const fn split_at(&self) -> usize {
+        self.split_at
+    }
+
+    /// Exact ordered `left || right` output schema.
+    pub const fn output(&self) -> &StatementSchema {
+        &self.output
+    }
+}
+
 /// Schema-level statement errors independent of a circuit's field type.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum StatementError {
@@ -120,6 +203,10 @@ pub enum StatementError {
     LengthOverflow,
     #[error("statement value length mismatch: expected {expected}, got {got}")]
     ValueLengthMismatch { expected: usize, got: usize },
+    #[error("aggregation statement split mismatch: expected {expected}, got {got}")]
+    AggregationSplitMismatch { expected: usize, got: usize },
+    #[error("aggregation statement output schema is not the exact ordered child concatenation")]
+    AggregationOutputSchemaMismatch,
 }
 
 #[cfg(test)]
@@ -127,7 +214,7 @@ mod tests {
     use alloc::vec;
     use core::cell::Cell;
 
-    use super::{StatementError, StatementField, StatementSchema};
+    use super::{AggregationStatementLayout, StatementError, StatementField, StatementSchema};
 
     struct SchemaNameProbe<'a>(&'a Cell<Option<&'static str>>);
 
@@ -212,6 +299,59 @@ mod tests {
                 StatementField::Base,
             ]),
             Err(StatementError::LengthOverflow)
+        );
+    }
+
+    #[test]
+    fn aggregation_layout_retains_exact_ordered_boundary_and_output_schema() {
+        let left = StatementSchema::new(vec![
+            StatementField::Base,
+            StatementField::Extension { degree: 2 },
+        ])
+        .unwrap();
+        let right = StatementSchema::new(vec![StatementField::Base]).unwrap();
+        let output = StatementSchema::new(vec![
+            StatementField::Base,
+            StatementField::Extension { degree: 2 },
+            StatementField::Base,
+        ])
+        .unwrap();
+
+        let layout =
+            AggregationStatementLayout::try_new(left.clone(), right.clone(), 3, output.clone())
+                .unwrap();
+
+        assert_eq!(layout.left(), &left);
+        assert_eq!(layout.right(), &right);
+        assert_eq!(layout.split_at(), 3);
+        assert_eq!(layout.output(), &output);
+    }
+
+    #[test]
+    fn aggregation_layout_rejects_wrong_boundary_or_output_schema() {
+        let left = StatementSchema::new(vec![StatementField::Extension { degree: 2 }]).unwrap();
+        let right = StatementSchema::new(vec![StatementField::Base]).unwrap();
+        let output = StatementSchema::new(vec![
+            StatementField::Extension { degree: 2 },
+            StatementField::Base,
+        ])
+        .unwrap();
+
+        assert_eq!(
+            AggregationStatementLayout::try_new(left.clone(), right.clone(), 1, output.clone(),),
+            Err(StatementError::AggregationSplitMismatch {
+                expected: 2,
+                got: 1,
+            })
+        );
+        assert_eq!(
+            AggregationStatementLayout::try_new(
+                left,
+                right,
+                2,
+                StatementSchema::new(vec![StatementField::Base; 3]).unwrap(),
+            ),
+            Err(StatementError::AggregationOutputSchemaMismatch)
         );
     }
 }

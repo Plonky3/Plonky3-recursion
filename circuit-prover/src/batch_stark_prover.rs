@@ -825,6 +825,11 @@ where
     pub fn statement_layout(&self) -> &StatementLayout {
         self.inner.relation.statement_layout()
     }
+
+    /// Checked semantic left/right boundary for an aggregation statement, when present.
+    pub fn aggregation_statement_layout(&self) -> Option<&p3_circuit::AggregationStatementLayout> {
+        self.inner.relation.aggregation_statement_layout()
+    }
 }
 
 impl<SC> CircuitVerifier<SC>
