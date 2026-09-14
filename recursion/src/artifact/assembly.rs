@@ -693,6 +693,8 @@ where
 #[cfg(test)]
 mod tests {
     use alloc::vec::Vec;
+    use core::convert::Infallible;
+    use core::sync::atomic::{AtomicUsize, Ordering};
 
     use p3_baby_bear::BabyBear;
     use p3_circuit::CircuitBuilder;
@@ -703,13 +705,16 @@ mod tests {
     use p3_field::PrimeCharacteristicRing;
     use p3_field::extension::BinomialExtensionField;
     use p3_koala_bear::KoalaBear;
+    use rand::rngs::StdRng;
+    use rand::{SeedableRng, TryCryptoRng, TryRng};
 
     use crate::artifact::{
         ArtifactError, ArtifactLimits, CanonicalStatement, ExpectedVerifierArtifact,
         PortableArtifactExport, PortableVerifier,
     };
     use crate::builtin_config::{
-        FriConfigV1, KoalaBearD4Poseidon2BinaryConfig, SuiteIdV1, baby_bear_d4_poseidon2_binary,
+        BabyBearD4Poseidon2RandomCodewordConfig, FriConfigV1, KoalaBearD4Poseidon2BinaryConfig,
+        SuiteIdV1, baby_bear_d4_poseidon2_binary, baby_bear_d4_poseidon2_random_codeword,
         koala_bear_d4_poseidon2_binary,
     };
     use crate::prepared::test_common;
@@ -721,6 +726,40 @@ mod tests {
     use super::super::descriptor::{RelationDescriptorV1, read_common, write_common};
     use super::super::native::{read_merkle_cap, write_merkle_cap};
     use super::super::wire::{FieldEncoding, Reader, Writer};
+
+    static VERIFICATION_RNG_DRAWS: AtomicUsize = AtomicUsize::new(0);
+
+    #[derive(Debug)]
+    struct AuditedRng(StdRng);
+
+    impl TryRng for AuditedRng {
+        type Error = Infallible;
+
+        fn try_next_u32(&mut self) -> Result<u32, Self::Error> {
+            VERIFICATION_RNG_DRAWS.fetch_add(1, Ordering::Relaxed);
+            self.0.try_next_u32()
+        }
+
+        fn try_next_u64(&mut self) -> Result<u64, Self::Error> {
+            VERIFICATION_RNG_DRAWS.fetch_add(1, Ordering::Relaxed);
+            self.0.try_next_u64()
+        }
+
+        fn try_fill_bytes(&mut self, dst: &mut [u8]) -> Result<(), Self::Error> {
+            VERIFICATION_RNG_DRAWS.fetch_add(1, Ordering::Relaxed);
+            self.0.try_fill_bytes(dst)
+        }
+    }
+
+    impl TryCryptoRng for AuditedRng {}
+
+    impl SeedableRng for AuditedRng {
+        type Seed = <StdRng as SeedableRng>::Seed;
+
+        fn from_seed(seed: Self::Seed) -> Self {
+            Self(StdRng::from_seed(seed))
+        }
+    }
 
     fn exported_double_circuit(multiplier: u32, input_value: u32) -> (Vec<u8>, Vec<u8>) {
         let limits = ArtifactLimits::default();
@@ -886,6 +925,46 @@ mod tests {
                 .verify_encoded(&proof_b, CanonicalStatement::new(&[], 0))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn imported_random_codeword_verification_draws_no_rng_bytes() {
+        type VerifyingConfig = BabyBearD4Poseidon2RandomCodewordConfig<AuditedRng>;
+
+        let limits = ArtifactLimits::default();
+        let suite = SuiteIdV1::BabyBearD4Poseidon2RandomCodewordFri;
+        let descriptor = FriConfigV1::new(suite, 1, 0, 2, 2, 0, 0, 0, 0, 2, 0);
+        let config = baby_bear_d4_poseidon2_random_codeword(
+            &descriptor,
+            &limits.verifier,
+            StdRng::seed_from_u64(7),
+        )
+        .unwrap();
+        let mut builder = CircuitBuilder::<BabyBear>::new();
+        let _ = builder.define_const(BabyBear::from_u32(5));
+        let circuit = builder.build().unwrap();
+        let traces = circuit.runner().run().unwrap();
+        let prepared = BatchStarkProver::new(config)
+            .with_table_packing(TablePacking::new(4, 4).with_min_trace_height(32))
+            .prepare_circuit::<BabyBear, 1>(&circuit, &[], &[], ConstraintProfile::Standard)
+            .unwrap();
+        let proof = prepared.prove(&traces).unwrap();
+        let verifier = prepared.verifier();
+        let verifier_bytes = verifier.encode_verifier_artifact(limits).unwrap();
+        let proof_bytes = verifier.encode_proof_artifact(&proof, limits).unwrap();
+        drop(proof);
+        drop(verifier);
+        drop(prepared);
+        drop(traces);
+        drop(circuit);
+
+        let imported = super::decode_typed::<VerifyingConfig>(&verifier_bytes, suite, limits)
+            .expect("the verification-only audited RNG config reconstructs");
+        VERIFICATION_RNG_DRAWS.store(0, Ordering::Relaxed);
+        imported
+            .verify_encoded(&proof_bytes, CanonicalStatement::new(&[], 0))
+            .unwrap();
+        assert_eq!(VERIFICATION_RNG_DRAWS.load(Ordering::Relaxed), 0);
     }
 
     #[test]

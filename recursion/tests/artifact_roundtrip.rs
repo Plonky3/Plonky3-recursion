@@ -7,7 +7,7 @@ use p3_circuit_prover::{
     BatchStarkProver, ConstraintProfile, StatementAirBuilder, StatementPreprocessor,
     StatementProver, TablePacking,
 };
-use p3_field::PrimeCharacteristicRing;
+use p3_field::{PrimeCharacteristicRing, PrimeField64};
 use p3_goldilocks::Goldilocks;
 use p3_koala_bear::KoalaBear;
 use p3_recursion::artifact::{
@@ -92,6 +92,7 @@ macro_rules! portable_roundtrip {
             limits,
         )
         .unwrap();
+        assert_eq!(imported.trusted_identity_bytes(), verifier_bytes);
         imported
             .verify_encoded(&proof_bytes, CanonicalStatement::new(&[], 0))
             .unwrap();
@@ -271,6 +272,19 @@ fn one_preparation_exports_two_ordered_runtime_statements_after_all_native_owner
     assert!(
         imported
             .verify_encoded(&first_bytes, CanonicalStatement::new(&swapped_statement, 2),)
+            .is_err()
+    );
+    let modulus = (BabyBear::ORDER_U64 as u32).to_le_bytes();
+    let mut non_canonical = modulus.to_vec();
+    non_canonical.extend(9_u32.to_le_bytes());
+    assert!(
+        imported
+            .verify_encoded(&first_bytes, CanonicalStatement::new(&non_canonical, 2),)
+            .is_err()
+    );
+    assert!(
+        imported
+            .verify_encoded(&first_bytes, CanonicalStatement::new(&first_statement, 1),)
             .is_err()
     );
 }
