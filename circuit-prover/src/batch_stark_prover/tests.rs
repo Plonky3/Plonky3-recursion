@@ -249,6 +249,34 @@ fn trusted_relation_circuit(multiplier: u32) -> p3_circuit::Circuit<BabyBear> {
     builder.build().unwrap()
 }
 
+#[test]
+fn prepare_circuit_preserves_typed_profile_overflow_metadata() {
+    let mut builder = CircuitBuilder::<BabyBear>::new();
+    for value in 0..10 {
+        let _ = builder.define_const(BabyBear::from_u32(value + 2));
+    }
+    let circuit = builder.build().unwrap();
+    let prover = BatchStarkProver::new(config::baby_bear()).with_table_packing(
+        TablePacking::new(1, 1)
+            .with_min_trace_height(4)
+            .with_strict_heights(),
+    );
+
+    match prover.prepare_circuit::<BabyBear, 1>(&circuit, &[], &[], ConstraintProfile::Standard) {
+        Err(BatchStarkProverError::InvalidMetadata(ProofMetadataError::ProfileOverflow {
+            table,
+            needed,
+            allowed,
+        })) => {
+            assert_eq!(table, "CONST");
+            assert_eq!(needed, 16);
+            assert_eq!(allowed, 4);
+        }
+        Ok(_) => panic!("strict preparation unexpectedly accepted an undersized CONST table"),
+        Err(other) => panic!("expected typed profile overflow metadata, got {other}"),
+    }
+}
+
 fn trusted_relation_proof(
     prepared: &PreparedCircuitProver<BabyBearConfig>,
     circuit: &p3_circuit::Circuit<BabyBear>,

@@ -2902,7 +2902,18 @@ where
             self.alu_variant,
             self.config.is_zk() != 0,
         )
-        .map_err(|error| BatchStarkProverError::RelationMismatch(error.to_string()))?;
+        .map_err(|error| match error {
+            CircuitError::ProfileOverflow {
+                table,
+                needed,
+                allowed,
+            } => BatchStarkProverError::InvalidMetadata(ProofMetadataError::ProfileOverflow {
+                table,
+                needed,
+                allowed,
+            }),
+            other => BatchStarkProverError::RelationMismatch(other.to_string()),
+        })?;
         let (airs_and_degrees, relation, primitive_columns, non_primitive_columns) =
             finalized.into_parts();
         let (airs, _base_degrees): (Vec<_>, Vec<_>) = airs_and_degrees.into_iter().unzip();

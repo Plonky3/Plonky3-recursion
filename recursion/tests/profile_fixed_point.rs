@@ -31,6 +31,35 @@ fn init_logger() {
         .try_init();
 }
 
+fn undersized_seed() -> RecursionLayerProfile {
+    RecursionLayerProfile {
+        table_packing: TablePacking::new(1, 3).with_horner_pack_k(4),
+        hash: HashProfile::default(),
+        transcript: TranscriptKind::default(),
+        constraint_profile: ConstraintProfile::default(),
+    }
+}
+
+#[test]
+fn fixed_point_reports_bounded_nonconvergence_after_a_typed_growth_step() {
+    let fixture = build_koala_bear_d4_first_layer_input();
+    let error = solve_fixed_point::<_, _, _, 4>(
+        undersized_seed(),
+        &fixture.recursion_input(),
+        &fixture.layer_config,
+        &fixture.backend,
+        1,
+    )
+    .unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("solve_fixed_point did not converge"),
+        "a handled profile overflow must reach the bounded nonconvergence diagnostic: {error}"
+    );
+}
+
 /// `solve_fixed_point` must converge on a real recursion-layer verifier circuit (verifying a
 /// KoalaBear D4 base batch-STARK proof), and the profile it returns must be an actual fixed
 /// point for that one circuit: independently rebuilding this layer's circuit and
@@ -48,12 +77,7 @@ fn fixed_point_converges_on_koala_bear_d4_first_layer_and_the_profile_actually_p
     // floor of 1, so every primitive table's natural row count (hundreds of ALU/CONST rows
     // verifying a batch-STARK FRI proof) exceeds it. Convergence therefore requires real
     // iteration, not a lucky pass on iteration 0.
-    let seed = RecursionLayerProfile {
-        table_packing: TablePacking::new(1, 3).with_horner_pack_k(4),
-        hash: HashProfile::default(),
-        transcript: TranscriptKind::default(),
-        constraint_profile: ConstraintProfile::default(),
-    };
+    let seed = undersized_seed();
 
     // `solve_fixed_point` needs at most (number of tables that overflow) + 1 probes: one bump
     // per overflowing table, plus a final clean re-probe that finds nothing left to bump. Every

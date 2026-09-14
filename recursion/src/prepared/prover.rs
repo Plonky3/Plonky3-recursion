@@ -10,8 +10,8 @@ use p3_circuit_prover::common::{NpoAirBuilder, NpoPreprocessor};
 use p3_circuit_prover::config::StarkField;
 use p3_circuit_prover::field_params::ExtractBinomialW;
 use p3_circuit_prover::{
-    CircuitVerifier, PreparedCircuitProver, StatementAirBuilder, StatementPreprocessor,
-    StatementProver,
+    BatchStarkProverError, CircuitVerifier, PreparedCircuitProver, ProofMetadataError,
+    StatementAirBuilder, StatementPreprocessor, StatementProver,
 };
 use p3_commit::Pcs;
 use p3_field::{Algebra, BasedVectorSpace, ExtensionField, PrimeField64};
@@ -162,7 +162,12 @@ where
             air_builders,
             params.constraint_profile,
         )
-        .map_err(|error| VerificationError::InvalidProofShape(error.to_string()))?;
+        .map_err(|error| match error {
+            BatchStarkProverError::InvalidMetadata(
+                metadata @ ProofMetadataError::ProfileOverflow { .. },
+            ) => VerificationError::Circuit(metadata.into()),
+            other => VerificationError::InvalidProofShape(other.to_string()),
+        })?;
 
     Ok(PreparedProver { prepared })
 }
