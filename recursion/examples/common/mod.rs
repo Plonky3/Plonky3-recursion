@@ -85,6 +85,42 @@ pub struct FriParams {
     pub query_pow_bits: usize,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum FriQueryCountError {
+    SecurityLevelTooLow,
+    ZeroBlowup,
+}
+
+pub(crate) fn checked_num_queries(
+    security_level: usize,
+    query_pow_bits: usize,
+    log_blowup: usize,
+) -> Result<usize, FriQueryCountError> {
+    let remaining = security_level
+        .checked_sub(query_pow_bits)
+        .ok_or(FriQueryCountError::SecurityLevelTooLow)?;
+    remaining
+        .checked_div(log_blowup)
+        .ok_or(FriQueryCountError::ZeroBlowup)
+}
+
+#[cfg(test)]
+mod checked_fri_tests {
+    use super::{FriQueryCountError, checked_num_queries};
+
+    #[test]
+    fn checked_num_queries_rejects_invalid_security_and_blowup() {
+        assert_eq!(
+            checked_num_queries(15, 16, 1),
+            Err(FriQueryCountError::SecurityLevelTooLow)
+        );
+        assert_eq!(
+            checked_num_queries(16, 16, 0),
+            Err(FriQueryCountError::ZeroBlowup)
+        );
+    }
+}
+
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum FieldOption {
     KoalaBear,
@@ -627,16 +663,14 @@ macro_rules! define_field_module_types {
         fn create_fri_instance(
             fp: &FriParams,
             security_level: usize,
-        ) -> (MyMmcs, FriParameters<ChallengeMmcs>) {
+        ) -> Result<(MyMmcs, FriParameters<ChallengeMmcs>), FriQueryCountError> {
             let perm = $default_perm();
             let hash = MyHash::new(perm.clone());
             let compress = MyCompress::new(perm);
             let val_mmcs = MyMmcs::new(hash, compress, fp.cap_height);
 
-            let num_queries = security_level
-                .checked_sub(fp.query_pow_bits)
-                .and_then(|remaining| (fp.log_blowup != 0).then_some(remaining / fp.log_blowup))
-                .expect("FRI security level must cover query PoW and use nonzero blowup");
+            let num_queries =
+                checked_num_queries(security_level, fp.query_pow_bits, fp.log_blowup)?;
 
             let fri_params = FriParameters {
                 max_log_arity: fp.max_log_arity,
@@ -647,27 +681,24 @@ macro_rules! define_field_module_types {
                 query_proof_of_work_bits: fp.query_pow_bits,
                 mmcs: ChallengeMmcs::new(val_mmcs.clone()),
             };
-            (val_mmcs, fri_params)
+            Ok((val_mmcs, fri_params))
         }
 
         #[allow(dead_code)]
         fn create_config(fp: &FriParams, security_level: usize) -> MyConfig {
-            let (val_mmcs, fri_params) = create_fri_instance(fp, security_level);
+            let (val_mmcs, fri_params) = create_fri_instance(fp, security_level)
+                .expect("FRI example parameters must have a valid query count");
             let pcs = MyPcs::new(Dft::default(), val_mmcs, fri_params);
             MyConfig::new(pcs, Challenger::new($default_perm()))
         }
 
-        fn create_fri_verifier_params(fp: &FriParams, security_level: usize) -> FriVerifierParams {
-            let num_queries = security_level
-                .checked_sub(fp.query_pow_bits)
-                .and_then(|remaining| (fp.log_blowup != 0).then_some(remaining / fp.log_blowup))
-                .expect("FRI security level must cover query PoW and use nonzero blowup");
+        fn create_fri_verifier_params(native: NativeFriParams) -> FriVerifierParams {
             FriVerifierParams::with_mmcs(
-                fp.log_blowup,
-                fp.log_final_poly_len,
-                fp.commit_pow_bits,
-                fp.query_pow_bits,
-                num_queries,
+                native.log_blowup(),
+                native.log_final_poly_len(),
+                native.commit_pow_bits(),
+                native.query_pow_bits(),
+                native.num_queries(),
                 $poseidon2_config,
             )
         }
@@ -677,13 +708,14 @@ macro_rules! define_field_module_types {
             security_level: usize,
             disable_recompose_npo: bool,
         ) -> ConfigWithFriParams {
-            let (val_mmcs, fri_params) = create_fri_instance(fp, security_level);
+            let (val_mmcs, fri_params) = create_fri_instance(fp, security_level)
+                .expect("FRI example parameters must have a valid query count");
             let native_fri_params = NativeFriParams::try_from_native::<F, _>(&fri_params).unwrap();
             let restore_mmcs = val_mmcs.clone();
             let pcs = MyPcs::new(Dft::default(), val_mmcs, fri_params.clone());
             ConfigWithFriParams {
                 config: Arc::new(MyConfig::new(pcs, Challenger::new($default_perm()))),
-                fri_verifier_params: create_fri_verifier_params(fp, security_level),
+                fri_verifier_params: create_fri_verifier_params(native_fri_params),
                 native_fri_params,
                 disable_recompose_npo,
                 fri_instance: Arc::new((restore_mmcs, fri_params)),
@@ -692,7 +724,8 @@ macro_rules! define_field_module_types {
 
         #[allow(dead_code)]
         fn create_config_zk(fp: &FriParams, security_level: usize, rng_seed: u64) -> MyConfigZk {
-            let (val_mmcs, fri_params) = create_fri_instance(fp, security_level);
+            let (val_mmcs, fri_params) = create_fri_instance(fp, security_level)
+                .expect("FRI example parameters must have a valid query count");
             let pcs = MyPcsZk::new(
                 Dft::default(),
                 val_mmcs,
@@ -710,7 +743,8 @@ macro_rules! define_field_module_types {
             disable_recompose_npo: bool,
             rng_seed: u64,
         ) -> ConfigWithFriParamsZk {
-            let (val_mmcs, fri_params) = create_fri_instance(fp, security_level);
+            let (val_mmcs, fri_params) = create_fri_instance(fp, security_level)
+                .expect("FRI example parameters must have a valid query count");
             let native_fri_params = NativeFriParams::try_from_native::<F, _>(&fri_params).unwrap();
             let restore_mmcs = val_mmcs.clone();
             let pcs = MyPcsZk::new(
@@ -722,7 +756,7 @@ macro_rules! define_field_module_types {
             );
             ConfigWithFriParamsZk {
                 config: Arc::new(MyConfigZk::new(pcs, Challenger::new($default_perm()))),
-                fri_verifier_params: create_fri_verifier_params(fp, security_level),
+                fri_verifier_params: create_fri_verifier_params(native_fri_params),
                 native_fri_params,
                 disable_recompose_npo,
                 fri_instance: Arc::new((restore_mmcs, fri_params)),
@@ -935,16 +969,14 @@ macro_rules! define_field_module_types_quintic {
         fn create_fri_instance(
             fp: &FriParams,
             security_level: usize,
-        ) -> (MyMmcs, FriParameters<ChallengeMmcs>) {
+        ) -> Result<(MyMmcs, FriParameters<ChallengeMmcs>), FriQueryCountError> {
             let perm = $default_perm();
             let hash = MyHash::new(perm.clone());
             let compress = MyCompress::new(perm);
             let val_mmcs = MyMmcs::new(hash, compress, fp.cap_height);
 
-            let num_queries = security_level
-                .checked_sub(fp.query_pow_bits)
-                .and_then(|remaining| (fp.log_blowup != 0).then_some(remaining / fp.log_blowup))
-                .expect("FRI security level must cover query PoW and use nonzero blowup");
+            let num_queries =
+                checked_num_queries(security_level, fp.query_pow_bits, fp.log_blowup)?;
 
             let fri_params = FriParameters {
                 max_log_arity: fp.max_log_arity,
@@ -955,27 +987,24 @@ macro_rules! define_field_module_types_quintic {
                 query_proof_of_work_bits: fp.query_pow_bits,
                 mmcs: ChallengeMmcs::new(val_mmcs.clone()),
             };
-            (val_mmcs, fri_params)
+            Ok((val_mmcs, fri_params))
         }
 
         #[allow(dead_code)]
         fn create_config(fp: &FriParams, security_level: usize) -> MyConfig {
-            let (val_mmcs, fri_params) = create_fri_instance(fp, security_level);
+            let (val_mmcs, fri_params) = create_fri_instance(fp, security_level)
+                .expect("FRI example parameters must have a valid query count");
             let pcs = MyPcs::new(Dft::default(), val_mmcs, fri_params);
             MyConfig::new(pcs, Challenger::new($default_perm()))
         }
 
-        fn create_fri_verifier_params(fp: &FriParams, security_level: usize) -> FriVerifierParams {
-            let num_queries = security_level
-                .checked_sub(fp.query_pow_bits)
-                .and_then(|remaining| (fp.log_blowup != 0).then_some(remaining / fp.log_blowup))
-                .expect("FRI security level must cover query PoW and use nonzero blowup");
+        fn create_fri_verifier_params(native: NativeFriParams) -> FriVerifierParams {
             FriVerifierParams::with_mmcs(
-                fp.log_blowup,
-                fp.log_final_poly_len,
-                fp.commit_pow_bits,
-                fp.query_pow_bits,
-                num_queries,
+                native.log_blowup(),
+                native.log_final_poly_len(),
+                native.commit_pow_bits(),
+                native.query_pow_bits(),
+                native.num_queries(),
                 $poseidon2_config,
             )
         }
@@ -985,13 +1014,14 @@ macro_rules! define_field_module_types_quintic {
             security_level: usize,
             disable_recompose_npo: bool,
         ) -> ConfigWithFriParams {
-            let (val_mmcs, fri_params) = create_fri_instance(fp, security_level);
+            let (val_mmcs, fri_params) = create_fri_instance(fp, security_level)
+                .expect("FRI example parameters must have a valid query count");
             let native_fri_params = NativeFriParams::try_from_native::<F, _>(&fri_params).unwrap();
             let restore_mmcs = val_mmcs.clone();
             let pcs = MyPcs::new(Dft::default(), val_mmcs, fri_params.clone());
             ConfigWithFriParams {
                 config: Arc::new(MyConfig::new(pcs, Challenger::new($default_perm()))),
-                fri_verifier_params: create_fri_verifier_params(fp, security_level),
+                fri_verifier_params: create_fri_verifier_params(native_fri_params),
                 native_fri_params,
                 disable_recompose_npo,
                 fri_instance: Arc::new((restore_mmcs, fri_params)),

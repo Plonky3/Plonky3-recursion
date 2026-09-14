@@ -575,7 +575,8 @@ fn test_batch_verifier_with_local_only_preprocessed() -> Result<(), Verification
         .preprocessed_next = Some(Vec::new());
     // Upstream native verification currently requires the canonical `None`
     // encoding in its constraint-window builder; `Some(empty)` passes its
-    // shape check but panics before PCS verification.  Verify that canonical
+    // shape check but panics later during constraint evaluation, after PCS
+    // verification.  Verify that canonical
     // native proof, while exercising the raw empty representation through
     // recursive shape validation and the runner below.
     batch_proof.opened_values.instances[0]

@@ -15,6 +15,8 @@ pub enum FriInputError {
     LogNotRepresentable { name: &'static str },
     #[error("native FRI height logs overflow")]
     HeightOverflow,
+    #[error("native FRI height cannot be represented by the machine word")]
+    HeightExceedsWord,
     #[error("native FRI height exceeds field two-adicity")]
     HeightExceedsTwoAdicity,
     #[error("native FRI max arity exceeds field two-adicity")]
@@ -133,6 +135,9 @@ impl NativeFriParams {
             .log_blowup
             .checked_add(self.log_final_poly_len)
             .ok_or(FriInputError::HeightOverflow)?;
+        if height >= usize::BITS as usize {
+            return Err(FriInputError::HeightExceedsWord);
+        }
         if height > F::TWO_ADICITY {
             return Err(FriInputError::HeightExceedsTwoAdicity);
         }
@@ -284,6 +289,7 @@ mod tests {
     use p3_baby_bear::BabyBear;
     use p3_circuit::ops::Poseidon2Config;
     use p3_fri::FriParameters;
+    use p3_goldilocks::Goldilocks;
 
     use super::*;
 
@@ -376,19 +382,46 @@ mod tests {
     #[test]
     fn native_snapshot_preserves_exact_queries_and_recursive_floor() {
         let snapshot =
-            NativeFriParams::try_from_native::<BabyBear, _>(&native(1, 0, 1, 4, 0, 0)).unwrap();
-        assert_eq!(snapshot.num_queries(), 4);
+            NativeFriParams::try_from_native::<BabyBear, _>(&native(1, 0, 1, 1, 0, 0)).unwrap();
+        assert_eq!(snapshot.num_queries(), 1);
         assert!(snapshot.validate_field::<BabyBear>().is_ok());
-        let recursive = FriVerifierParams::with_mmcs(1, 0, 0, 0, 2, p2());
-        assert!(snapshot.validate_recursive(&recursive).is_ok());
-        let too_high = FriVerifierParams::with_mmcs(1, 0, 0, 0, 5, p2());
+        let local_floor = FriVerifierParams::with_mmcs(1, 0, 0, 0, 2, p2());
         assert_eq!(
-            snapshot.validate_recursive(&too_high),
+            snapshot.validate_recursive(&local_floor),
             Err(FriInputError::QueryFloor {
-                native: 4,
-                minimum: 5,
+                native: 1,
+                minimum: 2,
             })
         );
+    }
+
+    #[test]
+    fn native_snapshot_rejects_each_recursive_scalar_mismatch() {
+        let snapshot =
+            NativeFriParams::try_from_native::<BabyBear, _>(&native(1, 0, 1, 2, 0, 0)).unwrap();
+        for (params, name) in [
+            (
+                FriVerifierParams::with_mmcs(2, 0, 0, 0, 2, p2()),
+                "log_blowup",
+            ),
+            (
+                FriVerifierParams::with_mmcs(1, 1, 0, 0, 2, p2()),
+                "log_final_poly_len",
+            ),
+            (
+                FriVerifierParams::with_mmcs(1, 0, 1, 0, 2, p2()),
+                "commit_pow_bits",
+            ),
+            (
+                FriVerifierParams::with_mmcs(1, 0, 0, 1, 2, p2()),
+                "query_pow_bits",
+            ),
+        ] {
+            assert_eq!(
+                snapshot.validate_recursive(&params),
+                Err(FriInputError::ScalarMismatch { name })
+            );
+        }
     }
 
     #[test]
@@ -419,6 +452,29 @@ mod tests {
         assert_eq!(
             word_limited.validate_field::<BabyBear>(),
             Err(FriInputError::LogNotRepresentable { name: "log_blowup" })
+        );
+        let combined_word_limited = NativeFriParams {
+            log_blowup: usize::BITS as usize - 1,
+            log_final_poly_len: 1,
+            max_log_arity: 1,
+            num_queries: 1,
+            commit_pow_bits: 0,
+            query_pow_bits: 0,
+        };
+        assert_eq!(
+            combined_word_limited.validate_field::<BabyBear>(),
+            Err(FriInputError::HeightExceedsWord)
+        );
+    }
+
+    #[test]
+    fn native_snapshot_revalidates_against_the_actual_field() {
+        let snapshot =
+            NativeFriParams::try_from_native::<Goldilocks, _>(&native(32, 0, 1, 2, 0, 0)).unwrap();
+        assert!(snapshot.validate_field::<Goldilocks>().is_ok());
+        assert_eq!(
+            snapshot.validate_field::<BabyBear>(),
+            Err(FriInputError::HeightExceedsTwoAdicity)
         );
     }
 }

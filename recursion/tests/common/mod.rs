@@ -385,17 +385,16 @@ where
 pub(crate) type KoalaBearD4Backend = FriRecursionBackendForExt<4, 16, 8, Poseidon2Config>;
 
 fn koala_bear_d4_recursion_config(pow_bits: usize) -> KoalaBearD4RecursionConfig {
-    let scalars = test_fri_scalars();
-    let fri_verifier_params = FriVerifierParams::with_mmcs(
-        scalars.log_blowup,
-        scalars.log_final_poly_len,
-        pow_bits,
-        pow_bits,
-        scalars.num_queries,
-        Poseidon2Config::KOALA_BEAR_D4_W16,
-    );
     let (val_mmcs, fri_params) = test_fri_instance_with_pow_bits(pow_bits);
     let native_fri_params = NativeFriParams::try_from_native::<F, _>(&fri_params).unwrap();
+    let fri_verifier_params = FriVerifierParams::with_mmcs(
+        native_fri_params.log_blowup(),
+        native_fri_params.log_final_poly_len(),
+        native_fri_params.commit_pow_bits(),
+        native_fri_params.query_pow_bits(),
+        native_fri_params.num_queries(),
+        Poseidon2Config::KOALA_BEAR_D4_W16,
+    );
     let pcs = MyPcs::new(Dft::default(), val_mmcs.clone(), fri_params.clone());
     KoalaBearD4RecursionConfig {
         config: Arc::new(MyConfig::new(

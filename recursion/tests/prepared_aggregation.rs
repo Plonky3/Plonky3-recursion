@@ -396,15 +396,15 @@ mod arity4_output {
             0,
         );
         let fri_params = FriParameters::new_testing(ChallengeMmcs::new(val_mmcs.clone()), 0);
+        let native_fri_params = NativeFriParams::try_from_native::<F, _>(&fri_params).unwrap();
         let verifier_params = FriVerifierParams::with_mmcs(
-            fri_params.log_blowup,
-            fri_params.log_final_poly_len,
-            fri_params.commit_proof_of_work_bits,
-            fri_params.query_proof_of_work_bits,
-            fri_params.num_queries,
+            native_fri_params.log_blowup(),
+            native_fri_params.log_final_poly_len(),
+            native_fri_params.commit_pow_bits(),
+            native_fri_params.query_pow_bits(),
+            native_fri_params.num_queries(),
             Poseidon2Config::KOALA_BEAR_D4_W32,
         );
-        let native_fri_params = NativeFriParams::try_from_native::<F, _>(&fri_params).unwrap();
         let pcs = Pcs4::new(
             Radix2DitParallel::default(),
             val_mmcs.clone(),
@@ -576,15 +576,15 @@ mod hiding_fri {
             0,
         );
         let fri_params = FriParameters::new_testing(ChallengeMmcs::new(val_mmcs.clone()), 0);
+        let native_fri_params = NativeFriParams::try_from_native::<F, _>(&fri_params).unwrap();
         let verifier_params = FriVerifierParams::with_mmcs(
-            fri_params.log_blowup,
-            fri_params.log_final_poly_len,
-            fri_params.commit_proof_of_work_bits,
-            fri_params.query_proof_of_work_bits,
-            fri_params.num_queries,
+            native_fri_params.log_blowup(),
+            native_fri_params.log_final_poly_len(),
+            native_fri_params.commit_pow_bits(),
+            native_fri_params.query_pow_bits(),
+            native_fri_params.num_queries(),
             Poseidon2Config::KOALA_BEAR_D4_W16,
         );
-        let native_fri_params = NativeFriParams::try_from_native::<F, _>(&fri_params).unwrap();
         let pcs = HidingPcs::new(
             Dft::default(),
             val_mmcs.clone(),

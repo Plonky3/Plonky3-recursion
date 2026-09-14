@@ -1324,16 +1324,14 @@ macro_rules! arity4_mixed_config_impl {
         fn create_fri_instance_arity4(
             fp: &FriParams,
             security_level: usize,
-        ) -> (MyMmcsArity4, FriParameters<ChallengeMmcsArity4>) {
+        ) -> Result<(MyMmcsArity4, FriParameters<ChallengeMmcsArity4>), FriQueryCountError> {
             let mmcs_perm = $default_perm_arity4();
             let hash = MyHashArity4::new(mmcs_perm.clone());
             let compress = MyCompressArity4::new(mmcs_perm);
             let val_mmcs = MyMmcsArity4::new(hash, compress, fp.cap_height);
 
-            let num_queries = security_level
-                .checked_sub(fp.query_pow_bits)
-                .and_then(|remaining| (fp.log_blowup != 0).then_some(remaining / fp.log_blowup))
-                .expect("FRI security level must cover query PoW and use nonzero blowup");
+            let num_queries =
+                checked_num_queries(security_level, fp.query_pow_bits, fp.log_blowup)?;
 
             let fri_params = FriParameters {
                 max_log_arity: fp.max_log_arity,
@@ -1344,30 +1342,24 @@ macro_rules! arity4_mixed_config_impl {
                 query_proof_of_work_bits: fp.query_pow_bits,
                 mmcs: ChallengeMmcsArity4::new(val_mmcs.clone()),
             };
-            (val_mmcs, fri_params)
+            Ok((val_mmcs, fri_params))
         }
 
         #[allow(dead_code)]
         fn create_config_arity4(fp: &FriParams, security_level: usize) -> MyConfigArity4 {
-            let (val_mmcs, fri_params) = create_fri_instance_arity4(fp, security_level);
+            let (val_mmcs, fri_params) = create_fri_instance_arity4(fp, security_level)
+                .expect("FRI example parameters must have a valid query count");
             let pcs = MyPcsArity4::new(Dft::default(), val_mmcs, fri_params);
             MyConfigArity4::new(pcs, Challenger::new($default_perm()))
         }
 
-        fn create_fri_verifier_params_arity4(
-            fp: &FriParams,
-            security_level: usize,
-        ) -> FriVerifierParams {
-            let num_queries = security_level
-                .checked_sub(fp.query_pow_bits)
-                .and_then(|remaining| (fp.log_blowup != 0).then_some(remaining / fp.log_blowup))
-                .expect("FRI security level must cover query PoW and use nonzero blowup");
+        fn create_fri_verifier_params_arity4(native: NativeFriParams) -> FriVerifierParams {
             FriVerifierParams::with_mmcs(
-                fp.log_blowup,
-                fp.log_final_poly_len,
-                fp.commit_pow_bits,
-                fp.query_pow_bits,
-                num_queries,
+                native.log_blowup(),
+                native.log_final_poly_len(),
+                native.commit_pow_bits(),
+                native.query_pow_bits(),
+                native.num_queries(),
                 $poseidon2_config_arity4,
             )
         }
@@ -1377,13 +1369,14 @@ macro_rules! arity4_mixed_config_impl {
             security_level: usize,
             disable_recompose_npo: bool,
         ) -> ConfigWithFriParamsArity4 {
-            let (val_mmcs, fri_params) = create_fri_instance_arity4(fp, security_level);
+            let (val_mmcs, fri_params) = create_fri_instance_arity4(fp, security_level)
+                .expect("FRI example parameters must have a valid query count");
             let native_fri_params = NativeFriParams::try_from_native::<F, _>(&fri_params).unwrap();
             let restore_mmcs = val_mmcs.clone();
             let pcs = MyPcsArity4::new(Dft::default(), val_mmcs, fri_params.clone());
             ConfigWithFriParamsArity4 {
                 config: Arc::new(MyConfigArity4::new(pcs, Challenger::new($default_perm()))),
-                fri_verifier_params: create_fri_verifier_params_arity4(fp, security_level),
+                fri_verifier_params: create_fri_verifier_params_arity4(native_fri_params),
                 native_fri_params,
                 disable_recompose_npo,
                 fri_instance: Arc::new((restore_mmcs, fri_params)),
