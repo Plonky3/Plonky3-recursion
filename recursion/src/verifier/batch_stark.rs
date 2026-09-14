@@ -580,6 +580,7 @@ where
     let mut preprocessed_widths = Vec::with_capacity(airs.len());
     let mut log_quotient_degrees = Vec::with_capacity(n_instances);
     let mut quotient_degrees = Vec::with_capacity(n_instances);
+    let mut permutation_widths = Vec::with_capacity(n_instances);
     for (i, (air, instance)) in airs.iter().zip(instances.iter()).enumerate() {
         let OpenedValuesTargets {
             trace_local_targets,
@@ -620,6 +621,27 @@ where
                 trace_next_targets.len()
             )));
         }
+
+        let expected_permutation_width = if all_lookups[i].is_empty() {
+            0
+        } else {
+            (all_lookups[i].len() + 1)
+                .checked_mul(SC::Challenge::DIMENSION)
+                .ok_or_else(|| {
+                    VerificationError::InvalidProofShape(
+                        "packed permutation width overflows".to_string(),
+                    )
+                })?
+        };
+        if instance.permutation_local_targets.len() != expected_permutation_width
+            || instance.permutation_next_targets.len() != expected_permutation_width
+        {
+            return Err(VerificationError::InvalidProofShape(
+                "flattened permutation opening width does not match packed lookup metadata"
+                    .to_string(),
+            ));
+        }
+        permutation_widths.push(expected_permutation_width);
 
         // Single-terminal layout: exactly one terminal is present iff the AIR declares any lookup.
         // Derive from the AIR directly — `common.lookups` is prover-supplied and cannot be
@@ -677,22 +699,20 @@ where
 
     let layout_instances: Vec<InstanceLayout> = airs
         .iter()
-        .zip(instances.iter())
         .zip(degree_bits.iter().zip(log_quotient_degrees.iter()))
         .enumerate()
-        .map(
-            |(i, ((air, instance), (&ext_log, &quotient_log)))| InstanceLayout {
-                ext_log,
-                base_log: ext_log - config.is_zk(),
-                trace_width: air.width(),
-                trace_next: air.opens_trace_next(),
-                pre_width: preprocessed_widths[i],
-                pre_next: air.opens_preprocessed_next(),
-                quotient_log,
-                quotient_chunks: quotient_degrees[i],
-                permutation_width: instance.permutation_local_targets.len(),
-            },
-        )
+        .map(|(i, (air, (&ext_log, &quotient_log)))| InstanceLayout {
+            ext_log,
+            base_log: ext_log - config.is_zk(),
+            challenge_width: SC::Challenge::DIMENSION,
+            trace_width: air.width(),
+            trace_next: air.opens_trace_next(),
+            pre_width: preprocessed_widths[i],
+            pre_next: air.opens_preprocessed_next(),
+            quotient_log,
+            quotient_chunks: quotient_degrees[i],
+            permutation_width: permutation_widths[i],
+        })
         .collect();
     let preprocessed_order = common
         .preprocessed
@@ -848,21 +868,24 @@ where
     let mut coms_to_verify = Vec::with_capacity(5);
 
     if let Some(random_commit) = &commitments_targets.random_commit {
-        coms_to_verify.push((
-            random_commit.clone(),
-            ext_trace_domains
-                .iter()
-                .zip(instances.iter())
-                .map(|(domain, inst)| {
-                    let random_vals = inst
-                        .opened_values_no_lookups
-                        .random_targets
-                        .as_ref()
-                        .ok_or(VerificationError::RandomizationError)?;
-                    Ok((*domain, vec![(zeta, random_vals.clone())]))
-                })
-                .collect::<Result<Vec<_>, VerificationError>>()?,
-        ));
+        let random_round = layout
+            .matrices(CommitmentRole::Random)
+            .map(|matrix| {
+                let MatrixRoute::Random { instance } = matrix.route else {
+                    unreachable!("random planner emits only random routes")
+                };
+                let random_vals = instances[instance]
+                    .opened_values_no_lookups
+                    .random_targets
+                    .as_ref()
+                    .ok_or(VerificationError::RandomizationError)?;
+                Ok((
+                    ext_trace_domains[instance],
+                    vec![(zeta, random_vals.clone())],
+                ))
+            })
+            .collect::<Result<Vec<_>, VerificationError>>()?;
+        coms_to_verify.push((random_commit.clone(), random_round));
     }
 
     // Trace-domain generator for `zeta_next = zeta * g`, where `g` advances the domain by one row.
@@ -877,26 +900,27 @@ where
             Ok::<_, VerificationError>(next_point * first_point.inverse())
         };
 
-    let trace_round: Vec<_> = ext_trace_domains
-        .iter()
-        .zip(trace_domains.iter())
-        .zip(instances.iter())
-        .zip(airs.iter())
-        .map(|(((ext_dom, trace_dom), inst), air)| {
+    let trace_round: Vec<_> = layout
+        .matrices(CommitmentRole::Trace)
+        .map(|matrix| {
+            let MatrixRoute::Trace { instance } = matrix.route else {
+                unreachable!("trace planner emits only trace routes")
+            };
+            let inst = &instances[instance];
             let mut points = vec![(
                 zeta,
                 inst.opened_values_no_lookups.trace_local_targets.clone(),
             )];
-            // The `zeta_next` opening is present only when the AIR accesses the next row.
-            if air.opens_trace_next() {
-                let generator_const = circuit.define_const(trace_domain_generator(trace_dom)?);
+            if matrix.point_count == 2 {
+                let generator_const =
+                    circuit.define_const(trace_domain_generator(&trace_domains[instance])?);
                 let zeta_next = circuit.mul(zeta, generator_const);
                 points.push((
                     zeta_next,
                     inst.opened_values_no_lookups.trace_next_targets.clone(),
                 ));
             }
-            Ok((*ext_dom, points))
+            Ok((ext_trace_domains[instance], points))
         })
         .collect::<Result<_, VerificationError>>()?;
     coms_to_verify.push((commitments_targets.trace_targets.clone(), trace_round));
@@ -930,23 +954,33 @@ where
         .collect();
 
     let mut quotient_round = Vec::with_capacity(
-        randomized_quotient_domains
+        layout
+            .instances
             .iter()
-            .map(|domains| domains.len())
+            .map(|instance| instance.quotient_chunks)
             .sum(),
     );
-    for (domains, inst) in randomized_quotient_domains.iter().zip(instances.iter()) {
-        if domains.len() != inst.opened_values_no_lookups.quotient_chunks_targets.len() {
-            return Err(VerificationError::InvalidProofShape(
-                "Quotient chunk count mismatch across domains".to_string(),
-            ));
-        }
-        for (domain, values) in domains
-            .iter()
-            .zip(inst.opened_values_no_lookups.quotient_chunks_targets.iter())
-        {
-            quotient_round.push((*domain, vec![(zeta, values.clone())]));
-        }
+    for matrix in layout.matrices(CommitmentRole::Quotient) {
+        let MatrixRoute::Quotient { instance, chunk } = matrix.route else {
+            unreachable!("quotient planner emits only quotient routes")
+        };
+        let domain = randomized_quotient_domains[instance]
+            .get(chunk)
+            .ok_or_else(|| {
+                VerificationError::InvalidProofShape(
+                    "Quotient chunk count mismatch across domains".to_string(),
+                )
+            })?;
+        let values = instances[instance]
+            .opened_values_no_lookups
+            .quotient_chunks_targets
+            .get(chunk)
+            .ok_or_else(|| {
+                VerificationError::InvalidProofShape(
+                    "Quotient chunk count mismatch across domains".to_string(),
+                )
+            })?;
+        quotient_round.push((*domain, vec![(zeta, values.clone())]));
     }
     coms_to_verify.push((
         commitments_targets.quotient_chunks_targets.clone(),
@@ -956,7 +990,14 @@ where
     if let Some(global) = &common.preprocessed {
         let mut pre_round = Vec::with_capacity(global.matrix_to_instance.len());
 
-        for (matrix_index, &inst_idx) in global.matrix_to_instance.iter().enumerate() {
+        for matrix in layout.matrices(CommitmentRole::Preprocessed) {
+            let MatrixRoute::Preprocessed {
+                instance: inst_idx,
+                matrix: matrix_index,
+            } = matrix.route
+            else {
+                unreachable!("preprocessed planner emits only preprocessed routes")
+            };
             let pre_w = preprocessed_widths[inst_idx];
             if pre_w == 0 {
                 return Err(VerificationError::InvalidProofShape(
@@ -999,7 +1040,7 @@ where
             let generator_const = circuit.define_const(trace_domain_generator(trace_dom)?);
             let zeta_next = circuit.mul(zeta, generator_const);
 
-            if airs[inst_idx].opens_preprocessed_next() {
+            if matrix.point_count == 2 {
                 let next = inst
                     .opened_values_no_lookups
                     .preprocessed_next_targets
@@ -1026,31 +1067,24 @@ where
 
         let mut permutation_round = Vec::with_capacity(ext_trace_domains.len());
 
-        for (i, ext_dom) in ext_trace_domains.iter().enumerate() {
+        for matrix in layout.matrices(CommitmentRole::Permutation) {
+            let MatrixRoute::Permutation { instance: i } = matrix.route else {
+                unreachable!("permutation planner emits only permutation routes")
+            };
+            let ext_dom = &ext_trace_domains[i];
             let inst = &instances[i];
             let permutation_local = &inst.permutation_local_targets;
             let permutation_next = &inst.permutation_next_targets;
-
-            if permutation_local.len() != permutation_next.len() {
-                return Err(VerificationError::InvalidProofShape(
-                    "Mismatch between the lengths of permutation local and next opened values"
-                        .to_string(),
-                ));
-            }
-
-            if !permutation_local.is_empty() {
-                let trace_dom = &trace_domains[i];
-                let generator_const = circuit.define_const(trace_domain_generator(trace_dom)?);
-                let zeta_next = circuit.mul(zeta, generator_const);
-
-                permutation_round.push((
-                    *ext_dom,
-                    vec![
-                        (zeta, permutation_local.clone()),
-                        (zeta_next, permutation_next.clone()),
-                    ],
-                ));
-            }
+            let trace_dom = &trace_domains[i];
+            let generator_const = circuit.define_const(trace_domain_generator(trace_dom)?);
+            let zeta_next = circuit.mul(zeta, generator_const);
+            permutation_round.push((
+                *ext_dom,
+                vec![
+                    (zeta, permutation_local.clone()),
+                    (zeta_next, permutation_next.clone()),
+                ],
+            ));
         }
 
         coms_to_verify.push((permutation_commit, permutation_round));
@@ -1064,20 +1098,12 @@ where
     // Fiat-Shamir transcript in sync with the prover/verifier.
     if SC::Pcs::PRE_OBSERVES_OPENED_VALUES {
         let fri_random_rounds = SC::Pcs::get_fri_random_opened_values(&proof_targets.opening_proof);
-        let preprocessed_next: Vec<bool> = airs
-            .iter()
-            .map(|air| air.opens_preprocessed_next())
-            .collect();
         observe_opened_values_circuit::<SC, CP, WIDTH, RATE>(
             circuit,
             &mut challenger,
             instances,
-            &quotient_degrees,
             fri_random_rounds,
-            common.preprocessed.is_some(),
-            is_lookup,
-            Some(&layout),
-            &preprocessed_next,
+            &layout,
         );
     }
 
@@ -1349,12 +1375,8 @@ fn observe_opened_values_circuit<
     circuit: &mut CircuitBuilder<SC::Challenge>,
     challenger: &mut CircuitChallenger<WIDTH, RATE, CP>,
     instances: &[OpenedValuesTargetsWithLookups<SC>],
-    quotient_degrees: &[usize],
     fri_random_rounds: &[Vec<Vec<Vec<Target>>>],
-    has_preprocessed: bool,
-    is_lookup: bool,
-    preprocessed_layout: Option<&NativeStarkLayout<'_>>,
-    preprocessed_next: &[bool],
+    layout: &NativeStarkLayout<'_>,
 ) where
     SC: StarkGenericConfig,
     Val<SC>: PrimeField64,
@@ -1375,13 +1397,14 @@ fn observe_opened_values_circuit<
     let mut round_idx: usize = 0;
 
     // 1. Random round (if ZK): for each instance (= mat), one point at zeta.
-    let has_random_round = instances
-        .first()
-        .is_some_and(|i| i.opened_values_no_lookups.random_targets.is_some());
-    if has_random_round {
+    if layout.has_random {
         let rand_round = fri_random_rounds.get(round_idx);
-        for (mat_idx, inst) in instances.iter().enumerate() {
-            if let Some(random_vals) = &inst.opened_values_no_lookups.random_targets {
+        for (mat_idx, matrix) in layout.matrices(CommitmentRole::Random).enumerate() {
+            let MatrixRoute::Random { instance } = matrix.route else {
+                unreachable!("random planner emits only random routes")
+            };
+            if let Some(random_vals) = &instances[instance].opened_values_no_lookups.random_targets
+            {
                 let fri_rand = rand_round
                     .and_then(|r| r.get(mat_idx))
                     .and_then(|m| m.first());
@@ -1394,7 +1417,11 @@ fn observe_opened_values_circuit<
     // 2. Trace round: for each instance (= mat), two points (zeta, zeta_next).
     {
         let rand_round = fri_random_rounds.get(round_idx);
-        for (mat_idx, inst) in instances.iter().enumerate() {
+        for (mat_idx, matrix) in layout.matrices(CommitmentRole::Trace).enumerate() {
+            let MatrixRoute::Trace { instance } = matrix.route else {
+                unreachable!("trace planner emits only trace routes")
+            };
+            let inst = &instances[instance];
             let fri_rand_local = rand_round
                 .and_then(|r| r.get(mat_idx))
                 .and_then(|m| m.first());
@@ -1407,12 +1434,14 @@ fn observe_opened_values_circuit<
                 &inst.opened_values_no_lookups.trace_local_targets,
                 fri_rand_local,
             );
-            observe_point(
-                circuit,
-                challenger,
-                &inst.opened_values_no_lookups.trace_next_targets,
-                fri_rand_next,
-            );
+            if matrix.point_count == 2 {
+                observe_point(
+                    circuit,
+                    challenger,
+                    &inst.opened_values_no_lookups.trace_next_targets,
+                    fri_rand_next,
+                );
+            }
         }
         round_idx += 1;
     }
@@ -1420,32 +1449,25 @@ fn observe_opened_values_circuit<
     // 3. Quotient round: mats are flattened chunks across all instances, one point each.
     {
         let rand_round = fri_random_rounds.get(round_idx);
-        let mut flat_mat_idx: usize = 0;
-        for (inst, &qd) in instances.iter().zip(quotient_degrees.iter()) {
-            for chunk_values in inst
+        for (mat_idx, matrix) in layout.matrices(CommitmentRole::Quotient).enumerate() {
+            let MatrixRoute::Quotient { instance, chunk } = matrix.route else {
+                unreachable!("quotient planner emits only quotient routes")
+            };
+            let chunk_values = &instances[instance]
                 .opened_values_no_lookups
-                .quotient_chunks_targets
-                .iter()
-                .take(qd)
-            {
-                let fri_rand = rand_round
-                    .and_then(|r| r.get(flat_mat_idx))
-                    .and_then(|m| m.first());
-                observe_point(circuit, challenger, chunk_values, fri_rand);
-                flat_mat_idx += 1;
-            }
+                .quotient_chunks_targets[chunk];
+            let fri_rand = rand_round
+                .and_then(|r| r.get(mat_idx))
+                .and_then(|m| m.first());
+            observe_point(circuit, challenger, chunk_values, fri_rand);
         }
         round_idx += 1;
     }
 
     // 4. Preprocessed round (if present): mats are indexed by matrix_to_instance order.
-    if has_preprocessed {
+    if layout.has_preprocessed {
         let rand_round = fri_random_rounds.get(round_idx);
-        let mut mat_idx: usize = 0;
-        for matrix in preprocessed_layout
-            .expect("preprocessed round")
-            .matrices(CommitmentRole::Preprocessed)
-        {
+        for (mat_idx, matrix) in layout.matrices(CommitmentRole::Preprocessed).enumerate() {
             let MatrixRoute::Preprocessed {
                 instance: inst_idx, ..
             } = matrix.route
@@ -1461,63 +1483,82 @@ fn observe_opened_values_circuit<
                     .and_then(|r| r.get(mat_idx))
                     .and_then(|m| m.get(1));
                 observe_point(circuit, challenger, prep_local, fri_rand_local);
-                if preprocessed_next[inst_idx]
-                    && let Some(prep_next) =
-                        &inst.opened_values_no_lookups.preprocessed_next_targets
-                {
-                    observe_point(circuit, challenger, prep_next, fri_rand_next);
+                if matrix.point_count == 2 {
+                    let prep_next = &inst.opened_values_no_lookups.preprocessed_next_targets;
+                    if let Some(prep_next) = prep_next {
+                        observe_point(circuit, challenger, prep_next, fri_rand_next);
+                    }
                 }
-                mat_idx += 1;
             }
         }
         round_idx += 1;
     }
 
     // 5. Permutation round (if present): for each instance with non-empty permutation.
-    if is_lookup {
+    if layout.has_permutation {
         let rand_round = fri_random_rounds.get(round_idx);
-        let mut mat_idx: usize = 0;
-        for inst in instances {
-            if !inst.permutation_local_targets.is_empty() {
-                let fri_rand_local = rand_round
-                    .and_then(|r| r.get(mat_idx))
-                    .and_then(|m| m.first());
-                let fri_rand_next = rand_round
-                    .and_then(|r| r.get(mat_idx))
-                    .and_then(|m| m.get(1));
-                observe_point(
-                    circuit,
-                    challenger,
-                    &inst.permutation_local_targets,
-                    fri_rand_local,
-                );
-                if !inst.permutation_next_targets.is_empty() {
-                    observe_point(
-                        circuit,
-                        challenger,
-                        &inst.permutation_next_targets,
-                        fri_rand_next,
-                    );
-                }
-                mat_idx += 1;
-            }
+        for (mat_idx, matrix) in layout.matrices(CommitmentRole::Permutation).enumerate() {
+            let MatrixRoute::Permutation { instance } = matrix.route else {
+                unreachable!("permutation planner emits only permutation routes")
+            };
+            let inst = &instances[instance];
+            let fri_rand_local = rand_round
+                .and_then(|r| r.get(mat_idx))
+                .and_then(|m| m.first());
+            let fri_rand_next = rand_round
+                .and_then(|r| r.get(mat_idx))
+                .and_then(|m| m.get(1));
+            observe_point(
+                circuit,
+                challenger,
+                &inst.permutation_local_targets,
+                fri_rand_local,
+            );
+            observe_point(
+                circuit,
+                challenger,
+                &inst.permutation_next_targets,
+                fri_rand_next,
+            );
         }
     }
 }
 
 #[cfg(test)]
 mod create_alu_air_tests {
+    use alloc::vec;
+    use alloc::vec::Vec;
+
     use p3_air::BaseAir;
-    use p3_circuit_prover::air::PublicAir;
+    use p3_air::symbolic::AirLayout;
+    use p3_batch_stark::symbolic::get_log_num_quotient_chunks;
+    use p3_challenger::FieldChallenger;
+    use p3_circuit::CircuitBuilder;
+    use p3_circuit::ops::{Poseidon2Config, generate_poseidon2_trace, generate_recompose_trace};
+    use p3_circuit_prover::air::{AluAir, PublicAir};
+    use p3_circuit_prover::batch_stark_prover::lookups_for_circuit_table_air;
     use p3_circuit_prover::common::CircuitTableAir;
-    use p3_field::extension::QuinticTrinomialExtensionField;
+    use p3_circuit_prover::field_params::ExtractBinomialW;
+    use p3_commit::Pcs as PcsTrait;
+    use p3_field::coset::TwoAdicMultiplicativeCoset;
+    use p3_field::extension::{BinomialExtensionField, QuinticTrinomialExtensionField};
+    use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
+    use p3_fri::FriProof;
+    use p3_goldilocks::Goldilocks;
     use p3_koala_bear::KoalaBear;
     use p3_lookup::logup::LogUpGadget;
+    use p3_poseidon2_circuit_air::KoalaBearD4Width16;
+    use p3_symmetric::MerkleCap;
+    use p3_test_utils::goldilocks_params::MyConfig as GoldilocksRecursionConfig;
+    use p3_test_utils::koala_bear_quintic_params::MyConfig as KoalaBearQuinticRecursionConfig;
     use p3_uni_stark::{StarkGenericConfig, Val};
 
-    use super::{CircuitTablesAir, create_alu_air};
+    use super::{CircuitTablesAir, create_alu_air, observe_opened_values_circuit};
+    use crate::challenger::CircuitChallenger;
+    use crate::input_contract::stark_layout::{InstanceLayout, NativeStarkLayout};
     use crate::prepared::test_common::KoalaBearD4RecursionConfig;
-    use crate::traits::RecursiveAir;
+    use crate::traits::{RecursiveAir, RecursiveChallenger};
+    use crate::types::{OpenedValuesTargets, OpenedValuesTargetsWithLookups};
 
     /// A proof-controlled `alu_quintic_trinomial = false` against a quintic-trinomial `EF` has
     /// no binomial `W` to fall back to; this must be a rejected proof shape, not a panic.
@@ -1561,5 +1602,297 @@ mod create_alu_air_tests {
             <Config as StarkGenericConfig>::Challenge,
             LogUpGadget,
         >>::opens_preprocessed_next(&reconstructed));
+    }
+
+    fn assert_alu_metadata_parity<F, EF, const D: usize>(old: AluAir<F, D>, actual: AluAir<F, D>)
+    where
+        F: Field + p3_field::PrimeCharacteristicRing + Copy,
+        EF: p3_field::ExtensionField<F> + ExtractBinomialW<F>,
+    {
+        assert_eq!(BaseAir::<F>::width(&old), BaseAir::<F>::width(&actual));
+        assert_eq!(
+            BaseAir::<F>::preprocessed_width(&old),
+            BaseAir::<F>::preprocessed_width(&actual)
+        );
+        assert_eq!(
+            BaseAir::<F>::main_next_row_columns(&old),
+            BaseAir::<F>::main_next_row_columns(&actual)
+        );
+        assert_eq!(
+            BaseAir::<F>::preprocessed_next_row_columns(&old),
+            BaseAir::<F>::preprocessed_next_row_columns(&actual)
+        );
+    }
+
+    fn assert_alu_packed_metadata_parity<SC, const D: usize>(
+        old: AluAir<Val<SC>, D>,
+        actual: AluAir<Val<SC>, D>,
+    ) where
+        SC: StarkGenericConfig,
+        Val<SC>: p3_field::PrimeField,
+        SC::Challenge: p3_field::ExtensionField<Val<SC>>,
+        p3_uni_stark::SymbolicExpressionExt<Val<SC>, SC::Challenge>: p3_field::Algebra<p3_uni_stark::SymbolicExpression<Val<SC>>>
+            + p3_field::Algebra<SC::Challenge>,
+    {
+        let old_outer = CircuitTableAir::<SC, D>::Alu(old);
+        let actual_outer = CircuitTableAir::<SC, D>::Alu(actual);
+        let old_packed = lookups_for_circuit_table_air(&old_outer, 4, 0);
+        let actual_packed = lookups_for_circuit_table_air(&actual_outer, 4, 0);
+        assert_eq!(
+            postcard::to_allocvec(&old_packed).unwrap(),
+            postcard::to_allocvec(&actual_packed).unwrap()
+        );
+        let gadget = LogUpGadget::new();
+        let old_q = get_log_num_quotient_chunks(
+            &old_outer,
+            AirLayout::from_air(&old_outer),
+            4,
+            &old_packed,
+            0,
+            &gadget,
+        );
+        let actual_q = get_log_num_quotient_chunks(
+            &actual_outer,
+            AirLayout::from_air(&actual_outer),
+            4,
+            &actual_packed,
+            0,
+            &gadget,
+        );
+        assert_eq!(old_q, actual_q);
+        assert_eq!(
+            (old_packed.len() + 1) * SC::Challenge::DIMENSION,
+            (actual_packed.len() + 1) * SC::Challenge::DIMENSION
+        );
+    }
+
+    #[test]
+    fn lightweight_alu_metadata_matches_zero_preprocessed_d1_k2_k4() {
+        for k in [2, 4] {
+            let prep = vec![KoalaBear::ZERO; 8 * AluAir::<KoalaBear, 1>::preprocessed_lane_width()];
+            let old = AluAir::<KoalaBear, 1>::new_with_preprocessed(8, 2, prep, k);
+            let actual = create_alu_air::<KoalaBear, KoalaBear, 1>(8, 2, k, false).unwrap();
+            assert_alu_metadata_parity::<KoalaBear, KoalaBear, 1>(old.clone(), actual.clone());
+            assert_alu_packed_metadata_parity::<KoalaBearD4RecursionConfig, 1>(old, actual);
+        }
+    }
+
+    #[test]
+    fn lightweight_alu_metadata_matches_zero_preprocessed_d2_k2_k4() {
+        type F = Goldilocks;
+        type EF = BinomialExtensionField<F, 2>;
+        let w = EF::extract_w().expect("test extension has binomial W");
+        for k in [2, 4] {
+            let prep = vec![F::ZERO; 8 * AluAir::<F, 2>::preprocessed_lane_width()];
+            let old = AluAir::<F, 2>::new_binomial_with_preprocessed(8, 2, w, prep, k);
+            let actual = create_alu_air::<F, EF, 2>(8, 2, k, false).unwrap();
+            assert_alu_metadata_parity::<F, EF, 2>(old.clone(), actual.clone());
+            assert_alu_packed_metadata_parity::<GoldilocksRecursionConfig, 2>(old, actual);
+        }
+    }
+
+    #[test]
+    fn lightweight_alu_metadata_matches_zero_preprocessed_d4_k2_k4() {
+        type F = KoalaBear;
+        type EF = BinomialExtensionField<F, 4>;
+        let w = EF::extract_w().expect("test extension has binomial W");
+        for k in [2, 4] {
+            let prep = vec![F::ZERO; 8 * AluAir::<F, 4>::preprocessed_lane_width()];
+            let old = AluAir::<F, 4>::new_binomial_with_preprocessed(8, 2, w, prep, k);
+            let actual = create_alu_air::<F, EF, 4>(8, 2, k, false).unwrap();
+            assert_alu_metadata_parity::<F, EF, 4>(old.clone(), actual.clone());
+            assert_alu_packed_metadata_parity::<KoalaBearD4RecursionConfig, 4>(old, actual);
+        }
+    }
+
+    #[test]
+    fn lightweight_alu_metadata_matches_zero_preprocessed_d5_k2_k4() {
+        type F = KoalaBear;
+        type EF = QuinticTrinomialExtensionField<F>;
+        for k in [2, 4] {
+            let prep = vec![F::ZERO; 8 * AluAir::<F, 5>::preprocessed_lane_width()];
+            let old = AluAir::<F, 5>::new_quintic_trinomial_with_preprocessed(8, 2, prep, k);
+            let actual = create_alu_air::<F, EF, 5>(8, 2, k, true).unwrap();
+            assert_alu_metadata_parity::<F, EF, 5>(old.clone(), actual.clone());
+            assert_alu_packed_metadata_parity::<KoalaBearQuinticRecursionConfig, 5>(old, actual);
+        }
+    }
+
+    #[test]
+    fn reordered_preprocessed_observation_matches_native_replay() {
+        type Config = p3_test_utils::koala_bear_params::MyConfig;
+        type F = Val<Config>;
+        type EF = <Config as StarkGenericConfig>::Challenge;
+        const WIDTH: usize = 16;
+        const RATE: usize = 8;
+
+        let config = p3_test_utils::koala_bear_params::make_test_config();
+        let domain = TwoAdicMultiplicativeCoset::new(F::GENERATOR, 3).unwrap();
+        let commitment = MerkleCap::new(vec![[F::ZERO; 8]]);
+        let pre_commitment = commitment.clone();
+        let coms = vec![
+            (
+                commitment.clone(),
+                vec![
+                    (domain, vec![(EF::ZERO, vec![EF::from_u64(3)])]),
+                    (domain, vec![(EF::ZERO, vec![EF::from_u64(4)])]),
+                ],
+            ),
+            (
+                commitment.clone(),
+                vec![
+                    (domain, vec![(EF::ZERO, vec![EF::from_u64(5)])]),
+                    (domain, vec![(EF::ZERO, vec![EF::from_u64(6)])]),
+                ],
+            ),
+            (
+                pre_commitment,
+                vec![
+                    (
+                        domain,
+                        vec![(EF::ZERO, vec![EF::from_u64(21), EF::from_u64(22)])],
+                    ),
+                    (domain, vec![(EF::ZERO, vec![EF::from_u64(31)])]),
+                ],
+            ),
+        ];
+        let mut native = config.initialise_challenger();
+        crate::generation::observe_opened_values::<Config>(&mut native, &coms);
+
+        let mut circuit = CircuitBuilder::<EF>::new();
+        circuit.enable_poseidon2_perm::<KoalaBearD4Width16, _>(
+            generate_poseidon2_trace::<EF, KoalaBearD4Width16>,
+            p3_test_utils::koala_bear_params::default_koalabear_poseidon2_16(),
+        );
+        circuit.enable_recompose::<F>(generate_recompose_trace::<F, EF>);
+        let mut instances = Vec::new();
+        for (trace, pre) in [(3usize, 31usize), (4, 21)] {
+            let mut define = |value: usize| circuit.define_const(EF::from_usize(value));
+            instances.push(OpenedValuesTargetsWithLookups {
+                opened_values_no_lookups: OpenedValuesTargets {
+                    trace_local_targets: vec![define(trace)],
+                    trace_next_targets: Vec::new(),
+                    preprocessed_local_targets: Some(if pre == 31 {
+                        vec![define(31)]
+                    } else {
+                        vec![define(21), define(22)]
+                    }),
+                    preprocessed_next_targets: None,
+                    quotient_chunks_targets: vec![vec![define(trace + 2)]],
+                    random_targets: None,
+                    _phantom: core::marker::PhantomData,
+                },
+                permutation_local_targets: Vec::new(),
+                permutation_next_targets: Vec::new(),
+            });
+        }
+        let map = [1usize, 0];
+        let layout = NativeStarkLayout::new(
+            vec![
+                InstanceLayout {
+                    ext_log: 3,
+                    base_log: 3,
+                    challenge_width: 4,
+                    trace_width: 1,
+                    trace_next: false,
+                    pre_width: 1,
+                    pre_next: false,
+                    quotient_log: 0,
+                    quotient_chunks: 1,
+                    permutation_width: 0,
+                },
+                InstanceLayout {
+                    ext_log: 3,
+                    base_log: 3,
+                    challenge_width: 4,
+                    trace_width: 1,
+                    trace_next: false,
+                    pre_width: 2,
+                    pre_next: false,
+                    quotient_log: 0,
+                    quotient_chunks: 1,
+                    permutation_width: 0,
+                },
+            ],
+            &map,
+            false,
+            true,
+            false,
+        )
+        .unwrap();
+        let mut circuit_challenger =
+            CircuitChallenger::<WIDTH, RATE, Poseidon2Config>::new_koalabear();
+        observe_opened_values_circuit::<Config, Poseidon2Config, WIDTH, RATE>(
+            &mut circuit,
+            &mut circuit_challenger,
+            &instances,
+            &[],
+            &layout,
+        );
+        let native_a = native.sample_algebra_element::<EF>();
+        let circuit_a =
+            RecursiveChallenger::<F, EF>::sample_ext(&mut circuit_challenger, &mut circuit);
+        let expected_a = circuit.define_const(native_a);
+        circuit.connect(circuit_a, expected_a);
+        let native_b = native.sample_algebra_element::<EF>();
+        let circuit_b =
+            RecursiveChallenger::<F, EF>::sample_ext(&mut circuit_challenger, &mut circuit);
+        let expected_b = circuit.define_const(native_b);
+        circuit.connect(circuit_b, expected_b);
+        circuit.build().unwrap().runner().run().unwrap();
+    }
+
+    #[test]
+    fn native_pcs_observes_openings_before_typed_count_error() {
+        type Config = p3_test_utils::koala_bear_params::MyConfig;
+        type F = Val<Config>;
+        type EF = <Config as StarkGenericConfig>::Challenge;
+        type PcsType = <Config as StarkGenericConfig>::Pcs;
+        type Challenger = <Config as StarkGenericConfig>::Challenger;
+        let config = p3_test_utils::koala_bear_params::make_test_config();
+        let domain = TwoAdicMultiplicativeCoset::new(F::GENERATOR, 3).unwrap();
+        let commitment = MerkleCap::new(vec![[F::ZERO; 8]]);
+        let coms = vec![(
+            commitment.clone(),
+            vec![(domain, vec![(EF::ZERO, vec![EF::from_u64(11)])])],
+        )];
+        let probe: <PcsType as PcsTrait<EF, Challenger>>::Proof = FriProof {
+            commit_phase_commits: vec![commitment],
+            commit_pow_witnesses: Vec::new(),
+            input_openings: Vec::new(),
+            commit_phase_openings: Vec::new(),
+            final_poly: Vec::new(),
+            query_pow_witness: F::ZERO,
+        };
+        let mut challenger = config.initialise_challenger();
+        let result = <PcsType as PcsTrait<EF, Challenger>>::verify(
+            config.pcs(),
+            coms.clone(),
+            &probe,
+            &mut challenger,
+        );
+        assert!(matches!(
+            result,
+            Err(
+                p3_fri::verifier::FriError::CommitPhaseOpeningsCountMismatch {
+                    expected: 1,
+                    got: 0
+                }
+            )
+        ));
+
+        // The count error is deliberately reached after the PCS has absorbed
+        // every supplied opening and sampled its first fold challenge.  The
+        // replay consumer must therefore discard exactly that one challenge
+        // before its subsequent samples can be compared with native PCS.
+        let mut replay = config.initialise_challenger();
+        crate::generation::observe_opened_values::<Config>(&mut replay, &coms);
+        let _replay_alpha = replay.sample_algebra_element::<EF>();
+        for _ in 0..2 {
+            assert_eq!(
+                challenger.sample_algebra_element::<EF>(),
+                replay.sample_algebra_element::<EF>()
+            );
+        }
     }
 }

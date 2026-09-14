@@ -333,6 +333,23 @@ where
 
     let is_lookup = commitments.permutation.is_some();
 
+    let permutation_widths: Vec<usize> = all_lookups
+        .iter()
+        .map(|lookups| {
+            if lookups.is_empty() {
+                Ok(0)
+            } else {
+                lookups
+                    .len()
+                    .checked_add(1)
+                    .and_then(|width| width.checked_mul(SC::Challenge::DIMENSION))
+                    .ok_or(GenerationError::InvalidProofShape(
+                        "packed permutation width overflows",
+                    ))
+            }
+        })
+        .collect::<Result<_, _>>()?;
+
     let layout_instances: Vec<InstanceLayout> = airs
         .iter()
         .zip(degree_bits.iter().zip(log_quotient_degrees.iter()))
@@ -340,15 +357,27 @@ where
         .map(|(i, (air, (&ext_log, &quotient_log)))| InstanceLayout {
             ext_log,
             base_log: ext_log - config.is_zk(),
+            challenge_width: SC::Challenge::DIMENSION,
             trace_width: air.width(),
             trace_next: !p3_air::BaseAir::<Val<SC>>::main_next_row_columns(air).is_empty(),
             pre_width: preprocessed_widths[i],
             pre_next: !p3_air::BaseAir::<Val<SC>>::preprocessed_next_row_columns(air).is_empty(),
             quotient_log,
             quotient_chunks: quotient_degrees[i],
-            permutation_width: 0,
+            permutation_width: permutation_widths[i],
         })
         .collect();
+
+    for (i, instance) in opened_values.instances.iter().enumerate() {
+        let expected_permutation_width = layout_instances[i].permutation_width;
+        if instance.permutation_local.len() != expected_permutation_width
+            || instance.permutation_next.len() != expected_permutation_width
+        {
+            return Err(GenerationError::InvalidProofShape(
+                "permutation opening width does not match packed lookup metadata",
+            ));
+        }
+    }
     let preprocessed_order = common_data
         .preprocessed
         .as_ref()
@@ -361,6 +390,35 @@ where
         is_lookup,
     )
     .map_err(|_| GenerationError::InvalidProofShape("invalid STARK opening layout"))?;
+
+    for (i, instance) in opened_values.instances.iter().enumerate() {
+        let shape = layout.instances[i];
+        let pre_local_len = instance
+            .base_opened_values
+            .preprocessed_local
+            .as_ref()
+            .map_or(0, Vec::len);
+        let pre_next_len = instance
+            .base_opened_values
+            .preprocessed_next
+            .as_ref()
+            .map_or(0, Vec::len);
+        let trace_next_len = instance
+            .base_opened_values
+            .trace_next
+            .as_ref()
+            .map_or(0, Vec::len);
+        if instance.base_opened_values.trace_local.len() != shape.trace_width
+            || trace_next_len != shape.trace_width * usize::from(shape.trace_next)
+            || pre_local_len != shape.pre_width
+            || pre_next_len != shape.pre_width * usize::from(shape.pre_next)
+            || instance.base_opened_values.quotient_chunks.len() != shape.quotient_chunks
+        {
+            return Err(GenerationError::InvalidProofShape(
+                "opened value widths do not match the validated STARK layout",
+            ));
+        }
+    }
 
     // Sample the batch's single permutation challenge pair on the transcript challenger. This has
     // the same transcript effect as the native `sample_perm_challenges` (two `sample_algebra_element`
@@ -403,39 +461,46 @@ where
     let mut coms_to_verify = Vec::with_capacity(5);
 
     if let Some(random_commit) = &commitments.random {
-        let random_round = ext_trace_domains
-            .iter()
-            .zip(opened_values.instances.iter())
-            .map(|(domain, inst)| {
-                let random_vals = inst
+        let random_round = layout
+            .matrices(CommitmentRole::Random)
+            .map(|matrix| {
+                let MatrixRoute::Random { instance } = matrix.route else {
+                    unreachable!("random planner emits only random routes")
+                };
+                let random_vals = opened_values.instances[instance]
                     .base_opened_values
                     .random
                     .as_ref()
                     .ok_or(GenerationError::RandomizationError)?;
-                Ok((*domain, vec![(zeta, random_vals.clone())]))
+                Ok((
+                    ext_trace_domains[instance],
+                    vec![(zeta, random_vals.clone())],
+                ))
             })
             .collect::<Result<Vec<_>, GenerationError>>()?;
         coms_to_verify.push((random_commit.clone(), random_round));
     }
 
-    let trace_round = ext_trace_domains
-        .iter()
-        .zip(trace_domains.iter())
-        .zip(opened_values.instances.iter())
-        .map(|((ext_dom, trace_dom), inst)| {
-            // The `zeta_next` opening is present only when the AIR accesses the next row
-            // (mirrors the native prover's `main_next_row_columns` gating).
+    let trace_round = layout
+        .matrices(CommitmentRole::Trace)
+        .map(|matrix| {
+            let MatrixRoute::Trace { instance } = matrix.route else {
+                unreachable!("trace planner emits only trace routes")
+            };
+            let inst = &opened_values.instances[instance];
             let mut points = vec![(zeta, inst.base_opened_values.trace_local.clone())];
-            if let Some(trace_next) = &inst.base_opened_values.trace_next {
-                let zeta_next =
-                    trace_dom
-                        .next_point(zeta)
-                        .ok_or(GenerationError::InvalidProofShape(
-                            "trace domain lacks next point",
-                        ))?;
+            if matrix.point_count == 2 {
+                let trace_next = inst.base_opened_values.trace_next.as_ref().ok_or(
+                    GenerationError::InvalidProofShape(
+                        "AIR opens the next trace row but the proof carries no such opening",
+                    ),
+                )?;
+                let zeta_next = trace_domains[instance].next_point(zeta).ok_or(
+                    GenerationError::InvalidProofShape("trace domain lacks next point"),
+                )?;
                 points.push((zeta_next, trace_next.clone()));
             }
-            Ok((*ext_dom, points))
+            Ok((ext_trace_domains[instance], points))
         })
         .collect::<Result<Vec<_>, GenerationError>>()?;
     coms_to_verify.push((commitments.main.clone(), trace_round));
@@ -468,27 +533,26 @@ where
         })
         .collect();
 
-    let mut quotient_round = Vec::with_capacity(
-        randomized_quotient_domains
-            .iter()
-            .map(|domains| domains.len())
-            .sum(),
-    );
-    for (domains, inst) in randomized_quotient_domains
-        .iter()
-        .zip(opened_values.instances.iter())
-    {
-        if inst.base_opened_values.quotient_chunks.len() != domains.len() {
-            return Err(GenerationError::InvalidProofShape(
+    let mut quotient_round =
+        Vec::with_capacity(layout.instances.iter().map(|i| i.quotient_chunks).sum());
+    for matrix in layout.matrices(CommitmentRole::Quotient) {
+        let MatrixRoute::Quotient { instance, chunk } = matrix.route else {
+            unreachable!("quotient planner emits only quotient routes")
+        };
+        let domains = &randomized_quotient_domains[instance];
+        let values = opened_values.instances[instance]
+            .base_opened_values
+            .quotient_chunks
+            .get(chunk)
+            .ok_or(GenerationError::InvalidProofShape(
                 "quotient chunk count mismatch",
-            ));
-        }
-        for (domain, values) in domains
-            .iter()
-            .zip(inst.base_opened_values.quotient_chunks.iter())
-        {
-            quotient_round.push((*domain, vec![(zeta, values.clone())]));
-        }
+            ))?;
+        let domain = domains
+            .get(chunk)
+            .ok_or(GenerationError::InvalidProofShape(
+                "quotient chunk count mismatch",
+            ))?;
+        quotient_round.push((*domain, vec![(zeta, values.clone())]));
     }
     coms_to_verify.push((commitments.quotient_chunks.clone(), quotient_round));
 
@@ -551,32 +615,22 @@ where
 
     if is_lookup {
         let permutation_commit = commitments.permutation.clone().unwrap();
-        let mut permutation_round = Vec::with_capacity(ext_trace_domains.len());
-        for (i, (ext_dom, inst_opened_vals)) in ext_trace_domains
-            .iter()
-            .zip(opened_values.instances.iter())
-            .enumerate()
-        {
-            if inst_opened_vals.permutation_local.len() != inst_opened_vals.permutation_next.len() {
-                return Err(GenerationError::InvalidProofShape(
-                    "Permutation opened values length mismatch",
-                ));
-            }
-            if !inst_opened_vals.permutation_local.is_empty() {
-                let zeta_next =
-                    trace_domains[i]
-                        .next_point(zeta)
-                        .ok_or(GenerationError::InvalidProofShape(
-                            "Missing preprocessed instance metadata",
-                        ))?;
-                permutation_round.push((
-                    *ext_dom,
-                    vec![
-                        (zeta, inst_opened_vals.permutation_local.clone()),
-                        (zeta_next, inst_opened_vals.permutation_next.clone()),
-                    ],
-                ));
-            }
+        let mut permutation_round = Vec::with_capacity(layout.instances.len());
+        for matrix in layout.matrices(CommitmentRole::Permutation) {
+            let MatrixRoute::Permutation { instance } = matrix.route else {
+                unreachable!("permutation planner emits only permutation routes")
+            };
+            let inst_opened_vals = &opened_values.instances[instance];
+            let zeta_next = trace_domains[instance].next_point(zeta).ok_or(
+                GenerationError::InvalidProofShape("permutation domain lacks next point"),
+            )?;
+            permutation_round.push((
+                ext_trace_domains[instance],
+                vec![
+                    (zeta, inst_opened_vals.permutation_local.clone()),
+                    (zeta_next, inst_opened_vals.permutation_next.clone()),
+                ],
+            ));
         }
         coms_to_verify.push((permutation_commit, permutation_round));
     }
@@ -651,6 +705,40 @@ where
         .map(|domain| pcs.natural_domain_for_degree(domain.size() << is_zk))
         .collect();
 
+    let layout = NativeStarkLayout::new(
+        vec![InstanceLayout {
+            ext_log: degree_bits,
+            base_log: degree_bits
+                .checked_sub(is_zk)
+                .ok_or(GenerationError::InvalidProofShape(
+                    "extended degree smaller than zk adjustment",
+                ))?,
+            challenge_width: SC::Challenge::DIMENSION,
+            trace_width: air.width(),
+            trace_next: air.opens_trace_next(),
+            pre_width: preprocessed_width,
+            pre_next: air.opens_preprocessed_next(),
+            quotient_log: log_quotient_degree,
+            quotient_chunks: quotient_degree,
+            permutation_width: 0,
+        }],
+        if preprocessed_width > 0 { &[0] } else { &[] },
+        commitments.random.is_some(),
+        preprocessed_width > 0,
+        false,
+    )
+    .map_err(|_| GenerationError::InvalidProofShape("invalid STARK opening layout"))?;
+
+    if opened_values.trace_local.len() != air.width()
+        || opened_values.trace_next.as_ref().map_or(0, Vec::len)
+            != usize::from(air.opens_trace_next()) * air.width()
+        || opened_values.quotient_chunks.len() != quotient_degree
+    {
+        return Err(GenerationError::InvalidProofShape(
+            "opened value widths do not match the validated STARK layout",
+        ));
+    }
+
     let mut challenger = config.initialise_challenger();
     challenger.observe(Val::<SC>::from_usize(degree_bits));
     challenger.observe(Val::<SC>::from_usize(degree_bits - is_zk));
@@ -676,22 +764,30 @@ where
                 "trace domain lacks next point",
             ))?;
 
-    let mut coms_to_verify = if let Some(random_commit) = &commitments.random {
+    let mut coms_to_verify = Vec::with_capacity(layout.commitment_count());
+    for matrix in layout.matrices(CommitmentRole::Random) {
+        let MatrixRoute::Random { .. } = matrix.route else {
+            unreachable!("random planner emits only random routes")
+        };
         let random_values = opened_values
             .random
             .as_ref()
             .ok_or(GenerationError::RandomizationError)?;
-        vec![(
-            random_commit.clone(),
+        coms_to_verify.push((
+            commitments
+                .random
+                .clone()
+                .ok_or(GenerationError::RandomizationError)?,
             vec![(trace_domain, vec![(zeta, random_values.clone())])],
-        )]
-    } else {
-        vec![]
-    };
+        ));
+    }
 
     let mut trace_points = vec![(zeta, opened_values.trace_local.clone())];
-    // The `zeta_next` opening is present only when the AIR accesses the next row.
-    if air.opens_trace_next() {
+    if layout
+        .matrices(CommitmentRole::Trace)
+        .next()
+        .is_some_and(|m| m.point_count == 2)
+    {
         let trace_next =
             opened_values
                 .trace_next
@@ -711,14 +807,19 @@ where
             "quotient chunk count mismatch",
         ));
     }
-    coms_to_verify.push((
-        commitments.quotient_chunks.clone(),
-        randomized_quotient_chunks_domains
-            .iter()
-            .zip(&opened_values.quotient_chunks)
-            .map(|(domain, values)| (*domain, vec![(zeta, values.clone())]))
-            .collect(),
-    ));
+    let quotient_points = layout
+        .matrices(CommitmentRole::Quotient)
+        .map(|matrix| {
+            let MatrixRoute::Quotient { chunk, .. } = matrix.route else {
+                unreachable!("quotient planner emits only quotient routes")
+            };
+            (
+                randomized_quotient_chunks_domains[chunk],
+                vec![(zeta, opened_values.quotient_chunks[chunk].clone())],
+            )
+        })
+        .collect();
+    coms_to_verify.push((commitments.quotient_chunks.clone(), quotient_points));
 
     if preprocessed_width > 0 {
         let local =
@@ -729,7 +830,11 @@ where
                     "preprocessed local values should exist",
                 ))?;
         let mut points = vec![(zeta, local.clone())];
-        if air.opens_preprocessed_next() {
+        if layout
+            .matrices(CommitmentRole::Preprocessed)
+            .next()
+            .is_some_and(|matrix| matrix.point_count == 2)
+        {
             let next = opened_values.preprocessed_next.as_ref().ok_or(
                 GenerationError::InvalidProofShape("preprocessed next values should exist"),
             )?;
@@ -737,7 +842,9 @@ where
         }
         coms_to_verify.push((
             preprocessed_commit
-                .expect("presence checked against the preprocessed width above")
+                .ok_or(GenerationError::InvalidProofShape(
+                    "preprocessed commitment missing",
+                ))?
                 .clone(),
             vec![(trace_domain, points)],
         ));

@@ -14,6 +14,9 @@ use super::{ObservableCommitment, VerificationError, recompose_quotient_from_chu
 use crate::Target;
 use crate::challenger::CircuitChallenger;
 use crate::challenger_perm::ChallengerPermConfig;
+use crate::input_contract::stark_layout::{
+    CommitmentRole, InstanceLayout, MatrixRoute, NativeStarkLayout,
+};
 use crate::traits::{LookupMetadata, Recursive, RecursiveAir, RecursivePcs};
 use crate::types::{
     CommitmentTargets, OpenedValuesTargets, OpenedValuesTargetsWithLookups, ProofTargets,
@@ -190,63 +193,110 @@ where
         quotient_degree,
     )?;
 
+    let layout = NativeStarkLayout::new(
+        vec![InstanceLayout {
+            ext_log: *degree_bits,
+            base_log: degree_bits.checked_sub(config.is_zk()).ok_or_else(|| {
+                VerificationError::InvalidProofShape(
+                    "extended degree smaller than zk adjustment".to_string(),
+                )
+            })?,
+            challenge_width: SC::Challenge::DIMENSION,
+            trace_width: A::width(air),
+            trace_next: air.opens_trace_next(),
+            pre_width: preprocessed_width,
+            pre_next: air.opens_preprocessed_next(),
+            quotient_log: log_quotient_degree,
+            quotient_chunks: quotient_degree,
+            permutation_width: 0,
+        }],
+        if preprocessed_width > 0 { &[0] } else { &[] },
+        random_commit.is_some(),
+        preprocessed_width > 0,
+        false,
+    )
+    .map_err(|error| VerificationError::InvalidProofShape(error.to_string()))?;
+
     let alpha = challenge_targets[0];
     let zeta = challenge_targets[1];
     let zeta_next = challenge_targets[2];
 
     // Prepare commitments with their opening points for PCS verification
-    let mut coms_to_verify = if let Some(r_commit) = &random_commit {
+    let mut coms_to_verify = Vec::with_capacity(layout.commitment_count());
+    for matrix in layout.matrices(CommitmentRole::Random) {
+        let MatrixRoute::Random { .. } = matrix.route else {
+            unreachable!("random planner emits only random routes")
+        };
         let random_values = opened_random
             .as_ref()
             .ok_or(VerificationError::RandomizationError)?;
-        vec![(
-            r_commit.clone(),
+        coms_to_verify.push((
+            random_commit
+                .clone()
+                .ok_or(VerificationError::RandomizationError)?,
             vec![(trace_domain, vec![(zeta, random_values.clone())])],
-        )]
-    } else {
-        vec![]
-    };
-
-    let mut trace_points = vec![(zeta, opened_trace_local_targets.clone())];
-    // The `zeta_next` opening is present only when the AIR accesses the next row.
-    if air.opens_trace_next() {
-        trace_points.push((zeta_next, opened_trace_next_targets.clone()));
+        ));
     }
-
-    coms_to_verify.extend([
-        (trace_targets.clone(), vec![(trace_domain, trace_points)]),
-        (
-            quotient_chunks_targets.clone(),
-            // Check the commitment on the randomized domains
-            {
-                if randomized_quotient_chunks_domains.len() != opened_quotient_chunks_targets.len()
-                {
-                    return Err(VerificationError::InvalidProofShape(
-                        "Randomized quotient chunks length mismatch".to_string(),
-                    ));
-                }
-                randomized_quotient_chunks_domains
-                    .iter()
-                    .zip(opened_quotient_chunks_targets)
-                    .map(|(domain, values)| (*domain, vec![(zeta, values.clone())]))
-                    .collect_vec()
-            },
-        ),
-    ]);
-
-    // Add preprocessed commitment verification if present
-    if preprocessed_width > 0 {
-        let mut points = vec![(zeta, opt_opened_preprocessed_local_targets.clone().unwrap())];
-        if air.opens_preprocessed_next() {
+    for matrix in layout.matrices(CommitmentRole::Trace) {
+        let MatrixRoute::Trace { .. } = matrix.route else {
+            unreachable!("trace planner emits only trace routes")
+        };
+        let mut points = vec![(zeta, opened_trace_local_targets.clone())];
+        if matrix.point_count == 2 {
+            points.push((zeta_next, opened_trace_next_targets.clone()));
+        }
+        coms_to_verify.push((trace_targets.clone(), vec![(trace_domain, points)]));
+    }
+    let quotient_matrices: Vec<_> = layout.matrices(CommitmentRole::Quotient).collect();
+    if quotient_matrices.len() != opened_quotient_chunks_targets.len()
+        || quotient_matrices.len() != randomized_quotient_chunks_domains.len()
+    {
+        return Err(VerificationError::InvalidProofShape(
+            "Randomized quotient chunks length mismatch".to_string(),
+        ));
+    }
+    let quotient_points = quotient_matrices
+        .into_iter()
+        .zip(randomized_quotient_chunks_domains.iter())
+        .map(|(matrix, domain)| {
+            let MatrixRoute::Quotient { chunk, .. } = matrix.route else {
+                unreachable!("quotient planner emits only quotient routes")
+            };
+            (
+                *domain,
+                vec![(zeta, opened_quotient_chunks_targets[chunk].clone())],
+            )
+        })
+        .collect();
+    coms_to_verify.push((quotient_chunks_targets.clone(), quotient_points));
+    for matrix in layout.matrices(CommitmentRole::Preprocessed) {
+        let MatrixRoute::Preprocessed { .. } = matrix.route else {
+            unreachable!("preprocessed planner emits only preprocessed routes")
+        };
+        let local = opt_opened_preprocessed_local_targets
+            .clone()
+            .ok_or_else(|| {
+                VerificationError::InvalidProofShape(
+                    "preprocessed local values should exist".to_string(),
+                )
+            })?;
+        let mut points = vec![(zeta, local)];
+        if matrix.point_count == 2 {
             points.push((
                 zeta_next,
-                opt_opened_preprocessed_next_targets.clone().unwrap(),
+                opt_opened_preprocessed_next_targets
+                    .clone()
+                    .ok_or_else(|| {
+                        VerificationError::InvalidProofShape(
+                            "preprocessed next values should exist".to_string(),
+                        )
+                    })?,
             ));
         }
         coms_to_verify.push((
-            preprocessed_commit
-                .clone()
-                .expect("We checked in validate_proof_shape that the commit exists"),
+            preprocessed_commit.clone().ok_or_else(|| {
+                VerificationError::InvalidProofShape("preprocessed commitment missing".to_string())
+            })?,
             vec![(trace_domain, points)],
         ));
     }

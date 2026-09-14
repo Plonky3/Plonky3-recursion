@@ -234,6 +234,43 @@ where
     }
 }
 
+/// The same local constraint as `SubAirPartialPreprocessed`, with an explicit
+/// local-only preprocessing policy.  Keeping this as a separate wrapper
+/// preserves the inherited two-point policy of the existing fixture.
+#[derive(Clone, Copy)]
+struct LocalOnlySubAir(SubAirPartialPreprocessed);
+
+impl<Val: Field> BaseAir<Val> for LocalOnlySubAir
+where
+    StandardUniform: Distribution<Val>,
+{
+    fn width(&self) -> usize {
+        BaseAir::<Val>::width(&self.0)
+    }
+
+    fn preprocessed_width(&self) -> usize {
+        BaseAir::<Val>::preprocessed_width(&self.0)
+    }
+
+    fn preprocessed_trace(&self) -> Option<RowMajorMatrix<Val>> {
+        BaseAir::<Val>::preprocessed_trace(&self.0)
+    }
+
+    fn preprocessed_next_row_columns(&self) -> Vec<usize> {
+        Vec::new()
+    }
+}
+
+impl<AB: AirBuilder> Air<AB> for LocalOnlySubAir
+where
+    AB::F: Field,
+    StandardUniform: Distribution<AB::F>,
+{
+    fn eval(&self, builder: &mut AB) {
+        Air::<AB>::eval(&self.0, builder);
+    }
+}
+
 /// AIR with public values: constrains `pis[0] == row[0]` on the first row.
 #[derive(Clone, Copy)]
 struct PublicValueAir {
@@ -405,6 +442,94 @@ fn test_batch_verifier_with_mixed_preprocessed() -> Result<(), VerificationError
 
     let _traces = runner.run().map_err(VerificationError::Circuit)?;
 
+    Ok(())
+}
+
+#[test]
+fn test_batch_verifier_with_local_only_preprocessed() -> Result<(), VerificationError> {
+    let n = 1 << 3;
+    let scalars = test_fri_scalars();
+    let pcs_verifier_params = FriVerifierParams::unsafe_arithmetic_only_for_tests(
+        scalars.log_blowup,
+        scalars.log_final_poly_len,
+        scalars.commit_pow_bits,
+        scalars.query_pow_bits,
+    );
+    let config = make_test_config();
+    let air = LocalOnlySubAir(SubAirPartialPreprocessed { rows: n });
+    let (trace, _) = air.0.random_valid_trace::<F>(true);
+    let public_values = vec![];
+    let instance = StarkInstance {
+        air: &air,
+        trace: &trace,
+        public_values: public_values.clone(),
+    };
+    let instances = vec![instance];
+    let prover_data = ProverData::from_instances(&config, &instances);
+    let batch_proof = prove_batch(&config, &instances, &prover_data);
+    verify_batch(
+        &config,
+        &[air],
+        &batch_proof,
+        &[public_values.clone()],
+        &prover_data.common,
+    )
+    .unwrap();
+
+    let opened = &batch_proof.opened_values.instances[0].base_opened_values;
+    assert_eq!(
+        opened
+            .preprocessed_local
+            .as_ref()
+            .map_or(0, |values| values.len()),
+        1
+    );
+    assert_eq!(
+        opened
+            .preprocessed_next
+            .as_ref()
+            .map_or(0, |values| values.len()),
+        0
+    );
+
+    let mut circuit_builder = CircuitBuilder::<Challenge>::new();
+    circuit_builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
+        generate_poseidon2_trace::<Challenge, BabyBearD4Width16>,
+        default_babybear_poseidon2_16(),
+    );
+    circuit_builder.enable_recompose::<F>(generate_recompose_trace::<F, Challenge>);
+    let verifier_inputs = BatchStarkVerifierInputsBuilder::<
+        MyConfig,
+        MerkleCapTargets<F, DIGEST_ELEMS>,
+        InnerFri,
+    >::allocate(
+        &mut circuit_builder,
+        &batch_proof,
+        &prover_data.common,
+        &[0],
+    )?;
+    verify_batch_circuit::<_, _, _, _, _, _, _, WIDTH, RATE>(
+        &config,
+        &[air],
+        &mut circuit_builder,
+        &verifier_inputs.proof_targets,
+        &verifier_inputs.air_public_targets,
+        &pcs_verifier_params,
+        &verifier_inputs.common_data,
+        &LogUpGadget::new(),
+        Poseidon2Config::BABY_BEAR_D4_W16,
+    )?;
+    let circuit = circuit_builder.build()?;
+    let mut runner = circuit.runner();
+    let (public_inputs, private_inputs) =
+        verifier_inputs.pack_values(&[public_values], &batch_proof, &prover_data.common);
+    runner
+        .set_public_inputs(&public_inputs)
+        .map_err(VerificationError::Circuit)?;
+    runner
+        .set_private_inputs(&private_inputs)
+        .map_err(VerificationError::Circuit)?;
+    runner.run().map_err(VerificationError::Circuit)?;
     Ok(())
 }
 

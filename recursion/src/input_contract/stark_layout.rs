@@ -42,6 +42,8 @@ pub(crate) struct MatrixOpeningLayout {
 /// Per-instance dimensions used by all STARK commitment routes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct InstanceLayout {
+    /// Number of base-field columns in one extension-field opening.
+    pub(crate) challenge_width: usize,
     pub(crate) ext_log: usize,
     pub(crate) base_log: usize,
     pub(crate) trace_width: usize,
@@ -70,8 +72,10 @@ pub(crate) enum LayoutError {
 
 /// Computes `2^log_degree` without allowing a shift panic.
 pub(crate) fn checked_power_of_two(log_degree: usize) -> Result<usize, LayoutError> {
+    let shift =
+        u32::try_from(log_degree).map_err(|_| LayoutError::QuotientCountOverflow { log_degree })?;
     1usize
-        .checked_shl(log_degree as u32)
+        .checked_shl(shift)
         .ok_or(LayoutError::QuotientCountOverflow { log_degree })
 }
 
@@ -190,6 +194,12 @@ impl Iterator for MatrixLayoutIter<'_> {
     type Item = MatrixOpeningLayout;
 
     fn next(&mut self) -> Option<Self::Item> {
+        if (self.role == CommitmentRole::Random && !self.layout.has_random)
+            || (self.role == CommitmentRole::Preprocessed && !self.layout.has_preprocessed)
+            || (self.role == CommitmentRole::Permutation && !self.layout.has_permutation)
+        {
+            return None;
+        }
         match self.role {
             CommitmentRole::Random => {
                 let instance = self.instance;
@@ -198,7 +208,7 @@ impl Iterator for MatrixLayoutIter<'_> {
                 Some(MatrixOpeningLayout {
                     route: MatrixRoute::Random { instance },
                     log_height: info.ext_log,
-                    width: 1,
+                    width: info.challenge_width,
                     point_count: 1,
                     next_step_log: None,
                 })
@@ -229,11 +239,8 @@ impl Iterator for MatrixLayoutIter<'_> {
                         instance: self.instance,
                         chunk,
                     },
-                    log_height: info
-                        .ext_log
-                        .checked_add(info.quotient_log)
-                        .expect("validated quotient log arithmetic"),
-                    width: 1,
+                    log_height: info.ext_log,
+                    width: info.challenge_width,
                     point_count: 1,
                     next_step_log: None,
                 });
@@ -278,6 +285,7 @@ mod tests {
         InstanceLayout {
             ext_log: 8,
             base_log: 7,
+            challenge_width: 4,
             trace_width: 3,
             trace_next: true,
             pre_width: 2,
@@ -320,10 +328,10 @@ mod tests {
         assert_eq!(pre[0].point_count, 2);
         assert_eq!(pre[0].log_height, 8);
         let random: alloc::vec::Vec<_> = layout.matrices(CommitmentRole::Random).collect();
-        assert_eq!(random[0].width, 1);
+        assert_eq!(random[0].width, 4);
         let quotient: alloc::vec::Vec<_> = layout.matrices(CommitmentRole::Quotient).collect();
         assert_eq!(quotient.len(), 3);
-        assert_eq!(quotient[0].log_height, 9);
+        assert_eq!(quotient[0].log_height, 8);
         let permutation: alloc::vec::Vec<_> =
             layout.matrices(CommitmentRole::Permutation).collect();
         assert_eq!(permutation[0].point_count, 2);
@@ -371,6 +379,47 @@ mod tests {
             MatrixRoute::Permutation { instance: 1 }
         );
         assert_eq!(permutation[0].point_count, 2);
+
+        // An increasing sparse map must not synthesize an opening for the
+        // omitted middle instance.
+        let mut third = instance(1);
+        third.pre_width = 3;
+        third.pre_next = false;
+        let sparse = NativeStarkLayout::new(
+            alloc::vec![
+                first,
+                InstanceLayout {
+                    pre_width: 0,
+                    ..second
+                },
+                third
+            ],
+            &[0, 2],
+            false,
+            true,
+            false,
+        )
+        .unwrap();
+        let sparse_pre: alloc::vec::Vec<_> =
+            sparse.matrices(CommitmentRole::Preprocessed).collect();
+        assert_eq!(
+            sparse_pre
+                .iter()
+                .map(|opening| opening.route)
+                .collect::<alloc::vec::Vec<_>>(),
+            alloc::vec![
+                MatrixRoute::Preprocessed {
+                    instance: 0,
+                    matrix: 0
+                },
+                MatrixRoute::Preprocessed {
+                    instance: 2,
+                    matrix: 1
+                }
+            ]
+        );
+        assert_eq!(sparse_pre[0].point_count, 1);
+        assert_eq!(sparse_pre[1].point_count, 1);
     }
 
     #[test]
@@ -379,6 +428,12 @@ mod tests {
             checked_power_of_two(usize::BITS as usize),
             Err(LayoutError::QuotientCountOverflow { .. })
         ));
+        if usize::BITS > 32 {
+            assert!(matches!(
+                checked_power_of_two(u32::MAX as usize + 1),
+                Err(LayoutError::QuotientCountOverflow { .. })
+            ));
+        }
         let instances = alloc::vec![instance(1)];
         assert!(matches!(
             NativeStarkLayout::new(instances.clone(), &[1], false, true, false),
