@@ -1381,6 +1381,119 @@ fn trusted_aggregation_retains_each_child_runtime_config_and_pins_both_roots() {
 }
 
 #[test]
+fn trusted_heterogeneous_cross_config_aggregation_exports_ordered_statement_after_owner_drop() {
+    let n = 1 << 10;
+    let left_air = FibonacciAir {};
+    let (input_config, _) = common::koala_bear_d4_recursion_config_and_backend();
+    let left_statement = vec![F::ZERO, F::ONE, fibonacci_output::<F>(0, 1, n)];
+    let left_proof = prove(
+        &input_config,
+        &left_air,
+        generate_trace_rows::<F>(0, 1, n),
+        &left_statement,
+    );
+    let right_fixture = common::KoalaBearD4StatementFixture::new();
+    let right_statement = [F::from_u64(11), F::from_u64(13)];
+    let right_proof = right_fixture.prove([11, 13]);
+    let replacement_statement = [F::from_u64(17), F::from_u64(19)];
+    let replacement_proof = right_fixture.prove([17, 19]);
+    let output_config = arity4_output::config();
+    let backend = FriRecursionBackend::<16, 8, _>::new(Poseidon2Config::KOALA_BEAR_D4_W16)
+        .with_extra_poseidon2_table(Poseidon2Config::KOALA_BEAR_D4_W32)
+        .for_extension_degree::<4>();
+
+    let owner = TrustedPreparedAggregation::<_, _, FibonacciAir, BatchOnly, _, 4>::new(
+        TrustedPreparedSource::UniStark {
+            config: input_config,
+            air: &left_air,
+            preprocessed_commit: None,
+            proof: &left_proof,
+            public_inputs: &left_statement,
+        },
+        TrustedPreparedSource::BatchStark {
+            verifier: right_fixture.verifier(),
+            proof: &right_proof,
+            statement: &right_statement,
+        },
+        output_config,
+        backend,
+        ProveNextLayerParams::default(),
+    )
+    .expect("the heterogeneous trusted pair prepares under the distinct output config");
+
+    assert!(matches!(
+        owner
+            .check_inputs(
+                &TrustedPreparedInput::UniStark {
+                    proof: &left_proof,
+                    public_inputs: &left_statement,
+                },
+                &TrustedPreparedInput::BatchStark {
+                    proof: &replacement_proof,
+                    statement: &right_statement,
+                },
+            )
+            .unwrap_err(),
+        VerificationError::InvalidProofShape(_)
+    ));
+    assert!(matches!(
+        owner
+            .check_inputs(
+                &TrustedPreparedInput::BatchStark {
+                    proof: &right_proof,
+                    statement: &right_statement,
+                },
+                &TrustedPreparedInput::UniStark {
+                    proof: &left_proof,
+                    public_inputs: &left_statement,
+                },
+            )
+            .unwrap_err(),
+        VerificationError::PreparedInputMismatch { .. }
+    ));
+
+    let output = owner
+        .prove(
+            TrustedPreparedInput::UniStark {
+                proof: &left_proof,
+                public_inputs: &left_statement,
+            },
+            TrustedPreparedInput::BatchStark {
+                proof: &right_proof,
+                statement: &right_statement,
+            },
+        )
+        .expect("the heterogeneous child statements prove in slot order");
+    let parent_verifier = owner.verifier();
+    let layout = parent_verifier
+        .aggregation_statement_layout()
+        .expect("the parent retains its heterogeneous statement boundary");
+    assert_eq!(layout.left().base_len(), 3);
+    assert_eq!(layout.right().base_len(), 2);
+    assert_eq!(layout.split_at(), 3);
+    assert_eq!(layout.output().base_len(), 5);
+
+    let mut expected = left_statement.clone();
+    expected.extend(right_statement);
+    let mut swapped = right_statement.to_vec();
+    swapped.extend(left_statement.iter().copied());
+    let mut substituted = expected.clone();
+    substituted[3] = replacement_statement[0];
+    let mut duplicated = expected.clone();
+    duplicated[4] = duplicated[3];
+    drop(owner);
+    drop(left_proof);
+    drop(right_proof);
+    drop(replacement_proof);
+    drop(right_fixture);
+
+    parent_verifier.verify(&output.0, &expected).unwrap();
+    assert!(parent_verifier.verify(&output.0, &swapped).is_err());
+    assert!(parent_verifier.verify(&output.0, &substituted).is_err());
+    assert!(parent_verifier.verify(&output.0, &duplicated).is_err());
+}
+
+#[test]
 fn same_config_profile_aggregation_reuses_preparation_for_varied_pairs() {
     let left_first = common::build_koala_bear_d4_first_layer_input_with_starts(0, 1);
     let right_first = common::build_koala_bear_d4_first_layer_input_with_starts(2, 3);
