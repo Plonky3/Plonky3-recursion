@@ -1450,6 +1450,36 @@ fn trusted_heterogeneous_cross_config_aggregation_exports_ordered_statement_afte
             .unwrap_err(),
         VerificationError::PreparedInputMismatch { .. }
     ));
+    assert!(matches!(
+        owner
+            .check_inputs(
+                &TrustedPreparedInput::UniStark {
+                    proof: &left_proof,
+                    public_inputs: &left_statement,
+                },
+                &TrustedPreparedInput::UniStark {
+                    proof: &left_proof,
+                    public_inputs: &left_statement,
+                },
+            )
+            .unwrap_err(),
+        VerificationError::PreparedInputMismatch { .. }
+    ));
+    assert!(matches!(
+        owner
+            .check_inputs(
+                &TrustedPreparedInput::BatchStark {
+                    proof: &right_proof,
+                    statement: &right_statement,
+                },
+                &TrustedPreparedInput::BatchStark {
+                    proof: &right_proof,
+                    statement: &right_statement,
+                },
+            )
+            .unwrap_err(),
+        VerificationError::PreparedInputMismatch { .. }
+    ));
 
     let output = owner
         .prove(
@@ -1478,8 +1508,8 @@ fn trusted_heterogeneous_cross_config_aggregation_exports_ordered_statement_afte
     swapped.extend(left_statement.iter().copied());
     let mut substituted = expected.clone();
     substituted[3] = replacement_statement[0];
-    let mut duplicated = expected.clone();
-    duplicated[4] = duplicated[3];
+    let mut duplicated_value = expected.clone();
+    duplicated_value[4] = duplicated_value[3];
     drop(owner);
     drop(left_proof);
     drop(right_proof);
@@ -1489,7 +1519,11 @@ fn trusted_heterogeneous_cross_config_aggregation_exports_ordered_statement_afte
     parent_verifier.verify(&output.0, &expected).unwrap();
     assert!(parent_verifier.verify(&output.0, &swapped).is_err());
     assert!(parent_verifier.verify(&output.0, &substituted).is_err());
-    assert!(parent_verifier.verify(&output.0, &duplicated).is_err());
+    assert!(
+        parent_verifier
+            .verify(&output.0, &duplicated_value)
+            .is_err()
+    );
 }
 
 #[test]

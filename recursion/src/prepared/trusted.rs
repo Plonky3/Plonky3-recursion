@@ -1226,6 +1226,18 @@ mod tests {
                 },
             )
             .unwrap();
+        let duplicated_left_output = owner
+            .prove(
+                TrustedPreparedInput::BatchStark {
+                    proof: &left_proof,
+                    statement: &left_statement,
+                },
+                TrustedPreparedInput::BatchStark {
+                    proof: &left_proof,
+                    statement: &left_statement,
+                },
+            )
+            .expect("identical authorized slots may reuse the same relation and statement");
         let parent_verifier = owner.verifier();
         let layout = parent_verifier
             .aggregation_statement_layout()
@@ -1245,6 +1257,31 @@ mod tests {
                 ],
             )
             .unwrap();
+        parent_verifier
+            .verify(
+                &duplicated_left_output.0,
+                &[
+                    left_statement[0],
+                    left_statement[1],
+                    left_statement[0],
+                    left_statement[1],
+                ],
+            )
+            .unwrap();
+        assert!(
+            parent_verifier
+                .verify(
+                    &duplicated_left_output.0,
+                    &[
+                        left_statement[0],
+                        left_statement[1],
+                        right_statement[0],
+                        right_statement[1],
+                    ],
+                )
+                .is_err(),
+            "a valid left || left output must not satisfy an independently requested left || right"
+        );
         assert!(
             parent_verifier
                 .verify(
