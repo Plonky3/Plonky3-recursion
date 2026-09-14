@@ -135,6 +135,18 @@ macro_rules! impl_counting_backend {
                 >>::VerifierResult,
             >;
 
+            fn validate_input(
+                &self,
+                config: &common::KoalaBearD4RecursionConfig,
+                prev: &RecursionInput<'_, common::KoalaBearD4RecursionConfig, $air>,
+            ) -> Result<(), VerificationError> {
+                <common::KoalaBearD4Backend as PcsRecursionBackend<
+                    common::KoalaBearD4RecursionConfig,
+                    $air,
+                    4,
+                >>::validate_input(&self.inner, config, prev)
+            }
+
             fn prepare_circuit(
                 &self,
                 config: &common::KoalaBearD4RecursionConfig,

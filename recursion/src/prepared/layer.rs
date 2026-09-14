@@ -369,6 +369,14 @@ mod tests {
     {
         type VerifierResult = CountingVerifierResult<B::VerifierResult>;
 
+        fn validate_input(
+            &self,
+            config: &SC,
+            prev: &crate::recursion::RecursionInput<'_, SC, A>,
+        ) -> Result<(), VerificationError> {
+            self.inner.validate_input(config, prev)
+        }
+
         fn prepare_circuit(
             &self,
             config: &SC,
