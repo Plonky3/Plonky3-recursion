@@ -83,72 +83,19 @@ pub fn build_whir_setup(log_n: usize, round_log_inv_rates: Vec<usize>) -> WhirSe
     }
 }
 
-/// Builds and runs the recursive verifier circuit for `proof` and `pis`.
-///
-/// `with_mmcs` selects whether in-circuit Merkle path verification runs; when
-/// it does, the caller must also supply the restored paths (Task 14 extends
-/// this function).
+/// Builds and runs the mandatory-MMCS recursive verifier circuit for `proof` and `pis`.
 pub fn run_whir_recursive_verifier(
     setup: &WhirSetup,
     proof: &p3_uni_stark::Proof<BbWhirConfig>,
     pis: &[BbF],
 ) -> Result<(), VerificationError> {
-    let mut builder = CircuitBuilder::new();
-    builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
-        generate_poseidon2_trace::<BbEF, BabyBearD4Width16>,
-        bb_whir_perm(),
-    );
-    builder.enable_recompose::<BbF>(generate_recompose_trace::<BbF, BbEF>);
-
-    let params = WhirUniVerifierParams::<BbF>::new(
-        bb_whir_protocol_params(setup.round_log_inv_rates.clone()),
-        PrefixProver::<BbF, BbEF>::variable_order(),
-        None,
-    )
-    .expect("valid WHIR test configuration");
-
-    let verifier_inputs = StarkVerifierInputsBuilder::<
-        BbWhirConfig,
-        MerkleCapTargets<BbF, BB_DIGEST_ELEMS>,
-        WhirUniProofTargets<BbF, BbEF, BbMmcs, BB_DIGEST_ELEMS>,
-    >::allocate(&mut builder, proof, None, pis.len());
-
-    let _op_ids = verify_p3_uni_proof_circuit::<
-        FibonacciAir,
-        BbWhirConfig,
-        MerkleCapTargets<BbF, BB_DIGEST_ELEMS>,
-        (),
-        WhirUniProofTargets<BbF, BbEF, BbMmcs, BB_DIGEST_ELEMS>,
-        _,
-        16,
-        8,
-    >(
-        &setup.config,
-        &setup.air,
-        &mut builder,
-        &verifier_inputs.proof_targets,
-        &verifier_inputs.air_public_targets,
-        &None,
-        &params,
-        Poseidon2Config::BABY_BEAR_D4_W16,
-    )?;
-
-    let circuit = builder.build()?;
-    let mut runner = circuit.runner();
-    let (public_inputs, private_inputs) = verifier_inputs.pack_values(pis, proof, &None);
-    runner
-        .set_public_inputs(&public_inputs)
-        .map_err(VerificationError::Circuit)?;
-    runner
-        .set_private_inputs(&private_inputs)
-        .map_err(VerificationError::Circuit)?;
-    runner.run().map_err(VerificationError::Circuit)?;
-    Ok(())
+    let paths = restore_whir_uni_paths(setup, proof, &setup.pis);
+    run_whir_recursive_verifier_with_mmcs(setup, proof, pis, &paths)
 }
 
 /// A WHIR-backed uni-STARK proof verifies inside the recursive circuit.
 #[test]
-fn whir_fibonacci_recursive_verifier_arithmetic_only() -> Result<(), VerificationError> {
+fn whir_fibonacci_recursive_verifier() -> Result<(), VerificationError> {
     let setup = build_whir_setup(10, vec![4]);
     run_whir_recursive_verifier(&setup, &setup.proof, &setup.pis)
 }
@@ -234,7 +181,7 @@ pub fn run_whir_recursive_verifier_with_mmcs(
     let params = WhirUniVerifierParams::<BbF>::new(
         bb_whir_protocol_params(setup.round_log_inv_rates.clone()),
         PrefixProver::<BbF, BbEF>::variable_order(),
-        Some(Poseidon2Config::BABY_BEAR_D4_W16.into()),
+        Poseidon2Config::BABY_BEAR_D4_W16,
     )
     .expect("valid WHIR test configuration");
 
@@ -528,24 +475,25 @@ mod koala_bear {
     use p3_circuit::test_utils::{FibonacciAir, generate_trace_rows};
     use p3_field::PrimeCharacteristicRing;
     use p3_poseidon2_circuit_air::KoalaBearD4Width16;
+    use p3_recursion::backend::replay_recursion_input_transcript;
     use p3_recursion::pcs::fri::MerkleCapTargets;
-    use p3_recursion::pcs::whir::uni::{WhirUniProofTargets, WhirUniVerifierParams};
+    use p3_recursion::pcs::set_whir_mmcs_private_data;
+    use p3_recursion::pcs::whir::uni::{
+        WhirUniProofTargets, WhirUniVerifierParams, restore_whir_recursion_paths,
+        whir_round_paths_op_count,
+    };
     use p3_recursion::public_inputs::StarkVerifierInputsBuilder;
+    use p3_recursion::recursion::RecursionInput;
     use p3_recursion::{Poseidon2Config, VerificationError, verify_p3_uni_proof_circuit};
     use p3_sumcheck::layout::{Layout, PrefixProver};
     use p3_uni_stark::{prove, verify};
 
     use crate::common::whir_config::{
-        KB_DIGEST_ELEMS, KbEF, KbF, KbMmcs, KbWhirConfig, kb_whir_config, kb_whir_perm,
-        kb_whir_protocol_params,
+        KB_DIGEST_ELEMS, KbEF, KbF, KbMmcs, KbWhirConfig, kb_whir_config, kb_whir_mmcs,
+        kb_whir_perm, kb_whir_protocol_params,
     };
 
-    /// The arithmetic-only recursive verification (`permutation_config: None`,
-    /// no in-circuit MMCS) over KoalaBear, confirming the adapter and its
-    /// Fiat-Shamir challenger are generic in the field rather than
-    /// specialised to BabyBear — a wrong permutation here would desync the
-    /// transcript and fail. KoalaBear's own Merkle-path verification has no
-    /// equivalent coverage.
+    /// Full recursive verification over KoalaBear, including its own MMCS paths.
     #[test]
     fn whir_fibonacci_recursive_verifier_koala_bear() -> Result<(), VerificationError> {
         let trace = generate_trace_rows::<KbF>(0, 1, 1 << 10);
@@ -565,7 +513,7 @@ mod koala_bear {
         let params = WhirUniVerifierParams::<KbF>::new(
             kb_whir_protocol_params(vec![4]),
             PrefixProver::<KbF, KbEF>::variable_order(),
-            None,
+            Poseidon2Config::KOALA_BEAR_D4_W16,
         )
         .expect("valid WHIR test configuration");
 
@@ -575,7 +523,7 @@ mod koala_bear {
             WhirUniProofTargets<KbF, KbEF, KbMmcs, KB_DIGEST_ELEMS>,
         >::allocate(&mut builder, &proof, None, pis.len());
 
-        verify_p3_uni_proof_circuit::<
+        let op_ids = verify_p3_uni_proof_circuit::<
             FibonacciAir,
             KbWhirConfig,
             MerkleCapTargets<KbF, KB_DIGEST_ELEMS>,
@@ -604,6 +552,37 @@ mod koala_bear {
         runner
             .set_private_inputs(&private_inputs)
             .map_err(VerificationError::Circuit)?;
+
+        let protocol_params = kb_whir_protocol_params(vec![4]);
+        let recursion_input = RecursionInput::UniStark {
+            proof: &proof,
+            air: &air,
+            public_inputs: pis.clone(),
+            preprocessed_commit: None,
+        };
+        let transcript = replay_recursion_input_transcript(&config, &recursion_input, &[])?;
+        let paths = restore_whir_recursion_paths::<KbWhirConfig, _, _, _, _, _, KB_DIGEST_ELEMS>(
+            &kb_whir_mmcs(),
+            transcript,
+            &proof.opening_proof,
+            &protocol_params,
+            4,
+            PrefixProver::<KbF, KbEF>::variable_order(),
+        )?;
+        let mut offset = 0;
+        for round_paths in &paths {
+            let count = whir_round_paths_op_count(round_paths);
+            set_whir_mmcs_private_data::<KbF, KbEF, KB_DIGEST_ELEMS>(
+                &mut runner,
+                &op_ids[offset..offset + count],
+                &round_paths.rounds,
+                &round_paths.final_paths,
+                Poseidon2Config::KOALA_BEAR_D4_W16,
+            )
+            .map_err(|error| VerificationError::InvalidProofShape(error.to_string()))?;
+            offset += count;
+        }
+        assert_eq!(offset, op_ids.len());
         runner.run().map_err(VerificationError::Circuit)?;
         Ok(())
     }

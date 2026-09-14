@@ -3,7 +3,7 @@
 use alloc::vec::Vec;
 
 use p3_challenger::{FieldChallenger, GrindingChallenger};
-use p3_circuit::ops::{PermConfig, Poseidon2Config};
+use p3_circuit::ops::PermConfig;
 use p3_circuit::symbolic::RowSelectorsTargets;
 use p3_circuit::{CircuitBuilder, CircuitBuilderError, NonPrimitiveOpId};
 use p3_commit::{Mmcs, PolynomialSpace};
@@ -102,37 +102,40 @@ pub(crate) fn validate_round_config_inputs(
 /// A commitment's WHIR configuration depends on the arity of the stacked
 /// polynomial it covers, which varies per commitment, so the per-round
 /// [`WhirVerifierParams`] are derived on demand rather than stored.
+///
+/// Fields are private and the constructor requires a concrete MMCS permutation.
+///
+/// ```compile_fail
+/// use p3_recursion::pcs::whir::uni::WhirUniVerifierParams;
+/// let params: WhirUniVerifierParams<()> = unimplemented!();
+/// let WhirUniVerifierParams { folding, .. } = params;
+/// ```
+///
+/// ```compile_fail
+/// use p3_recursion::pcs::whir::uni::WhirUniVerifierParams;
+/// let _ = WhirUniVerifierParams::<()>::unsafe_arithmetic_only_for_tests();
+/// ```
 #[derive(Clone, Debug)]
 pub struct WhirUniVerifierParams<F> {
     /// Protocol parameters used for every commitment.
-    pub protocol_params: ProtocolParameters,
+    protocol_params: ProtocolParameters,
     /// First-round folding factor, read from `protocol_params`.
-    pub folding: usize,
+    folding: usize,
     /// Folding variable order declared by the prover's layout.
-    pub variable_order: VariableOrder,
-    /// Poseidon2 configuration for in-circuit MMCS path verification.
-    ///
-    /// `None` skips MMCS verification, which is **unsound** and exists only for
-    /// tests that isolate the WHIR arithmetic.
-    pub permutation_config: Option<PermConfig>,
+    variable_order: VariableOrder,
+    /// Poseidon2 configuration for mandatory in-circuit MMCS path verification.
+    permutation_config: PermConfig,
     _marker: core::marker::PhantomData<F>,
 }
 
 impl<F: TwoAdicField> WhirUniVerifierParams<F> {
     /// Builds the shared parameters.
     ///
-    /// `permutation_config: None` skips MMCS verification for every
-    /// commitment this configuration derives params for — **unsound for
-    /// production use**, since a prover could then open WHIR commitments to
-    /// arbitrary values without detection. Pass `None` only for tests that
-    /// isolate the WHIR arithmetic path; production callers must pass
-    /// `Some(_)`.
-    ///
     /// Returns an error unless the folding factor is a nonzero constant.
     pub fn new(
         protocol_params: ProtocolParameters,
         variable_order: VariableOrder,
-        permutation_config: Option<PermConfig>,
+        permutation_config: impl Into<PermConfig>,
     ) -> Result<Self, WhirVerifierParamsError> {
         if variable_order != VariableOrder::Prefix {
             return Err(WhirVerifierParamsError::UnsupportedVariableOrder { variable_order });
@@ -148,7 +151,7 @@ impl<F: TwoAdicField> WhirUniVerifierParams<F> {
             protocol_params,
             folding,
             variable_order,
-            permutation_config,
+            permutation_config: permutation_config.into(),
             _marker: core::marker::PhantomData,
         })
     }
@@ -170,15 +173,20 @@ impl<F: TwoAdicField> WhirUniVerifierParams<F> {
         validate_round_config_inputs(stacked_num_variables, &self.protocol_params)?;
         let config =
             WhirConfig::<EF, F, Ch>::new(stacked_num_variables, self.protocol_params.clone())?;
-        #[allow(clippy::option_if_let_else)]
-        match self.permutation_config {
-            Some(perm) => WhirVerifierParams::from_config(&config, self.variable_order, perm),
-            None => WhirVerifierParams::unsafe_arithmetic_only_for_tests(
-                &config,
-                self.variable_order,
-                Poseidon2Config::BABY_BEAR_D4_W16,
-            ),
-        }
+        WhirVerifierParams::from_config(&config, self.variable_order, self.permutation_config)
+    }
+
+    pub const fn protocol_params(&self) -> &ProtocolParameters {
+        &self.protocol_params
+    }
+    pub const fn folding(&self) -> usize {
+        self.folding
+    }
+    pub const fn variable_order(&self) -> VariableOrder {
+        self.variable_order
+    }
+    pub const fn permutation_config(&self) -> PermConfig {
+        self.permutation_config
     }
 }
 
@@ -187,6 +195,7 @@ mod validation_tests {
     use alloc::vec;
     use alloc::vec::Vec;
 
+    use p3_circuit::ops::Poseidon2Config;
     use p3_sumcheck::strategy::VariableOrder;
     use p3_whir::parameters::{FoldingFactor, SecurityAssumption};
 
@@ -206,7 +215,7 @@ mod validation_tests {
             WhirUniVerifierParams::<p3_baby_bear::BabyBear>::new(
                 protocol,
                 VariableOrder::Prefix,
-                None,
+                Poseidon2Config::BABY_BEAR_D4_W16,
             )
         });
         let result = result.expect("invalid configuration must not panic");
@@ -229,7 +238,7 @@ mod validation_tests {
         let result = WhirUniVerifierParams::<p3_baby_bear::BabyBear>::new(
             protocol,
             VariableOrder::Prefix,
-            None,
+            Poseidon2Config::BABY_BEAR_D4_W16,
         );
         assert!(matches!(
             result,
@@ -250,7 +259,7 @@ mod validation_tests {
         let result = WhirUniVerifierParams::<p3_baby_bear::BabyBear>::new(
             protocol,
             VariableOrder::Suffix,
-            None,
+            Poseidon2Config::BABY_BEAR_D4_W16,
         );
         assert!(matches!(
             result,
@@ -274,8 +283,12 @@ mod validation_tests {
             security_level: 32,
             pow_bits: 0,
         };
-        let params = WhirUniVerifierParams::<Base>::new(protocol, VariableOrder::Prefix, None)
-            .expect("constructor only validates the scalar fold mode");
+        let params = WhirUniVerifierParams::<Base>::new(
+            protocol,
+            VariableOrder::Prefix,
+            Poseidon2Config::BABY_BEAR_D4_W16,
+        )
+        .expect("constructor only validates the scalar fold mode");
         assert!(matches!(
             params.round_params::<Ext, DummyChallenger<Base>>(usize::BITS as usize),
             Err(WhirVerifierParamsError::InvalidStackedArity { .. })
@@ -289,8 +302,12 @@ mod validation_tests {
             security_level: 32,
             pow_bits: 0,
         };
-        let params = WhirUniVerifierParams::<Base>::new(protocol, VariableOrder::Prefix, None)
-            .expect("constructor only validates the scalar fold mode");
+        let params = WhirUniVerifierParams::<Base>::new(
+            protocol,
+            VariableOrder::Prefix,
+            Poseidon2Config::BABY_BEAR_D4_W16,
+        )
+        .expect("constructor only validates the scalar fold mode");
         assert!(matches!(
             params.round_params::<Ext, DummyChallenger<Base>>(12),
             Err(WhirVerifierParamsError::InvalidConfig(_))

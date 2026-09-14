@@ -168,26 +168,7 @@ fn test_goldilocks_fibonacci_verifier() -> Result<(), VerificationError> {
 fn test_goldilocks_mul_verifier_with_preprocessed() -> Result<(), VerificationError> {
     let n = 1 << 3;
 
-    let (_config, perm, ..) = make_config();
-
-    // Skip MMCS verification (arithmetic only), matching the pattern in mul_air.rs.
-    let (config2, _, fri_verifier_params) = {
-        let perm2 = default_goldilocks_poseidon2_8();
-        let hash2 = MyHash::new(perm2.clone());
-        let compress2 = MyCompress::new(perm2.clone());
-        let val_mmcs2 = MyMmcs::new(hash2, compress2, 0);
-        let challenge_mmcs2 = ChallengeMmcs::new(val_mmcs2.clone());
-        let fri_params2 = FriParameters::new_testing(challenge_mmcs2, 0);
-        let fri_verifier_params = FriVerifierParams::unsafe_arithmetic_only_for_tests(
-            fri_params2.log_blowup,
-            fri_params2.log_final_poly_len,
-            fri_params2.commit_proof_of_work_bits,
-            fri_params2.query_proof_of_work_bits,
-        );
-        let pcs2 = MyPcs::new(Dft::default(), val_mmcs2, fri_params2);
-        let challenger2 = Challenger::new(perm2.clone());
-        (MyConfig::new(pcs2, challenger2), perm2, fri_verifier_params)
-    };
+    let (config2, perm, fri_verifier_params, val_mmcs, fri_params) = make_config();
 
     let air = MulAir { degree: 2, rows: n };
     let (trace, _) = air.random_valid_trace::<F>(true);
@@ -207,6 +188,14 @@ fn test_goldilocks_mul_verifier_with_preprocessed() -> Result<(), VerificationEr
     assert!(
         verify_with_preprocessed(&config2, &air, &proof, &[], preprocessed_vk.as_ref()).is_ok()
     );
+    let replay = replay_uni_stark_transcript(
+        &config2,
+        &air,
+        &proof,
+        &[],
+        preprocessed_vk.as_ref().map(|vk| &vk.commitment),
+    )
+    .map_err(|error| VerificationError::InvalidProofShape(error.to_string()))?;
 
     let mut circuit_builder = CircuitBuilder::new();
     circuit_builder.enable_poseidon2_perm_width_8::<GoldilocksD2Width8, _>(
@@ -228,7 +217,7 @@ fn test_goldilocks_mul_verifier_with_preprocessed() -> Result<(), VerificationEr
     );
 
     // Add the verification circuit to the builder
-    verify_p3_uni_proof_circuit::<_, _, _, _, _, _, WIDTH, RATE>(
+    let mmcs_op_ids = verify_p3_uni_proof_circuit::<_, _, _, _, _, _, WIDTH, RATE>(
         &config2,
         &air,
         &mut circuit_builder,
@@ -254,6 +243,28 @@ fn test_goldilocks_mul_verifier_with_preprocessed() -> Result<(), VerificationEr
     runner
         .set_private_inputs(&private_inputs)
         .map_err(VerificationError::Circuit)?;
+
+    let OpeningTranscript {
+        mut challenger,
+        commitments_with_opening_points,
+    } = replay;
+    observe_opened_values::<MyConfig>(&mut challenger, &commitments_with_opening_points);
+    let query_paths = restore_fri_query_paths(
+        &fri_params,
+        &val_mmcs,
+        &val_mmcs,
+        &proof.opening_proof,
+        &mut challenger,
+        &commitments_with_opening_points,
+    )
+    .map_err(|error| VerificationError::InvalidProofShape(format!("{error:?}")))?;
+    set_fri_mmcs_private_data::<F, Challenge, DIGEST_ELEMS>(
+        &mut runner,
+        &mmcs_op_ids,
+        &query_paths,
+        Poseidon2Config::GOLDILOCKS_D2_W8,
+    )
+    .map_err(|error| VerificationError::InvalidProofShape(error.to_string()))?;
 
     runner.run().map_err(VerificationError::Circuit)?;
 

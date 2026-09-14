@@ -57,9 +57,7 @@ use crate::traits::RecursiveChallenger;
 /// order they were verified (initial-round queries first, then per-round, then
 /// final-round queries).  The caller must supply private path data for each ID.
 ///
-/// When `params.permutation_config` is `None` (arithmetic-only, unsound test mode),
-/// no MMCS verification is performed and an empty list is returned.
-pub fn verify_whir_circuit<BF, EF, Ch>(
+fn verify_whir_circuit_engine<BF, EF, Ch>(
     circuit: &mut CircuitBuilder<EF>,
     challenger: &mut Ch,
     params: &WhirVerifierParams<BF>,
@@ -67,13 +65,14 @@ pub fn verify_whir_circuit<BF, EF, Ch>(
     initial_commitment_cap: &[Vec<Target>],
     initial_constraint: ConstraintWeightData,
     initial_claimed_eval: Target,
+    permutation_config: Option<p3_circuit::ops::PermConfig>,
 ) -> Result<Vec<NonPrimitiveOpId>, CircuitBuilderError>
 where
     BF: PrimeField64 + TwoAdicField,
     EF: ExtensionField<BF> + TwoAdicField,
     Ch: RecursiveChallenger<BF, EF>,
 {
-    let is_suffix = params.variable_order == VariableOrder::Suffix;
+    let is_suffix = params.variable_order() == VariableOrder::Suffix;
 
     let mut all_np_ops: Vec<NonPrimitiveOpId> = Vec::new();
     let mut all_constraints: Vec<ConstraintWeightData> = vec![initial_constraint];
@@ -87,7 +86,7 @@ where
         claimed_eval,
         &proof.initial_sumcheck.round_polys,
         &proof.initial_sumcheck.pow_witnesses,
-        params.starting_folding_pow_bits,
+        params.starting_folding_pow_bits(),
     )?;
     claimed_eval = new_claim;
     let mut last_r = initial_r.clone();
@@ -96,7 +95,7 @@ where
     // ── Intermediate round loop ───────────────────────────────────────────────
     let mut prev_cap: Vec<Vec<Target>> = initial_commitment_cap.to_vec();
 
-    for (round_idx, rp) in params.round_params.iter().enumerate() {
+    for (round_idx, rp) in params.round_params().iter().enumerate() {
         let round_proof = &proof.rounds[round_idx];
 
         // 1. Observe round commitment cap (public inputs, already in transcript order).
@@ -116,17 +115,17 @@ where
         }
 
         // 2. OOD: sample univariate point, expand, observe answer — one per OOD sample.
-        let mut ood_eq_points: Vec<Vec<Target>> = Vec::with_capacity(rp.ood_samples);
-        for i in 0..rp.ood_samples {
+        let mut ood_eq_points: Vec<Vec<Target>> = Vec::with_capacity(rp.ood_samples());
+        for i in 0..rp.ood_samples() {
             let ood_univ = challenger.sample_ext(circuit);
-            let ood_pt = expand_from_univariate(circuit, ood_univ, rp.num_variables);
+            let ood_pt = expand_from_univariate(circuit, ood_univ, rp.num_variables());
             challenger.observe_ext(circuit, round_proof.ood_answers[i]);
             ood_eq_points.push(ood_pt);
         }
 
         // 3. PoW check (after OOD, before STIR index sampling).
-        if rp.pow_bits > 0 {
-            challenger.check_pow_witness(circuit, rp.pow_bits, round_proof.pow_witness)?;
+        if rp.pow_bits() > 0 {
+            challenger.check_pow_witness(circuit, rp.pow_bits(), round_proof.pow_witness)?;
         }
 
         // 4. Transcript checkpoint: native calls `challenger.sample()` for intermediate
@@ -137,11 +136,11 @@ where
         //
         //    query_randomness = last_r (Prefix) or last_r reversed (Suffix).
         //    fold_j = eval_multilinear(leaf_j, query_randomness).
-        let folded_domain_size = rp.domain_size >> rp.folding_factor;
+        let folded_domain_size = rp.domain_size() >> rp.folding_factor();
         let domain_size_bits = p3_util::log2_strict_usize(folded_domain_size);
         let dims = vec![Dimensions {
             height: folded_domain_size,
-            width: 1usize << rp.folding_factor,
+            width: 1usize << rp.folding_factor(),
         }];
 
         let query_r: Vec<Target> = if is_suffix {
@@ -150,27 +149,26 @@ where
             last_r.clone()
         };
 
-        let mut fold_vals: Vec<Target> = Vec::with_capacity(rp.num_queries);
-        let mut sel_scalars: Vec<Target> = Vec::with_capacity(rp.num_queries);
+        let mut fold_vals: Vec<Target> = Vec::with_capacity(rp.num_queries());
+        let mut sel_scalars: Vec<Target> = Vec::with_capacity(rp.num_queries());
 
-        for q_idx in 0..rp.num_queries {
+        for q_idx in 0..rp.num_queries() {
             // Sample domain_size_bits bits as little-endian index.
             let index_bits = challenger.sample_bits(circuit, domain_size_bits)?;
 
             // domain_point = folded_domain_gen^index (big-endian powers → LE bits).
-            let domain_pt = pow_const_base(circuit, rp.folded_domain_gen.into(), &index_bits);
+            let domain_pt = pow_const_base(circuit, rp.folded_domain_gen().into(), &index_bits);
             sel_scalars.push(domain_pt);
 
             let query_opening = &round_proof.queries[q_idx];
             let leaf_vals = query_opening.leaf_values();
             fold_vals.push(eval_multilinear(circuit, leaf_vals, &query_r));
 
-            // 6. MMCS path verification (skipped when permutation_config is None).
-            if let Some(ref perm) = params.permutation_config {
+            if let Some(permutation_config) = permutation_config {
                 let np_ops = match query_opening {
                     QueryOpeningTargets::Base { leaf_values } => verify_batch_circuit::<BF, EF>(
                         circuit,
-                        *perm,
+                        permutation_config,
                         &prev_cap,
                         &dims,
                         &index_bits,
@@ -180,7 +178,7 @@ where
                     QueryOpeningTargets::Extension { leaf_values } => {
                         verify_batch_circuit_from_extension_opened::<BF, EF>(
                             circuit,
-                            *perm,
+                            permutation_config,
                             &prev_cap,
                             &dims,
                             &index_bits,
@@ -204,7 +202,7 @@ where
         claimed_eval = circuit.add(claimed_eval, contrib);
 
         all_constraints.push(ConstraintWeightData {
-            num_variables: rp.num_variables,
+            num_variables: rp.num_variables(),
             eq_points: ood_eq_points,
             sel_scalars,
             gamma,
@@ -217,7 +215,7 @@ where
             claimed_eval,
             &round_proof.sumcheck.round_polys,
             &round_proof.sumcheck.pow_witnesses,
-            rp.folding_pow_bits,
+            rp.folding_pow_bits(),
         )?;
         claimed_eval = new_claim;
         last_r = round_r.clone();
@@ -232,19 +230,19 @@ where
     challenger.observe_ext_slice(circuit, &proof.final_poly);
 
     // Final PoW check — no transcript checkpoint after this (native omits it).
-    if params.final_pow_bits > 0 {
-        challenger.check_pow_witness(circuit, params.final_pow_bits, proof.final_pow_witness)?;
+    if params.final_pow_bits() > 0 {
+        challenger.check_pow_witness(circuit, params.final_pow_bits(), proof.final_pow_witness)?;
     }
 
     // Final STIR queries: domain = final_round_config.domain_size >> final_round_config.folding_factor.
     // `final_folding_factor` is the fold applied to *enter* the final phase; it is
     // distinct from `final_sumcheck_rounds`, the plain-sumcheck length performed
     // *after* that fold, and the two coincide only for specific arities.
-    let final_folded_size = params.final_domain_size >> params.final_folding_factor;
+    let final_folded_size = params.final_domain_size() >> params.final_folding_factor();
     let final_domain_bits = p3_util::log2_strict_usize(final_folded_size);
     let final_dims = vec![Dimensions {
         height: final_folded_size,
-        width: 1usize << params.final_folding_factor,
+        width: 1usize << params.final_folding_factor(),
     }];
 
     let final_query_r: Vec<Target> = if is_suffix {
@@ -253,11 +251,14 @@ where
         last_r.clone()
     };
 
-    for q_idx in 0..params.final_queries {
+    for q_idx in 0..params.final_queries() {
         let index_bits = challenger.sample_bits(circuit, final_domain_bits)?;
 
-        let domain_scalar =
-            pow_const_base(circuit, params.final_folded_domain_gen.into(), &index_bits);
+        let domain_scalar = pow_const_base(
+            circuit,
+            params.final_folded_domain_gen().into(),
+            &index_bits,
+        );
 
         let query_opening = &proof.final_queries[q_idx];
         let leaf_vals = query_opening.leaf_values();
@@ -269,12 +270,11 @@ where
         let expected = horner_eval(circuit, &proof.final_poly, domain_scalar);
         circuit.connect(fold, expected);
 
-        // MMCS path verification for the final commitment.
-        if let Some(ref perm) = params.permutation_config {
+        if let Some(permutation_config) = permutation_config {
             let np_ops = match query_opening {
                 QueryOpeningTargets::Base { leaf_values } => verify_batch_circuit::<BF, EF>(
                     circuit,
-                    *perm,
+                    permutation_config,
                     &prev_cap,
                     &final_dims,
                     &index_bits,
@@ -284,7 +284,7 @@ where
                 QueryOpeningTargets::Extension { leaf_values } => {
                     verify_batch_circuit_from_extension_opened::<BF, EF>(
                         circuit,
-                        *perm,
+                        permutation_config,
                         &prev_cap,
                         &final_dims,
                         &index_bits,
@@ -298,7 +298,7 @@ where
     }
 
     // Optional final sumcheck.
-    if params.final_sumcheck_rounds > 0
+    if params.final_sumcheck_rounds() > 0
         && let Some(ref final_sc) = proof.final_sumcheck
     {
         let (new_claim, final_r) = verify_sumcheck_rounds::<BF, EF, Ch>(
@@ -307,7 +307,7 @@ where
             claimed_eval,
             &final_sc.round_polys,
             &final_sc.pow_witnesses,
-            params.final_folding_pow_bits,
+            params.final_folding_pow_bits(),
         )?;
         claimed_eval = new_claim;
         last_r = final_r.clone();
@@ -337,6 +337,33 @@ where
     circuit.connect(claimed_eval, expected);
 
     Ok(all_np_ops)
+}
+
+/// Verify a WHIR proof in-circuit with mandatory MMCS authentication.
+pub fn verify_whir_circuit<BF, EF, Ch>(
+    circuit: &mut CircuitBuilder<EF>,
+    challenger: &mut Ch,
+    params: &WhirVerifierParams<BF>,
+    proof: &WhirProofTargets,
+    initial_commitment_cap: &[Vec<Target>],
+    initial_constraint: ConstraintWeightData,
+    initial_claimed_eval: Target,
+) -> Result<Vec<NonPrimitiveOpId>, CircuitBuilderError>
+where
+    BF: PrimeField64 + TwoAdicField,
+    EF: ExtensionField<BF> + TwoAdicField,
+    Ch: RecursiveChallenger<BF, EF>,
+{
+    verify_whir_circuit_engine(
+        circuit,
+        challenger,
+        params,
+        proof,
+        initial_commitment_cap,
+        initial_constraint,
+        initial_claimed_eval,
+        Some(params.permutation_config()),
+    )
 }
 
 #[cfg(test)]
@@ -392,6 +419,25 @@ mod tests {
     type MyMmcs = MerkleTreeMmcs<PackedBF, PackedBF, MyHash, MyCompress, 2, 8>;
     type MyDft = Radix2DFTSmallBatch<BF>;
     type TestPcs = WhirProver<EF, BF, MyDft, MyMmcs, MyChallenger, PrefixProver<BF, EF>>;
+
+    /// Private, type-separated lane for tests that isolate WHIR arithmetic from MMCS.
+    /// It intentionally provides no conversion or dereference to production parameters.
+    struct WhirArithmeticParams<F> {
+        verifier: WhirVerifierParams<F>,
+    }
+
+    impl WhirArithmeticParams<BF> {
+        fn from_config(config: &WhirConfig<EF, BF, MyChallenger>) -> Self {
+            Self {
+                verifier: WhirVerifierParams::from_config(
+                    config,
+                    PrefixProver::<BF, EF>::variable_order(),
+                    p3_circuit::ops::Poseidon2Config::BABY_BEAR_D4_W16,
+                )
+                .expect("non-saturating STIR query counts at this arity"),
+            }
+        }
+    }
 
     fn make_perm() -> Perm {
         let mut rng = SmallRng::seed_from_u64(1);
@@ -648,14 +694,10 @@ mod tests {
             }
         }
 
-        let vp = WhirVerifierParams::<BF>::unsafe_arithmetic_only_for_tests::<EF, MyChallenger>(
-            &config,
-            PrefixProver::<BF, EF>::variable_order(),
-            p3_circuit::ops::Poseidon2Config::BABY_BEAR_D4_W16,
-        )
-        .expect("non-saturating STIR query counts at this arity");
+        let arithmetic_params = WhirArithmeticParams::from_config(&config);
+        let vp = &arithmetic_params.verifier;
         let mut circuit = CircuitBuilder::<EF>::new();
-        let proof_targets = WhirProofTargets::alloc::<BF, EF>(&mut circuit, &vp, 1, 1);
+        let proof_targets = WhirProofTargets::alloc::<BF, EF>(&mut circuit, vp, 1, 1);
         let initial_cap: Vec<Vec<Target>> = vec![vec![circuit.define_const(EF::ZERO)]];
         let gamma_target = circuit.define_const(constraint_challenge(&initial_constraint));
         let eq_points: Vec<Vec<Target>> = constraint_eq_points(&initial_constraint)
@@ -678,14 +720,15 @@ mod tests {
             ext_samples: ext_samples.into_iter().collect(),
             base_samples: base_samples.into_iter().collect(),
         };
-        verify_whir_circuit::<BF, EF, MockChallenger>(
+        super::verify_whir_circuit_engine::<BF, EF, MockChallenger>(
             &mut circuit,
             &mut mock,
-            &vp,
+            vp,
             &proof_targets,
             &initial_cap,
             circuit_constraint,
             initial_claimed_eval_target,
+            None,
         )
         .expect("verify_whir_circuit failed");
         assert!(

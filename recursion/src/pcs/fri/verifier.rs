@@ -110,15 +110,6 @@ where
     }
 }
 
-/// Per-phase configuration for the FRI fold chain.
-#[derive(Clone, Debug)]
-pub struct FoldPhaseConfig {
-    pub beta: Target,
-    /// Packed extension field sibling evaluations (arity - 1 values).
-    pub siblings: Vec<Target>,
-    pub roll_in: Option<Target>,
-}
-
 /// Optimized one-hot computation for 2 bits.
 fn one_hot_from_two_bits<EF: Field>(
     builder: &mut CircuitBuilder<EF>,
@@ -783,57 +774,6 @@ where
     new_folded
 }
 
-/// Perform the full FRI fold chain with variable arity per phase.
-fn fold_chain_circuit<F, EF>(
-    builder: &mut CircuitBuilder<EF>,
-    initial_folded_eval: Target,
-    index_bits: &[Target],
-    phases: &[FoldPhaseConfig],
-    log_arities: &[usize],
-    cumulative_bits: &[usize],
-    beta_pows_per_phase: &[Target],
-) -> Target
-where
-    F: Field + TwoAdicField,
-    EF: ExtensionField<F>,
-{
-    builder.push_scope("fold_chain_circuit");
-
-    let log_max_height = index_bits.len();
-
-    let subgroup_starts = precompute_subgroup_starts::<F, EF>(
-        builder,
-        index_bits,
-        log_max_height,
-        log_arities,
-        cumulative_bits,
-    );
-
-    let mut folded = initial_folded_eval;
-    let mut bits_consumed = 0usize;
-
-    for (i, phase) in phases.iter().enumerate() {
-        let log_arity = log_arities[i];
-        folded = fold_one_phase::<F, EF>(
-            builder,
-            folded,
-            &phase.siblings,
-            phase.beta,
-            index_bits,
-            bits_consumed,
-            log_arity,
-            phase.roll_in,
-            Some(beta_pows_per_phase[i]),
-            None,
-            subgroup_starts[i],
-        );
-        bits_consumed += log_arity;
-    }
-
-    builder.pop_scope();
-    folded
-}
-
 /// Evaluate a polynomial at a point `x` using Horner's method.
 /// Given coefficients [c0, c1, c2, ...], compute `p(x) = c0 + x*(c1 + x*(c2 + ...))`.
 fn evaluate_polynomial<EF: Field>(
@@ -1077,8 +1017,8 @@ fn open_input<F, EF, Comm>(
     commitments_with_opening_points: &ComsWithOpeningsTargets<Comm, TwoAdicMultiplicativeCoset<F>>,
     batch_opened_values: &[Vec<Vec<Target>>], // Per batch -> per matrix -> per column
     batch_salts: &[Vec<Vec<Target>>],         // Per batch -> per matrix -> salt (hiding MMCS)
-    permutation_config: Option<PermConfig>,
-    pre_packed_input_caps: Option<&[Vec<Vec<Target>>]>,
+    permutation_config: PermConfig,
+    pre_packed_input_caps: &[Vec<Vec<Target>>],
 ) -> Result<(Vec<(usize, Target)>, Vec<NonPrimitiveOpId>), VerificationError>
 where
     F: Field + TwoAdicField + PrimeField64,
@@ -1127,7 +1067,7 @@ where
     let mut mmcs_op_ids = Vec::new();
 
     // Process each batch
-    for (batch_idx, ((batch_commit, mats), batch_openings)) in zip_eq(
+    for (batch_idx, ((_batch_commit, mats), batch_openings)) in zip_eq(
         commitments_with_opening_points.iter(),
         batch_opened_values.iter(),
         VerificationError::InvalidProofShape(
@@ -1155,15 +1095,9 @@ where
         let bits_reduced = log_global_max_height - batch_log_height;
         let batch_index_bits = &index_bits[bits_reduced..];
 
-        // Recursive MMCS verification for this batch
-        if let Some(perm_config) = permutation_config {
-            // Use pre-packed cap if available, otherwise pack on the fly
-            let commitment_cap: Vec<Vec<Target>> = if let Some(pre_packed) = pre_packed_input_caps {
-                pre_packed[batch_idx].clone()
-            } else {
-                let lifted_commitment = batch_commit.to_observation_targets();
-                commitment_cap_rows_from_lifted::<F, EF>(builder, perm_config, &lifted_commitment)
-            };
+        // Recursive MMCS verification for this batch.
+        {
+            let commitment_cap = pre_packed_input_caps[batch_idx].clone();
 
             // Match native `p3_fri::verifier::open_input`: width is unused by MerkleTreeMmcs
             // verification (only height drives grouping); see Plonky3 TODO on Dimensions.width.
@@ -1182,10 +1116,10 @@ where
                 _ => None,
             };
 
-            let op_ids = if perm_config.is_arity4_shape() {
+            let op_ids = if permutation_config.is_arity4_shape() {
                 verify_batch_circuit_arity4::<F, EF>(
                     builder,
-                    perm_config,
+                    permutation_config,
                     &commitment_cap,
                     &dimensions,
                     batch_index_bits,
@@ -1194,7 +1128,7 @@ where
             } else {
                 verify_batch_circuit::<F, EF>(
                     builder,
-                    perm_config,
+                    permutation_config,
                     &commitment_cap,
                     &dimensions,
                     batch_index_bits,
@@ -1377,20 +1311,16 @@ where
     Ok((reduced_list, mmcs_op_ids))
 }
 
-/// Verify FRI arithmetic in-circuit with optional MMCS verification.
+/// Shared implementation for the production FRI verifier.
 ///
 /// Supports variable-arity FRI folding: each phase may fold by a different arity
 /// determined by `log_arities` extracted from the proof.
-///
-/// When `permutation_config` is `Some`, this function performs full recursive MMCS
-/// verification for both input batch openings and commit-phase openings.
-/// When `None`, only arithmetic verification is performed (for testing).
 ///
 /// Returns the list of non-primitive operation IDs that require private data
 /// (Merkle sibling values) to be set by the runner.
 ///
 /// Reference (Plonky3): `p3_fri::verifier::verify_fri`
-pub fn verify_fri_circuit<F, EF, RecMmcs, Inner, Witness, Comm>(
+fn verify_fri_circuit_engine<F, EF, RecMmcs, Inner, Witness, Comm>(
     builder: &mut CircuitBuilder<EF>,
     fri_proof_targets: &FriProofTargets<F, EF, RecMmcs, InputProofTargets<F, EF, Inner>, Witness>,
     alpha: Target,
@@ -1398,7 +1328,7 @@ pub fn verify_fri_circuit<F, EF, RecMmcs, Inner, Witness, Comm>(
     index_bits_per_query: &[Vec<Target>],
     commitments_with_opening_points: &ComsWithOpeningsTargets<Comm, TwoAdicMultiplicativeCoset<F>>,
     log_blowup: usize,
-    permutation_config: Option<PermConfig>,
+    permutation_config: PermConfig,
 ) -> Result<Vec<NonPrimitiveOpId>, VerificationError>
 where
     F: Field + TwoAdicField + PrimeField64,
@@ -1594,28 +1524,22 @@ where
     // Pre-pack commitment caps once so they can be reused across all queries.
     // Each input batch commitment and each commit-phase commitment is packed from
     // lifted representation to extension representation a single time.
-    let pre_packed_input_caps: Option<Vec<Vec<Vec<Target>>>> =
-        permutation_config.map(|perm_config| {
-            commitments_with_opening_points
-                .iter()
-                .map(|(commit, _)| {
-                    let lifted = commit.to_observation_targets();
-                    commitment_cap_rows_from_lifted::<F, EF>(builder, perm_config, &lifted)
-                })
-                .collect()
-        });
+    let pre_packed_input_caps: Vec<Vec<Vec<Target>>> = commitments_with_opening_points
+        .iter()
+        .map(|(commit, _)| {
+            let lifted = commit.to_observation_targets();
+            commitment_cap_rows_from_lifted::<F, EF>(builder, permutation_config, &lifted)
+        })
+        .collect();
 
-    let pre_packed_commit_caps: Option<Vec<Vec<Vec<Target>>>> =
-        permutation_config.map(|perm_config| {
-            fri_proof_targets
-                .commit_phase_commits
-                .iter()
-                .map(|commit| {
-                    let lifted = commit.to_observation_targets();
-                    commitment_cap_rows_from_lifted::<F, EF>(builder, perm_config, &lifted)
-                })
-                .collect()
-        });
+    let pre_packed_commit_caps: Vec<Vec<Vec<Target>>> = fri_proof_targets
+        .commit_phase_commits
+        .iter()
+        .map(|commit| {
+            let lifted = commit.to_observation_targets();
+            commitment_cap_rows_from_lifted::<F, EF>(builder, permutation_config, &lifted)
+        })
+        .collect();
 
     // Collect all MMCS operation IDs for private data setting
     let mut all_mmcs_op_ids = Vec::new();
@@ -1649,7 +1573,7 @@ where
             &batch_opened_values,
             &batch_salts,
             permutation_config,
-            pre_packed_input_caps.as_deref(),
+            &pre_packed_input_caps,
         )?;
         all_mmcs_op_ids.extend(input_mmcs_ops);
 
@@ -1713,14 +1637,9 @@ where
         let final_poly_eval =
             evaluate_polynomial(builder, &fri_proof_targets.final_poly, final_query_point);
 
-        // Commit-phase MMCS verification with variable arity.
-        // When MMCS verification is active, the fold chain is computed as part of
-        // the MMCS loop (each phase calls fold_one_phase), so the final
-        // current_folded is connected directly to final_poly_eval — no separate
-        // fold_chain_circuit call is needed.
-        // When MMCS verification is not active (no Poseidon2 table), we fall back
-        // to fold_chain_circuit for the arithmetic fold constraint.
-        if let Some(perm_config) = permutation_config {
+        // Commit-phase MMCS verification with variable arity. The fold chain is
+        // computed as part of this loop, so the final value is connected directly.
+        {
             let subgroup_starts = precompute_subgroup_starts::<F, EF>(
                 builder,
                 &index_bits_per_query[q],
@@ -1733,7 +1652,7 @@ where
             let mut bits_consumed = 0usize;
             let mut log_current_height = log_max_height;
 
-            for (phase_idx, (commit, opening)) in fri_proof_targets
+            for (phase_idx, (_commit, opening)) in fri_proof_targets
                 .commit_phase_commits
                 .iter()
                 .zip(query_proof.commit_phase_openings.iter())
@@ -1752,17 +1671,7 @@ where
                     reconstruct_evals(builder, current_folded, siblings, index_in_group_bits);
 
                 // Use pre-packed commit-phase cap
-                let commitment_cap: Vec<Vec<Target>> =
-                    if let Some(ref pre_packed) = pre_packed_commit_caps {
-                        pre_packed[phase_idx].clone()
-                    } else {
-                        let lifted_commitment = commit.to_observation_targets();
-                        commitment_cap_rows_from_lifted::<F, EF>(
-                            builder,
-                            perm_config,
-                            &lifted_commitment,
-                        )
-                    };
+                let commitment_cap = pre_packed_commit_caps[phase_idx].clone();
 
                 // Dimensions: width = arity, height = 2^log_folded_height
                 let folded_height = 1usize << log_folded_height;
@@ -1790,10 +1699,10 @@ where
                     Some(phase_salts)
                 };
 
-                let commit_phase_ops = if perm_config.is_arity4_shape() {
+                let commit_phase_ops = if permutation_config.is_arity4_shape() {
                     verify_batch_circuit_from_extension_opened_arity4::<F, EF>(
                         builder,
-                        perm_config,
+                        permutation_config,
                         &commitment_cap,
                         &dimensions,
                         &parent_index_bits,
@@ -1802,7 +1711,7 @@ where
                 } else {
                     verify_batch_circuit_from_extension_opened::<F, EF>(
                         builder,
-                        perm_config,
+                        permutation_config,
                         &commitment_cap,
                         &dimensions,
                         &parent_index_bits,
@@ -1840,29 +1749,6 @@ where
 
             // The MMCS loop already computed the full fold chain; connect directly.
             builder.connect(current_folded, final_poly_eval);
-        } else {
-            // No MMCS verification — use fold_chain_circuit for the arithmetic constraint.
-            let mut fold_phases = Vec::with_capacity(num_phases);
-            for i in 0..num_phases {
-                fold_phases.push(FoldPhaseConfig {
-                    beta: betas[i],
-                    siblings: sibling_values_per_phase[i].clone(),
-                    roll_in: roll_ins[i],
-                });
-            }
-
-            builder.push_scope("fri_fold_chain_no_mmcs query");
-            let folded_eval = fold_chain_circuit::<F, EF>(
-                builder,
-                initial_folded_eval,
-                &index_bits_per_query[q],
-                &fold_phases,
-                log_arities,
-                &cumulative_bits,
-                &beta_pows_per_phase,
-            );
-            builder.pop_scope();
-            builder.connect(folded_eval, final_poly_eval);
         }
 
         builder.pop_scope(); // close verify_fri_query
@@ -1873,11 +1759,8 @@ where
     Ok(all_mmcs_op_ids)
 }
 
-/// Production FRI verifier entry point.  Unlike the legacy arithmetic test
-/// entry point above, this API has no switch that can disable commitment
-/// authentication: the supplied permutation is always used for input and
-/// commit-phase MMCS checks.
-pub fn verify_fri_circuit_with_mmcs<F, EF, RecMmcs, Inner, Witness, Comm>(
+/// Production FRI verifier entry point. MMCS authentication is mandatory.
+pub fn verify_fri_circuit<F, EF, RecMmcs, Inner, Witness, Comm>(
     builder: &mut CircuitBuilder<EF>,
     fri_proof_targets: &FriProofTargets<F, EF, RecMmcs, InputProofTargets<F, EF, Inner>, Witness>,
     alpha: Target,
@@ -1898,7 +1781,7 @@ where
     Witness: Recursive<EF>,
     Comm: ObservableCommitment,
 {
-    verify_fri_circuit(
+    verify_fri_circuit_engine(
         builder,
         fri_proof_targets,
         alpha,
@@ -1906,6 +1789,6 @@ where
         index_bits_per_query,
         commitments_with_opening_points,
         log_blowup,
-        Some(permutation_config),
+        permutation_config,
     )
 }

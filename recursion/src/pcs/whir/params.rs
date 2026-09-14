@@ -74,21 +74,21 @@ pub enum WhirVerifierParamsError {
 #[derive(Clone, Debug)]
 pub struct WhirRoundParams<F> {
     /// Number of out-of-domain evaluation samples for this round.
-    pub ood_samples: usize,
+    ood_samples: usize,
     /// Number of STIR proximity queries.
-    pub num_queries: usize,
+    num_queries: usize,
     /// PoW bits for the after-commitment grinding phase.
-    pub pow_bits: usize,
+    pow_bits: usize,
     /// PoW bits for the folding sumcheck within this round.
-    pub folding_pow_bits: usize,
+    folding_pow_bits: usize,
     /// Number of variables folded in this round (= folding_factor for the round's sumcheck).
-    pub folding_factor: usize,
+    folding_factor: usize,
     /// Size of the evaluation domain before folding in this round.
-    pub domain_size: usize,
+    domain_size: usize,
     /// Two-adic generator of the folded evaluation domain (for computing STIR domain points).
-    pub folded_domain_gen: F,
+    folded_domain_gen: F,
     /// Number of multilinear variables remaining after folding in this round.
-    pub num_variables: usize,
+    num_variables: usize,
 }
 
 /// Verifier parameters for the WHIR recursive verifier.
@@ -96,24 +96,39 @@ pub struct WhirRoundParams<F> {
 /// Mirrors the verification-relevant subset of `WhirConfig`, stripped of all proving
 /// machinery (DFT, Mmcs prover data, phantom types). Carry this alongside the circuit
 /// instead of threading the full `WhirConfig<EF, F, Ch>` into the verifier.
+///
+/// Fields are private so callers must use the checked canonical derivation.
+///
+/// ```compile_fail
+/// use p3_recursion::pcs::whir::WhirVerifierParams;
+/// let params: WhirVerifierParams<()> = unimplemented!();
+/// let WhirVerifierParams { num_variables, .. } = params;
+/// ```
+///
+/// Arithmetic-only construction is confined to the verifier's private unit-test lane.
+///
+/// ```compile_fail
+/// use p3_recursion::pcs::whir::WhirVerifierParams;
+/// let _ = WhirVerifierParams::<()>::unsafe_arithmetic_only_for_tests();
+/// ```
 #[derive(Clone, Debug)]
 pub struct WhirVerifierParams<F> {
     /// Number of multilinear variables in the original polynomial.
-    pub num_variables: usize,
+    num_variables: usize,
     /// Number of OOD evaluation samples at the initial commitment phase.
-    pub commitment_ood_samples: usize,
+    commitment_ood_samples: usize,
     /// PoW bits for the initial folding sumcheck (before any intermediate rounds).
-    pub starting_folding_pow_bits: usize,
+    starting_folding_pow_bits: usize,
     /// Per-round configuration for each intermediate STIR round.
-    pub round_params: Vec<WhirRoundParams<F>>,
+    round_params: Vec<WhirRoundParams<F>>,
     /// Number of variables in the final polynomial sent in the clear.
-    pub final_poly_num_variables: usize,
+    final_poly_num_variables: usize,
     /// Number of STIR queries in the final proximity test.
-    pub final_queries: usize,
+    final_queries: usize,
     /// PoW bits for the final STIR query phase.
-    pub final_pow_bits: usize,
+    final_pow_bits: usize,
     /// Number of sumcheck rounds in the final phase (`0` means no final sumcheck).
-    pub final_sumcheck_rounds: usize,
+    final_sumcheck_rounds: usize,
     /// Number of variables folded to enter the final phase
     /// (= `final_round_config().folding_factor`).
     ///
@@ -121,19 +136,17 @@ pub struct WhirVerifierParams<F> {
     /// final STIR query domain and Merkle leaf width. It is distinct from
     /// `final_sumcheck_rounds`, which counts the plain-sumcheck rounds performed
     /// *after* that fold; the two coincide only for specific arities.
-    pub final_folding_factor: usize,
+    final_folding_factor: usize,
     /// PoW bits for the final folding sumcheck.
-    pub final_folding_pow_bits: usize,
+    final_folding_pow_bits: usize,
     /// Folding variable order (Prefix or Suffix).
-    pub variable_order: VariableOrder,
+    variable_order: VariableOrder,
     /// Domain size entering the final phase (= `final_round_config().domain_size`).
-    pub final_domain_size: usize,
+    final_domain_size: usize,
     /// Two-adic generator of the final folded domain (= `final_round_config().folded_domain_gen`).
-    pub final_folded_domain_gen: F,
-    /// Permutation config for MMCS path verification.
-    /// `None` skips MMCS verification — **unsound**, test-only via
-    /// [`Self::unsafe_arithmetic_only_for_tests`].
-    pub permutation_config: Option<PermConfig>,
+    final_folded_domain_gen: F,
+    /// Permutation config for mandatory MMCS path verification.
+    permutation_config: PermConfig,
 }
 
 impl<F: Field> WhirVerifierParams<F> {
@@ -251,37 +264,8 @@ impl<F: Field> WhirVerifierParams<F> {
             variable_order,
             final_domain_size: final_round_config.domain_size,
             final_folded_domain_gen: final_round_config.folded_domain_gen,
-            permutation_config: Some(permutation_config.into()),
+            permutation_config: permutation_config.into(),
         })
-    }
-
-    /// Create params **without MMCS verification** (arithmetic-only).
-    ///
-    /// # Safety / soundness
-    ///
-    /// A verifier built from these params checks the WHIR arithmetic (sumcheck,
-    /// constraint evaluation, fold value) but does **not** verify Merkle/MMCS
-    /// commitment openings. This is **unsound for production use**: a prover can
-    /// open commitments to arbitrary values without detection.
-    ///
-    /// Use only for tests that isolate the arithmetic path.
-    ///
-    /// # Errors
-    ///
-    /// See [`Self::from_config`].
-    pub fn unsafe_arithmetic_only_for_tests<EF, Ch>(
-        config: &WhirConfig<EF, F, Ch>,
-        variable_order: VariableOrder,
-        permutation_config: impl Into<PermConfig>,
-    ) -> Result<Self, WhirVerifierParamsError>
-    where
-        F: TwoAdicField,
-        EF: ExtensionField<F> + TwoAdicField,
-        Ch: FieldChallenger<F> + GrindingChallenger<Witness = F>,
-    {
-        let mut params = Self::from_config(config, variable_order, permutation_config)?;
-        params.permutation_config = None;
-        Ok(params)
     }
 
     /// Number of intermediate STIR rounds.
@@ -305,6 +289,79 @@ impl<F: Field> WhirVerifierParams<F> {
         } else {
             self.final_folding_factor
         }
+    }
+
+    pub const fn num_variables(&self) -> usize {
+        self.num_variables
+    }
+    pub const fn commitment_ood_samples(&self) -> usize {
+        self.commitment_ood_samples
+    }
+    pub const fn starting_folding_pow_bits(&self) -> usize {
+        self.starting_folding_pow_bits
+    }
+    pub fn round_params(&self) -> &[WhirRoundParams<F>] {
+        &self.round_params
+    }
+    pub const fn final_poly_num_variables(&self) -> usize {
+        self.final_poly_num_variables
+    }
+    pub const fn final_queries(&self) -> usize {
+        self.final_queries
+    }
+    pub const fn final_pow_bits(&self) -> usize {
+        self.final_pow_bits
+    }
+    pub const fn final_sumcheck_rounds(&self) -> usize {
+        self.final_sumcheck_rounds
+    }
+    pub const fn final_folding_factor(&self) -> usize {
+        self.final_folding_factor
+    }
+    pub const fn final_folding_pow_bits(&self) -> usize {
+        self.final_folding_pow_bits
+    }
+    pub const fn variable_order(&self) -> VariableOrder {
+        self.variable_order
+    }
+    pub const fn final_domain_size(&self) -> usize {
+        self.final_domain_size
+    }
+    pub const fn final_folded_domain_gen(&self) -> F {
+        self.final_folded_domain_gen
+    }
+    pub const fn permutation_config(&self) -> PermConfig {
+        self.permutation_config
+    }
+}
+
+impl<F> WhirRoundParams<F> {
+    pub const fn ood_samples(&self) -> usize {
+        self.ood_samples
+    }
+    pub const fn num_queries(&self) -> usize {
+        self.num_queries
+    }
+    pub const fn pow_bits(&self) -> usize {
+        self.pow_bits
+    }
+    pub const fn folding_pow_bits(&self) -> usize {
+        self.folding_pow_bits
+    }
+    pub const fn folding_factor(&self) -> usize {
+        self.folding_factor
+    }
+    pub const fn domain_size(&self) -> usize {
+        self.domain_size
+    }
+    pub const fn folded_domain_gen(&self) -> F
+    where
+        F: Copy,
+    {
+        self.folded_domain_gen
+    }
+    pub const fn num_variables(&self) -> usize {
+        self.num_variables
     }
 }
 

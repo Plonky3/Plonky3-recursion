@@ -1945,7 +1945,7 @@ where
             let commit_targets = commit.to_observation_targets();
             challenger.observe_slice(circuit, &commit_targets);
             // Check commit-phase PoW witness.
-            challenger.check_pow_witness(circuit, params.commit_pow_bits, pow.witness)?;
+            challenger.check_pow_witness(circuit, params.commit_pow_bits(), pow.witness)?;
             // Sample beta - extension field
             let beta = challenger.sample_ext(circuit);
             betas.push(beta);
@@ -1965,7 +1965,7 @@ where
         // Check query PoW witness.
         challenger.check_pow_witness(
             circuit,
-            params.query_pow_bits,
+            params.query_pow_bits(),
             fri_proof.pow_witness.witness,
         )?;
 
@@ -1989,14 +1989,10 @@ where
         opening_proof: &Self::RecursiveProof,
         params: &Self::VerifierParams,
     ) -> Result<Vec<NonPrimitiveOpId>, VerificationError> {
-        let FriVerifierParams {
-            log_blowup,
-            log_final_poly_len,
-            commit_pow_bits: _,
-            query_pow_bits: _,
-            num_queries: required_num_queries,
-            permutation_config,
-        } = *params;
+        let log_blowup = params.log_blowup();
+        let log_final_poly_len = params.log_final_poly_len();
+        let required_num_queries = params.num_queries();
+        let permutation_config = params.permutation_config();
         let num_betas = opening_proof.commit_phase_commits.len();
         let num_queries = opening_proof.query_proofs.len();
 
@@ -2439,7 +2435,7 @@ where
         {
             let commit_targets = commit.to_observation_targets();
             challenger.observe_slice(circuit, &commit_targets);
-            challenger.check_pow_witness(circuit, params.commit_pow_bits, pow.witness)?;
+            challenger.check_pow_witness(circuit, params.commit_pow_bits(), pow.witness)?;
             let beta = challenger.sample_ext(circuit);
             betas.push(beta);
         }
@@ -2454,7 +2450,7 @@ where
 
         challenger.check_pow_witness(
             circuit,
-            params.query_pow_bits,
+            params.query_pow_bits(),
             fri_proof.pow_witness.witness,
         )?;
 
@@ -2476,14 +2472,10 @@ where
         opening_proof: &Self::RecursiveProof,
         params: &Self::VerifierParams,
     ) -> Result<Vec<NonPrimitiveOpId>, VerificationError> {
-        let FriVerifierParams {
-            log_blowup,
-            log_final_poly_len,
-            commit_pow_bits: _,
-            query_pow_bits: _,
-            num_queries: required_num_queries,
-            permutation_config,
-        } = *params;
+        let log_blowup = params.log_blowup();
+        let log_final_poly_len = params.log_final_poly_len();
+        let required_num_queries = params.num_queries();
+        let permutation_config = params.permutation_config();
         let fri_proof = &opening_proof.inner_proof;
         let num_betas = fri_proof.commit_phase_commits.len();
         let num_queries = fri_proof.query_proofs.len();

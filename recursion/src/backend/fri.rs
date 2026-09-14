@@ -822,22 +822,12 @@ where
     }
 
     /// # Errors
-    /// Returns [`VerificationError::InvalidProofShape`] when the config's
-    /// [`FriVerifierParams::permutation_config`] is `None`, the arithmetic-only mode that skips
-    /// in-circuit MMCS verification entirely; a recursion layer built that way would accept FRI
-    /// openings to arbitrary values.
+    /// Propagates any error while enabling the verifier operations required by the config.
     fn prepare_circuit(
         &self,
         config: &SC,
         circuit: &mut CircuitBuilder<SC::Challenge>,
     ) -> Result<(), VerificationError> {
-        if config.pcs_verifier_params().permutation_config.is_none() {
-            return Err(VerificationError::InvalidProofShape(
-                "FriRecursionBackend requires a sound (Some) permutation_config — None is an \
-                 unsound, arithmetic-only test mode that skips in-circuit MMCS verification"
-                    .to_string(),
-            ));
-        }
         config.prepare_circuit_for_verification(circuit)
     }
 
@@ -1001,22 +991,12 @@ where
     }
 
     /// # Errors
-    /// Returns [`VerificationError::InvalidProofShape`] when the config's
-    /// [`FriVerifierParams::permutation_config`] is `None`, the arithmetic-only mode that skips
-    /// in-circuit MMCS verification entirely; a recursion layer built that way would accept FRI
-    /// openings to arbitrary values.
+    /// Propagates any error while enabling the verifier operations required by the config.
     fn prepare_circuit(
         &self,
         config: &SC,
         circuit: &mut CircuitBuilder<SC::Challenge>,
     ) -> Result<(), VerificationError> {
-        if config.pcs_verifier_params().permutation_config.is_none() {
-            return Err(VerificationError::InvalidProofShape(
-                "FriRecursionBackend requires a sound (Some) permutation_config — None is an \
-                 unsound, arithmetic-only test mode that skips in-circuit MMCS verification"
-                    .to_string(),
-            ));
-        }
         config.prepare_circuit_for_verification(circuit)
     }
 
@@ -1180,22 +1160,12 @@ where
     }
 
     /// # Errors
-    /// Returns [`VerificationError::InvalidProofShape`] when the config's
-    /// [`FriVerifierParams::permutation_config`] is `None`, the arithmetic-only mode that skips
-    /// in-circuit MMCS verification entirely; a recursion layer built that way would accept FRI
-    /// openings to arbitrary values.
+    /// Propagates any error while enabling the verifier operations required by the config.
     fn prepare_circuit(
         &self,
         config: &SC,
         circuit: &mut CircuitBuilder<SC::Challenge>,
     ) -> Result<(), VerificationError> {
-        if config.pcs_verifier_params().permutation_config.is_none() {
-            return Err(VerificationError::InvalidProofShape(
-                "FriRecursionBackend requires a sound (Some) permutation_config — None is an \
-                 unsound, arithmetic-only test mode that skips in-circuit MMCS verification"
-                    .to_string(),
-            ));
-        }
         config.prepare_circuit_for_verification(circuit)
     }
 

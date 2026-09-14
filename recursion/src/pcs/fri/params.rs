@@ -29,6 +29,17 @@ pub enum FriInputError {
     QueryFloor { native: usize, minimum: usize },
 }
 
+/// Errors constructing production recursive FRI parameters.
+#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
+pub enum FriVerifierParamsError {
+    #[error("FRI verifier requires at least one query")]
+    ZeroQueries,
+    #[error("FRI verifier log parameter {name} is not representable")]
+    LogNotRepresentable { name: &'static str },
+    #[error("FRI verifier fold/domain exponent sum overflows usize")]
+    HeightOverflow,
+}
+
 /// The checked scalar FRI declaration retained by built-in recursion configs.
 ///
 /// This is deliberately only scalar metadata.  It does not clone or expose a
@@ -198,31 +209,42 @@ impl NativeFriParams {
 ///
 /// These parameters are extracted from the full `FriParameters` and contain
 /// only the information needed during verification (not proving).
+///
+/// Fields are private so production code cannot forge an unchecked parameter
+/// set or omit the MMCS permutation configuration.
+///
+/// ```compile_fail
+/// use p3_recursion::pcs::fri::FriVerifierParams;
+/// let params: FriVerifierParams = unimplemented!();
+/// let FriVerifierParams { num_queries, .. } = params;
+/// ```
+///
+/// The former arithmetic-only constructor is deliberately unavailable on the
+/// production type.
+///
+/// ```compile_fail
+/// use p3_recursion::pcs::fri::FriVerifierParams;
+/// let _ = FriVerifierParams::unsafe_arithmetic_only_for_tests(1, 0, 0, 0);
+/// ```
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FriVerifierParams {
     /// Log₂ of the blowup factor (rate = 1/blowup)
-    pub log_blowup: usize,
+    log_blowup: usize,
     /// Log₂ of the final polynomial length (after all folding rounds)
-    pub log_final_poly_len: usize,
+    log_final_poly_len: usize,
     /// Number of commit-phase proof-of-work bits required
-    pub commit_pow_bits: usize,
+    commit_pow_bits: usize,
     /// Number of query proof-of-work bits required
-    pub query_pow_bits: usize,
+    query_pow_bits: usize,
     /// Minimum number of FRI query proofs required for soundness.
     ///
     /// The recursive verifier enforces `fri_proof_num_queries(proof) >= num_queries`
     /// at circuit-construction time. A circuit built from a proof with fewer
     /// queries than this threshold is rejected with `InvalidProofShape`.
     ///
-    /// Set to `0` only for test constructors that intentionally skip this check
-    /// (see [`Self::unsafe_arithmetic_only_for_tests`]).
-    pub num_queries: usize,
-    /// Permutation configuration for MMCS verification (Poseidon1 or Poseidon2).
-    /// When `Some`, recursive MMCS verification is performed.
-    /// When `None`, only arithmetic verification is performed — this is
-    /// **unsound** and only reachable via
-    /// [`Self::unsafe_arithmetic_only_for_tests`].
-    pub permutation_config: Option<PermConfig>,
+    num_queries: usize,
+    /// Mandatory permutation configuration for MMCS verification.
+    permutation_config: PermConfig,
 }
 
 impl FriVerifierParams {
@@ -231,6 +253,45 @@ impl FriVerifierParams {
     /// `num_queries` is the minimum number of FRI query proofs required for soundness.
     /// The circuit verifier enforces this bound at build time and rejects proofs
     /// that carry fewer queries than required.
+    pub fn try_with_mmcs(
+        log_blowup: usize,
+        log_final_poly_len: usize,
+        commit_pow_bits: usize,
+        query_pow_bits: usize,
+        num_queries: usize,
+        permutation_config: impl Into<PermConfig>,
+    ) -> Result<Self, FriVerifierParamsError> {
+        if num_queries == 0 {
+            return Err(FriVerifierParamsError::ZeroQueries);
+        }
+        for (name, value) in [
+            ("log_blowup", log_blowup),
+            ("log_final_poly_len", log_final_poly_len),
+            ("commit_pow_bits", commit_pow_bits),
+            ("query_pow_bits", query_pow_bits),
+        ] {
+            if value >= usize::BITS as usize || u32::try_from(value).is_err() {
+                return Err(FriVerifierParamsError::LogNotRepresentable { name });
+            }
+        }
+        let height = log_blowup
+            .checked_add(log_final_poly_len)
+            .ok_or(FriVerifierParamsError::HeightOverflow)?;
+        if height >= usize::BITS as usize {
+            return Err(FriVerifierParamsError::HeightOverflow);
+        }
+        Ok(Self {
+            log_blowup,
+            log_final_poly_len,
+            commit_pow_bits,
+            query_pow_bits,
+            num_queries,
+            permutation_config: permutation_config.into(),
+        })
+    }
+
+    /// Compatibility constructor for existing callers. New fallible callers
+    /// should prefer [`Self::try_with_mmcs`].
     pub fn with_mmcs(
         log_blowup: usize,
         log_final_poly_len: usize,
@@ -239,48 +300,34 @@ impl FriVerifierParams {
         num_queries: usize,
         permutation_config: impl Into<PermConfig>,
     ) -> Self {
-        Self {
+        Self::try_with_mmcs(
             log_blowup,
             log_final_poly_len,
             commit_pow_bits,
             query_pow_bits,
             num_queries,
-            permutation_config: Some(permutation_config.into()),
-        }
+            permutation_config,
+        )
+        .expect("invalid production FRI verifier parameters")
     }
 
-    /// Create params **without MMCS verification** (arithmetic-only).
-    ///
-    /// # Safety / soundness
-    ///
-    /// A verifier built from these params checks the FRI arithmetic fold chain
-    /// but does **not** verify Merkle/MMCS commitment openings. This is
-    /// **unsound for production use**: a prover can open commitments to
-    /// arbitrary values without detection.
-    ///
-    /// This constructor exists only for tests that exercise the arithmetic path
-    /// in isolation. Production verifier builders must use [`Self::with_mmcs`],
-    /// which is the only safe constructor and the only way to obtain a
-    /// `permutation_config`. There is intentionally no `From<&FriParameters>`
-    /// (or other implicit) conversion, so MMCS verification cannot be disabled
-    /// accidentally.
-    ///
-    /// `num_queries` is set to `0` for this test constructor, meaning no
-    /// minimum query count is enforced. Do **not** rely on this in production.
-    pub const fn unsafe_arithmetic_only_for_tests(
-        log_blowup: usize,
-        log_final_poly_len: usize,
-        commit_pow_bits: usize,
-        query_pow_bits: usize,
-    ) -> Self {
-        Self {
-            log_blowup,
-            log_final_poly_len,
-            commit_pow_bits,
-            query_pow_bits,
-            num_queries: 0,
-            permutation_config: None,
-        }
+    pub const fn log_blowup(&self) -> usize {
+        self.log_blowup
+    }
+    pub const fn log_final_poly_len(&self) -> usize {
+        self.log_final_poly_len
+    }
+    pub const fn commit_pow_bits(&self) -> usize {
+        self.commit_pow_bits
+    }
+    pub const fn query_pow_bits(&self) -> usize {
+        self.query_pow_bits
+    }
+    pub const fn num_queries(&self) -> usize {
+        self.num_queries
+    }
+    pub const fn permutation_config(&self) -> PermConfig {
+        self.permutation_config
     }
 }
 
@@ -303,21 +350,7 @@ mod tests {
     #[test]
     fn with_mmcs_always_enables_mmcs_verification() {
         let params = FriVerifierParams::with_mmcs(1, 0, 0, 0, 1, p2());
-        assert!(
-            params.permutation_config.is_some(),
-            "with_mmcs must enable MMCS verification"
-        );
-    }
-
-    /// Disabling MMCS verification must require the explicitly unsafe,
-    /// test-only constructor — there is no implicit (`From`/`into`) path.
-    #[test]
-    fn arithmetic_only_is_the_only_way_to_disable_mmcs() {
-        let params = FriVerifierParams::unsafe_arithmetic_only_for_tests(1, 0, 0, 0);
-        assert!(
-            params.permutation_config.is_none(),
-            "arithmetic-only params must not perform MMCS verification"
-        );
+        assert_eq!(params.permutation_config(), p2());
     }
 
     /// `with_mmcs` must store the caller-supplied `num_queries` unchanged.
@@ -333,14 +366,11 @@ mod tests {
         );
     }
 
-    /// The test-only constructor disables the query-count lower-bound check by
-    /// storing 0, which is always satisfied (`N >= 0` for any `usize N`).
     #[test]
-    fn arithmetic_only_sets_num_queries_zero() {
-        let params = FriVerifierParams::unsafe_arithmetic_only_for_tests(1, 0, 0, 0);
+    fn with_mmcs_rejects_a_combined_height_at_the_word_boundary() {
         assert_eq!(
-            params.num_queries, 0,
-            "unsafe_arithmetic_only_for_tests must disable the query-count check"
+            FriVerifierParams::try_with_mmcs(usize::BITS as usize - 1, 1, 0, 0, 1, p2(),),
+            Err(FriVerifierParamsError::HeightOverflow)
         );
     }
 

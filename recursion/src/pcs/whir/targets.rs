@@ -217,44 +217,44 @@ impl WhirProofTargets {
     ///
     /// - `cap_entries`: number of Merkle roots in each commitment cap (typically 1).
     /// - `cap_entry_len`: number of EF-element Targets per cap entry
-    ///   (= `permutation_config.rate_ext()`; pass `1` for arithmetic-only tests).
+    ///   (= `permutation_config.rate_ext()`).
     pub fn alloc<F: Field, EF: ExtensionField<F>>(
         circuit: &mut CircuitBuilder<EF>,
         params: &super::params::WhirVerifierParams<F>,
         cap_entries: usize,
         cap_entry_len: usize,
     ) -> Self {
-        let initial_ood_answers =
-            circuit.alloc_public_inputs(params.commitment_ood_samples, "WHIR initial OOD answers");
+        let initial_ood_answers = circuit
+            .alloc_public_inputs(params.commitment_ood_samples(), "WHIR initial OOD answers");
 
         let initial_folding_factor = if params.n_rounds() > 0 {
-            params.round_params[0].folding_factor
+            params.round_params()[0].folding_factor()
         } else {
             // No intermediate rounds: the initial fold *is* the fold that enters
             // the final phase, so its length is `final_folding_factor`, not
             // `final_sumcheck_rounds` (the plain-sumcheck length performed after
             // that fold — a distinct quantity that coincides with it only for
             // specific arities).
-            params.final_folding_factor
+            params.final_folding_factor()
         };
         let initial_sumcheck = SumcheckDataTargets::alloc(
             circuit,
             initial_folding_factor,
-            params.starting_folding_pow_bits,
+            params.starting_folding_pow_bits(),
             "WHIR initial sumcheck",
         );
 
         let rounds = params
-            .round_params
+            .round_params()
             .iter()
             .enumerate()
             .map(|(i, rp)| {
                 WhirRoundProofTargets::alloc(
                     circuit,
-                    rp.ood_samples,
-                    rp.num_queries,
-                    rp.folding_factor,
-                    rp.folding_pow_bits,
+                    rp.ood_samples(),
+                    rp.num_queries(),
+                    rp.folding_factor(),
+                    rp.folding_pow_bits(),
                     cap_entries,
                     cap_entry_len,
                     i == 0,
@@ -262,7 +262,7 @@ impl WhirProofTargets {
             })
             .collect();
 
-        let final_poly_len = 1usize << params.final_poly_num_variables;
+        let final_poly_len = 1usize << params.final_poly_num_variables();
         let final_poly =
             circuit.alloc_public_inputs(final_poly_len, "WHIR final polynomial evaluations");
         let final_pow_witness = circuit.alloc_public_input("WHIR final PoW witness");
@@ -272,8 +272,8 @@ impl WhirProofTargets {
         // intermediate* round's fold) is a different quantity in general and only
         // coincides with it when the folding schedule's last two entries happen
         // to match.
-        let final_leaf_len = 1usize << params.final_folding_factor;
-        let final_queries = (0..params.final_queries)
+        let final_leaf_len = 1usize << params.final_folding_factor();
+        let final_queries = (0..params.final_queries())
             .map(|_| {
                 if params.n_rounds() == 0 {
                     QueryOpeningTargets::alloc_base(circuit, final_leaf_len)
@@ -283,11 +283,11 @@ impl WhirProofTargets {
             })
             .collect();
 
-        let final_sumcheck = if params.final_sumcheck_rounds > 0 {
+        let final_sumcheck = if params.final_sumcheck_rounds() > 0 {
             Some(SumcheckDataTargets::alloc(
                 circuit,
-                params.final_sumcheck_rounds,
-                params.final_folding_pow_bits,
+                params.final_sumcheck_rounds(),
+                params.final_folding_pow_bits(),
                 "WHIR final sumcheck",
             ))
         } else {

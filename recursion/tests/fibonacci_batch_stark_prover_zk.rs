@@ -126,11 +126,13 @@ fn test_batch_verifier_zk_hiding_fri() -> Result<(), VerificationError> {
     let challenge_mmcs2 = ChallengeMmcs::new(val_mmcs2.clone());
     let dft2 = Dft::default();
     let fri_params2 = FriParameters::new_testing(challenge_mmcs2, 0);
-    let fri_verifier_params = FriVerifierParams::unsafe_arithmetic_only_for_tests(
+    let fri_verifier_params = FriVerifierParams::with_mmcs(
         fri_params2.log_blowup,
         fri_params2.log_final_poly_len,
         fri_params2.commit_proof_of_work_bits,
         fri_params2.query_proof_of_work_bits,
+        fri_params2.num_queries,
+        Poseidon2Config::KOALA_BEAR_D4_W16,
     );
     let pcs_verif = MyPcsZk::new(dft2, val_mmcs2, fri_params2, 2, StdRng::seed_from_u64(2));
     let challenger_verif = Challenger::new(perm2.clone());

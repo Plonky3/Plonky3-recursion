@@ -115,7 +115,7 @@ pub fn bb_whir_config(round_log_inv_rates: Vec<usize>) -> BbWhirConfig {
     let whir_verifier_params = WhirUniVerifierParams::<BbF>::new(
         protocol_params,
         PrefixProver::<BbF, BbEF>::variable_order(),
-        Some(Poseidon2Config::BABY_BEAR_D4_W16.into()),
+        Poseidon2Config::BABY_BEAR_D4_W16,
     )
     .expect("valid WHIR example configuration");
     BbWhirConfig {
@@ -187,9 +187,9 @@ impl WhirRecursionConfig for BbWhirConfig {
             &mmcs,
             transcript,
             opening_proof,
-            &params.protocol_params,
-            params.folding,
-            params.variable_order,
+            params.protocol_params(),
+            params.folding(),
+            params.variable_order(),
         )
         .map_err(|_| "Failed to restore WHIR Merkle paths")?;
 
@@ -294,7 +294,7 @@ pub fn kb_whir_config(round_log_inv_rates: Vec<usize>) -> KbWhirConfig {
     let whir_verifier_params = WhirUniVerifierParams::<KbF>::new(
         protocol_params,
         PrefixProver::<KbF, KbEF>::variable_order(),
-        Some(Poseidon2Config::KOALA_BEAR_D4_W16.into()),
+        Poseidon2Config::KOALA_BEAR_D4_W16,
     )
     .expect("valid WHIR example configuration");
     KbWhirConfig {
@@ -366,9 +366,9 @@ impl WhirRecursionConfig for KbWhirConfig {
             &mmcs,
             transcript,
             opening_proof,
-            &params.protocol_params,
-            params.folding,
-            params.variable_order,
+            params.protocol_params(),
+            params.folding(),
+            params.variable_order(),
         )
         .map_err(|_| "Failed to restore WHIR Merkle paths")?;
 

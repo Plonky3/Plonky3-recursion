@@ -12,10 +12,10 @@ use p3_lookup::Lookups;
 use p3_lookup::logup::LogUpGadget;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_poseidon2_circuit_air::BabyBearD4Width16;
-use p3_recursion::pcs::MerkleCapTargets;
+use p3_recursion::pcs::{MerkleCapTargets, restore_fri_query_paths, set_fri_mmcs_private_data};
 use p3_recursion::{
-    BatchProofTargets, BatchStarkVerifierInputsBuilder, FriVerifierParams, Poseidon2Config,
-    VerificationError, verify_batch_circuit,
+    BatchProofTargets, BatchStarkVerifierInputsBuilder, FriVerifierParams, OpeningTranscript,
+    Poseidon2Config, VerificationError, observe_opened_values, verify_batch_circuit,
 };
 use p3_test_utils::baby_bear_params::*;
 use rand::distr::{Distribution, StandardUniform};
@@ -322,13 +322,16 @@ fn test_batch_verifier_with_mixed_preprocessed() -> Result<(), VerificationError
     let n = 1 << 3;
 
     let scalars = test_fri_scalars();
-    let fri_verifier_params = FriVerifierParams::unsafe_arithmetic_only_for_tests(
+    let fri_verifier_params = FriVerifierParams::with_mmcs(
         scalars.log_blowup,
         scalars.log_final_poly_len,
         scalars.commit_pow_bits,
         scalars.query_pow_bits,
+        scalars.num_queries,
+        Poseidon2Config::BABY_BEAR_D4_W16,
     );
     let config = make_test_config();
+    let (val_mmcs, fri_params) = test_fri_instance();
     // Same default permutation make_test_config uses, for the recursive verifier circuit.
     let perm = default_babybear_poseidon2_16();
 
@@ -473,7 +476,7 @@ fn test_batch_verifier_with_mixed_preprocessed() -> Result<(), VerificationError
     // 1. MulAir (has preprocessed columns)
     // 2. AddAirNoPreprocessed (no preprocessed columns)
     // 3. SubAirPartialPreprocessed (some preprocessed columns)
-    verify_batch_circuit::<_, _, _, _, _, _, _, WIDTH, RATE>(
+    let mmcs_op_ids = verify_batch_circuit::<_, _, _, _, _, _, _, WIDTH, RATE>(
         &config,
         &airs,
         &mut circuit_builder,
@@ -500,6 +503,28 @@ fn test_batch_verifier_with_mixed_preprocessed() -> Result<(), VerificationError
         .set_private_inputs(&private_inputs)
         .map_err(VerificationError::Circuit)?;
 
+    let OpeningTranscript {
+        mut challenger,
+        commitments_with_opening_points,
+    } = replay;
+    observe_opened_values::<MyConfig>(&mut challenger, &commitments_with_opening_points);
+    let query_paths = restore_fri_query_paths(
+        &fri_params,
+        &val_mmcs,
+        &val_mmcs,
+        &batch_proof.opening_proof,
+        &mut challenger,
+        &commitments_with_opening_points,
+    )
+    .map_err(|error| VerificationError::InvalidProofShape(format!("{error:?}")))?;
+    set_fri_mmcs_private_data::<F, Challenge, DIGEST_ELEMS>(
+        &mut runner,
+        &mmcs_op_ids,
+        &query_paths,
+        Poseidon2Config::BABY_BEAR_D4_W16,
+    )
+    .map_err(|error| VerificationError::InvalidProofShape(error.to_string()))?;
+
     let _traces = runner.run().map_err(VerificationError::Circuit)?;
 
     Ok(())
@@ -509,13 +534,16 @@ fn test_batch_verifier_with_mixed_preprocessed() -> Result<(), VerificationError
 fn test_batch_verifier_with_local_only_preprocessed() -> Result<(), VerificationError> {
     let n = 1 << 3;
     let scalars = test_fri_scalars();
-    let pcs_verifier_params = FriVerifierParams::unsafe_arithmetic_only_for_tests(
+    let pcs_verifier_params = FriVerifierParams::with_mmcs(
         scalars.log_blowup,
         scalars.log_final_poly_len,
         scalars.commit_pow_bits,
         scalars.query_pow_bits,
+        scalars.num_queries,
+        Poseidon2Config::BABY_BEAR_D4_W16,
     );
     let config = make_test_config();
+    let (val_mmcs, fri_params) = test_fri_instance();
     let air = LocalOnlySubAir(SubAirPartialPreprocessed { rows: n });
     let (trace, _) = air.0.random_valid_trace::<F>(true);
     let public_values = vec![];
@@ -649,7 +677,7 @@ fn test_batch_verifier_with_local_only_preprocessed() -> Result<(), Verification
         &prover_data.common,
         &[0],
     )?;
-    verify_batch_circuit::<_, _, _, _, _, _, _, WIDTH, RATE>(
+    let mmcs_op_ids = verify_batch_circuit::<_, _, _, _, _, _, _, WIDTH, RATE>(
         &config,
         &[air],
         &mut circuit_builder,
@@ -670,6 +698,27 @@ fn test_batch_verifier_with_local_only_preprocessed() -> Result<(), Verification
     runner
         .set_private_inputs(&private_inputs)
         .map_err(VerificationError::Circuit)?;
+    let OpeningTranscript {
+        mut challenger,
+        commitments_with_opening_points,
+    } = replay;
+    observe_opened_values::<MyConfig>(&mut challenger, &commitments_with_opening_points);
+    let query_paths = restore_fri_query_paths(
+        &fri_params,
+        &val_mmcs,
+        &val_mmcs,
+        &batch_proof.opening_proof,
+        &mut challenger,
+        &commitments_with_opening_points,
+    )
+    .map_err(|error| VerificationError::InvalidProofShape(format!("{error:?}")))?;
+    set_fri_mmcs_private_data::<F, Challenge, DIGEST_ELEMS>(
+        &mut runner,
+        &mmcs_op_ids,
+        &query_paths,
+        Poseidon2Config::BABY_BEAR_D4_W16,
+    )
+    .map_err(|error| VerificationError::InvalidProofShape(error.to_string()))?;
     runner.run().map_err(VerificationError::Circuit)?;
     batch_proof.opened_values.instances[0]
         .base_opened_values
@@ -689,11 +738,13 @@ fn run_with_tampered_common(
     let n = 1 << 3;
 
     let scalars = test_fri_scalars();
-    let fri_verifier_params = FriVerifierParams::unsafe_arithmetic_only_for_tests(
+    let fri_verifier_params = FriVerifierParams::with_mmcs(
         scalars.log_blowup,
         scalars.log_final_poly_len,
         scalars.commit_pow_bits,
         scalars.query_pow_bits,
+        scalars.num_queries,
+        Poseidon2Config::BABY_BEAR_D4_W16,
     );
     let config = make_test_config();
     let perm = default_babybear_poseidon2_16();
@@ -848,11 +899,13 @@ fn run_with_tampered_proof(
     let n = 1 << 3;
 
     let scalars = test_fri_scalars();
-    let fri_verifier_params = FriVerifierParams::unsafe_arithmetic_only_for_tests(
+    let fri_verifier_params = FriVerifierParams::with_mmcs(
         scalars.log_blowup,
         scalars.log_final_poly_len,
         scalars.commit_pow_bits,
         scalars.query_pow_bits,
+        scalars.num_queries,
+        Poseidon2Config::BABY_BEAR_D4_W16,
     );
     let config = make_test_config();
     let perm = default_babybear_poseidon2_16();
@@ -1108,13 +1161,16 @@ fn test_batch_verifier_with_public_values() -> Result<(), VerificationError> {
     let n = 1 << 3;
 
     let scalars = test_fri_scalars();
-    let fri_verifier_params = FriVerifierParams::unsafe_arithmetic_only_for_tests(
+    let fri_verifier_params = FriVerifierParams::with_mmcs(
         scalars.log_blowup,
         scalars.log_final_poly_len,
         scalars.commit_pow_bits,
         scalars.query_pow_bits,
+        scalars.num_queries,
+        Poseidon2Config::BABY_BEAR_D4_W16,
     );
     let config = make_test_config();
+    let (val_mmcs, fri_params) = test_fri_instance();
     // Same default permutation make_test_config uses, for the recursive verifier circuit.
     let perm = default_babybear_poseidon2_16();
 
@@ -1156,7 +1212,7 @@ fn test_batch_verifier_with_public_values() -> Result<(), VerificationError> {
         &air_public_counts,
     )?;
 
-    verify_batch_circuit::<_, _, _, _, _, _, _, WIDTH, RATE>(
+    let mmcs_op_ids = verify_batch_circuit::<_, _, _, _, _, _, _, WIDTH, RATE>(
         &config,
         &[pv_air],
         &mut circuit_builder,
@@ -1181,6 +1237,39 @@ fn test_batch_verifier_with_public_values() -> Result<(), VerificationError> {
         .set_private_inputs(&private_inputs)
         .map_err(VerificationError::Circuit)?;
 
+    let (
+        OpeningTranscript {
+            mut challenger,
+            commitments_with_opening_points,
+        },
+        _,
+    ) = p3_recursion::replay_batch_stark_transcript(
+        &[pv_air],
+        &config,
+        &batch_proof,
+        &pvs,
+        common_data,
+        &lookup_gadget,
+    )
+    .map_err(|error| VerificationError::InvalidProofShape(error.to_string()))?;
+    observe_opened_values::<MyConfig>(&mut challenger, &commitments_with_opening_points);
+    let query_paths = restore_fri_query_paths(
+        &fri_params,
+        &val_mmcs,
+        &val_mmcs,
+        &batch_proof.opening_proof,
+        &mut challenger,
+        &commitments_with_opening_points,
+    )
+    .map_err(|error| VerificationError::InvalidProofShape(format!("{error:?}")))?;
+    set_fri_mmcs_private_data::<F, Challenge, DIGEST_ELEMS>(
+        &mut runner,
+        &mmcs_op_ids,
+        &query_paths,
+        Poseidon2Config::BABY_BEAR_D4_W16,
+    )
+    .map_err(|error| VerificationError::InvalidProofShape(error.to_string()))?;
+
     let _traces = runner.run().map_err(VerificationError::Circuit)?;
 
     Ok(())
@@ -1192,13 +1281,16 @@ fn test_batch_verifier_wrong_public_values() {
     let n = 1 << 3;
 
     let scalars = test_fri_scalars();
-    let fri_verifier_params = FriVerifierParams::unsafe_arithmetic_only_for_tests(
+    let fri_verifier_params = FriVerifierParams::with_mmcs(
         scalars.log_blowup,
         scalars.log_final_poly_len,
         scalars.commit_pow_bits,
         scalars.query_pow_bits,
+        scalars.num_queries,
+        Poseidon2Config::BABY_BEAR_D4_W16,
     );
     let config = make_test_config();
+    let (val_mmcs, fri_params) = test_fri_instance();
     // Same default permutation make_test_config uses, for the recursive verifier circuit.
     let perm = default_babybear_poseidon2_16();
 
@@ -1218,6 +1310,31 @@ fn test_batch_verifier_wrong_public_values() {
     let batch_proof = prove_batch(&config, &instances, &prover_data);
 
     let lookup_gadget = LogUpGadget::new();
+    let (
+        OpeningTranscript {
+            mut challenger,
+            commitments_with_opening_points,
+        },
+        _,
+    ) = p3_recursion::replay_batch_stark_transcript(
+        &[pv_air],
+        &config,
+        &batch_proof,
+        &pvs,
+        common_data,
+        &lookup_gadget,
+    )
+    .unwrap();
+    observe_opened_values::<MyConfig>(&mut challenger, &commitments_with_opening_points);
+    let query_paths = restore_fri_query_paths(
+        &fri_params,
+        &val_mmcs,
+        &val_mmcs,
+        &batch_proof.opening_proof,
+        &mut challenger,
+        &commitments_with_opening_points,
+    )
+    .unwrap();
 
     let mut circuit_builder = CircuitBuilder::new();
     circuit_builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
@@ -1239,7 +1356,7 @@ fn test_batch_verifier_wrong_public_values() {
     )
     .expect("valid proof shape must allocate verifier inputs");
 
-    verify_batch_circuit::<_, _, _, _, _, _, _, WIDTH, RATE>(
+    let mmcs_op_ids = verify_batch_circuit::<_, _, _, _, _, _, _, WIDTH, RATE>(
         &config,
         &[pv_air],
         &mut circuit_builder,
@@ -1263,6 +1380,13 @@ fn test_batch_verifier_wrong_public_values() {
 
     runner.set_public_inputs(&public_inputs).unwrap();
     runner.set_private_inputs(&private_inputs).unwrap();
+    set_fri_mmcs_private_data::<F, Challenge, DIGEST_ELEMS>(
+        &mut runner,
+        &mmcs_op_ids,
+        &query_paths,
+        Poseidon2Config::BABY_BEAR_D4_W16,
+    )
+    .unwrap();
 
     // Should panic with WitnessConflict because the public value doesn't match the trace.
     runner.run().unwrap();

@@ -795,9 +795,7 @@ where
         input_salt_elems,
         phase_salt_elems,
     )?;
-    let permutation = recursive.permutation_config.ok_or_else(|| {
-        invalid("checked FRI context requires a recursive MMCS permutation configuration")
-    })?;
+    let permutation = recursive.permutation_config();
     let commitment_count = layout.commitment_count();
     if commitment_count > MAX_FRI_COMMITMENTS {
         return Err(invalid("FRI commitment role count exceeds checked maximum"));
@@ -891,9 +889,7 @@ where
     RI::Commitment: CheckedFriCommitment<EF>,
     RF::Commitment: CheckedFriCommitment<EF, Input = <RF::Input as Mmcs<EF>>::Commitment>,
 {
-    let permutation = recursive.permutation_config.ok_or_else(|| {
-        invalid("checked FRI context requires a recursive MMCS permutation configuration")
-    })?;
+    let permutation = recursive.permutation_config();
     let validated = validate_fri_borrowed_with_caps::<F, EF, RI, RF>(
         proof,
         native,

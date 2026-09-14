@@ -461,7 +461,7 @@ where
             })
             .collect();
 
-        let stacked_num_variables = stacked_num_variables(&openings, params.folding)?;
+        let stacked_num_variables = stacked_num_variables(&openings, params.folding())?;
         let vp = params.round_params::<EF, DummyChallenger<BF>>(stacked_num_variables)?;
 
         let context_params = WhirContextParams::from_recursive(&vp);
@@ -470,10 +470,10 @@ where
         // The commitment fixes how many initial OOD answers exist; a wrong
         // count would desync Fiat-Shamir instead of being rejected, exactly
         // as native `verify_at` guards against (`InitialOodAnswerCountMismatch`).
-        if round.whir.initial_ood_answers.len() != vp.commitment_ood_samples {
+        if round.whir.initial_ood_answers.len() != vp.commitment_ood_samples() {
             return Err(VerificationError::InvalidProofShape(format!(
                 "WHIR commitment expects {} initial OOD answers, proof supplies {}",
-                vp.commitment_ood_samples,
+                vp.commitment_ood_samples(),
                 round.whir.initial_ood_answers.len()
             )));
         }
@@ -483,7 +483,7 @@ where
         // `compute_folding_schedule` produces for this arity — so a
         // differently-sized `round_polys` would desync Fiat-Shamir the same
         // way a wrong OOD count would.
-        let expected_initial_rounds = params.folding.min(stacked_num_variables);
+        let expected_initial_rounds = params.folding().min(stacked_num_variables);
         if round.whir.initial_sumcheck.round_polys.len() != expected_initial_rounds {
             return Err(VerificationError::InvalidProofShape(format!(
                 "WHIR initial sumcheck expects {expected_initial_rounds} rounds for a \
@@ -494,12 +494,12 @@ where
 
         // The final polynomial's hypercube evaluation count is fixed by the
         // number of variables left after all folding.
-        let expected_final_poly_len = 1usize << vp.final_poly_num_variables;
+        let expected_final_poly_len = 1usize << vp.final_poly_num_variables();
         if round.whir.final_poly.len() != expected_final_poly_len {
             return Err(VerificationError::InvalidProofShape(format!(
                 "WHIR final polynomial expects {expected_final_poly_len} evaluations \
                  ({} variables), proof supplies {}",
-                vp.final_poly_num_variables,
+                vp.final_poly_num_variables(),
                 round.whir.final_poly.len()
             )));
         }
@@ -510,20 +510,19 @@ where
             &openings,
             &round.evals,
             &round.whir.initial_ood_answers,
-            params.folding,
+            params.folding(),
         )
         .map_err(|e| VerificationError::InvalidProofShape(format!("{e:?}")))?;
         debug_assert_eq!(claims.stacked_num_variables, stacked_num_variables);
 
         // The MMCS gadget wants each cap entry as packed extension targets; the
         // commitment's observation targets are lifted base scalars.
-        let cap: Vec<Vec<Target>> = match params.permutation_config {
-            Some(perm) => {
-                let lifted = commitment.to_observation_targets();
-                crate::pcs::fri::commitment_cap_rows_from_lifted::<BF, EF>(circuit, perm, &lifted)
-            }
-            None => alloc::vec![alloc::vec![circuit.define_const(EF::ZERO)]],
-        };
+        let lifted = commitment.to_observation_targets();
+        let cap: Vec<Vec<Target>> = crate::pcs::fri::commitment_cap_rows_from_lifted::<BF, EF>(
+            circuit,
+            params.permutation_config(),
+            &lifted,
+        );
 
         let round_ops = crate::pcs::whir::verify_whir_circuit::<BF, EF, Ch>(
             circuit,
@@ -970,9 +969,9 @@ mod tests {
     }
 
     /// A round's verifier params must be derived for the arity the claim
-    /// assembly computed, and must carry the requested MMCS mode.
+    /// assembly computed and carry mandatory MMCS configuration.
     #[test]
-    fn round_params_track_the_stacked_arity_and_mmcs_mode() {
+    fn round_params_track_the_stacked_arity_and_mmcs_config() {
         use p3_circuit::ops::Poseidon2Config;
         use p3_sumcheck::layout::{Layout, PrefixProver};
         use p3_whir::parameters::{FoldingFactor, ProtocolParameters, SecurityAssumption};
@@ -988,28 +987,34 @@ mod tests {
             starting_log_inv_rate: 1,
         };
 
-        let arithmetic_only = WhirUniVerifierParams::<BF>::new(
+        let params = WhirUniVerifierParams::<BF>::new(
             protocol_params.clone(),
             PrefixProver::<BF, EF>::variable_order(),
-            None,
+            Poseidon2Config::BABY_BEAR_D4_W16,
         )
         .expect("valid WHIR test configuration");
-        let vp = arithmetic_only
+        let vp = params
             .round_params::<EF, DuplexChallenger<BF, Poseidon2BabyBear<16>, 16, 8>>(12)
             .expect("non-saturating STIR query counts at this arity");
-        assert_eq!(vp.num_variables, 12);
-        assert!(vp.permutation_config.is_none());
+        assert_eq!(vp.num_variables(), 12);
+        assert_eq!(
+            vp.permutation_config(),
+            Poseidon2Config::BABY_BEAR_D4_W16.into()
+        );
 
         let with_mmcs = WhirUniVerifierParams::<BF>::new(
             protocol_params,
             PrefixProver::<BF, EF>::variable_order(),
-            Some(Poseidon2Config::BABY_BEAR_D4_W16.into()),
+            Poseidon2Config::BABY_BEAR_D4_W16,
         )
         .expect("valid WHIR test configuration");
         let vp = with_mmcs
             .round_params::<EF, DuplexChallenger<BF, Poseidon2BabyBear<16>, 16, 8>>(12)
             .expect("non-saturating STIR query counts at this arity");
-        assert!(vp.permutation_config.is_some());
+        assert_eq!(
+            vp.permutation_config(),
+            Poseidon2Config::BABY_BEAR_D4_W16.into()
+        );
         assert_eq!(vp.n_rounds(), 1);
     }
 
@@ -1024,6 +1029,7 @@ mod tests {
     )>;
 
     fn test_whir_uni_verifier_params() -> super::WhirUniVerifierParams<BF> {
+        use p3_circuit::ops::Poseidon2Config;
         use p3_whir::parameters::{FoldingFactor, ProtocolParameters, SecurityAssumption};
 
         let protocol_params = ProtocolParameters {
@@ -1037,7 +1043,7 @@ mod tests {
         super::WhirUniVerifierParams::<BF>::new(
             protocol_params,
             PrefixProver::<BF, EF>::variable_order(),
-            None,
+            Poseidon2Config::BABY_BEAR_D4_W16,
         )
         .expect("valid WHIR test configuration")
     }
@@ -1096,7 +1102,7 @@ mod tests {
         let expected_ood = params
             .round_params::<EF, DuplexChallenger<BF, Poseidon2BabyBear<16>, 16, 8>>(LOG_HEIGHT)
             .expect("non-saturating STIR query counts at this arity")
-            .commitment_ood_samples;
+            .commitment_ood_samples();
 
         let mut builder = CircuitBuilder::<EF>::new();
         let commitment = builder.define_const(EF::ZERO);

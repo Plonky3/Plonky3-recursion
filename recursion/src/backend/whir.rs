@@ -494,23 +494,11 @@ where
         preflight_basic_whir_input(&self.0.limits, prev)
     }
 
-    /// # Errors
-    /// Returns [`VerificationError::InvalidProofShape`] when the config's
-    /// [`WhirUniVerifierParams::permutation_config`] is `None`, the arithmetic-only mode that
-    /// skips in-circuit MMCS verification entirely; a recursion layer built that way would
-    /// accept WHIR openings to arbitrary values.
     fn prepare_circuit(
         &self,
         config: &SC,
         circuit: &mut CircuitBuilder<SC::Challenge>,
     ) -> Result<(), VerificationError> {
-        if config.pcs_verifier_params().permutation_config.is_none() {
-            return Err(VerificationError::InvalidProofShape(
-                "WhirRecursionBackend requires a sound (Some) permutation_config — None is an \
-                 unsound, arithmetic-only test mode that skips in-circuit MMCS verification"
-                    .to_string(),
-            ));
-        }
         config.prepare_circuit_for_verification(circuit)
     }
 

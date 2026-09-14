@@ -201,11 +201,13 @@ fn add_zk_batch_verifier_to_circuit(
         let val_mmcs = MyMmcs::new(hash, compress, 0);
         let challenge_mmcs = ChallengeMmcs::new(val_mmcs);
         let fri_params = FriParameters::new_testing(challenge_mmcs, 0);
-        FriVerifierParams::unsafe_arithmetic_only_for_tests(
+        FriVerifierParams::with_mmcs(
             fri_params.log_blowup,
             fri_params.log_final_poly_len,
             fri_params.commit_proof_of_work_bits,
             fri_params.query_proof_of_work_bits,
+            fri_params.num_queries,
+            Poseidon2Config::KOALA_BEAR_D4_W16,
         )
     };
 

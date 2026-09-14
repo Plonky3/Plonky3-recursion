@@ -3,18 +3,17 @@ mod common;
 use p3_circuit::test_utils::{FibonacciAir, generate_trace_rows};
 use p3_circuit_prover::batch_stark_prover::BatchStarkProver;
 use p3_field::PrimeCharacteristicRing;
+use p3_recursion::Poseidon2Config;
 use p3_recursion::backend::whir::{WhirRecursionBackend, WhirRecursionBackendForExt};
 use p3_recursion::recursion::{
     BatchOnly, PcsRecursionBackend, ProveNextLayerParams, RecursionInput,
     build_and_prove_next_layer,
 };
-use p3_recursion::{Poseidon2Config, VerificationError};
 use p3_uni_stark::{prove, verify};
 use p3_whir::pcs::proof::QueryOpenings;
 
 use crate::common::whir_config::{
-    BbEF, BbF, BbWhirConfig, KbEF, KbF, bb_whir_config, bb_whir_config_arithmetic_only,
-    kb_whir_config,
+    BbEF, BbF, BbWhirConfig, KbEF, KbF, bb_whir_config, kb_whir_config,
 };
 
 /// `WhirRecursionBackendForExt<4, ...>` must satisfy the exact `PcsRecursionBackend` bound
@@ -138,47 +137,6 @@ fn whir_recursion_backend_proves_a_real_next_layer_koala_bear() {
     prover
         .verify_all_tables::<KbEF>(&output.0)
         .expect("the recursion layer's own proof verifies");
-}
-
-/// A config carrying no permutation config on its WHIR verifier params must be refused.
-///
-/// That setting skips in-circuit MMCS verification for every commitment, so nothing ties a WHIR
-/// opening to its Merkle root and a prover can open to arbitrary values. It is a legitimate mode
-/// for the lower-level tests that isolate the WHIR arithmetic, but a recursion layer built on it
-/// is unsound, and neither the type system nor the circuit's own constraints signal that -- the
-/// backend has to.
-#[test]
-fn whir_recursion_backend_rejects_an_arithmetic_only_permutation_config() {
-    let log_n = 10;
-    let n = 1 << log_n;
-    let trace = generate_trace_rows::<BbF>(0, 1, n);
-    let pis = vec![BbF::ZERO, BbF::ONE, fibonacci_output::<BbF>(n)];
-    let air = FibonacciAir {};
-    let config = bb_whir_config_arithmetic_only(vec![]);
-    let proof = prove(&config, &air, trace, &pis);
-    assert!(verify(&config, &air, &proof, &pis).is_ok());
-
-    let result = build_and_prove_next_layer(
-        &RecursionInput::UniStark {
-            proof: &proof,
-            air: &air,
-            public_inputs: pis,
-            preprocessed_commit: None,
-        },
-        &config,
-        &WhirRecursionBackend::<16, 8>::new(Poseidon2Config::BABY_BEAR_D4_W16)
-            .for_extension_degree::<4>(),
-        &ProveNextLayerParams::default(),
-    );
-
-    match result {
-        Err(VerificationError::InvalidProofShape(message)) => assert!(
-            message.contains("permutation_config"),
-            "rejected for the permutation config specifically, got: {message}"
-        ),
-        Err(other) => panic!("expected InvalidProofShape, got {other:?}"),
-        Ok(_) => panic!("a permutation-config-less WHIR config must not produce a recursion layer"),
-    }
 }
 
 /// A second WHIR-backed recursion layer verifies the *first* layer's own batch-STARK proof.

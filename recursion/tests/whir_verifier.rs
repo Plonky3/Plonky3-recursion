@@ -10,19 +10,25 @@ use std::collections::VecDeque;
 
 use p3_baby_bear::{BabyBear, Poseidon2BabyBear};
 use p3_challenger::{CanObserve, CanSample, DuplexChallenger, FieldChallenger};
+use p3_circuit::ops::{generate_poseidon2_trace, generate_recompose_trace};
 use p3_circuit::{CircuitBuilder, CircuitBuilderError};
 use p3_commit::MultilinearPcs;
 use p3_dft::Radix2DFTSmallBatch;
 use p3_field::extension::BinomialExtensionField;
 use p3_field::{Field, PrimeCharacteristicRing};
 use p3_koala_bear::{KoalaBear, Poseidon2KoalaBear};
+use p3_matrix::Dimensions;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_merkle_tree::MerkleTreeMmcs;
 use p3_multilinear_util::point::Point;
 use p3_multilinear_util::poly::Poly;
+use p3_poseidon2_circuit_air::{BabyBearD4Width16, KoalaBearD4Width16};
 use p3_recursion::Target;
 use p3_recursion::pcs::whir::{
     ConstraintWeightData, WhirProofTargets, WhirVerifierParams, verify_whir_circuit,
+};
+use p3_recursion::pcs::{
+    convert_merkle_proof_to_siblings, restore_whir_query_paths, set_whir_mmcs_private_data,
 };
 use p3_recursion::traits::RecursiveChallenger;
 use p3_sumcheck::constraints::{Constraint, Statements};
@@ -48,6 +54,7 @@ macro_rules! whir_arithmetic_test {
         $make_perm:expr,
         $Perm:ty,
         $EF:ty,
+        $poseidon_air:ty,
         $poseidon_cfg:expr,
         $num_vars:expr,
         $folding:expr,
@@ -188,8 +195,15 @@ macro_rules! whir_arithmetic_test {
                 }
             }
 
+            fn digest_to_ext(digest: &[BF; 8]) -> Vec<EF> {
+                convert_merkle_proof_to_siblings::<BF, EF, 8>(core::slice::from_ref(digest))
+                    .into_iter()
+                    .next()
+                    .expect("one digest produces one packed entry")
+            }
+
             #[test]
-            fn arithmetic_only_passes() {
+            fn full_mmcs_passes() {
                 const NUM_VARIABLES: usize = $num_vars;
                 const FOLDING: usize = $folding;
 
@@ -218,7 +232,7 @@ macro_rules! whir_arithmetic_test {
                 };
                 let config =
                     WhirConfig::<EF, BF, MyChallenger>::new(NUM_VARIABLES, whir_params).unwrap();
-                let pcs = TestPcs::new(config.clone(), dft, mmcs);
+                let pcs = TestPcs::new(config.clone(), dft, mmcs.clone());
 
                 let (commitment, proof) = {
                     let mut ch = make_challenger();
@@ -265,6 +279,7 @@ macro_rules! whir_arithmetic_test {
                 // Replay Fiat–Shamir transcript across all rounds.
                 let mut ext_samples: Vec<EF> = Vec::new();
                 let mut base_samples: Vec<BF> = Vec::new();
+                let mut round_indices = Vec::new();
 
                 for &[c0, cinf] in proof.whir.initial_sumcheck.polynomial_evaluations() {
                     vc.observe_algebra_element(c0);
@@ -294,6 +309,7 @@ macro_rules! whir_arithmetic_test {
                     for &idx in &indices {
                         base_samples.push(BF::from_u64(idx as u64));
                     }
+                    round_indices.push(indices);
                     ext_samples.push(vc.sample_algebra_element());
                     for &[c0, cinf] in rproof.sumcheck.polynomial_evaluations() {
                         vc.observe_algebra_element(c0);
@@ -301,7 +317,7 @@ macro_rules! whir_arithmetic_test {
                         ext_samples.push(vc.sample_algebra_element());
                     }
                 }
-                {
+                let final_indices = {
                     let fp = proof.whir.final_poly.as_ref().expect("final_poly");
                     vc.observe_algebra_slice(fp.as_slice());
                     let fin_rc = config.final_round_config();
@@ -321,19 +337,33 @@ macro_rules! whir_arithmetic_test {
                             ext_samples.push(vc.sample_algebra_element());
                         }
                     }
-                }
+                    final_indices
+                };
 
-                let vp =
-                    WhirVerifierParams::<BF>::unsafe_arithmetic_only_for_tests::<EF, MyChallenger>(
-                        &config,
-                        PrefixProver::<BF, EF>::variable_order(),
-                        $poseidon_cfg,
-                    )
-                    .expect("non-saturating STIR query counts at this arity");
+                let vp = WhirVerifierParams::<BF>::from_config::<EF, MyChallenger>(
+                    &config,
+                    PrefixProver::<BF, EF>::variable_order(),
+                    $poseidon_cfg,
+                )
+                .expect("non-saturating STIR query counts at this arity");
 
                 let mut circuit = CircuitBuilder::<EF>::new();
-                let proof_targets = WhirProofTargets::alloc::<BF, EF>(&mut circuit, &vp, 1, 1);
-                let initial_cap: Vec<Vec<Target>> = vec![vec![circuit.define_const(EF::ZERO)]];
+                circuit.enable_poseidon2_perm::<$poseidon_air, _>(
+                    generate_poseidon2_trace::<EF, $poseidon_air>,
+                    make_perm(),
+                );
+                circuit.enable_recompose::<BF>(generate_recompose_trace::<BF, EF>);
+                let proof_targets = WhirProofTargets::alloc::<BF, EF>(&mut circuit, &vp, 1, 2);
+                let initial_cap: Vec<Vec<Target>> = commitment
+                    .roots()
+                    .iter()
+                    .map(|digest| {
+                        digest_to_ext(digest)
+                            .into_iter()
+                            .map(|value| circuit.define_const(value))
+                            .collect()
+                    })
+                    .collect();
                 let gamma_target = circuit.define_const(constraint_challenge(&initial_constraint));
                 let eq_points: Vec<Vec<Target>> = constraint_eq_points(&initial_constraint)
                     .into_iter()
@@ -356,7 +386,7 @@ macro_rules! whir_arithmetic_test {
                     ext_samples: ext_samples.into_iter().collect(),
                     base_samples: base_samples.into_iter().collect(),
                 };
-                verify_whir_circuit::<BF, EF, MockChallenger>(
+                let op_ids = verify_whir_circuit::<BF, EF, MockChallenger>(
                     &mut circuit,
                     &mut mock,
                     &vp,
@@ -390,7 +420,9 @@ macro_rules! whir_arithmetic_test {
                     public_inputs.push(cinf);
                 }
                 for r in &proof.whir.rounds {
-                    public_inputs.push(EF::ZERO); // dummy cap placeholder
+                    for digest in r.commitment.as_ref().expect("round commitment").roots() {
+                        public_inputs.extend(digest_to_ext(digest));
+                    }
                     for &v in &r.ood_answers {
                         public_inputs.push(v);
                     }
@@ -431,6 +463,45 @@ macro_rules! whir_arithmetic_test {
                 runner
                     .set_private_inputs(&private_inputs)
                     .expect("set_private_inputs");
+                let restored_rounds: Vec<_> = proof
+                    .whir
+                    .rounds
+                    .iter()
+                    .zip(&config.round_parameters)
+                    .zip(&round_indices)
+                    .map(|((round, params), indices)| {
+                        restore_whir_query_paths::<PackedBF, PackedBF, EF, _, _, 2, 8>(
+                            &mmcs,
+                            &round.openings,
+                            &[Dimensions {
+                                height: params.domain_size >> params.folding_factor,
+                                width: 1 << params.folding_factor,
+                            }],
+                            indices,
+                        )
+                        .expect("intermediate WHIR paths restore")
+                    })
+                    .collect();
+                let final_config = config.final_round_config();
+                let restored_final =
+                    restore_whir_query_paths::<PackedBF, PackedBF, EF, _, _, 2, 8>(
+                        &mmcs,
+                        &proof.whir.final_openings,
+                        &[Dimensions {
+                            height: final_config.domain_size >> final_config.folding_factor,
+                            width: 1 << final_config.folding_factor,
+                        }],
+                        &final_indices,
+                    )
+                    .expect("final WHIR paths restore");
+                set_whir_mmcs_private_data::<BF, EF, 8>(
+                    &mut runner,
+                    &op_ids,
+                    &restored_rounds,
+                    &restored_final,
+                    $poseidon_cfg,
+                )
+                .expect("WHIR MMCS private data matches circuit operations");
                 runner.run().expect("circuit run failed");
             }
         }
@@ -446,6 +517,7 @@ whir_arithmetic_test!(
     default_babybear_poseidon2_16,
     Poseidon2BabyBear<16>,
     BinomialExtensionField<BabyBear, 4>,
+    BabyBearD4Width16,
     p3_circuit::ops::Poseidon2Config::BABY_BEAR_D4_W16,
     16,
     4,
@@ -458,6 +530,7 @@ whir_arithmetic_test!(
     default_koalabear_poseidon2_16,
     Poseidon2KoalaBear<16>,
     BinomialExtensionField<KoalaBear, 4>,
+    KoalaBearD4Width16,
     p3_circuit::ops::Poseidon2Config::KOALA_BEAR_D4_W16,
     12,
     4,

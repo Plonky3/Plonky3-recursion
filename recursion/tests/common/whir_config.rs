@@ -114,7 +114,7 @@ pub fn bb_whir_config(round_log_inv_rates: Vec<usize>) -> BbWhirConfig {
     let whir_verifier_params = WhirUniVerifierParams::<BbF>::new(
         protocol_params,
         PrefixProver::<BbF, BbEF>::variable_order(),
-        Some(Poseidon2Config::BABY_BEAR_D4_W16.into()),
+        Poseidon2Config::BABY_BEAR_D4_W16,
     )
     .expect("valid WHIR test configuration");
     BbWhirConfig {
@@ -122,18 +122,6 @@ pub fn bb_whir_config(round_log_inv_rates: Vec<usize>) -> BbWhirConfig {
         challenger,
         whir_verifier_params,
     }
-}
-
-/// The same configuration as [`bb_whir_config`], but with no permutation config on its WHIR
-/// verifier params: the arithmetic-only mode that skips in-circuit MMCS verification.
-///
-/// This mode is unsound — a prover can open the WHIR commitments to arbitrary values, since
-/// nothing in the circuit ties an opened leaf to its Merkle root. It exists for tests that
-/// isolate the WHIR arithmetic, and for asserting that the recursion backend refuses it.
-pub fn bb_whir_config_arithmetic_only(round_log_inv_rates: Vec<usize>) -> BbWhirConfig {
-    let mut config = bb_whir_config(round_log_inv_rates);
-    config.whir_verifier_params.permutation_config = None;
-    config
 }
 
 impl StarkGenericConfig for BbWhirConfig {
@@ -198,9 +186,9 @@ impl WhirRecursionConfig for BbWhirConfig {
             &mmcs,
             transcript,
             opening_proof,
-            &params.protocol_params,
-            params.folding,
-            params.variable_order,
+            params.protocol_params(),
+            params.folding(),
+            params.variable_order(),
         )
         .map_err(|_| "Failed to restore WHIR Merkle paths")?;
 
@@ -306,7 +294,7 @@ pub fn kb_whir_config(round_log_inv_rates: Vec<usize>) -> KbWhirConfig {
     let whir_verifier_params = WhirUniVerifierParams::<KbF>::new(
         protocol_params,
         PrefixProver::<KbF, KbEF>::variable_order(),
-        Some(Poseidon2Config::KOALA_BEAR_D4_W16.into()),
+        Poseidon2Config::KOALA_BEAR_D4_W16,
     )
     .expect("valid WHIR test configuration");
     KbWhirConfig {
@@ -378,9 +366,9 @@ impl WhirRecursionConfig for KbWhirConfig {
             &mmcs,
             transcript,
             opening_proof,
-            &params.protocol_params,
-            params.folding,
-            params.variable_order,
+            params.protocol_params(),
+            params.folding(),
+            params.variable_order(),
         )
         .map_err(|_| "Failed to restore WHIR Merkle paths")?;
 

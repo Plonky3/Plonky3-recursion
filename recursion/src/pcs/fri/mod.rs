@@ -6,7 +6,7 @@ mod targets;
 mod verifier;
 
 pub use context::{CheckedFriCommitment, CheckedFriOpening, ValidatedFriContext};
-pub use params::{FriInputError, FriVerifierParams, NativeFriParams};
+pub use params::{FriInputError, FriVerifierParams, FriVerifierParamsError, NativeFriParams};
 pub use targets::{
     BatchOpeningTargets, CommitPhaseProofStepTargets, FriProofTargets, HashProofTargets,
     HidingFriProofTargets, HidingHashProofTargets, HidingOpenedValuesTargets, InputProofTargets,
@@ -17,4 +17,4 @@ pub use targets::{
     fri_proof_num_queries,
 };
 pub(crate) use verifier::commitment_cap_rows_from_lifted;
-pub use verifier::{verify_fri_circuit, verify_fri_circuit_with_mmcs};
+pub use verifier::verify_fri_circuit;

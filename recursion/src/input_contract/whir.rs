@@ -108,27 +108,27 @@ pub(crate) struct WhirContextParams {
 impl WhirContextParams {
     pub(crate) fn from_recursive<F: Field>(params: &WhirVerifierParams<F>) -> Self {
         Self {
-            num_variables: params.num_variables,
-            commitment_ood_samples: params.commitment_ood_samples,
+            num_variables: params.num_variables(),
+            commitment_ood_samples: params.commitment_ood_samples(),
             starting_folding_factor: params.round_folding_factor(0),
-            starting_folding_pow_bits: params.starting_folding_pow_bits,
+            starting_folding_pow_bits: params.starting_folding_pow_bits(),
             rounds: params
-                .round_params
+                .round_params()
                 .iter()
                 .map(|round| WhirRoundContext {
-                    ood_samples: round.ood_samples,
-                    num_queries: round.num_queries,
-                    folding_pow_bits: round.folding_pow_bits,
-                    folding_factor: round.folding_factor,
-                    domain_size: round.domain_size,
+                    ood_samples: round.ood_samples(),
+                    num_queries: round.num_queries(),
+                    folding_pow_bits: round.folding_pow_bits(),
+                    folding_factor: round.folding_factor(),
+                    domain_size: round.domain_size(),
                 })
                 .collect(),
-            final_poly_num_variables: params.final_poly_num_variables,
-            final_queries: params.final_queries,
-            final_sumcheck_rounds: params.final_sumcheck_rounds,
-            final_folding_factor: params.final_folding_factor,
-            final_folding_pow_bits: params.final_folding_pow_bits,
-            final_domain_size: params.final_domain_size,
+            final_poly_num_variables: params.final_poly_num_variables(),
+            final_queries: params.final_queries(),
+            final_sumcheck_rounds: params.final_sumcheck_rounds(),
+            final_folding_factor: params.final_folding_factor(),
+            final_folding_pow_bits: params.final_folding_pow_bits(),
+            final_domain_size: params.final_domain_size(),
         }
     }
 }

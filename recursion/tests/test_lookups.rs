@@ -2,11 +2,11 @@ mod common;
 
 use p3_baby_bear::default_babybear_poseidon2_16;
 use p3_batch_stark::{CommonData, ProverData};
-use p3_circuit::CircuitBuilder;
 use p3_circuit::ops::{
     Poseidon2Config, Poseidon2PermCall, PrimitiveOpType, generate_poseidon2_trace,
     generate_recompose_trace,
 };
+use p3_circuit::{CircuitBuilder, NonPrimitiveOpId};
 use p3_circuit_prover::air::{AluAir, ConstAir, PublicAir};
 use p3_circuit_prover::batch_stark_prover::{
     PrimitiveTable, poseidon2_air_builders_for_configs, recompose_air_builders,
@@ -20,8 +20,12 @@ use p3_lookup::logup::LogUpGadget;
 use p3_poseidon2_circuit_air::BabyBearD4Width16;
 use p3_recursion::generation::generate_batch_challenges;
 use p3_recursion::pcs::fri::{FriVerifierParams, InputProofTargets, MerkleCapTargets, RecValMmcs};
+use p3_recursion::pcs::{restore_fri_query_paths, set_fri_mmcs_private_data};
 use p3_recursion::verifier::{CircuitTablesAir, verify_p3_batch_proof_circuit};
-use p3_recursion::{BatchStarkVerifierInputsBuilder, GenerationError, VerificationError};
+use p3_recursion::{
+    BatchStarkVerifierInputsBuilder, GenerationError, OpeningTranscript, VerificationError,
+    observe_opened_values,
+};
 use p3_test_utils::baby_bear_params::*;
 
 use crate::common::InnerFriGeneric;
@@ -84,7 +88,7 @@ fn test_arith_lookups() {
 
     // Pack values using the builder
     let batch_proof = &batch_stark_proof.proof;
-    let builder = verifier_inputs.as_ref().unwrap();
+    let (builder, mmcs_op_ids) = verifier_inputs.as_ref().unwrap();
     let (public_inputs, private_inputs) = builder.pack_values(&pis, batch_proof, common);
 
     assert_eq!(public_inputs.len(), expected_public_input_len);
@@ -94,6 +98,39 @@ fn test_arith_lookups() {
     let mut runner = verification_circuit.runner();
     runner.set_public_inputs(&public_inputs).unwrap();
     runner.set_private_inputs(&private_inputs).unwrap();
+    let (
+        OpeningTranscript {
+            mut challenger,
+            commitments_with_opening_points,
+        },
+        _,
+    ) = p3_recursion::replay_batch_stark_transcript(
+        &native_airs(&batch_stark_proof),
+        &config,
+        batch_proof,
+        &pis,
+        common,
+        &lookup_gadget,
+    )
+    .unwrap();
+    observe_opened_values::<MyConfig>(&mut challenger, &commitments_with_opening_points);
+    let (val_mmcs, fri_params) = test_fri_instance();
+    let query_paths = restore_fri_query_paths(
+        &fri_params,
+        &val_mmcs,
+        &val_mmcs,
+        &batch_proof.opening_proof,
+        &mut challenger,
+        &commitments_with_opening_points,
+    )
+    .unwrap();
+    set_fri_mmcs_private_data::<F, Challenge, DIGEST_ELEMS>(
+        &mut runner,
+        mmcs_op_ids,
+        &query_paths,
+        Poseidon2Config::BABY_BEAR_D4_W16,
+    )
+    .unwrap();
     let _traces = runner.run().unwrap();
 }
 
@@ -186,7 +223,7 @@ fn test_wrong_multiplicities() {
 
     // Pack values using the builder
     let batch_proof = &batch_stark_proof.proof;
-    let builder = verifier_inputs.as_ref().unwrap();
+    let (builder, _mmcs_op_ids) = verifier_inputs.as_ref().unwrap();
     let (public_inputs, private_inputs) = builder.pack_values(&pis, batch_proof, common);
 
     assert_eq!(public_inputs.len(), expected_public_input_len);
@@ -246,7 +283,7 @@ fn test_wrong_expected_cumulated() {
     let expected_public_input_len = verification_circuit.public_flat_len;
 
     // Pack values using the builder
-    let builder = verifier_inputs.as_ref().unwrap();
+    let (builder, _mmcs_op_ids) = verifier_inputs.as_ref().unwrap();
     let (public_inputs, private_inputs) =
         builder.pack_values(&pis, &batch_stark_proof.proof, common);
 
@@ -393,11 +430,13 @@ fn get_proving_config() -> MyConfig {
 // Uses the default permutation to match the circuit's Fiat-Shamir challenger.
 fn get_recursive_config_and_params() -> (MyConfig, FriVerifierParams, usize, usize) {
     let scalars = test_fri_scalars();
-    let fri_verifier_params = FriVerifierParams::unsafe_arithmetic_only_for_tests(
+    let fri_verifier_params = FriVerifierParams::with_mmcs(
         scalars.log_blowup,
         scalars.log_final_poly_len,
         scalars.commit_pow_bits,
         scalars.query_pow_bits,
+        scalars.num_queries,
+        Poseidon2Config::BABY_BEAR_D4_W16,
     );
     let pow_bits = scalars.query_pow_bits;
     let log_height_max = scalars.log_final_poly_len + scalars.log_blowup;
@@ -411,7 +450,10 @@ fn get_recursive_config_and_params() -> (MyConfig, FriVerifierParams, usize, usi
 
 type ResultVerifierInputsAndChallenges = (
     Result<
-        BatchStarkVerifierInputsBuilder<MyConfig, MerkleCapTargets<F, DIGEST_ELEMS>, InnerFri>,
+        (
+            BatchStarkVerifierInputsBuilder<MyConfig, MerkleCapTargets<F, DIGEST_ELEMS>, InnerFri>,
+            Vec<NonPrimitiveOpId>,
+        ),
         VerificationError,
     >,
     Result<Vec<Challenge>, GenerationError>,
@@ -434,24 +476,8 @@ fn get_verifier_inputs_and_challenges(
     pis: &[Vec<F>],
     lookup_gadget: &LogUpGadget,
 ) -> ResultVerifierInputsAndChallenges {
-    // Extract proof components
-    let rows = batch_stark_proof.rows;
-    let packing = batch_stark_proof.table_packing.clone();
-
     // Base field AIRs for native challenge generation
-    let native_airs = vec![
-        CircuitTablesAir::<MyConfig, TRACE_D>::Const(ConstAir::<F, TRACE_D>::new(
-            rows[PrimitiveTable::Const],
-        )),
-        CircuitTablesAir::<MyConfig, TRACE_D>::Public(PublicAir::<F, TRACE_D>::new(
-            rows[PrimitiveTable::Public],
-            packing.public_lanes(),
-        )),
-        CircuitTablesAir::<MyConfig, TRACE_D>::Alu(AluAir::<F, TRACE_D>::new(
-            rows[PrimitiveTable::Alu],
-            packing.alu_lanes(),
-        )),
-    ];
+    let native_airs = native_airs(batch_stark_proof);
 
     // Attach verifier without manually building circuit_airs
     let verifier_inputs = verify_p3_batch_proof_circuit::<
@@ -473,8 +499,7 @@ fn get_verifier_inputs_and_challenges(
         lookup_gadget,
         Poseidon2Config::BABY_BEAR_D4_W16,
         &[],
-    )
-    .map(|(inputs, _mmcs_op_ids)| inputs);
+    );
 
     let all_challenges = generate_batch_challenges(
         &native_airs,
@@ -487,6 +512,26 @@ fn get_verifier_inputs_and_challenges(
     );
 
     (verifier_inputs, all_challenges)
+}
+
+fn native_airs(
+    batch_stark_proof: &BatchStarkProof<MyConfig>,
+) -> Vec<CircuitTablesAir<MyConfig, TRACE_D>> {
+    let rows = batch_stark_proof.rows;
+    let packing = batch_stark_proof.table_packing.clone();
+    vec![
+        CircuitTablesAir::<MyConfig, TRACE_D>::Const(ConstAir::<F, TRACE_D>::new(
+            rows[PrimitiveTable::Const],
+        )),
+        CircuitTablesAir::<MyConfig, TRACE_D>::Public(PublicAir::<F, TRACE_D>::new(
+            rows[PrimitiveTable::Public],
+            packing.public_lanes(),
+        )),
+        CircuitTablesAir::<MyConfig, TRACE_D>::Alu(AluAir::<F, TRACE_D>::new(
+            rows[PrimitiveTable::Alu],
+            packing.alu_lanes(),
+        )),
+    ]
 }
 
 // Creates a circuit builder and builds a circuit that computes the following function:
