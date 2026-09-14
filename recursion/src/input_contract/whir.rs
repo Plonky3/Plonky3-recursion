@@ -6,7 +6,7 @@ use alloc::vec::Vec;
 
 use p3_commit::Mmcs;
 use p3_field::{BasedVectorSpace, ExtensionField, Field, TwoAdicField};
-use p3_merkle_tree::MerkleCap;
+use p3_merkle_tree::{MerkleCap, PrunedMerklePaths};
 use p3_sumcheck::SumcheckData;
 use p3_whir::parameters::WhirConfig;
 use p3_whir::pcs::proof::{PcsProof, QueryOpenings};
@@ -17,7 +17,7 @@ use crate::pcs::whir::params::WhirVerifierParams;
 use crate::pcs::whir::uni::WhirUniVerifierParams;
 use crate::pcs::whir::uni::pcs::WhirUniProof;
 use crate::traits::CheckedRecursive;
-use crate::verifier::VerificationError;
+use crate::verifier::{InputResourceUsage, VerificationError, VerifierLimits};
 
 /// Allocation-relevant structure of one sumcheck transcript.
 #[derive(Clone, PartialEq, Eq)]
@@ -118,6 +118,7 @@ pub struct ValidatedWhirContext<F> {
     pub(crate) layout: super::stark_layout::NativeStarkLayout<'static>,
     pub(crate) permutation: PermConfig,
     pub(crate) canonical: Vec<WhirContextParams>,
+    pub(crate) verifier_params: Vec<WhirVerifierParams<F>>,
     pub(crate) outside_cap_roots: Vec<usize>,
     pub(crate) shape: WhirUniShape<MerkleCapShape>,
     pub(crate) _field: core::marker::PhantomData<F>,
@@ -135,6 +136,10 @@ impl<F> ValidatedWhirContext<F> {
     pub(crate) fn canonical(&self) -> &[WhirContextParams] {
         &self.canonical
     }
+
+    pub(crate) fn verifier_params(&self) -> &[WhirVerifierParams<F>] {
+        &self.verifier_params
+    }
 }
 
 /// Checked capability implemented by concrete WHIR opening target adapters.
@@ -144,6 +149,13 @@ where
     EF: ExtensionField<F>,
     C: CheckedRecursive<EF>,
 {
+    /// Walk all proof-owned resources for the audited native Merkle proof
+    /// composition before target allocation, packing, or transcript replay.
+    fn check_whir_resources(
+        input: &Self::Input,
+        limits: &VerifierLimits,
+    ) -> Result<InputResourceUsage, VerificationError>;
+
     fn validate_whir_context(
         input: &Self::Input,
         params: &WhirUniVerifierParams<F>,
@@ -157,6 +169,122 @@ where
         layout: FriOpeningLayout<'_>,
         caps: &[&C::Input],
     ) -> Result<(), VerificationError>;
+}
+
+pub(crate) trait WhirResourceProof {
+    fn compressed_frontier_hashes(&self) -> usize;
+}
+
+impl<F, const DIGEST_ELEMS: usize> WhirResourceProof for PrunedMerklePaths<F, DIGEST_ELEMS> {
+    fn compressed_frontier_hashes(&self) -> usize {
+        self.sibling_hashes.len()
+    }
+}
+
+fn checked_product(
+    left: usize,
+    right: usize,
+    component: &'static str,
+) -> Result<usize, VerificationError> {
+    left.checked_mul(right)
+        .ok_or(VerificationError::ResourceArithmeticOverflow { component })
+}
+
+fn add_sumcheck_resources<F: Field, EF: Field>(
+    usage: &mut InputResourceUsage,
+    limits: &VerifierLimits,
+    data: &SumcheckData<F, EF>,
+) -> Result<(), VerificationError> {
+    let evaluations = checked_product(data.polynomial_evaluations().len(), 2, "scalar elements")?;
+    usage.add_scalar_elements(limits, evaluations)?;
+    usage.add_scalar_elements(limits, data.pow_witnesses.len())
+}
+
+fn add_query_resources<F, EF, P>(
+    usage: &mut InputResourceUsage,
+    limits: &VerifierLimits,
+    openings: &QueryOpenings<F, EF, P>,
+) -> Result<(), VerificationError>
+where
+    P: WhirResourceProof,
+{
+    match openings {
+        QueryOpenings::Base(opening) => {
+            usage.add_query_round(limits, opening.rows.len())?;
+            for row in &opening.rows {
+                usage.check_matrix_width(limits, row.len())?;
+                usage.add_scalar_elements(limits, row.len())?;
+            }
+            usage.add_compressed_frontier_hashes(limits, opening.proof.compressed_frontier_hashes())
+        }
+        QueryOpenings::Extension(opening) => {
+            usage.add_query_round(limits, opening.rows.len())?;
+            for row in &opening.rows {
+                usage.check_matrix_width(limits, row.len())?;
+                usage.add_scalar_elements(limits, row.len())?;
+            }
+            usage.add_compressed_frontier_hashes(limits, opening.proof.compressed_frontier_hashes())
+        }
+    }
+}
+
+pub(crate) fn check_whir_resource_limits<F, EF, MT, const DIGEST_ELEMS: usize>(
+    input: &WhirUniProof<F, EF, MT>,
+    limits: &VerifierLimits,
+) -> Result<InputResourceUsage, VerificationError>
+where
+    F: Field,
+    EF: ExtensionField<F> + BasedVectorSpace<F>,
+    MT: Mmcs<F, Commitment = MerkleCap<F, [F; DIGEST_ELEMS]>>,
+    MT::MultiProof: WhirResourceProof,
+{
+    let mut usage = InputResourceUsage::default();
+    usage.add_rounds(limits, input.rounds.len())?;
+    for argument in &input.rounds {
+        for batch in &argument.evals {
+            usage.check_matrix_width(limits, batch.current().len())?;
+            usage.check_matrix_width(limits, batch.next().len())?;
+            usage.add_scalar_elements(limits, batch.current().len())?;
+            usage.add_scalar_elements(limits, batch.next().len())?;
+        }
+
+        let proof = &argument.whir;
+        usage.check_matrix_width(limits, proof.initial_ood_answers.len())?;
+        usage.add_scalar_elements(limits, proof.initial_ood_answers.len())?;
+        add_sumcheck_resources(&mut usage, limits, &proof.initial_sumcheck)?;
+        usage.add_rounds(limits, proof.rounds.len())?;
+        for round in &proof.rounds {
+            if let Some(cap) = &round.commitment {
+                let roots = cap.num_roots();
+                usage.add_cap_roots(limits, roots)?;
+                let packed = checked_product(
+                    roots,
+                    crate::pcs::whir::uni::targets::packed_digest_len(DIGEST_ELEMS, EF::DIMENSION),
+                    "scalar elements",
+                )?;
+                usage.add_scalar_elements(limits, packed)?;
+            }
+            usage.check_matrix_width(limits, round.ood_answers.len())?;
+            usage.add_scalar_elements(limits, round.ood_answers.len())?;
+            usage.add_scalar_elements(limits, 1)?;
+            add_query_resources(&mut usage, limits, &round.openings)?;
+            add_sumcheck_resources(&mut usage, limits, &round.sumcheck)?;
+        }
+
+        if let Some(final_poly) = &proof.final_poly {
+            usage.add_final_poly_evaluations(limits, final_poly.num_evals())?;
+            usage.add_scalar_elements(limits, final_poly.num_evals())?;
+        }
+        usage.add_scalar_elements(limits, 1)?;
+        add_query_resources(&mut usage, limits, &proof.final_openings)?;
+        if let Some(final_sumcheck) = &proof.final_sumcheck {
+            // Native WHIR may semantically ignore a present zero-round block;
+            // it still selects proof shape and therefore consumes its budget.
+            add_sumcheck_resources(&mut usage, limits, final_sumcheck)?;
+        }
+    }
+    usage.check(limits)?;
+    Ok(usage)
 }
 
 impl WhirContextParams {
@@ -661,7 +789,7 @@ mod tests {
     use crate::pcs::whir::uni::pcs::tests::{MyMmcs, open_two_matrices};
     use crate::pcs::whir::uni::targets::WhirUniProofTargets;
     use crate::traits::{CheckedRecursive, PreparedRecursive};
-    use crate::verifier::VerificationError;
+    use crate::verifier::{VerificationError, VerifierLimits};
 
     type F = BabyBear;
     type EF = BinomialExtensionField<F, 4>;
@@ -797,6 +925,98 @@ mod tests {
             sumcheck: whir.initial_sumcheck.clone(),
         });
         proof
+    }
+
+    #[test]
+    fn whir_resource_walk_checks_all_native_axes_and_present_ignored_payloads() {
+        let (mut proof, _params, _layout, _caps) = canonical_two_argument_fixture();
+        match &mut proof.rounds[0].whir.final_openings {
+            QueryOpenings::Base(opening) => {
+                opening.proof.sibling_hashes.extend([[F::ZERO; 8]; 5]);
+            }
+            QueryOpenings::Extension(_) => unreachable!(),
+        }
+        let exact = VerifierLimits {
+            max_rounds: 3,
+            max_queries_per_round: 6,
+            max_matrix_width: 256,
+            max_final_poly_evaluations: 5,
+            max_cap_roots: 1,
+            max_total_scalar_elements: 3653,
+            max_compressed_frontier_hashes: 5,
+            ..VerifierLimits::default()
+        };
+
+        let usage = <Targets as CheckedWhirOpening<F, EF, CapTargets>>::check_whir_resources(
+            &proof, &exact,
+        )
+        .expect("literal exact boundaries are accepted");
+        assert_eq!(usage.rounds, 3);
+        assert_eq!(usage.cap_roots, 1);
+        assert_eq!(usage.final_poly_evaluations, 5);
+        assert_eq!(usage.compressed_frontier_hashes, 5);
+
+        for (limits, component) in [
+            (
+                VerifierLimits {
+                    max_rounds: 2,
+                    ..exact
+                },
+                "rounds",
+            ),
+            (
+                VerifierLimits {
+                    max_queries_per_round: 5,
+                    ..exact
+                },
+                "queries per round",
+            ),
+            (
+                VerifierLimits {
+                    max_matrix_width: 255,
+                    ..exact
+                },
+                "matrix or row width",
+            ),
+            (
+                VerifierLimits {
+                    max_final_poly_evaluations: 4,
+                    ..exact
+                },
+                "final polynomial evaluations",
+            ),
+            (
+                VerifierLimits {
+                    max_cap_roots: 0,
+                    ..exact
+                },
+                "cap roots",
+            ),
+            (
+                VerifierLimits {
+                    max_total_scalar_elements: 3652,
+                    ..exact
+                },
+                "scalar elements",
+            ),
+            (
+                VerifierLimits {
+                    max_compressed_frontier_hashes: 4,
+                    ..exact
+                },
+                "compressed frontier hashes",
+            ),
+        ] {
+            let error = <Targets as CheckedWhirOpening<F, EF, CapTargets>>::check_whir_resources(
+                &proof, &limits,
+            )
+            .expect_err("one-below boundary must reject");
+            assert!(matches!(
+                error,
+                VerificationError::ResourceLimitExceeded { component: actual, .. }
+                    if actual == component
+            ));
+        }
     }
 
     fn set_query_rows(

@@ -40,7 +40,9 @@ use crate::traits::{
     RecursiveExtensionMmcs, RecursiveMmcs, RecursivePcs,
 };
 use crate::types::{OpenedValuesTargetsWithLookups, RecursiveLagrangeSelectors};
-use crate::verifier::{ObservableCommitment, VerificationError};
+use crate::verifier::{
+    InputResourceUsage, ObservableCommitment, VerificationError, VerifierLimits,
+};
 
 /// Per-query view of a shared MMCS multi-opening proof.
 ///
@@ -125,6 +127,14 @@ pub(crate) trait FriPrivateAdvice<EF: Field>:
     PreparedRecursiveMultiProofTargets<EF> + sealed::FriPrivateAdvice
 {
     fn checked_private_values_len(proof: &Self::MultiProof) -> Result<usize, VerificationError>;
+
+    fn add_private_resource_usage(
+        proof: &Self::MultiProof,
+        usage: &mut InputResourceUsage,
+        limits: &VerifierLimits,
+    ) -> Result<(), VerificationError>;
+
+    fn compressed_frontier_hashes(proof: &Self::MultiProof) -> usize;
 }
 
 /// Per-query view of the FRI input-batch openings.
@@ -1199,6 +1209,18 @@ impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize> FriPrivateAdvic
     fn checked_private_values_len(_proof: &Self::MultiProof) -> Result<usize, VerificationError> {
         Ok(0)
     }
+
+    fn add_private_resource_usage(
+        _proof: &Self::MultiProof,
+        _usage: &mut InputResourceUsage,
+        _limits: &VerifierLimits,
+    ) -> Result<(), VerificationError> {
+        Ok(())
+    }
+
+    fn compressed_frontier_hashes(proof: &Self::MultiProof) -> usize {
+        proof.sibling_hashes.len()
+    }
 }
 
 /// In TwoAdicFriPcs, the POW witness is just a base field element.
@@ -1538,6 +1560,24 @@ impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize> FriPrivateAdvic
         }
         Ok(total)
     }
+
+    fn add_private_resource_usage(
+        proof: &Self::MultiProof,
+        usage: &mut InputResourceUsage,
+        limits: &VerifierLimits,
+    ) -> Result<(), VerificationError> {
+        for query in &proof.0 {
+            for matrix in query {
+                usage.check_matrix_width(limits, matrix.len())?;
+                usage.add_scalar_elements(limits, matrix.len())?;
+            }
+        }
+        Ok(())
+    }
+
+    fn compressed_frontier_hashes(proof: &Self::MultiProof) -> usize {
+        proof.1.sibling_hashes.len()
+    }
 }
 
 /// `Recursive` version of a `MerkleTreeHidingMmcs` where leaf and digest elements are base
@@ -1672,6 +1712,13 @@ where
 {
     type PhaseCommitment = RF::Commitment;
 
+    fn check_fri_resources(
+        input: &Self::Input,
+        limits: &VerifierLimits,
+    ) -> Result<InputResourceUsage, VerificationError> {
+        crate::pcs::fri::context::check_fri_resource_limits::<F, EF, RI, RF>(input, None, limits)
+    }
+
     fn validate_fri_context(
         input: &Self::Input,
         native: &NativeFriParams,
@@ -1726,6 +1773,17 @@ where
     RF::Proof: FriPrivateAdvice<EF, MultiProof = <RF::Input as Mmcs<EF>>::MultiProof>,
 {
     type PhaseCommitment = RF::Commitment;
+
+    fn check_fri_resources(
+        input: &Self::Input,
+        limits: &VerifierLimits,
+    ) -> Result<InputResourceUsage, VerificationError> {
+        crate::pcs::fri::context::check_fri_resource_limits::<F, EF, RI, RF>(
+            &input.1,
+            Some(&input.0),
+            limits,
+        )
+    }
 
     fn validate_fri_context(
         input: &Self::Input,
@@ -2668,6 +2726,7 @@ mod prepared_shape_tests {
     use crate::input_contract::fri::FriShape;
     use crate::input_contract::stark_layout::{InstanceLayout, NativeStarkLayout};
     use crate::traits::PreparedRecursive;
+    use crate::verifier::VerifierLimits;
 
     type RecInputMmcs = RecValMmcs<F, DIGEST_ELEMS, MyHash, MyCompress>;
     type RecFriMmcs = RecExtensionValMmcs<F, Challenge, DIGEST_ELEMS, RecInputMmcs>;
@@ -5044,11 +5103,183 @@ mod prepared_shape_tests {
         }
     }
 
+    #[test]
+    fn fri_resource_walk_checks_real_rows_rounds_caps_final_poly_and_frontier() {
+        let mut proof = ordinary_opening(&[2]);
+        proof.input_openings[0].opening_proof = frontier(2);
+        proof.commit_phase_openings[0].opening_proof = frontier(3);
+        let exact = VerifierLimits {
+            max_rounds: 1,
+            max_queries_per_round: 1,
+            max_matrix_width: 2,
+            max_final_poly_evaluations: 1,
+            max_cap_roots: 1,
+            max_total_scalar_elements: 17,
+            max_compressed_frontier_hashes: 5,
+            ..VerifierLimits::default()
+        };
+
+        let usage = <OpeningTargets as CheckedFriOpening<
+            Challenge,
+            <RecInputMmcs as RecursiveMmcs<F, Challenge>>::Commitment,
+        >>::check_fri_resources(&proof, &exact)
+        .expect("every exact boundary is accepted");
+        assert_eq!(usage.rounds, 1);
+        assert_eq!(usage.queries, 2);
+        assert_eq!(usage.cap_roots, 1);
+        assert_eq!(usage.final_poly_evaluations, 1);
+        assert_eq!(usage.compressed_frontier_hashes, 5);
+        assert_eq!(usage.scalar_elements, 17);
+
+        for (limits, component) in [
+            (
+                VerifierLimits {
+                    max_rounds: 0,
+                    ..exact
+                },
+                "rounds",
+            ),
+            (
+                VerifierLimits {
+                    max_queries_per_round: 0,
+                    ..exact
+                },
+                "queries per round",
+            ),
+            (
+                VerifierLimits {
+                    max_matrix_width: 1,
+                    ..exact
+                },
+                "matrix or row width",
+            ),
+            (
+                VerifierLimits {
+                    max_log_domain_or_degree: 0,
+                    ..exact
+                },
+                "log domain or degree",
+            ),
+            (
+                VerifierLimits {
+                    max_cap_roots: 0,
+                    ..exact
+                },
+                "cap roots",
+            ),
+            (
+                VerifierLimits {
+                    max_final_poly_evaluations: 0,
+                    ..exact
+                },
+                "final polynomial evaluations",
+            ),
+            (
+                VerifierLimits {
+                    max_compressed_frontier_hashes: 4,
+                    ..exact
+                },
+                "compressed frontier hashes",
+            ),
+            (
+                VerifierLimits {
+                    max_total_scalar_elements: 16,
+                    ..exact
+                },
+                "scalar elements",
+            ),
+        ] {
+            let error = <OpeningTargets as CheckedFriOpening<
+                Challenge,
+                <RecInputMmcs as RecursiveMmcs<F, Challenge>>::Commitment,
+            >>::check_fri_resources(&proof, &limits)
+            .expect_err("one-below boundary must reject");
+            assert!(matches!(
+                error,
+                VerificationError::ResourceLimitExceeded { component: actual, .. }
+                    if actual == component
+            ));
+        }
+
+        let mut unmatched_phase_cap = proof.clone();
+        unmatched_phase_cap.commit_phase_commits.push(cap(1));
+        let unmatched_limits = VerifierLimits {
+            max_rounds: 2,
+            ..exact
+        };
+        assert!(matches!(
+            <OpeningTargets as CheckedFriOpening<
+                Challenge,
+                <RecInputMmcs as RecursiveMmcs<F, Challenge>>::Commitment,
+            >>::check_fri_resources(&unmatched_phase_cap, &unmatched_limits),
+            Err(VerificationError::ResourceLimitExceeded {
+                component: "cap roots",
+                actual: 2,
+                limit: 1,
+            })
+        ));
+    }
+
     fn hiding_frontier(
         salts: Vec<Vec<Vec<F>>>,
         count: usize,
     ) -> <NativeHidingMmcs as Mmcs<F>>::MultiProof {
         (salts, frontier(count))
+    }
+
+    #[test]
+    fn hiding_fri_resource_walk_counts_salts_tails_and_both_frontiers() {
+        let mut proof = hiding_opening(&[4], &[2]);
+        proof.1.input_openings[0].opening_proof.1 = frontier(2);
+        proof.1.commit_phase_openings[0].opening_proof.1 = frontier(3);
+        let exact = VerifierLimits {
+            max_matrix_width: 4,
+            max_total_scalar_elements: 26,
+            max_compressed_frontier_hashes: 5,
+            ..VerifierLimits::default()
+        };
+        let usage = <HidingOpeningTargets as CheckedFriOpening<
+            Challenge,
+            <RecHidingMmcs as RecursiveMmcs<F, Challenge>>::Commitment,
+        >>::check_fri_resources(&proof, &exact)
+        .expect("hiding proof is accepted at its literal resource boundaries");
+        assert_eq!(usage.scalar_elements, 26);
+        assert_eq!(usage.compressed_frontier_hashes, 5);
+
+        for (limits, component) in [
+            (
+                VerifierLimits {
+                    max_total_scalar_elements: 25,
+                    ..exact
+                },
+                "scalar elements",
+            ),
+            (
+                VerifierLimits {
+                    max_compressed_frontier_hashes: 4,
+                    ..exact
+                },
+                "compressed frontier hashes",
+            ),
+            (
+                VerifierLimits {
+                    max_matrix_width: 3,
+                    ..exact
+                },
+                "matrix or row width",
+            ),
+        ] {
+            assert!(matches!(
+                <HidingOpeningTargets as CheckedFriOpening<
+                    Challenge,
+                    <RecHidingMmcs as RecursiveMmcs<F, Challenge>>::Commitment,
+                >>::check_fri_resources(&proof, &limits),
+                Err(VerificationError::ResourceLimitExceeded {
+                    component: actual,
+                    ..
+                }) if actual == component
+            ));
+        }
     }
 
     fn retention_layout(

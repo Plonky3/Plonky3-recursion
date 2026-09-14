@@ -1,22 +1,332 @@
 use alloc::vec::Vec;
 
 use p3_circuit_prover::air::AluExtMulKind;
-use p3_circuit_prover::{AirVariant, CircuitVerifier, RowCounts, TablePacking};
+use p3_circuit_prover::{
+    AirVariant, BatchStarkProof, CircuitVerifier, RowCounts, TablePacking,
+};
+use p3_commit::Pcs;
 use p3_field::{ExtensionField, PrimeCharacteristicRing, PrimeField64};
 use p3_lookup::logup::LogUpGadget;
-use p3_uni_stark::{StarkGenericConfig, Val};
+use p3_uni_stark::{OpenedValues, Proof, StarkGenericConfig, Val};
 
 use crate::input_contract::stark_layout::{CommitmentRole, NativeStarkLayout};
 use crate::input_contract::{GlobalPreprocessedShape, NonPrimitiveContract};
+use crate::pcs::fri::CheckedFriCommitment;
 use crate::prepared::input::NativeCommitment;
 use crate::recursion::RecursionInput;
 use crate::traits::RecursiveAir;
-use crate::verifier::VerificationError;
+use crate::verifier::{InputResourceUsage, VerificationError, VerifierLimits};
+
+fn add_opened_values<SC: StarkGenericConfig>(
+    usage: &mut InputResourceUsage,
+    limits: &VerifierLimits,
+    values: &OpenedValues<SC::Challenge>,
+) -> Result<(), VerificationError> {
+    let OpenedValues {
+        trace_local,
+        trace_next,
+        preprocessed_local,
+        preprocessed_next,
+        quotient_chunks,
+        random,
+    } = values;
+    for row in core::iter::once(trace_local)
+        .chain(trace_next.iter())
+        .chain(preprocessed_local.iter())
+        .chain(preprocessed_next.iter())
+        .chain(quotient_chunks.iter())
+        .chain(random.iter())
+    {
+        usage.check_matrix_width(limits, row.len())?;
+        usage.add_scalar_elements(limits, row.len())?;
+    }
+    Ok(())
+}
+
+fn add_cap<SC, Comm>(
+    usage: &mut InputResourceUsage,
+    limits: &VerifierLimits,
+    cap: &<SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment,
+) -> Result<(), VerificationError>
+where
+    SC: StarkGenericConfig,
+    Comm: CheckedFriCommitment<
+            SC::Challenge,
+            Input = <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment,
+        >,
+{
+    usage.add_cap_roots(limits, Comm::checked_fri_cap_roots(cap)?)?;
+    usage.add_scalar_elements(limits, Comm::checked_fri_public_values_len(cap)?)
+}
+
+const fn check_height(
+    usage: &InputResourceUsage,
+    limits: &VerifierLimits,
+    height: usize,
+) -> Result<(), VerificationError> {
+    let log = if height <= 1 {
+        0
+    } else {
+        usize::BITS as usize - (height - 1).leading_zeros() as usize
+    };
+    usage.check_log_degree(limits, log)
+}
+
+pub(crate) fn check_uni_stark_resources<SC, Comm>(
+    limits: &VerifierLimits,
+    proof: &Proof<SC>,
+    public_inputs: &[Val<SC>],
+    preprocessed_commit: Option<&NativeCommitment<SC>>,
+    pcs_usage: InputResourceUsage,
+) -> Result<InputResourceUsage, VerificationError>
+where
+    SC: StarkGenericConfig,
+    Comm: CheckedFriCommitment<
+            SC::Challenge,
+            Input = <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment,
+        >,
+{
+    let mut usage = pcs_usage;
+    usage.add_instances(limits, 1)?;
+    usage.check_log_degree(limits, proof.degree_bits)?;
+    usage.check_matrix_width(limits, public_inputs.len())?;
+    usage.add_scalar_elements(limits, public_inputs.len())?;
+    add_cap::<SC, Comm>(&mut usage, limits, &proof.commitments.trace)?;
+    add_cap::<SC, Comm>(&mut usage, limits, &proof.commitments.quotient_chunks)?;
+    if let Some(random) = &proof.commitments.random {
+        add_cap::<SC, Comm>(&mut usage, limits, random)?;
+    }
+    if let Some(preprocessed) = preprocessed_commit {
+        add_cap::<SC, Comm>(&mut usage, limits, preprocessed)?;
+    }
+    add_opened_values::<SC>(&mut usage, limits, &proof.opened_values)?;
+    usage.check(limits)?;
+    Ok(usage)
+}
+
+pub(crate) fn check_batch_stark_resources<SC, Comm>(
+    limits: &VerifierLimits,
+    proof: &BatchStarkProof<SC>,
+    common_data: &p3_batch_stark::CommonData<SC>,
+    table_public_inputs: &[Vec<Val<SC>>],
+    pcs_usage: InputResourceUsage,
+) -> Result<InputResourceUsage, VerificationError>
+where
+    SC: StarkGenericConfig,
+    Comm: CheckedFriCommitment<
+            SC::Challenge,
+            Input = <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment,
+        >,
+{
+    let mut usage = pcs_usage;
+    let mut instance_axis = proof
+        .proof
+        .opened_values
+        .instances
+        .len()
+        .max(proof.proof.degree_bits.len())
+        .max(proof.proof.lookup_terminals.len())
+        .max(table_public_inputs.len())
+        .max(common_data.lookups.len());
+    if let Some(preprocessed) = &common_data.preprocessed {
+        instance_axis = instance_axis.max(preprocessed.instances.len());
+    }
+    usage.add_instances(limits, instance_axis)?;
+
+    // Metadata is cheap to inspect and can itself be attacker-controlled. Walk
+    // it before proof rows/caps so oversized manifests and identifiers fail
+    // before any substantially larger PCS payload is traversed.
+    usage.add_metadata_entries(limits, proof.proof.degree_bits.len())?;
+    usage.add_metadata_entries(limits, table_public_inputs.len())?;
+    usage.add_metadata_entries(limits, proof.proof.lookup_terminals.len())?;
+    usage.add_metadata_entries(limits, proof.non_primitives.len())?;
+    usage.check_matrix_width(limits, proof.table_packing.public_lanes())?;
+    usage.check_matrix_width(limits, proof.table_packing.alu_lanes())?;
+    usage.check_matrix_width(limits, proof.table_packing.horner_packed_steps())?;
+    check_height(&usage, limits, proof.table_packing.min_trace_height())?;
+    for height in [
+        proof.table_packing.alu_min_height(),
+        proof.table_packing.public_min_height(),
+        proof.table_packing.const_min_height(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        check_height(&usage, limits, height)?;
+    }
+    usage.add_metadata_entries(limits, proof.rows.iter().len())?;
+    for rows in proof.rows.iter() {
+        check_height(&usage, limits, rows)?;
+    }
+    for entry in &proof.non_primitives {
+        usage.add_metadata_string_bytes(limits, entry.op_type.as_str().len())?;
+        usage.check_matrix_width(limits, entry.lanes)?;
+        usage.check_matrix_width(limits, entry.public_values.len())?;
+        check_height(&usage, limits, entry.rows)?;
+    }
+    for (op_type, lanes) in proof.table_packing.npo_lanes_iter() {
+        usage.add_metadata_entries(limits, 1)?;
+        usage.add_metadata_string_bytes(limits, op_type.as_str().len())?;
+        usage.check_matrix_width(limits, lanes)?;
+    }
+    for (op_type, height) in proof.table_packing.npo_min_heights() {
+        usage.add_metadata_entries(limits, 1)?;
+        usage.add_metadata_string_bytes(limits, op_type.as_str().len())?;
+        check_height(&usage, limits, height)?;
+    }
+    usage.add_metadata_entries(limits, common_data.lookups.len())?;
+    for lookups in &common_data.lookups {
+        usage.add_metadata_entries(limits, lookups.len())?;
+    }
+    if let Some(preprocessed) = &common_data.preprocessed {
+        usage.add_metadata_entries(limits, preprocessed.instances.len())?;
+        usage.add_metadata_entries(limits, preprocessed.matrix_to_instance.len())?;
+        for metadata in preprocessed.instances.iter().flatten() {
+            usage.check_matrix_width(limits, metadata.width)?;
+            usage.check_log_degree(limits, metadata.degree_bits)?;
+        }
+    }
+
+    for &degree in &proof.proof.degree_bits {
+        usage.check_log_degree(limits, degree)?;
+    }
+    for values in table_public_inputs {
+        usage.check_matrix_width(limits, values.len())?;
+        usage.add_scalar_elements(limits, values.len())?;
+    }
+    for instance in &proof.proof.opened_values.instances {
+        add_opened_values::<SC>(&mut usage, limits, &instance.base_opened_values)?;
+        for row in [&instance.permutation_local, &instance.permutation_next] {
+            usage.check_matrix_width(limits, row.len())?;
+            usage.add_scalar_elements(limits, row.len())?;
+        }
+    }
+    usage.add_scalar_elements(
+        limits,
+        proof.proof.lookup_terminals.iter().flatten().count(),
+    )?;
+    usage.add_scalar_elements(limits, usize::from(proof.w_binomial.is_some()))?;
+
+    add_cap::<SC, Comm>(&mut usage, limits, &proof.proof.commitments.main)?;
+    if let Some(permutation) = &proof.proof.commitments.permutation {
+        add_cap::<SC, Comm>(&mut usage, limits, permutation)?;
+    }
+    add_cap::<SC, Comm>(&mut usage, limits, &proof.proof.commitments.quotient_chunks)?;
+    if let Some(random) = &proof.proof.commitments.random {
+        add_cap::<SC, Comm>(&mut usage, limits, random)?;
+    }
+
+    for entry in &proof.non_primitives {
+        usage.add_scalar_elements(limits, entry.public_values.len())?;
+    }
+    if let Some(preprocessed) = &common_data.preprocessed {
+        add_cap::<SC, Comm>(&mut usage, limits, &preprocessed.commitment)?;
+    }
+    usage.check(limits)?;
+    Ok(usage)
+}
+
+pub(crate) fn check_trusted_batch_stark_resources<SC, Comm>(
+    limits: &VerifierLimits,
+    verifier: &CircuitVerifier<SC>,
+    proof: &BatchStarkProof<SC>,
+    pcs_usage: InputResourceUsage,
+) -> Result<InputResourceUsage, VerificationError>
+where
+    SC: StarkGenericConfig + 'static,
+    Comm: CheckedFriCommitment<
+            SC::Challenge,
+            Input = <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment,
+        >,
+{
+    // The retained descriptor supplies public values. Avoid materializing a replacement vector
+    // until the complete witness/common/PCS resource walk has succeeded.
+    let mut usage = check_batch_stark_resources::<SC, Comm>(
+        limits,
+        proof,
+        verifier.common_data(),
+        &[],
+        pcs_usage,
+    )?;
+    usage.add_metadata_entries(
+        limits,
+        3usize
+            .checked_add(verifier.relation().non_primitives().len())
+            .ok_or(VerificationError::ResourceArithmeticOverflow {
+                component: "metadata entries",
+            })?,
+    )?;
+    for entry in verifier.relation().non_primitives() {
+        usage.check_matrix_width(limits, entry.public_values().len())?;
+        usage.add_scalar_elements(limits, entry.public_values().len())?;
+    }
+    usage.check(limits)?;
+    Ok(usage)
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct StarkLayoutPolicy {
     pub(crate) is_zk: usize,
     pub(crate) log_max_lde_height: usize,
+}
+
+impl StarkLayoutPolicy {
+    pub(crate) fn from_config<SC: StarkGenericConfig>(config: &SC) -> Self {
+        Self {
+            is_zk: config.is_zk(),
+            log_max_lde_height: config.pcs().log_max_lde_height(),
+        }
+    }
+
+    pub(crate) fn validate_config<SC: StarkGenericConfig>(
+        self,
+        config: &SC,
+    ) -> Result<(), VerificationError> {
+        self.validate_actual(Self::from_config(config))
+    }
+
+    fn validate_actual(self, actual: Self) -> Result<(), VerificationError> {
+        if self == actual {
+            Ok(())
+        } else {
+            Err(VerificationError::PreparedInputMismatch {
+                component: "input.stark_policy",
+            })
+        }
+    }
+}
+
+#[cfg(test)]
+mod policy_tests {
+    use super::StarkLayoutPolicy;
+    use crate::verifier::VerificationError;
+
+    #[test]
+    fn retained_stark_policy_rejects_each_runtime_policy_mismatch() {
+        let retained = StarkLayoutPolicy {
+            is_zk: 1,
+            log_max_lde_height: 31,
+        };
+        retained.validate_actual(retained).unwrap();
+
+        for actual in [
+            StarkLayoutPolicy {
+                is_zk: 0,
+                ..retained
+            },
+            StarkLayoutPolicy {
+                log_max_lde_height: 30,
+                ..retained
+            },
+        ] {
+            assert!(matches!(
+                retained.validate_actual(actual),
+                Err(VerificationError::PreparedInputMismatch {
+                    component: "input.stark_policy"
+                })
+            ));
+        }
+    }
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -385,6 +695,10 @@ where
                 .quotient_chunks
                 .iter()
                 .any(|chunk| chunk.len() != layout.challenge_width)
+            || base
+                .random
+                .as_ref()
+                .is_some_and(|values| values.len() != layout.challenge_width)
             || opened.permutation_local.len() != layout.permutation_width
             || opened.permutation_next.len() != layout.permutation_width
         {

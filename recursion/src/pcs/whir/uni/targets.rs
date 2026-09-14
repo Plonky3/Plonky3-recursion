@@ -19,8 +19,9 @@ use p3_whir::pcs::proof::QueryOpenings;
 
 use crate::Target;
 use crate::input_contract::whir::{
-    CheckedWhirOpening, ValidatedWhirContext, WhirContextParams, WhirUniShape,
-    capture_whir_uni_shape, validate_whir_pcs_context_iter, validate_whir_uni_input,
+    CheckedWhirOpening, ValidatedWhirContext, WhirContextParams, WhirResourceProof, WhirUniShape,
+    capture_whir_uni_shape, check_whir_resource_limits, validate_whir_pcs_context_iter,
+    validate_whir_uni_input,
 };
 use crate::input_contract::{FriOpeningLayout, MerkleCapShape};
 use crate::pcs::fri::CheckedFriCommitment;
@@ -30,6 +31,7 @@ use crate::pcs::whir::uni::WhirUniVerifierParams;
 use crate::pcs::whir::uni::pcs::WhirUniProof;
 use crate::pcs::whir::uni::recursive_pcs::DummyChallenger;
 use crate::traits::{CheckedRecursive, PreparedRecursive, Recursive};
+use crate::verifier::{InputResourceUsage, VerifierLimits};
 
 /// Number of extension targets one Merkle digest occupies in-circuit.
 ///
@@ -362,8 +364,16 @@ where
     F: p3_field::PrimeField64 + p3_field::TwoAdicField,
     EF: ExtensionField<F> + BasedVectorSpace<F> + p3_field::TwoAdicField,
     MT: Mmcs<F, Commitment = MerkleCap<F, [F; DIGEST_ELEMS]>>,
+    MT::MultiProof: WhirResourceProof,
     C: CheckedFriCommitment<EF, Input = MerkleCap<F, [F; DIGEST_ELEMS]>>,
 {
+    fn check_whir_resources(
+        input: &Self::Input,
+        limits: &VerifierLimits,
+    ) -> Result<InputResourceUsage, crate::VerificationError> {
+        check_whir_resource_limits::<F, EF, MT, DIGEST_ELEMS>(input, limits)
+    }
+
     fn validate_whir_context(
         input: &Self::Input,
         params: &WhirUniVerifierParams<F>,
@@ -386,6 +396,7 @@ where
             ));
         }
         let mut canonical = Vec::with_capacity(input.rounds.len());
+        let mut retained_verifier_params = Vec::with_capacity(input.rounds.len());
         let mut outside_cap_roots = Vec::with_capacity(input.rounds.len());
         for (ordinal, (round, cap)) in input.rounds.iter().zip(caps).enumerate() {
             let matrices = layout
@@ -437,12 +448,14 @@ where
                 )?;
             }
             canonical.push(context);
+            retained_verifier_params.push(verifier_params);
         }
         let shape = capture_whir_uni_shape::<F, EF, MT, DIGEST_ELEMS>(input)?;
         Ok(ValidatedWhirContext {
             layout: layout.to_owned_layout(),
             permutation,
             canonical,
+            verifier_params: retained_verifier_params,
             outside_cap_roots,
             shape,
             _field: PhantomData,

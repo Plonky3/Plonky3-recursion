@@ -36,8 +36,8 @@ use p3_recursion::{
     OpeningTranscript, PcsRecursionBackend, Poseidon2Config, PreparedAggregation,
     PreparedAggregationCross, PreparedInput, PreparedPcsRecursionBackend, PreparedSource,
     ProveNextLayerParams, RecursionInput, RecursiveAir, RecursivePcs, VerificationError,
-    VerifierCircuitResult, build_aggregation_layer_circuit, merge_hiding_random_openings,
-    observe_opened_values,
+    VerifierCircuitResult, VerifierLimits, build_aggregation_layer_circuit,
+    build_next_layer_circuit, merge_hiding_random_openings, observe_opened_values,
 };
 use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
 use p3_test_utils::koala_bear_params::{
@@ -138,6 +138,18 @@ macro_rules! impl_counting_backend {
                     4,
                 >>::VerifierResult,
             >;
+
+            fn preflight_input(
+                &self,
+                config: &common::KoalaBearD4RecursionConfig,
+                prev: &RecursionInput<'_, common::KoalaBearD4RecursionConfig, $air>,
+            ) -> Result<(), VerificationError> {
+                <common::KoalaBearD4Backend as PcsRecursionBackend<
+                    common::KoalaBearD4RecursionConfig,
+                    $air,
+                    4,
+                >>::preflight_input(&self.inner, config, prev)
+            }
 
             fn validate_input(
                 &self,
@@ -260,6 +272,18 @@ macro_rules! impl_counting_backend {
                 $air,
                 4,
             >>::InputContract;
+
+            fn preflight_input(
+                &self,
+                config: &common::KoalaBearD4RecursionConfig,
+                input: &PreparedInput<'_, common::KoalaBearD4RecursionConfig>,
+            ) -> Result<(), VerificationError> {
+                <common::KoalaBearD4Backend as PreparedPcsRecursionBackend<
+                    common::KoalaBearD4RecursionConfig,
+                    $air,
+                    4,
+                >>::preflight_input(&self.inner, config, input)
+            }
 
             fn capture_input_contract(
                 &self,
@@ -827,8 +851,19 @@ fn aggregation_rejects_either_mismatch_before_packing_or_private_setup() {
     let batch = Rc::new(SideCounters::default());
     let uni_preparations = Rc::new(Cell::new(0));
     let batch_preparations = Rc::new(Cell::new(0));
+    let exact_final_poly = left_proof.opening_proof.final_poly.len().max(
+        right_reference
+            .base_proof
+            .proof
+            .opening_proof
+            .final_poly
+            .len(),
+    );
     let backend = CountingBackend {
-        inner,
+        inner: inner.with_limits(VerifierLimits {
+            max_final_poly_evaluations: exact_final_poly,
+            ..VerifierLimits::default()
+        }),
         uni: Rc::clone(&uni),
         batch: Rc::clone(&batch),
         uni_output_preparations: Rc::clone(&uni_preparations),
@@ -858,7 +893,7 @@ fn aggregation_rejects_either_mismatch_before_packing_or_private_setup() {
         .is_err(),
         "the built-in FRI boundary must fail closed without a native snapshot"
     );
-    assert_eq!(uni.validations.get(), 1);
+    assert_eq!(uni.validations.get(), 0);
     assert_eq!(batch.validations.get(), 0);
     assert_eq!(uni.preparations.get(), 0);
     assert_eq!(batch.preparations.get(), 0);
@@ -866,12 +901,8 @@ fn aggregation_rejects_either_mismatch_before_packing_or_private_setup() {
     assert_eq!(batch.builds.get(), 0);
     uni.validations.set(0);
 
-    right_mismatch
-        .base_proof
-        .proof
-        .opening_proof
-        .final_poly
-        .push(Challenge::ZERO);
+    right_mismatch.base_proof.proof.opening_proof.final_poly =
+        vec![Challenge::ZERO; exact_final_poly + 1];
     let bad_right_input: RecursionInput<'_, common::KoalaBearD4RecursionConfig, BatchOnly> =
         RecursionInput::BatchStark {
             proof: &right_mismatch.base_proof,
@@ -887,8 +918,8 @@ fn aggregation_rejects_either_mismatch_before_packing_or_private_setup() {
         )
         .is_err()
     );
-    assert_eq!(uni.validations.get(), 1);
-    assert_eq!(batch.validations.get(), 1);
+    assert_eq!(uni.validations.get(), 0);
+    assert_eq!(batch.validations.get(), 0);
     assert_eq!(uni.preparations.get(), 0);
     assert_eq!(batch.preparations.get(), 0);
     assert_eq!(uni.builds.get(), 0);
@@ -931,6 +962,14 @@ fn aggregation_rejects_either_mismatch_before_packing_or_private_setup() {
         common_data: &right_reference.base_proof.stark_common,
         table_public_inputs: &right_public,
     };
+    let before_right_resource_rejection = (
+        uni.validations.get(),
+        batch.validations.get(),
+        uni.preparations.get(),
+        batch.preparations.get(),
+        uni.builds.get(),
+        batch.builds.get(),
+    );
 
     let error = match prepared.prove(
         compatible_left(),
@@ -940,15 +979,30 @@ fn aggregation_rejects_either_mismatch_before_packing_or_private_setup() {
             table_public_inputs: &right_public,
         },
     ) {
-        Ok(_) => panic!("a right-side shape mismatch must be rejected"),
+        Ok(_) => panic!("a right-side resource excess must be rejected"),
         Err(error) => error,
     };
     assert!(matches!(
         error,
-        VerificationError::PreparedInputMismatch { .. }
+        VerificationError::ResourceLimitExceeded {
+            component: "final polynomial evaluations",
+            ..
+        }
     ));
     assert_side_counters_zero(&uni);
     assert_side_counters_zero(&batch);
+    assert_eq!(
+        before_right_resource_rejection,
+        (
+            uni.validations.get(),
+            batch.validations.get(),
+            uni.preparations.get(),
+            batch.preparations.get(),
+            uni.builds.get(),
+            batch.builds.get(),
+        ),
+        "both borrowed resource walks finish before either side starts contextual or build work",
+    );
 
     let error = match prepared.prove(
         PreparedInput::UniStark {
@@ -994,6 +1048,14 @@ fn aggregation_rejects_either_mismatch_before_packing_or_private_setup() {
         1,
         "cross-config output dispatches through BatchOnly"
     );
+    let before_cross_right_resource_rejection = (
+        uni.validations.get(),
+        batch.validations.get(),
+        uni.preparations.get(),
+        batch.preparations.get(),
+        uni.builds.get(),
+        batch.builds.get(),
+    );
 
     let error = match cross.prove(
         compatible_left(),
@@ -1003,15 +1065,29 @@ fn aggregation_rejects_either_mismatch_before_packing_or_private_setup() {
             table_public_inputs: &right_public,
         },
     ) {
-        Ok(_) => panic!("a cross-config right-side mismatch must be rejected"),
+        Ok(_) => panic!("a cross-config right-side resource excess must be rejected"),
         Err(error) => error,
     };
     assert!(matches!(
         error,
-        VerificationError::PreparedInputMismatch { .. }
+        VerificationError::ResourceLimitExceeded {
+            component: "final polynomial evaluations",
+            ..
+        }
     ));
     assert_side_counters_zero(&uni);
     assert_side_counters_zero(&batch);
+    assert_eq!(
+        before_cross_right_resource_rejection,
+        (
+            uni.validations.get(),
+            batch.validations.get(),
+            uni.preparations.get(),
+            batch.preparations.get(),
+            uni.builds.get(),
+            batch.builds.get(),
+        ),
+    );
 
     let error = match cross.prove(
         PreparedInput::UniStark {
@@ -1375,4 +1451,60 @@ fn hiding_fri_aggregation_reuses_preparation_for_varied_honest_pairs() {
     assert!(Rc::ptr_eq(&out1.1, &out2.1));
     hiding_fri::verify(config.clone(), &params, &out1);
     hiding_fri::verify(config, &params, &out2);
+}
+
+#[test]
+fn hiding_batch_random_width_is_checked_by_the_preallocation_context_pass() {
+    let config = hiding_fri::config(9);
+    let backend = FriRecursionBackend::<16, 8, _>::new(Poseidon2Config::KOALA_BEAR_D4_W16)
+        .for_extension_degree::<4>();
+    let mut proof = hiding_fri::batch_proof(&config, 0, 1);
+    let table_public_inputs = vec![vec![]; proof.proof.opened_values.instances.len()];
+
+    let (_, retained) = build_next_layer_circuit::<hiding_fri::Config, BatchOnly, _, 4>(
+        &RecursionInput::BatchStark {
+            proof: &proof,
+            common_data: &proof.stark_common,
+            table_public_inputs: table_public_inputs.clone(),
+        },
+        &config,
+        &backend,
+    )
+    .expect("the honest hiding proof has one challenge-width random row per instance");
+
+    let random = proof.proof.opened_values.instances[0]
+        .base_opened_values
+        .random
+        .as_mut()
+        .expect("hiding proof has a random opening");
+    assert_eq!(random.len(), <Challenge as BasedVectorSpace<F>>::DIMENSION);
+    random.pop();
+    let error = <_ as PcsRecursionBackend<hiding_fri::Config, BatchOnly, 4>>::validate_input(
+        &backend,
+        &config,
+        &RecursionInput::BatchStark {
+            proof: &proof,
+            common_data: &proof.stark_common,
+            table_public_inputs: table_public_inputs.clone(),
+        },
+    )
+    .expect_err("a short random row must fail before verifier target allocation");
+    assert!(matches!(error, VerificationError::InvalidProofShape(_)));
+
+    let retained_error =
+        <_ as VerifierCircuitResult<hiding_fri::Config, BatchOnly>>::pack_private_inputs(
+            &retained,
+            &RecursionInput::BatchStark {
+                proof: &proof,
+                common_data: &proof.stark_common,
+                table_public_inputs: table_public_inputs.clone(),
+            },
+        )
+        .expect_err("retained result must reject before private-value extraction");
+    assert!(matches!(
+        retained_error,
+        VerificationError::PreparedInputMismatch {
+            component: "input.stark_layout"
+        }
+    ));
 }

@@ -3,12 +3,14 @@ mod common;
 use p3_circuit::test_utils::{FibonacciAir, generate_trace_rows};
 use p3_circuit_prover::batch_stark_prover::BatchStarkProver;
 use p3_field::PrimeCharacteristicRing;
-use p3_recursion::Poseidon2Config;
-use p3_recursion::backend::whir::{WhirRecursionBackend, WhirRecursionBackendForExt};
+use p3_recursion::backend::whir::{
+    WhirRecursionBackend, WhirRecursionBackendForExt, WhirRecursionConfig,
+};
 use p3_recursion::recursion::{
     BatchOnly, PcsRecursionBackend, ProveNextLayerParams, RecursionInput,
     build_and_prove_next_layer,
 };
+use p3_recursion::{Poseidon2Config, VerificationError, VerifierLimits};
 use p3_uni_stark::{prove, verify};
 use p3_whir::pcs::proof::QueryOpenings;
 
@@ -44,6 +46,79 @@ fn fibonacci_output<F: PrimeCharacteristicRing + Copy>(n: usize) -> F {
         b = next;
     }
     b
+}
+
+fn query_count<F, EF, P>(openings: &QueryOpenings<F, EF, P>) -> usize {
+    match openings {
+        QueryOpenings::Base(opening) => opening.rows.len(),
+        QueryOpenings::Extension(opening) => opening.rows.len(),
+    }
+}
+
+#[test]
+fn whir_backend_restoration_budget_accepts_exact_and_rejects_one_below() {
+    let n = 1 << 10;
+    let air = FibonacciAir {};
+    let pis = vec![BbF::ZERO, BbF::ONE, fibonacci_output(n)];
+    let config = bb_whir_config(vec![]);
+    let proof = prove(&config, &air, generate_trace_rows::<BbF>(0, 1, n), &pis);
+    let input = RecursionInput::UniStark {
+        proof: &proof,
+        air: &air,
+        public_inputs: pis,
+        preprocessed_commit: None,
+    };
+    let queries = proof
+        .opening_proof
+        .rounds
+        .iter()
+        .map(|argument| {
+            argument
+                .whir
+                .rounds
+                .iter()
+                .map(|round| query_count(&round.openings))
+                .sum::<usize>()
+                + query_count(&argument.whir.final_openings)
+        })
+        .sum::<usize>();
+    let depth = proof.degree_bits
+        + config
+            .pcs_verifier_params()
+            .protocol_params()
+            .starting_log_inv_rate;
+    let exact_restored = queries * depth;
+    let backend = WhirRecursionBackend::<16, 8>::new(Poseidon2Config::BABY_BEAR_D4_W16)
+        .for_extension_degree::<4>()
+        .with_limits(VerifierLimits {
+            max_restored_authentication_path_hashes: exact_restored,
+            ..VerifierLimits::default()
+        });
+    <WhirRecursionBackendForExt<4> as PcsRecursionBackend<
+        BbWhirConfig,
+        FibonacciAir,
+        4,
+    >>::preflight_input(&backend, &config, &input)
+    .expect("the exact conservative WHIR restoration bound is accepted");
+
+    let below = backend.with_limits(VerifierLimits {
+        max_restored_authentication_path_hashes: exact_restored - 1,
+        ..VerifierLimits::default()
+    });
+    let error = <WhirRecursionBackendForExt<4> as PcsRecursionBackend<
+        BbWhirConfig,
+        FibonacciAir,
+        4,
+    >>::preflight_input(&below, &config, &input)
+    .expect_err("one below the conservative WHIR restoration bound must reject");
+    assert!(matches!(
+        error,
+        VerificationError::ResourceLimitExceeded {
+            component: "restored authentication-path hashes",
+            actual,
+            limit,
+        } if actual == exact_restored && limit + 1 == exact_restored
+    ));
 }
 
 /// A WHIR-backed uni-STARK proof, verified and PROVEN as a real recursion layer

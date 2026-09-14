@@ -210,6 +210,16 @@ where
         left: &PreparedInput<'_, SC>,
         right: &PreparedInput<'_, SC>,
     ) -> Result<(), VerificationError> {
+        <B as PreparedPcsRecursionBackend<SC, A1, D>>::preflight_input(
+            &self.backend,
+            &self.config,
+            left,
+        )?;
+        <B as PreparedPcsRecursionBackend<SC, A2, D>>::preflight_input(
+            &self.backend,
+            &self.config,
+            right,
+        )?;
         <B as PreparedPcsRecursionBackend<SC, A1, D>>::validate_prepared_input(
             &self.backend,
             &self.config,
@@ -506,6 +516,16 @@ where
         left: &PreparedInput<'_, InSC>,
         right: &PreparedInput<'_, InSC>,
     ) -> Result<(), VerificationError> {
+        <B as PreparedPcsRecursionBackend<InSC, A1, D>>::preflight_input(
+            &self.backend,
+            &self.input_config,
+            left,
+        )?;
+        <B as PreparedPcsRecursionBackend<InSC, A2, D>>::preflight_input(
+            &self.backend,
+            &self.input_config,
+            right,
+        )?;
         <B as PreparedPcsRecursionBackend<InSC, A1, D>>::validate_prepared_input(
             &self.backend,
             &self.input_config,

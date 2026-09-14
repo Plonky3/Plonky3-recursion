@@ -234,6 +234,11 @@ where
 
     /// Validate a witness input before any packing, runner creation, or backend setup.
     pub fn check_input(&self, input: &PreparedInput<'_, SC>) -> Result<(), VerificationError> {
+        <B as PreparedPcsRecursionBackend<SC, A, D>>::preflight_input(
+            &self.backend,
+            &self.config,
+            input,
+        )?;
         self.backend
             .validate_prepared_input(&self.config, &self.contract, input)
     }
@@ -295,9 +300,10 @@ mod tests {
     use alloc::vec::Vec;
     use core::cell::Cell;
 
+    use p3_circuit::ops::NpoTypeId;
     use p3_circuit::test_utils::{FibonacciAir, generate_trace_rows};
     use p3_circuit::{CircuitBuilder, CircuitRunner, NonPrimitiveOpId};
-    use p3_circuit_prover::batch_stark_prover::TableProver;
+    use p3_circuit_prover::batch_stark_prover::{NUM_PRIMITIVE_TABLES, RowCounts, TableProver};
     use p3_circuit_prover::common::{NpoAirBuilder, NpoPreprocessor};
     use p3_field::PrimeCharacteristicRing;
     use p3_test_utils::koala_bear_params::F;
@@ -305,6 +311,7 @@ mod tests {
 
     use super::*;
     use crate::prepared::test_common;
+    use crate::{FriRecursionConfig, VerifierLimits};
 
     type Config = test_common::KoalaBearD4RecursionConfig;
     type Backend = test_common::KoalaBearD4Backend;
@@ -449,6 +456,18 @@ mod tests {
     {
         type InputContract = B::InputContract;
 
+        fn preflight_input(
+            &self,
+            config: &SC,
+            input: &PreparedInput<'_, SC>,
+        ) -> Result<(), VerificationError> {
+            <B as PreparedPcsRecursionBackend<SC, A, D>>::preflight_input(
+                &self.inner,
+                config,
+                input,
+            )
+        }
+
         fn capture_input_contract(
             &self,
             config: &SC,
@@ -471,6 +490,7 @@ mod tests {
     struct ShapeOnlyBackend {
         pack_calls: Rc<Cell<usize>>,
         setup_calls: Rc<Cell<usize>>,
+        prepared_preflight_calls: Rc<Cell<usize>>,
     }
 
     struct ShapeOnlyVerifierResult {
@@ -536,6 +556,16 @@ mod tests {
 
     impl PreparedPcsRecursionBackend<Config, FibonacciAir, 4> for ShapeOnlyBackend {
         type InputContract = usize;
+
+        fn preflight_input(
+            &self,
+            _config: &Config,
+            _input: &PreparedInput<'_, Config>,
+        ) -> Result<(), VerificationError> {
+            self.prepared_preflight_calls
+                .set(self.prepared_preflight_calls.get() + 1);
+            Ok(())
+        }
 
         fn capture_input_contract(
             &self,
@@ -603,6 +633,7 @@ mod tests {
         let backend = ShapeOnlyBackend {
             pack_calls: Rc::new(Cell::new(0)),
             setup_calls: Rc::new(Cell::new(0)),
+            prepared_preflight_calls: Rc::new(Cell::new(0)),
         };
         let prepared = PreparedLayer::<Config, FibonacciAir, _, 4>::new(
             PreparedSource::UniStark {
@@ -636,12 +667,196 @@ mod tests {
     }
 
     #[test]
+    fn prepared_reuse_runs_resource_preflight_before_contract_validation() {
+        let (config, _) = test_common::koala_bear_d4_recursion_config_and_backend();
+        let air = FibonacciAir {};
+        let (proof, pis) = honest_fri_reference(&config, &air);
+        let backend = ShapeOnlyBackend {
+            pack_calls: Rc::new(Cell::new(0)),
+            setup_calls: Rc::new(Cell::new(0)),
+            prepared_preflight_calls: Rc::new(Cell::new(0)),
+        };
+        let prepared = PreparedLayer::<Config, FibonacciAir, _, 4>::new(
+            PreparedSource::UniStark {
+                air: &air,
+                proof: &proof,
+                public_inputs: &pis,
+                preprocessed_commit: None,
+            },
+            config,
+            backend.clone(),
+            ProveNextLayerParams::default(),
+        )
+        .unwrap();
+        let after_construction = backend.prepared_preflight_calls.get();
+        prepared
+            .check_input(&PreparedInput::UniStark {
+                proof: &proof,
+                public_inputs: &pis,
+                preprocessed_commit: None,
+            })
+            .unwrap();
+        assert_eq!(
+            backend.prepared_preflight_calls.get(),
+            after_construction + 1,
+            "reuse must rerun the borrowed resource policy before shape capture"
+        );
+    }
+
+    #[test]
+    fn builtin_resource_limit_runs_before_builder_setup_and_accepts_exact_boundary() {
+        let (config, inner) = test_common::koala_bear_d4_recursion_config_and_backend();
+        let air = FibonacciAir {};
+        let (proof, pis) = honest_fri_reference(&config, &air);
+        let input = PreparedInput::UniStark {
+            proof: &proof,
+            public_inputs: &pis,
+            preprocessed_commit: None,
+        };
+        let query_rows = proof
+            .opening_proof
+            .input_openings
+            .iter()
+            .map(|batch| batch.opened_values.len())
+            .chain(
+                proof
+                    .opening_proof
+                    .commit_phase_openings
+                    .iter()
+                    .map(|round| round.sibling_values.len()),
+            )
+            .sum::<usize>();
+        let restoration_depth = proof.degree_bits
+            + config
+                .native_fri_validation_params()
+                .expect("test config retains native FRI params")
+                .log_blowup();
+        let exact_restored = query_rows * restoration_depth;
+
+        let exact = inner.clone().with_limits(VerifierLimits {
+            max_instances: 1,
+            max_restored_authentication_path_hashes: exact_restored,
+            ..VerifierLimits::default()
+        });
+        <Backend as PreparedPcsRecursionBackend<Config, FibonacciAir, 4>>::preflight_input(
+            &exact, &config, &input,
+        )
+        .expect("a single real FRI instance is accepted at the exact boundary");
+
+        let restored_below = inner.clone().with_limits(VerifierLimits {
+            max_restored_authentication_path_hashes: exact_restored - 1,
+            ..VerifierLimits::default()
+        });
+        let error =
+            <Backend as PreparedPcsRecursionBackend<Config, FibonacciAir, 4>>::preflight_input(
+                &restored_below,
+                &config,
+                &input,
+            )
+            .expect_err("one below the real restoration bound must reject");
+        assert!(matches!(
+            error,
+            VerificationError::ResourceLimitExceeded {
+                component: "restored authentication-path hashes",
+                actual,
+                limit,
+            } if actual == exact_restored && limit + 1 == exact_restored
+        ));
+
+        let backend = CountingBackend::new(inner.with_limits(VerifierLimits {
+            max_instances: 0,
+            ..VerifierLimits::default()
+        }));
+        let error = PreparedLayer::<Config, FibonacciAir, _, 4>::new(
+            PreparedSource::UniStark {
+                air: &air,
+                proof: &proof,
+                public_inputs: &pis,
+                preprocessed_commit: None,
+            },
+            config,
+            backend.clone(),
+            ProveNextLayerParams::default(),
+        )
+        .err()
+        .expect("one below the real instance count must reject");
+        assert!(matches!(
+            error,
+            VerificationError::ResourceLimitExceeded {
+                component: "instances",
+                actual: 1,
+                limit: 0,
+            }
+        ));
+        assert_eq!(backend.build_calls.get(), 0);
+        assert_eq!(backend.pack_calls.get(), 0);
+        assert_eq!(backend.setup_calls.get(), 0);
+    }
+
+    #[test]
     fn builtin_equal_total_metadata_mismatch_stops_before_pack_or_backend_setup() {
         let first = test_common::build_koala_bear_d4_first_layer_input_with_starts(0, 1);
         let mut changed = test_common::build_koala_bear_d4_first_layer_input_with_starts(2, 3);
         let table_public_inputs =
             vec![vec![]; first.base_proof.proof.opened_values.instances.len()];
-        let backend = CountingBackend::new(first.backend.clone());
+        let proof = &first.base_proof;
+        let mut metadata_entries = proof.proof.degree_bits.len()
+            + table_public_inputs.len()
+            + proof.proof.lookup_terminals.len()
+            + proof.non_primitives.len()
+            + proof.table_packing.npo_lanes_iter().count()
+            + proof.table_packing.npo_min_heights().count()
+            + proof.rows.iter().len()
+            + proof.stark_common.lookups.len()
+            + proof
+                .stark_common
+                .lookups
+                .iter()
+                .map(|lookups| lookups.len())
+                .sum::<usize>();
+        if let Some(preprocessed) = &proof.stark_common.preprocessed {
+            metadata_entries +=
+                preprocessed.instances.len() + preprocessed.matrix_to_instance.len();
+        }
+        assert!(metadata_entries > 0);
+        let exact_limits = VerifierLimits {
+            max_metadata_entries: metadata_entries,
+            ..VerifierLimits::default()
+        };
+        let exact = first.backend.clone().with_limits(exact_limits);
+        let input = PreparedInput::BatchStark {
+            proof,
+            common_data: &proof.stark_common,
+            table_public_inputs: &table_public_inputs,
+        };
+        <Backend as PreparedPcsRecursionBackend<Config, crate::recursion::BatchOnly, 4>>::preflight_input(
+            &exact,
+            &first.layer_config,
+            &input,
+        )
+        .expect("real batch metadata is accepted at both exact boundaries");
+        for (limits, component) in [(
+            VerifierLimits {
+                max_metadata_entries: metadata_entries - 1,
+                ..exact_limits
+            },
+            "metadata entries",
+        )] {
+            let limited = first.backend.clone().with_limits(limits);
+            assert!(matches!(
+                <Backend as PreparedPcsRecursionBackend<
+                    Config,
+                    crate::recursion::BatchOnly,
+                    4,
+                >>::preflight_input(&limited, &first.layer_config, &input),
+                Err(VerificationError::ResourceLimitExceeded {
+                    component: actual,
+                    ..
+                }) if actual == component
+            ));
+        }
+
+        let backend = CountingBackend::new(exact);
         let prepared = PreparedLayer::<Config, crate::recursion::BatchOnly, _, 4>::new(
             PreparedSource::batch(
                 &first.base_proof,
@@ -677,6 +892,104 @@ mod tests {
         ));
         assert_eq!(backend.pack_calls.get(), 0);
         assert_eq!(backend.setup_calls.get(), 0);
+    }
+
+    #[test]
+    fn long_packing_identifier_is_limited_before_builder_or_shape_work() {
+        let mut source = test_common::build_koala_bear_d4_first_layer_input_with_starts(0, 1);
+        let table_public_inputs =
+            vec![vec![]; source.base_proof.proof.opened_values.instances.len()];
+        let identifier = "resource-probe/".repeat(8);
+        let identifier_bytes = identifier.len();
+        source.base_proof.table_packing = source
+            .base_proof
+            .table_packing
+            .clone()
+            .with_npo_lanes(NpoTypeId::new(identifier), 1);
+        let input = PreparedInput::BatchStark {
+            proof: &source.base_proof,
+            common_data: &source.base_proof.stark_common,
+            table_public_inputs: &table_public_inputs,
+        };
+        let exact = source.backend.clone().with_limits(VerifierLimits {
+            max_metadata_string_bytes: identifier_bytes,
+            ..VerifierLimits::default()
+        });
+        <Backend as PreparedPcsRecursionBackend<Config, crate::recursion::BatchOnly, 4>>::preflight_input(
+            &exact,
+            &source.layer_config,
+            &input,
+        )
+        .expect("the borrowed identifier is accepted at the exact byte boundary");
+
+        let backend = CountingBackend::new(source.backend.clone().with_limits(VerifierLimits {
+            max_metadata_string_bytes: identifier_bytes - 1,
+            ..VerifierLimits::default()
+        }));
+        let error = PreparedLayer::<Config, crate::recursion::BatchOnly, _, 4>::new(
+            PreparedSource::batch(
+                &source.base_proof,
+                &source.base_proof.stark_common,
+                &table_public_inputs,
+            ),
+            source.layer_config,
+            backend.clone(),
+            ProveNextLayerParams::default(),
+        )
+        .err()
+        .expect("one below the identifier byte count must reject");
+        assert!(matches!(
+            error,
+            VerificationError::ResourceLimitExceeded {
+                component: "metadata string bytes",
+                actual,
+                limit,
+            } if actual == identifier_bytes && limit + 1 == identifier_bytes
+        ));
+        assert_eq!(backend.build_calls.get(), 0);
+        assert_eq!(backend.pack_calls.get(), 0);
+        assert_eq!(backend.setup_calls.get(), 0);
+    }
+
+    #[test]
+    fn primitive_row_counts_are_borrowed_into_the_log_degree_budget() {
+        let mut source = test_common::build_koala_bear_d4_first_layer_input_with_starts(0, 1);
+        let table_public_inputs =
+            vec![vec![]; source.base_proof.proof.opened_values.instances.len()];
+        source.base_proof.rows = RowCounts::new([1 << 20; NUM_PRIMITIVE_TABLES]);
+        let input = PreparedInput::BatchStark {
+            proof: &source.base_proof,
+            common_data: &source.base_proof.stark_common,
+            table_public_inputs: &table_public_inputs,
+        };
+
+        let exact = source.backend.clone().with_limits(VerifierLimits {
+            max_log_domain_or_degree: 20,
+            ..VerifierLimits::default()
+        });
+        <Backend as PreparedPcsRecursionBackend<Config, crate::recursion::BatchOnly, 4>>::preflight_input(
+            &exact,
+            &source.layer_config,
+            &input,
+        )
+        .expect("borrowed primitive row counts are accepted at the exact log boundary");
+
+        let below = source.backend.with_limits(VerifierLimits {
+            max_log_domain_or_degree: 19,
+            ..VerifierLimits::default()
+        });
+        assert!(matches!(
+            <Backend as PreparedPcsRecursionBackend<Config, crate::recursion::BatchOnly, 4>>::preflight_input(
+                &below,
+                &source.layer_config,
+                &input,
+            ),
+            Err(VerificationError::ResourceLimitExceeded {
+                component: "log domain or degree",
+                actual: 20,
+                limit: 19,
+            })
+        ));
     }
 
     #[test]

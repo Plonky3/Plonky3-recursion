@@ -17,7 +17,7 @@ use crate::input_contract::stark_layout::NativeStarkLayout;
 use crate::ops::PermConfig;
 use crate::pcs::fri::targets::{FriPrivateAdvice, InputProofTargets, MerkleCapTargets};
 use crate::traits::{CheckedRecursive, RecursiveExtensionMmcs, RecursiveMmcs};
-use crate::verifier::VerificationError;
+use crate::verifier::{InputResourceUsage, VerificationError, VerifierLimits};
 
 #[cfg(test)]
 std::thread_local! {
@@ -108,6 +108,8 @@ impl ValidatedFriContext {
 pub trait CheckedFriCommitment<EF: p3_field::Field>: CheckedRecursive<EF> {
     fn checked_fri_public_values_len(input: &Self::Input) -> Result<usize, VerificationError>;
 
+    fn checked_fri_cap_roots(input: &Self::Input) -> Result<usize, VerificationError>;
+
     fn validate_fri_cap<I>(
         input: &Self::Input,
         permutation: PermConfig,
@@ -134,6 +136,14 @@ pub trait CheckedFriOpening<EF: p3_field::Field, C: CheckedFriCommitment<EF>>:
     CheckedRecursive<EF>
 {
     type PhaseCommitment: CheckedFriCommitment<EF>;
+
+    /// Walk every proof-owned resource consumed by the built-in FRI targets.
+    /// This is a borrowed, allocation-free capability of the audited ordinary
+    /// and hiding Merkle compositions, not a promise for arbitrary targets.
+    fn check_fri_resources(
+        input: &Self::Input,
+        limits: &VerifierLimits,
+    ) -> Result<InputResourceUsage, VerificationError>;
 
     fn validate_fri_context(
         input: &Self::Input,
@@ -162,6 +172,11 @@ where
         checked_cap_public_values_len::<EF>(input.num_roots(), DIGEST_ELEMS)
     }
 
+    fn checked_fri_cap_roots(input: &Self::Input) -> Result<usize, VerificationError> {
+        <Self as CheckedRecursive<EF>>::validate_input(input)?;
+        Ok(input.num_roots())
+    }
+
     fn validate_fri_cap<I>(
         input: &Self::Input,
         permutation: PermConfig,
@@ -180,6 +195,103 @@ where
         <Self as CheckedFriCommitment<EF>>::checked_fri_public_values_len(input)?;
         Ok(input.num_roots())
     }
+}
+
+#[allow(clippy::type_complexity)]
+pub(crate) fn check_fri_resource_limits<F, EF, RI, RF>(
+    proof: &FriProof<EF, RF::Input, F, Vec<BatchMultiOpening<F, RI::Input>>>,
+    hiding_tails: Option<&OpenedValues<EF>>,
+    limits: &VerifierLimits,
+) -> Result<InputResourceUsage, VerificationError>
+where
+    F: p3_field::Field,
+    EF: ExtensionField<F>,
+    RI: crate::traits::RecursiveMmcs<F, EF>,
+    RF: crate::traits::RecursiveExtensionMmcs<F, EF>,
+    RI::Proof: FriPrivateAdvice<EF, MultiProof = <RI::Input as Mmcs<F>>::MultiProof>,
+    RF::Proof: FriPrivateAdvice<EF, MultiProof = <RF::Input as Mmcs<EF>>::MultiProof>,
+    RF::Commitment: CheckedFriCommitment<EF, Input = <RF::Input as Mmcs<EF>>::Commitment>,
+{
+    let mut usage = InputResourceUsage::default();
+    usage.add_rounds(
+        limits,
+        proof
+            .commit_phase_openings
+            .len()
+            .max(proof.commit_phase_commits.len())
+            .max(proof.commit_pow_witnesses.len()),
+    )?;
+
+    for batch in &proof.input_openings {
+        usage.add_query_round(limits, batch.opened_values.len())?;
+        for query in &batch.opened_values {
+            for row in query {
+                usage.check_matrix_width(limits, row.len())?;
+                usage.add_scalar_elements(limits, row.len())?;
+            }
+        }
+        <RI::Proof as FriPrivateAdvice<EF>>::add_private_resource_usage(
+            &batch.opening_proof,
+            &mut usage,
+            limits,
+        )?;
+        usage.add_compressed_frontier_hashes(
+            limits,
+            <RI::Proof as FriPrivateAdvice<EF>>::compressed_frontier_hashes(&batch.opening_proof),
+        )?;
+    }
+
+    for step in &proof.commit_phase_openings {
+        usage.check_log_degree(limits, step.log_arity as usize)?;
+        usage.add_query_round(limits, step.sibling_values.len())?;
+        for row in &step.sibling_values {
+            usage.check_matrix_width(limits, row.len())?;
+            let coefficients = row.len().checked_mul(EF::DIMENSION).ok_or(
+                VerificationError::ResourceArithmeticOverflow {
+                    component: "scalar elements",
+                },
+            )?;
+            usage.add_scalar_elements(limits, coefficients)?;
+        }
+        <RF::Proof as FriPrivateAdvice<EF>>::add_private_resource_usage(
+            &step.opening_proof,
+            &mut usage,
+            limits,
+        )?;
+        usage.add_compressed_frontier_hashes(
+            limits,
+            <RF::Proof as FriPrivateAdvice<EF>>::compressed_frontier_hashes(&step.opening_proof),
+        )?;
+    }
+
+    // Count commitments independently of openings. A malformed proof may have
+    // unequal phase-vector lengths; resource accounting must still see every
+    // supplied cap before contextual validation reports that mismatch.
+    for commitment in &proof.commit_phase_commits {
+        usage.add_cap_roots(limits, RF::Commitment::checked_fri_cap_roots(commitment)?)?;
+        usage.add_scalar_elements(
+            limits,
+            RF::Commitment::checked_fri_public_values_len(commitment)?,
+        )?;
+    }
+
+    if let Some(tails) = hiding_tails {
+        for round in tails {
+            for matrix in round {
+                for point in matrix {
+                    usage.check_matrix_width(limits, point.len())?;
+                    usage.add_scalar_elements(limits, point.len())?;
+                }
+            }
+        }
+    }
+
+    usage.add_final_poly_evaluations(limits, proof.final_poly.len())?;
+    usage.add_scalar_elements(limits, proof.final_poly.len())?;
+    usage.add_scalar_elements(limits, proof.commit_pow_witnesses.len())?;
+    usage.add_scalar_elements(limits, 1)?;
+    usage.check(limits)?;
+    Ok(usage)
 }
 
 fn invalid(message: impl Into<alloc::string::String>) -> VerificationError {

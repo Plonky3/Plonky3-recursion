@@ -90,7 +90,7 @@ pub enum WhirVerifierParamsError {
 ///     let WhirRoundParams { num_queries, .. } = params;
 /// }
 /// ```
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WhirRoundParams<F> {
     /// Number of out-of-domain evaluation samples for this round.
     ood_samples: usize,
@@ -130,7 +130,7 @@ pub struct WhirRoundParams<F> {
 /// use p3_recursion::pcs::whir::WhirVerifierParams;
 /// let _ = WhirVerifierParams::<()>::unsafe_arithmetic_only_for_tests();
 /// ```
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WhirVerifierParams<F> {
     /// Number of multilinear variables in the original polynomial.
     num_variables: usize,
@@ -428,6 +428,37 @@ mod tests {
             soundness_type: SecurityAssumption::CapacityBound,
             starting_log_inv_rate: 1,
         }
+    }
+
+    #[test]
+    fn full_parameter_identity_retains_query_grinding_bits() {
+        let config =
+            WhirConfig::<EF, BF, DummyChallenger<BF>>::new(12, non_saturating_protocol_params())
+                .unwrap();
+        let retained = WhirVerifierParams::<BF>::from_config(
+            &config,
+            PrefixProver::<BF, EF>::variable_order(),
+            p3_circuit::ops::Poseidon2Config::BABY_BEAR_D4_W16,
+        )
+        .unwrap();
+
+        let mut changed_round = retained.clone();
+        changed_round.round_params[0].pow_bits += 1;
+        assert_ne!(retained, changed_round);
+        assert_eq!(
+            crate::input_contract::whir::WhirContextParams::from_recursive(&retained),
+            crate::input_contract::whir::WhirContextParams::from_recursive(&changed_round),
+            "allocation shape intentionally omits query-grinding bits"
+        );
+
+        let mut changed_final = retained.clone();
+        changed_final.final_pow_bits += 1;
+        assert_ne!(retained, changed_final);
+        assert_eq!(
+            crate::input_contract::whir::WhirContextParams::from_recursive(&retained),
+            crate::input_contract::whir::WhirContextParams::from_recursive(&changed_final),
+            "allocation shape intentionally omits final query-grinding bits"
+        );
     }
 
     #[test]

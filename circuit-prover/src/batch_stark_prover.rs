@@ -514,6 +514,14 @@ impl RowCounts {
         }
         Ok(())
     }
+
+    /// Borrow every primitive table's declared row count in canonical table order.
+    ///
+    /// This supports allocation-free verifier resource preflight without exposing
+    /// the fixed backing array or coupling consumers to the enum discriminants.
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = usize> + '_ {
+        self.0.iter().copied()
+    }
 }
 
 impl core::ops::Index<PrimitiveTable> for RowCounts {

@@ -173,6 +173,10 @@ where
                 .quotient_chunks
                 .iter()
                 .any(|chunk| chunk.len() != SC::Challenge::DIMENSION)
+            || base
+                .random
+                .as_ref()
+                .is_some_and(|values| values.len() != SC::Challenge::DIMENSION)
             || opened.permutation_local.len() != permutation_width
             || opened.permutation_next.len() != permutation_width
             || proof.lookup_terminals[index].is_some() != air.declares_interactions(pre_width)
