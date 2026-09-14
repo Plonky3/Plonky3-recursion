@@ -331,6 +331,11 @@ pub(crate) unsafe fn transmute_traces<FromEF, ToEF>(t: &Traces<FromEF>) -> &Trac
 /// Implementors would typically delegate to an existing AIR type, define a base case
 /// for base-field traces, and then use the [`impl_table_prover_batch_instances_from_base!`]
 /// macro to generate the degree-specific implementations.
+///
+/// The [`Any`] bound is intentional and requires implementations to be `'static`: table provers
+/// should own their setup state (or share it through an owning pointer) rather than borrow it.
+/// Trusted preparation checks the concrete built-in Statement prover identity so wrappers cannot
+/// gain authority to supply runtime Statement values by reusing its operation name or behavior.
 pub trait TableProver<SC>: Send + Sync + Any
 where
     SC: StarkGenericConfig + 'static,

@@ -2290,7 +2290,9 @@ where
     /// Verify against the retained trusted relation and preprocessing commitment.
     ///
     /// `proof.stark_common` is legacy transport metadata and is deliberately ignored here.
-    /// Tasks 8–10 define an empty external statement; non-empty statements are rejected.
+    /// `expected_statement` supplies the runtime values for the retained Statement schema; its
+    /// exact order and length are fixed during preparation and bound by the Statement AIR. Public
+    /// values for every other non-primitive table remain fixed by the retained relation.
     pub fn verify(
         &self,
         proof: &BatchStarkProof<SC>,

@@ -43,6 +43,11 @@ pub(crate) fn reduce_lanes_if_dummy(
 ///
 /// Each implementation can update `PreprocessedColumns` (ext_reads, multiplicities, etc.)
 /// and return base-field non-primitive preprocessed rows for its own `NpoTypeId`s.
+///
+/// The [`Any`] bound is intentional and therefore requires implementations to be `'static`:
+/// plugins should own their configuration (or share it through an owning pointer) rather than
+/// borrow it. Trusted preparation uses the concrete type identity of the built-in Statement
+/// preprocessor, so a same-name or delegating wrapper cannot acquire Statement authority.
 pub trait NpoPreprocessor<F>: Send + Sync + Any
 where
     F: StarkField + PrimeField64,
@@ -61,6 +66,11 @@ where
 /// Builds (AIR, degree) from preprocessed base data for a given NPO op_type.
 /// Used by `get_airs_and_degrees_with_prep` so that AIR construction is plugin-driven
 /// without requiring generic methods on the preprocessor trait (object safety).
+///
+/// The [`Any`] bound deliberately makes implementations `'static`; implementations should own
+/// their state (or place it behind an owning pointer). The trusted Statement path checks the
+/// concrete identity of the built-in builder, preventing wrappers that merely delegate to it
+/// from minting dynamic Statement metadata.
 pub trait NpoAirBuilder<SC, const D: usize>: Send + Sync + Any
 where
     SC: StarkGenericConfig,

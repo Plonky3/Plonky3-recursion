@@ -1,4 +1,10 @@
+use std::borrow::Cow;
+
+#[cfg(debug_assertions)]
+use p3_air::DebugConstraintBuilder;
+use p3_air::{Air, BaseAir};
 use p3_baby_bear::BabyBear;
+use p3_batch_stark::StarkGenericConfig;
 use p3_circuit::ops::{NonPrimitivePreprocessedMap, NpoTypeId, generate_recompose_trace};
 use p3_circuit::tables::Traces;
 use p3_circuit::{
@@ -6,19 +12,266 @@ use p3_circuit::{
 };
 use p3_circuit_prover::batch_stark_prover::{
     BatchStarkProver, BatchStarkProverError, BatchTableInstance, DynamicAirEntry,
-    NonPrimitiveTableEntry, PreparedCircuitProver, RecomposePreprocessor, StatementAirBuilder,
-    StatementPreprocessor, StatementProver, TablePacking, TableProver, recompose_air_builders,
+    NonPrimitiveTableEntry, PreparedCircuitProver, RecomposeAirBuilder, RecomposePreprocessor,
+    RecomposeProver, StatementAirBuilder, StatementPreprocessor, StatementProver, TablePacking,
+    TableProver, recompose_air_builders,
 };
-use p3_circuit_prover::common::{BuiltNpoTable, CircuitTableAir, NpoAirBuilder, NpoPreprocessor};
-use p3_circuit_prover::{ConstraintProfile, config};
-use p3_field::extension::QuinticTrinomialExtensionField;
+use p3_circuit_prover::common::{
+    BuiltNpoTable, CircuitTableAir, NpoAirBuilder, NpoPreprocessor, NpoRelation,
+};
+use p3_circuit_prover::{AirVariant, ConstraintProfile, config};
+use p3_field::extension::{BinomialExtensionField, QuinticTrinomialExtensionField};
 use p3_field::{Algebra, BasedVectorSpace, PrimeCharacteristicRing};
-use p3_test_utils::baby_bear_params::BinomialExtensionField;
+use p3_lookup::folder::{ProverConstraintFolderWithLookups, VerifierConstraintFolderWithLookups};
+use p3_lookup::symbolic::InteractionSymbolicBuilder;
+use p3_matrix::dense::RowMajorMatrix;
 use p3_uni_stark::{SymbolicExpression, SymbolicExpressionExt};
 
 type EF = BinomialExtensionField<BabyBear, 4>;
 type SC = config::BabyBearConfig;
 const D: usize = 4;
+const STATIC_RECOMPOSE_VALUE: BabyBear = BabyBear::new(42);
+
+#[derive(Clone)]
+struct OnePublicValueAir {
+    inner: DynamicAirEntry<SC>,
+}
+
+impl OnePublicValueAir {
+    fn new(inner: DynamicAirEntry<SC>) -> Self {
+        Self { inner }
+    }
+}
+
+impl BaseAir<BabyBear> for OnePublicValueAir {
+    fn width(&self) -> usize {
+        BaseAir::<BabyBear>::width(&self.inner)
+    }
+
+    fn num_public_values(&self) -> usize {
+        1
+    }
+
+    fn preprocessed_width(&self) -> usize {
+        BaseAir::<BabyBear>::preprocessed_width(&self.inner)
+    }
+
+    fn preprocessed_trace(&self) -> Option<RowMajorMatrix<BabyBear>> {
+        BaseAir::<BabyBear>::preprocessed_trace(&self.inner)
+    }
+
+    fn main_next_row_columns(&self) -> Vec<usize> {
+        BaseAir::<BabyBear>::main_next_row_columns(&self.inner)
+    }
+
+    fn num_periodic_columns(&self) -> usize {
+        BaseAir::<BabyBear>::num_periodic_columns(&self.inner)
+    }
+
+    fn periodic_columns(&self) -> Cow<'_, [Vec<BabyBear>]> {
+        BaseAir::<BabyBear>::periodic_columns(&self.inner)
+    }
+}
+
+macro_rules! forward_air {
+    ($(#[$cfg:meta])? $builder:ty) => {
+        $(#[$cfg])?
+        impl Air<$builder> for OnePublicValueAir {
+            fn eval(&self, builder: &mut $builder) {
+                <DynamicAirEntry<SC> as Air<$builder>>::eval(&self.inner, builder);
+            }
+        }
+    };
+}
+
+forward_air!(InteractionSymbolicBuilder<BabyBear, <SC as StarkGenericConfig>::Challenge>);
+#[cfg(debug_assertions)]
+impl<'a> Air<DebugConstraintBuilder<'a, BabyBear, <SC as StarkGenericConfig>::Challenge>>
+    for OnePublicValueAir
+{
+    fn eval(
+        &self,
+        builder: &mut DebugConstraintBuilder<'a, BabyBear, <SC as StarkGenericConfig>::Challenge>,
+    ) {
+        <DynamicAirEntry<SC> as Air<_>>::eval(&self.inner, builder);
+    }
+}
+impl<'a> Air<ProverConstraintFolderWithLookups<'a, SC>> for OnePublicValueAir {
+    fn eval(&self, builder: &mut ProverConstraintFolderWithLookups<'a, SC>) {
+        <DynamicAirEntry<SC> as Air<_>>::eval(&self.inner, builder);
+    }
+}
+impl<'a> Air<VerifierConstraintFolderWithLookups<'a, SC>> for OnePublicValueAir {
+    fn eval(&self, builder: &mut VerifierConstraintFolderWithLookups<'a, SC>) {
+        <DynamicAirEntry<SC> as Air<_>>::eval(&self.inner, builder);
+    }
+}
+
+impl p3_circuit_prover::batch_stark_prover::BatchAir<SC> for OnePublicValueAir {}
+
+fn one_public_value_air(air: DynamicAirEntry<SC>) -> DynamicAirEntry<SC> {
+    DynamicAirEntry::new(Box::new(OnePublicValueAir::new(air)))
+}
+
+struct StaticPublicRecomposeAirBuilder {
+    inner: RecomposeAirBuilder<D>,
+}
+
+impl StaticPublicRecomposeAirBuilder {
+    fn new() -> Self {
+        Self {
+            inner: RecomposeAirBuilder::new(1, true),
+        }
+    }
+}
+
+impl NpoAirBuilder<SC, D> for StaticPublicRecomposeAirBuilder {
+    fn lanes(&self) -> usize {
+        1
+    }
+
+    fn try_build(
+        &self,
+        op_type: &NpoTypeId,
+        prep_base: &[BabyBear],
+        min_height: usize,
+        lanes: usize,
+        constraint_profile: ConstraintProfile,
+    ) -> Option<(CircuitTableAir<SC, D>, usize)> {
+        let (air, degree) = <RecomposeAirBuilder<D> as NpoAirBuilder<SC, D>>::try_build(
+            &self.inner,
+            op_type,
+            prep_base,
+            min_height,
+            lanes,
+            constraint_profile,
+        )?;
+        let CircuitTableAir::Dynamic(air) = air else {
+            unreachable!("recompose always builds a dynamic AIR")
+        };
+        Some((CircuitTableAir::Dynamic(one_public_value_air(air)), degree))
+    }
+
+    fn try_build_trusted(
+        &self,
+        op_type: &NpoTypeId,
+        prep_base: &[BabyBear],
+        min_height: usize,
+        lanes: usize,
+        constraint_profile: ConstraintProfile,
+    ) -> Option<BuiltNpoTable<SC, D>> {
+        let (air, degree) =
+            self.try_build(op_type, prep_base, min_height, lanes, constraint_profile)?;
+        Some(BuiltNpoTable::new(
+            air,
+            degree,
+            NpoRelation::new(
+                op_type.clone(),
+                prep_base.len() / (2 + 2 * D),
+                lanes,
+                AirVariant::Baseline,
+                vec![STATIC_RECOMPOSE_VALUE],
+            ),
+        ))
+    }
+}
+
+struct StaticPublicRecomposeProver {
+    inner: RecomposeProver<D>,
+}
+
+impl StaticPublicRecomposeProver {
+    fn new() -> Self {
+        Self {
+            inner: RecomposeProver::new(1, true),
+        }
+    }
+
+    fn with_static_public_value(
+        &self,
+        mut instance: BatchTableInstance<SC>,
+    ) -> BatchTableInstance<SC> {
+        instance.air = one_public_value_air(instance.air);
+        instance.public_values = vec![STATIC_RECOMPOSE_VALUE];
+        instance
+    }
+}
+
+macro_rules! forward_static_public_instance {
+    ($method:ident, $trace_field:ty) => {
+        fn $method(
+            &self,
+            config: &SC,
+            packing: &TablePacking,
+            traces: &Traces<$trace_field>,
+        ) -> Option<BatchTableInstance<SC>> {
+            <RecomposeProver<D> as TableProver<SC>>::$method(&self.inner, config, packing, traces)
+                .map(|instance| self.with_static_public_value(instance))
+        }
+    };
+}
+
+impl TableProver<SC> for StaticPublicRecomposeProver {
+    fn op_type(&self) -> NpoTypeId {
+        NpoTypeId::recompose_with_coeff_lookups()
+    }
+
+    fn lanes(&self) -> usize {
+        1
+    }
+
+    forward_static_public_instance!(batch_instance_d1, BabyBear);
+    forward_static_public_instance!(
+        batch_instance_d2,
+        BinomialExtensionField<BabyBear, 2>
+    );
+    forward_static_public_instance!(
+        batch_instance_d4,
+        BinomialExtensionField<BabyBear, 4>
+    );
+    forward_static_public_instance!(
+        batch_instance_d6,
+        BinomialExtensionField<BabyBear, 6>
+    );
+    forward_static_public_instance!(
+        batch_instance_d8,
+        BinomialExtensionField<BabyBear, 8>
+    );
+
+    fn batch_air_from_table_entry(
+        &self,
+        config: &SC,
+        degree: usize,
+        circuit_extension_degree: u32,
+        table_entry: &NonPrimitiveTableEntry<SC>,
+    ) -> Result<DynamicAirEntry<SC>, String> {
+        <RecomposeProver<D> as TableProver<SC>>::batch_air_from_table_entry(
+            &self.inner,
+            config,
+            degree,
+            circuit_extension_degree,
+            table_entry,
+        )
+        .map(one_public_value_air)
+    }
+
+    fn air_with_committed_preprocessed(
+        &self,
+        committed_prep: Vec<BabyBear>,
+        min_height: usize,
+        lanes: usize,
+        circuit_extension_degree: u32,
+    ) -> Option<DynamicAirEntry<SC>> {
+        <RecomposeProver<D> as TableProver<SC>>::air_with_committed_preprocessed(
+            &self.inner,
+            committed_prep,
+            min_height,
+            lanes,
+            circuit_extension_degree,
+        )
+        .map(one_public_value_air)
+    }
+}
 
 fn prepare_statement_circuit() -> (Circuit<EF>, StatementSchema, PreparedCircuitProver<SC>) {
     let mut builder = CircuitBuilder::<EF>::new();
@@ -52,6 +305,44 @@ fn prepare_statement_circuit() -> (Circuit<EF>, StatementSchema, PreparedCircuit
         )
         .unwrap();
     (circuit, schema, prepared)
+}
+
+fn prepare_statement_circuit_with_static_public_npo() -> (Circuit<EF>, PreparedCircuitProver<SC>) {
+    let mut builder = CircuitBuilder::<EF>::new();
+    builder.enable_recompose::<BabyBear>(generate_recompose_trace::<BabyBear, EF>);
+    let base = builder.public_input();
+    let extension = builder.public_input();
+    let schema = builder
+        .set_statement_exports::<BabyBear>(&[
+            StatementExport::Base(base),
+            StatementExport::Extension(extension),
+        ])
+        .unwrap();
+    let circuit = builder.build().unwrap();
+
+    let preprocessors: Vec<Box<dyn NpoPreprocessor<BabyBear>>> = vec![
+        Box::new(RecomposePreprocessor::new(true)),
+        Box::new(StatementPreprocessor::new(schema.clone())),
+    ];
+    let air_builders: Vec<Box<dyn NpoAirBuilder<SC, D>>> = vec![
+        Box::new(RecomposeAirBuilder::<D>::new(1, false)),
+        Box::new(StaticPublicRecomposeAirBuilder::new()),
+        Box::new(StatementAirBuilder::<D>::new(schema.clone())),
+    ];
+    let mut prover = BatchStarkProver::new(config::baby_bear())
+        .with_table_packing(TablePacking::default().with_npo_min_height(NpoTypeId::statement(), 4));
+    prover.register_table_prover(Box::new(RecomposeProver::<D>::new(1, false)));
+    prover.register_table_prover(Box::new(StaticPublicRecomposeProver::new()));
+    prover.register_table_prover(Box::new(StatementProver::<D>::new(schema)));
+    let prepared = prover
+        .prepare_circuit::<EF, D>(
+            &circuit,
+            &preprocessors,
+            &air_builders,
+            ConstraintProfile::Standard,
+        )
+        .unwrap();
+    (circuit, prepared)
 }
 
 fn traces(circuit: &Circuit<EF>, base: u32, extension: [u32; D]) -> p3_circuit::tables::Traces<EF> {
@@ -199,6 +490,40 @@ fn attached_statement_replacement_and_static_npo_values_are_not_adopted() {
         .unwrap();
     static_recompose.public_values.push(BabyBear::ONE);
     assert!(verifier.verify(&proof, &honest).is_err());
+}
+
+#[test]
+fn same_length_static_npo_value_substitution_is_rejected() {
+    let (circuit, prepared) = prepare_statement_circuit_with_static_public_npo();
+    let mut proof = prepared
+        .prove(&traces(&circuit, 7, [11, 12, 13, 14]))
+        .unwrap();
+    let verifier = prepared.verifier();
+    let honest_statement = [7, 11, 12, 13, 14].map(BabyBear::from_u32);
+    let static_recompose = proof
+        .non_primitives
+        .iter()
+        .find(|entry| entry.op_type == NpoTypeId::recompose_with_coeff_lookups())
+        .unwrap();
+
+    assert_eq!(static_recompose.public_values, [STATIC_RECOMPOSE_VALUE]);
+    verifier.verify(&proof, &honest_statement).unwrap();
+
+    proof
+        .non_primitives
+        .iter_mut()
+        .find(|entry| entry.op_type == NpoTypeId::recompose_with_coeff_lookups())
+        .unwrap()
+        .public_values[0] = BabyBear::new(43);
+    let error = verifier.verify(&proof, &honest_statement).unwrap_err();
+    assert!(
+        matches!(
+            &error,
+            BatchStarkProverError::RelationMismatch(message)
+                if message == "submitted NPO metadata differs at index 0"
+        ),
+        "{error:?}"
+    );
 }
 
 struct ForgedStatementAirBuilder {
