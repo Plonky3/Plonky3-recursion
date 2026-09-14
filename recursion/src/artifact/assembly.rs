@@ -479,10 +479,6 @@ where
         self.verifier.statement_layout().schema()
     }
 
-    fn suite(&self) -> SuiteIdV1 {
-        self.suite
-    }
-
     fn verify_encoded(
         &self,
         bytes: &[u8],
@@ -680,14 +676,14 @@ where
     if canonical != candidate {
         return Err(ArtifactError::NonCanonicalMetadata);
     }
-    Ok(PortableVerifier {
-        inner: Box::new(TypedPortableVerifier {
+    Ok(PortableVerifier::from_parts(
+        Box::new(TypedPortableVerifier {
             verifier,
             suite,
             limits,
         }),
-        canonical_bytes: canonical,
-    })
+        canonical,
+    ))
 }
 
 #[cfg(test)]
@@ -709,7 +705,7 @@ mod tests {
     use rand::{SeedableRng, TryCryptoRng, TryRng};
 
     use crate::artifact::{
-        ArtifactError, ArtifactLimits, CanonicalStatement, ExpectedVerifierArtifact,
+        ArtifactError, ArtifactKind, ArtifactLimits, CanonicalStatement, ExpectedVerifierArtifact,
         PortableArtifactExport, PortableVerifier,
     };
     use crate::builtin_config::{
@@ -723,9 +719,12 @@ mod tests {
         TrustedPreparedInput, TrustedPreparedSource,
     };
 
-    use super::super::descriptor::{RelationDescriptorV1, read_common, write_common};
+    use super::super::descriptor::{
+        BuiltinNpoV1, NpoDescriptorV1, NpoPublicValuesV1, RelationDescriptorV1, read_common,
+        read_config, read_relation, write_common, write_config, write_relation,
+    };
     use super::super::native::{read_merkle_cap, write_merkle_cap};
-    use super::super::wire::{FieldEncoding, Reader, Writer};
+    use super::super::wire::{FieldEncoding, Reader, Writer, decode_framed, encode_framed};
 
     static VERIFICATION_RNG_DRAWS: AtomicUsize = AtomicUsize::new(0);
 
@@ -801,6 +800,51 @@ mod tests {
         drop(circuit);
 
         (verifier_bytes, proof_bytes)
+    }
+
+    fn rewrite_baby_bear_verifier_relation(
+        bytes: &[u8],
+        limits: ArtifactLimits,
+        mutate: impl FnOnce(&mut RelationDescriptorV1<BabyBear>),
+    ) -> Vec<u8> {
+        type Config = crate::builtin_config::BabyBearD4Poseidon2BinaryConfig;
+
+        let suite = SuiteIdV1::BabyBearD4Poseidon2BinaryFri;
+        let (descriptor, mut relation, common) = decode_framed(
+            bytes,
+            ArtifactKind::Verifier,
+            &limits,
+            |raw| raw == suite.as_u16(),
+            |_, reader| {
+                assert_eq!(reader.read_u16().unwrap(), suite.spec().protocol_revision);
+                let descriptor = read_config(reader, suite).unwrap();
+                let relation = read_relation(reader, FieldEncoding::u32()).unwrap();
+                let common = read_common::<Config>(
+                    reader,
+                    <Config as super::BuiltinArtifactConfig>::read_commitment,
+                )
+                .unwrap();
+                Ok((descriptor, relation, common))
+            },
+        )
+        .unwrap();
+        mutate(&mut relation);
+        encode_framed(
+            ArtifactKind::Verifier,
+            suite.as_u16(),
+            limits.max_verifier_bytes,
+            |writer| {
+                writer.write_u16(suite.spec().protocol_revision)?;
+                write_config(writer, &descriptor)?;
+                write_relation(writer, &relation, FieldEncoding::u32())?;
+                write_common(
+                    writer,
+                    &common,
+                    <Config as super::BuiltinArtifactConfig>::write_commitment,
+                )
+            },
+        )
+        .unwrap()
     }
 
     #[test]
@@ -928,6 +972,135 @@ mod tests {
     }
 
     #[test]
+    fn public_import_enforces_exact_allocation_and_container_boundaries() {
+        let (verifier_bytes, _) = exported_double_circuit(2, 4);
+        let expected = ExpectedVerifierArtifact::from_trusted_bytes(&verifier_bytes);
+        let default = ArtifactLimits::default();
+
+        let minimum_passing = |maximum: usize, set_limit: fn(&mut ArtifactLimits, usize)| {
+            let mut lower = 0;
+            let mut upper = maximum;
+            while lower < upper {
+                let candidate = lower + (upper - lower) / 2;
+                let mut limits = default;
+                set_limit(&mut limits, candidate);
+                if PortableVerifier::decode(&verifier_bytes, expected, limits).is_ok() {
+                    upper = candidate;
+                } else {
+                    lower = candidate + 1;
+                }
+            }
+            lower
+        };
+        let minimum_allocation = minimum_passing(default.max_decoded_bytes, |limits, value| {
+            limits.max_decoded_bytes = value;
+        });
+        assert!(minimum_allocation > 0);
+        let mut exact = default;
+        exact.max_decoded_bytes = minimum_allocation;
+        PortableVerifier::decode(&verifier_bytes, expected, exact).unwrap();
+        exact.max_decoded_bytes -= 1;
+        assert!(matches!(
+            PortableVerifier::decode(&verifier_bytes, expected, exact),
+            Err(ArtifactError::DecodeLimitExceeded { .. })
+        ));
+
+        let minimum_containers = minimum_passing(default.max_container_entries, |limits, value| {
+            limits.max_container_entries = value;
+        });
+        assert!(minimum_containers > 0);
+        let mut exact = default;
+        exact.max_container_entries = minimum_containers;
+        PortableVerifier::decode(&verifier_bytes, expected, exact).unwrap();
+        exact.max_container_entries -= 1;
+        assert!(matches!(
+            PortableVerifier::decode(&verifier_bytes, expected, exact),
+            Err(ArtifactError::DecodeLimitExceeded { .. })
+        ));
+    }
+
+    #[test]
+    fn trusted_candidate_rejects_unsafe_relation_geometry_before_air_construction() {
+        let limits = ArtifactLimits::default();
+        let (verifier_bytes, _) = exported_double_circuit(2, 4);
+
+        let bad_lanes = rewrite_baby_bear_verifier_relation(&verifier_bytes, limits, |relation| {
+            relation.non_primitives.push(NpoDescriptorV1 {
+                kind: BuiltinNpoV1::Recompose,
+                rows: 1,
+                lanes: 33,
+                air_variant: p3_circuit_prover::AirVariant::Baseline,
+                public_values: NpoPublicValuesV1::Static(Vec::new()),
+            });
+            relation.trace_degree_bits.push(5);
+        });
+        let mut narrow = limits;
+        narrow.verifier.max_matrix_width = 64;
+        assert!(matches!(
+            PortableVerifier::decode(
+                &bad_lanes,
+                ExpectedVerifierArtifact::from_trusted_bytes(&bad_lanes),
+                narrow,
+            ),
+            Err(ArtifactError::DecodeLimitExceeded {
+                component: "NPO matrix width",
+                ..
+            })
+        ));
+
+        let bad_degree = rewrite_baby_bear_verifier_relation(&verifier_bytes, limits, |relation| {
+            relation.trace_degree_bits[0] = 33
+        });
+        assert!(matches!(
+            PortableVerifier::decode(
+                &bad_degree,
+                ExpectedVerifierArtifact::from_trusted_bytes(&bad_degree),
+                limits,
+            ),
+            Err(ArtifactError::DecodeLimitExceeded {
+                component: "trace degree bits",
+                ..
+            })
+        ));
+
+        let inconsistent_rows =
+            rewrite_baby_bear_verifier_relation(&verifier_bytes, limits, |relation| {
+                let height = 1usize << relation.trace_degree_bits[0];
+                relation.rows = p3_circuit_prover::RowCounts::new([height + 1, 1, 1]);
+            });
+        assert!(matches!(
+            PortableVerifier::decode(
+                &inconsistent_rows,
+                ExpectedVerifierArtifact::from_trusted_bytes(&inconsistent_rows),
+                limits,
+            ),
+            Err(ArtifactError::NonCanonicalMetadata)
+        ));
+
+        let max_u32_rows =
+            rewrite_baby_bear_verifier_relation(&verifier_bytes, limits, |relation| {
+                relation.non_primitives.push(NpoDescriptorV1 {
+                    kind: BuiltinNpoV1::Recompose,
+                    rows: u32::MAX as usize,
+                    lanes: 1,
+                    air_variant: p3_circuit_prover::AirVariant::Baseline,
+                    public_values: NpoPublicValuesV1::Static(Vec::new()),
+                });
+                relation.trace_degree_bits.push(31);
+            });
+        let mut platform_safe = limits;
+        platform_safe.verifier.max_total_scalar_elements = usize::MAX;
+        assert!(matches!(
+            PortableVerifier::decode(
+                &max_u32_rows,
+                ExpectedVerifierArtifact::from_trusted_bytes(&max_u32_rows),
+                platform_safe,
+            ),
+            Err(ArtifactError::NonCanonicalMetadata)
+        ));
+    }
+
+    #[test]
     fn imported_random_codeword_verification_draws_no_rng_bytes() {
         type VerifyingConfig = BabyBearD4Poseidon2RandomCodewordConfig<AuditedRng>;
 
@@ -960,8 +1133,10 @@ mod tests {
 
         let imported = super::decode_typed::<VerifyingConfig>(&verifier_bytes, suite, limits)
             .expect("the verification-only audited RNG config reconstructs");
+        let retained = imported.clone();
+        drop(imported);
         VERIFICATION_RNG_DRAWS.store(0, Ordering::Relaxed);
-        imported
+        retained
             .verify_encoded(&proof_bytes, CanonicalStatement::new(&[], 0))
             .unwrap();
         assert_eq!(VERIFICATION_RNG_DRAWS.load(Ordering::Relaxed), 0);

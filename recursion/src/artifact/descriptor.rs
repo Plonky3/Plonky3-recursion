@@ -13,6 +13,8 @@ use p3_circuit_prover::{
 };
 use p3_field::PrimeField64;
 
+use crate::VerifierLimits;
+
 use super::ArtifactError;
 use super::wire::{Reader, Writer};
 
@@ -644,7 +646,183 @@ pub(crate) fn read_relation<F: PrimeField64>(
         trace_degree_bits,
     };
     validate_relation_descriptor(&relation)?;
+    validate_relation_geometry(&relation, &reader.limits().verifier)?;
     Ok(relation)
+}
+
+const fn check_geometry_limit(
+    component: &'static str,
+    actual: usize,
+    limit: usize,
+) -> Result<(), ArtifactError> {
+    if actual > limit {
+        return Err(ArtifactError::DecodeLimitExceeded {
+            component,
+            actual,
+            limit,
+        });
+    }
+    Ok(())
+}
+
+fn checked_geometry_product(left: usize, right: usize) -> Result<usize, ArtifactError> {
+    left.checked_mul(right).ok_or(ArtifactError::LengthOverflow)
+}
+
+const fn check_matrix_width(
+    component: &'static str,
+    width: usize,
+    limits: &VerifierLimits,
+) -> Result<(), ArtifactError> {
+    check_geometry_limit(component, width, limits.max_matrix_width)
+}
+
+fn trace_height(degree: usize, limits: &VerifierLimits) -> Result<usize, ArtifactError> {
+    check_geometry_limit("trace degree bits", degree, limits.max_log_domain_or_degree)?;
+    let shift = u32::try_from(degree).map_err(|_| ArtifactError::LengthOverflow)?;
+    1usize
+        .checked_shl(shift)
+        .ok_or(ArtifactError::LengthOverflow)
+}
+
+fn validate_table_height(
+    rows: usize,
+    lanes: usize,
+    minimum_height: usize,
+    degree: usize,
+    limits: &VerifierLimits,
+) -> Result<(), ArtifactError> {
+    let height = trace_height(degree, limits)?;
+    let natural_height = rows.div_ceil(lanes);
+    if natural_height > height || minimum_height > height {
+        return Err(ArtifactError::NonCanonicalMetadata);
+    }
+    Ok(())
+}
+
+fn validate_relation_geometry<F: Copy>(
+    relation: &RelationDescriptorV1<F>,
+    limits: &VerifierLimits,
+) -> Result<(), ArtifactError> {
+    let packing = &relation.table_packing;
+    let ext_degree = relation.ext_degree;
+
+    check_geometry_limit(
+        "primitive rows",
+        relation.rows.iter().max().unwrap_or(0),
+        limits.max_total_scalar_elements,
+    )?;
+    check_matrix_width(
+        "constant matrix width",
+        ext_degree
+            .checked_add(2)
+            .ok_or(ArtifactError::LengthOverflow)?,
+        limits,
+    )?;
+    check_matrix_width(
+        "public matrix width",
+        checked_geometry_product(packing.public_lanes(), ext_degree.max(2))?,
+        limits,
+    )?;
+
+    let horner_steps = packing.horner_packed_steps();
+    let horner_minus_one = horner_steps
+        .checked_sub(1)
+        .ok_or(ArtifactError::LengthOverflow)?;
+    let alu_main_lane_width = ext_degree
+        .checked_mul(4)
+        .ok_or(ArtifactError::LengthOverflow)?;
+    let alu_main_lanes_width = checked_geometry_product(packing.alu_lanes(), alu_main_lane_width)?;
+    let alu_prep_lanes_width = checked_geometry_product(packing.alu_lanes(), 13)?;
+    let main_extra_units = (horner_minus_one / 2)
+        .checked_add(
+            horner_minus_one
+                .checked_mul(2)
+                .ok_or(ArtifactError::LengthOverflow)?,
+        )
+        .and_then(|value| value.checked_add(1))
+        .ok_or(ArtifactError::LengthOverflow)?;
+    let main_extra = main_extra_units
+        .checked_mul(ext_degree)
+        .ok_or(ArtifactError::LengthOverflow)?;
+    let prep_extra = horner_minus_one
+        .checked_mul(7)
+        .ok_or(ArtifactError::LengthOverflow)?;
+    let alu_main_width = alu_main_lanes_width
+        .checked_add(main_extra)
+        .ok_or(ArtifactError::LengthOverflow)?;
+    let alu_prep_width = alu_prep_lanes_width
+        .checked_add(prep_extra)
+        .ok_or(ArtifactError::LengthOverflow)?;
+    let alu_width = alu_main_width.max(alu_prep_width);
+    check_matrix_width("ALU matrix width", alu_width, limits)?;
+
+    let primitive = [
+        (
+            relation.rows[p3_circuit_prover::PrimitiveTable::Const],
+            1,
+            packing
+                .const_min_height()
+                .unwrap_or_else(|| packing.min_trace_height()),
+        ),
+        (
+            relation.rows[p3_circuit_prover::PrimitiveTable::Public],
+            packing.public_lanes(),
+            packing
+                .public_min_height()
+                .unwrap_or_else(|| packing.min_trace_height()),
+        ),
+        (
+            relation.rows[p3_circuit_prover::PrimitiveTable::Alu],
+            packing.alu_lanes(),
+            packing
+                .alu_min_height()
+                .unwrap_or_else(|| packing.min_trace_height()),
+        ),
+    ];
+    for ((rows, lanes, minimum), degree) in primitive
+        .into_iter()
+        .zip(relation.trace_degree_bits.iter().copied())
+    {
+        validate_table_height(rows, lanes, minimum, degree, limits)?;
+    }
+
+    for (index, npo) in relation.non_primitives.iter().enumerate() {
+        check_geometry_limit("NPO rows", npo.rows, limits.max_total_scalar_elements)?;
+        let per_lane_width = match npo.kind {
+            BuiltinNpoV1::Statement => match npo.public_values {
+                NpoPublicValuesV1::Statement { width } => {
+                    width.checked_add(1).ok_or(ArtifactError::LengthOverflow)?
+                }
+                NpoPublicValuesV1::Static(_) => return Err(ArtifactError::NonCanonicalMetadata),
+            },
+            BuiltinNpoV1::Recompose => ext_degree.max(2),
+            BuiltinNpoV1::RecomposeWithCoefficientLookups => ext_degree
+                .checked_mul(2)
+                .and_then(|width| width.checked_add(2))
+                .ok_or(ArtifactError::LengthOverflow)?,
+            BuiltinNpoV1::Poseidon1(config) => {
+                if npo.lanes != 1 {
+                    return Err(ArtifactError::NonCanonicalMetadata);
+                }
+                config.width()
+            }
+            BuiltinNpoV1::Poseidon2(config) => {
+                if npo.lanes != 1 {
+                    return Err(ArtifactError::NonCanonicalMetadata);
+                }
+                config.width()
+            }
+        };
+        let matrix_width = checked_geometry_product(npo.lanes, per_lane_width)?;
+        check_matrix_width("NPO matrix width", matrix_width, limits)?;
+        let degree = relation.trace_degree_bits[p3_circuit_prover::NUM_PRIMITIVE_TABLES + index];
+        let minimum = packing
+            .npo_min_height(&npo.kind.op_type())
+            .unwrap_or_else(|| packing.min_trace_height());
+        validate_table_height(npo.rows, npo.lanes, minimum, degree, limits)?;
+    }
+    Ok(())
 }
 
 fn validate_relation_descriptor<F: Copy>(
@@ -1073,7 +1251,7 @@ mod tests {
                 )
                 .unwrap(),
             ),
-            trace_degree_bits: vec![2, 3, 4, 1, 0],
+            trace_degree_bits: vec![2, 3, 4, 2, 3],
         }
     }
 

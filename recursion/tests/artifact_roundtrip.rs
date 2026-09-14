@@ -251,26 +251,28 @@ fn one_preparation_exports_two_ordered_runtime_statements_after_all_native_owner
         limits,
     )
     .unwrap();
+    let retained = imported.clone();
+    drop(imported);
     assert_eq!(
-        imported.schema().fields(),
+        retained.schema().fields(),
         &[StatementField::Base, StatementField::Base]
     );
     let first_statement = canonical_baby_bear_statement(&[7, 9]);
     let second_statement = canonical_baby_bear_statement(&[11, 13]);
     let swapped_statement = canonical_baby_bear_statement(&[9, 7]);
-    imported
+    retained
         .verify_encoded(&first_bytes, CanonicalStatement::new(&first_statement, 2))
         .unwrap();
-    imported
+    retained
         .verify_encoded(&second_bytes, CanonicalStatement::new(&second_statement, 2))
         .unwrap();
     assert!(
-        imported
+        retained
             .verify_encoded(&second_bytes, CanonicalStatement::new(&first_statement, 2),)
             .is_err()
     );
     assert!(
-        imported
+        retained
             .verify_encoded(&first_bytes, CanonicalStatement::new(&swapped_statement, 2),)
             .is_err()
     );
@@ -278,12 +280,12 @@ fn one_preparation_exports_two_ordered_runtime_statements_after_all_native_owner
     let mut non_canonical = modulus.to_vec();
     non_canonical.extend(9_u32.to_le_bytes());
     assert!(
-        imported
+        retained
             .verify_encoded(&first_bytes, CanonicalStatement::new(&non_canonical, 2),)
             .is_err()
     );
     assert!(
-        imported
+        retained
             .verify_encoded(&first_bytes, CanonicalStatement::new(&first_statement, 1),)
             .is_err()
     );

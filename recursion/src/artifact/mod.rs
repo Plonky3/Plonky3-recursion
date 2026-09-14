@@ -3,6 +3,8 @@ mod descriptor;
 pub(crate) mod native;
 pub(crate) mod wire;
 
+use alloc::boxed::Box;
+use alloc::rc::Rc;
 use alloc::vec::Vec;
 
 use p3_circuit::{StatementError, StatementSchema};
@@ -11,7 +13,6 @@ use p3_uni_stark::StarkGenericConfig;
 
 use crate::VerifierLimits;
 use crate::builtin_config::BuiltinConfigError;
-use crate::builtin_config::SuiteIdV1;
 
 /// Application-provisioned exact trust anchor for one canonical verifier artifact.
 #[derive(Clone, Copy, Debug)]
@@ -46,7 +47,6 @@ impl<'a> CanonicalStatement<'a> {
 
 pub(crate) trait PortableVerifierInner {
     fn schema(&self) -> &StatementSchema;
-    fn suite(&self) -> SuiteIdV1;
     fn verify_encoded(
         &self,
         bytes: &[u8],
@@ -55,12 +55,36 @@ pub(crate) trait PortableVerifierInner {
 }
 
 /// Opaque verification-only handle reconstructed from a pinned canonical artifact.
+///
+/// The selected suite and native verifier/config stay private to the handle.
+///
+/// ```compile_fail
+/// use p3_recursion::artifact::PortableVerifier;
+///
+/// fn suite_escape(verifier: &PortableVerifier) {
+///     let _ = verifier.suite();
+/// }
+/// ```
+#[derive(Clone)]
 pub struct PortableVerifier {
-    inner: alloc::boxed::Box<dyn PortableVerifierInner>,
+    state: Rc<PortableVerifierState>,
+}
+
+struct PortableVerifierState {
+    inner: Box<dyn PortableVerifierInner>,
     canonical_bytes: Vec<u8>,
 }
 
 impl PortableVerifier {
+    fn from_parts(inner: Box<dyn PortableVerifierInner>, canonical_bytes: Vec<u8>) -> Self {
+        Self {
+            state: Rc::new(PortableVerifierState {
+                inner,
+                canonical_bytes,
+            }),
+        }
+    }
+
     pub fn decode(
         candidate: &[u8],
         expected: ExpectedVerifierArtifact<'_>,
@@ -75,19 +99,15 @@ impl PortableVerifier {
         proof: &[u8],
         expected_statement: CanonicalStatement<'_>,
     ) -> Result<(), ArtifactError> {
-        self.inner.verify_encoded(proof, expected_statement)
+        self.state.inner.verify_encoded(proof, expected_statement)
     }
 
     pub fn schema(&self) -> &StatementSchema {
-        self.inner.schema()
-    }
-
-    pub fn suite(&self) -> SuiteIdV1 {
-        self.inner.suite()
+        self.state.inner.schema()
     }
 
     pub fn trusted_identity_bytes(&self) -> &[u8] {
-        &self.canonical_bytes
+        &self.state.canonical_bytes
     }
 }
 
