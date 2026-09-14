@@ -9,8 +9,8 @@ use p3_field::{ExtensionField, PrimeField64, TwoAdicField};
 use p3_fri::{BatchMultiOpening, FriProof};
 
 use super::{FriVerifierParams, NativeFriParams};
+use crate::input_contract::FriOpeningLayout;
 use crate::input_contract::stark_layout::NativeStarkLayout;
-use crate::input_contract::{FriMatrixGeometry, FriOpeningLayout};
 use crate::ops::PermConfig;
 use crate::pcs::fri::targets::MerkleCapTargets;
 use crate::traits::CheckedRecursive;
@@ -21,6 +21,7 @@ use crate::verifier::VerificationError;
 /// This is intentionally not public API and carries no commitment authority;
 /// the checked adapter below only constructs [`ValidatedFriContext`] after it
 /// has validated the borrowed input and phase caps.
+#[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct FriContextShape {
     native_query_count: usize,
@@ -173,26 +174,6 @@ fn checked_pow2(value: usize, label: &str) -> Result<usize, VerificationError> {
         .ok_or_else(|| invalid(format!("FRI {label} height overflows")))
 }
 
-fn layout_matrices(
-    layout: FriOpeningLayout<'_>,
-) -> Result<Vec<Vec<FriMatrixGeometry>>, VerificationError> {
-    (0..layout.commitment_count())
-        .map(|ordinal| {
-            let expected = layout
-                .matrix_count(ordinal)
-                .map_err(|error| invalid(error.to_string()))?;
-            let matrices: Vec<_> = layout.matrices(ordinal).collect();
-            if matrices.len() != expected || matrices.is_empty() {
-                return Err(invalid(format!(
-                    "FRI commitment {ordinal} matrix count mismatch: expected {expected}, got {}",
-                    matrices.len()
-                )));
-            }
-            Ok(matrices)
-        })
-        .collect()
-}
-
 fn validate_hiding_tail_partition(
     layout: FriOpeningLayout<'_>,
     tails: &OpenedValues<impl p3_field::Field>,
@@ -211,12 +192,9 @@ fn validate_hiding_tail_partition(
             )));
         }
         let mut round_shape = Vec::with_capacity(tail_round.len());
-        for (matrix, points) in tail_round.iter().enumerate() {
-            let expected_points = layout
-                .matrices(ordinal)
-                .nth(matrix)
-                .map(|m| m.point_count());
-            if expected_points != Some(points.len()) {
+        for (matrix, (geometry, points)) in layout.matrices(ordinal).zip(tail_round).enumerate() {
+            let expected_points = geometry.point_count();
+            if expected_points != points.len() {
                 return Err(invalid(format!(
                     "Hiding FRI tail point count mismatch at commitment {ordinal} matrix {matrix}"
                 )));
@@ -232,8 +210,18 @@ fn validate_hiding_tail_partition(
     Ok(shape)
 }
 
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct CoreValidation {
+    query_count: usize,
+    max_input_log: usize,
+    total_reduction: usize,
+    has_input_matrix: bool,
+}
+
 /// Validate the complete native-vs-recursive FRI shape without transcript work,
 /// target allocation, challenger sampling, or PCS/MMCS cloning.
+#[allow(dead_code)]
 pub(crate) fn validate_fri_context_core<F, EF, IM, FM, W>(
     proof: &FriProof<EF, FM, W, Vec<BatchMultiOpening<F, IM>>>,
     native: &NativeFriParams,
@@ -242,6 +230,55 @@ pub(crate) fn validate_fri_context_core<F, EF, IM, FM, W>(
     perm: PermConfig,
     hiding_tails: Option<&OpenedValues<EF>>,
 ) -> Result<FriContextShape, VerificationError>
+where
+    F: TwoAdicField + PrimeField64,
+    EF: ExtensionField<F>,
+    IM: Mmcs<F>,
+    FM: Mmcs<EF>,
+{
+    let core = validate_fri_borrowed(
+        proof,
+        native,
+        recursive,
+        layout,
+        perm,
+        hiding_tails,
+        None,
+        None,
+    )?;
+    let log_arities = proof
+        .commit_phase_openings
+        .iter()
+        .map(|opening| opening.log_arity as usize)
+        .collect();
+    let input_matrix_counts = (0..layout.commitment_count())
+        .map(|ordinal| {
+            layout
+                .matrix_count(ordinal)
+                .map_err(|error| invalid(error.to_string()))
+        })
+        .collect::<Result<_, _>>()?;
+    Ok(FriContextShape {
+        native_query_count: core.query_count,
+        log_arities,
+        input_matrix_counts,
+        hiding_tail_shape: hiding_tails
+            .map(|tails| validate_hiding_tail_partition(layout, tails))
+            .transpose()?,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn validate_fri_borrowed<F, EF, IM, FM, W>(
+    proof: &FriProof<EF, FM, W, Vec<BatchMultiOpening<F, IM>>>,
+    native: &NativeFriParams,
+    recursive: &FriVerifierParams,
+    layout: FriOpeningLayout<'_>,
+    perm: PermConfig,
+    hiding_tails: Option<&OpenedValues<EF>>,
+    input_salt_elems: Option<usize>,
+    phase_salt_elems: Option<usize>,
+) -> Result<CoreValidation, VerificationError>
 where
     F: TwoAdicField + PrimeField64,
     EF: ExtensionField<F>,
@@ -269,20 +306,53 @@ where
         )));
     }
 
-    let matrices = layout_matrices(layout)?;
-    if proof.input_openings.len() != matrices.len() {
+    let commitment_count = layout.commitment_count();
+    if proof.input_openings.len() != commitment_count {
         return Err(invalid(format!(
             "FRI input batch count mismatch: expected {}, got {}",
-            matrices.len(),
+            commitment_count,
             proof.input_openings.len()
         )));
     }
     let mut max_input_height = 0usize;
-    let mut input_matrix_counts = Vec::with_capacity(matrices.len());
-    for (batch, batch_matrices) in matrices.iter().enumerate() {
-        input_matrix_counts.push(batch_matrices.len());
-        for matrix in batch_matrices {
-            let lde_height = matrix
+    let mut has_input_matrix = false;
+    for batch in 0..commitment_count {
+        let expected_matrix_count = layout
+            .matrix_count(batch)
+            .map_err(|error| invalid(error.to_string()))?;
+        if expected_matrix_count == 0 {
+            return Err(invalid(format!(
+                "FRI commitment {batch} has no planned matrices"
+            )));
+        }
+        let batch_matrices = layout.matrices(batch);
+        let opened = &proof.input_openings[batch].opened_values;
+        if opened.len() != query_count {
+            return Err(invalid(format!(
+                "FRI input batch {batch} query count mismatch: expected {query_count}, got {}",
+                opened.len()
+            )));
+        }
+        for (query, rows) in opened.iter().enumerate() {
+            if rows.len() != expected_matrix_count {
+                return Err(invalid(format!(
+                    "FRI input batch {batch} query {query} matrix count mismatch: expected {expected_matrix_count}, got {}",
+                    rows.len()
+                )));
+            }
+        }
+        // Compare the untrusted proof rows before traversing a potentially
+        // enormous quotient-matrix iterator. A malformed tiny proof must
+        // reject from its explicit row axis without touching that metadata.
+        let actual_matrix_count = batch_matrices.clone().count();
+        if actual_matrix_count != expected_matrix_count {
+            return Err(invalid(format!(
+                "FRI commitment {batch} matrix count mismatch: expected {expected_matrix_count}, got {actual_matrix_count}"
+            )));
+        }
+        let mut grouped_leaf_widths = [0usize; usize::BITS as usize + 1];
+        for (matrix, geometry) in batch_matrices.enumerate() {
+            let lde_height = geometry
                 .log_height()
                 .checked_add(native.log_blowup())
                 .ok_or_else(|| invalid("FRI input LDE height overflows"))?;
@@ -293,42 +363,68 @@ where
             }
             checked_pow2(lde_height, "input LDE")?;
             max_input_height = max_input_height.max(lde_height);
-        }
-        let opened = &proof.input_openings[batch].opened_values;
-        if opened.len() != query_count {
-            return Err(invalid(format!(
-                "FRI input batch {batch} query count mismatch: expected {query_count}, got {}",
-                opened.len()
-            )));
-        }
-        for (query, rows) in opened.iter().enumerate() {
-            if rows.len() != batch_matrices.len() {
-                return Err(invalid(format!(
-                    "FRI input batch {batch} query {query} matrix count mismatch: expected {}, got {}",
-                    batch_matrices.len(),
-                    rows.len()
-                )));
+            has_input_matrix = true;
+            let tail_points =
+                hiding_tails.map(|tails| tails.get(batch).and_then(|round| round.get(matrix)));
+            let tail_width = if let Some(Some(points)) = tail_points {
+                if points.len() != geometry.point_count() || points.is_empty() {
+                    return Err(invalid(format!(
+                        "Hiding FRI tail point count mismatch at commitment {batch} matrix {matrix}"
+                    )));
+                }
+                let width = points[0].len();
+                if points.iter().any(|point| point.len() != width) {
+                    return Err(invalid("Hiding FRI tail point widths disagree"));
+                }
+                width
+            } else if hiding_tails.is_some() {
+                return Err(invalid("Hiding FRI tail matrix is missing"));
+            } else {
+                0
+            };
+            let effective_base_width = geometry
+                .width()
+                .checked_add(tail_width)
+                .ok_or_else(|| invalid("FRI effective input width overflows"))?;
+            let effective_leaf_width = effective_base_width
+                .checked_add(input_salt_elems.unwrap_or(0))
+                .ok_or_else(|| invalid("FRI salted input width overflows"))?;
+            if effective_leaf_width
+                .checked_mul(core::mem::size_of::<F>())
+                .filter(|bytes| *bytes <= isize::MAX as usize)
+                .is_none()
+            {
+                return Err(invalid("FRI input leaf byte width overflows"));
             }
-            for (matrix, (row, geometry)) in rows.iter().zip(batch_matrices).enumerate() {
+            grouped_leaf_widths[lde_height] = grouped_leaf_widths[lde_height]
+                .checked_add(effective_leaf_width)
+                .ok_or_else(|| invalid("FRI grouped input leaf width overflows"))?;
+            for (query, rows) in opened.iter().enumerate() {
+                let row = &rows[matrix];
                 if geometry.point_count() == 0 {
                     return Err(invalid(format!(
                         "FRI input batch {batch} matrix {matrix} has no opening points"
                     )));
                 }
-                if row.len() != geometry.width() {
+                if row.len() != effective_base_width {
                     return Err(invalid(format!(
-                        "FRI input batch {batch} query {query} matrix {matrix} width mismatch: expected {}, got {}",
-                        geometry.width(),
+                        "FRI input batch {batch} query {query} matrix {matrix} width mismatch: expected {effective_base_width}, got {}",
                         row.len()
                     )));
                 }
             }
         }
+        if grouped_leaf_widths.iter().any(|width| {
+            width
+                .checked_mul(core::mem::size_of::<F>())
+                .is_none_or(|bytes| bytes > isize::MAX as usize)
+        }) {
+            return Err(invalid("FRI grouped input leaf byte width overflows"));
+        }
     }
-    if max_input_height == 0 {
+    if !has_input_matrix {
         return Err(invalid("FRI has no non-empty input matrix"));
     }
-    let mut log_arities = Vec::with_capacity(proof.commit_phase_openings.len());
     let mut total_reduction = 0usize;
     for (round, opening) in proof.commit_phase_openings.iter().enumerate() {
         let arity = opening
@@ -356,10 +452,20 @@ where
         {
             return Err(invalid(format!("FRI round {round} sibling width mismatch")));
         }
+        let phase_leaf_width = checked_pow2(arity, "fold arity")?
+            .checked_mul(EF::DIMENSION)
+            .and_then(|width| width.checked_add(phase_salt_elems.unwrap_or(0)))
+            .ok_or_else(|| invalid("FRI phase leaf width overflows"))?;
+        if phase_leaf_width
+            .checked_mul(core::mem::size_of::<EF>())
+            .filter(|bytes| *bytes <= isize::MAX as usize)
+            .is_none()
+        {
+            return Err(invalid("FRI phase leaf byte width overflows"));
+        }
         total_reduction = total_reduction
             .checked_add(arity)
             .ok_or_else(|| invalid("FRI fold schedule overflows"))?;
-        log_arities.push(arity);
     }
 
     let global_height = total_reduction
@@ -374,22 +480,21 @@ where
             "FRI global/input height mismatch: expected {max_input_height}, got {global_height}"
         )));
     }
-    let mut reached = Vec::with_capacity(log_arities.len() + 1);
-    let mut current = global_height;
-    reached.push(current);
-    for arity in &log_arities {
-        current = current
-            .checked_sub(*arity)
-            .ok_or_else(|| invalid("FRI fold schedule exceeds input height"))?;
-        reached.push(current);
-    }
-    for batch in &matrices {
-        for matrix in batch {
+    for batch in 0..commitment_count {
+        for matrix in layout.matrices(batch) {
             let height = matrix
                 .log_height()
                 .checked_add(native.log_blowup())
                 .ok_or_else(|| invalid("FRI matrix LDE height overflows"))?;
-            if !reached.contains(&height) {
+            let mut reached = global_height;
+            let mut landed = height == reached;
+            for opening in &proof.commit_phase_openings {
+                reached = reached
+                    .checked_sub(opening.log_arity as usize)
+                    .ok_or_else(|| invalid("FRI fold schedule exceeds input height"))?;
+                landed |= height == reached;
+            }
+            if !landed {
                 return Err(invalid(format!(
                     "FRI matrix LDE height {height} is not reached by fold schedule"
                 )));
@@ -397,41 +502,12 @@ where
         }
     }
 
-    let hiding_tail_shape = if let Some(tails) = hiding_tails {
-        if tails.len() != matrices.len() {
-            return Err(invalid("Hiding FRI tail round count mismatch"));
-        }
-        let mut shape = Vec::with_capacity(tails.len());
-        for (round, (tail_round, batch_matrices)) in tails.iter().zip(&matrices).enumerate() {
-            if tail_round.len() != batch_matrices.len() {
-                return Err(invalid(format!(
-                    "Hiding FRI tail round {round} matrix count mismatch"
-                )));
-            }
-            let mut matrices_shape = Vec::with_capacity(tail_round.len());
-            for (matrix, (tail_matrix, geometry)) in
-                tail_round.iter().zip(batch_matrices).enumerate()
-            {
-                if tail_matrix.len() != geometry.point_count() {
-                    return Err(invalid(format!(
-                        "Hiding FRI tail round {round} matrix {matrix} point count mismatch"
-                    )));
-                }
-                matrices_shape.push(tail_matrix.iter().map(Vec::len).collect());
-            }
-            shape.push(matrices_shape);
-        }
-        Some(shape)
-    } else {
-        None
-    };
-
     let _ = perm;
-    Ok(FriContextShape {
-        native_query_count: query_count,
-        log_arities,
-        input_matrix_counts,
-        hiding_tail_shape,
+    Ok(CoreValidation {
+        query_count,
+        max_input_log: max_input_height,
+        total_reduction,
+        has_input_matrix,
     })
 }
 
@@ -445,7 +521,6 @@ pub(crate) fn validate_fri_context_with_caps<F, EF, IM, FM, W, C, PC>(
     recursive: &FriVerifierParams,
     layout: FriOpeningLayout<'_>,
     input_caps: &[&C::Input],
-    phase_caps: &[&PC::Input],
     input_salt_elems: Option<usize>,
     phase_salt_elems: Option<usize>,
     hiding_tails: Option<&OpenedValues<EF>>,
@@ -461,10 +536,7 @@ where
     let permutation = recursive.permutation_config.ok_or_else(|| {
         invalid("checked FRI context requires a recursive MMCS permutation configuration")
     })?;
-    let owned_layout = layout.to_owned_layout();
-    let view = owned_layout.opening_view();
-    let shape = validate_fri_context_core(proof, native, recursive, view, permutation, None)?;
-
+    let view = layout;
     if input_caps.len() != view.commitment_count() {
         return Err(invalid(format!(
             "FRI input cap count mismatch: expected {}, got {}",
@@ -472,16 +544,21 @@ where
             input_caps.len()
         )));
     }
-    if phase_caps.len() != proof.commit_phase_commits.len() {
-        return Err(invalid("FRI phase cap count mismatch"));
-    }
+    let phase_cap_count = proof.commit_phase_commits.len();
+    let core = validate_fri_borrowed(
+        proof,
+        native,
+        recursive,
+        view,
+        permutation,
+        hiding_tails,
+        input_salt_elems,
+        phase_salt_elems,
+    )?;
 
-    let index_bit_len = shape
-        .log_arities
-        .iter()
-        .try_fold(native.log_blowup(), |total, arity| {
-            total.checked_add(*arity)
-        })
+    let index_bit_len = core
+        .total_reduction
+        .checked_add(native.log_blowup())
         .and_then(|total| total.checked_add(native.log_final_poly_len()))
         .ok_or_else(|| invalid("FRI index-bit length overflows"))?;
     let mut input_cap_roots = Vec::with_capacity(input_caps.len());
@@ -490,30 +567,21 @@ where
             let log_height = matrix
                 .log_height()
                 .checked_add(native.log_blowup())
-                .ok_or_else(|| invalid("FRI input LDE height overflows"))?;
-            checked_pow2(log_height, "input cap height")
+                .unwrap_or(0);
+            checked_pow2(log_height, "input cap height").unwrap_or(0)
         });
-        let heights = heights.collect::<Result<Vec<_>, _>>()?;
-        let roots = C::validate_fri_cap(cap, permutation, index_bit_len, heights.iter().copied())?;
+        let roots = C::validate_fri_cap(cap, permutation, index_bit_len, heights)?;
         input_cap_roots.push(roots);
     }
 
-    let mut phase_cap_roots = Vec::with_capacity(phase_caps.len());
-    let mut current = index_bit_len
-        .checked_sub(native.log_blowup())
-        .and_then(|height| height.checked_sub(native.log_final_poly_len()))
-        .ok_or_else(|| invalid("FRI phase schedule underflows"))?;
-    for (round, cap) in phase_caps.iter().enumerate() {
-        let arity = shape.log_arities[round];
+    let mut phase_cap_roots = Vec::with_capacity(phase_cap_count);
+    let mut current = index_bit_len;
+    for (round, cap) in proof.commit_phase_commits.iter().enumerate() {
+        let arity = proof.commit_phase_openings[round].log_arity as usize;
         current = current
             .checked_sub(arity)
             .ok_or_else(|| invalid("FRI phase schedule underflows"))?;
-        let height = checked_pow2(
-            current
-                .checked_add(native.log_final_poly_len())
-                .ok_or_else(|| invalid("FRI phase cap height overflows"))?,
-            "phase cap height",
-        )?;
+        let height = checked_pow2(current, "phase cap height")?;
         let roots = PC::validate_fri_cap(cap, permutation, index_bit_len, [height].into_iter())?;
         phase_cap_roots.push(roots);
     }
@@ -528,15 +596,25 @@ where
     let hiding_tail_shape = hiding_tails
         .map(|tails| validate_hiding_tail_partition(view, tails))
         .transpose()?;
+    let input_matrix_counts = (0..view.commitment_count())
+        .map(|ordinal| {
+            view.matrix_count(ordinal)
+                .map_err(|error| invalid(error.to_string()))
+        })
+        .collect::<Result<_, _>>()?;
 
     Ok(ValidatedFriContext {
         native: *native,
         recursive: *recursive,
-        layout: owned_layout,
+        layout: layout.to_owned_layout(),
         permutation,
-        native_query_count: shape.native_query_count,
-        log_arities: shape.log_arities,
-        input_matrix_counts: shape.input_matrix_counts,
+        native_query_count: core.query_count,
+        log_arities: proof
+            .commit_phase_openings
+            .iter()
+            .map(|opening| opening.log_arity as usize)
+            .collect(),
+        input_matrix_counts,
         input_cap_roots,
         phase_cap_roots,
         input_salt_elems,

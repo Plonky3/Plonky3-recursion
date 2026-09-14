@@ -1524,6 +1524,11 @@ where
     RF::Proof:
         PreparedRecursiveMultiProofTargets<EF, MultiProof = <RF::Input as Mmcs<EF>>::MultiProof>,
 {
+    if input.commit_phase_openings.is_empty() {
+        return Err(VerificationError::InvalidProofShape(
+            "FRI must have at least one fold phase".into(),
+        ));
+    }
     let query_count = InputProofTargets::<F, EF, RI>::validate_openings_raw(&input.input_openings)?;
     for batch in &input.input_openings {
         <RI::Proof as PreparedRecursiveMultiProofTargets<EF>>::validate_multiproof_raw(
@@ -1578,7 +1583,6 @@ where
             <RI::Input as NativeFriSaltWidth>::SALT_ELEMS,
             <RF::Input as NativeFriSaltWidth>::SALT_ELEMS,
         )?;
-        let phase_caps: Vec<_> = input.commit_phase_commits.iter().collect();
         validate_fri_context_with_caps::<
             F,
             EF,
@@ -1593,7 +1597,6 @@ where
             recursive,
             layout,
             input_caps,
-            &phase_caps,
             <RI::Input as NativeFriSaltWidth>::SALT_ELEMS,
             <RF::Input as NativeFriSaltWidth>::SALT_ELEMS,
             None,
@@ -1664,7 +1667,6 @@ where
             <RI::Input as NativeFriSaltWidth>::SALT_ELEMS,
             <RF::Input as NativeFriSaltWidth>::SALT_ELEMS,
         )?;
-        let phase_caps: Vec<_> = input.1.commit_phase_commits.iter().collect();
         validate_fri_context_with_caps::<
             F,
             EF,
@@ -1679,7 +1681,6 @@ where
             recursive,
             layout,
             input_caps,
-            &phase_caps,
             <RI::Input as NativeFriSaltWidth>::SALT_ELEMS,
             <RF::Input as NativeFriSaltWidth>::SALT_ELEMS,
             Some(&input.0),
@@ -2889,6 +2890,70 @@ mod prepared_shape_tests {
     }
 
     #[test]
+    fn contextual_fri_validator_rejects_huge_quotient_shape_before_matrix_walk() {
+        use crate::input_contract::stark_layout::{InstanceLayout, NativeStarkLayout};
+        use crate::pcs::fri::context::validate_fri_context_core;
+        use crate::pcs::fri::{FriVerifierParams, NativeFriParams};
+
+        let params = p3_fri::FriParameters {
+            log_blowup: 1,
+            log_final_poly_len: 0,
+            max_log_arity: 1,
+            num_queries: 1,
+            commit_proof_of_work_bits: 0,
+            query_proof_of_work_bits: 0,
+            mmcs: (),
+        };
+        let native = NativeFriParams::try_from_native::<F, _>(&params).unwrap();
+        let recursive = FriVerifierParams::with_mmcs(
+            1,
+            0,
+            0,
+            0,
+            1,
+            crate::ops::Poseidon2Config::KOALA_BEAR_D4_W16,
+        );
+        let mut proof = ordinary_opening(&[1]);
+        proof.input_openings.push(BatchMultiOpening {
+            opened_values: vec![vec![vec![F::ZERO]]],
+            opening_proof: frontier(0),
+        });
+        let layout = NativeStarkLayout::new(
+            vec![InstanceLayout {
+                challenge_width: 1,
+                ext_log: 1,
+                base_log: 1,
+                trace_width: 1,
+                trace_next: false,
+                pre_width: 0,
+                pre_next: false,
+                quotient_log: 0,
+                quotient_chunks: usize::MAX,
+                permutation_width: 0,
+            }],
+            &[],
+            false,
+            false,
+            false,
+        )
+        .unwrap();
+        let error = validate_fri_context_core(
+            &proof,
+            &native,
+            &recursive,
+            layout.opening_view(),
+            PermConfig::poseidon2(crate::ops::Poseidon2Config::KOALA_BEAR_D4_W16),
+            None,
+        )
+        .expect_err("tiny malformed rows must reject before quotient traversal");
+        assert!(matches!(
+            error,
+            VerificationError::InvalidProofShape(message)
+                if message.contains("matrix count mismatch")
+        ));
+    }
+
+    #[test]
     fn checked_context_requires_and_validates_actual_caps() {
         use crate::input_contract::stark_layout::{InstanceLayout, NativeStarkLayout};
         use crate::pcs::fri::context::CheckedFriOpening;
@@ -2917,6 +2982,7 @@ mod prepared_shape_tests {
             opened_values: vec![vec![vec![F::ZERO]]],
             opening_proof: frontier(0),
         });
+        proof.commit_phase_commits[0] = cap(2);
         let layout = NativeStarkLayout::new(
             vec![InstanceLayout {
                 challenge_width: 1,
@@ -2985,7 +3051,7 @@ mod prepared_shape_tests {
         );
 
         let mut wrong_phase = proof.clone();
-        wrong_phase.commit_phase_commits[0] = cap(2);
+        wrong_phase.commit_phase_commits[0] = cap(4);
         assert!(
             <OpeningTargets as CheckedFriOpening<
                 Challenge,
@@ -2998,6 +3064,169 @@ mod prepared_shape_tests {
                 &input_caps,
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn checked_context_rejects_zero_fold_target_shape() {
+        use crate::input_contract::stark_layout::{InstanceLayout, NativeStarkLayout};
+        use crate::pcs::fri::context::CheckedFriOpening;
+
+        let params = p3_fri::FriParameters {
+            log_blowup: 0,
+            log_final_poly_len: 0,
+            max_log_arity: 1,
+            num_queries: 1,
+            commit_proof_of_work_bits: 0,
+            query_proof_of_work_bits: 0,
+            mmcs: (),
+        };
+        let native = NativeFriParams::try_from_native::<F, _>(&params).unwrap();
+        let recursive = FriVerifierParams::with_mmcs(
+            0,
+            0,
+            0,
+            0,
+            1,
+            crate::ops::Poseidon2Config::KOALA_BEAR_D4_W16,
+        );
+        let cap = cap(1);
+        let proof = FriProof::<Challenge, ChallengeMmcs, F, Vec<BatchMultiOpening<F, MyMmcs>>> {
+            commit_phase_commits: vec![],
+            commit_pow_witnesses: vec![],
+            input_openings: vec![
+                BatchMultiOpening {
+                    opened_values: vec![vec![vec![F::ZERO]]],
+                    opening_proof: frontier(0),
+                },
+                BatchMultiOpening {
+                    opened_values: vec![vec![vec![F::ZERO]]],
+                    opening_proof: frontier(0),
+                },
+            ],
+            commit_phase_openings: vec![],
+            final_poly: vec![Challenge::ZERO],
+            query_pow_witness: F::ZERO,
+        };
+        let layout = NativeStarkLayout::new(
+            vec![InstanceLayout {
+                challenge_width: 1,
+                ext_log: 0,
+                base_log: 0,
+                trace_width: 1,
+                trace_next: false,
+                pre_width: 0,
+                pre_next: false,
+                quotient_log: 0,
+                quotient_chunks: 1,
+                permutation_width: 0,
+            }],
+            &[],
+            false,
+            false,
+            false,
+        )
+        .unwrap();
+        let caps = [&cap, &cap];
+        let checked = <OpeningTargets as CheckedFriOpening<
+            Challenge,
+            <RecInputMmcs as RecursiveMmcs<F, Challenge>>::Commitment,
+        >>::validate_fri_context(
+            &proof, &native, &recursive, layout.opening_view(), &caps
+        );
+        assert!(
+            checked.is_err(),
+            "target verification requires a nonempty fold schedule: {checked:?}"
+        );
+    }
+
+    #[test]
+    fn checked_context_accepts_log_zero_matrix_reached_by_fold() {
+        use crate::input_contract::stark_layout::{InstanceLayout, NativeStarkLayout};
+        use crate::pcs::fri::context::CheckedFriOpening;
+
+        let params = p3_fri::FriParameters {
+            log_blowup: 0,
+            log_final_poly_len: 0,
+            max_log_arity: 1,
+            num_queries: 1,
+            commit_proof_of_work_bits: 0,
+            query_proof_of_work_bits: 0,
+            mmcs: (),
+        };
+        let native = NativeFriParams::try_from_native::<F, _>(&params).unwrap();
+        let recursive = FriVerifierParams::with_mmcs(
+            0,
+            0,
+            0,
+            0,
+            1,
+            crate::ops::Poseidon2Config::KOALA_BEAR_D4_W16,
+        );
+        let proof = FriProof::<Challenge, ChallengeMmcs, F, Vec<BatchMultiOpening<F, MyMmcs>>> {
+            commit_phase_commits: vec![cap(1)],
+            commit_pow_witnesses: vec![F::ZERO],
+            input_openings: vec![
+                BatchMultiOpening {
+                    opened_values: vec![vec![vec![F::ZERO], vec![F::ZERO]]],
+                    opening_proof: frontier(0),
+                },
+                BatchMultiOpening {
+                    opened_values: vec![vec![vec![F::ZERO], vec![F::ZERO]]],
+                    opening_proof: frontier(0),
+                },
+            ],
+            commit_phase_openings: vec![CommitPhaseMultiStep {
+                log_arity: 1,
+                sibling_values: vec![vec![Challenge::ZERO]],
+                opening_proof: frontier(0),
+            }],
+            final_poly: vec![Challenge::ZERO],
+            query_pow_witness: F::ZERO,
+        };
+        let layout = NativeStarkLayout::new(
+            vec![
+                InstanceLayout {
+                    challenge_width: 1,
+                    ext_log: 1,
+                    base_log: 1,
+                    trace_width: 1,
+                    trace_next: false,
+                    pre_width: 0,
+                    pre_next: false,
+                    quotient_log: 0,
+                    quotient_chunks: 1,
+                    permutation_width: 0,
+                },
+                InstanceLayout {
+                    challenge_width: 1,
+                    ext_log: 0,
+                    base_log: 0,
+                    trace_width: 1,
+                    trace_next: false,
+                    pre_width: 0,
+                    pre_next: false,
+                    quotient_log: 0,
+                    quotient_chunks: 1,
+                    permutation_width: 0,
+                },
+            ],
+            &[],
+            false,
+            false,
+            false,
+        )
+        .unwrap();
+        let caps = [&cap(1), &cap(1)];
+        let checked = <OpeningTargets as CheckedFriOpening<
+            Challenge,
+            <RecInputMmcs as RecursiveMmcs<F, Challenge>>::Commitment,
+        >>::validate_fri_context(
+            &proof, &native, &recursive, layout.opening_view(), &caps
+        );
+        assert!(
+            checked.is_ok(),
+            "a log-zero matrix reached after a fold is valid: {checked:?}"
         );
     }
 
@@ -3025,6 +3254,9 @@ mod prepared_shape_tests {
             crate::ops::Poseidon2Config::KOALA_BEAR_D4_W16,
         );
         let mut proof = hiding_opening(&[4], &[1]);
+        for batch in &mut proof.1.input_openings {
+            batch.opened_values[0][0] = vec![F::ZERO; 2];
+        }
         proof
             .1
             .input_openings
@@ -3032,6 +3264,7 @@ mod prepared_shape_tests {
                 opened_values: vec![vec![vec![F::ZERO]]],
                 opening_proof: hiding_frontier(vec![vec![vec![F::ZERO; 4]]], 0),
             });
+        proof.1.input_openings[1].opened_values[0][0] = vec![F::ZERO; 2];
         let tails = vec![
             vec![vec![vec![Challenge::ZERO]]],
             vec![vec![vec![Challenge::ZERO]]],
@@ -3087,6 +3320,25 @@ mod prepared_shape_tests {
             &input_caps,
         );
         assert!(bad_result.is_err(), "last input salt width must be exact");
+
+        for width in [3usize, 5] {
+            let mut bad_phase = proof.clone();
+            bad_phase.1.commit_phase_openings[0].opening_proof.0[0][0] = vec![F::ZERO; width];
+            let bad_phase_result = <HidingOpeningTargets as CheckedFriOpening<
+                Challenge,
+                <RecHidingMmcs as RecursiveMmcs<F, Challenge>>::Commitment,
+            >>::validate_fri_context(
+                &bad_phase,
+                &native,
+                &recursive,
+                layout.opening_view(),
+                &input_caps,
+            );
+            assert!(
+                bad_phase_result.is_err(),
+                "phase salt width {width} must be rejected"
+            );
+        }
     }
 
     fn ordinary_opening(widths: &[usize]) -> Opening {
