@@ -1,6 +1,12 @@
+use std::boxed::Box;
+
 use p3_baby_bear::BabyBear;
-use p3_circuit::CircuitBuilder;
-use p3_circuit_prover::{BatchStarkProver, ConstraintProfile, TablePacking};
+use p3_circuit::{CircuitBuilder, StatementExport, StatementField, StatementSchema};
+use p3_circuit_prover::common::{NpoAirBuilder, NpoPreprocessor};
+use p3_circuit_prover::{
+    BatchStarkProver, ConstraintProfile, StatementAirBuilder, StatementPreprocessor,
+    StatementProver, TablePacking,
+};
 use p3_field::PrimeCharacteristicRing;
 use p3_goldilocks::Goldilocks;
 use p3_koala_bear::KoalaBear;
@@ -9,8 +15,8 @@ use p3_recursion::artifact::{
     PortableVerifier,
 };
 use p3_recursion::builtin_config::{
-    FriConfigV1, SuiteIdV1, WhirConfigV1, WhirRateModeV1, WhirSecurityAssumptionV1,
-    baby_bear_d4_poseidon2_binary, baby_bear_d4_poseidon2_quaternary,
+    BabyBearD4Poseidon2BinaryConfig, FriConfigV1, SuiteIdV1, WhirConfigV1, WhirRateModeV1,
+    WhirSecurityAssumptionV1, baby_bear_d4_poseidon2_binary, baby_bear_d4_poseidon2_quaternary,
     baby_bear_d4_poseidon2_random_codeword, baby_bear_d4_poseidon2_whir,
     goldilocks_d2_poseidon2_binary, koala_bear_d4_poseidon2_salted, koala_bear_d4_poseidon2_whir,
     koala_bear_d5_poseidon2_binary,
@@ -162,5 +168,109 @@ fn representative_native_proofs_roundtrip_each_physical_format_and_field_dimensi
         KoalaBear,
         koala_bear_d4_poseidon2_whir(&descriptor, &limits.verifier).unwrap(),
         64
+    );
+}
+
+fn canonical_baby_bear_statement(values: &[u32]) -> Vec<u8> {
+    values
+        .iter()
+        .flat_map(|value| value.to_le_bytes())
+        .collect()
+}
+
+#[test]
+fn one_preparation_exports_two_ordered_runtime_statements_after_all_native_owners_drop() {
+    let limits = ArtifactLimits::default();
+    let descriptor = fri_descriptor(SuiteIdV1::BabyBearD4Poseidon2BinaryFri);
+    let config = baby_bear_d4_poseidon2_binary(&descriptor, &limits.verifier).unwrap();
+
+    let left_schema = StatementSchema::try_new(vec![StatementField::Base]).unwrap();
+    let right_schema = StatementSchema::try_new(vec![StatementField::Base]).unwrap();
+    let mut builder = CircuitBuilder::<BabyBear>::new();
+    let left = builder.public_input();
+    let right = builder.public_input();
+    let schema = builder
+        .set_statement_exports::<BabyBear>(&[
+            StatementExport::Base(left),
+            StatementExport::Base(right),
+        ])
+        .unwrap();
+    let aggregation = builder
+        .set_aggregation_statement_layout(left_schema.clone(), right_schema.clone())
+        .unwrap();
+    assert_eq!(aggregation.left(), &left_schema);
+    assert_eq!(aggregation.right(), &right_schema);
+    assert_eq!(aggregation.split_at(), 1);
+    let circuit = builder.build().unwrap();
+
+    let preprocessors: Vec<Box<dyn NpoPreprocessor<BabyBear>>> =
+        vec![Box::new(StatementPreprocessor::new(schema.clone()))];
+    let air_builders: Vec<Box<dyn NpoAirBuilder<BabyBearD4Poseidon2BinaryConfig, 1>>> =
+        vec![Box::new(StatementAirBuilder::<1>::new(schema.clone()))];
+    let mut prover = BatchStarkProver::new(config)
+        .with_table_packing(TablePacking::new(4, 4).with_min_trace_height(32));
+    prover.register_table_prover(Box::new(StatementProver::<1>::new(schema)));
+    let prepared = prover
+        .prepare_circuit::<BabyBear, 1>(
+            &circuit,
+            &preprocessors,
+            &air_builders,
+            ConstraintProfile::Standard,
+        )
+        .unwrap();
+    let prove = |statement: [u32; 2]| {
+        let mut runner = circuit.runner();
+        runner
+            .set_public_inputs(&statement.map(BabyBear::from_u32))
+            .unwrap();
+        prepared.prove(&runner.run().unwrap()).unwrap()
+    };
+    let first_proof = prove([7, 9]);
+    let second_proof = prove([11, 13]);
+    let native_verifier = prepared.verifier();
+    let verifier_bytes = native_verifier.encode_verifier_artifact(limits).unwrap();
+    let first_bytes = native_verifier
+        .encode_proof_artifact(&first_proof, limits)
+        .unwrap();
+    let second_bytes = native_verifier
+        .encode_proof_artifact(&second_proof, limits)
+        .unwrap();
+
+    drop(first_proof);
+    drop(second_proof);
+    drop(native_verifier);
+    drop(prepared);
+    drop(air_builders);
+    drop(preprocessors);
+    drop(circuit);
+
+    let imported = PortableVerifier::decode(
+        &verifier_bytes,
+        ExpectedVerifierArtifact::from_trusted_bytes(&verifier_bytes),
+        limits,
+    )
+    .unwrap();
+    assert_eq!(
+        imported.schema().fields(),
+        &[StatementField::Base, StatementField::Base]
+    );
+    let first_statement = canonical_baby_bear_statement(&[7, 9]);
+    let second_statement = canonical_baby_bear_statement(&[11, 13]);
+    let swapped_statement = canonical_baby_bear_statement(&[9, 7]);
+    imported
+        .verify_encoded(&first_bytes, CanonicalStatement::new(&first_statement, 2))
+        .unwrap();
+    imported
+        .verify_encoded(&second_bytes, CanonicalStatement::new(&second_statement, 2))
+        .unwrap();
+    assert!(
+        imported
+            .verify_encoded(&second_bytes, CanonicalStatement::new(&first_statement, 2),)
+            .is_err()
+    );
+    assert!(
+        imported
+            .verify_encoded(&first_bytes, CanonicalStatement::new(&swapped_statement, 2),)
+            .is_err()
     );
 }
