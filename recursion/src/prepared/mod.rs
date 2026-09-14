@@ -431,7 +431,8 @@ mod trusted_commitment_tests {
 
 #[cfg(test)]
 mod verified_statement_target_tests {
-    use alloc::{vec, vec::Vec};
+    use alloc::vec;
+    use alloc::vec::Vec;
 
     use p3_baby_bear::BabyBear;
     use p3_circuit::ops::NpoTypeId;

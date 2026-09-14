@@ -6,14 +6,15 @@ use p3_circuit::{Circuit, CircuitBuilder, StatementField, StatementSchema};
 use p3_circuit_prover::config::StarkField;
 use p3_circuit_prover::field_params::ExtractBinomialW;
 use p3_circuit_prover::{BatchStarkProof, CircuitVerifier, StatementPreprocessor};
-use p3_commit::Pcs;
+use p3_commit::{Pcs, PolynomialSpace};
 use p3_field::{Algebra, BasedVectorSpace, ExtensionField, PrimeField64};
 use p3_lookup::logup::LogUpGadget;
 use p3_uni_stark::{Proof, StarkGenericConfig, Val};
 
-use super::prover::{PreparedProver, prepare_prover, prepare_prover_with_statement};
+use super::prover::{PreparedProver, prepare_prover_with_statement};
 use super::{
-    NativeCommitment, PreparedInput, PreparedPcsRecursionBackend, TrustedPcsRecursionBackend,
+    NativeCommitment, PreparedInput, PreparedPcsRecursionBackend, TrustedChildStatementLayout,
+    TrustedPcsRecursionBackend, VerifiedStatementTargets,
 };
 use crate::recursion::{
     BatchOnly, PcsRecursionBackend, ProveNextLayerParams, RecursionInput, RecursionOutput,
@@ -448,11 +449,14 @@ where
         Algebra<SymbolicExpression<Val<InSC>>> + Algebra<InSC::Challenge>,
     SymbolicExpressionExt<Val<OutSC>, OutSC::Challenge>:
         Algebra<SymbolicExpression<Val<OutSC>>> + Algebra<OutSC::Challenge>,
+    <InSC::Pcs as Pcs<InSC::Challenge, InSC::Challenger>>::Domain:
+        PolynomialSpace<Val = Val<OutSC>>,
     <InSC::Pcs as Pcs<InSC::Challenge, InSC::Challenger>>::Commitment: Clone,
     <OutSC::Pcs as Pcs<OutSC::Challenge, OutSC::Challenger>>::Domain: Send + Sync,
     OutSC::Pcs: Sync,
     <OutSC::Pcs as Pcs<OutSC::Challenge, OutSC::Challenger>>::ProverData: Sync,
     <OutSC::Pcs as Pcs<OutSC::Challenge, OutSC::Challenger>>::Commitment: Sync,
+    StatementPreprocessor: p3_circuit_prover::common::NpoPreprocessor<Val<OutSC>>,
 {
     /// Preflight both unmaterialized sources before cloning or natively verifying either child.
     pub fn new(
@@ -467,6 +471,8 @@ where
 
         let left = TrustedConstruction::<InSC, A1>::new(left)?;
         let right = TrustedConstruction::<InSC, A2>::new(right)?;
+        let left_statement = trusted_child_statement_layout(&left.authority)?;
+        let right_statement = trusted_child_statement_layout(&right.authority)?;
         let left_prev = left.authority.recursion_input(&left.input)?;
         let right_prev = right.authority.recursion_input(&right.input)?;
         let left_contract = capture_trusted_input_contract::<InSC, A1, B, D>(
@@ -519,9 +525,30 @@ where
             &right_result,
             right.authority.expected_preprocessed(),
         )?;
+        let left_targets =
+            <B as TrustedPcsRecursionBackend<InSC, A1, D>>::verified_statement_targets(
+                &backend,
+                &left_result,
+                &left_statement,
+            )?;
+        let right_targets =
+            <B as TrustedPcsRecursionBackend<InSC, A2, D>>::verified_statement_targets(
+                &backend,
+                &right_result,
+                &right_statement,
+            )?;
+        let aggregation_layout = VerifiedStatementTargets::install_ordered_aggregation::<
+            Val<InSC>,
+            InSC::Challenge,
+        >(left_targets, right_targets, &mut builder)?;
         let circuit = builder.build().map_err(VerificationError::CircuitBuilder)?;
-        let prep =
-            prepare_prover::<OutSC, BatchOnly, B, D>(&circuit, &output_config, &backend, &params)?;
+        let prep = prepare_prover_with_statement::<OutSC, BatchOnly, B, D>(
+            &circuit,
+            &output_config,
+            &backend,
+            &params,
+            aggregation_layout.output(),
+        )?;
 
         Ok(Self {
             left: left.authority,
@@ -605,6 +632,37 @@ where
 
     pub fn verifier(&self) -> CircuitVerifier<OutSC> {
         self.prep.verifier()
+    }
+}
+
+fn trusted_child_statement_layout<SC, A>(
+    authority: &TrustedChildAuthority<'_, SC, A>,
+) -> Result<TrustedChildStatementLayout, VerificationError>
+where
+    SC: StarkGenericConfig + 'static,
+    A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
+    Val<SC>: PrimeField64 + StarkField,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+{
+    match authority {
+        TrustedChildAuthority::Uni { air, .. } => {
+            let public_values_len = air.expected_public_input_count().ok_or_else(|| {
+                VerificationError::InvalidProofShape(
+                    "trusted uni-STARK AIR does not declare an exact public input count".into(),
+                )
+            })?;
+            let schema = StatementSchema::try_new(vec![StatementField::Base; public_values_len])
+                .map_err(|error| {
+                    VerificationError::InvalidProofShape(alloc::format!(
+                        "trusted uni statement schema is invalid: {error}"
+                    ))
+                })?;
+            TrustedChildStatementLayout::uni(public_values_len, schema)
+        }
+        TrustedChildAuthority::Batch { verifier } => Ok(TrustedChildStatementLayout::batch(
+            verifier.statement_layout(),
+        )),
     }
 }
 
@@ -1164,7 +1222,39 @@ mod tests {
                 },
             )
             .unwrap();
-        owner.verifier().verify(&output.0, &[]).unwrap();
+        let parent_verifier = owner.verifier();
+        let layout = parent_verifier
+            .aggregation_statement_layout()
+            .expect("the trusted parent retains the ordered child boundary");
+        assert_eq!(layout.left().base_len(), left_statement.len());
+        assert_eq!(layout.right().base_len(), right_statement.len());
+        assert_eq!(layout.split_at(), left_statement.len());
+        assert_eq!(layout.output().base_len(), 4);
+        parent_verifier
+            .verify(
+                &output.0,
+                &[
+                    left_statement[0],
+                    left_statement[1],
+                    right_statement[0],
+                    right_statement[1],
+                ],
+            )
+            .unwrap();
+        assert!(
+            parent_verifier
+                .verify(
+                    &output.0,
+                    &[
+                        right_statement[0],
+                        right_statement[1],
+                        left_statement[0],
+                        left_statement[1],
+                    ],
+                )
+                .is_err(),
+            "the parent statement must not accept swapped child values"
+        );
 
         let error = owner
             .check_inputs(
