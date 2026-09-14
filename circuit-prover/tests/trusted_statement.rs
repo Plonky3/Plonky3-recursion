@@ -443,6 +443,7 @@ fn one_trusted_preparation_proves_two_distinct_runtime_statements() {
 fn check_trusted_verifier_rejects_seeded_statement_scalar_order_and_length(
     corpus: CorpusSpec,
     fixed_values: Option<(u32, [u32; D])>,
+    fixed_scalar_mutation: Option<(usize, u32)>,
 ) {
     let (circuit, _schema, prepared) = prepare_statement_circuit();
     let verifier = prepared.verifier();
@@ -462,9 +463,22 @@ fn check_trusted_verifier_rejects_seeded_statement_scalar_order_and_length(
             )
         });
 
-        let scalar_index = (rng.next_u64() as usize) % honest.len();
+        let (scalar_index, scalar_value) = fixed_scalar_mutation.map_or_else(
+            || {
+                let index = (rng.next_u64() as usize) % honest.len();
+                (index, honest[index] + BabyBear::ONE)
+            },
+            |(index, value)| (index, BabyBear::from_u32(value)),
+        );
         let mut wrong_scalar = honest;
-        wrong_scalar[scalar_index] = wrong_scalar[scalar_index] + BabyBear::ONE;
+        wrong_scalar[scalar_index] = scalar_value;
+        if fixed_scalar_mutation.is_some() {
+            assert_eq!(
+                (scalar_index, wrong_scalar[2]),
+                (2, BabyBear::from_u32(99)),
+                "the named fixed regression must preserve the original index-2/value-99 mutation"
+            );
+        }
         let error = verifier.verify(&proof, &wrong_scalar).unwrap_err();
         assert!(
             matches!(
@@ -513,6 +527,7 @@ fn trusted_verifier_rejects_wrong_statement_value_order_and_length() {
             cases: 1,
         },
         Some((7, [11, 12, 13, 14])),
+        Some((2, 99)),
     );
 }
 
@@ -520,6 +535,7 @@ fn trusted_verifier_rejects_wrong_statement_value_order_and_length() {
 fn assurance_trusted_verifier_rejects_seeded_statement_scalar_order_and_length() {
     check_trusted_verifier_rejects_seeded_statement_scalar_order_and_length(
         assurance_proof_corpus_from_env(),
+        None,
         None,
     );
 }
