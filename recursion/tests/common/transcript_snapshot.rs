@@ -1,6 +1,7 @@
 //! Test-only native duplex challenger snapshots for transcript assurance.
 
 use std::sync::{Arc, Mutex};
+use std::vec::Vec;
 
 use p3_challenger::{
     CanObserve, CanSample, CanSampleBits, CanSampleUniformBits, DuplexChallenger, FieldChallenger,
