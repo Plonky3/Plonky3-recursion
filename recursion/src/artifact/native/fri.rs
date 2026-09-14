@@ -4,10 +4,9 @@ use p3_commit::{Mmcs, OpenedValues};
 use p3_field::{ExtensionField, PrimeField64};
 use p3_fri::{BatchMultiOpening, CommitPhaseMultiStep, FriProof};
 
+use super::mmcs::MmcsCodec;
 use crate::artifact::ArtifactError;
 use crate::artifact::wire::{FieldEncoding, Reader, Writer};
-
-use super::mmcs::MmcsCodec;
 
 type NativeFriProof<F, EF, InputMmcs, FriMmcs> =
     FriProof<EF, FriMmcs, F, Vec<BatchMultiOpening<F, InputMmcs>>>;

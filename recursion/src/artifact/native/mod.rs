@@ -31,15 +31,14 @@ mod tests {
     use p3_whir::{PcsProof, QueryOpenings, SharedProofOpening, WhirProof, WhirRoundProof};
     use rand::rngs::StdRng;
 
-    use crate::artifact::wire::{FieldEncoding, Reader, Writer};
-    use crate::artifact::{ArtifactError, ArtifactLimits};
-    use crate::pcs::whir::uni::WhirUniProof;
-
     use super::{
         MerkleMmcsCodec, SaltedMerkleMmcsCodec, read_fri_proof, read_hiding_fri_proof,
         read_salted_multi_proof, read_whir_uni_proof, write_fri_proof, write_hiding_fri_proof,
         write_salted_multi_proof, write_whir_uni_proof,
     };
+    use crate::artifact::wire::{FieldEncoding, Reader, Writer};
+    use crate::artifact::{ArtifactError, ArtifactLimits};
+    use crate::pcs::whir::uni::WhirUniProof;
 
     type F = BabyBear;
     type EF = BinomialExtensionField<F, 4>;

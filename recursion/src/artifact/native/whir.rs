@@ -4,11 +4,10 @@ use p3_multilinear_util::poly::Poly;
 use p3_sumcheck::{OpeningBatch, SumcheckData};
 use p3_whir::{PcsProof, QueryOpenings, SharedProofOpening, WhirProof, WhirRoundProof};
 
+use super::mmcs::MmcsCodec;
 use crate::artifact::ArtifactError;
 use crate::artifact::wire::{FieldEncoding, Reader, Writer};
 use crate::pcs::whir::uni::WhirUniProof;
-
-use super::mmcs::MmcsCodec;
 
 fn write_option<T>(
     writer: &mut Writer,

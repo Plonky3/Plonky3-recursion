@@ -1,8 +1,5 @@
 use alloc::vec::Vec;
 
-use crate::builtin_config::{
-    BuiltinConfigDescriptorV1, FriConfigV1, SuiteIdV1, WhirConfigV1, WhirRateModeV1,
-};
 use p3_batch_stark::common::{GlobalPreprocessed, PreprocessedInstanceMeta};
 use p3_batch_stark::{CommonData, StarkGenericConfig};
 use p3_circuit::ops::{NpoTypeId, Poseidon1Config, Poseidon2Config};
@@ -13,10 +10,12 @@ use p3_circuit_prover::{
 };
 use p3_field::PrimeField64;
 
-use crate::VerifierLimits;
-
 use super::ArtifactError;
 use super::wire::{Reader, Writer};
+use crate::VerifierLimits;
+use crate::builtin_config::{
+    BuiltinConfigDescriptorV1, FriConfigV1, SuiteIdV1, WhirConfigV1, WhirRateModeV1,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum BuiltinNpoV1 {
@@ -1131,16 +1130,15 @@ mod tests {
     use p3_circuit_prover::{AirVariant, ConstraintProfile, RowCounts, TablePacking};
     use p3_field::PrimeCharacteristicRing;
 
+    use super::{
+        BuiltinNpoV1, NpoDescriptorV1, NpoPublicValuesV1, RelationDescriptorV1, read_config,
+        read_relation, validate_relation_descriptor, write_config, write_relation,
+    };
     use crate::artifact::wire::{Reader, Writer};
     use crate::artifact::{ArtifactError, ArtifactLimits};
     use crate::builtin_config::{
         BuiltinConfigDescriptorV1, FriConfigV1, SuiteIdV1, WhirConfigV1, WhirRateModeV1,
         WhirSecurityAssumptionV1,
-    };
-
-    use super::{
-        BuiltinNpoV1, NpoDescriptorV1, NpoPublicValuesV1, RelationDescriptorV1, read_config,
-        read_relation, validate_relation_descriptor, write_config, write_relation,
     };
 
     fn ordinary() -> BuiltinConfigDescriptorV1 {

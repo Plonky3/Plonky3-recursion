@@ -1,20 +1,16 @@
 use alloc::boxed::Box;
 use alloc::vec::Vec;
-use p3_baby_bear::BabyBear;
 
+use p3_baby_bear::BabyBear;
 use p3_circuit::{StatementError, StatementSchema};
 use p3_circuit_prover::{BatchStarkProof, CircuitVerifier, NonPrimitiveTableEntry};
-use p3_field::PrimeField64;
 use p3_field::extension::{BinomialExtensionField, QuinticTrinomialExtensionField};
-use p3_field::{Algebra, BasedVectorSpace};
+use p3_field::{Algebra, BasedVectorSpace, PrimeField64};
 use p3_goldilocks::Goldilocks;
 use p3_koala_bear::KoalaBear;
-use p3_uni_stark::StarkGenericConfig;
-use p3_uni_stark::{SymbolicExpression, SymbolicExpressionExt};
+use p3_uni_stark::{StarkGenericConfig, SymbolicExpression, SymbolicExpressionExt};
 use rand::rngs::StdRng;
 use rand::{CryptoRng, SeedableRng};
-
-use crate::builtin_config::*;
 
 use super::descriptor::{
     RelationDescriptorV1, read_common, read_config, read_relation, write_common, write_config,
@@ -30,6 +26,7 @@ use super::{
     ArtifactError, ArtifactKind, ArtifactLimits, CanonicalStatement, PortableVerifier,
     PortableVerifierInner,
 };
+use crate::builtin_config::*;
 
 mod private {
     pub trait Sealed {}
@@ -704,6 +701,12 @@ mod tests {
     use rand::rngs::StdRng;
     use rand::{SeedableRng, TryCryptoRng, TryRng};
 
+    use super::super::descriptor::{
+        BuiltinNpoV1, NpoDescriptorV1, NpoPublicValuesV1, RelationDescriptorV1, read_common,
+        read_config, read_relation, write_common, write_config, write_relation,
+    };
+    use super::super::native::{read_merkle_cap, write_merkle_cap};
+    use super::super::wire::{FieldEncoding, Reader, Writer, decode_framed, encode_framed};
     use crate::artifact::{
         ArtifactError, ArtifactKind, ArtifactLimits, CanonicalStatement, ExpectedVerifierArtifact,
         PortableArtifactExport, PortableVerifier,
@@ -718,13 +721,6 @@ mod tests {
         BatchOnly, FriRecursionConfig, ProveNextLayerParams, TrustedPreparedAggregation,
         TrustedPreparedInput, TrustedPreparedSource,
     };
-
-    use super::super::descriptor::{
-        BuiltinNpoV1, NpoDescriptorV1, NpoPublicValuesV1, RelationDescriptorV1, read_common,
-        read_config, read_relation, write_common, write_config, write_relation,
-    };
-    use super::super::native::{read_merkle_cap, write_merkle_cap};
-    use super::super::wire::{FieldEncoding, Reader, Writer, decode_framed, encode_framed};
 
     static VERIFICATION_RNG_DRAWS: AtomicUsize = AtomicUsize::new(0);
 
