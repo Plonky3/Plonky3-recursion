@@ -5,7 +5,7 @@ mod params;
 mod targets;
 mod verifier;
 
-pub use context::{ValidatedFriContext, validate_fri_context};
+pub use context::{CheckedFriCommitment, CheckedFriOpening, ValidatedFriContext};
 pub use params::{FriInputError, FriVerifierParams, NativeFriParams};
 pub use targets::{
     BatchOpeningTargets, CommitPhaseProofStepTargets, FriProofTargets, HashProofTargets,

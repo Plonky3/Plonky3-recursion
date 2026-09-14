@@ -22,9 +22,13 @@ use rand::{CryptoRng, Rng, SeedableRng};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-use super::{FriVerifierParams, verify_fri_circuit};
+use super::context::{
+    CheckedFriCommitment, CheckedFriOpening, ValidatedFriContext, validate_fri_context_with_caps,
+};
+use super::{FriVerifierParams, NativeFriParams, verify_fri_circuit};
 use crate::Target;
 use crate::challenger::CircuitChallenger;
+use crate::input_contract::FriOpeningLayout;
 use crate::input_contract::fri::{
     FriCommitStepShape, FriInputBatchShape, FriShape, HidingFriShape, HidingOpeningAdviceShape,
     MerkleCapShape,
@@ -86,6 +90,25 @@ pub trait PreparedRecursiveMultiProofTargets<EF: Field>: RecursiveMultiProofTarg
         proof: &Self::MultiProof,
         query_matrix_counts: &[usize],
     ) -> Result<Self::Shape, VerificationError>;
+
+    /// Validate only the borrowed axes needed before any prepared shape capture.
+    /// The default is compatibility fallback for custom implementations and may allocate.
+    fn validate_multiproof_raw<I>(
+        proof: &Self::MultiProof,
+        query_matrix_counts: I,
+        required_salt_elems: Option<usize>,
+    ) -> Result<(), VerificationError>
+    where
+        I: ExactSizeIterator<Item = usize>,
+    {
+        if required_salt_elems.is_some() {
+            return Err(VerificationError::InvalidProofShape(
+                "checked FRI salt validation is unsupported for this multiproof".into(),
+            ));
+        }
+        let counts: Vec<_> = query_matrix_counts.collect();
+        Self::multiproof_shape(proof, &counts).map(|_| ())
+    }
 }
 
 /// Per-query view of the FRI input-batch openings.
@@ -132,6 +155,23 @@ pub trait PreparedRecursiveFriInputOpenings<EF: Field>: RecursiveFriInputOpening
 
     /// Report the query count of every input batch.
     fn query_counts(input: &Self::MultiOpenings) -> Vec<usize>;
+
+    /// Validate borrowed input-batch/query axes before prepared shape capture.
+    /// The default preserves old custom implementations and may allocate.
+    fn validate_openings_raw(
+        input: &Self::MultiOpenings,
+    ) -> Result<Option<usize>, VerificationError> {
+        let counts = Self::query_counts(input);
+        if counts
+            .first()
+            .is_some_and(|first| counts.iter().any(|count| count != first))
+        {
+            return Err(VerificationError::InvalidProofShape(
+                "FRI input query counts disagree".into(),
+            ));
+        }
+        Self::openings_shape(input).map(|_| counts.first().copied())
+    }
 }
 
 /// Number of queries a FRI proof opens, given the per-round and per-batch opening counts.
@@ -481,7 +521,7 @@ where
         ));
     }
 
-    let mut query_count = InputProof::num_queries(&input.input_openings);
+    let mut query_count = InputProof::validate_openings_raw(&input.input_openings)?;
     for step in &input.commit_phase_openings {
         let Some(arity) = (1usize)
             .checked_shl(u32::from(step.log_arity))
@@ -507,13 +547,10 @@ where
             query_count = Some(step.sibling_values.len());
         }
         // The built-in multiproof validators check hiding salts and all matrix axes.
-        let matrix_counts = vec![1; step.sibling_values.len()];
-        RecMmcs::Proof::multiproof_shape(&step.opening_proof, &matrix_counts)?;
+        let matrix_counts = core::iter::repeat_n(1usize, step.sibling_values.len());
+        RecMmcs::Proof::validate_multiproof_raw(&step.opening_proof, matrix_counts, None)?;
     }
 
-    // This also checks each input multiproof's query/matrix cardinality before
-    // `new_for_query` starts allocating per-query targets.
-    InputProof::openings_shape(&input.input_openings)?;
     Ok(())
 }
 
@@ -1065,6 +1102,22 @@ impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize>
     ) -> Result<Self::Shape, VerificationError> {
         Ok(())
     }
+
+    fn validate_multiproof_raw<I>(
+        _proof: &Self::MultiProof,
+        _query_matrix_counts: I,
+        required_salt_elems: Option<usize>,
+    ) -> Result<(), VerificationError>
+    where
+        I: ExactSizeIterator<Item = usize>,
+    {
+        if required_salt_elems.is_some() {
+            return Err(VerificationError::InvalidProofShape(
+                "ordinary FRI multiproof cannot carry salts".into(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// In TwoAdicFriPcs, the POW witness is just a base field element.
@@ -1327,6 +1380,11 @@ impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize>
         proof: &Self::MultiProof,
         query_matrix_counts: &[usize],
     ) -> Result<Self::Shape, VerificationError> {
+        <Self as PreparedRecursiveMultiProofTargets<EF>>::validate_multiproof_raw(
+            proof,
+            query_matrix_counts.iter().copied(),
+            None,
+        )?;
         if proof.0.len() != query_matrix_counts.len()
             || proof
                 .0
@@ -1345,6 +1403,36 @@ impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize>
                 .map(|matrices| matrices.iter().map(Vec::len).collect())
                 .collect(),
         })
+    }
+
+    fn validate_multiproof_raw<I>(
+        proof: &Self::MultiProof,
+        query_matrix_counts: I,
+        required_salt_elems: Option<usize>,
+    ) -> Result<(), VerificationError>
+    where
+        I: ExactSizeIterator<Item = usize>,
+    {
+        if proof.0.len() != query_matrix_counts.len() {
+            return Err(VerificationError::InvalidProofShape(
+                "hiding FRI salt query count mismatch".into(),
+            ));
+        }
+        for (salts, expected) in proof.0.iter().zip(query_matrix_counts) {
+            if salts.len() != expected {
+                return Err(VerificationError::InvalidProofShape(
+                    "hiding FRI salt matrix count mismatch".into(),
+                ));
+            }
+            if let Some(salt_width) = required_salt_elems
+                && salts.iter().any(|salt| salt.len() != salt_width)
+            {
+                return Err(VerificationError::InvalidProofShape(
+                    "hiding FRI salt width mismatch".into(),
+                ));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -1390,8 +1478,246 @@ where
 
 pub type InputProofTargets<F, EF, Inner> = Vec<BatchOpeningTargets<F, EF, Inner>>;
 
+/// Static salt metadata carried by the native MMCS input type.
+///
+/// The recursive hiding proof target intentionally erases its salt width, while
+/// the native MMCS type retains it in its const parameters.  Checked FRI
+/// validation uses this capability without cloning an MMCS or touching its
+/// prover state.
+pub(crate) trait NativeFriSaltWidth {
+    const SALT_ELEMS: Option<usize>;
+}
+
+impl<P, PW, H, C, const ARITY: usize, const DIGEST_ELEMS: usize> NativeFriSaltWidth
+    for MerkleTreeMmcs<P, PW, H, C, ARITY, DIGEST_ELEMS>
+{
+    const SALT_ELEMS: Option<usize> = None;
+}
+
+impl<P, PW, H, C, R, const ARITY: usize, const DIGEST_ELEMS: usize, const SALT_ELEMS: usize>
+    NativeFriSaltWidth for MerkleTreeHidingMmcs<P, PW, H, C, R, ARITY, DIGEST_ELEMS, SALT_ELEMS>
+{
+    const SALT_ELEMS: Option<usize> = Some(SALT_ELEMS);
+}
+
+impl<F, EF, M: NativeFriSaltWidth> NativeFriSaltWidth for ExtensionMmcs<F, EF, M> {
+    const SALT_ELEMS: Option<usize> = M::SALT_ELEMS;
+}
+
 pub type TwoAdicFriProofTargets<F, EF, RecMmcs, Inner> =
     FriProofTargets<F, EF, RecMmcs, InputProofTargets<F, EF, Inner>, Target>;
+
+#[allow(clippy::type_complexity)]
+fn validate_builtin_fri_raw<F, EF, RF, RI, W>(
+    input: &FriProof<EF, RF::Input, W::Input, Vec<BatchMultiOpening<F, RI::Input>>>,
+    input_salt_elems: Option<usize>,
+    phase_salt_elems: Option<usize>,
+) -> Result<(), VerificationError>
+where
+    F: Field,
+    EF: ExtensionField<F>,
+    RF: RecursiveExtensionMmcs<F, EF>,
+    RI: RecursiveMmcs<F, EF>,
+    W: Recursive<EF>,
+    RI::Proof:
+        PreparedRecursiveMultiProofTargets<EF, MultiProof = <RI::Input as Mmcs<F>>::MultiProof>,
+    RF::Proof:
+        PreparedRecursiveMultiProofTargets<EF, MultiProof = <RF::Input as Mmcs<EF>>::MultiProof>,
+{
+    let query_count = InputProofTargets::<F, EF, RI>::validate_openings_raw(&input.input_openings)?;
+    for batch in &input.input_openings {
+        <RI::Proof as PreparedRecursiveMultiProofTargets<EF>>::validate_multiproof_raw(
+            &batch.opening_proof,
+            batch.opened_values.iter().map(Vec::len),
+            input_salt_elems,
+        )?;
+    }
+    for step in &input.commit_phase_openings {
+        if query_count.is_some_and(|count| count != step.sibling_values.len()) {
+            return Err(VerificationError::InvalidProofShape(
+                "FRI query counts disagree".into(),
+            ));
+        }
+        <RF::Proof as PreparedRecursiveMultiProofTargets<EF>>::validate_multiproof_raw(
+            &step.opening_proof,
+            core::iter::repeat_n(1usize, step.sibling_values.len()),
+            phase_salt_elems,
+        )?;
+    }
+    Ok(())
+}
+
+impl<F, EF, RF, RI, W> CheckedFriOpening<EF, RI::Commitment>
+    for FriProofTargets<F, EF, RF, InputProofTargets<F, EF, RI>, W>
+where
+    F: TwoAdicField + PrimeField64,
+    EF: ExtensionField<F>,
+    RF: RecursiveExtensionMmcs<F, EF>,
+    RI: RecursiveMmcs<F, EF>,
+    W: Recursive<EF>,
+    RI::Input: NativeFriSaltWidth,
+    RF::Input: NativeFriSaltWidth,
+    RI::Commitment: CheckedFriCommitment<EF, Input = <RI::Input as Mmcs<F>>::Commitment>,
+    RF::Commitment: CheckedFriCommitment<EF, Input = <RF::Input as Mmcs<EF>>::Commitment>,
+    RI::Proof:
+        PreparedRecursiveMultiProofTargets<EF, MultiProof = <RI::Input as Mmcs<F>>::MultiProof>,
+    RF::Proof:
+        PreparedRecursiveMultiProofTargets<EF, MultiProof = <RF::Input as Mmcs<EF>>::MultiProof>,
+{
+    type PhaseCommitment = RF::Commitment;
+
+    fn validate_fri_context(
+        input: &Self::Input,
+        native: &NativeFriParams,
+        recursive: &FriVerifierParams,
+        layout: FriOpeningLayout<'_>,
+        input_caps: &[&<RI::Commitment as Recursive<EF>>::Input],
+    ) -> Result<ValidatedFriContext, VerificationError> {
+        validate_builtin_fri_raw::<F, EF, RF, RI, W>(
+            input,
+            <RI::Input as NativeFriSaltWidth>::SALT_ELEMS,
+            <RF::Input as NativeFriSaltWidth>::SALT_ELEMS,
+        )?;
+        let phase_caps: Vec<_> = input.commit_phase_commits.iter().collect();
+        validate_fri_context_with_caps::<
+            F,
+            EF,
+            RI::Input,
+            RF::Input,
+            W::Input,
+            RI::Commitment,
+            RF::Commitment,
+        >(
+            input,
+            native,
+            recursive,
+            layout,
+            input_caps,
+            &phase_caps,
+            <RI::Input as NativeFriSaltWidth>::SALT_ELEMS,
+            <RF::Input as NativeFriSaltWidth>::SALT_ELEMS,
+            None,
+        )
+    }
+
+    fn validate_fri_replacement(
+        input: &Self::Input,
+        expected: &ValidatedFriContext,
+        candidate_layout: FriOpeningLayout<'_>,
+        input_caps: &[&<RI::Commitment as Recursive<EF>>::Input],
+    ) -> Result<(), VerificationError> {
+        if candidate_layout.to_owned_layout() != *expected.layout() {
+            return Err(VerificationError::InvalidProofShape(
+                "FRI retained layout mismatch".into(),
+            ));
+        }
+        let candidate = Self::validate_fri_context(
+            input,
+            &expected.native_params(),
+            &expected.recursive_params(),
+            candidate_layout,
+            input_caps,
+        )?;
+        if candidate.log_arities() != expected.log_arities()
+            || candidate.input_cap_roots() != expected.input_cap_roots()
+            || candidate.phase_cap_roots() != expected.phase_cap_roots()
+            || candidate.input_salt_elems() != expected.input_salt_elems()
+            || candidate.phase_salt_elems() != expected.phase_salt_elems()
+            || candidate.hiding_tail_shape() != expected.hiding_tail_shape()
+        {
+            return Err(VerificationError::InvalidProofShape(
+                "FRI retained schedule or cap metadata mismatch".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl<F, EF, RF, RI, W> CheckedFriOpening<EF, RI::Commitment>
+    for HidingFriProofTargets<F, EF, RF, InputProofTargets<F, EF, RI>, W>
+where
+    F: TwoAdicField + PrimeField64,
+    EF: ExtensionField<F>,
+    RF: RecursiveExtensionMmcs<F, EF>,
+    RI: RecursiveMmcs<F, EF>,
+    W: Recursive<EF>,
+    RI::Input: NativeFriSaltWidth,
+    RF::Input: NativeFriSaltWidth,
+    RI::Commitment: CheckedFriCommitment<EF, Input = <RI::Input as Mmcs<F>>::Commitment>,
+    RF::Commitment: CheckedFriCommitment<EF, Input = <RF::Input as Mmcs<EF>>::Commitment>,
+    RI::Proof:
+        PreparedRecursiveMultiProofTargets<EF, MultiProof = <RI::Input as Mmcs<F>>::MultiProof>,
+    RF::Proof:
+        PreparedRecursiveMultiProofTargets<EF, MultiProof = <RF::Input as Mmcs<EF>>::MultiProof>,
+{
+    type PhaseCommitment = RF::Commitment;
+
+    fn validate_fri_context(
+        input: &Self::Input,
+        native: &NativeFriParams,
+        recursive: &FriVerifierParams,
+        layout: FriOpeningLayout<'_>,
+        input_caps: &[&<RI::Commitment as Recursive<EF>>::Input],
+    ) -> Result<ValidatedFriContext, VerificationError> {
+        validate_builtin_fri_raw::<F, EF, RF, RI, W>(
+            &input.1,
+            <RI::Input as NativeFriSaltWidth>::SALT_ELEMS,
+            <RF::Input as NativeFriSaltWidth>::SALT_ELEMS,
+        )?;
+        let phase_caps: Vec<_> = input.1.commit_phase_commits.iter().collect();
+        validate_fri_context_with_caps::<
+            F,
+            EF,
+            RI::Input,
+            RF::Input,
+            W::Input,
+            RI::Commitment,
+            RF::Commitment,
+        >(
+            &input.1,
+            native,
+            recursive,
+            layout,
+            input_caps,
+            &phase_caps,
+            <RI::Input as NativeFriSaltWidth>::SALT_ELEMS,
+            <RF::Input as NativeFriSaltWidth>::SALT_ELEMS,
+            Some(&input.0),
+        )
+    }
+
+    fn validate_fri_replacement(
+        input: &Self::Input,
+        expected: &ValidatedFriContext,
+        candidate_layout: FriOpeningLayout<'_>,
+        input_caps: &[&<RI::Commitment as Recursive<EF>>::Input],
+    ) -> Result<(), VerificationError> {
+        if candidate_layout.to_owned_layout() != *expected.layout() {
+            return Err(VerificationError::InvalidProofShape(
+                "FRI retained layout mismatch".into(),
+            ));
+        }
+        let candidate = Self::validate_fri_context(
+            input,
+            &expected.native_params(),
+            &expected.recursive_params(),
+            candidate_layout,
+            input_caps,
+        )?;
+        if candidate.log_arities() != expected.log_arities()
+            || candidate.input_cap_roots() != expected.input_cap_roots()
+            || candidate.phase_cap_roots() != expected.phase_cap_roots()
+            || candidate.input_salt_elems() != expected.input_salt_elems()
+            || candidate.phase_salt_elems() != expected.phase_salt_elems()
+            || candidate.hiding_tail_shape() != expected.hiding_tail_shape()
+        {
+            return Err(VerificationError::InvalidProofShape(
+                "FRI retained schedule or cap metadata mismatch".into(),
+            ));
+        }
+        Ok(())
+    }
+}
 
 impl<F: Field, EF: ExtensionField<F>, Inner: RecursiveMmcs<F, EF>> Recursive<EF>
     for InputProofTargets<F, EF, Inner>
@@ -1479,6 +1805,7 @@ where
         Vec<FriInputBatchShape<<Inner::Proof as PreparedRecursiveMultiProofTargets<EF>>::Shape>>;
 
     fn openings_shape(input: &Self::MultiOpenings) -> Result<Self::Shape, VerificationError> {
+        Self::validate_openings_raw(input)?;
         input
             .iter()
             .map(|batch| {
@@ -1504,6 +1831,30 @@ where
             .iter()
             .map(|batch| batch.opened_values.len())
             .collect()
+    }
+
+    fn validate_openings_raw(
+        input: &Self::MultiOpenings,
+    ) -> Result<Option<usize>, VerificationError> {
+        let mut query_count = None;
+        for batch in input {
+            let count = batch.opened_values.len();
+            if let Some(expected) = query_count {
+                if expected != count {
+                    return Err(VerificationError::InvalidProofShape(
+                        "FRI input query counts disagree".into(),
+                    ));
+                }
+            } else {
+                query_count = Some(count);
+            }
+            Inner::Proof::validate_multiproof_raw(
+                &batch.opening_proof,
+                batch.opened_values.iter().map(Vec::len),
+                None,
+            )?;
+        }
+        Ok(query_count)
     }
 }
 
@@ -2416,6 +2767,28 @@ mod prepared_shape_tests {
             .is_err()
         );
         assert!(validate_cap_packing::<1>(1, 1, false, 1, usize::MAX, 1).is_err());
+
+        // Keep the outer `Vec<Target>` header bound distinct from the flat
+        // digest-byte bound: both are checked before any allocation.
+        let outer_header_roots =
+            (isize::MAX as usize / core::mem::size_of::<Vec<Target>>()).saturating_add(1);
+        let outer_error = validate_cap_packing::<1>(outer_header_roots, 1, false, 1, 0, 0)
+            .expect_err("outer target-vector bytes must be rejected");
+        assert!(matches!(
+            outer_error,
+            VerificationError::InvalidProofShape(message)
+                if message.contains("outer target vector")
+        ));
+
+        let flat_digest_roots =
+            (isize::MAX as usize / (8 * core::mem::size_of::<Target>())).saturating_add(1);
+        let flat_error = validate_cap_packing::<8>(flat_digest_roots, 2, false, 4, 0, 0)
+            .expect_err("flat digest target bytes must be rejected");
+        assert!(matches!(
+            flat_error,
+            VerificationError::InvalidProofShape(message)
+                if message.contains("digest target size")
+        ));
     }
 
     fn frontier(count: usize) -> PrunedMerklePaths<F, DIGEST_ELEMS> {
@@ -2427,7 +2800,8 @@ mod prepared_shape_tests {
     #[test]
     fn contextual_fri_validator_accepts_a_tiny_native_shape() {
         use crate::input_contract::stark_layout::{InstanceLayout, NativeStarkLayout};
-        use crate::pcs::fri::{FriVerifierParams, NativeFriParams, validate_fri_context};
+        use crate::pcs::fri::context::validate_fri_context_core;
+        use crate::pcs::fri::{FriVerifierParams, NativeFriParams};
 
         let params = p3_fri::FriParameters {
             log_blowup: 1,
@@ -2488,7 +2862,7 @@ mod prepared_shape_tests {
         )
         .unwrap();
         assert!(
-            validate_fri_context(
+            validate_fri_context_core(
                 &proof,
                 &native,
                 &recursive,
@@ -2502,7 +2876,7 @@ mod prepared_shape_tests {
         let mut malformed = proof.clone();
         malformed.commit_phase_openings[0].sibling_values[0].clear();
         assert!(
-            validate_fri_context(
+            validate_fri_context_core(
                 &malformed,
                 &native,
                 &recursive,
@@ -2512,6 +2886,207 @@ mod prepared_shape_tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn checked_context_requires_and_validates_actual_caps() {
+        use crate::input_contract::stark_layout::{InstanceLayout, NativeStarkLayout};
+        use crate::pcs::fri::context::CheckedFriOpening;
+        use crate::pcs::fri::{FriVerifierParams, NativeFriParams};
+
+        let params = p3_fri::FriParameters {
+            log_blowup: 1,
+            log_final_poly_len: 0,
+            max_log_arity: 1,
+            num_queries: 1,
+            commit_proof_of_work_bits: 0,
+            query_proof_of_work_bits: 0,
+            mmcs: (),
+        };
+        let native = NativeFriParams::try_from_native::<F, _>(&params).unwrap();
+        let recursive = FriVerifierParams::with_mmcs(
+            1,
+            0,
+            0,
+            0,
+            1,
+            crate::ops::Poseidon2Config::KOALA_BEAR_D4_W16,
+        );
+        let mut proof = ordinary_opening(&[1]);
+        proof.input_openings.push(BatchMultiOpening::<F, MyMmcs> {
+            opened_values: vec![vec![vec![F::ZERO]]],
+            opening_proof: frontier(0),
+        });
+        let layout = NativeStarkLayout::new(
+            vec![InstanceLayout {
+                challenge_width: 1,
+                ext_log: 1,
+                base_log: 1,
+                trace_width: 1,
+                trace_next: false,
+                pre_width: 0,
+                pre_next: false,
+                quotient_log: 0,
+                quotient_chunks: 1,
+                permutation_width: 0,
+            }],
+            &[],
+            false,
+            false,
+            false,
+        )
+        .unwrap();
+        let input_cap0 = cap(1);
+        let input_cap1 = cap(1);
+        let input_caps = [&input_cap0, &input_cap1];
+        let result = <OpeningTargets as CheckedFriOpening<
+            Challenge,
+            <RecInputMmcs as RecursiveMmcs<F, Challenge>>::Commitment,
+        >>::validate_fri_context(
+            &proof,
+            &native,
+            &recursive,
+            layout.opening_view(),
+            &input_caps,
+        );
+        let context = result.expect("actual input and phase cap geometry should pass");
+        assert!(
+            <OpeningTargets as CheckedFriOpening<
+                Challenge,
+                <RecInputMmcs as RecursiveMmcs<F, Challenge>>::Commitment,
+            >>::validate_fri_replacement(
+                &proof, &context, layout.opening_view(), &input_caps,
+            )
+            .is_ok()
+        );
+
+        let altered_layout = NativeStarkLayout::new(
+            vec![InstanceLayout {
+                trace_width: 2,
+                ..layout.instances[0]
+            }],
+            &[],
+            false,
+            false,
+            false,
+        )
+        .unwrap();
+        assert!(
+            <OpeningTargets as CheckedFriOpening<
+                Challenge,
+                <RecInputMmcs as RecursiveMmcs<F, Challenge>>::Commitment,
+            >>::validate_fri_replacement(
+                &proof,
+                &context,
+                altered_layout.opening_view(),
+                &input_caps,
+            )
+            .is_err()
+        );
+
+        let mut wrong_phase = proof.clone();
+        wrong_phase.commit_phase_commits[0] = cap(2);
+        assert!(
+            <OpeningTargets as CheckedFriOpening<
+                Challenge,
+                <RecInputMmcs as RecursiveMmcs<F, Challenge>>::Commitment,
+            >>::validate_fri_context(
+                &wrong_phase,
+                &native,
+                &recursive,
+                layout.opening_view(),
+                &input_caps,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn checked_hiding_context_checks_static_salt_width_and_tail_partition() {
+        use crate::input_contract::stark_layout::{InstanceLayout, NativeStarkLayout};
+        use crate::pcs::fri::context::CheckedFriOpening;
+
+        let params = p3_fri::FriParameters {
+            log_blowup: 1,
+            log_final_poly_len: 0,
+            max_log_arity: 1,
+            num_queries: 1,
+            commit_proof_of_work_bits: 0,
+            query_proof_of_work_bits: 0,
+            mmcs: (),
+        };
+        let native = NativeFriParams::try_from_native::<F, _>(&params).unwrap();
+        let recursive = FriVerifierParams::with_mmcs(
+            1,
+            0,
+            0,
+            0,
+            1,
+            crate::ops::Poseidon2Config::KOALA_BEAR_D4_W16,
+        );
+        let mut proof = hiding_opening(&[4], &[1]);
+        proof
+            .1
+            .input_openings
+            .push(BatchMultiOpening::<F, NativeHidingMmcs> {
+                opened_values: vec![vec![vec![F::ZERO]]],
+                opening_proof: hiding_frontier(vec![vec![vec![F::ZERO; 4]]], 0),
+            });
+        let tails = vec![
+            vec![vec![vec![Challenge::ZERO]]],
+            vec![vec![vec![Challenge::ZERO]]],
+        ];
+        proof.0 = tails;
+        let layout = NativeStarkLayout::new(
+            vec![InstanceLayout {
+                challenge_width: 1,
+                ext_log: 1,
+                base_log: 1,
+                trace_width: 1,
+                trace_next: false,
+                pre_width: 0,
+                pre_next: false,
+                quotient_log: 0,
+                quotient_chunks: 1,
+                permutation_width: 0,
+            }],
+            &[],
+            false,
+            false,
+            false,
+        )
+        .unwrap();
+        let input_cap0 = cap(1);
+        let input_cap1 = cap(1);
+        let input_caps = [&input_cap0, &input_cap1];
+        let result = <HidingOpeningTargets as CheckedFriOpening<
+            Challenge,
+            <RecHidingMmcs as RecursiveMmcs<F, Challenge>>::Commitment,
+        >>::validate_fri_context(
+            &proof,
+            &native,
+            &recursive,
+            layout.opening_view(),
+            &input_caps,
+        );
+        assert!(
+            result.is_ok(),
+            "hiding salt/tail metadata should pass: {result:?}"
+        );
+
+        let mut bad = proof.clone();
+        bad.1.input_openings[1].opening_proof.0[0][0] = vec![F::ZERO; 3];
+        let bad_result = <HidingOpeningTargets as CheckedFriOpening<
+            Challenge,
+            <RecHidingMmcs as RecursiveMmcs<F, Challenge>>::Commitment,
+        >>::validate_fri_context(
+            &bad,
+            &native,
+            &recursive,
+            layout.opening_view(),
+            &input_caps,
+        );
+        assert!(bad_result.is_err(), "last input salt width must be exact");
     }
 
     fn ordinary_opening(widths: &[usize]) -> Opening {

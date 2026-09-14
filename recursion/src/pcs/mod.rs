@@ -5,14 +5,14 @@ pub mod mmcs;
 pub mod whir;
 
 pub use fri::{
-    BatchOpeningTargets, CommitPhaseProofStepTargets, FriInputError, FriProofTargets,
-    FriVerifierParams, HashProofTargets, HidingFriProofTargets, HidingHashProofTargets,
-    HidingOpenedValuesTargets, InputProofTargets, MerkleCapTargets, MmcsProofTargets,
-    NativeFriParams, PreparedRecursiveFriInputOpenings, PreparedRecursiveMultiProofTargets,
-    QueryProofTargets, RecExtensionValMmcs, RecExtensionValMmcsArity4, RecValHidingMmcs,
-    RecValMmcs, RecValMmcsArity4, RecursiveFriInputOpenings, RecursiveMultiProofTargets,
-    TwoAdicFriProofTargets, ValidatedFriContext, Witness, fri_proof_num_queries,
-    validate_fri_context, verify_fri_circuit,
+    BatchOpeningTargets, CheckedFriCommitment, CheckedFriOpening, CommitPhaseProofStepTargets,
+    FriInputError, FriProofTargets, FriVerifierParams, HashProofTargets, HidingFriProofTargets,
+    HidingHashProofTargets, HidingOpenedValuesTargets, InputProofTargets, MerkleCapTargets,
+    MmcsProofTargets, NativeFriParams, PreparedRecursiveFriInputOpenings,
+    PreparedRecursiveMultiProofTargets, QueryProofTargets, RecExtensionValMmcs,
+    RecExtensionValMmcsArity4, RecValHidingMmcs, RecValMmcs, RecValMmcsArity4,
+    RecursiveFriInputOpenings, RecursiveMultiProofTargets, TwoAdicFriProofTargets,
+    ValidatedFriContext, Witness, fri_proof_num_queries, verify_fri_circuit,
 };
 pub use mmcs::{
     FriQueryLayout, FriQueryPaths, convert_merkle_proof_to_siblings, replay_fri_query_layout,

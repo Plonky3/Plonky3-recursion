@@ -735,6 +735,7 @@ where
 }
 
 /// Walk native arity-4 cap geometry without allocating a height table.
+#[allow(dead_code)]
 pub(crate) fn validate_arity4_cap_geometry(
     heights: &[usize],
     roots: usize,

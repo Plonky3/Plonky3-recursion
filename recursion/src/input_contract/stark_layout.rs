@@ -4,6 +4,8 @@
 //! AIR relation identity.  It describes only the validated statement routing
 //! needed by native transcript replay and recursive PCS assembly.
 
+use alloc::borrow::Cow;
+
 use thiserror::Error;
 
 /// The commitment roles emitted by the STARK transcript.
@@ -68,6 +70,8 @@ pub(crate) enum LayoutError {
     DuplicatePreprocessedIndex { index: usize },
     #[error("preprocessed matrix route points to zero-width instance {index}")]
     PreprocessedWidthZero { index: usize },
+    #[error("STARK commitment ordinal {ordinal} is out of bounds")]
+    InvalidCommitmentOrdinal { ordinal: usize },
 }
 
 /// Computes `2^log_degree` without allowing a shift panic.
@@ -91,9 +95,10 @@ pub(crate) fn checked_quotient_matrix_count(
 }
 
 /// The shared integer opening layout.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct NativeStarkLayout<'a> {
     pub(crate) instances: alloc::vec::Vec<InstanceLayout>,
-    pub(crate) preprocessed_order: &'a [usize],
+    pub(crate) preprocessed_order: Cow<'a, [usize]>,
     pub(crate) has_random: bool,
     pub(crate) has_preprocessed: bool,
     pub(crate) has_permutation: bool,
@@ -140,7 +145,15 @@ impl<'a> FriOpeningLayout<'a> {
         self.inner.commitment_count()
     }
 
-    pub fn matrices(self, ordinal: usize) -> impl Iterator<Item = FriMatrixGeometry> + 'a {
+    pub(crate) fn matrix_count(self, ordinal: usize) -> Result<usize, LayoutError> {
+        self.inner.matrix_count(ordinal)
+    }
+
+    pub(crate) fn to_owned_layout(self) -> NativeStarkLayout<'static> {
+        self.inner.to_owned_layout()
+    }
+
+    pub fn matrices(self, ordinal: usize) -> impl Iterator<Item = FriMatrixGeometry> + Clone + 'a {
         let role = self.inner.commitment_role(ordinal);
         role.into_iter().flat_map(move |role| {
             self.inner.matrices(role).map(|matrix| FriMatrixGeometry {
@@ -187,7 +200,7 @@ impl<'a> NativeStarkLayout<'a> {
         checked_quotient_matrix_count(&instances)?;
         Ok(Self {
             instances,
-            preprocessed_order,
+            preprocessed_order: Cow::Borrowed(preprocessed_order),
             has_random,
             has_preprocessed,
             has_permutation,
@@ -199,6 +212,32 @@ impl<'a> NativeStarkLayout<'a> {
             + 2 // trace and quotient
             + usize::from(self.has_preprocessed)
             + usize::from(self.has_permutation)
+    }
+
+    pub(crate) fn matrix_count(&self, ordinal: usize) -> Result<usize, LayoutError> {
+        let role = self
+            .commitment_role(ordinal)
+            .ok_or(LayoutError::InvalidCommitmentOrdinal { ordinal })?;
+        match role {
+            CommitmentRole::Random | CommitmentRole::Trace => Ok(self.instances.len()),
+            CommitmentRole::Quotient => checked_quotient_matrix_count(&self.instances),
+            CommitmentRole::Preprocessed => Ok(self.preprocessed_order.len()),
+            CommitmentRole::Permutation => Ok(self
+                .instances
+                .iter()
+                .filter(|instance| instance.permutation_width != 0)
+                .count()),
+        }
+    }
+
+    pub(crate) fn to_owned_layout(&self) -> NativeStarkLayout<'static> {
+        NativeStarkLayout {
+            instances: self.instances.clone(),
+            preprocessed_order: Cow::Owned(self.preprocessed_order.to_vec()),
+            has_random: self.has_random,
+            has_preprocessed: self.has_preprocessed,
+            has_permutation: self.has_permutation,
+        }
     }
 
     pub(crate) const fn commitment_role(&self, ordinal: usize) -> Option<CommitmentRole> {
@@ -240,6 +279,7 @@ impl<'a> NativeStarkLayout<'a> {
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct MatrixLayoutIter<'a> {
     layout: &'a NativeStarkLayout<'a>,
     role: CommitmentRole,
