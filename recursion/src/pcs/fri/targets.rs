@@ -2816,6 +2816,67 @@ mod prepared_shape_tests {
         }
     }
 
+    struct ProbePhaseMmcs;
+    struct ProbePhaseProof;
+
+    type ProbePhaseInput = <RecFriMmcs as RecursiveExtensionMmcs<F, Challenge>>::Input;
+    type ProbePhaseNativeProof = <ProbePhaseInput as p3_commit::Mmcs<Challenge>>::Proof;
+    type ProbePhaseMultiProof = <ProbePhaseInput as p3_commit::Mmcs<Challenge>>::MultiProof;
+
+    impl Recursive<Challenge> for ProbePhaseProof {
+        type Input = ProbePhaseNativeProof;
+
+        fn new(_: &mut CircuitBuilder<Challenge>, _: &Self::Input) -> Self {
+            panic!("phase multiproof target allocation must not run")
+        }
+
+        fn get_values(_: &Self::Input) -> Vec<Challenge> {
+            panic!("phase multiproof value extraction must not run")
+        }
+    }
+
+    impl RecursiveMultiProofTargets<Challenge> for ProbePhaseProof {
+        type MultiProof = ProbePhaseMultiProof;
+
+        fn new_for_query(
+            _: &mut CircuitBuilder<Challenge>,
+            _: &Self::MultiProof,
+            _: usize,
+        ) -> Self {
+            panic!("phase multiproof target allocation must not run")
+        }
+    }
+
+    impl PreparedRecursiveMultiProofTargets<Challenge> for ProbePhaseProof {
+        type Shape = ();
+
+        fn multiproof_shape(
+            _: &Self::MultiProof,
+            _: &[usize],
+        ) -> Result<Self::Shape, VerificationError> {
+            panic!("phase multiproof shape capture must not run")
+        }
+
+        fn validate_multiproof_raw<I>(
+            proof: &Self::MultiProof,
+            query_matrix_counts: I,
+            required_salt_elems: Option<usize>,
+        ) -> Result<(), VerificationError>
+        where
+            I: ExactSizeIterator<Item = usize>,
+        {
+            <<RecFriMmcs as RecursiveExtensionMmcs<F, Challenge>>::Proof
+                as PreparedRecursiveMultiProofTargets<Challenge>>::
+                validate_multiproof_raw(proof, query_matrix_counts, required_salt_elems)
+        }
+    }
+
+    impl RecursiveExtensionMmcs<F, Challenge> for ProbePhaseMmcs {
+        type Input = ProbePhaseInput;
+        type Commitment = <RecFriMmcs as RecursiveExtensionMmcs<F, Challenge>>::Commitment;
+        type Proof = ProbePhaseProof;
+    }
+
     fn cap(roots: usize) -> MerkleCap<F, [F; DIGEST_ELEMS]> {
         MerkleCap::new(vec![[F::ZERO; DIGEST_ELEMS]; roots])
     }
@@ -3000,22 +3061,26 @@ mod prepared_shape_tests {
         );
 
         // Native F groups stream independently, while recursive grouped
-        // buffers are measured in Target elements.  Preserve that distinction
-        // at the actual Target byte boundary: equal-height groups whose sum is
-        // representable pass, and a different-height overrun is rejected.
+        // buffers are measured in Target elements.  Different heights own
+        // separate buffers; only same-height contributions concatenate.
         let target_limit = isize::MAX as usize / core::mem::size_of::<Target>();
-        let first_group = target_limit / 2;
-        let second_group = target_limit - first_group;
-        let same_height_sum = checked_add_len(first_group, second_group, "same-height groups")
-            .expect("exact Target boundary addition");
-        assert!(check_vec_len::<Target>(same_height_sum, "same-height groups").is_ok());
-        let different_height_sum = checked_add_len(target_limit, 1, "different-height groups")
-            .expect("different-height group arithmetic itself is representable");
+        let mut exact_height = [0usize; usize::BITS as usize + 1];
+        exact_height[3] = target_limit;
+        assert!(crate::pcs::fri::context::check_grouped_target_leaf_widths(&exact_height).is_ok());
+        let mut same_height = exact_height;
+        same_height[3] = checked_add_len(same_height[3], 1, "same-height groups")
+            .expect("same-height group arithmetic itself is representable");
         assert!(matches!(
-            check_vec_len::<Target>(different_height_sum, "different-height groups"),
+            crate::pcs::fri::context::check_grouped_target_leaf_widths(&same_height),
             Err(VerificationError::InvalidProofShape(message))
-                if message.contains("different-height groups byte length")
+                if message.contains("grouped target input leaf byte length")
         ));
+        let mut different_height = [0usize; usize::BITS as usize + 1];
+        different_height[3] = target_limit;
+        different_height[4] = 1;
+        assert!(
+            crate::pcs::fri::context::check_grouped_target_leaf_widths(&different_height).is_ok()
+        );
 
         assert_eq!(checked_input_counts(5, 2, 4).unwrap(), (7, 11));
         assert!(checked_input_counts(usize::MAX, 1, 0).is_err());
@@ -3133,6 +3198,26 @@ mod prepared_shape_tests {
             .is_err()
         );
 
+        let mut two_batch_mismatch = proof.clone();
+        let second_batch = two_batch_mismatch.input_openings[0].clone();
+        two_batch_mismatch.input_openings.push(second_batch);
+        let second_query = two_batch_mismatch.input_openings[1].opened_values[0].clone();
+        two_batch_mismatch.input_openings[1]
+            .opened_values
+            .push(second_query);
+        assert!(
+            validate_fri_structure::<F, Challenge, RecFriMmcs, LegacyInput, Witness<F>>(
+                &two_batch_mismatch
+            )
+            .is_err()
+        );
+
+        assert!(
+            <LegacyMultiProof as PreparedRecursiveMultiProofTargets<Challenge>>::
+                validate_multiproof_raw(&(), [1usize].into_iter(), None)
+                .is_ok()
+        );
+
         let salt_error =
             <LegacyMultiProof as PreparedRecursiveMultiProofTargets<Challenge>>::validate_multiproof_raw(
                 &(),
@@ -3145,6 +3230,19 @@ mod prepared_shape_tests {
             VerificationError::InvalidProofShape(message)
                 if message.contains("salt validation is unsupported")
         ));
+    }
+
+    #[test]
+    fn legacy_phase_raw_probe_avoids_shape_and_target_routes() {
+        use crate::pcs::fri::targets::validate_fri_structure;
+
+        let proof = ordinary_opening(&[1]);
+        assert!(
+            validate_fri_structure::<F, Challenge, ProbePhaseMmcs, PanicRawInput, Witness<F>>(
+                &proof
+            )
+            .is_ok()
+        );
     }
 
     #[test]
@@ -3517,19 +3615,7 @@ mod prepared_shape_tests {
         input_cap_roots[0][0] = F::ONE;
         input_cap_digest = MerkleCap::new(input_cap_roots);
         let input_cap_digest_refs = [&input_cap_digest, &baseline_caps[1], &baseline_caps[2]];
-        assert!(
-            <OpeningTargets as CheckedFriOpening<
-                Challenge,
-                <RecInputMmcs as RecursiveMmcs<F, Challenge>>::Commitment,
-            >>::validate_fri_context(
-                &baseline,
-                &native,
-                &recursive,
-                baseline_layout.opening_view(),
-                &input_cap_digest_refs,
-            )
-            .is_ok()
-        );
+        assert_compatible("input cap digest", &baseline, &input_cap_digest_refs);
 
         let mut input_frontier = baseline.clone();
         input_frontier.input_openings[0].opening_proof = frontier(1);
@@ -3544,20 +3630,12 @@ mod prepared_shape_tests {
         assert_compatible("phase frontier", &phase_frontier, &baseline_cap_refs);
 
         let mut phase_cap_digest = baseline.clone();
-        phase_cap_digest.commit_phase_commits[0] = cap(2);
-        assert!(
-            <OpeningTargets as CheckedFriOpening<
-                Challenge,
-                <RecInputMmcs as RecursiveMmcs<F, Challenge>>::Commitment,
-            >>::validate_fri_context(
-                &phase_cap_digest,
-                &native,
-                &recursive,
-                baseline_layout.opening_view(),
-                &baseline_cap_refs,
-            )
-            .is_ok()
-        );
+        let mut phase_cap_roots = phase_cap_digest.commit_phase_commits[0]
+            .clone()
+            .into_roots();
+        phase_cap_roots[0][0] = F::ONE;
+        phase_cap_digest.commit_phase_commits[0] = MerkleCap::new(phase_cap_roots);
+        assert_compatible("phase cap digest", &phase_cap_digest, &baseline_cap_refs);
 
         let mut commit_scalar = baseline.clone();
         commit_scalar.commit_pow_witnesses[2] = F::ONE;
@@ -3649,6 +3727,34 @@ mod prepared_shape_tests {
         );
         assert_eq!(HidingOpeningTargets::get_values(&baseline).len(), 29);
 
+        let assert_tail_rejected = |candidate: &HidingOpening| {
+            assert!(
+                <HidingOpeningTargets as CheckedFriOpening<
+                    Challenge,
+                    <RecHidingMmcs as RecursiveMmcs<F, Challenge>>::Commitment,
+                >>::validate_fri_context(
+                    candidate,
+                    &native,
+                    &recursive,
+                    baseline_layout.opening_view(),
+                    &baseline_cap_refs,
+                )
+                .is_err()
+            );
+            assert!(
+                <HidingOpeningTargets as CheckedFriOpening<
+                    Challenge,
+                    <RecHidingMmcs as RecursiveMmcs<F, Challenge>>::Commitment,
+                >>::validate_fri_replacement(
+                    candidate,
+                    &old,
+                    baseline_layout.opening_view(),
+                    &baseline_cap_refs,
+                )
+                .is_err()
+            );
+        };
+
         for extra in [false, true] {
             let mut bad_tails = baseline.clone();
             if extra {
@@ -3682,6 +3788,31 @@ mod prepared_shape_tests {
                 .is_err()
             );
         }
+
+        for extra in [false, true] {
+            let mut bad_round = baseline.clone();
+            if extra {
+                bad_round.0.push(vec![]);
+            } else {
+                bad_round.0.pop();
+            }
+            assert_tail_rejected(&bad_round);
+        }
+
+        for extra in [false, true] {
+            let mut bad_matrix = baseline.clone();
+            if extra {
+                bad_matrix.0[2].push(vec![]);
+            } else {
+                bad_matrix.0[2].pop();
+            }
+            assert_tail_rejected(&bad_matrix);
+        }
+
+        let mut inconsistent_last_points = baseline.clone();
+        inconsistent_last_points.0[2][0][0] = vec![Challenge::ZERO];
+        inconsistent_last_points.0[2][1][0] = vec![Challenge::ZERO; 2];
+        assert_tail_rejected(&inconsistent_last_points);
 
         for (row_width, salt_width) in [(3usize, 3usize), (1usize, 5usize)] {
             let mut compensated = baseline.clone();
@@ -3724,6 +3855,18 @@ mod prepared_shape_tests {
                 &base_only,
                 &native,
                 &recursive,
+                baseline_layout.opening_view(),
+                &baseline_cap_refs,
+            )
+            .is_err()
+        );
+        assert!(
+            <HidingOpeningTargets as CheckedFriOpening<
+                Challenge,
+                <RecHidingMmcs as RecursiveMmcs<F, Challenge>>::Commitment,
+            >>::validate_fri_replacement(
+                &base_only,
+                &old,
                 baseline_layout.opening_view(),
                 &baseline_cap_refs,
             )
@@ -3956,7 +4099,13 @@ mod prepared_shape_tests {
             .is_err()
         );
 
-        let assert_hiding_compatible = |label: &str, candidate: &HidingOpening| {
+        let assert_hiding_compatible = |
+            label: &str,
+            candidate: &HidingOpening,
+            candidate_caps: &[&<<RecHidingMmcs as RecursiveMmcs<F, Challenge>>::Commitment as Recursive<
+                Challenge,
+            >>::Input],
+        | {
             assert!(
                 <HidingOpeningTargets as CheckedFriOpening<
                     Challenge,
@@ -3966,7 +4115,7 @@ mod prepared_shape_tests {
                     &native,
                     &recursive,
                     baseline_layout.opening_view(),
-                    &baseline_cap_refs,
+                    candidate_caps,
                 )
                 .is_ok(),
                 "fresh hiding compatibility failed for {label}"
@@ -3979,40 +4128,68 @@ mod prepared_shape_tests {
                     candidate,
                     &old,
                     baseline_layout.opening_view(),
-                    &baseline_cap_refs,
+                    candidate_caps,
                 )
                 .is_ok(),
                 "replacement hiding compatibility failed for {label}"
             );
         };
 
+        let mut input_cap_digest = baseline_caps[0].clone();
+        let mut input_cap_roots = input_cap_digest.into_roots();
+        input_cap_roots[0][0] = F::ONE;
+        input_cap_digest = MerkleCap::new(input_cap_roots);
+        let input_cap_digest_refs = [&input_cap_digest, &baseline_caps[1], &baseline_caps[2]];
+        assert_hiding_compatible("input cap digest", &baseline, &input_cap_digest_refs);
+
+        let mut phase_cap_digest = baseline.clone();
+        let mut phase_cap_roots = phase_cap_digest.1.commit_phase_commits[0]
+            .clone()
+            .into_roots();
+        phase_cap_roots[0][0] = F::ONE;
+        phase_cap_digest.1.commit_phase_commits[0] = MerkleCap::new(phase_cap_roots);
+        assert_hiding_compatible("phase cap digest", &phase_cap_digest, &baseline_cap_refs);
+
+        let mut input_frontier = baseline.clone();
+        let input_salts = input_frontier.1.input_openings[0].opening_proof.0.clone();
+        input_frontier.1.input_openings[0].opening_proof = hiding_frontier(input_salts, 1);
+        assert_hiding_compatible("input frontier", &input_frontier, &baseline_cap_refs);
+
+        let mut phase_frontier = baseline.clone();
+        let phase_salts = phase_frontier.1.commit_phase_openings[1]
+            .opening_proof
+            .0
+            .clone();
+        phase_frontier.1.commit_phase_openings[1].opening_proof = hiding_frontier(phase_salts, 1);
+        assert_hiding_compatible("phase frontier", &phase_frontier, &baseline_cap_refs);
+
         let mut input_salt_only = baseline.clone();
         input_salt_only.1.input_openings[2].opening_proof.0[3][1][0] = F::ONE;
-        assert_hiding_compatible("input salt", &input_salt_only);
+        assert_hiding_compatible("input salt", &input_salt_only, &baseline_cap_refs);
 
         let mut phase_salt_only = baseline.clone();
         phase_salt_only.1.commit_phase_openings[2].opening_proof.0[3][0][0] = F::ONE;
-        assert_hiding_compatible("phase salt", &phase_salt_only);
+        assert_hiding_compatible("phase salt", &phase_salt_only, &baseline_cap_refs);
 
         let mut tail_only = baseline.clone();
         tail_only.0[0][0][0][0] = Challenge::ONE;
-        assert_hiding_compatible("hiding tail", &tail_only);
+        assert_hiding_compatible("hiding tail", &tail_only, &baseline_cap_refs);
 
         let mut phase_sibling_only = baseline.clone();
         phase_sibling_only.1.commit_phase_openings[2].sibling_values[3][0] = Challenge::ONE;
-        assert_hiding_compatible("phase sibling", &phase_sibling_only);
+        assert_hiding_compatible("phase sibling", &phase_sibling_only, &baseline_cap_refs);
 
         let mut commit_scalar_only = baseline.clone();
         commit_scalar_only.1.commit_pow_witnesses[2] = F::ONE;
-        assert_hiding_compatible("commit scalar", &commit_scalar_only);
+        assert_hiding_compatible("commit scalar", &commit_scalar_only, &baseline_cap_refs);
 
         let mut final_scalar_only = baseline.clone();
         final_scalar_only.1.final_poly[0] = Challenge::ONE;
-        assert_hiding_compatible("final scalar", &final_scalar_only);
+        assert_hiding_compatible("final scalar", &final_scalar_only, &baseline_cap_refs);
 
         let mut query_scalar_only = baseline.clone();
         query_scalar_only.1.query_pow_witness = F::ONE;
-        assert_hiding_compatible("query scalar", &query_scalar_only);
+        assert_hiding_compatible("query scalar", &query_scalar_only, &baseline_cap_refs);
 
         let mut witness_only = baseline.clone();
         witness_only.1.input_openings[2].opened_values[3][1][0] = F::ONE;

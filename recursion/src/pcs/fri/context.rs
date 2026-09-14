@@ -249,6 +249,18 @@ pub(crate) fn checked_phase_counts(
     Ok((full_base, sibling_coefficients, private_values))
 }
 
+/// Check the per-height recursive target buffers used by grouped input leaves.
+/// Native F groups stream their slices; only the recursive Target buffers are
+/// materialized, and each height owns a separate buffer.
+pub(crate) fn check_grouped_target_leaf_widths(
+    grouped_leaf_widths: &[usize],
+) -> Result<(), VerificationError> {
+    for &width in grouped_leaf_widths {
+        check_vec_len::<Target>(width, "grouped target input leaf")?;
+    }
+    Ok(())
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct FriValueCounts {
     private_values: usize,
@@ -667,11 +679,7 @@ where
                 }
             }
         }
-        for width in grouped_leaf_widths {
-            // Native hash groups stream their F slices; only the recursive grouped target
-            // buffer is materialized and therefore needs a target-byte bound.
-            check_vec_len::<Target>(width, "grouped target input leaf")?;
-        }
+        check_grouped_target_leaf_widths(&grouped_leaf_widths)?;
     }
     if !has_input_matrix {
         return Err(invalid("FRI has no non-empty input matrix"));
