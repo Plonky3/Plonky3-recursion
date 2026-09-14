@@ -25,6 +25,7 @@ use p3_matrix::dense::RowMajorMatrix;
 use p3_merkle_tree::MerkleTreeHidingMmcs;
 use p3_symmetric::{CryptographicHasher, PaddingFreeSponge, Permutation};
 use p3_test_utils::LiftPermToQuintic;
+use p3_test_utils::corpus::{CaseRng, CorpusSpec, derive_family_seed, for_each_case};
 use p3_test_utils::koala_bear_params::{
     Challenge, Challenger, DIGEST_ELEMS, Dft, MyCompress, MyHash,
 };
@@ -44,6 +45,33 @@ use crate::batch_stark_prover::{
 };
 use crate::common::{NpoAirBuilder, NpoPreprocessor, get_airs_and_degrees_with_prep};
 use crate::config::{self, BabyBearConfig, GoldilocksConfig, KoalaBearConfig};
+
+const MAX_ASSURANCE_PROOF_CASES: u32 = 8;
+
+fn assurance_proof_corpus_from_env() -> CorpusSpec {
+    let start_seed = std::env::var("P3_ASSURANCE_START_SEED")
+        .ok()
+        .map_or(Ok(0), |raw| {
+            raw.parse::<u64>()
+                .map_err(|_| format!("P3_ASSURANCE_START_SEED must be a u64, got {raw:?}"))
+        })
+        .unwrap_or_else(|error| panic!("{error}"));
+    let cases = std::env::var("P3_ASSURANCE_PROOF_CASES")
+        .ok()
+        .map_or(Ok(1), |raw| {
+            raw.parse::<u32>().map_err(|_| {
+                format!(
+                    "P3_ASSURANCE_PROOF_CASES must be a u32 in 1..={MAX_ASSURANCE_PROOF_CASES}, got {raw:?}"
+                )
+            })
+        })
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert!(
+        (1..=MAX_ASSURANCE_PROOF_CASES).contains(&cases),
+        "P3_ASSURANCE_PROOF_CASES must be in 1..={MAX_ASSURANCE_PROOF_CASES}, got {cases}"
+    );
+    CorpusSpec { start_seed, cases }
+}
 
 #[derive(Clone)]
 struct CountingPcs<P> {
@@ -431,8 +459,10 @@ fn independently_trusted_builtin_artifact_rejects_common_routing_substitution() 
     ));
 }
 
-#[test]
-fn trusted_verifier_rejects_a_same_shape_foreign_relation() {
+fn check_trusted_verifier_rejects_seeded_same_shape_foreign_relations(
+    corpus: CorpusSpec,
+    fixed_input: Option<u32>,
+) {
     let circuit_a = trusted_relation_circuit(2);
     let prepared_a = BatchStarkProver::new(config::baby_bear())
         .prepare_circuit::<BabyBear, 1>(&circuit_a, &[], &[], ConstraintProfile::Standard)
@@ -441,11 +471,92 @@ fn trusted_verifier_rejects_a_same_shape_foreign_relation() {
     let prepared_b = BatchStarkProver::new(config::baby_bear())
         .prepare_circuit::<BabyBear, 1>(&circuit_b, &[], &[], ConstraintProfile::Standard)
         .unwrap();
-    assert_eq!(prepared_a.relation(), prepared_b.relation());
+    assert_eq!(
+        prepared_a.relation(),
+        prepared_b.relation(),
+        "family=trusted-relation field=BabyBear/D1 mutation=foreign-root setup=same-shape"
+    );
+    let verifier_a = prepared_a.verifier();
+    let verifier_b = prepared_b.verifier();
+    let root_a = &verifier_a
+        .common_data()
+        .preprocessed
+        .as_ref()
+        .unwrap()
+        .commitment;
+    let root_b = &verifier_b
+        .common_data()
+        .preprocessed
+        .as_ref()
+        .unwrap()
+        .commitment;
+    assert_ne!(
+        root_a, root_b,
+        "family=trusted-relation field=BabyBear/D1 mutation=foreign-root setup=distinct-root"
+    );
 
-    let proof_b = trusted_relation_proof(&prepared_b, &circuit_b, 4, 12);
-    prepared_b.verifier().verify(&proof_b, &[]).unwrap();
-    assert!(prepared_a.verifier().verify(&proof_b, &[]).is_err());
+    for_each_case(corpus, |seed| {
+        let mut rng = CaseRng::new(derive_family_seed(seed, 0x5452_5553_5445_4452));
+        let input = fixed_input.unwrap_or_else(|| 1 + (rng.next_u64() % 1000) as u32);
+        let proof_a = trusted_relation_proof(&prepared_a, &circuit_a, input, input * 2);
+        let proof_b = trusted_relation_proof(&prepared_b, &circuit_b, input, input * 3);
+        assert_eq!(
+            &proof_a
+                .stark_common
+                .preprocessed
+                .as_ref()
+                .unwrap()
+                .commitment,
+            root_a,
+            "family=trusted-relation field=BabyBear/D1 seed={seed} mutation=honest-a-root expected-stage=setup"
+        );
+        assert_eq!(
+            &proof_b
+                .stark_common
+                .preprocessed
+                .as_ref()
+                .unwrap()
+                .commitment,
+            root_b,
+            "family=trusted-relation field=BabyBear/D1 seed={seed} mutation=honest-b-root expected-stage=setup"
+        );
+
+        verifier_a.verify(&proof_a, &[]).unwrap_or_else(|error| {
+            panic!(
+                "family=trusted-relation field=BabyBear/D1 seed={seed} mutation=none expected-stage=native-accept-a error={error:?}"
+            )
+        });
+        verifier_b.verify(&proof_b, &[]).unwrap_or_else(|error| {
+            panic!(
+                "family=trusted-relation field=BabyBear/D1 seed={seed} mutation=none expected-stage=native-accept-b error={error:?}"
+            )
+        });
+
+        let error = verifier_a.verify(&proof_b, &[]).unwrap_err();
+        assert!(
+            matches!(error, BatchStarkProverError::Verify(_)),
+            "family=trusted-relation field=BabyBear/D1 seed={seed} mutation=foreign-root expected-stage=native-verify error={error:?}"
+        );
+    });
+}
+
+#[test]
+fn trusted_verifier_rejects_a_same_shape_foreign_relation() {
+    check_trusted_verifier_rejects_seeded_same_shape_foreign_relations(
+        CorpusSpec {
+            start_seed: 0,
+            cases: 1,
+        },
+        Some(4),
+    );
+}
+
+#[test]
+fn assurance_trusted_verifier_rejects_seeded_same_shape_foreign_relations() {
+    check_trusted_verifier_rejects_seeded_same_shape_foreign_relations(
+        assurance_proof_corpus_from_env(),
+        None,
+    );
 }
 
 #[test]

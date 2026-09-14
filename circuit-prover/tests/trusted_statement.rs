@@ -8,7 +8,8 @@ use p3_batch_stark::StarkGenericConfig;
 use p3_circuit::ops::{NonPrimitivePreprocessedMap, NpoTypeId, generate_recompose_trace};
 use p3_circuit::tables::Traces;
 use p3_circuit::{
-    Circuit, CircuitBuilder, CircuitError, PreprocessedColumns, StatementExport, StatementSchema,
+    Circuit, CircuitBuilder, CircuitError, PreprocessedColumns, StatementError, StatementExport,
+    StatementSchema,
 };
 use p3_circuit_prover::batch_stark_prover::{
     BatchStarkProver, BatchStarkProverError, BatchTableInstance, DynamicAirEntry,
@@ -25,12 +26,39 @@ use p3_field::{Algebra, BasedVectorSpace, PrimeCharacteristicRing};
 use p3_lookup::folder::{ProverConstraintFolderWithLookups, VerifierConstraintFolderWithLookups};
 use p3_lookup::symbolic::InteractionSymbolicBuilder;
 use p3_matrix::dense::RowMajorMatrix;
+use p3_test_utils::corpus::{CaseRng, CorpusSpec, derive_family_seed, for_each_case};
 use p3_uni_stark::{SymbolicExpression, SymbolicExpressionExt};
 
 type EF = BinomialExtensionField<BabyBear, 4>;
 type SC = config::BabyBearConfig;
 const D: usize = 4;
 const STATIC_RECOMPOSE_VALUE: BabyBear = BabyBear::new(42);
+const MAX_ASSURANCE_PROOF_CASES: u32 = 8;
+
+fn assurance_proof_corpus_from_env() -> CorpusSpec {
+    let start_seed = std::env::var("P3_ASSURANCE_START_SEED")
+        .ok()
+        .map_or(Ok(0), |raw| {
+            raw.parse::<u64>()
+                .map_err(|_| format!("P3_ASSURANCE_START_SEED must be a u64, got {raw:?}"))
+        })
+        .unwrap_or_else(|error| panic!("{error}"));
+    let cases = std::env::var("P3_ASSURANCE_PROOF_CASES")
+        .ok()
+        .map_or(Ok(1), |raw| {
+            raw.parse::<u32>().map_err(|_| {
+                format!(
+                    "P3_ASSURANCE_PROOF_CASES must be a u32 in 1..={MAX_ASSURANCE_PROOF_CASES}, got {raw:?}"
+                )
+            })
+        })
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert!(
+        (1..=MAX_ASSURANCE_PROOF_CASES).contains(&cases),
+        "P3_ASSURANCE_PROOF_CASES must be in 1..={MAX_ASSURANCE_PROOF_CASES}, got {cases}"
+    );
+    CorpusSpec { start_seed, cases }
+}
 
 #[derive(Clone)]
 struct OnePublicValueAir {
@@ -412,26 +440,88 @@ fn one_trusted_preparation_proves_two_distinct_runtime_statements() {
     assert_eq!(first_table_values[4], expected_first);
 }
 
+fn check_trusted_verifier_rejects_seeded_statement_scalar_order_and_length(
+    corpus: CorpusSpec,
+    fixed_values: Option<(u32, [u32; D])>,
+) {
+    let (circuit, _schema, prepared) = prepare_statement_circuit();
+    let verifier = prepared.verifier();
+
+    for_each_case(corpus, |seed| {
+        let mut rng = CaseRng::new(derive_family_seed(seed, 0x5354_4154_454d_454e));
+        let (base, extension) = fixed_values.unwrap_or_else(|| {
+            let base = 1 + (rng.next_u64() % 1000) as u32;
+            (base, [base + 1, base + 2, base + 3, base + 4])
+        });
+        let honest =
+            [base, extension[0], extension[1], extension[2], extension[3]].map(BabyBear::from_u32);
+        let proof = prepared.prove(&traces(&circuit, base, extension)).unwrap();
+        verifier.verify(&proof, &honest).unwrap_or_else(|error| {
+            panic!(
+                "family=trusted-statement field=BabyBear/D4 seed={seed} mutation=none expected-stage=native-accept error={error:?}"
+            )
+        });
+
+        let scalar_index = (rng.next_u64() as usize) % honest.len();
+        let mut wrong_scalar = honest;
+        wrong_scalar[scalar_index] = wrong_scalar[scalar_index] + BabyBear::ONE;
+        let error = verifier.verify(&proof, &wrong_scalar).unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                BatchStarkProverError::RelationMismatch(message)
+                    if message == "attached Statement values differ from the caller's expected statement"
+            ),
+            "family=trusted-statement field=BabyBear/D4 seed={seed} mutation=caller-scalar expected-stage=relation-mismatch error={error:?}"
+        );
+
+        let mut wrong_order = honest;
+        wrong_order.swap(1, 4);
+        assert!(
+            matches!(
+                verifier.verify(&proof, &wrong_order),
+                Err(BatchStarkProverError::RelationMismatch(_))
+            ),
+            "family=trusted-statement field=BabyBear/D4 seed={seed} mutation=caller-order expected-stage=relation-mismatch"
+        );
+
+        assert_eq!(
+            verifier.table_public_values(&honest[..4]),
+            Err(StatementError::ValueLengthMismatch {
+                expected: 5,
+                got: 4,
+            }),
+            "family=trusted-statement field=BabyBear/D4 seed={seed} mutation=caller-length expected-stage=statement-schema"
+        );
+        let error = verifier.verify(&proof, &honest[..4]).unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                BatchStarkProverError::RelationMismatch(message)
+                    if message == "statement value length mismatch: expected 5, got 4"
+            ),
+            "family=trusted-statement field=BabyBear/D4 seed={seed} mutation=caller-length expected-stage=relation-mismatch error={error:?}"
+        );
+    });
+}
+
 #[test]
 fn trusted_verifier_rejects_wrong_statement_value_order_and_length() {
-    let (circuit, _schema, prepared) = prepare_statement_circuit();
-    let proof = prepared
-        .prove(&traces(&circuit, 7, [11, 12, 13, 14]))
-        .unwrap();
-    let verifier = prepared.verifier();
-    let honest = [7, 11, 12, 13, 14].map(BabyBear::from_u32);
-    verifier.verify(&proof, &honest).unwrap();
+    check_trusted_verifier_rejects_seeded_statement_scalar_order_and_length(
+        CorpusSpec {
+            start_seed: 0,
+            cases: 1,
+        },
+        Some((7, [11, 12, 13, 14])),
+    );
+}
 
-    let mut wrong_scalar = honest;
-    wrong_scalar[2] = BabyBear::from_u32(99);
-    assert!(verifier.verify(&proof, &wrong_scalar).is_err());
-
-    let mut wrong_order = honest;
-    wrong_order.swap(1, 4);
-    assert!(verifier.verify(&proof, &wrong_order).is_err());
-
-    assert!(verifier.verify(&proof, &honest[..4]).is_err());
-    assert!(verifier.table_public_values(&honest[..4]).is_err());
+#[test]
+fn assurance_trusted_verifier_rejects_seeded_statement_scalar_order_and_length() {
+    check_trusted_verifier_rejects_seeded_statement_scalar_order_and_length(
+        assurance_proof_corpus_from_env(),
+        None,
+    );
 }
 
 #[test]
@@ -492,37 +582,75 @@ fn attached_statement_replacement_and_static_npo_values_are_not_adopted() {
     assert!(verifier.verify(&proof, &honest).is_err());
 }
 
+fn check_same_length_static_npo_value_substitution_is_rejected(
+    corpus: CorpusSpec,
+    fixed_values: Option<(u32, [u32; D])>,
+) {
+    let (circuit, prepared) = prepare_statement_circuit_with_static_public_npo();
+    let verifier = prepared.verifier();
+
+    for_each_case(corpus, |seed| {
+        let mut rng = CaseRng::new(derive_family_seed(seed, 0x4e50_4f5f_5055_424c));
+        let (base, extension) = fixed_values.unwrap_or_else(|| {
+            let base = 1 + (rng.next_u64() % 1000) as u32;
+            (base, [base + 1, base + 2, base + 3, base + 4])
+        });
+        let honest_statement =
+            [base, extension[0], extension[1], extension[2], extension[3]].map(BabyBear::from_u32);
+        let mut proof = prepared.prove(&traces(&circuit, base, extension)).unwrap();
+        let static_recompose = proof
+            .non_primitives
+            .iter()
+            .find(|entry| entry.op_type == NpoTypeId::recompose_with_coeff_lookups())
+            .unwrap();
+
+        assert_eq!(
+            static_recompose.public_values,
+            [STATIC_RECOMPOSE_VALUE],
+            "family=trusted-npo field=BabyBear/D4 seed={seed} mutation=none expected-stage=setup"
+        );
+        verifier
+            .verify(&proof, &honest_statement)
+            .unwrap_or_else(|error| {
+                panic!(
+                    "family=trusted-npo field=BabyBear/D4 seed={seed} mutation=none expected-stage=native-accept error={error:?}"
+                )
+            });
+
+        proof
+            .non_primitives
+            .iter_mut()
+            .find(|entry| entry.op_type == NpoTypeId::recompose_with_coeff_lookups())
+            .unwrap()
+            .public_values[0] = BabyBear::new(43);
+        let error = verifier.verify(&proof, &honest_statement).unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                BatchStarkProverError::RelationMismatch(message)
+                    if message == "submitted NPO metadata differs at index 0"
+            ),
+            "family=trusted-npo field=BabyBear/D4 seed={seed} mutation=static-public-value expected-stage=relation-mismatch error={error:?}"
+        );
+    });
+}
+
 #[test]
 fn same_length_static_npo_value_substitution_is_rejected() {
-    let (circuit, prepared) = prepare_statement_circuit_with_static_public_npo();
-    let mut proof = prepared
-        .prove(&traces(&circuit, 7, [11, 12, 13, 14]))
-        .unwrap();
-    let verifier = prepared.verifier();
-    let honest_statement = [7, 11, 12, 13, 14].map(BabyBear::from_u32);
-    let static_recompose = proof
-        .non_primitives
-        .iter()
-        .find(|entry| entry.op_type == NpoTypeId::recompose_with_coeff_lookups())
-        .unwrap();
+    check_same_length_static_npo_value_substitution_is_rejected(
+        CorpusSpec {
+            start_seed: 0,
+            cases: 1,
+        },
+        Some((7, [11, 12, 13, 14])),
+    );
+}
 
-    assert_eq!(static_recompose.public_values, [STATIC_RECOMPOSE_VALUE]);
-    verifier.verify(&proof, &honest_statement).unwrap();
-
-    proof
-        .non_primitives
-        .iter_mut()
-        .find(|entry| entry.op_type == NpoTypeId::recompose_with_coeff_lookups())
-        .unwrap()
-        .public_values[0] = BabyBear::new(43);
-    let error = verifier.verify(&proof, &honest_statement).unwrap_err();
-    assert!(
-        matches!(
-            &error,
-            BatchStarkProverError::RelationMismatch(message)
-                if message == "submitted NPO metadata differs at index 0"
-        ),
-        "{error:?}"
+#[test]
+fn assurance_same_length_static_npo_value_substitution_is_rejected() {
+    check_same_length_static_npo_value_substitution_is_rejected(
+        assurance_proof_corpus_from_env(),
+        None,
     );
 }
 

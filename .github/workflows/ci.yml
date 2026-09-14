@@ -74,6 +74,9 @@ jobs:
           cargo test --verbose --release -p p3-circuit-prover --lib batch_stark_prover::tests::verify_all_tables_rejects_a_forged_constant_value -- --exact
           cargo test --verbose --release -p p3-circuit-prover --lib batch_stark_prover::tests::verify_all_tables_rejects_alu_bus_only_operand_swap -- --exact
           cargo test --verbose --release -p p3-circuit-prover --lib batch_stark_prover::tests::verify_all_tables_rejects_forged_horner_chain_head_seed -- --exact
+          cargo test --verbose --release -p p3-circuit-prover --lib batch_stark_prover::tests::assurance_trusted_verifier_rejects_seeded_same_shape_foreign_relations -- --exact
+          cargo test --verbose --release -p p3-circuit-prover --test trusted_statement assurance_
+          cargo test --verbose --release -p p3-recursion --lib prepared::trusted::tests::assurance_trusted_aggregation_rejects_seeded_statement_boundary_and_output_substitutions -- --exact
           cargo test --verbose --release -p p3-recursion --test test_lookups test_wrong_multiplicities -- --exact
           cargo test --verbose --release -p p3-recursion --test zk_hiding_mmcs test_batch_verifier_hiding_mmcs -- --exact
 

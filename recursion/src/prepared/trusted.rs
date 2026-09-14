@@ -1,6 +1,5 @@
 use alloc::string::ToString;
 use alloc::vec;
-use alloc::vec::Vec;
 
 use p3_air::{SymbolicExpression, SymbolicExpressionExt};
 use p3_circuit::{Circuit, CircuitBuilder, StatementField, StatementSchema};
@@ -894,7 +893,9 @@ mod tests {
     use std::string::String;
 
     use p3_circuit::tables::WitnessTrace;
+    use p3_circuit_prover::BatchStarkProverError;
     use p3_field::PrimeCharacteristicRing;
+    use p3_test_utils::corpus::{CaseRng, CorpusSpec, derive_family_seed, for_each_case};
     use p3_test_utils::koala_bear_params::{Challenge, DIGEST_ELEMS, F};
     use p3_test_utils::rejection_oracle::classify_debug_diagnostic;
 
@@ -903,6 +904,34 @@ mod tests {
     use crate::prepared::test_common;
     use crate::traits::Recursive;
     use crate::verifier::VerifierLimits;
+
+    const MAX_ASSURANCE_PROOF_CASES: u32 = 8;
+
+    fn assurance_proof_corpus_from_env() -> CorpusSpec {
+        let start_seed = std::env::var("P3_ASSURANCE_START_SEED")
+            .ok()
+            .map(|raw| {
+                raw.parse::<u64>().unwrap_or_else(|_| {
+                    panic!("P3_ASSURANCE_START_SEED must be a u64, got {raw:?}")
+                })
+            })
+            .unwrap_or(0);
+        let cases = std::env::var("P3_ASSURANCE_PROOF_CASES")
+            .ok()
+            .map(|raw| {
+                raw.parse::<u32>().unwrap_or_else(|_| {
+                    panic!(
+                        "P3_ASSURANCE_PROOF_CASES must be a u32 in 1..={MAX_ASSURANCE_PROOF_CASES}, got {raw:?}"
+                    )
+                })
+            })
+            .unwrap_or(1);
+        assert!(
+            (1..=MAX_ASSURANCE_PROOF_CASES).contains(&cases),
+            "P3_ASSURANCE_PROOF_CASES must be in 1..={MAX_ASSURANCE_PROOF_CASES}, got {cases}"
+        );
+        CorpusSpec { start_seed, cases }
+    }
 
     #[test]
     fn fri_trusted_layer_reuses_one_child_relation_for_two_runtime_statements() {
@@ -1187,129 +1216,223 @@ mod tests {
         }
     }
 
-    #[test]
-    fn trusted_aggregation_keeps_left_and_right_runtime_statements_in_input_order() {
+    fn check_trusted_aggregation_rejects_seeded_statement_boundary_and_output_substitutions(
+        corpus: CorpusSpec,
+        fixed_values: Option<([u64; 2], [u64; 2])>,
+    ) {
         type SC = test_common::KoalaBearD4RecursionConfig;
 
         let fixture = test_common::KoalaBearD4StatementFixture::new();
-        let left_statement = [F::from_u64(7), F::from_u64(9)];
-        let right_statement = [F::from_u64(11), F::from_u64(13)];
-        let left_proof = fixture.prove([7, 9]);
-        let right_proof = fixture.prove([11, 13]);
+        let representative_left_statement = [F::from_u64(7), F::from_u64(9)];
+        let representative_right_statement = [F::from_u64(11), F::from_u64(13)];
+        let representative_left_proof = fixture.prove([7, 9]);
+        let representative_right_proof = fixture.prove([11, 13]);
         let params = ProveNextLayerParams::default();
         let owner = TrustedPreparedAggregation::<SC, SC, BatchOnly, BatchOnly, _, 4>::new(
             TrustedPreparedSource::BatchStark {
                 verifier: fixture.verifier(),
-                proof: &left_proof,
-                statement: &left_statement,
+                proof: &representative_left_proof,
+                statement: &representative_left_statement,
             },
             TrustedPreparedSource::BatchStark {
                 verifier: fixture.verifier(),
-                proof: &right_proof,
-                statement: &right_statement,
+                proof: &representative_right_proof,
+                statement: &representative_right_statement,
             },
             fixture.layer_config.clone(),
             fixture.backend.clone(),
             params,
         )
         .unwrap();
-
-        let output = owner
-            .prove(
-                TrustedPreparedInput::BatchStark {
-                    proof: &left_proof,
-                    statement: &left_statement,
-                },
-                TrustedPreparedInput::BatchStark {
-                    proof: &right_proof,
-                    statement: &right_statement,
-                },
-            )
-            .unwrap();
-        let duplicated_left_output = owner
-            .prove(
-                TrustedPreparedInput::BatchStark {
-                    proof: &left_proof,
-                    statement: &left_statement,
-                },
-                TrustedPreparedInput::BatchStark {
-                    proof: &left_proof,
-                    statement: &left_statement,
-                },
-            )
-            .expect("identical authorized slots may reuse the same relation and statement");
         let parent_verifier = owner.verifier();
         let layout = parent_verifier
             .aggregation_statement_layout()
             .expect("the trusted parent retains the ordered child boundary");
-        assert_eq!(layout.left().base_len(), left_statement.len());
-        assert_eq!(layout.right().base_len(), right_statement.len());
-        assert_eq!(layout.split_at(), left_statement.len());
-        assert_eq!(layout.output().base_len(), 4);
-        parent_verifier
-            .verify(
-                &output.0,
-                &[
-                    left_statement[0],
-                    left_statement[1],
-                    right_statement[0],
-                    right_statement[1],
-                ],
-            )
-            .unwrap();
-        parent_verifier
-            .verify(
-                &duplicated_left_output.0,
-                &[
-                    left_statement[0],
-                    left_statement[1],
-                    left_statement[0],
-                    left_statement[1],
-                ],
-            )
-            .unwrap();
-        assert!(
-            parent_verifier
-                .verify(
-                    &duplicated_left_output.0,
-                    &[
-                        left_statement[0],
-                        left_statement[1],
-                        right_statement[0],
-                        right_statement[1],
-                    ],
-                )
-                .is_err(),
-            "a valid left || left output must not satisfy an independently requested left || right"
+        assert_eq!(
+            layout.left().base_len(),
+            2,
+            "family=trusted-ordered field=KoalaBear/D4 mutation=none expected-stage=layout-left"
         );
-        assert!(
-            parent_verifier
-                .verify(
-                    &output.0,
-                    &[
-                        right_statement[0],
-                        right_statement[1],
-                        left_statement[0],
-                        left_statement[1],
-                    ],
-                )
-                .is_err(),
-            "the parent statement must not accept swapped child values"
+        assert_eq!(
+            layout.right().base_len(),
+            2,
+            "family=trusted-ordered field=KoalaBear/D4 mutation=none expected-stage=layout-right"
+        );
+        assert_eq!(
+            layout.split_at(),
+            2,
+            "family=trusted-ordered field=KoalaBear/D4 mutation=none expected-stage=layout-boundary"
+        );
+        assert_eq!(
+            layout.output().base_len(),
+            4,
+            "family=trusted-ordered field=KoalaBear/D4 mutation=none expected-stage=layout-output"
         );
 
-        let error = owner
-            .check_inputs(
-                &TrustedPreparedInput::BatchStark {
-                    proof: &left_proof,
-                    statement: &right_statement,
-                },
-                &TrustedPreparedInput::BatchStark {
-                    proof: &right_proof,
-                    statement: &left_statement,
-                },
-            )
-            .unwrap_err();
-        assert!(matches!(error, VerificationError::InvalidProofShape(_)));
+        for_each_case(corpus, |seed| {
+            let mut rng = CaseRng::new(derive_family_seed(seed, 0x4f52_4445_5245_445f));
+            let (left_values, right_values) = fixed_values.unwrap_or_else(|| {
+                (
+                    [1 + (rng.next_u64() % 1000), 1001 + (rng.next_u64() % 1000)],
+                    [
+                        2001 + (rng.next_u64() % 1000),
+                        3001 + (rng.next_u64() % 1000),
+                    ],
+                )
+            });
+            let left_statement = left_values.map(F::from_u64);
+            let right_statement = right_values.map(F::from_u64);
+            let left_proof = fixture.prove(left_values);
+            let right_proof = fixture.prove(right_values);
+            let child_verifier = fixture.verifier();
+            child_verifier
+                .verify(&left_proof, &left_statement)
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "family=trusted-ordered field=KoalaBear/D4 seed={seed} mutation=none expected-stage=native-left-accept error={error:?}"
+                    )
+                });
+            child_verifier
+                .verify(&right_proof, &right_statement)
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "family=trusted-ordered field=KoalaBear/D4 seed={seed} mutation=none expected-stage=native-right-accept error={error:?}"
+                    )
+                });
+
+            let left_input = TrustedPreparedInput::BatchStark {
+                proof: &left_proof,
+                statement: &left_statement,
+            };
+            let right_input = TrustedPreparedInput::BatchStark {
+                proof: &right_proof,
+                statement: &right_statement,
+            };
+            owner
+                .check_inputs(&left_input, &right_input)
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "family=trusted-ordered field=KoalaBear/D4 seed={seed} mutation=none expected-stage=trusted-replay-accept error={error:?}"
+                    )
+                });
+            let output = owner
+                .prove(left_input, right_input)
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "family=trusted-ordered field=KoalaBear/D4 seed={seed} mutation=none expected-stage=circuit-prove-accept error={error:?}"
+                    )
+                });
+            let expected = [
+                left_statement[0],
+                left_statement[1],
+                right_statement[0],
+                right_statement[1],
+            ];
+            parent_verifier
+                .verify(&output.0, &expected)
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "family=trusted-ordered field=KoalaBear/D4 seed={seed} mutation=none expected-stage=parent-native-accept error={error:?}"
+                    )
+                });
+
+            if fixed_values.is_some() {
+                let duplicated_left_output = owner
+                    .prove(
+                        TrustedPreparedInput::BatchStark {
+                            proof: &left_proof,
+                            statement: &left_statement,
+                        },
+                        TrustedPreparedInput::BatchStark {
+                            proof: &left_proof,
+                            statement: &left_statement,
+                        },
+                    )
+                    .expect("identical authorized slots may reuse the same relation and statement");
+                let duplicated_expected = [
+                    left_statement[0],
+                    left_statement[1],
+                    left_statement[0],
+                    left_statement[1],
+                ];
+                parent_verifier
+                    .verify(&duplicated_left_output.0, &duplicated_expected)
+                    .unwrap();
+                assert!(
+                    parent_verifier
+                        .verify(&duplicated_left_output.0, &expected)
+                        .is_err(),
+                    "a valid left || left output must not satisfy an independently requested left || right"
+                );
+            }
+
+            let mut wrong_boundary = [
+                right_statement[0],
+                right_statement[1],
+                left_statement[0],
+                left_statement[1],
+            ];
+            let error = parent_verifier
+                .verify(&output.0, &wrong_boundary)
+                .unwrap_err();
+            assert!(
+                matches!(error, BatchStarkProverError::RelationMismatch(_)),
+                "family=trusted-ordered field=KoalaBear/D4 seed={seed} mutation=child-boundary-swap expected-stage=relation-mismatch error={error:?}"
+            );
+
+            wrong_boundary = expected;
+            wrong_boundary[layout.split_at()] = wrong_boundary[layout.split_at()] + F::ONE;
+            let error = parent_verifier
+                .verify(&output.0, &wrong_boundary)
+                .unwrap_err();
+            assert!(
+                matches!(error, BatchStarkProverError::RelationMismatch(_)),
+                "family=trusted-ordered field=KoalaBear/D4 seed={seed} mutation=right-output-scalar expected-stage=relation-mismatch error={error:?}"
+            );
+            let error = parent_verifier
+                .verify(&output.0, &expected[..expected.len() - 1])
+                .unwrap_err();
+            assert!(
+                matches!(error, BatchStarkProverError::RelationMismatch(_)),
+                "family=trusted-ordered field=KoalaBear/D4 seed={seed} mutation=output-length expected-stage=relation-mismatch error={error:?}"
+            );
+
+            let error = owner
+                .check_inputs(
+                    &TrustedPreparedInput::BatchStark {
+                        proof: &left_proof,
+                        statement: &right_statement,
+                    },
+                    &TrustedPreparedInput::BatchStark {
+                        proof: &right_proof,
+                        statement: &left_statement,
+                    },
+                )
+                .unwrap_err();
+            assert!(
+                matches!(error, VerificationError::InvalidProofShape(_)),
+                "family=trusted-ordered field=KoalaBear/D4 seed={seed} mutation=swapped-input-statements expected-stage=invalid-proof-shape error={error:?}"
+            );
+        });
+    }
+
+    #[test]
+    fn trusted_aggregation_keeps_left_and_right_runtime_statements_in_input_order() {
+        check_trusted_aggregation_rejects_seeded_statement_boundary_and_output_substitutions(
+            CorpusSpec {
+                start_seed: 0,
+                cases: 1,
+            },
+            Some(([7, 9], [11, 13])),
+        );
+    }
+
+    #[test]
+    fn assurance_trusted_aggregation_rejects_seeded_statement_boundary_and_output_substitutions() {
+        check_trusted_aggregation_rejects_seeded_statement_boundary_and_output_substitutions(
+            assurance_proof_corpus_from_env(),
+            None,
+        );
     }
 
     #[test]
