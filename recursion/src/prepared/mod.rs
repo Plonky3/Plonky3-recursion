@@ -342,6 +342,14 @@ where
         op_ids: &[NonPrimitiveOpId],
     ) -> Result<(), VerificationError>;
 
+    /// Return the exact existing AIR-public targets consumed by `result`, checked against the
+    /// retained trusted child statement layout.
+    fn verified_statement_targets(
+        &self,
+        result: &Self::VerifierResult,
+        source: &TrustedChildStatementLayout,
+    ) -> Result<VerifiedStatementTargets, VerificationError>;
+
     /// Constrain the preprocessing commitment allocated by `result` to `expected`, including
     /// enforcing equal presence and the complete commitment's exact root/limb cardinality.
     fn constrain_trusted_preprocessing(
@@ -397,7 +405,7 @@ mod verified_statement_target_tests {
     use alloc::vec;
 
     use p3_baby_bear::BabyBear;
-    use p3_circuit::{CircuitBuilder, StatementExport};
+    use p3_circuit::{CircuitBuilder, StatementField, StatementSchema};
     use p3_field::extension::BinomialExtensionField;
 
     use super::{ConsumedStatementTargets, TrustedChildStatementLayout, checked_statement_targets};
@@ -408,15 +416,8 @@ mod verified_statement_target_tests {
     fn checked_statement_targets_retain_consumed_ids_and_source_schema() {
         type Ext4 = BinomialExtensionField<BabyBear, 4>;
 
-        let mut schema_builder = CircuitBuilder::<BabyBear>::new();
-        let first = schema_builder.public_input();
-        let second = schema_builder.public_input();
-        let schema = schema_builder
-            .set_statement_exports::<BabyBear>(&[
-                StatementExport::Base(first),
-                StatementExport::Base(second),
-            ])
-            .unwrap();
+        let schema =
+            StatementSchema::try_new(vec![StatementField::Base, StatementField::Base]).unwrap();
         let source = TrustedChildStatementLayout::uni(2, schema.clone()).unwrap();
 
         let mut wrapper = CircuitBuilder::<Ext4>::new();
@@ -428,5 +429,46 @@ mod verified_statement_target_tests {
         verified.install::<BabyBear, Ext4>(&mut wrapper).unwrap();
         let circuit = wrapper.build().unwrap();
         assert_eq!(circuit.statement_schema(), Some(&schema));
+    }
+
+    /// Selecting all batch public targets, the wrong table, or a same-kind vector of the wrong
+    /// length would make at least one of these checks fail.
+    #[test]
+    fn checked_batch_statement_targets_select_only_the_trusted_table() {
+        let schema = StatementSchema::try_new(vec![
+            StatementField::Extension { degree: 2 },
+            StatementField::Base,
+        ])
+        .unwrap();
+        let source = TrustedChildStatementLayout {
+            kind: super::TrustedChildStatementKind::Batch,
+            schema: schema.clone(),
+            public_values_len: 3,
+            table_instance: Some(1),
+        };
+        let mut builder = CircuitBuilder::<BabyBear>::new();
+        let tables = vec![
+            vec![builder.public_input()],
+            vec![
+                builder.public_input(),
+                builder.public_input(),
+                builder.public_input(),
+            ],
+            vec![builder.public_input()],
+        ];
+
+        let verified =
+            checked_statement_targets(ConsumedStatementTargets::Batch(&tables), &source).unwrap();
+        assert_eq!(verified.base_targets, tables[1]);
+        assert_eq!(verified.schema(), &schema);
+
+        assert!(
+            checked_statement_targets(ConsumedStatementTargets::Uni(&tables[1]), &source).is_err()
+        );
+        let short_tables = vec![vec![], vec![builder.public_input()]];
+        assert!(
+            checked_statement_targets(ConsumedStatementTargets::Batch(&short_tables), &source)
+                .is_err()
+        );
     }
 }

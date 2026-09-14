@@ -47,8 +47,9 @@ use crate::prepared::input::{
     validate_builtin_prepared_input, validate_trusted_batch_input,
 };
 use crate::prepared::{
-    ConstrainConstantCommitment, NativeCommitment, PreparedInput, PreparedPcsRecursionBackend,
-    TrustedPcsRecursionBackend,
+    ConstrainConstantCommitment, ConsumedStatementTargets, NativeCommitment, PreparedInput,
+    PreparedPcsRecursionBackend, TrustedChildStatementLayout, TrustedPcsRecursionBackend,
+    VerifiedStatementTargets, checked_statement_targets,
 };
 use crate::public_inputs::{BatchStarkVerifierInputsBuilder, StarkVerifierInputsBuilder};
 use crate::recursion::{PcsRecursionBackend, RecursionInput, VerifierCircuitResult};
@@ -1503,6 +1504,22 @@ where
             SC::set_whir_private_data(verifier.config(), runner, op_ids, opening_proof, transcript)
         })
         .map_err(|message| VerificationError::InvalidProofShape(message.into()))
+    }
+
+    fn verified_statement_targets(
+        &self,
+        result: &Self::VerifierResult,
+        source: &TrustedChildStatementLayout,
+    ) -> Result<VerifiedStatementTargets, VerificationError> {
+        let consumed = match &result.inner {
+            WhirVerifierResult::UniStark(builder, ..) => {
+                ConsumedStatementTargets::Uni(&builder.air_public_targets)
+            }
+            WhirVerifierResult::BatchStark(builder, ..) => {
+                ConsumedStatementTargets::Batch(&builder.air_public_targets)
+            }
+        };
+        checked_statement_targets(consumed, source)
     }
 
     fn constrain_trusted_preprocessing(

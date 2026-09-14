@@ -44,8 +44,9 @@ pub use p3_circuit::ops::{PermConfig, Poseidon2Config};
 pub use pcs::fri::{FriInputError, FriVerifierParams, FriVerifierParamsError, NativeFriParams};
 pub use prepared::{
     NativeCommitment, PreparedAggregation, PreparedAggregationCross, PreparedInput, PreparedLayer,
-    PreparedPcsRecursionBackend, PreparedSource, TrustedPcsRecursionBackend,
-    TrustedPreparedAggregation, TrustedPreparedInput, TrustedPreparedLayer, TrustedPreparedSource,
+    PreparedPcsRecursionBackend, PreparedSource, TrustedChildStatementKind,
+    TrustedChildStatementLayout, TrustedPcsRecursionBackend, TrustedPreparedAggregation,
+    TrustedPreparedInput, TrustedPreparedLayer, TrustedPreparedSource, VerifiedStatementTargets,
 };
 pub use profile::{FixedPointError, RecursionLayerProfile, solve_fixed_point};
 pub use public_inputs::{
