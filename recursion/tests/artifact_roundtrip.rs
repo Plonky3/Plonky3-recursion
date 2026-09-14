@@ -16,16 +16,15 @@ use p3_recursion::artifact::{
     PortableVerifier,
 };
 use p3_recursion::builtin_config::{
-    baby_bear_d4_poseidon2_binary, baby_bear_d4_poseidon2_quaternary,
-    baby_bear_d4_poseidon2_random_codeword, baby_bear_d4_poseidon2_whir,
-    goldilocks_d2_poseidon2_binary, koala_bear_d4_poseidon2_salted, koala_bear_d4_poseidon2_whir,
-    koala_bear_d5_poseidon2_binary, BabyBearD4Poseidon2BinaryConfig, FriConfigV1,
-    KoalaBearD4Poseidon2SaltedConfig, SuiteIdV1, WhirConfigV1, WhirRateModeV1,
-    WhirSecurityAssumptionV1,
+    BabyBearD4Poseidon2BinaryConfig, FriConfigV1, KoalaBearD4Poseidon2SaltedConfig, SuiteIdV1,
+    WhirConfigV1, WhirRateModeV1, WhirSecurityAssumptionV1, baby_bear_d4_poseidon2_binary,
+    baby_bear_d4_poseidon2_quaternary, baby_bear_d4_poseidon2_random_codeword,
+    baby_bear_d4_poseidon2_whir, goldilocks_d2_poseidon2_binary, koala_bear_d4_poseidon2_salted,
+    koala_bear_d4_poseidon2_whir, koala_bear_d5_poseidon2_binary,
 };
 use p3_symmetric::CryptographicHasher;
-use rand::rngs::StdRng;
 use rand::SeedableRng;
+use rand::rngs::StdRng;
 
 #[derive(Clone, Copy)]
 struct ArtifactGolden {
@@ -314,11 +313,13 @@ fn representative_native_proofs_roundtrip_each_physical_format_and_field_dimensi
                 .as_ref()
                 .expect("salted verifier must retain trusted setup common data");
             assert!(!preprocessed.commitment.roots().is_empty());
-            assert!(preprocessed
-                .commitment
-                .roots()
-                .iter()
-                .any(|root| root.iter().any(|limb| *limb != KoalaBear::ZERO)));
+            assert!(
+                preprocessed
+                    .commitment
+                    .roots()
+                    .iter()
+                    .any(|root| root.iter().any(|limb| *limb != KoalaBear::ZERO))
+            );
         }
     );
 
@@ -433,19 +434,27 @@ fn one_preparation_exports_two_ordered_runtime_statements_after_all_native_owner
     retained
         .verify_encoded(&second_bytes, CanonicalStatement::new(&second_statement, 2))
         .unwrap();
-    assert!(retained
-        .verify_encoded(&second_bytes, CanonicalStatement::new(&first_statement, 2),)
-        .is_err());
-    assert!(retained
-        .verify_encoded(&first_bytes, CanonicalStatement::new(&swapped_statement, 2),)
-        .is_err());
+    assert!(
+        retained
+            .verify_encoded(&second_bytes, CanonicalStatement::new(&first_statement, 2),)
+            .is_err()
+    );
+    assert!(
+        retained
+            .verify_encoded(&first_bytes, CanonicalStatement::new(&swapped_statement, 2),)
+            .is_err()
+    );
     let modulus = (BabyBear::ORDER_U64 as u32).to_le_bytes();
     let mut non_canonical = modulus.to_vec();
     non_canonical.extend(9_u32.to_le_bytes());
-    assert!(retained
-        .verify_encoded(&first_bytes, CanonicalStatement::new(&non_canonical, 2),)
-        .is_err());
-    assert!(retained
-        .verify_encoded(&first_bytes, CanonicalStatement::new(&first_statement, 1),)
-        .is_err());
+    assert!(
+        retained
+            .verify_encoded(&first_bytes, CanonicalStatement::new(&non_canonical, 2),)
+            .is_err()
+    );
+    assert!(
+        retained
+            .verify_encoded(&first_bytes, CanonicalStatement::new(&first_statement, 1),)
+            .is_err()
+    );
 }
