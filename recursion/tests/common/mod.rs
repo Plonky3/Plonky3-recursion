@@ -187,6 +187,72 @@ where
     }
 }
 
+/// A local-only variant of `MulAir` for verifying the one-point preprocessing
+/// route.  It deliberately keeps the same witness generation and local
+/// constraints, but does not read a next preprocessing row.
+#[derive(Clone, Copy)]
+pub(crate) struct LocalOnlyMulAir {
+    pub(crate) degree: u64,
+    pub(crate) rows: usize,
+}
+
+impl LocalOnlyMulAir {
+    pub(crate) fn random_valid_trace<Val: Field>(
+        &self,
+        valid: bool,
+    ) -> (RowMajorMatrix<Val>, RowMajorMatrix<Val>)
+    where
+        StandardUniform: Distribution<Val>,
+    {
+        MulAir {
+            degree: self.degree,
+            rows: self.rows,
+        }
+        .random_valid_trace(valid)
+    }
+}
+
+impl<Val: Field> BaseAir<Val> for LocalOnlyMulAir
+where
+    StandardUniform: Distribution<Val>,
+{
+    fn width(&self) -> usize {
+        MAIN_TRACE_WIDTH
+    }
+
+    fn preprocessed_width(&self) -> usize {
+        PREP_WIDTH
+    }
+
+    fn preprocessed_trace(&self) -> Option<RowMajorMatrix<Val>> {
+        Some(self.random_valid_trace(true).1)
+    }
+
+    fn preprocessed_next_row_columns(&self) -> Vec<usize> {
+        Vec::new()
+    }
+}
+
+impl<AB: AirBuilder> Air<AB> for LocalOnlyMulAir
+where
+    AB::F: Field,
+    StandardUniform: Distribution<AB::F>,
+{
+    fn eval(&self, builder: &mut AB) {
+        let main = builder.main();
+        let main_local = main.current_slice();
+        let preprocessed = builder.preprocessed().clone();
+        let preprocessed_local = preprocessed.current_slice();
+        for (i, c) in main_local.iter().enumerate() {
+            let prep_start = i * 2;
+            let a = preprocessed_local[prep_start];
+            let b = preprocessed_local[prep_start + 1];
+            builder.assert_zero(a.into().exp_u64(self.degree - 1) * b - *c);
+            builder.when_first_row().assert_eq(a * a + AB::Expr::ONE, b);
+        }
+    }
+}
+
 /// `OpeningProof` type for a KoalaBear D4 `TwoAdicFriPcs` recursion-layer verifier circuit.
 pub(crate) type KoalaBearD4InnerFri = InnerFriGeneric<MyConfig, MyHash, MyCompress, DIGEST_ELEMS>;
 

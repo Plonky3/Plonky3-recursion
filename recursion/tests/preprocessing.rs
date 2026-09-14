@@ -372,11 +372,49 @@ fn test_batch_verifier_with_mixed_preprocessed() -> Result<(), VerificationError
     // Generate prover data and batch proof
     let prover_data = ProverData::from_instances(&config, &instances);
     let lookup_gadget = LogUpGadget::new();
-    let batch_proof = prove_batch(&config, &instances, &prover_data);
+    let mut batch_proof = prove_batch(&config, &instances, &prover_data);
     let airs = [mixed_air1, mixed_air2, mixed_air3];
     let common_data = &prover_data.common;
 
     verify_batch(&config, &airs, &batch_proof, &pvs, common_data).unwrap();
+
+    // The next-row-using MulAir control rejects a missing preprocessing-next
+    // opening before recursive backend construction.
+    let required_next = batch_proof.opened_values.instances[0]
+        .base_opened_values
+        .preprocessed_next
+        .take();
+    batch_proof.opened_values.instances[0]
+        .base_opened_values
+        .preprocessed_next = None;
+    let mut shape_builder = CircuitBuilder::<Challenge>::new();
+    shape_builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
+        generate_poseidon2_trace::<Challenge, BabyBearD4Width16>,
+        perm.clone(),
+    );
+    shape_builder.enable_recompose::<F>(generate_recompose_trace::<F, Challenge>);
+    let shape_inputs = BatchStarkVerifierInputsBuilder::<
+        MyConfig,
+        MerkleCapTargets<F, DIGEST_ELEMS>,
+        InnerFri,
+    >::allocate(&mut shape_builder, &batch_proof, common_data, &[0, 0, 0])?;
+    assert!(
+        verify_batch_circuit::<_, _, _, _, _, _, _, WIDTH, RATE>(
+            &config,
+            &airs,
+            &mut shape_builder,
+            &shape_inputs.proof_targets,
+            &shape_inputs.air_public_targets,
+            &fri_verifier_params,
+            &shape_inputs.common_data,
+            &lookup_gadget,
+            Poseidon2Config::BABY_BEAR_D4_W16,
+        )
+        .is_err()
+    );
+    batch_proof.opened_values.instances[0]
+        .base_opened_values
+        .preprocessed_next = required_next;
 
     // Create AIRs vector for verification circuit
     let airs = vec![mixed_air1, mixed_air2, mixed_air3];
@@ -466,7 +504,7 @@ fn test_batch_verifier_with_local_only_preprocessed() -> Result<(), Verification
     };
     let instances = vec![instance];
     let prover_data = ProverData::from_instances(&config, &instances);
-    let batch_proof = prove_batch(&config, &instances, &prover_data);
+    let mut batch_proof = prove_batch(&config, &instances, &prover_data);
     verify_batch(
         &config,
         &[air],
@@ -491,6 +529,63 @@ fn test_batch_verifier_with_local_only_preprocessed() -> Result<(), Verification
             .map_or(0, |values| values.len()),
         0
     );
+    let (replay, _) = p3_recursion::replay_batch_stark_transcript(
+        &[air],
+        &config,
+        &batch_proof,
+        &[public_values.clone()],
+        &prover_data.common,
+        &LogUpGadget::new(),
+    )
+    .unwrap();
+    let pre_round = replay.commitments_with_opening_points.last().unwrap();
+    assert_eq!(pre_round.1.len(), 1);
+    assert_eq!(pre_round.1[0].1.len(), 1);
+
+    // `Some(empty)` is accepted for an AIR whose expected next width is zero;
+    // a nonempty extra next opening is rejected by the actual target verifier.
+    let original_next = batch_proof.opened_values.instances[0]
+        .base_opened_values
+        .preprocessed_next
+        .take();
+    batch_proof.opened_values.instances[0]
+        .base_opened_values
+        .preprocessed_next = Some(Vec::new());
+    let shape_result = |proof: &BatchProof<MyConfig>| -> Result<(), VerificationError> {
+        let mut shape_builder = CircuitBuilder::<Challenge>::new();
+        shape_builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
+            generate_poseidon2_trace::<Challenge, BabyBearD4Width16>,
+            default_babybear_poseidon2_16(),
+        );
+        shape_builder.enable_recompose::<F>(generate_recompose_trace::<F, Challenge>);
+        let shape_inputs = BatchStarkVerifierInputsBuilder::<
+            MyConfig,
+            MerkleCapTargets<F, DIGEST_ELEMS>,
+            InnerFri,
+        >::allocate(
+            &mut shape_builder, proof, &prover_data.common, &[0]
+        )?;
+        verify_batch_circuit::<_, _, _, _, _, _, _, WIDTH, RATE>(
+            &config,
+            &[air],
+            &mut shape_builder,
+            &shape_inputs.proof_targets,
+            &shape_inputs.air_public_targets,
+            &pcs_verifier_params,
+            &shape_inputs.common_data,
+            &LogUpGadget::new(),
+            Poseidon2Config::BABY_BEAR_D4_W16,
+        )
+        .map(|_| ())
+    };
+    shape_result(&batch_proof).unwrap();
+    batch_proof.opened_values.instances[0]
+        .base_opened_values
+        .preprocessed_next = Some(vec![Challenge::ZERO]);
+    assert!(shape_result(&batch_proof).is_err());
+    batch_proof.opened_values.instances[0]
+        .base_opened_values
+        .preprocessed_next = original_next;
 
     let mut circuit_builder = CircuitBuilder::<Challenge>::new();
     circuit_builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(

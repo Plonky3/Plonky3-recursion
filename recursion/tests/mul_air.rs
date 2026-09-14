@@ -9,12 +9,14 @@ use p3_matrix::Matrix;
 use p3_poseidon2_circuit_air::BabyBearD4Width16;
 use p3_recursion::pcs::fri::{FriVerifierParams, MerkleCapTargets};
 use p3_recursion::public_inputs::StarkVerifierInputsBuilder;
-use p3_recursion::{Poseidon2Config, VerificationError, verify_p3_uni_proof_circuit};
+use p3_recursion::{
+    Poseidon2Config, VerificationError, replay_uni_stark_transcript, verify_p3_uni_proof_circuit,
+};
 use p3_test_utils::baby_bear_params::*;
 use p3_uni_stark::{prove_with_preprocessed, setup_preprocessed, verify_with_preprocessed};
 use p3_util::log2_ceil_usize;
 
-use crate::common::{InnerFriGeneric, MulAir};
+use crate::common::{InnerFriGeneric, LocalOnlyMulAir, MulAir};
 
 type InnerFri = InnerFriGeneric<MyConfig, MyHash, MyCompress, DIGEST_ELEMS>;
 
@@ -42,7 +44,7 @@ fn test_mul_verifier_circuit() -> Result<(), VerificationError> {
     let (preprocessed_prover_data, preprocessed_vk) =
         setup_preprocessed(&config, &air, log2_ceil_usize(trace.height())).unzip();
     // Generate and verify proof
-    let proof = prove_with_preprocessed(
+    let mut proof = prove_with_preprocessed(
         &config,
         &air,
         trace,
@@ -52,6 +54,51 @@ fn test_mul_verifier_circuit() -> Result<(), VerificationError> {
     assert!(
         verify_with_preprocessed(&config, &air, &proof, &pis, preprocessed_vk.as_ref()).is_ok()
     );
+    let replay = replay_uni_stark_transcript(
+        &config,
+        &air,
+        &proof,
+        &pis,
+        preprocessed_vk.as_ref().map(|vk| &vk.commitment),
+    )
+    .unwrap();
+    let pre_round = replay.commitments_with_opening_points.last().unwrap();
+    assert_eq!(pre_round.1.len(), 1);
+    assert_eq!(pre_round.1[0].1.len(), 2);
+
+    // The next-row-using control must reject a missing required opening.
+    let required_next = proof.opened_values.preprocessed_next.take();
+    proof.opened_values.preprocessed_next = None;
+    let mut shape_builder = CircuitBuilder::new();
+    shape_builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
+        generate_poseidon2_trace::<Challenge, BabyBearD4Width16>,
+        default_babybear_poseidon2_16(),
+    );
+    shape_builder.enable_recompose::<F>(generate_recompose_trace::<F, Challenge>);
+    let shape_inputs = StarkVerifierInputsBuilder::<
+        MyConfig,
+        MerkleCapTargets<F, DIGEST_ELEMS>,
+        InnerFri,
+    >::allocate(
+        &mut shape_builder,
+        &proof,
+        preprocessed_vk.as_ref().map(|vk| &vk.commitment),
+        pis.len(),
+    );
+    assert!(
+        verify_p3_uni_proof_circuit::<_, _, _, _, _, _, WIDTH, RATE>(
+            &config,
+            &air,
+            &mut shape_builder,
+            &shape_inputs.proof_targets,
+            &shape_inputs.air_public_targets,
+            &shape_inputs.preprocessed_commit,
+            &fri_verifier_params,
+            Poseidon2Config::BABY_BEAR_D4_W16,
+        )
+        .is_err()
+    );
+    proof.opened_values.preprocessed_next = required_next;
 
     let mut circuit_builder = CircuitBuilder::new();
     circuit_builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
@@ -102,5 +149,148 @@ fn test_mul_verifier_circuit() -> Result<(), VerificationError> {
 
     let _traces = runner.run().map_err(VerificationError::Circuit)?;
 
+    Ok(())
+}
+
+#[test]
+fn test_local_only_mul_verifier_circuit_uses_one_preprocessed_point()
+-> Result<(), VerificationError> {
+    let n = 1 << 3;
+    let scalars = test_fri_scalars();
+    let fri_verifier_params = FriVerifierParams::unsafe_arithmetic_only_for_tests(
+        scalars.log_blowup,
+        scalars.log_final_poly_len,
+        scalars.commit_pow_bits,
+        scalars.query_pow_bits,
+    );
+    let config = make_test_config();
+    let air = LocalOnlyMulAir { degree: 2, rows: n };
+    let pis = vec![];
+    let (trace, _) = air.random_valid_trace(true);
+    let (preprocessed_prover_data, preprocessed_vk) =
+        setup_preprocessed(&config, &air, log2_ceil_usize(trace.height())).unzip();
+    let mut proof = prove_with_preprocessed(
+        &config,
+        &air,
+        trace,
+        &pis,
+        preprocessed_prover_data.as_ref(),
+    );
+    verify_with_preprocessed(&config, &air, &proof, &pis, preprocessed_vk.as_ref()).unwrap();
+    let replay = replay_uni_stark_transcript(
+        &config,
+        &air,
+        &proof,
+        &pis,
+        preprocessed_vk.as_ref().map(|vk| &vk.commitment),
+    )
+    .unwrap();
+    let pre_round = replay.commitments_with_opening_points.last().unwrap();
+    assert_eq!(pre_round.1.len(), 1);
+    assert_eq!(pre_round.1[0].1.len(), 1);
+
+    // A zero-width next opening may be encoded as `Some(empty)`; a nonempty
+    // extra opening must still be rejected by the actual target verifier.
+    let original_next = proof.opened_values.preprocessed_next.take();
+    proof.opened_values.preprocessed_next = Some(Vec::new());
+    let mut shape_builder = CircuitBuilder::new();
+    shape_builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
+        generate_poseidon2_trace::<Challenge, BabyBearD4Width16>,
+        default_babybear_poseidon2_16(),
+    );
+    shape_builder.enable_recompose::<F>(generate_recompose_trace::<F, Challenge>);
+    let shape_inputs = StarkVerifierInputsBuilder::<
+        MyConfig,
+        MerkleCapTargets<F, DIGEST_ELEMS>,
+        InnerFri,
+    >::allocate(
+        &mut shape_builder,
+        &proof,
+        preprocessed_vk.as_ref().map(|vk| &vk.commitment),
+        pis.len(),
+    );
+    assert!(
+        verify_p3_uni_proof_circuit::<_, _, _, _, _, _, WIDTH, RATE>(
+            &config,
+            &air,
+            &mut shape_builder,
+            &shape_inputs.proof_targets,
+            &shape_inputs.air_public_targets,
+            &shape_inputs.preprocessed_commit,
+            &fri_verifier_params,
+            Poseidon2Config::BABY_BEAR_D4_W16,
+        )
+        .is_ok()
+    );
+    proof.opened_values.preprocessed_next = Some(vec![Challenge::ZERO]);
+    let mut extra_builder = CircuitBuilder::new();
+    extra_builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
+        generate_poseidon2_trace::<Challenge, BabyBearD4Width16>,
+        default_babybear_poseidon2_16(),
+    );
+    extra_builder.enable_recompose::<F>(generate_recompose_trace::<F, Challenge>);
+    let extra_inputs = StarkVerifierInputsBuilder::<
+        MyConfig,
+        MerkleCapTargets<F, DIGEST_ELEMS>,
+        InnerFri,
+    >::allocate(
+        &mut extra_builder,
+        &proof,
+        preprocessed_vk.as_ref().map(|vk| &vk.commitment),
+        pis.len(),
+    );
+    assert!(
+        verify_p3_uni_proof_circuit::<_, _, _, _, _, _, WIDTH, RATE>(
+            &config,
+            &air,
+            &mut extra_builder,
+            &extra_inputs.proof_targets,
+            &extra_inputs.air_public_targets,
+            &extra_inputs.preprocessed_commit,
+            &fri_verifier_params,
+            Poseidon2Config::BABY_BEAR_D4_W16,
+        )
+        .is_err()
+    );
+    proof.opened_values.preprocessed_next = original_next;
+
+    let perm = default_babybear_poseidon2_16();
+    let mut circuit_builder = CircuitBuilder::new();
+    circuit_builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
+        generate_poseidon2_trace::<Challenge, BabyBearD4Width16>,
+        perm,
+    );
+    circuit_builder.enable_recompose::<F>(generate_recompose_trace::<F, Challenge>);
+    let verifier_inputs = StarkVerifierInputsBuilder::<
+        MyConfig,
+        MerkleCapTargets<F, DIGEST_ELEMS>,
+        InnerFri,
+    >::allocate(
+        &mut circuit_builder,
+        &proof,
+        preprocessed_vk.as_ref().map(|vk| &vk.commitment),
+        pis.len(),
+    );
+    verify_p3_uni_proof_circuit::<_, _, _, _, _, _, WIDTH, RATE>(
+        &config,
+        &air,
+        &mut circuit_builder,
+        &verifier_inputs.proof_targets,
+        &verifier_inputs.air_public_targets,
+        &verifier_inputs.preprocessed_commit,
+        &fri_verifier_params,
+        Poseidon2Config::BABY_BEAR_D4_W16,
+    )?;
+    let circuit = circuit_builder.build()?;
+    let mut runner = circuit.runner();
+    let (public_inputs, private_inputs) =
+        verifier_inputs.pack_values(&pis, &proof, &preprocessed_vk.map(|vk| vk.commitment));
+    runner
+        .set_public_inputs(&public_inputs)
+        .map_err(VerificationError::Circuit)?;
+    runner
+        .set_private_inputs(&private_inputs)
+        .map_err(VerificationError::Circuit)?;
+    runner.run().map_err(VerificationError::Circuit)?;
     Ok(())
 }
