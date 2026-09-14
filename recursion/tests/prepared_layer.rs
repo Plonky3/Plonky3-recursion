@@ -15,7 +15,8 @@ use p3_recursion::backend::whir::{WhirRecursionBackend, WhirRecursionBackendForE
 use p3_recursion::profile::{HashProfile, RecursionLayerProfile, TranscriptKind};
 use p3_recursion::{
     BatchOnly, Poseidon2Config, PreparedInput, PreparedLayer, PreparedSource, ProveNextLayerParams,
-    RecursionInput, RecursionOutput, VerificationError, build_and_prove_next_layer,
+    RecursionInput, RecursionOutput, TrustedPreparedInput, TrustedPreparedLayer,
+    TrustedPreparedSource, VerificationError, build_and_prove_next_layer,
 };
 use p3_test_utils::koala_bear_params::{Challenge, F};
 use p3_uni_stark::{prove, verify};
@@ -185,6 +186,9 @@ fn fri_uni_prepared_layer_reuses_varied_witnesses_after_reference_drop() {
         })
         .expect("the varied witness proves with the prepared owner");
 
+    let verifier = prepared.verifier();
+    verifier.verify(&out1.0, &[]).unwrap();
+    verifier.verify(&out2.0, &[]).unwrap();
     assert!(Rc::ptr_eq(&out1.1, &out2.1));
     assert!(prepared.profile().is_none());
     assert_eq!(
@@ -362,6 +366,61 @@ fn fri_batch_prepared_layer_reuses_prover_data() {
     assert!(Rc::ptr_eq(&out1.1, &out2.1));
     verify_fri_output(config.clone(), &params, &out1);
     verify_fri_output(config, &params, &out2);
+}
+
+#[test]
+fn fri_batch_trusted_layer_uses_retained_child_verifier_and_witness_only_inputs() {
+    let first = common::build_koala_bear_d4_first_layer_input_with_starts(0, 1);
+    let second = common::build_koala_bear_d4_first_layer_input_with_starts(2, 3);
+    first
+        .verifier
+        .verify(&second.base_proof, &[])
+        .expect("the varied witness has the retained child relation");
+    assert!(
+        first
+            .base_proof
+            .stark_common
+            .preprocessed
+            .as_ref()
+            .map(|g| &g.commitment)
+            == first
+                .verifier
+                .common_data()
+                .preprocessed
+                .as_ref()
+                .map(|g| &g.commitment)
+    );
+    let params = ProveNextLayerParams::default();
+    let output_config = first.layer_config.clone();
+    let owner = TrustedPreparedLayer::<_, _, BatchOnly, _, 4>::new(
+        TrustedPreparedSource::BatchStark {
+            verifier: first.verifier.clone(),
+            proof: &first.base_proof,
+            statement: &[],
+        },
+        output_config.clone(),
+        first.backend.clone(),
+        params.clone(),
+    )
+    .expect("the retained child verifier prepares");
+
+    let first_output = owner
+        .prove(TrustedPreparedInput::BatchStark {
+            proof: &first.base_proof,
+            statement: &[],
+        })
+        .expect("the representative witness proves");
+    let second_output = owner
+        .prove(TrustedPreparedInput::BatchStark {
+            proof: &second.base_proof,
+            statement: &[],
+        })
+        .expect("a varied witness proves without replacement authority");
+
+    owner.verifier().verify(&first_output.0, &[]).unwrap();
+    owner.verifier().verify(&second_output.0, &[]).unwrap();
+    verify_fri_output(output_config.clone(), &params, &first_output);
+    verify_fri_output(output_config, &params, &second_output);
 }
 
 #[test]

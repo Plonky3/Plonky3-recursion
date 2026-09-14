@@ -1,17 +1,15 @@
 use alloc::boxed::Box;
-use alloc::rc::Rc;
 use alloc::string::ToString;
 use alloc::vec::Vec;
 
 use p3_air::{SymbolicExpression, SymbolicExpressionExt};
-use p3_batch_stark::ProverData;
 use p3_circuit::Circuit;
 use p3_circuit::tables::Traces;
 use p3_circuit_prover::batch_stark_prover::TableProver;
-use p3_circuit_prover::common::{NpoAirBuilder, NpoPreprocessor, get_airs_and_degrees_with_prep};
+use p3_circuit_prover::common::{NpoAirBuilder, NpoPreprocessor};
 use p3_circuit_prover::config::StarkField;
 use p3_circuit_prover::field_params::ExtractBinomialW;
-use p3_circuit_prover::{BatchStarkProver, CircuitProverData};
+use p3_circuit_prover::{CircuitVerifier, PreparedCircuitProver};
 use p3_commit::Pcs;
 use p3_field::{Algebra, BasedVectorSpace, ExtensionField, PrimeField64};
 use p3_lookup::logup::LogUpGadget;
@@ -25,8 +23,7 @@ use crate::traits::RecursiveAir;
 use crate::verifier::VerificationError;
 
 pub(crate) struct PreparedProver<SC: StarkGenericConfig + 'static> {
-    circuit_prover_data: Rc<CircuitProverData<SC>>,
-    prover: BatchStarkProver<SC>,
+    prepared: PreparedCircuitProver<SC>,
 }
 
 impl<SC> PreparedProver<SC>
@@ -48,11 +45,15 @@ where
         &self,
         traces: &Traces<SC::Challenge>,
     ) -> Result<RecursionOutput<SC>, VerificationError> {
-        let proof = self
-            .prover
-            .prove_all_tables(traces, &self.circuit_prover_data)
+        let (proof, prover_data) = self
+            .prepared
+            .prove_with_legacy_data(traces)
             .map_err(|error| VerificationError::InvalidProofShape(error.to_string()))?;
-        Ok(RecursionOutput(proof, Rc::clone(&self.circuit_prover_data)))
+        Ok(RecursionOutput(proof, prover_data))
+    }
+
+    pub(crate) fn verifier(&self) -> CircuitVerifier<SC> {
+        self.prepared.verifier()
     }
 }
 
@@ -75,31 +76,9 @@ where
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
         Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
-    let (airs_degrees, primitive_columns, non_primitive_columns) = {
-        let preprocessors: Vec<Box<dyn NpoPreprocessor<Val<SC>>>> =
-            backend.non_primitive_preprocessors();
-        let air_builders: Vec<Box<dyn NpoAirBuilder<SC, D>>> = backend.non_primitive_air_builders();
-        get_airs_and_degrees_with_prep::<SC, SC::Challenge, D>(
-            circuit,
-            &params.table_packing,
-            &preprocessors,
-            &air_builders,
-            params.constraint_profile,
-        )
-        .map_err(VerificationError::Circuit)?
-    };
-
-    let (airs, degrees): (Vec<_>, Vec<_>) = airs_degrees.into_iter().unzip();
-    let ext_degrees: Vec<usize> = degrees
-        .iter()
-        .map(|&degree| degree + config.is_zk())
-        .collect();
-    let prover_data = ProverData::from_airs_and_degrees(config, &airs, &ext_degrees);
-    let circuit_prover_data = Rc::new(CircuitProverData::new(
-        prover_data,
-        primitive_columns,
-        non_primitive_columns,
-    ));
+    let preprocessors: Vec<Box<dyn NpoPreprocessor<Val<SC>>>> =
+        backend.non_primitive_preprocessors();
+    let air_builders: Vec<Box<dyn NpoAirBuilder<SC, D>>> = backend.non_primitive_air_builders();
     let provers: Vec<Box<dyn TableProver<SC>>> = backend.non_primitive_provers(D);
     let prover = build_layer_prover(
         config,
@@ -107,9 +86,14 @@ where
         params.constraint_profile,
         provers,
     );
+    let prepared = prover
+        .prepare_circuit::<SC::Challenge, D>(
+            circuit,
+            &preprocessors,
+            &air_builders,
+            params.constraint_profile,
+        )
+        .map_err(|error| VerificationError::InvalidProofShape(error.to_string()))?;
 
-    Ok(PreparedProver {
-        circuit_prover_data,
-        prover,
-    })
+    Ok(PreparedProver { prepared })
 }

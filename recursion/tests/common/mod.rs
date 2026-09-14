@@ -14,7 +14,9 @@ use p3_circuit::ops::{generate_poseidon2_trace, generate_recompose_trace};
 use p3_circuit::{CircuitBuilder, CircuitRunner, NonPrimitiveOpId};
 use p3_circuit_prover::batch_stark_prover::BatchStarkProver;
 use p3_circuit_prover::common::get_airs_and_degrees_with_prep;
-use p3_circuit_prover::{BatchStarkProof, CircuitProverData, ConstraintProfile, TablePacking};
+use p3_circuit_prover::{
+    BatchStarkProof, CircuitProverData, CircuitVerifier, ConstraintProfile, TablePacking,
+};
 use p3_commit::Pcs;
 use p3_field::{Field, PrimeCharacteristicRing};
 use p3_lookup::logup::LogUpGadget;
@@ -439,6 +441,7 @@ pub(crate) struct KoalaBearD4FirstLayerFixture {
     pub(crate) layer_config: KoalaBearD4RecursionConfig,
     pub(crate) backend: KoalaBearD4Backend,
     pub(crate) base_proof: BatchStarkProof<KoalaBearD4RecursionConfig>,
+    pub(crate) verifier: CircuitVerifier<KoalaBearD4RecursionConfig>,
 }
 
 impl KoalaBearD4FirstLayerFixture {
@@ -541,16 +544,6 @@ fn build_koala_bear_d4_first_layer_input_with_pow_bits_and_starts(
     let layer_config = koala_bear_d4_recursion_config(pow_bits);
 
     let circuit = builder.build().unwrap();
-    let (airs_degrees, primitive_columns, non_primitive_columns) =
-        get_airs_and_degrees_with_prep::<KoalaBearD4RecursionConfig, _, 1>(
-            &circuit,
-            &table_packing,
-            &[],
-            &[],
-            ConstraintProfile::Standard,
-        )
-        .unwrap();
-    let (airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
     let mut runner = circuit.runner();
 
     let expected_fib = compute_fibonacci_classical(n, start_a, start_b);
@@ -563,15 +556,13 @@ fn build_koala_bear_d4_first_layer_input_with_pow_bits_and_starts(
     }
     let traces = runner.run().unwrap();
 
-    let prover_data = ProverData::from_airs_and_degrees(&layer_config, &airs, &degrees);
-    let circuit_prover_data =
-        CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
-
     let prover = BatchStarkProver::new(layer_config.clone()).with_table_packing(table_packing);
-    let base_proof = prover
-        .prove_all_tables(&traces, &circuit_prover_data)
+    let prepared = prover
+        .prepare_circuit::<F, 1>(&circuit, &[], &[], ConstraintProfile::Standard)
         .unwrap();
-    prover.verify_all_tables::<F>(&base_proof).unwrap();
+    let verifier = prepared.verifier();
+    let base_proof = prepared.prove(&traces).unwrap();
+    verifier.verify(&base_proof, &[]).unwrap();
 
     let backend = FriRecursionBackend::<16, 8, _>::new(Poseidon2Config::KOALA_BEAR_D4_W16)
         .for_extension_degree::<4>();
@@ -580,6 +571,7 @@ fn build_koala_bear_d4_first_layer_input_with_pow_bits_and_starts(
         layer_config,
         backend,
         base_proof,
+        verifier,
     }
 }
 

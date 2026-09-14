@@ -9,7 +9,9 @@ use p3_lookup::Lookup;
 use p3_lookup::logup::LogUpGadget;
 use p3_recursion::backend::fri::{FriRecursionBackendD5, FriRecursionBackendForExt};
 use p3_recursion::backend::whir::{WhirRecursionBackend, WhirRecursionBackendForExt};
-use p3_recursion::prepared::{PreparedInput, PreparedPcsRecursionBackend, PreparedSource};
+use p3_recursion::prepared::{
+    PreparedInput, PreparedPcsRecursionBackend, PreparedSource, TrustedPcsRecursionBackend,
+};
 use p3_recursion::recursion::BatchOnly;
 use p3_recursion::traits::{LookupMetadata, RecursiveAir};
 use p3_recursion::{Poseidon2Config, RecursiveLagrangeSelectors, Target, VerificationError};
@@ -127,6 +129,31 @@ fn built_in_backends_explicitly_opt_in_for_uni_and_batch_inputs() {
         4,
     >();
     assert_prepared::<WhirRecursionBackendForExt<4>, common::whir_config::BbWhirConfig, BatchOnly, 4>(
+    );
+}
+
+#[test]
+fn built_in_backends_explicitly_opt_in_for_complete_trusted_root_binding() {
+    fn assert_trusted<B, SC, A, const D: usize>()
+    where
+        SC: p3_uni_stark::StarkGenericConfig,
+        A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
+        B: TrustedPcsRecursionBackend<SC, A, D>,
+    {
+    }
+
+    use p3_circuit::test_utils::FibonacciAir;
+    assert_trusted::<FriRecursionBackendForExt<4>, Config, FibonacciAir, 4>();
+    assert_trusted::<FriRecursionBackendForExt<4>, Config, BatchOnly, 4>();
+    assert_trusted::<FriRecursionBackendD5<16, 8, Poseidon2Config>, Config, FibonacciAir, 5>();
+    assert_trusted::<FriRecursionBackendD5<16, 8, Poseidon2Config>, Config, BatchOnly, 5>();
+    assert_trusted::<
+        WhirRecursionBackendForExt<4>,
+        common::whir_config::BbWhirConfig,
+        FibonacciAir,
+        4,
+    >();
+    assert_trusted::<WhirRecursionBackendForExt<4>, common::whir_config::BbWhirConfig, BatchOnly, 4>(
     );
 }
 

@@ -1,5 +1,6 @@
 use p3_air::{SymbolicExpression, SymbolicExpressionExt};
 use p3_circuit::Circuit;
+use p3_circuit_prover::CircuitVerifier;
 use p3_circuit_prover::config::StarkField;
 use p3_circuit_prover::field_params::ExtractBinomialW;
 use p3_commit::Pcs;
@@ -278,6 +279,11 @@ where
     /// Profile label fixed at construction, if profile-based preparation was requested.
     pub const fn profile(&self) -> Option<&RecursionLayerProfile> {
         self.profile.as_ref()
+    }
+
+    /// Export the verifier-authoritative key fixed by this preparation.
+    pub fn verifier(&self) -> CircuitVerifier<SC> {
+        self.prep.verifier()
     }
 }
 

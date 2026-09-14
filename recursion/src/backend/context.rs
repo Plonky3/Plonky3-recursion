@@ -1,6 +1,7 @@
 use alloc::vec::Vec;
 
-use p3_circuit_prover::{AirVariant, RowCounts, TablePacking};
+use p3_circuit_prover::air::AluExtMulKind;
+use p3_circuit_prover::{AirVariant, CircuitVerifier, RowCounts, TablePacking};
 use p3_field::{ExtensionField, PrimeCharacteristicRing, PrimeField64};
 use p3_lookup::logup::LogUpGadget;
 use p3_uni_stark::{StarkGenericConfig, Val};
@@ -98,6 +99,67 @@ where
                     matrix_to_instance: global.matrix_to_instance.clone(),
                 }),
         },
+    }
+}
+
+/// Capture batch packing authority from a retained verifier descriptor, never witness metadata.
+pub(crate) fn capture_trusted_batch_authority<SC>(
+    verifier: &CircuitVerifier<SC>,
+) -> StarkPackingAuthority<Val<SC>>
+where
+    SC: StarkGenericConfig + 'static,
+{
+    let relation = verifier.relation();
+    let (w_binomial, alu_quintic_trinomial) = match relation.reduction() {
+        AluExtMulKind::Base => (None, false),
+        AluExtMulKind::Binomial { w } => (Some(w), false),
+        AluExtMulKind::QuinticTrinomial => (None, true),
+    };
+    StarkPackingAuthority::Batch {
+        public_inputs: core::iter::repeat_n(0, 3)
+            .chain(
+                relation
+                    .non_primitives()
+                    .iter()
+                    .map(|entry| entry.public_values().len()),
+            )
+            .collect(),
+        table_packing: relation.table_packing().clone(),
+        rows: *relation.rows(),
+        alu_variant: relation.alu_variant(),
+        ext_degree: relation.ext_degree(),
+        w_binomial,
+        alu_quintic_trinomial,
+        non_primitives: relation
+            .non_primitives()
+            .iter()
+            .map(|entry| NonPrimitiveContract {
+                op_type: entry.op_type().clone(),
+                rows: entry.rows(),
+                lanes: entry.lanes(),
+                air_variant: entry.air_variant(),
+                public_values: entry.public_values().to_vec(),
+            })
+            .collect(),
+        preprocessed: verifier.common_data().preprocessed.as_ref().map(|global| {
+            GlobalPreprocessedShape {
+                commitment: (),
+                instances: global
+                    .instances
+                    .iter()
+                    .map(|entry| {
+                        entry.as_ref().map(|meta| {
+                            crate::input_contract::PreprocessedInstanceShape {
+                                matrix_index: meta.matrix_index,
+                                width: meta.width,
+                                degree_bits: meta.degree_bits,
+                            }
+                        })
+                    })
+                    .collect(),
+                matrix_to_instance: global.matrix_to_instance.clone(),
+            }
+        }),
     }
 }
 

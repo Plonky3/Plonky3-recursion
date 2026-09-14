@@ -2588,6 +2588,26 @@ where
         self.prover
             .prove_prepared_all_tables(traces, &self.circuit_prover_data, &self.relation)
     }
+
+    /// Prove and retain the opaque preparation handle used by legacy recursion outputs.
+    ///
+    /// The returned handle is not verifier authority; [`Self::verifier`] remains the only
+    /// independently owned trusted verifier key. This compatibility seam lets existing recursion
+    /// outputs keep their stable `(proof, prover-data)` shape while using finalized preparation.
+    pub fn prove_with_legacy_data<EF>(
+        &self,
+        traces: &Traces<EF>,
+    ) -> Result<(BatchStarkProof<SC>, Rc<CircuitProverData<SC>>), BatchStarkProverError>
+    where
+        EF: Field + BasedVectorSpace<Val<SC>> + ExtractBinomialW<Val<SC>>,
+        <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain: Send + Sync,
+        SC::Pcs: Sync,
+        <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::ProverData: Sync,
+        <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment: Sync,
+    {
+        let proof = self.prove(traces)?;
+        Ok((proof, Rc::clone(&self.circuit_prover_data)))
+    }
 }
 
 /// Poseidon2 AIR builders for the given extension degree `D` (typically `2` or `4`).

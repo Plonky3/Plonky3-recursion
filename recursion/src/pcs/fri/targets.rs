@@ -34,6 +34,7 @@ use crate::input_contract::fri::{
     FriCommitStepShape, FriInputBatchShape, FriShape, HidingFriShape, HidingOpeningAdviceShape,
     MerkleCapShape,
 };
+use crate::prepared::ConstrainConstantCommitment;
 use crate::traits::{
     CheckedRecursive, ComsWithOpeningsTargets, PreparedRecursive, Recursive, RecursiveChallenger,
     RecursiveExtensionMmcs, RecursiveMmcs, RecursivePcs,
@@ -1038,6 +1039,53 @@ impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize> Recursive<EF>
                 entry.iter().map(|v| EF::from(*v))
             })
             .collect()
+    }
+}
+
+impl<F: Field, EF: ExtensionField<F>, const DIGEST_ELEMS: usize> ConstrainConstantCommitment<EF>
+    for MerkleCapTargets<F, DIGEST_ELEMS>
+{
+    fn constrain_constant(
+        &self,
+        circuit: &mut CircuitBuilder<EF>,
+        expected: &Self::Input,
+    ) -> Result<(), VerificationError> {
+        if self.cap_targets.len() != expected.num_roots() {
+            return Err(VerificationError::InvalidProofShape(format!(
+                "trusted preprocessing cap root count mismatch: targets {}, expected {}",
+                self.cap_targets.len(),
+                expected.num_roots()
+            )));
+        }
+        let targets = self
+            .cap_targets
+            .iter()
+            .flat_map(|entry| entry.iter().copied());
+        let values = <Self as Recursive<EF>>::get_values(expected);
+        let expected_limbs = self
+            .cap_targets
+            .len()
+            .checked_mul(DIGEST_ELEMS)
+            .ok_or_else(|| {
+                VerificationError::InvalidProofShape(
+                    "trusted preprocessing cap limb count overflows".into(),
+                )
+            })?;
+        if values.len() != expected_limbs {
+            return Err(VerificationError::InvalidProofShape(format!(
+                "trusted preprocessing cap limb count mismatch: targets {expected_limbs}, expected {}",
+                values.len()
+            )));
+        }
+        for (target, value) in targets.zip(values) {
+            let constant = circuit.alloc_const(value, "trusted child preprocessing");
+            // Connecting two independently-produced values aliases their witness slots. Enforce
+            // equality through a zero difference so the public commitment and constant remain
+            // distinct producers in the circuit's global witness lookup.
+            let difference = circuit.sub(target, constant);
+            circuit.connect(difference, Target::ZERO);
+        }
+        Ok(())
     }
 }
 

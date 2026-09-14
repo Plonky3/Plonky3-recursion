@@ -13,8 +13,8 @@ use p3_circuit::symbolic::ColumnsTargets;
 use p3_circuit::{CircuitBuilder, NonPrimitiveOpId};
 use p3_circuit_prover::air::{AluAir, AluExtMulKind, ConstAir, PublicAir};
 use p3_circuit_prover::batch_stark_prover::{
-    AirVariant, DynamicAirEntry, NUM_PRIMITIVE_TABLES, PrimitiveTable, RowCounts, TableProver,
-    lookups_for_circuit_table_air,
+    AirVariant, CircuitVerifier, DynamicAirEntry, NUM_PRIMITIVE_TABLES, PrimitiveTable, RowCounts,
+    TableProver, lookups_for_circuit_table_air,
 };
 use p3_circuit_prover::common::CircuitTableAir;
 use p3_circuit_prover::field_params::ExtractBinomialW;
@@ -243,6 +243,15 @@ where
             Self::Dynamic(a) => CircuitTableAir::Dynamic(a.clone()),
         }
     }
+
+    fn from_table_air(air: CircuitTableAir<SC, D>) -> Self {
+        match air {
+            CircuitTableAir::Const(air) => Self::Const(air),
+            CircuitTableAir::Public(air) => Self::Public(air),
+            CircuitTableAir::Alu(air) => Self::Alu(air),
+            CircuitTableAir::Dynamic(air) => Self::Dynamic(air),
+        }
+    }
 }
 
 impl<SC, const D: usize> P3BaseAir<Val<SC>> for CircuitTablesAir<SC, D>
@@ -283,6 +292,15 @@ where
             Self::Public(a) => P3BaseAir::main_next_row_columns(a),
             Self::Alu(a) => P3BaseAir::main_next_row_columns(a),
             Self::Dynamic(a) => P3BaseAir::main_next_row_columns(a),
+        }
+    }
+
+    fn preprocessed_next_row_columns(&self) -> Vec<usize> {
+        match self {
+            Self::Const(air) => P3BaseAir::preprocessed_next_row_columns(air),
+            Self::Public(air) => P3BaseAir::preprocessed_next_row_columns(air),
+            Self::Alu(air) => P3BaseAir::preprocessed_next_row_columns(air),
+            Self::Dynamic(air) => P3BaseAir::preprocessed_next_row_columns(air),
         }
     }
 
@@ -494,6 +512,70 @@ where
     })
 }
 
+/// Rebuild batch recursion tables exclusively from a retained trusted verifier descriptor.
+///
+/// Unlike [`reconstruct_batch_tables`], no relation metadata is read from the witness proof.
+pub fn trusted_batch_tables<SC: StarkGenericConfig + 'static, const TRACE_D: usize>(
+    verifier: &CircuitVerifier<SC>,
+) -> Result<ReconstructedBatchTables<SC, TRACE_D>, VerificationError>
+where
+    Val<SC>: PrimeField64 + p3_circuit_prover::config::StarkField,
+    SC::Challenge: ExtensionField<Val<SC>> + ExtractBinomialW<Val<SC>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+{
+    let relation = verifier.relation();
+    if relation.ext_degree() != TRACE_D {
+        return Err(VerificationError::InvalidProofShape(format!(
+            "trusted verifier extension degree mismatch: descriptor declares {}, backend expects {TRACE_D}",
+            relation.ext_degree()
+        )));
+    }
+    let airs = verifier
+        .table_airs::<TRACE_D>()
+        .map_err(|error| VerificationError::InvalidProofShape(error.to_string()))?
+        .into_iter()
+        .map(CircuitTablesAir::from_table_air)
+        .collect::<Vec<_>>();
+    if airs.len() != relation.trace_degree_bits().len() {
+        return Err(VerificationError::InvalidProofShape(
+            "trusted verifier table/degree cardinality mismatch".into(),
+        ));
+    }
+    let zk = verifier.config().is_zk();
+    let trace_lens = relation
+        .trace_degree_bits()
+        .iter()
+        .map(|&degree| {
+            degree
+                .checked_sub(zk)
+                .and_then(|base_degree| 1usize.checked_shl(base_degree as u32))
+                .ok_or_else(|| {
+                    VerificationError::InvalidProofShape(
+                        "trusted verifier trace degree is invalid".into(),
+                    )
+                })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut public_values = vec![Vec::new(); NUM_PRIMITIVE_TABLES];
+    public_values.extend(
+        relation
+            .non_primitives()
+            .iter()
+            .map(|entry| entry.public_values().to_vec()),
+    );
+    if public_values.len() != airs.len() {
+        return Err(VerificationError::InvalidProofShape(
+            "trusted verifier AIR/public-value cardinality mismatch".into(),
+        ));
+    }
+    Ok(ReconstructedBatchTables {
+        airs,
+        trace_lens,
+        public_values,
+    })
+}
+
 /// Build and attach a recursive verifier circuit for a circuit-prover [`BatchStarkProof`].
 ///
 /// This reconstructs the circuit table AIRs from the proof metadata (rows + packing) so callers
@@ -546,6 +628,150 @@ where
         Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
     let tables = reconstruct_batch_tables::<SC, TRACE_D>(config, proof, non_primitive_provers)?;
+    verify_p3_batch_proof_circuit_with_tables::<
+        SC,
+        Comm,
+        InputProof,
+        OpeningProof,
+        LG,
+        CP,
+        WIDTH,
+        RATE,
+        TRACE_D,
+    >(
+        config,
+        circuit,
+        proof,
+        pcs_params,
+        common_data,
+        lookup_gadget,
+        challenger_perm_config,
+        &tables,
+        true,
+    )
+}
+
+/// Build a recursive verifier from a retained child verifier descriptor and common data.
+/// Witness metadata is validated against that descriptor but never selects the relation.
+#[allow(clippy::type_complexity)]
+#[allow(clippy::too_many_arguments)]
+pub fn verify_trusted_p3_batch_proof_circuit<
+    SC: StarkGenericConfig + 'static,
+    Comm: Recursive<
+            SC::Challenge,
+            Input = <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment,
+        > + Clone
+        + ObservableCommitment,
+    InputProof: Recursive<SC::Challenge>,
+    OpeningProof: Recursive<SC::Challenge, Input = <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Proof>,
+    LG: RecursiveLookupGadget<SC::Challenge>,
+    CP: ChallengerPermConfig,
+    const WIDTH: usize,
+    const RATE: usize,
+    const TRACE_D: usize,
+>(
+    verifier: &CircuitVerifier<SC>,
+    circuit: &mut CircuitBuilder<SC::Challenge>,
+    proof: &p3_circuit_prover::batch_stark_prover::BatchStarkProof<SC>,
+    statement: &[Val<SC>],
+    pcs_params: &PcsVerifierParams<SC, InputProof, OpeningProof, Comm>,
+    lookup_gadget: &LG,
+    challenger_perm_config: CP,
+) -> Result<
+    (
+        BatchStarkVerifierInputsBuilder<SC, Comm, OpeningProof>,
+        Vec<NonPrimitiveOpId>,
+    ),
+    VerificationError,
+>
+where
+    <SC as StarkGenericConfig>::Pcs: RecursivePcs<
+            SC,
+            InputProof,
+            OpeningProof,
+            Comm,
+            <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain,
+        >,
+    Val<SC>: PrimeField64 + p3_circuit_prover::config::StarkField,
+    SC::Challenge: ExtensionField<Val<SC>> + PrimeCharacteristicRing + ExtractBinomialW<Val<SC>>,
+    <<SC as StarkGenericConfig>::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain: Clone,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+{
+    verifier
+        .verify(proof, statement)
+        .map_err(|error| VerificationError::InvalidProofShape(error.to_string()))?;
+    let tables = trusted_batch_tables::<SC, TRACE_D>(verifier)?;
+    verify_p3_batch_proof_circuit_with_tables::<
+        SC,
+        Comm,
+        InputProof,
+        OpeningProof,
+        LG,
+        CP,
+        WIDTH,
+        RATE,
+        TRACE_D,
+    >(
+        verifier.config(),
+        circuit,
+        proof,
+        pcs_params,
+        verifier.common_data(),
+        lookup_gadget,
+        challenger_perm_config,
+        &tables,
+        false,
+    )
+}
+
+#[allow(clippy::type_complexity)]
+#[allow(clippy::too_many_arguments)]
+fn verify_p3_batch_proof_circuit_with_tables<
+    SC: StarkGenericConfig + 'static,
+    Comm: Recursive<
+            SC::Challenge,
+            Input = <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment,
+        > + Clone
+        + ObservableCommitment,
+    InputProof: Recursive<SC::Challenge>,
+    OpeningProof: Recursive<SC::Challenge, Input = <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Proof>,
+    LG: RecursiveLookupGadget<SC::Challenge>,
+    CP: ChallengerPermConfig,
+    const WIDTH: usize,
+    const RATE: usize,
+    const TRACE_D: usize,
+>(
+    config: &SC,
+    circuit: &mut CircuitBuilder<SC::Challenge>,
+    proof: &p3_circuit_prover::batch_stark_prover::BatchStarkProof<SC>,
+    pcs_params: &PcsVerifierParams<SC, InputProof, OpeningProof, Comm>,
+    common_data: &CommonData<SC>,
+    lookup_gadget: &LG,
+    challenger_perm_config: CP,
+    tables: &ReconstructedBatchTables<SC, TRACE_D>,
+    rebuild_lookups: bool,
+) -> Result<
+    (
+        BatchStarkVerifierInputsBuilder<SC, Comm, OpeningProof>,
+        Vec<NonPrimitiveOpId>,
+    ),
+    VerificationError,
+>
+where
+    <SC as StarkGenericConfig>::Pcs: RecursivePcs<
+            SC,
+            InputProof,
+            OpeningProof,
+            Comm,
+            <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain,
+        >,
+    Val<SC>: PrimeField64,
+    SC::Challenge: ExtensionField<Val<SC>> + PrimeCharacteristicRing + ExtractBinomialW<Val<SC>>,
+    <<SC as StarkGenericConfig>::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain: Clone,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+{
     let ReconstructedBatchTables {
         airs: circuit_airs,
         trace_lens,
@@ -564,18 +790,20 @@ where
     // the proof-supplied `common.lookups`, which drives the CTL folding, aux width, and
     // challenge layout. For an honest proof these are identical (both derived from the same
     // AIRs); a malformed or malicious lookup set is now ignored rather than believed.
-    verifier_inputs.common_data.lookups = circuit_airs
-        .iter()
-        .zip(trace_lens.iter())
-        .map(|(air, &trace_len)| {
-            lookups_for_circuit_table_air::<SC, TRACE_D>(
-                &air.to_table_air(),
-                trace_len,
-                config.is_zk(),
-            )
-            .to_vec()
-        })
-        .collect();
+    if rebuild_lookups {
+        verifier_inputs.common_data.lookups = circuit_airs
+            .iter()
+            .zip(trace_lens.iter())
+            .map(|(air, &trace_len)| {
+                lookups_for_circuit_table_air::<SC, TRACE_D>(
+                    &air.to_table_air(),
+                    trace_len,
+                    config.is_zk(),
+                )
+                .to_vec()
+            })
+            .collect();
+    }
 
     let common = &verifier_inputs.common_data;
 
@@ -1781,10 +2009,10 @@ mod create_alu_air_tests {
         assert!(result.is_ok());
     }
 
-    /// The reconstructed verifier wrapper must preserve the producer wrapper's metadata-based
-    /// default: a preprocessed trace with no explicit override opens every column at the next row.
+    /// The reconstructed verifier wrapper must preserve the producer wrapper's explicit
+    /// next-preprocessing policy.
     #[test]
-    fn reconstructed_public_air_preserves_preprocessed_opening_policy() {
+    fn reconstructed_public_air_preserves_absent_preprocessed_next_opening() {
         type Config = KoalaBearD4RecursionConfig;
         type F = Val<Config>;
         let inner = PublicAir::<F, 4>::new(2, 1);
@@ -1799,7 +2027,7 @@ mod create_alu_air_tests {
             BaseAir::<F>::preprocessed_next_row_columns(&producer),
             BaseAir::<F>::preprocessed_next_row_columns(&reconstructed)
         );
-        assert!(<CircuitTablesAir<Config, 4> as RecursiveAir<
+        assert!(!<CircuitTablesAir<Config, 4> as RecursiveAir<
             F,
             <Config as StarkGenericConfig>::Challenge,
             LogUpGadget,

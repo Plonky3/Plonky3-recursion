@@ -7,10 +7,11 @@ use alloc::{format, vec};
 
 use p3_circuit::{CircuitBuilder, CircuitRunner, NonPrimitiveOpId};
 use p3_circuit_prover::batch_stark_prover::{
-    RecomposeAirBuilder, RecomposeProver, lookups_for_circuit_table_air, poseidon1_air_builders_d5,
-    poseidon1_air_builders_for_configs, poseidon1_preprocessor, poseidon1_table_provers_d5,
-    poseidon2_air_builders_d5, poseidon2_air_builders_for_configs, poseidon2_preprocessor,
-    poseidon2_table_provers_d5, recompose_preprocessor,
+    BatchStarkProof, CircuitVerifier, RecomposeAirBuilder, RecomposeProver,
+    lookups_for_circuit_table_air, poseidon1_air_builders_d5, poseidon1_air_builders_for_configs,
+    poseidon1_preprocessor, poseidon1_table_provers_d5, poseidon2_air_builders_d5,
+    poseidon2_air_builders_for_configs, poseidon2_preprocessor, poseidon2_table_provers_d5,
+    recompose_preprocessor,
 };
 use p3_circuit_prover::common::{NpoAirBuilder, NpoPreprocessor};
 use p3_circuit_prover::config::StarkField;
@@ -28,10 +29,12 @@ use p3_uni_stark::{StarkGenericConfig, SymbolicExpressionExt, Val};
 
 use crate::backend::CheckedVerifierResult;
 use crate::backend::context::{
-    StarkLayoutPolicy, StarkPackingAuthority, capture_stark_authority, input_caps,
-    validate_stark_replacement,
+    StarkLayoutPolicy, StarkPackingAuthority, capture_stark_authority,
+    capture_trusted_batch_authority, input_caps, validate_stark_replacement,
 };
-use crate::backend::transcript::replay_recursion_input_transcript;
+use crate::backend::transcript::{
+    replay_recursion_input_transcript, replay_trusted_batch_layer_transcript,
+};
 use crate::generation::OpeningTranscript;
 use crate::input_contract::stark::validate_batch_proof_native;
 use crate::ops::{Poseidon1Config, Poseidon2Config};
@@ -40,14 +43,18 @@ use crate::pcs::fri::{
     ValidatedFriContext,
 };
 use crate::prepared::input::{capture_builtin_input_contract, validate_builtin_prepared_input};
-use crate::prepared::{PreparedInput, PreparedPcsRecursionBackend};
+use crate::prepared::{
+    ConstrainConstantCommitment, NativeCommitment, PreparedInput, PreparedPcsRecursionBackend,
+    TrustedPcsRecursionBackend,
+};
 use crate::public_inputs::{BatchStarkVerifierInputsBuilder, StarkVerifierInputsBuilder};
 use crate::recursion::{PcsRecursionBackend, RecursionInput, VerifierCircuitResult};
 use crate::traits::{CheckedRecursive, PreparedRecursive, RecursiveAir};
 use crate::verifier::{
     InputResourceUsage, ObservableCommitment, VerificationError, VerifierLimits,
     plan_batch_native_layout, plan_uni_native_layout, reconstruct_batch_tables,
-    verify_p3_batch_proof_circuit, verify_p3_uni_proof_circuit,
+    trusted_batch_tables, verify_p3_batch_proof_circuit, verify_p3_uni_proof_circuit,
+    verify_trusted_p3_batch_proof_circuit,
 };
 use crate::{ChallengerPermConfig, Recursive, RecursivePcs};
 
@@ -609,6 +616,102 @@ where
         log_max_lde_height: config.pcs().log_max_lde_height(),
     };
     Ok((context, authority, policy))
+}
+
+fn preflight_trusted_fri_batch<SC, A, const TRACE_D: usize>(
+    verifier: &CircuitVerifier<SC>,
+    proof: &BatchStarkProof<SC>,
+    statement: &[Val<SC>],
+) -> Result<
+    (
+        ValidatedFriContext,
+        StarkPackingAuthority<Val<SC>>,
+        StarkLayoutPolicy,
+    ),
+    VerificationError,
+>
+where
+    SC: FriRecursionConfig + Send + Sync + 'static,
+    A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
+    Val<SC>: PrimeField64 + StarkField,
+    SC::Challenge: BasedVectorSpace<Val<SC>>
+        + ExtensionField<Val<SC>>
+        + PrimeCharacteristicRing
+        + ExtractBinomialW<Val<SC>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        From<p3_uni_stark::SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+    SC::Commitment: CheckedFriCommitment<SC::Challenge>,
+    SC::OpeningProof: CheckedFriOpening<SC::Challenge, SC::Commitment>,
+    SC::Pcs: RecursivePcs<
+            SC,
+            SC::InputProof,
+            SC::OpeningProof,
+            SC::Commitment,
+            <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain,
+            VerifierParams = FriVerifierParams,
+        >,
+{
+    verifier
+        .verify(proof, statement)
+        .map_err(|error| VerificationError::InvalidProofShape(error.to_string()))?;
+    let config = verifier.config();
+    let native = config.native_fri_validation_params().ok_or_else(|| {
+        VerificationError::InvalidProofShape(
+            "built-in FRI recursion requires native validation parameters".into(),
+        )
+    })?;
+    let tables = trusted_batch_tables::<SC, TRACE_D>(verifier)?;
+    let lookups = tables
+        .airs
+        .iter()
+        .zip(&tables.trace_lens)
+        .map(|(air, &trace_len)| {
+            lookups_for_circuit_table_air::<SC, TRACE_D>(
+                &air.to_table_air(),
+                trace_len,
+                config.is_zk(),
+            )
+            .to_vec()
+        })
+        .collect::<Vec<_>>();
+    let public_counts = tables
+        .public_values
+        .iter()
+        .map(Vec::len)
+        .collect::<Vec<_>>();
+    let layout = plan_batch_native_layout(
+        config,
+        &tables.airs,
+        &proof.proof,
+        &public_counts,
+        verifier.common_data(),
+        &lookups,
+        &LogUpGadget,
+    )?;
+    let prev = RecursionInput::<SC, A>::BatchStark {
+        proof,
+        common_data: verifier.common_data(),
+        table_public_inputs: tables.public_values,
+    };
+    let caps = input_caps(&prev, &layout)?;
+    let context = <SC::OpeningProof as CheckedFriOpening<
+        SC::Challenge,
+        SC::Commitment,
+    >>::validate_fri_context(
+        &proof.proof.opening_proof,
+        &native,
+        config.pcs_verifier_params(),
+        layout.opening_view(),
+        &caps,
+    )?;
+    Ok((
+        context,
+        capture_trusted_batch_authority(verifier),
+        StarkLayoutPolicy {
+            is_zk: config.is_zk(),
+            log_max_lde_height: config.pcs().log_max_lde_height(),
+        },
+    ))
 }
 
 impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
@@ -1684,6 +1787,185 @@ macro_rules! impl_prepared_fri_backend {
                 input: &PreparedInput<'_, SC>,
             ) -> Result<(), VerificationError> {
                 preflight_basic_fri_prepared(&self.0.limits, input)
+            }
+        }
+
+        impl<SC, A, const WIDTH: usize, const RATE: usize, C> TrustedPcsRecursionBackend<SC, A, $d>
+            for $backend
+        where
+            SC: FriRecursionConfig + Send + Sync + 'static,
+            A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
+            C: ChallengerPermConfig + Copy + 'static,
+            Val<SC>: PrimeField64 + StarkField + $binomial_bound,
+            Poseidon1Preprocessor: NpoPreprocessor<Val<SC>>,
+            Poseidon2Preprocessor: NpoPreprocessor<Val<SC>>,
+            RecomposePreprocessor: NpoPreprocessor<Val<SC>>,
+            SC::Challenge: BasedVectorSpace<Val<SC>>
+                + From<Val<SC>>
+                + ExtensionField<Val<SC>>
+                + PrimeCharacteristicRing
+                + ExtractBinomialW<Val<SC>>,
+            <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain: Clone,
+            SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+                From<p3_uni_stark::SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+            SC::Pcs: RecursivePcs<
+                    SC,
+                    SC::InputProof,
+                    SC::OpeningProof,
+                    SC::Commitment,
+                    <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain,
+                    VerifierParams = FriVerifierParams,
+                >,
+            SC::Commitment: CheckedFriCommitment<SC::Challenge>
+                + PreparedRecursive<SC::Challenge>
+                + ConstrainConstantCommitment<SC::Challenge>,
+            SC::OpeningProof:
+                CheckedFriOpening<SC::Challenge, SC::Commitment> + PreparedRecursive<SC::Challenge>,
+        {
+            fn build_trusted_batch_verifier_circuit(
+                &self,
+                verifier: &CircuitVerifier<SC>,
+                proof: &BatchStarkProof<SC>,
+                statement: &[Val<SC>],
+                circuit: &mut CircuitBuilder<SC::Challenge>,
+            ) -> Result<Self::VerifierResult, VerificationError> {
+                let degree = verifier.relation().ext_degree();
+                let table_public_inputs = match degree {
+                    1 => trusted_batch_tables::<SC, 1>(verifier)?.public_values,
+                    2 => trusted_batch_tables::<SC, 2>(verifier)?.public_values,
+                    4 => trusted_batch_tables::<SC, 4>(verifier)?.public_values,
+                    5 => trusted_batch_tables::<SC, 5>(verifier)?.public_values,
+                    degree => {
+                        return Err(VerificationError::InvalidProofShape(format!(
+                            "unsupported trusted batch verifier ext_degree {degree}"
+                        )));
+                    }
+                };
+                preflight_basic_fri_input(
+                    &self.0.limits,
+                    &RecursionInput::<SC, A>::BatchStark {
+                        proof,
+                        common_data: verifier.common_data(),
+                        table_public_inputs,
+                    },
+                )?;
+                let (pcs_context, stark_authority, policy) = match degree {
+                    1 => preflight_trusted_fri_batch::<SC, A, 1>(verifier, proof, statement)?,
+                    2 => preflight_trusted_fri_batch::<SC, A, 2>(verifier, proof, statement)?,
+                    4 => preflight_trusted_fri_batch::<SC, A, 4>(verifier, proof, statement)?,
+                    5 => preflight_trusted_fri_batch::<SC, A, 5>(verifier, proof, statement)?,
+                    _ => unreachable!(),
+                };
+                validate_batch_proof_native::<SC, SC::Commitment, SC::OpeningProof>(&proof.proof)?;
+                macro_rules! build_for_degree {
+                    ($trace_d:literal) => {
+                        verify_trusted_p3_batch_proof_circuit::<
+                            SC,
+                            SC::Commitment,
+                            SC::InputProof,
+                            SC::OpeningProof,
+                            _,
+                            _,
+                            WIDTH,
+                            RATE,
+                            $trace_d,
+                        >(
+                            verifier,
+                            circuit,
+                            proof,
+                            statement,
+                            verifier.config().pcs_verifier_params(),
+                            &LogUpGadget::new(),
+                            self.0.challenger_perm_config,
+                        )
+                    };
+                }
+                let (verifier_inputs, op_ids) = match degree {
+                    1 => build_for_degree!(1)?,
+                    2 => build_for_degree!(2)?,
+                    4 => build_for_degree!(4)?,
+                    5 => build_for_degree!(5)?,
+                    _ => unreachable!(),
+                };
+                Ok(CheckedVerifierResult::new(
+                    FriVerifierResult::BatchStark(verifier_inputs, op_ids, self.0.limits),
+                    pcs_context,
+                    stark_authority,
+                    policy,
+                ))
+            }
+
+            fn set_private_data_for_trusted_batch(
+                &self,
+                verifier: &CircuitVerifier<SC>,
+                proof: &BatchStarkProof<SC>,
+                statement: &[Val<SC>],
+                runner: &mut CircuitRunner<'_, SC::Challenge>,
+                op_ids: &[NonPrimitiveOpId],
+            ) -> Result<(), VerificationError> {
+                let (transcript, table_public_inputs) = match verifier.relation().ext_degree() {
+                    1 => (
+                        replay_trusted_batch_layer_transcript::<SC, 1>(verifier, proof, statement)?,
+                        trusted_batch_tables::<SC, 1>(verifier)?.public_values,
+                    ),
+                    2 => (
+                        replay_trusted_batch_layer_transcript::<SC, 2>(verifier, proof, statement)?,
+                        trusted_batch_tables::<SC, 2>(verifier)?.public_values,
+                    ),
+                    4 => (
+                        replay_trusted_batch_layer_transcript::<SC, 4>(verifier, proof, statement)?,
+                        trusted_batch_tables::<SC, 4>(verifier)?.public_values,
+                    ),
+                    5 => (
+                        replay_trusted_batch_layer_transcript::<SC, 5>(verifier, proof, statement)?,
+                        trusted_batch_tables::<SC, 5>(verifier)?.public_values,
+                    ),
+                    degree => {
+                        return Err(VerificationError::InvalidProofShape(format!(
+                            "unsupported trusted batch verifier ext_degree {degree}"
+                        )));
+                    }
+                };
+                let prev = RecursionInput::<SC, A>::BatchStark {
+                    proof,
+                    common_data: verifier.common_data(),
+                    table_public_inputs,
+                };
+                SC::with_fri_opening_proof(&prev, |opening_proof| {
+                    SC::set_fri_private_data(
+                        verifier.config(),
+                        runner,
+                        op_ids,
+                        opening_proof,
+                        transcript,
+                    )
+                })
+                .map_err(|message| VerificationError::InvalidProofShape(message.into()))
+            }
+
+            fn constrain_trusted_preprocessing(
+                &self,
+                circuit: &mut CircuitBuilder<SC::Challenge>,
+                result: &Self::VerifierResult,
+                expected: Option<&NativeCommitment<SC>>,
+            ) -> Result<(), VerificationError> {
+                let target = match &result.inner {
+                    FriVerifierResult::UniStark(builder, ..) => {
+                        builder.preprocessed_commit.as_ref()
+                    }
+                    FriVerifierResult::BatchStark(builder, ..) => builder
+                        .common_data
+                        .preprocessed
+                        .as_ref()
+                        .map(|group| &group.commitment),
+                };
+                match (target, expected) {
+                    (None, None) => Ok(()),
+                    (Some(target), Some(expected)) => target.constrain_constant(circuit, expected),
+                    _ => Err(VerificationError::InvalidProofShape(
+                        "trusted child preprocessing commitment presence mismatch".into(),
+                    )),
+                }
             }
         }
     };

@@ -11,7 +11,8 @@ mod stark;
 pub(crate) use batch_stark::plan_batch_native_layout;
 pub use batch_stark::{
     CircuitTablesAir, PcsVerifierParams, ReconstructedBatchTables, reconstruct_batch_tables,
-    verify_batch_circuit, verify_p3_batch_proof_circuit,
+    trusted_batch_tables, verify_batch_circuit, verify_p3_batch_proof_circuit,
+    verify_trusted_p3_batch_proof_circuit,
 };
 pub use errors::VerificationError;
 pub use limits::{InputResourceUsage, VerifierLimits};
