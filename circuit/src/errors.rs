@@ -46,6 +46,28 @@ pub enum CircuitError {
     )]
     UnclaimedPrivateInput { witness_id: WitnessId },
 
+    /// An exported source has no creator other than statement-generated normalization.
+    #[error(
+        "Statement export {export_index} uses unsourced WitnessId({witness_id}); export sources \
+         must be produced by Public, Const, ALU, or a table-backed non-primitive operation"
+    )]
+    UnsourcedStatementExport {
+        export_index: usize,
+        witness_id: WitnessId,
+    },
+
+    /// More than one built-in Statement operation reached execution/preprocessing.
+    #[error("a circuit must contain at most one built-in Statement operation")]
+    MultipleStatementOperations,
+
+    /// A flattened statement witness was not a base-field embedding at runtime.
+    #[error("statement slot {slot} is not a base-field element")]
+    StatementValueNotBase { slot: usize },
+
+    /// Statement metadata, reserved executor configuration, and emitted operation disagree.
+    #[error("invalid or unaudited built-in Statement configuration")]
+    InvalidStatementConfiguration,
+
     /// WitnessId out of bounds.
     #[error("WitnessId({witness_id}) out of bounds")]
     WitnessIdOutOfBounds { witness_id: WitnessId },

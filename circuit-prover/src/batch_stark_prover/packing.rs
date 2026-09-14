@@ -319,9 +319,10 @@ impl TablePacking {
                 });
             }
             if *lanes > 1
-                && SINGLE_LANE_NPO_PREFIXES
-                    .iter()
-                    .any(|prefix| op_type.as_str().starts_with(prefix))
+                && (*op_type == NpoTypeId::statement()
+                    || SINGLE_LANE_NPO_PREFIXES
+                        .iter()
+                        .any(|prefix| op_type.as_str().starts_with(prefix)))
             {
                 return Err(ProofMetadataError::NpoLanesUnsupported {
                     op_type: op_type.clone(),

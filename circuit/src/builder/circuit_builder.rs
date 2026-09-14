@@ -27,13 +27,14 @@ use crate::ops::poseidon2_perm::{
     Poseidon2CircuitPlugin, Poseidon2PermCallBase, generate_poseidon2_challenger_trace,
 };
 use crate::ops::recompose::RecomposeCircuitPlugin;
+use crate::ops::statement::StatementCircuitPlugin;
 use crate::ops::{
     HintExecutor, NpoConfig, NpoRegistry, NpoTypeId, Poseidon1Params, Poseidon1PermCall,
     Poseidon2Params, Poseidon2PermCall,
 };
 use crate::tables::TraceGeneratorFn;
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};
-use crate::{CircuitBuilderError, CircuitError};
+use crate::{CircuitBuilderError, CircuitError, StatementExport, StatementField, StatementSchema};
 
 /// How `recompose_base_coeffs_to_ext` should lower a coefficient recomposition.
 ///
@@ -121,6 +122,13 @@ pub struct CircuitBuilder<F: Field> {
     /// creator, unbalancing the `WitnessChecks` bus. The fresh path routes every coefficient
     /// through `recompose/coeff`, which creates each limb explicitly.
     decompose_skip_select_provenance: bool,
+
+    /// `Some` after the circuit's ordered statement has been defined, including the empty schema.
+    statement_schema: Option<StatementSchema>,
+    /// Original typed export expressions, before extension normalization creates coefficient rows.
+    statement_source_exprs: Vec<ExprId>,
+    /// NPOs emitted solely to normalize extension exports into constrained base coefficients.
+    statement_normalization_ops: HashSet<NonPrimitiveOpId>,
 }
 
 impl<F> Default for CircuitBuilder<F>
@@ -156,6 +164,9 @@ where
             recompose_coeff_ctl_for_decompose_links: false,
             decompose_recompose_via_alu: false,
             decompose_skip_select_provenance: false,
+            statement_schema: None,
+            statement_source_exprs: Vec::new(),
+            statement_normalization_ops: HashSet::new(),
         }
     }
 
@@ -487,6 +498,87 @@ where
         BF: PrimeField64,
         F: ExtensionField<BF>,
     {
+    }
+
+    /// Define the circuit's one ordered public statement over existing targets.
+    ///
+    /// Base exports remain one sink input, whose full witness-bus tuple proves that all higher
+    /// extension limbs are zero. Extension exports use the coefficient-aware decomposition path
+    /// and retain canonical basis order. An empty schema records the once-only choice but emits no
+    /// zero-width table.
+    pub fn set_statement_exports<BF>(
+        &mut self,
+        exports: &[StatementExport],
+    ) -> Result<StatementSchema, CircuitBuilderError>
+    where
+        BF: PrimeField64,
+        F: ExtensionField<BF>,
+    {
+        if self.statement_schema.is_some() {
+            return Err(CircuitBuilderError::StatementAlreadyDefined);
+        }
+        if self.npo_registry.contains_key(&NpoTypeId::statement()) {
+            return Err(CircuitBuilderError::StatementNpoAlreadyRegistered);
+        }
+
+        let mut fields = Vec::with_capacity(exports.len());
+        let mut flattened = Vec::new();
+        let mut normalization_ops = HashSet::new();
+        for export in exports {
+            match *export {
+                StatementExport::Base(expr) => {
+                    fields.push(StatementField::Base);
+                    flattened.push(expr);
+                }
+                StatementExport::Extension(expr) => {
+                    fields.push(StatementField::Extension {
+                        degree: F::DIMENSION,
+                    });
+                    let before = self.non_primitive_ops.len();
+                    let coeffs =
+                        self.decompose_ext_to_base_coeffs_with_coeff_lookups::<BF>(expr)?;
+                    normalization_ops.extend(
+                        self.non_primitive_ops[before..]
+                            .iter()
+                            .map(|operation| operation.op_id),
+                    );
+                    flattened.extend(coeffs);
+                }
+            }
+        }
+
+        let schema = StatementSchema::new(fields)?;
+        debug_assert_eq!(schema.base_len(), flattened.len());
+        self.statement_schema = Some(schema.clone());
+        self.statement_source_exprs = exports
+            .iter()
+            .map(|export| match *export {
+                StatementExport::Base(expr) | StatementExport::Extension(expr) => expr,
+            })
+            .collect();
+        self.statement_normalization_ops = normalization_ops;
+
+        if !flattened.is_empty() {
+            let plugin = StatementCircuitPlugin::new(
+                schema.clone(),
+                crate::ops::statement::generate_statement_trace::<BF, F>,
+            );
+            let op_type = NpoTypeId::statement();
+            let plugin = Arc::new(plugin);
+            self.config.enable_op(op_type.clone(), plugin.config());
+            self.non_primitive_trace_generators
+                .insert(op_type.clone(), plugin.trace_generator());
+            self.npo_registry.insert(op_type.clone(), plugin);
+            self.push_non_primitive_op_with_outputs(
+                op_type,
+                vec![flattened],
+                vec![],
+                None,
+                "statement",
+            );
+        }
+
+        Ok(schema)
     }
 
     /// Checks whether an op type is enabled on this builder.
@@ -1077,6 +1169,20 @@ where
         circuit.public_rows = public_rows;
         circuit.private_input_rows = private_input_rows;
         circuit.private_flat_len = self.private_input_tracker.count();
+        circuit.statement_schema = self.statement_schema;
+        circuit.statement_source_wids = self
+            .statement_source_exprs
+            .iter()
+            .map(|expr| {
+                circuit.expr_to_widx.get(expr).copied().ok_or_else(|| {
+                    CircuitBuilderError::MissingExprMapping {
+                        expr_id: *expr,
+                        context: "statement source".into(),
+                    }
+                })
+            })
+            .collect::<Result<_, _>>()?;
+        circuit.statement_normalization_ops = self.statement_normalization_ops;
         if !rewrite.is_empty() {
             circuit.witness_rewrite = Some(rewrite);
         }
@@ -3778,5 +3884,155 @@ mod proptests {
             !traces2.alu_trace.values.is_empty(),
             "ALU trace should not be empty"
         );
+    }
+
+    /// Removing the once-only guard, changing export order, or treating an extension export as
+    /// one slot would make this fail.
+    #[test]
+    fn statement_schema_is_ordered_checked_and_defined_once() {
+        type Ext4 = BinomialExtensionField<BabyBear, 4>;
+
+        let mut builder = CircuitBuilder::<Ext4>::new();
+        enable_recompose_tables(&mut builder);
+        let base = builder.public_input();
+        let extension = builder.public_input();
+
+        let schema = builder
+            .set_statement_exports::<BabyBear>(&[
+                crate::StatementExport::Base(base),
+                crate::StatementExport::Extension(extension),
+                crate::StatementExport::Base(base),
+            ])
+            .expect("the first statement definition is accepted");
+
+        assert_eq!(schema.base_len(), 6);
+        assert_eq!(
+            schema.fields(),
+            &[
+                crate::StatementField::Base,
+                crate::StatementField::Extension { degree: 4 },
+                crate::StatementField::Base,
+            ]
+        );
+        assert!(matches!(
+            builder.set_statement_exports::<BabyBear>(&[]),
+            Err(CircuitBuilderError::StatementAlreadyDefined)
+        ));
+    }
+
+    /// Extension exports must never silently use the weighted-sum-only ALU decomposition.
+    #[test]
+    fn statement_extension_needs_coefficient_lookups() {
+        type Ext4 = BinomialExtensionField<BabyBear, 4>;
+
+        let mut builder = CircuitBuilder::<Ext4>::new();
+        let extension = builder.public_input();
+        assert!(matches!(
+            builder.set_statement_exports::<BabyBear>(&[crate::StatementExport::Extension(
+                extension,
+            )]),
+            Err(CircuitBuilderError::RecomposeCoeffLookupsUnavailable)
+        ));
+    }
+
+    /// An empty statement records the once-only decision but emits no zero-width NPO table.
+    #[test]
+    fn empty_statement_has_no_table() {
+        let mut builder = CircuitBuilder::<BabyBear>::new();
+        let schema = builder
+            .set_statement_exports::<BabyBear>(&[])
+            .expect("empty statements are valid");
+        assert_eq!(schema.base_len(), 0);
+        assert!(builder.non_primitive_ops.is_empty());
+        assert!(matches!(
+            builder.set_statement_exports::<BabyBear>(&[]),
+            Err(CircuitBuilderError::StatementAlreadyDefined)
+        ));
+    }
+
+    /// Deduplicating the sink inputs or recording pre-optimizer expression numbers would make the
+    /// committed indices/order or read multiplicity below differ.
+    #[test]
+    fn statement_uses_final_canonical_witnesses_and_preserves_duplicate_slots() {
+        let mut builder = CircuitBuilder::<BabyBear>::new();
+        let a = builder.public_input();
+        let b = builder.public_input();
+        let sum_a = builder.add(a, b);
+        let sum_b = builder.add(a, b);
+        let folded = builder.define_const(BabyBear::from_u64(23));
+        builder
+            .set_statement_exports::<BabyBear>(&[
+                crate::StatementExport::Base(sum_a),
+                crate::StatementExport::Base(folded),
+                crate::StatementExport::Base(sum_b),
+                crate::StatementExport::Base(sum_a),
+            ])
+            .unwrap();
+        let circuit = builder.build().unwrap();
+        let statement_inputs = circuit
+            .ops
+            .iter()
+            .find_map(|op| match op {
+                crate::Op::NonPrimitiveOpWithExecutor {
+                    inputs, executor, ..
+                } if *executor.op_type() == NpoTypeId::statement() => Some(inputs[0].clone()),
+                _ => None,
+            })
+            .expect("one statement sink");
+
+        assert_eq!(statement_inputs.len(), 4);
+        assert_eq!(statement_inputs[0], statement_inputs[2]);
+        assert_eq!(statement_inputs[0], statement_inputs[3]);
+        let prep = circuit.generate_preprocessed_columns::<1>().unwrap();
+        assert_eq!(
+            prep.non_primitive[&NpoTypeId::statement()],
+            vec![
+                BabyBear::ONE,
+                statement_inputs[0].base_field_index::<BabyBear, 1>(),
+                statement_inputs[1].base_field_index::<BabyBear, 1>(),
+                statement_inputs[2].base_field_index::<BabyBear, 1>(),
+                statement_inputs[3].base_field_index::<BabyBear, 1>(),
+            ]
+        );
+        assert_eq!(prep.ext_reads[statement_inputs[0].0 as usize], 3);
+    }
+
+    /// A zero-output sink must not turn a raw private witness into a bus creator.
+    #[test]
+    fn statement_rejects_an_unsourced_private_export() {
+        let mut builder = CircuitBuilder::<BabyBear>::new();
+        let private = builder.alloc_private_input("unsourced statement");
+        builder
+            .set_statement_exports::<BabyBear>(&[crate::StatementExport::Base(private)])
+            .unwrap();
+        let circuit = builder.build().unwrap();
+        assert!(matches!(
+            circuit.generate_preprocessed_columns::<1>(),
+            Err(CircuitError::UnsourcedStatementExport {
+                export_index: 0,
+                ..
+            })
+        ));
+    }
+
+    /// Extension normalization cannot manufacture provenance for its original private source.
+    #[test]
+    fn statement_rejects_an_extension_sourced_only_by_its_own_normalization() {
+        type Ext4 = BinomialExtensionField<BabyBear, 4>;
+
+        let mut builder = CircuitBuilder::<Ext4>::new();
+        enable_recompose_tables(&mut builder);
+        let private = builder.alloc_private_input("unsourced extension statement");
+        builder
+            .set_statement_exports::<BabyBear>(&[crate::StatementExport::Extension(private)])
+            .unwrap();
+        let circuit = builder.build().unwrap();
+        assert!(matches!(
+            circuit.generate_preprocessed_columns::<4>(),
+            Err(CircuitError::UnsourcedStatementExport {
+                export_index: 0,
+                ..
+            })
+        ));
     }
 }

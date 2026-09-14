@@ -11,7 +11,7 @@ use crate::ops::{
 };
 use crate::tables::{CircuitRunner, TraceGeneratorFn};
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessId};
-use crate::{AluOpKind, CircuitError};
+use crate::{AluOpKind, CircuitError, StatementSchema};
 
 /// Preprocessed data for primitive and non-primitive operation tables.
 ///
@@ -202,6 +202,12 @@ pub struct Circuit<F> {
     /// After ALU deduplication, duplicate outputs are rewritten to canonical.
     /// This map is used by the runner to fill those slots.
     pub witness_rewrite: Option<HashMap<WitnessId, WitnessId>>,
+    /// Library-issued marker and schema for the built-in Statement sink.
+    pub(crate) statement_schema: Option<StatementSchema>,
+    /// Canonical witnesses of the original typed exports (before extension normalization).
+    pub(crate) statement_source_wids: Vec<WitnessId>,
+    /// Operations emitted only to normalize extension exports into constrained coefficients.
+    pub(crate) statement_normalization_ops: hashbrown::HashSet<NonPrimitiveOpId>,
 }
 
 impl<F: Field + Clone> Clone for Circuit<F> {
@@ -220,6 +226,9 @@ impl<F: Field + Clone> Clone for Circuit<F> {
             tag_to_witness: self.tag_to_witness.clone(),
             tag_to_op_id: self.tag_to_op_id.clone(),
             witness_rewrite: self.witness_rewrite.clone(),
+            statement_schema: self.statement_schema.clone(),
+            statement_source_wids: self.statement_source_wids.clone(),
+            statement_normalization_ops: self.statement_normalization_ops.clone(),
         }
     }
 }
@@ -241,7 +250,15 @@ impl<F: Field> Circuit<F> {
             tag_to_witness: HashMap::new(),
             tag_to_op_id: HashMap::new(),
             witness_rewrite: None,
+            statement_schema: None,
+            statement_source_wids: Vec::new(),
+            statement_normalization_ops: hashbrown::HashSet::new(),
         }
+    }
+
+    /// Return the circuit's once-defined statement schema, including an empty schema.
+    pub const fn statement_schema(&self) -> Option<&StatementSchema> {
+        self.statement_schema.as_ref()
     }
 
     /// Generates preprocessed columns for all primitive operation types.
@@ -267,6 +284,8 @@ impl<F: Field> Circuit<F> {
         // Const and Public define their outputs first. ALU ops define their output (forward)
         // or their `b` operand (backward/sub encoding where `out` was already defined).
         let mut defined = vec![false; self.witness_count as usize];
+        let mut independently_sourced_statement_wids = hashbrown::HashSet::new();
+        let mut statement_operations = 0usize;
 
         // Private input witness IDs: these get their bus creator role from the first
         // ALU op that uses them, rather than from a Public table row.
@@ -320,6 +339,7 @@ impl<F: Field> Circuit<F> {
                         defined.resize(out_idx + 1, false);
                     }
                     defined[out_idx] = true;
+                    independently_sourced_statement_wids.insert(out.0);
                 }
                 // Public: creates the output witness value. Store D-scaled out index.
                 // No ext_reads increment: Public is a creator, not a reader.
@@ -331,6 +351,7 @@ impl<F: Field> Circuit<F> {
                         defined.resize(out_idx + 1, false);
                     }
                     defined[out_idx] = true;
+                    independently_sourced_statement_wids.insert(out.0);
                 }
                 // Unified ALU operations with selectors for operation kind.
                 //
@@ -459,6 +480,7 @@ impl<F: Field> Circuit<F> {
                             defined.resize(out_idx + 1, false);
                         }
                         defined[out_idx] = true;
+                        independently_sourced_statement_wids.insert(out.0);
                     }
                     if b_is_creator == F::ONE {
                         let b_idx = b.0 as usize;
@@ -466,6 +488,7 @@ impl<F: Field> Circuit<F> {
                             defined.resize(b_idx + 1, false);
                         }
                         defined[b_idx] = true;
+                        independently_sourced_statement_wids.insert(b.0);
                     }
                     if a_state == F::TWO {
                         let a_idx = a.0 as usize;
@@ -473,6 +496,7 @@ impl<F: Field> Circuit<F> {
                             defined.resize(a_idx + 1, false);
                         }
                         defined[a_idx] = true;
+                        independently_sourced_statement_wids.insert(a.0);
                     }
                     if c_state == F::TWO {
                         let c_idx = c_wid.0 as usize;
@@ -480,20 +504,34 @@ impl<F: Field> Circuit<F> {
                             defined.resize(c_idx + 1, false);
                         }
                         defined[c_idx] = true;
+                        independently_sourced_statement_wids.insert(c_wid.0);
                     }
                 }
                 Op::NonPrimitiveOpWithExecutor {
                     executor,
                     inputs,
                     outputs,
-                    ..
+                    op_id,
                 } => {
+                    if *executor.op_type() == NpoTypeId::statement() {
+                        statement_operations += 1;
+                    }
                     executor.preprocess(inputs, outputs, &mut preprocessed)?;
 
                     // Track duplicate non-primitive outputs: first occurrence is a creator,
                     // subsequent occurrences are treated as readers on WitnessChecks.
                     let op_type = executor.op_type();
                     let n_exposed = executor.num_exposed_outputs().unwrap_or(outputs.len());
+                    if !self.statement_normalization_ops.contains(op_id) {
+                        independently_sourced_statement_wids
+                            .extend(outputs.iter().take(n_exposed).flatten().map(|wid| wid.0));
+                        if let Some(group) = executor.arbitrated_coeff_input_group()
+                            && let Some(coeffs) = inputs.get(group)
+                        {
+                            independently_sourced_statement_wids
+                                .extend(coeffs.iter().map(|wid| wid.0));
+                        }
+                    }
                     for out_limb in outputs.iter().take(n_exposed) {
                         for wid in out_limb {
                             let wid_idx = wid.0 as usize;
@@ -554,6 +592,39 @@ impl<F: Field> Circuit<F> {
         let size = self.witness_count as usize;
         if preprocessed.ext_reads.len() < size {
             preprocessed.ext_reads.resize(size, 0);
+        }
+
+        match self.statement_schema.as_ref() {
+            Some(schema) if schema.base_len() == 0 => {
+                if statement_operations != 0 {
+                    return Err(CircuitError::InvalidStatementConfiguration);
+                }
+            }
+            Some(schema) => {
+                let configured_schema = self
+                    .enabled_ops
+                    .get(&NpoTypeId::statement())
+                    .and_then(|config| {
+                        config.downcast_ref::<crate::ops::statement::StatementConfig>()
+                    })
+                    .map(|config| &config.schema);
+                if statement_operations != 1 || configured_schema != Some(schema) {
+                    return Err(CircuitError::InvalidStatementConfiguration);
+                }
+                for (export_index, &witness_id) in self.statement_source_wids.iter().enumerate() {
+                    if !independently_sourced_statement_wids.contains(&witness_id.0) {
+                        return Err(CircuitError::UnsourcedStatementExport {
+                            export_index,
+                            witness_id,
+                        });
+                    }
+                }
+            }
+            None => {
+                if statement_operations != 0 {
+                    return Err(CircuitError::InvalidStatementConfiguration);
+                }
+            }
         }
 
         // Safety: every private input must have been claimed as a creator by some ALU op,

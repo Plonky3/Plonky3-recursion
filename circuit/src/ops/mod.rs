@@ -10,6 +10,7 @@ pub mod poseidon1_perm;
 pub mod poseidon2_perm;
 pub(crate) mod poseidon_perm;
 pub mod recompose;
+pub mod statement;
 
 pub use context::*;
 pub use executor::*;
@@ -50,3 +51,4 @@ pub use recompose::{
     RecomposeCircuitRow, RecomposeTrace, RecomposeTraceKind, generate_recompose_coeff_trace,
     generate_recompose_trace,
 };
+pub use statement::{StatementCircuitRow, StatementTrace, generate_statement_trace};

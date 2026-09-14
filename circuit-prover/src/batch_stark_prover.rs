@@ -63,6 +63,7 @@ mod packing;
 mod poseidon1;
 mod poseidon2;
 mod recompose;
+mod statement;
 
 pub use dynamic_air::{
     BatchAir, BatchTableInstance, CloneableBatchAir, DynamicAirEntry, TableProver,
@@ -79,6 +80,7 @@ pub use poseidon2::{
     poseidon2_verifier_air_from_config,
 };
 pub use recompose::{RecomposeAirBuilder, RecomposePreprocessor, RecomposeProver};
+pub use statement::{StatementAirBuilder, StatementPreprocessor, StatementProver};
 
 /// Prime modulus of the BabyBear field (`2^31 - 2^27 + 1`).
 pub const BABY_BEAR_MODULUS: u64 = 0x7800_0001;

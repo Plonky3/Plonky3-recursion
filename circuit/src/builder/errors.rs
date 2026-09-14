@@ -126,6 +126,18 @@ pub enum CircuitBuilderError {
          sum, or pinned to a constant with a component outside the base field"
     )]
     CoefficientsNotBaseBound,
+
+    /// A circuit may define its ordered statement schema only once.
+    #[error("statement exports are already defined for this circuit")]
+    StatementAlreadyDefined,
+
+    /// The reserved built-in Statement NPO identifier was already registered.
+    #[error("the reserved built-in `statement` operation identifier is already registered")]
+    StatementNpoAlreadyRegistered,
+
+    /// The statement schema's flattened length overflowed `usize`.
+    #[error(transparent)]
+    StatementSchema(#[from] crate::StatementError),
 }
 
 #[cfg(test)]

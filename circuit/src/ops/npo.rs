@@ -56,6 +56,11 @@ impl NpoTypeId {
         Self::new("recompose/coeff")
     }
 
+    /// Reserved identifier for the built-in statement export sink.
+    pub fn statement() -> Self {
+        Self::new("statement")
+    }
+
     /// Convenience: Unconstrained (hint) operation type ID.
     ///
     /// This is kept only for profiling / debugging purposes; Unconstrained is
