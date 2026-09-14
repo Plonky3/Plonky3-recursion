@@ -5,6 +5,7 @@
 extern crate alloc;
 
 pub mod corpus;
+pub mod rejection_oracle;
 
 use core::marker::PhantomData;
 
