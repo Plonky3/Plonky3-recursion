@@ -932,6 +932,15 @@ fn validate_cap_packing<const DIGEST_ELEMS: usize>(
         VerificationError::InvalidProofShape("MMCS cap chunk count overflows".into())
     })?;
     let target_size = core::mem::size_of::<Target>();
+    if roots
+        .checked_mul(core::mem::size_of::<Vec<Target>>())
+        .and_then(|bytes| (bytes <= isize::MAX as usize).then_some(bytes))
+        .is_none()
+    {
+        return Err(VerificationError::InvalidProofShape(
+            "MMCS cap outer target vector size overflows".into(),
+        ));
+    }
     for (label, elements) in [("digest", flat_digest), ("chunk", flat_chunk)] {
         if elements
             .checked_mul(target_size)
@@ -2387,6 +2396,26 @@ mod prepared_shape_tests {
         assert!(validate_cap_packing::<8>(1, 4, false, 2, 0, 0).is_ok());
         assert!(validate_cap_packing::<8>(1, 8, true, 5, 0, 0).is_ok());
         assert!(validate_cap_packing::<7>(1, 2, false, 4, 0, 0).is_err());
+    }
+
+    #[test]
+    fn cap_packing_overflow_boundaries_are_typed_errors() {
+        assert!(validate_cap_packing::<1>(1, 0, false, 1, 0, 0).is_err());
+        assert!(validate_cap_packing::<1>(1, 1, false, 0, 0, 0).is_err());
+        assert!(validate_cap_packing::<1>(1, usize::MAX, false, 2, 0, 0).is_err());
+        assert!(validate_cap_packing::<8>(usize::MAX, 1, false, 8, 0, 0).is_err());
+        assert!(
+            validate_cap_packing::<1>(
+                usize::MAX / core::mem::size_of::<Target>() + 1,
+                1,
+                false,
+                1,
+                0,
+                0,
+            )
+            .is_err()
+        );
+        assert!(validate_cap_packing::<1>(1, 1, false, 1, usize::MAX, 1).is_err());
     }
 
     fn frontier(count: usize) -> PrunedMerklePaths<F, DIGEST_ELEMS> {

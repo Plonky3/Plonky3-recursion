@@ -104,7 +104,7 @@ fn prove_verify_arity4(
         assert_eq!(
             commit.num_roots(),
             4,
-            "surplus control starts with cap height 1"
+            "surplus control starts with four leaf roots"
         );
         let mut roots = commit.roots().to_vec();
         roots.extend([[F::ZERO; 8]; 4]);
@@ -171,6 +171,14 @@ fn prove_verify_arity4(
     let native_schedule = mmcs
         .proof_arity_schedule(&dimensions)
         .expect("native arity schedule");
+    if dimensions.iter().map(|dims| dims.height).eq([16, 8]) {
+        let expected = if cap_height == 0 {
+            vec![2, 4, 4]
+        } else {
+            vec![2, 4]
+        };
+        assert_eq!(native_schedule, expected);
+    }
     let native_siblings: usize = native_schedule.iter().map(|step| step - 1).sum();
     assert_eq!(batch_opening.opening_proof.len(), native_siblings);
     assert_eq!(mmcs_op_ids.len(), native_siblings);
@@ -291,5 +299,8 @@ fn arity4_shared_geometry_matches_native_controls() {
     prove_verify_arity4(vec![tall, short], 4, 15, 1, false, false);
 
     let height_two = RowMajorMatrix::new((0..2u64).map(F::from_u64).collect(), 1);
-    prove_verify_arity4(vec![height_two], 1, 0, 10, false, false);
+    prove_verify_arity4(vec![height_two.clone()], 1, 0, 10, false, false);
+    prove_verify_arity4(vec![height_two.clone()], 1, 1, 10, false, false);
+    prove_verify_arity4(vec![height_two.clone()], 1, 0, 10, true, false);
+    prove_verify_arity4(vec![height_two], 1, 1, 10, true, false);
 }

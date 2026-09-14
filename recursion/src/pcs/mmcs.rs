@@ -661,22 +661,23 @@ where
     }
 
     // Validate every next-power computation and reject unequal raw heights in
-    // one native bucket without sorting or collecting the input iterator.
-    let mut outer = heights.clone();
-    while let Some(height) = outer.next() {
-        if height == 0 {
-            continue;
-        }
+    // one native bucket.  There are at most usize::BITS representable buckets,
+    // so this fixed table keeps validation O(matrix_count * word_bits) without
+    // a matrix-count allocation or a quadratic pairwise scan.
+    let mut buckets: [Option<usize>; usize::BITS as usize + 1] = [None; usize::BITS as usize + 1];
+    for height in heights {
         let bucket = checked_next_power_of_two(height)?;
-        let later = outer.clone();
-        for other in later {
-            if other != 0 && checked_next_power_of_two(other)? == bucket && other != height {
+        let bucket_index = bucket.trailing_zeros() as usize;
+        match buckets[bucket_index] {
+            Some(existing) if existing != height => {
                 return Err(CircuitBuilderError::Poseidon2ConfigMismatch {
                     expected: "matrix heights that round up to the same power of two must be equal"
                         .into(),
                     got: "incompatible matrix heights".into(),
                 });
             }
+            None => buckets[bucket_index] = Some(height),
+            Some(_) => {}
         }
     }
 
@@ -689,10 +690,9 @@ where
         } else {
             let target = checked_next_power_of_two(curr / 4)?;
             let mut has_intermediate = false;
-            let remaining = heights.clone();
-            for height in remaining {
-                if height != 0 {
-                    let bucket = checked_next_power_of_two(height)?;
+            for (bucket_index, height) in buckets.iter().enumerate() {
+                if height.is_some() {
+                    let bucket = 1usize << bucket_index;
                     if bucket < consumed_below && bucket > target {
                         has_intermediate = true;
                         break;
@@ -705,17 +705,12 @@ where
         let logical_next = curr / step;
         let next = checked_padded_len(logical_next)?;
         let logical_next_bucket = checked_next_power_of_two(logical_next)?;
-        let mut injection_height = None;
-        let remaining = heights.clone();
-        for height in remaining {
-            if height != 0
-                && checked_next_power_of_two(height)? == logical_next_bucket
-                && logical_next_bucket < consumed_below
-            {
-                injection_height = Some(height);
-                break;
-            }
-        }
+        let injection_height = if logical_next_bucket < consumed_below {
+            let bucket_index = logical_next_bucket.trailing_zeros() as usize;
+            buckets[bucket_index]
+        } else {
+            None
+        };
         if injection_height.is_some() {
             consumed_below = logical_next_bucket;
         }
@@ -3357,6 +3352,55 @@ mod test {
         assert!(checked_padded_len(usize::MAX).is_err());
         assert!(checked_padded_len(usize::MAX - 2).is_err());
         assert_eq!(checked_padded_len(usize::MAX - 3).unwrap(), usize::MAX - 3);
+    }
+
+    #[test]
+    fn arity4_zero_height_groups_preserve_legacy_events() {
+        assert!(validate_arity4_cap_geometry(&[1, 0], 1).is_err());
+        let mut events = Vec::new();
+        visit_arity4_path([8usize, 0].into_iter(), 1, |step| events.push(step))
+            .expect("legacy zero-height injection remains scalar-valid");
+        assert_eq!(
+            events.last().and_then(|step| step.injection_height),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn arity4_bucket_validation_is_linear_in_matrix_count() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        #[derive(Clone)]
+        struct Counted {
+            remaining: usize,
+            visits: Rc<Cell<usize>>,
+        }
+
+        impl Iterator for Counted {
+            type Item = usize;
+
+            fn next(&mut self) -> Option<Self::Item> {
+                if self.remaining == 0 {
+                    return None;
+                }
+                self.remaining -= 1;
+                self.visits.set(self.visits.get() + 1);
+                Some(8)
+            }
+        }
+
+        let visits = Rc::new(Cell::new(0));
+        visit_arity4_path(
+            Counted {
+                remaining: 1024,
+                visits: visits.clone(),
+            },
+            1,
+            |_| {},
+        )
+        .expect("repeated equal-height buckets are valid");
+        assert!(visits.get() <= 1024 * (usize::BITS as usize + 1));
     }
 
     /// Cross-checks [`restore_fri_query_paths`] against the trusted single-query
