@@ -14,7 +14,7 @@ use super::{BuiltinConfigError, SuiteIdV1, WhirConfigV1};
 use crate::pcs::whir::uni::{WhirUniPcs, WhirUniVerifierParams};
 use crate::verifier::VerifierLimits;
 
-type WhirMmcs<F, Perm> = MerkleTreeMmcs<
+pub(crate) type WhirMmcs<F, Perm> = MerkleTreeMmcs<
     <F as Field>::Packing,
     <F as Field>::Packing,
     PaddingFreeSponge<Perm, 16, 8, 8>,
@@ -23,7 +23,7 @@ type WhirMmcs<F, Perm> = MerkleTreeMmcs<
     8,
 >;
 
-type WhirPcs<F, EF, Perm> = WhirUniPcs<
+pub(crate) type WhirPcs<F, EF, Perm> = WhirUniPcs<
     EF,
     F,
     Radix2DFTSmallBatch<F>,

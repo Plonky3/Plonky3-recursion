@@ -4001,8 +4001,8 @@ mod proptests {
 
     #[test]
     fn aggregation_layout_requires_and_retains_the_exact_defined_statement() {
-        let left = StatementSchema::new(vec![crate::StatementField::Base]).unwrap();
-        let right = StatementSchema::new(vec![crate::StatementField::Base]).unwrap();
+        let left = StatementSchema::try_new(vec![crate::StatementField::Base]).unwrap();
+        let right = StatementSchema::try_new(vec![crate::StatementField::Base]).unwrap();
 
         let mut missing = CircuitBuilder::<BabyBear>::new();
         assert!(matches!(
@@ -4021,7 +4021,8 @@ mod proptests {
             .unwrap();
         assert!(matches!(
             mismatched.set_aggregation_statement_layout(
-                StatementSchema::new(vec![crate::StatementField::Extension { degree: 2 }]).unwrap(),
+                StatementSchema::try_new(vec![crate::StatementField::Extension { degree: 2 }])
+                    .unwrap(),
                 StatementSchema::default(),
             ),
             Err(CircuitBuilderError::AggregationStatementSchemaMismatch)

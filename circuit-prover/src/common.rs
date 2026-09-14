@@ -335,6 +335,7 @@ pub struct TrustedBuiltinArtifactRelation<F: Copy> {
     pub(crate) non_primitives: Vec<BuiltinArtifactNpo<F>>,
     pub(crate) statement_schema: StatementSchema,
     pub(crate) statement_table_instance: Option<usize>,
+    pub(crate) aggregation_statement_layout: Option<AggregationStatementLayout>,
     pub(crate) trace_degree_bits: Vec<usize>,
 }
 
@@ -350,6 +351,7 @@ impl<F: Copy> TrustedBuiltinArtifactRelation<F> {
         non_primitives: Vec<BuiltinArtifactNpo<F>>,
         statement_schema: StatementSchema,
         statement_table_instance: Option<usize>,
+        aggregation_statement_layout: Option<AggregationStatementLayout>,
         trace_degree_bits: Vec<usize>,
     ) -> Result<Self, ProofMetadataError> {
         table_packing.validate()?;
@@ -397,6 +399,14 @@ impl<F: Copy> TrustedBuiltinArtifactRelation<F> {
                 "Statement AIR width does not match the schema",
             ));
         }
+        if aggregation_statement_layout
+            .as_ref()
+            .is_some_and(|layout| layout.output() != &statement_schema)
+        {
+            return Err(ProofMetadataError::TrustedArtifactRelation(
+                "aggregation output schema does not match the Statement schema",
+            ));
+        }
         for npo in &non_primitives {
             if let BuiltinArtifactNpo::Static { rows, lanes, .. } = npo
                 && (*rows == 0 || *lanes == 0)
@@ -416,6 +426,7 @@ impl<F: Copy> TrustedBuiltinArtifactRelation<F> {
             non_primitives,
             statement_schema,
             statement_table_instance,
+            aggregation_statement_layout,
             trace_degree_bits,
         })
     }
@@ -470,6 +481,7 @@ impl<F: Copy> CircuitRelation<F> {
                 parts.statement_schema,
                 parts.statement_table_instance,
             ),
+            aggregation_statement_layout: parts.aggregation_statement_layout,
             trace_degree_bits: parts.trace_degree_bits,
         }
     }

@@ -1,6 +1,8 @@
 use crate::builtin_config::{
     BuiltinConfigDescriptorV1, FriConfigV1, SuiteIdV1, WhirConfigV1, WhirRateModeV1,
 };
+use p3_batch_stark::common::{GlobalPreprocessed, PreprocessedInstanceMeta};
+use p3_batch_stark::{CommonData, StarkGenericConfig};
 
 use super::ArtifactError;
 use super::wire::{Reader, Writer};
@@ -148,6 +150,7 @@ pub(crate) struct RelationDescriptorV1<F: Copy> {
     pub non_primitives: Vec<NpoDescriptorV1<F>>,
     pub statement_schema: StatementSchema,
     pub statement_table_instance: Option<usize>,
+    pub aggregation_statement_layout: Option<p3_circuit::AggregationStatementLayout>,
     pub trace_degree_bits: Vec<usize>,
 }
 
@@ -179,6 +182,7 @@ impl<F: Copy> RelationDescriptorV1<F> {
             non_primitives,
             statement_schema: relation.statement_layout().schema().clone(),
             statement_table_instance: relation.statement_layout().table_instance(),
+            aggregation_statement_layout: relation.aggregation_statement_layout().cloned(),
             trace_degree_bits: relation.trace_degree_bits().to_vec(),
         })
     }
@@ -227,6 +231,7 @@ impl<F: Copy> RelationDescriptorV1<F> {
             non_primitives,
             self.statement_schema,
             self.statement_table_instance,
+            self.aggregation_statement_layout,
             self.trace_degree_bits,
         )
         .map_err(|_| ArtifactError::NonCanonicalMetadata)
@@ -448,6 +453,43 @@ fn read_schema(reader: &mut Reader<'_>) -> Result<StatementSchema, ArtifactError
     Ok(schema)
 }
 
+fn write_aggregation_layout(
+    writer: &mut Writer,
+    layout: Option<&p3_circuit::AggregationStatementLayout>,
+) -> Result<(), ArtifactError> {
+    match layout {
+        None => writer.write_u8(0),
+        Some(layout) => {
+            writer.write_u8(1)?;
+            write_schema(writer, layout.left())?;
+            write_schema(writer, layout.right())?;
+            writer.write_count("aggregation statement split", layout.split_at())?;
+            write_schema(writer, layout.output())
+        }
+    }
+}
+
+fn read_aggregation_layout(
+    reader: &mut Reader<'_>,
+) -> Result<Option<p3_circuit::AggregationStatementLayout>, ArtifactError> {
+    match reader.read_u8()? {
+        0 => Ok(None),
+        1 => {
+            let left = read_schema(reader)?;
+            let right = read_schema(reader)?;
+            let split_at = read_count_value(reader)?;
+            let output = read_schema(reader)?;
+            p3_circuit::AggregationStatementLayout::try_new(left, right, split_at, output)
+                .map(Some)
+                .map_err(|_| ArtifactError::NonCanonicalMetadata)
+        }
+        tag => Err(ArtifactError::InvalidTag {
+            component: "aggregation statement layout",
+            tag,
+        }),
+    }
+}
+
 pub(crate) fn write_relation<F: PrimeField64>(
     writer: &mut Writer,
     relation: &RelationDescriptorV1<F>,
@@ -491,6 +533,7 @@ pub(crate) fn write_relation<F: PrimeField64>(
     })?;
     write_schema(writer, &relation.statement_schema)?;
     write_option_u32(writer, relation.statement_table_instance)?;
+    write_aggregation_layout(writer, relation.aggregation_statement_layout.as_ref())?;
     writer.write_vec(
         "trace degree bits",
         &relation.trace_degree_bits,
@@ -576,6 +619,7 @@ pub(crate) fn read_relation<F: PrimeField64>(
     })?;
     let statement_schema = read_schema(reader)?;
     let statement_table_instance = read_option_u32(reader, "statement table instance")?;
+    let aggregation_statement_layout = read_aggregation_layout(reader)?;
     let trace_degree_bits =
         reader.read_vec_limited("trace degree bits", max_instances, 4, read_count_value)?;
     let relation = RelationDescriptorV1 {
@@ -588,6 +632,7 @@ pub(crate) fn read_relation<F: PrimeField64>(
         non_primitives,
         statement_schema,
         statement_table_instance,
+        aggregation_statement_layout,
         trace_degree_bits,
     };
     validate_relation_descriptor(&relation)?;
@@ -643,6 +688,13 @@ fn validate_relation_descriptor<F: Copy>(
         {
             return Err(ArtifactError::NonCanonicalMetadata);
         }
+    }
+    if relation
+        .aggregation_statement_layout
+        .as_ref()
+        .is_some_and(|layout| layout.output() != &relation.statement_schema)
+    {
+        return Err(ArtifactError::NonCanonicalMetadata);
     }
     match relation.reduction {
         AluExtMulKind::Base if relation.ext_degree == 1 => {}
@@ -756,6 +808,130 @@ pub(crate) fn read_config(
     };
     descriptor.validate(&reader.limits().verifier)?;
     Ok(descriptor)
+}
+
+pub(crate) fn write_common<SC: StarkGenericConfig>(
+    writer: &mut Writer,
+    common: &CommonData<SC>,
+    mut write_commitment: impl FnMut(
+        &mut Writer,
+        &p3_batch_stark::Commitment<SC>,
+    ) -> Result<(), ArtifactError>,
+) -> Result<(), ArtifactError> {
+    match &common.preprocessed {
+        None => writer.write_u8(0),
+        Some(preprocessed) => {
+            writer.write_u8(1)?;
+            write_commitment(writer, &preprocessed.commitment)?;
+            writer.write_vec(
+                "preprocessed instances",
+                &preprocessed.instances,
+                |writer, metadata| match metadata {
+                    None => writer.write_u8(0),
+                    Some(metadata) => {
+                        writer.write_u8(1)?;
+                        writer.write_count("preprocessed matrix index", metadata.matrix_index)?;
+                        writer.write_count("preprocessed matrix width", metadata.width)?;
+                        writer.write_count("preprocessed matrix degree", metadata.degree_bits)
+                    }
+                },
+            )?;
+            writer.write_vec(
+                "preprocessed matrix routing",
+                &preprocessed.matrix_to_instance,
+                |writer, instance| writer.write_count("preprocessed routed instance", *instance),
+            )
+        }
+    }
+}
+
+pub(crate) fn read_common<SC: StarkGenericConfig>(
+    reader: &mut Reader<'_>,
+    mut read_commitment: impl FnMut(
+        &mut Reader<'_>,
+    ) -> Result<p3_batch_stark::Commitment<SC>, ArtifactError>,
+) -> Result<CommonData<SC>, ArtifactError> {
+    let preprocessed = match reader.read_u8()? {
+        0 => None,
+        1 => {
+            let commitment = read_commitment(reader)?;
+            let max_instances = reader.limits().verifier.max_instances;
+            let max_width = reader.limits().verifier.max_matrix_width;
+            let max_degree = reader.limits().verifier.max_log_domain_or_degree;
+            let instances =
+                reader.read_vec_limited("preprocessed instances", max_instances, 1, |reader| {
+                    match reader.read_u8()? {
+                        0 => Ok(None),
+                        1 => {
+                            let matrix_index = read_count_value(reader)?;
+                            let width = read_count_value(reader)?;
+                            let degree_bits = read_count_value(reader)?;
+                            if width == 0 || width > max_width {
+                                return Err(ArtifactError::DecodeLimitExceeded {
+                                    component: "preprocessed matrix width",
+                                    actual: width,
+                                    limit: max_width,
+                                });
+                            }
+                            if degree_bits > max_degree {
+                                return Err(ArtifactError::DecodeLimitExceeded {
+                                    component: "preprocessed matrix degree",
+                                    actual: degree_bits,
+                                    limit: max_degree,
+                                });
+                            }
+                            Ok(Some(PreprocessedInstanceMeta {
+                                matrix_index,
+                                width,
+                                degree_bits,
+                            }))
+                        }
+                        tag => Err(ArtifactError::InvalidTag {
+                            component: "preprocessed instance",
+                            tag,
+                        }),
+                    }
+                })?;
+            let matrix_to_instance = reader.read_vec_limited(
+                "preprocessed matrix routing",
+                max_instances,
+                4,
+                read_count_value,
+            )?;
+            if matrix_to_instance
+                .iter()
+                .any(|&instance| instance >= instances.len())
+            {
+                return Err(ArtifactError::NonCanonicalMetadata);
+            }
+            let mut next_matrix = 0;
+            for (instance, metadata) in instances.iter().enumerate() {
+                if let Some(metadata) = metadata {
+                    if metadata.matrix_index != next_matrix
+                        || matrix_to_instance.get(next_matrix) != Some(&instance)
+                    {
+                        return Err(ArtifactError::NonCanonicalMetadata);
+                    }
+                    next_matrix += 1;
+                }
+            }
+            if next_matrix != matrix_to_instance.len() {
+                return Err(ArtifactError::NonCanonicalMetadata);
+            }
+            Some(GlobalPreprocessed {
+                commitment,
+                instances,
+                matrix_to_instance,
+            })
+        }
+        tag => {
+            return Err(ArtifactError::InvalidTag {
+                component: "preprocessed common data",
+                tag,
+            });
+        }
+    };
+    Ok(CommonData::new(preprocessed, Vec::new()))
 }
 
 #[cfg(test)]
@@ -875,6 +1051,20 @@ mod tests {
             ])
             .unwrap(),
             statement_table_instance: Some(p3_circuit_prover::NUM_PRIMITIVE_TABLES + 1),
+            aggregation_statement_layout: Some(
+                p3_circuit::AggregationStatementLayout::try_new(
+                    StatementSchema::try_new(vec![StatementField::Base]).unwrap(),
+                    StatementSchema::try_new(vec![StatementField::Extension { degree: 4 }])
+                        .unwrap(),
+                    1,
+                    StatementSchema::try_new(vec![
+                        StatementField::Base,
+                        StatementField::Extension { degree: 4 },
+                    ])
+                    .unwrap(),
+                )
+                .unwrap(),
+            ),
             trace_degree_bits: vec![2, 3, 4, 1, 0],
         }
     }

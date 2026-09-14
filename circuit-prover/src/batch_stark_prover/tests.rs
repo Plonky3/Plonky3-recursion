@@ -372,6 +372,7 @@ fn independently_trusted_builtin_artifact_reconstructs_without_proving_state() {
         Vec::new(),
         relation.statement_layout().schema().clone(),
         relation.statement_layout().table_instance(),
+        relation.aggregation_statement_layout().cloned(),
         relation.trace_degree_bits().to_vec(),
     )
     .unwrap();
@@ -405,6 +406,7 @@ fn independently_trusted_builtin_artifact_rejects_common_routing_substitution() 
         Vec::new(),
         relation.statement_layout().schema().clone(),
         relation.statement_layout().table_instance(),
+        relation.aggregation_statement_layout().cloned(),
         relation.trace_degree_bits().to_vec(),
     )
     .unwrap();

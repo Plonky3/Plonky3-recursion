@@ -1,3 +1,4 @@
+#[cfg(test)]
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::marker::PhantomData;
@@ -134,6 +135,7 @@ impl Writer {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn write_string(
         &mut self,
         value: &str,
@@ -406,15 +408,40 @@ impl<'a> Reader<'a> {
         Ok(values)
     }
 
+    pub(crate) fn read_exact_items<T>(
+        &mut self,
+        component: &'static str,
+        count: usize,
+        min_item_bytes: usize,
+        mut read_item: impl FnMut(&mut Self) -> Result<T, ArtifactError>,
+    ) -> Result<Vec<T>, ArtifactError> {
+        self.charge_container::<T>(count)?;
+        let min_bytes = checked_product(count, min_item_bytes)?;
+        if min_bytes > self.remaining() {
+            return Err(ArtifactError::Truncated);
+        }
+        let mut values = Vec::new();
+        values
+            .try_reserve_exact(count)
+            .map_err(|_| ArtifactError::AllocationFailed { component })?;
+        for _ in 0..count {
+            values.push(read_item(self)?);
+        }
+        Ok(values)
+    }
+
+    #[cfg(test)]
     pub(crate) fn read_string(&mut self, component: &'static str) -> Result<String, ArtifactError> {
         let bytes = self.read_vec(component, 1, |reader| reader.read_u8())?;
         String::from_utf8(bytes).map_err(|_| ArtifactError::NonCanonicalMetadata)
     }
 
+    #[cfg(test)]
     pub(crate) const fn requested_allocation_bytes(&self) -> usize {
         self.requested_allocation_bytes
     }
 
+    #[cfg(test)]
     pub(crate) const fn container_entries(&self) -> usize {
         self.container_entries
     }
@@ -520,6 +547,52 @@ pub(crate) fn decode_framed<T>(
     let value = read_body(suite, &mut reader)?;
     reader.finish()?;
     Ok(value)
+}
+
+pub(crate) fn validate_frame_envelope(
+    bytes: &[u8],
+    expected_kind: ArtifactKind,
+    max_bytes: usize,
+) -> Result<(), ArtifactError> {
+    if bytes.len() > max_bytes {
+        return Err(ArtifactError::DecodeLimitExceeded {
+            component: "artifact bytes",
+            actual: bytes.len(),
+            limit: max_bytes,
+        });
+    }
+    if bytes.len() < MAGIC.len() {
+        return if MAGIC.starts_with(bytes) {
+            Err(ArtifactError::Truncated)
+        } else {
+            Err(ArtifactError::BadMagic)
+        };
+    }
+    if bytes.get(..MAGIC.len()) != Some(MAGIC) {
+        return Err(ArtifactError::BadMagic);
+    }
+    if bytes.len() < HEADER_BYTES {
+        return Err(ArtifactError::Truncated);
+    }
+    let version = u16::from_le_bytes(bytes[8..10].try_into().unwrap());
+    if version != VERSION {
+        return Err(ArtifactError::UnsupportedVersion(version));
+    }
+    if bytes[10] != expected_kind as u8 {
+        return Err(ArtifactError::WrongArtifactKind);
+    }
+    let body_len = usize::try_from(u32::from_le_bytes(bytes[13..17].try_into().unwrap()))
+        .map_err(|_| ArtifactError::LengthOverflow)?;
+    let expected_len = HEADER_BYTES
+        .checked_add(body_len)
+        .ok_or(ArtifactError::LengthOverflow)?;
+    if bytes.len() < expected_len {
+        return Err(ArtifactError::Truncated);
+    }
+    if bytes.len() > expected_len {
+        return Err(ArtifactError::TrailingBytes);
+    }
+    Ok(())
 }
 
 #[cfg(test)]

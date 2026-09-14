@@ -23,7 +23,7 @@ use super::{BuiltinConfigError, FriConfigV1, SuiteIdV1};
 use crate::pcs::fri::{FriVerifierParams, NativeFriParams};
 use crate::verifier::VerifierLimits;
 
-type OrdinaryMmcs<
+pub(crate) type OrdinaryMmcs<
     F,
     Perm,
     const WIDTH: usize,
@@ -39,7 +39,7 @@ type OrdinaryMmcs<
     DIGEST,
 >;
 
-type OrdinaryPcs<
+pub(crate) type OrdinaryPcs<
     F,
     EF,
     Perm,
@@ -54,16 +54,23 @@ type OrdinaryPcs<
     ExtensionMmcs<F, EF, OrdinaryMmcs<F, Perm, WIDTH, RATE, DIGEST, ARITY>>,
 >;
 
-type RandomCodewordPcs<F, EF, Perm, R, const WIDTH: usize, const RATE: usize, const DIGEST: usize> =
-    HidingFriPcs<
-        F,
-        Radix2DitParallel<F>,
-        OrdinaryMmcs<F, Perm, WIDTH, RATE, DIGEST, 2>,
-        ExtensionMmcs<F, EF, OrdinaryMmcs<F, Perm, WIDTH, RATE, DIGEST, 2>>,
-        R,
-    >;
+pub(crate) type RandomCodewordPcs<
+    F,
+    EF,
+    Perm,
+    R,
+    const WIDTH: usize,
+    const RATE: usize,
+    const DIGEST: usize,
+> = HidingFriPcs<
+    F,
+    Radix2DitParallel<F>,
+    OrdinaryMmcs<F, Perm, WIDTH, RATE, DIGEST, 2>,
+    ExtensionMmcs<F, EF, OrdinaryMmcs<F, Perm, WIDTH, RATE, DIGEST, 2>>,
+    R,
+>;
 
-type SaltedMmcs<F, Perm, R, const WIDTH: usize, const RATE: usize, const DIGEST: usize> =
+pub(crate) type SaltedMmcs<F, Perm, R, const WIDTH: usize, const RATE: usize, const DIGEST: usize> =
     MerkleTreeHidingMmcs<
         <F as Field>::Packing,
         <F as Field>::Packing,
@@ -75,14 +82,21 @@ type SaltedMmcs<F, Perm, R, const WIDTH: usize, const RATE: usize, const DIGEST:
         4,
     >;
 
-type SaltedPcs<F, EF, Perm, R, const WIDTH: usize, const RATE: usize, const DIGEST: usize> =
-    HidingFriPcs<
-        F,
-        Radix2DitParallel<F>,
-        SaltedMmcs<F, Perm, R, WIDTH, RATE, DIGEST>,
-        ExtensionMmcs<F, EF, SaltedMmcs<F, Perm, R, WIDTH, RATE, DIGEST>>,
-        R,
-    >;
+pub(crate) type SaltedPcs<
+    F,
+    EF,
+    Perm,
+    R,
+    const WIDTH: usize,
+    const RATE: usize,
+    const DIGEST: usize,
+> = HidingFriPcs<
+    F,
+    Radix2DitParallel<F>,
+    SaltedMmcs<F, Perm, R, WIDTH, RATE, DIGEST>,
+    ExtensionMmcs<F, EF, SaltedMmcs<F, Perm, R, WIDTH, RATE, DIGEST>>,
+    R,
+>;
 
 /// A native proving config plus the exact validated descriptor retained for export.
 #[derive(Clone, Debug)]

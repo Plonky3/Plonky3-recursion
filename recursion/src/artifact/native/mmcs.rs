@@ -75,7 +75,7 @@ fn read_digest<F: PrimeField64, const DIGEST_ELEMS: usize>(
     Ok(digest)
 }
 
-fn write_merkle_cap<F: PrimeField64, const DIGEST_ELEMS: usize>(
+pub(crate) fn write_merkle_cap<F: PrimeField64, const DIGEST_ELEMS: usize>(
     writer: &mut Writer,
     cap: &MerkleCap<F, [F; DIGEST_ELEMS]>,
     field: FieldEncoding<F>,
@@ -85,7 +85,7 @@ fn write_merkle_cap<F: PrimeField64, const DIGEST_ELEMS: usize>(
     })
 }
 
-fn read_merkle_cap<F: PrimeField64, const DIGEST_ELEMS: usize>(
+pub(crate) fn read_merkle_cap<F: PrimeField64, const DIGEST_ELEMS: usize>(
     reader: &mut Reader<'_>,
     field: FieldEncoding<F>,
 ) -> Result<MerkleCap<F, [F; DIGEST_ELEMS]>, ArtifactError> {

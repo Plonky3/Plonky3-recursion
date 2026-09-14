@@ -4,9 +4,9 @@
 //! implements today.  A suite identifier is not a bag of freely-combinable
 //! field, hash, arity, and hiding switches.
 
-mod fri;
+pub(crate) mod fri;
 mod registry;
-mod whir;
+pub(crate) mod whir;
 
 pub use fri::*;
 pub use registry::{

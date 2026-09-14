@@ -1,9 +1,121 @@
+mod assembly;
 mod descriptor;
 pub(crate) mod native;
 pub(crate) mod wire;
 
+use alloc::vec::Vec;
+
+use p3_circuit::{StatementError, StatementSchema};
+use p3_circuit_prover::BatchStarkProof;
+use p3_uni_stark::StarkGenericConfig;
+
 use crate::VerifierLimits;
 use crate::builtin_config::BuiltinConfigError;
+use crate::builtin_config::SuiteIdV1;
+
+/// Application-provisioned exact trust anchor for one canonical verifier artifact.
+#[derive(Clone, Copy, Debug)]
+pub struct ExpectedVerifierArtifact<'a> {
+    canonical_bytes: &'a [u8],
+}
+
+impl<'a> ExpectedVerifierArtifact<'a> {
+    /// Assert that `bytes` came from an independently trusted provisioning channel.
+    pub const fn from_trusted_bytes(bytes: &'a [u8]) -> Self {
+        Self {
+            canonical_bytes: bytes,
+        }
+    }
+}
+
+/// Canonical base-field statement bytes interpreted under a retained verifier schema.
+#[derive(Clone, Copy, Debug)]
+pub struct CanonicalStatement<'a> {
+    canonical_bytes: &'a [u8],
+    element_count: usize,
+}
+
+impl<'a> CanonicalStatement<'a> {
+    pub const fn new(canonical_bytes: &'a [u8], element_count: usize) -> Self {
+        Self {
+            canonical_bytes,
+            element_count,
+        }
+    }
+}
+
+pub(crate) trait PortableVerifierInner {
+    fn schema(&self) -> &StatementSchema;
+    fn suite(&self) -> SuiteIdV1;
+    fn verify_encoded(
+        &self,
+        bytes: &[u8],
+        expected: CanonicalStatement<'_>,
+    ) -> Result<(), ArtifactError>;
+}
+
+/// Opaque verification-only handle reconstructed from a pinned canonical artifact.
+pub struct PortableVerifier {
+    inner: alloc::boxed::Box<dyn PortableVerifierInner>,
+    canonical_bytes: Vec<u8>,
+}
+
+impl PortableVerifier {
+    pub fn decode(
+        candidate: &[u8],
+        expected: ExpectedVerifierArtifact<'_>,
+        limits: ArtifactLimits,
+    ) -> Result<Self, ArtifactError> {
+        check_expected_verifier_candidate(candidate, expected, &limits)?;
+        assembly::decode_portable_verifier(candidate, limits)
+    }
+
+    pub fn verify_encoded(
+        &self,
+        proof: &[u8],
+        expected_statement: CanonicalStatement<'_>,
+    ) -> Result<(), ArtifactError> {
+        self.inner.verify_encoded(proof, expected_statement)
+    }
+
+    pub fn schema(&self) -> &StatementSchema {
+        self.inner.schema()
+    }
+
+    pub fn suite(&self) -> SuiteIdV1 {
+        self.inner.suite()
+    }
+
+    pub fn trusted_identity_bytes(&self) -> &[u8] {
+        &self.canonical_bytes
+    }
+}
+
+/// Export operations implemented only for library-created built-in verifier config wrappers.
+pub trait PortableArtifactExport {
+    type Config: StarkGenericConfig;
+
+    fn encode_verifier_artifact(&self, limits: ArtifactLimits) -> Result<Vec<u8>, ArtifactError>;
+    fn encode_proof_artifact(
+        &self,
+        proof: &BatchStarkProof<Self::Config>,
+        limits: ArtifactLimits,
+    ) -> Result<Vec<u8>, ArtifactError>;
+}
+
+fn check_expected_verifier_candidate(
+    candidate: &[u8],
+    expected: ExpectedVerifierArtifact<'_>,
+    limits: &ArtifactLimits,
+) -> Result<(), ArtifactError> {
+    // Parse only the non-selecting frame envelope first. Suite/config dispatch is forbidden until
+    // the exact independently provisioned byte identity has matched.
+    wire::validate_frame_envelope(candidate, ArtifactKind::Verifier, limits.max_verifier_bytes)?;
+    if candidate != expected.canonical_bytes {
+        return Err(ArtifactError::TrustedArtifactMismatch);
+    }
+    Ok(())
+}
 
 /// The physical artifact carried by a V1 frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -50,6 +162,8 @@ pub enum ArtifactError {
     UnsupportedSuite(u16),
     #[error("artifact built-in AIR tag {0} is unsupported")]
     UnsupportedBuiltinAir(u16),
+    #[error("candidate verifier artifact does not match the independently trusted bytes")]
+    TrustedArtifactMismatch,
     #[error("artifact is truncated")]
     Truncated,
     #[error("artifact has trailing bytes")]
@@ -74,4 +188,50 @@ pub enum ArtifactError {
     AllocationFailed { component: &'static str },
     #[error("artifact contains an invalid built-in configuration: {0}")]
     BuiltinConfig(#[from] BuiltinConfigError),
+    #[error("artifact statement does not match the retained schema: {0}")]
+    Statement(#[from] StatementError),
+    #[error("artifact proof verification was rejected")]
+    VerificationRejected,
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use alloc::vec;
+
+    use super::{
+        ArtifactError, ArtifactKind, ArtifactLimits, ExpectedVerifierArtifact,
+        check_expected_verifier_candidate,
+    };
+    use crate::artifact::wire::encode_framed;
+
+    #[test]
+    fn exact_trust_anchor_match_precedes_suite_or_body_instantiation() {
+        let limits = ArtifactLimits::default();
+        let candidate = encode_framed(ArtifactKind::Verifier, 0xffff, 128, |writer| {
+            writer.write_u8(0xff)
+        })
+        .unwrap();
+        let expected = encode_framed(ArtifactKind::Verifier, 1, 128, |_| Ok(())).unwrap();
+        assert_eq!(
+            check_expected_verifier_candidate(
+                &candidate,
+                ExpectedVerifierArtifact::from_trusted_bytes(&expected),
+                &limits,
+            ),
+            Err(ArtifactError::TrustedArtifactMismatch)
+        );
+    }
+
+    #[test]
+    fn malformed_frame_rejects_before_identity_comparison() {
+        let limits = ArtifactLimits::default();
+        assert_eq!(
+            check_expected_verifier_candidate(
+                b"not-artifact",
+                ExpectedVerifierArtifact::from_trusted_bytes(&vec![0; 17]),
+                &limits,
+            ),
+            Err(ArtifactError::BadMagic)
+        );
+    }
 }

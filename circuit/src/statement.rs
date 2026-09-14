@@ -304,13 +304,13 @@ mod tests {
 
     #[test]
     fn aggregation_layout_retains_exact_ordered_boundary_and_output_schema() {
-        let left = StatementSchema::new(vec![
+        let left = StatementSchema::try_new(vec![
             StatementField::Base,
             StatementField::Extension { degree: 2 },
         ])
         .unwrap();
-        let right = StatementSchema::new(vec![StatementField::Base]).unwrap();
-        let output = StatementSchema::new(vec![
+        let right = StatementSchema::try_new(vec![StatementField::Base]).unwrap();
+        let output = StatementSchema::try_new(vec![
             StatementField::Base,
             StatementField::Extension { degree: 2 },
             StatementField::Base,
@@ -329,9 +329,9 @@ mod tests {
 
     #[test]
     fn aggregation_layout_rejects_wrong_boundary_or_output_schema() {
-        let left = StatementSchema::new(vec![StatementField::Extension { degree: 2 }]).unwrap();
-        let right = StatementSchema::new(vec![StatementField::Base]).unwrap();
-        let output = StatementSchema::new(vec![
+        let left = StatementSchema::try_new(vec![StatementField::Extension { degree: 2 }]).unwrap();
+        let right = StatementSchema::try_new(vec![StatementField::Base]).unwrap();
+        let output = StatementSchema::try_new(vec![
             StatementField::Extension { degree: 2 },
             StatementField::Base,
         ])
@@ -349,7 +349,7 @@ mod tests {
                 left,
                 right,
                 2,
-                StatementSchema::new(vec![StatementField::Base; 3]).unwrap(),
+                StatementSchema::try_new(vec![StatementField::Base; 3]).unwrap(),
             ),
             Err(StatementError::AggregationOutputSchemaMismatch)
         );
