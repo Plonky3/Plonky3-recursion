@@ -1,5 +1,6 @@
 use alloc::string::ToString;
 use alloc::vec;
+use alloc::vec::Vec;
 
 use p3_air::{SymbolicExpression, SymbolicExpressionExt};
 use p3_circuit::{Circuit, CircuitBuilder, StatementField, StatementSchema};
