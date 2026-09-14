@@ -1330,7 +1330,7 @@ fn trusted_aggregation_retains_each_child_runtime_config_and_pins_both_roots() {
     let left = common::build_koala_bear_d4_first_layer_input();
     let right = common::build_koala_bear_d4_first_layer_input_with_pow_bits(0);
     let params = ProveNextLayerParams::default();
-    let output_config = left.layer_config.clone();
+    let (output_config, _) = common::koala_bear_d4_recursion_config_and_backend_with_pow_bits(1);
     assert_eq!(
         left.verifier
             .common_data()
@@ -1401,7 +1401,6 @@ fn trusted_heterogeneous_cross_config_aggregation_exports_ordered_statement_afte
     let backend = FriRecursionBackend::<16, 8, _>::new(Poseidon2Config::KOALA_BEAR_D4_W16)
         .with_extra_poseidon2_table(Poseidon2Config::KOALA_BEAR_D4_W32)
         .for_extension_degree::<4>();
-
     let owner = TrustedPreparedAggregation::<_, _, FibonacciAir, BatchOnly, _, 4>::new(
         TrustedPreparedSource::UniStark {
             config: input_config,
@@ -1491,6 +1490,49 @@ fn trusted_heterogeneous_cross_config_aggregation_exports_ordered_statement_afte
     assert!(parent_verifier.verify(&output.0, &swapped).is_err());
     assert!(parent_verifier.verify(&output.0, &substituted).is_err());
     assert!(parent_verifier.verify(&output.0, &duplicated).is_err());
+}
+
+#[test]
+fn trusted_cross_config_aggregation_verifies_arity2_inputs_and_emits_arity4_output() {
+    let left = common::build_koala_bear_d4_first_layer_input_with_starts(0, 1);
+    let right = common::build_koala_bear_d4_first_layer_input_with_starts(2, 3);
+    let output_config = arity4_output::config();
+    let backend = FriRecursionBackend::<16, 8, _>::new(Poseidon2Config::KOALA_BEAR_D4_W16)
+        .with_extra_poseidon2_table(Poseidon2Config::KOALA_BEAR_D4_W32)
+        .for_extension_degree::<4>();
+    let params = ProveNextLayerParams::default();
+
+    let prepared = TrustedPreparedAggregation::<_, _, BatchOnly, BatchOnly, _, 4>::new(
+        TrustedPreparedSource::BatchStark {
+            verifier: left.verifier.clone(),
+            proof: &left.base_proof,
+            statement: &[],
+        },
+        TrustedPreparedSource::BatchStark {
+            verifier: right.verifier.clone(),
+            proof: &right.base_proof,
+            statement: &[],
+        },
+        output_config.clone(),
+        backend,
+        params.clone(),
+    )
+    .expect("the trusted arity-2 children prepare under the independent arity-4 output config");
+    let output = prepared
+        .prove(
+            TrustedPreparedInput::BatchStark {
+                proof: &left.base_proof,
+                statement: &[],
+            },
+            TrustedPreparedInput::BatchStark {
+                proof: &right.base_proof,
+                statement: &[],
+            },
+        )
+        .expect("the trusted cross-config child pair proves");
+
+    prepared.verifier().verify(&output.0, &[]).unwrap();
+    arity4_output::verify(output_config, &params, &output);
 }
 
 #[test]

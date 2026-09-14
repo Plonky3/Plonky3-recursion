@@ -15,6 +15,7 @@ use p3_circuit_prover::batch_stark_prover::{
 use p3_circuit_prover::common::{NpoAirBuilder, NpoPreprocessor};
 use p3_circuit_prover::{ConstraintProfile, TablePacking};
 use p3_field::PrimeCharacteristicRing;
+use p3_matrix::Matrix;
 use p3_recursion::backend::whir::{WhirRecursionBackend, WhirRecursionBackendForExt};
 use p3_recursion::profile::{HashProfile, RecursionLayerProfile, TranscriptKind};
 use p3_recursion::{
@@ -23,7 +24,9 @@ use p3_recursion::{
     TrustedPreparedSource, VerificationError, build_and_prove_next_layer,
 };
 use p3_test_utils::koala_bear_params::{Challenge, F};
-use p3_uni_stark::{prove, verify};
+use p3_uni_stark::{
+    prove, prove_with_preprocessed, setup_preprocessed, verify, verify_with_preprocessed,
+};
 
 fn fibonacci_output<Fld: PrimeCharacteristicRing + Copy>(
     start_a: u64,
@@ -449,6 +452,76 @@ fn trusted_fri_uni_layer_exports_each_original_air_statement() {
             .verify(&second_outer.0, &first_statement)
             .is_err()
     );
+}
+
+#[test]
+fn fri_trusted_uni_retains_air_config_and_complete_preprocessed_root() {
+    let air = common::MulAir::default();
+    let (config, backend) = common::koala_bear_d4_recursion_config_and_backend();
+    let (output_config, _) = common::koala_bear_d4_recursion_config_and_backend_with_pow_bits(1);
+    let (main, _) = air.random_valid_trace::<F>(true);
+    let degree_bits = main.height().ilog2() as usize;
+    let (preprocessed, verifier_key) = setup_preprocessed(&config, &air, degree_bits).unwrap();
+    let proof = prove_with_preprocessed(&config, &air, main, &[], Some(&preprocessed));
+    verify_with_preprocessed(&config, &air, &proof, &[], Some(&verifier_key)).unwrap();
+
+    let owner = TrustedPreparedLayer::<_, _, common::MulAir, _, 4>::new(
+        TrustedPreparedSource::UniStark {
+            config: config.clone(),
+            air: &air,
+            preprocessed_commit: Some(verifier_key.commitment.clone()),
+            proof: &proof,
+            public_inputs: &[],
+        },
+        output_config,
+        backend,
+        ProveNextLayerParams::default(),
+    )
+    .expect("the trusted uni authority and complete preprocessing root prepare");
+    let output = owner
+        .prove(TrustedPreparedInput::UniStark {
+            proof: &proof,
+            public_inputs: &[],
+        })
+        .expect("the witness-only uni input proves under retained authority");
+    owner.verifier().verify(&output.0, &[]).unwrap();
+}
+
+#[test]
+fn whir_trusted_uni_retains_air_config_and_complete_preprocessed_root() {
+    let air = common::MulAir {
+        degree: 3,
+        rows: 1 << 10,
+    };
+    let config = bb_whir_config(vec![]);
+    let backend = WhirRecursionBackend::<16, 8>::new(Poseidon2Config::BABY_BEAR_D4_W16)
+        .for_extension_degree::<4>();
+    let (main, _) = air.random_valid_trace::<BbF>(true);
+    let degree_bits = main.height().ilog2() as usize;
+    let (preprocessed, verifier_key) = setup_preprocessed(&config, &air, degree_bits).unwrap();
+    let proof = prove_with_preprocessed(&config, &air, main, &[], Some(&preprocessed));
+    verify_with_preprocessed(&config, &air, &proof, &[], Some(&verifier_key)).unwrap();
+
+    let owner = TrustedPreparedLayer::<_, _, common::MulAir, _, 4>::new(
+        TrustedPreparedSource::UniStark {
+            config: config.clone(),
+            air: &air,
+            preprocessed_commit: Some(verifier_key.commitment.clone()),
+            proof: &proof,
+            public_inputs: &[],
+        },
+        config,
+        backend,
+        ProveNextLayerParams::default(),
+    )
+    .expect("the trusted WHIR uni authority and complete preprocessing root prepare");
+    let output = owner
+        .prove(TrustedPreparedInput::UniStark {
+            proof: &proof,
+            public_inputs: &[],
+        })
+        .expect("the WHIR witness-only uni input proves under retained authority");
+    owner.verifier().verify(&output.0, &[]).unwrap();
 }
 
 #[test]

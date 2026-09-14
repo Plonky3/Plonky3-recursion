@@ -1397,6 +1397,208 @@ mod tests {
         }
     }
 
+    #[test]
+    fn fri_aggregation_fixed_parent_rejects_each_foreign_child_after_host_bypass() {
+        type SC = test_common::KoalaBearD4RecursionConfig;
+
+        let child_a = test_common::build_koala_bear_d4_first_layer_input();
+        let child_b =
+            test_common::build_koala_bear_d4_first_layer_input_with_different_alu_relation();
+        child_a.verifier.verify(&child_a.base_proof, &[]).unwrap();
+        child_b.verifier.verify(&child_b.base_proof, &[]).unwrap();
+        assert_ne!(
+            child_a
+                .verifier
+                .common_data()
+                .preprocessed
+                .as_ref()
+                .map(|group| &group.commitment),
+            child_b
+                .verifier
+                .common_data()
+                .preprocessed
+                .as_ref()
+                .map(|group| &group.commitment),
+            "the two valid children must have distinct preprocessing roots"
+        );
+
+        let owner = TrustedPreparedAggregation::<SC, SC, BatchOnly, BatchOnly, _, 4>::new(
+            TrustedPreparedSource::BatchStark {
+                verifier: child_a.verifier.clone(),
+                proof: &child_a.base_proof,
+                statement: &[],
+            },
+            TrustedPreparedSource::BatchStark {
+                verifier: child_b.verifier.clone(),
+                proof: &child_b.base_proof,
+                statement: &[],
+            },
+            child_a.layer_config.clone(),
+            child_a.backend.clone(),
+            ProveNextLayerParams::default(),
+        )
+        .expect("the original ordered child pair prepares exactly once");
+
+        let input_a = TrustedPreparedInput::BatchStark {
+            proof: &child_a.base_proof,
+            statement: &[],
+        };
+        let input_b = TrustedPreparedInput::BatchStark {
+            proof: &child_b.base_proof,
+            statement: &[],
+        };
+        let honest = owner
+            .prove(input_a.clone(), input_b.clone())
+            .expect("the exact retained child pair proves");
+        let fixed_parent = owner.verifier();
+        fixed_parent
+            .verify(&honest.0, &[])
+            .expect("the exact retained child pair verifies");
+
+        let prev_a = owner.left.recursion_input(&input_a).unwrap();
+        let prev_b = owner.right.recursion_input(&input_b).unwrap();
+        let mut honest_public = owner.left_result.pack_public_inputs(&prev_a).unwrap();
+        honest_public.extend(owner.right_result.pack_public_inputs(&prev_b).unwrap());
+        let mut honest_private = owner.left_result.pack_private_inputs(&prev_a).unwrap();
+        honest_private.extend(owner.right_result.pack_private_inputs(&prev_b).unwrap());
+        let run_honest_pair = || {
+            let mut runner = owner.circuit.runner();
+            runner.set_public_inputs(&honest_public).unwrap();
+            runner.set_private_inputs(&honest_private).unwrap();
+            set_trusted_child_private::<SC, BatchOnly, _, 4>(
+                &owner.backend,
+                &owner.left,
+                &input_a,
+                &prev_a,
+                &owner.left_result,
+                &mut runner,
+            )
+            .unwrap();
+            set_trusted_child_private::<SC, BatchOnly, _, 4>(
+                &owner.backend,
+                &owner.right,
+                &input_b,
+                &prev_b,
+                &owner.right_result,
+                &mut runner,
+            )
+            .unwrap();
+            runner.run().unwrap()
+        };
+        let encoded_a_root =
+            <MerkleCapTargets<F, DIGEST_ELEMS> as Recursive<Challenge>>::get_values(
+                &child_a
+                    .verifier
+                    .common_data()
+                    .preprocessed
+                    .as_ref()
+                    .unwrap()
+                    .commitment,
+            );
+        let encoded_b_root =
+            <MerkleCapTargets<F, DIGEST_ELEMS> as Recursive<Challenge>>::get_values(
+                &child_b
+                    .verifier
+                    .common_data()
+                    .preprocessed
+                    .as_ref()
+                    .unwrap()
+                    .commitment,
+            );
+
+        // Replace only the left child with the valid foreign B proof, retaining the exact A/B
+        // aggregation circuit and parent preparation. The raw result packer carries B's actual
+        // root; no host-side expected-root substitution or trusted-input check is involved.
+        let mut left_foreign_public = owner.left_result.inner.pack_public_inputs(&prev_b).unwrap();
+        let left_public_len = left_foreign_public.len();
+        assert!(
+            left_foreign_public
+                .windows(encoded_b_root.len())
+                .any(|window| window == encoded_b_root),
+            "the raw left pack must contain foreign child B's complete actual cap"
+        );
+        left_foreign_public.extend(owner.right_result.pack_public_inputs(&prev_b).unwrap());
+        assert_eq!(left_public_len, honest_public.len() - left_public_len);
+        let mut left_foreign_traces = run_honest_pair();
+        replace_public_values(
+            &owner.circuit,
+            &mut left_foreign_traces,
+            left_foreign_public,
+        );
+        let left_attempt =
+            catch_unwind(AssertUnwindSafe(|| owner.prep.prove(&left_foreign_traces)));
+        assert_fixed_parent_rejects(left_attempt, &fixed_parent, "left");
+
+        // Symmetrically replace only the right child with valid foreign A inputs while retaining
+        // the same A/B parent circuit and preparation.
+        let mut right_foreign_public = owner.left_result.pack_public_inputs(&prev_a).unwrap();
+        let right_offset = right_foreign_public.len();
+        right_foreign_public.extend(
+            owner
+                .right_result
+                .inner
+                .pack_public_inputs(&prev_a)
+                .unwrap(),
+        );
+        assert!(
+            right_foreign_public[right_offset..]
+                .windows(encoded_a_root.len())
+                .any(|window| window == encoded_a_root),
+            "the raw right pack must contain foreign child A's complete actual cap"
+        );
+        let mut right_foreign_traces = run_honest_pair();
+        replace_public_values(
+            &owner.circuit,
+            &mut right_foreign_traces,
+            right_foreign_public,
+        );
+        let right_attempt =
+            catch_unwind(AssertUnwindSafe(|| owner.prep.prove(&right_foreign_traces)));
+        assert_fixed_parent_rejects(right_attempt, &fixed_parent, "right");
+    }
+
+    fn replace_public_values(
+        circuit: &Circuit<Challenge>,
+        traces: &mut p3_circuit::tables::Traces<Challenge>,
+        values: Vec<Challenge>,
+    ) {
+        let mut witness_values = (0..traces.witness_trace.num_rows())
+            .map(|index| {
+                *traces
+                    .witness_trace
+                    .get_value(p3_circuit::WitnessId(index as u32))
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        for (position, value) in values.iter().copied().enumerate() {
+            witness_values[circuit.public_rows[position].0 as usize] = value;
+        }
+        traces.witness_trace = WitnessTrace::new(witness_values);
+        traces.public_trace.values = values;
+    }
+
+    fn assert_fixed_parent_rejects(
+        attempt: std::thread::Result<
+            Result<RecursionOutput<test_common::KoalaBearD4RecursionConfig>, VerificationError>,
+        >,
+        fixed_parent: &CircuitVerifier<test_common::KoalaBearD4RecursionConfig>,
+        side: &str,
+    ) {
+        match attempt {
+            Ok(Ok(forged)) => assert!(
+                fixed_parent.verify(&forged.0, &[]).is_err(),
+                "the fixed parent must reject the foreign {side} child"
+            ),
+            Ok(Err(error)) => {
+                panic!("forged {side} trace must reach proof construction: {error:?}")
+            }
+            Err(payload) => assert!(
+                classify_panic(payload.as_ref()).is_some(),
+                "debug rejection for the foreign {side} child must match the strict oracle"
+            ),
+        }
+    }
+
     fn classify_panic(
         payload: &(dyn Any + Send),
     ) -> Option<p3_test_utils::rejection_oracle::DebugRejectionKind> {
