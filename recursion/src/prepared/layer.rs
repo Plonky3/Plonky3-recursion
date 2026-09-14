@@ -212,6 +212,7 @@ where
             PreparedSource::BatchStark { .. } => None,
         };
         let input = source.as_input();
+        <B as PreparedPcsRecursionBackend<SC, A, D>>::preflight_input(&backend, &config, &input)?;
         let prev = legacy_input(air, &input)?;
         let contract = backend.capture_input_contract(&config, &prev)?;
         let (circuit, verifier_result) =

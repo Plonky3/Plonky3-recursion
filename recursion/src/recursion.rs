@@ -149,6 +149,17 @@ where
     /// Opaque verifier result returned by `build_verifier_circuit`.
     type VerifierResult: VerifierCircuitResult<SC, A>;
 
+    /// Borrowed resource preflight hook. Built-in backends override this to
+    /// enforce their verifier-owned limits before target allocation; the
+    /// default preserves source compatibility for explicitly custom backends.
+    fn preflight_input(
+        &self,
+        _config: &SC,
+        _prev: &RecursionInput<'_, SC, A>,
+    ) -> Result<(), VerificationError> {
+        Ok(())
+    }
+
     /// Validate the input before backend preparation, plugin construction, or circuit
     /// allocation. Custom backends retain the historical trusted no-op default; audited built-in
     /// backends override this with their raw input guards and perform contextual PCS checks in
@@ -298,6 +309,7 @@ where
 {
     let mut circuit_builder = CircuitBuilder::new();
     backend.validate_input(config, prev)?;
+    backend.preflight_input(config, prev)?;
     backend.prepare_circuit(config, &mut circuit_builder)?;
 
     // Build verifier constraints.
@@ -439,6 +451,8 @@ where
     // Validate both inputs before either backend prepares plugins or allocates verifier targets.
     <B as PcsRecursionBackend<SC, A1, D>>::validate_input(backend, config, left)?;
     <B as PcsRecursionBackend<SC, A2, D>>::validate_input(backend, config, right)?;
+    <B as PcsRecursionBackend<SC, A1, D>>::preflight_input(backend, config, left)?;
+    <B as PcsRecursionBackend<SC, A2, D>>::preflight_input(backend, config, right)?;
 
     <B as PcsRecursionBackend<SC, A1, D>>::prepare_circuit(backend, config, &mut circuit_builder)?;
     <B as PcsRecursionBackend<SC, A2, D>>::prepare_circuit(backend, config, &mut circuit_builder)?;

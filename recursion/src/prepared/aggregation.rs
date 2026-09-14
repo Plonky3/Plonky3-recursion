@@ -157,6 +157,16 @@ where
         let right_air = source_air(&right);
         let left_input = left.as_input();
         let right_input = right.as_input();
+        <B as PreparedPcsRecursionBackend<SC, A1, D>>::preflight_input(
+            &backend,
+            &config,
+            &left_input,
+        )?;
+        <B as PreparedPcsRecursionBackend<SC, A2, D>>::preflight_input(
+            &backend,
+            &config,
+            &right_input,
+        )?;
         let left_prev = legacy_input(left_air, &left_input)?;
         let right_prev = legacy_input(right_air, &right_input)?;
 
@@ -437,6 +447,16 @@ where
         let right_air = source_air(&right);
         let left_input = left.as_input();
         let right_input = right.as_input();
+        <B as PreparedPcsRecursionBackend<InSC, A1, D>>::preflight_input(
+            &backend,
+            &input_config,
+            &left_input,
+        )?;
+        <B as PreparedPcsRecursionBackend<InSC, A2, D>>::preflight_input(
+            &backend,
+            &input_config,
+            &right_input,
+        )?;
         let left_prev = legacy_input(left_air, &left_input)?;
         let right_prev = legacy_input(right_air, &right_input)?;
 

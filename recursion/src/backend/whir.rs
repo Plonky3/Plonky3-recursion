@@ -35,8 +35,8 @@ use crate::public_inputs::{BatchStarkVerifierInputsBuilder, StarkVerifierInputsB
 use crate::recursion::{PcsRecursionBackend, RecursionInput, VerifierCircuitResult};
 use crate::traits::{CheckedRecursive, PreparedRecursive, RecursiveAir};
 use crate::verifier::{
-    ObservableCommitment, VerificationError, verify_p3_batch_proof_circuit,
-    verify_p3_uni_proof_circuit,
+    InputResourceUsage, ObservableCommitment, VerificationError, VerifierLimits,
+    verify_p3_batch_proof_circuit, verify_p3_uni_proof_circuit,
 };
 use crate::{ChallengerPermConfig, Recursive, RecursivePcs};
 
@@ -139,15 +139,17 @@ pub struct WhirRecursionBackend<
 > {
     /// Permutation configuration used for the Fiat-Shamir challenger permutation circuit.
     pub challenger_perm_config: C,
+    pub(crate) limits: VerifierLimits,
 }
 
 impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
     WhirRecursionBackend<WIDTH, RATE, C>
 {
     /// Create a new backend with the given challenger permutation configuration.
-    pub const fn new(challenger_perm_config: C) -> Self {
+    pub fn new(challenger_perm_config: C) -> Self {
         Self {
             challenger_perm_config,
+            limits: VerifierLimits::default(),
         }
     }
 
@@ -157,6 +159,58 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
     ) -> WhirRecursionBackendForExt<D, WIDTH, RATE, C> {
         WhirRecursionBackendForExt(self)
     }
+
+    #[must_use]
+    pub fn with_limits(mut self, limits: VerifierLimits) -> Self {
+        self.limits = limits;
+        self
+    }
+
+    pub const fn limits(&self) -> &VerifierLimits {
+        &self.limits
+    }
+}
+
+fn preflight_basic_whir_input<SC, A>(
+    limits: &VerifierLimits,
+    prev: &RecursionInput<'_, SC, A>,
+) -> Result<(), VerificationError>
+where
+    SC: StarkGenericConfig,
+    A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
+{
+    let mut usage = InputResourceUsage::default();
+    match prev {
+        RecursionInput::UniStark {
+            proof,
+            public_inputs,
+            ..
+        } => {
+            usage.instances = 1;
+            usage.scalar_elements = public_inputs.len();
+            if proof.degree_bits > limits.max_log_domain_or_degree {
+                return Err(VerificationError::ResourceLimitExceeded {
+                    component: "log domain or degree",
+                    actual: proof.degree_bits,
+                    limit: limits.max_log_domain_or_degree,
+                });
+            }
+        }
+        RecursionInput::BatchStark { proof, .. } => {
+            usage.instances = proof.proof.opened_values.instances.len();
+            usage.metadata_entries = proof.non_primitives.len();
+            if let Some(&degree) = proof.proof.degree_bits.iter().max() {
+                if degree > limits.max_log_domain_or_degree {
+                    return Err(VerificationError::ResourceLimitExceeded {
+                        component: "log domain or degree",
+                        actual: degree,
+                        limit: limits.max_log_domain_or_degree,
+                    });
+                }
+            }
+        }
+    }
+    usage.check(limits)
 }
 
 /// Poseidon2 table configs for the challenger's permutation shape: the challenger's own table
@@ -316,6 +370,14 @@ where
         crate::prepared::input::validate_builtin_input_raw::<SC, A, SC::Commitment, SC::OpeningProof>(
             prev,
         )
+    }
+
+    fn preflight_input(
+        &self,
+        _config: &SC,
+        prev: &RecursionInput<'_, SC, A>,
+    ) -> Result<(), VerificationError> {
+        preflight_basic_whir_input(&self.0.limits, prev)
     }
 
     /// # Errors

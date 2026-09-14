@@ -2,6 +2,7 @@
 
 mod batch_stark;
 mod errors;
+mod limits;
 mod observable;
 mod periodic;
 mod quotient;
@@ -12,6 +13,7 @@ pub use batch_stark::{
     verify_batch_circuit, verify_p3_batch_proof_circuit,
 };
 pub use errors::VerificationError;
+pub use limits::{InputResourceUsage, VerifierLimits};
 pub use observable::ObservableCommitment;
 pub(crate) use periodic::evaluate_periodic_columns_circuit;
 pub use quotient::recompose_quotient_from_chunks_circuit;

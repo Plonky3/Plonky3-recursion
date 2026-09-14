@@ -65,5 +65,6 @@ pub use types::{
     RecursiveLagrangeSelectors, StarkChallenges, Target,
 };
 pub use verifier::{
-    ObservableCommitment, VerificationError, verify_batch_circuit, verify_p3_uni_proof_circuit,
+    InputResourceUsage, ObservableCommitment, VerificationError, VerifierLimits,
+    verify_batch_circuit, verify_p3_uni_proof_circuit,
 };

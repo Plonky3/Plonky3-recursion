@@ -1744,26 +1744,6 @@ where
                 let log_folded_height = log_current_height - log_arity;
                 let siblings = &sibling_values_per_phase[phase_idx];
 
-                // Skip MMCS verification for height 0 (no Merkle tree)
-                if log_folded_height == 0 {
-                    current_folded = fold_one_phase::<F, EF>(
-                        builder,
-                        current_folded,
-                        siblings,
-                        betas[phase_idx],
-                        &index_bits_per_query[q],
-                        bits_consumed,
-                        log_arity,
-                        roll_ins[phase_idx],
-                        Some(beta_pows_per_phase[phase_idx]),
-                        None,
-                        subgroup_starts[phase_idx],
-                    );
-                    bits_consumed += log_arity;
-                    log_current_height = log_folded_height;
-                    continue;
-                }
-
                 builder.push_scope("fri_commit_phase_mmcs");
 
                 let index_in_group_bits =
@@ -1891,4 +1871,41 @@ where
     builder.pop_scope();
 
     Ok(all_mmcs_op_ids)
+}
+
+/// Production FRI verifier entry point.  Unlike the legacy arithmetic test
+/// entry point above, this API has no switch that can disable commitment
+/// authentication: the supplied permutation is always used for input and
+/// commit-phase MMCS checks.
+pub fn verify_fri_circuit_with_mmcs<F, EF, RecMmcs, Inner, Witness, Comm>(
+    builder: &mut CircuitBuilder<EF>,
+    fri_proof_targets: &FriProofTargets<F, EF, RecMmcs, InputProofTargets<F, EF, Inner>, Witness>,
+    alpha: Target,
+    betas: &[Target],
+    index_bits_per_query: &[Vec<Target>],
+    commitments_with_opening_points: &ComsWithOpeningsTargets<Comm, TwoAdicMultiplicativeCoset<F>>,
+    log_blowup: usize,
+    permutation_config: PermConfig,
+) -> Result<Vec<NonPrimitiveOpId>, VerificationError>
+where
+    F: Field + TwoAdicField + PrimeField64,
+    EF: ExtensionField<F>,
+    RecMmcs: RecursiveExtensionMmcs<F, EF>,
+    RecMmcs::Commitment: ObservableCommitment,
+    RecMmcs::Proof: MmcsProofTargets,
+    Inner: RecursiveMmcs<F, EF>,
+    Inner::Proof: MmcsProofTargets,
+    Witness: Recursive<EF>,
+    Comm: ObservableCommitment,
+{
+    verify_fri_circuit(
+        builder,
+        fri_proof_targets,
+        alpha,
+        betas,
+        index_bits_per_query,
+        commitments_with_opening_points,
+        log_blowup,
+        Some(permutation_config),
+    )
 }

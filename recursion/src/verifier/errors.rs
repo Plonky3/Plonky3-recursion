@@ -19,6 +19,22 @@ pub enum VerificationError {
     #[error("prepared input does not match {component}")]
     PreparedInputMismatch { component: &'static str },
 
+    /// A well-formed input exceeds the verifier-owned operational budget.
+    ///
+    /// This is deliberately a typed, allocation-free error: callers can make a
+    /// policy decision without parsing an owned diagnostic string, and the
+    /// verifier never has to clone untrusted metadata merely to report a limit.
+    #[error("verifier resource limit exceeded for {component}: {actual} > {limit}")]
+    ResourceLimitExceeded {
+        component: &'static str,
+        actual: usize,
+        limit: usize,
+    },
+
+    /// A checked resource count or geometry operation overflowed `usize`.
+    #[error("verifier resource arithmetic overflow for {component}")]
+    ResourceArithmeticOverflow { component: &'static str },
+
     /// ZK randomization is inconsistent (random commitment exists but no opened values)
     #[error("Missing random opened values for existing random commitment")]
     RandomizationError,

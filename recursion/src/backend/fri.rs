@@ -36,8 +36,8 @@ use crate::public_inputs::{BatchStarkVerifierInputsBuilder, StarkVerifierInputsB
 use crate::recursion::{PcsRecursionBackend, RecursionInput, VerifierCircuitResult};
 use crate::traits::{CheckedRecursive, PreparedRecursive, RecursiveAir};
 use crate::verifier::{
-    ObservableCommitment, VerificationError, verify_p3_batch_proof_circuit,
-    verify_p3_uni_proof_circuit,
+    InputResourceUsage, ObservableCommitment, VerificationError, VerifierLimits,
+    verify_p3_batch_proof_circuit, verify_p3_uni_proof_circuit,
 };
 use crate::{ChallengerPermConfig, Recursive, RecursivePcs};
 
@@ -134,6 +134,63 @@ where
     ) -> Result<(), &'static str>;
 }
 
+fn preflight_basic_fri_input<SC, A>(
+    limits: &VerifierLimits,
+    prev: &RecursionInput<'_, SC, A>,
+) -> Result<(), VerificationError>
+where
+    SC: StarkGenericConfig,
+    A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
+{
+    let mut usage = InputResourceUsage::default();
+    match prev {
+        RecursionInput::UniStark {
+            proof,
+            public_inputs,
+            ..
+        } => {
+            usage.instances = InputResourceUsage::checked_add("instances", usage.instances, 1)?;
+            usage.scalar_elements = InputResourceUsage::checked_add(
+                "scalar elements",
+                usage.scalar_elements,
+                public_inputs.len(),
+            )?;
+            if proof.degree_bits > limits.max_log_domain_or_degree {
+                return Err(VerificationError::ResourceLimitExceeded {
+                    component: "log domain or degree",
+                    actual: proof.degree_bits,
+                    limit: limits.max_log_domain_or_degree,
+                });
+            }
+        }
+        RecursionInput::BatchStark { proof, .. } => {
+            let instances = proof.proof.opened_values.instances.len();
+            usage.instances =
+                InputResourceUsage::checked_add("instances", usage.instances, instances)?;
+            usage.metadata_entries = InputResourceUsage::checked_add(
+                "metadata entries",
+                usage.metadata_entries,
+                proof.non_primitives.len(),
+            )?;
+            usage.scalar_elements = InputResourceUsage::checked_add(
+                "scalar elements",
+                usage.scalar_elements,
+                proof.proof.degree_bits.len(),
+            )?;
+            if let Some(&degree) = proof.proof.degree_bits.iter().max() {
+                if degree > limits.max_log_domain_or_degree {
+                    return Err(VerificationError::ResourceLimitExceeded {
+                        component: "log domain or degree",
+                        actual: degree,
+                        limit: limits.max_log_domain_or_degree,
+                    });
+                }
+            }
+        }
+    }
+    usage.check(limits)
+}
+
 /// FRI-based recursion backend, holding the challenger permutation config.
 /// The verifier params come from the config via [`FriRecursionConfig::pcs_verifier_params`].
 /// `WIDTH` and `RATE` are the permutation circuit parameters (typically 16 and 8).
@@ -162,19 +219,34 @@ pub struct FriRecursionBackend<
     /// configuration instead, so that second table carries no rows and must not be expected in
     /// the proof; they clear this with [`Self::without_shared_challenger_perm_table`].
     pub shares_challenger_perm_table: bool,
+    /// Owned operational policy retained by prepared and uncached verifiers.
+    pub(crate) limits: VerifierLimits,
 }
 
 impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
     FriRecursionBackend<WIDTH, RATE, C>
 {
     /// Create a new backend with the given challenger permutation configuration.
-    pub const fn new(challenger_perm_config: C) -> Self {
+    pub fn new(challenger_perm_config: C) -> Self {
         Self {
             challenger_perm_config,
             extra_poseidon2_table_configs: Vec::new(),
             recompose_lanes: 1,
             shares_challenger_perm_table: true,
+            limits: VerifierLimits::default(),
         }
+    }
+
+    /// Override the finite verifier-owned operational policy.
+    #[must_use]
+    pub fn with_limits(mut self, limits: VerifierLimits) -> Self {
+        self.limits = limits;
+        self
+    }
+
+    /// Return the policy retained by this backend.
+    pub const fn limits(&self) -> &VerifierLimits {
+        &self.limits
     }
 
     /// Declare that MMCS and compression rows do not use the challenger's permutation shape.
@@ -619,6 +691,14 @@ where
         )
     }
 
+    fn preflight_input(
+        &self,
+        _config: &SC,
+        prev: &RecursionInput<'_, SC, A>,
+    ) -> Result<(), VerificationError> {
+        preflight_basic_fri_input(&self.0.limits, prev)
+    }
+
     /// # Errors
     /// Returns [`VerificationError::InvalidProofShape`] when the config's
     /// [`FriVerifierParams::permutation_config`] is `None`, the arithmetic-only mode that skips
@@ -790,6 +870,14 @@ where
         )
     }
 
+    fn preflight_input(
+        &self,
+        _config: &SC,
+        prev: &RecursionInput<'_, SC, A>,
+    ) -> Result<(), VerificationError> {
+        preflight_basic_fri_input(&self.0.limits, prev)
+    }
+
     /// # Errors
     /// Returns [`VerificationError::InvalidProofShape`] when the config's
     /// [`FriVerifierParams::permutation_config`] is `None`, the arithmetic-only mode that skips
@@ -959,6 +1047,14 @@ where
         crate::prepared::input::validate_builtin_input_raw::<SC, A, SC::Commitment, SC::OpeningProof>(
             prev,
         )
+    }
+
+    fn preflight_input(
+        &self,
+        _config: &SC,
+        prev: &RecursionInput<'_, SC, A>,
+    ) -> Result<(), VerificationError> {
+        preflight_basic_fri_input(&self.0.limits, prev)
     }
 
     /// # Errors

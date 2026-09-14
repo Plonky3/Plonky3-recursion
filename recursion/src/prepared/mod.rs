@@ -71,6 +71,16 @@ where
     /// Complete native contract used to authorize reuse.
     type InputContract;
 
+    /// Borrowed resource preflight hook for prepared owners. Implementations
+    /// should run it before shape capture or any source cloning.
+    fn preflight_input(
+        &self,
+        _config: &SC,
+        _input: &PreparedInput<'_, SC>,
+    ) -> Result<(), VerificationError> {
+        Ok(())
+    }
+
     /// Capture and validate the trusted construction reference.
     fn capture_input_contract(
         &self,
