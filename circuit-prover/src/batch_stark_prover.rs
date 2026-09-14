@@ -48,11 +48,12 @@ use thiserror::Error;
 use tracing::instrument;
 
 use crate::air::alu_air::ScheduleEntry;
-use crate::air::{AluAir, AluExtMulKind, ConstAir, PublicAir};
+use crate::air::{AluAir, AluExtMulKind, ConstAir, PublicAir, RecomposeAir, StatementAir};
 use crate::batch_stark_prover::dynamic_air::transmute_traces;
 use crate::batch_stark_prover::packing::{AirTableShape, TraceTablesLayout};
 use crate::common::{
-    CircuitRelation, CircuitTableAir, NpoAirBuilder, NpoPreprocessor, StatementLayout,
+    BuiltinArtifactAir, BuiltinArtifactNpo, CircuitRelation, CircuitTableAir, NpoAirBuilder,
+    NpoPreprocessor, NpoRelation, StatementLayout, TrustedBuiltinArtifactRelation,
     finalize_circuit_tables, reduce_lanes_if_dummy,
 };
 use crate::config::StarkField;
@@ -87,6 +88,8 @@ pub use statement::{StatementAirBuilder, StatementPreprocessor, StatementProver}
 pub const BABY_BEAR_MODULUS: u64 = 0x7800_0001;
 /// Prime modulus of the KoalaBear field (`2^31 - 2^24 + 1`).
 pub const KOALA_BEAR_MODULUS: u64 = 0x7f00_0001;
+/// Prime modulus of the Goldilocks field (`2^64 - 2^32 + 1`).
+pub const GOLDILOCKS_MODULUS: u64 = 0xffff_ffff_0000_0001;
 
 /// Returns the witness-bus dimension for a D=1 Poseidon config given the circuit's extension
 /// degree, or `None` if the scale is not supported.
@@ -824,6 +827,373 @@ where
     }
 }
 
+impl<SC> CircuitVerifier<SC>
+where
+    SC: StarkGenericConfig + Send + Sync + 'static,
+    Val<SC>: StarkField + PrimeField64,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+{
+    /// Reconstruct a verification-only handle from independently trusted, library-built parts.
+    ///
+    /// Artifact decoders must compare candidate bytes with their independently provisioned trust
+    /// anchor before calling this method. Only the closed built-in AIR enum is accepted; dynamic
+    /// plugin AIRs and arbitrary Statement marker construction cannot cross this boundary.
+    pub fn from_independently_trusted_builtin_artifact(
+        config: SC,
+        parts: TrustedBuiltinArtifactRelation<Val<SC>>,
+        common: CommonData<SC>,
+    ) -> Result<Self, BatchStarkProverError> {
+        match parts.ext_degree {
+            1 => {
+                Self::from_independently_trusted_builtin_artifact_degree::<1>(config, parts, common)
+            }
+            2 => {
+                Self::from_independently_trusted_builtin_artifact_degree::<2>(config, parts, common)
+            }
+            4 => {
+                Self::from_independently_trusted_builtin_artifact_degree::<4>(config, parts, common)
+            }
+            5 => {
+                Self::from_independently_trusted_builtin_artifact_degree::<5>(config, parts, common)
+            }
+            6 => {
+                Self::from_independently_trusted_builtin_artifact_degree::<6>(config, parts, common)
+            }
+            8 => {
+                Self::from_independently_trusted_builtin_artifact_degree::<8>(config, parts, common)
+            }
+            other => Err(BatchStarkProverError::UnsupportedDegree(other)),
+        }
+    }
+
+    fn from_independently_trusted_builtin_artifact_degree<const D: usize>(
+        config: SC,
+        parts: TrustedBuiltinArtifactRelation<Val<SC>>,
+        common: CommonData<SC>,
+    ) -> Result<Self, BatchStarkProverError> {
+        let reduction_ok = matches!(
+            parts.reduction,
+            AluExtMulKind::Base if D == 1
+        ) || matches!(
+            parts.reduction,
+            AluExtMulKind::Binomial { .. } if D > 1 && D != 5
+        ) || matches!(parts.reduction, AluExtMulKind::QuinticTrinomial if D == 5);
+        if !reduction_ok {
+            return Err(BatchStarkProverError::RelationMismatch(
+                "extension reduction does not match the circuit degree".into(),
+            ));
+        }
+
+        let statement_index = parts
+            .statement_table_instance
+            .and_then(|instance| instance.checked_sub(NUM_PRIMITIVE_TABLES));
+        let mut descriptors = Vec::with_capacity(parts.non_primitives.len());
+        let mut non_primitive_airs = Vec::with_capacity(parts.non_primitives.len());
+        for (index, npo) in parts.non_primitives.iter().enumerate() {
+            let (descriptor, air) = match npo {
+                BuiltinArtifactNpo::Static {
+                    air,
+                    rows,
+                    lanes,
+                    air_variant,
+                    public_values,
+                } => {
+                    if *air_variant != AirVariant::Baseline {
+                        return Err(BatchStarkProverError::RelationMismatch(
+                            "built-in NPO AIR variants must use the canonical baseline variant"
+                                .into(),
+                        ));
+                    }
+                    let op_type = builtin_artifact_op_type(*air)?;
+                    if parts
+                        .table_packing
+                        .npo_lanes(&op_type)
+                        .is_some_and(|packed| packed != *lanes)
+                    {
+                        return Err(BatchStarkProverError::RelationMismatch(
+                            "NPO lane metadata disagrees with effective packing".into(),
+                        ));
+                    }
+                    let min_height = parts
+                        .table_packing
+                        .npo_min_height(&op_type)
+                        .unwrap_or(parts.table_packing.min_trace_height());
+                    let dynamic = builtin_artifact_air::<SC, D>(*air, *lanes, min_height)?;
+                    let descriptor = NpoRelation::new(
+                        op_type,
+                        *rows,
+                        *lanes,
+                        *air_variant,
+                        public_values.clone(),
+                    );
+                    (descriptor, dynamic)
+                }
+                BuiltinArtifactNpo::Statement { public_width } => {
+                    if statement_index != Some(index)
+                        || *public_width != parts.statement_schema.base_len()
+                    {
+                        return Err(BatchStarkProverError::RelationMismatch(
+                            "Statement AIR identity, position, or width is not canonical".into(),
+                        ));
+                    }
+                    let op_type = NpoTypeId::statement();
+                    let min_height = parts
+                        .table_packing
+                        .npo_min_height(&op_type)
+                        .unwrap_or(parts.table_packing.min_trace_height());
+                    let dynamic = DynamicAirEntry::new(Box::new(
+                        StatementAir::<Val<SC>, D>::new_with_preprocessed(
+                            *public_width,
+                            Vec::new(),
+                            min_height,
+                        ),
+                    ));
+                    let descriptor = NpoRelation::audited_statement(
+                        op_type,
+                        1,
+                        1,
+                        AirVariant::Baseline,
+                        *public_width,
+                    );
+                    (descriptor, dynamic)
+                }
+            };
+            if BaseAir::<Val<SC>>::num_public_values(&air) != descriptor.public_values_len() {
+                return Err(BatchStarkProverError::RelationMismatch(format!(
+                    "built-in NPO {:?} public-value width disagrees with its AIR",
+                    descriptor.op_type()
+                )));
+            }
+            descriptors.push(descriptor);
+            non_primitive_airs.push(air);
+        }
+
+        let relation = CircuitRelation::from_trusted_builtin_artifact(parts, descriptors);
+        let airs = reconstruct_circuit_table_airs::<SC, D>(&relation, &non_primitive_airs)?;
+        validate_artifact_common(&airs, relation.trace_degree_bits(), &common)?;
+        let lookups = airs
+            .iter()
+            .zip(relation.trace_degree_bits())
+            .map(|(air, &degree_bits)| {
+                let trace_len = 1usize.checked_shl(degree_bits as u32).ok_or_else(|| {
+                    BatchStarkProverError::RelationMismatch(
+                        "trace degree cannot be represented on this platform".into(),
+                    )
+                })?;
+                Ok(lookups_for_circuit_table_air::<SC, D>(
+                    air,
+                    trace_len,
+                    config.is_zk(),
+                ))
+            })
+            .collect::<Result<Vec<_>, BatchStarkProverError>>()?;
+        let common = CommonData::new(common.preprocessed, lookups);
+        Ok(Self {
+            inner: Rc::new(CircuitVerifierData {
+                config,
+                relation,
+                common,
+                non_primitive_airs,
+            }),
+        })
+    }
+}
+
+fn builtin_artifact_op_type(air: BuiltinArtifactAir) -> Result<NpoTypeId, BatchStarkProverError> {
+    match air {
+        BuiltinArtifactAir::Recompose => Ok(NpoTypeId::recompose()),
+        BuiltinArtifactAir::RecomposeWithCoefficientLookups => {
+            Ok(NpoTypeId::recompose_with_coeff_lookups())
+        }
+        BuiltinArtifactAir::Poseidon1(config) if supported_poseidon1(config) => {
+            Ok(NpoTypeId::poseidon1_perm(config))
+        }
+        BuiltinArtifactAir::Poseidon2(config) if supported_poseidon2(config) => {
+            Ok(NpoTypeId::poseidon2_perm(config))
+        }
+        BuiltinArtifactAir::Poseidon1(_) | BuiltinArtifactAir::Poseidon2(_) => Err(
+            BatchStarkProverError::RelationMismatch("unknown built-in permutation AIR".into()),
+        ),
+    }
+}
+
+fn builtin_artifact_air<SC, const D: usize>(
+    air: BuiltinArtifactAir,
+    lanes: usize,
+    min_height: usize,
+) -> Result<DynamicAirEntry<SC>, BatchStarkProverError>
+where
+    SC: StarkGenericConfig + Send + Sync + 'static,
+    Val<SC>: StarkField + PrimeField64,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+{
+    match air {
+        BuiltinArtifactAir::Recompose | BuiltinArtifactAir::RecomposeWithCoefficientLookups => Ok(
+            DynamicAirEntry::new(Box::new(RecomposeAir::<Val<SC>, D>::new_with_preprocessed(
+                lanes,
+                Vec::new(),
+                min_height,
+                matches!(air, BuiltinArtifactAir::RecomposeWithCoefficientLookups),
+            ))),
+        ),
+        BuiltinArtifactAir::Poseidon1(config) => {
+            validate_poseidon_field::<Val<SC>>(
+                config.is_baby_bear(),
+                config.is_koala_bear(),
+                config.is_goldilocks(),
+            )?;
+            if lanes != 1 {
+                return Err(BatchStarkProverError::RelationMismatch(
+                    "Poseidon1 artifact AIR must use one lane".into(),
+                ));
+            }
+            poseidon1::poseidon1_artifact_air::<SC>(config, min_height, D as u32).ok_or_else(|| {
+                BatchStarkProverError::RelationMismatch(
+                    "Poseidon1 AIR is incompatible with the circuit extension".into(),
+                )
+            })
+        }
+        BuiltinArtifactAir::Poseidon2(config) => {
+            validate_poseidon_field::<Val<SC>>(
+                config.is_baby_bear(),
+                config.is_koala_bear(),
+                config.is_goldilocks(),
+            )?;
+            if lanes != 1 {
+                return Err(BatchStarkProverError::RelationMismatch(
+                    "Poseidon2 artifact AIR must use one lane".into(),
+                ));
+            }
+            poseidon2::poseidon2_artifact_air::<SC>(config, min_height, D as u32).ok_or_else(|| {
+                BatchStarkProverError::RelationMismatch(
+                    "Poseidon2 AIR is incompatible with the circuit extension".into(),
+                )
+            })
+        }
+    }
+}
+
+fn validate_poseidon_field<F: PrimeField64>(
+    baby_bear: bool,
+    koala_bear: bool,
+    goldilocks: bool,
+) -> Result<(), BatchStarkProverError> {
+    let matches = (baby_bear && F::ORDER_U64 == BABY_BEAR_MODULUS)
+        || (koala_bear && F::ORDER_U64 == KOALA_BEAR_MODULUS)
+        || (goldilocks && F::ORDER_U64 == GOLDILOCKS_MODULUS);
+    if matches {
+        Ok(())
+    } else {
+        Err(BatchStarkProverError::RelationMismatch(
+            "permutation AIR field family does not match the verifier configuration".into(),
+        ))
+    }
+}
+
+fn supported_poseidon1(config: Poseidon1Config) -> bool {
+    [
+        Poseidon1Config::BABY_BEAR_D1_W16,
+        Poseidon1Config::BABY_BEAR_D4_W16,
+        Poseidon1Config::BABY_BEAR_D4_W24,
+        Poseidon1Config::KOALA_BEAR_D1_W16,
+        Poseidon1Config::KOALA_BEAR_D4_W16,
+        Poseidon1Config::KOALA_BEAR_D4_W24,
+        Poseidon1Config::GOLDILOCKS_D2_W8,
+        Poseidon1Config::BABY_BEAR_D4_W16.for_challenger(),
+        Poseidon1Config::BABY_BEAR_D4_W24.for_challenger(),
+        Poseidon1Config::KOALA_BEAR_D4_W16.for_challenger(),
+        Poseidon1Config::KOALA_BEAR_D4_W24.for_challenger(),
+        Poseidon1Config::GOLDILOCKS_D2_W8.for_challenger(),
+    ]
+    .contains(&config)
+}
+
+fn supported_poseidon2(config: Poseidon2Config) -> bool {
+    [
+        Poseidon2Config::BABY_BEAR_D1_W16,
+        Poseidon2Config::BABY_BEAR_D4_W16,
+        Poseidon2Config::BABY_BEAR_D4_W24,
+        Poseidon2Config::BABY_BEAR_D4_W32,
+        Poseidon2Config::KOALA_BEAR_D1_W16,
+        Poseidon2Config::KOALA_BEAR_D4_W16,
+        Poseidon2Config::KOALA_BEAR_D4_W24,
+        Poseidon2Config::KOALA_BEAR_D1_W32,
+        Poseidon2Config::KOALA_BEAR_D4_W32,
+        Poseidon2Config::GOLDILOCKS_D2_W8,
+        Poseidon2Config::GOLDILOCKS_D2_W16,
+        Poseidon2Config::BABY_BEAR_D4_W16.for_challenger(),
+        Poseidon2Config::BABY_BEAR_D4_W24.for_challenger(),
+        Poseidon2Config::KOALA_BEAR_D4_W16.for_challenger(),
+        Poseidon2Config::KOALA_BEAR_D4_W24.for_challenger(),
+        Poseidon2Config::GOLDILOCKS_D2_W8.for_challenger(),
+    ]
+    .contains(&config)
+}
+
+fn validate_artifact_common<SC, const D: usize>(
+    airs: &[CircuitTableAir<SC, D>],
+    trace_degree_bits: &[usize],
+    common: &CommonData<SC>,
+) -> Result<(), BatchStarkProverError>
+where
+    SC: StarkGenericConfig,
+    Val<SC>: PrimeField,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+{
+    let expected_preprocessed = airs
+        .iter()
+        .filter(|air| BaseAir::<Val<SC>>::preprocessed_width(*air) != 0)
+        .count();
+    let Some(preprocessed) = &common.preprocessed else {
+        if expected_preprocessed == 0 {
+            return Ok(());
+        }
+        return Err(BatchStarkProverError::RelationMismatch(
+            "preprocessed commitment is absent for AIRs with preprocessed columns".into(),
+        ));
+    };
+    if preprocessed.instances.len() != airs.len()
+        || preprocessed.matrix_to_instance.len() != expected_preprocessed
+    {
+        return Err(BatchStarkProverError::RelationMismatch(
+            "preprocessed instance or routing count does not match AIR geometry".into(),
+        ));
+    }
+    let mut matrix_index = 0;
+    for (instance, ((air, &degree_bits), metadata)) in airs
+        .iter()
+        .zip(trace_degree_bits)
+        .zip(&preprocessed.instances)
+        .enumerate()
+    {
+        let width = BaseAir::<Val<SC>>::preprocessed_width(air);
+        match (width, metadata) {
+            (0, None) => {}
+            (0, Some(_)) | (_, None) => {
+                return Err(BatchStarkProverError::RelationMismatch(
+                    "preprocessed presence does not match AIR width".into(),
+                ));
+            }
+            (_, Some(metadata)) => {
+                if metadata.matrix_index != matrix_index
+                    || metadata.width != width
+                    || metadata.degree_bits != degree_bits
+                    || preprocessed.matrix_to_instance.get(matrix_index) != Some(&instance)
+                {
+                    return Err(BatchStarkProverError::RelationMismatch(
+                        "preprocessed width, degree, matrix index, or routing mismatch".into(),
+                    ));
+                }
+                matrix_index += 1;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Which optional next-row opening used the unsupported present-but-empty representation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NextRowOpeningKind {
@@ -972,6 +1342,10 @@ pub enum ProofMetadataError {
         table: usize,
         kind: NextRowOpeningKind,
     },
+
+    /// A checked built-in verifier artifact relation is internally inconsistent.
+    #[error("invalid trusted built-in artifact relation: {0}")]
+    TrustedArtifactRelation(&'static str),
 }
 
 impl From<ProofMetadataError> for CircuitError {

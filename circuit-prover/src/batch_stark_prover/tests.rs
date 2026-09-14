@@ -353,6 +353,80 @@ fn trusted_verifier_outlives_prover_and_ignores_embedded_common() {
 }
 
 #[test]
+fn independently_trusted_builtin_artifact_reconstructs_without_proving_state() {
+    let circuit = trusted_relation_circuit(2);
+    let prepared = BatchStarkProver::new(config::baby_bear())
+        .prepare_circuit::<BabyBear, 1>(&circuit, &[], &[], ConstraintProfile::Standard)
+        .unwrap();
+    let proof = trusted_relation_proof(&prepared, &circuit, 4, 8);
+    let original = prepared.verifier();
+    let relation = original.relation();
+    assert!(relation.non_primitives().is_empty());
+    let parts = crate::TrustedBuiltinArtifactRelation::try_new(
+        relation.table_packing().clone(),
+        relation.rows().clone(),
+        relation.ext_degree(),
+        relation.reduction(),
+        relation.alu_variant(),
+        relation.constraint_profile(),
+        Vec::new(),
+        relation.statement_layout().schema().clone(),
+        relation.statement_layout().table_instance(),
+        relation.trace_degree_bits().to_vec(),
+    )
+    .unwrap();
+    let imported = CircuitVerifier::from_independently_trusted_builtin_artifact(
+        original.config().clone(),
+        parts,
+        clone_common_data(original.common_data()),
+    )
+    .unwrap();
+
+    drop(original);
+    drop(prepared);
+    imported.verify(&proof, &[]).unwrap();
+}
+
+#[test]
+fn independently_trusted_builtin_artifact_rejects_common_routing_substitution() {
+    let circuit = trusted_relation_circuit(2);
+    let prepared = BatchStarkProver::new(config::baby_bear())
+        .prepare_circuit::<BabyBear, 1>(&circuit, &[], &[], ConstraintProfile::Standard)
+        .unwrap();
+    let original = prepared.verifier();
+    let relation = original.relation();
+    let parts = crate::TrustedBuiltinArtifactRelation::try_new(
+        relation.table_packing().clone(),
+        relation.rows().clone(),
+        relation.ext_degree(),
+        relation.reduction(),
+        relation.alu_variant(),
+        relation.constraint_profile(),
+        Vec::new(),
+        relation.statement_layout().schema().clone(),
+        relation.statement_layout().table_instance(),
+        relation.trace_degree_bits().to_vec(),
+    )
+    .unwrap();
+    let mut common = clone_common_data(original.common_data());
+    common
+        .preprocessed
+        .as_mut()
+        .unwrap()
+        .matrix_to_instance
+        .swap(0, 1);
+
+    assert!(matches!(
+        CircuitVerifier::from_independently_trusted_builtin_artifact(
+            original.config().clone(),
+            parts,
+            common,
+        ),
+        Err(BatchStarkProverError::RelationMismatch(_))
+    ));
+}
+
+#[test]
 fn trusted_verifier_rejects_a_same_shape_foreign_relation() {
     let circuit_a = trusted_relation_circuit(2);
     let prepared_a = BatchStarkProver::new(config::baby_bear())

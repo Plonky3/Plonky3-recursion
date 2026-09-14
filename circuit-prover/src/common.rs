@@ -265,6 +265,162 @@ pub struct StatementLayout {
     table_instance: Option<usize>,
 }
 
+/// A library-owned non-primitive AIR that V1 verifier artifacts may reconstruct.
+///
+/// This deliberately has no custom/plugin variant: callers importing artifact data can only
+/// request AIR implementations whose semantics are fixed by this library version.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BuiltinArtifactAir {
+    Recompose,
+    RecomposeWithCoefficientLookups,
+    Poseidon1(p3_circuit::ops::Poseidon1Config),
+    Poseidon2(p3_circuit::ops::Poseidon2Config),
+}
+
+/// Checked input describing one built-in NPO in an independently trusted verifier artifact.
+#[derive(Clone, Debug, PartialEq)]
+pub enum BuiltinArtifactNpo<F: Copy> {
+    Static {
+        air: BuiltinArtifactAir,
+        rows: usize,
+        lanes: usize,
+        air_variant: AirVariant,
+        public_values: Vec<F>,
+    },
+    Statement {
+        public_width: usize,
+    },
+}
+
+impl<F: Copy> BuiltinArtifactNpo<F> {
+    pub fn static_values(
+        air: BuiltinArtifactAir,
+        rows: usize,
+        lanes: usize,
+        air_variant: AirVariant,
+        public_values: Vec<F>,
+    ) -> Self {
+        Self::Static {
+            air,
+            rows,
+            lanes,
+            air_variant,
+            public_values,
+        }
+    }
+
+    /// Describe the sole built-in Statement AIR position.
+    ///
+    /// This value does not itself grant dynamic statement authority. That marker is minted only
+    /// by `CircuitVerifier::from_independently_trusted_builtin_artifact` after validating the
+    /// complete relation, schema, common-data routing, and constructed Statement AIR.
+    pub const fn statement(public_width: usize) -> Self {
+        Self::Statement { public_width }
+    }
+}
+
+/// Complete relation inputs decoded from independently provisioned trusted artifact bytes.
+///
+/// The fields stay private so downstream crates cannot partially initialize this value. The
+/// constructor performs allocation-free structural checks; the `CircuitVerifier` constructor
+/// performs the configuration-, AIR-, and common-data-dependent checks before accepting it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TrustedBuiltinArtifactRelation<F: Copy> {
+    pub(crate) table_packing: TablePacking,
+    pub(crate) rows: RowCounts,
+    pub(crate) ext_degree: usize,
+    pub(crate) reduction: AluExtMulKind<F>,
+    pub(crate) alu_variant: AirVariant,
+    pub(crate) constraint_profile: ConstraintProfile,
+    pub(crate) non_primitives: Vec<BuiltinArtifactNpo<F>>,
+    pub(crate) statement_schema: StatementSchema,
+    pub(crate) statement_table_instance: Option<usize>,
+    pub(crate) trace_degree_bits: Vec<usize>,
+}
+
+impl<F: Copy> TrustedBuiltinArtifactRelation<F> {
+    #[allow(clippy::too_many_arguments)]
+    pub fn try_new(
+        table_packing: TablePacking,
+        rows: RowCounts,
+        ext_degree: usize,
+        reduction: AluExtMulKind<F>,
+        alu_variant: AirVariant,
+        constraint_profile: ConstraintProfile,
+        non_primitives: Vec<BuiltinArtifactNpo<F>>,
+        statement_schema: StatementSchema,
+        statement_table_instance: Option<usize>,
+        trace_degree_bits: Vec<usize>,
+    ) -> Result<Self, ProofMetadataError> {
+        table_packing.validate()?;
+        rows.validate()?;
+        if !matches!(ext_degree, 1 | 2 | 4 | 5 | 6 | 8) {
+            return Err(ProofMetadataError::UnsupportedExtDegree(ext_degree));
+        }
+        let expected_instances = NUM_PRIMITIVE_TABLES
+            .checked_add(non_primitives.len())
+            .ok_or(ProofMetadataError::TrustedArtifactRelation(
+                "table count overflow",
+            ))?;
+        if trace_degree_bits.len() != expected_instances {
+            return Err(ProofMetadataError::TrustedArtifactRelation(
+                "trace-degree count does not match table count",
+            ));
+        }
+        let statement_index = statement_table_instance
+            .and_then(|instance| instance.checked_sub(NUM_PRIMITIVE_TABLES));
+        let dynamic_positions = non_primitives
+            .iter()
+            .enumerate()
+            .filter_map(|(index, npo)| {
+                matches!(npo, BuiltinArtifactNpo::Statement { .. }).then_some(index)
+            })
+            .collect::<Vec<_>>();
+        if statement_schema.base_len() == 0 {
+            if statement_table_instance.is_some() || !dynamic_positions.is_empty() {
+                return Err(ProofMetadataError::TrustedArtifactRelation(
+                    "empty schema must not carry a Statement table",
+                ));
+            }
+        } else if dynamic_positions.as_slice() != statement_index.as_slice()
+            || statement_index.is_none()
+        {
+            return Err(ProofMetadataError::TrustedArtifactRelation(
+                "Statement table position does not match the schema layout",
+            ));
+        } else if !matches!(
+            non_primitives.get(statement_index.unwrap()),
+            Some(BuiltinArtifactNpo::Statement { public_width })
+                if *public_width == statement_schema.base_len()
+        ) {
+            return Err(ProofMetadataError::TrustedArtifactRelation(
+                "Statement AIR width does not match the schema",
+            ));
+        }
+        for npo in &non_primitives {
+            if let BuiltinArtifactNpo::Static { rows, lanes, .. } = npo
+                && (*rows == 0 || *lanes == 0)
+            {
+                return Err(ProofMetadataError::TrustedArtifactRelation(
+                    "static NPO rows and lanes must be non-zero",
+                ));
+            }
+        }
+        Ok(Self {
+            table_packing,
+            rows,
+            ext_degree,
+            reduction,
+            alu_variant,
+            constraint_profile,
+            non_primitives,
+            statement_schema,
+            statement_table_instance,
+            trace_degree_bits,
+        })
+    }
+}
+
 impl StatementLayout {
     pub(crate) const fn new(schema: StatementSchema, table_instance: Option<usize>) -> Self {
         Self {
@@ -297,6 +453,26 @@ pub struct CircuitRelation<F: Copy> {
 }
 
 impl<F: Copy> CircuitRelation<F> {
+    pub(crate) fn from_trusted_builtin_artifact(
+        parts: TrustedBuiltinArtifactRelation<F>,
+        non_primitives: Vec<NpoRelation<F>>,
+    ) -> Self {
+        Self {
+            table_packing: parts.table_packing,
+            rows: parts.rows,
+            ext_degree: parts.ext_degree,
+            reduction: parts.reduction,
+            alu_variant: parts.alu_variant,
+            constraint_profile: parts.constraint_profile,
+            non_primitives,
+            statement_layout: StatementLayout::new(
+                parts.statement_schema,
+                parts.statement_table_instance,
+            ),
+            trace_degree_bits: parts.trace_degree_bits,
+        }
+    }
+
     pub const fn table_packing(&self) -> &TablePacking {
         &self.table_packing
     }

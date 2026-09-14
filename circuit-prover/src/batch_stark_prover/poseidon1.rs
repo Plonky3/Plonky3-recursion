@@ -522,6 +522,24 @@ pub fn poseidon1_verifier_air_from_config(config: Poseidon1Config) -> Poseidon1A
     Poseidon1Prover::air_wrapper_for_config(config)
 }
 
+pub(crate) fn poseidon1_artifact_air<SC>(
+    config: Poseidon1Config,
+    min_height: usize,
+    circuit_extension_degree: u32,
+) -> Option<DynamicAirEntry<SC>>
+where
+    SC: StarkGenericConfig + 'static + Send + Sync,
+    Val<SC>: StarkField,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+{
+    Poseidon1Prover::new(config, Default::default()).wrapper_from_config_with_preprocessed(
+        Vec::new(),
+        min_height,
+        circuit_extension_degree,
+    )
+}
+
 pub(crate) unsafe fn eval_poseidon1_variant<
     SC,
     F: PrimeField,
