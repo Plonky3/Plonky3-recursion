@@ -395,7 +395,7 @@ fn independently_trusted_builtin_artifact_reconstructs_without_proving_state() {
     assert!(relation.non_primitives().is_empty());
     let parts = crate::TrustedBuiltinArtifactRelation::try_new(
         relation.table_packing().clone(),
-        relation.rows().clone(),
+        *relation.rows(),
         relation.ext_degree(),
         relation.reduction(),
         relation.alu_variant(),
@@ -429,7 +429,7 @@ fn independently_trusted_builtin_artifact_rejects_common_routing_substitution() 
     let relation = original.relation();
     let parts = crate::TrustedBuiltinArtifactRelation::try_new(
         relation.table_packing().clone(),
-        relation.rows().clone(),
+        *relation.rows(),
         relation.ext_degree(),
         relation.reduction(),
         relation.alu_variant(),
@@ -739,15 +739,15 @@ fn run_with_strict_debug_oracle<T>(f: impl FnOnce() -> T) -> Result<T, DebugReje
                 .downcast_ref::<alloc::string::String>()
                 .map(alloc::string::String::as_str)
                 .or_else(|| payload.downcast_ref::<&str>().copied());
-            match message.and_then(classify_debug_diagnostic) {
-                Some(kind) => Err(kind),
-                None => std::panic::resume_unwind(payload),
+            if let Some(kind) = message.and_then(classify_debug_diagnostic) {
+                return Err(kind);
             }
+            std::panic::resume_unwind(payload)
         }
     }
 }
 
-fn assert_algebraic_rejection(result: Result<(), AlgebraicProofCheckError>, context: &str) {
+fn assert_algebraic_rejection(result: &Result<(), AlgebraicProofCheckError>, context: &str) {
     #[cfg(debug_assertions)]
     assert!(
         matches!(
@@ -2661,7 +2661,7 @@ fn verify_all_tables_rejects_a_forged_constant_value() {
         ),
         "forged constant must reject specifically at its AIR constraint: {result:?}"
     );
-    assert_algebraic_rejection(result, "forged constant 42 -> 43 at Const trace row 0");
+    assert_algebraic_rejection(&result, "forged constant 42 -> 43 at Const trace row 0");
 }
 
 #[test]
@@ -2713,7 +2713,7 @@ fn verify_all_tables_rejects_alu_bus_only_operand_swap() {
     );
     let honest_matrix = air.trace_to_matrix(&traces.alu_trace, 1);
     crate::air::test_utils::assert_air_satisfies::<KoalaBear, KoalaBear, _>(&air, &honest_matrix);
-    let mut locally_valid_forgery = honest_matrix.clone();
+    let mut locally_valid_forgery = honest_matrix;
     let width = locally_valid_forgery.width();
     let matches: Vec<_> = (0..locally_valid_forgery.height())
         .filter(|&row| {
@@ -2785,7 +2785,7 @@ fn verify_all_tables_rejects_alu_bus_only_operand_swap() {
         alu_prep,
         "the fixed WitnessChecks preprocessing must remain unchanged"
     );
-    assert_algebraic_rejection(result, "ALU row 0 columns a=0 and b=1 swapped");
+    assert_algebraic_rejection(&result, "ALU row 0 columns a=0 and b=1 swapped");
 }
 
 #[test]
@@ -2935,7 +2935,7 @@ fn verify_all_tables_rejects_forged_horner_chain_head_seed() {
         "forged Horner seed must reject specifically at the chain-head constraint: {result:?}"
     );
     assert_algebraic_rejection(
-        result,
+        &result,
         "ALU separator row 0 out column 3 changed 0 -> 1 with rows 1..=3 recomputed",
     );
 }

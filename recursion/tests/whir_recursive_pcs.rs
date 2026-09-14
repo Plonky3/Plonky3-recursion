@@ -557,7 +557,7 @@ mod koala_bear {
         let recursion_input = RecursionInput::UniStark {
             proof: &proof,
             air: &air,
-            public_inputs: pis.clone(),
+            public_inputs: pis,
             preprocessed_commit: None,
         };
         let transcript = replay_recursion_input_transcript(&config, &recursion_input, &[])?;

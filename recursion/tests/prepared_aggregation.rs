@@ -1872,7 +1872,7 @@ fn hiding_batch_random_width_is_checked_by_the_preallocation_context_pass() {
             &RecursionInput::BatchStark {
                 proof: &proof,
                 common_data: &proof.stark_common,
-                table_public_inputs: table_public_inputs.clone(),
+                table_public_inputs,
             },
         )
         .expect_err("retained result must reject before private-value extraction");

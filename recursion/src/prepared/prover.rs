@@ -87,8 +87,8 @@ where
         circuit,
         config,
         params,
-        preprocessors,
-        air_builders,
+        &preprocessors,
+        &air_builders,
         provers,
     )
 }
@@ -125,8 +125,8 @@ where
         circuit,
         config,
         params,
-        preprocessors,
-        air_builders,
+        &preprocessors,
+        &air_builders,
         provers,
     )
 }
@@ -135,8 +135,8 @@ fn prepare_prover_from_parts<SC, const D: usize>(
     circuit: &Circuit<SC::Challenge>,
     config: &SC,
     params: &ProveNextLayerParams,
-    preprocessors: Vec<Box<dyn NpoPreprocessor<Val<SC>>>>,
-    air_builders: Vec<Box<dyn NpoAirBuilder<SC, D>>>,
+    preprocessors: &[Box<dyn NpoPreprocessor<Val<SC>>>],
+    air_builders: &[Box<dyn NpoAirBuilder<SC, D>>],
     provers: Vec<Box<dyn TableProver<SC>>>,
 ) -> Result<PreparedProver<SC>, VerificationError>
 where
@@ -158,8 +158,8 @@ where
     let prepared = prover
         .prepare_circuit::<SC::Challenge, D>(
             circuit,
-            &preprocessors,
-            &air_builders,
+            preprocessors,
+            air_builders,
             params.constraint_profile,
         )
         .map_err(|error| VerificationError::InvalidProofShape(error.to_string()))?;

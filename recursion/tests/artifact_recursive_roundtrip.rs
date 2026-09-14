@@ -25,7 +25,11 @@ type F = KoalaBear;
 type Challenge = BinomialExtensionField<F, 4>;
 type Config = KoalaBearD4Poseidon2BinaryConfig;
 
-fn descriptor(num_queries: u32, input_cap_height: u32, commit_cap_height: u32) -> FriConfigV1 {
+const fn descriptor(
+    num_queries: u32,
+    input_cap_height: u32,
+    commit_cap_height: u32,
+) -> FriConfigV1 {
     FriConfigV1::new(
         SuiteIdV1::KoalaBearD4Poseidon2BinaryFri,
         1,

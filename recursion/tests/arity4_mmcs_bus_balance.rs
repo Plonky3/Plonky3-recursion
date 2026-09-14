@@ -110,7 +110,7 @@ fn prove_verify_arity4(
         roots.extend([[F::ZERO; 8]; 4]);
         MerkleCap::new(roots)
     } else {
-        commit.clone()
+        commit
     };
     mmcs.verify_batch(
         &verification_commit,

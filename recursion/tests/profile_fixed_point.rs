@@ -141,7 +141,7 @@ fn fixed_point_converges_on_koala_bear_d4_first_layer_and_the_profile_actually_p
         PreparedSource::batch(proof, common_data, table_public_inputs),
         fixture.layer_config.clone(),
         fixture.backend.clone(),
-        profile.clone(),
+        profile,
     )
     .expect("resolved profile must prepare without overflowing any table");
     let input = PreparedInput::BatchStark {

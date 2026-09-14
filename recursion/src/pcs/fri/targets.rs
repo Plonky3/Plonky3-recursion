@@ -3315,7 +3315,7 @@ mod prepared_shape_tests {
             .is_err()
         );
 
-        let mut two_batch_mismatch = proof.clone();
+        let mut two_batch_mismatch = proof;
         let second_batch = two_batch_mismatch.input_openings[0].clone();
         two_batch_mismatch.input_openings.push(second_batch);
         let second_query = two_batch_mismatch.input_openings[1].opened_values[0].clone();
@@ -3766,7 +3766,7 @@ mod prepared_shape_tests {
         query_scalar.query_pow_witness = F::ONE;
         assert_compatible("query scalar", &query_scalar, &baseline_cap_refs);
 
-        let mut witness_only = baseline.clone();
+        let mut witness_only = baseline;
         witness_only.input_openings[2].opened_values[3][1][0] = F::ONE;
         witness_only.commit_phase_openings[2].sibling_values[3][0] = Challenge::ONE;
         witness_only.commit_phase_openings[1].opening_proof = frontier(3);
@@ -4307,7 +4307,7 @@ mod prepared_shape_tests {
         query_scalar_only.1.query_pow_witness = F::ONE;
         assert_hiding_compatible("query scalar", &query_scalar_only, &baseline_cap_refs);
 
-        let mut witness_only = baseline.clone();
+        let mut witness_only = baseline;
         witness_only.1.input_openings[2].opened_values[3][1][0] = F::ONE;
         witness_only.1.input_openings[2].opening_proof.0[3][1][0] = F::ONE;
         witness_only.1.commit_phase_openings[2].opening_proof.0[3][0][0] = F::ONE;
@@ -4624,7 +4624,7 @@ mod prepared_shape_tests {
             .is_ok()
         );
 
-        let mut malformed = proof.clone();
+        let mut malformed = proof;
         malformed.commit_phase_openings[0].sibling_values[0].clear();
         assert!(
             validate_fri_context_core(

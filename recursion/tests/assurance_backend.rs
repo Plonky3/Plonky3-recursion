@@ -90,7 +90,7 @@ where
 fn seeded_add_trace(seed: u64) -> RowMajorMatrix<F> {
     let mut rng = CaseRng::new(seed);
     let mut values = F::zero_vec((1 << 5) * 3);
-    for row in values.chunks_exact_mut(3) {
+    for row in values.as_chunks_mut::<3>().0 {
         row[0] = F::from_u64(rng.next_u64());
         row[1] = F::from_u64(rng.next_u64());
         row[2] = row[0] + row[1];

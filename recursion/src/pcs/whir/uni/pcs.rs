@@ -1204,10 +1204,7 @@ pub(crate) mod tests {
             rounds: vec![proof.rounds[0].clone(), malformed_last],
         };
         let malformed_transcript = crate::generation::OpeningTranscript::<CountingConfig> {
-            challenger: CountingChallenger::new(
-                base_pcs.challenger_proto.clone(),
-                Arc::clone(&calls),
-            ),
+            challenger: CountingChallenger::new(base_pcs.challenger_proto, Arc::clone(&calls)),
             commitments_with_opening_points: vec![
                 (commitment.clone(), matrices.clone()),
                 (commitment, matrices),

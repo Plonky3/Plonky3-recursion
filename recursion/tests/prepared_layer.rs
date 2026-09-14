@@ -182,9 +182,9 @@ fn whir_trusted_batch_statement_replay_uses_each_caller_expected_vector() {
             proof: &first_proof,
             statement: &first_statement,
         },
-        config.clone(),
+        config,
         backend,
-        params.clone(),
+        params,
     )
     .unwrap();
 
@@ -419,7 +419,7 @@ fn trusted_fri_uni_layer_exports_each_original_air_statement() {
         4,
     >::new(
         TrustedPreparedSource::BatchStark {
-            verifier: middle_verifier.clone(),
+            verifier: middle_verifier,
             proof: &first_middle.0,
             statement: &first_statement,
         },
@@ -467,9 +467,9 @@ fn fri_trusted_uni_retains_air_config_and_complete_preprocessed_root() {
 
     let owner = TrustedPreparedLayer::<_, _, common::MulAir, _, 4>::new(
         TrustedPreparedSource::UniStark {
-            config: config.clone(),
+            config,
             air: &air,
-            preprocessed_commit: Some(verifier_key.commitment.clone()),
+            preprocessed_commit: Some(verifier_key.commitment),
             proof: &proof,
             public_inputs: &[],
         },
@@ -506,7 +506,7 @@ fn whir_trusted_uni_retains_air_config_and_complete_preprocessed_root() {
         TrustedPreparedSource::UniStark {
             config: config.clone(),
             air: &air,
-            preprocessed_commit: Some(verifier_key.commitment.clone()),
+            preprocessed_commit: Some(verifier_key.commitment),
             proof: &proof,
             public_inputs: &[],
         },
@@ -825,8 +825,8 @@ fn batch_example_policy_rebuilds_only_on_contract_mismatch() {
                         &mismatch.base_proof.stark_common,
                         &mismatch_table,
                     ),
-                    config.clone(),
-                    backend.clone(),
+                    config,
+                    backend,
                     params,
                 )
                 .expect("the mismatched contract can be explicitly reprepared"),

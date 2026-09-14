@@ -358,8 +358,10 @@ mod tests {
             max_instances: 2,
             ..VerifierLimits::default()
         };
-        let mut usage = InputResourceUsage::default();
-        usage.instances = 2;
+        let mut usage = InputResourceUsage {
+            instances: 2,
+            ..InputResourceUsage::default()
+        };
         usage.check(&limits).expect("exact boundary is accepted");
         usage.instances = 3;
         assert!(matches!(
@@ -571,8 +573,10 @@ mod tests {
         let mut usage = InputResourceUsage::default();
         assert_eq!(usage.max_whir_opening_width_sum, 0);
 
-        let mut other = InputResourceUsage::default();
-        other.max_whir_opening_width_sum = 7;
+        let other = InputResourceUsage {
+            max_whir_opening_width_sum: 7,
+            ..InputResourceUsage::default()
+        };
         other
             .check(&limits)
             .expect("the geometry summary is checked by the WHIR backend, not as a direct axis");

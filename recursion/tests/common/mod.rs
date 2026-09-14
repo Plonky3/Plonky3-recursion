@@ -286,7 +286,7 @@ impl core::ops::Deref for KoalaBearD4RecursionConfig {
 }
 
 impl KoalaBearD4RecursionConfig {
-    pub(crate) fn without_native_fri_snapshot(mut self) -> Self {
+    pub(crate) const fn without_native_fri_snapshot(mut self) -> Self {
         self.native_fri_snapshot_enabled = false;
         self
     }

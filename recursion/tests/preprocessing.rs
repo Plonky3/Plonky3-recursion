@@ -559,7 +559,7 @@ fn test_batch_verifier_with_local_only_preprocessed() -> Result<(), Verification
         &config,
         &[air],
         &batch_proof,
-        &[public_values.clone()],
+        core::slice::from_ref(&public_values),
         &prover_data.common,
     )
     .unwrap();
@@ -583,7 +583,7 @@ fn test_batch_verifier_with_local_only_preprocessed() -> Result<(), Verification
         &[air],
         &config,
         &batch_proof,
-        &[public_values.clone()],
+        core::slice::from_ref(&public_values),
         &prover_data.common,
         &LogUpGadget::new(),
     )
@@ -614,7 +614,7 @@ fn test_batch_verifier_with_local_only_preprocessed() -> Result<(), Verification
         &config,
         &[air],
         &batch_proof,
-        &[public_values.clone()],
+        core::slice::from_ref(&public_values),
         &prover_data.common,
     )
     .unwrap();

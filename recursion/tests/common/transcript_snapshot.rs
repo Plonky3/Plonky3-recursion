@@ -40,7 +40,7 @@ where
     F: Clone,
     P: CryptographicPermutation<[F; WIDTH]>,
 {
-    pub fn new(
+    pub const fn new(
         inner: DuplexChallenger<F, P, WIDTH, RATE>,
         sink: Arc<Mutex<Vec<DuplexSnapshot<F, WIDTH>>>>,
         branch: &'static str,

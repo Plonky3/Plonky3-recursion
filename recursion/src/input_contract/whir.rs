@@ -845,12 +845,14 @@ mod tests {
         })
     }
 
-    fn canonical_two_argument_fixture() -> (
+    type TwoArgumentFixture = (
         WhirUniProof<F, EF, MyMmcs>,
         WhirUniVerifierParams<F>,
         NativeStarkLayout<'static>,
         Vec<MerkleCap<F, [F; 8]>>,
-    ) {
+    );
+
+    fn canonical_two_argument_fixture() -> TwoArgumentFixture {
         let protocol = ProtocolParameters {
             starting_log_inv_rate: 6,
             round_log_inv_rates: vec![],
@@ -1378,7 +1380,7 @@ mod tests {
             .sumcheck
             .polynomial_evaluations
             .push([EF::ZERO; 2]);
-        let mut wrong_final = proof.clone();
+        let mut wrong_final = proof;
         wrong_final.rounds[1].whir.final_poly = Some(Poly::new(vec![EF::ZERO; 2]));
         for malformed in [wrong_eval, wrong_ood, wrong_fold, wrong_final] {
             assert!(

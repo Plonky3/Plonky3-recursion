@@ -249,7 +249,7 @@ fn base_chain_start_capacity_is_bound() {
     );
 
     assert_rejected(
-        prove_and_verify(&honest, &forged_traces),
+        &prove_and_verify(&honest, &forged_traces),
         "a transcript opened from a prover-chosen sponge IV must be rejected",
     );
 }

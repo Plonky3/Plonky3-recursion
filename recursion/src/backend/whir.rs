@@ -592,18 +592,17 @@ where
     Ok((context, authority, policy))
 }
 
+type TrustedWhirPreflight<F> = (
+    ValidatedWhirContext<F>,
+    StarkPackingAuthority<F>,
+    StarkLayoutPolicy,
+);
+
 fn preflight_trusted_whir_batch<SC, A>(
     verifier: &CircuitVerifier<SC>,
     proof: &BatchStarkProof<SC>,
     statement: &[Val<SC>],
-) -> Result<
-    (
-        ValidatedWhirContext<Val<SC>>,
-        StarkPackingAuthority<Val<SC>>,
-        StarkLayoutPolicy,
-    ),
-    VerificationError,
->
+) -> Result<TrustedWhirPreflight<Val<SC>>, VerificationError>
 where
     SC: WhirRecursionConfig + Send + Sync + 'static,
     A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,

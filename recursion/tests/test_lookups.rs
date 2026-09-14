@@ -193,7 +193,7 @@ fn test_wrong_multiplicities() {
     match rejection_oracle::run_with_debug_oracle(|| {
         prover.prove_all_tables(&traces, &circuit_prover_data)
     }) {
-        Err(rejection_oracle::DebugRejectionKind::Lookup) => return,
+        Err(rejection_oracle::DebugRejectionKind::Lookup) => (),
         Err(other) => panic!(
             "wrong Const-table multiplicity must emit the exact lookup diagnostic, got {other:?}"
         ),

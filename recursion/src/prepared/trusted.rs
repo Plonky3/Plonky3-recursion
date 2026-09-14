@@ -51,7 +51,6 @@ where
 ///
 /// It intentionally contains no configuration, AIR, preprocessing commitment, or batch common
 /// data. Those remain fixed by [`TrustedPreparedSource`].
-#[derive(Clone, Copy)]
 pub enum TrustedPreparedInput<'p, SC>
 where
     SC: StarkGenericConfig + 'static,
@@ -65,6 +64,17 @@ where
         statement: &'p [Val<SC>],
     },
 }
+
+impl<SC> Clone for TrustedPreparedInput<'_, SC>
+where
+    SC: StarkGenericConfig + 'static,
+{
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<SC> Copy for TrustedPreparedInput<'_, SC> where SC: StarkGenericConfig + 'static {}
 
 enum TrustedChildAuthority<'air, SC, A>
 where
@@ -245,6 +255,10 @@ where
     <OutSC::Pcs as Pcs<OutSC::Challenge, OutSC::Challenger>>::Commitment: Sync,
     StatementPreprocessor: p3_circuit_prover::common::NpoPreprocessor<Val<OutSC>>,
 {
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "prepared-owner constructors deliberately consume output configuration authority"
+    )]
     pub fn new(
         source: TrustedPreparedSource<'air, '_, InSC, A>,
         output_config: OutSC,
@@ -376,7 +390,7 @@ where
                     &self.result,
                     &prev,
                 )
-                .map_err(|message| VerificationError::InvalidProofShape(message.into()))?
+                .map_err(|message| VerificationError::InvalidProofShape(message.into()))?;
             }
             (
                 TrustedChildAuthority::Batch { verifier, .. },
@@ -459,6 +473,10 @@ where
     StatementPreprocessor: p3_circuit_prover::common::NpoPreprocessor<Val<OutSC>>,
 {
     /// Preflight both unmaterialized sources before cloning or natively verifying either child.
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "prepared-owner constructors deliberately consume output configuration authority"
+    )]
     pub fn new(
         left: TrustedPreparedSource<'left_air, '_, InSC, A1>,
         right: TrustedPreparedSource<'right_air, '_, InSC, A2>,
@@ -955,7 +973,7 @@ mod tests {
                 statement: &first_statement,
             },
             fixture.layer_config.clone(),
-            fixture.backend.clone(),
+            fixture.backend,
             ProveNextLayerParams::default(),
         )
         .unwrap();
@@ -997,7 +1015,7 @@ mod tests {
                 proof: &proof,
                 statement: &statement,
             },
-            fixture.layer_config.clone(),
+            fixture.layer_config,
             backend,
             ProveNextLayerParams::default(),
         )
@@ -1049,7 +1067,7 @@ mod tests {
                 proof: &proof,
                 statement: &statement,
             },
-            fixture.layer_config.clone(),
+            fixture.layer_config,
             backend,
             ProveNextLayerParams::default(),
         )
@@ -1097,7 +1115,7 @@ mod tests {
                 statement: &statement,
             },
             fixture.layer_config.clone(),
-            fixture.backend.clone(),
+            fixture.backend,
             ProveNextLayerParams::default(),
         )
         .unwrap();
@@ -1147,7 +1165,7 @@ mod tests {
                 statement: &statement,
             },
             fixture.layer_config.clone(),
-            fixture.backend.clone(),
+            fixture.backend,
             ProveNextLayerParams::default(),
         )
         .unwrap();
@@ -1612,7 +1630,7 @@ mod tests {
             statement: &[],
         };
         let honest = owner
-            .prove(input_a.clone(), input_b.clone())
+            .prove(input_a, input_b)
             .expect("the exact retained child pair proves");
         let fixed_parent = owner.verifier();
         fixed_parent

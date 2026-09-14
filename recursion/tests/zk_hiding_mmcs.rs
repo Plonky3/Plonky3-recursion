@@ -203,7 +203,7 @@ fn mutate_salt_alu_bus_row(traces: &mut Traces<Challenge>, salt_witness: Witness
 }
 
 fn prove_and_verify_outer_trace(
-    prover: &mut BatchStarkProver<MyConfig>,
+    prover: &BatchStarkProver<MyConfig>,
     prover_data: &CircuitProverData<MyConfig>,
     traces: &Traces<Challenge>,
 ) -> Result<(), ProofCheckError> {
@@ -552,7 +552,7 @@ fn test_batch_verifier_hiding_mmcs() -> Result<(), VerificationError> {
     let mut local_air_mutation = verification_traces.clone();
     mutate_salt_leaf_poseidon_trace(&mut local_air_mutation, &batch_stark_proof);
     let local_result = prove_and_verify_outer_trace(
-        &mut verification_prover,
+        &verification_prover,
         &verification_circuit_prover_data,
         &local_air_mutation,
     );
@@ -564,15 +564,15 @@ fn test_batch_verifier_hiding_mmcs() -> Result<(), VerificationError> {
         ))
     ));
     assert_rejected(
-        local_result,
+        &local_result,
         "a changed salt coefficient in the physical leaf-hash row",
     );
 
     let salt_witness = verification_circuit.private_input_rows[mutated_salt_private_index];
-    let mut global_lookup_mutation = verification_traces.clone();
+    let mut global_lookup_mutation = verification_traces;
     mutate_salt_alu_bus_row(&mut global_lookup_mutation, salt_witness);
     let global_result = prove_and_verify_outer_trace(
-        &mut verification_prover,
+        &verification_prover,
         &verification_circuit_prover_data,
         &global_lookup_mutation,
     );
@@ -587,7 +587,7 @@ fn test_batch_verifier_hiding_mmcs() -> Result<(), VerificationError> {
         "salt witness-only mutation must reach the global lookup oracle, got {global_result:?}"
     );
     assert_rejected(
-        global_result,
+        &global_result,
         "a changed salt witness disconnected from the honest physical leaf-hash row",
     );
 

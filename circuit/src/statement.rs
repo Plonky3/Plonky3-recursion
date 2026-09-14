@@ -343,7 +343,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            AggregationStatementLayout::try_new(left.clone(), right.clone(), 1, output.clone(),),
+            AggregationStatementLayout::try_new(left.clone(), right.clone(), 1, output),
             Err(StatementError::AggregationSplitMismatch {
                 expected: 2,
                 got: 1,

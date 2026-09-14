@@ -48,7 +48,7 @@ fn fibonacci_output<F: PrimeCharacteristicRing + Copy>(n: usize) -> F {
     b
 }
 
-fn query_count<F, EF, P>(openings: &QueryOpenings<F, EF, P>) -> usize {
+const fn query_count<F, EF, P>(openings: &QueryOpenings<F, EF, P>) -> usize {
     match openings {
         QueryOpenings::Base(opening) => opening.rows.len(),
         QueryOpenings::Extension(opening) => opening.rows.len(),

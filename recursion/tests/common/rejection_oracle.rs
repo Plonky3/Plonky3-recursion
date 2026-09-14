@@ -43,14 +43,16 @@ fn classify_debug_panic(payload: &(dyn Any + Send)) -> Option<DebugRejectionKind
 pub(crate) fn run_with_debug_oracle<T>(f: impl FnOnce() -> T) -> Result<T, DebugRejectionKind> {
     match std::panic::catch_unwind(AssertUnwindSafe(f)) {
         Ok(value) => Ok(value),
-        Err(payload) => match classify_debug_panic(payload.as_ref()) {
-            Some(kind) => Err(kind),
-            None => std::panic::resume_unwind(payload),
-        },
+        Err(payload) => {
+            if let Some(kind) = classify_debug_panic(payload.as_ref()) {
+                return Err(kind);
+            }
+            std::panic::resume_unwind(payload)
+        }
     }
 }
 
-pub(crate) fn assert_rejected(result: Result<(), ProofCheckError>, context: &str) {
+pub(crate) fn assert_rejected(result: &Result<(), ProofCheckError>, context: &str) {
     #[cfg(debug_assertions)]
     assert!(
         matches!(

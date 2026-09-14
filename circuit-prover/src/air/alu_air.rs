@@ -106,7 +106,7 @@ pub(crate) enum ScheduleEntry {
 }
 
 /// How extension multiplication is reduced in the MUL / MUL_ADD / Horner paths.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AluExtMulKind<F: Copy> {
     /// Base field only (`D == 1`).
     Base,

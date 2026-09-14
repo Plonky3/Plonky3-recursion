@@ -857,26 +857,21 @@ mod tests {
             &input,
         )
         .expect("real batch metadata is accepted at both exact boundaries");
-        for (limits, component) in [(
-            VerifierLimits {
-                max_metadata_entries: metadata_entries - 1,
-                ..exact_limits
-            },
-            "metadata entries",
-        )] {
-            let limited = first.backend.clone().with_limits(limits);
-            assert!(matches!(
-                <Backend as PreparedPcsRecursionBackend<
-                    Config,
-                    crate::recursion::BatchOnly,
-                    4,
-                >>::preflight_input(&limited, &first.layer_config, &input),
-                Err(VerificationError::ResourceLimitExceeded {
-                    component: actual,
-                    ..
-                }) if actual == component
-            ));
-        }
+        let limited = first.backend.clone().with_limits(VerifierLimits {
+            max_metadata_entries: metadata_entries - 1,
+            ..exact_limits
+        });
+        assert!(matches!(
+            <Backend as PreparedPcsRecursionBackend<
+                Config,
+                crate::recursion::BatchOnly,
+                4,
+            >>::preflight_input(&limited, &first.layer_config, &input),
+            Err(VerificationError::ResourceLimitExceeded {
+                component: "metadata entries",
+                ..
+            })
+        ));
 
         let backend = CountingBackend::new(exact);
         let prepared = PreparedLayer::<Config, crate::recursion::BatchOnly, _, 4>::new(

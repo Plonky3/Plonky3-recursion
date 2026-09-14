@@ -8,18 +8,13 @@ use p3_whir::pcs::proof::QueryOpenings;
 use super::{WhirRecursionBackend, WhirRecursionBackendForExt, WhirRecursionConfig};
 use crate::Poseidon2Config;
 use crate::pcs::whir::uni::acceptance_probe::{Counters, measure};
+use crate::prepared::test_common::whir_config::{BbF, BbWhirConfig, bb_whir_config};
 use crate::prepared::{PreparedInput, PreparedLayer, PreparedSource};
 use crate::recursion::{
     PcsRecursionBackend, ProveNextLayerParams, RecursionInput, VerifierCircuitResult,
     build_next_layer_circuit,
 };
 use crate::verifier::{VerificationError, VerifierLimits};
-
-#[allow(dead_code)]
-#[path = "../../../tests/common/whir_config.rs"]
-mod whir_config;
-
-use whir_config::{BbF, BbWhirConfig, bb_whir_config};
 
 fn assert_no_later_work(counters: Counters, stage: &str) {
     assert_eq!(

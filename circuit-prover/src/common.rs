@@ -169,7 +169,7 @@ enum NpoPublicValues<F: Copy> {
 }
 
 impl<F: Copy> NpoRelation<F> {
-    pub fn new(
+    pub const fn new(
         op_type: NpoTypeId,
         rows: usize,
         lanes: usize,
@@ -208,7 +208,7 @@ impl<F: Copy> NpoRelation<F> {
         }
     }
 
-    pub(crate) fn audited_statement(
+    pub(crate) const fn audited_statement(
         op_type: NpoTypeId,
         rows: usize,
         lanes: usize,
@@ -324,7 +324,7 @@ impl<F: Copy> BuiltinArtifactNpo<F> {
 /// The fields stay private so downstream crates cannot partially initialize this value. The
 /// constructor performs allocation-free structural checks; the `CircuitVerifier` constructor
 /// performs the configuration-, AIR-, and common-data-dependent checks before accepting it.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TrustedBuiltinArtifactRelation<F: Copy> {
     pub(crate) table_packing: TablePacking,
     pub(crate) rows: RowCounts,
@@ -542,7 +542,7 @@ impl<SC: StarkGenericConfig, const D: usize> BuiltNpoTable<SC, D>
 where
     SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
 {
-    pub fn new(
+    pub const fn new(
         air: CircuitTableAir<SC, D>,
         base_degree_bits: usize,
         descriptor: NpoRelation<Val<SC>>,
@@ -590,7 +590,7 @@ where
     SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
 {
     #[cfg(test)]
-    pub(crate) fn airs_and_base_degree_bits(&self) -> &CircuitAirsWithDegrees<SC, D> {
+    pub(crate) const fn airs_and_base_degree_bits(&self) -> &CircuitAirsWithDegrees<SC, D> {
         &self.airs_and_base_degree_bits
     }
 
@@ -599,14 +599,7 @@ where
         &self.relation
     }
 
-    pub(crate) fn into_parts(
-        self,
-    ) -> (
-        CircuitAirsWithDegrees<SC, D>,
-        CircuitRelation<Val<SC>>,
-        Vec<Vec<Val<SC>>>,
-        NonPrimitivePreprocessedMap<Val<SC>>,
-    ) {
+    pub(crate) fn into_parts(self) -> FinalizedCircuitTableParts<SC, D> {
         (
             self.airs_and_base_degree_bits,
             self.relation,
@@ -618,6 +611,21 @@ where
 
 /// Type alias for a vector of circuit table AIRs paired with their respective degrees (log of their trace height).
 type CircuitAirsWithDegrees<SC, const D: usize> = Vec<(CircuitTableAir<SC, D>, usize)>;
+
+type FinalizedCircuitTableParts<SC, const D: usize> = (
+    CircuitAirsWithDegrees<SC, D>,
+    CircuitRelation<Val<SC>>,
+    Vec<Vec<Val<SC>>>,
+    NonPrimitivePreprocessedMap<Val<SC>>,
+);
+
+#[derive(Clone, Copy)]
+struct CircuitTableBuildOptions {
+    constraint_profile: ConstraintProfile,
+    alu_variant: AirVariant,
+    is_zk: bool,
+    trusted: bool,
+}
 
 /// Output of [`get_airs_and_degrees_with_prep`]: AIRs with degrees, primitive columns, and non-primitive columns.
 type PrepOutput<SC, const D: usize> = (
@@ -646,10 +654,12 @@ where
         packing,
         non_primitive_preprocessors,
         non_primitive_air_builders,
-        constraint_profile,
-        AirVariant::Optimized,
-        false,
-        false,
+        CircuitTableBuildOptions {
+            constraint_profile,
+            alu_variant: AirVariant::Optimized,
+            is_zk: false,
+            trusted: false,
+        },
     )?;
     let (airs, _, primitive, non_primitive) = finalized.into_parts();
     Ok((airs, primitive, non_primitive))
@@ -677,10 +687,12 @@ where
         packing,
         non_primitive_preprocessors,
         non_primitive_air_builders,
-        constraint_profile,
-        alu_variant,
-        is_zk,
-        true,
+        CircuitTableBuildOptions {
+            constraint_profile,
+            alu_variant,
+            is_zk,
+            trusted: true,
+        },
     )
 }
 
@@ -693,15 +705,19 @@ fn build_circuit_tables<
     packing: &TablePacking,
     non_primitive_preprocessors: &[Box<dyn NpoPreprocessor<Val<SC>>>],
     non_primitive_air_builders: &[Box<dyn NpoAirBuilder<SC, D>>],
-    constraint_profile: ConstraintProfile,
-    alu_variant: AirVariant,
-    is_zk: bool,
-    trusted: bool,
+    options: CircuitTableBuildOptions,
 ) -> Result<FinalizedCircuitTables<SC, D>, CircuitError>
 where
     SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
     Val<SC>: StarkField,
 {
+    let CircuitTableBuildOptions {
+        constraint_profile,
+        alu_variant,
+        is_zk,
+        trusted,
+    } = options;
+
     // Reject a misconfigured packing (e.g. a per-table override below the global
     // min-height floor) before any table height derived from it is used to build or
     // pad the preprocessed trace, rather than only catching it later via

@@ -44,12 +44,22 @@ transmute_undefined_repr = "allow"
 cognitive_complexity = "allow"
 
 [workspace.dependencies]
+
+# Other common dependencies
+clap = { version = "4.6", features = ["derive"] }
+hashbrown = "0.17.1"
+itertools = { version = "0.15.0", default-features = false, features = ["use_alloc"] }
+
 # Plonky3 dependencies - shared across all crates
 p3-air = "0.7.0"
 p3-baby-bear = "0.7.0"
 p3-batch-stark = "0.7.0"
 p3-challenger = "0.7.0"
 p3-circle = "0.7.0"
+
+# Local dependencies
+p3-circuit = { path = "circuit", version = "0.1.0" }
+p3-circuit-prover = { path = "circuit-prover", version = "0.1.0" }
 p3-commit = "0.7.0"
 p3-dft = "0.7.0"
 p3-field = "0.7.0"
@@ -64,20 +74,20 @@ p3-maybe-rayon = "0.7.0"
 p3-merkle-tree = "0.7.0"
 p3-monty-31 = "0.7.0"
 p3-multilinear-util = "0.7.0"
+p3-poseidon-circuit-cols = { path = "poseidon-circuit-cols", version = "0.1.0" }
 p3-poseidon1 = "0.7.0"
 p3-poseidon1-air = "0.7.0"
+p3-poseidon1-circuit-air = { path = "poseidon1-circuit-air", version = "0.1.0" }
 p3-poseidon2 = "0.7.0"
 p3-poseidon2-air = "0.7.0"
+p3-poseidon2-circuit-air = { path = "poseidon2-circuit-air", version = "0.1.0" }
+p3-recursion = { path = "recursion", version = "0.1.0" }
 p3-sumcheck = "0.7.0"
 p3-symmetric = "0.7.0"
+p3-test-utils = { path = "test-utils", version = "0.1.0" }
 p3-uni-stark = "0.7.0"
 p3-util = "0.7.0"
 p3-whir = "0.7.0"
-
-# Other common dependencies
-clap = { version = "4.6", features = ["derive"] }
-hashbrown = "0.17.1"
-itertools = { version = "0.15.0", default-features = false, features = ["use_alloc"] }
 proptest = { version = "1.11", default-features = true }
 rand = { version = "0.10.1", default-features = false }
 serde = { version = "1.0", default-features = false, features = ["derive", "alloc"] }
@@ -88,15 +98,6 @@ tracing = { version = "0.1.44", default-features = false, features = ["attribute
 tracing-forest = "0.3.1"
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["alloc"] }
 unroll = { version = "0.1.5", default-features = false }
-
-# Local dependencies
-p3-circuit = { path = "circuit", version = "0.1.0" }
-p3-circuit-prover = { path = "circuit-prover", version = "0.1.0" }
-p3-poseidon-circuit-cols = { path = "poseidon-circuit-cols", version = "0.1.0" }
-p3-poseidon1-circuit-air = { path = "poseidon1-circuit-air", version = "0.1.0" }
-p3-poseidon2-circuit-air = { path = "poseidon2-circuit-air", version = "0.1.0" }
-p3-recursion = { path = "recursion", version = "0.1.0" }
-p3-test-utils = { path = "test-utils", version = "0.1.0" }
 
 [patch.crates-io]
 p3-whir = { path = "vendor/p3-whir" }

@@ -11,6 +11,10 @@ categories.workspace = true
 
 [dependencies]
 
+# Other common dependencies
+hashbrown.workspace = true
+itertools.workspace = true
+
 # Plonky3 dependencies
 p3-air.workspace = true
 p3-baby-bear.workspace = true
@@ -25,10 +29,6 @@ p3-poseidon1-circuit-air.workspace = true
 p3-symmetric.workspace = true
 p3-uni-stark.workspace = true
 p3-util.workspace = true
-
-# Other common dependencies
-hashbrown.workspace = true
-itertools.workspace = true
 rand.workspace = true
 serde.workspace = true
 strum.workspace = true

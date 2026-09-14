@@ -490,7 +490,7 @@ fn control_corrupted_const_value_is_rejected() {
     traces.const_trace.values[row] += EF::ONE;
 
     assert_rejected(
-        prove_and_verify(&circuit, &traces),
+        &prove_and_verify(&circuit, &traces),
         "a const value read over the bus must not be freely re-chosen",
     );
 }
@@ -543,7 +543,7 @@ fn capacity_limb_binding(mode: RecomposeMode) {
 
     let traces = run(&edited);
     assert_rejected(
-        prove_and_verify(&honest, &traces),
+        &prove_and_verify(&honest, &traces),
         &format!(
             "{mode:?}: a proof whose second permutation reads a capacity limb the first \
              permutation never produced must be rejected"
@@ -615,7 +615,7 @@ fn rate_limb_is_bound_across_permutations_npo_table() {
 
     let traces = run(&edited);
     assert_rejected(
-        prove_and_verify(&honest, &traces),
+        &prove_and_verify(&honest, &traces),
         "a proof whose second permutation reads a rate limb the first permutation never \
          produced must be rejected",
     );
@@ -691,7 +691,7 @@ fn absorbed_limb_binding(mode: RecomposeMode) {
 
     let traces = run_with(&edited, &publics);
     assert_rejected(
-        prove_and_verify(&honest, &traces),
+        &prove_and_verify(&honest, &traces),
         &format!(
             "{mode:?}: a query index drawn from limbs the transcript never absorbed must be rejected"
         ),
@@ -764,7 +764,7 @@ fn chain_start_capacity_binding(mode: RecomposeMode) {
         traces.const_trace.values[row] += EF::ONE;
 
         assert_rejected(
-            prove_and_verify(&honest, &traces),
+            &prove_and_verify(&honest, &traces),
             &format!(
                 "{mode:?}: the capacity the first permutation absorbs must not be freely re-chosen"
             ),
@@ -792,7 +792,7 @@ fn chain_start_capacity_binding(mode: RecomposeMode) {
 
     let traces = run(&edited);
     assert_rejected(
-        prove_and_verify(&honest, &traces),
+        &prove_and_verify(&honest, &traces),
         &format!(
             "{mode:?}: the capacity the first permutation absorbs must not be freely re-chosen"
         ),
@@ -998,7 +998,7 @@ fn non_base_capacity_coefficients_are_rejected() {
 
     let traces = run(&edited);
     assert_rejected(
-        prove_and_verify(&honest, &traces),
+        &prove_and_verify(&honest, &traces),
         "coefficients whose weighted sum matches the limb but which are not base-field \
          elements must not stand in for its base decomposition",
     );

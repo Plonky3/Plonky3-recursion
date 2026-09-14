@@ -66,7 +66,7 @@ struct OnePublicValueAir {
 }
 
 impl OnePublicValueAir {
-    fn new(inner: DynamicAirEntry<SC>) -> Self {
+    const fn new(inner: DynamicAirEntry<SC>) -> Self {
         Self { inner }
     }
 }

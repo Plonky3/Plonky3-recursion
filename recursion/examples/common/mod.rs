@@ -195,7 +195,7 @@ pub fn report_proof_size<S: Serialize>(proof: &S) {
 }
 
 /// Build the borrowed batch witness view used by prepared recursion owners.
-pub fn batch_prepared_input<'a, SC>(
+pub const fn batch_prepared_input<'a, SC>(
     output: &'a RecursionOutput<SC>,
     table_public_inputs: &'a [Vec<Val<SC>>],
 ) -> PreparedInput<'a, SC>
@@ -210,7 +210,7 @@ where
 }
 
 /// Build a trusted batch source for constructing a prepared recursion owner.
-pub fn batch_prepared_source<'a, SC>(
+pub const fn batch_prepared_source<'a, SC>(
     output: &'a RecursionOutput<SC>,
     table_public_inputs: &'a [Vec<Val<SC>>],
 ) -> PreparedSource<'static, 'a, SC, BatchOnly>
