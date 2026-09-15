@@ -78,8 +78,8 @@ pub use poseidon1::{
 };
 pub use poseidon2::{
     Poseidon2AirBuilder, Poseidon2AirBuilderForConfig, Poseidon2AirWrapperInner,
-    Poseidon2Preprocessor, Poseidon2Prover, Poseidon2ProverD2, poseidon2_preprocessor,
-    poseidon2_verifier_air_from_config,
+    Poseidon2Preprocessor, Poseidon2Prover, Poseidon2ProverD2, Poseidon2SharedPreprocessor,
+    poseidon2_preprocessor, poseidon2_verifier_air_from_config,
 };
 pub use recompose::{RecomposeAirBuilder, RecomposePreprocessor, RecomposeProver};
 pub use statement::{StatementAirBuilder, StatementPreprocessor, StatementProver};
@@ -1389,6 +1389,10 @@ pub enum BatchStarkProverError {
     #[error("missing table prover for non-primitive op `{0:?}`")]
     MissingTableProver(NpoTypeId),
 
+    /// More than one physical table claims the same logical source trace.
+    #[error("ambiguous physical table ownership for non-primitive op `{0:?}`")]
+    DuplicateTableSource(NpoTypeId),
+
     /// Proof metadata failed structural validation before verification.
     #[error("invalid proof metadata: {0}")]
     InvalidMetadata(#[from] ProofMetadataError),
@@ -2013,6 +2017,15 @@ where
             .map(|(i, p)| (p.op_type(), i))
             .collect();
 
+        let mut source_owner = BTreeMap::new();
+        for (index, prover) in self.non_primitive_provers.iter().enumerate() {
+            for source in prover.source_op_types() {
+                if source_owner.insert(source.clone(), index).is_some() {
+                    return Err(BatchStarkProverError::DuplicateTableSource(source));
+                }
+            }
+        }
+
         // Build matrices and AIRs per table.
         let packing = &self.table_packing;
         // IMPORTANT: this per-table resolution (getter + `unwrap_or(global_min_height)`) must
@@ -2117,7 +2130,7 @@ where
             if trace.rows() == 0 {
                 continue;
             }
-            if !prover_index_by_type.contains_key(op_type) {
+            if !source_owner.contains_key(op_type) {
                 return Err(BatchStarkProverError::MissingTableProver(op_type.clone()));
             }
         }

@@ -18,7 +18,8 @@ use p3_circuit_prover::config::StarkField;
 use p3_circuit_prover::field_params::ExtractBinomialW;
 use p3_circuit_prover::{
     ConstraintProfile, Poseidon1Preprocessor, Poseidon1Prover, Poseidon1ProverD2,
-    Poseidon2Preprocessor, Poseidon2Prover, Poseidon2ProverD2, RecomposePreprocessor, TableProver,
+    Poseidon2Preprocessor, Poseidon2Prover, Poseidon2ProverD2, Poseidon2SharedPreprocessor,
+    RecomposePreprocessor, TableProver,
 };
 use p3_commit::Pcs;
 use p3_field::extension::BinomiallyExtendable;
@@ -445,6 +446,17 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
     /// A base-field (`D == 1`) challenger has no dedicated table — the compact D=1 layout binds
     /// its sponge capacity on the shared table already — so only the shared entry is returned.
     fn poseidon2_challenger_shape_configs(&self, config: Poseidon2Config) -> Vec<Poseidon2Config> {
+        let shape = config.without_challenger_role();
+        if matches!(
+            shape,
+            Poseidon2Config::BABY_BEAR_D4_W16
+                | Poseidon2Config::BABY_BEAR_D4_W24
+                | Poseidon2Config::KOALA_BEAR_D4_W16
+                | Poseidon2Config::KOALA_BEAR_D4_W24
+                | Poseidon2Config::GOLDILOCKS_D2_W8
+        ) {
+            return vec![shape.for_shared_challenger_table()];
+        }
         let mut configs = Vec::new();
         if config.d() < 2 {
             return vec![config];
@@ -452,6 +464,21 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
         configs.push(config.for_challenger());
         if self.shares_challenger_perm_table {
             configs.push(config);
+        }
+        configs
+    }
+
+    fn poseidon2_legacy_challenger_shape_configs(
+        &self,
+        config: Poseidon2Config,
+    ) -> Vec<Poseidon2Config> {
+        let mut configs = Vec::new();
+        if config.d() < 2 {
+            return vec![config.without_challenger_role()];
+        }
+        configs.push(config.without_challenger_role().for_challenger());
+        if self.shares_challenger_perm_table {
+            configs.push(config.without_challenger_role());
         }
         configs
     }
@@ -483,10 +510,12 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
         table_degree: usize,
     ) -> Vec<Poseidon2Config> {
         let challenger = self.challenger_perm_config.as_poseidon2().copied();
+        let challenger_shape = challenger.map(Poseidon2Config::without_challenger_role);
         let mut configs = Vec::new();
         for &config in &self.extra_poseidon2_table_configs {
             if config.d() == table_degree
                 && Some(config) != challenger
+                && Some(config.without_challenger_role()) != challenger_shape
                 && !configs.contains(&config)
             {
                 configs.push(config);
@@ -1292,6 +1321,7 @@ where
     Val<SC>: PrimeField64 + BinomiallyExtendable<2> + StarkField,
     Poseidon1Preprocessor: NpoPreprocessor<Val<SC>>,
     Poseidon2Preprocessor: NpoPreprocessor<Val<SC>>,
+    Poseidon2SharedPreprocessor: NpoPreprocessor<Val<SC>>,
     RecomposePreprocessor: NpoPreprocessor<Val<SC>>,
     SC::Challenge: BasedVectorSpace<Val<SC>>
         + From<Val<SC>>
@@ -1321,7 +1351,15 @@ where
     ) -> Result<(), VerificationError> {
         let provers = match prev {
             RecursionInput::BatchStark { proof, .. } => {
-                PcsRecursionBackend::<SC, A, 2>::non_primitive_provers(self, proof.ext_degree)
+                PcsRecursionBackend::<SC, A, 2>::non_primitive_input_provers(
+                    self,
+                    proof.ext_degree,
+                    &proof
+                        .non_primitives
+                        .iter()
+                        .map(|entry| entry.op_type.clone())
+                        .collect::<Vec<_>>(),
+                )
             }
             _ => Vec::new(),
         };
@@ -1355,7 +1393,15 @@ where
         preflight_fri_input(config, &self.0.limits, prev)?;
         let provers = match prev {
             RecursionInput::BatchStark { proof, .. } => {
-                PcsRecursionBackend::<SC, A, 2>::non_primitive_provers(self, proof.ext_degree)
+                PcsRecursionBackend::<SC, A, 2>::non_primitive_input_provers(
+                    self,
+                    proof.ext_degree,
+                    &proof
+                        .non_primitives
+                        .iter()
+                        .map(|entry| entry.op_type.clone())
+                        .collect::<Vec<_>>(),
+                )
             }
             _ => Vec::new(),
         };
@@ -1375,7 +1421,15 @@ where
         // against the AIRs the circuit was built for.
         let provers = match prev {
             RecursionInput::BatchStark { proof, .. } => {
-                PcsRecursionBackend::<SC, A, 2>::non_primitive_provers(self, proof.ext_degree)
+                PcsRecursionBackend::<SC, A, 2>::non_primitive_input_provers(
+                    self,
+                    proof.ext_degree,
+                    &proof
+                        .non_primitives
+                        .iter()
+                        .map(|entry| entry.op_type.clone())
+                        .collect::<Vec<_>>(),
+                )
             }
             _ => Vec::new(),
         };
@@ -1414,7 +1468,23 @@ where
         let perm_prep = if self.0.challenger_perm_config.as_poseidon1().is_some() {
             poseidon1_preprocessor::<Val<SC>>()
         } else {
-            poseidon2_preprocessor::<Val<SC>>()
+            let configs: Vec<Poseidon2Config> = self
+                .0
+                .challenger_perm_config
+                .as_poseidon2()
+                .map(|config| {
+                    self.0
+                        .poseidon2_challenger_shape_configs(*config)
+                        .into_iter()
+                        .filter(|config| config.is_shared())
+                        .collect()
+                })
+                .unwrap_or_default();
+            if configs.is_empty() {
+                poseidon2_preprocessor::<Val<SC>>()
+            } else {
+                Box::new(Poseidon2SharedPreprocessor::new(configs))
+            }
         };
         vec![perm_prep, recompose_preprocessor::<Val<SC>>(true)]
     }
@@ -1464,6 +1534,52 @@ where
         }
     }
 
+    fn non_primitive_input_provers(
+        &self,
+        ext_degree: usize,
+        op_types: &[p3_circuit::ops::NpoTypeId],
+    ) -> Vec<Box<dyn TableProver<SC>>> {
+        let Some(challenger) = self.0.challenger_perm_config.as_poseidon2().copied() else {
+            return <Self as PcsRecursionBackend<SC, A, 2>>::non_primitive_provers(
+                self, ext_degree,
+            );
+        };
+        let legacy_ids: Vec<_> = self
+            .0
+            .poseidon2_legacy_challenger_shape_configs(challenger)
+            .into_iter()
+            .map(p3_circuit::ops::NpoTypeId::poseidon2_perm)
+            .collect();
+        if !legacy_ids.iter().any(|id| op_types.contains(id)) {
+            return <Self as PcsRecursionBackend<SC, A, 2>>::non_primitive_provers(
+                self, ext_degree,
+            );
+        }
+        if ext_degree != 2 {
+            return <Self as PcsRecursionBackend<SC, A, 2>>::non_primitive_provers(
+                self, ext_degree,
+            );
+        }
+        let mut provers = Vec::new();
+        for config in self.0.poseidon2_legacy_challenger_shape_configs(challenger) {
+            provers.push(
+                Box::new(Poseidon2ProverD2::new(config, ConstraintProfile::Standard))
+                    as Box<dyn TableProver<SC>>,
+            );
+        }
+        for config in self.0.extra_poseidon2_table_configs_for_degree(2) {
+            provers.push(Box::new(Poseidon2ProverD2::new(
+                config,
+                ConstraintProfile::Standard,
+            )));
+        }
+        provers.push(Box::new(RecomposeProver::<2>::new(
+            self.0.recompose_lanes,
+            true,
+        )));
+        provers
+    }
+
     fn non_primitive_air_builders(&self) -> Vec<Box<dyn NpoAirBuilder<SC, 2>>> {
         let mut builders = self.0.challenger_perm_config.as_poseidon1().map_or_else(
             || {
@@ -1494,6 +1610,7 @@ where
     Val<SC>: PrimeField64 + BinomiallyExtendable<4> + StarkField,
     Poseidon1Preprocessor: NpoPreprocessor<Val<SC>>,
     Poseidon2Preprocessor: NpoPreprocessor<Val<SC>>,
+    Poseidon2SharedPreprocessor: NpoPreprocessor<Val<SC>>,
     RecomposePreprocessor: NpoPreprocessor<Val<SC>>,
     SC::Challenge: BasedVectorSpace<Val<SC>>
         + From<Val<SC>>
@@ -1523,7 +1640,15 @@ where
     ) -> Result<(), VerificationError> {
         let provers = match prev {
             RecursionInput::BatchStark { proof, .. } => {
-                PcsRecursionBackend::<SC, A, 4>::non_primitive_provers(self, proof.ext_degree)
+                PcsRecursionBackend::<SC, A, 4>::non_primitive_input_provers(
+                    self,
+                    proof.ext_degree,
+                    &proof
+                        .non_primitives
+                        .iter()
+                        .map(|entry| entry.op_type.clone())
+                        .collect::<Vec<_>>(),
+                )
             }
             _ => Vec::new(),
         };
@@ -1557,7 +1682,15 @@ where
         preflight_fri_input(config, &self.0.limits, prev)?;
         let provers = match prev {
             RecursionInput::BatchStark { proof, .. } => {
-                PcsRecursionBackend::<SC, A, 4>::non_primitive_provers(self, proof.ext_degree)
+                PcsRecursionBackend::<SC, A, 4>::non_primitive_input_provers(
+                    self,
+                    proof.ext_degree,
+                    &proof
+                        .non_primitives
+                        .iter()
+                        .map(|entry| entry.op_type.clone())
+                        .collect::<Vec<_>>(),
+                )
             }
             _ => Vec::new(),
         };
@@ -1577,7 +1710,15 @@ where
         // against the AIRs the circuit was built for.
         let provers = match prev {
             RecursionInput::BatchStark { proof, .. } => {
-                PcsRecursionBackend::<SC, A, 4>::non_primitive_provers(self, proof.ext_degree)
+                PcsRecursionBackend::<SC, A, 4>::non_primitive_input_provers(
+                    self,
+                    proof.ext_degree,
+                    &proof
+                        .non_primitives
+                        .iter()
+                        .map(|entry| entry.op_type.clone())
+                        .collect::<Vec<_>>(),
+                )
             }
             _ => Vec::new(),
         };
@@ -1616,7 +1757,23 @@ where
         let perm_prep = if self.0.challenger_perm_config.as_poseidon1().is_some() {
             poseidon1_preprocessor::<Val<SC>>()
         } else {
-            poseidon2_preprocessor::<Val<SC>>()
+            let configs: Vec<Poseidon2Config> = self
+                .0
+                .challenger_perm_config
+                .as_poseidon2()
+                .map(|config| {
+                    self.0
+                        .poseidon2_challenger_shape_configs(*config)
+                        .into_iter()
+                        .filter(|config| config.is_shared())
+                        .collect()
+                })
+                .unwrap_or_default();
+            if configs.is_empty() {
+                poseidon2_preprocessor::<Val<SC>>()
+            } else {
+                Box::new(Poseidon2SharedPreprocessor::new(configs))
+            }
         };
         vec![perm_prep, recompose_preprocessor::<Val<SC>>(true)]
     }
@@ -1666,6 +1823,47 @@ where
         }
     }
 
+    fn non_primitive_input_provers(
+        &self,
+        ext_degree: usize,
+        op_types: &[p3_circuit::ops::NpoTypeId],
+    ) -> Vec<Box<dyn TableProver<SC>>> {
+        let Some(challenger) = self.0.challenger_perm_config.as_poseidon2().copied() else {
+            return <Self as PcsRecursionBackend<SC, A, 4>>::non_primitive_provers(
+                self, ext_degree,
+            );
+        };
+        let legacy_ids: Vec<_> = self
+            .0
+            .poseidon2_legacy_challenger_shape_configs(challenger)
+            .into_iter()
+            .map(p3_circuit::ops::NpoTypeId::poseidon2_perm)
+            .collect();
+        if ext_degree != 4 || !legacy_ids.iter().any(|id| op_types.contains(id)) {
+            return <Self as PcsRecursionBackend<SC, A, 4>>::non_primitive_provers(
+                self, ext_degree,
+            );
+        }
+        let mut provers: Vec<Box<dyn TableProver<SC>>> = Vec::new();
+        for config in self.0.poseidon2_legacy_challenger_shape_configs(challenger) {
+            provers.push(Box::new(Poseidon2Prover::new(
+                config,
+                ConstraintProfile::Standard,
+            )));
+        }
+        for config in self.0.extra_poseidon2_table_configs_for_degree(4) {
+            provers.push(Box::new(Poseidon2Prover::new(
+                config,
+                ConstraintProfile::Standard,
+            )));
+        }
+        provers.push(Box::new(RecomposeProver::<4>::new(
+            self.0.recompose_lanes,
+            true,
+        )));
+        provers
+    }
+
     fn non_primitive_air_builders(&self) -> Vec<Box<dyn NpoAirBuilder<SC, 4>>> {
         let mut builders = self.0.challenger_perm_config.as_poseidon1().map_or_else(
             || {
@@ -1696,6 +1894,7 @@ where
     Val<SC>: PrimeField64 + StarkField + BinomiallyExtendable<4>,
     Poseidon1Preprocessor: NpoPreprocessor<Val<SC>>,
     Poseidon2Preprocessor: NpoPreprocessor<Val<SC>>,
+    Poseidon2SharedPreprocessor: NpoPreprocessor<Val<SC>>,
     RecomposePreprocessor: NpoPreprocessor<Val<SC>>,
     SC::Challenge: BasedVectorSpace<Val<SC>>
         + From<Val<SC>>
@@ -1725,7 +1924,15 @@ where
     ) -> Result<(), VerificationError> {
         let provers = match prev {
             RecursionInput::BatchStark { proof, .. } => {
-                PcsRecursionBackend::<SC, A, 5>::non_primitive_provers(self, proof.ext_degree)
+                PcsRecursionBackend::<SC, A, 5>::non_primitive_input_provers(
+                    self,
+                    proof.ext_degree,
+                    &proof
+                        .non_primitives
+                        .iter()
+                        .map(|entry| entry.op_type.clone())
+                        .collect::<Vec<_>>(),
+                )
             }
             _ => Vec::new(),
         };
@@ -1759,7 +1966,15 @@ where
         preflight_fri_input(config, &self.0.limits, prev)?;
         let provers = match prev {
             RecursionInput::BatchStark { proof, .. } => {
-                PcsRecursionBackend::<SC, A, 5>::non_primitive_provers(self, proof.ext_degree)
+                PcsRecursionBackend::<SC, A, 5>::non_primitive_input_provers(
+                    self,
+                    proof.ext_degree,
+                    &proof
+                        .non_primitives
+                        .iter()
+                        .map(|entry| entry.op_type.clone())
+                        .collect::<Vec<_>>(),
+                )
             }
             _ => Vec::new(),
         };
@@ -1779,7 +1994,15 @@ where
         // against the AIRs the circuit was built for.
         let provers = match prev {
             RecursionInput::BatchStark { proof, .. } => {
-                PcsRecursionBackend::<SC, A, 5>::non_primitive_provers(self, proof.ext_degree)
+                PcsRecursionBackend::<SC, A, 5>::non_primitive_input_provers(
+                    self,
+                    proof.ext_degree,
+                    &proof
+                        .non_primitives
+                        .iter()
+                        .map(|entry| entry.op_type.clone())
+                        .collect::<Vec<_>>(),
+                )
             }
             _ => Vec::new(),
         };
@@ -1818,7 +2041,23 @@ where
         let perm_prep = if self.0.challenger_perm_config.as_poseidon1().is_some() {
             poseidon1_preprocessor::<Val<SC>>()
         } else {
-            poseidon2_preprocessor::<Val<SC>>()
+            let configs: Vec<Poseidon2Config> = self
+                .0
+                .challenger_perm_config
+                .as_poseidon2()
+                .map(|config| {
+                    self.0
+                        .poseidon2_challenger_shape_configs(*config)
+                        .into_iter()
+                        .filter(|config| config.is_shared())
+                        .collect()
+                })
+                .unwrap_or_default();
+            if configs.is_empty() {
+                poseidon2_preprocessor::<Val<SC>>()
+            } else {
+                Box::new(Poseidon2SharedPreprocessor::new(configs))
+            }
         };
         vec![perm_prep, recompose_preprocessor::<Val<SC>>(true)]
     }
@@ -1881,6 +2120,7 @@ macro_rules! impl_prepared_fri_backend {
             Val<SC>: PrimeField64 + StarkField + $binomial_bound,
             Poseidon1Preprocessor: NpoPreprocessor<Val<SC>>,
             Poseidon2Preprocessor: NpoPreprocessor<Val<SC>>,
+            Poseidon2SharedPreprocessor: NpoPreprocessor<Val<SC>>,
             RecomposePreprocessor: NpoPreprocessor<Val<SC>>,
             SC::Challenge: BasedVectorSpace<Val<SC>>
                 + From<Val<SC>>
@@ -1917,9 +2157,14 @@ macro_rules! impl_prepared_fri_backend {
                 preflight_fri_input(config, &self.0.limits, source)?;
                 let provers = match source {
                     RecursionInput::BatchStark { proof, .. } => {
-                        PcsRecursionBackend::<SC, A, $d>::non_primitive_provers(
+                        PcsRecursionBackend::<SC, A, $d>::non_primitive_input_provers(
                             self,
                             proof.ext_degree,
+                            &proof
+                                .non_primitives
+                                .iter()
+                                .map(|entry| entry.op_type.clone())
+                                .collect::<Vec<_>>(),
                         )
                     }
                     _ => Vec::new(),
@@ -1962,6 +2207,7 @@ macro_rules! impl_prepared_fri_backend {
             Val<SC>: PrimeField64 + StarkField + $binomial_bound,
             Poseidon1Preprocessor: NpoPreprocessor<Val<SC>>,
             Poseidon2Preprocessor: NpoPreprocessor<Val<SC>>,
+            Poseidon2SharedPreprocessor: NpoPreprocessor<Val<SC>>,
             RecomposePreprocessor: NpoPreprocessor<Val<SC>>,
             SC::Challenge: BasedVectorSpace<Val<SC>>
                 + From<Val<SC>>

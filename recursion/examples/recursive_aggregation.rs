@@ -531,10 +531,20 @@ macro_rules! define_field_module_aggregation_quintic {
                                     report_proof_size(&out.0);
                                     let mut verifier = BatchStarkProver::new(config.clone())
                                         .with_table_packing(prof.table_packing.clone());
-                                    if $poseidon2_config.d() >= 2 {
-                                        verifier.$register_fn::<D>($poseidon2_config.for_challenger());
+                                    if $poseidon2_config.d() >= 2
+                                        && !$poseidon2_config.is_arity4_shape()
+                                    {
+                                        verifier.$register_fn::<D>(
+                                            $poseidon2_config.for_shared_challenger_table(),
+                                        );
+                                    } else {
+                                        if $poseidon2_config.d() >= 2 {
+                                            verifier.$register_fn::<D>(
+                                                $poseidon2_config.for_challenger(),
+                                            );
+                                        }
+                                        verifier.$register_fn::<D>($poseidon2_config);
                                     }
-                                    verifier.$register_fn::<D>($poseidon2_config);
                                     if !disable_recompose_npo {
                                         verifier.register_recompose_table::<D>(true);
                                     }
@@ -605,10 +615,20 @@ macro_rules! define_field_module_aggregation_quintic {
                                 report_proof_size(&out.0);
                                 let mut verifier = BatchStarkProver::new(agg_config.clone())
                                     .with_table_packing(agg_params.table_packing.clone());
-                                if $poseidon2_config.d() >= 2 {
-                                    verifier.$register_fn::<D>($poseidon2_config.for_challenger());
+                                if $poseidon2_config.d() >= 2
+                                    && !$poseidon2_config.is_arity4_shape()
+                                {
+                                    verifier.$register_fn::<D>(
+                                        $poseidon2_config.for_shared_challenger_table(),
+                                    );
+                                } else {
+                                    if $poseidon2_config.d() >= 2 {
+                                        verifier.$register_fn::<D>(
+                                            $poseidon2_config.for_challenger(),
+                                        );
+                                    }
+                                    verifier.$register_fn::<D>($poseidon2_config);
                                 }
-                                verifier.$register_fn::<D>($poseidon2_config);
                                 if !disable_recompose_npo {
                                     verifier.register_recompose_table::<D>(true);
                                 }
@@ -888,10 +908,20 @@ macro_rules! define_field_module {
                                     report_proof_size(&out.0);
                                     let mut verifier = BatchStarkProver::new(config.clone())
                                         .with_table_packing(prof.table_packing.clone());
-                                    if $poseidon2_config.d() >= 2 {
-                                        verifier.$register_fn::<$d>($poseidon2_config.for_challenger());
+                                    if $poseidon2_config.d() >= 2
+                                        && !$poseidon2_config.is_arity4_shape()
+                                    {
+                                        verifier.$register_fn::<$d>(
+                                            $poseidon2_config.for_shared_challenger_table(),
+                                        );
+                                    } else {
+                                        if $poseidon2_config.d() >= 2 {
+                                            verifier.$register_fn::<$d>(
+                                                $poseidon2_config.for_challenger(),
+                                            );
+                                        }
+                                        verifier.$register_fn::<$d>($poseidon2_config);
                                     }
-                                    verifier.$register_fn::<$d>($poseidon2_config);
                                     if !disable_recompose_npo {
                                         verifier.register_recompose_table::<$d>(true);
                                     }
@@ -962,10 +992,20 @@ macro_rules! define_field_module {
                                 report_proof_size(&out.0);
                                 let mut verifier = BatchStarkProver::new(agg_config.clone())
                                     .with_table_packing(agg_params.table_packing.clone());
-                                if $poseidon2_config.d() >= 2 {
-                                    verifier.$register_fn::<$d>($poseidon2_config.for_challenger());
+                                if $poseidon2_config.d() >= 2
+                                    && !$poseidon2_config.is_arity4_shape()
+                                {
+                                    verifier.$register_fn::<$d>(
+                                        $poseidon2_config.for_shared_challenger_table(),
+                                    );
+                                } else {
+                                    if $poseidon2_config.d() >= 2 {
+                                        verifier.$register_fn::<$d>(
+                                            $poseidon2_config.for_challenger(),
+                                        );
+                                    }
+                                    verifier.$register_fn::<$d>($poseidon2_config);
                                 }
-                                verifier.$register_fn::<$d>($poseidon2_config);
                                 if !disable_recompose_npo {
                                     verifier.register_recompose_table::<$d>(true);
                                 }

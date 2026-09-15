@@ -93,6 +93,10 @@ impl Poseidon2Params for GoldilocksD2Width8 {
 /// - Optional MMCS index accumulator
 #[derive(Debug, Clone)]
 pub struct Poseidon2CircuitRow<F> {
+    /// Host-only source role used when same-shape challenger and MMCS rows share a table.
+    /// This is never exposed as a witness column; the prover derives it from the trusted trace
+    /// source when materializing a combined table.
+    pub challenger: bool,
     /// Control: If 1, row begins a new independent Poseidon chain.
     pub new_start: bool,
     /// Control: 0 → normal sponge/Challenger mode, 1 → Merkle-path mode.
@@ -255,6 +259,7 @@ fn generate_poseidon2_trace_for<
             })?;
 
             Ok(Poseidon2CircuitRow {
+                challenger: op_type.as_str().ends_with("_challenger"),
                 new_start: row.new_start,
                 merkle_path: row.merkle_path,
                 mmcs_bit: row.mmcs_bit,

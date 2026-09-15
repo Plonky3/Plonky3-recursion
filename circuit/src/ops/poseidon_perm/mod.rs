@@ -318,6 +318,7 @@ impl PoseidonVariant for Poseidon2Variant {
 
     fn build_row<F: Field>(fields: PoseidonRowFields<F>) -> Self::Row<F> {
         Poseidon2CircuitRow {
+            challenger: false,
             new_start: fields.new_start,
             merkle_path: fields.merkle_path,
             mmcs_bit: fields.mmcs_bit,

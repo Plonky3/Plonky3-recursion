@@ -493,8 +493,9 @@ mod arity4_output {
     ) {
         let mut verifier =
             BatchStarkProver::new(config).with_table_packing(params.table_packing.clone());
-        verifier.register_poseidon2_table::<4>(Poseidon2Config::KOALA_BEAR_D4_W16.for_challenger());
-        verifier.register_poseidon2_table::<4>(Poseidon2Config::KOALA_BEAR_D4_W16);
+        verifier.register_poseidon2_table::<4>(
+            Poseidon2Config::KOALA_BEAR_D4_W16.for_shared_challenger_table(),
+        );
         verifier.register_poseidon2_table::<4>(Poseidon2Config::KOALA_BEAR_D4_W32);
         verifier.register_recompose_table::<4>(true);
         verifier
@@ -727,8 +728,9 @@ mod hiding_fri {
     ) {
         let mut verifier =
             BatchStarkProver::new(config).with_table_packing(params.table_packing.clone());
-        verifier.register_poseidon2_table::<4>(Poseidon2Config::KOALA_BEAR_D4_W16.for_challenger());
-        verifier.register_poseidon2_table::<4>(Poseidon2Config::KOALA_BEAR_D4_W16);
+        verifier.register_poseidon2_table::<4>(
+            Poseidon2Config::KOALA_BEAR_D4_W16.for_shared_challenger_table(),
+        );
         verifier.register_recompose_table::<4>(true);
         verifier
             .verify_all_tables::<Challenge>(&output.0)
@@ -1252,8 +1254,9 @@ fn verify_output(
 ) {
     let mut verifier =
         BatchStarkProver::new(config).with_table_packing(params.table_packing.clone());
-    verifier.register_poseidon2_table::<4>(Poseidon2Config::KOALA_BEAR_D4_W16.for_challenger());
-    verifier.register_poseidon2_table::<4>(Poseidon2Config::KOALA_BEAR_D4_W16);
+    verifier.register_poseidon2_table::<4>(
+        Poseidon2Config::KOALA_BEAR_D4_W16.for_shared_challenger_table(),
+    );
     verifier.register_recompose_table::<4>(true);
     verifier
         .verify_all_tables::<Challenge>(&output.0)

@@ -347,6 +347,12 @@ where
     /// Operation type for this prover.
     fn op_type(&self) -> NpoTypeId;
 
+    /// Logical trace identities consumed when materializing this physical table.
+    /// Ordinary provers consume only their own identity; combined provers override this list.
+    fn source_op_types(&self) -> Vec<NpoTypeId> {
+        alloc::vec![self.op_type()]
+    }
+
     /// Number of operations packed into a single AIR row.
     ///
     /// Defaults to 1. Override to pack multiple operations per row, reducing the trace

@@ -43,7 +43,7 @@ const POSEIDON1_CONFIGS: [Poseidon1Config; 12] = [
     Poseidon1Config::GOLDILOCKS_D2_W8.for_challenger(),
 ];
 
-const POSEIDON2_CONFIGS: [Poseidon2Config; 16] = [
+const POSEIDON2_CONFIGS: [Poseidon2Config; 21] = [
     Poseidon2Config::BABY_BEAR_D1_W16,
     Poseidon2Config::BABY_BEAR_D4_W16,
     Poseidon2Config::BABY_BEAR_D4_W24,
@@ -60,6 +60,11 @@ const POSEIDON2_CONFIGS: [Poseidon2Config; 16] = [
     Poseidon2Config::KOALA_BEAR_D4_W16.for_challenger(),
     Poseidon2Config::KOALA_BEAR_D4_W24.for_challenger(),
     Poseidon2Config::GOLDILOCKS_D2_W8.for_challenger(),
+    Poseidon2Config::BABY_BEAR_D4_W16.for_shared_challenger_table(),
+    Poseidon2Config::BABY_BEAR_D4_W24.for_shared_challenger_table(),
+    Poseidon2Config::KOALA_BEAR_D4_W16.for_shared_challenger_table(),
+    Poseidon2Config::KOALA_BEAR_D4_W24.for_shared_challenger_table(),
+    Poseidon2Config::GOLDILOCKS_D2_W8.for_shared_challenger_table(),
 ];
 
 impl BuiltinNpoV1 {
@@ -102,7 +107,7 @@ impl BuiltinNpoV1 {
             0x0100..=0x010b => Ok(Self::Poseidon1(
                 POSEIDON1_CONFIGS[usize::from(tag - 0x0100)],
             )),
-            0x0200..=0x020f => Ok(Self::Poseidon2(
+            0x0200..=0x0214 => Ok(Self::Poseidon2(
                 POSEIDON2_CONFIGS[usize::from(tag - 0x0200)],
             )),
             _ => Err(ArtifactError::UnsupportedBuiltinAir(tag)),

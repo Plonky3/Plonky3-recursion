@@ -123,6 +123,10 @@ pub struct Poseidon2CircuitAir<
     /// compression or caller-supplied permutation rows, a `new_start` row's capacity is
     /// whatever the caller fed it, so the constraint is not emitted.
     challenger: bool,
+
+    /// Whether this table combines challenger and ordinary rows. In this mode the trusted
+    /// challenger-start selector is carried in the second capacity Merkle-selector slot.
+    shared: bool,
 }
 
 impl<
@@ -160,6 +164,7 @@ impl<
             preprocessed: self.preprocessed.clone(),
             min_height: self.min_height,
             challenger: self.challenger,
+            shared: self.shared,
         }
     }
 }
@@ -217,6 +222,7 @@ impl<
             preprocessed: Vec::new(),
             min_height: 1,
             challenger: false,
+            shared: false,
         }
     }
 
@@ -228,6 +234,12 @@ impl<
     /// challenger duplex.
     pub const fn with_challenger_role(mut self, challenger: bool) -> Self {
         self.challenger = challenger;
+        self
+    }
+
+    /// Declare that this table combines challenger and ordinary rows.
+    pub const fn with_shared_role(mut self, shared: bool) -> Self {
+        self.shared = shared;
         self
     }
 
@@ -268,6 +280,7 @@ impl<
             preprocessed,
             min_height: 1,
             challenger: false,
+            shared: false,
         }
     }
 
@@ -732,6 +745,28 @@ pub fn extract_preprocessed_from_operations<
     poseidon_extension_degree: usize,
     challenger: bool,
 ) -> Vec<F> {
+    extract_preprocessed_from_operations_with_role::<IL, OL, F, OF>(
+        operations,
+        d,
+        poseidon_extension_degree,
+        challenger,
+        false,
+    )
+}
+
+/// Build preprocessed Poseidon2 columns while selecting the shared-table role encoding.
+pub fn extract_preprocessed_from_operations_with_role<
+    const IL: usize,
+    const OL: usize,
+    F: Field,
+    OF: Field,
+>(
+    operations: &[Poseidon2CircuitRow<OF>],
+    d: u32,
+    poseidon_extension_degree: usize,
+    challenger: bool,
+    shared: bool,
+) -> Vec<F> {
     let row_width = poseidon2_preprocessed_row_width_for_air(poseidon_extension_degree, IL, OL);
     let mut preprocessed = Vec::with_capacity(operations.len() * row_width);
 
@@ -791,12 +826,17 @@ pub fn extract_preprocessed_from_operations<
             preprocessed.push(F::from_bool(*new_start));
             preprocessed.push(F::from_bool(*merkle_path));
         } else {
+            let row_challenger = if shared {
+                operation.challenger
+            } else {
+                challenger
+            };
             let row = Poseidon2PreprocessedRow::<IL, OL, F> {
                 input_limbs: core::array::from_fn(|i| {
                     let ctl = in_ctl[i];
                     // Challenger rows feed every limb over CTL, so the capacity chain selector
                     // cannot be inferred from an empty slot; it is on for every continuation row.
-                    let capacity_chain = challenger && i >= OL;
+                    let capacity_chain = row_challenger && i >= OL;
                     Poseidon2PrepInputLimb {
                         idx: F::from_u32(input_indices[i] * d),
                         in_ctl: F::from_bool(ctl),
@@ -810,7 +850,9 @@ pub fn extract_preprocessed_from_operations<
                         // arity-4 layout, where `eval_arity4` reads this very slot as a live
                         // placement gate: `Poseidon2Config::for_challenger` rejects the arity-4
                         // shape, so no arity-4 table ever carries a tag.
-                        merkle_chain_sel: if *merkle_path {
+                        merkle_chain_sel: if shared && i == OL + 1 {
+                            F::from_bool(row_challenger && *new_start)
+                        } else if *merkle_path {
                             F::from_bool(!*new_start && !ctl)
                         } else if i == OL {
                             F::from_u8(*absorb_len as u8)
@@ -1126,7 +1168,14 @@ pub(crate) fn eval<
         // and state both come from the `next` row, so the constraint is row-local and carries no
         // transition selector: the wrap-around window reaches row 0, the row that opens the
         // table's first chain and has no predecessor to chain against.
-        if air.challenger {
+        if air.shared {
+            eval_challenger_chain_start::<AB, D, WIDTH_EXT, RATE_EXT>(
+                builder,
+                next_prep.input_limbs[RATE_EXT + 1].merkle_chain_sel,
+                next_in,
+                cap_tag,
+            );
+        } else if air.challenger {
             eval_challenger_chain_start::<AB, D, WIDTH_EXT, RATE_EXT>(
                 builder,
                 next_prep.new_start,
@@ -1249,7 +1298,7 @@ fn eval_challenger_chain_start<
     const RATE_EXT: usize,
 >(
     builder: &mut AB,
-    new_start: AB::Var,
+    start_gate: AB::Var,
     next_in: &[AB::Var],
     cap_tag: AB::Var,
 ) {
@@ -1261,7 +1310,7 @@ fn eval_challenger_chain_start<
                 AB::Expr::ZERO
             };
             builder
-                .when(new_start)
+                .when(start_gate)
                 .assert_zero(next_in[limb * D + d] - tag);
         }
     }
@@ -2063,6 +2112,7 @@ mod test {
         let mut padded = rows;
         if padded.len() < target_rows {
             let filler = Poseidon2CircuitRow {
+                challenger: false,
                 new_start: true,
                 merkle_path: false,
                 mmcs_bit: false,
@@ -2117,6 +2167,7 @@ mod test {
         // The squeeze overwrites nothing, so it chains the full state forward with no tag.
         let row =
             |new_start: bool, input_values: [Val; WIDTH], absorb_len: usize| Poseidon2CircuitRow {
+                challenger: true,
                 new_start,
                 merkle_path: false,
                 mmcs_bit: false,
@@ -2148,6 +2199,7 @@ mod test {
         let target_rows = 1usize << 5;
         let mut padded = rows;
         let filler = Poseidon2CircuitRow {
+            challenger: false,
             new_start: true,
             merkle_path: false,
             mmcs_bit: false,
@@ -2173,6 +2225,72 @@ mod test {
         .with_challenger_role(challenger);
         let trace = air.generate_trace_rows(&padded, constants, 0);
         (air, trace)
+    }
+
+    /// Materialize one physical table containing a challenger stream followed by an ordinary
+    /// stream. The ordinary stream deliberately opens from a nonzero capacity; only its own
+    /// role metadata, not the row contents, permits that opening.
+    fn shared_air_and_trace(
+        rng: &mut SmallRng,
+        perm: &Poseidon2BabyBear<WIDTH>,
+        constants: &RoundConstants<Val, WIDTH, 4, 13>,
+    ) -> (
+        Poseidon2CircuitAirBabyBearD4Width16,
+        p3_matrix::dense::RowMajorMatrix<Val>,
+        Vec<Val>,
+    ) {
+        let mut rows = challenger_duplex_rows(rng, perm, Val::ZERO);
+        let mut ordinary = challenger_duplex_rows(rng, perm, Val::ONE);
+        for row in &mut ordinary {
+            row.challenger = false;
+            for ctl in &mut row.in_ctl {
+                *ctl = false;
+            }
+        }
+        // Turn the ordinary continuation into a genuine Merkle continuation. This exercises
+        // the shared-mode rule that its second capacity selector is zero even when legacy
+        // extraction would otherwise place a Merkle selector there.
+        let first_input: [Val; WIDTH] = ordinary[0]
+            .input_values
+            .clone()
+            .try_into()
+            .expect("fixed Poseidon2 width");
+        let first_output = perm.permute(first_input);
+        let mut merkle_input = [Val::ZERO; WIDTH];
+        merkle_input[..2 * 4].copy_from_slice(&first_output[..2 * 4]);
+        ordinary[1].input_values = merkle_input.to_vec();
+        ordinary[1].merkle_path = true;
+        ordinary[1].mmcs_ctl_enabled = true;
+        rows.extend(ordinary);
+
+        let target_rows = 1usize << 5;
+        let filler = Poseidon2CircuitRow {
+            challenger: false,
+            new_start: true,
+            merkle_path: false,
+            mmcs_bit: false,
+            mmcs_bit2: false,
+            mmcs_index_sum: Val::ZERO,
+            input_values: Val::zero_vec(WIDTH),
+            in_ctl: vec![false; POSEIDON2_LIMBS],
+            input_indices: vec![0; POSEIDON2_LIMBS],
+            out_ctl: vec![false; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
+            output_indices: vec![0; POSEIDON2_PUBLIC_OUTPUT_LIMBS],
+            mmcs_index_sum_idx: 0,
+            mmcs_ctl_enabled: false,
+            absorb_len: 0,
+        };
+        rows.resize(target_rows, filler);
+        let preprocessed = extract_preprocessed_from_operations_with_role::<4, 2, Val, Val>(
+            &rows, 4, 4, false, true,
+        );
+        let air = Poseidon2CircuitAirBabyBearD4Width16::new_with_preprocessed(
+            constants.clone(),
+            preprocessed.clone(),
+        )
+        .with_shared_role(true);
+        let trace = air.generate_trace_rows(&rows, constants, 0);
+        (air, trace, preprocessed)
     }
 
     #[test]
@@ -2207,6 +2325,40 @@ mod test {
     }
 
     #[test]
+    fn shared_table_accepts_mixed_roles_and_clears_ordinary_reserved_slot() {
+        let mut rng = SmallRng::seed_from_u64(17);
+        let (constants, perm) = make_constants_and_perm(&mut rng);
+        let (air, trace, preprocessed) = shared_air_and_trace(&mut rng, &perm, &constants);
+        assert_air_satisfies::<Val, EF, _>(&air, &trace);
+
+        // The second capacity selector is the trusted role gate in shared mode. It is set only
+        // on the first challenger row; both ordinary rows, including the continuation row, are
+        // explicitly zero.
+        let row_width = poseidon2_preprocessed_row_width_for_air(4, 4, 2);
+        let role_slot = (2 + 1) * 4 + 3;
+        assert_eq!(preprocessed[role_slot], Val::ONE);
+        assert_eq!(preprocessed[2 * row_width + role_slot], Val::ZERO);
+        assert_eq!(preprocessed[3 * row_width + role_slot], Val::ZERO);
+    }
+
+    #[test]
+    fn shared_table_rejects_ordinary_capacity_with_trusted_role_gate() {
+        let mut rng = SmallRng::seed_from_u64(18);
+        let (constants, perm) = make_constants_and_perm(&mut rng);
+        let (_air, trace, mut preprocessed) = shared_air_and_trace(&mut rng, &perm, &constants);
+        let row_width = poseidon2_preprocessed_row_width_for_air(4, 4, 2);
+        let role_slot = (2 + 1) * 4 + 3;
+        // Mark the ordinary opening as a challenger opening. Its nonzero capacity must then be
+        // rejected, demonstrating that the committed role slot is authoritative.
+        preprocessed[2 * row_width + role_slot] = Val::ONE;
+        let air =
+            Poseidon2CircuitAirBabyBearD4Width16::new_with_preprocessed(constants, preprocessed)
+                .with_shared_role(true);
+        assert_air_rejects::<Val, EF, _>(&air, &trace);
+        assert_eq!(row_width, 24);
+    }
+
+    #[test]
     fn satisfies_poseidon2_sponge() {
         let mut rng = SmallRng::seed_from_u64(1);
         let (constants, perm) = make_constants_and_perm(&mut rng);
@@ -2215,6 +2367,7 @@ mod test {
         let state_a: [Val; WIDTH] = core::array::from_fn(|_| rng.random());
         let output_a = perm.permute(state_a);
         let sponge_a = Poseidon2CircuitRow {
+            challenger: false,
             new_start: true,
             merkle_path: false,
             mmcs_bit: false,
@@ -2234,6 +2387,7 @@ mod test {
         let state_b = output_a;
         let output_b = perm.permute(state_b);
         let sponge_b = Poseidon2CircuitRow {
+            challenger: false,
             new_start: false,
             merkle_path: false,
             mmcs_bit: true,
@@ -2256,6 +2410,7 @@ mod test {
         state_c[0..2 * D].copy_from_slice(&output_b[0..2 * D]);
         let output_c = perm.permute(state_c);
         let sponge_c = Poseidon2CircuitRow {
+            challenger: false,
             new_start: false,
             merkle_path: true,
             mmcs_bit: false,
@@ -2274,6 +2429,7 @@ mod test {
         // Row D: sponge mode chaining from output_c.
         let state_d = output_c;
         let sponge_d = Poseidon2CircuitRow {
+            challenger: false,
             new_start: false,
             merkle_path: false,
             mmcs_bit: false,
@@ -2302,6 +2458,7 @@ mod test {
         let state_a: [Val; WIDTH] = core::array::from_fn(|_| rng.random());
         let output_a = perm.permute(state_a);
         let row_a = Poseidon2CircuitRow {
+            challenger: false,
             new_start: true,
             merkle_path: false,
             mmcs_bit: false,
@@ -2327,6 +2484,7 @@ mod test {
         state_b[3 * D..4 * D].copy_from_slice(&output_a[D..2 * D]);
         let output_b = perm.permute(state_b);
         let row_b = Poseidon2CircuitRow {
+            challenger: false,
             new_start: false,
             merkle_path: true,
             mmcs_bit: true,
@@ -2344,6 +2502,7 @@ mod test {
 
         // Row C: sponge chaining from output_b.
         let row_c = Poseidon2CircuitRow {
+            challenger: false,
             new_start: false,
             merkle_path: false,
             mmcs_bit: false,
@@ -2377,6 +2536,7 @@ mod test {
         let state_0: [Val; WIDTH] = core::array::from_fn(|_| rng.random());
         let output_0 = perm.permute(state_0);
         let row_0 = Poseidon2CircuitRow {
+            challenger: false,
             new_start: true,
             merkle_path: true,
             mmcs_bit: bits[0],
@@ -2398,6 +2558,7 @@ mod test {
         state_1[D..2 * D].copy_from_slice(&output_0[D..2 * D]);
         let output_1 = perm.permute(state_1);
         let row_1 = Poseidon2CircuitRow {
+            challenger: false,
             new_start: false,
             merkle_path: true,
             mmcs_bit: bits[1],
@@ -2421,6 +2582,7 @@ mod test {
         state_2[3 * D..4 * D].copy_from_slice(&output_1[D..2 * D]);
         let _output_2 = perm.permute(state_2);
         let row_2 = Poseidon2CircuitRow {
+            challenger: false,
             new_start: false,
             merkle_path: true,
             mmcs_bit: bits[2],
@@ -2474,6 +2636,7 @@ mod test {
                 .copy_from_slice(&prev_output[0..CAPACITY_EXT * D]);
             let output = perm.permute(state);
             let row = Poseidon2CircuitRow {
+                challenger: false,
                 new_start,
                 merkle_path: true,
                 mmcs_bit: pos & 1 == 1,
@@ -2495,6 +2658,7 @@ mod test {
         let state_0: [KbVal; W32] = core::array::from_fn(|_| rng.random());
         let output_0 = perm.permute(state_0);
         let row_0 = Poseidon2CircuitRow {
+            challenger: false,
             new_start: true,
             merkle_path: true,
             mmcs_bit: false,
@@ -2517,6 +2681,7 @@ mod test {
         let mut padded = vec![row_0, row_1, row_2];
         let target_rows = 1usize << 5;
         let filler = Poseidon2CircuitRow {
+            challenger: false,
             new_start: true,
             merkle_path: false,
             mmcs_bit: false,

@@ -70,6 +70,9 @@ pub struct PoseidonPrepInputLimb<T> {
     /// On sponge rows no limb carries a Merkle selector, so the first
     /// capacity limb's column instead holds the prefix-free duplex length
     /// tag that the sponge chain constraint adds to that limb.
+    ///
+    /// On combined Poseidon2 challenger/MMCS tables, the second capacity limb's slot is reserved
+    /// for the trusted challenger-start gate (`challenger && new_start`).
     pub merkle_chain_sel: T,
 }
 

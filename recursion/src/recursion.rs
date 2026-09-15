@@ -8,6 +8,7 @@ use alloc::vec::Vec;
 
 use p3_air::{SymbolicExpression, SymbolicExpressionExt};
 use p3_batch_stark::CommonData;
+use p3_circuit::ops::NpoTypeId;
 use p3_circuit::symbolic::ColumnsTargets;
 use p3_circuit::tables::Traces;
 use p3_circuit::{Circuit, CircuitBuilder, CircuitRunner, NonPrimitiveOpId};
@@ -257,6 +258,17 @@ where
     /// Default returns empty; backends that use NPOs in the circuit override this.
     fn non_primitive_provers(&self, _ext_degree: usize) -> Vec<Box<dyn TableProver<SC>>> {
         Vec::new()
+    }
+
+    /// Non-primitive provers selected for an input proof manifest. Built-in backends may accept
+    /// either their legacy separated manifest or the combined output manifest; custom backends
+    /// retain the output list by default.
+    fn non_primitive_input_provers(
+        &self,
+        ext_degree: usize,
+        _op_types: &[NpoTypeId],
+    ) -> Vec<Box<dyn TableProver<SC>>> {
+        self.non_primitive_provers(ext_degree)
     }
 
     /// AIR builders for NPOs from preprocessed data.

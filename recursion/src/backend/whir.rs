@@ -8,14 +8,14 @@ use alloc::{format, vec};
 use p3_circuit::{CircuitBuilder, CircuitRunner, NonPrimitiveOpId};
 use p3_circuit_prover::batch_stark_prover::{
     BatchStarkProof, CircuitVerifier, RecomposeAirBuilder, RecomposeProver,
-    lookups_for_circuit_table_air, poseidon2_air_builders_for_configs, poseidon2_preprocessor,
-    recompose_preprocessor,
+    lookups_for_circuit_table_air, poseidon2_air_builders_for_configs, recompose_preprocessor,
 };
 use p3_circuit_prover::common::{NpoAirBuilder, NpoPreprocessor};
 use p3_circuit_prover::config::StarkField;
 use p3_circuit_prover::field_params::ExtractBinomialW;
 use p3_circuit_prover::{
-    ConstraintProfile, Poseidon2Preprocessor, Poseidon2Prover, RecomposePreprocessor, TableProver,
+    ConstraintProfile, Poseidon2Preprocessor, Poseidon2Prover, Poseidon2SharedPreprocessor,
+    RecomposePreprocessor, TableProver,
 };
 use p3_commit::Pcs;
 use p3_field::extension::BinomiallyExtendable;
@@ -440,10 +440,29 @@ where
 /// A base-field (`D == 1`) challenger has no dedicated table — the compact D=1 layout binds its
 /// sponge capacity on the shared table already — so only the shared entry is returned.
 fn poseidon2_challenger_shape_configs(config: Poseidon2Config) -> Vec<Poseidon2Config> {
+    let shape = config.without_challenger_role();
+    if matches!(
+        shape,
+        Poseidon2Config::BABY_BEAR_D4_W16
+            | Poseidon2Config::BABY_BEAR_D4_W24
+            | Poseidon2Config::KOALA_BEAR_D4_W16
+            | Poseidon2Config::KOALA_BEAR_D4_W24
+            | Poseidon2Config::GOLDILOCKS_D2_W8
+    ) {
+        return vec![shape.for_shared_challenger_table()];
+    }
     if config.d() < 2 {
         return vec![config];
     }
     vec![config.for_challenger(), config]
+}
+
+fn poseidon2_legacy_challenger_shape_configs(config: Poseidon2Config) -> Vec<Poseidon2Config> {
+    let shape = config.without_challenger_role();
+    if shape.d() < 2 {
+        return vec![shape];
+    }
+    vec![shape.for_challenger(), shape]
 }
 
 fn plan_whir_batch<SC, A>(
@@ -1020,6 +1039,7 @@ where
         + ExtractBinomialW<Val<SC>>
         + TwoAdicField,
     Poseidon2Preprocessor: NpoPreprocessor<Val<SC>>,
+    Poseidon2SharedPreprocessor: NpoPreprocessor<Val<SC>>,
     RecomposePreprocessor: NpoPreprocessor<Val<SC>>,
     <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain: Clone,
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
@@ -1043,7 +1063,15 @@ where
     ) -> Result<(), VerificationError> {
         let provers = match prev {
             RecursionInput::BatchStark { proof, .. } => {
-                PcsRecursionBackend::<SC, A, 4>::non_primitive_provers(self, proof.ext_degree)
+                PcsRecursionBackend::<SC, A, 4>::non_primitive_input_provers(
+                    self,
+                    proof.ext_degree,
+                    &proof
+                        .non_primitives
+                        .iter()
+                        .map(|entry| entry.op_type.clone())
+                        .collect::<Vec<_>>(),
+                )
             }
             RecursionInput::UniStark { .. } => Vec::new(),
         };
@@ -1075,7 +1103,15 @@ where
         preflight_whir_input(config, &self.0.limits, prev)?;
         let provers = match prev {
             RecursionInput::BatchStark { proof, .. } => {
-                PcsRecursionBackend::<SC, A, 4>::non_primitive_provers(self, proof.ext_degree)
+                PcsRecursionBackend::<SC, A, 4>::non_primitive_input_provers(
+                    self,
+                    proof.ext_degree,
+                    &proof
+                        .non_primitives
+                        .iter()
+                        .map(|entry| entry.op_type.clone())
+                        .collect::<Vec<_>>(),
+                )
             }
             RecursionInput::UniStark { .. } => Vec::new(),
         };
@@ -1184,7 +1220,15 @@ where
         // against the AIRs the circuit was built for.
         let provers = match prev {
             RecursionInput::BatchStark { proof, .. } => {
-                PcsRecursionBackend::<SC, A, 4>::non_primitive_provers(self, proof.ext_degree)
+                PcsRecursionBackend::<SC, A, 4>::non_primitive_input_provers(
+                    self,
+                    proof.ext_degree,
+                    &proof
+                        .non_primitives
+                        .iter()
+                        .map(|entry| entry.op_type.clone())
+                        .collect::<Vec<_>>(),
+                )
             }
             RecursionInput::UniStark { .. } => Vec::new(),
         };
@@ -1216,8 +1260,20 @@ where
     }
 
     fn non_primitive_preprocessors(&self) -> Vec<Box<dyn NpoPreprocessor<Val<SC>>>> {
+        let challenger = self
+            .0
+            .challenger_perm_config
+            .as_poseidon2()
+            .copied()
+            .unwrap_or_else(|| {
+                panic!("WhirRecursionBackend requires a Poseidon2 challenger config")
+            });
+        let shared_configs = poseidon2_challenger_shape_configs(challenger)
+            .into_iter()
+            .filter(|config| config.is_shared())
+            .collect();
         vec![
-            poseidon2_preprocessor::<Val<SC>>(),
+            Box::new(Poseidon2SharedPreprocessor::new(shared_configs)),
             recompose_preprocessor::<Val<SC>>(true),
         ]
     }
@@ -1244,6 +1300,39 @@ where
         } else {
             Vec::new()
         }
+    }
+
+    fn non_primitive_input_provers(
+        &self,
+        ext_degree: usize,
+        op_types: &[p3_circuit::ops::NpoTypeId],
+    ) -> Vec<Box<dyn TableProver<SC>>> {
+        let challenger = self
+            .0
+            .challenger_perm_config
+            .as_poseidon2()
+            .copied()
+            .unwrap_or_else(|| {
+                panic!("WhirRecursionBackend requires a Poseidon2 challenger config")
+            });
+        let legacy_ids: Vec<_> = poseidon2_legacy_challenger_shape_configs(challenger)
+            .into_iter()
+            .map(p3_circuit::ops::NpoTypeId::poseidon2_perm)
+            .collect();
+        if ext_degree != 4 || !legacy_ids.iter().any(|id| op_types.contains(id)) {
+            return <Self as PcsRecursionBackend<SC, A, 4>>::non_primitive_provers(
+                self, ext_degree,
+            );
+        }
+        let mut provers: Vec<Box<dyn TableProver<SC>>> = Vec::new();
+        for config in poseidon2_legacy_challenger_shape_configs(challenger) {
+            provers.push(Box::new(Poseidon2Prover::new(
+                config,
+                ConstraintProfile::Standard,
+            )));
+        }
+        provers.push(Box::new(RecomposeProver::<4>::new(1, true)));
+        provers
     }
 
     fn non_primitive_air_builders(&self) -> Vec<Box<dyn NpoAirBuilder<SC, 4>>> {
@@ -1281,6 +1370,7 @@ where
         + ExtractBinomialW<Val<SC>>
         + TwoAdicField,
     Poseidon2Preprocessor: NpoPreprocessor<Val<SC>>,
+    Poseidon2SharedPreprocessor: NpoPreprocessor<Val<SC>>,
     RecomposePreprocessor: NpoPreprocessor<Val<SC>>,
     <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain: Clone,
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
@@ -1311,7 +1401,15 @@ where
         preflight_whir_input(config, &self.0.limits, source)?;
         let provers = match source {
             RecursionInput::BatchStark { proof, .. } => {
-                PcsRecursionBackend::<SC, A, 4>::non_primitive_provers(self, proof.ext_degree)
+                PcsRecursionBackend::<SC, A, 4>::non_primitive_input_provers(
+                    self,
+                    proof.ext_degree,
+                    &proof
+                        .non_primitives
+                        .iter()
+                        .map(|entry| entry.op_type.clone())
+                        .collect::<Vec<_>>(),
+                )
             }
             RecursionInput::UniStark { .. } => Vec::new(),
         };
@@ -1356,6 +1454,7 @@ where
         + ExtractBinomialW<Val<SC>>
         + TwoAdicField,
     Poseidon2Preprocessor: NpoPreprocessor<Val<SC>>,
+    Poseidon2SharedPreprocessor: NpoPreprocessor<Val<SC>>,
     RecomposePreprocessor: NpoPreprocessor<Val<SC>>,
     <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain: Clone,
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:

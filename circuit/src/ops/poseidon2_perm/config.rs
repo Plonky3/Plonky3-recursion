@@ -56,6 +56,9 @@ pub struct Poseidon2Config {
     /// Rows of the same permutation shape used for MMCS and compression live on the table
     /// keyed by the same configuration with this flag clear.
     challenger: bool,
+    /// Whether this is the physical table shared by challenger and MMCS rows.
+    #[serde(default)]
+    shared: bool,
 }
 
 impl Poseidon2Config {
@@ -68,6 +71,7 @@ impl Poseidon2Config {
         sbox_registers: 1,
         half_full_rounds: 4,
         challenger: false,
+        shared: false,
         partial_rounds: 13,
     };
 
@@ -80,6 +84,7 @@ impl Poseidon2Config {
         sbox_registers: 1,
         half_full_rounds: 4,
         challenger: false,
+        shared: false,
         partial_rounds: 13,
     };
 
@@ -92,6 +97,7 @@ impl Poseidon2Config {
         sbox_registers: 1,
         half_full_rounds: 4,
         challenger: false,
+        shared: false,
         partial_rounds: 21,
     };
 
@@ -107,6 +113,7 @@ impl Poseidon2Config {
         sbox_registers: 1,
         half_full_rounds: 4,
         challenger: false,
+        shared: false,
         partial_rounds: 30,
     };
 
@@ -119,6 +126,7 @@ impl Poseidon2Config {
         sbox_registers: 0,
         half_full_rounds: 4,
         challenger: false,
+        shared: false,
         partial_rounds: 20,
     };
 
@@ -131,6 +139,7 @@ impl Poseidon2Config {
         sbox_registers: 0,
         half_full_rounds: 4,
         challenger: false,
+        shared: false,
         partial_rounds: 20,
     };
 
@@ -143,6 +152,7 @@ impl Poseidon2Config {
         sbox_registers: 0,
         half_full_rounds: 4,
         challenger: false,
+        shared: false,
         partial_rounds: 23,
     };
 
@@ -155,6 +165,7 @@ impl Poseidon2Config {
         sbox_registers: 1,
         half_full_rounds: 4,
         challenger: false,
+        shared: false,
         partial_rounds: 22,
     };
 
@@ -170,6 +181,7 @@ impl Poseidon2Config {
         sbox_registers: 0,
         half_full_rounds: 4,
         challenger: false,
+        shared: false,
         partial_rounds: 31,
     };
 
@@ -185,6 +197,7 @@ impl Poseidon2Config {
         sbox_registers: 0,
         half_full_rounds: 4,
         challenger: false,
+        shared: false,
         partial_rounds: 31,
     };
 
@@ -200,6 +213,7 @@ impl Poseidon2Config {
         sbox_registers: 1,
         half_full_rounds: 4,
         challenger: false,
+        shared: false,
         partial_rounds: 22,
     };
 
@@ -235,6 +249,7 @@ impl Poseidon2Config {
         );
         Self {
             challenger: true,
+            shared: false,
             ..self
         }
     }
@@ -243,8 +258,49 @@ impl Poseidon2Config {
     pub const fn without_challenger_role(self) -> Self {
         Self {
             challenger: false,
+            shared: false,
             ..self
         }
+    }
+
+    /// The physical table that combines the challenger's and ordinary rows.
+    pub const fn for_shared_challenger_table(self) -> Self {
+        assert!(
+            self.d >= 2,
+            "shared challenger tables require extension limbs"
+        );
+        assert!(
+            !self.is_arity4_shape(),
+            "arity-4 tables cannot share challenger rows"
+        );
+        Self {
+            challenger: false,
+            shared: true,
+            ..self
+        }
+    }
+
+    /// Strip the physical shared-table marker while retaining geometry.
+    pub const fn without_shared_role(self) -> Self {
+        Self {
+            shared: false,
+            ..self
+        }
+    }
+
+    /// Whether this identity denotes the shared challenger/MMCS table.
+    pub const fn is_shared(self) -> bool {
+        self.shared
+    }
+
+    /// Ordered logical sources consumed by a shared physical table.
+    pub fn source_configs(self) -> Vec<Self> {
+        assert!(
+            self.shared,
+            "source_configs is only valid for a shared table"
+        );
+        let shape = self.without_shared_role();
+        vec![shape.for_challenger(), shape]
     }
 
     /// Whether this configuration keys the challenger's own permutation table.
@@ -463,6 +519,24 @@ impl Poseidon2Config {
     /// The format is `{field}_d{d}_w{width}`, matching the legacy enum variant
     /// names so serialized `NpoTypeId` keys remain stable.
     pub const fn variant_name(self) -> &'static str {
+        if self.shared {
+            return match self.field_id {
+                Poseidon2FieldId::BabyBear => match (self.d, self.width) {
+                    (4, 16) => "baby_bear_d4_w16_shared",
+                    (4, 24) => "baby_bear_d4_w24_shared",
+                    _ => panic!("unknown BabyBear Poseidon2 shared config"),
+                },
+                Poseidon2FieldId::KoalaBear => match (self.d, self.width) {
+                    (4, 16) => "koala_bear_d4_w16_shared",
+                    (4, 24) => "koala_bear_d4_w24_shared",
+                    _ => panic!("unknown KoalaBear Poseidon2 shared config"),
+                },
+                Poseidon2FieldId::Goldilocks => match (self.d, self.width) {
+                    (2, 8) => "goldilocks_d2_w8_shared",
+                    _ => panic!("unknown Goldilocks Poseidon2 shared config"),
+                },
+            };
+        }
         if self.challenger {
             return match self.field_id {
                 Poseidon2FieldId::BabyBear => match (self.d, self.width) {
@@ -524,6 +598,15 @@ impl Poseidon2Config {
             "koala_bear_d4_w16_challenger" => Some(Self::KOALA_BEAR_D4_W16.for_challenger()),
             "koala_bear_d4_w24_challenger" => Some(Self::KOALA_BEAR_D4_W24.for_challenger()),
             "goldilocks_d2_w8_challenger" => Some(Self::GOLDILOCKS_D2_W8.for_challenger()),
+            "baby_bear_d4_w16_shared" => Some(Self::BABY_BEAR_D4_W16.for_shared_challenger_table()),
+            "baby_bear_d4_w24_shared" => Some(Self::BABY_BEAR_D4_W24.for_shared_challenger_table()),
+            "koala_bear_d4_w16_shared" => {
+                Some(Self::KOALA_BEAR_D4_W16.for_shared_challenger_table())
+            }
+            "koala_bear_d4_w24_shared" => {
+                Some(Self::KOALA_BEAR_D4_W24.for_shared_challenger_table())
+            }
+            "goldilocks_d2_w8_shared" => Some(Self::GOLDILOCKS_D2_W8.for_shared_challenger_table()),
             _ => None,
         }
     }
@@ -561,6 +644,25 @@ mod tests {
         // width_ext=4, rate_ext=2
         assert!(cfg.validate_io_counts(4 + 2, 2, false).is_ok()); // inputs=6, outputs=rate
         assert!(cfg.validate_io_counts(6, 4, true).is_ok()); // outputs=width
+    }
+
+    #[test]
+    fn combined_shape_has_distinct_stable_identity() {
+        let cfg = Poseidon2Config::KOALA_BEAR_D4_W16.for_shared_challenger_table();
+        assert_eq!(cfg.variant_name(), "koala_bear_d4_w16_shared");
+        assert_eq!(
+            Poseidon2Config::from_variant_name(cfg.variant_name()),
+            Some(cfg)
+        );
+        assert_eq!(
+            cfg.source_configs(),
+            vec![
+                Poseidon2Config::KOALA_BEAR_D4_W16.for_challenger(),
+                Poseidon2Config::KOALA_BEAR_D4_W16,
+            ]
+        );
+        assert!(!Poseidon2Config::from_variant_name("baby_bear_d1_w16_shared").is_some());
+        assert!(!Poseidon2Config::from_variant_name("koala_bear_d4_w32_shared").is_some());
     }
 
     #[test]

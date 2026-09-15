@@ -1659,6 +1659,7 @@ mod tests {
             F::from_u64(4),
         ];
         let row = Poseidon2CircuitRow {
+            challenger: false,
             new_start: true,
             merkle_path: false,
             mmcs_bit: false,
@@ -1699,6 +1700,7 @@ mod tests {
             F::from_u64(8),
         ];
         let row = Poseidon2CircuitRow {
+            challenger: false,
             new_start: true,
             merkle_path: true,
             mmcs_bit: false,

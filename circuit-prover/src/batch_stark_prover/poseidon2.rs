@@ -28,6 +28,7 @@ use p3_koala_bear::{GenericPoseidon2LinearLayersKoalaBear, KoalaBear};
 use p3_lookup::folder::{ProverConstraintFolderWithLookups, VerifierConstraintFolderWithLookups};
 use p3_lookup::symbolic::InteractionSymbolicBuilder;
 use p3_matrix::dense::RowMajorMatrix;
+use p3_poseidon_circuit_cols::poseidon_preprocessed_row_width_for_air;
 use p3_poseidon2_circuit_air::*;
 use p3_uni_stark::{
     ProverConstraintFolder, SymbolicExpression, SymbolicExpressionExt, VerifierConstraintFolder,
@@ -174,6 +175,53 @@ impl Poseidon2AirWrapperInner {
             }
             Self::GoldilocksD2Width16(air) => {
                 Self::GoldilocksD2Width16(Box::new((*air).with_challenger_role(challenger)))
+            }
+        }
+    }
+
+    fn with_shared_role(self, shared: bool) -> Self {
+        match self {
+            Self::BabyBearD1Width16Bus1(air) => {
+                Self::BabyBearD1Width16Bus1(Box::new(air.with_shared_role(shared)))
+            }
+            Self::BabyBearD1Width16Bus5(air) => {
+                Self::BabyBearD1Width16Bus5(Box::new(air.with_shared_role(shared)))
+            }
+            Self::BabyBearD4Width16(air) => {
+                Self::BabyBearD4Width16(Box::new(air.with_shared_role(shared)))
+            }
+            Self::BabyBearD4Width24(air) => {
+                Self::BabyBearD4Width24(Box::new(air.with_shared_role(shared)))
+            }
+            Self::BabyBearD4Width32(air) => {
+                Self::BabyBearD4Width32(Box::new(air.with_shared_role(shared)))
+            }
+            Self::KoalaBearD1Width16Bus1(air) => {
+                Self::KoalaBearD1Width16Bus1(Box::new(air.with_shared_role(shared)))
+            }
+            Self::KoalaBearD1Width16Bus5(air) => {
+                Self::KoalaBearD1Width16Bus5(Box::new(air.with_shared_role(shared)))
+            }
+            Self::KoalaBearD4Width16(air) => {
+                Self::KoalaBearD4Width16(Box::new(air.with_shared_role(shared)))
+            }
+            Self::KoalaBearD4Width24(air) => {
+                Self::KoalaBearD4Width24(Box::new(air.with_shared_role(shared)))
+            }
+            Self::KoalaBearD1Width32Bus1(air) => {
+                Self::KoalaBearD1Width32Bus1(Box::new(air.with_shared_role(shared)))
+            }
+            Self::KoalaBearD1Width32Bus5(air) => {
+                Self::KoalaBearD1Width32Bus5(Box::new(air.with_shared_role(shared)))
+            }
+            Self::KoalaBearD4Width32(air) => {
+                Self::KoalaBearD4Width32(Box::new(air.with_shared_role(shared)))
+            }
+            Self::GoldilocksD2Width8(air) => {
+                Self::GoldilocksD2Width8(Box::new(air.with_shared_role(shared)))
+            }
+            Self::GoldilocksD2Width16(air) => {
+                Self::GoldilocksD2Width16(Box::new(air.with_shared_role(shared)))
             }
         }
     }
@@ -1015,7 +1063,9 @@ impl Poseidon2Prover {
             // consts above can be constructed, so this is unreachable.
             _ => unreachable!("unsupported Poseidon2Config"),
         };
-        inner.with_challenger_role(config.is_challenger())
+        inner
+            .with_challenger_role(config.is_challenger())
+            .with_shared_role(config.is_shared())
     }
 
     fn air_wrapper_for_config_with_preprocessed<F: Field>(
@@ -1138,7 +1188,11 @@ impl Poseidon2Prover {
             ),
             _ => unreachable!("unsupported Poseidon2Config"),
         };
-        Some(inner.with_challenger_role(config.is_challenger()))
+        Some(
+            inner
+                .with_challenger_role(config.is_challenger())
+                .with_shared_role(config.is_shared()),
+        )
     }
 
     pub fn wrapper_from_config_with_preprocessed<SC>(
@@ -1249,7 +1303,39 @@ impl Poseidon2Prover {
             Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
     {
         let op_type = NpoTypeId::poseidon2_perm(self.config);
-        let t = traces.non_primitive_trace::<Poseidon2Trace<Val<SC>>>(&op_type)?;
+        let owned_trace;
+        let t = if self.config.is_shared() {
+            let mut operations = Vec::new();
+            for source in self.config.source_configs() {
+                let source_id = NpoTypeId::poseidon2_perm(source);
+                let Some(source_trace) =
+                    traces.non_primitive_trace::<Poseidon2Trace<Val<SC>>>(&source_id)
+                else {
+                    continue;
+                };
+                if source_trace.operations.is_empty() {
+                    continue;
+                }
+                // Each independently generated stream must begin a chain. This is also the
+                // condition that keeps MMCS terminal multiplicities unchanged at the merge seam.
+                debug_assert!(source_trace.operations[0].new_start);
+                let challenger = source.is_challenger();
+                operations.extend(source_trace.operations.iter().cloned().map(|mut row| {
+                    row.challenger = challenger;
+                    row
+                }));
+            }
+            if operations.is_empty() {
+                return None;
+            }
+            owned_trace = Poseidon2Trace {
+                op_type: op_type.clone(),
+                operations,
+            };
+            &owned_trace
+        } else {
+            traces.non_primitive_trace::<Poseidon2Trace<Val<SC>>>(&op_type)?
+        };
 
         let rows = t.total_rows();
         if rows == 0 {
@@ -1288,6 +1374,7 @@ impl Poseidon2Prover {
         // row would leave non-zero capacity inputs and break compact D=1 constraints that assert
         // zero capacity on sponge `new_start` transitions.
         let pad_filler = Poseidon2CircuitRow {
+            challenger: false,
             new_start: true,
             merkle_path: false,
             mmcs_bit: false,
@@ -1309,12 +1396,14 @@ impl Poseidon2Prover {
             Poseidon2Config::BABY_BEAR_D1_W16 => {
                 let constants = BabyBearD1Width16::round_constants();
                 let wbus = poseidon_d1_witness_bus_dim(witness_ctl_scale)?;
-                let preprocessed = extract_preprocessed_from_operations::<16, 8, BabyBear, Val<SC>>(
-                    &t.operations,
-                    witness_ctl_scale,
-                    1,
-                    cfg.is_challenger(),
-                );
+                let preprocessed =
+                    extract_preprocessed_from_operations_with_role::<16, 8, BabyBear, Val<SC>>(
+                        &t.operations,
+                        witness_ctl_scale,
+                        1,
+                        cfg.is_challenger(),
+                        cfg.is_shared(),
+                    );
                 let (inner, matrix_f) = match wbus {
                     1 => {
                         let air = BabyBearD1Width16::default_air_with_preprocessed(
@@ -1355,12 +1444,14 @@ impl Poseidon2Prover {
             }
             Poseidon2Config::BABY_BEAR_D4_W16 => {
                 let constants = BabyBearD4Width16::round_constants();
-                let preprocessed = extract_preprocessed_from_operations::<4, 2, BabyBear, Val<SC>>(
-                    &t.operations,
-                    witness_ctl_scale,
-                    cfg.d(),
-                    cfg.is_challenger(),
-                );
+                let preprocessed =
+                    extract_preprocessed_from_operations_with_role::<4, 2, BabyBear, Val<SC>>(
+                        &t.operations,
+                        witness_ctl_scale,
+                        cfg.d(),
+                        cfg.is_challenger(),
+                        cfg.is_shared(),
+                    );
                 let air =
                     BabyBearD4Width16::default_air_with_preprocessed(preprocessed, min_height);
                 let ops: Vec<Poseidon2CircuitRow<BabyBear>> = unsafe { transmute(padded_ops) };
@@ -1376,12 +1467,14 @@ impl Poseidon2Prover {
             }
             Poseidon2Config::BABY_BEAR_D4_W24 => {
                 let constants = BabyBearD4Width24::round_constants();
-                let preprocessed = extract_preprocessed_from_operations::<6, 4, BabyBear, Val<SC>>(
-                    &t.operations,
-                    witness_ctl_scale,
-                    cfg.d(),
-                    cfg.is_challenger(),
-                );
+                let preprocessed =
+                    extract_preprocessed_from_operations_with_role::<6, 4, BabyBear, Val<SC>>(
+                        &t.operations,
+                        witness_ctl_scale,
+                        cfg.d(),
+                        cfg.is_challenger(),
+                        cfg.is_shared(),
+                    );
                 let air =
                     BabyBearD4Width24::default_air_with_preprocessed(preprocessed, min_height);
                 let ops: Vec<Poseidon2CircuitRow<BabyBear>> = unsafe { transmute(padded_ops) };
@@ -1397,12 +1490,14 @@ impl Poseidon2Prover {
             }
             Poseidon2Config::BABY_BEAR_D4_W32 => {
                 let constants = BabyBearD4Width32::round_constants();
-                let preprocessed = extract_preprocessed_from_operations::<8, 6, BabyBear, Val<SC>>(
-                    &t.operations,
-                    witness_ctl_scale,
-                    cfg.d(),
-                    cfg.is_challenger(),
-                );
+                let preprocessed =
+                    extract_preprocessed_from_operations_with_role::<8, 6, BabyBear, Val<SC>>(
+                        &t.operations,
+                        witness_ctl_scale,
+                        cfg.d(),
+                        cfg.is_challenger(),
+                        cfg.is_shared(),
+                    );
                 let air =
                     BabyBearD4Width32::default_air_with_preprocessed(preprocessed, min_height);
                 let ops: Vec<Poseidon2CircuitRow<BabyBear>> = unsafe { transmute(padded_ops) };
@@ -1419,12 +1514,14 @@ impl Poseidon2Prover {
             Poseidon2Config::KOALA_BEAR_D1_W16 => {
                 let constants = KoalaBearD1Width16::round_constants();
                 let wbus = poseidon_d1_witness_bus_dim(witness_ctl_scale)?;
-                let preprocessed = extract_preprocessed_from_operations::<16, 8, KoalaBear, Val<SC>>(
-                    &t.operations,
-                    witness_ctl_scale,
-                    1,
-                    cfg.is_challenger(),
-                );
+                let preprocessed =
+                    extract_preprocessed_from_operations_with_role::<16, 8, KoalaBear, Val<SC>>(
+                        &t.operations,
+                        witness_ctl_scale,
+                        1,
+                        cfg.is_challenger(),
+                        cfg.is_shared(),
+                    );
                 let (inner, matrix_f) = match wbus {
                     1 => {
                         let air = KoalaBearD1Width16::default_air_with_preprocessed(
@@ -1465,12 +1562,14 @@ impl Poseidon2Prover {
             }
             Poseidon2Config::KOALA_BEAR_D4_W16 => {
                 let constants = KoalaBearD4Width16::round_constants();
-                let preprocessed = extract_preprocessed_from_operations::<4, 2, KoalaBear, Val<SC>>(
-                    &t.operations,
-                    witness_ctl_scale,
-                    cfg.d(),
-                    cfg.is_challenger(),
-                );
+                let preprocessed =
+                    extract_preprocessed_from_operations_with_role::<4, 2, KoalaBear, Val<SC>>(
+                        &t.operations,
+                        witness_ctl_scale,
+                        cfg.d(),
+                        cfg.is_challenger(),
+                        cfg.is_shared(),
+                    );
                 let air =
                     KoalaBearD4Width16::default_air_with_preprocessed(preprocessed, min_height);
                 let ops: Vec<Poseidon2CircuitRow<KoalaBear>> = unsafe { transmute(padded_ops) };
@@ -1486,12 +1585,14 @@ impl Poseidon2Prover {
             }
             Poseidon2Config::KOALA_BEAR_D4_W24 => {
                 let constants = KoalaBearD4Width24::round_constants();
-                let preprocessed = extract_preprocessed_from_operations::<6, 4, KoalaBear, Val<SC>>(
-                    &t.operations,
-                    witness_ctl_scale,
-                    cfg.d(),
-                    cfg.is_challenger(),
-                );
+                let preprocessed =
+                    extract_preprocessed_from_operations_with_role::<6, 4, KoalaBear, Val<SC>>(
+                        &t.operations,
+                        witness_ctl_scale,
+                        cfg.d(),
+                        cfg.is_challenger(),
+                        cfg.is_shared(),
+                    );
                 let air =
                     KoalaBearD4Width24::default_air_with_preprocessed(preprocessed, min_height);
                 let ops: Vec<Poseidon2CircuitRow<KoalaBear>> = unsafe { transmute(padded_ops) };
@@ -1508,12 +1609,14 @@ impl Poseidon2Prover {
             Poseidon2Config::KOALA_BEAR_D1_W32 => {
                 let constants = KoalaBearD1Width32::round_constants();
                 let wbus = poseidon_d1_witness_bus_dim(witness_ctl_scale)?;
-                let preprocessed = extract_preprocessed_from_operations::<32, 24, KoalaBear, Val<SC>>(
-                    &t.operations,
-                    witness_ctl_scale,
-                    1,
-                    cfg.is_challenger(),
-                );
+                let preprocessed =
+                    extract_preprocessed_from_operations_with_role::<32, 24, KoalaBear, Val<SC>>(
+                        &t.operations,
+                        witness_ctl_scale,
+                        1,
+                        cfg.is_challenger(),
+                        cfg.is_shared(),
+                    );
                 let (inner, matrix_f) = match wbus {
                     1 => {
                         let air = KoalaBearD1Width32::default_air_with_preprocessed(
@@ -1554,12 +1657,14 @@ impl Poseidon2Prover {
             }
             Poseidon2Config::KOALA_BEAR_D4_W32 => {
                 let constants = KoalaBearD4Width32::round_constants();
-                let preprocessed = extract_preprocessed_from_operations::<8, 6, KoalaBear, Val<SC>>(
-                    &t.operations,
-                    witness_ctl_scale,
-                    cfg.d(),
-                    cfg.is_challenger(),
-                );
+                let preprocessed =
+                    extract_preprocessed_from_operations_with_role::<8, 6, KoalaBear, Val<SC>>(
+                        &t.operations,
+                        witness_ctl_scale,
+                        cfg.d(),
+                        cfg.is_challenger(),
+                        cfg.is_shared(),
+                    );
                 let air =
                     KoalaBearD4Width32::default_air_with_preprocessed(preprocessed, min_height);
                 let ops: Vec<Poseidon2CircuitRow<KoalaBear>> = unsafe { transmute(padded_ops) };
@@ -1575,12 +1680,14 @@ impl Poseidon2Prover {
             }
             Poseidon2Config::GOLDILOCKS_D2_W8 => {
                 let constants = goldilocks_d2_width8_round_constants();
-                let preprocessed = extract_preprocessed_from_operations::<4, 2, Goldilocks, Val<SC>>(
-                    &t.operations,
-                    witness_ctl_scale,
-                    cfg.d(),
-                    cfg.is_challenger(),
-                );
+                let preprocessed =
+                    extract_preprocessed_from_operations_with_role::<4, 2, Goldilocks, Val<SC>>(
+                        &t.operations,
+                        witness_ctl_scale,
+                        cfg.d(),
+                        cfg.is_challenger(),
+                        cfg.is_shared(),
+                    );
                 let air =
                     goldilocks_d2_width8_default_air_with_preprocessed(preprocessed, min_height);
                 let ops: Vec<Poseidon2CircuitRow<Goldilocks>> = unsafe { transmute(padded_ops) };
@@ -1596,12 +1703,14 @@ impl Poseidon2Prover {
             }
             Poseidon2Config::GOLDILOCKS_D2_W16 => {
                 let constants = goldilocks_d2_width16_round_constants();
-                let preprocessed = extract_preprocessed_from_operations::<8, 6, Goldilocks, Val<SC>>(
-                    &t.operations,
-                    witness_ctl_scale,
-                    cfg.d(),
-                    cfg.is_challenger(),
-                );
+                let preprocessed =
+                    extract_preprocessed_from_operations_with_role::<8, 6, Goldilocks, Val<SC>>(
+                        &t.operations,
+                        witness_ctl_scale,
+                        cfg.d(),
+                        cfg.is_challenger(),
+                        cfg.is_shared(),
+                    );
                 let air =
                     GoldilocksD2Width16::default_air_with_preprocessed(preprocessed, min_height);
                 let ops: Vec<Poseidon2CircuitRow<Goldilocks>> = unsafe { transmute(padded_ops) };
@@ -1638,6 +1747,18 @@ where
 {
     fn op_type(&self) -> NpoTypeId {
         self.poseidon2_op_type()
+    }
+
+    fn source_op_types(&self) -> Vec<NpoTypeId> {
+        if self.config.is_shared() {
+            self.config
+                .source_configs()
+                .into_iter()
+                .map(NpoTypeId::poseidon2_perm)
+                .collect()
+        } else {
+            vec![self.poseidon2_op_type()]
+        }
     }
 
     fn batch_instance_d1(
@@ -1759,6 +1880,19 @@ where
         self.0.poseidon2_op_type()
     }
 
+    fn source_op_types(&self) -> Vec<NpoTypeId> {
+        if self.0.config.is_shared() {
+            self.0
+                .config
+                .source_configs()
+                .into_iter()
+                .map(NpoTypeId::poseidon2_perm)
+                .collect()
+        } else {
+            vec![self.0.poseidon2_op_type()]
+        }
+    }
+
     fn batch_instance_d1(
         &self,
         _config: &SC,
@@ -1857,6 +1991,82 @@ where
 #[derive(Clone, Default)]
 pub struct Poseidon2Preprocessor;
 
+/// Configured preprocessor for physical shared challenger/MMCS tables. It deliberately runs the
+/// generic Poseidon2 pass first so ext-read and duplicate-output bookkeeping remains keyed by
+/// the original logical source identities before rows are concatenated.
+#[derive(Clone, Debug)]
+pub struct Poseidon2SharedPreprocessor {
+    configs: Vec<Poseidon2Config>,
+}
+
+impl Poseidon2SharedPreprocessor {
+    pub fn new(configs: Vec<Poseidon2Config>) -> Self {
+        Self { configs }
+    }
+}
+
+fn merge_shared_preprocessed<F: StarkField + PrimeField64>(
+    map: &mut NonPrimitivePreprocessedMap<F>,
+    config: Poseidon2Config,
+) -> Result<(), CircuitError> {
+    let sources = config.source_configs();
+    let width_ext = config.width_ext();
+    let rate_ext = config.rate_ext();
+    let row_width = poseidon_preprocessed_row_width_for_air(config.d(), width_ext, rate_ext);
+    let role_offset = (rate_ext + 1) * 4 + 3;
+    let new_start_offset = row_width - 2;
+    let mut merged = Vec::new();
+    let mut found = false;
+    for source in sources {
+        let source_id = NpoTypeId::poseidon2_perm(source);
+        let Some(mut values) = map.remove(&source_id) else {
+            continue;
+        };
+        found = true;
+        if !values.len().is_multiple_of(row_width) {
+            return Err(CircuitError::InvalidPreprocessedValues);
+        }
+        if values.get(new_start_offset).copied() != Some(F::ONE) {
+            return Err(CircuitError::InvalidPreprocessedValues);
+        }
+        for row in values.chunks_exact_mut(row_width) {
+            if source.is_challenger() {
+                row[role_offset] = if row[new_start_offset] == F::ONE {
+                    F::ONE
+                } else {
+                    F::ZERO
+                };
+            } else {
+                // The second capacity slot is reserved for the shared role gate; in particular,
+                // clear the redundant Merkle selector on every ordinary continuation row.
+                row[role_offset] = F::ZERO;
+            }
+        }
+        merged.extend(values);
+    }
+    if found {
+        map.insert(NpoTypeId::poseidon2_perm(config), merged);
+    }
+    Ok(())
+}
+
+fn shared_preprocess<F, ExtF, const D: usize>(
+    circuit: &dyn Any,
+    preprocessed: &mut dyn Any,
+    configs: &[Poseidon2Config],
+) -> Result<NonPrimitivePreprocessedMap<F>, CircuitError>
+where
+    F: StarkField + PrimeField64,
+    ExtF: ExtensionField<F>,
+    Poseidon2Preprocessor: NpoPreprocessor<F>,
+{
+    let mut map = Poseidon2Preprocessor.preprocess(circuit, preprocessed)?;
+    for &config in configs {
+        merge_shared_preprocessed(&mut map, config)?;
+    }
+    Ok(map)
+}
+
 impl NpoPreprocessor<BabyBear> for Poseidon2Preprocessor {
     fn preprocess(
         &self,
@@ -1927,6 +2137,85 @@ impl NpoPreprocessor<Goldilocks> for Poseidon2Preprocessor {
                 BinomialExtensionField<Goldilocks, 2>,
                 2,
             >(prep);
+        }
+        Ok(NonPrimitivePreprocessedMap::new())
+    }
+}
+
+impl NpoPreprocessor<BabyBear> for Poseidon2SharedPreprocessor {
+    fn preprocess(
+        &self,
+        circuit: &dyn Any,
+        preprocessed: &mut dyn Any,
+    ) -> Result<NonPrimitivePreprocessedMap<BabyBear>, CircuitError> {
+        if preprocessed.is::<PreprocessedColumns<BabyBear, 1>>() {
+            return shared_preprocess::<BabyBear, BabyBear, 1>(
+                circuit,
+                preprocessed,
+                &self.configs,
+            );
+        }
+        if preprocessed.is::<PreprocessedColumns<BinomialExtensionField<BabyBear, 4>, 4>>() {
+            return shared_preprocess::<BabyBear, BinomialExtensionField<BabyBear, 4>, 4>(
+                circuit,
+                preprocessed,
+                &self.configs,
+            );
+        }
+        Ok(NonPrimitivePreprocessedMap::new())
+    }
+}
+
+impl NpoPreprocessor<KoalaBear> for Poseidon2SharedPreprocessor {
+    fn preprocess(
+        &self,
+        circuit: &dyn Any,
+        preprocessed: &mut dyn Any,
+    ) -> Result<NonPrimitivePreprocessedMap<KoalaBear>, CircuitError> {
+        if preprocessed.is::<PreprocessedColumns<KoalaBear, 1>>() {
+            return shared_preprocess::<KoalaBear, KoalaBear, 1>(
+                circuit,
+                preprocessed,
+                &self.configs,
+            );
+        }
+        if preprocessed.is::<PreprocessedColumns<BinomialExtensionField<KoalaBear, 4>, 4>>() {
+            return shared_preprocess::<KoalaBear, BinomialExtensionField<KoalaBear, 4>, 4>(
+                circuit,
+                preprocessed,
+                &self.configs,
+            );
+        }
+        if preprocessed.is::<PreprocessedColumns<QuinticTrinomialExtensionField<KoalaBear>, 5>>() {
+            return shared_preprocess::<KoalaBear, QuinticTrinomialExtensionField<KoalaBear>, 5>(
+                circuit,
+                preprocessed,
+                &self.configs,
+            );
+        }
+        Ok(NonPrimitivePreprocessedMap::new())
+    }
+}
+
+impl NpoPreprocessor<Goldilocks> for Poseidon2SharedPreprocessor {
+    fn preprocess(
+        &self,
+        circuit: &dyn Any,
+        preprocessed: &mut dyn Any,
+    ) -> Result<NonPrimitivePreprocessedMap<Goldilocks>, CircuitError> {
+        if preprocessed.is::<PreprocessedColumns<Goldilocks, 1>>() {
+            return shared_preprocess::<Goldilocks, Goldilocks, 1>(
+                circuit,
+                preprocessed,
+                &self.configs,
+            );
+        }
+        if preprocessed.is::<PreprocessedColumns<BinomialExtensionField<Goldilocks, 2>, 2>>() {
+            return shared_preprocess::<Goldilocks, BinomialExtensionField<Goldilocks, 2>, 2>(
+                circuit,
+                preprocessed,
+                &self.configs,
+            );
         }
         Ok(NonPrimitivePreprocessedMap::new())
     }
@@ -2209,4 +2498,57 @@ where
     Poseidon2Preprocessor: NpoPreprocessor<F>,
 {
     Box::new(Poseidon2Preprocessor)
+}
+
+#[cfg(test)]
+mod shared_preprocessing_tests {
+    use super::*;
+
+    #[test]
+    fn shared_preprocessing_requires_each_source_to_start_a_chain() {
+        let config = Poseidon2Config::KOALA_BEAR_D4_W16.for_shared_challenger_table();
+        let width = poseidon_preprocessed_row_width_for_air(
+            config.d(),
+            config.width_ext(),
+            config.rate_ext(),
+        );
+        let challenger = config.source_configs()[0];
+        let mut malformed = vec![BabyBear::ZERO; width];
+        malformed[width - 2] = BabyBear::ZERO;
+        let mut map = NonPrimitivePreprocessedMap::new();
+        map.insert(NpoTypeId::poseidon2_perm(challenger), malformed);
+
+        assert!(matches!(
+            merge_shared_preprocessed(&mut map, config),
+            Err(CircuitError::InvalidPreprocessedValues)
+        ));
+    }
+
+    #[test]
+    fn shared_preprocessing_orders_sources_and_sets_only_challenger_gate() {
+        let config = Poseidon2Config::KOALA_BEAR_D4_W16.for_shared_challenger_table();
+        let width = poseidon_preprocessed_row_width_for_air(
+            config.d(),
+            config.width_ext(),
+            config.rate_ext(),
+        );
+        let role_offset = (config.rate_ext() + 1) * 4 + 3;
+        let challenger = config.source_configs()[0];
+        let ordinary = config.source_configs()[1];
+        let mut challenger_row = vec![BabyBear::ZERO; width];
+        challenger_row[width - 2] = BabyBear::ONE;
+        let mut ordinary_row = vec![BabyBear::ZERO; width];
+        ordinary_row[width - 2] = BabyBear::ONE;
+        let mut map = NonPrimitivePreprocessedMap::new();
+        map.insert(NpoTypeId::poseidon2_perm(ordinary), ordinary_row);
+        map.insert(NpoTypeId::poseidon2_perm(challenger), challenger_row);
+
+        merge_shared_preprocessed(&mut map, config).unwrap();
+        let merged = map
+            .get(&NpoTypeId::poseidon2_perm(config))
+            .expect("shared physical source");
+        assert_eq!(merged.len(), 2 * width);
+        assert_eq!(merged[role_offset], BabyBear::ONE);
+        assert_eq!(merged[width + role_offset], BabyBear::ZERO);
+    }
 }
