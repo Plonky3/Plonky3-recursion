@@ -779,9 +779,9 @@ mod tests {
         PortableArtifactExport, PortableVerifier,
     };
     use crate::builtin_config::{
-        BabyBearD4Poseidon2RandomCodewordConfig, FriConfigV1, KoalaBearD4Poseidon2BinaryConfig,
-        SuiteIdV1, baby_bear_d4_poseidon2_binary, baby_bear_d4_poseidon2_random_codeword,
-        koala_bear_d4_poseidon2_binary,
+        BabyBearD4Poseidon2RandomCodewordConfig, BuiltinConfigDescriptorV1, FriConfigV1,
+        KoalaBearD4Poseidon2BinaryConfig, SuiteIdV1, baby_bear_d4_poseidon2_binary,
+        baby_bear_d4_poseidon2_random_codeword, koala_bear_d4_poseidon2_binary,
     };
     use crate::prepared::test_common;
     use crate::{
@@ -1433,6 +1433,38 @@ mod tests {
         })
         .unwrap();
         common_reader.finish().unwrap();
+        let mut substituted_relation = relation.clone();
+        let mut replaced_shared_role = false;
+        for npo in &mut substituted_relation.non_primitives {
+            if let BuiltinNpoV1::Poseidon2(config) = npo.kind {
+                if config.is_shared() {
+                    npo.kind = BuiltinNpoV1::Poseidon2(config.without_shared_role());
+                    replaced_shared_role = true;
+                }
+            }
+        }
+        assert!(
+            replaced_shared_role,
+            "recursive artifact must contain a shared Poseidon2 NPO"
+        );
+        let substituted_bytes = encode_framed(
+            ArtifactKind::Verifier,
+            SuiteIdV1::KoalaBearD4Poseidon2BinaryFri.as_u16(),
+            limits.max_verifier_bytes,
+            |writer| {
+                writer.write_u16(
+                    SuiteIdV1::KoalaBearD4Poseidon2BinaryFri
+                        .spec()
+                        .protocol_revision,
+                )?;
+                write_config(writer, &BuiltinConfigDescriptorV1::Fri(descriptor))?;
+                write_relation(writer, &substituted_relation, FieldEncoding::u32())?;
+                write_common::<PortableConfig>(writer, &common, |writer, commitment| {
+                    write_merkle_cap::<KoalaBear, 8>(writer, commitment, FieldEncoding::u32())
+                })
+            },
+        )
+        .unwrap();
         let portable_native_verifier =
             CircuitVerifier::from_independently_trusted_builtin_artifact(
                 portable_config,
@@ -1440,6 +1472,17 @@ mod tests {
                 common,
             )
             .unwrap();
+        let verifier_bytes = portable_native_verifier
+            .encode_verifier_artifact(limits)
+            .unwrap();
+        assert!(matches!(
+            PortableVerifier::decode(
+                &substituted_bytes,
+                ExpectedVerifierArtifact::from_trusted_bytes(&verifier_bytes),
+                limits,
+            ),
+            Err(ArtifactError::TrustedArtifactMismatch)
+        ));
 
         let recursive_proof = output.0;
         let mut proof_writer = Writer::new(limits.max_proof_bytes);
@@ -1495,9 +1538,6 @@ mod tests {
             non_primitives: portable_non_primitives,
             stark_common: p3_batch_stark::CommonData::new(None, Vec::new()),
         };
-        let verifier_bytes = portable_native_verifier
-            .encode_verifier_artifact(limits)
-            .unwrap();
         let proof_bytes = portable_native_verifier
             .encode_proof_artifact(&portable_native_proof, limits)
             .unwrap();
