@@ -510,7 +510,7 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
 
     /// Omit configured extra Poseidon2 tables from the next input manifest only. Output AIR/table
     /// registration still includes them, which is used by the first bridge into arity-4 layers.
-    pub fn without_extra_poseidon2_input_tables(mut self) -> Self {
+    pub const fn without_extra_poseidon2_input_tables(mut self) -> Self {
         self.expect_extra_poseidon2_input_tables = false;
         self
     }
