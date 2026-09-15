@@ -2250,9 +2250,7 @@ mod test {
         let mut ordinary = challenger_duplex_rows(rng, perm, Val::ONE);
         for row in &mut ordinary {
             row.challenger = false;
-            for ctl in &mut row.in_ctl {
-                *ctl = false;
-            }
+            row.in_ctl.fill(false);
         }
         // Turn the ordinary continuation into a genuine Merkle continuation. This exercises
         // the shared-mode rule that its second capacity selector is zero even when legacy
