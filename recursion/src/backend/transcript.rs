@@ -127,6 +127,7 @@ where
         airs,
         trace_lens,
         public_values,
+        ..
     } = reconstruct_batch_tables::<SC, D>(config, proof, non_primitive_provers)?;
 
     let lookups = airs
@@ -182,6 +183,7 @@ where
         airs,
         trace_lens: _,
         public_values,
+        ..
     } = trusted_batch_tables::<SC, D>(verifier, statement)?;
     let (transcript, _) = replay_batch_stark_transcript(
         &airs,
