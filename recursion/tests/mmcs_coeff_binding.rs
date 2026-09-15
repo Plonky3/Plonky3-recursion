@@ -8,20 +8,21 @@
 #[path = "common/rejection_oracle.rs"]
 mod rejection_oracle;
 
-use p3_batch_stark::ProverData;
+use p3_circuit::ops::recompose::RecomposeTrace;
 use p3_circuit::ops::{
-    HintExecutor, Op, Poseidon2Config, generate_poseidon2_trace, generate_recompose_trace,
+    NpoTypeId, Op, Poseidon2Config, Poseidon2Trace, generate_poseidon2_trace,
+    generate_recompose_trace,
 };
 use p3_circuit::tables::Traces;
-use p3_circuit::{Circuit, CircuitBuilder, CircuitError, WitnessId};
+use p3_circuit::{Circuit, CircuitBuilder, WitnessId};
 use p3_circuit_prover::batch_stark_prover::{
     poseidon2_air_builders_for_configs, recompose_air_builders,
 };
-use p3_circuit_prover::common::{NpoPreprocessor, get_airs_and_degrees_with_prep};
+use p3_circuit_prover::common::NpoPreprocessor;
 use p3_circuit_prover::config::KoalaBearConfig;
 use p3_circuit_prover::{
-    BatchStarkProver, CircuitProverData, ConstraintProfile, Poseidon2Preprocessor,
-    RecomposePreprocessor, TablePacking, config,
+    BatchStarkProver, ConstraintProfile, Poseidon2Preprocessor, RecomposePreprocessor,
+    TablePacking, config,
 };
 use p3_commit::{BatchOpeningRef, Mmcs};
 use p3_field::extension::BinomialExtensionField;
@@ -169,23 +170,90 @@ fn build_fixture(width: usize) -> Fixture {
     }
 }
 
-fn run(circuit: &Circuit<EF>, public_inputs: &[EF]) -> Traces<EF> {
-    let mut runner = circuit.runner();
-    runner
-        .set_public_inputs(public_inputs)
-        .expect("fixture public inputs");
-    runner.run().expect("MMCS witness generation succeeds")
+fn recompose_trace(traces: &Traces<EF>) -> RecomposeTrace<F> {
+    traces
+        .non_primitive_trace::<RecomposeTrace<F>>(&NpoTypeId::recompose_with_coeff_lookups())
+        .expect("coefficient-bound recompose trace")
+        .clone()
 }
 
-fn witness_values(circuit: &Circuit<EF>, public_inputs: &[EF]) -> Vec<Option<EF>> {
-    let mut runner = circuit.runner();
-    runner
-        .set_public_inputs(public_inputs)
-        .expect("fixture public inputs");
-    runner
-        .execute_all()
-        .expect("MMCS witness execution succeeds");
-    runner.witness().to_vec()
+fn poseidon_trace(traces: &Traces<EF>) -> Poseidon2Trace<F> {
+    traces
+        .non_primitive_trace::<Poseidon2Trace<F>>(&NpoTypeId::poseidon2_perm(CFG))
+        .expect("MMCS Poseidon2 trace")
+        .clone()
+}
+
+/// Forge one full leaf packer in the proof trace while retaining the honest operation metadata.
+/// This avoids `CircuitRunner`'s intentional conflict when a changed Poseidon output is wired to
+/// the trusted public cap: a prover assembling trace polynomials can choose the row values, but
+/// the fixed key still carries the honest coefficient witness indices and native cap trace.
+fn forge_full_pack_trace(fixture: &Fixture, target_row: usize, donor_row: usize) -> Traces<EF> {
+    let mut traces = fixture.traces.clone();
+    let mut recomposes = recompose_trace(&traces);
+    let donor_values = recomposes.operations[donor_row].values.clone();
+    recomposes.operations[target_row].values = donor_values.clone();
+    traces.non_primitive_traces.insert(
+        NpoTypeId::recompose_with_coeff_lookups(),
+        Box::new(recomposes),
+    );
+
+    let mut permutation = poseidon_trace(&traces);
+    let start = target_row * D;
+    permutation.operations[0].input_values[start..start + D].copy_from_slice(&donor_values);
+    traces
+        .non_primitive_traces
+        .insert(NpoTypeId::poseidon2_perm(CFG), Box::new(permutation));
+    traces
+}
+
+/// Forge the partial carry's canonical base-field projection after a non-base weighted-sum
+/// cancellation. The source-level extension coefficients satisfy the unchanged weighted sum,
+/// while the coefficient table sees the changed base projection of the final carry slot.
+fn forge_partial_carry_trace(fixture: &Fixture, shift: u64) -> Traces<EF> {
+    let mut traces = fixture.traces.clone();
+    let mut recomposes = recompose_trace(&traces);
+    assert!(
+        recomposes.operations.len() >= 4,
+        "partial leaf has carry and pack rows"
+    );
+    let carry_row = 2;
+    let source = recomposes.operations[carry_row].values.clone();
+    let source_ext = source.iter().copied().map(EF::from).collect::<Vec<_>>();
+    let mut forged = source_ext.clone();
+    forged[2] += EF::from_u64(shift) * basis(1);
+    forged[3] -= EF::from_u64(shift);
+    assert_eq!(weighted_sum(&forged), weighted_sum(&source_ext));
+    recomposes.operations[carry_row].values = forged
+        .iter()
+        .map(|value| <EF as BasedVectorSpace<F>>::as_basis_coefficients_slice(value)[0])
+        .collect();
+    traces.non_primitive_traces.insert(
+        NpoTypeId::recompose_with_coeff_lookups(),
+        Box::new(recomposes),
+    );
+
+    let mut permutation = poseidon_trace(&traces);
+    let mut changed = permutation.operations[1].input_values.clone();
+    // The second absorb's first extension limb contains two fresh coefficients and the two
+    // canonicalized carry coefficients. The carry row's changed c3 is its fourth base slot.
+    changed[3] -= F::from_u64(shift);
+    permutation.operations[1].input_values = changed;
+    traces
+        .non_primitive_traces
+        .insert(NpoTypeId::poseidon2_perm(CFG), Box::new(permutation));
+    traces
+}
+
+fn assert_honest_public_trace(honest: &Traces<EF>, forged: &Traces<EF>) {
+    assert_eq!(
+        honest.public_trace.index, forged.public_trace.index,
+        "forged trace must retain the honest public-input witness layout"
+    );
+    assert_eq!(
+        honest.public_trace.values, forged.public_trace.values,
+        "forged trace must retain the honest native cap/opened public-input values"
+    );
 }
 
 /// Prove `traces` against `circuit`'s original constraint system and verify its proof.
@@ -198,40 +266,32 @@ fn prove_and_verify(circuit: &Circuit<EF>, traces: &Traces<EF>) -> Result<(), Pr
     ];
     let mut air_builders = poseidon2_air_builders_for_configs::<KoalaBearConfig, D>(vec![CFG]);
     air_builders.extend(recompose_air_builders::<KoalaBearConfig, D>(1, true));
-    let (airs_degrees, primitive_columns, non_primitive_columns) =
-        get_airs_and_degrees_with_prep::<KoalaBearConfig, EF, D>(
+    let mut prover = BatchStarkProver::new(stark_config).with_table_packing(table_packing);
+    prover.register_poseidon2_table::<D>(CFG);
+    prover.register_recompose_table::<D>(true);
+    let prepared = prover
+        .prepare_circuit::<EF, D>(
             circuit,
-            &table_packing,
             &npo_preprocessors,
             &air_builders,
             ConstraintProfile::Standard,
         )
-        .expect("fixed-key preprocessed columns");
-    let (airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
-    let prover_data = ProverData::from_airs_and_degrees(&stark_config, &airs, &degrees);
-    let circuit_prover_data =
-        CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
-    let mut prover = BatchStarkProver::new(stark_config).with_table_packing(table_packing);
-    prover.register_poseidon2_table::<D>(CFG);
-    prover.register_recompose_table::<D>(true);
+        .expect("trusted fixed-key circuit preparation");
+    let verifier = prepared.verifier();
 
     #[cfg(debug_assertions)]
     let result = run_with_debug_oracle(|| {
-        let proof = prover
-            .prove_all_tables(traces, &circuit_prover_data)
-            .map_err(ProofCheckError::Prove)?;
-        prover
-            .verify_all_tables::<EF>(&proof)
+        let proof = prepared.prove(traces).map_err(ProofCheckError::Prove)?;
+        verifier
+            .verify(&proof, &[])
             .map_err(ProofCheckError::Verify)
     });
 
     #[cfg(not(debug_assertions))]
     let result = {
-        let proof = prover
-            .prove_all_tables(traces, &circuit_prover_data)
-            .map_err(ProofCheckError::Prove)?;
-        prover
-            .verify_all_tables::<EF>(&proof)
+        let proof = prepared.prove(traces).map_err(ProofCheckError::Prove)?;
+        verifier
+            .verify(&proof, &[])
             .map_err(ProofCheckError::Verify)
     };
 
@@ -261,77 +321,6 @@ fn weighted_sum(coeffs: &[EF]) -> EF {
         .enumerate()
         .map(|(i, &coeff)| coeff * basis(i))
         .sum()
-}
-
-fn base_decomposition(value: EF) -> Vec<EF> {
-    <EF as BasedVectorSpace<F>>::as_basis_coefficients_slice(&value)
-        .iter()
-        .copied()
-        .map(EF::from)
-        .collect()
-}
-
-fn is_base(value: EF) -> bool {
-    <EF as BasedVectorSpace<F>>::as_basis_coefficients_slice(&value)[1..]
-        .iter()
-        .all(|coefficient| *coefficient == F::ZERO)
-}
-
-/// Replace a decomposition hint with a prover-controlled non-base pair whose weighted sum is
-/// unchanged. The two changed coefficient witnesses are the carry slots of the second partial
-/// absorb in the width-10 fixture.
-#[derive(Clone, Debug)]
-struct NonBaseCarryShift(u64);
-
-impl HintExecutor<EF> for NonBaseCarryShift {
-    fn execute(
-        &self,
-        inputs: &[WitnessId],
-        outputs: &[WitnessId],
-        witness: &mut [Option<EF>],
-    ) -> Result<(), CircuitError> {
-        assert_eq!(inputs.len(), 1);
-        assert_eq!(outputs.len(), D);
-        let source = witness[inputs[0].0 as usize].expect("carry source is witnessed");
-        let mut coeffs = base_decomposition(source);
-        let shift = EF::from_u64(self.0);
-        // The pair carries the two positions unused by the partial second absorb. Their changes
-        // cancel in c2*w^2 + c3*w^3, but each is no longer a base-field element.
-        coeffs[2] += shift * basis(1);
-        coeffs[3] -= shift;
-        assert_eq!(weighted_sum(&coeffs), source);
-        for (&output, &value) in outputs.iter().zip(&coeffs) {
-            witness[output.0 as usize] = Some(value);
-        }
-        Ok(())
-    }
-
-    fn boxed(&self) -> Box<dyn HintExecutor<EF>> {
-        Box::new(self.clone())
-    }
-}
-
-fn carry_hint_position(circuit: &Circuit<EF>) -> usize {
-    let perms = perm_positions(circuit);
-    assert!(
-        perms.len() >= 2,
-        "partial fixture must absorb in two permutations"
-    );
-    let (_, first_outputs) = npo_io(circuit, perms[0]);
-    let carry_source = first_outputs[0][0];
-    circuit
-        .ops
-        .iter()
-        .enumerate()
-        .find(|(_, op)| {
-            matches!(
-                op,
-                Op::Hint { inputs, outputs, .. }
-                    if inputs == &[carry_source] && outputs.len() == D
-            )
-        })
-        .map(|(pos, _)| pos)
-        .expect("partial carry decomposition hint")
 }
 
 #[test]
@@ -377,9 +366,8 @@ fn full_leaf_coefficient_replacement_is_rejected_with_honest_key() {
     let packers = recompose_positions(&fixture.circuit);
     assert_eq!(packers.len(), 2);
     let (donor_inputs, _) = npo_io(&fixture.circuit, packers[1]);
-    let (target_inputs, target_outputs) = npo_io(&fixture.circuit, packers[0]);
+    let (target_inputs, _) = npo_io(&fixture.circuit, packers[0]);
     assert_ne!(target_inputs, donor_inputs);
-    let target_limb = target_outputs[0][0];
 
     let mut edited = fixture.circuit.clone();
     match &mut edited.ops[packers[0]] {
@@ -395,23 +383,14 @@ fn full_leaf_coefficient_replacement_is_rejected_with_honest_key() {
         edited.generate_preprocessed_columns::<D>().unwrap(),
         "coefficient-row rewiring must change the verifier-fixed key"
     );
-    let honest_witness = {
-        let mut runner = fixture.circuit.runner();
-        runner.set_public_inputs(&fixture.public_inputs).unwrap();
-        runner.execute_all().unwrap();
-        runner.witness().to_vec()
-    };
-    let edited_witness = {
-        let mut runner = edited.runner();
-        runner.set_public_inputs(&fixture.public_inputs).unwrap();
-        runner.execute_all().unwrap();
-        runner.witness().to_vec()
-    };
+    let honest_perm = poseidon_trace(&fixture.traces);
+    let forged = forge_full_pack_trace(&fixture, 0, 1);
+    let forged_perm = poseidon_trace(&forged);
     assert_ne!(
-        edited_witness[target_limb.0 as usize], honest_witness[target_limb.0 as usize],
-        "rewiring a full leaf packer must change the authenticated limb"
+        forged_perm.operations[0].input_values, honest_perm.operations[0].input_values,
+        "rewiring a full leaf packer must change the authenticated leaf input"
     );
-    let forged = run(&edited, &fixture.public_inputs);
+    assert_honest_public_trace(&fixture.traces, &forged);
     assert_rejected(
         &prove_and_verify(&fixture.circuit, &forged),
         "a full leaf coefficient replacement must fail against the trusted key",
@@ -439,16 +418,16 @@ fn repeated_full_leaf_coefficients_are_rejected_with_honest_key() {
         edited.generate_preprocessed_columns::<D>().unwrap(),
         "repeated coefficient rows must not be hidden from the verifier key"
     );
-    let honest_witness = witness_values(&fixture.circuit, &fixture.public_inputs);
-    let edited_witness = witness_values(&edited, &fixture.public_inputs);
-    let (_, target_outputs) = npo_io(&fixture.circuit, packers[1]);
+    let honest_perm = poseidon_trace(&fixture.traces);
+    let forged = forge_full_pack_trace(&fixture, 1, 0);
+    let forged_perm = poseidon_trace(&forged);
     assert_ne!(
-        edited_witness[target_outputs[0][0].0 as usize],
-        honest_witness[target_outputs[0][0].0 as usize],
-        "repeating a coefficient group must change the second authenticated limb"
+        forged_perm.operations[0].input_values, honest_perm.operations[0].input_values,
+        "repeating a coefficient group must change the authenticated leaf input"
     );
+    assert_honest_public_trace(&fixture.traces, &forged);
     assert_rejected(
-        &prove_and_verify(&fixture.circuit, &run(&edited, &fixture.public_inputs)),
+        &prove_and_verify(&fixture.circuit, &forged),
         "repeated full-leaf coefficients must fail against the trusted key",
     );
 }
@@ -456,46 +435,17 @@ fn repeated_full_leaf_coefficients_are_rejected_with_honest_key() {
 #[test]
 fn partial_carry_non_base_cancellation_is_rejected_with_honest_key() {
     let fixture = build_fixture(10);
-    let hint_pos = carry_hint_position(&fixture.circuit);
-    let mut edited = fixture.circuit.clone();
-    match &mut edited.ops[hint_pos] {
-        Op::Hint { executor, .. } => *executor = Box::new(NonBaseCarryShift(7)),
-        _ => unreachable!(),
-    }
-    assert_same_constraint_system(&fixture.circuit, &edited);
-    assert_eq!(
-        fixture
-            .circuit
-            .generate_preprocessed_columns::<D>()
-            .unwrap(),
-        edited.generate_preprocessed_columns::<D>().unwrap(),
-        "hint tampering must keep the trusted key fixed"
-    );
-
-    let honest_witness = witness_values(&fixture.circuit, &fixture.public_inputs);
-    let edited_witness = witness_values(&edited, &fixture.public_inputs);
-    let perms = perm_positions(&fixture.circuit);
-    let (second_inputs, _) = npo_io(&fixture.circuit, perms[1]);
-    let hint_outputs = match &fixture.circuit.ops[hint_pos] {
-        Op::Hint { outputs, .. } => outputs.clone(),
-        _ => unreachable!(),
-    };
+    let honest_perm = poseidon_trace(&fixture.traces);
+    let forged = forge_partial_carry_trace(&fixture, 7);
+    let forged_perm = poseidon_trace(&forged);
+    assert_honest_public_trace(&fixture.traces, &forged);
     assert_ne!(
-        edited_witness[hint_outputs[2].0 as usize], honest_witness[hint_outputs[2].0 as usize],
-        "the carry hint mutation must change a coefficient witness"
-    );
-    assert!(
-        !is_base(edited_witness[hint_outputs[2].0 as usize].expect("edited carry witness")),
-        "the cancellation must use a genuinely non-base coefficient"
-    );
-    assert_eq!(
-        edited_witness[second_inputs[0][0].0 as usize],
-        honest_witness[second_inputs[0][0].0 as usize],
-        "weighted-sum cancellation must leave the authenticated extension limb unchanged"
+        forged_perm.operations[1].input_values, honest_perm.operations[1].input_values,
+        "canonicalizing the non-base cancellation must change the partial leaf input"
     );
 
     assert_rejected(
-        &prove_and_verify(&fixture.circuit, &run(&edited, &fixture.public_inputs)),
+        &prove_and_verify(&fixture.circuit, &forged),
         "non-base weighted-sum cancellation must not forge a partial leaf",
     );
 }
