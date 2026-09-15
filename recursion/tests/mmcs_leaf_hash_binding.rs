@@ -1,30 +1,24 @@
 //! Bus-binding regression for the MMCS leaf-hash absorb.
 //!
 //! `verify_batch_circuit` packs each leaf's opened base-field coefficients into extension
-//! limbs before absorbing them into the sponge. The recompose NPO table publishes only its
-//! own output on the `WitnessChecks` bus: the packed limb's `v_0..v_{D-1}` columns are free
-//! main-trace columns and the coefficient witness ids appear nowhere on the bus, so a limb
-//! packed that way carries no relation to the coefficients the leaf is supposed to be made
-//! of, and re-pointing the row at another coefficient group leaves the verifier's
-//! preprocessed columns untouched. The ALU `mul_add` chain reads every coefficient as a
-//! bus-bound operand and carries the operand witness ids in the ALU table's preprocessed
-//! columns, so the limb is tied to the coefficients and the same edit is visible to the
-//! verifier.
-//!
-//! Both tests build the leaf hash with the recompose NPO table *enabled*, which is the
-//! configuration in which the two lowerings differ.
+//! limbs before absorbing them into the sponge. Eligible non-hiding binary D4/W16 Poseidon2
+//! leaves use the `recompose/coeff` table, which publishes each coefficient on the
+//! `WitnessChecks` bus and exposes coefficient identity in preprocessed metadata. Excluded
+//! routes retain the legacy ALU lowering, including hiding-MMCS salts.
 
+use p3_baby_bear::{BabyBear, default_babybear_poseidon2_16};
 use p3_circuit::ops::{Op, Poseidon2Config, generate_poseidon2_trace, generate_recompose_trace};
-use p3_circuit::{Circuit, CircuitBuilder, WitnessId};
+use p3_circuit::{Circuit, CircuitBuilder, CircuitBuilderError, WitnessId};
 use p3_field::extension::BinomialExtensionField;
 use p3_koala_bear::{KoalaBear, default_koalabear_poseidon2_16};
 use p3_matrix::Dimensions;
-use p3_poseidon2_circuit_air::KoalaBearD4Width16;
+use p3_poseidon2_circuit_air::{BabyBearD4Width16, KoalaBearD4Width16};
 use p3_recursion::Target;
 use p3_recursion::pcs::verify_batch_circuit;
 
 type F = KoalaBear;
 type EF = BinomialExtensionField<F, 4>;
+type BabyEF = BinomialExtensionField<BabyBear, 4>;
 
 const D: usize = 4;
 const CFG: Poseidon2Config = Poseidon2Config::KOALA_BEAR_D4_W16;
@@ -45,18 +39,36 @@ fn build_leaf_hash_circuit() -> Circuit<EF> {
 }
 
 fn build_leaf_hash_circuit_of_width(leaf_width: usize) -> Circuit<EF> {
+    build_leaf_hash_circuit_with_options(leaf_width, false, true)
+        .expect("eligible leaf hash circuit builds")
+}
+
+fn build_leaf_hash_circuit_with_salts(leaf_width: usize) -> Circuit<EF> {
+    build_leaf_hash_circuit_with_options(leaf_width, true, true)
+        .expect("salted leaf hash circuit builds")
+}
+
+fn build_leaf_hash_circuit_with_options(
+    leaf_width: usize,
+    salted: bool,
+    enable_recompose: bool,
+) -> Result<Circuit<EF>, CircuitBuilderError> {
     let perm = default_koalabear_poseidon2_16();
     let mut builder = CircuitBuilder::<EF>::new();
     builder.enable_poseidon2_perm::<KoalaBearD4Width16, _>(
         generate_poseidon2_trace::<EF, KoalaBearD4Width16>,
         perm,
     );
-    builder.enable_recompose::<F>(generate_recompose_trace::<F, EF>);
+    if enable_recompose {
+        builder.enable_recompose::<F>(generate_recompose_trace::<F, EF>);
+    }
 
-    let unrelated: Vec<Target> = (0..D).map(|_| builder.public_input()).collect();
-    builder
-        .recompose_base_coeffs_to_ext::<F>(&unrelated)
-        .expect("recompose lowers through the NPO table");
+    if enable_recompose {
+        let unrelated: Vec<Target> = (0..D).map(|_| builder.public_input()).collect();
+        builder
+            .recompose_base_coeffs_to_ext::<F>(&unrelated)
+            .expect("recompose lowers through the NPO table");
+    }
 
     let cap: Vec<Vec<Target>> = vec![
         (0..CFG.rate_ext())
@@ -69,6 +81,7 @@ fn build_leaf_hash_circuit_of_width(leaf_width: usize) -> Circuit<EF> {
     }];
     let index_bits: Vec<Target> = (0..2).map(|_| builder.public_input()).collect();
     let opened: Vec<Vec<Target>> = vec![(0..leaf_width).map(|_| builder.public_input()).collect()];
+    let salts = salted.then(|| vec![(0..2).map(|_| builder.public_input()).collect()]);
 
     verify_batch_circuit::<F, EF>(
         &mut builder,
@@ -77,23 +90,57 @@ fn build_leaf_hash_circuit_of_width(leaf_width: usize) -> Circuit<EF> {
         &dimensions,
         &index_bits,
         &opened,
-        None,
-    )
-    .expect("verify_batch_circuit builds");
+        salts.as_deref(),
+    )?;
 
-    builder.build().expect("circuit builds")
+    Ok(builder.build().expect("circuit builds"))
 }
 
-fn is_npo_type(op: &Op<EF>, needle: &str) -> bool {
+fn build_baby_bear_leaf_hash_circuit() -> Circuit<BabyEF> {
+    let perm = default_babybear_poseidon2_16();
+    let mut builder = CircuitBuilder::<BabyEF>::new();
+    builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
+        generate_poseidon2_trace::<BabyEF, BabyBearD4Width16>,
+        perm,
+    );
+    builder.enable_recompose::<BabyBear>(generate_recompose_trace::<BabyBear, BabyEF>);
+
+    let cap: Vec<Vec<Target>> = vec![
+        (0..Poseidon2Config::BABY_BEAR_D4_W16.rate_ext())
+            .map(|_| builder.public_input())
+            .collect(),
+    ];
+    let dimensions = [Dimensions {
+        width: LEAF_WIDTH,
+        height: 4,
+    }];
+    let index_bits: Vec<Target> = (0..2).map(|_| builder.public_input()).collect();
+    let opened: Vec<Vec<Target>> = vec![(0..LEAF_WIDTH).map(|_| builder.public_input()).collect()];
+
+    verify_batch_circuit::<BabyBear, BabyEF>(
+        &mut builder,
+        Poseidon2Config::BABY_BEAR_D4_W16,
+        &cap,
+        &dimensions,
+        &index_bits,
+        &opened,
+        None,
+    )
+    .expect("BabyBear verify_batch_circuit builds");
+
+    builder.build().expect("BabyBear circuit builds")
+}
+
+fn is_npo_type<F: p3_field::Field>(op: &Op<F>, needle: &str) -> bool {
     match op {
         Op::NonPrimitiveOpWithExecutor { executor, .. } => {
-            format!("{:?}", executor.op_type()).contains(needle)
+            executor.op_type().as_str().contains(needle)
         }
         _ => false,
     }
 }
 
-fn writes(op: &Op<EF>, wid: WitnessId) -> bool {
+fn writes<F: p3_field::Field>(op: &Op<F>, wid: WitnessId) -> bool {
     match op {
         Op::Const { out, .. } | Op::Public { out, .. } | Op::Alu { out, .. } => *out == wid,
         Op::Hint { outputs, .. } => outputs.contains(&wid),
@@ -102,7 +149,7 @@ fn writes(op: &Op<EF>, wid: WitnessId) -> bool {
 }
 
 /// Position of the op that writes `wid`.
-fn writer_position(circuit: &Circuit<EF>, wid: WitnessId) -> usize {
+fn writer_position<F: p3_field::Field>(circuit: &Circuit<F>, wid: WitnessId) -> usize {
     circuit
         .ops
         .iter()
@@ -111,7 +158,7 @@ fn writer_position(circuit: &Circuit<EF>, wid: WitnessId) -> usize {
 }
 
 /// Every witness read by a Poseidon2 permutation, in op order.
-fn permutation_input_witnesses(circuit: &Circuit<EF>) -> Vec<WitnessId> {
+fn permutation_input_witnesses<F: p3_field::Field>(circuit: &Circuit<F>) -> Vec<WitnessId> {
     circuit
         .ops
         .iter()
@@ -124,7 +171,7 @@ fn permutation_input_witnesses(circuit: &Circuit<EF>) -> Vec<WitnessId> {
 }
 
 #[test]
-fn leaf_hash_limbs_are_packed_by_the_alu_chain() {
+fn eligible_leaf_hash_limbs_use_coefficient_bound_recompose() {
     let circuit = build_leaf_hash_circuit();
 
     assert!(
@@ -138,19 +185,41 @@ fn leaf_hash_limbs_are_packed_by_the_alu_chain() {
         "the leaf hash must run at least one permutation"
     );
 
+    let mut coeff_packed = 0;
     let mut alu_packed = 0;
     for wid in perm_inputs {
         let writer = &circuit.ops[writer_position(&circuit, wid)];
-        assert!(
-            !is_npo_type(writer, "recompose"),
-            "a permutation reads {wid:?}, whose only writer is a recompose row: its packed \
-             value is a free main-trace column"
-        );
+        coeff_packed += usize::from(is_npo_type(writer, "recompose/coeff"));
         alu_packed += usize::from(matches!(writer, Op::Alu { .. }));
     }
     assert!(
-        alu_packed > 0,
-        "the leaf's opened coefficients must reach the sponge through an ALU packing"
+        coeff_packed > 0,
+        "the eligible leaf must use coefficient-bound recompose rows"
+    );
+    assert!(
+        alu_packed == 0,
+        "the eligible leaf's opened coefficients must not reach the sponge through ALU packing"
+    );
+}
+
+#[test]
+fn baby_bear_eligible_leaf_hash_uses_coefficient_bound_recompose() {
+    let circuit = build_baby_bear_leaf_hash_circuit();
+    let perm_inputs = permutation_input_witnesses(&circuit);
+    assert!(
+        perm_inputs.iter().any(|&wid| {
+            is_npo_type(
+                &circuit.ops[writer_position(&circuit, wid)],
+                "recompose/coeff",
+            )
+        }),
+        "BabyBear D4/W16 leaves must use coefficient-bound recompose rows"
+    );
+    assert!(
+        perm_inputs
+            .iter()
+            .all(|&wid| !matches!(circuit.ops[writer_position(&circuit, wid)], Op::Alu { .. })),
+        "BabyBear D4/W16 leaves must not use ALU packing"
     );
 }
 
@@ -158,30 +227,43 @@ fn leaf_hash_limbs_are_packed_by_the_alu_chain() {
 fn re_pointing_a_leaf_hash_packing_is_visible_to_the_verifier() {
     let honest = build_leaf_hash_circuit();
 
-    // The first permutation limb whose packing is an ALU op, and one of its operands.
+    // The first permutation limb whose packing is a coefficient-bound row, and one of its
+    // operands.
     let packed = permutation_input_witnesses(&honest)
         .into_iter()
-        .find(|&wid| matches!(honest.ops[writer_position(&honest, wid)], Op::Alu { .. }))
-        .expect("an ALU-packed permutation input");
+        .find(|&wid| {
+            is_npo_type(
+                &honest.ops[writer_position(&honest, wid)],
+                "recompose/coeff",
+            )
+        })
+        .expect("a coefficient-bound permutation input");
     let packing_pos = writer_position(&honest, packed);
-    let original_operand = match honest.ops[packing_pos] {
-        Op::Alu { a, .. } => a,
+    let original_operand = match &honest.ops[packing_pos] {
+        Op::NonPrimitiveOpWithExecutor { inputs, .. } => inputs[0][0],
         _ => unreachable!(),
     };
 
     // Re-point the packing at a different coefficient the same leaf already carries.
     let donor = permutation_input_witnesses(&honest)
         .into_iter()
-        .filter_map(|wid| match honest.ops[writer_position(&honest, wid)] {
-            Op::Alu { a, .. } if a != original_operand => Some(a),
+        .filter_map(|wid| match &honest.ops[writer_position(&honest, wid)] {
+            Op::NonPrimitiveOpWithExecutor { inputs, .. }
+                if is_npo_type(
+                    &honest.ops[writer_position(&honest, wid)],
+                    "recompose/coeff",
+                ) && inputs[0][0] != original_operand =>
+            {
+                Some(inputs[0][0])
+            }
             _ => None,
         })
         .next()
-        .expect("a second ALU-packed permutation input to donate an operand");
+        .expect("a second coefficient-bound permutation input to donate an operand");
 
     let mut edited = honest.clone();
     match &mut edited.ops[packing_pos] {
-        Op::Alu { a, .. } => *a = donor,
+        Op::NonPrimitiveOpWithExecutor { inputs, .. } => inputs[0][0] = donor,
         _ => unreachable!(),
     }
 
@@ -193,8 +275,8 @@ fn re_pointing_a_leaf_hash_packing_is_visible_to_the_verifier() {
         .expect("edited preprocessed columns");
     assert!(
         honest_prep != edited_prep,
-        "re-pointing the packing that feeds the leaf hash must change the constraint system \
-         the verifier derives, not just prover-side data"
+        "re-pointing a coefficient-bound packing must change the verifier's preprocessed \
+         coefficient identity metadata, not just prover-side data"
     );
 }
 
@@ -202,12 +284,10 @@ fn re_pointing_a_leaf_hash_packing_is_visible_to_the_verifier() {
 /// over from the previous permutation's output.
 ///
 /// Those carry-over coefficients are decomposition hints. Reconstructing them through the
-/// recompose NPO table pins the row's own free columns to the previous output and leaves the
-/// hint witnesses — the values that actually get absorbed — unrelated to it, so the sponge
-/// would absorb a state the prover picks. The ALU `mul_add` chain reads each hint as a
-/// bus-bound operand and constrains their weighted sum to the previous output instead.
+/// coefficient-bound recompose table publishes each hint on the `WitnessChecks` bus and ties it
+/// to the previous permutation output while preserving overwrite semantics for the unused slots.
 #[test]
-fn partial_chunk_carry_over_coefficients_are_packed_by_the_alu_chain() {
+fn partial_chunk_carry_over_coefficients_use_coefficient_bound_recompose() {
     let circuit = build_leaf_hash_circuit_of_width(PARTIAL_CHUNK_LEAF_WIDTH);
 
     assert!(
@@ -226,30 +306,67 @@ fn partial_chunk_carry_over_coefficients_are_packed_by_the_alu_chain() {
         "the leaf must absorb across at least two permutations to reach the partial-chunk path"
     );
 
+    let mut coeff_packed = 0;
+    let mut alu_packed = 0;
     for wid in perm_inputs {
         let writer = &circuit.ops[writer_position(&circuit, wid)];
-        assert!(
-            !is_npo_type(writer, "recompose"),
-            "a permutation reads {wid:?}, whose only writer is a recompose row: its packed \
-             value is a free main-trace column"
-        );
+        coeff_packed += usize::from(is_npo_type(writer, "recompose/coeff"));
+        alu_packed += usize::from(matches!(writer, Op::Alu { .. }));
     }
+    assert!(
+        coeff_packed > 0,
+        "partial eligible leaves use coefficient-bound packing"
+    );
+    assert_eq!(
+        alu_packed, 0,
+        "partial eligible leaves do not use ALU packing"
+    );
 
-    // The carry-over decomposition itself must be reconstructed through the ALU, not the table:
-    // every hint output in the circuit is read by some ALU op.
+    // The carry-over decomposition itself must be reconstructed through the coefficient-bound
+    // table: every hint output in the circuit is read by some `recompose/coeff` op.
     for op in &circuit.ops {
         if let Op::Hint { outputs, .. } = op {
             for out in outputs {
                 assert!(
                     circuit.ops.iter().any(|other| matches!(
                         other,
-                        Op::Alu { a, b, c, .. }
-                            if a == out || b == out || c.as_ref() == Some(out)
+                        Op::NonPrimitiveOpWithExecutor { inputs, .. }
+                            if is_npo_type(other, "recompose/coeff")
+                                && inputs.iter().flatten().any(|input| input == out)
                     )),
-                    "hint output {out:?} is never read by an ALU op, so nothing on the bus \
-                     ties it to the value it was decomposed from"
+                    "hint output {out:?} is never read by a coefficient-bound recompose op, so \
+                     nothing on the bus ties it to the value it was decomposed from"
                 );
             }
         }
     }
+}
+
+#[test]
+fn salted_leaf_hash_keeps_the_legacy_alu_lowering() {
+    let circuit = build_leaf_hash_circuit_with_salts(LEAF_WIDTH);
+    let perm_inputs = permutation_input_witnesses(&circuit);
+    assert!(
+        perm_inputs
+            .iter()
+            .any(|&wid| { matches!(circuit.ops[writer_position(&circuit, wid)], Op::Alu { .. }) }),
+        "hiding leaves must keep their ALU packing"
+    );
+    assert!(
+        !circuit
+            .ops
+            .iter()
+            .any(|op| is_npo_type(op, "recompose/coeff")),
+        "hiding leaves must not select coefficient-bound packing"
+    );
+}
+
+#[test]
+fn eligible_leaf_hash_fails_closed_without_coefficient_table() {
+    let error = build_leaf_hash_circuit_with_options(LEAF_WIDTH, false, false)
+        .expect_err("eligible coefficient-bound packing requires the enabled table");
+    assert!(
+        matches!(error, CircuitBuilderError::RecomposeCoeffLookupsUnavailable),
+        "eligible calls must not silently fall back to ALU packing: {error:?}"
+    );
 }
