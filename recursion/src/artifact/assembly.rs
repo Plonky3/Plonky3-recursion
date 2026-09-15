@@ -1436,11 +1436,11 @@ mod tests {
         let mut substituted_relation = relation.clone();
         let mut replaced_shared_role = false;
         for npo in &mut substituted_relation.non_primitives {
-            if let BuiltinNpoV1::Poseidon2(config) = npo.kind {
-                if config.is_shared() {
-                    npo.kind = BuiltinNpoV1::Poseidon2(config.without_shared_role());
-                    replaced_shared_role = true;
-                }
+            if let BuiltinNpoV1::Poseidon2(config) = npo.kind
+                && config.is_shared()
+            {
+                npo.kind = BuiltinNpoV1::Poseidon2(config.without_shared_role());
+                replaced_shared_role = true;
             }
         }
         assert!(
