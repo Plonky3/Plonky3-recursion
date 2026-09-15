@@ -22,6 +22,7 @@ use p3_recursion::recursion::{
     BatchOnly, ProveNextLayerParams, RecursionInput, build_and_prove_next_layer,
 };
 use p3_recursion::traits::RecursiveChallenger;
+use p3_recursion::{FriRecursionBackend, PreparedInput, PreparedLayer, PreparedSource};
 use p3_test_utils::koala_bear_params::Challenge;
 
 type F = KoalaBear;
@@ -163,6 +164,25 @@ fn legacy_input<'a>(
 fn legacy_separated_input_recurses_into_combined_output_twice() {
     let mut fixture = build_legacy_fixture(true);
     let params = ProveNextLayerParams::default();
+    let table_public_inputs = vec![vec![]; fixture.proof.proof.opened_values.instances.len()];
+    let prepared = PreparedLayer::<_, BatchOnly, _, 4>::new(
+        PreparedSource::batch(
+            &fixture.proof,
+            &fixture.proof.stark_common,
+            &table_public_inputs,
+        ),
+        fixture.config.clone(),
+        fixture.backend.clone(),
+        params.clone(),
+    )
+    .expect("the real legacy proof captures a prepared input contract");
+    prepared
+        .check_input(&PreparedInput::BatchStark {
+            proof: &fixture.proof,
+            common_data: &fixture.proof.stark_common,
+            table_public_inputs: &table_public_inputs,
+        })
+        .expect("the honest legacy proof passes prepared preflight and capture");
     let input = legacy_input(&fixture.proof);
     let first = build_and_prove_next_layer(&input, &fixture.config, &fixture.backend, &params)
         .expect("legacy separated input recurses into combined output");
@@ -202,6 +222,15 @@ fn legacy_separated_input_recurses_into_combined_output_twice() {
 
     let removed = fixture.proof.non_primitives.remove(pair + 1);
     assert!(
+        prepared
+            .check_input(&PreparedInput::BatchStark {
+                proof: &fixture.proof,
+                common_data: &fixture.proof.stark_common,
+                table_public_inputs: &table_public_inputs,
+            })
+            .is_err()
+    );
+    assert!(
         build_and_prove_next_layer(
             &legacy_input(&fixture.proof),
             &fixture.config,
@@ -213,6 +242,15 @@ fn legacy_separated_input_recurses_into_combined_output_twice() {
     fixture.proof.non_primitives.insert(pair + 1, removed);
 
     fixture.proof.non_primitives.swap(pair, pair + 1);
+    assert!(
+        prepared
+            .check_input(&PreparedInput::BatchStark {
+                proof: &fixture.proof,
+                common_data: &fixture.proof.stark_common,
+                table_public_inputs: &table_public_inputs,
+            })
+            .is_err()
+    );
     assert!(
         build_and_prove_next_layer(
             &legacy_input(&fixture.proof),
@@ -226,6 +264,15 @@ fn legacy_separated_input_recurses_into_combined_output_twice() {
 
     let original = fixture.proof.non_primitives[pair + 1].op_type.clone();
     fixture.proof.non_primitives[pair + 1].op_type = shared;
+    assert!(
+        prepared
+            .check_input(&PreparedInput::BatchStark {
+                proof: &fixture.proof,
+                common_data: &fixture.proof.stark_common,
+                table_public_inputs: &table_public_inputs,
+            })
+            .is_err()
+    );
     assert!(
         build_and_prove_next_layer(
             &legacy_input(&fixture.proof),
@@ -249,6 +296,14 @@ fn challenger_only_legacy_input_recurses_with_mixed_manifest_policy() {
         &params,
     )
     .expect("challenger-only legacy input recurses under mixed manifest policy");
+
+    let mut verifier = BatchStarkProver::new(fixture.config.clone())
+        .with_table_packing(params.table_packing.clone());
+    verifier.register_poseidon2_table::<4>(CFG.for_shared_challenger_table());
+    verifier.register_recompose_table::<4>(true);
+    verifier
+        .verify_all_tables::<Challenge>(&output.0)
+        .expect("challenger-only legacy input's combined output verifies natively");
     assert_eq!(
         output
             .0
