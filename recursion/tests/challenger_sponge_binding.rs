@@ -53,9 +53,10 @@
 mod rejection_oracle;
 use p3_batch_stark::ProverData;
 use p3_circuit::ops::{
-    HintExecutor, Op, Poseidon2Config, generate_poseidon2_trace, generate_recompose_trace,
+    HintExecutor, NpoTypeId, Op, Poseidon2Config, Poseidon2PermCall, Poseidon2Trace,
+    generate_poseidon2_trace, generate_recompose_trace,
 };
-use p3_circuit::tables::Traces;
+use p3_circuit::tables::{Traces, WitnessTrace};
 use p3_circuit::{Circuit, CircuitBuilder, CircuitError, WitnessId};
 use p3_circuit_prover::batch_stark_prover::{
     poseidon2_air_builders_for_configs, recompose_air_builders,
@@ -64,7 +65,7 @@ use p3_circuit_prover::common::{NpoPreprocessor, get_airs_and_degrees_with_prep}
 use p3_circuit_prover::config::KoalaBearConfig;
 use p3_circuit_prover::{
     BatchStarkProver, CircuitProverData, ConstraintProfile, Poseidon2Preprocessor,
-    RecomposePreprocessor, TablePacking, config,
+    Poseidon2SharedPreprocessor, RecomposePreprocessor, TablePacking, config,
 };
 use p3_field::extension::BinomialExtensionField;
 use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
@@ -72,6 +73,7 @@ use p3_koala_bear::{KoalaBear, default_koalabear_poseidon2_16};
 use p3_poseidon2_circuit_air::KoalaBearD4Width16;
 use p3_recursion::challenger::CircuitChallenger;
 use p3_recursion::traits::RecursiveChallenger;
+use p3_symmetric::Permutation;
 #[cfg(debug_assertions)]
 use rejection_oracle::run_with_debug_oracle;
 use rejection_oracle::{ProofCheckError, assert_rejected};
@@ -89,6 +91,7 @@ const WIDTH_EXT: usize = WIDTH / D;
 const CAPACITY_LIMB: usize = RATE_EXT;
 /// Width of the query index the transcript is asked for.
 const QUERY_INDEX_BITS: usize = 8;
+const SHARED_CFG: Poseidon2Config = CFG.for_shared_challenger_table();
 
 /// How the challenger packs its sponge state: through the `recompose/coeff` table, or through
 /// the ALU `mul_add` chain.
@@ -306,7 +309,7 @@ impl HintExecutor<EF> for ChosenCoefficients {
 }
 
 fn run(circuit: &Circuit<EF>) -> Traces<EF> {
-    run_with(circuit, &[])
+    run_with(circuit, &default_publics(circuit))
 }
 
 fn run_with(circuit: &Circuit<EF>, publics: &[EF]) -> Traces<EF> {
@@ -316,7 +319,17 @@ fn run_with(circuit: &Circuit<EF>, publics: &[EF]) -> Traces<EF> {
 }
 
 fn witness_values(circuit: &Circuit<EF>) -> Vec<Option<EF>> {
-    witness_values_with(circuit, &[])
+    witness_values_with(circuit, &default_publics(circuit))
+}
+
+fn default_publics(circuit: &Circuit<EF>) -> Vec<EF> {
+    (0..circuit.public_flat_len)
+        .map(|i| {
+            (i == 0 && circuit.public_flat_len == 2)
+                .then_some(EF::from_u64(RATE as u64))
+                .unwrap_or(EF::ZERO)
+        })
+        .collect()
 }
 
 fn witness_values_with(circuit: &Circuit<EF>, publics: &[EF]) -> Vec<Option<EF>> {
@@ -387,6 +400,283 @@ fn prove_and_verify(circuit: &Circuit<EF>, traces: &Traces<EF>) -> Result<(), Pr
     result
 }
 
+fn add_shared_challenger_transcript(circuit: &mut CircuitBuilder<EF>, first: u64) {
+    let mut challenger = challenger_for(RecomposeMode::NpoTable, circuit);
+    for i in 0..RATE {
+        let t = circuit.define_const(EF::from_u64(first + i as u64));
+        RecursiveChallenger::<F, EF>::observe(&mut challenger, circuit, t);
+    }
+    for _ in 0..=RATE {
+        let _ = RecursiveChallenger::<F, EF>::sample(&mut challenger, circuit);
+    }
+}
+
+/// Build one circuit whose execution has two independent challenger streams and ordinary
+/// sponge/MMCS rows. The logical source traces remain separate; shared materialization is the
+/// only place where they become one physical table.
+fn build_shared_mixed_circuit() -> Circuit<EF> {
+    let perm = default_koalabear_poseidon2_16();
+    let mut circuit = CircuitBuilder::<EF>::new();
+    circuit.enable_poseidon2_perm::<KoalaBearD4Width16, _>(
+        generate_poseidon2_trace::<EF, KoalaBearD4Width16>,
+        perm,
+    );
+
+    // A direct challenger pair with public capacity limbs gives the proof-level attack mutator
+    // a prover-controlled input while keeping the shared preprocessor's challenger layout
+    // (including its capacity CTLs) intact. Honest public capacities are zero.
+    let rate0 = circuit.define_const(EF::from_u64(1));
+    let rate1 = circuit.define_const(EF::from_u64(2));
+    let cap0 = circuit.public_input();
+    let cap1 = circuit.public_input();
+    let config = CFG.for_challenger();
+    circuit
+        .add_poseidon2_perm(&Poseidon2PermCall {
+            config,
+            new_start: true,
+            merkle_path: false,
+            mmcs_bit: None,
+            mmcs_bit2: None,
+            inputs: vec![Some(rate0), Some(rate1), Some(cap0), Some(cap1)],
+            out_ctl: vec![true; RATE_EXT],
+            return_all_outputs: false,
+            mmcs_index_sum: None,
+            absorb_len: RATE,
+        })
+        .expect("public-capacity challenger start builds");
+    add_shared_challenger_transcript(&mut circuit, 100);
+    add_shared_challenger_transcript(&mut circuit, 200);
+
+    // An ordinary sponge chain starts from a deliberately nonzero capacity. Its second row is
+    // a continuation, so the shared table exercises both the ordinary start and continuation
+    // role at a real proof boundary.
+    let ordinary_inputs: Vec<_> = (0..WIDTH_EXT)
+        .map(|i| circuit.define_const(EF::from_u64(10_000 + i as u64)))
+        .collect();
+    let (_, ordinary_outputs) = circuit
+        .add_poseidon2_perm(&Poseidon2PermCall {
+            config: CFG,
+            new_start: true,
+            merkle_path: false,
+            mmcs_bit: None,
+            mmcs_bit2: None,
+            inputs: ordinary_inputs.into_iter().map(Some).collect(),
+            out_ctl: vec![true; RATE_EXT],
+            return_all_outputs: true,
+            mmcs_index_sum: None,
+            absorb_len: 0,
+        })
+        .expect("ordinary sponge start builds");
+    circuit
+        .add_poseidon2_perm(&Poseidon2PermCall {
+            config: CFG,
+            new_start: false,
+            merkle_path: false,
+            mmcs_bit: None,
+            mmcs_bit2: None,
+            inputs: vec![None; WIDTH_EXT],
+            out_ctl: vec![true; RATE_EXT],
+            return_all_outputs: false,
+            mmcs_index_sum: None,
+            absorb_len: 0,
+        })
+        .expect("ordinary sponge continuation builds");
+
+    // An ordinary MMCS row follows the source stream as a separate chain start. The shared
+    // preprocessing must leave its reserved challenger-role slot clear despite Merkle metadata.
+    let merkle_inputs: Vec<_> = (0..WIDTH_EXT)
+        .map(|i| circuit.define_const(EF::from_u64(20_000 + i as u64)))
+        .collect();
+    let mmcs_sum = circuit.define_const(EF::ZERO);
+    let mmcs_bit = circuit.define_const(EF::ONE);
+    circuit
+        .add_poseidon2_perm(&Poseidon2PermCall {
+            config: CFG,
+            new_start: true,
+            merkle_path: true,
+            mmcs_bit: Some(mmcs_bit),
+            mmcs_bit2: None,
+            inputs: merkle_inputs.into_iter().map(Some).collect(),
+            out_ctl: vec![true; RATE_EXT],
+            return_all_outputs: false,
+            mmcs_index_sum: Some(mmcs_sum),
+            absorb_len: 0,
+        })
+        .expect("ordinary MMCS row builds");
+
+    // Keep the output witnesses live so the continuation's CTL rows are part of the proof. The
+    // first ordinary operation's returned capacity is intentionally not exposed to the circuit.
+    assert_eq!(ordinary_outputs.len(), WIDTH_EXT);
+    circuit.build().expect("shared mixed circuit builds")
+}
+
+/// Prove `traces` against the single physical shared Poseidon2 table and verify the proof.
+fn shared_prove_and_verify(
+    circuit: &Circuit<EF>,
+    traces: &Traces<EF>,
+) -> Result<(), ProofCheckError> {
+    let table_packing = TablePacking::new(1, 1);
+    let stark_config = config::koala_bear();
+    let npo_preprocessors: Vec<Box<dyn NpoPreprocessor<F>>> = vec![
+        Box::new(Poseidon2SharedPreprocessor::new(vec![SHARED_CFG])),
+        Box::new(RecomposePreprocessor::new(true)),
+    ];
+    let mut air_builders =
+        poseidon2_air_builders_for_configs::<KoalaBearConfig, D>(vec![SHARED_CFG]);
+    air_builders.extend(recompose_air_builders::<KoalaBearConfig, D>(1, true));
+
+    let (airs_degrees, primitive_columns, non_primitive_columns) =
+        get_airs_and_degrees_with_prep::<KoalaBearConfig, EF, D>(
+            circuit,
+            &table_packing,
+            &npo_preprocessors,
+            &air_builders,
+            ConstraintProfile::Standard,
+        )
+        .expect("shared preprocessed columns");
+    let (airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
+
+    let prover_data = ProverData::from_airs_and_degrees(&stark_config, &airs, &degrees);
+    let circuit_prover_data =
+        CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
+    let mut prover = BatchStarkProver::new(stark_config).with_table_packing(table_packing);
+    prover.register_poseidon2_table::<D>(SHARED_CFG);
+    prover.register_recompose_table::<D>(true);
+
+    #[cfg(debug_assertions)]
+    let result = run_with_debug_oracle(|| {
+        let proof = prover
+            .prove_all_tables(traces, &circuit_prover_data)
+            .map_err(ProofCheckError::Prove)?;
+        prover
+            .verify_all_tables::<EF>(&proof)
+            .map_err(ProofCheckError::Verify)
+    });
+
+    #[cfg(not(debug_assertions))]
+    let result = {
+        let proof = prover
+            .prove_all_tables(traces, &circuit_prover_data)
+            .map_err(ProofCheckError::Prove)?;
+        prover
+            .verify_all_tables::<EF>(&proof)
+            .map_err(ProofCheckError::Verify)
+    };
+
+    #[cfg(debug_assertions)]
+    return match result {
+        Ok(result) => result,
+        Err(kind) => Err(ProofCheckError::DebugPanic(kind)),
+    };
+
+    #[cfg(not(debug_assertions))]
+    result
+}
+
+/// Apply a prover-controlled mutation to one challenger source row, recompute that row's
+/// permutation and every later row in the same chain, and update the exposed rate witnesses.
+/// The circuit and its committed preprocessing remain the honest originals.
+fn forge_shared_challenger_trace(
+    circuit: &Circuit<EF>,
+    target_row: usize,
+    mutate: impl FnOnce(&mut p3_circuit::ops::Poseidon2CircuitRow<F>),
+) -> Traces<EF> {
+    let mut traces = run(circuit);
+    let source_id = NpoTypeId::poseidon2_perm(CFG.for_challenger());
+    let source = traces
+        .non_primitive_trace::<Poseidon2Trace<F>>(&source_id)
+        .expect("shared circuit has challenger source trace")
+        .clone();
+    assert!(target_row < source.operations.len());
+    assert!(!source.operations[target_row].merkle_path);
+
+    let mut forged = source;
+    mutate(&mut forged.operations[target_row]);
+    let mut witness: Vec<EF> = witness_values(circuit)
+        .into_iter()
+        .map(|value| value.expect("honest witness is complete"))
+        .collect();
+    // Keep the witness bus and public-input table consistent with the forged row's input state.
+    // The targeted direct challenger rows expose their capacity over public CTLs, so this is a
+    // prover-controlled main/input mutation rather than a constant-table mismatch.
+    for limb in 0..WIDTH_EXT {
+        let wid = forged.operations[target_row].input_indices[limb] as usize;
+        let coeffs = &forged.operations[target_row].input_values[limb * D..(limb + 1) * D];
+        witness[wid] = <EF as BasedVectorSpace<F>>::from_basis_coefficients_slice(coeffs)
+            .expect("challenger input coefficients form an extension element");
+    }
+    for (wid, value) in traces
+        .public_trace
+        .index
+        .iter()
+        .zip(traces.public_trace.values.iter_mut())
+    {
+        *value = witness[wid.0 as usize];
+    }
+    let perm = default_koalabear_poseidon2_16();
+
+    let mut chain_end = target_row + 1;
+    while chain_end < forged.operations.len() && !forged.operations[chain_end].new_start {
+        chain_end += 1;
+    }
+    for row_index in target_row..chain_end {
+        let row = &mut forged.operations[row_index];
+        let input: [F; WIDTH] = row
+            .input_values
+            .clone()
+            .try_into()
+            .expect("Poseidon2 row has fixed width");
+        let output = perm.permute(input);
+        for (limb, (&ctl, &wid)) in row
+            .out_ctl
+            .iter()
+            .zip(row.output_indices.iter())
+            .enumerate()
+        {
+            if ctl {
+                let coeffs = &output[limb * D..(limb + 1) * D];
+                let value = <EF as BasedVectorSpace<F>>::from_basis_coefficients_slice(coeffs)
+                    .expect("permutation output coefficients form an extension element");
+                witness[wid as usize] = value;
+            }
+        }
+        if row_index + 1 < chain_end {
+            let next = &mut forged.operations[row_index + 1];
+            next.input_values = output.to_vec();
+            if next.absorb_len > 0 {
+                next.input_values[RATE] += F::from_u8(next.absorb_len as u8);
+            }
+        }
+    }
+
+    traces
+        .non_primitive_traces
+        .insert(source_id, Box::new(forged));
+    traces.witness_trace = WitnessTrace::new(witness);
+    traces
+}
+
+/// Forge a challenger continuation through its decomposition hint. This changes the capacity
+/// witness and the recompose output consistently, while leaving the original circuit's
+/// preprocessed columns (including the shared role/tag selectors) untouched.
+fn forge_shared_continuation_from_hint(circuit: &Circuit<EF>) -> Traces<EF> {
+    let mut edited = circuit.clone();
+    let perms = perm_op_positions(circuit);
+    let (_, first_outputs) = npo_io(circuit, perms[1]);
+    let produced = first_outputs[CAPACITY_LIMB][0];
+    let hint_pos = decomposition_hint_position(circuit, produced);
+    match &mut edited.ops[perms[1]] {
+        Op::NonPrimitiveOpWithExecutor { outputs, .. } => outputs[CAPACITY_LIMB].clear(),
+        _ => unreachable!(),
+    }
+    match &mut edited.ops[hint_pos] {
+        Op::Hint { executor, .. } => *executor = Box::new(ChosenCoefficients(1_000)),
+        _ => unreachable!(),
+    }
+    assert_same_constraint_system(circuit, &edited);
+    run(&edited)
+}
+
 #[cfg(debug_assertions)]
 #[test]
 fn unrelated_panic_is_not_accepted_as_rejection_oracle() {
@@ -419,6 +709,87 @@ fn assert_same_constraint_system(honest: &Circuit<EF>, edited: &Circuit<EF>) {
 // ---------------------------------------------------------------------------
 // Baseline and control
 // ---------------------------------------------------------------------------
+
+#[test]
+fn shared_mixed_transcript_proves_and_verifies() {
+    let circuit = build_shared_mixed_circuit();
+    let traces = run(&circuit);
+    let challenger_id = NpoTypeId::poseidon2_perm(CFG.for_challenger());
+    let challenger_trace = traces
+        .non_primitive_trace::<Poseidon2Trace<F>>(&challenger_id)
+        .expect("mixed circuit has challenger source trace");
+    assert!(
+        !challenger_trace.operations.is_empty(),
+        "honest control must execute challenger permutations"
+    );
+    let ordinary_id = NpoTypeId::poseidon2_perm(CFG);
+    let ordinary_trace = traces
+        .non_primitive_trace::<Poseidon2Trace<F>>(&ordinary_id)
+        .expect("mixed circuit has ordinary source trace");
+    assert!(
+        !ordinary_trace.operations.is_empty(),
+        "honest control must execute ordinary permutations"
+    );
+    assert!(
+        ordinary_trace.operations[0].new_start
+            && ordinary_trace.operations[0].input_values[RATE] != F::ZERO,
+        "honest ordinary start must carry nonzero capacity"
+    );
+    shared_prove_and_verify(&circuit, &traces)
+        .expect("honest mixed challenger/ordinary proof must verify");
+}
+
+#[test]
+fn shared_challenger_initial_capacity_is_rejected_with_original_prep() {
+    let circuit = build_shared_mixed_circuit();
+    let forged = forge_shared_challenger_trace(&circuit, 0, |row| {
+        // Keep the prefix tag intact and forge the remaining initial capacity limb.
+        row.input_values[RATE + D] += F::ONE;
+    });
+    assert_rejected(
+        &shared_prove_and_verify(&circuit, &forged),
+        "a shared challenger chain start must retain its trusted zero capacity",
+    );
+}
+
+#[test]
+fn shared_challenger_later_capacity_is_rejected_with_original_prep() {
+    let circuit = build_shared_mixed_circuit();
+    let forged = forge_shared_continuation_from_hint(&circuit);
+    assert_rejected(
+        &shared_prove_and_verify(&circuit, &forged),
+        "a shared challenger continuation must retain the previous capacity output",
+    );
+}
+
+#[test]
+fn shared_challenger_prefix_tag_is_rejected_with_original_prep() {
+    let circuit = build_shared_mixed_circuit();
+    let forged = forge_shared_challenger_trace(&circuit, 0, |row| {
+        assert!(
+            row.absorb_len > 0,
+            "the first challenger row carries its prefix tag"
+        );
+        row.input_values[RATE] += F::ONE;
+    });
+    assert_rejected(
+        &shared_prove_and_verify(&circuit, &forged),
+        "a shared challenger start must retain its trusted prefix-length tag",
+    );
+}
+
+#[test]
+fn shared_challenger_role_metadata_cannot_downgrade_a_forged_start() {
+    let circuit = build_shared_mixed_circuit();
+    let forged = forge_shared_challenger_trace(&circuit, 0, |row| {
+        row.challenger = false;
+        row.input_values[RATE + D] += F::ONE;
+    });
+    assert_rejected(
+        &shared_prove_and_verify(&circuit, &forged),
+        "witness-only challenger role metadata must not downgrade a forged challenger start",
+    );
+}
 
 #[test]
 fn honest_transcript_proves_and_verifies() {
