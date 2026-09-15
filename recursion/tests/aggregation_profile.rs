@@ -199,7 +199,7 @@ fn backend_output_registration_deduplicates_same_shape_roles() {
 }
 
 #[test]
-fn backend_input_selector_accepts_exact_legacy_or_combined_manifest() {
+fn backend_input_selector_selects_exact_legacy_or_combined_manifest() {
     let backend =
         p3_recursion::FriRecursionBackend::<16, 8, _>::new(Poseidon2Config::KOALA_BEAR_D4_W16)
             .for_extension_degree::<4>();
