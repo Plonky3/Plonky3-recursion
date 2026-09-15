@@ -261,6 +261,45 @@ fn backend_input_selector_selects_exact_legacy_or_combined_manifest() {
     );
 }
 
+#[test]
+fn mixed_arity4_bridge_separates_input_and_output_extra_tables() {
+    let backend =
+        p3_recursion::FriRecursionBackend::<16, 8, _>::new(Poseidon2Config::KOALA_BEAR_D4_W16)
+            .with_extra_poseidon2_table(Poseidon2Config::KOALA_BEAR_D4_W32)
+            .without_extra_poseidon2_input_tables()
+            .for_extension_degree::<4>();
+    let shared =
+        NpoTypeId::poseidon2_perm(Poseidon2Config::KOALA_BEAR_D4_W16.for_shared_challenger_table());
+    let wide = NpoTypeId::poseidon2_perm(Poseidon2Config::KOALA_BEAR_D4_W32);
+    let recompose = NpoTypeId::recompose_with_coeff_lookups();
+    let input_ids = vec![shared.clone(), recompose.clone()];
+    let input_provers = <KoalaBearD4Backend as PcsRecursionBackend<
+        KoalaBearD4RecursionConfig,
+        BatchOnly,
+        4,
+    >>::non_primitive_input_provers(&backend, 4, &input_ids);
+    assert_eq!(
+        input_provers
+            .iter()
+            .map(|prover| prover.op_type())
+            .collect::<Vec<_>>(),
+        input_ids
+    );
+
+    let output_provers = <KoalaBearD4Backend as PcsRecursionBackend<
+        KoalaBearD4RecursionConfig,
+        BatchOnly,
+        4,
+    >>::non_primitive_provers(&backend, 4);
+    assert_eq!(
+        output_provers
+            .iter()
+            .map(|prover| prover.op_type())
+            .collect::<Vec<_>>(),
+        vec![shared, wide, recompose]
+    );
+}
+
 /// `prove_aggregation_layer_with_profile` prepares fresh proving data for each call.
 #[test]
 fn aggregation_layer_profile_prepares_fresh() {

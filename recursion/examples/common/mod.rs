@@ -56,15 +56,19 @@ pub use p3_recursion::{
 /// Physical non-primitive tables emitted by a recursive backend.
 ///
 /// Poseidon2 challenger/MMCS shapes use one shared output identity when extension limbs are
-/// available. Poseidon1 has no shared identity, so this local example helper preserves its
-/// existing one-table registration without adding a production API to Poseidon1.
+/// available. Poseidon1 retains its two-role legacy identities for D>=2; D1 has one physical
+/// table because it has no extension-limb challenger role.
 pub trait OutputTableConfigs: Copy {
     fn output_table_configs(self) -> Vec<Self>;
 }
 
 impl OutputTableConfigs for Poseidon1Config {
     fn output_table_configs(self) -> Vec<Self> {
-        vec![self]
+        if self.d() >= 2 {
+            vec![self.for_challenger(), self]
+        } else {
+            vec![self]
+        }
     }
 }
 
@@ -77,6 +81,41 @@ impl OutputTableConfigs for Poseidon2Config {
         } else {
             vec![self]
         }
+    }
+}
+
+#[cfg(test)]
+mod output_table_config_tests {
+    use super::*;
+
+    #[test]
+    fn poseidon1_extension_outputs_retain_both_legacy_roles() {
+        let config = Poseidon1Config::KOALA_BEAR_D4_W16;
+        let ids: Vec<_> = config
+            .output_table_configs()
+            .into_iter()
+            .map(NpoTypeId::poseidon1_perm)
+            .collect();
+        assert_eq!(
+            ids,
+            vec![
+                NpoTypeId::poseidon1_perm(config.for_challenger()),
+                NpoTypeId::poseidon1_perm(config),
+            ]
+        );
+    }
+
+    #[test]
+    fn poseidon1_base_outputs_keep_one_legacy_role() {
+        let config = Poseidon1Config::KOALA_BEAR_D1_W16;
+        assert_eq!(
+            config
+                .output_table_configs()
+                .into_iter()
+                .map(NpoTypeId::poseidon1_perm)
+                .collect::<Vec<_>>(),
+            vec![NpoTypeId::poseidon1_perm(config)]
+        );
     }
 }
 pub use p3_symmetric::{PaddingFreeSponge, Permutation, TruncatedPermutation};

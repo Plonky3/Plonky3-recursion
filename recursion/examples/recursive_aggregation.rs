@@ -1447,6 +1447,9 @@ macro_rules! arity4_run {
                 .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup);
             let backend = $backend;
             let backend_arity4 = $backend_arity4;
+            let bridge_backend_arity4 = backend_arity4
+                .clone()
+                .without_extra_poseidon2_input_tables();
 
             let tree_depth = num_recursive_layers;
             let num_leaves = 1usize << tree_depth;
@@ -1569,7 +1572,6 @@ macro_rules! arity4_run {
                 for table_config in $poseidon2_config.output_table_configs() {
                     verifier.register_poseidon2_table::<D>(table_config);
                 }
-                verifier.register_poseidon2_table::<D>($poseidon2_config_arity4);
                 if !disable_recompose_npo {
                     verifier.register_recompose_table::<D>(true);
                 }
@@ -1595,6 +1597,11 @@ macro_rules! arity4_run {
                     security_level,
                     disable_recompose_npo,
                 );
+                let input_backend_arity4 = if level == 2 {
+                    bridge_backend_arity4.clone()
+                } else {
+                    backend_arity4.clone()
+                };
 
                 let mut next_level = Vec::with_capacity(pairs);
                 let mut level_owner: Option<
@@ -1632,7 +1639,7 @@ macro_rules! arity4_run {
                                         &right_table,
                                     ),
                                     agg_config.clone(),
-                                    backend_arity4.clone(),
+                                    input_backend_arity4.clone(),
                                     agg_params.clone(),
                                 )
                                 .unwrap_or_else(|e| {
@@ -1661,7 +1668,7 @@ macro_rules! arity4_run {
                                 &right_table,
                             ),
                             agg_config.clone(),
-                            backend_arity4.clone(),
+                            input_backend_arity4.clone(),
                             agg_params.clone(),
                         )
                         .unwrap_or_else(|e| {

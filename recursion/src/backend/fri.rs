@@ -387,6 +387,10 @@ pub struct FriRecursionBackend<
     /// Additional Poseidon2 table configs that may appear in input proofs verified
     /// by this backend (e.g. a wide MMCS config distinct from the challenger).
     pub extra_poseidon2_table_configs: Vec<Poseidon2Config>,
+    /// Whether configured extra Poseidon2 tables are expected in input manifests. Output
+    /// registration always retains [`Self::extra_poseidon2_table_configs`]; this separate bridge
+    /// switch supports a first mixed-shape layer whose output has not emitted the wide table yet.
+    pub expect_extra_poseidon2_input_tables: bool,
     /// Number of recompose operations packed per AIR row.
     ///
     /// Increasing this reduces the recompose table height proportionally.
@@ -411,6 +415,7 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
         Self {
             challenger_perm_config,
             extra_poseidon2_table_configs: Vec::new(),
+            expect_extra_poseidon2_input_tables: true,
             recompose_lanes: 1,
             shares_challenger_perm_table: true,
             limits: VerifierLimits::default(),
@@ -503,6 +508,13 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
         self
     }
 
+    /// Omit configured extra Poseidon2 tables from the next input manifest only. Output AIR/table
+    /// registration still includes them, which is used by the first bridge into arity-4 layers.
+    pub fn without_extra_poseidon2_input_tables(mut self) -> Self {
+        self.expect_extra_poseidon2_input_tables = false;
+        self
+    }
+
     /// Extra Poseidon2 table configs whose circuit extension degree equals
     /// `table_degree`, de-duplicated and excluding the challenger config.
     fn extra_poseidon2_table_configs_for_degree(
@@ -522,6 +534,17 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
             }
         }
         configs
+    }
+
+    fn extra_poseidon2_table_configs_for_input_degree(
+        &self,
+        table_degree: usize,
+    ) -> Vec<Poseidon2Config> {
+        if self.expect_extra_poseidon2_input_tables {
+            self.extra_poseidon2_table_configs_for_degree(table_degree)
+        } else {
+            Vec::new()
+        }
     }
 
     /// Full ordered list of Poseidon2 table configs for `table_degree`: the challenger config's
@@ -594,6 +617,13 @@ pub struct FriRecursionBackendD5<
 impl<const D: usize, const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
     FriRecursionBackendForExt<D, WIDTH, RATE, C>
 {
+    /// Omit configured extra Poseidon2 tables from the next input manifest only; output
+    /// registration remains unchanged for a mixed-shape bridge.
+    pub fn without_extra_poseidon2_input_tables(mut self) -> Self {
+        self.0 = self.0.without_extra_poseidon2_input_tables();
+        self
+    }
+
     /// Override the finite verifier-owned operational policy.
     #[must_use]
     pub fn with_limits(mut self, limits: VerifierLimits) -> Self {
@@ -610,6 +640,13 @@ impl<const D: usize, const WIDTH: usize, const RATE: usize, C: ChallengerPermCon
 impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
     FriRecursionBackendD5<WIDTH, RATE, C>
 {
+    /// Omit configured extra Poseidon2 tables from the next input manifest only; output
+    /// registration remains unchanged for a mixed-shape bridge.
+    pub fn without_extra_poseidon2_input_tables(mut self) -> Self {
+        self.0 = self.0.without_extra_poseidon2_input_tables();
+        self
+    }
+
     /// Override the finite verifier-owned operational policy.
     #[must_use]
     pub fn with_limits(mut self, limits: VerifierLimits) -> Self {
@@ -1539,10 +1576,20 @@ where
         ext_degree: usize,
         op_types: &[p3_circuit::ops::NpoTypeId],
     ) -> Vec<Box<dyn TableProver<SC>>> {
+        let fallback = || {
+            if self.0.expect_extra_poseidon2_input_tables {
+                <Self as PcsRecursionBackend<SC, A, 2>>::non_primitive_provers(self, ext_degree)
+            } else {
+                let mut input_backend = (*self).clone();
+                input_backend.0.extra_poseidon2_table_configs.clear();
+                <Self as PcsRecursionBackend<SC, A, 2>>::non_primitive_provers(
+                    &input_backend,
+                    ext_degree,
+                )
+            }
+        };
         let Some(challenger) = self.0.challenger_perm_config.as_poseidon2().copied() else {
-            return <Self as PcsRecursionBackend<SC, A, 2>>::non_primitive_provers(
-                self, ext_degree,
-            );
+            return fallback();
         };
         let legacy_ids: Vec<_> = self
             .0
@@ -1551,14 +1598,10 @@ where
             .map(p3_circuit::ops::NpoTypeId::poseidon2_perm)
             .collect();
         if !legacy_ids.iter().any(|id| op_types.contains(id)) {
-            return <Self as PcsRecursionBackend<SC, A, 2>>::non_primitive_provers(
-                self, ext_degree,
-            );
+            return fallback();
         }
         if ext_degree != 2 {
-            return <Self as PcsRecursionBackend<SC, A, 2>>::non_primitive_provers(
-                self, ext_degree,
-            );
+            return fallback();
         }
         let mut provers = Vec::new();
         for config in self.0.poseidon2_legacy_challenger_shape_configs(challenger) {
@@ -1567,7 +1610,7 @@ where
                     as Box<dyn TableProver<SC>>,
             );
         }
-        for config in self.0.extra_poseidon2_table_configs_for_degree(2) {
+        for config in self.0.extra_poseidon2_table_configs_for_input_degree(2) {
             provers.push(Box::new(Poseidon2ProverD2::new(
                 config,
                 ConstraintProfile::Standard,
@@ -1828,10 +1871,20 @@ where
         ext_degree: usize,
         op_types: &[p3_circuit::ops::NpoTypeId],
     ) -> Vec<Box<dyn TableProver<SC>>> {
+        let fallback = || {
+            if self.0.expect_extra_poseidon2_input_tables {
+                <Self as PcsRecursionBackend<SC, A, 4>>::non_primitive_provers(self, ext_degree)
+            } else {
+                let mut input_backend = (*self).clone();
+                input_backend.0.extra_poseidon2_table_configs.clear();
+                <Self as PcsRecursionBackend<SC, A, 4>>::non_primitive_provers(
+                    &input_backend,
+                    ext_degree,
+                )
+            }
+        };
         let Some(challenger) = self.0.challenger_perm_config.as_poseidon2().copied() else {
-            return <Self as PcsRecursionBackend<SC, A, 4>>::non_primitive_provers(
-                self, ext_degree,
-            );
+            return fallback();
         };
         let legacy_ids: Vec<_> = self
             .0
@@ -1840,9 +1893,7 @@ where
             .map(p3_circuit::ops::NpoTypeId::poseidon2_perm)
             .collect();
         if ext_degree != 4 || !legacy_ids.iter().any(|id| op_types.contains(id)) {
-            return <Self as PcsRecursionBackend<SC, A, 4>>::non_primitive_provers(
-                self, ext_degree,
-            );
+            return fallback();
         }
         let mut provers: Vec<Box<dyn TableProver<SC>>> = Vec::new();
         for config in self.0.poseidon2_legacy_challenger_shape_configs(challenger) {
@@ -1851,7 +1902,7 @@ where
                 ConstraintProfile::Standard,
             )));
         }
-        for config in self.0.extra_poseidon2_table_configs_for_degree(4) {
+        for config in self.0.extra_poseidon2_table_configs_for_input_degree(4) {
             provers.push(Box::new(Poseidon2Prover::new(
                 config,
                 ConstraintProfile::Standard,
@@ -2087,6 +2138,21 @@ where
         } else {
             Vec::new()
         }
+    }
+
+    fn non_primitive_input_provers(
+        &self,
+        ext_degree: usize,
+        _op_types: &[p3_circuit::ops::NpoTypeId],
+    ) -> Vec<Box<dyn TableProver<SC>>> {
+        if self.0.expect_extra_poseidon2_input_tables {
+            return <Self as PcsRecursionBackend<SC, A, 5>>::non_primitive_provers(
+                self, ext_degree,
+            );
+        }
+        let mut input_backend = self.clone();
+        input_backend.0.extra_poseidon2_table_configs.clear();
+        <Self as PcsRecursionBackend<SC, A, 5>>::non_primitive_provers(&input_backend, ext_degree)
     }
 
     fn non_primitive_air_builders(&self) -> Vec<Box<dyn NpoAirBuilder<SC, 5>>> {
