@@ -9,7 +9,9 @@ use p3_circuit_prover::{ConstraintProfile, TablePacking};
 use p3_recursion::profile::{
     HashProfile, RecursionLayerProfile, TranscriptKind, prove_aggregation_layer_with_profile,
 };
-use p3_recursion::{BatchOnly, PcsRecursionBackend, build_aggregation_layer_circuit};
+use p3_recursion::{
+    BatchOnly, PcsRecursionBackend, Poseidon2Config, build_aggregation_layer_circuit,
+};
 use p3_test_utils::koala_bear_params::Challenge;
 
 use crate::common::{
@@ -165,6 +167,98 @@ fn aggregation_layer_profile_converges_and_proves() {
     );
 
     verify_output(&output, &config, &backend, profile.table_packing);
+}
+
+#[test]
+fn backend_output_registration_deduplicates_same_shape_roles() {
+    let backend =
+        p3_recursion::FriRecursionBackend::<16, 8, _>::new(Poseidon2Config::KOALA_BEAR_D4_W16)
+            .with_extra_poseidon2_table(Poseidon2Config::KOALA_BEAR_D4_W16)
+            .with_extra_poseidon2_table(Poseidon2Config::KOALA_BEAR_D4_W16.for_challenger())
+            .for_extension_degree::<4>();
+
+    let provers = <KoalaBearD4Backend as PcsRecursionBackend<
+        KoalaBearD4RecursionConfig,
+        BatchOnly,
+        4,
+    >>::non_primitive_provers(&backend, 4);
+    let same_shape: Vec<_> = provers
+        .iter()
+        .filter(|prover| {
+            prover
+                .op_type()
+                .as_str()
+                .starts_with("poseidon2_perm/koala_bear_d4_w16")
+        })
+        .collect();
+    assert_eq!(same_shape.len(), 1);
+    assert_eq!(
+        same_shape[0].op_type().as_str(),
+        "poseidon2_perm/koala_bear_d4_w16_shared"
+    );
+}
+
+#[test]
+fn backend_input_selector_accepts_exact_legacy_or_combined_manifest() {
+    let backend =
+        p3_recursion::FriRecursionBackend::<16, 8, _>::new(Poseidon2Config::KOALA_BEAR_D4_W16)
+            .for_extension_degree::<4>();
+    let combined =
+        NpoTypeId::poseidon2_perm(Poseidon2Config::KOALA_BEAR_D4_W16.for_shared_challenger_table());
+    let legacy = vec![
+        NpoTypeId::poseidon2_perm(Poseidon2Config::KOALA_BEAR_D4_W16.for_challenger()),
+        NpoTypeId::poseidon2_perm(Poseidon2Config::KOALA_BEAR_D4_W16),
+    ];
+
+    let combined_provers = <KoalaBearD4Backend as PcsRecursionBackend<
+        KoalaBearD4RecursionConfig,
+        BatchOnly,
+        4,
+    >>::non_primitive_input_provers(
+        &backend, 4, std::slice::from_ref(&combined)
+    );
+    assert!(combined_provers.iter().any(|p| p.op_type() == combined));
+
+    let legacy_provers = <KoalaBearD4Backend as PcsRecursionBackend<
+        KoalaBearD4RecursionConfig,
+        BatchOnly,
+        4,
+    >>::non_primitive_input_provers(&backend, 4, &legacy);
+    assert_eq!(
+        legacy_provers
+            .iter()
+            .filter(|p| p
+                .op_type()
+                .as_str()
+                .starts_with("poseidon2_perm/koala_bear_d4_w16"))
+            .map(|p| p.op_type().clone())
+            .collect::<Vec<_>>(),
+        legacy
+    );
+
+    let challenger_only_backend =
+        p3_recursion::FriRecursionBackend::<16, 8, _>::new(Poseidon2Config::KOALA_BEAR_D4_W16)
+            .without_shared_challenger_perm_table()
+            .for_extension_degree::<4>();
+    let challenger_only = vec![legacy[0].clone()];
+    let challenger_only_provers = <KoalaBearD4Backend as PcsRecursionBackend<
+        KoalaBearD4RecursionConfig,
+        BatchOnly,
+        4,
+    >>::non_primitive_input_provers(
+        &challenger_only_backend, 4, &challenger_only
+    );
+    assert_eq!(
+        challenger_only_provers
+            .iter()
+            .filter(|p| p
+                .op_type()
+                .as_str()
+                .starts_with("poseidon2_perm/koala_bear_d4_w16"))
+            .map(|p| p.op_type().clone())
+            .collect::<Vec<_>>(),
+        challenger_only
+    );
 }
 
 /// `prove_aggregation_layer_with_profile` prepares fresh proving data for each call.

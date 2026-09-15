@@ -154,8 +154,9 @@ macro_rules! define_whir_aggregation_module {
             ) {
                 let mut verifier =
                     BatchStarkProver::new(config.clone()).with_table_packing(table_packing.clone());
-                verifier.register_poseidon2_table::<4>($poseidon2_config.for_challenger());
-                verifier.register_poseidon2_table::<4>($poseidon2_config);
+                for table_config in $poseidon2_config.output_table_configs() {
+                    verifier.register_poseidon2_table::<4>(table_config);
+                }
                 verifier.register_recompose_table::<4>(true);
                 verifier
                     .verify_all_tables::<$ef>(proof)

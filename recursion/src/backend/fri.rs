@@ -392,13 +392,12 @@ pub struct FriRecursionBackend<
     /// Increasing this reduces the recompose table height proportionally.
     /// Must be kept in sync between prover and verifier. Defaults to 1.
     pub recompose_lanes: usize,
-    /// Whether MMCS and compression rows share the challenger permutation's shape.
+    /// Whether legacy input manifests expect a same-shape challenger/MMCS table.
     ///
-    /// The challenger's duplex rows live on their own table so the AIR can chain their sponge
-    /// capacity, which leaves a second table for the rows of the same shape that MMCS and
-    /// compression emit. Mixed-shape circuits run those on a separately registered
-    /// configuration instead, so that second table carries no rows and must not be expected in
-    /// the proof; they clear this with [`Self::without_shared_challenger_perm_table`].
+    /// Supported D>=2, non-arity-4 output proofs always use one combined physical identity. In
+    /// mixed-shape recursion that identity may contain challenger rows only; clearing this flag
+    /// selects the legacy challenger-only input manifest while leaving output registration
+    /// unchanged.
     pub shares_challenger_perm_table: bool,
     /// Owned operational policy retained by prepared and uncached verifiers.
     pub(crate) limits: VerifierLimits,
@@ -430,11 +429,12 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
         &self.limits
     }
 
-    /// Declare that MMCS and compression rows do not use the challenger's permutation shape.
+    /// Select the legacy input manifest for a mixed-shape recursion.
     ///
-    /// Set this for mixed-shape circuits (for example arity-4 recursion, where leaf hashing and
-    /// compression run on a wider separately registered configuration), so the shared table for
-    /// the challenger's own shape is not expected in the proof.
+    /// Output registration still uses the combined physical challenger identity where supported;
+    /// this option only says that an input proof expects the dedicated challenger table plus its
+    /// separate ordinary/wide MMCS tables. For arity-4 recursion, the wide MMCS table remains a
+    /// distinct ordinary identity while the narrow challenger identity may be shared.
     pub const fn without_shared_challenger_perm_table(mut self) -> Self {
         self.shares_challenger_perm_table = false;
         self

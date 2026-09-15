@@ -73,13 +73,29 @@ fn verify_fri_output(
     output: &RecursionOutput<common::KoalaBearD4RecursionConfig>,
 ) {
     let mut verifier =
-        BatchStarkProver::new(config).with_table_packing(params.table_packing.clone());
-    verifier.register_poseidon2_table::<4>(Poseidon2Config::KOALA_BEAR_D4_W16.for_challenger());
-    verifier.register_poseidon2_table::<4>(Poseidon2Config::KOALA_BEAR_D4_W16);
+        BatchStarkProver::new(config.clone()).with_table_packing(params.table_packing.clone());
+    verifier.register_poseidon2_table::<4>(
+        Poseidon2Config::KOALA_BEAR_D4_W16.for_shared_challenger_table(),
+    );
     verifier.register_recompose_table::<4>(true);
     verifier
         .verify_all_tables::<Challenge>(&output.0)
         .expect("the recursive proof verifies");
+
+    // The output manifest is now the single shared physical identity. A verifier configured with
+    // the historical separated challenger/ordinary identities must reject that real proof rather
+    // than silently accepting a count/order mismatch.
+    let mut legacy_verifier =
+        BatchStarkProver::new(config.clone()).with_table_packing(params.table_packing.clone());
+    legacy_verifier
+        .register_poseidon2_table::<4>(Poseidon2Config::KOALA_BEAR_D4_W16.for_challenger());
+    legacy_verifier.register_poseidon2_table::<4>(Poseidon2Config::KOALA_BEAR_D4_W16);
+    legacy_verifier.register_recompose_table::<4>(true);
+    assert!(
+        legacy_verifier
+            .verify_all_tables::<Challenge>(&output.0)
+            .is_err()
+    );
     assert_preprocessing_is_retained(output);
 }
 
@@ -89,13 +105,26 @@ fn verify_whir_output(
     output: &RecursionOutput<BbWhirConfig>,
 ) {
     let mut verifier =
-        BatchStarkProver::new(config).with_table_packing(params.table_packing.clone());
-    verifier.register_poseidon2_table::<4>(Poseidon2Config::BABY_BEAR_D4_W16.for_challenger());
-    verifier.register_poseidon2_table::<4>(Poseidon2Config::BABY_BEAR_D4_W16);
+        BatchStarkProver::new(config.clone()).with_table_packing(params.table_packing.clone());
+    verifier.register_poseidon2_table::<4>(
+        Poseidon2Config::BABY_BEAR_D4_W16.for_shared_challenger_table(),
+    );
     verifier.register_recompose_table::<4>(true);
     verifier
         .verify_all_tables::<BbEF>(&output.0)
         .expect("the recursive proof verifies");
+
+    let mut legacy_verifier =
+        BatchStarkProver::new(config.clone()).with_table_packing(params.table_packing.clone());
+    legacy_verifier
+        .register_poseidon2_table::<4>(Poseidon2Config::BABY_BEAR_D4_W16.for_challenger());
+    legacy_verifier.register_poseidon2_table::<4>(Poseidon2Config::BABY_BEAR_D4_W16);
+    legacy_verifier.register_recompose_table::<4>(true);
+    assert!(
+        legacy_verifier
+            .verify_all_tables::<BbEF>(&output.0)
+            .is_err()
+    );
     assert_preprocessing_is_retained(output);
 }
 

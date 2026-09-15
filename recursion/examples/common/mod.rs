@@ -12,7 +12,8 @@ pub use clap::{Args as ClapArgs, Parser, ValueEnum};
 pub use p3_air::{SymbolicExpression, SymbolicExpressionExt};
 pub use p3_challenger::DuplexChallenger;
 pub use p3_circuit::ops::{
-    NpoTypeId, generate_poseidon1_trace, generate_poseidon2_trace, generate_recompose_trace,
+    NpoTypeId, Poseidon1Config, generate_poseidon1_trace, generate_poseidon2_trace,
+    generate_recompose_trace,
 };
 pub use p3_circuit::{Circuit, CircuitBuilder, CircuitError, CircuitRunner, NonPrimitiveOpId};
 pub use p3_circuit_prover::batch_stark_prover::poseidon2_air_builders;
@@ -51,6 +52,33 @@ pub use p3_recursion::{
     merge_hiding_random_openings, observe_opened_values, prove_aggregation_layer,
     prove_aggregation_layer_cross, prove_next_layer, verify_batch_circuit,
 };
+
+/// Physical non-primitive tables emitted by a recursive backend.
+///
+/// Poseidon2 challenger/MMCS shapes use one shared output identity when extension limbs are
+/// available. Poseidon1 has no shared identity, so this local example helper preserves its
+/// existing one-table registration without adding a production API to Poseidon1.
+pub trait OutputTableConfigs: Copy {
+    fn output_table_configs(self) -> Vec<Self>;
+}
+
+impl OutputTableConfigs for Poseidon1Config {
+    fn output_table_configs(self) -> Vec<Self> {
+        vec![self]
+    }
+}
+
+impl OutputTableConfigs for Poseidon2Config {
+    fn output_table_configs(self) -> Vec<Self> {
+        if self.d() >= 2 && !self.is_arity4_shape() {
+            vec![self.for_shared_challenger_table()]
+        } else if self.d() >= 2 {
+            vec![self.for_challenger(), self]
+        } else {
+            vec![self]
+        }
+    }
+}
 pub use p3_symmetric::{PaddingFreeSponge, Permutation, TruncatedPermutation};
 pub use p3_uni_stark::{StarkConfig, StarkGenericConfig, Val};
 pub(crate) use prepared_reuse::is_prepared_input_mismatch;

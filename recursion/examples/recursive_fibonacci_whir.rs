@@ -135,8 +135,9 @@ macro_rules! define_whir_field_module {
 
                 let mut prover =
                     BatchStarkProver::new(config).with_table_packing(params.table_packing);
-                prover.register_poseidon2_table::<4>($poseidon2_config.for_challenger());
-                prover.register_poseidon2_table::<4>($poseidon2_config);
+                for table_config in $poseidon2_config.output_table_configs() {
+                    prover.register_poseidon2_table::<4>(table_config);
+                }
                 prover.register_recompose_table::<4>(true);
                 prover
                     .verify_all_tables::<$ef>(&output.0)

@@ -415,10 +415,9 @@ macro_rules! define_field_module_keccak_quintic {
                                     report_proof_size(&out.0);
                                     let mut prover = BatchStarkProver::new(config.clone())
                                         .with_table_packing(owner.params().table_packing.clone());
-                                    if $poseidon2_config.d() >= 2 {
-                                        prover.$register_fn::<D>($poseidon2_config.for_challenger());
-                                    }
-                                    prover.$register_fn::<D>($poseidon2_config);
+                                        for table_config in $poseidon2_config.output_table_configs() {
+                                            prover.$register_fn::<D>(table_config);
+                                        }
                                     if !disable_recompose_npo {
                                         prover.register_recompose_table::<D>(true);
                                     }
@@ -474,10 +473,9 @@ macro_rules! define_field_module_keccak_quintic {
                         report_proof_size(&out.0);
                         let mut prover = BatchStarkProver::new(config.clone())
                             .with_table_packing(resolved.table_packing.clone());
-                        if $poseidon2_config.d() >= 2 {
-                            prover.$register_fn::<D>($poseidon2_config.for_challenger());
-                        }
-                        prover.$register_fn::<D>($poseidon2_config);
+                            for table_config in $poseidon2_config.output_table_configs() {
+                                prover.$register_fn::<D>(table_config);
+                            }
                         if !disable_recompose_npo {
                             prover.register_recompose_table::<D>(true);
                         }
@@ -597,10 +595,9 @@ macro_rules! define_field_module_keccak_quintic {
                     report_proof_size(&out.0);
                     let mut prover = BatchStarkProver::new(config.clone())
                         .with_table_packing(params.table_packing.clone());
-                    if $poseidon2_config.d() >= 2 {
-                        prover.$register_fn::<D>($poseidon2_config.for_challenger());
-                    }
-                    prover.$register_fn::<D>($poseidon2_config);
+                        for table_config in $poseidon2_config.output_table_configs() {
+                            prover.$register_fn::<D>(table_config);
+                        }
                     if !disable_recompose_npo {
                         prover.register_recompose_table::<D>(true);
                     }
@@ -753,10 +750,9 @@ macro_rules! define_field_module {
                                     report_proof_size(&out.0);
                                     let mut prover = BatchStarkProver::new(config.clone())
                                         .with_table_packing(owner.params().table_packing.clone());
-                                    if $poseidon2_config.d() >= 2 {
-                                        prover.$register_fn::<$d>($poseidon2_config.for_challenger());
-                                    }
-                                    prover.$register_fn::<$d>($poseidon2_config);
+                                        for table_config in $poseidon2_config.output_table_configs() {
+                                            prover.$register_fn::<$d>(table_config);
+                                        }
                                     if !disable_recompose_npo {
                                         prover.register_recompose_table::<$d>(true);
                                     }
@@ -812,10 +808,9 @@ macro_rules! define_field_module {
                         report_proof_size(&out.0);
                         let mut prover = BatchStarkProver::new(config.clone())
                             .with_table_packing(resolved.table_packing.clone());
-                        if $poseidon2_config.d() >= 2 {
-                            prover.$register_fn::<$d>($poseidon2_config.for_challenger());
-                        }
-                        prover.$register_fn::<$d>($poseidon2_config);
+                            for table_config in $poseidon2_config.output_table_configs() {
+                                prover.$register_fn::<$d>(table_config);
+                            }
                         if !disable_recompose_npo {
                             prover.register_recompose_table::<$d>(true);
                         }
@@ -935,10 +930,9 @@ macro_rules! define_field_module {
                     report_proof_size(&out.0);
                     let mut prover = BatchStarkProver::new(config.clone())
                         .with_table_packing(params.table_packing.clone());
-                    if $poseidon2_config.d() >= 2 {
-                        prover.$register_fn::<$d>($poseidon2_config.for_challenger());
-                    }
-                    prover.$register_fn::<$d>($poseidon2_config);
+                        for table_config in $poseidon2_config.output_table_configs() {
+                            prover.$register_fn::<$d>(table_config);
+                        }
                     if !disable_recompose_npo {
                         prover.register_recompose_table::<$d>(true);
                     }

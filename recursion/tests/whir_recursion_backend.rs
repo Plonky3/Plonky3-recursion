@@ -176,8 +176,9 @@ fn whir_recursion_backend_proves_a_real_next_layer() {
     // shape with the MMCS/compression rows, plus recompose) on a fresh `BatchStarkProver` and
     // calling `verify_all_tables`.
     let mut prover = BatchStarkProver::new(config).with_table_packing(params.table_packing);
-    prover.register_poseidon2_table::<4>(Poseidon2Config::BABY_BEAR_D4_W16.for_challenger());
-    prover.register_poseidon2_table::<4>(Poseidon2Config::BABY_BEAR_D4_W16);
+    prover.register_poseidon2_table::<4>(
+        Poseidon2Config::BABY_BEAR_D4_W16.for_shared_challenger_table(),
+    );
     prover.register_recompose_table::<4>(true);
     prover
         .verify_all_tables::<BbEF>(&output.0)
@@ -223,8 +224,9 @@ fn whir_recursion_backend_proves_a_real_next_layer_koala_bear() {
     // used (both Poseidon2 challenger-shape tables plus recompose) on a fresh `BatchStarkProver`
     // and verify the layer's own proof.
     let mut prover = BatchStarkProver::new(config).with_table_packing(params.table_packing);
-    prover.register_poseidon2_table::<4>(Poseidon2Config::KOALA_BEAR_D4_W16.for_challenger());
-    prover.register_poseidon2_table::<4>(Poseidon2Config::KOALA_BEAR_D4_W16);
+    prover.register_poseidon2_table::<4>(
+        Poseidon2Config::KOALA_BEAR_D4_W16.for_shared_challenger_table(),
+    );
     prover.register_recompose_table::<4>(true);
     prover
         .verify_all_tables::<KbEF>(&output.0)
@@ -275,8 +277,9 @@ fn whir_recursion_backend_proves_a_batch_stark_next_layer() {
     // As in the single-layer test: the layer's own proof has to verify, registering the same
     // non-primitive tables the backend used.
     let mut prover = BatchStarkProver::new(config).with_table_packing(params.table_packing);
-    prover.register_poseidon2_table::<4>(Poseidon2Config::BABY_BEAR_D4_W16.for_challenger());
-    prover.register_poseidon2_table::<4>(Poseidon2Config::BABY_BEAR_D4_W16);
+    prover.register_poseidon2_table::<4>(
+        Poseidon2Config::BABY_BEAR_D4_W16.for_shared_challenger_table(),
+    );
     prover.register_recompose_table::<4>(true);
     prover
         .verify_all_tables::<BbEF>(&layer2.0)
