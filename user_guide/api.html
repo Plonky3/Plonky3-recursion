@@ -220,29 +220,54 @@
 <pre><code class="language-rust ignore">let output = build_and_prove_next_layer::&lt;SC, A, B, D&gt;(
     &amp;input, &amp;config, &amp;backend, &amp;params,
 )?;</code></pre>
-<h3 id="prove_next_layer-split-buildprove"><a class="header" href="#prove_next_layer-split-buildprove"><code>prove_next_layer</code> (split build/prove)</a></h3>
-<p>For better performance across repeated invocations, separate circuit building, preprocessing, and proving. The circuit only needs to be built and preprocessed once when the proof shape is stable:</p>
-<pre><code class="language-rust ignore">// Build the circuit once (shape-dependent)
-let (circuit, verifier_result) = build_next_layer_circuit::&lt;SC, A, B, D&gt;(
-    &amp;input, &amp;config, &amp;backend,
+<h3 id="preparedlayer-repeated-proving"><a class="header" href="#preparedlayer-repeated-proving"><code>PreparedLayer</code> (repeated proving)</a></h3>
+<p>For repeated invocations, let an owner capture the native input contract and retain the verifier circuit, configuration, and prepared proving data together:</p>
+<pre><code class="language-rust ignore">let owner = PreparedLayer::&lt;SC, A, B, D&gt;::new(
+    PreparedSource::UniStark { air, proof, public_inputs, preprocessed_commit },
+    config,
+    backend,
+    params,
 )?;
 
-// Preprocess once (commits to constant columns; reusable for same circuit shape)
-let prep = build_next_layer_prep::&lt;SC, A, B, D&gt;(
-    &amp;circuit, &amp;config, &amp;backend, &amp;params,
-)?;
-
-// Prove repeatedly with different inputs of the same shape
-let output = prove_next_layer::&lt;SC, A, B, D&gt;(
-    &amp;input, &amp;circuit, &amp;verifier_result, &amp;config, &amp;backend, &amp;params,
-    Some(&amp;prep),  // pass None to skip prep reuse
-)?;</code></pre>
-<p><code>NextLayerPrepCache</code> holds the committed preprocessed columns and the prover. Reusing it across same-shape layers avoids re-computing the LDE and Merkle-tree commitment on every call.</p>
+// Check the native contract before each repeated proof.
+owner.check_input(&amp;input)?;
+let output = owner.prove(input)?;</code></pre>
+<p><code>PreparedLayer</code> owns the committed preprocessed columns and prover, and rejects malformed or incompatible native inputs before proving. Use a new owner when the native contract changes.</p>
+<p>This compatibility check is shape-only: a prepared owner is not a portable trusted relation
+verifier and does not bind child proving keys, recursion statements, or public claims. Later
+trust-boundary work must pin those relations before an owner can be reused across such changes.</p>
 <h3 id="build_and_prove_aggregation_layer"><a class="header" href="#build_and_prove_aggregation_layer"><code>build_and_prove_aggregation_layer</code></a></h3>
 <p>Verifies two proofs in a single circuit. The two inputs can be different <code>RecursionInput</code> variants:</p>
 <pre><code class="language-rust ignore">let output = build_and_prove_aggregation_layer::&lt;SC, A1, A2, B, D&gt;(
     &amp;left, &amp;right, &amp;config, &amp;backend, &amp;params,
 )?;</code></pre>
+<h3 id="preparedaggregation-repeated-aggregation"><a class="header" href="#preparedaggregation-repeated-aggregation"><code>PreparedAggregation</code> (repeated aggregation)</a></h3>
+<p>For repeated aggregation at one compatible level, retain both verifier results and prepared
+proving data in an owner. Check both borrowed inputs before each reuse; construct a new owner when
+either native contract changes:</p>
+<pre><code class="language-rust ignore">let owner = PreparedAggregation::new(
+    PreparedSource::batch(&amp;left_proof, &amp;left_common_data, &amp;left_table_public_inputs),
+    PreparedSource::batch(&amp;right_proof, &amp;right_common_data, &amp;right_table_public_inputs),
+    config,
+    backend,
+    params,
+)?;
+
+let left = PreparedInput::BatchStark {
+    proof: &amp;left_proof,
+    common_data: &amp;left_common_data,
+    table_public_inputs: &amp;left_table_public_inputs,
+};
+let right = PreparedInput::BatchStark {
+    proof: &amp;right_proof,
+    common_data: &amp;right_common_data,
+    table_public_inputs: &amp;right_table_public_inputs,
+};
+owner.check_inputs(&amp;left, &amp;right)?;
+let output = owner.prove(left, right)?;</code></pre>
+<p>As with <code>PreparedLayer</code>, this owner checks native shape compatibility only. It does not itself
+bind child keys or statements, so relation and claim changes require explicit trust-boundary
+policy rather than owner reuse.</p>
 <h3 id="prove_aggregation_layer"><a class="header" href="#prove_aggregation_layer"><code>prove_aggregation_layer</code></a></h3>
 <p>The split build/prove variant for aggregation. The circuit builder is private; use <code>prove_aggregation_layer</code> with a pre-built circuit when you need to re-prove the same aggregation shape:</p>
 <pre><code class="language-rust ignore">let output = prove_aggregation_layer::&lt;SC, A1, A2, B, D&gt;(

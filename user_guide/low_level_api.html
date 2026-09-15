@@ -278,9 +278,12 @@ for np in backend.non_primitive_provers(D) {
 }
 
 let proof = prover.prove_all_tables(&amp;traces, &amp;circuit_prover_data)?;</code></pre>
-<p>In practice, prefer <code>build_next_layer_prep</code> (unified API) over calling <code>get_airs_and_degrees_with_prep</code>
-directly — it wires up backend preprocessors/air-builders automatically and returns a reusable
-<code>NextLayerPrepCache</code>.</p>
+<p>For repeated proving, prefer <code>PreparedLayer</code> (unified API) over manually calling
+<code>get_airs_and_degrees_with_prep</code>: it wires up backend preprocessors/air-builders automatically,
+retains the circuit/configuration/prover together, and validates each borrowed native input.
+That validation is shape-only; a prepared owner is not a portable trusted relation verifier and
+does not bind child keys, recursion statements, or public claims. Pin those relations explicitly
+before reusing an owner across trust-boundary changes.</p>
 <h2 id="when-to-use-the-low-level-api"><a class="header" href="#when-to-use-the-low-level-api">When to use the low-level API</a></h2>
 <ul>
 <li>You need to inspect or modify the circuit between building and proving</li>
