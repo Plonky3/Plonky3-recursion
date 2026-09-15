@@ -297,8 +297,8 @@ fn challenger_only_legacy_input_recurses_with_mixed_manifest_policy() {
     )
     .expect("challenger-only legacy input recurses under mixed manifest policy");
 
-    let mut verifier = BatchStarkProver::new(fixture.config.clone())
-        .with_table_packing(params.table_packing.clone());
+    let mut verifier =
+        BatchStarkProver::new(fixture.config).with_table_packing(params.table_packing);
     verifier.register_poseidon2_table::<4>(CFG.for_shared_challenger_table());
     verifier.register_recompose_table::<4>(true);
     verifier

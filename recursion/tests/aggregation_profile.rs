@@ -231,7 +231,7 @@ fn backend_input_selector_selects_exact_legacy_or_combined_manifest() {
                 .op_type()
                 .as_str()
                 .starts_with("poseidon2_perm/koala_bear_d4_w16"))
-            .map(|p| p.op_type().clone())
+            .map(|p| p.op_type())
             .collect::<Vec<_>>(),
         legacy
     );
@@ -255,7 +255,7 @@ fn backend_input_selector_selects_exact_legacy_or_combined_manifest() {
                 .op_type()
                 .as_str()
                 .starts_with("poseidon2_perm/koala_bear_d4_w16"))
-            .map(|p| p.op_type().clone())
+            .map(|p| p.op_type())
             .collect::<Vec<_>>(),
         challenger_only
     );

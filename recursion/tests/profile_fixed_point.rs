@@ -127,7 +127,8 @@ fn fixed_point_converges_on_koala_bear_d4_first_layer_and_the_profile_actually_p
     // Non-primitive (NPO) tables get the same strict-mode overflow check as primitives, so
     // this layer's Poseidon2 and Recompose tables (natural heights far above the seed's floor
     // of 1) must have been bumped too.
-    let poseidon2_op = NpoTypeId::poseidon2_perm(Poseidon2Config::KOALA_BEAR_D4_W16);
+    let poseidon2_op =
+        NpoTypeId::poseidon2_perm(Poseidon2Config::KOALA_BEAR_D4_W16.for_shared_challenger_table());
     assert!(
         profile
             .table_packing

@@ -68,7 +68,7 @@ where
 }
 
 fn verify_fri_output(
-    config: common::KoalaBearD4RecursionConfig,
+    config: &common::KoalaBearD4RecursionConfig,
     params: &ProveNextLayerParams,
     output: &RecursionOutput<common::KoalaBearD4RecursionConfig>,
 ) {
@@ -100,7 +100,7 @@ fn verify_fri_output(
 }
 
 fn verify_whir_output(
-    config: BbWhirConfig,
+    config: &BbWhirConfig,
     params: &ProveNextLayerParams,
     output: &RecursionOutput<BbWhirConfig>,
 ) {
@@ -309,8 +309,8 @@ fn fri_uni_prepared_layer_reuses_varied_witnesses_after_reference_drop() {
         params.table_packing,
         "the owner retains its resolved parameters"
     );
-    verify_fri_output(config.clone(), &params, &out1);
-    verify_fri_output(config, &params, &out2);
+    verify_fri_output(&config, &params, &out1);
+    verify_fri_output(&config, &params, &out2);
 }
 
 /// Omitting the verifier-consumed public targets from the parent Statement sink, copying only the
@@ -717,8 +717,8 @@ fn fri_batch_prepared_layer_reuses_prover_data() {
         })
         .expect("the prepared verifier can be reused");
     assert!(Rc::ptr_eq(&out1.1, &out2.1));
-    verify_fri_output(config.clone(), &params, &out1);
-    verify_fri_output(config, &params, &out2);
+    verify_fri_output(&config, &params, &out1);
+    verify_fri_output(&config, &params, &out2);
 }
 
 #[test]
@@ -772,8 +772,8 @@ fn fri_batch_trusted_layer_uses_retained_child_verifier_and_witness_only_inputs(
 
     owner.verifier().verify(&first_output.0, &[]).unwrap();
     owner.verifier().verify(&second_output.0, &[]).unwrap();
-    verify_fri_output(output_config.clone(), &params, &first_output);
-    verify_fri_output(output_config, &params, &second_output);
+    verify_fri_output(&output_config, &params, &first_output);
+    verify_fri_output(&output_config, &params, &second_output);
 }
 
 #[test]
@@ -942,8 +942,8 @@ fn whir_uni_prepared_layer_reuses_varied_witnesses_after_reference_drop() {
         .expect("the varied WHIR witness proves with the prepared owner");
 
     assert!(Rc::ptr_eq(&out1.1, &out2.1));
-    verify_whir_output(config.clone(), &params, &out1);
-    verify_whir_output(config, &params, &out2);
+    verify_whir_output(&config, &params, &out1);
+    verify_whir_output(&config, &params, &out2);
 }
 
 /// Exercises the WHIR `UniStark` verifier-result branch with public values belonging to a
@@ -1019,8 +1019,8 @@ fn whir_batch_prepared_layer_reuses_varied_witnesses_after_reference_drop() {
     let params = ProveNextLayerParams::default();
     let first = build_whir_first_layer(&config, &backend, &params, 0, 1);
     let second = build_whir_first_layer(&config, &backend, &params, 2, 3);
-    verify_whir_output(config.clone(), &params, &first);
-    verify_whir_output(config.clone(), &params, &second);
+    verify_whir_output(&config, &params, &first);
+    verify_whir_output(&config, &params, &second);
     let table_public_inputs = vec![vec![]; first.0.proof.opened_values.instances.len()];
 
     let (prepared, out1) = {
@@ -1050,6 +1050,6 @@ fn whir_batch_prepared_layer_reuses_varied_witnesses_after_reference_drop() {
         .expect("the varied WHIR batch witness proves with the prepared owner");
 
     assert!(Rc::ptr_eq(&out1.1, &out2.1));
-    verify_whir_output(config.clone(), &params, &out1);
-    verify_whir_output(config, &params, &out2);
+    verify_whir_output(&config, &params, &out1);
+    verify_whir_output(&config, &params, &out2);
 }
