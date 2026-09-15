@@ -28,7 +28,9 @@ use p3_koala_bear::{GenericPoseidon2LinearLayersKoalaBear, KoalaBear};
 use p3_lookup::folder::{ProverConstraintFolderWithLookups, VerifierConstraintFolderWithLookups};
 use p3_lookup::symbolic::InteractionSymbolicBuilder;
 use p3_matrix::dense::RowMajorMatrix;
-use p3_poseidon_circuit_cols::poseidon_preprocessed_row_width_for_air;
+use p3_poseidon_circuit_cols::{
+    poseidon_preprocessed_row_width_for_air, poseidon_shared_challenger_role_offset,
+};
 use p3_poseidon2_circuit_air::*;
 use p3_uni_stark::{
     ProverConstraintFolder, SymbolicExpression, SymbolicExpressionExt, VerifierConstraintFolder,
@@ -125,6 +127,176 @@ mod width_tests {
                 assert_eq!(expected, width);
             }
         }
+    }
+
+    #[test]
+    fn shared_shapes_preserve_widths_and_reject_unsupported_geometry() {
+        let shared = [
+            Poseidon2Config::BABY_BEAR_D4_W16,
+            Poseidon2Config::BABY_BEAR_D4_W24,
+            Poseidon2Config::KOALA_BEAR_D4_W16,
+            Poseidon2Config::KOALA_BEAR_D4_W24,
+            Poseidon2Config::GOLDILOCKS_D2_W8,
+        ];
+        for ordinary in shared {
+            let combined = ordinary.for_shared_challenger_table();
+            let ordinary_prover = Poseidon2Prover::new(ordinary, ConstraintProfile::Standard);
+            let combined_prover = Poseidon2Prover::new(combined, ConstraintProfile::Standard);
+            assert_eq!(
+                combined_prover.main_width_from_config(),
+                ordinary_prover.main_width_from_config()
+            );
+            assert_eq!(
+                combined_prover.preprocessed_width_from_config(),
+                ordinary_prover.preprocessed_width_from_config()
+            );
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "shared challenger tables require extension limbs")]
+    fn shared_rejects_d1_geometry() {
+        Poseidon2Config::BABY_BEAR_D1_W16.for_shared_challenger_table();
+    }
+
+    #[test]
+    #[should_panic(expected = "arity-4 tables cannot share challenger rows")]
+    fn shared_rejects_arity4_geometry() {
+        Poseidon2Config::KOALA_BEAR_D4_W32.for_shared_challenger_table();
+    }
+}
+
+#[cfg(test)]
+mod shared_materialization_tests {
+    use p3_circuit::tables::{
+        AluTrace, ConstTrace, NonPrimitiveTrace, PublicTrace, Traces, WitnessTrace,
+    };
+    use p3_field::extension::BinomialExtensionField;
+    use p3_matrix::Matrix;
+
+    use super::*;
+
+    fn row(value: BabyBear) -> Poseidon2CircuitRow<BabyBear> {
+        let config = Poseidon2Config::BABY_BEAR_D4_W16;
+        Poseidon2CircuitRow {
+            challenger: false,
+            new_start: true,
+            merkle_path: false,
+            mmcs_bit: false,
+            mmcs_bit2: false,
+            mmcs_index_sum: BabyBear::ZERO,
+            input_values: {
+                let mut values = BabyBear::zero_vec(config.width());
+                values[0] = value;
+                values
+            },
+            in_ctl: vec![false; config.width_ext()],
+            input_indices: vec![0; config.width_ext()],
+            out_ctl: vec![false; config.rate_ext()],
+            output_indices: vec![0; config.rate_ext()],
+            mmcs_index_sum_idx: 0,
+            mmcs_ctl_enabled: false,
+            absorb_len: 0,
+        }
+    }
+
+    fn traces(
+        config: Poseidon2Config,
+        include_challenger: bool,
+        include_ordinary: bool,
+    ) -> Traces<BinomialExtensionField<BabyBear, 4>> {
+        let sources = config.source_configs();
+        let mut non_primitive_traces = hashbrown::HashMap::new();
+        if include_challenger {
+            non_primitive_traces.insert(
+                NpoTypeId::poseidon2_perm(sources[0]),
+                Box::new(Poseidon2Trace {
+                    op_type: NpoTypeId::poseidon2_perm(sources[0]),
+                    operations: vec![row(BabyBear::from_u64(11))],
+                })
+                    as Box<dyn NonPrimitiveTrace<BinomialExtensionField<BabyBear, 4>>>,
+            );
+        }
+        if include_ordinary {
+            non_primitive_traces.insert(
+                NpoTypeId::poseidon2_perm(sources[1]),
+                Box::new(Poseidon2Trace {
+                    op_type: NpoTypeId::poseidon2_perm(sources[1]),
+                    operations: vec![row(BabyBear::from_u64(22))],
+                })
+                    as Box<dyn NonPrimitiveTrace<BinomialExtensionField<BabyBear, 4>>>,
+            );
+        }
+        Traces {
+            witness_trace: WitnessTrace::new(Vec::new()),
+            const_trace: ConstTrace {
+                index: Vec::new(),
+                values: Vec::new(),
+            },
+            public_trace: PublicTrace {
+                index: Vec::new(),
+                values: Vec::new(),
+            },
+            alu_trace: AluTrace {
+                op_kind: Vec::new(),
+                values: Vec::new(),
+                indices: Vec::new(),
+            },
+            non_primitive_traces,
+            tag_to_witness: hashbrown::HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn shared_materialization_has_stable_source_order_and_physical_identity() {
+        let config = Poseidon2Config::BABY_BEAR_D4_W16.for_shared_challenger_table();
+        let prover = Poseidon2Prover::new(config, ConstraintProfile::Standard);
+        let packing = TablePacking::new(1, 1);
+        let stark_config = crate::config::baby_bear();
+
+        for (challenger, ordinary, expected_rows) in [
+            (false, false, None),
+            (true, false, Some(1)),
+            (false, true, Some(1)),
+            (true, true, Some(2)),
+        ] {
+            let traces = traces(config, challenger, ordinary);
+            let instance = prover.batch_instance_d4(&stark_config, &packing, &traces);
+            match expected_rows {
+                None => assert!(instance.is_none()),
+                Some(rows) => {
+                    let instance = instance.expect("nonempty source materializes");
+                    assert_eq!(instance.op_type, NpoTypeId::poseidon2_perm(config));
+                    assert_eq!(instance.rows, rows);
+                    assert_eq!(instance.trace.height(), rows.next_power_of_two());
+                    if challenger && ordinary {
+                        assert_eq!(instance.trace.values[0], BabyBear::from_u64(11));
+                        let row_width = instance.trace.width();
+                        assert_eq!(instance.trace.values[row_width], BabyBear::from_u64(22));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn shared_materialization_preserves_logical_rows_under_power_of_two_padding() {
+        let config = Poseidon2Config::BABY_BEAR_D4_W16.for_shared_challenger_table();
+        let prover = Poseidon2Prover::new(config, ConstraintProfile::Standard);
+        let packing =
+            TablePacking::new(1, 1).with_npo_min_height(NpoTypeId::poseidon2_perm(config), 4);
+        let traces = traces(config, true, true);
+        let instance = prover
+            .batch_instance_d4(&crate::config::baby_bear(), &packing, &traces)
+            .expect("combined sources materialize");
+
+        assert_eq!(instance.rows, 4);
+        assert_eq!(instance.trace.height(), 4);
+        assert_eq!(instance.trace.values[0], BabyBear::from_u64(11));
+        assert_eq!(
+            instance.trace.values[instance.trace.width()],
+            BabyBear::from_u64(22)
+        );
     }
 }
 
@@ -2000,7 +2172,7 @@ pub struct Poseidon2SharedPreprocessor {
 }
 
 impl Poseidon2SharedPreprocessor {
-    pub fn new(configs: Vec<Poseidon2Config>) -> Self {
+    pub const fn new(configs: Vec<Poseidon2Config>) -> Self {
         Self { configs }
     }
 }
@@ -2013,7 +2185,7 @@ fn merge_shared_preprocessed<F: StarkField + PrimeField64>(
     let width_ext = config.width_ext();
     let rate_ext = config.rate_ext();
     let row_width = poseidon_preprocessed_row_width_for_air(config.d(), width_ext, rate_ext);
-    let role_offset = (rate_ext + 1) * 4 + 3;
+    let role_offset = poseidon_shared_challenger_role_offset(rate_ext);
     let new_start_offset = row_width - 2;
     let mut merged = Vec::new();
     let mut found = false;
@@ -2050,14 +2222,13 @@ fn merge_shared_preprocessed<F: StarkField + PrimeField64>(
     Ok(())
 }
 
-fn shared_preprocess<F, ExtF, const D: usize>(
+fn shared_preprocess<F, const D: usize>(
     circuit: &dyn Any,
     preprocessed: &mut dyn Any,
     configs: &[Poseidon2Config],
 ) -> Result<NonPrimitivePreprocessedMap<F>, CircuitError>
 where
     F: StarkField + PrimeField64,
-    ExtF: ExtensionField<F>,
     Poseidon2Preprocessor: NpoPreprocessor<F>,
 {
     let mut map = Poseidon2Preprocessor.preprocess(circuit, preprocessed)?;
@@ -2149,18 +2320,10 @@ impl NpoPreprocessor<BabyBear> for Poseidon2SharedPreprocessor {
         preprocessed: &mut dyn Any,
     ) -> Result<NonPrimitivePreprocessedMap<BabyBear>, CircuitError> {
         if preprocessed.is::<PreprocessedColumns<BabyBear, 1>>() {
-            return shared_preprocess::<BabyBear, BabyBear, 1>(
-                circuit,
-                preprocessed,
-                &self.configs,
-            );
+            return shared_preprocess::<BabyBear, 1>(circuit, preprocessed, &self.configs);
         }
         if preprocessed.is::<PreprocessedColumns<BinomialExtensionField<BabyBear, 4>, 4>>() {
-            return shared_preprocess::<BabyBear, BinomialExtensionField<BabyBear, 4>, 4>(
-                circuit,
-                preprocessed,
-                &self.configs,
-            );
+            return shared_preprocess::<BabyBear, 4>(circuit, preprocessed, &self.configs);
         }
         Ok(NonPrimitivePreprocessedMap::new())
     }
@@ -2173,25 +2336,13 @@ impl NpoPreprocessor<KoalaBear> for Poseidon2SharedPreprocessor {
         preprocessed: &mut dyn Any,
     ) -> Result<NonPrimitivePreprocessedMap<KoalaBear>, CircuitError> {
         if preprocessed.is::<PreprocessedColumns<KoalaBear, 1>>() {
-            return shared_preprocess::<KoalaBear, KoalaBear, 1>(
-                circuit,
-                preprocessed,
-                &self.configs,
-            );
+            return shared_preprocess::<KoalaBear, 1>(circuit, preprocessed, &self.configs);
         }
         if preprocessed.is::<PreprocessedColumns<BinomialExtensionField<KoalaBear, 4>, 4>>() {
-            return shared_preprocess::<KoalaBear, BinomialExtensionField<KoalaBear, 4>, 4>(
-                circuit,
-                preprocessed,
-                &self.configs,
-            );
+            return shared_preprocess::<KoalaBear, 4>(circuit, preprocessed, &self.configs);
         }
         if preprocessed.is::<PreprocessedColumns<QuinticTrinomialExtensionField<KoalaBear>, 5>>() {
-            return shared_preprocess::<KoalaBear, QuinticTrinomialExtensionField<KoalaBear>, 5>(
-                circuit,
-                preprocessed,
-                &self.configs,
-            );
+            return shared_preprocess::<KoalaBear, 5>(circuit, preprocessed, &self.configs);
         }
         Ok(NonPrimitivePreprocessedMap::new())
     }
@@ -2204,18 +2355,10 @@ impl NpoPreprocessor<Goldilocks> for Poseidon2SharedPreprocessor {
         preprocessed: &mut dyn Any,
     ) -> Result<NonPrimitivePreprocessedMap<Goldilocks>, CircuitError> {
         if preprocessed.is::<PreprocessedColumns<Goldilocks, 1>>() {
-            return shared_preprocess::<Goldilocks, Goldilocks, 1>(
-                circuit,
-                preprocessed,
-                &self.configs,
-            );
+            return shared_preprocess::<Goldilocks, 1>(circuit, preprocessed, &self.configs);
         }
         if preprocessed.is::<PreprocessedColumns<BinomialExtensionField<Goldilocks, 2>, 2>>() {
-            return shared_preprocess::<Goldilocks, BinomialExtensionField<Goldilocks, 2>, 2>(
-                circuit,
-                preprocessed,
-                &self.configs,
-            );
+            return shared_preprocess::<Goldilocks, 2>(circuit, preprocessed, &self.configs);
         }
         Ok(NonPrimitivePreprocessedMap::new())
     }
@@ -2532,7 +2675,7 @@ mod shared_preprocessing_tests {
             config.width_ext(),
             config.rate_ext(),
         );
-        let role_offset = (config.rate_ext() + 1) * 4 + 3;
+        let role_offset = poseidon_shared_challenger_role_offset(config.rate_ext());
         let challenger = config.source_configs()[0];
         let ordinary = config.source_configs()[1];
         let mut challenger_row = vec![BabyBear::ZERO; width];
@@ -2550,5 +2693,35 @@ mod shared_preprocessing_tests {
         assert_eq!(merged.len(), 2 * width);
         assert_eq!(merged[role_offset], BabyBear::ONE);
         assert_eq!(merged[width + role_offset], BabyBear::ZERO);
+    }
+
+    #[test]
+    fn shared_preprocessing_concatenates_rows_and_preserves_signed_outputs() {
+        let config = Poseidon2Config::BABY_BEAR_D4_W16.for_shared_challenger_table();
+        let width = poseidon_preprocessed_row_width_for_air(
+            config.d(),
+            config.width_ext(),
+            config.rate_ext(),
+        );
+        let challenger = config.source_configs()[0];
+        let ordinary = config.source_configs()[1];
+        let mut challenger_rows = vec![BabyBear::ZERO; width * 2];
+        challenger_rows[width - 2] = BabyBear::ONE;
+        challenger_rows[width] = BabyBear::from_u64(7);
+        challenger_rows[width + width - 2] = BabyBear::ONE;
+        let mut ordinary_rows = vec![BabyBear::ZERO; width];
+        ordinary_rows[0] = BabyBear::NEG_ONE;
+        ordinary_rows[width - 2] = BabyBear::ONE;
+        let mut map = NonPrimitivePreprocessedMap::new();
+        map.insert(NpoTypeId::poseidon2_perm(ordinary), ordinary_rows);
+        map.insert(NpoTypeId::poseidon2_perm(challenger), challenger_rows);
+
+        merge_shared_preprocessed(&mut map, config).unwrap();
+        let merged = map
+            .get(&NpoTypeId::poseidon2_perm(config))
+            .expect("shared physical source");
+        assert_eq!(merged.len(), width * 3);
+        assert_eq!(merged[width], BabyBear::from_u64(7));
+        assert_eq!(merged[width * 2], BabyBear::NEG_ONE);
     }
 }

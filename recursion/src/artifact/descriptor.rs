@@ -1207,8 +1207,9 @@ mod tests {
     use p3_test_utils::koala_bear_params::MyConfig;
 
     use super::{
-        BuiltinNpoV1, NpoDescriptorV1, NpoPublicValuesV1, RelationDescriptorV1, read_common,
-        read_config, read_relation, validate_relation_descriptor, write_config, write_relation,
+        BuiltinNpoV1, NpoDescriptorV1, NpoPublicValuesV1, POSEIDON2_CONFIGS, RelationDescriptorV1,
+        read_common, read_config, read_relation, validate_relation_descriptor, write_config,
+        write_relation,
     };
     use crate::artifact::wire::{Reader, Writer};
     use crate::artifact::{ArtifactError, ArtifactLimits};
@@ -1439,6 +1440,29 @@ mod tests {
         assert_eq!(
             BuiltinNpoV1::from_wire(0xffff),
             Err(ArtifactError::UnsupportedBuiltinAir(0xffff))
+        );
+    }
+
+    #[test]
+    fn poseidon2_registry_roundtrips_legacy_and_shared_tags_without_reordering() {
+        for (index, config) in POSEIDON2_CONFIGS.iter().copied().enumerate() {
+            let kind = BuiltinNpoV1::Poseidon2(config);
+            let tag = 0x0200 + index as u16;
+            assert_eq!(kind.wire_tag(), tag);
+            assert_eq!(BuiltinNpoV1::from_wire(tag), Ok(kind));
+            assert_eq!(
+                BuiltinNpoV1::from_native(&NpoTypeId::poseidon2_perm(config)),
+                Ok(kind)
+            );
+        }
+
+        assert_eq!(
+            POSEIDON2_CONFIGS[16].variant_name(),
+            "baby_bear_d4_w16_shared"
+        );
+        assert_eq!(
+            POSEIDON2_CONFIGS[20].variant_name(),
+            "goldilocks_d2_w8_shared"
         );
     }
 }

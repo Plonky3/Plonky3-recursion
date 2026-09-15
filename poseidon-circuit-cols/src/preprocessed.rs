@@ -151,6 +151,16 @@ pub const fn poseidon_preprocessed_row_width_for_air(
     }
 }
 
+/// Offset of the reserved challenger-role selector in a shared Poseidon2 row.
+///
+/// Shared tables use the second capacity limb's Merkle-selector slot. Keeping this
+/// offset derived from the input-limb layout avoids duplicating raw offset arithmetic.
+#[inline]
+pub const fn poseidon_shared_challenger_role_offset(rate_ext: usize) -> usize {
+    (rate_ext + 1) * size_of::<PoseidonPrepInputLimb<u8>>() + size_of::<PoseidonPrepInputLimb<u8>>()
+        - 1
+}
+
 /// Full preprocessed row for a Poseidon circuit table.
 ///
 /// One row per Poseidon permutation invocation.
@@ -330,5 +340,16 @@ mod tests {
         // PoseidonPrepOutputLimb<u8>: 2 fields × 1 byte = 2 bytes per limb
         // 4 input limbs × 4 + 2 output limbs × 2 + 4 header = 24
         assert_eq!(poseidon_preprocessed_row_width(4, 2), 24);
+    }
+
+    #[test]
+    fn shared_role_offset_matches_second_capacity_selector_layout() {
+        let mut row = PoseidonPreprocessedRow::<4, 2, u8>::default();
+        row.input_limbs[3].merkle_chain_sel = 1;
+        let mut flat = Vec::new();
+        row.write_into(&mut flat);
+
+        assert_eq!(flat.len(), poseidon_preprocessed_row_width(4, 2));
+        assert_eq!(flat[poseidon_shared_challenger_role_offset(2)], 1);
     }
 }
