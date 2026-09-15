@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use p3_baby_bear::BabyBear;
+use p3_circuit::StatementSchema;
 use p3_circuit::builder::CircuitBuilder;
 use p3_circuit::ops::poseidon1_perm::{
     KoalaBearD1Width16 as P1KoalaBearD1Width16, Poseidon1PermCallBase,
@@ -14,6 +15,7 @@ use p3_circuit::ops::{
     KoalaBearD1Width16, NpoTypeId, Op, Poseidon1Config, Poseidon2Config, PrimitiveOpType,
     generate_poseidon1_trace, generate_poseidon2_trace, generate_recompose_trace,
 };
+use p3_circuit::tables::NonPrimitiveTrace;
 use p3_commit::{ExtensionMmcs, Pcs, PeriodicLdeTable, PolynomialSpace};
 use p3_field::PrimeCharacteristicRing;
 use p3_field::extension::{BinomialExtensionField, QuinticTrinomialExtensionField};
@@ -34,6 +36,27 @@ use p3_test_utils::rejection_oracle::{DebugRejectionKind, classify_debug_diagnos
 use p3_uni_stark::StarkConfig;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
+
+#[derive(Clone)]
+struct UnknownNonPrimitiveTrace;
+
+impl NonPrimitiveTrace<BabyBear> for UnknownNonPrimitiveTrace {
+    fn op_type(&self) -> NpoTypeId {
+        NpoTypeId::new("test/unknown_source")
+    }
+
+    fn rows(&self) -> usize {
+        1
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn boxed_clone(&self) -> Box<dyn NonPrimitiveTrace<BabyBear>> {
+        Box::new(self.clone())
+    }
+}
 
 use super::*;
 use crate::ConstraintProfile;
@@ -288,6 +311,61 @@ fn trusted_relation_proof(
         .set_public_inputs(&[BabyBear::from_u32(input), BabyBear::from_u32(output)])
         .unwrap();
     prepared.prove(&runner.run().unwrap()).unwrap()
+}
+
+#[test]
+fn prepared_prover_rejects_unknown_nonempty_source_trace() {
+    let circuit = trusted_relation_circuit(2);
+    let prepared = BatchStarkProver::new(config::baby_bear())
+        .prepare_circuit::<BabyBear, 1>(&circuit, &[], &[], ConstraintProfile::Standard)
+        .unwrap();
+    let mut runner = circuit.runner();
+    runner
+        .set_public_inputs(&[BabyBear::from_u32(3), BabyBear::from_u32(6)])
+        .unwrap();
+    let mut traces = runner.run().unwrap();
+    traces.non_primitive_traces.insert(
+        NpoTypeId::new("test/unknown_source"),
+        Box::new(UnknownNonPrimitiveTrace),
+    );
+
+    assert!(matches!(
+        prepared.prove(&traces),
+        Err(BatchStarkProverError::MissingTableProver(op))
+            if op == NpoTypeId::new("test/unknown_source")
+    ));
+}
+
+#[test]
+fn prepared_prover_rejects_duplicate_source_ownership_before_materialization() {
+    let circuit = trusted_relation_circuit(2);
+    let mut prover = BatchStarkProver::new(config::baby_bear());
+    prover.register_table_prover(Box::new(RecomposeProver::<1>::new(1, false)));
+    prover.register_table_prover(Box::new(RecomposeProver::<1>::new(1, false)));
+    let prepared = prover
+        .prepare_circuit::<BabyBear, 1>(&circuit, &[], &[], ConstraintProfile::Standard)
+        .unwrap();
+    let mut runner = circuit.runner();
+    runner
+        .set_public_inputs(&[BabyBear::from_u32(3), BabyBear::from_u32(6)])
+        .unwrap();
+
+    assert!(matches!(
+        prepared.prove(&runner.run().unwrap()),
+        Err(BatchStarkProverError::DuplicateTableSource(op))
+            if op == NpoTypeId::recompose()
+    ));
+}
+
+#[test]
+fn default_table_prover_source_declaration_preserves_custom_identity() {
+    let schema = StatementSchema::try_new(Vec::new()).unwrap();
+    let prover = StatementProver::<1>::new(schema);
+    let op_type = TableProver::<BabyBearConfig>::op_type(&prover);
+    assert_eq!(
+        TableProver::<BabyBearConfig>::source_op_types(&prover),
+        vec![op_type]
+    );
 }
 
 #[test]

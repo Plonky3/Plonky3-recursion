@@ -2724,4 +2724,65 @@ mod shared_preprocessing_tests {
         assert_eq!(merged[width], BabyBear::from_u64(7));
         assert_eq!(merged[width * 2], BabyBear::NEG_ONE);
     }
+
+    #[test]
+    fn shared_preprocessing_counts_boundary_wrap_and_padding_reads_per_source() {
+        type Ext = BinomialExtensionField<BabyBear, 4>;
+        let config = Poseidon2Config::BABY_BEAR_D4_W16.for_shared_challenger_table();
+        let challenger = config.source_configs()[0];
+        let ordinary = config.source_configs()[1];
+        let row_width = poseidon_preprocessed_row_width_for_air(
+            config.d(),
+            config.width_ext(),
+            config.rate_ext(),
+        );
+        let tail = row_width - 4;
+        let source_rows = |new_starts: &[bool]| {
+            let mut rows = vec![Ext::ZERO; row_width * new_starts.len()];
+            for (row_idx, new_start) in new_starts.iter().copied().enumerate() {
+                let row = &mut rows[row_idx * row_width..(row_idx + 1) * row_width];
+                row[tail] = Ext::ZERO;
+                row[tail + 1] = Ext::ONE;
+                row[tail + 2] = Ext::from(BabyBear::from_bool(new_start));
+                row[config.width_ext() * 4 + 1] = Ext::ONE;
+            }
+            rows
+        };
+        let mut columns = PreprocessedColumns::<Ext, 4>::new();
+        columns.non_primitive.insert(
+            NpoTypeId::poseidon2_perm(challenger),
+            // The first two starts exercise an in-table chain boundary; the final row's
+            // terminal read is against the first padded row.
+            source_rows(&[true, true, false]),
+        );
+        columns.non_primitive.insert(
+            NpoTypeId::poseidon2_perm(ordinary),
+            // A power-of-two source has no padding, so its final terminal read wraps to
+            // the first row's chain start.
+            source_rows(&[true, true, false, false]),
+        );
+        columns
+            .dup_npo_outputs
+            .insert(NpoTypeId::poseidon2_perm(ordinary), vec![true]);
+
+        let preprocessor = Poseidon2SharedPreprocessor::new(vec![config]);
+        let map: NonPrimitivePreprocessedMap<BabyBear> =
+            preprocessor.preprocess(&(), &mut columns).unwrap();
+
+        assert_eq!(columns.ext_reads, vec![4]);
+        let merged = map
+            .get(&NpoTypeId::poseidon2_perm(config))
+            .expect("shared physical source");
+        let output_ctl = config.width_ext() * 4 + 1;
+        assert_eq!(merged[output_ctl], BabyBear::from_u32(4));
+        assert_eq!(merged[row_width + output_ctl], BabyBear::from_u32(4));
+        assert_eq!(merged[row_width * 2 + output_ctl], BabyBear::from_u32(4));
+        assert_eq!(merged[row_width * 3 + output_ctl], BabyBear::NEG_ONE);
+        assert_eq!(merged[row_width * 4 + output_ctl], BabyBear::NEG_ONE);
+        assert_eq!(merged[row_width * 6 + output_ctl], BabyBear::NEG_ONE);
+        assert_eq!(
+            merged[poseidon_shared_challenger_role_offset(config.rate_ext())],
+            BabyBear::ONE
+        );
+    }
 }

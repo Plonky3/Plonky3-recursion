@@ -1074,7 +1074,7 @@ pub(crate) fn eval<
 
         // Merkle-path chaining (compact): precomputed `(1−ns)(merkle)(1−ctl_i)` × direction bit (degree 3).
         let is_left = AB::Expr::ONE - next_bit.into();
-        for i in 0..RATE_EXT {
+        for i in 0..CAPACITY_EXT {
             let merkle_chain_i = s[rate_merkle_base + i];
             let gate_left_i = merkle_chain_i * is_left.clone();
             let gate_right_i = merkle_chain_i * next_bit;
@@ -1184,9 +1184,11 @@ pub(crate) fn eval<
             );
         }
 
-        // Merkle-path chaining: first `RATE_EXT` logical limbs of the output
-        // form our digest; the sibling occupies the next `RATE_EXT` limbs of
-        // the next row's input. The direction bit selects left vs right placement.
+        // Merkle-path chaining: the running hash is carried in the rate portion;
+        // the sibling occupies the capacity portion of the next row's input.
+        // Arity-4 rows use a separate chunked placement below, so this is the
+        // arity-2 layout. In particular, W24 has RATE_EXT=4 and CAPACITY_EXT=2;
+        // indexing the right side by RATE_EXT would address beyond the state.
         let is_left = AB::Expr::ONE - next_bit.into();
 
         for i in 0..RATE_EXT {
@@ -1198,7 +1200,7 @@ pub(crate) fn eval<
                     .assert_zero(next_in[i * D + d] - local_out[i * D + d]);
             }
         }
-        for i in 0..RATE_EXT {
+        for i in 0..CAPACITY_EXT {
             let gate_right_i = next_prep.input_limbs[i].merkle_chain_sel * next_bit;
             for d in 0..D {
                 builder
@@ -2063,6 +2065,7 @@ mod test {
 
     use p3_baby_bear::{BabyBear, Poseidon2BabyBear};
     use p3_field::extension::BinomialExtensionField;
+    use p3_goldilocks::Goldilocks;
     use p3_koala_bear::KoalaBear;
     use p3_matrix::Matrix;
     use p3_poseidon2::ExternalLayerConstants;
@@ -2075,9 +2078,13 @@ mod test {
     use super::*;
     use crate::columns::{POSEIDON2_LIMBS, POSEIDON2_PUBLIC_OUTPUT_LIMBS};
     use crate::{
-        BabyBearD4Width32, GoldilocksD2Width16, KoalaBearD1Width32, KoalaBearD4Width32,
-        Poseidon2CircuitAirBabyBearD4Width16, Poseidon2CircuitAirBabyBearD4Width32,
-        Poseidon2CircuitAirKoalaBearD1Width32, Poseidon2CircuitAirKoalaBearD4Width32,
+        BabyBearD4Width16, BabyBearD4Width24, BabyBearD4Width32, GoldilocksD2Width16,
+        KoalaBearD1Width32, KoalaBearD4Width16, KoalaBearD4Width24, KoalaBearD4Width32,
+        Poseidon2CircuitAirBabyBearD4Width16, Poseidon2CircuitAirBabyBearD4Width24,
+        Poseidon2CircuitAirBabyBearD4Width32, Poseidon2CircuitAirGoldilocksD2Width8,
+        Poseidon2CircuitAirKoalaBearD1Width32, Poseidon2CircuitAirKoalaBearD4Width16,
+        Poseidon2CircuitAirKoalaBearD4Width24, Poseidon2CircuitAirKoalaBearD4Width32,
+        goldilocks_d2_width8_round_constants,
     };
 
     const WIDTH: usize = 16;
@@ -2725,7 +2732,8 @@ mod test {
     fn assert_arity4_constraint_degree<F: p3_field::Field, ExtF: p3_field::ExtensionField<F>, A>(
         air: &A,
         label: &str,
-    ) where
+    ) -> usize
+    where
         A: p3_air::BaseAir<F> + p3_air::Air<p3_lookup::InteractionSymbolicBuilder<F, ExtF>>,
         p3_air::symbolic::SymbolicExpressionExt<F, ExtF>: p3_field::Algebra<ExtF>,
     {
@@ -2750,8 +2758,10 @@ mod test {
         let (base_constraints, extension_constraints) =
             get_symbolic_constraints::<F, ExtF, _, _>(air, layout, &lookups, &lookup_gadget);
 
+        let mut max_degree = 0;
         for (i, constraint) in base_constraints.iter().enumerate() {
             let degree = constraint.degree_multiple();
+            max_degree = max_degree.max(degree);
             assert!(
                 degree <= p3_test_utils::MAX_TEST_CONSTRAINT_DEGREE,
                 "{label} base constraint {i} has degree {degree} exceeding maximum"
@@ -2759,11 +2769,39 @@ mod test {
         }
         for (i, constraint) in extension_constraints.iter().enumerate() {
             let degree = constraint.degree_multiple();
+            max_degree = max_degree.max(degree);
             assert!(
                 degree <= p3_test_utils::MAX_TEST_CONSTRAINT_DEGREE,
                 "{label} extension constraint {i} has degree {degree} exceeding maximum"
             );
         }
+        max_degree
+    }
+
+    fn assert_unchanged_constraint_degree<
+        F: p3_field::Field,
+        ExtF: p3_field::ExtensionField<F>,
+        A,
+    >(
+        ordinary: &A,
+        challenger: &A,
+        shared: &A,
+        label: &str,
+    ) where
+        A: p3_air::BaseAir<F> + p3_air::Air<p3_lookup::InteractionSymbolicBuilder<F, ExtF>>,
+        p3_air::symbolic::SymbolicExpressionExt<F, ExtF>: p3_field::Algebra<ExtF>,
+    {
+        let expected = assert_arity4_constraint_degree::<F, ExtF, _>(ordinary, label);
+        assert_eq!(
+            assert_arity4_constraint_degree::<F, ExtF, _>(challenger, label),
+            expected,
+            "{label} challenger role changed maximum constraint degree"
+        );
+        assert_eq!(
+            assert_arity4_constraint_degree::<F, ExtF, _>(shared, label),
+            expected,
+            "{label} shared role changed maximum constraint degree"
+        );
     }
 
     #[test]
@@ -2795,6 +2833,73 @@ mod test {
 
         let gl_d2_w16 = GoldilocksD2Width16::default_air();
         assert_arity4_constraint_degree::<GlF, GlEF, _>(&gl_d2_w16, "GoldilocksD2Width16");
+    }
+
+    #[test]
+    fn test_constraint_degree_is_unchanged_for_shared_role_modes() {
+        let bb_w16 = BabyBearD4Width16::round_constants();
+        let bb_w16_ordinary = Poseidon2CircuitAirBabyBearD4Width16::new(bb_w16.clone());
+        let bb_w16_challenger =
+            Poseidon2CircuitAirBabyBearD4Width16::new(bb_w16.clone()).with_challenger_role(true);
+        let bb_w16_shared =
+            Poseidon2CircuitAirBabyBearD4Width16::new(bb_w16).with_shared_role(true);
+        assert_unchanged_constraint_degree::<BabyBear, BinomialExtensionField<BabyBear, 4>, _>(
+            &bb_w16_ordinary,
+            &bb_w16_challenger,
+            &bb_w16_shared,
+            "BabyBearD4Width16",
+        );
+
+        let bb_w24 = BabyBearD4Width24::round_constants();
+        let bb_w24_ordinary = Poseidon2CircuitAirBabyBearD4Width24::new(bb_w24.clone());
+        let bb_w24_challenger =
+            Poseidon2CircuitAirBabyBearD4Width24::new(bb_w24.clone()).with_challenger_role(true);
+        let bb_w24_shared =
+            Poseidon2CircuitAirBabyBearD4Width24::new(bb_w24).with_shared_role(true);
+        assert_unchanged_constraint_degree::<BabyBear, BinomialExtensionField<BabyBear, 4>, _>(
+            &bb_w24_ordinary,
+            &bb_w24_challenger,
+            &bb_w24_shared,
+            "BabyBearD4Width24",
+        );
+
+        let kb_w16 = KoalaBearD4Width16::round_constants();
+        let kb_w16_ordinary = Poseidon2CircuitAirKoalaBearD4Width16::new(kb_w16.clone());
+        let kb_w16_challenger =
+            Poseidon2CircuitAirKoalaBearD4Width16::new(kb_w16.clone()).with_challenger_role(true);
+        let kb_w16_shared =
+            Poseidon2CircuitAirKoalaBearD4Width16::new(kb_w16).with_shared_role(true);
+        assert_unchanged_constraint_degree::<KoalaBear, BinomialExtensionField<KoalaBear, 4>, _>(
+            &kb_w16_ordinary,
+            &kb_w16_challenger,
+            &kb_w16_shared,
+            "KoalaBearD4Width16",
+        );
+
+        let kb_w24 = KoalaBearD4Width24::round_constants();
+        let kb_w24_ordinary = Poseidon2CircuitAirKoalaBearD4Width24::new(kb_w24.clone());
+        let kb_w24_challenger =
+            Poseidon2CircuitAirKoalaBearD4Width24::new(kb_w24.clone()).with_challenger_role(true);
+        let kb_w24_shared =
+            Poseidon2CircuitAirKoalaBearD4Width24::new(kb_w24).with_shared_role(true);
+        assert_unchanged_constraint_degree::<KoalaBear, BinomialExtensionField<KoalaBear, 4>, _>(
+            &kb_w24_ordinary,
+            &kb_w24_challenger,
+            &kb_w24_shared,
+            "KoalaBearD4Width24",
+        );
+
+        let gl_w8 = goldilocks_d2_width8_round_constants();
+        let gl_w8_ordinary = Poseidon2CircuitAirGoldilocksD2Width8::new(gl_w8.clone());
+        let gl_w8_challenger =
+            Poseidon2CircuitAirGoldilocksD2Width8::new(gl_w8.clone()).with_challenger_role(true);
+        let gl_w8_shared = Poseidon2CircuitAirGoldilocksD2Width8::new(gl_w8).with_shared_role(true);
+        assert_unchanged_constraint_degree::<Goldilocks, BinomialExtensionField<Goldilocks, 2>, _>(
+            &gl_w8_ordinary,
+            &gl_w8_challenger,
+            &gl_w8_shared,
+            "GoldilocksD2Width8",
+        );
     }
 
     /// Build an AIR with the given preprocessed data and optional minimum

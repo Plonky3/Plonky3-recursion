@@ -1133,6 +1133,11 @@ fn supported_poseidon2(config: Poseidon2Config) -> bool {
         Poseidon2Config::KOALA_BEAR_D4_W16.for_challenger(),
         Poseidon2Config::KOALA_BEAR_D4_W24.for_challenger(),
         Poseidon2Config::GOLDILOCKS_D2_W8.for_challenger(),
+        Poseidon2Config::BABY_BEAR_D4_W16.for_shared_challenger_table(),
+        Poseidon2Config::BABY_BEAR_D4_W24.for_shared_challenger_table(),
+        Poseidon2Config::KOALA_BEAR_D4_W16.for_shared_challenger_table(),
+        Poseidon2Config::KOALA_BEAR_D4_W24.for_shared_challenger_table(),
+        Poseidon2Config::GOLDILOCKS_D2_W8.for_shared_challenger_table(),
     ]
     .contains(&config)
 }

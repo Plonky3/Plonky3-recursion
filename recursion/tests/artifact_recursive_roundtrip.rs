@@ -194,6 +194,10 @@ fn builtin_recursion_roundtrips_two_ordered_pairs_after_all_native_owners_drop()
             .verify_encoded(&second_bytes, CanonicalStatement::new(&first_statement, 4))
             .is_err()
     );
+    // Both artifacts use the same KoalaBear D4 W16 geometry. The recursive parent carries the
+    // shared challenger-table authority, while the child retains its legacy source identity;
+    // trusted bytes must therefore reject same-width role substitution.
+    assert_ne!(child_verifier_bytes, verifier_bytes);
     assert!(matches!(
         PortableVerifier::decode(
             &child_verifier_bytes,
