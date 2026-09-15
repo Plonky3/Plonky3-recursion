@@ -140,6 +140,13 @@ fn is_npo_type<F: p3_field::Field>(op: &Op<F>, needle: &str) -> bool {
     }
 }
 
+fn is_exact_npo_type<F: p3_field::Field>(op: &Op<F>, expected: &str) -> bool {
+    match op {
+        Op::NonPrimitiveOpWithExecutor { executor, .. } => executor.op_type().as_str() == expected,
+        _ => false,
+    }
+}
+
 fn writes<F: p3_field::Field>(op: &Op<F>, wid: WitnessId) -> bool {
     match op {
         Op::Const { out, .. } | Op::Public { out, .. } | Op::Alu { out, .. } => *out == wid,
@@ -170,6 +177,29 @@ fn permutation_input_witnesses<F: p3_field::Field>(circuit: &Circuit<F>) -> Vec<
         .collect()
 }
 
+/// Witnesses absorbed by the first `chunk_count` sponge permutations that hash one leaf.
+fn leaf_hash_input_witnesses<F: p3_field::Field>(
+    circuit: &Circuit<F>,
+    chunk_count: usize,
+    rate_ext: usize,
+) -> Vec<WitnessId> {
+    circuit
+        .ops
+        .iter()
+        .filter(|op| is_npo_type(op, "poseidon2_perm"))
+        .take(chunk_count)
+        .flat_map(|op| match op {
+            Op::NonPrimitiveOpWithExecutor { inputs, .. } => inputs
+                .iter()
+                .take(rate_ext)
+                .flatten()
+                .copied()
+                .collect::<Vec<_>>(),
+            _ => unreachable!(),
+        })
+        .collect()
+}
+
 #[test]
 fn eligible_leaf_hash_limbs_use_coefficient_bound_recompose() {
     let circuit = build_leaf_hash_circuit();
@@ -179,47 +209,39 @@ fn eligible_leaf_hash_limbs_use_coefficient_bound_recompose() {
         "the recompose NPO table must be enabled for this test to say anything"
     );
 
-    let perm_inputs = permutation_input_witnesses(&circuit);
+    let leaf_inputs = leaf_hash_input_witnesses(&circuit, 1, CFG.rate_ext());
     assert!(
-        !perm_inputs.is_empty(),
-        "the leaf hash must run at least one permutation"
-    );
-
-    let mut coeff_packed = 0;
-    let mut alu_packed = 0;
-    for wid in perm_inputs {
-        let writer = &circuit.ops[writer_position(&circuit, wid)];
-        coeff_packed += usize::from(is_npo_type(writer, "recompose/coeff"));
-        alu_packed += usize::from(matches!(writer, Op::Alu { .. }));
-    }
-    assert!(
-        coeff_packed > 0,
-        "the eligible leaf must use coefficient-bound recompose rows"
+        !leaf_inputs.is_empty(),
+        "the leaf hash must absorb through at least one sponge permutation"
     );
     assert!(
-        alu_packed == 0,
-        "the eligible leaf's opened coefficients must not reach the sponge through ALU packing"
+        leaf_inputs.iter().all(|&wid| {
+            is_exact_npo_type(
+                &circuit.ops[writer_position(&circuit, wid)],
+                "recompose/coeff",
+            )
+        }),
+        "every full-chunk leaf limb must be written by an exact coefficient-bound row"
     );
 }
 
 #[test]
 fn baby_bear_eligible_leaf_hash_uses_coefficient_bound_recompose() {
     let circuit = build_baby_bear_leaf_hash_circuit();
-    let perm_inputs = permutation_input_witnesses(&circuit);
+    let leaf_inputs =
+        leaf_hash_input_witnesses(&circuit, 1, Poseidon2Config::BABY_BEAR_D4_W16.rate_ext());
     assert!(
-        perm_inputs.iter().any(|&wid| {
-            is_npo_type(
+        !leaf_inputs.is_empty(),
+        "the BabyBear leaf hash must absorb through a sponge permutation"
+    );
+    assert!(
+        leaf_inputs.iter().all(|&wid| {
+            is_exact_npo_type(
                 &circuit.ops[writer_position(&circuit, wid)],
                 "recompose/coeff",
             )
         }),
-        "BabyBear D4/W16 leaves must use coefficient-bound recompose rows"
-    );
-    assert!(
-        perm_inputs
-            .iter()
-            .all(|&wid| !matches!(circuit.ops[writer_position(&circuit, wid)], Op::Alu { .. })),
-        "BabyBear D4/W16 leaves must not use ALU packing"
+        "every BabyBear D4/W16 leaf limb must be written by an exact coefficient-bound row"
     );
 }
 
@@ -229,10 +251,10 @@ fn re_pointing_a_leaf_hash_packing_is_visible_to_the_verifier() {
 
     // The first permutation limb whose packing is a coefficient-bound row, and one of its
     // operands.
-    let packed = permutation_input_witnesses(&honest)
+    let packed = leaf_hash_input_witnesses(&honest, 1, CFG.rate_ext())
         .into_iter()
         .find(|&wid| {
-            is_npo_type(
+            is_exact_npo_type(
                 &honest.ops[writer_position(&honest, wid)],
                 "recompose/coeff",
             )
@@ -245,11 +267,11 @@ fn re_pointing_a_leaf_hash_packing_is_visible_to_the_verifier() {
     };
 
     // Re-point the packing at a different coefficient the same leaf already carries.
-    let donor = permutation_input_witnesses(&honest)
+    let donor = leaf_hash_input_witnesses(&honest, 1, CFG.rate_ext())
         .into_iter()
         .filter_map(|wid| match &honest.ops[writer_position(&honest, wid)] {
             Op::NonPrimitiveOpWithExecutor { inputs, .. }
-                if is_npo_type(
+                if is_exact_npo_type(
                     &honest.ops[writer_position(&honest, wid)],
                     "recompose/coeff",
                 ) && inputs[0][0] != original_operand =>
@@ -295,7 +317,7 @@ fn partial_chunk_carry_over_coefficients_use_coefficient_bound_recompose() {
         "the recompose NPO table must be enabled for this test to say anything"
     );
 
-    let perm_inputs = permutation_input_witnesses(&circuit);
+    let leaf_inputs = leaf_hash_input_witnesses(&circuit, 2, CFG.rate_ext());
     let perm_count = circuit
         .ops
         .iter()
@@ -306,20 +328,14 @@ fn partial_chunk_carry_over_coefficients_use_coefficient_bound_recompose() {
         "the leaf must absorb across at least two permutations to reach the partial-chunk path"
     );
 
-    let mut coeff_packed = 0;
-    let mut alu_packed = 0;
-    for wid in perm_inputs {
-        let writer = &circuit.ops[writer_position(&circuit, wid)];
-        coeff_packed += usize::from(is_npo_type(writer, "recompose/coeff"));
-        alu_packed += usize::from(matches!(writer, Op::Alu { .. }));
-    }
     assert!(
-        coeff_packed > 0,
-        "partial eligible leaves use coefficient-bound packing"
-    );
-    assert_eq!(
-        alu_packed, 0,
-        "partial eligible leaves do not use ALU packing"
+        leaf_inputs.iter().all(|&wid| {
+            is_exact_npo_type(
+                &circuit.ops[writer_position(&circuit, wid)],
+                "recompose/coeff",
+            )
+        }),
+        "every partial-chunk leaf limb must be written by an exact coefficient-bound row"
     );
 
     // The carry-over decomposition itself must be reconstructed through the coefficient-bound
@@ -331,7 +347,7 @@ fn partial_chunk_carry_over_coefficients_use_coefficient_bound_recompose() {
                     circuit.ops.iter().any(|other| matches!(
                         other,
                         Op::NonPrimitiveOpWithExecutor { inputs, .. }
-                            if is_npo_type(other, "recompose/coeff")
+                            if is_exact_npo_type(other, "recompose/coeff")
                                 && inputs.iter().flatten().any(|input| input == out)
                     )),
                     "hint output {out:?} is never read by a coefficient-bound recompose op, so \

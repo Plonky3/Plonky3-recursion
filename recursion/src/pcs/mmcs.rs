@@ -27,26 +27,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::Target;
 
-/// Hash base field coefficients using overwrite-mode sponge (matching native PaddingFreeSponge).
-///
-/// Native `PaddingFreeSponge` uses "overwrite mode": when absorbing a partial chunk,
-/// only the absorbed positions are overwritten; the remaining rate positions keep their
-/// values from the previous permutation output.
-///
-/// This function implements the same behavior in the circuit by:
-/// 1. Processing base coefficients in chunks of `rate` (8 for BabyBear / KoalaBear)
-/// 2. For partial chunks, mixing absorbed values with previous output for remaining positions
-/// 3. Using proper chaining for the capacity portion
-///
-/// # Parameters
-/// - `circuit`: Circuit builder
-/// - `permutation_config`: Poseidon2 configuration
-/// - `base_coeffs`: Base field coefficient targets (in lifted representation)
-/// - `reset`: If true, starts a new hash chain (initial state = zeros)
-/// - `packing`: selects the binding-aware coefficient lookup table or the legacy ALU chain for
-///   recomposition and partial-chunk carry unpacking. The coefficient-bound table is only selected
-///   by the non-hiding binary D4/W16 Poseidon2 base-opening entrypoint; all other callers retain
-///   the ALU route for compatibility.
+/// Recomposition lowering selected by each MMCS caller.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum BaseCoeffPacking {
     Alu,
@@ -72,6 +53,26 @@ where
         })
 }
 
+/// Hash base field coefficients using overwrite-mode sponge (matching native PaddingFreeSponge).
+///
+/// Native `PaddingFreeSponge` uses "overwrite mode": when absorbing a partial chunk,
+/// only the absorbed positions are overwritten; the remaining rate positions keep their
+/// values from the previous permutation output.
+///
+/// This function implements the same behavior in the circuit by:
+/// 1. Processing base coefficients in chunks of `rate` (8 for BabyBear / KoalaBear)
+/// 2. For partial chunks, mixing absorbed values with previous output for remaining positions
+/// 3. Using proper chaining for the capacity portion
+///
+/// # Parameters
+/// - `circuit`: Circuit builder
+/// - `permutation_config`: Poseidon2 configuration
+/// - `base_coeffs`: Base field coefficient targets (in lifted representation)
+/// - `reset`: If true, starts a new hash chain (initial state = zeros)
+/// - `packing`: selects the binding-aware coefficient lookup table or the legacy ALU chain for
+///   recomposition and partial-chunk carry unpacking. The coefficient-bound table is only selected
+///   by the non-hiding binary D4/W16 Poseidon2 base-opening entrypoint; all other callers retain
+///   the ALU route for compatibility.
 fn add_hash_base_coeffs_overwrite<F, EF>(
     circuit: &mut CircuitBuilder<EF>,
     permutation_config: &PermConfig,
