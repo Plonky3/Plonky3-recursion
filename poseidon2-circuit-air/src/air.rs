@@ -1074,7 +1074,7 @@ pub(crate) fn eval<
 
         // Merkle-path chaining (compact): precomputed `(1−ns)(merkle)(1−ctl_i)` × direction bit (degree 3).
         let is_left = AB::Expr::ONE - next_bit.into();
-        for i in 0..CAPACITY_EXT {
+        for i in 0..RATE_EXT {
             let merkle_chain_i = s[rate_merkle_base + i];
             let gate_left_i = merkle_chain_i * is_left.clone();
             let gate_right_i = merkle_chain_i * next_bit;
@@ -1184,30 +1184,35 @@ pub(crate) fn eval<
             );
         }
 
-        // Merkle-path chaining: the running hash is carried in the rate portion;
-        // the sibling occupies the capacity portion of the next row's input.
-        // Arity-4 rows use a separate chunked placement below, so this is the
-        // arity-2 layout. In particular, W24 has RATE_EXT=4 and CAPACITY_EXT=2;
-        // indexing the right side by RATE_EXT would address beyond the state.
-        let is_left = AB::Expr::ONE - next_bit.into();
+        // Binary Merkle chaining is supported only when both child digests fit in equal
+        // halves of the state. Arity-4 rows use the separate branch above. For an unequal
+        // non-arity-4 shape (notably W24), reject any trusted Merkle flag on the shifted row.
+        // This row-local assertion intentionally has no transition or enabled-row gate, so
+        // wraparound covers the first, last, and one-row traces as well.
+        if RATE_EXT == CAPACITY_EXT {
+            let is_left = AB::Expr::ONE - next_bit.into();
 
-        for i in 0..RATE_EXT {
-            let gate_left_i = next_prep.input_limbs[i].merkle_chain_sel * is_left.clone();
-            for d in 0..D {
-                builder
-                    .when_transition()
-                    .when(gate_left_i.clone())
-                    .assert_zero(next_in[i * D + d] - local_out[i * D + d]);
+            for i in 0..RATE_EXT {
+                let gate_left_i = next_prep.input_limbs[i].merkle_chain_sel * is_left.clone();
+                for d in 0..D {
+                    builder
+                        .when_transition()
+                        .when(gate_left_i.clone())
+                        .assert_zero(next_in[i * D + d] - local_out[i * D + d]);
+                }
             }
-        }
-        for i in 0..CAPACITY_EXT {
-            let gate_right_i = next_prep.input_limbs[i].merkle_chain_sel * next_bit;
-            for d in 0..D {
-                builder
-                    .when_transition()
-                    .when(gate_right_i.clone())
-                    .assert_zero(next_in[(RATE_EXT + i) * D + d] - local_out[i * D + d]);
+
+            for i in 0..RATE_EXT {
+                let gate_right_i = next_prep.input_limbs[i].merkle_chain_sel * next_bit;
+                for d in 0..D {
+                    builder
+                        .when_transition()
+                        .when(gate_right_i.clone())
+                        .assert_zero(next_in[(RATE_EXT + i) * D + d] - local_out[i * D + d]);
+                }
             }
+        } else {
+            builder.assert_zero(next_prep.merkle_path.into());
         }
 
         // MMCS accumulator
@@ -2296,6 +2301,98 @@ mod test {
         .with_shared_role(true);
         let trace = air.generate_trace_rows(&rows, constants, 0);
         (air, trace, preprocessed)
+    }
+
+    fn w24_rows(merkle_row: Option<usize>, row_count: usize) -> Vec<Poseidon2CircuitRow<Val>> {
+        (0..row_count)
+            .map(|row_index| Poseidon2CircuitRow {
+                challenger: false,
+                new_start: true,
+                merkle_path: merkle_row == Some(row_index),
+                mmcs_bit: false,
+                mmcs_bit2: false,
+                mmcs_index_sum: Val::ZERO,
+                input_values: Val::zero_vec(24),
+                in_ctl: vec![false; 6],
+                input_indices: vec![0; 6],
+                out_ctl: vec![false; 4],
+                output_indices: vec![0; 4],
+                mmcs_index_sum_idx: 0,
+                mmcs_ctl_enabled: false,
+                absorb_len: 0,
+            })
+            .collect()
+    }
+
+    fn w24_air_and_trace(
+        rows: &[Poseidon2CircuitRow<Val>],
+        shared: bool,
+    ) -> (
+        Poseidon2CircuitAirBabyBearD4Width24,
+        p3_matrix::dense::RowMajorMatrix<Val>,
+    ) {
+        let preprocessed = extract_preprocessed_from_operations_with_role::<6, 4, Val, Val>(
+            rows, 4, 4, false, shared,
+        );
+        let air = Poseidon2CircuitAirBabyBearD4Width24::new_with_preprocessed(
+            BabyBearD4Width24::round_constants(),
+            preprocessed,
+        )
+        .with_shared_role(shared);
+        let trace = air.generate_trace_rows(rows, &BabyBearD4Width24::round_constants(), 0);
+        (air, trace)
+    }
+
+    fn w24_challenger_air_and_trace(
+        rows: &[Poseidon2CircuitRow<Val>],
+    ) -> (
+        Poseidon2CircuitAirBabyBearD4Width24,
+        p3_matrix::dense::RowMajorMatrix<Val>,
+    ) {
+        let preprocessed = extract_preprocessed_from_operations_with_role::<6, 4, Val, Val>(
+            rows, 4, 4, true, false,
+        );
+        let air = Poseidon2CircuitAirBabyBearD4Width24::new_with_preprocessed(
+            BabyBearD4Width24::round_constants(),
+            preprocessed,
+        )
+        .with_challenger_role(true);
+        let trace = air.generate_trace_rows(rows, &BabyBearD4Width24::round_constants(), 0);
+        (air, trace)
+    }
+
+    #[test]
+    fn rejects_w24_merkle_flag_at_one_first_and_last_rows_in_ordinary_and_shared_roles() {
+        for shared in [false, true] {
+            for rows in [
+                w24_rows(Some(0), 1),
+                w24_rows(Some(0), 4),
+                w24_rows(Some(3), 4),
+            ] {
+                let (air, trace) = w24_air_and_trace(&rows, shared);
+                assert_air_rejects::<Val, BinomialExtensionField<Val, 4>, _>(&air, &trace);
+            }
+        }
+    }
+
+    #[test]
+    fn accepts_w24_all_sponge_rows_in_ordinary_and_shared_roles() {
+        for shared in [false, true] {
+            let rows = w24_rows(None, 4);
+            let (air, trace) = w24_air_and_trace(&rows, shared);
+            assert_air_satisfies::<Val, BinomialExtensionField<Val, 4>, _>(&air, &trace);
+        }
+    }
+
+    #[test]
+    fn accepts_w24_all_sponge_rows_in_challenger_role() {
+        let mut rows = w24_rows(None, 4);
+        for row in &mut rows {
+            row.challenger = true;
+            row.in_ctl.fill(true);
+        }
+        let (air, trace) = w24_challenger_air_and_trace(&rows);
+        assert_air_satisfies::<Val, BinomialExtensionField<Val, 4>, _>(&air, &trace);
     }
 
     #[test]

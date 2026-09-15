@@ -21,6 +21,7 @@ impl<F: Field> CircuitBuilder<F> {
         &mut self,
         call: &Poseidon2PermCall,
     ) -> Result<(NonPrimitiveOpId, Vec<Option<ExprId>>), CircuitBuilderError> {
+        call.config.validate_merkle_geometry(call.merkle_path)?;
         if call.merkle_path && call.mmcs_bit.is_none() {
             return Err(CircuitBuilderError::Poseidon2MerkleMissingMmcsBit);
         }
@@ -66,5 +67,63 @@ impl<F: Field> CircuitBuilder<F> {
             "poseidon2_perm_base_out_capacity",
             "poseidon2_perm_base",
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec;
+
+    use p3_field::PrimeCharacteristicRing;
+    use p3_field::extension::BinomialExtensionField;
+    use p3_test_utils::baby_bear_params::BabyBear;
+
+    use super::*;
+    use crate::ops::Poseidon2Config;
+
+    #[test]
+    fn add_poseidon2_perm_rejects_w24_binary_merkle_before_row_creation() {
+        type Ext4 = BinomialExtensionField<BabyBear, 4>;
+
+        let mut builder = CircuitBuilder::<Ext4>::new();
+        let zero = builder.define_const(Ext4::ZERO);
+        let call = Poseidon2PermCall {
+            config: Poseidon2Config::BABY_BEAR_D4_W24,
+            new_start: true,
+            merkle_path: true,
+            mmcs_bit: Some(zero),
+            mmcs_bit2: None,
+            inputs: vec![Some(zero); 6],
+            out_ctl: vec![true; 4],
+            return_all_outputs: false,
+            mmcs_index_sum: None,
+            absorb_len: 0,
+        };
+
+        let Err(CircuitBuilderError::Poseidon2ConfigMismatch { .. }) =
+            builder.add_poseidon2_perm(&call)
+        else {
+            panic!("W24 binary Merkle mode must be rejected before row creation");
+        };
+    }
+
+    #[test]
+    fn add_mmcs_verify_rejects_w24_binary_merkle_path_before_execution() {
+        type Ext4 = BinomialExtensionField<BabyBear, 4>;
+
+        let mut builder = CircuitBuilder::<Ext4>::new();
+        let zero = builder.define_const(Ext4::ZERO);
+        let openings = vec![vec![zero; 4], vec![zero; 4]];
+        let directions = vec![zero];
+        let root = vec![zero; 4];
+
+        let Err(CircuitBuilderError::Poseidon2ConfigMismatch { .. }) = builder.add_mmcs_verify(
+            Poseidon2Config::BABY_BEAR_D4_W24,
+            &openings,
+            &directions,
+            &root,
+        ) else {
+            panic!("W24 binary MMCS must return a configuration error");
+        };
     }
 }

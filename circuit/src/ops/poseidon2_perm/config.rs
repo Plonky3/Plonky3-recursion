@@ -1,6 +1,6 @@
 //! Poseidon2 configuration types and execution closures.
 
-use alloc::format;
+use alloc::string::ToString;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
@@ -381,6 +381,25 @@ impl Poseidon2Config {
         self.rate_ext() + self.capacity_ext()
     }
 
+    /// Reject binary-Merkle layouts whose digest halves do not match the state geometry.
+    pub(crate) fn validate_merkle_geometry(
+        self,
+        merkle_path: bool,
+    ) -> Result<(), CircuitBuilderError> {
+        if merkle_path && !self.is_arity4_shape() && self.rate_ext() != self.capacity_ext() {
+            return Err(CircuitBuilderError::Poseidon2ConfigMismatch {
+                expected: "binary Merkle shape with equal rate_ext and capacity_ext".to_string(),
+                got: format!(
+                    "{} has rate_ext={} and capacity_ext={}",
+                    self.variant_name(),
+                    self.rate_ext(),
+                    self.capacity_ext()
+                ),
+            });
+        }
+        Ok(())
+    }
+
     /// Check that input and output counts match this config's expected layout.
     ///
     /// - For D=1: `add_poseidon2_perm` always supplies `width_ext + 2` input slots (MMCS slots may
@@ -397,6 +416,7 @@ impl Poseidon2Config {
         output_count: usize,
         merkle_path: bool,
     ) -> Result<(), CircuitBuilderError> {
+        self.validate_merkle_geometry(merkle_path)?;
         let is_d1 = self.d() == 1;
         // Arity-4 compression Merkle rows carry a second direction bit, so they
         // supply `width_ext + 3` input slots (limbs + mmcs_index_sum + two bits).
@@ -679,6 +699,28 @@ mod tests {
         let cfg = Poseidon2Config::BABY_BEAR_D1_W16;
         assert!(cfg.validate_io_counts(18, 8, true).is_ok());
         assert!(cfg.validate_io_counts(18, 16, true).is_ok());
+    }
+
+    #[test]
+    fn validate_io_counts_w24_accepts_sponge_and_rejects_binary_merkle() {
+        for cfg in [
+            Poseidon2Config::BABY_BEAR_D4_W24,
+            Poseidon2Config::BABY_BEAR_D4_W24.for_challenger(),
+            Poseidon2Config::BABY_BEAR_D4_W24.for_shared_challenger_table(),
+            Poseidon2Config::KOALA_BEAR_D4_W24,
+            Poseidon2Config::KOALA_BEAR_D4_W24.for_challenger(),
+            Poseidon2Config::KOALA_BEAR_D4_W24.for_shared_challenger_table(),
+        ] {
+            assert!(
+                cfg.validate_io_counts(cfg.width_ext() + 2, cfg.rate_ext(), false)
+                    .is_ok()
+            );
+            let Err(CircuitBuilderError::Poseidon2ConfigMismatch { .. }) =
+                cfg.validate_io_counts(cfg.width_ext() + 2, cfg.rate_ext(), true)
+            else {
+                panic!("W24 binary Merkle mode must be rejected");
+            };
+        }
     }
 
     #[test]
