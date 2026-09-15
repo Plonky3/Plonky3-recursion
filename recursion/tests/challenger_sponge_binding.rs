@@ -309,7 +309,7 @@ impl HintExecutor<EF> for ChosenCoefficients {
 }
 
 fn run(circuit: &Circuit<EF>) -> Traces<EF> {
-    run_with(circuit, &default_publics(circuit))
+    run_with(circuit, &[])
 }
 
 fn run_with(circuit: &Circuit<EF>, publics: &[EF]) -> Traces<EF> {
@@ -319,17 +319,19 @@ fn run_with(circuit: &Circuit<EF>, publics: &[EF]) -> Traces<EF> {
 }
 
 fn witness_values(circuit: &Circuit<EF>) -> Vec<Option<EF>> {
-    witness_values_with(circuit, &default_publics(circuit))
+    witness_values_with(circuit, &[])
 }
 
-fn default_publics(circuit: &Circuit<EF>) -> Vec<EF> {
-    (0..circuit.public_flat_len)
-        .map(|i| {
-            (i == 0 && circuit.public_flat_len == 2)
-                .then_some(EF::from_u64(RATE as u64))
-                .unwrap_or(EF::ZERO)
-        })
-        .collect()
+fn shared_publics() -> [EF; 2] {
+    [EF::from_u64(RATE as u64), EF::ZERO]
+}
+
+fn shared_run(circuit: &Circuit<EF>) -> Traces<EF> {
+    run_with(circuit, &shared_publics())
+}
+
+fn shared_witness_values(circuit: &Circuit<EF>) -> Vec<Option<EF>> {
+    witness_values_with(circuit, &shared_publics())
 }
 
 fn witness_values_with(circuit: &Circuit<EF>, publics: &[EF]) -> Vec<Option<EF>> {
@@ -581,7 +583,7 @@ fn forge_shared_challenger_trace(
     target_row: usize,
     mutate: impl FnOnce(&mut p3_circuit::ops::Poseidon2CircuitRow<F>),
 ) -> Traces<EF> {
-    let mut traces = run(circuit);
+    let mut traces = shared_run(circuit);
     let source_id = NpoTypeId::poseidon2_perm(CFG.for_challenger());
     let source = traces
         .non_primitive_trace::<Poseidon2Trace<F>>(&source_id)
@@ -592,7 +594,7 @@ fn forge_shared_challenger_trace(
 
     let mut forged = source;
     mutate(&mut forged.operations[target_row]);
-    let mut witness: Vec<EF> = witness_values(circuit)
+    let mut witness: Vec<EF> = shared_witness_values(circuit)
         .into_iter()
         .map(|value| value.expect("honest witness is complete"))
         .collect();
@@ -674,7 +676,7 @@ fn forge_shared_continuation_from_hint(circuit: &Circuit<EF>) -> Traces<EF> {
         _ => unreachable!(),
     }
     assert_same_constraint_system(circuit, &edited);
-    run(&edited)
+    shared_run(&edited)
 }
 
 #[cfg(debug_assertions)]
@@ -713,7 +715,7 @@ fn assert_same_constraint_system(honest: &Circuit<EF>, edited: &Circuit<EF>) {
 #[test]
 fn shared_mixed_transcript_proves_and_verifies() {
     let circuit = build_shared_mixed_circuit();
-    let traces = run(&circuit);
+    let traces = shared_run(&circuit);
     let challenger_id = NpoTypeId::poseidon2_perm(CFG.for_challenger());
     let challenger_trace = traces
         .non_primitive_trace::<Poseidon2Trace<F>>(&challenger_id)
