@@ -1475,8 +1475,7 @@ impl Poseidon2Prover {
             Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
     {
         let op_type = NpoTypeId::poseidon2_perm(self.config);
-        let owned_trace;
-        let t = if self.config.is_shared() {
+        let operations = if self.config.is_shared() {
             let mut operations = Vec::new();
             for source in self.config.source_configs() {
                 let source_id = NpoTypeId::poseidon2_perm(source);
@@ -1497,20 +1496,14 @@ impl Poseidon2Prover {
                     row
                 }));
             }
-            if operations.is_empty() {
-                return None;
-            }
-            owned_trace = Poseidon2Trace {
-                op_type: op_type.clone(),
-                operations,
-            };
-            &owned_trace
+            operations
         } else {
-            traces.non_primitive_trace::<Poseidon2Trace<Val<SC>>>(&op_type)?
+            traces
+                .non_primitive_trace::<Poseidon2Trace<Val<SC>>>(&op_type)?
+                .operations
+                .clone()
         };
-
-        let rows = t.total_rows();
-        if rows == 0 {
+        if operations.is_empty() {
             return None;
         }
 
@@ -1518,12 +1511,12 @@ impl Poseidon2Prover {
             .npo_min_height(&op_type)
             .unwrap_or_else(|| packing.min_trace_height());
         let witness_ctl_scale = <CF as BasedVectorSpace<Val<SC>>>::DIMENSION as u32;
-        self.batch_instance_base_impl::<SC>(t, min_height, witness_ctl_scale)
+        self.batch_instance_base_impl::<SC>(operations, min_height, witness_ctl_scale)
     }
 
     fn batch_instance_base_impl<SC>(
         &self,
-        t: &Poseidon2Trace<Val<SC>>,
+        operations: Vec<Poseidon2CircuitRow<Val<SC>>>,
         min_height: usize,
         witness_ctl_scale: u32,
     ) -> Option<BatchTableInstance<SC>>
@@ -1534,7 +1527,7 @@ impl Poseidon2Prover {
             Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
     {
         let cfg = self.config;
-        let rows = t.total_rows();
+        let rows = operations.len();
 
         // Pad logical ops to the larger of (next power-of-two of row count) and `min_height`.
         let padded_rows = rows.next_power_of_two().max(min_height.next_power_of_two());
@@ -1561,7 +1554,7 @@ impl Poseidon2Prover {
             mmcs_ctl_enabled: false,
             absorb_len: 0,
         };
-        let mut padded_ops = t.operations.clone();
+        let mut padded_ops = operations;
         padded_ops.resize(padded_rows, pad_filler);
 
         let (air, matrix) = match cfg.without_challenger_role() {
@@ -1570,7 +1563,7 @@ impl Poseidon2Prover {
                 let wbus = poseidon_d1_witness_bus_dim(witness_ctl_scale)?;
                 let preprocessed =
                     extract_preprocessed_from_operations_with_role::<16, 8, BabyBear, Val<SC>>(
-                        &t.operations,
+                        &padded_ops[..rows],
                         witness_ctl_scale,
                         1,
                         cfg.is_challenger(),
@@ -1618,7 +1611,7 @@ impl Poseidon2Prover {
                 let constants = BabyBearD4Width16::round_constants();
                 let preprocessed =
                     extract_preprocessed_from_operations_with_role::<4, 2, BabyBear, Val<SC>>(
-                        &t.operations,
+                        &padded_ops[..rows],
                         witness_ctl_scale,
                         cfg.d(),
                         cfg.is_challenger(),
@@ -1641,7 +1634,7 @@ impl Poseidon2Prover {
                 let constants = BabyBearD4Width24::round_constants();
                 let preprocessed =
                     extract_preprocessed_from_operations_with_role::<6, 4, BabyBear, Val<SC>>(
-                        &t.operations,
+                        &padded_ops[..rows],
                         witness_ctl_scale,
                         cfg.d(),
                         cfg.is_challenger(),
@@ -1664,7 +1657,7 @@ impl Poseidon2Prover {
                 let constants = BabyBearD4Width32::round_constants();
                 let preprocessed =
                     extract_preprocessed_from_operations_with_role::<8, 6, BabyBear, Val<SC>>(
-                        &t.operations,
+                        &padded_ops[..rows],
                         witness_ctl_scale,
                         cfg.d(),
                         cfg.is_challenger(),
@@ -1688,7 +1681,7 @@ impl Poseidon2Prover {
                 let wbus = poseidon_d1_witness_bus_dim(witness_ctl_scale)?;
                 let preprocessed =
                     extract_preprocessed_from_operations_with_role::<16, 8, KoalaBear, Val<SC>>(
-                        &t.operations,
+                        &padded_ops[..rows],
                         witness_ctl_scale,
                         1,
                         cfg.is_challenger(),
@@ -1736,7 +1729,7 @@ impl Poseidon2Prover {
                 let constants = KoalaBearD4Width16::round_constants();
                 let preprocessed =
                     extract_preprocessed_from_operations_with_role::<4, 2, KoalaBear, Val<SC>>(
-                        &t.operations,
+                        &padded_ops[..rows],
                         witness_ctl_scale,
                         cfg.d(),
                         cfg.is_challenger(),
@@ -1759,7 +1752,7 @@ impl Poseidon2Prover {
                 let constants = KoalaBearD4Width24::round_constants();
                 let preprocessed =
                     extract_preprocessed_from_operations_with_role::<6, 4, KoalaBear, Val<SC>>(
-                        &t.operations,
+                        &padded_ops[..rows],
                         witness_ctl_scale,
                         cfg.d(),
                         cfg.is_challenger(),
@@ -1783,7 +1776,7 @@ impl Poseidon2Prover {
                 let wbus = poseidon_d1_witness_bus_dim(witness_ctl_scale)?;
                 let preprocessed =
                     extract_preprocessed_from_operations_with_role::<32, 24, KoalaBear, Val<SC>>(
-                        &t.operations,
+                        &padded_ops[..rows],
                         witness_ctl_scale,
                         1,
                         cfg.is_challenger(),
@@ -1831,7 +1824,7 @@ impl Poseidon2Prover {
                 let constants = KoalaBearD4Width32::round_constants();
                 let preprocessed =
                     extract_preprocessed_from_operations_with_role::<8, 6, KoalaBear, Val<SC>>(
-                        &t.operations,
+                        &padded_ops[..rows],
                         witness_ctl_scale,
                         cfg.d(),
                         cfg.is_challenger(),
@@ -1854,7 +1847,7 @@ impl Poseidon2Prover {
                 let constants = goldilocks_d2_width8_round_constants();
                 let preprocessed =
                     extract_preprocessed_from_operations_with_role::<4, 2, Goldilocks, Val<SC>>(
-                        &t.operations,
+                        &padded_ops[..rows],
                         witness_ctl_scale,
                         cfg.d(),
                         cfg.is_challenger(),
@@ -1877,7 +1870,7 @@ impl Poseidon2Prover {
                 let constants = goldilocks_d2_width16_round_constants();
                 let preprocessed =
                     extract_preprocessed_from_operations_with_role::<8, 6, Goldilocks, Val<SC>>(
-                        &t.operations,
+                        &padded_ops[..rows],
                         witness_ctl_scale,
                         cfg.d(),
                         cfg.is_challenger(),
@@ -1977,7 +1970,7 @@ where
         let min_height = packing
             .npo_min_height(&op_type)
             .unwrap_or_else(|| packing.min_trace_height());
-        self.batch_instance_base_impl::<SC>(t, min_height, 5)
+        self.batch_instance_base_impl::<SC>(t.operations.clone(), min_height, 5)
     }
 
     fn batch_instance_d6(
