@@ -49,6 +49,8 @@ cognitive_complexity = "allow"
 clap = { version = "4.6", features = ["derive"] }
 hashbrown = "0.17.1"
 itertools = { version = "0.15.0", default-features = false, features = ["use_alloc"] }
+libmimalloc-sys = { version = "0.1", default-features = false, features = ["extended"] }
+mimalloc = { version = "0.1", default-features = false }
 
 # Plonky3 dependencies - shared across all crates
 p3-air = "0.7.0"

@@ -177,6 +177,7 @@ impl Args {
 }
 
 fn main() {
+    keep_freed_memory_mapped();
     init_logger();
 
     let args = Args::parse();

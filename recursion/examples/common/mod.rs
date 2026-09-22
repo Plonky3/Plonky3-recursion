@@ -131,6 +131,22 @@ pub use tracing_subscriber::layer::SubscriberExt;
 pub use tracing_subscriber::util::SubscriberInitExt;
 pub use tracing_subscriber::{EnvFilter, Registry};
 
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
+/// Index of `mi_option_purge_delay` in mimalloc's `mi_option_t` enum (same in v2 and v3).
+const MI_OPTION_PURGE_DELAY: libmimalloc_sys::mi_option_t = 15;
+
+/// Keep freed memory mapped instead of returning it to the OS.
+///
+/// Every recursion layer reallocates trace and LDE buffers of the same sizes; purging them in
+/// between turns each reuse into fresh page faults.
+pub fn keep_freed_memory_mapped() {
+    // SAFETY: `mi_option_set` is not thread safe; this runs first thing in `main`, before any
+    // other thread exists.
+    unsafe { libmimalloc_sys::mi_option_set(MI_OPTION_PURGE_DELAY, -1) };
+}
+
 pub fn init_logger() {
     let env_filter = EnvFilter::builder()
         .with_default_directive(LevelFilter::INFO.into())
