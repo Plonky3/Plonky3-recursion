@@ -61,10 +61,16 @@ impl<'a, F: PrimeCharacteristicRing + Eq> ExecutionContext<'a, F> {
     pub fn set_witness(&mut self, widx: WitnessId, value: F) -> Result<(), CircuitError> {
         let idx = widx.0 as usize;
 
+        #[cfg(debug_assertions)]
         let slot = self
             .witness
             .get_mut(idx)
             .ok_or(CircuitError::WitnessIdOutOfBounds { witness_id: widx })?;
+
+        #[cfg(not(debug_assertions))]
+        // SAFETY: `idx` is derived from a `WitnessId` allocated against this `witness`
+        // vector at circuit compile time; the slot is guaranteed to exist.
+        let slot = unsafe { self.witness.get_unchecked_mut(idx) };
 
         if let Some(existing_value) = slot {
             if *existing_value != value {
