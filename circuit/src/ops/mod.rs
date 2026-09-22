@@ -17,6 +17,7 @@ pub use executor::*;
 pub use npo::*;
 pub use op::*;
 pub use perm::{PermCall, PermConfig, perm_private_data};
+pub use poseidon_perm::PoseidonRowValues;
 pub use poseidon1_perm::{
     // Prover/AIR (trace access)
     Poseidon1CircuitRow,

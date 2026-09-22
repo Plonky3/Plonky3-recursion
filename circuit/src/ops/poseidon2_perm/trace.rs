@@ -2,7 +2,6 @@
 
 use alloc::boxed::Box;
 use alloc::string::ToString;
-use alloc::vec;
 use alloc::vec::Vec;
 use core::any::Any;
 
@@ -11,6 +10,7 @@ use p3_maybe_rayon::prelude::*;
 
 use crate::CircuitError;
 use crate::ops::NpoTypeId;
+use crate::ops::poseidon_perm::PoseidonRowValues;
 use crate::ops::poseidon2_perm::config::Poseidon2Config;
 use crate::ops::poseidon2_perm::state::Poseidon2ExecutionState;
 use crate::tables::NonPrimitiveTrace;
@@ -113,15 +113,15 @@ pub struct Poseidon2CircuitRow<F> {
     pub mmcs_index_sum: F,
     /// Inputs to the Poseidon2 permutation (flattened state).
     /// For execution rows: 4 extension limbs. For trace rows: WIDTH base field elements.
-    pub input_values: Vec<F>,
+    pub input_values: PoseidonRowValues<F>,
     /// Input exposure flags for CTL lookups: permuted to match the physical trace layout.
-    pub in_ctl: Vec<bool>,
+    pub in_ctl: PoseidonRowValues<bool>,
     /// Input exposure indices for CTL lookups.
-    pub input_indices: Vec<u32>,
+    pub input_indices: PoseidonRowValues<u32>,
     /// Output exposure flags for rate limbs (CTL-verified when true).
-    pub out_ctl: Vec<bool>,
+    pub out_ctl: PoseidonRowValues<bool>,
     /// Output exposure indices: index into the witness table for rate limbs.
-    pub output_indices: Vec<u32>,
+    pub output_indices: PoseidonRowValues<u32>,
     /// MMCS index exposure: index for CTL exposure of mmcs_index_sum.
     pub mmcs_index_sum_idx: u32,
     /// Whether mmcs_index_sum CTL is enabled. When false, the mmcs_index_sum lookup is disabled.
@@ -232,7 +232,8 @@ fn generate_poseidon2_trace_for<
                 limb_count,
                 "Source row must have WIDTH/D input limbs"
             );
-            let mut input_values = vec![Config::BaseField::ZERO; Config::WIDTH];
+            let mut input_values =
+                PoseidonRowValues::from_elem(Config::BaseField::ZERO, Config::WIDTH);
             assert_eq!(
                 input_values.len(),
                 Config::WIDTH,

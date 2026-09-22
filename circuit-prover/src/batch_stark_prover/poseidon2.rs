@@ -188,12 +188,12 @@ mod shared_materialization_tests {
             input_values: {
                 let mut values = BabyBear::zero_vec(config.width());
                 values[0] = value;
-                values
+                values.into()
             },
-            in_ctl: vec![false; config.width_ext()],
-            input_indices: vec![0; config.width_ext()],
-            out_ctl: vec![false; config.rate_ext()],
-            output_indices: vec![0; config.rate_ext()],
+            in_ctl: vec![false; config.width_ext()].into(),
+            input_indices: vec![0; config.width_ext()].into(),
+            out_ctl: vec![false; config.rate_ext()].into(),
+            output_indices: vec![0; config.rate_ext()].into(),
             mmcs_index_sum_idx: 0,
             mmcs_ctl_enabled: false,
             absorb_len: 0,
@@ -1545,11 +1545,11 @@ impl Poseidon2Prover {
             mmcs_bit: false,
             mmcs_bit2: false,
             mmcs_index_sum: Val::<SC>::ZERO,
-            input_values: Val::<SC>::zero_vec(width),
-            in_ctl: vec![false; width_ext],
-            input_indices: vec![0; width_ext],
-            out_ctl: vec![false; rate_ext],
-            output_indices: vec![0; rate_ext],
+            input_values: Val::<SC>::zero_vec(width).into(),
+            in_ctl: vec![false; width_ext].into(),
+            input_indices: vec![0; width_ext].into(),
+            out_ctl: vec![false; rate_ext].into(),
+            output_indices: vec![0; rate_ext].into(),
             mmcs_index_sum_idx: 0,
             mmcs_ctl_enabled: false,
             absorb_len: 0,

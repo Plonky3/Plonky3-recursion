@@ -625,7 +625,7 @@ fn forge_shared_challenger_trace(
         let row = &mut forged.operations[row_index];
         let input: [F; WIDTH] = row
             .input_values
-            .clone()
+            .as_slice()
             .try_into()
             .expect("Poseidon2 row has fixed width");
         let output = perm.permute(input);
@@ -644,7 +644,7 @@ fn forge_shared_challenger_trace(
         }
         if row_index + 1 < chain_end {
             let next = &mut forged.operations[row_index + 1];
-            next.input_values = output.to_vec();
+            next.input_values = output.to_vec().into();
             if next.absorb_len > 0 {
                 next.input_values[RATE] += F::from_u8(next.absorb_len as u8);
             }
