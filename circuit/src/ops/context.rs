@@ -53,7 +53,7 @@ impl<'a, F: PrimeCharacteristicRing + Eq> ExecutionContext<'a, F> {
             .get(idx)
             .and_then(Option::as_ref)
             .map(p3_field::Dup::dup)
-            .ok_or(CircuitError::WitnessNotSet { witness_id: widx })
+            .ok_or_else(|| CircuitError::WitnessNotSet { witness_id: widx })
     }
 
     /// Set witness value at the given index.
@@ -65,7 +65,7 @@ impl<'a, F: PrimeCharacteristicRing + Eq> ExecutionContext<'a, F> {
         let slot = self
             .witness
             .get_mut(idx)
-            .ok_or(CircuitError::WitnessIdOutOfBounds { witness_id: widx })?;
+            .ok_or_else(|| CircuitError::WitnessIdOutOfBounds { witness_id: widx })?;
 
         #[cfg(not(debug_assertions))]
         // SAFETY: `idx` is derived from a `WitnessId` allocated against this `witness`
@@ -93,7 +93,7 @@ impl<'a, F: PrimeCharacteristicRing + Eq> ExecutionContext<'a, F> {
         self.non_primitive_op_private_data
             .get(self.operation_id.0 as usize)
             .and_then(Option::as_ref)
-            .ok_or(CircuitError::NonPrimitiveOpMissingPrivateData {
+            .ok_or_else(|| CircuitError::NonPrimitiveOpMissingPrivateData {
                 operation_index: self.operation_id,
             })
     }
