@@ -949,6 +949,53 @@ where
     FriMmcs: Mmcs<Challenge>,
     Challenger: FieldChallenger<Val> + GrindingChallenger + CanObserve<FriMmcs::Commitment>,
 {
+    let samples = sample_fri_queries(params, proof, challenger, commitments_with_opening_points)?;
+    fold_fri_queries(
+        params,
+        input_mmcs,
+        proof,
+        commitments_with_opening_points,
+        samples,
+    )
+}
+
+/// The transcript values a FRI query phase is sampled from, before any opening is read.
+struct FriQuerySamples<Challenge> {
+    alpha: Challenge,
+    betas: Vec<Challenge>,
+    log_arities: Vec<usize>,
+    log_global_max_height: usize,
+    log_final_height: usize,
+    extra_query_index_bits: usize,
+    indices: Vec<usize>,
+}
+
+/// Validate the proof's shape against `params` and replay the FRI transcript up to and including
+/// the query indices, exactly as [`p3_fri::verifier::verify_fri`] does before reading openings.
+fn sample_fri_queries<Val, Challenge, InputMmcs, FriMmcs, Challenger>(
+    params: &FriParameters<FriMmcs>,
+    proof: &FriProof<
+        Challenge,
+        FriMmcs,
+        Challenger::Witness,
+        Vec<BatchMultiOpening<Val, InputMmcs>>,
+    >,
+    challenger: &mut Challenger,
+    commitments_with_opening_points: &[CommitmentWithOpeningPoints<
+        Challenge,
+        InputMmcs::Commitment,
+        TwoAdicMultiplicativeCoset<Val>,
+    >],
+) -> Result<FriQuerySamples<Challenge>, FriError<FriMmcs::Error, InputMmcs::Error>>
+where
+    Val: TwoAdicField,
+    Challenge: ExtensionField<Val>,
+    // The folding strategy carries the input proof and its error type across the fold chain, so
+    // both have to be shareable.
+    InputMmcs: Mmcs<Val, MultiProof: Sync, Error: Sync>,
+    FriMmcs: Mmcs<Challenge>,
+    Challenger: FieldChallenger<Val> + GrindingChallenger + CanObserve<FriMmcs::Commitment>,
+{
     type Folding<Val, InputMmcs> = TwoAdicFriFoldingForMmcs<Val, InputMmcs>;
     let folding: Folding<Val, InputMmcs> = TwoAdicFriFolding(PhantomData);
 
@@ -1171,6 +1218,47 @@ where
         .take(params.num_queries)
         .collect();
 
+    Ok(FriQuerySamples {
+        alpha,
+        betas,
+        log_arities,
+        log_global_max_height,
+        log_final_height,
+        extra_query_index_bits,
+        indices,
+    })
+}
+
+/// Reduce the input openings at the sampled queries and walk every query's fold chain.
+fn fold_fri_queries<Val, Challenge, InputMmcs, FriMmcs, Witness>(
+    params: &FriParameters<FriMmcs>,
+    input_mmcs: &InputMmcs,
+    proof: &FriProof<Challenge, FriMmcs, Witness, Vec<BatchMultiOpening<Val, InputMmcs>>>,
+    commitments_with_opening_points: &[CommitmentWithOpeningPoints<
+        Challenge,
+        InputMmcs::Commitment,
+        TwoAdicMultiplicativeCoset<Val>,
+    >],
+    samples: FriQuerySamples<Challenge>,
+) -> Result<FriQueryLayout<Challenge>, FriError<FriMmcs::Error, InputMmcs::Error>>
+where
+    Val: TwoAdicField,
+    Challenge: ExtensionField<Val>,
+    InputMmcs: Mmcs<Val, MultiProof: Sync, Error: Sync>,
+    FriMmcs: Mmcs<Challenge>,
+{
+    type Folding<Val, InputMmcs> = TwoAdicFriFoldingForMmcs<Val, InputMmcs>;
+    let folding: Folding<Val, InputMmcs> = TwoAdicFriFolding(PhantomData);
+    let FriQuerySamples {
+        alpha,
+        betas,
+        log_arities,
+        log_global_max_height,
+        log_final_height,
+        extra_query_index_bits,
+        indices,
+    } = samples;
+
     let reduced_openings = open_inputs::<Val, Challenge, _, FriMmcs>(
         params,
         log_global_max_height,
@@ -1356,42 +1444,54 @@ where
         + Sync,
     [Val; DIGEST_ELEMS]: Serialize + DeserializeOwned,
 {
-    let layout = replay_fri_query_layout(
-        params,
-        input_mmcs,
-        proof,
-        challenger,
-        commitments_with_opening_points,
-    )?;
+    let samples = sample_fri_queries(params, proof, challenger, commitments_with_opening_points)?;
+    let indices = samples.indices.clone();
+    let log_global_max_height = samples.log_global_max_height;
 
     // Input batches: the opened rows are explicit, so only the leaf indices and the committed
-    // dimensions have to be rederived — exactly as `open_inputs` derives them.
-    let input_paths_by_batch: Vec<Vec<Vec<[Val; DIGEST_ELEMS]>>> = proof
-        .input_openings
-        .par_iter()
-        .zip(commitments_with_opening_points.par_iter())
-        .enumerate()
-        .map(|(batch, (batch_opening, (_, mats)))| {
-            let (batch_dims, reduced_indices) = input_batch_layout::<Val, Challenge, _, _>(
+    // dimensions have to be rederived — exactly as `open_inputs` derives them. Those depend only
+    // on the sampled indices, so the paths are rebuilt while the fold chains are walked.
+    let (layout, input_paths_by_batch) = join(
+        || {
+            fold_fri_queries(
                 params,
-                batch,
-                layout.log_global_max_height,
-                &layout.indices,
-                mats,
-            )?;
-            Ok(input_mmcs
-                .restore_and_recompute_paths(
-                    &batch_dims,
-                    &reduced_indices,
-                    &batch_opening.opened_values,
-                    &batch_opening.opening_proof,
-                )
-                .map_err(FriError::InputError)?
-                .into_iter()
-                .map(|path| path.siblings)
-                .collect())
-        })
-        .collect::<Result<_, _>>()?;
+                input_mmcs,
+                proof,
+                commitments_with_opening_points,
+                samples,
+            )
+        },
+        || {
+            proof
+                .input_openings
+                .par_iter()
+                .zip(commitments_with_opening_points.par_iter())
+                .enumerate()
+                .map(|(batch, (batch_opening, (_, mats)))| {
+                    let (batch_dims, reduced_indices) = input_batch_layout::<Val, Challenge, _, _>(
+                        params,
+                        batch,
+                        log_global_max_height,
+                        &indices,
+                        mats,
+                    )?;
+                    Ok(input_mmcs
+                        .restore_and_recompute_paths(
+                            &batch_dims,
+                            &reduced_indices,
+                            &batch_opening.opened_values,
+                            &batch_opening.opening_proof,
+                        )
+                        .map_err(FriError::InputError)?
+                        .into_iter()
+                        .map(|path| path.siblings)
+                        .collect())
+                })
+                .collect::<Result<Vec<Vec<Vec<[Val; DIGEST_ELEMS]>>>, _>>()
+        },
+    );
+    let layout = layout?;
+    let input_paths_by_batch = input_paths_by_batch?;
 
     // Commit-phase rounds: one matrix of `arity` extension columns per round, flattened to base
     // field the way the round's `ExtensionMmcs` commits it.
