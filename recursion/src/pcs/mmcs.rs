@@ -16,6 +16,7 @@ use p3_fri::{
     TwoAdicFriFolding, TwoAdicFriFoldingForMmcs,
 };
 use p3_matrix::Dimensions;
+use p3_maybe_rayon::prelude::*;
 use p3_merkle_tree::{MerkleTreeError, MerkleTreeHidingMmcs, MerkleTreeMmcs, PrunedMerklePaths};
 use p3_symmetric::{CryptographicHasher, PseudoCompressionFunction};
 use p3_util::log2_strict_usize;
@@ -1343,8 +1344,9 @@ pub fn restore_fri_query_paths<
 where
     Val: TwoAdicField + Serialize + DeserializeOwned,
     Challenge: ExtensionField<Val>,
-    FriMmcs:
-        Mmcs<Challenge, MultiProof = PrunedMerklePaths<Val, DIGEST_ELEMS>, Error = MerkleTreeError>,
+    FriMmcs: Mmcs<Challenge, MultiProof = PrunedMerklePaths<Val, DIGEST_ELEMS>, Error = MerkleTreeError>
+        + Sync,
+    FriMmcs::Commitment: Sync,
     Challenger: FieldChallenger<Val> + GrindingChallenger + CanObserve<FriMmcs::Commitment>,
     H: CryptographicHasher<Val, [Val; DIGEST_ELEMS]>
         + CryptographicHasher<Val::Packing, [Val::Packing; DIGEST_ELEMS]>
@@ -1364,24 +1366,20 @@ where
 
     // Input batches: the opened rows are explicit, so only the leaf indices and the committed
     // dimensions have to be rederived — exactly as `open_inputs` derives them.
-    let mut input_paths_by_batch: Vec<Vec<Vec<[Val; DIGEST_ELEMS]>>> =
-        Vec::with_capacity(proof.input_openings.len());
-    for (batch, (batch_opening, (_, mats))) in proof
+    let input_paths_by_batch: Vec<Vec<Vec<[Val; DIGEST_ELEMS]>>> = proof
         .input_openings
-        .iter()
-        .zip(commitments_with_opening_points)
+        .par_iter()
+        .zip(commitments_with_opening_points.par_iter())
         .enumerate()
-    {
-        let (batch_dims, reduced_indices) = input_batch_layout::<Val, Challenge, _, _>(
-            params,
-            batch,
-            layout.log_global_max_height,
-            &layout.indices,
-            mats,
-        )?;
-
-        input_paths_by_batch.push(
-            input_mmcs
+        .map(|(batch, (batch_opening, (_, mats)))| {
+            let (batch_dims, reduced_indices) = input_batch_layout::<Val, Challenge, _, _>(
+                params,
+                batch,
+                layout.log_global_max_height,
+                &layout.indices,
+                mats,
+            )?;
+            Ok(input_mmcs
                 .restore_and_recompute_paths(
                     &batch_dims,
                     &reduced_indices,
@@ -1391,37 +1389,45 @@ where
                 .map_err(FriError::InputError)?
                 .into_iter()
                 .map(|path| path.siblings)
-                .collect(),
-        );
-    }
+                .collect())
+        })
+        .collect::<Result<_, _>>()?;
 
     // Commit-phase rounds: one matrix of `arity` extension columns per round, flattened to base
     // field the way the round's `ExtensionMmcs` commits it.
-    let mut commit_phase_paths_by_round: Vec<Vec<Vec<[Val; DIGEST_ELEMS]>>> =
-        Vec::with_capacity(layout.log_arities.len());
-    let mut log_current_height = layout.log_global_max_height;
-    for (round, (opening, &log_arity)) in proof
-        .commit_phase_openings
+    let log_folded_heights: Vec<usize> = layout
+        .log_arities
         .iter()
-        .zip(&layout.log_arities)
+        .scan(layout.log_global_max_height, |log_height, &log_arity| {
+            *log_height -= log_arity;
+            Some(*log_height)
+        })
+        .collect();
+    let commit_phase_paths_by_round: Vec<Vec<Vec<[Val; DIGEST_ELEMS]>>> = proof
+        .commit_phase_openings
+        .par_iter()
+        .zip(
+            layout
+                .log_arities
+                .par_iter()
+                .zip(log_folded_heights.par_iter()),
+        )
         .enumerate()
-    {
-        let log_folded_height = log_current_height - log_arity;
-        let dims = [commit_phase_dims::<Challenge, Val>(
-            log_arity,
-            log_folded_height,
-        )];
-        let opened_values: Vec<Vec<Vec<Val>>> = layout.rows_by_round[round]
-            .iter()
-            .map(|rows| {
-                rows.iter()
-                    .map(|row| Challenge::flatten_to_base(row.clone()))
-                    .collect()
-            })
-            .collect();
+        .map(|(round, (opening, (&log_arity, &log_folded_height)))| {
+            let dims = [commit_phase_dims::<Challenge, Val>(
+                log_arity,
+                log_folded_height,
+            )];
+            let opened_values: Vec<Vec<Vec<Val>>> = layout.rows_by_round[round]
+                .iter()
+                .map(|rows| {
+                    rows.iter()
+                        .map(|row| Challenge::flatten_to_base(row.clone()))
+                        .collect()
+                })
+                .collect();
 
-        commit_phase_paths_by_round.push(
-            commit_phase_mmcs
+            Ok(commit_phase_mmcs
                 .restore_and_recompute_paths(
                     &dims,
                     &layout.group_indices_by_round[round],
@@ -1431,10 +1437,9 @@ where
                 .map_err(FriError::CommitPhaseMmcsError)?
                 .into_iter()
                 .map(|path| path.siblings)
-                .collect(),
-        );
-        log_current_height = log_folded_height;
-    }
+                .collect())
+        })
+        .collect::<Result<_, _>>()?;
 
     Ok(transpose_query_paths(
         params.num_queries,

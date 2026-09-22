@@ -10,6 +10,7 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
+p3-maybe-rayon.workspace = true
 
 # Other dependencies
 hashbrown.workspace = true
@@ -66,6 +67,7 @@ tracing-subscriber = { workspace = true, features = ["std", "env-filter"] }
 
 [features]
 parallel = [
+    "p3-maybe-rayon/parallel",
     "p3-circuit/parallel",
     "p3-circuit-prover/parallel",
     "p3-poseidon2-circuit-air/parallel",
