@@ -2,8 +2,8 @@
 
 use alloc::borrow::Cow;
 use alloc::boxed::Box;
-use alloc::rc::Rc;
 use alloc::string::ToString;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use p3_air::{SymbolicExpression, SymbolicExpressionExt};
@@ -88,7 +88,7 @@ where
 }
 
 /// Output of one recursion step: the next-layer batch proof and its prover data (for chaining or verification).
-pub struct RecursionOutput<SC>(pub BatchStarkProof<SC>, pub Rc<CircuitProverData<SC>>)
+pub struct RecursionOutput<SC>(pub BatchStarkProof<SC>, pub Arc<CircuitProverData<SC>>)
 where
     SC: StarkGenericConfig;
 

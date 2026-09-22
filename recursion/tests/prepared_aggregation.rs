@@ -818,7 +818,7 @@ fn same_config_mixed_aggregation_retains_distinct_air_and_batch_shapes() {
         )
         .expect("the second mixed pair proves");
 
-    assert!(Rc::ptr_eq(&out1.1, &out2.1));
+    assert!(Arc::ptr_eq(&out1.1, &out2.1));
     verify_output(config.clone(), &params, &out1);
     verify_output(config, &params, &out2);
 }
@@ -1321,7 +1321,7 @@ fn same_config_batch_aggregation_reuses_preparation_for_varied_pairs() {
         )
         .expect("the varied pair proves");
 
-    assert!(Rc::ptr_eq(&first.1, &second.1));
+    assert!(Arc::ptr_eq(&first.1, &second.1));
     assert!(prepared.profile().is_none());
     assert_eq!(prepared.params().table_packing, params.table_packing);
     verify_output(config.clone(), &params, &first);
@@ -1640,7 +1640,7 @@ fn same_config_profile_aggregation_reuses_preparation_for_varied_pairs() {
         prepared.params().constraint_profile,
         profile.constraint_profile
     );
-    assert!(Rc::ptr_eq(&first.1, &second.1));
+    assert!(Arc::ptr_eq(&first.1, &second.1));
 }
 
 #[test]
@@ -1707,7 +1707,7 @@ fn cross_config_aggregation_verifies_arity2_inputs_and_emits_arity4_outputs() {
         )
         .expect("the second cross-config pair proves");
 
-    assert!(Rc::ptr_eq(&out1.1, &out2.1));
+    assert!(Arc::ptr_eq(&out1.1, &out2.1));
     assert!(prepared.profile().is_none());
     assert_eq!(prepared.params().table_packing, params.table_packing);
     arity4_output::verify(output_config.clone(), &params, &out1);
@@ -1826,7 +1826,7 @@ fn hiding_fri_aggregation_reuses_preparation_for_varied_honest_pairs() {
         )
         .expect("the second hiding pair proves");
 
-    assert!(Rc::ptr_eq(&out1.1, &out2.1));
+    assert!(Arc::ptr_eq(&out1.1, &out2.1));
     hiding_fri::verify(config.clone(), &params, &out1);
     hiding_fri::verify(config, &params, &out2);
 }

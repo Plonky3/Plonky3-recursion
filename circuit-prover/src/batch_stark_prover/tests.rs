@@ -1,6 +1,5 @@
 extern crate std;
 
-use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -464,6 +463,16 @@ fn trusted_recompose_descriptor_keeps_raw_operation_rows() {
     assert_eq!(built.base_degree_bits, 3);
 }
 
+/// Independent proofs of one prepared circuit (e.g. the pairs of an aggregation level) are proven
+/// from several threads against a single shared preparation.
+#[test]
+fn prepared_circuit_prover_is_shareable_across_threads() {
+    const fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<PreparedCircuitProver<config::BabyBearConfig>>();
+    assert_send_sync::<CircuitVerifier<config::BabyBearConfig>>();
+    assert_send_sync::<Arc<CircuitProverData<config::BabyBearConfig>>>();
+}
+
 #[test]
 fn trusted_verifier_outlives_prover_and_ignores_embedded_common() {
     let circuit_a = trusted_relation_circuit(2);
@@ -471,7 +480,7 @@ fn trusted_verifier_outlives_prover_and_ignores_embedded_common() {
         .prepare_circuit::<BabyBear, 1>(&circuit_a, &[], &[], ConstraintProfile::Standard)
         .unwrap();
     let verifier_a = prepared_a.verifier();
-    let weak_proving_data = Rc::downgrade(&prepared_a.circuit_prover_data);
+    let weak_proving_data = Arc::downgrade(&prepared_a.circuit_prover_data);
     let mut proof_a = trusted_relation_proof(&prepared_a, &circuit_a, 4, 8);
 
     let circuit_b = trusted_relation_circuit(3);

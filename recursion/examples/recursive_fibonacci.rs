@@ -397,7 +397,7 @@ macro_rules! define_field_module {
                             return;
                         }
 
-                        let mut output = RecursionOutput(proof_0, Rc::new(circuit_prover_data_0));
+                        let mut output = RecursionOutput(proof_0, Arc::new(circuit_prover_data_0));
 
                         // Keep an owner only after two consecutive native input contracts match.
                         // A witness count alone cannot authorize reusing a prepared verifier.
@@ -780,7 +780,7 @@ macro_rules! define_field_module_quintic {
                     return;
                 }
 
-                let mut output = RecursionOutput(proof_0, Rc::new(circuit_prover_data_0));
+                let mut output = RecursionOutput(proof_0, Arc::new(circuit_prover_data_0));
 
                 // A retained owner is established only after consecutive native contracts match;
                 // witness-count equality is not a cache-compatibility check.

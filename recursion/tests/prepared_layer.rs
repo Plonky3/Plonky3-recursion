@@ -3,7 +3,7 @@ mod common;
 #[path = "../examples/common/prepared_reuse.rs"]
 mod example_prepared_reuse;
 
-use std::rc::Rc;
+use std::sync::Arc;
 
 use common::whir_config::{BbEF, BbF, BbWhirConfig, bb_whir_config};
 use example_prepared_reuse::is_prepared_input_mismatch;
@@ -302,7 +302,7 @@ fn fri_uni_prepared_layer_reuses_varied_witnesses_after_reference_drop() {
     let verifier = prepared.verifier();
     verifier.verify(&out1.0, &[]).unwrap();
     verifier.verify(&out2.0, &[]).unwrap();
-    assert!(Rc::ptr_eq(&out1.1, &out2.1));
+    assert!(Arc::ptr_eq(&out1.1, &out2.1));
     assert!(prepared.profile().is_none());
     assert_eq!(
         prepared.params().table_packing,
@@ -618,7 +618,7 @@ fn fri_uni_profile_prepared_layer_reuses_varied_witnesses() {
         prepared.params().constraint_profile,
         profile.constraint_profile
     );
-    assert!(Rc::ptr_eq(&first_output.1, &second_output.1));
+    assert!(Arc::ptr_eq(&first_output.1, &second_output.1));
 }
 
 #[test]
@@ -716,7 +716,7 @@ fn fri_batch_prepared_layer_reuses_prover_data() {
             table_public_inputs: &table_public_inputs,
         })
         .expect("the prepared verifier can be reused");
-    assert!(Rc::ptr_eq(&out1.1, &out2.1));
+    assert!(Arc::ptr_eq(&out1.1, &out2.1));
     verify_fri_output(&config, &params, &out1);
     verify_fri_output(&config, &params, &out2);
 }
@@ -837,7 +837,7 @@ fn batch_example_policy_rebuilds_only_on_contract_mismatch() {
         .unwrap()
         .prove(second_input)
         .expect("the second matching input proves");
-    assert!(Rc::ptr_eq(&first_output.1, &second_output.1));
+    assert!(Arc::ptr_eq(&first_output.1, &second_output.1));
     assert_eq!(rebuilds, 1, "matching calls must not rebuild preparation");
 
     let mismatched_input = PreparedInput::BatchStark {
@@ -941,7 +941,7 @@ fn whir_uni_prepared_layer_reuses_varied_witnesses_after_reference_drop() {
         })
         .expect("the varied WHIR witness proves with the prepared owner");
 
-    assert!(Rc::ptr_eq(&out1.1, &out2.1));
+    assert!(Arc::ptr_eq(&out1.1, &out2.1));
     verify_whir_output(&config, &params, &out1);
     verify_whir_output(&config, &params, &out2);
 }
@@ -1049,7 +1049,7 @@ fn whir_batch_prepared_layer_reuses_varied_witnesses_after_reference_drop() {
         })
         .expect("the varied WHIR batch witness proves with the prepared owner");
 
-    assert!(Rc::ptr_eq(&out1.1, &out2.1));
+    assert!(Arc::ptr_eq(&out1.1, &out2.1));
     verify_whir_output(&config, &params, &out1);
     verify_whir_output(&config, &params, &out2);
 }

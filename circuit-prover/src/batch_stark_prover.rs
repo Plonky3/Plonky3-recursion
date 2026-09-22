@@ -4,12 +4,11 @@
 use alloc::borrow::Cow;
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
-use alloc::rc::Rc;
 use alloc::string::{String, ToString};
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use alloc::{format, vec};
 use core::any::TypeId;
-use core::cell::RefCell;
 
 use hashbrown::HashMap;
 #[cfg(debug_assertions)]
@@ -327,7 +326,7 @@ impl<SC: StarkGenericConfig> NonPrimitiveTableEntry<SC> {
 /// and are not needed here.
 /// Cached ALU packed-Horner schedule and preprocessed trace matrix, keyed by the
 /// `(lanes, horner_packed_steps, min_height)` they were computed for.
-type AluScheduleCache<F> = RefCell<
+type AluScheduleCache<F> = spin::Mutex<
     Option<(
         usize,
         usize,
@@ -369,7 +368,7 @@ impl<SC: StarkGenericConfig> CircuitProverData<SC> {
             prover_data,
             primitive_columns,
             non_primitive_columns,
-            alu_schedule_cache: RefCell::new(None),
+            alu_schedule_cache: spin::Mutex::new(None),
         }
     }
 
@@ -753,7 +752,7 @@ where
     SC: StarkGenericConfig + 'static,
 {
     prover: BatchStarkProver<SC>,
-    circuit_prover_data: Rc<CircuitProverData<SC>>,
+    circuit_prover_data: Arc<CircuitProverData<SC>>,
     relation: CircuitRelation<Val<SC>>,
     verifier: CircuitVerifier<SC>,
 }
@@ -778,7 +777,7 @@ pub struct CircuitVerifier<SC>
 where
     SC: StarkGenericConfig + 'static,
 {
-    inner: Rc<CircuitVerifierData<SC>>,
+    inner: Arc<CircuitVerifierData<SC>>,
 }
 
 struct CircuitVerifierData<SC>
@@ -797,7 +796,7 @@ where
 {
     fn clone(&self) -> Self {
         Self {
-            inner: Rc::clone(&self.inner),
+            inner: Arc::clone(&self.inner),
         }
     }
 }
@@ -995,7 +994,7 @@ where
             .collect::<Result<Vec<_>, BatchStarkProverError>>()?;
         let common = CommonData::new(common.preprocessed, lookups);
         Ok(Self {
-            inner: Rc::new(CircuitVerifierData {
+            inner: Arc::new(CircuitVerifierData {
                 config,
                 relation,
                 common,
@@ -2085,7 +2084,7 @@ where
         // (alu_prep, alu_lanes, horner_k, alu_min_height), not on D, so both are cached in
         // `circuit_prover_data` and reused across proofs of this circuit shape.
         let (alu_schedule, cached_prep_trace) = {
-            let mut cache = circuit_prover_data.alu_schedule_cache.borrow_mut();
+            let mut cache = circuit_prover_data.alu_schedule_cache.lock();
             match cache.as_ref() {
                 Some((cached_lanes, cached_k, cached_min_height, schedule, prep_trace))
                     if *cached_lanes == alu_lanes
@@ -2115,7 +2114,7 @@ where
             alu_air = alu_air.with_precomputed_prep_trace(prep_trace);
         } else if let Some(prep_trace) = alu_air.preprocessed_trace() {
             alu_air = alu_air.with_precomputed_prep_trace(prep_trace.clone());
-            let mut cache = circuit_prover_data.alu_schedule_cache.borrow_mut();
+            let mut cache = circuit_prover_data.alu_schedule_cache.lock();
             if let Some((cached_lanes, cached_k, cached_min_height, _, cached_prep_trace)) =
                 cache.as_mut()
                 && *cached_lanes == alu_lanes
@@ -2990,7 +2989,7 @@ where
         }
 
         let verifier = CircuitVerifier {
-            inner: Rc::new(CircuitVerifierData {
+            inner: Arc::new(CircuitVerifierData {
                 config: self.config.clone(),
                 relation: relation.clone(),
                 common: clone_common_data(&prover_data.common),
@@ -3000,7 +2999,7 @@ where
 
         Ok(PreparedCircuitProver {
             prover: self,
-            circuit_prover_data: Rc::new(CircuitProverData::new(
+            circuit_prover_data: Arc::new(CircuitProverData::new(
                 prover_data,
                 primitive_columns,
                 non_primitive_columns,
@@ -3042,7 +3041,7 @@ where
     pub fn prove_with_legacy_data<EF>(
         &self,
         traces: &Traces<EF>,
-    ) -> Result<(BatchStarkProof<SC>, Rc<CircuitProverData<SC>>), BatchStarkProverError>
+    ) -> Result<(BatchStarkProof<SC>, Arc<CircuitProverData<SC>>), BatchStarkProverError>
     where
         EF: Field + BasedVectorSpace<Val<SC>> + ExtractBinomialW<Val<SC>>,
         <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain: Send + Sync,
@@ -3051,7 +3050,7 @@ where
         <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment: Sync,
     {
         let proof = self.prove(traces)?;
-        Ok((proof, Rc::clone(&self.circuit_prover_data)))
+        Ok((proof, Arc::clone(&self.circuit_prover_data)))
     }
 }
 

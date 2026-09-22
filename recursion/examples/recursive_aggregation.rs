@@ -410,7 +410,7 @@ macro_rules! define_field_module_aggregation_quintic {
                 prover
                     .verify_all_tables::<F>(&proof)
                     .expect("Failed to verify dummy proof");
-                RecursionOutput(proof, Rc::new(circuit_prover_data))
+                RecursionOutput(proof, Arc::new(circuit_prover_data))
             }
 
             pub fn run(
@@ -732,7 +732,7 @@ macro_rules! define_field_module {
                 prover
                     .verify_all_tables::<F>(&proof)
                     .expect("Failed to verify dummy proof");
-                RecursionOutput(proof, Rc::new(circuit_prover_data))
+                RecursionOutput(proof, Arc::new(circuit_prover_data))
             }
 
             /// Build a dummy circuit with a single constant and prove it (ZK).
@@ -775,7 +775,7 @@ macro_rules! define_field_module {
                 prover
                     .verify_all_tables::<F>(&proof)
                     .expect("Failed to verify dummy proof (ZK)");
-                RecursionOutput(proof, Rc::new(circuit_prover_data))
+                RecursionOutput(proof, Arc::new(circuit_prover_data))
             }
 
             pub fn run(
@@ -1433,7 +1433,7 @@ macro_rules! arity4_base_dummy_prover {
             prover
                 .verify_all_tables::<F>(&proof)
                 .expect("Failed to verify dummy proof");
-            RecursionOutput(proof, Rc::new(circuit_prover_data))
+            RecursionOutput(proof, Arc::new(circuit_prover_data))
         }
     };
 }
