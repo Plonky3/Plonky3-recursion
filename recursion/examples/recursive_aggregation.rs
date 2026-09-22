@@ -68,12 +68,10 @@ struct Args {
     )]
     pub log_blowup: usize,
 
-    #[arg(
-        long,
-        default_value_t = 2,
-        help = "Maximum arity allowed during FRI folding phases"
-    )]
-    pub max_log_arity: usize,
+    /// Maximum log-arity allowed during FRI folding phases [default: 3, or 2 with `--zk` or
+    /// `--hash poseidon1`]
+    #[arg(long)]
+    pub max_log_arity: Option<usize>,
 
     #[arg(long, default_value_t = 0, help = "Height of the Merkle cap to open")]
     pub cap_height: usize,
@@ -164,14 +162,26 @@ struct Args {
 }
 
 impl Args {
-    pub const fn to_fri_params(&self) -> FriParams {
+    pub fn to_fri_params(&self) -> FriParams {
         FriParams {
             log_blowup: self.log_blowup,
-            max_log_arity: self.max_log_arity,
+            max_log_arity: self
+                .max_log_arity
+                .unwrap_or_else(|| self.default_max_log_arity()),
             cap_height: self.cap_height,
             log_final_poly_len: self.log_final_poly_len,
             commit_pow_bits: self.commit_pow_bits,
             query_pow_bits: self.query_pow_bits,
+        }
+    }
+
+    /// Arity 3 folds the aggregation layers into shorter FRI chains; the hiding and Poseidon1
+    /// verifier circuits instead grow past a table-height boundary with it, so they keep 2.
+    fn default_max_log_arity(&self) -> usize {
+        if self.zk || self.hash == HashOption::Poseidon1 {
+            2
+        } else {
+            3
         }
     }
 
