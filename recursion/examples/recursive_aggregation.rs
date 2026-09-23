@@ -36,8 +36,10 @@
 
 #[macro_use]
 mod common;
+
 use common::*;
 use p3_batch_stark::ProverData;
+use p3_maybe_rayon::prelude::*;
 
 #[derive(Parser, Debug)]
 #[command(version, about = "2-to-1 proof aggregation example")]
@@ -159,6 +161,13 @@ struct Args {
         help = "Build/prove aggregation levels >= 2 via a fixed RecursionLayerProfile instead of deriving shape from the previous proof"
     )]
     pub profile: bool,
+
+    /// Prove the pairs of each aggregation level concurrently against one shared preparation.
+    ///
+    /// This raises throughput for the whole tree; each individual proof then shares the cores,
+    /// so its own reported proving time grows.
+    #[arg(long, default_value_t = false)]
+    pub concurrent_pairs: bool,
 }
 
 impl Args {
@@ -261,6 +270,7 @@ fn main() {
             args.zk,
             args.disable_recompose_npo,
             args.profile,
+            args.concurrent_pairs,
         ),
         (HashOption::Poseidon2, FieldOption::KoalaBear, false) => koala_bear::run(
             args.num_recursive_layers,
@@ -270,6 +280,7 @@ fn main() {
             args.zk,
             args.disable_recompose_npo,
             args.profile,
+            args.concurrent_pairs,
         ),
         (HashOption::Poseidon2, FieldOption::BabyBear, _) => baby_bear::run(
             args.num_recursive_layers,
@@ -279,6 +290,7 @@ fn main() {
             args.zk,
             args.disable_recompose_npo,
             args.profile,
+            args.concurrent_pairs,
         ),
         (HashOption::Poseidon2, FieldOption::Goldilocks, _) => goldilocks::run(
             args.num_recursive_layers,
@@ -288,6 +300,7 @@ fn main() {
             args.zk,
             args.disable_recompose_npo,
             args.profile,
+            args.concurrent_pairs,
         ),
         (HashOption::Poseidon1, FieldOption::KoalaBear, true) => koala_bear_quintic_poseidon1::run(
             args.num_recursive_layers,
@@ -297,6 +310,7 @@ fn main() {
             args.zk,
             args.disable_recompose_npo,
             args.profile,
+            args.concurrent_pairs,
         ),
         (HashOption::Poseidon1, FieldOption::KoalaBear, false) => koala_bear_poseidon1::run(
             args.num_recursive_layers,
@@ -306,6 +320,7 @@ fn main() {
             args.zk,
             args.disable_recompose_npo,
             args.profile,
+            args.concurrent_pairs,
         ),
         (HashOption::Poseidon1, FieldOption::BabyBear, _) => baby_bear_poseidon1::run(
             args.num_recursive_layers,
@@ -315,6 +330,7 @@ fn main() {
             args.zk,
             args.disable_recompose_npo,
             args.profile,
+            args.concurrent_pairs,
         ),
         (HashOption::Poseidon1, FieldOption::Goldilocks, _) => goldilocks_poseidon1::run(
             args.num_recursive_layers,
@@ -324,6 +340,7 @@ fn main() {
             args.zk,
             args.disable_recompose_npo,
             args.profile,
+            args.concurrent_pairs,
         ),
     }
 }
@@ -413,6 +430,7 @@ macro_rules! define_field_module_aggregation_quintic {
                 RecursionOutput(proof, Arc::new(circuit_prover_data))
             }
 
+            #[allow(clippy::too_many_arguments)]
             pub fn run(
                 num_recursive_layers: usize,
                 fri_params: &FriParams,
@@ -421,6 +439,7 @@ macro_rules! define_field_module_aggregation_quintic {
                 zk: bool,
                 disable_recompose_npo: bool,
                 profile: bool,
+                concurrent_pairs: bool,
             ) {
                 if zk {
                     tracing::warn!(
@@ -573,6 +592,71 @@ macro_rules! define_field_module_aggregation_quintic {
                             };
                             let agg_config: $cfg_type = $config_agg(level as u64);
 
+                            let verify_output = |pair_idx: usize, out: &RecursionOutput<$cfg_type>| {
+                                report_proof_size(&out.0);
+                                let mut verifier = BatchStarkProver::new(agg_config.clone())
+                                    .with_table_packing(agg_params.table_packing.clone());
+                                for table_config in $poseidon2_config.output_table_configs() {
+                                    verifier.$register_fn::<D>(table_config);
+                                }
+                                if !disable_recompose_npo {
+                                    verifier.register_recompose_table::<D>(true);
+                                }
+                                verifier
+                                    .verify_all_tables::<Challenge>(&out.0)
+                                    .unwrap_or_else(|e| {
+                                        panic!("Verification failed at level {level}, pair {pair_idx}: {e:?}")
+                                    });
+                            };
+
+                            if concurrent_pairs && pairs > 1 {
+                                let prepare_pair = |pair_idx: usize| {
+                                    let left_output = &proofs[pair_idx * 2];
+                                    let right_output = &proofs[pair_idx * 2 + 1];
+                                    let left_table = batch_table_public_inputs(left_output);
+                                    let right_table = batch_table_public_inputs(right_output);
+                                    PreparedAggregation::new(
+                                        PreparedSource::batch(&left_output.0, &left_output.0.stark_common, &left_table),
+                                        PreparedSource::batch(&right_output.0, &right_output.0.stark_common, &right_table),
+                                        agg_config.clone(), backend.clone(), agg_params.clone(),
+                                    )
+                                    .unwrap_or_else(|e| panic!("Failed to prepare level {level}, pair {pair_idx}: {e:?}"))
+                                };
+                                let prove_pair = |pair_idx: usize, owner: &PreparedAggregation<'static, 'static, $cfg_type, BatchOnly, BatchOnly, _, D>| {
+                                    let left_output = &proofs[pair_idx * 2];
+                                    let right_output = &proofs[pair_idx * 2 + 1];
+                                    let left_table = batch_table_public_inputs(left_output);
+                                    let right_table = batch_table_public_inputs(right_output);
+                                    let left_input = batch_prepared_input(left_output, &left_table);
+                                    let right_input = batch_prepared_input(right_output, &right_table);
+                                    match owner.check_inputs(&left_input, &right_input) {
+                                        Ok(()) => owner.prove(left_input, right_input),
+                                        Err(error) if is_prepared_input_mismatch(&error) => {
+                                            prepare_pair(pair_idx).prove(left_input, right_input)
+                                        }
+                                        Err(e) => panic!("Failed to validate level {level}, pair {pair_idx}: {e:?}"),
+                                    }
+                                    .unwrap_or_else(|e| panic!("Failed at level {level}, pair {pair_idx}: {e:?}"))
+                                };
+                                // Every pair of a level shares one prepared circuit. The first pair
+                                // prepares it and proves alone, which also fills the shared DFT
+                                // twiddle caches: `Radix2DitParallel` computes a missing entry under a
+                                // spin lock while running parallel work, and a concurrent proof stealing
+                                // that work would spin on the same lock forever.
+                                let level_owner = prepare_pair(0);
+                                let mut next_level = vec![prove_pair(0, &level_owner)];
+                                let rest: Vec<_> = (1..pairs)
+                                    .into_par_iter()
+                                    .map(|pair_idx| prove_pair(pair_idx, &level_owner))
+                                    .collect();
+                                next_level.extend(rest);
+                                for (pair_idx, out) in next_level.iter().enumerate() {
+                                    verify_output(pair_idx, out);
+                                }
+                                proofs = next_level;
+                                continue;
+                            }
+
                             let mut next_level = Vec::with_capacity(pairs);
                             let mut level_owner: Option<PreparedAggregation<'static, 'static, $cfg_type, BatchOnly, BatchOnly, _, D>> = None;
                             for pair_idx in 0..pairs {
@@ -612,20 +696,7 @@ macro_rules! define_field_module_aggregation_quintic {
                                 }
                                 .unwrap_or_else(|e| panic!("Failed at level {level}, pair {pair_idx}: {e:?}"));
 
-                                report_proof_size(&out.0);
-                                let mut verifier = BatchStarkProver::new(agg_config.clone())
-                                    .with_table_packing(agg_params.table_packing.clone());
-                                for table_config in $poseidon2_config.output_table_configs() {
-                                    verifier.$register_fn::<D>(table_config);
-                                }
-                                if !disable_recompose_npo {
-                                    verifier.register_recompose_table::<D>(true);
-                                }
-                                verifier
-                                    .verify_all_tables::<Challenge>(&out.0)
-                                    .unwrap_or_else(|e| {
-                                        panic!("Verification failed at level {level}, pair {pair_idx}: {e:?}")
-                                    });
+                                verify_output(pair_idx, &out);
                                 next_level.push(out);
                             }
                             proofs = next_level;
@@ -778,6 +849,7 @@ macro_rules! define_field_module {
                 RecursionOutput(proof, Arc::new(circuit_prover_data))
             }
 
+            #[allow(clippy::too_many_arguments)]
             pub fn run(
                 num_recursive_layers: usize,
                 fri_params: &FriParams,
@@ -786,6 +858,7 @@ macro_rules! define_field_module {
                 zk: bool,
                 disable_recompose_npo: bool,
                 profile: bool,
+                concurrent_pairs: bool,
             ) {
                 let base_table_packing = TablePacking::new(1, 1)
                     .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup);
@@ -928,6 +1001,71 @@ macro_rules! define_field_module {
                             };
                             let agg_config: $cfg_type = $config_agg(level as u64);
 
+                            let verify_output = |pair_idx: usize, out: &RecursionOutput<$cfg_type>| {
+                                report_proof_size(&out.0);
+                                let mut verifier = BatchStarkProver::new(agg_config.clone())
+                                    .with_table_packing(agg_params.table_packing.clone());
+                                for table_config in $poseidon2_config.output_table_configs() {
+                                    verifier.$register_fn::<$d>(table_config);
+                                }
+                                if !disable_recompose_npo {
+                                    verifier.register_recompose_table::<$d>(true);
+                                }
+                                verifier
+                                    .verify_all_tables::<Challenge>(&out.0)
+                                    .unwrap_or_else(|e| {
+                                        panic!("Verification failed at level {level}, pair {pair_idx}: {e:?}")
+                                    });
+                            };
+
+                            if concurrent_pairs && pairs > 1 {
+                                let prepare_pair = |pair_idx: usize| {
+                                    let left_output = &proofs[pair_idx * 2];
+                                    let right_output = &proofs[pair_idx * 2 + 1];
+                                    let left_table = batch_table_public_inputs(left_output);
+                                    let right_table = batch_table_public_inputs(right_output);
+                                    PreparedAggregation::new(
+                                        PreparedSource::batch(&left_output.0, &left_output.0.stark_common, &left_table),
+                                        PreparedSource::batch(&right_output.0, &right_output.0.stark_common, &right_table),
+                                        agg_config.clone(), backend.clone(), agg_params.clone(),
+                                    )
+                                    .unwrap_or_else(|e| panic!("Failed to prepare level {level}, pair {pair_idx}: {e:?}"))
+                                };
+                                let prove_pair = |pair_idx: usize, owner: &PreparedAggregation<'static, 'static, $cfg_type, BatchOnly, BatchOnly, _, D>| {
+                                    let left_output = &proofs[pair_idx * 2];
+                                    let right_output = &proofs[pair_idx * 2 + 1];
+                                    let left_table = batch_table_public_inputs(left_output);
+                                    let right_table = batch_table_public_inputs(right_output);
+                                    let left_input = batch_prepared_input(left_output, &left_table);
+                                    let right_input = batch_prepared_input(right_output, &right_table);
+                                    match owner.check_inputs(&left_input, &right_input) {
+                                        Ok(()) => owner.prove(left_input, right_input),
+                                        Err(error) if is_prepared_input_mismatch(&error) => {
+                                            prepare_pair(pair_idx).prove(left_input, right_input)
+                                        }
+                                        Err(e) => panic!("Failed to validate level {level}, pair {pair_idx}: {e:?}"),
+                                    }
+                                    .unwrap_or_else(|e| panic!("Failed at level {level}, pair {pair_idx}: {e:?}"))
+                                };
+                                // Every pair of a level shares one prepared circuit. The first pair
+                                // prepares it and proves alone, which also fills the shared DFT
+                                // twiddle caches: `Radix2DitParallel` computes a missing entry under a
+                                // spin lock while running parallel work, and a concurrent proof stealing
+                                // that work would spin on the same lock forever.
+                                let level_owner = prepare_pair(0);
+                                let mut next_level = vec![prove_pair(0, &level_owner)];
+                                let rest: Vec<_> = (1..pairs)
+                                    .into_par_iter()
+                                    .map(|pair_idx| prove_pair(pair_idx, &level_owner))
+                                    .collect();
+                                next_level.extend(rest);
+                                for (pair_idx, out) in next_level.iter().enumerate() {
+                                    verify_output(pair_idx, out);
+                                }
+                                proofs = next_level;
+                                continue;
+                            }
+
                             let mut next_level = Vec::with_capacity(pairs);
                             let mut level_owner: Option<PreparedAggregation<'static, 'static, $cfg_type, BatchOnly, BatchOnly, _, D>> = None;
                             for pair_idx in 0..pairs {
@@ -967,20 +1105,7 @@ macro_rules! define_field_module {
                                 }
                                 .unwrap_or_else(|e| panic!("Failed at level {level}, pair {pair_idx}: {e:?}"));
 
-                                report_proof_size(&out.0);
-                                let mut verifier = BatchStarkProver::new(agg_config.clone())
-                                    .with_table_packing(agg_params.table_packing.clone());
-                                for table_config in $poseidon2_config.output_table_configs() {
-                                    verifier.$register_fn::<$d>(table_config);
-                                }
-                                if !disable_recompose_npo {
-                                    verifier.register_recompose_table::<$d>(true);
-                                }
-                                verifier
-                                    .verify_all_tables::<Challenge>(&out.0)
-                                    .unwrap_or_else(|e| {
-                                        panic!("Verification failed at level {level}, pair {pair_idx}: {e:?}")
-                                    });
+                                verify_output(pair_idx, &out);
                                 next_level.push(out);
                             }
                             proofs = next_level;
