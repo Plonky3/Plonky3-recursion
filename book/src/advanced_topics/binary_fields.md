@@ -49,6 +49,12 @@ This is groundwork only. Nothing here proves or recursively verifies a binary-fi
     32-byte digests in one call, matching
     `CompressionFunctionFromHasher<Keccak256Hash, 2, 32>`, the node compression of a Keccak
     Merkle tree.
+  - **Keccak-256 sponge:** `keccak256_limbs` hashes messages of any even byte length. The first
+    block fills the zero state directly; later blocks are XORed in with a bitwise gadget.
+  - **Leaf hash:** `keccak256_field_elements` matches `SerializingHasher<Keccak256Hash>`, the
+    leaf hash of a Keccak Merkle tree. Elements are serialized exactly as Plonky3 does it
+    (Montgomery fields such as BabyBear hash `x·2^32 mod p`). Each serialized value is decomposed
+    into canonical bits, so `y + p` cannot stand in for `y`.
 
 ## Not yet supported
 
@@ -57,10 +63,8 @@ This is groundwork only. Nothing here proves or recursively verifies a binary-fi
 - Recursively verifying binary-PCS or multi-stark proofs. That needs `GF(2^128)` arithmetic
   inside a prime-field circuit, plus in-circuit Keccak-256 or BLAKE3 for the transcript and
   Merkle paths.
-- In-circuit BLAKE3, and Keccak-256 of messages longer than one 136-byte block (which needs an
-  XOR gadget to absorb into a nonzero state).
-- Hashing field elements with Keccak in-circuit, the leaf hash of a Keccak Merkle tree. That
-  needs a canonical byte decomposition of each element, since limbs alone do not rule out a
-  non-canonical encoding.
+- In-circuit BLAKE3.
+- A Keccak Merkle path or MMCS verification gadget built from the leaf hash and compression
+  above.
 - Keccak-f in the recursion backends' table lists, so recursively verifying a proof that
   contains a Keccak-f table is not wired up yet.

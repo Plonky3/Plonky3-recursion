@@ -254,3 +254,57 @@ fn a_keccak256_compression_proves_against_the_native_digest() {
     let proof = prepared.prove(&traces).unwrap();
     prepared.verifier().verify(&proof, &[]).unwrap();
 }
+
+/// A two-block Keccak leaf hash (canonical serialization, XOR absorption) proves against
+/// `SerializingHasher<Keccak256Hash>`.
+#[test]
+fn a_two_block_keccak_leaf_hash_proves_against_the_serializing_hasher() {
+    use p3_circuit::ops::{KECCAK256_DIGEST_LIMBS, bytes_to_limbs};
+    use p3_keccak::Keccak256Hash;
+    use p3_symmetric::{CryptographicHasher, SerializingHasher};
+
+    // 34 BabyBear elements are 136 bytes: one full block of message, a second of padding.
+    let row: Vec<BabyBear> = (0..34u32)
+        .map(|i| BabyBear::NEG_ONE - BabyBear::from_u32(i * 99_991))
+        .collect();
+    let native: [u8; 32] = SerializingHasher::new(Keccak256Hash).hash_iter(row.iter().copied());
+
+    let mut builder = CircuitBuilder::<EF>::new();
+    builder.enable_keccak_f1600::<BabyBear>();
+    let inputs: Vec<ExprId> = (0..row.len()).map(|_| builder.public_input()).collect();
+    let expected: Vec<ExprId> = (0..KECCAK256_DIGEST_LIMBS)
+        .map(|_| builder.public_input())
+        .collect();
+    let digest = builder
+        .keccak256_field_elements::<BabyBear>(&inputs)
+        .unwrap();
+    for (&got, &want) in digest.iter().zip(&expected) {
+        builder.connect(got, want);
+    }
+    let circuit = builder.build().unwrap();
+
+    let mut public: Vec<EF> = row.iter().map(|&x| EF::from(x)).collect();
+    public.extend(bytes_to_limbs(&native).into_iter().map(EF::from_u16));
+
+    let preprocessors: Vec<Box<dyn NpoPreprocessor<BabyBear>>> =
+        vec![Box::new(KeccakF1600Preprocessor)];
+    let air_builders: Vec<Box<dyn NpoAirBuilder<config::BabyBearConfig, D>>> =
+        vec![Box::new(KeccakF1600AirBuilder::<D>)];
+    let mut prover = BatchStarkProver::new(config::baby_bear());
+    prover.register_table_prover(Box::new(KeccakF1600Prover::<D>));
+    let prepared = prover
+        .prepare_circuit::<EF, D>(
+            &circuit,
+            &preprocessors,
+            &air_builders,
+            ConstraintProfile::Standard,
+        )
+        .unwrap();
+    let mut runner = circuit.runner();
+    runner.set_public_inputs(&public).unwrap();
+    let traces = runner
+        .run()
+        .expect("the native digest satisfies the circuit");
+    let proof = prepared.prove(&traces).unwrap();
+    prepared.verifier().verify(&proof, &[]).unwrap();
+}

@@ -486,6 +486,182 @@ where
     }
 }
 
+impl<F> crate::CircuitBuilder<F>
+where
+    F: Field + Eq + core::hash::Hash,
+{
+    /// The XOR of two 16-bit limbs, bit by bit: `a ⊕ b = a + b − 2ab`.
+    ///
+    /// Decomposing each operand into 16 bits also constrains it below `2^16`.
+    fn xor_limb16<BF>(&mut self, a: ExprId, b: ExprId) -> Result<ExprId, CircuitBuilderError>
+    where
+        BF: PrimeField64,
+        F: ExtensionField<BF>,
+    {
+        let a_bits = self.decompose_to_bits::<BF>(a, KECCAK_LIMB_BITS)?;
+        let b_bits = self.decompose_to_bits::<BF>(b, KECCAK_LIMB_BITS)?;
+        let minus_two = self.define_const(-F::TWO);
+        let mut limb = self.define_const(F::ZERO);
+        for (i, (&x, &y)) in a_bits.iter().zip(&b_bits).enumerate() {
+            let sum = self.add(x, y);
+            let product = self.mul(x, y);
+            let bit = self.mul_add(product, minus_two, sum);
+            let weight = self.define_const(F::from_u32(1 << i));
+            limb = self.mul_add(bit, weight, limb);
+        }
+        Ok(limb)
+    }
+
+    /// Keccak-256 of a message given as little-endian 16-bit limbs (an even number of bytes);
+    /// returns the digest as [`KECCAK256_DIGEST_LIMBS`] limbs.
+    ///
+    /// The sponge absorbs one 136-byte block per Keccak-f call. The first block fills the zero
+    /// state directly; every later block is XORed into the permuted state with a bitwise gadget.
+    /// Padding is constant: `0x01` after the message and `0x80` in the last block's final byte.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::add_keccak_f1600`] and [`Self::decompose_to_bits`].
+    pub fn keccak256_limbs<BF>(
+        &mut self,
+        message: &[ExprId],
+    ) -> Result<Vec<ExprId>, CircuitBuilderError>
+    where
+        BF: PrimeField64,
+        F: ExtensionField<BF>,
+    {
+        const RATE_LIMBS: usize = KECCAK256_RATE_BYTES / 2;
+
+        // The padded tail: `0x01` right after the message, `0x80` in the last byte of its block.
+        let message_bytes = 2 * message.len();
+        let padded_bytes = (message_bytes / KECCAK256_RATE_BYTES + 1) * KECCAK256_RATE_BYTES;
+        let mut tail = vec![0u8; padded_bytes - message_bytes];
+        tail[0] = 0x01;
+        *tail.last_mut().expect("a padded message has a tail") |= 0x80;
+
+        let mut padded: Vec<Option<ExprId>> = message.iter().copied().map(Some).collect();
+        let mut constants: Vec<u16> = vec![0; message.len()];
+        for limb in bytes_to_limbs(&tail) {
+            padded.push(None);
+            constants.push(limb);
+        }
+
+        let zero = self.define_const(F::ZERO);
+        let mut state: Vec<ExprId> = Vec::new();
+        for (block, (limbs, consts)) in padded
+            .chunks_exact(RATE_LIMBS)
+            .zip(constants.chunks_exact(RATE_LIMBS))
+            .enumerate()
+        {
+            let mut next = Vec::with_capacity(KECCAK_STATE_LIMBS);
+            for (j, (&limb, &constant)) in limbs.iter().zip(consts).enumerate() {
+                let absorbed = match (limb, block) {
+                    // A zero padding limb leaves the permuted state unchanged.
+                    (None, _) if constant == 0 && block > 0 => state[j],
+                    (None, _) => {
+                        let value = self.define_const(F::from_u16(constant));
+                        if block == 0 {
+                            value
+                        } else {
+                            self.xor_limb16::<BF>(state[j], value)?
+                        }
+                    }
+                    // The first block fills the all-zero initial state, so XOR is a copy.
+                    (Some(expr), 0) => expr,
+                    (Some(expr), _) => self.xor_limb16::<BF>(state[j], expr)?,
+                };
+                next.push(absorbed);
+            }
+            if block == 0 {
+                next.resize(KECCAK_STATE_LIMBS, zero);
+            } else {
+                next.extend_from_slice(&state[RATE_LIMBS..]);
+            }
+            state = self.add_keccak_f1600(&next)?;
+        }
+        state.truncate(KECCAK256_DIGEST_LIMBS);
+        Ok(state)
+    }
+
+    /// Each element's serialized little-endian bytes, as 16-bit limbs: the byte stream a
+    /// `SerializingHasher` feeds its byte hash.
+    ///
+    /// Plonky3 serializes an element as a unique integer below `p`, which is not always its
+    /// canonical value: Montgomery fields (BabyBear, KoalaBear) serialize `x·2^32 mod p`. Both
+    /// forms are `x·u(1)` for the serialization `u(1)` of one, so each element is scaled by that
+    /// constant and then decomposed into canonical bits (`value < p`), which stops a prover from
+    /// substituting the encoding of `y + p` for `y`.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::decompose_to_bits`].
+    ///
+    /// # Panics
+    ///
+    /// If `BF`'s serialization is not linear in the element, which no Plonky3 prime field is.
+    pub fn serialize_to_keccak_limbs<BF>(
+        &mut self,
+        elements: &[ExprId],
+    ) -> Result<Vec<ExprId>, CircuitBuilderError>
+    where
+        BF: PrimeField64,
+        F: ExtensionField<BF>,
+    {
+        let limbs_per_element = BF::NUM_BYTES / 2;
+        let serialized = |x: BF| -> u64 {
+            BF::into_byte_stream([x])
+                .into_iter()
+                .enumerate()
+                .fold(0, |acc, (i, byte)| acc | (u64::from(byte) << (8 * i)))
+        };
+        let scale = BF::from_u64(serialized(BF::ONE));
+        assert_eq!(
+            serialized(BF::GENERATOR),
+            (BF::GENERATOR * scale).as_canonical_u64(),
+            "field serialization must be x -> x * u(1)"
+        );
+        let scale = self.define_const(F::from(scale));
+
+        let mut limbs = Vec::with_capacity(elements.len() * limbs_per_element);
+        for &element in elements {
+            let serialized_value = self.mul(element, scale);
+            let bits = self.decompose_to_bits::<BF>(serialized_value, BF::bits())?;
+            for chunk in 0..limbs_per_element {
+                let mut limb = self.define_const(F::ZERO);
+                for (i, &bit) in bits
+                    .iter()
+                    .skip(chunk * KECCAK_LIMB_BITS)
+                    .take(KECCAK_LIMB_BITS)
+                    .enumerate()
+                {
+                    let weight = self.define_const(F::from_u32(1 << i));
+                    limb = self.mul_add(bit, weight, limb);
+                }
+                limbs.push(limb);
+            }
+        }
+        Ok(limbs)
+    }
+
+    /// `SerializingHasher<Keccak256Hash>` of base-field elements: Keccak-256 of their
+    /// canonical little-endian bytes, the leaf hash of a Keccak Merkle tree.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::serialize_to_keccak_limbs`] and [`Self::keccak256_limbs`].
+    pub fn keccak256_field_elements<BF>(
+        &mut self,
+        elements: &[ExprId],
+    ) -> Result<Vec<ExprId>, CircuitBuilderError>
+    where
+        BF: PrimeField64,
+        F: ExtensionField<BF>,
+    {
+        let limbs = self.serialize_to_keccak_limbs::<BF>(elements)?;
+        self.keccak256_limbs::<BF>(&limbs)
+    }
+}
+
 // ============================================================================
 // Trace
 // ============================================================================

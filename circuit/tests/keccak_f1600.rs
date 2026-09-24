@@ -239,3 +239,106 @@ mod keccak256_compress {
         ));
     }
 }
+
+mod keccak256_sponge {
+    use p3_circuit::ops::{KECCAK256_DIGEST_LIMBS, bytes_to_limbs};
+    use p3_keccak::Keccak256Hash;
+    use p3_symmetric::{CryptographicHasher, SerializingHasher};
+
+    use super::*;
+
+    fn digest_limbs<BF, F>(traces: &p3_circuit::Traces<F>) -> Vec<u16>
+    where
+        BF: PrimeField64,
+        F: ExtensionField<BF>,
+    {
+        (0..KECCAK256_DIGEST_LIMBS)
+            .map(|i| {
+                let value = traces.probe(&format!("digest_{i}")).unwrap();
+                let coeffs = <F as BasedVectorSpace<BF>>::as_basis_coefficients_slice(value);
+                u16::try_from(coeffs[0].as_canonical_u64()).unwrap()
+            })
+            .collect()
+    }
+
+    fn tag_digest<F: p3_field::Field + Eq + core::hash::Hash>(
+        builder: &mut CircuitBuilder<F>,
+        digest: &[ExprId],
+    ) {
+        for (i, &limb) in digest.iter().enumerate() {
+            builder.tag(limb, format!("digest_{i}")).unwrap();
+        }
+    }
+
+    /// Byte messages across every block boundary case hash to the native Keccak-256 digest.
+    #[test]
+    fn byte_messages_match_native_keccak256() {
+        for len in [0usize, 2, 64, 134, 136, 200, 282] {
+            let message: Vec<u8> = (0..len).map(|i| (i * 7 + 3) as u8).collect();
+            let native = Keccak256Hash.hash_iter(message.iter().copied());
+
+            let mut builder = CircuitBuilder::<EF4>::new();
+            builder.enable_keccak_f1600::<BabyBear>();
+            let limbs: Vec<ExprId> = (0..len / 2).map(|_| builder.public_input()).collect();
+            let digest = builder.keccak256_limbs::<BabyBear>(&limbs).unwrap();
+            tag_digest(&mut builder, &digest);
+
+            let circuit = builder.build().unwrap();
+            let mut runner = circuit.runner();
+            let public: Vec<EF4> = bytes_to_limbs(&message)
+                .into_iter()
+                .map(EF4::from_u16)
+                .collect();
+            runner.set_public_inputs(&public).unwrap();
+            let traces = runner.run().unwrap();
+            assert_eq!(
+                digest_limbs::<BabyBear, EF4>(&traces),
+                bytes_to_limbs(&native),
+                "message of {len} bytes"
+            );
+        }
+    }
+
+    fn field_elements_match_serializing_hasher<BF, F>(counts: &[usize])
+    where
+        BF: PrimeField64,
+        F: ExtensionField<BF> + Eq + core::hash::Hash,
+    {
+        let hasher = SerializingHasher::new(Keccak256Hash);
+        for &count in counts {
+            // Include values near the modulus so both limbs of each element are exercised.
+            let row: Vec<BF> = (0..count)
+                .map(|i| BF::NEG_ONE - BF::from_usize(i * 1_000_003))
+                .collect();
+            let native: [u8; 32] = hasher.hash_iter(row.iter().copied());
+
+            let mut builder = CircuitBuilder::<F>::new();
+            builder.enable_keccak_f1600::<BF>();
+            let inputs: Vec<ExprId> = (0..count).map(|_| builder.public_input()).collect();
+            let digest = builder.keccak256_field_elements::<BF>(&inputs).unwrap();
+            tag_digest(&mut builder, &digest);
+
+            let circuit = builder.build().unwrap();
+            let mut runner = circuit.runner();
+            let public: Vec<F> = row.iter().map(|&x| F::from(x)).collect();
+            runner.set_public_inputs(&public).unwrap();
+            let traces = runner.run().unwrap();
+            assert_eq!(
+                digest_limbs::<BF, F>(&traces),
+                bytes_to_limbs(&native),
+                "row of {count} elements"
+            );
+        }
+    }
+
+    #[test]
+    fn baby_bear_rows_match_the_serializing_hasher() {
+        // 33 elements fill one block with room for padding; 34 spill into a second.
+        field_elements_match_serializing_hasher::<BabyBear, EF4>(&[1, 33, 34, 70]);
+    }
+
+    #[test]
+    fn goldilocks_rows_match_the_serializing_hasher() {
+        field_elements_match_serializing_hasher::<Goldilocks, EF2>(&[1, 16, 17, 40]);
+    }
+}
