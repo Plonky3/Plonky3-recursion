@@ -56,6 +56,11 @@ impl NpoTypeId {
         Self::new("recompose/coeff")
     }
 
+    /// BLAKE3 compression over 16-bit limbs.
+    pub fn blake3_compress() -> Self {
+        Self::new("blake3_compress")
+    }
+
     /// Keccak-f[1600] permutation over 16-bit limbs.
     pub fn keccak_f1600() -> Self {
         Self::new("keccak_f1600")

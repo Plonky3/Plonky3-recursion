@@ -3,6 +3,7 @@ mod executor;
 mod npo;
 mod op;
 
+pub mod blake3_compress;
 pub mod hash;
 pub mod keccak_perm;
 pub mod mmcs;
@@ -13,6 +14,11 @@ pub(crate) mod poseidon_perm;
 pub mod recompose;
 pub mod statement;
 
+pub use blake3_compress::{
+    BLAKE3_INPUT_LIMBS, BLAKE3_INPUT_WORDS, BLAKE3_IV, BLAKE3_OUTPUT_LIMBS, BLAKE3_OUTPUT_WORDS,
+    Blake3CompressCircuitRow, Blake3CompressTrace, blake3_compress, blake3_flags,
+    generate_blake3_compress_trace, limbs_to_words, words_to_limbs,
+};
 pub use context::*;
 pub use executor::*;
 pub use keccak_perm::{
