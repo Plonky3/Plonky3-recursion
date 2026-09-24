@@ -370,13 +370,16 @@ fn n10_n15_caps_bind_following_tree_geometry_for_fresh_and_retained_inputs() {
     let fixture = Fixture::canonical();
 
     // `MerkleCap` refuses an empty or non-power-of-two root count on every construction
-    // path, the wire decoder included, so only a well-formed cap of the wrong height can
-    // reach validation.
-    for bytes in [postcard::to_allocvec(&Vec::<[F; 8]>::new()), postcard::to_allocvec(&vec![[F::ZERO; 8]; 3])] {
+    // path, the wire decoder included, so only a well-formed cap taller than the tree it
+    // commits to can reach validation.
+    for bytes in [
+        postcard::to_allocvec(&Vec::<[F; 8]>::new()),
+        postcard::to_allocvec(&vec![[F::ZERO; 8]; 3]),
+    ] {
         let bytes = bytes.expect("the raw cap payload serializes");
         assert!(postcard::from_bytes::<Cap>(&bytes).is_err());
     }
-    for roots in [2, 4] {
+    for roots in [1 << 16] {
         let mut caps = fixture.caps.clone();
         caps[1] = cap(roots);
         fixture.assert_rejected(&fixture.proof, &caps, "cap");

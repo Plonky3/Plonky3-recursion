@@ -4888,9 +4888,9 @@ mod prepared_shape_tests {
 
     #[test]
     fn checked_context_rejects_zero_fold_target_shape() {
-        use crate::input_contract::stark_layout::{InstanceLayout, NativeStarkLayout};
-        use crate::pcs::fri::context::CheckedFriOpening;
-
+        // A zero-fold target shape needs the final height to equal the tallest LDE height,
+        // which only a zero blowup allows; p3-fri 0.8 rejects that configuration outright,
+        // and the native parameter snapshot mirrors the rejection.
         let params = p3_fri::FriParameters {
             log_blowup: 0,
             log_final_poly_len: 0,
@@ -4901,64 +4901,9 @@ mod prepared_shape_tests {
             query_proof_of_work_bits: 0,
             mmcs: (),
         };
-        let native = NativeFriParams::try_from_native::<F, _>(&params).unwrap();
-        let recursive = FriVerifierParams::with_mmcs(
-            0,
-            0,
-            params.max_log_arity,
-            0,
-            0,
-            1,
-            crate::ops::Poseidon2Config::KOALA_BEAR_D4_W16,
-        );
-        let cap = cap(1);
-        let proof = FriProof::<Challenge, ChallengeMmcs, F, Vec<BatchMultiOpening<F, MyMmcs>>> {
-            batch_pow_witness: Default::default(),
-            commit_phase_commits: vec![],
-            commit_pow_witnesses: vec![],
-            input_openings: vec![
-                BatchMultiOpening {
-                    opened_values: vec![vec![vec![F::ZERO]]],
-                    opening_proof: frontier(0),
-                },
-                BatchMultiOpening {
-                    opened_values: vec![vec![vec![F::ZERO]]],
-                    opening_proof: frontier(0),
-                },
-            ],
-            commit_phase_openings: vec![],
-            final_poly: vec![Challenge::ZERO],
-            query_pow_witness: F::ZERO,
-        };
-        let layout = NativeStarkLayout::new(
-            vec![InstanceLayout {
-                challenge_width: 1,
-                ext_log: 0,
-                base_log: 0,
-                trace_width: 1,
-                trace_next: false,
-                pre_width: 0,
-                pre_next: false,
-                quotient_log: 0,
-                quotient_chunks: 1,
-                permutation_width: 0,
-            }],
-            &[],
-            false,
-            false,
-            false,
-        )
-        .unwrap();
-        let caps = [&cap, &cap];
-        let checked = <OpeningTargets as CheckedFriOpening<
-            Challenge,
-            <RecInputMmcs as RecursiveMmcs<F, Challenge>>::Commitment,
-        >>::validate_fri_context(
-            &proof, &native, &recursive, layout.opening_view(), &caps
-        );
-        assert!(
-            checked.is_err(),
-            "target verification requires a nonempty fold schedule: {checked:?}"
+        assert_eq!(
+            NativeFriParams::try_from_native::<F, _>(&params),
+            Err(crate::pcs::fri::FriInputError::ZeroBlowup)
         );
     }
 
@@ -4968,7 +4913,7 @@ mod prepared_shape_tests {
         use crate::pcs::fri::context::CheckedFriOpening;
 
         let params = p3_fri::FriParameters {
-            log_blowup: 0,
+            log_blowup: 1,
             log_final_poly_len: 0,
             max_log_arity: 1,
             num_queries: 1,
@@ -4979,7 +4924,7 @@ mod prepared_shape_tests {
         };
         let native = NativeFriParams::try_from_native::<F, _>(&params).unwrap();
         let recursive = FriVerifierParams::with_mmcs(
-            0,
+            1,
             0,
             params.max_log_arity,
             0,
