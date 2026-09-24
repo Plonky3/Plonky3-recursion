@@ -605,3 +605,96 @@ mod tests {
             LiftPermToQuintic::new(perm);
     }
 }
+
+/// Common parameters for the characteristic-2 fields and byte-oriented hashes of Plonky3 0.7/0.8.
+///
+/// The binary tower `GF(2) ⊂ … ⊂ GF(2^128)` has no Poseidon instance, so its commitments and
+/// transcripts hash bytes: a Merkle tree serializes each row, hashes it with a 32-byte hash, and
+/// compresses node pairs with the same hash, while [`BinaryChallenger`] observes and samples field
+/// elements as raw bit patterns over a byte transcript (no rejection sampling is needed, since
+/// every bit pattern is an element). This mirrors the configuration `p3-binary-pcs` tests with.
+///
+/// Each hash gets its own submodule with the same item names, so a test can swap Keccak-256 for
+/// BLAKE3 by changing one `use`.
+pub mod binary_field_params {
+    pub use p3_binary_field::{
+        BinaryChallenger, BinaryField8, BinaryField16, BinaryField32, BinaryField64,
+        BinaryField128, Gf2, Ghash128, TowerLevel,
+    };
+
+    /// The widest tower level, the field binary proofs draw their challenges from.
+    pub type F = BinaryField128;
+    /// Bytes per digest of every binary hash here.
+    pub const DIGEST_BYTES: usize = 32;
+
+    macro_rules! byte_hash_params {
+        ($(#[$doc:meta])* $module:ident, $hash:ty, $hash_value:expr) => {
+            $(#[$doc])*
+            pub mod $module {
+                use alloc::vec::Vec;
+
+                use p3_challenger::HashChallenger;
+                use p3_merkle_tree::MerkleTreeMmcs;
+                use p3_symmetric::{CompressionFunctionFromHasher, SerializingHasher};
+
+                use super::{BinaryChallenger, DIGEST_BYTES, F};
+
+                /// The byte hash itself.
+                pub type ByteHash = $hash;
+                /// Leaf hasher: serializes a row of field elements to bytes and hashes them.
+                pub type FieldHash = SerializingHasher<ByteHash>;
+                /// Node compression: hashes the concatenation of two child digests.
+                pub type Compress = CompressionFunctionFromHasher<ByteHash, 2, DIGEST_BYTES>;
+                /// Binary Merkle commitment over matrices of tower level `L`.
+                pub type LevelMmcs<L> =
+                    MerkleTreeMmcs<L, u8, FieldHash, Compress, 2, DIGEST_BYTES>;
+                /// Binary Merkle commitment over matrices of [`F`].
+                pub type Mmcs = LevelMmcs<F>;
+                /// Fiat-Shamir transcript over tower level `L`, backed by a byte transcript.
+                pub type LevelChallenger<L> =
+                    BinaryChallenger<L, HashChallenger<u8, ByteHash, DIGEST_BYTES>>;
+                /// Fiat-Shamir transcript over [`F`].
+                pub type Challenger = LevelChallenger<F>;
+
+                /// The byte hash instance.
+                pub const fn byte_hash() -> ByteHash {
+                    $hash_value
+                }
+
+                /// A Merkle commitment over tower level `L` with a single-root cap.
+                pub const fn level_mmcs<L>() -> LevelMmcs<L> {
+                    LevelMmcs::new(FieldHash::new(byte_hash()), Compress::new(byte_hash()), 0)
+                }
+
+                /// A Merkle commitment over [`F`] with a single-root cap.
+                pub const fn mmcs() -> Mmcs {
+                    level_mmcs::<F>()
+                }
+
+                /// A fresh transcript over tower level `L` with an empty initial state.
+                pub const fn level_challenger<L>() -> LevelChallenger<L> {
+                    LevelChallenger::from_hasher(Vec::new(), byte_hash())
+                }
+
+                /// A fresh transcript over [`F`] with an empty initial state.
+                pub const fn challenger() -> Challenger {
+                    level_challenger::<F>()
+                }
+            }
+        };
+    }
+
+    byte_hash_params!(
+        /// Keccak-256 commitments and transcripts over the binary tower.
+        keccak,
+        p3_keccak::Keccak256Hash,
+        p3_keccak::Keccak256Hash
+    );
+
+    byte_hash_params!(
+        /// BLAKE3 commitments and transcripts over the binary tower.
+        blake3,
+        p3_blake3::Blake3,
+        p3_blake3::Blake3
+    );
+}

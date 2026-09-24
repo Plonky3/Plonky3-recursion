@@ -43,6 +43,7 @@ criterion = { version = "0.8", features = ["html_reports"] }
 p3-air.workspace = true
 p3-baby-bear.workspace = true
 p3-batch-stark.workspace = true
+p3-binary-field.workspace = true
 p3-challenger.workspace = true
 p3-commit.workspace = true
 p3-dft.workspace = true

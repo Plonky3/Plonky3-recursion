@@ -11,3 +11,5 @@ This page tracks planned improvements and known optimization opportunities.
 - **Configurable WIDTH/RATE**: Currently fixed at `WIDTH=16`, `RATE=8` for 32-bit fields, `WIDTH=8`, `RATE=4` for Goldilocks.
 Making these configurable would support wider permutations and different security/performance trade-offs.
 - **Multi-shape FRI verification**: A single verifier circuit that can handle proofs with different trace sizes, reducing the need for proof lifting.
+- **Binary fields**: Circuits already run over the Plonky3 binary tower, and binary hash configurations are in `p3-test-utils` (see [Binary Fields and Binary Hashes](../advanced_topics/binary_fields.md)).
+The remaining steps are proving binary-field circuits with the binary PCS, adding in-circuit Keccak-256 and BLAKE3, and recursively verifying binary proofs.
