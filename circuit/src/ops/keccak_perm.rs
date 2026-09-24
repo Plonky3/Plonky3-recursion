@@ -39,6 +39,20 @@ pub const KECCAK_LIMB_BITS: usize = 16;
 /// Limbs in the whole state, which is both the input and the output width of one call.
 pub const KECCAK_STATE_LIMBS: usize = KECCAK_LANES * KECCAK_LIMBS_PER_LANE;
 
+/// 16-bit limbs in a 32-byte Keccak-256 digest.
+pub const KECCAK256_DIGEST_LIMBS: usize = 16;
+/// Bytes absorbed per Keccak-256 block (the sponge rate).
+pub const KECCAK256_RATE_BYTES: usize = 136;
+
+/// The little-endian 16-bit limbs of a byte string of even length.
+pub fn bytes_to_limbs(bytes: &[u8]) -> Vec<u16> {
+    assert!(bytes.len().is_multiple_of(2), "limbs hold two bytes each");
+    bytes
+        .chunks_exact(2)
+        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+        .collect()
+}
+
 /// Split a state into its little-endian 16-bit limbs, lane by lane.
 pub fn keccak_state_to_limbs(state: &[u64; KECCAK_LANES]) -> [u16; KECCAK_STATE_LIMBS] {
     let mut limbs = [0u16; KECCAK_STATE_LIMBS];
@@ -416,6 +430,59 @@ where
             .into_iter()
             .map(|out| out.expect("every Keccak-f output limb is requested"))
             .collect())
+    }
+}
+
+impl<F> crate::CircuitBuilder<F>
+where
+    F: Field + Eq + core::hash::Hash,
+{
+    /// Keccak-256 of the 64-byte concatenation of two 32-byte digests, each given as
+    /// [`KECCAK256_DIGEST_LIMBS`] little-endian 16-bit limbs; returns the digest in the same
+    /// form.
+    ///
+    /// This is `CompressionFunctionFromHasher<Keccak256Hash, 2, 32>`, the node compression of a
+    /// Keccak Merkle tree. The message fits in one 136-byte block, so the sponge is a single
+    /// Keccak-f call on `left ‖ right ‖ pad`: no state is carried between blocks and nothing
+    /// needs XOR-absorbing. Keccak-256 pads with `0x01` after the message and sets the top bit
+    /// of the block's last byte.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::add_keccak_f1600`], or [`CircuitBuilderError::NonPrimitiveOpArity`] for a
+    /// digest of the wrong width.
+    pub fn keccak256_compress(
+        &mut self,
+        left: &[ExprId],
+        right: &[ExprId],
+    ) -> Result<Vec<ExprId>, CircuitBuilderError> {
+        for digest in [left, right] {
+            if digest.len() != KECCAK256_DIGEST_LIMBS {
+                return Err(CircuitBuilderError::NonPrimitiveOpArity {
+                    op: "Keccak256Compress",
+                    expected: format!("{KECCAK256_DIGEST_LIMBS} limbs per digest"),
+                    got: digest.len(),
+                });
+            }
+        }
+
+        let mut block = [0u8; KECCAK256_RATE_BYTES];
+        block[2 * 32] = 0x01;
+        block[KECCAK256_RATE_BYTES - 1] |= 0x80;
+        let padding = bytes_to_limbs(&block);
+
+        let mut state = Vec::with_capacity(KECCAK_STATE_LIMBS);
+        state.extend_from_slice(left);
+        state.extend_from_slice(right);
+        for &limb in &padding[state.len()..] {
+            state.push(self.define_const(F::from_u16(limb)));
+        }
+        let zero = self.define_const(F::ZERO);
+        state.resize(KECCAK_STATE_LIMBS, zero);
+
+        let mut out = self.add_keccak_f1600(&state)?;
+        out.truncate(KECCAK256_DIGEST_LIMBS);
+        Ok(out)
     }
 }
 

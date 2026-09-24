@@ -160,3 +160,82 @@ fn the_operation_must_be_enabled_and_take_a_full_state() {
         Err(CircuitBuilderError::NonPrimitiveOpArity { .. })
     ));
 }
+
+mod keccak256_compress {
+    use p3_circuit::ops::{KECCAK256_DIGEST_LIMBS, bytes_to_limbs};
+    use p3_keccak::Keccak256Hash;
+    use p3_symmetric::{CompressionFunctionFromHasher, PseudoCompressionFunction};
+
+    use super::*;
+
+    type Compress = CompressionFunctionFromHasher<Keccak256Hash, 2, 32>;
+
+    fn digest(seed: u8) -> [u8; 32] {
+        core::array::from_fn(|i| (i as u8).wrapping_mul(37).wrapping_add(seed).rotate_left(3))
+    }
+
+    fn limb_values(digest: &[u8; 32]) -> Vec<EF4> {
+        bytes_to_limbs(digest)
+            .into_iter()
+            .map(EF4::from_u16)
+            .collect()
+    }
+
+    fn probe_digest(traces: &p3_circuit::Traces<EF4>, prefix: &str) -> Vec<u16> {
+        (0..KECCAK256_DIGEST_LIMBS)
+            .map(|i| {
+                let value = traces.probe(&format!("{prefix}{i}")).unwrap();
+                let coeffs =
+                    <EF4 as BasedVectorSpace<BabyBear>>::as_basis_coefficients_slice(value);
+                u16::try_from(coeffs[0].as_canonical_u64()).unwrap()
+            })
+            .collect()
+    }
+
+    fn digest_inputs(builder: &mut CircuitBuilder<EF4>) -> Vec<ExprId> {
+        (0..KECCAK256_DIGEST_LIMBS)
+            .map(|_| builder.public_input())
+            .collect()
+    }
+
+    /// A four-leaf Merkle root built in-circuit equals the native Keccak-256 compression tree.
+    #[test]
+    fn a_merkle_root_matches_native_keccak256_compression() {
+        let leaves = [digest(1), digest(2), digest(3), digest(4)];
+        let compress = Compress::new(Keccak256Hash);
+        let left = compress.compress([leaves[0], leaves[1]]);
+        let right = compress.compress([leaves[2], leaves[3]]);
+        let root = compress.compress([left, right]);
+
+        let mut builder = CircuitBuilder::<EF4>::new();
+        builder.enable_keccak_f1600::<BabyBear>();
+        let inputs: Vec<Vec<ExprId>> = (0..4).map(|_| digest_inputs(&mut builder)).collect();
+        let l = builder.keccak256_compress(&inputs[0], &inputs[1]).unwrap();
+        let r = builder.keccak256_compress(&inputs[2], &inputs[3]).unwrap();
+        let top = builder.keccak256_compress(&l, &r).unwrap();
+        for (i, (&a, &b)) in l.iter().zip(&top).enumerate() {
+            builder.tag(a, format!("left_{i}")).unwrap();
+            builder.tag(b, format!("root_{i}")).unwrap();
+        }
+
+        let circuit = builder.build().unwrap();
+        let mut runner = circuit.runner();
+        let public: Vec<EF4> = leaves.iter().flat_map(limb_values).collect();
+        runner.set_public_inputs(&public).unwrap();
+        let traces = runner.run().unwrap();
+
+        assert_eq!(probe_digest(&traces, "left_"), bytes_to_limbs(&left));
+        assert_eq!(probe_digest(&traces, "root_"), bytes_to_limbs(&root));
+    }
+
+    #[test]
+    fn a_digest_of_the_wrong_width_is_rejected() {
+        let mut builder = CircuitBuilder::<EF4>::new();
+        builder.enable_keccak_f1600::<BabyBear>();
+        let full = digest_inputs(&mut builder);
+        assert!(matches!(
+            builder.keccak256_compress(&full, &full[1..]),
+            Err(CircuitBuilderError::NonPrimitiveOpArity { .. })
+        ));
+    }
+}

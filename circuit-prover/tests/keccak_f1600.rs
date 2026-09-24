@@ -200,3 +200,57 @@ fn a_prepared_keccak_f_circuit_proves_and_verifies() {
             .expect("a prepared Keccak-f proof verifies");
     }
 }
+
+/// A Keccak-256 Merkle node compression proves against the native digest.
+#[test]
+fn a_keccak256_compression_proves_against_the_native_digest() {
+    use p3_circuit::ops::{KECCAK256_DIGEST_LIMBS, bytes_to_limbs};
+    use p3_keccak::Keccak256Hash;
+    use p3_symmetric::{CompressionFunctionFromHasher, PseudoCompressionFunction};
+
+    let left: [u8; 32] = core::array::from_fn(|i| i as u8 * 3 + 1);
+    let right: [u8; 32] = core::array::from_fn(|i| 255 - i as u8);
+    let parent = CompressionFunctionFromHasher::<Keccak256Hash, 2, 32>::new(Keccak256Hash)
+        .compress([left, right]);
+
+    let mut builder = CircuitBuilder::<EF>::new();
+    builder.enable_keccak_f1600::<BabyBear>();
+    let mut digest = || -> Vec<ExprId> {
+        (0..KECCAK256_DIGEST_LIMBS)
+            .map(|_| builder.public_input())
+            .collect()
+    };
+    let (l, r, expected) = (digest(), digest(), digest());
+    let out = builder.keccak256_compress(&l, &r).unwrap();
+    for (&got, &want) in out.iter().zip(&expected) {
+        builder.connect(got, want);
+    }
+    let circuit = builder.build().unwrap();
+
+    let public: Vec<EF> = [left, right, parent]
+        .iter()
+        .flat_map(|d| bytes_to_limbs(d))
+        .map(EF::from_u16)
+        .collect();
+    let preprocessors: Vec<Box<dyn NpoPreprocessor<BabyBear>>> =
+        vec![Box::new(KeccakF1600Preprocessor)];
+    let air_builders: Vec<Box<dyn NpoAirBuilder<config::BabyBearConfig, D>>> =
+        vec![Box::new(KeccakF1600AirBuilder::<D>)];
+    let mut prover = BatchStarkProver::new(config::baby_bear());
+    prover.register_table_prover(Box::new(KeccakF1600Prover::<D>));
+    let prepared = prover
+        .prepare_circuit::<EF, D>(
+            &circuit,
+            &preprocessors,
+            &air_builders,
+            ConstraintProfile::Standard,
+        )
+        .unwrap();
+    let mut runner = circuit.runner();
+    runner.set_public_inputs(&public).unwrap();
+    let traces = runner
+        .run()
+        .expect("the native digest satisfies the circuit");
+    let proof = prepared.prove(&traces).unwrap();
+    prepared.verifier().verify(&proof, &[]).unwrap();
+}

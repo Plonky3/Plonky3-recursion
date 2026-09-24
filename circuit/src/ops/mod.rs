@@ -17,8 +17,8 @@ pub use context::*;
 pub use executor::*;
 pub use keccak_perm::{
     KECCAK_LANES, KECCAK_LIMB_BITS, KECCAK_LIMBS_PER_LANE, KECCAK_STATE_LIMBS,
-    KeccakF1600CircuitRow, KeccakF1600Trace, generate_keccak_f1600_trace, keccak_limbs_to_state,
-    keccak_state_to_limbs,
+    KECCAK256_DIGEST_LIMBS, KECCAK256_RATE_BYTES, KeccakF1600CircuitRow, KeccakF1600Trace,
+    bytes_to_limbs, generate_keccak_f1600_trace, keccak_limbs_to_state, keccak_state_to_limbs,
 };
 pub use npo::*;
 pub use op::*;

@@ -36,6 +36,20 @@ This is groundwork only. Nothing here proves or recursively verifies a binary-fi
   AIRs over `GF(2^128)` accept their generated traces and reject a non-bit cell or a flipped
   bit, and that the byte-hash commitments round-trip and reject tampering.
 
+- **In-circuit Keccak.** Prime-field circuits can call Keccak-f\[1600\] as a non-primitive
+  operation (`CircuitBuilder::enable_keccak_f1600` / `add_keccak_f1600`).
+  - **State layout:** the state is 100 little-endian 16-bit limbs (limb `4·i + k` is limb `k` of
+    lane `i = x + 5·y`), matching `p3-keccak-air`.
+  - **Proving:** the `KeccakF1600Air` table runs `KeccakAir` over 24 rows per call and ties the
+    input and output limbs to the witness table through `WitnessChecks` lookups. `KeccakAir`'s
+    bit decompositions keep every limb below `2^16`.
+  - **Registration:** register it with `KeccakF1600Preprocessor`, `KeccakF1600AirBuilder` and
+    `KeccakF1600Prover`.
+  - **Merkle compression:** `keccak256_compress` builds on it. It computes Keccak-256 of two
+    32-byte digests in one call, matching
+    `CompressionFunctionFromHasher<Keccak256Hash, 2, 32>`, the node compression of a Keccak
+    Merkle tree.
+
 ## Not yet supported
 
 - Proving circuits over a binary field. The circuit prover's tables, lookups and Poseidon
@@ -43,5 +57,10 @@ This is groundwork only. Nothing here proves or recursively verifies a binary-fi
 - Recursively verifying binary-PCS or multi-stark proofs. That needs `GF(2^128)` arithmetic
   inside a prime-field circuit, plus in-circuit Keccak-256 or BLAKE3 for the transcript and
   Merkle paths.
-- In-circuit Keccak-256 or BLAKE3 as non-primitive ops. Today only Poseidon1 and Poseidon2
-  permutations are native to circuits.
+- In-circuit BLAKE3, and Keccak-256 of messages longer than one 136-byte block (which needs an
+  XOR gadget to absorb into a nonzero state).
+- Hashing field elements with Keccak in-circuit, the leaf hash of a Keccak Merkle tree. That
+  needs a canonical byte decomposition of each element, since limbs alone do not rule out a
+  non-canonical encoding.
+- Keccak-f in the recursion backends' table lists, so recursively verifying a proof that
+  contains a Keccak-f table is not wired up yet.
