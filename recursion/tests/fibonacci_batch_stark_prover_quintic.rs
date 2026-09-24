@@ -97,7 +97,7 @@ fn test_fibonacci_batch_verifier_quintic_koala() {
     runner.set_public_inputs(&[expected_fib]).unwrap();
     let traces = runner.run().unwrap();
 
-    let prover_data = ProverData::from_airs_and_degrees(&config_proving, &airs, &degrees);
+    let prover_data = ProverData::from_airs_and_degrees(&config_proving, &airs, &degrees).unwrap();
     let circuit_prover_data =
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
     let prover = BatchStarkProver::new(config_proving).with_table_packing(table_packing);
@@ -117,6 +117,7 @@ fn test_fibonacci_batch_verifier_quintic_koala() {
     let fri_verifier_params = FriVerifierParams::with_mmcs(
         scalars.log_blowup,
         scalars.log_final_poly_len,
+        scalars.max_log_arity,
         scalars.commit_pow_bits,
         scalars.query_pow_bits,
         scalars.num_queries,
@@ -234,7 +235,8 @@ fn test_fibonacci_batch_verifier_quintic_koala() {
     let config3 = make_test_config();
 
     let verification_prover_data =
-        ProverData::from_airs_and_degrees(&config3, &verification_airs, &verification_degrees);
+        ProverData::from_airs_and_degrees(&config3, &verification_airs, &verification_degrees)
+            .unwrap();
     let verification_circuit_prover_data = CircuitProverData::new(
         verification_prover_data,
         verification_primitive,

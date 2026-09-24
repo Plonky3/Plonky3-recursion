@@ -406,6 +406,7 @@ pub mod koala_bear_params {
         (
             val_mmcs,
             FriParameters {
+                batch_proof_of_work_bits: 0,
                 commit_proof_of_work_bits: pow_bits,
                 query_proof_of_work_bits: pow_bits,
                 ..fri_params
@@ -427,6 +428,7 @@ pub mod koala_bear_params {
             log_blowup,
             log_final_poly_len: 0,
             num_queries,
+            batch_proof_of_work_bits: 0,
             commit_proof_of_work_bits: 0,
             query_proof_of_work_bits,
             mmcs: ChallengeMmcs::new(val_mmcs.clone()),

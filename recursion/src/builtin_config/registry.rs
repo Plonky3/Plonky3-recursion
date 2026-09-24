@@ -500,6 +500,7 @@ impl FriConfigV1 {
             log_blowup: self.log_blowup as usize,
             log_final_poly_len: self.log_final_poly_len as usize,
             num_queries: self.num_queries as usize,
+            batch_proof_of_work_bits: 0,
             commit_proof_of_work_bits: self.commit_pow_bits as usize,
             query_proof_of_work_bits: self.query_pow_bits as usize,
             mmcs: (),
@@ -513,6 +514,7 @@ impl FriConfigV1 {
         FriVerifierParams::try_with_mmcs(
             params.log_blowup,
             params.log_final_poly_len,
+            params.max_log_arity,
             params.commit_proof_of_work_bits,
             params.query_proof_of_work_bits,
             params.num_queries,

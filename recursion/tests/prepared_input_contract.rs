@@ -189,7 +189,7 @@ fn fri_uni_reference_enforces_exact_air_arity_but_values_stay_dynamic() {
     }
     let air = FibonacciAir {};
     let public_inputs = vec![Val::<Config>::ZERO, Val::<Config>::ONE, b];
-    let proof = prove(&fixture.layer_config, &air, trace, &public_inputs);
+    let proof = prove(&fixture.layer_config, &air, trace, &public_inputs).unwrap();
 
     let reference = p3_recursion::RecursionInput::UniStark {
         proof: &proof,
@@ -255,7 +255,8 @@ fn custom_uni_arity_is_fail_closed_and_explicitly_extensible() {
         &FibonacciAir {},
         trace,
         &public_inputs,
-    );
+    )
+    .unwrap();
 
     let unknown = UnknownArityAir;
     let source = p3_recursion::RecursionInput::UniStark {
@@ -351,7 +352,7 @@ fn whir_uni_backend_captures_and_compares_the_native_contract() {
     }
     let air = FibonacciAir {};
     let public_inputs = vec![Val::<WhirConfig>::ZERO, Val::<WhirConfig>::ONE, b];
-    let mut proof = prove(&config, &air, trace, &public_inputs);
+    let mut proof = prove(&config, &air, trace, &public_inputs).unwrap();
     let backend = WhirRecursionBackend::<16, 8>::new(Poseidon2Config::BABY_BEAR_D4_W16)
         .for_extension_degree::<4>();
     let source = RecursionInput::UniStark {

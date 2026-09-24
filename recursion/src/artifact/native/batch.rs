@@ -4,12 +4,12 @@ use p3_batch_stark::proof::OpenedValuesWithLookups;
 use p3_batch_stark::{BatchCommitments, BatchOpenedValues, BatchProof, StarkGenericConfig};
 use p3_field::{BasedVectorSpace, PrimeField64};
 use p3_lookup::LookupTerminal;
-use p3_uni_stark::OpenedValues;
+use p3_uni_stark::{OpenedValues, PreprocessedOpenedValues};
 
 use crate::artifact::ArtifactError;
 use crate::artifact::wire::{FieldEncoding, Reader, Writer};
 
-fn write_option<T>(
+fn write_option<T: ?Sized>(
     writer: &mut Writer,
     value: Option<&T>,
     mut write_value: impl FnMut(&mut Writer, &T) -> Result<(), ArtifactError>,
@@ -82,16 +82,12 @@ where
     write_option(writer, values.trace_next.as_ref(), |writer, values| {
         write_extension_vec(writer, "trace next openings", values, field)
     })?;
-    write_option(
-        writer,
-        values.preprocessed_local.as_ref(),
-        |writer, values| write_extension_vec(writer, "preprocessed local openings", values, field),
-    )?;
-    write_option(
-        writer,
-        values.preprocessed_next.as_ref(),
-        |writer, values| write_extension_vec(writer, "preprocessed next openings", values, field),
-    )?;
+    write_option(writer, values.preprocessed_local(), |writer, values| {
+        write_extension_vec(writer, "preprocessed local openings", values, field)
+    })?;
+    write_option(writer, values.preprocessed_next(), |writer, values| {
+        write_extension_vec(writer, "preprocessed next openings", values, field)
+    })?;
     writer.write_vec(
         "quotient chunk opening vectors",
         &values.quotient_chunks,
@@ -112,17 +108,30 @@ where
 {
     let max_width = reader.limits().verifier.max_matrix_width;
     let max_rounds = reader.limits().verifier.max_rounds;
+    let trace_local = read_extension_vec(reader, "trace local openings", max_width, field)?;
+    let trace_next = read_option(reader, "trace next openings", |reader| {
+        read_extension_vec(reader, "trace next openings", max_width, field)
+    })?;
+    let preprocessed_local = read_option(reader, "preprocessed local openings", |reader| {
+        read_extension_vec(reader, "preprocessed local openings", max_width, field)
+    })?;
+    let preprocessed_next = read_option(reader, "preprocessed next openings", |reader| {
+        read_extension_vec(reader, "preprocessed next openings", max_width, field)
+    })?;
+    // A next-row preprocessed opening is only meaningful alongside the current-row one.
+    let preprocessed = match (preprocessed_local, preprocessed_next) {
+        (Some(local), next) => Some(PreprocessedOpenedValues { local, next }),
+        (None, None) => None,
+        (None, Some(_)) => {
+            return Err(ArtifactError::MalformedProof {
+                component: "preprocessed next openings without local openings",
+            });
+        }
+    };
     Ok(OpenedValues {
-        trace_local: read_extension_vec(reader, "trace local openings", max_width, field)?,
-        trace_next: read_option(reader, "trace next openings", |reader| {
-            read_extension_vec(reader, "trace next openings", max_width, field)
-        })?,
-        preprocessed_local: read_option(reader, "preprocessed local openings", |reader| {
-            read_extension_vec(reader, "preprocessed local openings", max_width, field)
-        })?,
-        preprocessed_next: read_option(reader, "preprocessed next openings", |reader| {
-            read_extension_vec(reader, "preprocessed next openings", max_width, field)
-        })?,
+        trace_local,
+        trace_next,
+        preprocessed,
         quotient_chunks: reader.read_vec_limited(
             "quotient chunk opening vectors",
             max_rounds,
@@ -152,6 +161,7 @@ where
     SC: StarkGenericConfig,
     F: PrimeField64,
     SC::Challenge: BasedVectorSpace<F>,
+    p3_uni_stark::Domain<SC>: p3_commit::PolynomialSpace<Val = F>,
 {
     write_commitment(writer, &proof.commitments.main)?;
     write_option(
@@ -196,7 +206,13 @@ where
     )?;
     writer.write_vec("batch degree bits", &proof.degree_bits, |writer, degree| {
         writer.write_count("batch degree bits", *degree)
-    })
+    })?;
+    write_option(
+        writer,
+        proof.lookup_pow_witness.as_ref(),
+        |writer, witness| writer.write_field(field, *witness),
+    )?;
+    writer.write_field(field, proof.ood_pow_witness)
 }
 
 pub(crate) fn read_batch_proof<SC, F>(
@@ -213,6 +229,7 @@ where
     SC: StarkGenericConfig,
     F: PrimeField64,
     SC::Challenge: BasedVectorSpace<F>,
+    p3_uni_stark::Domain<SC>: p3_commit::PolynomialSpace<Val = F>,
 {
     let main = read_commitment(reader)?;
     let permutation = read_option(reader, "permutation commitment", |reader| {
@@ -264,6 +281,10 @@ where
     if instances.len() != lookup_terminals.len() || instances.len() != degree_bits.len() {
         return Err(ArtifactError::NonCanonicalMetadata);
     }
+    let lookup_pow_witness = read_option(reader, "lookup PoW witness", |reader| {
+        reader.read_field(field)
+    })?;
+    let ood_pow_witness = reader.read_field(field)?;
     Ok(BatchProof {
         commitments: BatchCommitments {
             main,
@@ -275,5 +296,7 @@ where
         opening_proof,
         lookup_terminals,
         degree_bits,
+        lookup_pow_witness,
+        ood_pow_witness,
     })
 }

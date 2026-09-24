@@ -319,7 +319,7 @@ where
         let log_arities = input
             .commit_phase_openings
             .iter()
-            .map(|opening| opening.log_arity as usize)
+            .map(|opening| super::sibling_log_arity(opening).unwrap_or(0))
             .collect();
 
         Self {
@@ -334,6 +334,7 @@ where
 
     fn get_values(input: &Self::Input) -> Vec<EF> {
         let FriProof {
+            batch_pow_witness: _,
             commit_phase_commits,
             commit_pow_witnesses,
             input_openings,
@@ -398,6 +399,7 @@ where
 
     fn input_shape(input: &Self::Input) -> Result<Self::Shape, VerificationError> {
         let FriProof {
+            batch_pow_witness: _,
             commit_phase_commits,
             commit_pow_witnesses,
             input_openings,
@@ -423,19 +425,14 @@ where
             ));
         }
 
+        let mut log_arities = Vec::with_capacity(commit_phase_openings.len());
         for step in commit_phase_openings {
-            let siblings = 1usize
-                .checked_shl(u32::from(step.log_arity))
-                .and_then(|arity| arity.checked_sub(1))
-                .filter(|_| step.log_arity > 0)
+            let log_arity = super::sibling_log_arity(step)
+                .and_then(|log_arity| u8::try_from(log_arity).ok())
                 .ok_or_else(|| {
-                    VerificationError::InvalidProofShape("invalid FRI log_arity".into())
+                    VerificationError::InvalidProofShape("FRI sibling arity mismatch".into())
                 })?;
-            if step.sibling_values.iter().any(|row| row.len() != siblings) {
-                return Err(VerificationError::InvalidProofShape(
-                    "FRI sibling arity mismatch".into(),
-                ));
-            }
+            log_arities.push(log_arity);
         }
 
         Ok(FriShape {
@@ -450,9 +447,10 @@ where
             input_openings: InputProof::openings_shape(input_openings)?,
             commit_phase_openings: commit_phase_openings
                 .iter()
-                .map(|step| {
+                .zip(log_arities)
+                .map(|(step, log_arity)| {
                     Ok(FriCommitStepShape {
-                        log_arity: step.log_arity,
+                        log_arity,
                         sibling_values: step.sibling_values.iter().map(Vec::len).collect(),
                         opening_advice: RecMmcs::Proof::multiproof_shape(
                             &step.opening_proof,
@@ -554,16 +552,7 @@ where
 
     let mut query_count = InputProof::validate_openings_raw(&input.input_openings)?;
     for step in &input.commit_phase_openings {
-        let Some(arity) = (1usize)
-            .checked_shl(u32::from(step.log_arity))
-            .and_then(|arity| arity.checked_sub(1))
-            .filter(|_| step.log_arity > 0)
-        else {
-            return Err(VerificationError::InvalidProofShape(
-                "invalid FRI log_arity".into(),
-            ));
-        };
-        if step.sibling_values.iter().any(|row| row.len() != arity) {
+        if super::sibling_log_arity(step).is_none() {
             return Err(VerificationError::InvalidProofShape(
                 "FRI sibling arity mismatch".into(),
             ));
@@ -732,7 +721,8 @@ where
         input: &CommitPhaseMultiStep<EF, RecMmcs::Input>,
         query: usize,
     ) -> Self {
-        let log_arity = input.log_arity as usize;
+        let log_arity = super::sibling_log_arity(input)
+            .expect("FRI commit-phase rows were validated before target allocation");
         let arity = 1usize << log_arity;
         let num_siblings = arity - 1;
         let num_coeffs = num_siblings * EF::DIMENSION;
@@ -4559,6 +4549,7 @@ mod prepared_shape_tests {
             log_final_poly_len: 0,
             max_log_arity: 1,
             num_queries: 1,
+            batch_proof_of_work_bits: 0,
             commit_proof_of_work_bits: 0,
             query_proof_of_work_bits: 0,
             mmcs: (),
@@ -4567,6 +4558,7 @@ mod prepared_shape_tests {
         let recursive = FriVerifierParams::with_mmcs(
             1,
             0,
+            params.max_log_arity,
             0,
             0,
             1,
@@ -4650,6 +4642,7 @@ mod prepared_shape_tests {
             log_final_poly_len: 0,
             max_log_arity: 1,
             num_queries: 1,
+            batch_proof_of_work_bits: 0,
             commit_proof_of_work_bits: 0,
             query_proof_of_work_bits: 0,
             mmcs: (),
@@ -4658,6 +4651,7 @@ mod prepared_shape_tests {
         let recursive = FriVerifierParams::with_mmcs(
             1,
             0,
+            params.max_log_arity,
             0,
             0,
             1,
@@ -4714,6 +4708,7 @@ mod prepared_shape_tests {
             log_final_poly_len: 0,
             max_log_arity: 1,
             num_queries: 1,
+            batch_proof_of_work_bits: 0,
             commit_proof_of_work_bits: 0,
             query_proof_of_work_bits: 0,
             mmcs: (),
@@ -4722,6 +4717,7 @@ mod prepared_shape_tests {
         let recursive = FriVerifierParams::with_mmcs(
             1,
             0,
+            params.max_log_arity,
             0,
             0,
             1,
@@ -4827,6 +4823,7 @@ mod prepared_shape_tests {
             log_final_poly_len: 0,
             max_log_arity: 1,
             num_queries: 1,
+            batch_proof_of_work_bits: 0,
             commit_proof_of_work_bits: 0,
             query_proof_of_work_bits: 0,
             mmcs: (),
@@ -4835,6 +4832,7 @@ mod prepared_shape_tests {
         let recursive = FriVerifierParams::with_mmcs(
             0,
             0,
+            params.max_log_arity,
             0,
             0,
             1,
@@ -4900,6 +4898,7 @@ mod prepared_shape_tests {
             log_final_poly_len: 0,
             max_log_arity: 1,
             num_queries: 1,
+            batch_proof_of_work_bits: 0,
             commit_proof_of_work_bits: 0,
             query_proof_of_work_bits: 0,
             mmcs: (),
@@ -4908,6 +4907,7 @@ mod prepared_shape_tests {
         let recursive = FriVerifierParams::with_mmcs(
             0,
             0,
+            params.max_log_arity,
             0,
             0,
             1,
@@ -4990,6 +4990,7 @@ mod prepared_shape_tests {
             log_final_poly_len: 0,
             max_log_arity: 1,
             num_queries: 1,
+            batch_proof_of_work_bits: 0,
             commit_proof_of_work_bits: 0,
             query_proof_of_work_bits: 0,
             mmcs: (),
@@ -4998,6 +4999,7 @@ mod prepared_shape_tests {
         let recursive = FriVerifierParams::with_mmcs(
             1,
             0,
+            params.max_log_arity,
             0,
             0,
             1,
@@ -5431,6 +5433,7 @@ mod prepared_shape_tests {
             log_final_poly_len: 0,
             max_log_arity: 2,
             num_queries: 4,
+            batch_proof_of_work_bits: 0,
             commit_proof_of_work_bits: 0,
             query_proof_of_work_bits: 0,
             mmcs: (),
@@ -5440,6 +5443,7 @@ mod prepared_shape_tests {
             FriVerifierParams::with_mmcs(
                 1,
                 0,
+                params.max_log_arity,
                 0,
                 0,
                 2,

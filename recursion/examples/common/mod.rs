@@ -760,6 +760,7 @@ macro_rules! define_field_module_types {
                 log_blowup: fp.log_blowup,
                 log_final_poly_len: fp.log_final_poly_len,
                 num_queries,
+                batch_proof_of_work_bits: 0,
                 commit_proof_of_work_bits: fp.commit_pow_bits,
                 query_proof_of_work_bits: fp.query_pow_bits,
                 mmcs: ChallengeMmcs::new(val_mmcs.clone()),
@@ -779,6 +780,7 @@ macro_rules! define_field_module_types {
             FriVerifierParams::with_mmcs(
                 native.log_blowup(),
                 native.log_final_poly_len(),
+                native.max_log_arity(),
                 native.commit_pow_bits(),
                 native.query_pow_bits(),
                 native.num_queries(),
@@ -1066,6 +1068,7 @@ macro_rules! define_field_module_types_quintic {
                 log_blowup: fp.log_blowup,
                 log_final_poly_len: fp.log_final_poly_len,
                 num_queries,
+                batch_proof_of_work_bits: 0,
                 commit_proof_of_work_bits: fp.commit_pow_bits,
                 query_proof_of_work_bits: fp.query_pow_bits,
                 mmcs: ChallengeMmcs::new(val_mmcs.clone()),
@@ -1085,6 +1088,7 @@ macro_rules! define_field_module_types_quintic {
             FriVerifierParams::with_mmcs(
                 native.log_blowup(),
                 native.log_final_poly_len(),
+                native.max_log_arity(),
                 native.commit_pow_bits(),
                 native.query_pow_bits(),
                 native.num_queries(),

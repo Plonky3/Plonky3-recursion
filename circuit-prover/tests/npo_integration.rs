@@ -292,7 +292,8 @@ fn cube_npo_stark_proof() {
     let traces = runner.run().expect("run cube circuit");
 
     // Prove all primitive tables.
-    let prover_data = p3_batch_stark::ProverData::from_airs_and_degrees(&cfg, &airs, &log_degrees);
+    let prover_data =
+        p3_batch_stark::ProverData::from_airs_and_degrees(&cfg, &airs, &log_degrees).unwrap();
     let circuit_prover_data =
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
     let prover = BatchStarkProver::new(cfg);
@@ -323,7 +324,7 @@ fn cube_air_stark_proof() {
     let x_cu = x_sq * x;
     let trace = RowMajorMatrix::new(vec![x, x_sq, x_cu], 3);
 
-    let proof = prove(&cfg, &CubeAir, trace, &[]);
+    let proof = prove(&cfg, &CubeAir, trace, &[]).unwrap();
 
     verify(&cfg, &CubeAir, &proof, &[]).expect("CubeAir STARK proof should verify");
 }

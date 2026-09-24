@@ -399,6 +399,8 @@ pub fn prove_next_layer<SC, A, B, const D: usize>(
     params: &ProveNextLayerParams,
 ) -> Result<RecursionOutput<SC>, VerificationError>
 where
+    p3_uni_stark::PcsProverError<SC>: Send,
+    SC::Challenger: p3_challenger::GrindingChallenger<Witness = p3_uni_stark::Val<SC>>,
     SC: StarkGenericConfig + Send + Sync + Clone + 'static,
     A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
     B: PcsRecursionBackend<SC, A, D>,
@@ -443,6 +445,8 @@ pub fn build_and_prove_next_layer<SC, A, B, const D: usize>(
     params: &ProveNextLayerParams,
 ) -> Result<RecursionOutput<SC>, VerificationError>
 where
+    p3_uni_stark::PcsProverError<SC>: Send,
+    SC::Challenger: p3_challenger::GrindingChallenger<Witness = p3_uni_stark::Val<SC>>,
     SC: StarkGenericConfig + Send + Sync + Clone + 'static,
     A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
     B: PcsRecursionBackend<SC, A, D>,
@@ -611,6 +615,8 @@ pub fn prove_aggregation_layer<SC, A1, A2, B, const D: usize>(
     params: &ProveNextLayerParams,
 ) -> Result<RecursionOutput<SC>, VerificationError>
 where
+    p3_uni_stark::PcsProverError<SC>: Send,
+    SC::Challenger: p3_challenger::GrindingChallenger<Witness = p3_uni_stark::Val<SC>>,
     SC: StarkGenericConfig + Send + Sync + Clone + 'static,
     A1: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
     A2: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
@@ -662,6 +668,8 @@ pub fn prove_aggregation_layer_cross<InSC, OutSC, A1, A2, B, const D: usize>(
     params: &ProveNextLayerParams,
 ) -> Result<RecursionOutput<OutSC>, VerificationError>
 where
+    p3_uni_stark::PcsProverError<OutSC>: Send,
+    OutSC::Challenger: p3_challenger::GrindingChallenger<Witness = p3_uni_stark::Val<OutSC>>,
     InSC: StarkGenericConfig + Send + Sync + Clone + 'static,
     OutSC: StarkGenericConfig<Challenge = InSC::Challenge> + Send + Sync + Clone + 'static,
     A1: RecursiveAir<Val<InSC>, InSC::Challenge, LogUpGadget>,
@@ -719,6 +727,8 @@ pub fn build_and_prove_aggregation_layer<SC, A1, A2, B, const D: usize>(
     params: &ProveNextLayerParams,
 ) -> Result<RecursionOutput<SC>, VerificationError>
 where
+    p3_uni_stark::PcsProverError<SC>: Send,
+    SC::Challenger: p3_challenger::GrindingChallenger<Witness = p3_uni_stark::Val<SC>>,
     SC: StarkGenericConfig + Send + Sync + Clone + 'static,
     A1: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
     A2: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
@@ -764,6 +774,8 @@ pub fn build_and_prove_aggregation_layer_cross<InSC, OutSC, A1, A2, B, const D: 
     params: &ProveNextLayerParams,
 ) -> Result<RecursionOutput<OutSC>, VerificationError>
 where
+    p3_uni_stark::PcsProverError<OutSC>: Send,
+    OutSC::Challenger: p3_challenger::GrindingChallenger<Witness = p3_uni_stark::Val<OutSC>>,
     InSC: StarkGenericConfig + Send + Sync + Clone + 'static,
     OutSC: StarkGenericConfig<Challenge = InSC::Challenge> + Send + Sync + Clone + 'static,
     A1: RecursiveAir<Val<InSC>, InSC::Challenge, LogUpGadget>,

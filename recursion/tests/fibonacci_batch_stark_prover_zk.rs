@@ -114,7 +114,7 @@ fn test_batch_verifier_zk_hiding_fri() -> Result<(), VerificationError> {
     let instances = vec![instance];
     let prover_data = ProverData::from_instances(&config_proving, &instances);
     let common = &prover_data.common;
-    let batch_stark_proof = prove_batch(&config_proving, &instances, &prover_data);
+    let batch_stark_proof = prove_batch(&config_proving, &instances, &prover_data).unwrap();
 
     verify_batch(&config_proving, &[air], &batch_stark_proof, &pvs, common).unwrap();
 
@@ -129,6 +129,7 @@ fn test_batch_verifier_zk_hiding_fri() -> Result<(), VerificationError> {
     let fri_verifier_params = FriVerifierParams::with_mmcs(
         fri_params2.log_blowup,
         fri_params2.log_final_poly_len,
+        fri_params2.max_log_arity,
         fri_params2.commit_proof_of_work_bits,
         fri_params2.query_proof_of_work_bits,
         fri_params2.num_queries,
@@ -268,7 +269,8 @@ fn test_batch_verifier_zk_hiding_fri() -> Result<(), VerificationError> {
         verification_airs_degrees.into_iter().unzip();
 
     let verification_prover_data =
-        ProverData::from_airs_and_degrees(&config3, &verification_airs, &verification_degrees);
+        ProverData::from_airs_and_degrees(&config3, &verification_airs, &verification_degrees)
+            .unwrap();
     let verification_circuit_prover_data = CircuitProverData::new(
         verification_prover_data,
         verification_primitive_columns,

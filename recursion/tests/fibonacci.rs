@@ -60,6 +60,7 @@ fn build_fibonacci_test_setup() -> FibonacciTestSetup {
     let fri_verifier_params = FriVerifierParams::with_mmcs(
         scalars.log_blowup,
         scalars.log_final_poly_len,
+        scalars.max_log_arity,
         scalars.commit_pow_bits,
         scalars.query_pow_bits,
         scalars.num_queries,
@@ -67,7 +68,7 @@ fn build_fibonacci_test_setup() -> FibonacciTestSetup {
     );
     let pis = vec![F::ZERO, F::ONE, F::from_u64(x)];
     let air = FibonacciAir {};
-    let proof = prove(&config, &air, trace, &pis);
+    let proof = prove(&config, &air, trace, &pis).unwrap();
 
     FibonacciTestSetup {
         config,

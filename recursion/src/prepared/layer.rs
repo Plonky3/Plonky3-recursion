@@ -159,6 +159,8 @@ where
 
 impl<'air, SC, A, B, const D: usize> PreparedLayer<'air, SC, A, B, D>
 where
+    p3_uni_stark::PcsProverError<SC>: Send,
+    SC::Challenger: p3_challenger::GrindingChallenger<Witness = p3_uni_stark::Val<SC>>,
     SC: StarkGenericConfig + Send + Sync + Clone + 'static,
     A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
     B: PreparedPcsRecursionBackend<SC, A, D>,

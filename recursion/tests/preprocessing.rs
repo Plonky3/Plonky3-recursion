@@ -325,6 +325,7 @@ fn test_batch_verifier_with_mixed_preprocessed() -> Result<(), VerificationError
     let fri_verifier_params = FriVerifierParams::with_mmcs(
         scalars.log_blowup,
         scalars.log_final_poly_len,
+        scalars.max_log_arity,
         scalars.commit_pow_bits,
         scalars.query_pow_bits,
         scalars.num_queries,
@@ -375,7 +376,7 @@ fn test_batch_verifier_with_mixed_preprocessed() -> Result<(), VerificationError
     // Generate prover data and batch proof
     let prover_data = ProverData::from_instances(&config, &instances);
     let lookup_gadget = LogUpGadget::new();
-    let mut batch_proof = prove_batch(&config, &instances, &prover_data);
+    let mut batch_proof = prove_batch(&config, &instances, &prover_data).unwrap();
     let airs = [mixed_air1, mixed_air2, mixed_air3];
     let common_data = &prover_data.common;
 
@@ -537,6 +538,7 @@ fn test_batch_verifier_with_local_only_preprocessed() -> Result<(), Verification
     let pcs_verifier_params = FriVerifierParams::with_mmcs(
         scalars.log_blowup,
         scalars.log_final_poly_len,
+        scalars.max_log_arity,
         scalars.commit_pow_bits,
         scalars.query_pow_bits,
         scalars.num_queries,
@@ -554,7 +556,7 @@ fn test_batch_verifier_with_local_only_preprocessed() -> Result<(), Verification
     };
     let instances = vec![instance];
     let prover_data = ProverData::from_instances(&config, &instances);
-    let mut batch_proof = prove_batch(&config, &instances, &prover_data);
+    let mut batch_proof = prove_batch(&config, &instances, &prover_data).unwrap();
     verify_batch(
         &config,
         &[air],
@@ -741,6 +743,7 @@ fn run_with_tampered_common(
     let fri_verifier_params = FriVerifierParams::with_mmcs(
         scalars.log_blowup,
         scalars.log_final_poly_len,
+        scalars.max_log_arity,
         scalars.commit_pow_bits,
         scalars.query_pow_bits,
         scalars.num_queries,
@@ -783,7 +786,7 @@ fn run_with_tampered_common(
 
     let mut prover_data = ProverData::from_instances(&config, &instances);
     let lookup_gadget = LogUpGadget::new();
-    let batch_proof = prove_batch(&config, &instances, &prover_data);
+    let batch_proof = prove_batch(&config, &instances, &prover_data).unwrap();
     let airs = vec![mixed_air1, mixed_air2, mixed_air3];
 
     // Corrupt the common data the verifier will bind against.
@@ -902,6 +905,7 @@ fn run_with_tampered_proof(
     let fri_verifier_params = FriVerifierParams::with_mmcs(
         scalars.log_blowup,
         scalars.log_final_poly_len,
+        scalars.max_log_arity,
         scalars.commit_pow_bits,
         scalars.query_pow_bits,
         scalars.num_queries,
@@ -944,7 +948,7 @@ fn run_with_tampered_proof(
 
     let prover_data = ProverData::from_instances(&config, &instances);
     let lookup_gadget = LogUpGadget::new();
-    let mut batch_proof = prove_batch(&config, &instances, &prover_data);
+    let mut batch_proof = prove_batch(&config, &instances, &prover_data).unwrap();
     let airs = vec![mixed_air1, mixed_air2, mixed_air3];
     let common_data = &prover_data.common;
 
@@ -1109,7 +1113,7 @@ fn test_batch_allocation_validates_cardinalities_before_mutating_builder() {
         public_values,
     }];
     let prover_data = ProverData::from_instances(&config, &instances);
-    let mut proof = prove_batch(&config, &instances, &prover_data);
+    let mut proof = prove_batch(&config, &instances, &prover_data).unwrap();
     let common = &prover_data.common;
     let valid_counts = [1];
 
@@ -1164,6 +1168,7 @@ fn test_batch_verifier_with_public_values() -> Result<(), VerificationError> {
     let fri_verifier_params = FriVerifierParams::with_mmcs(
         scalars.log_blowup,
         scalars.log_final_poly_len,
+        scalars.max_log_arity,
         scalars.commit_pow_bits,
         scalars.query_pow_bits,
         scalars.num_queries,
@@ -1187,7 +1192,7 @@ fn test_batch_verifier_with_public_values() -> Result<(), VerificationError> {
 
     let prover_data = ProverData::from_instances(&config, &instances);
     let common_data = &prover_data.common;
-    let batch_proof = prove_batch(&config, &instances, &prover_data);
+    let batch_proof = prove_batch(&config, &instances, &prover_data).unwrap();
 
     verify_batch(&config, &[pv_air], &batch_proof, &pvs, common_data).unwrap();
 
@@ -1284,6 +1289,7 @@ fn test_batch_verifier_wrong_public_values() {
     let fri_verifier_params = FriVerifierParams::with_mmcs(
         scalars.log_blowup,
         scalars.log_final_poly_len,
+        scalars.max_log_arity,
         scalars.commit_pow_bits,
         scalars.query_pow_bits,
         scalars.num_queries,
@@ -1307,7 +1313,7 @@ fn test_batch_verifier_wrong_public_values() {
 
     let prover_data = ProverData::from_instances(&config, &instances);
     let common_data = &prover_data.common;
-    let batch_proof = prove_batch(&config, &instances, &prover_data);
+    let batch_proof = prove_batch(&config, &instances, &prover_data).unwrap();
 
     let lookup_gadget = LogUpGadget::new();
     let (

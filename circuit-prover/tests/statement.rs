@@ -109,7 +109,8 @@ fn base_statement_fixture(
     let traces = runner.run().unwrap();
     let cfg = config::baby_bear();
     let (airs, degrees): (Vec<_>, Vec<_>) = airs_degrees.into_iter().unzip();
-    let prover_data = p3_batch_stark::ProverData::from_airs_and_degrees(&cfg, &airs, &degrees);
+    let prover_data =
+        p3_batch_stark::ProverData::from_airs_and_degrees(&cfg, &airs, &degrees).unwrap();
     let prepared = CircuitProverData::new(prover_data, primitive, non_primitive);
     let mut prover = BatchStarkProver::new(cfg).with_table_packing(packing);
     prover.register_table_prover(Box::new(StatementProver::<D>::new(schema.clone())));
@@ -209,7 +210,8 @@ fn statement_base_and_extension_prove_with_actual_public_values() {
 
     let cfg = config::baby_bear();
     let (airs, degrees): (Vec<_>, Vec<_>) = airs_degrees.into_iter().unzip();
-    let prover_data = p3_batch_stark::ProverData::from_airs_and_degrees(&cfg, &airs, &degrees);
+    let prover_data =
+        p3_batch_stark::ProverData::from_airs_and_degrees(&cfg, &airs, &degrees).unwrap();
     let prepared = CircuitProverData::new(prover_data, primitive, non_primitive);
     let mut prover = BatchStarkProver::new(cfg).with_table_packing(packing);
     prover.register_recompose_table::<D>(true);
@@ -271,7 +273,8 @@ fn statement_extension_rejects_nonbase_coefficients_with_unchanged_weighted_sum(
     let traces = runner.run().unwrap();
     let cfg = config::baby_bear();
     let (airs, degrees): (Vec<_>, Vec<_>) = airs_degrees.into_iter().unzip();
-    let prover_data = p3_batch_stark::ProverData::from_airs_and_degrees(&cfg, &airs, &degrees);
+    let prover_data =
+        p3_batch_stark::ProverData::from_airs_and_degrees(&cfg, &airs, &degrees).unwrap();
     let prepared = CircuitProverData::new(prover_data, primitive, non_primitive);
     let mut prover = BatchStarkProver::new(cfg).with_table_packing(packing);
     prover.register_recompose_table::<D>(true);
@@ -363,7 +366,7 @@ macro_rules! statement_extension_field_case {
             let cfg = $config;
             let (airs, degrees): (Vec<_>, Vec<_>) = airs_degrees.into_iter().unzip();
             let prover_data =
-                p3_batch_stark::ProverData::from_airs_and_degrees(&cfg, &airs, &degrees);
+                p3_batch_stark::ProverData::from_airs_and_degrees(&cfg, &airs, &degrees).unwrap();
             let prepared = CircuitProverData::new(prover_data, primitive, non_primitive);
             let mut prover = BatchStarkProver::new(cfg).with_table_packing(packing);
             prover.register_recompose_table::<$d>(true);
@@ -430,7 +433,7 @@ fn statement_proves_and_verifies_with_hiding_fri() {
         Dft::default(),
         value_mmcs,
         fri_params,
-        2,
+        4,
         StdRng::seed_from_u64(7),
     );
     let cfg = HidingConfig::new(pcs, Challenger::new(permutation));
@@ -465,7 +468,8 @@ fn statement_proves_and_verifies_with_hiding_fri() {
     // `get_airs_and_degrees_with_prep` returns base trace degrees. HidingFriPcs commits one
     // additional randomized row bit, which is part of ProverData's extended degree metadata.
     let degrees: Vec<_> = degrees.into_iter().map(|degree| degree + 1).collect();
-    let prover_data = p3_batch_stark::ProverData::from_airs_and_degrees(&cfg, &airs, &degrees);
+    let prover_data =
+        p3_batch_stark::ProverData::from_airs_and_degrees(&cfg, &airs, &degrees).unwrap();
     let prepared = CircuitProverData::new(prover_data, primitive, non_primitive);
     let mut prover = BatchStarkProver::new(cfg).with_table_packing(packing);
     prover.register_table_prover(Box::new(StatementProver::<1>::new(schema)));
@@ -591,7 +595,8 @@ fn statement_order_tampering_is_rejected_by_ctl() {
 
     let cfg = config::baby_bear();
     let (airs, degrees): (Vec<_>, Vec<_>) = airs_degrees.into_iter().unzip();
-    let prover_data = p3_batch_stark::ProverData::from_airs_and_degrees(&cfg, &airs, &degrees);
+    let prover_data =
+        p3_batch_stark::ProverData::from_airs_and_degrees(&cfg, &airs, &degrees).unwrap();
     let prepared = CircuitProverData::new(prover_data, primitive, non_primitive);
     let mut prover = BatchStarkProver::new(cfg).with_table_packing(packing);
     prover.register_table_prover(Box::new(StatementProver::<D>::new(schema)));

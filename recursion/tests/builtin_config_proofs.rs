@@ -92,7 +92,7 @@ macro_rules! prove_and_check {
             <$field>::ONE,
             fibonacci_output::<$field>($rows),
         ];
-        let proof = prove(&$config, &air, trace, &public_values);
+        let proof = prove(&$config, &air, trace, &public_values).unwrap();
         verify(&$config, &air, &proof, &public_values).expect("native proof must verify");
         let mut wrong = public_values;
         wrong[2] += <$field>::ONE;
@@ -147,7 +147,7 @@ fn random_codeword_hiding_fri_factory_proves_and_checks() {
         BabyBear::ONE,
         fibonacci_output::<BabyBear>(8),
     ];
-    let proof = prove(&proving_config, &air, trace, &public_values);
+    let proof = prove(&proving_config, &air, trace, &public_values).unwrap();
 
     let draws = Arc::new(AtomicUsize::new(0));
     let verifying_config = baby_bear_d4_poseidon2_random_codeword(
@@ -182,7 +182,7 @@ fn salted_hiding_fri_factory_proves_and_checks() {
         KoalaBear::ONE,
         fibonacci_output::<KoalaBear>(8),
     ];
-    let proof = prove(&proving_config, &air, trace, &public_values);
+    let proof = prove(&proving_config, &air, trace, &public_values).unwrap();
 
     let input_draws = Arc::new(AtomicUsize::new(0));
     let commit_draws = Arc::new(AtomicUsize::new(0));

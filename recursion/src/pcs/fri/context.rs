@@ -245,7 +245,7 @@ where
     }
 
     for step in &proof.commit_phase_openings {
-        usage.check_log_degree(limits, step.log_arity as usize)?;
+        usage.check_log_degree(limits, super::sibling_log_arity(step).unwrap_or(0))?;
         usage.add_query_round(limits, step.sibling_values.len())?;
         usage.add_metadata_entries(limits, step.sibling_values.len())?;
         for row in &step.sibling_values {
@@ -639,7 +639,7 @@ where
     let log_arities = proof
         .commit_phase_openings
         .iter()
-        .map(|opening| opening.log_arity as usize)
+        .map(|opening| super::sibling_log_arity(opening).unwrap_or(0))
         .collect();
     let input_matrix_counts = (0..layout.commitment_count())
         .map(|ordinal| {
@@ -803,16 +803,43 @@ where
     if !has_input_matrix {
         return Err(invalid("FRI has no non-empty input matrix"));
     }
+    // Since p3-fri 0.8 the fold schedule is a function of the configuration and the input
+    // heights alone; the proof no longer carries it.
+    let mut input_log_heights: Vec<usize> = (0..commitment_count)
+        .flat_map(|batch| layout.matrices(batch).map(|matrix| matrix.log_height()))
+        .map(|height| {
+            height
+                .checked_add(native.log_blowup())
+                .ok_or_else(|| invalid("FRI input LDE height overflows"))
+        })
+        .collect::<Result<_, _>>()?;
+    input_log_heights.sort_unstable_by(|a, b| b.cmp(a));
+    input_log_heights.dedup();
+    let log_final_height = native
+        .log_blowup()
+        .checked_add(native.log_final_poly_len())
+        .ok_or_else(|| invalid("FRI final height overflows"))?;
+    let schedule =
+        p3_fri::fold_schedule(&input_log_heights, log_final_height, native.max_log_arity());
+    if proof.commit_phase_openings.len() != schedule.len() {
+        return Err(invalid(format!(
+            "FRI round count mismatch: configured schedule has {} rounds, proof has {}",
+            schedule.len(),
+            proof.commit_phase_openings.len()
+        )));
+    }
     let mut total_reduction = 0usize;
-    for (round, opening) in proof.commit_phase_openings.iter().enumerate() {
-        let arity = opening
-            .checked_log_arity(native.max_log_arity())
-            .ok_or_else(|| {
-                invalid(format!(
-                    "FRI round {round} has invalid log_arity {}",
-                    opening.log_arity
-                ))
-            })?;
+    for (round, (opening, &arity)) in proof
+        .commit_phase_openings
+        .iter()
+        .zip(&schedule)
+        .enumerate()
+    {
+        if arity == 0 || arity > native.max_log_arity() {
+            return Err(invalid(format!(
+                "FRI round {round} has invalid log_arity {arity}"
+            )));
+        }
         checked_pow2(arity, "fold arity")?;
         if opening.sibling_values.len() != query_count {
             return Err(invalid(format!(
@@ -861,9 +888,9 @@ where
                 .ok_or_else(|| invalid("FRI matrix LDE height overflows"))?;
             let mut reached = global_height;
             let mut landed = height == reached;
-            for opening in &proof.commit_phase_openings {
+            for &arity in &schedule {
                 reached = reached
-                    .checked_sub(opening.log_arity as usize)
+                    .checked_sub(arity)
                     .ok_or_else(|| invalid("FRI fold schedule exceeds input height"))?;
                 landed |= height == reached;
             }
@@ -964,7 +991,8 @@ where
     let mut phase_roots = [0usize; usize::BITS as usize];
     let mut current = index_bit_len;
     for (round, cap) in proof.commit_phase_commits.iter().enumerate() {
-        let arity = proof.commit_phase_openings[round].log_arity as usize;
+        let arity = super::sibling_log_arity(&proof.commit_phase_openings[round])
+            .ok_or_else(|| invalid("FRI round has malformed sibling rows"))?;
         current = current
             .checked_sub(arity)
             .ok_or_else(|| invalid("FRI phase schedule underflows"))?;
@@ -1047,7 +1075,7 @@ where
         log_arities: proof
             .commit_phase_openings
             .iter()
-            .map(|opening| opening.log_arity as usize)
+            .map(|opening| super::sibling_log_arity(opening).unwrap_or(0))
             .collect(),
         input_matrix_counts,
         input_cap_roots: validated.input_roots[..validated.input_root_count].to_vec(),
@@ -1152,7 +1180,7 @@ where
         || proof
             .commit_phase_openings
             .iter()
-            .map(|opening| opening.log_arity as usize)
+            .map(|opening| super::sibling_log_arity(opening).unwrap_or(0))
             .ne(expected.log_arities.iter().copied())
     {
         return Err(invalid("FRI retained fold schedule mismatch"));

@@ -72,7 +72,7 @@ pub fn build_whir_setup(log_n: usize, round_log_inv_rates: Vec<usize>) -> WhirSe
     let pis = vec![BbF::ZERO, BbF::ONE, fibonacci_output(n)];
     let air = FibonacciAir {};
     let config = crate::common::whir_config::bb_whir_config(round_log_inv_rates.clone());
-    let proof = prove(&config, &air, trace, &pis);
+    let proof = prove(&config, &air, trace, &pis).unwrap();
     assert!(verify(&config, &air, &proof, &pis).is_ok());
     WhirSetup {
         config,
@@ -500,7 +500,7 @@ mod koala_bear {
         let pis = vec![KbF::ZERO, KbF::ONE, fibonacci_output(1 << 10)];
         let air = FibonacciAir {};
         let config = kb_whir_config(vec![4]);
-        let proof = prove(&config, &air, trace, &pis);
+        let proof = prove(&config, &air, trace, &pis).unwrap();
         assert!(verify(&config, &air, &proof, &pis).is_ok());
 
         let mut builder = CircuitBuilder::new();

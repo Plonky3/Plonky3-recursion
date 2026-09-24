@@ -393,6 +393,7 @@ pub(crate) fn encode_proof<SC>(
     limits: ArtifactLimits,
 ) -> Result<Vec<u8>, ArtifactError>
 where
+    SC::Challenger: p3_challenger::GrindingChallenger<Witness = p3_uni_stark::Val<SC>>,
     SC: BuiltinArtifactConfig,
     p3_batch_stark::Val<SC>: p3_circuit_prover::config::StarkField + PrimeField64,
     SC::Challenge: BasedVectorSpace<p3_batch_stark::Val<SC>>,
@@ -434,6 +435,7 @@ where
 
 impl<SC> super::PortableArtifactExport for CircuitVerifier<SC>
 where
+    SC::Challenger: p3_challenger::GrindingChallenger<Witness = p3_uni_stark::Val<SC>>,
     SC: BuiltinArtifactConfig,
     p3_batch_stark::Val<SC>: p3_circuit_prover::config::StarkField + PrimeField64,
     SC::Challenge: BasedVectorSpace<p3_batch_stark::Val<SC>>,
@@ -511,6 +513,7 @@ fn charge_table_packing_copy(
 
 impl<SC> PortableVerifierInner for TypedPortableVerifier<SC>
 where
+    SC::Challenger: p3_challenger::GrindingChallenger<Witness = p3_uni_stark::Val<SC>>,
     SC: BuiltinArtifactConfig,
     p3_batch_stark::Val<SC>: p3_circuit_prover::config::StarkField + PrimeField64,
     SC::Challenge: BasedVectorSpace<p3_batch_stark::Val<SC>>,
@@ -705,6 +708,7 @@ fn decode_typed<SC>(
     limits: ArtifactLimits,
 ) -> Result<PortableVerifier, ArtifactError>
 where
+    SC::Challenger: p3_challenger::GrindingChallenger<Witness = p3_uni_stark::Val<SC>>,
     SC: BuiltinArtifactConfig,
     p3_batch_stark::Val<SC>: p3_circuit_prover::config::StarkField + PrimeField64,
     SC::Challenge: BasedVectorSpace<p3_batch_stark::Val<SC>>,

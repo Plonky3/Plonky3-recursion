@@ -15,7 +15,10 @@ use p3_circuit::ops::{
     generate_poseidon1_trace, generate_poseidon2_trace, generate_recompose_trace,
 };
 use p3_circuit::tables::NonPrimitiveTrace;
-use p3_commit::{ExtensionMmcs, Pcs, PeriodicLdeTable, PolynomialSpace};
+use p3_commit::{
+    CommitmentOpening, ExtensionMmcs, OpeningRequest, Pcs, PeriodicLdeTable, PolynomialSpace,
+    UnivariateStarkPcs,
+};
 use p3_field::PrimeCharacteristicRing;
 use p3_field::extension::{BinomialExtensionField, QuinticTrinomialExtensionField};
 use p3_fri::{FriParameters, HidingFriPcs};
@@ -114,6 +117,9 @@ impl<P> CountingPcs<P> {
     }
 }
 
+type DomainVal<P, ChallengeField, Challenger> =
+    <<P as Pcs<ChallengeField, Challenger>>::Domain as PolynomialSpace>::Val;
+
 impl<P, ChallengeField, Challenger> Pcs<ChallengeField, Challenger> for CountingPcs<P>
 where
     P: Pcs<ChallengeField, Challenger>,
@@ -122,18 +128,12 @@ where
     type Domain = P::Domain;
     type Commitment = P::Commitment;
     type ProverData = P::ProverData;
-    type EvaluationsOnDomain<'a> = P::EvaluationsOnDomain<'a>;
     type Proof = P::Proof;
     type Error = P::Error;
-
-    const ZK: bool = P::ZK;
+    type ProverError = P::ProverError;
 
     fn natural_domain_for_degree(&self, degree: usize) -> Self::Domain {
         self.inner.natural_domain_for_degree(degree)
-    }
-
-    fn log_max_lde_height(&self) -> usize {
-        self.inner.log_max_lde_height()
     }
 
     fn commit(
@@ -144,8 +144,53 @@ where
                 RowMajorMatrix<<Self::Domain as PolynomialSpace>::Val>,
             ),
         >,
-    ) -> (Self::Commitment, Self::ProverData) {
+    ) -> Result<(Self::Commitment, Self::ProverData), Self::ProverError> {
         self.inner.commit(evaluations)
+    }
+
+    fn open(
+        &self,
+        commitment_data_with_opening_points: Vec<
+            OpeningRequest<'_, Self::ProverData, ChallengeField>,
+        >,
+        fiat_shamir_challenger: &mut Challenger,
+    ) -> Result<(p3_commit::OpenedValues<ChallengeField>, Self::Proof), Self::ProverError> {
+        self.inner
+            .open(commitment_data_with_opening_points, fiat_shamir_challenger)
+    }
+
+    fn verify(
+        &self,
+        commitments_with_opening_points: Vec<
+            CommitmentOpening<ChallengeField, Self::Commitment, Self::Domain>,
+        >,
+        proof: &Self::Proof,
+        fiat_shamir_challenger: &mut Challenger,
+    ) -> Result<(), Self::Error> {
+        self.inner.verify(
+            commitments_with_opening_points,
+            proof,
+            fiat_shamir_challenger,
+        )
+    }
+}
+
+impl<P, ChallengeField, Challenger> UnivariateStarkPcs<ChallengeField, Challenger>
+    for CountingPcs<P>
+where
+    P: UnivariateStarkPcs<ChallengeField, Challenger>,
+    ChallengeField: p3_field::ExtensionField<<P::Domain as PolynomialSpace>::Val>,
+{
+    type EvaluationsOnDomain<'a> = P::EvaluationsOnDomain<'a>;
+
+    const ZK: bool = P::ZK;
+
+    fn log_max_trace_height(&self) -> usize {
+        self.inner.log_max_trace_height()
+    }
+
+    fn log_min_trace_height(&self) -> usize {
+        self.inner.log_min_trace_height()
     }
 
     fn commit_preprocessing(
@@ -153,12 +198,22 @@ where
         evaluations: impl IntoIterator<
             Item = (
                 Self::Domain,
-                RowMajorMatrix<<Self::Domain as PolynomialSpace>::Val>,
+                RowMajorMatrix<DomainVal<P, ChallengeField, Challenger>>,
             ),
         >,
-    ) -> (Self::Commitment, Self::ProverData) {
+    ) -> Result<(Self::Commitment, Self::ProverData), Self::ProverError> {
         self.preprocessing_commits.fetch_add(1, Ordering::SeqCst);
         self.inner.commit_preprocessing(evaluations)
+    }
+
+    fn commit_quotient(
+        &self,
+        quotient_domain: Self::Domain,
+        quotient_evaluations: RowMajorMatrix<DomainVal<P, ChallengeField, Challenger>>,
+        num_chunks: usize,
+    ) -> Result<(Self::Commitment, Self::ProverData), Self::ProverError> {
+        self.inner
+            .commit_quotient(quotient_domain, quotient_evaluations, num_chunks)
     }
 
     fn get_quotient_ldes(
@@ -166,18 +221,19 @@ where
         evaluations: impl IntoIterator<
             Item = (
                 Self::Domain,
-                RowMajorMatrix<<Self::Domain as PolynomialSpace>::Val>,
+                RowMajorMatrix<DomainVal<P, ChallengeField, Challenger>>,
             ),
         >,
         num_chunks: usize,
-    ) -> Vec<RowMajorMatrix<<Self::Domain as PolynomialSpace>::Val>> {
+    ) -> Result<Vec<RowMajorMatrix<DomainVal<P, ChallengeField, Challenger>>>, Self::ProverError>
+    {
         self.inner.get_quotient_ldes(evaluations, num_chunks)
     }
 
     fn commit_ldes(
         &self,
-        ldes: Vec<RowMajorMatrix<<Self::Domain as PolynomialSpace>::Val>>,
-    ) -> (Self::Commitment, Self::ProverData) {
+        ldes: Vec<RowMajorMatrix<DomainVal<P, ChallengeField, Challenger>>>,
+    ) -> Result<(Self::Commitment, Self::ProverData), Self::ProverError> {
         self.inner.commit_ldes(ldes)
     }
 
@@ -201,60 +257,48 @@ where
             .get_evaluations_on_domain_no_random(prover_data, idx, domain)
     }
 
-    fn open(
-        &self,
-        commitment_data_with_opening_points: Vec<(&Self::ProverData, Vec<Vec<ChallengeField>>)>,
-        fiat_shamir_challenger: &mut Challenger,
-    ) -> (p3_commit::OpenedValues<ChallengeField>, Self::Proof) {
-        self.inner
-            .open(commitment_data_with_opening_points, fiat_shamir_challenger)
-    }
-
     fn open_with_preprocessing(
         &self,
-        commitment_data_with_opening_points: Vec<(&Self::ProverData, Vec<Vec<ChallengeField>>)>,
+        commitment_data_with_opening_points: Vec<
+            OpeningRequest<'_, Self::ProverData, ChallengeField>,
+        >,
         fiat_shamir_challenger: &mut Challenger,
-        is_preprocessing: bool,
-    ) -> (p3_commit::OpenedValues<ChallengeField>, Self::Proof) {
+        preprocessed_commitment: Option<usize>,
+    ) -> Result<(p3_commit::OpenedValues<ChallengeField>, Self::Proof), Self::ProverError> {
         self.inner.open_with_preprocessing(
             commitment_data_with_opening_points,
             fiat_shamir_challenger,
-            is_preprocessing,
+            preprocessed_commitment,
         )
     }
 
-    fn verify(
+    fn verify_with_preprocessing(
         &self,
-        commitments_with_opening_points: Vec<(
-            Self::Commitment,
-            Vec<(Self::Domain, Vec<(ChallengeField, Vec<ChallengeField>)>)>,
-        )>,
+        rounds: Vec<CommitmentOpening<ChallengeField, Self::Commitment, Self::Domain>>,
         proof: &Self::Proof,
-        fiat_shamir_challenger: &mut Challenger,
+        challenger: &mut Challenger,
+        preprocessed_commitment: Option<usize>,
     ) -> Result<(), Self::Error> {
-        self.inner.verify(
-            commitments_with_opening_points,
-            proof,
-            fiat_shamir_challenger,
-        )
+        self.inner
+            .verify_with_preprocessing(rounds, proof, challenger, preprocessed_commitment)
     }
 
     fn get_opt_randomization_poly_commitment(
         &self,
         domain: impl IntoIterator<Item = Self::Domain>,
-    ) -> Option<(Self::Commitment, Self::ProverData)> {
+    ) -> Result<Option<(Self::Commitment, Self::ProverData)>, Self::ProverError> {
         self.inner.get_opt_randomization_poly_commitment(domain)
     }
 
     fn build_periodic_lde_table(
         &self,
-        periodic_cols: &[Vec<<Self::Domain as PolynomialSpace>::Val>],
+        periodic_cols: &[Vec<DomainVal<P, ChallengeField, Challenger>>],
         trace_domain: Self::Domain,
         quotient_domain: Self::Domain,
-    ) -> PeriodicLdeTable<<Self::Domain as PolynomialSpace>::Val>
+    ) -> PeriodicLdeTable<DomainVal<P, ChallengeField, Challenger>>
     where
         Self::Domain: Clone,
-        <Self::Domain as PolynomialSpace>::Val: Clone,
+        DomainVal<P, ChallengeField, Challenger>: Clone,
     {
         self.inner
             .build_periodic_lde_table(periodic_cols, trace_domain, quotient_domain)
@@ -396,7 +440,7 @@ fn hiding_trusted_preparation_reuses_one_salted_setup_with_fresh_proof_randomnes
         Dft::default(),
         value_mmcs,
         fri_params,
-        2,
+        4,
         StdRng::seed_from_u64(7),
     );
     let (pcs, preprocessing_commits) = CountingPcs::new(pcs);
@@ -691,7 +735,7 @@ fn trusted_verifier_rejects_empty_present_next_rows_before_native_verification()
     assert!(
         proof.proof.opened_values.instances[1]
             .base_opened_values
-            .preprocessed_next
+            .preprocessed_next()
             .is_none()
     );
     verifier.verify(&proof, &[]).unwrap();
@@ -714,7 +758,10 @@ fn trusted_verifier_rejects_empty_present_next_rows_before_native_verification()
         .trace_next = None;
     proof.proof.opened_values.instances[1]
         .base_opened_values
-        .preprocessed_next = Some(Vec::new());
+        .preprocessed
+        .as_mut()
+        .expect("table 1 has preprocessed openings")
+        .next = Some(Vec::new());
     assert!(matches!(
         verifier.verify(&proof, &[]),
         Err(BatchStarkProverError::InvalidMetadata(
@@ -726,7 +773,10 @@ fn trusted_verifier_rejects_empty_present_next_rows_before_native_verification()
     ));
     proof.proof.opened_values.instances[1]
         .base_opened_values
-        .preprocessed_next = None;
+        .preprocessed
+        .as_mut()
+        .expect("table 1 has preprocessed openings")
+        .next = None;
     verifier.verify(&proof, &[]).unwrap();
 }
 
@@ -918,7 +968,7 @@ fn test_babybear_batch_stark_base_field() {
         )
         .unwrap();
     let (airs, log_degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
-    let prover_data = ProverData::from_airs_and_degrees(&cfg, &airs, &log_degrees);
+    let prover_data = ProverData::from_airs_and_degrees(&cfg, &airs, &log_degrees).unwrap();
     let circuit_prover_data =
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
 
@@ -976,7 +1026,7 @@ fn prove_all_tables_rejects_below_floor_table_packing_independent_of_prep() {
         )
         .unwrap();
     let (airs, log_degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
-    let prover_data = ProverData::from_airs_and_degrees(&cfg, &airs, &log_degrees);
+    let prover_data = ProverData::from_airs_and_degrees(&cfg, &airs, &log_degrees).unwrap();
     let circuit_prover_data =
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
 
@@ -1034,7 +1084,7 @@ fn test_trace_next_suppressed_for_next_row_free_tables() {
         )
         .unwrap();
     let (airs, log_degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
-    let prover_data = ProverData::from_airs_and_degrees(&cfg, &airs, &log_degrees);
+    let prover_data = ProverData::from_airs_and_degrees(&cfg, &airs, &log_degrees).unwrap();
     let circuit_prover_data =
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
 
@@ -1109,7 +1159,7 @@ fn test_table_lookups() {
     let expected_val = BabyBear::from_u64(13); // 7 + 10 - 3 - 1 = 13
     runner.set_public_inputs(&[x_val, expected_val]).unwrap();
     let traces = runner.run().unwrap();
-    let prover_data = ProverData::from_airs_and_degrees(&cfg, &airs, &log_degrees);
+    let prover_data = ProverData::from_airs_and_degrees(&cfg, &airs, &log_degrees).unwrap();
     let circuit_prover_data =
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
 
@@ -1215,7 +1265,7 @@ fn test_extension_field_batch_stark() {
     runner.set_public_inputs(&[xv, yv, zv, expected_v]).unwrap();
     let traces = runner.run().unwrap();
 
-    let prover_data = ProverData::from_airs_and_degrees(&cfg, &airs, &degrees);
+    let prover_data = ProverData::from_airs_and_degrees(&cfg, &airs, &degrees).unwrap();
     let circuit_prover_data =
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
     let prover = BatchStarkProver::new(cfg);
@@ -1290,7 +1340,7 @@ fn test_extension_field_table_lookups() {
     runner.set_public_inputs(&[xv, yv, zv, expected_v]).unwrap();
     let traces = runner.run().unwrap();
 
-    let prover_data = ProverData::from_airs_and_degrees(&cfg, &airs, &log_degrees);
+    let prover_data = ProverData::from_airs_and_degrees(&cfg, &airs, &log_degrees).unwrap();
     let circuit_prover_data =
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
 
@@ -1387,7 +1437,7 @@ fn test_koalabear_batch_stark_base_field() {
         .unwrap();
     let traces = runner.run().unwrap();
 
-    let prover_data = ProverData::from_airs_and_degrees(&cfg, &airs, &degrees);
+    let prover_data = ProverData::from_airs_and_degrees(&cfg, &airs, &degrees).unwrap();
     let circuit_prover_data =
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
     let prover = BatchStarkProver::new(cfg);
@@ -1483,7 +1533,7 @@ fn test_koalabear_batch_stark_extension_field_d8() {
         .unwrap();
     let traces = runner.run().unwrap();
 
-    let prover_data = ProverData::from_airs_and_degrees(&cfg, &airs, &degrees);
+    let prover_data = ProverData::from_airs_and_degrees(&cfg, &airs, &degrees).unwrap();
     let circuit_prover_data =
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
     let prover = BatchStarkProver::new(cfg);
@@ -1548,7 +1598,7 @@ fn test_goldilocks_batch_stark_binomial_ext2() {
         .unwrap();
     let traces = runner.run().unwrap();
 
-    let prover_data = ProverData::from_airs_and_degrees(&cfg, &airs, &degrees);
+    let prover_data = ProverData::from_airs_and_degrees(&cfg, &airs, &degrees).unwrap();
     let circuit_prover_data =
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
     let prover = BatchStarkProver::new(cfg);
@@ -1687,7 +1737,7 @@ fn test_mul_only_circuit_padding() {
     runner.set_public_inputs(&[x_val, y_val]).unwrap();
     let traces = runner.run().unwrap();
 
-    let prover_data = ProverData::from_airs_and_degrees(&cfg, &airs, &degrees);
+    let prover_data = ProverData::from_airs_and_degrees(&cfg, &airs, &degrees).unwrap();
     let circuit_prover_data =
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
 
@@ -1735,7 +1785,7 @@ fn test_add_only_circuit_padding() {
         .unwrap();
     let traces = runner.run().unwrap();
 
-    let prover_data = ProverData::from_airs_and_degrees(&cfg, &airs, &degrees);
+    let prover_data = ProverData::from_airs_and_degrees(&cfg, &airs, &degrees).unwrap();
     let circuit_prover_data =
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
 
@@ -1834,7 +1884,7 @@ fn test_koalabear_quintic_trinomial_batch_stark_with_poseidon_d1() {
     runner.set_public_inputs(&[in0, in1, exp0, exp1]).unwrap();
     let traces = runner.run().unwrap();
 
-    let prover_data = ProverData::from_airs_and_degrees(&cfg, &airs, &degrees);
+    let prover_data = ProverData::from_airs_and_degrees(&cfg, &airs, &degrees).unwrap();
     let circuit_prover_data =
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
 
@@ -1994,7 +2044,7 @@ fn test_koalabear_quintic_trinomial_batch_stark_poseidon_d1_sponge_chain() {
     runner.set_public_inputs(&[in0, in1, exp0, exp1]).unwrap();
     let traces = runner.run().unwrap();
 
-    let prover_data = ProverData::from_airs_and_degrees(&cfg, &airs, &degrees);
+    let prover_data = ProverData::from_airs_and_degrees(&cfg, &airs, &degrees).unwrap();
     let circuit_prover_data =
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
 
@@ -2142,7 +2192,7 @@ fn test_stark_serialization_round_trip() {
         )
         .unwrap();
     let (airs, log_degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
-    let prover_data = ProverData::from_airs_and_degrees(&cfg, &airs, &log_degrees);
+    let prover_data = ProverData::from_airs_and_degrees(&cfg, &airs, &log_degrees).unwrap();
     let circuit_prover_data =
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
 
@@ -2432,7 +2482,7 @@ fn verify_all_tables_rejects_tampered_serialized_row_counts() {
         )
         .unwrap();
     let (airs, log_degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
-    let prover_data = ProverData::from_airs_and_degrees(&cfg, &airs, &log_degrees);
+    let prover_data = ProverData::from_airs_and_degrees(&cfg, &airs, &log_degrees).unwrap();
     let circuit_prover_data =
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
 
@@ -2540,7 +2590,7 @@ fn test_koalabear_quintic_trinomial_batch_stark_with_poseidon1_d1() {
     runner.set_public_inputs(&[in0, in1, exp0, exp1]).unwrap();
     let traces = runner.run().unwrap();
 
-    let prover_data = ProverData::from_airs_and_degrees(&cfg, &airs, &degrees);
+    let prover_data = ProverData::from_airs_and_degrees(&cfg, &airs, &degrees).unwrap();
     let circuit_prover_data =
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
 
@@ -2650,7 +2700,7 @@ fn verify_all_tables_rejects_a_forged_constant_value() {
         )
         .unwrap();
     let (airs, log_degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
-    let prover_data = ProverData::from_airs_and_degrees(&cfg, &airs, &log_degrees);
+    let prover_data = ProverData::from_airs_and_degrees(&cfg, &airs, &log_degrees).unwrap();
     let circuit_prover_data =
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
 
@@ -2709,7 +2759,7 @@ fn verify_all_tables_rejects_a_forged_constant_value() {
     let (forged_airs, forged_log_degrees): (Vec<_>, Vec<usize>) =
         forged_airs_degrees.into_iter().unzip();
     let forged_prover_data =
-        ProverData::from_airs_and_degrees(&forged_cfg, &forged_airs, &forged_log_degrees);
+        ProverData::from_airs_and_degrees(&forged_cfg, &forged_airs, &forged_log_degrees).unwrap();
     let forged_circuit_prover_data = CircuitProverData::new(
         forged_prover_data,
         forged_primitive_columns,
@@ -2803,7 +2853,7 @@ fn verify_all_tables_rejects_alu_bus_only_operand_swap() {
     let alu_prep = primitive_columns[PrimitiveOpType::Alu as usize].clone();
     assert!(!alu_prep.is_empty(), "ALU preprocessing must be nonempty");
     let (airs, degrees): (Vec<_>, Vec<_>) = airs_degrees.into_iter().unzip();
-    let prover_data = ProverData::from_airs_and_degrees(&cfg, &airs, &degrees);
+    let prover_data = ProverData::from_airs_and_degrees(&cfg, &airs, &degrees).unwrap();
     let circuit_prover_data =
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
 
@@ -2940,7 +2990,7 @@ fn verify_all_tables_rejects_forged_horner_chain_head_seed() {
         "Horner preprocessing must be nonempty"
     );
     let (airs, degrees): (Vec<_>, Vec<_>) = airs_degrees.into_iter().unzip();
-    let prover_data = ProverData::from_airs_and_degrees(&cfg, &airs, &degrees);
+    let prover_data = ProverData::from_airs_and_degrees(&cfg, &airs, &degrees).unwrap();
     let circuit_prover_data =
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
     let mut runner = circuit.runner();

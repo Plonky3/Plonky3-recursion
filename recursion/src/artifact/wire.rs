@@ -10,7 +10,7 @@ use p3_field::{BasedVectorSpace, PrimeField32, PrimeField64};
 use super::{ArtifactError, ArtifactKind, ArtifactLimits};
 
 const MAGIC: &[u8; 8] = b"P3RCART\0";
-const VERSION: u16 = 1;
+const VERSION: u16 = 2;
 const HEADER_BYTES: usize = 17;
 
 pub(crate) fn checked_product(left: usize, right: usize) -> Result<usize, ArtifactError> {

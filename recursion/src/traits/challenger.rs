@@ -47,6 +47,18 @@ pub trait RecursiveChallenger<BF: PrimeField64, EF: ExtensionField<BF>> {
         }
     }
 
+    /// Absorb a native transcript's domain-separator seed as circuit constants.
+    ///
+    /// `seed` is what [`crate::transcript::domain_separator_seed`] records for the native
+    /// sub-protocol shape; absorbing it here keeps the in-circuit sponge aligned with the native
+    /// one at the start of that sub-protocol.
+    fn observe_seed(&mut self, circuit: &mut CircuitBuilder<EF>, seed: &[BF]) {
+        for &value in seed {
+            let target = circuit.alloc_const(EF::from(value), "transcript domain separator seed");
+            self.observe(circuit, target);
+        }
+    }
+
     /// Sample a base field element from the sponge.
     ///
     /// Matches the native `DuplexChallenger::sample` behavior exactly.

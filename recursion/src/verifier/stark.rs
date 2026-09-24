@@ -5,7 +5,7 @@ use alloc::{format, vec};
 use itertools::Itertools;
 use p3_circuit::symbolic::ColumnsTargets;
 use p3_circuit::{CircuitBuilder, CircuitBuilderError, NonPrimitiveOpId};
-use p3_commit::{Pcs, PolynomialSpace};
+use p3_commit::{Pcs, PolynomialSpace, UnivariateStarkPcs};
 use p3_field::{BasedVectorSpace, ExtensionField, Field, PrimeCharacteristicRing, PrimeField64};
 use p3_lookup::logup::LogUpGadget;
 use p3_uni_stark::{StarkGenericConfig, Val, validate_degree_bits};
@@ -58,7 +58,8 @@ where
 {
     plan_uni_native_layout_with_policy(
         config.is_zk(),
-        config.pcs().log_max_lde_height(),
+        config.pcs().log_min_trace_height(),
+        config.pcs().log_max_trace_height(),
         air,
         proof,
         public_value_count,
@@ -68,6 +69,7 @@ where
 
 pub(crate) fn plan_uni_native_layout_with_policy<SC, A>(
     is_zk: usize,
+    log_min_trace_height: usize,
     log_max_lde_height: usize,
     air: &A,
     proof: &p3_uni_stark::Proof<SC>,
@@ -86,15 +88,21 @@ where
         ));
     }
     let degree_bits = proof.degree_bits;
-    validate_degree_bits(None, degree_bits, is_zk, log_max_lde_height)
-        .map_err(|error| VerificationError::InvalidProofShape(error.to_string()))?;
+    validate_degree_bits(
+        None,
+        degree_bits,
+        is_zk,
+        log_min_trace_height,
+        log_max_lde_height,
+    )
+    .map_err(|error| VerificationError::InvalidProofShape(error.to_string()))?;
     let base_log = degree_bits.checked_sub(is_zk).ok_or_else(|| {
         VerificationError::InvalidProofShape(
             "extended degree smaller than zk adjustment".to_string(),
         )
     })?;
     let opened = &proof.opened_values;
-    let preprocessed_width = opened.preprocessed_local.as_ref().map_or(0, Vec::len);
+    let preprocessed_width = opened.preprocessed_local().map_or(0, <[_]>::len);
     if (preprocessed_width != 0) != preprocessed_commit.is_some() {
         return Err(VerificationError::InvalidProofShape(
             "preprocessed commitment presence disagrees with its opening".into(),
@@ -122,7 +130,7 @@ where
     let expected_pre_next = preprocessed_width * usize::from(air.opens_preprocessed_next());
     if opened.trace_local.len() != air.width()
         || opened.trace_next.as_ref().map_or(0, Vec::len) != expected_trace_next
-        || opened.preprocessed_next.as_ref().map_or(0, Vec::len) != expected_pre_next
+        || opened.preprocessed_next().map_or(0, <[_]>::len) != expected_pre_next
         || opened.quotient_chunks.len() != quotient_chunks
         || opened
             .quotient_chunks
@@ -244,8 +252,14 @@ where
     // native p3-uni-stark) instead of shift-overflowing or building a degenerate domain
     // from a crafted proof.
     let pcs = config.pcs();
-    validate_degree_bits(None, *degree_bits, config.is_zk(), pcs.log_max_lde_height())
-        .map_err(|e| VerificationError::InvalidProofShape(e.to_string()))?;
+    validate_degree_bits(
+        None,
+        *degree_bits,
+        config.is_zk(),
+        pcs.log_min_trace_height(),
+        pcs.log_max_trace_height(),
+    )
+    .map_err(|e| VerificationError::InvalidProofShape(e.to_string()))?;
 
     let degree = 1 << degree_bits;
     let lookup_gadget = LogUpGadget {};

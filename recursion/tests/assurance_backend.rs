@@ -148,7 +148,7 @@ fn run_binary_fri_d4_case(seed: u64) {
         public_values: vec![],
     }];
     let prover_data = ProverData::from_instances(&native_config, &instances);
-    let proof = prove_batch(&native_config, &instances, &prover_data);
+    let proof = prove_batch(&native_config, &instances, &prover_data).unwrap();
 
     native_sink
         .lock()
@@ -234,7 +234,7 @@ fn run_random_codeword_hiding_fri_case(seed: u64) {
         Dft::default(),
         val_mmcs,
         fri_params,
-        2,
+        4,
         StdRng::seed_from_u64(seed),
     );
     let native_sink = Arc::new(Mutex::new(Vec::new()));
@@ -252,7 +252,7 @@ fn run_random_codeword_hiding_fri_case(seed: u64) {
         public_values: vec![],
     }];
     let prover_data = ProverData::from_instances(&native_config, &instances);
-    let proof = prove_batch(&native_config, &instances, &prover_data);
+    let proof = prove_batch(&native_config, &instances, &prover_data).unwrap();
     native_sink
         .lock()
         .expect("native snapshot sink is not poisoned")
@@ -339,7 +339,7 @@ fn run_quaternary_wide_mmcs_case(seed: u64) {
         public_values: vec![],
     }];
     let prover_data = ProverData::from_instances(&native_config, &instances);
-    let proof = prove_batch(&native_config, &instances, &prover_data);
+    let proof = prove_batch(&native_config, &instances, &prover_data).unwrap();
     native_sink
         .lock()
         .expect("native snapshot sink is not poisoned")
@@ -433,7 +433,7 @@ fn run_non_zk_whir_d4_case(seed: u64) {
         20,
     );
     let native_config = RecordingWhirConfig::new(pcs, native_challenger);
-    let proof = prove(&native_config, &air, trace, &public_values);
+    let proof = prove(&native_config, &air, trace, &public_values).unwrap();
     native_sink
         .lock()
         .expect("native snapshot sink is not poisoned")
@@ -489,6 +489,7 @@ fn run_binary_fri_d4_recursive_acceptance(
     let verifier_params = FriVerifierParams::with_mmcs(
         fri_params.log_blowup,
         fri_params.log_final_poly_len,
+        fri_params.max_log_arity,
         fri_params.commit_proof_of_work_bits,
         fri_params.query_proof_of_work_bits,
         fri_params.num_queries,

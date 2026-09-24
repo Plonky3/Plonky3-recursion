@@ -465,6 +465,7 @@ mod arity4_output {
         let verifier_params = FriVerifierParams::with_mmcs(
             native_fri_params.log_blowup(),
             native_fri_params.log_final_poly_len(),
+            native_fri_params.max_log_arity(),
             native_fri_params.commit_pow_bits(),
             native_fri_params.query_pow_bits(),
             native_fri_params.num_queries(),
@@ -646,6 +647,7 @@ mod hiding_fri {
         let verifier_params = FriVerifierParams::with_mmcs(
             native_fri_params.log_blowup(),
             native_fri_params.log_final_poly_len(),
+            native_fri_params.max_log_arity(),
             native_fri_params.commit_pow_bits(),
             native_fri_params.query_pow_bits(),
             native_fri_params.num_queries(),
@@ -655,7 +657,7 @@ mod hiding_fri {
             Dft::default(),
             val_mmcs.clone(),
             fri_params.clone(),
-            2,
+            4,
             StdRng::seed_from_u64(seed),
         );
         Config {
@@ -699,7 +701,7 @@ mod hiding_fri {
             .iter()
             .map(|degree| degree + config.is_zk())
             .collect();
-        let prover_data = ProverData::from_airs_and_degrees(config, &airs, &ext_degrees);
+        let prover_data = ProverData::from_airs_and_degrees(config, &airs, &ext_degrees).unwrap();
         let circuit_prover_data =
             CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
         let mut runner = circuit.runner();
@@ -755,7 +757,8 @@ fn same_config_mixed_aggregation_retains_distinct_air_and_batch_shapes() {
         &air,
         generate_trace_rows::<F>(0, 1, n),
         &left_first_pis,
-    );
+    )
+    .unwrap();
     verify(&config, &air, &left_first, &left_first_pis).expect("the first uni proof verifies");
 
     let left_second_pis = vec![
@@ -768,7 +771,8 @@ fn same_config_mixed_aggregation_retains_distinct_air_and_batch_shapes() {
         &air,
         generate_trace_rows::<F>(2, 3, n),
         &left_second_pis,
-    );
+    )
+    .unwrap();
     verify(&config, &air, &left_second, &left_second_pis).expect("the second uni proof verifies");
 
     let prepared = PreparedAggregation::<_, FibonacciAir, BatchOnly, _, 4>::new(
@@ -841,14 +845,15 @@ fn aggregation_rejects_either_mismatch_before_packing_or_private_setup() {
             .len()
     ];
     let left_pis = vec![F::ZERO, F::ONE, fibonacci_output::<F>(0, 1, n)];
-    let left_proof = prove(&config, &air, generate_trace_rows::<F>(0, 1, n), &left_pis);
+    let left_proof = prove(&config, &air, generate_trace_rows::<F>(0, 1, n), &left_pis).unwrap();
     let short_pis = vec![F::ZERO, F::ONE, fibonacci_output::<F>(0, 1, short_n)];
     let short_proof = prove(
         &config,
         &air,
         generate_trace_rows::<F>(0, 1, short_n),
         &short_pis,
-    );
+    )
+    .unwrap();
 
     let uni = Rc::new(SideCounters::default());
     let batch = Rc::new(SideCounters::default());
@@ -1124,7 +1129,8 @@ fn reusable_aggregation_preflights_both_replacements_before_either_pack() {
         &air,
         generate_trace_rows::<F>(0, 1, n),
         &left_public,
-    );
+    )
+    .unwrap();
     let exact_final_poly = left_proof
         .opening_proof
         .final_poly
@@ -1394,7 +1400,8 @@ fn trusted_heterogeneous_cross_config_aggregation_exports_ordered_statement_afte
         &left_air,
         generate_trace_rows::<F>(0, 1, n),
         &left_statement,
-    );
+    )
+    .unwrap();
     let right_fixture = common::KoalaBearD4StatementFixture::new();
     let right_statement = [F::from_u64(11), F::from_u64(13)];
     let right_proof = right_fixture.prove([11, 13]);

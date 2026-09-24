@@ -404,6 +404,7 @@ fn koala_bear_d4_recursion_config(pow_bits: usize) -> KoalaBearD4RecursionConfig
     let fri_verifier_params = FriVerifierParams::with_mmcs(
         native_fri_params.log_blowup(),
         native_fri_params.log_final_poly_len(),
+        native_fri_params.max_log_arity(),
         native_fri_params.commit_pow_bits(),
         native_fri_params.query_pow_bits(),
         native_fri_params.num_queries(),

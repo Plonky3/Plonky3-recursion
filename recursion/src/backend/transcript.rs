@@ -44,6 +44,7 @@ pub fn replay_recursion_input_transcript<SC, A>(
     non_primitive_provers: &[Box<dyn TableProver<SC>>],
 ) -> Result<OpeningTranscript<SC>, VerificationError>
 where
+    SC::Challenger: p3_challenger::GrindingChallenger<Witness = p3_uni_stark::Val<SC>>,
     SC: StarkGenericConfig + 'static,
     A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
     Val<SC>: PrimeField64,
@@ -117,6 +118,7 @@ pub fn replay_batch_layer_transcript<SC, const D: usize>(
     non_primitive_provers: &[Box<dyn TableProver<SC>>],
 ) -> Result<OpeningTranscript<SC>, VerificationError>
 where
+    SC::Challenger: p3_challenger::GrindingChallenger<Witness = p3_uni_stark::Val<SC>>,
     SC: StarkGenericConfig + 'static,
     Val<SC>: PrimeField64,
     SC::Challenge: ExtensionField<Val<SC>> + ExtractBinomialW<Val<SC>>,
@@ -169,6 +171,7 @@ pub fn replay_trusted_batch_layer_transcript<SC, const D: usize>(
     statement: &[Val<SC>],
 ) -> Result<OpeningTranscript<SC>, VerificationError>
 where
+    SC::Challenger: p3_challenger::GrindingChallenger<Witness = p3_uni_stark::Val<SC>>,
     SC: StarkGenericConfig + 'static,
     Val<SC>: PrimeField64 + p3_circuit_prover::config::StarkField,
     SC::Challenge: ExtensionField<Val<SC>> + ExtractBinomialW<Val<SC>>,

@@ -22,6 +22,7 @@ pub mod profile;
 pub mod public_inputs;
 pub mod recursion;
 pub mod traits;
+pub mod transcript;
 pub mod types;
 pub mod verifier;
 

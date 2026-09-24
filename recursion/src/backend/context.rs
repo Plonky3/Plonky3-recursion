@@ -5,7 +5,7 @@ use p3_air::{SymbolicExpression, SymbolicExpressionExt};
 use p3_circuit_prover::air::AluExtMulKind;
 use p3_circuit_prover::batch_stark_prover::NUM_PRIMITIVE_TABLES;
 use p3_circuit_prover::{AirVariant, BatchStarkProof, CircuitVerifier, RowCounts, TablePacking};
-use p3_commit::Pcs;
+use p3_commit::{Pcs, UnivariateStarkPcs};
 use p3_field::{Algebra, ExtensionField, PrimeCharacteristicRing, PrimeField64};
 use p3_lookup::logup::LogUpGadget;
 use p3_uni_stark::{OpenedValues, Proof, StarkGenericConfig, Val};
@@ -26,20 +26,21 @@ fn add_opened_values<SC: StarkGenericConfig>(
     let OpenedValues {
         trace_local,
         trace_next,
-        preprocessed_local,
-        preprocessed_next,
+        preprocessed,
         quotient_chunks,
         random,
     } = values;
+    let preprocessed_local = preprocessed.as_ref().map(|p| p.local.as_slice());
+    let preprocessed_next = preprocessed.as_ref().and_then(|p| p.next.as_deref());
     // Each quotient chunk owns a separately allocated row even when that row
     // contains no scalars, so charge the container axis before walking it.
     usage.add_metadata_entries(limits, quotient_chunks.len())?;
-    for row in core::iter::once(trace_local)
-        .chain(trace_next.iter())
-        .chain(preprocessed_local.iter())
-        .chain(preprocessed_next.iter())
-        .chain(quotient_chunks.iter())
-        .chain(random.iter())
+    for row in core::iter::once(trace_local.as_slice())
+        .chain(trace_next.as_deref())
+        .chain(preprocessed_local)
+        .chain(preprocessed_next)
+        .chain(quotient_chunks.iter().map(Vec::as_slice))
+        .chain(random.as_deref())
     {
         usage.check_matrix_width(limits, row.len())?;
         usage.add_scalar_elements(limits, row.len())?;
@@ -271,6 +272,7 @@ where
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct StarkLayoutPolicy {
     pub(crate) is_zk: usize,
+    pub(crate) log_min_trace_height: usize,
     pub(crate) log_max_lde_height: usize,
 }
 
@@ -278,7 +280,8 @@ impl StarkLayoutPolicy {
     pub(crate) fn from_config<SC: StarkGenericConfig>(config: &SC) -> Self {
         Self {
             is_zk: config.is_zk(),
-            log_max_lde_height: config.pcs().log_max_lde_height(),
+            log_min_trace_height: config.pcs().log_min_trace_height(),
+            log_max_lde_height: config.pcs().log_max_trace_height(),
         }
     }
 
@@ -319,6 +322,7 @@ mod policy_tests {
     fn retained_stark_policy_rejects_each_runtime_policy_mismatch() {
         let retained = StarkLayoutPolicy {
             is_zk: 1,
+            log_min_trace_height: 0,
             log_max_lde_height: 31,
         };
         retained.validate_actual(retained).unwrap();
@@ -615,6 +619,7 @@ where
         {
             let actual = crate::verifier::plan_uni_native_layout_with_policy(
                 policy.is_zk,
+                policy.log_min_trace_height,
                 policy.log_max_lde_height,
                 *air,
                 proof,
@@ -748,8 +753,8 @@ where
             || base.trace_local.len() != layout.trace_width
             || base.trace_next.as_ref().map_or(0, Vec::len)
                 != layout.trace_width * usize::from(layout.trace_next)
-            || base.preprocessed_local.as_ref().map_or(0, Vec::len) != layout.pre_width
-            || base.preprocessed_next.as_ref().map_or(0, Vec::len)
+            || base.preprocessed_local().map_or(0, <[_]>::len) != layout.pre_width
+            || base.preprocessed_next().map_or(0, <[_]>::len)
                 != layout.pre_width * usize::from(layout.pre_next)
             || base.quotient_chunks.len() != layout.quotient_chunks
             || base

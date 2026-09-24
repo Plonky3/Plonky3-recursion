@@ -35,7 +35,7 @@ fn baby_bear_base_proof() -> p3_circuit_prover::batch_stark_prover::BatchStarkPr
         )
         .unwrap();
     let (airs, log_degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
-    let prover_data = ProverData::from_airs_and_degrees(&cfg, &airs, &log_degrees);
+    let prover_data = ProverData::from_airs_and_degrees(&cfg, &airs, &log_degrees).unwrap();
     let circuit_prover_data =
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
 

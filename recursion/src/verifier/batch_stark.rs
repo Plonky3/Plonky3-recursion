@@ -18,7 +18,7 @@ use p3_circuit_prover::batch_stark_prover::{
 };
 use p3_circuit_prover::common::CircuitTableAir;
 use p3_circuit_prover::field_params::ExtractBinomialW;
-use p3_commit::{Pcs, PolynomialSpace};
+use p3_commit::{Pcs, PolynomialSpace, UnivariateStarkPcs};
 use p3_field::{
     Algebra, BasedVectorSpace, ExtensionField, Field, PrimeCharacteristicRing, PrimeField64,
 };
@@ -103,7 +103,8 @@ where
             Some(index),
             degree,
             config.is_zk(),
-            config.pcs().log_max_lde_height(),
+            config.pcs().log_min_trace_height(),
+            config.pcs().log_max_trace_height(),
         )
         .map_err(|error| VerificationError::InvalidProofShape(error.to_string()))?;
     }
@@ -165,8 +166,8 @@ where
         if base.trace_local.len() != air.width()
             || base.trace_next.as_ref().map_or(0, Vec::len)
                 != air.width() * usize::from(air.opens_trace_next())
-            || base.preprocessed_local.as_ref().map_or(0, Vec::len) != pre_width
-            || base.preprocessed_next.as_ref().map_or(0, Vec::len)
+            || base.preprocessed_local().map_or(0, <[_]>::len) != pre_width
+            || base.preprocessed_next().map_or(0, <[_]>::len)
                 != pre_width * usize::from(air.opens_preprocessed_next())
             || base.quotient_chunks.len() != quotient_chunks
             || base
@@ -742,6 +743,7 @@ pub fn verify_trusted_p3_batch_proof_circuit<
     VerificationError,
 >
 where
+    SC::Challenger: p3_challenger::GrindingChallenger<Witness = p3_uni_stark::Val<SC>>,
     <SC as StarkGenericConfig>::Pcs: RecursivePcs<
             SC,
             InputProof,
@@ -973,8 +975,14 @@ where
     // building a degenerate domain from a crafted proof.
     let pcs = config.pcs();
     for (i, &db) in degree_bits.iter().enumerate() {
-        validate_degree_bits(Some(i), db, config.is_zk(), pcs.log_max_lde_height())
-            .map_err(|e| VerificationError::InvalidProofShape(e.to_string()))?;
+        validate_degree_bits(
+            Some(i),
+            db,
+            config.is_zk(),
+            pcs.log_min_trace_height(),
+            pcs.log_max_trace_height(),
+        )
+        .map_err(|e| VerificationError::InvalidProofShape(e.to_string()))?;
     }
 
     // `common` is consumed by per-instance indexing below (`common.lookups[i]`,
@@ -2624,12 +2632,10 @@ mod create_alu_air_tests {
                         trace_local_targets: targetize(&base.trace_local, &mut circuit),
                         trace_next_targets: Vec::new(),
                         preprocessed_local_targets: base
-                            .preprocessed_local
-                            .as_ref()
+                            .preprocessed_local()
                             .map(|values| targetize(values, &mut circuit)),
                         preprocessed_next_targets: base
-                            .preprocessed_next
-                            .as_ref()
+                            .preprocessed_next()
                             .map(|values| targetize(values, &mut circuit)),
                         quotient_chunks_targets: base
                             .quotient_chunks

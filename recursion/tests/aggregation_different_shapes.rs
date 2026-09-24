@@ -33,6 +33,7 @@ fn fri_verifier_params(log_blowup: usize) -> FriVerifierParams {
     FriVerifierParams::with_mmcs(
         log_blowup,
         0,
+        max_log_arity,
         0,
         16,
         num_queries,
@@ -58,7 +59,7 @@ fn test_aggregation_with_different_shapes() -> Result<(), VerificationError> {
     let trace = generate_trace_rows::<F>(0, 1, n);
 
     // Prove the Fibonacci trace with the Uni-Stark.
-    let uni_proof = prove(&left_config, &air, trace, &pis);
+    let uni_proof = prove(&left_config, &air, trace, &pis).unwrap();
     assert!(verify(&left_config, &air, &uni_proof, &pis).is_ok());
 
     // Prove the dummy circuit with the Batch-Stark.
@@ -81,7 +82,7 @@ fn test_aggregation_with_different_shapes() -> Result<(), VerificationError> {
     let mut runner = circuit.runner();
     runner.set_public_inputs(&[F::from_u32(42)]).unwrap();
     let traces = runner.run().unwrap();
-    let prover_data = ProverData::from_airs_and_degrees(&right_config, &airs, &degrees);
+    let prover_data = ProverData::from_airs_and_degrees(&right_config, &airs, &degrees).unwrap();
     let circuit_prover_data =
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
     let prover = BatchStarkProver::new(right_config).with_table_packing(table_packing);

@@ -181,7 +181,7 @@ fn test_wrong_multiplicities() {
     let traces = runner.run().unwrap();
 
     // Create prover data for proving and verifying.
-    let prover_data = ProverData::from_airs_and_degrees(&config_proving, &airs, &degrees);
+    let prover_data = ProverData::from_airs_and_degrees(&config_proving, &airs, &degrees).unwrap();
     let circuit_prover_data =
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
 
@@ -420,7 +420,7 @@ fn get_test_circuit_proof() -> TestCircuitProofData {
     let traces = runner.run().unwrap();
 
     // Create prover data for proving and verifying.
-    let prover_data = ProverData::from_airs_and_degrees(&config_proving, &airs, &degrees);
+    let prover_data = ProverData::from_airs_and_degrees(&config_proving, &airs, &degrees).unwrap();
     let circuit_prover_data =
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
 
@@ -462,6 +462,7 @@ fn get_recursive_config_and_params() -> (MyConfig, FriVerifierParams, usize, usi
     let fri_verifier_params = FriVerifierParams::with_mmcs(
         scalars.log_blowup,
         scalars.log_final_poly_len,
+        scalars.max_log_arity,
         scalars.commit_pow_bits,
         scalars.query_pow_bits,
         scalars.num_queries,
@@ -678,7 +679,7 @@ fn test_poseidon2_ctl_lookups() {
 
     let traces = runner.run().unwrap();
 
-    let prover_data = ProverData::from_airs_and_degrees(&config_proving, &airs, &degrees);
+    let prover_data = ProverData::from_airs_and_degrees(&config_proving, &airs, &degrees).unwrap();
     let circuit_prover_data =
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
 
@@ -818,7 +819,7 @@ fn test_poseidon2_chained_ctl_lookups() {
 
     let traces = runner.run().unwrap();
 
-    let prover_data = ProverData::from_airs_and_degrees(&config_proving, &airs, &degrees);
+    let prover_data = ProverData::from_airs_and_degrees(&config_proving, &airs, &degrees).unwrap();
     let circuit_prover_data =
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
 

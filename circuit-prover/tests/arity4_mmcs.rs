@@ -196,7 +196,8 @@ fn run_arity4_round_trip(
         .expect("derive airs and preprocessed columns");
     let (airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
 
-    let prover_data_stark = ProverData::from_airs_and_degrees(&stark_config, &airs, &degrees);
+    let prover_data_stark =
+        ProverData::from_airs_and_degrees(&stark_config, &airs, &degrees).unwrap();
     let circuit_prover_data =
         CircuitProverData::new(prover_data_stark, primitive_columns, non_primitive_columns);
 

@@ -95,7 +95,7 @@ fn per_table_min_height_overrides_round_trip_through_prove_and_verify() {
     let traces = runner.run().unwrap();
 
     // Panics with a height-mismatch assertion if prep-build and prove ever disagree.
-    let prover_data = ProverData::from_airs_and_degrees(&config_proving, &airs, &degrees);
+    let prover_data = ProverData::from_airs_and_degrees(&config_proving, &airs, &degrees).unwrap();
     let circuit_prover_data =
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
 
@@ -220,7 +220,7 @@ fn npo_min_height_override_at_or_above_global_floor_round_trips() {
 
     let (airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
     // Panics with a height-mismatch assertion if prep-build and prove ever disagree.
-    let prover_data = ProverData::from_airs_and_degrees(&stark_config, &airs, &degrees);
+    let prover_data = ProverData::from_airs_and_degrees(&stark_config, &airs, &degrees).unwrap();
     let circuit_prover_data =
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
 

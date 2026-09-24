@@ -21,7 +21,7 @@ use p3_circuit_prover::{
     Poseidon2Preprocessor, Poseidon2Prover, Poseidon2ProverD2, Poseidon2SharedPreprocessor,
     RecomposePreprocessor, TableProver,
 };
-use p3_commit::Pcs;
+use p3_commit::{Pcs, UnivariateStarkPcs};
 use p3_field::extension::BinomiallyExtendable;
 use p3_field::{Algebra, BasedVectorSpace, ExtensionField, PrimeCharacteristicRing, PrimeField64};
 use p3_lookup::Lookup;
@@ -818,6 +818,7 @@ fn preflight_trusted_fri_batch<SC, A, const TRACE_D: usize>(
     VerificationError,
 >
 where
+    SC::Challenger: p3_challenger::GrindingChallenger<Witness = p3_uni_stark::Val<SC>>,
     SC: FriRecursionConfig + Send + Sync + 'static,
     A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
     Val<SC>: PrimeField64 + StarkField,
@@ -875,7 +876,7 @@ where
         &lookups,
         &LogUpGadget,
     )?;
-    let prev = RecursionInput::<SC, A>::BatchStark {
+    let prev: RecursionInput<'_, SC, A> = RecursionInput::BatchStark {
         proof,
         common_data: verifier.common_data(),
         table_public_inputs: tables.public_values,
@@ -896,7 +897,8 @@ where
         capture_trusted_batch_authority(verifier, statement)?,
         StarkLayoutPolicy {
             is_zk: config.is_zk(),
-            log_max_lde_height: config.pcs().log_max_lde_height(),
+            log_min_trace_height: config.pcs().log_min_trace_height(),
+            log_max_lde_height: config.pcs().log_max_trace_height(),
         },
     ))
 }
@@ -1352,6 +1354,7 @@ where
 impl<SC, A, const WIDTH: usize, const RATE: usize, C> PcsRecursionBackend<SC, A, 2>
     for FriRecursionBackendForExt<2, WIDTH, RATE, C>
 where
+    SC::Challenger: p3_challenger::GrindingChallenger<Witness = p3_uni_stark::Val<SC>>,
     SC: FriRecursionConfig + Send + Sync + 'static,
     A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
     C: ChallengerPermConfig + Copy + 'static,
@@ -1647,6 +1650,7 @@ where
 impl<SC, A, const WIDTH: usize, const RATE: usize, C> PcsRecursionBackend<SC, A, 4>
     for FriRecursionBackendForExt<4, WIDTH, RATE, C>
 where
+    SC::Challenger: p3_challenger::GrindingChallenger<Witness = p3_uni_stark::Val<SC>>,
     SC: FriRecursionConfig + Send + Sync + 'static,
     A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
     C: ChallengerPermConfig + Copy + 'static,
@@ -1939,6 +1943,7 @@ where
 impl<SC, A, const WIDTH: usize, const RATE: usize, C> PcsRecursionBackend<SC, A, 5>
     for FriRecursionBackendD5<WIDTH, RATE, C>
 where
+    SC::Challenger: p3_challenger::GrindingChallenger<Witness = p3_uni_stark::Val<SC>>,
     SC: FriRecursionConfig + Send + Sync + 'static,
     A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
     C: ChallengerPermConfig + Copy + 'static,
@@ -2180,6 +2185,7 @@ macro_rules! impl_prepared_fri_backend {
         impl<SC, A, const WIDTH: usize, const RATE: usize, C> PreparedPcsRecursionBackend<SC, A, $d>
             for $backend
         where
+            SC::Challenger: p3_challenger::GrindingChallenger<Witness = p3_uni_stark::Val<SC>>,
             SC: FriRecursionConfig + Send + Sync + 'static,
             A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
             C: ChallengerPermConfig + Copy + 'static,
@@ -2267,6 +2273,7 @@ macro_rules! impl_prepared_fri_backend {
         impl<SC, A, const WIDTH: usize, const RATE: usize, C> TrustedPcsRecursionBackend<SC, A, $d>
             for $backend
         where
+            SC::Challenger: p3_challenger::GrindingChallenger<Witness = p3_uni_stark::Val<SC>>,
             SC: FriRecursionConfig + Send + Sync + 'static,
             A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
             C: ChallengerPermConfig + Copy + 'static,
@@ -2378,9 +2385,9 @@ macro_rules! impl_prepared_fri_backend {
                         )));
                     }
                 };
-                preflight_basic_fri_input(
+                preflight_basic_fri_input::<SC, A>(
                     &self.0.limits,
-                    &RecursionInput::<SC, A>::BatchStark {
+                    &RecursionInput::BatchStark {
                         proof,
                         common_data: verifier.common_data(),
                         table_public_inputs,
@@ -2466,7 +2473,7 @@ macro_rules! impl_prepared_fri_backend {
                         )));
                     }
                 };
-                let prev = RecursionInput::<SC, A>::BatchStark {
+                let prev: RecursionInput<'_, SC, A> = RecursionInput::BatchStark {
                     proof,
                     common_data: verifier.common_data(),
                     table_public_inputs,

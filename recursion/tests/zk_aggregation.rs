@@ -178,7 +178,7 @@ fn prove_zk_add_air(config: &MyConfigZk, trace: &RowMajorMatrix<F>) -> ZkProofDa
     let instances = vec![instance];
     let prover_data = ProverData::from_instances(config, &instances);
     let common = &prover_data.common;
-    let proof = prove_batch(config, &instances, &prover_data);
+    let proof = prove_batch(config, &instances, &prover_data).unwrap();
     verify_batch(config, &[air], &proof, &[vec![]], common).expect("inner ZK verify failed");
     ZkProofData { proof, prover_data }
 }
@@ -204,6 +204,7 @@ fn add_zk_batch_verifier_to_circuit(
         FriVerifierParams::with_mmcs(
             fri_params.log_blowup,
             fri_params.log_final_poly_len,
+            fri_params.max_log_arity,
             fri_params.commit_proof_of_work_bits,
             fri_params.query_proof_of_work_bits,
             fri_params.num_queries,
@@ -344,7 +345,7 @@ fn test_zk_aggregation() -> Result<(), VerificationError> {
         .unwrap();
     let (airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
 
-    let prover_data = ProverData::from_airs_and_degrees(&config_outer, &airs, &degrees);
+    let prover_data = ProverData::from_airs_and_degrees(&config_outer, &airs, &degrees).unwrap();
     let circuit_prover_data =
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
 

@@ -23,6 +23,10 @@ pub enum FriInputError {
     MaxArityExceedsTwoAdicity,
     #[error("native FRI {name} proof-of-work bits are not supported by the field/word limits")]
     PowBitsOutOfRange { name: &'static str },
+    #[error(
+        "native FRI batch-phase proof of work ({bits} bits) is not supported by the recursive verifier"
+    )]
+    UnsupportedBatchPow { bits: usize },
     #[error("native FRI scalar {name} does not match recursive parameters")]
     ScalarMismatch { name: &'static str },
     #[error("native FRI has {native} queries but recursive verifier requires {minimum}")]
@@ -34,6 +38,8 @@ pub enum FriInputError {
 pub enum FriVerifierParamsError {
     #[error("FRI verifier requires at least one query")]
     ZeroQueries,
+    #[error("FRI verifier max folding arity must be positive")]
+    ZeroMaxLogArity,
     #[error("FRI verifier log parameter {name} is not representable")]
     LogNotRepresentable { name: &'static str },
     #[error("FRI verifier fold/domain exponent sum overflows usize")]
@@ -68,6 +74,13 @@ impl NativeFriParams {
         }
         if params.max_log_arity == 0 {
             return Err(FriInputError::ZeroMaxLogArity);
+        }
+        // The recursive FRI verifier replays no batch-phase grind, so it only accepts the zero
+        // difficulty, at which the native transcript absorbs nothing for that phase.
+        if params.batch_proof_of_work_bits != 0 {
+            return Err(FriInputError::UnsupportedBatchPow {
+                bits: params.batch_proof_of_work_bits,
+            });
         }
         for (name, value) in [
             ("log_blowup", params.log_blowup),
@@ -180,6 +193,7 @@ impl NativeFriParams {
                 self.log_final_poly_len,
                 recursive.log_final_poly_len,
             ),
+            ("max_log_arity", self.max_log_arity, recursive.max_log_arity),
             (
                 "commit_pow_bits",
                 self.commit_pow_bits,
@@ -232,6 +246,11 @@ pub struct FriVerifierParams {
     log_blowup: usize,
     /// Log₂ of the final polynomial length (after all folding rounds)
     log_final_poly_len: usize,
+    /// Log₂ of the largest folding arity a commit-phase round may use.
+    ///
+    /// Since Plonky3 0.8 the fold schedule is derived from this cap and the input heights, and
+    /// the cap is bound into the FRI transcript's domain separator.
+    max_log_arity: usize,
     /// Number of commit-phase proof-of-work bits required
     commit_pow_bits: usize,
     /// Number of query proof-of-work bits required
@@ -256,6 +275,7 @@ impl FriVerifierParams {
     pub fn try_with_mmcs(
         log_blowup: usize,
         log_final_poly_len: usize,
+        max_log_arity: usize,
         commit_pow_bits: usize,
         query_pow_bits: usize,
         num_queries: usize,
@@ -267,6 +287,7 @@ impl FriVerifierParams {
         for (name, value) in [
             ("log_blowup", log_blowup),
             ("log_final_poly_len", log_final_poly_len),
+            ("max_log_arity", max_log_arity),
             ("commit_pow_bits", commit_pow_bits),
             ("query_pow_bits", query_pow_bits),
         ] {
@@ -280,9 +301,13 @@ impl FriVerifierParams {
         if height >= usize::BITS as usize {
             return Err(FriVerifierParamsError::HeightOverflow);
         }
+        if max_log_arity == 0 {
+            return Err(FriVerifierParamsError::ZeroMaxLogArity);
+        }
         Ok(Self {
             log_blowup,
             log_final_poly_len,
+            max_log_arity,
             commit_pow_bits,
             query_pow_bits,
             num_queries,
@@ -295,6 +320,7 @@ impl FriVerifierParams {
     pub fn with_mmcs(
         log_blowup: usize,
         log_final_poly_len: usize,
+        max_log_arity: usize,
         commit_pow_bits: usize,
         query_pow_bits: usize,
         num_queries: usize,
@@ -303,6 +329,7 @@ impl FriVerifierParams {
         Self::try_with_mmcs(
             log_blowup,
             log_final_poly_len,
+            max_log_arity,
             commit_pow_bits,
             query_pow_bits,
             num_queries,
@@ -316,6 +343,9 @@ impl FriVerifierParams {
     }
     pub const fn log_final_poly_len(&self) -> usize {
         self.log_final_poly_len
+    }
+    pub const fn max_log_arity(&self) -> usize {
+        self.max_log_arity
     }
     pub const fn commit_pow_bits(&self) -> usize {
         self.commit_pow_bits
@@ -349,7 +379,7 @@ mod tests {
     /// checks.
     #[test]
     fn with_mmcs_always_enables_mmcs_verification() {
-        let params = FriVerifierParams::with_mmcs(1, 0, 0, 0, 1, p2());
+        let params = FriVerifierParams::with_mmcs(1, 0, 1, 0, 0, 1, p2());
         assert_eq!(params.permutation_config(), p2());
     }
 
@@ -359,7 +389,7 @@ mod tests {
     /// FRI soundness.
     #[test]
     fn with_mmcs_stores_num_queries() {
-        let params = FriVerifierParams::with_mmcs(2, 0, 0, 16, 42, p2());
+        let params = FriVerifierParams::with_mmcs(2, 0, 1, 0, 16, 42, p2());
         assert_eq!(
             params.num_queries, 42,
             "with_mmcs must store num_queries exactly"
@@ -369,7 +399,7 @@ mod tests {
     #[test]
     fn with_mmcs_rejects_a_combined_height_at_the_word_boundary() {
         assert_eq!(
-            FriVerifierParams::try_with_mmcs(usize::BITS as usize - 1, 1, 0, 0, 1, p2(),),
+            FriVerifierParams::try_with_mmcs(usize::BITS as usize - 1, 1, 1, 0, 0, 1, p2(),),
             Err(FriVerifierParamsError::HeightOverflow)
         );
     }
@@ -387,6 +417,7 @@ mod tests {
             log_final_poly_len,
             max_log_arity,
             num_queries,
+            batch_proof_of_work_bits: 0,
             commit_proof_of_work_bits: commit_pow_bits,
             query_proof_of_work_bits: query_pow_bits,
             mmcs: (),
@@ -415,7 +446,7 @@ mod tests {
             NativeFriParams::try_from_native::<BabyBear, _>(&native(1, 0, 1, 1, 0, 0)).unwrap();
         assert_eq!(snapshot.num_queries(), 1);
         assert!(snapshot.validate_field::<BabyBear>().is_ok());
-        let local_floor = FriVerifierParams::with_mmcs(1, 0, 0, 0, 2, p2());
+        let local_floor = FriVerifierParams::with_mmcs(1, 0, 1, 0, 0, 2, p2());
         assert_eq!(
             snapshot.validate_recursive(&local_floor),
             Err(FriInputError::QueryFloor {
@@ -436,19 +467,23 @@ mod tests {
             NativeFriParams::try_from_native::<BabyBear, _>(&native(1, 0, 1, 2, 0, 0)).unwrap();
         for (params, name) in [
             (
-                FriVerifierParams::with_mmcs(2, 0, 0, 0, 2, p2()),
+                FriVerifierParams::with_mmcs(2, 0, 1, 0, 0, 2, p2()),
                 "log_blowup",
             ),
             (
-                FriVerifierParams::with_mmcs(1, 1, 0, 0, 2, p2()),
+                FriVerifierParams::with_mmcs(1, 1, 1, 0, 0, 2, p2()),
                 "log_final_poly_len",
             ),
             (
-                FriVerifierParams::with_mmcs(1, 0, 1, 0, 2, p2()),
+                FriVerifierParams::with_mmcs(1, 0, 2, 0, 0, 2, p2()),
+                "max_log_arity",
+            ),
+            (
+                FriVerifierParams::with_mmcs(1, 0, 1, 1, 0, 2, p2()),
                 "commit_pow_bits",
             ),
             (
-                FriVerifierParams::with_mmcs(1, 0, 0, 1, 2, p2()),
+                FriVerifierParams::with_mmcs(1, 0, 1, 0, 1, 2, p2()),
                 "query_pow_bits",
             ),
         ] {

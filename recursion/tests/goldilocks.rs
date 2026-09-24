@@ -55,6 +55,7 @@ fn make_config() -> (
     let fri_verifier_params = FriVerifierParams::with_mmcs(
         fri_params.log_blowup,
         fri_params.log_final_poly_len,
+        fri_params.max_log_arity,
         fri_params.commit_proof_of_work_bits,
         fri_params.query_proof_of_work_bits,
         fri_params.num_queries,
@@ -79,7 +80,7 @@ fn test_goldilocks_fibonacci_verifier() -> Result<(), VerificationError> {
     let trace = generate_trace_rows::<F>(0, 1, n);
     let pis = vec![F::ZERO, F::ONE, F::from_u64(x)];
     let air = FibonacciAir {};
-    let proof = prove(&config, &air, trace, &pis);
+    let proof = prove(&config, &air, trace, &pis).unwrap();
     assert!(verify(&config, &air, &proof, &pis).is_ok());
 
     let mut circuit_builder = CircuitBuilder::new();
