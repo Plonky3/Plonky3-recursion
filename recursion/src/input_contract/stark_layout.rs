@@ -236,7 +236,7 @@ impl<'a> NativeStarkLayout<'a> {
             .enumerate()
             .filter_map(|(index, instance)| (instance.pre_width != 0).then_some(index))
             .collect();
-        if has_preprocessed != !preprocessed_order.is_empty()
+        if has_preprocessed == preprocessed_order.is_empty()
             || positive_preprocessed.len() != preprocessed_order.len()
             || positive_preprocessed
                 .iter()

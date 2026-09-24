@@ -2,8 +2,8 @@ mod common;
 
 use p3_baby_bear::default_babybear_poseidon2_16;
 use p3_challenger::{CanObserve, CanSampleBits, FieldChallenger, GrindingChallenger};
-use p3_circuit::ops::{generate_poseidon2_trace, generate_recompose_trace};
 use p3_circuit::CircuitBuilder;
+use p3_circuit::ops::{generate_poseidon2_trace, generate_recompose_trace};
 use p3_commit::Pcs;
 use p3_dft::Radix2DitParallel;
 use p3_field::coset::TwoAdicMultiplicativeCoset;
@@ -17,8 +17,7 @@ use p3_recursion::pcs::fri::{
     Witness as RecWitness,
 };
 use p3_recursion::pcs::{
-    FriQueryPaths, replay_fri_query_layout, restore_fri_query_paths,
-    set_fri_mmcs_private_data,
+    FriQueryPaths, replay_fri_query_layout, restore_fri_query_paths, set_fri_mmcs_private_data,
 };
 use p3_recursion::{Poseidon2Config, Recursive};
 use p3_test_utils::baby_bear_params::*;

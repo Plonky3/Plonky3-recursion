@@ -491,7 +491,7 @@ where
         get_different_perm_challenges::<SC, LG, _>(&mut challenger, all_lookups, lookup_gadget);
 
     if let Some(permutation) = &commitments.permutation {
-        observe_commitment::<SC>(&mut challenger, &permutation);
+        observe_commitment::<SC>(&mut challenger, permutation);
     }
     for terminal in lookup_terminals.iter().flatten() {
         challenger.observe_algebra_element(terminal.0);
@@ -500,7 +500,7 @@ where
 
     observe_commitment::<SC>(&mut challenger, &commitments.quotient_chunks);
     if let Some(random_commit) = &commitments.random {
-        observe_commitment::<SC>(&mut challenger, &random_commit);
+        observe_commitment::<SC>(&mut challenger, random_commit);
     }
     if !challenger.check_witness(config.ood_proof_of_work_bits(), *ood_pow_witness) {
         return Err(GenerationError::InvalidPowWitness);
@@ -830,7 +830,7 @@ where
     if let Some(prep_commit) = preprocessed_commit
         && preprocessed_width > 0
     {
-        observe_commitment::<SC>(&mut challenger, &prep_commit);
+        observe_commitment::<SC>(&mut challenger, prep_commit);
     }
     challenger.observe_slice(public_values);
 

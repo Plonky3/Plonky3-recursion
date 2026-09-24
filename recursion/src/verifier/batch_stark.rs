@@ -2020,8 +2020,8 @@ mod create_alu_air_tests {
     use p3_uni_stark::{OpenedValues, PreprocessedOpenedValues, StarkGenericConfig, Val};
 
     use super::{
-        CircuitTablesAir, claimed_evaluation_counts, collect_opened_values_circuit,
-        create_alu_air, observe_claims_circuit,
+        CircuitTablesAir, claimed_evaluation_counts, collect_opened_values_circuit, create_alu_air,
+        observe_claims_circuit,
     };
     use crate::challenger::CircuitChallenger;
     use crate::input_contract::stark_layout::{CommitmentRole, InstanceLayout, NativeStarkLayout};
@@ -2418,7 +2418,7 @@ mod create_alu_air_tests {
 
         // This prefix is independently built with the upstream typed transcript.
         let transcript_shape = BatchShape {
-            trace_widths: airs.iter().map(|air| BaseAir::<F>::width(air)).collect(),
+            trace_widths: airs.iter().map(BaseAir::<F>::width).collect(),
             public_value_counts: public_values.iter().map(Vec::len).collect(),
             preprocessed_widths: preprocessed_widths.clone(),
             has_preprocessed_commitment: true,
@@ -2428,12 +2428,11 @@ mod create_alu_air_tests {
             ood_pow_bits: 0,
         };
         let mut native_challenger = config.initialise_challenger();
-        let mut native_prefix = BatchVerifierTranscript::<
-            Challenger,
-            F,
-            EF,
-            p3_batch_stark::Commitment<Config>,
-        >::new(&mut native_challenger, transcript_shape.clone());
+        let mut native_prefix =
+            BatchVerifierTranscript::<Challenger, F, EF, p3_batch_stark::Commitment<Config>>::new(
+                &mut native_challenger,
+                transcript_shape.clone(),
+            );
         native_prefix.instance_bindings(&proof.degree_bits);
         native_prefix.main_phase(pre_commitment.clone(), &public_values);
         native_prefix.preprocessed_phase(Some(pre_commitment.clone()));
@@ -2550,7 +2549,7 @@ mod create_alu_air_tests {
         // Pcs::verify is the independent evaluation consumer.  Its malformed
         // FRI proof reaches this typed stop only after opening observation and
         // one alpha sample (the test config has nonzero query count).
-        let mut native_pcs = native_pre_pcs_challenger.clone();
+        let mut native_pcs = native_pre_pcs_challenger;
         let result = <PcsType as PcsTrait<EF, Challenger>>::verify(
             config.pcs(),
             native_argument,
@@ -2559,9 +2558,7 @@ mod create_alu_air_tests {
         );
         assert!(matches!(
             result,
-            Err(
-                p3_fri::verifier::FriError::CommitPhaseOpeningsCountMismatch { got: 0, .. }
-            )
+            Err(p3_fri::verifier::FriError::CommitPhaseOpeningsCountMismatch { got: 0, .. })
         ));
 
         let mut replay_pcs = replay.challenger.clone();
@@ -2678,9 +2675,8 @@ mod create_alu_air_tests {
             })
             .collect::<Vec<_>>();
         let claims = collect_opened_values_circuit::<Config>(&target_instances, &[], &layout);
-        let seed = crate::pcs::fri::fri_pcs_transcript_seed::<F, EF>(claimed_evaluation_counts(
-            &claims,
-        ));
+        let seed =
+            crate::pcs::fri::fri_pcs_transcript_seed::<F, EF>(claimed_evaluation_counts(&claims));
         observe_claims_circuit::<Config, Poseidon2Config, WIDTH, RATE>(
             &mut circuit,
             &mut circuit_challenger,

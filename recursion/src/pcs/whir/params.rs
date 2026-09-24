@@ -200,7 +200,7 @@ impl WhirTranscriptShape {
 }
 
 impl<F: Field> WhirVerifierParams<F> {
-    fn round_config_matches(a: &RoundConfig, b: &RoundConfig) -> bool {
+    const fn round_config_matches(a: &RoundConfig, b: &RoundConfig) -> bool {
         a.pow_bits == b.pow_bits
             && a.folding_pow_bits == b.folding_pow_bits
             && a.num_queries == b.num_queries
@@ -547,5 +547,4 @@ mod tests {
         )
         .expect("this arity does not saturate any phase");
     }
-
 }

@@ -14,8 +14,7 @@ use alloc::vec::Vec;
 
 use p3_challenger::fs::{DomainSeparator, FieldUnit};
 use p3_challenger::{
-    CanObserve, CanSample, CanSampleBits, CanSampleUniformBits, FieldChallenger,
-    GrindingChallenger,
+    CanObserve, CanSample, CanSampleBits, CanSampleUniformBits, FieldChallenger, GrindingChallenger,
 };
 use p3_field::{ExtensionField, PrimeField64};
 use p3_lookup::LookupProtocol;

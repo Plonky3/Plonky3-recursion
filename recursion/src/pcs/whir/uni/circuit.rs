@@ -12,33 +12,31 @@
 //! the flattened equality points receive the batching powers in that same
 //! order.
 
-use alloc::format;
 use alloc::string::ToString;
-use alloc::vec;
 use alloc::vec::Vec;
+use alloc::{format, vec};
 
 use p3_circuit::{CircuitBuilder, CircuitBuilderError, NonPrimitiveOpId};
 use p3_field::coset::TwoAdicMultiplicativeCoset;
 use p3_field::{ExtensionField, PrimeField64, TwoAdicField};
-
 use p3_sumcheck::OpeningEvals;
 use p3_sumcheck::layout::{LayoutStrategy, Verifier};
 use p3_sumcheck::strategy::VariableOrder;
 
 use crate::Target;
 use crate::input_contract::whir::WhirContextParams;
-use crate::pcs::whir::params::WhirTranscriptShape;
-use crate::pcs::whir::uni::pcs::round_schedule;
-use crate::transcript::{SeedTap, domain_separator_seed};
 use crate::pcs::whir::gadgets::{ConstraintWeightData, eval_powers_combination};
+use crate::pcs::whir::params::WhirTranscriptShape;
 use crate::pcs::whir::targets::QueryOpeningTargets;
 use crate::pcs::whir::uni::bridge::univariate_eq_point_circuit;
+use crate::pcs::whir::uni::pcs::round_schedule;
 use crate::pcs::whir::uni::plan::{
     PaddedArity, StackedPlan, checked_stacked_num_variables, padded_arity,
 };
 use crate::pcs::whir::uni::recursive_pcs::{DummyChallenger, WhirUniVerifierParams};
 use crate::pcs::whir::uni::targets::WhirRoundTargets;
 use crate::traits::{ComsWithOpeningsTargets, RecursiveChallenger};
+use crate::transcript::{SeedTap, domain_separator_seed};
 use crate::verifier::{ObservableCommitment, VerificationError};
 
 /// One committed matrix's public opening shape.
