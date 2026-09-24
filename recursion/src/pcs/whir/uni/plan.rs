@@ -412,7 +412,7 @@ mod tests {
             .map(|&(arity, width)| rand_table(&mut rng, width, arity))
             .collect();
         let witness: Witness<F> = PrefixProver::<F, F>::new_witness(tables.clone(), folding);
-        let stacked: &Poly<F> = witness.poly();
+        let stacked: Poly<F> = witness.stacked_poly();
 
         let shapes: Vec<(PaddedArity, usize)> = raw
             .iter()

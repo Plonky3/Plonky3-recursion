@@ -14,14 +14,22 @@
 
 use alloc::format;
 use alloc::string::ToString;
+use alloc::vec;
 use alloc::vec::Vec;
 
 use p3_circuit::{CircuitBuilder, CircuitBuilderError, NonPrimitiveOpId};
 use p3_field::coset::TwoAdicMultiplicativeCoset;
 use p3_field::{ExtensionField, PrimeField64, TwoAdicField};
 
+use p3_sumcheck::OpeningEvals;
+use p3_sumcheck::layout::{LayoutStrategy, Verifier};
+use p3_sumcheck::strategy::VariableOrder;
+
 use crate::Target;
 use crate::input_contract::whir::WhirContextParams;
+use crate::pcs::whir::params::WhirTranscriptShape;
+use crate::pcs::whir::uni::pcs::round_schedule;
+use crate::transcript::{SeedTap, domain_separator_seed};
 use crate::pcs::whir::gadgets::{ConstraintWeightData, eval_powers_combination};
 use crate::pcs::whir::targets::QueryOpeningTargets;
 use crate::pcs::whir::uni::bridge::univariate_eq_point_circuit;
@@ -39,6 +47,94 @@ pub struct MatrixOpenings<'a> {
     pub log_height: usize,
     /// Opening points and the claimed univariate values at each.
     pub points: &'a [(Target, Vec<Target>)],
+}
+
+/// The domain-separator seeds one commitment round's native transcript opens its steps with.
+///
+/// Native `PrescribedPointPcs::verify_at` runs each layout step (every out-of-domain claim, every
+/// concrete opening claim, the batching challenge) and the WHIR argument itself on its own seeded
+/// sub-transcript. All of these seeds depend only on the round's public shape.
+#[derive(Clone, Debug)]
+pub struct RoundTranscriptSeeds<F> {
+    /// Seed of each out-of-domain claim's step, in claim order.
+    pub virtual_claims: Vec<Vec<F>>,
+    /// Seed of each concrete opening claim's step, in `iter_openings()` order.
+    pub opening_claims: Vec<Vec<F>>,
+    /// Seed of the WHIR argument's own transcript.
+    pub whir: Vec<F>,
+    /// Seed of the batching challenge's step.
+    pub batching: Vec<F>,
+}
+
+/// Derive a commitment round's transcript seeds from its public opening shape.
+///
+/// The layout's per-step shapes are crate-private upstream, so the seeds are recovered by running
+/// the public native layout verifier on a [`SeedTap`] with dummy values: the opening protocol, and
+/// so every seed, depends only on matrix heights, widths and point counts.
+pub fn round_transcript_seeds<BF, EF>(
+    matrices: &[MatrixOpenings<'_>],
+    num_virtual_claims: usize,
+    folding: usize,
+    whir_shape: &WhirTranscriptShape,
+) -> RoundTranscriptSeeds<BF>
+where
+    BF: PrimeField64 + TwoAdicField,
+    EF: ExtensionField<BF>,
+{
+    let shapes: Vec<(usize, usize)> = matrices
+        .iter()
+        .map(|m| {
+            let width = m.points.first().map_or(0, |(_, values)| values.len());
+            (m.log_height, width)
+        })
+        .collect();
+    let dummy_points: Vec<Vec<EF>> = matrices
+        .iter()
+        .map(|m| vec![EF::ONE; m.points.len()])
+        .collect();
+    let schedule = round_schedule::<BF, EF>(&shapes, &dummy_points, folding);
+    // The recursive adapter supports the Prefix order only, whose layout reverses selectors.
+    let strategy = LayoutStrategy::new(true, VariableOrder::Prefix);
+    let mut layout = Verifier::<BF, EF>::new(&schedule.protocol.table_shapes(), strategy);
+
+    let virtual_claims = (0..num_virtual_claims)
+        .map(|_| {
+            let mut tap = SeedTap::<BF>::new();
+            layout.add_virtual_eval(EF::ZERO, &mut tap);
+            tap.seed()
+        })
+        .collect();
+    let opening_claims = schedule
+        .protocol
+        .iter_openings()
+        .zip(&schedule.points)
+        .map(|((table_idx, batch), point)| {
+            let evals = OpeningEvals::new(
+                vec![EF::ZERO; batch.current().len()],
+                vec![EF::ZERO; batch.next().len()],
+            );
+            let mut tap = SeedTap::<BF>::new();
+            layout
+                .add_claim_at(table_idx, batch, point, &evals, &mut tap)
+                .expect("dummy evaluations match the batch they were shaped from");
+            tap.seed()
+        })
+        .collect();
+    let mut tap = SeedTap::<BF>::new();
+    let _ = layout.batching_challenge(&mut tap);
+    let batching = tap.seed();
+    let whir = domain_separator_seed(
+        &whir_shape
+            .for_claims(schedule.protocol.num_openings())
+            .domain_separator::<BF, EF>(),
+    );
+
+    RoundTranscriptSeeds {
+        virtual_claims,
+        opening_claims,
+        whir,
+        batching,
+    }
 }
 
 /// The constraint and claimed sum one commitment round hands to WHIR.
@@ -280,6 +376,7 @@ pub fn build_round_claims<BF, EF, Ch>(
     round_evals: &[Vec<Target>],
     initial_ood_answers: &[Target],
     folding: usize,
+    seeds: &RoundTranscriptSeeds<BF>,
 ) -> Result<RoundClaims, CircuitBuilderError>
 where
     BF: PrimeField64,
@@ -328,8 +425,11 @@ where
 
     // Out-of-domain claims: one sampled univariate point per answer, expanded
     // over the whole stacked space, then the answer absorbed.
+    assert_eq!(seeds.virtual_claims.len(), initial_ood_answers.len());
+    assert_eq!(seeds.opening_claims.len(), round_evals.len());
     let mut ood_points: Vec<Vec<Target>> = Vec::with_capacity(initial_ood_answers.len());
-    for &answer in initial_ood_answers {
+    for (&answer, seed) in initial_ood_answers.iter().zip(&seeds.virtual_claims) {
+        challenger.observe_seed(circuit, seed);
         let univariate = challenger.sample_ext(circuit);
         ood_points.push(crate::pcs::whir::gadgets::expand_from_univariate(
             circuit,
@@ -340,10 +440,15 @@ where
     }
 
     // Concrete claims absorb their bound values, matching `add_claim_at`.
-    for batch_values in round_evals {
+    for (batch_values, seed) in round_evals.iter().zip(&seeds.opening_claims) {
+        challenger.observe_seed(circuit, seed);
         challenger.observe_ext_slice(circuit, batch_values);
     }
 
+    // The WHIR argument opens its own transcript, then draws the batching challenge inside its
+    // initial-fold delegation, on the batching step's own seed.
+    challenger.observe_seed(circuit, &seeds.whir);
+    challenger.observe_seed(circuit, &seeds.batching);
     let alpha = challenger.sample_ext(circuit);
 
     // Placement order drives both the batched sum and the equality-point order.
@@ -488,6 +593,13 @@ where
             .collect();
         let stacked_num_variables = stacked_num_variables(&openings, params.folding())?;
 
+        let seeds = round_transcript_seeds::<BF, EF>(
+            &openings,
+            round.whir.initial_ood_answers.len(),
+            params.folding(),
+            vp.transcript_shape(),
+        );
+
         #[cfg(test)]
         crate::pcs::whir::uni::acceptance_probe::target_challenger();
         let claims = build_round_claims::<BF, EF, Ch>(
@@ -497,6 +609,7 @@ where
             &round.evals,
             &round.whir.initial_ood_answers,
             params.folding(),
+            &seeds,
         )
         .map_err(|e| VerificationError::InvalidProofShape(format!("{e:?}")))?;
         debug_assert_eq!(claims.stacked_num_variables, stacked_num_variables);
@@ -537,12 +650,22 @@ pub(crate) mod tests_support {
     use p3_field::PrimeCharacteristicRing;
     use p3_field::extension::BinomialExtensionField;
 
-    use super::{MatrixOpenings, build_round_claims};
+    use super::{MatrixOpenings, RoundTranscriptSeeds, build_round_claims};
     use crate::Target;
     use crate::traits::RecursiveChallenger;
 
     type BF = BabyBear;
     type EF = BinomialExtensionField<BF, 4>;
+
+    /// Empty seeds: the stub challenger below ignores every observation.
+    pub(crate) fn stub_seeds(num_virtual: usize, num_claims: usize) -> RoundTranscriptSeeds<BF> {
+        RoundTranscriptSeeds {
+            virtual_claims: alloc::vec![Vec::new(); num_virtual],
+            opening_claims: alloc::vec![Vec::new(); num_claims],
+            whir: Vec::new(),
+            batching: Vec::new(),
+        }
+    }
 
     /// Returns the extension challenges in a fixed order and ignores observations.
     struct StubChallenger {
@@ -655,6 +778,7 @@ pub(crate) mod tests_support {
             &round_evals,
             &ood_targets,
             folding,
+            &stub_seeds(ood_targets.len(), round_evals.len()),
         )
         .unwrap();
         assert_eq!(claims.stacked_num_variables, stacked_num_variables);
@@ -730,6 +854,7 @@ pub(crate) mod tests_support {
             &round_evals,
             &[],
             folding,
+            &stub_seeds(0, round_evals.len()),
         )
         .unwrap();
 
@@ -951,6 +1076,7 @@ mod tests {
             &round_evals,
             &[],
             4,
+            &super::tests_support::stub_seeds(0, round_evals.len()),
         );
     }
 

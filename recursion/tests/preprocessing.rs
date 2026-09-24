@@ -406,11 +406,17 @@ fn test_batch_verifier_with_mixed_preprocessed() -> Result<(), VerificationError
     // opening at target verification after input allocation.
     let required_next = batch_proof.opened_values.instances[0]
         .base_opened_values
-        .preprocessed_next
+        .preprocessed
+        .as_mut()
+        .expect("preprocessed openings")
+        .next
         .take();
     batch_proof.opened_values.instances[0]
         .base_opened_values
-        .preprocessed_next = None;
+        .preprocessed
+        .as_mut()
+        .expect("preprocessed openings")
+        .next = None;
     let mut shape_builder = CircuitBuilder::<Challenge>::new();
     shape_builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
         generate_poseidon2_trace::<Challenge, BabyBearD4Width16>,
@@ -440,7 +446,10 @@ fn test_batch_verifier_with_mixed_preprocessed() -> Result<(), VerificationError
     ));
     batch_proof.opened_values.instances[0]
         .base_opened_values
-        .preprocessed_next = required_next;
+        .preprocessed
+        .as_mut()
+        .expect("preprocessed openings")
+        .next = required_next;
 
     // Create AIRs vector for verification circuit
     let airs = vec![mixed_air1, mixed_air2, mixed_air3];
@@ -578,15 +587,13 @@ fn test_batch_verifier_with_local_only_preprocessed() -> Result<(), Verification
     let opened = &batch_proof.opened_values.instances[0].base_opened_values;
     assert_eq!(
         opened
-            .preprocessed_local
-            .as_ref()
+            .preprocessed_local()
             .map_or(0, |values| values.len()),
         1
     );
     assert_eq!(
         opened
-            .preprocessed_next
-            .as_ref()
+            .preprocessed_next()
             .map_or(0, |values| values.len()),
         0
     );
@@ -607,11 +614,17 @@ fn test_batch_verifier_with_local_only_preprocessed() -> Result<(), Verification
     // a nonempty extra next opening is rejected by the actual target verifier.
     let original_next = batch_proof.opened_values.instances[0]
         .base_opened_values
-        .preprocessed_next
+        .preprocessed
+        .as_mut()
+        .expect("preprocessed openings")
+        .next
         .take();
     batch_proof.opened_values.instances[0]
         .base_opened_values
-        .preprocessed_next = Some(Vec::new());
+        .preprocessed
+        .as_mut()
+        .expect("preprocessed openings")
+        .next = Some(Vec::new());
     // Upstream native verification currently requires the canonical `None`
     // encoding in its constraint-window builder; `Some(empty)` passes its
     // shape check but panics later during constraint evaluation, after PCS
@@ -620,7 +633,10 @@ fn test_batch_verifier_with_local_only_preprocessed() -> Result<(), Verification
     // recursive shape validation and the runner below.
     batch_proof.opened_values.instances[0]
         .base_opened_values
-        .preprocessed_next = None;
+        .preprocessed
+        .as_mut()
+        .expect("preprocessed openings")
+        .next = None;
     verify_batch(
         &config,
         &[air],
@@ -631,7 +647,10 @@ fn test_batch_verifier_with_local_only_preprocessed() -> Result<(), Verification
     .unwrap();
     batch_proof.opened_values.instances[0]
         .base_opened_values
-        .preprocessed_next = Some(Vec::new());
+        .preprocessed
+        .as_mut()
+        .expect("preprocessed openings")
+        .next = Some(Vec::new());
     let shape_result = |proof: &BatchProof<MyConfig>| -> Result<(), VerificationError> {
         let mut shape_builder = CircuitBuilder::<Challenge>::new();
         shape_builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
@@ -662,7 +681,10 @@ fn test_batch_verifier_with_local_only_preprocessed() -> Result<(), Verification
     shape_result(&batch_proof).unwrap();
     batch_proof.opened_values.instances[0]
         .base_opened_values
-        .preprocessed_next = Some(vec![Challenge::ZERO]);
+        .preprocessed
+        .as_mut()
+        .expect("preprocessed openings")
+        .next = Some(vec![Challenge::ZERO]);
     assert!(matches!(
         shape_result(&batch_proof),
         Err(VerificationError::InvalidProofShape(message))
@@ -670,7 +692,10 @@ fn test_batch_verifier_with_local_only_preprocessed() -> Result<(), Verification
     ));
     batch_proof.opened_values.instances[0]
         .base_opened_values
-        .preprocessed_next = Some(Vec::new());
+        .preprocessed
+        .as_mut()
+        .expect("preprocessed openings")
+        .next = Some(Vec::new());
 
     let mut circuit_builder = CircuitBuilder::<Challenge>::new();
     circuit_builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
@@ -742,7 +767,10 @@ fn test_batch_verifier_with_local_only_preprocessed() -> Result<(), Verification
     runner.run().map_err(VerificationError::Circuit)?;
     batch_proof.opened_values.instances[0]
         .base_opened_values
-        .preprocessed_next = original_next;
+        .preprocessed
+        .as_mut()
+        .expect("preprocessed openings")
+        .next = original_next;
     Ok(())
 }
 

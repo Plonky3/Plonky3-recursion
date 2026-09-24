@@ -11,6 +11,10 @@
 //! [`fold_sumcheck_claim`] chains it across every round of a `SumcheckData`,
 //! given the challenges the caller sampled from the transcript.
 
+use p3_sumcheck::strategy::Basis;
+use p3_sumcheck::transcript::SumcheckShape;
+
+use crate::transcript::domain_separator_seed;
 use alloc::vec::Vec;
 
 use p3_circuit::{CircuitBuilder, CircuitBuilderError};
@@ -108,6 +112,16 @@ where
             pow_witnesses.len(),
             round_polys.len(),
             "verify_sumcheck_rounds: pow witness count must equal round count"
+        );
+    }
+
+    // A native batch of rounds opens its own transcript with a seed bound to its shape; a batch
+    // with no rounds opens none.
+    if !round_polys.is_empty() {
+        let shape = SumcheckShape::new(round_polys.len(), pow_bits, Basis::Evaluation);
+        challenger.observe_seed(
+            circuit,
+            &domain_separator_seed(&shape.domain_separator::<BF, EF>()),
         );
     }
 

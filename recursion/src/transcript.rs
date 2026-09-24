@@ -12,8 +12,11 @@
 
 use alloc::vec::Vec;
 
-use p3_challenger::CanObserve;
 use p3_challenger::fs::{DomainSeparator, FieldUnit};
+use p3_challenger::{
+    CanObserve, CanSample, CanSampleBits, CanSampleUniformBits, FieldChallenger,
+    GrindingChallenger,
+};
 use p3_field::{ExtensionField, PrimeField64};
 use p3_lookup::LookupProtocol;
 use p3_uni_stark::StarkShape;
@@ -35,6 +38,93 @@ pub fn domain_separator_seed<F: PrimeField64>(separator: &DomainSeparator<FieldU
     let mut recorder = SeedRecorder(Vec::new());
     separator.seed(&mut recorder);
     recorder.0
+}
+
+/// A challenger that records what a native sub-protocol absorbs before its first sample.
+///
+/// Some native sub-transcripts (p3-sumcheck's layout claims and batching) keep their shapes
+/// crate-private, so their domain-separator seeds cannot be built directly. Every seed is
+/// self-delimiting — its first element is its byte length — so running the public native step on
+/// this tap with dummy data and cutting the recorded prefix at that length recovers the seed
+/// exactly, without restating upstream internals.
+#[derive(Clone, Debug, Default)]
+pub struct SeedTap<F> {
+    observed: Vec<F>,
+    sampled: bool,
+}
+
+impl<F: PrimeField64> SeedTap<F> {
+    /// An empty tap.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            observed: Vec::new(),
+            sampled: false,
+        }
+    }
+
+    /// The domain-separator seed the recorded step opened with.
+    ///
+    /// # Panics
+    /// Panics if the tap recorded no complete seed.
+    #[must_use]
+    pub fn seed(&self) -> Vec<F> {
+        let bits = u64::BITS - F::ORDER_U64.leading_zeros();
+        let bytes_per_element = ((bits as usize) - 1) / 8;
+        let byte_len = self
+            .observed
+            .first()
+            .expect("a native sub-transcript always opens with its seed")
+            .as_canonical_u64() as usize;
+        let len = 1 + byte_len.div_ceil(bytes_per_element);
+        assert!(
+            self.observed.len() >= len,
+            "the tap recorded a truncated seed"
+        );
+        self.observed[..len].to_vec()
+    }
+}
+
+impl<F: Clone> CanObserve<F> for SeedTap<F> {
+    fn observe(&mut self, value: F) {
+        if !self.sampled {
+            self.observed.push(value);
+        }
+    }
+}
+
+impl<F: PrimeField64> CanSample<F> for SeedTap<F> {
+    fn sample(&mut self) -> F {
+        self.sampled = true;
+        F::ZERO
+    }
+}
+
+impl<F> CanSampleBits<usize> for SeedTap<F> {
+    fn sample_bits(&mut self, _bits: usize) -> usize {
+        self.sampled = true;
+        0
+    }
+}
+
+impl<F: PrimeField64> CanSampleUniformBits<F> for SeedTap<F> {
+    fn sample_uniform_bits<const RESAMPLE: bool>(
+        &mut self,
+        _bits: usize,
+    ) -> Result<usize, p3_challenger::ResamplingError> {
+        self.sampled = true;
+        Ok(0)
+    }
+}
+
+impl<F: PrimeField64> FieldChallenger<F> for SeedTap<F> {}
+
+impl<F: PrimeField64> GrindingChallenger for SeedTap<F> {
+    type Witness = F;
+
+    fn grind(&mut self, _bits: usize) -> F {
+        F::ZERO
+    }
 }
 
 /// The uni-STARK transcript shape `p3_uni_stark::verify` seeds its transcript from.
@@ -77,6 +167,7 @@ where
 mod tests {
     use p3_baby_bear::{BabyBear, Poseidon2BabyBear};
     use p3_challenger::{CanSample, DuplexChallenger};
+    use p3_field::PrimeCharacteristicRing;
     use p3_field::extension::BinomialExtensionField;
     use p3_fri::PcsShape;
     use rand::SeedableRng;
@@ -106,6 +197,25 @@ mod tests {
         assert_eq!(
             CanSample::<F>::sample(&mut native),
             CanSample::<F>::sample(&mut replay)
+        );
+    }
+
+    #[test]
+    fn tapped_seed_matches_the_public_seed() {
+        use p3_sumcheck::strategy::Basis;
+        use p3_sumcheck::transcript::{SumcheckShape, VerifierTranscript};
+
+        let shape = SumcheckShape::new(3, 0, Basis::Evaluation);
+        let mut tap = SeedTap::<F>::new();
+        let mut transcript = VerifierTranscript::<_, F, EF>::new(&mut tap, shape);
+        let _ = transcript.round(EF::ONE, EF::TWO, None).unwrap();
+        let _ = transcript.round(EF::ONE, EF::TWO, None).unwrap();
+        let _ = transcript.round(EF::ONE, EF::TWO, None).unwrap();
+        transcript.finish();
+
+        assert_eq!(
+            tap.seed(),
+            domain_separator_seed(&shape.domain_separator::<F, EF>())
         );
     }
 }

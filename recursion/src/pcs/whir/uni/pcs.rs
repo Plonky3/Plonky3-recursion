@@ -920,7 +920,7 @@ pub(crate) mod tests {
         let (_commit, data) = <MyPcs as p3_commit::Pcs<EF, MyChallenger>>::commit(
             &pcs,
             vec![(d0, m0.clone()), (d1, m1.clone())],
-        );
+        ).unwrap();
 
         // 3 * 2^6 + 2 * 2^5 = 256 -> stacked arity 8.
         assert_eq!(data.stacked_num_variables, 8);
@@ -960,11 +960,11 @@ pub(crate) mod tests {
         let trace_domain = TwoAdicMultiplicativeCoset::<F>::new(F::ONE, 5).unwrap();
         let mat = RowMajorMatrix::<F>::rand(&mut rng, 1 << 5, 2);
         let (_c, data) =
-            <MyPcs as p3_commit::Pcs<EF, MyChallenger>>::commit(&pcs, vec![(trace_domain, mat)]);
+            <MyPcs as p3_commit::Pcs<EF, MyChallenger>>::commit(&pcs, vec![(trace_domain, mat)]).unwrap();
 
         // Quotient domain: 4x larger, disjoint coset.
         let quotient_domain = trace_domain.create_disjoint_domain(1 << 7);
-        let got = <MyPcs as p3_commit::Pcs<EF, MyChallenger>>::get_evaluations_on_domain(
+        let got = <MyPcs as p3_commit::UnivariateStarkPcs<EF, MyChallenger>>::get_evaluations_on_domain(
             &pcs,
             &data,
             0,
@@ -996,9 +996,9 @@ pub(crate) mod tests {
         let domain = TwoAdicMultiplicativeCoset::<F>::new(F::GENERATOR, 4).unwrap();
         let mat = RowMajorMatrix::<F>::rand(&mut rng, 1 << 4, 3);
         let (_c, data) =
-            <MyPcs as p3_commit::Pcs<EF, MyChallenger>>::commit(&pcs, vec![(domain, mat.clone())]);
+            <MyPcs as p3_commit::Pcs<EF, MyChallenger>>::commit(&pcs, vec![(domain, mat.clone())]).unwrap();
 
-        let got = <MyPcs as p3_commit::Pcs<EF, MyChallenger>>::get_evaluations_on_domain(
+        let got = <MyPcs as p3_commit::UnivariateStarkPcs<EF, MyChallenger>>::get_evaluations_on_domain(
             &pcs, &data, 0, domain,
         );
         assert_eq!(got.values, mat.values);
@@ -1016,12 +1016,12 @@ pub(crate) mod tests {
         let evals = RowMajorMatrix::<F>::rand(&mut rng, 1 << 6, 1);
         let num_chunks = 4;
 
-        let (_c, data) = <MyPcs as p3_commit::Pcs<EF, MyChallenger>>::commit_quotient(
+        let (_c, data) = <MyPcs as p3_commit::UnivariateStarkPcs<EF, MyChallenger>>::commit_quotient(
             &pcs,
             quotient_domain,
             evals.clone(),
             num_chunks,
-        );
+        ).unwrap();
 
         let sub_domains = quotient_domain.split_domains(num_chunks);
         let sub_evals = quotient_domain.split_evals(num_chunks, evals);
@@ -1076,15 +1076,15 @@ pub(crate) mod tests {
         let domain = TwoAdicMultiplicativeCoset::<F>::new(F::ONE, 6).unwrap();
         let mat = RowMajorMatrix::<F>::rand(&mut rng, 1 << 6, 2);
         let (_c, data) =
-            <MyPcs as p3_commit::Pcs<EF, MyChallenger>>::commit(&pcs, vec![(domain, mat)]);
+            <MyPcs as p3_commit::Pcs<EF, MyChallenger>>::commit(&pcs, vec![(domain, mat)]).unwrap();
 
         let zeta = EF::from_u32(9_999);
         let mut challenger = pcs.challenger_proto.clone();
         let (opened, proof) = <MyPcs as p3_commit::Pcs<EF, MyChallenger>>::open(
             &pcs,
-            vec![(&data, vec![vec![zeta]])],
+            vec![(&data, vec![vec![zeta]]).into()],
             &mut challenger,
-        );
+        ).unwrap();
 
         // Reference: Horner over the stored coefficients.
         let coeffs = &data.coeffs[0];
@@ -1119,7 +1119,7 @@ pub(crate) mod tests {
         let m0 = RowMajorMatrix::<F>::rand(&mut rng, 1 << 6, 2);
         let m1 = RowMajorMatrix::<F>::rand(&mut rng, 1 << 5, 1);
         let (commit, data) =
-            <MyPcs as p3_commit::Pcs<EF, MyChallenger>>::commit(&pcs, vec![(d0, m0), (d1, m1)]);
+            <MyPcs as p3_commit::Pcs<EF, MyChallenger>>::commit(&pcs, vec![(d0, m0), (d1, m1)]).unwrap();
 
         let zeta = EF::from_u32(777);
         let zeta_next = zeta * EF::from(d0.subgroup_generator());
@@ -1128,9 +1128,9 @@ pub(crate) mod tests {
         let mut challenger = pcs.challenger_proto.clone();
         let (opened, proof) = <MyPcs as p3_commit::Pcs<EF, MyChallenger>>::open(
             &pcs,
-            vec![(&data, points)],
+            vec![(&data, points).into()],
             &mut challenger,
-        );
+        ).unwrap();
 
         let coms = vec![
             (
@@ -1151,7 +1151,7 @@ pub(crate) mod tests {
         let mut challenger = pcs.challenger_proto.clone();
         <MyPcs as p3_commit::Pcs<EF, MyChallenger>>::verify(
             &pcs,
-            vec![(commit, coms)],
+            vec![(commit, coms).into()],
             &proof,
             &mut challenger,
         )
@@ -1174,8 +1174,8 @@ pub(crate) mod tests {
             rounds: vec![proof.rounds[0].clone(), malformed_last],
         };
         let commitments = vec![
-            (commitment.clone(), matrices.clone()),
-            (commitment, matrices),
+            (commitment.clone(), matrices.clone()).into(),
+            (commitment, matrices).into(),
         ];
         let calls = Arc::new(AtomicUsize::new(0));
         let mut challenger =
@@ -1290,7 +1290,7 @@ pub(crate) mod tests {
         let mut challenger = pcs.challenger_proto.clone();
         let err = <MyPcs as p3_commit::Pcs<EF, MyChallenger>>::verify(
             &pcs,
-            vec![(commit, coms)],
+            vec![(commit, coms).into()],
             &proof,
             &mut challenger,
         )
@@ -1320,7 +1320,7 @@ pub(crate) mod tests {
         let mut challenger = pcs.challenger_proto.clone();
         let err = <MyPcs as p3_commit::Pcs<EF, MyChallenger>>::verify(
             &pcs,
-            vec![(commit, coms)],
+            vec![(commit, coms).into()],
             &proof,
             &mut challenger,
         )

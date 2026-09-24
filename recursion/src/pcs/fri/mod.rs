@@ -7,6 +7,8 @@ mod verifier;
 
 pub use context::{CheckedFriCommitment, CheckedFriOpening, ValidatedFriContext};
 pub use params::{FriInputError, FriVerifierParams, FriVerifierParamsError, NativeFriParams};
+#[cfg(test)]
+pub(crate) use targets::fri_pcs_transcript_seed;
 pub(crate) use targets::validate_merkle_cap_context;
 pub use targets::{
     BatchOpeningTargets, CommitPhaseProofStepTargets, FriProofTargets, HashProofTargets,
