@@ -583,72 +583,12 @@ where
         Ok(state)
     }
 
-    /// Each element's serialized little-endian bytes, as 16-bit limbs: the byte stream a
-    /// `SerializingHasher` feeds its byte hash.
-    ///
-    /// Plonky3 serializes an element as a unique integer below `p`, which is not always its
-    /// canonical value: Montgomery fields (BabyBear, KoalaBear) serialize `x·2^32 mod p`. Both
-    /// forms are `x·u(1)` for the serialization `u(1)` of one, so each element is scaled by that
-    /// constant and then decomposed into canonical bits (`value < p`), which stops a prover from
-    /// substituting the encoding of `y + p` for `y`.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::decompose_to_bits`].
-    ///
-    /// # Panics
-    ///
-    /// If `BF`'s serialization is not linear in the element, which no Plonky3 prime field is.
-    pub fn serialize_to_keccak_limbs<BF>(
-        &mut self,
-        elements: &[ExprId],
-    ) -> Result<Vec<ExprId>, CircuitBuilderError>
-    where
-        BF: PrimeField64,
-        F: ExtensionField<BF>,
-    {
-        let limbs_per_element = BF::NUM_BYTES / 2;
-        let serialized = |x: BF| -> u64 {
-            BF::into_byte_stream([x])
-                .into_iter()
-                .enumerate()
-                .fold(0, |acc, (i, byte)| acc | (u64::from(byte) << (8 * i)))
-        };
-        let scale = BF::from_u64(serialized(BF::ONE));
-        assert_eq!(
-            serialized(BF::GENERATOR),
-            (BF::GENERATOR * scale).as_canonical_u64(),
-            "field serialization must be x -> x * u(1)"
-        );
-        let scale = self.define_const(F::from(scale));
-
-        let mut limbs = Vec::with_capacity(elements.len() * limbs_per_element);
-        for &element in elements {
-            let serialized_value = self.mul(element, scale);
-            let bits = self.decompose_to_bits::<BF>(serialized_value, BF::bits())?;
-            for chunk in 0..limbs_per_element {
-                let mut limb = self.define_const(F::ZERO);
-                for (i, &bit) in bits
-                    .iter()
-                    .skip(chunk * KECCAK_LIMB_BITS)
-                    .take(KECCAK_LIMB_BITS)
-                    .enumerate()
-                {
-                    let weight = self.define_const(F::from_u32(1 << i));
-                    limb = self.mul_add(bit, weight, limb);
-                }
-                limbs.push(limb);
-            }
-        }
-        Ok(limbs)
-    }
-
     /// `SerializingHasher<Keccak256Hash>` of base-field elements: Keccak-256 of their
     /// canonical little-endian bytes, the leaf hash of a Keccak Merkle tree.
     ///
     /// # Errors
     ///
-    /// As [`Self::serialize_to_keccak_limbs`] and [`Self::keccak256_limbs`].
+    /// As [`Self::serialize_field_elements_to_limbs`] and [`Self::keccak256_limbs`].
     pub fn keccak256_field_elements<BF>(
         &mut self,
         elements: &[ExprId],
@@ -657,81 +597,8 @@ where
         BF: PrimeField64,
         F: ExtensionField<BF>,
     {
-        let limbs = self.serialize_to_keccak_limbs::<BF>(elements)?;
+        let limbs = self.serialize_field_elements_to_limbs::<BF>(elements)?;
         self.keccak256_limbs::<BF>(&limbs)
-    }
-}
-
-impl<F> crate::CircuitBuilder<F>
-where
-    F: Field + Eq + core::hash::Hash,
-{
-    /// Constrains a single-matrix Keccak Merkle opening: `leaf` (a row of base-field elements)
-    /// sits at the position whose little-endian bits are `index_bits`, under `root`.
-    ///
-    /// This is `MerkleTreeMmcs` with a `SerializingHasher<Keccak256Hash>` leaf hash, a
-    /// `CompressionFunctionFromHasher<Keccak256Hash, 2, 32>` node compression and a one-root
-    /// cap. `siblings[i]` is the sibling digest at level `i` (bottom-up), `root` the cap digest,
-    /// each as [`KECCAK256_DIGEST_LIMBS`] limbs. At level `i`, a set `index_bits[i]` means the
-    /// current node is the right child. Every index bit is constrained to be boolean.
-    ///
-    /// # Errors
-    ///
-    /// - [`CircuitBuilderError::NonPrimitiveOpArity`] if the path length differs from the index
-    ///   width, or a digest has the wrong width.
-    /// - As [`Self::keccak256_field_elements`] and [`Self::keccak256_compress`].
-    pub fn verify_keccak_merkle_path<BF>(
-        &mut self,
-        leaf: &[ExprId],
-        index_bits: &[ExprId],
-        siblings: &[Vec<ExprId>],
-        root: &[ExprId],
-    ) -> Result<(), CircuitBuilderError>
-    where
-        BF: PrimeField64,
-        F: ExtensionField<BF>,
-    {
-        if siblings.len() != index_bits.len() {
-            return Err(CircuitBuilderError::NonPrimitiveOpArity {
-                op: "KeccakMerklePath",
-                expected: format!("one sibling per index bit ({})", index_bits.len()),
-                got: siblings.len(),
-            });
-        }
-        if root.len() != KECCAK256_DIGEST_LIMBS {
-            return Err(CircuitBuilderError::NonPrimitiveOpArity {
-                op: "KeccakMerklePath",
-                expected: format!("{KECCAK256_DIGEST_LIMBS} root limbs"),
-                got: root.len(),
-            });
-        }
-
-        let mut node = self.keccak256_field_elements::<BF>(leaf)?;
-        for (&bit, sibling) in index_bits.iter().zip(siblings) {
-            self.assert_bool(bit);
-            if sibling.len() != KECCAK256_DIGEST_LIMBS {
-                return Err(CircuitBuilderError::NonPrimitiveOpArity {
-                    op: "KeccakMerklePath",
-                    expected: format!("{KECCAK256_DIGEST_LIMBS} sibling limbs"),
-                    got: sibling.len(),
-                });
-            }
-            let (left, right): (Vec<ExprId>, Vec<ExprId>) = node
-                .iter()
-                .zip(sibling)
-                .map(|(&current, &other)| {
-                    (
-                        self.select(bit, other, current),
-                        self.select(bit, current, other),
-                    )
-                })
-                .unzip();
-            node = self.keccak256_compress(&left, &right)?;
-        }
-        for (&computed, &expected) in node.iter().zip(root) {
-            self.connect(computed, expected);
-        }
-        Ok(())
     }
 }
 

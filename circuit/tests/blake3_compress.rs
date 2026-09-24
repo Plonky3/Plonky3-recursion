@@ -128,3 +128,107 @@ fn the_operation_must_be_enabled_and_take_a_full_input() {
         Err(CircuitBuilderError::NonPrimitiveOpArity { .. })
     ));
 }
+
+mod blake3_gadgets {
+    use p3_circuit::ops::{DIGEST_LIMBS, bytes_to_limbs};
+    use p3_symmetric::{
+        CompressionFunctionFromHasher, PseudoCompressionFunction, SerializingHasher,
+    };
+
+    use super::*;
+
+    fn run_digest(circuit: &p3_circuit::Circuit<EF4>, public: &[EF4]) -> Vec<u16> {
+        let mut runner = circuit.runner();
+        runner.set_public_inputs(public).unwrap();
+        let traces = runner.run().unwrap();
+        (0..DIGEST_LIMBS)
+            .map(|i| {
+                let value = traces.probe(&format!("digest_{i}")).unwrap();
+                let coeffs =
+                    <EF4 as BasedVectorSpace<BabyBear>>::as_basis_coefficients_slice(value);
+                u16::try_from(coeffs[0].as_canonical_u64()).unwrap()
+            })
+            .collect()
+    }
+
+    fn tag(builder: &mut CircuitBuilder<EF4>, digest: &[ExprId]) {
+        for (i, &limb) in digest.iter().enumerate() {
+            builder.tag(limb, format!("digest_{i}")).unwrap();
+        }
+    }
+
+    /// Messages across every block boundary of one chunk hash to the native BLAKE3 digest.
+    #[test]
+    fn byte_messages_match_native_blake3() {
+        for len in [0usize, 2, 62, 64, 66, 200, 1024] {
+            let message: Vec<u8> = (0..len).map(|i| (i * 11 + 1) as u8).collect();
+            let mut builder = CircuitBuilder::<EF4>::new();
+            builder.enable_blake3_compress::<BabyBear>();
+            let limbs: Vec<ExprId> = (0..len / 2).map(|_| builder.public_input()).collect();
+            let digest = builder.blake3_limbs::<BabyBear>(&limbs).unwrap();
+            tag(&mut builder, &digest);
+            let circuit = builder.build().unwrap();
+            let public: Vec<EF4> = bytes_to_limbs(&message)
+                .into_iter()
+                .map(EF4::from_u16)
+                .collect();
+            assert_eq!(
+                run_digest(&circuit, &public),
+                bytes_to_limbs(&Blake3.hash_iter(message.iter().copied())),
+                "message of {len} bytes"
+            );
+        }
+    }
+
+    #[test]
+    fn a_message_longer_than_one_chunk_is_rejected() {
+        let mut builder = CircuitBuilder::<EF4>::new();
+        builder.enable_blake3_compress::<BabyBear>();
+        let limbs: Vec<ExprId> = (0..513).map(|_| builder.public_input()).collect();
+        assert!(matches!(
+            builder.blake3_limbs::<BabyBear>(&limbs),
+            Err(CircuitBuilderError::NonPrimitiveOpArity { .. })
+        ));
+    }
+
+    #[test]
+    fn rows_match_the_serializing_hasher_and_digests_the_compression() {
+        let hasher = SerializingHasher::new(Blake3);
+        for count in [1usize, 16, 17, 256] {
+            let row: Vec<BabyBear> = (0..count)
+                .map(|i| BabyBear::NEG_ONE - BabyBear::from_usize(i * 7_777))
+                .collect();
+            let native: [u8; 32] = hasher.hash_iter(row.iter().copied());
+            let mut builder = CircuitBuilder::<EF4>::new();
+            builder.enable_blake3_compress::<BabyBear>();
+            let inputs: Vec<ExprId> = (0..count).map(|_| builder.public_input()).collect();
+            let digest = builder.blake3_field_elements::<BabyBear>(&inputs).unwrap();
+            tag(&mut builder, &digest);
+            let circuit = builder.build().unwrap();
+            let public: Vec<EF4> = row.iter().map(|&x| EF4::from(x)).collect();
+            assert_eq!(
+                run_digest(&circuit, &public),
+                bytes_to_limbs(&native),
+                "{count} elements"
+            );
+        }
+
+        let left: [u8; 32] = core::array::from_fn(|i| i as u8);
+        let right: [u8; 32] = core::array::from_fn(|i| 200 - i as u8);
+        let native =
+            CompressionFunctionFromHasher::<Blake3, 2, 32>::new(Blake3).compress([left, right]);
+        let mut builder = CircuitBuilder::<EF4>::new();
+        builder.enable_blake3_compress::<BabyBear>();
+        let l: Vec<ExprId> = (0..DIGEST_LIMBS).map(|_| builder.public_input()).collect();
+        let r: Vec<ExprId> = (0..DIGEST_LIMBS).map(|_| builder.public_input()).collect();
+        let digest = builder.blake3_compress_digests::<BabyBear>(&l, &r).unwrap();
+        tag(&mut builder, &digest);
+        let circuit = builder.build().unwrap();
+        let public: Vec<EF4> = bytes_to_limbs(&left)
+            .into_iter()
+            .chain(bytes_to_limbs(&right))
+            .map(EF4::from_u16)
+            .collect();
+        assert_eq!(run_digest(&circuit, &public), bytes_to_limbs(&native));
+    }
+}

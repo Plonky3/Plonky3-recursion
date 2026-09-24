@@ -447,6 +447,128 @@ where
     }
 }
 
+/// Bytes BLAKE3 compresses per call.
+pub const BLAKE3_BLOCK_BYTES: usize = 64;
+/// Bytes in one BLAKE3 chunk, the most [`crate::CircuitBuilder::blake3_limbs`] hashes.
+pub const BLAKE3_CHUNK_BYTES: usize = 1024;
+
+impl<F> crate::CircuitBuilder<F>
+where
+    F: Field + Eq + core::hash::Hash,
+{
+    /// BLAKE3 of a message given as little-endian 16-bit limbs (an even number of bytes, at
+    /// most one 1024-byte chunk); returns the digest as 16 limbs.
+    ///
+    /// The chunk's 64-byte blocks are compressed in order, each chaining value being the first
+    /// eight output words of the previous block. The first block carries `CHUNK_START`, the last
+    /// `CHUNK_END | ROOT` and its true length; the counter is zero; a partial final block is
+    /// zero-padded. The empty message is one empty block.
+    ///
+    /// # Errors
+    ///
+    /// - [`CircuitBuilderError::NonPrimitiveOpArity`] for a message longer than one chunk, which
+    ///   needs BLAKE3's chunk tree.
+    /// - As [`Self::add_blake3_compress`].
+    pub fn blake3_limbs<BF>(
+        &mut self,
+        message: &[ExprId],
+    ) -> Result<Vec<ExprId>, CircuitBuilderError>
+    where
+        BF: PrimeField64,
+        F: ExtensionField<BF>,
+    {
+        const BLOCK_LIMBS: usize = BLAKE3_BLOCK_BYTES / 2;
+        if 2 * message.len() > BLAKE3_CHUNK_BYTES {
+            return Err(CircuitBuilderError::NonPrimitiveOpArity {
+                op: "Blake3Hash",
+                expected: format!("at most {BLAKE3_CHUNK_BYTES} message bytes (one chunk)"),
+                got: 2 * message.len(),
+            });
+        }
+
+        let constant_words = |builder: &mut Self, words: &[u32]| -> Vec<ExprId> {
+            words_to_limbs(words)
+                .into_iter()
+                .map(|limb| builder.define_const(F::from_u16(limb)))
+                .collect::<Vec<_>>()
+        };
+
+        let blocks: Vec<&[ExprId]> = if message.is_empty() {
+            vec![&[]]
+        } else {
+            message.chunks(BLOCK_LIMBS).collect()
+        };
+        let zero = self.define_const(F::ZERO);
+        let mut cv = constant_words(self, &BLAKE3_IV);
+        for (i, block) in blocks.iter().enumerate() {
+            let last = i + 1 == blocks.len();
+            let mut flags = 0;
+            if i == 0 {
+                flags |= blake3_flags::CHUNK_START;
+            }
+            if last {
+                flags |= blake3_flags::CHUNK_END | blake3_flags::ROOT;
+            }
+            let block_len = 2 * block.len() as u32;
+
+            let mut input = block.to_vec();
+            input.resize(BLOCK_LIMBS, zero);
+            input.extend_from_slice(&cv);
+            input.extend(constant_words(self, &[0, 0, block_len, flags]));
+            let out = self.add_blake3_compress(&input)?;
+            cv = out[..16].to_vec();
+        }
+        Ok(cv)
+    }
+
+    /// `CompressionFunctionFromHasher<Blake3, 2, 32>`: BLAKE3 of the 64-byte concatenation of two
+    /// 16-limb digests, one compression.
+    ///
+    /// # Errors
+    ///
+    /// [`CircuitBuilderError::NonPrimitiveOpArity`] for a digest of the wrong width, or as
+    /// [`Self::blake3_limbs`].
+    pub fn blake3_compress_digests<BF>(
+        &mut self,
+        left: &[ExprId],
+        right: &[ExprId],
+    ) -> Result<Vec<ExprId>, CircuitBuilderError>
+    where
+        BF: PrimeField64,
+        F: ExtensionField<BF>,
+    {
+        for digest in [left, right] {
+            if digest.len() != 16 {
+                return Err(CircuitBuilderError::NonPrimitiveOpArity {
+                    op: "Blake3Compress",
+                    expected: "16 limbs per digest".into(),
+                    got: digest.len(),
+                });
+            }
+        }
+        let mut message = left.to_vec();
+        message.extend_from_slice(right);
+        self.blake3_limbs::<BF>(&message)
+    }
+
+    /// `SerializingHasher<Blake3>` of base-field elements, the leaf hash of a BLAKE3 Merkle tree.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::serialize_field_elements_to_limbs`] and [`Self::blake3_limbs`].
+    pub fn blake3_field_elements<BF>(
+        &mut self,
+        elements: &[ExprId],
+    ) -> Result<Vec<ExprId>, CircuitBuilderError>
+    where
+        BF: PrimeField64,
+        F: ExtensionField<BF>,
+    {
+        let limbs = self.serialize_field_elements_to_limbs::<BF>(elements)?;
+        self.blake3_limbs::<BF>(&limbs)
+    }
+}
+
 // ============================================================================
 // Trace
 // ============================================================================

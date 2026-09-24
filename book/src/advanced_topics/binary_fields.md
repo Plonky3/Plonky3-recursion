@@ -55,9 +55,22 @@ This is groundwork only. Nothing here proves or recursively verifies a binary-fi
     leaf hash of a Keccak Merkle tree. Elements are serialized exactly as Plonky3 does it
     (Montgomery fields such as BabyBear hash `x·2^32 mod p`). Each serialized value is decomposed
     into canonical bits, so `y + p` cannot stand in for `y`.
-  - **Merkle paths:** `verify_keccak_merkle_path` constrains a single-matrix opening of a
-    Keccak `MerkleTreeMmcs` with a one-root cap. It takes the row, the little-endian index bits,
-    the sibling digests (bottom-up) and the root, as in the native opening.
+- **In-circuit BLAKE3.** `enable_blake3_compress` / `add_blake3_compress` expose one BLAKE3
+  compression per call.
+  - **Limb layout:** 56 input limbs (block, chaining value, counter, block length, flags, each
+    32-bit word as a little-endian 16-bit pair) and 32 output limbs.
+  - **Proving:** the `Blake3CompressAir` table runs `p3-blake3-air`'s `Blake3Air`, one
+    compression per row, with each call's real counter, length and flags. It exposes the limbs
+    through dedicated columns tied to `Blake3Air`'s bit columns.
+  - **Registration:** register it with `Blake3CompressPreprocessor`, `Blake3CompressAirBuilder`
+    and `Blake3CompressProver`.
+  - **Gadgets:** built on the compression are `blake3_limbs` (messages up to one 1024-byte
+    chunk), `blake3_compress_digests` (`CompressionFunctionFromHasher<Blake3, 2, 32>`) and
+    `blake3_field_elements` (`SerializingHasher<Blake3>`).
+- **Merkle paths.** `verify_byte_hash_merkle_path` (with `verify_keccak_merkle_path` and
+  `verify_blake3_merkle_path` as shorthands) constrains a single-matrix opening of a Keccak-256
+  or BLAKE3 `MerkleTreeMmcs` with a one-root cap. It takes the row, the little-endian index bits,
+  the sibling digests (bottom-up) and the root, as in the native opening.
 
 ## Not yet supported
 
@@ -66,7 +79,7 @@ This is groundwork only. Nothing here proves or recursively verifies a binary-fi
 - Recursively verifying binary-PCS or multi-stark proofs. That needs `GF(2^128)` arithmetic
   inside a prime-field circuit, plus in-circuit Keccak-256 or BLAKE3 for the transcript and
   Merkle paths.
-- In-circuit BLAKE3.
+- BLAKE3 of messages longer than one 1024-byte chunk (the chunk tree).
 - Keccak MMCS openings of several matrices of different heights in one tree, and caps with
   more than one root.
 - Keccak-f in the recursion backends' table lists, so recursively verifying a proof that

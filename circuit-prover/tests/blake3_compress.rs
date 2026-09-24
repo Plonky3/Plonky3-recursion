@@ -171,3 +171,69 @@ fn a_blake3_trace_that_disagrees_with_the_witnesses_is_rejected() {
         }
     }
 }
+
+/// A native BLAKE3 MMCS opening verifies in-circuit and proves; tampering fails.
+#[test]
+fn a_native_blake3_merkle_opening_proves_in_circuit() {
+    use p3_circuit::ops::{DIGEST_LIMBS, bytes_to_limbs};
+    use p3_commit::Mmcs;
+    use p3_matrix::Matrix;
+    use p3_matrix::dense::RowMajorMatrix;
+    use p3_test_utils::binary_field_params::blake3;
+
+    const LOG_HEIGHT: usize = 3;
+    const WIDTH: usize = 6;
+    let mmcs = blake3::level_mmcs::<BabyBear>();
+    let values = (0..(WIDTH << LOG_HEIGHT) as u32)
+        .map(|i| BabyBear::from_u32(i.wrapping_mul(2_246_822_519) >> 3))
+        .collect();
+    let matrix = RowMajorMatrix::new(values, WIDTH);
+    let dims = [matrix.dimensions()];
+    let (commitment, data) = mmcs.commit_matrix(matrix);
+
+    let mut builder = CircuitBuilder::<EF>::new();
+    builder.enable_blake3_compress::<BabyBear>();
+    let mut inputs = |n: usize| -> Vec<ExprId> { (0..n).map(|_| builder.public_input()).collect() };
+    let leaf = inputs(WIDTH);
+    let bits = inputs(LOG_HEIGHT);
+    let siblings: Vec<Vec<ExprId>> = (0..LOG_HEIGHT).map(|_| inputs(DIGEST_LIMBS)).collect();
+    let root = inputs(DIGEST_LIMBS);
+    builder
+        .verify_blake3_merkle_path::<BabyBear>(&leaf, &bits, &siblings, &root)
+        .unwrap();
+    let circuit = builder.build().unwrap();
+
+    let public = |row: &[BabyBear], index: usize, siblings: &[[u8; 32]]| -> Vec<EF> {
+        let digest = |d: &[u8; 32]| bytes_to_limbs(d).into_iter().map(EF::from_u16);
+        row.iter()
+            .map(|&x| EF::from(x))
+            .chain((0..LOG_HEIGHT).map(|i| EF::from_bool(index >> i & 1 == 1)))
+            .chain(siblings.iter().flat_map(digest))
+            .chain(digest(&commitment.roots()[0]))
+            .collect()
+    };
+    let runs = |values: &[EF]| {
+        let mut runner = circuit.runner();
+        runner.set_public_inputs(values).is_ok() && runner.run().is_ok()
+    };
+
+    for index in 0..1 << LOG_HEIGHT {
+        let opening = mmcs.open_batch(index, &data);
+        mmcs.verify_batch(&commitment, &dims, index, (&opening).into())
+            .expect("the native opening verifies");
+        let row = &opening.opened_values[0];
+        assert!(runs(&public(row, index, &opening.opening_proof)));
+        let mut wrong = opening.opening_proof.clone();
+        wrong[0][31] ^= 0x80;
+        assert!(!runs(&public(row, index, &wrong)));
+        assert!(!runs(&public(row, index ^ 2, &opening.opening_proof)));
+    }
+
+    let opening = mmcs.open_batch(6, &data);
+    prove_and_verify(
+        &circuit,
+        &public(&opening.opened_values[0], 6, &opening.opening_proof),
+        |_| {},
+    )
+    .expect("a native BLAKE3 opening proves and verifies");
+}
