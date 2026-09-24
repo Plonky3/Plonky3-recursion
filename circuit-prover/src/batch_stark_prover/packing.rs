@@ -61,9 +61,9 @@ const fn default_horner_pack_k() -> usize {
 /// metadata.
 pub(crate) const MAX_SANE_LANES: usize = 1 << 16;
 
-/// [`NpoTypeId`] prefixes whose tables prove exactly one operation per AIR row and so cannot
-/// honour a [`TablePacking::with_npo_lanes`] override above 1.
-const SINGLE_LANE_NPO_PREFIXES: [&str; 2] = ["poseidon1_perm/", "poseidon2_perm/"];
+/// [`NpoTypeId`] prefixes whose tables prove at most one operation per AIR row and so cannot
+/// honour a [`TablePacking::with_npo_lanes`] override above 1. A Keccak-f call spans 24 rows.
+const SINGLE_LANE_NPO_PREFIXES: [&str; 3] = ["poseidon1_perm/", "poseidon2_perm/", "keccak_f1600"];
 
 impl TablePacking {
     /// Reconstruct artifact-owned packing metadata without cloning its already checked buffers.

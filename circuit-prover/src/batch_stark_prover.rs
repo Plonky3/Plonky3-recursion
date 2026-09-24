@@ -63,6 +63,7 @@ use crate::constraint_profile::ConstraintProfile;
 use crate::field_params::ExtractBinomialW;
 
 mod dynamic_air;
+mod keccak;
 mod packing;
 mod poseidon1;
 mod poseidon2;
@@ -72,6 +73,7 @@ mod statement;
 pub use dynamic_air::{
     BatchAir, BatchTableInstance, CloneableBatchAir, DynamicAirEntry, TableProver,
 };
+pub use keccak::{KeccakF1600AirBuilder, KeccakF1600Preprocessor, KeccakF1600Prover};
 pub use packing::TablePacking;
 pub use poseidon1::{
     Poseidon1AirBuilder, Poseidon1AirBuilderForConfig, Poseidon1AirWrapperInner,
