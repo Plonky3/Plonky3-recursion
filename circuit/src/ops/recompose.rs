@@ -139,10 +139,10 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for RecomposeExec
         let input_wids = &inputs[0];
         let output_wid = outputs[0][0];
 
-        let mut bf_values = Vec::with_capacity(self.d);
-        for &wid in input_wids {
-            bf_values.push(ctx.get_witness(wid)?);
-        }
+        let bf_values = input_wids
+            .iter()
+            .map(|&wid| ctx.get_witness(wid))
+            .collect::<Result<Vec<_>, _>>()?;
 
         // Use the type-aware recompose function that was created at `enable_recompose` time,
         // where the base field BF was known. This correctly uses `BasedVectorSpace<BF>`

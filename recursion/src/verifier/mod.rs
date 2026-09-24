@@ -15,6 +15,7 @@ pub use batch_stark::{
     verify_trusted_p3_batch_proof_circuit,
 };
 pub use errors::VerificationError;
+pub(crate) use limits::check_limit;
 pub use limits::{InputResourceUsage, VerifierLimits};
 pub use observable::ObservableCommitment;
 pub(crate) use periodic::evaluate_periodic_columns_circuit;

@@ -11,7 +11,7 @@ pub(crate) use mmcs::{MerkleMmcsCodec, SaltedMerkleMmcsCodec, read_merkle_cap, w
 #[cfg(test)]
 pub(crate) use mmcs::{MmcsCodec, read_salted_multi_proof, write_salted_multi_proof};
 #[cfg(test)]
-pub(crate) use whir::{read_option, read_optional_poly};
+pub(crate) use whir::read_optional_poly;
 pub(crate) use whir::{read_whir_uni_proof, write_whir_uni_proof};
 
 #[cfg(test)]
@@ -304,9 +304,7 @@ mod tests {
         let option = writer.finish().unwrap();
         let mut reader = Reader::new(&option, &limits);
         assert_eq!(
-            super::read_option(&mut reader, "final polynomial", |_| Ok::<_, ArtifactError>(
-                ()
-            )),
+            reader.read_option("final polynomial", |_| Ok::<_, ArtifactError>(())),
             Err(ArtifactError::InvalidTag {
                 component: "final polynomial",
                 tag: 2,

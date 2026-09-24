@@ -4,12 +4,11 @@ use alloc::vec::Vec;
 
 use p3_challenger::{FieldChallenger, GrindingChallenger};
 use p3_circuit::ops::PermConfig;
-use p3_circuit::symbolic::RowSelectorsTargets;
 use p3_circuit::{CircuitBuilder, CircuitBuilderError, NonPrimitiveOpId};
 use p3_commit::{Mmcs, PolynomialSpace};
 use p3_dft::TwoAdicSubgroupDft;
 use p3_field::coset::TwoAdicMultiplicativeCoset;
-use p3_field::{ExtensionField, Field, PrimeCharacteristicRing, PrimeField64, TwoAdicField};
+use p3_field::{ExtensionField, PrimeField64, TwoAdicField};
 use p3_merkle_tree::MerkleCap;
 use p3_sumcheck::layout::Layout;
 use p3_sumcheck::strategy::VariableOrder;
@@ -431,32 +430,7 @@ where
         domain: &TwoAdicMultiplicativeCoset<Val<SC>>,
         point: &Target,
     ) -> RecursiveLagrangeSelectors {
-        let shift_inv = circuit.alloc_const(
-            SC::Challenge::from(domain.shift_inverse()),
-            "whir shift_inv",
-        );
-        let one = circuit.alloc_const(SC::Challenge::from(Val::<SC>::ONE), "whir one");
-        let subgroup_gen_inv = circuit.alloc_const(
-            SC::Challenge::from(domain.subgroup_generator().inverse()),
-            "whir subgroup_gen_inv",
-        );
-
-        let unshifted_point = circuit.alloc_mul(shift_inv, *point, "whir unshifted_point");
-        let us_exp = circuit.exp_power_of_2(unshifted_point, domain.log_size());
-        let z_h = circuit.alloc_sub(us_exp, one, "whir z_h");
-
-        let us_minus_one = circuit.alloc_sub(unshifted_point, one, "whir us_minus_one");
-        let us_minus_gen_inv =
-            circuit.alloc_sub(unshifted_point, subgroup_gen_inv, "whir us_minus_gen_inv");
-
-        RecursiveLagrangeSelectors {
-            row_selectors: RowSelectorsTargets {
-                is_first_row: circuit.alloc_div(z_h, us_minus_one, "whir is_first_row"),
-                is_last_row: circuit.alloc_div(z_h, us_minus_gen_inv, "whir is_last_row"),
-                is_transition: us_minus_gen_inv,
-            },
-            inv_vanishing: circuit.alloc_div(one, z_h, "whir inv_vanishing"),
-        }
+        RecursiveLagrangeSelectors::two_adic_at_point(circuit, domain, *point)
     }
 
     fn evaluate_periodic_columns_at_point_circuit(

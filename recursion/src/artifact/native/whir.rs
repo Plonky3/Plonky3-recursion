@@ -9,32 +9,6 @@ use crate::artifact::ArtifactError;
 use crate::artifact::wire::{FieldEncoding, Reader, Writer};
 use crate::pcs::whir::uni::WhirUniProof;
 
-fn write_option<T>(
-    writer: &mut Writer,
-    value: Option<&T>,
-    mut write_value: impl FnMut(&mut Writer, &T) -> Result<(), ArtifactError>,
-) -> Result<(), ArtifactError> {
-    match value {
-        None => writer.write_u8(0),
-        Some(value) => {
-            writer.write_u8(1)?;
-            write_value(writer, value)
-        }
-    }
-}
-
-pub(crate) fn read_option<T>(
-    reader: &mut Reader<'_>,
-    component: &'static str,
-    read_value: impl FnOnce(&mut Reader<'_>) -> Result<T, ArtifactError>,
-) -> Result<Option<T>, ArtifactError> {
-    match reader.read_u8()? {
-        0 => Ok(None),
-        1 => read_value(reader).map(Some),
-        tag => Err(ArtifactError::InvalidTag { component, tag }),
-    }
-}
-
 fn write_sumcheck<F, EF>(
     writer: &mut Writer,
     sumcheck: &SumcheckData<F, EF>,
@@ -223,7 +197,7 @@ where
     F: PrimeField64,
     EF: ExtensionField<F>,
 {
-    write_option(writer, polynomial, |writer, polynomial| {
+    writer.write_option(polynomial, |writer, polynomial| {
         if polynomial.as_slice().is_empty() || !polynomial.as_slice().len().is_power_of_two() {
             return Err(ArtifactError::MalformedProof {
                 component: "WHIR final polynomial",
@@ -245,7 +219,7 @@ where
     F: PrimeField64,
     EF: ExtensionField<F>,
 {
-    read_option(reader, "WHIR final polynomial", |reader| {
+    reader.read_option("WHIR final polynomial", |reader| {
         let max_final_poly = reader.limits().verifier.max_final_poly_evaluations;
         let extension_bytes = field
             .encoded_bytes()
@@ -286,7 +260,7 @@ where
     )?;
     write_sumcheck(writer, &whir.initial_sumcheck, field)?;
     writer.write_vec("WHIR rounds", &whir.rounds, |writer, round| {
-        write_option(writer, round.commitment.as_ref(), |writer, commitment| {
+        writer.write_option(round.commitment.as_ref(), |writer, commitment| {
             <Codec as MmcsCodec<F, M>>::write_commitment(codec, writer, commitment)
         })?;
         writer.write_vec(
@@ -301,7 +275,7 @@ where
     write_optional_poly(writer, whir.final_poly.as_ref(), field)?;
     writer.write_field(field, whir.final_pow_witness)?;
     write_query_openings::<F, EF, M, Codec>(writer, &whir.final_openings, field, codec)?;
-    write_option(writer, whir.final_sumcheck.as_ref(), |writer, sumcheck| {
+    writer.write_option(whir.final_sumcheck.as_ref(), |writer, sumcheck| {
         write_sumcheck(writer, sumcheck, field)
     })?;
     writer.write_vec("WHIR opening batches", &proof.evals, |writer, batch| {
@@ -342,7 +316,7 @@ where
     )?;
     let initial_sumcheck = read_sumcheck(reader, field)?;
     let rounds = reader.read_vec_limited("WHIR rounds", max_rounds, 14, |reader| {
-        let commitment = read_option(reader, "WHIR commitment", |reader| {
+        let commitment = reader.read_option("WHIR commitment", |reader| {
             <Codec as MmcsCodec<F, M>>::read_commitment(codec, reader)
         })?;
         let ood_answers = reader.read_vec_limited(
@@ -365,9 +339,8 @@ where
     let final_poly = read_optional_poly(reader, field)?;
     let final_pow_witness = reader.read_field(field)?;
     let final_openings = read_query_openings::<F, EF, M, Codec>(reader, field, codec)?;
-    let final_sumcheck = read_option(reader, "WHIR final sumcheck", |reader| {
-        read_sumcheck(reader, field)
-    })?;
+    let final_sumcheck =
+        reader.read_option("WHIR final sumcheck", |reader| read_sumcheck(reader, field))?;
     let evals = reader.read_vec_limited("WHIR opening batches", max_instances, 8, |reader| {
         let current = reader.read_vec_limited(
             "WHIR current evaluations",

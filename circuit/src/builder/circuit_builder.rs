@@ -1889,10 +1889,11 @@ where
                 self.recompose_coeff_ctl_for_decompose_links = saved_ctl;
                 debug_assert_eq!(t_coeffs.len(), F::DIMENSION);
                 debug_assert_eq!(s_coeffs.len(), F::DIMENSION);
-                let mut coeffs = Vec::with_capacity(F::DIMENSION);
-                for (&tc, &sc) in t_coeffs.iter().zip(s_coeffs.iter()) {
-                    coeffs.push(self.select(b, tc, sc));
-                }
+                let coeffs: Vec<_> = t_coeffs
+                    .iter()
+                    .zip(&s_coeffs)
+                    .map(|(&tc, &sc)| self.select(b, tc, sc))
+                    .collect();
                 if saved_ctl {
                     // The select coefficients are what enter Poseidon2 rate slots, so they
                     // need a coeff-ctl entry. Emit one for x now that the selects are known.

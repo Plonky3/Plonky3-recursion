@@ -58,7 +58,7 @@ use crate::public_inputs::{BatchStarkVerifierInputsBuilder, StarkVerifierInputsB
 use crate::recursion::{PcsRecursionBackend, RecursionInput, VerifierCircuitResult};
 use crate::traits::{CheckedRecursive, PreparedRecursive, RecursiveAir};
 use crate::verifier::{
-    InputResourceUsage, ObservableCommitment, VerificationError, VerifierLimits,
+    InputResourceUsage, ObservableCommitment, VerificationError, VerifierLimits, check_limit,
     plan_batch_native_layout, plan_uni_native_layout, reconstruct_batch_tables,
     trusted_batch_tables, verify_p3_batch_proof_circuit, verify_p3_uni_proof_circuit,
     verify_trusted_p3_batch_proof_circuit,
@@ -443,6 +443,37 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
     pub const fn without_shared_challenger_perm_table(mut self) -> Self {
         self.shares_challenger_perm_table = false;
         self
+    }
+
+    /// Preprocessors for the challenger permutation and recompose tables.
+    fn non_primitive_preprocessors<F>(&self) -> Vec<Box<dyn NpoPreprocessor<F>>>
+    where
+        F: StarkField + PrimeField64,
+        Poseidon1Preprocessor: NpoPreprocessor<F>,
+        Poseidon2Preprocessor: NpoPreprocessor<F>,
+        Poseidon2SharedPreprocessor: NpoPreprocessor<F>,
+        RecomposePreprocessor: NpoPreprocessor<F>,
+    {
+        let perm_prep = if self.challenger_perm_config.as_poseidon1().is_some() {
+            poseidon1_preprocessor::<F>()
+        } else {
+            let configs: Vec<Poseidon2Config> = self
+                .challenger_perm_config
+                .as_poseidon2()
+                .map(|config| {
+                    self.poseidon2_challenger_shape_configs(*config)
+                        .into_iter()
+                        .filter(|config| config.is_shared())
+                        .collect()
+                })
+                .unwrap_or_default();
+            if configs.is_empty() {
+                poseidon2_preprocessor::<F>()
+            } else {
+                Box::new(Poseidon2SharedPreprocessor::new(configs))
+            }
+        };
+        vec![perm_prep, recompose_preprocessor::<F>(true)]
     }
 
     /// Ordered Poseidon2 table configurations for the challenger's permutation shape: the
@@ -1093,13 +1124,11 @@ where
             ) => {
                 let values =
                     builder.try_pack_public_values(public_inputs, proof, preprocessed_commit)?;
-                if values.len() > limits.max_total_scalar_elements {
-                    return Err(VerificationError::ResourceLimitExceeded {
-                        component: "packed scalar elements",
-                        actual: values.len(),
-                        limit: limits.max_total_scalar_elements,
-                    });
-                }
+                check_limit(
+                    "packed scalar elements",
+                    values.len(),
+                    limits.max_total_scalar_elements,
+                )?;
                 Ok(values)
             }
             (
@@ -1115,13 +1144,11 @@ where
                     &proof.proof,
                     common_data,
                 )?;
-                if values.len() > limits.max_total_scalar_elements {
-                    return Err(VerificationError::ResourceLimitExceeded {
-                        component: "packed scalar elements",
-                        actual: values.len(),
-                        limit: limits.max_total_scalar_elements,
-                    });
-                }
+                check_limit(
+                    "packed scalar elements",
+                    values.len(),
+                    limits.max_total_scalar_elements,
+                )?;
                 Ok(values)
             }
             _ => Err(VerificationError::InvalidProofShape(
@@ -1138,24 +1165,20 @@ where
         match (self, prev) {
             (Self::UniStark(builder, _, limits), RecursionInput::UniStark { proof, .. }) => {
                 let values = builder.try_pack_private_values(proof)?;
-                if values.len() > limits.max_total_scalar_elements {
-                    return Err(VerificationError::ResourceLimitExceeded {
-                        component: "packed scalar elements",
-                        actual: values.len(),
-                        limit: limits.max_total_scalar_elements,
-                    });
-                }
+                check_limit(
+                    "packed scalar elements",
+                    values.len(),
+                    limits.max_total_scalar_elements,
+                )?;
                 Ok(values)
             }
             (Self::BatchStark(builder, _, limits), RecursionInput::BatchStark { proof, .. }) => {
                 let values = builder.try_pack_private_values(&proof.proof)?;
-                if values.len() > limits.max_total_scalar_elements {
-                    return Err(VerificationError::ResourceLimitExceeded {
-                        component: "packed scalar elements",
-                        actual: values.len(),
-                        limit: limits.max_total_scalar_elements,
-                    });
-                }
+                check_limit(
+                    "packed scalar elements",
+                    values.len(),
+                    limits.max_total_scalar_elements,
+                )?;
                 Ok(values)
             }
             _ => Err(VerificationError::InvalidProofShape(
@@ -1502,28 +1525,7 @@ where
     }
 
     fn non_primitive_preprocessors(&self) -> Vec<Box<dyn NpoPreprocessor<Val<SC>>>> {
-        let perm_prep = if self.0.challenger_perm_config.as_poseidon1().is_some() {
-            poseidon1_preprocessor::<Val<SC>>()
-        } else {
-            let configs: Vec<Poseidon2Config> = self
-                .0
-                .challenger_perm_config
-                .as_poseidon2()
-                .map(|config| {
-                    self.0
-                        .poseidon2_challenger_shape_configs(*config)
-                        .into_iter()
-                        .filter(|config| config.is_shared())
-                        .collect()
-                })
-                .unwrap_or_default();
-            if configs.is_empty() {
-                poseidon2_preprocessor::<Val<SC>>()
-            } else {
-                Box::new(Poseidon2SharedPreprocessor::new(configs))
-            }
-        };
-        vec![perm_prep, recompose_preprocessor::<Val<SC>>(true)]
+        self.0.non_primitive_preprocessors()
     }
 
     fn non_primitive_provers(&self, ext_degree: usize) -> Vec<Box<dyn TableProver<SC>>> {
@@ -1797,28 +1799,7 @@ where
     }
 
     fn non_primitive_preprocessors(&self) -> Vec<Box<dyn NpoPreprocessor<Val<SC>>>> {
-        let perm_prep = if self.0.challenger_perm_config.as_poseidon1().is_some() {
-            poseidon1_preprocessor::<Val<SC>>()
-        } else {
-            let configs: Vec<Poseidon2Config> = self
-                .0
-                .challenger_perm_config
-                .as_poseidon2()
-                .map(|config| {
-                    self.0
-                        .poseidon2_challenger_shape_configs(*config)
-                        .into_iter()
-                        .filter(|config| config.is_shared())
-                        .collect()
-                })
-                .unwrap_or_default();
-            if configs.is_empty() {
-                poseidon2_preprocessor::<Val<SC>>()
-            } else {
-                Box::new(Poseidon2SharedPreprocessor::new(configs))
-            }
-        };
-        vec![perm_prep, recompose_preprocessor::<Val<SC>>(true)]
+        self.0.non_primitive_preprocessors()
     }
 
     fn non_primitive_provers(&self, ext_degree: usize) -> Vec<Box<dyn TableProver<SC>>> {
@@ -2089,28 +2070,7 @@ where
     }
 
     fn non_primitive_preprocessors(&self) -> Vec<Box<dyn NpoPreprocessor<Val<SC>>>> {
-        let perm_prep = if self.0.challenger_perm_config.as_poseidon1().is_some() {
-            poseidon1_preprocessor::<Val<SC>>()
-        } else {
-            let configs: Vec<Poseidon2Config> = self
-                .0
-                .challenger_perm_config
-                .as_poseidon2()
-                .map(|config| {
-                    self.0
-                        .poseidon2_challenger_shape_configs(*config)
-                        .into_iter()
-                        .filter(|config| config.is_shared())
-                        .collect()
-                })
-                .unwrap_or_default();
-            if configs.is_empty() {
-                poseidon2_preprocessor::<Val<SC>>()
-            } else {
-                Box::new(Poseidon2SharedPreprocessor::new(configs))
-            }
-        };
-        vec![perm_prep, recompose_preprocessor::<Val<SC>>(true)]
+        self.0.non_primitive_preprocessors()
     }
 
     fn non_primitive_provers(&self, ext_degree: usize) -> Vec<Box<dyn TableProver<SC>>> {

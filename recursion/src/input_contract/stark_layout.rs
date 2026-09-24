@@ -174,7 +174,6 @@ impl FriMatrixGeometry {
 }
 
 impl<'a> FriOpeningLayout<'a> {
-    #[allow(dead_code)]
     pub(crate) const fn new(inner: &'a NativeStarkLayout<'a>) -> Self {
         Self { inner }
     }
@@ -208,7 +207,6 @@ impl<'a> FriOpeningLayout<'a> {
 }
 
 impl<'a> NativeStarkLayout<'a> {
-    #[allow(dead_code)]
     pub(crate) const fn opening_view(&'a self) -> FriOpeningLayout<'a> {
         FriOpeningLayout::new(self)
     }

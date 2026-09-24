@@ -22,10 +22,7 @@ impl<F> WitnessTrace<F> {
     ///
     /// IDs are assigned sequentially starting from `WitnessId(0)`.
     pub fn new(values: Vec<F>) -> Self {
-        let mut index = Vec::with_capacity(values.len());
-        for i in 0..values.len() as u32 {
-            index.push(WitnessId(i));
-        }
+        let index = (0..values.len() as u32).map(WitnessId).collect();
         Self { index, values }
     }
 

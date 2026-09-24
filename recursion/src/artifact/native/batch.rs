@@ -9,32 +9,6 @@ use p3_uni_stark::OpenedValues;
 use crate::artifact::ArtifactError;
 use crate::artifact::wire::{FieldEncoding, Reader, Writer};
 
-fn write_option<T>(
-    writer: &mut Writer,
-    value: Option<&T>,
-    mut write_value: impl FnMut(&mut Writer, &T) -> Result<(), ArtifactError>,
-) -> Result<(), ArtifactError> {
-    match value {
-        None => writer.write_u8(0),
-        Some(value) => {
-            writer.write_u8(1)?;
-            write_value(writer, value)
-        }
-    }
-}
-
-fn read_option<T>(
-    reader: &mut Reader<'_>,
-    component: &'static str,
-    mut read_value: impl FnMut(&mut Reader<'_>) -> Result<T, ArtifactError>,
-) -> Result<Option<T>, ArtifactError> {
-    match reader.read_u8()? {
-        0 => Ok(None),
-        1 => read_value(reader).map(Some),
-        tag => Err(ArtifactError::InvalidTag { component, tag }),
-    }
-}
-
 fn write_extension_vec<F, EF>(
     writer: &mut Writer,
     component: &'static str,
@@ -79,25 +53,21 @@ where
     EF: BasedVectorSpace<F>,
 {
     write_extension_vec(writer, "trace local openings", &values.trace_local, field)?;
-    write_option(writer, values.trace_next.as_ref(), |writer, values| {
+    writer.write_option(values.trace_next.as_ref(), |writer, values| {
         write_extension_vec(writer, "trace next openings", values, field)
     })?;
-    write_option(
-        writer,
-        values.preprocessed_local.as_ref(),
-        |writer, values| write_extension_vec(writer, "preprocessed local openings", values, field),
-    )?;
-    write_option(
-        writer,
-        values.preprocessed_next.as_ref(),
-        |writer, values| write_extension_vec(writer, "preprocessed next openings", values, field),
-    )?;
+    writer.write_option(values.preprocessed_local.as_ref(), |writer, values| {
+        write_extension_vec(writer, "preprocessed local openings", values, field)
+    })?;
+    writer.write_option(values.preprocessed_next.as_ref(), |writer, values| {
+        write_extension_vec(writer, "preprocessed next openings", values, field)
+    })?;
     writer.write_vec(
         "quotient chunk opening vectors",
         &values.quotient_chunks,
         |writer, chunk| write_extension_vec(writer, "quotient chunk openings", chunk, field),
     )?;
-    write_option(writer, values.random.as_ref(), |writer, values| {
+    writer.write_option(values.random.as_ref(), |writer, values| {
         write_extension_vec(writer, "random openings", values, field)
     })
 }
@@ -114,13 +84,13 @@ where
     let max_rounds = reader.limits().verifier.max_rounds;
     Ok(OpenedValues {
         trace_local: read_extension_vec(reader, "trace local openings", max_width, field)?,
-        trace_next: read_option(reader, "trace next openings", |reader| {
+        trace_next: reader.read_option("trace next openings", |reader| {
             read_extension_vec(reader, "trace next openings", max_width, field)
         })?,
-        preprocessed_local: read_option(reader, "preprocessed local openings", |reader| {
+        preprocessed_local: reader.read_option("preprocessed local openings", |reader| {
             read_extension_vec(reader, "preprocessed local openings", max_width, field)
         })?,
-        preprocessed_next: read_option(reader, "preprocessed next openings", |reader| {
+        preprocessed_next: reader.read_option("preprocessed next openings", |reader| {
             read_extension_vec(reader, "preprocessed next openings", max_width, field)
         })?,
         quotient_chunks: reader.read_vec_limited(
@@ -129,7 +99,7 @@ where
             4,
             |reader| read_extension_vec(reader, "quotient chunk openings", max_width, field),
         )?,
-        random: read_option(reader, "random openings", |reader| {
+        random: reader.read_option("random openings", |reader| {
             read_extension_vec(reader, "random openings", max_width, field)
         })?,
     })
@@ -154,17 +124,13 @@ where
     SC::Challenge: BasedVectorSpace<F>,
 {
     write_commitment(writer, &proof.commitments.main)?;
-    write_option(
-        writer,
-        proof.commitments.permutation.as_ref(),
-        |writer, value| write_commitment(writer, value),
-    )?;
+    writer.write_option(proof.commitments.permutation.as_ref(), |writer, value| {
+        write_commitment(writer, value)
+    })?;
     write_commitment(writer, &proof.commitments.quotient_chunks)?;
-    write_option(
-        writer,
-        proof.commitments.random.as_ref(),
-        |writer, value| write_commitment(writer, value),
-    )?;
+    writer.write_option(proof.commitments.random.as_ref(), |writer, value| {
+        write_commitment(writer, value)
+    })?;
     writer.write_vec(
         "batch opened-value instances",
         &proof.opened_values.instances,
@@ -189,7 +155,7 @@ where
         "lookup terminals",
         &proof.lookup_terminals,
         |writer, terminal| {
-            write_option(writer, terminal.as_ref(), |writer, terminal| {
+            writer.write_option(terminal.as_ref(), |writer, terminal| {
                 writer.write_extension(field, &terminal.0)
             })
         },
@@ -215,13 +181,10 @@ where
     SC::Challenge: BasedVectorSpace<F>,
 {
     let main = read_commitment(reader)?;
-    let permutation = read_option(reader, "permutation commitment", |reader| {
-        read_commitment(reader)
-    })?;
+    let permutation =
+        reader.read_option("permutation commitment", |reader| read_commitment(reader))?;
     let quotient_chunks = read_commitment(reader)?;
-    let random = read_option(reader, "random commitment", |reader| {
-        read_commitment(reader)
-    })?;
+    let random = reader.read_option("random commitment", |reader| read_commitment(reader))?;
     let max_instances = reader.limits().verifier.max_instances;
     let max_width = reader.limits().verifier.max_matrix_width;
     let instances =
@@ -245,7 +208,7 @@ where
     let opening_proof = read_opening_proof(reader)?;
     let lookup_terminals =
         reader.read_vec_limited("lookup terminals", max_instances, 1, |reader| {
-            read_option(reader, "lookup terminal", |reader| {
+            reader.read_option("lookup terminal", |reader| {
                 reader.read_extension(field).map(LookupTerminal)
             })
         })?;

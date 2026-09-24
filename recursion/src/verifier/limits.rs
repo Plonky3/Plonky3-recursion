@@ -113,13 +113,7 @@ impl InputResourceUsage {
             ),
         ];
         for (component, actual, limit) in checks {
-            if actual > limit {
-                return Err(VerificationError::ResourceLimitExceeded {
-                    component,
-                    actual,
-                    limit,
-                });
-            }
+            check_limit(component, actual, limit)?;
         }
         Ok(())
     }
@@ -148,7 +142,7 @@ impl InputResourceUsage {
         count: usize,
     ) -> Result<(), VerificationError> {
         self.rounds = Self::checked_add("rounds", self.rounds, count)?;
-        self.check_component("rounds", self.rounds, limits.max_rounds)
+        check_limit("rounds", self.rounds, limits.max_rounds)
     }
 
     pub fn add_instances(
@@ -157,7 +151,7 @@ impl InputResourceUsage {
         count: usize,
     ) -> Result<(), VerificationError> {
         self.instances = Self::checked_add("instances", self.instances, count)?;
-        self.check_component("instances", self.instances, limits.max_instances)
+        check_limit("instances", self.instances, limits.max_instances)
     }
 
     pub fn add_metadata_entries(
@@ -167,7 +161,7 @@ impl InputResourceUsage {
     ) -> Result<(), VerificationError> {
         self.metadata_entries =
             Self::checked_add("metadata entries", self.metadata_entries, count)?;
-        self.check_component(
+        check_limit(
             "metadata entries",
             self.metadata_entries,
             limits.max_metadata_entries,
@@ -181,7 +175,7 @@ impl InputResourceUsage {
     ) -> Result<(), VerificationError> {
         self.metadata_string_bytes =
             Self::checked_add("metadata string bytes", self.metadata_string_bytes, count)?;
-        self.check_component(
+        check_limit(
             "metadata string bytes",
             self.metadata_string_bytes,
             limits.max_metadata_string_bytes,
@@ -194,7 +188,7 @@ impl InputResourceUsage {
         count: usize,
     ) -> Result<(), VerificationError> {
         self.scalar_elements = Self::checked_add("scalar elements", self.scalar_elements, count)?;
-        self.check_component(
+        check_limit(
             "scalar elements",
             self.scalar_elements,
             limits.max_total_scalar_elements,
@@ -207,7 +201,7 @@ impl InputResourceUsage {
         count: usize,
     ) -> Result<(), VerificationError> {
         self.cap_roots = Self::checked_add("cap roots", self.cap_roots, count)?;
-        self.check_component("cap roots", self.cap_roots, limits.max_cap_roots)
+        check_limit("cap roots", self.cap_roots, limits.max_cap_roots)
     }
 
     pub fn add_final_poly_evaluations(
@@ -215,13 +209,11 @@ impl InputResourceUsage {
         limits: &VerifierLimits,
         count: usize,
     ) -> Result<(), VerificationError> {
-        if count > limits.max_final_poly_evaluations {
-            return Err(VerificationError::ResourceLimitExceeded {
-                component: "final polynomial evaluations",
-                actual: count,
-                limit: limits.max_final_poly_evaluations,
-            });
-        }
+        check_limit(
+            "final polynomial evaluations",
+            count,
+            limits.max_final_poly_evaluations,
+        )?;
         self.final_poly_evaluations = self.final_poly_evaluations.max(count);
         Ok(())
     }
@@ -236,7 +228,7 @@ impl InputResourceUsage {
             self.compressed_frontier_hashes,
             count,
         )?;
-        self.check_component(
+        check_limit(
             "compressed frontier hashes",
             self.compressed_frontier_hashes,
             limits.max_compressed_frontier_hashes,
@@ -260,7 +252,7 @@ impl InputResourceUsage {
             self.restored_authentication_path_hashes,
             count,
         )?;
-        self.check_component(
+        check_limit(
             "restored authentication-path hashes",
             self.restored_authentication_path_hashes,
             limits.max_restored_authentication_path_hashes,
@@ -272,7 +264,7 @@ impl InputResourceUsage {
         limits: &VerifierLimits,
         width: usize,
     ) -> Result<(), VerificationError> {
-        self.check_component("matrix or row width", width, limits.max_matrix_width)
+        check_limit("matrix or row width", width, limits.max_matrix_width)
     }
 
     pub const fn check_log_degree(
@@ -280,7 +272,7 @@ impl InputResourceUsage {
         limits: &VerifierLimits,
         value: usize,
     ) -> Result<(), VerificationError> {
-        self.check_component(
+        check_limit(
             "log domain or degree",
             value,
             limits.max_log_domain_or_degree,
@@ -300,7 +292,7 @@ impl InputResourceUsage {
             self.restored_authentication_path_hashes,
             other.restored_authentication_path_hashes,
         )?;
-        self.check_component(
+        check_limit(
             "restored authentication-path hashes",
             self.restored_authentication_path_hashes,
             limits.max_restored_authentication_path_hashes,
@@ -312,22 +304,22 @@ impl InputResourceUsage {
             .max(other.max_whir_opening_width_sum);
         Ok(())
     }
+}
 
-    const fn check_component(
-        &self,
-        component: &'static str,
-        actual: usize,
-        limit: usize,
-    ) -> Result<(), VerificationError> {
-        if actual > limit {
-            Err(VerificationError::ResourceLimitExceeded {
-                component,
-                actual,
-                limit,
-            })
-        } else {
-            Ok(())
-        }
+/// Reject `actual` when it exceeds the configured `limit` for `component`.
+pub(crate) const fn check_limit(
+    component: &'static str,
+    actual: usize,
+    limit: usize,
+) -> Result<(), VerificationError> {
+    if actual > limit {
+        Err(VerificationError::ResourceLimitExceeded {
+            component,
+            actual,
+            limit,
+        })
+    } else {
+        Ok(())
     }
 }
 

@@ -803,7 +803,6 @@ where
     /// The `inputs` parameter contains all input expressions (flattened), making dependencies
     /// explicit in the DAG structure. For stateful ops with chaining (e.g., `in_ctl=false`),
     /// `inputs` may be empty since chained values are not in the witness table.
-    #[allow(unused)]
     #[allow(unused_variables)]
     pub fn add_non_primitive_call(
         &mut self,

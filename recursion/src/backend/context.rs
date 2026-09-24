@@ -9,6 +9,7 @@ use p3_commit::Pcs;
 use p3_field::{Algebra, ExtensionField, PrimeCharacteristicRing, PrimeField64};
 use p3_lookup::logup::LogUpGadget;
 use p3_uni_stark::{OpenedValues, Proof, StarkGenericConfig, Val};
+use p3_util::log2_ceil_usize;
 
 use crate::input_contract::stark_layout::{CommitmentRole, NativeStarkLayout};
 use crate::input_contract::{GlobalPreprocessedShape, NonPrimitiveContract};
@@ -68,12 +69,7 @@ const fn check_height(
     limits: &VerifierLimits,
     height: usize,
 ) -> Result<(), VerificationError> {
-    let log = if height <= 1 {
-        0
-    } else {
-        usize::BITS as usize - (height - 1).leading_zeros() as usize
-    };
-    usage.check_log_degree(limits, log)
+    usage.check_log_degree(limits, log2_ceil_usize(height))
 }
 
 pub(crate) fn check_uni_stark_resources<SC, Comm>(

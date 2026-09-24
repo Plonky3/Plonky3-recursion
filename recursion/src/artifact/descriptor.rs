@@ -28,44 +28,10 @@ pub(crate) enum BuiltinNpoV1 {
     Poseidon2(Poseidon2Config),
 }
 
-const POSEIDON1_CONFIGS: [Poseidon1Config; 12] = [
-    Poseidon1Config::BABY_BEAR_D1_W16,
-    Poseidon1Config::BABY_BEAR_D4_W16,
-    Poseidon1Config::BABY_BEAR_D4_W24,
-    Poseidon1Config::KOALA_BEAR_D1_W16,
-    Poseidon1Config::KOALA_BEAR_D4_W16,
-    Poseidon1Config::KOALA_BEAR_D4_W24,
-    Poseidon1Config::GOLDILOCKS_D2_W8,
-    Poseidon1Config::BABY_BEAR_D4_W16.for_challenger(),
-    Poseidon1Config::BABY_BEAR_D4_W24.for_challenger(),
-    Poseidon1Config::KOALA_BEAR_D4_W16.for_challenger(),
-    Poseidon1Config::KOALA_BEAR_D4_W24.for_challenger(),
-    Poseidon1Config::GOLDILOCKS_D2_W8.for_challenger(),
-];
-
-const POSEIDON2_CONFIGS: [Poseidon2Config; 21] = [
-    Poseidon2Config::BABY_BEAR_D1_W16,
-    Poseidon2Config::BABY_BEAR_D4_W16,
-    Poseidon2Config::BABY_BEAR_D4_W24,
-    Poseidon2Config::BABY_BEAR_D4_W32,
-    Poseidon2Config::KOALA_BEAR_D1_W16,
-    Poseidon2Config::KOALA_BEAR_D4_W16,
-    Poseidon2Config::KOALA_BEAR_D4_W24,
-    Poseidon2Config::KOALA_BEAR_D1_W32,
-    Poseidon2Config::KOALA_BEAR_D4_W32,
-    Poseidon2Config::GOLDILOCKS_D2_W8,
-    Poseidon2Config::GOLDILOCKS_D2_W16,
-    Poseidon2Config::BABY_BEAR_D4_W16.for_challenger(),
-    Poseidon2Config::BABY_BEAR_D4_W24.for_challenger(),
-    Poseidon2Config::KOALA_BEAR_D4_W16.for_challenger(),
-    Poseidon2Config::KOALA_BEAR_D4_W24.for_challenger(),
-    Poseidon2Config::GOLDILOCKS_D2_W8.for_challenger(),
-    Poseidon2Config::BABY_BEAR_D4_W16.for_shared_challenger_table(),
-    Poseidon2Config::BABY_BEAR_D4_W24.for_shared_challenger_table(),
-    Poseidon2Config::KOALA_BEAR_D4_W16.for_shared_challenger_table(),
-    Poseidon2Config::KOALA_BEAR_D4_W24.for_shared_challenger_table(),
-    Poseidon2Config::GOLDILOCKS_D2_W8.for_shared_challenger_table(),
-];
+// Built-in artifacts encode a Poseidon config as its index in these lists, so
+// their order is part of the wire format.
+const POSEIDON1_CONFIGS: [Poseidon1Config; 12] = p3_circuit_prover::SUPPORTED_POSEIDON1_CONFIGS;
+const POSEIDON2_CONFIGS: [Poseidon2Config; 21] = p3_circuit_prover::SUPPORTED_POSEIDON2_CONFIGS;
 
 impl BuiltinNpoV1 {
     fn from_native(op_type: &NpoTypeId) -> Result<Self, ArtifactError> {
@@ -325,26 +291,18 @@ fn npo_from_native<F: Copy>(
 }
 
 fn write_option_u32(writer: &mut Writer, value: Option<usize>) -> Result<(), ArtifactError> {
-    match value {
-        None => writer.write_u8(0),
-        Some(value) => {
-            writer.write_u8(1)?;
-            writer.write_count("optional index", value)
-        }
-    }
+    writer.write_option(value.as_ref(), |writer, &value| {
+        writer.write_count("optional index", value)
+    })
 }
 
 fn read_option_u32(
     reader: &mut Reader<'_>,
     component: &'static str,
 ) -> Result<Option<usize>, ArtifactError> {
-    match reader.read_u8()? {
-        0 => Ok(None),
-        1 => Ok(Some(
-            usize::try_from(reader.read_u32()?).map_err(|_| ArtifactError::LengthOverflow)?,
-        )),
-        tag => Err(ArtifactError::InvalidTag { component, tag }),
-    }
+    reader.read_option(component, |reader| {
+        usize::try_from(reader.read_u32()?).map_err(|_| ArtifactError::LengthOverflow)
+    })
 }
 
 fn write_air_variant(writer: &mut Writer, variant: AirVariant) -> Result<(), ArtifactError> {

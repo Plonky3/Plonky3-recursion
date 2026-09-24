@@ -97,6 +97,21 @@ impl Writer {
         self.write_u8(u8::from(value))
     }
 
+    /// Writes a `0` tag for `None`, or a `1` tag followed by the encoded value.
+    pub(crate) fn write_option<T>(
+        &mut self,
+        value: Option<&T>,
+        write_value: impl FnOnce(&mut Self, &T) -> Result<(), ArtifactError>,
+    ) -> Result<(), ArtifactError> {
+        match value {
+            None => self.write_u8(0),
+            Some(value) => {
+                self.write_u8(1)?;
+                write_value(self, value)
+            }
+        }
+    }
+
     pub(crate) fn write_u16(&mut self, value: u16) -> Result<(), ArtifactError> {
         self.write_bytes(&value.to_le_bytes())
     }
@@ -239,6 +254,19 @@ impl<'a> Reader<'a> {
             0 => Ok(false),
             1 => Ok(true),
             tag => Err(ArtifactError::InvalidTag { component, tag }),
+        }
+    }
+
+    /// Reads an option written by [`Writer::write_option`].
+    pub(crate) fn read_option<T>(
+        &mut self,
+        component: &'static str,
+        read_value: impl FnOnce(&mut Self) -> Result<T, ArtifactError>,
+    ) -> Result<Option<T>, ArtifactError> {
+        if self.read_bool(component)? {
+            read_value(self).map(Some)
+        } else {
+            Ok(None)
         }
     }
 

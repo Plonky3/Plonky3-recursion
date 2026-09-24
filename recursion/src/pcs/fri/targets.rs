@@ -5,7 +5,6 @@ use core::marker::PhantomData;
 
 use p3_challenger::{CanObserve, GrindingChallenger};
 use p3_circuit::ops::PermConfig;
-use p3_circuit::symbolic::RowSelectorsTargets;
 use p3_circuit::{CircuitBuilder, CircuitBuilderError, NonPrimitiveOpId};
 use p3_commit::{BatchOpening, ExtensionMmcs, Mmcs, OpenedValues, PolynomialSpace};
 use p3_field::coset::TwoAdicMultiplicativeCoset;
@@ -2149,40 +2148,7 @@ where
         domain: &TwoAdicMultiplicativeCoset<Val<SC>>,
         point: &Target,
     ) -> RecursiveLagrangeSelectors {
-        // Constants that we will need.
-        let shift_inv =
-            circuit.alloc_const(SC::Challenge::from(domain.shift_inverse()), "shift_inv");
-        let one = circuit.alloc_const(SC::Challenge::from(Val::<SC>::ONE), "1");
-        let subgroup_gen_inv = circuit.alloc_const(
-            SC::Challenge::from(domain.subgroup_generator().inverse()),
-            "subgroup_gen_inv",
-        );
-
-        // Unshifted and z_h
-        let unshifted_point = circuit.alloc_mul(shift_inv, *point, "unshifted_point");
-        let us_exp = circuit.exp_power_of_2(unshifted_point, domain.log_size());
-        let z_h = circuit.alloc_sub(us_exp, one, "z_h");
-
-        // Denominators
-        let us_minus_one = circuit.alloc_sub(unshifted_point, one, "us_minus_one");
-        let us_minus_gen_inv =
-            circuit.alloc_sub(unshifted_point, subgroup_gen_inv, "us_minus_gen_inv");
-
-        // Selectors
-        let is_first_row = circuit.alloc_div(z_h, us_minus_one, "is_first_row");
-        let is_last_row = circuit.alloc_div(z_h, us_minus_gen_inv, "is_last_row");
-        let is_transition = us_minus_gen_inv;
-        let inv_vanishing = circuit.alloc_div(one, z_h, "inv_vanishing");
-
-        let row_selectors = RowSelectorsTargets {
-            is_first_row,
-            is_last_row,
-            is_transition,
-        };
-        RecursiveLagrangeSelectors {
-            row_selectors,
-            inv_vanishing,
-        }
+        RecursiveLagrangeSelectors::two_adic_at_point(circuit, domain, *point)
     }
 
     fn evaluate_periodic_columns_at_point_circuit(
@@ -2638,36 +2604,7 @@ where
         domain: &TwoAdicMultiplicativeCoset<Val<SC>>,
         point: &Target,
     ) -> RecursiveLagrangeSelectors {
-        let shift_inv =
-            circuit.alloc_const(SC::Challenge::from(domain.shift_inverse()), "shift_inv");
-        let one = circuit.alloc_const(SC::Challenge::from(Val::<SC>::ONE), "1");
-        let subgroup_gen_inv = circuit.alloc_const(
-            SC::Challenge::from(domain.subgroup_generator().inverse()),
-            "subgroup_gen_inv",
-        );
-
-        let unshifted_point = circuit.alloc_mul(shift_inv, *point, "unshifted_point");
-        let us_exp = circuit.exp_power_of_2(unshifted_point, domain.log_size());
-        let z_h = circuit.alloc_sub(us_exp, one, "z_h");
-
-        let us_minus_one = circuit.alloc_sub(unshifted_point, one, "us_minus_one");
-        let us_minus_gen_inv =
-            circuit.alloc_sub(unshifted_point, subgroup_gen_inv, "us_minus_gen_inv");
-
-        let is_first_row = circuit.alloc_div(z_h, us_minus_one, "is_first_row");
-        let is_last_row = circuit.alloc_div(z_h, us_minus_gen_inv, "is_last_row");
-        let is_transition = us_minus_gen_inv;
-        let inv_vanishing = circuit.alloc_div(one, z_h, "inv_vanishing");
-
-        let row_selectors = RowSelectorsTargets {
-            is_first_row,
-            is_last_row,
-            is_transition,
-        };
-        RecursiveLagrangeSelectors {
-            row_selectors,
-            inv_vanishing,
-        }
+        RecursiveLagrangeSelectors::two_adic_at_point(circuit, domain, *point)
     }
 
     fn evaluate_periodic_columns_at_point_circuit(

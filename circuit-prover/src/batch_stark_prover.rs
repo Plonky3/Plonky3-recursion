@@ -1010,10 +1010,10 @@ fn builtin_artifact_op_type(air: BuiltinArtifactAir) -> Result<NpoTypeId, BatchS
         BuiltinArtifactAir::RecomposeWithCoefficientLookups => {
             Ok(NpoTypeId::recompose_with_coeff_lookups())
         }
-        BuiltinArtifactAir::Poseidon1(config) if supported_poseidon1(config) => {
+        BuiltinArtifactAir::Poseidon1(config) if SUPPORTED_POSEIDON1_CONFIGS.contains(&config) => {
             Ok(NpoTypeId::poseidon1_perm(config))
         }
-        BuiltinArtifactAir::Poseidon2(config) if supported_poseidon2(config) => {
+        BuiltinArtifactAir::Poseidon2(config) if SUPPORTED_POSEIDON2_CONFIGS.contains(&config) => {
             Ok(NpoTypeId::poseidon2_perm(config))
         }
         BuiltinArtifactAir::Poseidon1(_) | BuiltinArtifactAir::Poseidon2(_) => Err(
@@ -1096,50 +1096,50 @@ fn validate_poseidon_field<F: PrimeField64>(
     }
 }
 
-fn supported_poseidon1(config: Poseidon1Config) -> bool {
-    [
-        Poseidon1Config::BABY_BEAR_D1_W16,
-        Poseidon1Config::BABY_BEAR_D4_W16,
-        Poseidon1Config::BABY_BEAR_D4_W24,
-        Poseidon1Config::KOALA_BEAR_D1_W16,
-        Poseidon1Config::KOALA_BEAR_D4_W16,
-        Poseidon1Config::KOALA_BEAR_D4_W24,
-        Poseidon1Config::GOLDILOCKS_D2_W8,
-        Poseidon1Config::BABY_BEAR_D4_W16.for_challenger(),
-        Poseidon1Config::BABY_BEAR_D4_W24.for_challenger(),
-        Poseidon1Config::KOALA_BEAR_D4_W16.for_challenger(),
-        Poseidon1Config::KOALA_BEAR_D4_W24.for_challenger(),
-        Poseidon1Config::GOLDILOCKS_D2_W8.for_challenger(),
-    ]
-    .contains(&config)
-}
+/// Poseidon1 configurations accepted by built-in artifact relations.
+///
+/// The order is frozen: artifact descriptors encode each entry by its index.
+pub const SUPPORTED_POSEIDON1_CONFIGS: [Poseidon1Config; 12] = [
+    Poseidon1Config::BABY_BEAR_D1_W16,
+    Poseidon1Config::BABY_BEAR_D4_W16,
+    Poseidon1Config::BABY_BEAR_D4_W24,
+    Poseidon1Config::KOALA_BEAR_D1_W16,
+    Poseidon1Config::KOALA_BEAR_D4_W16,
+    Poseidon1Config::KOALA_BEAR_D4_W24,
+    Poseidon1Config::GOLDILOCKS_D2_W8,
+    Poseidon1Config::BABY_BEAR_D4_W16.for_challenger(),
+    Poseidon1Config::BABY_BEAR_D4_W24.for_challenger(),
+    Poseidon1Config::KOALA_BEAR_D4_W16.for_challenger(),
+    Poseidon1Config::KOALA_BEAR_D4_W24.for_challenger(),
+    Poseidon1Config::GOLDILOCKS_D2_W8.for_challenger(),
+];
 
-fn supported_poseidon2(config: Poseidon2Config) -> bool {
-    [
-        Poseidon2Config::BABY_BEAR_D1_W16,
-        Poseidon2Config::BABY_BEAR_D4_W16,
-        Poseidon2Config::BABY_BEAR_D4_W24,
-        Poseidon2Config::BABY_BEAR_D4_W32,
-        Poseidon2Config::KOALA_BEAR_D1_W16,
-        Poseidon2Config::KOALA_BEAR_D4_W16,
-        Poseidon2Config::KOALA_BEAR_D4_W24,
-        Poseidon2Config::KOALA_BEAR_D1_W32,
-        Poseidon2Config::KOALA_BEAR_D4_W32,
-        Poseidon2Config::GOLDILOCKS_D2_W8,
-        Poseidon2Config::GOLDILOCKS_D2_W16,
-        Poseidon2Config::BABY_BEAR_D4_W16.for_challenger(),
-        Poseidon2Config::BABY_BEAR_D4_W24.for_challenger(),
-        Poseidon2Config::KOALA_BEAR_D4_W16.for_challenger(),
-        Poseidon2Config::KOALA_BEAR_D4_W24.for_challenger(),
-        Poseidon2Config::GOLDILOCKS_D2_W8.for_challenger(),
-        Poseidon2Config::BABY_BEAR_D4_W16.for_shared_challenger_table(),
-        Poseidon2Config::BABY_BEAR_D4_W24.for_shared_challenger_table(),
-        Poseidon2Config::KOALA_BEAR_D4_W16.for_shared_challenger_table(),
-        Poseidon2Config::KOALA_BEAR_D4_W24.for_shared_challenger_table(),
-        Poseidon2Config::GOLDILOCKS_D2_W8.for_shared_challenger_table(),
-    ]
-    .contains(&config)
-}
+/// Poseidon2 configurations accepted by built-in artifact relations.
+///
+/// The order is frozen: artifact descriptors encode each entry by its index.
+pub const SUPPORTED_POSEIDON2_CONFIGS: [Poseidon2Config; 21] = [
+    Poseidon2Config::BABY_BEAR_D1_W16,
+    Poseidon2Config::BABY_BEAR_D4_W16,
+    Poseidon2Config::BABY_BEAR_D4_W24,
+    Poseidon2Config::BABY_BEAR_D4_W32,
+    Poseidon2Config::KOALA_BEAR_D1_W16,
+    Poseidon2Config::KOALA_BEAR_D4_W16,
+    Poseidon2Config::KOALA_BEAR_D4_W24,
+    Poseidon2Config::KOALA_BEAR_D1_W32,
+    Poseidon2Config::KOALA_BEAR_D4_W32,
+    Poseidon2Config::GOLDILOCKS_D2_W8,
+    Poseidon2Config::GOLDILOCKS_D2_W16,
+    Poseidon2Config::BABY_BEAR_D4_W16.for_challenger(),
+    Poseidon2Config::BABY_BEAR_D4_W24.for_challenger(),
+    Poseidon2Config::KOALA_BEAR_D4_W16.for_challenger(),
+    Poseidon2Config::KOALA_BEAR_D4_W24.for_challenger(),
+    Poseidon2Config::GOLDILOCKS_D2_W8.for_challenger(),
+    Poseidon2Config::BABY_BEAR_D4_W16.for_shared_challenger_table(),
+    Poseidon2Config::BABY_BEAR_D4_W24.for_shared_challenger_table(),
+    Poseidon2Config::KOALA_BEAR_D4_W16.for_shared_challenger_table(),
+    Poseidon2Config::KOALA_BEAR_D4_W24.for_shared_challenger_table(),
+    Poseidon2Config::GOLDILOCKS_D2_W8.for_shared_challenger_table(),
+];
 
 fn validate_artifact_common<SC, const D: usize>(
     airs: &[CircuitTableAir<SC, D>],

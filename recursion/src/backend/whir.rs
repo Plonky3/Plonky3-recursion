@@ -25,6 +25,7 @@ use p3_field::{
 use p3_lookup::Lookup;
 use p3_lookup::logup::LogUpGadget;
 use p3_uni_stark::{StarkGenericConfig, SymbolicExpressionExt, Val};
+use p3_util::log2_ceil_usize;
 
 use crate::backend::CheckedVerifierResult;
 use crate::backend::context::{
@@ -55,7 +56,7 @@ use crate::public_inputs::{BatchStarkVerifierInputsBuilder, StarkVerifierInputsB
 use crate::recursion::{PcsRecursionBackend, RecursionInput, VerifierCircuitResult};
 use crate::traits::{CheckedRecursive, PreparedRecursive, RecursiveAir};
 use crate::verifier::{
-    InputResourceUsage, ObservableCommitment, VerificationError, VerifierLimits,
+    InputResourceUsage, ObservableCommitment, VerificationError, VerifierLimits, check_limit,
     plan_batch_native_layout, plan_uni_native_layout, reconstruct_batch_tables,
     trusted_batch_tables, verify_p3_batch_proof_circuit, verify_p3_uni_proof_circuit,
     verify_trusted_p3_batch_proof_circuit,
@@ -341,11 +342,7 @@ where
 {
     let params = config.pcs_verifier_params();
     let padded_degree = degree_bits.max(params.folding());
-    let width_log = if usage.max_whir_opening_width_sum <= 1 {
-        0
-    } else {
-        usize::BITS as usize - (usage.max_whir_opening_width_sum - 1).leading_zeros() as usize
-    };
+    let width_log = log2_ceil_usize(usage.max_whir_opening_width_sum);
     // A valid WHIR argument stacks each committed matrix column into a
     // separate 2^padded_degree slot. Summing every opening-batch width can
     // repeat a matrix opened at several points, but cannot underestimate the
@@ -947,13 +944,11 @@ where
             ) => {
                 let values =
                     builder.try_pack_public_values(public_inputs, proof, preprocessed_commit)?;
-                if values.len() > limits.max_total_scalar_elements {
-                    return Err(VerificationError::ResourceLimitExceeded {
-                        component: "packed scalar elements",
-                        actual: values.len(),
-                        limit: limits.max_total_scalar_elements,
-                    });
-                }
+                check_limit(
+                    "packed scalar elements",
+                    values.len(),
+                    limits.max_total_scalar_elements,
+                )?;
                 Ok(values)
             }
             (
@@ -969,13 +964,11 @@ where
                     &proof.proof,
                     common_data,
                 )?;
-                if values.len() > limits.max_total_scalar_elements {
-                    return Err(VerificationError::ResourceLimitExceeded {
-                        component: "packed scalar elements",
-                        actual: values.len(),
-                        limit: limits.max_total_scalar_elements,
-                    });
-                }
+                check_limit(
+                    "packed scalar elements",
+                    values.len(),
+                    limits.max_total_scalar_elements,
+                )?;
                 Ok(values)
             }
             _ => Err(VerificationError::InvalidProofShape(
@@ -992,24 +985,20 @@ where
         match (self, prev) {
             (Self::UniStark(builder, _, limits), RecursionInput::UniStark { proof, .. }) => {
                 let values = builder.try_pack_private_values(proof)?;
-                if values.len() > limits.max_total_scalar_elements {
-                    return Err(VerificationError::ResourceLimitExceeded {
-                        component: "packed scalar elements",
-                        actual: values.len(),
-                        limit: limits.max_total_scalar_elements,
-                    });
-                }
+                check_limit(
+                    "packed scalar elements",
+                    values.len(),
+                    limits.max_total_scalar_elements,
+                )?;
                 Ok(values)
             }
             (Self::BatchStark(builder, _, limits), RecursionInput::BatchStark { proof, .. }) => {
                 let values = builder.try_pack_private_values(&proof.proof)?;
-                if values.len() > limits.max_total_scalar_elements {
-                    return Err(VerificationError::ResourceLimitExceeded {
-                        component: "packed scalar elements",
-                        actual: values.len(),
-                        limit: limits.max_total_scalar_elements,
-                    });
-                }
+                check_limit(
+                    "packed scalar elements",
+                    values.len(),
+                    limits.max_total_scalar_elements,
+                )?;
                 Ok(values)
             }
             _ => Err(VerificationError::InvalidProofShape(

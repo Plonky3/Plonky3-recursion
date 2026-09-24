@@ -39,7 +39,7 @@ pub(crate) fn fri_finisher_calls() -> usize {
 /// This is intentionally not public API and carries no commitment authority;
 /// the checked adapter below only constructs [`ValidatedFriContext`] after it
 /// has validated the borrowed input and phase caps.
-#[allow(dead_code)]
+#[cfg(test)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct FriContextShape {
     native_query_count: usize,
@@ -387,12 +387,12 @@ pub(crate) struct FriValueCounts {
 }
 
 impl FriValueCounts {
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) const fn private_values(self) -> usize {
         self.private_values
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) const fn public_values(self) -> usize {
         self.public_values
     }
@@ -558,13 +558,10 @@ fn validate_hiding_tail_partition(
     Ok(shape)
 }
 
-#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct CoreValidation {
     query_count: usize,
-    max_input_log: usize,
     total_reduction: usize,
-    has_input_matrix: bool,
 }
 
 const MAX_FRI_COMMITMENTS: usize = 5;
@@ -611,7 +608,7 @@ fn validate_hiding_tail_partition_borrowed(
 
 /// Validate the complete native-vs-recursive FRI shape without transcript work,
 /// target allocation, challenger sampling, or PCS/MMCS cloning.
-#[allow(dead_code)]
+#[cfg(test)]
 pub(crate) fn validate_fri_context_core<F, EF, IM, FM, W>(
     proof: &FriProof<EF, FM, W, Vec<BatchMultiOpening<F, IM>>>,
     native: &NativeFriParams,
@@ -878,9 +875,7 @@ where
     let _ = perm;
     Ok(CoreValidation {
         query_count,
-        max_input_log: max_input_height,
         total_reduction,
-        has_input_matrix,
     })
 }
 

@@ -63,10 +63,10 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for StatementExec
             });
         }
 
-        let mut values = Vec::with_capacity(self.public_len);
-        for &wid in &inputs[0] {
-            values.push(ctx.get_witness(wid)?);
-        }
+        let values = inputs[0]
+            .iter()
+            .map(|&wid| ctx.get_witness(wid))
+            .collect::<Result<Vec<_>, _>>()?;
         let state = ctx.get_op_state_mut::<StatementExecutionState<F>>(&self.op_type);
         if !state.rows.is_empty() {
             return Err(CircuitError::MultipleStatementOperations);
