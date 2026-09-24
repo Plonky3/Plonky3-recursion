@@ -171,6 +171,7 @@ where
         input: &'a TrustedPreparedInput<'p, SC>,
     ) -> Result<RecursionInput<'a, SC, A>, VerificationError>
     where
+        SC::Challenger: p3_challenger::GrindingChallenger<Witness = p3_uni_stark::Val<SC>>,
         NativeCommitment<SC>: Clone,
     {
         match (self, input) {
@@ -230,6 +231,9 @@ where
 
 impl<'air, InSC, OutSC, A, B, const D: usize> TrustedPreparedLayer<'air, InSC, OutSC, A, B, D>
 where
+    p3_uni_stark::PcsProverError<OutSC>: Send,
+    OutSC::Challenger: p3_challenger::GrindingChallenger<Witness = p3_uni_stark::Val<OutSC>>,
+    InSC::Challenger: p3_challenger::GrindingChallenger<Witness = p3_uni_stark::Val<InSC>>,
     InSC: StarkGenericConfig + Send + Sync + Clone + 'static,
     OutSC: StarkGenericConfig<Challenge = InSC::Challenge> + Send + Sync + Clone + 'static,
     A: RecursiveAir<Val<InSC>, InSC::Challenge, LogUpGadget>,
@@ -444,6 +448,9 @@ where
 impl<'left_air, 'right_air, InSC, OutSC, A1, A2, B, const D: usize>
     TrustedPreparedAggregation<'left_air, 'right_air, InSC, OutSC, A1, A2, B, D>
 where
+    p3_uni_stark::PcsProverError<OutSC>: Send,
+    OutSC::Challenger: p3_challenger::GrindingChallenger<Witness = p3_uni_stark::Val<OutSC>>,
+    InSC::Challenger: p3_challenger::GrindingChallenger<Witness = p3_uni_stark::Val<InSC>>,
     InSC: StarkGenericConfig + Send + Sync + Clone + 'static,
     OutSC: StarkGenericConfig<Challenge = InSC::Challenge> + Send + Sync + Clone + 'static,
     A1: RecursiveAir<Val<InSC>, InSC::Challenge, LogUpGadget>,

@@ -276,6 +276,12 @@ pub struct ConstraintWeightData {
     pub sel_scalars: Vec<Target>,
     /// Batching challenge `γ` used to combine eq and sel contributions.
     pub gamma: Target,
+    /// Exponent of `γ` weighting the first statement.
+    ///
+    /// Mirrors `p3_sumcheck::constraints::Constraint`'s `initial_power`: `0` for the
+    /// initial constraint, `1` for every round constraint, which carries an existing
+    /// claim at `γ^0` so its fresh statements start at `γ^1`.
+    pub initial_power: usize,
 }
 
 /// Evaluates the full WHIR constraint-weight polynomial at the accumulated
@@ -304,7 +310,10 @@ pub fn eval_constraints_poly_circuit<F: Field>(
             local_r_slice.to_vec()
         };
         let eq_refs: Vec<&[Target]> = c.eq_points.iter().map(|v| v.as_slice()).collect();
-        let w = eval_constraint_weight(builder, &local_r, &eq_refs, &c.sel_scalars, c.gamma);
+        let mut w = eval_constraint_weight(builder, &local_r, &eq_refs, &c.sel_scalars, c.gamma);
+        for _ in 0..c.initial_power {
+            w = builder.mul(w, c.gamma);
+        }
         total = builder.add(total, w);
     }
     total

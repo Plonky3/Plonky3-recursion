@@ -7,12 +7,14 @@ use core::any::Any;
 #[cfg(debug_assertions)]
 use p3_air::DebugConstraintBuilder;
 use p3_air::{Air, BaseAir};
+use p3_batch_stark::folder::{
+    ProverConstraintFolderWithLookups, VerifierConstraintFolderWithLookups,
+};
 use p3_batch_stark::{StarkGenericConfig, Val};
 use p3_circuit::ops::NpoTypeId;
 use p3_circuit::tables::Traces;
 use p3_field::extension::{BinomialExtensionField, QuinticTrinomialExtensionField};
 use p3_field::{Algebra, PrimeField};
-use p3_lookup::folder::{ProverConstraintFolderWithLookups, VerifierConstraintFolderWithLookups};
 use p3_lookup::symbolic::InteractionSymbolicBuilder;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_uni_stark::{SymbolicExpression, SymbolicExpressionExt};

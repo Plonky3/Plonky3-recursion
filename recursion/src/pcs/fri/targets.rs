@@ -39,6 +39,7 @@ use crate::traits::{
     CheckedRecursive, ComsWithOpeningsTargets, PreparedRecursive, Recursive, RecursiveChallenger,
     RecursiveExtensionMmcs, RecursiveMmcs, RecursivePcs,
 };
+use crate::transcript::domain_separator_seed;
 use crate::types::{OpenedValuesTargetsWithLookups, RecursiveLagrangeSelectors};
 use crate::verifier::{
     InputResourceUsage, ObservableCommitment, VerificationError, VerifierLimits,
@@ -213,6 +214,53 @@ fn num_queries_from_counts(from_rounds: Option<usize>, from_batches: Option<usiz
     }
 }
 
+/// The domain-separator seed of the native FRI PCS transcript for a set of claims.
+///
+/// The recursive verifier only accepts a zero batch-phase difficulty (see
+/// [`NativeFriParams`]), so the shape binds zero batch PoW bits.
+pub(crate) fn fri_pcs_transcript_seed<F, EF>(
+    claimed_evaluation_counts: Vec<Vec<Vec<usize>>>,
+) -> Vec<F>
+where
+    F: PrimeField64,
+    EF: ExtensionField<F>,
+{
+    domain_separator_seed(
+        &p3_fri::PcsShape {
+            claimed_evaluation_counts,
+            batch_pow_bits: 0,
+        }
+        .domain_separator::<F, EF>(),
+    )
+}
+
+/// The domain-separator seed of the native FRI low-degree test for a fold schedule.
+pub(crate) fn fri_transcript_seed<F, EF>(
+    params: &FriVerifierParams,
+    log_arities: &[usize],
+    num_queries: usize,
+) -> Vec<F>
+where
+    F: PrimeField64,
+    EF: ExtensionField<F>,
+{
+    let index_bits =
+        log_arities.iter().sum::<usize>() + params.log_blowup() + params.log_final_poly_len();
+    domain_separator_seed(
+        &p3_fri::FriShape {
+            log_arities: log_arities.to_vec(),
+            final_poly_len: 1 << params.log_final_poly_len(),
+            commit_pow_bits: params.commit_pow_bits(),
+            query_pow_bits: params.query_pow_bits(),
+            num_queries,
+            index_bits,
+            log_blowup: params.log_blowup(),
+            max_log_arity: params.max_log_arity(),
+        }
+        .domain_separator::<F, EF>(),
+    )
+}
+
 /// Number of queries a [`TwoAdicFriPcs`] proof opens.
 pub fn fri_proof_num_queries<F, EF, InputMmcs, FriMmcs, Witness>(
     proof: &FriProof<EF, FriMmcs, Witness, Vec<BatchMultiOpening<F, InputMmcs>>>,
@@ -319,7 +367,7 @@ where
         let log_arities = input
             .commit_phase_openings
             .iter()
-            .map(|opening| opening.log_arity as usize)
+            .map(|opening| super::sibling_log_arity(opening).unwrap_or(0))
             .collect();
 
         Self {
@@ -334,6 +382,7 @@ where
 
     fn get_values(input: &Self::Input) -> Vec<EF> {
         let FriProof {
+            batch_pow_witness: _,
             commit_phase_commits,
             commit_pow_witnesses,
             input_openings,
@@ -398,6 +447,7 @@ where
 
     fn input_shape(input: &Self::Input) -> Result<Self::Shape, VerificationError> {
         let FriProof {
+            batch_pow_witness: _,
             commit_phase_commits,
             commit_pow_witnesses,
             input_openings,
@@ -423,19 +473,14 @@ where
             ));
         }
 
+        let mut log_arities = Vec::with_capacity(commit_phase_openings.len());
         for step in commit_phase_openings {
-            let siblings = 1usize
-                .checked_shl(u32::from(step.log_arity))
-                .and_then(|arity| arity.checked_sub(1))
-                .filter(|_| step.log_arity > 0)
+            let log_arity = super::sibling_log_arity(step)
+                .and_then(|log_arity| u8::try_from(log_arity).ok())
                 .ok_or_else(|| {
-                    VerificationError::InvalidProofShape("invalid FRI log_arity".into())
+                    VerificationError::InvalidProofShape("FRI sibling arity mismatch".into())
                 })?;
-            if step.sibling_values.iter().any(|row| row.len() != siblings) {
-                return Err(VerificationError::InvalidProofShape(
-                    "FRI sibling arity mismatch".into(),
-                ));
-            }
+            log_arities.push(log_arity);
         }
 
         Ok(FriShape {
@@ -450,9 +495,10 @@ where
             input_openings: InputProof::openings_shape(input_openings)?,
             commit_phase_openings: commit_phase_openings
                 .iter()
-                .map(|step| {
+                .zip(log_arities)
+                .map(|(step, log_arity)| {
                     Ok(FriCommitStepShape {
-                        log_arity: step.log_arity,
+                        log_arity,
                         sibling_values: step.sibling_values.iter().map(Vec::len).collect(),
                         opening_advice: RecMmcs::Proof::multiproof_shape(
                             &step.opening_proof,
@@ -554,16 +600,7 @@ where
 
     let mut query_count = InputProof::validate_openings_raw(&input.input_openings)?;
     for step in &input.commit_phase_openings {
-        let Some(arity) = (1usize)
-            .checked_shl(u32::from(step.log_arity))
-            .and_then(|arity| arity.checked_sub(1))
-            .filter(|_| step.log_arity > 0)
-        else {
-            return Err(VerificationError::InvalidProofShape(
-                "invalid FRI log_arity".into(),
-            ));
-        };
-        if step.sibling_values.iter().any(|row| row.len() != arity) {
+        if super::sibling_log_arity(step).is_none() {
             return Err(VerificationError::InvalidProofShape(
                 "FRI sibling arity mismatch".into(),
             ));
@@ -732,7 +769,8 @@ where
         input: &CommitPhaseMultiStep<EF, RecMmcs::Input>,
         query: usize,
     ) -> Self {
-        let log_arity = input.log_arity as usize;
+        let log_arity = super::sibling_log_arity(input)
+            .expect("FRI commit-phase rows were validated before target allocation");
         let arity = 1usize << log_arity;
         let num_siblings = arity - 1;
         let num_coeffs = num_siblings * EF::DIMENSION;
@@ -2013,6 +2051,17 @@ where
     SC::Challenger: GrindingChallenger + CanObserve<FriMmcs::Commitment>,
 {
     type VerifierParams = FriVerifierParams;
+
+    fn claims_transcript_seed(
+        _params: &Self::VerifierParams,
+        claimed_evaluation_counts: Vec<Vec<Vec<usize>>>,
+    ) -> Vec<Val<SC>>
+    where
+        Val<SC>: PrimeField64,
+        SC::Challenge: ExtensionField<Val<SC>>,
+    {
+        fri_pcs_transcript_seed::<Val<SC>, SC::Challenge>(claimed_evaluation_counts)
+    }
     type RecursiveProof = RecursiveFriProof<
         SC,
         RecursiveFriMmcs,
@@ -2043,8 +2092,19 @@ where
         // For batch-STARK, the caller must observe in per-instance order to match native.
         // For single-STARK, the caller can use opened_values.observe() directly.
 
-        // Sample FRI alpha (for batch opening reduction) - extension field
+        // Sample FRI alpha (for batch opening reduction) - extension field. The batch phase
+        // grinds nothing: the recursive verifier only accepts a zero batch difficulty.
         let fri_alpha = challenger.sample_ext(circuit);
+
+        // The low-degree test opens its own transcript with a seed bound to its shape.
+        challenger.observe_seed(
+            circuit,
+            &fri_transcript_seed::<Val<SC>, SC::Challenge>(
+                params,
+                &fri_proof.log_arities,
+                fri_proof.query_proofs.len(),
+            ),
+        );
 
         // Sample FRI betas: one per commit phase
         // For each FRI commitment, observe it and sample beta
@@ -2065,14 +2125,6 @@ where
 
         // Observe final polynomial coefficients (extension field values)
         challenger.observe_ext_slice(circuit, &fri_proof.final_poly);
-
-        // Bind the variable-arity schedule into the transcript before query grinding,
-        // matching the native FRI verifier in Plonky3.
-        for &log_arity in &fri_proof.log_arities {
-            let log_arity_target =
-                circuit.alloc_const(SC::Challenge::from_usize(log_arity), "FRI log_arity");
-            challenger.observe(circuit, log_arity_target);
-        }
 
         // Check query PoW witness.
         challenger.check_pow_witness(
@@ -2514,6 +2566,17 @@ where
     SC::Challenger: GrindingChallenger + CanObserve<FriMmcs::Commitment>,
 {
     type VerifierParams = FriVerifierParams;
+
+    fn claims_transcript_seed(
+        _params: &Self::VerifierParams,
+        claimed_evaluation_counts: Vec<Vec<Vec<usize>>>,
+    ) -> Vec<Val<SC>>
+    where
+        Val<SC>: PrimeField64,
+        SC::Challenge: ExtensionField<Val<SC>>,
+    {
+        fri_pcs_transcript_seed::<Val<SC>, SC::Challenge>(claimed_evaluation_counts)
+    }
     type RecursiveProof = RecursiveHidingFriProof<
         SC,
         RecursiveFriMmcs,
@@ -2538,6 +2601,14 @@ where
         let fri_proof = &proof_targets.inner_proof;
 
         let fri_alpha = challenger.sample_ext(circuit);
+        challenger.observe_seed(
+            circuit,
+            &fri_transcript_seed::<Val<SC>, SC::Challenge>(
+                params,
+                &fri_proof.log_arities,
+                fri_proof.query_proofs.len(),
+            ),
+        );
 
         let mut betas = Vec::with_capacity(fri_proof.commit_phase_commits.len());
         for (commit, pow) in fri_proof
@@ -2553,12 +2624,6 @@ where
         }
 
         challenger.observe_ext_slice(circuit, &fri_proof.final_poly);
-
-        for &log_arity in &fri_proof.log_arities {
-            let log_arity_target =
-                circuit.alloc_const(SC::Challenge::from_usize(log_arity), "FRI log_arity");
-            challenger.observe(circuit, log_arity_target);
-        }
 
         challenger.check_pow_witness(
             circuit,
@@ -3370,7 +3435,7 @@ mod prepared_shape_tests {
         const MAP10: &[usize] = &[1, 0];
         let (native, recursive) = retention_params();
         let baseline_layout = retention_layout([1, 2], [4, 1], true, MAP01);
-        let baseline = retention_opening([2, 1, 1], [1, 2]);
+        let baseline = retention_opening(&[2, 1, 1], [1, 2]);
         let baseline_caps = retention_caps([1, 1, 1]);
         let baseline_cap_refs = [&baseline_caps[0], &baseline_caps[1], &baseline_caps[2]];
         let counts = validate_counted_fri_raw::<F, Challenge, RecInputMmcs, RecFriMmcs>(
@@ -3480,7 +3545,10 @@ mod prepared_shape_tests {
             &baseline_cap_refs,
         );
 
-        let schedule = retention_opening([1, 2, 1], [1, 2]);
+        // Since p3-fri 0.8 the fold schedule is derived from the configuration and the
+        // input heights, so a proof carrying any other coherent schedule is rejected by
+        // the fresh context check before replacement is ever considered.
+        let schedule = retention_opening(&[1, 2, 1], [1, 2]);
         assert!(
             <OpeningTargets as CheckedFriOpening<
                 Challenge,
@@ -3492,23 +3560,11 @@ mod prepared_shape_tests {
                 baseline_layout.opening_view(),
                 &baseline_cap_refs,
             )
-            .is_ok()
-        );
-        assert!(
-            <OpeningTargets as CheckedFriOpening<
-                Challenge,
-                <RecInputMmcs as RecursiveMmcs<F, Challenge>>::Commitment,
-            >>::validate_fri_replacement(
-                &schedule,
-                &old,
-                baseline_layout.opening_view(),
-                &baseline_cap_refs,
-            )
             .is_err()
         );
 
         let width_layout = retention_layout([2, 1], [4, 1], true, MAP01);
-        let width = retention_opening([2, 1, 1], [2, 1]);
+        let width = retention_opening(&[2, 1, 1], [2, 1]);
         assert!(
             <OpeningTargets as CheckedFriOpening<
                 Challenge,
@@ -3536,12 +3592,15 @@ mod prepared_shape_tests {
         );
 
         let height_layout = retention_layout([1, 2], [4, 2], true, MAP01);
+        // The second instance's LDE now lands at log-height 3, so the configured
+        // schedule folds 5 -> 3 -> 1 in two arity-2 rounds.
+        let height = retention_opening(&[2, 2], [1, 2]);
         assert!(
             <OpeningTargets as CheckedFriOpening<
                 Challenge,
                 <RecInputMmcs as RecursiveMmcs<F, Challenge>>::Commitment,
             >>::validate_fri_context(
-                &baseline,
+                &height,
                 &native,
                 &recursive,
                 height_layout.opening_view(),
@@ -3554,7 +3613,7 @@ mod prepared_shape_tests {
                 Challenge,
                 <RecInputMmcs as RecursiveMmcs<F, Challenge>>::Commitment,
             >>::validate_fri_replacement(
-                &baseline,
+                &height,
                 &old,
                 height_layout.opening_view(),
                 &baseline_cap_refs,
@@ -4353,7 +4412,7 @@ mod prepared_shape_tests {
         let caps = retention_caps([1, 1, 1]);
         let cap_refs = [&caps[0], &caps[1], &caps[2]];
 
-        let ordinary = retention_opening([2, 1, 1], [1, 2]);
+        let ordinary = retention_opening(&[2, 1, 1], [1, 2]);
         reset_fri_finisher_calls();
         assert!(<OpeningTargets as CheckedRecursive<Challenge>>::validate_input(&ordinary).is_ok());
         assert_eq!(fri_finisher_calls(), 1);
@@ -4493,7 +4552,7 @@ mod prepared_shape_tests {
     }
 
     #[test]
-    fn contextual_fri_rejects_skipped_landing_and_excess_log_arity() {
+    fn contextual_fri_rejects_schedules_off_the_configured_fold() {
         use crate::pcs::fri::context::CheckedFriOpening;
 
         const MAP01: &[usize] = &[0, 1];
@@ -4502,7 +4561,7 @@ mod prepared_shape_tests {
         let caps = retention_caps([1, 1, 1]);
         let cap_refs = [&caps[0], &caps[1], &caps[2]];
 
-        let skipped = retention_opening([1, 1, 2], [1, 2]);
+        let skipped = retention_opening(&[1, 1, 2], [1, 2]);
         let skipped_error = <OpeningTargets as CheckedFriOpening<
             Challenge,
             <RecInputMmcs as RecursiveMmcs<F, Challenge>>::Commitment,
@@ -4514,13 +4573,15 @@ mod prepared_shape_tests {
             &cap_refs,
         )
         .expect_err("a coherent schedule that skips the LDE landing must reject");
+        // The configured schedule is [2, 1, 1]; a proof folding by other arities opens
+        // sibling rows of the wrong width in its first round.
         assert!(matches!(
             skipped_error,
             VerificationError::InvalidProofShape(message)
-                if message.contains("not reached")
+                if message.contains("sibling width mismatch")
         ));
 
-        let mut excess = retention_opening([3, 1, 1], [1, 2]);
+        let mut excess = retention_opening(&[3, 1, 1], [1, 2]);
         excess.commit_phase_commits.pop();
         excess.commit_pow_witnesses.pop();
         excess.commit_phase_openings.pop();
@@ -4534,11 +4595,13 @@ mod prepared_shape_tests {
             layout.opening_view(),
             &cap_refs,
         )
-        .expect_err("log arity above maxarity must reject");
+        .expect_err("log arity above max arity must reject");
+        // An arity above the configured maximum can only reach the final height in
+        // fewer rounds than the configured schedule has.
         assert!(matches!(
             excess_error,
             VerificationError::InvalidProofShape(message)
-                if message.contains("invalid log_arity")
+                if message.contains("round count mismatch")
         ));
     }
 
@@ -4559,6 +4622,7 @@ mod prepared_shape_tests {
             log_final_poly_len: 0,
             max_log_arity: 1,
             num_queries: 1,
+            batch_proof_of_work_bits: 0,
             commit_proof_of_work_bits: 0,
             query_proof_of_work_bits: 0,
             mmcs: (),
@@ -4567,12 +4631,14 @@ mod prepared_shape_tests {
         let recursive = FriVerifierParams::with_mmcs(
             1,
             0,
+            params.max_log_arity,
             0,
             0,
             1,
             crate::ops::Poseidon2Config::KOALA_BEAR_D4_W16,
         );
         let proof = FriProof::<Challenge, ChallengeMmcs, F, Vec<BatchMultiOpening<F, MyMmcs>>> {
+            batch_pow_witness: Default::default(),
             commit_phase_commits: vec![cap(1)],
             commit_pow_witnesses: vec![F::ZERO],
             input_openings: vec![
@@ -4586,7 +4652,6 @@ mod prepared_shape_tests {
                 },
             ],
             commit_phase_openings: vec![CommitPhaseMultiStep {
-                log_arity: 1,
                 sibling_values: vec![vec![Challenge::ZERO]],
                 opening_proof: frontier(0),
             }],
@@ -4650,6 +4715,7 @@ mod prepared_shape_tests {
             log_final_poly_len: 0,
             max_log_arity: 1,
             num_queries: 1,
+            batch_proof_of_work_bits: 0,
             commit_proof_of_work_bits: 0,
             query_proof_of_work_bits: 0,
             mmcs: (),
@@ -4658,6 +4724,7 @@ mod prepared_shape_tests {
         let recursive = FriVerifierParams::with_mmcs(
             1,
             0,
+            params.max_log_arity,
             0,
             0,
             1,
@@ -4714,6 +4781,7 @@ mod prepared_shape_tests {
             log_final_poly_len: 0,
             max_log_arity: 1,
             num_queries: 1,
+            batch_proof_of_work_bits: 0,
             commit_proof_of_work_bits: 0,
             query_proof_of_work_bits: 0,
             mmcs: (),
@@ -4722,6 +4790,7 @@ mod prepared_shape_tests {
         let recursive = FriVerifierParams::with_mmcs(
             1,
             0,
+            params.max_log_arity,
             0,
             0,
             1,
@@ -4827,6 +4896,7 @@ mod prepared_shape_tests {
             log_final_poly_len: 0,
             max_log_arity: 1,
             num_queries: 1,
+            batch_proof_of_work_bits: 0,
             commit_proof_of_work_bits: 0,
             query_proof_of_work_bits: 0,
             mmcs: (),
@@ -4835,6 +4905,7 @@ mod prepared_shape_tests {
         let recursive = FriVerifierParams::with_mmcs(
             0,
             0,
+            params.max_log_arity,
             0,
             0,
             1,
@@ -4842,6 +4913,7 @@ mod prepared_shape_tests {
         );
         let cap = cap(1);
         let proof = FriProof::<Challenge, ChallengeMmcs, F, Vec<BatchMultiOpening<F, MyMmcs>>> {
+            batch_pow_witness: Default::default(),
             commit_phase_commits: vec![],
             commit_pow_witnesses: vec![],
             input_openings: vec![
@@ -4900,6 +4972,7 @@ mod prepared_shape_tests {
             log_final_poly_len: 0,
             max_log_arity: 1,
             num_queries: 1,
+            batch_proof_of_work_bits: 0,
             commit_proof_of_work_bits: 0,
             query_proof_of_work_bits: 0,
             mmcs: (),
@@ -4908,12 +4981,14 @@ mod prepared_shape_tests {
         let recursive = FriVerifierParams::with_mmcs(
             0,
             0,
+            params.max_log_arity,
             0,
             0,
             1,
             crate::ops::Poseidon2Config::KOALA_BEAR_D4_W16,
         );
         let proof = FriProof::<Challenge, ChallengeMmcs, F, Vec<BatchMultiOpening<F, MyMmcs>>> {
+            batch_pow_witness: Default::default(),
             commit_phase_commits: vec![cap(1)],
             commit_pow_witnesses: vec![F::ZERO],
             input_openings: vec![
@@ -4927,7 +5002,6 @@ mod prepared_shape_tests {
                 },
             ],
             commit_phase_openings: vec![CommitPhaseMultiStep {
-                log_arity: 1,
                 sibling_values: vec![vec![Challenge::ZERO]],
                 opening_proof: frontier(0),
             }],
@@ -4990,6 +5064,7 @@ mod prepared_shape_tests {
             log_final_poly_len: 0,
             max_log_arity: 1,
             num_queries: 1,
+            batch_proof_of_work_bits: 0,
             commit_proof_of_work_bits: 0,
             query_proof_of_work_bits: 0,
             mmcs: (),
@@ -4998,6 +5073,7 @@ mod prepared_shape_tests {
         let recursive = FriVerifierParams::with_mmcs(
             1,
             0,
+            params.max_log_arity,
             0,
             0,
             1,
@@ -5093,6 +5169,7 @@ mod prepared_shape_tests {
 
     fn ordinary_opening(widths: &[usize]) -> Opening {
         FriProof {
+            batch_pow_witness: Default::default(),
             commit_phase_commits: vec![cap(1)],
             commit_pow_witnesses: vec![F::ZERO],
             input_openings: vec![BatchMultiOpening::<F, MyMmcs> {
@@ -5100,7 +5177,6 @@ mod prepared_shape_tests {
                 opening_proof: frontier(0),
             }],
             commit_phase_openings: vec![CommitPhaseMultiStep {
-                log_arity: 1,
                 sibling_values: vec![vec![Challenge::ZERO]],
                 opening_proof: frontier(0),
             }],
@@ -5431,6 +5507,7 @@ mod prepared_shape_tests {
             log_final_poly_len: 0,
             max_log_arity: 2,
             num_queries: 4,
+            batch_proof_of_work_bits: 0,
             commit_proof_of_work_bits: 0,
             query_proof_of_work_bits: 0,
             mmcs: (),
@@ -5440,6 +5517,7 @@ mod prepared_shape_tests {
             FriVerifierParams::with_mmcs(
                 1,
                 0,
+                params.max_log_arity,
                 0,
                 0,
                 2,
@@ -5448,7 +5526,7 @@ mod prepared_shape_tests {
         )
     }
 
-    fn retention_opening(schedule: [u8; 3], trace_widths: [usize; 2]) -> Opening {
+    fn retention_opening(schedule: &[u8], trace_widths: [usize; 2]) -> Opening {
         let widths = [trace_widths, [4, 4], [1, 2]];
         let input_openings = widths
             .into_iter()
@@ -5465,9 +5543,8 @@ mod prepared_shape_tests {
             })
             .collect();
         let commit_phase_openings = schedule
-            .into_iter()
-            .map(|log_arity| CommitPhaseMultiStep {
-                log_arity,
+            .iter()
+            .map(|&log_arity| CommitPhaseMultiStep {
                 sibling_values: (0..4)
                     .map(|_| vec![Challenge::ZERO; (1usize << log_arity) - 1])
                     .collect(),
@@ -5475,8 +5552,9 @@ mod prepared_shape_tests {
             })
             .collect();
         FriProof {
-            commit_phase_commits: vec![cap(1), cap(1), cap(1)],
-            commit_pow_witnesses: vec![F::ZERO; 3],
+            batch_pow_witness: Default::default(),
+            commit_phase_commits: vec![cap(1); schedule.len()],
+            commit_pow_witnesses: vec![F::ZERO; schedule.len()],
             input_openings,
             commit_phase_openings,
             final_poly: vec![Challenge::ZERO],
@@ -5485,7 +5563,9 @@ mod prepared_shape_tests {
     }
 
     fn retention_equal_geometry_opening() -> Opening {
-        let mut proof = retention_opening([2, 1, 1], [4, 4]);
+        // Every input sits at one height, so the configured schedule folds the
+        // LDE from log-height 5 to 1 in two rounds of the maximum arity.
+        let mut proof = retention_opening(&[2, 2], [4, 4]);
         for query in &mut proof.input_openings[2].opened_values {
             query[1] = vec![F::ZERO; 1];
         }
@@ -5538,13 +5618,13 @@ mod prepared_shape_tests {
             .collect();
         let phase_salts = (0..4).map(|_| vec![vec![F::ZERO; 4]]).collect::<Vec<_>>();
         let inner = FriProof {
+            batch_pow_witness: Default::default(),
             commit_phase_commits: vec![cap(1), cap(1), cap(1)],
             commit_pow_witnesses: vec![F::ZERO; 3],
             input_openings,
             commit_phase_openings: [2u8, 1, 1]
                 .into_iter()
                 .map(|log_arity| CommitPhaseMultiStep {
-                    log_arity,
                     sibling_values: (0..4)
                         .map(|_| vec![Challenge::ZERO; (1usize << log_arity) - 1])
                         .collect(),
@@ -5571,6 +5651,7 @@ mod prepared_shape_tests {
 
     fn hiding_opening(salt_widths: &[usize], random_widths: &[usize]) -> HidingOpening {
         let inner = FriProof {
+            batch_pow_witness: Default::default(),
             commit_phase_commits: vec![cap(1)],
             commit_pow_witnesses: vec![F::ZERO],
             input_openings: vec![BatchMultiOpening::<F, NativeHidingMmcs> {
@@ -5586,7 +5667,6 @@ mod prepared_shape_tests {
                 ),
             }],
             commit_phase_openings: vec![CommitPhaseMultiStep {
-                log_arity: 1,
                 sibling_values: vec![vec![Challenge::ZERO]],
                 opening_proof: hiding_frontier(vec![vec![vec![F::ZERO; 4]]], 0),
             }],
@@ -5633,8 +5713,10 @@ mod prepared_shape_tests {
 
     #[test]
     fn prepared_fri_rejects_bad_sibling_arity() {
+        // Since p3-fri 0.8 a round's arity is read off its sibling rows, so rows of
+        // disagreeing widths are the malformed shape.
         let mut input = ordinary_opening(&[1, 3]);
-        input.commit_phase_openings[0].log_arity = 2;
+        input.commit_phase_openings[0].sibling_values[0].push(Challenge::ZERO);
 
         assert!(matches!(
             OpeningTargets::input_shape(&input),
@@ -5642,7 +5724,9 @@ mod prepared_shape_tests {
         ));
 
         let mut zero_arity = ordinary_opening(&[1, 3]);
-        zero_arity.commit_phase_openings[0].log_arity = 0;
+        for row in &mut zero_arity.commit_phase_openings[0].sibling_values {
+            row.clear();
+        }
         assert!(matches!(
             OpeningTargets::input_shape(&zero_arity),
             Err(VerificationError::InvalidProofShape(_))
@@ -5653,7 +5737,6 @@ mod prepared_shape_tests {
     fn prepared_fri_rejects_commitment_round_cardinality_mismatch() {
         let mut input = ordinary_opening(&[1, 3]);
         input.commit_phase_openings.push(CommitPhaseMultiStep {
-            log_arity: 1,
             sibling_values: vec![vec![Challenge::ZERO]],
             opening_proof: frontier(0),
         });

@@ -30,6 +30,7 @@ fn test_mul_verifier_circuit() -> Result<(), VerificationError> {
     let fri_verifier_params = FriVerifierParams::with_mmcs(
         scalars.log_blowup,
         scalars.log_final_poly_len,
+        scalars.max_log_arity,
         scalars.commit_pow_bits,
         scalars.query_pow_bits,
         scalars.num_queries,
@@ -47,7 +48,9 @@ fn test_mul_verifier_circuit() -> Result<(), VerificationError> {
 
     // Setup preprocessed data
     let (preprocessed_prover_data, preprocessed_vk) =
-        setup_preprocessed(&config, &air, log2_ceil_usize(trace.height())).unzip();
+        setup_preprocessed(&config, &air, log2_ceil_usize(trace.height()))
+            .unwrap()
+            .unzip();
     // Generate and verify proof
     let mut proof = prove_with_preprocessed(
         &config,
@@ -55,7 +58,8 @@ fn test_mul_verifier_circuit() -> Result<(), VerificationError> {
         trace,
         &pis,
         preprocessed_prover_data.as_ref(),
-    );
+    )
+    .unwrap();
     assert!(
         verify_with_preprocessed(&config, &air, &proof, &pis, preprocessed_vk.as_ref()).is_ok()
     );
@@ -73,8 +77,19 @@ fn test_mul_verifier_circuit() -> Result<(), VerificationError> {
 
     // The next-row-using control must reject a missing required opening. This
     // target check occurs after input allocation; Stage5D preflight is separate.
-    let required_next = proof.opened_values.preprocessed_next.take();
-    proof.opened_values.preprocessed_next = None;
+    let required_next = proof
+        .opened_values
+        .preprocessed
+        .as_mut()
+        .expect("preprocessed openings")
+        .next
+        .take();
+    proof
+        .opened_values
+        .preprocessed
+        .as_mut()
+        .expect("preprocessed openings")
+        .next = None;
     let mut shape_builder = CircuitBuilder::new();
     shape_builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
         generate_poseidon2_trace::<Challenge, BabyBearD4Width16>,
@@ -106,7 +121,12 @@ fn test_mul_verifier_circuit() -> Result<(), VerificationError> {
         Err(VerificationError::InvalidProofShape(message))
             if message.contains("preprocessed") && message.contains("width")
     ));
-    proof.opened_values.preprocessed_next = required_next;
+    proof
+        .opened_values
+        .preprocessed
+        .as_mut()
+        .expect("preprocessed openings")
+        .next = required_next;
 
     let mut circuit_builder = CircuitBuilder::new();
     circuit_builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
@@ -159,14 +179,23 @@ fn test_mul_verifier_circuit() -> Result<(), VerificationError> {
         mut challenger,
         commitments_with_opening_points,
     } = replay;
-    observe_opened_values::<MyConfig>(&mut challenger, &commitments_with_opening_points);
+    observe_opened_values::<MyConfig>(
+        &mut challenger,
+        &commitments_with_opening_points,
+        fri_params.batch_proof_of_work_bits,
+    );
+    let claims: Vec<_> = commitments_with_opening_points
+        .iter()
+        .cloned()
+        .map(Into::into)
+        .collect();
     let query_paths = restore_fri_query_paths(
         &fri_params,
         &val_mmcs,
         &val_mmcs,
         &proof.opening_proof,
         &mut challenger,
-        &commitments_with_opening_points,
+        &claims,
     )
     .map_err(|error| VerificationError::InvalidProofShape(format!("{error:?}")))?;
     set_fri_mmcs_private_data::<F, Challenge, DIGEST_ELEMS>(
@@ -190,6 +219,7 @@ fn test_local_only_mul_verifier_circuit_uses_one_preprocessed_point()
     let fri_verifier_params = FriVerifierParams::with_mmcs(
         scalars.log_blowup,
         scalars.log_final_poly_len,
+        scalars.max_log_arity,
         scalars.commit_pow_bits,
         scalars.query_pow_bits,
         scalars.num_queries,
@@ -201,14 +231,17 @@ fn test_local_only_mul_verifier_circuit_uses_one_preprocessed_point()
     let pis = vec![];
     let (trace, _) = air.random_valid_trace(true);
     let (preprocessed_prover_data, preprocessed_vk) =
-        setup_preprocessed(&config, &air, log2_ceil_usize(trace.height())).unzip();
+        setup_preprocessed(&config, &air, log2_ceil_usize(trace.height()))
+            .unwrap()
+            .unzip();
     let mut proof = prove_with_preprocessed(
         &config,
         &air,
         trace,
         &pis,
         preprocessed_prover_data.as_ref(),
-    );
+    )
+    .unwrap();
     verify_with_preprocessed(&config, &air, &proof, &pis, preprocessed_vk.as_ref()).unwrap();
     let replay = replay_uni_stark_transcript(
         &config,
@@ -224,16 +257,37 @@ fn test_local_only_mul_verifier_circuit_uses_one_preprocessed_point()
 
     // A zero-width next opening may be encoded as `Some(empty)`; a nonempty
     // extra opening must still be rejected by the actual target verifier.
-    let original_next = proof.opened_values.preprocessed_next.take();
-    proof.opened_values.preprocessed_next = Some(Vec::new());
+    let original_next = proof
+        .opened_values
+        .preprocessed
+        .as_mut()
+        .expect("preprocessed openings")
+        .next
+        .take();
+    proof
+        .opened_values
+        .preprocessed
+        .as_mut()
+        .expect("preprocessed openings")
+        .next = Some(Vec::new());
     // Upstream native verification currently accepts the canonical `None`
     // encoding but panics on `Some(empty)` while building its constraint
     // window.  Keep the production native positive on that safe encoding and
     // exercise the raw `Some(empty)` representation through recursive shape
     // validation and the runner below.
-    proof.opened_values.preprocessed_next = None;
+    proof
+        .opened_values
+        .preprocessed
+        .as_mut()
+        .expect("preprocessed openings")
+        .next = None;
     verify_with_preprocessed(&config, &air, &proof, &pis, preprocessed_vk.as_ref()).unwrap();
-    proof.opened_values.preprocessed_next = Some(Vec::new());
+    proof
+        .opened_values
+        .preprocessed
+        .as_mut()
+        .expect("preprocessed openings")
+        .next = Some(Vec::new());
     let mut shape_builder = CircuitBuilder::new();
     shape_builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
         generate_poseidon2_trace::<Challenge, BabyBearD4Width16>,
@@ -261,7 +315,12 @@ fn test_local_only_mul_verifier_circuit_uses_one_preprocessed_point()
         Poseidon2Config::BABY_BEAR_D4_W16,
     )
     .unwrap();
-    proof.opened_values.preprocessed_next = Some(vec![Challenge::ZERO]);
+    proof
+        .opened_values
+        .preprocessed
+        .as_mut()
+        .expect("preprocessed openings")
+        .next = Some(vec![Challenge::ZERO]);
     let mut extra_builder = CircuitBuilder::new();
     extra_builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
         generate_poseidon2_trace::<Challenge, BabyBearD4Width16>,
@@ -293,7 +352,12 @@ fn test_local_only_mul_verifier_circuit_uses_one_preprocessed_point()
         Err(VerificationError::InvalidProofShape(message))
             if message.contains("preprocessed") && message.contains("width")
     ));
-    proof.opened_values.preprocessed_next = Some(Vec::new());
+    proof
+        .opened_values
+        .preprocessed
+        .as_mut()
+        .expect("preprocessed openings")
+        .next = Some(Vec::new());
 
     let perm = default_babybear_poseidon2_16();
     let mut circuit_builder = CircuitBuilder::new();
@@ -336,14 +400,23 @@ fn test_local_only_mul_verifier_circuit_uses_one_preprocessed_point()
         mut challenger,
         commitments_with_opening_points,
     } = replay;
-    observe_opened_values::<MyConfig>(&mut challenger, &commitments_with_opening_points);
+    observe_opened_values::<MyConfig>(
+        &mut challenger,
+        &commitments_with_opening_points,
+        fri_params.batch_proof_of_work_bits,
+    );
+    let claims: Vec<_> = commitments_with_opening_points
+        .iter()
+        .cloned()
+        .map(Into::into)
+        .collect();
     let query_paths = restore_fri_query_paths(
         &fri_params,
         &val_mmcs,
         &val_mmcs,
         &proof.opening_proof,
         &mut challenger,
-        &commitments_with_opening_points,
+        &claims,
     )
     .map_err(|error| VerificationError::InvalidProofShape(format!("{error:?}")))?;
     set_fri_mmcs_private_data::<F, Challenge, DIGEST_ELEMS>(
@@ -354,6 +427,11 @@ fn test_local_only_mul_verifier_circuit_uses_one_preprocessed_point()
     )
     .map_err(|error| VerificationError::InvalidProofShape(error.to_string()))?;
     runner.run().map_err(VerificationError::Circuit)?;
-    proof.opened_values.preprocessed_next = original_next;
+    proof
+        .opened_values
+        .preprocessed
+        .as_mut()
+        .expect("preprocessed openings")
+        .next = original_next;
     Ok(())
 }

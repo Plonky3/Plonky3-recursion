@@ -147,7 +147,8 @@ fn build_whir_first_layer(
         &air,
         generate_trace_rows::<BbF>(start_a, start_b, n),
         &pis,
-    );
+    )
+    .unwrap();
     verify(config, &air, &proof, &pis).expect("the native WHIR proof verifies");
     build_and_prove_next_layer(
         &RecursionInput::UniStark {
@@ -250,7 +251,7 @@ fn fri_uni_prepared_layer_reuses_varied_witnesses_after_reference_drop() {
 
     let (prepared, out1) = {
         let pis = vec![F::ZERO, F::ONE, fibonacci_output::<F>(0, 1, n)];
-        let proof = prove(&config, &air, generate_trace_rows::<F>(0, 1, n), &pis);
+        let proof = prove(&config, &air, generate_trace_rows::<F>(0, 1, n), &pis).unwrap();
         verify(&config, &air, &proof, &pis).expect("the trusted reference proof verifies");
         let prepared = PreparedLayer::<
             common::KoalaBearD4RecursionConfig,
@@ -289,7 +290,8 @@ fn fri_uni_prepared_layer_reuses_varied_witnesses_after_reference_drop() {
         &air,
         generate_trace_rows::<F>(2, 3, n),
         &second_pis,
-    );
+    )
+    .unwrap();
     verify(&config, &air, &second, &second_pis).expect("the varied native proof verifies");
     let out2 = prepared
         .prove(PreparedInput::UniStark {
@@ -327,7 +329,8 @@ fn trusted_fri_uni_layer_exports_each_original_air_statement() {
         &air,
         generate_trace_rows::<F>(0, 1, n),
         &first_statement,
-    );
+    )
+    .unwrap();
     let owner = TrustedPreparedLayer::<
         common::KoalaBearD4RecursionConfig,
         common::KoalaBearD4RecursionConfig,
@@ -364,7 +367,8 @@ fn trusted_fri_uni_layer_exports_each_original_air_statement() {
         &air,
         generate_trace_rows::<F>(2, 3, n),
         &second_statement,
-    );
+    )
+    .unwrap();
     let second_output = owner
         .prove(TrustedPreparedInput::UniStark {
             proof: &second_proof,
@@ -490,8 +494,10 @@ fn fri_trusted_uni_retains_air_config_and_complete_preprocessed_root() {
     let (output_config, _) = common::koala_bear_d4_recursion_config_and_backend_with_pow_bits(1);
     let (main, _) = air.random_valid_trace::<F>(true);
     let degree_bits = main.height().ilog2() as usize;
-    let (preprocessed, verifier_key) = setup_preprocessed(&config, &air, degree_bits).unwrap();
-    let proof = prove_with_preprocessed(&config, &air, main, &[], Some(&preprocessed));
+    let (preprocessed, verifier_key) = setup_preprocessed(&config, &air, degree_bits)
+        .unwrap()
+        .unwrap();
+    let proof = prove_with_preprocessed(&config, &air, main, &[], Some(&preprocessed)).unwrap();
     verify_with_preprocessed(&config, &air, &proof, &[], Some(&verifier_key)).unwrap();
 
     let owner = TrustedPreparedLayer::<_, _, common::MulAir, _, 4>::new(
@@ -527,8 +533,10 @@ fn whir_trusted_uni_retains_air_config_and_complete_preprocessed_root() {
         .for_extension_degree::<4>();
     let (main, _) = air.random_valid_trace::<BbF>(true);
     let degree_bits = main.height().ilog2() as usize;
-    let (preprocessed, verifier_key) = setup_preprocessed(&config, &air, degree_bits).unwrap();
-    let proof = prove_with_preprocessed(&config, &air, main, &[], Some(&preprocessed));
+    let (preprocessed, verifier_key) = setup_preprocessed(&config, &air, degree_bits)
+        .unwrap()
+        .unwrap();
+    let proof = prove_with_preprocessed(&config, &air, main, &[], Some(&preprocessed)).unwrap();
     verify_with_preprocessed(&config, &air, &proof, &[], Some(&verifier_key)).unwrap();
 
     let owner = TrustedPreparedLayer::<_, _, common::MulAir, _, 4>::new(
@@ -567,7 +575,7 @@ fn fri_uni_profile_prepared_layer_reuses_varied_witnesses() {
     };
 
     let first_pis = vec![F::ZERO, F::ONE, fibonacci_output::<F>(0, 1, n)];
-    let first = prove(&config, &air, generate_trace_rows::<F>(0, 1, n), &first_pis);
+    let first = prove(&config, &air, generate_trace_rows::<F>(0, 1, n), &first_pis).unwrap();
     let prepared = PreparedLayer::<
         common::KoalaBearD4RecursionConfig,
         FibonacciAir,
@@ -603,7 +611,8 @@ fn fri_uni_profile_prepared_layer_reuses_varied_witnesses() {
         &air,
         generate_trace_rows::<F>(2, 3, n),
         &second_pis,
-    );
+    )
+    .unwrap();
     let second_output = prepared
         .prove(PreparedInput::UniStark {
             proof: &second,
@@ -629,7 +638,7 @@ fn fri_uni_profile_owner_matches_params_owner_bytes() {
     // ownership comparison needs a deterministic transcript, so disable PoW for this fixture.
     let (config, backend) = common::koala_bear_d4_recursion_config_and_backend_with_pow_bits(0);
     let pis = vec![F::ZERO, F::ONE, fibonacci_output::<F>(0, 1, n)];
-    let proof = prove(&config, &air, generate_trace_rows::<F>(0, 1, n), &pis);
+    let proof = prove(&config, &air, generate_trace_rows::<F>(0, 1, n), &pis).unwrap();
     let params = ProveNextLayerParams {
         table_packing: TablePacking::default(),
         constraint_profile: ConstraintProfile::Standard,
@@ -897,7 +906,7 @@ fn whir_uni_prepared_layer_reuses_varied_witnesses_after_reference_drop() {
 
     let (prepared, out1) = {
         let pis = vec![BbF::ZERO, BbF::ONE, fibonacci_output::<BbF>(0, 1, n)];
-        let proof = prove(&config, &air, generate_trace_rows::<BbF>(0, 1, n), &pis);
+        let proof = prove(&config, &air, generate_trace_rows::<BbF>(0, 1, n), &pis).unwrap();
         verify(&config, &air, &proof, &pis).expect("the trusted WHIR proof verifies");
         let prepared = PreparedLayer::<BbWhirConfig, FibonacciAir, _, 4>::new(
             PreparedSource::UniStark {
@@ -931,7 +940,8 @@ fn whir_uni_prepared_layer_reuses_varied_witnesses_after_reference_drop() {
         &air,
         generate_trace_rows::<BbF>(2, 3, n),
         &second_pis,
-    );
+    )
+    .unwrap();
     verify(&config, &air, &second, &second_pis).expect("the varied WHIR proof verifies");
     let out2 = prepared
         .prove(PreparedInput::UniStark {
@@ -963,7 +973,8 @@ fn trusted_whir_uni_layer_exports_each_original_air_statement() {
         &air,
         generate_trace_rows::<BbF>(0, 1, n),
         &first_statement,
-    );
+    )
+    .unwrap();
     let owner = TrustedPreparedLayer::<BbWhirConfig, BbWhirConfig, FibonacciAir, _, 4>::new(
         TrustedPreparedSource::UniStark {
             config: config.clone(),
@@ -994,7 +1005,8 @@ fn trusted_whir_uni_layer_exports_each_original_air_statement() {
         &air,
         generate_trace_rows::<BbF>(2, 3, n),
         &second_statement,
-    );
+    )
+    .unwrap();
     let second_output = owner
         .prove(TrustedPreparedInput::UniStark {
             proof: &second_proof,

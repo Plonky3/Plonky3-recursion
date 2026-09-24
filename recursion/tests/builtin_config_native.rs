@@ -28,7 +28,7 @@ const fn descriptor(suite: SuiteIdV1) -> FriConfigV1 {
         5,
         2,
         1,
-        if spec.is_hiding() { 2 } else { 0 },
+        if spec.is_hiding() { 4 } else { 0 },
         spec.salt_elements as u32,
     )
 }

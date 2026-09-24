@@ -22,6 +22,7 @@ pub const MAX_TEST_CONSTRAINT_DEGREE: usize = 3;
 pub struct TestFriScalars {
     pub log_blowup: usize,
     pub log_final_poly_len: usize,
+    pub max_log_arity: usize,
     pub commit_pow_bits: usize,
     pub query_pow_bits: usize,
     pub num_queries: usize,
@@ -34,6 +35,7 @@ pub const fn test_fri_scalars() -> TestFriScalars {
     TestFriScalars {
         log_blowup: params.log_blowup,
         log_final_poly_len: params.log_final_poly_len,
+        max_log_arity: params.max_log_arity,
         commit_pow_bits: params.commit_proof_of_work_bits,
         query_pow_bits: params.query_proof_of_work_bits,
         num_queries: params.num_queries,
@@ -406,6 +408,7 @@ pub mod koala_bear_params {
         (
             val_mmcs,
             FriParameters {
+                batch_proof_of_work_bits: 0,
                 commit_proof_of_work_bits: pow_bits,
                 query_proof_of_work_bits: pow_bits,
                 ..fri_params
@@ -427,6 +430,7 @@ pub mod koala_bear_params {
             log_blowup,
             log_final_poly_len: 0,
             num_queries,
+            batch_proof_of_work_bits: 0,
             commit_proof_of_work_bits: 0,
             query_proof_of_work_bits,
             mmcs: ChallengeMmcs::new(val_mmcs.clone()),

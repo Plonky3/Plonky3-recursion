@@ -177,6 +177,7 @@ fn checked_parameters<M>(
         log_blowup: descriptor.log_blowup() as usize,
         log_final_poly_len: descriptor.log_final_poly_len() as usize,
         num_queries: descriptor.num_queries() as usize,
+        batch_proof_of_work_bits: 0,
         commit_proof_of_work_bits: descriptor.commit_pow_bits() as usize,
         query_proof_of_work_bits: descriptor.query_pow_bits() as usize,
         mmcs,
@@ -194,6 +195,7 @@ fn checked_parameters<M>(
     let recursive = FriVerifierParams::try_with_mmcs(
         params.log_blowup,
         params.log_final_poly_len,
+        params.max_log_arity,
         params.commit_proof_of_work_bits,
         params.query_proof_of_work_bits,
         params.num_queries,

@@ -102,7 +102,7 @@ fn test_batch_verifier_zk_hiding_fri() -> Result<(), VerificationError> {
     let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
     let dft = Dft::default();
     let fri_params = FriParameters::new_testing(challenge_mmcs, 0);
-    let pcs_proving = MyPcsZk::new(dft, val_mmcs, fri_params, 2, StdRng::seed_from_u64(1));
+    let pcs_proving = MyPcsZk::new(dft, val_mmcs, fri_params, 4, StdRng::seed_from_u64(1));
     let challenger_proving = Challenger::new(perm);
     let config_proving = MyConfigZk::new(pcs_proving, challenger_proving);
 
@@ -112,9 +112,9 @@ fn test_batch_verifier_zk_hiding_fri() -> Result<(), VerificationError> {
         public_values: pvs[0].clone(),
     };
     let instances = vec![instance];
-    let prover_data = ProverData::from_instances(&config_proving, &instances);
+    let prover_data = ProverData::from_instances(&config_proving, &instances).unwrap();
     let common = &prover_data.common;
-    let batch_stark_proof = prove_batch(&config_proving, &instances, &prover_data);
+    let batch_stark_proof = prove_batch(&config_proving, &instances, &prover_data).unwrap();
 
     verify_batch(&config_proving, &[air], &batch_stark_proof, &pvs, common).unwrap();
 
@@ -129,12 +129,13 @@ fn test_batch_verifier_zk_hiding_fri() -> Result<(), VerificationError> {
     let fri_verifier_params = FriVerifierParams::with_mmcs(
         fri_params2.log_blowup,
         fri_params2.log_final_poly_len,
+        fri_params2.max_log_arity,
         fri_params2.commit_proof_of_work_bits,
         fri_params2.query_proof_of_work_bits,
         fri_params2.num_queries,
         Poseidon2Config::KOALA_BEAR_D4_W16,
     );
-    let pcs_verif = MyPcsZk::new(dft2, val_mmcs2, fri_params2, 2, StdRng::seed_from_u64(2));
+    let pcs_verif = MyPcsZk::new(dft2, val_mmcs2, fri_params2, 4, StdRng::seed_from_u64(2));
     let challenger_verif = Challenger::new(perm2.clone());
     let config = MyConfigZk::new(pcs_verif, challenger_verif);
 
@@ -206,7 +207,17 @@ fn test_batch_verifier_zk_hiding_fri() -> Result<(), VerificationError> {
             &batch_stark_proof.opening_proof.0,
         )
         .expect("the random openings match the public ones");
-        observe_opened_values::<MyConfigZk>(&mut challenger, &commitments_with_opening_points);
+        observe_opened_values::<MyConfigZk>(
+            &mut challenger,
+            &commitments_with_opening_points,
+            // The test FRI parameters (`FriParameters::new_testing`) grind no batch phase.
+            0,
+        );
+        let claims: Vec<_> = commitments_with_opening_points
+            .iter()
+            .cloned()
+            .map(Into::into)
+            .collect();
         let (val_mmcs, fri_params) = test_fri_instance();
         let query_paths = restore_fri_query_paths(
             &fri_params,
@@ -214,7 +225,7 @@ fn test_batch_verifier_zk_hiding_fri() -> Result<(), VerificationError> {
             &val_mmcs,
             &batch_stark_proof.opening_proof.1,
             &mut challenger,
-            &commitments_with_opening_points,
+            &claims,
         )
         .expect("an honest proof's Merkle paths restore");
         set_fri_mmcs_private_data::<F, Challenge, DIGEST_ELEMS>(
@@ -268,7 +279,8 @@ fn test_batch_verifier_zk_hiding_fri() -> Result<(), VerificationError> {
         verification_airs_degrees.into_iter().unzip();
 
     let verification_prover_data =
-        ProverData::from_airs_and_degrees(&config3, &verification_airs, &verification_degrees);
+        ProverData::from_airs_and_degrees(&config3, &verification_airs, &verification_degrees)
+            .unwrap();
     let verification_circuit_prover_data = CircuitProverData::new(
         verification_prover_data,
         verification_primitive_columns,

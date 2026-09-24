@@ -325,6 +325,7 @@ fn test_batch_verifier_with_mixed_preprocessed() -> Result<(), VerificationError
     let fri_verifier_params = FriVerifierParams::with_mmcs(
         scalars.log_blowup,
         scalars.log_final_poly_len,
+        scalars.max_log_arity,
         scalars.commit_pow_bits,
         scalars.query_pow_bits,
         scalars.num_queries,
@@ -373,9 +374,9 @@ fn test_batch_verifier_with_mixed_preprocessed() -> Result<(), VerificationError
     ];
 
     // Generate prover data and batch proof
-    let prover_data = ProverData::from_instances(&config, &instances);
+    let prover_data = ProverData::from_instances(&config, &instances).unwrap();
     let lookup_gadget = LogUpGadget::new();
-    let mut batch_proof = prove_batch(&config, &instances, &prover_data);
+    let mut batch_proof = prove_batch(&config, &instances, &prover_data).unwrap();
     let airs = [mixed_air1, mixed_air2, mixed_air3];
     let common_data = &prover_data.common;
 
@@ -405,11 +406,17 @@ fn test_batch_verifier_with_mixed_preprocessed() -> Result<(), VerificationError
     // opening at target verification after input allocation.
     let required_next = batch_proof.opened_values.instances[0]
         .base_opened_values
-        .preprocessed_next
+        .preprocessed
+        .as_mut()
+        .expect("preprocessed openings")
+        .next
         .take();
     batch_proof.opened_values.instances[0]
         .base_opened_values
-        .preprocessed_next = None;
+        .preprocessed
+        .as_mut()
+        .expect("preprocessed openings")
+        .next = None;
     let mut shape_builder = CircuitBuilder::<Challenge>::new();
     shape_builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
         generate_poseidon2_trace::<Challenge, BabyBearD4Width16>,
@@ -439,7 +446,10 @@ fn test_batch_verifier_with_mixed_preprocessed() -> Result<(), VerificationError
     ));
     batch_proof.opened_values.instances[0]
         .base_opened_values
-        .preprocessed_next = required_next;
+        .preprocessed
+        .as_mut()
+        .expect("preprocessed openings")
+        .next = required_next;
 
     // Create AIRs vector for verification circuit
     let airs = vec![mixed_air1, mixed_air2, mixed_air3];
@@ -507,14 +517,23 @@ fn test_batch_verifier_with_mixed_preprocessed() -> Result<(), VerificationError
         mut challenger,
         commitments_with_opening_points,
     } = replay;
-    observe_opened_values::<MyConfig>(&mut challenger, &commitments_with_opening_points);
+    observe_opened_values::<MyConfig>(
+        &mut challenger,
+        &commitments_with_opening_points,
+        fri_params.batch_proof_of_work_bits,
+    );
+    let claims: Vec<_> = commitments_with_opening_points
+        .iter()
+        .cloned()
+        .map(Into::into)
+        .collect();
     let query_paths = restore_fri_query_paths(
         &fri_params,
         &val_mmcs,
         &val_mmcs,
         &batch_proof.opening_proof,
         &mut challenger,
-        &commitments_with_opening_points,
+        &claims,
     )
     .map_err(|error| VerificationError::InvalidProofShape(format!("{error:?}")))?;
     set_fri_mmcs_private_data::<F, Challenge, DIGEST_ELEMS>(
@@ -537,6 +556,7 @@ fn test_batch_verifier_with_local_only_preprocessed() -> Result<(), Verification
     let pcs_verifier_params = FriVerifierParams::with_mmcs(
         scalars.log_blowup,
         scalars.log_final_poly_len,
+        scalars.max_log_arity,
         scalars.commit_pow_bits,
         scalars.query_pow_bits,
         scalars.num_queries,
@@ -553,8 +573,8 @@ fn test_batch_verifier_with_local_only_preprocessed() -> Result<(), Verification
         public_values: public_values.clone(),
     };
     let instances = vec![instance];
-    let prover_data = ProverData::from_instances(&config, &instances);
-    let mut batch_proof = prove_batch(&config, &instances, &prover_data);
+    let prover_data = ProverData::from_instances(&config, &instances).unwrap();
+    let mut batch_proof = prove_batch(&config, &instances, &prover_data).unwrap();
     verify_batch(
         &config,
         &[air],
@@ -567,15 +587,13 @@ fn test_batch_verifier_with_local_only_preprocessed() -> Result<(), Verification
     let opened = &batch_proof.opened_values.instances[0].base_opened_values;
     assert_eq!(
         opened
-            .preprocessed_local
-            .as_ref()
+            .preprocessed_local()
             .map_or(0, |values| values.len()),
         1
     );
     assert_eq!(
         opened
-            .preprocessed_next
-            .as_ref()
+            .preprocessed_next()
             .map_or(0, |values| values.len()),
         0
     );
@@ -596,11 +614,17 @@ fn test_batch_verifier_with_local_only_preprocessed() -> Result<(), Verification
     // a nonempty extra next opening is rejected by the actual target verifier.
     let original_next = batch_proof.opened_values.instances[0]
         .base_opened_values
-        .preprocessed_next
+        .preprocessed
+        .as_mut()
+        .expect("preprocessed openings")
+        .next
         .take();
     batch_proof.opened_values.instances[0]
         .base_opened_values
-        .preprocessed_next = Some(Vec::new());
+        .preprocessed
+        .as_mut()
+        .expect("preprocessed openings")
+        .next = Some(Vec::new());
     // Upstream native verification currently requires the canonical `None`
     // encoding in its constraint-window builder; `Some(empty)` passes its
     // shape check but panics later during constraint evaluation, after PCS
@@ -609,7 +633,10 @@ fn test_batch_verifier_with_local_only_preprocessed() -> Result<(), Verification
     // recursive shape validation and the runner below.
     batch_proof.opened_values.instances[0]
         .base_opened_values
-        .preprocessed_next = None;
+        .preprocessed
+        .as_mut()
+        .expect("preprocessed openings")
+        .next = None;
     verify_batch(
         &config,
         &[air],
@@ -620,7 +647,10 @@ fn test_batch_verifier_with_local_only_preprocessed() -> Result<(), Verification
     .unwrap();
     batch_proof.opened_values.instances[0]
         .base_opened_values
-        .preprocessed_next = Some(Vec::new());
+        .preprocessed
+        .as_mut()
+        .expect("preprocessed openings")
+        .next = Some(Vec::new());
     let shape_result = |proof: &BatchProof<MyConfig>| -> Result<(), VerificationError> {
         let mut shape_builder = CircuitBuilder::<Challenge>::new();
         shape_builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
@@ -651,7 +681,10 @@ fn test_batch_verifier_with_local_only_preprocessed() -> Result<(), Verification
     shape_result(&batch_proof).unwrap();
     batch_proof.opened_values.instances[0]
         .base_opened_values
-        .preprocessed_next = Some(vec![Challenge::ZERO]);
+        .preprocessed
+        .as_mut()
+        .expect("preprocessed openings")
+        .next = Some(vec![Challenge::ZERO]);
     assert!(matches!(
         shape_result(&batch_proof),
         Err(VerificationError::InvalidProofShape(message))
@@ -659,7 +692,10 @@ fn test_batch_verifier_with_local_only_preprocessed() -> Result<(), Verification
     ));
     batch_proof.opened_values.instances[0]
         .base_opened_values
-        .preprocessed_next = Some(Vec::new());
+        .preprocessed
+        .as_mut()
+        .expect("preprocessed openings")
+        .next = Some(Vec::new());
 
     let mut circuit_builder = CircuitBuilder::<Challenge>::new();
     circuit_builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
@@ -702,14 +738,23 @@ fn test_batch_verifier_with_local_only_preprocessed() -> Result<(), Verification
         mut challenger,
         commitments_with_opening_points,
     } = replay;
-    observe_opened_values::<MyConfig>(&mut challenger, &commitments_with_opening_points);
+    observe_opened_values::<MyConfig>(
+        &mut challenger,
+        &commitments_with_opening_points,
+        fri_params.batch_proof_of_work_bits,
+    );
+    let claims: Vec<_> = commitments_with_opening_points
+        .iter()
+        .cloned()
+        .map(Into::into)
+        .collect();
     let query_paths = restore_fri_query_paths(
         &fri_params,
         &val_mmcs,
         &val_mmcs,
         &batch_proof.opening_proof,
         &mut challenger,
-        &commitments_with_opening_points,
+        &claims,
     )
     .map_err(|error| VerificationError::InvalidProofShape(format!("{error:?}")))?;
     set_fri_mmcs_private_data::<F, Challenge, DIGEST_ELEMS>(
@@ -722,7 +767,10 @@ fn test_batch_verifier_with_local_only_preprocessed() -> Result<(), Verification
     runner.run().map_err(VerificationError::Circuit)?;
     batch_proof.opened_values.instances[0]
         .base_opened_values
-        .preprocessed_next = original_next;
+        .preprocessed
+        .as_mut()
+        .expect("preprocessed openings")
+        .next = original_next;
     Ok(())
 }
 
@@ -741,6 +789,7 @@ fn run_with_tampered_common(
     let fri_verifier_params = FriVerifierParams::with_mmcs(
         scalars.log_blowup,
         scalars.log_final_poly_len,
+        scalars.max_log_arity,
         scalars.commit_pow_bits,
         scalars.query_pow_bits,
         scalars.num_queries,
@@ -781,9 +830,9 @@ fn run_with_tampered_common(
         },
     ];
 
-    let mut prover_data = ProverData::from_instances(&config, &instances);
+    let mut prover_data = ProverData::from_instances(&config, &instances).unwrap();
     let lookup_gadget = LogUpGadget::new();
-    let batch_proof = prove_batch(&config, &instances, &prover_data);
+    let batch_proof = prove_batch(&config, &instances, &prover_data).unwrap();
     let airs = vec![mixed_air1, mixed_air2, mixed_air3];
 
     // Corrupt the common data the verifier will bind against.
@@ -902,6 +951,7 @@ fn run_with_tampered_proof(
     let fri_verifier_params = FriVerifierParams::with_mmcs(
         scalars.log_blowup,
         scalars.log_final_poly_len,
+        scalars.max_log_arity,
         scalars.commit_pow_bits,
         scalars.query_pow_bits,
         scalars.num_queries,
@@ -942,9 +992,9 @@ fn run_with_tampered_proof(
         },
     ];
 
-    let prover_data = ProverData::from_instances(&config, &instances);
+    let prover_data = ProverData::from_instances(&config, &instances).unwrap();
     let lookup_gadget = LogUpGadget::new();
-    let mut batch_proof = prove_batch(&config, &instances, &prover_data);
+    let mut batch_proof = prove_batch(&config, &instances, &prover_data).unwrap();
     let airs = vec![mixed_air1, mixed_air2, mixed_air3];
     let common_data = &prover_data.common;
 
@@ -1108,8 +1158,8 @@ fn test_batch_allocation_validates_cardinalities_before_mutating_builder() {
         trace: &trace,
         public_values,
     }];
-    let prover_data = ProverData::from_instances(&config, &instances);
-    let mut proof = prove_batch(&config, &instances, &prover_data);
+    let prover_data = ProverData::from_instances(&config, &instances).unwrap();
+    let mut proof = prove_batch(&config, &instances, &prover_data).unwrap();
     let common = &prover_data.common;
     let valid_counts = [1];
 
@@ -1164,6 +1214,7 @@ fn test_batch_verifier_with_public_values() -> Result<(), VerificationError> {
     let fri_verifier_params = FriVerifierParams::with_mmcs(
         scalars.log_blowup,
         scalars.log_final_poly_len,
+        scalars.max_log_arity,
         scalars.commit_pow_bits,
         scalars.query_pow_bits,
         scalars.num_queries,
@@ -1185,9 +1236,9 @@ fn test_batch_verifier_with_public_values() -> Result<(), VerificationError> {
         public_values: pvs[0].clone(),
     }];
 
-    let prover_data = ProverData::from_instances(&config, &instances);
+    let prover_data = ProverData::from_instances(&config, &instances).unwrap();
     let common_data = &prover_data.common;
-    let batch_proof = prove_batch(&config, &instances, &prover_data);
+    let batch_proof = prove_batch(&config, &instances, &prover_data).unwrap();
 
     verify_batch(&config, &[pv_air], &batch_proof, &pvs, common_data).unwrap();
 
@@ -1252,14 +1303,23 @@ fn test_batch_verifier_with_public_values() -> Result<(), VerificationError> {
         &lookup_gadget,
     )
     .map_err(|error| VerificationError::InvalidProofShape(error.to_string()))?;
-    observe_opened_values::<MyConfig>(&mut challenger, &commitments_with_opening_points);
+    observe_opened_values::<MyConfig>(
+        &mut challenger,
+        &commitments_with_opening_points,
+        fri_params.batch_proof_of_work_bits,
+    );
+    let claims: Vec<_> = commitments_with_opening_points
+        .iter()
+        .cloned()
+        .map(Into::into)
+        .collect();
     let query_paths = restore_fri_query_paths(
         &fri_params,
         &val_mmcs,
         &val_mmcs,
         &batch_proof.opening_proof,
         &mut challenger,
-        &commitments_with_opening_points,
+        &claims,
     )
     .map_err(|error| VerificationError::InvalidProofShape(format!("{error:?}")))?;
     set_fri_mmcs_private_data::<F, Challenge, DIGEST_ELEMS>(
@@ -1284,6 +1344,7 @@ fn test_batch_verifier_wrong_public_values() {
     let fri_verifier_params = FriVerifierParams::with_mmcs(
         scalars.log_blowup,
         scalars.log_final_poly_len,
+        scalars.max_log_arity,
         scalars.commit_pow_bits,
         scalars.query_pow_bits,
         scalars.num_queries,
@@ -1305,9 +1366,9 @@ fn test_batch_verifier_wrong_public_values() {
         public_values: pvs[0].clone(),
     }];
 
-    let prover_data = ProverData::from_instances(&config, &instances);
+    let prover_data = ProverData::from_instances(&config, &instances).unwrap();
     let common_data = &prover_data.common;
-    let batch_proof = prove_batch(&config, &instances, &prover_data);
+    let batch_proof = prove_batch(&config, &instances, &prover_data).unwrap();
 
     let lookup_gadget = LogUpGadget::new();
     let (
@@ -1325,14 +1386,23 @@ fn test_batch_verifier_wrong_public_values() {
         &lookup_gadget,
     )
     .unwrap();
-    observe_opened_values::<MyConfig>(&mut challenger, &commitments_with_opening_points);
+    observe_opened_values::<MyConfig>(
+        &mut challenger,
+        &commitments_with_opening_points,
+        fri_params.batch_proof_of_work_bits,
+    );
+    let claims: Vec<_> = commitments_with_opening_points
+        .iter()
+        .cloned()
+        .map(Into::into)
+        .collect();
     let query_paths = restore_fri_query_paths(
         &fri_params,
         &val_mmcs,
         &val_mmcs,
         &batch_proof.opening_proof,
         &mut challenger,
-        &commitments_with_opening_points,
+        &claims,
     )
     .unwrap();
 

@@ -36,6 +36,8 @@ use crate::verifier::VerificationError;
 /// # fn prepare<'air, SC, A, B, const D: usize>(air: &'air A, proof: Proof<SC>, public_inputs: Vec<Val<SC>>, config: SC, backend: B) -> Result<PreparedLayer<'air, SC, A, B, D>, VerificationError>
 /// # where
 /// #   SC: StarkGenericConfig + Send + Sync + Clone + 'static,
+/// #   SC::Challenger: p3_challenger::GrindingChallenger<Witness = Val<SC>>,
+/// #   p3_uni_stark::PcsProverError<SC>: Send,
 /// #   A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
 /// #   B: PreparedPcsRecursionBackend<SC, A, D>,
 /// #   Val<SC>: PrimeField64 + StarkField,
@@ -74,6 +76,8 @@ use crate::verifier::VerificationError;
 /// # fn wrong<SC, A, B, const D: usize>(owner: &PreparedLayer<'_, SC, A, B, D>, input: PreparedInput<'_, SC>, replacement_air: &A)
 /// # where
 /// #   SC: StarkGenericConfig + Send + Sync + Clone + 'static,
+/// #   SC::Challenger: p3_challenger::GrindingChallenger<Witness = Val<SC>>,
+/// #   p3_uni_stark::PcsProverError<SC>: Send,
 /// #   A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>, B: PreparedPcsRecursionBackend<SC, A, D>, Val<SC>: PrimeField64 + StarkField,
 /// #   SC::Challenge: BasedVectorSpace<Val<SC>> + From<Val<SC>> + ExtensionField<Val<SC>> + ExtractBinomialW<Val<SC>>,
 /// #   SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
@@ -99,6 +103,8 @@ use crate::verifier::VerificationError;
 /// # fn wrong<SC, A, B, const D: usize>(owner: &PreparedLayer<'_, SC, A, B, D>, input: PreparedInput<'_, SC>, config: SC, backend: B, params: ProveNextLayerParams)
 /// # where
 /// #   SC: StarkGenericConfig + Send + Sync + Clone + 'static,
+/// #   SC::Challenger: p3_challenger::GrindingChallenger<Witness = Val<SC>>,
+/// #   p3_uni_stark::PcsProverError<SC>: Send,
 /// #   A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>, B: PreparedPcsRecursionBackend<SC, A, D>, Val<SC>: PrimeField64 + StarkField,
 /// #   SC::Challenge: BasedVectorSpace<Val<SC>> + From<Val<SC>> + ExtensionField<Val<SC>> + ExtractBinomialW<Val<SC>>,
 /// #   SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
@@ -159,6 +165,8 @@ where
 
 impl<'air, SC, A, B, const D: usize> PreparedLayer<'air, SC, A, B, D>
 where
+    p3_uni_stark::PcsProverError<SC>: Send,
+    SC::Challenger: p3_challenger::GrindingChallenger<Witness = p3_uni_stark::Val<SC>>,
     SC: StarkGenericConfig + Send + Sync + Clone + 'static,
     A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
     B: PreparedPcsRecursionBackend<SC, A, D>,
@@ -620,7 +628,7 @@ mod tests {
         }
         let output = b;
         let pis = vec![F::ZERO, F::ONE, output];
-        let proof = prove(config, air, generate_trace_rows::<F>(0, 1, n), &pis);
+        let proof = prove(config, air, generate_trace_rows::<F>(0, 1, n), &pis).unwrap();
         verify(config, air, &proof, &pis).unwrap();
         (proof, pis)
     }

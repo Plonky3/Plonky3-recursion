@@ -335,12 +335,12 @@ impl WhirContextParams {
     {
         let final_config = config.final_round_config();
         Self {
-            num_variables: config.num_variables,
-            commitment_ood_samples: config.commitment_ood_samples,
+            num_variables: config.num_variables(),
+            commitment_ood_samples: config.commitment_ood_samples(),
             starting_folding_factor: config.round_folding_factor(0),
-            starting_folding_pow_bits: config.starting_folding_pow_bits,
+            starting_folding_pow_bits: config.starting_folding_pow_bits(),
             rounds: config
-                .round_parameters
+                .round_parameters()
                 .iter()
                 .map(|round| WhirRoundContext {
                     ood_samples: round.ood_samples,
@@ -351,10 +351,10 @@ impl WhirContextParams {
                 })
                 .collect(),
             final_poly_num_variables: final_config.num_variables,
-            final_queries: config.final_queries,
-            final_sumcheck_rounds: config.final_sumcheck_rounds,
+            final_queries: config.terminal().num_queries,
+            final_sumcheck_rounds: config.final_sumcheck_rounds(),
             final_folding_factor: final_config.folding_factor,
-            final_folding_pow_bits: config.final_folding_pow_bits,
+            final_folding_pow_bits: config.final_folding_pow_bits(),
             final_domain_size: final_config.domain_size,
         }
     }

@@ -32,7 +32,7 @@ fn checked_caller_rejects_malformed_last_argument_before_all_later_stages() {
     let public_inputs = vec![BbF::ZERO, BbF::ONE, fibonacci_output(n)];
     let air = FibonacciAir {};
     let config = bb_whir_config(vec![]);
-    let mut proof = prove(&config, &air, trace, &public_inputs);
+    let mut proof = prove(&config, &air, trace, &public_inputs).unwrap();
     verify(&config, &air, &proof, &public_inputs).expect("the native control proof verifies");
     assert!(
         proof.opening_proof.rounds.len() >= 2,
@@ -165,7 +165,7 @@ fn whir_preflight_bounds_wide_stacked_geometry_before_restoration() {
     let public_inputs = vec![BbF::ZERO, BbF::ONE, fibonacci_output(n)];
     let air = FibonacciAir {};
     let config = bb_whir_config(vec![]);
-    let proof = prove(&config, &air, trace, &public_inputs);
+    let proof = prove(&config, &air, trace, &public_inputs).unwrap();
     verify(&config, &air, &proof, &public_inputs).expect("the native control proof verifies");
     let degree = proof.degree_bits;
 

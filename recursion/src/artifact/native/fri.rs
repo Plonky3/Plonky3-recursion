@@ -28,6 +28,7 @@ where
     InputCodec: MmcsCodec<F, InputMmcs>,
     FriCodec: MmcsCodec<EF, FriMmcs>,
 {
+    writer.write_field(field, proof.batch_pow_witness)?;
     writer.write_vec(
         "FRI commit-phase commitments",
         &proof.commit_phase_commits,
@@ -60,12 +61,6 @@ where
         "FRI commit-phase openings",
         &proof.commit_phase_openings,
         |writer, step| {
-            if step.log_arity == 0 {
-                return Err(ArtifactError::MalformedProof {
-                    component: "FRI log arity",
-                });
-            }
-            writer.write_u8(step.log_arity)?;
             writer.write_vec("FRI sibling rows", &step.sibling_values, |writer, row| {
                 writer.write_vec("FRI sibling values", row, |writer, value| {
                     writer.write_extension(field, value)
@@ -111,6 +106,7 @@ where
         .checked_mul(EF::DIMENSION)
         .ok_or(ArtifactError::LengthOverflow)?;
 
+    let batch_pow_witness = reader.read_field(field)?;
     let commit_phase_commits =
         reader.read_vec_limited("FRI commit-phase commitments", max_rounds, 4, |reader| {
             fri_codec.read_commitment(reader)
@@ -142,14 +138,6 @@ where
         })?;
     let commit_phase_openings =
         reader.read_vec_limited("FRI commit-phase openings", max_rounds, 9, |reader| {
-            let log_arity = reader.read_u8()?;
-            if log_arity == 0
-                || usize::from(log_arity) > reader.limits().verifier.max_log_domain_or_degree
-            {
-                return Err(ArtifactError::MalformedProof {
-                    component: "FRI log arity",
-                });
-            }
             let sibling_values =
                 reader.read_vec_limited("FRI sibling rows", max_queries, 4, |reader| {
                     reader.read_vec_limited(
@@ -161,7 +149,6 @@ where
                 })?;
             let opening_proof = fri_codec.read_multi_proof(reader)?;
             Ok(CommitPhaseMultiStep {
-                log_arity,
                 sibling_values,
                 opening_proof,
             })
@@ -179,6 +166,7 @@ where
     }
     let query_pow_witness = reader.read_field(field)?;
     Ok(FriProof {
+        batch_pow_witness,
         commit_phase_commits,
         commit_pow_witnesses,
         input_openings,

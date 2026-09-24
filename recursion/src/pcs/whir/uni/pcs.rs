@@ -14,10 +14,10 @@ use alloc::vec::Vec;
 use core::marker::PhantomData;
 
 use p3_challenger::{CanObserve, CanSampleUniformBits, FieldChallenger, GrindingChallenger};
-use p3_commit::{Mmcs, MultilinearPcs, OpenedValues};
+use p3_commit::{CommitmentOpening, Mmcs, MultilinearPcs, OpenedValues};
 use p3_dft::TwoAdicSubgroupDft;
 use p3_field::coset::TwoAdicMultiplicativeCoset;
-use p3_field::{ExtensionField, TwoAdicField};
+use p3_field::{ExtensionField, PrimeField64, TwoAdicField};
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_multilinear_util::point::Point;
@@ -26,7 +26,7 @@ use p3_sumcheck::{
     OpeningBatch, OpeningProtocol, OpeningRequest, PrescribedPointPcs, TableShape, TableSpec,
 };
 use p3_util::log2_strict_usize;
-use p3_whir::parameters::{FoldingFactor, ProtocolParameters, WhirConfig};
+use p3_whir::parameters::{FoldingFactor, ProtocolParameters, WhirConfig, WhirConfigError};
 use p3_whir::pcs::WhirProverData;
 use p3_whir::pcs::proof::PcsProof;
 use p3_whir::pcs::prover::WhirProver;
@@ -213,9 +213,9 @@ pub struct WhirUniPcs<EF, F, Dft, MT, Challenger, L> {
 
 impl<EF, F, Dft, MT, Challenger, L> WhirUniPcs<EF, F, Dft, MT, Challenger, L>
 where
-    F: TwoAdicField + Ord,
+    F: TwoAdicField + PrimeField64 + Ord,
     EF: ExtensionField<F> + TwoAdicField,
-    Dft: TwoAdicSubgroupDft<F> + Clone,
+    Dft: TwoAdicSubgroupDft<F> + Clone + Sync,
     MT: Mmcs<F> + Clone,
     MT::ProverData<RowMajorMatrix<F>>: Clone,
     Challenger: FieldChallenger<F>
@@ -287,7 +287,7 @@ where
         &self,
         domains: Vec<TwoAdicMultiplicativeCoset<F>>,
         coeffs: Vec<RowMajorMatrix<F>>,
-    ) -> (MT::Commitment, WhirUniProverData<F, EF, MT, L>) {
+    ) -> Result<(MT::Commitment, WhirUniProverData<F, EF, MT, L>), WhirConfigError> {
         let shapes = self.table_shapes(&coeffs);
         let plan = StackedPlan::new(&shapes);
         let stacked_num_variables = plan.num_variables;
@@ -311,9 +311,9 @@ where
         let (commitment, whir) = <WhirProver<EF, F, Dft, MT, Challenger, L> as MultilinearPcs<
             EF,
             Challenger,
-        >>::commit(&prover, witness, &mut sink);
+        >>::commit(&prover, witness, &mut sink)?;
 
-        (
+        Ok((
             commitment,
             WhirUniProverData {
                 domains,
@@ -322,7 +322,7 @@ where
                 stacked_num_variables,
                 whir,
             },
-        )
+        ))
     }
 
     /// Evaluations of committed matrix `idx` over `domain`.
@@ -378,7 +378,7 @@ where
     fn commit_quotient_coefficient_matrices(
         &self,
         coeffs: Vec<RowMajorMatrix<F>>,
-    ) -> (MT::Commitment, WhirUniProverData<F, EF, MT, L>) {
+    ) -> Result<(MT::Commitment, WhirUniProverData<F, EF, MT, L>), WhirConfigError> {
         let domains = coeffs
             .iter()
             .map(|m| {
@@ -399,7 +399,7 @@ where
         &self,
         rounds: Vec<(&WhirUniProverData<F, EF, MT, L>, Vec<Vec<EF>>)>,
         challenger: &mut Challenger,
-    ) -> (OpenedValues<EF>, WhirUniProof<F, EF, MT>) {
+    ) -> Result<(OpenedValues<EF>, WhirUniProof<F, EF, MT>), WhirConfigError> {
         let mut opened = Vec::with_capacity(rounds.len());
         let mut proofs = Vec::with_capacity(rounds.len());
 
@@ -422,7 +422,7 @@ where
                 &schedule.protocol,
                 &schedule.points,
                 challenger,
-            );
+            )?;
 
             let mut round_values = Vec::with_capacity(data.coeffs.len());
             for (m, zetas) in points_per_matrix.iter().enumerate() {
@@ -445,7 +445,7 @@ where
             proofs.push(proof);
         }
 
-        (opened, WhirUniProof { rounds: proofs })
+        Ok((opened, WhirUniProof { rounds: proofs }))
     }
 
     /// Verifies every commitment's WHIR argument and the claimed evaluations.
@@ -606,9 +606,9 @@ where
 impl<EF, F, Dft, MT, Challenger, L> p3_commit::Pcs<EF, Challenger>
     for WhirUniPcs<EF, F, Dft, MT, Challenger, L>
 where
-    F: TwoAdicField + Ord,
+    F: TwoAdicField + PrimeField64 + Ord,
     EF: ExtensionField<F> + TwoAdicField,
-    Dft: TwoAdicSubgroupDft<F> + Clone,
+    Dft: TwoAdicSubgroupDft<F> + Clone + Sync,
     MT: Mmcs<F> + Clone,
     MT::ProverData<RowMajorMatrix<F>>: Clone,
     MT::Commitment: Serialize + for<'de> Deserialize<'de>,
@@ -623,25 +623,19 @@ where
     type Domain = TwoAdicMultiplicativeCoset<F>;
     type Commitment = MT::Commitment;
     type ProverData = WhirUniProverData<F, EF, MT, L>;
-    type EvaluationsOnDomain<'a> = RowMajorMatrix<F>;
     type Proof = WhirUniProof<F, EF, MT>;
     type Error = WhirUniPcsError;
-
-    const ZK: bool = false;
+    type ProverError = WhirConfigError;
 
     fn natural_domain_for_degree(&self, degree: usize) -> Self::Domain {
         TwoAdicMultiplicativeCoset::new(F::ONE, log2_strict_usize(degree))
             .expect("degree is within the field's two-adicity")
     }
 
-    fn log_max_lde_height(&self) -> usize {
-        self.log_max_lde_height
-    }
-
     fn commit(
         &self,
         evaluations: impl IntoIterator<Item = (Self::Domain, RowMajorMatrix<F>)>,
-    ) -> (Self::Commitment, Self::ProverData) {
+    ) -> Result<(Self::Commitment, Self::ProverData), Self::ProverError> {
         let mut domains = Vec::new();
         let mut coeffs = Vec::new();
         for (domain, mat) in evaluations {
@@ -650,6 +644,82 @@ where
             domains.push(domain);
         }
         self.commit_coefficient_matrices(domains, coeffs)
+    }
+
+    fn open(
+        &self,
+        commitment_data_with_opening_points: Vec<
+            p3_commit::OpeningRequest<'_, Self::ProverData, EF>,
+        >,
+        fiat_shamir_challenger: &mut Challenger,
+    ) -> Result<(p3_commit::OpenedValues<EF>, Self::Proof), Self::ProverError> {
+        let rounds = commitment_data_with_opening_points
+            .into_iter()
+            .map(|request| (request.prover_data, request.points))
+            .collect();
+        self.open_rounds(rounds, fiat_shamir_challenger)
+    }
+
+    fn verify(
+        &self,
+        commitments_with_opening_points: Vec<CommitmentOpening<EF, Self::Commitment, Self::Domain>>,
+        proof: &Self::Proof,
+        fiat_shamir_challenger: &mut Challenger,
+    ) -> Result<(), Self::Error> {
+        let rounds = commitments_with_opening_points
+            .into_iter()
+            .map(|claim| {
+                (
+                    claim.commitment,
+                    claim
+                        .matrices
+                        .into_iter()
+                        .map(|matrix| {
+                            (
+                                matrix.domain,
+                                matrix
+                                    .points
+                                    .into_iter()
+                                    .map(|point| (point.point, point.values))
+                                    .collect(),
+                            )
+                        })
+                        .collect(),
+                )
+            })
+            .collect();
+        self.verify_rounds(rounds, proof, fiat_shamir_challenger)
+    }
+}
+
+impl<EF, F, Dft, MT, Challenger, L> p3_commit::UnivariateStarkPcs<EF, Challenger>
+    for WhirUniPcs<EF, F, Dft, MT, Challenger, L>
+where
+    F: TwoAdicField + PrimeField64 + Ord,
+    EF: ExtensionField<F> + TwoAdicField,
+    Dft: TwoAdicSubgroupDft<F> + Clone + Sync,
+    MT: Mmcs<F> + Clone,
+    MT::ProverData<RowMajorMatrix<F>>: Clone,
+    MT::Commitment: Serialize + for<'de> Deserialize<'de>,
+    MT::MultiProof: Serialize + for<'de> Deserialize<'de>,
+    Challenger: FieldChallenger<F>
+        + GrindingChallenger<Witness = F>
+        + CanSampleUniformBits<F>
+        + CanObserve<MT::Commitment>
+        + Clone,
+    L: Layout<F, EF> + Clone,
+{
+    type EvaluationsOnDomain<'a> = RowMajorMatrix<F>;
+
+    const ZK: bool = false;
+
+    fn log_max_trace_height(&self) -> usize {
+        self.log_max_lde_height
+    }
+
+    fn log_min_trace_height(&self) -> usize {
+        // Multiplicative coset selectors are defined down to a single row.
+        0
     }
 
     fn get_evaluations_on_domain<'a>(
@@ -665,36 +735,15 @@ where
         &self,
         evaluations: impl IntoIterator<Item = (Self::Domain, RowMajorMatrix<F>)>,
         num_chunks: usize,
-    ) -> Vec<RowMajorMatrix<F>> {
-        self.quotient_coefficient_matrices(evaluations, num_chunks)
+    ) -> Result<Vec<RowMajorMatrix<F>>, Self::ProverError> {
+        Ok(self.quotient_coefficient_matrices(evaluations, num_chunks))
     }
 
-    fn commit_ldes(&self, ldes: Vec<RowMajorMatrix<F>>) -> (Self::Commitment, Self::ProverData) {
+    fn commit_ldes(
+        &self,
+        ldes: Vec<RowMajorMatrix<F>>,
+    ) -> Result<(Self::Commitment, Self::ProverData), Self::ProverError> {
         self.commit_quotient_coefficient_matrices(ldes)
-    }
-
-    fn open(
-        &self,
-        commitment_data_with_opening_points: Vec<(&Self::ProverData, Vec<Vec<EF>>)>,
-        fiat_shamir_challenger: &mut Challenger,
-    ) -> (p3_commit::OpenedValues<EF>, Self::Proof) {
-        self.open_rounds(commitment_data_with_opening_points, fiat_shamir_challenger)
-    }
-
-    fn verify(
-        &self,
-        commitments_with_opening_points: Vec<(
-            Self::Commitment,
-            Vec<(Self::Domain, Vec<(EF, Vec<EF>)>)>,
-        )>,
-        proof: &Self::Proof,
-        fiat_shamir_challenger: &mut Challenger,
-    ) -> Result<(), Self::Error> {
-        self.verify_rounds(
-            commitments_with_opening_points,
-            proof,
-            fiat_shamir_challenger,
-        )
     }
 }
 
@@ -871,7 +920,7 @@ pub(crate) mod tests {
         let (_commit, data) = <MyPcs as p3_commit::Pcs<EF, MyChallenger>>::commit(
             &pcs,
             vec![(d0, m0.clone()), (d1, m1.clone())],
-        );
+        ).unwrap();
 
         // 3 * 2^6 + 2 * 2^5 = 256 -> stacked arity 8.
         assert_eq!(data.stacked_num_variables, 8);
@@ -911,11 +960,11 @@ pub(crate) mod tests {
         let trace_domain = TwoAdicMultiplicativeCoset::<F>::new(F::ONE, 5).unwrap();
         let mat = RowMajorMatrix::<F>::rand(&mut rng, 1 << 5, 2);
         let (_c, data) =
-            <MyPcs as p3_commit::Pcs<EF, MyChallenger>>::commit(&pcs, vec![(trace_domain, mat)]);
+            <MyPcs as p3_commit::Pcs<EF, MyChallenger>>::commit(&pcs, vec![(trace_domain, mat)]).unwrap();
 
         // Quotient domain: 4x larger, disjoint coset.
         let quotient_domain = trace_domain.create_disjoint_domain(1 << 7);
-        let got = <MyPcs as p3_commit::Pcs<EF, MyChallenger>>::get_evaluations_on_domain(
+        let got = <MyPcs as p3_commit::UnivariateStarkPcs<EF, MyChallenger>>::get_evaluations_on_domain(
             &pcs,
             &data,
             0,
@@ -947,9 +996,9 @@ pub(crate) mod tests {
         let domain = TwoAdicMultiplicativeCoset::<F>::new(F::GENERATOR, 4).unwrap();
         let mat = RowMajorMatrix::<F>::rand(&mut rng, 1 << 4, 3);
         let (_c, data) =
-            <MyPcs as p3_commit::Pcs<EF, MyChallenger>>::commit(&pcs, vec![(domain, mat.clone())]);
+            <MyPcs as p3_commit::Pcs<EF, MyChallenger>>::commit(&pcs, vec![(domain, mat.clone())]).unwrap();
 
-        let got = <MyPcs as p3_commit::Pcs<EF, MyChallenger>>::get_evaluations_on_domain(
+        let got = <MyPcs as p3_commit::UnivariateStarkPcs<EF, MyChallenger>>::get_evaluations_on_domain(
             &pcs, &data, 0, domain,
         );
         assert_eq!(got.values, mat.values);
@@ -967,12 +1016,12 @@ pub(crate) mod tests {
         let evals = RowMajorMatrix::<F>::rand(&mut rng, 1 << 6, 1);
         let num_chunks = 4;
 
-        let (_c, data) = <MyPcs as p3_commit::Pcs<EF, MyChallenger>>::commit_quotient(
+        let (_c, data) = <MyPcs as p3_commit::UnivariateStarkPcs<EF, MyChallenger>>::commit_quotient(
             &pcs,
             quotient_domain,
             evals.clone(),
             num_chunks,
-        );
+        ).unwrap();
 
         let sub_domains = quotient_domain.split_domains(num_chunks);
         let sub_evals = quotient_domain.split_evals(num_chunks, evals);
@@ -1027,15 +1076,15 @@ pub(crate) mod tests {
         let domain = TwoAdicMultiplicativeCoset::<F>::new(F::ONE, 6).unwrap();
         let mat = RowMajorMatrix::<F>::rand(&mut rng, 1 << 6, 2);
         let (_c, data) =
-            <MyPcs as p3_commit::Pcs<EF, MyChallenger>>::commit(&pcs, vec![(domain, mat)]);
+            <MyPcs as p3_commit::Pcs<EF, MyChallenger>>::commit(&pcs, vec![(domain, mat)]).unwrap();
 
         let zeta = EF::from_u32(9_999);
         let mut challenger = pcs.challenger_proto.clone();
         let (opened, proof) = <MyPcs as p3_commit::Pcs<EF, MyChallenger>>::open(
             &pcs,
-            vec![(&data, vec![vec![zeta]])],
+            vec![(&data, vec![vec![zeta]]).into()],
             &mut challenger,
-        );
+        ).unwrap();
 
         // Reference: Horner over the stored coefficients.
         let coeffs = &data.coeffs[0];
@@ -1070,7 +1119,7 @@ pub(crate) mod tests {
         let m0 = RowMajorMatrix::<F>::rand(&mut rng, 1 << 6, 2);
         let m1 = RowMajorMatrix::<F>::rand(&mut rng, 1 << 5, 1);
         let (commit, data) =
-            <MyPcs as p3_commit::Pcs<EF, MyChallenger>>::commit(&pcs, vec![(d0, m0), (d1, m1)]);
+            <MyPcs as p3_commit::Pcs<EF, MyChallenger>>::commit(&pcs, vec![(d0, m0), (d1, m1)]).unwrap();
 
         let zeta = EF::from_u32(777);
         let zeta_next = zeta * EF::from(d0.subgroup_generator());
@@ -1079,9 +1128,9 @@ pub(crate) mod tests {
         let mut challenger = pcs.challenger_proto.clone();
         let (opened, proof) = <MyPcs as p3_commit::Pcs<EF, MyChallenger>>::open(
             &pcs,
-            vec![(&data, points)],
+            vec![(&data, points).into()],
             &mut challenger,
-        );
+        ).unwrap();
 
         let coms = vec![
             (
@@ -1102,7 +1151,7 @@ pub(crate) mod tests {
         let mut challenger = pcs.challenger_proto.clone();
         <MyPcs as p3_commit::Pcs<EF, MyChallenger>>::verify(
             &pcs,
-            vec![(commit, coms)],
+            vec![(commit, coms).into()],
             &proof,
             &mut challenger,
         )
@@ -1125,8 +1174,8 @@ pub(crate) mod tests {
             rounds: vec![proof.rounds[0].clone(), malformed_last],
         };
         let commitments = vec![
-            (commitment.clone(), matrices.clone()),
-            (commitment, matrices),
+            (commitment.clone(), matrices.clone()).into(),
+            (commitment, matrices).into(),
         ];
         let calls = Arc::new(AtomicUsize::new(0));
         let mut challenger =
@@ -1241,7 +1290,7 @@ pub(crate) mod tests {
         let mut challenger = pcs.challenger_proto.clone();
         let err = <MyPcs as p3_commit::Pcs<EF, MyChallenger>>::verify(
             &pcs,
-            vec![(commit, coms)],
+            vec![(commit, coms).into()],
             &proof,
             &mut challenger,
         )
@@ -1271,7 +1320,7 @@ pub(crate) mod tests {
         let mut challenger = pcs.challenger_proto.clone();
         let err = <MyPcs as p3_commit::Pcs<EF, MyChallenger>>::verify(
             &pcs,
-            vec![(commit, coms)],
+            vec![(commit, coms).into()],
             &proof,
             &mut challenger,
         )

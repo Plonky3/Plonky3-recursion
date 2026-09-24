@@ -104,7 +104,7 @@ fn make_zk_config(seed: u64) -> MyConfigZk {
         Dft::default(),
         val_mmcs,
         fri_params,
-        2,
+        4,
         StdRng::seed_from_u64(seed),
     );
     MyConfigZk::new(pcs, Challenger::new(default_koalabear_poseidon2_16()))
@@ -136,7 +136,13 @@ fn set_zk_mmcs_private_data(
         &proof.opening_proof.0,
     )
     .map_err(|e| VerificationError::InvalidProofShape(e.to_string()))?;
-    observe_opened_values::<MyConfigZk>(&mut challenger, &commitments_with_opening_points);
+    // The test FRI parameters (`FriParameters::new_testing`) grind no batch phase.
+    observe_opened_values::<MyConfigZk>(&mut challenger, &commitments_with_opening_points, 0);
+    let claims: Vec<_> = commitments_with_opening_points
+        .iter()
+        .cloned()
+        .map(Into::into)
+        .collect();
 
     let perm = default_koalabear_poseidon2_16();
     let val_mmcs = MyMmcs::new(MyHash::new(perm.clone()), MyCompress::new(perm), 0);
@@ -147,7 +153,7 @@ fn set_zk_mmcs_private_data(
         &val_mmcs,
         &proof.opening_proof.1,
         &mut challenger,
-        &commitments_with_opening_points,
+        &claims,
     )
     .map_err(|e| VerificationError::InvalidProofShape(format!("{e:?}")))?;
     set_fri_mmcs_private_data::<F, Challenge, DIGEST_ELEMS>(
@@ -176,9 +182,9 @@ fn prove_zk_add_air(config: &MyConfigZk, trace: &RowMajorMatrix<F>) -> ZkProofDa
         public_values: vec![],
     };
     let instances = vec![instance];
-    let prover_data = ProverData::from_instances(config, &instances);
+    let prover_data = ProverData::from_instances(config, &instances).unwrap();
     let common = &prover_data.common;
-    let proof = prove_batch(config, &instances, &prover_data);
+    let proof = prove_batch(config, &instances, &prover_data).unwrap();
     verify_batch(config, &[air], &proof, &[vec![]], common).expect("inner ZK verify failed");
     ZkProofData { proof, prover_data }
 }
@@ -204,6 +210,7 @@ fn add_zk_batch_verifier_to_circuit(
         FriVerifierParams::with_mmcs(
             fri_params.log_blowup,
             fri_params.log_final_poly_len,
+            fri_params.max_log_arity,
             fri_params.commit_proof_of_work_bits,
             fri_params.query_proof_of_work_bits,
             fri_params.num_queries,
@@ -344,7 +351,7 @@ fn test_zk_aggregation() -> Result<(), VerificationError> {
         .unwrap();
     let (airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
 
-    let prover_data = ProverData::from_airs_and_degrees(&config_outer, &airs, &degrees);
+    let prover_data = ProverData::from_airs_and_degrees(&config_outer, &airs, &degrees).unwrap();
     let circuit_prover_data =
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
 

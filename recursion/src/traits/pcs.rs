@@ -3,6 +3,7 @@
 use alloc::vec::Vec;
 
 use p3_circuit::{CircuitBuilder, CircuitBuilderError, NonPrimitiveOpId};
+use p3_field::{ExtensionField, PrimeField64};
 use p3_uni_stark::{StarkGenericConfig, Val};
 
 use super::Recursive;
@@ -49,6 +50,23 @@ pub trait RecursivePcs<
     /// correct point, inside `verify_circuit` — the generic caller must not
     /// pre-observe them for WHIR, or it desyncs the transcript.
     const PRE_OBSERVES_OPENED_VALUES: bool = true;
+
+    /// The domain-separator seed the native PCS absorbs before its claimed evaluations.
+    ///
+    /// Only consulted when [`Self::PRE_OBSERVES_OPENED_VALUES`] is `true`: the generic caller
+    /// absorbs this seed, then every claimed evaluation. `claimed_evaluation_counts[c][m][p]` is
+    /// the number of values claimed for commitment `c`, matrix `m`, point `p`, in native order.
+    /// Schemes without such a seed return an empty vector.
+    fn claims_transcript_seed(
+        _params: &Self::VerifierParams,
+        _claimed_evaluation_counts: Vec<Vec<Vec<usize>>>,
+    ) -> Vec<Val<SC>>
+    where
+        Val<SC>: PrimeField64,
+        SC::Challenge: ExtensionField<Val<SC>>,
+    {
+        Vec::new()
+    }
 
     /// Generate PCS-specific challenges (e.g., FRI beta challenges, query indices).
     ///

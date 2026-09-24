@@ -16,9 +16,7 @@ use alloc::vec::Vec;
 
 pub use bridge::{univariate_eq_point, univariate_eq_point_circuit};
 pub use circuit::{MatrixOpenings, RoundClaims, build_round_claims};
-use p3_challenger::{
-    CanObserve, CanSample, CanSampleUniformBits, FieldChallenger, GrindingChallenger,
-};
+use p3_challenger::{CanObserve, CanSampleUniformBits, FieldChallenger, GrindingChallenger};
 use p3_commit::{Mmcs, PolynomialSpace};
 use p3_field::{Algebra, PrimeCharacteristicRing, PrimeField64, TwoAdicField};
 use p3_sumcheck::layout::{LayoutStrategy, Verifier};
@@ -28,7 +26,7 @@ use p3_sumcheck::verify_final_sumcheck_rounds;
 use p3_uni_stark::{StarkGenericConfig, SymbolicExpression, SymbolicExpressionExt, Val};
 use p3_util::log2_strict_usize;
 use p3_whir::parameters::{ProtocolParameters, WhirConfig};
-use p3_whir::pcs::utils::get_challenge_stir_queries;
+use p3_whir::transcript::{WhirShape, WhirVerifierTranscript};
 pub use pcs::{WhirUniPcs, WhirUniPcsError, WhirUniProof, WhirUniProverData};
 pub use plan::{StackedPlacement, StackedPlan, StackedSelector, padded_arity};
 pub use recursion_data::{WhirRoundPaths, restore_whir_recursion_paths, whir_round_paths_op_count};
@@ -228,10 +226,10 @@ where
         // `pcs/adapter.rs`): bind the initial OOD answers and every opening
         // claim into the layout verifier, absorbing them into the transcript
         // in the same order the prover did.
-        if round_proof.whir.initial_ood_answers.len() != whir_config.commitment_ood_samples {
+        if round_proof.whir.initial_ood_answers.len() != whir_config.commitment_ood_samples() {
             return Err(VerificationError::InvalidProofShape(format!(
                 "WHIR initial OOD answer count mismatch: expected {}, got {}",
-                whir_config.commitment_ood_samples,
+                whir_config.commitment_ood_samples(),
                 round_proof.whir.initial_ood_answers.len()
             )));
         }
@@ -266,14 +264,9 @@ where
                     ))
                 })?;
         }
-        // The WHIR batching challenge: sampled here for its transcript side
-        // effect only. Its value feeds the arithmetic constraint this
-        // replay does not need to build.
-        let _alpha: EF<SC> = challenger.sample_algebra_element();
-
-        // Mirror `WhirVerifier::verify`'s round loop (p3-whir's
-        // `pcs/verifier/mod.rs`), capturing STIR indices instead of the
-        // arithmetic each step also produces.
+        // Mirror `WhirVerifier::verify` (p3-whir's `pcs/verifier/mod.rs`) through p3-whir's own
+        // typed transcript, capturing STIR indices instead of the arithmetic each step also
+        // produces.
         let n_rounds = whir_config.n_rounds();
         if round_proof.whir.rounds.len() != n_rounds {
             return Err(VerificationError::InvalidProofShape(format!(
@@ -281,142 +274,29 @@ where
                 round_proof.whir.rounds.len()
             )));
         }
-
-        // A dummy running sum: `verify_rounds`/`verify_final_sumcheck_rounds`
-        // fold proof data into it, but its value never feeds back into the
-        // challenger, so it plays no part in which indices get sampled.
-        let mut claimed_eval = EF::<SC>::ZERO;
-        round_proof
-            .whir
-            .initial_sumcheck
-            .verify_rounds(
-                &mut challenger,
-                &mut claimed_eval,
-                whir_config.round_folding_factor(0),
-                whir_config.starting_folding_pow_bits,
-                Basis::Evaluation,
-            )
-            .map_err(|e| {
-                VerificationError::InvalidProofShape(format!(
-                    "WHIR initial sumcheck replay failed: {e:?}"
-                ))
-            })?;
-
-        let mut rounds_indices = Vec::with_capacity(n_rounds);
-        for round_index in 0..n_rounds {
-            let round_params = &whir_config.round_parameters[round_index];
-            let whir_round = &round_proof.whir.rounds[round_index];
-
-            // Mirrors `ParsedCommitment::parse_with_round` (p3-whir,
-            // `pcs/committer/reader.rs`, `pub(crate)` there and so not
-            // reachable from this crate): observe the round's commitment
-            // root, then per OOD sample, sample a point and observe its
-            // answer. Only the transcript side effect matters here — the
-            // `EqStatement` native code builds from these samples feeds the
-            // arithmetic constraint this replay does not need.
-            let commitment = whir_round.commitment.clone().ok_or_else(|| {
-                VerificationError::InvalidProofShape(format!(
-                    "WHIR round {round_index} is missing its commitment"
-                ))
-            })?;
-            if whir_round.ood_answers.len() != round_params.ood_samples {
-                return Err(VerificationError::InvalidProofShape(format!(
-                    "WHIR round {round_index} OOD answer count mismatch: expected {}, got {}",
-                    round_params.ood_samples,
-                    whir_round.ood_answers.len()
-                )));
-            }
-            challenger.observe(commitment);
-            for &eval in &whir_round.ood_answers {
-                let _ood_point: EF<SC> = challenger.sample_algebra_element();
-                challenger.observe_algebra_element(eval);
-            }
-
-            // PoW check, then the intermediate-round transcript checkpoint
-            // (native calls this only for `round_index < n_rounds()`, i.e.
-            // every intermediate round but not the final phase), then the
-            // STIR indices themselves.
-            if round_params.pow_bits > 0
-                && !challenger.check_witness(round_params.pow_bits, whir_round.pow_witness)
-            {
-                return Err(VerificationError::InvalidProofShape(format!(
-                    "WHIR round {round_index} PoW check failed during replay"
-                )));
-            }
-            let _checkpoint: F<SC> = challenger.sample();
-            rounds_indices.push(get_challenge_stir_queries::<SC::Challenger, F<SC>>(
-                round_params.domain_size,
-                round_params.folding_factor,
-                round_params.num_queries,
-                &mut challenger,
-            ));
-
-            // The per-round batching challenge: transcript side effect only.
-            let _gamma: EF<SC> = challenger.sample_algebra_element();
-
-            whir_round
-                .sumcheck
-                .verify_rounds(
-                    &mut challenger,
-                    &mut claimed_eval,
-                    whir_config.round_folding_factor(round_index + 1),
-                    round_params.folding_pow_bits,
-                    Basis::Evaluation,
-                )
-                .map_err(|e| {
-                    VerificationError::InvalidProofShape(format!(
-                        "WHIR round {round_index} sumcheck replay failed: {e:?}"
-                    ))
-                })?;
-        }
-
-        // Final phase: observe the final polynomial, PoW-check (no
-        // checkpoint sample here — native only takes one for intermediate
-        // rounds), sample the final STIR indices, then replay the optional
-        // final plain sumcheck.
-        let final_round_config = whir_config.final_round_config();
         let final_poly = round_proof.whir.final_poly.as_ref().ok_or_else(|| {
             VerificationError::InvalidProofShape("WHIR proof missing final polynomial".into())
         })?;
-        let expected_final_poly_len = 1usize << final_round_config.num_variables;
-        if final_poly.num_evals() != expected_final_poly_len {
-            return Err(VerificationError::InvalidProofShape(format!(
-                "WHIR final polynomial length mismatch: expected {expected_final_poly_len}, got {}",
-                final_poly.num_evals()
-            )));
-        }
-        challenger.observe_algebra_slice(final_poly.as_slice());
-
-        if final_round_config.pow_bits > 0
-            && !challenger.check_witness(
-                final_round_config.pow_bits,
-                round_proof.whir.final_pow_witness,
-            )
-        {
-            return Err(VerificationError::InvalidProofShape(
-                "WHIR final PoW check failed during replay".into(),
-            ));
-        }
-        let final_queries = get_challenge_stir_queries::<SC::Challenger, F<SC>>(
-            final_round_config.domain_size,
-            final_round_config.folding_factor,
-            final_round_config.num_queries,
-            &mut challenger,
+        let shape = WhirShape::new(&whir_config, schedule.protocol.num_openings());
+        let mut whir_transcript =
+            WhirVerifierTranscript::<SC::Challenger, F<SC>, EF<SC>>::new(&mut challenger, shape);
+        let replayed = replay_whir_rounds::<SC, MT>(
+            &mut whir_transcript,
+            &whir_config,
+            &layout_verifier,
+            &round_proof.whir,
+            final_poly.as_slice(),
         );
-
-        verify_final_sumcheck_rounds(
-            round_proof.whir.final_sumcheck.as_ref(),
-            &mut challenger,
-            &mut claimed_eval,
-            whir_config.final_sumcheck_rounds,
-            whir_config.final_folding_pow_bits,
-            Basis::Evaluation,
-        )
-        .map_err(|e| {
-            VerificationError::InvalidProofShape(format!(
-                "WHIR final sumcheck replay failed: {e:?}"
-            ))
-        })?;
+        let (rounds_indices, final_queries) = match replayed {
+            Ok(indices) => {
+                whir_transcript.finish();
+                indices
+            }
+            Err(error) => {
+                whir_transcript.abort();
+                return Err(error);
+            }
+        };
 
         out.push(WhirQueryIndices {
             stacked_num_variables: schedule.stacked_num_variables,
@@ -426,4 +306,121 @@ where
     }
 
     Ok(out)
+}
+
+/// STIR indices of one WHIR argument: per intermediate round, then the final phase.
+type ReplayedWhirIndices = (Vec<Vec<usize>>, Vec<usize>);
+
+/// Replay one WHIR argument's rounds on a live typed transcript.
+///
+/// The caller seeds the transcript and must `finish` it on success or `abort` it on error.
+fn replay_whir_rounds<SC, MT>(
+    transcript: &mut WhirVerifierTranscript<'_, SC::Challenger, Val<SC>, SC::Challenge>,
+    whir_config: &WhirConfig<SC::Challenge, Val<SC>, SC::Challenger>,
+    layout_verifier: &Verifier<Val<SC>, SC::Challenge>,
+    proof: &p3_whir::pcs::proof::WhirProof<Val<SC>, SC::Challenge, MT>,
+    final_poly: &[SC::Challenge],
+) -> Result<ReplayedWhirIndices, VerificationError>
+where
+    SC: StarkGenericConfig,
+    Val<SC>: TwoAdicField + PrimeField64,
+    SC::Challenge: TwoAdicField,
+    SC::Challenger: FieldChallenger<Val<SC>>
+        + GrindingChallenger<Witness = Val<SC>>
+        + CanSampleUniformBits<Val<SC>>
+        + CanObserve<MT::Commitment>,
+    MT: Mmcs<Val<SC>>,
+{
+    let invalid = |what: &str, e: &dyn core::fmt::Debug| {
+        VerificationError::InvalidProofShape(format!("WHIR {what} replay failed: {e:?}"))
+    };
+
+    // A dummy running sum: the sumcheck replays fold proof data into it, but its value never
+    // feeds back into the challenger, so it plays no part in which indices get sampled.
+    let mut claimed_eval = SC::Challenge::ZERO;
+    let _ = transcript
+        .delegate_initial_fold(|challenger| {
+            // The WHIR batching challenge: transcript side effect only.
+            let _alpha = layout_verifier.batching_challenge(challenger);
+            proof.initial_sumcheck.verify_rounds(
+                challenger,
+                &mut claimed_eval,
+                whir_config.round_folding_factor(0),
+                whir_config.starting_folding_pow_bits(),
+                Basis::Evaluation,
+            )
+        })
+        .map_err(|e| invalid("initial sumcheck", &e))?;
+
+    let n_rounds = whir_config.n_rounds();
+    let mut rounds_indices = Vec::with_capacity(n_rounds);
+    for round_index in 0..n_rounds {
+        let round_params = &whir_config.round_parameters()[round_index];
+        let whir_round = &proof.rounds[round_index];
+
+        // Mirrors `ParsedCommitment::parse_with_round`: the round's commitment root, then per
+        // OOD sample a point and its answer.
+        let commitment = whir_round.commitment.clone().ok_or_else(|| {
+            VerificationError::InvalidProofShape(format!(
+                "WHIR round {round_index} is missing its commitment"
+            ))
+        })?;
+        if whir_round.ood_answers.len() != round_params.ood_samples {
+            return Err(VerificationError::InvalidProofShape(format!(
+                "WHIR round {round_index} OOD answer count mismatch: expected {}, got {}",
+                round_params.ood_samples,
+                whir_round.ood_answers.len()
+            )));
+        }
+        transcript.commitment(commitment);
+        for &eval in &whir_round.ood_answers {
+            let _ood_point = transcript.ood_point();
+            transcript.ood_answer(eval);
+        }
+
+        transcript
+            .query_pow(round_index, whir_round.pow_witness)
+            .map_err(|e| invalid("round PoW", &e))?;
+        rounds_indices.push(transcript.query_indices(round_index));
+
+        // The per-round batching challenge: transcript side effect only.
+        let _gamma = transcript.round_batching();
+
+        let _ = transcript
+            .delegate_round_fold(|challenger| {
+                whir_round.sumcheck.verify_rounds(
+                    challenger,
+                    &mut claimed_eval,
+                    whir_config.round_folding_factor(round_index + 1),
+                    round_params.folding_pow_bits,
+                    Basis::Evaluation,
+                )
+            })
+            .map_err(|e| invalid("round sumcheck", &e))?;
+    }
+
+    // Final phase: the final polynomial, its grind, the final STIR indices, then the optional
+    // final plain sumcheck.
+    transcript
+        .final_poly(final_poly)
+        .map_err(|e| invalid("final polynomial", &e))?;
+    transcript
+        .query_pow(n_rounds, proof.final_pow_witness)
+        .map_err(|e| invalid("final PoW", &e))?;
+    let final_queries = transcript.query_indices(n_rounds);
+    transcript
+        .delegate_final_fold(|challenger| {
+            verify_final_sumcheck_rounds(
+                proof.final_sumcheck.as_ref(),
+                challenger,
+                &mut claimed_eval,
+                whir_config.final_sumcheck_rounds(),
+                whir_config.final_folding_pow_bits(),
+                Basis::Evaluation,
+            )
+        })
+        .transpose()
+        .map_err(|e| invalid("final sumcheck", &e))?;
+
+    Ok((rounds_indices, final_queries))
 }

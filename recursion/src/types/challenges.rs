@@ -25,10 +25,8 @@ pub struct StarkChallenges {
 
 /// Parameters for STARK challenge allocation that match native challenger behavior.
 pub(crate) struct StarkChallengeParams<'a, SC: StarkGenericConfig, Comm> {
-    /// Log₂ of trace domain size
-    pub degree_bits: usize,
-    /// is_zk flag (0 or 1)
-    pub is_zk: usize,
+    /// Domain-separator seed of the native uni-STARK transcript shape.
+    pub transcript_seed: Vec<Val<SC>>,
     /// Width of preprocessed trace (0 if none)
     pub preprocessed_width: usize,
     /// Preprocessed commitment targets (if preprocessed_width > 0)
@@ -40,10 +38,8 @@ pub(crate) struct StarkChallengeParams<'a, SC: StarkGenericConfig, Comm> {
 impl StarkChallenges {
     /// Allocate base STARK challenge targets using Fiat-Shamir transform.
     ///
-    /// This method follows the exact native DuplexChallenger protocol ordering:
-    /// 1. Observe degree_bits
-    /// 2. Observe degree_bits - is_zk (init trace domain log size)
-    /// 3. Observe preprocessed_width
+    /// This method follows the exact native typed-transcript ordering of `p3_uni_stark::verify`:
+    /// 1. Absorb the transcript shape's domain-separator seed (which binds the degrees and widths)
     /// 4. Observe trace commitment
     /// 5. If preprocessed_width > 0: observe preprocessed commitment
     /// 6. Observe public values
@@ -97,25 +93,8 @@ impl StarkChallenges {
             .as_ref()
             .map(|c| c.to_observation_targets());
 
-        // 1. Observe degree_bits (base field element)
-        let degree_bits_target =
-            circuit.alloc_const(SC::Challenge::from_usize(params.degree_bits), "degree bits");
-        challenger.observe(circuit, degree_bits_target);
-
-        // 2. Observe degree_bits - is_zk (init trace domain log size, base field element)
-        let init_trace_log_size = params.degree_bits.saturating_sub(params.is_zk);
-        let init_trace_log_size_target = circuit.alloc_const(
-            SC::Challenge::from_usize(init_trace_log_size),
-            "init trace log size",
-        );
-        challenger.observe(circuit, init_trace_log_size_target);
-
-        // 3. Observe preprocessed_width (base field element)
-        let preprocessed_width_target = circuit.alloc_const(
-            SC::Challenge::from_usize(params.preprocessed_width),
-            "preprocessed width",
-        );
-        challenger.observe(circuit, preprocessed_width_target);
+        // 1. Absorb the transcript shape's domain-separator seed.
+        challenger.observe_seed(circuit, &params.transcript_seed);
 
         // 4. Observe trace commitment (base field elements)
         challenger.observe_slice(circuit, &trace_comm_targets);
@@ -141,7 +120,8 @@ impl StarkChallenges {
             challenger.observe_slice(circuit, &random_comm);
         }
 
-        // 10. Sample zeta (extension field element)
+        // 10. Sample zeta (extension field element). The out-of-domain phase grinds nothing:
+        //     the recursive verifier only accepts a zero OOD difficulty.
         let zeta = challenger.sample_ext(circuit);
 
         // 11. Compute zeta_next = zeta * trace_domain_generator (NOT sampled!)

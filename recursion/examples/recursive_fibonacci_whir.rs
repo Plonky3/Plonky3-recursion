@@ -107,7 +107,7 @@ macro_rules! define_whir_field_module {
                 let air = FibonacciAir {};
                 let config = $config_fn(vec![]);
 
-                let proof = prove(&config, &air, trace, &pis);
+                let proof = prove(&config, &air, trace, &pis).unwrap();
                 verify(&config, &air, &proof, &pis).expect("Failed to verify base proof");
                 report_proof_size(&proof);
                 info!("Base WHIR Fibonacci proof verified successfully");

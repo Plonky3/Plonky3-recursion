@@ -9,6 +9,9 @@ use core::mem::transmute;
 use p3_air::DebugConstraintBuilder;
 use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 use p3_baby_bear::BabyBear;
+use p3_batch_stark::folder::{
+    ProverConstraintFolderWithLookups, VerifierConstraintFolderWithLookups,
+};
 use p3_batch_stark::{StarkGenericConfig, Val};
 use p3_circuit::ops::{NonPrimitivePreprocessedMap, NpoTypeId, Poseidon1Config, Poseidon1Trace};
 use p3_circuit::tables::Traces;
@@ -22,7 +25,6 @@ use p3_field::{
 };
 use p3_goldilocks::Goldilocks;
 use p3_koala_bear::KoalaBear;
-use p3_lookup::folder::{ProverConstraintFolderWithLookups, VerifierConstraintFolderWithLookups};
 use p3_lookup::symbolic::InteractionSymbolicBuilder;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_poseidon1_circuit_air::*;

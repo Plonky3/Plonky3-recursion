@@ -8,6 +8,7 @@ use p3_circuit::ops::PermConfig;
 use p3_field::{ExtensionField, Field, TwoAdicField};
 use p3_sumcheck::strategy::VariableOrder;
 use p3_whir::parameters::{RoundConfig, WhirConfig, WhirConfigError};
+use p3_whir::transcript::WhirShape;
 use thiserror::Error;
 
 /// Which phase of the WHIR protocol a verifier-params derivation error occurred in.
@@ -68,6 +69,10 @@ pub enum WhirVerifierParamsError {
         /// `domain_size >> folding_factor` for that phase.
         folded_domain_size: usize,
     },
+    /// The domain allocates proximity queries to fixed strata, which the in-circuit verifier
+    /// does not replay.
+    #[error("WHIR recursive verifier does not support stratified query sampling")]
+    UnsupportedStratifiedQueries,
 }
 
 /// Per-round configuration extracted from a `WhirConfig` for in-circuit use.
@@ -164,12 +169,38 @@ pub struct WhirVerifierParams<F> {
     final_domain_size: usize,
     /// Two-adic generator of the final folded domain (= `final_round_config().folded_domain_gen`).
     final_folded_domain_gen: F,
+    /// The native WHIR transcript shape, from which the domain-separator seed is derived.
+    transcript_shape: WhirTranscriptShape,
     /// Permutation config for mandatory MMCS path verification.
     permutation_config: PermConfig,
 }
 
+/// The native [`WhirShape`] a verifier seeds its transcript from, compared structurally.
+#[derive(Clone, Debug)]
+pub struct WhirTranscriptShape(WhirShape);
+
+impl PartialEq for WhirTranscriptShape {
+    fn eq(&self, other: &Self) -> bool {
+        // `WhirShape` does not implement `PartialEq`; its debug rendering covers every field.
+        alloc::format!("{:?}", self.0) == alloc::format!("{:?}", other.0)
+    }
+}
+
+impl Eq for WhirTranscriptShape {}
+
+impl WhirTranscriptShape {
+    /// The native shape for a WHIR opening of `num_opening_claims` claims.
+    #[must_use]
+    pub fn for_claims(&self, num_opening_claims: usize) -> WhirShape {
+        WhirShape {
+            num_opening_claims,
+            ..self.0.clone()
+        }
+    }
+}
+
 impl<F: Field> WhirVerifierParams<F> {
-    fn round_config_matches(a: &RoundConfig<F>, b: &RoundConfig<F>) -> bool {
+    fn round_config_matches(a: &RoundConfig, b: &RoundConfig) -> bool {
         a.pow_bits == b.pow_bits
             && a.folding_pow_bits == b.folding_pow_bits
             && a.num_queries == b.num_queries
@@ -178,7 +209,7 @@ impl<F: Field> WhirVerifierParams<F> {
             && a.folding_factor == b.folding_factor
             && a.log_inv_rate == b.log_inv_rate
             && a.domain_size == b.domain_size
-            && a.folded_domain_gen == b.folded_domain_gen
+            && a.log_folded_domain_size == b.log_folded_domain_size
     }
 
     /// Derive verifier params from a concrete `WhirConfig`.
@@ -205,26 +236,26 @@ impl<F: Field> WhirVerifierParams<F> {
             return Err(WhirVerifierParamsError::UnsupportedVariableOrder { variable_order });
         }
         crate::pcs::whir::uni::recursive_pcs::validate_round_config_inputs(
-            config.num_variables,
-            &config.params,
+            config.num_variables(),
+            config.params(),
         )?;
         // `WhirConfig` exposes its derived fields publicly for prover use.
         // Re-derive and compare before touching `final_round_config`, whose
         // unchecked arithmetic assumes those fields are internally coherent.
-        let canonical = WhirConfig::<EF, F, Ch>::new(config.num_variables, config.params.clone())?;
-        if config.num_variables != canonical.num_variables
-            || config.folding_schedule != canonical.folding_schedule
-            || config.commitment_ood_samples != canonical.commitment_ood_samples
-            || config.starting_folding_pow_bits != canonical.starting_folding_pow_bits
-            || config.final_queries != canonical.final_queries
-            || config.final_pow_bits != canonical.final_pow_bits
-            || config.final_sumcheck_rounds != canonical.final_sumcheck_rounds
-            || config.final_folding_pow_bits != canonical.final_folding_pow_bits
-            || config.round_parameters.len() != canonical.round_parameters.len()
+        let canonical =
+            WhirConfig::<EF, F, Ch>::new(config.num_variables(), config.params().clone())?;
+        if config.num_variables() != canonical.num_variables()
+            || config.folding_schedule() != canonical.folding_schedule()
+            || config.commitment_ood_samples() != canonical.commitment_ood_samples()
+            || config.starting_folding_pow_bits() != canonical.starting_folding_pow_bits()
+            || config.terminal() != canonical.terminal()
+            || config.final_sumcheck_rounds() != canonical.final_sumcheck_rounds()
+            || config.final_folding_pow_bits() != canonical.final_folding_pow_bits()
+            || config.round_parameters().len() != canonical.round_parameters().len()
             || config
-                .round_parameters
+                .round_parameters()
                 .iter()
-                .zip(&canonical.round_parameters)
+                .zip(canonical.round_parameters())
                 .any(|(a, b)| !Self::round_config_matches(a, b))
         {
             return Err(WhirVerifierParamsError::InconsistentDerivedConfig {
@@ -236,7 +267,7 @@ impl<F: Field> WhirVerifierParams<F> {
         let n_rounds = config.n_rounds();
         let round_params = (0..n_rounds)
             .map(|i| {
-                let rp = &config.round_parameters[i];
+                let rp = &config.round_parameters()[i];
                 let folded_domain_size = rp.domain_size >> rp.folding_factor;
                 if rp.num_queries >= folded_domain_size {
                     return Err(WhirVerifierParamsError::SaturatingQueryCountUnsupported {
@@ -252,7 +283,7 @@ impl<F: Field> WhirVerifierParams<F> {
                     folding_pow_bits: rp.folding_pow_bits,
                     folding_factor: rp.folding_factor,
                     domain_size: rp.domain_size,
-                    folded_domain_gen: rp.folded_domain_gen,
+                    folded_domain_gen: F::two_adic_generator(rp.log_folded_domain_size),
                     num_variables: rp.num_variables,
                 })
             })
@@ -261,28 +292,37 @@ impl<F: Field> WhirVerifierParams<F> {
         let final_round_config = config.final_round_config();
         let final_folded_domain_size =
             final_round_config.domain_size >> final_round_config.folding_factor;
-        if config.final_queries >= final_folded_domain_size {
+        let terminal = config.terminal();
+        if terminal.num_queries >= final_folded_domain_size {
             return Err(WhirVerifierParamsError::SaturatingQueryCountUnsupported {
                 phase: WhirPhase::Final,
-                num_queries: config.final_queries,
+                num_queries: terminal.num_queries,
                 folded_domain_size: final_folded_domain_size,
             });
         }
+        // The claim count is bound per circuit; zero here is replaced when seeding.
+        let transcript_shape = WhirShape::new(config, 0);
+        if transcript_shape.stratified_queries {
+            return Err(WhirVerifierParamsError::UnsupportedStratifiedQueries);
+        }
 
         Ok(Self {
-            num_variables: config.num_variables,
-            commitment_ood_samples: config.commitment_ood_samples,
-            starting_folding_pow_bits: config.starting_folding_pow_bits,
+            num_variables: config.num_variables(),
+            commitment_ood_samples: config.commitment_ood_samples(),
+            starting_folding_pow_bits: config.starting_folding_pow_bits(),
             round_params,
             final_poly_num_variables: final_round_config.num_variables,
-            final_queries: config.final_queries,
-            final_pow_bits: config.final_pow_bits,
-            final_sumcheck_rounds: config.final_sumcheck_rounds,
+            final_queries: terminal.num_queries,
+            final_pow_bits: terminal.pow_bits,
+            final_sumcheck_rounds: config.final_sumcheck_rounds(),
             final_folding_factor: final_round_config.folding_factor,
-            final_folding_pow_bits: config.final_folding_pow_bits,
+            final_folding_pow_bits: config.final_folding_pow_bits(),
             variable_order,
             final_domain_size: final_round_config.domain_size,
-            final_folded_domain_gen: final_round_config.folded_domain_gen,
+            final_folded_domain_gen: F::two_adic_generator(
+                final_round_config.log_folded_domain_size,
+            ),
+            transcript_shape: WhirTranscriptShape(transcript_shape),
             permutation_config: permutation_config.into(),
         })
     }
@@ -351,6 +391,10 @@ impl<F: Field> WhirVerifierParams<F> {
     }
     pub const fn permutation_config(&self) -> PermConfig {
         self.permutation_config
+    }
+    /// The native WHIR transcript shape these parameters were derived with.
+    pub const fn transcript_shape(&self) -> &WhirTranscriptShape {
+        &self.transcript_shape
     }
 }
 
@@ -504,57 +548,4 @@ mod tests {
         .expect("this arity does not saturate any phase");
     }
 
-    #[test]
-    fn from_config_rejects_tampered_derived_schedule() {
-        let mut config =
-            WhirConfig::<EF, BF, DummyChallenger<BF>>::new(12, non_saturating_protocol_params())
-                .expect("config is valid");
-        config.folding_schedule.clear();
-        let err = WhirVerifierParams::<BF>::from_config(
-            &config,
-            PrefixProver::<BF, EF>::variable_order(),
-            p3_circuit::ops::Poseidon2Config::BABY_BEAR_D4_W16,
-        )
-        .expect_err("tampered derived fields must be rejected");
-        assert!(matches!(
-            err,
-            WhirVerifierParamsError::InconsistentDerivedConfig { .. }
-        ));
-    }
-
-    #[test]
-    fn from_config_rejects_tampered_round_fold_before_indexing() {
-        let mut config =
-            WhirConfig::<EF, BF, DummyChallenger<BF>>::new(12, non_saturating_protocol_params())
-                .expect("config is valid");
-        config.round_parameters[0].folding_factor = usize::BITS as usize;
-        let err = WhirVerifierParams::<BF>::from_config(
-            &config,
-            PrefixProver::<BF, EF>::variable_order(),
-            p3_circuit::ops::Poseidon2Config::BABY_BEAR_D4_W16,
-        )
-        .expect_err("tampered round fields must be rejected");
-        assert!(matches!(
-            err,
-            WhirVerifierParamsError::InconsistentDerivedConfig { .. }
-        ));
-    }
-
-    #[test]
-    fn from_config_rejects_tampered_protocol_arithmetic_without_panicking() {
-        let mut config =
-            WhirConfig::<EF, BF, DummyChallenger<BF>>::new(12, non_saturating_protocol_params())
-                .expect("config is valid");
-        config.params.starting_log_inv_rate = usize::MAX;
-        let err = WhirVerifierParams::<BF>::from_config(
-            &config,
-            PrefixProver::<BF, EF>::variable_order(),
-            p3_circuit::ops::Poseidon2Config::BABY_BEAR_D4_W16,
-        )
-        .expect_err("invalid protocol arithmetic must be rejected before re-derivation");
-        assert!(matches!(
-            err,
-            WhirVerifierParamsError::InvalidStackedArity { .. }
-        ));
-    }
 }

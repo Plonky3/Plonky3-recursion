@@ -416,7 +416,7 @@ macro_rules! define_field_module_aggregation_quintic {
                 let ext_degrees: Vec<usize> =
                     degrees.iter().map(|&d| d + config.is_zk()).collect();
                 let prover_data =
-                    ProverData::from_airs_and_degrees(config, &airs, &ext_degrees);
+                    ProverData::from_airs_and_degrees(config, &airs, &ext_degrees).unwrap();
                 let circuit_prover_data = CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
                 let prover =
                     BatchStarkProver::new(config.clone()).with_table_packing(table_packing.clone());
@@ -792,7 +792,7 @@ macro_rules! define_field_module {
                 let ext_degrees: Vec<usize> =
                     degrees.iter().map(|&d| d + config.is_zk()).collect();
                 let prover_data =
-                    ProverData::from_airs_and_degrees(config, &airs, &ext_degrees);
+                    ProverData::from_airs_and_degrees(config, &airs, &ext_degrees).unwrap();
                 let circuit_prover_data = CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
                 let prover =
                     BatchStarkProver::new(config.clone()).with_table_packing(table_packing.clone());
@@ -835,7 +835,7 @@ macro_rules! define_field_module {
                 let ext_degrees: Vec<usize> =
                     degrees.iter().map(|&d| d + config.is_zk()).collect();
                 let prover_data =
-                    ProverData::from_airs_and_degrees(config, &airs, &ext_degrees);
+                    ProverData::from_airs_and_degrees(config, &airs, &ext_degrees).unwrap();
                 let circuit_prover_data = CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
                 let prover =
                     BatchStarkProver::new(config.clone()).with_table_packing(table_packing.clone());
@@ -1431,14 +1431,23 @@ macro_rules! arity4_mixed_config_impl {
                     mut challenger,
                     commitments_with_opening_points,
                 } = transcript;
-                observe_opened_values::<Self>(&mut challenger, &commitments_with_opening_points);
+                observe_opened_values::<Self>(
+                    &mut challenger,
+                    &commitments_with_opening_points,
+                    config.fri_instance.1.batch_proof_of_work_bits,
+                );
+                let claims: Vec<_> = commitments_with_opening_points
+                    .iter()
+                    .cloned()
+                    .map(Into::into)
+                    .collect();
                 let query_paths = restore_fri_query_paths(
                     &config.fri_instance.1,
                     &config.fri_instance.0,
                     &config.fri_instance.0,
                     opening_proof,
                     &mut challenger,
-                    &commitments_with_opening_points,
+                    &claims,
                 )
                 .map_err(|_| "Failed to restore the FRI proof's per-query Merkle paths")?;
                 set_fri_mmcs_private_data_arity4::<F, Challenge, $digest_elems>(
@@ -1470,6 +1479,7 @@ macro_rules! arity4_mixed_config_impl {
                 log_blowup: fp.log_blowup,
                 log_final_poly_len: fp.log_final_poly_len,
                 num_queries,
+                batch_proof_of_work_bits: 0,
                 commit_proof_of_work_bits: fp.commit_pow_bits,
                 query_proof_of_work_bits: fp.query_pow_bits,
                 mmcs: ChallengeMmcsArity4::new(val_mmcs.clone()),
@@ -1489,6 +1499,7 @@ macro_rules! arity4_mixed_config_impl {
             FriVerifierParams::with_mmcs(
                 native.log_blowup(),
                 native.log_final_poly_len(),
+                native.max_log_arity(),
                 native.commit_pow_bits(),
                 native.query_pow_bits(),
                 native.num_queries(),
@@ -1546,7 +1557,8 @@ macro_rules! arity4_base_dummy_prover {
                 .unwrap();
             let traces = runner.run().unwrap();
             let ext_degrees: Vec<usize> = degrees.iter().map(|&d| d + config.is_zk()).collect();
-            let prover_data = ProverData::from_airs_and_degrees(config, &airs, &ext_degrees);
+            let prover_data =
+                ProverData::from_airs_and_degrees(config, &airs, &ext_degrees).unwrap();
             let circuit_prover_data =
                 CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
             let prover =

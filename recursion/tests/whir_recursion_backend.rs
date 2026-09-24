@@ -61,7 +61,7 @@ fn whir_backend_restoration_budget_accepts_exact_and_rejects_one_below() {
     let air = FibonacciAir {};
     let pis = vec![BbF::ZERO, BbF::ONE, fibonacci_output(n)];
     let config = bb_whir_config(vec![]);
-    let proof = prove(&config, &air, generate_trace_rows::<BbF>(0, 1, n), &pis);
+    let proof = prove(&config, &air, generate_trace_rows::<BbF>(0, 1, n), &pis).unwrap();
     let input = RecursionInput::UniStark {
         proof: &proof,
         air: &air,
@@ -150,7 +150,7 @@ fn whir_recursion_backend_proves_a_real_next_layer() {
     let pis = vec![BbF::ZERO, BbF::ONE, fibonacci_output(n)];
     let air = FibonacciAir {};
     let config = bb_whir_config(vec![]);
-    let proof = prove(&config, &air, trace, &pis);
+    let proof = prove(&config, &air, trace, &pis).unwrap();
     assert!(verify(&config, &air, &proof, &pis).is_ok());
 
     let recursion_input = RecursionInput::UniStark {
@@ -203,7 +203,7 @@ fn whir_recursion_backend_proves_a_real_next_layer_koala_bear() {
     let pis = vec![KbF::ZERO, KbF::ONE, fibonacci_output::<KbF>(n)];
     let air = FibonacciAir {};
     let config = kb_whir_config(vec![]);
-    let proof = prove(&config, &air, trace, &pis);
+    let proof = prove(&config, &air, trace, &pis).unwrap();
     assert!(verify(&config, &air, &proof, &pis).is_ok());
 
     let recursion_input = RecursionInput::UniStark {
@@ -250,7 +250,7 @@ fn whir_recursion_backend_proves_a_batch_stark_next_layer() {
     // of the polynomial being committed, which one config serving three differently-sized
     // roles (the base proof, layer 1's own commit, layer 2's own commit) requires.
     let config = bb_whir_config(vec![]);
-    let proof = prove(&config, &air, trace, &pis);
+    let proof = prove(&config, &air, trace, &pis).unwrap();
     assert!(verify(&config, &air, &proof, &pis).is_ok());
 
     let backend = WhirRecursionBackend::<16, 8>::new(Poseidon2Config::BABY_BEAR_D4_W16)
@@ -298,7 +298,7 @@ fn whir_recursion_backend_rejects_a_tampered_input_proof() {
     let pis = vec![BbF::ZERO, BbF::ONE, fibonacci_output(n)];
     let air = FibonacciAir {};
     let config = bb_whir_config(vec![]);
-    let mut proof = prove(&config, &air, trace, &pis);
+    let mut proof = prove(&config, &air, trace, &pis).unwrap();
     proof.opened_values.quotient_chunks[0][0] += BbEF::ONE;
 
     let recursion_input = RecursionInput::UniStark {
@@ -333,7 +333,7 @@ fn build_honest_first_layer() -> (
     let pis = vec![BbF::ZERO, BbF::ONE, fibonacci_output(n)];
     let air = FibonacciAir {};
     let config = bb_whir_config(vec![]);
-    let proof = prove(&config, &air, trace, &pis);
+    let proof = prove(&config, &air, trace, &pis).unwrap();
     assert!(verify(&config, &air, &proof, &pis).is_ok());
 
     let backend = WhirRecursionBackend::<16, 8>::new(Poseidon2Config::BABY_BEAR_D4_W16)

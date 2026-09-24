@@ -1,3 +1,5 @@
+use alloc::vec::Vec;
+
 use p3_challenger::DuplexChallenger;
 use p3_circuit::ops::{generate_poseidon2_trace, generate_recompose_trace};
 use p3_circuit::{CircuitBuilder, CircuitRunner, NonPrimitiveOpId};
@@ -63,6 +65,7 @@ fn native_restore_components(
         log_blowup: descriptor.log_blowup() as usize,
         log_final_poly_len: descriptor.log_final_poly_len() as usize,
         num_queries: descriptor.num_queries() as usize,
+        batch_proof_of_work_bits: 0,
         commit_proof_of_work_bits: descriptor.commit_pow_bits() as usize,
         query_proof_of_work_bits: descriptor.query_pow_bits() as usize,
         mmcs: ExtensionMmcs::new(commit_mmcs.clone()),
@@ -139,15 +142,23 @@ where
             mut challenger,
             commitments_with_opening_points,
         } = transcript;
-        observe_opened_values::<Self>(&mut challenger, &commitments_with_opening_points);
         let (input_mmcs, commit_mmcs, fri_params) = native_restore_components(config);
+        observe_opened_values::<Self>(
+            &mut challenger,
+            &commitments_with_opening_points,
+            fri_params.batch_proof_of_work_bits,
+        );
+        let claims: Vec<_> = commitments_with_opening_points
+            .into_iter()
+            .map(Into::into)
+            .collect();
         let query_paths = restore_fri_query_paths(
             &fri_params,
             &input_mmcs,
             &commit_mmcs,
             opening_proof,
             &mut challenger,
-            &commitments_with_opening_points,
+            &claims,
         )
         .map_err(|_| "Failed to restore the FRI proof's per-query Merkle paths")?;
         set_fri_mmcs_private_data::<F, Challenge, 8>(
