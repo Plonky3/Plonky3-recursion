@@ -444,7 +444,12 @@ fn statement_proves_and_verifies_with_hiding_fri() {
         .set_statement_exports::<KoalaBear>(&[StatementExport::Base(value)])
         .expect("define hiding statement");
     let circuit = builder.build().expect("build hiding statement circuit");
-    let packing = TablePacking::default().with_npo_min_height(NpoTypeId::statement(), 32);
+    // HidingFriPcs 0.8 requires every committed table's mask to cover
+    // 2 * (extension degree * opening points + queries) values, so every table is
+    // padded to at least 32 rows.
+    let packing = TablePacking::default()
+        .with_min_trace_height(32)
+        .with_npo_min_height(NpoTypeId::statement(), 32);
     let preprocessors: Vec<Box<dyn NpoPreprocessor<KoalaBear>>> =
         vec![Box::new(StatementPreprocessor::new(schema.clone()))];
     let air_builders: Vec<Box<dyn NpoAirBuilder<HidingConfig, 1>>> =

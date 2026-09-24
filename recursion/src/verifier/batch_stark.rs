@@ -2560,10 +2560,7 @@ mod create_alu_air_tests {
         assert!(matches!(
             result,
             Err(
-                p3_fri::verifier::FriError::CommitPhaseOpeningsCountMismatch {
-                    expected: 1,
-                    got: 0
-                }
+                p3_fri::verifier::FriError::CommitPhaseOpeningsCountMismatch { got: 0, .. }
             )
         ));
 

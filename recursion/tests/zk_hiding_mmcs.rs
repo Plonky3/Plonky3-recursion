@@ -256,7 +256,7 @@ fn test_batch_verifier_hiding_mmcs() -> Result<(), VerificationError> {
     let challenge_mmcs = HidingChallengeMmcs::new(val_mmcs.clone());
     let dft = Dft::default();
     let fri_params = FriParameters::new_testing(challenge_mmcs, 0);
-    let pcs_proving = MyPcsZk::new(dft, val_mmcs, fri_params, 2, StdRng::seed_from_u64(1));
+    let pcs_proving = MyPcsZk::new(dft, val_mmcs, fri_params, 4, StdRng::seed_from_u64(1));
     let challenger_proving = Challenger::new(perm);
     let config_proving = MyConfigZk::new(pcs_proving, challenger_proving);
 
@@ -300,7 +300,7 @@ fn test_batch_verifier_hiding_mmcs() -> Result<(), VerificationError> {
         fri_params2.num_queries,
         Poseidon2Config::KOALA_BEAR_D4_W16,
     );
-    let pcs_verif = MyPcsZk::new(dft2, val_mmcs2, fri_params2, 2, StdRng::seed_from_u64(2));
+    let pcs_verif = MyPcsZk::new(dft2, val_mmcs2, fri_params2, 4, StdRng::seed_from_u64(2));
     let challenger_verif = Challenger::new(perm2.clone());
     let config = MyConfigZk::new(pcs_verif, challenger_verif);
 

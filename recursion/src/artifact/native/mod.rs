@@ -276,6 +276,8 @@ mod tests {
         let codec = MerkleMmcsCodec::<F, 8>::new(FieldEncoding::u32());
 
         let mut zero_cap = Vec::new();
+        // Batch PoW witness, then one commit-phase commitment with zero cap roots.
+        zero_cap.extend_from_slice(&0_u32.to_le_bytes());
         zero_cap.extend_from_slice(&1_u32.to_le_bytes());
         zero_cap.extend_from_slice(&0_u32.to_le_bytes());
         let mut reader = Reader::new(&zero_cap, &limits);

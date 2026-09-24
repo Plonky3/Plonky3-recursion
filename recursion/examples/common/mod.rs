@@ -833,7 +833,7 @@ macro_rules! define_field_module_types {
                 Dft::default(),
                 val_mmcs,
                 fri_params,
-                2,
+                4,
                 StdRng::seed_from_u64(rng_seed),
             );
             MyConfigZk::new(pcs, Challenger::new($default_perm()))
@@ -854,7 +854,7 @@ macro_rules! define_field_module_types {
                 Dft::default(),
                 val_mmcs,
                 fri_params.clone(),
-                2,
+                4,
                 StdRng::seed_from_u64(rng_seed),
             );
             ConfigWithFriParamsZk {

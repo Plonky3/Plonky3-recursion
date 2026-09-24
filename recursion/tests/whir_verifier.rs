@@ -378,6 +378,7 @@ macro_rules! whir_arithmetic_test {
                     eq_points,
                     sel_scalars: vec![],
                     gamma: gamma_target,
+                    initial_power: 0,
                 };
                 let initial_claimed_eval_target = circuit.define_const(initial_claimed_eval);
 

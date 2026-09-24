@@ -191,11 +191,14 @@ where
         // 7. Sample gamma, update claimed_eval, record round constraint.
         //
         //    Native: `constraint.combine_evals(&mut claimed_eval)` adds
-        //    Σ_i γ^i·ood_ans[i] + Σ_j γ^{n_ood+j}·fold[j].
+        //    Σ_i γ^{1+i}·ood_ans[i] + Σ_j γ^{1+n_ood+j}·fold[j]. The round constraint is
+        //    built with `Constraint::new_with_existing_claim`, so the carried claim keeps
+        //    `γ^0` and the fresh statements start at `γ^1`.
         let gamma = challenger.sample_ext(circuit);
         let mut combined: Vec<Target> = round_proof.ood_answers.clone();
         combined.extend_from_slice(&fold_vals);
-        let contrib = eval_powers_combination(circuit, &combined, gamma);
+        let combination = eval_powers_combination(circuit, &combined, gamma);
+        let contrib = circuit.mul(combination, gamma);
         claimed_eval = circuit.add(claimed_eval, contrib);
 
         all_constraints.push(ConstraintWeightData {
@@ -203,6 +206,7 @@ where
             eq_points: ood_eq_points,
             sel_scalars,
             gamma,
+            initial_power: 1,
         });
 
         // 8. Round sumcheck → next `last_r`.
@@ -805,6 +809,7 @@ mod tests {
             eq_points,
             sel_scalars: vec![],
             gamma: gamma_target,
+            initial_power: 0,
         };
         let initial_claimed_eval_target = circuit.define_const(initial_claimed_eval);
         let mut mock = MockChallenger {
@@ -1011,6 +1016,7 @@ mod tests {
             eq_points,
             sel_scalars: vec![],
             gamma: gamma_target,
+            initial_power: 0,
         };
         let initial_claimed_eval_target = circuit.define_const(initial_claimed_eval);
 
@@ -1207,6 +1213,7 @@ mod tests {
             eq_points,
             sel_scalars: vec![],
             gamma: gamma_target,
+            initial_power: 0,
         };
         let initial_claimed_eval_target = circuit.define_const(initial_claimed_eval);
 

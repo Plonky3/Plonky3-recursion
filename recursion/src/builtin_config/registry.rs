@@ -455,12 +455,14 @@ impl FriConfigV1 {
                     value: self.num_random_codewords,
                 });
             }
+            // Hiding FRI draws one random codeword per extension coordinate, so fewer
+            // than `extension_degree` codewords cannot mask an extension-field opening.
             ProofFamilyV1::RandomCodewordFri | ProofFamilyV1::SaltedFri
-                if self.num_random_codewords == 0 =>
+                if self.num_random_codewords < u32::from(spec.extension_degree) =>
             {
                 return Err(BuiltinConfigError::InvalidParameter {
                     component: "num_random_codewords",
-                    value: 0,
+                    value: self.num_random_codewords,
                 });
             }
             _ => {}

@@ -480,6 +480,7 @@ where
             eq_points,
             sel_scalars: Vec::new(),
             gamma: alpha,
+            initial_power: 0,
         },
         claimed_eval,
         stacked_num_variables: plan.num_variables,
@@ -872,7 +873,7 @@ mod tests {
     use alloc::vec::Vec;
 
     use p3_baby_bear::{BabyBear, Poseidon2BabyBear};
-    use p3_challenger::{DuplexChallenger, FieldChallenger};
+    use p3_challenger::{CanObserve, DuplexChallenger, FieldChallenger};
     use p3_circuit::{CircuitBuilder, CircuitBuilderError};
     use p3_field::PrimeCharacteristicRing;
     use p3_field::extension::BinomialExtensionField;
@@ -885,6 +886,7 @@ mod tests {
     use crate::Target;
     use crate::pcs::whir::uni::pcs::round_schedule;
     use crate::traits::RecursiveChallenger;
+    use crate::transcript::SeedTap;
 
     type BF = BabyBear;
     type EF = BinomialExtensionField<BF, 4>;
@@ -925,14 +927,19 @@ mod tests {
             &schedule.protocol.table_shapes(),
             PrefixProver::<BF, EF>::strategy(),
         );
-        // `add_virtual_eval` samples its OOD point internally from `ch`; peek
-        // the exact value it will draw from a clone taken right before the
-        // call, so the circuit side can be fed the same OOD seed instead of
-        // an arbitrary stand-in. Sampling from the clone does not disturb
-        // `ch`'s own state, so the real call below draws the identical value.
+        // `add_virtual_eval` absorbs its domain-separator seed and then samples
+        // its OOD point from `ch`; peek the exact value it will draw by
+        // replaying that seed on a clone taken right before the call, so the
+        // circuit side can be fed the same OOD seed instead of an arbitrary
+        // stand-in. The clone does not disturb `ch`'s own state, so the real
+        // call below draws the identical value.
         let mut ood_seeds: Vec<EF> = Vec::with_capacity(ood.len());
         for &e in &ood {
-            let seed: EF = ch.clone().sample_algebra_element();
+            let mut tap = SeedTap::<BF>::new();
+            lv.clone().add_virtual_eval(e, &mut tap);
+            let mut probe = ch.clone();
+            probe.observe_slice(&tap.seed());
+            let seed: EF = probe.sample_algebra_element();
             ood_seeds.push(seed);
             lv.add_virtual_eval(e, &mut ch);
         }
@@ -946,7 +953,7 @@ mod tests {
             lv.add_claim_at(table_idx, batch, point, &batch_evals, &mut ch)
                 .unwrap();
         }
-        let alpha: EF = ch.sample_algebra_element();
+        let alpha: EF = lv.batching_challenge(&mut ch);
         let native_sum = lv.sum(alpha);
         let native_constraint = lv.constraint(alpha);
 

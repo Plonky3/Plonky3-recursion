@@ -11,6 +11,8 @@ pub enum FriInputError {
     ZeroQueries,
     #[error("native FRI max folding arity must be positive")]
     ZeroMaxLogArity,
+    #[error("native FRI log_blowup must be positive for soundness")]
+    ZeroBlowup,
     #[error("native FRI log parameter {name} is not representable")]
     LogNotRepresentable { name: &'static str },
     #[error("native FRI height logs overflow")]
@@ -74,6 +76,10 @@ impl NativeFriParams {
         }
         if params.max_log_arity == 0 {
             return Err(FriInputError::ZeroMaxLogArity);
+        }
+        // At rate 1 every word is a codeword, so p3-fri 0.8 rejects a zero blowup outright.
+        if params.log_blowup == 0 {
+            return Err(FriInputError::ZeroBlowup);
         }
         // The recursive FRI verifier replays no batch-phase grind, so it only accepts the zero
         // difficulty, at which the native transcript absorbs nothing for that phase.
@@ -433,6 +439,10 @@ mod tests {
         assert_eq!(
             NativeFriParams::try_from_native::<BabyBear, _>(&native(1, 0, 1, 0, 0, 0)),
             Err(FriInputError::ZeroQueries)
+        );
+        assert_eq!(
+            NativeFriParams::try_from_native::<BabyBear, _>(&native(0, 0, 1, 2, 0, 0)),
+            Err(FriInputError::ZeroBlowup)
         );
         assert_eq!(
             NativeFriParams::try_from_native::<BabyBear, _>(&native(1, 0, 1, 2, 31, 0)),

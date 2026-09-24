@@ -78,7 +78,7 @@ const fn fri_descriptor(suite: SuiteIdV1) -> FriConfigV1 {
         0,
         0,
         0,
-        if spec.is_hiding() { 2 } else { 0 },
+        if spec.is_hiding() { 4 } else { 0 },
         spec.salt_elements as u32,
     )
 }
@@ -141,11 +141,12 @@ fn random_codeword_hiding_fri_factory_proves_and_checks() {
     )
     .unwrap();
     let air = FibonacciAir {};
-    let trace = generate_trace_rows::<BabyBear>(0, 1, 8);
+    // Hiding FRI needs the zero-knowledge mask to cover every disclosed value.
+    let trace = generate_trace_rows::<BabyBear>(0, 1, 32);
     let public_values = [
         BabyBear::ZERO,
         BabyBear::ONE,
-        fibonacci_output::<BabyBear>(8),
+        fibonacci_output::<BabyBear>(32),
     ];
     let proof = prove(&proving_config, &air, trace, &public_values).unwrap();
 
@@ -176,11 +177,12 @@ fn salted_hiding_fri_factory_proves_and_checks() {
     )
     .unwrap();
     let air = FibonacciAir {};
-    let trace = generate_trace_rows::<KoalaBear>(0, 1, 8);
+    // Hiding FRI needs the zero-knowledge mask to cover every disclosed value.
+    let trace = generate_trace_rows::<KoalaBear>(0, 1, 32);
     let public_values = [
         KoalaBear::ZERO,
         KoalaBear::ONE,
-        fibonacci_output::<KoalaBear>(8),
+        fibonacci_output::<KoalaBear>(32),
     ];
     let proof = prove(&proving_config, &air, trace, &public_values).unwrap();
 

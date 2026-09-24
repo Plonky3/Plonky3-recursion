@@ -1243,7 +1243,7 @@ mod tests {
 
         let limits = ArtifactLimits::default();
         let suite = SuiteIdV1::BabyBearD4Poseidon2RandomCodewordFri;
-        let descriptor = FriConfigV1::new(suite, 1, 0, 2, 2, 0, 0, 0, 0, 2, 0);
+        let descriptor = FriConfigV1::new(suite, 1, 0, 2, 2, 0, 0, 0, 0, 4, 0);
         let config = baby_bear_d4_poseidon2_random_codeword(
             &descriptor,
             &limits.verifier,

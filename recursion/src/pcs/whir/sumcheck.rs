@@ -11,17 +11,16 @@
 //! [`fold_sumcheck_claim`] chains it across every round of a `SumcheckData`,
 //! given the challenges the caller sampled from the transcript.
 
-use p3_sumcheck::strategy::Basis;
-use p3_sumcheck::transcript::SumcheckShape;
-
-use crate::transcript::domain_separator_seed;
 use alloc::vec::Vec;
 
 use p3_circuit::{CircuitBuilder, CircuitBuilderError};
 use p3_field::{ExtensionField, Field, PrimeField64};
+use p3_sumcheck::strategy::Basis;
+use p3_sumcheck::transcript::SumcheckShape;
 
 use crate::Target;
 use crate::traits::RecursiveChallenger;
+use crate::transcript::domain_separator_seed;
 
 /// Updates the running sumcheck claim for one round.
 ///
@@ -150,7 +149,10 @@ mod tests {
     use p3_sumcheck::lagrange::extrapolate_01inf;
     use proptest::prelude::*;
 
-    use super::{fold_sumcheck_claim, sumcheck_round_claim_update, verify_sumcheck_rounds};
+    use super::{
+        Basis, SumcheckShape, domain_separator_seed, fold_sumcheck_claim, sumcheck_round_claim_update,
+        verify_sumcheck_rounds,
+    };
     use crate::Target;
     use crate::pcs::whir::test_util::eval_gadget;
     use crate::traits::RecursiveChallenger;
@@ -253,10 +255,20 @@ mod tests {
         .unwrap();
         builder.tag(out_claim, "claim").unwrap();
 
-        // Every round observes (h(0), h(inf)) before sampling its challenge.
-        let expected_events: Vec<&str> = polys_v
-            .iter()
-            .flat_map(|_| ["observe", "observe", "sample"])
+        // The domain-separator seed is absorbed first, then every round observes
+        // (h(0), h(inf)) before sampling its challenge.
+        let seed_len = domain_separator_seed(
+            &SumcheckShape::new(polys_v.len(), 0, Basis::Evaluation)
+                .domain_separator::<BabyBear, F>(),
+        )
+        .len();
+        assert!(seed_len > 0);
+        let expected_events: Vec<&str> = core::iter::repeat_n("observe", seed_len)
+            .chain(
+                polys_v
+                    .iter()
+                    .flat_map(|_| ["observe", "observe", "sample"]),
+            )
             .collect();
         assert_eq!(challenger.events, expected_events);
         assert_eq!(randomness.len(), polys_v.len());

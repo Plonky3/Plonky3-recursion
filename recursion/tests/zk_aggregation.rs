@@ -104,7 +104,7 @@ fn make_zk_config(seed: u64) -> MyConfigZk {
         Dft::default(),
         val_mmcs,
         fri_params,
-        2,
+        4,
         StdRng::seed_from_u64(seed),
     );
     MyConfigZk::new(pcs, Challenger::new(default_koalabear_poseidon2_16()))

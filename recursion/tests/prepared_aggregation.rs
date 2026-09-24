@@ -704,7 +704,9 @@ mod hiding_fri {
         }
         builder.connect(b, expected);
         let circuit = builder.build().expect("the hiding fixture circuit builds");
-        let packing = TablePacking::new(2, 4);
+        // HidingFriPcs requires every committed table's mask to cover
+        // 2 * (extension degree * opening points + queries) values.
+        let packing = TablePacking::new(2, 4).with_min_trace_height(32);
         let (airs_degrees, primitive_columns, non_primitive_columns) =
             get_airs_and_degrees_with_prep::<Config, _, 1>(
                 &circuit,

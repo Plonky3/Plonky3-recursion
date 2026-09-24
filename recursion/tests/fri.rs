@@ -3,12 +3,11 @@ mod common;
 use p3_baby_bear::default_babybear_poseidon2_16;
 use p3_challenger::{CanObserve, CanSampleBits, FieldChallenger, GrindingChallenger};
 use p3_circuit::ops::{generate_poseidon2_trace, generate_recompose_trace};
-use p3_circuit::{Circuit, CircuitBuilder, CircuitError, NonPrimitiveOpId};
-use p3_commit::{Mmcs, Pcs};
+use p3_circuit::CircuitBuilder;
+use p3_commit::Pcs;
 use p3_dft::Radix2DitParallel;
 use p3_field::coset::TwoAdicMultiplicativeCoset;
 use p3_fri::FriParameters;
-use p3_matrix::Dimensions;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_poseidon2_circuit_air::BabyBearD4Width16;
 // Recursive target graph pieces
@@ -18,7 +17,7 @@ use p3_recursion::pcs::fri::{
     Witness as RecWitness,
 };
 use p3_recursion::pcs::{
-    FriQueryLayout, FriQueryPaths, replay_fri_query_layout, restore_fri_query_paths,
+    FriQueryPaths, replay_fri_query_layout, restore_fri_query_paths,
     set_fri_mmcs_private_data,
 };
 use p3_recursion::{Poseidon2Config, Recursive};
@@ -87,8 +86,6 @@ struct ProduceInputsResult {
     actual_commitments: Vec<MyCommitment>,
     /// The total number of FRI folding phases (rounds).
     num_phases: usize,
-    /// Logarithm of the low-degree-extension blowup used by this proof.
-    log_blowup: usize,
     /// The log base 2 of the size of the largest domain.
     log_max_height: usize,
     /// The FRI proof
@@ -96,8 +93,6 @@ struct ProduceInputsResult {
     /// The per-query Merkle authentication chains restored from the proof's shared pruned
     /// multiproofs — what the in-circuit MMCS gadget consumes.
     query_paths: Vec<FriQueryPaths<F, DIGEST_ELEMS>>,
-    /// Native-reconstructed FRI rows and group indices used to authenticate commit phases.
-    query_layout: FriQueryLayout<Challenge>,
 }
 
 /// Produce all public inputs for a recursive FRI verification circuit over **multiple input batches**.
@@ -226,7 +221,7 @@ fn produce_inputs_multi(
     )
     .expect("honest native PCS proof");
 
-    let query_layout = replay_fri_query_layout(
+    replay_fri_query_layout(
         fri_params,
         val_mmcs,
         &fri_proof,
@@ -347,11 +342,9 @@ fn produce_inputs_multi(
             .map(|(commitment, _)| commitment)
             .collect(),
         num_phases: fri_proof.commit_phase_commits.len(),
-        log_blowup,
         log_max_height,
         fri_proof,
         query_paths,
-        query_layout,
     }
 }
 
@@ -450,95 +443,6 @@ fn pack_mmcs_inputs(result: &ProduceInputsResult) -> Vec<Challenge> {
         }
     }
     packed
-}
-
-fn build_mmcs_circuit(result: &ProduceInputsResult) -> (Circuit<Challenge>, Vec<NonPrimitiveOpId>) {
-    let mut builder = CircuitBuilder::<Challenge>::new();
-    builder.enable_poseidon2_perm::<BabyBearD4Width16, _>(
-        generate_poseidon2_trace::<Challenge, BabyBearD4Width16>,
-        default_babybear_poseidon2_16(),
-    );
-    builder.enable_recompose::<F>(generate_recompose_trace::<F, Challenge>);
-
-    let fri_targets = FriTargets::new(&mut builder, &result.fri_proof);
-    let alpha = builder.public_input();
-    let betas: Vec<_> = (0..result.num_phases)
-        .map(|_| builder.public_input())
-        .collect();
-    let query_bits: Vec<Vec<_>> = result
-        .index_bits_per_query
-        .iter()
-        .map(|bits| bits.iter().map(|_| builder.public_input()).collect())
-        .collect();
-
-    let mut commitments_with_points = Vec::new();
-    for (commitment, (_, matrices)) in result
-        .actual_commitments
-        .iter()
-        .zip(&result.commitments_with_points)
-    {
-        let commitment = <MerkleCapTargets<F, DIGEST_ELEMS> as Recursive<Challenge>>::new(
-            &mut builder,
-            commitment,
-        );
-        let matrices = matrices
-            .iter()
-            .map(|(domain, points_and_values)| {
-                let points_and_values = points_and_values
-                    .iter()
-                    .map(|(_, values)| {
-                        let point = builder.public_input();
-                        let values = values.iter().map(|_| builder.public_input()).collect();
-                        (point, values)
-                    })
-                    .collect();
-                (*domain, points_and_values)
-            })
-            .collect();
-        commitments_with_points.push((commitment, matrices));
-    }
-
-    let op_ids = verify_fri_circuit::<
-        F,
-        Challenge,
-        RecExt,
-        RecVal,
-        RecWitness<F>,
-        MerkleCapTargets<F, DIGEST_ELEMS>,
-    >(
-        &mut builder,
-        &fri_targets,
-        alpha,
-        &betas,
-        &query_bits,
-        &commitments_with_points,
-        result.log_blowup,
-        Poseidon2Config::BABY_BEAR_D4_W16.into(),
-    )
-    .expect("honest FRI shape builds");
-
-    (builder.build().expect("FRI circuit builds"), op_ids)
-}
-
-fn set_and_run_mmcs_circuit(
-    circuit: &Circuit<Challenge>,
-    op_ids: &[NonPrimitiveOpId],
-    result: &ProduceInputsResult,
-    public_inputs: &[Challenge],
-) -> Result<(), CircuitError> {
-    let private_inputs =
-        <FriTargets as Recursive<Challenge>>::get_private_values(&result.fri_proof);
-    let mut runner = circuit.runner();
-    runner.set_public_inputs(public_inputs)?;
-    runner.set_private_inputs(&private_inputs)?;
-    set_fri_mmcs_private_data::<F, Challenge, DIGEST_ELEMS>(
-        &mut runner,
-        op_ids,
-        &result.query_paths,
-        Poseidon2Config::BABY_BEAR_D4_W16,
-    )
-    .expect("honest restored MMCS paths match circuit operations");
-    runner.run().map(drop)
 }
 
 fn run_fri_test(setup: FriSetup, build_only: bool) {
@@ -978,149 +882,6 @@ fn test_circuit_fri_verifier_with_mmcs() {
     let groups = vec![vec![4u8, 5]];
     let setup = generate_setup(1, groups);
     run_fri_test_with_mmcs(setup);
-}
-
-fn generate_zero_height_phase_setup() -> FriSetup {
-    let perm = default_babybear_poseidon2_16();
-    let val_mmcs = MyMmcs::new(MyHash::new(perm.clone()), MyCompress::new(perm.clone()), 0);
-    let fri_params = FriParameters {
-        log_blowup: 0,
-        log_final_poly_len: 0,
-        max_log_arity: 1,
-        num_queries: 2,
-        batch_proof_of_work_bits: 0,
-        commit_proof_of_work_bits: 0,
-        query_proof_of_work_bits: 0,
-        mmcs: ChallengeMmcs::new(val_mmcs.clone()),
-    };
-    let pcs = MyPcs::new(
-        Radix2DitParallel::<F>::default(),
-        val_mmcs.clone(),
-        fri_params.clone(),
-    );
-    FriSetup::new(pcs, perm, 0, 0, 0, 0, vec![vec![1]], val_mmcs, fri_params)
-}
-
-fn produce_zero_height_phase_result(setup: &FriSetup) -> ProduceInputsResult {
-    produce_inputs_multi(
-        &setup.pcs,
-        &setup.perm,
-        setup.log_blowup,
-        setup.log_final_poly_len,
-        (setup.commit_pow_bits, setup.query_pow_bits),
-        &setup.group_sizes,
-        42,
-        &setup.val_mmcs,
-        &setup.fri_params,
-    )
-}
-
-fn wrong_zero_height_phase_cap(result: &ProduceInputsResult) -> MyCommitment {
-    let mut roots = result.fri_proof.commit_phase_commits[0].roots().to_vec();
-    roots[0][0] += F::ONE;
-    p3_merkle_tree::MerkleCap::new(roots)
-}
-
-#[test]
-fn test_circuit_fri_zero_height_phase_native_control() {
-    let setup = generate_zero_height_phase_setup();
-    let result = produce_zero_height_phase_result(&setup);
-
-    assert_eq!(result.actual_commitments.len(), 1);
-    assert_eq!(result.log_max_height, 1);
-    assert_eq!(result.index_bits_per_query.len(), 2);
-    assert!(
-        result
-            .index_bits_per_query
-            .iter()
-            .all(|bits| bits.len() == 1)
-    );
-    assert_eq!(result.fri_proof.commit_phase_openings.len(), 1);
-    let phase = &result.fri_proof.commit_phase_openings[0];
-    assert_eq!(phase.sibling_values.len(), 2);
-    assert!(
-        phase
-            .sibling_values
-            .iter()
-            .all(|siblings| siblings.len() == 1)
-    );
-    assert_eq!(result.fri_proof.commit_phase_commits[0].roots().len(), 1);
-    assert_eq!(result.query_layout.group_indices_by_round, vec![vec![0, 0]]);
-    assert_eq!(result.query_layout.rows_by_round.len(), 1);
-    assert_eq!(result.query_layout.rows_by_round[0].len(), 2);
-    assert!(
-        result.query_layout.rows_by_round[0]
-            .iter()
-            .all(|query_rows| query_rows.len() == 1 && query_rows[0].len() == 2)
-    );
-    assert!(
-        result
-            .query_paths
-            .iter()
-            .all(|paths| paths.commit_phase.len() == 1 && paths.commit_phase[0].is_empty())
-    );
-    assert_eq!(result.fri_proof.final_poly.len(), 1);
-
-    let dimensions = [Dimensions {
-        width: 2,
-        height: 1,
-    }];
-    setup
-        .fri_params
-        .mmcs
-        .verify_multi_batch(
-            &result.fri_proof.commit_phase_commits[0],
-            &dimensions,
-            &result.query_layout.group_indices_by_round[0],
-            &result.query_layout.rows_by_round[0],
-            &phase.opening_proof,
-        )
-        .expect("height-one native phase MMCS authenticates");
-
-    let (circuit, op_ids) = build_mmcs_circuit(&result);
-    let public_inputs = pack_mmcs_inputs(&result);
-    set_and_run_mmcs_circuit(&circuit, &op_ids, &result, &public_inputs)
-        .expect("honest enabled-MMCS circuit accepts");
-}
-
-#[test]
-fn test_circuit_fri_zero_height_phase_cap_binding() {
-    let setup = generate_zero_height_phase_setup();
-    let result = produce_zero_height_phase_result(&setup);
-    let phase = &result.fri_proof.commit_phase_openings[0];
-    let dimensions = [Dimensions {
-        width: 2,
-        height: 1,
-    }];
-    let wrong_cap = wrong_zero_height_phase_cap(&result);
-
-    assert!(matches!(
-        setup.fri_params.mmcs.verify_multi_batch(
-            &wrong_cap,
-            &dimensions,
-            &result.query_layout.group_indices_by_round[0],
-            &result.query_layout.rows_by_round[0],
-            &phase.opening_proof,
-        ),
-        Err(p3_merkle_tree::MerkleTreeError::CapMismatch)
-    ));
-
-    let (circuit, op_ids) = build_mmcs_circuit(&result);
-    let honest_public_inputs = pack_mmcs_inputs(&result);
-    set_and_run_mmcs_circuit(&circuit, &op_ids, &result, &honest_public_inputs)
-        .expect("honest control accepts in the same circuit");
-
-    let mut mutant_proof = result.fri_proof.clone();
-    mutant_proof.commit_phase_commits[0] = wrong_cap;
-    let mutant_proof_values = FriTargets::get_values(&mutant_proof);
-    assert_eq!(mutant_proof_values.len(), result.fri_values.len());
-    let mut mutant_public_inputs = honest_public_inputs;
-    mutant_public_inputs[..mutant_proof_values.len()].copy_from_slice(&mutant_proof_values);
-
-    assert!(matches!(
-        set_and_run_mmcs_circuit(&circuit, &op_ids, &result, &mutant_public_inputs),
-        Err(CircuitError::WitnessConflict { .. })
-    ));
 }
 
 /// Allocate `FriProofTargets` for `result` and wire `verify_fri_circuit`,

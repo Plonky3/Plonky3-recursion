@@ -3435,7 +3435,7 @@ mod prepared_shape_tests {
         const MAP10: &[usize] = &[1, 0];
         let (native, recursive) = retention_params();
         let baseline_layout = retention_layout([1, 2], [4, 1], true, MAP01);
-        let baseline = retention_opening([2, 1, 1], [1, 2]);
+        let baseline = retention_opening(&[2, 1, 1], [1, 2]);
         let baseline_caps = retention_caps([1, 1, 1]);
         let baseline_cap_refs = [&baseline_caps[0], &baseline_caps[1], &baseline_caps[2]];
         let counts = validate_counted_fri_raw::<F, Challenge, RecInputMmcs, RecFriMmcs>(
@@ -3545,7 +3545,10 @@ mod prepared_shape_tests {
             &baseline_cap_refs,
         );
 
-        let schedule = retention_opening([1, 2, 1], [1, 2]);
+        // Since p3-fri 0.8 the fold schedule is derived from the configuration and the
+        // input heights, so a proof carrying any other coherent schedule is rejected by
+        // the fresh context check before replacement is ever considered.
+        let schedule = retention_opening(&[1, 2, 1], [1, 2]);
         assert!(
             <OpeningTargets as CheckedFriOpening<
                 Challenge,
@@ -3557,23 +3560,11 @@ mod prepared_shape_tests {
                 baseline_layout.opening_view(),
                 &baseline_cap_refs,
             )
-            .is_ok()
-        );
-        assert!(
-            <OpeningTargets as CheckedFriOpening<
-                Challenge,
-                <RecInputMmcs as RecursiveMmcs<F, Challenge>>::Commitment,
-            >>::validate_fri_replacement(
-                &schedule,
-                &old,
-                baseline_layout.opening_view(),
-                &baseline_cap_refs,
-            )
             .is_err()
         );
 
         let width_layout = retention_layout([2, 1], [4, 1], true, MAP01);
-        let width = retention_opening([2, 1, 1], [2, 1]);
+        let width = retention_opening(&[2, 1, 1], [2, 1]);
         assert!(
             <OpeningTargets as CheckedFriOpening<
                 Challenge,
@@ -3601,12 +3592,15 @@ mod prepared_shape_tests {
         );
 
         let height_layout = retention_layout([1, 2], [4, 2], true, MAP01);
+        // The second instance's LDE now lands at log-height 3, so the configured
+        // schedule folds 5 -> 3 -> 1 in two arity-2 rounds.
+        let height = retention_opening(&[2, 2], [1, 2]);
         assert!(
             <OpeningTargets as CheckedFriOpening<
                 Challenge,
                 <RecInputMmcs as RecursiveMmcs<F, Challenge>>::Commitment,
             >>::validate_fri_context(
-                &baseline,
+                &height,
                 &native,
                 &recursive,
                 height_layout.opening_view(),
@@ -3619,7 +3613,7 @@ mod prepared_shape_tests {
                 Challenge,
                 <RecInputMmcs as RecursiveMmcs<F, Challenge>>::Commitment,
             >>::validate_fri_replacement(
-                &baseline,
+                &height,
                 &old,
                 height_layout.opening_view(),
                 &baseline_cap_refs,
@@ -4418,7 +4412,7 @@ mod prepared_shape_tests {
         let caps = retention_caps([1, 1, 1]);
         let cap_refs = [&caps[0], &caps[1], &caps[2]];
 
-        let ordinary = retention_opening([2, 1, 1], [1, 2]);
+        let ordinary = retention_opening(&[2, 1, 1], [1, 2]);
         reset_fri_finisher_calls();
         assert!(<OpeningTargets as CheckedRecursive<Challenge>>::validate_input(&ordinary).is_ok());
         assert_eq!(fri_finisher_calls(), 1);
@@ -4558,7 +4552,7 @@ mod prepared_shape_tests {
     }
 
     #[test]
-    fn contextual_fri_rejects_skipped_landing_and_excess_log_arity() {
+    fn contextual_fri_rejects_schedules_off_the_configured_fold() {
         use crate::pcs::fri::context::CheckedFriOpening;
 
         const MAP01: &[usize] = &[0, 1];
@@ -4567,7 +4561,7 @@ mod prepared_shape_tests {
         let caps = retention_caps([1, 1, 1]);
         let cap_refs = [&caps[0], &caps[1], &caps[2]];
 
-        let skipped = retention_opening([1, 1, 2], [1, 2]);
+        let skipped = retention_opening(&[1, 1, 2], [1, 2]);
         let skipped_error = <OpeningTargets as CheckedFriOpening<
             Challenge,
             <RecInputMmcs as RecursiveMmcs<F, Challenge>>::Commitment,
@@ -4579,13 +4573,15 @@ mod prepared_shape_tests {
             &cap_refs,
         )
         .expect_err("a coherent schedule that skips the LDE landing must reject");
+        // The configured schedule is [2, 1, 1]; a proof folding by other arities opens
+        // sibling rows of the wrong width in its first round.
         assert!(matches!(
             skipped_error,
             VerificationError::InvalidProofShape(message)
-                if message.contains("not reached")
+                if message.contains("sibling width mismatch")
         ));
 
-        let mut excess = retention_opening([3, 1, 1], [1, 2]);
+        let mut excess = retention_opening(&[3, 1, 1], [1, 2]);
         excess.commit_phase_commits.pop();
         excess.commit_pow_witnesses.pop();
         excess.commit_phase_openings.pop();
@@ -4599,11 +4595,13 @@ mod prepared_shape_tests {
             layout.opening_view(),
             &cap_refs,
         )
-        .expect_err("log arity above maxarity must reject");
+        .expect_err("log arity above max arity must reject");
+        // An arity above the configured maximum can only reach the final height in
+        // fewer rounds than the configured schedule has.
         assert!(matches!(
             excess_error,
             VerificationError::InvalidProofShape(message)
-                if message.contains("invalid log_arity")
+                if message.contains("round count mismatch")
         ));
     }
 
@@ -5528,7 +5526,7 @@ mod prepared_shape_tests {
         )
     }
 
-    fn retention_opening(schedule: [u8; 3], trace_widths: [usize; 2]) -> Opening {
+    fn retention_opening(schedule: &[u8], trace_widths: [usize; 2]) -> Opening {
         let widths = [trace_widths, [4, 4], [1, 2]];
         let input_openings = widths
             .into_iter()
@@ -5545,8 +5543,8 @@ mod prepared_shape_tests {
             })
             .collect();
         let commit_phase_openings = schedule
-            .into_iter()
-            .map(|log_arity| CommitPhaseMultiStep {
+            .iter()
+            .map(|&log_arity| CommitPhaseMultiStep {
                 sibling_values: (0..4)
                     .map(|_| vec![Challenge::ZERO; (1usize << log_arity) - 1])
                     .collect(),
@@ -5555,8 +5553,8 @@ mod prepared_shape_tests {
             .collect();
         FriProof {
             batch_pow_witness: Default::default(),
-            commit_phase_commits: vec![cap(1), cap(1), cap(1)],
-            commit_pow_witnesses: vec![F::ZERO; 3],
+            commit_phase_commits: vec![cap(1); schedule.len()],
+            commit_pow_witnesses: vec![F::ZERO; schedule.len()],
             input_openings,
             commit_phase_openings,
             final_poly: vec![Challenge::ZERO],
@@ -5565,7 +5563,9 @@ mod prepared_shape_tests {
     }
 
     fn retention_equal_geometry_opening() -> Opening {
-        let mut proof = retention_opening([2, 1, 1], [4, 4]);
+        // Every input sits at one height, so the configured schedule folds the
+        // LDE from log-height 5 to 1 in two rounds of the maximum arity.
+        let mut proof = retention_opening(&[2, 2], [4, 4]);
         for query in &mut proof.input_openings[2].opened_values {
             query[1] = vec![F::ZERO; 1];
         }
