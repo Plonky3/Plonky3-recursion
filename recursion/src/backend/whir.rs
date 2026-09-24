@@ -686,7 +686,7 @@ where
         &lookups,
         &LogUpGadget,
     )?;
-    let prev = RecursionInput::<SC, A>::BatchStark {
+    let prev: RecursionInput<'_, SC, A> = RecursionInput::BatchStark {
         proof,
         common_data: verifier.common_data(),
         table_public_inputs: tables.public_values,
@@ -1547,9 +1547,9 @@ where
             self, verifier, proof,
         )?;
         let public_values = trusted_batch_tables::<SC, 4>(verifier, statement)?.public_values;
-        preflight_basic_whir_input(
+        preflight_basic_whir_input::<SC, A>(
             &self.0.limits,
-            &RecursionInput::<SC, A>::BatchStark {
+            &RecursionInput::BatchStark {
                 proof,
                 common_data: verifier.common_data(),
                 table_public_inputs: public_values,
@@ -1598,7 +1598,7 @@ where
         )?;
         let transcript =
             replay_trusted_batch_layer_transcript::<SC, 4>(verifier, proof, statement)?;
-        let prev = RecursionInput::<SC, A>::BatchStark {
+        let prev: RecursionInput<'_, SC, A> = RecursionInput::BatchStark {
             proof,
             common_data: verifier.common_data(),
             table_public_inputs: trusted_batch_tables::<SC, 4>(verifier, statement)?.public_values,

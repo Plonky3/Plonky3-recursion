@@ -622,7 +622,7 @@ mod tests {
         }
         let output = b;
         let pis = vec![F::ZERO, F::ONE, output];
-        let proof = prove(config, air, generate_trace_rows::<F>(0, 1, n), &pis);
+        let proof = prove(config, air, generate_trace_rows::<F>(0, 1, n), &pis).unwrap();
         verify(config, air, &proof, &pis).unwrap();
         (proof, pis)
     }

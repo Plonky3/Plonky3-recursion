@@ -96,14 +96,23 @@ fn restore_query_paths(
         commitments_with_opening_points,
     } = replay_uni_stark_transcript(&setup.config, &setup.air, proof, pis, None)
         .expect("the proof's transcript replays");
-    observe_opened_values::<MyConfig>(&mut challenger, &commitments_with_opening_points);
+    observe_opened_values::<MyConfig>(
+        &mut challenger,
+        &commitments_with_opening_points,
+        fri_params.batch_proof_of_work_bits,
+    );
+    let claims: Vec<_> = commitments_with_opening_points
+        .iter()
+        .cloned()
+        .map(Into::into)
+        .collect();
     restore_fri_query_paths(
         &fri_params,
         &val_mmcs,
         &val_mmcs,
         &proof.opening_proof,
         &mut challenger,
-        &commitments_with_opening_points,
+        &claims,
     )
     .expect("an honest proof's Merkle paths restore")
 }

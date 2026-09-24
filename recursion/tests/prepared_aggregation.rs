@@ -434,14 +434,23 @@ mod arity4_output {
                 mut challenger,
                 commitments_with_opening_points,
             } = transcript;
-            observe_opened_values::<Self>(&mut challenger, &commitments_with_opening_points);
+            observe_opened_values::<Self>(
+                &mut challenger,
+                &commitments_with_opening_points,
+                config.fri_instance.1.batch_proof_of_work_bits,
+            );
+            let claims: Vec<_> = commitments_with_opening_points
+                .iter()
+                .cloned()
+                .map(Into::into)
+                .collect();
             let query_paths = restore_fri_query_paths(
                 &config.fri_instance.1,
                 &config.fri_instance.0,
                 &config.fri_instance.0,
                 opening_proof,
                 &mut challenger,
-                &commitments_with_opening_points,
+                &claims,
             )
             .map_err(|_| "failed to restore arity-4 FRI query paths")?;
             set_fri_mmcs_private_data_arity4::<F, Challenge, 8>(
@@ -616,14 +625,23 @@ mod hiding_fri {
                 &opening_proof.0,
             )
             .map_err(|_| "failed to merge hiding FRI random openings")?;
-            observe_opened_values::<Self>(&mut challenger, &commitments_with_opening_points);
+            observe_opened_values::<Self>(
+                &mut challenger,
+                &commitments_with_opening_points,
+                config.fri_params.batch_proof_of_work_bits,
+            );
+            let claims: Vec<_> = commitments_with_opening_points
+                .iter()
+                .cloned()
+                .map(Into::into)
+                .collect();
             let query_paths = restore_fri_query_paths(
                 &config.fri_params,
                 &config.val_mmcs,
                 &config.val_mmcs,
                 &opening_proof.1,
                 &mut challenger,
-                &commitments_with_opening_points,
+                &claims,
             )
             .map_err(|_| "failed to restore hiding FRI query paths")?;
             set_fri_mmcs_private_data::<F, Challenge, 8>(

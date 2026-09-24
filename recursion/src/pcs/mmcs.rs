@@ -3724,34 +3724,43 @@ mod test {
             .collect();
         let domains: Vec<_> = evals.iter().map(|(domain, _)| *domain).collect();
 
-        let (commitment, prover_data) = <Pcs4 as Pcs<Challenge, Challenger>>::commit(&pcs, evals);
+        let (commitment, prover_data) =
+            <Pcs4 as Pcs<Challenge, Challenger>>::commit(&pcs, evals).unwrap();
 
         let mut p_challenger = Challenger::new(perm.clone());
         p_challenger.observe(commitment.clone());
         let zeta: Challenge = p_challenger.sample_algebra_element();
         let (opened_values, proof) = <Pcs4 as Pcs<Challenge, Challenger>>::open(
             &pcs,
-            vec![(&prover_data, vec![vec![zeta]; log_degrees.len()])],
+            vec![(&prover_data, vec![vec![zeta]; log_degrees.len()]).into()],
             &mut p_challenger,
-        );
+        )
+        .unwrap();
 
         // Verifier transcript, replayed up to the point `verify_fri` starts from.
         let mut challenger = Challenger::new(perm);
         challenger.observe(commitment.clone());
         let v_zeta: Challenge = challenger.sample_algebra_element();
         assert_eq!(v_zeta, zeta);
-        let cwop = vec![(
-            commitment.clone(),
-            domains
-                .iter()
-                .zip(&opened_values[0])
-                .map(|(domain, mat)| (*domain, vec![(zeta, mat[0].clone())]))
-                .collect::<Vec<_>>(),
-        )];
-        for (_, round) in &cwop {
-            for (_, mat) in round {
-                for (_, point) in mat {
-                    challenger.observe_algebra_slice(point);
+        let cwop: Vec<CommitmentWithOpeningPoints<_, _, _>> = vec![
+            (
+                commitment.clone(),
+                domains
+                    .iter()
+                    .zip(&opened_values[0])
+                    .map(|(domain, mat)| (*domain, vec![(zeta, mat[0].clone())]))
+                    .collect::<Vec<_>>(),
+            )
+                .into(),
+        ];
+        // The FRI PCS transcript: its domain separator, then every claimed evaluation.
+        p3_fri::PcsShape::from_claims(&fri_params, &cwop)
+            .domain_separator::<F, Challenge>()
+            .seed(&mut challenger);
+        for claim in &cwop {
+            for matrix in &claim.matrices {
+                for point in &matrix.points {
+                    challenger.observe_algebra_slice(&point.values);
                 }
             }
         }
@@ -3807,7 +3816,7 @@ mod test {
         // Commit phase: one matrix of `arity` extension columns per round, flattened to base.
         let mut log_current_height = log_global_max_height;
         for (round, opening) in proof.commit_phase_openings.iter().enumerate() {
-            let log_arity = opening.log_arity as usize;
+            let log_arity = crate::pcs::fri::sibling_log_arity(opening).unwrap();
             let arity = 1usize << log_arity;
             let log_folded_height = log_current_height - log_arity;
             let dims = [Dimensions {
@@ -3854,14 +3863,29 @@ mod test {
         usize,
     ) {
         let folding: TwoAdicFriFoldingForMmcs<F, MyMmcs> = TwoAdicFriFolding(PhantomData);
+        assert!(challenger.check_witness(params.batch_proof_of_work_bits, proof.batch_pow_witness));
         let alpha: Challenge = challenger.sample_algebra_element();
-        let log_arities: Vec<usize> = proof
-            .commit_phase_openings
+        let mut input_log_heights: Vec<usize> = cwop
             .iter()
-            .map(|opening| opening.log_arity as usize)
+            .flat_map(|claim| {
+                claim
+                    .matrices
+                    .iter()
+                    .map(|matrix| log2_strict_usize(matrix.domain.size()) + params.log_blowup)
+            })
             .collect();
+        input_log_heights.sort_unstable_by(|a, b| b.cmp(a));
+        input_log_heights.dedup();
+        let log_arities = p3_fri::fold_schedule(
+            &input_log_heights,
+            params.log_blowup + params.log_final_poly_len,
+            params.max_log_arity,
+        );
         let log_global_max_height =
             log_arities.iter().sum::<usize>() + params.log_blowup + params.log_final_poly_len;
+        FriShape::with_schedule(params, log_arities.clone(), log_global_max_height)
+            .domain_separator::<F, Challenge>()
+            .seed(challenger);
 
         let betas: Vec<Challenge> = proof
             .commit_phase_commits
@@ -3875,9 +3899,6 @@ mod test {
             .collect();
 
         challenger.observe_algebra_slice(&proof.final_poly);
-        for &log_arity in &log_arities {
-            challenger.observe(F::from_usize(log_arity));
-        }
         assert!(challenger.check_witness(params.query_proof_of_work_bits, proof.query_pow_witness));
 
         let indices: Vec<usize> =

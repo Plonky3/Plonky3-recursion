@@ -17,7 +17,9 @@ use crate::challenger_perm::ChallengerPermConfig;
 use crate::input_contract::stark_layout::{
     CommitmentRole, InstanceLayout, MatrixRoute, NativeStarkLayout, checked_power_of_two,
 };
+use crate::traits::RecursiveChallenger;
 use crate::traits::{LookupMetadata, Recursive, RecursiveAir, RecursivePcs};
+use crate::transcript::domain_separator_seed;
 use crate::types::{
     CommitmentTargets, OpenedValuesTargets, OpenedValuesTargetsWithLookups, ProofTargets,
     StarkChallengeParams, StarkChallenges,
@@ -301,6 +303,14 @@ where
         .map(|domain| pcs.natural_domain_for_degree(pcs.size(domain) << (config.is_zk())))
         .collect_vec();
 
+    // The recursive verifier replays no out-of-domain grind, so it only accepts the zero
+    // difficulty, at which the native transcript absorbs nothing for that phase.
+    if config.ood_proof_of_work_bits() != 0 {
+        return Err(VerificationError::InvalidProofShape(
+            "recursive uni-STARK verification requires zero OOD proof of work".to_string(),
+        ));
+    }
+
     // Generate all challenges (alpha, zeta, zeta_next, PCS challenges)
     let (challenge_targets, mut challenger) =
         get_circuit_challenges::<A, SC, Comm, InputProof, OpeningProof, CP, WIDTH, RATE>(
@@ -309,6 +319,7 @@ where
             proof_targets,
             public_values,
             preprocessed_width,
+            quotient_degree,
             preprocessed_commit,
             &init_trace_domain,
             circuit,
@@ -533,6 +544,7 @@ fn get_circuit_challenges<
     proof_targets: &ProofTargets<SC, Comm, OpeningProof>,
     public_values: &[Target],
     preprocessed_width: usize,
+    quotient_degree: usize,
     preprocessed_commit: &Option<Comm>,
     init_trace_domain: &PcsDomain<SC>,
     circuit: &mut CircuitBuilder<SC::Challenge>,
@@ -563,9 +575,22 @@ where
     let mut challenger = CircuitChallenger::<WIDTH, RATE, CP>::new(challenger_perm_config);
 
     // Set up challenge parameters matching native challenger behavior
+    let degree_bits = proof_targets.degree_bits;
+    let transcript_seed = domain_separator_seed(
+        &crate::transcript::uni_stark_shape(
+            _air,
+            preprocessed_width,
+            public_values.len(),
+            degree_bits,
+            degree_bits - config.is_zk(),
+            quotient_degree,
+            SC::Pcs::ZK,
+            config.ood_proof_of_work_bits(),
+        )
+        .domain_separator::<Val<SC>, SC::Challenge>(),
+    );
     let challenge_params = StarkChallengeParams {
-        degree_bits: proof_targets.degree_bits,
-        is_zk: config.is_zk(),
+        transcript_seed,
         preprocessed_width,
         preprocessed_commit,
         trace_domain_generator,
@@ -590,6 +615,43 @@ where
     // transcript expects them pre-observed (FRI). WHIR observes them itself,
     // interleaved with its own per-commitment challenges, inside verify_circuit.
     if SC::Pcs::PRE_OBSERVES_OPENED_VALUES {
+        // The PCS opens its own transcript with a seed bound to the claims' shape, in the
+        // commitment order random, trace, quotient chunks, preprocessed.
+        let values = &opened_values_no_lookups.opened_values_no_lookups;
+        let mut counts = Vec::with_capacity(4);
+        if let Some(random) = &values.random_targets {
+            counts.push(vec![vec![random.len()]]);
+        }
+        let mut trace_points = vec![values.trace_local_targets.len()];
+        if _air.opens_trace_next() {
+            trace_points.push(values.trace_next_targets.len());
+        }
+        counts.push(vec![trace_points]);
+        counts.push(
+            values
+                .quotient_chunks_targets
+                .iter()
+                .map(|chunk| vec![chunk.len()])
+                .collect(),
+        );
+        if let Some(local) = &values.preprocessed_local_targets {
+            let mut points = vec![local.len()];
+            if _air.opens_preprocessed_next() {
+                points.push(
+                    values
+                        .preprocessed_next_targets
+                        .as_ref()
+                        .map_or(0, Vec::len),
+                );
+            }
+            counts.push(vec![points]);
+        }
+        let seed = SC::Pcs::claims_transcript_seed(pcs_params, counts);
+        RecursiveChallenger::<Val<SC>, SC::Challenge>::observe_seed(
+            &mut challenger,
+            circuit,
+            &seed,
+        );
         opened_values_no_lookups.observe(circuit, &mut challenger);
     }
 

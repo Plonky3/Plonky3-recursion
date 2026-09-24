@@ -494,8 +494,10 @@ fn fri_trusted_uni_retains_air_config_and_complete_preprocessed_root() {
     let (output_config, _) = common::koala_bear_d4_recursion_config_and_backend_with_pow_bits(1);
     let (main, _) = air.random_valid_trace::<F>(true);
     let degree_bits = main.height().ilog2() as usize;
-    let (preprocessed, verifier_key) = setup_preprocessed(&config, &air, degree_bits).unwrap();
-    let proof = prove_with_preprocessed(&config, &air, main, &[], Some(&preprocessed));
+    let (preprocessed, verifier_key) = setup_preprocessed(&config, &air, degree_bits)
+        .unwrap()
+        .unwrap();
+    let proof = prove_with_preprocessed(&config, &air, main, &[], Some(&preprocessed)).unwrap();
     verify_with_preprocessed(&config, &air, &proof, &[], Some(&verifier_key)).unwrap();
 
     let owner = TrustedPreparedLayer::<_, _, common::MulAir, _, 4>::new(
@@ -531,8 +533,10 @@ fn whir_trusted_uni_retains_air_config_and_complete_preprocessed_root() {
         .for_extension_degree::<4>();
     let (main, _) = air.random_valid_trace::<BbF>(true);
     let degree_bits = main.height().ilog2() as usize;
-    let (preprocessed, verifier_key) = setup_preprocessed(&config, &air, degree_bits).unwrap();
-    let proof = prove_with_preprocessed(&config, &air, main, &[], Some(&preprocessed));
+    let (preprocessed, verifier_key) = setup_preprocessed(&config, &air, degree_bits)
+        .unwrap()
+        .unwrap();
+    let proof = prove_with_preprocessed(&config, &air, main, &[], Some(&preprocessed)).unwrap();
     verify_with_preprocessed(&config, &air, &proof, &[], Some(&verifier_key)).unwrap();
 
     let owner = TrustedPreparedLayer::<_, _, common::MulAir, _, 4>::new(

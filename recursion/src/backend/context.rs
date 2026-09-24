@@ -351,8 +351,7 @@ mod policy_tests {
         let values = OpenedValues::<Challenge> {
             trace_local: vec![],
             trace_next: None,
-            preprocessed_local: None,
-            preprocessed_next: None,
+            preprocessed: None,
             quotient_chunks: vec![vec![], vec![], vec![]],
             random: None,
         };

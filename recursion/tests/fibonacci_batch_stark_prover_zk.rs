@@ -112,7 +112,7 @@ fn test_batch_verifier_zk_hiding_fri() -> Result<(), VerificationError> {
         public_values: pvs[0].clone(),
     };
     let instances = vec![instance];
-    let prover_data = ProverData::from_instances(&config_proving, &instances);
+    let prover_data = ProverData::from_instances(&config_proving, &instances).unwrap();
     let common = &prover_data.common;
     let batch_stark_proof = prove_batch(&config_proving, &instances, &prover_data).unwrap();
 
@@ -207,7 +207,17 @@ fn test_batch_verifier_zk_hiding_fri() -> Result<(), VerificationError> {
             &batch_stark_proof.opening_proof.0,
         )
         .expect("the random openings match the public ones");
-        observe_opened_values::<MyConfigZk>(&mut challenger, &commitments_with_opening_points);
+        observe_opened_values::<MyConfigZk>(
+            &mut challenger,
+            &commitments_with_opening_points,
+            // The test FRI parameters (`FriParameters::new_testing`) grind no batch phase.
+            0,
+        );
+        let claims: Vec<_> = commitments_with_opening_points
+            .iter()
+            .cloned()
+            .map(Into::into)
+            .collect();
         let (val_mmcs, fri_params) = test_fri_instance();
         let query_paths = restore_fri_query_paths(
             &fri_params,
@@ -215,7 +225,7 @@ fn test_batch_verifier_zk_hiding_fri() -> Result<(), VerificationError> {
             &val_mmcs,
             &batch_stark_proof.opening_proof.1,
             &mut challenger,
-            &commitments_with_opening_points,
+            &claims,
         )
         .expect("an honest proof's Merkle paths restore");
         set_fri_mmcs_private_data::<F, Challenge, DIGEST_ELEMS>(

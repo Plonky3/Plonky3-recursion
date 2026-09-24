@@ -28,7 +28,7 @@ type InnerFri = InnerFriGeneric<MyConfig, MyHash, MyCompress, DIGEST_ELEMS>;
 
 const TRACE_D: usize = 1;
 
-fn fri_verifier_params(log_blowup: usize) -> FriVerifierParams {
+fn fri_verifier_params(log_blowup: usize, max_log_arity: usize) -> FriVerifierParams {
     let num_queries = (100 - 16) / log_blowup;
     FriVerifierParams::with_mmcs(
         log_blowup,
@@ -101,8 +101,8 @@ fn test_aggregation_with_different_shapes() -> Result<(), VerificationError> {
     circuit_builder.enable_recompose::<F>(generate_recompose_trace::<F, Challenge>);
 
     // Build the verifier inputs for the Uni-Stark.
-    let left_fri_params = fri_verifier_params(2);
-    let right_fri_params = fri_verifier_params(3);
+    let left_fri_params = fri_verifier_params(2, 3);
+    let right_fri_params = fri_verifier_params(3, 4);
 
     let left_verifier_inputs = StarkVerifierInputsBuilder::<
         MyConfig,
@@ -185,14 +185,23 @@ fn test_aggregation_with_different_shapes() -> Result<(), VerificationError> {
         commitments_with_opening_points,
     } = replay_uni_stark_transcript(&left_config, &air, &uni_proof, &pis, None)
         .map_err(|e| VerificationError::InvalidProofShape(e.to_string()))?;
-    observe_opened_values::<MyConfig>(&mut challenger, &commitments_with_opening_points);
+    observe_opened_values::<MyConfig>(
+        &mut challenger,
+        &commitments_with_opening_points,
+        left_fri.batch_proof_of_work_bits,
+    );
+    let claims: Vec<_> = commitments_with_opening_points
+        .iter()
+        .cloned()
+        .map(Into::into)
+        .collect();
     let left_query_paths = restore_fri_query_paths(
         &left_fri,
         &left_val_mmcs,
         &left_val_mmcs,
         &uni_proof.opening_proof,
         &mut challenger,
-        &commitments_with_opening_points,
+        &claims,
     )
     .map_err(|e| VerificationError::InvalidProofShape(format!("{e:?}")))?;
     set_fri_mmcs_private_data::<F, Challenge, DIGEST_ELEMS>(
@@ -214,14 +223,23 @@ fn test_aggregation_with_different_shapes() -> Result<(), VerificationError> {
         common,
         &[],
     )?;
-    observe_opened_values::<MyConfig>(&mut challenger, &commitments_with_opening_points);
+    observe_opened_values::<MyConfig>(
+        &mut challenger,
+        &commitments_with_opening_points,
+        right_fri.batch_proof_of_work_bits,
+    );
+    let claims: Vec<_> = commitments_with_opening_points
+        .iter()
+        .cloned()
+        .map(Into::into)
+        .collect();
     let right_query_paths = restore_fri_query_paths(
         &right_fri,
         &right_val_mmcs,
         &right_val_mmcs,
         &batch_stark_proof.proof.opening_proof,
         &mut challenger,
-        &commitments_with_opening_points,
+        &claims,
     )
     .map_err(|e| VerificationError::InvalidProofShape(format!("{e:?}")))?;
     set_fri_mmcs_private_data::<F, Challenge, DIGEST_ELEMS>(

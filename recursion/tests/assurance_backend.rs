@@ -147,7 +147,7 @@ fn run_binary_fri_d4_case(seed: u64) {
         trace: &trace,
         public_values: vec![],
     }];
-    let prover_data = ProverData::from_instances(&native_config, &instances);
+    let prover_data = ProverData::from_instances(&native_config, &instances).unwrap();
     let proof = prove_batch(&native_config, &instances, &prover_data).unwrap();
 
     native_sink
@@ -198,7 +198,10 @@ fn run_binary_fri_d4_case(seed: u64) {
     replay_config
         .pcs()
         .verify(
-            commitments_with_opening_points,
+            commitments_with_opening_points
+                .into_iter()
+                .map(Into::into)
+                .collect(),
             &proof.opening_proof,
             &mut challenger,
         )
@@ -251,7 +254,7 @@ fn run_random_codeword_hiding_fri_case(seed: u64) {
         trace: &trace,
         public_values: vec![],
     }];
-    let prover_data = ProverData::from_instances(&native_config, &instances);
+    let prover_data = ProverData::from_instances(&native_config, &instances).unwrap();
     let proof = prove_batch(&native_config, &instances, &prover_data).unwrap();
     native_sink
         .lock()
@@ -297,7 +300,10 @@ fn run_random_codeword_hiding_fri_case(seed: u64) {
     replay_config
         .pcs()
         .verify(
-            commitments_with_opening_points,
+            commitments_with_opening_points
+                .into_iter()
+                .map(Into::into)
+                .collect(),
             &proof.opening_proof,
             &mut challenger,
         )
@@ -338,7 +344,7 @@ fn run_quaternary_wide_mmcs_case(seed: u64) {
         trace: &trace,
         public_values: vec![],
     }];
-    let prover_data = ProverData::from_instances(&native_config, &instances);
+    let prover_data = ProverData::from_instances(&native_config, &instances).unwrap();
     let proof = prove_batch(&native_config, &instances, &prover_data).unwrap();
     native_sink
         .lock()
@@ -388,7 +394,10 @@ fn run_quaternary_wide_mmcs_case(seed: u64) {
     replay_config
         .pcs()
         .verify(
-            commitments_with_opening_points,
+            commitments_with_opening_points
+                .into_iter()
+                .map(Into::into)
+                .collect(),
             &proof.opening_proof,
             &mut challenger,
         )
@@ -462,7 +471,10 @@ fn run_non_zk_whir_d4_case(seed: u64) {
     replay_config
         .pcs()
         .verify(
-            commitments_with_opening_points,
+            commitments_with_opening_points
+                .into_iter()
+                .map(Into::into)
+                .collect(),
             &proof.opening_proof,
             &mut challenger,
         )
@@ -546,14 +558,23 @@ fn run_binary_fri_d4_recursive_acceptance(
     )
     .expect("the honest binary FRI transcript replays")
     .0;
-    observe_opened_values::<RecordingConfig>(&mut challenger, &commitments_with_opening_points);
+    observe_opened_values::<RecordingConfig>(
+        &mut challenger,
+        &commitments_with_opening_points,
+        fri_params.batch_proof_of_work_bits,
+    );
+    let claims: Vec<_> = commitments_with_opening_points
+        .iter()
+        .cloned()
+        .map(Into::into)
+        .collect();
     let paths = restore_fri_query_paths(
         &fri_params,
         &val_mmcs,
         &val_mmcs,
         &proof.opening_proof,
         &mut challenger,
-        &commitments_with_opening_points,
+        &claims,
     )
     .expect("the honest binary FRI paths restore");
     set_fri_mmcs_private_data::<F, Challenge, DIGEST_ELEMS>(

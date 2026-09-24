@@ -141,7 +141,7 @@ fn produce_inputs_multi(
     let mut commitments_and_data: Vec<(MyCommitment, MyProverData)> = Vec::new();
     for evals in &groups_evals {
         let (commitment, prover_data) =
-            <MyPcs as Pcs<Challenge, Challenger>>::commit(pcs, evals.clone());
+            <MyPcs as Pcs<Challenge, Challenger>>::commit(pcs, evals.clone()).unwrap();
         p_challenger.observe(commitment.clone());
         commitments_and_data.push((commitment, prover_data));
     }
@@ -153,13 +153,13 @@ fn produce_inputs_multi(
     let mut open_data = Vec::new();
     for (i, _evals) in groups_evals.iter().enumerate() {
         let mat_count = groups_evals[i].len();
-        open_data.push((&commitments_and_data[i].1, vec![vec![zeta]; mat_count]));
+        open_data.push((&commitments_and_data[i].1, vec![vec![zeta]; mat_count]).into());
     }
 
     // Open and produce FRI proof
     type MyProof = <MyPcs as Pcs<Challenge, Challenger>>::Proof;
     let (opened_values, fri_proof): (_, MyProof) =
-        <MyPcs as Pcs<Challenge, Challenger>>::open(pcs, open_data, &mut p_challenger);
+        <MyPcs as Pcs<Challenge, Challenger>>::open(pcs, open_data, &mut p_challenger).unwrap();
 
     // --- Verifier transcript replay (to derive the public inputs) ---
     let mut v_challenger = Challenger::new(perm.clone());
@@ -177,6 +177,7 @@ fn produce_inputs_multi(
 
     // Extract proof pieces
     let p3_fri::FriProof {
+        batch_pow_witness,
         commit_phase_commits,
         commit_pow_witnesses,
         input_openings,
@@ -185,17 +186,10 @@ fn produce_inputs_multi(
         query_pow_witness,
     } = fri_proof.clone();
 
-    // Observe all opened evaluation values (same order)
-    for values in &point_values_flat {
-        for &opening in values {
-            v_challenger.observe_algebra_element(opening);
-        }
-    }
-
-    // The challenger is now in the state `verify_fri` starts from, which is what restoring the
+    // The challenger is now in the state the PCS batch phase starts from, which is what restoring the
     // per-query Merkle chains out of the proof's shared pruned multiproofs needs.
     let mut pv_idx_for_paths = 0;
-    let restore_cwop: Vec<_> = group_sizes
+    let restore_cwop: Vec<p3_commit::CommitmentOpening<_, _, _>> = group_sizes
         .iter()
         .zip(&commitments_and_data)
         .map(|(sizes, (commitment, _))| {
@@ -209,9 +203,20 @@ fn produce_inputs_multi(
                     (domain, points)
                 })
                 .collect();
-            (commitment.clone(), mats)
+            (commitment.clone(), mats).into()
         })
         .collect();
+
+    // The PCS transcript: its domain separator, then every opened evaluation (same order).
+    p3_fri::PcsShape::from_claims(fri_params, &restore_cwop)
+        .domain_separator::<F, Challenge>()
+        .seed(&mut v_challenger);
+    // Observe all opened evaluation values (same order)
+    for values in &point_values_flat {
+        for &opening in values {
+            v_challenger.observe_algebra_element(opening);
+        }
+    }
 
     <MyPcs as Pcs<Challenge, Challenger>>::verify(
         pcs,
@@ -239,8 +244,27 @@ fn produce_inputs_multi(
     )
     .expect("an honest proof's Merkle paths restore");
 
-    // α (batch combiner)
+    // α (batch combiner), after the batch grind.
+    assert!(v_challenger.check_witness(fri_params.batch_proof_of_work_bits, batch_pow_witness));
     let alpha: Challenge = v_challenger.sample_algebra_element();
+
+    // The low-degree test's own transcript, seeded with the configured fold schedule.
+    let mut input_log_heights: Vec<usize> = group_sizes
+        .iter()
+        .flatten()
+        .map(|&log_size| log_size as usize + log_blowup)
+        .collect();
+    input_log_heights.sort_unstable_by(|a, b| b.cmp(a));
+    input_log_heights.dedup();
+    let log_arities = p3_fri::fold_schedule(
+        &input_log_heights,
+        log_blowup + log_final_poly_len,
+        fri_params.max_log_arity,
+    );
+    let log_max_height = log_arities.iter().sum::<usize>() + log_blowup + log_final_poly_len;
+    p3_fri::FriShape::with_schedule(fri_params, log_arities, log_max_height)
+        .domain_separator::<F, Challenge>()
+        .seed(&mut v_challenger);
 
     let (commit_pow_bits, query_pow_bits) = pow_bits;
 
@@ -257,18 +281,10 @@ fn produce_inputs_multi(
         v_challenger.observe_algebra_element(c);
     }
 
-    // Bind the variable-arity schedule into the transcript before query grinding,
-    // matching the native FRI verifier in Plonky3.
-    for step in &commit_phase_openings {
-        v_challenger.observe(F::from_usize(step.log_arity as usize));
-    }
-
     // PoW check
     assert!(v_challenger.check_witness(query_pow_bits, query_pow_witness));
 
     // Query indices
-    let num_phases = commit_phase_commits.len();
-    let log_max_height = num_phases + log_blowup + log_final_poly_len;
     let num_queries = fri_proof_num_queries(&fri_proof);
     let mut indices: Vec<usize> = Vec::with_capacity(num_queries);
     for _ in 0..num_queries {
@@ -311,6 +327,7 @@ fn produce_inputs_multi(
     // —— FriProofTargets values ——
 
     let fri_values: Vec<Challenge> = FriTargets::get_values(&p3_fri::FriProof {
+        batch_pow_witness,
         commit_phase_commits,
         commit_pow_witnesses,
         input_openings,
@@ -329,7 +346,7 @@ fn produce_inputs_multi(
             .into_iter()
             .map(|(commitment, _)| commitment)
             .collect(),
-        num_phases,
+        num_phases: fri_proof.commit_phase_commits.len(),
         log_blowup,
         log_max_height,
         fri_proof,
@@ -834,7 +851,7 @@ fn run_fri_test_with_mmcs(setup: FriSetup) {
 
     for evals in &groups_evals {
         let (commitment, _prover_data) =
-            <MyPcs as Pcs<Challenge, Challenger>>::commit(&pcs, evals.clone());
+            <MyPcs as Pcs<Challenge, Challenger>>::commit(&pcs, evals.clone()).unwrap();
         v_challenger.observe(commitment.clone());
         actual_commitments.push(commitment);
     }
@@ -1020,7 +1037,6 @@ fn test_circuit_fri_zero_height_phase_native_control() {
     );
     assert_eq!(result.fri_proof.commit_phase_openings.len(), 1);
     let phase = &result.fri_proof.commit_phase_openings[0];
-    assert_eq!(phase.log_arity, 1);
     assert_eq!(phase.sibling_values.len(), 2);
     assert!(
         phase

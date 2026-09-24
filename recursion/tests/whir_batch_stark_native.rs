@@ -50,7 +50,7 @@ fn whir_backed_batch_stark_proves_two_instances() {
         },
     ];
 
-    let prover_data = ProverData::from_instances(&config, &instances);
+    let prover_data = ProverData::from_instances(&config, &instances).unwrap();
     let common = &prover_data.common;
     let proof = prove_batch(&config, &instances, &prover_data).unwrap();
     let _shape = WhirUniProofTargets::<BbF, BbEF, BbMmcs, BB_DIGEST_ELEMS>::input_shape(

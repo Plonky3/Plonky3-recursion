@@ -793,13 +793,14 @@ fn prepared_fri_arity4_selected_target_captures_real_proof() {
     let domain = <Pcs4 as Pcs<CF, Challenger32>>::natural_domain_for_degree(&pcs, 16);
     let matrix = RowMajorMatrix::new((0..32).map(F::from_usize).collect(), 2);
     let (_commitment, prover_data) =
-        <Pcs4 as Pcs<CF, Challenger32>>::commit(&pcs, vec![(domain, matrix)]);
+        <Pcs4 as Pcs<CF, Challenger32>>::commit(&pcs, vec![(domain, matrix)]).unwrap();
     let mut challenger = Challenger32::new(perm);
     let (_opened_values, proof) = <Pcs4 as Pcs<CF, Challenger32>>::open(
         &pcs,
-        vec![(&prover_data, vec![vec![CF::ONE]])],
+        vec![(&prover_data, vec![vec![CF::ONE]]).into()],
         &mut challenger,
-    );
+    )
+    .unwrap();
 
     let _shape = SelectedFriTargets4::input_shape(&proof)
         .expect("an honest arity-4 FRI proof has a capturable prepared shape");

@@ -116,15 +116,24 @@ fn test_arith_lookups() {
         &lookup_gadget,
     )
     .unwrap();
-    observe_opened_values::<MyConfig>(&mut challenger, &commitments_with_opening_points);
     let (val_mmcs, fri_params) = test_fri_instance();
+    observe_opened_values::<MyConfig>(
+        &mut challenger,
+        &commitments_with_opening_points,
+        fri_params.batch_proof_of_work_bits,
+    );
+    let claims: Vec<_> = commitments_with_opening_points
+        .iter()
+        .cloned()
+        .map(Into::into)
+        .collect();
     let query_paths = restore_fri_query_paths(
         &fri_params,
         &val_mmcs,
         &val_mmcs,
         &batch_proof.opening_proof,
         &mut challenger,
-        &commitments_with_opening_points,
+        &claims,
     )
     .unwrap();
     set_fri_mmcs_private_data::<F, Challenge, DIGEST_ELEMS>(

@@ -394,8 +394,8 @@ fn one_preparation_exports_two_ordered_runtime_statements_after_all_native_owner
             .unwrap();
         prepared.prove(&runner.run().unwrap()).unwrap()
     };
-    let first_proof = prove([7, 9]).unwrap();
-    let second_proof = prove([11, 13]).unwrap();
+    let first_proof = prove([7, 9]);
+    let second_proof = prove([11, 13]);
     let native_verifier = prepared.verifier();
     let verifier_bytes = native_verifier.encode_verifier_artifact(limits).unwrap();
     let first_bytes = native_verifier

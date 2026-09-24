@@ -136,7 +136,13 @@ fn set_zk_mmcs_private_data(
         &proof.opening_proof.0,
     )
     .map_err(|e| VerificationError::InvalidProofShape(e.to_string()))?;
-    observe_opened_values::<MyConfigZk>(&mut challenger, &commitments_with_opening_points);
+    // The test FRI parameters (`FriParameters::new_testing`) grind no batch phase.
+    observe_opened_values::<MyConfigZk>(&mut challenger, &commitments_with_opening_points, 0);
+    let claims: Vec<_> = commitments_with_opening_points
+        .iter()
+        .cloned()
+        .map(Into::into)
+        .collect();
 
     let perm = default_koalabear_poseidon2_16();
     let val_mmcs = MyMmcs::new(MyHash::new(perm.clone()), MyCompress::new(perm), 0);
@@ -147,7 +153,7 @@ fn set_zk_mmcs_private_data(
         &val_mmcs,
         &proof.opening_proof.1,
         &mut challenger,
-        &commitments_with_opening_points,
+        &claims,
     )
     .map_err(|e| VerificationError::InvalidProofShape(format!("{e:?}")))?;
     set_fri_mmcs_private_data::<F, Challenge, DIGEST_ELEMS>(
@@ -176,7 +182,7 @@ fn prove_zk_add_air(config: &MyConfigZk, trace: &RowMajorMatrix<F>) -> ZkProofDa
         public_values: vec![],
     };
     let instances = vec![instance];
-    let prover_data = ProverData::from_instances(config, &instances);
+    let prover_data = ProverData::from_instances(config, &instances).unwrap();
     let common = &prover_data.common;
     let proof = prove_batch(config, &instances, &prover_data).unwrap();
     verify_batch(config, &[air], &proof, &[vec![]], common).expect("inner ZK verify failed");

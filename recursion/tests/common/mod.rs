@@ -375,14 +375,22 @@ where
             mut challenger,
             commitments_with_opening_points,
         } = transcript;
-        observe_opened_values::<Self>(&mut challenger, &commitments_with_opening_points);
+        observe_opened_values::<Self>(
+            &mut challenger,
+            &commitments_with_opening_points,
+            config.fri_params.batch_proof_of_work_bits,
+        );
+        let claims: Vec<_> = commitments_with_opening_points
+            .into_iter()
+            .map(Into::into)
+            .collect();
         let query_paths = restore_fri_query_paths(
             &config.fri_params,
             &config.val_mmcs,
             &config.val_mmcs,
             opening_proof,
             &mut challenger,
-            &commitments_with_opening_points,
+            &claims,
         )
         .map_err(|_| "Failed to restore the FRI proof's per-query Merkle paths")?;
         set_fri_mmcs_private_data::<F, Challenge, DIGEST_ELEMS>(

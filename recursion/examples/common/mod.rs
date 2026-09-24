@@ -612,14 +612,23 @@ macro_rules! define_field_module_types {
                     mut challenger,
                     commitments_with_opening_points,
                 } = transcript;
-                observe_opened_values::<Self>(&mut challenger, &commitments_with_opening_points);
+                observe_opened_values::<Self>(
+                    &mut challenger,
+                    &commitments_with_opening_points,
+                    config.fri_instance.1.batch_proof_of_work_bits,
+                );
+                let claims: Vec<_> = commitments_with_opening_points
+                    .iter()
+                    .cloned()
+                    .map(Into::into)
+                    .collect();
                 let query_paths = restore_fri_query_paths(
                     &config.fri_instance.1,
                     &config.fri_instance.0,
                     &config.fri_instance.0,
                     opening_proof,
                     &mut challenger,
-                    &commitments_with_opening_points,
+                    &claims,
                 )
                 .map_err(|_| "Failed to restore the FRI proof's per-query Merkle paths")?;
                 set_fri_mmcs_private_data::<F, Challenge, DIGEST_ELEMS>(
@@ -721,14 +730,23 @@ macro_rules! define_field_module_types {
                     &opening_proof.0,
                 )
                 .map_err(|_| "Hiding random openings do not match the public ones")?;
-                observe_opened_values::<Self>(&mut challenger, &commitments_with_opening_points);
+                observe_opened_values::<Self>(
+                    &mut challenger,
+                    &commitments_with_opening_points,
+                    config.fri_instance.1.batch_proof_of_work_bits,
+                );
+                let claims: Vec<_> = commitments_with_opening_points
+                    .iter()
+                    .cloned()
+                    .map(Into::into)
+                    .collect();
                 let query_paths = restore_fri_query_paths(
                     &config.fri_instance.1,
                     &config.fri_instance.0,
                     &config.fri_instance.0,
                     &opening_proof.1,
                     &mut challenger,
-                    &commitments_with_opening_points,
+                    &claims,
                 )
                 .map_err(|_| "Failed to restore the FRI proof's per-query Merkle paths")?;
                 set_fri_mmcs_private_data::<F, Challenge, DIGEST_ELEMS>(
@@ -1029,14 +1047,23 @@ macro_rules! define_field_module_types_quintic {
                     mut challenger,
                     commitments_with_opening_points,
                 } = transcript;
-                observe_opened_values::<Self>(&mut challenger, &commitments_with_opening_points);
+                observe_opened_values::<Self>(
+                    &mut challenger,
+                    &commitments_with_opening_points,
+                    config.fri_instance.1.batch_proof_of_work_bits,
+                );
+                let claims: Vec<_> = commitments_with_opening_points
+                    .iter()
+                    .cloned()
+                    .map(Into::into)
+                    .collect();
                 let query_paths = restore_fri_query_paths(
                     &config.fri_instance.1,
                     &config.fri_instance.0,
                     &config.fri_instance.0,
                     opening_proof,
                     &mut challenger,
-                    &commitments_with_opening_points,
+                    &claims,
                 )
                 .map_err(|_| "Failed to restore the FRI proof's per-query Merkle paths")?;
                 set_fri_mmcs_private_data::<F, Challenge, DIGEST_ELEMS>(

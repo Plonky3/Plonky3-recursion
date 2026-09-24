@@ -266,7 +266,7 @@ fn test_batch_verifier_hiding_mmcs() -> Result<(), VerificationError> {
         public_values: pvs[0].clone(),
     };
     let instances = vec![instance];
-    let prover_data = ProverData::from_instances(&config_proving, &instances);
+    let prover_data = ProverData::from_instances(&config_proving, &instances).unwrap();
     let common = &prover_data.common;
     let mut batch_stark_proof = prove_batch(&config_proving, &instances, &prover_data).unwrap();
 
@@ -376,7 +376,13 @@ fn test_batch_verifier_hiding_mmcs() -> Result<(), VerificationError> {
         &batch_stark_proof.opening_proof.0,
     )
     .expect("the random openings match the public ones");
-    observe_opened_values::<MyConfigZk>(&mut challenger, &commitments_with_opening_points);
+    // The test FRI parameters (`FriParameters::new_testing`) grind no batch phase.
+    observe_opened_values::<MyConfigZk>(&mut challenger, &commitments_with_opening_points, 0);
+    let claims: Vec<_> = commitments_with_opening_points
+        .iter()
+        .cloned()
+        .map(Into::into)
+        .collect();
 
     let restore_perm = default_koalabear_poseidon2_16();
     let restore_hiding_mmcs = HidingValMmcs::new(
@@ -399,7 +405,7 @@ fn test_batch_verifier_hiding_mmcs() -> Result<(), VerificationError> {
         &restore_tree,
         &batch_stark_proof.opening_proof.1,
         &mut challenger,
-        &commitments_with_opening_points,
+        &claims,
     )
     .expect("an honest proof's salted Merkle paths restore");
     set_fri_mmcs_private_data::<F, Challenge, DIGEST_ELEMS>(

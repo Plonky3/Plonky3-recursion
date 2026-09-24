@@ -112,7 +112,7 @@ where
         .map_err(|e| VerificationError::InvalidProofShape(alloc::format!("{e:?}")))?;
 
         let mut rounds = Vec::new();
-        for (i, rp) in cfg.round_parameters.iter().enumerate() {
+        for (i, rp) in cfg.round_parameters().iter().enumerate() {
             let dims = [Dimensions {
                 height: rp.domain_size >> rp.folding_factor,
                 width: 1 << rp.folding_factor,
