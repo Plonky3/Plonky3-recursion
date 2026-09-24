@@ -1,5 +1,6 @@
 pub mod alu_air;
 mod alu_columns;
+pub mod blake3_air;
 mod column_layout;
 pub mod const_air;
 pub mod keccak_air;
@@ -14,6 +15,7 @@ mod shape_golden;
 pub mod test_utils;
 
 pub use alu_air::{AluAir, AluExtMulKind};
+pub use blake3_air::Blake3CompressAir;
 pub use const_air::ConstAir;
 pub use keccak_air::KeccakF1600Air;
 pub use public_air::{PublicAir, WitnessSendAir};

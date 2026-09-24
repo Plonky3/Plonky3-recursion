@@ -62,6 +62,7 @@ use crate::config::StarkField;
 use crate::constraint_profile::ConstraintProfile;
 use crate::field_params::ExtractBinomialW;
 
+mod blake3;
 mod dynamic_air;
 mod keccak;
 mod packing;
@@ -70,6 +71,7 @@ mod poseidon2;
 mod recompose;
 mod statement;
 
+pub use blake3::{Blake3CompressAirBuilder, Blake3CompressPreprocessor, Blake3CompressProver};
 pub use dynamic_air::{
     BatchAir, BatchTableInstance, CloneableBatchAir, DynamicAirEntry, TableProver,
 };

@@ -18,6 +18,7 @@ hashbrown.workspace = true
 p3-air.workspace = true
 p3-baby-bear.workspace = true
 p3-batch-stark.workspace = true
+p3-blake3-air.workspace = true
 p3-challenger.workspace = true
 p3-circle.workspace = true
 p3-circuit.workspace = true
@@ -53,6 +54,7 @@ unroll.workspace = true
 [dev-dependencies]
 criterion = { version = "0.8", features = ["html_reports"] }
 p3-batch-stark.workspace = true
+p3-blake3.workspace = true
 p3-test-utils.workspace = true
 postcard = { version = "1.1", default-features = false, features = ["alloc"] }
 rand.workspace = true

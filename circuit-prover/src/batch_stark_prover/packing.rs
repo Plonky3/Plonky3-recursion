@@ -63,7 +63,12 @@ pub(crate) const MAX_SANE_LANES: usize = 1 << 16;
 
 /// [`NpoTypeId`] prefixes whose tables prove at most one operation per AIR row and so cannot
 /// honour a [`TablePacking::with_npo_lanes`] override above 1. A Keccak-f call spans 24 rows.
-const SINGLE_LANE_NPO_PREFIXES: [&str; 3] = ["poseidon1_perm/", "poseidon2_perm/", "keccak_f1600"];
+const SINGLE_LANE_NPO_PREFIXES: [&str; 4] = [
+    "poseidon1_perm/",
+    "poseidon2_perm/",
+    "keccak_f1600",
+    "blake3_compress",
+];
 
 impl TablePacking {
     /// Reconstruct artifact-owned packing metadata without cloning its already checked buffers.
