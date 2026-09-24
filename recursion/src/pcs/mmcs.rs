@@ -1335,7 +1335,6 @@ where
 /// Both are rederived from the verifier-known opening points exactly as
 /// [`p3_fri::verifier::open_inputs`] derives them; the proof contributes only each matrix's
 /// opened width.
-#[expect(clippy::type_complexity)]
 fn input_batch_layout<Val, Challenge, E1: core::fmt::Debug, E2: core::fmt::Debug>(
     params: &FriParameters<impl Mmcs<Challenge>>,
     batch: usize,

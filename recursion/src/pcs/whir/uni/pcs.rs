@@ -39,6 +39,10 @@ use crate::pcs::whir::uni::plan::{
 };
 use crate::pcs::whir::uni::recursive_pcs::validate_round_config_inputs;
 
+/// A commitment and the prover state behind it, or the configuration error that prevented it.
+type CommitResult<F, EF, MT, L> =
+    Result<(<MT as Mmcs<F>>::Commitment, WhirUniProverData<F, EF, MT, L>), WhirConfigError>;
+
 /// Prover state behind one WHIR-backed univariate commitment.
 pub struct WhirUniProverData<F, EF, MT, L>
 where
@@ -287,7 +291,7 @@ where
         &self,
         domains: Vec<TwoAdicMultiplicativeCoset<F>>,
         coeffs: Vec<RowMajorMatrix<F>>,
-    ) -> Result<(MT::Commitment, WhirUniProverData<F, EF, MT, L>), WhirConfigError> {
+    ) -> CommitResult<F, EF, MT, L> {
         let shapes = self.table_shapes(&coeffs);
         let plan = StackedPlan::new(&shapes);
         let stacked_num_variables = plan.num_variables;
@@ -378,7 +382,7 @@ where
     fn commit_quotient_coefficient_matrices(
         &self,
         coeffs: Vec<RowMajorMatrix<F>>,
-    ) -> Result<(MT::Commitment, WhirUniProverData<F, EF, MT, L>), WhirConfigError> {
+    ) -> CommitResult<F, EF, MT, L> {
         let domains = coeffs
             .iter()
             .map(|m| {
@@ -920,7 +924,8 @@ pub(crate) mod tests {
         let (_commit, data) = <MyPcs as p3_commit::Pcs<EF, MyChallenger>>::commit(
             &pcs,
             vec![(d0, m0.clone()), (d1, m1.clone())],
-        ).unwrap();
+        )
+        .unwrap();
 
         // 3 * 2^6 + 2 * 2^5 = 256 -> stacked arity 8.
         assert_eq!(data.stacked_num_variables, 8);
@@ -960,16 +965,18 @@ pub(crate) mod tests {
         let trace_domain = TwoAdicMultiplicativeCoset::<F>::new(F::ONE, 5).unwrap();
         let mat = RowMajorMatrix::<F>::rand(&mut rng, 1 << 5, 2);
         let (_c, data) =
-            <MyPcs as p3_commit::Pcs<EF, MyChallenger>>::commit(&pcs, vec![(trace_domain, mat)]).unwrap();
+            <MyPcs as p3_commit::Pcs<EF, MyChallenger>>::commit(&pcs, vec![(trace_domain, mat)])
+                .unwrap();
 
         // Quotient domain: 4x larger, disjoint coset.
         let quotient_domain = trace_domain.create_disjoint_domain(1 << 7);
-        let got = <MyPcs as p3_commit::UnivariateStarkPcs<EF, MyChallenger>>::get_evaluations_on_domain(
-            &pcs,
-            &data,
-            0,
-            quotient_domain,
-        );
+        let got =
+            <MyPcs as p3_commit::UnivariateStarkPcs<EF, MyChallenger>>::get_evaluations_on_domain(
+                &pcs,
+                &data,
+                0,
+                quotient_domain,
+            );
 
         // Reference: pad the coefficients to the quotient height, then coset-DFT.
         let mut coeffs = data.coeffs[0].clone();
@@ -996,11 +1003,13 @@ pub(crate) mod tests {
         let domain = TwoAdicMultiplicativeCoset::<F>::new(F::GENERATOR, 4).unwrap();
         let mat = RowMajorMatrix::<F>::rand(&mut rng, 1 << 4, 3);
         let (_c, data) =
-            <MyPcs as p3_commit::Pcs<EF, MyChallenger>>::commit(&pcs, vec![(domain, mat.clone())]).unwrap();
+            <MyPcs as p3_commit::Pcs<EF, MyChallenger>>::commit(&pcs, vec![(domain, mat.clone())])
+                .unwrap();
 
-        let got = <MyPcs as p3_commit::UnivariateStarkPcs<EF, MyChallenger>>::get_evaluations_on_domain(
-            &pcs, &data, 0, domain,
-        );
+        let got =
+            <MyPcs as p3_commit::UnivariateStarkPcs<EF, MyChallenger>>::get_evaluations_on_domain(
+                &pcs, &data, 0, domain,
+            );
         assert_eq!(got.values, mat.values);
     }
 
@@ -1016,12 +1025,14 @@ pub(crate) mod tests {
         let evals = RowMajorMatrix::<F>::rand(&mut rng, 1 << 6, 1);
         let num_chunks = 4;
 
-        let (_c, data) = <MyPcs as p3_commit::UnivariateStarkPcs<EF, MyChallenger>>::commit_quotient(
-            &pcs,
-            quotient_domain,
-            evals.clone(),
-            num_chunks,
-        ).unwrap();
+        let (_c, data) =
+            <MyPcs as p3_commit::UnivariateStarkPcs<EF, MyChallenger>>::commit_quotient(
+                &pcs,
+                quotient_domain,
+                evals.clone(),
+                num_chunks,
+            )
+            .unwrap();
 
         let sub_domains = quotient_domain.split_domains(num_chunks);
         let sub_evals = quotient_domain.split_evals(num_chunks, evals);
@@ -1084,7 +1095,8 @@ pub(crate) mod tests {
             &pcs,
             vec![(&data, vec![vec![zeta]]).into()],
             &mut challenger,
-        ).unwrap();
+        )
+        .unwrap();
 
         // Reference: Horner over the stored coefficients.
         let coeffs = &data.coeffs[0];
@@ -1119,7 +1131,8 @@ pub(crate) mod tests {
         let m0 = RowMajorMatrix::<F>::rand(&mut rng, 1 << 6, 2);
         let m1 = RowMajorMatrix::<F>::rand(&mut rng, 1 << 5, 1);
         let (commit, data) =
-            <MyPcs as p3_commit::Pcs<EF, MyChallenger>>::commit(&pcs, vec![(d0, m0), (d1, m1)]).unwrap();
+            <MyPcs as p3_commit::Pcs<EF, MyChallenger>>::commit(&pcs, vec![(d0, m0), (d1, m1)])
+                .unwrap();
 
         let zeta = EF::from_u32(777);
         let zeta_next = zeta * EF::from(d0.subgroup_generator());
@@ -1130,7 +1143,8 @@ pub(crate) mod tests {
             &pcs,
             vec![(&data, points).into()],
             &mut challenger,
-        ).unwrap();
+        )
+        .unwrap();
 
         let coms = vec![
             (

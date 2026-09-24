@@ -150,8 +150,8 @@ mod tests {
     use proptest::prelude::*;
 
     use super::{
-        Basis, SumcheckShape, domain_separator_seed, fold_sumcheck_claim, sumcheck_round_claim_update,
-        verify_sumcheck_rounds,
+        Basis, SumcheckShape, domain_separator_seed, fold_sumcheck_claim,
+        sumcheck_round_claim_update, verify_sumcheck_rounds,
     };
     use crate::Target;
     use crate::pcs::whir::test_util::eval_gadget;

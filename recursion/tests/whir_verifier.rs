@@ -255,8 +255,10 @@ macro_rules! whir_arithmetic_test {
                 // every sample the in-circuit verifier draws after the initial constraint.
                 let mut ch = make_challenger();
                 observe_commitment::<BF, _, _>(&mut ch, commitment.clone());
-                let mut lv =
-                    Verifier::<BF, EF>::new(&protocol.table_shapes(), PrefixProver::<BF, EF>::strategy());
+                let mut lv = Verifier::<BF, EF>::new(
+                    &protocol.table_shapes(),
+                    PrefixProver::<BF, EF>::strategy(),
+                );
                 for &eval in &proof.whir.initial_ood_answers {
                     lv.add_virtual_eval(eval, &mut ch);
                 }
@@ -296,7 +298,13 @@ macro_rules! whir_arithmetic_test {
                     .zip(config.round_parameters())
                     .enumerate()
                 {
-                    vt.commitment(rproof.commitment.as_ref().expect("round commitment").clone());
+                    vt.commitment(
+                        rproof
+                            .commitment
+                            .as_ref()
+                            .expect("round commitment")
+                            .clone(),
+                    );
                     for &answer in &rproof.ood_answers {
                         ext_samples.push(vt.ood_point());
                         vt.ood_answer(answer);
@@ -322,7 +330,8 @@ macro_rules! whir_arithmetic_test {
                 let n_rounds = proof.whir.rounds.len();
                 let fp = proof.whir.final_poly.as_ref().expect("final_poly");
                 vt.final_poly(fp.as_slice()).unwrap();
-                vt.query_pow(n_rounds, proof.whir.final_pow_witness).unwrap();
+                vt.query_pow(n_rounds, proof.whir.final_pow_witness)
+                    .unwrap();
                 let final_indices = vt.query_indices(n_rounds);
                 base_samples.extend(final_indices.iter().map(|&idx| BF::from_u64(idx as u64)));
                 if let Some(r) = vt.delegate_final_fold(|challenger| {

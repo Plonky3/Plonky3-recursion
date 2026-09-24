@@ -617,7 +617,13 @@ mod tests {
             .zip(config.round_parameters())
             .enumerate()
         {
-            vt.commitment(rproof.commitment.as_ref().expect("round commitment").clone());
+            vt.commitment(
+                rproof
+                    .commitment
+                    .as_ref()
+                    .expect("round commitment")
+                    .clone(),
+            );
             for &answer in &rproof.ood_answers {
                 ext_samples.push(vt.ood_point());
                 vt.ood_answer(answer);
@@ -643,7 +649,8 @@ mod tests {
         let n_rounds = proof.whir.rounds.len();
         let final_poly = proof.whir.final_poly.as_ref().expect("final_poly");
         vt.final_poly(final_poly.as_slice()).unwrap();
-        vt.query_pow(n_rounds, proof.whir.final_pow_witness).unwrap();
+        vt.query_pow(n_rounds, proof.whir.final_pow_witness)
+            .unwrap();
         let final_indices = vt.query_indices(n_rounds);
         base_samples.extend(final_indices.iter().map(|&idx| BF::from_u64(idx as u64)));
         if let Some(r) = vt.delegate_final_fold(|challenger| {

@@ -17,8 +17,7 @@ use crate::challenger_perm::ChallengerPermConfig;
 use crate::input_contract::stark_layout::{
     CommitmentRole, InstanceLayout, MatrixRoute, NativeStarkLayout, checked_power_of_two,
 };
-use crate::traits::RecursiveChallenger;
-use crate::traits::{LookupMetadata, Recursive, RecursiveAir, RecursivePcs};
+use crate::traits::{LookupMetadata, Recursive, RecursiveAir, RecursiveChallenger, RecursivePcs};
 use crate::transcript::domain_separator_seed;
 use crate::types::{
     CommitmentTargets, OpenedValuesTargets, OpenedValuesTargetsWithLookups, ProofTargets,

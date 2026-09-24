@@ -682,8 +682,8 @@ mod tests {
                 Poseidon2Config::KOALA_BEAR_D4_W16,
             ]
         );
-        assert!(!Poseidon2Config::from_variant_name("baby_bear_d1_w16_shared").is_some());
-        assert!(!Poseidon2Config::from_variant_name("koala_bear_d4_w32_shared").is_some());
+        assert!(Poseidon2Config::from_variant_name("baby_bear_d1_w16_shared").is_none());
+        assert!(Poseidon2Config::from_variant_name("koala_bear_d4_w32_shared").is_none());
     }
 
     #[test]

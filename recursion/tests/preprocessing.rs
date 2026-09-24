@@ -586,15 +586,11 @@ fn test_batch_verifier_with_local_only_preprocessed() -> Result<(), Verification
 
     let opened = &batch_proof.opened_values.instances[0].base_opened_values;
     assert_eq!(
-        opened
-            .preprocessed_local()
-            .map_or(0, |values| values.len()),
+        opened.preprocessed_local().map_or(0, |values| values.len()),
         1
     );
     assert_eq!(
-        opened
-            .preprocessed_next()
-            .map_or(0, |values| values.len()),
+        opened.preprocessed_next().map_or(0, |values| values.len()),
         0
     );
     let (replay, _) = p3_recursion::replay_batch_stark_transcript(

@@ -358,7 +358,7 @@ mod tests {
             })
         ));
 
-        let empty_fri_final_poly = [0_u8; 20];
+        let empty_fri_final_poly = [0_u8; 24];
         let mut reader = Reader::new(&empty_fri_final_poly, &limits);
         assert_eq!(
             read_fri_proof::<F, EF, Mmcs, ChallengeMmcs, _, _>(
