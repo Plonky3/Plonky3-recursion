@@ -13,4 +13,5 @@ Making these configurable would support wider permutations and different securit
 - **Multi-shape FRI verification**: A single verifier circuit that can handle proofs with different trace sizes, reducing the need for proof lifting.
 - **Binary fields**: Circuits already run over the Plonky3 binary tower, and binary hash configurations are in `p3-test-utils` (see [Binary Fields and Binary Hashes](../advanced_topics/binary_fields.md)).
 In-circuit Keccak-f\[1600\], the Keccak-256 sponge, digest compression and field-element leaf hashing are available.
-The remaining steps are a Keccak MMCS verification gadget, in-circuit BLAKE3, proving binary-field circuits with the binary PCS, and recursively verifying binary proofs.
+Single-matrix Keccak Merkle paths can be verified in-circuit.
+The remaining steps are mixed-height Keccak MMCS openings, in-circuit BLAKE3, proving binary-field circuits with the binary PCS, and recursively verifying binary proofs.

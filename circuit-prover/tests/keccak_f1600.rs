@@ -308,3 +308,122 @@ fn a_two_block_keccak_leaf_hash_proves_against_the_serializing_hasher() {
     let proof = prepared.prove(&traces).unwrap();
     prepared.verifier().verify(&proof, &[]).unwrap();
 }
+
+mod keccak_merkle_path {
+    use p3_circuit::ops::{KECCAK256_DIGEST_LIMBS, bytes_to_limbs};
+    use p3_commit::Mmcs;
+    use p3_matrix::Matrix;
+    use p3_matrix::dense::RowMajorMatrix;
+    use p3_test_utils::binary_field_params::keccak;
+
+    use super::*;
+
+    const LOG_HEIGHT: usize = 3;
+    const WIDTH: usize = 5;
+
+    /// A native Keccak MMCS opening: `(row, index, siblings, root)`.
+    fn native_opening(index: usize) -> (Vec<BabyBear>, usize, Vec<[u8; 32]>, [u8; 32]) {
+        let mmcs = keccak::level_mmcs::<BabyBear>();
+        let values = (0..(WIDTH << LOG_HEIGHT) as u32)
+            .map(|i| BabyBear::from_u32(i.wrapping_mul(2_654_435_761) >> 2))
+            .collect();
+        let matrix = RowMajorMatrix::new(values, WIDTH);
+        let dims = [matrix.dimensions()];
+        let (commitment, data) = mmcs.commit_matrix(matrix);
+        let opening = mmcs.open_batch(index, &data);
+        mmcs.verify_batch(&commitment, &dims, index, (&opening).into())
+            .expect("the native opening verifies");
+        (
+            opening.opened_values[0].clone(),
+            index,
+            opening.opening_proof.clone(),
+            commitment.roots()[0],
+        )
+    }
+
+    fn path_circuit() -> Circuit<EF> {
+        let mut builder = CircuitBuilder::<EF>::new();
+        builder.enable_keccak_f1600::<BabyBear>();
+        let mut inputs =
+            |n: usize| -> Vec<ExprId> { (0..n).map(|_| builder.public_input()).collect() };
+        let leaf = inputs(WIDTH);
+        let bits = inputs(LOG_HEIGHT);
+        let siblings: Vec<Vec<ExprId>> = (0..LOG_HEIGHT)
+            .map(|_| inputs(KECCAK256_DIGEST_LIMBS))
+            .collect();
+        let root = inputs(KECCAK256_DIGEST_LIMBS);
+        builder
+            .verify_keccak_merkle_path::<BabyBear>(&leaf, &bits, &siblings, &root)
+            .unwrap();
+        builder.build().unwrap()
+    }
+
+    fn public(row: &[BabyBear], index: usize, siblings: &[[u8; 32]], root: &[u8; 32]) -> Vec<EF> {
+        let digest = |d: &[u8; 32]| bytes_to_limbs(d).into_iter().map(EF::from_u16);
+        row.iter()
+            .map(|&x| EF::from(x))
+            .chain((0..LOG_HEIGHT).map(|i| EF::from_bool(index >> i & 1 == 1)))
+            .chain(siblings.iter().flat_map(digest))
+            .chain(digest(root))
+            .collect()
+    }
+
+    fn runs(circuit: &Circuit<EF>, values: &[EF]) -> bool {
+        let mut runner = circuit.runner();
+        runner.set_public_inputs(values).is_ok() && runner.run().is_ok()
+    }
+
+    #[test]
+    fn a_native_keccak_opening_proves_in_circuit() {
+        let circuit = path_circuit();
+        let (row, index, siblings, root) = native_opening(5);
+
+        let preprocessors: Vec<Box<dyn NpoPreprocessor<BabyBear>>> =
+            vec![Box::new(KeccakF1600Preprocessor)];
+        let air_builders: Vec<Box<dyn NpoAirBuilder<config::BabyBearConfig, D>>> =
+            vec![Box::new(KeccakF1600AirBuilder::<D>)];
+        let mut prover = BatchStarkProver::new(config::baby_bear());
+        prover.register_table_prover(Box::new(KeccakF1600Prover::<D>));
+        let prepared = prover
+            .prepare_circuit::<EF, D>(
+                &circuit,
+                &preprocessors,
+                &air_builders,
+                ConstraintProfile::Standard,
+            )
+            .unwrap();
+        let mut runner = circuit.runner();
+        runner
+            .set_public_inputs(&public(&row, index, &siblings, &root))
+            .unwrap();
+        let traces = runner.run().expect("a native opening satisfies the path");
+        let proof = prepared.prove(&traces).unwrap();
+        prepared.verifier().verify(&proof, &[]).unwrap();
+    }
+
+    #[test]
+    fn every_native_opening_runs_and_tampering_does_not() {
+        let circuit = path_circuit();
+        for index in 0..1 << LOG_HEIGHT {
+            let (row, index, siblings, root) = native_opening(index);
+            assert!(runs(&circuit, &public(&row, index, &siblings, &root)));
+
+            let mut wrong_row = row.clone();
+            wrong_row[WIDTH - 1] += BabyBear::ONE;
+            assert!(!runs(
+                &circuit,
+                &public(&wrong_row, index, &siblings, &root)
+            ));
+
+            let mut wrong_sibling = siblings.clone();
+            wrong_sibling[1][0] ^= 1;
+            assert!(!runs(&circuit, &public(&row, index, &wrong_sibling, &root)));
+
+            let wrong_index = index ^ 1;
+            assert!(!runs(
+                &circuit,
+                &public(&row, wrong_index, &siblings, &root)
+            ));
+        }
+    }
+}

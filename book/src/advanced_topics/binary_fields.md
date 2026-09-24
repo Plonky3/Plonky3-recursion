@@ -55,6 +55,9 @@ This is groundwork only. Nothing here proves or recursively verifies a binary-fi
     leaf hash of a Keccak Merkle tree. Elements are serialized exactly as Plonky3 does it
     (Montgomery fields such as BabyBear hash `x·2^32 mod p`). Each serialized value is decomposed
     into canonical bits, so `y + p` cannot stand in for `y`.
+  - **Merkle paths:** `verify_keccak_merkle_path` constrains a single-matrix opening of a
+    Keccak `MerkleTreeMmcs` with a one-root cap. It takes the row, the little-endian index bits,
+    the sibling digests (bottom-up) and the root, as in the native opening.
 
 ## Not yet supported
 
@@ -64,7 +67,7 @@ This is groundwork only. Nothing here proves or recursively verifies a binary-fi
   inside a prime-field circuit, plus in-circuit Keccak-256 or BLAKE3 for the transcript and
   Merkle paths.
 - In-circuit BLAKE3.
-- A Keccak Merkle path or MMCS verification gadget built from the leaf hash and compression
-  above.
+- Keccak MMCS openings of several matrices of different heights in one tree, and caps with
+  more than one root.
 - Keccak-f in the recursion backends' table lists, so recursively verifying a proof that
   contains a Keccak-f table is not wired up yet.

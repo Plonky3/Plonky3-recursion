@@ -662,6 +662,79 @@ where
     }
 }
 
+impl<F> crate::CircuitBuilder<F>
+where
+    F: Field + Eq + core::hash::Hash,
+{
+    /// Constrains a single-matrix Keccak Merkle opening: `leaf` (a row of base-field elements)
+    /// sits at the position whose little-endian bits are `index_bits`, under `root`.
+    ///
+    /// This is `MerkleTreeMmcs` with a `SerializingHasher<Keccak256Hash>` leaf hash, a
+    /// `CompressionFunctionFromHasher<Keccak256Hash, 2, 32>` node compression and a one-root
+    /// cap. `siblings[i]` is the sibling digest at level `i` (bottom-up), `root` the cap digest,
+    /// each as [`KECCAK256_DIGEST_LIMBS`] limbs. At level `i`, a set `index_bits[i]` means the
+    /// current node is the right child. Every index bit is constrained to be boolean.
+    ///
+    /// # Errors
+    ///
+    /// - [`CircuitBuilderError::NonPrimitiveOpArity`] if the path length differs from the index
+    ///   width, or a digest has the wrong width.
+    /// - As [`Self::keccak256_field_elements`] and [`Self::keccak256_compress`].
+    pub fn verify_keccak_merkle_path<BF>(
+        &mut self,
+        leaf: &[ExprId],
+        index_bits: &[ExprId],
+        siblings: &[Vec<ExprId>],
+        root: &[ExprId],
+    ) -> Result<(), CircuitBuilderError>
+    where
+        BF: PrimeField64,
+        F: ExtensionField<BF>,
+    {
+        if siblings.len() != index_bits.len() {
+            return Err(CircuitBuilderError::NonPrimitiveOpArity {
+                op: "KeccakMerklePath",
+                expected: format!("one sibling per index bit ({})", index_bits.len()),
+                got: siblings.len(),
+            });
+        }
+        if root.len() != KECCAK256_DIGEST_LIMBS {
+            return Err(CircuitBuilderError::NonPrimitiveOpArity {
+                op: "KeccakMerklePath",
+                expected: format!("{KECCAK256_DIGEST_LIMBS} root limbs"),
+                got: root.len(),
+            });
+        }
+
+        let mut node = self.keccak256_field_elements::<BF>(leaf)?;
+        for (&bit, sibling) in index_bits.iter().zip(siblings) {
+            self.assert_bool(bit);
+            if sibling.len() != KECCAK256_DIGEST_LIMBS {
+                return Err(CircuitBuilderError::NonPrimitiveOpArity {
+                    op: "KeccakMerklePath",
+                    expected: format!("{KECCAK256_DIGEST_LIMBS} sibling limbs"),
+                    got: sibling.len(),
+                });
+            }
+            let (left, right): (Vec<ExprId>, Vec<ExprId>) = node
+                .iter()
+                .zip(sibling)
+                .map(|(&current, &other)| {
+                    (
+                        self.select(bit, other, current),
+                        self.select(bit, current, other),
+                    )
+                })
+                .unzip();
+            node = self.keccak256_compress(&left, &right)?;
+        }
+        for (&computed, &expected) in node.iter().zip(root) {
+            self.connect(computed, expected);
+        }
+        Ok(())
+    }
+}
+
 // ============================================================================
 // Trace
 // ============================================================================
