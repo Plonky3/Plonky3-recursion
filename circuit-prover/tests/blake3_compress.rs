@@ -237,3 +237,41 @@ fn a_native_blake3_merkle_opening_proves_in_circuit() {
     )
     .expect("a native BLAKE3 opening proves and verifies");
 }
+
+/// A message spanning three chunks hashes through the BLAKE3 chunk tree in-circuit, and the
+/// proof verifies against the native digest; a wrong digest does not run.
+#[test]
+fn a_multi_chunk_blake3_hash_proves_and_verifies() {
+    use p3_circuit::ops::{DIGEST_LIMBS, bytes_to_limbs};
+
+    let message: Vec<u8> = (0..2_500usize).map(|i| (i * 131 + 17) as u8).collect();
+    let mut builder = CircuitBuilder::<EF>::new();
+    builder.enable_blake3_compress::<BabyBear>();
+    let limbs: Vec<ExprId> = (0..message.len() / 2)
+        .map(|_| builder.public_input())
+        .collect();
+    let expected: Vec<ExprId> = (0..DIGEST_LIMBS).map(|_| builder.public_input()).collect();
+    let digest = builder.blake3_limbs::<BabyBear>(&limbs).unwrap();
+    for (a, b) in digest.into_iter().zip(expected) {
+        builder.connect(a, b);
+    }
+    let circuit = builder.build().unwrap();
+
+    let public = |digest: &[u8; 32]| -> Vec<EF> {
+        bytes_to_limbs(&message)
+            .into_iter()
+            .chain(bytes_to_limbs(digest))
+            .map(EF::from_u16)
+            .collect()
+    };
+    let native = Blake3.hash_iter(message.iter().copied());
+    let mut wrong = native;
+    wrong[0] ^= 1;
+    let mut runner = circuit.runner();
+    assert!(
+        runner.set_public_inputs(&public(&wrong)).is_err() || runner.run().is_err(),
+        "a wrong digest must not run"
+    );
+    prove_and_verify(&circuit, &public(&native), |_| {})
+        .expect("a multi-chunk BLAKE3 hash proves and verifies");
+}

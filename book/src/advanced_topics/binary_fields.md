@@ -64,8 +64,8 @@ This is groundwork only. Nothing here proves or recursively verifies a binary-fi
     through dedicated columns tied to `Blake3Air`'s bit columns.
   - **Registration:** register it with `Blake3CompressPreprocessor`, `Blake3CompressAirBuilder`
     and `Blake3CompressProver`.
-  - **Gadgets:** built on the compression are `blake3_limbs` (messages up to one 1024-byte
-    chunk), `blake3_compress_digests` (`CompressionFunctionFromHasher<Blake3, 2, 32>`) and
+  - **Gadgets:** built on the compression are `blake3_limbs` (messages of any even byte
+    length, through the full chunk tree), `blake3_compress_digests` (`CompressionFunctionFromHasher<Blake3, 2, 32>`) and
     `blake3_field_elements` (`SerializingHasher<Blake3>`).
 - **Merkle openings.** `verify_byte_hash_mmcs_opening` constrains an opening of a Keccak-256 or
   BLAKE3 `MerkleTreeMmcs` batch commitment, mirroring the native binary-arity `verify_batch`:
@@ -93,5 +93,4 @@ This is groundwork only. Nothing here proves or recursively verifies a binary-fi
 - Recursively verifying binary-PCS or multi-stark proofs. That needs `GF(2^128)` arithmetic
   inside a prime-field circuit, plus in-circuit Keccak-256 or BLAKE3 for the transcript and
   Merkle paths.
-- BLAKE3 of messages longer than one 1024-byte chunk (the chunk tree).
 - MMCS openings of matrices whose heights are not powers of two, and trees of arity above two.

@@ -157,10 +157,13 @@ mod blake3_gadgets {
         }
     }
 
-    /// Messages across every block boundary of one chunk hash to the native BLAKE3 digest.
+    /// Messages across every block boundary of a chunk, and across several chunk-tree shapes,
+    /// hash to the native BLAKE3 digest.
     #[test]
     fn byte_messages_match_native_blake3() {
-        for len in [0usize, 2, 62, 64, 66, 200, 1024] {
+        for len in [
+            0usize, 2, 62, 64, 66, 200, 1024, 1026, 2048, 3072, 4096, 5122,
+        ] {
             let message: Vec<u8> = (0..len).map(|i| (i * 11 + 1) as u8).collect();
             let mut builder = CircuitBuilder::<EF4>::new();
             builder.enable_blake3_compress::<BabyBear>();
@@ -181,20 +184,9 @@ mod blake3_gadgets {
     }
 
     #[test]
-    fn a_message_longer_than_one_chunk_is_rejected() {
-        let mut builder = CircuitBuilder::<EF4>::new();
-        builder.enable_blake3_compress::<BabyBear>();
-        let limbs: Vec<ExprId> = (0..513).map(|_| builder.public_input()).collect();
-        assert!(matches!(
-            builder.blake3_limbs::<BabyBear>(&limbs),
-            Err(CircuitBuilderError::NonPrimitiveOpArity { .. })
-        ));
-    }
-
-    #[test]
     fn rows_match_the_serializing_hasher_and_digests_the_compression() {
         let hasher = SerializingHasher::new(Blake3);
-        for count in [1usize, 16, 17, 256] {
+        for count in [1usize, 16, 17, 256, 257, 700] {
             let row: Vec<BabyBear> = (0..count)
                 .map(|i| BabyBear::NEG_ONE - BabyBear::from_usize(i * 7_777))
                 .collect();

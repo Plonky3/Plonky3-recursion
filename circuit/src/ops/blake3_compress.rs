@@ -449,26 +449,112 @@ where
 
 /// Bytes BLAKE3 compresses per call.
 pub const BLAKE3_BLOCK_BYTES: usize = 64;
-/// Bytes in one BLAKE3 chunk, the most [`crate::CircuitBuilder::blake3_limbs`] hashes.
+/// Bytes in one BLAKE3 chunk, the leaf unit of its hash tree.
 pub const BLAKE3_CHUNK_BYTES: usize = 1024;
 
 impl<F> crate::CircuitBuilder<F>
 where
     F: Field + Eq + core::hash::Hash,
 {
-    /// BLAKE3 of a message given as little-endian 16-bit limbs (an even number of bytes, at
-    /// most one 1024-byte chunk); returns the digest as 16 limbs.
+    fn blake3_constant_words(&mut self, words: &[u32]) -> Vec<ExprId> {
+        words_to_limbs(words)
+            .into_iter()
+            .map(|limb| self.define_const(F::from_u16(limb)))
+            .collect()
+    }
+
+    /// One compression: `block` (at most 32 limbs, zero-padded), then `cv`, the counter, the
+    /// block length in bytes and the flags. Returns the 8-word chaining value as 16 limbs.
+    fn blake3_compress_block(
+        &mut self,
+        block: &[ExprId],
+        cv: &[ExprId],
+        counter: u64,
+        block_len: u32,
+        flags: u32,
+    ) -> Result<Vec<ExprId>, CircuitBuilderError> {
+        const BLOCK_LIMBS: usize = BLAKE3_BLOCK_BYTES / 2;
+        let zero = self.define_const(F::ZERO);
+        let mut input = block.to_vec();
+        input.resize(BLOCK_LIMBS, zero);
+        input.extend_from_slice(cv);
+        let tail = [counter as u32, (counter >> 32) as u32, block_len, flags];
+        input.extend(self.blake3_constant_words(&tail));
+        let mut out = self.add_blake3_compress(&input)?;
+        out.truncate(16);
+        Ok(out)
+    }
+
+    /// The chaining value of chunk `index`: its 64-byte blocks compressed in order, the first with
+    /// `CHUNK_START`, the last with `CHUNK_END` (and `ROOT` if `root`) and its true length.
+    fn blake3_chunk(
+        &mut self,
+        chunk: &[ExprId],
+        index: u64,
+        root: bool,
+    ) -> Result<Vec<ExprId>, CircuitBuilderError> {
+        let blocks: Vec<&[ExprId]> = if chunk.is_empty() {
+            vec![&[]]
+        } else {
+            chunk.chunks(BLAKE3_BLOCK_BYTES / 2).collect()
+        };
+        let mut cv = self.blake3_constant_words(&BLAKE3_IV);
+        for (i, block) in blocks.iter().enumerate() {
+            let mut flags = 0;
+            if i == 0 {
+                flags |= blake3_flags::CHUNK_START;
+            }
+            if i + 1 == blocks.len() {
+                flags |= blake3_flags::CHUNK_END;
+                if root {
+                    flags |= blake3_flags::ROOT;
+                }
+            }
+            cv = self.blake3_compress_block(block, &cv, index, 2 * block.len() as u32, flags)?;
+        }
+        Ok(cv)
+    }
+
+    /// The chaining value of the subtree over `chunks`, whose first chunk has index `first`:
+    /// a single chunk's own value, or the parent of the left subtree (the largest power of two
+    /// of chunks strictly fewer than all) and the right subtree.
+    fn blake3_subtree(
+        &mut self,
+        chunks: &[&[ExprId]],
+        first: u64,
+        root: bool,
+    ) -> Result<Vec<ExprId>, CircuitBuilderError> {
+        if let [chunk] = chunks {
+            return self.blake3_chunk(chunk, first, root);
+        }
+        let left_len = 1 << (chunks.len() - 1).ilog2();
+        let left = self.blake3_subtree(&chunks[..left_len], first, false)?;
+        let right = self.blake3_subtree(&chunks[left_len..], first + left_len as u64, false)?;
+        let mut block = left;
+        block.extend(right);
+        let key = self.blake3_constant_words(&BLAKE3_IV);
+        let mut flags = blake3_flags::PARENT;
+        if root {
+            flags |= blake3_flags::ROOT;
+        }
+        self.blake3_compress_block(&block, &key, 0, BLAKE3_BLOCK_BYTES as u32, flags)
+    }
+
+    /// BLAKE3 of a message given as little-endian 16-bit limbs (an even number of bytes);
+    /// returns the digest as 16 limbs.
     ///
-    /// The chunk's 64-byte blocks are compressed in order, each chaining value being the first
-    /// eight output words of the previous block. The first block carries `CHUNK_START`, the last
-    /// `CHUNK_END | ROOT` and its true length; the counter is zero; a partial final block is
-    /// zero-padded. The empty message is one empty block.
+    /// The message is split into 1024-byte chunks. Each chunk's 64-byte blocks are compressed in
+    /// order with the chunk index as the counter, each chaining value being the first eight
+    /// output words of the previous block; the first block carries `CHUNK_START`, the last
+    /// `CHUNK_END` and its true length, and a partial block is zero-padded. Chunk chaining values
+    /// merge in BLAKE3's tree, whose left subtree always holds the largest power of two of chunks
+    /// strictly fewer than all, through `PARENT` compressions of the concatenated children under
+    /// the key. The node at the top, chunk or parent, also carries `ROOT`. The empty message is
+    /// one empty block.
     ///
     /// # Errors
     ///
-    /// - [`CircuitBuilderError::NonPrimitiveOpArity`] for a message longer than one chunk, which
-    ///   needs BLAKE3's chunk tree.
-    /// - As [`Self::add_blake3_compress`].
+    /// As [`Self::add_blake3_compress`].
     pub fn blake3_limbs<BF>(
         &mut self,
         message: &[ExprId],
@@ -477,48 +563,12 @@ where
         BF: PrimeField64,
         F: ExtensionField<BF>,
     {
-        const BLOCK_LIMBS: usize = BLAKE3_BLOCK_BYTES / 2;
-        if 2 * message.len() > BLAKE3_CHUNK_BYTES {
-            return Err(CircuitBuilderError::NonPrimitiveOpArity {
-                op: "Blake3Hash",
-                expected: format!("at most {BLAKE3_CHUNK_BYTES} message bytes (one chunk)"),
-                got: 2 * message.len(),
-            });
-        }
-
-        let constant_words = |builder: &mut Self, words: &[u32]| -> Vec<ExprId> {
-            words_to_limbs(words)
-                .into_iter()
-                .map(|limb| builder.define_const(F::from_u16(limb)))
-                .collect::<Vec<_>>()
-        };
-
-        let blocks: Vec<&[ExprId]> = if message.is_empty() {
+        let chunks: Vec<&[ExprId]> = if message.is_empty() {
             vec![&[]]
         } else {
-            message.chunks(BLOCK_LIMBS).collect()
+            message.chunks(BLAKE3_CHUNK_BYTES / 2).collect()
         };
-        let zero = self.define_const(F::ZERO);
-        let mut cv = constant_words(self, &BLAKE3_IV);
-        for (i, block) in blocks.iter().enumerate() {
-            let last = i + 1 == blocks.len();
-            let mut flags = 0;
-            if i == 0 {
-                flags |= blake3_flags::CHUNK_START;
-            }
-            if last {
-                flags |= blake3_flags::CHUNK_END | blake3_flags::ROOT;
-            }
-            let block_len = 2 * block.len() as u32;
-
-            let mut input = block.to_vec();
-            input.resize(BLOCK_LIMBS, zero);
-            input.extend_from_slice(&cv);
-            input.extend(constant_words(self, &[0, 0, block_len, flags]));
-            let out = self.add_blake3_compress(&input)?;
-            cv = out[..16].to_vec();
-        }
-        Ok(cv)
+        self.blake3_subtree(&chunks, 0, true)
     }
 
     /// `CompressionFunctionFromHasher<Blake3, 2, 32>`: BLAKE3 of the 64-byte concatenation of two
