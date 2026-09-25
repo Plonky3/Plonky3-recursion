@@ -242,8 +242,20 @@ const KOALA_BEAR_WHIR_GOLDEN: ArtifactGolden = ArtifactGolden {
     ],
 };
 
+/// The golden bytes need reproducible proofs. The hiding configurations draw their masks from a
+/// seeded RNG, but the batch prover computes instance quotients in parallel and each one draws
+/// from that shared RNG, so under the `parallel` feature the draw order, and with it the proof,
+/// depends on thread scheduling. One worker thread restores the sequential order.
 #[test]
 fn representative_native_proofs_roundtrip_each_physical_format_and_field_dimension() {
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(1)
+        .build()
+        .unwrap()
+        .install(roundtrip_representative_native_proofs);
+}
+
+fn roundtrip_representative_native_proofs() {
     let limits = ArtifactLimits::default();
 
     let descriptor = fri_descriptor(SuiteIdV1::BabyBearD4Poseidon2BinaryFri);
