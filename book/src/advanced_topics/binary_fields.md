@@ -71,6 +71,15 @@ This is groundwork only. Nothing here proves or recursively verifies a binary-fi
   `verify_blake3_merkle_path` as shorthands) constrains a single-matrix opening of a Keccak-256
   or BLAKE3 `MerkleTreeMmcs` with a one-root cap. It takes the row, the little-endian index bits,
   the sibling digests (bottom-up) and the root, as in the native opening.
+- **Recursion over hash tables.** A batch proof whose circuit used Keccak-f or BLAKE3 can be
+  verified by the next recursion layer.
+  - **Low-level:** pass `KeccakF1600Prover` / `Blake3CompressProver` among the input table
+    provers of `verify_p3_batch_proof_circuit` and `replay_batch_layer_transcript`.
+  - **Built-in backends:** `PcsRecursionBackend::input_table_provers` adds these tables to the
+    backend's own input provers in the input manifest's order, through
+    `with_hash_table_input_provers`. The FRI and WHIR backends use it.
+  - **No relaxation:** hash tables are only ever *added*. With its hash entries removed, the
+    manifest must still list the backend's own tables exactly, as before.
 
 ## Not yet supported
 
@@ -80,7 +89,5 @@ This is groundwork only. Nothing here proves or recursively verifies a binary-fi
   inside a prime-field circuit, plus in-circuit Keccak-256 or BLAKE3 for the transcript and
   Merkle paths.
 - BLAKE3 of messages longer than one 1024-byte chunk (the chunk tree).
-- Keccak MMCS openings of several matrices of different heights in one tree, and caps with
-  more than one root.
-- Keccak-f in the recursion backends' table lists, so recursively verifying a proof that
-  contains a Keccak-f table is not wired up yet.
+- Keccak-256 or BLAKE3 MMCS openings of several matrices of different heights in one tree, and
+  caps with more than one root.

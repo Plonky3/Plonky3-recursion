@@ -1066,7 +1066,7 @@ where
     ) -> Result<(), VerificationError> {
         let provers = match prev {
             RecursionInput::BatchStark { proof, .. } => {
-                PcsRecursionBackend::<SC, A, 4>::non_primitive_input_provers(
+                PcsRecursionBackend::<SC, A, 4>::input_table_provers(
                     self,
                     proof.ext_degree,
                     &proof
@@ -1106,7 +1106,7 @@ where
         preflight_whir_input(config, &self.0.limits, prev)?;
         let provers = match prev {
             RecursionInput::BatchStark { proof, .. } => {
-                PcsRecursionBackend::<SC, A, 4>::non_primitive_input_provers(
+                PcsRecursionBackend::<SC, A, 4>::input_table_provers(
                     self,
                     proof.ext_degree,
                     &proof
@@ -1223,7 +1223,7 @@ where
         // against the AIRs the circuit was built for.
         let provers = match prev {
             RecursionInput::BatchStark { proof, .. } => {
-                PcsRecursionBackend::<SC, A, 4>::non_primitive_input_provers(
+                PcsRecursionBackend::<SC, A, 4>::input_table_provers(
                     self,
                     proof.ext_degree,
                     &proof
@@ -1405,7 +1405,7 @@ where
         preflight_whir_input(config, &self.0.limits, source)?;
         let provers = match source {
             RecursionInput::BatchStark { proof, .. } => {
-                PcsRecursionBackend::<SC, A, 4>::non_primitive_input_provers(
+                PcsRecursionBackend::<SC, A, 4>::input_table_provers(
                     self,
                     proof.ext_degree,
                     &proof

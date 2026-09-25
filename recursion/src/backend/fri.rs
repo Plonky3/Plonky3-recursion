@@ -1391,7 +1391,7 @@ where
     ) -> Result<(), VerificationError> {
         let provers = match prev {
             RecursionInput::BatchStark { proof, .. } => {
-                PcsRecursionBackend::<SC, A, 2>::non_primitive_input_provers(
+                PcsRecursionBackend::<SC, A, 2>::input_table_provers(
                     self,
                     proof.ext_degree,
                     &proof
@@ -1433,7 +1433,7 @@ where
         preflight_fri_input(config, &self.0.limits, prev)?;
         let provers = match prev {
             RecursionInput::BatchStark { proof, .. } => {
-                PcsRecursionBackend::<SC, A, 2>::non_primitive_input_provers(
+                PcsRecursionBackend::<SC, A, 2>::input_table_provers(
                     self,
                     proof.ext_degree,
                     &proof
@@ -1461,7 +1461,7 @@ where
         // against the AIRs the circuit was built for.
         let provers = match prev {
             RecursionInput::BatchStark { proof, .. } => {
-                PcsRecursionBackend::<SC, A, 2>::non_primitive_input_provers(
+                PcsRecursionBackend::<SC, A, 2>::input_table_provers(
                     self,
                     proof.ext_degree,
                     &proof
@@ -1687,7 +1687,7 @@ where
     ) -> Result<(), VerificationError> {
         let provers = match prev {
             RecursionInput::BatchStark { proof, .. } => {
-                PcsRecursionBackend::<SC, A, 4>::non_primitive_input_provers(
+                PcsRecursionBackend::<SC, A, 4>::input_table_provers(
                     self,
                     proof.ext_degree,
                     &proof
@@ -1729,7 +1729,7 @@ where
         preflight_fri_input(config, &self.0.limits, prev)?;
         let provers = match prev {
             RecursionInput::BatchStark { proof, .. } => {
-                PcsRecursionBackend::<SC, A, 4>::non_primitive_input_provers(
+                PcsRecursionBackend::<SC, A, 4>::input_table_provers(
                     self,
                     proof.ext_degree,
                     &proof
@@ -1757,7 +1757,7 @@ where
         // against the AIRs the circuit was built for.
         let provers = match prev {
             RecursionInput::BatchStark { proof, .. } => {
-                PcsRecursionBackend::<SC, A, 4>::non_primitive_input_provers(
+                PcsRecursionBackend::<SC, A, 4>::input_table_provers(
                     self,
                     proof.ext_degree,
                     &proof
@@ -1980,7 +1980,7 @@ where
     ) -> Result<(), VerificationError> {
         let provers = match prev {
             RecursionInput::BatchStark { proof, .. } => {
-                PcsRecursionBackend::<SC, A, 5>::non_primitive_input_provers(
+                PcsRecursionBackend::<SC, A, 5>::input_table_provers(
                     self,
                     proof.ext_degree,
                     &proof
@@ -2022,7 +2022,7 @@ where
         preflight_fri_input(config, &self.0.limits, prev)?;
         let provers = match prev {
             RecursionInput::BatchStark { proof, .. } => {
-                PcsRecursionBackend::<SC, A, 5>::non_primitive_input_provers(
+                PcsRecursionBackend::<SC, A, 5>::input_table_provers(
                     self,
                     proof.ext_degree,
                     &proof
@@ -2050,7 +2050,7 @@ where
         // against the AIRs the circuit was built for.
         let provers = match prev {
             RecursionInput::BatchStark { proof, .. } => {
-                PcsRecursionBackend::<SC, A, 5>::non_primitive_input_provers(
+                PcsRecursionBackend::<SC, A, 5>::input_table_provers(
                     self,
                     proof.ext_degree,
                     &proof
@@ -2229,7 +2229,7 @@ macro_rules! impl_prepared_fri_backend {
                 preflight_fri_input(config, &self.0.limits, source)?;
                 let provers = match source {
                     RecursionInput::BatchStark { proof, .. } => {
-                        PcsRecursionBackend::<SC, A, $d>::non_primitive_input_provers(
+                        PcsRecursionBackend::<SC, A, $d>::input_table_provers(
                             self,
                             proof.ext_degree,
                             &proof

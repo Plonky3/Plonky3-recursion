@@ -275,6 +275,29 @@ where
     fn non_primitive_air_builders(&self) -> Vec<Box<dyn NpoAirBuilder<SC, D>>> {
         Vec::new()
     }
+
+    /// The provers that rebuild an input proof's tables: [`Self::non_primitive_input_provers`]
+    /// plus the byte-hash tables (Keccak-f, BLAKE3) its manifest names, in manifest order.
+    ///
+    /// See [`crate::backend::hash_tables::with_hash_table_input_provers`]: the hash tables are
+    /// only added, so a manifest must still list this backend's own tables exactly.
+    fn input_table_provers(
+        &self,
+        ext_degree: usize,
+        op_types: &[NpoTypeId],
+    ) -> Vec<Box<dyn TableProver<SC>>>
+    where
+        SC: 'static + Send + Sync,
+        Val<SC>: StarkField,
+        SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+            Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+    {
+        crate::backend::hash_tables::with_hash_table_input_provers(
+            ext_degree,
+            op_types,
+            self.non_primitive_input_provers(ext_degree, op_types),
+        )
+    }
 }
 
 /// Parameters for the shared recursion pipeline (table packing, optional overrides).
