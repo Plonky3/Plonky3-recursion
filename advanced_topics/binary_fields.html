@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Debugging - The Plonky3 recursion book</title>
+        <title>Binary Fields and Binary Hashes - The Plonky3 recursion book</title>
 
 
         <!-- Custom HTML head -->
@@ -176,97 +176,138 @@
                 <div id="content" class="content">
                     <main>
                         <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
-<h1 id="debugging"><a class="header" href="#debugging">Debugging</a></h1>
-<p>The <code>CircuitBuilder</code> provides built-in debugging tools to help identify wiring issues and unsatisfied constraints.</p>
-<h2 id="compile-features"><a class="header" href="#compile-features">Compile features</a></h2>
-<p>The workspace exposes several opt-in compile features that activate extra instrumentation. They are disabled by default to keep production binaries lean.</p>
-<div class="table-wrapper"><table><thead><tr><th>Crate</th><th>Feature</th><th>What it enables</th></tr></thead><tbody>
-<tr><td><code>p3-circuit</code></td><td><code>debugging</code></td><td>Allocation logging: every witness slot records the operation type, optional label, and call-site scope that allocated it. Exposes <code>AllocationLog</code>, <code>AllocationEntry</code>, and <code>AllocationType</code> in the public API.</td></tr>
-<tr><td><code>p3-circuit</code></td><td><code>profiling</code></td><td>Operation-count profiling (implies <code>debugging</code>): the builder tracks how many <code>add</code>, <code>mul</code>, <code>const</code>, <code>public</code>, <code>horner_acc</code>, <code>bool_check</code>, <code>mul_add</code>, and per-NPO-type operations were allocated, both globally and per named scope. Exposes <code>OpCounts</code> and <code>ProfilingState</code>.</td></tr>
-<tr><td><code>p3-circuit-prover</code></td><td><code>parallel</code></td><td>Enables multi-threaded trace generation via Rayon (<code>p3-maybe-rayon/parallel</code>). Strongly recommended for benchmarking and production workloads.</td></tr>
-</tbody></table>
-</div>
-<p>Enable a feature by passing <code>--features &lt;feature&gt;</code> (or <code>--features parallel</code> for the prover sub-crate) to Cargo:</p>
-<pre><code class="language-bash"># Enable allocation logging
-cargo test -p p3-circuit --features debugging
-
-# Enable profiling (includes debugging)
-cargo test -p p3-circuit --features profiling
-
-# Enable parallel trace generation
-cargo run --example recursive_fibonacci --features parallel
-</code></pre>
-<h2 id="build-profiles"><a class="header" href="#build-profiles">Build profiles</a></h2>
-<p>Two custom workspace profiles complement the features above:</p>
-<div class="table-wrapper"><table><thead><tr><th>Profile</th><th>Inherits</th><th>Extra flags</th><th>Purpose</th></tr></thead><tbody>
-<tr><td><code>profiling</code></td><td><code>release</code></td><td><code>debug = true</code></td><td>Keeps DWARF symbols in an otherwise-optimised binary so that tools like <code>perf</code>, Instruments, or <code>samply</code> can map samples back to source lines. Use this together with the <code>profiling</code> crate feature.</td></tr>
-<tr><td><code>optimized</code></td><td><code>release</code></td><td><code>lto = "thin"</code>, <code>codegen-units = 1</code>, <code>opt-level = 3</code></td><td>Maximum-performance binary. All benchmarks and the provided examples are run under this profile.</td></tr>
-</tbody></table>
-</div>
-<pre><code class="language-bash"># Profile-guided performance measurement (symbols + optimisation)
-cargo run --profile profiling --example recursive_fibonacci --features parallel
-
-# Maximum-performance binary (examples, benchmarks)
-cargo run --profile optimized --example recursive_fibonacci --features parallel
-</code></pre>
-<h2 id="allocation-logging"><a class="header" href="#allocation-logging">Allocation Logging</a></h2>
-<p>The <code>CircuitBuilder</code> supports an allocation logger during circuit building that logs allocations being performed.
-These logs can then be analyzed at runtime and leveraged to detect issues in circuit constructions.</p>
-<blockquote>
-<p><strong>Requirement</strong>: allocation logging requires the <code>debugging</code> compile feature to be enabled on <code>p3-circuit</code>.</p>
-</blockquote>
-<h3 id="enabling-debug-logging"><a class="header" href="#enabling-debug-logging">Enabling Debug Logging</a></h3>
-<p>Allocation logging is active whenever the <code>debugging</code> feature is compiled in.
-Logs can be dumped to <code>stdout</code> when calling <code>builder.dump_allocation_log()</code>, if logging level is set to <code>DEBUG</code> or lower.</p>
-<h3 id="allocation-log-format"><a class="header" href="#allocation-log-format">Allocation Log Format</a></h3>
-<p>By default, the <code>CircuitBuilder</code> automatically logs all allocations with no specific labels.
-One can decide to attach a specific descriptive to ease debugging, like so:</p>
-<pre><code class="language-rust ignore">let mut builder = CircuitBuilder::&lt;F&gt;::new();
-
-// Allocating with custom labels
-let input_a = builder.alloc_public_input("input_a");
-let input_b = builder.alloc_public_input("input_b");
-let input_c = builder.alloc_public_input("input_c");
-
-let b_times_c = builder.alloc_mul(input_b, input_c, "b_times_c");
-let a_plus_bc = builder.alloc_add(input_a, b_times_c, "a_plus_bc");
-let a_minus_bc = builder.alloc_sub(input_a, b_times_c, "a_minus_bc");
-
-// Default allocation
-let x = builder.public_input(); // unlabelled
-let y = builder.add(x, z);          // unlabelled</code></pre>
-<p>The <code>CircuitBuilder</code> also allows for nested scoping of allocation logs, so that users can debug
-a specific context within a larger circuit. Scoping can be defined arbitrarily by users as follows:</p>
-<pre><code class="language-rust ignore">fn complex_function(builder: &amp;mut CircuitBuilder) {
-    builder.push_scope("complex function");
-
-    // Do something
-    inner_function(builder); // &lt;- this will create a nested scope within the inner function
-
-    builder.pop_scope();
-}
-
-fn inner_function(builder: &amp;mut CircuitBuilder) {
-    builder.push_scope("inner function");
-
-    // Do something else
-
-    builder.pop_scope();
-}</code></pre>
-<h2 id="debugging-constraints"><a class="header" href="#debugging-constraints">Debugging constraints</a></h2>
-<p>When debugging constraint satisfaction issues, the system relies on Plonky3's internal <code>check_constraints</code>
-feature to evaluate AIR constraints, available in debug mode.
-This ensures that all constraints are properly satisfied before proceeding to the next proving phases.</p>
+<h1 id="binary-fields-and-binary-hashes"><a class="header" href="#binary-fields-and-binary-hashes">Binary Fields and Binary Hashes</a></h1>
+<p>Plonky3 0.7 and 0.8 added a native characteristic-2 proving stack alongside the two-adic
+prime fields this repository is built on:</p>
+<ul>
+<li><code>p3-binary-field</code>: the tower <code>GF(2) ⊂ GF(4) ⊂ … ⊂ GF(2^128)</code> (<code>Gf2</code>, <code>BinaryField8</code> …
+<code>BinaryField128</code>), <code>GF(2^128)</code> in the GHASH polynomial basis (<code>Ghash128</code>), and
+<code>BinaryChallenger</code>, a Fiat-Shamir transcript over a byte hash.</li>
+<li><code>p3-binary-dft</code>, <code>p3-binary-pcs</code>, WHIR over binary additive domains, and <code>p3-multi-stark</code>:
+multilinear commitments and a SuperSpartan-style prover over those fields.</li>
+<li>Characteristic-2 AIRs for the bit-oriented hashes: <code>KeccakBinaryAir</code> (<code>p3-keccak-air</code>) and
+<code>Blake3BinaryAir</code> (<code>p3-blake3-air</code>).</li>
+</ul>
+<h2 id="what-this-repository-supports-today"><a class="header" href="#what-this-repository-supports-today">What this repository supports today</a></h2>
+<p>This is groundwork only. Nothing here proves or recursively verifies a binary-field proof.</p>
+<ul>
+<li>
+<p><strong>Circuits over binary fields.</strong> The primitive circuit layer (constants, public and private
+inputs, ALU ops, connections, tags) needs only field arithmetic, and runs unchanged over every
+tower level and <code>Ghash128</code> (<code>circuit/tests/binary_fields.rs</code>). Two things behave differently
+from a prime field:</p>
+<ul>
+<li><code>x - y = x + y</code> and <code>2 = 0</code>. Integer constructors such as <code>F::from_u64</code> go through <code>GF(2)</code>,
+so they keep only the parity of their argument.</li>
+<li>Gadgets that read field elements as integers are rejected, not silently wrong.
+<code>reconstruct_index_from_bits</code> returns <code>CircuitBuilderError::CharacteristicTwoUnsupported</code>
+for a characteristic-2 base field. The decomposition and recomposition gadgets require
+<code>BF: PrimeField64</code> with <code>F: ExtensionField&lt;BF&gt;</code>, and the binary tower only extends its
+byte-aligned levels, so they cannot be instantiated over it at all.</li>
+</ul>
+</li>
+<li>
+<p><strong>Binary hash configurations.</strong> <code>p3_test_utils::binary_field_params</code> provides the
+configuration <code>p3-binary-pcs</code> tests with, once per hash (<code>keccak</code> and <code>blake3</code> submodules
+with identical item names):</p>
+<ul>
+<li>Merkle commitments over any tower level that serialize rows to bytes, hash with
+Keccak-256 or BLAKE3, and compress node pairs with the same hash;</li>
+<li><code>BinaryChallenger</code> transcripts over the same byte hash.</li>
+</ul>
+</li>
+<li>
+<p><strong>Binary hash AIRs.</strong> <code>test-utils/tests/binary_hashes.rs</code> checks that the Keccak-f and BLAKE3
+AIRs over <code>GF(2^128)</code> accept their generated traces and reject a non-bit cell or a flipped
+bit, and that the byte-hash commitments round-trip and reject tampering.</p>
+</li>
+<li>
+<p><strong>In-circuit Keccak.</strong> Prime-field circuits can call Keccak-f[1600] as a non-primitive
+operation (<code>CircuitBuilder::enable_keccak_f1600</code> / <code>add_keccak_f1600</code>).</p>
+<ul>
+<li><strong>State layout:</strong> the state is 100 little-endian 16-bit limbs (limb <code>4·i + k</code> is limb <code>k</code> of
+lane <code>i = x + 5·y</code>), matching <code>p3-keccak-air</code>.</li>
+<li><strong>Proving:</strong> the <code>KeccakF1600Air</code> table runs <code>KeccakAir</code> over 24 rows per call and ties the
+input and output limbs to the witness table through <code>WitnessChecks</code> lookups. <code>KeccakAir</code>'s
+bit decompositions keep every limb below <code>2^16</code>.</li>
+<li><strong>Registration:</strong> register it with <code>KeccakF1600Preprocessor</code>, <code>KeccakF1600AirBuilder</code> and
+<code>KeccakF1600Prover</code>.</li>
+<li><strong>Merkle compression:</strong> <code>keccak256_compress</code> builds on it. It computes Keccak-256 of two
+32-byte digests in one call, matching
+<code>CompressionFunctionFromHasher&lt;Keccak256Hash, 2, 32&gt;</code>, the node compression of a Keccak
+Merkle tree.</li>
+<li><strong>Keccak-256 sponge:</strong> <code>keccak256_limbs</code> hashes messages of any even byte length. The first
+block fills the zero state directly; later blocks are XORed in with a bitwise gadget.</li>
+<li><strong>Leaf hash:</strong> <code>keccak256_field_elements</code> matches <code>SerializingHasher&lt;Keccak256Hash&gt;</code>, the
+leaf hash of a Keccak Merkle tree. Elements are serialized exactly as Plonky3 does it
+(Montgomery fields such as BabyBear hash <code>x·2^32 mod p</code>). Each serialized value is decomposed
+into canonical bits, so <code>y + p</code> cannot stand in for <code>y</code>.</li>
+</ul>
+</li>
+<li>
+<p><strong>In-circuit BLAKE3.</strong> <code>enable_blake3_compress</code> / <code>add_blake3_compress</code> expose one BLAKE3
+compression per call.</p>
+<ul>
+<li><strong>Limb layout:</strong> 56 input limbs (block, chaining value, counter, block length, flags, each
+32-bit word as a little-endian 16-bit pair) and 32 output limbs.</li>
+<li><strong>Proving:</strong> the <code>Blake3CompressAir</code> table runs <code>p3-blake3-air</code>'s <code>Blake3Air</code>, one
+compression per row, with each call's real counter, length and flags. It exposes the limbs
+through dedicated columns tied to <code>Blake3Air</code>'s bit columns.</li>
+<li><strong>Registration:</strong> register it with <code>Blake3CompressPreprocessor</code>, <code>Blake3CompressAirBuilder</code>
+and <code>Blake3CompressProver</code>.</li>
+<li><strong>Gadgets:</strong> built on the compression are <code>blake3_limbs</code> (messages of any even byte
+length, through the full chunk tree), <code>blake3_compress_digests</code> (<code>CompressionFunctionFromHasher&lt;Blake3, 2, 32&gt;</code>) and
+<code>blake3_field_elements</code> (<code>SerializingHasher&lt;Blake3&gt;</code>).</li>
+</ul>
+</li>
+<li>
+<p><strong>Merkle openings.</strong> <code>verify_byte_hash_mmcs_opening</code> constrains an opening of a Keccak-256 or
+BLAKE3 <code>MerkleTreeMmcs</code> batch commitment, mirroring the native binary-arity <code>verify_batch</code>:</p>
+<ul>
+<li><strong>Inputs:</strong> the opened rows of several matrices with their heights, the little-endian index
+bits, the sibling digests (bottom-up) and a cap of any power-of-two root count.</li>
+<li><strong>Heights:</strong> as natively, they need not be powers of two, but each must be
+<code>ceil(max_height / 2^k)</code>. The index is constrained below the tallest height.</li>
+<li><strong>Injection:</strong> shorter matrices' rows are folded in at the level where their height is
+reached.</li>
+<li><strong>Cap:</strong> the remaining index bits select the cap root.</li>
+<li><strong>Shorthands:</strong> <code>verify_byte_hash_merkle_path</code>, <code>verify_keccak_merkle_path</code> and
+<code>verify_blake3_merkle_path</code> cover the single-matrix, one-root case.</li>
+</ul>
+</li>
+<li>
+<p><strong>Recursion over hash tables.</strong> A batch proof whose circuit used Keccak-f or BLAKE3 can be
+verified by the next recursion layer.</p>
+<ul>
+<li><strong>Low-level:</strong> pass <code>KeccakF1600Prover</code> / <code>Blake3CompressProver</code> among the input table
+provers of <code>verify_p3_batch_proof_circuit</code> and <code>replay_batch_layer_transcript</code>.</li>
+<li><strong>Built-in backends:</strong> <code>PcsRecursionBackend::input_table_provers</code> adds these tables to the
+backend's own input provers in the input manifest's order, through
+<code>with_hash_table_input_provers</code>. The FRI and WHIR backends use it.</li>
+<li><strong>No relaxation:</strong> hash tables are only ever <em>added</em>. With its hash entries removed, the
+manifest must still list the backend's own tables exactly, as before.</li>
+</ul>
+</li>
+</ul>
+<h2 id="not-yet-supported"><a class="header" href="#not-yet-supported">Not yet supported</a></h2>
+<ul>
+<li>Proving circuits over a binary field. The circuit prover's tables, lookups and Poseidon
+permutations assume a two-adic prime field, as do FRI and the prime-field WHIR.</li>
+<li>Recursively verifying binary-PCS or multi-stark proofs. That needs <code>GF(2^128)</code> arithmetic
+inside a prime-field circuit, plus in-circuit Keccak-256 or BLAKE3 for the transcript and
+Merkle paths.</li>
+<li>MMCS trees of arity above two.</li>
+</ul>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="../advanced_topics/soundness.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="../advanced_topics/debugging.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <i class="fa fa-angle-left"></i>
                             </a>
 
-                            <a rel="next prefetch" href="../advanced_topics/binary_fields.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="../appendix/benchmark.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <i class="fa fa-angle-right"></i>
                             </a>
 
@@ -276,11 +317,11 @@ This ensures that all constraints are properly satisfied before proceeding to th
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="../advanced_topics/soundness.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="../advanced_topics/debugging.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <i class="fa fa-angle-left"></i>
                     </a>
 
-                    <a rel="next prefetch" href="../advanced_topics/binary_fields.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="../appendix/benchmark.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <i class="fa fa-angle-right"></i>
                     </a>
             </nav>
