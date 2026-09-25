@@ -67,10 +67,15 @@ This is groundwork only. Nothing here proves or recursively verifies a binary-fi
   - **Gadgets:** built on the compression are `blake3_limbs` (messages up to one 1024-byte
     chunk), `blake3_compress_digests` (`CompressionFunctionFromHasher<Blake3, 2, 32>`) and
     `blake3_field_elements` (`SerializingHasher<Blake3>`).
-- **Merkle paths.** `verify_byte_hash_merkle_path` (with `verify_keccak_merkle_path` and
-  `verify_blake3_merkle_path` as shorthands) constrains a single-matrix opening of a Keccak-256
-  or BLAKE3 `MerkleTreeMmcs` with a one-root cap. It takes the row, the little-endian index bits,
-  the sibling digests (bottom-up) and the root, as in the native opening.
+- **Merkle openings.** `verify_byte_hash_mmcs_opening` constrains an opening of a Keccak-256 or
+  BLAKE3 `MerkleTreeMmcs` batch commitment, mirroring the native binary-arity `verify_batch`:
+  - **Inputs:** the opened rows of several matrices with power-of-two heights, the little-endian
+    index bits, the sibling digests (bottom-up) and a cap of any power-of-two root count.
+  - **Injection:** shorter matrices' rows are folded in at the level where their height is
+    reached.
+  - **Cap:** the remaining index bits select the cap root.
+  - **Shorthands:** `verify_byte_hash_merkle_path`, `verify_keccak_merkle_path` and
+    `verify_blake3_merkle_path` cover the single-matrix, one-root case.
 - **Recursion over hash tables.** A batch proof whose circuit used Keccak-f or BLAKE3 can be
   verified by the next recursion layer.
   - **Low-level:** pass `KeccakF1600Prover` / `Blake3CompressProver` among the input table
@@ -89,5 +94,4 @@ This is groundwork only. Nothing here proves or recursively verifies a binary-fi
   inside a prime-field circuit, plus in-circuit Keccak-256 or BLAKE3 for the transcript and
   Merkle paths.
 - BLAKE3 of messages longer than one 1024-byte chunk (the chunk tree).
-- Keccak-256 or BLAKE3 MMCS openings of several matrices of different heights in one tree, and
-  caps with more than one root.
+- MMCS openings of matrices whose heights are not powers of two, and trees of arity above two.

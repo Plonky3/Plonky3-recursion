@@ -152,51 +152,102 @@ where
         }
     }
 
-    /// Constrains a single-matrix Merkle opening under `hash`: `leaf` (a row of base-field
-    /// elements) sits at the position whose little-endian bits are `index_bits`, under `root`.
+    /// Constrains an opening of a `hash` `MerkleTreeMmcs` batch commitment at one index.
     ///
-    /// This is `MerkleTreeMmcs` with a `SerializingHasher<hash>` leaf hash, a
-    /// `CompressionFunctionFromHasher<hash, 2, 32>` node compression and a one-root cap.
-    /// `siblings[i]` is the sibling digest at level `i` (bottom-up), `root` the cap digest, each
-    /// as [`DIGEST_LIMBS`] limbs. At level `i`, a set `index_bits[i]` means the current node is
-    /// the right child. Every index bit is constrained to be boolean.
+    /// This mirrors the native binary-arity `verify_batch` of a tree whose matrices have
+    /// power-of-two heights:
+    ///
+    /// - `rows[m]` is matrix `m`'s opened row (base-field elements), in commitment order, and
+    ///   `log_heights[m]` its log-height; the tallest has log-height `index_bits.len()`.
+    /// - The leaf digest hashes the concatenated rows of every tallest matrix
+    ///   (`SerializingHasher<hash>`).
+    /// - Level `i` compresses the pair ordered by `index_bits[i]` (set: the current node is the
+    ///   right child) with `siblings[i]`; then, if some matrices have the height just reached,
+    ///   the digest becomes `compress(digest, hash(their rows))`.
+    /// - After `index_bits.len() - log2(cap.len())` levels, the remaining index bits select the
+    ///   cap root the digest must equal.
+    ///
+    /// Digests are [`DIGEST_LIMBS`] limbs. Every index bit is constrained to be boolean.
     ///
     /// # Errors
     ///
-    /// - [`CircuitBuilderError::NonPrimitiveOpArity`] if the path length differs from the index
-    ///   width, or a digest has the wrong width.
+    /// - [`CircuitBuilderError::NonPrimitiveOpArity`] if the rows and heights, the path and the
+    ///   index, or a digest's width disagree; if the cap is not a power-of-two root count at
+    ///   most `2^index_bits.len()`; or if some matrix is shorter than the cap layer or taller
+    ///   than the index allows.
     /// - As [`Self::byte_hash_field_elements`] and [`Self::byte_hash_compress`].
-    pub fn verify_byte_hash_merkle_path<BF>(
+    #[allow(clippy::too_many_arguments)]
+    pub fn verify_byte_hash_mmcs_opening<BF>(
         &mut self,
         hash: ByteHash,
-        leaf: &[ExprId],
+        rows: &[Vec<ExprId>],
+        log_heights: &[usize],
         index_bits: &[ExprId],
         siblings: &[Vec<ExprId>],
-        root: &[ExprId],
+        cap: &[Vec<ExprId>],
     ) -> Result<(), CircuitBuilderError>
     where
         BF: PrimeField64,
         F: ExtensionField<BF>,
     {
-        if siblings.len() != index_bits.len() {
-            return Err(CircuitBuilderError::NonPrimitiveOpArity {
-                op: "MerklePath",
-                expected: format!("one sibling per index bit ({})", index_bits.len()),
-                got: siblings.len(),
-            });
+        let shape_error = |expected: alloc::string::String, got: usize| {
+            CircuitBuilderError::NonPrimitiveOpArity {
+                op: "MmcsOpening",
+                expected,
+                got,
+            }
+        };
+        let log_max = index_bits.len();
+        if rows.is_empty() || rows.len() != log_heights.len() {
+            return Err(shape_error(
+                format!("one log-height per opened row ({})", rows.len()),
+                log_heights.len(),
+            ));
         }
-        for digest in siblings.iter().map(Vec::as_slice).chain([root]) {
+        if !cap.len().is_power_of_two() || cap.len() > 1 << log_max {
+            return Err(shape_error(
+                format!("a power-of-two cap of at most 2^{log_max} roots"),
+                cap.len(),
+            ));
+        }
+        let cap_height = cap.len().trailing_zeros() as usize;
+        let levels = log_max - cap_height;
+        if siblings.len() != levels {
+            return Err(shape_error(format!("{levels} siblings"), siblings.len()));
+        }
+        if log_heights.iter().max() != Some(&log_max) {
+            return Err(shape_error(
+                format!("a tallest matrix of log-height {log_max}"),
+                log_heights.iter().copied().max().unwrap_or(0),
+            ));
+        }
+        if let Some(&short) = log_heights.iter().find(|&&h| h < cap_height) {
+            return Err(shape_error(
+                format!("matrices at least as tall as the cap layer (log-height {cap_height})"),
+                short,
+            ));
+        }
+        for digest in siblings.iter().chain(cap) {
             if digest.len() != DIGEST_LIMBS {
-                return Err(CircuitBuilderError::NonPrimitiveOpArity {
-                    op: "MerklePath",
-                    expected: format!("{DIGEST_LIMBS} limbs per digest"),
-                    got: digest.len(),
-                });
+                return Err(shape_error(
+                    format!("{DIGEST_LIMBS} limbs per digest"),
+                    digest.len(),
+                ));
             }
         }
 
-        let mut node = self.byte_hash_field_elements::<BF>(hash, leaf)?;
-        for (&bit, sibling) in index_bits.iter().zip(siblings) {
+        // The concatenated rows of every matrix of one log-height, in commitment order.
+        let rows_at = |log_height: usize| -> Vec<ExprId> {
+            rows.iter()
+                .zip(log_heights)
+                .filter(|&(_, &h)| h == log_height)
+                .flat_map(|(row, _)| row.iter().copied())
+                .collect()
+        };
+
+        let leaf = rows_at(log_max);
+        let mut node = self.byte_hash_field_elements::<BF>(hash, &leaf)?;
+        for (level, (&bit, sibling)) in index_bits.iter().zip(siblings).enumerate() {
             self.assert_bool(bit);
             let (left, right): (Vec<ExprId>, Vec<ExprId>) = node
                 .iter()
@@ -209,11 +260,64 @@ where
                 })
                 .unzip();
             node = self.byte_hash_compress::<BF>(hash, &left, &right)?;
+
+            let reached = log_max - level - 1;
+            if log_heights.contains(&reached) {
+                let injected = rows_at(reached);
+                let digest = self.byte_hash_field_elements::<BF>(hash, &injected)?;
+                node = self.byte_hash_compress::<BF>(hash, &node, &digest)?;
+            }
         }
-        for (&computed, &expected) in node.iter().zip(root) {
+
+        // The remaining index bits pick the cap root, one multiplexer layer per bit.
+        let mut candidates: Vec<Vec<ExprId>> = cap.to_vec();
+        for &bit in &index_bits[levels..] {
+            self.assert_bool(bit);
+            candidates = candidates
+                .chunks_exact(2)
+                .map(|pair| {
+                    pair[0]
+                        .iter()
+                        .zip(&pair[1])
+                        .map(|(&even, &odd)| self.select(bit, odd, even))
+                        .collect()
+                })
+                .collect();
+        }
+        for (&computed, &expected) in node.iter().zip(&candidates[0]) {
             self.connect(computed, expected);
         }
         Ok(())
+    }
+
+    /// Constrains a single-matrix Merkle opening under `hash`: `leaf` sits at the position
+    /// whose little-endian bits are `index_bits`, under a one-root cap `root`.
+    ///
+    /// [`Self::verify_byte_hash_mmcs_opening`] for one matrix and a one-root cap.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::verify_byte_hash_mmcs_opening`].
+    pub fn verify_byte_hash_merkle_path<BF>(
+        &mut self,
+        hash: ByteHash,
+        leaf: &[ExprId],
+        index_bits: &[ExprId],
+        siblings: &[Vec<ExprId>],
+        root: &[ExprId],
+    ) -> Result<(), CircuitBuilderError>
+    where
+        BF: PrimeField64,
+        F: ExtensionField<BF>,
+    {
+        self.verify_byte_hash_mmcs_opening::<BF>(
+            hash,
+            &[leaf.to_vec()],
+            &[index_bits.len()],
+            index_bits,
+            siblings,
+            &[root.to_vec()],
+        )
     }
 
     /// [`Self::verify_byte_hash_merkle_path`] under Keccak-256.
