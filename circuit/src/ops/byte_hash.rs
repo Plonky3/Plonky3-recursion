@@ -8,6 +8,7 @@ use alloc::format;
 use alloc::vec::Vec;
 
 use p3_field::{ExtensionField, Field, PrimeField64};
+use p3_util::log2_ceil_usize;
 
 use crate::builder::CircuitBuilderError;
 use crate::types::ExprId;
@@ -154,15 +155,18 @@ where
 
     /// Constrains an opening of a `hash` `MerkleTreeMmcs` batch commitment at one index.
     ///
-    /// This mirrors the native binary-arity `verify_batch` of a tree whose matrices have
-    /// power-of-two heights:
+    /// This mirrors the native binary-arity `verify_batch`:
     ///
     /// - `rows[m]` is matrix `m`'s opened row (base-field elements), in commitment order, and
-    ///   `log_heights[m]` its log-height; the tallest has log-height `index_bits.len()`.
+    ///   `heights[m]` its height. Heights need not be powers of two, but as natively, each must be
+    ///   `ceil(max_height / 2^k)` for some `k`; the tree has `index_bits.len() =
+    ///   ceil(log2(max_height))` levels, and a matrix of height `h` sits `ceil(log2(h))` levels
+    ///   above the root.
+    /// - The index, whose little-endian bits are `index_bits`, is constrained below `max_height`.
     /// - The leaf digest hashes the concatenated rows of every tallest matrix
     ///   (`SerializingHasher<hash>`).
     /// - Level `i` compresses the pair ordered by `index_bits[i]` (set: the current node is the
-    ///   right child) with `siblings[i]`; then, if some matrices have the height just reached,
+    ///   right child) with `siblings[i]`; then, if some matrices sit at the level just reached,
     ///   the digest becomes `compress(digest, hash(their rows))`.
     /// - After `index_bits.len() - log2(cap.len())` levels, the remaining index bits select the
     ///   cap root the digest must equal.
@@ -172,16 +176,16 @@ where
     /// # Errors
     ///
     /// - [`CircuitBuilderError::NonPrimitiveOpArity`] if the rows and heights, the path and the
-    ///   index, or a digest's width disagree; if the cap is not a power-of-two root count at
-    ///   most `2^index_bits.len()`; or if some matrix is shorter than the cap layer or taller
-    ///   than the index allows.
+    ///   index, or a digest's width disagree; if a height is not reachable from the tallest; if
+    ///   the cap is not a power-of-two root count at most `2^index_bits.len()`; or if some matrix
+    ///   sits below the cap layer.
     /// - As [`Self::byte_hash_field_elements`] and [`Self::byte_hash_compress`].
     #[allow(clippy::too_many_arguments)]
     pub fn verify_byte_hash_mmcs_opening<BF>(
         &mut self,
         hash: ByteHash,
         rows: &[Vec<ExprId>],
-        log_heights: &[usize],
+        heights: &[usize],
         index_bits: &[ExprId],
         siblings: &[Vec<ExprId>],
         cap: &[Vec<ExprId>],
@@ -198,12 +202,31 @@ where
             }
         };
         let log_max = index_bits.len();
-        if rows.is_empty() || rows.len() != log_heights.len() {
+        if rows.is_empty() || rows.len() != heights.len() {
             return Err(shape_error(
-                format!("one log-height per opened row ({})", rows.len()),
-                log_heights.len(),
+                format!("one height per opened row ({})", rows.len()),
+                heights.len(),
             ));
         }
+        let max_height = heights.iter().copied().max().unwrap_or(0);
+        if max_height == 0 || log2_ceil_usize(max_height) != log_max {
+            return Err(shape_error(
+                format!("a tallest matrix of height needing {log_max} index bits"),
+                max_height,
+            ));
+        }
+        // As natively: a height `h` sits `k = log_max - ceil(log2(h))` levels up and must be
+        // `ceil(max_height / 2^k)`, so each level holds at most one height.
+        for &height in heights {
+            let reduced = log_max - log2_ceil_usize(height.max(1));
+            if height != ((max_height - 1) >> reduced) + 1 {
+                return Err(shape_error(
+                    format!("a height of ceil({max_height} / 2^k)"),
+                    height,
+                ));
+            }
+        }
+        let log_heights: Vec<usize> = heights.iter().map(|&h| log2_ceil_usize(h)).collect();
         if !cap.len().is_power_of_two() || cap.len() > 1 << log_max {
             return Err(shape_error(
                 format!("a power-of-two cap of at most 2^{log_max} roots"),
@@ -214,12 +237,6 @@ where
         let levels = log_max - cap_height;
         if siblings.len() != levels {
             return Err(shape_error(format!("{levels} siblings"), siblings.len()));
-        }
-        if log_heights.iter().max() != Some(&log_max) {
-            return Err(shape_error(
-                format!("a tallest matrix of log-height {log_max}"),
-                log_heights.iter().copied().max().unwrap_or(0),
-            ));
         }
         if let Some(&short) = log_heights.iter().find(|&&h| h < cap_height) {
             return Err(shape_error(
@@ -239,16 +256,22 @@ where
         // The concatenated rows of every matrix of one log-height, in commitment order.
         let rows_at = |log_height: usize| -> Vec<ExprId> {
             rows.iter()
-                .zip(log_heights)
+                .zip(&log_heights)
                 .filter(|&(_, &h)| h == log_height)
                 .flat_map(|(row, _)| row.iter().copied())
                 .collect()
         };
 
+        for &bit in index_bits {
+            self.assert_bool(bit);
+        }
+        if !max_height.is_power_of_two() {
+            self.assert_bits_at_most(index_bits, max_height - 1);
+        }
+
         let leaf = rows_at(log_max);
         let mut node = self.byte_hash_field_elements::<BF>(hash, &leaf)?;
         for (level, (&bit, sibling)) in index_bits.iter().zip(siblings).enumerate() {
-            self.assert_bool(bit);
             let (left, right): (Vec<ExprId>, Vec<ExprId>) = node
                 .iter()
                 .zip(sibling)
@@ -272,7 +295,6 @@ where
         // The remaining index bits pick the cap root, one multiplexer layer per bit.
         let mut candidates: Vec<Vec<ExprId>> = cap.to_vec();
         for &bit in &index_bits[levels..] {
-            self.assert_bool(bit);
             candidates = candidates
                 .chunks_exact(2)
                 .map(|pair| {
@@ -288,6 +310,25 @@ where
             self.connect(computed, expected);
         }
         Ok(())
+    }
+
+    /// Constrains the number whose little-endian (boolean) bits are `bits` to be at most `bound`.
+    fn assert_bits_at_most(&mut self, bits: &[ExprId], bound: usize) {
+        // `above` is whether the bits read so far, from the least significant, exceed `bound`'s
+        // bits of the same positions: a set bit over a clear one exceeds it, a clear bit over a
+        // set one does not, and equal bits leave the lower positions to decide.
+        let mut above = self.define_const(F::ZERO);
+        for (i, &bit) in bits.iter().enumerate() {
+            let both = self.mul(bit, above);
+            above = if bound >> i & 1 == 1 {
+                both
+            } else {
+                let either = self.add(bit, above);
+                self.sub(either, both)
+            };
+        }
+        let zero = self.define_const(F::ZERO);
+        self.connect(above, zero);
     }
 
     /// Constrains a single-matrix Merkle opening under `hash`: `leaf` sits at the position
@@ -313,7 +354,7 @@ where
         self.verify_byte_hash_mmcs_opening::<BF>(
             hash,
             &[leaf.to_vec()],
-            &[index_bits.len()],
+            &[1 << index_bits.len()],
             index_bits,
             siblings,
             &[root.to_vec()],
@@ -362,5 +403,32 @@ where
         F: ExtensionField<BF>,
     {
         self.verify_byte_hash_merkle_path::<BF>(ByteHash::Blake3, leaf, index_bits, siblings, root)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use p3_baby_bear::BabyBear;
+    use p3_field::PrimeCharacteristicRing;
+
+    use super::*;
+    use crate::CircuitBuilder;
+
+    #[test]
+    fn the_index_bound_admits_exactly_the_indices_up_to_it() {
+        for bound in 0..8usize {
+            let mut builder = CircuitBuilder::<BabyBear>::new();
+            let bits: Vec<ExprId> = (0..3).map(|_| builder.public_input()).collect();
+            builder.assert_bits_at_most(&bits, bound);
+            let circuit = builder.build().unwrap();
+            for index in 0..8usize {
+                let public: Vec<BabyBear> = (0..3)
+                    .map(|i| BabyBear::from_bool(index >> i & 1 == 1))
+                    .collect();
+                let mut runner = circuit.runner();
+                let runs = runner.set_public_inputs(&public).is_ok() && runner.run().is_ok();
+                assert_eq!(runs, index <= bound, "index {index}, bound {bound}");
+            }
+        }
     }
 }

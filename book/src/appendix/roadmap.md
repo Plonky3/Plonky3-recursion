@@ -14,5 +14,5 @@ Making these configurable would support wider permutations and different securit
 - **Binary fields**: Circuits already run over the Plonky3 binary tower, and binary hash configurations are in `p3-test-utils` (see [Binary Fields and Binary Hashes](../advanced_topics/binary_fields.md)).
 In-circuit Keccak-f\[1600\], the Keccak-256 sponge, digest compression and field-element leaf hashing are available.
 In-circuit BLAKE3 (any message length, with the chunk tree) and single-matrix Keccak-256 and BLAKE3 Merkle paths are available too.
-Keccak-256 and BLAKE3 MMCS batch openings (mixed heights, multi-root caps) and recursion over proofs containing these tables are available too.
+Keccak-256 and BLAKE3 MMCS batch openings (mixed heights, powers of two or not, multi-root caps) and recursion over proofs containing these tables are available too.
 The remaining steps are proving binary-field circuits with the binary PCS, and recursively verifying binary proofs.

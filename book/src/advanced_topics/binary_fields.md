@@ -69,8 +69,10 @@ This is groundwork only. Nothing here proves or recursively verifies a binary-fi
     `blake3_field_elements` (`SerializingHasher<Blake3>`).
 - **Merkle openings.** `verify_byte_hash_mmcs_opening` constrains an opening of a Keccak-256 or
   BLAKE3 `MerkleTreeMmcs` batch commitment, mirroring the native binary-arity `verify_batch`:
-  - **Inputs:** the opened rows of several matrices with power-of-two heights, the little-endian
-    index bits, the sibling digests (bottom-up) and a cap of any power-of-two root count.
+  - **Inputs:** the opened rows of several matrices with their heights, the little-endian index
+    bits, the sibling digests (bottom-up) and a cap of any power-of-two root count.
+  - **Heights:** as natively, they need not be powers of two, but each must be
+    `ceil(max_height / 2^k)`. The index is constrained below the tallest height.
   - **Injection:** shorter matrices' rows are folded in at the level where their height is
     reached.
   - **Cap:** the remaining index bits select the cap root.
@@ -93,4 +95,4 @@ This is groundwork only. Nothing here proves or recursively verifies a binary-fi
 - Recursively verifying binary-PCS or multi-stark proofs. That needs `GF(2^128)` arithmetic
   inside a prime-field circuit, plus in-circuit Keccak-256 or BLAKE3 for the transcript and
   Merkle paths.
-- MMCS openings of matrices whose heights are not powers of two, and trees of arity above two.
+- MMCS trees of arity above two.
