@@ -4,11 +4,11 @@ use alloc::vec::Vec;
 use p3_air::Air;
 use p3_air::symbolic::AirLayout;
 use p3_batch_stark::symbolic::get_log_num_quotient_chunks as get_batch_log_num_quotient_chunks;
-use p3_batch_stark::{BatchProof, BatchTranscript, CommonData};
+use p3_batch_stark::{BatchProof, BatchShape, CommonData};
 use p3_challenger::{CanObserve, CanSample, CanSampleBits, FieldChallenger, GrindingChallenger};
-use p3_commit::{Mmcs, OpenedValues, Pcs, PolynomialSpace};
+use p3_commit::{Mmcs, OpenedValues, Pcs, PolynomialSpace, UnivariateStarkPcs};
 use p3_field::{Algebra, BasedVectorSpace, PrimeCharacteristicRing, PrimeField, TwoAdicField};
-use p3_fri::{BatchMultiOpening, FriProof, HidingFriPcs, TwoAdicFriPcs};
+use p3_fri::{BatchMultiOpening, FriProof, FriShape, HidingFriPcs, PcsShape, TwoAdicFriPcs};
 use p3_lookup::logup::LogUpGadget;
 use p3_lookup::symbolic::InteractionSymbolicBuilder;
 use p3_lookup::{Lookup, LookupProtocol};
@@ -80,21 +80,54 @@ pub struct OpeningTranscript<SC: StarkGenericConfig> {
     pub commitments_with_opening_points: Vec<CommitmentWithOpenings<SC>>,
 }
 
-/// Observe every opened value, mirroring the loop
-/// [`TwoAdicFriPcs::verify`](p3_fri::TwoAdicFriPcs) runs before entering `verify_fri`.
+/// Seed the FRI PCS transcript and observe every opened value, mirroring what
+/// [`TwoAdicFriPcs::verify`](p3_fri::TwoAdicFriPcs) does before its batch phase.
 ///
-/// Advances a challenger from the state [`OpeningTranscript`] holds to the one the FRI verifier
-/// itself starts from.
+/// Advances a challenger from the state [`OpeningTranscript`] holds to the one the PCS batch
+/// phase (the batch grind, then `alpha`) starts from. `batch_pow_bits` is the native
+/// `FriParameters::batch_proof_of_work_bits`; it is bound into the PCS domain separator.
 pub fn observe_opened_values<SC: StarkGenericConfig>(
     challenger: &mut SC::Challenger,
     coms_to_verify: &ComsWithOpenings<SC>,
+    batch_pow_bits: usize,
 ) {
+    fri_pcs_shape::<SC>(coms_to_verify, batch_pow_bits)
+        .domain_separator::<Val<SC>, SC::Challenge>()
+        .seed(challenger);
     for (_, round) in coms_to_verify {
         for (_, mat) in round {
             for (_, point) in mat {
                 challenger.observe_algebra_slice(point);
             }
         }
+    }
+}
+
+/// Absorb a PCS commitment, disambiguating from the base-field `observe` a grinding challenger
+/// also offers.
+fn observe_commitment<SC: StarkGenericConfig>(
+    challenger: &mut SC::Challenger,
+    commitment: &<SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment,
+) {
+    CanObserve::observe(challenger, commitment.clone());
+}
+
+/// The FRI PCS transcript shape for a set of claims: one evaluation count per opening point.
+pub fn fri_pcs_shape<SC: StarkGenericConfig>(
+    coms_to_verify: &ComsWithOpenings<SC>,
+    batch_pow_bits: usize,
+) -> PcsShape {
+    PcsShape {
+        claimed_evaluation_counts: coms_to_verify
+            .iter()
+            .map(|(_, round)| {
+                round
+                    .iter()
+                    .map(|(_, points)| points.iter().map(|(_, values)| values.len()).collect())
+                    .collect()
+            })
+            .collect(),
+        batch_pow_bits,
     }
 }
 
@@ -163,6 +196,7 @@ pub fn generate_batch_challenges<SC: StarkGenericConfig, A, LG: LookupProtocol>(
     lookup_gadget: &LG,
 ) -> Result<Vec<SC::Challenge>, GenerationError>
 where
+    SC::Challenger: GrindingChallenger<Witness = Val<SC>>,
     A: Air<InteractionSymbolicBuilder<Val<SC>, SC::Challenge>>,
     SC::Pcs: PcsGeneration<SC, <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Proof>,
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
@@ -203,6 +237,7 @@ pub fn replay_batch_stark_transcript<SC: StarkGenericConfig, A, LG: LookupProtoc
     lookup_gadget: &LG,
 ) -> Result<(OpeningTranscript<SC>, Vec<SC::Challenge>), GenerationError>
 where
+    SC::Challenger: GrindingChallenger<Witness = Val<SC>>,
     A: Air<InteractionSymbolicBuilder<Val<SC>, SC::Challenge>>,
     SymbolicExpressionExt<Val<SC>, SC::Challenge>:
         Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
@@ -214,6 +249,8 @@ where
         opened_values,
         lookup_terminals,
         degree_bits,
+        lookup_pow_witness,
+        ood_pow_witness,
         ..
     } = proof;
 
@@ -266,9 +303,6 @@ where
     }
 
     let pcs = config.pcs();
-    let mut transcript = BatchTranscript::<SC>::new(config.initialise_challenger());
-
-    transcript.observe_instance_count(n_instances);
 
     for inst in &opened_values.instances {
         if inst
@@ -324,26 +358,6 @@ where
         log_quotient_degrees.push(log_qd);
         quotient_degrees.push(quotient_degree);
     }
-
-    for i in 0..n_instances {
-        let ext_db = degree_bits[i];
-        let base_db =
-            ext_db
-                .checked_sub(config.is_zk())
-                .ok_or(GenerationError::InvalidProofShape(
-                    "extended degree smaller than zk adjustment",
-                ))?;
-
-        transcript.observe_instance_binding(
-            ext_db,
-            base_db,
-            A::width(&airs[i]),
-            quotient_degrees[i],
-        );
-    }
-
-    transcript.observe_main(&commitments.main, public_values);
-    transcript.observe_preprocessed(&preprocessed_widths, common_data.preprocessed.as_ref());
 
     let is_lookup = commitments.permutation.is_some();
 
@@ -409,14 +423,12 @@ where
         let shape = layout.instances[i];
         let pre_local_len = instance
             .base_opened_values
-            .preprocessed_local
-            .as_ref()
-            .map_or(0, Vec::len);
+            .preprocessed_local()
+            .map_or(0, <[_]>::len);
         let pre_next_len = instance
             .base_opened_values
-            .preprocessed_next
-            .as_ref()
-            .map_or(0, Vec::len);
+            .preprocessed_next()
+            .map_or(0, <[_]>::len);
         let trace_next_len = instance
             .base_opened_values
             .trace_next
@@ -434,24 +446,66 @@ where
         }
     }
 
-    // Sample the batch's single permutation challenge pair on the transcript challenger. This has
-    // the same transcript effect as the native `sample_perm_challenges` (two `sample_algebra_element`
-    // draws) while returning the raw pair the in-circuit verifier samples and connects to.
-    let different_challenges = get_different_perm_challenges::<SC, LG, _>(
-        &mut transcript.challenger,
-        all_lookups,
-        lookup_gadget,
-    );
-
-    // Then, observe the permutation tables, if any and sample the alpha challenge.
-    let alpha = transcript
-        .observe_perm_and_sample_alpha(commitments.permutation.as_ref(), lookup_terminals);
-
-    transcript.observe_quotient_commitment(&commitments.quotient_chunks);
-    if let Some(random_commit) = &commitments.random {
-        transcript.observe_random_commitment(random_commit);
+    // Replay `p3_batch_stark::verify_batch`'s transcript step for step: the domain-separator seed
+    // of the batch shape, the instance heights, the main and preprocessed commitments, the lookup
+    // phase, the permutation phase, the quotient phase and the out-of-domain phase.
+    let num_lookup_instances = all_lookups.iter().filter(|c| !c.is_empty()).count();
+    if (num_lookup_instances > 0) != is_lookup {
+        return Err(GenerationError::InvalidProofShape(
+            "permutation commitment presence does not match the declared lookups",
+        ));
     }
-    let zeta = transcript.sample_zeta();
+    let shape = BatchShape {
+        trace_widths: airs.iter().map(|air| air.width()).collect(),
+        public_value_counts: airs.iter().map(|air| air.num_public_values()).collect(),
+        preprocessed_widths: preprocessed_widths.clone(),
+        has_preprocessed_commitment: common_data.preprocessed.is_some(),
+        num_lookup_instances,
+        lookup_pow_bits: config.lookup_proof_of_work_bits(),
+        has_randomization_commitment: SC::Pcs::ZK,
+        ood_pow_bits: config.ood_proof_of_work_bits(),
+    };
+    let mut challenger = config.initialise_challenger();
+    shape
+        .domain_separator::<Val<SC>, SC::Challenge>()
+        .seed(&mut challenger);
+    for &bits in degree_bits {
+        challenger.observe_algebra_element(SC::Challenge::from(Val::<SC>::from_usize(bits)));
+    }
+    observe_commitment::<SC>(&mut challenger, &commitments.main);
+    for values in public_values {
+        challenger.observe_slice(values);
+    }
+    if let Some(global) = &common_data.preprocessed {
+        observe_commitment::<SC>(&mut challenger, &global.commitment);
+    }
+
+    // The lookup phase grinds before its challenges; a zero difficulty absorbs nothing.
+    if is_lookup {
+        let witness = lookup_pow_witness.ok_or(GenerationError::InvalidPowWitness)?;
+        if !challenger.check_witness(config.lookup_proof_of_work_bits(), witness) {
+            return Err(GenerationError::InvalidPowWitness);
+        }
+    }
+    let different_challenges =
+        get_different_perm_challenges::<SC, LG, _>(&mut challenger, all_lookups, lookup_gadget);
+
+    if let Some(permutation) = &commitments.permutation {
+        observe_commitment::<SC>(&mut challenger, permutation);
+    }
+    for terminal in lookup_terminals.iter().flatten() {
+        challenger.observe_algebra_element(terminal.0);
+    }
+    let alpha: SC::Challenge = challenger.sample_algebra_element();
+
+    observe_commitment::<SC>(&mut challenger, &commitments.quotient_chunks);
+    if let Some(random_commit) = &commitments.random {
+        observe_commitment::<SC>(&mut challenger, random_commit);
+    }
+    if !challenger.check_witness(config.ood_proof_of_work_bits(), *ood_pow_witness) {
+        return Err(GenerationError::InvalidPowWitness);
+    }
+    let zeta: SC::Challenge = challenger.sample_algebra_element();
 
     let trace_domains: Vec<_> = degree_bits
         .iter()
@@ -595,17 +649,17 @@ where
             let zeta_next_i = trace_domains[inst_idx].next_point(zeta).ok_or(
                 GenerationError::InvalidProofShape("Preprocessed domain lacks next point"),
             )?;
-            let local = inst.base_opened_values.preprocessed_local.as_ref().ok_or(
+            let local = inst.base_opened_values.preprocessed_local().ok_or(
                 GenerationError::InvalidProofShape("preprocessed local values should exist"),
             )?;
-            let mut points = vec![(zeta, local.clone())];
+            let mut points = vec![(zeta, local.to_vec())];
             if !p3_air::BaseAir::<Val<SC>>::preprocessed_next_row_columns(&airs[inst_idx])
                 .is_empty()
             {
-                let next = inst.base_opened_values.preprocessed_next.as_ref().ok_or(
+                let next = inst.base_opened_values.preprocessed_next().ok_or(
                     GenerationError::InvalidProofShape("preprocessed next values should exist"),
                 )?;
-                points.push((zeta_next_i, next.clone()));
+                points.push((zeta_next_i, next.to_vec()));
             }
 
             // Validate that the preprocessed data's degree metadata matches this instance.
@@ -656,7 +710,7 @@ where
 
     Ok((
         OpeningTranscript {
-            challenger: transcript.challenger,
+            challenger,
             commitments_with_opening_points: coms_to_verify,
         },
         challenges,
@@ -677,24 +731,28 @@ pub fn replay_uni_stark_transcript<SC: StarkGenericConfig, A>(
     preprocessed_commit: Option<&<SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment>,
 ) -> Result<OpeningTranscript<SC>, GenerationError>
 where
+    SC::Challenger: GrindingChallenger<Witness = Val<SC>>,
     A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
     SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
 {
     let pcs = config.pcs();
     let is_zk = config.is_zk();
     let degree_bits = proof.degree_bits;
-    validate_degree_bits(None, degree_bits, is_zk, pcs.log_max_lde_height())
-        .map_err(|_| GenerationError::InvalidProofShape("invalid degree bits"))?;
+    validate_degree_bits(
+        None,
+        degree_bits,
+        is_zk,
+        pcs.log_min_trace_height(),
+        pcs.log_max_trace_height(),
+    )
+    .map_err(|_| GenerationError::InvalidProofShape("invalid degree bits"))?;
 
     let commitments = &proof.commitments;
     let opened_values = &proof.opened_values;
 
     // The recursive verifier reads the preprocessed width off the opened values rather than off a
     // verifier key, so the transcript binding must be read the same way here.
-    let preprocessed_width = opened_values
-        .preprocessed_local
-        .as_ref()
-        .map_or(0, |v| v.len());
+    let preprocessed_width = opened_values.preprocessed_local().map_or(0, |v| v.len());
     if (preprocessed_width > 0) != preprocessed_commit.is_some() {
         return Err(GenerationError::InvalidProofShape(
             "preprocessed commitment presence does not match the opened preprocessed width",
@@ -753,22 +811,36 @@ where
         ));
     }
 
+    // Replay `p3_uni_stark::verify`'s transcript: the domain-separator seed of the STARK shape,
+    // the constraint phase, then the out-of-domain phase.
     let mut challenger = config.initialise_challenger();
-    challenger.observe(Val::<SC>::from_usize(degree_bits));
-    challenger.observe(Val::<SC>::from_usize(degree_bits - is_zk));
-    challenger.observe(Val::<SC>::from_usize(preprocessed_width));
-    challenger.observe(commitments.trace.clone());
+    crate::transcript::uni_stark_shape(
+        air,
+        preprocessed_width,
+        public_values.len(),
+        degree_bits,
+        degree_bits - is_zk,
+        quotient_degree,
+        SC::Pcs::ZK,
+        config.ood_proof_of_work_bits(),
+    )
+    .domain_separator::<Val<SC>, SC::Challenge>()
+    .seed(&mut challenger);
+    observe_commitment::<SC>(&mut challenger, &commitments.trace);
     if let Some(prep_commit) = preprocessed_commit
         && preprocessed_width > 0
     {
-        challenger.observe(prep_commit.clone());
+        observe_commitment::<SC>(&mut challenger, prep_commit);
     }
     challenger.observe_slice(public_values);
 
     let _alpha: SC::Challenge = challenger.sample_algebra_element();
-    challenger.observe(commitments.quotient_chunks.clone());
+    observe_commitment::<SC>(&mut challenger, &commitments.quotient_chunks);
     if let Some(random_commit) = commitments.random.clone() {
-        challenger.observe(random_commit);
+        observe_commitment::<SC>(&mut challenger, &random_commit);
+    }
+    if !challenger.check_witness(config.ood_proof_of_work_bits(), proof.ood_pow_witness) {
+        return Err(GenerationError::InvalidPowWitness);
     }
     let zeta: SC::Challenge = challenger.sample_algebra_element();
     let zeta_next =
@@ -838,21 +910,23 @@ where
     if preprocessed_width > 0 {
         let local =
             opened_values
-                .preprocessed_local
-                .as_ref()
+                .preprocessed_local()
                 .ok_or(GenerationError::InvalidProofShape(
                     "preprocessed local values should exist",
                 ))?;
-        let mut points = vec![(zeta, local.clone())];
+        let mut points = vec![(zeta, local.to_vec())];
         if layout
             .matrices(CommitmentRole::Preprocessed)
             .next()
             .is_some_and(|matrix| matrix.point_count == 2)
         {
-            let next = opened_values.preprocessed_next.as_ref().ok_or(
-                GenerationError::InvalidProofShape("preprocessed next values should exist"),
-            )?;
-            points.push((zeta_next, next.clone()));
+            let next =
+                opened_values
+                    .preprocessed_next()
+                    .ok_or(GenerationError::InvalidProofShape(
+                        "preprocessed next values should exist",
+                    ))?;
+            points.push((zeta_next, next.to_vec()));
         }
         coms_to_verify.push((
             preprocessed_commit
@@ -894,82 +968,12 @@ where
         opening_proof: &InnerFriProof<SC, InputMmcs, FriMmcs>,
         extra_params: Option<&[usize]>,
     ) -> Result<Vec<SC::Challenge>, GenerationError> {
-        let num_challenges =
-            <Self as PcsGeneration<SC, InnerFriProof<SC, InputMmcs, FriMmcs>>>::num_challenges(
-                opening_proof,
-                None,
-            )?;
-        let mut challenges = Vec::with_capacity(num_challenges);
-
-        // Observe all openings.
-        for (_, round) in coms_to_verify {
-            for (_, mat) in round {
-                for (_, point) in mat {
-                    point
-                        .iter()
-                        .for_each(|&opening| challenger.observe_algebra_element(opening));
-                }
-            }
-        }
-
-        challenges.push(challenger.sample_algebra_element());
-
-        // Get `beta` challenges for the FRI rounds.
-        opening_proof
-            .commit_phase_commits
-            .iter()
-            .zip(&opening_proof.commit_pow_witnesses)
-            .for_each(|(comm, pow_witness)| {
-                // To match with the prover (and for security purposes),
-                // we observe the commitment before sampling the challenge.
-                challenger.observe(comm.clone());
-                challenger.observe(*pow_witness);
-                // Sample a challenge as H(transcript || pow_witness). The circuit later
-                // verifies that the challenge begins with the required number of leading zeros.
-                let rand_f: Val<SC> = challenger.sample();
-                let rand_usize = rand_f.as_canonical_biguint().to_u64_digits()[0] as usize;
-                challenges.push(SC::Challenge::from_usize(rand_usize));
-
-                challenges.push(challenger.sample_algebra_element());
-            });
-
-        // Observe all coefficients of the final polynomial.
-        opening_proof
-            .final_poly
-            .iter()
-            .for_each(|x| challenger.observe_algebra_element(*x));
-
-        // Bind the variable-arity schedule into the transcript before query grinding,
-        // matching the native FRI verifier in Plonky3.
-        for step in &opening_proof.commit_phase_openings {
-            challenger.observe(Val::<SC>::from_usize(step.log_arity as usize));
-        }
-
-        let params = extra_params.ok_or(GenerationError::MissingParameterError)?;
-
-        if params.len() != 2 {
-            return Err(GenerationError::InvalidParameterCount(params.len(), 2));
-        }
-
-        // Check PoW witness.
-        challenger.observe(opening_proof.query_pow_witness);
-
-        // Sample a challenge as H(transcript || pow_witness). The circuit later
-        // verifies that the challenge begins with the required number of leading zeros.
-        let rand_f: Val<SC> = challenger.sample();
-        let rand_usize = rand_f.as_canonical_biguint().to_u64_digits()[0] as usize;
-        challenges.push(SC::Challenge::from_usize(rand_usize));
-
-        let log_height_max = params[1];
-        let log_global_max_height = opening_proof.commit_phase_commits.len() + log_height_max;
-        for _ in 0..fri_proof_num_queries(opening_proof) {
-            // For each query, we start by generating the random index.
-            challenges.push(SC::Challenge::from_usize(
-                challenger.sample_bits(log_global_max_height),
-            ));
-        }
-
-        Ok(challenges)
+        generate_fri_challenges::<SC, InputMmcs, FriMmcs>(
+            challenger,
+            coms_to_verify,
+            opening_proof,
+            extra_params,
+        )
     }
 
     fn num_challenges(
@@ -1005,66 +1009,15 @@ where
         opening_proof: &HidingInnerFriProof<SC, InputMmcs, FriMmcs>,
         extra_params: Option<&[usize]>,
     ) -> Result<Vec<SC::Challenge>, GenerationError> {
-        let inner_proof = &opening_proof.1;
-        let num_challenges = <Self as PcsGeneration<
-            SC,
-            HidingInnerFriProof<SC, InputMmcs, FriMmcs>,
-        >>::num_challenges(opening_proof, None)?;
-        let mut challenges = Vec::with_capacity(num_challenges);
-
-        for (_, round) in coms_to_verify {
-            for (_, mat) in round {
-                for (_, point) in mat {
-                    point
-                        .iter()
-                        .for_each(|&opening| challenger.observe_algebra_element(opening));
-                }
-            }
-        }
-
-        challenges.push(challenger.sample_algebra_element());
-
-        inner_proof
-            .commit_phase_commits
-            .iter()
-            .zip(&inner_proof.commit_pow_witnesses)
-            .for_each(|(comm, pow_witness)| {
-                challenger.observe(comm.clone());
-                challenger.observe(*pow_witness);
-                let rand_f: Val<SC> = challenger.sample();
-                let rand_usize = rand_f.as_canonical_biguint().to_u64_digits()[0] as usize;
-                challenges.push(SC::Challenge::from_usize(rand_usize));
-                challenges.push(challenger.sample_algebra_element());
-            });
-
-        inner_proof
-            .final_poly
-            .iter()
-            .for_each(|x| challenger.observe_algebra_element(*x));
-
-        for step in &inner_proof.commit_phase_openings {
-            challenger.observe(Val::<SC>::from_usize(step.log_arity as usize));
-        }
-
-        let params = extra_params.ok_or(GenerationError::MissingParameterError)?;
-        if params.len() != 2 {
-            return Err(GenerationError::InvalidParameterCount(params.len(), 2));
-        }
-
-        challenger.observe(inner_proof.query_pow_witness);
-        let rand_f: Val<SC> = challenger.sample();
-        let rand_usize = rand_f.as_canonical_biguint().to_u64_digits()[0] as usize;
-        challenges.push(SC::Challenge::from_usize(rand_usize));
-
-        let log_height_max = params[1];
-        let log_global_max_height = inner_proof.commit_phase_commits.len() + log_height_max;
-        for _ in 0..fri_proof_num_queries(inner_proof) {
-            challenges.push(SC::Challenge::from_usize(
-                challenger.sample_bits(log_global_max_height),
-            ));
-        }
-
-        Ok(challenges)
+        let (random_openings, inner_proof) = opening_proof;
+        let mut merged = coms_to_verify.to_vec();
+        merge_hiding_random_openings::<SC>(&mut merged, random_openings)?;
+        generate_fri_challenges::<SC, InputMmcs, FriMmcs>(
+            challenger,
+            &merged,
+            inner_proof,
+            extra_params,
+        )
     }
 
     fn num_challenges(
@@ -1074,6 +1027,120 @@ where
         let inner_proof = &opening_proof.1;
         Ok(1 + inner_proof.commit_phase_commits.len() + fri_proof_num_queries(inner_proof))
     }
+}
+
+/// Replay the FRI PCS transcript (0.8 layout) from the state [`OpeningTranscript`] holds.
+///
+/// `extra_params` is `[log_blowup, log_final_poly_len, max_log_arity, commit_pow_bits,
+/// query_pow_bits, batch_pow_bits]`: the native `FriParameters` scalars the PCS and FRI domain
+/// separators bind. The returned challenges are `alpha`, then per commit round the round's grind
+/// sample (zero at zero difficulty) and `beta`, then the query grind sample, then one index per
+/// query.
+fn generate_fri_challenges<SC, InputMmcs, FriMmcs>(
+    challenger: &mut SC::Challenger,
+    coms_to_verify: &ComsWithOpenings<SC>,
+    opening_proof: &InnerFriProof<SC, InputMmcs, FriMmcs>,
+    extra_params: Option<&[usize]>,
+) -> Result<Vec<SC::Challenge>, GenerationError>
+where
+    SC: StarkGenericConfig,
+    InputMmcs: Mmcs<Val<SC>>,
+    FriMmcs: Mmcs<SC::Challenge>,
+    Val<SC>: TwoAdicField + PrimeField,
+    SC::Challenger: FieldChallenger<Val<SC>>
+        + GrindingChallenger<Witness = Val<SC>>
+        + CanObserve<FriMmcs::Commitment>,
+{
+    let params = extra_params.ok_or(GenerationError::MissingParameterError)?;
+    let &[
+        log_blowup,
+        log_final_poly_len,
+        max_log_arity,
+        commit_pow_bits,
+        query_pow_bits,
+        batch_pow_bits,
+    ] = params
+    else {
+        return Err(GenerationError::InvalidParameterCount(params.len(), 6));
+    };
+    let num_queries = fri_proof_num_queries(opening_proof);
+    let mut challenges =
+        Vec::with_capacity(2 + 2 * opening_proof.commit_phase_commits.len() + num_queries);
+
+    // PCS phase: domain separator, claimed openings, batch grind, `alpha`.
+    observe_opened_values::<SC>(challenger, coms_to_verify, batch_pow_bits);
+    if !challenger.check_witness(batch_pow_bits, opening_proof.batch_pow_witness) {
+        return Err(GenerationError::InvalidPowWitness);
+    }
+    challenges.push(challenger.sample_algebra_element());
+
+    // Low-degree test: its own domain separator, bound to the configured fold schedule.
+    let mut input_log_heights: Vec<usize> = coms_to_verify
+        .iter()
+        .flat_map(|(_, round)| {
+            round
+                .iter()
+                .map(|(domain, _)| p3_util::log2_strict_usize(domain.size()) + log_blowup)
+        })
+        .collect();
+    input_log_heights.sort_unstable_by(|a, b| b.cmp(a));
+    input_log_heights.dedup();
+    let log_global_max_height = *input_log_heights
+        .first()
+        .ok_or(GenerationError::InvalidProofShape("FRI opens no matrix"))?;
+    let log_arities = p3_fri::fold_schedule(
+        &input_log_heights,
+        log_blowup + log_final_poly_len,
+        max_log_arity,
+    );
+    FriShape {
+        log_arities,
+        final_poly_len: 1 << log_final_poly_len,
+        commit_pow_bits,
+        query_pow_bits,
+        num_queries,
+        index_bits: log_global_max_height,
+        log_blowup,
+        max_log_arity,
+    }
+    .domain_separator::<Val<SC>, SC::Challenge>()
+    .seed(challenger);
+
+    let grind = |challenger: &mut SC::Challenger, bits: usize, witness: Val<SC>| {
+        // A zero difficulty leaves the transcript untouched, as the native check does.
+        if bits == 0 {
+            return SC::Challenge::ZERO;
+        }
+        challenger.observe(witness);
+        let rand_f: Val<SC> = challenger.sample();
+        let rand_usize = rand_f.as_canonical_biguint().to_u64_digits()[0] as usize;
+        SC::Challenge::from_usize(rand_usize)
+    };
+
+    for (comm, pow_witness) in opening_proof
+        .commit_phase_commits
+        .iter()
+        .zip(&opening_proof.commit_pow_witnesses)
+    {
+        challenger.observe(comm.clone());
+        challenges.push(grind(challenger, commit_pow_bits, *pow_witness));
+        challenges.push(challenger.sample_algebra_element());
+    }
+
+    challenger.observe_algebra_slice(&opening_proof.final_poly);
+    challenges.push(grind(
+        challenger,
+        query_pow_bits,
+        opening_proof.query_pow_witness,
+    ));
+
+    for _ in 0..num_queries {
+        challenges.push(SC::Challenge::from_usize(
+            challenger.sample_bits(log_global_max_height),
+        ));
+    }
+
+    Ok(challenges)
 }
 
 /// Samples the batch's single permutation challenge pair on the transcript challenger and returns

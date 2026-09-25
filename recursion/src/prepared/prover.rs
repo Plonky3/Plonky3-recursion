@@ -31,6 +31,8 @@ pub(crate) struct PreparedProver<SC: StarkGenericConfig + 'static> {
 
 impl<SC> PreparedProver<SC>
 where
+    p3_uni_stark::PcsProverError<SC>: Send,
+    SC::Challenger: p3_challenger::GrindingChallenger<Witness = p3_uni_stark::Val<SC>>,
     SC: StarkGenericConfig + Send + Sync + Clone + 'static,
     Val<SC>: PrimeField64 + StarkField,
     SC::Challenge: BasedVectorSpace<Val<SC>>

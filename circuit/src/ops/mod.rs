@@ -3,7 +3,10 @@ mod executor;
 mod npo;
 mod op;
 
+pub mod blake3_compress;
+pub mod byte_hash;
 pub mod hash;
+pub mod keccak_perm;
 pub mod mmcs;
 pub mod perm;
 pub mod poseidon1_perm;
@@ -12,11 +15,23 @@ pub(crate) mod poseidon_perm;
 pub mod recompose;
 pub mod statement;
 
+pub use blake3_compress::{
+    BLAKE3_BLOCK_BYTES, BLAKE3_CHUNK_BYTES, BLAKE3_INPUT_LIMBS, BLAKE3_INPUT_WORDS, BLAKE3_IV,
+    BLAKE3_OUTPUT_LIMBS, BLAKE3_OUTPUT_WORDS, Blake3CompressCircuitRow, Blake3CompressTrace,
+    blake3_compress, blake3_flags, generate_blake3_compress_trace, limbs_to_words, words_to_limbs,
+};
+pub use byte_hash::{ByteHash, DIGEST_LIMBS};
 pub use context::*;
 pub use executor::*;
+pub use keccak_perm::{
+    KECCAK_LANES, KECCAK_LIMB_BITS, KECCAK_LIMBS_PER_LANE, KECCAK_STATE_LIMBS,
+    KECCAK256_DIGEST_LIMBS, KECCAK256_RATE_BYTES, KeccakF1600CircuitRow, KeccakF1600Trace,
+    bytes_to_limbs, generate_keccak_f1600_trace, keccak_limbs_to_state, keccak_state_to_limbs,
+};
 pub use npo::*;
 pub use op::*;
 pub use perm::{PermCall, PermConfig, perm_private_data};
+pub use poseidon_perm::PoseidonRowValues;
 pub use poseidon1_perm::{
     // Prover/AIR (trace access)
     Poseidon1CircuitRow,

@@ -15,9 +15,12 @@ use alloc::vec::Vec;
 
 use p3_circuit::{CircuitBuilder, CircuitBuilderError};
 use p3_field::{ExtensionField, Field, PrimeField64};
+use p3_sumcheck::strategy::Basis;
+use p3_sumcheck::transcript::SumcheckShape;
 
 use crate::Target;
 use crate::traits::RecursiveChallenger;
+use crate::transcript::domain_separator_seed;
 
 /// Updates the running sumcheck claim for one round.
 ///
@@ -111,6 +114,16 @@ where
         );
     }
 
+    // A native batch of rounds opens its own transcript with a seed bound to its shape; a batch
+    // with no rounds opens none.
+    if !round_polys.is_empty() {
+        let shape = SumcheckShape::new(round_polys.len(), pow_bits, Basis::Evaluation);
+        challenger.observe_seed(
+            circuit,
+            &domain_separator_seed(&shape.domain_separator::<BF, EF>()),
+        );
+    }
+
     let mut claim = claimed_sum;
     let mut randomness = Vec::with_capacity(round_polys.len());
     for (i, &[c0, c_inf]) in round_polys.iter().enumerate() {
@@ -136,7 +149,10 @@ mod tests {
     use p3_sumcheck::lagrange::extrapolate_01inf;
     use proptest::prelude::*;
 
-    use super::{fold_sumcheck_claim, sumcheck_round_claim_update, verify_sumcheck_rounds};
+    use super::{
+        Basis, SumcheckShape, domain_separator_seed, fold_sumcheck_claim,
+        sumcheck_round_claim_update, verify_sumcheck_rounds,
+    };
     use crate::Target;
     use crate::pcs::whir::test_util::eval_gadget;
     use crate::traits::RecursiveChallenger;
@@ -239,10 +255,20 @@ mod tests {
         .unwrap();
         builder.tag(out_claim, "claim").unwrap();
 
-        // Every round observes (h(0), h(inf)) before sampling its challenge.
-        let expected_events: Vec<&str> = polys_v
-            .iter()
-            .flat_map(|_| ["observe", "observe", "sample"])
+        // The domain-separator seed is absorbed first, then every round observes
+        // (h(0), h(inf)) before sampling its challenge.
+        let seed_len = domain_separator_seed(
+            &SumcheckShape::new(polys_v.len(), 0, Basis::Evaluation)
+                .domain_separator::<BabyBear, F>(),
+        )
+        .len();
+        assert!(seed_len > 0);
+        let expected_events: Vec<&str> = core::iter::repeat_n("observe", seed_len)
+            .chain(
+                polys_v
+                    .iter()
+                    .flat_map(|_| ["observe", "observe", "sample"]),
+            )
             .collect();
         assert_eq!(challenger.events, expected_events);
         assert_eq!(randomness.len(), polys_v.len());

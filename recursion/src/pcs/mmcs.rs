@@ -7,15 +7,18 @@ use itertools::Itertools;
 use p3_challenger::{CanObserve, FieldChallenger, GrindingChallenger};
 use p3_circuit::ops::{PermCall, PermConfig, perm_private_data};
 use p3_circuit::{CircuitBuilder, CircuitBuilderError, CircuitRunner, NonPrimitiveOpId};
-use p3_commit::Mmcs;
+use p3_commit::{
+    CommitmentOpening, CommitmentWithOpeningPoints, MatrixOpening, Mmcs, PointOpening,
+};
 use p3_field::coset::TwoAdicMultiplicativeCoset;
 use p3_field::{BasedVectorSpace, ExtensionField, Field, PackedValue, PrimeField64, TwoAdicField};
-use p3_fri::verifier::{FriError, fold_query, open_inputs};
+use p3_fri::verifier::{FriError, PowPhase, fold_query, open_inputs};
 use p3_fri::{
-    BatchMultiOpening, CommitmentWithOpeningPoints, FriFoldingStrategy, FriParameters, FriProof,
-    TwoAdicFriFolding, TwoAdicFriFoldingForMmcs,
+    BatchMultiOpening, FriFoldingStrategy, FriParameters, FriProof, FriShape, TwoAdicFriFolding,
+    TwoAdicFriFoldingForMmcs,
 };
 use p3_matrix::Dimensions;
+use p3_maybe_rayon::prelude::*;
 use p3_merkle_tree::{MerkleTreeError, MerkleTreeHidingMmcs, MerkleTreeMmcs, PrunedMerklePaths};
 use p3_symmetric::{CryptographicHasher, PseudoCompressionFunction};
 use p3_util::log2_strict_usize;
@@ -940,7 +943,54 @@ pub fn replay_fri_query_layout<Val, Challenge, InputMmcs, FriMmcs, Challenger>(
     >],
 ) -> Result<FriQueryLayout<Challenge>, FriError<FriMmcs::Error, InputMmcs::Error>>
 where
-    Val: TwoAdicField,
+    Val: TwoAdicField + PrimeField64,
+    Challenge: ExtensionField<Val>,
+    // The folding strategy carries the input proof and its error type across the fold chain, so
+    // both have to be shareable.
+    InputMmcs: Mmcs<Val, MultiProof: Sync, Error: Sync>,
+    FriMmcs: Mmcs<Challenge>,
+    Challenger: FieldChallenger<Val> + GrindingChallenger + CanObserve<FriMmcs::Commitment>,
+{
+    let samples = sample_fri_queries(params, proof, challenger, commitments_with_opening_points)?;
+    fold_fri_queries(
+        params,
+        input_mmcs,
+        proof,
+        commitments_with_opening_points,
+        samples,
+    )
+}
+
+/// The transcript values a FRI query phase is sampled from, before any opening is read.
+struct FriQuerySamples<Challenge> {
+    alpha: Challenge,
+    betas: Vec<Challenge>,
+    log_arities: Vec<usize>,
+    log_global_max_height: usize,
+    log_final_height: usize,
+    extra_query_index_bits: usize,
+    indices: Vec<usize>,
+}
+
+/// Validate the proof's shape against `params` and replay the FRI transcript up to and including
+/// the query indices, exactly as [`p3_fri::verifier::verify_fri`] does before reading openings.
+fn sample_fri_queries<Val, Challenge, InputMmcs, FriMmcs, Challenger>(
+    params: &FriParameters<FriMmcs>,
+    proof: &FriProof<
+        Challenge,
+        FriMmcs,
+        Challenger::Witness,
+        Vec<BatchMultiOpening<Val, InputMmcs>>,
+    >,
+    challenger: &mut Challenger,
+    commitments_with_opening_points: &[CommitmentWithOpeningPoints<
+        Challenge,
+        InputMmcs::Commitment,
+        TwoAdicMultiplicativeCoset<Val>,
+    >],
+) -> Result<FriQuerySamples<Challenge>, FriError<FriMmcs::Error, InputMmcs::Error>>
+where
+    Val: TwoAdicField + PrimeField64,
     Challenge: ExtensionField<Val>,
     // The folding strategy carries the input proof and its error type across the fold chain, so
     // both have to be shareable.
@@ -965,20 +1015,44 @@ where
         });
     }
 
-    let log_arities: Vec<usize> = proof
-        .commit_phase_openings
-        .iter()
-        .enumerate()
-        .map(|(round, opening)| {
-            opening
-                .checked_log_arity(params.max_log_arity)
-                .ok_or(FriError::InvalidLogArity {
-                    round,
-                    log_arity: opening.log_arity as usize,
-                    max: params.max_log_arity,
-                })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+    if params.max_log_arity == 0 {
+        return Err(FriError::ZeroFoldingArity);
+    }
+    // Since p3-fri 0.8 the fold schedule comes from the configuration and the committed input
+    // heights, exactly as `verify_fri` derives it; the proof no longer carries it.
+    let mut input_log_heights = Vec::new();
+    for claim in commitments_with_opening_points {
+        for MatrixOpening { domain, .. } in &claim.matrices {
+            let height = log2_strict_usize(domain.size())
+                .checked_add(params.log_blowup)
+                .filter(|&height| height < usize::BITS as usize)
+                .ok_or(FriError::GlobalMaxHeightTooLarge {
+                    log_global_max_height: usize::MAX,
+                    two_adicity: Val::TWO_ADICITY,
+                })?;
+            input_log_heights.push(height);
+        }
+    }
+    input_log_heights.sort_unstable_by(|a, b| b.cmp(a));
+    input_log_heights.dedup();
+    let log_final_height_for_schedule = params
+        .log_blowup
+        .checked_add(params.log_final_poly_len)
+        .ok_or(FriError::GlobalMaxHeightTooLarge {
+            log_global_max_height: usize::MAX,
+            two_adicity: Val::TWO_ADICITY,
+        })?;
+    let log_arities = p3_fri::fold_schedule(
+        &input_log_heights,
+        log_final_height_for_schedule,
+        params.max_log_arity,
+    );
+    if proof.commit_phase_openings.len() != log_arities.len() {
+        return Err(FriError::CommitPhaseOpeningsCountMismatch {
+            expected: log_arities.len(),
+            got: proof.commit_phase_openings.len(),
+        });
+    }
 
     for (round, opening) in proof.commit_phase_openings.iter().enumerate() {
         if opening.sibling_values.len() != params.num_queries {
@@ -988,15 +1062,7 @@ where
                 got: opening.sibling_values.len(),
             });
         }
-        let expected_siblings = opening
-            .checked_log_arity(params.max_log_arity)
-            .and_then(|log| 1usize.checked_shl(log as u32))
-            .and_then(|arity| arity.checked_sub(1))
-            .ok_or(FriError::InvalidLogArity {
-                round,
-                log_arity: opening.log_arity as usize,
-                max: params.max_log_arity,
-            })?;
+        let expected_siblings = (1usize << log_arities[round]) - 1;
         if let Some(actual) = opening
             .sibling_values
             .iter()
@@ -1038,8 +1104,8 @@ where
     //   H_in   = max committed log_2(domain.size) + log_blowup
     //   H_fold = sum(per-round log-arities) + log_blowup + log_final_poly_len
     let mut expected_log_global_max_height = None;
-    for (_, matrices) in commitments_with_opening_points {
-        for (domain, _) in matrices {
+    for claim in commitments_with_opening_points {
+        for MatrixOpening { domain, .. } in &claim.matrices {
             let height = log2_strict_usize(domain.size())
                 .checked_add(params.log_blowup)
                 .filter(|&height| height < usize::BITS as usize)
@@ -1054,9 +1120,11 @@ where
     if let Some(expected) = expected_log_global_max_height
         && log_global_max_height != expected
     {
-        return Err(FriError::GlobalMaxHeightMismatch {
-            expected,
-            got: log_global_max_height,
+        // The schedule is derived from these very heights, so this cannot disagree; keep the
+        // independent derivation as a guard against a schedule/height drift.
+        return Err(FriError::GlobalMaxHeightTooLarge {
+            log_global_max_height: log_global_max_height.max(expected),
+            two_adicity: Val::TWO_ADICITY,
         });
     }
 
@@ -1099,7 +1167,7 @@ where
             got: proof.input_openings.len(),
         });
     }
-    for (batch, (opening, (_, matrices))) in proof
+    for (batch, (opening, CommitmentOpening { matrices, .. })) in proof
         .input_openings
         .iter()
         .zip(commitments_with_opening_points)
@@ -1120,11 +1188,19 @@ where
                     got: rows.len(),
                 });
             }
-            for (matrix, (row, (_, points))) in rows.iter().zip(matrices).enumerate() {
+            for (matrix, (row, MatrixOpening { points, .. })) in
+                rows.iter().zip(matrices).enumerate()
+            {
                 if points.is_empty() {
                     return Err(FriError::MatrixWithoutOpeningPoints { batch, matrix });
                 }
-                for (point, (_, claimed)) in points.iter().enumerate() {
+                for (
+                    point,
+                    PointOpening {
+                        values: claimed, ..
+                    },
+                ) in points.iter().enumerate()
+                {
                     if row.len() != claimed.len() {
                         return Err(FriError::PointEvaluationCountMismatch {
                             batch,
@@ -1140,8 +1216,15 @@ where
     }
 
     // Only after the complete borrowed schedule/proof preflight may transcript
-    // replay begin.
+    // replay begin. The challenger sits after the PCS transcript's claimed openings; finish the
+    // PCS batch phase, then open the low-degree test's own transcript with its seed.
+    if !challenger.check_witness(params.batch_proof_of_work_bits, proof.batch_pow_witness) {
+        return Err(FriError::InvalidPowWitness(PowPhase::Batch));
+    }
     let alpha: Challenge = challenger.sample_algebra_element();
+    FriShape::with_schedule(params, log_arities.clone(), query_index_bits)
+        .domain_separator::<Val, Challenge>()
+        .seed(challenger);
 
     let betas: Vec<Challenge> = proof
         .commit_phase_commits
@@ -1150,7 +1233,7 @@ where
         .map(|(comm, witness)| {
             challenger.observe(comm.clone());
             if !challenger.check_witness(params.commit_proof_of_work_bits, *witness) {
-                return Err(FriError::InvalidPowWitness);
+                return Err(FriError::InvalidPowWitness(PowPhase::CommitPhase));
             }
             Ok(challenger.sample_algebra_element())
         })
@@ -1158,17 +1241,54 @@ where
 
     challenger.observe_algebra_slice(&proof.final_poly);
 
-    for &log_arity in &log_arities {
-        challenger.observe(Val::from_usize(log_arity));
-    }
-
     if !challenger.check_witness(params.query_proof_of_work_bits, proof.query_pow_witness) {
-        return Err(FriError::InvalidPowWitness);
+        return Err(FriError::InvalidPowWitness(PowPhase::Query));
     }
 
     let indices: Vec<usize> = core::iter::repeat_with(|| challenger.sample_bits(query_index_bits))
         .take(params.num_queries)
         .collect();
+
+    Ok(FriQuerySamples {
+        alpha,
+        betas,
+        log_arities,
+        log_global_max_height,
+        log_final_height,
+        extra_query_index_bits,
+        indices,
+    })
+}
+
+/// Reduce the input openings at the sampled queries and walk every query's fold chain.
+fn fold_fri_queries<Val, Challenge, InputMmcs, FriMmcs, Witness>(
+    params: &FriParameters<FriMmcs>,
+    input_mmcs: &InputMmcs,
+    proof: &FriProof<Challenge, FriMmcs, Witness, Vec<BatchMultiOpening<Val, InputMmcs>>>,
+    commitments_with_opening_points: &[CommitmentWithOpeningPoints<
+        Challenge,
+        InputMmcs::Commitment,
+        TwoAdicMultiplicativeCoset<Val>,
+    >],
+    samples: FriQuerySamples<Challenge>,
+) -> Result<FriQueryLayout<Challenge>, FriError<FriMmcs::Error, InputMmcs::Error>>
+where
+    Val: TwoAdicField,
+    Challenge: ExtensionField<Val>,
+    InputMmcs: Mmcs<Val, MultiProof: Sync, Error: Sync>,
+    FriMmcs: Mmcs<Challenge>,
+{
+    type Folding<Val, InputMmcs> = TwoAdicFriFoldingForMmcs<Val, InputMmcs>;
+    let folding: Folding<Val, InputMmcs> = TwoAdicFriFolding(PhantomData);
+    let FriQuerySamples {
+        alpha,
+        betas,
+        log_arities,
+        log_global_max_height,
+        log_final_height,
+        extra_query_index_bits,
+        indices,
+    } = samples;
 
     let reduced_openings = open_inputs::<Val, Challenge, _, FriMmcs>(
         params,
@@ -1215,16 +1335,12 @@ where
 /// Both are rederived from the verifier-known opening points exactly as
 /// [`p3_fri::verifier::open_inputs`] derives them; the proof contributes only each matrix's
 /// opened width.
-#[expect(clippy::type_complexity)]
 fn input_batch_layout<Val, Challenge, E1: core::fmt::Debug, E2: core::fmt::Debug>(
     params: &FriParameters<impl Mmcs<Challenge>>,
     batch: usize,
     log_global_max_height: usize,
     indices: &[usize],
-    mats: &[(
-        TwoAdicMultiplicativeCoset<Val>,
-        Vec<(Challenge, Vec<Challenge>)>,
-    )],
+    mats: &[MatrixOpening<Challenge, TwoAdicMultiplicativeCoset<Val>>],
 ) -> Result<(Vec<Dimensions>, Vec<usize>), FriError<E1, E2>>
 where
     Val: TwoAdicField,
@@ -1232,14 +1348,15 @@ where
 {
     let batch_heights: Vec<usize> = mats
         .iter()
-        .map(|(domain, _)| domain.size() << params.log_blowup)
+        .map(|matrix| matrix.domain.size() << params.log_blowup)
         .collect();
     let batch_dims = batch_heights
         .iter()
         .zip(mats)
         .enumerate()
-        .map(|(matrix, (&height, (_, points_and_values)))| {
-            let (_, values) = points_and_values
+        .map(|(matrix, (&height, opening))| {
+            let PointOpening { values, .. } = opening
+                .points
                 .first()
                 .ok_or(FriError::MatrixWithoutOpeningPoints { batch, matrix })?;
             Ok(Dimensions {
@@ -1341,10 +1458,11 @@ pub fn restore_fri_query_paths<
     >],
 ) -> Result<Vec<FriQueryPaths<Val, DIGEST_ELEMS>>, FriError<MerkleTreeError, MerkleTreeError>>
 where
-    Val: TwoAdicField + Serialize + DeserializeOwned,
+    Val: TwoAdicField + PrimeField64 + Serialize + DeserializeOwned,
     Challenge: ExtensionField<Val>,
-    FriMmcs:
-        Mmcs<Challenge, MultiProof = PrunedMerklePaths<Val, DIGEST_ELEMS>, Error = MerkleTreeError>,
+    FriMmcs: Mmcs<Challenge, MultiProof = PrunedMerklePaths<Val, DIGEST_ELEMS>, Error = MerkleTreeError>
+        + Sync,
+    FriMmcs::Commitment: Sync,
     Challenger: FieldChallenger<Val> + GrindingChallenger + CanObserve<FriMmcs::Commitment>,
     H: CryptographicHasher<Val, [Val; DIGEST_ELEMS]>
         + CryptographicHasher<Val::Packing, [Val::Packing; DIGEST_ELEMS]>
@@ -1354,74 +1472,96 @@ where
         + Sync,
     [Val; DIGEST_ELEMS]: Serialize + DeserializeOwned,
 {
-    let layout = replay_fri_query_layout(
-        params,
-        input_mmcs,
-        proof,
-        challenger,
-        commitments_with_opening_points,
-    )?;
+    let samples = sample_fri_queries(params, proof, challenger, commitments_with_opening_points)?;
+    let indices = samples.indices.clone();
+    let log_global_max_height = samples.log_global_max_height;
 
     // Input batches: the opened rows are explicit, so only the leaf indices and the committed
-    // dimensions have to be rederived — exactly as `open_inputs` derives them.
-    let mut input_paths_by_batch: Vec<Vec<Vec<[Val; DIGEST_ELEMS]>>> =
-        Vec::with_capacity(proof.input_openings.len());
-    for (batch, (batch_opening, (_, mats))) in proof
-        .input_openings
-        .iter()
-        .zip(commitments_with_opening_points)
-        .enumerate()
-    {
-        let (batch_dims, reduced_indices) = input_batch_layout::<Val, Challenge, _, _>(
-            params,
-            batch,
-            layout.log_global_max_height,
-            &layout.indices,
-            mats,
-        )?;
-
-        input_paths_by_batch.push(
-            input_mmcs
-                .restore_and_recompute_paths(
-                    &batch_dims,
-                    &reduced_indices,
-                    &batch_opening.opened_values,
-                    &batch_opening.opening_proof,
+    // dimensions have to be rederived — exactly as `open_inputs` derives them. Those depend only
+    // on the sampled indices, so the paths are rebuilt while the fold chains are walked.
+    let (layout, input_paths_by_batch) = join(
+        || {
+            fold_fri_queries(
+                params,
+                input_mmcs,
+                proof,
+                commitments_with_opening_points,
+                samples,
+            )
+        },
+        || {
+            proof
+                .input_openings
+                .par_iter()
+                .zip(commitments_with_opening_points.par_iter())
+                .enumerate()
+                .map(
+                    |(batch, (batch_opening, CommitmentOpening { matrices: mats, .. }))| {
+                        let (batch_dims, reduced_indices) =
+                            input_batch_layout::<Val, Challenge, MerkleTreeError, MerkleTreeError>(
+                                params,
+                                batch,
+                                log_global_max_height,
+                                &indices,
+                                mats,
+                            )?;
+                        Ok(input_mmcs
+                            .restore_and_recompute_paths(
+                                &batch_dims,
+                                &reduced_indices,
+                                &batch_opening.opened_values,
+                                &batch_opening.opening_proof,
+                            )
+                            .map_err(FriError::InputError)?
+                            .into_iter()
+                            .map(|path| path.siblings)
+                            .collect())
+                    },
                 )
-                .map_err(FriError::InputError)?
-                .into_iter()
-                .map(|path| path.siblings)
-                .collect(),
-        );
-    }
+                .collect::<Result<
+                    Vec<Vec<Vec<[Val; DIGEST_ELEMS]>>>,
+                    FriError<MerkleTreeError, MerkleTreeError>,
+                >>()
+        },
+    );
+    let layout = layout?;
+    let input_paths_by_batch = input_paths_by_batch?;
 
     // Commit-phase rounds: one matrix of `arity` extension columns per round, flattened to base
     // field the way the round's `ExtensionMmcs` commits it.
-    let mut commit_phase_paths_by_round: Vec<Vec<Vec<[Val; DIGEST_ELEMS]>>> =
-        Vec::with_capacity(layout.log_arities.len());
-    let mut log_current_height = layout.log_global_max_height;
-    for (round, (opening, &log_arity)) in proof
-        .commit_phase_openings
+    let log_folded_heights: Vec<usize> = layout
+        .log_arities
         .iter()
-        .zip(&layout.log_arities)
+        .scan(layout.log_global_max_height, |log_height, &log_arity| {
+            *log_height -= log_arity;
+            Some(*log_height)
+        })
+        .collect();
+    let commit_phase_paths_by_round: Vec<Vec<Vec<[Val; DIGEST_ELEMS]>>> = proof
+        .commit_phase_openings
+        .par_iter()
+        .zip(
+            layout
+                .log_arities
+                .par_iter()
+                .zip(log_folded_heights.par_iter()),
+        )
         .enumerate()
-    {
-        let log_folded_height = log_current_height - log_arity;
-        let dims = [commit_phase_dims::<Challenge, Val>(
-            log_arity,
-            log_folded_height,
-        )];
-        let opened_values: Vec<Vec<Vec<Val>>> = layout.rows_by_round[round]
-            .iter()
-            .map(|rows| {
-                rows.iter()
-                    .map(|row| Challenge::flatten_to_base(row.clone()))
-                    .collect()
-            })
-            .collect();
+        .map(|(round, (opening, (&log_arity, &log_folded_height)))| {
+            let dims = [commit_phase_dims::<Challenge, Val>(
+                log_arity,
+                log_folded_height,
+            )];
+            let opened_values: Vec<Vec<Vec<Val>>> = layout.rows_by_round[round]
+                .iter()
+                .map(|rows| {
+                    rows.iter()
+                        .map(|row| Challenge::flatten_to_base(row.clone()))
+                        .collect()
+                })
+                .collect();
 
-        commit_phase_paths_by_round.push(
-            commit_phase_mmcs
+            Ok(commit_phase_mmcs
                 .restore_and_recompute_paths(
                     &dims,
                     &layout.group_indices_by_round[round],
@@ -1431,10 +1571,9 @@ where
                 .map_err(FriError::CommitPhaseMmcsError)?
                 .into_iter()
                 .map(|path| path.siblings)
-                .collect(),
-        );
-        log_current_height = log_folded_height;
-    }
+                .collect())
+        })
+        .collect::<Result<_, FriError<MerkleTreeError, MerkleTreeError>>>()?;
 
     Ok(transpose_query_paths(
         params.num_queries,
@@ -1482,7 +1621,7 @@ pub fn restore_hiding_fri_query_paths<
     >],
 ) -> Result<Vec<FriQueryPaths<Val, DIGEST_ELEMS>>, FriError<MerkleTreeError, MerkleTreeError>>
 where
-    Val: TwoAdicField + Serialize + DeserializeOwned,
+    Val: TwoAdicField + PrimeField64 + Serialize + DeserializeOwned,
     Challenge: ExtensionField<Val>,
     FriMmcs: Mmcs<
             Challenge,
@@ -1510,7 +1649,7 @@ where
 
     let mut input_paths_by_batch: Vec<Vec<Vec<[Val; DIGEST_ELEMS]>>> =
         Vec::with_capacity(proof.input_openings.len());
-    for (batch, (batch_opening, (_, mats))) in proof
+    for (batch, (batch_opening, CommitmentOpening { matrices: mats, .. })) in proof
         .input_openings
         .iter()
         .zip(commitments_with_opening_points)
@@ -1626,20 +1765,29 @@ fn salt_opened_values<Val: Clone, const SALT_ELEMS: usize>(
     salts: &[Vec<Vec<Val>>],
 ) -> Result<Vec<Vec<Vec<Val>>>, MerkleTreeError> {
     if salts.len() != opened_values.len() {
-        return Err(MerkleTreeError::WrongBatchSize);
+        return Err(MerkleTreeError::WrongBatchSize {
+            expected: opened_values.len(),
+            got: salts.len(),
+        });
     }
     opened_values
         .iter()
         .zip(salts)
         .map(|(rows, query_salts)| {
             if query_salts.len() != rows.len() {
-                return Err(MerkleTreeError::WrongBatchSize);
+                return Err(MerkleTreeError::WrongBatchSize {
+                    expected: rows.len(),
+                    got: query_salts.len(),
+                });
             }
             rows.iter()
                 .zip(query_salts)
                 .map(|(row, salt)| {
                     if salt.len() != SALT_ELEMS {
-                        return Err(MerkleTreeError::WrongBatchSize);
+                        return Err(MerkleTreeError::WrongBatchSize {
+                            expected: SALT_ELEMS,
+                            got: salt.len(),
+                        });
                     }
                     Ok(row.iter().chain(salt).cloned().collect())
                 })
@@ -3551,6 +3699,7 @@ mod test {
         let val_mmcs = MyMmcs::new(hash, compress, 0);
         let fri_params = FriParameters {
             num_queries: 6,
+            batch_proof_of_work_bits: 0,
             commit_proof_of_work_bits: 0,
             query_proof_of_work_bits: 0,
             ..FriParameters::new_testing(ChallengeMmcs::new(val_mmcs.clone()), 0)
@@ -3574,34 +3723,43 @@ mod test {
             .collect();
         let domains: Vec<_> = evals.iter().map(|(domain, _)| *domain).collect();
 
-        let (commitment, prover_data) = <Pcs4 as Pcs<Challenge, Challenger>>::commit(&pcs, evals);
+        let (commitment, prover_data) =
+            <Pcs4 as Pcs<Challenge, Challenger>>::commit(&pcs, evals).unwrap();
 
         let mut p_challenger = Challenger::new(perm.clone());
         p_challenger.observe(commitment.clone());
         let zeta: Challenge = p_challenger.sample_algebra_element();
         let (opened_values, proof) = <Pcs4 as Pcs<Challenge, Challenger>>::open(
             &pcs,
-            vec![(&prover_data, vec![vec![zeta]; log_degrees.len()])],
+            vec![(&prover_data, vec![vec![zeta]; log_degrees.len()]).into()],
             &mut p_challenger,
-        );
+        )
+        .unwrap();
 
         // Verifier transcript, replayed up to the point `verify_fri` starts from.
         let mut challenger = Challenger::new(perm);
         challenger.observe(commitment.clone());
         let v_zeta: Challenge = challenger.sample_algebra_element();
         assert_eq!(v_zeta, zeta);
-        let cwop = vec![(
-            commitment.clone(),
-            domains
-                .iter()
-                .zip(&opened_values[0])
-                .map(|(domain, mat)| (*domain, vec![(zeta, mat[0].clone())]))
-                .collect::<Vec<_>>(),
-        )];
-        for (_, round) in &cwop {
-            for (_, mat) in round {
-                for (_, point) in mat {
-                    challenger.observe_algebra_slice(point);
+        let cwop: Vec<CommitmentWithOpeningPoints<_, _, _>> = vec![
+            (
+                commitment.clone(),
+                domains
+                    .iter()
+                    .zip(&opened_values[0])
+                    .map(|(domain, mat)| (*domain, vec![(zeta, mat[0].clone())]))
+                    .collect::<Vec<_>>(),
+            )
+                .into(),
+        ];
+        // The FRI PCS transcript: its domain separator, then every claimed evaluation.
+        p3_fri::PcsShape::from_claims(&fri_params, &cwop)
+            .domain_separator::<F, Challenge>()
+            .seed(&mut challenger);
+        for claim in &cwop {
+            for matrix in &claim.matrices {
+                for point in &matrix.points {
+                    challenger.observe_algebra_slice(&point.values);
                 }
             }
         }
@@ -3657,7 +3815,7 @@ mod test {
         // Commit phase: one matrix of `arity` extension columns per round, flattened to base.
         let mut log_current_height = log_global_max_height;
         for (round, opening) in proof.commit_phase_openings.iter().enumerate() {
-            let log_arity = opening.log_arity as usize;
+            let log_arity = crate::pcs::fri::sibling_log_arity(opening).unwrap();
             let arity = 1usize << log_arity;
             let log_folded_height = log_current_height - log_arity;
             let dims = [Dimensions {
@@ -3704,14 +3862,29 @@ mod test {
         usize,
     ) {
         let folding: TwoAdicFriFoldingForMmcs<F, MyMmcs> = TwoAdicFriFolding(PhantomData);
+        assert!(challenger.check_witness(params.batch_proof_of_work_bits, proof.batch_pow_witness));
         let alpha: Challenge = challenger.sample_algebra_element();
-        let log_arities: Vec<usize> = proof
-            .commit_phase_openings
+        let mut input_log_heights: Vec<usize> = cwop
             .iter()
-            .map(|opening| opening.log_arity as usize)
+            .flat_map(|claim| {
+                claim
+                    .matrices
+                    .iter()
+                    .map(|matrix| log2_strict_usize(matrix.domain.size()) + params.log_blowup)
+            })
             .collect();
+        input_log_heights.sort_unstable_by(|a, b| b.cmp(a));
+        input_log_heights.dedup();
+        let log_arities = p3_fri::fold_schedule(
+            &input_log_heights,
+            params.log_blowup + params.log_final_poly_len,
+            params.max_log_arity,
+        );
         let log_global_max_height =
             log_arities.iter().sum::<usize>() + params.log_blowup + params.log_final_poly_len;
+        FriShape::with_schedule(params, log_arities.clone(), log_global_max_height)
+            .domain_separator::<F, Challenge>()
+            .seed(challenger);
 
         let betas: Vec<Challenge> = proof
             .commit_phase_commits
@@ -3725,9 +3898,6 @@ mod test {
             .collect();
 
         challenger.observe_algebra_slice(&proof.final_poly);
-        for &log_arity in &log_arities {
-            challenger.observe(F::from_usize(log_arity));
-        }
         assert!(challenger.check_witness(params.query_proof_of_work_bits, proof.query_pow_witness));
 
         let indices: Vec<usize> =

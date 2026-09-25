@@ -10,7 +10,7 @@ use p3_field::{BasedVectorSpace, PrimeField32, PrimeField64};
 use super::{ArtifactError, ArtifactKind, ArtifactLimits};
 
 const MAGIC: &[u8; 8] = b"P3RCART\0";
-const VERSION: u16 = 1;
+const VERSION: u16 = 2;
 const HEADER_BYTES: usize = 17;
 
 pub(crate) fn checked_product(left: usize, right: usize) -> Result<usize, ArtifactError> {
@@ -645,7 +645,7 @@ mod tests {
         assert_eq!(
             encoded,
             vec![
-                b'P', b'3', b'R', b'C', b'A', b'R', b'T', 0, 1, 0, 2, 0x34, 0x12, 2, 0, 0, 0, 0xcd,
+                b'P', b'3', b'R', b'C', b'A', b'R', b'T', 0, 2, 0, 2, 0x34, 0x12, 2, 0, 0, 0, 0xcd,
                 0xab,
             ]
         );
@@ -679,10 +679,10 @@ mod tests {
         );
 
         let mut wrong_version = valid.clone();
-        wrong_version[8] = 2;
+        wrong_version[8] = 1;
         assert_eq!(
             decode(&wrong_version, ArtifactKind::Proof, |_| true),
-            Err(ArtifactError::UnsupportedVersion(2))
+            Err(ArtifactError::UnsupportedVersion(1))
         );
         assert_eq!(
             decode(&valid, ArtifactKind::Proof, |_| false),

@@ -4,12 +4,11 @@
 use alloc::borrow::Cow;
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
-use alloc::rc::Rc;
 use alloc::string::{String, ToString};
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use alloc::{format, vec};
 use core::any::TypeId;
-use core::cell::RefCell;
 
 use hashbrown::HashMap;
 #[cfg(debug_assertions)]
@@ -17,8 +16,12 @@ use p3_air::DebugConstraintBuilder;
 use p3_air::symbolic::AirLayout;
 use p3_air::{Air, BaseAir};
 use p3_batch_stark::common::{GlobalPreprocessed, PreprocessedInstanceMeta};
+use p3_batch_stark::folder::{
+    ProverConstraintFolderWithLookups, VerifierConstraintFolderWithLookups,
+};
 use p3_batch_stark::symbolic::get_log_num_quotient_chunks;
 use p3_batch_stark::{BatchProof, CommonData, ProverData, StarkGenericConfig, StarkInstance, Val};
+use p3_challenger::GrindingChallenger;
 use p3_circuit::ops::{
     NonPrimitivePreprocessedMap, NpoTypeId, Poseidon1Config, Poseidon2Config, PrimitiveOpType,
 };
@@ -31,7 +34,6 @@ use p3_field::{
     PrimeField64,
 };
 use p3_lookup::Lookups;
-use p3_lookup::folder::{ProverConstraintFolderWithLookups, VerifierConstraintFolderWithLookups};
 use p3_lookup::logup::LogUpGadget;
 use p3_lookup::symbolic::InteractionSymbolicBuilder;
 use p3_matrix::Matrix;
@@ -41,7 +43,7 @@ use p3_poseidon_circuit_cols::{
     poseidon_preprocessed_row_width, poseidon_preprocessed_row_width_for_air,
     poseidon_uses_compact_d1_preprocessed,
 };
-use p3_uni_stark::{SymbolicExpression, SymbolicExpressionExt};
+use p3_uni_stark::{PcsProverError, SymbolicExpression, SymbolicExpressionExt};
 use p3_util::log2_strict_usize;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -60,16 +62,20 @@ use crate::config::StarkField;
 use crate::constraint_profile::ConstraintProfile;
 use crate::field_params::ExtractBinomialW;
 
+mod blake3;
 mod dynamic_air;
+mod keccak;
 mod packing;
 mod poseidon1;
 mod poseidon2;
 mod recompose;
 mod statement;
 
+pub use blake3::{Blake3CompressAirBuilder, Blake3CompressPreprocessor, Blake3CompressProver};
 pub use dynamic_air::{
     BatchAir, BatchTableInstance, CloneableBatchAir, DynamicAirEntry, TableProver,
 };
+pub use keccak::{KeccakF1600AirBuilder, KeccakF1600Preprocessor, KeccakF1600Prover};
 pub use packing::TablePacking;
 pub use poseidon1::{
     Poseidon1AirBuilder, Poseidon1AirBuilderForConfig, Poseidon1AirWrapperInner,
@@ -327,7 +333,7 @@ impl<SC: StarkGenericConfig> NonPrimitiveTableEntry<SC> {
 /// and are not needed here.
 /// Cached ALU packed-Horner schedule and preprocessed trace matrix, keyed by the
 /// `(lanes, horner_packed_steps, min_height)` they were computed for.
-type AluScheduleCache<F> = RefCell<
+type AluScheduleCache<F> = spin::Mutex<
     Option<(
         usize,
         usize,
@@ -369,7 +375,7 @@ impl<SC: StarkGenericConfig> CircuitProverData<SC> {
             prover_data,
             primitive_columns,
             non_primitive_columns,
-            alu_schedule_cache: RefCell::new(None),
+            alu_schedule_cache: spin::Mutex::new(None),
         }
     }
 
@@ -753,7 +759,7 @@ where
     SC: StarkGenericConfig + 'static,
 {
     prover: BatchStarkProver<SC>,
-    circuit_prover_data: Rc<CircuitProverData<SC>>,
+    circuit_prover_data: Arc<CircuitProverData<SC>>,
     relation: CircuitRelation<Val<SC>>,
     verifier: CircuitVerifier<SC>,
 }
@@ -778,7 +784,7 @@ pub struct CircuitVerifier<SC>
 where
     SC: StarkGenericConfig + 'static,
 {
-    inner: Rc<CircuitVerifierData<SC>>,
+    inner: Arc<CircuitVerifierData<SC>>,
 }
 
 struct CircuitVerifierData<SC>
@@ -797,7 +803,7 @@ where
 {
     fn clone(&self) -> Self {
         Self {
-            inner: Rc::clone(&self.inner),
+            inner: Arc::clone(&self.inner),
         }
     }
 }
@@ -995,7 +1001,7 @@ where
             .collect::<Result<Vec<_>, BatchStarkProverError>>()?;
         let common = CommonData::new(common.preprocessed, lookups);
         Ok(Self {
-            inner: Rc::new(CircuitVerifierData {
+            inner: Arc::new(CircuitVerifierData {
                 config,
                 relation,
                 common,
@@ -1405,6 +1411,10 @@ pub enum BatchStarkProverError {
     /// Trusted circuit preparation or a prepared proof disagreed with its finalized relation.
     #[error("trusted circuit relation mismatch: {0}")]
     RelationMismatch(String),
+
+    /// The batch STARK prover failed (e.g. the PCS rejected its configuration or budget).
+    #[error("proving failed: {0}")]
+    Prove(String),
 }
 
 impl<SC, const D: usize> BaseAir<Val<SC>> for CircuitTableAir<SC, D>
@@ -1863,6 +1873,8 @@ where
         circuit_prover_data: &CircuitProverData<SC>,
     ) -> Result<BatchStarkProof<SC>, BatchStarkProverError>
     where
+        SC::Challenger: GrindingChallenger<Witness = Val<SC>>,
+        PcsProverError<SC>: Send,
         EF: Field + BasedVectorSpace<Val<SC>> + ExtractBinomialW<Val<SC>>,
         SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
         <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain: Send + Sync,
@@ -1886,6 +1898,8 @@ where
         relation: &CircuitRelation<Val<SC>>,
     ) -> Result<BatchStarkProof<SC>, BatchStarkProverError>
     where
+        SC::Challenger: GrindingChallenger<Witness = Val<SC>>,
+        PcsProverError<SC>: Send,
         EF: Field + BasedVectorSpace<Val<SC>> + ExtractBinomialW<Val<SC>>,
         SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
         <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain: Send + Sync,
@@ -1924,6 +1938,8 @@ where
         proof: &BatchStarkProof<SC>,
     ) -> Result<(), BatchStarkProverError>
     where
+        SC::Challenger: GrindingChallenger<Witness = Val<SC>>,
+        PcsProverError<SC>: Send,
         EF: Field + BasedVectorSpace<Val<SC>> + ExtractBinomialW<Val<SC>>,
     {
         proof.validate()?;
@@ -1972,6 +1988,8 @@ where
         trusted_relation: Option<&CircuitRelation<Val<SC>>>,
     ) -> Result<BatchStarkProof<SC>, BatchStarkProverError>
     where
+        SC::Challenger: GrindingChallenger<Witness = Val<SC>>,
+        PcsProverError<SC>: Send,
         EF: Field + BasedVectorSpace<Val<SC>> + ExtractBinomialW<Val<SC>>,
         <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain: Send + Sync,
         SC::Pcs: Sync,
@@ -1998,6 +2016,8 @@ where
         transform: M,
     ) -> Result<BatchStarkProof<SC>, BatchStarkProverError>
     where
+        SC::Challenger: GrindingChallenger<Witness = Val<SC>>,
+        PcsProverError<SC>: Send,
         EF: Field + BasedVectorSpace<Val<SC>> + ExtractBinomialW<Val<SC>>,
         M: FnOnce(&mut [RowMajorMatrix<Val<SC>>]),
         <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain: Send + Sync,
@@ -2085,7 +2105,7 @@ where
         // (alu_prep, alu_lanes, horner_k, alu_min_height), not on D, so both are cached in
         // `circuit_prover_data` and reused across proofs of this circuit shape.
         let (alu_schedule, cached_prep_trace) = {
-            let mut cache = circuit_prover_data.alu_schedule_cache.borrow_mut();
+            let mut cache = circuit_prover_data.alu_schedule_cache.lock();
             match cache.as_ref() {
                 Some((cached_lanes, cached_k, cached_min_height, schedule, prep_trace))
                     if *cached_lanes == alu_lanes
@@ -2115,7 +2135,7 @@ where
             alu_air = alu_air.with_precomputed_prep_trace(prep_trace);
         } else if let Some(prep_trace) = alu_air.preprocessed_trace() {
             alu_air = alu_air.with_precomputed_prep_trace(prep_trace.clone());
-            let mut cache = circuit_prover_data.alu_schedule_cache.borrow_mut();
+            let mut cache = circuit_prover_data.alu_schedule_cache.lock();
             if let Some((cached_lanes, cached_k, cached_min_height, _, cached_prep_trace)) =
                 cache.as_mut()
                 && *cached_lanes == alu_lanes
@@ -2376,11 +2396,14 @@ where
                 .iter()
                 .map(|m| log2_strict_usize(m.height()) + self.config.is_zk())
                 .collect();
-            Some(ProverData::from_airs_and_degrees(
-                &self.config,
-                &air_storage,
-                &trace_ext_degree_bits,
-            ))
+            Some(
+                ProverData::from_airs_and_degrees(
+                    &self.config,
+                    &air_storage,
+                    &trace_ext_degree_bits,
+                )
+                .map_err(|e| BatchStarkProverError::Prove(format!("{e:?}")))?,
+            )
         } else {
             None
         };
@@ -2445,6 +2468,7 @@ where
             }
 
             p3_batch_stark::prove_batch(&self.config, &instances, effective_prover_data)
+                .map_err(|e| BatchStarkProverError::Prove(format!("{e:?}")))?
         };
 
         let dynamic_public_values = public_storage.drain(NUM_PRIMITIVE_TABLES..);
@@ -2553,7 +2577,10 @@ where
         proof: &BatchStarkProof<SC>,
         w_binomial: Option<Val<SC>>,
         common: &CommonData<SC>,
-    ) -> Result<(), BatchStarkProverError> {
+    ) -> Result<(), BatchStarkProverError>
+    where
+        SC::Challenger: GrindingChallenger<Witness = Val<SC>>,
+    {
         let prover_index_by_type: BTreeMap<NpoTypeId, usize> = self
             .non_primitive_provers
             .iter()
@@ -2731,7 +2758,10 @@ where
         &self,
         proof: &BatchStarkProof<SC>,
         expected_statement: &[Val<SC>],
-    ) -> Result<(), BatchStarkProverError> {
+    ) -> Result<(), BatchStarkProverError>
+    where
+        SC::Challenger: GrindingChallenger<Witness = Val<SC>>,
+    {
         let table_public_values = self
             .table_public_values(expected_statement)
             .map_err(|error| BatchStarkProverError::RelationMismatch(error.to_string()))?;
@@ -2837,7 +2867,10 @@ where
         &self,
         proof: &BatchStarkProof<SC>,
         public_values: &[Vec<Val<SC>>],
-    ) -> Result<(), BatchStarkProverError> {
+    ) -> Result<(), BatchStarkProverError>
+    where
+        SC::Challenger: GrindingChallenger<Witness = Val<SC>>,
+    {
         let airs = self.table_airs::<D>()?;
         if proof.proof.opened_values.instances.len() != airs.len() {
             return Err(BatchStarkProverError::RelationMismatch(format!(
@@ -2865,7 +2898,7 @@ where
                 .into());
             }
             if BaseAir::<Val<SC>>::preprocessed_width(air) > 0
-                && opened.preprocessed_next.as_ref().is_some_and(Vec::is_empty)
+                && opened.preprocessed_next().is_some_and(<[_]>::is_empty)
             {
                 return Err(ProofMetadataError::UnsupportedEmptyNextRow {
                     table,
@@ -2936,7 +2969,8 @@ where
             finalized.into_parts();
         let (airs, _base_degrees): (Vec<_>, Vec<_>) = airs_and_degrees.into_iter().unzip();
         let prover_data =
-            ProverData::from_airs_and_degrees(&self.config, &airs, relation.trace_degree_bits());
+            ProverData::from_airs_and_degrees(&self.config, &airs, relation.trace_degree_bits())
+                .map_err(|e| BatchStarkProverError::Prove(format!("{e:?}")))?;
         self.table_packing = relation.table_packing().clone();
 
         let mut non_primitive_airs = Vec::with_capacity(relation.non_primitives().len());
@@ -2990,7 +3024,7 @@ where
         }
 
         let verifier = CircuitVerifier {
-            inner: Rc::new(CircuitVerifierData {
+            inner: Arc::new(CircuitVerifierData {
                 config: self.config.clone(),
                 relation: relation.clone(),
                 common: clone_common_data(&prover_data.common),
@@ -3000,7 +3034,7 @@ where
 
         Ok(PreparedCircuitProver {
             prover: self,
-            circuit_prover_data: Rc::new(CircuitProverData::new(
+            circuit_prover_data: Arc::new(CircuitProverData::new(
                 prover_data,
                 primitive_columns,
                 non_primitive_columns,
@@ -3024,6 +3058,8 @@ where
         traces: &Traces<EF>,
     ) -> Result<BatchStarkProof<SC>, BatchStarkProverError>
     where
+        SC::Challenger: GrindingChallenger<Witness = Val<SC>>,
+        PcsProverError<SC>: Send,
         EF: Field + BasedVectorSpace<Val<SC>> + ExtractBinomialW<Val<SC>>,
         <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain: Send + Sync,
         SC::Pcs: Sync,
@@ -3042,8 +3078,10 @@ where
     pub fn prove_with_legacy_data<EF>(
         &self,
         traces: &Traces<EF>,
-    ) -> Result<(BatchStarkProof<SC>, Rc<CircuitProverData<SC>>), BatchStarkProverError>
+    ) -> Result<(BatchStarkProof<SC>, Arc<CircuitProverData<SC>>), BatchStarkProverError>
     where
+        SC::Challenger: GrindingChallenger<Witness = Val<SC>>,
+        PcsProverError<SC>: Send,
         EF: Field + BasedVectorSpace<Val<SC>> + ExtractBinomialW<Val<SC>>,
         <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain: Send + Sync,
         SC::Pcs: Sync,
@@ -3051,7 +3089,7 @@ where
         <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment: Sync,
     {
         let proof = self.prove(traces)?;
-        Ok((proof, Rc::clone(&self.circuit_prover_data)))
+        Ok((proof, Arc::clone(&self.circuit_prover_data)))
     }
 }
 

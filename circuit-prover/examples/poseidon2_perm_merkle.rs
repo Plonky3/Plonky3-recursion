@@ -281,7 +281,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         .expect("poseidon2 trace missing");
     assert_eq!(poseidon2_trace.total_rows(), 3, "expected three perm rows");
 
-    let prover_data = ProverData::from_airs_and_degrees(&stark_config, &airs, &degrees);
+    let prover_data = ProverData::from_airs_and_degrees(&stark_config, &airs, &degrees).unwrap();
     let circuit_prover_data =
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
 

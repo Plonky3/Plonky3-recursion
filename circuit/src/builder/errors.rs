@@ -85,6 +85,11 @@ pub enum CircuitBuilderError {
     #[error("Too many bits for binary decomposition: expected at most {expected}, got {n_bits}")]
     BinaryDecompositionTooManyBits { expected: usize, n_bits: usize },
 
+    /// A gadget that reads field elements as integers was instantiated over a field of
+    /// characteristic 2, where `2 = 0` and integer weights such as `2^j` collapse to parity.
+    #[error("{operation} requires a field of odd characteristic, got characteristic 2")]
+    CharacteristicTwoUnsupported { operation: &'static str },
+
     /// Missing output
     #[error("An output was expected but none was given")]
     MissingOutput,
@@ -368,6 +373,9 @@ mod tests {
             CircuitBuilderError::BinaryDecompositionTooManyBits {
                 expected: 8,
                 n_bits: 16,
+            },
+            CircuitBuilderError::CharacteristicTwoUnsupported {
+                operation: "reconstruct_index_from_bits",
             },
             CircuitBuilderError::MissingOutput,
             CircuitBuilderError::DuplicateTag { tag: "t".into() },

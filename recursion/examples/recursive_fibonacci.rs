@@ -177,6 +177,7 @@ impl Args {
 }
 
 fn main() {
+    keep_freed_memory_mapped();
     init_logger();
 
     let args = Args::parse();
@@ -375,7 +376,8 @@ macro_rules! define_field_module {
                         let ext_degrees_0: Vec<usize> =
                             degrees_0.iter().map(|&d| d + config_0.is_zk()).collect();
                         let prover_data_0 =
-                            ProverData::from_airs_and_degrees(&config_0, &airs_0, &ext_degrees_0);
+                            ProverData::from_airs_and_degrees(&config_0, &airs_0, &ext_degrees_0)
+                                .unwrap();
                         let circuit_prover_data_0 = CircuitProverData::new(
                             prover_data_0,
                             primitive_columns_0,
@@ -396,7 +398,7 @@ macro_rules! define_field_module {
                             return;
                         }
 
-                        let mut output = RecursionOutput(proof_0, Rc::new(circuit_prover_data_0));
+                        let mut output = RecursionOutput(proof_0, Arc::new(circuit_prover_data_0));
 
                         // Keep an owner only after two consecutive native input contracts match.
                         // A witness count alone cannot authorize reusing a prepared verifier.
@@ -758,7 +760,7 @@ macro_rules! define_field_module_quintic {
                     .unwrap();
                 let (airs_0, degrees_0): (Vec<_>, Vec<usize>) = airs_degrees_0.into_iter().unzip();
                 let prover_data_0 =
-                    ProverData::from_airs_and_degrees(&config_0, &airs_0, &degrees_0);
+                    ProverData::from_airs_and_degrees(&config_0, &airs_0, &degrees_0).unwrap();
                 let circuit_prover_data_0 = CircuitProverData::new(
                     prover_data_0,
                     primitive_columns_0,
@@ -779,7 +781,7 @@ macro_rules! define_field_module_quintic {
                     return;
                 }
 
-                let mut output = RecursionOutput(proof_0, Rc::new(circuit_prover_data_0));
+                let mut output = RecursionOutput(proof_0, Arc::new(circuit_prover_data_0));
 
                 // A retained owner is established only after consecutive native contracts match;
                 // witness-count equality is not a cache-compatibility check.

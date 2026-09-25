@@ -35,7 +35,7 @@ fn fibonacci_uni_stark_over_whir_round_trips() {
 
     // One intermediate WHIR round.
     let config = bb_whir_config(vec![4]);
-    let proof = prove(&config, &air, trace, &pis);
+    let proof = prove(&config, &air, trace, &pis).unwrap();
     let _shape = WhirUniProofTargets::<BbF, BbEF, BbMmcs, BB_DIGEST_ELEMS>::input_shape(
         &proof.opening_proof,
     )
@@ -54,7 +54,7 @@ fn fibonacci_uni_stark_over_whir_rejects_a_wrong_public_input() {
     let air = FibonacciAir {};
 
     let config = bb_whir_config(vec![4]);
-    let proof = prove(&config, &air, trace, &pis);
+    let proof = prove(&config, &air, trace, &pis).unwrap();
 
     let wrong = vec![BbF::ZERO, BbF::ONE, x + BbF::ONE];
     assert!(verify(&config, &air, &proof, &wrong).is_err());

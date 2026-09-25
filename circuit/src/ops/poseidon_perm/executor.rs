@@ -1,9 +1,9 @@
 //! Poseidon permutation executor — generic over [`PoseidonVariant`].
 
 use alloc::boxed::Box;
+use alloc::format;
 use alloc::string::ToString;
 use alloc::vec::Vec;
-use alloc::{format, vec};
 use core::fmt;
 use core::marker::PhantomData;
 
@@ -11,7 +11,7 @@ use p3_field::Field;
 
 use super::{
     PoseidonConfigApi, PoseidonExecutionState, PoseidonPermExec, PoseidonPermPrivateData,
-    PoseidonRowFields, PoseidonVariant,
+    PoseidonRowFields, PoseidonRowValues, PoseidonVariant,
 };
 use crate::CircuitError;
 use crate::ops::{ExecutionContext, NonPrimitiveExecutor, NpoTypeId, PreprocessedWriter};
@@ -395,8 +395,8 @@ impl<V: PoseidonVariant> PoseidonPermExecutor<V> {
         let width_ext = self.config.width_ext();
         let rate_ext = self.config.rate_ext();
 
-        let mut in_ctl = vec![false; width_ext];
-        let mut input_indices = vec![0u32; width_ext];
+        let mut in_ctl = PoseidonRowValues::from_elem(false, width_ext);
+        let mut input_indices = PoseidonRowValues::from_elem(0u32, width_ext);
         for (i, inp) in inputs[..width_ext].iter().enumerate() {
             if let Some(&wid) = inp.first() {
                 in_ctl[i] = true;
@@ -404,8 +404,8 @@ impl<V: PoseidonVariant> PoseidonPermExecutor<V> {
             }
         }
 
-        let mut out_ctl = vec![false; rate_ext];
-        let mut output_indices = vec![0u32; rate_ext];
+        let mut out_ctl = PoseidonRowValues::from_elem(false, rate_ext);
+        let mut output_indices = PoseidonRowValues::from_elem(0u32, rate_ext);
         for (i, out_slot) in outputs.iter().take(rate_ext).enumerate() {
             if let Some(&wid) = out_slot.first() {
                 out_ctl[i] = true;
@@ -434,7 +434,7 @@ impl<V: PoseidonVariant> PoseidonPermExecutor<V> {
             mmcs_bit,
             mmcs_bit2,
             mmcs_index_sum,
-            input_values,
+            input_values: input_values.into(),
             in_ctl,
             input_indices,
             out_ctl,
@@ -458,8 +458,8 @@ impl<V: PoseidonVariant> PoseidonPermExecutor<V> {
     ) -> V::Row<F> {
         let width = self.config.width();
         let rate_ext = self.config.rate_ext();
-        let mut in_ctl = vec![false; width];
-        let mut input_indices = vec![0u32; width];
+        let mut in_ctl = PoseidonRowValues::from_elem(false, width);
+        let mut input_indices = PoseidonRowValues::from_elem(0u32, width);
         for i in 0..width {
             if let Some(inp) = inputs.get(i)
                 && let [wid] = inp.as_slice()
@@ -474,8 +474,8 @@ impl<V: PoseidonVariant> PoseidonPermExecutor<V> {
             }
         }
 
-        let mut out_ctl = vec![false; rate_ext];
-        let mut output_indices = vec![0u32; rate_ext];
+        let mut out_ctl = PoseidonRowValues::from_elem(false, rate_ext);
+        let mut output_indices = PoseidonRowValues::from_elem(0u32, rate_ext);
         for i in 0..rate_ext {
             if let Some(out_slot) = outputs.get(i)
                 && let [wid] = out_slot.as_slice()
@@ -491,7 +491,7 @@ impl<V: PoseidonVariant> PoseidonPermExecutor<V> {
             mmcs_bit: false,
             mmcs_bit2: false,
             mmcs_index_sum: F::ZERO,
-            input_values: input_values.to_vec(),
+            input_values: PoseidonRowValues::from_slice(input_values),
             in_ctl,
             input_indices,
             out_ctl,
@@ -1590,10 +1590,10 @@ mod tests {
             .build_trace_row(&inputs, &outputs, false, false, input_values, &ctx)
             .unwrap();
 
-        assert_eq!(row.in_ctl, vec![true, false, true, false]);
-        assert_eq!(row.input_indices, vec![1, 0, 3, 0]);
-        assert_eq!(row.out_ctl, vec![true, false]);
-        assert_eq!(row.output_indices, vec![5, 0]);
+        assert_eq!(row.in_ctl.to_vec(), vec![true, false, true, false]);
+        assert_eq!(row.input_indices.to_vec(), vec![1, 0, 3, 0]);
+        assert_eq!(row.out_ctl.to_vec(), vec![true, false]);
+        assert_eq!(row.output_indices.to_vec(), vec![5, 0]);
         assert!(row.mmcs_ctl_enabled);
         assert_eq!(row.mmcs_index_sum, F::from_u64(42));
     }
@@ -1640,8 +1640,8 @@ mod tests {
         let mut exp_idx = vec![0u32; 16];
         exp_idx[0] = 10;
         exp_idx[4] = 20;
-        assert_eq!(row.in_ctl, exp_ctl);
-        assert_eq!(row.input_indices, exp_idx);
+        assert_eq!(row.in_ctl.to_vec(), exp_ctl);
+        assert_eq!(row.input_indices.to_vec(), exp_idx);
     }
 
     #[test]
@@ -1665,11 +1665,11 @@ mod tests {
             mmcs_bit: false,
             mmcs_bit2: false,
             mmcs_index_sum: F::ZERO,
-            input_values: vec![],
-            in_ctl: vec![],
-            input_indices: vec![],
-            out_ctl: vec![],
-            output_indices: vec![],
+            input_values: vec![].into(),
+            in_ctl: vec![].into(),
+            input_indices: vec![].into(),
+            out_ctl: vec![].into(),
+            output_indices: vec![].into(),
             mmcs_index_sum_idx: 0,
             mmcs_ctl_enabled: false,
             absorb_len: 0,
@@ -1706,11 +1706,11 @@ mod tests {
             mmcs_bit: false,
             mmcs_bit2: false,
             mmcs_index_sum: F::ZERO,
-            input_values: vec![],
-            in_ctl: vec![],
-            input_indices: vec![],
-            out_ctl: vec![],
-            output_indices: vec![],
+            input_values: vec![].into(),
+            in_ctl: vec![].into(),
+            input_indices: vec![].into(),
+            out_ctl: vec![].into(),
+            output_indices: vec![].into(),
             mmcs_index_sum_idx: 0,
             mmcs_ctl_enabled: false,
             absorb_len: 0,

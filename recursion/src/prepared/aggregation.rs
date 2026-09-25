@@ -100,6 +100,8 @@ where
 impl<'left_air, 'right_air, SC, A1, A2, B, const D: usize>
     PreparedAggregation<'left_air, 'right_air, SC, A1, A2, B, D>
 where
+    p3_uni_stark::PcsProverError<SC>: Send,
+    SC::Challenger: p3_challenger::GrindingChallenger<Witness = p3_uni_stark::Val<SC>>,
     SC: StarkGenericConfig + Send + Sync + Clone + 'static,
     A1: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
     A2: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
@@ -371,6 +373,8 @@ where
 impl<'left_air, 'right_air, InSC, OutSC, A1, A2, B, const D: usize>
     PreparedAggregationCross<'left_air, 'right_air, InSC, OutSC, A1, A2, B, D>
 where
+    p3_uni_stark::PcsProverError<OutSC>: Send,
+    OutSC::Challenger: p3_challenger::GrindingChallenger<Witness = p3_uni_stark::Val<OutSC>>,
     InSC: StarkGenericConfig + Send + Sync + Clone + 'static,
     OutSC: StarkGenericConfig<Challenge = InSC::Challenge> + Send + Sync + Clone + 'static,
     A1: RecursiveAir<Val<InSC>, InSC::Challenge, LogUpGadget>,

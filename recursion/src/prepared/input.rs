@@ -165,16 +165,17 @@ fn opened_values_shape<EF>(values: &p3_uni_stark::OpenedValues<EF>) -> OpenedVal
     let p3_uni_stark::OpenedValues {
         trace_local,
         trace_next,
-        preprocessed_local,
-        preprocessed_next,
+        preprocessed,
         quotient_chunks,
         random,
     } = values;
+    let preprocessed_local = preprocessed.as_ref().map(|p| p.local.as_slice());
+    let preprocessed_next = preprocessed.as_ref().and_then(|p| p.next.as_deref());
     OpenedValuesShape {
         trace_local: trace_local.len(),
         trace_next: trace_next.as_ref().map(Vec::len),
-        preprocessed_local: preprocessed_local.as_ref().map(Vec::len),
-        preprocessed_next: preprocessed_next.as_ref().map(Vec::len),
+        preprocessed_local: preprocessed_local.map(<[_]>::len),
+        preprocessed_next: preprocessed_next.map(<[_]>::len),
         quotient_chunks: quotient_chunks.iter().map(Vec::len).collect(),
         random: random.as_ref().map(Vec::len),
     }
@@ -196,11 +197,14 @@ where
             public_inputs,
             preprocessed_commit,
         } => {
+            // The PoW witnesses carry no transcript data at the zero difficulty the recursive
+            // verifier requires, so they are not part of the input contract.
             let Proof {
                 commitments,
                 opened_values,
                 opening_proof,
                 degree_bits,
+                ood_pow_witness: _,
             } = proof;
             let p3_uni_stark::Commitments {
                 trace,
@@ -250,6 +254,8 @@ where
                 opening_proof,
                 lookup_terminals,
                 degree_bits,
+                lookup_pow_witness: _,
+                ood_pow_witness: _,
             } = batch;
             let p3_batch_stark::BatchOpenedValues { instances } = opened_values;
             let instance_count = instances.len();
@@ -495,6 +501,7 @@ pub(crate) fn capture_trusted_batch_input_contract<SC, Comm, Opening>(
     expected_statement: &[Val<SC>],
 ) -> CaptureShapeResult<SC, Comm::Shape, Opening::Shape>
 where
+    SC::Challenger: p3_challenger::GrindingChallenger<Witness = p3_uni_stark::Val<SC>>,
     SC: StarkGenericConfig + 'static,
     Comm: Recursive<SC::Challenge, Input = NativeCommitment<SC>> + PreparedRecursive<SC::Challenge>,
     Opening: Recursive<SC::Challenge, Input = <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Proof>
@@ -530,6 +537,7 @@ pub(crate) fn validate_trusted_batch_input<SC, Comm, Opening>(
     expected_statement: &[Val<SC>],
 ) -> Result<(), VerificationError>
 where
+    SC::Challenger: p3_challenger::GrindingChallenger<Witness = p3_uni_stark::Val<SC>>,
     SC: StarkGenericConfig + 'static,
     Comm: Recursive<SC::Challenge, Input = NativeCommitment<SC>> + PreparedRecursive<SC::Challenge>,
     Opening: Recursive<SC::Challenge, Input = <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Proof>

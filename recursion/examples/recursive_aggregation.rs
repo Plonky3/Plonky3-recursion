@@ -36,8 +36,10 @@
 
 #[macro_use]
 mod common;
+
 use common::*;
 use p3_batch_stark::ProverData;
+use p3_maybe_rayon::prelude::*;
 
 #[derive(Parser, Debug)]
 #[command(version, about = "2-to-1 proof aggregation example")]
@@ -68,12 +70,10 @@ struct Args {
     )]
     pub log_blowup: usize,
 
-    #[arg(
-        long,
-        default_value_t = 2,
-        help = "Maximum arity allowed during FRI folding phases"
-    )]
-    pub max_log_arity: usize,
+    /// Maximum log-arity allowed during FRI folding phases [default: 3, or 2 with `--zk` or
+    /// `--hash poseidon1`]
+    #[arg(long)]
+    pub max_log_arity: Option<usize>,
 
     #[arg(long, default_value_t = 0, help = "Height of the Merkle cap to open")]
     pub cap_height: usize,
@@ -161,17 +161,36 @@ struct Args {
         help = "Build/prove aggregation levels >= 2 via a fixed RecursionLayerProfile instead of deriving shape from the previous proof"
     )]
     pub profile: bool,
+
+    /// Prove the pairs of each aggregation level concurrently against one shared preparation.
+    ///
+    /// This raises throughput for the whole tree; each individual proof then shares the cores,
+    /// so its own reported proving time grows.
+    #[arg(long, default_value_t = false)]
+    pub concurrent_pairs: bool,
 }
 
 impl Args {
-    pub const fn to_fri_params(&self) -> FriParams {
+    pub fn to_fri_params(&self) -> FriParams {
         FriParams {
             log_blowup: self.log_blowup,
-            max_log_arity: self.max_log_arity,
+            max_log_arity: self
+                .max_log_arity
+                .unwrap_or_else(|| self.default_max_log_arity()),
             cap_height: self.cap_height,
             log_final_poly_len: self.log_final_poly_len,
             commit_pow_bits: self.commit_pow_bits,
             query_pow_bits: self.query_pow_bits,
+        }
+    }
+
+    /// Arity 3 folds the aggregation layers into shorter FRI chains; the hiding and Poseidon1
+    /// verifier circuits instead grow past a table-height boundary with it, so they keep 2.
+    fn default_max_log_arity(&self) -> usize {
+        if self.zk || self.hash == HashOption::Poseidon1 {
+            2
+        } else {
+            3
         }
     }
 
@@ -183,6 +202,7 @@ impl Args {
 }
 
 fn main() {
+    keep_freed_memory_mapped();
     init_logger();
 
     let args = Args::parse();
@@ -250,6 +270,7 @@ fn main() {
             args.zk,
             args.disable_recompose_npo,
             args.profile,
+            args.concurrent_pairs,
         ),
         (HashOption::Poseidon2, FieldOption::KoalaBear, false) => koala_bear::run(
             args.num_recursive_layers,
@@ -259,6 +280,7 @@ fn main() {
             args.zk,
             args.disable_recompose_npo,
             args.profile,
+            args.concurrent_pairs,
         ),
         (HashOption::Poseidon2, FieldOption::BabyBear, _) => baby_bear::run(
             args.num_recursive_layers,
@@ -268,6 +290,7 @@ fn main() {
             args.zk,
             args.disable_recompose_npo,
             args.profile,
+            args.concurrent_pairs,
         ),
         (HashOption::Poseidon2, FieldOption::Goldilocks, _) => goldilocks::run(
             args.num_recursive_layers,
@@ -277,6 +300,7 @@ fn main() {
             args.zk,
             args.disable_recompose_npo,
             args.profile,
+            args.concurrent_pairs,
         ),
         (HashOption::Poseidon1, FieldOption::KoalaBear, true) => koala_bear_quintic_poseidon1::run(
             args.num_recursive_layers,
@@ -286,6 +310,7 @@ fn main() {
             args.zk,
             args.disable_recompose_npo,
             args.profile,
+            args.concurrent_pairs,
         ),
         (HashOption::Poseidon1, FieldOption::KoalaBear, false) => koala_bear_poseidon1::run(
             args.num_recursive_layers,
@@ -295,6 +320,7 @@ fn main() {
             args.zk,
             args.disable_recompose_npo,
             args.profile,
+            args.concurrent_pairs,
         ),
         (HashOption::Poseidon1, FieldOption::BabyBear, _) => baby_bear_poseidon1::run(
             args.num_recursive_layers,
@@ -304,6 +330,7 @@ fn main() {
             args.zk,
             args.disable_recompose_npo,
             args.profile,
+            args.concurrent_pairs,
         ),
         (HashOption::Poseidon1, FieldOption::Goldilocks, _) => goldilocks_poseidon1::run(
             args.num_recursive_layers,
@@ -313,6 +340,7 @@ fn main() {
             args.zk,
             args.disable_recompose_npo,
             args.profile,
+            args.concurrent_pairs,
         ),
     }
 }
@@ -388,7 +416,7 @@ macro_rules! define_field_module_aggregation_quintic {
                 let ext_degrees: Vec<usize> =
                     degrees.iter().map(|&d| d + config.is_zk()).collect();
                 let prover_data =
-                    ProverData::from_airs_and_degrees(config, &airs, &ext_degrees);
+                    ProverData::from_airs_and_degrees(config, &airs, &ext_degrees).unwrap();
                 let circuit_prover_data = CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
                 let prover =
                     BatchStarkProver::new(config.clone()).with_table_packing(table_packing.clone());
@@ -399,9 +427,10 @@ macro_rules! define_field_module_aggregation_quintic {
                 prover
                     .verify_all_tables::<F>(&proof)
                     .expect("Failed to verify dummy proof");
-                RecursionOutput(proof, Rc::new(circuit_prover_data))
+                RecursionOutput(proof, Arc::new(circuit_prover_data))
             }
 
+            #[allow(clippy::too_many_arguments)]
             pub fn run(
                 num_recursive_layers: usize,
                 fri_params: &FriParams,
@@ -410,6 +439,7 @@ macro_rules! define_field_module_aggregation_quintic {
                 zk: bool,
                 disable_recompose_npo: bool,
                 profile: bool,
+                concurrent_pairs: bool,
             ) {
                 if zk {
                     tracing::warn!(
@@ -562,6 +592,71 @@ macro_rules! define_field_module_aggregation_quintic {
                             };
                             let agg_config: $cfg_type = $config_agg(level as u64);
 
+                            let verify_output = |pair_idx: usize, out: &RecursionOutput<$cfg_type>| {
+                                report_proof_size(&out.0);
+                                let mut verifier = BatchStarkProver::new(agg_config.clone())
+                                    .with_table_packing(agg_params.table_packing.clone());
+                                for table_config in $poseidon2_config.output_table_configs() {
+                                    verifier.$register_fn::<D>(table_config);
+                                }
+                                if !disable_recompose_npo {
+                                    verifier.register_recompose_table::<D>(true);
+                                }
+                                verifier
+                                    .verify_all_tables::<Challenge>(&out.0)
+                                    .unwrap_or_else(|e| {
+                                        panic!("Verification failed at level {level}, pair {pair_idx}: {e:?}")
+                                    });
+                            };
+
+                            if concurrent_pairs && pairs > 1 {
+                                let prepare_pair = |pair_idx: usize| {
+                                    let left_output = &proofs[pair_idx * 2];
+                                    let right_output = &proofs[pair_idx * 2 + 1];
+                                    let left_table = batch_table_public_inputs(left_output);
+                                    let right_table = batch_table_public_inputs(right_output);
+                                    PreparedAggregation::new(
+                                        PreparedSource::batch(&left_output.0, &left_output.0.stark_common, &left_table),
+                                        PreparedSource::batch(&right_output.0, &right_output.0.stark_common, &right_table),
+                                        agg_config.clone(), backend.clone(), agg_params.clone(),
+                                    )
+                                    .unwrap_or_else(|e| panic!("Failed to prepare level {level}, pair {pair_idx}: {e:?}"))
+                                };
+                                let prove_pair = |pair_idx: usize, owner: &PreparedAggregation<'static, 'static, $cfg_type, BatchOnly, BatchOnly, _, D>| {
+                                    let left_output = &proofs[pair_idx * 2];
+                                    let right_output = &proofs[pair_idx * 2 + 1];
+                                    let left_table = batch_table_public_inputs(left_output);
+                                    let right_table = batch_table_public_inputs(right_output);
+                                    let left_input = batch_prepared_input(left_output, &left_table);
+                                    let right_input = batch_prepared_input(right_output, &right_table);
+                                    match owner.check_inputs(&left_input, &right_input) {
+                                        Ok(()) => owner.prove(left_input, right_input),
+                                        Err(error) if is_prepared_input_mismatch(&error) => {
+                                            prepare_pair(pair_idx).prove(left_input, right_input)
+                                        }
+                                        Err(e) => panic!("Failed to validate level {level}, pair {pair_idx}: {e:?}"),
+                                    }
+                                    .unwrap_or_else(|e| panic!("Failed at level {level}, pair {pair_idx}: {e:?}"))
+                                };
+                                // Every pair of a level shares one prepared circuit. The first pair
+                                // prepares it and proves alone, which also fills the shared DFT
+                                // twiddle caches: `Radix2DitParallel` computes a missing entry under a
+                                // spin lock while running parallel work, and a concurrent proof stealing
+                                // that work would spin on the same lock forever.
+                                let level_owner = prepare_pair(0);
+                                let mut next_level = vec![prove_pair(0, &level_owner)];
+                                let rest: Vec<_> = (1..pairs)
+                                    .into_par_iter()
+                                    .map(|pair_idx| prove_pair(pair_idx, &level_owner))
+                                    .collect();
+                                next_level.extend(rest);
+                                for (pair_idx, out) in next_level.iter().enumerate() {
+                                    verify_output(pair_idx, out);
+                                }
+                                proofs = next_level;
+                                continue;
+                            }
+
                             let mut next_level = Vec::with_capacity(pairs);
                             let mut level_owner: Option<PreparedAggregation<'static, 'static, $cfg_type, BatchOnly, BatchOnly, _, D>> = None;
                             for pair_idx in 0..pairs {
@@ -601,20 +696,7 @@ macro_rules! define_field_module_aggregation_quintic {
                                 }
                                 .unwrap_or_else(|e| panic!("Failed at level {level}, pair {pair_idx}: {e:?}"));
 
-                                report_proof_size(&out.0);
-                                let mut verifier = BatchStarkProver::new(agg_config.clone())
-                                    .with_table_packing(agg_params.table_packing.clone());
-                                for table_config in $poseidon2_config.output_table_configs() {
-                                    verifier.$register_fn::<D>(table_config);
-                                }
-                                if !disable_recompose_npo {
-                                    verifier.register_recompose_table::<D>(true);
-                                }
-                                verifier
-                                    .verify_all_tables::<Challenge>(&out.0)
-                                    .unwrap_or_else(|e| {
-                                        panic!("Verification failed at level {level}, pair {pair_idx}: {e:?}")
-                                    });
+                                verify_output(pair_idx, &out);
                                 next_level.push(out);
                             }
                             proofs = next_level;
@@ -710,7 +792,7 @@ macro_rules! define_field_module {
                 let ext_degrees: Vec<usize> =
                     degrees.iter().map(|&d| d + config.is_zk()).collect();
                 let prover_data =
-                    ProverData::from_airs_and_degrees(config, &airs, &ext_degrees);
+                    ProverData::from_airs_and_degrees(config, &airs, &ext_degrees).unwrap();
                 let circuit_prover_data = CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
                 let prover =
                     BatchStarkProver::new(config.clone()).with_table_packing(table_packing.clone());
@@ -721,7 +803,7 @@ macro_rules! define_field_module {
                 prover
                     .verify_all_tables::<F>(&proof)
                     .expect("Failed to verify dummy proof");
-                RecursionOutput(proof, Rc::new(circuit_prover_data))
+                RecursionOutput(proof, Arc::new(circuit_prover_data))
             }
 
             /// Build a dummy circuit with a single constant and prove it (ZK).
@@ -753,7 +835,7 @@ macro_rules! define_field_module {
                 let ext_degrees: Vec<usize> =
                     degrees.iter().map(|&d| d + config.is_zk()).collect();
                 let prover_data =
-                    ProverData::from_airs_and_degrees(config, &airs, &ext_degrees);
+                    ProverData::from_airs_and_degrees(config, &airs, &ext_degrees).unwrap();
                 let circuit_prover_data = CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
                 let prover =
                     BatchStarkProver::new(config.clone()).with_table_packing(table_packing.clone());
@@ -764,9 +846,10 @@ macro_rules! define_field_module {
                 prover
                     .verify_all_tables::<F>(&proof)
                     .expect("Failed to verify dummy proof (ZK)");
-                RecursionOutput(proof, Rc::new(circuit_prover_data))
+                RecursionOutput(proof, Arc::new(circuit_prover_data))
             }
 
+            #[allow(clippy::too_many_arguments)]
             pub fn run(
                 num_recursive_layers: usize,
                 fri_params: &FriParams,
@@ -775,6 +858,7 @@ macro_rules! define_field_module {
                 zk: bool,
                 disable_recompose_npo: bool,
                 profile: bool,
+                concurrent_pairs: bool,
             ) {
                 let base_table_packing = TablePacking::new(1, 1)
                     .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup);
@@ -917,6 +1001,71 @@ macro_rules! define_field_module {
                             };
                             let agg_config: $cfg_type = $config_agg(level as u64);
 
+                            let verify_output = |pair_idx: usize, out: &RecursionOutput<$cfg_type>| {
+                                report_proof_size(&out.0);
+                                let mut verifier = BatchStarkProver::new(agg_config.clone())
+                                    .with_table_packing(agg_params.table_packing.clone());
+                                for table_config in $poseidon2_config.output_table_configs() {
+                                    verifier.$register_fn::<$d>(table_config);
+                                }
+                                if !disable_recompose_npo {
+                                    verifier.register_recompose_table::<$d>(true);
+                                }
+                                verifier
+                                    .verify_all_tables::<Challenge>(&out.0)
+                                    .unwrap_or_else(|e| {
+                                        panic!("Verification failed at level {level}, pair {pair_idx}: {e:?}")
+                                    });
+                            };
+
+                            if concurrent_pairs && pairs > 1 {
+                                let prepare_pair = |pair_idx: usize| {
+                                    let left_output = &proofs[pair_idx * 2];
+                                    let right_output = &proofs[pair_idx * 2 + 1];
+                                    let left_table = batch_table_public_inputs(left_output);
+                                    let right_table = batch_table_public_inputs(right_output);
+                                    PreparedAggregation::new(
+                                        PreparedSource::batch(&left_output.0, &left_output.0.stark_common, &left_table),
+                                        PreparedSource::batch(&right_output.0, &right_output.0.stark_common, &right_table),
+                                        agg_config.clone(), backend.clone(), agg_params.clone(),
+                                    )
+                                    .unwrap_or_else(|e| panic!("Failed to prepare level {level}, pair {pair_idx}: {e:?}"))
+                                };
+                                let prove_pair = |pair_idx: usize, owner: &PreparedAggregation<'static, 'static, $cfg_type, BatchOnly, BatchOnly, _, D>| {
+                                    let left_output = &proofs[pair_idx * 2];
+                                    let right_output = &proofs[pair_idx * 2 + 1];
+                                    let left_table = batch_table_public_inputs(left_output);
+                                    let right_table = batch_table_public_inputs(right_output);
+                                    let left_input = batch_prepared_input(left_output, &left_table);
+                                    let right_input = batch_prepared_input(right_output, &right_table);
+                                    match owner.check_inputs(&left_input, &right_input) {
+                                        Ok(()) => owner.prove(left_input, right_input),
+                                        Err(error) if is_prepared_input_mismatch(&error) => {
+                                            prepare_pair(pair_idx).prove(left_input, right_input)
+                                        }
+                                        Err(e) => panic!("Failed to validate level {level}, pair {pair_idx}: {e:?}"),
+                                    }
+                                    .unwrap_or_else(|e| panic!("Failed at level {level}, pair {pair_idx}: {e:?}"))
+                                };
+                                // Every pair of a level shares one prepared circuit. The first pair
+                                // prepares it and proves alone, which also fills the shared DFT
+                                // twiddle caches: `Radix2DitParallel` computes a missing entry under a
+                                // spin lock while running parallel work, and a concurrent proof stealing
+                                // that work would spin on the same lock forever.
+                                let level_owner = prepare_pair(0);
+                                let mut next_level = vec![prove_pair(0, &level_owner)];
+                                let rest: Vec<_> = (1..pairs)
+                                    .into_par_iter()
+                                    .map(|pair_idx| prove_pair(pair_idx, &level_owner))
+                                    .collect();
+                                next_level.extend(rest);
+                                for (pair_idx, out) in next_level.iter().enumerate() {
+                                    verify_output(pair_idx, out);
+                                }
+                                proofs = next_level;
+                                continue;
+                            }
+
                             let mut next_level = Vec::with_capacity(pairs);
                             let mut level_owner: Option<PreparedAggregation<'static, 'static, $cfg_type, BatchOnly, BatchOnly, _, D>> = None;
                             for pair_idx in 0..pairs {
@@ -956,20 +1105,7 @@ macro_rules! define_field_module {
                                 }
                                 .unwrap_or_else(|e| panic!("Failed at level {level}, pair {pair_idx}: {e:?}"));
 
-                                report_proof_size(&out.0);
-                                let mut verifier = BatchStarkProver::new(agg_config.clone())
-                                    .with_table_packing(agg_params.table_packing.clone());
-                                for table_config in $poseidon2_config.output_table_configs() {
-                                    verifier.$register_fn::<$d>(table_config);
-                                }
-                                if !disable_recompose_npo {
-                                    verifier.register_recompose_table::<$d>(true);
-                                }
-                                verifier
-                                    .verify_all_tables::<Challenge>(&out.0)
-                                    .unwrap_or_else(|e| {
-                                        panic!("Verification failed at level {level}, pair {pair_idx}: {e:?}")
-                                    });
+                                verify_output(pair_idx, &out);
                                 next_level.push(out);
                             }
                             proofs = next_level;
@@ -1295,14 +1431,23 @@ macro_rules! arity4_mixed_config_impl {
                     mut challenger,
                     commitments_with_opening_points,
                 } = transcript;
-                observe_opened_values::<Self>(&mut challenger, &commitments_with_opening_points);
+                observe_opened_values::<Self>(
+                    &mut challenger,
+                    &commitments_with_opening_points,
+                    config.fri_instance.1.batch_proof_of_work_bits,
+                );
+                let claims: Vec<_> = commitments_with_opening_points
+                    .iter()
+                    .cloned()
+                    .map(Into::into)
+                    .collect();
                 let query_paths = restore_fri_query_paths(
                     &config.fri_instance.1,
                     &config.fri_instance.0,
                     &config.fri_instance.0,
                     opening_proof,
                     &mut challenger,
-                    &commitments_with_opening_points,
+                    &claims,
                 )
                 .map_err(|_| "Failed to restore the FRI proof's per-query Merkle paths")?;
                 set_fri_mmcs_private_data_arity4::<F, Challenge, $digest_elems>(
@@ -1334,6 +1479,7 @@ macro_rules! arity4_mixed_config_impl {
                 log_blowup: fp.log_blowup,
                 log_final_poly_len: fp.log_final_poly_len,
                 num_queries,
+                batch_proof_of_work_bits: 0,
                 commit_proof_of_work_bits: fp.commit_pow_bits,
                 query_proof_of_work_bits: fp.query_pow_bits,
                 mmcs: ChallengeMmcsArity4::new(val_mmcs.clone()),
@@ -1353,6 +1499,7 @@ macro_rules! arity4_mixed_config_impl {
             FriVerifierParams::with_mmcs(
                 native.log_blowup(),
                 native.log_final_poly_len(),
+                native.max_log_arity(),
                 native.commit_pow_bits(),
                 native.query_pow_bits(),
                 native.num_queries(),
@@ -1410,7 +1557,8 @@ macro_rules! arity4_base_dummy_prover {
                 .unwrap();
             let traces = runner.run().unwrap();
             let ext_degrees: Vec<usize> = degrees.iter().map(|&d| d + config.is_zk()).collect();
-            let prover_data = ProverData::from_airs_and_degrees(config, &airs, &ext_degrees);
+            let prover_data =
+                ProverData::from_airs_and_degrees(config, &airs, &ext_degrees).unwrap();
             let circuit_prover_data =
                 CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
             let prover =
@@ -1422,7 +1570,7 @@ macro_rules! arity4_base_dummy_prover {
             prover
                 .verify_all_tables::<F>(&proof)
                 .expect("Failed to verify dummy proof");
-            RecursionOutput(proof, Rc::new(circuit_prover_data))
+            RecursionOutput(proof, Arc::new(circuit_prover_data))
         }
     };
 }

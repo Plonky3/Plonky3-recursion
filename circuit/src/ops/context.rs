@@ -49,11 +49,10 @@ impl<'a, F: PrimeCharacteristicRing + Eq> ExecutionContext<'a, F> {
     pub fn get_witness(&self, widx: WitnessId) -> Result<F, CircuitError> {
         let idx = widx.0 as usize;
 
-        self.witness
-            .get(idx)
-            .and_then(Option::as_ref)
-            .map(p3_field::Dup::dup)
-            .ok_or(CircuitError::WitnessNotSet { witness_id: widx })
+        let Some(value) = self.witness.get(idx).and_then(Option::as_ref) else {
+            return Err(CircuitError::WitnessNotSet { witness_id: widx });
+        };
+        Ok(p3_field::Dup::dup(value))
     }
 
     /// Set witness value at the given index.
@@ -61,10 +60,15 @@ impl<'a, F: PrimeCharacteristicRing + Eq> ExecutionContext<'a, F> {
     pub fn set_witness(&mut self, widx: WitnessId, value: F) -> Result<(), CircuitError> {
         let idx = widx.0 as usize;
 
-        let slot = self
-            .witness
-            .get_mut(idx)
-            .ok_or(CircuitError::WitnessIdOutOfBounds { witness_id: widx })?;
+        #[cfg(debug_assertions)]
+        let Some(slot) = self.witness.get_mut(idx) else {
+            return Err(CircuitError::WitnessIdOutOfBounds { witness_id: widx });
+        };
+
+        #[cfg(not(debug_assertions))]
+        // SAFETY: `idx` is derived from a `WitnessId` allocated against this `witness`
+        // vector at circuit compile time; the slot is guaranteed to exist.
+        let slot = unsafe { self.witness.get_unchecked_mut(idx) };
 
         if let Some(existing_value) = slot {
             if *existing_value != value {
@@ -84,12 +88,16 @@ impl<'a, F: PrimeCharacteristicRing + Eq> ExecutionContext<'a, F> {
 
     /// Get private data for the current operation
     pub fn get_private_data(&self) -> Result<&NpoPrivateData, CircuitError> {
-        self.non_primitive_op_private_data
+        let Some(data) = self
+            .non_primitive_op_private_data
             .get(self.operation_id.0 as usize)
             .and_then(Option::as_ref)
-            .ok_or(CircuitError::NonPrimitiveOpMissingPrivateData {
+        else {
+            return Err(CircuitError::NonPrimitiveOpMissingPrivateData {
                 operation_index: self.operation_id,
-            })
+            });
+        };
+        Ok(data)
     }
 
     /// Get operation configuration by type

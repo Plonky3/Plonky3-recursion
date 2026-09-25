@@ -101,7 +101,8 @@ fn bench_prove_all_tables(c: &mut Criterion) {
                 let mut runner = circuit.runner();
                 runner.set_public_inputs(&[expected_fib]).unwrap();
                 let traces = runner.run().unwrap();
-                let prover_data = ProverData::from_airs_and_degrees(&config, &airs, &degrees);
+                let prover_data =
+                    ProverData::from_airs_and_degrees(&config, &airs, &degrees).unwrap();
                 let circuit_prover_data =
                     CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
                 let prover =

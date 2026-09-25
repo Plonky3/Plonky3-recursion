@@ -111,7 +111,7 @@ fn build_legacy_fixture(include_ordinary: bool) -> LegacyFixture {
         )
         .expect("legacy fixture preprocessing succeeds");
     let (airs, degrees): (Vec<_>, Vec<_>) = airs_degrees.into_iter().unzip();
-    let prover_data = ProverData::from_airs_and_degrees(&config, &airs, &degrees);
+    let prover_data = ProverData::from_airs_and_degrees(&config, &airs, &degrees).unwrap();
     let circuit_prover_data =
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
     let mut prover = BatchStarkProver::new(config.clone()).with_table_packing(table_packing);

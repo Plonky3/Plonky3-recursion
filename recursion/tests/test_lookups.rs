@@ -116,15 +116,24 @@ fn test_arith_lookups() {
         &lookup_gadget,
     )
     .unwrap();
-    observe_opened_values::<MyConfig>(&mut challenger, &commitments_with_opening_points);
     let (val_mmcs, fri_params) = test_fri_instance();
+    observe_opened_values::<MyConfig>(
+        &mut challenger,
+        &commitments_with_opening_points,
+        fri_params.batch_proof_of_work_bits,
+    );
+    let claims: Vec<_> = commitments_with_opening_points
+        .iter()
+        .cloned()
+        .map(Into::into)
+        .collect();
     let query_paths = restore_fri_query_paths(
         &fri_params,
         &val_mmcs,
         &val_mmcs,
         &batch_proof.opening_proof,
         &mut challenger,
-        &commitments_with_opening_points,
+        &claims,
     )
     .unwrap();
     set_fri_mmcs_private_data::<F, Challenge, DIGEST_ELEMS>(
@@ -181,7 +190,7 @@ fn test_wrong_multiplicities() {
     let traces = runner.run().unwrap();
 
     // Create prover data for proving and verifying.
-    let prover_data = ProverData::from_airs_and_degrees(&config_proving, &airs, &degrees);
+    let prover_data = ProverData::from_airs_and_degrees(&config_proving, &airs, &degrees).unwrap();
     let circuit_prover_data =
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
 
@@ -420,7 +429,7 @@ fn get_test_circuit_proof() -> TestCircuitProofData {
     let traces = runner.run().unwrap();
 
     // Create prover data for proving and verifying.
-    let prover_data = ProverData::from_airs_and_degrees(&config_proving, &airs, &degrees);
+    let prover_data = ProverData::from_airs_and_degrees(&config_proving, &airs, &degrees).unwrap();
     let circuit_prover_data =
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
 
@@ -462,6 +471,7 @@ fn get_recursive_config_and_params() -> (MyConfig, FriVerifierParams, usize, usi
     let fri_verifier_params = FriVerifierParams::with_mmcs(
         scalars.log_blowup,
         scalars.log_final_poly_len,
+        scalars.max_log_arity,
         scalars.commit_pow_bits,
         scalars.query_pow_bits,
         scalars.num_queries,
@@ -678,7 +688,7 @@ fn test_poseidon2_ctl_lookups() {
 
     let traces = runner.run().unwrap();
 
-    let prover_data = ProverData::from_airs_and_degrees(&config_proving, &airs, &degrees);
+    let prover_data = ProverData::from_airs_and_degrees(&config_proving, &airs, &degrees).unwrap();
     let circuit_prover_data =
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
 
@@ -818,7 +828,7 @@ fn test_poseidon2_chained_ctl_lookups() {
 
     let traces = runner.run().unwrap();
 
-    let prover_data = ProverData::from_airs_and_degrees(&config_proving, &airs, &degrees);
+    let prover_data = ProverData::from_airs_and_degrees(&config_proving, &airs, &degrees).unwrap();
     let circuit_prover_data =
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
 

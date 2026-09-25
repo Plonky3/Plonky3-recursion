@@ -78,7 +78,7 @@ const fn fri_descriptor(suite: SuiteIdV1) -> FriConfigV1 {
         0,
         0,
         0,
-        if spec.is_hiding() { 2 } else { 0 },
+        if spec.is_hiding() { 4 } else { 0 },
         spec.salt_elements as u32,
     )
 }
@@ -92,7 +92,7 @@ macro_rules! prove_and_check {
             <$field>::ONE,
             fibonacci_output::<$field>($rows),
         ];
-        let proof = prove(&$config, &air, trace, &public_values);
+        let proof = prove(&$config, &air, trace, &public_values).unwrap();
         verify(&$config, &air, &proof, &public_values).expect("native proof must verify");
         let mut wrong = public_values;
         wrong[2] += <$field>::ONE;
@@ -141,13 +141,14 @@ fn random_codeword_hiding_fri_factory_proves_and_checks() {
     )
     .unwrap();
     let air = FibonacciAir {};
-    let trace = generate_trace_rows::<BabyBear>(0, 1, 8);
+    // Hiding FRI needs the zero-knowledge mask to cover every disclosed value.
+    let trace = generate_trace_rows::<BabyBear>(0, 1, 32);
     let public_values = [
         BabyBear::ZERO,
         BabyBear::ONE,
-        fibonacci_output::<BabyBear>(8),
+        fibonacci_output::<BabyBear>(32),
     ];
-    let proof = prove(&proving_config, &air, trace, &public_values);
+    let proof = prove(&proving_config, &air, trace, &public_values).unwrap();
 
     let draws = Arc::new(AtomicUsize::new(0));
     let verifying_config = baby_bear_d4_poseidon2_random_codeword(
@@ -176,13 +177,14 @@ fn salted_hiding_fri_factory_proves_and_checks() {
     )
     .unwrap();
     let air = FibonacciAir {};
-    let trace = generate_trace_rows::<KoalaBear>(0, 1, 8);
+    // Hiding FRI needs the zero-knowledge mask to cover every disclosed value.
+    let trace = generate_trace_rows::<KoalaBear>(0, 1, 32);
     let public_values = [
         KoalaBear::ZERO,
         KoalaBear::ONE,
-        fibonacci_output::<KoalaBear>(8),
+        fibonacci_output::<KoalaBear>(32),
     ];
-    let proof = prove(&proving_config, &air, trace, &public_values);
+    let proof = prove(&proving_config, &air, trace, &public_values).unwrap();
 
     let input_draws = Arc::new(AtomicUsize::new(0));
     let commit_draws = Arc::new(AtomicUsize::new(0));

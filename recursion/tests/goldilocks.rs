@@ -55,6 +55,7 @@ fn make_config() -> (
     let fri_verifier_params = FriVerifierParams::with_mmcs(
         fri_params.log_blowup,
         fri_params.log_final_poly_len,
+        fri_params.max_log_arity,
         fri_params.commit_proof_of_work_bits,
         fri_params.query_proof_of_work_bits,
         fri_params.num_queries,
@@ -79,7 +80,7 @@ fn test_goldilocks_fibonacci_verifier() -> Result<(), VerificationError> {
     let trace = generate_trace_rows::<F>(0, 1, n);
     let pis = vec![F::ZERO, F::ONE, F::from_u64(x)];
     let air = FibonacciAir {};
-    let proof = prove(&config, &air, trace, &pis);
+    let proof = prove(&config, &air, trace, &pis).unwrap();
     assert!(verify(&config, &air, &proof, &pis).is_ok());
 
     let mut circuit_builder = CircuitBuilder::new();
@@ -139,14 +140,23 @@ fn test_goldilocks_fibonacci_verifier() -> Result<(), VerificationError> {
         commitments_with_opening_points,
     } = replay_uni_stark_transcript(&config, &air, &proof, &pis, None)
         .map_err(|e| VerificationError::InvalidProofShape(e.to_string()))?;
-    observe_opened_values::<MyConfig>(&mut challenger, &commitments_with_opening_points);
+    observe_opened_values::<MyConfig>(
+        &mut challenger,
+        &commitments_with_opening_points,
+        fri_params.batch_proof_of_work_bits,
+    );
+    let claims: Vec<_> = commitments_with_opening_points
+        .iter()
+        .cloned()
+        .map(Into::into)
+        .collect();
     let query_paths = restore_fri_query_paths(
         &fri_params,
         &val_mmcs,
         &val_mmcs,
         &proof.opening_proof,
         &mut challenger,
-        &commitments_with_opening_points,
+        &claims,
     )
     .map_err(|e| VerificationError::InvalidProofShape(format!("{e:?}")))?;
     set_fri_mmcs_private_data::<F, Challenge, DIGEST_ELEMS>(
@@ -175,7 +185,9 @@ fn test_goldilocks_mul_verifier_with_preprocessed() -> Result<(), VerificationEr
 
     // Setup preprocessed data
     let (preprocessed_prover_data, preprocessed_vk) =
-        setup_preprocessed(&config2, &air, log2_ceil_usize(trace.height())).unzip();
+        setup_preprocessed(&config2, &air, log2_ceil_usize(trace.height()))
+            .unwrap()
+            .unzip();
 
     // Generate and verify proof
     let proof = prove_with_preprocessed(
@@ -184,7 +196,8 @@ fn test_goldilocks_mul_verifier_with_preprocessed() -> Result<(), VerificationEr
         trace,
         &[],
         preprocessed_prover_data.as_ref(),
-    );
+    )
+    .unwrap();
     assert!(
         verify_with_preprocessed(&config2, &air, &proof, &[], preprocessed_vk.as_ref()).is_ok()
     );
@@ -248,14 +261,23 @@ fn test_goldilocks_mul_verifier_with_preprocessed() -> Result<(), VerificationEr
         mut challenger,
         commitments_with_opening_points,
     } = replay;
-    observe_opened_values::<MyConfig>(&mut challenger, &commitments_with_opening_points);
+    observe_opened_values::<MyConfig>(
+        &mut challenger,
+        &commitments_with_opening_points,
+        fri_params.batch_proof_of_work_bits,
+    );
+    let claims: Vec<_> = commitments_with_opening_points
+        .iter()
+        .cloned()
+        .map(Into::into)
+        .collect();
     let query_paths = restore_fri_query_paths(
         &fri_params,
         &val_mmcs,
         &val_mmcs,
         &proof.opening_proof,
         &mut challenger,
-        &commitments_with_opening_points,
+        &claims,
     )
     .map_err(|error| VerificationError::InvalidProofShape(format!("{error:?}")))?;
     set_fri_mmcs_private_data::<F, Challenge, DIGEST_ELEMS>(

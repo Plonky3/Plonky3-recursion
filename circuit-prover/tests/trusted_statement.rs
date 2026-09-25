@@ -5,6 +5,9 @@ use p3_air::DebugConstraintBuilder;
 use p3_air::{Air, BaseAir};
 use p3_baby_bear::BabyBear;
 use p3_batch_stark::StarkGenericConfig;
+use p3_batch_stark::folder::{
+    ProverConstraintFolderWithLookups, VerifierConstraintFolderWithLookups,
+};
 use p3_circuit::ops::{NonPrimitivePreprocessedMap, NpoTypeId, generate_recompose_trace};
 use p3_circuit::tables::Traces;
 use p3_circuit::{
@@ -23,7 +26,6 @@ use p3_circuit_prover::common::{
 use p3_circuit_prover::{AirVariant, ConstraintProfile, config};
 use p3_field::extension::{BinomialExtensionField, QuinticTrinomialExtensionField};
 use p3_field::{Algebra, BasedVectorSpace, PrimeCharacteristicRing};
-use p3_lookup::folder::{ProverConstraintFolderWithLookups, VerifierConstraintFolderWithLookups};
 use p3_lookup::symbolic::InteractionSymbolicBuilder;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_test_utils::corpus::{CaseRng, CorpusSpec, derive_family_seed, for_each_case};

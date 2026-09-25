@@ -189,7 +189,7 @@ fn fri_uni_reference_enforces_exact_air_arity_but_values_stay_dynamic() {
     }
     let air = FibonacciAir {};
     let public_inputs = vec![Val::<Config>::ZERO, Val::<Config>::ONE, b];
-    let proof = prove(&fixture.layer_config, &air, trace, &public_inputs);
+    let proof = prove(&fixture.layer_config, &air, trace, &public_inputs).unwrap();
 
     let reference = p3_recursion::RecursionInput::UniStark {
         proof: &proof,
@@ -255,7 +255,8 @@ fn custom_uni_arity_is_fail_closed_and_explicitly_extensible() {
         &FibonacciAir {},
         trace,
         &public_inputs,
-    );
+    )
+    .unwrap();
 
     let unknown = UnknownArityAir;
     let source = p3_recursion::RecursionInput::UniStark {
@@ -301,12 +302,13 @@ fn custom_uni_arity_is_fail_closed_and_explicitly_extensible() {
     )
     .expect("zero is a known exact public-input count");
 
-    let source = p3_recursion::RecursionInput::<Config, BatchOnly>::UniStark {
-        proof: &proof,
-        air: &BatchOnly,
-        public_inputs: vec![],
-        preprocessed_commit: None,
-    };
+    let source: p3_recursion::RecursionInput<'_, Config, BatchOnly> =
+        p3_recursion::RecursionInput::UniStark {
+            proof: &proof,
+            air: &BatchOnly,
+            public_inputs: vec![],
+            preprocessed_commit: None,
+        };
     <Backend as PreparedPcsRecursionBackend<Config, BatchOnly, 4>>::capture_input_contract(
         &fixture.backend,
         &fixture.layer_config,
@@ -319,11 +321,12 @@ fn custom_uni_arity_is_fail_closed_and_explicitly_extensible() {
 fn batch_reference_never_queries_the_placeholder_air_arity() {
     let fixture = common::build_koala_bear_d4_first_layer_input();
     let table_public_inputs = vec![vec![]; fixture.base_proof.proof.opened_values.instances.len()];
-    let source = p3_recursion::RecursionInput::<Config, UnknownArityAir>::BatchStark {
-        proof: &fixture.base_proof,
-        common_data: &fixture.base_proof.stark_common,
-        table_public_inputs,
-    };
+    let source: p3_recursion::RecursionInput<'_, Config, UnknownArityAir> =
+        p3_recursion::RecursionInput::BatchStark {
+            proof: &fixture.base_proof,
+            common_data: &fixture.base_proof.stark_common,
+            table_public_inputs,
+        };
 
     <Backend as PreparedPcsRecursionBackend<Config, UnknownArityAir, 4>>::capture_input_contract(
         &fixture.backend,
@@ -351,7 +354,7 @@ fn whir_uni_backend_captures_and_compares_the_native_contract() {
     }
     let air = FibonacciAir {};
     let public_inputs = vec![Val::<WhirConfig>::ZERO, Val::<WhirConfig>::ONE, b];
-    let mut proof = prove(&config, &air, trace, &public_inputs);
+    let mut proof = prove(&config, &air, trace, &public_inputs).unwrap();
     let backend = WhirRecursionBackend::<16, 8>::new(Poseidon2Config::BABY_BEAR_D4_W16)
         .for_extension_degree::<4>();
     let source = RecursionInput::UniStark {
@@ -453,7 +456,10 @@ fn fri_batch_contract_binds_opening_partitions_and_optional_values() {
         let value = opened.trace_local.pop().unwrap();
         opened.trace_next.get_or_insert_default().push(value);
     } else {
-        opened.preprocessed_local = Some(Vec::new());
+        opened.preprocessed = Some(p3_uni_stark::PreprocessedOpenedValues {
+            local: Vec::new(),
+            next: None,
+        });
     }
     assert!(matches!(
         validate(&fixture, &contract, &table_public_inputs),

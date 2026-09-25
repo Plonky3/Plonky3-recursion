@@ -1,6 +1,6 @@
 mod common;
 
-use std::rc::Rc;
+use std::sync::Arc;
 
 use p3_circuit::CircuitError;
 use p3_circuit::ops::NpoTypeId;
@@ -365,8 +365,8 @@ fn aggregation_layer_profile_prepares_fresh() {
     )
     .expect("a repeated profile call should prepare independently and succeed");
     assert_ne!(
-        Rc::as_ptr(&output.1),
-        Rc::as_ptr(&repeat.1),
+        Arc::as_ptr(&output.1),
+        Arc::as_ptr(&repeat.1),
         "expert free profile calls must not retain detached preparation between calls"
     );
 

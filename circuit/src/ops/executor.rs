@@ -86,7 +86,7 @@ impl dyn OpExecutionState {
 ///
 /// This trait enables dynamic dispatch and allows each operation to control
 /// its own execution logic with full access to the execution context.
-pub trait NonPrimitiveExecutor<F: Field>: Debug {
+pub trait NonPrimitiveExecutor<F: Field>: Debug + Send + Sync {
     /// Execute the operation with full context access
     ///
     /// # Arguments
@@ -155,7 +155,7 @@ impl<F: Field> Clone for Box<dyn NonPrimitiveExecutor<F>> {
 ///
 /// Hints are non-deterministic witness assignments that do not have associated AIR tables
 /// or traces. They operate directly on the witness array.
-pub trait HintExecutor<F: Field>: Debug {
+pub trait HintExecutor<F: Field>: Debug + Send + Sync {
     /// Execute the hint.
     ///
     /// - `inputs`: Witness IDs to read from

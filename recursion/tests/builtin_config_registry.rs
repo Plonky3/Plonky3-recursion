@@ -121,6 +121,27 @@ fn fri_descriptor_rejects_family_and_hiding_mismatches() {
             ..
         })
     ));
+
+    let hiding_below_extension_degree = FriConfigV1::new(
+        SuiteIdV1::BabyBearD4Poseidon2RandomCodewordFri,
+        1,
+        0,
+        2,
+        2,
+        0,
+        0,
+        3,
+        3,
+        3,
+        0,
+    );
+    assert!(matches!(
+        BuiltinConfigDescriptorV1::Fri(hiding_below_extension_degree).validate(&limits),
+        Err(BuiltinConfigError::InvalidParameter {
+            component: "num_random_codewords",
+            value: 3,
+        })
+    ));
 }
 
 #[test]

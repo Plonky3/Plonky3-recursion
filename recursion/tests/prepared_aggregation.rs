@@ -434,14 +434,23 @@ mod arity4_output {
                 mut challenger,
                 commitments_with_opening_points,
             } = transcript;
-            observe_opened_values::<Self>(&mut challenger, &commitments_with_opening_points);
+            observe_opened_values::<Self>(
+                &mut challenger,
+                &commitments_with_opening_points,
+                config.fri_instance.1.batch_proof_of_work_bits,
+            );
+            let claims: Vec<_> = commitments_with_opening_points
+                .iter()
+                .cloned()
+                .map(Into::into)
+                .collect();
             let query_paths = restore_fri_query_paths(
                 &config.fri_instance.1,
                 &config.fri_instance.0,
                 &config.fri_instance.0,
                 opening_proof,
                 &mut challenger,
-                &commitments_with_opening_points,
+                &claims,
             )
             .map_err(|_| "failed to restore arity-4 FRI query paths")?;
             set_fri_mmcs_private_data_arity4::<F, Challenge, 8>(
@@ -465,6 +474,7 @@ mod arity4_output {
         let verifier_params = FriVerifierParams::with_mmcs(
             native_fri_params.log_blowup(),
             native_fri_params.log_final_poly_len(),
+            native_fri_params.max_log_arity(),
             native_fri_params.commit_pow_bits(),
             native_fri_params.query_pow_bits(),
             native_fri_params.num_queries(),
@@ -615,14 +625,23 @@ mod hiding_fri {
                 &opening_proof.0,
             )
             .map_err(|_| "failed to merge hiding FRI random openings")?;
-            observe_opened_values::<Self>(&mut challenger, &commitments_with_opening_points);
+            observe_opened_values::<Self>(
+                &mut challenger,
+                &commitments_with_opening_points,
+                config.fri_params.batch_proof_of_work_bits,
+            );
+            let claims: Vec<_> = commitments_with_opening_points
+                .iter()
+                .cloned()
+                .map(Into::into)
+                .collect();
             let query_paths = restore_fri_query_paths(
                 &config.fri_params,
                 &config.val_mmcs,
                 &config.val_mmcs,
                 &opening_proof.1,
                 &mut challenger,
-                &commitments_with_opening_points,
+                &claims,
             )
             .map_err(|_| "failed to restore hiding FRI query paths")?;
             set_fri_mmcs_private_data::<F, Challenge, 8>(
@@ -646,6 +665,7 @@ mod hiding_fri {
         let verifier_params = FriVerifierParams::with_mmcs(
             native_fri_params.log_blowup(),
             native_fri_params.log_final_poly_len(),
+            native_fri_params.max_log_arity(),
             native_fri_params.commit_pow_bits(),
             native_fri_params.query_pow_bits(),
             native_fri_params.num_queries(),
@@ -655,7 +675,7 @@ mod hiding_fri {
             Dft::default(),
             val_mmcs.clone(),
             fri_params.clone(),
-            2,
+            4,
             StdRng::seed_from_u64(seed),
         );
         Config {
@@ -684,7 +704,9 @@ mod hiding_fri {
         }
         builder.connect(b, expected);
         let circuit = builder.build().expect("the hiding fixture circuit builds");
-        let packing = TablePacking::new(2, 4);
+        // HidingFriPcs requires every committed table's mask to cover
+        // 2 * (extension degree * opening points + queries) values.
+        let packing = TablePacking::new(2, 4).with_min_trace_height(32);
         let (airs_degrees, primitive_columns, non_primitive_columns) =
             get_airs_and_degrees_with_prep::<Config, _, 1>(
                 &circuit,
@@ -699,7 +721,7 @@ mod hiding_fri {
             .iter()
             .map(|degree| degree + config.is_zk())
             .collect();
-        let prover_data = ProverData::from_airs_and_degrees(config, &airs, &ext_degrees);
+        let prover_data = ProverData::from_airs_and_degrees(config, &airs, &ext_degrees).unwrap();
         let circuit_prover_data =
             CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
         let mut runner = circuit.runner();
@@ -755,7 +777,8 @@ fn same_config_mixed_aggregation_retains_distinct_air_and_batch_shapes() {
         &air,
         generate_trace_rows::<F>(0, 1, n),
         &left_first_pis,
-    );
+    )
+    .unwrap();
     verify(&config, &air, &left_first, &left_first_pis).expect("the first uni proof verifies");
 
     let left_second_pis = vec![
@@ -768,7 +791,8 @@ fn same_config_mixed_aggregation_retains_distinct_air_and_batch_shapes() {
         &air,
         generate_trace_rows::<F>(2, 3, n),
         &left_second_pis,
-    );
+    )
+    .unwrap();
     verify(&config, &air, &left_second, &left_second_pis).expect("the second uni proof verifies");
 
     let prepared = PreparedAggregation::<_, FibonacciAir, BatchOnly, _, 4>::new(
@@ -818,7 +842,7 @@ fn same_config_mixed_aggregation_retains_distinct_air_and_batch_shapes() {
         )
         .expect("the second mixed pair proves");
 
-    assert!(Rc::ptr_eq(&out1.1, &out2.1));
+    assert!(Arc::ptr_eq(&out1.1, &out2.1));
     verify_output(config.clone(), &params, &out1);
     verify_output(config, &params, &out2);
 }
@@ -841,14 +865,15 @@ fn aggregation_rejects_either_mismatch_before_packing_or_private_setup() {
             .len()
     ];
     let left_pis = vec![F::ZERO, F::ONE, fibonacci_output::<F>(0, 1, n)];
-    let left_proof = prove(&config, &air, generate_trace_rows::<F>(0, 1, n), &left_pis);
+    let left_proof = prove(&config, &air, generate_trace_rows::<F>(0, 1, n), &left_pis).unwrap();
     let short_pis = vec![F::ZERO, F::ONE, fibonacci_output::<F>(0, 1, short_n)];
     let short_proof = prove(
         &config,
         &air,
         generate_trace_rows::<F>(0, 1, short_n),
         &short_pis,
-    );
+    )
+    .unwrap();
 
     let uni = Rc::new(SideCounters::default());
     let batch = Rc::new(SideCounters::default());
@@ -1124,7 +1149,8 @@ fn reusable_aggregation_preflights_both_replacements_before_either_pack() {
         &air,
         generate_trace_rows::<F>(0, 1, n),
         &left_public,
-    );
+    )
+    .unwrap();
     let exact_final_poly = left_proof
         .opening_proof
         .final_poly
@@ -1321,7 +1347,7 @@ fn same_config_batch_aggregation_reuses_preparation_for_varied_pairs() {
         )
         .expect("the varied pair proves");
 
-    assert!(Rc::ptr_eq(&first.1, &second.1));
+    assert!(Arc::ptr_eq(&first.1, &second.1));
     assert!(prepared.profile().is_none());
     assert_eq!(prepared.params().table_packing, params.table_packing);
     verify_output(config.clone(), &params, &first);
@@ -1394,7 +1420,8 @@ fn trusted_heterogeneous_cross_config_aggregation_exports_ordered_statement_afte
         &left_air,
         generate_trace_rows::<F>(0, 1, n),
         &left_statement,
-    );
+    )
+    .unwrap();
     let right_fixture = common::KoalaBearD4StatementFixture::new();
     let right_statement = [F::from_u64(11), F::from_u64(13)];
     let right_proof = right_fixture.prove([11, 13]);
@@ -1640,7 +1667,7 @@ fn same_config_profile_aggregation_reuses_preparation_for_varied_pairs() {
         prepared.params().constraint_profile,
         profile.constraint_profile
     );
-    assert!(Rc::ptr_eq(&first.1, &second.1));
+    assert!(Arc::ptr_eq(&first.1, &second.1));
 }
 
 #[test]
@@ -1707,7 +1734,7 @@ fn cross_config_aggregation_verifies_arity2_inputs_and_emits_arity4_outputs() {
         )
         .expect("the second cross-config pair proves");
 
-    assert!(Rc::ptr_eq(&out1.1, &out2.1));
+    assert!(Arc::ptr_eq(&out1.1, &out2.1));
     assert!(prepared.profile().is_none());
     assert_eq!(prepared.params().table_packing, params.table_packing);
     arity4_output::verify(output_config.clone(), &params, &out1);
@@ -1826,7 +1853,7 @@ fn hiding_fri_aggregation_reuses_preparation_for_varied_honest_pairs() {
         )
         .expect("the second hiding pair proves");
 
-    assert!(Rc::ptr_eq(&out1.1, &out2.1));
+    assert!(Arc::ptr_eq(&out1.1, &out2.1));
     hiding_fri::verify(config.clone(), &params, &out1);
     hiding_fri::verify(config, &params, &out2);
 }

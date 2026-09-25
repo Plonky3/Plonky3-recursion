@@ -295,7 +295,7 @@ fn assurance_poseidon1_rejects_first_full_round_post_state_mutation() {
     );
     let (airs, degrees): (Vec<_>, Vec<_>) = airs_degrees.into_iter().unzip();
     let data = CircuitProverData::new(
-        ProverData::from_airs_and_degrees(&cfg, &airs, &degrees),
+        ProverData::from_airs_and_degrees(&cfg, &airs, &degrees).unwrap(),
         primitive,
         non_primitive,
     );
@@ -389,7 +389,7 @@ fn assurance_poseidon2_rejects_first_full_round_post_state_mutation() {
     );
     let (airs, degrees): (Vec<_>, Vec<_>) = airs_degrees.into_iter().unzip();
     let data = CircuitProverData::new(
-        ProverData::from_airs_and_degrees(&cfg, &airs, &degrees),
+        ProverData::from_airs_and_degrees(&cfg, &airs, &degrees).unwrap(),
         primitive,
         non_primitive,
     );

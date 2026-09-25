@@ -89,6 +89,7 @@ struct Args {
 }
 
 fn main() {
+    keep_freed_memory_mapped();
     init_logger();
 
     let args = Args::parse();
@@ -139,7 +140,7 @@ macro_rules! define_whir_aggregation_module {
                     fibonacci_output(n),
                 ];
                 let air = FibonacciAir {};
-                let proof = prove(config, &air, trace, &pis);
+                let proof = prove(config, &air, trace, &pis).unwrap();
                 verify(config, &air, &proof, &pis).expect("Failed to verify base proof");
                 report_proof_size(&proof);
                 (proof, air, pis)

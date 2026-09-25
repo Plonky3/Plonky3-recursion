@@ -364,7 +364,7 @@ fn prove_and_verify(circuit: &Circuit<EF>, traces: &Traces<EF>) -> Result<(), Pr
         .expect("preprocessed columns");
     let (airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
 
-    let prover_data = ProverData::from_airs_and_degrees(&stark_config, &airs, &degrees);
+    let prover_data = ProverData::from_airs_and_degrees(&stark_config, &airs, &degrees).unwrap();
     let circuit_prover_data =
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
     let mut prover = BatchStarkProver::new(stark_config).with_table_packing(table_packing);
@@ -538,7 +538,7 @@ fn shared_prove_and_verify(
         .expect("shared preprocessed columns");
     let (airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
 
-    let prover_data = ProverData::from_airs_and_degrees(&stark_config, &airs, &degrees);
+    let prover_data = ProverData::from_airs_and_degrees(&stark_config, &airs, &degrees).unwrap();
     let circuit_prover_data =
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
     let mut prover = BatchStarkProver::new(stark_config).with_table_packing(table_packing);
@@ -625,7 +625,7 @@ fn forge_shared_challenger_trace(
         let row = &mut forged.operations[row_index];
         let input: [F; WIDTH] = row
             .input_values
-            .clone()
+            .as_slice()
             .try_into()
             .expect("Poseidon2 row has fixed width");
         let output = perm.permute(input);
@@ -644,7 +644,7 @@ fn forge_shared_challenger_trace(
         }
         if row_index + 1 < chain_end {
             let next = &mut forged.operations[row_index + 1];
-            next.input_values = output.to_vec();
+            next.input_values = output.to_vec().into();
             if next.absorb_len > 0 {
                 next.input_values[RATE] += F::from_u8(next.absorb_len as u8);
             }

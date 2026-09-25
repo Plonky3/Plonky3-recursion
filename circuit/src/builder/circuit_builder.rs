@@ -1517,6 +1517,13 @@ where
     /// # Returns
     /// - `Ok(ExprId)` if `bits.len() <= F::bits()`, otherwise an error.
     ///
+    /// # Errors
+    /// - [`CircuitBuilderError::CharacteristicTwoUnsupported`] if `BF` has characteristic 2:
+    ///   the weights `2^j` are integers, and in such a field every one of them above `2^0`
+    ///   is zero, so the recomposition would silently keep only the parity of each limb.
+    /// - [`CircuitBuilderError::BinaryDecompositionTooManyBits`] if
+    ///   `bits.len() > F::bits()`.
+    ///
     /// # Cost
     /// `n` boolean constraints + `n` multiplications + `n` additions,
     /// where `n = bits.len()`.
@@ -1528,14 +1535,19 @@ where
         F: ExtensionField<BF>,
         BF: Field,
     {
-        self.push_scope("reconstruct_index_from_bits");
-
+        if BF::TWO.is_zero() {
+            return Err(CircuitBuilderError::CharacteristicTwoUnsupported {
+                operation: "reconstruct_index_from_bits",
+            });
+        }
         if bits.len() > F::bits() {
             return Err(CircuitBuilderError::BinaryDecompositionTooManyBits {
                 expected: F::bits(),
                 n_bits: bits.len(),
             });
         }
+
+        self.push_scope("reconstruct_index_from_bits");
 
         // Accumulator for the running sum.
         let mut acc = self.define_const(F::ZERO);

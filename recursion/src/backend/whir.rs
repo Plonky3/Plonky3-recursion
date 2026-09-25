@@ -17,7 +17,7 @@ use p3_circuit_prover::{
     ConstraintProfile, Poseidon2Preprocessor, Poseidon2Prover, Poseidon2SharedPreprocessor,
     RecomposePreprocessor, TableProver,
 };
-use p3_commit::Pcs;
+use p3_commit::{Pcs, UnivariateStarkPcs};
 use p3_field::extension::BinomiallyExtendable;
 use p3_field::{
     Algebra, BasedVectorSpace, ExtensionField, PrimeCharacteristicRing, PrimeField64, TwoAdicField,
@@ -623,6 +623,7 @@ fn preflight_trusted_whir_batch<SC, A>(
     statement: &[Val<SC>],
 ) -> Result<TrustedWhirPreflight<Val<SC>>, VerificationError>
 where
+    SC::Challenger: p3_challenger::GrindingChallenger<Witness = p3_uni_stark::Val<SC>>,
     SC: WhirRecursionConfig + Send + Sync + 'static,
     A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
     Val<SC>: PrimeField64 + StarkField + TwoAdicField,
@@ -685,7 +686,7 @@ where
         &lookups,
         &LogUpGadget,
     )?;
-    let prev = RecursionInput::<SC, A>::BatchStark {
+    let prev: RecursionInput<'_, SC, A> = RecursionInput::BatchStark {
         proof,
         common_data: verifier.common_data(),
         table_public_inputs: tables.public_values,
@@ -706,7 +707,8 @@ where
         capture_trusted_batch_authority(verifier, statement)?,
         StarkLayoutPolicy {
             is_zk: config.is_zk(),
-            log_max_lde_height: config.pcs().log_max_lde_height(),
+            log_min_trace_height: config.pcs().log_min_trace_height(),
+            log_max_lde_height: config.pcs().log_max_trace_height(),
         },
     ))
 }
@@ -1028,6 +1030,7 @@ where
 impl<SC, A, const WIDTH: usize, const RATE: usize, C> PcsRecursionBackend<SC, A, 4>
     for WhirRecursionBackendForExt<4, WIDTH, RATE, C>
 where
+    SC::Challenger: p3_challenger::GrindingChallenger<Witness = p3_uni_stark::Val<SC>>,
     SC: WhirRecursionConfig + Send + Sync + 'static,
     A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
     C: ChallengerPermConfig + Copy + 'static,
@@ -1063,7 +1066,7 @@ where
     ) -> Result<(), VerificationError> {
         let provers = match prev {
             RecursionInput::BatchStark { proof, .. } => {
-                PcsRecursionBackend::<SC, A, 4>::non_primitive_input_provers(
+                PcsRecursionBackend::<SC, A, 4>::input_table_provers(
                     self,
                     proof.ext_degree,
                     &proof
@@ -1103,7 +1106,7 @@ where
         preflight_whir_input(config, &self.0.limits, prev)?;
         let provers = match prev {
             RecursionInput::BatchStark { proof, .. } => {
-                PcsRecursionBackend::<SC, A, 4>::non_primitive_input_provers(
+                PcsRecursionBackend::<SC, A, 4>::input_table_provers(
                     self,
                     proof.ext_degree,
                     &proof
@@ -1220,7 +1223,7 @@ where
         // against the AIRs the circuit was built for.
         let provers = match prev {
             RecursionInput::BatchStark { proof, .. } => {
-                PcsRecursionBackend::<SC, A, 4>::non_primitive_input_provers(
+                PcsRecursionBackend::<SC, A, 4>::input_table_provers(
                     self,
                     proof.ext_degree,
                     &proof
@@ -1359,6 +1362,7 @@ mod acceptance_counter_tests;
 impl<SC, A, const WIDTH: usize, const RATE: usize, C> PreparedPcsRecursionBackend<SC, A, 4>
     for WhirRecursionBackendForExt<4, WIDTH, RATE, C>
 where
+    SC::Challenger: p3_challenger::GrindingChallenger<Witness = p3_uni_stark::Val<SC>>,
     SC: WhirRecursionConfig + Send + Sync + 'static,
     A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
     C: ChallengerPermConfig + Copy + 'static,
@@ -1401,7 +1405,7 @@ where
         preflight_whir_input(config, &self.0.limits, source)?;
         let provers = match source {
             RecursionInput::BatchStark { proof, .. } => {
-                PcsRecursionBackend::<SC, A, 4>::non_primitive_input_provers(
+                PcsRecursionBackend::<SC, A, 4>::input_table_provers(
                     self,
                     proof.ext_degree,
                     &proof
@@ -1443,6 +1447,7 @@ where
 impl<SC, A, const WIDTH: usize, const RATE: usize, C> TrustedPcsRecursionBackend<SC, A, 4>
     for WhirRecursionBackendForExt<4, WIDTH, RATE, C>
 where
+    SC::Challenger: p3_challenger::GrindingChallenger<Witness = p3_uni_stark::Val<SC>>,
     SC: WhirRecursionConfig + Send + Sync + 'static,
     A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
     C: ChallengerPermConfig + Copy + 'static,
@@ -1542,9 +1547,9 @@ where
             self, verifier, proof,
         )?;
         let public_values = trusted_batch_tables::<SC, 4>(verifier, statement)?.public_values;
-        preflight_basic_whir_input(
+        preflight_basic_whir_input::<SC, A>(
             &self.0.limits,
-            &RecursionInput::<SC, A>::BatchStark {
+            &RecursionInput::BatchStark {
                 proof,
                 common_data: verifier.common_data(),
                 table_public_inputs: public_values,
@@ -1593,7 +1598,7 @@ where
         )?;
         let transcript =
             replay_trusted_batch_layer_transcript::<SC, 4>(verifier, proof, statement)?;
-        let prev = RecursionInput::<SC, A>::BatchStark {
+        let prev: RecursionInput<'_, SC, A> = RecursionInput::BatchStark {
             proof,
             common_data: verifier.common_data(),
             table_public_inputs: trusted_batch_tables::<SC, 4>(verifier, statement)?.public_values,

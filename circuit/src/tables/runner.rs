@@ -145,14 +145,16 @@ impl<'a, F: Field> CircuitRunner<'a, F> {
         }
 
         // Validate that the private data matches the operation type
-        let op_idx = self
+        let Some(op_idx) = self
             .non_primitive_op_index_by_id
             .get(op_id.0 as usize)
             .and_then(|x| *x)
-            .ok_or(CircuitError::NonPrimitiveOpIdOutOfRange {
+        else {
+            return Err(CircuitError::NonPrimitiveOpIdOutOfRange {
                 op_id: op_id.0,
                 max_ops: self.non_primitive_op_private_data.len(),
-            })?;
+            });
+        };
         let Op::NonPrimitiveOpWithExecutor { executor, .. } = &self.circuit.ops[op_idx] else {
             return Err(CircuitError::NonPrimitiveOpIdOutOfRange {
                 op_id: op_id.0,
@@ -220,7 +222,10 @@ impl<'a, F: Field> CircuitRunner<'a, F> {
         // Build witness trace directly from the populated witness table.
         let mut witness_values = Vec::with_capacity(self.witness.len());
         for (i, value) in self.witness.iter().enumerate() {
-            witness_values.push((*value).ok_or(CircuitError::WitnessNotSetForIndex { index: i })?);
+            let Some(value) = *value else {
+                return Err(CircuitError::WitnessNotSetForIndex { index: i });
+            };
+            witness_values.push(value);
         }
         let witness_trace = WitnessTrace::new(witness_values);
 
@@ -402,7 +407,9 @@ impl<'a, F: Field> CircuitRunner<'a, F> {
                     })
                 } else {
                     let result_val = self.get_witness(out)?;
-                    let a_inv = a_val.try_inverse().ok_or(CircuitError::DivisionByZero)?;
+                    let Some(a_inv) = a_val.try_inverse() else {
+                        return Err(CircuitError::DivisionByZero);
+                    };
                     let b_val = result_val * a_inv;
                     self.set_witness(b, b_val)?;
                     Ok(AluOpRecord {
@@ -496,8 +503,10 @@ impl<'a, F: Field> CircuitRunner<'a, F> {
     /// Gets witness value by ID.
     #[inline(always)]
     fn get_witness(&self, widx: WitnessId) -> Result<F, CircuitError> {
-        self.witness_value(widx)
-            .ok_or(CircuitError::WitnessNotSet { witness_id: widx })
+        let Some(value) = self.witness_value(widx) else {
+            return Err(CircuitError::WitnessNotSet { witness_id: widx });
+        };
+        Ok(value)
     }
 
     /// Sets witness value by ID.

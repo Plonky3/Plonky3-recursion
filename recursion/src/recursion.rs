@@ -2,8 +2,8 @@
 
 use alloc::borrow::Cow;
 use alloc::boxed::Box;
-use alloc::rc::Rc;
 use alloc::string::ToString;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use p3_air::{SymbolicExpression, SymbolicExpressionExt};
@@ -88,7 +88,7 @@ where
 }
 
 /// Output of one recursion step: the next-layer batch proof and its prover data (for chaining or verification).
-pub struct RecursionOutput<SC>(pub BatchStarkProof<SC>, pub Rc<CircuitProverData<SC>>)
+pub struct RecursionOutput<SC>(pub BatchStarkProof<SC>, pub Arc<CircuitProverData<SC>>)
 where
     SC: StarkGenericConfig;
 
@@ -275,6 +275,29 @@ where
     fn non_primitive_air_builders(&self) -> Vec<Box<dyn NpoAirBuilder<SC, D>>> {
         Vec::new()
     }
+
+    /// The provers that rebuild an input proof's tables: [`Self::non_primitive_input_provers`]
+    /// plus the byte-hash tables (Keccak-f, BLAKE3) its manifest names, in manifest order.
+    ///
+    /// See [`crate::backend::hash_tables::with_hash_table_input_provers`]: the hash tables are
+    /// only added, so a manifest must still list this backend's own tables exactly.
+    fn input_table_provers(
+        &self,
+        ext_degree: usize,
+        op_types: &[NpoTypeId],
+    ) -> Vec<Box<dyn TableProver<SC>>>
+    where
+        SC: 'static + Send + Sync,
+        Val<SC>: StarkField,
+        SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+            Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+    {
+        crate::backend::hash_tables::with_hash_table_input_provers(
+            ext_degree,
+            op_types,
+            self.non_primitive_input_provers(ext_degree, op_types),
+        )
+    }
 }
 
 /// Parameters for the shared recursion pipeline (table packing, optional overrides).
@@ -399,6 +422,8 @@ pub fn prove_next_layer<SC, A, B, const D: usize>(
     params: &ProveNextLayerParams,
 ) -> Result<RecursionOutput<SC>, VerificationError>
 where
+    p3_uni_stark::PcsProverError<SC>: Send,
+    SC::Challenger: p3_challenger::GrindingChallenger<Witness = p3_uni_stark::Val<SC>>,
     SC: StarkGenericConfig + Send + Sync + Clone + 'static,
     A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
     B: PcsRecursionBackend<SC, A, D>,
@@ -443,6 +468,8 @@ pub fn build_and_prove_next_layer<SC, A, B, const D: usize>(
     params: &ProveNextLayerParams,
 ) -> Result<RecursionOutput<SC>, VerificationError>
 where
+    p3_uni_stark::PcsProverError<SC>: Send,
+    SC::Challenger: p3_challenger::GrindingChallenger<Witness = p3_uni_stark::Val<SC>>,
     SC: StarkGenericConfig + Send + Sync + Clone + 'static,
     A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
     B: PcsRecursionBackend<SC, A, D>,
@@ -611,6 +638,8 @@ pub fn prove_aggregation_layer<SC, A1, A2, B, const D: usize>(
     params: &ProveNextLayerParams,
 ) -> Result<RecursionOutput<SC>, VerificationError>
 where
+    p3_uni_stark::PcsProverError<SC>: Send,
+    SC::Challenger: p3_challenger::GrindingChallenger<Witness = p3_uni_stark::Val<SC>>,
     SC: StarkGenericConfig + Send + Sync + Clone + 'static,
     A1: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
     A2: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
@@ -662,6 +691,8 @@ pub fn prove_aggregation_layer_cross<InSC, OutSC, A1, A2, B, const D: usize>(
     params: &ProveNextLayerParams,
 ) -> Result<RecursionOutput<OutSC>, VerificationError>
 where
+    p3_uni_stark::PcsProverError<OutSC>: Send,
+    OutSC::Challenger: p3_challenger::GrindingChallenger<Witness = p3_uni_stark::Val<OutSC>>,
     InSC: StarkGenericConfig + Send + Sync + Clone + 'static,
     OutSC: StarkGenericConfig<Challenge = InSC::Challenge> + Send + Sync + Clone + 'static,
     A1: RecursiveAir<Val<InSC>, InSC::Challenge, LogUpGadget>,
@@ -719,6 +750,8 @@ pub fn build_and_prove_aggregation_layer<SC, A1, A2, B, const D: usize>(
     params: &ProveNextLayerParams,
 ) -> Result<RecursionOutput<SC>, VerificationError>
 where
+    p3_uni_stark::PcsProverError<SC>: Send,
+    SC::Challenger: p3_challenger::GrindingChallenger<Witness = p3_uni_stark::Val<SC>>,
     SC: StarkGenericConfig + Send + Sync + Clone + 'static,
     A1: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
     A2: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
@@ -764,6 +797,8 @@ pub fn build_and_prove_aggregation_layer_cross<InSC, OutSC, A1, A2, B, const D: 
     params: &ProveNextLayerParams,
 ) -> Result<RecursionOutput<OutSC>, VerificationError>
 where
+    p3_uni_stark::PcsProverError<OutSC>: Send,
+    OutSC::Challenger: p3_challenger::GrindingChallenger<Witness = p3_uni_stark::Val<OutSC>>,
     InSC: StarkGenericConfig + Send + Sync + Clone + 'static,
     OutSC: StarkGenericConfig<Challenge = InSC::Challenge> + Send + Sync + Clone + 'static,
     A1: RecursiveAir<Val<InSC>, InSC::Challenge, LogUpGadget>,

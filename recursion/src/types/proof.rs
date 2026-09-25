@@ -281,6 +281,7 @@ impl<
             opened_values,
             opening_proof,
             degree_bits: _,
+            ood_pow_witness: _,
         } = input;
 
         let commitments_no_lookups = BatchCommitments {
@@ -406,6 +407,8 @@ impl<
             opening_proof,
             lookup_terminals,
             degree_bits: _,
+            lookup_pow_witness: _,
+            ood_pow_witness: _,
         } = input;
 
         CommitmentTargets::<SC::Challenge, Comm>::get_values(commitments)
@@ -486,12 +489,10 @@ impl<SC: StarkGenericConfig> Recursive<SC::Challenge> for OpenedValuesTargets<SC
         let trace_next_targets = circuit.alloc_private_inputs(trace_next_len, "trace next values");
 
         let preprocessed_local_targets = input
-            .preprocessed_local
-            .as_ref()
+            .preprocessed_local()
             .map(|prep| circuit.alloc_private_inputs(prep.len(), "local preprocessed values"));
         let preprocessed_next_targets = input
-            .preprocessed_next
-            .as_ref()
+            .preprocessed_next()
             .map(|prep| circuit.alloc_private_inputs(prep.len(), "local preprocessed values"));
 
         let quotient_chunks_len = input.quotient_chunks.len();
@@ -527,11 +528,12 @@ impl<SC: StarkGenericConfig> Recursive<SC::Challenge> for OpenedValuesTargets<SC
         let OpenedValues {
             trace_local,
             trace_next,
-            preprocessed_local,
-            preprocessed_next,
+            preprocessed,
             quotient_chunks,
             random,
         } = input;
+        let preprocessed_local = preprocessed.as_ref().map(|p| p.local.as_slice());
+        let preprocessed_next = preprocessed.as_ref().and_then(|p| p.next.as_deref());
 
         let mut values = vec![];
         values.extend(trace_local);

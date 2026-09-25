@@ -71,6 +71,7 @@ mod tests {
 
     fn ordinary_fri() -> FriProof<EF, ChallengeMmcs, F, Vec<BatchMultiOpening<F, Mmcs>>> {
         FriProof {
+            batch_pow_witness: Default::default(),
             commit_phase_commits: vec![cap(1)],
             commit_pow_witnesses: vec![f(2)],
             input_openings: vec![BatchMultiOpening {
@@ -78,7 +79,6 @@ mod tests {
                 opening_proof: frontier(5),
             }],
             commit_phase_openings: vec![p3_fri::CommitPhaseMultiStep {
-                log_arity: 1,
                 sibling_values: vec![vec![ef([6, 7, 8, 9])]],
                 opening_proof: frontier(10),
             }],
@@ -184,6 +184,7 @@ mod tests {
         let inner = ordinary_fri();
         let salted: FriProof<EF, SaltedChallengeMmcs, F, Vec<BatchMultiOpening<F, SaltedMmcs>>> =
             FriProof {
+                batch_pow_witness: Default::default(),
                 commit_phase_commits: inner.commit_phase_commits,
                 commit_pow_witnesses: inner.commit_pow_witnesses,
                 input_openings: vec![BatchMultiOpening {
@@ -191,7 +192,6 @@ mod tests {
                     opening_proof: (vec![vec![vec![f(4); 4]]], frontier(5)),
                 }],
                 commit_phase_openings: vec![p3_fri::CommitPhaseMultiStep {
-                    log_arity: 1,
                     sibling_values: inner.commit_phase_openings[0].sibling_values.clone(),
                     opening_proof: (vec![vec![vec![f(6); 4]]], frontier(7)),
                 }],
@@ -276,6 +276,8 @@ mod tests {
         let codec = MerkleMmcsCodec::<F, 8>::new(FieldEncoding::u32());
 
         let mut zero_cap = Vec::new();
+        // Batch PoW witness, then one commit-phase commitment with zero cap roots.
+        zero_cap.extend_from_slice(&0_u32.to_le_bytes());
         zero_cap.extend_from_slice(&1_u32.to_le_bytes());
         zero_cap.extend_from_slice(&0_u32.to_le_bytes());
         let mut reader = Reader::new(&zero_cap, &limits);
@@ -356,7 +358,7 @@ mod tests {
             })
         ));
 
-        let empty_fri_final_poly = [0_u8; 20];
+        let empty_fri_final_poly = [0_u8; 24];
         let mut reader = Reader::new(&empty_fri_final_poly, &limits);
         assert_eq!(
             read_fri_proof::<F, EF, Mmcs, ChallengeMmcs, _, _>(

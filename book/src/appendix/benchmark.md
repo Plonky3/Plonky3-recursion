@@ -10,37 +10,42 @@ The reference examples are a Plonky3 uni-stark proof of the Keccak AIR imported 
 
 - Keccak example: set number of hashes with `-n` argument
 ```bash
-RUSTFLAGS=-Ctarget-cpu=native RUSTFLAGS=-Copt-level=3 RUST_LOG=info cargo run --release \
+RUSTFLAGS="-Ctarget-cpu=native -Copt-level=3" RUST_LOG=info cargo run --release \
     --example recursive_keccak --features parallel -- -n 2500 
 ```
 
 - Fibonacci example: set element index in the sequence with `-n` argument
 ```bash
-RUSTFLAGS=-Ctarget-cpu=native RUSTFLAGS=-Copt-level=3 RUST_LOG=info cargo run --release \
+RUSTFLAGS="-Ctarget-cpu=native -Copt-level=3" RUST_LOG=info cargo run --release \
     --example recursive_fibonacci --features parallel -- -n 10000
 ```
 
 - 2-to-1 aggregation example:
 ```bash
-RUSTFLAGS=-Ctarget-cpu=native RUSTFLAGS=-Copt-level=3 RUST_LOG=info cargo run --release \
+RUSTFLAGS="-Ctarget-cpu=native -Copt-level=3" RUST_LOG=info cargo run --release \
     --example recursive_aggregation --features parallel -- --field koala-bear
 ```
 
 ### Parameterization
 
 Each example supports additional parameterization around the FRI parameters, namely:
-- `--log-blowup`: logarithmic blowup factor for the LDE. Default 3.
-- `--max-log-arity`: maximum arity allowed during the FRI folding phases. Default 3.
-- `--log-final-poly-len`: logarithmic size (or degree) allowed for the final polynomial after folding. Default 5.
-- `--cap-height`: the height at which the MMCS tree is truncated for commitments. Default varies per examples.
+- `--log-blowup`: logarithmic blowup factor for the LDE. Default 2.
+- `--max-log-arity`: maximum arity allowed during the FRI folding phases. Default 2 (3 for the aggregation example, except with `--zk` or `--hash poseidon1`).
+- `--log-final-poly-len`: logarithmic size (or degree) allowed for the final polynomial after folding. Default 5 (6 for the aggregation example).
+- `--cap-height`: the height at which the MMCS tree is truncated for commitments. Default 0.
 - `--commit-pow-bits`: additional PoW grinding during the FRI commit phase. Default 0.
-- `--query-pow-bits`: additional PoW grinding during the FRI query phase. Default 16.
-- `--num-recursive-layers`: number of recursive proofs to be generated in a chain, starting from the base proof (Keccak or Fibonacci). Default 3.
-- `--witness-lanes`: number of witness lanes for the table packing in recursive layers. Default varies per examples.
-- `--public-lanes`: number of public lanes for the table packing in recursive layers. Default 2.
+- `--query-pow-bits`: additional PoW grinding during the FRI query phase. Default 15.
+- `--num-recursive-layers`: number of recursive proofs to be generated in a chain, starting from the base proof (Keccak or Fibonacci). Default 3. For the aggregation example, this is the depth of the aggregation tree. Default 1.
+- `--public-lanes`: number of public lanes for the table packing in recursive layers. Default 1.
 - `--alu-lanes`: number of ALU lanes for the table packing in recursive layers. Default 3.
+- `--horner-packed-steps`: number of consecutive Horner steps packed per ALU row. Default 4.
+- `--recompose-lanes`: number of recompose lanes for the table packing in recursive layers. Default 1.
 - `--security-level`: targeted conjectured security in bits. Default 124.
 - `--zk`: activates the Zero-Knowledge property. Default `false`.
+
+The aggregation example additionally accepts `--concurrent-pairs`, which proves all pairs of an aggregation level concurrently against one shared preparation. It shortens the whole tree, but each individual proof then shares the cores, so its reported per-layer time grows; the results below are measured without it.
+
+The examples run on the [mimalloc](https://github.com/microsoft/mimalloc) allocator and keep freed memory mapped between recursion layers.
 
 ## Results
 

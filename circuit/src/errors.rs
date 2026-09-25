@@ -118,6 +118,17 @@ pub enum CircuitError {
         reconstructed: String,
     },
 
+    /// A non-primitive operation read an input outside the domain it accepts.
+    #[error(
+        "Invalid input WitnessId({witness_id}) for operation {op:?}: expected {expected}, got {got}"
+    )]
+    InvalidNonPrimitiveOpInput {
+        op: NpoTypeId,
+        witness_id: WitnessId,
+        expected: &'static str,
+        got: String,
+    },
+
     /// Mismatched non-primitive operation configuration
     #[error("Invalid configuration for operation {op:?}")]
     InvalidNonPrimitiveOpConfiguration { op: NpoTypeId },

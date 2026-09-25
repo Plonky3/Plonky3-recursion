@@ -129,10 +129,6 @@ where
             challenger.check_pow_witness(circuit, rp.pow_bits(), round_proof.pow_witness)?;
         }
 
-        // 4. Transcript checkpoint: native calls `challenger.sample()` for intermediate
-        //    rounds only (not the final round) to advance the sponge state.
-        let _ = challenger.sample(circuit);
-
         // 5. STIR query sampling and leaf folding.
         //
         //    query_randomness = last_r (Prefix) or last_r reversed (Suffix).
@@ -195,11 +191,14 @@ where
         // 7. Sample gamma, update claimed_eval, record round constraint.
         //
         //    Native: `constraint.combine_evals(&mut claimed_eval)` adds
-        //    Σ_i γ^i·ood_ans[i] + Σ_j γ^{n_ood+j}·fold[j].
+        //    Σ_i γ^{1+i}·ood_ans[i] + Σ_j γ^{1+n_ood+j}·fold[j]. The round constraint is
+        //    built with `Constraint::new_with_existing_claim`, so the carried claim keeps
+        //    `γ^0` and the fresh statements start at `γ^1`.
         let gamma = challenger.sample_ext(circuit);
         let mut combined: Vec<Target> = round_proof.ood_answers.clone();
         combined.extend_from_slice(&fold_vals);
-        let contrib = eval_powers_combination(circuit, &combined, gamma);
+        let combination = eval_powers_combination(circuit, &combined, gamma);
+        let contrib = circuit.mul(combination, gamma);
         claimed_eval = circuit.add(claimed_eval, contrib);
 
         all_constraints.push(ConstraintWeightData {
@@ -207,6 +206,7 @@ where
             eq_points: ood_eq_points,
             sel_scalars,
             gamma,
+            initial_power: 1,
         });
 
         // 8. Round sumcheck → next `last_r`.
@@ -416,7 +416,7 @@ mod tests {
     use alloc::vec::Vec;
 
     use p3_baby_bear::{BabyBear, Poseidon2BabyBear};
-    use p3_challenger::{CanObserve, CanSample, DuplexChallenger, FieldChallenger};
+    use p3_challenger::DuplexChallenger;
     use p3_circuit::ops::{generate_poseidon2_trace, generate_recompose_trace};
     use p3_circuit::{CircuitBuilder, CircuitBuilderError};
     use p3_commit::MultilinearPcs;
@@ -430,14 +430,14 @@ mod tests {
     use p3_multilinear_util::poly::Poly;
     use p3_poseidon2_circuit_air::BabyBearD4Width16;
     use p3_sumcheck::constraints::{Constraint, Statements};
-    use p3_sumcheck::layout::{Layout, PrefixProver, Table, Verifier};
+    use p3_sumcheck::layout::{Layout, PrefixProver, Table, Verifier, observe_commitment};
+    use p3_sumcheck::strategy::Basis;
     use p3_sumcheck::{OpeningBatch, OpeningProtocol, TableShape, TableSpec};
     use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
-    use p3_whir::fiat_shamir::domain_separator::DomainSeparator;
     use p3_whir::parameters::{FoldingFactor, ProtocolParameters, SecurityAssumption, WhirConfig};
     use p3_whir::pcs::proof::QueryOpenings;
     use p3_whir::pcs::prover::WhirProver;
-    use p3_whir::pcs::utils::get_challenge_stir_queries;
+    use p3_whir::transcript::{WhirShape, WhirVerifierTranscript};
     use rand::SeedableRng;
     use rand::rngs::SmallRng;
 
@@ -536,6 +536,149 @@ mod tests {
         }
 
         fn clear(&mut self, _: &mut CircuitBuilder<EF>) {}
+    }
+
+    /// What a native WHIR verification samples after its initial constraint, in the order the
+    /// in-circuit verifier draws the same values.
+    struct NativeWhirReplay {
+        initial_constraint: Constraint<BF, EF>,
+        initial_claimed_eval: EF,
+        ext_samples: Vec<EF>,
+        base_samples: Vec<BF>,
+        round_indices: Vec<Vec<usize>>,
+        final_indices: Vec<usize>,
+    }
+
+    /// Prove natively, then replay the native verifier through p3-whir's own typed transcript.
+    fn prove_and_replay(
+        pcs: &TestPcs,
+        config: &WhirConfig<EF, BF, MyChallenger>,
+        protocol: &OpeningProtocol,
+        witness: p3_sumcheck::layout::Witness<BF>,
+    ) -> (
+        <MyMmcs as p3_commit::Mmcs<BF>>::Commitment,
+        p3_whir::pcs::proof::PcsProof<BF, EF, MyMmcs>,
+        NativeWhirReplay,
+    ) {
+        let (commitment, proof) = {
+            let mut ch = make_challenger();
+            let (commitment, prover_data) =
+                <TestPcs as MultilinearPcs<EF, MyChallenger>>::commit(pcs, witness, &mut ch)
+                    .unwrap();
+            let proof = <TestPcs as MultilinearPcs<EF, MyChallenger>>::open(
+                pcs,
+                prover_data,
+                protocol.clone(),
+                &mut ch,
+            )
+            .unwrap();
+            (commitment, proof)
+        };
+
+        let mut ch = make_challenger();
+        observe_commitment::<BF, _, _>(&mut ch, commitment.clone());
+        let mut lv =
+            Verifier::<BF, EF>::new(&protocol.table_shapes(), PrefixProver::<BF, EF>::strategy());
+        for &eval in &proof.whir.initial_ood_answers {
+            lv.add_virtual_eval(eval, &mut ch);
+        }
+        for ((table_idx, polys), evals) in protocol.iter_openings().zip(&proof.evals) {
+            lv.add_claim(table_idx, polys, evals, &mut ch)
+                .expect("proof evaluations match the opening schedule shape");
+        }
+
+        let mut ext_samples: Vec<EF> = Vec::new();
+        let mut base_samples: Vec<BF> = Vec::new();
+        let mut round_indices = Vec::new();
+        let shape = WhirShape::new(config, protocol.num_openings());
+        let mut vt = WhirVerifierTranscript::<MyChallenger, BF, EF>::new(&mut ch, shape);
+        let (initial_constraint, initial_claimed_eval, initial_r) =
+            vt.delegate_initial_fold(|challenger| {
+                let alpha = lv.batching_challenge(challenger);
+                let constraint = lv.constraint(alpha);
+                let mut claimed_eval = EF::ZERO;
+                constraint.combine_evals(&mut claimed_eval);
+                let mut running = claimed_eval;
+                let r = proof.whir.initial_sumcheck.verify_rounds(
+                    challenger,
+                    &mut running,
+                    config.round_folding_factor(0),
+                    config.starting_folding_pow_bits(),
+                    Basis::Evaluation,
+                );
+                (constraint, claimed_eval, r)
+            });
+        ext_samples.extend(initial_r.expect("initial sumcheck replays").as_slice());
+        let mut dummy = EF::ZERO;
+        for (round_index, (rproof, rp)) in proof
+            .whir
+            .rounds
+            .iter()
+            .zip(config.round_parameters())
+            .enumerate()
+        {
+            vt.commitment(
+                rproof
+                    .commitment
+                    .as_ref()
+                    .expect("round commitment")
+                    .clone(),
+            );
+            for &answer in &rproof.ood_answers {
+                ext_samples.push(vt.ood_point());
+                vt.ood_answer(answer);
+            }
+            vt.query_pow(round_index, rproof.pow_witness).unwrap();
+            let indices = vt.query_indices(round_index);
+            base_samples.extend(indices.iter().map(|&idx| BF::from_u64(idx as u64)));
+            round_indices.push(indices);
+            ext_samples.push(vt.round_batching());
+            let r = vt
+                .delegate_round_fold(|challenger| {
+                    rproof.sumcheck.verify_rounds(
+                        challenger,
+                        &mut dummy,
+                        config.round_folding_factor(round_index + 1),
+                        rp.folding_pow_bits,
+                        Basis::Evaluation,
+                    )
+                })
+                .expect("round sumcheck replays");
+            ext_samples.extend(r.as_slice());
+        }
+        let n_rounds = proof.whir.rounds.len();
+        let final_poly = proof.whir.final_poly.as_ref().expect("final_poly");
+        vt.final_poly(final_poly.as_slice()).unwrap();
+        vt.query_pow(n_rounds, proof.whir.final_pow_witness)
+            .unwrap();
+        let final_indices = vt.query_indices(n_rounds);
+        base_samples.extend(final_indices.iter().map(|&idx| BF::from_u64(idx as u64)));
+        if let Some(r) = vt.delegate_final_fold(|challenger| {
+            p3_sumcheck::verify_final_sumcheck_rounds(
+                proof.whir.final_sumcheck.as_ref(),
+                challenger,
+                &mut dummy,
+                config.final_sumcheck_rounds(),
+                config.final_folding_pow_bits(),
+                Basis::Evaluation,
+            )
+        }) {
+            ext_samples.extend(r.expect("final sumcheck replays").as_slice());
+        }
+        vt.finish();
+
+        (
+            commitment,
+            proof,
+            NativeWhirReplay {
+                initial_constraint,
+                initial_claimed_eval,
+                ext_samples,
+                base_samples,
+                round_indices,
+                final_indices,
+            },
+        )
     }
 
     /// Builds the single-column `Table` the test protocol commits to.
@@ -640,101 +783,18 @@ mod tests {
         let config = WhirConfig::<EF, BF, MyChallenger>::new(NUM_VARIABLES, whir_params).unwrap();
         let pcs = TestPcs::new(config.clone(), dft, mmcs);
 
-        let (commitment, proof) = {
-            let mut ch = make_challenger();
-            let mut ds = DomainSeparator::new(vec![]);
-            pcs.add_domain_separator::<8>(&mut ds);
-            ds.observe_domain_separator(&mut ch);
-            let (commitment, prover_data) =
-                <TestPcs as MultilinearPcs<EF, MyChallenger>>::commit(&pcs, witness, &mut ch);
-            let proof = <TestPcs as MultilinearPcs<EF, MyChallenger>>::open(
-                &pcs,
-                prover_data,
-                protocol.clone(),
-                &mut ch,
-            );
-            (commitment, proof)
-        };
-
-        let (initial_constraint, initial_claimed_eval, mut vc) = {
-            let mut ch = make_challenger();
-            let mut ds = DomainSeparator::new(vec![]);
-            pcs.add_domain_separator::<8>(&mut ds);
-            ds.observe_domain_separator(&mut ch);
-            ch.observe(commitment);
-            let mut lv = Verifier::<BF, EF>::new(
-                &protocol.table_shapes(),
-                PrefixProver::<BF, EF>::strategy(),
-            );
-            for &eval in &proof.whir.initial_ood_answers {
-                lv.add_virtual_eval(eval, &mut ch);
-            }
-            for ((table_idx, polys), evals) in protocol.iter_openings().zip(&proof.evals) {
-                lv.add_claim(table_idx, polys, evals, &mut ch)
-                    .expect("proof evaluations match the opening schedule shape");
-            }
-            let alpha: EF = ch.sample_algebra_element();
-            let constraint = lv.constraint(alpha);
-            let mut claimed_eval = EF::ZERO;
-            constraint.combine_evals(&mut claimed_eval);
-            (constraint, claimed_eval, ch)
-        };
-
-        let mut ext_samples: Vec<EF> = Vec::new();
-        let mut base_samples: Vec<BF> = Vec::new();
-        let rp0 = &config.round_parameters[0];
-
-        for &[c0, cinf] in proof.whir.initial_sumcheck.polynomial_evaluations() {
-            vc.observe_algebra_element(c0);
-            vc.observe_algebra_element(cinf);
-            ext_samples.push(vc.sample_algebra_element());
-        }
-        {
-            let rproof = &proof.whir.rounds[0];
-            let cap = rproof.commitment.as_ref().expect("round commitment");
-            vc.observe(cap.clone());
-            for &answer in &rproof.ood_answers {
-                ext_samples.push(vc.sample_algebra_element());
-                vc.observe_algebra_element(answer);
-            }
-            let checkpoint: BF = CanSample::sample(&mut vc);
-            base_samples.push(checkpoint);
-            let round0_indices = get_challenge_stir_queries::<MyChallenger, BF>(
-                rp0.domain_size,
-                rp0.folding_factor,
-                rp0.num_queries,
-                &mut vc,
-            );
-            for &idx in &round0_indices {
-                base_samples.push(BF::from_u64(idx as u64));
-            }
-            ext_samples.push(vc.sample_algebra_element());
-            for &[c0, cinf] in rproof.sumcheck.polynomial_evaluations() {
-                vc.observe_algebra_element(c0);
-                vc.observe_algebra_element(cinf);
-                ext_samples.push(vc.sample_algebra_element());
-            }
-        }
-        {
-            let final_poly = proof.whir.final_poly.as_ref().expect("final_poly");
-            vc.observe_algebra_slice(final_poly.as_slice());
-            let final_indices = get_challenge_stir_queries::<MyChallenger, BF>(
-                config.final_round_config().domain_size,
-                config.final_round_config().folding_factor,
-                config.final_queries,
-                &mut vc,
-            );
-            for &idx in &final_indices {
-                base_samples.push(BF::from_u64(idx as u64));
-            }
-            if let Some(ref final_sc) = proof.whir.final_sumcheck {
-                for &[c0, cinf] in final_sc.polynomial_evaluations() {
-                    vc.observe_algebra_element(c0);
-                    vc.observe_algebra_element(cinf);
-                    ext_samples.push(vc.sample_algebra_element());
-                }
-            }
-        }
+        let (commitment, proof, replay) = prove_and_replay(&pcs, &config, &protocol, witness);
+        let NativeWhirReplay {
+            initial_constraint,
+            initial_claimed_eval,
+            ext_samples,
+            base_samples,
+            round_indices,
+            final_indices,
+        } = replay;
+        let round0_indices = round_indices[0].clone();
+        let rp0 = &config.round_parameters()[0];
+        let _ = (&commitment, &round0_indices, &final_indices, rp0);
 
         let arithmetic_params = WhirArithmeticParams::from_config(&config);
         let vp = &arithmetic_params.verifier;
@@ -756,6 +816,7 @@ mod tests {
             eq_points,
             sel_scalars: vec![],
             gamma: gamma_target,
+            initial_power: 0,
         };
         let initial_claimed_eval_target = circuit.define_const(initial_claimed_eval);
         let mut mock = MockChallenger {
@@ -907,104 +968,19 @@ mod tests {
         let config = WhirConfig::<EF, BF, MyChallenger>::new(NUM_VARIABLES, whir_params).unwrap();
         let pcs = TestPcs::new(config.clone(), dft, mmcs.clone());
 
-        let (commitment, proof) = {
-            let mut ch = make_challenger();
-            let mut ds = DomainSeparator::new(vec![]);
-            pcs.add_domain_separator::<8>(&mut ds);
-            ds.observe_domain_separator(&mut ch);
-            let (commitment, prover_data) =
-                <TestPcs as MultilinearPcs<EF, MyChallenger>>::commit(&pcs, witness, &mut ch);
-            let proof = <TestPcs as MultilinearPcs<EF, MyChallenger>>::open(
-                &pcs,
-                prover_data,
-                protocol.clone(),
-                &mut ch,
-            );
-            (commitment, proof)
-        };
+        let (commitment, proof, replay) = prove_and_replay(&pcs, &config, &protocol, witness);
+        let NativeWhirReplay {
+            initial_constraint,
+            initial_claimed_eval,
+            ext_samples,
+            base_samples,
+            round_indices,
+            final_indices,
+        } = replay;
+        let round0_indices = round_indices[0].clone();
+        let rp0 = &config.round_parameters()[0];
+        let _ = (&commitment, &round0_indices, &final_indices, rp0);
 
-        let (initial_constraint, initial_claimed_eval, mut vc) = {
-            let mut ch = make_challenger();
-            let mut ds = DomainSeparator::new(vec![]);
-            pcs.add_domain_separator::<8>(&mut ds);
-            ds.observe_domain_separator(&mut ch);
-            ch.observe(commitment.clone());
-            let mut lv = Verifier::<BF, EF>::new(
-                &protocol.table_shapes(),
-                PrefixProver::<BF, EF>::strategy(),
-            );
-            for &eval in &proof.whir.initial_ood_answers {
-                lv.add_virtual_eval(eval, &mut ch);
-            }
-            for ((table_idx, polys), evals) in protocol.iter_openings().zip(&proof.evals) {
-                lv.add_claim(table_idx, polys, evals, &mut ch)
-                    .expect("proof evaluations match the opening schedule shape");
-            }
-            let alpha: EF = ch.sample_algebra_element();
-            let constraint = lv.constraint(alpha);
-            let mut claimed_eval = EF::ZERO;
-            constraint.combine_evals(&mut claimed_eval);
-            (constraint, claimed_eval, ch)
-        };
-
-        // Record transcript (same logic as arithmetic test).
-        let mut ext_samples: Vec<EF> = Vec::new();
-        let mut base_samples: Vec<BF> = Vec::new();
-        let rp0 = &config.round_parameters[0];
-        for &[c0, cinf] in proof.whir.initial_sumcheck.polynomial_evaluations() {
-            vc.observe_algebra_element(c0);
-            vc.observe_algebra_element(cinf);
-            ext_samples.push(vc.sample_algebra_element());
-        }
-        let round0_indices = {
-            let rproof = &proof.whir.rounds[0];
-            vc.observe(rproof.commitment.as_ref().unwrap().clone());
-            for &answer in &rproof.ood_answers {
-                ext_samples.push(vc.sample_algebra_element());
-                vc.observe_algebra_element(answer);
-            }
-            let checkpoint: BF = CanSample::sample(&mut vc);
-            base_samples.push(checkpoint);
-            let round0_indices = get_challenge_stir_queries::<MyChallenger, BF>(
-                rp0.domain_size,
-                rp0.folding_factor,
-                rp0.num_queries,
-                &mut vc,
-            );
-            for &idx in &round0_indices {
-                base_samples.push(BF::from_u64(idx as u64));
-            }
-            ext_samples.push(vc.sample_algebra_element());
-            for &[c0, cinf] in rproof.sumcheck.polynomial_evaluations() {
-                vc.observe_algebra_element(c0);
-                vc.observe_algebra_element(cinf);
-                ext_samples.push(vc.sample_algebra_element());
-            }
-            round0_indices
-        };
-        let final_indices = {
-            let final_poly = proof.whir.final_poly.as_ref().unwrap();
-            vc.observe_algebra_slice(final_poly.as_slice());
-            let final_indices = get_challenge_stir_queries::<MyChallenger, BF>(
-                config.final_round_config().domain_size,
-                config.final_round_config().folding_factor,
-                config.final_queries,
-                &mut vc,
-            );
-            for &idx in &final_indices {
-                base_samples.push(BF::from_u64(idx as u64));
-            }
-            if let Some(ref final_sc) = proof.whir.final_sumcheck {
-                for &[c0, cinf] in final_sc.polynomial_evaluations() {
-                    vc.observe_algebra_element(c0);
-                    vc.observe_algebra_element(cinf);
-                    ext_samples.push(vc.sample_algebra_element());
-                }
-            }
-            final_indices
-        };
-
-        // Build circuit with real MMCS verification enabled.
         let vp = WhirVerifierParams::<BF>::from_config::<EF, MyChallenger>(
             &config,
             PrefixProver::<BF, EF>::variable_order(),
@@ -1047,6 +1023,7 @@ mod tests {
             eq_points,
             sel_scalars: vec![],
             gamma: gamma_target,
+            initial_power: 0,
         };
         let initial_claimed_eval_target = circuit.define_const(initial_claimed_eval);
 
@@ -1189,101 +1166,18 @@ mod tests {
         let config = WhirConfig::<EF, BF, MyChallenger>::new(NUM_VARIABLES, whir_params).unwrap();
         let pcs = TestPcs::new(config.clone(), dft, mmcs.clone());
 
-        let (commitment, proof) = {
-            let mut ch = make_challenger();
-            let mut ds = DomainSeparator::new(vec![]);
-            pcs.add_domain_separator::<8>(&mut ds);
-            ds.observe_domain_separator(&mut ch);
-            let (commitment, prover_data) =
-                <TestPcs as MultilinearPcs<EF, MyChallenger>>::commit(&pcs, witness, &mut ch);
-            let proof = <TestPcs as MultilinearPcs<EF, MyChallenger>>::open(
-                &pcs,
-                prover_data,
-                protocol.clone(),
-                &mut ch,
-            );
-            (commitment, proof)
-        };
-
-        let (initial_constraint, initial_claimed_eval, mut vc) = {
-            let mut ch = make_challenger();
-            let mut ds = DomainSeparator::new(vec![]);
-            pcs.add_domain_separator::<8>(&mut ds);
-            ds.observe_domain_separator(&mut ch);
-            ch.observe(commitment.clone());
-            let mut lv = Verifier::<BF, EF>::new(
-                &protocol.table_shapes(),
-                PrefixProver::<BF, EF>::strategy(),
-            );
-            for &eval in &proof.whir.initial_ood_answers {
-                lv.add_virtual_eval(eval, &mut ch);
-            }
-            for ((table_idx, polys), evals) in protocol.iter_openings().zip(&proof.evals) {
-                lv.add_claim(table_idx, polys, evals, &mut ch)
-                    .expect("proof evaluations match the opening schedule shape");
-            }
-            let alpha: EF = ch.sample_algebra_element();
-            let constraint = lv.constraint(alpha);
-            let mut claimed_eval = EF::ZERO;
-            constraint.combine_evals(&mut claimed_eval);
-            (constraint, claimed_eval, ch)
-        };
-
-        let mut ext_samples: Vec<EF> = Vec::new();
-        let mut base_samples: Vec<BF> = Vec::new();
-        let rp0 = &config.round_parameters[0];
-        for &[c0, cinf] in proof.whir.initial_sumcheck.polynomial_evaluations() {
-            vc.observe_algebra_element(c0);
-            vc.observe_algebra_element(cinf);
-            ext_samples.push(vc.sample_algebra_element());
-        }
-        let round0_indices = {
-            let rproof = &proof.whir.rounds[0];
-            vc.observe(rproof.commitment.as_ref().unwrap().clone());
-            for &answer in &rproof.ood_answers {
-                ext_samples.push(vc.sample_algebra_element());
-                vc.observe_algebra_element(answer);
-            }
-            let checkpoint: BF = CanSample::sample(&mut vc);
-            base_samples.push(checkpoint);
-            let round0_indices = get_challenge_stir_queries::<MyChallenger, BF>(
-                rp0.domain_size,
-                rp0.folding_factor,
-                rp0.num_queries,
-                &mut vc,
-            );
-            for &idx in &round0_indices {
-                base_samples.push(BF::from_u64(idx as u64));
-            }
-            ext_samples.push(vc.sample_algebra_element());
-            for &[c0, cinf] in rproof.sumcheck.polynomial_evaluations() {
-                vc.observe_algebra_element(c0);
-                vc.observe_algebra_element(cinf);
-                ext_samples.push(vc.sample_algebra_element());
-            }
-            round0_indices
-        };
-        let final_indices = {
-            let final_poly = proof.whir.final_poly.as_ref().unwrap();
-            vc.observe_algebra_slice(final_poly.as_slice());
-            let final_indices = get_challenge_stir_queries::<MyChallenger, BF>(
-                config.final_round_config().domain_size,
-                config.final_round_config().folding_factor,
-                config.final_queries,
-                &mut vc,
-            );
-            for &idx in &final_indices {
-                base_samples.push(BF::from_u64(idx as u64));
-            }
-            if let Some(ref final_sc) = proof.whir.final_sumcheck {
-                for &[c0, cinf] in final_sc.polynomial_evaluations() {
-                    vc.observe_algebra_element(c0);
-                    vc.observe_algebra_element(cinf);
-                    ext_samples.push(vc.sample_algebra_element());
-                }
-            }
-            final_indices
-        };
+        let (commitment, proof, replay) = prove_and_replay(&pcs, &config, &protocol, witness);
+        let NativeWhirReplay {
+            initial_constraint,
+            initial_claimed_eval,
+            ext_samples,
+            base_samples,
+            round_indices,
+            final_indices,
+        } = replay;
+        let round0_indices = round_indices[0].clone();
+        let rp0 = &config.round_parameters()[0];
+        let _ = (&commitment, &round0_indices, &final_indices, rp0);
 
         let vp = WhirVerifierParams::<BF>::from_config::<EF, MyChallenger>(
             &config,
@@ -1326,6 +1220,7 @@ mod tests {
             eq_points,
             sel_scalars: vec![],
             gamma: gamma_target,
+            initial_power: 0,
         };
         let initial_claimed_eval_target = circuit.define_const(initial_claimed_eval);
 

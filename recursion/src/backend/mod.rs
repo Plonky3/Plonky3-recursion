@@ -2,6 +2,7 @@
 
 mod context;
 pub mod fri;
+pub mod hash_tables;
 pub mod transcript;
 pub mod whir;
 

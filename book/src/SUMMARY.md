@@ -29,6 +29,7 @@
 - [Scaling Strategies](advanced_topics/scaling.md)
 - [Soundness and Security](advanced_topics/soundness.md)
 - [Debugging](advanced_topics/debugging.md)
+- [Binary Fields and Binary Hashes](advanced_topics/binary_fields.md)
 
 # Appendix
 

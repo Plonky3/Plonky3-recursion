@@ -18,6 +18,7 @@ pub(crate) use call::{PoseidonPermCall, PoseidonPermCallBase};
 use p3_field::Field;
 use p3_poseidon1_circuit_air::Poseidon1CircuitRow;
 pub(crate) use plugin::PoseidonCircuitPlugin;
+use smallvec::SmallVec;
 pub(crate) use state::PoseidonExecutionState;
 pub use state::PoseidonPermPrivateData;
 
@@ -35,6 +36,11 @@ use crate::{CircuitBuilderError, CircuitError};
 /// For D=1 mode, `width_ext == width` and the elements are base field values.
 pub(crate) type PoseidonPermExec<F> = Arc<dyn Fn(&[F]) -> Vec<F> + Send + Sync>;
 
+/// Inline-capacity storage for a row's per-limb values and CTL flags.
+///
+/// Sixteen entries hold every width-16 shape without a heap allocation; wider shapes spill.
+pub type PoseidonRowValues<T> = SmallVec<[T; 16]>;
+
 /// Plain field bundle assembled by the executor before constructing a variant's
 /// concrete trace row.
 pub struct PoseidonRowFields<F> {
@@ -43,11 +49,11 @@ pub struct PoseidonRowFields<F> {
     pub mmcs_bit: bool,
     pub mmcs_bit2: bool,
     pub mmcs_index_sum: F,
-    pub input_values: Vec<F>,
-    pub in_ctl: Vec<bool>,
-    pub input_indices: Vec<u32>,
-    pub out_ctl: Vec<bool>,
-    pub output_indices: Vec<u32>,
+    pub input_values: PoseidonRowValues<F>,
+    pub in_ctl: PoseidonRowValues<bool>,
+    pub input_indices: PoseidonRowValues<u32>,
+    pub out_ctl: PoseidonRowValues<bool>,
+    pub output_indices: PoseidonRowValues<u32>,
     pub mmcs_index_sum_idx: u32,
     pub mmcs_ctl_enabled: bool,
     pub absorb_len: usize,
@@ -258,11 +264,11 @@ impl PoseidonVariant for Poseidon1Variant {
             merkle_path: fields.merkle_path,
             mmcs_bit: fields.mmcs_bit,
             mmcs_index_sum: fields.mmcs_index_sum,
-            input_values: fields.input_values,
-            in_ctl: fields.in_ctl,
-            input_indices: fields.input_indices,
-            out_ctl: fields.out_ctl,
-            output_indices: fields.output_indices,
+            input_values: fields.input_values.into_vec(),
+            in_ctl: fields.in_ctl.into_vec(),
+            input_indices: fields.input_indices.into_vec(),
+            out_ctl: fields.out_ctl.into_vec(),
+            output_indices: fields.output_indices.into_vec(),
             mmcs_index_sum_idx: fields.mmcs_index_sum_idx,
             mmcs_ctl_enabled: fields.mmcs_ctl_enabled,
             absorb_len: fields.absorb_len,

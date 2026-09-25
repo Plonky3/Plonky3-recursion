@@ -97,7 +97,7 @@ fn test_fibonacci_batch_verifier_quintic_koala() {
     runner.set_public_inputs(&[expected_fib]).unwrap();
     let traces = runner.run().unwrap();
 
-    let prover_data = ProverData::from_airs_and_degrees(&config_proving, &airs, &degrees);
+    let prover_data = ProverData::from_airs_and_degrees(&config_proving, &airs, &degrees).unwrap();
     let circuit_prover_data =
         CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
     let prover = BatchStarkProver::new(config_proving).with_table_packing(table_packing);
@@ -117,6 +117,7 @@ fn test_fibonacci_batch_verifier_quintic_koala() {
     let fri_verifier_params = FriVerifierParams::with_mmcs(
         scalars.log_blowup,
         scalars.log_final_poly_len,
+        scalars.max_log_arity,
         scalars.commit_pow_bits,
         scalars.query_pow_bits,
         scalars.num_queries,
@@ -206,15 +207,24 @@ fn test_fibonacci_batch_verifier_quintic_koala() {
             &[],
         )
         .unwrap();
-        observe_opened_values::<MyConfig>(&mut challenger, &commitments_with_opening_points);
         let (val_mmcs, fri_params) = test_fri_instance();
+        observe_opened_values::<MyConfig>(
+            &mut challenger,
+            &commitments_with_opening_points,
+            fri_params.batch_proof_of_work_bits,
+        );
+        let claims: Vec<_> = commitments_with_opening_points
+            .iter()
+            .cloned()
+            .map(Into::into)
+            .collect();
         let query_paths = restore_fri_query_paths(
             &fri_params,
             &val_mmcs,
             &val_mmcs,
             &batch_stark_proof.proof.opening_proof,
             &mut challenger,
-            &commitments_with_opening_points,
+            &claims,
         )
         .unwrap();
         set_fri_mmcs_private_data::<F, Challenge, DIGEST_ELEMS>(
@@ -234,7 +244,8 @@ fn test_fibonacci_batch_verifier_quintic_koala() {
     let config3 = make_test_config();
 
     let verification_prover_data =
-        ProverData::from_airs_and_degrees(&config3, &verification_airs, &verification_degrees);
+        ProverData::from_airs_and_degrees(&config3, &verification_airs, &verification_degrees)
+            .unwrap();
     let verification_circuit_prover_data = CircuitProverData::new(
         verification_prover_data,
         verification_primitive,
