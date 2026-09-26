@@ -8,7 +8,7 @@ use alloc::{format, vec};
 use p3_circuit::{CircuitBuilder, CircuitRunner, NonPrimitiveOpId};
 use p3_circuit_prover::batch_stark_prover::{
     BatchStarkProof, CircuitVerifier, RecomposeAirBuilder, RecomposeProver,
-    lookups_for_circuit_table_air, poseidon2_air_builders_for_configs, recompose_preprocessor,
+    poseidon2_air_builders_for_configs, recompose_preprocessor,
 };
 use p3_circuit_prover::common::{NpoAirBuilder, NpoPreprocessor};
 use p3_circuit_prover::config::StarkField;
@@ -505,15 +505,7 @@ where
             "batch table public inputs disagree with reconstructed AIR metadata".into(),
         ));
     }
-    let lookups: Vec<Vec<Lookup<Val<SC>>>> = tables
-        .airs
-        .iter()
-        .zip(&tables.trace_lens)
-        .map(|(air, &trace_len)| {
-            lookups_for_circuit_table_air::<SC, 4>(&air.to_table_air(), trace_len, config.is_zk())
-                .to_vec()
-        })
-        .collect();
+    let lookups: Vec<Vec<Lookup<Val<SC>>>> = tables.lookups.iter().map(|l| l.to_vec()).collect();
     let public_counts = table_public_inputs.iter().map(Vec::len).collect::<Vec<_>>();
     plan_batch_native_layout(
         config,
@@ -664,13 +656,9 @@ where
     }
     let tables = trusted_batch_tables::<SC, 4>(verifier, statement)?;
     let lookups = tables
-        .airs
+        .lookups
         .iter()
-        .zip(&tables.trace_lens)
-        .map(|(air, &trace_len)| {
-            lookups_for_circuit_table_air::<SC, 4>(&air.to_table_air(), trace_len, config.is_zk())
-                .to_vec()
-        })
+        .map(|l| l.to_vec())
         .collect::<Vec<_>>();
     let public_counts = tables
         .public_values
