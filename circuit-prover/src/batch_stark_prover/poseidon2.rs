@@ -303,6 +303,81 @@ mod shared_materialization_tests {
 }
 
 impl Poseidon2AirWrapperInner {
+    fn trace_from_sources<F: Field>(
+        &self,
+        sources: &[&dyn Any],
+        padded_rows: usize,
+    ) -> Option<RowMajorMatrix<F>> {
+        macro_rules! generate {
+            ($air:expr, $field:ty, $constants:expr) => {{
+                if core::any::TypeId::of::<F>() != core::any::TypeId::of::<$field>() {
+                    return None;
+                }
+                let source_rows: Option<Vec<_>> = sources
+                    .iter()
+                    .map(|trace| {
+                        Some(
+                            trace
+                                .downcast_ref::<Poseidon2Trace<$field>>()?
+                                .operations
+                                .as_slice(),
+                        )
+                    })
+                    .collect();
+                let source_rows = source_rows?;
+                let matrix =
+                    $air.generate_trace_rows_from_slices(&source_rows, padded_rows, &$constants, 0);
+                // SAFETY: The TypeId check above proves F is exactly the concrete field,
+                // so the owned matrix has identical element and allocation layouts.
+                Some(unsafe { transmute::<RowMajorMatrix<$field>, RowMajorMatrix<F>>(matrix) })
+            }};
+        }
+        match self {
+            Self::BabyBearD1Width16Bus1(air) => {
+                generate!(air, BabyBear, BabyBearD1Width16::round_constants())
+            }
+            Self::BabyBearD1Width16Bus5(air) => {
+                generate!(air, BabyBear, BabyBearD1Width16::round_constants())
+            }
+            Self::BabyBearD4Width16(air) => {
+                generate!(air, BabyBear, BabyBearD4Width16::round_constants())
+            }
+            Self::BabyBearD4Width24(air) => {
+                generate!(air, BabyBear, BabyBearD4Width24::round_constants())
+            }
+            Self::BabyBearD4Width32(air) => {
+                generate!(air, BabyBear, BabyBearD4Width32::round_constants())
+            }
+            Self::KoalaBearD1Width16Bus1(air) => {
+                generate!(air, KoalaBear, KoalaBearD1Width16::round_constants())
+            }
+            Self::KoalaBearD1Width16Bus5(air) => {
+                generate!(air, KoalaBear, KoalaBearD1Width16::round_constants())
+            }
+            Self::KoalaBearD4Width16(air) => {
+                generate!(air, KoalaBear, KoalaBearD4Width16::round_constants())
+            }
+            Self::KoalaBearD4Width24(air) => {
+                generate!(air, KoalaBear, KoalaBearD4Width24::round_constants())
+            }
+            Self::KoalaBearD1Width32Bus1(air) => {
+                generate!(air, KoalaBear, KoalaBearD1Width32::round_constants())
+            }
+            Self::KoalaBearD1Width32Bus5(air) => {
+                generate!(air, KoalaBear, KoalaBearD1Width32::round_constants())
+            }
+            Self::KoalaBearD4Width32(air) => {
+                generate!(air, KoalaBear, KoalaBearD4Width32::round_constants())
+            }
+            Self::GoldilocksD2Width8(air) => {
+                generate!(air, Goldilocks, goldilocks_d2_width8_round_constants())
+            }
+            Self::GoldilocksD2Width16(air) => {
+                generate!(air, Goldilocks, goldilocks_d2_width16_round_constants())
+            }
+        }
+    }
+
     /// Declare whether the wrapped table holds nothing but challenger duplex-sponge rows.
     ///
     /// The AIR emits the sponge chain-start capacity constraint only when it does.
@@ -1463,6 +1538,69 @@ impl Poseidon2Prover {
         }
     }
 
+    fn batch_instance_from_committed<SC>(
+        &self,
+        packing: &TablePacking,
+        traces: &[(&NpoTypeId, &dyn Any)],
+        committed: &[Val<SC>],
+        circuit_extension_degree: u32,
+    ) -> Option<BatchTableInstance<SC>>
+    where
+        SC: StarkGenericConfig + 'static + Send + Sync,
+        Val<SC>: StarkField,
+        SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+            Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+    {
+        let source_configs = if self.config.is_shared() {
+            self.config.source_configs().to_vec()
+        } else {
+            vec![self.config]
+        };
+        let mut sources = Vec::with_capacity(source_configs.len());
+        let mut rows = 0;
+        for source in source_configs {
+            let source_id = NpoTypeId::poseidon2_perm(source);
+            let Some((_, trace)) = traces.iter().find(|(id, _)| **id == source_id) else {
+                continue;
+            };
+            let typed = trace.downcast_ref::<Poseidon2Trace<Val<SC>>>()?;
+            if typed.operations.is_empty() {
+                continue;
+            }
+            if self.config.is_shared() {
+                debug_assert!(typed.operations[0].new_start);
+            }
+            rows += typed.operations.len();
+            sources.push(*trace);
+        }
+        if rows == 0 {
+            return None;
+        }
+        let op_type = self.poseidon2_op_type();
+        let min_height = packing
+            .npo_min_height(&op_type)
+            .unwrap_or_else(|| packing.min_trace_height());
+        let padded_rows = rows.next_power_of_two().max(min_height.next_power_of_two());
+        let inner = Self::air_wrapper_for_config_with_preprocessed(
+            self.config,
+            committed.to_vec(),
+            min_height,
+            circuit_extension_degree,
+        )?;
+        let trace = inner.trace_from_sources::<Val<SC>>(&sources, padded_rows)?;
+        Some(BatchTableInstance {
+            op_type,
+            air: DynamicAirEntry::new(Box::new(Poseidon2AirWrapper {
+                inner,
+                _phantom: core::marker::PhantomData::<SC>,
+            })),
+            trace,
+            public_values: Vec::new(),
+            rows: padded_rows,
+            lanes: 1,
+        })
+    }
+
     fn batch_instance_from_traces<SC, CF>(
         &self,
         _config: &SC,
@@ -1928,6 +2066,27 @@ where
         }
     }
 
+    fn batch_instance_with_committed_preprocessed(
+        &self,
+        _config: &SC,
+        packing: &TablePacking,
+        traces: &[(&NpoTypeId, &dyn Any)],
+        committed: &[Val<SC>],
+        circuit_extension_degree: u32,
+    ) -> Option<BatchTableInstance<SC>> {
+        if !matches!(circuit_extension_degree, 1 | 4 | 5)
+            || (circuit_extension_degree == 5 && self.config.is_shared())
+        {
+            return None;
+        }
+        self.batch_instance_from_committed::<SC>(
+            packing,
+            traces,
+            committed,
+            circuit_extension_degree,
+        )
+    }
+
     fn batch_instance_d1(
         &self,
         config: &SC,
@@ -2058,6 +2217,25 @@ where
         } else {
             vec![self.0.poseidon2_op_type()]
         }
+    }
+
+    fn batch_instance_with_committed_preprocessed(
+        &self,
+        _config: &SC,
+        packing: &TablePacking,
+        traces: &[(&NpoTypeId, &dyn Any)],
+        committed: &[Val<SC>],
+        circuit_extension_degree: u32,
+    ) -> Option<BatchTableInstance<SC>> {
+        if circuit_extension_degree != 2 {
+            return None;
+        }
+        self.0.batch_instance_from_committed::<SC>(
+            packing,
+            traces,
+            committed,
+            circuit_extension_degree,
+        )
     }
 
     fn batch_instance_d1(
@@ -2779,5 +2957,162 @@ mod shared_preprocessing_tests {
             merged[poseidon_shared_challenger_role_offset(config.rate_ext())],
             BabyBear::ONE
         );
+    }
+}
+
+#[cfg(test)]
+mod committed_materialization_tests {
+    use p3_matrix::Matrix;
+
+    use super::*;
+
+    fn check_shape<SC>(shape: Poseidon2Config, circuit_degree: u32)
+    where
+        SC: StarkGenericConfig + 'static + Send + Sync,
+        Val<SC>: StarkField,
+        SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+            Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+    {
+        let prover = Poseidon2Prover::new(shape, ConstraintProfile::Standard);
+        let configs = if shape.is_shared() {
+            shape.source_configs().to_vec()
+        } else {
+            vec![shape]
+        };
+        let counts: &[(usize, usize)] = if shape.is_shared() {
+            &[(0, 0), (1, 0), (0, 1), (1, 2), (3, 5)]
+        } else {
+            &[(0, 0), (1, 0), (3, 0), (8, 0)]
+        };
+        for &(first, second) in counts {
+            for min_height in [1, 16] {
+                let packing = TablePacking::new(1, 1)
+                    .with_npo_min_height(NpoTypeId::poseidon2_perm(shape), min_height);
+                let mut sources = Vec::new();
+                let mut expected_operations = Vec::new();
+                for (stream, &config) in configs.iter().enumerate() {
+                    let count = if stream == 0 { first } else { second };
+                    let operations: Vec<_> = (0..count)
+                        .map(|row| Poseidon2CircuitRow {
+                            // Shared materialization must use the committed roles, not these flags.
+                            challenger: false,
+                            new_start: row == 0,
+                            merkle_path: true,
+                            mmcs_bit: row % 2 == 1,
+                            mmcs_bit2: row % 3 == 1,
+                            mmcs_index_sum: Val::<SC>::from_usize(stream + 3),
+                            input_values: (0..config.width())
+                                .map(|column| {
+                                    Val::<SC>::from_usize(1 + stream * 100 + row * 10 + column)
+                                })
+                                .collect::<Vec<_>>()
+                                .into(),
+                            in_ctl: vec![true; config.width_ext()].into(),
+                            input_indices: (0..config.width_ext())
+                                .map(|i| i as u32)
+                                .collect::<Vec<_>>()
+                                .into(),
+                            out_ctl: vec![true; config.rate_ext()].into(),
+                            output_indices: (0..config.rate_ext())
+                                .map(|i| (i + 20) as u32)
+                                .collect::<Vec<_>>()
+                                .into(),
+                            mmcs_index_sum_idx: 37,
+                            mmcs_ctl_enabled: true,
+                            absorb_len: config.rate_ext(),
+                        })
+                        .collect();
+                    expected_operations.extend(operations.iter().cloned().map(|mut row| {
+                        if shape.is_shared() {
+                            row.challenger = config.is_challenger();
+                        }
+                        row
+                    }));
+                    sources.push(Poseidon2Trace {
+                        op_type: NpoTypeId::poseidon2_perm(config),
+                        operations,
+                    });
+                }
+                let erased: Vec<_> = sources
+                    .iter()
+                    .map(|trace| (&trace.op_type, trace as &dyn Any))
+                    .collect();
+                if expected_operations.is_empty() {
+                    assert!(
+                        prover
+                            .batch_instance_from_committed::<SC>(
+                                &packing,
+                                &erased,
+                                &[],
+                                circuit_degree,
+                            )
+                            .is_none()
+                    );
+                    continue;
+                }
+                let reference = prover
+                    .batch_instance_base_impl::<SC>(expected_operations, min_height, circuit_degree)
+                    .unwrap();
+                let mut committed = reference.air.preprocessed_trace().unwrap().values;
+                // Prepared preprocessing can carry multiplicities absent from runtime rows.
+                committed[0] += Val::<SC>::ONE;
+                let expected_air = prover
+                    .wrapper_from_config_with_preprocessed::<SC>(
+                        committed.clone(),
+                        min_height,
+                        circuit_degree,
+                    )
+                    .unwrap();
+                let direct = prover
+                    .batch_instance_from_committed::<SC>(
+                        &packing,
+                        &erased,
+                        &committed,
+                        circuit_degree,
+                    )
+                    .unwrap();
+                assert_eq!(direct.op_type, reference.op_type);
+                assert_eq!(direct.rows, reference.rows);
+                assert_eq!(direct.lanes, reference.lanes);
+                assert_eq!(direct.trace.width(), reference.trace.width());
+                assert_eq!(direct.trace.values, reference.trace.values);
+                assert_eq!(
+                    direct.air.preprocessed_trace(),
+                    expected_air.preprocessed_trace()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn committed_poseidon_materialization_matches_owned_rows() {
+        for config in [
+            Poseidon2Config::BABY_BEAR_D4_W16,
+            Poseidon2Config::BABY_BEAR_D4_W24,
+            Poseidon2Config::BABY_BEAR_D4_W32,
+            Poseidon2Config::BABY_BEAR_D4_W16.for_shared_challenger_table(),
+        ] {
+            check_shape::<BabyBearConfig>(config, 4);
+        }
+        for config in [
+            Poseidon2Config::KOALA_BEAR_D4_W16,
+            Poseidon2Config::KOALA_BEAR_D4_W24,
+            Poseidon2Config::KOALA_BEAR_D4_W32,
+            Poseidon2Config::KOALA_BEAR_D4_W16.for_shared_challenger_table(),
+        ] {
+            check_shape::<KoalaBearConfig>(config, 4);
+        }
+        for degree in [1, 5] {
+            check_shape::<BabyBearConfig>(Poseidon2Config::BABY_BEAR_D1_W16, degree);
+            check_shape::<KoalaBearConfig>(Poseidon2Config::KOALA_BEAR_D1_W16, degree);
+            check_shape::<KoalaBearConfig>(Poseidon2Config::KOALA_BEAR_D1_W32, degree);
+        }
+        for config in [
+            Poseidon2Config::GOLDILOCKS_D2_W8,
+            Poseidon2Config::GOLDILOCKS_D2_W16,
+            Poseidon2Config::GOLDILOCKS_D2_W8.for_shared_challenger_table(),
+        ] {
+            check_shape::<GoldilocksConfig>(config, 2);
+        }
     }
 }

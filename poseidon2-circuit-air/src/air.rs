@@ -345,11 +345,62 @@ impl<
         constants: &RoundConstants<F, WIDTH, HALF_FULL_ROUNDS, PARTIAL_ROUNDS>,
         extra_capacity_bits: usize,
     ) -> RowMajorMatrix<F> {
-        let n = sponge_ops.len();
+        self.generate_trace_rows_from_slices(
+            &[sponge_ops],
+            sponge_ops.len(),
+            constants,
+            extra_capacity_bits,
+        )
+    }
+
+    /// Generate a main trace from ordered borrowed streams, padding with zero-input rows.
+    ///
+    /// Each padding row starts a fresh sponge chain and has zero MMCS columns. Source
+    /// roles and witness indices belong to the AIR's preprocessing, not its main trace.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `padded_rows` is not a power of two, the streams exceed that height,
+    /// or a source row has an input width different from `WIDTH`.
+    #[instrument(skip_all, name = "Poseidon2CircuitAir::build_trace_from_slices")]
+    pub fn generate_trace_rows_from_slices(
+        &self,
+        sources: &[&[Poseidon2CircuitRow<F>]],
+        padded_rows: usize,
+        constants: &RoundConstants<F, WIDTH, HALF_FULL_ROUNDS, PARTIAL_ROUNDS>,
+        extra_capacity_bits: usize,
+    ) -> RowMajorMatrix<F> {
+        let n = padded_rows;
         assert!(
             n.is_power_of_two(),
             "Callers expected to pad inputs to a power of two"
         );
+        let source_rows: usize = sources.iter().map(|source| source.len()).sum();
+        assert!(
+            source_rows <= n,
+            "source rows exceed the padded trace height"
+        );
+        let padding = Poseidon2CircuitRow {
+            challenger: false,
+            new_start: true,
+            merkle_path: false,
+            mmcs_bit: false,
+            mmcs_bit2: false,
+            mmcs_index_sum: F::ZERO,
+            input_values: F::zero_vec(WIDTH).into(),
+            in_ctl: Vec::new().into(),
+            input_indices: Vec::new().into(),
+            out_ctl: Vec::new().into(),
+            output_indices: Vec::new().into(),
+            mmcs_index_sum_idx: 0,
+            mmcs_ctl_enabled: false,
+            absorb_len: 0,
+        };
+        let sponge_ops = sources
+            .iter()
+            .flat_map(|source| source.iter())
+            .chain(core::iter::repeat(&padding))
+            .take(n);
 
         // Each row has two segments:
         //
@@ -431,7 +482,7 @@ impl<
         // product column; their index accumulator counts in base four.
         let is_arity4 = 4 * CAPACITY_EXT == WIDTH_EXT;
 
-        for (row_index, (op, row)) in sponge_ops.iter().zip(rows).enumerate() {
+        for (row_index, (op, row)) in sponge_ops.zip(rows).enumerate() {
             let Poseidon2CircuitRow {
                 new_start,
                 merkle_path,

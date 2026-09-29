@@ -2245,61 +2245,63 @@ where
 
         let mut dynamic_instances: Vec<BatchTableInstance<SC>> =
             Vec::with_capacity(self.non_primitive_provers.len());
-        if D == 1 {
-            let t: &Traces<Val<SC>> = unsafe { transmute_traces(traces) };
-            for p in &self.non_primitive_provers {
-                if let Some(instance) = p.batch_instance_d1(&self.config, packing, t) {
-                    dynamic_instances.push(instance);
-                }
+        let source_traces: Vec<(&NpoTypeId, &dyn core::any::Any)> = traces
+            .non_primitive_traces
+            .iter()
+            .map(|(op_type, trace)| (op_type, trace.as_any()))
+            .collect();
+        for prover in &self.non_primitive_provers {
+            if let Some(committed) = non_primitive.get(&prover.op_type())
+                && let Some(instance) = prover.batch_instance_with_committed_preprocessed(
+                    &self.config,
+                    packing,
+                    &source_traces,
+                    committed,
+                    D as u32,
+                )
+            {
+                dynamic_instances.push(instance);
+                continue;
             }
-        } else if D == 2 {
-            type EF2<F> = BinomialExtensionField<F, 2>;
-            let t: &Traces<EF2<Val<SC>>> = unsafe { transmute_traces(traces) };
-            for p in &self.non_primitive_provers {
-                if let Some(instance) = p.batch_instance_d2(&self.config, packing, t) {
-                    dynamic_instances.push(instance);
-                }
-            }
-        } else if D == 4 {
-            type EF4<F> = BinomialExtensionField<F, 4>;
-            let t: &Traces<EF4<Val<SC>>> = unsafe { transmute_traces(traces) };
-            for p in &self.non_primitive_provers {
-                if let Some(instance) = p.batch_instance_d4(&self.config, packing, t) {
-                    dynamic_instances.push(instance);
-                }
-            }
-        } else if D == 6 {
-            type EF6<F> = BinomialExtensionField<F, 6>;
-            let t: &Traces<EF6<Val<SC>>> = unsafe { transmute_traces(traces) };
-            for p in &self.non_primitive_provers {
-                if let Some(instance) = p.batch_instance_d6(&self.config, packing, t) {
-                    dynamic_instances.push(instance);
-                }
-            }
-        } else if D == 8 {
-            type EF8<F> = BinomialExtensionField<F, 8>;
-            let t: &Traces<EF8<Val<SC>>> = unsafe { transmute_traces(traces) };
-            for p in &self.non_primitive_provers {
-                if let Some(instance) = p.batch_instance_d8(&self.config, packing, t) {
-                    dynamic_instances.push(instance);
-                }
-            }
-        } else if D == 5 {
-            type EF5<F> = p3_field::extension::QuinticTrinomialExtensionField<F>;
-            let t: &Traces<EF5<Val<SC>>> = unsafe { transmute_traces(traces) };
-            for p in &self.non_primitive_provers {
-                if let Some(instance) = p.batch_instance_d5(&self.config, packing, t) {
-                    dynamic_instances.push(instance);
-                }
-            }
-        }
 
-        // The `batch_instance_dN` methods regenerate Poseidon2 preprocessed data from
-        // runtime ops using `extract_preprocessed_from_operations`.
-        //
-        // Hence, we override here with the committed preprocessed data so the debug
-        // lookup check is consistent with the committed preprocessed trace.
-        for instance in &mut dynamic_instances {
+            let instance = match D {
+                1 => {
+                    let t: &Traces<Val<SC>> = unsafe { transmute_traces(traces) };
+                    prover.batch_instance_d1(&self.config, packing, t)
+                }
+                2 => {
+                    let t: &Traces<BinomialExtensionField<Val<SC>, 2>> =
+                        unsafe { transmute_traces(traces) };
+                    prover.batch_instance_d2(&self.config, packing, t)
+                }
+                4 => {
+                    let t: &Traces<BinomialExtensionField<Val<SC>, 4>> =
+                        unsafe { transmute_traces(traces) };
+                    prover.batch_instance_d4(&self.config, packing, t)
+                }
+                6 => {
+                    let t: &Traces<BinomialExtensionField<Val<SC>, 6>> =
+                        unsafe { transmute_traces(traces) };
+                    prover.batch_instance_d6(&self.config, packing, t)
+                }
+                8 => {
+                    let t: &Traces<BinomialExtensionField<Val<SC>, 8>> =
+                        unsafe { transmute_traces(traces) };
+                    prover.batch_instance_d8(&self.config, packing, t)
+                }
+                5 => {
+                    let t: &Traces<p3_field::extension::QuinticTrinomialExtensionField<Val<SC>>> =
+                        unsafe { transmute_traces(traces) };
+                    prover.batch_instance_d5(&self.config, packing, t)
+                }
+                _ => None,
+            };
+            let Some(mut instance) = instance else {
+                continue;
+            };
+
+            // Preserve the legacy plugin fallback: its runtime AIR may need the committed
+            // preprocessing substituted after materialization.
             if let Some(committed_prep) = non_primitive.get(&instance.op_type)
                 && let Some(&pi) = prover_index_by_type.get(&instance.op_type)
             {
@@ -2316,6 +2318,7 @@ where
                     instance.air = new_air;
                 }
             }
+            dynamic_instances.push(instance);
         }
 
         TraceTablesLayout {
@@ -3132,11 +3135,8 @@ where
                 None
             }
         });
-        let circuit_prover_data = CircuitProverData::new(
-            prover_data,
-            primitive_columns,
-            non_primitive_columns,
-        );
+        let circuit_prover_data =
+            CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
         *circuit_prover_data.alu_schedule_cache.lock() = alu_cache;
 
         Ok(PreparedCircuitProver {

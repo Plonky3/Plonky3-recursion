@@ -3,11 +3,12 @@
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
+use core::any::Any;
 
 use hashbrown::HashMap;
 use p3_baby_bear::BabyBear;
 use p3_batch_stark::{StarkGenericConfig, Val};
-use p3_circuit::ops::recompose::RecomposeTrace;
+use p3_circuit::ops::recompose::{RecomposeTrace, RecomposeTraceKind};
 use p3_circuit::ops::{NonPrimitivePreprocessedMap, NpoTypeId};
 use p3_circuit::tables::Traces;
 use p3_circuit::{CircuitError, PreprocessedColumns};
@@ -81,7 +82,30 @@ impl<const D: usize> RecomposeProver<D> {
 
         let t = trace.as_any().downcast_ref::<RecomposeTrace<Val<SC>>>()?;
 
+        self.batch_instance_from_trace::<SC>(packing, t, None)
+    }
+
+    fn batch_instance_from_trace<SC>(
+        &self,
+        packing: &TablePacking,
+        t: &RecomposeTrace<Val<SC>>,
+        committed: Option<&[Val<SC>]>,
+    ) -> Option<BatchTableInstance<SC>>
+    where
+        SC: StarkGenericConfig + 'static + Send + Sync,
+        Val<SC>: StarkField,
+        SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+            Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+    {
+        let op_type = if self.coeff_lookups {
+            NpoTypeId::recompose_with_coeff_lookups()
+        } else {
+            NpoTypeId::recompose()
+        };
         let num_ops = t.total_rows();
+        if num_ops == 0 {
+            return None;
+        }
         // Prefer the per-op override from TablePacking; fall back to the prover's own default.
         let lanes = packing
             .npo_lanes(&op_type)
@@ -98,18 +122,23 @@ impl<const D: usize> RecomposeProver<D> {
             .unwrap_or_else(|| packing.min_trace_height());
 
         let coeff_lookups = self.coeff_lookups;
-        let prep_lane_width =
-            RecomposeAir::<Val<SC>, D>::preprocessed_lane_width_for(coeff_lookups);
-        let mut preprocessed = Val::<SC>::zero_vec(num_ops * prep_lane_width);
-        for (i, row) in t.operations.iter().enumerate() {
-            let base = i * prep_lane_width;
-            preprocessed[base] = row.output_wid.base_field_index::<Val<SC>, D>();
-            if coeff_lookups {
-                for (j, &coeff_wid) in row.input_wids.iter().enumerate().take(D) {
-                    preprocessed[base + 2 + j * 2] = coeff_wid.base_field_index::<Val<SC>, D>();
+        let preprocessed = if let Some(committed) = committed {
+            committed.to_vec()
+        } else {
+            let prep_lane_width =
+                RecomposeAir::<Val<SC>, D>::preprocessed_lane_width_for(coeff_lookups);
+            let mut preprocessed = Val::<SC>::zero_vec(num_ops * prep_lane_width);
+            for (i, row) in t.operations.iter().enumerate() {
+                let base = i * prep_lane_width;
+                preprocessed[base] = row.output_wid.base_field_index::<Val<SC>, D>();
+                if coeff_lookups {
+                    for (j, &coeff_wid) in row.input_wids.iter().enumerate().take(D) {
+                        preprocessed[base + 2 + j * 2] = coeff_wid.base_field_index::<Val<SC>, D>();
+                    }
                 }
             }
-        }
+            preprocessed
+        };
 
         let air = RecomposeAir::<Val<SC>, D>::new_with_preprocessed(
             lanes,
@@ -147,6 +176,31 @@ where
 
     fn lanes(&self) -> usize {
         self.lanes
+    }
+
+    fn batch_instance_with_committed_preprocessed(
+        &self,
+        _config: &SC,
+        packing: &TablePacking,
+        traces: &[(&NpoTypeId, &dyn Any)],
+        committed: &[Val<SC>],
+        circuit_extension_degree: u32,
+    ) -> Option<BatchTableInstance<SC>> {
+        if circuit_extension_degree != D as u32 {
+            return None;
+        }
+        let op_type = <Self as TableProver<SC>>::op_type(self);
+        let trace = traces.iter().find(|(id, _)| **id == op_type)?.1;
+        let trace = trace.downcast_ref::<RecomposeTrace<Val<SC>>>()?;
+        let expected_kind = if self.coeff_lookups {
+            RecomposeTraceKind::WithCoeffLookups
+        } else {
+            RecomposeTraceKind::Standard
+        };
+        if trace.kind != expected_kind {
+            return None;
+        }
+        self.batch_instance_from_trace::<SC>(packing, trace, Some(committed))
     }
 
     impl_table_prover_batch_instances_from_base!(batch_instance_base);
@@ -474,5 +528,164 @@ where
                 Vec::new(),
             ),
         ))
+    }
+}
+
+#[cfg(test)]
+mod committed_materialization_tests {
+    use p3_air::BaseAir;
+    use p3_circuit::ops::recompose::RecomposeCircuitRow;
+    use p3_circuit::types::WitnessId;
+
+    use super::*;
+    use crate::config::KoalaBearConfig;
+
+    fn check_recompose<const D: usize>() {
+        let config = crate::config::koala_bear();
+        for coeff_lookups in [false, true] {
+            let prover = RecomposeProver::<D>::new(1, coeff_lookups);
+            let op_type = <RecomposeProver<D> as TableProver<KoalaBearConfig>>::op_type(&prover);
+            for lanes in [1, 2, 4] {
+                let packing = TablePacking::new(1, 1)
+                    .with_npo_lanes(op_type.clone(), lanes)
+                    .with_npo_min_height(op_type.clone(), 8);
+                let trace = RecomposeTrace {
+                    operations: (0..3)
+                        .map(|row| RecomposeCircuitRow {
+                            input_wids: (0..D)
+                                .map(|i| WitnessId((row * D + i + 1) as u32))
+                                .collect(),
+                            output_wid: WitnessId((100 + row) as u32),
+                            values: (0..D)
+                                .map(|i| KoalaBear::from_usize(row * D + i + 1))
+                                .collect(),
+                        })
+                        .collect(),
+                    kind: if coeff_lookups {
+                        RecomposeTraceKind::WithCoeffLookups
+                    } else {
+                        RecomposeTraceKind::Standard
+                    },
+                };
+                let reference = prover
+                    .batch_instance_from_trace::<KoalaBearConfig>(&packing, &trace, None)
+                    .unwrap();
+                let mut committed = reference.air.preprocessed_trace().unwrap().values;
+                committed[1] = KoalaBear::from_u32(9);
+                let expected_air = <RecomposeProver<D> as TableProver<KoalaBearConfig>>::air_with_committed_preprocessed(
+                    &prover, committed.clone(), 8, lanes, D as u32,
+                ).unwrap();
+                let sources = [(&op_type, &trace as &dyn Any)];
+                let direct = prover
+                    .batch_instance_with_committed_preprocessed(
+                        &config, &packing, &sources, &committed, D as u32,
+                    )
+                    .unwrap();
+                assert_eq!(direct.op_type, op_type);
+                assert_eq!(direct.rows, 3);
+                assert_eq!(direct.lanes, lanes);
+                assert_eq!(direct.trace, reference.trace);
+                assert_eq!(
+                    direct.air.preprocessed_trace(),
+                    expected_air.preprocessed_trace()
+                );
+                assert!(
+                    prover
+                        .batch_instance_with_committed_preprocessed(
+                            &config,
+                            &packing,
+                            &sources,
+                            &committed,
+                            D as u32 + 1,
+                        )
+                        .is_none()
+                );
+                let mut wrong_kind = trace.clone();
+                wrong_kind.kind = if coeff_lookups {
+                    RecomposeTraceKind::Standard
+                } else {
+                    RecomposeTraceKind::WithCoeffLookups
+                };
+                let wrong_sources = [(&op_type, &wrong_kind as &dyn Any)];
+                assert!(
+                    prover
+                        .batch_instance_with_committed_preprocessed(
+                            &config,
+                            &packing,
+                            &wrong_sources,
+                            &committed,
+                            D as u32,
+                        )
+                        .is_none()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn committed_recompose_materialization_preserves_packing_and_preprocessing() {
+        check_recompose::<4>();
+        check_recompose::<5>();
+    }
+
+    fn prove_packed_coeff_lookups<EF, const D: usize>()
+    where
+        EF: Field + ExtensionField<KoalaBear> + crate::field_params::ExtractBinomialW<KoalaBear>,
+    {
+        use p3_circuit::builder::CircuitBuilder;
+        use p3_circuit::ops::generate_recompose_trace;
+
+        use crate::batch_stark_prover::{BatchStarkProver, recompose_air_builders};
+
+        let mut builder = CircuitBuilder::<EF>::new();
+        builder.enable_recompose::<KoalaBear>(generate_recompose_trace::<KoalaBear, EF>);
+        let mut inputs = Vec::new();
+        for row in 0..5 {
+            let input = builder.public_input();
+            let coeffs = builder
+                .decompose_ext_to_base_coeffs_with_coeff_lookups::<KoalaBear>(input)
+                .unwrap();
+            for (i, coeff) in coeffs.into_iter().enumerate() {
+                let expected = builder.define_const(EF::from_u32((row * D + i + 1) as u32));
+                builder.connect(coeff, expected);
+            }
+            inputs.push(EF::from_basis_coefficients_fn(|i| {
+                KoalaBear::from_usize(row * D + i + 1)
+            }));
+        }
+        let circuit = builder.build().unwrap();
+        let mut runner = circuit.runner();
+        runner.set_public_inputs(&inputs).unwrap();
+        let traces = runner.run().unwrap();
+        let op_type = NpoTypeId::recompose_with_coeff_lookups();
+        for lanes in [2, 4] {
+            let packing = TablePacking::new(1, 1).with_npo_lanes(op_type.clone(), lanes);
+            let mut prover =
+                BatchStarkProver::new(crate::config::koala_bear()).with_table_packing(packing);
+            prover.register_table_prover(Box::new(RecomposeProver::<D>::new(1, true)));
+            let prepared = prover
+                .prepare_circuit::<EF, D>(
+                    &circuit,
+                    &[Box::new(RecomposePreprocessor::new(true))],
+                    &recompose_air_builders::<KoalaBearConfig, D>(1, true),
+                    ConstraintProfile::Standard,
+                )
+                .unwrap();
+            let proof = prepared.prove(&traces).unwrap();
+            prepared.verifier().verify(&proof, &[]).unwrap();
+            let table = proof
+                .non_primitives
+                .iter()
+                .find(|table| table.op_type == op_type)
+                .unwrap();
+            assert_eq!(table.lanes, lanes);
+            assert_eq!(table.rows, 5);
+        }
+    }
+
+    #[test]
+    fn prepared_coeff_lookups_prove_partial_packed_rows() {
+        prove_packed_coeff_lookups::<BinomialExtensionField<KoalaBear, 4>, 4>();
+        prove_packed_coeff_lookups::<QuinticTrinomialExtensionField<KoalaBear>, 5>();
     }
 }

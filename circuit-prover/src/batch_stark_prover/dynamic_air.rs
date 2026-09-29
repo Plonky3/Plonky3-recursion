@@ -363,6 +363,23 @@ where
         1
     }
 
+    /// Materialize a table directly from its committed preprocessing.
+    ///
+    /// The trace values are borrowed, type-erased logical source traces in unspecified
+    /// order; locate sources by their operation IDs. Return `None`
+    /// to use the degree-specific materializer and preprocessing override instead.
+    /// Implementations must preserve the same source order, packing, and table identity.
+    fn batch_instance_with_committed_preprocessed(
+        &self,
+        _config: &SC,
+        _packing: &TablePacking,
+        _traces: &[(&NpoTypeId, &dyn Any)],
+        _committed: &[Val<SC>],
+        _circuit_extension_degree: u32,
+    ) -> Option<BatchTableInstance<SC>> {
+        None
+    }
+
     /// Produce a batched table instance for base-field traces.
     fn batch_instance_d1(
         &self,
