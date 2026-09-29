@@ -179,7 +179,10 @@ After enough layers, the recursive proof reaches a steady-state size — further
 
 ## Type parameter `D`
 
-The const generic `D` is the extension field degree. For binomial extensions (BabyBear, KoalaBear), use `D = 4`. A quintic variant (`D = 5`, KoalaBear only) is supported via `FriRecursionBackendD5`.
+The const generic `D` is the extension field degree. Built-in BabyBear and
+KoalaBear binomial suites use `D = 4`; Goldilocks uses `D = 2`. KoalaBear
+quintic FRI uses `D = 5` through `FriRecursionBackendD5`, with a base-field
+(`D1`) challenger permutation. The built-in WHIR suites use `D = 4`.
 
 ## FriRecursionBackend
 
@@ -191,18 +194,45 @@ implements `PcsRecursionBackend` for the matching FRI-based config. It handles:
 - Packing public inputs
 - Setting Merkle path private data
 
-`WIDTH` and `RATE` are the permutation parameters (typically 16 and 8 for 32-bit fields). `C` is the challenger permutation config (defaults to `Poseidon2Config`).
+`WIDTH` and `RATE` describe the challenger permutation: 16 and 8 for
+BabyBear/KoalaBear, or 8 and 4 for Goldilocks. `C` is the challenger config
+(`Poseidon1Config` or `Poseidon2Config`); use `_` in the type arguments to
+infer it from `new`.
 
 ```rust,ignore
 // Standard Poseidon2 backend
 let backend = FriRecursionBackend::<16, 8>::new(Poseidon2Config::KOALA_BEAR_D4_W16)
     .for_extension_degree::<4>();
 
-// With an extra Poseidon2 table config for proofs that use a wider MMCS hash
-let backend = FriRecursionBackend::<16, 8>::new(Poseidon2Config::KOALA_BEAR_D4_W16)
-    .with_extra_poseidon2_table(Poseidon2Config::KOALA_BEAR_D4_W24)
+// Quaternary FRI: narrow challenger, wider Poseidon2 MMCS table
+let quaternary = FriRecursionBackend::<16, 8, _>::new(Poseidon2Config::KOALA_BEAR_D4_W16)
+    .with_extra_poseidon2_table(Poseidon2Config::KOALA_BEAR_D4_W32)
     .for_extension_degree::<4>();
+
+// KoalaBear quintic FRI: the challenger uses D1 base-field Poseidon lanes
+let quintic = FriRecursionBackend::<16, 8, _>::new_d5(
+    Poseidon2Config::KOALA_BEAR_D1_W16,
+);
 ```
 
 `FriRecursionBackendD5` handles the supported quintic (`D = 5`) variant;
 `FriRecursionBackendForExt<D>` tags binomial extension degrees such as 2 and 4.
+For Poseidon1 suites, select the matching `p3_recursion::ops::Poseidon1Config`
+constant in `new` or `new_d5`. Quaternary built-ins use Poseidon2 and require
+the matching wide table; binary and hiding FRI do not add one. See
+[built-in backend selection](./configuration.md#choosing-a-built-in-recursion-backend)
+for the suite map and FRI table shapes.
+
+## WhirRecursionBackend
+
+The BabyBear and KoalaBear built-in WHIR suites use a Poseidon2 challenger,
+binary commitments, and a degree-4 extension:
+
+```rust,ignore
+let backend = p3_recursion::backend::whir::WhirRecursionBackend::<16, 8>::new(
+    Poseidon2Config::BABY_BEAR_D4_W16,
+).for_extension_degree::<4>();
+```
+
+Choose recursively admissible WHIR geometry as described in
+[Configuration](./configuration.md#choosing-a-built-in-recursion-backend).

@@ -10,7 +10,7 @@ Key items:
 - `TrustedPreparedLayer` / `TrustedPreparedAggregation` — reusable owners that retain child relation authority and accept caller-expected statements
 - `TrustedPreparedAggregation::new_state_transition` — compose trusted `[initial state, final state, count]` statements into a compact transition statement
 - `TypedArtifactVerifier` / `VerifiedArtifactProof` — import serialized proofs against an independently pinned verifier and caller-expected statement for trusted prepared recursion
-- `FriRecursionBackendForExt` / `FriRecursionConfig` — degree-tagged FRI backend and config contract
+- `FriRecursionBackendForExt` / `FriRecursionConfig` and `WhirRecursionBackendForExt` / `WhirRecursionConfig` — direct recursion for the registered FRI and WHIR built-in suites with matching backends
 - `verify_batch_circuit`, `verify_p3_uni_proof_circuit` — expert in-circuit proof verifiers
 - `CircuitChallenger` — in-circuit Fiat–Shamir transcript
 - `Recursive`, `RecursiveAir`, `RecursivePcs`, `RecursiveMmcs` — the recursion trait family
@@ -26,3 +26,5 @@ The [aggregation guide](../book/src/user_guide/aggregation.md#composing-state-tr
 explains transition count bounds, prepared reuse, and independent root verification.
 The [integration guide](../book/src/user_guide/integration.md#import-portable-artifacts-into-trusted-recursion)
 explains typed artifact import and application-supplied configuration.
+The [configuration guide](../book/src/user_guide/configuration.md#choosing-a-built-in-recursion-backend)
+maps built-in suites to backends and describes recursive parameter limits.

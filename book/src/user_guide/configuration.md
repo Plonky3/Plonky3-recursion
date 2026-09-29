@@ -13,11 +13,14 @@ Native FRI factories include these base fields:
 | **Goldilocks** | `0xFFFFFFFF00000001` | 64 | Available with a degree-2 challenge extension |
 
 BabyBear and KoalaBear have degree-4 binomial suites. KoalaBear also has a degree-5
-quintic suite. These [native factories](https://github.com/Plonky3/Plonky3-recursion/blob/main/recursion/src/builtin_config/fri.rs) validate
-their own parameters. Of these, only `KoalaBearD4Poseidon2BinaryConfig` directly implements
-`FriRecursionConfig` for the unified recursion API. For the other factories, provide a local
-`StarkGenericConfig` wrapper with a matching `FriRecursionConfig` implementation; see the
-[integration guide](./integration.md).
+quintic suite. All 19 registered [FRI configuration aliases](https://github.com/Plonky3/Plonky3-recursion/blob/main/recursion/src/builtin_config/fri.rs)
+implement `FriRecursionConfig`; both registered [WHIR aliases](https://github.com/Plonky3/Plonky3-recursion/blob/main/recursion/src/builtin_config/whir.rs)
+implement `WhirRecursionConfig`. Their factories validate native parameters, while
+recursive proving also requires a matching backend and admissible proof geometry.
+For the seven generic random-codeword and salted FRI aliases, recursion and typed
+artifact import additionally require `R: CryptoRng + SeedableRng + Send + Sync + 'static`;
+the native factories require only `CryptoRng + SeedableRng`.
+See the [integration guide](./integration.md) for custom configurations.
 
 ## Built-in native configuration suites
 
@@ -60,20 +63,16 @@ The hiding tests use independent seeded proving and verifying RNGs and check tha
 draws no RNG. These small parameters establish factory interoperability, not a production
 security level; choose security parameters for your application.
 
-Native factory and artifact codec support do not imply direct recursive integration.
-Only `KoalaBearD4Poseidon2BinaryConfig` directly implements `FriRecursionConfig` for the
-unified recursion API; [custom recursion configurations](https://github.com/Plonky3/Plonky3-recursion/blob/main/recursion/tests/common/mod.rs)
-and the [integration guide](./integration.md) show the separate wrapper route.
-The typed artifact importer recognizes the built-in codec suites, including
-hiding FRI and WHIR, when given an application-owned matching native config.
-Codec support alone does not provide a `FriRecursionConfig` or recursive backend
-implementation for a suite.
-Broader custom tests exercise a [Goldilocks recursive verifier](https://github.com/Plonky3/Plonky3-recursion/blob/main/recursion/tests/goldilocks.rs),
-[KoalaBear quintic recursive proving](https://github.com/Plonky3/Plonky3-recursion/blob/main/recursion/tests/fibonacci_batch_stark_prover_quintic.rs),
-[quaternary MMCS verification](https://github.com/Plonky3/Plonky3-recursion/blob/main/recursion/tests/recursive_arity4_mmcs.rs), and
-[hiding FRI recursive verification](https://github.com/Plonky3/Plonky3-recursion/blob/main/recursion/tests/fibonacci_batch_stark_prover_zk.rs).
-Those tests use their own configurations; they do not establish recursion support for every
-factory combination in the table.
+The [binary FRI](https://github.com/Plonky3/Plonky3-recursion/blob/main/recursion/tests/builtin_fri_recursion_binary.rs),
+[quaternary FRI](https://github.com/Plonky3/Plonky3-recursion/blob/main/recursion/tests/builtin_fri_recursion_quaternary.rs),
+[hiding FRI](https://github.com/Plonky3/Plonky3-recursion/blob/main/recursion/tests/builtin_fri_recursion_hiding.rs), and
+[WHIR](https://github.com/Plonky3/Plonky3-recursion/blob/main/recursion/tests/builtin_whir_recursion.rs)
+lifecycle tests cover the 21 concrete aliases: prepared reuse, typed artifact
+reentry, a second recursive layer, and portable verification against independent
+expected statements. The typed importer uses the application-supplied native
+configuration, including its hiding RNG setup; a separate output configuration
+is supplied to the recursive owner. [Custom recursion configurations](https://github.com/Plonky3/Plonky3-recursion/blob/main/recursion/tests/common/mod.rs)
+remain an extension route for setups outside the registered aliases.
 The [artifact round-trip tests](https://github.com/Plonky3/Plonky3-recursion/blob/main/recursion/tests/artifact_roundtrip.rs) cover
 representative native suites, while the
 [recursive artifact round-trip](https://github.com/Plonky3/Plonky3-recursion/blob/main/recursion/tests/artifact_recursive_roundtrip.rs)
@@ -85,6 +84,43 @@ all features, each with and without AVX2. It therefore runs these bounded factor
 on every PR. The [weekly assurance workflow](https://github.com/Plonky3/Plonky3-recursion/blob/main/.github/workflows/assurance.yml)
 runs a separate bounded seeded verifier corpus; it does not replace the 21-suite native
 factory checks.
+
+## Choosing a built-in recursion backend
+
+Choose the backend from the native suite's *challenger* permutation. For binary
+FRI, random-codeword FRI, and salted FRI, its MMCS uses the same permutation
+width. The four registered quaternary suites all use Poseidon2: they keep the
+narrower challenger backend and register the wider MMCS table separately with
+`with_extra_poseidon2_table`:
+
+| Suite family | Challenger backend | Additional quaternary MMCS table |
+|-------------|--------------------|----------------------------------|
+| BabyBear/KoalaBear D4 Poseidon1 or Poseidon2 FRI | `FriRecursionBackend::<16, 8, _>::new(...).for_extension_degree::<4>()` with matching `*_D4_W16` | Poseidon2 `*_D4_W32` for quaternary suites |
+| Goldilocks D2 Poseidon1 or Poseidon2 FRI | `FriRecursionBackend::<8, 4, _>::new(...).for_extension_degree::<2>()` with matching `GOLDILOCKS_D2_W8` | Poseidon2 `GOLDILOCKS_D2_W16` for quaternary |
+| KoalaBear D5 Poseidon1 or Poseidon2 FRI | `FriRecursionBackend::<16, 8, _>::new_d5(...)` with matching `KOALA_BEAR_D1_W16` | Poseidon2 `KOALA_BEAR_D1_W32` for quaternary |
+| BabyBear/KoalaBear D4 Poseidon2 WHIR | `WhirRecursionBackend::<16, 8>::new(...).for_extension_degree::<4>()` with matching `*_D4_W16` | None; binary commitments |
+
+The two D5 FRI challengers use a quintic extension for proof challenges but
+base-field (`D1`) Poseidon lanes. `new_d5` requires a D1 challenger config;
+the quaternary D5 MMCS table is also D1. Match Poseidon1 versus Poseidon2 as
+well as the field, width, rate, extension degree, and native Merkle arity.
+Keep `input_cap_height` and `commit_cap_height` distinct when choosing FRI
+parameters; the built-in configuration retains both for path restoration.
+For hiding suites, provide the native proving RNGs through the application
+configuration; typed import retains it. Salted FRI path restoration constructs
+private, fixed-seed MMCS helpers for verification only. Those helpers never
+commit or draw randomness and do not replace the retained proving config.
+
+Both WHIR aliases use Poseidon2, D4, and binary Merkle commitments. Their
+recursive verifier supports Prefix variable order and a nonzero constant
+folding factor. An explicit round-rate schedule must match the intermediate
+round count derived from each commitment's stacked arity; use
+`WhirRateModeV1::Auto` when leaf and recursive trace sizes differ. Choose
+`num_queries < domain_size >> folding_factor` in every intermediate and final
+phase: the recursive verifier rejects saturating counts and stratified sampling.
+Thus a factory-valid native WHIR configuration is not necessarily admissible
+for recursive verification. The WHIR descriptor's cap height is retained when
+restoring paths.
 
 ## FRI parameters
 
@@ -153,12 +189,18 @@ This is stored in your config wrapper and returned via `FriRecursionConfig::pcs_
 | `BABY_BEAR_D4_W16` | BabyBear | 4 | 16 | 8 |
 | `BABY_BEAR_D1_W16` | BabyBear | 1 | 16 | 8 |
 | `BABY_BEAR_D4_W24` | BabyBear | 4 | 24 | 12 |
+| `BABY_BEAR_D4_W32` | BabyBear | 4 | 32 | 24 |
 | `KOALA_BEAR_D4_W16` | KoalaBear | 4 | 16 | 8 |
 | `KOALA_BEAR_D1_W16` | KoalaBear | 1 | 16 | 8 |
 | `KOALA_BEAR_D4_W24` | KoalaBear | 4 | 24 | 12 |
+| `KOALA_BEAR_D4_W32` | KoalaBear | 4 | 32 | 24 |
+| `KOALA_BEAR_D1_W32` | KoalaBear | 1 | 32 | 24 |
 | `GOLDILOCKS_D2_W8` | Goldilocks | 2 | 8 | 4 |
+| `GOLDILOCKS_D2_W16` | Goldilocks | 2 | 16 | 12 |
 
 For a degree-4 suite using width 16, select the `D4_W16` constant matching your field.
+The wider W16/W32 entries above describe quaternary MMCS tables; the backend
+`WIDTH` and `RATE` type parameters still describe the narrow challenger.
 Choose the backend degree tag to match the circuit extension, for example
 `FriRecursionBackend::new(Poseidon2Config::KOALA_BEAR_D4_W16).for_extension_degree::<4>()`
 for trusted prepared recursion.
