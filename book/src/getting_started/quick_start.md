@@ -52,9 +52,12 @@ let output_2 = build_and_prove_next_layer::<_, _, _, 4>(
 )?;
 ```
 
-The config (`&config`) must implement `FriRecursionConfig`. The
-[built-in FRI config factories](../../../recursion/src/builtin_config/fri.rs) provide checked
-starting points. See the [Integration Guide](../user_guide/integration.md) for custom configs,
+The config (`&config`) must implement `FriRecursionConfig`.
+`KoalaBearD4Poseidon2BinaryConfig` is the built-in suite that implements it directly.
+The other [native FRI factories](../../../recursion/src/builtin_config/fri.rs) provide validated
+building blocks; using them with this recursion API requires a local `StarkGenericConfig`
+wrapper and `FriRecursionConfig` implementation. See the
+[Integration Guide](../user_guide/integration.md) for that contract,
 or the [Examples](./examples.md) for working code. This one-shot API transports the proof's
 attached metadata; use a trusted prepared owner when independently fixed relation and statement
 authority is required.

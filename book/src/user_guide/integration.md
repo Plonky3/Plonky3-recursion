@@ -4,11 +4,12 @@ This section explains how to connect a native Plonky3 prover to recursive verifi
 
 ## Choose a native config
 
-For a supported field, hash, PCS, and extension degree, start with the
-[checked built-in FRI factories](../../../recursion/src/builtin_config/fri.rs). They retain
-native FRI metadata and the matching `FriVerifierParams` together. The
-[concrete `FriRecursionConfig` implementation](../../../recursion/src/builtin_config/fri/recursion.rs)
-shows how the built-in suite prepares the circuit and supplies opening witnesses.
+`KoalaBearD4Poseidon2BinaryConfig` directly implements `FriRecursionConfig` for unified
+recursion. The other [checked native FRI factories](../../../recursion/src/builtin_config/fri.rs)
+retain native FRI metadata and matching `FriVerifierParams`, but require a local
+`StarkGenericConfig` wrapper and `FriRecursionConfig` implementation before use with the
+unified recursion API. The [concrete built-in implementation](../../../recursion/src/builtin_config/fri/recursion.rs)
+shows how the directly integrated suite prepares the circuit and supplies opening witnesses.
 
 For a custom PCS setup, implement [`FriRecursionConfig`](../../../recursion/src/backend/fri.rs)
 on a `StarkGenericConfig` wrapper. It must supply the verifier target types, matching
@@ -37,12 +38,13 @@ matching binomial extension, or the D5 backend for a supported quintic suite.
 
 Custom non-primitive operations must be enabled on the `CircuitBuilder` before use. They
 need matching trace generation, preprocessing, AIR builders, and table provers. The
-[prepared recursion backend interface](../../../recursion/src/prepared/mod.rs) owns these
-registrations for a prepared layer.
+[`PcsRecursionBackend` interface](../../../recursion/src/recursion.rs) supplies the
+preprocessor, AIR-builder, and table-prover registration hooks. Prepared owners reuse that
+backend through the [prepared contract](../../../recursion/src/prepared/mod.rs).
 
 ## Integration checklist
 
-1. Choose a checked built-in suite or implement the native and recursive FRI contract together.
+1. Choose the directly integrated KoalaBear suite, or implement the recursive FRI contract for another native config.
 2. Supply an AIR with a `RecursiveAir` implementation and fixed public-input width when using a trusted owner.
 3. Choose a backend with the matching field, permutation, and extension degree.
 4. Use a prepared owner for reuse; choose a trusted prepared owner when relation and statement authority must be fixed.

@@ -4,17 +4,20 @@ This section covers the parameters you need to choose when setting up recursive 
 
 ## Field selection
 
-The built-in FRI configurations include these base fields:
+Native FRI factories include these base fields:
 
-| Field | Modulus | Bits | Status |
-|-------|---------|------|--------|
-| **KoalaBear** | `0x7F000001` | 31 | Recommended |
-| **BabyBear** | `0x78000001` | 31 | Fully supported |
-| **Goldilocks** | `0xFFFFFFFF00000001` | 64 | Supported with a degree-2 challenge extension |
+| Field | Modulus | Bits | Native factory |
+|-------|---------|------|----------------|
+| **KoalaBear** | `0x7F000001` | 31 | Available |
+| **BabyBear** | `0x78000001` | 31 | Available |
+| **Goldilocks** | `0xFFFFFFFF00000001` | 64 | Available with a degree-2 challenge extension |
 
 BabyBear and KoalaBear have degree-4 binomial suites. KoalaBear also has a degree-5
-quintic suite. Select a matching [built-in suite](../../../recursion/src/builtin_config/fri.rs)
-or supply a config with the same native and recursive PCS parameters.
+quintic suite. These [native factories](../../../recursion/src/builtin_config/fri.rs) validate
+their own parameters. Of these, only `KoalaBearD4Poseidon2BinaryConfig` directly implements
+`FriRecursionConfig` for the unified recursion API. For the other factories, provide a local
+`StarkGenericConfig` wrapper with a matching `FriRecursionConfig` implementation; see the
+[integration guide](./integration.md).
 
 ## FRI parameters
 
