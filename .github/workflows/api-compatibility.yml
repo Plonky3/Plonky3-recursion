@@ -1,0 +1,43 @@
+name: Advisory API compatibility
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  api-compatibility:
+    name: Report public API changes (advisory findings)
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    env:
+      CARGO_INCREMENTAL: 0
+      CARGO_BUILD_JOBS: 4
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_PROFILE_TEST_DEBUG: 0
+      CARGO_TARGET_DIR: ${{ runner.temp }}/api-compatibility-target
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: api-compatibility
+          cache-on-failure: true
+
+      - name: Install cargo-semver-checks 0.50.0
+        run: cargo install cargo-semver-checks --version 0.50.0 --locked
+
+      - name: Compare released public APIs
+        run: python3 scripts/check_api_compatibility.py --log-dir api-compatibility-logs
+
+      - name: Upload API compatibility logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-compatibility-logs
+          path: api-compatibility-logs/
+          if-no-files-found: warn
