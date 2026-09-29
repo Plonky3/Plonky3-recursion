@@ -13,7 +13,7 @@ use p3_keccak::Keccak256Hash;
 use p3_koala_bear::KoalaBear;
 use p3_recursion::artifact::{
     ArtifactLimits, CanonicalStatement, ExpectedVerifierArtifact, PortableArtifactExport,
-    PortableVerifier,
+    PortableArtifactImport, PortableVerifier, TypedArtifactVerifier,
 };
 use p3_recursion::builtin_config::{
     BabyBearD4Poseidon2BinaryConfig, FriConfigV1, KoalaBearD4Poseidon2SaltedConfig, SuiteIdV1,
@@ -119,6 +119,19 @@ macro_rules! portable_roundtrip {
         imported
             .verify_encoded(&proof_bytes, CanonicalStatement::new(&[], 0))
             .unwrap();
+        let import_config = $config;
+        let typed = TypedArtifactVerifier::decode_with_config(
+            import_config,
+            &verifier_bytes,
+            ExpectedVerifierArtifact::from_trusted_bytes(&verifier_bytes),
+            limits,
+        )
+        .unwrap();
+        let imported_proof = typed
+            .import_proof(&proof_bytes, CanonicalStatement::new(&[], 0))
+            .unwrap();
+        assert_eq!(imported_proof.statement(), &[]);
+        assert_eq!(imported_proof.trusted_identity_bytes(), verifier_bytes);
     }};
 }
 

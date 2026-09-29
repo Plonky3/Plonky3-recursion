@@ -25,8 +25,9 @@ use super::native::{
 };
 use super::wire::{FieldEncoding, Reader, Writer, decode_framed, encode_framed};
 use super::{
-    ArtifactError, ArtifactKind, ArtifactLimits, CanonicalStatement, PortableVerifier,
-    PortableVerifierInner,
+    ArtifactError, ArtifactKind, ArtifactLimits, CanonicalStatement, ExpectedVerifierArtifact,
+    PortableArtifactImport, PortableVerifier, PortableVerifierInner, TypedArtifactVerifier,
+    VerifiedArtifactProof, check_expected_verifier_candidate,
 };
 use crate::builtin_config::*;
 
@@ -529,97 +530,113 @@ where
         bytes: &[u8],
         expected: CanonicalStatement<'_>,
     ) -> Result<(), ArtifactError> {
-        let (native, expected_statement) = decode_framed(
-            bytes,
-            ArtifactKind::Proof,
-            &self.limits,
-            |raw| raw == self.suite.as_u16(),
-            |raw, reader| {
-                if raw != self.suite.as_u16()
-                    || reader.read_u16()? != self.suite.spec().protocol_revision
-                {
-                    return Err(ArtifactError::NonCanonicalMetadata);
-                }
-                let expected_statement = decode_canonical_statement::<p3_batch_stark::Val<SC>>(
-                    expected,
-                    self.schema(),
-                    SC::field_encoding(),
-                    reader,
-                )?;
-                let attached = reader.read_vec_exact(
-                    "attached statement",
-                    self.schema().base_len(),
-                    SC::field_encoding().encoded_bytes(),
-                    |reader| reader.read_field(SC::field_encoding()),
-                )?;
-                let proof = read_batch_proof::<SC, p3_batch_stark::Val<SC>>(
-                    reader,
-                    SC::field_encoding(),
-                    SC::read_commitment,
-                    SC::read_opening_proof,
-                )?;
-                let relation = self.verifier.relation();
-                reader.charge_conversion_vec::<NonPrimitiveTableEntry<SC>>(
-                    relation.non_primitives().len(),
-                )?;
-                let mut non_primitives = Vec::new();
-                non_primitives
-                    .try_reserve_exact(relation.non_primitives().len())
-                    .map_err(|_| ArtifactError::AllocationFailed {
-                        component: "proof NPO conversion",
-                    })?;
-                let statement_index = self
-                    .verifier
-                    .statement_layout()
-                    .table_instance()
-                    .and_then(|index| index.checked_sub(p3_circuit_prover::NUM_PRIMITIVE_TABLES));
-                let mut attached = Some(attached);
-                for (index, npo) in relation.non_primitives().iter().enumerate() {
-                    let public_values = if statement_index == Some(index) {
-                        attached.take().ok_or(ArtifactError::NonCanonicalMetadata)?
-                    } else {
-                        try_copy_slice(reader, npo.public_values(), "NPO public values copy")?
-                    };
-                    non_primitives.push(NonPrimitiveTableEntry {
-                        op_type: try_copy_npo_id(reader, npo.op_type())?,
-                        rows: npo.rows(),
-                        lanes: npo.lanes(),
-                        public_values,
-                        air_variant: npo.air_variant(),
-                    });
-                }
-                charge_table_packing_copy(reader, relation.table_packing())?;
-                let table_packing =
-                    relation
-                        .table_packing()
-                        .try_clone_for_artifact()
-                        .map_err(|_| ArtifactError::AllocationFailed {
-                            component: "table packing copy",
-                        })?;
-                reader.charge_conversion_vec::<()>(0)?;
-                let (w_binomial, alu_quintic_trinomial) = match relation.reduction() {
-                    p3_circuit_prover::air::AluExtMulKind::Base => (None, false),
-                    p3_circuit_prover::air::AluExtMulKind::Binomial { w } => (Some(w), false),
-                    p3_circuit_prover::air::AluExtMulKind::QuinticTrinomial => (None, true),
-                };
-                let native = BatchStarkProof {
-                    proof,
-                    table_packing,
-                    rows: *relation.rows(),
-                    alu_variant: relation.alu_variant(),
-                    ext_degree: relation.ext_degree(),
-                    w_binomial,
-                    alu_quintic_trinomial,
-                    non_primitives,
-                    stark_common: p3_batch_stark::CommonData::new(None, Vec::new()),
-                };
-                Ok((native, expected_statement))
-            },
-        )?;
-        self.verifier
-            .verify(&native, &expected_statement)
-            .map_err(|_| ArtifactError::VerificationRejected)
+        decode_verified_proof(&self.verifier, self.suite, &self.limits, bytes, expected).map(|_| ())
     }
+}
+
+fn decode_verified_proof<SC>(
+    verifier: &CircuitVerifier<SC>,
+    suite: SuiteIdV1,
+    limits: &ArtifactLimits,
+    bytes: &[u8],
+    expected: CanonicalStatement<'_>,
+) -> Result<(BatchStarkProof<SC>, Vec<p3_batch_stark::Val<SC>>), ArtifactError>
+where
+    SC::Challenger: p3_challenger::GrindingChallenger<Witness = p3_uni_stark::Val<SC>>,
+    SC: BuiltinArtifactConfig,
+    p3_batch_stark::Val<SC>: p3_circuit_prover::config::StarkField + PrimeField64,
+    SC::Challenge: BasedVectorSpace<p3_batch_stark::Val<SC>>,
+    SymbolicExpressionExt<p3_batch_stark::Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<p3_batch_stark::Val<SC>>> + Algebra<SC::Challenge>,
+{
+    let (native, expected_statement) = decode_framed(
+        bytes,
+        ArtifactKind::Proof,
+        limits,
+        |raw| raw == suite.as_u16(),
+        |raw, reader| {
+            if raw != suite.as_u16() || reader.read_u16()? != suite.spec().protocol_revision {
+                return Err(ArtifactError::NonCanonicalMetadata);
+            }
+            let expected_statement = decode_canonical_statement::<p3_batch_stark::Val<SC>>(
+                expected,
+                verifier.statement_layout().schema(),
+                SC::field_encoding(),
+                reader,
+            )?;
+            let attached = reader.read_vec_exact(
+                "attached statement",
+                verifier.statement_layout().schema().base_len(),
+                SC::field_encoding().encoded_bytes(),
+                |reader| reader.read_field(SC::field_encoding()),
+            )?;
+            let proof = read_batch_proof::<SC, p3_batch_stark::Val<SC>>(
+                reader,
+                SC::field_encoding(),
+                SC::read_commitment,
+                SC::read_opening_proof,
+            )?;
+            let relation = verifier.relation();
+            reader.charge_conversion_vec::<NonPrimitiveTableEntry<SC>>(
+                relation.non_primitives().len(),
+            )?;
+            let mut non_primitives = Vec::new();
+            non_primitives
+                .try_reserve_exact(relation.non_primitives().len())
+                .map_err(|_| ArtifactError::AllocationFailed {
+                    component: "proof NPO conversion",
+                })?;
+            let statement_index = verifier
+                .statement_layout()
+                .table_instance()
+                .and_then(|index| index.checked_sub(p3_circuit_prover::NUM_PRIMITIVE_TABLES));
+            let mut attached = Some(attached);
+            for (index, npo) in relation.non_primitives().iter().enumerate() {
+                let public_values = if statement_index == Some(index) {
+                    attached.take().ok_or(ArtifactError::NonCanonicalMetadata)?
+                } else {
+                    try_copy_slice(reader, npo.public_values(), "NPO public values copy")?
+                };
+                non_primitives.push(NonPrimitiveTableEntry {
+                    op_type: try_copy_npo_id(reader, npo.op_type())?,
+                    rows: npo.rows(),
+                    lanes: npo.lanes(),
+                    public_values,
+                    air_variant: npo.air_variant(),
+                });
+            }
+            charge_table_packing_copy(reader, relation.table_packing())?;
+            let table_packing =
+                relation
+                    .table_packing()
+                    .try_clone_for_artifact()
+                    .map_err(|_| ArtifactError::AllocationFailed {
+                        component: "table packing copy",
+                    })?;
+            reader.charge_conversion_vec::<()>(0)?;
+            let (w_binomial, alu_quintic_trinomial) = match relation.reduction() {
+                p3_circuit_prover::air::AluExtMulKind::Base => (None, false),
+                p3_circuit_prover::air::AluExtMulKind::Binomial { w } => (Some(w), false),
+                p3_circuit_prover::air::AluExtMulKind::QuinticTrinomial => (None, true),
+            };
+            let native = BatchStarkProof {
+                proof,
+                table_packing,
+                rows: *relation.rows(),
+                alu_variant: relation.alu_variant(),
+                ext_degree: relation.ext_degree(),
+                w_binomial,
+                alu_quintic_trinomial,
+                non_primitives,
+                stark_common: p3_batch_stark::CommonData::new(None, Vec::new()),
+            };
+            Ok((native, expected_statement))
+        },
+    )?;
+    verifier
+        .verify(&native, &expected_statement)
+        .map_err(|_| ArtifactError::VerificationRejected)?;
+    Ok((native, expected_statement))
 }
 
 fn decode_canonical_statement<F: PrimeField64>(
@@ -715,21 +732,8 @@ where
     SymbolicExpressionExt<p3_batch_stark::Val<SC>, SC::Challenge>:
         Algebra<SymbolicExpression<p3_batch_stark::Val<SC>>> + Algebra<SC::Challenge>,
 {
-    let (descriptor, relation, common) = decode_framed(
-        candidate,
-        ArtifactKind::Verifier,
-        &limits,
-        |raw| raw == suite.as_u16(),
-        |raw, reader| {
-            if raw != suite.as_u16() || reader.read_u16()? != suite.spec().protocol_revision {
-                return Err(ArtifactError::NonCanonicalMetadata);
-            }
-            let descriptor = read_config(reader, suite)?;
-            let relation = read_relation(reader, SC::field_encoding())?;
-            let common = read_common::<SC>(reader, SC::read_commitment)?;
-            Ok((descriptor, relation, common))
-        },
-    )?;
+    let (descriptor, relation, common) =
+        decode_verifier_parts::<SC>(candidate, suite, &limits, None)?;
     let config = SC::reconstruct(&descriptor, &limits)?;
     let verifier = CircuitVerifier::from_independently_trusted_builtin_artifact(
         config,
@@ -751,8 +755,108 @@ where
     ))
 }
 
+type DecodedVerifierParts<SC> = (
+    BuiltinConfigDescriptorV1,
+    RelationDescriptorV1<p3_batch_stark::Val<SC>>,
+    p3_batch_stark::CommonData<SC>,
+);
+
+fn decode_verifier_parts<SC>(
+    candidate: &[u8],
+    suite: SuiteIdV1,
+    limits: &ArtifactLimits,
+    expected_descriptor: Option<&BuiltinConfigDescriptorV1>,
+) -> Result<DecodedVerifierParts<SC>, ArtifactError>
+where
+    SC: BuiltinArtifactConfig,
+    p3_batch_stark::Val<SC>: PrimeField64,
+    SC::Challenge: BasedVectorSpace<p3_batch_stark::Val<SC>>,
+{
+    decode_framed(
+        candidate,
+        ArtifactKind::Verifier,
+        limits,
+        |raw| raw == suite.as_u16(),
+        |raw, reader| {
+            if raw != suite.as_u16() || reader.read_u16()? != suite.spec().protocol_revision {
+                return Err(ArtifactError::NonCanonicalMetadata);
+            }
+            let descriptor = read_config(reader, suite)?;
+            if expected_descriptor.is_some_and(|expected| expected != &descriptor) {
+                return Err(ArtifactError::TypedConfigMismatch);
+            }
+            let relation = read_relation(reader, SC::field_encoding())?;
+            let common = read_common::<SC>(reader, SC::read_commitment)?;
+            Ok((descriptor, relation, common))
+        },
+    )
+}
+
+impl<SC> PortableArtifactImport for TypedArtifactVerifier<SC>
+where
+    SC::Challenger: p3_challenger::GrindingChallenger<Witness = p3_uni_stark::Val<SC>>,
+    SC: BuiltinArtifactConfig,
+    p3_batch_stark::Val<SC>: p3_circuit_prover::config::StarkField + PrimeField64,
+    SC::Challenge: BasedVectorSpace<p3_batch_stark::Val<SC>>,
+    SymbolicExpressionExt<p3_batch_stark::Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<p3_batch_stark::Val<SC>>> + Algebra<SC::Challenge>,
+{
+    type Config = SC;
+
+    fn decode_with_config(
+        config: SC,
+        candidate: &[u8],
+        expected: ExpectedVerifierArtifact<'_>,
+        limits: ArtifactLimits,
+    ) -> Result<Self, ArtifactError> {
+        check_expected_verifier_candidate(candidate, expected, &limits)?;
+        let descriptor = config.artifact_descriptor();
+        let suite = descriptor.suite();
+        let actual = u16::from_le_bytes(candidate[11..13].try_into().unwrap());
+        if actual != suite.as_u16() {
+            return Err(ArtifactError::TypedSuiteMismatch {
+                expected: suite.as_u16(),
+                actual,
+            });
+        }
+        let (_, relation, common) =
+            decode_verifier_parts::<SC>(candidate, suite, &limits, Some(&descriptor))?;
+        let verifier = CircuitVerifier::from_independently_trusted_builtin_artifact(
+            config,
+            relation.into_trusted()?,
+            common,
+        )
+        .map_err(|_| ArtifactError::NonCanonicalMetadata)?;
+        let canonical = encode_verifier(&verifier, limits)?;
+        if canonical != candidate {
+            return Err(ArtifactError::NonCanonicalMetadata);
+        }
+        Ok(Self::from_parts(verifier, canonical, suite, limits))
+    }
+
+    fn import_proof(
+        &self,
+        bytes: &[u8],
+        expected_statement: CanonicalStatement<'_>,
+    ) -> Result<VerifiedArtifactProof<SC>, ArtifactError> {
+        let (proof, statement) = decode_verified_proof(
+            &self.state.verifier,
+            self.state.suite,
+            &self.state.limits,
+            bytes,
+            expected_statement,
+        )?;
+        Ok(VerifiedArtifactProof::from_parts(
+            proof,
+            statement,
+            self.clone(),
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use alloc::sync::Arc;
     use alloc::vec::Vec;
     use core::convert::Infallible;
     use core::mem::size_of;
@@ -780,7 +884,7 @@ mod tests {
     use super::super::wire::{FieldEncoding, Reader, Writer, decode_framed, encode_framed};
     use crate::artifact::{
         ArtifactError, ArtifactKind, ArtifactLimits, CanonicalStatement, ExpectedVerifierArtifact,
-        PortableArtifactExport, PortableVerifier,
+        PortableArtifactExport, PortableArtifactImport, PortableVerifier, TypedArtifactVerifier,
     };
     use crate::builtin_config::{
         BabyBearD4Poseidon2RandomCodewordConfig, BuiltinConfigDescriptorV1, FriConfigV1,
@@ -828,6 +932,46 @@ mod tests {
 
         fn from_seed(seed: Self::Seed) -> Self {
             Self(StdRng::from_seed(seed))
+        }
+    }
+
+    #[derive(Debug)]
+    struct RetainedRng {
+        inner: StdRng,
+        _lifetime: Arc<()>,
+        draws: Arc<AtomicUsize>,
+    }
+
+    impl TryRng for RetainedRng {
+        type Error = Infallible;
+
+        fn try_next_u32(&mut self) -> Result<u32, Self::Error> {
+            self.draws.fetch_add(1, Ordering::Relaxed);
+            self.inner.try_next_u32()
+        }
+
+        fn try_next_u64(&mut self) -> Result<u64, Self::Error> {
+            self.draws.fetch_add(1, Ordering::Relaxed);
+            self.inner.try_next_u64()
+        }
+
+        fn try_fill_bytes(&mut self, dst: &mut [u8]) -> Result<(), Self::Error> {
+            self.draws.fetch_add(1, Ordering::Relaxed);
+            self.inner.try_fill_bytes(dst)
+        }
+    }
+
+    impl TryCryptoRng for RetainedRng {}
+
+    impl SeedableRng for RetainedRng {
+        type Seed = <StdRng as SeedableRng>::Seed;
+
+        fn from_seed(seed: Self::Seed) -> Self {
+            Self {
+                inner: StdRng::from_seed(seed),
+                _lifetime: Arc::new(()),
+                draws: Arc::new(AtomicUsize::new(0)),
+            }
         }
     }
 
@@ -1277,6 +1421,46 @@ mod tests {
             .verify_encoded(&proof_bytes, CanonicalStatement::new(&[], 0))
             .unwrap();
         assert_eq!(VERIFICATION_RNG_DRAWS.load(Ordering::Relaxed), 0);
+
+        let lifetime = Arc::new(());
+        let weak_lifetime = Arc::downgrade(&lifetime);
+        let draws = Arc::new(AtomicUsize::new(0));
+        let caller_rng = RetainedRng {
+            inner: StdRng::seed_from_u64(19),
+            _lifetime: lifetime,
+            draws: draws.clone(),
+        };
+        let caller_config =
+            baby_bear_d4_poseidon2_random_codeword(&descriptor, &limits.verifier, caller_rng)
+                .unwrap();
+        let typed = TypedArtifactVerifier::decode_with_config(
+            caller_config,
+            &verifier_bytes,
+            ExpectedVerifierArtifact::from_trusted_bytes(&verifier_bytes),
+            limits,
+        )
+        .unwrap();
+        let imported = typed
+            .import_proof(&proof_bytes, CanonicalStatement::new(&[], 0))
+            .unwrap();
+        drop(typed);
+        drop(verifier_bytes);
+        drop(proof_bytes);
+        assert!(weak_lifetime.upgrade().is_some());
+        assert_eq!(draws.load(Ordering::Relaxed), 0);
+        let TrustedPreparedSource::BatchStark {
+            verifier,
+            proof,
+            statement,
+        } = imported.as_source()
+        else {
+            panic!("expected batch source")
+        };
+        verifier.verify(proof, statement).unwrap();
+        assert_eq!(draws.load(Ordering::Relaxed), 0);
+        drop(verifier);
+        drop(imported);
+        assert!(weak_lifetime.upgrade().is_none());
     }
 
     #[test]

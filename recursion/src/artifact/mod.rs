@@ -5,14 +5,154 @@ pub(crate) mod wire;
 
 use alloc::boxed::Box;
 use alloc::rc::Rc;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use p3_circuit::{StatementError, StatementSchema};
-use p3_circuit_prover::BatchStarkProof;
-use p3_uni_stark::StarkGenericConfig;
+use p3_circuit_prover::{BatchStarkProof, CircuitVerifier};
+use p3_uni_stark::{StarkGenericConfig, Val};
 
-use crate::VerifierLimits;
 use crate::builtin_config::BuiltinConfigError;
+use crate::{BatchOnly, TrustedPreparedInput, TrustedPreparedSource, VerifierLimits};
+
+mod import_sealed {
+    pub trait Sealed {}
+}
+
+/// A typed, independently pinned verifier authority for importing native proofs.
+pub struct TypedArtifactVerifier<SC: StarkGenericConfig + 'static> {
+    state: Arc<TypedArtifactVerifierState<SC>>,
+}
+
+struct TypedArtifactVerifierState<SC: StarkGenericConfig + 'static> {
+    verifier: CircuitVerifier<SC>,
+    canonical_bytes: Vec<u8>,
+    suite: crate::builtin_config::SuiteIdV1,
+    limits: ArtifactLimits,
+}
+
+impl<SC: StarkGenericConfig + 'static> Clone for TypedArtifactVerifier<SC> {
+    fn clone(&self) -> Self {
+        Self {
+            state: self.state.clone(),
+        }
+    }
+}
+
+impl<SC: StarkGenericConfig + 'static> TypedArtifactVerifier<SC> {
+    fn from_parts(
+        verifier: CircuitVerifier<SC>,
+        canonical_bytes: Vec<u8>,
+        suite: crate::builtin_config::SuiteIdV1,
+        limits: ArtifactLimits,
+    ) -> Self {
+        Self {
+            state: Arc::new(TypedArtifactVerifierState {
+                verifier,
+                canonical_bytes,
+                suite,
+                limits,
+            }),
+        }
+    }
+
+    /// The exact bytes pinned by the application's independently trusted identity.
+    pub fn trusted_identity_bytes(&self) -> &[u8] {
+        &self.state.canonical_bytes
+    }
+
+    /// The retained statement schema used when decoding and verifying proofs.
+    pub fn schema(&self) -> &StatementSchema {
+        self.state.verifier.statement_layout().schema()
+    }
+
+    /// The retained native authority, including its caller-supplied configuration and common data.
+    pub fn verifier(&self) -> &CircuitVerifier<SC> {
+        &self.state.verifier
+    }
+}
+
+/// A native proof verified against a pinned authority and an independent expected statement.
+pub struct VerifiedArtifactProof<SC: StarkGenericConfig + 'static> {
+    proof: BatchStarkProof<SC>,
+    statement: Vec<Val<SC>>,
+    authority: TypedArtifactVerifier<SC>,
+}
+
+impl<SC: StarkGenericConfig + 'static> VerifiedArtifactProof<SC> {
+    const fn from_parts(
+        proof: BatchStarkProof<SC>,
+        statement: Vec<Val<SC>>,
+        authority: TypedArtifactVerifier<SC>,
+    ) -> Self {
+        Self {
+            proof,
+            statement,
+            authority,
+        }
+    }
+
+    pub fn statement(&self) -> &[Val<SC>] {
+        &self.statement
+    }
+
+    pub fn trusted_identity_bytes(&self) -> &[u8] {
+        self.authority.trusted_identity_bytes()
+    }
+
+    /// Supply the retained verifier authority and a representative proof to a trusted owner.
+    /// The authority owns its validated common data; the decoded proof's legacy common field is
+    /// empty because trusted owners use `CircuitVerifier::common_data()`.
+    pub fn as_source(&self) -> TrustedPreparedSource<'static, '_, SC, BatchOnly> {
+        TrustedPreparedSource::BatchStark {
+            verifier: self.authority.state.verifier.clone(),
+            proof: &self.proof,
+            statement: &self.statement,
+        }
+    }
+
+    /// Borrow the verified proof and statement as a witness for a compatible prepared owner.
+    /// The destination owner still checks this witness against its own retained authority and
+    /// input contract; this view does not authorize a different relation.
+    pub fn as_input(&self) -> TrustedPreparedInput<'_, SC> {
+        TrustedPreparedInput::BatchStark {
+            proof: &self.proof,
+            statement: &self.statement,
+        }
+    }
+}
+
+/// Import for library-supported built-in configurations only.
+///
+/// The application provides the exact native configuration; decoding never reconstructs a
+/// proving-capable hiding configuration from verifier-only fixed RNG seeds.
+pub trait PortableArtifactImport: import_sealed::Sealed {
+    type Config: StarkGenericConfig + 'static;
+
+    /// Decode a verifier only after matching `candidate` to an independently provisioned exact
+    /// byte identity. The supplied native config must match the artifact's complete descriptor.
+    /// `limits` apply to this import even if `config` was made under looser limits. The caller
+    /// retains control over any hiding RNG state; import does not seed a replacement config.
+    fn decode_with_config(
+        config: Self::Config,
+        candidate: &[u8],
+        expected: ExpectedVerifierArtifact<'_>,
+        limits: ArtifactLimits,
+    ) -> Result<Self, ArtifactError>
+    where
+        Self: Sized;
+
+    /// Decode and natively verify a proof against an independently specified expected statement.
+    /// The returned proof owns its native data, expected statement, and authority, so it remains
+    /// usable after the source buffers and importer are dropped.
+    fn import_proof(
+        &self,
+        bytes: &[u8],
+        expected_statement: CanonicalStatement<'_>,
+    ) -> Result<VerifiedArtifactProof<Self::Config>, ArtifactError>;
+}
+
+impl<SC: StarkGenericConfig + 'static> import_sealed::Sealed for TypedArtifactVerifier<SC> {}
 
 /// Application-provisioned exact trust anchor for one canonical verifier artifact.
 #[derive(Clone, Copy, Debug)]
@@ -29,7 +169,9 @@ impl<'a> ExpectedVerifierArtifact<'a> {
     }
 }
 
-/// Canonical base-field statement bytes interpreted under a retained verifier schema.
+/// Canonical base-field statement bytes in retained schema order, without a length prefix.
+/// Each BabyBear or KoalaBear element is a four-byte little-endian word; each Goldilocks element
+/// is an eight-byte little-endian word. `element_count` must equal the schema's base-field length.
 #[derive(Clone, Copy, Debug)]
 pub struct CanonicalStatement<'a> {
     canonical_bytes: &'a [u8],
@@ -184,6 +326,12 @@ pub enum ArtifactError {
     UnsupportedBuiltinAir(u16),
     #[error("candidate verifier artifact does not match the independently trusted bytes")]
     TrustedArtifactMismatch,
+    #[error(
+        "artifact suite {actual} does not match the caller-supplied configuration suite {expected}"
+    )]
+    TypedSuiteMismatch { expected: u16, actual: u16 },
+    #[error("artifact configuration descriptor does not match the caller-supplied configuration")]
+    TypedConfigMismatch,
     #[error("artifact is truncated")]
     Truncated,
     #[error("artifact has trailing bytes")]
