@@ -50,9 +50,13 @@ fi
 
 check_binary_installed "release-plz"
 
-# release-plz opens the release PR against the branch you run it on, so release
-# from whichever branch is checked out: main, or a vX.Y.Z version/rc line.
+# release-plz opens the release PR against the checked-out branch. Its publish
+# workflow and push CI both cover only main and these version/RC base lines.
 branch=$(git symbolic-ref --short HEAD)
+if [[ "$branch" != "main" && ! "$branch" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc[0-9]+|-rc\.[0-9]+)?$ ]]; then
+  echo "Error: Unsupported release base '$branch'; use main or a vX.Y.Z version/RC branch." >&2
+  exit 1
+fi
 
 if [ -n "$rc_version" ]; then
   if ! git diff --quiet || ! git diff --cached --quiet; then
@@ -81,6 +85,17 @@ fi
 if [ -n "$rc_version" ]; then
   check_binary_installed "gh"
   check_binary_installed "python3"
+
+  if git ls-remote --exit-code --heads origin "refs/heads/$pr_branch" > /dev/null; then
+    echo "Error: Remote branch '$pr_branch' already exists." >&2
+    exit 1
+  else
+    lookup_status=$?
+    if [ "$lookup_status" -ne 2 ]; then
+      echo "Error: Could not check whether remote branch '$pr_branch' exists." >&2
+      exit "$lookup_status"
+    fi
+  fi
 
   echo "Cutting release candidate '$rc_version' from '$branch'..."
 

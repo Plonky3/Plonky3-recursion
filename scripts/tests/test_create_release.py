@@ -1,3 +1,4 @@
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -31,7 +32,7 @@ class CreateReleaseTests(unittest.TestCase):
                 [workspace.dependencies]
                 alpha = { path = "alpha", version = "0.1.0" } # local
                 test-utils = { path = "test-utils", version = "0.1.0" }
-                external = { version = "1.2.3" } # external
+                external = { path = "../external", version = "1.2.3" } # external
                 '''
             )
         )
@@ -45,7 +46,14 @@ class CreateReleaseTests(unittest.TestCase):
             (crate / "Cargo.toml").write_text(
                 f'[package]\nname = "{name}"\nversion.workspace = true\n'
                 f'edition.workspace = true\n{publish}'
+                + ("\n[dependencies]\nexternal.workspace = true\n" if name == "alpha" else "")
             )
+        external = self.root / "external"
+        (external / "src").mkdir(parents=True)
+        (external / "src" / "lib.rs").write_text("pub fn external() {}\n")
+        (external / "Cargo.toml").write_text(
+            '[package]\nname = "external"\nversion = "1.2.3"\nedition = "2021"\n'
+        )
         self.git("init", "-q", "-b", "main")
         self.git("config", "user.name", "Fixture")
         self.git("config", "user.email", "fixture@example.invalid")
@@ -53,6 +61,9 @@ class CreateReleaseTests(unittest.TestCase):
         self.cargo("generate-lockfile", "--offline")
         self.git("add", ".")
         self.git("commit", "-qm", "initial")
+        self.remote = self.root / "origin.git"
+        self.git("clone", "-q", "--bare", str(self.repo), str(self.remote))
+        self.git("remote", "add", "origin", str(self.remote))
         self.git("update-ref", "refs/remotes/origin/main", "HEAD")
         self.initial_manifest = (self.repo / "Cargo.toml").read_bytes()
         self.initial_lock = (self.repo / "Cargo.lock").read_bytes()
@@ -76,6 +87,14 @@ class CreateReleaseTests(unittest.TestCase):
 
     def cargo(self, *args):
         return subprocess.check_output(["cargo", *args], cwd=self.repo, text=True)
+
+    def remote_ref(self, branch):
+        self.git(
+            f"--git-dir={self.remote}",
+            "update-ref",
+            f"refs/heads/{branch}",
+            self.git("rev-parse", "HEAD"),
+        )
 
     def make_stub(self, name, action):
         path = self.bin / name
@@ -106,10 +125,10 @@ class CreateReleaseTests(unittest.TestCase):
     def events_text(self):
         return self.events.read_text() if self.events.exists() else ""
 
-    def assert_unchanged(self):
+    def assert_unchanged(self, branch="main"):
         self.assertEqual((self.repo / "Cargo.toml").read_bytes(), self.initial_manifest)
         self.assertEqual((self.repo / "Cargo.lock").read_bytes(), self.initial_lock)
-        self.assertEqual(self.git("branch", "--show-current"), "main")
+        self.assertEqual(self.git("branch", "--show-current"), branch)
 
     def test_rc_updates_workspace_and_lock_and_opens_pr(self):
         (self.repo / "untracked-notes.md").write_text("preserve me\n")
@@ -127,8 +146,17 @@ class CreateReleaseTests(unittest.TestCase):
         self.assertIn('# external', manifest_text)
         lock = tomllib.loads((self.repo / "Cargo.lock").read_text())
         versions = {p["name"]: p["version"] for p in lock["package"]}
-        self.assertEqual(versions, {"alpha": "0.2.0-rc.0", "test-utils": "0.2.0-rc.0"})
-        self.cargo("metadata", "--offline", "--locked", "--format-version", "1")
+        self.assertEqual(
+            versions, {"alpha": "0.2.0-rc.0", "test-utils": "0.2.0-rc.0", "external": "1.2.3"}
+        )
+        original_external = next(
+            p for p in tomllib.loads(self.initial_lock.decode())["package"] if p["name"] == "external"
+        )
+        current_external = next(p for p in lock["package"] if p["name"] == "external")
+        self.assertEqual(current_external, original_external)
+        metadata = json.loads(self.cargo("metadata", "--offline", "--locked", "--format-version", "1"))
+        external_id = next(p["id"] for p in metadata["packages"] if p["name"] == "external")
+        self.assertNotIn(external_id, metadata["workspace_members"])
         self.assertEqual((self.repo / "untracked-notes.md").read_text(), "preserve me\n")
         self.assertEqual(self.git("status", "--porcelain"), "?? untracked-notes.md")
         self.assertEqual(self.git("show", "--pretty=format:", "--name-only", "HEAD"), "Cargo.lock\nCargo.toml")
@@ -170,6 +198,56 @@ class CreateReleaseTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assert_unchanged()
         self.assertEqual(self.events_text(), "")
+
+    def test_supported_version_bases_allow_automatic_and_rc_modes(self):
+        for index, base in enumerate(("v1.2.3", "v1.2.3-rc4", "v1.2.3-rc.4"), 1):
+            with self.subTest(base=base):
+                self.git("switch", "-q", "-c", base)
+                self.remote_ref(base)
+                self.git("update-ref", f"refs/remotes/origin/{base}", "HEAD")
+                automatic = self.run_release()
+                self.assertEqual(automatic.returncode, 0, automatic.stderr)
+                self.assert_unchanged(base)
+                self.assertIn("release-plz release-pr", self.events_text())
+                self.events.unlink()
+
+                version = f"0.2.{index}-rc.0"
+                candidate = self.run_release(version)
+                self.assertEqual(candidate.returncode, 0, candidate.stderr)
+                self.assertEqual(self.git("branch", "--show-current"), f"robin/release-{version}")
+                self.assertIn(
+                    f"gh pr create --base {base} --head robin/release-{version}", self.events_text()
+                )
+                self.git("switch", "-q", "main")
+                self.events.unlink()
+
+    def test_unsupported_bases_fail_before_fetch_in_both_modes(self):
+        for base in ("feature/other", "v1.2", "v1.2.3-rcX"):
+            with self.subTest(base=base):
+                self.git("switch", "-q", "-c", base)
+                for args in ((), ("0.2.0-rc.1",)):
+                    result = self.run_release(*args)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assert_unchanged(base)
+                    self.assertEqual(self.events_text(), "")
+                self.git("switch", "-q", "main")
+                self.events.unlink(missing_ok=True)
+
+    def test_remote_only_release_branch_fails_before_mutation(self):
+        self.remote_ref("robin/release-1.2.3-rc.4")
+        result = self.run_release("1.2.3-rc.4")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("already exists", result.stderr)
+        self.assert_unchanged()
+        self.assertEqual(self.events_text(), "git fetch origin main\n")
+
+    def test_remote_lookup_error_is_not_treated_as_missing_branch(self):
+        self.git("remote", "set-url", "origin", str(self.root / "missing-remote"))
+        result = self.run_release("1.2.3-rc.4")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("could not check", result.stderr.lower())
+        self.assert_unchanged()
+        self.assertEqual(self.events_text(), "git fetch origin main\n")
 
     def test_automatic_mode_delegates_without_version_edits(self):
         result = self.run_release()
