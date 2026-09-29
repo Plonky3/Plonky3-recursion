@@ -35,9 +35,22 @@ jobs:
         run: python3 scripts/check_api_compatibility.py --log-dir api-compatibility-logs
 
       - name: Upload API compatibility logs
+        id: upload_logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: api-compatibility-logs
           path: api-compatibility-logs/
           if-no-files-found: warn
+
+      - name: Link API compatibility logs
+        if: always()
+        env:
+          ARTIFACT_URL: ${{ steps.upload_logs.outputs.artifact-url }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ -n "$ARTIFACT_URL" ]; then
+            printf '\n[Download API compatibility logs](%s)\n' "$ARTIFACT_URL" >> "$GITHUB_STEP_SUMMARY"
+          else
+            printf '\n[View workflow run and logs](%s)\n' "$RUN_URL" >> "$GITHUB_STEP_SUMMARY"
+          fi
