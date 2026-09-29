@@ -237,12 +237,19 @@ impl<F: PrimeField64, const D: usize> BaseAir<F> for Blake3CompressAir<F, D> {
         let height = Self::height_for(self.num_ops(), self.min_height);
         let mut values = F::zero_vec(height * BLAKE3_PREP_ROW_WIDTH);
         for (row, prep) in values
-            .chunks_exact_mut(BLAKE3_PREP_ROW_WIDTH)
-            .zip(self.preprocessed.chunks_exact(BLAKE3_PREP_OP_WIDTH))
+            .as_chunks_mut::<BLAKE3_PREP_ROW_WIDTH>()
+            .0
+            .iter_mut()
+            .zip(
+                self.preprocessed
+                    .as_chunks::<BLAKE3_PREP_OP_WIDTH>()
+                    .0
+                    .iter(),
+            )
         {
             row[..1 + BLAKE3_INPUT_LIMBS].copy_from_slice(&prep[..1 + BLAKE3_INPUT_LIMBS]);
             let outputs = &prep[1 + BLAKE3_INPUT_LIMBS..];
-            for (j, pair) in outputs.chunks_exact(2).enumerate() {
+            for (j, pair) in outputs.as_chunks::<2>().0.iter().enumerate() {
                 row[1 + BLAKE3_INPUT_LIMBS + j] = pair[0];
                 row[1 + BLAKE3_INPUT_LIMBS + BLAKE3_OUTPUT_LIMBS + j] = pair[1];
             }
@@ -292,7 +299,7 @@ where
                 &local.flags,
             ])
             .chain(local.outputs.iter().flatten());
-        for (bits, pair) in words.zip(limbs.chunks_exact(2)) {
+        for (bits, pair) in words.zip(limbs.as_chunks::<2>().0.iter()) {
             let lo: AB::Expr = pack_bits_le(bits[..16].iter().copied());
             let hi: AB::Expr = pack_bits_le(bits[16..].iter().copied());
             builder.assert_eq(pair[0], lo);
@@ -340,7 +347,9 @@ mod tests {
     fn blake3_block(trace: &RowMajorMatrix<BabyBear>) -> RowMajorMatrix<BabyBear> {
         let values = trace
             .values
-            .chunks_exact(BLAKE3_COMPRESS_WIDTH)
+            .as_chunks::<BLAKE3_COMPRESS_WIDTH>()
+            .0
+            .iter()
             .flat_map(|row| row[..NUM_BLAKE3_COLS].iter().copied())
             .collect();
         RowMajorMatrix::new(values, NUM_BLAKE3_COLS)
@@ -383,7 +392,9 @@ mod tests {
 
         for (row, input) in trace
             .values
-            .chunks_exact(BLAKE3_COMPRESS_WIDTH)
+            .as_chunks::<BLAKE3_COMPRESS_WIDTH>()
+            .0
+            .iter()
             .zip(&inputs)
         {
             let cols: &Blake3Cols<BabyBear> = row[..NUM_BLAKE3_COLS].borrow();

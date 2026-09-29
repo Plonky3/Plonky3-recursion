@@ -134,7 +134,9 @@ pub fn words_to_limbs(words: &[u32]) -> Vec<u16> {
 /// Reassemble words from their little-endian 16-bit limb pairs.
 pub fn limbs_to_words(limbs: &[u16]) -> Vec<u32> {
     limbs
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| u32::from(pair[0]) | (u32::from(pair[1]) << 16))
         .collect()
 }

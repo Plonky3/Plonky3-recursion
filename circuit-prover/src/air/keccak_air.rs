@@ -121,7 +121,9 @@ impl<F: PrimeField64, const D: usize> BaseAir<F> for KeccakF1600Air<F, D> {
         let mut values = F::zero_vec(height * KECCAK_PREP_ROW_WIDTH);
         for (op, prep) in self
             .preprocessed
-            .chunks_exact(KECCAK_PREP_OP_WIDTH)
+            .as_chunks::<KECCAK_PREP_OP_WIDTH>()
+            .0
+            .iter()
             .enumerate()
         {
             let first = op * KECCAK_ROWS_PER_OP * KECCAK_PREP_ROW_WIDTH;
@@ -131,7 +133,7 @@ impl<F: PrimeField64, const D: usize> BaseAir<F> for KeccakF1600Air<F, D> {
 
             values[first] = *active;
             values[first + 1..first + 1 + KECCAK_STATE_LIMBS].copy_from_slice(in_idx);
-            for (j, pair) in outputs.chunks_exact(2).enumerate() {
+            for (j, pair) in outputs.as_chunks::<2>().0.iter().enumerate() {
                 values[last + 1 + j] = pair[0];
                 values[last + 1 + KECCAK_STATE_LIMBS + j] = pair[1];
             }

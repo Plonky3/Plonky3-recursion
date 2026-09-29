@@ -209,9 +209,9 @@ where
     }
 
     let dups = prep.dup_npo_outputs.get(&op_type);
-    for call in prep_base.chunks_exact_mut(BLAKE3_PREP_OP_WIDTH) {
+    for call in prep_base.as_chunks_mut::<BLAKE3_PREP_OP_WIDTH>().0 {
         let outputs = &mut call[1 + p3_circuit::ops::BLAKE3_INPUT_LIMBS..];
-        for pair in outputs.chunks_exact_mut(2) {
+        for pair in outputs.as_chunks_mut::<2>().0 {
             let wid = pair[0].as_canonical_u64() as usize / D;
             let is_dup = dups.and_then(|d| d.get(wid).copied()).unwrap_or(false);
             pair[1] = if is_dup {

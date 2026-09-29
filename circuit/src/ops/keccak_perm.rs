@@ -48,7 +48,9 @@ pub const KECCAK256_RATE_BYTES: usize = 136;
 pub fn bytes_to_limbs(bytes: &[u8]) -> Vec<u16> {
     assert!(bytes.len().is_multiple_of(2), "limbs hold two bytes each");
     bytes
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
         .collect()
 }
@@ -58,7 +60,7 @@ pub fn keccak_state_to_limbs(state: &[u64; KECCAK_LANES]) -> [u16; KECCAK_STATE_
     let mut limbs = [0u16; KECCAK_STATE_LIMBS];
     for (lane, chunk) in state
         .iter()
-        .zip(limbs.chunks_exact_mut(KECCAK_LIMBS_PER_LANE))
+        .zip(limbs.as_chunks_mut::<KECCAK_LIMBS_PER_LANE>().0.iter_mut())
     {
         for (k, limb) in chunk.iter_mut().enumerate() {
             *limb = (lane >> (KECCAK_LIMB_BITS * k)) as u16;
@@ -549,8 +551,10 @@ where
         let zero = self.define_const(F::ZERO);
         let mut state: Vec<ExprId> = Vec::new();
         for (block, (limbs, consts)) in padded
-            .chunks_exact(RATE_LIMBS)
-            .zip(constants.chunks_exact(RATE_LIMBS))
+            .as_chunks::<RATE_LIMBS>()
+            .0
+            .iter()
+            .zip(constants.as_chunks::<RATE_LIMBS>().0.iter())
             .enumerate()
         {
             let mut next = Vec::with_capacity(KECCAK_STATE_LIMBS);
