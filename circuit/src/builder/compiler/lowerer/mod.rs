@@ -8,6 +8,8 @@ pub(super) mod state;
 mod tests;
 
 use alloc::sync::Arc;
+#[cfg(feature = "debugging")]
+use alloc::vec::Vec;
 
 use hashbrown::HashMap;
 use p3_field::Field;
@@ -65,6 +67,20 @@ impl<'a, F: Field> ExpressionLowerer<'a, F> {
 
     /// Run the full lowering pipeline and return the result.
     pub fn lower(self) -> Result<LoweringResult<F>, CircuitBuilderError> {
+        Ok(self.lower_state()?.into())
+    }
+
+    #[cfg(feature = "debugging")]
+    pub(crate) fn lower_with_origins(
+        self,
+    ) -> Result<(LoweringResult<F>, Vec<Vec<ExprId>>), CircuitBuilderError> {
+        let mut state = self.lower_state()?;
+        let origins = core::mem::take(&mut state.operation_origins);
+        debug_assert_eq!(state.ops.len(), origins.len());
+        Ok((state.into(), origins))
+    }
+
+    fn lower_state(self) -> Result<LoweringState<'a, F>, CircuitBuilderError> {
         // Initialise mutable state (builds the DSU and validates the NPO output map).
         let mut state = LoweringState::new(self)?;
         // Emit all constant nodes first so they are available as operands.
@@ -79,6 +95,6 @@ impl<'a, F: Field> ExpressionLowerer<'a, F> {
         // Fill in witness mappings for connect-class members not directly visited.
         state.backfill_connect_mappings();
         // Convert the accumulated mutable state into the immutable result.
-        Ok(state.into())
+        Ok(state)
     }
 }

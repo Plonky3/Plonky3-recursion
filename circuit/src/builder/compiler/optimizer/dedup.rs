@@ -3,9 +3,25 @@ use alloc::vec::Vec;
 use hashbrown::HashMap;
 use p3_field::Field;
 
+#[cfg(feature = "debugging")]
+use super::OptimizedWithOrigins;
 use super::analysis::AluKey;
 use crate::ops::{AluOpKind, Op};
+#[cfg(feature = "debugging")]
+use crate::types::ExprId;
 use crate::types::WitnessId;
+
+#[cfg(feature = "debugging")]
+type SeenOperation = (WitnessId, usize);
+#[cfg(not(feature = "debugging"))]
+type SeenOperation = WitnessId;
+
+struct Duplicate {
+    duplicate_output: WitnessId,
+    canonical_output: WitnessId,
+    #[cfg(feature = "debugging")]
+    retained_index: usize,
+}
 
 /// Removes duplicate ALU operations by tracking a canonical output per `AluKey`.
 ///
@@ -13,7 +29,7 @@ use crate::types::WitnessId;
 /// Later ops see the canonical ID through `apply_witness_rewrite`.
 pub(super) struct Deduplicator {
     rewrite: HashMap<WitnessId, WitnessId>,
-    seen: HashMap<(AluKey, Option<WitnessId>), WitnessId>,
+    seen: HashMap<(AluKey, Option<WitnessId>), SeenOperation>,
 }
 
 impl Deduplicator {
@@ -28,30 +44,81 @@ impl Deduplicator {
 
     /// Consumes the op list and returns deduplicated ops + the rewrite map.
     pub(super) fn run<F: Field>(
-        mut self,
+        self,
         ops: Vec<Op<F>>,
     ) -> (Vec<Op<F>>, HashMap<WitnessId, WitnessId>) {
+        #[cfg(feature = "debugging")]
+        let result = self.run_inner(ops, None);
+        #[cfg(not(feature = "debugging"))]
+        let result = self.run_inner(ops);
+        (result.ops, result.rewrite)
+    }
+
+    #[cfg(feature = "debugging")]
+    pub(super) fn run_with_origins<F: Field>(
+        self,
+        ops: Vec<Op<F>>,
+        origins: Vec<Vec<ExprId>>,
+    ) -> OptimizedWithOrigins<F> {
+        assert_eq!(ops.len(), origins.len());
+        let result = self.run_inner(ops, Some(origins));
+        (result.ops, result.rewrite, result.origins.unwrap())
+    }
+
+    fn run_inner<F: Field>(
+        mut self,
+        ops: Vec<Op<F>>,
+        #[cfg(feature = "debugging")] origins: Option<Vec<Vec<ExprId>>>,
+    ) -> DedupResult<F> {
         let mut result = Vec::with_capacity(ops.len());
+        #[cfg(feature = "debugging")]
+        let mut source_iter = origins.map(Vec::into_iter);
+        #[cfg(feature = "debugging")]
+        let mut result_origins: Option<Vec<Vec<ExprId>>> =
+            source_iter.as_ref().map(|_| Vec::with_capacity(ops.len()));
 
         for mut op in ops {
+            #[cfg(feature = "debugging")]
+            let source = source_iter.as_mut().map(|iter| iter.next().unwrap());
             op.apply_witness_rewrite(&self.rewrite);
 
-            if let Some((dup_out, canonical)) = self.detect_duplicate(&op) {
-                let root = canonical.resolve(&self.rewrite);
-                if dup_out != root {
-                    self.rewrite.insert(dup_out, root);
+            #[cfg(feature = "debugging")]
+            let duplicate = self.detect_duplicate(&op, result.len());
+            #[cfg(not(feature = "debugging"))]
+            let duplicate = self.detect_duplicate(&op);
+            if let Some(duplicate) = duplicate {
+                let root = duplicate.canonical_output.resolve(&self.rewrite);
+                if duplicate.duplicate_output != root {
+                    self.rewrite.insert(duplicate.duplicate_output, root);
+                }
+                #[cfg(feature = "debugging")]
+                if let (Some(result_origins), Some(source)) = (&mut result_origins, source) {
+                    result_origins[duplicate.retained_index].extend(source);
                 }
                 continue;
             }
 
             result.push(op);
+            #[cfg(feature = "debugging")]
+            if let (Some(result_origins), Some(source)) = (&mut result_origins, source) {
+                result_origins.push(source);
+            }
         }
 
-        (result, self.rewrite)
+        DedupResult {
+            ops: result,
+            rewrite: self.rewrite,
+            #[cfg(feature = "debugging")]
+            origins: result_origins,
+        }
     }
 
-    /// Returns `Some((duplicate_out, canonical_out))` when `op` duplicates an earlier ALU.
-    fn detect_duplicate<F: Field>(&mut self, op: &Op<F>) -> Option<(WitnessId, WitnessId)> {
+    /// Returns duplicate and the exact retained operation index for the seen key.
+    fn detect_duplicate<F: Field>(
+        &mut self,
+        op: &Op<F>,
+        #[cfg(feature = "debugging")] retained_len: usize,
+    ) -> Option<Duplicate> {
         let Op::Alu {
             kind,
             a,
@@ -80,13 +147,33 @@ impl Deduplicator {
             _ => None,
         };
 
-        if let Some(&canonical) = self.seen.get(&(key, acc)) {
-            Some((*out, canonical))
+        let retained = self.seen.get(&(key, acc)).copied();
+        if let Some(retained) = retained {
+            #[cfg(feature = "debugging")]
+            let (canonical_output, retained_index) = retained;
+            #[cfg(not(feature = "debugging"))]
+            let canonical_output = retained;
+            Some(Duplicate {
+                duplicate_output: *out,
+                canonical_output,
+                #[cfg(feature = "debugging")]
+                retained_index,
+            })
         } else {
+            #[cfg(feature = "debugging")]
+            self.seen.insert((key, acc), (*out, retained_len));
+            #[cfg(not(feature = "debugging"))]
             self.seen.insert((key, acc), *out);
             None
         }
     }
+}
+
+struct DedupResult<F> {
+    ops: Vec<Op<F>>,
+    rewrite: HashMap<WitnessId, WitnessId>,
+    #[cfg(feature = "debugging")]
+    origins: Option<Vec<Vec<ExprId>>>,
 }
 
 #[cfg(test)]
@@ -287,5 +374,27 @@ mod tests {
         let (deduped, rewrite) = Deduplicator::with_capacity(ops.len()).run(ops);
         assert_eq!(deduped.len(), 1, "identical Horner steps should dedup");
         assert_eq!(rewrite.get(&WitnessId(21)), Some(&WitnessId(20)));
+    }
+
+    #[cfg(feature = "debugging")]
+    #[test]
+    fn origins_merge_by_exact_key_when_distinct_constraints_share_an_output() {
+        let (a, b, c) = (WitnessId(0), WitnessId(1), WitnessId(2));
+        let shared = WitnessId(3);
+        let duplicate = WitnessId(4);
+        let ops: Vec<Op<F>> = vec![
+            Op::add(a, b, shared),
+            Op::mul(a, c, shared),
+            Op::add(b, a, duplicate),
+        ];
+        let sources = vec![vec![ExprId(10)], vec![ExprId(11)], vec![ExprId(12)]];
+        let (kept, rewrite, origins) =
+            Deduplicator::with_capacity(ops.len()).run_with_origins(ops, sources);
+        assert_eq!(kept.len(), 2);
+        assert_eq!(rewrite.get(&duplicate), Some(&shared));
+        assert_eq!(
+            origins,
+            vec![vec![ExprId(10), ExprId(12)], vec![ExprId(11)]]
+        );
     }
 }

@@ -14,6 +14,8 @@ use crate::ops::NpoTypeId;
 #[derive(Debug, Clone)]
 pub enum AllocationType {
     Public,
+    /// A private input set by the caller rather than a public trace input.
+    PrivateInput,
     Const,
     Add,
     Sub,
@@ -31,6 +33,7 @@ impl AllocationType {
     const fn group_name(&self) -> &'static str {
         match self {
             Self::Public => "Public Inputs",
+            Self::PrivateInput => "Private Inputs",
             Self::Const => "Constants",
             Self::Add => "Additions",
             Self::Sub => "Subtractions",
@@ -60,6 +63,7 @@ impl fmt::Display for AllocationType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Public => f.write_str("Public"),
+            Self::PrivateInput => f.write_str("PrivateInput"),
             Self::Const => f.write_str("Const"),
             Self::Add => f.write_str("Add"),
             Self::Sub => f.write_str("Sub"),
@@ -202,13 +206,14 @@ impl AllocationLog {
 
     /// Emit one summary event with per-type counts as structured fields.
     fn log_summary(&self) {
-        let (mut pub_n, mut cst, mut add, mut sub) = (0u32, 0, 0, 0);
+        let (mut pub_n, mut private_n, mut cst, mut add, mut sub) = (0u32, 0, 0, 0, 0);
         let (mut mul, mut div, mut hor, mut bck, mut mad, mut npo, mut wit) =
             (0u32, 0, 0, 0, 0, 0, 0);
 
         for e in self.iter() {
             match e.alloc_type {
                 AllocationType::Public => pub_n += 1,
+                AllocationType::PrivateInput => private_n += 1,
                 AllocationType::Const => cst += 1,
                 AllocationType::Add => add += 1,
                 AllocationType::Sub => sub += 1,
@@ -224,6 +229,7 @@ impl AllocationLog {
 
         tracing::debug!(
             publics = pub_n,
+            private_inputs = private_n,
             constants = cst,
             additions = add,
             subtractions = sub,
@@ -243,6 +249,7 @@ impl AllocationLog {
         /// Filter predicates in display order — one per [`AllocationType`] variant.
         const GROUPS: &[fn(&AllocationType) -> bool] = &[
             |a| matches!(a, AllocationType::Public),
+            |a| matches!(a, AllocationType::PrivateInput),
             |a| matches!(a, AllocationType::Const),
             |a| matches!(a, AllocationType::Add),
             |a| matches!(a, AllocationType::Sub),
@@ -307,6 +314,7 @@ mod tests {
     #[test]
     fn allocation_type_display_all_variants() {
         assert_eq!(AllocationType::Public.to_string(), "Public");
+        assert_eq!(AllocationType::PrivateInput.to_string(), "PrivateInput");
         assert_eq!(AllocationType::Const.to_string(), "Const");
         assert_eq!(AllocationType::Add.to_string(), "Add");
         assert_eq!(AllocationType::Sub.to_string(), "Sub");
@@ -325,6 +333,7 @@ mod tests {
     #[test]
     fn allocation_type_group_names() {
         assert_eq!(AllocationType::Public.group_name(), "Public Inputs");
+        assert_eq!(AllocationType::PrivateInput.group_name(), "Private Inputs");
         assert_eq!(AllocationType::Const.group_name(), "Constants");
         assert_eq!(AllocationType::Add.group_name(), "Additions");
         assert_eq!(AllocationType::Sub.group_name(), "Subtractions");
@@ -354,6 +363,7 @@ mod tests {
     #[test]
     fn allocation_type_operator_non_binary() {
         assert_eq!(AllocationType::Public.operator(), None);
+        assert_eq!(AllocationType::PrivateInput.operator(), None);
         assert_eq!(AllocationType::Const.operator(), None);
         assert_eq!(AllocationType::HornerAcc.operator(), None);
         assert_eq!(AllocationType::BoolCheck.operator(), None);

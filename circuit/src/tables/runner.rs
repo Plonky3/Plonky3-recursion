@@ -15,9 +15,13 @@ use super::public::PublicTraceBuilder;
 use super::witness::WitnessTrace;
 use super::{NonPrimitiveTrace, Traces};
 use crate::circuit::Circuit;
+#[cfg(feature = "debugging")]
+use crate::diagnostics::{CircuitDiagnostic, DiagnosticPhase};
 use crate::ops::{ExecutionContext, NpoPrivateData, NpoTypeId, Op, OpStateMap};
 use crate::types::{NonPrimitiveOpId, WitnessId};
 use crate::{AluOpKind, CircuitError};
+
+type TraceGenerationResult<F> = Result<Option<Box<dyn NonPrimitiveTrace<F>>>, CircuitError>;
 
 /// Circuit execution engine.
 pub struct CircuitRunner<'a, F> {
@@ -33,6 +37,9 @@ pub struct CircuitRunner<'a, F> {
     non_primitive_op_index_by_id: Vec<Option<usize>>,
     /// Operation-specific execution state (e.g., Poseidon chaining, row records).
     op_states: OpStateMap,
+    /// Set only by diagnostic execution; ordinary runs do not track location.
+    #[cfg(feature = "debugging")]
+    diagnostic_phase: DiagnosticPhase,
 }
 
 impl<'a, F: Field> CircuitRunner<'a, F> {
@@ -79,6 +86,8 @@ impl<'a, F: Field> CircuitRunner<'a, F> {
             non_primitive_op_private_data,
             non_primitive_op_index_by_id,
             op_states,
+            #[cfg(feature = "debugging")]
+            diagnostic_phase: DiagnosticPhase::Caller,
         }
     }
 
@@ -198,7 +207,32 @@ impl<'a, F: Field> CircuitRunner<'a, F> {
     /// Run the circuit and generate traces
     #[instrument(skip_all)]
     pub fn run(mut self) -> Result<Traces<F>, CircuitError> {
-        let alu_trace = self.execute_all()?;
+        self.run_inner::<false>()
+    }
+
+    /// Run the circuit, retaining owned source and compiled-operation context on failure.
+    #[cfg(feature = "debugging")]
+    #[instrument(skip_all)]
+    pub fn run_with_diagnostics(mut self) -> Result<Traces<F>, CircuitDiagnostic> {
+        // A preceding public `execute_all` may have failed. No earlier location is relevant.
+        self.diagnostic_phase = DiagnosticPhase::Caller;
+        match self.run_inner::<true>() {
+            Ok(traces) => Ok(traces),
+            Err(error) => Err(CircuitDiagnostic::from_error(
+                self.circuit,
+                error,
+                self.diagnostic_phase.clone(),
+            )),
+        }
+    }
+
+    fn run_inner<const DIAGNOSTICS: bool>(&mut self) -> Result<Traces<F>, CircuitError> {
+        let alu_trace = self.execute_all_inner::<DIAGNOSTICS>()?;
+
+        #[cfg(feature = "debugging")]
+        if DIAGNOSTICS {
+            self.diagnostic_phase = DiagnosticPhase::WitnessAliases;
+        }
 
         if let Some(rewrite) = self.witness_rewrite.take() {
             let mut resolved: HashMap<WitnessId, WitnessId> = HashMap::with_capacity(rewrite.len());
@@ -211,14 +245,30 @@ impl<'a, F: Field> CircuitRunner<'a, F> {
                     cur
                 })
             };
-            for (dup, canon) in &rewrite {
-                let r = root(*canon);
+            let mut replay = |dup: WitnessId, canon: WitnessId| -> Result<(), CircuitError> {
+                let r = root(canon);
                 if let Some(ref val) = self.witness[r.0 as usize] {
-                    self.set_witness(*dup, *val)?;
+                    self.set_witness(dup, *val)?;
+                }
+                Ok(())
+            };
+            if DIAGNOSTICS {
+                let mut entries: Vec<_> = rewrite.iter().collect();
+                entries.sort_unstable_by_key(|(dup, _)| **dup);
+                for (dup, canon) in entries {
+                    replay(*dup, *canon)?;
+                }
+            } else {
+                for (dup, canon) in &rewrite {
+                    replay(*dup, *canon)?;
                 }
             }
         }
 
+        #[cfg(feature = "debugging")]
+        if DIAGNOSTICS {
+            self.diagnostic_phase = DiagnosticPhase::WitnessTrace;
+        }
         // Build witness trace directly from the populated witness table.
         let mut witness_values = Vec::with_capacity(self.witness.len());
         for (i, value) in self.witness.iter().enumerate() {
@@ -229,7 +279,15 @@ impl<'a, F: Field> CircuitRunner<'a, F> {
         }
         let witness_trace = WitnessTrace::new(witness_values);
 
+        #[cfg(feature = "debugging")]
+        if DIAGNOSTICS {
+            self.diagnostic_phase = DiagnosticPhase::ConstTrace;
+        }
         let const_trace = ConstTraceBuilder::new(&self.circuit.ops).build()?;
+        #[cfg(feature = "debugging")]
+        if DIAGNOSTICS {
+            self.diagnostic_phase = DiagnosticPhase::PublicTrace;
+        }
         let public_trace = PublicTraceBuilder::new(&self.circuit.ops, &self.witness).build()?;
 
         // Iterate over generators in deterministic order (sorted by key). Generators only read
@@ -238,12 +296,38 @@ impl<'a, F: Field> CircuitRunner<'a, F> {
         // matter there.
         let _scope = tracing::debug_span!("generators").entered();
         let generators = &self.circuit.non_primitive_trace_generators;
-        let generated: Vec<Option<Box<dyn NonPrimitiveTrace<F>>>> = self
-            .circuit
-            .non_primitive_trace_generator_order
-            .par_iter()
-            .map(|op_type| generators[op_type](&self.op_states))
-            .collect::<Result<Vec<_>, _>>()?;
+        let generated: Vec<Option<Box<dyn NonPrimitiveTrace<F>>>> = if DIAGNOSTICS {
+            let results: Vec<TraceGenerationResult<F>> = self
+                .circuit
+                .non_primitive_trace_generator_order
+                .par_iter()
+                .map(|op_type| generators[op_type](&self.op_states))
+                .collect();
+            let mut generated = Vec::with_capacity(results.len());
+            for (op_type, result) in self
+                .circuit
+                .non_primitive_trace_generator_order
+                .iter()
+                .zip(results)
+            {
+                #[cfg(feature = "debugging")]
+                if result.is_err() {
+                    self.diagnostic_phase = DiagnosticPhase::NonPrimitiveTrace {
+                        op_type: op_type.clone(),
+                    };
+                }
+                #[cfg(not(feature = "debugging"))]
+                let _ = op_type;
+                generated.push(result?);
+            }
+            generated
+        } else {
+            self.circuit
+                .non_primitive_trace_generator_order
+                .par_iter()
+                .map(|op_type| generators[op_type](&self.op_states))
+                .collect::<Result<Vec<_>, _>>()?
+        };
         _scope.exit();
 
         let mut non_primitive_traces: HashMap<NpoTypeId, Box<dyn NonPrimitiveTrace<F>>> =
@@ -266,15 +350,26 @@ impl<'a, F: Field> CircuitRunner<'a, F> {
     ///
     /// The circuit is already lowered into a valid execution order, so this function
     /// can blindly execute from index 0 to end.
-    #[instrument(skip_all, level = "debug")]
     pub fn execute_all(&mut self) -> Result<AluTrace<F>, CircuitError> {
+        self.execute_all_inner::<false>()
+    }
+
+    #[instrument(name = "execute_all", skip_all, level = "debug")]
+    fn execute_all_inner<const DIAGNOSTICS: bool>(&mut self) -> Result<AluTrace<F>, CircuitError> {
         // Written directly from each AluOpRecord as it's produced, instead of collecting into
         // an intermediate Vec<AluOpRecord> and re-scattering it into these columns afterward.
         let mut op_kind = Vec::with_capacity(self.circuit.ops.len());
         let mut values = Vec::with_capacity(self.circuit.ops.len());
         let mut indices = Vec::with_capacity(self.circuit.ops.len());
 
+        #[cfg(feature = "debugging")]
+        let mut compiled_op_index = 0usize;
         for op in &self.circuit.ops {
+            #[cfg(feature = "debugging")]
+            if DIAGNOSTICS {
+                self.diagnostic_phase = DiagnosticPhase::Execution { compiled_op_index };
+                compiled_op_index += 1;
+            }
             match op {
                 Op::Const { out, val } => {
                     self.set_witness(*out, *val)?;
@@ -326,6 +421,11 @@ impl<'a, F: Field> CircuitRunner<'a, F> {
                     executor.execute(inputs, outputs, &mut ctx)?;
                 }
             }
+        }
+
+        #[cfg(feature = "debugging")]
+        if DIAGNOSTICS {
+            self.diagnostic_phase = DiagnosticPhase::Caller;
         }
 
         // If the trace is empty, add a dummy row: 0 + 0 = 0.
@@ -575,9 +675,462 @@ mod tests {
 
     use super::*;
     use crate::builder::CircuitBuilder;
+    #[cfg(feature = "debugging")]
+    use crate::builder::{NonPrimitiveOperationData, NpoCircuitPlugin, NpoLoweringContext};
     use crate::ops::HintExecutor;
+    #[cfg(feature = "debugging")]
+    use crate::ops::NpoConfig;
+    #[cfg(feature = "debugging")]
+    use crate::tables::TraceGeneratorFn;
     use crate::tables::{ConstTrace, PublicTrace};
     use crate::types::WitnessId;
+    #[cfg(feature = "debugging")]
+    use crate::{AllocationType, CircuitBuilderError, ExprId, NpoPrivateData};
+
+    #[cfg(feature = "debugging")]
+    #[derive(Debug, Clone)]
+    struct DiagnosticNpo {
+        op_type: NpoTypeId,
+        fail: bool,
+    }
+
+    #[cfg(feature = "debugging")]
+    impl crate::ops::NonPrimitiveExecutor<BabyBear> for DiagnosticNpo {
+        fn execute(
+            &self,
+            _inputs: &[Vec<WitnessId>],
+            _outputs: &[Vec<WitnessId>],
+            _ctx: &mut ExecutionContext<'_, BabyBear>,
+        ) -> Result<(), CircuitError> {
+            if self.fail {
+                Err(CircuitError::InvalidNonPrimitiveOpConfiguration {
+                    op: self.op_type.clone(),
+                })
+            } else {
+                Ok(())
+            }
+        }
+
+        fn op_type(&self) -> &NpoTypeId {
+            &self.op_type
+        }
+
+        fn boxed(&self) -> Box<dyn crate::ops::NonPrimitiveExecutor<BabyBear>> {
+            Box::new(self.clone())
+        }
+    }
+
+    #[cfg(feature = "debugging")]
+    struct DiagnosticNpoPlugin {
+        op_type: NpoTypeId,
+    }
+
+    #[cfg(feature = "debugging")]
+    impl NpoCircuitPlugin<BabyBear> for DiagnosticNpoPlugin {
+        fn type_id(&self) -> NpoTypeId {
+            self.op_type.clone()
+        }
+
+        fn lower(
+            &self,
+            data: &NonPrimitiveOperationData<BabyBear>,
+            output_exprs: &[(u32, ExprId)],
+            ctx: &mut NpoLoweringContext<'_, BabyBear>,
+        ) -> Result<Op<BabyBear>, CircuitBuilderError> {
+            assert!(output_exprs.is_empty());
+            Ok(Op::NonPrimitiveOpWithExecutor {
+                inputs: ctx.lower_expr_slots(&data.input_exprs, "DiagnosticNpo", "input")?,
+                outputs: vec![],
+                executor: Box::new(DiagnosticNpo {
+                    op_type: self.op_type.clone(),
+                    fail: data.op_id == NonPrimitiveOpId(1),
+                }),
+                op_id: data.op_id,
+            })
+        }
+
+        fn trace_generator(&self) -> TraceGeneratorFn<BabyBear> {
+            empty_diagnostic_generator
+        }
+
+        fn config(&self) -> NpoConfig {
+            NpoConfig::new(())
+        }
+    }
+
+    #[cfg(feature = "debugging")]
+    fn empty_diagnostic_generator(
+        _states: &OpStateMap,
+    ) -> Result<Option<Box<dyn NonPrimitiveTrace<BabyBear>>>, CircuitError> {
+        Ok(None)
+    }
+
+    #[cfg(feature = "debugging")]
+    struct OutputlessFixture {
+        circuit: Circuit<BabyBear>,
+        first_call: ExprId,
+        second_op_id: NonPrimitiveOpId,
+        second_call: ExprId,
+        second_inputs: [ExprId; 2],
+        op_type: NpoTypeId,
+    }
+
+    #[cfg(feature = "debugging")]
+    fn outputless_npo_fixture() -> OutputlessFixture {
+        let mut builder = CircuitBuilder::<BabyBear>::new();
+        let op_type = NpoTypeId::new("test/builder_outputless");
+        builder.register_npo(DiagnosticNpoPlugin {
+            op_type: op_type.clone(),
+        });
+        let left = builder.define_const(BabyBear::ONE);
+        let right = builder.define_const(BabyBear::from_u64(2));
+        builder.push_scope("outputless_scope");
+        let (first_id, first_call, _) = builder.push_non_primitive_op_with_outputs(
+            op_type.clone(),
+            vec![vec![left], vec![right]],
+            vec![],
+            None,
+            "first_call",
+        );
+        let (second_op_id, second_call, _) = builder.push_non_primitive_op_with_outputs(
+            op_type.clone(),
+            vec![vec![right], vec![left]],
+            vec![],
+            None,
+            "second_call",
+        );
+        builder.pop_scope();
+        builder.tag_op(first_id, "first_tag").unwrap();
+        builder.tag_op(second_op_id, "z_second").unwrap();
+        builder.tag_op(second_op_id, "a_second").unwrap();
+        OutputlessFixture {
+            circuit: builder.build().unwrap(),
+            first_call,
+            second_op_id,
+            second_call,
+            second_inputs: [right, left],
+            op_type,
+        }
+    }
+
+    #[cfg(feature = "debugging")]
+    #[derive(Debug, Clone)]
+    struct DiagnosticHint;
+
+    #[cfg(feature = "debugging")]
+    impl HintExecutor<BabyBear> for DiagnosticHint {
+        fn execute(
+            &self,
+            _inputs: &[WitnessId],
+            _outputs: &[WitnessId],
+            _witness: &mut [Option<BabyBear>],
+        ) -> Result<(), CircuitError> {
+            Err(CircuitError::DivisionByZero)
+        }
+
+        fn boxed(&self) -> Box<dyn HintExecutor<BabyBear>> {
+            Box::new(self.clone())
+        }
+    }
+
+    #[cfg(feature = "debugging")]
+    #[test]
+    fn outputless_same_type_failure_identifies_exact_compiled_call() {
+        let mut circuit = Circuit::<BabyBear>::new(0, HashMap::new());
+        let op_type = NpoTypeId::new("test/outputless");
+        for (id, fail) in [(0, false), (1, true)] {
+            circuit.ops.push(Op::NonPrimitiveOpWithExecutor {
+                inputs: vec![],
+                outputs: vec![],
+                executor: Box::new(DiagnosticNpo {
+                    op_type: op_type.clone(),
+                    fail,
+                }),
+                op_id: NonPrimitiveOpId(id),
+            });
+        }
+        let report = circuit.runner().run_with_diagnostics().unwrap_err();
+        assert_eq!(
+            report.phase(),
+            &DiagnosticPhase::Execution {
+                compiled_op_index: 1
+            }
+        );
+        assert_eq!(report.compiled_operation().unwrap().compiled_op_index, 1);
+        assert_eq!(
+            report.compiled_operation().unwrap().kind,
+            crate::diagnostics::CompiledOpKind::NonPrimitive {
+                op_id: NonPrimitiveOpId(1),
+                op_type
+            }
+        );
+        assert!(report.operation_origins().is_empty());
+        assert!(report.to_string().contains("unavailable"));
+    }
+
+    #[cfg(feature = "debugging")]
+    #[test]
+    fn builder_outputless_npo_failure_retains_the_second_call_anchor() {
+        let fixture = outputless_npo_fixture();
+        let op_index = fixture
+            .circuit
+            .ops
+            .iter()
+            .position(|op| matches!(op, Op::NonPrimitiveOpWithExecutor { op_id, .. } if *op_id == fixture.second_op_id))
+            .unwrap();
+        let report = fixture.circuit.runner().run_with_diagnostics().unwrap_err();
+
+        assert_eq!(
+            report.phase(),
+            &DiagnosticPhase::Execution {
+                compiled_op_index: op_index
+            }
+        );
+        assert_eq!(
+            report.compiled_operation().unwrap().kind,
+            crate::diagnostics::CompiledOpKind::NonPrimitive {
+                op_id: fixture.second_op_id,
+                op_type: fixture.op_type.clone(),
+            }
+        );
+        let origins = report.operation_origins();
+        assert_eq!(origins.len(), 1);
+        assert_ne!(origins[0].expr_id, fixture.first_call);
+        assert_eq!(origins[0].expr_id, fixture.second_call);
+        let allocation = origins[0].allocation.as_ref().unwrap();
+        assert!(
+            matches!(&allocation.alloc_type, AllocationType::NonPrimitiveOp(op_type) if op_type == &fixture.op_type)
+        );
+        assert_eq!(allocation.label, "second_call");
+        assert_eq!(allocation.scope.as_deref(), Some("outputless_scope"));
+        assert_eq!(
+            origins[0]
+                .dependencies
+                .iter()
+                .map(|group| group
+                    .iter()
+                    .map(|source| source.expr_id)
+                    .collect::<Vec<_>>())
+                .collect::<Vec<_>>(),
+            vec![
+                vec![fixture.second_inputs[0]],
+                vec![fixture.second_inputs[1]]
+            ]
+        );
+        assert_eq!(
+            report.tags(),
+            &["a_second".to_string(), "z_second".to_string()]
+        );
+    }
+
+    #[cfg(feature = "debugging")]
+    #[test]
+    fn caller_id_error_resolves_the_second_outputless_call_and_its_tags() {
+        let fixture = outputless_npo_fixture();
+        let op_index = fixture
+            .circuit
+            .ops
+            .iter()
+            .position(|op| matches!(op, Op::NonPrimitiveOpWithExecutor { op_id, .. } if *op_id == fixture.second_op_id))
+            .unwrap();
+        let mut runner = fixture.circuit.runner();
+        runner
+            .set_private_data(fixture.second_op_id, NpoPrivateData::new(()))
+            .unwrap();
+        let error = runner
+            .set_private_data(fixture.second_op_id, NpoPrivateData::new(()))
+            .unwrap_err();
+        let report = fixture.circuit.diagnose_error(error);
+
+        assert_eq!(report.phase(), &DiagnosticPhase::Caller);
+        assert!(
+            matches!(report.error(), CircuitError::IncorrectNonPrimitiveOpPrivateData { operation_index, .. } if *operation_index == fixture.second_op_id)
+        );
+        assert_eq!(
+            report.compiled_operation().unwrap().compiled_op_index,
+            op_index
+        );
+        assert_eq!(
+            report.compiled_operation().unwrap().kind,
+            crate::diagnostics::CompiledOpKind::NonPrimitive {
+                op_id: fixture.second_op_id,
+                op_type: fixture.op_type,
+            }
+        );
+        assert_eq!(report.operation_origins().len(), 1);
+        assert_eq!(report.operation_origins()[0].expr_id, fixture.second_call);
+        assert_eq!(
+            report.tags(),
+            &["a_second".to_string(), "z_second".to_string()]
+        );
+    }
+
+    #[cfg(feature = "debugging")]
+    #[test]
+    fn builder_outputless_hint_failure_retains_its_call_anchor() {
+        let mut builder = CircuitBuilder::<BabyBear>::new();
+        let left = builder.define_const(BabyBear::ONE);
+        let right = builder.define_const(BabyBear::from_u64(2));
+        builder.push_scope("hint_scope");
+        let (_, call, outputs) = builder.push_unconstrained_op(
+            vec![vec![right, left]],
+            0,
+            DiagnosticHint,
+            "failing_hint",
+        );
+        builder.pop_scope();
+        assert!(outputs.is_empty());
+        let circuit = builder.build().unwrap();
+        let op_index = circuit
+            .ops
+            .iter()
+            .position(|op| matches!(op, Op::Hint { .. }))
+            .unwrap();
+        let report = circuit.runner().run_with_diagnostics().unwrap_err();
+
+        assert_eq!(
+            report.phase(),
+            &DiagnosticPhase::Execution {
+                compiled_op_index: op_index
+            }
+        );
+        assert_eq!(
+            report.compiled_operation().unwrap().kind,
+            crate::diagnostics::CompiledOpKind::Hint
+        );
+        assert_eq!(report.operation_origins().len(), 1);
+        let origin = &report.operation_origins()[0];
+        assert_eq!(origin.expr_id, call);
+        let allocation = origin.allocation.as_ref().unwrap();
+        assert!(
+            matches!(&allocation.alloc_type, AllocationType::NonPrimitiveOp(op_type) if op_type == &NpoTypeId::unconstrained())
+        );
+        assert_eq!(allocation.label, "failing_hint");
+        assert_eq!(allocation.scope.as_deref(), Some("hint_scope"));
+        assert_eq!(
+            origin
+                .dependencies
+                .iter()
+                .map(|group| group
+                    .iter()
+                    .map(|source| source.expr_id)
+                    .collect::<Vec<_>>())
+                .collect::<Vec<_>>(),
+            vec![vec![right], vec![left]]
+        );
+    }
+
+    #[cfg(feature = "debugging")]
+    #[test]
+    fn hint_type_only_failure_has_compiled_position_without_npo_id() {
+        let mut circuit = Circuit::<BabyBear>::new(0, HashMap::new());
+        circuit.ops.push(Op::Hint {
+            inputs: vec![],
+            outputs: vec![],
+            executor: Box::new(DiagnosticHint),
+        });
+        let report = circuit.runner().run_with_diagnostics().unwrap_err();
+        assert_eq!(
+            report.phase(),
+            &DiagnosticPhase::Execution {
+                compiled_op_index: 0
+            }
+        );
+        assert_eq!(
+            report.compiled_operation().unwrap().kind,
+            crate::diagnostics::CompiledOpKind::Hint
+        );
+    }
+
+    #[cfg(feature = "debugging")]
+    fn failing_diagnostic_generator(
+        _states: &OpStateMap,
+    ) -> Result<Option<Box<dyn NonPrimitiveTrace<BabyBear>>>, CircuitError> {
+        Err(CircuitError::DivisionByZero)
+    }
+
+    #[cfg(feature = "debugging")]
+    fn row_index_generator_error(
+        _states: &OpStateMap,
+    ) -> Result<Option<Box<dyn NonPrimitiveTrace<BabyBear>>>, CircuitError> {
+        Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
+            op: NpoTypeId::new("test/beta"),
+            operation_index: NonPrimitiveOpId(0), // Generator-local row index, not a global op ID.
+            expected: "valid row".to_string(),
+            got: "invalid row".to_string(),
+        })
+    }
+
+    #[cfg(feature = "debugging")]
+    #[test]
+    fn generator_local_row_index_does_not_identify_an_unrelated_compiled_call() {
+        let mut circuit = Circuit::<BabyBear>::new(0, HashMap::new());
+        let alpha = NpoTypeId::new("test/alpha");
+        let beta = NpoTypeId::new("test/beta");
+        circuit.ops.push(Op::NonPrimitiveOpWithExecutor {
+            inputs: vec![],
+            outputs: vec![],
+            executor: Box::new(DiagnosticNpo {
+                op_type: alpha,
+                fail: false,
+            }),
+            op_id: NonPrimitiveOpId(0),
+        });
+        circuit
+            .tag_to_op_id
+            .insert("alpha".to_string(), NonPrimitiveOpId(0));
+        circuit
+            .non_primitive_trace_generator_order
+            .push(beta.clone());
+        circuit
+            .non_primitive_trace_generators
+            .insert(beta.clone(), row_index_generator_error);
+
+        let report = circuit.runner().run_with_diagnostics().unwrap_err();
+        assert_eq!(
+            report.phase(),
+            &DiagnosticPhase::NonPrimitiveTrace { op_type: beta }
+        );
+        assert!(report.compiled_operation().is_none());
+        assert!(report.operation_origins().is_empty());
+        assert!(report.tags().is_empty());
+        assert!(matches!(
+            report.error(),
+            CircuitError::IncorrectNonPrimitiveOpPrivateData { .. }
+        ));
+    }
+
+    #[cfg(feature = "debugging")]
+    #[test]
+    fn prior_execute_failure_does_not_stale_attribute_generator_failure() {
+        let mut circuit = Circuit::<BabyBear>::new(1, HashMap::new());
+        circuit.ops.push(Op::Public {
+            out: WitnessId(0),
+            public_pos: 0,
+        });
+        circuit.public_rows.push(WitnessId(0));
+        circuit.public_flat_len = 1;
+        let op_type = NpoTypeId::new("test/generator");
+        circuit
+            .non_primitive_trace_generator_order
+            .push(op_type.clone());
+        circuit
+            .non_primitive_trace_generators
+            .insert(op_type.clone(), failing_diagnostic_generator);
+
+        let mut runner = circuit.runner();
+        assert!(matches!(
+            runner.execute_all(),
+            Err(CircuitError::PublicInputNotSet { .. })
+        ));
+        runner.set_public_inputs(&[BabyBear::ONE]).unwrap();
+        let report = runner.run_with_diagnostics().unwrap_err();
+        assert_eq!(
+            report.phase(),
+            &DiagnosticPhase::NonPrimitiveTrace { op_type }
+        );
+        assert!(report.compiled_operation().is_none());
+    }
 
     /// Initializes a global logger with default parameters.
     fn init_logger() {

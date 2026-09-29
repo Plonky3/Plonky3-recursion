@@ -32,6 +32,8 @@ use crate::ops::{
     HintExecutor, NpoConfig, NpoRegistry, NpoTypeId, Poseidon1Params, Poseidon1PermCall,
     Poseidon2Params, Poseidon2PermCall,
 };
+#[cfg(feature = "debugging")]
+use crate::provenance::CircuitProvenance;
 use crate::tables::TraceGeneratorFn;
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};
 use crate::{
@@ -1328,8 +1330,9 @@ where
 
     /// Builds the circuit and returns both the circuit and the ExprId→WitnessId mapping for public inputs.
     #[allow(clippy::type_complexity)]
+    #[cfg_attr(not(feature = "debugging"), allow(unused_mut))]
     pub fn build_with_public_mapping(
-        self,
+        mut self,
     ) -> Result<(Circuit<F>, HashMap<ExprId, WitnessId>), CircuitBuilderError> {
         // Stage 1: Lower expressions and non-primitives into a single op list
         for data in &self.non_primitive_ops {
@@ -1345,6 +1348,10 @@ where
             &self.npo_registry,
         );
         // Run the multi-phase lowering pipeline and destructure the result.
+        #[cfg(feature = "debugging")]
+        let (lowered, origins) = lowerer.lower_with_origins()?;
+        #[cfg(not(feature = "debugging"))]
+        let lowered = lowerer.lower()?;
         let LoweringResult {
             ops,
             public_rows,
@@ -1352,9 +1359,13 @@ where
             expr_to_widx,
             public_mappings,
             witness_count,
-        } = lowerer.lower()?;
+        } = lowered;
 
         // Stage 2: IR transformations and optimizations
+        #[cfg(feature = "debugging")]
+        let (ops, rewrite, origins) =
+            Optimizer::optimize_with_origins(ops, origins, &private_input_rows);
+        #[cfg(not(feature = "debugging"))]
         let (ops, rewrite) = Optimizer::optimize_with_preinitialized(ops, &private_input_rows);
 
         let resolve = |id: WitnessId| id.resolve(&rewrite);
@@ -1368,6 +1379,15 @@ where
         // Stage 3: Generate final circuit
         let mut circuit = Circuit::new(witness_count, expr_to_widx);
         circuit.ops = ops;
+        #[cfg(feature = "debugging")]
+        {
+            let allocations = self.expr_builder.take_allocation_log();
+            circuit.provenance = Some(Arc::new(CircuitProvenance::new(
+                allocations,
+                origins,
+                &circuit.expr_to_widx,
+            )));
+        }
         circuit.public_rows = public_rows;
         circuit.private_input_rows = private_input_rows;
         circuit.private_flat_len = self.private_input_tracker.count();

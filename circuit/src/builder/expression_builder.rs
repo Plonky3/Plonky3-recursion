@@ -427,7 +427,7 @@ where
     pub fn private_input(&mut self, pos: usize, label: &'static str) -> ExprId {
         let expr_id = self.graph.add_expr(Expr::PrivateInput(pos));
         #[cfg(feature = "debugging")]
-        self.log_alloc(expr_id, label, || (AllocationType::Public, vec![]));
+        self.log_alloc(expr_id, label, || (AllocationType::PrivateInput, vec![]));
         #[cfg(not(feature = "debugging"))]
         self.log_alloc(expr_id, label, || ());
         expr_id
@@ -1063,7 +1063,7 @@ where
         self.scope_stack.last().map(|s| s.as_str())
     }
 
-    /// Returns a reference to the allocation log (debug builds only).
+    /// Returns a reference to the allocation log when the `debugging` feature is enabled.
     ///
     /// Provides read-only access to all allocation entries recorded during circuit
     /// construction. Useful for testing and verifying allocation behavior.
@@ -1076,9 +1076,16 @@ where
         &self.allocation_log
     }
 
+    /// Move the existing debug log into the compiled circuit provenance.
+    #[cfg(feature = "debugging")]
+    pub(crate) fn take_allocation_log(&mut self) -> AllocationLog {
+        core::mem::take(&mut self.allocation_log)
+    }
+
     /// Dumps the allocation log for specific `ExprId`s.
     ///
-    /// If debug_assertions are not enabled, this is a no-op.
+    /// Without the `debugging` feature, this is a no-op. Records are emitted
+    /// through `tracing` when the feature is enabled.
     // `expr_ids` is only consumed by the `debugging`-gated allocation log.
     #[allow(unused_variables)]
     pub fn dump_expr_ids(&self, expr_ids: &[ExprId]) {
@@ -1086,15 +1093,15 @@ where
         self.allocation_log.dump_expr_ids(expr_ids);
     }
 
-    /// Dumps the allocation log to stdout (debug builds only).
+    /// Emits the allocation log through `tracing` with the `debugging` feature.
     ///
-    /// Prints a formatted view of all allocations, including their types, labels,
+    /// Emits a formatted view of all allocations, including their types, labels,
     /// dependencies, and scopes. Useful for debugging circuit construction.
     ///
     /// # Output
     ///
-    /// In debug builds, outputs a detailed allocation report. In release builds,
-    /// this method does nothing.
+    /// With `debugging` enabled, emits a detailed report through `tracing`.
+    /// Without that feature, this method does nothing.
     pub fn dump_allocation_log(&self) {
         #[cfg(feature = "debugging")]
         self.allocation_log.dump();
@@ -1107,8 +1114,8 @@ where
     ///
     /// # Returns
     ///
-    /// - **Debug builds**: Vector of unique scope names
-    /// - **Release builds**: Empty vector (no scopes tracked)
+    /// - With `debugging`: Vector of unique scope names
+    /// - Without `debugging`: Empty vector (no scopes tracked)
     pub fn list_scopes(&self) -> Vec<String> {
         #[cfg(feature = "debugging")]
         {

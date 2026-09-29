@@ -10,7 +10,13 @@ use hashbrown::HashMap;
 use p3_field::Field;
 
 use crate::ops::Op;
+#[cfg(feature = "debugging")]
+use crate::types::ExprId;
 use crate::types::WitnessId;
+
+#[cfg(feature = "debugging")]
+pub(super) type OptimizedWithOrigins<F> =
+    (Vec<Op<F>>, HashMap<WitnessId, WitnessId>, Vec<Vec<ExprId>>);
 
 /// Runs optimization passes on primitive operations.
 ///
@@ -44,6 +50,29 @@ impl<F: Field> Optimizer<F> {
             .collect();
         let ops = MulAddFusion::with_preinitialized(&ops, &preinitialized).run(ops);
         (ops, rewrite)
+    }
+
+    /// The same optimization passes with source IDs carried through actual edits.
+    #[cfg(feature = "debugging")]
+    pub(crate) fn optimize_with_origins(
+        ops: Vec<Op<F>>,
+        origins: Vec<Vec<ExprId>>,
+        preinitialized: &[WitnessId],
+    ) -> OptimizedWithOrigins<F> {
+        let (ops, rewrite, origins) =
+            Deduplicator::with_capacity(ops.len()).run_with_origins(ops, origins);
+        let preinitialized: Vec<_> = preinitialized
+            .iter()
+            .map(|id| id.resolve(&rewrite))
+            .collect();
+        let (ops, mut origins) =
+            MulAddFusion::with_preinitialized(&ops, &preinitialized).run_with_origins(ops, origins);
+        for sources in &mut origins {
+            sources.sort_unstable();
+            sources.dedup();
+        }
+        debug_assert_eq!(ops.len(), origins.len());
+        (ops, rewrite, origins)
     }
 }
 

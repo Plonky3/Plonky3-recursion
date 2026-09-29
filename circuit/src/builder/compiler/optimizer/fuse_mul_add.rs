@@ -5,6 +5,8 @@ use p3_field::Field;
 
 use super::analysis::{IndexedDef, OpDef};
 use crate::ops::{AluOpKind, Op};
+#[cfg(feature = "debugging")]
+use crate::types::ExprId;
 use crate::types::WitnessId;
 
 /// Detects `a * b + c` patterns and rewrites them as fused `MulAdd` ops.
@@ -45,9 +47,36 @@ impl<F: Field> MulAddFusion<F> {
 
     /// Runs the three-phase fusion and returns the rewritten op list.
     pub(super) fn run(self, ops: Vec<Op<F>>) -> Vec<Op<F>> {
+        #[cfg(feature = "debugging")]
+        let result = self.run_inner(ops, None);
+        #[cfg(not(feature = "debugging"))]
+        let result = self.run_inner(ops);
+        result.ops
+    }
+
+    #[cfg(feature = "debugging")]
+    pub(super) fn run_with_origins(
+        self,
+        ops: Vec<Op<F>>,
+        origins: Vec<Vec<ExprId>>,
+    ) -> (Vec<Op<F>>, Vec<Vec<ExprId>>) {
+        assert_eq!(ops.len(), origins.len());
+        let result = self.run_inner(ops, Some(origins));
+        (result.ops, result.origins.unwrap())
+    }
+
+    fn run_inner(
+        self,
+        ops: Vec<Op<F>>,
+        #[cfg(feature = "debugging")] origins: Option<Vec<Vec<ExprId>>>,
+    ) -> FusionResult<F> {
         let candidates = self.identify_candidates(&ops);
         let valid = self.filter_valid(&ops, &candidates);
-        Self::apply(ops, candidates, &valid)
+        #[cfg(feature = "debugging")]
+        let result = Self::apply(ops, candidates, &valid, origins);
+        #[cfg(not(feature = "debugging"))]
+        let result = Self::apply(ops, candidates, &valid);
+        result
     }
 
     fn def_idx(&self, id: &WitnessId) -> Option<usize> {
@@ -285,7 +314,8 @@ impl<F: Field> MulAddFusion<F> {
         ops: Vec<Op<F>>,
         mut candidates: HashMap<usize, (usize, Op<F>, WitnessId)>,
         valid: &hashbrown::HashSet<usize>,
-    ) -> Vec<Op<F>> {
+        #[cfg(feature = "debugging")] mut origins: Option<Vec<Vec<ExprId>>>,
+    ) -> FusionResult<F> {
         let mut consumed_adds = hashbrown::HashSet::new();
         let mut mul_replacements: HashMap<usize, Op<F>> = HashMap::new();
 
@@ -295,15 +325,41 @@ impl<F: Field> MulAddFusion<F> {
             {
                 mul_replacements.insert(mul_idx, muladd);
                 consumed_adds.insert(add_idx);
+                #[cfg(feature = "debugging")]
+                if let Some(ref mut origins) = origins {
+                    let add_sources = origins[add_idx].clone();
+                    origins[mul_idx].extend(add_sources);
+                }
             }
         }
 
-        ops.into_iter()
+        let ops = ops
+            .into_iter()
             .enumerate()
             .filter(|(idx, _)| !consumed_adds.contains(idx))
             .map(|(idx, op)| mul_replacements.remove(&idx).unwrap_or(op))
-            .collect()
+            .collect();
+        #[cfg(feature = "debugging")]
+        let origins = origins.map(|origins| {
+            origins
+                .into_iter()
+                .enumerate()
+                .filter(|(idx, _)| !consumed_adds.contains(idx))
+                .map(|(_, sources)| sources)
+                .collect()
+        });
+        FusionResult {
+            ops,
+            #[cfg(feature = "debugging")]
+            origins,
+        }
     }
+}
+
+struct FusionResult<F> {
+    ops: Vec<Op<F>>,
+    #[cfg(feature = "debugging")]
+    origins: Option<Vec<Vec<ExprId>>>,
 }
 
 #[cfg(test)]

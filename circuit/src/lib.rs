@@ -7,9 +7,13 @@
 extern crate alloc;
 #[cfg(feature = "debugging")]
 pub mod alloc_entry;
+#[cfg(feature = "debugging")]
+pub mod provenance;
 
 pub mod builder;
 pub mod circuit;
+#[cfg(feature = "debugging")]
+pub mod diagnostics;
 pub mod errors;
 pub mod expr;
 pub mod ops;
@@ -27,9 +31,15 @@ pub use builder::{
     NpoLoweringContext, VerifiedStatementTargets,
 };
 pub use circuit::{Circuit, PreprocessedColumns};
+#[cfg(feature = "debugging")]
+pub use diagnostics::{
+    CircuitDiagnostic, CompiledOpKind, CompiledOperation, DiagnosticPhase, DiagnosticSource,
+};
 pub use errors::CircuitError;
 pub use expr::Expr;
 pub use ops::{AluOpKind, NpoPrivateData, NpoTypeId, Op, PreprocessedWriter};
+#[cfg(feature = "debugging")]
+pub use provenance::CircuitProvenance;
 pub use statement::{
     AggregationStatementLayout, StateTransitionError, StateTransitionLayout, StatementError,
     StatementExport, StatementField, StatementSchema,

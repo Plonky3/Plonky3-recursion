@@ -1,4 +1,6 @@
 use alloc::string::String;
+#[cfg(feature = "debugging")]
+use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -9,6 +11,8 @@ use strum::EnumCount;
 use crate::ops::{
     NonPrimitivePreprocessedMap, NpoConfig, NpoTypeId, Op, PreprocessedWriter, PrimitiveOpType,
 };
+#[cfg(feature = "debugging")]
+use crate::provenance::CircuitProvenance;
 use crate::tables::{CircuitRunner, TraceGeneratorFn};
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessId};
 use crate::{AggregationStatementLayout, AluOpKind, CircuitError, StatementSchema};
@@ -202,6 +206,9 @@ pub struct Circuit<F> {
     /// After ALU deduplication, duplicate outputs are rewritten to canonical.
     /// This map is used by the runner to fill those slots.
     pub witness_rewrite: Option<HashMap<WitnessId, WitnessId>>,
+    /// Builder snapshot metadata; absent for manually assembled circuits.
+    #[cfg(feature = "debugging")]
+    pub(crate) provenance: Option<Arc<CircuitProvenance>>,
     /// Library-issued marker and schema for the built-in Statement sink.
     pub(crate) statement_schema: Option<StatementSchema>,
     /// Checked left/right semantic boundary for an aggregation Statement sink.
@@ -228,6 +235,8 @@ impl<F: Field + Clone> Clone for Circuit<F> {
             tag_to_witness: self.tag_to_witness.clone(),
             tag_to_op_id: self.tag_to_op_id.clone(),
             witness_rewrite: self.witness_rewrite.clone(),
+            #[cfg(feature = "debugging")]
+            provenance: self.provenance.clone(),
             statement_schema: self.statement_schema.clone(),
             aggregation_statement_layout: self.aggregation_statement_layout.clone(),
             statement_source_wids: self.statement_source_wids.clone(),
@@ -253,11 +262,24 @@ impl<F: Field> Circuit<F> {
             tag_to_witness: HashMap::new(),
             tag_to_op_id: HashMap::new(),
             witness_rewrite: None,
+            #[cfg(feature = "debugging")]
+            provenance: None,
             statement_schema: None,
             aggregation_statement_layout: None,
             statement_source_wids: Vec::new(),
             statement_normalization_sources: HashMap::new(),
         }
+    }
+
+    /// Source metadata for the builder-produced compiled snapshot, if valid.
+    ///
+    /// A changed operation count invalidates this snapshot. Mutating public
+    /// fields without changing the count can also invalidate it undetectably.
+    #[cfg(feature = "debugging")]
+    pub fn provenance(&self) -> Option<&CircuitProvenance> {
+        self.provenance
+            .as_deref()
+            .filter(|source| source.operation_count() == self.ops.len())
     }
 
     /// Return the circuit's once-defined statement schema, including an empty schema.

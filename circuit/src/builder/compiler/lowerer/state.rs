@@ -18,6 +18,11 @@ use crate::expr::{Expr, ExpressionGraph};
 use crate::ops::{AluOpKind, NpoTypeId, Op};
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};
 
+#[cfg(feature = "debugging")]
+type NegConstCacheEntry = (WitnessId, usize);
+#[cfg(not(feature = "debugging"))]
+type NegConstCacheEntry = WitnessId;
+
 /// Accumulated mutable state threaded through all lowering phases.
 pub(super) struct LoweringState<'a, F: Field> {
     /// The expression DAG being lowered (immutable, borrowed).
@@ -34,6 +39,9 @@ pub(super) struct LoweringState<'a, F: Field> {
 
     /// Accumulated primitive operations in emission order.
     pub(super) ops: Vec<Op<F>>,
+    /// Exact source expression IDs, kept in lockstep with emitted operations.
+    #[cfg(feature = "debugging")]
+    pub(super) operation_origins: Vec<Vec<ExprId>>,
     /// Expression-to-witness mapping built during lowering.
     pub(super) expr_to_widx: HashMap<ExprId, WitnessId>,
     /// Witness slot for each public input position.
@@ -53,7 +61,40 @@ pub(super) struct LoweringState<'a, F: Field> {
     /// Memoizes the synthetic negated-constant witness emitted by `emit_sub`'s `Mul - Const`
     /// fast path, keyed by the negated value, so the same constant isn't re-emitted per
     /// occurrence.
-    neg_const_cache: HashMap<F, WitnessId>,
+    neg_const_cache: HashMap<F, NegConstCacheEntry>,
+}
+
+#[cfg(all(test, feature = "debugging"))]
+mod provenance_tests {
+    use p3_test_utils::baby_bear_params::{BabyBear, PrimeCharacteristicRing};
+
+    use crate::builder::CircuitBuilder;
+    use crate::ops::Op;
+
+    #[test]
+    fn reused_synthetic_negated_constant_keeps_all_parent_sub_origins() {
+        let mut builder = CircuitBuilder::<BabyBear>::new();
+        let a = builder.public_input();
+        let b = builder.public_input();
+        let c = builder.public_input();
+        let offset = builder.define_const(BabyBear::from_u64(7));
+        let mul_a = builder.mul(a, b);
+        let mul_b = builder.mul(a, c);
+        let sub_a = builder.sub(mul_a, offset);
+        let sub_b = builder.sub(mul_b, offset);
+        let circuit = builder.build().unwrap();
+        let provenance = circuit.provenance().unwrap();
+        let negative = -BabyBear::from_u64(7);
+        let synthetic = circuit
+            .ops
+            .iter()
+            .enumerate()
+            .find_map(|(idx, op)| {
+                matches!(op, Op::Const { val, .. } if *val == negative).then_some(idx)
+            })
+            .unwrap();
+        assert_eq!(provenance.operation_origins(synthetic), &[sub_a, sub_b]);
+    }
 }
 
 impl<'a, F: Field> LoweringState<'a, F> {
@@ -78,6 +119,8 @@ impl<'a, F: Field> LoweringState<'a, F> {
             witness_alloc: lowerer.witness_alloc,
             // One op is emitted per expression node in the common case.
             ops: Vec::with_capacity(node_count),
+            #[cfg(feature = "debugging")]
+            operation_origins: Vec::with_capacity(node_count),
             expr_to_widx: HashMap::with_capacity(node_count),
             // Pre-size positional vectors with placeholder witness IDs.
             public_rows: vec![WitnessId(0); lowerer.public_input_count],
@@ -88,6 +131,18 @@ impl<'a, F: Field> LoweringState<'a, F> {
             emitted_npo_ops: HashSet::new(),
             neg_const_cache: HashMap::new(),
         })
+    }
+
+    /// The single operation emission seam keeps debug source IDs aligned.
+    fn push_op(&mut self, op: Op<F>, origin: ExprId) {
+        self.ops.push(op);
+        #[cfg(feature = "debugging")]
+        {
+            self.operation_origins.push(vec![origin]);
+            debug_assert_eq!(self.ops.len(), self.operation_origins.len());
+        }
+        #[cfg(not(feature = "debugging"))]
+        let _ = origin;
     }
 
     /// Look up an already-assigned witness for the given expression.
@@ -121,7 +176,8 @@ impl<'a, F: Field> LoweringState<'a, F> {
                 let expr_id = ExprId(expr_idx as u32);
                 // Allocate a witness (shared if this const is in a connect class).
                 let w = self.dsu.alloc_witness(expr_id, &mut self.witness_alloc);
-                self.ops.push(Op::Const { out: w, val: *val });
+                let val = *val;
+                self.push_op(Op::Const { out: w, val }, expr_id);
                 self.expr_to_widx.insert(expr_id, w);
             }
         }
@@ -136,13 +192,17 @@ impl<'a, F: Field> LoweringState<'a, F> {
             if let Expr::Public(pos) = expr {
                 let expr_id = ExprId(expr_idx as u32);
                 let out_widx = self.dsu.alloc_witness(expr_id, &mut self.witness_alloc);
-                self.ops.push(Op::Public {
-                    out: out_widx,
-                    public_pos: *pos,
-                });
+                let pos = *pos;
+                self.push_op(
+                    Op::Public {
+                        out: out_widx,
+                        public_pos: pos,
+                    },
+                    expr_id,
+                );
                 self.expr_to_widx.insert(expr_id, out_widx);
                 // Store the witness in the positional vector.
-                self.public_rows[*pos] = out_widx;
+                self.public_rows[pos] = out_widx;
                 // Also record in the public-only mapping.
                 self.public_mappings.insert(expr_id, out_widx);
             }
@@ -187,7 +247,7 @@ impl<'a, F: Field> LoweringState<'a, F> {
                 Expr::BoolCheck { val } => self.emit_bool_check(expr_id, *val)?,
                 Expr::MulAdd { a, b, c } => self.emit_mul_add(expr_id, *a, *b, *c)?,
                 Expr::NonPrimitiveCall { op_id } => {
-                    self.emit_npo_call(*op_id)?;
+                    self.emit_npo_call(*op_id, expr_id)?;
                 }
                 Expr::NonPrimitiveOutput {
                     call,
@@ -213,7 +273,7 @@ impl<'a, F: Field> LoweringState<'a, F> {
         let a_widx = self.resolve_witness(lhs, "Add lhs", expr_id)?;
         let b_widx = self.resolve_witness(rhs, "Add rhs", expr_id)?;
         // Emit the forward add: out = a + b.
-        self.ops.push(Op::add(a_widx, b_widx, out_widx));
+        self.push_op(Op::add(a_widx, b_widx, out_widx), expr_id);
         self.expr_to_widx.insert(expr_id, out_widx);
         Ok(())
     }
@@ -248,9 +308,29 @@ impl<'a, F: Field> LoweringState<'a, F> {
             // `Mul - <same const>` occurrences share one witness instead of re-emitting a Const
             // op each time.
             let neg_val = -(*const_val);
+            #[cfg(feature = "debugging")]
+            let neg_const_widx = if let Some(&(widx, op_idx)) = self.neg_const_cache.get(&neg_val) {
+                self.operation_origins[op_idx].push(expr_id);
+                widx
+            } else {
+                // This ID only allocates a witness; it is never reported as a source.
+                let synthetic_id = ExprId(self.graph.nodes().len() as u32);
+                let widx = self
+                    .dsu
+                    .alloc_witness(synthetic_id, &mut self.witness_alloc);
+                let op_idx = self.ops.len();
+                self.push_op(
+                    Op::Const {
+                        out: widx,
+                        val: neg_val,
+                    },
+                    expr_id,
+                );
+                self.neg_const_cache.insert(neg_val, (widx, op_idx));
+                widx
+            };
+            #[cfg(not(feature = "debugging"))]
             let neg_const_widx = *self.neg_const_cache.entry(neg_val).or_insert_with(|| {
-                // The synthetic ID is beyond the graph so it never collides with real
-                // expressions; it's never in a connect class, so this always allocates fresh.
                 let synthetic_id = ExprId(self.graph.nodes().len() as u32);
                 let widx = self
                     .dsu
@@ -262,12 +342,11 @@ impl<'a, F: Field> LoweringState<'a, F> {
                 widx
             });
             // Encode as forward add: result = lhs + (-c).
-            self.ops
-                .push(Op::add(lhs_widx, neg_const_widx, result_widx));
+            self.push_op(Op::add(lhs_widx, neg_const_widx, result_widx), expr_id);
         } else {
             // Generic path: encode result + rhs = lhs (backwards add).
             let rhs_widx = self.resolve_witness(rhs, "Sub rhs", expr_id)?;
-            self.ops.push(Op::add(rhs_widx, result_widx, lhs_widx));
+            self.push_op(Op::add(rhs_widx, result_widx, lhs_widx), expr_id);
         }
         self.expr_to_widx.insert(expr_id, result_widx);
         Ok(())
@@ -285,7 +364,7 @@ impl<'a, F: Field> LoweringState<'a, F> {
         let a_widx = self.resolve_witness(lhs, "Mul lhs", expr_id)?;
         let b_widx = self.resolve_witness(rhs, "Mul rhs", expr_id)?;
         // Emit the forward multiply: out = a * b.
-        self.ops.push(Op::mul(a_widx, b_widx, out_widx));
+        self.push_op(Op::mul(a_widx, b_widx, out_widx), expr_id);
         self.expr_to_widx.insert(expr_id, out_widx);
         Ok(())
     }
@@ -305,7 +384,7 @@ impl<'a, F: Field> LoweringState<'a, F> {
         let out_widx = self.resolve_witness(lhs, "Div lhs", expr_id)?;
         let a_widx = self.resolve_witness(rhs, "Div rhs", expr_id)?;
         // Emit rhs * quotient = lhs.
-        self.ops.push(Op::mul(a_widx, b_widx, out_widx));
+        self.push_op(Op::mul(a_widx, b_widx, out_widx), expr_id);
         self.expr_to_widx.insert(expr_id, b_widx);
         Ok(())
     }
@@ -329,13 +408,10 @@ impl<'a, F: Field> LoweringState<'a, F> {
         let p_at_z_widx = self.resolve_witness(p_at_z, "HornerAcc p_at_z", expr_id)?;
         let p_at_x_widx = self.resolve_witness(p_at_x, "HornerAcc p_at_x", expr_id)?;
         // Emit a single fused ALU op: out = acc * alpha + p_at_z - p_at_x.
-        self.ops.push(Op::horner_acc(
-            p_at_x_widx,
-            alpha_widx,
-            p_at_z_widx,
-            out_widx,
-            acc_widx,
-        ));
+        self.push_op(
+            Op::horner_acc(p_at_x_widx, alpha_widx, p_at_z_widx, out_widx, acc_widx),
+            expr_id,
+        );
         self.expr_to_widx.insert(expr_id, out_widx);
         Ok(())
     }
@@ -349,14 +425,17 @@ impl<'a, F: Field> LoweringState<'a, F> {
         let val_widx = self.resolve_witness(val, "BoolCheck val", expr_id)?;
         // The zero constant is always the first expression in the graph.
         let zero_widx = self.resolve_witness(ExprId::ZERO, "BoolCheck zero constant", expr_id)?;
-        self.ops.push(Op::Alu {
-            kind: AluOpKind::BoolCheck,
-            a: val_widx,
-            b: zero_widx,
-            c: Some(val_widx),
-            out: out_widx,
-            intermediate_out: None,
-        });
+        self.push_op(
+            Op::Alu {
+                kind: AluOpKind::BoolCheck,
+                a: val_widx,
+                b: zero_widx,
+                c: Some(val_widx),
+                out: out_widx,
+                intermediate_out: None,
+            },
+            expr_id,
+        );
         self.expr_to_widx.insert(expr_id, out_widx);
         Ok(())
     }
@@ -377,7 +456,7 @@ impl<'a, F: Field> LoweringState<'a, F> {
         let b_widx = self.resolve_witness(b, "MulAdd b", expr_id)?;
         let c_widx = self.resolve_witness(c, "MulAdd c", expr_id)?;
         // Emit a single fused ALU op: out = a * b + c.
-        self.ops.push(Op::mul_add(a_widx, b_widx, c_widx, out_widx));
+        self.push_op(Op::mul_add(a_widx, b_widx, c_widx, out_widx), expr_id);
         self.expr_to_widx.insert(expr_id, out_widx);
         Ok(())
     }
@@ -387,7 +466,11 @@ impl<'a, F: Field> LoweringState<'a, F> {
     /// Multiple output nodes may reference the same operation; this method
     /// ensures the operation is emitted exactly once. Pre-allocates witness
     /// slots for all outputs before dispatching to the type-specific emitter.
-    fn emit_npo_call(&mut self, op_id: NonPrimitiveOpId) -> Result<(), CircuitBuilderError> {
+    fn emit_npo_call(
+        &mut self,
+        op_id: NonPrimitiveOpId,
+        call: ExprId,
+    ) -> Result<(), CircuitBuilderError> {
         // Dedup guard: skip if already emitted.
         if !self.emitted_npo_ops.insert(op_id) {
             return Ok(());
@@ -411,9 +494,9 @@ impl<'a, F: Field> LoweringState<'a, F> {
 
         // Dispatch to the appropriate emitter based on operation type.
         if data.op_type == NpoTypeId::unconstrained() {
-            self.emit_unconstrained_hint(data, &outputs)?;
+            self.emit_unconstrained_hint(data, &outputs, call)?;
         } else {
-            self.emit_table_backed_npo(data, &outputs)?;
+            self.emit_table_backed_npo(data, &outputs, call)?;
         }
         Ok(())
     }
@@ -426,6 +509,7 @@ impl<'a, F: Field> LoweringState<'a, F> {
         &mut self,
         data: &NonPrimitiveOperationData<F>,
         output_exprs: &[(u32, ExprId)],
+        call: ExprId,
     ) -> Result<(), CircuitBuilderError> {
         // Extract the executor closure from the operation parameters.
         let executor = match data.params.as_ref().ok_or_else(|| {
@@ -467,11 +551,14 @@ impl<'a, F: Field> LoweringState<'a, F> {
             })
             .collect();
 
-        self.ops.push(Op::Hint {
-            inputs: flat_inputs,
-            outputs: flat_outputs,
-            executor,
-        });
+        self.push_op(
+            Op::Hint {
+                inputs: flat_inputs,
+                outputs: flat_outputs,
+                executor,
+            },
+            call,
+        );
         Ok(())
     }
 
@@ -483,6 +570,7 @@ impl<'a, F: Field> LoweringState<'a, F> {
         &mut self,
         data: &NonPrimitiveOperationData<F>,
         output_exprs: &[(u32, ExprId)],
+        call: ExprId,
     ) -> Result<(), CircuitBuilderError> {
         let plugin = self.npo_registry.get(&data.op_type).ok_or_else(|| {
             CircuitBuilderError::UnsupportedNonPrimitiveOp {
@@ -497,7 +585,7 @@ impl<'a, F: Field> LoweringState<'a, F> {
         };
         let mut ctx = NpoLoweringContext::new(&mut self.expr_to_widx, &mut alloc_fn);
         let op = plugin.lower(data, output_exprs, &mut ctx)?;
-        self.ops.push(op);
+        self.push_op(op, call);
         Ok(())
     }
 
@@ -519,7 +607,7 @@ impl<'a, F: Field> LoweringState<'a, F> {
         };
         // Copy the ID to release the borrow on the graph before mutating self.
         let op_id = *op_id;
-        self.emit_npo_call(op_id)?;
+        self.emit_npo_call(op_id, call)?;
 
         // Ensure this output node has a witness (may already have been assigned
         // during pre-allocation in the call emission).
