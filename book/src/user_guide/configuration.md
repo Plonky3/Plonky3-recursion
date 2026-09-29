@@ -13,11 +13,74 @@ Native FRI factories include these base fields:
 | **Goldilocks** | `0xFFFFFFFF00000001` | 64 | Available with a degree-2 challenge extension |
 
 BabyBear and KoalaBear have degree-4 binomial suites. KoalaBear also has a degree-5
-quintic suite. These [native factories](../../../recursion/src/builtin_config/fri.rs) validate
+quintic suite. These [native factories](https://github.com/Plonky3/Plonky3-recursion/blob/main/recursion/src/builtin_config/fri.rs) validate
 their own parameters. Of these, only `KoalaBearD4Poseidon2BinaryConfig` directly implements
 `FriRecursionConfig` for the unified recursion API. For the other factories, provide a local
 `StarkGenericConfig` wrapper with a matching `FriRecursionConfig` implementation; see the
 [integration guide](./integration.md).
+
+## Built-in native configuration suites
+
+The [V1 suite registry](https://github.com/Plonky3/Plonky3-recursion/blob/main/recursion/src/builtin_config/registry.rs) defines the following
+21 native suites. `D` is the challenge extension degree; arity is the commitment tree arity.
+Every row is constructed by its typed native
+[FRI](https://github.com/Plonky3/Plonky3-recursion/blob/main/recursion/src/builtin_config/fri.rs) or
+[WHIR](https://github.com/Plonky3/Plonky3-recursion/blob/main/recursion/src/builtin_config/whir.rs) factory
+and proves and verifies a bounded Fibonacci trace in
+[`builtin_config_proofs.rs`](https://github.com/Plonky3/Plonky3-recursion/blob/main/recursion/tests/builtin_config_proofs.rs).
+
+| Suite | Field | D | Hash | Arity | Hiding |
+|-------|-------|---|------|-------|--------|
+| Ordinary FRI, binary | BabyBear | 4 | Poseidon2 | 2 | None |
+| Ordinary FRI, binary | BabyBear | 4 | Poseidon1 | 2 | None |
+| Ordinary FRI, binary | KoalaBear | 4 | Poseidon2 | 2 | None |
+| Ordinary FRI, binary | KoalaBear | 4 | Poseidon1 | 2 | None |
+| Ordinary FRI, binary | Goldilocks | 2 | Poseidon2 | 2 | None |
+| Ordinary FRI, binary | Goldilocks | 2 | Poseidon1 | 2 | None |
+| Ordinary FRI, binary | KoalaBear | 5 | Poseidon2 | 2 | None |
+| Ordinary FRI, binary | KoalaBear | 5 | Poseidon1 | 2 | None |
+| Ordinary FRI, quaternary | BabyBear | 4 | Poseidon2 | 4 | None |
+| Ordinary FRI, quaternary | KoalaBear | 4 | Poseidon2 | 4 | None |
+| Ordinary FRI, quaternary | Goldilocks | 2 | Poseidon2 | 4 | None |
+| Ordinary FRI, quaternary | KoalaBear | 5 | Poseidon2 | 4 | None |
+| Random-codeword FRI | BabyBear | 4 | Poseidon2 | 2 | Random codeword |
+| Random-codeword FRI | BabyBear | 4 | Poseidon1 | 2 | Random codeword |
+| Random-codeword FRI | KoalaBear | 4 | Poseidon2 | 2 | Random codeword |
+| Random-codeword FRI | KoalaBear | 4 | Poseidon1 | 2 | Random codeword |
+| Random-codeword FRI | Goldilocks | 2 | Poseidon2 | 2 | Random codeword |
+| Random-codeword FRI | Goldilocks | 2 | Poseidon1 | 2 | Random codeword |
+| Salted FRI | KoalaBear | 4 | Poseidon2 | 2 | Salted commitments and random codeword |
+| WHIR | BabyBear | 4 | Poseidon2 | 2 | None |
+| WHIR | KoalaBear | 4 | Poseidon2 | 2 | None |
+
+[`builtin_config_native.rs`](https://github.com/Plonky3/Plonky3-recursion/blob/main/recursion/tests/builtin_config_native.rs) additionally checks
+that each factory retains its descriptor and native parameters. The ordinary FRI proof tests use
+8-row traces, the hiding FRI tests use 32-row traces, and the WHIR tests use 64-row traces.
+The hiding tests use independent seeded proving and verifying RNGs and check that verification
+draws no RNG. These small parameters establish factory interoperability, not a production
+security level; choose security parameters for your application.
+
+Native factory support does not mean every suite has direct recursion or artifact integration.
+Only `KoalaBearD4Poseidon2BinaryConfig` directly implements `FriRecursionConfig` for the
+unified recursion API; [custom recursion configurations](https://github.com/Plonky3/Plonky3-recursion/blob/main/recursion/tests/common/mod.rs)
+and the [integration guide](./integration.md) show the separate wrapper route.
+Broader custom tests exercise a [Goldilocks recursive verifier](https://github.com/Plonky3/Plonky3-recursion/blob/main/recursion/tests/goldilocks.rs),
+[KoalaBear quintic recursive proving](https://github.com/Plonky3/Plonky3-recursion/blob/main/recursion/tests/fibonacci_batch_stark_prover_quintic.rs),
+[quaternary MMCS verification](https://github.com/Plonky3/Plonky3-recursion/blob/main/recursion/tests/recursive_arity4_mmcs.rs), and
+[hiding FRI recursive verification](https://github.com/Plonky3/Plonky3-recursion/blob/main/recursion/tests/fibonacci_batch_stark_prover_zk.rs).
+Those tests use their own configurations; they do not establish recursion support for every
+factory combination in the table.
+The [artifact round-trip tests](https://github.com/Plonky3/Plonky3-recursion/blob/main/recursion/tests/artifact_roundtrip.rs) cover
+representative native suites, while the
+[recursive artifact round-trip](https://github.com/Plonky3/Plonky3-recursion/blob/main/recursion/tests/artifact_recursive_roundtrip.rs)
+uses that KoalaBear binary suite. [Binary-field foundations](../advanced_topics/binary_fields.md)
+are partial and are outside this native suite matrix.
+
+The [PR CI matrix](https://github.com/Plonky3/Plonky3-recursion/blob/main/.github/workflows/ci.yml) runs workspace tests with default and
+all features, each with and without AVX2. It therefore runs these bounded factory proof tests
+on every PR. The [weekly assurance workflow](https://github.com/Plonky3/Plonky3-recursion/blob/main/.github/workflows/assurance.yml)
+runs a separate bounded seeded verifier corpus; it does not replace the 21-suite native
+factory checks.
 
 ## FRI parameters
 

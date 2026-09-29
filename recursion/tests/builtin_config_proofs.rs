@@ -10,10 +10,16 @@ use p3_koala_bear::KoalaBear;
 use p3_recursion::VerifierLimits;
 use p3_recursion::builtin_config::{
     FriConfigV1, SuiteIdV1, WhirConfigV1, WhirRateModeV1, WhirSecurityAssumptionV1,
+    baby_bear_d4_poseidon1_binary, baby_bear_d4_poseidon1_random_codeword,
     baby_bear_d4_poseidon2_binary, baby_bear_d4_poseidon2_quaternary,
     baby_bear_d4_poseidon2_random_codeword, baby_bear_d4_poseidon2_whir,
-    goldilocks_d2_poseidon2_binary, koala_bear_d4_poseidon2_salted, koala_bear_d4_poseidon2_whir,
-    koala_bear_d5_poseidon2_binary,
+    goldilocks_d2_poseidon1_binary, goldilocks_d2_poseidon1_random_codeword,
+    goldilocks_d2_poseidon2_binary, goldilocks_d2_poseidon2_quaternary,
+    goldilocks_d2_poseidon2_random_codeword, koala_bear_d4_poseidon1_binary,
+    koala_bear_d4_poseidon1_random_codeword, koala_bear_d4_poseidon2_binary,
+    koala_bear_d4_poseidon2_quaternary, koala_bear_d4_poseidon2_random_codeword,
+    koala_bear_d4_poseidon2_salted, koala_bear_d4_poseidon2_whir, koala_bear_d5_poseidon1_binary,
+    koala_bear_d5_poseidon2_binary, koala_bear_d5_poseidon2_quaternary,
 };
 use p3_uni_stark::{prove, verify};
 use rand::rngs::StdRng;
@@ -110,60 +116,164 @@ fn fibonacci_output<F: Field>(n: usize) -> F {
     b
 }
 
-#[test]
-fn ordinary_fri_factories_prove_across_field_extension_and_arity_representations() {
-    let limits = VerifierLimits::default();
-
-    let descriptor = fri_descriptor(SuiteIdV1::BabyBearD4Poseidon2BinaryFri);
-    let config = baby_bear_d4_poseidon2_binary(&descriptor, &limits).unwrap();
-    prove_and_check!(BabyBear, config, 8);
-
-    let descriptor = fri_descriptor(SuiteIdV1::GoldilocksD2Poseidon2BinaryFri);
-    let config = goldilocks_d2_poseidon2_binary(&descriptor, &limits).unwrap();
-    prove_and_check!(Goldilocks, config, 8);
-
-    let descriptor = fri_descriptor(SuiteIdV1::KoalaBearD5Poseidon2BinaryFri);
-    let config = koala_bear_d5_poseidon2_binary(&descriptor, &limits).unwrap();
-    prove_and_check!(KoalaBear, config, 8);
-
-    let descriptor = fri_descriptor(SuiteIdV1::BabyBearD4Poseidon2QuaternaryFri);
-    let config = baby_bear_d4_poseidon2_quaternary(&descriptor, &limits).unwrap();
-    prove_and_check!(BabyBear, config, 8);
+macro_rules! ordinary_fri_proof_test {
+    ($name:ident, $field:ty, $factory:ident, $suite:ident) => {
+        #[test]
+        fn $name() {
+            let descriptor = fri_descriptor(SuiteIdV1::$suite);
+            let config = $factory(&descriptor, &VerifierLimits::default()).unwrap();
+            prove_and_check!($field, config, 8);
+        }
+    };
 }
 
-#[test]
-fn random_codeword_hiding_fri_factory_proves_and_checks() {
-    let descriptor = fri_descriptor(SuiteIdV1::BabyBearD4Poseidon2RandomCodewordFri);
-    let proving_config = baby_bear_d4_poseidon2_random_codeword(
-        &descriptor,
-        &VerifierLimits::default(),
-        CountingRng::new(1, Arc::new(AtomicUsize::new(0))),
-    )
-    .unwrap();
-    let air = FibonacciAir {};
-    // Hiding FRI needs the zero-knowledge mask to cover every disclosed value.
-    let trace = generate_trace_rows::<BabyBear>(0, 1, 32);
-    let public_values = [
-        BabyBear::ZERO,
-        BabyBear::ONE,
-        fibonacci_output::<BabyBear>(32),
-    ];
-    let proof = prove(&proving_config, &air, trace, &public_values).unwrap();
+ordinary_fri_proof_test!(
+    baby_bear_d4_poseidon2_binary_proves,
+    BabyBear,
+    baby_bear_d4_poseidon2_binary,
+    BabyBearD4Poseidon2BinaryFri
+);
+ordinary_fri_proof_test!(
+    baby_bear_d4_poseidon1_binary_proves,
+    BabyBear,
+    baby_bear_d4_poseidon1_binary,
+    BabyBearD4Poseidon1BinaryFri
+);
+ordinary_fri_proof_test!(
+    koala_bear_d4_poseidon2_binary_proves,
+    KoalaBear,
+    koala_bear_d4_poseidon2_binary,
+    KoalaBearD4Poseidon2BinaryFri
+);
+ordinary_fri_proof_test!(
+    koala_bear_d4_poseidon1_binary_proves,
+    KoalaBear,
+    koala_bear_d4_poseidon1_binary,
+    KoalaBearD4Poseidon1BinaryFri
+);
+ordinary_fri_proof_test!(
+    goldilocks_d2_poseidon2_binary_proves,
+    Goldilocks,
+    goldilocks_d2_poseidon2_binary,
+    GoldilocksD2Poseidon2BinaryFri
+);
+ordinary_fri_proof_test!(
+    goldilocks_d2_poseidon1_binary_proves,
+    Goldilocks,
+    goldilocks_d2_poseidon1_binary,
+    GoldilocksD2Poseidon1BinaryFri
+);
+ordinary_fri_proof_test!(
+    koala_bear_d5_poseidon2_binary_proves,
+    KoalaBear,
+    koala_bear_d5_poseidon2_binary,
+    KoalaBearD5Poseidon2BinaryFri
+);
+ordinary_fri_proof_test!(
+    koala_bear_d5_poseidon1_binary_proves,
+    KoalaBear,
+    koala_bear_d5_poseidon1_binary,
+    KoalaBearD5Poseidon1BinaryFri
+);
+ordinary_fri_proof_test!(
+    baby_bear_d4_poseidon2_quaternary_proves,
+    BabyBear,
+    baby_bear_d4_poseidon2_quaternary,
+    BabyBearD4Poseidon2QuaternaryFri
+);
+ordinary_fri_proof_test!(
+    koala_bear_d4_poseidon2_quaternary_proves,
+    KoalaBear,
+    koala_bear_d4_poseidon2_quaternary,
+    KoalaBearD4Poseidon2QuaternaryFri
+);
+ordinary_fri_proof_test!(
+    goldilocks_d2_poseidon2_quaternary_proves,
+    Goldilocks,
+    goldilocks_d2_poseidon2_quaternary,
+    GoldilocksD2Poseidon2QuaternaryFri
+);
+ordinary_fri_proof_test!(
+    koala_bear_d5_poseidon2_quaternary_proves,
+    KoalaBear,
+    koala_bear_d5_poseidon2_quaternary,
+    KoalaBearD5Poseidon2QuaternaryFri
+);
 
-    let draws = Arc::new(AtomicUsize::new(0));
-    let verifying_config = baby_bear_d4_poseidon2_random_codeword(
-        &descriptor,
-        &VerifierLimits::default(),
-        CountingRng::new(91, draws.clone()),
-    )
-    .unwrap();
-    verify(&verifying_config, &air, &proof, &public_values).unwrap();
-    assert_eq!(
-        draws.load(Ordering::Relaxed),
-        0,
-        "random-codeword FRI verification must not read its retained RNG"
-    );
+macro_rules! random_codeword_fri_proof_test {
+    ($name:ident, $field:ty, $factory:ident, $suite:ident) => {
+        #[test]
+        fn $name() {
+            let descriptor = fri_descriptor(SuiteIdV1::$suite);
+            let proving_config = $factory(
+                &descriptor,
+                &VerifierLimits::default(),
+                CountingRng::new(1, Arc::new(AtomicUsize::new(0))),
+            )
+            .unwrap();
+            let air = FibonacciAir {};
+            // Hiding FRI needs the zero-knowledge mask to cover every disclosed value.
+            let trace = generate_trace_rows::<$field>(0, 1, 32);
+            let public_values = [
+                <$field>::ZERO,
+                <$field>::ONE,
+                fibonacci_output::<$field>(32),
+            ];
+            let proof = prove(&proving_config, &air, trace, &public_values).unwrap();
+
+            let draws = Arc::new(AtomicUsize::new(0));
+            let verifying_config = $factory(
+                &descriptor,
+                &VerifierLimits::default(),
+                CountingRng::new(91, draws.clone()),
+            )
+            .unwrap();
+            verify(&verifying_config, &air, &proof, &public_values).unwrap();
+            assert_eq!(
+                draws.load(Ordering::Relaxed),
+                0,
+                "random-codeword FRI verification must not read its retained RNG"
+            );
+        }
+    };
 }
+
+random_codeword_fri_proof_test!(
+    baby_bear_d4_poseidon2_random_codeword_proves,
+    BabyBear,
+    baby_bear_d4_poseidon2_random_codeword,
+    BabyBearD4Poseidon2RandomCodewordFri
+);
+random_codeword_fri_proof_test!(
+    baby_bear_d4_poseidon1_random_codeword_proves,
+    BabyBear,
+    baby_bear_d4_poseidon1_random_codeword,
+    BabyBearD4Poseidon1RandomCodewordFri
+);
+random_codeword_fri_proof_test!(
+    koala_bear_d4_poseidon2_random_codeword_proves,
+    KoalaBear,
+    koala_bear_d4_poseidon2_random_codeword,
+    KoalaBearD4Poseidon2RandomCodewordFri
+);
+random_codeword_fri_proof_test!(
+    koala_bear_d4_poseidon1_random_codeword_proves,
+    KoalaBear,
+    koala_bear_d4_poseidon1_random_codeword,
+    KoalaBearD4Poseidon1RandomCodewordFri
+);
+random_codeword_fri_proof_test!(
+    goldilocks_d2_poseidon2_random_codeword_proves,
+    Goldilocks,
+    goldilocks_d2_poseidon2_random_codeword,
+    GoldilocksD2Poseidon2RandomCodewordFri
+);
+random_codeword_fri_proof_test!(
+    goldilocks_d2_poseidon1_random_codeword_proves,
+    Goldilocks,
+    goldilocks_d2_poseidon1_random_codeword,
+    GoldilocksD2Poseidon1RandomCodewordFri
+);
 
 #[test]
 fn salted_hiding_fri_factory_proves_and_checks() {
