@@ -22,10 +22,8 @@ type EF = BinomialExtensionField<BabyBear, 4>;
 const D: usize = 4;
 
 fn words(bytes: &[u8]) -> Vec<u32> {
-    bytes
-        .chunks_exact(4)
-        .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
-        .collect()
+    let (words, _) = bytes.as_chunks::<4>();
+    words.iter().map(|&w| u32::from_le_bytes(w)).collect()
 }
 
 /// The compression input for block `block` of a single-chunk message.

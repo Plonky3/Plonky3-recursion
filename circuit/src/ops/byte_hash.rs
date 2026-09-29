@@ -295,12 +295,13 @@ where
         // The remaining index bits pick the cap root, one multiplexer layer per bit.
         let mut candidates: Vec<Vec<ExprId>> = cap.to_vec();
         for &bit in &index_bits[levels..] {
-            candidates = candidates
-                .chunks_exact(2)
-                .map(|pair| {
-                    pair[0]
+            let (pairs, _) = candidates.as_chunks::<2>();
+            candidates = pairs
+                .iter()
+                .map(|[even_child, odd_child]| {
+                    even_child
                         .iter()
-                        .zip(&pair[1])
+                        .zip(odd_child)
                         .map(|(&even, &odd)| self.select(bit, odd, even))
                         .collect()
                 })

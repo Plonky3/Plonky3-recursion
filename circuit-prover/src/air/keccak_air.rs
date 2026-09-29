@@ -119,11 +119,8 @@ impl<F: PrimeField64, const D: usize> BaseAir<F> for KeccakF1600Air<F, D> {
     fn preprocessed_trace(&self) -> Option<RowMajorMatrix<F>> {
         let height = Self::height_for(self.num_ops(), self.min_height);
         let mut values = F::zero_vec(height * KECCAK_PREP_ROW_WIDTH);
-        for (op, prep) in self
-            .preprocessed
-            .chunks_exact(KECCAK_PREP_OP_WIDTH)
-            .enumerate()
-        {
+        let (calls, _) = self.preprocessed.as_chunks::<KECCAK_PREP_OP_WIDTH>();
+        for (op, prep) in calls.iter().enumerate() {
             let first = op * KECCAK_ROWS_PER_OP * KECCAK_PREP_ROW_WIDTH;
             let last = first + (KECCAK_ROWS_PER_OP - 1) * KECCAK_PREP_ROW_WIDTH;
             let (active, rest) = prep.split_first().expect("a call has an active flag");
@@ -131,9 +128,10 @@ impl<F: PrimeField64, const D: usize> BaseAir<F> for KeccakF1600Air<F, D> {
 
             values[first] = *active;
             values[first + 1..first + 1 + KECCAK_STATE_LIMBS].copy_from_slice(in_idx);
-            for (j, pair) in outputs.chunks_exact(2).enumerate() {
-                values[last + 1 + j] = pair[0];
-                values[last + 1 + KECCAK_STATE_LIMBS + j] = pair[1];
+            let (pairs, _) = outputs.as_chunks::<2>();
+            for (j, &[low, high]) in pairs.iter().enumerate() {
+                values[last + 1 + j] = low;
+                values[last + 1 + KECCAK_STATE_LIMBS + j] = high;
             }
         }
         Some(RowMajorMatrix::new(values, KECCAK_PREP_ROW_WIDTH))

@@ -21,8 +21,9 @@ fn single_block_input(message: &[u8]) -> [u32; BLAKE3_INPUT_WORDS] {
     let mut block = [0u8; 64];
     block[..message.len()].copy_from_slice(message);
     let mut input = [0u32; BLAKE3_INPUT_WORDS];
-    for (word, bytes) in input.iter_mut().zip(block.chunks_exact(4)) {
-        *word = u32::from_le_bytes(bytes.try_into().unwrap());
+    let (word_bytes, _) = block.as_chunks::<4>();
+    for (word, &bytes) in input.iter_mut().zip(word_bytes) {
+        *word = u32::from_le_bytes(bytes);
     }
     input[16..24].copy_from_slice(&BLAKE3_IV);
     input[26] = message.len() as u32;

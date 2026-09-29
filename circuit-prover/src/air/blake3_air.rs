@@ -236,15 +236,15 @@ impl<F: PrimeField64, const D: usize> BaseAir<F> for Blake3CompressAir<F, D> {
     fn preprocessed_trace(&self) -> Option<RowMajorMatrix<F>> {
         let height = Self::height_for(self.num_ops(), self.min_height);
         let mut values = F::zero_vec(height * BLAKE3_PREP_ROW_WIDTH);
-        for (row, prep) in values
-            .chunks_exact_mut(BLAKE3_PREP_ROW_WIDTH)
-            .zip(self.preprocessed.chunks_exact(BLAKE3_PREP_OP_WIDTH))
-        {
+        let (rows, _) = values.as_chunks_mut::<BLAKE3_PREP_ROW_WIDTH>();
+        let (calls, _) = self.preprocessed.as_chunks::<BLAKE3_PREP_OP_WIDTH>();
+        for (row, prep) in rows.iter_mut().zip(calls) {
             row[..1 + BLAKE3_INPUT_LIMBS].copy_from_slice(&prep[..1 + BLAKE3_INPUT_LIMBS]);
             let outputs = &prep[1 + BLAKE3_INPUT_LIMBS..];
-            for (j, pair) in outputs.chunks_exact(2).enumerate() {
-                row[1 + BLAKE3_INPUT_LIMBS + j] = pair[0];
-                row[1 + BLAKE3_INPUT_LIMBS + BLAKE3_OUTPUT_LIMBS + j] = pair[1];
+            let (pairs, _) = outputs.as_chunks::<2>();
+            for (j, &[low, high]) in pairs.iter().enumerate() {
+                row[1 + BLAKE3_INPUT_LIMBS + j] = low;
+                row[1 + BLAKE3_INPUT_LIMBS + BLAKE3_OUTPUT_LIMBS + j] = high;
             }
         }
         Some(RowMajorMatrix::new(values, BLAKE3_PREP_ROW_WIDTH))
@@ -292,7 +292,8 @@ where
                 &local.flags,
             ])
             .chain(local.outputs.iter().flatten());
-        for (bits, pair) in words.zip(limbs.chunks_exact(2)) {
+        let (limb_pairs, _) = limbs.as_chunks::<2>();
+        for (bits, pair) in words.zip(limb_pairs) {
             let lo: AB::Expr = pack_bits_le(bits[..16].iter().copied());
             let hi: AB::Expr = pack_bits_le(bits[16..].iter().copied());
             builder.assert_eq(pair[0], lo);
@@ -338,9 +339,9 @@ mod tests {
 
     /// The `Blake3Cols` block of each row, the part `Blake3Air` constrains.
     fn blake3_block(trace: &RowMajorMatrix<BabyBear>) -> RowMajorMatrix<BabyBear> {
-        let values = trace
-            .values
-            .chunks_exact(BLAKE3_COMPRESS_WIDTH)
+        let (rows, _) = trace.values.as_chunks::<BLAKE3_COMPRESS_WIDTH>();
+        let values = rows
+            .iter()
             .flat_map(|row| row[..NUM_BLAKE3_COLS].iter().copied())
             .collect();
         RowMajorMatrix::new(values, NUM_BLAKE3_COLS)
@@ -381,11 +382,8 @@ mod tests {
         let trace = Blake3CompressAir::<BabyBear, 4>::trace_to_matrix(&ops, 4);
         check_constraints(&Blake3Air {}, &blake3_block(&trace), &[]);
 
-        for (row, input) in trace
-            .values
-            .chunks_exact(BLAKE3_COMPRESS_WIDTH)
-            .zip(&inputs)
-        {
+        let (rows, _) = trace.values.as_chunks::<BLAKE3_COMPRESS_WIDTH>();
+        for (row, input) in rows.iter().zip(&inputs) {
             let cols: &Blake3Cols<BabyBear> = row[..NUM_BLAKE3_COLS].borrow();
             let limbs: Vec<u16> = cols
                 .outputs

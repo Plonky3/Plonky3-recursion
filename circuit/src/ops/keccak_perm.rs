@@ -47,19 +47,15 @@ pub const KECCAK256_RATE_BYTES: usize = 136;
 /// The little-endian 16-bit limbs of a byte string of even length.
 pub fn bytes_to_limbs(bytes: &[u8]) -> Vec<u16> {
     assert!(bytes.len().is_multiple_of(2), "limbs hold two bytes each");
-    bytes
-        .chunks_exact(2)
-        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
-        .collect()
+    let (pairs, _) = bytes.as_chunks::<2>();
+    pairs.iter().map(|&pair| u16::from_le_bytes(pair)).collect()
 }
 
 /// Split a state into its little-endian 16-bit limbs, lane by lane.
 pub fn keccak_state_to_limbs(state: &[u64; KECCAK_LANES]) -> [u16; KECCAK_STATE_LIMBS] {
     let mut limbs = [0u16; KECCAK_STATE_LIMBS];
-    for (lane, chunk) in state
-        .iter()
-        .zip(limbs.chunks_exact_mut(KECCAK_LIMBS_PER_LANE))
-    {
+    let (lane_limbs, _) = limbs.as_chunks_mut::<KECCAK_LIMBS_PER_LANE>();
+    for (lane, chunk) in state.iter().zip(lane_limbs) {
         for (k, limb) in chunk.iter_mut().enumerate() {
             *limb = (lane >> (KECCAK_LIMB_BITS * k)) as u16;
         }
@@ -548,11 +544,9 @@ where
 
         let zero = self.define_const(F::ZERO);
         let mut state: Vec<ExprId> = Vec::new();
-        for (block, (limbs, consts)) in padded
-            .chunks_exact(RATE_LIMBS)
-            .zip(constants.chunks_exact(RATE_LIMBS))
-            .enumerate()
-        {
+        let (padded_blocks, _) = padded.as_chunks::<RATE_LIMBS>();
+        let (constant_blocks, _) = constants.as_chunks::<RATE_LIMBS>();
+        for (block, (limbs, consts)) in padded_blocks.iter().zip(constant_blocks).enumerate() {
             let mut next = Vec::with_capacity(KECCAK_STATE_LIMBS);
             for (j, (&limb, &constant)) in limbs.iter().zip(consts).enumerate() {
                 let absorbed = match (limb, block) {
