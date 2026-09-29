@@ -103,8 +103,8 @@ must be fixed independently of each proof. Its `TrustedPreparedSource::UniStark`
 trusted native config, AIR and preprocessing commitment; its `BatchStark` source retains a
 `CircuitVerifier`. `TrustedPreparedInput` supplies only a proof and caller-expected statement.
 The owner can export an independently retained verifier for its output. See the
-[compiled prelude example](../../../recursion/src/prelude.rs) and
-[trusted layer tests](../../../recursion/tests/prepared_layer.rs).
+[compiled prelude example](https://github.com/Plonky3/Plonky3-recursion/blob/main/recursion/src/prelude.rs) and
+[trusted layer tests](https://github.com/Plonky3/Plonky3-recursion/blob/main/recursion/tests/prepared_layer.rs).
 
 ### `build_and_prove_aggregation_layer`
 
@@ -148,12 +148,12 @@ let output = owner.prove(left, right)?;
 As with `PreparedLayer`, this owner checks native shape compatibility only. Use
 `TrustedPreparedAggregation` to retain both child authorities and their left/right statement
 layout. Supply each child's expected statement on every proof attempt; see the
-[trusted aggregation tests](../../../recursion/tests/prepared_aggregation.rs).
+[trusted aggregation tests](https://github.com/Plonky3/Plonky3-recursion/blob/main/recursion/tests/prepared_aggregation.rs).
 
 ### `prove_aggregation_layer`
 
 The split build/prove variant is an expert API. Follow the checked
-[`build_aggregation_layer_circuit` and `prove_aggregation_layer` signatures](../../../recursion/src/recursion.rs)
+[`build_aggregation_layer_circuit` and `prove_aggregation_layer` signatures](https://github.com/Plonky3/Plonky3-recursion/blob/main/recursion/src/recursion.rs)
 if you need to manage the circuit and verifier results directly.
 
 ## Recursion loop pattern

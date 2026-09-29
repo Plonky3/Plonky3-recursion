@@ -54,7 +54,7 @@ let output_2 = build_and_prove_next_layer::<_, _, _, 4>(
 
 The config (`&config`) must implement `FriRecursionConfig`.
 `KoalaBearD4Poseidon2BinaryConfig` is the built-in suite that implements it directly.
-The other [native FRI factories](../../../recursion/src/builtin_config/fri.rs) provide validated
+The other [native FRI factories](https://github.com/Plonky3/Plonky3-recursion/blob/main/recursion/src/builtin_config/fri.rs) provide validated
 building blocks; using them with this recursion API requires a local `StarkGenericConfig`
 wrapper and `FriRecursionConfig` implementation. See the
 [Integration Guide](../user_guide/integration.md) for that contract,
