@@ -1,14 +1,15 @@
 name: Release-plz
 
 on:
-  # Fires on releases cut from main or a vX.Y.Z version branch (including -rcN
-  # pre-releases).
+  # Fires on releases cut from main or a vX.Y.Z version branch (including
+  # both -rcN and -rc.N pre-releases). Keep bases aligned with ci.yml pushes.
   pull_request:
     types: [closed]
     branches:
       - "main"
       - "v[0-9]+.[0-9]+.[0-9]+"
       - "v[0-9]+.[0-9]+.[0-9]+-rc[0-9]+"
+      - "v[0-9]+.[0-9]+.[0-9]+-rc.[0-9]+"
   # Allow manual re-runs if publish fails (e.g., crates.io outage)
   workflow_dispatch:
 
@@ -33,6 +34,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
+          ref: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
           token: ${{ secrets.RELEASE_PLZ_TOKEN }}
       - name: Verify CI passed on merge commit
         # Refuses to publish if the merge commit's CI run never finished `success`.
@@ -45,7 +47,7 @@ jobs:
           set -euo pipefail
           echo "Waiting for CI workflow on $SHA"
           for i in $(seq 1 60); do
-            data=$(gh run list --workflow CI --commit "$SHA" --json status,conclusion --limit 1 --jq '.[0] // {}')
+            data=$(gh run list --workflow CI --event push --commit "$SHA" --json status,conclusion --limit 1 --jq '.[0] // {}')
             status=$(echo "$data" | jq -r '.status // "missing"')
             conclusion=$(echo "$data" | jq -r '.conclusion // ""')
             echo "Attempt $i: status=$status conclusion=$conclusion"

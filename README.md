@@ -22,6 +22,14 @@ This library provides a **fixed recursive verifier** for Plonky3 STARK (both `p3
 
 ## Quick Start
 
+### Development requirements
+
+Use the latest stable Rust toolchain for development. CI also uses nightly for
+`rustfmt`; the project does not promise an untested minimum supported Rust
+version. The root `Cargo.lock` fixes dependency resolution for local development
+and CI. Published library crates keep their semver dependency requirements, so
+downstream projects resolve compatible versions under their own lockfiles.
+
 ### Unified recursion API
 
 #### Recursive verification

@@ -2,7 +2,12 @@ name: CI
 
 on:
   push:
-    branches: [ "main" ]
+    # Keep these base branches aligned with release-plz.yml.
+    branches:
+      - "main"
+      - "v[0-9]+.[0-9]+.[0-9]+"
+      - "v[0-9]+.[0-9]+.[0-9]+-rc[0-9]+"
+      - "v[0-9]+.[0-9]+.[0-9]+-rc.[0-9]+"
   pull_request:
     branches: [ "*" ]
 
@@ -57,46 +62,51 @@ jobs:
           du -sh ~/.cargo/registry ~/.cargo/git || true
 
       - name: Test (workspace)
-        run: cargo nextest run --workspace --all-targets
+        run: cargo nextest run --locked --workspace --all-targets
 
       - name: Test (workspace, all-features)
-        run: cargo nextest run --workspace --all-targets --all-features
+        run: cargo nextest run --locked --workspace --all-targets --all-features
 
       - name: Check (release)
-        run: cargo check --verbose --workspace --all-targets --release
+        run: cargo check --locked --verbose --workspace --all-targets --release
 
       - name: Test challenger rejection oracles (release)
         if: ${{ !matrix.features }}
         run: |
-          cargo test --verbose --release -p p3-recursion --test challenger_sponge_binding
-          cargo test --verbose --release -p p3-recursion --test challenger_base_sponge_binding
-          cargo test --verbose --release -p p3-circuit-prover --test assurance_algebraic
-          cargo test --verbose --release -p p3-circuit-prover --lib batch_stark_prover::tests::verify_all_tables_rejects_a_forged_constant_value -- --exact
-          cargo test --verbose --release -p p3-circuit-prover --lib batch_stark_prover::tests::verify_all_tables_rejects_alu_bus_only_operand_swap -- --exact
-          cargo test --verbose --release -p p3-circuit-prover --lib batch_stark_prover::tests::verify_all_tables_rejects_forged_horner_chain_head_seed -- --exact
-          cargo test --verbose --release -p p3-circuit-prover --lib batch_stark_prover::tests::assurance_trusted_verifier_rejects_seeded_same_shape_foreign_relations -- --exact
-          cargo test --verbose --release -p p3-circuit-prover --test trusted_statement assurance_
-          cargo test --verbose --release -p p3-recursion --lib prepared::trusted::tests::assurance_trusted_aggregation_rejects_seeded_statement_boundary_and_output_substitutions -- --exact
-          cargo test --verbose --release -p p3-recursion --test test_lookups test_wrong_multiplicities -- --exact
-          cargo test --verbose --release -p p3-recursion --test zk_hiding_mmcs test_batch_verifier_hiding_mmcs -- --exact
+          cargo test --locked --verbose --release -p p3-recursion --test challenger_sponge_binding
+          cargo test --locked --verbose --release -p p3-recursion --test challenger_base_sponge_binding
+          cargo test --locked --verbose --release -p p3-circuit-prover --test assurance_algebraic
+          cargo test --locked --verbose --release -p p3-circuit-prover --lib batch_stark_prover::tests::verify_all_tables_rejects_a_forged_constant_value -- --exact
+          cargo test --locked --verbose --release -p p3-circuit-prover --lib batch_stark_prover::tests::verify_all_tables_rejects_alu_bus_only_operand_swap -- --exact
+          cargo test --locked --verbose --release -p p3-circuit-prover --lib batch_stark_prover::tests::verify_all_tables_rejects_forged_horner_chain_head_seed -- --exact
+          cargo test --locked --verbose --release -p p3-circuit-prover --lib batch_stark_prover::tests::assurance_trusted_verifier_rejects_seeded_same_shape_foreign_relations -- --exact
+          cargo test --locked --verbose --release -p p3-circuit-prover --test trusted_statement assurance_
+          cargo test --locked --verbose --release -p p3-recursion --lib prepared::trusted::tests::assurance_trusted_aggregation_rejects_seeded_statement_boundary_and_output_substitutions -- --exact
+          cargo test --locked --verbose --release -p p3-recursion --test test_lookups test_wrong_multiplicities -- --exact
+          cargo test --locked --verbose --release -p p3-recursion --test zk_hiding_mmcs test_batch_verifier_hiding_mmcs -- --exact
 
       - name: Test documentation
         # nextest doesn't run doctests, so cover them with plain `cargo test`.
-        run: cargo test --verbose --workspace --doc
+        run: cargo test --locked --verbose --workspace --doc
+
+      - name: Check workspace documentation
+        env:
+          RUSTDOCFLAGS: "-D warnings --html-in-header .cargo/katex-header.html"
+        run: cargo doc --locked --workspace --no-deps
 
       - name: Run basic examples
         run: |
-          cargo run --package p3-circuit-prover --example fibonacci
-          cargo run --package p3-circuit-prover --example poseidon2_perm_chain
-          cargo run --package p3-circuit-prover --example poseidon2_perm_merkle
+          cargo run --locked --package p3-circuit-prover --example fibonacci
+          cargo run --locked --package p3-circuit-prover --example poseidon2_perm_chain
+          cargo run --locked --package p3-circuit-prover --example poseidon2_perm_merkle
 
       - name: Run allocation_log example with debugging feature and debug logging
         env:
           RUST_LOG: debug
-        run: cargo run --package p3-circuit --example allocation_log --features debugging
+        run: cargo run --locked --package p3-circuit --example allocation_log --features debugging
 
       - name: Build benchmarks without running
-        run: cargo bench --no-run --workspace
+        run: cargo bench --locked --no-run --workspace
 
       - name: Disk usage (after)
         if: always()
@@ -131,8 +141,8 @@ jobs:
 
       - name: Run recursive examples (recursive_fibonacci is run in performance checks already)
         run: |
-          cargo run --release --features parallel --example recursive_aggregation -- --field koala-bear --num-recursive-layers 2
-          cargo run --release --features parallel --example recursive_keccak -- --field baby-bear -n 10 --num-recursive-layers 2
+          cargo run --locked --release --features parallel --example recursive_aggregation -- --field koala-bear --num-recursive-layers 2
+          cargo run --locked --release --features parallel --example recursive_keccak -- --field baby-bear -n 10 --num-recursive-layers 2
 
       - name: Disk usage (after)
         if: always()
@@ -173,12 +183,12 @@ jobs:
 
       - name: Build
         run: |
-          cargo build --verbose --target ${{ env.target }} -p p3-circuit
-          cargo build --verbose --target ${{ env.target }} -p p3-circuit-prover
-          cargo build --verbose --target ${{ env.target }} -p p3-poseidon1-circuit-air
-          cargo build --verbose --target ${{ env.target }} -p p3-poseidon2-circuit-air
-          cargo build --verbose --target ${{ env.target }} -p p3-recursion
-          cargo build --verbose --target ${{ env.target }} -p p3-test-utils
+          cargo build --locked --verbose --target ${{ env.target }} -p p3-circuit
+          cargo build --locked --verbose --target ${{ env.target }} -p p3-circuit-prover
+          cargo build --locked --verbose --target ${{ env.target }} -p p3-poseidon1-circuit-air
+          cargo build --locked --verbose --target ${{ env.target }} -p p3-poseidon2-circuit-air
+          cargo build --locked --verbose --target ${{ env.target }} -p p3-recursion
+          cargo build --locked --verbose --target ${{ env.target }} -p p3-test-utils
 
       - name: Disk usage (after)
         if: always()
@@ -211,16 +221,16 @@ jobs:
           cache-on-failure: true
 
       - name: Install cargo-sort
-        run: cargo install cargo-sort
+        run: cargo install cargo-sort --version 2.1.3 --locked
 
       - name: Sort Cargo.toml
         run: cargo +stable sort --workspace --grouped --check
 
       - name: Clippy
-        run: cargo +stable clippy --all-targets -- -D warnings
+        run: cargo +stable clippy --locked --all-targets -- -D warnings
 
       - name: Clippy (all-features)
-        run: cargo +stable clippy --all-targets --all-features -- -D warnings
+        run: cargo +stable clippy --locked --all-targets --all-features -- -D warnings
 
       - name: Format
         run: cargo +nightly fmt --all -- --check

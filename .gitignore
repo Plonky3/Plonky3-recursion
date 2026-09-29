@@ -4,6 +4,7 @@ debug
 target
 
 Cargo.lock
+!/Cargo.lock
 # The vendored p3-whir crate is tested as a standalone unit (see
 # scripts/verify_vendored_p3_whir.sh and the CI job that runs it), so its
 # lockfile is committed for reproducibility rather than left to float.
