@@ -52,6 +52,58 @@ layers via `into_recursion_input::<BatchOnly>()`. That helper carries proof-atta
 use `TrustedPreparedAggregation` with independently retained child verifier authority and
 caller-expected statements when aggregating trusted relations.
 
+## Composing state transitions
+
+Use `TrustedPreparedAggregation::new_state_transition` when each trusted child proves a
+transition with the exact statement schema `state_schema || state_schema || [Base]`.
+Its values are ordered `[initial_state coefficients, final_state coefficients, count]`.
+The constructor takes the same left and right `TrustedPreparedSource`s, output config,
+backend, and parameters as `new`, plus a `StateTransitionLayout`:
+
+```rust,ignore
+use p3_circuit::StateTransitionLayout;
+use p3_recursion::TrustedPreparedAggregation;
+
+let layout = StateTransitionLayout::base(2, 4)?; // two Base state coefficients; 4 count bits
+let owner = TrustedPreparedAggregation::new_state_transition(
+    left_source, right_source, output_config, backend, params, layout.clone(),
+)?;
+let output = owner.prove(left_input, right_input)?;
+```
+
+For example, `[10, 20, 13, 26, 3]` followed by `[13, 26, 20, 40, 7]`
+produces `[10, 20, 20, 40, 10]`. The merger connects **every** left final-state
+coefficient to the corresponding right initial-state coefficient, adds the two
+counts, and exports the left initial state, right final state, and sum. All child
+schemas must equal the layout exactly, including semantic `StatementField`
+boundaries. Use `StateTransitionLayout::try_new(state_schema, count_bits)` for a
+state schema containing extension fields.
+
+Counts are canonical nonnegative integers from `0` through `2^b - 1`, where
+`b = count_bits`. The layout requires `2 * (2^b - 1) < p` for the base-field
+modulus `p`; each child count and their sum must also fit in `b` bits. These
+checks make addition an ordinary integer sum without field wraparound. Zero is
+allowed; the authorized leaf relation defines what a zero-count transition means
+and what the count measures. The merger only adds the counts asserted by those
+child relations.
+
+The prepared owner can prove multiple compatible pairs with different states and
+counts. At each level, supply each child's proof and caller-expected statement;
+retain the child verifier authority independently. The application should also
+retain its own expected root statement and verify the final proof against it,
+including when using a portable verifier. The same concrete base-field type is
+supported across the input and output configurations of a prepared owner. The
+FRI and WHIR backends each support this constructor with that field type.
+
+`TrustedPreparedAggregation::new` still exports the ordered concatenation of
+its child statements. Transition composition exports a compact statement of the
+same width as one child, and its verifier has no concat-specific
+`aggregation_statement_layout()` metadata. The compiled verifier relation enforces
+the transition rules. See the [layout implementation](https://github.com/Plonky3/Plonky3-recursion/blob/main/circuit/src/statement.rs),
+[prepared constructor](https://github.com/Plonky3/Plonky3-recursion/blob/main/recursion/src/prepared/trusted.rs),
+and [two-level FRI transition test](https://github.com/Plonky3/Plonky3-recursion/blob/main/recursion/tests/artifact_recursive_roundtrip.rs)
+for the API, prepared reuse, and portable root verification.
+
 ## Tree aggregation
 
 To aggregate N independent proofs, arrange them as leaves of a binary tree and aggregate pairwise, bottom up:

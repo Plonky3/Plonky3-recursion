@@ -69,9 +69,21 @@ let public_inputs = builder.build();
 
 ## Public inputs in aggregation
 
-For aggregation circuits, public inputs from both verifications are concatenated — left first, then right. This is handled automatically by `prove_aggregation_layer`:
+For aggregation circuits, the *internal verifier inputs* from both child proofs
+are packed left first, then right. This is handled automatically by
+`prove_aggregation_layer` and by prepared aggregation owners:
 
 ```rust,ignore
 let mut public_inputs = left_result.pack_public_inputs(&left)?;
 public_inputs.extend(right_result.pack_public_inputs(&right)?);
 ```
+
+This packing order is separate from the public statement exported by the parent
+proof. `TrustedPreparedAggregation::new` exports the two child statements in
+left-right order.
+With `TrustedPreparedAggregation::new_state_transition`, each child statement has
+the exact schema `state_schema || state_schema || [Base]` and values
+`[initial_state coefficients, final_state coefficients, count]`; the parent exports
+`[left.initial_state, right.final_state, left.count + right.count]`. Its statement
+has the same width and schema as either child, even though the internal verifier
+still packs both proofs' inputs. See [state-transition composition](./aggregation.md#composing-state-transitions).
