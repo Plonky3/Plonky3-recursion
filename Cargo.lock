@@ -917,6 +917,7 @@ dependencies = [
  "p3-util",
  "postcard",
  "rand 0.10.1",
+ "rayon",
  "serde",
  "spin 0.9.8",
  "strum",

@@ -6,6 +6,7 @@ use p3_circuit::{
     Circuit, CircuitBuilder, StateTransitionError, StateTransitionLayout, StatementField,
     StatementSchema,
 };
+use p3_circuit_prover::batch_stark_prover::ProvingMaybeSend;
 use p3_circuit_prover::config::StarkField;
 use p3_circuit_prover::field_params::ExtractBinomialW;
 use p3_circuit_prover::{BatchStarkProof, CircuitVerifier, StatementPreprocessor};
@@ -390,7 +391,10 @@ where
     pub fn prove(
         &self,
         input: TrustedPreparedInput<'_, InSC>,
-    ) -> Result<RecursionOutput<OutSC>, VerificationError> {
+    ) -> Result<RecursionOutput<OutSC>, VerificationError>
+    where
+        p3_batch_stark::BatchProof<OutSC>: ProvingMaybeSend,
+    {
         self.check_input(&input)?;
         let prev = self.child.recursion_input(&input)?;
         let public = self.result.pack_public_inputs(&prev)?;
@@ -698,7 +702,10 @@ where
         &self,
         left: TrustedPreparedInput<'_, InSC>,
         right: TrustedPreparedInput<'_, InSC>,
-    ) -> Result<RecursionOutput<OutSC>, VerificationError> {
+    ) -> Result<RecursionOutput<OutSC>, VerificationError>
+    where
+        p3_batch_stark::BatchProof<OutSC>: ProvingMaybeSend,
+    {
         self.check_inputs(&left, &right)?;
         let left_prev = self.left.recursion_input(&left)?;
         let right_prev = self.right.recursion_input(&right)?;

@@ -1,5 +1,6 @@
 use p3_air::{SymbolicExpression, SymbolicExpressionExt};
 use p3_circuit::Circuit;
+use p3_circuit_prover::batch_stark_prover::ProvingMaybeSend;
 use p3_circuit_prover::config::StarkField;
 use p3_circuit_prover::field_params::ExtractBinomialW;
 use p3_commit::Pcs;
@@ -242,7 +243,10 @@ where
         &self,
         left: PreparedInput<'_, SC>,
         right: PreparedInput<'_, SC>,
-    ) -> Result<RecursionOutput<SC>, VerificationError> {
+    ) -> Result<RecursionOutput<SC>, VerificationError>
+    where
+        p3_batch_stark::BatchProof<SC>: ProvingMaybeSend,
+    {
         self.check_inputs(&left, &right)?;
         let left = legacy_input(self.left_air, &left)?;
         let right = legacy_input(self.right_air, &right)?;
@@ -550,7 +554,10 @@ where
         &self,
         left: PreparedInput<'_, InSC>,
         right: PreparedInput<'_, InSC>,
-    ) -> Result<RecursionOutput<OutSC>, VerificationError> {
+    ) -> Result<RecursionOutput<OutSC>, VerificationError>
+    where
+        p3_batch_stark::BatchProof<OutSC>: ProvingMaybeSend,
+    {
         self.check_inputs(&left, &right)?;
         let left = legacy_input(self.left_air, &left)?;
         let right = legacy_input(self.right_air, &right)?;

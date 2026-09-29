@@ -44,6 +44,7 @@ p3-symmetric.workspace = true
 p3-uni-stark.workspace = true
 p3-util.workspace = true
 rand.workspace = true
+rayon = { workspace = true, optional = true }
 serde.workspace = true
 spin.workspace = true
 strum.workspace = true
@@ -62,7 +63,7 @@ tracing-forest = { workspace = true, features = ["smallvec"] }
 tracing-subscriber = { workspace = true, features = ["std", "env-filter"] }
 
 [features]
-parallel = ["p3-maybe-rayon/parallel", "p3-circuit/parallel"]
+parallel = ["dep:rayon", "p3-maybe-rayon/parallel", "p3-circuit/parallel", "tracing/std"]
 
 [[bench]]
 name = "prover"

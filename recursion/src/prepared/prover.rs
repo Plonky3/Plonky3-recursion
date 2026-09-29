@@ -4,7 +4,7 @@ use alloc::vec::Vec;
 use p3_air::{SymbolicExpression, SymbolicExpressionExt};
 use p3_circuit::tables::Traces;
 use p3_circuit::{Circuit, StatementSchema};
-use p3_circuit_prover::batch_stark_prover::TableProver;
+use p3_circuit_prover::batch_stark_prover::{ProvingMaybeSend, TableProver};
 use p3_circuit_prover::common::{NpoAirBuilder, NpoPreprocessor};
 use p3_circuit_prover::config::StarkField;
 use p3_circuit_prover::field_params::ExtractBinomialW;
@@ -48,7 +48,10 @@ where
     pub(crate) fn prove(
         &self,
         traces: &Traces<SC::Challenge>,
-    ) -> Result<RecursionOutput<SC>, VerificationError> {
+    ) -> Result<RecursionOutput<SC>, VerificationError>
+    where
+        p3_batch_stark::BatchProof<SC>: ProvingMaybeSend,
+    {
         let (proof, prover_data) = self
             .prepared
             .prove_with_legacy_data(traces)

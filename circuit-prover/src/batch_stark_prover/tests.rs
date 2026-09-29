@@ -84,6 +84,8 @@ fn assurance_proof_corpus_from_env() -> CorpusSpec {
 struct CountingPcs<P> {
     inner: P,
     preprocessing_commits: Arc<AtomicUsize>,
+    #[cfg(feature = "parallel")]
+    quotient_worker_expectation: Option<(usize, Option<&'static str>, Arc<AtomicUsize>)>,
 }
 
 impl<P> CountingPcs<P> {
@@ -93,10 +95,46 @@ impl<P> CountingPcs<P> {
             Self {
                 inner,
                 preprocessing_commits: preprocessing_commits.clone(),
+                #[cfg(feature = "parallel")]
+                quotient_worker_expectation: None,
             },
             preprocessing_commits,
         )
     }
+
+    #[cfg(feature = "parallel")]
+    fn expect_quotient_workers(
+        mut self,
+        workers: usize,
+        span_name: Option<&'static str>,
+    ) -> (Self, Arc<AtomicUsize>) {
+        let calls = Arc::new(AtomicUsize::new(0));
+        self.quotient_worker_expectation = Some((workers, span_name, calls.clone()));
+        (self, calls)
+    }
+}
+
+#[cfg(feature = "parallel")]
+fn assert_test_tracing_context(span_name: &str) {
+    use tracing_subscriber::registry::LookupSpan;
+
+    let current_id = tracing::Span::current()
+        .id()
+        .expect("quotient generation must have an active tracing span");
+    tracing::dispatcher::get_default(|dispatch| {
+        let registry = dispatch
+            .downcast_ref::<tracing_subscriber::Registry>()
+            .expect("quotient generation must use the caller's tracing subscriber");
+        let current_span = registry
+            .span(&current_id)
+            .expect("current span must be present in the caller's registry");
+        assert!(
+            current_span
+                .scope()
+                .any(|span| span.metadata().name() == span_name),
+            "the caller's tracing span must remain an ancestor"
+        );
+    });
 }
 
 type DomainVal<P, ChallengeField, Challenger> =
@@ -209,6 +247,18 @@ where
         num_chunks: usize,
     ) -> Result<Vec<RowMajorMatrix<DomainVal<P, ChallengeField, Challenger>>>, Self::ProverError>
     {
+        #[cfg(feature = "parallel")]
+        if let Some((workers, span_name, calls)) = &self.quotient_worker_expectation {
+            assert_eq!(
+                rayon::current_num_threads(),
+                *workers,
+                "quotient generation ran in the wrong worker pool"
+            );
+            if let Some(span_name) = span_name {
+                assert_test_tracing_context(span_name);
+            }
+            calls.fetch_add(1, Ordering::SeqCst);
+        }
         self.inner.get_quotient_ldes(evaluations, num_chunks)
     }
 
@@ -395,6 +445,10 @@ fn default_table_prover_source_declaration_preserves_custom_identity() {
 
 #[test]
 fn hiding_trusted_preparation_reuses_one_salted_setup_with_fresh_proof_randomness() {
+    if p3_maybe_rayon::PARALLEL_ENABLED && !cfg!(feature = "parallel") {
+        return;
+    }
+
     const SALT_ELEMS: usize = 4;
     type HidingValMmcs = MerkleTreeHidingMmcs<
         <KoalaBear as p3_field::Field>::Packing,
@@ -466,6 +520,173 @@ fn hiding_trusted_preparation_reuses_one_salted_setup_with_fresh_proof_randomnes
         setup
     );
     assert_ne!(first.proof.commitments.main, second.proof.commitments.main);
+}
+
+#[cfg(feature = "parallel")]
+#[test]
+fn hiding_proof_quotients_use_single_worker_pool_inside_parallel_caller() {
+    const SALT_ELEMS: usize = 4;
+    type HidingValMmcs = MerkleTreeHidingMmcs<
+        <KoalaBear as p3_field::Field>::Packing,
+        <KoalaBear as p3_field::Field>::Packing,
+        MyHash,
+        MyCompress,
+        StdRng,
+        2,
+        DIGEST_ELEMS,
+        SALT_ELEMS,
+    >;
+    type HidingChallengeMmcs = ExtensionMmcs<KoalaBear, Challenge, HidingValMmcs>;
+    type HidingPcs = HidingFriPcs<KoalaBear, Dft, HidingValMmcs, HidingChallengeMmcs, StdRng>;
+    type HidingConfig = StarkConfig<CountingPcs<HidingPcs>, Challenge, Challenger>;
+
+    let caller_pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(2)
+        .build()
+        .unwrap();
+    caller_pool.install(|| {
+        tracing::subscriber::with_default(tracing_subscriber::Registry::default(), || {
+            let span = tracing::info_span!("hiding_caller");
+            let _guard = span.enter();
+            assert_test_tracing_context("hiding_caller");
+            assert_eq!(rayon::current_num_threads(), 2);
+
+            let permutation = default_koalabear_poseidon2_16();
+            let value_mmcs = HidingValMmcs::new(
+                MyHash::new(permutation.clone()),
+                MyCompress::new(permutation.clone()),
+                0,
+                StdRng::seed_from_u64(11),
+            );
+            let fri_params =
+                FriParameters::new_testing(HidingChallengeMmcs::new(value_mmcs.clone()), 0);
+            let pcs = HidingPcs::new(
+                Dft::default(),
+                value_mmcs,
+                fri_params,
+                4,
+                StdRng::seed_from_u64(7),
+            );
+            let (pcs, preprocessing_commits) = CountingPcs::new(pcs);
+            let (pcs, quotient_calls) = pcs.expect_quotient_workers(1, Some("hiding_caller"));
+            let config = HidingConfig::new(pcs, Challenger::new(permutation));
+
+            let mut builder = CircuitBuilder::<KoalaBear>::new();
+            let _ = builder.define_const(KoalaBear::TWO);
+            let circuit = builder.build().unwrap();
+            let traces = circuit.runner().run().unwrap();
+            let prepared = BatchStarkProver::new(config)
+                .with_table_packing(TablePacking::new(4, 4).with_min_trace_height(32))
+                .prepare_circuit::<KoalaBear, 1>(&circuit, &[], &[], ConstraintProfile::Standard)
+                .unwrap();
+            assert_eq!(rayon::current_num_threads(), 2);
+            assert_eq!(preprocessing_commits.load(Ordering::SeqCst), 1);
+
+            let verifier = prepared.verifier();
+            let proof = prepared.prove(&traces).unwrap();
+            assert!(quotient_calls.load(Ordering::SeqCst) > 0);
+            assert_eq!(rayon::current_num_threads(), 2);
+            assert_test_tracing_context("hiding_caller");
+            verifier.verify(&proof, &[]).unwrap();
+            assert_eq!(rayon::current_num_threads(), 2);
+            assert_test_tracing_context("hiding_caller");
+        });
+    });
+}
+
+#[cfg(feature = "parallel")]
+#[test]
+fn non_hiding_proof_quotients_keep_parallel_caller_pool() {
+    use p3_test_utils::koala_bear_params::{ChallengeMmcs, MyMmcs, MyPcs};
+
+    type PlainConfig = StarkConfig<CountingPcs<MyPcs>, Challenge, Challenger>;
+
+    let caller_pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(2)
+        .build()
+        .unwrap();
+    caller_pool.install(|| {
+        let permutation = default_koalabear_poseidon2_16();
+        let value_mmcs = MyMmcs::new(
+            MyHash::new(permutation.clone()),
+            MyCompress::new(permutation.clone()),
+            0,
+        );
+        let fri_params = FriParameters::new_testing(ChallengeMmcs::new(value_mmcs.clone()), 0);
+        let pcs = MyPcs::new(Dft::default(), value_mmcs, fri_params);
+        let (pcs, _) = CountingPcs::new(pcs);
+        let (pcs, quotient_calls) = pcs.expect_quotient_workers(2, None);
+        let config = PlainConfig::new(pcs, Challenger::new(permutation));
+
+        let mut builder = CircuitBuilder::<KoalaBear>::new();
+        let _ = builder.define_const(KoalaBear::TWO);
+        let circuit = builder.build().unwrap();
+        let traces = circuit.runner().run().unwrap();
+        let prepared = BatchStarkProver::new(config)
+            .with_table_packing(TablePacking::new(4, 4).with_min_trace_height(32))
+            .prepare_circuit::<KoalaBear, 1>(&circuit, &[], &[], ConstraintProfile::Standard)
+            .unwrap();
+
+        let verifier = prepared.verifier();
+        let proof = prepared.prove(&traces).unwrap();
+        assert!(quotient_calls.load(Ordering::SeqCst) > 0);
+        assert_eq!(rayon::current_num_threads(), 2);
+        verifier.verify(&proof, &[]).unwrap();
+    });
+}
+
+#[cfg(not(feature = "parallel"))]
+#[test]
+fn unified_parallel_backend_rejects_hiding_before_preprocessing_commit() {
+    if !p3_maybe_rayon::PARALLEL_ENABLED {
+        return;
+    }
+
+    const SALT_ELEMS: usize = 4;
+    type HidingValMmcs = MerkleTreeHidingMmcs<
+        <KoalaBear as p3_field::Field>::Packing,
+        <KoalaBear as p3_field::Field>::Packing,
+        MyHash,
+        MyCompress,
+        StdRng,
+        2,
+        DIGEST_ELEMS,
+        SALT_ELEMS,
+    >;
+    type HidingChallengeMmcs = ExtensionMmcs<KoalaBear, Challenge, HidingValMmcs>;
+    type HidingPcs = HidingFriPcs<KoalaBear, Dft, HidingValMmcs, HidingChallengeMmcs, StdRng>;
+    type HidingConfig = StarkConfig<CountingPcs<HidingPcs>, Challenge, Challenger>;
+
+    let permutation = default_koalabear_poseidon2_16();
+    let value_mmcs = HidingValMmcs::new(
+        MyHash::new(permutation.clone()),
+        MyCompress::new(permutation.clone()),
+        0,
+        StdRng::seed_from_u64(11),
+    );
+    let fri_params = FriParameters::new_testing(HidingChallengeMmcs::new(value_mmcs.clone()), 0);
+    let pcs = HidingPcs::new(
+        Dft::default(),
+        value_mmcs,
+        fri_params,
+        4,
+        StdRng::seed_from_u64(7),
+    );
+    let (pcs, preprocessing_commits) = CountingPcs::new(pcs);
+    let config = HidingConfig::new(pcs, Challenger::new(permutation));
+
+    let mut builder = CircuitBuilder::<KoalaBear>::new();
+    let _ = builder.define_const(KoalaBear::TWO);
+    let circuit = builder.build().unwrap();
+    let prepared = BatchStarkProver::new(config)
+        .with_table_packing(TablePacking::new(4, 4).with_min_trace_height(32))
+        .prepare_circuit::<KoalaBear, 1>(&circuit, &[], &[], ConstraintProfile::Standard);
+    assert!(matches!(
+        prepared,
+        Err(BatchStarkProverError::Prove(message))
+            if message.contains("p3-circuit-prover/parallel")
+    ));
+    assert_eq!(preprocessing_commits.load(Ordering::SeqCst), 0);
 }
 
 #[test]

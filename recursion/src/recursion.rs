@@ -7,12 +7,12 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use p3_air::{SymbolicExpression, SymbolicExpressionExt};
-use p3_batch_stark::CommonData;
+use p3_batch_stark::{BatchProof, CommonData};
 use p3_circuit::ops::NpoTypeId;
 use p3_circuit::symbolic::ColumnsTargets;
 use p3_circuit::tables::Traces;
 use p3_circuit::{Circuit, CircuitBuilder, CircuitRunner, NonPrimitiveOpId};
-use p3_circuit_prover::batch_stark_prover::{NUM_PRIMITIVE_TABLES, TableProver};
+use p3_circuit_prover::batch_stark_prover::{NUM_PRIMITIVE_TABLES, ProvingMaybeSend, TableProver};
 use p3_circuit_prover::common::{NpoAirBuilder, NpoPreprocessor};
 use p3_circuit_prover::config::StarkField;
 use p3_circuit_prover::field_params::ExtractBinomialW;
@@ -422,6 +422,7 @@ pub fn prove_next_layer<SC, A, B, const D: usize>(
     params: &ProveNextLayerParams,
 ) -> Result<RecursionOutput<SC>, VerificationError>
 where
+    BatchProof<SC>: ProvingMaybeSend,
     p3_uni_stark::PcsProverError<SC>: Send,
     SC::Challenger: p3_challenger::GrindingChallenger<Witness = p3_uni_stark::Val<SC>>,
     SC: StarkGenericConfig + Send + Sync + Clone + 'static,
@@ -468,6 +469,7 @@ pub fn build_and_prove_next_layer<SC, A, B, const D: usize>(
     params: &ProveNextLayerParams,
 ) -> Result<RecursionOutput<SC>, VerificationError>
 where
+    BatchProof<SC>: ProvingMaybeSend,
     p3_uni_stark::PcsProverError<SC>: Send,
     SC::Challenger: p3_challenger::GrindingChallenger<Witness = p3_uni_stark::Val<SC>>,
     SC: StarkGenericConfig + Send + Sync + Clone + 'static,
@@ -638,6 +640,7 @@ pub fn prove_aggregation_layer<SC, A1, A2, B, const D: usize>(
     params: &ProveNextLayerParams,
 ) -> Result<RecursionOutput<SC>, VerificationError>
 where
+    BatchProof<SC>: ProvingMaybeSend,
     p3_uni_stark::PcsProverError<SC>: Send,
     SC::Challenger: p3_challenger::GrindingChallenger<Witness = p3_uni_stark::Val<SC>>,
     SC: StarkGenericConfig + Send + Sync + Clone + 'static,
@@ -691,6 +694,7 @@ pub fn prove_aggregation_layer_cross<InSC, OutSC, A1, A2, B, const D: usize>(
     params: &ProveNextLayerParams,
 ) -> Result<RecursionOutput<OutSC>, VerificationError>
 where
+    BatchProof<OutSC>: ProvingMaybeSend,
     p3_uni_stark::PcsProverError<OutSC>: Send,
     OutSC::Challenger: p3_challenger::GrindingChallenger<Witness = p3_uni_stark::Val<OutSC>>,
     InSC: StarkGenericConfig + Send + Sync + Clone + 'static,
@@ -750,6 +754,7 @@ pub fn build_and_prove_aggregation_layer<SC, A1, A2, B, const D: usize>(
     params: &ProveNextLayerParams,
 ) -> Result<RecursionOutput<SC>, VerificationError>
 where
+    BatchProof<SC>: ProvingMaybeSend,
     p3_uni_stark::PcsProverError<SC>: Send,
     SC::Challenger: p3_challenger::GrindingChallenger<Witness = p3_uni_stark::Val<SC>>,
     SC: StarkGenericConfig + Send + Sync + Clone + 'static,
@@ -797,6 +802,7 @@ pub fn build_and_prove_aggregation_layer_cross<InSC, OutSC, A1, A2, B, const D: 
     params: &ProveNextLayerParams,
 ) -> Result<RecursionOutput<OutSC>, VerificationError>
 where
+    BatchProof<OutSC>: ProvingMaybeSend,
     p3_uni_stark::PcsProverError<OutSC>: Send,
     OutSC::Challenger: p3_challenger::GrindingChallenger<Witness = p3_uni_stark::Val<OutSC>>,
     InSC: StarkGenericConfig + Send + Sync + Clone + 'static,

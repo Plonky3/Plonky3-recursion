@@ -1,6 +1,7 @@
 use p3_air::{SymbolicExpression, SymbolicExpressionExt};
 use p3_circuit::Circuit;
 use p3_circuit_prover::CircuitVerifier;
+use p3_circuit_prover::batch_stark_prover::ProvingMaybeSend;
 use p3_circuit_prover::config::StarkField;
 use p3_circuit_prover::field_params::ExtractBinomialW;
 use p3_commit::Pcs;
@@ -256,7 +257,10 @@ where
     pub fn prove(
         &self,
         input: PreparedInput<'_, SC>,
-    ) -> Result<RecursionOutput<SC>, VerificationError> {
+    ) -> Result<RecursionOutput<SC>, VerificationError>
+    where
+        p3_batch_stark::BatchProof<SC>: ProvingMaybeSend,
+    {
         self.check_input(&input)?;
         let prev = legacy_input(self.air, &input)?;
         let public = self.verifier_result.pack_public_inputs(&prev)?;

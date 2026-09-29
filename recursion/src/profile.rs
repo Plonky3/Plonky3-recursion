@@ -15,8 +15,10 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use p3_air::{SymbolicExpression, SymbolicExpressionExt};
+use p3_batch_stark::BatchProof;
 use p3_circuit::ops::NpoTypeId;
 use p3_circuit::{Circuit, CircuitError};
+use p3_circuit_prover::batch_stark_prover::ProvingMaybeSend;
 use p3_circuit_prover::config::StarkField;
 use p3_circuit_prover::field_params::ExtractBinomialW;
 use p3_circuit_prover::{BatchStarkProof, ConstraintProfile, TablePacking};
@@ -268,6 +270,7 @@ pub fn prove_layer<SC, A, B, const D: usize>(
     backend: &B,
 ) -> Result<RecursionOutput<SC>, VerificationError>
 where
+    BatchProof<SC>: ProvingMaybeSend,
     p3_uni_stark::PcsProverError<SC>: Send,
     SC::Challenger: p3_challenger::GrindingChallenger<Witness = p3_uni_stark::Val<SC>>,
     SC: StarkGenericConfig + Send + Sync + Clone + 'static,
@@ -328,6 +331,7 @@ pub fn prove_aggregation_layer_with_profile<SC, A1, A2, B, const D: usize>(
     backend: &B,
 ) -> Result<RecursionOutput<SC>, VerificationError>
 where
+    BatchProof<SC>: ProvingMaybeSend,
     p3_uni_stark::PcsProverError<SC>: Send,
     SC::Challenger: p3_challenger::GrindingChallenger<Witness = p3_uni_stark::Val<SC>>,
     SC: StarkGenericConfig + Send + Sync + Clone + 'static,
@@ -390,6 +394,7 @@ pub fn prove_aggregation_layer_cross_with_profile<InSC, OutSC, A1, A2, B, const 
     backend: &B,
 ) -> Result<RecursionOutput<OutSC>, VerificationError>
 where
+    BatchProof<OutSC>: ProvingMaybeSend,
     p3_uni_stark::PcsProverError<OutSC>: Send,
     OutSC::Challenger: p3_challenger::GrindingChallenger<Witness = p3_uni_stark::Val<OutSC>>,
     InSC: StarkGenericConfig + Send + Sync + Clone + 'static,
