@@ -13,7 +13,9 @@ prime fields this repository is built on:
 
 ## What this repository supports today
 
-This is groundwork only. Nothing here proves or recursively verifies a binary-field proof.
+This is groundwork toward a binary-proof verifier. Prime-field circuits can prove and recursively
+verify arithmetic on a represented binary-tower value, but nothing here proves or recursively
+verifies a complete binary-field proof.
 
 - **Circuits over binary fields.** The primitive circuit layer (constants, public and private
   inputs, ALU ops, connections, tags) needs only field arithmetic, and runs unchanged over every
@@ -26,6 +28,26 @@ This is groundwork only. Nothing here proves or recursively verifies a binary-fi
     for a characteristic-2 base field. The decomposition and recomposition gadgets require
     `BF: PrimeField64` with `F: ExtensionField<BF>`, and the binary tower only extends its
     byte-aligned levels, so they cannot be instantiated over it at all.
+- **Non-native `BinaryField128` arithmetic.** `BinaryTower128Target` represents the Wiedemann
+  tower type `p3_binary_field::BinaryField128` as 128 Boolean coordinates in a supported
+  odd-characteristic circuit. It does not use the GHASH polynomial coordinates of `Ghash128`.
+  At each level, `a = a0 + a1 X_k` stores the lower coefficient first and uses
+  `X_k² + X_(k-1) X_k + 1 = 0`, with `X_(-1) = 1`. Bit 0 is one; bit `j` is the product of
+  tower roots selected by the set bits of `j`. Every 128-bit pattern is a valid tower element.
+  The raw `u128` coordinates in native code come from `TowerLevel::from_repr` / `to_repr`,
+  or from little-endian bytes, **not** `from_u128` (which embeds through `GF(2)`).
+  - Import/export uses eight little-endian 16-bit limbs:
+    `limb[j] = Σ_(i=0..15) bit[16j+i]·2^i`. The base field must have order above 65535;
+    both limb methods also reject characteristic two. Limb import constrains the range and
+    base-field embedding, and raw-bit import asserts every input bit is Boolean.
+  - `binary128_add`, `binary128_mul`, and `binary128_square` use the existing ALU relations
+    for Boolean XOR/AND and recursive tower reduction. `assert_binary128_inverse(value,
+    candidate)` constrains their product to tower one; the caller supplies the candidate,
+    and zero has no satisfying inverse. There are no new tables, AIRs, or native-field hints.
+  - All `ExprId`s passed to these methods must come from the same `CircuitBuilder` expression
+    graph. The target's read-only bits do not carry a builder identity. A circuit using this
+    arithmetic can be proved and carried into the next recursion layer over the supported
+    odd-prime host fields.
 - **Binary hash configurations.** `p3_test_utils::binary_field_params` provides the
   configuration `p3-binary-pcs` tests with, once per hash (`keccak` and `blake3` submodules
   with identical item names):
@@ -92,7 +114,7 @@ This is groundwork only. Nothing here proves or recursively verifies a binary-fi
 
 - Proving circuits over a binary field. The circuit prover's tables, lookups and Poseidon
   permutations assume a two-adic prime field, as do FRI and the prime-field WHIR.
-- Recursively verifying binary-PCS or multi-stark proofs. That needs `GF(2^128)` arithmetic
-  inside a prime-field circuit, plus in-circuit Keccak-256 or BLAKE3 for the transcript and
-  Merkle paths.
+- Recursively verifying binary-PCS or multi-stark proofs. The non-native `BinaryField128`
+  arithmetic above supplies one component, but the binary PCS, transcript, and full verifier
+  wiring are still missing.
 - MMCS trees of arity above two.
