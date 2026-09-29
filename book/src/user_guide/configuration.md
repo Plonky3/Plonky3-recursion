@@ -60,10 +60,14 @@ The hiding tests use independent seeded proving and verifying RNGs and check tha
 draws no RNG. These small parameters establish factory interoperability, not a production
 security level; choose security parameters for your application.
 
-Native factory support does not mean every suite has direct recursion or artifact integration.
+Native factory and artifact codec support do not imply direct recursive integration.
 Only `KoalaBearD4Poseidon2BinaryConfig` directly implements `FriRecursionConfig` for the
 unified recursion API; [custom recursion configurations](https://github.com/Plonky3/Plonky3-recursion/blob/main/recursion/tests/common/mod.rs)
 and the [integration guide](./integration.md) show the separate wrapper route.
+The typed artifact importer recognizes the built-in codec suites, including
+hiding FRI and WHIR, when given an application-owned matching native config.
+Codec support alone does not provide a `FriRecursionConfig` or recursive backend
+implementation for a suite.
 Broader custom tests exercise a [Goldilocks recursive verifier](https://github.com/Plonky3/Plonky3-recursion/blob/main/recursion/tests/goldilocks.rs),
 [KoalaBear quintic recursive proving](https://github.com/Plonky3/Plonky3-recursion/blob/main/recursion/tests/fibonacci_batch_stark_prover_quintic.rs),
 [quaternary MMCS verification](https://github.com/Plonky3/Plonky3-recursion/blob/main/recursion/tests/recursive_arity4_mmcs.rs), and

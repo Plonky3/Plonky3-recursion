@@ -104,6 +104,10 @@ the transition rules. See the [layout implementation](https://github.com/Plonky3
 and [two-level FRI transition test](https://github.com/Plonky3/Plonky3-recursion/blob/main/recursion/tests/artifact_recursive_roundtrip.rs)
 for the API, prepared reuse, and portable root verification.
 
+When child proofs arrive as serialized artifacts, [typed import](./integration.md#import-portable-artifacts-into-trusted-recursion)
+checks each proof against an independently pinned verifier and caller-expected
+statement before its `as_source()` or `as_input()` view enters a prepared owner.
+
 ## Tree aggregation
 
 To aggregate N independent proofs, arrange them as leaves of a binary tree and aggregate pairwise, bottom up:

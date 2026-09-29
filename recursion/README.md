@@ -9,6 +9,7 @@ Key items:
 - `PreparedLayer` / `PreparedAggregation` — reusable owners with native shape checks
 - `TrustedPreparedLayer` / `TrustedPreparedAggregation` — reusable owners that retain child relation authority and accept caller-expected statements
 - `TrustedPreparedAggregation::new_state_transition` — compose trusted `[initial state, final state, count]` statements into a compact transition statement
+- `TypedArtifactVerifier` / `VerifiedArtifactProof` — import serialized proofs against an independently pinned verifier and caller-expected statement for trusted prepared recursion
 - `FriRecursionBackendForExt` / `FriRecursionConfig` — degree-tagged FRI backend and config contract
 - `verify_batch_circuit`, `verify_p3_uni_proof_circuit` — expert in-circuit proof verifiers
 - `CircuitChallenger` — in-circuit Fiat–Shamir transcript
@@ -23,3 +24,5 @@ See the [compiled trusted-owner example](src/prelude.rs),
 
 The [aggregation guide](../book/src/user_guide/aggregation.md#composing-state-transitions)
 explains transition count bounds, prepared reuse, and independent root verification.
+The [integration guide](../book/src/user_guide/integration.md#import-portable-artifacts-into-trusted-recursion)
+explains typed artifact import and application-supplied configuration.
