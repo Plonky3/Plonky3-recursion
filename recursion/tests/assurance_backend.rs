@@ -33,7 +33,9 @@ use p3_recursion::{
 };
 use p3_sumcheck::layout::PrefixProver;
 use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
-use p3_test_utils::corpus::{CaseRng, CorpusSpec, derive_family_seed, for_each_case};
+use p3_test_utils::corpus::{
+    CaseRng, CorpusSpec, derive_family_seed, for_each_case, parse_proof_corpus,
+};
 use p3_test_utils::koala_bear_params::{
     Challenge, ChallengeMmcs, DIGEST_ELEMS, Dft, F, MyCompress, MyHash, MyMmcs, MyPcs, Perm, RATE,
     WIDTH, default_koalabear_poseidon2_16, make_test_config, test_fri_instance,
@@ -41,8 +43,6 @@ use p3_test_utils::koala_bear_params::{
 use p3_uni_stark::{StarkConfig, StarkGenericConfig, prove, verify};
 use rand::SeedableRng;
 use rand::rngs::StdRng;
-
-const MAX_PROOF_CASES: u32 = 8;
 
 type RecordingChallenger = RecordingDuplexChallenger<F, Perm, WIDTH, RATE>;
 type RecordingConfig = StarkConfig<MyPcs, Challenge, RecordingChallenger>;
@@ -589,32 +589,11 @@ fn run_binary_fri_d4_recursive_acceptance(
     });
 }
 
-fn parse_proof_cases(value: Option<&str>) -> Result<u32, String> {
-    let cases = match value {
-        None => 1,
-        Some(raw) => raw.parse::<u32>().map_err(|_| {
-            format!("P3_ASSURANCE_PROOF_CASES must be a u32 in 1..={MAX_PROOF_CASES}, got {raw:?}")
-        })?,
-    };
-    if !(1..=MAX_PROOF_CASES).contains(&cases) {
-        return Err(format!(
-            "P3_ASSURANCE_PROOF_CASES must be in 1..={MAX_PROOF_CASES}, got {cases}"
-        ));
-    }
-    Ok(cases)
-}
-
 fn proof_corpus_from_env() -> CorpusSpec {
-    let start_seed = std::env::var("P3_ASSURANCE_START_SEED")
-        .ok()
-        .map_or(Ok(0), |raw| {
-            raw.parse::<u64>()
-                .map_err(|_| format!("P3_ASSURANCE_START_SEED must be a u64, got {raw:?}"))
-        })
-        .unwrap_or_else(|error| panic!("{error}"));
-    let cases = parse_proof_cases(std::env::var("P3_ASSURANCE_PROOF_CASES").ok().as_deref())
-        .unwrap_or_else(|error| panic!("{error}"));
-    CorpusSpec { start_seed, cases }
+    let start_seed = std::env::var("P3_ASSURANCE_START_SEED").ok();
+    let proof_cases = std::env::var("P3_ASSURANCE_PROOF_CASES").ok();
+    parse_proof_corpus(start_seed.as_deref(), proof_cases.as_deref())
+        .unwrap_or_else(|error| panic!("{error}"))
 }
 
 #[test]
@@ -648,19 +627,6 @@ fn assurance_recording_challenger_preserves_duplex_behavior() {
             .iter()
             .all(|entry| entry.branch == "wrapped-control")
     );
-}
-
-#[test]
-fn assurance_proof_case_override_policy() {
-    assert_eq!(parse_proof_cases(None), Ok(1));
-    assert_eq!(parse_proof_cases(Some("4")), Ok(4));
-    assert_eq!(parse_proof_cases(Some("8")), Ok(MAX_PROOF_CASES));
-    for invalid in ["", "zero", "0", "9", "4294967296"] {
-        assert!(
-            parse_proof_cases(Some(invalid)).is_err(),
-            "invalid proof-case override {invalid:?} must reject"
-        );
-    }
 }
 
 #[test]

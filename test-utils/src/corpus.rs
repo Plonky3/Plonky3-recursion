@@ -1,5 +1,7 @@
 //! Deterministic, bounded test-data support for assurance tests.
 
+use alloc::string::String;
+
 /// Default number of cheap assurance cases executed by ordinary test runs.
 pub const DEFAULT_CASES: u32 = 8;
 
@@ -11,6 +13,35 @@ pub const MAX_CASES: u32 = 1024;
 pub struct CorpusSpec {
     pub start_seed: u64,
     pub cases: u32,
+}
+
+/// Parse the small proof corpus used by bounded assurance tests.
+pub fn parse_proof_corpus(
+    start_seed: Option<&str>,
+    proof_cases: Option<&str>,
+) -> Result<CorpusSpec, String> {
+    const MAX_PROOF_CASES: u32 = 8;
+
+    let start_seed = match start_seed {
+        Some(raw) => raw
+            .parse::<u64>()
+            .map_err(|_| alloc::format!("P3_ASSURANCE_START_SEED must be a u64, got {raw:?}"))?,
+        None => 0,
+    };
+    let cases = match proof_cases {
+        Some(raw) => raw.parse::<u32>().map_err(|_| {
+            alloc::format!(
+                "P3_ASSURANCE_PROOF_CASES must be a u32 in 1..={MAX_PROOF_CASES}, got {raw:?}"
+            )
+        })?,
+        None => 1,
+    };
+    if !(1..=MAX_PROOF_CASES).contains(&cases) {
+        return Err(alloc::format!(
+            "P3_ASSURANCE_PROOF_CASES must be in 1..={MAX_PROOF_CASES}, got {cases}"
+        ));
+    }
+    Ok(CorpusSpec { start_seed, cases })
 }
 
 /// Visit `cases` consecutive wrapping seeds, independent of execution order.
@@ -58,7 +89,82 @@ const fn splitmix64_without_increment(mut value: u64) -> u64 {
 mod tests {
     use alloc::vec;
 
-    use super::{CaseRng, CorpusSpec, derive_family_seed, for_each_case};
+    use super::{CaseRng, CorpusSpec, derive_family_seed, for_each_case, parse_proof_corpus};
+
+    #[test]
+    fn proof_corpus_defaults_each_unspecified_field_independently() {
+        assert_eq!(
+            parse_proof_corpus(None, None),
+            Ok(CorpusSpec {
+                start_seed: 0,
+                cases: 1
+            })
+        );
+        assert_eq!(
+            parse_proof_corpus(Some("42"), None),
+            Ok(CorpusSpec {
+                start_seed: 42,
+                cases: 1
+            })
+        );
+        assert_eq!(
+            parse_proof_corpus(None, Some("4")),
+            Ok(CorpusSpec {
+                start_seed: 0,
+                cases: 4
+            })
+        );
+    }
+
+    #[test]
+    fn proof_corpus_accepts_seed_and_case_boundaries() {
+        assert_eq!(
+            parse_proof_corpus(Some("18446744073709551615"), Some("8")),
+            Ok(CorpusSpec {
+                start_seed: u64::MAX,
+                cases: 8
+            })
+        );
+        assert_eq!(
+            parse_proof_corpus(Some("0"), Some("1")),
+            Ok(CorpusSpec {
+                start_seed: 0,
+                cases: 1
+            })
+        );
+    }
+
+    #[test]
+    fn proof_corpus_rejects_malformed_and_overflowing_seeds_first() {
+        for raw in ["", "nope", "18446744073709551616"] {
+            assert_eq!(
+                parse_proof_corpus(Some(raw), Some("0")),
+                Err(alloc::format!(
+                    "P3_ASSURANCE_START_SEED must be a u64, got {raw:?}"
+                ))
+            );
+        }
+    }
+
+    #[test]
+    fn proof_corpus_rejects_malformed_and_out_of_range_case_counts() {
+        for raw in ["", "nope", "4294967296"] {
+            assert_eq!(
+                parse_proof_corpus(None, Some(raw)),
+                Err(alloc::format!(
+                    "P3_ASSURANCE_PROOF_CASES must be a u32 in 1..=8, got {raw:?}"
+                ))
+            );
+        }
+        for (raw, count) in [("0", 0), ("9", 9)] {
+            assert_eq!(
+                parse_proof_corpus(None, Some(raw)),
+                Err(alloc::format!(
+                    "P3_ASSURANCE_PROOF_CASES must be in 1..=8, got {count}"
+                ))
+            );
+        }
+    }
 
     #[test]
     fn explicit_seed_derivation_is_reproducible_and_order_independent() {

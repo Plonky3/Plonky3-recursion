@@ -922,7 +922,9 @@ mod tests {
     use p3_circuit::tables::WitnessTrace;
     use p3_circuit_prover::BatchStarkProverError;
     use p3_field::PrimeCharacteristicRing;
-    use p3_test_utils::corpus::{CaseRng, CorpusSpec, derive_family_seed, for_each_case};
+    use p3_test_utils::corpus::{
+        CaseRng, CorpusSpec, derive_family_seed, for_each_case, parse_proof_corpus,
+    };
     use p3_test_utils::koala_bear_params::{Challenge, DIGEST_ELEMS, F};
     use p3_test_utils::rejection_oracle::classify_debug_diagnostic;
 
@@ -932,32 +934,11 @@ mod tests {
     use crate::traits::Recursive;
     use crate::verifier::VerifierLimits;
 
-    const MAX_ASSURANCE_PROOF_CASES: u32 = 8;
-
     fn assurance_proof_corpus_from_env() -> CorpusSpec {
-        let start_seed = std::env::var("P3_ASSURANCE_START_SEED")
-            .ok()
-            .map(|raw| {
-                raw.parse::<u64>().unwrap_or_else(|_| {
-                    panic!("P3_ASSURANCE_START_SEED must be a u64, got {raw:?}")
-                })
-            })
-            .unwrap_or(0);
-        let cases = std::env::var("P3_ASSURANCE_PROOF_CASES")
-            .ok()
-            .map(|raw| {
-                raw.parse::<u32>().unwrap_or_else(|_| {
-                    panic!(
-                        "P3_ASSURANCE_PROOF_CASES must be a u32 in 1..={MAX_ASSURANCE_PROOF_CASES}, got {raw:?}"
-                    )
-                })
-            })
-            .unwrap_or(1);
-        assert!(
-            (1..=MAX_ASSURANCE_PROOF_CASES).contains(&cases),
-            "P3_ASSURANCE_PROOF_CASES must be in 1..={MAX_ASSURANCE_PROOF_CASES}, got {cases}"
-        );
-        CorpusSpec { start_seed, cases }
+        let start_seed = std::env::var("P3_ASSURANCE_START_SEED").ok();
+        let proof_cases = std::env::var("P3_ASSURANCE_PROOF_CASES").ok();
+        parse_proof_corpus(start_seed.as_deref(), proof_cases.as_deref())
+            .unwrap_or_else(|error| panic!("{error}"))
     }
 
     #[test]

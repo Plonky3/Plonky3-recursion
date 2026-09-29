@@ -28,38 +28,20 @@ use p3_field::extension::{BinomialExtensionField, QuinticTrinomialExtensionField
 use p3_field::{Algebra, BasedVectorSpace, PrimeCharacteristicRing};
 use p3_lookup::symbolic::InteractionSymbolicBuilder;
 use p3_matrix::dense::RowMajorMatrix;
-use p3_test_utils::corpus::{CaseRng, CorpusSpec, derive_family_seed, for_each_case};
+use p3_test_utils::corpus::{
+    CaseRng, CorpusSpec, derive_family_seed, for_each_case, parse_proof_corpus,
+};
 use p3_uni_stark::{SymbolicExpression, SymbolicExpressionExt};
 
 type EF = BinomialExtensionField<BabyBear, 4>;
 type SC = config::BabyBearConfig;
 const D: usize = 4;
 const STATIC_RECOMPOSE_VALUE: BabyBear = BabyBear::new(42);
-const MAX_ASSURANCE_PROOF_CASES: u32 = 8;
-
 fn assurance_proof_corpus_from_env() -> CorpusSpec {
-    let start_seed = std::env::var("P3_ASSURANCE_START_SEED")
-        .ok()
-        .map_or(Ok(0), |raw| {
-            raw.parse::<u64>()
-                .map_err(|_| format!("P3_ASSURANCE_START_SEED must be a u64, got {raw:?}"))
-        })
-        .unwrap_or_else(|error| panic!("{error}"));
-    let cases = std::env::var("P3_ASSURANCE_PROOF_CASES")
-        .ok()
-        .map_or(Ok(1), |raw| {
-            raw.parse::<u32>().map_err(|_| {
-                format!(
-                    "P3_ASSURANCE_PROOF_CASES must be a u32 in 1..={MAX_ASSURANCE_PROOF_CASES}, got {raw:?}"
-                )
-            })
-        })
-        .unwrap_or_else(|error| panic!("{error}"));
-    assert!(
-        (1..=MAX_ASSURANCE_PROOF_CASES).contains(&cases),
-        "P3_ASSURANCE_PROOF_CASES must be in 1..={MAX_ASSURANCE_PROOF_CASES}, got {cases}"
-    );
-    CorpusSpec { start_seed, cases }
+    let start_seed = std::env::var("P3_ASSURANCE_START_SEED").ok();
+    let proof_cases = std::env::var("P3_ASSURANCE_PROOF_CASES").ok();
+    parse_proof_corpus(start_seed.as_deref(), proof_cases.as_deref())
+        .unwrap_or_else(|error| panic!("{error}"))
 }
 
 #[derive(Clone)]
