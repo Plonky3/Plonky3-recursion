@@ -24,6 +24,17 @@
 
 set -euo pipefail
 
+if [ "$#" -gt 1 ]; then
+  echo "Error: expected no argument or one X.Y.Z-rc.N version." >&2
+  exit 1
+fi
+
+rc_version="${1:-}"
+if [ "$#" -eq 1 ] && ! [[ "$rc_version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-rc\.(0|[1-9][0-9]*)$ ]]; then
+  echo "Error: RC version must have the form X.Y.Z-rc.N without leading zeroes." >&2
+  exit 1
+fi
+
 check_binary_installed() {
   local binary_name="$1"
   if ! command -v "$binary_name" &> /dev/null; then
@@ -39,11 +50,22 @@ fi
 
 check_binary_installed "release-plz"
 
-rc_version="${1:-}"
-
 # release-plz opens the release PR against the branch you run it on, so release
 # from whichever branch is checked out: main, or a vX.Y.Z version/rc line.
 branch=$(git symbolic-ref --short HEAD)
+
+if [ -n "$rc_version" ]; then
+  if ! git diff --quiet || ! git diff --cached --quiet; then
+    echo "Error: Commit or discard tracked and staged changes before cutting an RC." >&2
+    exit 1
+  fi
+
+  pr_branch="robin/release-$rc_version"
+  if git show-ref --verify --quiet "refs/heads/$pr_branch"; then
+    echo "Error: Branch '$pr_branch' already exists." >&2
+    exit 1
+  fi
+fi
 
 # Ensure the local release branch is up-to-date with its remote.
 git fetch origin "$branch"
@@ -57,25 +79,18 @@ if [ "$local_head" != "$remote_head" ]; then
 fi
 
 if [ -n "$rc_version" ]; then
-  if [[ "$rc_version" != *rc* ]]; then
-    echo "Warning: '$rc_version' is not a release candidate (no 'rc')."
-    echo "Only rc versions may be set manually; omit the argument and let"
-    echo "release-plz compute stable versions automatically."
-    exit 1
-  fi
-
   check_binary_installed "gh"
+  check_binary_installed "python3"
 
-  pr_branch="release-plz-$rc_version"
   echo "Cutting release candidate '$rc_version' from '$branch'..."
 
-  # Every crate inherits `version.workspace = true`, so bumping the single
-  # [workspace.package] version sets the whole workspace in lock-step.
-  sed -i.bak -E "s/^version = \".*\"/version = \"$rc_version\"/" Cargo.toml
-  rm -f Cargo.toml.bak
-
   git switch -c "$pr_branch"
-  git commit -m "chore: release $rc_version" Cargo.toml
+  python3 "$(dirname "${BASH_SOURCE[0]}")/scripts/set_release_candidate.py" Cargo.toml "$rc_version"
+  # --workspace refreshes local package entries without updating registry versions.
+  cargo update --workspace --offline
+  cargo metadata --offline --locked --format-version 1 > /dev/null
+  git add Cargo.toml Cargo.lock
+  git commit -m "chore: release $rc_version" -- Cargo.toml Cargo.lock
   git push -u origin "$pr_branch"
 
   GH_TOKEN="$GIT_TOKEN" gh pr create \
