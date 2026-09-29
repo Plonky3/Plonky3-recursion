@@ -33,14 +33,20 @@ Use `UniStark` when verifying an external Plonky3 proof (e.g. Keccak AIR). Use `
 The output of one recursion step:
 
 ```rust,ignore
-pub struct RecursionOutput<SC>(pub BatchStarkProof<SC>, pub Rc<CircuitProverData<SC>>);
+pub struct RecursionOutput<SC>(pub BatchStarkProof<SC>, pub Arc<CircuitProverData<SC>>);
 ```
 
-Contains the batch-STARK proof and the prover data (reference-counted for cheap cloning) needed for further chaining. Convert it to a `RecursionInput` for the next layer:
+Contains the batch-STARK proof and prover data in an `Arc`. The latter is a
+compatibility handle, not independent verifier authority. Convert to an expert
+`RecursionInput` using proof-attached table public values:
 
 ```rust,ignore
 let next_input = output.into_recursion_input::<BatchOnly>();
 ```
+
+For trusted chaining, retain a `CircuitVerifier` separately and call
+`output.into_trusted_recursion_input::<BatchOnly>(&verifier, &expected_statement)`.
+That method derives the per-table public vectors from the verifier's retained relation.
 
 The `BatchOnly` marker type satisfies the `RecursiveAir` bound without carrying any AIR data — it's a no-op used when the next layer only needs to verify the recursive batch proof.
 
@@ -91,9 +97,14 @@ let output = owner.prove(input)?;
 
 `PreparedLayer` owns the committed preprocessed columns and prover, and rejects malformed or incompatible native inputs before proving. Use a new owner when the native contract changes.
 
-This compatibility check is shape-only: a prepared owner is not a portable trusted relation
-verifier and does not bind child proving keys, recursion statements, or public claims. Later
-trust-boundary work must pin those relations before an owner can be reused across such changes.
+This compatibility check is shape-only: a prepared owner does not bind child proving keys,
+recursion statements, or public claims. Use `TrustedPreparedLayer` when the verifier relation
+must be fixed independently of each proof. Its `TrustedPreparedSource::UniStark` retains the
+trusted native config, AIR and preprocessing commitment; its `BatchStark` source retains a
+`CircuitVerifier`. `TrustedPreparedInput` supplies only a proof and caller-expected statement.
+The owner can export an independently retained verifier for its output. See the
+[compiled prelude example](../../../recursion/src/prelude.rs) and
+[trusted layer tests](../../../recursion/tests/prepared_layer.rs).
 
 ### `build_and_prove_aggregation_layer`
 
@@ -134,29 +145,24 @@ owner.check_inputs(&left, &right)?;
 let output = owner.prove(left, right)?;
 ```
 
-As with `PreparedLayer`, this owner checks native shape compatibility only. It does not itself
-bind child keys or statements, so relation and claim changes require explicit trust-boundary
-policy rather than owner reuse.
+As with `PreparedLayer`, this owner checks native shape compatibility only. Use
+`TrustedPreparedAggregation` to retain both child authorities and their left/right statement
+layout. Supply each child's expected statement on every proof attempt; see the
+[trusted aggregation tests](../../../recursion/tests/prepared_aggregation.rs).
 
 ### `prove_aggregation_layer`
 
-The split build/prove variant for aggregation. The circuit builder is private; use `prove_aggregation_layer` with a pre-built circuit when you need to re-prove the same aggregation shape:
-
-```rust,ignore
-let output = prove_aggregation_layer::<SC, A1, A2, B, D>(
-    &left, &right, &left_result, &right_result,
-    circuit, &config, &backend, &params,
-)?;
-```
-
-See the source of `build_and_prove_aggregation_layer` for how to obtain `left_result`, `right_result`, and `circuit` when splitting manually.
+The split build/prove variant is an expert API. Follow the checked
+[`build_aggregation_layer_circuit` and `prove_aggregation_layer` signatures](../../../recursion/src/recursion.rs)
+if you need to manage the circuit and verifier results directly.
 
 ## Recursion loop pattern
 
 A typical recursion loop looks like this:
 
 ```rust,ignore
-let backend = FriRecursionBackend::<16, 8>::new(Poseidon2Config::KoalaBearD4Width16);
+let backend = FriRecursionBackend::<16, 8>::new(Poseidon2Config::KOALA_BEAR_D4_W16)
+    .for_extension_degree::<4>();
 
 // Layer 1: verify the base proof
 let input = RecursionInput::UniStark { proof: &base_proof, air: &my_air, .. };
@@ -177,7 +183,8 @@ The const generic `D` is the extension field degree. For binomial extensions (Ba
 
 ## FriRecursionBackend
 
-The `FriRecursionBackend<WIDTH, RATE, C>` implements `PcsRecursionBackend` for FRI-based configs. It handles:
+`FriRecursionBackend::for_extension_degree::<D>()` returns a degree-tagged backend that
+implements `PcsRecursionBackend` for the matching FRI-based config. It handles:
 
 - Preparing the circuit for verification (enabling the challenger permutation and NPOs)
 - Building the verifier circuit (delegating to `verify_p3_uni_proof_circuit` or `verify_p3_batch_proof_circuit`)
@@ -188,11 +195,14 @@ The `FriRecursionBackend<WIDTH, RATE, C>` implements `PcsRecursionBackend` for F
 
 ```rust,ignore
 // Standard Poseidon2 backend
-let backend = FriRecursionBackend::<16, 8>::new(Poseidon2Config::KoalaBearD4Width16);
+let backend = FriRecursionBackend::<16, 8>::new(Poseidon2Config::KOALA_BEAR_D4_W16)
+    .for_extension_degree::<4>();
 
 // With an extra Poseidon2 table config for proofs that use a wider MMCS hash
-let backend = FriRecursionBackend::<16, 8>::new(Poseidon2Config::KoalaBearD4Width16)
-    .with_extra_poseidon2_table(Poseidon2Config::KoalaBearD4Width24);
+let backend = FriRecursionBackend::<16, 8>::new(Poseidon2Config::KOALA_BEAR_D4_W16)
+    .with_extra_poseidon2_table(Poseidon2Config::KOALA_BEAR_D4_W24)
+    .for_extension_degree::<4>();
 ```
 
-`FriRecursionBackendD5` is a type alias for the quintic (`D = 5`) variant and `FriRecursionBackendForExt` covers mixed-degree scenarios.
+`FriRecursionBackendD5` handles the supported quintic (`D = 5`) variant;
+`FriRecursionBackendForExt<D>` tags binomial extension degrees such as 2 and 4.

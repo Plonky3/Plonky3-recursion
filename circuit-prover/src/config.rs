@@ -4,7 +4,7 @@
 //!
 //! # Quick Start
 //!
-//! ```ignore
+//! ```rust
 //! use p3_circuit_prover::config;
 //!
 //! // Use a preconfigured setup
@@ -149,7 +149,8 @@ where
 ///
 /// # Examples
 ///
-/// ```ignore
+/// ```rust
+/// use p3_circuit_prover::{BatchStarkProver, config};
 /// let config = config::baby_bear();
 /// let prover = BatchStarkProver::new(config);
 /// ```
@@ -172,7 +173,8 @@ pub fn baby_bear() -> BabyBearConfig {
 ///
 /// # Examples
 ///
-/// ```ignore
+/// ```rust
+/// use p3_circuit_prover::{BatchStarkProver, config};
 /// let config = config::koala_bear();
 /// let prover = BatchStarkProver::new(config);
 /// ```
@@ -195,7 +197,8 @@ pub fn koala_bear() -> KoalaBearConfig {
 ///
 /// # Examples
 ///
-/// ```ignore
+/// ```rust
+/// use p3_circuit_prover::{BatchStarkProver, config};
 /// let config = config::goldilocks();
 /// let prover = BatchStarkProver::new(config);
 /// ```

@@ -5,11 +5,17 @@ uni-stark or batch-stark proof, so proofs can be aggregated layer by layer.
 
 Key items:
 
-- `prove_next_layer` / `build_and_prove_next_layer` / `build_and_prove_aggregation_layer` — the unified recursion entry points
-- `FriRecursionBackend` / `FriRecursionConfig` — the FRI PCS backend for the recursion API
-- `verify_batch_circuit`, `verify_p3_uni_proof_circuit` — in-circuit proof verifiers
+- `build_and_prove_next_layer` / `build_and_prove_aggregation_layer` — one-shot unified recursion entry points
+- `PreparedLayer` / `PreparedAggregation` — reusable owners with native shape checks
+- `TrustedPreparedLayer` / `TrustedPreparedAggregation` — reusable owners that retain child relation authority and accept caller-expected statements
+- `FriRecursionBackendForExt` / `FriRecursionConfig` — degree-tagged FRI backend and config contract
+- `verify_batch_circuit`, `verify_p3_uni_proof_circuit` — expert in-circuit proof verifiers
 - `CircuitChallenger` — in-circuit Fiat–Shamir transcript
 - `Recursive`, `RecursiveAir`, `RecursivePcs`, `RecursiveMmcs` — the recursion trait family
 - `StarkVerifierInputs` / `PublicInputBuilder` and the `*InputsBuilder` types — verifier public-input assembly
 
 Part of [Plonky3-recursion](https://github.com/Plonky3/Plonky3-recursion), dual-licensed under MIT and Apache 2.0.
+
+See the [compiled trusted-owner example](src/prelude.rs),
+[unified API guide](../book/src/user_guide/api.md), and
+[built-in FRI configs](src/builtin_config/fri.rs) for current signatures.

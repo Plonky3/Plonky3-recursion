@@ -36,7 +36,8 @@ let input = RecursionInput::UniStark {
 };
 
 // 2. Create the FRI backend with a Poseidon2 config matching your field.
-let backend = FriRecursionBackend::<16, 8>::new(Poseidon2Config::KoalaBearD4Width16);
+let backend = FriRecursionBackend::<16, 8>::new(Poseidon2Config::KOALA_BEAR_D4_W16)
+    .for_extension_degree::<4>();
 
 // 3. Prove. This builds the verifier circuit, runs it, and produces a batch-STARK proof.
 let params = ProveNextLayerParams::default();
@@ -51,7 +52,12 @@ let output_2 = build_and_prove_next_layer::<_, _, _, 4>(
 )?;
 ```
 
-The config (`&config`) must implement `FriRecursionConfig`. See the [Integration Guide](./integration.md) for how to set this up, or the [Examples](./examples.md) for complete working code.
+The config (`&config`) must implement `FriRecursionConfig`. The
+[built-in FRI config factories](../../../recursion/src/builtin_config/fri.rs) provide checked
+starting points. See the [Integration Guide](../user_guide/integration.md) for custom configs,
+or the [Examples](./examples.md) for working code. This one-shot API transports the proof's
+attached metadata; use a trusted prepared owner when independently fixed relation and statement
+authority is required.
 
 ## Running the examples
 

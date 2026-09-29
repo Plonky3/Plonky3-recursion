@@ -38,7 +38,8 @@ let right = RecursionInput::UniStark {
     proof: &proof_b, air: &air_b, public_inputs: pis_b.clone(), preprocessed_commit: None,
 };
 
-let backend = FriRecursionBackend::<16, 8>::new(Poseidon2Config::KoalaBearD4Width16);
+let backend = FriRecursionBackend::<16, 8>::new(Poseidon2Config::KOALA_BEAR_D4_W16)
+    .for_extension_degree::<4>();
 let params = ProveNextLayerParams::default();
 
 let output = build_and_prove_aggregation_layer::<_, _, _, _, 4>(
@@ -46,7 +47,10 @@ let output = build_and_prove_aggregation_layer::<_, _, _, _, 4>(
 )?;
 ```
 
-The output is a regular `RecursionOutput` and can be fed into further aggregation or recursion layers via `into_recursion_input::<BatchOnly>()`.
+The output is a regular `RecursionOutput` and can be fed into further aggregation or recursion
+layers via `into_recursion_input::<BatchOnly>()`. That helper carries proof-attached values;
+use `TrustedPreparedAggregation` with independently retained child verifier authority and
+caller-expected statements when aggregating trusted relations.
 
 ## Tree aggregation
 

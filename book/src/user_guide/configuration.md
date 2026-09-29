@@ -4,15 +4,17 @@ This section covers the parameters you need to choose when setting up recursive 
 
 ## Field selection
 
-The library currently supports two base fields:
+The built-in FRI configurations include these base fields:
 
 | Field | Modulus | Bits | Status |
 |-------|---------|------|--------|
 | **KoalaBear** | `0x7F000001` | 31 | Recommended |
 | **BabyBear** | `0x78000001` | 31 | Fully supported |
+| **Goldilocks** | `0xFFFFFFFF00000001` | 64 | Supported with a degree-2 challenge extension |
 
-All fields support degree-4 binomial extensions (`BinomialExtensionField<F, 4>`), which is a currently
-fixed parameter for the recursion stack, with plans to lift it to a runtime parameter in the future.
+BabyBear and KoalaBear have degree-4 binomial suites. KoalaBear also has a degree-5
+quintic suite. Select a matching [built-in suite](../../../recursion/src/builtin_config/fri.rs)
+or supply a config with the same native and recursive PCS parameters.
 
 ## FRI parameters
 
@@ -59,31 +61,37 @@ The outermost (final) layer should use full-strength parameters.
 The recursion circuit uses `FriVerifierParams` to know the FRI structure without accessing the native `FriParameters` directly:
 
 ```rust,ignore
-let fri_verifier_params = FriVerifierParams::with_mmcs(
+let fri_verifier_params = FriVerifierParams::try_with_mmcs(
     log_blowup,
     log_final_poly_len,
+    max_log_arity,
     commit_pow_bits,
     query_pow_bits,
+    num_queries,
     poseidon2_config,
-);
+)?;
 ```
 
 This is stored in your config wrapper and returned via `FriRecursionConfig::pcs_verifier_params()`.
 
 ## Poseidon2 configuration
 
-The `Poseidon2Config` enum selects the hash function parameters for in-circuit hashing (MMCS verification and Fiat-Shamir):
+`Poseidon2Config` provides named constants for in-circuit permutation parameters:
 
 | Config | Field | D | WIDTH | RATE |
 |--------|-------|---|-------|------|
-| `BabyBearD4Width16` | BabyBear | 4 | 16 | 8 |
-| `BabyBearD1Width16` | BabyBear | 1 | 16 | 8 |
-| `BabyBearD4Width24` | BabyBear | 4 | 24 | 12 |
-| `KoalaBearD4Width16` | KoalaBear | 4 | 16 | 8 |
-| `KoalaBearD1Width16` | KoalaBear | 1 | 16 | 8 |
-| `KoalaBearD4Width24` | KoalaBear | 4 | 24 | 12 |
+| `BABY_BEAR_D4_W16` | BabyBear | 4 | 16 | 8 |
+| `BABY_BEAR_D1_W16` | BabyBear | 1 | 16 | 8 |
+| `BABY_BEAR_D4_W24` | BabyBear | 4 | 24 | 12 |
+| `KOALA_BEAR_D4_W16` | KoalaBear | 4 | 16 | 8 |
+| `KOALA_BEAR_D1_W16` | KoalaBear | 1 | 16 | 8 |
+| `KOALA_BEAR_D4_W24` | KoalaBear | 4 | 24 | 12 |
+| `GOLDILOCKS_D2_W8` | Goldilocks | 2 | 8 | 4 |
 
-For standard recursive verification, use the `D4Width16` variant matching your field. The `D1` variants use base field challenges (lower overhead per duplexing, but different security trade-offs). The `Width24` variants use a wider permutation for more efficient hashing.
+For a degree-4 suite using width 16, select the `D4_W16` constant matching your field.
+Choose the backend degree tag to match the circuit extension, for example
+`FriRecursionBackend::new(Poseidon2Config::KOALA_BEAR_D4_W16).for_extension_degree::<4>()`
+for trusted prepared recursion.
 
 The `Poseidon2Config` must be consistent between:
 - The `FriRecursionBackend` constructor

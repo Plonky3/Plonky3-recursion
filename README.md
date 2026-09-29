@@ -34,8 +34,8 @@ For most use cases, use the **unified API**: a single owner type works for both 
 
 ```rust
 use p3_recursion::{
-    FriRecursionBackend, FriRecursionConfig, PreparedInput, PreparedLayer, PreparedSource,
-    ProveNextLayerParams,
+    BatchOnly, FriRecursionBackend, FriRecursionConfig, PreparedInput, PreparedLayer,
+    PreparedSource, ProveNextLayerParams, RecursionInput,
 };
 
 // First layer: recurse on a uni-stark proof (e.g. Keccak), retaining the owner for reuse.
@@ -45,7 +45,7 @@ let source = PreparedSource::UniStark {
     public_inputs: &pis,
     preprocessed_commit: None,
 };
-let backend = FriRecursionBackend::new(poseidon2_config);
+let backend = FriRecursionBackend::new(poseidon2_config).for_extension_degree::<4>();
 let params = ProveNextLayerParams { table_packing, constraint_profile };
 let owner = PreparedLayer::new(source, config.clone(), backend.clone(), params.clone())?;
 let output = owner.prove(PreparedInput::UniStark {
@@ -55,7 +55,8 @@ let output = owner.prove(PreparedInput::UniStark {
 })?;
 
 // Next layers: prepare an owner from the previous batch proof, then check before each reuse.
-let table_public_inputs = vec![vec![]; output.0.proof.opened_values.instances.len()];
+let RecursionInput::BatchStark { table_public_inputs, .. } =
+    output.into_recursion_input::<BatchOnly>() else { unreachable!() };
 let owner = PreparedLayer::new(
     PreparedSource::batch(&output.0, &output.0.stark_common, &table_public_inputs),
     config.clone(),
@@ -73,7 +74,11 @@ let output = owner.prove(input)?;
 
 `PreparedLayer` retains the circuit and prepared prover data. For a changing native contract, construct a new owner explicitly; a matching contract can be checked and proved repeatedly.
 The compatibility check is shape-only: this owner does not bind child proving keys, recursion
-statements, or public claims. Those trust relations require explicit policy before reuse.
+statements, or public claims. For verifier-authoritative reuse, use `TrustedPreparedLayer` or
+`TrustedPreparedAggregation`, supplying a trusted uni-STARK config/AIR and preprocessing
+commitment or a retained batch `CircuitVerifier`. Each proof attempt supplies witness data and
+the expected statement. See the [compiled trusted-owner example](recursion/src/prelude.rs) and
+[trusted layer tests](recursion/tests/prepared_layer.rs).
 
 #### Recursive aggregation
 
@@ -94,7 +99,7 @@ let input_2 = RecursionInput::UniStark {
     preprocessed_commit: None,
 };
 
-let backend = FriRecursionBackend::new(poseidon2_config);
+let backend = FriRecursionBackend::new(poseidon2_config).for_extension_degree::<4>();
 let params = ProveNextLayerParams { table_packing, constraint_profile };
 let output = build_and_prove_aggregation_layer(
     &input_1,
@@ -107,49 +112,12 @@ let output = build_and_prove_aggregation_layer(
 
 ### Low-level API
 
-For fine-grained control, you can build the verification circuit and run the prover pipeline yourself via `verify_p3_batch_proof_circuit` (batch) or `verify_p3_uni_proof_circuit` (uni-stark). For ordinary repeated proving, prefer `PreparedLayer` or `PreparedAggregation` so the circuit and preprocessing remain with the owner:
-
-```rust
-use p3_recursion::verifier::verify_p3_batch_proof_circuit;
-use p3_recursion::public_inputs::BatchStarkVerifierInputsBuilder;
-use p3_circuit::CircuitBuilder;
-
-// Build a verification circuit
-let mut circuit_builder = CircuitBuilder::new();
-circuit_builder.enable_poseidon2_perm::<Config, _>(trace_generator, poseidon2_perm);
-
-let (verifier_inputs, mmcs_op_ids) = verify_p3_batch_proof_circuit::<
-    MyConfig,
-    HashTargets<F, DIGEST_ELEMS>,
-    InputProofTargets<F, Challenge, RecValMmcs<...>>,
-    InnerFri,
-    LogUpGadget,
-    WIDTH,
-    RATE,
-    TRACE_D,
->(
-    &config,
-    &mut circuit_builder,
-    &batch_stark_proof,
-    &fri_verifier_params,
-    common_data,
-    &lookup_gadget,
-    Poseidon2Config::BabyBearD4Width16,
-)?;
-
-// Build and run the circuit
-let circuit = circuit_builder.build()?;
-let mut runner = circuit.runner();
-
-// Pack public inputs using the builder
-let public_inputs = verifier_inputs.pack_public_values(&pis, &batch_proof, common_data);
-runner.set_public_inputs(&public_inputs)?;
-
-// Set MMCS private data (Merkle paths)
-set_fri_mmcs_private_data(&mut runner, &mmcs_op_ids, &proof.opening_proof)?;
-
-let traces = runner.run()?;
-```
+For expert control of circuit construction, start with the checked
+[`PcsRecursionBackend` interface](recursion/src/recursion.rs) and
+[`FriRecursionConfig` implementation](recursion/src/builtin_config/fri/recursion.rs).
+FRI private data requires restoring each query's path from the pruned proof and replayed
+opening transcript before filling MMCS witness slots. The [low-level guide](book/src/user_guide/low_level_api.md)
+explains that boundary; the prepared owners handle it for ordinary use.
 
 ### Examples
 
@@ -256,7 +224,7 @@ Two custom profiles are defined in the workspace `Cargo.toml`:
 
 | Profile | Based on | Description |
 |---------|----------|-------------|
-| `optimized` | `release` | Maximum performance: thin LTO, single codegen unit, `opt-level = 3`. Use for all benchmarks and production runs. |
+| `optimized` | `release` | Thin LTO, 16 codegen units, `opt-level = 3`. Use for benchmarks and performance runs. |
 | `profiling` | `release` | Like `release` but with debug symbols (`debug = true`) for CPU profilers (`perf`, Instruments, `samply`). |
 
 ```bash

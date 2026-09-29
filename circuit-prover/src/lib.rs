@@ -7,31 +7,40 @@
 //! - `D`: Element-field extension degree. Must equal `EF::DIMENSION`. AIRs are parameterized as `<F, D>`.
 //! - `CD`: FRI challenge field degree, independent of `D`.
 //!
-//! - Build a field-specific config via `config::{babybear_config, koalabear_config, goldilocks_config}`.
-//! - Create a `BatchStarkProver` from that config.
-//! - Generate traces from a `p3_circuit::Circuit` runner and prove/verify.
+//! - Build a field-specific config via [`config::baby_bear`], [`config::koala_bear`], or [`config::goldilocks`].
+//! - Prepare a circuit once with [`BatchStarkProver::prepare_circuit`].
+//! - Prove runner traces with [`PreparedCircuitProver::prove`] and verify against an
+//!   independently retained [`CircuitVerifier`] and expected statement.
 //!
 //! Example (BabyBear):
 //!
-//! ```ignore
+//! ```rust
 //! use p3_baby_bear::BabyBear;
-//! use p3_circuit::builder::CircuitBuilder;
-//! use p3_circuit_prover::config::babybear_config::build_standard_config_babybear;
-//! use p3_circuit_prover::BatchStarkProver;
+//! use p3_circuit::{CircuitBuilder, StatementExport};
+//! use p3_circuit_prover::batch_stark_prover::{StatementAirBuilder, StatementPreprocessor, StatementProver};
+//! use p3_circuit_prover::common::{NpoAirBuilder, NpoPreprocessor};
+//! use p3_circuit_prover::{config, BatchStarkProver, ConstraintProfile};
 //!
 //! let mut builder = CircuitBuilder::<BabyBear>::new();
 //! let x = builder.public_input();
-//! let y = builder.public_input();
-//! let z = builder.add(x, y);
-//! builder.assert_zero(builder.sub(z, builder.define_const(BabyBear::from_u64(3))));
-//! let circuit = builder.build();
+//! let schema = builder.set_statement_exports::<BabyBear>(&[StatementExport::Base(x)]).unwrap();
+//! let circuit = builder.build().unwrap();
+//! let preprocessors: Vec<Box<dyn NpoPreprocessor<BabyBear>>> =
+//!     vec![Box::new(StatementPreprocessor::new(schema.clone()))];
+//! let air_builders: Vec<Box<dyn NpoAirBuilder<config::BabyBearConfig, 1>>> =
+//!     vec![Box::new(StatementAirBuilder::<1>::new(schema.clone()))];
+//! let mut prover = BatchStarkProver::new(config::baby_bear());
+//! prover.register_table_prover(Box::new(StatementProver::<1>::new(schema)));
+//! let prepared = prover.prepare_circuit::<BabyBear, 1>(
+//!     &circuit, &preprocessors, &air_builders, ConstraintProfile::Standard,
+//! ).unwrap();
+//! let verifier = prepared.verifier(); // Retain this independently of each proof.
+//! let expected = BabyBear::new(3);
 //! let mut runner = circuit.runner();
-//! runner.set_public_inputs(&[BabyBear::from_u64(1), BabyBear::from_u64(2)]).unwrap();
+//! runner.set_public_inputs(&[expected]).unwrap();
 //! let traces = runner.run().unwrap();
-//! let cfg = build_standard_config_babybear();
-//! let prover = BatchStarkProver::new(cfg);
-//! let proof = prover.prove_all_tables(&traces).unwrap();
-//! prover.verify_all_tables::<BabyBear>(&proof).unwrap();
+//! let proof = prepared.prove(&traces).unwrap();
+//! verifier.verify(&proof, &[expected]).unwrap();
 //! ```
 #![no_std]
 
