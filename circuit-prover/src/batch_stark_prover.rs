@@ -2174,7 +2174,7 @@ where
         // ALU — preprocessed is already in 10-col format (with multiplicities) from
         // get_airs_and_degrees_with_prep. When the trace is empty, a dummy row is included.
         let alu_rows = traces.alu_trace.values.len();
-        let alu_prep = primitive[PrimitiveOpType::Alu as usize].clone();
+        let alu_prep = &primitive[PrimitiveOpType::Alu as usize];
         let alu_num_ops = alu_prep.len() / AluAir::<Val<SC>, D>::preprocessed_lane_width();
         let horner_k = packing.horner_packed_steps();
         let alu_quintic = D == 5 && EF::alu_is_quintic_trinomial();
@@ -2195,7 +2195,7 @@ where
                 }
                 _ => {
                     let schedule =
-                        AluAir::<Val<SC>, D>::compute_schedule_for(&alu_prep, alu_lanes, horner_k);
+                        AluAir::<Val<SC>, D>::compute_schedule_for(alu_prep, alu_lanes, horner_k);
                     *cache = Some((alu_lanes, horner_k, alu_min_height, schedule.clone(), None));
                     (schedule, None)
                 }
@@ -2205,7 +2205,11 @@ where
             alu_num_ops,
             alu_lanes,
             reduction,
-            alu_prep,
+            if cached_prep_trace.is_some() {
+                Vec::new()
+            } else {
+                alu_prep.clone()
+            },
             horner_k,
             alu_schedule,
         )
@@ -3049,7 +3053,12 @@ where
         })?;
         let (airs_and_degrees, relation, primitive_columns, non_primitive_columns) =
             finalized.into_parts();
-        let (airs, _base_degrees): (Vec<_>, Vec<_>) = airs_and_degrees.into_iter().unzip();
+        let (mut airs, _base_degrees): (Vec<_>, Vec<_>) = airs_and_degrees.into_iter().unzip();
+        for air in &mut airs {
+            if let CircuitTableAir::Alu(air) = air {
+                air.cache_preprocessed_trace();
+            }
+        }
         let prover_data =
             ProverData::from_airs_and_degrees(&self.config, &airs, relation.trace_degree_bits())
                 .map_err(|e| BatchStarkProverError::Prove(format!("{e:?}")))?;
@@ -3114,13 +3123,25 @@ where
             }),
         };
 
+        let alu_cache = airs.into_iter().find_map(|air| {
+            if let CircuitTableAir::Alu(air) = air {
+                let key = (air.lanes, air.horner_packed_steps, air.min_height);
+                let (schedule, prep_trace) = air.into_schedule_and_prep();
+                Some((key.0, key.1, key.2, schedule, prep_trace))
+            } else {
+                None
+            }
+        });
+        let circuit_prover_data = CircuitProverData::new(
+            prover_data,
+            primitive_columns,
+            non_primitive_columns,
+        );
+        *circuit_prover_data.alu_schedule_cache.lock() = alu_cache;
+
         Ok(PreparedCircuitProver {
             prover: self,
-            circuit_prover_data: Arc::new(CircuitProverData::new(
-                prover_data,
-                primitive_columns,
-                non_primitive_columns,
-            )),
+            circuit_prover_data: Arc::new(circuit_prover_data),
             relation,
             verifier,
         })

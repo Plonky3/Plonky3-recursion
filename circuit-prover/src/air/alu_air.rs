@@ -240,6 +240,21 @@ impl<F: Field + PrimeCharacteristicRing + Copy, const D: usize> AluAir<F, D> {
         self
     }
 
+    /// Materialize static preprocessing once for setup and later proofs.
+    pub(crate) fn cache_preprocessed_trace(&mut self) {
+        if self.precomputed_prep_trace.is_none() {
+            self.precomputed_prep_trace = self.preprocessed_trace();
+        }
+    }
+
+    /// Transfer the already materialized preprocessing into prepared proving data.
+    pub(crate) fn into_schedule_and_prep(
+        mut self,
+    ) -> (Option<Vec<ScheduleEntry>>, Option<RowMajorMatrix<F>>) {
+        self.cache_preprocessed_trace();
+        (self.schedule, self.precomputed_prep_trace)
+    }
+
     /// Compute the packed-Horner lane schedule for the given preprocessed data.
     ///
     /// Exposed so callers can precompute and cache it once per circuit shape (it depends only
