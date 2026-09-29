@@ -744,13 +744,13 @@ fn trace_height(degree: usize, limits: &VerifierLimits) -> Result<usize, Artifac
 
 fn validate_table_height(
     rows: usize,
-    lanes: usize,
+    entries_per_row: usize,
     minimum_height: usize,
     degree: usize,
     limits: &VerifierLimits,
 ) -> Result<(), ArtifactError> {
     let height = trace_height(degree, limits)?;
-    let natural_height = rows.div_ceil(lanes);
+    let natural_height = rows.div_ceil(entries_per_row);
     if natural_height > height || minimum_height > height {
         return Err(ArtifactError::NonCanonicalMetadata);
     }
@@ -814,6 +814,13 @@ fn validate_relation_geometry<F: Copy>(
     let alu_width = alu_main_width.max(alu_prep_width);
     check_matrix_width("ALU matrix width", alu_width, limits)?;
 
+    // The retained ALU row count is the raw operation count. A scheduled row can place up to
+    // `horner_steps` operations in its first lane and one in each remaining physical lane.
+    let alu_operation_capacity = packing
+        .alu_lanes()
+        .checked_add(horner_minus_one)
+        .ok_or(ArtifactError::LengthOverflow)?;
+
     let primitive = [
         (
             relation.rows[p3_circuit_prover::PrimitiveTable::Const],
@@ -831,17 +838,17 @@ fn validate_relation_geometry<F: Copy>(
         ),
         (
             relation.rows[p3_circuit_prover::PrimitiveTable::Alu],
-            packing.alu_lanes(),
+            alu_operation_capacity,
             packing
                 .alu_min_height()
                 .unwrap_or_else(|| packing.min_trace_height()),
         ),
     ];
-    for ((rows, lanes, minimum), degree) in primitive
+    for ((rows, entries_per_row, minimum), degree) in primitive
         .into_iter()
         .zip(relation.trace_degree_bits.iter().copied())
     {
-        validate_table_height(rows, lanes, minimum, degree, limits)?;
+        validate_table_height(rows, entries_per_row, minimum, degree, limits)?;
     }
 
     for (index, npo) in relation.non_primitives.iter().enumerate() {
@@ -1413,6 +1420,48 @@ mod tests {
         let mut canonical = Writer::new(4096);
         write_relation(&mut canonical, &decoded, field).unwrap();
         assert_eq!(canonical.finish().unwrap(), bytes);
+    }
+
+    #[test]
+    fn relation_decoder_accepts_raw_alu_rows_with_packed_horner_capacity() {
+        let limits = ArtifactLimits::default();
+        let field = crate::artifact::wire::FieldEncoding::<BabyBear>::u32();
+        for (lanes, packed_steps, raw_rows, degree) in [(4, 2, 8640, 11), (1, 3, 2500, 10)] {
+            let mut descriptor = relation();
+            descriptor.table_packing = descriptor
+                .table_packing
+                .clone()
+                .with_public_alu_lanes(2, lanes)
+                .with_horner_pack_k(packed_steps);
+            descriptor.rows = RowCounts::new([3, 5, raw_rows]);
+            descriptor.trace_degree_bits[2] = degree;
+
+            let mut writer = Writer::new(4096);
+            write_relation(&mut writer, &descriptor, field).unwrap();
+            let bytes = writer.finish().unwrap();
+            let mut reader = Reader::new(&bytes, &limits);
+            assert_eq!(read_relation(&mut reader, field), Ok(descriptor));
+            reader.finish().unwrap();
+        }
+    }
+
+    #[test]
+    fn relation_decoder_rejects_raw_alu_rows_beyond_packed_capacity() {
+        let mut descriptor = relation();
+        descriptor.table_packing = descriptor.table_packing.clone().with_horner_pack_k(2);
+        descriptor.rows = RowCounts::new([3, 5, 10_241]);
+        descriptor.trace_degree_bits[2] = 11;
+
+        let field = crate::artifact::wire::FieldEncoding::<BabyBear>::u32();
+        let mut writer = Writer::new(4096);
+        write_relation(&mut writer, &descriptor, field).unwrap();
+        let bytes = writer.finish().unwrap();
+        let limits = ArtifactLimits::default();
+        let mut reader = Reader::new(&bytes, &limits);
+        assert_eq!(
+            read_relation(&mut reader, field),
+            Err(ArtifactError::NonCanonicalMetadata)
+        );
     }
 
     #[test]
