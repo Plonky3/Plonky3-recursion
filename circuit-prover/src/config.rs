@@ -205,7 +205,7 @@ pub fn koala_bear() -> KoalaBearConfig {
 #[inline]
 pub fn goldilocks() -> GoldilocksConfig {
     use rand::SeedableRng;
-    let mut rng = rand::rngs::SmallRng::seed_from_u64(1);
+    let mut rng = rand::rngs::Xoshiro256PlusPlus::seed_from_u64(1);
     let perm = p3_goldilocks::Poseidon2Goldilocks::<8>::new_from_rng_128(&mut rng);
     build_poseidon2_stark_config(perm.clone(), perm)
 }

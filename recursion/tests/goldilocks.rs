@@ -25,14 +25,14 @@ use p3_uni_stark::{
 };
 use p3_util::log2_ceil_usize;
 use rand::SeedableRng;
-use rand::rngs::SmallRng;
+use rand::rngs::Xoshiro256PlusPlus;
 
 use crate::common::{InnerFriGeneric, MulAir};
 
 type InnerFri = InnerFriGeneric<MyConfig, MyHash, MyCompress, DIGEST_ELEMS>;
 
 fn default_goldilocks_poseidon2_8() -> Poseidon2Goldilocks<8> {
-    let mut rng = SmallRng::seed_from_u64(1);
+    let mut rng = Xoshiro256PlusPlus::seed_from_u64(1);
     Poseidon2Goldilocks::<8>::new_from_rng_128(&mut rng)
 }
 

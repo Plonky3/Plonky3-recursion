@@ -259,14 +259,14 @@ pub fn assert_arity4_supported(arity4: bool, field: FieldOption, hash: HashOptio
 
 pub fn default_goldilocks_poseidon2_8() -> p3_goldilocks::Poseidon2Goldilocks<8> {
     use rand::SeedableRng;
-    let mut rng = rand::rngs::SmallRng::seed_from_u64(1);
+    let mut rng = rand::rngs::Xoshiro256PlusPlus::seed_from_u64(1);
     p3_goldilocks::Poseidon2Goldilocks::<8>::new_from_rng_128(&mut rng)
 }
 
 #[allow(dead_code)]
 pub fn default_goldilocks_poseidon2_16() -> p3_goldilocks::Poseidon2Goldilocks<16> {
     use rand::SeedableRng;
-    let mut rng = rand::rngs::SmallRng::seed_from_u64(1);
+    let mut rng = rand::rngs::Xoshiro256PlusPlus::seed_from_u64(1);
     p3_goldilocks::Poseidon2Goldilocks::<16>::new_from_rng_128(&mut rng)
 }
 

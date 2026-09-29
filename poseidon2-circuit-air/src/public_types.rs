@@ -27,7 +27,7 @@ use p3_goldilocks::{GenericPoseidon2LinearLayersGoldilocks, Goldilocks};
 use p3_koala_bear::{GenericPoseidon2LinearLayersKoalaBear, KoalaBear};
 use p3_poseidon2_air::RoundConstants;
 use rand::distr::StandardUniform;
-use rand::rngs::SmallRng;
+use rand::rngs::Xoshiro256PlusPlus;
 use rand::{RngExt, SeedableRng};
 
 use crate::{Poseidon2CircuitAir, assert_circuit_cols_split, assert_circuit_cols_split_arity4};
@@ -675,9 +675,9 @@ pub type Poseidon2CircuitAirGoldilocksD2Width8 = Poseidon2CircuitAir<
 >;
 
 /// Generate deterministic round constants for the Goldilocks width-8
-/// configuration using a fixed seed.
+/// configuration using the historical 64-bit generator with a fixed seed.
 pub fn goldilocks_d2_width8_round_constants() -> RoundConstants<Goldilocks, 8, 4, 22> {
-    let mut rng = SmallRng::seed_from_u64(1);
+    let mut rng = Xoshiro256PlusPlus::seed_from_u64(1);
     let beginning_full = rng.sample(StandardUniform);
     let ending_full = rng.sample(StandardUniform);
     let partial = rng.sample(StandardUniform);
@@ -685,9 +685,9 @@ pub fn goldilocks_d2_width8_round_constants() -> RoundConstants<Goldilocks, 8, 4
 }
 
 /// Generate deterministic round constants for the Goldilocks width-16
-/// configuration using a fixed seed.
+/// configuration using the historical 64-bit generator with a fixed seed.
 pub fn goldilocks_d2_width16_round_constants() -> RoundConstants<Goldilocks, 16, 4, 22> {
-    let mut rng = SmallRng::seed_from_u64(1);
+    let mut rng = Xoshiro256PlusPlus::seed_from_u64(1);
     let beginning_full = rng.sample(StandardUniform);
     let ending_full = rng.sample(StandardUniform);
     let partial = rng.sample(StandardUniform);

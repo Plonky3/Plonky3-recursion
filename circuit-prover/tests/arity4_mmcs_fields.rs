@@ -266,7 +266,7 @@ arity4_field_suite!(
     p3_goldilocks::Poseidon2Goldilocks<16>,
     {
         use rand::SeedableRng;
-        let mut rng = rand::rngs::SmallRng::seed_from_u64(1);
+        let mut rng = rand::rngs::Xoshiro256PlusPlus::seed_from_u64(1);
         p3_goldilocks::Poseidon2Goldilocks::<16>::new_from_rng_128(&mut rng)
     },
     p3_poseidon2_circuit_air::GoldilocksD2Width16,

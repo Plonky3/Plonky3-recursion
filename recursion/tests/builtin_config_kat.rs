@@ -3,6 +3,7 @@ use p3_baby_bear::{
     default_babybear_poseidon2_32,
 };
 use p3_challenger::{CanObserve, CanSample, DuplexChallenger};
+use p3_circuit::ops::{GoldilocksD2Width8, Poseidon2CircuitRow, Poseidon2Params};
 use p3_field::extension::{
     BinomialExtensionField, BinomiallyExtendable, QuinticTrinomialExtensionField,
 };
@@ -11,6 +12,12 @@ use p3_goldilocks::{Goldilocks, Poseidon2Goldilocks};
 use p3_koala_bear::{
     KoalaBear, default_koalabear_poseidon1_16, default_koalabear_poseidon2_16,
     default_koalabear_poseidon2_32,
+};
+use p3_matrix::Matrix;
+use p3_poseidon2_air::Poseidon2Cols;
+use p3_poseidon2_circuit_air::{
+    GoldilocksD2Width16, goldilocks_d2_width8_default_air, goldilocks_d2_width8_round_constants,
+    goldilocks_d2_width16_round_constants,
 };
 use p3_recursion::builtin_config::{fixed_goldilocks_poseidon2_8, fixed_goldilocks_poseidon2_16};
 use p3_symmetric::{
@@ -346,5 +353,84 @@ fn fixed_goldilocks_poseidon2_matches_the_historical_small_rng_constructors() {
     assert_eq!(
         fixed_goldilocks_poseidon2_16().permute(input),
         historical.permute(input)
+    );
+}
+
+macro_rules! assert_goldilocks_air_native_agreement {
+    ($width:literal, $config:ty, $air:expr, $constants:expr, $native:expr) => {{
+        use core::borrow::Borrow;
+
+        let constants = $constants;
+        let air = $air;
+        let native = $native;
+        let perm_cols = p3_poseidon2_air::num_cols::<
+            $width,
+            { <$config as Poseidon2Params>::SBOX_DEGREE },
+            { <$config as Poseidon2Params>::SBOX_REGISTERS },
+            { <$config as Poseidon2Params>::HALF_FULL_ROUNDS },
+            { <$config as Poseidon2Params>::PARTIAL_ROUNDS },
+        >();
+        let states: [[Goldilocks; $width]; 2] = [
+            core::array::from_fn(|i| {
+                Goldilocks::from_u64(101 + (i as u64 + 1) * 17 + (i * i) as u64)
+            }),
+            core::array::from_fn(|i| {
+                Goldilocks::from_u64(907 + (($width - i) as u64) * 29 + (i * i * i) as u64)
+            }),
+        ];
+        for state in states {
+            let row = Poseidon2CircuitRow {
+                challenger: false,
+                new_start: true,
+                merkle_path: false,
+                mmcs_bit: false,
+                mmcs_bit2: false,
+                mmcs_index_sum: Goldilocks::ZERO,
+                input_values: state.to_vec().into(),
+                in_ctl: vec![false; <$config as Poseidon2Params>::WIDTH_EXT].into(),
+                input_indices: vec![0; <$config as Poseidon2Params>::WIDTH_EXT].into(),
+                out_ctl: vec![false; <$config as Poseidon2Params>::RATE_EXT].into(),
+                output_indices: vec![0; <$config as Poseidon2Params>::RATE_EXT].into(),
+                mmcs_index_sum_idx: 0,
+                mmcs_ctl_enabled: false,
+                absorb_len: 0,
+            };
+            let trace = air.generate_trace_rows(&[row], &constants, 0);
+            let first_row = trace.row_slice(0).unwrap();
+            let local: &Poseidon2Cols<
+                Goldilocks,
+                $width,
+                { <$config as Poseidon2Params>::SBOX_DEGREE },
+                { <$config as Poseidon2Params>::SBOX_REGISTERS },
+                { <$config as Poseidon2Params>::HALF_FULL_ROUNDS },
+                { <$config as Poseidon2Params>::PARTIAL_ROUNDS },
+            > = first_row[..perm_cols].borrow();
+            assert_eq!(
+                local.ending_full_rounds[<$config as Poseidon2Params>::HALF_FULL_ROUNDS - 1].post,
+                native.permute(state)
+            );
+        }
+    }};
+}
+
+#[test]
+fn fixed_goldilocks_width8_native_permutation_matches_circuit_air_trace() {
+    assert_goldilocks_air_native_agreement!(
+        8,
+        GoldilocksD2Width8,
+        goldilocks_d2_width8_default_air(),
+        goldilocks_d2_width8_round_constants(),
+        fixed_goldilocks_poseidon2_8()
+    );
+}
+
+#[test]
+fn fixed_goldilocks_width16_native_permutation_matches_circuit_air_trace() {
+    assert_goldilocks_air_native_agreement!(
+        16,
+        GoldilocksD2Width16,
+        GoldilocksD2Width16::default_air(),
+        goldilocks_d2_width16_round_constants(),
+        fixed_goldilocks_poseidon2_16()
     );
 }
