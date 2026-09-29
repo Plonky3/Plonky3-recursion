@@ -935,6 +935,7 @@ fn compute_single_reduced_opening<EF: Field>(
     alpha: Target,            // Alpha challenge
     alpha_powers_set: &mut HashMap<usize, Target>,
     inv_z_minus_x: Target, // 1 / (z - x), shared across matrices at same (height, z)
+    compressed_x: Option<Target>,
 ) -> (Target, Target) // (new_alpha_pow, reduced_opening_contrib)
 {
     builder.push_scope("compute_single_reduced_opening");
@@ -954,12 +955,28 @@ fn compute_single_reduced_opening<EF: Field>(
     //   ...
     //   inner = inner * alpha + p_at_z[0] - p_at_x[0]
     //
-    // Each step emits a single HornerAcc ALU op (no intermediate witnesses).
-    let zero = builder.define_const(EF::ZERO);
-    let mut inner = zero;
-    for i in (0..n).rev() {
-        inner = builder.horner_acc_step(inner, alpha, point_values[i], opened_values[i]);
-    }
+    // Multipoint matrices reuse the query-side sum across opening points. Ordinary
+    // mul_add nodes let the builder share the point-side sum across queries without
+    // joining independent packed-Horner chains.
+    let inner = if let Some(compressed_x) = compressed_x {
+        let compressed_z = if n == 1 {
+            point_values[0]
+        } else {
+            let mut reduced_z = point_values[n - 1];
+            for &value in point_values[..n - 1].iter().rev() {
+                reduced_z = builder.mul_add(reduced_z, alpha, value);
+            }
+            reduced_z
+        };
+        builder.sub(compressed_z, compressed_x)
+    } else {
+        let zero = builder.define_const(EF::ZERO);
+        let mut inner = zero;
+        for i in (0..n).rev() {
+            inner = builder.horner_acc_step(inner, alpha, point_values[i], opened_values[i]);
+        }
+        inner
+    };
 
     // reduced_opening = alpha_pow * inner * (1 / (z - x))
     let numerator = builder.mul(alpha_pow, inner);
@@ -1251,6 +1268,11 @@ where
             } else {
                 // Fallback: per-matrix per-z, identical to the original implementation.
                 for (mat_opening, points_and_values) in matrices {
+                    let compressed_x = if points_and_values.len() > 1 && mat_opening.len() > 1 {
+                        Some(evaluate_polynomial(builder, mat_opening, alpha))
+                    } else {
+                        None
+                    };
                     for (z, ps_at_z) in points_and_values.iter() {
                         let inv_z_minus_x = *inv_z_minus_x_cache
                             .entry((*log_height, *z))
@@ -1279,6 +1301,7 @@ where
                             alpha,
                             &mut alpha_powers_set,
                             inv_z_minus_x,
+                            compressed_x,
                         );
 
                         let entry = reduced_openings.get_mut(log_height).expect("entry");
@@ -1982,5 +2005,139 @@ mod checked_geometry_tests {
         runner
             .run()
             .expect("FRI open_input must use the native shifted index for the short batch");
+    }
+}
+
+#[cfg(test)]
+mod reduced_opening_tests {
+    use super::{compute_single_reduced_opening, evaluate_polynomial};
+    use alloc::vec;
+    use alloc::vec::Vec;
+    use hashbrown::HashMap;
+    use p3_batch_stark::ProverData;
+    use p3_circuit::CircuitBuilder;
+    use p3_circuit_prover::common::get_airs_and_degrees_with_prep;
+    use p3_circuit_prover::{BatchStarkProver, CircuitProverData, ConstraintProfile, TablePacking};
+    use p3_field::extension::BinomialExtensionField;
+    use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
+    use p3_koala_bear::KoalaBear;
+    use p3_test_utils::koala_bear_params::{MyConfig, make_test_config_with_pow_bits};
+
+    // Catches sign/order/offset mistakes, including alpha=0 where division-based
+    // rewrites are invalid. Expected values use native ascending power sums.
+    #[test]
+    fn multipoint_reductions_match_native_power_sums() {
+        type EF = BinomialExtensionField<KoalaBear, 4>;
+        let nonbase = EF::from_basis_coefficients_slice(&[
+            KoalaBear::from_u32(2),
+            KoalaBear::from_u32(3),
+            KoalaBear::from_u32(4),
+            KoalaBear::from_u32(5),
+        ])
+        .unwrap();
+        for alpha_value in [EF::ZERO, EF::ONE, nonbase] {
+            for width in [0, 1, 3, 8, 17] {
+                let mut builder = CircuitBuilder::<EF>::new();
+                let alpha = builder.public_input();
+                let initial_offset = builder.public_input();
+                let inverse = builder.public_input();
+                let mut public = vec![alpha_value, EF::from_u32(7), EF::from_u32(11)];
+                let point_values: Vec<Vec<EF>> = (0..2)
+                    .map(|point| {
+                        (0..width)
+                            .map(|i| EF::from_u32((31 + point * 23 + i * 3) as u32))
+                            .collect()
+                    })
+                    .collect();
+                let point_targets: Vec<_> = point_values
+                    .iter()
+                    .map(|values| {
+                        let targets = builder.alloc_public_inputs(width, "point values");
+                        public.extend(values);
+                        targets
+                    })
+                    .collect();
+                let mut powers = HashMap::new();
+                for query in 0..6 {
+                    let row_values: Vec<_> = (0..width)
+                        .map(|i| EF::from_u32((3 + query * 17 + i * 7) as u32))
+                        .collect();
+                    let row = builder.alloc_public_inputs(width, "query row");
+                    public.extend(&row_values);
+                    let sx = match width {
+                        0 => None,
+                        1 => Some(row[0]),
+                        _ => Some(evaluate_polynomial(&mut builder, &row, alpha)),
+                    };
+                    let mut offset = initial_offset;
+                    let mut offset_value = EF::from_u32(7);
+                    for (zs, z_values) in point_targets.iter().zip(&point_values) {
+                        let (next_offset, reduced) = compute_single_reduced_opening(
+                            &mut builder,
+                            &row,
+                            zs,
+                            offset,
+                            alpha,
+                            &mut powers,
+                            inverse,
+                            sx,
+                        );
+                        let (reference_offset, reference) = compute_single_reduced_opening(
+                            &mut builder,
+                            &row,
+                            zs,
+                            offset,
+                            alpha,
+                            &mut powers,
+                            inverse,
+                            None,
+                        );
+                        builder.connect(reduced, reference);
+                        builder.connect(next_offset, reference_offset);
+                        let mut sum = EF::ZERO;
+                        let mut power = EF::ONE;
+                        for (z, x) in z_values.iter().zip(&row_values) {
+                            sum += power * (*z - *x);
+                            power *= alpha_value;
+                        }
+                        let expected = builder.define_const(offset_value * sum * EF::from_u32(11));
+                        builder.connect(reduced, expected);
+                        offset_value *= power;
+                        let expected_offset = builder.define_const(offset_value);
+                        builder.connect(next_offset, expected_offset);
+                        offset = next_offset;
+                    }
+                }
+                let circuit = builder.build().unwrap();
+                let mut runner = circuit.runner();
+                runner.set_public_inputs(&public).unwrap();
+                let traces = runner
+                    .run()
+                    .expect("factored and fused reductions must match native sums");
+                let packing = TablePacking::new(1, 3).with_horner_pack_k(4);
+                let config = make_test_config_with_pow_bits(0);
+                let (air_degrees, primitive, non_primitive) =
+                    get_airs_and_degrees_with_prep::<MyConfig, _, 4>(
+                        &circuit,
+                        &packing,
+                        &[],
+                        &[],
+                        ConstraintProfile::Standard,
+                    )
+                    .unwrap();
+                let (airs, degrees): (Vec<_>, Vec<_>) = air_degrees.into_iter().unzip();
+                let data = ProverData::from_airs_and_degrees(&config, &airs, &degrees).unwrap();
+                let data = CircuitProverData::new(data, primitive, non_primitive);
+                let prover = BatchStarkProver::new(config).with_table_packing(packing);
+                let proof = prover.prove_all_tables(&traces, &data).unwrap();
+                prover
+                    .verify_all_tables::<EF>(&proof)
+                    .unwrap_or_else(|error| {
+                        panic!(
+                            "reduced opening AIR: alpha={alpha_value:?}, width={width}: {error:?}"
+                        )
+                    });
+            }
+        }
     }
 }
