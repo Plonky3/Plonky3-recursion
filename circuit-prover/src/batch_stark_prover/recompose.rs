@@ -122,23 +122,25 @@ impl<const D: usize> RecomposeProver<D> {
             .unwrap_or_else(|| packing.min_trace_height());
 
         let coeff_lookups = self.coeff_lookups;
-        let preprocessed = if let Some(committed) = committed {
-            committed.to_vec()
-        } else {
-            let prep_lane_width =
-                RecomposeAir::<Val<SC>, D>::preprocessed_lane_width_for(coeff_lookups);
-            let mut preprocessed = Val::<SC>::zero_vec(num_ops * prep_lane_width);
-            for (i, row) in t.operations.iter().enumerate() {
-                let base = i * prep_lane_width;
-                preprocessed[base] = row.output_wid.base_field_index::<Val<SC>, D>();
-                if coeff_lookups {
-                    for (j, &coeff_wid) in row.input_wids.iter().enumerate().take(D) {
-                        preprocessed[base + 2 + j * 2] = coeff_wid.base_field_index::<Val<SC>, D>();
+        let preprocessed = committed.map_or_else(
+            || {
+                let prep_lane_width =
+                    RecomposeAir::<Val<SC>, D>::preprocessed_lane_width_for(coeff_lookups);
+                let mut preprocessed = Val::<SC>::zero_vec(num_ops * prep_lane_width);
+                for (i, row) in t.operations.iter().enumerate() {
+                    let base = i * prep_lane_width;
+                    preprocessed[base] = row.output_wid.base_field_index::<Val<SC>, D>();
+                    if coeff_lookups {
+                        for (j, &coeff_wid) in row.input_wids.iter().enumerate().take(D) {
+                            preprocessed[base + 2 + j * 2] =
+                                coeff_wid.base_field_index::<Val<SC>, D>();
+                        }
                     }
                 }
-            }
-            preprocessed
-        };
+                preprocessed
+            },
+            <[_]>::to_vec,
+        );
 
         let air = RecomposeAir::<Val<SC>, D>::new_with_preprocessed(
             lanes,
