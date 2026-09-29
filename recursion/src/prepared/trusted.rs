@@ -2,7 +2,10 @@ use alloc::string::ToString;
 use alloc::vec;
 
 use p3_air::{SymbolicExpression, SymbolicExpressionExt};
-use p3_circuit::{Circuit, CircuitBuilder, StatementField, StatementSchema};
+use p3_circuit::{
+    Circuit, CircuitBuilder, StateTransitionError, StateTransitionLayout, StatementField,
+    StatementSchema,
+};
 use p3_circuit_prover::config::StarkField;
 use p3_circuit_prover::field_params::ExtractBinomialW;
 use p3_circuit_prover::{BatchStarkProof, CircuitVerifier, StatementPreprocessor};
@@ -75,6 +78,18 @@ where
 }
 
 impl<SC> Copy for TrustedPreparedInput<'_, SC> where SC: StarkGenericConfig + 'static {}
+
+impl<SC> TrustedPreparedInput<'_, SC>
+where
+    SC: StarkGenericConfig + 'static,
+{
+    const fn statement_values(&self) -> &[Val<SC>] {
+        match self {
+            Self::UniStark { public_inputs, .. } => public_inputs,
+            Self::BatchStark { statement, .. } => statement,
+        }
+    }
+}
 
 enum TrustedChildAuthority<'air, SC, A>
 where
@@ -443,6 +458,7 @@ where
     backend: B,
     params: ProveNextLayerParams,
     prep: PreparedProver<OutSC>,
+    state_transition_layout: Option<StateTransitionLayout>,
 }
 
 impl<'left_air, 'right_air, InSC, OutSC, A1, A2, B, const D: usize>
@@ -493,6 +509,35 @@ where
         backend: B,
         params: ProveNextLayerParams,
     ) -> Result<Self, VerificationError> {
+        Self::new_with_composition(left, right, output_config, backend, params, None)
+    }
+
+    /// Prepare a reusable trusted merger for `[initial state, final state, count]` statements.
+    /// The child relation determines the meaning of its count; this constructor compiles
+    /// coefficientwise continuity and integer-safe count addition into the parent relation.
+    pub fn new_state_transition(
+        left: TrustedPreparedSource<'left_air, '_, InSC, A1>,
+        right: TrustedPreparedSource<'right_air, '_, InSC, A2>,
+        output_config: OutSC,
+        backend: B,
+        params: ProveNextLayerParams,
+        layout: StateTransitionLayout,
+    ) -> Result<Self, VerificationError> {
+        Self::new_with_composition(left, right, output_config, backend, params, Some(layout))
+    }
+
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "shared constructor consumes output configuration authority"
+    )]
+    fn new_with_composition(
+        left: TrustedPreparedSource<'left_air, '_, InSC, A1>,
+        right: TrustedPreparedSource<'right_air, '_, InSC, A2>,
+        output_config: OutSC,
+        backend: B,
+        params: ProveNextLayerParams,
+        state_transition_layout: Option<StateTransitionLayout>,
+    ) -> Result<Self, VerificationError> {
         preflight_trusted_source::<InSC, A1, B, D>(&backend, &left)?;
         preflight_trusted_source::<InSC, A2, B, D>(&backend, &right)?;
 
@@ -500,6 +545,15 @@ where
         let right = TrustedConstruction::<InSC, A2>::new(right)?;
         let left_statement = trusted_child_statement_layout(&left.authority)?;
         let right_statement = trusted_child_statement_layout(&right.authority)?;
+        if let Some(layout) = &state_transition_layout {
+            if left_statement.schema() != layout.statement_schema() {
+                return Err(StateTransitionError::ChildSchemaMismatch { child: 0 }.into());
+            }
+            if right_statement.schema() != layout.statement_schema() {
+                return Err(StateTransitionError::ChildSchemaMismatch { child: 1 }.into());
+            }
+            layout.validate_field_pair::<Val<InSC>, Val<OutSC>>()?;
+        }
         let left_prev = left.authority.recursion_input(&left.input)?;
         let right_prev = right.authority.recursion_input(&right.input)?;
         let left_contract = capture_trusted_input_contract::<InSC, A1, B, D>(
@@ -514,6 +568,12 @@ where
             &right.input,
             &right_prev,
         )?;
+        if let Some(layout) = &state_transition_layout {
+            layout.compose_statement(
+                left.input.statement_values(),
+                right.input.statement_values(),
+            )?;
+        }
 
         let mut builder = CircuitBuilder::new();
         <B as PcsRecursionBackend<InSC, A1, D>>::prepare_circuit(
@@ -566,18 +626,30 @@ where
                 &right_statement,
                 &builder,
             )?;
-        let aggregation_layout = VerifiedStatementTargets::install_ordered_aggregation::<Val<InSC>>(
-            left_targets,
-            right_targets,
-            &mut builder,
-        )?;
+        let output_schema = if let Some(layout) = &state_transition_layout {
+            VerifiedStatementTargets::install_state_transition::<Val<InSC>>(
+                left_targets,
+                right_targets,
+                &mut builder,
+                layout,
+            )?;
+            layout.statement_schema().clone()
+        } else {
+            VerifiedStatementTargets::install_ordered_aggregation::<Val<InSC>>(
+                left_targets,
+                right_targets,
+                &mut builder,
+            )?
+            .output()
+            .clone()
+        };
         let circuit = builder.build().map_err(VerificationError::CircuitBuilder)?;
         let prep = prepare_prover_with_statement::<OutSC, BatchOnly, B, D>(
             &circuit,
             &output_config,
             &backend,
             &params,
-            aggregation_layout.output(),
+            &output_schema,
         )?;
 
         Ok(Self {
@@ -591,6 +663,7 @@ where
             backend,
             params,
             prep,
+            state_transition_layout,
         })
     }
 
@@ -613,7 +686,11 @@ where
             &self.right,
             &self.right_contract,
             right,
-        )
+        )?;
+        if let Some(layout) = &self.state_transition_layout {
+            layout.compose_statement(left.statement_values(), right.statement_values())?;
+        }
+        Ok(())
     }
 
     /// Prove one aggregation layer under the retained child authorities and output config.
@@ -658,6 +735,11 @@ where
 
     pub const fn params(&self) -> &ProveNextLayerParams {
         &self.params
+    }
+
+    /// Retained transition interpretation for this owner, if it composes transitions.
+    pub const fn state_transition_layout(&self) -> Option<&StateTransitionLayout> {
+        self.state_transition_layout.as_ref()
     }
 
     pub fn verifier(&self) -> CircuitVerifier<OutSC> {

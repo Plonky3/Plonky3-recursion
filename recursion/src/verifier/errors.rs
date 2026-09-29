@@ -2,7 +2,7 @@
 
 use alloc::string::String;
 
-use p3_circuit::{CircuitBuilderError, CircuitError};
+use p3_circuit::{CircuitBuilderError, CircuitError, StateTransitionError};
 use p3_circuit_prover::BatchStarkProverError;
 use thiserror::Error;
 
@@ -51,6 +51,10 @@ pub enum VerificationError {
     /// Error from the circuit builder layer
     #[error("Circuit builder error: {0}")]
     CircuitBuilder(#[from] CircuitBuilderError),
+
+    /// Invalid state-transition layout or runtime child statements.
+    #[error(transparent)]
+    StateTransition(#[from] StateTransitionError),
 
     /// Error from challenge generation
     #[error("Generation error: {0}")]

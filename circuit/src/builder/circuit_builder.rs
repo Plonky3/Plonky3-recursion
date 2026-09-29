@@ -133,6 +133,10 @@ impl<F: Field> VerifiedStatementTargets<F> {
 
     /// Consume two verified capabilities and install a compact state-transition statement.
     /// Equality and three integer range checks are compiled into the parent relation.
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "both opaque verified capabilities must be consumed by composition"
+    )]
     pub fn install_state_transition<BF>(
         left: Self,
         right: Self,
@@ -161,10 +165,11 @@ impl<F: Field> VerifiedStatementTargets<F> {
         layout.validate_field::<BF>()?;
         let width = layout.state_width();
         for coefficient in 0..width {
-            builder.connect(
+            let difference = builder.sub(
                 left.base_targets[width + coefficient],
                 right.base_targets[coefficient],
             );
+            builder.assert_zero(difference);
         }
         let left_count = left.base_targets[2 * width];
         let right_count = right.base_targets[2 * width];

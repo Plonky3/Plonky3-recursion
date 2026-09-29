@@ -35,6 +35,8 @@
 //! }
 //! ```
 
+pub use p3_circuit::{StateTransitionError, StateTransitionLayout};
+
 pub use crate::challenger::CircuitChallenger;
 pub use crate::generation::{GenerationError, PcsGeneration};
 pub use crate::pcs::fri::FriVerifierParams;

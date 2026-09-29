@@ -1,5 +1,6 @@
 use alloc::format;
 use alloc::vec::Vec;
+use core::any::{TypeId, type_name};
 
 use p3_field::PrimeField64;
 use serde::{Deserialize, Serialize};
@@ -94,6 +95,11 @@ pub enum StateTransitionError {
     CountOverflow { sum: u128, max: u64 },
     #[error("transition count capacity for {bits} bits exceeds field modulus {modulus}")]
     CountCapacityExceeded { bits: u8, modulus: u64 },
+    #[error("transition input base field {input} differs from output base field {output}")]
+    BaseFieldTypeMismatch {
+        input: &'static str,
+        output: &'static str,
+    },
 }
 
 impl StateTransitionLayout {
@@ -125,6 +131,13 @@ impl StateTransitionLayout {
         if width == 0 {
             return Err(StateTransitionError::EmptyState);
         }
+        if !(1..=63).contains(&count_bits) {
+            return Err(StateTransitionError::InvalidCountBits { bits: count_bits });
+        }
+        width
+            .checked_mul(2)
+            .and_then(|endpoints| endpoints.checked_add(1))
+            .ok_or(StatementError::LengthOverflow)?;
         Self::try_new(
             StatementSchema::try_new(alloc::vec![StatementField::Base; width])?,
             count_bits,
@@ -153,6 +166,20 @@ impl StateTransitionLayout {
             });
         }
         Ok(())
+    }
+
+    /// Check count capacity and require a single concrete base-field representation across
+    /// input and output, as required by the retained Statement trace representation.
+    pub fn validate_field_pair<InBF: PrimeField64, OutBF: PrimeField64>(
+        &self,
+    ) -> Result<(), StateTransitionError> {
+        if TypeId::of::<InBF>() != TypeId::of::<OutBF>() {
+            return Err(StateTransitionError::BaseFieldTypeMismatch {
+                input: type_name::<InBF>(),
+                output: type_name::<OutBF>(),
+            });
+        }
+        self.validate_field::<InBF>()
     }
 
     pub const fn max_count(&self) -> u64 {
@@ -617,6 +644,31 @@ mod tests {
                 .unwrap()
                 .validate_field::<Goldilocks>(),
             Err(StateTransitionError::CountCapacityExceeded { .. })
+        ));
+    }
+
+    #[test]
+    fn transition_base_constructor_rejects_impossible_width_before_allocating() {
+        assert_eq!(
+            StateTransitionLayout::base(usize::MAX, 4),
+            Err(StateTransitionError::InvalidSchema(
+                StatementError::LengthOverflow
+            ))
+        );
+        assert_eq!(
+            StateTransitionLayout::base(usize::MAX, 0),
+            Err(StateTransitionError::InvalidCountBits { bits: 0 })
+        );
+    }
+
+    #[test]
+    fn transition_field_pair_rejects_distinct_concrete_base_fields() {
+        let layout = StateTransitionLayout::base(1, 4).unwrap();
+        assert_eq!(layout.validate_field_pair::<BabyBear, BabyBear>(), Ok(()));
+        assert!(matches!(
+            layout.validate_field_pair::<BabyBear, KoalaBear>(),
+            Err(StateTransitionError::BaseFieldTypeMismatch { input, output })
+                if input.contains("BabyBear") && output.contains("KoalaBear")
         ));
     }
 }
