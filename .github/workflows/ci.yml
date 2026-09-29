@@ -16,6 +16,18 @@ env:
   CARGO_INCREMENTAL: 0 # reduce disk bloat
 
 jobs:
+  packaged_crates:
+    name: Packaged crate consumer
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build and run from published archives
+        run: python3 scripts/check_packaged_crates.py
+
   build_and_test:
     name: Build and Test
     strategy:
