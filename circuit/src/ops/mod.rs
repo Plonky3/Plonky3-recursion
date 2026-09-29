@@ -3,6 +3,7 @@ mod executor;
 mod npo;
 mod op;
 
+pub mod binary_tower;
 pub mod blake3_compress;
 pub mod byte_hash;
 pub mod hash;
@@ -15,6 +16,7 @@ pub(crate) mod poseidon_perm;
 pub mod recompose;
 pub mod statement;
 
+pub use binary_tower::{BINARY_TOWER128_BITS, BINARY_TOWER128_LIMBS, BinaryTower128Target};
 pub use blake3_compress::{
     BLAKE3_BLOCK_BYTES, BLAKE3_CHUNK_BYTES, BLAKE3_INPUT_LIMBS, BLAKE3_INPUT_WORDS, BLAKE3_IV,
     BLAKE3_OUTPUT_LIMBS, BLAKE3_OUTPUT_WORDS, Blake3CompressCircuitRow, Blake3CompressTrace,
