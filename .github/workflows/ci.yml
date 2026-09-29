@@ -9,6 +9,9 @@ on:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0 # reduce disk bloat
+  # Debug info is what makes the test binaries large enough for the runner's
+  # linker to die on them, and nothing here reads a backtrace.
+  RUSTFLAGS: -C debuginfo=0
 
 jobs:
   build_and_test:
@@ -35,7 +38,7 @@ jobs:
       - name: Set flags (AVX2)
         if: ${{ matrix.features }}
         run: |
-          echo "RUSTFLAGS=-Ctarget-feature=${{ matrix.features }}" >> "$GITHUB_ENV"
+          echo "RUSTFLAGS=$RUSTFLAGS -Ctarget-feature=${{ matrix.features }}" >> "$GITHUB_ENV"
 
       - uses: Swatinem/rust-cache@v2
         with:
