@@ -1,10 +1,11 @@
 """Exercise package consumption across a real Cargo archive boundary."""
 
 import importlib.util
-import json
+import io
 from pathlib import Path
 import subprocess
 import sys
+import tarfile
 import tempfile
 import unittest
 
@@ -15,6 +16,18 @@ SCRIPT = Path(__file__).resolve().parents[1] / "check_packaged_crates.py"
 def write(path, contents):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(contents)
+
+
+def make_archive(root, manifest, extra=None):
+    archive = root / "fixture-alpha-0.1.0.crate"
+    data = manifest.encode()
+    with tarfile.open(archive, "w:gz") as tar:
+        entry = tarfile.TarInfo("fixture-alpha-0.1.0/Cargo.toml")
+        entry.size = len(data)
+        tar.addfile(entry, io.BytesIO(data))
+        if extra is not None:
+            tar.addfile(extra, io.BytesIO(b"x") if extra.isfile() else None)
+    return archive
 
 
 def fixture(root, omit_module=False):
@@ -96,6 +109,43 @@ class PackageConsumerTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             with self.assertRaisesRegex(ValueError, "missing archive"):
                 module.extract_archives(Path(tmp), [("fixture-alpha", "0.1.0")], Path(tmp) / "extract")
+
+    def test_archive_manifest_identity_must_match_expected_package(self):
+        spec = importlib.util.spec_from_file_location("check_packaged_crates", SCRIPT)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_archive(root, '[package]\nname = "wrong-name"\nversion = "0.1.0"\n')
+            with self.assertRaisesRegex(ValueError, "identity mismatch"):
+                module.extract_archives(root, [("fixture-alpha", "0.1.0")], root / "extract")
+
+    def test_archive_member_cannot_escape_staging(self):
+        spec = importlib.util.spec_from_file_location("check_packaged_crates", SCRIPT)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            escaping = tarfile.TarInfo("fixture-alpha-0.1.0/../../outside-staging")
+            escaping.size = 1
+            make_archive(root, '[package]\nname = "fixture-alpha"\nversion = "0.1.0"\n', escaping)
+            with self.assertRaisesRegex(ValueError, "unsafe archive path"):
+                module.extract_archives(root, [("fixture-alpha", "0.1.0")], root / "extract")
+            self.assertFalse((root / "outside-staging").exists())
+
+    def test_archive_link_cannot_escape_staging(self):
+        spec = importlib.util.spec_from_file_location("check_packaged_crates", SCRIPT)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            link = tarfile.TarInfo("fixture-alpha-0.1.0/src/link")
+            link.type = tarfile.SYMTYPE
+            link.linkname = str(root / "outside-staging")
+            make_archive(root, '[package]\nname = "fixture-alpha"\nversion = "0.1.0"\n', link)
+            with self.assertRaisesRegex(ValueError, "unsupported archive entry"):
+                module.extract_archives(root, [("fixture-alpha", "0.1.0")], root / "extract")
+            self.assertFalse((root / "outside-staging").exists())
 
 
 if __name__ == "__main__":
