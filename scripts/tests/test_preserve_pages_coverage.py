@@ -8,6 +8,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import yaml
+
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts/preserve_pages_coverage.py"
@@ -155,11 +157,6 @@ class PreserveCoverageTests(unittest.TestCase):
 
 class WorkflowTests(unittest.TestCase):
     def test_deploy_jobs_share_lock_and_own_published_paths(self):
-        try:
-            import yaml
-        except ImportError:
-            self.skipTest("PyYAML unavailable for workflow parsing")
-
         book = yaml.safe_load((ROOT / ".github/workflows/book.yml").read_text())
         coverage = yaml.safe_load((ROOT / ".github/workflows/coverage.yml").read_text())
         for workflow in (book, coverage):

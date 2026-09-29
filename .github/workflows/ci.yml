@@ -43,7 +43,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Test benchmark script
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python test dependencies
+        run: python3 -m pip install PyYAML==6.0.3
+
+      - name: Test maintenance scripts
         run: python3 -m unittest discover -s scripts/tests -p 'test_*.py'
 
       - uses: dtolnay/rust-toolchain@stable
