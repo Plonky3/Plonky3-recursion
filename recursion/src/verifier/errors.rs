@@ -3,6 +3,7 @@
 use alloc::string::String;
 
 use p3_circuit::{CircuitBuilderError, CircuitError};
+use p3_circuit_prover::BatchStarkProverError;
 use thiserror::Error;
 
 use crate::generation::GenerationError;
@@ -43,6 +44,10 @@ pub enum VerificationError {
     #[error("Circuit error: {0}")]
     Circuit(#[from] CircuitError),
 
+    /// Error from preparing or proving a recursive layer
+    #[error("Prover error: {0}")]
+    Prover(#[from] BatchStarkProverError),
+
     /// Error from the circuit builder layer
     #[error("Circuit builder error: {0}")]
     CircuitBuilder(#[from] CircuitBuilderError),
@@ -59,8 +64,10 @@ pub enum VerificationError {
 #[cfg(test)]
 mod tests {
     use alloc::string::ToString;
+    use core::error::Error as _;
 
     use p3_circuit::{CircuitBuilderError, CircuitError};
+    use p3_circuit_prover::BatchStarkProverError;
 
     use super::*;
     use crate::generation::GenerationError;
@@ -99,5 +106,44 @@ mod tests {
                 .to_string()
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn prover_error_preserves_setup_variant_and_source() {
+        let error = VerificationError::from(BatchStarkProverError::UnsupportedDegree(3));
+
+        assert!(matches!(
+            error,
+            VerificationError::Prover(BatchStarkProverError::UnsupportedDegree(3))
+        ));
+        assert!(
+            error
+                .to_string()
+                .contains("unsupported extension degree: 3")
+        );
+        assert!(
+            error
+                .source()
+                .and_then(|source| source.downcast_ref::<BatchStarkProverError>())
+                .is_some_and(|source| matches!(
+                    source,
+                    BatchStarkProverError::UnsupportedDegree(3)
+                ))
+        );
+    }
+
+    #[test]
+    fn prover_error_preserves_proving_variant_and_source() {
+        let error = VerificationError::from(BatchStarkProverError::Prove("pcs budget".into()));
+
+        assert!(matches!(
+            error,
+            VerificationError::Prover(BatchStarkProverError::Prove(ref reason))
+                if reason == "pcs budget"
+        ));
+        assert!(error
+            .source()
+            .and_then(|source| source.downcast_ref::<BatchStarkProverError>())
+            .is_some_and(|source| matches!(source, BatchStarkProverError::Prove(reason) if reason == "pcs budget")));
     }
 }

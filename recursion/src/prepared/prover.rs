@@ -1,5 +1,4 @@
 use alloc::boxed::Box;
-use alloc::string::ToString;
 use alloc::vec::Vec;
 
 use p3_air::{SymbolicExpression, SymbolicExpressionExt};
@@ -53,7 +52,7 @@ where
         let (proof, prover_data) = self
             .prepared
             .prove_with_legacy_data(traces)
-            .map_err(|error| VerificationError::InvalidProofShape(error.to_string()))?;
+            .map_err(VerificationError::from)?;
         Ok(RecursionOutput(proof, prover_data))
     }
 
@@ -164,12 +163,67 @@ where
             air_builders,
             params.constraint_profile,
         )
-        .map_err(|error| match error {
-            BatchStarkProverError::InvalidMetadata(
-                metadata @ ProofMetadataError::ProfileOverflow { .. },
-            ) => VerificationError::Circuit(metadata.into()),
-            other => VerificationError::InvalidProofShape(other.to_string()),
-        })?;
+        .map_err(map_prepare_prover_error)?;
 
     Ok(PreparedProver { prepared })
+}
+
+fn map_prepare_prover_error(error: BatchStarkProverError) -> VerificationError {
+    match error {
+        BatchStarkProverError::InvalidMetadata(
+            metadata @ ProofMetadataError::ProfileOverflow { .. },
+        ) => VerificationError::Circuit(metadata.into()),
+        other => VerificationError::Prover(other),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::string::ToString;
+    use core::error::Error as _;
+
+    use p3_circuit::CircuitError;
+
+    use super::*;
+
+    #[test]
+    fn preparation_profile_overflow_remains_a_circuit_error() {
+        let error = map_prepare_prover_error(BatchStarkProverError::InvalidMetadata(
+            ProofMetadataError::ProfileOverflow {
+                table: "ALU".into(),
+                needed: 16,
+                allowed: 8,
+            },
+        ));
+
+        assert!(matches!(
+            error,
+            VerificationError::Circuit(CircuitError::ProfileOverflow {
+                ref table,
+                needed: 16,
+                allowed: 8,
+            }) if table == "ALU"
+        ));
+    }
+
+    #[test]
+    fn preparation_other_metadata_error_remains_typed_prover_error() {
+        let error = map_prepare_prover_error(BatchStarkProverError::InvalidMetadata(
+            ProofMetadataError::BadMinTraceHeight(3),
+        ));
+
+        assert!(matches!(
+            error,
+            VerificationError::Prover(BatchStarkProverError::InvalidMetadata(
+                ProofMetadataError::BadMinTraceHeight(3)
+            ))
+        ));
+        assert!(
+            error
+                .source()
+                .and_then(|source| source.downcast_ref::<BatchStarkProverError>())
+                .is_some()
+        );
+        assert!(error.to_string().contains("minimum trace height"));
+    }
 }
