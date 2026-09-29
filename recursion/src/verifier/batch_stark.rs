@@ -1792,7 +1792,7 @@ where
 /// 4. Preprocessed round (if present): for each matrix, observe prep_local (+ FRI random) then prep_next (+ FRI random)
 /// 5. Permutation round (if present): for each instance, observe perm_local (+ FRI random) then perm_next (+ FRI random)
 #[allow(clippy::too_many_arguments)]
-fn collect_opened_values_circuit<SC>(
+pub(crate) fn collect_opened_values_circuit<SC>(
     instances: &[OpenedValuesTargetsWithLookups<SC>],
     fri_random_rounds: &[Vec<Vec<Vec<Target>>>],
     layout: &NativeStarkLayout<'_>,

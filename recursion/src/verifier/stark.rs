@@ -10,6 +10,9 @@ use p3_field::{BasedVectorSpace, ExtensionField, Field, PrimeCharacteristicRing,
 use p3_lookup::logup::LogUpGadget;
 use p3_uni_stark::{StarkGenericConfig, Val, validate_degree_bits};
 
+use super::batch_stark::{
+    claimed_evaluation_counts, collect_opened_values_circuit, observe_claims_circuit,
+};
 use super::{ObservableCommitment, VerificationError, recompose_quotient_from_chunks_circuit};
 use crate::Target;
 use crate::challenger::CircuitChallenger;
@@ -17,7 +20,7 @@ use crate::challenger_perm::ChallengerPermConfig;
 use crate::input_contract::stark_layout::{
     CommitmentRole, InstanceLayout, MatrixRoute, NativeStarkLayout, checked_power_of_two,
 };
-use crate::traits::{LookupMetadata, Recursive, RecursiveAir, RecursiveChallenger, RecursivePcs};
+use crate::traits::{LookupMetadata, Recursive, RecursiveAir, RecursivePcs};
 use crate::transcript::domain_separator_seed;
 use crate::types::{
     CommitmentTargets, OpenedValuesTargets, OpenedValuesTargetsWithLookups, ProofTargets,
@@ -310,22 +313,6 @@ where
         ));
     }
 
-    // Generate all challenges (alpha, zeta, zeta_next, PCS challenges)
-    let (challenge_targets, mut challenger) =
-        get_circuit_challenges::<A, SC, Comm, InputProof, OpeningProof, CP, WIDTH, RATE>(
-            air,
-            config,
-            proof_targets,
-            public_values,
-            preprocessed_width,
-            quotient_degree,
-            preprocessed_commit,
-            &init_trace_domain,
-            circuit,
-            pcs_params,
-            challenger_perm_config,
-        )?;
-
     // Validate ZK randomization consistency
     if (opened_random.is_some() != SC::Pcs::ZK) || (random_commit.is_some() != SC::Pcs::ZK) {
         return Err(VerificationError::RandomizationError);
@@ -363,6 +350,24 @@ where
         false,
     )
     .map_err(|error| VerificationError::InvalidProofShape(error.to_string()))?;
+
+    // Generate all challenges (alpha, zeta, zeta_next, PCS challenges). The
+    // opening layout determines the native order of claims absorbed by FRI.
+    let (challenge_targets, mut challenger) =
+        get_circuit_challenges::<A, SC, Comm, InputProof, OpeningProof, CP, WIDTH, RATE>(
+            air,
+            config,
+            proof_targets,
+            public_values,
+            preprocessed_width,
+            quotient_degree,
+            preprocessed_commit,
+            &init_trace_domain,
+            &layout,
+            circuit,
+            pcs_params,
+            challenger_perm_config,
+        )?;
 
     let alpha = challenge_targets[0];
     let zeta = challenge_targets[1];
@@ -546,6 +551,7 @@ fn get_circuit_challenges<
     quotient_degree: usize,
     preprocessed_commit: &Option<Comm>,
     init_trace_domain: &PcsDomain<SC>,
+    layout: &NativeStarkLayout<'_>,
     circuit: &mut CircuitBuilder<SC::Challenge>,
     pcs_params: &PcsVerifierParams<SC, InputProof, OpeningProof, Comm>,
     challenger_perm_config: CP,
@@ -614,44 +620,17 @@ where
     // transcript expects them pre-observed (FRI). WHIR observes them itself,
     // interleaved with its own per-commitment challenges, inside verify_circuit.
     if SC::Pcs::PRE_OBSERVES_OPENED_VALUES {
-        // The PCS opens its own transcript with a seed bound to the claims' shape, in the
-        // commitment order random, trace, quotient chunks, preprocessed.
-        let values = &opened_values_no_lookups.opened_values_no_lookups;
-        let mut counts = Vec::with_capacity(4);
-        if let Some(random) = &values.random_targets {
-            counts.push(vec![vec![random.len()]]);
-        }
-        let mut trace_points = vec![values.trace_local_targets.len()];
-        if _air.opens_trace_next() {
-            trace_points.push(values.trace_next_targets.len());
-        }
-        counts.push(vec![trace_points]);
-        counts.push(
-            values
-                .quotient_chunks_targets
-                .iter()
-                .map(|chunk| vec![chunk.len()])
-                .collect(),
+        // Hiding FRI appends its random openings to each claim before seeding
+        // and observing the PCS transcript. Reuse the batch verifier's native
+        // ordering for the single-instance layout as well.
+        let fri_random_rounds = SC::Pcs::get_fri_random_opened_values(&proof_targets.opening_proof);
+        let claims = collect_opened_values_circuit::<SC>(
+            core::slice::from_ref(&opened_values_no_lookups),
+            fri_random_rounds,
+            layout,
         );
-        if let Some(local) = &values.preprocessed_local_targets {
-            let mut points = vec![local.len()];
-            if _air.opens_preprocessed_next() {
-                points.push(
-                    values
-                        .preprocessed_next_targets
-                        .as_ref()
-                        .map_or(0, Vec::len),
-                );
-            }
-            counts.push(vec![points]);
-        }
-        let seed = SC::Pcs::claims_transcript_seed(pcs_params, counts);
-        RecursiveChallenger::<Val<SC>, SC::Challenge>::observe_seed(
-            &mut challenger,
-            circuit,
-            &seed,
-        );
-        opened_values_no_lookups.observe(circuit, &mut challenger);
+        let seed = SC::Pcs::claims_transcript_seed(pcs_params, claimed_evaluation_counts(&claims));
+        observe_claims_circuit::<SC, CP, WIDTH, RATE>(circuit, &mut challenger, &seed, &claims);
     }
 
     // Get PCS-specific challenges (FRI betas, query indices, etc.)
