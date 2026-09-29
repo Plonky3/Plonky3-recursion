@@ -244,7 +244,7 @@ cargo run --profile profiling  --example recursive_fibonacci --features parallel
 
 | Crate | Feature | Description |
 |-------|---------|-------------|
-| `p3-circuit` | `debugging` | Allocation logging — every witness slot records the operation and scope that created it. |
+| `p3-circuit` | `debugging` | Builder allocation logs and compiled source provenance for owned runner diagnostics. |
 | `p3-circuit` | `profiling` | Operation-count profiling (implies `debugging`) — tracks `add`/`mul`/`const`/NPO counts globally and per named scope via `OpCounts`. |
 | `p3-circuit-prover` | `parallel` | Multi-threaded trace generation via Rayon. Strongly recommended for benchmarks and production. |
 
