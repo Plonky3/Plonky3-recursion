@@ -5,17 +5,12 @@ on:
     - cron: "0 0 * * 1" # min hour day-of-month month day-of-week
   workflow_dispatch: {}
 
-permissions:
-  contents: write
-
-concurrency:
-  group: gh-pages
-  cancel-in-progress: true
-
 jobs:
   coverage:
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    permissions:
+      contents: read
 
     steps:
       - name: Checkout main
@@ -45,6 +40,29 @@ jobs:
             --output-dir site
           mv site/tarpaulin-report.html site/index.html
 
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: site
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: coverage
+    permissions:
+      contents: write
+    concurrency:
+      group: gh-pages
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download coverage report
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-report
+          path: site
+
       - name: Deploy coverage into gh-pages:/coverage
         uses: peaceiris/actions-gh-pages@v4
         with:
@@ -52,4 +70,3 @@ jobs:
           publish_branch: gh-pages
           publish_dir: site
           destination_dir: coverage
-          keep_files: true
