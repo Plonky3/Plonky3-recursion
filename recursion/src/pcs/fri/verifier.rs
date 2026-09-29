@@ -415,49 +415,6 @@ fn reconstruct_evals<EF: Field>(
     evals
 }
 
-/// Compute the subgroup evaluation points for a single FRI fold phase.
-///
-/// Returns `(xs, subgroup_start)` where:
-/// - `xs[i] = subgroup_start * omega^{br(i)}` are the `arity` evaluation points
-///   in bit-reversed order,
-/// - `omega = two_adic_generator(log_arity)`,
-/// - `subgroup_start = two_adic_generator(log_folded_height + log_arity)^{rev(parent_index)}`.
-///
-/// When `precomputed_subgroup_start` is `Some`, the select-mul chain for
-/// `subgroup_start` is skipped and the provided value is used directly.
-fn compute_subgroup_points<F, EF>(
-    builder: &mut CircuitBuilder<EF>,
-    log_arity: usize,
-    subgroup_start: Target,
-) -> (Vec<Target>, Target)
-where
-    F: Field + TwoAdicField,
-    EF: ExtensionField<F>,
-{
-    builder.push_scope("fri_compute_subgroup_points");
-
-    let arity = 1usize << log_arity;
-
-    // Compute xs[i] = subgroup_start * omega^{br(i)}
-    let omega = F::two_adic_generator(log_arity);
-    let omega_br_consts: Vec<Target> = (0..arity)
-        .map(|i| {
-            let br_i = p3_util::reverse_bits_len(i, log_arity);
-            let omega_br = omega.exp_u64(br_i as u64);
-            builder.define_const(EF::from(omega_br))
-        })
-        .collect();
-
-    let mut xs = Vec::with_capacity(arity);
-    for &omega_br_const in omega_br_consts.iter() {
-        let xi = builder.mul(subgroup_start, omega_br_const);
-        xs.push(xi);
-    }
-
-    builder.pop_scope();
-    (xs, subgroup_start)
-}
-
 /// Precompute `subgroup_start` for every FRI phase within a single query.
 ///
 /// All phases compute `g_i^{rev(parent_index_i)}` where
@@ -553,28 +510,11 @@ fn precompute_beta_powers_per_phase<EF: Field>(
     result
 }
 
-/// Single arity-2 fold at a point: given (e0, e1) and evaluation point beta,
-/// returns the folded value using (e0 + e1)/2 + (e1 - e0)*beta/(2*x0).
-fn arity2_fold_at_point<EF: Field>(
-    builder: &mut CircuitBuilder<EF>,
-    e0: Target,
-    e1: Target,
-    beta: Target,
-    x0: Target,
-) -> Target {
-    let neg_half = builder.define_const(EF::NEG_ONE * EF::ONE.halve());
-    let inv = builder.div(neg_half, x0);
-    let e1_minus_e0 = builder.sub(e1, e0);
-    let beta_minus_x0 = builder.sub(beta, x0);
-    let t = builder.mul(beta_minus_x0, e1_minus_e0);
-    builder.mul_add(t, inv, e0)
-}
-
 /// Perform a single FRI fold phase with arbitrary arity.
 ///
-/// For log_arity > 1 we use k sequential arity-2 folds (beta, beta^2, ...)
-/// instead of one Lagrange interpolation, reducing batch inversions to one per step.
-/// Arity 4 and 8 use the same fold schedule with the loop unrolled (no subgroup `Vec`s).
+/// For log_arity > 1, normalize beta by twice the subgroup start once. Squaring and
+/// doubling this value advances each binary folding level. All pair weights reuse
+/// the single inverse and native constants from the bit-reversed roots.
 ///
 /// When `precomputed_evals` is `Some`, those evals are reused instead of
 /// rebuilding them via `reconstruct_evals`.
@@ -602,23 +542,17 @@ where
     // For arity 2, use the optimized formula
     if log_arity == 1 {
         let sibling = siblings[0];
-        let one = builder.define_const(EF::ONE);
-        let two = builder.define_const(EF::TWO);
         let neg_one = builder.define_const(EF::NEG_ONE);
-        let neg_half = builder.define_const(EF::NEG_ONE * EF::ONE.halve());
-        let sibling_is_right = builder.sub(one, index_bits[bits_consumed]);
-
-        let e0 = builder.select(sibling_is_right, folded, sibling);
-        let x0 = precomputed_subgroup_start;
-        let inv = builder.div(neg_half, x0);
-
+        let two = builder.define_const(EF::TWO);
+        let half = builder.define_const(EF::ONE.halve());
+        let inv = builder.div(half, precomputed_subgroup_start);
         let d = builder.sub(sibling, folded);
-        let two_b_m1 = builder.mul_add(two, sibling_is_right, neg_one);
-        let e1_minus_e0 = builder.mul(two_b_m1, d);
-
-        let beta_minus_x0 = builder.sub(beta, x0);
-        let t = builder.mul(beta_minus_x0, e1_minus_e0);
-        let mut new_folded = builder.mul_add(t, inv, e0);
+        let sign = builder.mul_add(two, index_bits[bits_consumed], neg_one);
+        let beta_inv = builder.mul(beta, inv);
+        let weight = builder.mul_add(sign, beta_inv, half);
+        // folded + (1/2 + (2*bit - 1) * beta/(2*x0)) * (sibling - folded).
+        // Keeping the nonzero numerator in `inv` also constrains x0 to be nonzero.
+        let mut new_folded = builder.mul_add(weight, d, folded);
 
         if let Some(ro) = roll_in {
             let beta_sq = precomputed_beta_pow.unwrap_or_else(|| builder.mul(beta, beta));
@@ -637,131 +571,39 @@ where
         }
     };
 
-    // Unrolled fold tree for arity 4 / 8: same x0 and beta schedule as the generic loop,
-    // but no `compute_subgroup_points` / `data` / `omega_s_br` vectors.
-    let mut new_folded = if log_arity == 2 {
-        let omega = F::two_adic_generator(2);
-        let ss = precomputed_subgroup_start;
-
-        let x_at_step0 = |builder: &mut CircuitBuilder<EF>, j: usize| {
-            let br = p3_util::reverse_bits_len(2 * j, 2);
-            let w = builder.define_const(EF::from(omega.exp_u64(br as u64)));
-            builder.mul(ss, w)
-        };
-
-        let x00 = x_at_step0(builder, 0);
-        let x01 = x_at_step0(builder, 1);
-        let f0 = arity2_fold_at_point::<EF>(builder, evals[0], evals[1], beta, x00);
-        let f1 = arity2_fold_at_point::<EF>(builder, evals[2], evals[3], beta, x01);
-
-        let beta2 = builder.mul(beta, beta);
-        let ss2 = builder.mul(ss, ss);
-        let omega_s = omega.exp_u64(1 << 1);
-        let br = p3_util::reverse_bits_len(0, 1);
-        let w = builder.define_const(EF::from(omega_s.exp_u64(br as u64)));
-        let x_step1 = builder.mul(ss2, w);
-        arity2_fold_at_point::<EF>(builder, f0, f1, beta2, x_step1)
-    } else if log_arity == 3 {
-        let omega = F::two_adic_generator(3);
-        let ss = precomputed_subgroup_start;
-
-        let x_at_step0 = |builder: &mut CircuitBuilder<EF>, j: usize| {
-            let br = p3_util::reverse_bits_len(2 * j, 3);
-            let w = builder.define_const(EF::from(omega.exp_u64(br as u64)));
-            builder.mul(ss, w)
-        };
-
-        let x00 = x_at_step0(builder, 0);
-        let x01 = x_at_step0(builder, 1);
-        let x02 = x_at_step0(builder, 2);
-        let x03 = x_at_step0(builder, 3);
-        let f0 = arity2_fold_at_point::<EF>(builder, evals[0], evals[1], beta, x00);
-        let f1 = arity2_fold_at_point::<EF>(builder, evals[2], evals[3], beta, x01);
-        let f2 = arity2_fold_at_point::<EF>(builder, evals[4], evals[5], beta, x02);
-        let f3 = arity2_fold_at_point::<EF>(builder, evals[6], evals[7], beta, x03);
-
-        let beta2 = builder.mul(beta, beta);
-        let ss2 = builder.mul(ss, ss);
-        let omega_s1 = omega.exp_u64(1 << 1);
-
-        let x_at_step1 = |builder: &mut CircuitBuilder<EF>, j: usize| {
-            let br = p3_util::reverse_bits_len(2 * j, 2);
-            let w = builder.define_const(EF::from(omega_s1.exp_u64(br as u64)));
-            builder.mul(ss2, w)
-        };
-        let x10 = x_at_step1(builder, 0);
-        let x11 = x_at_step1(builder, 1);
-        let g0 = arity2_fold_at_point::<EF>(builder, f0, f1, beta2, x10);
-        let g1 = arity2_fold_at_point::<EF>(builder, f2, f3, beta2, x11);
-
-        let beta4 = builder.mul(beta2, beta2);
-        let ss4 = builder.mul(ss2, ss2);
-        let omega_s2 = omega.exp_u64(1 << 2);
-        let br = p3_util::reverse_bits_len(0, 1);
-        let w = builder.define_const(EF::from(omega_s2.exp_u64(br as u64)));
-        let x_step2 = builder.mul(ss4, w);
-        arity2_fold_at_point::<EF>(builder, g0, g1, beta4, x_step2)
-    } else {
-        // General path: k sequential arity-2 folds (beta, beta^2, ...) instead of
-        // one Lagrange interpolation, matching the native optimization to reduce inversions.
-        let (xs, subgroup_start) =
-            compute_subgroup_points::<F, EF>(builder, log_arity, precomputed_subgroup_start);
-
-        let mut subgroup_start_powers: Vec<Target> = vec![subgroup_start];
-        for _ in 1..log_arity {
-            let prev = subgroup_start_powers.last().copied().unwrap();
-            subgroup_start_powers.push(builder.mul(prev, prev));
-        }
-
-        let omega = F::two_adic_generator(log_arity);
-        let mut data: Vec<Target> = evals.to_vec();
-        let mut current_beta = beta;
-
-        for (step, ss) in subgroup_start_powers
-            .into_iter()
-            .enumerate()
-            .take(log_arity)
-        {
-            let num_pairs = data.len() / 2;
-            if step == 0 {
-                for j in 0..num_pairs {
-                    data[j] = arity2_fold_at_point::<EF>(
-                        builder,
-                        data[2 * j],
-                        data[2 * j + 1],
-                        current_beta,
-                        xs[2 * j],
-                    );
-                }
+    let half_target = builder.define_const(EF::ONE.halve());
+    // A nonzero numerator preserves the denominator check even when beta is zero.
+    let inverse_start = builder.div(half_target, precomputed_subgroup_start);
+    let mut half_normalized_beta = builder.mul(beta, inverse_start);
+    let inverse_omega = F::two_adic_generator(log_arity).inverse();
+    let coefficients: Vec<_> = (1..evals.len() / 2)
+        .map(|j| {
+            let exponent = p3_util::reverse_bits_len(2 * j, log_arity);
+            // Negated inverse roots reuse the roots from the original positive half-domain.
+            builder.define_const(-EF::from(inverse_omega.exp_u64(exponent as u64)))
+        })
+        .collect();
+    let mut data = evals.to_vec();
+    for level in 0..log_arity {
+        let pairs = data.len() / 2;
+        for j in 0..pairs {
+            // At later levels the bit-reversed roots are the same prefix:
+            // 2^level * rev_{k-level}(2j) = rev_k(2j).
+            let weight = if j == 0 {
+                builder.sub(half_target, half_normalized_beta)
             } else {
-                let log_domain = log_arity - step;
-                let omega_s = omega.exp_u64(1 << step);
-                let omega_s_br: Vec<Target> = (0..num_pairs)
-                    .map(|j| {
-                        let br_2j = p3_util::reverse_bits_len(2 * j, log_domain);
-                        let c = omega_s.exp_u64(br_2j as u64);
-                        builder.define_const(EF::from(c))
-                    })
-                    .collect();
-                for j in 0..num_pairs {
-                    let x0 = builder.mul(ss, omega_s_br[j]);
-                    data[j] = arity2_fold_at_point::<EF>(
-                        builder,
-                        data[2 * j],
-                        data[2 * j + 1],
-                        current_beta,
-                        x0,
-                    );
-                }
-            }
-            data.truncate(num_pairs);
-            if step < log_arity - 1 {
-                current_beta = builder.mul(current_beta, current_beta);
-            }
+                builder.mul_add(half_normalized_beta, coefficients[j - 1], half_target)
+            };
+            let difference = builder.sub(data[2 * j + 1], data[2 * j]);
+            data[j] = builder.mul_add(weight, difference, data[2 * j]);
         }
-
-        data[0]
-    };
+        data.truncate(pairs);
+        if level + 1 < log_arity {
+            let square = builder.mul(half_normalized_beta, half_normalized_beta);
+            half_normalized_beta = builder.add(square, square);
+        }
+    }
+    let mut new_folded = data[0];
 
     // Roll-in: folded += beta^{2^log_arity} * roll_in
     if let Some(ro) = roll_in {
@@ -2010,9 +1852,9 @@ mod checked_geometry_tests {
 
 #[cfg(test)]
 mod reduced_opening_tests {
-    use super::{compute_single_reduced_opening, evaluate_polynomial};
     use alloc::vec;
     use alloc::vec::Vec;
+
     use hashbrown::HashMap;
     use p3_batch_stark::ProverData;
     use p3_circuit::CircuitBuilder;
@@ -2022,6 +1864,8 @@ mod reduced_opening_tests {
     use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
     use p3_koala_bear::KoalaBear;
     use p3_test_utils::koala_bear_params::{MyConfig, make_test_config_with_pow_bits};
+
+    use super::{compute_single_reduced_opening, evaluate_polynomial};
 
     // Catches sign/order/offset mistakes, including alpha=0 where division-based
     // rewrites are invalid. Expected values use native ascending power sums.
@@ -2138,6 +1982,267 @@ mod reduced_opening_tests {
                         )
                     });
             }
+        }
+    }
+    #[test]
+    fn binary_fold_matches_native_interpolation_and_keeps_nonzero_denominator() {
+        type EF = BinomialExtensionField<KoalaBear, 4>;
+        let nonbase = EF::from_basis_coefficients_slice(&[
+            KoalaBear::from_u32(2),
+            KoalaBear::from_u32(3),
+            KoalaBear::from_u32(4),
+            KoalaBear::from_u32(5),
+        ])
+        .unwrap();
+        for with_roll_in in [false, true] {
+            for precompute_beta in [false, true] {
+                let mut builder = CircuitBuilder::<EF>::new();
+                let inputs = builder.alloc_public_inputs(7, "binary fold inputs and output");
+                let [folded, sibling, beta, x0, bit, roll_in, expected]: [_; 7] =
+                    inputs.try_into().unwrap();
+                let beta_squared = precompute_beta.then(|| builder.mul(beta, beta));
+                let actual = super::fold_one_phase::<KoalaBear, EF>(
+                    &mut builder,
+                    folded,
+                    &[sibling],
+                    beta,
+                    &[bit],
+                    0,
+                    1,
+                    with_roll_in.then_some(roll_in),
+                    beta_squared,
+                    None,
+                    x0,
+                );
+                builder.connect(actual, expected);
+                let circuit = builder.build().unwrap();
+                let packing = TablePacking::new(1, 3).with_horner_pack_k(4);
+                let config = make_test_config_with_pow_bits(0);
+                let (air_degrees, primitive, non_primitive) =
+                    get_airs_and_degrees_with_prep::<MyConfig, _, 4>(
+                        &circuit,
+                        &packing,
+                        &[],
+                        &[],
+                        ConstraintProfile::Standard,
+                    )
+                    .unwrap();
+                let (airs, degrees): (Vec<_>, Vec<_>) = air_degrees.into_iter().unzip();
+                let data = ProverData::from_airs_and_degrees(&config, &airs, &degrees).unwrap();
+                let data = CircuitProverData::new(data, primitive, non_primitive);
+                let prover = BatchStarkProver::new(config).with_table_packing(packing);
+                for x in [EF::from_u32(7), nonbase] {
+                    for beta in [EF::ZERO, x, -x, nonbase + EF::ONE] {
+                        for bit in [EF::ZERO, EF::ONE, EF::TWO, nonbase] {
+                            for sibling in [nonbase, EF::from_u32(13)] {
+                                let folded = nonbase;
+                                let roll = EF::from_u32(11);
+                                let right = EF::ONE - bit;
+                                let e0 = right * folded + (EF::ONE - right) * sibling;
+                                let e1_minus_e0 = (EF::TWO * right - EF::ONE) * (sibling - folded);
+                                let mut expected =
+                                    e0 + (beta - x) * e1_minus_e0 * (-EF::ONE.halve() / x);
+                                if with_roll_in {
+                                    expected += beta * beta * roll;
+                                }
+                                let public = [folded, sibling, beta, x, bit, roll, expected];
+                                let mut runner = circuit.runner();
+                                runner.set_public_inputs(&public).unwrap();
+                                let traces =
+                                    runner.run().expect("binary fold must match interpolation");
+                                // Exercise the real ALU relation as well as witness execution.
+                                if x == nonbase
+                                    && beta == EF::ZERO
+                                    && bit == EF::ONE
+                                    && sibling != folded
+                                {
+                                    let proof = prover.prove_all_tables(&traces, &data).unwrap();
+                                    prover.verify_all_tables::<EF>(&proof).unwrap();
+                                }
+                            }
+                        }
+                    }
+                }
+                // beta=0 must not cancel the explicit nonzero-denominator check.
+                let mut runner = circuit.runner();
+                runner
+                    .set_public_inputs(&[
+                        nonbase,
+                        nonbase,
+                        EF::ZERO,
+                        EF::ZERO,
+                        EF::ZERO,
+                        EF::ZERO,
+                        nonbase,
+                    ])
+                    .unwrap();
+                assert!(matches!(
+                    runner.run(),
+                    Err(p3_circuit::CircuitError::DivisionByZero)
+                ));
+            }
+        }
+    }
+    #[test]
+    fn normalized_folds_match_native_polynomial_evaluation() {
+        use p3_field::TwoAdicField;
+        type EF = BinomialExtensionField<KoalaBear, 4>;
+        let nonbase = EF::from_basis_coefficients_slice(&[
+            KoalaBear::from_u32(2),
+            KoalaBear::from_u32(3),
+            KoalaBear::from_u32(4),
+            KoalaBear::from_u32(5),
+        ])
+        .unwrap();
+        for log_arity in 1..=4 {
+            let arity = 1usize << log_arity;
+            let omega = KoalaBear::two_adic_generator(log_arity);
+            for supplied_evals in [false, true] {
+                for with_roll_in in [false, true] {
+                    let mut builder = CircuitBuilder::<EF>::new();
+                    let folded = builder.public_input();
+                    let siblings = builder.alloc_public_inputs(arity - 1, "siblings");
+                    let beta = builder.public_input();
+                    let start = builder.public_input();
+                    let bits = builder.alloc_public_inputs(log_arity + 2, "offset query bits");
+                    let roll = builder.public_input();
+                    let expected = builder.public_input();
+                    let eval_targets = supplied_evals
+                        .then(|| builder.alloc_public_inputs(arity, "ordered evaluations"));
+                    let beta_power =
+                        supplied_evals.then(|| builder.exp_power_of_2(beta, log_arity));
+                    let actual = super::fold_one_phase::<KoalaBear, EF>(
+                        &mut builder,
+                        folded,
+                        &siblings,
+                        beta,
+                        &bits,
+                        2,
+                        log_arity,
+                        with_roll_in.then_some(roll),
+                        beta_power,
+                        eval_targets.as_deref(),
+                        start,
+                    );
+                    builder.connect(actual, expected);
+                    let circuit = builder.build().unwrap();
+                    let packing = TablePacking::new(1, 3).with_horner_pack_k(4);
+                    let config = make_test_config_with_pow_bits(0);
+                    let prepared = BatchStarkProver::new(config)
+                        .with_table_packing(packing)
+                        .prepare_circuit::<EF, 4>(&circuit, &[], &[], ConstraintProfile::Standard)
+                        .unwrap();
+                    for dense in [false, true] {
+                        let coefficients: Vec<_> = (0..arity)
+                            .map(|i| {
+                                if dense {
+                                    nonbase * EF::from_usize(i + 1) + EF::from_usize(i * i + 3)
+                                } else if i == arity - 1 {
+                                    EF::ONE
+                                } else {
+                                    EF::ZERO
+                                }
+                            })
+                            .collect();
+                        let evaluate = |point: EF| {
+                            coefficients
+                                .iter()
+                                .rev()
+                                .fold(EF::ZERO, |acc, &c| acc * point + c)
+                        };
+                        for ss in [EF::from_u32(7), nonbase] {
+                            let evaluations: Vec<_> = (0..arity)
+                                .map(|i| {
+                                    let exponent = p3_util::reverse_bits_len(i, log_arity);
+                                    evaluate(ss * EF::from(omega.exp_u64(exponent as u64)))
+                                })
+                                .collect();
+                            for beta in [EF::ZERO, ss, nonbase + EF::ONE] {
+                                for index in 0..arity {
+                                    let roll = EF::from_u32(11);
+                                    let expected = evaluate(beta)
+                                        + if with_roll_in {
+                                            beta.exp_power_of_2(log_arity) * roll
+                                        } else {
+                                            EF::ZERO
+                                        };
+                                    let mut public = vec![evaluations[index]];
+                                    public.extend(
+                                        evaluations
+                                            .iter()
+                                            .enumerate()
+                                            .filter_map(|(i, &v)| (i != index).then_some(v)),
+                                    );
+                                    public.extend([beta, ss, EF::ONE, EF::ZERO]);
+                                    public.extend(
+                                        (0..log_arity).map(|i| EF::from_usize((index >> i) & 1)),
+                                    );
+                                    public.extend([roll, expected]);
+                                    if supplied_evals {
+                                        public.extend(&evaluations);
+                                    }
+                                    let mut runner = circuit.runner();
+                                    runner.set_public_inputs(&public).unwrap();
+                                    let traces = runner.run().unwrap_or_else(|error|
+                                        panic!("arity={arity} index={index} supplied={supplied_evals} roll={with_roll_in}: {error:?}"));
+                                    if dense
+                                        && ss == nonbase
+                                        && beta == EF::ZERO
+                                        && index == arity - 1
+                                    {
+                                        let proof = prepared.prove(&traces).unwrap();
+                                        prepared.verifier().verify(&proof, &[]).unwrap();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    let mut runner = circuit.runner();
+                    runner
+                        .set_public_inputs(&vec![EF::ZERO; circuit.public_rows.len()])
+                        .unwrap();
+                    assert!(matches!(
+                        runner.run(),
+                        Err(p3_circuit::CircuitError::DivisionByZero)
+                    ));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn zero_constant_challenge_keeps_the_folding_denominator_constraint() {
+        type EF = BinomialExtensionField<KoalaBear, 4>;
+        for log_arity in 1..=4 {
+            let mut builder = CircuitBuilder::<EF>::new();
+            let start = builder.public_input();
+            let zero = builder.define_const(EF::ZERO);
+            let siblings = vec![zero; (1 << log_arity) - 1];
+            let bits = vec![zero; log_arity];
+            let output = super::fold_one_phase::<KoalaBear, EF>(
+                &mut builder,
+                zero,
+                &siblings,
+                zero,
+                &bits,
+                0,
+                log_arity,
+                None,
+                None,
+                None,
+                start,
+            );
+            builder.connect(output, zero);
+            let circuit = builder.build().unwrap();
+            let mut runner = circuit.runner();
+            runner.set_public_inputs(&[EF::ZERO]).unwrap();
+            assert!(matches!(
+                runner.run(),
+                Err(p3_circuit::CircuitError::DivisionByZero)
+            ));
+            let mut runner = circuit.runner();
+            runner.set_public_inputs(&[EF::ONE]).unwrap();
+            runner.run().unwrap();
         }
     }
 }
