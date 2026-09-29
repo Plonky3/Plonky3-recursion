@@ -1,6 +1,6 @@
 //! User-facing call structs for adding Poseidon1 permutation rows.
 //!
-//! These are variant-named aliases of the shared [`crate::ops::poseidon_perm`]
+//! These are variant-named aliases of the shared `poseidon_perm`
 //! call structs.
 
 use crate::ops::poseidon_perm::{Poseidon1Variant, PoseidonPermCall, PoseidonPermCallBase};

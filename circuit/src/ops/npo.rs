@@ -61,7 +61,7 @@ impl NpoTypeId {
         Self::new("blake3_compress")
     }
 
-    /// Keccak-f[1600] permutation over 16-bit limbs.
+    /// `Keccak-f[1600]` permutation over 16-bit limbs.
     pub fn keccak_f1600() -> Self {
         Self::new("keccak_f1600")
     }

@@ -2,7 +2,7 @@
 //!
 //! This module contains all Poseidon2 permutation related code:
 //! - Builder API ([`Poseidon2PermCall`], [`CircuitBuilder::add_poseidon2_perm`])
-//! - Execution state ([`state::Poseidon2ExecutionState`])
+//! - Execution state (`state::Poseidon2ExecutionState`)
 //! - Private data ([`Poseidon2PermPrivateData`])
 //! - Trace generation types ([`Poseidon2Params`], [`Poseidon2CircuitRow`], [`Poseidon2Trace`])
 //!

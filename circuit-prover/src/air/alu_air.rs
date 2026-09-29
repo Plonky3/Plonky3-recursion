@@ -32,7 +32,7 @@
 //!
 //! ## Preprocessed trace layout
 //!
-//! Each lane occupies 13 columns (see [`AluPrepLaneCols`](super::alu_columns::AluPrepLaneCols)):
+//! Each lane occupies 13 columns (see `AluPrepLaneCols`):
 //!
 //! | Offset | Name              | Purpose                                        |
 //! |--------|-------------------|------------------------------------------------|
@@ -53,21 +53,21 @@
 //! After all lanes, there are `(K_max - 1) + 4 * (K_max - 1)` **global** extra preprocessed
 //! columns: `sel_k` for each arity `k = 2..K_max`, then for each step `t = 1..K_max-1` four
 //! columns `a_t_idx`, `c_t_idx`, `a_t_reader`, `c_t_reader`
-//! (see [`AluPackedHornerStepPrepCols`](super::alu_columns::AluPackedHornerStepPrepCols)).
+//! (see `AluPackedHornerStepPrepCols`).
 //!
 //! Total preprocessed width = `lanes * 13 + (K_max - 1) + 6 * (K_max - 1)`.
 //!
 //! ## K-step packed HornerAcc
 //!
-//! When HornerAcc operations are present, [`compute_schedule`] places Horner chains
-//! on lane 0 and greedily packs each prefix of a chain into [`ScheduleEntry::PackedHorner`]
+//! When HornerAcc operations are present, `compute_schedule` places Horner chains
+//! on lane 0 and greedily packs each prefix of a chain into `ScheduleEntry::PackedHorner`
 //! with arity `k ∈ {2..K_max}` (same `b` witness index, contiguous indices). Remainder ops
 //! use single-step rows.
 //!
 //! Inter-row and intra-row constraints fold consecutive Horner steps in pairs (degree-3
 //! where needed); see `eval` implementation for the exact selector layout per `k`.
 //!
-//! A leading [`ScheduleEntry::Separator`] prevents bogus inter-row Horner on row 0.
+//! A leading `ScheduleEntry::Separator` prevents bogus inter-row Horner on row 0.
 //!
 //! ## WitnessChecks bus
 //!
@@ -367,7 +367,7 @@ impl<F: Field + PrimeCharacteristicRing + Copy, const D: usize> AluAir<F, D> {
         self
     }
 
-    /// Number of main columns per lane: a[D], b[D], c[D], out[D]
+    /// Number of main columns per lane: `a[D]`, `b[D]`, `c[D]`, `out[D]`.
     pub const fn lane_width() -> usize {
         alu_main_lane_width::<D>()
     }
@@ -380,7 +380,7 @@ impl<F: Field + PrimeCharacteristicRing + Copy, const D: usize> AluAir<F, D> {
         self.lanes * Self::lane_width() + extra
     }
 
-    /// Number of preprocessed columns per lane (see [`AluPrepLaneCols`](super::alu_columns::AluPrepLaneCols)).
+    /// Number of preprocessed columns per lane (see `AluPrepLaneCols`).
     pub const fn preprocessed_lane_width() -> usize {
         PREP_LANE_WIDTH
     }

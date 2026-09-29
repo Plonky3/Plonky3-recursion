@@ -223,13 +223,13 @@ impl<F: Field> CircuitBuilder<F> {
     ///    `direction_pair[i]`). The previous row's running hash chains into chunk
     ///    `pos = mmcs_bit + 2 · mmcs_bit2` via the AIR's arity-4 placement
     ///    constraint, and the 3 sibling digests fill the other chunks (provided as
-    ///    [`Poseidon2PermPrivateData::sibling`] / [`Poseidon1PermPrivateData::sibling`],
+    ///    `Poseidon2PermPrivateData::sibling` / `Poseidon1PermPrivateData::sibling`,
     ///    length `3 · capacity_ext` extension limbs). Their input slots stay empty
     ///    (`in_ctl = false`).
     ///
     /// Returns the op-ids of those `1 + directions_expr.len()` rows in order. The
     /// leaf-hash row gets no sibling private data (it has no siblings); each
-    /// compression row gets 3 sibling digests via [`perm_private_data`].
+    /// compression row gets 3 sibling digests via [`crate::ops::perm_private_data`].
     ///
     /// # Parameters
     /// * `permutation_config` — must satisfy `width_ext == 4 · capacity_ext`

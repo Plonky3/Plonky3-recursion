@@ -84,7 +84,7 @@ impl Poseidon2Params for GoldilocksD2Width8 {
 /// Poseidon2 operation table row.
 ///
 /// This implements the Poseidon Permutation Table specification.
-/// See: https://github.com/Plonky3/Plonky3-recursion/discussions/186
+/// See: <https://github.com/Plonky3/Plonky3-recursion/discussions/186>
 ///
 /// The table has one row per Poseidon call, implementing:
 /// - Standard chaining (Challenger-style sponge use)

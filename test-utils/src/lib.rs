@@ -610,7 +610,7 @@ mod tests {
 ///
 /// The binary tower `GF(2) ⊂ … ⊂ GF(2^128)` has no Poseidon instance, so its commitments and
 /// transcripts hash bytes: a Merkle tree serializes each row, hashes it with a 32-byte hash, and
-/// compresses node pairs with the same hash, while [`BinaryChallenger`] observes and samples field
+/// compresses node pairs with the same hash, while `BinaryChallenger` observes and samples field
 /// elements as raw bit patterns over a byte transcript (no rejection sampling is needed, since
 /// every bit pattern is an element). This mirrors the configuration `p3-binary-pcs` tests with.
 ///

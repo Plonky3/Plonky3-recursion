@@ -335,7 +335,7 @@ pub(crate) unsafe fn transmute_traces<FromEF, ToEF>(t: &Traces<FromEF>) -> &Trac
 /// Trait implemented by all non-primitive table plugins used by the batch prover.
 ///
 /// Implementors would typically delegate to an existing AIR type, define a base case
-/// for base-field traces, and then use the [`impl_table_prover_batch_instances_from_base!`]
+/// for base-field traces, and then use the `impl_table_prover_batch_instances_from_base!`
 /// macro to generate the degree-specific implementations.
 ///
 /// The [`Any`] bound is intentional and requires implementations to be `'static`: table provers

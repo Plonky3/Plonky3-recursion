@@ -112,7 +112,7 @@ impl<F: Field, const D: usize> WitnessSendAir<F, D> {
     }
 
     /// Number of preprocessed base-field columns occupied by a single lane.
-    /// Each lane stores multiplicity + index (see [`WitnessLookupPrepCols`](crate::air::column_layout::WitnessLookupPrepCols)).
+    /// Each lane stores multiplicity + index (see `WitnessLookupPrepCols`).
     pub const fn preprocessed_lane_width() -> usize {
         WITNESS_LOOKUP_PREP_LANE_WIDTH
     }

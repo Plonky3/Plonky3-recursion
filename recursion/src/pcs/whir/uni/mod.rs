@@ -41,7 +41,7 @@ use crate::pcs::whir::uni::recursive_pcs::validate_round_config_inputs;
 /// Queried STIR indices one commitment's WHIR argument sampled.
 ///
 /// The queried indices are not carried by the proof: WHIR's now-independent
-/// sampler ([`get_challenge_stir_queries`]) draws them straight from the
+/// sampler (`get_challenge_stir_queries`) draws them straight from the
 /// transcript, so recovering them for MMCS path restoration means replaying
 /// that transcript rather than reading them off any proof field.
 #[derive(Clone, Debug)]
@@ -58,7 +58,7 @@ pub struct WhirQueryIndices {
 /// STIR query indices.
 ///
 /// Native `WhirVerifier::verify` samples these indices internally
-/// ([`get_challenge_stir_queries`]) and never returns them — its job is to
+/// (`get_challenge_stir_queries`) and never returns them — its job is to
 /// check a proof, not report intermediate transcript state. This function
 /// walks the identical sequence of transcript operations (per commitment,
 /// [`p3_sumcheck::layout::Verifier`]'s opening-claim absorption from

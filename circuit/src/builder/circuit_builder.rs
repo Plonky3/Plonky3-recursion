@@ -264,7 +264,7 @@ where
 
     /// Set whether [`Self::decompose_ext_to_base_coeffs`] skips the EF-select coefficient-wise
     /// optimization, returning the previous value so callers can restore it. See
-    /// [`Self::decompose_skip_select_provenance`].
+    /// `decompose_skip_select_provenance`.
     pub const fn set_decompose_skip_select_provenance(&mut self, enabled: bool) -> bool {
         core::mem::replace(&mut self.decompose_skip_select_provenance, enabled)
     }
@@ -457,7 +457,7 @@ where
     ///
     /// This mirrors [`Self::enable_poseidon2_perm_base`] but for the W32 leaf-hash and 4-to-1
     /// compression table. The permutation operates directly on 32 elements of the circuit field
-    /// `F`; for quintic recursion `perm` is a [`p3_test_utils::LiftPermToQuintic`] over the base
+    /// `F`; for quintic recursion `perm` is a `p3_test_utils::LiftPermToQuintic` over the base
     /// W32 permutation, so each lane carries the digest value in its constant coefficient.
     pub fn enable_poseidon2_perm_base_width_32<Config, P>(
         &mut self,

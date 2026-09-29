@@ -1,3 +1,8 @@
+//! Build and run field-generic circuits for the Plonky3 batch STARK prover.
+//!
+//! [`CircuitBuilder`] defines operations and public inputs. A built [`Circuit`]
+//! creates a runner that evaluates witnesses and emits table traces.
+
 #![no_std]
 extern crate alloc;
 #[cfg(feature = "debugging")]

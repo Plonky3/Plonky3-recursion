@@ -78,7 +78,8 @@ where
 {
     /// Number of operations packed into a single AIR row for this NPO.
     ///
-    /// Must match the `lanes` value returned by the corresponding [`TableProver`] implementation.
+    /// Must match the `lanes` value returned by the corresponding
+    /// [`TableProver`](crate::batch_stark_prover::TableProver) implementation.
     /// Defaults to 1.
     fn lanes(&self) -> usize {
         1
