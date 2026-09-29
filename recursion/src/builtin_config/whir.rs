@@ -14,6 +14,8 @@ use super::{BuiltinConfigError, SuiteIdV1, WhirConfigV1};
 use crate::pcs::whir::uni::{WhirUniPcs, WhirUniVerifierParams};
 use crate::verifier::VerifierLimits;
 
+mod recursion;
+
 pub(crate) type WhirMmcs<F, Perm> = MerkleTreeMmcs<
     <F as Field>::Packing,
     <F as Field>::Packing,
