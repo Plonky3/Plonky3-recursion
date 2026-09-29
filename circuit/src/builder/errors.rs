@@ -159,6 +159,10 @@ pub enum CircuitBuilderError {
     /// The statement schema's flattened length overflowed `usize`.
     #[error(transparent)]
     StatementSchema(#[from] crate::StatementError),
+
+    /// Invalid trusted state-transition composition.
+    #[error(transparent)]
+    StateTransition(#[from] crate::StateTransitionError),
 }
 
 #[cfg(test)]

@@ -35,8 +35,8 @@ use crate::ops::{
 use crate::tables::TraceGeneratorFn;
 use crate::types::{ExprId, NonPrimitiveOpId, WitnessAllocator, WitnessId};
 use crate::{
-    AggregationStatementLayout, CircuitBuilderError, CircuitError, StatementExport, StatementField,
-    StatementSchema,
+    AggregationStatementLayout, CircuitBuilderError, CircuitError, StateTransitionError,
+    StateTransitionLayout, StatementExport, StatementField, StatementSchema,
 };
 
 /// How `recompose_base_coeffs_to_ext` should lower a coefficient recomposition.
@@ -129,6 +129,58 @@ impl<F: Field> VerifiedStatementTargets<F> {
         }
         .install::<BF>(builder)?;
         builder.set_aggregation_statement_layout(left_schema, right_schema)
+    }
+
+    /// Consume two verified capabilities and install a compact state-transition statement.
+    /// Equality and three integer range checks are compiled into the parent relation.
+    pub fn install_state_transition<BF>(
+        left: Self,
+        right: Self,
+        builder: &mut CircuitBuilder<F>,
+        layout: &StateTransitionLayout,
+    ) -> Result<(), CircuitBuilderError>
+    where
+        BF: PrimeField64,
+        F: ExtensionField<BF> + PrimeCharacteristicRing + Eq + Hash,
+    {
+        if !Arc::ptr_eq(
+            &left.builder_capability,
+            &builder.statement_target_capability,
+        ) || !Arc::ptr_eq(
+            &right.builder_capability,
+            &builder.statement_target_capability,
+        ) {
+            return Err(CircuitBuilderError::StatementTargetCapabilityMismatch);
+        }
+        if left.schema != *layout.statement_schema() {
+            return Err(StateTransitionError::ChildSchemaMismatch { child: 0 }.into());
+        }
+        if right.schema != *layout.statement_schema() {
+            return Err(StateTransitionError::ChildSchemaMismatch { child: 1 }.into());
+        }
+        layout.validate_field::<BF>()?;
+        let width = layout.state_width();
+        for coefficient in 0..width {
+            builder.connect(
+                left.base_targets[width + coefficient],
+                right.base_targets[coefficient],
+            );
+        }
+        let left_count = left.base_targets[2 * width];
+        let right_count = right.base_targets[2 * width];
+        builder.decompose_to_bits::<BF>(left_count, layout.count_bits() as usize)?;
+        builder.decompose_to_bits::<BF>(right_count, layout.count_bits() as usize)?;
+        let sum = builder.add(left_count, right_count);
+        builder.decompose_to_bits::<BF>(sum, layout.count_bits() as usize)?;
+        let mut output = Vec::with_capacity(layout.statement_schema().base_len());
+        output.extend_from_slice(&left.base_targets[..width]);
+        output.extend_from_slice(&right.base_targets[width..2 * width]);
+        output.push(sum);
+        builder.set_statement_base_targets::<BF>(
+            &left.builder_capability,
+            layout.statement_schema(),
+            &output,
+        )
     }
 }
 
@@ -4239,6 +4291,89 @@ mod proptests {
         assert!(matches!(
             verified.install::<BabyBear>(&mut unrelated),
             Err(CircuitBuilderError::StatementTargetCapabilityMismatch)
+        ));
+    }
+
+    #[test]
+    fn transition_composer_checks_all_state_coefficients_and_count_capacity() {
+        let layout = crate::StateTransitionLayout::base(2, 4).unwrap();
+        let mut builder = CircuitBuilder::<BabyBear>::new();
+        let left = (0..5).map(|_| builder.public_input()).collect::<Vec<_>>();
+        let right = (0..5).map(|_| builder.public_input()).collect::<Vec<_>>();
+        // SAFETY: both sets are the exact public targets of this test's trusted child relations.
+        let left_verified = unsafe {
+            VerifiedStatementTargets::new_unchecked(
+                &builder,
+                layout.statement_schema().clone(),
+                left,
+            )
+        }
+        .unwrap();
+        let right_verified = unsafe {
+            VerifiedStatementTargets::new_unchecked(
+                &builder,
+                layout.statement_schema().clone(),
+                right,
+            )
+        }
+        .unwrap();
+        VerifiedStatementTargets::install_state_transition::<BabyBear>(
+            left_verified,
+            right_verified,
+            &mut builder,
+            &layout,
+        )
+        .unwrap();
+        let circuit = builder.build().unwrap();
+        assert_eq!(circuit.statement_schema(), Some(layout.statement_schema()));
+        assert_eq!(circuit.aggregation_statement_layout(), None);
+
+        for values in [
+            [10, 20, 11, 22, 7, 11, 22, 13, 26, 8],
+            [10, 20, 11, 22, 8, 11, 22, 13, 26, 8],
+            [10, 20, 11, 22, 7, 11, 23, 13, 26, 8],
+            [10, 20, 11, 22, 16, 11, 22, 13, 26, 0],
+        ] {
+            let mut runner = circuit.runner();
+            let result = runner
+                .set_public_inputs(&values.map(BabyBear::from_u32))
+                .and_then(|()| runner.run().map(|_| ()));
+            assert_eq!(result.is_ok(), values[4] == 7 && values[6] == 22);
+        }
+    }
+
+    #[test]
+    fn transition_composer_rejects_exact_schema_mismatch() {
+        let layout = crate::StateTransitionLayout::try_new(
+            StatementSchema::try_new(vec![crate::StatementField::Extension { degree: 2 }]).unwrap(),
+            4,
+        )
+        .unwrap();
+        let mut builder = CircuitBuilder::<BabyBear>::new();
+        let left = (0..5).map(|_| builder.public_input()).collect();
+        let right = (0..5).map(|_| builder.public_input()).collect();
+        let flat = StatementSchema::try_new(vec![crate::StatementField::Base; 5]).unwrap();
+        // SAFETY: existing test targets are represented in their respective semantic schemas.
+        let left =
+            unsafe { VerifiedStatementTargets::new_unchecked(&builder, flat, left) }.unwrap();
+        let right = unsafe {
+            VerifiedStatementTargets::new_unchecked(
+                &builder,
+                layout.statement_schema().clone(),
+                right,
+            )
+        }
+        .unwrap();
+        assert!(matches!(
+            VerifiedStatementTargets::install_state_transition::<BabyBear>(
+                left,
+                right,
+                &mut builder,
+                &layout,
+            ),
+            Err(CircuitBuilderError::StateTransition(
+                crate::StateTransitionError::ChildSchemaMismatch { child: 0 }
+            ))
         ));
     }
 

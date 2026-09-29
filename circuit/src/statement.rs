@@ -1,6 +1,7 @@
 use alloc::format;
 use alloc::vec::Vec;
 
+use p3_field::PrimeField64;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -53,6 +54,154 @@ pub struct AggregationStatementLayout {
     right: StatementSchema,
     split_at: usize,
     output: StatementSchema,
+}
+
+/// A compact two-child transition relation with statement order
+/// `[initial state, final state, count]` for each child and parent.
+///
+/// The authorized leaf relation defines what a count means. Zero is permitted.
+/// The application must retain this layout alongside its pinned verifier relation;
+/// an ordinary statement schema alone cannot describe transition semantics.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StateTransitionLayout {
+    state_schema: StatementSchema,
+    statement_schema: StatementSchema,
+    count_bits: u8,
+}
+
+/// Errors in transition layout validation or composition of canonical statements.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum StateTransitionError {
+    #[error("transition state schema must be nonempty")]
+    EmptyState,
+    #[error("transition count bit width must be in 1..=63, got {bits}")]
+    InvalidCountBits { bits: u8 },
+    #[error("transition layout schema is invalid: {0}")]
+    InvalidSchema(#[from] StatementError),
+    #[error("transition child {child} schema differs from the exact transition schema")]
+    ChildSchemaMismatch { child: usize },
+    #[error("transition child {child} statement length mismatch: expected {expected}, got {got}")]
+    StatementLength {
+        child: usize,
+        expected: usize,
+        got: usize,
+    },
+    #[error("transition state differs at flattened coefficient {coefficient}")]
+    DiscontinuousState { coefficient: usize },
+    #[error("transition child {child} count {count} exceeds {max}")]
+    CountOutOfRange { child: usize, count: u64, max: u64 },
+    #[error("transition count sum {sum} exceeds {max}")]
+    CountOverflow { sum: u128, max: u64 },
+    #[error("transition count capacity for {bits} bits exceeds field modulus {modulus}")]
+    CountCapacityExceeded { bits: u8, modulus: u64 },
+}
+
+impl StateTransitionLayout {
+    /// Construct the semantic endpoint and whole-statement schemas.
+    pub fn try_new(
+        state_schema: StatementSchema,
+        count_bits: u8,
+    ) -> Result<Self, StateTransitionError> {
+        if state_schema.base_len() == 0 {
+            return Err(StateTransitionError::EmptyState);
+        }
+        if !(1..=63).contains(&count_bits) {
+            return Err(StateTransitionError::InvalidCountBits { bits: count_bits });
+        }
+        let endpoints = StatementSchema::concat(&state_schema, &state_schema)?;
+        let statement_schema = StatementSchema::concat(
+            &endpoints,
+            &StatementSchema::try_new(alloc::vec![StatementField::Base])?,
+        )?;
+        Ok(Self {
+            state_schema,
+            statement_schema,
+            count_bits,
+        })
+    }
+
+    /// Construct a state with `width` individual base-field coefficients.
+    pub fn base(width: usize, count_bits: u8) -> Result<Self, StateTransitionError> {
+        if width == 0 {
+            return Err(StateTransitionError::EmptyState);
+        }
+        Self::try_new(
+            StatementSchema::try_new(alloc::vec![StatementField::Base; width])?,
+            count_bits,
+        )
+    }
+
+    pub const fn state_schema(&self) -> &StatementSchema {
+        &self.state_schema
+    }
+    pub const fn statement_schema(&self) -> &StatementSchema {
+        &self.statement_schema
+    }
+    pub const fn count_bits(&self) -> u8 {
+        self.count_bits
+    }
+    pub const fn state_width(&self) -> usize {
+        self.state_schema.base_len()
+    }
+
+    /// Ensure adding two maximal canonical counts cannot wrap the base field.
+    pub fn validate_field<BF: PrimeField64>(&self) -> Result<(), StateTransitionError> {
+        if 2u128 * u128::from(self.max_count()) >= u128::from(BF::ORDER_U64) {
+            return Err(StateTransitionError::CountCapacityExceeded {
+                bits: self.count_bits,
+                modulus: BF::ORDER_U64,
+            });
+        }
+        Ok(())
+    }
+
+    pub const fn max_count(&self) -> u64 {
+        (1u64 << self.count_bits) - 1
+    }
+
+    /// Predict a parent statement from canonical child values, after checking every endpoint
+    /// coefficient and the integer count bounds. Circuit constraints enforce the same relation.
+    pub fn compose_statement<BF: PrimeField64>(
+        &self,
+        left: &[BF],
+        right: &[BF],
+    ) -> Result<Vec<BF>, StateTransitionError> {
+        self.validate_field::<BF>()?;
+        for (child, values) in [left, right].into_iter().enumerate() {
+            if values.len() != self.statement_schema.base_len() {
+                return Err(StateTransitionError::StatementLength {
+                    child,
+                    expected: self.statement_schema.base_len(),
+                    got: values.len(),
+                });
+            }
+        }
+        let width = self.state_width();
+        for coefficient in 0..width {
+            if left[width + coefficient] != right[coefficient] {
+                return Err(StateTransitionError::DiscontinuousState { coefficient });
+            }
+        }
+        let max = self.max_count();
+        let counts = [
+            left[2 * width].as_canonical_u64(),
+            right[2 * width].as_canonical_u64(),
+        ];
+        for (child, count) in counts.into_iter().enumerate() {
+            if count > max {
+                return Err(StateTransitionError::CountOutOfRange { child, count, max });
+            }
+        }
+        let sum = u128::from(counts[0]) + u128::from(counts[1]);
+        if sum > u128::from(max) {
+            return Err(StateTransitionError::CountOverflow { sum, max });
+        }
+        let mut output = Vec::with_capacity(self.statement_schema.base_len());
+        output.extend_from_slice(&left[..width]);
+        output.extend_from_slice(&right[width..2 * width]);
+        output.push(BF::from_u64(sum as u64));
+        Ok(output)
+    }
 }
 
 #[derive(Deserialize)]
@@ -232,7 +381,15 @@ mod tests {
     use alloc::vec;
     use core::cell::Cell;
 
-    use super::{AggregationStatementLayout, StatementError, StatementField, StatementSchema};
+    use p3_baby_bear::BabyBear;
+    use p3_field::PrimeCharacteristicRing;
+    use p3_goldilocks::Goldilocks;
+    use p3_koala_bear::KoalaBear;
+
+    use super::{
+        AggregationStatementLayout, StateTransitionError, StateTransitionLayout, StatementError,
+        StatementField, StatementSchema,
+    };
 
     struct SchemaNameProbe<'a>(&'a Cell<Option<&'static str>>);
 
@@ -371,5 +528,95 @@ mod tests {
             ),
             Err(StatementError::AggregationOutputSchemaMismatch)
         );
+    }
+
+    #[test]
+    fn transition_layout_preserves_endpoint_semantics_and_composes_values() {
+        let state = StatementSchema::try_new(vec![
+            StatementField::Base,
+            StatementField::Extension { degree: 2 },
+        ])
+        .unwrap();
+        let layout = StateTransitionLayout::try_new(state.clone(), 4).unwrap();
+        assert_eq!(layout.state_schema(), &state);
+        assert_eq!(layout.statement_schema().base_len(), 7);
+        assert_eq!(
+            layout.statement_schema().fields(),
+            &[
+                StatementField::Base,
+                StatementField::Extension { degree: 2 },
+                StatementField::Base,
+                StatementField::Extension { degree: 2 },
+                StatementField::Base,
+            ]
+        );
+        let left = [10, 20, 30, 11, 22, 33, 7].map(BabyBear::from_u32);
+        let right = [11, 22, 33, 13, 26, 39, 8].map(BabyBear::from_u32);
+        assert_eq!(
+            layout.compose_statement(&left, &right).unwrap(),
+            [10, 20, 30, 13, 26, 39, 15].map(BabyBear::from_u32)
+        );
+        let mut broken = right;
+        broken[2] = BabyBear::from_u32(34);
+        assert_eq!(
+            layout.compose_statement(&left, &broken),
+            Err(StateTransitionError::DiscontinuousState { coefficient: 2 })
+        );
+    }
+
+    #[test]
+    fn transition_layout_rejects_invalid_counts_and_shapes() {
+        let schema = StatementSchema::try_new(vec![StatementField::Base]).unwrap();
+        assert_eq!(
+            StateTransitionLayout::try_new(StatementSchema::default(), 4),
+            Err(StateTransitionError::EmptyState)
+        );
+        assert_eq!(
+            StateTransitionLayout::try_new(schema.clone(), 0),
+            Err(StateTransitionError::InvalidCountBits { bits: 0 })
+        );
+        let layout = StateTransitionLayout::try_new(schema, 4).unwrap();
+        assert!(matches!(
+            layout.compose_statement(&[BabyBear::from_u32(1)], &[]),
+            Err(StateTransitionError::StatementLength { .. })
+        ));
+        let left = [1, 8, 8].map(BabyBear::from_u32);
+        let right = [8, 9, 8].map(BabyBear::from_u32);
+        assert_eq!(
+            layout.compose_statement(&left, &right),
+            Err(StateTransitionError::CountOverflow { sum: 16, max: 15 })
+        );
+        let left = [1, 8, 16].map(BabyBear::from_u32);
+        assert_eq!(
+            layout.compose_statement(&left, &right),
+            Err(StateTransitionError::CountOutOfRange {
+                child: 0,
+                count: 16,
+                max: 15
+            })
+        );
+        let zero = [1, 1, 0].map(BabyBear::from_u32);
+        assert_eq!(layout.compose_statement(&zero, &zero).unwrap(), zero);
+    }
+
+    #[test]
+    fn transition_count_capacity_is_strictly_below_modulus() {
+        let schema = StatementSchema::try_new(vec![StatementField::Base]).unwrap();
+        let bb = StateTransitionLayout::try_new(schema.clone(), 29).unwrap();
+        bb.validate_field::<BabyBear>().unwrap();
+        bb.validate_field::<KoalaBear>().unwrap();
+        let too_wide = StateTransitionLayout::try_new(schema.clone(), 30).unwrap();
+        assert!(matches!(
+            too_wide.validate_field::<BabyBear>(),
+            Err(StateTransitionError::CountCapacityExceeded { .. })
+        ));
+        let gl = StateTransitionLayout::try_new(schema.clone(), 62).unwrap();
+        gl.validate_field::<Goldilocks>().unwrap();
+        assert!(matches!(
+            StateTransitionLayout::try_new(schema, 63)
+                .unwrap()
+                .validate_field::<Goldilocks>(),
+            Err(StateTransitionError::CountCapacityExceeded { .. })
+        ));
     }
 }

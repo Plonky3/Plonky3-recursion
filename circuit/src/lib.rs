@@ -31,7 +31,8 @@ pub use errors::CircuitError;
 pub use expr::Expr;
 pub use ops::{AluOpKind, NpoPrivateData, NpoTypeId, Op, PreprocessedWriter};
 pub use statement::{
-    AggregationStatementLayout, StatementError, StatementExport, StatementField, StatementSchema,
+    AggregationStatementLayout, StateTransitionError, StateTransitionLayout, StatementError,
+    StatementExport, StatementField, StatementSchema,
 };
 pub use tables::{CircuitRunner, Traces};
 pub use types::{ExprId, NonPrimitiveOpId, WitnessId};
