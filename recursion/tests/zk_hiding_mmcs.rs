@@ -557,23 +557,27 @@ fn test_batch_verifier_hiding_mmcs() -> Result<(), VerificationError> {
         .verify_all_tables::<Challenge>(&verification_proof)
         .expect("Failed to verify proof of hiding-MMCS verification circuit");
 
-    let mut local_air_mutation = verification_traces.clone();
-    mutate_salt_leaf_poseidon_trace(&mut local_air_mutation, &batch_stark_proof);
-    let local_result = prove_and_verify_outer_trace(
+    let mut physical_leaf_mutation = verification_traces.clone();
+    mutate_salt_leaf_poseidon_trace(&mut physical_leaf_mutation, &batch_stark_proof);
+    let physical_leaf_result = prove_and_verify_outer_trace(
         &verification_prover,
         &verification_circuit_prover_data,
-        &local_air_mutation,
+        &physical_leaf_mutation,
     );
+    // Poseidon rows are regenerated from the changed input; the witness lookup detects the mismatch.
     #[cfg(debug_assertions)]
-    assert!(matches!(
-        &local_result,
-        Err(ProofCheckError::DebugPanic(
-            rejection_oracle::DebugRejectionKind::Constraint
-        ))
-    ));
+    assert!(
+        matches!(
+            &physical_leaf_result,
+            Err(ProofCheckError::DebugPanic(
+                rejection_oracle::DebugRejectionKind::Lookup
+            ))
+        ),
+        "changed physical leaf-hash input must fail the witness lookup, got {physical_leaf_result:?}"
+    );
     assert_rejected(
-        &local_result,
-        "a changed salt coefficient in the physical leaf-hash row",
+        &physical_leaf_result,
+        "a changed salt coefficient in the physical leaf-hash operation",
     );
 
     let salt_witness = verification_circuit.private_input_rows[mutated_salt_private_index];
