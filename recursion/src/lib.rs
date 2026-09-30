@@ -33,7 +33,7 @@ pub use backend::{
     FriRecursionBackend, FriRecursionBackendD5, FriRecursionBackendForExt,
     replay_batch_layer_transcript, replay_recursion_input_transcript,
 };
-pub use challenger::CircuitChallenger;
+pub use challenger::{BinaryTower128Challenger, CircuitChallenger};
 pub use challenger_perm::ChallengerPermConfig;
 pub use generation::{
     GenerationError, OpeningTranscript, PcsGeneration, generate_batch_challenges,
