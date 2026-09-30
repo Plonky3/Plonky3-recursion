@@ -116,11 +116,15 @@ recursive verifier supports Prefix variable order and a nonzero constant
 folding factor. An explicit round-rate schedule must match the intermediate
 round count derived from each commitment's stacked arity; use
 `WhirRateModeV1::Auto` when leaf and recursive trace sizes differ. Choose
-`num_queries < domain_size >> folding_factor` in every intermediate and final
-phase: the recursive verifier rejects saturating counts and stratified sampling.
-Thus a factory-valid native WHIR configuration is not necessarily admissible
-for recursive verification. The WHIR descriptor's cap height is retained when
-restoring paths.
+unstratified query sampling. In any intermediate or final phase where the raw
+configured query count reaches or exceeds `domain_size >> folding_factor`, the
+verifier opens the entire folded domain in ascending order and makes no
+query-index challenger draws. The effective opening count is the minimum of the
+raw count and folded domain size; the raw count remains part of the canonical
+security configuration.
+Native configurations with stratified sampling, non-Prefix variable order, or
+nonconstant folding remain unsupported by the recursive verifier.
+The WHIR descriptor's cap height is retained when restoring paths.
 
 ## FRI parameters
 
