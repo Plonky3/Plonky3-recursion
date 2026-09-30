@@ -48,6 +48,40 @@ verifies a complete binary-field proof.
     graph. The target's read-only bits do not carry a builder identity. A circuit using this
     arithmetic can be proved and carried into the next recursion layer over the supported
     odd-prime host fields.
+- **Non-native binary byte-hash transcript.** `BinaryTower128Challenger` has a separate,
+  fallible inherent API (`new`, `with_initial_limbs`, `observe`, `observe_slice`,
+  `observe_digest`, `sample`, `sample_bits`, `check_witness`). It matches native
+  `BinaryChallenger<BinaryField128, HashChallenger<u8, H, 32>>` for
+  `H = Keccak256Hash` or `p3_blake3::Blake3`, selected by the fixed `ByteHash` passed to
+  its constructor. It is separate from the prime-field `RecursiveChallenger` trait.
+  - The initial transcript is empty or an even number of raw bytes, supplied as low-byte-first
+    16-bit limbs. There is no length prefix or padding. A tower observation appends its eight
+    low-first limbs (the raw little-endian Wiedemann coordinates); a digest observation appends
+    all sixteen 16-bit limbs in natural byte order. External initial and digest limbs are
+    constrained to base-field integers at most 65535. The host base field must be an
+    odd-characteristic `PrimeField64` with order above 65535.
+  - An observation clears unread output bytes and appends to the next hash input. A refill
+    hashes that entire input; the resulting digest becomes both the forward input for the next
+    chained hash and the current output. Sampling draws bytes from the **end** of that digest,
+    retaining a short remainder across draws and refilling only when it is exhausted. Thus the
+    first sample from an empty transcript starts with the last byte of `H([])`, while a refill
+    after consuming its digest hashes `H(previous_digest)`; later observations are appended to
+    that digest in forward order before hashing. A field sample consumes 16 bytes and interprets
+    them as raw little-endian tower coordinates, with no rejection sampling.
+  - `sample_bits(bits)` consumes eight bytes even when `bits == 0`, returning Boolean targets
+    for the requested low bits; `bits` must be below `usize::BITS`. By contrast,
+    `check_witness(0, witness)` leaves the transcript and builder untouched. For nonzero
+    difficulty, `check_witness` observes the canonical witness, samples eight bytes and
+    constrains the requested low bits to zero. This is witness **checking**; native grinding
+    search is outside this API.
+  - Every target and `ExprId` used with one challenger must belong to the same
+    `CircuitBuilder` graph; expression IDs do not enforce graph ownership. Enable the matching
+    Keccak-f or BLAKE3 compression operation before a refill, and register its existing
+    preprocessor, AIR builder and prover together with the statement table when proving.
+    Bind dynamic transcript limbs, witnesses and returned samples through
+    `StatementExport::Base` in an agreed order. An error leaves the challenger's transcript
+    state unchanged for retry, although expressions or constraints already added to the
+    builder by a fallible gadget may remain.
 - **Binary hash configurations.** `p3_test_utils::binary_field_params` provides the
   configuration `p3-binary-pcs` tests with, once per hash (`keccak` and `blake3` submodules
   with identical item names):
@@ -115,6 +149,6 @@ verifies a complete binary-field proof.
 - Proving circuits over a binary field. The circuit prover's tables, lookups and Poseidon
   permutations assume a two-adic prime field, as do FRI and the prime-field WHIR.
 - Recursively verifying binary-PCS or multi-stark proofs. The non-native `BinaryField128`
-  arithmetic above supplies one component, but the binary PCS, transcript, and full verifier
-  wiring are still missing.
+  arithmetic and the byte-hash challenger above supply components, but binary PCS verification,
+  multi-STARK verification and their wire/transcript integration are still missing.
 - MMCS trees of arity above two.

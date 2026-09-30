@@ -13,6 +13,7 @@ Key items:
 - `FriRecursionBackendForExt` / `FriRecursionConfig` and `WhirRecursionBackendForExt` / `WhirRecursionConfig` — direct recursion for the registered FRI and WHIR built-in suites with matching backends
 - `verify_batch_circuit`, `verify_p3_uni_proof_circuit` — expert in-circuit proof verifiers
 - `CircuitChallenger` — in-circuit Fiat–Shamir transcript
+- `BinaryTower128Challenger` — non-native Keccak-256/BLAKE3 byte transcript over the binary tower
 - `Recursive`, `RecursiveAir`, `RecursivePcs`, `RecursiveMmcs` — the recursion trait family
 - `StarkVerifierInputs` / `PublicInputBuilder` and the `*InputsBuilder` types — verifier public-input assembly
 
@@ -28,3 +29,5 @@ The [integration guide](../book/src/user_guide/integration.md#import-portable-ar
 explains typed artifact import and application-supplied configuration.
 The [configuration guide](../book/src/user_guide/configuration.md#choosing-a-built-in-recursion-backend)
 maps built-in suites to backends and describes recursive parameter limits.
+The [binary-field guide](../book/src/advanced_topics/binary_fields.md)
+describes the separate binary byte-hash challenger and its proof-table registration.
