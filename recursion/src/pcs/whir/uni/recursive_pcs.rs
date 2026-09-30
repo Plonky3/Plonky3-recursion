@@ -161,7 +161,8 @@ impl<F: TwoAdicField> WhirUniVerifierParams<F> {
     ///
     /// # Errors
     /// Returns a typed error for invalid arithmetic/configuration or an
-    /// unsupported saturating STIR query phase.
+    /// unsupported variable order or stratified query schedule. Saturated
+    /// STIR query counts use the native whole-domain opening schedule.
     pub fn round_params<EF, Ch>(
         &self,
         stacked_num_variables: usize,

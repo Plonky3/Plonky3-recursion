@@ -50,13 +50,11 @@ pub enum WhirVerifierParamsError {
     /// A caller supplied a derived config that no longer matches its source parameters.
     #[error("WHIR derived configuration is inconsistent in {component}")]
     InconsistentDerivedConfig { component: &'static str },
-    /// A phase's STIR query count meets or exceeds its folded domain size.
+    /// Legacy saturation error retained for source compatibility.
     ///
-    /// Native `get_challenge_stir_queries` enumerates the whole folded domain
-    /// deterministically with zero challenger draws whenever
-    /// `num_queries >= folded_domain_size`; the in-circuit verifier always
-    /// draws exactly `num_queries` samples and does not yet mirror that
-    /// branch. Handling it in-circuit is tracked as a follow-on task.
+    /// Supported unstratified canonical configurations no longer emit this
+    /// variant: both native and in-circuit verifiers enumerate the whole
+    /// folded domain without challenger draws when the query count saturates.
     #[error(
         "{phase}: num_queries ({num_queries}) >= folded_domain_size ({folded_domain_size}); \
          saturating STIR query counts are not yet supported in-circuit"
@@ -99,7 +97,8 @@ pub enum WhirVerifierParamsError {
 pub struct WhirRoundParams<F> {
     /// Number of out-of-domain evaluation samples for this round.
     ood_samples: usize,
-    /// Number of STIR proximity queries.
+    /// Raw configured number of STIR proximity queries. The proof carries
+    /// [`Self::num_query_openings`] rows after capping at the folded domain.
     num_queries: usize,
     /// PoW bits for the after-commitment grinding phase.
     pow_bits: usize,
@@ -147,7 +146,8 @@ pub struct WhirVerifierParams<F> {
     round_params: Vec<WhirRoundParams<F>>,
     /// Number of variables in the final polynomial sent in the clear.
     final_poly_num_variables: usize,
-    /// Number of STIR queries in the final proximity test.
+    /// Raw configured number of STIR queries in the final proximity test.
+    /// The proof carries [`Self::final_query_openings`] rows.
     final_queries: usize,
     /// PoW bits for the final STIR query phase.
     final_pow_bits: usize,
@@ -216,12 +216,9 @@ impl<F: Field> WhirVerifierParams<F> {
     ///
     /// # Errors
     ///
-    /// Returns [`WhirVerifierParamsError::SaturatingQueryCountUnsupported`] if any
-    /// round, or the final phase, would ask for at least as many STIR queries as its
-    /// folded domain has positions. Native sampling handles that case by
-    /// deterministically enumerating the whole domain with no challenger draws; the
-    /// in-circuit verifier always draws exactly `num_queries` samples and does not yet
-    /// mirror that branch.
+    /// Returns a typed error for an invalid, noncanonical, stratified, or
+    /// otherwise unsupported configuration. Saturated query counts are accepted;
+    /// the raw counts and native transcript shape remain unchanged.
     pub fn from_config<EF, Ch>(
         config: &WhirConfig<EF, F, Ch>,
         variable_order: VariableOrder,
@@ -268,15 +265,7 @@ impl<F: Field> WhirVerifierParams<F> {
         let round_params = (0..n_rounds)
             .map(|i| {
                 let rp = &config.round_parameters()[i];
-                let folded_domain_size = rp.domain_size >> rp.folding_factor;
-                if rp.num_queries >= folded_domain_size {
-                    return Err(WhirVerifierParamsError::SaturatingQueryCountUnsupported {
-                        phase: WhirPhase::Round(i),
-                        num_queries: rp.num_queries,
-                        folded_domain_size,
-                    });
-                }
-                Ok(WhirRoundParams {
+                WhirRoundParams {
                     ood_samples: rp.ood_samples,
                     num_queries: rp.num_queries,
                     pow_bits: rp.pow_bits,
@@ -285,21 +274,12 @@ impl<F: Field> WhirVerifierParams<F> {
                     domain_size: rp.domain_size,
                     folded_domain_gen: F::two_adic_generator(rp.log_folded_domain_size),
                     num_variables: rp.num_variables,
-                })
+                }
             })
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect();
 
         let final_round_config = config.final_round_config();
-        let final_folded_domain_size =
-            final_round_config.domain_size >> final_round_config.folding_factor;
         let terminal = config.terminal();
-        if terminal.num_queries >= final_folded_domain_size {
-            return Err(WhirVerifierParamsError::SaturatingQueryCountUnsupported {
-                phase: WhirPhase::Final,
-                num_queries: terminal.num_queries,
-                folded_domain_size: final_folded_domain_size,
-            });
-        }
         // The claim count is bound per circuit; zero here is replaced when seeding.
         let transcript_shape = WhirShape::new(config, 0);
         if transcript_shape.stratified_queries {
@@ -368,6 +348,16 @@ impl<F: Field> WhirVerifierParams<F> {
     pub const fn final_queries(&self) -> usize {
         self.final_queries
     }
+    /// Number of final proof-opening rows, capped by the folded domain size.
+    /// [`Self::final_queries`] retains the raw configured count.
+    pub const fn final_query_openings(&self) -> usize {
+        let folded = self.final_domain_size >> self.final_folding_factor;
+        if self.final_queries < folded {
+            self.final_queries
+        } else {
+            folded
+        }
+    }
     pub const fn final_pow_bits(&self) -> usize {
         self.final_pow_bits
     }
@@ -404,6 +394,16 @@ impl<F> WhirRoundParams<F> {
     }
     pub const fn num_queries(&self) -> usize {
         self.num_queries
+    }
+    /// Number of proof-opening rows for this round, capped by its folded
+    /// domain size. [`Self::num_queries`] retains the raw configured count.
+    pub const fn num_query_openings(&self) -> usize {
+        let folded = self.domain_size >> self.folding_factor;
+        if self.num_queries < folded {
+            self.num_queries
+        } else {
+            folded
+        }
     }
     pub const fn pow_bits(&self) -> usize {
         self.pow_bits
@@ -446,9 +446,8 @@ mod tests {
     /// `NUM_VARIABLES = 4` with this schedule has zero intermediate rounds: the
     /// only fold (factor 4) takes the starting domain (32 positions) straight
     /// into the final phase, leaving a folded domain of `32 >> 4 = 2`
-    /// positions. `final_queries = 35 >= 2`, so native sampling would enumerate
-    /// the whole domain with no challenger draws, which the in-circuit verifier
-    /// does not yet mirror.
+    /// positions. `final_queries = 35 >= 2`, so native and in-circuit sampling
+    /// enumerate the whole domain with no query-index challenger draws.
     fn saturating_protocol_params() -> ProtocolParameters {
         ProtocolParameters {
             security_level: 32,
@@ -506,31 +505,78 @@ mod tests {
     }
 
     #[test]
-    fn from_config_rejects_a_saturating_final_phase() {
+    fn from_config_accepts_a_saturating_final_phase_with_raw_identity() {
         let config =
             WhirConfig::<EF, BF, DummyChallenger<BF>>::new(4, saturating_protocol_params())
-                .expect("config is valid, only its final-phase query count saturates");
+                .expect("the canonical saturated configuration is valid");
         assert_eq!(
             config.n_rounds(),
             0,
             "this schedule has no intermediate rounds"
         );
 
-        let err = WhirVerifierParams::<BF>::from_config(
+        let retained = WhirVerifierParams::<BF>::from_config(
             &config,
             PrefixProver::<BF, EF>::variable_order(),
             p3_circuit::ops::Poseidon2Config::BABY_BEAR_D4_W16,
         )
-        .expect_err("final_queries=35 >= folded_domain_size=2 must be rejected");
+        .expect("final_queries=35 opens both folded-domain positions");
 
-        assert!(matches!(
-            err,
-            WhirVerifierParamsError::SaturatingQueryCountUnsupported {
-                phase: WhirPhase::Final,
-                num_queries: 35,
-                folded_domain_size: 2,
-            }
-        ));
+        assert_eq!(retained.final_queries(), 35);
+        assert_eq!(retained.final_query_openings(), 2);
+        let mut changed_raw_count = retained.clone();
+        changed_raw_count.final_queries += 1;
+        assert_eq!(changed_raw_count.final_query_openings(), 2);
+        assert_ne!(retained, changed_raw_count);
+        assert_ne!(
+            crate::input_contract::whir::WhirContextParams::from_recursive(&retained),
+            crate::input_contract::whir::WhirContextParams::from_recursive(&changed_raw_count),
+            "equal opening cardinality must not erase the raw authority count"
+        );
+        assert_eq!(
+            crate::input_contract::whir::WhirContextParams::from_recursive(&retained),
+            crate::input_contract::whir::WhirContextParams::from_native(&config),
+            "canonical context retains the raw query count"
+        );
+        assert_eq!(
+            retained.transcript_shape(),
+            &WhirTranscriptShape(WhirShape::new(&config, 0)),
+            "transcript seeding retains the native shape"
+        );
+    }
+
+    #[test]
+    fn equality_saturated_intermediate_and_greater_final_keep_raw_counts() {
+        let protocol = ProtocolParameters {
+            security_level: 106,
+            pow_bits: 0,
+            round_log_inv_rates: vec![1],
+            folding_factor: FoldingFactor::Constant(4),
+            soundness_type: SecurityAssumption::UniqueDecoding,
+            starting_log_inv_rate: 1,
+        };
+        let config = WhirConfig::<EF, BF, DummyChallenger<BF>>::new(11, protocol).unwrap();
+        let retained = WhirVerifierParams::<BF>::from_config(
+            &config,
+            PrefixProver::<BF, EF>::variable_order(),
+            p3_circuit::ops::Poseidon2Config::BABY_BEAR_D4_W16,
+        )
+        .unwrap();
+        assert_eq!(retained.n_rounds(), 1);
+        let round = &retained.round_params()[0];
+        assert_eq!(round.domain_size() >> round.folding_factor(), 256);
+        assert_eq!(round.num_queries(), 256);
+        assert_eq!(round.num_query_openings(), 256);
+        assert_eq!(
+            retained.final_domain_size() >> retained.final_folding_factor(),
+            16
+        );
+        assert_eq!(retained.final_queries(), 256);
+        assert_eq!(retained.final_query_openings(), 16);
+        assert_eq!(
+            crate::input_contract::whir::WhirContextParams::from_recursive(&retained),
+            crate::input_contract::whir::WhirContextParams::from_native(&config)
+        );
     }
 
     #[test]

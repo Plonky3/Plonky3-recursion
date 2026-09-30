@@ -32,6 +32,37 @@ use crate::pcs::whir::sumcheck::verify_sumcheck_rounds;
 use crate::pcs::whir::targets::{QueryOpeningTargets, WhirProofTargets};
 use crate::traits::RecursiveChallenger;
 
+/// Native STIR either draws each unsaturated index independently or opens the
+/// entire folded domain in ascending order without drawing from the challenger.
+/// The returned bits are little-endian and have exactly `domain_bits` entries.
+fn stir_query_index_bits<BF, EF, Ch>(
+    circuit: &mut CircuitBuilder<EF>,
+    challenger: &mut Ch,
+    raw_queries: usize,
+    folded_domain_size: usize,
+    query: usize,
+) -> Result<Vec<Target>, CircuitBuilderError>
+where
+    BF: PrimeField64,
+    EF: ExtensionField<BF>,
+    Ch: RecursiveChallenger<BF, EF>,
+{
+    let domain_bits = p3_util::log2_strict_usize(folded_domain_size);
+    if raw_queries < folded_domain_size {
+        challenger.sample_bits(circuit, domain_bits)
+    } else {
+        Ok((0..domain_bits)
+            .map(|bit| {
+                circuit.define_const(if (query >> bit) & 1 == 0 {
+                    EF::ZERO
+                } else {
+                    EF::ONE
+                })
+            })
+            .collect())
+    }
+}
+
 /// Verify a WHIR proof in-circuit.
 ///
 /// Mirrors `WhirVerifier::verify` from `p3-whir`: replays the transcript, checks
@@ -134,7 +165,6 @@ where
         //    query_randomness = last_r (Prefix) or last_r reversed (Suffix).
         //    fold_j = eval_multilinear(leaf_j, query_randomness).
         let folded_domain_size = rp.domain_size() >> rp.folding_factor();
-        let domain_size_bits = p3_util::log2_strict_usize(folded_domain_size);
         let dims = vec![Dimensions {
             height: folded_domain_size,
             width: 1usize << rp.folding_factor(),
@@ -146,12 +176,17 @@ where
             last_r.clone()
         };
 
-        let mut fold_vals: Vec<Target> = Vec::with_capacity(rp.num_queries());
-        let mut sel_scalars: Vec<Target> = Vec::with_capacity(rp.num_queries());
+        let mut fold_vals: Vec<Target> = Vec::with_capacity(rp.num_query_openings());
+        let mut sel_scalars: Vec<Target> = Vec::with_capacity(rp.num_query_openings());
 
-        for q_idx in 0..rp.num_queries() {
-            // Sample domain_size_bits bits as little-endian index.
-            let index_bits = challenger.sample_bits(circuit, domain_size_bits)?;
+        for q_idx in 0..rp.num_query_openings() {
+            let index_bits = stir_query_index_bits::<BF, EF, Ch>(
+                circuit,
+                challenger,
+                rp.num_queries(),
+                folded_domain_size,
+                q_idx,
+            )?;
 
             // domain_point = folded_domain_gen^index (big-endian powers → LE bits).
             let domain_pt = pow_const_base(circuit, rp.folded_domain_gen().into(), &index_bits);
@@ -240,7 +275,6 @@ where
     // distinct from `final_sumcheck_rounds`, the plain-sumcheck length performed
     // *after* that fold, and the two coincide only for specific arities.
     let final_folded_size = params.final_domain_size() >> params.final_folding_factor();
-    let final_domain_bits = p3_util::log2_strict_usize(final_folded_size);
     let final_dims = vec![Dimensions {
         height: final_folded_size,
         width: 1usize << params.final_folding_factor(),
@@ -249,11 +283,17 @@ where
     let final_query_r: Vec<Target> = if is_suffix {
         last_r.iter().copied().rev().collect()
     } else {
-        last_r.clone()
+        last_r
     };
 
-    for q_idx in 0..params.final_queries() {
-        let index_bits = challenger.sample_bits(circuit, final_domain_bits)?;
+    for q_idx in 0..params.final_query_openings() {
+        let index_bits = stir_query_index_bits::<BF, EF, Ch>(
+            circuit,
+            challenger,
+            params.final_queries(),
+            final_folded_size,
+            q_idx,
+        )?;
 
         let domain_scalar = pow_const_base(
             circuit,
@@ -299,7 +339,7 @@ where
     }
 
     // Optional final sumcheck.
-    if params.final_sumcheck_rounds() > 0
+    let final_sumcheck_r = if params.final_sumcheck_rounds() > 0
         && let Some(ref final_sc) = proof.final_sumcheck
     {
         let (new_claim, final_r) = verify_sumcheck_rounds::<BF, EF, Ch>(
@@ -311,9 +351,11 @@ where
             params.final_folding_pow_bits(),
         )?;
         claimed_eval = new_claim;
-        last_r = final_r.clone();
         all_r.extend_from_slice(&final_r);
-    }
+        final_r
+    } else {
+        Vec::new()
+    };
 
     // ── Final consistency check ───────────────────────────────────────────────
     //
@@ -322,15 +364,16 @@ where
     // `eval_constraints_poly` sums per-constraint weight polynomials evaluated
     // at the appropriate local slice of `all_r` (last k elements, per variable_order).
     //
-    // `final_value = eval_multilinear(final_poly, last_r)`  [Prefix]
-    //             or `eval_multilinear(final_poly, last_r.reversed())`  [Suffix].
+    // The closing sumcheck has its own randomness, distinct from the preceding
+    // fold point used by final STIR. With zero closing rounds it is empty, so
+    // the one-value final polynomial is evaluated at the empty point.
 
     let eval_weights = eval_constraints_poly_circuit(circuit, &all_r, &all_constraints, is_suffix);
 
     let final_r_local: Vec<Target> = if is_suffix {
-        last_r.iter().copied().rev().collect()
+        final_sumcheck_r.iter().copied().rev().collect()
     } else {
-        last_r
+        final_sumcheck_r
     };
     let final_value = eval_multilinear(circuit, &proof.final_poly, &final_r_local);
 
@@ -448,7 +491,7 @@ mod tests {
     use crate::pcs::whir::gadgets::ConstraintWeightData;
     use crate::pcs::whir::params::WhirVerifierParams;
     use crate::pcs::whir::targets::WhirProofTargets;
-    use crate::pcs::whir::verifier::verify_whir_circuit;
+    use crate::pcs::whir::verifier::{stir_query_index_bits, verify_whir_circuit};
     use crate::traits::RecursiveChallenger;
 
     type BF = BabyBear;
@@ -536,6 +579,61 @@ mod tests {
         }
 
         fn clear(&mut self, _: &mut CircuitBuilder<EF>) {}
+    }
+
+    #[test]
+    fn stir_indices_saturate_without_draws_and_unsaturated_draws_keep_order() {
+        let mut circuit = CircuitBuilder::<EF>::new();
+        let mut challenger = MockChallenger {
+            ext_samples: VecDeque::new(),
+            base_samples: VecDeque::new(),
+        };
+
+        // Both equality and strictly greater raw counts enumerate every
+        // position in ascending order. An empty base queue makes any accidental
+        // call to sample_bits (including width zero) panic.
+        for (raw, folded) in [(4, 4), (7, 4), (1, 1), (2, 1)] {
+            for query in 0..folded {
+                let bits = stir_query_index_bits::<BF, EF, _>(
+                    &mut circuit,
+                    &mut challenger,
+                    raw,
+                    folded,
+                    query,
+                )
+                .unwrap();
+                assert_eq!(bits.len(), folded.ilog2() as usize);
+                for (bit, target) in bits.into_iter().enumerate() {
+                    let expected = circuit.define_const(EF::from_bool((query >> bit) & 1 == 1));
+                    let difference = circuit.sub(target, expected);
+                    circuit.assert_zero(difference);
+                }
+            }
+        }
+
+        // Unsaturated queries remain independent draws in their original
+        // order; duplicate indices are not sorted or removed.
+        challenger.base_samples =
+            VecDeque::from(vec![BF::from_u8(5), BF::from_u8(5), BF::from_u8(2)]);
+        for expected_index in [5usize, 5, 2] {
+            let bits = stir_query_index_bits::<BF, EF, _>(
+                &mut circuit,
+                &mut challenger,
+                3,
+                8,
+                expected_index,
+            )
+            .unwrap();
+            assert_eq!(bits.len(), 3);
+            for (bit, target) in bits.into_iter().enumerate() {
+                let expected =
+                    circuit.define_const(EF::from_bool((expected_index >> bit) & 1 == 1));
+                let difference = circuit.sub(target, expected);
+                circuit.assert_zero(difference);
+            }
+        }
+        assert!(challenger.base_samples.is_empty());
+        circuit.build().unwrap().runner().run().unwrap();
     }
 
     /// What a native WHIR verification samples after its initial constraint, in the order the

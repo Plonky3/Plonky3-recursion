@@ -252,7 +252,7 @@ impl WhirProofTargets {
                 WhirRoundProofTargets::alloc(
                     circuit,
                     rp.ood_samples(),
-                    rp.num_queries(),
+                    rp.num_query_openings(),
                     rp.folding_factor(),
                     rp.folding_pow_bits(),
                     cap_entries,
@@ -273,7 +273,7 @@ impl WhirProofTargets {
         // coincides with it when the folding schedule's last two entries happen
         // to match.
         let final_leaf_len = 1usize << params.final_folding_factor();
-        let final_queries = (0..params.final_queries())
+        let final_queries = (0..params.final_query_openings())
             .map(|_| {
                 if params.n_rounds() == 0 {
                     QueryOpeningTargets::alloc_base(circuit, final_leaf_len)

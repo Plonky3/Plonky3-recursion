@@ -272,7 +272,10 @@ fn validate_target_round_shape(
                 "WHIR intermediate round {round_idx} OOD count disagrees with canonical parameters"
             )));
         }
-        if proof_round.queries.len() != params.num_queries {
+        let expected_queries = params
+            .num_queries
+            .min(params.domain_size >> params.folding_factor);
+        if proof_round.queries.len() != expected_queries {
             return Err(VerificationError::InvalidProofShape(format!(
                 "WHIR intermediate round {round_idx} query count disagrees with canonical parameters"
             )));
@@ -282,7 +285,7 @@ fn validate_target_round_shape(
             validate_target_query(
                 query,
                 round_idx != 0,
-                params.num_queries,
+                expected_queries,
                 width,
                 "intermediate",
             )?;
@@ -303,7 +306,10 @@ fn validate_target_round_shape(
             "WHIR final polynomial length disagrees with canonical parameters".into(),
         ));
     }
-    if round.whir.final_queries.len() != vp.final_queries {
+    let expected_final_queries = vp
+        .final_queries
+        .min(vp.final_domain_size >> vp.final_folding_factor);
+    if round.whir.final_queries.len() != expected_final_queries {
         return Err(VerificationError::InvalidProofShape(
             "WHIR final query count disagrees with canonical parameters".into(),
         ));
@@ -313,7 +319,7 @@ fn validate_target_round_shape(
         validate_target_query(
             query,
             !vp.rounds.is_empty(),
-            vp.final_queries,
+            expected_final_queries,
             final_width,
             "final",
         )?;
@@ -1263,5 +1269,119 @@ mod tests {
             result,
             Err(VerificationError::InvalidProofShape(_))
         ));
+    }
+
+    fn saturated_query_count_mismatch_is_rejected(
+        log_height: usize,
+        security_level: usize,
+        soundness_type: p3_whir::parameters::SecurityAssumption,
+        intermediate: bool,
+        extra: bool,
+    ) {
+        use p3_circuit::ops::Poseidon2Config;
+        use p3_field::coset::TwoAdicMultiplicativeCoset;
+        use p3_whir::parameters::{FoldingFactor, ProtocolParameters};
+
+        use crate::pcs::whir::targets::{QueryOpeningTargets, WhirProofTargets};
+        use crate::pcs::whir::uni::recursive_pcs::DummyChallenger;
+        use crate::pcs::whir::uni::targets::WhirRoundTargets;
+        use crate::traits::ComsWithOpeningsTargets;
+        use crate::verifier::VerificationError;
+
+        let params = super::WhirUniVerifierParams::<BF>::new(
+            ProtocolParameters {
+                security_level,
+                pow_bits: 0,
+                round_log_inv_rates: if intermediate { vec![1] } else { vec![] },
+                folding_factor: FoldingFactor::Constant(4),
+                soundness_type,
+                starting_log_inv_rate: 1,
+            },
+            PrefixProver::<BF, EF>::variable_order(),
+            Poseidon2Config::BABY_BEAR_D4_W16,
+        )
+        .unwrap();
+        let vp = params
+            .round_params::<EF, DummyChallenger<BF>>(log_height)
+            .unwrap();
+        assert_eq!(vp.n_rounds(), usize::from(intermediate));
+        if intermediate {
+            let rp = &vp.round_params()[0];
+            assert_eq!(rp.num_queries(), rp.num_query_openings());
+            assert_eq!(rp.num_query_openings(), 256);
+        } else {
+            assert_eq!(vp.final_queries(), 35);
+            assert_eq!(vp.final_query_openings(), 2);
+        }
+
+        let mut builder = CircuitBuilder::<EF>::new();
+        let commitment = builder.define_const(EF::ZERO);
+        let zeta = builder.define_const(EF::ZERO);
+        let value = builder.define_const(EF::ZERO);
+        let domain = TwoAdicMultiplicativeCoset::new(BF::ONE, log_height).unwrap();
+        let commitments_with_opening_points: TestCommitments =
+            vec![(commitment, vec![(domain, vec![(zeta, vec![value])])])];
+        let coms: &ComsWithOpeningsTargets<Target, TwoAdicMultiplicativeCoset<BF>> =
+            &commitments_with_opening_points;
+
+        let mut whir = WhirProofTargets::alloc(&mut builder, &vp, 1, 1);
+        let queries = if intermediate {
+            &mut whir.rounds[0].queries
+        } else {
+            &mut whir.final_queries
+        };
+        if extra {
+            queries.push(QueryOpeningTargets::alloc_base(&mut builder, 16));
+        } else {
+            queries.pop().unwrap();
+        }
+        let round = WhirRoundTargets {
+            evals: vec![vec![value]],
+            whir,
+        };
+
+        // A new input gets the next expression ID only if preflight returned
+        // before adding any verifier expression. The stub panics on every
+        // challenger interaction, including a zero-width sample_bits call.
+        let before = builder.alloc_public_input("preflight before");
+        let result = super::verify_whir_uni_circuit::<BF, EF, _, Target>(
+            &mut builder,
+            &mut NeverCalledChallenger,
+            &params,
+            coms,
+            core::slice::from_ref(&round),
+        );
+        let after = builder.alloc_public_input("preflight after");
+        assert!(matches!(
+            result,
+            Err(VerificationError::InvalidProofShape(_))
+        ));
+        assert_eq!(after.0, before.0 + 1);
+    }
+
+    #[test]
+    fn saturated_final_query_targets_reject_missing_and_extra_before_transcript() {
+        for extra in [false, true] {
+            saturated_query_count_mismatch_is_rejected(
+                4,
+                32,
+                p3_whir::parameters::SecurityAssumption::CapacityBound,
+                false,
+                extra,
+            );
+        }
+    }
+
+    #[test]
+    fn equality_saturated_intermediate_targets_reject_missing_and_extra_before_transcript() {
+        for extra in [false, true] {
+            saturated_query_count_mismatch_is_rejected(
+                11,
+                106,
+                p3_whir::parameters::SecurityAssumption::UniqueDecoding,
+                true,
+                extra,
+            );
+        }
     }
 }

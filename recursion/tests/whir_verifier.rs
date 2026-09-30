@@ -11,7 +11,7 @@ use std::collections::VecDeque;
 use p3_baby_bear::{BabyBear, Poseidon2BabyBear};
 use p3_challenger::DuplexChallenger;
 use p3_circuit::ops::{generate_poseidon2_trace, generate_recompose_trace};
-use p3_circuit::{CircuitBuilder, CircuitBuilderError};
+use p3_circuit::{CircuitBuilder, CircuitBuilderError, CircuitError};
 use p3_commit::MultilinearPcs;
 use p3_dft::Radix2DFTSmallBatch;
 use p3_field::extension::BinomialExtensionField;
@@ -58,7 +58,11 @@ macro_rules! whir_arithmetic_test {
         $poseidon_cfg:expr,
         $num_vars:expr,
         $folding:expr,
-        $round_log_inv_rates:expr
+        $security:expr,
+        $round_log_inv_rates:expr,
+        $soundness:expr,
+        $expected_round_saturation:expr,
+        $expected_final_saturation:expr
     ) => {
         mod $modname {
             use super::*;
@@ -84,6 +88,7 @@ macro_rules! whir_arithmetic_test {
             struct MockChallenger {
                 ext_samples: VecDeque<EF>,
                 base_samples: VecDeque<BF>,
+                bit_widths: Vec<usize>,
             }
 
             impl RecursiveChallenger<BF, EF> for MockChallenger {
@@ -105,6 +110,7 @@ macro_rules! whir_arithmetic_test {
                     circuit: &mut CircuitBuilder<EF>,
                     k: usize,
                 ) -> Result<Vec<Target>, CircuitBuilderError> {
+                    self.bit_widths.push(k);
                     let raw = self.base_samples.pop_front().expect("base exhausted");
                     let raw_target = circuit.define_const(EF::from(raw));
                     let bits = circuit.decompose_to_bits::<BF>(raw_target, BF::bits())?;
@@ -195,6 +201,15 @@ macro_rules! whir_arithmetic_test {
                 }
             }
 
+            fn opening_row_widths<P>(openings: &QueryOpenings<BF, EF, P>) -> Vec<usize> {
+                match openings {
+                    QueryOpenings::Base(opening) => opening.rows.iter().map(Vec::len).collect(),
+                    QueryOpenings::Extension(opening) => {
+                        opening.rows.iter().map(Vec::len).collect()
+                    }
+                }
+            }
+
             fn digest_to_ext(digest: &[BF; 8]) -> Vec<EF> {
                 convert_merkle_proof_to_siblings::<BF, EF, 8>(core::slice::from_ref(digest))
                     .into_iter()
@@ -223,15 +238,55 @@ macro_rules! whir_arithmetic_test {
                     PrefixProver::<BF, EF>::new_witness(vec![single_poly_table(&poly)], FOLDING);
 
                 let whir_params = ProtocolParameters {
-                    security_level: 32,
+                    security_level: $security,
                     pow_bits: 0,
                     round_log_inv_rates: $round_log_inv_rates,
                     folding_factor: FoldingFactor::Constant(FOLDING),
-                    soundness_type: SecurityAssumption::CapacityBound,
+                    soundness_type: $soundness,
                     starting_log_inv_rate: 1,
                 };
                 let config =
                     WhirConfig::<EF, BF, MyChallenger>::new(NUM_VARIABLES, whir_params).unwrap();
+                assert_eq!(
+                    config
+                        .round_parameters()
+                        .iter()
+                        .map(|round| round.num_queries >= round.domain_size >> round.folding_factor)
+                        .collect::<Vec<_>>(),
+                    $expected_round_saturation,
+                    "derived intermediate saturation differs from fixture"
+                );
+                let final_config = config.final_round_config();
+                assert_eq!(
+                    final_config.num_queries
+                        >= final_config.domain_size >> final_config.folding_factor,
+                    $expected_final_saturation,
+                    "derived final saturation differs from fixture"
+                );
+                if NUM_VARIABLES == 4 && FOLDING == 4 {
+                    assert_eq!(final_config.num_queries, 35);
+                    assert_eq!(final_config.domain_size >> final_config.folding_factor, 2);
+                }
+                if NUM_VARIABLES == 11 && $security == 32 {
+                    assert_eq!(config.round_parameters()[0].num_queries, 35);
+                    assert_eq!(
+                        config.round_parameters()[0].domain_size
+                            >> config.round_parameters()[0].folding_factor,
+                        256
+                    );
+                    assert_eq!(final_config.num_queries, 35);
+                    assert_eq!(final_config.domain_size >> final_config.folding_factor, 16);
+                }
+                if NUM_VARIABLES == 11 && $security == 106 {
+                    assert_eq!(config.round_parameters()[0].num_queries, 256);
+                    assert_eq!(
+                        config.round_parameters()[0].domain_size
+                            >> config.round_parameters()[0].folding_factor,
+                        256
+                    );
+                    assert_eq!(final_config.num_queries, 256);
+                    assert_eq!(final_config.domain_size >> final_config.folding_factor, 16);
+                }
                 let pcs = TestPcs::new(config.clone(), dft, mmcs.clone());
 
                 let (commitment, proof) = {
@@ -269,6 +324,7 @@ macro_rules! whir_arithmetic_test {
 
                 let mut ext_samples: Vec<EF> = Vec::new();
                 let mut base_samples: Vec<BF> = Vec::new();
+                let mut expected_bit_widths = Vec::new();
                 let mut round_indices = Vec::new();
 
                 let shape = WhirShape::new(&config, protocol.num_openings());
@@ -311,7 +367,16 @@ macro_rules! whir_arithmetic_test {
                     }
                     vt.query_pow(round_index, rproof.pow_witness).unwrap();
                     let indices = vt.query_indices(round_index);
-                    base_samples.extend(indices.iter().map(|&idx| BF::from_u64(idx as u64)));
+                    let folded_domain_size = rp.domain_size >> rp.folding_factor;
+                    if rp.num_queries >= folded_domain_size {
+                        assert_eq!(indices, (0..folded_domain_size).collect::<Vec<_>>());
+                    } else {
+                        base_samples.extend(indices.iter().map(|&idx| BF::from_u64(idx as u64)));
+                        expected_bit_widths.extend(core::iter::repeat_n(
+                            folded_domain_size.ilog2() as usize,
+                            indices.len(),
+                        ));
+                    }
                     round_indices.push(indices);
                     ext_samples.push(vt.round_batching());
                     let r = vt
@@ -333,7 +398,21 @@ macro_rules! whir_arithmetic_test {
                 vt.query_pow(n_rounds, proof.whir.final_pow_witness)
                     .unwrap();
                 let final_indices = vt.query_indices(n_rounds);
-                base_samples.extend(final_indices.iter().map(|&idx| BF::from_u64(idx as u64)));
+                let final_config = config.final_round_config();
+                let final_folded_domain_size =
+                    final_config.domain_size >> final_config.folding_factor;
+                if final_config.num_queries >= final_folded_domain_size {
+                    assert_eq!(
+                        final_indices,
+                        (0..final_folded_domain_size).collect::<Vec<_>>()
+                    );
+                } else {
+                    base_samples.extend(final_indices.iter().map(|&idx| BF::from_u64(idx as u64)));
+                    expected_bit_widths.extend(core::iter::repeat_n(
+                        final_folded_domain_size.ilog2() as usize,
+                        final_indices.len(),
+                    ));
+                }
                 if let Some(r) = vt.delegate_final_fold(|challenger| {
                     p3_sumcheck::verify_final_sumcheck_rounds(
                         proof.whir.final_sumcheck.as_ref(),
@@ -353,7 +432,7 @@ macro_rules! whir_arithmetic_test {
                     PrefixProver::<BF, EF>::variable_order(),
                     $poseidon_cfg,
                 )
-                .expect("non-saturating STIR query counts at this arity");
+                .expect("canonical WHIR query counts at this arity");
 
                 let mut circuit = CircuitBuilder::<EF>::new();
                 circuit.enable_poseidon2_perm::<$poseidon_air, _>(
@@ -362,6 +441,27 @@ macro_rules! whir_arithmetic_test {
                 );
                 circuit.enable_recompose::<BF>(generate_recompose_trace::<BF, EF>);
                 let proof_targets = WhirProofTargets::alloc::<BF, EF>(&mut circuit, &vp, 1, 2);
+                assert_eq!(proof_targets.rounds.len(), proof.whir.rounds.len());
+                for (target_round, native_round) in
+                    proof_targets.rounds.iter().zip(&proof.whir.rounds)
+                {
+                    assert_eq!(
+                        target_round
+                            .queries
+                            .iter()
+                            .map(|query| query.leaf_values().len())
+                            .collect::<Vec<_>>(),
+                        opening_row_widths(&native_round.openings)
+                    );
+                }
+                assert_eq!(
+                    proof_targets
+                        .final_queries
+                        .iter()
+                        .map(|query| query.leaf_values().len())
+                        .collect::<Vec<_>>(),
+                    opening_row_widths(&proof.whir.final_openings)
+                );
                 let initial_cap: Vec<Vec<Target>> = commitment
                     .roots()
                     .iter()
@@ -394,6 +494,7 @@ macro_rules! whir_arithmetic_test {
                 let mut mock = MockChallenger {
                     ext_samples: ext_samples.into_iter().collect(),
                     base_samples: base_samples.into_iter().collect(),
+                    bit_widths: Vec::new(),
                 };
                 let op_ids = verify_whir_circuit::<BF, EF, MockChallenger>(
                     &mut circuit,
@@ -416,6 +517,7 @@ macro_rules! whir_arithmetic_test {
                     "unused base_samples: {}",
                     mock.base_samples.len()
                 );
+                assert_eq!(mock.bit_widths, expected_bit_widths);
 
                 let circuit = circuit.build().expect("circuit build failed");
 
@@ -512,6 +614,49 @@ macro_rules! whir_arithmetic_test {
                 )
                 .expect("WHIR MMCS private data matches circuit operations");
                 runner.run().expect("circuit run failed");
+
+                let rejects = |values: &[EF], paths: &[Vec<[BF; 8]>]| {
+                    let mut tampered = circuit.runner();
+                    tampered.set_public_inputs(&public_inputs).unwrap();
+                    tampered.set_private_inputs(values).unwrap();
+                    set_whir_mmcs_private_data::<BF, EF, 8>(
+                        &mut tampered,
+                        &op_ids,
+                        &restored_rounds,
+                        paths,
+                        $poseidon_cfg,
+                    )
+                    .unwrap();
+                    matches!(tampered.run(), Err(CircuitError::WitnessConflict { .. }))
+                };
+
+                if NUM_VARIABLES == 4 && FOLDING == 4 {
+                    // The final polynomial is constant, so its two whole-domain
+                    // rows coincide. Corrupt values and paths individually.
+                    assert_eq!(private_inputs.len(), 32);
+                    assert_eq!(restored_final.len(), 2);
+                    assert!(restored_final.iter().all(|path| path.len() == 1));
+                    for index in [0, 31] {
+                        let mut bad_leaf = private_inputs.clone();
+                        bad_leaf[index] += EF::ONE;
+                        assert!(rejects(&bad_leaf, &restored_final));
+                    }
+                    for index in [0, 1] {
+                        let mut bad_paths = restored_final.clone();
+                        bad_paths[index][0][0] += BF::ONE;
+                        assert!(rejects(&private_inputs, &bad_paths));
+                    }
+                }
+                if NUM_VARIABLES == 11 && $security == 32 {
+                    // The mixed fixture has a nonconstant final codeword;
+                    // swapping adjacent whole-domain rows must fail MMCS binding.
+                    let width = 1usize << final_config.folding_factor;
+                    let final_start = private_inputs.len() - final_indices.len() * width;
+                    let mut reordered = private_inputs.clone();
+                    reordered[final_start..final_start + 2 * width].rotate_left(width);
+                    assert_ne!(reordered, private_inputs);
+                    assert!(rejects(&reordered, &restored_final));
+                }
             }
         }
     };
@@ -530,7 +675,11 @@ whir_arithmetic_test!(
     p3_circuit::ops::Poseidon2Config::BABY_BEAR_D4_W16,
     16,
     4,
-    vec![4usize, 4]
+    32,
+    vec![4usize, 4],
+    SecurityAssumption::CapacityBound,
+    vec![false, false],
+    false
 );
 
 whir_arithmetic_test!(
@@ -543,5 +692,60 @@ whir_arithmetic_test!(
     p3_circuit::ops::Poseidon2Config::KOALA_BEAR_D4_W16,
     12,
     4,
-    vec![4usize]
+    32,
+    vec![4usize],
+    SecurityAssumption::CapacityBound,
+    vec![false],
+    false
+);
+
+whir_arithmetic_test!(
+    babybear_d4_saturated_final,
+    BabyBear,
+    default_babybear_poseidon2_16,
+    Poseidon2BabyBear<16>,
+    BinomialExtensionField<BabyBear, 4>,
+    BabyBearD4Width16,
+    p3_circuit::ops::Poseidon2Config::BABY_BEAR_D4_W16,
+    4,
+    4,
+    32,
+    vec![],
+    SecurityAssumption::CapacityBound,
+    vec![],
+    true
+);
+
+whir_arithmetic_test!(
+    babybear_d4_mixed_saturation,
+    BabyBear,
+    default_babybear_poseidon2_16,
+    Poseidon2BabyBear<16>,
+    BinomialExtensionField<BabyBear, 4>,
+    BabyBearD4Width16,
+    p3_circuit::ops::Poseidon2Config::BABY_BEAR_D4_W16,
+    11,
+    4,
+    32,
+    vec![1usize],
+    SecurityAssumption::CapacityBound,
+    vec![false],
+    true
+);
+
+whir_arithmetic_test!(
+    babybear_d4_both_saturated,
+    BabyBear,
+    default_babybear_poseidon2_16,
+    Poseidon2BabyBear<16>,
+    BinomialExtensionField<BabyBear, 4>,
+    BabyBearD4Width16,
+    p3_circuit::ops::Poseidon2Config::BABY_BEAR_D4_W16,
+    11,
+    4,
+    106,
+    vec![1usize],
+    SecurityAssumption::UniqueDecoding,
+    vec![true],
+    true
 );
