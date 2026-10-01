@@ -69,13 +69,12 @@ where
 ///
 /// # Parameters
 /// - `circuit`: Circuit builder
-/// - `permutation_config`: Poseidon2 configuration
+/// - `permutation_config`: Poseidon1 or Poseidon2 configuration
 /// - `base_coeffs`: Base field coefficient targets (in lifted representation)
 /// - `reset`: If true, starts a new hash chain (initial state = zeros)
 /// - `packing`: selects the binding-aware coefficient lookup table or the legacy ALU chain for
-///   recomposition and partial-chunk carry unpacking. The coefficient-bound table is only selected
-///   by the non-hiding binary D4/W16 Poseidon2 base-opening entrypoint; all other callers retain
-///   the ALU route for compatibility.
+///   recomposition and partial-chunk carry unpacking. Each caller resolves this policy before
+///   hashing; WHIR uses the bound table for matching packed D2/D4 base openings.
 fn add_hash_base_coeffs_overwrite<F, EF>(
     circuit: &mut CircuitBuilder<EF>,
     permutation_config: &PermConfig,
@@ -355,7 +354,7 @@ where
 ///
 /// # Parameters
 /// - `circuit`: The circuit builder
-/// - `permutation_config`: Poseidon2 configuration
+/// - `permutation_config`: Poseidon1 or Poseidon2 configuration
 /// - `commitment_cap`: Merkle cap entries, each with `rate_ext` packed extension targets
 /// - `dimensions`: Matrix dimensions (height used for tree structure)
 /// - `index_bits`: All Merkle path direction bits (length = `log_max_height`)
@@ -383,6 +382,78 @@ where
     EF: ExtensionField<F>,
 {
     let permutation_config: PermConfig = permutation_config.into();
+    let packing = if use_coeff_bound_binary_base_opening::<F, EF>(permutation_config, salts) {
+        BaseCoeffPacking::CoeffBound
+    } else {
+        BaseCoeffPacking::Alu
+    };
+    verify_batch_circuit_with_packing::<F, EF>(
+        circuit,
+        permutation_config,
+        commitment_cap,
+        dimensions,
+        index_bits,
+        opened_base_coeffs,
+        salts,
+        packing,
+    )
+}
+
+/// Verify a WHIR base-query opening with coefficient-bound packing when its packed permutation
+/// degree matches D2 or D4. The caller must enable recompose and prove `recompose/coeff` rows for
+/// those geometries. Other degrees use the public/default policy, preserving D1 direct lifts.
+/// WHIR base-query MMCS openings carry no salts.
+pub(crate) fn verify_whir_base_batch_circuit<F, EF>(
+    circuit: &mut CircuitBuilder<EF>,
+    permutation_config: impl Into<PermConfig>,
+    commitment_cap: &[Vec<Target>],
+    dimensions: &[Dimensions],
+    index_bits: &[Target],
+    opened_base_coeffs: &[Vec<Target>],
+) -> Result<Vec<NonPrimitiveOpId>, CircuitBuilderError>
+where
+    F: Field + TwoAdicField + PrimeField64,
+    EF: ExtensionField<F>,
+{
+    let permutation_config: PermConfig = permutation_config.into();
+    let degree = <EF as BasedVectorSpace<F>>::DIMENSION;
+    let packing = if (matches!(degree, 2 | 4) && permutation_config.d() == degree)
+        || use_coeff_bound_binary_base_opening::<F, EF>(permutation_config, None)
+    {
+        BaseCoeffPacking::CoeffBound
+    } else {
+        BaseCoeffPacking::Alu
+    };
+    verify_batch_circuit_with_packing::<F, EF>(
+        circuit,
+        permutation_config,
+        commitment_cap,
+        dimensions,
+        index_bits,
+        opened_base_coeffs,
+        None,
+        packing,
+    )
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "shared MMCS body adds caller-resolved policy"
+)]
+fn verify_batch_circuit_with_packing<F, EF>(
+    circuit: &mut CircuitBuilder<EF>,
+    permutation_config: PermConfig,
+    commitment_cap: &[Vec<Target>],
+    dimensions: &[Dimensions],
+    index_bits: &[Target],
+    opened_base_coeffs: &[Vec<Target>],
+    salts: Option<&[Vec<Target>]>,
+    packing: BaseCoeffPacking,
+) -> Result<Vec<NonPrimitiveOpId>, CircuitBuilderError>
+where
+    F: Field + TwoAdicField + PrimeField64,
+    EF: ExtensionField<F>,
+{
     if dimensions.len() != opened_base_coeffs.len() {
         return Err(CircuitBuilderError::WrongBatchSize {
             expected: dimensions.len(),
@@ -445,14 +516,8 @@ where
             continue;
         }
 
-        // Hash using overwrite-mode sponge (matching native PaddingFreeSponge). Non-hiding binary
-        // D4/W16 Poseidon2 leaves use coefficient-bound recomposition; salted and all excluded
-        // geometries retain the legacy ALU lowering.
-        let packing = if use_coeff_bound_binary_base_opening::<F, EF>(permutation_config, salts) {
-            BaseCoeffPacking::CoeffBound
-        } else {
-            BaseCoeffPacking::Alu
-        };
+        // Hash using overwrite-mode sponge (matching native PaddingFreeSponge) with the
+        // caller-resolved coefficient-packing policy.
         *digest = add_hash_base_coeffs_overwrite::<F, EF>(
             circuit,
             &permutation_config,
@@ -2607,6 +2672,9 @@ where
 
     Ok(())
 }
+
+#[cfg(test)]
+mod whir_packing_tests;
 
 #[cfg(test)]
 mod test {

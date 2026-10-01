@@ -23,7 +23,9 @@ use p3_sumcheck::strategy::VariableOrder;
 
 use super::params::WhirVerifierParams;
 use crate::Target;
-use crate::pcs::mmcs::{verify_batch_circuit, verify_batch_circuit_from_extension_opened};
+use crate::pcs::mmcs::{
+    verify_batch_circuit_from_extension_opened, verify_whir_base_batch_circuit,
+};
 use crate::pcs::whir::gadgets::{
     ConstraintWeightData, eval_constraints_poly_circuit, eval_multilinear, eval_powers_combination,
     expand_from_univariate, horner_eval, pow_const_base,
@@ -198,15 +200,16 @@ where
 
             if let Some(permutation_config) = permutation_config {
                 let np_ops = match query_opening {
-                    QueryOpeningTargets::Base { leaf_values } => verify_batch_circuit::<BF, EF>(
-                        circuit,
-                        permutation_config,
-                        &prev_cap,
-                        &dims,
-                        &index_bits,
-                        core::slice::from_ref(leaf_values),
-                        None,
-                    )?,
+                    QueryOpeningTargets::Base { leaf_values } => {
+                        verify_whir_base_batch_circuit::<BF, EF>(
+                            circuit,
+                            permutation_config,
+                            &prev_cap,
+                            &dims,
+                            &index_bits,
+                            core::slice::from_ref(leaf_values),
+                        )?
+                    }
                     QueryOpeningTargets::Extension { leaf_values } => {
                         verify_batch_circuit_from_extension_opened::<BF, EF>(
                             circuit,
@@ -313,15 +316,16 @@ where
 
         if let Some(permutation_config) = permutation_config {
             let np_ops = match query_opening {
-                QueryOpeningTargets::Base { leaf_values } => verify_batch_circuit::<BF, EF>(
-                    circuit,
-                    permutation_config,
-                    &prev_cap,
-                    &final_dims,
-                    &index_bits,
-                    core::slice::from_ref(leaf_values),
-                    None,
-                )?,
+                QueryOpeningTargets::Base { leaf_values } => {
+                    verify_whir_base_batch_circuit::<BF, EF>(
+                        circuit,
+                        permutation_config,
+                        &prev_cap,
+                        &final_dims,
+                        &index_bits,
+                        core::slice::from_ref(leaf_values),
+                    )?
+                }
                 QueryOpeningTargets::Extension { leaf_values } => {
                     verify_batch_circuit_from_extension_opened::<BF, EF>(
                         circuit,
@@ -384,6 +388,10 @@ where
 }
 
 /// Verify a WHIR proof in-circuit with mandatory MMCS authentication.
+///
+/// Matching D2/D4 base-query MMCS openings require `enable_recompose` on the circuit builder
+/// and a proving configuration containing the `recompose/coeff` table. Other degrees retain the
+/// ordinary MMCS packing policy, including D1 direct lifts.
 ///
 /// The arithmetic-only parameter wrapper is defined only inside this module's private
 /// `cfg(test)` unit-test lane and cannot be named by downstream code, even when all crate features
