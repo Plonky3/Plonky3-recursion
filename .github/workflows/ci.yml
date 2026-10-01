@@ -100,6 +100,7 @@ jobs:
           cargo test --locked --verbose --release -p p3-recursion --test whir_saturated_recursion
           cargo test --locked --verbose --release -p p3-recursion --test whir_varying_folding
           cargo test --locked --verbose --release -p p3-recursion --test whir_suffix_recursion
+          cargo test --locked --verbose --release -p p3-recursion --test whir_goldilocks_d2
           cargo test --locked --verbose --release -p p3-recursion --test whir_verifier
           cargo test --locked --verbose --release -p p3-circuit-prover --lib batch_stark_prover::tests::verify_all_tables_rejects_a_forged_constant_value -- --exact
           cargo test --locked --verbose --release -p p3-circuit-prover --lib batch_stark_prover::tests::verify_all_tables_rejects_alu_bus_only_operand_swap -- --exact

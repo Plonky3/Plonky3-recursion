@@ -356,6 +356,39 @@ fn build_honest_first_layer() -> (
     (config, backend, layer1)
 }
 
+#[test]
+fn whir_d4_batch_validation_rejects_degree_two_metadata_before_reconstruction() {
+    let (config, backend, mut layer1) = build_honest_first_layer();
+    assert_eq!(layer1.0.ext_degree, 4);
+    <WhirRecursionBackendForExt<4> as PcsRecursionBackend<BbWhirConfig, BatchOnly, 4>>::
+        validate_input(&backend, &config, &layer1.into_recursion_input::<BatchOnly>())
+            .expect("the honest degree-four parent validates");
+
+    layer1.0.ext_degree = 2;
+    let error = <WhirRecursionBackendForExt<4> as PcsRecursionBackend<
+        BbWhirConfig,
+        BatchOnly,
+        4,
+    >>::validate_input(
+        &backend,
+        &config,
+        &layer1.into_recursion_input::<BatchOnly>(),
+    )
+    .expect_err("the D4 backend must reject degree-two parent metadata");
+    match error {
+        VerificationError::InvalidProofShape(message) => assert_eq!(
+            message,
+            "WhirRecursionBackend supports batch proofs of ext_degree 4, got 2"
+        ),
+        other => panic!("wrong typed D4 degree rejection: {other:?}"),
+    }
+
+    layer1.0.ext_degree = 4;
+    <WhirRecursionBackendForExt<4> as PcsRecursionBackend<BbWhirConfig, BatchOnly, 4>>::
+        validate_input(&backend, &config, &layer1.into_recursion_input::<BatchOnly>())
+            .expect("restored honest degree-four parent validates");
+}
+
 /// Tampering an opened value inside the FIRST layer's own batch-STARK proof -- before it is fed
 /// into a SECOND WHIR recursion layer -- must be rejected: the second layer's own verifier
 /// circuit connects this STARK-side opened value to the untampered copy carried inside the WHIR
