@@ -1,7 +1,7 @@
 //! In-circuit WHIR verifier — mirrors `WhirVerifier::verify`.
 //!
 //! [`verify_whir_circuit`] replays the WHIR Fiat–Shamir transcript and
-//! enforces every arithmetic check gate-for-gate against the native verifier
+//! enforces every arithmetic check from the native verifier
 //! in `p3-whir`. The caller is responsible for wiring the returned
 //! [`NonPrimitiveOpId`]s to their private Merkle-path data.
 //!
@@ -27,8 +27,9 @@ use crate::pcs::mmcs::{
     verify_batch_circuit_from_extension_opened, verify_whir_base_batch_circuit,
 };
 use crate::pcs::whir::gadgets::{
-    ConstraintWeightData, eval_constraints_poly_circuit, eval_multilinear, eval_powers_combination,
-    expand_from_univariate, horner_eval, pow_const_base,
+    ConstraintWeightData, eval_constraints_poly_circuit, eval_multilinear,
+    eval_multilinear_batched, expand_from_univariate, horner_eval, multilinear_eq_weights,
+    pow_const_base,
 };
 use crate::pcs::whir::sumcheck::verify_sumcheck_rounds;
 use crate::pcs::whir::targets::{QueryOpeningTargets, WhirProofTargets};
@@ -231,7 +232,6 @@ where
             last_r.clone()
         };
 
-        let mut fold_vals: Vec<Target> = Vec::with_capacity(rp.num_query_openings());
         let mut sel_scalars: Vec<Target> = Vec::with_capacity(rp.num_query_openings());
 
         for q_idx in 0..rp.num_query_openings() {
@@ -248,9 +248,6 @@ where
             sel_scalars.push(domain_pt);
 
             let query_opening = &round_proof.queries[q_idx];
-            let leaf_vals = query_opening.leaf_values();
-            fold_vals.push(eval_multilinear(circuit, leaf_vals, &query_r));
-
             if let Some(config) = permutation_config {
                 mmcs_checks.push(WhirMmcsCheck {
                     config,
@@ -269,9 +266,16 @@ where
         //    built with `Constraint::new_with_existing_claim`, so the carried claim keeps
         //    `γ^0` and the fresh statements start at `γ^1`.
         let gamma = challenger.sample_ext(circuit);
-        let mut combined: Vec<Target> = round_proof.ood_answers.clone();
-        combined.extend_from_slice(&fold_vals);
-        let combination = eval_powers_combination(circuit, &combined, gamma);
+        let leaves: Vec<_> = round_proof
+            .queries
+            .iter()
+            .map(|query| query.leaf_values())
+            .collect();
+        let mut combination = eval_multilinear_batched(circuit, &leaves, &query_r, gamma);
+        // OOD answers precede the query folds in the native power combination.
+        for &answer in round_proof.ood_answers.iter().rev() {
+            combination = circuit.mul_add(combination, gamma, answer);
+        }
         let contrib = circuit.mul(combination, gamma);
         claimed_eval = circuit.add(claimed_eval, contrib);
 
@@ -325,6 +329,11 @@ where
         last_r
     };
 
+    // A shared equality basis is cheaper than repeated interpolation for at
+    // least three leaves of width >= 4. Keep the cheaper direct fold otherwise.
+    let final_weights = (params.final_folding_factor() >= 2 && params.final_query_openings() >= 3)
+        .then(|| multilinear_eq_weights(circuit, &final_query_r));
+
     for q_idx in 0..params.final_query_openings() {
         let index_bits = stir_query_index_bits::<BF, EF, Ch>(
             circuit,
@@ -342,7 +351,10 @@ where
 
         let query_opening = &proof.final_queries[q_idx];
         let leaf_vals = query_opening.leaf_values();
-        let fold = eval_multilinear(circuit, leaf_vals, &final_query_r);
+        let fold = match &final_weights {
+            Some(weights) => circuit.inner_product(weights, leaf_vals),
+            None => eval_multilinear(circuit, leaf_vals, &final_query_r),
+        };
 
         // Mirrors `SelectStatement::verify(final_poly)`: the hypercube evaluations
         // of the final polynomial are treated as univariate coefficients and

@@ -1,7 +1,7 @@
 //! Multilinear-polynomial arithmetic gadgets used by the WHIR verifier.
 //!
-//! Each gadget reproduces, gate-for-gate, the field formula of its native
-//! counterpart so the recursive verifier computes byte-identical values:
+//! Each gadget reproduces the field formula of its native counterpart so the
+//! recursive verifier computes identical values:
 //!
 //! - [`expand_from_univariate`] mirrors `p3_multilinear_util::point::Point::expand_from_univariate`
 //! - [`eq_eval`] mirrors `Point::eval_eq`
@@ -46,29 +46,36 @@ pub fn expand_from_univariate<F: Field>(
 /// Evaluates the multilinear equality polynomial
 /// `eq(a, b) = ∏_i (a_i·b_i + (1-a_i)·(1-b_i))`.
 ///
-/// Each factor is computed as `2·a_i·b_i - a_i - b_i + 1`, the algebraic
-/// identity the native `Point::eval_eq` uses. The product of zero factors is
-/// `1`.
+/// Each factor is computed as `(2·a_i - 1)·b_i + (1 - a_i)`. The affine
+/// terms depending only on `a` are shared across equalities at the same point.
+/// Literal Boolean coordinates of `b` are factored separately, so column
+/// selectors share the entire equality product for their common local point.
+/// The product of zero factors is `1`.
 ///
 /// # Panics
 /// Panics if `a` and `b` have different lengths.
 pub fn eq_eval<F: Field>(builder: &mut CircuitBuilder<F>, a: &[Target], b: &[Target]) -> Target {
     assert_eq!(a.len(), b.len(), "eq_eval: point length mismatch");
 
+    let zero = builder.define_const(F::ZERO);
     let one = builder.define_const(F::ONE);
-    let terms: Vec<Target> = a
-        .iter()
-        .zip(b)
-        .map(|(&ai, &bi)| {
-            // 2·ai·bi - ai - bi + 1
+    let mut selectors = Vec::new();
+    let mut terms = Vec::new();
+    for (&ai, &bi) in a.iter().zip(b) {
+        if bi == one {
+            selectors.push(ai);
+        } else if bi == zero {
+            selectors.push(builder.sub(one, ai));
+        } else {
             let two_ai = builder.add(ai, ai);
-            let two_ai_bi = builder.mul(two_ai, bi);
-            let t = builder.sub(two_ai_bi, ai);
-            let t = builder.sub(t, bi);
-            builder.add(t, one)
-        })
-        .collect();
-    builder.mul_many(&terms)
+            let slope = builder.sub(two_ai, one);
+            let complement = builder.sub(one, ai);
+            terms.push(builder.mul_add(slope, bi, complement));
+        }
+    }
+    let local_eq = builder.mul_many(&terms);
+    let selector_eq = builder.mul_many(&selectors);
+    builder.mul(local_eq, selector_eq)
 }
 
 /// Evaluates the selection polynomial `select(point, z)` that the WHIR verifier
@@ -92,9 +99,9 @@ pub fn select_eval<F: Field>(
     let mut var = z;
     let mut terms = Vec::with_capacity(n);
     for (k, &coord) in point.iter().rev().enumerate() {
-        // term = coord·(var - 1) + 1
-        let var_minus_one = builder.sub(var, one);
-        let term = builder.mul_add(coord, var_minus_one, one);
+        // term = coord·var + (1 - coord), sharing the complement across scalars.
+        let complement = builder.sub(one, coord);
+        let term = builder.mul_add(coord, var, complement);
         terms.push(term);
         // The final coordinate needs no further power of z.
         if k + 1 < n {
@@ -163,6 +170,57 @@ pub fn eval_multilinear<F: Field>(
         cur = next;
     }
     cur[0]
+}
+
+/// Combines multilinear leaf evaluations at a shared point with successive powers
+/// of `gamma`. The empty combination is zero.
+pub(crate) fn eval_multilinear_batched<F: Field>(
+    builder: &mut CircuitBuilder<F>,
+    leaves: &[&[Target]],
+    point: &[Target],
+    gamma: Target,
+) -> Target {
+    let Some(last) = leaves.last() else {
+        return builder.define_const(F::ZERO);
+    };
+    let width = 1usize << point.len();
+    assert!(
+        leaves.iter().all(|leaf| leaf.len() == width),
+        "multilinear batch leaf width mismatch"
+    );
+
+    // Evaluation at a fixed point is linear in the leaf values. Combine each
+    // column first, then pay for only one multilinear interpolation.
+    let combined: Vec<_> = (0..width)
+        .map(|column| {
+            leaves[..leaves.len() - 1]
+                .iter()
+                .rev()
+                .fold(last[column], |acc, leaf| {
+                    builder.mul_add(acc, gamma, leaf[column])
+                })
+        })
+        .collect();
+    eval_multilinear(builder, &combined, point)
+}
+
+/// Equality weights in lexicographic hypercube order, with `point[0]` most
+/// significant. A caller evaluating many leaves at this point can share them.
+pub(crate) fn multilinear_eq_weights<F: Field>(
+    builder: &mut CircuitBuilder<F>,
+    point: &[Target],
+) -> Vec<Target> {
+    let mut weights = alloc::vec![builder.define_const(F::ONE)];
+    for &coordinate in point {
+        let mut next = Vec::with_capacity(2 * weights.len());
+        for weight in weights {
+            let right = builder.mul(weight, coordinate);
+            let left = builder.sub(weight, right);
+            next.extend([left, right]);
+        }
+        weights = next;
+    }
+    weights
 }
 
 /// Combines `values` with successive powers of `base`: `Σ_i values[i]·base^i`,
@@ -240,6 +298,8 @@ pub fn pow_const_base<F: Field>(
 ///
 /// `point` is the local evaluation point: callers that slice/reverse a global
 /// challenge per the constraint's variable order must do so before calling.
+/// Complete Boolean selector blocks are factored before batching; other
+/// equality points retain their individual evaluation.
 pub fn eval_constraint_weight<F: Field>(
     builder: &mut CircuitBuilder<F>,
     point: &[Target],
@@ -247,17 +307,117 @@ pub fn eval_constraint_weight<F: Field>(
     sel_scalars: &[Target],
     gamma: Target,
 ) -> Target {
-    // Equality terms first (powers γ^0..), then selection terms (powers γ^{n_eq}..),
-    // matching the native batching order; `eval_powers_combination` supplies the
-    // successive powers of γ.
-    let mut values = Vec::with_capacity(eq_points.len() + sel_scalars.len());
-    for &z in eq_points {
-        values.push(eq_eval(builder, point, z));
+    assert!(
+        eq_points.iter().all(|z| z.len() == point.len()),
+        "eq_eval: point length mismatch"
+    );
+    let selections: Vec<_> = sel_scalars
+        .iter()
+        .map(|&z| select_eval(builder, point, z))
+        .collect();
+    let mut acc =
+        (!selections.is_empty()).then(|| eval_powers_combination(builder, &selections, gamma));
+    if eq_points.is_empty() {
+        return acc.unwrap_or_else(|| builder.define_const(F::ZERO));
     }
-    for &z in sel_scalars {
-        values.push(select_eval(builder, point, z));
+
+    let zero = builder.define_const(F::ZERO);
+    let one = builder.define_const(F::ONE);
+    let mut blocks = Vec::new();
+    let mut start = 0;
+    while start < eq_points.len() {
+        let (width, coordinates) = boolean_eq_block(&eq_points[start..], zero, one);
+        blocks.push((start, width, coordinates));
+        start += width;
     }
-    eval_powers_combination(builder, &values, gamma)
+
+    // gamma_powers[i] = γ^(2^i), shared by every block and its Horner shift.
+    let mut gamma_powers = alloc::vec![gamma];
+    for (start, width, coordinates) in blocks.into_iter().rev() {
+        let bits = coordinates.len();
+        while gamma_powers.len() <= bits {
+            let last = *gamma_powers.last().unwrap();
+            gamma_powers.push(builder.mul(last, last));
+        }
+
+        let block_weight = if bits == 0 {
+            eq_eval(builder, point, eq_points[start])
+        } else {
+            let mut fixed_a = Vec::with_capacity(point.len() - bits);
+            let mut fixed_b = Vec::with_capacity(point.len() - bits);
+            for (coordinate, (&a, &b)) in point.iter().zip(eq_points[start]).enumerate() {
+                if !coordinates.contains(&coordinate) {
+                    fixed_a.push(a);
+                    fixed_b.push(b);
+                }
+            }
+            let fixed_eq = eq_eval(builder, &fixed_a, &fixed_b);
+            let factors: Vec<_> = coordinates
+                .iter()
+                .enumerate()
+                .map(|(bit, &coordinate)| {
+                    let r = point[coordinate];
+                    let complement = builder.sub(one, r);
+                    builder.mul_add(r, gamma_powers[bit], complement)
+                })
+                .collect();
+            let selector_weight = builder.mul_many(&factors);
+            builder.mul(fixed_eq, selector_weight)
+        };
+
+        // A block of B terms shifts the later statements by γ^B, preserving
+        // the native equality-before-selection order and every batching power.
+        debug_assert_eq!(width, 1usize << bits);
+        acc = Some(acc.map_or(block_weight, |later| {
+            builder.mul_add(later, gamma_powers[bits], block_weight)
+        }));
+    }
+    acc.unwrap()
+}
+
+/// Recognizes a dyadic Boolean subcube in statement order. The coordinate
+/// introduced at doubling step i is bit i of the statement's within-block index.
+/// All other coordinates must match across corresponding lower/upper halves.
+fn boolean_eq_block(points: &[&[Target]], zero: Target, one: Target) -> (usize, Vec<usize>) {
+    let first = points[0];
+    let mut width = 1;
+    let mut coordinates = Vec::new();
+    while width <= points.len() / 2 {
+        let mut differences = first
+            .iter()
+            .zip(points[width])
+            .enumerate()
+            .filter_map(|(coordinate, (&a, &b))| (a != b).then_some(coordinate));
+        let Some(coordinate) = differences.next() else {
+            break;
+        };
+        if differences.next().is_some()
+            || first[coordinate] != zero
+            || points[width][coordinate] != one
+            || coordinates.contains(&coordinate)
+        {
+            break;
+        }
+        let matches =
+            points[..width]
+                .iter()
+                .zip(&points[width..2 * width])
+                .all(|(&lower, &upper)| {
+                    lower[coordinate] == zero
+                        && upper[coordinate] == one
+                        && lower
+                            .iter()
+                            .zip(upper)
+                            .enumerate()
+                            .all(|(i, (a, b))| i == coordinate || a == b)
+                });
+        if !matches {
+            break;
+        }
+        coordinates.push(coordinate);
+        width *= 2;
+    }
+    (width, coordinates)
 }
 
 // ─── Multi-constraint weight evaluation ──────────────────────────────────────
@@ -325,14 +485,16 @@ mod tests {
 
     use p3_baby_bear::BabyBear;
     use p3_circuit::CircuitBuilder;
-    use p3_field::{PrimeCharacteristicRing, TwoAdicField};
+    use p3_field::extension::BinomialExtensionField;
+    use p3_field::{BasedVectorSpace, PrimeCharacteristicRing, TwoAdicField};
     use p3_multilinear_util::point::Point;
     use p3_multilinear_util::poly::Poly;
     use proptest::prelude::*;
 
     use super::{
-        eq_eval, eval_constraint_weight, eval_multilinear, eval_powers_combination,
-        expand_from_univariate, pow_const_base, select_eval,
+        eq_eval, eval_constraint_weight, eval_multilinear, eval_multilinear_batched,
+        eval_powers_combination, expand_from_univariate, multilinear_eq_weights, pow_const_base,
+        select_eval,
     };
     use crate::Target;
     use crate::pcs::whir::test_util::{eval_gadget, eval_gadget_multi};
@@ -438,6 +600,372 @@ mod tests {
         });
         let expected = Point::<F>::eval_eq(&[x0, x1], &[z0, z1]);
         assert_eq!(got, expected);
+    }
+
+    #[test]
+    fn shared_equality_point_reuses_affine_terms() {
+        let mut builder = CircuitBuilder::<F>::new();
+        let point: Vec<_> = (0..4).map(|_| builder.public_input()).collect();
+        for _ in 0..8 {
+            let other: Vec<_> = (0..4).map(|_| builder.public_input()).collect();
+            eq_eval(&mut builder, &point, &other);
+        }
+        let circuit = builder.build().unwrap();
+        let alu_ops = circuit
+            .ops
+            .iter()
+            .filter(|op| matches!(op, p3_circuit::ops::Op::Alu { .. }))
+            .count();
+        // Three shared affine operations per coordinate, one FMA per pair,
+        // and three multiplications per four-coordinate equality.
+        assert!(
+            alu_ops <= 12 + 8 * 7,
+            "equality batch uses {alu_ops} ALU operations"
+        );
+    }
+
+    #[test]
+    fn boolean_selectors_share_the_local_equality_product() {
+        for selectors_first in [true, false] {
+            let mut builder = CircuitBuilder::<F>::new();
+            let point: Vec<_> = (0..8).map(|_| builder.public_input()).collect();
+            let local: Vec<_> = (0..4).map(|_| builder.public_input()).collect();
+            for selector in 0..16 {
+                let mut other: Vec<_> = (0..4)
+                    .map(|bit| builder.define_const(F::from_bool((selector >> (3 - bit)) & 1 != 0)))
+                    .collect();
+                if selectors_first {
+                    other.extend_from_slice(&local);
+                } else {
+                    other.splice(..0, local.iter().copied());
+                }
+                let result = eq_eval(&mut builder, &point, &other);
+                builder
+                    .tag(result, alloc::format!("selector{selector}"))
+                    .unwrap();
+            }
+            let circuit = builder.build().unwrap();
+            let alu_ops = circuit
+                .ops
+                .iter()
+                .filter(|op| matches!(op, p3_circuit::ops::Op::Alu { .. }))
+                .count();
+            // Shared local equality: 19 ops; four selector complements, 28 trie
+            // products for the 16 selectors, and one final product per selector.
+            assert!(
+                alu_ops <= 67,
+                "selector equality batch uses {alu_ops} ALU operations"
+            );
+
+            let inputs: Vec<_> = (2..14).map(F::from_u32).collect();
+            let mut runner = circuit.runner();
+            runner.set_public_inputs(&inputs).unwrap();
+            let traces = runner.run().unwrap();
+            for selector in 0..16 {
+                let mut other: Vec<_> = (0..4)
+                    .map(|bit| F::from_bool((selector >> (3 - bit)) & 1 != 0))
+                    .collect();
+                if selectors_first {
+                    other.extend_from_slice(&inputs[8..]);
+                } else {
+                    other.splice(..0, inputs[8..].iter().copied());
+                }
+                assert_eq!(
+                    *traces.probe(&alloc::format!("selector{selector}")).unwrap(),
+                    Point::<F>::eval_eq(&inputs[..8], &other)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn boolean_equality_blocks_reduce_batching_work() {
+        for selectors_first in [false, true] {
+            let mut builder = CircuitBuilder::<F>::new();
+            let point: Vec<_> = (0..10).map(|_| builder.public_input()).collect();
+            let local: Vec<_> = (0..4).map(|_| builder.public_input()).collect();
+            let gamma = builder.public_input();
+            let points: Vec<Vec<_>> = (0..64)
+                .map(|selector| {
+                    let bits: Vec<_> = (0..6)
+                        .map(|bit| builder.define_const(F::from_bool((selector >> bit) & 1 != 0)))
+                        .collect();
+                    if selectors_first {
+                        [bits.as_slice(), local.as_slice()].concat()
+                    } else {
+                        [local.as_slice(), bits.as_slice()].concat()
+                    }
+                })
+                .collect();
+            let refs: Vec<_> = points.iter().map(Vec::as_slice).collect();
+            let out = eval_constraint_weight(&mut builder, &point, &refs, &[], gamma);
+            builder.tag(out, "out").unwrap();
+            let circuit = builder.build().unwrap();
+            let alu_ops = circuit
+                .ops
+                .iter()
+                .filter(|op| matches!(op, p3_circuit::ops::Op::Alu { .. }))
+                .count();
+            assert!(
+                alu_ops <= 60,
+                "Boolean equality batch uses {alu_ops} ALU operations"
+            );
+
+            for gamma in [F::ZERO, F::ONE, f(17)] {
+                let mut inputs: Vec<_> = (2..16).map(F::from_u32).collect();
+                inputs.push(gamma);
+                let mut expected = F::ZERO;
+                let mut power = F::ONE;
+                for selector in 0..64 {
+                    let bits: Vec<_> = (0..6)
+                        .map(|bit| F::from_bool((selector >> bit) & 1 != 0))
+                        .collect();
+                    let other = if selectors_first {
+                        [bits.as_slice(), &inputs[10..14]].concat()
+                    } else {
+                        [&inputs[10..14], bits.as_slice()].concat()
+                    };
+                    expected += power * Point::<F>::eval_eq(&inputs[..10], &other);
+                    power *= gamma;
+                }
+                let mut runner = circuit.runner();
+                runner.set_public_inputs(&inputs).unwrap();
+                let traces = runner.run().unwrap();
+                assert_eq!(*traces.probe("out").unwrap(), expected);
+            }
+        }
+    }
+
+    #[test]
+    fn boolean_equality_blocks_match_mixed_layouts_and_fallbacks() {
+        use p3_sumcheck::strategy::VariableOrder;
+
+        use crate::pcs::whir::uni::plan::{StackedPlan, canonical_layout_strategy, padded_arity};
+
+        type EF = BinomialExtensionField<F, 4>;
+        let extension = |seed| EF::from_basis_coefficients_fn(|i| F::from_usize(seed + 3 * i));
+        let shapes = [(15, 80), (14, 5), (13, 166), (12, 3)];
+        for order in [VariableOrder::Prefix, VariableOrder::Suffix] {
+            let strategy = canonical_layout_strategy(order);
+            let plan = StackedPlan::new_with_strategy(
+                &shapes.map(|(arity, width)| (padded_arity(arity, 4), width)),
+                strategy,
+            );
+            let n = plan.num_variables;
+            for perturb in [false, true] {
+                for gamma in [EF::ZERO, EF::ONE, extension(17)] {
+                    let mut inputs: Vec<_> = (0..n).map(|i| extension(i + 2)).collect();
+                    let mut native_points = Vec::new();
+                    let mut local_ranges = Vec::new();
+                    for placement in &plan.placements {
+                        let arity = shapes[placement.table_idx].0;
+                        for opening in 0..2 {
+                            let start = inputs.len();
+                            inputs.extend((0..arity).map(|i| extension(start + opening + i)));
+                            let range = start..inputs.len();
+                            for selector in &placement.selectors {
+                                native_points.push(selector.lift_with_strategy(
+                                    &inputs[range.clone()],
+                                    EF::ZERO,
+                                    EF::ONE,
+                                    strategy,
+                                ));
+                            }
+                            local_ranges.push(range);
+                        }
+                    }
+                    // OOD points remain individual statements after the selector blocks.
+                    let ood_start = inputs.len();
+                    inputs.extend((0..2 * n).map(|i| extension(ood_start + i)));
+                    native_points.extend(inputs[ood_start..].chunks(n).map(<[_]>::to_vec));
+                    let selector_coordinate = if strategy.reverse_selectors {
+                        shapes[plan.placements[0].table_idx].0
+                    } else {
+                        0
+                    };
+                    if perturb {
+                        native_points[4][selector_coordinate] =
+                            EF::ONE - native_points[4][selector_coordinate];
+                    }
+                    let selection_start = inputs.len();
+                    inputs.extend([extension(23), extension(29), gamma]);
+                    let mut expected = EF::ZERO;
+                    let mut power = EF::ONE;
+                    for other in &native_points {
+                        expected += power * Point::<EF>::eval_eq(&inputs[..n], other);
+                        power *= gamma;
+                    }
+                    for &scalar in &inputs[selection_start..selection_start + 2] {
+                        expected += power * Point::<EF>::eval_select(scalar, &inputs[..n]);
+                        power *= gamma;
+                    }
+                    let actual = eval_gadget(&inputs, |builder, targets| {
+                        let zero = builder.define_const(EF::ZERO);
+                        let one = builder.define_const(EF::ONE);
+                        let mut points = Vec::new();
+                        let mut ranges = local_ranges.iter();
+                        for placement in &plan.placements {
+                            for _ in 0..2 {
+                                let local = &targets[ranges.next().unwrap().clone()];
+                                points.extend(placement.selectors.iter().map(|selector| {
+                                    selector.lift_with_strategy(local, zero, one, strategy)
+                                }));
+                            }
+                        }
+                        points.extend(
+                            targets[ood_start..selection_start]
+                                .chunks(n)
+                                .map(<[_]>::to_vec),
+                        );
+                        if perturb {
+                            let bit = &mut points[4][selector_coordinate];
+                            *bit = if *bit == zero { one } else { zero };
+                        }
+                        let refs: Vec<_> = points.iter().map(Vec::as_slice).collect();
+                        eval_constraint_weight(
+                            builder,
+                            &targets[..n],
+                            &refs,
+                            &targets[selection_start..selection_start + 2],
+                            targets[selection_start + 2],
+                        )
+                    });
+                    assert_eq!(actual, expected, "order {order:?}, perturb {perturb}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn shared_selection_point_reuses_complements() {
+        let mut builder = CircuitBuilder::<F>::new();
+        let point: Vec<_> = (0..4).map(|_| builder.public_input()).collect();
+        for _ in 0..8 {
+            let scalar = builder.public_input();
+            select_eval(&mut builder, &point, scalar);
+        }
+        let circuit = builder.build().unwrap();
+        let alu_ops = circuit
+            .ops
+            .iter()
+            .filter(|op| matches!(op, p3_circuit::ops::Op::Alu { .. }))
+            .count();
+        // Four shared complements; per scalar, three squarings, four FMAs,
+        // and three multiplications.
+        assert!(
+            alu_ops <= 4 + 8 * 10,
+            "selection batch uses {alu_ops} ALU operations"
+        );
+    }
+
+    #[test]
+    fn batched_multilinear_folding_matches_native_weighted_evaluations() {
+        type EF = BinomialExtensionField<F, 4>;
+        let extension =
+            |seed: usize| EF::from_basis_coefficients_fn(|i| F::from_usize(seed + 3 * i));
+        for dimensions in 0..=4 {
+            let width = 1usize << dimensions;
+            for queries in [0, 1, 2, 3, 8] {
+                let leaves: Vec<Vec<EF>> = (0..queries)
+                    .map(|q| (0..width).map(|i| extension(7 + 11 * q + i * i)).collect())
+                    .collect();
+                for reverse in [false, true] {
+                    let mut point: Vec<_> = (0..dimensions).map(|i| extension(3 + i)).collect();
+                    if reverse {
+                        point.reverse();
+                    }
+                    for gamma in [EF::ZERO, EF::ONE, extension(13)] {
+                        let mut power = EF::ONE;
+                        let mut expected = EF::ZERO;
+                        for leaf in &leaves {
+                            expected += power
+                                * Poly::new(leaf.clone()).eval_ext::<F>(&Point::new(point.clone()));
+                            power *= gamma;
+                        }
+                        let mut inputs: Vec<_> = leaves.iter().flatten().copied().collect();
+                        inputs.extend_from_slice(&point);
+                        inputs.push(gamma);
+                        let actual = eval_gadget(&inputs, |builder, targets| {
+                            let leaf_targets: Vec<_> =
+                                targets[..queries * width].chunks(width).collect();
+                            eval_multilinear_batched(
+                                builder,
+                                &leaf_targets,
+                                &targets[queries * width..queries * width + dimensions],
+                                targets[targets.len() - 1],
+                            )
+                        });
+                        assert_eq!(
+                            actual, expected,
+                            "dimensions {dimensions}, queries {queries}, reverse {reverse}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn batched_multilinear_folding_reduces_alu_work() {
+        let mut builder = CircuitBuilder::<F>::new();
+        let point: Vec<_> = (0..4).map(|_| builder.public_input()).collect();
+        let leaves: Vec<Vec<_>> = (0..24)
+            .map(|_| (0..16).map(|_| builder.public_input()).collect())
+            .collect();
+        let leaf_refs: Vec<_> = leaves.iter().map(Vec::as_slice).collect();
+        let gamma = builder.public_input();
+        eval_multilinear_batched(&mut builder, &leaf_refs, &point, gamma);
+        let circuit = builder.build().unwrap();
+        let alu_ops = circuit
+            .ops
+            .iter()
+            .filter(|op| matches!(op, p3_circuit::ops::Op::Alu { .. }))
+            .count();
+        // Batch 24 values in each of 16 columns, then perform 15 interpolations.
+        assert!(
+            alu_ops <= 16 * 23 + 2 * 15,
+            "leaf batch uses {alu_ops} ALU operations"
+        );
+    }
+
+    #[test]
+    fn shared_multilinear_weights_match_native_and_boolean_corners() {
+        type EF = BinomialExtensionField<F, 4>;
+        for dimensions in 0..=4 {
+            let width = 1usize << dimensions;
+            let point: Vec<_> = (0..dimensions)
+                .map(|j| EF::from_basis_coefficients_fn(|i| F::from_usize(2 + j + 7 * i)))
+                .collect();
+            let weights = eval_gadget_multi(&point, |builder, targets| {
+                multilinear_eq_weights(builder, targets)
+            });
+            for (index, &weight) in weights.iter().enumerate() {
+                let corner: Vec<_> = (0..dimensions)
+                    .map(|j| EF::from_bool((index >> (dimensions - 1 - j)) & 1 != 0))
+                    .collect();
+                assert_eq!(weight, Point::<EF>::eval_eq(&point, &corner));
+                let at_corner = eval_gadget_multi(&corner, |builder, targets| {
+                    multilinear_eq_weights(builder, targets)
+                });
+                assert_eq!(
+                    at_corner,
+                    (0..width)
+                        .map(|j| EF::from_bool(j == index))
+                        .collect::<Vec<_>>()
+                );
+            }
+            let values: Vec<_> = (0..width)
+                .map(|j| EF::from_basis_coefficients_fn(|i| F::from_usize(3 + j * j + 5 * i)))
+                .collect();
+            let native = Poly::new(values.clone()).eval_ext::<F>(&Point::new(point.clone()));
+            let mut inputs = point;
+            inputs.extend(values);
+            let actual = eval_gadget(&inputs, |builder, targets| {
+                let weights = multilinear_eq_weights(builder, &targets[..dimensions]);
+                builder.inner_product(&weights, &targets[dimensions..])
+            });
+            assert_eq!(actual, native);
+        }
     }
 
     proptest! {

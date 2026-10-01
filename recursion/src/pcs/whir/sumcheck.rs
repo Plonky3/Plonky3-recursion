@@ -37,18 +37,13 @@ pub fn sumcheck_round_claim_update<F: Field>(
 ) -> Target {
     let one = builder.define_const(F::ONE);
 
-    // Interpolation weights on {0, 1, inf}: L_0 = 1 - r, L_1 = r, L_inf = r·(r - 1).
-    let w0 = builder.sub(one, r);
+    // h(r) = c0 + r·(claimed_sum - 2·c0 + c_inf·(r - 1)).
+    // Horner form avoids constructing and multiplying all three Lagrange weights.
+    let twice_c0 = builder.add(c0, c0);
+    let linear = builder.sub(claimed_sum, twice_c0);
     let r_minus_one = builder.sub(r, one);
-    let w_inf = builder.mul(r, r_minus_one);
-
-    // h(1) = claimed_sum - h(0).
-    let e1 = builder.sub(claimed_sum, c0);
-
-    // h(r) = c0·w0 + h(1)·r + c_inf·w_inf.
-    let t0 = builder.mul(c0, w0);
-    let t1 = builder.mul_add(e1, r, t0);
-    builder.mul_add(c_inf, w_inf, t1)
+    let inner = builder.mul_add(c_inf, r_minus_one, linear);
+    builder.mul_add(r, inner, c0)
 }
 
 /// Folds an initial claim through every round of a sumcheck transcript.
@@ -303,6 +298,25 @@ mod tests {
             sumcheck_round_claim_update(b, ins[0], ins[1], ins[2], ins[3])
         });
         assert_eq!(at_one, claim - c0);
+    }
+
+    #[test]
+    fn round_update_needs_at_most_five_alu_operations() {
+        let mut builder = CircuitBuilder::<F>::new();
+        let inputs: Vec<_> = (0..4).map(|_| builder.public_input()).collect();
+        let out =
+            sumcheck_round_claim_update(&mut builder, inputs[0], inputs[1], inputs[2], inputs[3]);
+        builder.tag(out, "out").unwrap();
+        let circuit = builder.build().unwrap();
+        let alu_ops = circuit
+            .ops
+            .iter()
+            .filter(|op| matches!(op, p3_circuit::ops::Op::Alu { .. }))
+            .count();
+        assert!(
+            alu_ops <= 5,
+            "sumcheck update uses {alu_ops} ALU operations"
+        );
     }
 
     proptest! {
