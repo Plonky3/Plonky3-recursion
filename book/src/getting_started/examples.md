@@ -1,5 +1,23 @@
 # Examples
 
+The three recursive examples select their polynomial commitment scheme with
+`--pcs fri|whir` (default `fri`). WHIR supports BabyBear, KoalaBear, and Goldilocks
+with either `--hash poseidon2` or `--hash poseidon1`, retaining the same base
+computations and configurable recursion depth. `--quintic`, `--zk`, `--disable-recompose-npo`, and
+aggregation's `--arity4` require FRI.
+
+```bash
+cargo run --release --example recursive_fibonacci -- --pcs whir --n 1000 --num-recursive-layers 2
+cargo run --release --example recursive_keccak -- --pcs whir --num-hashes 100 --num-recursive-layers 2
+cargo run --release --example recursive_aggregation -- --pcs whir --num-recursive-layers 2
+```
+
+For WHIR, `--log-blowup` controls the starting inverse rate, `--query-pow-bits`
+controls the maximum PoW budget, and `--whir-folding-factor` controls the number
+of variables folded per round (default `4`). `--security-level` defaults to
+`64` for WHIR and `124` for FRI. FRI's `--max-log-arity`, `--log-final-poly-len`,
+and `--commit-pow-bits` do not configure WHIR.
+
 This section walks through the three provided examples to illustrate common recursion patterns.
 
 ## Recursive Keccak — verifying a uni-STARK proof

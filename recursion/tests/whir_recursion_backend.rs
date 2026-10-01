@@ -48,6 +48,58 @@ fn fibonacci_output<F: PrimeCharacteristicRing + Copy>(n: usize) -> F {
     b
 }
 
+#[test]
+fn whir_backend_accepts_a_primitive_only_extension_batch_input() {
+    use p3_batch_stark::ProverData;
+    use p3_circuit::CircuitBuilder;
+    use p3_circuit_prover::common::get_airs_and_degrees_with_prep;
+    use p3_circuit_prover::{CircuitProverData, ConstraintProfile, TablePacking};
+    use p3_recursion::BatchOnly;
+
+    let config = bb_whir_config(vec![]);
+    let mut builder = CircuitBuilder::<BbEF>::new();
+    let constant = builder.alloc_const(BbEF::from_u32(7), "constant");
+    let expected = builder.alloc_public_input("expected");
+    builder.connect(constant, expected);
+    let circuit = builder.build().unwrap();
+    let packing = TablePacking::new(1, 1).with_min_trace_height(1024);
+    let (airs_degrees, primitive_columns, non_primitive_columns) =
+        get_airs_and_degrees_with_prep::<BbWhirConfig, BbEF, 4>(
+            &circuit,
+            &packing,
+            &[],
+            &[],
+            ConstraintProfile::Standard,
+        )
+        .unwrap();
+    let (airs, degrees): (Vec<_>, Vec<_>) = airs_degrees.into_iter().unzip();
+    let data = CircuitProverData::new(
+        ProverData::from_airs_and_degrees(&config, &airs, &degrees).unwrap(),
+        primitive_columns,
+        non_primitive_columns,
+    );
+    let mut runner = circuit.runner();
+    runner.set_public_inputs(&[BbEF::from_u32(7)]).unwrap();
+    let traces = runner.run().unwrap();
+    let prover = BatchStarkProver::new(config.clone()).with_table_packing(packing);
+    let proof = prover.prove_all_tables(&traces, &data).unwrap();
+    prover.verify_all_tables::<BbEF>(&proof).unwrap();
+    assert!(proof.non_primitives.is_empty());
+
+    let table_public_inputs = vec![vec![]; proof.proof.opened_values.instances.len()];
+    let input = RecursionInput::BatchStark {
+        proof: &proof,
+        common_data: &proof.stark_common,
+        table_public_inputs,
+    };
+    let backend = WhirRecursionBackend::<16, 8>::new(Poseidon2Config::BABY_BEAR_D4_W16)
+        .for_extension_degree::<4>();
+    <WhirRecursionBackendForExt<4> as PcsRecursionBackend<BbWhirConfig, BatchOnly, 4>>::validate_input(
+        &backend, &config, &input,
+    )
+    .expect("an honest primitive-only WHIR batch circuit is a valid recursion input");
+}
+
 const fn query_count<F, EF, P>(openings: &QueryOpenings<F, EF, P>) -> usize {
     match openings {
         QueryOpenings::Base(opening) => opening.rows.len(),

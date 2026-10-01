@@ -24,6 +24,9 @@
 //! # KoalaBear with quintic challenge extension (D = 5)
 //! cargo run --release --example recursive_aggregation -- --field koala-bear --quintic
 //!
+//! # WHIR with the same dummy circuit leaves
+//! cargo run --release --example recursive_aggregation -- --pcs whir --num-recursive-layers 2
+//!
 //! # 8 base proofs, 3 aggregation levels, custom FRI parameters
 //! cargo run --release --example recursive_aggregation -- \
 //!     --field koala-bear \
@@ -44,6 +47,9 @@ use p3_maybe_rayon::prelude::*;
 #[derive(Parser, Debug)]
 #[command(version, about = "2-to-1 proof aggregation example")]
 struct Args {
+    #[command(flatten)]
+    pub pcs_options: PcsOptions,
+
     /// Tree depth (total base proofs = 2^(tree_depth)).  (1 = single pair, 2 = 4 leaves, …)
     #[arg(
         long,
@@ -55,7 +61,7 @@ struct Args {
     #[arg(short, long, ignore_case = true, value_enum, default_value_t = FieldOption::KoalaBear)]
     pub field: FieldOption,
 
-    /// Use quintic (D = 5) challenge extension (KoalaBear only; incompatible with baby-bear / goldilocks).
+    /// Use quintic (D = 5) challenge extension (FRI with KoalaBear only).
     #[arg(long, default_value_t = false)]
     pub quintic: bool,
 
@@ -81,21 +87,21 @@ struct Args {
     #[arg(
         long,
         default_value_t = 6,
-        help = "Log size of final polynomial after FRI folding"
+        help = "Log size of final polynomial after FRI folding (FRI only)"
     )]
     pub log_final_poly_len: usize,
 
     #[arg(
         long,
         default_value_t = 0,
-        help = "PoW grinding bits during FRI commit phase"
+        help = "PoW grinding bits during FRI commit phase (FRI only)"
     )]
     pub commit_pow_bits: usize,
 
     #[arg(
         long,
         default_value_t = 15,
-        help = "PoW grinding bits during FRI query phase"
+        help = "FRI query PoW bits / WHIR maximum PoW bits"
     )]
     pub query_pow_bits: usize,
 
@@ -131,10 +137,9 @@ struct Args {
     // TODO: Update once https://github.com/Plonky3/Plonky3/pull/1329 lands
     #[arg(
         long,
-        default_value_t = 124,
-        help = "Targeted security level (conjectured)"
+        help = "Targeted security level (conjectured) [default: 124 for FRI, 64 for WHIR]"
     )]
-    pub security_level: usize,
+    pub security_level: Option<usize>,
 
     #[arg(long, default_value_t = false, help = "Enable ZK mode (HidingFriPcs)")]
     pub zk: bool,
@@ -142,7 +147,7 @@ struct Args {
     #[arg(
         long,
         default_value_t = false,
-        help = "Disable recompose NPO (use only Poseidon2 perm)"
+        help = "Disable recompose NPO (FRI only; use only Poseidon2 perm)"
     )]
     pub disable_recompose_npo: bool,
 
@@ -206,6 +211,13 @@ fn main() {
     init_logger();
 
     let args = Args::parse();
+    let security_level = args.pcs_options.security_level(args.security_level);
+    args.pcs_options.assert_supported(
+        args.quintic,
+        args.zk,
+        args.arity4,
+        args.disable_recompose_npo,
+    );
     let fri_params = args.to_fri_params();
     let table_packing = args.table_packing();
 
@@ -215,8 +227,13 @@ fn main() {
     assert_arity4_supported(args.arity4, args.field, args.hash);
 
     info!(
-        "2-to-1 aggregation with field {:?}, quintic {}, hash {:?}, arity4 {}, {} aggregation recursive layers",
-        args.field, args.quintic, args.hash, args.arity4, args.num_recursive_layers
+        "2-to-1 aggregation with field {:?}, quintic {}, hash {:?}, pcs {:?}, arity4 {}, {} aggregation recursive layers",
+        args.field,
+        args.quintic,
+        args.hash,
+        args.pcs_options.pcs,
+        args.arity4,
+        args.num_recursive_layers
     );
 
     if args.arity4 {
@@ -233,28 +250,28 @@ fn main() {
                 args.num_recursive_layers,
                 &fri_params,
                 &table_packing,
-                args.security_level,
+                security_level,
                 args.disable_recompose_npo,
             ),
             (FieldOption::KoalaBear, false) => koala_bear_arity4::run(
                 args.num_recursive_layers,
                 &fri_params,
                 &table_packing,
-                args.security_level,
+                security_level,
                 args.disable_recompose_npo,
             ),
             (FieldOption::BabyBear, _) => baby_bear_arity4::run(
                 args.num_recursive_layers,
                 &fri_params,
                 &table_packing,
-                args.security_level,
+                security_level,
                 args.disable_recompose_npo,
             ),
             (FieldOption::Goldilocks, _) => goldilocks_arity4::run(
                 args.num_recursive_layers,
                 &fri_params,
                 &table_packing,
-                args.security_level,
+                security_level,
                 args.disable_recompose_npo,
             ),
         }
@@ -266,7 +283,7 @@ fn main() {
             args.num_recursive_layers,
             &fri_params,
             &table_packing,
-            args.security_level,
+            security_level,
             args.zk,
             args.disable_recompose_npo,
             args.profile,
@@ -276,37 +293,40 @@ fn main() {
             args.num_recursive_layers,
             &fri_params,
             &table_packing,
-            args.security_level,
+            security_level,
             args.zk,
             args.disable_recompose_npo,
             args.profile,
             args.concurrent_pairs,
+            &args.pcs_options,
         ),
         (HashOption::Poseidon2, FieldOption::BabyBear, _) => baby_bear::run(
             args.num_recursive_layers,
             &fri_params,
             &table_packing,
-            args.security_level,
+            security_level,
             args.zk,
             args.disable_recompose_npo,
             args.profile,
             args.concurrent_pairs,
+            &args.pcs_options,
         ),
         (HashOption::Poseidon2, FieldOption::Goldilocks, _) => goldilocks::run(
             args.num_recursive_layers,
             &fri_params,
             &table_packing,
-            args.security_level,
+            security_level,
             args.zk,
             args.disable_recompose_npo,
             args.profile,
             args.concurrent_pairs,
+            &args.pcs_options,
         ),
         (HashOption::Poseidon1, FieldOption::KoalaBear, true) => koala_bear_quintic_poseidon1::run(
             args.num_recursive_layers,
             &fri_params,
             &table_packing,
-            args.security_level,
+            security_level,
             args.zk,
             args.disable_recompose_npo,
             args.profile,
@@ -316,31 +336,34 @@ fn main() {
             args.num_recursive_layers,
             &fri_params,
             &table_packing,
-            args.security_level,
+            security_level,
             args.zk,
             args.disable_recompose_npo,
             args.profile,
             args.concurrent_pairs,
+            &args.pcs_options,
         ),
         (HashOption::Poseidon1, FieldOption::BabyBear, _) => baby_bear_poseidon1::run(
             args.num_recursive_layers,
             &fri_params,
             &table_packing,
-            args.security_level,
+            security_level,
             args.zk,
             args.disable_recompose_npo,
             args.profile,
             args.concurrent_pairs,
+            &args.pcs_options,
         ),
         (HashOption::Poseidon1, FieldOption::Goldilocks, _) => goldilocks_poseidon1::run(
             args.num_recursive_layers,
             &fri_params,
             &table_packing,
-            args.security_level,
+            security_level,
             args.zk,
             args.disable_recompose_npo,
             args.profile,
             args.concurrent_pairs,
+            &args.pcs_options,
         ),
     }
 }
@@ -763,91 +786,67 @@ macro_rules! define_field_module {
                 $params_trait
             );
 
-            /// Build a dummy circuit with a single constant and prove it (non-ZK).
-            fn prove_dummy_circuit(
-                constant_value: u32,
-                config: &ConfigWithFriParams,
-                table_packing: &TablePacking,
-            ) -> RecursionOutput<ConfigWithFriParams> {
-                let mut builder = CircuitBuilder::new();
-                let c = builder.alloc_const(F::from_u32(constant_value), "dummy_const");
-                let expected = builder.alloc_public_input("expected");
-                builder.connect(c, expected);
-                let circuit = builder.build().unwrap();
-                let (airs_degrees, primitive_columns, non_primitive_columns) =
-                    get_airs_and_degrees_with_prep::<ConfigWithFriParams, F, 1>(
-                        &circuit,
-                        &table_packing,
-                        &[],
-                        &[],
-                        ConstraintProfile::Standard,
-                    )
-                    .unwrap();
-                let (airs, degrees): (Vec<_>, Vec<_>) = airs_degrees.into_iter().unzip();
-                let mut runner = circuit.runner();
-                runner
-                    .set_public_inputs(&[F::from_u32(constant_value)])
-                    .unwrap();
-                let traces = runner.run().unwrap();
-                let ext_degrees: Vec<usize> =
-                    degrees.iter().map(|&d| d + config.is_zk()).collect();
-                let prover_data =
-                    ProverData::from_airs_and_degrees(config, &airs, &ext_degrees).unwrap();
-                let circuit_prover_data = CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
-                let prover =
-                    BatchStarkProver::new(config.clone()).with_table_packing(table_packing.clone());
-                let proof = prover
-                    .prove_all_tables(&traces, &circuit_prover_data)
-                    .expect("Failed to prove dummy circuit");
-                report_proof_size(&proof);
-                prover
-                    .verify_all_tables::<F>(&proof)
-                    .expect("Failed to verify dummy proof");
-                RecursionOutput(proof, Arc::new(circuit_prover_data))
+            define_whir_module_types!(
+                $default_perm,
+                $poseidon2_config,
+                $poseidon2_circuit_config,
+                $enable_poseidon2_fn,
+                $default_perm_circuit,
+                $gen_trace
+            );
+
+            // All PCS variants prove the same distinct constant circuits at the leaves.
+            macro_rules! define_base_prover {
+                ($name:ident, $config_ty:ident, $base_field:ty, $base_d:expr) => {
+                    fn $name(
+                        constant_value: u32,
+                        config: &$config_ty,
+                        table_packing: &TablePacking,
+                    ) -> RecursionOutput<$config_ty> {
+                        let mut builder = CircuitBuilder::<$base_field>::new();
+                        let c = builder.alloc_const(<$base_field>::from_u32(constant_value), "dummy_const");
+                        let expected = builder.alloc_public_input("expected");
+                        builder.connect(c, expected);
+                        let circuit = builder.build().unwrap();
+                        let (airs_degrees, primitive_columns, non_primitive_columns) =
+                            get_airs_and_degrees_with_prep::<$config_ty, $base_field, $base_d>(
+                                &circuit,
+                                &table_packing,
+                                &[],
+                                &[],
+                                ConstraintProfile::Standard,
+                            )
+                            .unwrap();
+                        let (airs, degrees): (Vec<_>, Vec<_>) = airs_degrees.into_iter().unzip();
+                        let mut runner = circuit.runner();
+                        runner
+                            .set_public_inputs(&[<$base_field>::from_u32(constant_value)])
+                            .unwrap();
+                        let traces = runner.run().unwrap();
+                        let ext_degrees: Vec<usize> =
+                            degrees.iter().map(|&d| d + config.is_zk()).collect();
+                        let prover_data =
+                            ProverData::from_airs_and_degrees(config, &airs, &ext_degrees).unwrap();
+                        let circuit_prover_data = CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
+                        let prover =
+                            BatchStarkProver::new(config.clone()).with_table_packing(table_packing.clone());
+                        let proof = prover
+                            .prove_all_tables(&traces, &circuit_prover_data)
+                            .expect("Failed to prove dummy circuit");
+                        report_proof_size(&proof);
+                        prover
+                            .verify_all_tables::<$base_field>(&proof)
+                            .expect("Failed to verify dummy proof");
+                        RecursionOutput(proof, Arc::new(circuit_prover_data))
+                    }
+
+                };
             }
 
-            /// Build a dummy circuit with a single constant and prove it (ZK).
-            fn prove_dummy_circuit_zk(
-                constant_value: u32,
-                config: &ConfigWithFriParamsZk,
-                table_packing: &TablePacking,
-            ) -> RecursionOutput<ConfigWithFriParamsZk> {
-                let mut builder = CircuitBuilder::new();
-                let c = builder.alloc_const(F::from_u32(constant_value), "dummy_const");
-                let expected = builder.alloc_public_input("expected");
-                builder.connect(c, expected);
-                let circuit = builder.build().unwrap();
-                let (airs_degrees, primitive_columns, non_primitive_columns) =
-                    get_airs_and_degrees_with_prep::<ConfigWithFriParamsZk, F, 1>(
-                        &circuit,
-                        &table_packing,
-                        &[],
-                        &[],
-                        ConstraintProfile::Standard,
-                    )
-                    .unwrap();
-                let (airs, degrees): (Vec<_>, Vec<_>) = airs_degrees.into_iter().unzip();
-                let mut runner = circuit.runner();
-                runner
-                    .set_public_inputs(&[F::from_u32(constant_value)])
-                    .unwrap();
-                let traces = runner.run().unwrap();
-                let ext_degrees: Vec<usize> =
-                    degrees.iter().map(|&d| d + config.is_zk()).collect();
-                let prover_data =
-                    ProverData::from_airs_and_degrees(config, &airs, &ext_degrees).unwrap();
-                let circuit_prover_data = CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
-                let prover =
-                    BatchStarkProver::new(config.clone()).with_table_packing(table_packing.clone());
-                let proof = prover
-                    .prove_all_tables(&traces, &circuit_prover_data)
-                    .expect("Failed to prove dummy circuit (ZK)");
-                report_proof_size(&proof);
-                prover
-                    .verify_all_tables::<F>(&proof)
-                    .expect("Failed to verify dummy proof (ZK)");
-                RecursionOutput(proof, Arc::new(circuit_prover_data))
-            }
+            define_base_prover!(prove_dummy_circuit, ConfigWithFriParams, F, 1);
+            define_base_prover!(prove_dummy_circuit_zk, ConfigWithFriParamsZk, F, 1);
+            // WHIR's batch verifier expects extension-field traces, including at the leaves.
+            define_base_prover!(prove_dummy_circuit_whir, ConfigWithWhirParams, Challenge, D);
 
             #[allow(clippy::too_many_arguments)]
             pub fn run(
@@ -859,9 +858,10 @@ macro_rules! define_field_module {
                 disable_recompose_npo: bool,
                 profile: bool,
                 concurrent_pairs: bool,
+                pcs_options: &PcsOptions,
             ) {
                 let base_table_packing = TablePacking::new(1, 1)
-                    .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup);
+                    .with_pcs_params(pcs_options, fri_params, security_level);
                 let backend = FriRecursionBackend::<$backend_width, $backend_rate, _>::new(
                     $poseidon2_config,
                 )
@@ -872,7 +872,9 @@ macro_rules! define_field_module {
                 info!("Binary aggregation tree: {num_leaves} base proofs, {tree_depth} levels");
 
                 macro_rules! run_aggregation {
-                    ($cfg_type:ident, $config_base:expr, $config_agg:expr, $prove_base_fn:ident) => {{
+                    ($cfg_type:ident, $config_base:expr, $config_agg:expr, $prove_base_fn:ident, $backend:expr) => {{
+                        let run = || {
+                        let backend = $backend;
                         let config_base: $cfg_type = $config_base;
                         let mut proofs: Vec<RecursionOutput<$cfg_type>> = (0..num_leaves)
                             .map(|i| {
@@ -924,9 +926,7 @@ macro_rules! define_field_module {
                                         )
                                         .unwrap_or_else(|e| panic!("Failed to build circuit at level {level}: {e:?}"));
                                         let seed = agg_current_profile.clone().unwrap_or_else(|| RecursionLayerProfile {
-                                            table_packing: table_packing.clone().with_fri_params(
-                                                fri_params.log_final_poly_len, fri_params.log_blowup,
-                                            ),
+                                            table_packing: table_packing.clone().with_pcs_params(pcs_options, fri_params, security_level),
                                             hash: HashProfile::default(),
                                             transcript: TranscriptKind::BaseDuplex,
                                             constraint_profile: ConstraintProfile::Standard,
@@ -993,10 +993,7 @@ macro_rules! define_field_module {
                                 } else {
                                     table_packing.clone()
                                 }
-                                .with_fri_params(
-                                    fri_params.log_final_poly_len,
-                                    fri_params.log_blowup,
-                                ),
+                                .with_pcs_params(pcs_options, fri_params, security_level),
                                 constraint_profile: ConstraintProfile::Standard,
                             };
                             let agg_config: $cfg_type = $config_agg(level as u64);
@@ -1110,10 +1107,26 @@ macro_rules! define_field_module {
                             }
                             proofs = next_level;
                         }
+                        };
+                        run();
                     }};
                 }
 
-                if zk {
+                if pcs_options.pcs == PcsOption::Whir {
+                    run_aggregation!(
+                        ConfigWithWhirParams,
+                        config_with_whir_params(fri_params, security_level, true, pcs_options.whir_folding_factor),
+                        |_lvl| config_with_whir_params(
+                            fri_params,
+                            security_level,
+                            disable_recompose_npo,
+                            pcs_options.whir_folding_factor,
+                        ),
+                        prove_dummy_circuit_whir,
+                        WhirRecursionBackend::<$backend_width, $backend_rate, _>::new($poseidon2_config)
+                            .for_extension_degree::<$d>()
+                    );
+                } else if zk {
                     run_aggregation!(
                         ConfigWithFriParamsZk,
                         config_with_fri_params_zk(fri_params, security_level, true, 0),
@@ -1123,7 +1136,8 @@ macro_rules! define_field_module {
                             disable_recompose_npo,
                             lvl,
                         ),
-                        prove_dummy_circuit_zk
+                        prove_dummy_circuit_zk,
+                        backend.clone()
                     );
                 } else {
                     run_aggregation!(
@@ -1134,7 +1148,8 @@ macro_rules! define_field_module {
                             security_level,
                             disable_recompose_npo,
                         ),
-                        prove_dummy_circuit
+                        prove_dummy_circuit,
+                        backend.clone()
                     );
                 }
 

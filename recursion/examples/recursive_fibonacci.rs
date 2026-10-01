@@ -26,6 +26,9 @@
 //! # KoalaBear with quintic challenge extension (D = 5)
 //! cargo run --release --example recursive_fibonacci -- --field koala-bear --quintic --n 10000
 //!
+//! # WHIR with the same base computation and configurable recursion depth
+//! cargo run --release --example recursive_fibonacci -- --pcs whir --num-recursive-layers 2
+//!
 //! # With custom FRI parameters and recursion depth
 //! cargo run --release --example recursive_fibonacci -- \
 //!     --field koala-bear \
@@ -45,6 +48,9 @@ use p3_batch_stark::ProverData;
 #[derive(Parser, Debug)]
 #[command(version, about = "Recursive Fibonacci proof verification example")]
 struct Args {
+    #[command(flatten)]
+    pub pcs_options: PcsOptions,
+
     /// The Fibonacci index to compute (F(n)).
     #[arg(short, long, default_value_t = 100)]
     n: usize,
@@ -60,7 +66,7 @@ struct Args {
     #[arg(short, long, ignore_case = true, value_enum, default_value_t = FieldOption::KoalaBear)]
     pub field: FieldOption,
 
-    /// Use quintic (D = 5) challenge extension (KoalaBear only; incompatible with baby-bear / goldilocks).
+    /// Use quintic (D = 5) challenge extension (FRI with KoalaBear only).
     #[arg(long, default_value_t = false)]
     pub quintic: bool,
 
@@ -78,7 +84,7 @@ struct Args {
     #[arg(
         long,
         default_value_t = 2,
-        help = "Maximum arity allowed during FRI folding phases"
+        help = "Maximum arity allowed during FRI folding phases (FRI only)"
     )]
     pub max_log_arity: usize,
 
@@ -88,21 +94,21 @@ struct Args {
     #[arg(
         long,
         default_value_t = 5,
-        help = "Log size of final polynomial after FRI folding"
+        help = "Log size of final polynomial after FRI folding (FRI only)"
     )]
     pub log_final_poly_len: usize,
 
     #[arg(
         long,
         default_value_t = 0,
-        help = "PoW grinding bits during FRI commit phase"
+        help = "PoW grinding bits during FRI commit phase (FRI only)"
     )]
     pub commit_pow_bits: usize,
 
     #[arg(
         long,
         default_value_t = 15,
-        help = "PoW grinding bits during FRI query phase"
+        help = "FRI query PoW bits / WHIR maximum PoW bits"
     )]
     pub query_pow_bits: usize,
 
@@ -134,17 +140,16 @@ struct Args {
     #[arg(
         long,
         default_value_t = false,
-        help = "Disable recompose NPO (use only Poseidon2 perm)"
+        help = "Disable recompose NPO (FRI only; use only Poseidon2 perm)"
     )]
     pub disable_recompose_npo: bool,
 
     // TODO: Update once https://github.com/Plonky3/Plonky3/pull/1329 lands
     #[arg(
         long,
-        default_value_t = 124,
-        help = "Targeted security level (conjectured)"
+        help = "Targeted security level (conjectured) [default: 124 for FRI, 64 for WHIR]"
     )]
-    pub security_level: usize,
+    pub security_level: Option<usize>,
 
     #[arg(long, default_value_t = false, help = "Enable ZK mode (HidingFriPcs)")]
     pub zk: bool,
@@ -181,6 +186,9 @@ fn main() {
     init_logger();
 
     let args = Args::parse();
+    let security_level = args.pcs_options.security_level(args.security_level);
+    args.pcs_options
+        .assert_supported(args.quintic, args.zk, false, args.disable_recompose_npo);
     let fri_params = args.to_fri_params();
     let table_packing = args.table_packing();
 
@@ -191,8 +199,8 @@ fn main() {
     assert_quintic_field(args.field, args.quintic);
 
     info!(
-        "Recursively proving {} Fibonacci iterations with field {:?}, quintic {}, hash {:?}",
-        args.n, args.field, args.quintic, args.hash
+        "Recursively proving {} Fibonacci iterations with field {:?}, quintic {}, hash {:?}, pcs {:?}",
+        args.n, args.field, args.quintic, args.hash, args.pcs_options.pcs
     );
 
     match (args.hash, args.field, args.quintic) {
@@ -201,7 +209,7 @@ fn main() {
             args.num_recursive_layers,
             &fri_params,
             &table_packing,
-            args.security_level,
+            security_level,
             args.disable_recompose_npo,
             args.profile,
         ),
@@ -210,37 +218,40 @@ fn main() {
             args.num_recursive_layers,
             &fri_params,
             &table_packing,
-            args.security_level,
+            security_level,
             args.zk,
             args.disable_recompose_npo,
             args.profile,
+            &args.pcs_options,
         ),
         (HashOption::Poseidon2, FieldOption::BabyBear, _) => baby_bear::run(
             args.n,
             args.num_recursive_layers,
             &fri_params,
             &table_packing,
-            args.security_level,
+            security_level,
             args.zk,
             args.disable_recompose_npo,
             args.profile,
+            &args.pcs_options,
         ),
         (HashOption::Poseidon2, FieldOption::Goldilocks, _) => goldilocks::run(
             args.n,
             args.num_recursive_layers,
             &fri_params,
             &table_packing,
-            args.security_level,
+            security_level,
             args.zk,
             args.disable_recompose_npo,
             args.profile,
+            &args.pcs_options,
         ),
         (HashOption::Poseidon1, FieldOption::KoalaBear, true) => koala_bear_quintic_poseidon1::run(
             args.n,
             args.num_recursive_layers,
             &fri_params,
             &table_packing,
-            args.security_level,
+            security_level,
             args.disable_recompose_npo,
             args.profile,
         ),
@@ -249,30 +260,33 @@ fn main() {
             args.num_recursive_layers,
             &fri_params,
             &table_packing,
-            args.security_level,
+            security_level,
             args.zk,
             args.disable_recompose_npo,
             args.profile,
+            &args.pcs_options,
         ),
         (HashOption::Poseidon1, FieldOption::BabyBear, _) => baby_bear_poseidon1::run(
             args.n,
             args.num_recursive_layers,
             &fri_params,
             &table_packing,
-            args.security_level,
+            security_level,
             args.zk,
             args.disable_recompose_npo,
             args.profile,
+            &args.pcs_options,
         ),
         (HashOption::Poseidon1, FieldOption::Goldilocks, _) => goldilocks_poseidon1::run(
             args.n,
             args.num_recursive_layers,
             &fri_params,
             &table_packing,
-            args.security_level,
+            security_level,
             args.zk,
             args.disable_recompose_npo,
             args.profile,
+            &args.pcs_options,
         ),
     }
 }
@@ -319,6 +333,15 @@ macro_rules! define_field_module {
                 $params_trait
             );
 
+            define_whir_module_types!(
+                $default_perm,
+                $poseidon2_config,
+                $poseidon2_circuit_config,
+                $enable_poseidon2_fn,
+                $default_perm_circuit,
+                $gen_trace
+            );
+
             #[allow(clippy::too_many_arguments)]
             pub fn run(
                 n: usize,
@@ -329,41 +352,47 @@ macro_rules! define_field_module {
                 zk: bool,
                 disable_recompose_npo: bool,
                 profile: bool,
+                pcs_options: &PcsOptions,
             ) {
-                let mut builder = CircuitBuilder::new();
-                let expected_result = builder.alloc_public_input("expected_result");
-
-                let mut a = builder.alloc_const(F::ZERO, "F(0)");
-                let mut b = builder.alloc_const(F::ONE, "F(1)");
-
-                for _ in 2..=n {
-                    let next = builder.add(a, b);
-                    a = b;
-                    b = next;
-                }
-
-                builder.connect(b, expected_result);
-
-                let base_circuit = builder.build().unwrap();
-                let table_packing_0 = TablePacking::new(1, 1)
-                    .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup);
-
-                let expected_fib = compute_fibonacci(n);
-                let traces_0 = {
-                    let mut runner_0 = base_circuit.runner();
-                    runner_0.set_public_inputs(&[expected_fib]).unwrap();
-                    runner_0.run().unwrap()
-                };
-
                 let backend =
                     FriRecursionBackend::<$backend_width, $backend_rate, _>::new($poseidon2_config)
                         .for_extension_degree::<$d>();
 
                 macro_rules! run_layers {
-                    ($cfg_type:ident, $config_0:expr, $config_recursive:expr) => {{
+                    ($cfg_type:ident, $config_0:expr, $config_recursive:expr, $backend:expr, $base_field:ty, $base_d:expr) => {{
+                        let run = || {
+                        let backend = $backend;
+                        let mut builder = CircuitBuilder::<$base_field>::new();
+                        let expected_result = builder.alloc_public_input("expected_result");
+
+                        let mut a = builder.alloc_const(<$base_field>::ZERO, "F(0)");
+                        let mut b = builder.alloc_const(<$base_field>::ONE, "F(1)");
+
+                        for _ in 2..=n {
+                            let next = builder.add(a, b);
+                            a = b;
+                            b = next;
+                        }
+
+                        builder.connect(b, expected_result);
+
+                        let base_circuit = builder.build().unwrap();
+                        let table_packing_0 = TablePacking::new(1, 1).with_pcs_params(
+                            pcs_options,
+                            fri_params,
+                            security_level,
+                        );
+
+                        let expected_fib = <$base_field>::from(compute_fibonacci(n));
+                        let traces_0 = {
+                            let mut runner_0 = base_circuit.runner();
+                            runner_0.set_public_inputs(&[expected_fib]).unwrap();
+                            runner_0.run().unwrap()
+                        };
+
                         let config_0: $cfg_type = $config_0;
                         let (airs_degrees_0, primitive_columns_0, non_primitive_columns_0) =
-                            get_airs_and_degrees_with_prep::<$cfg_type, F, 1>(
+                            get_airs_and_degrees_with_prep::<$cfg_type, $base_field, $base_d>(
                                 &base_circuit,
                                 &table_packing_0,
                                 &[],
@@ -390,7 +419,7 @@ macro_rules! define_field_module {
                             .expect("Failed to prove base circuit");
                         report_proof_size(&proof_0);
                         prover_0
-                            .verify_all_tables::<F>(&proof_0)
+                            .verify_all_tables::<$base_field>(&proof_0)
                             .expect("Failed to verify base proof");
 
                         if num_recursive_layers == 0 {
@@ -466,9 +495,10 @@ macro_rules! define_field_module {
 
                                 let seed = current_profile.clone().unwrap_or_else(|| {
                                     RecursionLayerProfile {
-                                        table_packing: table_packing.clone().with_fri_params(
-                                            fri_params.log_final_poly_len,
-                                            fri_params.log_blowup,
+                                        table_packing: table_packing.clone().with_pcs_params(
+                                            pcs_options,
+                                            fri_params,
+                                            security_level,
                                         ),
                                         hash: HashProfile::default(),
                                         transcript: TranscriptKind::BaseDuplex,
@@ -525,9 +555,10 @@ macro_rules! define_field_module {
                             }
 
                             let params = ProveNextLayerParams {
-                                table_packing: table_packing.clone().with_fri_params(
-                                    fri_params.log_final_poly_len,
-                                    fri_params.log_blowup,
+                                table_packing: table_packing.clone().with_pcs_params(
+                                    pcs_options,
+                                    fri_params,
+                                    security_level,
                                 ),
                                 constraint_profile: ConstraintProfile::Standard,
                             };
@@ -607,10 +638,38 @@ macro_rules! define_field_module {
 
                             output = out;
                         }
+
+                        info!("Recursive proof verified successfully");
+                        };
+                        run();
                     }};
                 }
 
-                if zk {
+                if pcs_options.pcs == PcsOption::Whir {
+                    // WHIR batch inputs use extension-field traces; embed the same Fibonacci
+                    // computation and expected base-field result in Challenge.
+                    run_layers!(
+                        ConfigWithWhirParams,
+                        config_with_whir_params(
+                            fri_params,
+                            security_level,
+                            true,
+                            pcs_options.whir_folding_factor
+                        ),
+                        |_seed| config_with_whir_params(
+                            fri_params,
+                            security_level,
+                            disable_recompose_npo,
+                            pcs_options.whir_folding_factor,
+                        ),
+                        WhirRecursionBackend::<$backend_width, $backend_rate, _>::new(
+                            $poseidon2_config
+                        )
+                        .for_extension_degree::<$d>(),
+                        Challenge,
+                        D
+                    );
+                } else if zk {
                     run_layers!(
                         ConfigWithFriParamsZk,
                         config_with_fri_params_zk(fri_params, security_level, true, 0),
@@ -621,7 +680,10 @@ macro_rules! define_field_module {
                                 disable_recompose_npo,
                                 seed,
                             )
-                        }
+                        },
+                        backend.clone(),
+                        F,
+                        1
                     );
                 } else {
                     run_layers!(
@@ -633,11 +695,13 @@ macro_rules! define_field_module {
                                 security_level,
                                 disable_recompose_npo,
                             )
-                        }
+                        },
+                        backend.clone(),
+                        F,
+                        1
                     );
                 }
 
-                info!("Recursive proof verified successfully");
             }
 
             fn compute_fibonacci(n: usize) -> F {

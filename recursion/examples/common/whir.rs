@@ -1,395 +1,260 @@
-//! WHIR-backed `StarkGenericConfig` types shared by the WHIR recursive examples.
-//!
-//! Examples cannot import from `recursion/tests/common/whir_config.rs` (tests and examples are
-//! separate Cargo compilation targets), so this module mirrors it for the `examples/` target.
+//! PCS selection and WHIR configuration shared by the recursive examples.
 
-use p3_baby_bear::{BabyBear, Poseidon2BabyBear, default_babybear_poseidon2_16};
-use p3_challenger::DuplexChallenger;
-use p3_circuit::ops::{generate_poseidon2_trace, generate_recompose_trace};
-use p3_circuit::{CircuitBuilder, CircuitRunner, NonPrimitiveOpId};
-use p3_dft::Radix2DFTSmallBatch;
-use p3_field::Field;
-use p3_field::extension::BinomialExtensionField;
-use p3_koala_bear::{KoalaBear, Poseidon2KoalaBear, default_koalabear_poseidon2_16};
-use p3_lookup::logup::LogUpGadget;
-use p3_merkle_tree::MerkleTreeMmcs;
-use p3_poseidon2_circuit_air::{BabyBearD4Width16, KoalaBearD4Width16};
-use p3_recursion::backend::whir::WhirRecursionConfig;
-use p3_recursion::generation::OpeningTranscript;
-use p3_recursion::pcs::fri::MerkleCapTargets;
-use p3_recursion::pcs::set_whir_mmcs_private_data;
-use p3_recursion::pcs::whir::uni::{
-    WhirUniPcs, WhirUniProof, WhirUniProofTargets, WhirUniVerifierParams,
-    restore_whir_recursion_paths, whir_round_paths_op_count,
-};
-use p3_recursion::recursion::RecursionInput;
-use p3_recursion::traits::RecursiveAir;
-use p3_recursion::{Poseidon2Config, VerificationError};
-use p3_sumcheck::layout::{Layout, PrefixProver};
-use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
-use p3_uni_stark::StarkGenericConfig;
-use p3_whir::parameters::{FoldingFactor, ProtocolParameters, SecurityAssumption};
+use p3_whir::parameters::SecurityAssumption;
 
-/// The base field for BabyBear WHIR example configurations.
-pub type BbF = BabyBear;
-/// The extension field WHIR-backed proofs are challenged and opened over.
-pub type BbEF = BinomialExtensionField<BabyBear, 4>;
-/// The Poseidon2 permutation shared by the hasher, compressor and challenger.
-pub type BbPerm = Poseidon2BabyBear<16>;
-/// The leaf hasher for the Merkle commitment scheme WHIR example configurations use.
-pub type BbHash = PaddingFreeSponge<BbPerm, 16, 8, 8>;
-/// The two-to-one compressor for the Merkle commitment scheme WHIR example configurations use.
-pub type BbCompress = TruncatedPermutation<BbPerm, 2, 8, 16>;
-/// The base field's packed SIMD representation, as required by [`BbMmcs`].
-pub type BbPacked = <BbF as Field>::Packing;
-/// The Merkle commitment scheme WHIR example configurations use.
-pub type BbMmcs = MerkleTreeMmcs<BbPacked, BbPacked, BbHash, BbCompress, 2, 8>;
-/// The FFT engine WHIR example configurations use to encode committed codewords.
-pub type BbDft = Radix2DFTSmallBatch<BbF>;
-/// The Fiat-Shamir challenger WHIR example configurations use.
-pub type BbChallenger = DuplexChallenger<BbF, BbPerm, 16, 8>;
-/// The WHIR-backed univariate polynomial commitment scheme under test.
-pub type BbWhirPcs = WhirUniPcs<BbEF, BbF, BbDft, BbMmcs, BbChallenger, PrefixProver<BbF, BbEF>>;
+use super::{ClapArgs, FriParams, TablePacking, ValueEnum};
 
-/// Number of base-field elements in one Merkle digest.
-pub const BB_DIGEST_ELEMS: usize = 8;
-
-/// Permutation shared by the hasher, compressor and challenger.
-///
-/// These are the canonical BabyBear width-16 round constants, the ones
-/// [`BabyBearD4Width16::round_constants`] hard-codes into the Poseidon2 AIR. A configuration
-/// whose circuit is proven — not merely witness-checked — has to use them: the AIR recomputes
-/// every permutation row from its own constants, so a different permutation makes each row's
-/// output disagree with the witness the circuit built from it, and the challenger table's
-/// sponge chain (each row's capacity input against the previous row's capacity output) is the
-/// first constraint to break.
-pub fn bb_whir_perm() -> BbPerm {
-    default_babybear_poseidon2_16()
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Default)]
+pub enum PcsOption {
+    #[default]
+    Fri,
+    Whir,
 }
 
-/// Merkle scheme used by every WHIR commitment in the examples.
-pub fn bb_whir_mmcs() -> BbMmcs {
-    let perm = bb_whir_perm();
-    BbMmcs::new(BbHash::new(perm.clone()), BbCompress::new(perm), 0)
+#[derive(Debug, Clone, Copy, ClapArgs)]
+pub struct PcsOptions {
+    /// Polynomial commitment scheme for base proofs and recursive layers.
+    #[arg(long, value_enum, ignore_case = true, default_value_t = PcsOption::Fri)]
+    pub pcs: PcsOption,
+
+    /// Number of variables folded per WHIR round (with --pcs whir).
+    #[arg(long, default_value_t = 4)]
+    pub whir_folding_factor: usize,
 }
 
-/// WHIR protocol parameters; the length of `round_log_inv_rates` fixes the
-/// number of intermediate WHIR rounds.
-pub const fn bb_whir_protocol_params(round_log_inv_rates: Vec<usize>) -> ProtocolParameters {
-    ProtocolParameters {
-        security_level: 32,
-        pow_bits: 0,
-        round_log_inv_rates,
-        folding_factor: FoldingFactor::Constant(4),
-        soundness_type: SecurityAssumption::CapacityBound,
-        starting_log_inv_rate: 1,
-    }
-}
-
-/// STARK configuration backed by WHIR.
-#[derive(Clone)]
-pub struct BbWhirConfig {
-    pcs: BbWhirPcs,
-    challenger: BbChallenger,
-    /// Shared WHIR verifier parameters, held so [`WhirRecursionConfig::pcs_verifier_params`] and
-    /// [`WhirRecursionConfig::set_whir_private_data`] can both read the round schedule the
-    /// config's own `pcs` was built with.
-    whir_verifier_params: WhirUniVerifierParams<BbF>,
-}
-
-/// Builds the configuration for the given WHIR round schedule. Pass `vec![]` to auto-derive the
-/// round schedule per commit, which is required whenever a config serves commits of more than
-/// one round-count bucket (e.g. a small base proof's opening and a larger verifier circuit's own
-/// trace).
-pub fn bb_whir_config(round_log_inv_rates: Vec<usize>) -> BbWhirConfig {
-    let perm = bb_whir_perm();
-    let challenger = BbChallenger::new(perm);
-    let protocol_params = bb_whir_protocol_params(round_log_inv_rates);
-    let pcs = WhirUniPcs::new(
-        protocol_params.clone(),
-        BbDft::default(),
-        bb_whir_mmcs(),
-        challenger.clone(),
-        20,
-    );
-    let whir_verifier_params = WhirUniVerifierParams::<BbF>::new(
-        protocol_params,
-        PrefixProver::<BbF, BbEF>::variable_order(),
-        Poseidon2Config::BABY_BEAR_D4_W16,
-    )
-    .expect("valid WHIR example configuration");
-    BbWhirConfig {
-        pcs,
-        challenger,
-        whir_verifier_params,
-    }
-}
-
-impl StarkGenericConfig for BbWhirConfig {
-    type Pcs = BbWhirPcs;
-    type Challenge = BbEF;
-    type Challenger = BbChallenger;
-
-    fn pcs(&self) -> &Self::Pcs {
-        &self.pcs
+impl PcsOptions {
+    pub fn security_level(&self, requested: Option<usize>) -> usize {
+        // Leave room for WHIR's claim-batching and sumcheck bounds in the D4/D2 fields.
+        requested.unwrap_or(match self.pcs {
+            PcsOption::Fri => 124,
+            PcsOption::Whir => 64,
+        })
     }
 
-    fn initialise_challenger(&self) -> Self::Challenger {
-        self.challenger.clone()
-    }
-}
-
-impl WhirRecursionConfig for BbWhirConfig {
-    type Commitment = MerkleCapTargets<BbF, BB_DIGEST_ELEMS>;
-    type InputProof = ();
-    type OpeningProof = WhirUniProofTargets<BbF, BbEF, BbMmcs, BB_DIGEST_ELEMS>;
-    type RawOpeningProof = WhirUniProof<BbF, BbEF, BbMmcs>;
-
-    fn with_whir_opening_proof<'a, A, R>(
-        prev: &RecursionInput<'a, Self, A>,
-        f: impl FnOnce(&Self::RawOpeningProof) -> R,
-    ) -> R
-    where
-        A: RecursiveAir<BbF, BbEF, LogUpGadget>,
-    {
-        match prev {
-            RecursionInput::UniStark { proof, .. } => f(&proof.opening_proof),
-            RecursionInput::BatchStark { proof, .. } => f(&proof.proof.opening_proof),
-        }
-    }
-
-    fn prepare_circuit_for_verification(
+    pub fn assert_supported(
         &self,
-        circuit: &mut CircuitBuilder<BbEF>,
-    ) -> Result<(), VerificationError> {
-        circuit.enable_poseidon2_perm::<BabyBearD4Width16, _>(
-            generate_poseidon2_trace::<BbEF, BabyBearD4Width16>,
-            bb_whir_perm(),
-        );
-        circuit.enable_recompose::<BbF>(generate_recompose_trace::<BbF, BbEF>);
-        Ok(())
-    }
-
-    fn pcs_verifier_params(&self) -> &WhirUniVerifierParams<BbF> {
-        &self.whir_verifier_params
-    }
-
-    fn set_whir_private_data(
-        config: &Self,
-        runner: &mut CircuitRunner<'_, BbEF>,
-        op_ids: &[NonPrimitiveOpId],
-        opening_proof: &Self::RawOpeningProof,
-        transcript: OpeningTranscript<Self>,
-    ) -> Result<(), &'static str> {
-        let mmcs = bb_whir_mmcs();
-        let params = config.pcs_verifier_params();
-        let paths = restore_whir_recursion_paths::<Self, _, _, _, _, _, BB_DIGEST_ELEMS>(
-            &mmcs,
-            transcript,
-            opening_proof,
-            params.protocol_params(),
-            params.folding(),
-            params.variable_order(),
-        )
-        .map_err(|_| "Failed to restore WHIR Merkle paths")?;
-
-        let mut offset = 0usize;
-        for round_paths in &paths {
-            let count = whir_round_paths_op_count(round_paths);
-            let op_ids_slice = op_ids
-                .get(offset..offset + count)
-                .ok_or("Not enough op_ids for the restored WHIR Merkle paths")?;
-            set_whir_mmcs_private_data::<BbF, BbEF, BB_DIGEST_ELEMS>(
-                runner,
-                op_ids_slice,
-                &round_paths.rounds,
-                &round_paths.final_paths,
-                Poseidon2Config::BABY_BEAR_D4_W16,
-            )?;
-            offset += count;
-        }
-        if offset != op_ids.len() {
-            return Err("op-id accounting mismatch in BbWhirConfig::set_whir_private_data");
-        }
-        Ok(())
-    }
-}
-
-/// The base field for KoalaBear WHIR example configurations.
-pub type KbF = KoalaBear;
-/// The extension field WHIR-backed proofs are challenged and opened over.
-pub type KbEF = BinomialExtensionField<KoalaBear, 4>;
-/// The Poseidon2 permutation shared by the hasher, compressor and challenger.
-pub type KbPerm = Poseidon2KoalaBear<16>;
-/// The leaf hasher for the Merkle commitment scheme WHIR example configurations use.
-pub type KbHash = PaddingFreeSponge<KbPerm, 16, 8, 8>;
-/// The two-to-one compressor for the Merkle commitment scheme WHIR example configurations use.
-pub type KbCompress = TruncatedPermutation<KbPerm, 2, 8, 16>;
-/// The base field's packed SIMD representation, as required by [`KbMmcs`].
-pub type KbPacked = <KbF as Field>::Packing;
-/// The Merkle commitment scheme WHIR example configurations use.
-pub type KbMmcs = MerkleTreeMmcs<KbPacked, KbPacked, KbHash, KbCompress, 2, 8>;
-/// The FFT engine WHIR example configurations use to encode committed codewords.
-pub type KbDft = Radix2DFTSmallBatch<KbF>;
-/// The Fiat-Shamir challenger WHIR example configurations use.
-pub type KbChallenger = DuplexChallenger<KbF, KbPerm, 16, 8>;
-/// The WHIR-backed univariate polynomial commitment scheme under test.
-pub type KbWhirPcs = WhirUniPcs<KbEF, KbF, KbDft, KbMmcs, KbChallenger, PrefixProver<KbF, KbEF>>;
-
-/// Number of base-field elements in one Merkle digest.
-pub const KB_DIGEST_ELEMS: usize = 8;
-
-/// Permutation shared by the hasher, compressor and challenger.
-///
-/// The canonical KoalaBear width-16 round constants, for the reason [`bb_whir_perm`] documents.
-pub fn kb_whir_perm() -> KbPerm {
-    default_koalabear_poseidon2_16()
-}
-
-/// Merkle scheme used by every WHIR commitment in the examples.
-pub fn kb_whir_mmcs() -> KbMmcs {
-    let perm = kb_whir_perm();
-    KbMmcs::new(KbHash::new(perm.clone()), KbCompress::new(perm), 0)
-}
-
-/// WHIR protocol parameters; the length of `round_log_inv_rates` fixes the
-/// number of intermediate WHIR rounds.
-pub const fn kb_whir_protocol_params(round_log_inv_rates: Vec<usize>) -> ProtocolParameters {
-    ProtocolParameters {
-        security_level: 32,
-        pow_bits: 0,
-        round_log_inv_rates,
-        folding_factor: FoldingFactor::Constant(4),
-        soundness_type: SecurityAssumption::CapacityBound,
-        starting_log_inv_rate: 1,
-    }
-}
-
-/// STARK configuration backed by WHIR.
-#[derive(Clone)]
-pub struct KbWhirConfig {
-    pcs: KbWhirPcs,
-    challenger: KbChallenger,
-    /// Shared WHIR verifier parameters, held so [`WhirRecursionConfig::pcs_verifier_params`] and
-    /// [`WhirRecursionConfig::set_whir_private_data`] can both read the round schedule the
-    /// config's own `pcs` was built with.
-    whir_verifier_params: WhirUniVerifierParams<KbF>,
-}
-
-/// Builds the configuration for the given WHIR round schedule. Pass `vec![]` to auto-derive the
-/// round schedule per commit, which is required whenever a config serves commits of more than
-/// one round-count bucket (e.g. a small base proof's opening and a larger verifier circuit's own
-/// trace).
-pub fn kb_whir_config(round_log_inv_rates: Vec<usize>) -> KbWhirConfig {
-    let perm = kb_whir_perm();
-    let challenger = KbChallenger::new(perm);
-    let protocol_params = kb_whir_protocol_params(round_log_inv_rates);
-    let pcs = WhirUniPcs::new(
-        protocol_params.clone(),
-        KbDft::default(),
-        kb_whir_mmcs(),
-        challenger.clone(),
-        20,
-    );
-    let whir_verifier_params = WhirUniVerifierParams::<KbF>::new(
-        protocol_params,
-        PrefixProver::<KbF, KbEF>::variable_order(),
-        Poseidon2Config::KOALA_BEAR_D4_W16,
-    )
-    .expect("valid WHIR example configuration");
-    KbWhirConfig {
-        pcs,
-        challenger,
-        whir_verifier_params,
-    }
-}
-
-impl StarkGenericConfig for KbWhirConfig {
-    type Pcs = KbWhirPcs;
-    type Challenge = KbEF;
-    type Challenger = KbChallenger;
-
-    fn pcs(&self) -> &Self::Pcs {
-        &self.pcs
-    }
-
-    fn initialise_challenger(&self) -> Self::Challenger {
-        self.challenger.clone()
-    }
-}
-
-impl WhirRecursionConfig for KbWhirConfig {
-    type Commitment = MerkleCapTargets<KbF, KB_DIGEST_ELEMS>;
-    type InputProof = ();
-    type OpeningProof = WhirUniProofTargets<KbF, KbEF, KbMmcs, KB_DIGEST_ELEMS>;
-    type RawOpeningProof = WhirUniProof<KbF, KbEF, KbMmcs>;
-
-    fn with_whir_opening_proof<'a, A, R>(
-        prev: &RecursionInput<'a, Self, A>,
-        f: impl FnOnce(&Self::RawOpeningProof) -> R,
-    ) -> R
-    where
-        A: RecursiveAir<KbF, KbEF, LogUpGadget>,
-    {
-        match prev {
-            RecursionInput::UniStark { proof, .. } => f(&proof.opening_proof),
-            RecursionInput::BatchStark { proof, .. } => f(&proof.proof.opening_proof),
+        quintic: bool,
+        zk: bool,
+        arity4: bool,
+        disable_recompose_npo: bool,
+    ) {
+        if self.pcs == PcsOption::Whir {
+            assert!(!quintic, "--quintic requires --pcs fri");
+            assert!(!zk, "--zk requires --pcs fri");
+            assert!(!arity4, "--arity4 requires --pcs fri");
+            assert!(
+                !disable_recompose_npo,
+                "--disable-recompose-npo requires --pcs fri"
+            );
+            assert!(
+                self.whir_folding_factor > 0 && self.whir_folding_factor < usize::BITS as usize,
+                "--whir-folding-factor must be positive and smaller than the machine word size"
+            );
         }
     }
 
-    fn prepare_circuit_for_verification(
-        &self,
-        circuit: &mut CircuitBuilder<KbEF>,
-    ) -> Result<(), VerificationError> {
-        circuit.enable_poseidon2_perm::<KoalaBearD4Width16, _>(
-            generate_poseidon2_trace::<KbEF, KoalaBearD4Width16>,
-            kb_whir_perm(),
-        );
-        circuit.enable_recompose::<KbF>(generate_recompose_trace::<KbF, KbEF>);
-        Ok(())
-    }
-
-    fn pcs_verifier_params(&self) -> &WhirUniVerifierParams<KbF> {
-        &self.whir_verifier_params
-    }
-
-    fn set_whir_private_data(
-        config: &Self,
-        runner: &mut CircuitRunner<'_, KbEF>,
-        op_ids: &[NonPrimitiveOpId],
-        opening_proof: &Self::RawOpeningProof,
-        transcript: OpeningTranscript<Self>,
-    ) -> Result<(), &'static str> {
-        let mmcs = kb_whir_mmcs();
-        let params = config.pcs_verifier_params();
-        let paths = restore_whir_recursion_paths::<Self, _, _, _, _, _, KB_DIGEST_ELEMS>(
-            &mmcs,
-            transcript,
-            opening_proof,
-            params.protocol_params(),
-            params.folding(),
-            params.variable_order(),
-        )
-        .map_err(|_| "Failed to restore WHIR Merkle paths")?;
-
-        let mut offset = 0usize;
-        for round_paths in &paths {
-            let count = whir_round_paths_op_count(round_paths);
-            let op_ids_slice = op_ids
-                .get(offset..offset + count)
-                .ok_or("Not enough op_ids for the restored WHIR Merkle paths")?;
-            set_whir_mmcs_private_data::<KbF, KbEF, KB_DIGEST_ELEMS>(
-                runner,
-                op_ids_slice,
-                &round_paths.rounds,
-                &round_paths.final_paths,
-                Poseidon2Config::KOALA_BEAR_D4_W16,
-            )?;
-            offset += count;
+    pub fn min_trace_height(&self, fp: &FriParams, security_level: usize) -> usize {
+        match self.pcs {
+            PcsOption::Fri => 1 << (fp.log_final_poly_len + fp.log_blowup + 1),
+            PcsOption::Whir => {
+                assert!(fp.log_blowup > 0, "--log-blowup must be positive for WHIR");
+                assert!(
+                    fp.query_pow_bits < security_level,
+                    "WHIR requires --query-pow-bits < --security-level"
+                );
+                // Even a one-column table must have enough folded leaves for unique queries.
+                // Later rounds increase the inverse rate and therefore need fewer queries.
+                let queries = SecurityAssumption::CapacityBound
+                    .queries(security_level - fp.query_pow_bits, fp.log_blowup);
+                (1usize << self.whir_folding_factor)
+                    .checked_mul(queries.next_power_of_two())
+                    .expect("WHIR minimum trace height is too large")
+            }
         }
-        if offset != op_ids.len() {
-            return Err("op-id accounting mismatch in KbWhirConfig::set_whir_private_data");
-        }
-        Ok(())
     }
+}
+
+pub trait ExampleTablePacking {
+    fn with_pcs_params(self, options: &PcsOptions, fp: &FriParams, security_level: usize) -> Self;
+}
+
+impl ExampleTablePacking for TablePacking {
+    fn with_pcs_params(self, options: &PcsOptions, fp: &FriParams, security_level: usize) -> Self {
+        self.with_min_trace_height(options.min_trace_height(fp, security_level))
+    }
+}
+
+/// Add a WHIR config to a field module that already defines its native field, extension,
+/// permutation, MMCS and challenger via `define_field_module_types!`.
+#[macro_export]
+macro_rules! define_whir_module_types {
+    (
+        $default_perm:path, $perm_config:expr, $circuit_config:ty,
+        $enable_fn:ident, $default_perm_circuit:path, $gen_trace:ident
+    ) => {
+        type MyWhirPcs = p3_recursion::pcs::whir::uni::WhirUniPcs<
+            Challenge,
+            F,
+            p3_dft::Radix2DFTSmallBatch<F>,
+            MyMmcs,
+            Challenger,
+            p3_sumcheck::layout::PrefixProver<F, Challenge>,
+        >;
+        type MyWhirConfig = StarkConfig<MyWhirPcs, Challenge, Challenger>;
+
+        #[derive(Clone)]
+        struct ConfigWithWhirParams {
+            config: Arc<MyWhirConfig>,
+            verifier_params: p3_recursion::pcs::whir::uni::WhirUniVerifierParams<F>,
+            mmcs: MyMmcs,
+            disable_recompose_npo: bool,
+        }
+
+        impl StarkGenericConfig for ConfigWithWhirParams {
+            type Pcs = MyWhirPcs;
+            type Challenge = Challenge;
+            type Challenger = Challenger;
+
+            fn pcs(&self) -> &Self::Pcs {
+                self.config.pcs()
+            }
+
+            fn initialise_challenger(&self) -> Self::Challenger {
+                self.config.initialise_challenger()
+            }
+        }
+
+        impl p3_recursion::backend::whir::WhirRecursionConfig for ConfigWithWhirParams {
+            type Commitment = MerkleCapTargets<F, DIGEST_ELEMS>;
+            type InputProof = ();
+            type OpeningProof = p3_recursion::pcs::whir::uni::WhirUniProofTargets<
+                F,
+                Challenge,
+                MyMmcs,
+                DIGEST_ELEMS,
+            >;
+            type RawOpeningProof = p3_recursion::pcs::whir::uni::WhirUniProof<F, Challenge, MyMmcs>;
+
+            fn with_whir_opening_proof<'a, A, R>(
+                prev: &RecursionInput<'a, Self, A>,
+                f: impl FnOnce(&Self::RawOpeningProof) -> R,
+            ) -> R
+            where
+                A: RecursiveAir<F, Challenge, LogUpGadget>,
+            {
+                match prev {
+                    RecursionInput::UniStark { proof, .. } => f(&proof.opening_proof),
+                    RecursionInput::BatchStark { proof, .. } => f(&proof.proof.opening_proof),
+                }
+            }
+
+            fn prepare_circuit_for_verification(
+                &self,
+                circuit: &mut CircuitBuilder<Challenge>,
+            ) -> Result<(), VerificationError> {
+                circuit.$enable_fn::<$circuit_config, _>(
+                    $gen_trace::<Challenge, $circuit_config>,
+                    $default_perm_circuit(),
+                );
+                if self.disable_recompose_npo {
+                    circuit.noop_enable_recompose::<F>(generate_recompose_trace::<F, Challenge>);
+                } else {
+                    circuit.enable_recompose::<F>(generate_recompose_trace::<F, Challenge>);
+                }
+                Ok(())
+            }
+
+            fn pcs_verifier_params(
+                &self,
+            ) -> &p3_recursion::pcs::whir::uni::WhirUniVerifierParams<F> {
+                &self.verifier_params
+            }
+
+            fn set_whir_private_data(
+                config: &Self,
+                runner: &mut CircuitRunner<'_, Challenge>,
+                op_ids: &[NonPrimitiveOpId],
+                opening_proof: &Self::RawOpeningProof,
+                transcript: OpeningTranscript<Self>,
+            ) -> Result<(), &'static str> {
+                use p3_recursion::pcs::whir::uni::{
+                    restore_whir_recursion_paths, whir_round_paths_op_count,
+                };
+                let params = &config.verifier_params;
+                let paths = restore_whir_recursion_paths::<Self, _, _, _, _, _, DIGEST_ELEMS>(
+                    &config.mmcs,
+                    transcript,
+                    opening_proof,
+                    params.protocol_params(),
+                    params.folding(),
+                    params.variable_order(),
+                )
+                .map_err(|_| "Failed to restore WHIR Merkle paths")?;
+                let mut offset = 0;
+                for round_paths in &paths {
+                    let count = whir_round_paths_op_count(round_paths);
+                    let ids = op_ids
+                        .get(offset..offset + count)
+                        .ok_or("Not enough op_ids for restored WHIR Merkle paths")?;
+                    p3_recursion::pcs::set_whir_mmcs_private_data::<F, Challenge, DIGEST_ELEMS>(
+                        runner,
+                        ids,
+                        &round_paths.rounds,
+                        &round_paths.final_paths,
+                        $perm_config,
+                    )?;
+                    offset += count;
+                }
+                if offset != op_ids.len() {
+                    return Err("WHIR op-id accounting mismatch");
+                }
+                Ok(())
+            }
+        }
+
+        fn config_with_whir_params(
+            fp: &FriParams,
+            security_level: usize,
+            disable_recompose_npo: bool,
+            folding_factor: usize,
+        ) -> ConfigWithWhirParams {
+            use p3_sumcheck::layout::Layout;
+            use p3_whir::parameters::{FoldingFactor, ProtocolParameters, SecurityAssumption};
+
+            let perm = $default_perm();
+            let mmcs = MyMmcs::new(
+                MyHash::new(perm.clone()),
+                MyCompress::new(perm.clone()),
+                fp.cap_height,
+            );
+            let challenger = Challenger::new(perm);
+            let protocol = ProtocolParameters {
+                security_level,
+                pow_bits: fp.query_pow_bits,
+                starting_log_inv_rate: fp.log_blowup,
+                round_log_inv_rates: vec![],
+                folding_factor: FoldingFactor::Constant(folding_factor),
+                soundness_type: SecurityAssumption::CapacityBound,
+            };
+            let pcs = MyWhirPcs::new(
+                protocol.clone(),
+                p3_dft::Radix2DFTSmallBatch::default(),
+                mmcs.clone(),
+                challenger.clone(),
+                <F as p3_field::TwoAdicField>::TWO_ADICITY,
+            );
+            let verifier_params = p3_recursion::pcs::whir::uni::WhirUniVerifierParams::new(
+                protocol,
+                p3_sumcheck::layout::PrefixProver::<F, Challenge>::variable_order(),
+                $perm_config,
+            )
+            .expect("valid WHIR example configuration");
+            ConfigWithWhirParams {
+                config: Arc::new(MyWhirConfig::new(pcs, challenger)),
+                verifier_params,
+                mmcs,
+                disable_recompose_npo,
+            }
+        }
+    };
 }

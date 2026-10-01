@@ -1431,6 +1431,13 @@ where
         ext_degree: usize,
         op_types: &[p3_circuit::ops::NpoTypeId],
     ) -> Vec<Box<dyn TableProver<SC>>> {
+        // Primitive-only leaf circuits have no non-primitive tables to reconstruct.
+        if op_types.is_empty()
+            && (self.0.challenger_perm_config.as_poseidon2().is_some()
+                || self.0.challenger_perm_config.as_poseidon1().is_some())
+        {
+            return Vec::new();
+        }
         let Some(challenger) = self.0.challenger_perm_config.as_poseidon2().copied() else {
             if self.0.challenger_perm_config.as_poseidon1().is_some() {
                 return <Self as PcsRecursionBackend<SC, A, $d>>::non_primitive_provers(

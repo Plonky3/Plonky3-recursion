@@ -32,6 +32,7 @@ pub use p3_lookup::logup::LogUpGadget;
 pub use p3_matrix::Matrix;
 pub use p3_matrix::dense::RowMajorMatrix;
 pub use p3_merkle_tree::MerkleTreeMmcs;
+pub use p3_recursion::backend::whir::WhirRecursionBackend;
 pub use p3_recursion::pcs::{
     HidingFriProofTargets, InputProofTargets, MerkleCapTargets, RecExtensionValMmcsArity4,
     RecValMmcs, RecValMmcsArity4, restore_fri_query_paths, set_fri_mmcs_private_data,
@@ -52,6 +53,7 @@ pub use p3_recursion::{
     merge_hiding_random_openings, observe_opened_values, prove_aggregation_layer,
     prove_aggregation_layer_cross, prove_next_layer, verify_batch_circuit,
 };
+pub use whir::{ExampleTablePacking, PcsOption, PcsOptions};
 
 /// Physical non-primitive tables emitted by a recursive backend.
 ///
