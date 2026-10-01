@@ -633,7 +633,7 @@ where
     // Recursive params support the two native canonical layouts. Derive their
     // full layout strategy once so transcript seeds and claims cannot diverge.
     let strategy = canonical_layout_strategy(params.variable_order());
-    let mut op_ids = Vec::new();
+    let mut mmcs_checks = Vec::new();
     for (((commitment, matrices), round), vp) in commitments_with_opening_points
         .iter()
         .zip(rounds)
@@ -680,7 +680,7 @@ where
             &lifted,
         );
 
-        let round_ops = crate::pcs::whir::verify_whir_circuit::<BF, EF, Ch>(
+        let round_checks = crate::pcs::whir::verifier::verify_whir_circuit_deferred::<BF, EF, Ch>(
             circuit,
             challenger,
             vp,
@@ -690,10 +690,13 @@ where
             claims.claimed_eval,
         )
         .map_err(|e| VerificationError::InvalidProofShape(format!("{e:?}")))?;
-        op_ids.extend(round_ops);
+        mmcs_checks.extend(round_checks);
     }
 
-    Ok(op_ids)
+    // D1 leaf sponges share the challenger's normal permutation chain. Wait until
+    // all commitment arguments have finished sampling before authenticating leaves.
+    crate::pcs::whir::verifier::verify_deferred_whir_mmcs::<BF, EF>(circuit, mmcs_checks)
+        .map_err(|e| VerificationError::InvalidProofShape(format!("{e:?}")))
 }
 
 #[cfg(test)]

@@ -646,19 +646,6 @@ fn query_shape<F, EF, P>(input: &QueryOpenings<F, EF, P>) -> QueryOpeningsShape 
     }
 }
 
-fn validate_digest_packing(
-    digest_elems: usize,
-    extension_dimension: usize,
-) -> Result<(), VerificationError> {
-    if extension_dimension != 1 && !digest_elems.is_multiple_of(extension_dimension) {
-        return Err(VerificationError::InvalidProofShape(format!(
-            "WHIR cap absorption requires EF::DIMENSION ({extension_dimension}) to be 1 or \
-             evenly divide DIGEST_ELEMS ({digest_elems})"
-        )));
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 #[path = "whir/context_acceptance_tests.rs"]
 mod context_acceptance_tests;
@@ -676,7 +663,6 @@ where
     EF: ExtensionField<F> + BasedVectorSpace<F>,
     MT: Mmcs<F, Commitment = MerkleCap<F, [F; DIGEST_ELEMS]>>,
 {
-    validate_digest_packing(DIGEST_ELEMS, <EF as BasedVectorSpace<F>>::DIMENSION)?;
     for round in &input.rounds {
         for batch in &round.evals {
             if !batch.next().is_empty() {
@@ -794,9 +780,7 @@ mod tests {
     use p3_whir::parameters::{FoldingFactor, ProtocolParameters, SecurityAssumption};
     use p3_whir::pcs::proof::{QueryOpenings, SharedProofOpening, WhirRoundProof};
 
-    use super::{
-        CheckedWhirOpening, WhirContextParams, validate_digest_packing, validate_whir_pcs_context,
-    };
+    use super::{CheckedWhirOpening, WhirContextParams, validate_whir_pcs_context};
     use crate::input_contract::stark_layout::{InstanceLayout, NativeStarkLayout};
     use crate::pcs::fri::MerkleCapTargets;
     use crate::pcs::whir::uni::WhirUniVerifierParams;
@@ -1239,16 +1223,6 @@ mod tests {
         }
 
         assert!(Targets::input_shape(&native).unwrap() == Targets::input_shape(&changed).unwrap());
-    }
-
-    #[test]
-    fn prepared_whir_rejects_unsupported_digest_packing() {
-        assert!(matches!(
-            validate_digest_packing(8, 5),
-            Err(VerificationError::InvalidProofShape(_))
-        ));
-        assert!(validate_digest_packing(8, 4).is_ok());
-        assert!(validate_digest_packing(8, 1).is_ok());
     }
 
     #[test]

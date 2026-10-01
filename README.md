@@ -146,7 +146,7 @@ All examples use the unified API (`PreparedLayer`, `PreparedAggregation`, borrow
   cargo run --profile optimized --example recursive_aggregation -- --field koala-bear --num-recursive-layers 4
   ```
 
-All three examples take `--pcs <fri|whir>` (default `fri`), `--field <koala-bear|baby-bear|goldilocks>`, `--quintic` (FRI with KoalaBear only), and `--hash <poseidon2|poseidon1>` (default `poseidon2`):
+All three examples take `--pcs <fri|whir>` (default `fri`), `--field <koala-bear|baby-bear|goldilocks>`, `--quintic` (KoalaBear only), and `--hash <poseidon2|poseidon1>` (default `poseidon2`):
 ```bash
 cargo run --profile optimized --example recursive_fibonacci -- --field baby-bear --hash poseidon1 --n 1000
 ```
@@ -156,7 +156,9 @@ reuse as FRI. `--log-blowup` sets its starting inverse rate, `--query-pow-bits` 
 maximum PoW budget, and `--whir-folding-factor` sets the variables folded per round
 (default `4`). The default `--security-level` is `124` for FRI and `64` for WHIR.
 `--max-log-arity`, `--log-final-poly-len`, and `--commit-pow-bits` apply to FRI;
-`--quintic`, `--zk`, `--disable-recompose-npo`, and aggregation's `--arity4` require FRI.
+`--zk`, `--disable-recompose-npo`, and aggregation's `--arity4` require FRI.
+WHIR also supports KoalaBear's quintic extension with `--pcs whir --quintic`,
+using either hash family.
 
 ```bash
 cargo run --profile optimized --example recursive_fibonacci -- --pcs whir --n 1000 --num-recursive-layers 2

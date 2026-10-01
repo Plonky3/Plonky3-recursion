@@ -31,15 +31,8 @@ impl PcsOptions {
         })
     }
 
-    pub fn assert_supported(
-        &self,
-        quintic: bool,
-        zk: bool,
-        arity4: bool,
-        disable_recompose_npo: bool,
-    ) {
+    pub fn assert_supported(&self, zk: bool, arity4: bool, disable_recompose_npo: bool) {
         if self.pcs == PcsOption::Whir {
-            assert!(!quintic, "--quintic requires --pcs fri");
             assert!(!zk, "--zk requires --pcs fri");
             assert!(!arity4, "--arity4 requires --pcs fri");
             assert!(
@@ -90,7 +83,7 @@ impl ExampleTablePacking for TablePacking {
 macro_rules! define_whir_module_types {
     (
         $default_perm:path, $perm_config:expr, $circuit_config:ty,
-        $enable_fn:ident, $default_perm_circuit:path, $gen_trace:ident
+        $enable_fn:ident, $default_perm_circuit:expr, $gen_trace:ident
     ) => {
         type MyWhirPcs = p3_recursion::pcs::whir::uni::WhirUniPcs<
             Challenge,
@@ -154,12 +147,17 @@ macro_rules! define_whir_module_types {
             ) -> Result<(), VerificationError> {
                 circuit.$enable_fn::<$circuit_config, _>(
                     $gen_trace::<Challenge, $circuit_config>,
-                    $default_perm_circuit(),
+                    ($default_perm_circuit)(),
                 );
                 if self.disable_recompose_npo {
                     circuit.noop_enable_recompose::<F>(generate_recompose_trace::<F, Challenge>);
                 } else {
                     circuit.enable_recompose::<F>(generate_recompose_trace::<F, Challenge>);
+                }
+                if ($perm_config).d() == 1
+                    && <Challenge as ::p3_field::BasedVectorSpace<F>>::DIMENSION > 1
+                {
+                    circuit.set_recompose_coeff_ctl_for_decompose_links(true);
                 }
                 Ok(())
             }

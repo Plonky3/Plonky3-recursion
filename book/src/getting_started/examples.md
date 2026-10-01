@@ -3,8 +3,9 @@
 The three recursive examples select their polynomial commitment scheme with
 `--pcs fri|whir` (default `fri`). WHIR supports BabyBear, KoalaBear, and Goldilocks
 with either `--hash poseidon2` or `--hash poseidon1`, retaining the same base
-computations and configurable recursion depth. `--quintic`, `--zk`, `--disable-recompose-npo`, and
-aggregation's `--arity4` require FRI.
+computations and configurable recursion depth. KoalaBear also supports its quintic
+challenge extension with `--pcs whir --quintic` and either hash family. `--zk`,
+`--disable-recompose-npo`, and aggregation's `--arity4` require FRI.
 
 ```bash
 cargo run --release --example recursive_fibonacci -- --pcs whir --n 1000 --num-recursive-layers 2

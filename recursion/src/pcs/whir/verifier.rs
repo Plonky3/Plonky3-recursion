@@ -65,10 +65,56 @@ where
     }
 }
 
+/// One query's authentication, emitted after transcript replay so compact D1
+/// challenger capacity cannot be overwritten by a leaf sponge in the same table.
+pub(crate) struct WhirMmcsCheck<'a> {
+    config: p3_circuit::ops::PermConfig,
+    cap: Vec<Vec<Target>>,
+    dims: Vec<Dimensions>,
+    index_bits: Vec<Target>,
+    opening: &'a QueryOpeningTargets,
+}
+
+pub(crate) fn verify_deferred_whir_mmcs<BF, EF>(
+    circuit: &mut CircuitBuilder<EF>,
+    checks: Vec<WhirMmcsCheck<'_>>,
+) -> Result<Vec<NonPrimitiveOpId>, CircuitBuilderError>
+where
+    BF: PrimeField64 + TwoAdicField,
+    EF: ExtensionField<BF> + TwoAdicField,
+{
+    let mut op_ids = Vec::new();
+    for check in checks {
+        let ids = match check.opening {
+            QueryOpeningTargets::Base { leaf_values } => verify_whir_base_batch_circuit::<BF, EF>(
+                circuit,
+                check.config,
+                &check.cap,
+                &check.dims,
+                &check.index_bits,
+                core::slice::from_ref(leaf_values),
+            )?,
+            QueryOpeningTargets::Extension { leaf_values } => {
+                verify_batch_circuit_from_extension_opened::<BF, EF>(
+                    circuit,
+                    check.config,
+                    &check.cap,
+                    &check.dims,
+                    &check.index_bits,
+                    core::slice::from_ref(leaf_values),
+                    None,
+                )?
+            }
+        };
+        op_ids.extend(ids);
+    }
+    Ok(op_ids)
+}
+
 /// Verify a WHIR proof in-circuit.
 ///
 /// Mirrors `WhirVerifier::verify` from `p3-whir`: replays the transcript, checks
-/// all PoW witnesses, verifies STIR query MMCS paths, folds leaves, runs all
+/// all PoW witnesses, queues STIR query MMCS paths, folds leaves, runs all
 /// sumchecks, and enforces the final `claimed_eval == W(r) * f(r)` identity.
 ///
 /// # Parameters
@@ -86,21 +132,20 @@ where
 ///
 /// # Returns
 ///
-/// A list of [`NonPrimitiveOpId`]s, one per MMCS path verification, in the
-/// order they were verified (initial-round queries first, then per-round, then
-/// final-round queries).  The caller must supply private path data for each ID.
+/// Pending MMCS checks in commitment, round, and query order. The caller must
+/// execute them after the complete PCS transcript to preserve D1 challenger state.
 ///
 #[allow(clippy::too_many_arguments)]
-fn verify_whir_circuit_engine<BF, EF, Ch>(
+fn verify_whir_circuit_engine<'a, BF, EF, Ch>(
     circuit: &mut CircuitBuilder<EF>,
     challenger: &mut Ch,
     params: &WhirVerifierParams<BF>,
-    proof: &WhirProofTargets,
+    proof: &'a WhirProofTargets,
     initial_commitment_cap: &[Vec<Target>],
     initial_constraint: ConstraintWeightData,
     initial_claimed_eval: Target,
     permutation_config: Option<p3_circuit::ops::PermConfig>,
-) -> Result<Vec<NonPrimitiveOpId>, CircuitBuilderError>
+) -> Result<Vec<WhirMmcsCheck<'a>>, CircuitBuilderError>
 where
     BF: PrimeField64 + TwoAdicField,
     EF: ExtensionField<BF> + TwoAdicField,
@@ -108,7 +153,7 @@ where
 {
     let is_suffix = params.variable_order() == VariableOrder::Suffix;
 
-    let mut all_np_ops: Vec<NonPrimitiveOpId> = Vec::new();
+    let mut mmcs_checks = Vec::new();
     let mut all_constraints: Vec<ConstraintWeightData> = vec![initial_constraint];
     let mut all_r: Vec<Target> = Vec::new();
     let mut claimed_eval = initial_claimed_eval;
@@ -139,13 +184,21 @@ where
         //    elements (`packed_digest_len`), so absorbing the entry as extension elements
         //    unpacks each back into its base coefficients and reproduces that order.
         //
-        //    This assumes `packed_digest_len` actually packed: EF::DIMENSION == 1, or
-        //    EF::DIMENSION evenly divides DIGEST_ELEMS. `WhirUniProofTargets::new`
-        //    (`uni/targets.rs`) debug-asserts that precondition where DIGEST_ELEMS is
-        //    known; outside it, a cap entry holds unpacked lifted base elements and
-        //    absorbing it here as extension elements would observe spurious zeros.
+        //    A non-dividing extension (e.g. D5 with an eight-element digest) stores
+        //    lifted base elements instead. Observe these directly to avoid extra zeros.
+        //    The trusted permutation geometry determines the native digest length.
+        let config = params.permutation_config();
+        let digest_elems = if config.is_arity4_shape() {
+            config.capacity_ext() * config.d()
+        } else {
+            config.rate_ext() * config.d()
+        };
         for cap_entry in &round_proof.commitment_cap {
-            challenger.observe_ext_slice(circuit, cap_entry);
+            if digest_elems.is_multiple_of(EF::DIMENSION) {
+                challenger.observe_ext_slice(circuit, cap_entry);
+            } else {
+                challenger.observe_slice(circuit, cap_entry);
+            }
         }
 
         // 2. OOD: sample univariate point, expand, observe answer — one per OOD sample.
@@ -198,31 +251,14 @@ where
             let leaf_vals = query_opening.leaf_values();
             fold_vals.push(eval_multilinear(circuit, leaf_vals, &query_r));
 
-            if let Some(permutation_config) = permutation_config {
-                let np_ops = match query_opening {
-                    QueryOpeningTargets::Base { leaf_values } => {
-                        verify_whir_base_batch_circuit::<BF, EF>(
-                            circuit,
-                            permutation_config,
-                            &prev_cap,
-                            &dims,
-                            &index_bits,
-                            core::slice::from_ref(leaf_values),
-                        )?
-                    }
-                    QueryOpeningTargets::Extension { leaf_values } => {
-                        verify_batch_circuit_from_extension_opened::<BF, EF>(
-                            circuit,
-                            permutation_config,
-                            &prev_cap,
-                            &dims,
-                            &index_bits,
-                            core::slice::from_ref(leaf_values),
-                            None,
-                        )?
-                    }
-                };
-                all_np_ops.extend(np_ops);
+            if let Some(config) = permutation_config {
+                mmcs_checks.push(WhirMmcsCheck {
+                    config,
+                    cap: prev_cap.clone(),
+                    dims: dims.clone(),
+                    index_bits,
+                    opening: query_opening,
+                });
             }
         }
 
@@ -314,31 +350,14 @@ where
         let expected = horner_eval(circuit, &proof.final_poly, domain_scalar);
         circuit.connect(fold, expected);
 
-        if let Some(permutation_config) = permutation_config {
-            let np_ops = match query_opening {
-                QueryOpeningTargets::Base { leaf_values } => {
-                    verify_whir_base_batch_circuit::<BF, EF>(
-                        circuit,
-                        permutation_config,
-                        &prev_cap,
-                        &final_dims,
-                        &index_bits,
-                        core::slice::from_ref(leaf_values),
-                    )?
-                }
-                QueryOpeningTargets::Extension { leaf_values } => {
-                    verify_batch_circuit_from_extension_opened::<BF, EF>(
-                        circuit,
-                        permutation_config,
-                        &prev_cap,
-                        &final_dims,
-                        &index_bits,
-                        core::slice::from_ref(leaf_values),
-                        None,
-                    )?
-                }
-            };
-            all_np_ops.extend(np_ops);
+        if let Some(config) = permutation_config {
+            mmcs_checks.push(WhirMmcsCheck {
+                config,
+                cap: prev_cap.clone(),
+                dims: final_dims.clone(),
+                index_bits,
+                opening: query_opening,
+            });
         }
     }
 
@@ -384,7 +403,7 @@ where
     let expected = circuit.mul(eval_weights, final_value);
     circuit.connect(claimed_eval, expected);
 
-    Ok(all_np_ops)
+    Ok(mmcs_checks)
 }
 
 /// Verify a WHIR proof in-circuit with mandatory MMCS authentication.
@@ -442,6 +461,34 @@ pub fn verify_whir_circuit<BF, EF, Ch>(
     initial_constraint: ConstraintWeightData,
     initial_claimed_eval: Target,
 ) -> Result<Vec<NonPrimitiveOpId>, CircuitBuilderError>
+where
+    BF: PrimeField64 + TwoAdicField,
+    EF: ExtensionField<BF> + TwoAdicField,
+    Ch: RecursiveChallenger<BF, EF>,
+{
+    let checks = verify_whir_circuit_deferred(
+        circuit,
+        challenger,
+        params,
+        proof,
+        initial_commitment_cap,
+        initial_constraint,
+        initial_claimed_eval,
+    )?;
+    verify_deferred_whir_mmcs::<BF, EF>(circuit, checks)
+}
+
+/// Replay one argument and retain its Merkle checks for the full PCS transcript's end.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn verify_whir_circuit_deferred<'a, BF, EF, Ch>(
+    circuit: &mut CircuitBuilder<EF>,
+    challenger: &mut Ch,
+    params: &WhirVerifierParams<BF>,
+    proof: &'a WhirProofTargets,
+    initial_commitment_cap: &[Vec<Target>],
+    initial_constraint: ConstraintWeightData,
+    initial_claimed_eval: Target,
+) -> Result<Vec<WhirMmcsCheck<'a>>, CircuitBuilderError>
 where
     BF: PrimeField64 + TwoAdicField,
     EF: ExtensionField<BF> + TwoAdicField,

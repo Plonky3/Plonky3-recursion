@@ -4,6 +4,7 @@ use alloc::boxed::Box;
 use alloc::string::ToString;
 use alloc::vec::Vec;
 use alloc::{format, vec};
+use core::any::TypeId;
 
 use p3_baby_bear::BabyBear;
 use p3_circuit::ops::{PermConfig, Poseidon1Config};
@@ -22,7 +23,7 @@ use p3_circuit_prover::{
     RecomposePreprocessor, TableProver,
 };
 use p3_commit::{Pcs, UnivariateStarkPcs};
-use p3_field::extension::BinomiallyExtendable;
+use p3_field::extension::{BinomiallyExtendable, QuinticTrinomialExtensionField};
 use p3_field::{
     Algebra, BasedVectorSpace, ExtensionField, PrimeCharacteristicRing, PrimeField64, TwoAdicField,
 };
@@ -155,7 +156,8 @@ where
 
 /// WHIR-based recursion backend, holding the challenger permutation config.
 ///
-/// Custom Poseidon1 and Poseidon2 configurations are supported for extension degrees 2 and 4.
+/// Custom Poseidon1 and Poseidon2 configurations are supported for extension degrees 2 and 4,
+/// and for KoalaBear's quintic trinomial extension using base-field permutation tables.
 /// The permutation in an input proof's WHIR PCS parameters must match this backend's challenger
 /// permutation after table-role normalization, including its width and rate. An output PCS used
 /// to prove the resulting verifier circuit may independently use another permutation.
@@ -181,7 +183,8 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
         }
     }
 
-    /// Tag this backend for a fixed batch/extension degree `D` (`2` and `4` are supported).
+    /// Tag this backend for a fixed batch/extension degree `D` (`2`, `4`, and `5` are supported).
+    /// Degree 5 requires KoalaBear's quintic trinomial extension and a D=1 permutation config.
     pub const fn for_extension_degree<const D: usize>(
         self,
     ) -> WhirRecursionBackendForExt<D, WIDTH, RATE, C> {
@@ -488,7 +491,7 @@ fn normalized_permutation(config: PermConfig) -> PermConfig {
 
 fn check_input_permutation<
     F: PrimeField64,
-    EF: BasedVectorSpace<F>,
+    EF: BasedVectorSpace<F> + 'static,
     const D: usize,
     const WIDTH: usize,
     const RATE: usize,
@@ -542,6 +545,20 @@ fn check_input_permutation<
         return Err(VerificationError::InvalidProofShape(format!(
             "WHIR backend challenge degree expected {D}, got {actual_dim}"
         )));
+    }
+    let permutation_degree = match selected {
+        PermConfig::Poseidon1(config) => config.d(),
+        PermConfig::Poseidon2(config) => config.d(),
+    };
+    if D == 5
+        && (TypeId::of::<F>() != TypeId::of::<KoalaBear>()
+            || TypeId::of::<EF>() != TypeId::of::<QuinticTrinomialExtensionField<KoalaBear>>()
+            || permutation_degree != 1)
+    {
+        return Err(VerificationError::InvalidProofShape(
+            "quintic WHIR requires KoalaBear's trinomial extension and a base-field permutation"
+                .into(),
+        ));
     }
     Ok(())
 }
@@ -811,7 +828,8 @@ where
     ))
 }
 
-/// WHIR recursion backend tagged with batch/extension field degree `D` (`2` and `4` are supported).
+/// WHIR recursion backend tagged with batch/extension degree `D` (`2`, `4`, or `5`).
+/// Degree 5 is restricted to KoalaBear's quintic trinomial extension with D=1 permutations.
 #[derive(Clone)]
 pub struct WhirRecursionBackendForExt<
     const D: usize,
@@ -1125,9 +1143,16 @@ where
     }
 }
 
+// D5 table dispatch uses concrete KoalaBear/quintic trace representations. Keep that
+// requirement sealed rather than trusting a downstream field's modulus or marker methods.
+trait SupportedWhirFieldPair<const D: usize> {}
+impl<F, EF> SupportedWhirFieldPair<2> for (F, EF) {}
+impl<F, EF> SupportedWhirFieldPair<4> for (F, EF) {}
+impl SupportedWhirFieldPair<5> for (KoalaBear, QuinticTrinomialExtensionField<KoalaBear>) {}
+
 #[rustfmt::skip]
 macro_rules! impl_whir_backend_for_degree {
-    ($d:literal, $poseidon_prover:ident, $poseidon1_prover:ident) => {
+    ($d:literal, $poseidon_d:literal, $poseidon_prover:ident, $poseidon1_prover:ident) => {
 impl<SC, A, const WIDTH: usize, const RATE: usize, C> PcsRecursionBackend<SC, A, $d>
     for WhirRecursionBackendForExt<$d, WIDTH, RATE, C>
 where
@@ -1135,7 +1160,8 @@ where
     SC: WhirRecursionConfig + Send + Sync + 'static,
     A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
     C: ChallengerPermConfig + Copy + 'static,
-    Val<SC>: PrimeField64 + BinomiallyExtendable<$d> + StarkField + TwoAdicField,
+    Val<SC>: PrimeField64 + BinomiallyExtendable<$poseidon_d> + StarkField + TwoAdicField,
+    (Val<SC>, SC::Challenge): SupportedWhirFieldPair<$d>,
     SC::Challenge: BasedVectorSpace<Val<SC>>
         + From<Val<SC>>
         + ExtensionField<Val<SC>>
@@ -1492,7 +1518,8 @@ where
     SC: WhirRecursionConfig + Send + Sync + 'static,
     A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
     C: ChallengerPermConfig + Copy + 'static,
-    Val<SC>: PrimeField64 + BinomiallyExtendable<$d> + StarkField + TwoAdicField,
+    Val<SC>: PrimeField64 + BinomiallyExtendable<$poseidon_d> + StarkField + TwoAdicField,
+    (Val<SC>, SC::Challenge): SupportedWhirFieldPair<$d>,
     SC::Challenge: BasedVectorSpace<Val<SC>>
         + From<Val<SC>>
         + ExtensionField<Val<SC>>
@@ -1590,7 +1617,8 @@ where
     SC: WhirRecursionConfig + Send + Sync + 'static,
     A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
     C: ChallengerPermConfig + Copy + 'static,
-    Val<SC>: PrimeField64 + BinomiallyExtendable<$d> + StarkField + TwoAdicField,
+    Val<SC>: PrimeField64 + BinomiallyExtendable<$poseidon_d> + StarkField + TwoAdicField,
+    (Val<SC>, SC::Challenge): SupportedWhirFieldPair<$d>,
     SC::Challenge: BasedVectorSpace<Val<SC>>
         + From<Val<SC>>
         + ExtensionField<Val<SC>>
@@ -1797,8 +1825,10 @@ where
     };
 }
 
-impl_whir_backend_for_degree!(4, Poseidon2Prover, Poseidon1Prover);
-impl_whir_backend_for_degree!(2, Poseidon2ProverD2, Poseidon1ProverD2);
+impl_whir_backend_for_degree!(4, 4, Poseidon2Prover, Poseidon1Prover);
+impl_whir_backend_for_degree!(2, 2, Poseidon2ProverD2, Poseidon1ProverD2);
+// D5 uses base-field Poseidon tables; their prover dispatch shares the D4 field bound.
+impl_whir_backend_for_degree!(5, 4, Poseidon2Prover, Poseidon1Prover);
 
 #[cfg(test)]
 #[path = "whir/acceptance_counter_tests.rs"]
@@ -2047,6 +2077,56 @@ mod poseidon1_backend_tests {
             check_input_permutation::<BabyBear, BabyEF, 4, 16, 8, _>(&Unsupported, p1.into()),
             Err(VerificationError::InvalidProofShape(_))
         ));
+    }
+
+    #[test]
+    fn quintic_inputs_require_koala_bear_base_field_permutations() {
+        type QuinticEF = p3_field::extension::QuinticTrinomialExtensionField<KoalaBear>;
+
+        for config in [
+            PermConfig::from(Poseidon1Config::KOALA_BEAR_D1_W16),
+            PermConfig::from(Poseidon2Config::KOALA_BEAR_D1_W16),
+        ] {
+            match config {
+                PermConfig::Poseidon1(config) => {
+                    check_input_permutation::<KoalaBear, QuinticEF, 5, 16, 8, _>(
+                        &config,
+                        config.into(),
+                    )
+                    .unwrap()
+                }
+                PermConfig::Poseidon2(config) => {
+                    check_input_permutation::<KoalaBear, QuinticEF, 5, 16, 8, _>(
+                        &config,
+                        config.into(),
+                    )
+                    .unwrap()
+                }
+            }
+        }
+        for config in [
+            PermConfig::from(Poseidon1Config::KOALA_BEAR_D4_W16),
+            PermConfig::from(Poseidon2Config::KOALA_BEAR_D4_W16),
+        ] {
+            let result = match config {
+                PermConfig::Poseidon1(config) => {
+                    check_input_permutation::<KoalaBear, QuinticEF, 5, 16, 8, _>(
+                        &config,
+                        config.into(),
+                    )
+                }
+                PermConfig::Poseidon2(config) => {
+                    check_input_permutation::<KoalaBear, QuinticEF, 5, 16, 8, _>(
+                        &config,
+                        config.into(),
+                    )
+                }
+            };
+            assert!(
+                matches!(result, Err(VerificationError::InvalidProofShape(_))),
+                "quintic circuits must use base-field permutation tables"
+            );
+        }
     }
 
     #[test]

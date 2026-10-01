@@ -61,7 +61,7 @@ struct Args {
     #[arg(short, long, ignore_case = true, value_enum, default_value_t = FieldOption::KoalaBear)]
     pub field: FieldOption,
 
-    /// Use quintic (D = 5) challenge extension (FRI with KoalaBear only).
+    /// Use quintic (D = 5) challenge extension (KoalaBear only).
     #[arg(long, default_value_t = false)]
     pub quintic: bool,
 
@@ -212,12 +212,8 @@ fn main() {
 
     let args = Args::parse();
     let security_level = args.pcs_options.security_level(args.security_level);
-    args.pcs_options.assert_supported(
-        args.quintic,
-        args.zk,
-        args.arity4,
-        args.disable_recompose_npo,
-    );
+    args.pcs_options
+        .assert_supported(args.zk, args.arity4, args.disable_recompose_npo);
     let fri_params = args.to_fri_params();
     let table_packing = args.table_packing();
 
@@ -288,6 +284,7 @@ fn main() {
             args.disable_recompose_npo,
             args.profile,
             args.concurrent_pairs,
+            &args.pcs_options,
         ),
         (HashOption::Poseidon2, FieldOption::KoalaBear, false) => koala_bear::run(
             args.num_recursive_layers,
@@ -331,6 +328,7 @@ fn main() {
             args.disable_recompose_npo,
             args.profile,
             args.concurrent_pairs,
+            &args.pcs_options,
         ),
         (HashOption::Poseidon1, FieldOption::KoalaBear, false) => koala_bear_poseidon1::run(
             args.num_recursive_layers,
@@ -369,6 +367,7 @@ fn main() {
 }
 
 /// KoalaBear quintic extension (`D = 5`) variant of [`define_field_module`] for aggregation.
+#[rustfmt::skip]
 macro_rules! define_field_module_aggregation_quintic {
     (
         $mod_name:ident,
@@ -411,47 +410,62 @@ macro_rules! define_field_module_aggregation_quintic {
                 $params_trait
             );
 
-            fn prove_dummy_circuit(
-                constant_value: u32,
-                config: &ConfigWithFriParams,
-                table_packing: &TablePacking,
-            ) -> RecursionOutput<ConfigWithFriParams> {
-                let mut builder = CircuitBuilder::new();
-                let c = builder.alloc_const(F::from_u32(constant_value), "dummy_const");
-                let expected = builder.alloc_public_input("expected");
-                builder.connect(c, expected);
-                let circuit = builder.build().unwrap();
-                let (airs_degrees, primitive_columns, non_primitive_columns) =
-                    get_airs_and_degrees_with_prep::<ConfigWithFriParams, F, 1>(
-                        &circuit,
-                        &table_packing,
-                        &[],
-                        &[],
-                        ConstraintProfile::Standard,
-                    )
-                    .unwrap();
-                let (airs, degrees): (Vec<_>, Vec<_>) = airs_degrees.into_iter().unzip();
-                let mut runner = circuit.runner();
-                runner
-                    .set_public_inputs(&[F::from_u32(constant_value)])
-                    .unwrap();
-                let traces = runner.run().unwrap();
-                let ext_degrees: Vec<usize> =
-                    degrees.iter().map(|&d| d + config.is_zk()).collect();
-                let prover_data =
-                    ProverData::from_airs_and_degrees(config, &airs, &ext_degrees).unwrap();
-                let circuit_prover_data = CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
-                let prover =
-                    BatchStarkProver::new(config.clone()).with_table_packing(table_packing.clone());
-                let proof = prover
-                    .prove_all_tables(&traces, &circuit_prover_data)
-                    .expect("Failed to prove dummy circuit");
-                report_proof_size(&proof);
-                prover
-                    .verify_all_tables::<F>(&proof)
-                    .expect("Failed to verify dummy proof");
-                RecursionOutput(proof, Arc::new(circuit_prover_data))
+            define_whir_module_types!(
+                $default_perm,
+                $poseidon2_config,
+                $poseidon2_circuit_config,
+                $enable_fn,
+                || ::p3_test_utils::LiftPermToQuintic::<$field, $perm, $width>::new($default_perm()),
+                $gen_trace
+            );
+
+            macro_rules! define_base_prover {
+                ($name:ident, $cfg_type:ident, $base_field:ty, $base_d:expr) => {
+                    fn $name(
+                        constant_value: u32,
+                        config: &$cfg_type,
+                        table_packing: &TablePacking,
+                    ) -> RecursionOutput<$cfg_type> {
+                        let mut builder = CircuitBuilder::new();
+                        let c = builder.alloc_const(<$base_field>::from_u32(constant_value), "dummy_const");
+                        let expected = builder.alloc_public_input("expected");
+                        builder.connect(c, expected);
+                        let circuit = builder.build().unwrap();
+                        let (airs_degrees, primitive_columns, non_primitive_columns) =
+                            get_airs_and_degrees_with_prep::<$cfg_type, $base_field, $base_d>(
+                                &circuit,
+                                &table_packing,
+                                &[],
+                                &[],
+                                ConstraintProfile::Standard,
+                            )
+                            .unwrap();
+                        let (airs, degrees): (Vec<_>, Vec<_>) = airs_degrees.into_iter().unzip();
+                        let mut runner = circuit.runner();
+                        runner
+                            .set_public_inputs(&[<$base_field>::from_u32(constant_value)])
+                            .unwrap();
+                        let traces = runner.run().unwrap();
+                        let ext_degrees: Vec<usize> =
+                            degrees.iter().map(|&d| d + config.is_zk()).collect();
+                        let prover_data =
+                            ProverData::from_airs_and_degrees(config, &airs, &ext_degrees).unwrap();
+                        let circuit_prover_data = CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
+                        let prover =
+                            BatchStarkProver::new(config.clone()).with_table_packing(table_packing.clone());
+                        let proof = prover
+                            .prove_all_tables(&traces, &circuit_prover_data)
+                            .expect("Failed to prove dummy circuit");
+                        report_proof_size(&proof);
+                        prover
+                            .verify_all_tables::<$base_field>(&proof)
+                            .expect("Failed to verify dummy proof");
+                        RecursionOutput(proof, Arc::new(circuit_prover_data))
+                    }
+                };
             }
+            define_base_prover!(prove_dummy_circuit, ConfigWithFriParams, F, 1);
+            define_base_prover!(prove_dummy_circuit_whir, ConfigWithWhirParams, Challenge, D);
 
             #[allow(clippy::too_many_arguments)]
             pub fn run(
@@ -463,6 +477,7 @@ macro_rules! define_field_module_aggregation_quintic {
                 disable_recompose_npo: bool,
                 profile: bool,
                 concurrent_pairs: bool,
+                pcs_options: &PcsOptions,
             ) {
                 if zk {
                     tracing::warn!(
@@ -472,118 +487,194 @@ macro_rules! define_field_module_aggregation_quintic {
                 }
 
                 let base_table_packing = TablePacking::new(1, 1)
-                    .with_fri_params(fri_params.log_final_poly_len, fri_params.log_blowup);
-                let backend = FriRecursionBackend::<$backend_width, $backend_rate, _>::new_d5(
-                    $poseidon2_config,
-                );
+                    .with_pcs_params(pcs_options, fri_params, security_level);
 
                 let tree_depth = num_recursive_layers;
                 let num_leaves = 1usize << tree_depth;
                 info!("Binary aggregation tree: {num_leaves} base proofs, {tree_depth} levels");
 
                 macro_rules! run_aggregation {
-                    ($cfg_type:ident, $config_base:expr, $config_agg:expr, $prove_base_fn:ident) => {{
-                        let config_base: $cfg_type = $config_base;
-                        let mut proofs: Vec<RecursionOutput<$cfg_type>> = (0..num_leaves)
-                            .map(|i| {
-                                let val = (i + 1) as u32;
-                                info!("Base proof {i} (const = {val})");
-                                $prove_base_fn(val, &config_base, &base_table_packing)
-                            })
-                            .collect();
+                    ($cfg_type:ident, $config_base:expr, $config_agg:expr, $prove_base_fn:ident, $backend:expr) => {{
+                        let run = || {
+                            let backend = $backend;
+                            let config_base: $cfg_type = $config_base;
+                            let mut proofs: Vec<RecursionOutput<$cfg_type>> = (0..num_leaves)
+                                .map(|i| {
+                                    let val = (i + 1) as u32;
+                                    info!("Base proof {i} (const = {val})");
+                                    $prove_base_fn(val, &config_base, &base_table_packing)
+                                })
+                                .collect();
 
-                        // `--profile` path: a `RecursionLayerProfile` fixed point is searched for
-                        // starting from level 1's proofs, re-solving (from the first pair) against
-                        // each new level's own output until the profile stops changing (mirroring
-                        // `solve_fixed_point`'s own documented cross-layer contract, applied at
-                        // level granularity since every pair within a level shares the same
-                        // circuit shape). Every level builds its own owner from the first pair and
-                        // reuses it for compatible remaining pairs after checking both inputs.
-                        // The profile is solved again from the first pair at each level because
-                        // the output shape may legitimately evolve between levels.
-                        let mut agg_profile_config: Option<$cfg_type> = None;
-                        let mut agg_current_profile: Option<RecursionLayerProfile> = None;
-                        let mut level = 0u32;
-                        while proofs.len() > 1 {
-                            level += 1;
-                            let pairs = proofs.len() / 2;
-                            info!(
-                                "Aggregation level {level}: {} proofs -> {pairs}",
-                                proofs.len()
-                            );
+                            // `--profile` path: a `RecursionLayerProfile` fixed point is searched for
+                            // starting from level 1's proofs, re-solving (from the first pair) against
+                            // each new level's own output until the profile stops changing (mirroring
+                            // `solve_fixed_point`'s own documented cross-layer contract, applied at
+                            // level granularity since every pair within a level shares the same
+                            // circuit shape). Every level builds its own owner from the first pair and
+                            // reuses it for compatible remaining pairs after checking both inputs.
+                            // The profile is solved again from the first pair at each level because
+                            // the output shape may legitimately evolve between levels.
+                            let mut agg_profile_config: Option<$cfg_type> = None;
+                            let mut agg_current_profile: Option<RecursionLayerProfile> = None;
+                            let mut level = 0u32;
+                            while proofs.len() > 1 {
+                                level += 1;
+                                let pairs = proofs.len() / 2;
+                                info!(
+                                    "Aggregation level {level}: {} proofs -> {pairs}",
+                                    proofs.len()
+                                );
 
-                            if profile && level >= 2 {
-                                let config = agg_profile_config.get_or_insert_with(|| $config_agg(0));
+                                if profile && level >= 2 {
+                                    let config = agg_profile_config.get_or_insert_with(|| $config_agg(0));
 
-                                let mut next_level = Vec::with_capacity(pairs);
-                                let mut level_prof: Option<RecursionLayerProfile> = None;
-                                let mut level_owner: Option<PreparedAggregation<'static, 'static, $cfg_type, BatchOnly, BatchOnly, _, D>> = None;
-                                for pair_idx in 0..pairs {
-                                    let li = pair_idx * 2;
-                                    let left_output = &proofs[li];
-                                    let right_output = &proofs[li + 1];
-                                    let left_table = batch_table_public_inputs(left_output);
-                                    let right_table = batch_table_public_inputs(right_output);
-                                    let left_input = batch_prepared_input(left_output, &left_table);
-                                    let right_input = batch_prepared_input(right_output, &right_table);
-                                    if level_prof.is_none() {
-                                        let left = left_output.into_recursion_input::<BatchOnly>();
-                                        let right = right_output.into_recursion_input::<BatchOnly>();
-                                        let (circuit, _) = build_aggregation_layer_circuit::<$cfg_type, _, _, _, D>(
-                                            &left, &right, config, &backend,
-                                        )
-                                        .unwrap_or_else(|e| panic!("Failed to build circuit at level {level}: {e:?}"));
-                                        let seed = agg_current_profile.clone().unwrap_or_else(|| RecursionLayerProfile {
-                                            table_packing: table_packing.clone().with_fri_params(
-                                                fri_params.log_final_poly_len, fri_params.log_blowup,
-                                            ),
-                                            hash: HashProfile::default(),
-                                            transcript: TranscriptKind::BaseDuplex,
-                                            constraint_profile: ConstraintProfile::Standard,
-                                        });
-                                        let resolved = solve_fixed_point_for_circuit::<$cfg_type, BatchOnly, _, D>(
-                                            seed, &circuit, &backend, 8,
-                                        );
-                                        agg_current_profile = Some(resolved.clone());
-                                        level_prof = Some(resolved);
-                                    }
-                                    let prof = level_prof.as_ref().unwrap();
-                                    let out = if let Some(owner) = level_owner.as_ref() {
-                                        match owner.check_inputs(&left_input, &right_input) {
-                                            Ok(()) => owner.prove(left_input, right_input),
-                                            Err(error) if is_prepared_input_mismatch(&error) => {
-                                                let left_source = PreparedSource::batch(
-                                                    &left_output.0, &left_output.0.stark_common, &left_table,
-                                                );
-                                                let right_source = PreparedSource::batch(
-                                                    &right_output.0, &right_output.0.stark_common, &right_table,
-                                                );
-                                                let owner = PreparedAggregation::new_with_profile(
-                                                    left_source, right_source, config.clone(), backend.clone(), prof.clone(),
+                                    let mut next_level = Vec::with_capacity(pairs);
+                                    let mut level_prof: Option<RecursionLayerProfile> = None;
+                                    let mut level_owner: Option<
+                                        PreparedAggregation<
+                                            'static,
+                                            'static,
+                                            $cfg_type,
+                                            BatchOnly,
+                                            BatchOnly,
+                                            _,
+                                            D,
+                                        >,
+                                    > = None;
+                                    for pair_idx in 0..pairs {
+                                        let li = pair_idx * 2;
+                                        let left_output = &proofs[li];
+                                        let right_output = &proofs[li + 1];
+                                        let left_table = batch_table_public_inputs(left_output);
+                                        let right_table = batch_table_public_inputs(right_output);
+                                        let left_input = batch_prepared_input(left_output, &left_table);
+                                        let right_input = batch_prepared_input(right_output, &right_table);
+                                        if level_prof.is_none() {
+                                            let left = left_output.into_recursion_input::<BatchOnly>();
+                                            let right = right_output.into_recursion_input::<BatchOnly>();
+                                            let (circuit, _) =
+                                                build_aggregation_layer_circuit::<$cfg_type, _, _, _, D>(
+                                                    &left, &right, config, &backend,
                                                 )
-                                                .unwrap_or_else(|e| panic!("Failed to reprepare level {level}, pair {pair_idx}: {e:?}"));
-                                                let out = owner.prove(left_input, right_input);
-                                                level_owner = Some(owner);
-                                                out
-                                            }
-                                            Err(e) => panic!("Failed to validate level {level}, pair {pair_idx}: {e:?}"),
+                                                .unwrap_or_else(|e| {
+                                                    panic!("Failed to build circuit at level {level}: {e:?}")
+                                                });
+                                            let seed =
+                                                agg_current_profile
+                                                    .clone()
+                                                    .unwrap_or_else(|| RecursionLayerProfile {
+                                                        table_packing: table_packing.clone().with_pcs_params(
+                                                            pcs_options,
+                                                            fri_params,
+                                                            security_level,
+                                                        ),
+                                                        hash: HashProfile::default(),
+                                                        transcript: TranscriptKind::BaseDuplex,
+                                                        constraint_profile: ConstraintProfile::Standard,
+                                                    });
+                                            let resolved =
+                                                solve_fixed_point_for_circuit::<$cfg_type, BatchOnly, _, D>(
+                                                    seed, &circuit, &backend, 8,
+                                                );
+                                            agg_current_profile = Some(resolved.clone());
+                                            level_prof = Some(resolved);
                                         }
-                                    } else {
-                                        let owner = PreparedAggregation::new_with_profile(
-                                            PreparedSource::batch(&left_output.0, &left_output.0.stark_common, &left_table),
-                                            PreparedSource::batch(&right_output.0, &right_output.0.stark_common, &right_table),
-                                            config.clone(), backend.clone(), prof.clone(),
-                                        )
-                                        .unwrap_or_else(|e| panic!("Failed to prepare level {level}, pair {pair_idx}: {e:?}"));
-                                        let out = owner.prove(left_input, right_input);
-                                        level_owner = Some(owner);
-                                        out
-                                    }
-                                    .unwrap_or_else(|e| panic!("Failed at level {level}, pair {pair_idx}: {e:?}"));
+                                        let prof = level_prof.as_ref().unwrap();
+                                        let out = if let Some(owner) = level_owner.as_ref() {
+                                            match owner.check_inputs(&left_input, &right_input) {
+                                                Ok(()) => owner.prove(left_input, right_input),
+                                                Err(error) if is_prepared_input_mismatch(&error) => {
+                                                    let left_source = PreparedSource::batch(
+                                                        &left_output.0,
+                                                        &left_output.0.stark_common,
+                                                        &left_table,
+                                                    );
+                                                    let right_source = PreparedSource::batch(
+                                                        &right_output.0,
+                                                        &right_output.0.stark_common,
+                                                        &right_table,
+                                                    );
+                                                    let owner = PreparedAggregation::new_with_profile(
+                                                        left_source,
+                                                        right_source,
+                                                        config.clone(),
+                                                        backend.clone(),
+                                                        prof.clone(),
+                                                    )
+                                                    .unwrap_or_else(|e| {
+                                                        panic!(
+                                                            "Failed to reprepare level {level}, pair {pair_idx}: {e:?}"
+                                                        )
+                                                    });
+                                                    let out = owner.prove(left_input, right_input);
+                                                    level_owner = Some(owner);
+                                                    out
+                                                }
+                                                Err(e) => {
+                                                    panic!("Failed to validate level {level}, pair {pair_idx}: {e:?}")
+                                                }
+                                            }
+                                        } else {
+                                            let owner = PreparedAggregation::new_with_profile(
+                                                PreparedSource::batch(
+                                                    &left_output.0,
+                                                    &left_output.0.stark_common,
+                                                    &left_table,
+                                                ),
+                                                PreparedSource::batch(
+                                                    &right_output.0,
+                                                    &right_output.0.stark_common,
+                                                    &right_table,
+                                                ),
+                                                config.clone(),
+                                                backend.clone(),
+                                                prof.clone(),
+                                            )
+                                            .unwrap_or_else(|e| {
+                                                panic!("Failed to prepare level {level}, pair {pair_idx}: {e:?}")
+                                            });
+                                            let out = owner.prove(left_input, right_input);
+                                            level_owner = Some(owner);
+                                            out
+                                        }
+                                        .unwrap_or_else(|e| panic!("Failed at level {level}, pair {pair_idx}: {e:?}"));
 
+                                        report_proof_size(&out.0);
+                                        let mut verifier = BatchStarkProver::new(config.clone())
+                                            .with_table_packing(prof.table_packing.clone());
+                                        for table_config in $poseidon2_config.output_table_configs() {
+                                            verifier.$register_fn::<D>(table_config);
+                                        }
+                                        if !disable_recompose_npo {
+                                            verifier.register_recompose_table::<D>(true);
+                                        }
+                                        verifier
+                                            .verify_all_tables::<Challenge>(&out.0)
+                                            .unwrap_or_else(|e| {
+                                                panic!("Verification failed at level {level}, pair {pair_idx}: {e:?}")
+                                            });
+                                        next_level.push(out);
+                                    }
+                                    proofs = next_level;
+                                    continue;
+                                }
+
+                                let agg_params = ProveNextLayerParams {
+                                    table_packing: if level == 1 {
+                                        TablePacking::new(2, 2)
+                                    } else {
+                                        table_packing.clone()
+                                    }
+                                    .with_pcs_params(pcs_options, fri_params, security_level),
+                                    constraint_profile: ConstraintProfile::Standard,
+                                };
+                                let agg_config: $cfg_type = $config_agg(level as u64);
+
+                                let verify_output = |pair_idx: usize, out: &RecursionOutput<$cfg_type>| {
                                     report_proof_size(&out.0);
-                                    let mut verifier = BatchStarkProver::new(config.clone())
-                                        .with_table_packing(prof.table_packing.clone());
+                                    let mut verifier = BatchStarkProver::new(agg_config.clone())
+                                        .with_table_packing(agg_params.table_packing.clone());
                                     for table_config in $poseidon2_config.output_table_configs() {
                                         verifier.$register_fn::<D>(table_config);
                                     }
@@ -595,148 +686,181 @@ macro_rules! define_field_module_aggregation_quintic {
                                         .unwrap_or_else(|e| {
                                             panic!("Verification failed at level {level}, pair {pair_idx}: {e:?}")
                                         });
-                                    next_level.push(out);
-                                }
-                                proofs = next_level;
-                                continue;
-                            }
-
-                            let agg_params = ProveNextLayerParams {
-                                table_packing: if level == 1 {
-                                    TablePacking::new(2, 2)
-                                } else {
-                                    table_packing.clone()
-                                }
-                                .with_fri_params(
-                                    fri_params.log_final_poly_len,
-                                    fri_params.log_blowup,
-                                ),
-                                constraint_profile: ConstraintProfile::Standard,
-                            };
-                            let agg_config: $cfg_type = $config_agg(level as u64);
-
-                            let verify_output = |pair_idx: usize, out: &RecursionOutput<$cfg_type>| {
-                                report_proof_size(&out.0);
-                                let mut verifier = BatchStarkProver::new(agg_config.clone())
-                                    .with_table_packing(agg_params.table_packing.clone());
-                                for table_config in $poseidon2_config.output_table_configs() {
-                                    verifier.$register_fn::<D>(table_config);
-                                }
-                                if !disable_recompose_npo {
-                                    verifier.register_recompose_table::<D>(true);
-                                }
-                                verifier
-                                    .verify_all_tables::<Challenge>(&out.0)
-                                    .unwrap_or_else(|e| {
-                                        panic!("Verification failed at level {level}, pair {pair_idx}: {e:?}")
-                                    });
-                            };
-
-                            if concurrent_pairs && pairs > 1 {
-                                let prepare_pair = |pair_idx: usize| {
-                                    let left_output = &proofs[pair_idx * 2];
-                                    let right_output = &proofs[pair_idx * 2 + 1];
-                                    let left_table = batch_table_public_inputs(left_output);
-                                    let right_table = batch_table_public_inputs(right_output);
-                                    PreparedAggregation::new(
-                                        PreparedSource::batch(&left_output.0, &left_output.0.stark_common, &left_table),
-                                        PreparedSource::batch(&right_output.0, &right_output.0.stark_common, &right_table),
-                                        agg_config.clone(), backend.clone(), agg_params.clone(),
-                                    )
-                                    .unwrap_or_else(|e| panic!("Failed to prepare level {level}, pair {pair_idx}: {e:?}"))
                                 };
-                                let prove_pair = |pair_idx: usize, owner: &PreparedAggregation<'static, 'static, $cfg_type, BatchOnly, BatchOnly, _, D>| {
-                                    let left_output = &proofs[pair_idx * 2];
-                                    let right_output = &proofs[pair_idx * 2 + 1];
+
+                                if concurrent_pairs && pairs > 1 {
+                                    let prepare_pair = |pair_idx: usize| {
+                                        let left_output = &proofs[pair_idx * 2];
+                                        let right_output = &proofs[pair_idx * 2 + 1];
+                                        let left_table = batch_table_public_inputs(left_output);
+                                        let right_table = batch_table_public_inputs(right_output);
+                                        PreparedAggregation::new(
+                                            PreparedSource::batch(
+                                                &left_output.0,
+                                                &left_output.0.stark_common,
+                                                &left_table,
+                                            ),
+                                            PreparedSource::batch(
+                                                &right_output.0,
+                                                &right_output.0.stark_common,
+                                                &right_table,
+                                            ),
+                                            agg_config.clone(),
+                                            backend.clone(),
+                                            agg_params.clone(),
+                                        )
+                                        .unwrap_or_else(|e| {
+                                            panic!("Failed to prepare level {level}, pair {pair_idx}: {e:?}")
+                                        })
+                                    };
+                                    let prove_pair = |pair_idx: usize,
+                                                      owner: &PreparedAggregation<
+                                        'static,
+                                        'static,
+                                        $cfg_type,
+                                        BatchOnly,
+                                        BatchOnly,
+                                        _,
+                                        D,
+                                    >| {
+                                        let left_output = &proofs[pair_idx * 2];
+                                        let right_output = &proofs[pair_idx * 2 + 1];
+                                        let left_table = batch_table_public_inputs(left_output);
+                                        let right_table = batch_table_public_inputs(right_output);
+                                        let left_input = batch_prepared_input(left_output, &left_table);
+                                        let right_input = batch_prepared_input(right_output, &right_table);
+                                        match owner.check_inputs(&left_input, &right_input) {
+                                            Ok(()) => owner.prove(left_input, right_input),
+                                            Err(error) if is_prepared_input_mismatch(&error) => {
+                                                prepare_pair(pair_idx).prove(left_input, right_input)
+                                            }
+                                            Err(e) => {
+                                                panic!("Failed to validate level {level}, pair {pair_idx}: {e:?}")
+                                            }
+                                        }
+                                        .unwrap_or_else(|e| panic!("Failed at level {level}, pair {pair_idx}: {e:?}"))
+                                    };
+                                    // Every pair of a level shares one prepared circuit. The first pair
+                                    // prepares it and proves alone, which also fills the shared DFT
+                                    // twiddle caches: `Radix2DitParallel` computes a missing entry under a
+                                    // spin lock while running parallel work, and a concurrent proof stealing
+                                    // that work would spin on the same lock forever.
+                                    let level_owner = prepare_pair(0);
+                                    let mut next_level = vec![prove_pair(0, &level_owner)];
+                                    let rest: Vec<_> = (1..pairs)
+                                        .into_par_iter()
+                                        .map(|pair_idx| prove_pair(pair_idx, &level_owner))
+                                        .collect();
+                                    next_level.extend(rest);
+                                    for (pair_idx, out) in next_level.iter().enumerate() {
+                                        verify_output(pair_idx, out);
+                                    }
+                                    proofs = next_level;
+                                    continue;
+                                }
+
+                                let mut next_level = Vec::with_capacity(pairs);
+                                let mut level_owner: Option<
+                                    PreparedAggregation<
+                                        'static,
+                                        'static,
+                                        $cfg_type,
+                                        BatchOnly,
+                                        BatchOnly,
+                                        _,
+                                        D,
+                                    >,
+                                > = None;
+                                for pair_idx in 0..pairs {
+                                    let li = pair_idx * 2;
+                                    let left_output = &proofs[li];
+                                    let right_output = &proofs[li + 1];
                                     let left_table = batch_table_public_inputs(left_output);
                                     let right_table = batch_table_public_inputs(right_output);
                                     let left_input = batch_prepared_input(left_output, &left_table);
                                     let right_input = batch_prepared_input(right_output, &right_table);
-                                    match owner.check_inputs(&left_input, &right_input) {
-                                        Ok(()) => owner.prove(left_input, right_input),
-                                        Err(error) if is_prepared_input_mismatch(&error) => {
-                                            prepare_pair(pair_idx).prove(left_input, right_input)
+                                    let out = if let Some(owner) = level_owner.as_ref() {
+                                        match owner.check_inputs(&left_input, &right_input) {
+                                            Ok(()) => owner.prove(left_input, right_input),
+                                            Err(error) if is_prepared_input_mismatch(&error) => {
+                                                let owner = PreparedAggregation::new(
+                                                    PreparedSource::batch(
+                                                        &left_output.0,
+                                                        &left_output.0.stark_common,
+                                                        &left_table,
+                                                    ),
+                                                    PreparedSource::batch(
+                                                        &right_output.0,
+                                                        &right_output.0.stark_common,
+                                                        &right_table,
+                                                    ),
+                                                    agg_config.clone(),
+                                                    backend.clone(),
+                                                    agg_params.clone(),
+                                                )
+                                                .unwrap_or_else(|e| {
+                                                    panic!("Failed to reprepare level {level}, pair {pair_idx}: {e:?}")
+                                                });
+                                                let out = owner.prove(left_input, right_input);
+                                                level_owner = Some(owner);
+                                                out
+                                            }
+                                            Err(e) => {
+                                                panic!("Failed to validate level {level}, pair {pair_idx}: {e:?}")
+                                            }
                                         }
-                                        Err(e) => panic!("Failed to validate level {level}, pair {pair_idx}: {e:?}"),
+                                    } else {
+                                        let owner = PreparedAggregation::new(
+                                            PreparedSource::batch(
+                                                &left_output.0,
+                                                &left_output.0.stark_common,
+                                                &left_table,
+                                            ),
+                                            PreparedSource::batch(
+                                                &right_output.0,
+                                                &right_output.0.stark_common,
+                                                &right_table,
+                                            ),
+                                            agg_config.clone(),
+                                            backend.clone(),
+                                            agg_params.clone(),
+                                        )
+                                        .unwrap_or_else(|e| {
+                                            panic!("Failed to prepare level {level}, pair {pair_idx}: {e:?}")
+                                        });
+                                        let out = owner.prove(left_input, right_input);
+                                        level_owner = Some(owner);
+                                        out
                                     }
-                                    .unwrap_or_else(|e| panic!("Failed at level {level}, pair {pair_idx}: {e:?}"))
-                                };
-                                // Every pair of a level shares one prepared circuit. The first pair
-                                // prepares it and proves alone, which also fills the shared DFT
-                                // twiddle caches: `Radix2DitParallel` computes a missing entry under a
-                                // spin lock while running parallel work, and a concurrent proof stealing
-                                // that work would spin on the same lock forever.
-                                let level_owner = prepare_pair(0);
-                                let mut next_level = vec![prove_pair(0, &level_owner)];
-                                let rest: Vec<_> = (1..pairs)
-                                    .into_par_iter()
-                                    .map(|pair_idx| prove_pair(pair_idx, &level_owner))
-                                    .collect();
-                                next_level.extend(rest);
-                                for (pair_idx, out) in next_level.iter().enumerate() {
-                                    verify_output(pair_idx, out);
+                                    .unwrap_or_else(|e| panic!("Failed at level {level}, pair {pair_idx}: {e:?}"));
+
+                                    verify_output(pair_idx, &out);
+                                    next_level.push(out);
                                 }
                                 proofs = next_level;
-                                continue;
                             }
-
-                            let mut next_level = Vec::with_capacity(pairs);
-                            let mut level_owner: Option<PreparedAggregation<'static, 'static, $cfg_type, BatchOnly, BatchOnly, _, D>> = None;
-                            for pair_idx in 0..pairs {
-                                let li = pair_idx * 2;
-                                let left_output = &proofs[li];
-                                let right_output = &proofs[li + 1];
-                                let left_table = batch_table_public_inputs(left_output);
-                                let right_table = batch_table_public_inputs(right_output);
-                                let left_input = batch_prepared_input(left_output, &left_table);
-                                let right_input = batch_prepared_input(right_output, &right_table);
-                                let out = if let Some(owner) = level_owner.as_ref() {
-                                    match owner.check_inputs(&left_input, &right_input) {
-                                        Ok(()) => owner.prove(left_input, right_input),
-                                        Err(error) if is_prepared_input_mismatch(&error) => {
-                                            let owner = PreparedAggregation::new(
-                                                PreparedSource::batch(&left_output.0, &left_output.0.stark_common, &left_table),
-                                                PreparedSource::batch(&right_output.0, &right_output.0.stark_common, &right_table),
-                                                agg_config.clone(), backend.clone(), agg_params.clone(),
-                                            )
-                                            .unwrap_or_else(|e| panic!("Failed to reprepare level {level}, pair {pair_idx}: {e:?}"));
-                                            let out = owner.prove(left_input, right_input);
-                                            level_owner = Some(owner);
-                                            out
-                                        }
-                                        Err(e) => panic!("Failed to validate level {level}, pair {pair_idx}: {e:?}"),
-                                    }
-                                } else {
-                                    let owner = PreparedAggregation::new(
-                                        PreparedSource::batch(&left_output.0, &left_output.0.stark_common, &left_table),
-                                        PreparedSource::batch(&right_output.0, &right_output.0.stark_common, &right_table),
-                                        agg_config.clone(), backend.clone(), agg_params.clone(),
-                                    )
-                                    .unwrap_or_else(|e| panic!("Failed to prepare level {level}, pair {pair_idx}: {e:?}"));
-                                    let out = owner.prove(left_input, right_input);
-                                    level_owner = Some(owner);
-                                    out
-                                }
-                                .unwrap_or_else(|e| panic!("Failed at level {level}, pair {pair_idx}: {e:?}"));
-
-                                verify_output(pair_idx, &out);
-                                next_level.push(out);
-                            }
-                            proofs = next_level;
-                        }
+                        };
+                        run();
                     }};
                 }
 
-                run_aggregation!(
-                    ConfigWithFriParams,
-                    config_with_fri_params(fri_params, security_level, true),
-                    |_lvl| config_with_fri_params(
-                        fri_params,
-                        security_level,
-                        disable_recompose_npo,
-                    ),
-                    prove_dummy_circuit
-                );
+                if pcs_options.pcs == PcsOption::Whir {
+                    run_aggregation!(
+                        ConfigWithWhirParams,
+                        config_with_whir_params(fri_params, security_level, true, pcs_options.whir_folding_factor),
+                        |_lvl| config_with_whir_params(fri_params, security_level, disable_recompose_npo, pcs_options.whir_folding_factor),
+                        prove_dummy_circuit_whir,
+                        WhirRecursionBackend::<$backend_width, $backend_rate, _>::new($poseidon2_config).for_extension_degree::<D>()
+                    );
+                } else {
+                    run_aggregation!(
+                        ConfigWithFriParams,
+                        config_with_fri_params(fri_params, security_level, true),
+                        |_lvl| config_with_fri_params(fri_params, security_level, disable_recompose_npo),
+                        prove_dummy_circuit,
+                        FriRecursionBackend::<$backend_width, $backend_rate, _>::new_d5($poseidon2_config)
+                    );
+                }
 
                 info!("All levels verified successfully");
             }

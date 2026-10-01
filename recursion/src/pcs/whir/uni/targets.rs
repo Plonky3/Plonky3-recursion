@@ -131,19 +131,8 @@ where
         #[cfg(test)]
         crate::pcs::whir::uni::acceptance_probe::target_new();
         let dimension = <EF as BasedVectorSpace<F>>::DIMENSION;
-        // `verify_whir_circuit`'s round-cap absorption (`observe_ext_slice`)
-        // unpacks each cap-entry target into `dimension` base coefficients and
-        // observes each — correct only when a cap entry holds full digests
-        // packed into extension elements (`dimension == 1`, where
-        // `observe_ext` degenerates to `observe`, or `dimension` evenly
-        // dividing `DIGEST_ELEMS`). Outside that, `packed_digest_len` falls
-        // back to one lifted base element per target, and `observe_ext_slice`
-        // would absorb `dimension - 1` spurious zeros per digest element.
-        debug_assert!(
-            dimension == 1 || DIGEST_ELEMS.is_multiple_of(dimension),
-            "WHIR cap absorption assumes packed digests: EF::DIMENSION ({dimension}) must be \
-             1 or evenly divide DIGEST_ELEMS ({DIGEST_ELEMS})"
-        );
+        // Non-dividing extensions keep one lifted base element per digest target.
+        // The verifier observes those directly instead of unpacking extension coefficients.
         let cap_entry_len = packed_digest_len(DIGEST_ELEMS, dimension);
         let rounds = input
             .rounds

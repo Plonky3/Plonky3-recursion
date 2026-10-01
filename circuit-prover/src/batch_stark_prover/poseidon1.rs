@@ -1826,6 +1826,37 @@ where
     }
 }
 
+impl<SC> NpoAirBuilder<SC, 5> for Poseidon1AirBuilderForConfig<5>
+where
+    SC: StarkGenericConfig + 'static + Send + Sync,
+    Val<SC>: StarkField,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+{
+    fn trusted_rows_are_padded_height(&self) -> bool {
+        true
+    }
+
+    fn try_build(
+        &self,
+        op_type: &NpoTypeId,
+        prep_base: &[Val<SC>],
+        min_height: usize,
+        lanes: usize,
+        constraint_profile: ConstraintProfile,
+    ) -> Option<(CircuitTableAir<SC, 5>, usize)> {
+        self.matches_op_type(op_type).then_some(())?;
+        <Poseidon1AirBuilder<5> as NpoAirBuilder<SC, 5>>::try_build(
+            &Poseidon1AirBuilder::<5>,
+            op_type,
+            prep_base,
+            min_height,
+            lanes,
+            constraint_profile,
+        )
+    }
+}
+
 /// Returns a type-erased Poseidon1 preprocessor for use when `Val<SC>` is BabyBear, Goldilocks, or KoalaBear.
 pub fn poseidon1_preprocessor<F>() -> Box<dyn NpoPreprocessor<F>>
 where
