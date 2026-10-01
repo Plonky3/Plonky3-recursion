@@ -49,9 +49,9 @@ use crate::traits::RecursiveChallenger;
 /// the native `DuplexChallenger<F, P, WIDTH, RATE>` behavior.
 ///
 /// # Type Parameters
-/// - `WIDTH`: Sponge state width (16 for Poseidon2)
+/// - `WIDTH`: Sponge state width from the selected permutation configuration.
 /// - `RATE`: Sponge rate (8 for typical configuration)
-/// - `C`: Challenger permutation config (e.g. [`Poseidon2Config`])
+/// - `C`: Challenger permutation config ([`Poseidon1Config`] or [`Poseidon2Config`])
 pub struct CircuitChallenger<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig> {
     /// Permutation config for the challenger (e.g. Poseidon2).
     config: C,
