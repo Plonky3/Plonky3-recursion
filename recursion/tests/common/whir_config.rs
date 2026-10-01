@@ -101,9 +101,13 @@ pub struct BbWhirConfig {
 /// one round-count bucket (e.g. a small base proof's opening and a larger verifier circuit's own
 /// trace).
 pub fn bb_whir_config(round_log_inv_rates: Vec<usize>) -> BbWhirConfig {
+    bb_whir_config_with_protocol_params(bb_whir_protocol_params(round_log_inv_rates))
+}
+
+/// Builds a BabyBear WHIR configuration with the supplied native protocol strategy.
+pub fn bb_whir_config_with_protocol_params(protocol_params: ProtocolParameters) -> BbWhirConfig {
     let perm = bb_whir_perm();
     let challenger = BbChallenger::new(perm);
-    let protocol_params = bb_whir_protocol_params(round_log_inv_rates);
     let pcs = WhirUniPcs::new(
         protocol_params.clone(),
         BbDft::default(),
