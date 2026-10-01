@@ -113,6 +113,11 @@ commit or draw randomness and do not replace the retained proving config.
 
 Both WHIR aliases use Poseidon2, D4, and binary Merkle commitments. The
 built-in `WhirConfigV1` descriptor still specifies one constant folding factor.
+Custom WHIR recursion backends support Poseidon1 or Poseidon2 at D2 or D4.
+The input PCS permutation must match the backend challenger after table-role
+normalization, including width and rate; the output PCS can be configured
+independently. Statement-bound parents chain through their retained trusted
+verifier.
 For a custom `WhirUniPcs` and `WhirUniVerifierParams`, the recursive verifier
 supports native `FoldingFactor::Constant`, `ConstantFromSecondRound`, and
 `PerRound` with positive factors, canonical Prefix or Suffix variable order,

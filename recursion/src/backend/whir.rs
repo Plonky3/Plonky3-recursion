@@ -5,17 +5,20 @@ use alloc::string::ToString;
 use alloc::vec::Vec;
 use alloc::{format, vec};
 
+use p3_circuit::ops::{PermConfig, Poseidon1Config};
 use p3_circuit::{CircuitBuilder, CircuitRunner, NonPrimitiveOpId};
 use p3_circuit_prover::batch_stark_prover::{
     BatchStarkProof, CircuitVerifier, RecomposeAirBuilder, RecomposeProver,
-    lookups_for_circuit_table_air, poseidon2_air_builders_for_configs, recompose_preprocessor,
+    lookups_for_circuit_table_air, poseidon1_air_builders_for_configs,
+    poseidon2_air_builders_for_configs, recompose_preprocessor,
 };
 use p3_circuit_prover::common::{NpoAirBuilder, NpoPreprocessor};
 use p3_circuit_prover::config::StarkField;
 use p3_circuit_prover::field_params::ExtractBinomialW;
 use p3_circuit_prover::{
-    ConstraintProfile, Poseidon2Preprocessor, Poseidon2Prover, Poseidon2ProverD2,
-    Poseidon2SharedPreprocessor, RecomposePreprocessor, TableProver,
+    ConstraintProfile, Poseidon1Preprocessor, Poseidon1Prover, Poseidon1ProverD2,
+    Poseidon2Preprocessor, Poseidon2Prover, Poseidon2ProverD2, Poseidon2SharedPreprocessor,
+    RecomposePreprocessor, TableProver,
 };
 use p3_commit::{Pcs, UnivariateStarkPcs};
 use p3_field::extension::BinomiallyExtendable;
@@ -149,11 +152,10 @@ where
 
 /// WHIR-based recursion backend, holding the challenger permutation config.
 ///
-/// `C` is bounded by [`ChallengerPermConfig`], which
-/// [`crate::ops::Poseidon1Config`] also satisfies, but this backend only supports Poseidon2:
-/// its non-primitive provers and AIR builders are Poseidon2 tables, so a non-Poseidon2 `C`
-/// panics in [`PcsRecursionBackend::non_primitive_provers`] and
-/// [`PcsRecursionBackend::non_primitive_air_builders`].
+/// Custom Poseidon1 and Poseidon2 configurations are supported for extension degrees 2 and 4.
+/// The permutation in an input proof's WHIR PCS parameters must match this backend's challenger
+/// permutation after table-role normalization, including its width and rate. An output PCS used
+/// to prove the resulting verifier circuit may independently use another permutation.
 #[derive(Clone)]
 pub struct WhirRecursionBackend<
     const WIDTH: usize = 16,
@@ -463,6 +465,52 @@ fn poseidon2_legacy_challenger_shape_configs(config: Poseidon2Config) -> Vec<Pos
         return vec![shape];
     }
     vec![shape.for_challenger(), shape]
+}
+
+fn poseidon1_challenger_shape_configs(config: Poseidon1Config) -> Vec<Poseidon1Config> {
+    let shape = config.without_challenger_role();
+    if shape.d() < 2 {
+        vec![shape]
+    } else {
+        vec![shape.for_challenger(), shape]
+    }
+}
+
+fn normalized_permutation(config: PermConfig) -> PermConfig {
+    match config {
+        PermConfig::Poseidon1(config) => config.without_challenger_role().into(),
+        PermConfig::Poseidon2(config) => config.without_challenger_role().into(),
+    }
+}
+
+fn check_input_permutation<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>(
+    challenger: &C,
+    input_permutation: PermConfig,
+) -> Result<(), VerificationError> {
+    let (selected, width, rate): (PermConfig, _, _) =
+        if let Some(config) = challenger.as_poseidon2() {
+            (
+                config.without_challenger_role().into(),
+                config.width(),
+                config.rate(),
+            )
+        } else if let Some(config) = challenger.as_poseidon1() {
+            (
+                config.without_challenger_role().into(),
+                config.width(),
+                config.rate(),
+            )
+        } else {
+            return Err(VerificationError::InvalidProofShape(
+                "WhirRecursionBackend requires a Poseidon1 or Poseidon2 challenger config".into(),
+            ));
+        };
+    if width != WIDTH || rate != RATE || selected != normalized_permutation(input_permutation) {
+        return Err(VerificationError::InvalidProofShape(
+            "WHIR input PCS permutation does not match the backend challenger".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn check_whir_batch_degree<const D: usize>(actual: usize) -> Result<(), VerificationError> {
@@ -1046,7 +1094,7 @@ where
 
 #[rustfmt::skip]
 macro_rules! impl_whir_backend_for_degree {
-    ($d:literal, $poseidon_prover:ident) => {
+    ($d:literal, $poseidon_prover:ident, $poseidon1_prover:ident) => {
 impl<SC, A, const WIDTH: usize, const RATE: usize, C> PcsRecursionBackend<SC, A, $d>
     for WhirRecursionBackendForExt<$d, WIDTH, RATE, C>
 where
@@ -1061,6 +1109,7 @@ where
         + PrimeCharacteristicRing
         + ExtractBinomialW<Val<SC>>
         + TwoAdicField,
+    Poseidon1Preprocessor: NpoPreprocessor<Val<SC>>,
     Poseidon2Preprocessor: NpoPreprocessor<Val<SC>>,
     Poseidon2SharedPreprocessor: NpoPreprocessor<Val<SC>>,
     RecomposePreprocessor: NpoPreprocessor<Val<SC>>,
@@ -1084,6 +1133,10 @@ where
         config: &SC,
         prev: &RecursionInput<'_, SC, A>,
     ) -> Result<(), VerificationError> {
+        check_input_permutation::<WIDTH, RATE, C>(
+            &self.0.challenger_perm_config,
+            config.pcs_verifier_params().permutation_config(),
+        )?;
         let provers = match prev {
             RecursionInput::BatchStark { proof, .. } => {
                 PcsRecursionBackend::<SC, A, $d>::input_table_provers(
@@ -1106,7 +1159,11 @@ where
         config: &SC,
         prev: &RecursionInput<'_, SC, A>,
     ) -> Result<(), VerificationError> {
-        preflight_whir_input(config, &self.0.limits, prev)
+        preflight_whir_input(config, &self.0.limits, prev)?;
+        check_input_permutation::<WIDTH, RATE, C>(
+            &self.0.challenger_perm_config,
+            config.pcs_verifier_params().permutation_config(),
+        )
     }
 
     fn prepare_circuit(
@@ -1114,6 +1171,10 @@ where
         config: &SC,
         circuit: &mut CircuitBuilder<SC::Challenge>,
     ) -> Result<(), VerificationError> {
+        check_input_permutation::<WIDTH, RATE, C>(
+            &self.0.challenger_perm_config,
+            config.pcs_verifier_params().permutation_config(),
+        )?;
         config.prepare_circuit_for_verification(circuit)
     }
 
@@ -1124,6 +1185,10 @@ where
         circuit: &mut CircuitBuilder<SC::Challenge>,
     ) -> Result<Self::VerifierResult, VerificationError> {
         preflight_whir_input(config, &self.0.limits, prev)?;
+        check_input_permutation::<WIDTH, RATE, C>(
+            &self.0.challenger_perm_config,
+            config.pcs_verifier_params().permutation_config(),
+        )?;
         let provers = match prev {
             RecursionInput::BatchStark { proof, .. } => {
                 PcsRecursionBackend::<SC, A, $d>::input_table_provers(
@@ -1238,6 +1303,11 @@ where
             check_whir_batch_degree::<$d>(proof.ext_degree)
                 .map_err(|_| "Failed to replay the input proof's verifier transcript")?;
         }
+        check_input_permutation::<WIDTH, RATE, C>(
+            &self.0.challenger_perm_config,
+            config.pcs_verifier_params().permutation_config(),
+        )
+        .map_err(|_| "WHIR input PCS permutation does not match the backend challenger")?;
         // The same plugin list `build_verifier_circuit` used, so the transcript is replayed
         // against the AIRs the circuit was built for.
         let provers = match prev {
@@ -1282,46 +1352,45 @@ where
     }
 
     fn non_primitive_preprocessors(&self) -> Vec<Box<dyn NpoPreprocessor<Val<SC>>>> {
-        let challenger = self
-            .0
-            .challenger_perm_config
-            .as_poseidon2()
-            .copied()
-            .unwrap_or_else(|| {
-                panic!("WhirRecursionBackend requires a Poseidon2 challenger config")
-            });
-        let shared_configs = poseidon2_challenger_shape_configs(challenger)
-            .into_iter()
-            .filter(|config| config.is_shared())
-            .collect();
-        vec![
-            Box::new(Poseidon2SharedPreprocessor::new(shared_configs)),
-            recompose_preprocessor::<Val<SC>>(true),
-        ]
+        let perm_preprocessor: Box<dyn NpoPreprocessor<Val<SC>>> =
+            if let Some(challenger) = self.0.challenger_perm_config.as_poseidon2().copied() {
+                let shared_configs = poseidon2_challenger_shape_configs(challenger)
+                    .into_iter()
+                    .filter(|config| config.is_shared())
+                    .collect();
+                Box::new(Poseidon2SharedPreprocessor::new(shared_configs))
+            } else if self.0.challenger_perm_config.as_poseidon1().is_some() {
+                Box::new(Poseidon1Preprocessor)
+            } else {
+                panic!("WhirRecursionBackend requires a Poseidon1 or Poseidon2 challenger config")
+            };
+        vec![perm_preprocessor, recompose_preprocessor::<Val<SC>>(true)]
     }
 
     fn non_primitive_provers(&self, ext_degree: usize) -> Vec<Box<dyn TableProver<SC>>> {
-        if ext_degree == $d {
-            let challenger = self
-                .0
-                .challenger_perm_config
-                .as_poseidon2()
-                .copied()
-                .unwrap_or_else(|| {
-                    panic!("WhirRecursionBackend requires a Poseidon2 challenger config")
-                });
-            let mut provers: Vec<Box<dyn TableProver<SC>>> = Vec::new();
+        if ext_degree != $d {
+            return Vec::new();
+        }
+        let mut provers: Vec<Box<dyn TableProver<SC>>> = Vec::new();
+        if let Some(challenger) = self.0.challenger_perm_config.as_poseidon2().copied() {
             for config in poseidon2_challenger_shape_configs(challenger) {
                 provers.push(Box::new($poseidon_prover::new(
                     config,
                     ConstraintProfile::Standard,
                 )));
             }
-            provers.push(Box::new(RecomposeProver::<$d>::new(1, true)));
-            provers
+        } else if let Some(challenger) = self.0.challenger_perm_config.as_poseidon1().copied() {
+            for config in poseidon1_challenger_shape_configs(challenger) {
+                provers.push(Box::new($poseidon1_prover::new(
+                    config,
+                    ConstraintProfile::Standard,
+                )));
+            }
         } else {
-            Vec::new()
+            panic!("WhirRecursionBackend requires a Poseidon1 or Poseidon2 challenger config")
         }
+        provers.push(Box::new(RecomposeProver::<$d>::new(1, true)));
+        provers
     }
 
     fn non_primitive_input_provers(
@@ -1329,14 +1398,14 @@ where
         ext_degree: usize,
         op_types: &[p3_circuit::ops::NpoTypeId],
     ) -> Vec<Box<dyn TableProver<SC>>> {
-        let challenger = self
-            .0
-            .challenger_perm_config
-            .as_poseidon2()
-            .copied()
-            .unwrap_or_else(|| {
-                panic!("WhirRecursionBackend requires a Poseidon2 challenger config")
-            });
+        let Some(challenger) = self.0.challenger_perm_config.as_poseidon2().copied() else {
+            if self.0.challenger_perm_config.as_poseidon1().is_some() {
+                return <Self as PcsRecursionBackend<SC, A, $d>>::non_primitive_provers(
+                    self, ext_degree,
+                );
+            }
+            panic!("WhirRecursionBackend requires a Poseidon1 or Poseidon2 challenger config")
+        };
         let legacy_ids: Vec<_> = poseidon2_legacy_challenger_shape_configs(challenger)
             .into_iter()
             .map(p3_circuit::ops::NpoTypeId::poseidon2_perm)
@@ -1358,17 +1427,19 @@ where
     }
 
     fn non_primitive_air_builders(&self) -> Vec<Box<dyn NpoAirBuilder<SC, $d>>> {
-        let challenger = self
-            .0
-            .challenger_perm_config
-            .as_poseidon2()
-            .copied()
-            .unwrap_or_else(|| {
-                panic!("WhirRecursionBackend requires a Poseidon2 challenger config")
-            });
-        let mut builders = poseidon2_air_builders_for_configs::<SC, $d>(
-            poseidon2_challenger_shape_configs(challenger),
-        );
+        let mut builders = if let Some(challenger) =
+            self.0.challenger_perm_config.as_poseidon2().copied()
+        {
+            poseidon2_air_builders_for_configs::<SC, $d>(
+                poseidon2_challenger_shape_configs(challenger),
+            )
+        } else if let Some(challenger) = self.0.challenger_perm_config.as_poseidon1().copied() {
+            poseidon1_air_builders_for_configs::<SC, $d>(
+                poseidon1_challenger_shape_configs(challenger),
+            )
+        } else {
+            panic!("WhirRecursionBackend requires a Poseidon1 or Poseidon2 challenger config")
+        };
         builders.push(Box::new(RecomposeAirBuilder::<$d>::new(1, true)));
         builders
     }
@@ -1388,6 +1459,7 @@ where
         + PrimeCharacteristicRing
         + ExtractBinomialW<Val<SC>>
         + TwoAdicField,
+    Poseidon1Preprocessor: NpoPreprocessor<Val<SC>>,
     Poseidon2Preprocessor: NpoPreprocessor<Val<SC>>,
     Poseidon2SharedPreprocessor: NpoPreprocessor<Val<SC>>,
     RecomposePreprocessor: NpoPreprocessor<Val<SC>>,
@@ -1418,6 +1490,10 @@ where
         source: &RecursionInput<'_, SC, A>,
     ) -> Result<Self::InputContract, VerificationError> {
         preflight_whir_input(config, &self.0.limits, source)?;
+        check_input_permutation::<WIDTH, RATE, C>(
+            &self.0.challenger_perm_config,
+            config.pcs_verifier_params().permutation_config(),
+        )?;
         let provers = match source {
             RecursionInput::BatchStark { proof, .. } => {
                 PcsRecursionBackend::<SC, A, $d>::input_table_provers(
@@ -1447,6 +1523,10 @@ where
         input: &PreparedInput<'_, SC>,
     ) -> Result<(), VerificationError> {
         preflight_whir_prepared(config, &self.0.limits, input)?;
+        check_input_permutation::<WIDTH, RATE, C>(
+            &self.0.challenger_perm_config,
+            config.pcs_verifier_params().permutation_config(),
+        )?;
         validate_builtin_prepared_input::<SC, SC::Commitment, SC::OpeningProof>(contract, input)
     }
 
@@ -1455,7 +1535,11 @@ where
         config: &SC,
         input: &PreparedInput<'_, SC>,
     ) -> Result<(), VerificationError> {
-        preflight_whir_prepared(config, &self.0.limits, input)
+        preflight_whir_prepared(config, &self.0.limits, input)?;
+        check_input_permutation::<WIDTH, RATE, C>(
+            &self.0.challenger_perm_config,
+            config.pcs_verifier_params().permutation_config(),
+        )
     }
 }
 
@@ -1473,6 +1557,7 @@ where
         + PrimeCharacteristicRing
         + ExtractBinomialW<Val<SC>>
         + TwoAdicField,
+    Poseidon1Preprocessor: NpoPreprocessor<Val<SC>>,
     Poseidon2Preprocessor: NpoPreprocessor<Val<SC>>,
     Poseidon2SharedPreprocessor: NpoPreprocessor<Val<SC>>,
     RecomposePreprocessor: NpoPreprocessor<Val<SC>>,
@@ -1515,7 +1600,11 @@ where
             proof.proof.degree_bits.iter().copied().max().unwrap_or(0),
             &mut usage,
         )?;
-        check_trusted_whir_batch_degree::<SC, $d>(verifier)
+        check_trusted_whir_batch_degree::<SC, $d>(verifier)?;
+        check_input_permutation::<WIDTH, RATE, C>(
+            &self.0.challenger_perm_config,
+            verifier.config().pcs_verifier_params().permutation_config(),
+        )
     }
 
     fn capture_trusted_batch_input_contract(
@@ -1668,9 +1757,250 @@ where
     };
 }
 
-impl_whir_backend_for_degree!(4, Poseidon2Prover);
-impl_whir_backend_for_degree!(2, Poseidon2ProverD2);
+impl_whir_backend_for_degree!(4, Poseidon2Prover, Poseidon1Prover);
+impl_whir_backend_for_degree!(2, Poseidon2ProverD2, Poseidon1ProverD2);
 
 #[cfg(test)]
 #[path = "whir/acceptance_counter_tests.rs"]
 mod acceptance_counter_tests;
+
+#[cfg(test)]
+mod poseidon1_backend_tests {
+    use core::any::TypeId;
+
+    use p3_circuit::test_utils::FibonacciAir;
+    use p3_circuit_prover::batch_stark_prover::{
+        Poseidon1AirBuilderForConfig, Poseidon2AirBuilderForConfig,
+    };
+
+    use super::*;
+    use crate::prepared::test_common::whir_config::BbWhirConfig;
+
+    #[derive(Clone, Copy)]
+    struct Unsupported;
+
+    impl ChallengerPermConfig for Unsupported {
+        fn extension_degree(&self) -> usize {
+            4
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    struct BothFamilies;
+
+    impl ChallengerPermConfig for BothFamilies {
+        fn extension_degree(&self) -> usize {
+            4
+        }
+
+        fn as_poseidon2(&self) -> Option<&Poseidon2Config> {
+            Some(&Poseidon2Config::BABY_BEAR_D4_W16)
+        }
+
+        fn as_poseidon1(&self) -> Option<&Poseidon1Config> {
+            Some(&Poseidon1Config::BABY_BEAR_D4_W16)
+        }
+    }
+
+    #[test]
+    fn poseidon1_d4_provider_surfaces_use_separate_normalized_tables() {
+        type Backend = WhirRecursionBackendForExt<4, 16, 8, Poseidon1Config>;
+        let ordinary = Poseidon1Config::BABY_BEAR_D4_W16;
+        let expected = vec![
+            p3_circuit::ops::NpoTypeId::poseidon1_perm(ordinary.for_challenger()),
+            p3_circuit::ops::NpoTypeId::poseidon1_perm(ordinary),
+            p3_circuit::ops::NpoTypeId::recompose_with_coeff_lookups(),
+        ];
+        for config in [ordinary, ordinary.for_challenger()] {
+            let backend = WhirRecursionBackend::<16, 8, _>::new(config).for_extension_degree::<4>();
+            let prep = <Backend as PcsRecursionBackend<BbWhirConfig, FibonacciAir, 4>>::
+                non_primitive_preprocessors(&backend);
+            assert_eq!(
+                prep[0].as_ref().type_id(),
+                TypeId::of::<Poseidon1Preprocessor>()
+            );
+            let output = <Backend as PcsRecursionBackend<BbWhirConfig, FibonacciAir, 4>>::
+                non_primitive_provers(&backend, 4);
+            assert_eq!(
+                output.iter().map(|p| p.op_type()).collect::<Vec<_>>(),
+                expected
+            );
+            let input = <Backend as PcsRecursionBackend<BbWhirConfig, FibonacciAir, 4>>::
+                non_primitive_input_provers(&backend, 4, &expected);
+            assert_eq!(
+                input.iter().map(|p| p.op_type()).collect::<Vec<_>>(),
+                expected
+            );
+            let builders = <Backend as PcsRecursionBackend<BbWhirConfig, FibonacciAir, 4>>::
+                non_primitive_air_builders(&backend);
+            assert_eq!(builders.len(), 3);
+            assert_eq!(
+                builders[0].as_ref().type_id(),
+                TypeId::of::<Poseidon1AirBuilderForConfig<4>>()
+            );
+            assert_eq!(
+                builders[1].as_ref().type_id(),
+                TypeId::of::<Poseidon1AirBuilderForConfig<4>>()
+            );
+            assert!(<Backend as PcsRecursionBackend<BbWhirConfig, FibonacciAir, 4>>::
+                non_primitive_provers(&backend, 2).is_empty());
+        }
+        let d1 = Poseidon1Config::BABY_BEAR_D1_W16;
+        let backend = WhirRecursionBackend::<16, 8, _>::new(d1).for_extension_degree::<4>();
+        let output =
+            <Backend as PcsRecursionBackend<BbWhirConfig, FibonacciAir, 4>>::non_primitive_provers(
+                &backend, 4,
+            );
+        assert_eq!(
+            output.iter().map(|p| p.op_type()).collect::<Vec<_>>(),
+            vec![
+                p3_circuit::ops::NpoTypeId::poseidon1_perm(d1),
+                p3_circuit::ops::NpoTypeId::recompose_with_coeff_lookups(),
+            ]
+        );
+    }
+
+    #[test]
+    fn dual_family_d4_uses_poseidon2_on_all_provider_surfaces() {
+        type Backend = WhirRecursionBackendForExt<4, 16, 8, BothFamilies>;
+        let backend =
+            WhirRecursionBackend::<16, 8, _>::new(BothFamilies).for_extension_degree::<4>();
+        let p2 = Poseidon2Config::BABY_BEAR_D4_W16;
+        let shared = p3_circuit::ops::NpoTypeId::poseidon2_perm(p2.for_shared_challenger_table());
+        let legacy = [p3_circuit::ops::NpoTypeId::poseidon2_perm(
+            p2.for_challenger(),
+        )];
+        let prep = <Backend as PcsRecursionBackend<BbWhirConfig, FibonacciAir, 4>>::
+            non_primitive_preprocessors(&backend);
+        assert_eq!(
+            prep[0].as_ref().type_id(),
+            TypeId::of::<Poseidon2SharedPreprocessor>()
+        );
+        let output =
+            <Backend as PcsRecursionBackend<BbWhirConfig, FibonacciAir, 4>>::non_primitive_provers(
+                &backend, 4,
+            );
+        assert_eq!(
+            output.iter().map(|p| p.op_type()).collect::<Vec<_>>(),
+            vec![
+                shared.clone(),
+                p3_circuit::ops::NpoTypeId::recompose_with_coeff_lookups(),
+            ]
+        );
+        let shared_input = <Backend as PcsRecursionBackend<BbWhirConfig, FibonacciAir, 4>>::
+            non_primitive_input_provers(&backend, 4, &[shared]);
+        assert_eq!(
+            shared_input.iter().map(|p| p.op_type()).collect::<Vec<_>>(),
+            vec![
+                p3_circuit::ops::NpoTypeId::poseidon2_perm(p2.for_shared_challenger_table()),
+                p3_circuit::ops::NpoTypeId::recompose_with_coeff_lookups(),
+            ]
+        );
+        let input = <Backend as PcsRecursionBackend<BbWhirConfig, FibonacciAir, 4>>::
+            non_primitive_input_provers(&backend, 4, &legacy);
+        assert_eq!(
+            input.iter().map(|p| p.op_type()).collect::<Vec<_>>(),
+            vec![
+                legacy[0].clone(),
+                p3_circuit::ops::NpoTypeId::poseidon2_perm(p2),
+                p3_circuit::ops::NpoTypeId::recompose_with_coeff_lookups(),
+            ]
+        );
+        let builders = <Backend as PcsRecursionBackend<BbWhirConfig, FibonacciAir, 4>>::
+            non_primitive_air_builders(&backend);
+        assert_eq!(builders.len(), 2);
+        assert_eq!(
+            builders[0].as_ref().type_id(),
+            TypeId::of::<Poseidon2AirBuilderForConfig<4>>()
+        );
+    }
+
+    #[test]
+    fn unknown_family_keeps_provider_panics_and_wrong_degree_empty() {
+        use std::panic::{AssertUnwindSafe, catch_unwind};
+
+        type Backend = WhirRecursionBackendForExt<4, 16, 8, Unsupported>;
+        let backend =
+            WhirRecursionBackend::<16, 8, _>::new(Unsupported).for_extension_degree::<4>();
+        assert!(
+            <Backend as PcsRecursionBackend<BbWhirConfig, FibonacciAir, 4>>::non_primitive_provers(
+                &backend, 2
+            )
+            .is_empty()
+        );
+        assert!(
+            catch_unwind(AssertUnwindSafe(|| {
+                <Backend as PcsRecursionBackend<BbWhirConfig, FibonacciAir, 4>>::
+                non_primitive_preprocessors(&backend)
+            }))
+            .is_err()
+        );
+        assert!(
+            catch_unwind(AssertUnwindSafe(|| {
+                <Backend as PcsRecursionBackend<BbWhirConfig, FibonacciAir, 4>>::
+                non_primitive_provers(&backend, 4)
+            }))
+            .is_err()
+        );
+        assert!(
+            catch_unwind(AssertUnwindSafe(|| {
+                <Backend as PcsRecursionBackend<BbWhirConfig, FibonacciAir, 4>>::
+                non_primitive_input_provers(&backend, 4, &[])
+            }))
+            .is_err()
+        );
+        assert!(
+            catch_unwind(AssertUnwindSafe(|| {
+                <Backend as PcsRecursionBackend<BbWhirConfig, FibonacciAir, 4>>::
+                non_primitive_air_builders(&backend)
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn input_permutation_normalizes_only_table_roles() {
+        let p1 = Poseidon1Config::BABY_BEAR_D4_W16;
+        let p2 = Poseidon2Config::BABY_BEAR_D4_W16;
+        check_input_permutation::<16, 8, _>(&p1.for_challenger(), p1.into()).unwrap();
+        check_input_permutation::<16, 8, _>(&p1, p1.for_challenger().into()).unwrap();
+        check_input_permutation::<16, 8, _>(
+            &p2.for_shared_challenger_table(),
+            p2.for_challenger().into(),
+        )
+        .unwrap();
+        check_input_permutation::<16, 8, _>(
+            &Poseidon1Config::BABY_BEAR_D1_W16,
+            Poseidon1Config::BABY_BEAR_D1_W16.into(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn input_permutation_rejects_family_field_geometry_and_degree_mismatches() {
+        let p1 = Poseidon1Config::BABY_BEAR_D4_W16;
+        for params in [
+            Poseidon2Config::BABY_BEAR_D4_W16.into(),
+            Poseidon1Config::KOALA_BEAR_D4_W16.into(),
+            Poseidon1Config::BABY_BEAR_D4_W24.into(),
+            Poseidon1Config::BABY_BEAR_D1_W16.into(),
+        ] {
+            assert!(matches!(
+                check_input_permutation::<16, 8, _>(&p1, params),
+                Err(VerificationError::InvalidProofShape(_))
+            ));
+        }
+        assert!(matches!(
+            check_input_permutation::<8, 4, _>(&p1, p1.into()),
+            Err(VerificationError::InvalidProofShape(_))
+        ));
+        assert!(matches!(
+            check_input_permutation::<16, 4, _>(&p1, p1.into()),
+            Err(VerificationError::InvalidProofShape(_))
+        ));
+        assert!(matches!(
+            check_input_permutation::<16, 8, _>(&Unsupported, p1.into()),
+            Err(VerificationError::InvalidProofShape(_))
+        ));
+    }
+}

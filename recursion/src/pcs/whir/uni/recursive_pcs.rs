@@ -124,7 +124,7 @@ pub struct WhirUniVerifierParams<F> {
     folding: usize,
     /// Folding variable order declared by the prover's layout.
     variable_order: VariableOrder,
-    /// Poseidon2 configuration for mandatory in-circuit MMCS path verification.
+    /// Permutation configuration for mandatory in-circuit MMCS path verification.
     permutation_config: PermConfig,
     _marker: core::marker::PhantomData<F>,
 }
