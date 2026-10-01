@@ -996,6 +996,10 @@ pub(crate) fn write_config(
             writer.write_u32(config.starting_log_inv_rate())?;
             match config.round_log_inv_rates() {
                 WhirRateModeV1::Auto => writer.write_u8(0)?,
+                WhirRateModeV1::FirstRoundReduction(bits) => {
+                    writer.write_u8(2)?;
+                    writer.write_u32(*bits)?;
+                }
                 WhirRateModeV1::Explicit(rates) => {
                     writer.write_u8(1)?;
                     writer.write_vec("WHIR round rates", rates, |writer, rate| {
@@ -1040,6 +1044,7 @@ pub(crate) fn read_config(
             let starting_log_inv_rate = reader.read_u32()?;
             let round_log_inv_rates = match reader.read_u8()? {
                 0 => WhirRateModeV1::Auto,
+                2 => WhirRateModeV1::FirstRoundReduction(reader.read_u32()?),
                 1 => WhirRateModeV1::Explicit(reader.read_vec_limited(
                     "WHIR round rates",
                     reader.limits().verifier.max_rounds,
@@ -1261,7 +1266,18 @@ mod tests {
 
     #[test]
     fn config_codec_roundtrips_exact_runtime_parameters() {
-        for descriptor in [ordinary(), whir()] {
+        let reduced_domain = BuiltinConfigDescriptorV1::Whir(WhirConfigV1::new(
+            SuiteIdV1::KoalaBearD4Poseidon2Whir,
+            2,
+            WhirRateModeV1::FirstRoundReduction(3),
+            4,
+            WhirSecurityAssumptionV1::CapacityBound.as_u16(),
+            64,
+            15,
+            20,
+            0,
+        ));
+        for descriptor in [ordinary(), whir(), reduced_domain] {
             let limits = ArtifactLimits::default();
             let mut writer = Writer::new(1024);
             write_config(&mut writer, &descriptor).unwrap();

@@ -126,12 +126,15 @@ macro_rules! whir_factory {
                 mmcs,
                 challenger.clone(),
                 descriptor.log_max_lde_height() as usize,
-            );
+            )
+            .with_rate_policy(descriptor.rate_policy())
+            .map_err(|_| BuiltinConfigError::InvalidWhirConfiguration)?;
             let verifier_params = WhirUniVerifierParams::<$field>::new(
                 protocol,
                 VariableOrder::Prefix,
                 $suite.mmcs_permutation(),
             )
+            .and_then(|params| params.with_rate_policy(descriptor.rate_policy()))
             .map_err(|_| BuiltinConfigError::InvalidWhirConfiguration)?;
             Ok(BuiltinWhirConfig::new(
                 StarkConfig::new(pcs, challenger),

@@ -287,6 +287,25 @@ fn whir_descriptor_distinguishes_auto_and_explicit_rates() {
 }
 
 #[test]
+fn whir_adaptive_rate_descriptor_rejects_nonpositive_intermediate_rates() {
+    let limits = VerifierLimits::default();
+    for bits in [0, 1, 3, 5, u32::MAX] {
+        let descriptor = WhirConfigV1::new(
+            SuiteIdV1::BabyBearD4Poseidon2Whir,
+            1,
+            WhirRateModeV1::FirstRoundReduction(bits),
+            4,
+            1,
+            32,
+            0,
+            20,
+            0,
+        );
+        assert_eq!(descriptor.validate(&limits).is_ok(), bits == 1 || bits == 3);
+    }
+}
+
+#[test]
 fn whir_security_assumption_ids_are_closed_and_not_normalized() {
     assert_eq!(
         WhirSecurityAssumptionV1::from_u16(1),

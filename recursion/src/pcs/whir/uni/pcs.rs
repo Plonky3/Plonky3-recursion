@@ -33,12 +33,12 @@ use p3_whir::pcs::prover::WhirProver;
 use serde::{Deserialize, Serialize};
 
 use crate::input_contract::whir::{WhirContextParams, validate_whir_pcs_context};
-use crate::pcs::whir::uni::SharedMmcs;
+use crate::pcs::whir::params::WhirVerifierParamsError;
 use crate::pcs::whir::uni::bridge::univariate_eq_point;
 use crate::pcs::whir::uni::plan::{
     PaddedArity, StackedPlan, checked_stacked_num_variables, initial_layout_folding, padded_arity,
 };
-use crate::pcs::whir::uni::recursive_pcs::validate_round_config_inputs;
+use crate::pcs::whir::uni::{SharedMmcs, WhirRatePolicy};
 
 /// A commitment and the prover state behind it, or the configuration error that prevented it.
 type CommitResult<F, EF, MT, L> =
@@ -205,6 +205,7 @@ pub struct WhirUniPcs<EF, F, Dft, MT, Challenger, L> {
     pub protocol_params: ProtocolParameters,
     /// First-round folding factor, extracted from `protocol_params`.
     folding: usize,
+    rate_policy: WhirRatePolicy,
     /// FFT engine used to encode each committed codeword.
     pub dft: Dft,
     /// Base-field Merkle commitment scheme.
@@ -250,6 +251,7 @@ where
         Self {
             protocol_params,
             folding,
+            rate_policy: WhirRatePolicy::Native,
             dft,
             mmcs,
             challenger_proto,
@@ -263,12 +265,34 @@ where
         self.folding
     }
 
+    /// Sets an arity-dependent rate policy, which must also be used by the recursive verifier.
+    pub fn with_rate_policy(
+        mut self,
+        policy: WhirRatePolicy,
+    ) -> Result<Self, WhirVerifierParamsError> {
+        policy.validate(&self.protocol_params)?;
+        self.rate_policy = policy;
+        Ok(self)
+    }
+
+    pub const fn rate_policy(&self) -> WhirRatePolicy {
+        self.rate_policy
+    }
+
+    fn try_whir_config(
+        &self,
+        arity: usize,
+    ) -> Result<WhirConfig<EF, F, Challenger>, WhirVerifierParamsError> {
+        let protocol = self.rate_policy.resolve(arity, &self.protocol_params)?;
+        Ok(WhirConfig::new(arity, protocol)?)
+    }
+
     /// WHIR configuration for a stacked polynomial of the given arity.
     ///
     /// # Panics
     /// Panics if the parameters are invalid for that arity.
     pub fn whir_config(&self, stacked_num_variables: usize) -> WhirConfig<EF, F, Challenger> {
-        WhirConfig::new(stacked_num_variables, self.protocol_params.clone())
+        self.try_whir_config(stacked_num_variables)
             .expect("WHIR parameters are valid for the committed arity")
     }
 
@@ -424,6 +448,25 @@ where
                 self.dft.clone(),
                 SharedMmcs(self.mmcs.clone()),
             );
+            if tracing::enabled!(tracing::Level::DEBUG) {
+                let security = prover.prescribed_security(&schedule.protocol);
+                let native = WhirProver::<EF, F, Dft, SharedMmcs<MT>, Challenger, L>::new(
+                    WhirConfig::new(data.stacked_num_variables, self.protocol_params.clone())
+                        .expect("native rate baseline is valid for the committed arity"),
+                    self.dft.clone(),
+                    SharedMmcs(self.mmcs.clone()),
+                )
+                .prescribed_security(&schedule.protocol);
+                tracing::debug!(
+                    stacked_num_variables = data.stacked_num_variables,
+                    rate_policy = ?self.rate_policy,
+                    opening_security_bits = security.as_ref().map(|s| s.error().bits()),
+                    native_rate_security_bits = native.as_ref().map(|s| s.error().bits()),
+                    log2_max_candidates = security.as_ref().map(|s| s.log2_max_candidates),
+                    native_log2_max_candidates = native.as_ref().map(|s| s.log2_max_candidates),
+                    "WHIR prescribed-opening security",
+                );
+            }
             let proof = prover.open_at(
                 data.whir.clone(),
                 &schedule.protocol,
@@ -557,13 +600,9 @@ where
                     .map(|&(log_height, width)| (padded_arity(log_height, self.folding), width)),
             )
             .map_err(|_| WhirUniPcsError::ShapeMismatch { round })?;
-            validate_round_config_inputs(stacked_num_variables, &self.protocol_params)
+            let config = self
+                .try_whir_config(stacked_num_variables)
                 .map_err(|_| WhirUniPcsError::ShapeMismatch { round })?;
-            let config = WhirConfig::<EF, F, Challenger>::new(
-                stacked_num_variables,
-                self.protocol_params.clone(),
-            )
-            .map_err(|_| WhirUniPcsError::ShapeMismatch { round })?;
             validate_whir_pcs_context::<F, EF, MT>(
                 round_proof,
                 &WhirContextParams::from_native(&config),
@@ -595,11 +634,9 @@ where
                     .map(|&(log_height, width)| (padded_arity(log_height, self.folding), width)),
             )
             .map_err(|_| WhirUniPcsError::ShapeMismatch { round })?;
-            let config = WhirConfig::<EF, F, Challenger>::new(
-                stacked_num_variables,
-                self.protocol_params.clone(),
-            )
-            .map_err(|_| WhirUniPcsError::ShapeMismatch { round })?;
+            let config = self
+                .try_whir_config(stacked_num_variables)
+                .map_err(|_| WhirUniPcsError::ShapeMismatch { round })?;
             let schedule = round_schedule::<F, EF>(&shapes, &points_per_matrix, self.folding);
             let prover = WhirProver::<EF, F, Dft, MT, Challenger, L>::new(
                 config,

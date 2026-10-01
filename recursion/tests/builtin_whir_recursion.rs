@@ -36,7 +36,7 @@ fn statement_bytes<F: PrimeField32>(statement: &[F]) -> Vec<u8> {
 }
 
 macro_rules! whir_lifecycle {
-    ($name:ident, $field:ty, $config:ty, $factory:path, $suite:expr, $poseidon:expr) => {
+    ($name:ident, $field:ty, $config:ty, $factory:path, $suite:expr, $poseidon:expr, $rate:expr) => {
         #[test]
         fn $name() {
             const N: usize = 1 << 10;
@@ -45,7 +45,7 @@ macro_rules! whir_lifecycle {
                 WhirConfigV1::new(
                     $suite,
                     1,
-                    WhirRateModeV1::Auto,
+                    $rate,
                     4,
                     WhirSecurityAssumptionV1::CapacityBound.as_u16(),
                     32,
@@ -217,7 +217,8 @@ whir_lifecycle!(
     BabyBearD4Poseidon2WhirConfig,
     baby_bear_d4_poseidon2_whir,
     SuiteIdV1::BabyBearD4Poseidon2Whir,
-    Poseidon2Config::BABY_BEAR_D4_W16
+    Poseidon2Config::BABY_BEAR_D4_W16,
+    WhirRateModeV1::Auto
 );
 
 whir_lifecycle!(
@@ -226,5 +227,16 @@ whir_lifecycle!(
     KoalaBearD4Poseidon2WhirConfig,
     koala_bear_d4_poseidon2_whir,
     SuiteIdV1::KoalaBearD4Poseidon2Whir,
-    Poseidon2Config::KOALA_BEAR_D4_W16
+    Poseidon2Config::KOALA_BEAR_D4_W16,
+    WhirRateModeV1::Auto
+);
+
+whir_lifecycle!(
+    baby_bear_builtin_whir_reduced_domain_lifecycle,
+    BabyBear,
+    BabyBearD4Poseidon2WhirConfig,
+    baby_bear_d4_poseidon2_whir,
+    SuiteIdV1::BabyBearD4Poseidon2Whir,
+    Poseidon2Config::BABY_BEAR_D4_W16,
+    WhirRateModeV1::FirstRoundReduction(3)
 );

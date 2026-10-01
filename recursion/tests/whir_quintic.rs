@@ -83,7 +83,13 @@ macro_rules! quintic_whir_test {
                     commit_pow_bits: 0,
                     query_pow_bits: 0,
                 };
-                let config = config_with_whir_params(&fp, 16, false, 2);
+                let options = PcsOptions {
+                    pcs: PcsOption::Whir,
+                    whir_folding_factor: 2,
+                    whir_first_folding_factor: None,
+                    whir_first_round_domain_reduction: None,
+                };
+                let config = config_with_whir_params(&fp, 16, false, &options);
                 let backend =
                     WhirRecursionBackend::<16, 8, _>::new($perm_config).for_extension_degree::<5>();
                 let params = ProveNextLayerParams {
@@ -144,23 +150,25 @@ macro_rules! quintic_whir_test {
                 let transcript =
                     p3_recursion::backend::replay_recursion_input_transcript(&config, &input, &[])?;
                 let vp = &config.verifier_params;
-                let mut paths = p3_recursion::pcs::whir::uni::restore_whir_recursion_paths::<
-                    ConfigWithWhirParams,
-                    _,
-                    _,
-                    _,
-                    _,
-                    _,
-                    DIGEST_ELEMS,
-                >(
-                    &config.mmcs,
-                    transcript,
-                    &proof.opening_proof,
-                    vp.protocol_params(),
-                    vp.folding(),
-                    vp.variable_order(),
-                )
-                .expect("honest quintic WHIR Merkle paths");
+                let mut paths =
+                    p3_recursion::pcs::whir::uni::restore_whir_recursion_paths_with_rate_policy::<
+                        ConfigWithWhirParams,
+                        _,
+                        _,
+                        _,
+                        _,
+                        _,
+                        DIGEST_ELEMS,
+                    >(
+                        &config.mmcs,
+                        transcript,
+                        &proof.opening_proof,
+                        vp.protocol_params(),
+                        vp.folding(),
+                        vp.variable_order(),
+                        vp.rate_policy(),
+                    )
+                    .expect("honest quintic WHIR Merkle paths");
                 let sibling = paths
                     .iter_mut()
                     .flat_map(|path| {

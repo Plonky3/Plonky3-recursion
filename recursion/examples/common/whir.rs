@@ -1,6 +1,7 @@
 //! PCS selection and WHIR configuration shared by the recursive examples.
 
-use p3_whir::parameters::SecurityAssumption;
+use p3_recursion::pcs::whir::uni::WhirRatePolicy;
+use p3_whir::parameters::{FoldingFactor, SecurityAssumption};
 
 use super::{ClapArgs, FriParams, TablePacking, ValueEnum};
 
@@ -20,9 +21,51 @@ pub struct PcsOptions {
     /// Number of variables folded per WHIR round (with --pcs whir).
     #[arg(long, default_value_t = 4)]
     pub whir_folding_factor: usize,
+
+    /// Variables folded in WHIR's initial round (defaults to --whir-folding-factor).
+    #[arg(long)]
+    pub whir_first_folding_factor: Option<usize>,
+
+    /// Bits by which to shrink the first intermediate WHIR domain.
+    #[arg(
+        long,
+        help = "First intermediate WHIR domain reduction in bits [default: 2, clamped for small folds; 1 uses native rates]"
+    )]
+    pub whir_first_round_domain_reduction: Option<usize>,
 }
 
 impl PcsOptions {
+    pub fn first_folding_factor(&self) -> usize {
+        self.whir_first_folding_factor
+            .unwrap_or(self.whir_folding_factor)
+    }
+
+    pub const fn folding_factor(&self) -> FoldingFactor {
+        match self.whir_first_folding_factor {
+            Some(first) => FoldingFactor::ConstantFromSecondRound(first, self.whir_folding_factor),
+            None => FoldingFactor::Constant(self.whir_folding_factor),
+        }
+    }
+
+    pub fn rate_policy(&self, starting_log_inv_rate: usize) -> WhirRatePolicy {
+        if self.pcs == PcsOption::Fri {
+            return WhirRatePolicy::Native;
+        }
+        let bits = self.whir_first_round_domain_reduction.unwrap_or_else(|| {
+            // Keep a positive first intermediate rate for smaller folding factors.
+            let max = starting_log_inv_rate
+                .checked_add(self.first_folding_factor())
+                .and_then(|rate| rate.checked_sub(1))
+                .expect("valid WHIR first-round geometry");
+            2.min(max)
+        });
+        if bits == 1 {
+            WhirRatePolicy::Native
+        } else {
+            WhirRatePolicy::FirstRoundReduction(bits)
+        }
+    }
+
     pub fn horner_packed_steps(&self, requested: Option<usize>) -> usize {
         requested.unwrap_or(match self.pcs {
             PcsOption::Fri => 4,
@@ -32,11 +75,23 @@ impl PcsOptions {
     }
 
     pub fn security_level(&self, requested: Option<usize>) -> usize {
-        // Leave room for WHIR's claim-batching and sumcheck bounds in the D4/D2 fields.
+        // The reserve offsets query rounding under the faster rate schedule.
+        // This is a per-error-term target; the PCS reports its composed bound separately.
         requested.unwrap_or(match self.pcs {
             PcsOption::Fri => 124,
-            PcsOption::Whir => 64,
+            PcsOption::Whir => 66,
         })
+    }
+
+    pub const fn query_pow_bits(&self, requested: Option<usize>) -> usize {
+        match requested {
+            Some(bits) => bits,
+            None => match self.pcs {
+                PcsOption::Fri => 15,
+                // Keep the extra queries below the recursive table padding boundary.
+                PcsOption::Whir => 18,
+            },
+        }
     }
 
     pub fn assert_supported(&self, zk: bool, arity4: bool, disable_recompose_npo: bool) {
@@ -50,6 +105,11 @@ impl PcsOptions {
             assert!(
                 self.whir_folding_factor > 0 && self.whir_folding_factor < usize::BITS as usize,
                 "--whir-folding-factor must be positive and smaller than the machine word size"
+            );
+            assert!(
+                self.first_folding_factor() > 0
+                    && self.first_folding_factor() < usize::BITS as usize,
+                "--whir-first-folding-factor must be positive and smaller than the machine word size"
             );
         }
     }
@@ -67,7 +127,7 @@ impl PcsOptions {
                 // Later rounds increase the inverse rate and therefore need fewer queries.
                 let queries = SecurityAssumption::CapacityBound
                     .queries(security_level - fp.query_pow_bits, fp.log_blowup);
-                (1usize << self.whir_folding_factor)
+                (1usize << self.first_folding_factor())
                     .checked_mul(queries.next_power_of_two())
                     .expect("WHIR minimum trace height is too large")
             }
@@ -192,16 +252,25 @@ macro_rules! define_whir_module_types {
                 transcript: OpeningTranscript<Self>,
             ) -> Result<(), &'static str> {
                 use p3_recursion::pcs::whir::uni::{
-                    restore_whir_recursion_paths, whir_round_paths_op_count,
+                    restore_whir_recursion_paths_with_rate_policy, whir_round_paths_op_count,
                 };
                 let params = &config.verifier_params;
-                let paths = restore_whir_recursion_paths::<Self, _, _, _, _, _, DIGEST_ELEMS>(
+                let paths = restore_whir_recursion_paths_with_rate_policy::<
+                    Self,
+                    _,
+                    _,
+                    _,
+                    _,
+                    _,
+                    DIGEST_ELEMS,
+                >(
                     &config.mmcs,
                     transcript,
                     opening_proof,
                     params.protocol_params(),
                     params.folding(),
                     params.variable_order(),
+                    params.rate_policy(),
                 )
                 .map_err(|_| "Failed to restore WHIR Merkle paths")?;
                 let mut offset = 0;
@@ -230,10 +299,10 @@ macro_rules! define_whir_module_types {
             fp: &FriParams,
             security_level: usize,
             disable_recompose_npo: bool,
-            folding_factor: usize,
+            options: &PcsOptions,
         ) -> ConfigWithWhirParams {
             use p3_sumcheck::layout::Layout;
-            use p3_whir::parameters::{FoldingFactor, ProtocolParameters, SecurityAssumption};
+            use p3_whir::parameters::{ProtocolParameters, SecurityAssumption};
 
             let perm = $default_perm();
             let mmcs = MyMmcs::new(
@@ -247,7 +316,7 @@ macro_rules! define_whir_module_types {
                 pow_bits: fp.query_pow_bits,
                 starting_log_inv_rate: fp.log_blowup,
                 round_log_inv_rates: vec![],
-                folding_factor: FoldingFactor::Constant(folding_factor),
+                folding_factor: options.folding_factor(),
                 soundness_type: SecurityAssumption::CapacityBound,
             };
             let pcs = MyWhirPcs::new(
@@ -256,13 +325,17 @@ macro_rules! define_whir_module_types {
                 mmcs.clone(),
                 challenger.clone(),
                 <F as p3_field::TwoAdicField>::TWO_ADICITY,
-            );
+            )
+            .with_rate_policy(options.rate_policy(fp.log_blowup))
+            .expect("valid WHIR example rate policy");
             let verifier_params = p3_recursion::pcs::whir::uni::WhirUniVerifierParams::new(
                 protocol,
                 p3_sumcheck::layout::PrefixProver::<F, Challenge>::variable_order(),
                 $perm_config,
             )
-            .expect("valid WHIR example configuration");
+            .expect("valid WHIR example configuration")
+            .with_rate_policy(options.rate_policy(fp.log_blowup))
+            .expect("valid WHIR example rate policy");
             ConfigWithWhirParams {
                 config: Arc::new(MyWhirConfig::new(pcs, challenger)),
                 verifier_params,
@@ -278,13 +351,46 @@ mod tests {
     use super::*;
 
     #[test]
+    fn rate_defaults_shrink_extension_codewords_and_keep_small_folds_valid() {
+        let mut options = PcsOptions {
+            pcs: PcsOption::Whir,
+            whir_folding_factor: 4,
+            whir_first_folding_factor: None,
+            whir_first_round_domain_reduction: None,
+        };
+        assert_eq!(
+            options.rate_policy(2),
+            WhirRatePolicy::FirstRoundReduction(2)
+        );
+        assert_eq!(options.security_level(None), 66);
+        assert_eq!(options.security_level(Some(64)), 64);
+        assert_eq!(options.query_pow_bits(None), 18);
+        assert_eq!(options.query_pow_bits(Some(15)), 15);
+        options.whir_folding_factor = 2;
+        assert_eq!(
+            options.rate_policy(1),
+            WhirRatePolicy::FirstRoundReduction(2)
+        );
+        options.whir_folding_factor = 1;
+        assert_eq!(options.rate_policy(1), WhirRatePolicy::Native);
+        options.whir_first_round_domain_reduction = Some(1);
+        assert_eq!(options.rate_policy(2), WhirRatePolicy::Native);
+    }
+
+    #[test]
     fn horner_packing_defaults_and_overrides() {
         for (pcs, default) in [(PcsOption::Fri, 4), (PcsOption::Whir, 1)] {
             let options = PcsOptions {
                 pcs,
                 whir_folding_factor: 4,
+                whir_first_folding_factor: None,
+                whir_first_round_domain_reduction: None,
             };
             assert_eq!(options.horner_packed_steps(None), default);
+            assert_eq!(
+                options.query_pow_bits(None),
+                if pcs == PcsOption::Fri { 15 } else { 18 }
+            );
             for requested in [1, 2, 4] {
                 assert_eq!(options.horner_packed_steps(Some(requested)), requested);
                 let source = TablePacking::new(4, 3).with_horner_pack_k(requested);

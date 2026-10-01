@@ -154,7 +154,13 @@ cargo run --profile optimized --example recursive_fibonacci -- --field baby-bear
 WHIR uses the same base computations, recursion depth, table packing, and prepared-owner
 reuse as FRI. `--log-blowup` sets its starting inverse rate, `--query-pow-bits` sets its
 maximum PoW budget, and `--whir-folding-factor` sets the variables folded per round
-(default `4`). The default `--security-level` is `124` for FRI and `64` for WHIR.
+(default `4`). `--whir-first-folding-factor` can set a separate initial fold.
+`--whir-first-round-domain-reduction` controls the first intermediate domain shrinkage
+(default `2`, then later domains halve); `1` restores native automatic rates. Larger
+reductions trade smaller prover codewords for more verifier queries.
+The default `--security-level` is `124` for FRI and `66` for WHIR; these are per-error-term
+targets. The WHIR maximum PoW budget defaults to `18` bits, while FRI query PoW remains `15`.
+WHIR debug logs include the composed prescribed-opening bound for each commitment.
 `--max-log-arity`, `--log-final-poly-len`, and `--commit-pow-bits` apply to FRI;
 `--zk`, `--disable-recompose-npo`, and aggregation's `--arity4` require FRI.
 WHIR also supports KoalaBear's quintic extension with `--pcs whir --quintic`,

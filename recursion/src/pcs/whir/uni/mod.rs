@@ -7,6 +7,7 @@ pub mod circuit;
 pub mod pcs;
 pub mod plan;
 mod prover_mmcs;
+mod rate;
 pub mod recursion_data;
 pub mod recursive_pcs;
 pub mod targets;
@@ -31,14 +32,17 @@ use p3_whir::transcript::{WhirShape, WhirVerifierTranscript};
 pub use pcs::{WhirUniPcs, WhirUniPcsError, WhirUniProof, WhirUniProverData};
 pub use plan::{StackedPlacement, StackedPlan, StackedSelector, padded_arity};
 pub use prover_mmcs::SharedMmcs;
-pub use recursion_data::{WhirRoundPaths, restore_whir_recursion_paths, whir_round_paths_op_count};
+pub use rate::WhirRatePolicy;
+pub use recursion_data::{
+    WhirRoundPaths, restore_whir_recursion_paths, restore_whir_recursion_paths_with_rate_policy,
+    whir_round_paths_op_count,
+};
 pub use recursive_pcs::WhirUniVerifierParams;
 pub use targets::{WhirRoundTargets, WhirUniProofTargets, packed_digest_len};
 
 use crate::VerificationError;
 use crate::input_contract::whir::{WhirContextParams, validate_whir_pcs_context};
 use crate::pcs::whir::uni::plan::{canonical_layout_strategy, checked_stacked_num_variables};
-use crate::pcs::whir::uni::recursive_pcs::validate_round_config_inputs;
 
 /// Queried STIR indices one commitment's WHIR argument sampled.
 ///
@@ -123,6 +127,36 @@ where
     SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
     MT: Mmcs<Val<SC>>,
 {
+    replay_whir_query_indices_with_rate_policy::<SC, MT>(
+        transcript,
+        opening_proof,
+        protocol_params,
+        folding,
+        variable_order,
+        WhirRatePolicy::Native,
+    )
+}
+
+/// Replay queries using the same arity-dependent rate policy as the native PCS.
+pub fn replay_whir_query_indices_with_rate_policy<SC, MT>(
+    transcript: crate::generation::OpeningTranscript<SC>,
+    opening_proof: &WhirUniProof<Val<SC>, SC::Challenge, MT>,
+    protocol_params: &ProtocolParameters,
+    folding: usize,
+    variable_order: VariableOrder,
+    rate_policy: WhirRatePolicy,
+) -> Result<Vec<WhirQueryIndices>, VerificationError>
+where
+    SC: StarkGenericConfig,
+    Val<SC>: TwoAdicField + PrimeField64,
+    SC::Challenge: TwoAdicField,
+    SC::Challenger: FieldChallenger<Val<SC>>
+        + GrindingChallenger<Witness = Val<SC>>
+        + CanSampleUniformBits<Val<SC>>
+        + CanObserve<MT::Commitment>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
+    MT: Mmcs<Val<SC>>,
+{
     type F<SC> = Val<SC>;
     type EF<SC> = <SC as StarkGenericConfig>::Challenge;
 
@@ -165,11 +199,11 @@ where
                 .map(|&(log_height, width, _)| (padded_arity(log_height, folding), width)),
         )
         .map_err(|error| VerificationError::InvalidProofShape(error.to_string()))?;
-        validate_round_config_inputs(stacked_num_variables, protocol_params)
-            .map_err(|error| VerificationError::InvalidProofShape(error.to_string()))?;
         let config = WhirConfig::<EF<SC>, F<SC>, SC::Challenger>::new(
             stacked_num_variables,
-            protocol_params.clone(),
+            rate_policy
+                .resolve(stacked_num_variables, protocol_params)
+                .map_err(|error| VerificationError::InvalidProofShape(error.to_string()))?,
         )
         .map_err(|error| {
             VerificationError::InvalidProofShape(format!("invalid WHIR config: {error:?}"))
@@ -214,7 +248,9 @@ where
 
         let whir_config = WhirConfig::<EF<SC>, F<SC>, SC::Challenger>::new(
             schedule.stacked_num_variables,
-            protocol_params.clone(),
+            rate_policy
+                .resolve(schedule.stacked_num_variables, protocol_params)
+                .map_err(|error| VerificationError::InvalidProofShape(error.to_string()))?,
         )
         .map_err(|e| VerificationError::InvalidProofShape(format!("invalid WHIR config: {e:?}")))?;
 

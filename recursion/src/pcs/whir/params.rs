@@ -48,6 +48,9 @@ pub enum WhirVerifierParamsError {
     /// A derived round rate would overflow integer arithmetic.
     #[error("WHIR rate arithmetic overflows while deriving round {round}")]
     RateArithmeticOverflow { round: usize },
+    /// An adaptive rate policy conflicts with explicit rates or invalid geometry.
+    #[error("invalid WHIR rate policy: {0}")]
+    InvalidRatePolicy(&'static str),
     /// A caller supplied config that does not match the canonical recursive derivation.
     #[error("WHIR derived configuration is inconsistent in {component}")]
     InconsistentDerivedConfig { component: &'static str },

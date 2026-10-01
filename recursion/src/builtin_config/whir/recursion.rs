@@ -14,8 +14,8 @@ use crate::generation::OpeningTranscript;
 use crate::pcs::fri::MerkleCapTargets;
 use crate::pcs::set_whir_mmcs_private_data;
 use crate::pcs::whir::uni::{
-    WhirUniProof, WhirUniProofTargets, WhirUniVerifierParams, restore_whir_recursion_paths,
-    whir_round_paths_op_count,
+    WhirUniProof, WhirUniProofTargets, WhirUniVerifierParams,
+    restore_whir_recursion_paths_with_rate_policy, whir_round_paths_op_count,
 };
 use crate::recursion::RecursionInput;
 use crate::traits::RecursiveAir;
@@ -72,15 +72,17 @@ macro_rules! whir_recursion_config {
                     config.descriptor().cap_height() as usize,
                 );
                 let params = config.pcs_verifier_params();
-                let paths = restore_whir_recursion_paths::<Self, _, _, _, _, _, 8>(
-                    &mmcs,
-                    transcript,
-                    opening_proof,
-                    params.protocol_params(),
-                    params.folding(),
-                    params.variable_order(),
-                )
-                .map_err(|_| "Failed to restore WHIR Merkle paths")?;
+                let paths =
+                    restore_whir_recursion_paths_with_rate_policy::<Self, _, _, _, _, _, 8>(
+                        &mmcs,
+                        transcript,
+                        opening_proof,
+                        params.protocol_params(),
+                        params.folding(),
+                        params.variable_order(),
+                        params.rate_policy(),
+                    )
+                    .map_err(|_| "Failed to restore WHIR Merkle paths")?;
 
                 let mut offset = 0;
                 for round_paths in &paths {

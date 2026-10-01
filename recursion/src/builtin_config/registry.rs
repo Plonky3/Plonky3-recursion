@@ -531,6 +531,8 @@ impl FriConfigV1 {
 pub enum WhirRateModeV1 {
     Auto,
     Explicit(Vec<u32>),
+    /// Shrink the first intermediate domain by `2^bits`, then halve later domains.
+    FirstRoundReduction(u32),
 }
 
 /// Closed V1 IDs for the WHIR soundness regimes exercised by this repository.
@@ -658,6 +660,23 @@ impl WhirConfigV1 {
         }
         let rates = match &self.round_log_inv_rates {
             WhirRateModeV1::Auto => &[][..],
+            WhirRateModeV1::FirstRoundReduction(bits) => {
+                check_limit(
+                    "first WHIR domain reduction",
+                    *bits as usize,
+                    limits.max_log_domain_or_degree,
+                )?;
+                if *bits == 0
+                    || u64::from(*bits)
+                        >= u64::from(self.starting_log_inv_rate) + u64::from(self.folding_factor)
+                {
+                    return Err(BuiltinConfigError::InvalidParameter {
+                        component: "first_round_domain_reduction",
+                        value: *bits,
+                    });
+                }
+                &[][..]
+            }
             WhirRateModeV1::Explicit(rates) if rates.is_empty() => {
                 return Err(BuiltinConfigError::InvalidParameter {
                     component: "round_log_inv_rates",
@@ -720,12 +739,14 @@ impl WhirConfigV1 {
                 VariableOrder::Prefix,
                 self.suite.mmcs_permutation(),
             )
+            .and_then(|params| params.with_rate_policy(self.rate_policy()))
             .map(|_| ()),
             FieldFamilyV1::KoalaBear => WhirUniVerifierParams::<KoalaBear>::new(
                 protocol,
                 VariableOrder::Prefix,
                 self.suite.mmcs_permutation(),
             )
+            .and_then(|params| params.with_rate_policy(self.rate_policy()))
             .map(|_| ()),
             FieldFamilyV1::Goldilocks => return Err(BuiltinConfigError::InvalidWhirConfiguration),
         };
@@ -737,7 +758,7 @@ impl WhirConfigV1 {
         Ok(ProtocolParameters {
             starting_log_inv_rate: self.starting_log_inv_rate as usize,
             round_log_inv_rates: match &self.round_log_inv_rates {
-                WhirRateModeV1::Auto => Vec::new(),
+                WhirRateModeV1::Auto | WhirRateModeV1::FirstRoundReduction(_) => Vec::new(),
                 WhirRateModeV1::Explicit(rates) => {
                     rates.iter().map(|&rate| rate as usize).collect()
                 }
@@ -748,6 +769,15 @@ impl WhirConfigV1 {
             security_level: self.security_level as usize,
             pow_bits: self.pow_bits as usize,
         })
+    }
+
+    pub(crate) const fn rate_policy(&self) -> crate::pcs::whir::uni::WhirRatePolicy {
+        match &self.round_log_inv_rates {
+            WhirRateModeV1::FirstRoundReduction(bits) => {
+                crate::pcs::whir::uni::WhirRatePolicy::FirstRoundReduction(*bits as usize)
+            }
+            _ => crate::pcs::whir::uni::WhirRatePolicy::Native,
+        }
     }
 }
 

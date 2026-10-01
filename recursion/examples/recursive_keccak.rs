@@ -115,10 +115,9 @@ struct Args {
 
     #[arg(
         long,
-        default_value_t = 15,
-        help = "FRI query PoW bits / WHIR maximum PoW bits"
+        help = "FRI query PoW bits / WHIR maximum PoW bits [default: 15 for FRI, 18 for WHIR]"
     )]
-    pub query_pow_bits: usize,
+    pub query_pow_bits: Option<usize>,
 
     #[arg(
         long,
@@ -155,7 +154,7 @@ struct Args {
     // TODO: Update once https://github.com/Plonky3/Plonky3/pull/1329 lands
     #[arg(
         long,
-        help = "Targeted security level (conjectured) [default: 124 for FRI, 64 for WHIR]"
+        help = "Targeted security level (conjectured) [default: 124 for FRI, 66 for WHIR]"
     )]
     pub security_level: Option<usize>,
 
@@ -178,7 +177,7 @@ impl Args {
             cap_height: self.cap_height,
             log_final_poly_len: self.log_final_poly_len,
             commit_pow_bits: self.commit_pow_bits,
-            query_pow_bits: self.query_pow_bits,
+            query_pow_bits: self.pcs_options.query_pow_bits(self.query_pow_bits),
         }
     }
 
@@ -642,7 +641,7 @@ macro_rules! define_field_module_keccak_quintic {
                 if pcs_options.pcs == PcsOption::Whir {
                     run_layers!(
                         ConfigWithWhirParams,
-                        || config_with_whir_params(fri_params, security_level, disable_recompose_npo, pcs_options.whir_folding_factor),
+                        || config_with_whir_params(fri_params, security_level, disable_recompose_npo, pcs_options),
                         WhirRecursionBackend::<$backend_width, $backend_rate, _>::new($poseidon2_config).for_extension_degree::<D>()
                     );
                 } else {
@@ -1007,7 +1006,7 @@ macro_rules! define_field_module {
                             fri_params,
                             security_level,
                             disable_recompose_npo,
-                            pcs_options.whir_folding_factor,
+                            pcs_options,
                         ),
                         WhirRecursionBackend::<$backend_width, $backend_rate, _>::new($poseidon2_config)
                             .for_extension_degree::<$d>()

@@ -7,6 +7,7 @@
 //! using the queried indices [`crate::pcs::whir::uni::replay_whir_query_indices`] recovers
 //! from the transcript (they are not present in the proof itself).
 
+use alloc::string::ToString;
 use alloc::vec::Vec;
 
 use p3_challenger::{CanObserve, CanSampleUniformBits, FieldChallenger, GrindingChallenger};
@@ -21,7 +22,9 @@ use serde::{Deserialize, Serialize};
 use super::WhirUniProof;
 use crate::generation::OpeningTranscript;
 use crate::pcs::restore_whir_query_paths;
-use crate::pcs::whir::uni::{VariableOrder, replay_whir_query_indices};
+use crate::pcs::whir::uni::{
+    VariableOrder, WhirRatePolicy, replay_whir_query_indices_with_rate_policy,
+};
 use crate::verifier::VerificationError;
 
 /// Restored Merkle chains for one commitment's WHIR argument.
@@ -93,12 +96,69 @@ where
         + Sync,
     [Val<SC>; DIGEST_ELEMS]: Serialize + for<'de> Deserialize<'de>,
 {
-    let indices = replay_whir_query_indices::<SC, MerkleTreeMmcs<P, PW, H, C, N, DIGEST_ELEMS>>(
+    restore_whir_recursion_paths_with_rate_policy::<SC, P, PW, H, C, N, DIGEST_ELEMS>(
+        mmcs,
         transcript,
         opening_proof,
         protocol_params,
         folding,
         variable_order,
+        WhirRatePolicy::Native,
+    )
+}
+
+/// Restore paths using the same arity-dependent rate policy as the native PCS.
+#[expect(clippy::type_complexity)]
+pub fn restore_whir_recursion_paths_with_rate_policy<
+    SC,
+    P,
+    PW,
+    H,
+    C,
+    const N: usize,
+    const DIGEST_ELEMS: usize,
+>(
+    mmcs: &MerkleTreeMmcs<P, PW, H, C, N, DIGEST_ELEMS>,
+    transcript: OpeningTranscript<SC>,
+    opening_proof: &WhirUniProof<
+        Val<SC>,
+        SC::Challenge,
+        MerkleTreeMmcs<P, PW, H, C, N, DIGEST_ELEMS>,
+    >,
+    protocol_params: &ProtocolParameters,
+    folding: usize,
+    variable_order: VariableOrder,
+    rate_policy: WhirRatePolicy,
+) -> Result<Vec<WhirRoundPaths<Val<SC>, DIGEST_ELEMS>>, VerificationError>
+where
+    SC: StarkGenericConfig,
+    Val<SC>: TwoAdicField + PrimeField64,
+    SC::Challenge: TwoAdicField,
+    SC::Challenger: FieldChallenger<Val<SC>>
+        + GrindingChallenger<Witness = Val<SC>>
+        + CanSampleUniformBits<Val<SC>>
+        + CanObserve<MerkleCap<Val<SC>, [Val<SC>; DIGEST_ELEMS]>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
+    P: PackedValue<Value = Val<SC>>,
+    PW: PackedValue<Value = Val<SC>>,
+    H: CryptographicHasher<Val<SC>, [Val<SC>; DIGEST_ELEMS]>
+        + CryptographicHasher<P, [PW; DIGEST_ELEMS]>
+        + Sync,
+    C: PseudoCompressionFunction<[Val<SC>; DIGEST_ELEMS], N>
+        + PseudoCompressionFunction<[PW; DIGEST_ELEMS], N>
+        + Sync,
+    [Val<SC>; DIGEST_ELEMS]: Serialize + for<'de> Deserialize<'de>,
+{
+    let indices = replay_whir_query_indices_with_rate_policy::<
+        SC,
+        MerkleTreeMmcs<P, PW, H, C, N, DIGEST_ELEMS>,
+    >(
+        transcript,
+        opening_proof,
+        protocol_params,
+        folding,
+        variable_order,
+        rate_policy,
     )?;
     #[cfg(test)]
     crate::pcs::whir::uni::acceptance_probe::restoration();
@@ -107,7 +167,9 @@ where
     for (round_idx, round) in opening_proof.rounds.iter().enumerate() {
         let cfg = WhirConfig::<SC::Challenge, Val<SC>, SC::Challenger>::new(
             indices[round_idx].stacked_num_variables,
-            protocol_params.clone(),
+            rate_policy
+                .resolve(indices[round_idx].stacked_num_variables, protocol_params)
+                .map_err(|error| VerificationError::InvalidProofShape(error.to_string()))?,
         )
         .map_err(|e| VerificationError::InvalidProofShape(alloc::format!("{e:?}")))?;
 

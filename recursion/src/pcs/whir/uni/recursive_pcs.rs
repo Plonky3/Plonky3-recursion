@@ -20,6 +20,7 @@ use crate::Target;
 use crate::challenger::CircuitChallenger;
 use crate::challenger_perm::ChallengerPermConfig;
 use crate::pcs::whir::params::{WhirVerifierParams, WhirVerifierParamsError};
+use crate::pcs::whir::uni::WhirRatePolicy;
 use crate::pcs::whir::uni::circuit::verify_whir_uni_circuit;
 use crate::pcs::whir::uni::pcs::WhirUniPcs;
 use crate::pcs::whir::uni::plan::initial_layout_folding;
@@ -120,6 +121,7 @@ pub(crate) fn validate_round_config_inputs(
 pub struct WhirUniVerifierParams<F> {
     /// Protocol parameters used for every commitment.
     protocol_params: ProtocolParameters,
+    rate_policy: WhirRatePolicy,
     /// First-round folding factor, read from `protocol_params`.
     folding: usize,
     /// Folding variable order declared by the prover's layout.
@@ -142,11 +144,23 @@ impl<F: TwoAdicField> WhirUniVerifierParams<F> {
             .ok_or(WhirVerifierParamsError::UnsupportedFoldingFactor)?;
         Ok(Self {
             protocol_params,
+            rate_policy: WhirRatePolicy::Native,
             folding,
             variable_order,
             permutation_config: permutation_config.into(),
             _marker: core::marker::PhantomData,
         })
+    }
+
+    /// Sets the arity-dependent rate policy. Use the same policy for the native PCS
+    /// and for query replay and private-path restoration.
+    pub fn with_rate_policy(
+        mut self,
+        policy: WhirRatePolicy,
+    ) -> Result<Self, WhirVerifierParamsError> {
+        policy.validate(&self.protocol_params)?;
+        self.rate_policy = policy;
+        Ok(self)
     }
 
     /// WHIR verifier parameters for a commitment whose stacked polynomial has
@@ -164,14 +178,18 @@ impl<F: TwoAdicField> WhirUniVerifierParams<F> {
         EF: ExtensionField<F> + TwoAdicField,
         Ch: FieldChallenger<F> + GrindingChallenger<Witness = F>,
     {
-        validate_round_config_inputs(stacked_num_variables, &self.protocol_params)?;
-        let config =
-            WhirConfig::<EF, F, Ch>::new(stacked_num_variables, self.protocol_params.clone())?;
+        let protocol = self
+            .rate_policy
+            .resolve(stacked_num_variables, &self.protocol_params)?;
+        let config = WhirConfig::<EF, F, Ch>::new(stacked_num_variables, protocol)?;
         WhirVerifierParams::from_config(&config, self.variable_order, self.permutation_config)
     }
 
     pub const fn protocol_params(&self) -> &ProtocolParameters {
         &self.protocol_params
+    }
+    pub const fn rate_policy(&self) -> WhirRatePolicy {
+        self.rate_policy
     }
     pub const fn folding(&self) -> usize {
         self.folding
