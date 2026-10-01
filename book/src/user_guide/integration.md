@@ -39,8 +39,9 @@ for repeated verification. See the [compiled prelude example](https://github.com
 and [trusted layer tests](https://github.com/Plonky3/Plonky3-recursion/blob/main/recursion/tests/prepared_layer.rs) for the prepared contract.
 Use `FriRecursionBackend::new(challenger_config).for_extension_degree::<D>()` for a
 matching binomial extension, `FriRecursionBackend::new_d5` for a KoalaBear
-quintic suite, or `WhirRecursionBackend::new(...).for_extension_degree::<4>()`
-for a supported WHIR suite. See [backend selection](./configuration.md#choosing-a-built-in-recursion-backend).
+quintic suite, or `WhirRecursionBackend::new(...).for_extension_degree::<D>()`
+for WHIR, where D is 2 or 4 and matches the input's actual challenge dimension.
+See [backend selection](./configuration.md#choosing-a-built-in-recursion-backend).
 
 ## Import portable artifacts into trusted recursion
 

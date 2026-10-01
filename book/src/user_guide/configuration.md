@@ -115,9 +115,14 @@ Both WHIR aliases use Poseidon2, D4, and binary Merkle commitments. The
 built-in `WhirConfigV1` descriptor still specifies one constant folding factor.
 Custom WHIR recursion backends support Poseidon1 or Poseidon2 at D2 or D4.
 The input PCS permutation must match the backend challenger after table-role
-normalization, including width and rate; the output PCS can be configured
-independently. Statement-bound parents chain through their retained trusted
-verifier.
+normalization, including its family and full configuration. Its field must
+match `Val<SC>`, its width and rate must match the backend, and the actual
+`SC::Challenge` dimension must equal the backend D. The permutation's own
+degree may differ from that D (for example, a D1 permutation in a D4 circuit).
+The output PCS may use different protocol parameters and a different
+permutation. Input and output configurations still use the same base and
+challenge fields and backend degree, with compatible domains. Statement-bound
+parents chain through their retained trusted verifier.
 For a custom `WhirUniPcs` and `WhirUniVerifierParams`, the recursive verifier
 supports native `FoldingFactor::Constant`, `ConstantFromSecondRound`, and
 `PerRound` with positive factors, canonical Prefix or Suffix variable order,
@@ -127,9 +132,10 @@ seeding. Every commitment's stacked arity must fit that strategy exactly.
 In particular, a `PerRound` vector must supply exactly the factors used at
 each commitment arity, so one vector may not fit both leaf and recursive
 trace sizes. An explicit round-rate schedule must likewise match the
-intermediate round count derived from each commitment's stacked arity; use
-`WhirRateModeV1::Auto` when leaf and recursive trace sizes differ. In any
-intermediate or final phase where the raw configured query count reaches or
+intermediate round count derived from each commitment's stacked arity; leave
+`ProtocolParameters::round_log_inv_rates` empty to derive rates automatically
+for each arity when leaf and recursive trace sizes differ. In any intermediate
+or final phase where the raw configured query count reaches or
 exceeds `domain_size >> folding_factor`, the verifier opens the entire folded
 domain in ascending order and makes no query-index challenger draws. The
 effective opening count is the minimum of the raw count and folded domain
