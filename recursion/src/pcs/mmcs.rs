@@ -609,7 +609,12 @@ where
             let mut all_base: Vec<Target> = Vec::new();
             for &mat_idx in &mats_at_height {
                 for &ext in &opened_extension_values[mat_idx] {
-                    all_base.extend(circuit.decompose_ext_to_base_coeffs::<F>(ext)?);
+                    let coeffs = if permutation_config.d() == 1 {
+                        circuit.decompose_ext_to_base_coeffs_fresh_via_alu::<F>(ext)?
+                    } else {
+                        circuit.decompose_ext_to_base_coeffs_fresh_with_coeff_lookups::<F>(ext)?
+                    };
+                    all_base.extend(coeffs);
                 }
                 all_base.extend(salts[mat_idx].iter().copied());
             }

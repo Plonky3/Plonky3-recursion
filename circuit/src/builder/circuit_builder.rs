@@ -2026,6 +2026,90 @@ where
         Ok(coeffs)
     }
 
+    /// Allocate fresh coefficients and constrain their weighted sum to `x` through the ALU.
+    ///
+    /// Replaces cached and select provenance. The caller must separately hold every returned
+    /// coefficient to the base field, for example through a live Poseidon input lookup.
+    /// The weighted sum alone does not enforce that property.
+    pub fn decompose_ext_to_base_coeffs_fresh_via_alu<BF>(
+        &mut self,
+        x: ExprId,
+    ) -> Result<Vec<ExprId>, CircuitBuilderError>
+    where
+        BF: PrimeField64,
+        F: ExtensionField<BF>,
+    {
+        self.decompose_ext_to_base_coeffs_fresh_impl::<BF>(x, RecomposeMode::ForceAlu)
+    }
+
+    /// Allocate fresh coefficients bound individually by the `recompose/coeff` table.
+    ///
+    /// Replaces cached and select provenance. Requires [`Self::enable_recompose`].
+    pub fn decompose_ext_to_base_coeffs_fresh_with_coeff_lookups<BF>(
+        &mut self,
+        x: ExprId,
+    ) -> Result<Vec<ExprId>, CircuitBuilderError>
+    where
+        BF: PrimeField64,
+        F: ExtensionField<BF>,
+    {
+        self.decompose_ext_to_base_coeffs_fresh_impl::<BF>(x, RecomposeMode::NpoWithCoeffLookups)
+    }
+
+    fn decompose_ext_to_base_coeffs_fresh_impl<BF>(
+        &mut self,
+        x: ExprId,
+        mode: RecomposeMode,
+    ) -> Result<Vec<ExprId>, CircuitBuilderError>
+    where
+        BF: PrimeField64,
+        F: ExtensionField<BF>,
+    {
+        if F::DIMENSION == 1 {
+            self.ext_recompose_coeffs.remove(&x);
+            self.ext_select_sources.remove(&x);
+            return Ok(vec![x]);
+        }
+        if let Some(value) = self.expr_builder.get_const_value(x) {
+            self.ext_recompose_coeffs.remove(&x);
+            self.ext_select_sources.remove(&x);
+            return Ok(value
+                .as_basis_coefficients_slice()
+                .iter()
+                .map(|&c| self.define_const(F::from(c)))
+                .collect());
+        }
+        let coeffs: Vec<_> = self
+            .push_unconstrained_op(
+                vec![vec![x]],
+                F::DIMENSION,
+                ExtDecompositionHint::<BF>::new(),
+                "fresh ext decomposition",
+            )
+            .2
+            .into_iter()
+            .collect::<Option<_>>()
+            .ok_or(CircuitBuilderError::MissingOutput)?;
+        let reconstructed = if mode == RecomposeMode::NpoWithCoeffLookups {
+            self.recompose_base_coeffs_to_ext_with_coeff_lookups::<BF>(&coeffs)?
+        } else {
+            let mut acc = coeffs[0];
+            for (i, &coeff) in coeffs.iter().enumerate().skip(1) {
+                let basis =
+                    F::from_basis_coefficients_fn(|j| if i == j { BF::ONE } else { BF::ZERO });
+                let basis = self.define_const(basis);
+                acc = self.mul_add(coeff, basis, acc);
+            }
+            acc
+        };
+        // A fresh bound decomposition replaces weak cached provenance. In the ALU
+        // case, leave no record that a later consumer might mistake for base binding.
+        self.ext_recompose_coeffs.remove(&x);
+        self.ext_select_sources.remove(&x);
+        self.connect(x, reconstructed);
+        Ok(coeffs)
+    }
+
     /// Like [`Self::decompose_ext_to_base_coeffs`], but reconstructs through the ALU `mul_add`
     /// chain even when the recompose NPO table is enabled.
     ///
@@ -2526,6 +2610,64 @@ mod tests {
     fn test_new_builder_initialization() {
         let builder = CircuitBuilder::<BabyBear>::new();
         assert_eq!(builder.public_input_count(), 0);
+    }
+
+    #[test]
+    fn fresh_alu_decomposition_ignores_cached_coefficients() {
+        type EF = BinomialExtensionField<BabyBear, 4>;
+        let mut builder = CircuitBuilder::<EF>::new();
+        let x = builder.public_input();
+        let zero = builder.define_const(EF::ZERO);
+        builder.hint_ext_recompose_coeffs(x, &[zero; 4]);
+        let coeffs = builder
+            .decompose_ext_to_base_coeffs_fresh_via_alu::<BabyBear>(x)
+            .unwrap();
+        assert_ne!(coeffs, vec![zero; 4]);
+        let circuit = builder.build().unwrap();
+        assert_eq!(
+            circuit
+                .ops
+                .iter()
+                .filter(|op| op.is_alu_kind(crate::ops::AluOpKind::MulAdd))
+                .count(),
+            3
+        );
+        circuit.generate_preprocessed_columns::<4>().unwrap();
+        let value = EF::new(core::array::from_fn(|i| BabyBear::from_usize(i + 7)));
+        let mut runner = circuit.runner();
+        runner.set_public_inputs(&[value]).unwrap();
+        let traces = runner.run().unwrap();
+        for (i, coeff) in coeffs.iter().enumerate() {
+            assert_eq!(
+                traces
+                    .witness_trace
+                    .get_value(circuit.expr_to_widx[coeff])
+                    .copied(),
+                Some(EF::from(BabyBear::from_usize(i + 7))),
+            );
+        }
+    }
+
+    #[test]
+    fn fresh_constant_decomposition_replaces_cached_coefficients() {
+        type EF = BinomialExtensionField<BabyBear, 4>;
+        for via_alu in [false, true] {
+            let mut builder = CircuitBuilder::<EF>::new();
+            let value = EF::new(core::array::from_fn(|i| BabyBear::from_usize(i + 7)));
+            let x = builder.define_const(value);
+            let zero = builder.define_const(EF::ZERO);
+            builder.hint_ext_recompose_coeffs(x, &[zero; 4]);
+            let coefficients = if via_alu {
+                builder.decompose_ext_to_base_coeffs_fresh_via_alu::<BabyBear>(x)
+            } else {
+                builder.decompose_ext_to_base_coeffs_fresh_with_coeff_lookups::<BabyBear>(x)
+            }
+            .unwrap();
+            assert_eq!(
+                builder.decompose_ext_to_base_coeffs::<BabyBear>(x).unwrap(),
+                coefficients,
+            );
+        }
     }
 
     #[test]
@@ -3747,6 +3889,36 @@ mod proptests {
         );
     }
 
+    #[test]
+    fn fresh_bound_decomposition_replaces_unbound_cached_coefficients() {
+        type EF = BinomialExtensionField<BabyBear, 4>;
+        let mut builder = CircuitBuilder::<EF>::new();
+        enable_recompose_tables(&mut builder);
+        let x = builder.public_input();
+        let zero = builder.define_const(EF::ZERO);
+        builder.hint_ext_recompose_coeffs(x, &[zero; 4]);
+        let coeffs = builder
+            .decompose_ext_to_base_coeffs_fresh_with_coeff_lookups::<BabyBear>(x)
+            .unwrap();
+        assert_ne!(coeffs, vec![zero; 4]);
+        assert_eq!(
+            builder
+                .decompose_ext_to_base_coeffs_with_coeff_lookups::<BabyBear>(x)
+                .unwrap(),
+            coeffs,
+        );
+        let circuit = builder.build().unwrap();
+        let prep = circuit.generate_preprocessed_columns::<4>().unwrap();
+        assert!(coeffs.iter().all(|coeff| {
+            prep.recompose_coeff_creator_wids
+                .contains(&circuit.expr_to_widx[coeff].0)
+        }));
+        let value = EF::new(core::array::from_fn(|i| BabyBear::from_usize(i + 7)));
+        let mut runner = circuit.runner();
+        runner.set_public_inputs(&[value]).unwrap();
+        runner.run().unwrap();
+    }
+
     /// The extension basis element `w^i`.
     fn basis(i: usize) -> BinomialExtensionField<BabyBear, 4> {
         BinomialExtensionField::<BabyBear, 4>::from_basis_coefficients_fn(|j| {
@@ -3758,9 +3930,8 @@ mod proptests {
         })
     }
 
-    /// The shape `CommitPhaseProofStepTargets::pack_one_sibling` builds: prover-supplied
-    /// coefficients packed through the ALU `mul_add` chain, with the packed value recorded as
-    /// their recomposition.
+    /// Prover-supplied coefficients packed through an ALU `mul_add` chain, with the
+    /// packed value recorded as their recomposition.
     fn pack_and_record_via_alu(
         builder: &mut CircuitBuilder<BinomialExtensionField<BabyBear, 4>>,
     ) -> (Vec<ExprId>, ExprId) {

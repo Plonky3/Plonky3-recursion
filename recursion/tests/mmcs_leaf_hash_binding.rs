@@ -14,7 +14,7 @@ use p3_koala_bear::{KoalaBear, default_koalabear_poseidon2_16};
 use p3_matrix::Dimensions;
 use p3_poseidon2_circuit_air::{BabyBearD4Width16, KoalaBearD4Width16};
 use p3_recursion::Target;
-use p3_recursion::pcs::verify_batch_circuit;
+use p3_recursion::pcs::{verify_batch_circuit, verify_batch_circuit_from_extension_opened};
 
 type F = KoalaBear;
 type EF = BinomialExtensionField<F, 4>;
@@ -145,6 +145,57 @@ fn is_exact_npo_type<F: p3_field::Field>(op: &Op<F>, expected: &str) -> bool {
         Op::NonPrimitiveOpWithExecutor { executor, .. } => executor.op_type().as_str() == expected,
         _ => false,
     }
+}
+
+#[test]
+fn salted_extension_leaf_binds_each_fresh_coefficient() {
+    let mut builder = CircuitBuilder::<EF>::new();
+    builder.enable_poseidon2_perm::<KoalaBearD4Width16, _>(
+        generate_poseidon2_trace::<EF, KoalaBearD4Width16>,
+        default_koalabear_poseidon2_16(),
+    );
+    builder.enable_recompose::<F>(generate_recompose_trace::<F, EF>);
+    let cap = vec![builder.alloc_public_inputs(CFG.rate_ext(), "cap")];
+    let bits = builder.alloc_public_inputs(2, "index");
+    let opened = vec![vec![builder.public_input()]];
+    let salts = vec![builder.alloc_public_inputs(4, "salt")];
+    verify_batch_circuit_from_extension_opened::<F, EF>(
+        &mut builder,
+        CFG,
+        &cap,
+        &[Dimensions {
+            width: 1,
+            height: 4,
+        }],
+        &bits,
+        &opened,
+        Some(&salts),
+    )
+    .unwrap();
+    let circuit = builder.build().unwrap();
+    let hints: Vec<_> = circuit
+        .ops
+        .iter()
+        .filter_map(|op| match op {
+            Op::Hint { outputs, .. } => Some(outputs),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(hints.len(), 1);
+    let coefficients = hints[0];
+    assert_eq!(coefficients.len(), D);
+    assert!(circuit.ops.iter().any(|op| matches!(
+        op,
+        Op::NonPrimitiveOpWithExecutor { inputs, .. }
+            if is_exact_npo_type(op, "recompose/coeff")
+                && inputs.concat() == *coefficients
+    )));
+    let prep = circuit.generate_preprocessed_columns::<D>().unwrap();
+    assert!(
+        coefficients
+            .iter()
+            .all(|wid| prep.recompose_coeff_creator_wids.contains(&wid.0))
+    );
 }
 
 fn writes<F: p3_field::Field>(op: &Op<F>, wid: WitnessId) -> bool {
