@@ -58,6 +58,8 @@ macro_rules! whir_arithmetic_test {
         $poseidon_cfg:expr,
         $num_vars:expr,
         $folding:expr,
+        $folding_strategy:expr,
+        $expected_schedule:expr,
         $security:expr,
         $round_log_inv_rates:expr,
         $soundness:expr,
@@ -241,12 +243,14 @@ macro_rules! whir_arithmetic_test {
                     security_level: $security,
                     pow_bits: 0,
                     round_log_inv_rates: $round_log_inv_rates,
-                    folding_factor: FoldingFactor::Constant(FOLDING),
+                    folding_factor: $folding_strategy,
                     soundness_type: $soundness,
                     starting_log_inv_rate: 1,
                 };
                 let config =
                     WhirConfig::<EF, BF, MyChallenger>::new(NUM_VARIABLES, whir_params).unwrap();
+                assert_eq!(config.folding_schedule(), $expected_schedule);
+                assert_eq!(config.folding_schedule()[0], FOLDING);
                 assert_eq!(
                     config
                         .round_parameters()
@@ -445,6 +449,14 @@ macro_rules! whir_arithmetic_test {
                 for (target_round, native_round) in
                     proof_targets.rounds.iter().zip(&proof.whir.rounds)
                 {
+                    assert_eq!(
+                        target_round.sumcheck.round_polys.len(),
+                        native_round.sumcheck.polynomial_evaluations().len()
+                    );
+                    assert_eq!(
+                        target_round.sumcheck.pow_witnesses.len(),
+                        native_round.sumcheck.pow_witnesses.len()
+                    );
                     assert_eq!(
                         target_round
                             .queries
@@ -675,6 +687,8 @@ whir_arithmetic_test!(
     p3_circuit::ops::Poseidon2Config::BABY_BEAR_D4_W16,
     16,
     4,
+    FoldingFactor::Constant(4),
+    &[4, 4, 4],
     32,
     vec![4usize, 4],
     SecurityAssumption::CapacityBound,
@@ -692,6 +706,8 @@ whir_arithmetic_test!(
     p3_circuit::ops::Poseidon2Config::KOALA_BEAR_D4_W16,
     12,
     4,
+    FoldingFactor::Constant(4),
+    &[4, 4],
     32,
     vec![4usize],
     SecurityAssumption::CapacityBound,
@@ -709,6 +725,8 @@ whir_arithmetic_test!(
     p3_circuit::ops::Poseidon2Config::BABY_BEAR_D4_W16,
     4,
     4,
+    FoldingFactor::Constant(4),
+    &[4],
     32,
     vec![],
     SecurityAssumption::CapacityBound,
@@ -726,6 +744,8 @@ whir_arithmetic_test!(
     p3_circuit::ops::Poseidon2Config::BABY_BEAR_D4_W16,
     11,
     4,
+    FoldingFactor::Constant(4),
+    &[4, 4],
     32,
     vec![1usize],
     SecurityAssumption::CapacityBound,
@@ -743,9 +763,49 @@ whir_arithmetic_test!(
     p3_circuit::ops::Poseidon2Config::BABY_BEAR_D4_W16,
     11,
     4,
+    FoldingFactor::Constant(4),
+    &[4, 4],
     106,
     vec![1usize],
     SecurityAssumption::UniqueDecoding,
     vec![true],
     true
+);
+
+whir_arithmetic_test!(
+    babybear_d4_partial_final_fold,
+    BabyBear,
+    default_babybear_poseidon2_16,
+    Poseidon2BabyBear<16>,
+    BinomialExtensionField<BabyBear, 4>,
+    BabyBearD4Width16,
+    p3_circuit::ops::Poseidon2Config::BABY_BEAR_D4_W16,
+    15,
+    8,
+    FoldingFactor::Constant(8),
+    &[8, 7],
+    32,
+    vec![1usize],
+    SecurityAssumption::CapacityBound,
+    vec![false],
+    true
+);
+
+whir_arithmetic_test!(
+    babybear_d4_per_round_fold,
+    BabyBear,
+    default_babybear_poseidon2_16,
+    Poseidon2BabyBear<16>,
+    BinomialExtensionField<BabyBear, 4>,
+    BabyBearD4Width16,
+    p3_circuit::ops::Poseidon2Config::BABY_BEAR_D4_W16,
+    12,
+    2,
+    FoldingFactor::PerRound(vec![2, 3, 1]),
+    &[2, 3, 1],
+    32,
+    vec![1usize, 1],
+    SecurityAssumption::CapacityBound,
+    vec![false, false],
+    false
 );

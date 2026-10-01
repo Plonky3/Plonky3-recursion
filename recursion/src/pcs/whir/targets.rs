@@ -149,7 +149,9 @@ impl WhirRoundProofTargets {
     /// `cap_entry_len` is the number of EF-element Targets per Merkle cap entry
     /// (= the hash output size; equals `permutation_config.rate_ext()` for the
     /// Poseidon2 hasher).  Pass `1` for arithmetic-only test circuits where MMCS
-    /// verification is skipped.
+    /// verification is skipped. This standalone allocator uses `folding_factor`
+    /// for both the opened leaf width and the sumcheck length. Canonical proof
+    /// allocation may use different factors for those two parts of a round.
     #[allow(clippy::too_many_arguments)] // TODO: refactor
     pub fn alloc<EF: Field>(
         circuit: &mut CircuitBuilder<EF>,
@@ -161,12 +163,37 @@ impl WhirRoundProofTargets {
         cap_entry_len: usize,
         is_base_round: bool,
     ) -> Self {
+        Self::alloc_with_sumcheck_rounds(
+            circuit,
+            ood_samples,
+            num_queries,
+            folding_factor,
+            folding_factor,
+            folding_pow_bits,
+            cap_entries,
+            cap_entry_len,
+            is_base_round,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn alloc_with_sumcheck_rounds<EF: Field>(
+        circuit: &mut CircuitBuilder<EF>,
+        ood_samples: usize,
+        num_queries: usize,
+        leaf_folding_factor: usize,
+        num_sumcheck_rounds: usize,
+        folding_pow_bits: usize,
+        cap_entries: usize,
+        cap_entry_len: usize,
+        is_base_round: bool,
+    ) -> Self {
         let commitment_cap = (0..cap_entries)
             .map(|_| circuit.alloc_public_inputs(cap_entry_len, "WHIR round commitment cap entry"))
             .collect();
         let ood_answers = circuit.alloc_public_inputs(ood_samples, "WHIR round OOD answers");
         let pow_witness = circuit.alloc_public_input("WHIR round PoW witness");
-        let leaf_len = 1usize << folding_factor;
+        let leaf_len = 1usize << leaf_folding_factor;
         let queries = if is_base_round {
             (0..num_queries)
                 .map(|_| QueryOpeningTargets::alloc_base(circuit, leaf_len))
@@ -178,7 +205,7 @@ impl WhirRoundProofTargets {
         };
         let sumcheck = SumcheckDataTargets::alloc(
             circuit,
-            folding_factor,
+            num_sumcheck_rounds,
             folding_pow_bits,
             "WHIR round sumcheck",
         );
@@ -249,11 +276,12 @@ impl WhirProofTargets {
             .iter()
             .enumerate()
             .map(|(i, rp)| {
-                WhirRoundProofTargets::alloc(
+                WhirRoundProofTargets::alloc_with_sumcheck_rounds(
                     circuit,
                     rp.ood_samples(),
                     rp.num_query_openings(),
                     rp.folding_factor(),
+                    params.round_folding_factor(i + 1),
                     rp.folding_pow_bits(),
                     cap_entries,
                     cap_entry_len,
@@ -333,5 +361,159 @@ impl WhirPcsProofTargets {
             .map(|&n| circuit.alloc_public_inputs(n, "WHIR opening evals"))
             .collect();
         Self { whir, evals }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec;
+
+    use p3_baby_bear::BabyBear;
+    use p3_field::extension::BinomialExtensionField;
+    use p3_sumcheck::layout::{Layout, PrefixProver};
+    use p3_whir::parameters::{FoldingFactor, ProtocolParameters, SecurityAssumption, WhirConfig};
+
+    use super::*;
+    use crate::pcs::whir::uni::recursive_pcs::DummyChallenger;
+
+    type BF = BabyBear;
+    type EF = BinomialExtensionField<BF, 4>;
+
+    #[test]
+    fn canonical_proof_targets_follow_next_fold_for_intermediate_sumchecks() {
+        let cases = [
+            (
+                15,
+                FoldingFactor::Constant(8),
+                vec![1],
+                vec![8, 7],
+                vec![256],
+                vec![7],
+                128,
+                1,
+                0,
+            ),
+            (
+                10,
+                FoldingFactor::ConstantFromSecondRound(3, 2),
+                vec![1],
+                vec![3, 2],
+                vec![8],
+                vec![2],
+                4,
+                32,
+                5,
+            ),
+            (
+                12,
+                FoldingFactor::PerRound(vec![2, 3, 1]),
+                vec![1, 1],
+                vec![2, 3, 1],
+                vec![4, 8],
+                vec![3, 1],
+                2,
+                64,
+                6,
+            ),
+            (
+                12,
+                FoldingFactor::Constant(4),
+                vec![1],
+                vec![4, 4],
+                vec![16],
+                vec![4],
+                16,
+                16,
+                4,
+            ),
+            (
+                4,
+                FoldingFactor::Constant(4),
+                vec![],
+                vec![4],
+                vec![],
+                vec![],
+                16,
+                1,
+                0,
+            ),
+        ];
+        for (
+            num_variables,
+            folding_factor,
+            round_log_inv_rates,
+            schedule,
+            leaf_widths,
+            sumcheck_rounds,
+            final_leaf_width,
+            final_poly_len,
+            final_sumcheck_rounds,
+        ) in cases
+        {
+            let config = WhirConfig::<EF, BF, DummyChallenger<BF>>::new(
+                num_variables,
+                ProtocolParameters {
+                    security_level: 32,
+                    pow_bits: 0,
+                    round_log_inv_rates,
+                    folding_factor,
+                    soundness_type: SecurityAssumption::CapacityBound,
+                    starting_log_inv_rate: 1,
+                },
+            )
+            .unwrap();
+            assert_eq!(config.folding_schedule(), schedule);
+            let params =
+                super::super::params::WhirVerifierParams::from_config::<EF, DummyChallenger<BF>>(
+                    &config,
+                    PrefixProver::<BF, EF>::variable_order(),
+                    p3_circuit::ops::Poseidon2Config::BABY_BEAR_D4_W16,
+                )
+                .unwrap();
+            let mut circuit = CircuitBuilder::<EF>::new();
+            let targets = WhirProofTargets::alloc(&mut circuit, &params, 1, 2);
+            assert_eq!(targets.initial_sumcheck.round_polys.len(), schedule[0]);
+            assert_eq!(
+                targets
+                    .rounds
+                    .iter()
+                    .map(|round| round.queries[0].leaf_values().len())
+                    .collect::<Vec<_>>(),
+                leaf_widths
+            );
+            assert_eq!(
+                targets
+                    .rounds
+                    .iter()
+                    .map(|round| round.sumcheck.round_polys.len())
+                    .collect::<Vec<_>>(),
+                sumcheck_rounds
+            );
+            assert_eq!(
+                targets.final_queries[0].leaf_values().len(),
+                final_leaf_width
+            );
+            assert_eq!(targets.final_poly.len(), final_poly_len);
+            assert_eq!(
+                targets
+                    .final_sumcheck
+                    .as_ref()
+                    .map_or(0, |sumcheck| sumcheck.round_polys.len()),
+                final_sumcheck_rounds
+            );
+        }
+    }
+
+    #[test]
+    fn uniform_round_allocator_sizes_optional_pow_witnesses_per_sumcheck_round() {
+        let mut circuit = CircuitBuilder::<EF>::new();
+        let with_pow = WhirRoundProofTargets::alloc(&mut circuit, 0, 1, 3, 1, 1, 2, true);
+        assert_eq!(with_pow.queries[0].leaf_values().len(), 8);
+        assert_eq!(with_pow.sumcheck.round_polys.len(), 3);
+        assert_eq!(with_pow.sumcheck.pow_witnesses.len(), 3);
+
+        let without_pow = WhirRoundProofTargets::alloc(&mut circuit, 0, 1, 2, 0, 1, 2, false);
+        assert_eq!(without_pow.sumcheck.round_polys.len(), 2);
+        assert!(without_pow.sumcheck.pow_witnesses.is_empty());
     }
 }
