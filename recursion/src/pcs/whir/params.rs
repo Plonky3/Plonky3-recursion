@@ -47,7 +47,7 @@ pub enum WhirVerifierParamsError {
     /// A derived round rate would overflow integer arithmetic.
     #[error("WHIR rate arithmetic overflows while deriving round {round}")]
     RateArithmeticOverflow { round: usize },
-    /// A caller supplied a derived config that no longer matches its source parameters.
+    /// A caller supplied config that does not match the canonical recursive derivation.
     #[error("WHIR derived configuration is inconsistent in {component}")]
     InconsistentDerivedConfig { component: &'static str },
     /// Legacy saturation error retained for source compatibility.
@@ -260,6 +260,20 @@ impl<F: Field> WhirVerifierParams<F> {
             });
         }
 
+        // Shape construction uses derived geometry, so inspect domain metadata
+        // only after the complete arithmetic schedule has been validated.
+        // The claim count is bound per circuit; zero here is replaced when seeding.
+        let supplied_shape = WhirShape::new(config, 0);
+        let canonical_shape = WhirShape::new(&canonical, 0);
+        if supplied_shape.stratified_queries {
+            return Err(WhirVerifierParamsError::UnsupportedStratifiedQueries);
+        }
+        if supplied_shape.domain_id != canonical_shape.domain_id {
+            return Err(WhirVerifierParamsError::InconsistentDerivedConfig {
+                component: "transcript domain",
+            });
+        }
+
         let config = &canonical;
         let n_rounds = config.n_rounds();
         let round_params = (0..n_rounds)
@@ -280,12 +294,6 @@ impl<F: Field> WhirVerifierParams<F> {
 
         let final_round_config = config.final_round_config();
         let terminal = config.terminal();
-        // The claim count is bound per circuit; zero here is replaced when seeding.
-        let transcript_shape = WhirShape::new(config, 0);
-        if transcript_shape.stratified_queries {
-            return Err(WhirVerifierParamsError::UnsupportedStratifiedQueries);
-        }
-
         Ok(Self {
             num_variables: config.num_variables(),
             commitment_ood_samples: config.commitment_ood_samples(),
@@ -302,7 +310,7 @@ impl<F: Field> WhirVerifierParams<F> {
             final_folded_domain_gen: F::two_adic_generator(
                 final_round_config.log_folded_domain_size,
             ),
-            transcript_shape: WhirTranscriptShape(transcript_shape),
+            transcript_shape: WhirTranscriptShape(canonical_shape),
             permutation_config: permutation_config.into(),
         })
     }
@@ -433,8 +441,12 @@ mod tests {
     use alloc::vec;
 
     use p3_baby_bear::BabyBear;
+    use p3_commit::Encoder;
+    use p3_dft::Radix2DFTSmallBatch;
     use p3_field::extension::BinomialExtensionField;
+    use p3_matrix::dense::RowMajorMatrix;
     use p3_sumcheck::layout::{Layout, PrefixProver};
+    use p3_whir::domain::{WhirDomain, WhirQueryPoint};
     use p3_whir::parameters::{FoldingFactor, ProtocolParameters, SecurityAssumption};
 
     use super::*;
@@ -442,6 +454,83 @@ mod tests {
 
     type BF = BabyBear;
     type EF = BinomialExtensionField<BF, 4>;
+
+    struct TestDomain {
+        dft: Radix2DFTSmallBatch<BF>,
+        protocol_id: &'static [u8],
+        stratified_queries: bool,
+    }
+
+    impl TestDomain {
+        fn new(protocol_id: &'static [u8], stratified_queries: bool) -> Self {
+            Self {
+                dft: Radix2DFTSmallBatch::default(),
+                protocol_id,
+                stratified_queries,
+            }
+        }
+    }
+
+    impl Encoder<BF> for TestDomain {
+        fn encode_batch(
+            &self,
+            message: RowMajorMatrix<BF>,
+            log_inv_rate: usize,
+        ) -> RowMajorMatrix<BF> {
+            self.dft.encode_batch(message, log_inv_rate)
+        }
+
+        fn encode_batch_padded(
+            &self,
+            message: RowMajorMatrix<BF>,
+            log_inv_rate: usize,
+        ) -> RowMajorMatrix<BF> {
+            self.dft.encode_batch_padded(message, log_inv_rate)
+        }
+    }
+
+    impl WhirDomain<BF, EF> for TestDomain {
+        fn protocol_id(&self) -> &'static [u8] {
+            self.protocol_id
+        }
+
+        fn supports_security_assumption(&self, assumption: SecurityAssumption) -> bool {
+            <Radix2DFTSmallBatch<BF> as WhirDomain<BF, EF>>::supports_security_assumption(
+                &self.dft, assumption,
+            )
+        }
+
+        fn stratified_queries(&self) -> bool {
+            self.stratified_queries
+        }
+
+        fn max_log_domain_size(&self) -> usize {
+            <Radix2DFTSmallBatch<BF> as WhirDomain<BF, EF>>::max_log_domain_size(&self.dft)
+        }
+
+        fn encode_extension_batch_padded(
+            &self,
+            message: RowMajorMatrix<EF>,
+            log_inv_rate: usize,
+        ) -> RowMajorMatrix<EF> {
+            self.dft
+                .encode_extension_batch_padded(message, log_inv_rate)
+        }
+
+        fn query_point(
+            &self,
+            log_domain_size: usize,
+            num_variables: usize,
+            index: usize,
+        ) -> WhirQueryPoint<BF> {
+            <Radix2DFTSmallBatch<BF> as WhirDomain<BF, EF>>::query_point(
+                &self.dft,
+                log_domain_size,
+                num_variables,
+                index,
+            )
+        }
+    }
 
     /// `NUM_VARIABLES = 4` with this schedule has zero intermediate rounds: the
     /// only fold (factor 4) takes the starting domain (32 positions) straight
@@ -470,6 +559,91 @@ mod tests {
             folding_factor: FoldingFactor::Constant(4),
             soundness_type: SecurityAssumption::CapacityBound,
             starting_log_inv_rate: 1,
+        }
+    }
+
+    fn checked_params(
+        config: &WhirConfig<EF, BF, DummyChallenger<BF>>,
+    ) -> Result<WhirVerifierParams<BF>, WhirVerifierParamsError> {
+        WhirVerifierParams::from_config(
+            config,
+            PrefixProver::<BF, EF>::variable_order(),
+            p3_circuit::ops::Poseidon2Config::BABY_BEAR_D4_W16,
+        )
+    }
+
+    #[test]
+    fn from_config_rejects_custom_transcript_domain_at_both_geometries() {
+        let domain = TestDomain::new(b"custom-domain", false);
+        for (num_variables, protocol) in [
+            (4, saturating_protocol_params()),
+            (12, non_saturating_protocol_params()),
+        ] {
+            let config = WhirConfig::<EF, BF, DummyChallenger<BF>>::new_with_domain(
+                num_variables,
+                protocol,
+                &domain,
+            )
+            .expect("native custom-domain config is valid");
+            assert!(matches!(
+                checked_params(&config),
+                Err(WhirVerifierParamsError::InconsistentDerivedConfig {
+                    component: "transcript domain"
+                })
+            ));
+        }
+    }
+
+    #[test]
+    fn from_config_rejects_stratified_queries() {
+        let config = WhirConfig::<EF, BF, DummyChallenger<BF>>::new_with_domain(
+            4,
+            saturating_protocol_params(),
+            &TestDomain::new(b"", true),
+        )
+        .expect("native stratified config is valid");
+        assert!(matches!(
+            checked_params(&config),
+            Err(WhirVerifierParamsError::UnsupportedStratifiedQueries)
+        ));
+    }
+
+    #[test]
+    fn from_config_rejects_stratification_before_custom_domain_identity() {
+        let config = WhirConfig::<EF, BF, DummyChallenger<BF>>::new_with_domain(
+            12,
+            non_saturating_protocol_params(),
+            &TestDomain::new(b"custom-domain", true),
+        )
+        .expect("native custom stratified config is valid");
+        assert!(matches!(
+            checked_params(&config),
+            Err(WhirVerifierParamsError::UnsupportedStratifiedQueries)
+        ));
+    }
+
+    #[test]
+    fn from_config_accepts_canonical_dft_through_new_with_domain() {
+        for (num_variables, protocol) in [
+            (4, saturating_protocol_params()),
+            (12, non_saturating_protocol_params()),
+        ] {
+            let canonical =
+                WhirConfig::<EF, BF, DummyChallenger<BF>>::new(num_variables, protocol.clone())
+                    .expect("canonical config is valid");
+            let with_domain = WhirConfig::<EF, BF, DummyChallenger<BF>>::new_with_domain(
+                num_variables,
+                protocol,
+                &Radix2DFTSmallBatch::<BF>::default(),
+            )
+            .expect("native canonical DFT config is valid");
+            let expected = checked_params(&canonical).expect("canonical params are supported");
+            let actual = checked_params(&with_domain).expect("canonical DFT params are supported");
+            assert_eq!(actual, expected);
+            assert_eq!(
+                actual.transcript_shape(),
+                &WhirTranscriptShape(WhirShape::new(&with_domain, 0))
+            );
         }
     }
 
