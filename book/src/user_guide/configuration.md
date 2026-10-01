@@ -129,9 +129,16 @@ exceeds `domain_size >> folding_factor`, the verifier opens the entire folded
 domain in ascending order and makes no query-index challenger draws. The
 effective opening count is the minimum of the raw count and folded domain
 size; the raw count remains part of the canonical security configuration.
-Native configurations with stratified sampling or non-Prefix variable order
-remain unsupported by the recursive verifier. The WHIR descriptor's cap
-height is retained when restoring paths.
+The public low-level `WhirVerifierParams::from_config` and
+`verify_whir_circuit` path accepts canonical, unstratified Prefix and Suffix
+variable orders. Its query-index circuit currently consumes one base-field
+sample per unsaturated query, so native uniform-bit rejection or resampling
+is outside the supported transcript cases. The stacked univariate adapter,
+`WhirUniVerifierParams`, built-in WHIR aliases, and prepared/descriptor paths
+remain Prefix-only. The built-in descriptor retains its constant folding
+factor; custom Prefix univariate configurations support the positive native
+folding strategies listed above. The WHIR descriptor's cap height is retained
+when restoring paths.
 
 ## FRI parameters
 

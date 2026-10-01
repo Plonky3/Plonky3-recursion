@@ -38,8 +38,8 @@ pub enum WhirVerifierParamsError {
     /// The recursive adapter requires a nonempty, positive native folding strategy.
     #[error("WHIR recursive verifier requires a positive native folding strategy")]
     UnsupportedFoldingFactor,
-    /// The recursive adapter's stacked layout is implemented for Prefix only.
-    #[error("WHIR recursive verifier does not support variable order {variable_order:?}")]
+    /// The stacked univariate adapter is implemented for Prefix only.
+    #[error("WHIR stacked univariate adapter does not support variable order {variable_order:?}")]
     UnsupportedVariableOrder { variable_order: VariableOrder },
     /// The stacked polynomial arity cannot be represented by WHIR's integer geometry.
     #[error("stacked WHIR arity {arity} cannot form an initial domain with rate {rate}")]
@@ -230,9 +230,6 @@ impl<F: Field> WhirVerifierParams<F> {
         EF: ExtensionField<F> + TwoAdicField,
         Ch: FieldChallenger<F> + GrindingChallenger<Witness = F>,
     {
-        if variable_order != VariableOrder::Prefix {
-            return Err(WhirVerifierParamsError::UnsupportedVariableOrder { variable_order });
-        }
         crate::pcs::whir::uni::recursive_pcs::validate_round_config_inputs(
             config.num_variables(),
             config.params(),
@@ -447,7 +444,7 @@ mod tests {
     use p3_dft::Radix2DFTSmallBatch;
     use p3_field::extension::BinomialExtensionField;
     use p3_matrix::dense::RowMajorMatrix;
-    use p3_sumcheck::layout::{Layout, PrefixProver};
+    use p3_sumcheck::layout::{Layout, PrefixProver, SuffixProver};
     use p3_whir::domain::{WhirDomain, WhirQueryPoint};
     use p3_whir::parameters::{FoldingFactor, ProtocolParameters, SecurityAssumption};
 
@@ -768,5 +765,30 @@ mod tests {
             p3_circuit::ops::Poseidon2Config::BABY_BEAR_D4_W16,
         )
         .expect("this arity does not saturate any phase");
+    }
+
+    #[test]
+    fn from_config_accepts_canonical_suffix_metadata() {
+        let config =
+            WhirConfig::<EF, BF, DummyChallenger<BF>>::new(12, non_saturating_protocol_params())
+                .expect("canonical native configuration is valid");
+        let params = WhirVerifierParams::<BF>::from_config(
+            &config,
+            SuffixProver::<BF, EF>::variable_order(),
+            p3_circuit::ops::Poseidon2Config::BABY_BEAR_D4_W16,
+        )
+        .expect("canonical Suffix metadata is supported by the low-level verifier");
+
+        assert_eq!(params.variable_order(), VariableOrder::Suffix);
+        assert_eq!(params.n_rounds(), config.n_rounds());
+        assert_eq!(params.final_queries(), config.terminal().num_queries);
+        assert_eq!(
+            params.final_domain_size(),
+            config.final_round_config().domain_size
+        );
+        assert_eq!(
+            params.transcript_shape(),
+            &WhirTranscriptShape(WhirShape::new(&config, 0))
+        );
     }
 }

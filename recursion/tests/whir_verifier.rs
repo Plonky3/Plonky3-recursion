@@ -33,7 +33,9 @@ use p3_recursion::pcs::{
 use p3_recursion::traits::RecursiveChallenger;
 use p3_recursion::{CircuitChallenger, Target};
 use p3_sumcheck::constraints::{Constraint, Statements};
-use p3_sumcheck::layout::{Layout, PrefixProver, Table, Verifier, observe_commitment};
+use p3_sumcheck::layout::{
+    Layout, PrefixProver, SuffixProver, Table, Verifier, observe_commitment,
+};
 use p3_sumcheck::strategy::Basis;
 use p3_sumcheck::{OpeningBatch, OpeningProtocol, TableShape, TableSpec};
 use p3_symmetric::{MerkleCap, PaddingFreeSponge, TruncatedPermutation};
@@ -50,6 +52,7 @@ use rand::rngs::SmallRng;
 macro_rules! whir_arithmetic_test {
     (
         $modname:ident,
+        $Layout:ident,
         $BF:ty,
         $make_perm:expr,
         $Perm:ty,
@@ -71,6 +74,7 @@ macro_rules! whir_arithmetic_test {
 
             type BF = $BF;
             type EF = $EF;
+            type TestLayout = $Layout<BF, EF>;
             type Perm = $Perm;
             type MyHash = PaddingFreeSponge<Perm, 16, 8, 8>;
             type MyCompress = TruncatedPermutation<Perm, 2, 8, 16>;
@@ -79,7 +83,7 @@ macro_rules! whir_arithmetic_test {
             type MyDft = Radix2DFTSmallBatch<BF>;
             type NativeDuplex = DuplexChallenger<BF, Perm, 16, 8>;
             type MyChallenger = RecordingNativeChallenger;
-            type TestPcs = WhirProver<EF, BF, MyDft, MyMmcs, MyChallenger, PrefixProver<BF, EF>>;
+            type TestPcs = WhirProver<EF, BF, MyDft, MyMmcs, MyChallenger, TestLayout>;
 
             fn make_perm() -> Perm {
                 ($make_perm)()
@@ -315,8 +319,7 @@ macro_rules! whir_arithmetic_test {
                 );
                 let protocol = OpeningProtocol::new(vec![spec]).pad_to_min_num_variables(FOLDING);
                 let poly = Poly::<BF>::rand(&mut SmallRng::seed_from_u64(42), NUM_VARIABLES);
-                let witness =
-                    PrefixProver::<BF, EF>::new_witness(vec![single_poly_table(&poly)], FOLDING);
+                let witness = TestLayout::new_witness(vec![single_poly_table(&poly)], FOLDING);
 
                 let whir_params = ProtocolParameters {
                     security_level: $security,
@@ -361,6 +364,7 @@ macro_rules! whir_arithmetic_test {
                 if NUM_VARIABLES == 4 && FOLDING == 4 {
                     assert_eq!(final_config.num_queries, 35);
                     assert_eq!(final_config.domain_size >> final_config.folding_factor, 2);
+                    assert_eq!(config.final_sumcheck_rounds(), 0);
                 }
                 if NUM_VARIABLES == 11 && $security == 32 {
                     assert_eq!(config.round_parameters()[0].num_queries, 35);
@@ -420,10 +424,8 @@ macro_rules! whir_arithmetic_test {
                 // and query indices needed to restore authenticated paths.
                 let mut ch = make_challenger();
                 observe_commitment::<BF, _, _>(&mut ch, commitment.clone());
-                let mut lv = Verifier::<BF, EF>::new(
-                    &protocol.table_shapes(),
-                    PrefixProver::<BF, EF>::strategy(),
-                );
+                let mut lv =
+                    Verifier::<BF, EF>::new(&protocol.table_shapes(), TestLayout::strategy());
                 for &eval in &proof.whir.initial_ood_answers {
                     lv.add_virtual_eval(eval, &mut ch);
                 }
@@ -547,7 +549,7 @@ macro_rules! whir_arithmetic_test {
 
                 let vp = WhirVerifierParams::<BF>::from_config::<EF, MyChallenger>(
                     &config,
-                    PrefixProver::<BF, EF>::variable_order(),
+                    TestLayout::variable_order(),
                     $poseidon_cfg,
                 )
                 .expect("canonical WHIR query counts at this arity");
@@ -800,6 +802,7 @@ use p3_koala_bear::default_koalabear_poseidon2_16;
 
 whir_arithmetic_test!(
     babybear_d4_2rounds,
+    PrefixProver,
     BabyBear,
     default_babybear_poseidon2_16,
     Poseidon2BabyBear<16>,
@@ -819,6 +822,7 @@ whir_arithmetic_test!(
 
 whir_arithmetic_test!(
     koalabear_d4_1round,
+    PrefixProver,
     KoalaBear,
     default_koalabear_poseidon2_16,
     Poseidon2KoalaBear<16>,
@@ -838,6 +842,7 @@ whir_arithmetic_test!(
 
 whir_arithmetic_test!(
     babybear_d4_saturated_final,
+    PrefixProver,
     BabyBear,
     default_babybear_poseidon2_16,
     Poseidon2BabyBear<16>,
@@ -857,6 +862,7 @@ whir_arithmetic_test!(
 
 whir_arithmetic_test!(
     babybear_d4_mixed_saturation,
+    PrefixProver,
     BabyBear,
     default_babybear_poseidon2_16,
     Poseidon2BabyBear<16>,
@@ -876,6 +882,7 @@ whir_arithmetic_test!(
 
 whir_arithmetic_test!(
     babybear_d4_both_saturated,
+    PrefixProver,
     BabyBear,
     default_babybear_poseidon2_16,
     Poseidon2BabyBear<16>,
@@ -895,6 +902,7 @@ whir_arithmetic_test!(
 
 whir_arithmetic_test!(
     babybear_d4_partial_final_fold,
+    PrefixProver,
     BabyBear,
     default_babybear_poseidon2_16,
     Poseidon2BabyBear<16>,
@@ -914,6 +922,7 @@ whir_arithmetic_test!(
 
 whir_arithmetic_test!(
     babybear_d4_per_round_fold,
+    PrefixProver,
     BabyBear,
     default_babybear_poseidon2_16,
     Poseidon2BabyBear<16>,
@@ -929,4 +938,84 @@ whir_arithmetic_test!(
     SecurityAssumption::CapacityBound,
     vec![false, false],
     false
+);
+
+whir_arithmetic_test!(
+    babybear_d4_suffix_unsaturated,
+    SuffixProver,
+    BabyBear,
+    default_babybear_poseidon2_16,
+    Poseidon2BabyBear<16>,
+    BinomialExtensionField<BabyBear, 4>,
+    BabyBearD4Width16,
+    p3_circuit::ops::Poseidon2Config::BABY_BEAR_D4_W16,
+    12,
+    4,
+    FoldingFactor::Constant(4),
+    &[4, 4],
+    32,
+    vec![4usize],
+    SecurityAssumption::CapacityBound,
+    vec![false],
+    false
+);
+
+whir_arithmetic_test!(
+    babybear_d4_suffix_per_round_fold,
+    SuffixProver,
+    BabyBear,
+    default_babybear_poseidon2_16,
+    Poseidon2BabyBear<16>,
+    BinomialExtensionField<BabyBear, 4>,
+    BabyBearD4Width16,
+    p3_circuit::ops::Poseidon2Config::BABY_BEAR_D4_W16,
+    12,
+    2,
+    FoldingFactor::PerRound(vec![2, 3, 1]),
+    &[2, 3, 1],
+    32,
+    vec![1usize, 1],
+    SecurityAssumption::CapacityBound,
+    vec![false, false],
+    false
+);
+
+whir_arithmetic_test!(
+    babybear_d4_suffix_saturated_final,
+    SuffixProver,
+    BabyBear,
+    default_babybear_poseidon2_16,
+    Poseidon2BabyBear<16>,
+    BinomialExtensionField<BabyBear, 4>,
+    BabyBearD4Width16,
+    p3_circuit::ops::Poseidon2Config::BABY_BEAR_D4_W16,
+    4,
+    4,
+    FoldingFactor::Constant(4),
+    &[4],
+    32,
+    vec![],
+    SecurityAssumption::CapacityBound,
+    vec![],
+    true
+);
+
+whir_arithmetic_test!(
+    babybear_d4_suffix_mixed_saturation,
+    SuffixProver,
+    BabyBear,
+    default_babybear_poseidon2_16,
+    Poseidon2BabyBear<16>,
+    BinomialExtensionField<BabyBear, 4>,
+    BabyBearD4Width16,
+    p3_circuit::ops::Poseidon2Config::BABY_BEAR_D4_W16,
+    11,
+    4,
+    FoldingFactor::Constant(4),
+    &[4, 4],
+    32,
+    vec![1usize],
+    SecurityAssumption::CapacityBound,
+    vec![false],
+    true
 );
