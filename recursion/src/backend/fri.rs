@@ -2244,7 +2244,7 @@ macro_rules! impl_prepared_fri_backend {
                 capture_builtin_input_contract::<SC, A, SC::Commitment, SC::OpeningProof>(
                     config,
                     source,
-                    false,
+                    None,
                     |_| provers,
                 )
             }

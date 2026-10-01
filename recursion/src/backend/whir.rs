@@ -14,8 +14,8 @@ use p3_circuit_prover::common::{NpoAirBuilder, NpoPreprocessor};
 use p3_circuit_prover::config::StarkField;
 use p3_circuit_prover::field_params::ExtractBinomialW;
 use p3_circuit_prover::{
-    ConstraintProfile, Poseidon2Preprocessor, Poseidon2Prover, Poseidon2SharedPreprocessor,
-    RecomposePreprocessor, TableProver,
+    ConstraintProfile, Poseidon2Preprocessor, Poseidon2Prover, Poseidon2ProverD2,
+    Poseidon2SharedPreprocessor, RecomposePreprocessor, TableProver,
 };
 use p3_commit::{Pcs, UnivariateStarkPcs};
 use p3_field::extension::BinomiallyExtendable;
@@ -176,7 +176,7 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
         }
     }
 
-    /// Tag this backend for a fixed batch/extension degree `D` (only `4` is supported today).
+    /// Tag this backend for a fixed batch/extension degree `D` (`2` and `4` are supported).
     pub const fn for_extension_degree<const D: usize>(
         self,
     ) -> WhirRecursionBackendForExt<D, WIDTH, RATE, C> {
@@ -465,7 +465,28 @@ fn poseidon2_legacy_challenger_shape_configs(config: Poseidon2Config) -> Vec<Pos
     vec![shape.for_challenger(), shape]
 }
 
-fn plan_whir_batch<SC, A>(
+fn check_whir_batch_degree<const D: usize>(actual: usize) -> Result<(), VerificationError> {
+    if actual != D {
+        return Err(VerificationError::InvalidProofShape(format!(
+            "WhirRecursionBackend supports batch proofs of ext_degree {D}, got {actual}"
+        )));
+    }
+    Ok(())
+}
+
+fn check_trusted_whir_batch_degree<SC: StarkGenericConfig, const D: usize>(
+    verifier: &CircuitVerifier<SC>,
+) -> Result<(), VerificationError> {
+    let actual = verifier.relation().ext_degree();
+    if actual != D {
+        return Err(VerificationError::InvalidProofShape(format!(
+            "trusted verifier extension degree mismatch: descriptor declares {actual}, backend expects {D}"
+        )));
+    }
+    Ok(())
+}
+
+fn plan_whir_batch<SC, A, const D: usize>(
     config: &SC,
     prev: &RecursionInput<'_, SC, A>,
     provers: &[Box<dyn TableProver<SC>>],
@@ -493,13 +514,8 @@ where
     else {
         unreachable!()
     };
-    if proof.ext_degree != 4 {
-        return Err(VerificationError::InvalidProofShape(format!(
-            "WhirRecursionBackend supports batch proofs of ext_degree 4, got {}",
-            proof.ext_degree
-        )));
-    }
-    let tables = reconstruct_batch_tables::<SC, 4>(config, proof, provers)?;
+    check_whir_batch_degree::<D>(proof.ext_degree)?;
+    let tables = reconstruct_batch_tables::<SC, D>(config, proof, provers)?;
     if tables.public_values.as_slice() != table_public_inputs {
         return Err(VerificationError::InvalidProofShape(
             "batch table public inputs disagree with reconstructed AIR metadata".into(),
@@ -510,7 +526,7 @@ where
         .iter()
         .zip(&tables.trace_lens)
         .map(|(air, &trace_len)| {
-            lookups_for_circuit_table_air::<SC, 4>(&air.to_table_air(), trace_len, config.is_zk())
+            lookups_for_circuit_table_air::<SC, D>(&air.to_table_air(), trace_len, config.is_zk())
                 .to_vec()
         })
         .collect();
@@ -527,7 +543,7 @@ where
 }
 
 #[allow(clippy::type_complexity)]
-fn preflight_whir_context<SC, A>(
+fn preflight_whir_context<SC, A, const D: usize>(
     config: &SC,
     prev: &RecursionInput<'_, SC, A>,
     provers: &[Box<dyn TableProver<SC>>],
@@ -589,7 +605,7 @@ where
             public_inputs.len(),
             preprocessed_commit.as_ref(),
         )?,
-        RecursionInput::BatchStark { .. } => plan_whir_batch(config, prev, provers)?,
+        RecursionInput::BatchStark { .. } => plan_whir_batch::<SC, A, D>(config, prev, provers)?,
     };
     let caps = input_caps(prev, &layout)?;
     let opening = match prev {
@@ -617,7 +633,7 @@ type TrustedWhirPreflight<F> = (
     StarkLayoutPolicy,
 );
 
-fn preflight_trusted_whir_batch<SC, A>(
+fn preflight_trusted_whir_batch<SC, A, const D: usize>(
     verifier: &CircuitVerifier<SC>,
     proof: &BatchStarkProof<SC>,
     statement: &[Val<SC>],
@@ -644,6 +660,7 @@ where
             VerifierParams = WhirUniVerifierParams<Val<SC>>,
         >,
 {
+    check_trusted_whir_batch_degree::<SC, D>(verifier)?;
     verifier
         .verify(proof, statement)
         .map_err(|error| VerificationError::InvalidProofShape(error.to_string()))?;
@@ -662,13 +679,13 @@ where
             "WhirRecursionBackend supports only binary Merkle commitments".into(),
         ));
     }
-    let tables = trusted_batch_tables::<SC, 4>(verifier, statement)?;
+    let tables = trusted_batch_tables::<SC, D>(verifier, statement)?;
     let lookups = tables
         .airs
         .iter()
         .zip(&tables.trace_lens)
         .map(|(air, &trace_len)| {
-            lookups_for_circuit_table_air::<SC, 4>(&air.to_table_air(), trace_len, config.is_zk())
+            lookups_for_circuit_table_air::<SC, D>(&air.to_table_air(), trace_len, config.is_zk())
                 .to_vec()
         })
         .collect::<Vec<_>>();
@@ -713,7 +730,7 @@ where
     ))
 }
 
-/// WHIR recursion backend tagged with batch/extension field degree `D` (only `4` is supported).
+/// WHIR recursion backend tagged with batch/extension field degree `D` (`2` and `4` are supported).
 #[derive(Clone)]
 pub struct WhirRecursionBackendForExt<
     const D: usize,
@@ -1027,14 +1044,17 @@ where
     }
 }
 
-impl<SC, A, const WIDTH: usize, const RATE: usize, C> PcsRecursionBackend<SC, A, 4>
-    for WhirRecursionBackendForExt<4, WIDTH, RATE, C>
+#[rustfmt::skip]
+macro_rules! impl_whir_backend_for_degree {
+    ($d:literal, $poseidon_prover:ident) => {
+impl<SC, A, const WIDTH: usize, const RATE: usize, C> PcsRecursionBackend<SC, A, $d>
+    for WhirRecursionBackendForExt<$d, WIDTH, RATE, C>
 where
     SC::Challenger: p3_challenger::GrindingChallenger<Witness = p3_uni_stark::Val<SC>>,
     SC: WhirRecursionConfig + Send + Sync + 'static,
     A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
     C: ChallengerPermConfig + Copy + 'static,
-    Val<SC>: PrimeField64 + BinomiallyExtendable<4> + StarkField + TwoAdicField,
+    Val<SC>: PrimeField64 + BinomiallyExtendable<$d> + StarkField + TwoAdicField,
     SC::Challenge: BasedVectorSpace<Val<SC>>
         + From<Val<SC>>
         + ExtensionField<Val<SC>>
@@ -1066,7 +1086,7 @@ where
     ) -> Result<(), VerificationError> {
         let provers = match prev {
             RecursionInput::BatchStark { proof, .. } => {
-                PcsRecursionBackend::<SC, A, 4>::input_table_provers(
+                PcsRecursionBackend::<SC, A, $d>::input_table_provers(
                     self,
                     proof.ext_degree,
                     &proof
@@ -1078,7 +1098,7 @@ where
             }
             RecursionInput::UniStark { .. } => Vec::new(),
         };
-        preflight_whir_context(config, prev, &provers).map(|_| ())
+        preflight_whir_context::<SC, A, $d>(config, prev, &provers).map(|_| ())
     }
 
     fn preflight_input(
@@ -1106,7 +1126,7 @@ where
         preflight_whir_input(config, &self.0.limits, prev)?;
         let provers = match prev {
             RecursionInput::BatchStark { proof, .. } => {
-                PcsRecursionBackend::<SC, A, 4>::input_table_provers(
+                PcsRecursionBackend::<SC, A, $d>::input_table_provers(
                     self,
                     proof.ext_degree,
                     &proof
@@ -1119,7 +1139,7 @@ where
             RecursionInput::UniStark { .. } => Vec::new(),
         };
         let (pcs_context, stark_authority, policy) =
-            preflight_whir_context(config, prev, &provers)?;
+            preflight_whir_context::<SC, A, $d>(config, prev, &provers)?;
         let inner: WhirVerifierResult<SC> = match prev {
             RecursionInput::UniStark {
                 proof,
@@ -1168,12 +1188,7 @@ where
                 table_public_inputs: _,
             } => {
                 validate_batch_proof_native::<SC, SC::Commitment, SC::OpeningProof>(&proof.proof)?;
-                if proof.ext_degree != 4 {
-                    return Err(VerificationError::InvalidProofShape(format!(
-                        "WhirRecursionBackend supports batch proofs of ext_degree 4, got {}",
-                        proof.ext_degree
-                    )));
-                }
+                check_whir_batch_degree::<$d>(proof.ext_degree)?;
                 let lookup_gadget = LogUpGadget::new();
                 let (verifier_inputs, op_ids) = verify_p3_batch_proof_circuit::<
                     SC,
@@ -1184,7 +1199,7 @@ where
                     _,
                     WIDTH,
                     RATE,
-                    4,
+                    $d,
                 >(
                     config,
                     circuit,
@@ -1219,11 +1234,15 @@ where
     ) -> Result<(), &'static str> {
         preflight_whir_input(config, &self.0.limits, prev)
             .map_err(|_| "WHIR input exceeds verifier resource limits")?;
+        if let RecursionInput::BatchStark { proof, .. } = prev {
+            check_whir_batch_degree::<$d>(proof.ext_degree)
+                .map_err(|_| "Failed to replay the input proof's verifier transcript")?;
+        }
         // The same plugin list `build_verifier_circuit` used, so the transcript is replayed
         // against the AIRs the circuit was built for.
         let provers = match prev {
             RecursionInput::BatchStark { proof, .. } => {
-                PcsRecursionBackend::<SC, A, 4>::input_table_provers(
+                PcsRecursionBackend::<SC, A, $d>::input_table_provers(
                     self,
                     proof.ext_degree,
                     &proof
@@ -1282,7 +1301,7 @@ where
     }
 
     fn non_primitive_provers(&self, ext_degree: usize) -> Vec<Box<dyn TableProver<SC>>> {
-        if ext_degree == 4 {
+        if ext_degree == $d {
             let challenger = self
                 .0
                 .challenger_perm_config
@@ -1293,12 +1312,12 @@ where
                 });
             let mut provers: Vec<Box<dyn TableProver<SC>>> = Vec::new();
             for config in poseidon2_challenger_shape_configs(challenger) {
-                provers.push(Box::new(Poseidon2Prover::new(
+                provers.push(Box::new($poseidon_prover::new(
                     config,
                     ConstraintProfile::Standard,
                 )));
             }
-            provers.push(Box::new(RecomposeProver::<4>::new(1, true)));
+            provers.push(Box::new(RecomposeProver::<$d>::new(1, true)));
             provers
         } else {
             Vec::new()
@@ -1322,23 +1341,23 @@ where
             .into_iter()
             .map(p3_circuit::ops::NpoTypeId::poseidon2_perm)
             .collect();
-        if ext_degree != 4 || !legacy_ids.iter().any(|id| op_types.contains(id)) {
-            return <Self as PcsRecursionBackend<SC, A, 4>>::non_primitive_provers(
+        if ext_degree != $d || !legacy_ids.iter().any(|id| op_types.contains(id)) {
+            return <Self as PcsRecursionBackend<SC, A, $d>>::non_primitive_provers(
                 self, ext_degree,
             );
         }
         let mut provers: Vec<Box<dyn TableProver<SC>>> = Vec::new();
         for config in poseidon2_legacy_challenger_shape_configs(challenger) {
-            provers.push(Box::new(Poseidon2Prover::new(
+            provers.push(Box::new($poseidon_prover::new(
                 config,
                 ConstraintProfile::Standard,
             )));
         }
-        provers.push(Box::new(RecomposeProver::<4>::new(1, true)));
+        provers.push(Box::new(RecomposeProver::<$d>::new(1, true)));
         provers
     }
 
-    fn non_primitive_air_builders(&self) -> Vec<Box<dyn NpoAirBuilder<SC, 4>>> {
+    fn non_primitive_air_builders(&self) -> Vec<Box<dyn NpoAirBuilder<SC, $d>>> {
         let challenger = self
             .0
             .challenger_perm_config
@@ -1347,26 +1366,22 @@ where
             .unwrap_or_else(|| {
                 panic!("WhirRecursionBackend requires a Poseidon2 challenger config")
             });
-        let mut builders = poseidon2_air_builders_for_configs::<SC, 4>(
+        let mut builders = poseidon2_air_builders_for_configs::<SC, $d>(
             poseidon2_challenger_shape_configs(challenger),
         );
-        builders.push(Box::new(RecomposeAirBuilder::<4>::new(1, true)));
+        builders.push(Box::new(RecomposeAirBuilder::<$d>::new(1, true)));
         builders
     }
 }
 
-#[cfg(test)]
-#[path = "whir/acceptance_counter_tests.rs"]
-mod acceptance_counter_tests;
-
-impl<SC, A, const WIDTH: usize, const RATE: usize, C> PreparedPcsRecursionBackend<SC, A, 4>
-    for WhirRecursionBackendForExt<4, WIDTH, RATE, C>
+impl<SC, A, const WIDTH: usize, const RATE: usize, C> PreparedPcsRecursionBackend<SC, A, $d>
+    for WhirRecursionBackendForExt<$d, WIDTH, RATE, C>
 where
     SC::Challenger: p3_challenger::GrindingChallenger<Witness = p3_uni_stark::Val<SC>>,
     SC: WhirRecursionConfig + Send + Sync + 'static,
     A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
     C: ChallengerPermConfig + Copy + 'static,
-    Val<SC>: PrimeField64 + BinomiallyExtendable<4> + StarkField + TwoAdicField,
+    Val<SC>: PrimeField64 + BinomiallyExtendable<$d> + StarkField + TwoAdicField,
     SC::Challenge: BasedVectorSpace<Val<SC>>
         + From<Val<SC>>
         + ExtensionField<Val<SC>>
@@ -1405,7 +1420,7 @@ where
         preflight_whir_input(config, &self.0.limits, source)?;
         let provers = match source {
             RecursionInput::BatchStark { proof, .. } => {
-                PcsRecursionBackend::<SC, A, 4>::input_table_provers(
+                PcsRecursionBackend::<SC, A, $d>::input_table_provers(
                     self,
                     proof.ext_degree,
                     &proof
@@ -1420,7 +1435,7 @@ where
         capture_builtin_input_contract::<SC, A, SC::Commitment, SC::OpeningProof>(
             config,
             source,
-            true,
+            Some($d),
             |_| provers,
         )
     }
@@ -1444,14 +1459,14 @@ where
     }
 }
 
-impl<SC, A, const WIDTH: usize, const RATE: usize, C> TrustedPcsRecursionBackend<SC, A, 4>
-    for WhirRecursionBackendForExt<4, WIDTH, RATE, C>
+impl<SC, A, const WIDTH: usize, const RATE: usize, C> TrustedPcsRecursionBackend<SC, A, $d>
+    for WhirRecursionBackendForExt<$d, WIDTH, RATE, C>
 where
     SC::Challenger: p3_challenger::GrindingChallenger<Witness = p3_uni_stark::Val<SC>>,
     SC: WhirRecursionConfig + Send + Sync + 'static,
     A: RecursiveAir<Val<SC>, SC::Challenge, LogUpGadget>,
     C: ChallengerPermConfig + Copy + 'static,
-    Val<SC>: PrimeField64 + BinomiallyExtendable<4> + StarkField + TwoAdicField,
+    Val<SC>: PrimeField64 + BinomiallyExtendable<$d> + StarkField + TwoAdicField,
     SC::Challenge: BasedVectorSpace<Val<SC>>
         + From<Val<SC>>
         + ExtensionField<Val<SC>>
@@ -1499,7 +1514,8 @@ where
             &self.0.limits,
             proof.proof.degree_bits.iter().copied().max().unwrap_or(0),
             &mut usage,
-        )
+        )?;
+        check_trusted_whir_batch_degree::<SC, $d>(verifier)
     }
 
     fn capture_trusted_batch_input_contract(
@@ -1508,7 +1524,7 @@ where
         proof: &BatchStarkProof<SC>,
         expected_statement: &[Val<SC>],
     ) -> Result<Self::InputContract, VerificationError> {
-        <Self as TrustedPcsRecursionBackend<SC, A, 4>>::preflight_trusted_batch(
+        <Self as TrustedPcsRecursionBackend<SC, A, $d>>::preflight_trusted_batch(
             self, verifier, proof,
         )?;
         capture_trusted_batch_input_contract::<SC, SC::Commitment, SC::OpeningProof>(
@@ -1525,7 +1541,7 @@ where
         proof: &BatchStarkProof<SC>,
         expected_statement: &[Val<SC>],
     ) -> Result<(), VerificationError> {
-        <Self as TrustedPcsRecursionBackend<SC, A, 4>>::preflight_trusted_batch(
+        <Self as TrustedPcsRecursionBackend<SC, A, $d>>::preflight_trusted_batch(
             self, verifier, proof,
         )?;
         validate_trusted_batch_input::<SC, SC::Commitment, SC::OpeningProof>(
@@ -1543,10 +1559,10 @@ where
         statement: &[Val<SC>],
         circuit: &mut CircuitBuilder<SC::Challenge>,
     ) -> Result<Self::VerifierResult, VerificationError> {
-        <Self as TrustedPcsRecursionBackend<SC, A, 4>>::preflight_trusted_batch(
+        <Self as TrustedPcsRecursionBackend<SC, A, $d>>::preflight_trusted_batch(
             self, verifier, proof,
         )?;
-        let public_values = trusted_batch_tables::<SC, 4>(verifier, statement)?.public_values;
+        let public_values = trusted_batch_tables::<SC, $d>(verifier, statement)?.public_values;
         preflight_basic_whir_input::<SC, A>(
             &self.0.limits,
             &RecursionInput::BatchStark {
@@ -1556,7 +1572,7 @@ where
             },
         )?;
         let (pcs_context, stark_authority, policy) =
-            preflight_trusted_whir_batch::<SC, A>(verifier, proof, statement)?;
+            preflight_trusted_whir_batch::<SC, A, $d>(verifier, proof, statement)?;
         validate_batch_proof_native::<SC, SC::Commitment, SC::OpeningProof>(&proof.proof)?;
         let (verifier_inputs, op_ids) = verify_trusted_p3_batch_proof_circuit::<
             SC,
@@ -1567,7 +1583,7 @@ where
             _,
             WIDTH,
             RATE,
-            4,
+            $d,
         >(
             verifier,
             circuit,
@@ -1593,15 +1609,15 @@ where
         runner: &mut CircuitRunner<'_, SC::Challenge>,
         op_ids: &[NonPrimitiveOpId],
     ) -> Result<(), VerificationError> {
-        <Self as TrustedPcsRecursionBackend<SC, A, 4>>::preflight_trusted_batch(
+        <Self as TrustedPcsRecursionBackend<SC, A, $d>>::preflight_trusted_batch(
             self, verifier, proof,
         )?;
         let transcript =
-            replay_trusted_batch_layer_transcript::<SC, 4>(verifier, proof, statement)?;
+            replay_trusted_batch_layer_transcript::<SC, $d>(verifier, proof, statement)?;
         let prev: RecursionInput<'_, SC, A> = RecursionInput::BatchStark {
             proof,
             common_data: verifier.common_data(),
-            table_public_inputs: trusted_batch_tables::<SC, 4>(verifier, statement)?.public_values,
+            table_public_inputs: trusted_batch_tables::<SC, $d>(verifier, statement)?.public_values,
         };
         SC::with_whir_opening_proof(&prev, |opening_proof| {
             SC::set_whir_private_data(verifier.config(), runner, op_ids, opening_proof, transcript)
@@ -1649,3 +1665,12 @@ where
         }
     }
 }
+    };
+}
+
+impl_whir_backend_for_degree!(4, Poseidon2Prover);
+impl_whir_backend_for_degree!(2, Poseidon2ProverD2);
+
+#[cfg(test)]
+#[path = "whir/acceptance_counter_tests.rs"]
+mod acceptance_counter_tests;

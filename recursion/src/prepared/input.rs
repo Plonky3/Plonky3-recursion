@@ -619,7 +619,7 @@ where
 pub(crate) fn capture_builtin_input_contract<SC, A, Comm, Opening>(
     config: &SC,
     source: &RecursionInput<'_, SC, A>,
-    whir_degree_four_only: bool,
+    expected_batch_degree: Option<usize>,
     make_non_primitive_provers: impl FnOnce(usize) -> Vec<Box<dyn TableProver<SC>>>,
 ) -> CaptureShapeResult<SC, Comm::Shape, Opening::Shape>
 where
@@ -677,9 +677,11 @@ where
             table_public_inputs,
             ..
         } => {
-            if whir_degree_four_only && proof.ext_degree != 4 {
+            if let Some(expected) = expected_batch_degree
+                && proof.ext_degree != expected
+            {
                 return Err(VerificationError::InvalidProofShape(format!(
-                    "WhirRecursionBackend supports batch proofs of ext_degree 4, got {}",
+                    "WhirRecursionBackend supports batch proofs of ext_degree {expected}, got {}",
                     proof.ext_degree
                 )));
             }
@@ -1081,7 +1083,7 @@ mod tests {
             crate::recursion::BatchOnly,
             <Config as crate::backend::fri::FriRecursionConfig>::Commitment,
             <Config as crate::backend::fri::FriRecursionConfig>::OpeningProof,
-        >(&fixture.layer_config, &source, false, |_| {
+        >(&fixture.layer_config, &source, None, |_| {
             factory_calls += 1;
             panic!("plugin factory must remain lazy until raw shape validation succeeds")
         });
