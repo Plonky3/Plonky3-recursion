@@ -6,16 +6,17 @@
 //!     the Extension-leaf query path that only appears in rounds ≥ 1.
 //!   - KoalaBear D4, 1 round — verifies the generic field typing.
 
-use std::collections::VecDeque;
-
 use p3_baby_bear::{BabyBear, Poseidon2BabyBear};
-use p3_challenger::DuplexChallenger;
-use p3_circuit::ops::{generate_poseidon2_trace, generate_recompose_trace};
+use p3_challenger::{
+    CanObserve, CanSample, CanSampleBits, CanSampleUniformBits, DuplexChallenger, FieldChallenger,
+    GrindingChallenger, ResamplingError,
+};
+use p3_circuit::ops::{Poseidon2Config, generate_poseidon2_trace, generate_recompose_trace};
 use p3_circuit::{CircuitBuilder, CircuitBuilderError, CircuitError};
 use p3_commit::MultilinearPcs;
 use p3_dft::Radix2DFTSmallBatch;
 use p3_field::extension::BinomialExtensionField;
-use p3_field::{Field, PrimeCharacteristicRing};
+use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
 use p3_koala_bear::{KoalaBear, Poseidon2KoalaBear};
 use p3_matrix::Dimensions;
 use p3_matrix::dense::RowMajorMatrix;
@@ -23,7 +24,6 @@ use p3_merkle_tree::MerkleTreeMmcs;
 use p3_multilinear_util::point::Point;
 use p3_multilinear_util::poly::Poly;
 use p3_poseidon2_circuit_air::{BabyBearD4Width16, KoalaBearD4Width16};
-use p3_recursion::Target;
 use p3_recursion::pcs::whir::{
     ConstraintWeightData, WhirProofTargets, WhirVerifierParams, verify_whir_circuit,
 };
@@ -31,11 +31,12 @@ use p3_recursion::pcs::{
     convert_merkle_proof_to_siblings, restore_whir_query_paths, set_whir_mmcs_private_data,
 };
 use p3_recursion::traits::RecursiveChallenger;
+use p3_recursion::{CircuitChallenger, Target};
 use p3_sumcheck::constraints::{Constraint, Statements};
 use p3_sumcheck::layout::{Layout, PrefixProver, Table, Verifier, observe_commitment};
 use p3_sumcheck::strategy::Basis;
 use p3_sumcheck::{OpeningBatch, OpeningProtocol, TableShape, TableSpec};
-use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
+use p3_symmetric::{MerkleCap, PaddingFreeSponge, TruncatedPermutation};
 use p3_whir::parameters::{FoldingFactor, ProtocolParameters, SecurityAssumption, WhirConfig};
 use p3_whir::pcs::proof::QueryOpenings;
 use p3_whir::pcs::prover::WhirProver;
@@ -43,8 +44,7 @@ use p3_whir::transcript::{WhirShape, WhirVerifierTranscript};
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
 
-/// Replay the WHIR Fiat–Shamir transcript over a native `DuplexChallenger` and
-/// collect the extension / base samples the `MockChallenger` must return.
+/// Compare WHIR's native Fiat–Shamir transcript with a real circuit challenger.
 ///
 /// Generic over any number of WHIR rounds; works for both BabyBear and KoalaBear.
 macro_rules! whir_arithmetic_test {
@@ -77,34 +77,109 @@ macro_rules! whir_arithmetic_test {
             type PackedBF = <BF as Field>::Packing;
             type MyMmcs = MerkleTreeMmcs<PackedBF, PackedBF, MyHash, MyCompress, 2, 8>;
             type MyDft = Radix2DFTSmallBatch<BF>;
-            type MyChallenger = DuplexChallenger<BF, Perm, 16, 8>;
+            type NativeDuplex = DuplexChallenger<BF, Perm, 16, 8>;
+            type MyChallenger = RecordingNativeChallenger;
             type TestPcs = WhirProver<EF, BF, MyDft, MyMmcs, MyChallenger, PrefixProver<BF, EF>>;
 
             fn make_perm() -> Perm {
                 ($make_perm)()
             }
             fn make_challenger() -> MyChallenger {
-                MyChallenger::new(make_perm())
+                MyChallenger {
+                    inner: NativeDuplex::new(make_perm()),
+                    events: Vec::new(),
+                    bit_calls: 0,
+                    uniform_widths: Vec::new(),
+                }
             }
 
-            struct MockChallenger {
-                ext_samples: VecDeque<EF>,
-                base_samples: VecDeque<BF>,
+            #[derive(Clone, Copy)]
+            enum NativeEvent {
+                Observe(BF),
+                Sample(BF),
+            }
+
+            #[derive(Clone)]
+            struct RecordingNativeChallenger {
+                inner: NativeDuplex,
+                events: Vec<NativeEvent>,
+                bit_calls: usize,
+                uniform_widths: Vec<usize>,
+            }
+
+            impl CanObserve<BF> for RecordingNativeChallenger {
+                fn observe(&mut self, value: BF) {
+                    self.events.push(NativeEvent::Observe(value));
+                    self.inner.observe(value);
+                }
+            }
+
+            impl CanObserve<MerkleCap<BF, [BF; 8]>> for RecordingNativeChallenger {
+                fn observe(&mut self, cap: MerkleCap<BF, [BF; 8]>) {
+                    for digest in cap.roots() {
+                        for &value in digest {
+                            <Self as CanObserve<BF>>::observe(self, value);
+                        }
+                    }
+                }
+            }
+
+            impl CanSample<BF> for RecordingNativeChallenger {
+                fn sample(&mut self) -> BF {
+                    let value = self.inner.sample();
+                    self.events.push(NativeEvent::Sample(value));
+                    value
+                }
+            }
+
+            impl CanSampleBits<usize> for RecordingNativeChallenger {
+                fn sample_bits(&mut self, bits: usize) -> usize {
+                    self.bit_calls += 1;
+                    self.inner.sample_bits(bits)
+                }
+            }
+
+            impl CanSampleUniformBits<BF> for RecordingNativeChallenger {
+                fn sample_uniform_bits<const RESAMPLE: bool>(
+                    &mut self,
+                    bits: usize,
+                ) -> Result<usize, ResamplingError> {
+                    self.uniform_widths.push(bits);
+                    self.inner.sample_uniform_bits::<RESAMPLE>(bits)
+                }
+            }
+
+            impl FieldChallenger<BF> for RecordingNativeChallenger {}
+
+            impl GrindingChallenger for RecordingNativeChallenger {
+                type Witness = BF;
+
+                fn grind(&mut self, bits: usize) -> BF {
+                    assert_eq!(bits, 0, "the transcript oracle requires zero PoW");
+                    self.inner.grind(bits)
+                }
+            }
+
+            struct RecordingCircuitChallenger {
+                inner: CircuitChallenger<16, 8, Poseidon2Config>,
                 bit_widths: Vec<usize>,
             }
 
-            impl RecursiveChallenger<BF, EF> for MockChallenger {
-                fn observe(&mut self, _: &mut CircuitBuilder<EF>, _: Target) {}
-                fn observe_ext(&mut self, _: &mut CircuitBuilder<EF>, _: Target) {}
+            impl RecursiveChallenger<BF, EF> for RecordingCircuitChallenger {
+                fn observe(&mut self, circuit: &mut CircuitBuilder<EF>, value: Target) {
+                    RecursiveChallenger::<BF, EF>::observe(&mut self.inner, circuit, value);
+                }
+
+                fn observe_ext(&mut self, circuit: &mut CircuitBuilder<EF>, value: Target) {
+                    RecursiveChallenger::<BF, EF>::observe_ext(&mut self.inner, circuit, value);
+                }
 
                 fn sample(&mut self, circuit: &mut CircuitBuilder<EF>) -> Target {
-                    let v = self.base_samples.pop_front().expect("base exhausted");
-                    circuit.define_const(EF::from(v))
+                    RecursiveChallenger::<BF, EF>::sample(&mut self.inner, circuit)
                 }
 
                 fn sample_ext(&mut self, circuit: &mut CircuitBuilder<EF>) -> Target {
-                    let v = self.ext_samples.pop_front().expect("ext exhausted");
-                    circuit.define_const(v)
+                    RecursiveChallenger::<BF, EF>::sample_ext(&mut self.inner, circuit)
                 }
 
                 fn sample_bits(
@@ -113,22 +188,26 @@ macro_rules! whir_arithmetic_test {
                     k: usize,
                 ) -> Result<Vec<Target>, CircuitBuilderError> {
                     self.bit_widths.push(k);
-                    let raw = self.base_samples.pop_front().expect("base exhausted");
-                    let raw_target = circuit.define_const(EF::from(raw));
-                    let bits = circuit.decompose_to_bits::<BF>(raw_target, BF::bits())?;
-                    Ok(bits[..k].to_vec())
+                    RecursiveChallenger::<BF, EF>::sample_bits(&mut self.inner, circuit, k)
                 }
 
                 fn check_pow_witness(
                     &mut self,
-                    _: &mut CircuitBuilder<EF>,
-                    _: usize,
-                    _: Target,
+                    circuit: &mut CircuitBuilder<EF>,
+                    bits: usize,
+                    witness: Target,
                 ) -> Result<(), CircuitBuilderError> {
-                    Ok(())
+                    RecursiveChallenger::<BF, EF>::check_pow_witness(
+                        &mut self.inner,
+                        circuit,
+                        bits,
+                        witness,
+                    )
                 }
 
-                fn clear(&mut self, _: &mut CircuitBuilder<EF>) {}
+                fn clear(&mut self, circuit: &mut CircuitBuilder<EF>) {
+                    RecursiveChallenger::<BF, EF>::clear(&mut self.inner, circuit);
+                }
             }
 
             /// Builds the single-column `Table` the test protocol commits to.
@@ -249,6 +328,18 @@ macro_rules! whir_arithmetic_test {
                 };
                 let config =
                     WhirConfig::<EF, BF, MyChallenger>::new(NUM_VARIABLES, whir_params).unwrap();
+                assert_eq!(config.params().pow_bits, 0);
+                assert_eq!(config.starting_folding_pow_bits(), 0);
+                assert_eq!(config.final_folding_pow_bits(), 0);
+                assert_eq!(config.terminal().pow_bits, 0);
+                for round in config.round_parameters() {
+                    assert_eq!(round.pow_bits, 0);
+                    assert_eq!(round.folding_pow_bits, 0);
+                }
+                assert!(
+                    3 * <EF as BasedVectorSpace<BF>>::DIMENSION > 8,
+                    "three EF draws must cross the sponge rate"
+                );
                 assert_eq!(config.folding_schedule(), $expected_schedule);
                 assert_eq!(config.folding_schedule()[0], FOLDING);
                 assert_eq!(
@@ -310,8 +401,23 @@ macro_rules! whir_arithmetic_test {
                     (commitment, proof)
                 };
 
-                // Replay the native verifier through p3-whir's own typed transcript, recording
-                // every sample the in-circuit verifier draws after the initial constraint.
+                // The official PCS verifier checks the proof and supplies the end-state oracle.
+                let mut official = make_challenger();
+                <TestPcs as MultilinearPcs<EF, MyChallenger>>::verify(
+                    &pcs,
+                    &commitment,
+                    &proof,
+                    &mut official,
+                    protocol.clone(),
+                )
+                .expect("official native PCS verification failed");
+                assert_eq!(official.bit_calls, 0);
+                let official_widths = official.uniform_widths.clone();
+                let official_tail: [EF; 3] =
+                    core::array::from_fn(|_| official.sample_algebra_element());
+
+                // The typed native replay exposes the exact adapter-to-engine checkpoint
+                // and query indices needed to restore authenticated paths.
                 let mut ch = make_challenger();
                 observe_commitment::<BF, _, _>(&mut ch, commitment.clone());
                 let mut lv = Verifier::<BF, EF>::new(
@@ -326,8 +432,7 @@ macro_rules! whir_arithmetic_test {
                         .expect("proof evaluations match the opening schedule shape");
                 }
 
-                let mut ext_samples: Vec<EF> = Vec::new();
-                let mut base_samples: Vec<BF> = Vec::new();
+                let mut initial_events = None;
                 let mut expected_bit_widths = Vec::new();
                 let mut round_indices = Vec::new();
 
@@ -339,6 +444,9 @@ macro_rules! whir_arithmetic_test {
                         let constraint = lv.constraint(alpha);
                         let mut claimed_eval = EF::ZERO;
                         constraint.combine_evals(&mut claimed_eval);
+                        assert_eq!(challenger.bit_calls, 0);
+                        assert!(challenger.uniform_widths.is_empty());
+                        initial_events = Some(challenger.events.clone());
                         let mut running = claimed_eval;
                         let r = proof.whir.initial_sumcheck.verify_rounds(
                             challenger,
@@ -349,7 +457,7 @@ macro_rules! whir_arithmetic_test {
                         );
                         (constraint, claimed_eval, r)
                     });
-                ext_samples.extend(initial_r.expect("initial sumcheck replays").as_slice());
+                let _ = initial_r.expect("initial sumcheck replays");
                 let mut dummy = EF::ZERO;
                 for (round_index, (rproof, rp)) in proof
                     .whir
@@ -366,7 +474,7 @@ macro_rules! whir_arithmetic_test {
                             .clone(),
                     );
                     for &answer in &rproof.ood_answers {
-                        ext_samples.push(vt.ood_point());
+                        let _ = vt.ood_point();
                         vt.ood_answer(answer);
                     }
                     vt.query_pow(round_index, rproof.pow_witness).unwrap();
@@ -375,14 +483,13 @@ macro_rules! whir_arithmetic_test {
                     if rp.num_queries >= folded_domain_size {
                         assert_eq!(indices, (0..folded_domain_size).collect::<Vec<_>>());
                     } else {
-                        base_samples.extend(indices.iter().map(|&idx| BF::from_u64(idx as u64)));
                         expected_bit_widths.extend(core::iter::repeat_n(
                             folded_domain_size.ilog2() as usize,
                             indices.len(),
                         ));
                     }
                     round_indices.push(indices);
-                    ext_samples.push(vt.round_batching());
+                    let _ = vt.round_batching();
                     let r = vt
                         .delegate_round_fold(|challenger| {
                             rproof.sumcheck.verify_rounds(
@@ -394,7 +501,7 @@ macro_rules! whir_arithmetic_test {
                             )
                         })
                         .expect("round sumcheck replays");
-                    ext_samples.extend(r.as_slice());
+                    let _ = r;
                 }
                 let n_rounds = proof.whir.rounds.len();
                 let fp = proof.whir.final_poly.as_ref().expect("final_poly");
@@ -411,7 +518,6 @@ macro_rules! whir_arithmetic_test {
                         (0..final_folded_domain_size).collect::<Vec<_>>()
                     );
                 } else {
-                    base_samples.extend(final_indices.iter().map(|&idx| BF::from_u64(idx as u64)));
                     expected_bit_widths.extend(core::iter::repeat_n(
                         final_folded_domain_size.ilog2() as usize,
                         final_indices.len(),
@@ -427,9 +533,17 @@ macro_rules! whir_arithmetic_test {
                         Basis::Evaluation,
                     )
                 }) {
-                    ext_samples.extend(r.expect("final sumcheck replays").as_slice());
+                    let _ = r.expect("final sumcheck replays");
                 }
                 vt.finish();
+                assert_eq!(ch.bit_calls, 0);
+                assert_eq!(ch.uniform_widths, expected_bit_widths);
+                assert_eq!(ch.uniform_widths, official_widths);
+                let manual_tail: [EF; 3] = core::array::from_fn(|_| ch.sample_algebra_element());
+                assert_eq!(
+                    manual_tail, official_tail,
+                    "typed replay ended in a different state"
+                );
 
                 let vp = WhirVerifierParams::<BF>::from_config::<EF, MyChallenger>(
                     &config,
@@ -503,14 +617,26 @@ macro_rules! whir_arithmetic_test {
                 };
                 let initial_claimed_eval_target = circuit.define_const(initial_claimed_eval);
 
-                let mut mock = MockChallenger {
-                    ext_samples: ext_samples.into_iter().collect(),
-                    base_samples: base_samples.into_iter().collect(),
+                let mut circuit_challenger = RecordingCircuitChallenger {
+                    inner: CircuitChallenger::new($poseidon_cfg),
                     bit_widths: Vec::new(),
                 };
-                let op_ids = verify_whir_circuit::<BF, EF, MockChallenger>(
+                for event in initial_events.expect("initial transcript checkpoint was captured") {
+                    match event {
+                        NativeEvent::Observe(value) => {
+                            let target = circuit.define_const(EF::from(value));
+                            circuit_challenger.observe(&mut circuit, target);
+                        }
+                        NativeEvent::Sample(value) => {
+                            let actual = circuit_challenger.sample(&mut circuit);
+                            let expected = circuit.define_const(EF::from(value));
+                            circuit.connect(actual, expected);
+                        }
+                    }
+                }
+                let op_ids = verify_whir_circuit::<BF, EF, RecordingCircuitChallenger>(
                     &mut circuit,
-                    &mut mock,
+                    &mut circuit_challenger,
                     &vp,
                     &proof_targets,
                     &initial_cap,
@@ -519,17 +645,12 @@ macro_rules! whir_arithmetic_test {
                 )
                 .expect("verify_whir_circuit failed");
 
-                assert!(
-                    mock.ext_samples.is_empty(),
-                    "unused ext_samples: {}",
-                    mock.ext_samples.len()
-                );
-                assert!(
-                    mock.base_samples.is_empty(),
-                    "unused base_samples: {}",
-                    mock.base_samples.len()
-                );
-                assert_eq!(mock.bit_widths, expected_bit_widths);
+                assert_eq!(circuit_challenger.bit_widths, official_widths);
+                for expected in official_tail {
+                    let actual = circuit_challenger.sample_ext(&mut circuit);
+                    let expected = circuit.define_const(expected);
+                    circuit.connect(actual, expected);
+                }
 
                 let circuit = circuit.build().expect("circuit build failed");
 
