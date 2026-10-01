@@ -5,6 +5,7 @@ use alloc::string::ToString;
 use alloc::vec::Vec;
 use alloc::{format, vec};
 
+use p3_baby_bear::BabyBear;
 use p3_circuit::ops::{PermConfig, Poseidon1Config};
 use p3_circuit::{CircuitBuilder, CircuitRunner, NonPrimitiveOpId};
 use p3_circuit_prover::batch_stark_prover::{
@@ -25,6 +26,8 @@ use p3_field::extension::BinomiallyExtendable;
 use p3_field::{
     Algebra, BasedVectorSpace, ExtensionField, PrimeCharacteristicRing, PrimeField64, TwoAdicField,
 };
+use p3_goldilocks::Goldilocks;
+use p3_koala_bear::KoalaBear;
 use p3_lookup::Lookup;
 use p3_lookup::logup::LogUpGadget;
 use p3_uni_stark::{StarkGenericConfig, SymbolicExpressionExt, Val};
@@ -483,7 +486,14 @@ fn normalized_permutation(config: PermConfig) -> PermConfig {
     }
 }
 
-fn check_input_permutation<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>(
+fn check_input_permutation<
+    F: PrimeField64,
+    EF: BasedVectorSpace<F>,
+    const D: usize,
+    const WIDTH: usize,
+    const RATE: usize,
+    C: ChallengerPermConfig,
+>(
     challenger: &C,
     input_permutation: PermConfig,
 ) -> Result<(), VerificationError> {
@@ -509,6 +519,29 @@ fn check_input_permutation<const WIDTH: usize, const RATE: usize, C: ChallengerP
         return Err(VerificationError::InvalidProofShape(
             "WHIR input PCS permutation does not match the backend challenger".into(),
         ));
+    }
+    let field_matches = match selected {
+        PermConfig::Poseidon1(config) => {
+            (config.is_baby_bear() && F::ORDER_U64 == BabyBear::ORDER_U64)
+                || (config.is_koala_bear() && F::ORDER_U64 == KoalaBear::ORDER_U64)
+                || (config.is_goldilocks() && F::ORDER_U64 == Goldilocks::ORDER_U64)
+        }
+        PermConfig::Poseidon2(config) => {
+            (config.is_baby_bear() && F::ORDER_U64 == BabyBear::ORDER_U64)
+                || (config.is_koala_bear() && F::ORDER_U64 == KoalaBear::ORDER_U64)
+                || (config.is_goldilocks() && F::ORDER_U64 == Goldilocks::ORDER_U64)
+        }
+    };
+    if !field_matches {
+        return Err(VerificationError::InvalidProofShape(
+            "WHIR input permutation field does not match the input base field".into(),
+        ));
+    }
+    let actual_dim = EF::DIMENSION;
+    if actual_dim != D {
+        return Err(VerificationError::InvalidProofShape(format!(
+            "WHIR backend challenge degree expected {D}, got {actual_dim}"
+        )));
     }
     Ok(())
 }
@@ -1133,7 +1166,7 @@ where
         config: &SC,
         prev: &RecursionInput<'_, SC, A>,
     ) -> Result<(), VerificationError> {
-        check_input_permutation::<WIDTH, RATE, C>(
+        check_input_permutation::<Val<SC>, SC::Challenge, $d, WIDTH, RATE, C>(
             &self.0.challenger_perm_config,
             config.pcs_verifier_params().permutation_config(),
         )?;
@@ -1160,7 +1193,7 @@ where
         prev: &RecursionInput<'_, SC, A>,
     ) -> Result<(), VerificationError> {
         preflight_whir_input(config, &self.0.limits, prev)?;
-        check_input_permutation::<WIDTH, RATE, C>(
+        check_input_permutation::<Val<SC>, SC::Challenge, $d, WIDTH, RATE, C>(
             &self.0.challenger_perm_config,
             config.pcs_verifier_params().permutation_config(),
         )
@@ -1171,7 +1204,7 @@ where
         config: &SC,
         circuit: &mut CircuitBuilder<SC::Challenge>,
     ) -> Result<(), VerificationError> {
-        check_input_permutation::<WIDTH, RATE, C>(
+        check_input_permutation::<Val<SC>, SC::Challenge, $d, WIDTH, RATE, C>(
             &self.0.challenger_perm_config,
             config.pcs_verifier_params().permutation_config(),
         )?;
@@ -1185,7 +1218,7 @@ where
         circuit: &mut CircuitBuilder<SC::Challenge>,
     ) -> Result<Self::VerifierResult, VerificationError> {
         preflight_whir_input(config, &self.0.limits, prev)?;
-        check_input_permutation::<WIDTH, RATE, C>(
+        check_input_permutation::<Val<SC>, SC::Challenge, $d, WIDTH, RATE, C>(
             &self.0.challenger_perm_config,
             config.pcs_verifier_params().permutation_config(),
         )?;
@@ -1303,7 +1336,7 @@ where
             check_whir_batch_degree::<$d>(proof.ext_degree)
                 .map_err(|_| "Failed to replay the input proof's verifier transcript")?;
         }
-        check_input_permutation::<WIDTH, RATE, C>(
+        check_input_permutation::<Val<SC>, SC::Challenge, $d, WIDTH, RATE, C>(
             &self.0.challenger_perm_config,
             config.pcs_verifier_params().permutation_config(),
         )
@@ -1490,7 +1523,7 @@ where
         source: &RecursionInput<'_, SC, A>,
     ) -> Result<Self::InputContract, VerificationError> {
         preflight_whir_input(config, &self.0.limits, source)?;
-        check_input_permutation::<WIDTH, RATE, C>(
+        check_input_permutation::<Val<SC>, SC::Challenge, $d, WIDTH, RATE, C>(
             &self.0.challenger_perm_config,
             config.pcs_verifier_params().permutation_config(),
         )?;
@@ -1523,7 +1556,7 @@ where
         input: &PreparedInput<'_, SC>,
     ) -> Result<(), VerificationError> {
         preflight_whir_prepared(config, &self.0.limits, input)?;
-        check_input_permutation::<WIDTH, RATE, C>(
+        check_input_permutation::<Val<SC>, SC::Challenge, $d, WIDTH, RATE, C>(
             &self.0.challenger_perm_config,
             config.pcs_verifier_params().permutation_config(),
         )?;
@@ -1536,7 +1569,7 @@ where
         input: &PreparedInput<'_, SC>,
     ) -> Result<(), VerificationError> {
         preflight_whir_prepared(config, &self.0.limits, input)?;
-        check_input_permutation::<WIDTH, RATE, C>(
+        check_input_permutation::<Val<SC>, SC::Challenge, $d, WIDTH, RATE, C>(
             &self.0.challenger_perm_config,
             config.pcs_verifier_params().permutation_config(),
         )
@@ -1601,7 +1634,7 @@ where
             &mut usage,
         )?;
         check_trusted_whir_batch_degree::<SC, $d>(verifier)?;
-        check_input_permutation::<WIDTH, RATE, C>(
+        check_input_permutation::<Val<SC>, SC::Challenge, $d, WIDTH, RATE, C>(
             &self.0.challenger_perm_config,
             verifier.config().pcs_verifier_params().permutation_config(),
         )
@@ -1772,9 +1805,12 @@ mod poseidon1_backend_tests {
     use p3_circuit_prover::batch_stark_prover::{
         Poseidon1AirBuilderForConfig, Poseidon2AirBuilderForConfig,
     };
+    use p3_field::extension::BinomialExtensionField;
 
     use super::*;
     use crate::prepared::test_common::whir_config::BbWhirConfig;
+
+    type BabyEF = BinomialExtensionField<BabyBear, 4>;
 
     #[derive(Clone, Copy)]
     struct Unsupported;
@@ -1962,14 +1998,16 @@ mod poseidon1_backend_tests {
     fn input_permutation_normalizes_only_table_roles() {
         let p1 = Poseidon1Config::BABY_BEAR_D4_W16;
         let p2 = Poseidon2Config::BABY_BEAR_D4_W16;
-        check_input_permutation::<16, 8, _>(&p1.for_challenger(), p1.into()).unwrap();
-        check_input_permutation::<16, 8, _>(&p1, p1.for_challenger().into()).unwrap();
-        check_input_permutation::<16, 8, _>(
+        check_input_permutation::<BabyBear, BabyEF, 4, 16, 8, _>(&p1.for_challenger(), p1.into())
+            .unwrap();
+        check_input_permutation::<BabyBear, BabyEF, 4, 16, 8, _>(&p1, p1.for_challenger().into())
+            .unwrap();
+        check_input_permutation::<BabyBear, BabyEF, 4, 16, 8, _>(
             &p2.for_shared_challenger_table(),
             p2.for_challenger().into(),
         )
         .unwrap();
-        check_input_permutation::<16, 8, _>(
+        check_input_permutation::<BabyBear, BabyEF, 4, 16, 8, _>(
             &Poseidon1Config::BABY_BEAR_D1_W16,
             Poseidon1Config::BABY_BEAR_D1_W16.into(),
         )
@@ -1986,21 +2024,107 @@ mod poseidon1_backend_tests {
             Poseidon1Config::BABY_BEAR_D1_W16.into(),
         ] {
             assert!(matches!(
-                check_input_permutation::<16, 8, _>(&p1, params),
+                check_input_permutation::<BabyBear, BabyEF, 4, 16, 8, _>(&p1, params),
                 Err(VerificationError::InvalidProofShape(_))
             ));
         }
         assert!(matches!(
-            check_input_permutation::<8, 4, _>(&p1, p1.into()),
+            check_input_permutation::<BabyBear, BabyEF, 4, 8, 4, _>(&p1, p1.into()),
             Err(VerificationError::InvalidProofShape(_))
         ));
         assert!(matches!(
-            check_input_permutation::<16, 4, _>(&p1, p1.into()),
+            check_input_permutation::<BabyBear, BabyEF, 4, 16, 4, _>(&p1, p1.into()),
             Err(VerificationError::InvalidProofShape(_))
         ));
         assert!(matches!(
-            check_input_permutation::<16, 8, _>(&Unsupported, p1.into()),
+            check_input_permutation::<BabyBear, BabyEF, 4, 16, 8, _>(&Unsupported, p1.into()),
             Err(VerificationError::InvalidProofShape(_))
+        ));
+    }
+
+    #[test]
+    fn actual_field_and_challenge_degree_match_all_supported_families() {
+        type KoalaEF = BinomialExtensionField<KoalaBear, 4>;
+        type GoldEF = BinomialExtensionField<Goldilocks, 2>;
+
+        for config in [
+            PermConfig::from(Poseidon1Config::KOALA_BEAR_D4_W16),
+            PermConfig::from(Poseidon2Config::KOALA_BEAR_D4_W16),
+        ] {
+            match config {
+                PermConfig::Poseidon1(config) => {
+                    check_input_permutation::<KoalaBear, KoalaEF, 4, 16, 8, _>(
+                        &config.for_challenger(),
+                        config.into(),
+                    )
+                    .unwrap();
+                }
+                PermConfig::Poseidon2(config) => {
+                    check_input_permutation::<KoalaBear, KoalaEF, 4, 16, 8, _>(
+                        &config.for_shared_challenger_table(),
+                        config.into(),
+                    )
+                    .unwrap();
+                }
+            }
+        }
+        check_input_permutation::<Goldilocks, GoldEF, 2, 8, 4, _>(
+            &Poseidon1Config::GOLDILOCKS_D2_W8,
+            Poseidon1Config::GOLDILOCKS_D2_W8.into(),
+        )
+        .unwrap();
+        check_input_permutation::<Goldilocks, GoldEF, 2, 8, 4, _>(
+            &Poseidon2Config::GOLDILOCKS_D2_W8,
+            Poseidon2Config::GOLDILOCKS_D2_W8.into(),
+        )
+        .unwrap();
+        assert!(matches!(
+            check_input_permutation::<BabyBear, BabyEF, 4, 16, 8, _>(
+                &Poseidon1Config::KOALA_BEAR_D4_W16,
+                Poseidon1Config::KOALA_BEAR_D4_W16.into(),
+            ),
+            Err(VerificationError::InvalidProofShape(message))
+                if message == "WHIR input permutation field does not match the input base field"
+        ));
+        assert!(matches!(
+            check_input_permutation::<BabyBear, BabyEF, 4, 16, 8, _>(
+                &Poseidon2Config::KOALA_BEAR_D4_W16,
+                Poseidon2Config::KOALA_BEAR_D4_W16.into(),
+            ),
+            Err(VerificationError::InvalidProofShape(message))
+                if message == "WHIR input permutation field does not match the input base field"
+        ));
+        assert!(matches!(
+            check_input_permutation::<Goldilocks, Goldilocks, 2, 8, 4, _>(
+                &Poseidon1Config::GOLDILOCKS_D2_W8,
+                Poseidon1Config::GOLDILOCKS_D2_W8.into(),
+            ),
+            Err(VerificationError::InvalidProofShape(message))
+                if message == "WHIR backend challenge degree expected 2, got 1"
+        ));
+        assert!(matches!(
+            check_input_permutation::<Goldilocks, Goldilocks, 2, 8, 4, _>(
+                &Poseidon2Config::GOLDILOCKS_D2_W8,
+                Poseidon2Config::GOLDILOCKS_D2_W8.into(),
+            ),
+            Err(VerificationError::InvalidProofShape(message))
+                if message == "WHIR backend challenge degree expected 2, got 1"
+        ));
+        assert!(matches!(
+            check_input_permutation::<BabyBear, BabyEF, 4, 16, 8, _>(
+                &Poseidon1Config::KOALA_BEAR_D4_W16,
+                Poseidon1Config::BABY_BEAR_D4_W16.into(),
+            ),
+            Err(VerificationError::InvalidProofShape(message))
+                if message == "WHIR input PCS permutation does not match the backend challenger"
+        ));
+        assert!(matches!(
+            check_input_permutation::<BabyBear, BabyEF, 4, 8, 4, _>(
+                &Poseidon1Config::KOALA_BEAR_D4_W16,
+                Poseidon1Config::KOALA_BEAR_D4_W16.into(),
+            ),
+            Err(VerificationError::InvalidProofShape(message))
+                if message == "WHIR input PCS permutation does not match the backend challenger"
         ));
     }
 }
