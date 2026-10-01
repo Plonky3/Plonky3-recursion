@@ -231,7 +231,8 @@ where
 /// For D=1 Poseidon2 in a high-degree extension context, each extension element is decomposed
 /// into its `D` base field coefficients and hashed flat, matching native `ExtensionMmcs`
 /// behavior which flattens extension elements before hashing. Decomposition is a no-op when the
-/// element came from `recompose_base_coeffs_to_ext` in the same circuit (see circuit builder).
+/// element came from `recompose_base_coeffs_to_ext` in the same circuit (see circuit builder),
+/// except for the fresh quintic decompositions used to balance ALU and coefficient-lookup work.
 fn add_hash_extension_elements<F, EF>(
     circuit: &mut CircuitBuilder<EF>,
     permutation_config: &PermConfig,
@@ -254,8 +255,21 @@ where
             return Ok(vec![zero; permutation_config.rate_ext()]);
         }
         let mut base_coeffs: Vec<Target> = Vec::with_capacity(ext_elements.len() * ext_degree);
-        for &t in ext_elements {
-            let coeffs = circuit.decompose_ext_to_base_coeffs::<F>(t)?;
+        let live_inputs = !merkle_seed
+            || ext_elements.len() * ext_degree > permutation_config.rate()
+            || permutation_config
+                .as_poseidon2()
+                .is_some_and(|config| config.is_arity4_shape());
+        for (i, &t) in ext_elements.iter().enumerate() {
+            let coeffs = if EF::DIMENSION != 5 {
+                circuit.decompose_ext_to_base_coeffs::<F>(t)?
+            } else if live_inputs && i.is_multiple_of(2) {
+                circuit.decompose_ext_to_base_coeffs_fresh_via_alu::<F>(t)?
+            } else if live_inputs {
+                circuit.decompose_ext_to_base_coeffs::<F>(t)?
+            } else {
+                circuit.decompose_ext_to_base_coeffs_fresh_with_coeff_lookups::<F>(t)?
+            };
             base_coeffs.extend(coeffs);
         }
         return add_hash_base_coeffs_overwrite::<F, EF>(
@@ -2399,21 +2413,24 @@ where
             // provenance whose coefficient-wise expansion would leave the internal subtraction's
             // difference limb without a `WitnessChecks` creator. Routing every limb through fresh
             // coefficients keeps the bus balanced for the D=1 extension-opened leaf.
-            let prev_skip = circuit.set_decompose_skip_select_provenance(true);
             let mut data = Vec::new();
+            let mut element_idx: usize = 0;
             for &mat_idx in mats {
                 for &t in &opened_extension_values[mat_idx] {
-                    let coeffs = circuit.decompose_ext_to_base_coeffs::<F>(t);
-                    match coeffs {
-                        Ok(c) => data.extend(c),
-                        Err(e) => {
-                            circuit.set_decompose_skip_select_provenance(prev_skip);
-                            return Err(e);
-                        }
-                    }
+                    // Alternate quintic decomposition backends to reduce coefficient lookups
+                    // without assigning all of their work to the ALU trace.
+                    let coeffs = if EF::DIMENSION == 5 && element_idx.is_multiple_of(2) {
+                        circuit.decompose_ext_to_base_coeffs_fresh_via_alu::<F>(t)?
+                    } else {
+                        let saved = circuit.set_decompose_skip_select_provenance(true);
+                        let coeffs = circuit.decompose_ext_to_base_coeffs::<F>(t);
+                        circuit.set_decompose_skip_select_provenance(saved);
+                        coeffs?
+                    };
+                    data.extend(coeffs);
+                    element_idx += 1;
                 }
             }
-            circuit.set_decompose_skip_select_provenance(prev_skip);
             add_arity4_leaf_digest_from_base::<F, EF>(
                 circuit,
                 permutation_config,
