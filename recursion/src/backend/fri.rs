@@ -490,13 +490,14 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
 
     /// Poseidon1 counterpart of [`Self::poseidon2_challenger_shape_configs`].
     fn poseidon1_challenger_shape_configs(&self, config: Poseidon1Config) -> Vec<Poseidon1Config> {
+        let shape = config.without_challenger_role();
         let mut configs = Vec::new();
-        if config.d() < 2 {
-            return vec![config];
+        if shape.d() < 2 {
+            return vec![shape];
         }
-        configs.push(config.for_challenger());
+        configs.push(shape.for_challenger());
         if self.shares_challenger_perm_table {
-            configs.push(config);
+            configs.push(shape);
         }
         configs
     }
@@ -1505,7 +1506,9 @@ where
     }
 
     fn non_primitive_preprocessors(&self) -> Vec<Box<dyn NpoPreprocessor<Val<SC>>>> {
-        let perm_prep = if self.0.challenger_perm_config.as_poseidon1().is_some() {
+        let perm_prep = if self.0.challenger_perm_config.as_poseidon2().is_none()
+            && self.0.challenger_perm_config.as_poseidon1().is_some()
+        {
             poseidon1_preprocessor::<Val<SC>>()
         } else {
             let configs: Vec<Poseidon2Config> = self
@@ -1537,20 +1540,20 @@ where
             // table with no rows is absent from the proof.
             let mut provers: Vec<Box<dyn TableProver<SC>>> = Vec::new();
             match (
-                self.0.challenger_perm_config.as_poseidon1(),
                 self.0.challenger_perm_config.as_poseidon2(),
+                self.0.challenger_perm_config.as_poseidon1(),
             ) {
                 (Some(c), _) => {
-                    for config in self.0.poseidon1_challenger_shape_configs(*c) {
-                        provers.push(Box::new(Poseidon1ProverD2::new(
+                    for config in self.0.poseidon2_challenger_shape_configs(*c) {
+                        provers.push(Box::new(Poseidon2ProverD2::new(
                             config,
                             ConstraintProfile::Standard,
                         )));
                     }
                 }
                 (_, Some(c)) => {
-                    for config in self.0.poseidon2_challenger_shape_configs(*c) {
-                        provers.push(Box::new(Poseidon2ProverD2::new(
+                    for config in self.0.poseidon1_challenger_shape_configs(*c) {
+                        provers.push(Box::new(Poseidon1ProverD2::new(
                             config,
                             ConstraintProfile::Standard,
                         )));
@@ -1627,18 +1630,17 @@ where
     }
 
     fn non_primitive_air_builders(&self) -> Vec<Box<dyn NpoAirBuilder<SC, 2>>> {
-        let mut builders = self.0.challenger_perm_config.as_poseidon1().map_or_else(
-            || {
-                poseidon2_air_builders_for_configs::<SC, 2>(
-                    self.0.poseidon2_air_configs_for_degree(2),
-                )
-            },
-            |c| {
-                poseidon1_air_builders_for_configs::<SC, 2>(
-                    self.0.poseidon1_challenger_shape_configs(*c),
-                )
-            },
-        );
+        let mut builders = match (
+            self.0.challenger_perm_config.as_poseidon2(),
+            self.0.challenger_perm_config.as_poseidon1(),
+        ) {
+            (Some(_), _) | (None, None) => poseidon2_air_builders_for_configs::<SC, 2>(
+                self.0.poseidon2_air_configs_for_degree(2),
+            ),
+            (None, Some(c)) => poseidon1_air_builders_for_configs::<SC, 2>(
+                self.0.poseidon1_challenger_shape_configs(*c),
+            ),
+        };
         builders.push(Box::new(RecomposeAirBuilder::<2>::new(
             self.0.recompose_lanes,
             true,
@@ -1801,7 +1803,9 @@ where
     }
 
     fn non_primitive_preprocessors(&self) -> Vec<Box<dyn NpoPreprocessor<Val<SC>>>> {
-        let perm_prep = if self.0.challenger_perm_config.as_poseidon1().is_some() {
+        let perm_prep = if self.0.challenger_perm_config.as_poseidon2().is_none()
+            && self.0.challenger_perm_config.as_poseidon1().is_some()
+        {
             poseidon1_preprocessor::<Val<SC>>()
         } else {
             let configs: Vec<Poseidon2Config> = self
@@ -1833,20 +1837,20 @@ where
             // table with no rows is absent from the proof.
             let mut provers: Vec<Box<dyn TableProver<SC>>> = Vec::new();
             match (
-                self.0.challenger_perm_config.as_poseidon1(),
                 self.0.challenger_perm_config.as_poseidon2(),
+                self.0.challenger_perm_config.as_poseidon1(),
             ) {
                 (Some(c), _) => {
-                    for config in self.0.poseidon1_challenger_shape_configs(*c) {
-                        provers.push(Box::new(Poseidon1Prover::new(
+                    for config in self.0.poseidon2_challenger_shape_configs(*c) {
+                        provers.push(Box::new(Poseidon2Prover::new(
                             config,
                             ConstraintProfile::Standard,
                         )));
                     }
                 }
                 (_, Some(c)) => {
-                    for config in self.0.poseidon2_challenger_shape_configs(*c) {
-                        provers.push(Box::new(Poseidon2Prover::new(
+                    for config in self.0.poseidon1_challenger_shape_configs(*c) {
+                        provers.push(Box::new(Poseidon1Prover::new(
                             config,
                             ConstraintProfile::Standard,
                         )));
@@ -1920,18 +1924,17 @@ where
     }
 
     fn non_primitive_air_builders(&self) -> Vec<Box<dyn NpoAirBuilder<SC, 4>>> {
-        let mut builders = self.0.challenger_perm_config.as_poseidon1().map_or_else(
-            || {
-                poseidon2_air_builders_for_configs::<SC, 4>(
-                    self.0.poseidon2_air_configs_for_degree(4),
-                )
-            },
-            |c| {
-                poseidon1_air_builders_for_configs::<SC, 4>(
-                    self.0.poseidon1_challenger_shape_configs(*c),
-                )
-            },
-        );
+        let mut builders = match (
+            self.0.challenger_perm_config.as_poseidon2(),
+            self.0.challenger_perm_config.as_poseidon1(),
+        ) {
+            (Some(_), _) | (None, None) => poseidon2_air_builders_for_configs::<SC, 4>(
+                self.0.poseidon2_air_configs_for_degree(4),
+            ),
+            (None, Some(c)) => poseidon1_air_builders_for_configs::<SC, 4>(
+                self.0.poseidon1_challenger_shape_configs(*c),
+            ),
+        };
         builders.push(Box::new(RecomposeAirBuilder::<4>::new(
             self.0.recompose_lanes,
             true,
@@ -2094,7 +2097,9 @@ where
     }
 
     fn non_primitive_preprocessors(&self) -> Vec<Box<dyn NpoPreprocessor<Val<SC>>>> {
-        let perm_prep = if self.0.challenger_perm_config.as_poseidon1().is_some() {
+        let perm_prep = if self.0.challenger_perm_config.as_poseidon2().is_none()
+            && self.0.challenger_perm_config.as_poseidon1().is_some()
+        {
             poseidon1_preprocessor::<Val<SC>>()
         } else {
             let configs: Vec<Poseidon2Config> = self
@@ -2125,11 +2130,11 @@ where
             // the packed limb. The plain recompose table therefore never carries a row, and a
             // table with no rows is absent from the proof.
             let mut provers = match (
-                self.0.challenger_perm_config.as_poseidon1(),
                 self.0.challenger_perm_config.as_poseidon2(),
+                self.0.challenger_perm_config.as_poseidon1(),
             ) {
-                (Some(c), _) => poseidon1_table_provers_d5(*c),
-                (_, Some(c)) => poseidon2_table_provers_d5(*c),
+                (Some(c), _) => poseidon2_table_provers_d5(*c),
+                (_, Some(c)) => poseidon1_table_provers_d5(*c),
                 _ => Vec::new(),
             };
             for config in self.0.extra_poseidon2_table_configs_for_degree(1) {
@@ -2161,7 +2166,9 @@ where
     }
 
     fn non_primitive_air_builders(&self) -> Vec<Box<dyn NpoAirBuilder<SC, 5>>> {
-        let mut builders = if self.0.challenger_perm_config.as_poseidon1().is_some() {
+        let mut builders = if self.0.challenger_perm_config.as_poseidon2().is_none()
+            && self.0.challenger_perm_config.as_poseidon1().is_some()
+        {
             poseidon1_air_builders_d5()
         } else if self
             .0
