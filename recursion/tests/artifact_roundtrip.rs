@@ -69,6 +69,49 @@ const fn whir_descriptor(suite: SuiteIdV1) -> WhirConfigV1 {
     )
 }
 
+#[test]
+fn unpacked_alu_whir_portable_roundtrip() {
+    let config = baby_bear_d4_poseidon2_whir(
+        &whir_descriptor(SuiteIdV1::BabyBearD4Poseidon2Whir),
+        &ArtifactLimits::default().verifier,
+    )
+    .unwrap();
+    let mut builder = CircuitBuilder::<BabyBear>::new();
+    let input = builder.public_input();
+    let two = builder.define_const(BabyBear::from_u32(2));
+    let output = builder.public_input();
+    let product = builder.mul(input, two);
+    builder.connect(product, output);
+    let circuit = builder.build().unwrap();
+    let mut runner = circuit.runner();
+    runner
+        .set_public_inputs(&[BabyBear::from_u32(4), BabyBear::from_u32(8)])
+        .unwrap();
+    let traces = runner.run().unwrap();
+    let prepared = BatchStarkProver::new(config)
+        .with_table_packing(
+            TablePacking::new(4, 4)
+                .with_min_trace_height(1024)
+                .with_horner_pack_k(1),
+        )
+        .prepare_circuit::<BabyBear, 1>(&circuit, &[], &[], ConstraintProfile::Standard)
+        .unwrap();
+    let verifier = prepared.verifier();
+    let proof = prepared.prove(&traces).unwrap();
+    let limits = ArtifactLimits::default();
+    let verifier_bytes = verifier.encode_verifier_artifact(limits).unwrap();
+    let proof_bytes = verifier.encode_proof_artifact(&proof, limits).unwrap();
+    let imported = PortableVerifier::decode(
+        &verifier_bytes,
+        ExpectedVerifierArtifact::from_trusted_bytes(&verifier_bytes),
+        limits,
+    )
+    .unwrap();
+    imported
+        .verify_encoded(&proof_bytes, CanonicalStatement::new(&[], 0))
+        .unwrap();
+}
+
 macro_rules! portable_roundtrip {
     ($field:ty, $config:expr, $min_height:expr, $golden:expr) => {
         portable_roundtrip!($field, $config, $min_height, $golden, |_| {})

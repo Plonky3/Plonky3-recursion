@@ -166,10 +166,10 @@ impl TablePacking {
         }
     }
 
-    /// Override packed Horner chain length (must be >= 2).
+    /// Override packed Horner chain length; 1 uses ordinary operations without packed columns.
     #[must_use]
     pub fn with_horner_pack_k(mut self, k: usize) -> Self {
-        assert!(k >= 2, "horner_packed_steps must be at least 2");
+        assert!(k >= 1, "horner_packed_steps must be positive");
         self.horner_packed_steps = k;
         self
     }
@@ -445,7 +445,7 @@ impl TablePacking {
                 });
             }
         }
-        if self.horner_packed_steps < 2 {
+        if self.horner_packed_steps == 0 {
             return Err(ProofMetadataError::BadHornerPackedSteps(
                 self.horner_packed_steps,
             ));

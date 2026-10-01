@@ -23,6 +23,14 @@ pub struct PcsOptions {
 }
 
 impl PcsOptions {
+    pub fn horner_packed_steps(&self, requested: Option<usize>) -> usize {
+        requested.unwrap_or(match self.pcs {
+            PcsOption::Fri => 4,
+            // WHIR uses ordinary multiply-adds, so packed Horner columns would be unused.
+            PcsOption::Whir => 1,
+        })
+    }
+
     pub fn security_level(&self, requested: Option<usize>) -> usize {
         // Leave room for WHIR's claim-batching and sumcheck bounds in the D4/D2 fields.
         requested.unwrap_or(match self.pcs {
@@ -69,11 +77,19 @@ impl PcsOptions {
 
 pub trait ExampleTablePacking {
     fn with_pcs_params(self, options: &PcsOptions, fp: &FriParams, security_level: usize) -> Self;
+    fn with_whir_horner_packing(self, options: &PcsOptions, source: &TablePacking) -> Self;
 }
 
 impl ExampleTablePacking for TablePacking {
     fn with_pcs_params(self, options: &PcsOptions, fp: &FriParams, security_level: usize) -> Self {
         self.with_min_trace_height(options.min_trace_height(fp, security_level))
+    }
+
+    fn with_whir_horner_packing(self, options: &PcsOptions, source: &TablePacking) -> Self {
+        match options.pcs {
+            PcsOption::Fri => self,
+            PcsOption::Whir => self.with_horner_pack_k(source.horner_packed_steps()),
+        }
     }
 }
 
@@ -255,4 +271,29 @@ macro_rules! define_whir_module_types {
             }
         }
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn horner_packing_defaults_and_overrides() {
+        for (pcs, default) in [(PcsOption::Fri, 4), (PcsOption::Whir, 1)] {
+            let options = PcsOptions {
+                pcs,
+                whir_folding_factor: 4,
+            };
+            assert_eq!(options.horner_packed_steps(None), default);
+            for requested in [1, 2, 4] {
+                assert_eq!(options.horner_packed_steps(Some(requested)), requested);
+                let source = TablePacking::new(4, 3).with_horner_pack_k(requested);
+                let fresh = TablePacking::new(1, 2).with_whir_horner_packing(&options, &source);
+                assert_eq!(
+                    fresh.horner_packed_steps(),
+                    if pcs == PcsOption::Whir { requested } else { 2 }
+                );
+            }
+        }
+    }
 }

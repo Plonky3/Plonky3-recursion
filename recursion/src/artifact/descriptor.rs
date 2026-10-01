@@ -429,7 +429,7 @@ fn read_packing(reader: &mut Reader<'_>) -> Result<TablePacking, ArtifactError> 
     let strict = reader.read_bool("strict table heights")?;
     if min_trace_height == 0
         || !min_trace_height.is_power_of_two()
-        || horner_packed_steps < 2
+        || horner_packed_steps == 0
         || [alu_min_height, public_min_height, const_min_height]
             .into_iter()
             .flatten()
@@ -791,14 +791,18 @@ fn validate_relation_geometry<F: Copy>(
         .ok_or(ArtifactError::LengthOverflow)?;
     let alu_main_lanes_width = checked_geometry_product(packing.alu_lanes(), alu_main_lane_width)?;
     let alu_prep_lanes_width = checked_geometry_product(packing.alu_lanes(), 13)?;
-    let main_extra_units = (horner_minus_one / 2)
-        .checked_add(
-            horner_minus_one
-                .checked_mul(2)
-                .ok_or(ArtifactError::LengthOverflow)?,
-        )
-        .and_then(|value| value.checked_add(1))
-        .ok_or(ArtifactError::LengthOverflow)?;
+    let main_extra_units = if horner_steps == 1 {
+        0
+    } else {
+        (horner_minus_one / 2)
+            .checked_add(
+                horner_minus_one
+                    .checked_mul(2)
+                    .ok_or(ArtifactError::LengthOverflow)?,
+            )
+            .and_then(|value| value.checked_add(1))
+            .ok_or(ArtifactError::LengthOverflow)?
+    };
     let main_extra = main_extra_units
         .checked_mul(ext_degree)
         .ok_or(ArtifactError::LengthOverflow)?;
@@ -1426,7 +1430,9 @@ mod tests {
     fn relation_decoder_accepts_raw_alu_rows_with_packed_horner_capacity() {
         let limits = ArtifactLimits::default();
         let field = crate::artifact::wire::FieldEncoding::<BabyBear>::u32();
-        for (lanes, packed_steps, raw_rows, degree) in [(4, 2, 8640, 11), (1, 3, 2500, 10)] {
+        for (lanes, packed_steps, raw_rows, degree) in
+            [(4, 1, 8192, 11), (4, 2, 8640, 11), (1, 3, 2500, 10)]
+        {
             let mut descriptor = relation();
             descriptor.table_packing = descriptor
                 .table_packing

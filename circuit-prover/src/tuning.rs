@@ -78,8 +78,8 @@ pub fn score_alu_packing<F: Field + PrimeCharacteristicRing + Copy, const D: usi
 ) -> AluPackingScore {
     assert!(lanes >= 1, "lane count must be non-zero");
     assert!(
-        horner_packed_steps >= 2,
-        "horner_packed_steps must be at least 2"
+        horner_packed_steps >= 1,
+        "horner_packed_steps must be positive"
     );
 
     let num_ops = alu_preprocessed.len() / AluAir::<F, D>::preprocessed_lane_width();

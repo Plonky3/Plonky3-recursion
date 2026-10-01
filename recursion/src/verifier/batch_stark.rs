@@ -383,8 +383,8 @@ where
     if lanes == 0 {
         return Err("ALU lane count must be non-zero".to_string());
     }
-    if horner_packed_steps < 2 {
-        return Err("packed Horner step count must be at least two".to_string());
+    if horner_packed_steps == 0 {
+        return Err("packed Horner step count must be positive".to_string());
     }
     let reduction = AluExtMulKind::resolve(
         TRACE_D,

@@ -155,7 +155,7 @@ pub struct AluAir<F: Copy, const D: usize = 1> {
     /// HornerAcc lane schedule. When present, ops are reordered so that HornerAcc
     /// chains occupy lane 0 in consecutive rows, with zero-separators between chains.
     schedule: Option<Vec<ScheduleEntry>>,
-    /// Pack size K for [`ScheduleEntry::PackedHorner`] (>= 2).
+    /// Pack size K for [`ScheduleEntry::PackedHorner`]; 1 disables packing.
     pub(crate) horner_packed_steps: usize,
     /// Precomputed preprocessed trace matrix, when the caller already built it for this
     /// `(preprocessed, lanes, horner_packed_steps)` (e.g. once per circuit shape). When set,
@@ -191,6 +191,10 @@ impl<F: Field + PrimeCharacteristicRing + Copy, const D: usize> AluAir<F, D> {
         preprocessed: Vec<F>,
         horner_packed_steps: usize,
     ) -> Self {
+        assert!(
+            horner_packed_steps >= 1,
+            "horner_packed_steps must be positive"
+        );
         let schedule = Self::compute_schedule(&preprocessed, lanes, horner_packed_steps);
         Self {
             num_ops,
@@ -291,8 +295,8 @@ impl<F: Field + PrimeCharacteristicRing + Copy, const D: usize> AluAir<F, D> {
             "Base-field constructor requires D == 1; use new_binomial_with_preprocessed or new_quintic_trinomial_with_preprocessed"
         );
         assert!(
-            horner_packed_steps >= 2,
-            "horner_packed_steps must be at least 2"
+            horner_packed_steps >= 1,
+            "horner_packed_steps must be positive"
         );
         Self::from_reduction_with_preprocessed(
             num_ops,
@@ -321,8 +325,8 @@ impl<F: Field + PrimeCharacteristicRing + Copy, const D: usize> AluAir<F, D> {
         assert!(lanes > 0, "lane count must be non-zero");
         assert!(D >= 2, "Binomial constructor requires D >= 2");
         assert!(
-            horner_packed_steps >= 2,
-            "horner_packed_steps must be at least 2"
+            horner_packed_steps >= 1,
+            "horner_packed_steps must be positive"
         );
         Self::from_reduction_with_preprocessed(
             num_ops,
@@ -350,8 +354,8 @@ impl<F: Field + PrimeCharacteristicRing + Copy, const D: usize> AluAir<F, D> {
         assert!(lanes > 0, "lane count must be non-zero");
         assert!(D == 5, "Quintic trinomial ALU requires D = 5");
         assert!(
-            horner_packed_steps >= 2,
-            "horner_packed_steps must be at least 2"
+            horner_packed_steps >= 1,
+            "horner_packed_steps must be positive"
         );
 
         Self::from_reduction_with_preprocessed(
@@ -377,7 +381,7 @@ impl<F: Field + PrimeCharacteristicRing + Copy, const D: usize> AluAir<F, D> {
     /// Batch verification rebuilds a symbolic ALU without committed preprocessed data; this must
     /// match [`crate::batch_stark_prover::TablePacking::horner_packed_steps`] from the proof.
     pub const fn with_horner_pack_k(mut self, k: usize) -> Self {
-        assert!(k >= 2, "horner_packed_steps must be at least 2");
+        assert!(k >= 1, "horner_packed_steps must be positive");
         self.horner_packed_steps = k;
         self
     }
@@ -390,6 +394,9 @@ impl<F: Field + PrimeCharacteristicRing + Copy, const D: usize> AluAir<F, D> {
     /// Total main trace width for this AIR instance.
     pub const fn total_width(&self) -> usize {
         let k = self.horner_packed_steps;
+        if k == 1 {
+            return self.lanes * Self::lane_width();
+        }
         let num_int = num_horner_intermediates(k);
         let extra = (num_int + 2 * (k - 1) + 1) * D;
         self.lanes * Self::lane_width() + extra
@@ -948,7 +955,8 @@ where
             let k_max = self.horner_packed_steps;
             let num_int = num_horner_intermediates(k_max);
             let extra_coeff_width = (num_int + 2 * (k_max - 1) + 1) * D;
-            let has_extra_cols = extra_main + extra_coeff_width <= local.len()
+            let has_extra_cols = k_max >= 2
+                && extra_main + extra_coeff_width <= local.len()
                 && extra_prep + horner_extra_prep_width(k_max) <= prep_local.len()
                 && extra_prep + horner_extra_prep_width(k_max) <= prep_next.len();
 
@@ -1076,6 +1084,13 @@ where
                         next_sel_horner
                             * (out_next_b[i].dup() + next_c[i] - next_a[i] - next_out[i]),
                     );
+                }
+                if lane == 0 && k_max == 1 {
+                    // Unpacked chains use the same zero-seeded separator as packed chains.
+                    let chain_head_seed = next_sel_horner * (prep_cur.mult_a + AB::Expr::ONE);
+                    for i in 0..D {
+                        builder.assert_zero(chain_head_seed.dup() * out[i]);
+                    }
                 }
             }
         }
@@ -1234,6 +1249,20 @@ mod tests {
 
     type EF = BinomialExtensionField<Val, 4>;
 
+    #[test]
+    fn unpacked_horner_mode_uses_only_lane_columns() {
+        fn check<const D: usize>() {
+            let air =
+                AluAir::<Val, D>::from_reduction(0, 3, AluExtMulKind::Base).with_horner_pack_k(1);
+            assert_eq!(air.total_width(), 12 * D);
+            assert_eq!(air.preprocessed_width(), 39);
+        }
+        check::<1>();
+        check::<2>();
+        check::<4>();
+        check::<5>();
+    }
+
     fn assurance_corpus_spec() -> CorpusSpec {
         let start_seed = std::env::var("P3_ASSURANCE_START_SEED")
             .ok()
@@ -1367,7 +1396,7 @@ mod tests {
 
     fn assurance_lanes_and_horner_k(case_seed: u64) -> (usize, usize) {
         let lanes = [1, 2, 4][case_seed as usize % 3];
-        let horner_k = if case_seed & 1 == 0 { 2 } else { 4 };
+        let horner_k = [1, 2, 4][case_seed as usize / 3 % 3];
         (lanes, horner_k)
     }
 

@@ -307,7 +307,8 @@ fn whir_recursion_backend_proves_a_batch_stark_next_layer() {
 
     let backend = WhirRecursionBackend::<16, 8>::new(Poseidon2Config::BABY_BEAR_D4_W16)
         .for_extension_degree::<4>();
-    let params = ProveNextLayerParams::default();
+    let mut params = ProveNextLayerParams::default();
+    params.table_packing = params.table_packing.with_horner_pack_k(1);
 
     let layer1 = build_and_prove_next_layer(
         &RecursionInput::UniStark {

@@ -2447,7 +2447,7 @@ fn test_stark_serialization_round_trip() {
 //
 // `#[derive(Deserialize)]` bypasses the constructors that enforce structural
 // invariants (non-zero row counts, lane clamping, power-of-two minimum height,
-// `horner_packed_steps >= 2`). These tests deserialize/construct the invalid
+// `horner_packed_steps >= 1`). These tests deserialize/construct the invalid
 // states a malicious or corrupt serialized proof could carry and assert that
 // `validate()` rejects them before verification.
 
@@ -2577,12 +2577,12 @@ fn validate_rejects_invalid_serialized_table_packing() {
     );
 
     let bad_horner = PackingMirror {
-        horner_packed_steps: 1,
+        horner_packed_steps: 0,
         ..PackingMirror::valid()
     };
     assert_eq!(
         bad_horner.into_table_packing().validate(),
-        Err(ProofMetadataError::BadHornerPackedSteps(1))
+        Err(ProofMetadataError::BadHornerPackedSteps(0))
     );
 }
 
@@ -3158,6 +3158,12 @@ fn verify_all_tables_rejects_alu_bus_only_operand_swap() {
 
 #[test]
 fn verify_all_tables_rejects_forged_horner_chain_head_seed() {
+    for k in [1, 2, 4] {
+        check_horner_chain_head_seed(k);
+    }
+}
+
+fn check_horner_chain_head_seed(k: usize) {
     let mut builder = CircuitBuilder::<KoalaBear>::new();
     let zero = builder.define_const(KoalaBear::ZERO);
     let a0 = builder.define_const(KoalaBear::from_u32(1));
@@ -3177,7 +3183,7 @@ fn verify_all_tables_rejects_forged_horner_chain_head_seed() {
     let circuit = builder.build().unwrap();
 
     let cfg = config::koala_bear();
-    let packing = TablePacking::default();
+    let packing = TablePacking::default().with_horner_pack_k(k);
     let (airs_degrees, primitive_columns, non_primitive_columns) =
         get_airs_and_degrees_with_prep::<KoalaBearConfig, _, 1>(
             &circuit,
@@ -3252,7 +3258,7 @@ fn verify_all_tables_rejects_forged_horner_chain_head_seed() {
     mutate(&mut forged_matrix);
     crate::air::test_utils::assert_air_rejects::<KoalaBear, KoalaBear, _>(&air, &forged_matrix);
 
-    let prover = BatchStarkProver::new(cfg);
+    let prover = BatchStarkProver::new(cfg).with_table_packing(packing);
     let honest_proof = prover
         .prove_all_tables(&traces, &circuit_prover_data)
         .expect("honest Horner proof must be produced");

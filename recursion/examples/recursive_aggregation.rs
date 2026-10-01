@@ -119,13 +119,9 @@ struct Args {
     )]
     pub alu_lanes: usize,
 
-    /// Pack this many consecutive HornerAcc steps (same `b`) per ALU row on lane 0 (must be >= 2).
-    #[arg(
-        long,
-        default_value_t = 4,
-        help = "Pack this many consecutive HornerAcc steps (same `b`) per ALU row on lane 0 (must be >= 2)"
-    )]
-    pub horner_packed_steps: usize,
+    /// Horner steps per ALU row (1 disables packing) [default: 4 for FRI, 1 for WHIR].
+    #[arg(long)]
+    pub horner_packed_steps: Option<usize>,
 
     #[arg(
         long,
@@ -201,7 +197,10 @@ impl Args {
 
     pub fn table_packing(&self) -> TablePacking {
         TablePacking::new(self.public_lanes, self.alu_lanes)
-            .with_horner_pack_k(self.horner_packed_steps)
+            .with_horner_pack_k(
+                self.pcs_options
+                    .horner_packed_steps(self.horner_packed_steps),
+            )
             .with_npo_lanes(NpoTypeId::recompose(), self.recompose_lanes)
     }
 }
@@ -486,7 +485,7 @@ macro_rules! define_field_module_aggregation_quintic {
                     );
                 }
 
-                let base_table_packing = TablePacking::new(1, 1)
+                let base_table_packing = TablePacking::new(1, 1).with_whir_horner_packing(pcs_options, table_packing)
                     .with_pcs_params(pcs_options, fri_params, security_level);
 
                 let tree_depth = num_recursive_layers;
@@ -662,7 +661,7 @@ macro_rules! define_field_module_aggregation_quintic {
 
                                 let agg_params = ProveNextLayerParams {
                                     table_packing: if level == 1 {
-                                        TablePacking::new(2, 2)
+                                        TablePacking::new(2, 2).with_whir_horner_packing(pcs_options, table_packing)
                                     } else {
                                         table_packing.clone()
                                     }
@@ -984,7 +983,7 @@ macro_rules! define_field_module {
                 concurrent_pairs: bool,
                 pcs_options: &PcsOptions,
             ) {
-                let base_table_packing = TablePacking::new(1, 1)
+                let base_table_packing = TablePacking::new(1, 1).with_whir_horner_packing(pcs_options, table_packing)
                     .with_pcs_params(pcs_options, fri_params, security_level);
                 let backend = FriRecursionBackend::<$backend_width, $backend_rate, _>::new(
                     $poseidon2_config,
@@ -1113,7 +1112,7 @@ macro_rules! define_field_module {
 
                             let agg_params = ProveNextLayerParams {
                                 table_packing: if level == 1 {
-                                    TablePacking::new(2, 2)
+                                    TablePacking::new(2, 2).with_whir_horner_packing(pcs_options, table_packing)
                                 } else {
                                     table_packing.clone()
                                 }

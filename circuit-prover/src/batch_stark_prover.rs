@@ -1339,8 +1339,8 @@ pub enum ProofMetadataError {
     #[error("minimum trace height must be a non-zero power of two (got {0})")]
     BadMinTraceHeight(usize),
 
-    /// `horner_packed_steps` is less than 2.
-    #[error("horner_packed_steps must be at least 2 (got {0})")]
+    /// `horner_packed_steps` is zero.
+    #[error("horner_packed_steps must be positive (got {0})")]
     BadHornerPackedSteps(usize),
 
     /// `ext_degree` is not one of the supported values.

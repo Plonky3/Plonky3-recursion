@@ -134,9 +134,9 @@ struct Args {
     )]
     pub alu_lanes: usize,
 
-    /// Pack this many consecutive HornerAcc steps (same `b`) per ALU row on lane 0 (must be >= 2).
-    #[arg(long, default_value_t = 4)]
-    pub horner_packed_steps: usize,
+    /// Horner steps per ALU row (1 disables packing) [default: 4 for FRI, 1 for WHIR].
+    #[arg(long)]
+    pub horner_packed_steps: Option<usize>,
 
     #[arg(
         long,
@@ -184,7 +184,10 @@ impl Args {
 
     pub fn table_packing(&self) -> TablePacking {
         TablePacking::new(self.public_lanes, self.alu_lanes)
-            .with_horner_pack_k(self.horner_packed_steps)
+            .with_horner_pack_k(
+                self.pcs_options
+                    .horner_packed_steps(self.horner_packed_steps),
+            )
             .with_npo_lanes(NpoTypeId::recompose(), self.recompose_lanes)
     }
 }
@@ -520,7 +523,7 @@ macro_rules! define_field_module_keccak_quintic {
 
                                 let layer_table_packing = {
                                     let p = if layer == 1 {
-                                        let mut p = TablePacking::new(1, 2).with_pcs_params(
+                                        let mut p = TablePacking::new(1, 2).with_whir_horner_packing(pcs_options, table_packing).with_pcs_params(
                                             pcs_options,
                                             fri_params,
                                             security_level,
@@ -875,7 +878,7 @@ macro_rules! define_field_module {
 
                             let layer_table_packing = {
                                 let p = if layer == 1 {
-                                    let mut p = TablePacking::new(1, 2)
+                                    let mut p = TablePacking::new(1, 2).with_whir_horner_packing(pcs_options, table_packing)
                                         .with_pcs_params(pcs_options, fri_params, security_level);
                                     if let Some(rl) = table_packing.npo_lanes(&NpoTypeId::recompose()) {
                                         p = p.with_npo_lanes(NpoTypeId::recompose(), rl);
