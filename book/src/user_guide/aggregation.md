@@ -4,7 +4,7 @@ The library supports 2-to-1 recursive aggregation: verifying two proofs inside a
 
 ## How it works
 
-An aggregation circuit contains two verifier sub-circuits sharing the same `CircuitBuilder`. Both verifications use the same Poseidon2 table and primitive chips. The combined circuit is then proved as a single batch-STARK.
+An aggregation circuit contains two verifier sub-circuits sharing the same `CircuitBuilder`. Both verifications use the matching permutation tables and primitive chips. The combined circuit is then proved as a single batch-STARK.
 
 ```
        ┌────────────────────────┐
@@ -142,6 +142,6 @@ while proofs.len() > 1 {
 
 ## Cost
 
-An aggregation circuit is roughly twice the size of a single-verification circuit (two verifiers in one circuit). The Poseidon2 table is shared, so the overhead is less than 2x for hash-heavy proofs.
+An aggregation circuit is roughly twice the size of a single-verification circuit (two verifiers in one circuit). Matching permutation tables are shared, so the overhead is less than 2x for hash-heavy proofs.
 
 Adjust `TablePacking` for aggregation circuits — they produce wider traces than single-verification circuits. See [Configuration](./configuration.md#table-packing) for guidance.

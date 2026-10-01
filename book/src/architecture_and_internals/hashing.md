@@ -1,7 +1,9 @@
 # Hashing and Fiat-Shamir in Recursion
 
-This section explains how cryptographic hashing, specifically Poseidon2, is used in recursive verification,
-and how the Fiat-Shamir challenger is implemented to maintain transcript compatibility with native Plonky3.
+This section uses a width-16/rate-8, degree-4 Poseidon2 configuration to
+explain hashing in recursive verification and transcript compatibility with
+native Plonky3. Supported custom configurations also select Poseidon1 or a
+different geometry; see [Configuration](../user_guide/configuration.md).
 
 ## Overview
 
@@ -10,7 +12,8 @@ Recursive verification requires two distinct uses of the permutation used by the
 1. **Fiat-Shamir Challenger**: Derives random challenges from the transcript (commitments, opened values, etc.)
 2. **MMCS/Merkle Verification**: Verifies Merkle tree opening proofs for commitments
 
-Both operations use the same underlying Poseidon2 permutation, but they interact with it differently:
+In the Poseidon2 example below, both operations use the same underlying
+permutation, but they interact with it differently:
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -27,13 +30,13 @@ Both operations use the same underlying Poseidon2 permutation, but they interact
 
 ## The Poseidon2 Permutation
 
-In this implementation, we use the Poseidon2 permutation with:
+The concrete Poseidon2 example uses:
 
 - **WIDTH = 16**: The permutation operates on 16 field elements
 - **RATE = 8**: In sponge mode, 8 elements are absorbed/squeezed per permutation
 
-**Note**: These parameters (WIDTH=16, RATE=8) are currently fixed and tailored to 32-bit fields.
-Future versions will make them configurable to support a wider range of applications.
+These width-16/rate-8 values describe this example. The selected supported
+permutation family, geometry, and backend degree depend on the configuration.
 
 ### Base Field vs Extension Field Views
 
@@ -99,7 +102,8 @@ The challenger implements a duplex sponge construction as follows:
 
 The recursive circuit operates over extension field elements, but must produce **identical transcripts** to the native challenger. This requires careful state management.
 
-The `CircuitChallenger` maintains state as **coefficient-level targets**:
+Conceptually, the Poseidon2 circuit challenger in this example maintains
+**coefficient-level targets**. This sketch is not its literal Rust definition:
 
 ```rust
 struct CircuitChallenger<const WIDTH: usize, const RATE: usize> {
@@ -145,7 +149,8 @@ The inverse operation, extracting basis coefficients from each extension element
 
 ### Row Overhead
 
-The recomposition/decomposition unfortunately adds overhead in the primitive tables:
+For this width-16/rate-8, degree-4 example, recomposition/decomposition adds
+overhead in the primitive tables:
 
 | Operation | Mul Rows | Add Rows | Witness Rows |
 |-----------|----------|----------|--------------|
@@ -153,7 +158,8 @@ The recomposition/decomposition unfortunately adds overhead in the primitive tab
 | Decompose (4 ext) | 16 | 12 | 16 |
 | **Total per duplexing** | **32** | **24** | **16** |
 
-This adds a total of approximately **70** rows over the different primitive tables per challenger duplexing.
+This example adds a total of approximately **70** rows over the different
+primitive tables per challenger duplexing.
 
 > **Optimization Note**: When using D=1 configuration (base field challenges), no recomposition/decomposition
 is needed as the state maps directly to the Poseidon2 inputs, eliminating this overhead.
@@ -207,7 +213,8 @@ associated constraints.
 
 ## Configuration
 
-The challenger is configured with a `Poseidon2Config` that specifies the field and extension degree:
+For the Poseidon2 examples here, `Poseidon2Config` specifies the field and
+permutation extension degree:
 
 | Config | Field | D | WIDTH | Use Case |
 |--------|-------|---|-------|----------|
@@ -218,4 +225,7 @@ The challenger is configured with a `Poseidon2Config` that specifies the field a
 | `KoalaBearD1Width16` | KoalaBear | 1 | 16 | Base field challenges (lower overhead) |
 | `KoalaBearD4Width24` | KoalaBear | 4 | 24 | Wider configuration, efficient hashing |
 
-The challenger is in charge to validate at runtime that the config matches the extension field being used.
+For supported custom WHIR configurations using Poseidon1 or Poseidon2, backend
+input validation also checks the actual base field and challenge dimension. See
+[Configuration](../user_guide/configuration.md) for the supported combinations
+and matching requirements.

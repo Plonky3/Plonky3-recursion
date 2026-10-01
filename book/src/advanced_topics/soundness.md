@@ -47,7 +47,8 @@ conjectural assumption is being made.
 
 ### Merkle tree verification
 
-Every MMCS opening proof (Merkle path) is verified in-circuit via Poseidon2 hashing. The circuit:
+Every MMCS opening proof (Merkle path) is verified in-circuit with the
+permutation selected by the configuration (Poseidon1 or Poseidon2). The circuit:
 - Hashes sibling pairs up the tree
 - Checks that the reconstructed root matches the committed root (a public input)
 - Handles position-dependent ordering (left vs right sibling)
@@ -69,24 +70,33 @@ The circuit challenger implements a duplex sponge construction identical to Plon
 
 The recursive verifier supports ZK-enabled STARK configurations, including batch recursion transcript/randomization handling.
 
-### Challenger Poseidon2: CTL-verified
+### Challenger permutation: CTL-verified
 
-The Fiat-Shamir challenger's Poseidon2 permutations are connected to the Poseidon2 AIR table via cross-table lookups (CTLs). The circuit builder's `add_poseidon2_perm_for_challenger` / `add_poseidon2_perm_for_challenger_base` use the standard Poseidon2 non-primitive op with full input and rate-output CTL exposure; the executor runs the real permutation and the lookup argument enforces that the (input, output) pair appears in the Poseidon2 table. The MMCS Poseidon2 calls (Merkle verification) are also CTL-verified.
+The Fiat-Shamir challenger's permutations are connected to the matching
+Poseidon1 or Poseidon2 AIR table via cross-table lookups (CTLs). The circuit
+builder exposes the permutation input and rate output; the executor runs the
+selected permutation, and the lookup argument enforces that the input/output
+pair appears in its table. MMCS permutation calls for Merkle verification are
+also CTL-verified.
 
 ## Current limitations
 
-### Fixed Poseidon2 parameters
+### Supported permutation configurations
 
-The recursion stack currently requires `WIDTH = 16` and `RATE = 8` for 32-bit fields with degree-4 extensions. Future versions will support configurable parameters.
+Custom recursion configurations support selected Poseidon1 or Poseidon2
+permutations and matching backend geometry and challenge dimension, including
+BabyBear D4 with width 16/rate 8 and Goldilocks D2 with width 8/rate 4.
+See [Configuration](../user_guide/configuration.md) for supported combinations
+and the input PCS matching requirements.
 
 ## Verifier trust model
 
 | Component | How it's verified |
 |-----------|------------------|
-| Commitment openings | Merkle path verification (Poseidon2, CTL-enforced) |
+| Commitment openings | Merkle path verification (selected permutation, CTL-enforced) |
 | FRI fold chain | Algebraic consistency checks in-circuit |
 | FRI query indices | Sampled in-circuit from transcript |
 | Proof-of-work | Verified in-circuit |
-| Fiat-Shamir challenges | Circuit challenger (CTL-verified against Poseidon2 AIR) |
+| Fiat-Shamir challenges | Circuit challenger (CTL-verified against the selected permutation AIR) |
 | AIR constraint satisfaction | Evaluated in-circuit via symbolic-to-circuit translation |
 | Lookup argument | LogUp verification in-circuit |
