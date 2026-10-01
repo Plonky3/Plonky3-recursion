@@ -111,20 +111,27 @@ configuration; typed import retains it. Salted FRI path restoration constructs
 private, fixed-seed MMCS helpers for verification only. Those helpers never
 commit or draw randomness and do not replace the retained proving config.
 
-Both WHIR aliases use Poseidon2, D4, and binary Merkle commitments. Their
-recursive verifier supports Prefix variable order and a nonzero constant
-folding factor. An explicit round-rate schedule must match the intermediate
-round count derived from each commitment's stacked arity; use
-`WhirRateModeV1::Auto` when leaf and recursive trace sizes differ. Choose
-unstratified query sampling. In any intermediate or final phase where the raw
-configured query count reaches or exceeds `domain_size >> folding_factor`, the
-verifier opens the entire folded domain in ascending order and makes no
-query-index challenger draws. The effective opening count is the minimum of the
-raw count and folded domain size; the raw count remains part of the canonical
-security configuration.
-Native configurations with stratified sampling, non-Prefix variable order, or
-nonconstant folding remain unsupported by the recursive verifier.
-The WHIR descriptor's cap height is retained when restoring paths.
+Both WHIR aliases use Poseidon2, D4, and binary Merkle commitments. The
+built-in `WhirConfigV1` descriptor still specifies one constant folding factor.
+For a custom `WhirUniPcs` and `WhirUniVerifierParams`, the recursive verifier
+supports native `FoldingFactor::Constant`, `ConstantFromSecondRound`, and
+`PerRound` with positive factors, Prefix variable order, unstratified query
+sampling, and binary commitments. The first fold controls table padding;
+the complete strategy is retained for native WHIR configuration and transcript
+seeding. Every commitment's stacked arity must fit that strategy exactly.
+In particular, a `PerRound` vector must supply exactly the factors used at
+each commitment arity, so one vector may not fit both leaf and recursive
+trace sizes. An explicit round-rate schedule must likewise match the
+intermediate round count derived from each commitment's stacked arity; use
+`WhirRateModeV1::Auto` when leaf and recursive trace sizes differ. In any
+intermediate or final phase where the raw configured query count reaches or
+exceeds `domain_size >> folding_factor`, the verifier opens the entire folded
+domain in ascending order and makes no query-index challenger draws. The
+effective opening count is the minimum of the raw count and folded domain
+size; the raw count remains part of the canonical security configuration.
+Native configurations with stratified sampling or non-Prefix variable order
+remain unsupported by the recursive verifier. The WHIR descriptor's cap
+height is retained when restoring paths.
 
 ## FRI parameters
 

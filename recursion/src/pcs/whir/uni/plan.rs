@@ -24,7 +24,22 @@
 use alloc::vec::Vec;
 
 use p3_util::reverse_bits_len;
+use p3_whir::parameters::FoldingFactor;
 use thiserror::Error;
+
+/// First fold used only to pad the stacked layout; native WHIR keeps the full strategy.
+pub(crate) fn initial_layout_folding(strategy: &FoldingFactor) -> Option<usize> {
+    match strategy {
+        FoldingFactor::Constant(first) if *first > 0 => Some(*first),
+        FoldingFactor::ConstantFromSecondRound(first, rest) if *first > 0 && *rest > 0 => {
+            Some(*first)
+        }
+        FoldingFactor::PerRound(factors) if factors.iter().all(|&factor| factor > 0) => {
+            factors.first().copied()
+        }
+        _ => None,
+    }
+}
 
 /// Overflow or inconsistent geometry while sizing a stacked WHIR polynomial.
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]

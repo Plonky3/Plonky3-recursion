@@ -26,7 +26,7 @@ use p3_sumcheck::{
     OpeningBatch, OpeningProtocol, OpeningRequest, PrescribedPointPcs, TableShape, TableSpec,
 };
 use p3_util::log2_strict_usize;
-use p3_whir::parameters::{FoldingFactor, ProtocolParameters, WhirConfig, WhirConfigError};
+use p3_whir::parameters::{ProtocolParameters, WhirConfig, WhirConfigError};
 use p3_whir::pcs::WhirProverData;
 use p3_whir::pcs::proof::PcsProof;
 use p3_whir::pcs::prover::WhirProver;
@@ -35,7 +35,7 @@ use serde::{Deserialize, Serialize};
 use crate::input_contract::whir::{WhirContextParams, validate_whir_pcs_context};
 use crate::pcs::whir::uni::bridge::univariate_eq_point;
 use crate::pcs::whir::uni::plan::{
-    PaddedArity, StackedPlan, checked_stacked_num_variables, padded_arity,
+    PaddedArity, StackedPlan, checked_stacked_num_variables, initial_layout_folding, padded_arity,
 };
 use crate::pcs::whir::uni::recursive_pcs::validate_round_config_inputs;
 
@@ -232,9 +232,9 @@ where
     /// Builds an instance from WHIR protocol parameters.
     ///
     /// # Panics
-    /// Panics unless `protocol_params.folding_factor` is
-    /// [`FoldingFactor::Constant`]: the adapter derives every table's padded
-    /// arity from a single first-round folding factor.
+    /// Panics unless `protocol_params.folding_factor` is a positive native
+    /// folding strategy. Each table's padded arity uses its initial fold;
+    /// native WHIR validates the full strategy for each commitment arity.
     pub fn new(
         protocol_params: ProtocolParameters,
         dft: Dft,
@@ -242,9 +242,8 @@ where
         challenger_proto: Challenger,
         log_max_lde_height: usize,
     ) -> Self {
-        let FoldingFactor::Constant(folding) = protocol_params.folding_factor else {
-            panic!("WhirUniPcs requires FoldingFactor::Constant");
-        };
+        let folding = initial_layout_folding(&protocol_params.folding_factor)
+            .expect("WhirUniPcs requires a positive native folding strategy");
         Self {
             protocol_params,
             folding,
@@ -906,6 +905,61 @@ pub(crate) mod tests {
         assert_eq!(test_pcs().folding(), 4);
     }
 
+    #[test]
+    fn constructor_keeps_positive_native_strategy_and_initial_layout_fold() {
+        let base = test_pcs();
+        for (folding_factor, first) in [
+            (FoldingFactor::Constant(2), 2),
+            (FoldingFactor::ConstantFromSecondRound(3, 2), 3),
+            (FoldingFactor::ConstantFromSecondRound(2, 3), 2),
+            (FoldingFactor::PerRound(vec![2, 3, 1]), 2),
+        ] {
+            let mut protocol = base.protocol_params.clone();
+            protocol.folding_factor = folding_factor.clone();
+            let pcs = MyPcs::new(
+                protocol,
+                base.dft.clone(),
+                base.mmcs.clone(),
+                base.challenger_proto.clone(),
+                base.log_max_lde_height,
+            );
+            assert_eq!(pcs.folding(), first);
+            assert_eq!(
+                alloc::format!("{:?}", pcs.protocol_params.folding_factor),
+                alloc::format!("{folding_factor:?}")
+            );
+        }
+    }
+
+    #[test]
+    fn constructor_rejects_empty_or_zero_native_strategy() {
+        let base = test_pcs();
+        for folding_factor in [
+            FoldingFactor::Constant(0),
+            FoldingFactor::ConstantFromSecondRound(0, 2),
+            FoldingFactor::ConstantFromSecondRound(2, 0),
+            FoldingFactor::PerRound(vec![]),
+            FoldingFactor::PerRound(vec![0, 2]),
+            FoldingFactor::PerRound(vec![2, 0]),
+        ] {
+            let mut protocol = base.protocol_params.clone();
+            protocol.folding_factor = folding_factor;
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                MyPcs::new(
+                    protocol,
+                    base.dft.clone(),
+                    base.mmcs.clone(),
+                    base.challenger_proto.clone(),
+                    base.log_max_lde_height,
+                )
+            }));
+            assert!(
+                result.is_err(),
+                "malformed native strategy must be rejected"
+            );
+        }
+    }
+
     /// The stacked arity a commitment reports must be what the layout planner
     /// says for the padded table shapes, and the WHIR config must be built for
     /// exactly that arity.
@@ -1170,6 +1224,113 @@ pub(crate) mod tests {
             &mut challenger,
         )
         .expect("honest opening verifies");
+    }
+
+    #[test]
+    fn per_round_native_commit_open_verify_and_preflight() {
+        let base = test_pcs();
+        let mut protocol = base.protocol_params.clone();
+        protocol.folding_factor = FoldingFactor::PerRound(vec![2, 3, 1]);
+        let pcs = MyPcs::new(
+            protocol,
+            base.dft.clone(),
+            base.mmcs.clone(),
+            base.challenger_proto.clone(),
+            base.log_max_lde_height,
+        );
+        let mut rng = SmallRng::seed_from_u64(73);
+        let domain = TwoAdicMultiplicativeCoset::<F>::new(F::ONE, 10).unwrap();
+        let matrix = RowMajorMatrix::<F>::rand(&mut rng, 1 << 10, 4);
+        let (commitment, data) =
+            <MyPcs as p3_commit::Pcs<EF, MyChallenger>>::commit(&pcs, vec![(domain, matrix)])
+                .unwrap();
+        assert_eq!(data.stacked_num_variables, 12);
+        assert_eq!(
+            pcs.whir_config(data.stacked_num_variables)
+                .folding_schedule(),
+            &[2, 3, 1]
+        );
+
+        let point = EF::from_u32(79);
+        let mut challenger = pcs.challenger_proto.clone();
+        let (opened, proof) = <MyPcs as p3_commit::Pcs<EF, MyChallenger>>::open(
+            &pcs,
+            vec![(&data, vec![vec![point]]).into()],
+            &mut challenger,
+        )
+        .unwrap();
+        let claimed = vec![(domain, vec![(point, opened[0][0][0].clone())])];
+        let mut challenger = pcs.challenger_proto.clone();
+        <MyPcs as p3_commit::Pcs<EF, MyChallenger>>::verify(
+            &pcs,
+            vec![(commitment.clone(), claimed.clone()).into()],
+            &proof,
+            &mut challenger,
+        )
+        .expect("native PerRound opening verifies");
+
+        let mut wrong = claimed.clone();
+        wrong[0].1[0].1[0] += EF::ONE;
+        let mut challenger = pcs.challenger_proto.clone();
+        assert!(matches!(
+            <MyPcs as p3_commit::Pcs<EF, MyChallenger>>::verify(
+                &pcs,
+                vec![(commitment.clone(), wrong).into()],
+                &proof,
+                &mut challenger,
+            ),
+            Err(super::WhirUniPcsError::OpeningValueMismatch {
+                round: 0,
+                batch: 0,
+                column: 0,
+            })
+        ));
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut invalid_protocol = pcs.protocol_params.clone();
+        invalid_protocol.folding_factor = FoldingFactor::PerRound(vec![2, 3]);
+        let invalid_pcs = CountingPcs::new(
+            invalid_protocol,
+            pcs.dft.clone(),
+            pcs.mmcs.clone(),
+            CountingChallenger::new(pcs.challenger_proto.clone(), Arc::clone(&calls)),
+            pcs.log_max_lde_height,
+        );
+        let mut challenger =
+            CountingChallenger::new(pcs.challenger_proto.clone(), Arc::clone(&calls));
+        assert!(matches!(
+            <CountingPcs as p3_commit::Pcs<EF, CountingChallenger<MyChallenger>>>::verify(
+                &invalid_pcs,
+                vec![(commitment.clone(), claimed.clone()).into()],
+                &proof,
+                &mut challenger,
+            ),
+            Err(super::WhirUniPcsError::ShapeMismatch { round: 0 })
+        ));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+        let mut malformed = proof.clone();
+        match &mut malformed.rounds[0].whir.final_openings {
+            p3_whir::pcs::proof::QueryOpenings::Base(opening) => {
+                opening.rows.last_mut().unwrap().pop();
+            }
+            p3_whir::pcs::proof::QueryOpenings::Extension(opening) => {
+                opening.rows.last_mut().unwrap().pop();
+            }
+        }
+        let counting = counting_pcs(&pcs, Arc::clone(&calls));
+        let mut challenger =
+            CountingChallenger::new(pcs.challenger_proto.clone(), Arc::clone(&calls));
+        assert!(matches!(
+            <CountingPcs as p3_commit::Pcs<EF, CountingChallenger<MyChallenger>>>::verify(
+                &counting,
+                vec![(commitment, claimed).into()],
+                &malformed,
+                &mut challenger,
+            ),
+            Err(super::WhirUniPcsError::ShapeMismatch { round: 0 })
+        ));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 
     #[test]

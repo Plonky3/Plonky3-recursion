@@ -35,8 +35,8 @@ pub enum WhirVerifierParamsError {
     /// The supplied protocol parameters cannot derive a WHIR configuration.
     #[error("invalid WHIR configuration: {0}")]
     InvalidConfig(#[from] WhirConfigError),
-    /// The recursive adapter currently supports only a nonzero constant fold.
-    #[error("WHIR recursive verifier requires a nonzero constant folding factor")]
+    /// The recursive adapter requires a nonempty, positive native folding strategy.
+    #[error("WHIR recursive verifier requires a positive native folding strategy")]
     UnsupportedFoldingFactor,
     /// The recursive adapter's stacked layout is implemented for Prefix only.
     #[error("WHIR recursive verifier does not support variable order {variable_order:?}")]
@@ -104,7 +104,8 @@ pub struct WhirRoundParams<F> {
     pow_bits: usize,
     /// PoW bits for the folding sumcheck within this round.
     folding_pow_bits: usize,
-    /// Number of variables folded in this round (= folding_factor for the round's sumcheck).
+    /// Number of variables folded from this round's queried codeword. The
+    /// sumcheck after this round uses the next fold in the native schedule.
     folding_factor: usize,
     /// Size of the evaluation domain before folding in this round.
     domain_size: usize,
@@ -320,16 +321,17 @@ impl<F: Field> WhirVerifierParams<F> {
         self.round_params.len()
     }
 
-    /// Folding factor (= round sumcheck length) for the given round index.
+    /// Folding factor of the codeword queried at the given round index.
     ///
-    /// - Round `0..n_rounds()`: the initial folding factor is the length of `initial_sumcheck`.
+    /// - Round `0..n_rounds()`: the factor for that round's queried codeword;
+    ///   the following sumcheck uses the next factor.
     /// - Round `n_rounds()`: the folding factor applied to enter the final phase
     ///   (`final_folding_factor`), *not* the final plain-sumcheck length
     ///   (`final_sumcheck_rounds`) — the two are distinct quantities that coincide
     ///   only for specific arities.
     ///
-    /// The initial folding factor is stored implicitly via the `initial_sumcheck` length in the proof.
-    /// This method queries the `round_params[i].folding_factor` for intermediate rounds.
+    /// The initial sumcheck uses the first factor, which is also the factor
+    /// attached to the first queried codeword.
     pub fn round_folding_factor(&self, round: usize) -> usize {
         if round < self.n_rounds() {
             self.round_params[round].folding_factor

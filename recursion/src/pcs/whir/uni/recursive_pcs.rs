@@ -22,6 +22,7 @@ use crate::challenger_perm::ChallengerPermConfig;
 use crate::pcs::whir::params::{WhirVerifierParams, WhirVerifierParamsError};
 use crate::pcs::whir::uni::circuit::verify_whir_uni_circuit;
 use crate::pcs::whir::uni::pcs::WhirUniPcs;
+use crate::pcs::whir::uni::plan::initial_layout_folding;
 use crate::pcs::whir::uni::targets::WhirUniProofTargets;
 use crate::traits::{ComsWithOpeningsTargets, Recursive, RecursivePcs};
 use crate::types::{OpenedValuesTargetsWithLookups, RecursiveLagrangeSelectors};
@@ -131,7 +132,7 @@ pub struct WhirUniVerifierParams<F> {
 impl<F: TwoAdicField> WhirUniVerifierParams<F> {
     /// Builds the shared parameters.
     ///
-    /// Returns an error unless the folding factor is a nonzero constant.
+    /// Returns an error unless every configured native folding factor is positive.
     pub fn new(
         protocol_params: ProtocolParameters,
         variable_order: VariableOrder,
@@ -140,13 +141,8 @@ impl<F: TwoAdicField> WhirUniVerifierParams<F> {
         if variable_order != VariableOrder::Prefix {
             return Err(WhirVerifierParamsError::UnsupportedVariableOrder { variable_order });
         }
-        let p3_whir::parameters::FoldingFactor::Constant(folding) = protocol_params.folding_factor
-        else {
-            return Err(WhirVerifierParamsError::UnsupportedFoldingFactor);
-        };
-        if folding == 0 {
-            return Err(WhirVerifierParamsError::UnsupportedFoldingFactor);
-        }
+        let folding = initial_layout_folding(&protocol_params.folding_factor)
+            .ok_or(WhirVerifierParamsError::UnsupportedFoldingFactor)?;
         Ok(Self {
             protocol_params,
             folding,
@@ -203,27 +199,176 @@ mod validation_tests {
     use super::*;
 
     #[test]
-    fn nonconstant_folding_is_rejected_without_panicking() {
-        let protocol = ProtocolParameters {
-            starting_log_inv_rate: 1,
-            round_log_inv_rates: Vec::new(),
-            folding_factor: FoldingFactor::ConstantFromSecondRound(2, 2),
-            soundness_type: SecurityAssumption::CapacityBound,
-            security_level: 32,
-            pow_bits: 0,
-        };
-        let result = std::panic::catch_unwind(|| {
-            WhirUniVerifierParams::<p3_baby_bear::BabyBear>::new(
+    fn varying_folding_strategies_retain_the_first_fold_and_full_protocol() {
+        for (folding_factor, first) in [
+            (FoldingFactor::Constant(2), 2),
+            (FoldingFactor::ConstantFromSecondRound(3, 2), 3),
+            (FoldingFactor::ConstantFromSecondRound(2, 3), 2),
+            (FoldingFactor::PerRound(vec![2, 3, 1]), 2),
+        ] {
+            let protocol = ProtocolParameters {
+                starting_log_inv_rate: 1,
+                round_log_inv_rates: Vec::new(),
+                folding_factor: folding_factor.clone(),
+                soundness_type: SecurityAssumption::CapacityBound,
+                security_level: 32,
+                pow_bits: 0,
+            };
+            let params = WhirUniVerifierParams::<p3_baby_bear::BabyBear>::new(
                 protocol,
                 VariableOrder::Prefix,
                 Poseidon2Config::BABY_BEAR_D4_W16,
             )
-        });
-        let result = result.expect("invalid configuration must not panic");
-        assert!(matches!(
-            result,
-            Err(WhirVerifierParamsError::UnsupportedFoldingFactor)
-        ));
+            .expect("positive native folding strategy is supported");
+            assert_eq!(params.folding(), first);
+            assert_eq!(
+                alloc::format!("{:?}", params.protocol_params().folding_factor),
+                alloc::format!("{folding_factor:?}")
+            );
+        }
+    }
+
+    #[test]
+    fn malformed_folding_strategies_are_typed_errors_without_panicking() {
+        for folding_factor in [
+            FoldingFactor::Constant(0),
+            FoldingFactor::ConstantFromSecondRound(0, 2),
+            FoldingFactor::ConstantFromSecondRound(2, 0),
+            FoldingFactor::PerRound(vec![]),
+            FoldingFactor::PerRound(vec![0, 2]),
+            FoldingFactor::PerRound(vec![2, 0]),
+        ] {
+            let protocol = ProtocolParameters {
+                starting_log_inv_rate: 1,
+                round_log_inv_rates: Vec::new(),
+                folding_factor,
+                soundness_type: SecurityAssumption::CapacityBound,
+                security_level: 32,
+                pow_bits: 0,
+            };
+            let result = std::panic::catch_unwind(|| {
+                WhirUniVerifierParams::<p3_baby_bear::BabyBear>::new(
+                    protocol.clone(),
+                    VariableOrder::Prefix,
+                    Poseidon2Config::BABY_BEAR_D4_W16,
+                )
+            });
+            assert!(matches!(
+                result.expect("constructor must not panic"),
+                Err(WhirVerifierParamsError::UnsupportedFoldingFactor)
+            ));
+            assert!(matches!(
+                WhirUniVerifierParams::<p3_baby_bear::BabyBear>::new(
+                    protocol,
+                    VariableOrder::Suffix,
+                    Poseidon2Config::BABY_BEAR_D4_W16,
+                ),
+                Err(WhirVerifierParamsError::UnsupportedVariableOrder { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn varying_round_params_keep_native_schedule_and_strategy_seed() {
+        use p3_field::extension::BinomialExtensionField;
+        use p3_whir::transcript::WhirShape;
+
+        type Base = p3_baby_bear::BabyBear;
+        type Ext = BinomialExtensionField<Base, 4>;
+        let mut seeds = Vec::new();
+        for (folding_factor, schedule, remainder) in [
+            (FoldingFactor::Constant(2), vec![2, 2, 2], 6),
+            (
+                FoldingFactor::ConstantFromSecondRound(2, 2),
+                vec![2, 2, 2],
+                6,
+            ),
+            (FoldingFactor::PerRound(vec![2, 2, 2]), vec![2, 2, 2], 6),
+            (
+                FoldingFactor::ConstantFromSecondRound(3, 2),
+                vec![3, 2, 2],
+                5,
+            ),
+            (FoldingFactor::PerRound(vec![2, 3, 1]), vec![2, 3, 1], 6),
+        ] {
+            let protocol = ProtocolParameters {
+                starting_log_inv_rate: 1,
+                round_log_inv_rates: Vec::new(),
+                folding_factor: folding_factor.clone(),
+                soundness_type: SecurityAssumption::CapacityBound,
+                security_level: 32,
+                pow_bits: 0,
+            };
+            let params = WhirUniVerifierParams::<Base>::new(
+                protocol.clone(),
+                VariableOrder::Prefix,
+                Poseidon2Config::BABY_BEAR_D4_W16,
+            )
+            .unwrap();
+            let native = WhirConfig::<Ext, Base, DummyChallenger<Base>>::new(12, protocol)
+                .expect("n=12 native strategy fits");
+            assert_eq!(native.folding_schedule(), schedule);
+            let retained = params
+                .round_params::<Ext, DummyChallenger<Base>>(12)
+                .unwrap();
+            assert_eq!(retained.num_variables(), 12);
+            assert_eq!(retained.final_poly_num_variables(), remainder);
+            assert_eq!(retained.n_rounds(), 2);
+            for (round, &factor) in schedule.iter().enumerate() {
+                assert_eq!(retained.round_folding_factor(round), factor);
+            }
+            assert_eq!(
+                alloc::format!("{:?}", params.protocol_params().folding_factor),
+                alloc::format!("{folding_factor:?}")
+            );
+            let seed = crate::transcript::domain_separator_seed(
+                &retained
+                    .transcript_shape()
+                    .for_claims(2)
+                    .domain_separator::<Base, Ext>(),
+            );
+            assert_eq!(
+                seed,
+                crate::transcript::domain_separator_seed(
+                    &WhirShape::new(&native, 2).domain_separator::<Base, Ext>()
+                )
+            );
+            seeds.push(seed);
+        }
+        assert_ne!(seeds[0], seeds[1]);
+        assert_ne!(seeds[0], seeds[2]);
+        assert_ne!(seeds[1], seeds[2]);
+    }
+
+    #[test]
+    fn per_round_requires_exact_fit_for_each_stacked_arity() {
+        use p3_field::extension::BinomialExtensionField;
+
+        type Base = p3_baby_bear::BabyBear;
+        type Ext = BinomialExtensionField<Base, 4>;
+        for (arity, factors) in [(9, vec![2, 3, 1]), (20, vec![2, 3, 1]), (9, vec![2, 8])] {
+            let protocol = ProtocolParameters {
+                starting_log_inv_rate: 1,
+                round_log_inv_rates: Vec::new(),
+                folding_factor: FoldingFactor::PerRound(factors),
+                soundness_type: SecurityAssumption::CapacityBound,
+                security_level: 32,
+                pow_bits: 0,
+            };
+            let params = WhirUniVerifierParams::<Base>::new(
+                protocol,
+                VariableOrder::Prefix,
+                Poseidon2Config::BABY_BEAR_D4_W16,
+            )
+            .unwrap();
+            let result = std::panic::catch_unwind(|| {
+                params.round_params::<Ext, DummyChallenger<Base>>(arity)
+            });
+            assert!(matches!(
+                result.expect("invalid per-arity strategy must not panic"),
+                Err(WhirVerifierParamsError::InvalidConfig(_))
+            ));
+        }
     }
 
     #[test]
