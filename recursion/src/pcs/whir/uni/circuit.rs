@@ -2,7 +2,7 @@
 //!
 //! `p3_sumcheck`'s layout verifier records each opening as an equality claim on
 //! the stacked polynomial, lifts it into the stacked variable space with the
-//! column's boolean selector prefix, and batches everything with powers of a
+//! column's boolean selector, and batches everything with powers of a
 //! single challenge `alpha`. This module does the same in-circuit, so the
 //! recursive verifier can hand `verify_whir_circuit` the same constraint and
 //! claimed sum the native verifier forms.
@@ -31,7 +31,8 @@ use crate::pcs::whir::targets::QueryOpeningTargets;
 use crate::pcs::whir::uni::bridge::univariate_eq_point_circuit;
 use crate::pcs::whir::uni::pcs::round_schedule;
 use crate::pcs::whir::uni::plan::{
-    PaddedArity, StackedPlan, checked_stacked_num_variables, padded_arity,
+    PaddedArity, StackedPlan, canonical_layout_strategy, checked_stacked_num_variables,
+    padded_arity,
 };
 use crate::pcs::whir::uni::recursive_pcs::{DummyChallenger, WhirUniVerifierParams};
 use crate::pcs::whir::uni::targets::WhirRoundTargets;
@@ -79,6 +80,26 @@ where
     BF: PrimeField64 + TwoAdicField,
     EF: ExtensionField<BF>,
 {
+    round_transcript_seeds_with_strategy::<BF, EF>(
+        matrices,
+        num_virtual_claims,
+        folding,
+        whir_shape,
+        canonical_layout_strategy(VariableOrder::Prefix),
+    )
+}
+
+fn round_transcript_seeds_with_strategy<BF, EF>(
+    matrices: &[MatrixOpenings<'_>],
+    num_virtual_claims: usize,
+    folding: usize,
+    whir_shape: &WhirTranscriptShape,
+    strategy: LayoutStrategy,
+) -> RoundTranscriptSeeds<BF>
+where
+    BF: PrimeField64 + TwoAdicField,
+    EF: ExtensionField<BF>,
+{
     let shapes: Vec<(usize, usize)> = matrices
         .iter()
         .map(|m| {
@@ -91,8 +112,6 @@ where
         .map(|m| vec![EF::ONE; m.points.len()])
         .collect();
     let schedule = round_schedule::<BF, EF>(&shapes, &dummy_points, folding);
-    // The recursive adapter supports the Prefix order only, whose layout reverses selectors.
-    let strategy = LayoutStrategy::new(true, VariableOrder::Prefix);
     let mut layout = Verifier::<BF, EF>::new(&schedule.protocol.table_shapes(), strategy);
 
     let virtual_claims = (0..num_virtual_claims)
@@ -387,6 +406,34 @@ where
     EF: ExtensionField<BF>,
     Ch: RecursiveChallenger<BF, EF>,
 {
+    build_round_claims_with_strategy::<BF, EF, Ch>(
+        circuit,
+        challenger,
+        matrices,
+        round_evals,
+        initial_ood_answers,
+        folding,
+        seeds,
+        canonical_layout_strategy(VariableOrder::Prefix),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_round_claims_with_strategy<BF, EF, Ch>(
+    circuit: &mut CircuitBuilder<EF>,
+    challenger: &mut Ch,
+    matrices: &[MatrixOpenings<'_>],
+    round_evals: &[Vec<Target>],
+    initial_ood_answers: &[Target],
+    folding: usize,
+    seeds: &RoundTranscriptSeeds<BF>,
+    strategy: LayoutStrategy,
+) -> Result<RoundClaims, CircuitBuilderError>
+where
+    BF: PrimeField64,
+    EF: ExtensionField<BF>,
+    Ch: RecursiveChallenger<BF, EF>,
+{
     let shapes: Vec<(PaddedArity, usize)> = matrices
         .iter()
         .map(|m| {
@@ -394,7 +441,7 @@ where
             (padded_arity(m.log_height, folding), width)
         })
         .collect();
-    let plan = StackedPlan::new(&shapes);
+    let plan = StackedPlan::new_with_strategy(&shapes, strategy);
 
     // Substituted equality point and scale per (matrix, point), plus the
     // bound-value binding. Batch indices follow matrix-major, then point order.
@@ -467,7 +514,7 @@ where
             let batch_of_matrix = first_batch + point_idx;
             for (col, selector) in placement.selectors.iter().enumerate() {
                 ordered_values.push(round_evals[batch_of_matrix][col]);
-                eq_points.push(selector.lift_prefix(local, zero, one));
+                eq_points.push(selector.lift_with_strategy(local, zero, one, strategy));
             }
         }
     }
@@ -583,6 +630,9 @@ where
         verified_params.push(vp);
     }
 
+    // Recursive params support the two native canonical layouts. Derive their
+    // full layout strategy once so transcript seeds and claims cannot diverge.
+    let strategy = canonical_layout_strategy(params.variable_order());
     let mut op_ids = Vec::new();
     for (((commitment, matrices), round), vp) in commitments_with_opening_points
         .iter()
@@ -598,16 +648,17 @@ where
             .collect();
         let stacked_num_variables = stacked_num_variables(&openings, params.folding())?;
 
-        let seeds = round_transcript_seeds::<BF, EF>(
+        let seeds = round_transcript_seeds_with_strategy::<BF, EF>(
             &openings,
             round.whir.initial_ood_answers.len(),
             params.folding(),
             vp.transcript_shape(),
+            strategy,
         );
 
         #[cfg(test)]
         crate::pcs::whir::uni::acceptance_probe::target_challenger();
-        let claims = build_round_claims::<BF, EF, Ch>(
+        let claims = build_round_claims_with_strategy::<BF, EF, Ch>(
             circuit,
             challenger,
             &openings,
@@ -615,6 +666,7 @@ where
             &round.whir.initial_ood_answers,
             params.folding(),
             &seeds,
+            strategy,
         )
         .map_err(|e| VerificationError::InvalidProofShape(format!("{e:?}")))?;
         debug_assert_eq!(claims.stacked_num_variables, stacked_num_variables);
@@ -654,6 +706,8 @@ pub(crate) mod tests_support {
     use p3_circuit::{CircuitBuilder, CircuitBuilderError};
     use p3_field::PrimeCharacteristicRing;
     use p3_field::extension::BinomialExtensionField;
+    use p3_sumcheck::layout::LayoutStrategy;
+    use p3_sumcheck::strategy::VariableOrder;
 
     use super::{MatrixOpenings, RoundTranscriptSeeds, build_round_claims};
     use crate::Target;
@@ -734,6 +788,31 @@ pub(crate) mod tests_support {
         alpha: EF,
         stacked_num_variables: usize,
     ) -> CircuitClaims {
+        claimed_eval_via_circuit_with_strategy(
+            shapes,
+            points_per_matrix,
+            folding,
+            ood,
+            ood_seeds,
+            evals,
+            alpha,
+            stacked_num_variables,
+            LayoutStrategy::new(true, VariableOrder::Prefix),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn claimed_eval_via_circuit_with_strategy(
+        shapes: &[(usize, usize)],
+        points_per_matrix: &[Vec<EF>],
+        folding: usize,
+        ood: &[EF],
+        ood_seeds: &[EF],
+        evals: &[Vec<EF>],
+        alpha: EF,
+        stacked_num_variables: usize,
+        strategy: LayoutStrategy,
+    ) -> CircuitClaims {
         assert_eq!(ood.len(), ood_seeds.len());
         let mut ext: VecDeque<EF> = ood_seeds.iter().copied().collect();
         ext.push_back(alpha);
@@ -776,7 +855,7 @@ pub(crate) mod tests_support {
             })
             .collect();
 
-        let claims = build_round_claims::<BF, EF, _>(
+        let claims = super::build_round_claims_with_strategy::<BF, EF, _>(
             &mut builder,
             &mut challenger,
             &matrices,
@@ -784,6 +863,7 @@ pub(crate) mod tests_support {
             &ood_targets,
             folding,
             &stub_seeds(ood_targets.len(), round_evals.len()),
+            strategy,
         )
         .unwrap();
         assert_eq!(claims.stacked_num_variables, stacked_num_variables);
@@ -882,7 +962,8 @@ mod tests {
     use p3_field::PrimeCharacteristicRing;
     use p3_field::extension::BinomialExtensionField;
     use p3_sumcheck::constraints::Statements;
-    use p3_sumcheck::layout::{Layout, PrefixProver, Verifier};
+    use p3_sumcheck::layout::{Layout, LayoutStrategy, PrefixProver, SuffixProver, Verifier};
+    use p3_sumcheck::strategy::VariableOrder;
     use rand::SeedableRng;
     use rand::rngs::SmallRng;
 
@@ -894,6 +975,121 @@ mod tests {
 
     type BF = BabyBear;
     type EF = BinomialExtensionField<BF, 4>;
+
+    #[test]
+    fn layout_step_seeds_match_native_for_both_canonical_strategies() {
+        use p3_circuit::ops::Poseidon2Config;
+        use p3_whir::parameters::{FoldingFactor, ProtocolParameters, SecurityAssumption};
+
+        use crate::pcs::whir::uni::recursive_pcs::{DummyChallenger, WhirUniVerifierParams};
+
+        let shapes = [(5usize, 1usize), (2, 3), (5, 2)];
+        let folding = 3;
+        let zeta = EF::from_u32(101);
+        let points = vec![vec![zeta], vec![zeta, EF::from_u32(103)], vec![zeta]];
+        let schedule = round_schedule::<BF, EF>(&shapes, &points, folding);
+        let mut builder = CircuitBuilder::<EF>::new();
+        let targets: Vec<Vec<(Target, Vec<Target>)>> = shapes
+            .iter()
+            .zip(&points)
+            .map(|(&(_, width), zetas)| {
+                zetas
+                    .iter()
+                    .map(|&z| {
+                        (
+                            builder.define_const(z),
+                            (0..width).map(|_| builder.define_const(EF::ZERO)).collect(),
+                        )
+                    })
+                    .collect()
+            })
+            .collect();
+        let matrices: Vec<MatrixOpenings<'_>> = shapes
+            .iter()
+            .zip(&targets)
+            .map(|(&(log_height, _), points)| MatrixOpenings { log_height, points })
+            .collect();
+        let protocol = ProtocolParameters {
+            security_level: 32,
+            pow_bits: 0,
+            round_log_inv_rates: vec![],
+            folding_factor: FoldingFactor::Constant(folding),
+            soundness_type: SecurityAssumption::CapacityBound,
+            starting_log_inv_rate: 1,
+        };
+        let params = WhirUniVerifierParams::<BF>::new(
+            protocol,
+            PrefixProver::<BF, EF>::variable_order(),
+            Poseidon2Config::BABY_BEAR_D4_W16,
+        )
+        .unwrap();
+        let vp = params
+            .round_params::<EF, DummyChallenger<BF>>(schedule.stacked_num_variables)
+            .unwrap();
+        let mut by_order = Vec::new();
+        for strategy in [
+            PrefixProver::<BF, EF>::strategy(),
+            LayoutStrategy::new(false, VariableOrder::Prefix),
+            LayoutStrategy::new(true, VariableOrder::Suffix),
+            SuffixProver::<BF, EF>::strategy(),
+        ] {
+            let got = super::round_transcript_seeds_with_strategy::<BF, EF>(
+                &matrices,
+                2,
+                folding,
+                vp.transcript_shape(),
+                strategy,
+            );
+            let mut native = Verifier::<BF, EF>::new(&schedule.protocol.table_shapes(), strategy);
+            let mut virtual_claims = Vec::new();
+            for _ in 0..2 {
+                let mut tap = SeedTap::<BF>::new();
+                native.add_virtual_eval(EF::ZERO, &mut tap);
+                virtual_claims.push(tap.seed());
+            }
+            let mut opening_claims = Vec::new();
+            for ((table_idx, batch), point) in
+                schedule.protocol.iter_openings().zip(&schedule.points)
+            {
+                let mut tap = SeedTap::<BF>::new();
+                let evals = p3_sumcheck::OpeningBatch::new(
+                    vec![EF::ZERO; batch.current().len()],
+                    Vec::new(),
+                );
+                native
+                    .add_claim_at(table_idx, batch, point, &evals, &mut tap)
+                    .unwrap();
+                opening_claims.push(tap.seed());
+            }
+            let mut tap = SeedTap::<BF>::new();
+            let _ = native.batching_challenge(&mut tap);
+            assert_eq!(got.virtual_claims, virtual_claims);
+            assert_eq!(got.opening_claims, opening_claims);
+            assert_eq!(got.batching, tap.seed());
+            assert_eq!(
+                got.whir,
+                crate::transcript::domain_separator_seed(
+                    &vp.transcript_shape()
+                        .for_claims(schedule.protocol.num_openings())
+                        .domain_separator::<BF, EF>()
+                )
+            );
+            by_order.push(got);
+        }
+        let public_prefix =
+            super::round_transcript_seeds::<BF, EF>(&matrices, 2, folding, vp.transcript_shape());
+        assert_eq!(public_prefix.virtual_claims, by_order[0].virtual_claims);
+        assert_eq!(public_prefix.opening_claims, by_order[0].opening_claims);
+        assert_eq!(public_prefix.batching, by_order[0].batching);
+        for variant in &by_order[1..] {
+            assert_eq!(by_order[0].whir, variant.whir);
+            assert_ne!(by_order[0].virtual_claims, variant.virtual_claims);
+            assert_ne!(by_order[0].opening_claims, variant.opening_claims);
+            assert_ne!(by_order[0].batching, variant.batching);
+        }
+        assert_ne!(by_order[1].virtual_claims, by_order[3].virtual_claims);
+        assert_ne!(by_order[2].virtual_claims, by_order[3].virtual_claims);
+    }
 
     /// The in-circuit claim assembly must reproduce the native layout
     /// verifier's batched sum bit for bit, including the alpha-power order.
@@ -989,6 +1185,77 @@ mod tests {
         assert_eq!(got.claimed_eval, native_sum);
         assert_eq!(got.num_variables, native_constraint.num_variables());
         assert_eq!(got.eq_points, native_eq_points);
+    }
+
+    #[test]
+    fn suffix_claims_match_native_batched_sum_and_equality_points() {
+        let shapes = [(5usize, 1usize), (2, 3), (5, 2)];
+        let folding = 3;
+        let zeta = EF::from_u32(101);
+        let zeta_next = EF::from_u32(103);
+        let points_per_matrix = vec![vec![zeta], vec![zeta, zeta_next], vec![zeta_next, zeta]];
+        let schedule = round_schedule::<BF, EF>(&shapes, &points_per_matrix, folding);
+        let ood = vec![EF::from_u32(7), EF::from_u32(8)];
+        let evals = vec![
+            vec![EF::from_u32(11)],
+            vec![EF::from_u32(13), EF::from_u32(17), EF::from_u32(19)],
+            vec![EF::from_u32(23), EF::from_u32(29), EF::from_u32(31)],
+            vec![EF::from_u32(37), EF::from_u32(41)],
+            vec![EF::from_u32(43), EF::from_u32(47)],
+        ];
+        let mut ch = DuplexChallenger::<BF, Poseidon2BabyBear<16>, 16, 8>::new(
+            Poseidon2BabyBear::<16>::new_from_rng_128(&mut SmallRng::seed_from_u64(2)),
+        );
+        let strategy = SuffixProver::<BF, EF>::strategy();
+        let mut native = Verifier::<BF, EF>::new(&schedule.protocol.table_shapes(), strategy);
+        let mut ood_seeds = Vec::new();
+        for &answer in &ood {
+            let mut tap = SeedTap::<BF>::new();
+            native.clone().add_virtual_eval(answer, &mut tap);
+            let mut probe = ch.clone();
+            probe.observe_slice(&tap.seed());
+            ood_seeds.push(probe.sample_algebra_element());
+            native.add_virtual_eval(answer, &mut ch);
+        }
+        for (((table_idx, batch), point), values) in schedule
+            .protocol
+            .iter_openings()
+            .zip(&schedule.points)
+            .zip(&evals)
+        {
+            let batch_evals = p3_sumcheck::OpeningBatch::new(values.clone(), Vec::new());
+            native
+                .add_claim_at(table_idx, batch, point, &batch_evals, &mut ch)
+                .unwrap();
+        }
+        let alpha: EF = native.batching_challenge(&mut ch);
+        let expected_sum = native.sum(alpha);
+        let constraint = native.constraint(alpha);
+        let expected_points: Vec<Vec<EF>> = constraint
+            .statements()
+            .iter()
+            .flat_map(|statement| match statement {
+                Statements::Eq(eq) => eq
+                    .iter()
+                    .map(|(point, _)| point.as_slice().to_vec())
+                    .collect(),
+                _ => Vec::new(),
+            })
+            .collect();
+        let got = super::tests_support::claimed_eval_via_circuit_with_strategy(
+            &shapes,
+            &points_per_matrix,
+            folding,
+            &ood,
+            &ood_seeds,
+            &evals,
+            alpha,
+            schedule.stacked_num_variables,
+            strategy,
+        );
+        assert_eq!(got.claimed_eval, expected_sum);
+        assert_eq!(got.num_variables, constraint.num_variables());
+        assert_eq!(got.eq_points, expected_points);
     }
 
     /// `build_round_claims`'s `circuit.mul` + `circuit.connect` binding

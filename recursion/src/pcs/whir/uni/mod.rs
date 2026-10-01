@@ -19,7 +19,7 @@ pub use circuit::{MatrixOpenings, RoundClaims, build_round_claims};
 use p3_challenger::{CanObserve, CanSampleUniformBits, FieldChallenger, GrindingChallenger};
 use p3_commit::{Mmcs, PolynomialSpace};
 use p3_field::{Algebra, PrimeCharacteristicRing, PrimeField64, TwoAdicField};
-use p3_sumcheck::layout::{LayoutStrategy, Verifier};
+use p3_sumcheck::layout::Verifier;
 use p3_sumcheck::strategy::Basis;
 pub use p3_sumcheck::strategy::VariableOrder;
 use p3_sumcheck::verify_final_sumcheck_rounds;
@@ -35,7 +35,7 @@ pub use targets::{WhirRoundTargets, WhirUniProofTargets, packed_digest_len};
 
 use crate::VerificationError;
 use crate::input_contract::whir::{WhirContextParams, validate_whir_pcs_context};
-use crate::pcs::whir::uni::plan::checked_stacked_num_variables;
+use crate::pcs::whir::uni::plan::{canonical_layout_strategy, checked_stacked_num_variables};
 use crate::pcs::whir::uni::recursive_pcs::validate_round_config_inputs;
 
 /// Queried STIR indices one commitment's WHIR argument sampled.
@@ -82,12 +82,10 @@ pub struct WhirQueryIndices {
 /// the same challenger states.
 ///
 /// `variable_order` must match the [`p3_sumcheck::layout::Layout`] the proof
-/// was produced under. Every current caller uses
-/// `p3_sumcheck::layout::PrefixProver`, whose `reverse_selectors` is `true`;
-/// `p3_sumcheck::layout::SuffixProver`'s is `false`. Since this function has
-/// no `Layout` type parameter of its own, it derives `reverse_selectors`
-/// from `variable_order` under that same correspondence — the only two
-/// `Layout` implementations this crate ships.
+/// was produced under. The recursive adapter supports the canonical
+/// `PrefixProver` and `SuffixProver` strategies. Since this function has no
+/// `Layout` type parameter, it derives selector placement from that canonical
+/// correspondence; arbitrary custom strategy pairs are outside its contract.
 ///
 /// # Errors
 ///
@@ -126,11 +124,7 @@ where
     type F<SC> = Val<SC>;
     type EF<SC> = <SC as StarkGenericConfig>::Challenge;
 
-    let reverse_selectors = match variable_order {
-        VariableOrder::Prefix => true,
-        VariableOrder::Suffix => false,
-    };
-    let strategy = LayoutStrategy::new(reverse_selectors, variable_order);
+    let strategy = canonical_layout_strategy(variable_order);
 
     if transcript.commitments_with_opening_points.len() != opening_proof.rounds.len() {
         return Err(VerificationError::InvalidProofShape(format!(

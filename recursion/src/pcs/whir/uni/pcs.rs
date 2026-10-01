@@ -65,7 +65,9 @@ where
     /// equal to the matrix width, column `j` holding polynomial `j`'s
     /// coefficients in ascending degree.
     pub coeffs: Vec<RowMajorMatrix<F>>,
-    /// Slot assignment of every column inside the stacked polynomial.
+    /// Slot assignment of every column inside the stacked polynomial, using
+    /// `L::strategy()`: Prefix selector indices are reversed; Suffix indices
+    /// are raw. The strategy itself is supplied by the enclosing PCS layout.
     pub plan: StackedPlan,
     /// Arity of the stacked polynomial.
     pub stacked_num_variables: usize,
@@ -292,7 +294,7 @@ where
         coeffs: Vec<RowMajorMatrix<F>>,
     ) -> CommitResult<F, EF, MT, L> {
         let shapes = self.table_shapes(&coeffs);
-        let plan = StackedPlan::new(&shapes);
+        let plan = StackedPlan::new_with_strategy(&shapes, L::strategy());
         let stacked_num_variables = plan.num_variables;
 
         // One table per matrix: `Table` stores one polynomial per row, so the
@@ -768,7 +770,7 @@ pub(crate) mod tests {
     use p3_matrix::Matrix;
     use p3_matrix::dense::RowMajorMatrix;
     use p3_merkle_tree::MerkleTreeMmcs;
-    use p3_sumcheck::layout::PrefixProver;
+    use p3_sumcheck::layout::{Layout, PrefixProver, SuffixProver, Table};
     use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
     use p3_whir::parameters::{FoldingFactor, ProtocolParameters, SecurityAssumption};
     use rand::SeedableRng;
@@ -786,6 +788,7 @@ pub(crate) mod tests {
     type MyDft = Radix2DFTSmallBatch<F>;
     pub(crate) type MyChallenger = DuplexChallenger<F, Perm, 16, 8>;
     pub(crate) type MyPcs = WhirUniPcs<EF, F, MyDft, MyMmcs, MyChallenger, PrefixProver<F, EF>>;
+    type SuffixPcs = WhirUniPcs<EF, F, MyDft, MyMmcs, MyChallenger, SuffixProver<F, EF>>;
 
     #[derive(Clone)]
     struct CountingChallenger<C> {
@@ -865,6 +868,8 @@ pub(crate) mod tests {
 
     type CountingPcs =
         WhirUniPcs<EF, F, MyDft, MyMmcs, CountingChallenger<MyChallenger>, PrefixProver<F, EF>>;
+    type CountingSuffixPcs =
+        WhirUniPcs<EF, F, MyDft, MyMmcs, CountingChallenger<MyChallenger>, SuffixProver<F, EF>>;
     type CountingConfig =
         p3_uni_stark::StarkConfig<CountingPcs, EF, CountingChallenger<MyChallenger>>;
 
@@ -1224,6 +1229,128 @@ pub(crate) mod tests {
             &mut challenger,
         )
         .expect("honest opening verifies");
+    }
+
+    #[test]
+    fn suffix_commit_open_verify_tracks_native_layout_and_rejects_wrong_value() {
+        let base = test_pcs();
+        let pcs = SuffixPcs::new(
+            base.protocol_params.clone(),
+            base.dft.clone(),
+            base.mmcs.clone(),
+            base.challenger_proto.clone(),
+            base.log_max_lde_height,
+        );
+        let mut rng = SmallRng::seed_from_u64(67);
+        // Equal-height tie, three columns, and a table padded from arity 3 to 4.
+        let d0 = TwoAdicMultiplicativeCoset::<F>::new(F::ONE, 6).unwrap();
+        let d1 = TwoAdicMultiplicativeCoset::<F>::new(F::ONE, 3).unwrap();
+        let d2 = TwoAdicMultiplicativeCoset::<F>::new(F::ONE, 6).unwrap();
+        let matrices = vec![
+            (d0, RowMajorMatrix::<F>::rand(&mut rng, 1 << 6, 3)),
+            (d1, RowMajorMatrix::<F>::rand(&mut rng, 1 << 3, 2)),
+            (d2, RowMajorMatrix::<F>::rand(&mut rng, 1 << 6, 1)),
+        ];
+        let (commitment, data) =
+            <SuffixPcs as p3_commit::Pcs<EF, MyChallenger>>::commit(&pcs, matrices).unwrap();
+        let tables: Vec<Table<F>> = data
+            .coeffs
+            .iter()
+            .map(|matrix| Table::new(matrix.transpose()))
+            .collect();
+        let witness = SuffixProver::<F, EF>::new_witness(tables, pcs.folding());
+        assert_eq!(data.plan.num_variables, witness.num_variables());
+        assert_eq!(data.stacked_num_variables, witness.num_variables());
+        assert_eq!(
+            data.plan
+                .placements
+                .iter()
+                .map(|p| p.table_idx)
+                .collect::<Vec<_>>(),
+            vec![2, 0, 1]
+        );
+        assert_eq!(
+            data.plan.placements[1]
+                .selectors
+                .iter()
+                .map(|s| s.index)
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+        assert_ne!(
+            data.plan,
+            crate::pcs::whir::uni::plan::StackedPlan::new(&pcs.table_shapes(&data.coeffs))
+        );
+
+        let zeta = EF::from_u32(777);
+        let zeta_next = EF::from_u32(779);
+        let points = vec![vec![zeta, zeta_next], vec![zeta], vec![zeta_next]];
+        let mut challenger = pcs.challenger_proto.clone();
+        let (opened, proof) = <SuffixPcs as p3_commit::Pcs<EF, MyChallenger>>::open(
+            &pcs,
+            vec![(&data, points).into()],
+            &mut challenger,
+        )
+        .unwrap();
+        let claims = vec![
+            (
+                d0,
+                vec![
+                    (zeta, opened[0][0][0].clone()),
+                    (zeta_next, opened[0][0][1].clone()),
+                ],
+            ),
+            (d1, vec![(zeta, opened[0][1][0].clone())]),
+            (d2, vec![(zeta_next, opened[0][2][0].clone())]),
+        ];
+        let mut challenger = pcs.challenger_proto.clone();
+        <SuffixPcs as p3_commit::Pcs<EF, MyChallenger>>::verify(
+            &pcs,
+            vec![(commitment.clone(), claims.clone()).into()],
+            &proof,
+            &mut challenger,
+        )
+        .expect("native Suffix opening verifies");
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut invalid_protocol = pcs.protocol_params.clone();
+        invalid_protocol.folding_factor = FoldingFactor::PerRound(vec![2, 3]);
+        let invalid = CountingSuffixPcs::new(
+            invalid_protocol,
+            pcs.dft.clone(),
+            pcs.mmcs.clone(),
+            CountingChallenger::new(pcs.challenger_proto.clone(), Arc::clone(&calls)),
+            pcs.log_max_lde_height,
+        );
+        let mut challenger =
+            CountingChallenger::new(pcs.challenger_proto.clone(), Arc::clone(&calls));
+        assert!(matches!(
+            <CountingSuffixPcs as p3_commit::Pcs<EF, CountingChallenger<MyChallenger>>>::verify(
+                &invalid,
+                vec![(commitment.clone(), claims.clone()).into()],
+                &proof,
+                &mut challenger,
+            ),
+            Err(super::WhirUniPcsError::ShapeMismatch { round: 0 })
+        ));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+        let mut wrong = claims;
+        wrong[0].1[0].1[0] += EF::ONE;
+        let mut challenger = pcs.challenger_proto.clone();
+        assert!(matches!(
+            <SuffixPcs as p3_commit::Pcs<EF, MyChallenger>>::verify(
+                &pcs,
+                vec![(commitment, wrong).into()],
+                &proof,
+                &mut challenger,
+            ),
+            Err(super::WhirUniPcsError::OpeningValueMismatch {
+                round: 0,
+                batch: 0,
+                column: 0
+            })
+        ));
     }
 
     #[test]

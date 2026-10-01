@@ -115,8 +115,8 @@ Both WHIR aliases use Poseidon2, D4, and binary Merkle commitments. The
 built-in `WhirConfigV1` descriptor still specifies one constant folding factor.
 For a custom `WhirUniPcs` and `WhirUniVerifierParams`, the recursive verifier
 supports native `FoldingFactor::Constant`, `ConstantFromSecondRound`, and
-`PerRound` with positive factors, Prefix variable order, unstratified query
-sampling, and binary commitments. The first fold controls table padding;
+`PerRound` with positive factors, canonical Prefix or Suffix variable order,
+unstratified query sampling, and binary commitments. The first fold controls table padding;
 the complete strategy is retained for native WHIR configuration and transcript
 seeding. Every commitment's stacked arity must fit that strategy exactly.
 In particular, a `PerRound` vector must supply exactly the factors used at
@@ -133,12 +133,13 @@ The public low-level `WhirVerifierParams::from_config` and
 `verify_whir_circuit` path accepts canonical, unstratified Prefix and Suffix
 variable orders. Its query-index circuit currently consumes one base-field
 sample per unsaturated query, so native uniform-bit rejection or resampling
-is outside the supported transcript cases. The stacked univariate adapter,
-`WhirUniVerifierParams`, built-in WHIR aliases, and prepared/descriptor paths
-remain Prefix-only. The built-in descriptor retains its constant folding
-factor; custom Prefix univariate configurations support the positive native
-folding strategies listed above. The WHIR descriptor's cap height is retained
-when restoring paths.
+is outside the supported transcript cases. Custom univariate recursion supports
+the two native canonical layouts, including prepared proof production under a
+custom Suffix configuration. Arbitrary layouts with independent selector and
+fold-order settings are outside this adapter's contract. The registered V1
+aliases and descriptors remain Prefix with Constant folding; no portable
+Suffix artifact format is registered. The WHIR descriptor's cap height is
+retained when restoring paths.
 
 ## FRI parameters
 

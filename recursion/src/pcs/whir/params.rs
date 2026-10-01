@@ -38,8 +38,9 @@ pub enum WhirVerifierParamsError {
     /// The recursive adapter requires a nonempty, positive native folding strategy.
     #[error("WHIR recursive verifier requires a positive native folding strategy")]
     UnsupportedFoldingFactor,
-    /// The stacked univariate adapter is implemented for Prefix only.
-    #[error("WHIR stacked univariate adapter does not support variable order {variable_order:?}")]
+    /// Legacy variable-order error retained for source compatibility.
+    /// The two current native orders are both supported by the recursive adapter.
+    #[error("WHIR stacked univariate adapter cannot use variable order {variable_order:?}")]
     UnsupportedVariableOrder { variable_order: VariableOrder },
     /// The stacked polynomial arity cannot be represented by WHIR's integer geometry.
     #[error("stacked WHIR arity {arity} cannot form an initial domain with rate {rate}")]

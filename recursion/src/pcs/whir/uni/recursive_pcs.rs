@@ -138,9 +138,6 @@ impl<F: TwoAdicField> WhirUniVerifierParams<F> {
         variable_order: VariableOrder,
         permutation_config: impl Into<PermConfig>,
     ) -> Result<Self, WhirVerifierParamsError> {
-        if variable_order != VariableOrder::Prefix {
-            return Err(WhirVerifierParamsError::UnsupportedVariableOrder { variable_order });
-        }
         let folding = initial_layout_folding(&protocol_params.folding_factor)
             .ok_or(WhirVerifierParamsError::UnsupportedFoldingFactor)?;
         Ok(Self {
@@ -157,7 +154,7 @@ impl<F: TwoAdicField> WhirUniVerifierParams<F> {
     ///
     /// # Errors
     /// Returns a typed error for invalid arithmetic/configuration or an
-    /// unsupported variable order or stratified query schedule. Saturated
+    /// unsupported stratified query schedule. Saturated
     /// STIR query counts use the native whole-domain opening schedule.
     pub fn round_params<EF, Ch>(
         &self,
@@ -263,7 +260,7 @@ mod validation_tests {
                     VariableOrder::Suffix,
                     Poseidon2Config::BABY_BEAR_D4_W16,
                 ),
-                Err(WhirVerifierParamsError::UnsupportedVariableOrder { .. })
+                Err(WhirVerifierParamsError::UnsupportedFoldingFactor)
             ));
         }
     }
@@ -355,19 +352,21 @@ mod validation_tests {
                 security_level: 32,
                 pow_bits: 0,
             };
-            let params = WhirUniVerifierParams::<Base>::new(
-                protocol,
-                VariableOrder::Prefix,
-                Poseidon2Config::BABY_BEAR_D4_W16,
-            )
-            .unwrap();
-            let result = std::panic::catch_unwind(|| {
-                params.round_params::<Ext, DummyChallenger<Base>>(arity)
-            });
-            assert!(matches!(
-                result.expect("invalid per-arity strategy must not panic"),
-                Err(WhirVerifierParamsError::InvalidConfig(_))
-            ));
+            for order in [VariableOrder::Prefix, VariableOrder::Suffix] {
+                let params = WhirUniVerifierParams::<Base>::new(
+                    protocol.clone(),
+                    order,
+                    Poseidon2Config::BABY_BEAR_D4_W16,
+                )
+                .unwrap();
+                let result = std::panic::catch_unwind(|| {
+                    params.round_params::<Ext, DummyChallenger<Base>>(arity)
+                });
+                assert!(matches!(
+                    result.expect("invalid per-arity strategy must not panic"),
+                    Err(WhirVerifierParamsError::InvalidConfig(_))
+                ));
+            }
         }
     }
 
@@ -393,7 +392,7 @@ mod validation_tests {
     }
 
     #[test]
-    fn suffix_variable_order_is_rejected_for_prefix_stacking() {
+    fn suffix_variable_order_retains_native_round_configuration() {
         let protocol = ProtocolParameters {
             starting_log_inv_rate: 1,
             round_log_inv_rates: Vec::new(),
@@ -407,12 +406,38 @@ mod validation_tests {
             VariableOrder::Suffix,
             Poseidon2Config::BABY_BEAR_D4_W16,
         );
-        assert!(matches!(
-            result,
-            Err(WhirVerifierParamsError::UnsupportedVariableOrder {
-                variable_order: VariableOrder::Suffix
-            })
-        ));
+        let params = result.expect("canonical Suffix stacking is supported");
+        assert_eq!(params.variable_order(), VariableOrder::Suffix);
+        assert_eq!(params.folding(), 4);
+    }
+
+    #[test]
+    fn suffix_round_params_keep_full_varying_schedule() {
+        use p3_field::extension::BinomialExtensionField;
+
+        type Base = p3_baby_bear::BabyBear;
+        type Ext = BinomialExtensionField<Base, 4>;
+        let protocol = ProtocolParameters {
+            starting_log_inv_rate: 1,
+            round_log_inv_rates: Vec::new(),
+            folding_factor: FoldingFactor::ConstantFromSecondRound(3, 2),
+            soundness_type: SecurityAssumption::CapacityBound,
+            security_level: 32,
+            pow_bits: 0,
+        };
+        let params = WhirUniVerifierParams::<Base>::new(
+            protocol,
+            VariableOrder::Suffix,
+            Poseidon2Config::BABY_BEAR_D4_W16,
+        )
+        .unwrap();
+        assert_eq!(params.folding(), 3);
+        let round = params
+            .round_params::<Ext, DummyChallenger<Base>>(12)
+            .unwrap();
+        assert_eq!(round.variable_order(), VariableOrder::Suffix);
+        assert_eq!(round.round_folding_factor(0), 3);
+        assert_eq!(round.round_folding_factor(1), 2);
     }
 
     #[test]
@@ -434,7 +459,7 @@ mod validation_tests {
             VariableOrder::Prefix,
             Poseidon2Config::BABY_BEAR_D4_W16,
         )
-        .expect("constructor only validates the scalar fold mode");
+        .expect("constructor accepts a positive native folding strategy");
         assert!(matches!(
             params.round_params::<Ext, DummyChallenger<Base>>(usize::BITS as usize),
             Err(WhirVerifierParamsError::InvalidStackedArity { .. })
@@ -453,7 +478,7 @@ mod validation_tests {
             VariableOrder::Prefix,
             Poseidon2Config::BABY_BEAR_D4_W16,
         )
-        .expect("constructor only validates the scalar fold mode");
+        .expect("constructor accepts a positive native folding strategy");
         assert!(matches!(
             params.round_params::<Ext, DummyChallenger<Base>>(12),
             Err(WhirVerifierParamsError::InvalidConfig(_))

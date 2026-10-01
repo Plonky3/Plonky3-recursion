@@ -8,21 +8,18 @@
 //!
 //! # Layout mode
 //!
-//! `p3_sumcheck::layout` supports two stacking modes: `SuffixProver`
-//! (`Witness::new`, selector bits unreversed and prepended before the local
-//! point) and `PrefixProver` (`Witness::new_interleaved`, selector bits
-//! bit-reversed and appended after the local point). Every consumer of this
-//! module targets `PrefixProver`, so [`StackedPlan::new`] stores each
-//! selector's index already bit-reversed, and [`StackedSelector::lift_prefix`]
-//! appends those bits as a suffix of the local point — mirroring what
-//! `Verifier::constraint` calls (`Selector::lift_suffix`) whenever
-//! `LayoutStrategy::reverse_selectors` is set, which `PrefixProver::strategy()`
-//! sets. The method keeps the name `lift_prefix` to match its call sites;
-//! "prefix" names the residual sumcheck's prefix-first variable-binding
-//! order, not the selector's position within the point.
+//! `p3_sumcheck::layout` supports two canonical stacking modes: `SuffixProver`
+//! (`Witness::new`, raw selector bits before the local point) and
+//! `PrefixProver` (`Witness::new_interleaved`, reversed selector bits after
+//! the local point). The public constructors and [`StackedSelector::lift_prefix`]
+//! retain the Prefix behavior. Internal helpers use the full `LayoutStrategy`:
+//! `reverse_selectors` controls selector reversal and point placement, while
+//! `variable_order` controls the residual WHIR folding order elsewhere.
 
 use alloc::vec::Vec;
 
+use p3_sumcheck::layout::LayoutStrategy;
+use p3_sumcheck::strategy::VariableOrder;
 use p3_util::reverse_bits_len;
 use p3_whir::parameters::FoldingFactor;
 use thiserror::Error;
@@ -38,6 +35,15 @@ pub(crate) fn initial_layout_folding(strategy: &FoldingFactor) -> Option<usize> 
             factors.first().copied()
         }
         _ => None,
+    }
+}
+
+/// Native strategies of the two layouts supported by the recursive adapter.
+/// Other generic `Layout` implementations may choose independent strategy fields.
+pub(crate) const fn canonical_layout_strategy(order: VariableOrder) -> LayoutStrategy {
+    match order {
+        VariableOrder::Prefix => LayoutStrategy::new(true, VariableOrder::Prefix),
+        VariableOrder::Suffix => LayoutStrategy::new(false, VariableOrder::Suffix),
     }
 }
 
@@ -132,8 +138,8 @@ where
 pub struct StackedSelector {
     /// Number of selector bits, i.e. stacked arity minus the table's arity.
     pub num_variables: usize,
-    /// Slot index, read as a `num_variables`-bit integer, already bit-reversed
-    /// relative to the raw placement offset (see the module docs).
+    /// Slot index, read as a `num_variables`-bit integer. It is bit-reversed
+    /// for Prefix plans and raw for Suffix plans (see the module docs).
     pub index: usize,
 }
 
@@ -160,11 +166,32 @@ impl StackedSelector {
     /// `local.len() + i`, matching
     /// `p3_multilinear_util::point::Point::hypercube`.
     pub fn lift_prefix<F: Clone>(&self, local: &[F], zero: F, one: F) -> Vec<F> {
+        self.lift_with_strategy(
+            local,
+            zero,
+            one,
+            canonical_layout_strategy(VariableOrder::Prefix),
+        )
+    }
+
+    /// Lifts a point according to native selector placement.
+    pub(crate) fn lift_with_strategy<F: Clone>(
+        &self,
+        local: &[F],
+        zero: F,
+        one: F,
+        strategy: LayoutStrategy,
+    ) -> Vec<F> {
         let mut out = Vec::with_capacity(local.len() + self.num_variables);
-        out.extend_from_slice(local);
+        if strategy.reverse_selectors {
+            out.extend_from_slice(local);
+        }
         for i in 0..self.num_variables {
             let bit = (self.index >> (self.num_variables - 1 - i)) & 1 == 1;
             out.push(if bit { one.clone() } else { zero.clone() });
+        }
+        if !strategy.reverse_selectors {
+            out.extend_from_slice(local);
         }
         out
     }
@@ -197,9 +224,8 @@ impl StackedPlan {
     /// slot of `2^arity` points. Ties keep their original relative order
     /// (a stable sort), then land in reverse, so the later-indexed table of
     /// an equal-arity pair is placed first. Each selector's slot index is
-    /// stored bit-reversed within its own bit-width, matching what
-    /// `PrefixProver`'s native stacking does before appending it as a suffix
-    /// of the local point (see [`StackedSelector::lift_prefix`]).
+    /// stored bit-reversed within its own bit-width, matching the native
+    /// Prefix layout (see [`StackedSelector::lift_prefix`]).
     pub fn new(shapes: &[(PaddedArity, usize)]) -> Self {
         Self::try_new(shapes).expect("stacked geometry must fit in usize")
     }
@@ -207,6 +233,23 @@ impl StackedPlan {
     /// Plans the layout after validating all integer geometry before any
     /// selector/order allocation.
     pub fn try_new(shapes: &[(PaddedArity, usize)]) -> Result<Self, StackedArityError> {
+        Self::try_new_with_strategy(shapes, canonical_layout_strategy(VariableOrder::Prefix))
+    }
+
+    /// Plans slots for the actual native layout strategy. Selector placement
+    /// depends on `reverse_selectors`, independently of residual fold order.
+    pub(crate) fn new_with_strategy(
+        shapes: &[(PaddedArity, usize)],
+        strategy: LayoutStrategy,
+    ) -> Self {
+        Self::try_new_with_strategy(shapes, strategy).expect("stacked geometry must fit in usize")
+    }
+
+    /// Fallible strategy-aware counterpart of [`Self::try_new`].
+    pub(crate) fn try_new_with_strategy(
+        shapes: &[(PaddedArity, usize)],
+        strategy: LayoutStrategy,
+    ) -> Result<Self, StackedArityError> {
         let num_variables = checked_stacked_num_variables(shapes.iter().copied())?;
         let mut order: Vec<usize> = (0..shapes.len()).collect();
         order.sort_by_key(|&i| shapes[i].0.get());
@@ -238,7 +281,11 @@ impl StackedPlan {
             let selectors = (0..width)
                 .map(|_| {
                     let raw_index = offset >> arity;
-                    let index = reverse_bits_len(raw_index, selector_variables);
+                    let index = if strategy.reverse_selectors {
+                        reverse_bits_len(raw_index, selector_variables)
+                    } else {
+                        raw_index
+                    };
                     let selector = StackedSelector::new(selector_variables, index);
                     offset += slot_size;
                     selector
@@ -290,7 +337,10 @@ mod tests {
     use p3_matrix::dense::RowMajorMatrix;
     use p3_multilinear_util::point::Point;
     use p3_multilinear_util::poly::Poly;
-    use p3_sumcheck::layout::{Layout, PrefixProver, Table, Verifier, Witness};
+    use p3_sumcheck::layout::{
+        Layout, LayoutStrategy, PrefixProver, SuffixProver, Table, Verifier, Witness,
+    };
+    use p3_sumcheck::strategy::VariableOrder;
     use rand::SeedableRng;
     use rand::rngs::SmallRng;
 
@@ -453,6 +503,108 @@ mod tests {
                 assert_eq!(got, want, "table {} col {col}", placement.table_idx);
             }
         }
+    }
+
+    #[test]
+    fn suffix_plan_and_lift_match_native_padded_witness() {
+        let mut rng = SmallRng::seed_from_u64(12);
+        // Equal-arity tie (tables 0 and 3), width three, and table 1 below
+        // the initial fold jointly exercise placement, raw bits, and padding.
+        let raw = [(4usize, 2usize), (2, 3), (5, 1), (4, 1)];
+        let folding = 3;
+        let tables: Vec<Table<F>> = raw
+            .iter()
+            .map(|&(arity, width)| rand_table(&mut rng, width, arity))
+            .collect();
+        let witness: Witness<F> = SuffixProver::<F, F>::new_witness(tables.clone(), folding);
+        let stacked = witness.stacked_poly();
+        let shapes: Vec<(PaddedArity, usize)> = raw
+            .iter()
+            .map(|&(arity, width)| (padded_arity(arity, folding), width))
+            .collect();
+        let strategy = SuffixProver::<F, F>::strategy();
+        let plan = StackedPlan::new_with_strategy(&shapes, strategy);
+        assert_eq!(plan.num_variables, witness.num_variables());
+        assert_eq!(
+            plan.placements
+                .iter()
+                .map(|p| p.table_idx)
+                .collect::<Vec<_>>(),
+            vec![2, 3, 0, 1]
+        );
+        assert_eq!(
+            plan.placements[2]
+                .selectors
+                .iter()
+                .map(|s| s.index)
+                .collect::<Vec<_>>(),
+            vec![3, 4]
+        );
+        assert_eq!(
+            plan.placements[3]
+                .selectors
+                .iter()
+                .map(|s| s.index)
+                .collect::<Vec<_>>(),
+            vec![10, 11, 12]
+        );
+
+        for placement in &plan.placements {
+            let table = &tables[placement.table_idx];
+            let arity = plan.table_num_variables(placement.table_idx);
+            for (col, selector) in placement.selectors.iter().enumerate() {
+                let local: Vec<F> = (0..arity).map(|i| F::from_u32(3 + i as u32)).collect();
+                let lifted = selector.lift_with_strategy(&local, F::ZERO, F::ONE, strategy);
+                let selector_bits: Vec<F> = (0..selector.num_variables)
+                    .map(|i| {
+                        if (selector.index >> (selector.num_variables - 1 - i)) & 1 == 1 {
+                            F::ONE
+                        } else {
+                            F::ZERO
+                        }
+                    })
+                    .collect();
+                assert_eq!(&lifted[..selector_bits.len()], &selector_bits);
+                assert_eq!(&lifted[selector_bits.len()..], &local);
+
+                let got = stacked.eval_base::<F>(&Point::new(lifted));
+                let mut padded = table.poly(col).as_slice().to_vec();
+                padded.resize(1usize << arity, F::ZERO);
+                let want = Poly::new(padded).eval_base::<F>(&Point::new(local));
+                assert_eq!(got, want, "table {} col {col}", placement.table_idx);
+            }
+        }
+    }
+
+    #[test]
+    fn selector_placement_depends_on_reverse_flag_independently_of_fold_order() {
+        let shapes = [(padded_arity(2, 2), 3)];
+        let prefix = StackedPlan::new(&shapes);
+        let same_placement = StackedPlan::new_with_strategy(
+            &shapes,
+            LayoutStrategy::new(true, VariableOrder::Suffix),
+        );
+        assert_eq!(same_placement, prefix);
+        let raw = StackedPlan::new_with_strategy(
+            &shapes,
+            LayoutStrategy::new(false, VariableOrder::Prefix),
+        );
+        assert_eq!(
+            raw.placements[0]
+                .selectors
+                .iter()
+                .map(|s| s.index)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2]
+        );
+        assert_eq!(
+            prefix.placements[0]
+                .selectors
+                .iter()
+                .map(|s| s.index)
+                .collect::<Vec<_>>(),
+            vec![0, 2, 1]
+        );
     }
 
     /// Equal-arity tables must tie-break by a stable sort followed by
