@@ -71,13 +71,18 @@ pub struct WhirQueryIndices {
 /// `p3-whir`'s `PrescribedPointPcs::verify_at`, then `WhirVerifier::verify`'s
 /// own round loop), reusing the same public sub-functions native
 /// verification does, but records the indices at each STIR-sampling point
-/// instead of discarding them.
+/// instead of discarding them. Each commitment's walk runs on its own round's
+/// forked transcript (`pcs::fork_transcript`), exactly as the native verifier
+/// does.
 ///
 /// `transcript` must be in the state [`crate::generation::OpeningTranscript`]
 /// documents — every commitment and public value observed, no opened value
 /// observed yet — exactly what
 /// [`crate::backend::replay_recursion_input_transcript`] produces for either
-/// a uni-STARK or a batch-STARK recursion input. `opening_proof` is the WHIR
+/// a uni-STARK or a batch-STARK recursion input. `fresh_challenger` is the
+/// initial state every round's transcript starts from, which must equal the
+/// PCS's `challenger_proto`: the fresh challenger
+/// `StarkGenericConfig::initialise_challenger` returns. `opening_proof` is the WHIR
 /// opening proof's own data (`proof.opening_proof` for a uni-STARK
 /// `Proof<SC>`, or the equivalent field on a batch-STARK proof), supplied
 /// separately because it is not part of the transcript.
@@ -111,6 +116,7 @@ pub struct WhirQueryIndices {
 /// reject.
 pub fn replay_whir_query_indices<SC, MT>(
     transcript: crate::generation::OpeningTranscript<SC>,
+    fresh_challenger: &SC::Challenger,
     opening_proof: &WhirUniProof<Val<SC>, SC::Challenge, MT>,
     protocol_params: &ProtocolParameters,
     folding: usize,
@@ -123,12 +129,14 @@ where
     SC::Challenger: FieldChallenger<Val<SC>>
         + GrindingChallenger<Witness = Val<SC>>
         + CanSampleUniformBits<Val<SC>>
-        + CanObserve<MT::Commitment>,
+        + CanObserve<MT::Commitment>
+        + Clone,
     SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
     MT: Mmcs<Val<SC>>,
 {
     replay_whir_query_indices_with_rate_policy::<SC, MT>(
         transcript,
+        fresh_challenger,
         opening_proof,
         protocol_params,
         folding,
@@ -140,6 +148,7 @@ where
 /// Replay queries using the same arity-dependent rate policy as the native PCS.
 pub fn replay_whir_query_indices_with_rate_policy<SC, MT>(
     transcript: crate::generation::OpeningTranscript<SC>,
+    fresh_challenger: &SC::Challenger,
     opening_proof: &WhirUniProof<Val<SC>, SC::Challenge, MT>,
     protocol_params: &ProtocolParameters,
     folding: usize,
@@ -153,7 +162,8 @@ where
     SC::Challenger: FieldChallenger<Val<SC>>
         + GrindingChallenger<Witness = Val<SC>>
         + CanSampleUniformBits<Val<SC>>
-        + CanObserve<MT::Commitment>,
+        + CanObserve<MT::Commitment>
+        + Clone,
     SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
     MT: Mmcs<Val<SC>>,
 {
@@ -217,14 +227,17 @@ where
 
     #[cfg(test)]
     acceptance_probe::query_replay();
-    let mut challenger = transcript.challenger;
+    let mut parent = transcript.challenger;
+    let seed = pcs::sample_fork_seed::<F<SC>, _>(&mut parent);
 
     let mut out = Vec::with_capacity(opening_proof.rounds.len());
-    for ((_commitment, matrices), round_proof) in transcript
+    for (round, ((_commitment, matrices), round_proof)) in transcript
         .commitments_with_opening_points
         .iter()
         .zip(&opening_proof.rounds)
+        .enumerate()
     {
+        let mut challenger = pcs::fork_transcript(fresh_challenger, round, &seed);
         // Rebuild the opening schedule from public data only, exactly as
         // `WhirUniPcs::verify_rounds` does.
         let mut shapes = Vec::with_capacity(matrices.len());

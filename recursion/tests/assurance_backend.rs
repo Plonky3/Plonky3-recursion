@@ -434,33 +434,55 @@ fn run_non_zk_whir_d4_case(seed: u64) {
         Arc::clone(&native_sink),
         "native-verifier",
     );
+    // Each commitment's WHIR argument runs on a fork of the PCS prototype, so the
+    // prototype records into its own sink and the shared transcript's sink keeps
+    // only the shared transcript.
+    let native_round_sink = Arc::new(Mutex::new(Vec::new()));
     let pcs = RecordingWhirPcs::new(
         bb_whir_protocol_params(vec![4]),
         BbDft::default(),
         bb_whir_mmcs(),
-        native_challenger.clone(),
+        RecordingBbChallenger::new(
+            DuplexChallenger::new(perm.clone()),
+            Arc::clone(&native_round_sink),
+            "native-verifier-rounds",
+        ),
         20,
     );
     let native_config = RecordingWhirConfig::new(pcs, native_challenger);
     let proof = prove(&native_config, &air, trace, &public_values).unwrap();
-    native_sink
-        .lock()
-        .expect("native snapshot sink is not poisoned")
-        .clear();
+    for sink in [&native_sink, &native_round_sink] {
+        sink.lock()
+            .expect("native snapshot sink is not poisoned")
+            .clear();
+    }
     verify(&native_config, &air, &proof, &public_values).unwrap_or_else(|error| {
         panic!("family={family} seed={seed} branch=native expected=accept error={error:?}")
     });
-    let native_final = native_sink
-        .lock()
-        .expect("native snapshot sink is not poisoned")
-        .last()
-        .cloned()
-        .expect("native verifier must exercise the recording challenger");
+    let last_snapshot = |sink: &Arc<Mutex<Vec<DuplexSnapshot<BbF, 16>>>>| {
+        sink.lock()
+            .expect("snapshot sink is not poisoned")
+            .last()
+            .cloned()
+            .expect("verifier must exercise the recording challenger")
+    };
+    let native_final = last_snapshot(&native_sink);
+    let native_round_final = last_snapshot(&native_round_sink);
 
     let replay_sink = Arc::new(Mutex::new(Vec::new()));
-    let replay_challenger =
-        RecordingBbChallenger::new(DuplexChallenger::new(perm), replay_sink, "replay-plus-pcs");
-    let replay_config = RecordingWhirConfig::new(native_config.pcs().clone(), replay_challenger);
+    let replay_round_sink = Arc::new(Mutex::new(Vec::new()));
+    let replay_challenger = RecordingBbChallenger::new(
+        DuplexChallenger::new(perm.clone()),
+        replay_sink,
+        "replay-plus-pcs",
+    );
+    let mut replay_pcs = native_config.pcs().clone();
+    replay_pcs.challenger_proto = RecordingBbChallenger::new(
+        DuplexChallenger::new(perm),
+        Arc::clone(&replay_round_sink),
+        "replay-plus-pcs-rounds",
+    );
+    let replay_config = RecordingWhirConfig::new(replay_pcs, replay_challenger);
     let OpeningTranscript {
         mut challenger,
         commitments_with_opening_points,
@@ -485,6 +507,12 @@ fn run_non_zk_whir_d4_case(seed: u64) {
         });
     let replay_final = challenger.snapshot("replay-plus-pcs-final");
     assert_same_duplex_state(family, seed, &native_final, &replay_final);
+    assert_same_duplex_state(
+        family,
+        seed,
+        &native_round_final,
+        &last_snapshot(&replay_round_sink),
+    );
 }
 
 fn run_binary_fri_d4_recursive_acceptance(

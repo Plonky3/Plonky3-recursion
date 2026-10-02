@@ -189,6 +189,7 @@ impl WhirRecursionConfig for BbWhirConfig {
         let paths = restore_whir_recursion_paths::<Self, _, _, _, _, _, BB_DIGEST_ELEMS>(
             &mmcs,
             transcript,
+            &config.initialise_challenger(),
             opening_proof,
             params.protocol_params(),
             params.folding(),
@@ -369,6 +370,7 @@ impl WhirRecursionConfig for KbWhirConfig {
         let paths = restore_whir_recursion_paths::<Self, _, _, _, _, _, KB_DIGEST_ELEMS>(
             &mmcs,
             transcript,
+            &config.initialise_challenger(),
             opening_proof,
             params.protocol_params(),
             params.folding(),

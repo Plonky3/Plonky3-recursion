@@ -266,6 +266,7 @@ macro_rules! define_whir_module_types {
                 >(
                     &config.mmcs,
                     transcript,
+                    &config.initialise_challenger(),
                     opening_proof,
                     params.protocol_params(),
                     params.folding(),

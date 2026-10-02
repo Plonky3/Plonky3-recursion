@@ -156,6 +156,7 @@ pub fn restore_whir_uni_paths(
     restore_whir_recursion_paths::<BbWhirConfig, _, _, _, _, _, BB_DIGEST_ELEMS>(
         &mmcs,
         transcript,
+        &setup.config.initialise_challenger(),
         &proof.opening_proof,
         &protocol_params,
         4,
@@ -486,7 +487,7 @@ mod koala_bear {
     use p3_recursion::recursion::RecursionInput;
     use p3_recursion::{Poseidon2Config, VerificationError, verify_p3_uni_proof_circuit};
     use p3_sumcheck::layout::{Layout, PrefixProver};
-    use p3_uni_stark::{prove, verify};
+    use p3_uni_stark::{StarkGenericConfig, prove, verify};
 
     use crate::common::whir_config::{
         KB_DIGEST_ELEMS, KbEF, KbF, KbMmcs, KbWhirConfig, kb_whir_config, kb_whir_mmcs,
@@ -564,6 +565,7 @@ mod koala_bear {
         let paths = restore_whir_recursion_paths::<KbWhirConfig, _, _, _, _, _, KB_DIGEST_ELEMS>(
             &kb_whir_mmcs(),
             transcript,
+            &config.initialise_challenger(),
             &proof.opening_proof,
             &protocol_params,
             4,

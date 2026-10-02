@@ -162,6 +162,7 @@ macro_rules! quintic_whir_test {
                     >(
                         &config.mmcs,
                         transcript,
+                        &config.initialise_challenger(),
                         &proof.opening_proof,
                         vp.protocol_params(),
                         vp.folding(),

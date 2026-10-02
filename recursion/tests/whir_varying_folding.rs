@@ -19,7 +19,7 @@ use p3_recursion::{
     TrustedPreparedLayer, TrustedPreparedSource, VerificationError,
     replay_recursion_input_transcript,
 };
-use p3_uni_stark::{Proof, prove, verify};
+use p3_uni_stark::{Proof, StarkGenericConfig, prove, verify};
 use p3_whir::parameters::{FoldingFactor, WhirConfig};
 use p3_whir::transcript::WhirShape;
 
@@ -55,6 +55,7 @@ fn assert_varying_proof_schedule(
     assert_eq!(shared.folding(), 3);
     let replay = replay_whir_query_indices::<BbWhirConfig, BbMmcs>(
         transcript,
+        &config.initialise_challenger(),
         &proof.opening_proof,
         shared.protocol_params(),
         shared.folding(),

@@ -17,7 +17,7 @@ use p3_recursion::{
     TrustedPreparedLayer, TrustedPreparedSource, VerificationError, VerifierLimits,
     replay_recursion_input_transcript,
 };
-use p3_uni_stark::{Proof, prove, verify};
+use p3_uni_stark::{Proof, StarkGenericConfig, prove, verify};
 use p3_whir::pcs::proof::QueryOpenings;
 
 type Config = BabyBearD4Poseidon2WhirConfig;
@@ -69,6 +69,7 @@ fn query_indices(
     let params = config.whir_verifier_params();
     replay_whir_query_indices::<Config, BbMmcs>(
         transcript,
+        &config.initialise_challenger(),
         &proof.opening_proof,
         params.protocol_params(),
         params.folding(),

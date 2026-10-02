@@ -7,6 +7,7 @@ use p3_lookup::logup::LogUpGadget;
 use p3_merkle_tree::MerkleTreeMmcs;
 use p3_poseidon2_circuit_air::{BabyBearD4Width16, KoalaBearD4Width16};
 use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
+use p3_uni_stark::StarkGenericConfig;
 
 use super::{BabyBearD4Poseidon2WhirConfig, KoalaBearD4Poseidon2WhirConfig, WhirMmcs};
 use crate::backend::whir::WhirRecursionConfig;
@@ -76,6 +77,7 @@ macro_rules! whir_recursion_config {
                     restore_whir_recursion_paths_with_rate_policy::<Self, _, _, _, _, _, 8>(
                         &mmcs,
                         transcript,
+                        &config.initialise_challenger(),
                         opening_proof,
                         params.protocol_params(),
                         params.folding(),

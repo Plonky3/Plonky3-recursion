@@ -147,6 +147,7 @@ impl WhirRecursionConfig for GoldWhirConfig {
         let paths = restore_whir_recursion_paths::<Self, _, _, _, _, _, GOLD_DIGEST_ELEMS>(
             &gold_whir_mmcs(),
             transcript,
+            &config.initialise_challenger(),
             opening_proof,
             params.protocol_params(),
             params.folding(),

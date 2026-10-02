@@ -129,6 +129,7 @@ impl WhirRecursionConfig for BabyWrongField {
         let paths = restore_whir_recursion_paths::<Self, _, _, _, _, _, BABY_DIGEST_ELEMS>(
             &baby_mmcs(),
             transcript,
+            &config.initialise_challenger(),
             opening_proof,
             config.params.protocol_params(),
             config.params.folding(),
@@ -249,6 +250,7 @@ impl WhirRecursionConfig for GoldBaseChallenge {
         let paths = restore_whir_recursion_paths::<Self, _, _, _, _, _, 4>(
             &gold_whir_mmcs(),
             transcript,
+            &config.initialise_challenger(),
             opening_proof,
             config.params.protocol_params(),
             config.params.folding(),

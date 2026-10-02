@@ -54,8 +54,11 @@ pub fn whir_round_paths_op_count<F, const DIGEST_ELEMS: usize>(
 /// `transcript` must be in the state [`OpeningTranscript`] documents (every commitment and
 /// public value observed, no opened value observed yet) — produce it with
 /// [`crate::backend::replay_recursion_input_transcript`] for either a uni-STARK or
-/// batch-STARK `RecursionInput`. `opening_proof` is the WHIR-native opening proof
-/// (`proof.opening_proof` on a uni-STARK `Proof<SC>`; the equivalent field for batch-STARK).
+/// batch-STARK `RecursionInput`. `fresh_challenger` is the initial state every commitment
+/// round's transcript starts from, `config.initialise_challenger()` (see
+/// [`crate::pcs::whir::uni::replay_whir_query_indices`]). `opening_proof` is the WHIR-native
+/// opening proof (`proof.opening_proof` on a uni-STARK `Proof<SC>`; the equivalent field for
+/// batch-STARK).
 ///
 /// Generic over the base-field Merkle tree's own components (`P`/`PW`/`H`/`C`/`N`, matching
 /// [`restore_whir_query_paths`]'s own parameterization) rather than over a single `Mmcs`-bound
@@ -68,6 +71,7 @@ pub fn whir_round_paths_op_count<F, const DIGEST_ELEMS: usize>(
 pub fn restore_whir_recursion_paths<SC, P, PW, H, C, const N: usize, const DIGEST_ELEMS: usize>(
     mmcs: &MerkleTreeMmcs<P, PW, H, C, N, DIGEST_ELEMS>,
     transcript: OpeningTranscript<SC>,
+    fresh_challenger: &SC::Challenger,
     opening_proof: &WhirUniProof<
         Val<SC>,
         SC::Challenge,
@@ -84,7 +88,8 @@ where
     SC::Challenger: FieldChallenger<Val<SC>>
         + GrindingChallenger<Witness = Val<SC>>
         + CanSampleUniformBits<Val<SC>>
-        + CanObserve<MerkleCap<Val<SC>, [Val<SC>; DIGEST_ELEMS]>>,
+        + CanObserve<MerkleCap<Val<SC>, [Val<SC>; DIGEST_ELEMS]>>
+        + Clone,
     SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
     P: PackedValue<Value = Val<SC>>,
     PW: PackedValue<Value = Val<SC>>,
@@ -99,6 +104,7 @@ where
     restore_whir_recursion_paths_with_rate_policy::<SC, P, PW, H, C, N, DIGEST_ELEMS>(
         mmcs,
         transcript,
+        fresh_challenger,
         opening_proof,
         protocol_params,
         folding,
@@ -108,7 +114,7 @@ where
 }
 
 /// Restore paths using the same arity-dependent rate policy as the native PCS.
-#[expect(clippy::type_complexity)]
+#[expect(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn restore_whir_recursion_paths_with_rate_policy<
     SC,
     P,
@@ -120,6 +126,7 @@ pub fn restore_whir_recursion_paths_with_rate_policy<
 >(
     mmcs: &MerkleTreeMmcs<P, PW, H, C, N, DIGEST_ELEMS>,
     transcript: OpeningTranscript<SC>,
+    fresh_challenger: &SC::Challenger,
     opening_proof: &WhirUniProof<
         Val<SC>,
         SC::Challenge,
@@ -137,7 +144,8 @@ where
     SC::Challenger: FieldChallenger<Val<SC>>
         + GrindingChallenger<Witness = Val<SC>>
         + CanSampleUniformBits<Val<SC>>
-        + CanObserve<MerkleCap<Val<SC>, [Val<SC>; DIGEST_ELEMS]>>,
+        + CanObserve<MerkleCap<Val<SC>, [Val<SC>; DIGEST_ELEMS]>>
+        + Clone,
     SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
     P: PackedValue<Value = Val<SC>>,
     PW: PackedValue<Value = Val<SC>>,
@@ -154,6 +162,7 @@ where
         MerkleTreeMmcs<P, PW, H, C, N, DIGEST_ELEMS>,
     >(
         transcript,
+        fresh_challenger,
         opening_proof,
         protocol_params,
         folding,

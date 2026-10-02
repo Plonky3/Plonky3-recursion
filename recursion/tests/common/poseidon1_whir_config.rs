@@ -165,6 +165,7 @@ impl WhirRecursionConfig for BabyP1WhirConfig {
         let paths = restore_whir_recursion_paths::<Self, _, _, _, _, _, BABY_DIGEST_ELEMS>(
             &baby_mmcs(),
             transcript,
+            &config.initialise_challenger(),
             opening_proof,
             params.protocol_params(),
             params.folding(),
@@ -284,6 +285,7 @@ impl WhirRecursionConfig for GoldP1WhirConfig {
         let paths = restore_whir_recursion_paths::<Self, _, _, _, _, _, GOLD_DIGEST_ELEMS>(
             &gold_mmcs(),
             transcript,
+            &config.initialise_challenger(),
             opening_proof,
             params.protocol_params(),
             params.folding(),

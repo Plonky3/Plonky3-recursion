@@ -129,6 +129,7 @@ impl WhirRecursionConfig for SuffixWhirConfig {
         let paths = restore_whir_recursion_paths::<Self, _, _, _, _, _, BB_DIGEST_ELEMS>(
             &bb_whir_mmcs(),
             transcript,
+            &config.initialise_challenger(),
             opening_proof,
             params.protocol_params(),
             params.folding(),
@@ -191,6 +192,7 @@ fn assert_suffix_child_schedule(
     let transcript = replay_recursion_input_transcript(config, &input, &[]).unwrap();
     let replay = replay_whir_query_indices::<SuffixWhirConfig, BbMmcs>(
         transcript,
+        &config.initialise_challenger(),
         &proof.opening_proof,
         params.protocol_params(),
         params.folding(),

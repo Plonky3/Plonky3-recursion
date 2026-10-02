@@ -29,7 +29,7 @@ use crate::pcs::whir::gadgets::{ConstraintWeightData, eval_powers_combination};
 use crate::pcs::whir::params::WhirTranscriptShape;
 use crate::pcs::whir::targets::QueryOpeningTargets;
 use crate::pcs::whir::uni::bridge::univariate_eq_point_circuit;
-use crate::pcs::whir::uni::pcs::round_schedule;
+use crate::pcs::whir::uni::pcs::{FORK_SEED_LEN, fork_tag, round_schedule};
 use crate::pcs::whir::uni::plan::{
     PaddedArity, StackedPlan, canonical_layout_strategy, checked_stacked_num_variables,
     padded_arity,
@@ -569,8 +569,12 @@ fn stacked_num_variables(
 
 /// Verifies every commitment's WHIR argument in-circuit.
 ///
-/// Each commitment is handled independently against the running transcript,
-/// in the order the STARK verifier supplies it. Per commitment, this
+/// Each commitment is handled independently, in the order the STARK verifier
+/// supplies it, on its own round's transcript as the native
+/// `pcs::fork_transcript` defines it: `challenger` first squeezes the shared
+/// seed, then is cleared and re-seeded for every round, so on return it holds
+/// the last round's transcript. Each round's sponge therefore opens a fresh
+/// permutation chain. Per commitment, this
 /// function first derives that commitment's own `WhirVerifierParams` (from
 /// its opening shapes) and cross-checks the proof's self-reported allocation
 /// sizes against it — `WhirUniProofTargets`'s own allocation trusts the
@@ -633,11 +637,15 @@ where
     // Recursive params support the two native canonical layouts. Derive their
     // full layout strategy once so transcript seeds and claims cannot diverge.
     let strategy = canonical_layout_strategy(params.variable_order());
+    let fork_seed: Vec<Target> = (0..FORK_SEED_LEN)
+        .map(|_| challenger.sample(circuit))
+        .collect();
     let mut mmcs_checks = Vec::new();
-    for (((commitment, matrices), round), vp) in commitments_with_opening_points
+    for (round_idx, (((commitment, matrices), round), vp)) in commitments_with_opening_points
         .iter()
         .zip(rounds)
         .zip(&verified_params)
+        .enumerate()
     {
         let openings: Vec<MatrixOpenings<'_>> = matrices
             .iter()
@@ -655,6 +663,10 @@ where
             vp.transcript_shape(),
             strategy,
         );
+
+        challenger.clear(circuit);
+        challenger.observe_seed(circuit, &fork_tag::<BF>(round_idx));
+        challenger.observe_slice(circuit, &fork_seed);
 
         #[cfg(test)]
         crate::pcs::whir::uni::acceptance_probe::target_challenger();

@@ -8,18 +8,22 @@
 //!
 //! One WHIR argument covers one commitment. The univariate interface hands the
 //! prover several commitments per opening, so a proof carries one WHIR argument
-//! per commitment, replayed in order against a shared transcript.
+//! per commitment, each on its own transcript forked from the shared one (see
+//! `fork_transcript`).
 
 use alloc::vec::Vec;
 use core::marker::PhantomData;
 
-use p3_challenger::{CanObserve, CanSampleUniformBits, FieldChallenger, GrindingChallenger};
+use p3_challenger::{
+    CanObserve, CanSample, CanSampleUniformBits, FieldChallenger, GrindingChallenger,
+};
 use p3_commit::{CommitmentOpening, Mmcs, MultilinearPcs, OpenedValues};
 use p3_dft::TwoAdicSubgroupDft;
 use p3_field::coset::TwoAdicMultiplicativeCoset;
-use p3_field::{ExtensionField, PrimeField64, TwoAdicField};
+use p3_field::{ExtensionField, PrimeCharacteristicRing, PrimeField64, TwoAdicField};
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
+use p3_maybe_rayon::prelude::*;
 use p3_multilinear_util::point::Point;
 use p3_sumcheck::layout::{Layout, Table};
 use p3_sumcheck::{
@@ -198,6 +202,41 @@ where
     }
 }
 
+/// Number of base-field elements the shared transcript squeezes to seed every round's transcript.
+pub(crate) const FORK_SEED_LEN: usize = 8;
+
+/// Domain tag every round's transcript absorbs ahead of its round index.
+const FORK_TAG: u32 = 0x5748_5246;
+
+/// Constant prefix of commitment round `round`'s transcript: the fork tag, then the round index.
+pub(crate) fn fork_tag<F: PrimeCharacteristicRing>(round: usize) -> [F; 2] {
+    [F::from_u32(FORK_TAG), F::from_usize(round)]
+}
+
+/// Squeezes the seed every round's transcript absorbs from the shared transcript.
+pub(crate) fn sample_fork_seed<F, Ch: CanSample<F>>(challenger: &mut Ch) -> [F; FORK_SEED_LEN] {
+    challenger.sample_array()
+}
+
+/// Transcript of commitment round `round`'s WHIR argument.
+///
+/// `fresh` is the transcript's initial state. Each round starts from it, absorbs
+/// [`fork_tag`] and then `seed`, which the shared transcript squeezed once every
+/// commitment and opening point was bound. The rounds are thus independent
+/// Fiat-Shamir arguments over statements that common prefix fixes, separated by
+/// distinct tags, and their soundness errors add up by the same union bound as
+/// arguments run back to back on one transcript.
+pub(crate) fn fork_transcript<F, Ch>(fresh: &Ch, round: usize, seed: &[F]) -> Ch
+where
+    F: PrimeCharacteristicRing + Clone,
+    Ch: CanObserve<F> + Clone,
+{
+    let mut challenger = fresh.clone();
+    challenger.observe_slice(&fork_tag::<F>(round));
+    challenger.observe_slice(seed);
+    challenger
+}
+
 /// WHIR behind the univariate PCS interface.
 #[derive(Clone, Debug)]
 pub struct WhirUniPcs<EF, F, Dft, MT, Challenger, L> {
@@ -213,6 +252,10 @@ pub struct WhirUniPcs<EF, F, Dft, MT, Challenger, L> {
     /// Challenger prototype cloned for the commit-time root absorption that the
     /// univariate interface has no transcript for; the real absorption is done
     /// by the STARK prover and verifier.
+    ///
+    /// It is also the initial state every commitment round's opening transcript
+    /// starts from (see `fork_transcript`), so it must be the fresh challenger
+    /// the STARK transcript itself starts from.
     pub challenger_proto: Challenger,
     /// Largest committed height this instance accepts, as a log2.
     pub log_max_lde_height: usize,
@@ -424,102 +467,133 @@ where
     ///
     /// The reported values are the true univariate evaluations; each WHIR
     /// argument binds the corresponding multilinear value, which rescales to
-    /// them by the bridge's scale factor.
+    /// them by the bridge's scale factor. The arguments run concurrently, each
+    /// on its own round's [`fork_transcript`].
     #[allow(clippy::type_complexity)]
     fn open_rounds(
         &self,
         rounds: Vec<(&WhirUniProverData<F, EF, MT, L>, Vec<Vec<EF>>)>,
         challenger: &mut Challenger,
-    ) -> Result<(OpenedValues<EF>, WhirUniProof<F, EF, MT>), WhirConfigError> {
-        let mut opened = Vec::with_capacity(rounds.len());
-        let mut proofs = Vec::with_capacity(rounds.len());
+    ) -> Result<(OpenedValues<EF>, WhirUniProof<F, EF, MT>), WhirConfigError>
+    where
+        MT: Sync,
+        MT::ProverData<RowMajorMatrix<F>>: Send + Sync,
+        MT::Commitment: Send,
+        MT::MultiProof: Send,
+        Challenger: Sync,
+        L: Sync,
+    {
+        let seed = sample_fork_seed::<F, _>(challenger);
+        let results: Vec<_> = rounds
+            .into_par_iter()
+            .enumerate()
+            .map(|(round, (data, points_per_matrix))| {
+                let mut fork = fork_transcript(&self.challenger_proto, round, &seed);
+                self.open_round(data, &points_per_matrix, &mut fork)
+            })
+            .collect();
+        let (opened, proofs): (Vec<_>, Vec<_>) = results
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .unzip();
+        Ok((opened, WhirUniProof { rounds: proofs }))
+    }
 
-        for (data, points_per_matrix) in rounds {
-            let shapes: Vec<(usize, usize)> = data
-                .coeffs
-                .iter()
-                .map(|m| (log2_strict_usize(m.height()), m.width()))
-                .collect();
-            let schedule = round_schedule::<F, EF>(&shapes, &points_per_matrix, self.folding);
-            debug_assert_eq!(schedule.stacked_num_variables, data.stacked_num_variables);
+    /// Opens one commitment at its points, running its WHIR argument on `challenger`.
+    #[allow(clippy::type_complexity)]
+    fn open_round(
+        &self,
+        data: &WhirUniProverData<F, EF, MT, L>,
+        points_per_matrix: &[Vec<EF>],
+        challenger: &mut Challenger,
+    ) -> Result<(Vec<Vec<Vec<EF>>>, PcsProof<F, EF, MT>), WhirConfigError> {
+        let shapes: Vec<(usize, usize)> = data
+            .coeffs
+            .iter()
+            .map(|m| (log2_strict_usize(m.height()), m.width()))
+            .collect();
+        let schedule = round_schedule::<F, EF>(&shapes, points_per_matrix, self.folding);
+        debug_assert_eq!(schedule.stacked_num_variables, data.stacked_num_variables);
 
-            let prover = WhirProver::<EF, F, Dft, SharedMmcs<MT>, Challenger, L>::new(
-                self.whir_config(data.stacked_num_variables),
+        let prover = WhirProver::<EF, F, Dft, SharedMmcs<MT>, Challenger, L>::new(
+            self.whir_config(data.stacked_num_variables),
+            self.dft.clone(),
+            SharedMmcs(self.mmcs.clone()),
+        );
+        if tracing::enabled!(tracing::Level::DEBUG) {
+            let security = prover.prescribed_security(&schedule.protocol);
+            let native = WhirProver::<EF, F, Dft, SharedMmcs<MT>, Challenger, L>::new(
+                WhirConfig::new(data.stacked_num_variables, self.protocol_params.clone())
+                    .expect("native rate baseline is valid for the committed arity"),
                 self.dft.clone(),
                 SharedMmcs(self.mmcs.clone()),
+            )
+            .prescribed_security(&schedule.protocol);
+            tracing::debug!(
+                stacked_num_variables = data.stacked_num_variables,
+                rate_policy = ?self.rate_policy,
+                opening_security_bits = security.as_ref().map(|s| s.error().bits()),
+                native_rate_security_bits = native.as_ref().map(|s| s.error().bits()),
+                log2_max_candidates = security.as_ref().map(|s| s.log2_max_candidates),
+                native_log2_max_candidates = native.as_ref().map(|s| s.log2_max_candidates),
+                "WHIR prescribed-opening security",
             );
-            if tracing::enabled!(tracing::Level::DEBUG) {
-                let security = prover.prescribed_security(&schedule.protocol);
-                let native = WhirProver::<EF, F, Dft, SharedMmcs<MT>, Challenger, L>::new(
-                    WhirConfig::new(data.stacked_num_variables, self.protocol_params.clone())
-                        .expect("native rate baseline is valid for the committed arity"),
-                    self.dft.clone(),
-                    SharedMmcs(self.mmcs.clone()),
-                )
-                .prescribed_security(&schedule.protocol);
-                tracing::debug!(
-                    stacked_num_variables = data.stacked_num_variables,
-                    rate_policy = ?self.rate_policy,
-                    opening_security_bits = security.as_ref().map(|s| s.error().bits()),
-                    native_rate_security_bits = native.as_ref().map(|s| s.error().bits()),
-                    log2_max_candidates = security.as_ref().map(|s| s.log2_max_candidates),
-                    native_log2_max_candidates = native.as_ref().map(|s| s.log2_max_candidates),
-                    "WHIR prescribed-opening security",
-                );
-            }
-            let proof = prover.open_at(
-                data.whir.clone(),
-                &schedule.protocol,
-                &schedule.points,
-                challenger,
-            )?;
+        }
+        let proof = prover.open_at(
+            data.whir.clone(),
+            &schedule.protocol,
+            &schedule.points,
+            challenger,
+        )?;
 
-            // WHIR already evaluated each column at the substituted equality point.
-            // Rescale those values instead of evaluating the same coefficients again.
-            // Batches follow the schedule's matrix-major, then point-major order.
-            let mut batches = proof.evals.iter();
-            let round_values = schedule
-                .scales
-                .iter()
-                .map(|scales| {
-                    scales
-                        .iter()
-                        .map(|&scale| {
-                            batches
-                                .next()
-                                .expect("WHIR returned every scheduled opening")
-                                .current()
-                                .iter()
-                                .map(|&value| value * scale)
-                                .collect()
-                        })
-                        .collect()
-                })
-                .collect();
-            debug_assert_eq!(batches.len(), 0);
-            opened.push(round_values);
-            // The storage wrapper has identical commitment and multiproof types.
-            // Move the proof back to the caller's MMCS type without copying its data.
-            let WhirProof {
-                initial_ood_answers,
-                initial_sumcheck,
-                rounds,
-                final_poly,
-                final_pow_witness,
-                final_openings,
-                final_sumcheck,
-            } = proof.whir;
-            let rounds = rounds
-                .into_iter()
-                .map(|round| WhirRoundProof {
-                    commitment: round.commitment,
-                    ood_answers: round.ood_answers,
-                    pow_witness: round.pow_witness,
-                    openings: round.openings,
-                    sumcheck: round.sumcheck,
-                })
-                .collect();
-            proofs.push(PcsProof {
+        // WHIR already evaluated each column at the substituted equality point.
+        // Rescale those values instead of evaluating the same coefficients again.
+        // Batches follow the schedule's matrix-major, then point-major order.
+        let mut batches = proof.evals.iter();
+        let round_values = schedule
+            .scales
+            .iter()
+            .map(|scales| {
+                scales
+                    .iter()
+                    .map(|&scale| {
+                        batches
+                            .next()
+                            .expect("WHIR returned every scheduled opening")
+                            .current()
+                            .iter()
+                            .map(|&value| value * scale)
+                            .collect()
+                    })
+                    .collect()
+            })
+            .collect();
+        debug_assert_eq!(batches.len(), 0);
+        // The storage wrapper has identical commitment and multiproof types.
+        // Move the proof back to the caller's MMCS type without copying its data.
+        let WhirProof {
+            initial_ood_answers,
+            initial_sumcheck,
+            rounds,
+            final_poly,
+            final_pow_witness,
+            final_openings,
+            final_sumcheck,
+        } = proof.whir;
+        let rounds = rounds
+            .into_iter()
+            .map(|round| WhirRoundProof {
+                commitment: round.commitment,
+                ood_answers: round.ood_answers,
+                pow_witness: round.pow_witness,
+                openings: round.openings,
+                sumcheck: round.sumcheck,
+            })
+            .collect();
+        Ok((
+            round_values,
+            PcsProof {
                 whir: WhirProof {
                     initial_ood_answers,
                     initial_sumcheck,
@@ -530,20 +604,18 @@ where
                     final_sumcheck,
                 },
                 evals: proof.evals,
-            });
-        }
-
-        Ok((opened, WhirUniProof { rounds: proofs }))
+            },
+        ))
     }
 
     /// Verifies every commitment's WHIR argument and the claimed evaluations.
     ///
     /// Each round rebuilds the same opening schedule the prover used from
-    /// public data, replays the WHIR argument through
-    /// [`PrescribedPointPcs::verify_at`] — which deliberately does not absorb
-    /// the commitment, the STARK verifier having already done so — and then
-    /// rescales the bound multilinear values into univariate ones and compares
-    /// them against the claims.
+    /// public data, replays the WHIR argument on its own round's
+    /// [`fork_transcript`] through [`PrescribedPointPcs::verify_at`] — which
+    /// deliberately does not absorb the commitment, the STARK verifier having
+    /// already done so — and then rescales the bound multilinear values into
+    /// univariate ones and compares them against the claims.
     ///
     /// # Precondition
     ///
@@ -611,6 +683,7 @@ where
             .map_err(|_| WhirUniPcsError::ShapeMismatch { round })?;
         }
 
+        let seed = sample_fork_seed::<F, _>(challenger);
         for (round, ((commitment, matrices), round_proof)) in
             commitments.into_iter().zip(&proof.rounds).enumerate()
         {
@@ -643,13 +716,14 @@ where
                 self.dft.clone(),
                 self.mmcs.clone(),
             );
+            let mut fork = fork_transcript(&self.challenger_proto, round, &seed);
             let evals = prover
                 .verify_at(
                     &commitment,
                     round_proof,
                     &schedule.protocol,
                     &schedule.points,
-                    challenger,
+                    &mut fork,
                 )
                 .map_err(|source| WhirUniPcsError::Whir { round, source })?;
 
@@ -691,16 +765,17 @@ where
     F: TwoAdicField + PrimeField64 + Ord,
     EF: ExtensionField<F> + TwoAdicField,
     Dft: TwoAdicSubgroupDft<F> + Clone + Sync,
-    MT: Mmcs<F> + Clone,
-    MT::ProverData<RowMajorMatrix<F>>: Clone,
-    MT::Commitment: Serialize + for<'de> Deserialize<'de>,
-    MT::MultiProof: Serialize + for<'de> Deserialize<'de>,
+    MT: Mmcs<F> + Clone + Sync,
+    MT::ProverData<RowMajorMatrix<F>>: Clone + Send + Sync,
+    MT::Commitment: Serialize + for<'de> Deserialize<'de> + Send,
+    MT::MultiProof: Serialize + for<'de> Deserialize<'de> + Send,
     Challenger: FieldChallenger<F>
         + GrindingChallenger<Witness = F>
         + CanSampleUniformBits<F>
         + CanObserve<MT::Commitment>
-        + Clone,
-    L: Layout<F, EF> + Clone,
+        + Clone
+        + Sync,
+    L: Layout<F, EF> + Clone + Sync,
 {
     type Domain = TwoAdicMultiplicativeCoset<F>;
     type Commitment = MT::Commitment;
@@ -780,16 +855,17 @@ where
     F: TwoAdicField + PrimeField64 + Ord,
     EF: ExtensionField<F> + TwoAdicField,
     Dft: TwoAdicSubgroupDft<F> + Clone + Sync,
-    MT: Mmcs<F> + Clone,
-    MT::ProverData<RowMajorMatrix<F>>: Clone,
-    MT::Commitment: Serialize + for<'de> Deserialize<'de>,
-    MT::MultiProof: Serialize + for<'de> Deserialize<'de>,
+    MT: Mmcs<F> + Clone + Sync,
+    MT::ProverData<RowMajorMatrix<F>>: Clone + Send + Sync,
+    MT::Commitment: Serialize + for<'de> Deserialize<'de> + Send,
+    MT::MultiProof: Serialize + for<'de> Deserialize<'de> + Send,
     Challenger: FieldChallenger<F>
         + GrindingChallenger<Witness = F>
         + CanSampleUniformBits<F>
         + CanObserve<MT::Commitment>
-        + Clone,
-    L: Layout<F, EF> + Clone,
+        + Clone
+        + Sync,
+    L: Layout<F, EF> + Clone + Sync,
 {
     type EvaluationsOnDomain<'a> = RowMajorMatrix<F>;
 
@@ -1260,9 +1336,9 @@ pub(crate) mod tests {
         use p3_util::log2_strict_usize;
         use p3_whir::pcs::prover::WhirProver;
 
-        use super::{SharedMmcs, round_schedule};
+        use super::{SharedMmcs, fork_transcript, round_schedule, sample_fork_seed};
 
-        fn check<L: Layout<F, EF> + Clone>(
+        fn check<L: Layout<F, EF> + Clone + Sync>(
             pcs: &WhirUniPcs<EF, F, MyDft, MyMmcs, MyChallenger, L>,
         ) {
             let mut rng = SmallRng::seed_from_u64(29);
@@ -1301,12 +1377,13 @@ pub(crate) mod tests {
                 pcs.dft.clone(),
                 SharedMmcs(pcs.mmcs.clone()),
             );
+            let seed = sample_fork_seed::<F, _>(&mut pcs.challenger_proto.clone());
             let wrapped = prover
                 .open_at(
                     cloned,
                     &schedule.protocol,
                     &schedule.points,
-                    &mut pcs.challenger_proto.clone(),
+                    &mut fork_transcript(&pcs.challenger_proto, 0, &seed),
                 )
                 .unwrap();
             assert_eq!(
@@ -1344,6 +1421,137 @@ pub(crate) mod tests {
             pcs.log_max_lde_height,
         ));
         check(&pcs);
+    }
+
+    /// Opens three separately committed matrices in one call and returns the
+    /// commitments with their prover data, the claims `verify_rounds` takes,
+    /// and the proof.
+    #[allow(clippy::type_complexity)]
+    fn open_three_commitments(
+        pcs: &MyPcs,
+    ) -> (
+        Vec<(
+            <MyMmcs as p3_commit::Mmcs<F>>::Commitment,
+            super::WhirUniProverData<F, EF, MyMmcs, PrefixProver<F, EF>>,
+        )>,
+        Vec<(
+            <MyMmcs as p3_commit::Mmcs<F>>::Commitment,
+            Vec<(TwoAdicMultiplicativeCoset<F>, Vec<(EF, Vec<EF>)>)>,
+        )>,
+        super::WhirUniProof<F, EF, MyMmcs>,
+    ) {
+        let mut rng = SmallRng::seed_from_u64(41);
+        let committed: Vec<_> = [(6, 2), (5, 3), (7, 1)]
+            .into_iter()
+            .map(|(log_height, width)| {
+                let domain = TwoAdicMultiplicativeCoset::<F>::new(F::ONE, log_height).unwrap();
+                let matrix = RowMajorMatrix::<F>::rand(&mut rng, 1 << log_height, width);
+                <MyPcs as p3_commit::Pcs<EF, MyChallenger>>::commit(pcs, vec![(domain, matrix)])
+                    .unwrap()
+            })
+            .collect();
+        let points: Vec<EF> = (0..3).map(|k| EF::from_u32(101 + k)).collect();
+        let rounds = committed
+            .iter()
+            .zip(&points)
+            .map(|((_, data), &point)| (data, vec![vec![point]]))
+            .collect();
+        let (opened, proof) = pcs
+            .open_rounds(rounds, &mut pcs.challenger_proto.clone())
+            .unwrap();
+        let claims = committed
+            .iter()
+            .zip(&points)
+            .zip(opened)
+            .map(|(((commitment, data), &point), values)| {
+                (
+                    commitment.clone(),
+                    vec![(data.domains[0], vec![(point, values[0][0].clone())])],
+                )
+            })
+            .collect();
+        (committed, claims, proof)
+    }
+
+    /// Each commitment's WHIR argument is exactly a native `open_at` on its own
+    /// round's fork of the shared transcript, and the shared transcript ends
+    /// once it has drawn the fork seed. Running the rounds concurrently can
+    /// therefore change neither a proof nor the transcript.
+    #[test]
+    fn concurrent_rounds_match_native_opens_on_their_forks() {
+        use p3_challenger::CanSample;
+        use p3_sumcheck::PrescribedPointPcs;
+        use p3_util::log2_strict_usize;
+        use p3_whir::pcs::prover::WhirProver;
+
+        use super::{SharedMmcs, fork_transcript, round_schedule, sample_fork_seed};
+
+        let pcs = test_pcs();
+        let (committed, claims, proof) = open_three_commitments(&pcs);
+
+        let mut parent = pcs.challenger_proto.clone();
+        let seed = sample_fork_seed::<F, _>(&mut parent);
+        for (round, ((_, data), (_, matrices))) in committed.iter().zip(&claims).enumerate() {
+            let shapes = [(
+                log2_strict_usize(data.coeffs[0].height()),
+                data.coeffs[0].width(),
+            )];
+            let points = vec![vec![matrices[0].1[0].0]];
+            let schedule = round_schedule::<F, EF>(&shapes, &points, pcs.folding());
+            let prover = WhirProver::<EF, F, MyDft, SharedMmcs<MyMmcs>, MyChallenger, _>::new(
+                pcs.whir_config(data.stacked_num_variables),
+                pcs.dft.clone(),
+                SharedMmcs(pcs.mmcs.clone()),
+            );
+            let native = prover
+                .open_at(
+                    data.whir.clone(),
+                    &schedule.protocol,
+                    &schedule.points,
+                    &mut fork_transcript(&pcs.challenger_proto, round, &seed),
+                )
+                .unwrap();
+            assert_eq!(
+                postcard::to_allocvec(&native).unwrap(),
+                postcard::to_allocvec(&proof.rounds[round]).unwrap(),
+                "round {round}"
+            );
+        }
+
+        let mut challenger = pcs.challenger_proto.clone();
+        let _ = pcs
+            .open_rounds(
+                committed
+                    .iter()
+                    .zip(&claims)
+                    .map(|((_, data), (_, matrices))| (data, vec![vec![matrices[0].1[0].0]]))
+                    .collect(),
+                &mut challenger,
+            )
+            .unwrap();
+        assert_eq!(
+            CanSample::<F>::sample(&mut challenger),
+            CanSample::<F>::sample(&mut parent)
+        );
+
+        pcs.verify_rounds(claims, &proof, &mut pcs.challenger_proto.clone())
+            .expect("honest concurrent opening verifies");
+    }
+
+    /// The fork tag binds each argument to its round index: the same arguments
+    /// presented in another order, each still paired with its own commitment
+    /// and claims, are rejected.
+    #[test]
+    fn verify_rejects_round_arguments_moved_to_another_round() {
+        let pcs = test_pcs();
+        let (_committed, mut claims, mut proof) = open_three_commitments(&pcs);
+        claims.swap(0, 1);
+        proof.rounds.swap(0, 1);
+
+        assert!(matches!(
+            pcs.verify_rounds(claims, &proof, &mut pcs.challenger_proto.clone()),
+            Err(super::WhirUniPcsError::Whir { round: 0, .. })
+        ));
     }
 
     /// Builds an honest commit/open pair over two matrices at two points and
@@ -1699,6 +1907,7 @@ pub(crate) mod tests {
             >(
                 &counting.mmcs,
                 honest_transcript,
+                &counting.challenger_proto,
                 &proof,
                 &counting.protocol_params,
                 counting.folding(),
@@ -1745,6 +1954,7 @@ pub(crate) mod tests {
             >(
                 &counting.mmcs,
                 malformed_transcript,
+                &counting.challenger_proto,
                 &malformed_proof,
                 &counting.protocol_params,
                 counting.folding(),
