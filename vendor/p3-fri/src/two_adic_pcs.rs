@@ -80,6 +80,52 @@ impl<Val, Dft, InputMmcs, FriMmcs> TwoAdicFriPcs<Val, Dft, InputMmcs, FriMmcs> {
     }
 }
 
+impl<Val, Dft, InputMmcs, FriMmcs> TwoAdicFriPcs<Val, Dft, InputMmcs, FriMmcs>
+where
+    Val: TwoAdicField + PrimeField64,
+    Dft: TwoAdicSubgroupDft<Val> + Sync,
+{
+    /// Compute the bit-reversed LDE of every matrix, running the per-matrix LDEs concurrently.
+    ///
+    /// Matrices are scheduled largest first so the small ones fill idle cores, and the results
+    /// are returned in the order of `evaluations`.
+    fn coset_ldes(
+        &self,
+        evaluations: impl IntoIterator<Item = (TwoAdicMultiplicativeCoset<Val>, RowMajorMatrix<Val>)>,
+    ) -> Vec<RowMajorMatrix<Val>> {
+        let mut jobs: Vec<_> = evaluations
+            .into_iter()
+            .enumerate()
+            .map(|(idx, (domain, evals))| (idx, domain, evals))
+            .collect();
+        jobs.sort_by_key(|(_, _, evals)| core::cmp::Reverse(evals.values.len()));
+
+        let dft = &self.dft;
+        let log_blowup = self.fri.log_blowup;
+        let mut ldes: Vec<_> = jobs
+            .into_par_iter()
+            .with_max_len(1)
+            .map(|(idx, domain, evals)| {
+                assert_eq!(domain.size(), evals.height());
+                // coset_lde_batch converts from evaluations over `xH` to evaluations over `shift * x * K`.
+                // Hence, letting `shift = g/x` the output will be evaluations over `gK` as desired.
+                // When `x = g`, we could just use the standard LDE but currently this doesn't seem
+                // to give a meaningful performance boost.
+                let shift = Val::GENERATOR / domain.shift();
+                // Compute the LDE with blowup factor fri.log_blowup.
+                // We bit reverse as this is required by our implementation of the FRI protocol.
+                let lde = dft
+                    .coset_lde_batch(evals, log_blowup, shift)
+                    .bit_reverse_rows()
+                    .to_row_major_matrix();
+                (idx, lde)
+            })
+            .collect();
+        ldes.sort_by_key(|(idx, _)| *idx);
+        ldes.into_iter().map(|(_, lde)| lde).collect()
+    }
+}
+
 /// The Prover Data associated to a commitment to a collection of matrices
 /// and a list of points to open each matrix at.
 pub type ProverDataWithOpeningPoints<'a, EF, ProverData> = OpeningRequest<'a, ProverData, EF>;
@@ -401,7 +447,7 @@ impl<Val, Dft, InputMmcs, FriMmcs, Challenge, Challenger> Pcs<Challenge, Challen
     for TwoAdicFriPcs<Val, Dft, InputMmcs, FriMmcs>
 where
     Val: TwoAdicField + PrimeField64,
-    Dft: TwoAdicSubgroupDft<Val>,
+    Dft: TwoAdicSubgroupDft<Val> + Sync,
     InputMmcs: Mmcs<Val, MultiProof: Sync, Error: Sync>,
     FriMmcs: Mmcs<Challenge>,
     Challenge: ExtensionField<Val>,
@@ -435,23 +481,7 @@ where
         &self,
         evaluations: impl IntoIterator<Item = (Self::Domain, RowMajorMatrix<Val>)>,
     ) -> Result<(Self::Commitment, Self::ProverData), Self::ProverError> {
-        let ldes: Vec<_> = evaluations
-            .into_iter()
-            .map(|(domain, evals)| {
-                assert_eq!(domain.size(), evals.height());
-                // coset_lde_batch converts from evaluations over `xH` to evaluations over `shift * x * K`.
-                // Hence, letting `shift = g/x` the output will be evaluations over `gK` as desired.
-                // When `x = g`, we could just use the standard LDE but currently this doesn't seem
-                // to give a meaningful performance boost.
-                let shift = Val::GENERATOR / domain.shift();
-                // Compute the LDE with blowup factor fri.log_blowup.
-                // We bit reverse as this is required by our implementation of the FRI protocol.
-                self.dft
-                    .coset_lde_batch(evals, self.fri.log_blowup, shift)
-                    .bit_reverse_rows()
-                    .to_row_major_matrix()
-            })
-            .collect();
+        let ldes = self.coset_ldes(evaluations);
 
         Ok(
             // Commit to the bit-reversed LDEs.
@@ -895,7 +925,7 @@ impl<Val, Dft, InputMmcs, FriMmcs, Challenge, Challenger> UnivariateStarkPcs<Cha
     for TwoAdicFriPcs<Val, Dft, InputMmcs, FriMmcs>
 where
     Val: TwoAdicField + PrimeField64,
-    Dft: TwoAdicSubgroupDft<Val>,
+    Dft: TwoAdicSubgroupDft<Val> + Sync,
     InputMmcs: Mmcs<Val, MultiProof: Sync, Error: Sync>,
     FriMmcs: Mmcs<Challenge>,
     Challenge: ExtensionField<Val>,
@@ -920,23 +950,7 @@ where
         evaluations: impl IntoIterator<Item = (Self::Domain, RowMajorMatrix<Val>)>,
         _num_chunks: usize,
     ) -> Result<Vec<RowMajorMatrix<Val>>, Self::ProverError> {
-        Ok(evaluations
-            .into_iter()
-            .map(|(domain, evals)| {
-                assert_eq!(domain.size(), evals.height());
-                // coset_lde_batch converts from evaluations over `xH` to evaluations over `shift * x * K`.
-                // Hence, letting `shift = g/x` the output will be evaluations over `gK` as desired.
-                // When `x = g`, we could just use the standard LDE but currently this doesn't seem
-                // to give a meaningful performance boost.
-                let shift = Val::GENERATOR / domain.shift();
-                // Compute the LDE with blowup factor fri.log_blowup.
-                // We bit reverse as this is required by our implementation of the FRI protocol.
-                self.dft
-                    .coset_lde_batch(evals, self.fri.log_blowup, shift)
-                    .bit_reverse_rows()
-                    .to_row_major_matrix()
-            })
-            .collect())
+        Ok(self.coset_ldes(evaluations))
     }
 
     fn commit_ldes(

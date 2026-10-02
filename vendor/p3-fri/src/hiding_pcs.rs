@@ -199,7 +199,7 @@ impl<Val, Dft, InputMmcs, FriMmcs, Challenge, Challenger, R> Pcs<Challenge, Chal
 where
     Val: TwoAdicField + PrimeField64,
     StandardUniform: Distribution<Val>,
-    Dft: TwoAdicSubgroupDft<Val>,
+    Dft: TwoAdicSubgroupDft<Val> + Sync,
     InputMmcs: Mmcs<Val, MultiProof: Sync, Error: Sync>,
     FriMmcs: Mmcs<Challenge>,
     Challenge: TwoAdicField + ExtensionField<Val>,
@@ -292,7 +292,7 @@ impl<Val, Dft, InputMmcs, FriMmcs, Challenge, Challenger, R>
 where
     Val: TwoAdicField + PrimeField64,
     StandardUniform: Distribution<Val>,
-    Dft: TwoAdicSubgroupDft<Val>,
+    Dft: TwoAdicSubgroupDft<Val> + Sync,
     InputMmcs: Mmcs<Val, MultiProof: Sync, Error: Sync>,
     FriMmcs: Mmcs<Challenge>,
     Challenge: TwoAdicField + ExtensionField<Val>,
