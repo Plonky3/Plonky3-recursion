@@ -1,0 +1,518 @@
+//! Transcript record:
+//! - produced by the generic-degree sumcheck prover,
+//! - consumed by the corresponding verifier.
+
+use alloc::vec::Vec;
+
+use p3_challenger::fs::TranscriptField;
+use p3_challenger::{FieldChallenger, GrindingChallenger};
+use p3_field::ExtensionField;
+use p3_multilinear_util::point::Point;
+use serde::{Deserialize, Serialize};
+
+use super::error::GenericDegreeError;
+use super::transcript::{GenericDegreeShape, VerifierTranscript};
+use super::util::RoundPolyInterpolator;
+
+/// Transcript record produced by the generic-degree sumcheck prover.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct GenericDegreeProof<F, EF> {
+    /// Claimed value of the sum over the boolean hypercube at round zero.
+    ///
+    /// Carried in the proof so the verifier consumes the whole prover output.
+    pub claimed_sum: EF,
+    /// Transmitted round-polynomial evaluations.
+    ///
+    /// Length is the number of rounds; each inner vector has length `degree`.
+    pub round_polys: Vec<Vec<EF>>,
+    /// One PoW witness per round when grinding is enabled, otherwise empty.
+    pub pow_witnesses: Vec<F>,
+}
+
+impl<F, EF> GenericDegreeProof<F, EF> {
+    /// Number of rounds in this proof.
+    #[inline]
+    #[must_use]
+    pub const fn num_rounds(&self) -> usize {
+        self.round_polys.len()
+    }
+
+    /// Run the verifier side of a generic-degree sumcheck.
+    ///
+    /// # Arguments
+    ///
+    /// - `challenger`: Fiat-Shamir transcript in the same state as the prover.
+    /// - `num_rounds`: number of variables expected to be bound.
+    /// - `degree`: per-variable degree of the polynomial being summed.
+    /// - `pow_bits`: grinding difficulty per round, or `0`.
+    ///
+    /// The claimed sum is read from the proof itself.
+    ///
+    /// # Returns
+    ///
+    /// - The vector of sampled challenges.
+    /// - The final claimed sum after all variables are bound.
+    ///
+    /// # Closing the protocol
+    ///
+    /// Sumcheck only reduces the cube sum to one polynomial evaluation; the protocol is not yet complete.
+    /// The caller must check that the returned final sum equals the polynomial at the returned challenge through:
+    ///
+    /// - PCS openings for committed multilinears.
+    /// - Closed-form evaluation for structural multilinears (`eq`, `next`, selectors).
+    ///
+    /// # The claimed sum is read from the proof
+    ///
+    /// This value is whatever the prover wrote, and no argument here pins it.
+    ///
+    /// A caller that skips the comparison verifies a sound reduction of the wrong sum.
+    ///
+    /// So when an outer protocol fixes the sum, the caller must compare the two itself.
+    ///
+    /// Every caller in the tree does, raising its own error and abandoning its transcript.
+    ///
+    /// That is why the comparison is not folded in here.
+    ///
+    /// # Zero rounds
+    ///
+    /// A run of no rounds is accepted.
+    ///
+    /// It is the trivial reduction, not a degenerate one, and the two look alike:
+    ///
+    /// ```text
+    ///     degenerate  ->  no challenge is sampled AND nothing downstream pins the result
+    ///     trivial     ->  no challenge is sampled because there is nothing left to fold
+    /// ```
+    ///
+    /// This is the second.
+    ///
+    /// At zero variables the summand is a constant.
+    ///
+    /// The sum over the empty cube is then that constant.
+    ///
+    /// The same two checks bracket the run as would bracket a longer one:
+    ///
+    /// - the claimed sum reaches the seed first, so no prover picks it late
+    /// - the value handed back is opened at the returned point, which here is that constant
+    ///
+    /// Nothing is left unpinned, so there is no floor to impose.
+    ///
+    /// The shape stays canonical too, since no rounds admits only the empty proof.
+    ///
+    /// Two callers reach this shape honestly.
+    ///
+    /// A shift reduction folds no word variable for a statement under one committed element.
+    ///
+    /// A closing fold plays no bracket when it has no rounds left to run.
+    ///
+    /// # Shape checks
+    ///
+    /// The counts this proof carries are attacker-controlled.
+    ///
+    /// The two that fix how the proof is walked are checked up front.
+    /// One is the round count, which decides how many steps are played.
+    /// The other is the witness count, which the round loop indexes into.
+    ///
+    /// The width of a round polynomial is checked by the transcript itself.
+    /// The described step declares that width, so a mismatch is rejected before the round absorbs anything.
+    ///
+    /// # Errors
+    ///
+    /// - The per-variable degree is zero, which carries no information.
+    /// - The round count differs from the expected one.
+    /// - The witness count differs from the expected one.
+    /// - A round polynomial carries the wrong number of evaluations.
+    /// - A grinding witness misses the required difficulty.
+    pub fn verify<Challenger>(
+        &self,
+        challenger: &mut Challenger,
+        num_rounds: usize,
+        degree: usize,
+        pow_bits: usize,
+    ) -> Result<(Point<EF>, EF), GenericDegreeError>
+    where
+        F: TranscriptField,
+        EF: ExtensionField<F>,
+        Challenger: FieldChallenger<F> + GrindingChallenger<Witness = F>,
+    {
+        // Phase 1: check the proof's shape.
+        //
+        // Nothing is absorbed yet, so every rejection here is a clean error.
+
+        // A degree-zero round polynomial carries no information.
+        // Interpolation would later index an empty evaluation slice.
+        if degree == 0 {
+            return Err(GenericDegreeError::InvalidDegree { degree });
+        }
+
+        // Reject up front if the proof has the wrong round count.
+        if self.round_polys.len() != num_rounds {
+            return Err(GenericDegreeError::RoundCountMismatch {
+                expected: num_rounds,
+                actual: self.round_polys.len(),
+            });
+        }
+
+        // Canonical proof shape — every accepting proof has a unique form:
+        // - zero difficulty requires an empty witness vector,
+        // - positive difficulty requires exactly one witness per round.
+        let expected_pow_witnesses = if pow_bits > 0 { num_rounds } else { 0 };
+        if self.pow_witnesses.len() != expected_pow_witnesses {
+            return Err(GenericDegreeError::PowWitnessCountMismatch {
+                expected: expected_pow_witnesses,
+                actual: self.pow_witnesses.len(),
+            });
+        }
+
+        // Phase 2: replay the transcript, now that the walk itself is known safe.
+
+        // Seeded from the same numbers the prover seeded with.
+        //
+        // Each round polynomial is one described step of exactly `degree` evaluations.
+        // The described width is what checks it, so no separate width sweep runs first.
+        //
+        //     described step:  Fixed(degree) evaluations
+        //     proof carries:   evals.len()
+        //     mismatch      -> that round rejects
+        //
+        // The rejection happens at the offending round, not before the replay.
+        // A proof whose round 3 carries the wrong width has rounds 0 to 2 absorbed first.
+        //
+        // The sponge is borrowed from the caller, so it outlives the rejection half advanced.
+        //
+        // What keeps the verdict safe is that every caller propagates the error:
+        //
+        //     propagate -> the half-advanced sponge is abandoned with the failed verification
+        //     retry     -> the next attempt starts from a state the rejected proof chose
+        //
+        // A retry on this borrow is therefore unsound: it lets a prover pick its own challenges.
+        let shape = GenericDegreeShape::new(num_rounds, degree, pow_bits);
+        let mut transcript =
+            VerifierTranscript::<Challenger, F, EF>::new(challenger, shape, self.claimed_sum);
+
+        // Barycentric weights for the integer domain 0, 1, …, degree are shared by every round.
+        let interpolator = RoundPolyInterpolator::new(degree);
+
+        let mut running_sum = self.claimed_sum;
+        let mut challenges = Vec::with_capacity(num_rounds);
+
+        // Driven by the same number the description was built from, not by the proof's length.
+        //
+        // The two agree only because of the round-count check above.
+        // Reading the count once keeps the loop and the description from ever disagreeing.
+        //
+        // Both indices below are in bounds by the two checks above.
+        for round in 0..num_rounds {
+            let evals = &self.round_polys[round];
+
+            // One call binds the polynomial, re-checks the grind, and draws the challenge.
+            let witness = (pow_bits > 0).then(|| self.pow_witnesses[round]);
+            let challenge = transcript.round(evals, witness)?;
+
+            // Reduce the running claim through the challenge just drawn.
+            running_sum = interpolator.eval(evals, running_sum, challenge);
+            challenges.push(challenge);
+        }
+
+        // Require that the whole described sequence was played.
+        transcript.finish();
+
+        Ok((Point::new(challenges), running_sum))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec;
+
+    use p3_baby_bear::{BabyBear, Poseidon2BabyBear};
+    use p3_challenger::DuplexChallenger;
+    use p3_field::PrimeCharacteristicRing;
+    use p3_field::extension::BinomialExtensionField;
+    use rand::SeedableRng;
+    use rand::rngs::SmallRng;
+
+    use super::*;
+
+    type F = BabyBear;
+    type EF = BinomialExtensionField<F, 4>;
+    type Perm = Poseidon2BabyBear<16>;
+    type Ch = DuplexChallenger<F, Perm, 16, 8>;
+
+    fn fresh_challenger() -> Ch {
+        // Fixed seed so prover and verifier transcripts match exactly.
+        let mut rng = SmallRng::seed_from_u64(0xDEADBEEF);
+        let perm = Perm::new_from_rng_128(&mut rng);
+        Ch::new(perm)
+    }
+
+    #[test]
+    fn verify_rejects_wrong_round_count() {
+        // A 0-round proof must be rejected when two rounds are expected.
+        let mut ch = fresh_challenger();
+        let proof: GenericDegreeProof<F, EF> = GenericDegreeProof::default();
+        let err = proof.verify(&mut ch, 2, 3, 0).unwrap_err();
+        assert!(matches!(
+            err,
+            GenericDegreeError::RoundCountMismatch {
+                expected: 2,
+                actual: 0
+            }
+        ));
+    }
+
+    #[test]
+    fn verify_rejects_wrong_evaluation_count_without_panicking() {
+        // Invariant: a round polynomial of the wrong width is untrusted input.
+        //
+        // The transcript panics on a step of an undescribed width.
+        // So the width is checked before anything is absorbed.
+        //
+        // Fixture state: one round, expected width 3.
+        //
+        // Mutation: send 2 evaluations instead.
+        //
+        //     described step:  Fixed(3)
+        //     proof carries:   2
+        //     -> structured error, no panic
+        let mut ch = fresh_challenger();
+        let proof = GenericDegreeProof::<F, EF> {
+            claimed_sum: EF::ZERO,
+            round_polys: vec![vec![EF::ZERO; 2]],
+            pow_witnesses: vec![],
+        };
+        let err = proof.verify(&mut ch, 1, 3, 0).unwrap_err();
+        assert_eq!(
+            err,
+            GenericDegreeError::PolyEvalCountMismatch {
+                round: 0,
+                expected: 3,
+                actual: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn shape_numbers_are_bound_into_the_seed() {
+        // Invariant: every number that shapes a run moves the shape fingerprint.
+        //
+        // The fingerprint enters the sponge when the transcript is seeded.
+        // It is therefore what keeps two configurations off the same challenges.
+        //
+        // Fixture state: 4 rounds, degree 3, no grinding.
+        let base = GenericDegreeShape::new(4, 3, 0)
+            .pattern::<F, EF>()
+            .pattern_hash();
+
+        // One more round appends three more steps.
+        let more_rounds = GenericDegreeShape::new(5, 3, 0)
+            .pattern::<F, EF>()
+            .pattern_hash();
+        assert_ne!(base, more_rounds);
+
+        // A wider round polynomial changes each round step's declared width.
+        let wider = GenericDegreeShape::new(4, 4, 0)
+            .pattern::<F, EF>()
+            .pattern_hash();
+        assert_ne!(base, wider);
+
+        // Enabling grinding inserts a step per round.
+        let ground = GenericDegreeShape::new(4, 3, 8)
+            .pattern::<F, EF>()
+            .pattern_hash();
+        assert_ne!(base, ground);
+
+        // Two positive difficulties differ only inside the grinding steps.
+        let harder = GenericDegreeShape::new(4, 3, 9)
+            .pattern::<F, EF>()
+            .pattern_hash();
+        assert_ne!(ground, harder);
+    }
+
+    #[test]
+    fn claimed_sum_is_bound_before_the_first_challenge() {
+        // Invariant: the claimed sum reaches the sponge before any challenge.
+        //
+        // Without that, a prover could pick the sum after seeing the challenge.
+        //
+        // Fixture state: one round, one evaluation, no grinding.
+        //
+        // Mutation: change only the claimed sum.
+        //
+        //     run A: claimed sum 1
+        //     run B: claimed sum 0
+        //     -> different challenge, so different reduction point
+        let proof = GenericDegreeProof::<F, EF> {
+            claimed_sum: EF::ONE,
+            round_polys: vec![vec![EF::ONE]],
+            pow_witnesses: vec![],
+        };
+        let tampered = GenericDegreeProof::<F, EF> {
+            claimed_sum: EF::ZERO,
+            ..proof.clone()
+        };
+
+        let mut ch_a = fresh_challenger();
+        let (point_a, _) = proof.verify(&mut ch_a, 1, 1, 0).unwrap();
+
+        let mut ch_b = fresh_challenger();
+        let (point_b, _) = tampered.verify(&mut ch_b, 1, 1, 0).unwrap();
+
+        assert_ne!(point_a, point_b);
+    }
+
+    #[test]
+    fn round_polynomial_is_bound_before_its_challenge() {
+        // Invariant: a round polynomial is bound before its own challenge.
+        //
+        // Without that, a prover could pick the polynomial to suit the challenge.
+        //
+        // Fixture state: two rounds, width 1, no grinding.
+        //
+        // Mutation: change the first round's only evaluation.
+        //
+        //     honest:   [[1], [1]]
+        //     tampered: [[2], [1]]
+        //     -> round 0's challenge changes, and every later one with it
+        let proof = GenericDegreeProof::<F, EF> {
+            claimed_sum: EF::ONE,
+            round_polys: vec![vec![EF::ONE], vec![EF::ONE]],
+            pow_witnesses: vec![],
+        };
+        let mut tampered = proof.clone();
+        tampered.round_polys[0][0] = EF::TWO;
+
+        let mut ch_a = fresh_challenger();
+        let (point_a, _) = proof.verify(&mut ch_a, 2, 1, 0).unwrap();
+
+        let mut ch_b = fresh_challenger();
+        let (point_b, _) = tampered.verify(&mut ch_b, 2, 1, 0).unwrap();
+
+        assert_ne!(point_a, point_b);
+    }
+
+    #[test]
+    fn verify_rejects_zero_degree() {
+        // Degree zero carries no information, so the verifier rejects it with a typed error.
+        let mut ch = fresh_challenger();
+        let proof: GenericDegreeProof<F, EF> = GenericDegreeProof::default();
+        let err = proof.verify(&mut ch, 0, 0, 0).unwrap_err();
+        assert!(matches!(
+            err,
+            GenericDegreeError::InvalidDegree { degree: 0 }
+        ));
+    }
+
+    #[test]
+    fn a_zero_round_run_is_the_trivial_reduction_and_stays_bound() {
+        // Invariant: zero rounds is accepted, and it is still pinned at both ends.
+        //
+        // At zero variables the summand is a constant, and so is the sum over it.
+        //
+        // No challenge is sampled because nothing is left to fold.
+        //
+        // That is not the same as the reduction having stopped constraining anything.
+        //
+        // A shift reduction reaches this shape for a statement under one committed element.
+        //
+        // Rejecting it would break a sound protocol.
+        //
+        // Fixture state: the empty proof, degree one, no grinding.
+        let proof = GenericDegreeProof::<F, EF> {
+            claimed_sum: EF::from_u64(7),
+            round_polys: vec![],
+            pow_witnesses: vec![],
+        };
+
+        let mut ch = fresh_challenger();
+        let (point, value) = proof.verify(&mut ch, 0, 1, 0).unwrap();
+
+        // No variable was bound, so the surviving claim is the constant itself.
+        //
+        // The caller's opening at this empty point is what pins it.
+        assert_eq!(point.num_variables(), 0);
+        assert_eq!(value, proof.claimed_sum);
+
+        // The claimed sum still reaches the sponge before anything is drawn.
+        //
+        // Two empty runs over different statements therefore part at once.
+        let other = GenericDegreeProof::<F, EF> {
+            claimed_sum: EF::from_u64(8),
+            ..proof.clone()
+        };
+        let mut ch_a = fresh_challenger();
+        let _ = proof.verify(&mut ch_a, 0, 1, 0).unwrap();
+        let mut ch_b = fresh_challenger();
+        let _ = other.verify(&mut ch_b, 0, 1, 0).unwrap();
+        assert_ne!(
+            ch_a.sample_algebra_element::<EF>(),
+            ch_b.sample_algebra_element::<EF>()
+        );
+
+        // The shape stays canonical: a zero-round run admits exactly the empty proof.
+        let mut ch = fresh_challenger();
+        let padded = GenericDegreeProof::<F, EF> {
+            claimed_sum: EF::from_u64(7),
+            round_polys: vec![vec![EF::ONE]],
+            pow_witnesses: vec![],
+        };
+        assert!(matches!(
+            padded.verify(&mut ch, 0, 1, 0).unwrap_err(),
+            GenericDegreeError::RoundCountMismatch {
+                expected: 0,
+                actual: 1
+            }
+        ));
+    }
+
+    #[test]
+    fn the_smallest_folding_shape_still_samples_a_challenge() {
+        // Invariant: the smallest folding run draws a challenge that moves with the statement.
+        //
+        // This test fails if that run ever stops sampling.
+        //
+        // A reduction can otherwise contract to a bare identity while separation tests pass.
+        //
+        // Two instances that draw no challenge cannot be told apart by one.
+        //
+        // Fixture state: one round, degree one, no grinding.
+        let proof = GenericDegreeProof::<F, EF> {
+            claimed_sum: EF::ONE,
+            round_polys: vec![vec![EF::ONE]],
+            pow_witnesses: vec![],
+        };
+
+        let mut ch = fresh_challenger();
+        let (point, _) = proof.verify(&mut ch, 1, 1, 0).unwrap();
+
+        // One round means exactly one challenge, not zero.
+        assert_eq!(point.num_variables(), 1);
+
+        // Mutation: change the round polynomial. The challenge must follow it.
+        let mut tampered = proof.clone();
+        tampered.round_polys[0][0] = EF::TWO;
+        let mut ch = fresh_challenger();
+        let (other, _) = tampered.verify(&mut ch, 1, 1, 0).unwrap();
+        assert_ne!(point, other);
+    }
+
+    #[test]
+    fn verify_rejects_unexpected_pow_witnesses() {
+        // With pow_bits == 0 a canonical proof carries no PoW witnesses.
+        // Accepting a spurious one would let two proofs verify the same statement (malleability).
+        let mut ch = fresh_challenger();
+        let proof = GenericDegreeProof::<F, EF> {
+            claimed_sum: EF::ZERO,
+            round_polys: vec![vec![EF::ZERO; 1]],
+            pow_witnesses: vec![F::ZERO],
+        };
+        let err = proof.verify(&mut ch, 1, 1, 0).unwrap_err();
+        assert!(matches!(
+            err,
+            GenericDegreeError::PowWitnessCountMismatch {
+                expected: 0,
+                actual: 1
+            }
+        ));
+    }
+}

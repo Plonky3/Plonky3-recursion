@@ -1,0 +1,733 @@
+//! Prefix-mode stacked-sumcheck prover.
+
+use alloc::vec::Vec;
+
+use p3_challenger::fs::TranscriptField;
+use p3_challenger::{FieldChallenger, GrindingChallenger};
+use p3_field::{ExtensionField, Field, PackedFieldExtension, PackedValue};
+use p3_maybe_rayon::prelude::*;
+use p3_multilinear_util::point::Point;
+use p3_multilinear_util::poly::Poly;
+use p3_multilinear_util::split_eq::SplitEq;
+use p3_util::log2_strict_usize;
+
+use crate::commit::write_stacked_message;
+use crate::layout::opening::Opening;
+use crate::layout::prover::{Layout, StackedClaims, preprocess};
+use crate::layout::witness::Table;
+use crate::layout::{LayoutStrategy, ProverMultiClaim, Witness};
+use crate::product_polynomial::ProductPolynomial;
+use crate::strategy::{SumcheckProver, VariableOrder};
+use crate::svo::{SvoPoint, calculate_accumulators_batch};
+use crate::table::{OpeningBatch, OpeningEvals, OpeningRequest};
+use crate::{Claim, SumcheckData};
+
+/// Stacked-sumcheck prover with prefix-first variable binding.
+///
+/// # Flow
+///
+/// - Every folding round is driven from precomputed SVO accumulators.
+/// - Residual compression uses packed storage when possible and scalar storage otherwise.
+#[derive(Debug, Clone)]
+pub struct PrefixProver<F: Field, EF: ExtensionField<F>> {
+    /// Recorded opening claims and the layout context that batches them.
+    pub(crate) claims: StackedClaims<F, EF>,
+    /// Stacked committed polynomial.
+    ///
+    /// - Prefix binding folds this polynomial directly.
+    /// - It is kept here, beside the shared claim state.
+    pub(crate) poly: Poly<F>,
+}
+
+impl<F: Field, EF: ExtensionField<F>> Layout<F, EF> for PrefixProver<F, EF> {
+    fn from_witness(witness: Witness<F>) -> Self {
+        // Move the witness fields out so the prover owns them outright.
+        let parts = witness.into_parts();
+        Self {
+            claims: StackedClaims::new(
+                parts.tables,
+                parts.placements,
+                parts.num_variables,
+                parts.folding,
+            ),
+            poly: parts
+                .poly
+                .expect("this layout retains its stacked polynomial"),
+        }
+    }
+
+    fn new_witness(tables: Vec<Table<F>>, folding: usize) -> Witness<F> {
+        Witness::new_interleaved(tables, folding)
+    }
+
+    fn write_message(witness: &Witness<F>, folding: usize, message: &mut [F]) {
+        write_stacked_message(
+            Self::variable_order(),
+            witness.retained_poly(),
+            folding,
+            message,
+        );
+    }
+
+    fn claims(&self) -> &StackedClaims<F, EF> {
+        &self.claims
+    }
+
+    /// Evaluates the selected columns of one table at a point and records the claim.
+    ///
+    /// All requested columns share the one supplied local opening point.
+    ///
+    /// - Direct openings evaluate a column at that point.
+    /// - Successor openings evaluate the repeat-last view at that point.
+    /// - Returned evaluations list every direct opening first.
+    ///
+    /// # Arguments
+    ///
+    /// - Source table index.
+    /// - Columns opened directly and through the successor view.
+    /// - Local-frame opening point, one coordinate per table variable.
+    ///
+    /// # Performance
+    ///
+    /// - The point is factorised once and reused by every selected column.
+    /// - Each column is an independent linear pass, so columns run in parallel.
+    #[tracing::instrument(skip_all, level = "debug")]
+    fn record_opening(
+        &mut self,
+        table_idx: usize,
+        batch: &OpeningRequest,
+        point: &Point<EF>,
+    ) -> OpeningEvals<EF> {
+        // Split the request into its two column groups.
+        let current = batch.current();
+        let next = batch.next();
+        let table = &self.claims.tables[table_idx];
+        // The opening point lives in the table's local frame, one coordinate per variable.
+        debug_assert_eq!(point.num_variables(), table.num_variables());
+
+        // Factorise the point once; every selected column reuses it.
+        let point = SvoPoint::new_packed(self.claims.folding, point);
+
+        // Current group: evaluate each column at the point.
+        // Each entry yields an opening (carrying preprocessing residuals) plus the bare eval.
+        // Each column is an independent O(2^n) pass, so columns evaluate in parallel.
+        let (current_openings, current_evals): (Vec<_>, Vec<EF>) = current
+            .into_par_iter()
+            .copied()
+            .map(|poly_idx| {
+                let (eval, partial_evals) = point.eval(table.poly(poly_idx));
+                (Opening::new_with_data(poly_idx, eval, partial_evals), eval)
+            })
+            .unzip();
+
+        // Next group: evaluate the repeat-last successor view at the same point.
+        // The prefix layout folds the leading variables, so the successor is taken accordingly.
+        let (next_openings, next_evals): (Vec<_>, Vec<EF>) = next
+            .into_par_iter()
+            .copied()
+            .map(|poly_idx| {
+                let (eval, partial_evals) = point.eval_next_prefix(table.poly(poly_idx));
+                (Opening::new_with_data(poly_idx, eval, partial_evals), eval)
+            })
+            .unzip();
+
+        // Store the batch for the later sumcheck reduction.
+        self.claims.claim_map[table_idx].push(ProverMultiClaim::new(
+            point,
+            current_openings,
+            next_openings,
+        ));
+
+        // Return both eval groups in the canonical current-then-next order.
+        OpeningBatch::new(current_evals, next_evals)
+    }
+
+    fn record_opening_known(
+        &mut self,
+        table_idx: usize,
+        batch: &OpeningRequest,
+        point: &Point<EF>,
+        evals: &OpeningEvals<EF>,
+    ) {
+        // The opening point lives in the table's local frame, one coordinate per variable.
+        debug_assert_eq!(
+            point.num_variables(),
+            self.claims.tables[table_idx].num_variables()
+        );
+        debug_assert!(self.known_evals_agree(table_idx, batch, point, evals));
+
+        // The point is factorised as the evaluating route factorises it; only the pass is skipped.
+        let point = SvoPoint::new_packed(self.claims.folding, point);
+        self.claims.record_known(table_idx, batch, point, evals);
+    }
+
+    /// Evaluates the full stacked polynomial at a point and records the claim.
+    ///
+    /// # Overview
+    ///
+    /// WHIR pins the stacked polynomial at a fresh point for soundness amplification.
+    ///
+    /// The stacked evaluation factors per column through the slot selector:
+    ///
+    /// ```text
+    ///     stacked(point) = sum_i  eq(selector_i, point_selector_part)
+    ///                             * col_i(point_local_part)
+    /// ```
+    ///
+    /// Per-column preprocessing residuals are collected on the way.
+    ///
+    /// They feed the accumulator batcher.
+    ///
+    /// The folding rounds then read them instead of the columns.
+    ///
+    /// # Arguments
+    ///
+    /// - Point covering every stacked variable.
+    #[tracing::instrument(skip_all)]
+    fn record_virtual(&mut self, point: &Point<EF>) -> EF {
+        // Per-column accumulation state:
+        //
+        //     eval    : running stacked evaluation
+        //     openings: one virtual opening per column, carrying its residuals
+        //     weights : per-column selector-equality scalars
+        let mut eval = EF::ZERO;
+        let mut openings = Vec::new();
+        let mut weights = Vec::new();
+
+        for placement in &self.claims.placements {
+            let table = &self.claims.tables[placement.idx()];
+            for (poly_idx, selector) in placement.selectors().iter().enumerate() {
+                // Source column behind this slot.
+                let poly = table.poly(poly_idx);
+
+                // Prefix binding puts the local bits first.
+                //
+                // The split therefore takes them first.
+                let (local_part, selector_part) = point.split_at(table.num_variables());
+
+                // Scalar weight picking this slot out of the stacked space.
+                let weight =
+                    Point::eval_eq::<EF>(selector.point().as_slice(), selector_part.as_slice());
+
+                // Factorise the local part, then evaluate the column at it.
+                let local_svo = SvoPoint::new_packed(self.claims.folding, &local_part);
+                let (column_eval, partial_evals) = local_svo.eval(poly);
+
+                // Add the weighted column evaluation into the stacked total.
+                eval += weight * column_eval;
+
+                // Record a virtual opening: no source column tag, residuals attached.
+                openings.push(Opening {
+                    poly_idx: None,
+                    eval: column_eval,
+                    data: partial_evals,
+                });
+
+                // Stash the weight for the accumulator-batcher call below.
+                weights.push(weight);
+            }
+        }
+
+        // Batch every per-column opening into per-round preprocessing accumulators.
+        let accumulators = calculate_accumulators_batch(
+            &ProverMultiClaim::new(
+                SvoPoint::new_unpacked(self.claims.folding, point, VariableOrder::Prefix),
+                openings,
+                Vec::new(),
+            ),
+            &weights,
+        );
+
+        // Record the claim so the folding rounds can read its accumulators.
+        self.claims.virtual_claims.push(Claim {
+            point: point.clone(),
+            eval,
+            data: accumulators,
+        });
+
+        eval
+    }
+
+    /// Finalises preprocessing and returns the residual sumcheck prover.
+    ///
+    /// # Returns
+    ///
+    /// - Residual sumcheck prover.
+    /// - Folding challenges sampled during preprocessing.
+    ///
+    /// # Algorithm
+    ///
+    /// ```text
+    ///     Phase | Action
+    ///     ------+-----------------------------------------------
+    ///       1   | Sample the batching challenge  a.
+    ///       2   | running sum  = sum_{i}  a^i * eval_i.
+    ///       3   | weight poly  = sum_{i}  a^i * eq(z_i, X).
+    ///       4   | Fold rounds 1..folding from precomputed SVO accumulators.
+    ///       5   | Hand off using storage suited to the residual width.
+    /// ```
+    ///
+    /// # Precondition
+    ///
+    /// - Each table's arity is at least  log_2(W), with W the packing width.
+    /// - Guarantees every per-slot packed accumulation spans a whole packed element.
+    #[tracing::instrument(skip_all)]
+    fn into_sumcheck<Ch>(
+        self,
+        sumcheck_data: &mut SumcheckData<F, EF>,
+        pow_bits: usize,
+        challenger: &mut Ch,
+    ) -> (SumcheckProver<F, EF>, Point<EF>)
+    where
+        F: TranscriptField,
+        Ch: FieldChallenger<F> + GrindingChallenger<Witness = F>,
+    {
+        let (alpha, sum, rs) = preprocess(&self, sumcheck_data, pow_bits, challenger);
+
+        let prod_poly = self.residual_product(&rs, alpha, EF::ONE);
+        debug_assert_eq!(prod_poly.dot_product(), sum);
+
+        (SumcheckProver::new(prod_poly, sum), rs)
+    }
+
+    fn strategy() -> LayoutStrategy {
+        LayoutStrategy::new(true, VariableOrder::Prefix)
+    }
+}
+
+impl<F: Field, EF: ExtensionField<F>> PrefixProver<F, EF> {
+    /// Whether supplied evaluations are the ones the opened columns hold at the point.
+    ///
+    /// This runs exactly the passes a supplied evaluation exists to avoid, so it is only
+    /// ever reached from a debug assertion.
+    fn known_evals_agree(
+        &self,
+        table_idx: usize,
+        batch: &OpeningRequest,
+        point: &Point<EF>,
+        evals: &OpeningEvals<EF>,
+    ) -> bool {
+        let table = &self.claims.tables[table_idx];
+        let point = SvoPoint::new_packed(self.claims.folding, point);
+
+        batch.has_same_shape(evals)
+            && batch
+                .current()
+                .iter()
+                .zip(evals.current())
+                .all(|(&poly_idx, &eval)| point.eval(table.poly(poly_idx)).0 == eval)
+            && batch
+                .next()
+                .iter()
+                .zip(evals.next())
+                .all(|(&poly_idx, &eval)| point.eval_next_prefix(table.poly(poly_idx)).0 == eval)
+    }
+
+    /// Builds the residual product polynomial with packed or scalar compression.
+    pub(crate) fn residual_product(
+        &self,
+        rs: &Point<EF>,
+        alpha: EF,
+        scale: EF,
+    ) -> ProductPolynomial<F, EF> {
+        // Packed compression requires one full packed element.
+        let k_pack = log2_strict_usize(<F as Field>::Packing::WIDTH);
+        if self.num_variables() - rs.num_variables() >= k_pack {
+            // Keep the vectorized compression path for wide residuals.
+            let compressed = tracing::info_span!("compress_prefix_to_packed")
+                .in_scope(|| self.poly.compress_prefix_to_packed(rs, scale));
+            let weights = self.residual_weights_packed(rs, alpha);
+            ProductPolynomial::new_packed(VariableOrder::Prefix, compressed, weights)
+        } else {
+            // Use scalar storage below one packed element.
+            let compressed = tracing::info_span!("compress_prefix")
+                .in_scope(|| self.poly.compress_prefix(rs, scale));
+            let weights = self.combine_weights(rs, alpha);
+            ProductPolynomial::new_unpacked(VariableOrder::Prefix, compressed, weights)
+        }
+    }
+
+    /// Builds the residual equality weights in packed form.
+    ///
+    /// Two routes produce the identical polynomial; each call takes the cheaper one:
+    ///
+    /// - Scatter: write directly into the packed buffer, visiting only claimed slots.
+    /// - Pack: build the full scalar table, then transpose-copy it into packed form.
+    ///
+    /// The scatter wins on a sparsely claimed residual.
+    /// The vectorized transpose wins when the claims fill most of the space.
+    pub(crate) fn residual_weights_packed(
+        &self,
+        rs: &Point<EF>,
+        alpha: EF,
+    ) -> Poly<EF::ExtensionPacking> {
+        if self.scatter_beats_pack(rs) {
+            self.combine_weights_packed(rs, alpha)
+        } else {
+            self.combine_weights(rs, alpha).pack::<F, EF>()
+        }
+    }
+
+    /// Decides whether the scatter route beats the transpose route.
+    ///
+    /// True when the concrete claims occupy at most a third of the residual space:
+    ///
+    /// ```text
+    ///     occupied = sum over openings of 2^(table_arity - folding)
+    ///     residual = 2^(num_variables - folding)
+    ///     scatter  <=>  3 * occupied <= residual
+    /// ```
+    ///
+    /// The crossover sits near half occupancy:
+    ///
+    /// - At a quarter, the scatter is clearly ahead.
+    /// - At a half, the two routes tie.
+    /// - Above a half, the transpose pulls ahead.
+    ///
+    /// The one-third cutoff keeps a margin below the crossover.
+    /// So the chosen route is never slower, across machines and SIMD widths.
+    ///
+    /// Virtual claims span the whole space and cost the same either way.
+    /// They do not enter the decision.
+    fn scatter_beats_pack(&self, rs: &Point<EF>) -> bool {
+        let residual = 1usize << (self.claims.num_variables - rs.num_variables());
+        let occupied: usize = self
+            .claims
+            .placements
+            .iter()
+            .map(|placement| {
+                let local =
+                    1usize << (self.num_variables_table(placement.idx()) - rs.num_variables());
+                self.claims.claim_map[placement.idx()]
+                    .iter()
+                    .map(|claim| claim.len() * local)
+                    .sum::<usize>()
+            })
+            .sum();
+        occupied.saturating_mul(3) <= residual
+    }
+
+    /// Builds the residual weight polynomial left after the folded prefix rounds.
+    ///
+    /// This is the dense-residual route: it materializes the full scalar table.
+    /// The packed scatter route shares the same accumulation but skips this buffer.
+    ///
+    /// # Overview
+    ///
+    /// - Each concrete opening contributes a slot-local equality weight.
+    /// - The slot's selector lifts that weight into the stacked variable space.
+    /// - All contributions are summed with the same alpha powers as the batched claim.
+    ///
+    /// # Arguments
+    ///
+    /// - `rs`    — folded challenges from the rounds already bound.
+    /// - `alpha` — batching challenge whose powers weight each opening.
+    ///
+    /// # Panics
+    ///
+    /// - The challenge count must equal the folding depth.
+    #[tracing::instrument(skip_all)]
+    pub(crate) fn combine_weights(&self, rs: &Point<EF>, alpha: EF) -> Poly<EF> {
+        // Invariant: one folded challenge per folded round.
+        assert_eq!(rs.num_variables(), self.claims.folding);
+        // Output spans the stacked space minus the already-folded variables.
+        let mut out = Poly::<EF>::zero(self.claims.num_variables - rs.num_variables());
+
+        let mut alphas = alpha.powers();
+
+        // Same canonical walk as the batched claim, so powers stay aligned.
+        for placement in &self.claims.placements {
+            // Variables left in each slot after removing the folded ones.
+            let local_rest_variables =
+                self.num_variables_table(placement.idx()) - rs.num_variables();
+            for claim in &self.claims.claim_map[placement.idx()] {
+                // Current group: equality weight of the column at the claim point.
+                for opening in claim.current_openings() {
+                    // The column picks the selector that names this slot.
+                    let col = opening.poly_idx().unwrap();
+                    let selector = &placement.selectors()[col];
+                    // Build the slot-local weight scaled by this opening's alpha power.
+                    let mut local = Poly::<EF>::zero(local_rest_variables);
+                    claim
+                        .point()
+                        .accumulate_into(local.as_mut_slice(), rs, alphas.next().unwrap());
+
+                    // Scatter the slot-local weight into its stacked positions.
+                    //     dst = (local_idx << selector_vars) | selector_index
+                    for (local_idx, &value) in local.as_slice().iter().enumerate() {
+                        let dst = (local_idx << selector.num_variables()) | selector.index();
+                        out.as_mut_slice()[dst] += value;
+                    }
+                }
+                // Next group: same scatter, but using the repeat-last successor weight.
+                for opening in claim.next_openings() {
+                    let col = opening.poly_idx().unwrap();
+                    let selector = &placement.selectors()[col];
+                    let mut local = Poly::<EF>::zero(local_rest_variables);
+                    claim.point().accumulate_next_prefix_into(
+                        local.as_mut_slice(),
+                        rs,
+                        alphas.next().unwrap(),
+                    );
+
+                    for (local_idx, &value) in local.as_slice().iter().enumerate() {
+                        let dst = (local_idx << selector.num_variables()) | selector.index();
+                        out.as_mut_slice()[dst] += value;
+                    }
+                }
+            }
+        }
+
+        let mut alpha_i = alpha.exp_u64(self.num_claims() as u64);
+        for claim in &self.claims.virtual_claims {
+            let (svo, rest) = claim.point.split_at(rs.num_variables());
+            let scale = alpha_i * Point::eval_eq(svo.as_slice(), rs.as_slice());
+            SplitEq::new_unpacked(&rest, scale).accumulate_into(out.as_mut_slice(), None);
+            alpha_i *= alpha;
+        }
+
+        out
+    }
+
+    /// Builds the residual equality weights straight into the packed buffer.
+    ///
+    /// Scatters each claim's contribution into packed lanes directly.
+    /// This skips the scalar table and the transpose-copy the dense route pays.
+    ///
+    /// # Identity
+    ///
+    /// For a concrete opening on a column at point `z = (z_svo, z_rest)`:
+    ///
+    /// ```text
+    ///     out[(y << s) | v] += alpha^i * eq(z_svo, rs) * eq(z_rest, y)
+    /// ```
+    ///
+    /// - `(s, v)` is the column's selector: `s` selector bits, slot index `v`.
+    /// - `y` ranges over the local table.
+    /// - scalar index `(y << s) | v` maps to packed word `idx >> k_pack`, lane `idx & (W - 1)`.
+    ///
+    /// Virtual claims span the whole residual space.
+    /// They continue the alpha sequence after the concrete openings.
+    ///
+    /// # Panics
+    ///
+    /// - `rs` must have exactly `folding` variables.
+    /// - The residual space must hold at least one packed element.
+    #[tracing::instrument(skip_all)]
+    pub(crate) fn combine_weights_packed(
+        &self,
+        rs: &Point<EF>,
+        alpha: EF,
+    ) -> Poly<EF::ExtensionPacking> {
+        assert_eq!(rs.num_variables(), self.claims.folding);
+        let k_pack = log2_strict_usize(F::Packing::WIDTH);
+        let out_variables = self.claims.num_variables - rs.num_variables();
+        assert!(out_variables >= k_pack);
+
+        let mut out = Poly::<EF::ExtensionPacking>::zero(out_variables - k_pack);
+        let lane_mask = F::Packing::WIDTH - 1;
+
+        // Scatters one slot-local weight table into its packed positions.
+        //     dst = (local_idx << selector_vars) | selector_index
+        // The destination splits into packed word `dst >> k_pack` and lane `dst & mask`.
+        let scatter = |out: &mut Poly<EF::ExtensionPacking>, local: &[EF], s: usize, v: usize| {
+            for (y, &value) in local.iter().enumerate() {
+                let idx = (y << s) | v;
+                out.as_mut_slice()[idx >> k_pack].add_assign_lane(idx & lane_mask, value);
+            }
+        };
+
+        // Concrete claims: scatter each column's local table into its packed slot.
+        // Alpha powers run in (placement, claim, current openings, next openings) order,
+        // matching the verifier and the scalar route.
+        let mut alphas = alpha.powers();
+        for placement in &self.claims.placements {
+            let local_rest_variables =
+                self.num_variables_table(placement.idx()) - rs.num_variables();
+            for claim in &self.claims.claim_map[placement.idx()] {
+                // Current group: equality weight of the column at the claim point.
+                for opening in claim.current_openings() {
+                    let col = opening.poly_idx().unwrap();
+                    let selector = &placement.selectors()[col];
+                    // Materialize alpha^i * eq(z_svo, rs) * eq(z_rest, .) for this column.
+                    let mut local = Poly::<EF>::zero(local_rest_variables);
+                    claim
+                        .point()
+                        .accumulate_into(local.as_mut_slice(), rs, alphas.next().unwrap());
+                    scatter(
+                        &mut out,
+                        local.as_slice(),
+                        selector.num_variables(),
+                        selector.index(),
+                    );
+                }
+                // Next group: same scatter, but using the repeat-last successor weight.
+                for opening in claim.next_openings() {
+                    let col = opening.poly_idx().unwrap();
+                    let selector = &placement.selectors()[col];
+                    let mut local = Poly::<EF>::zero(local_rest_variables);
+                    claim.point().accumulate_next_prefix_into(
+                        local.as_mut_slice(),
+                        rs,
+                        alphas.next().unwrap(),
+                    );
+                    scatter(
+                        &mut out,
+                        local.as_slice(),
+                        selector.num_variables(),
+                        selector.index(),
+                    );
+                }
+            }
+        }
+
+        // Virtual claims span the full residual space; accumulate packed.
+        let mut alpha_i = alpha.exp_u64(self.num_claims() as u64);
+        for claim in &self.claims.virtual_claims {
+            let (svo, rest) = claim.point.split_at(rs.num_variables());
+            let scale = alpha_i * Point::eval_eq(svo.as_slice(), rs.as_slice());
+            SplitEq::new_packed(&rest, scale).accumulate_into_packed(out.as_mut_slice(), None);
+            alpha_i *= alpha;
+        }
+
+        out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec;
+
+    use p3_field::PrimeCharacteristicRing;
+    use proptest::prelude::*;
+
+    use super::*;
+    use crate::layout::prover::test_utils::{
+        FOLDING, arb_opening_schedule, arb_witness_and_schedule, build_tables, tables_from_shape,
+    };
+    use crate::tests::{EF, F, challenger};
+
+    /// Replays a schedule plus virtual claims, then pins packed against scalar.
+    fn assert_packed_matches_scalar(
+        witness: Witness<F>,
+        schedule: &[(usize, Vec<usize>)],
+        num_virtual: usize,
+    ) {
+        let mut prover = PrefixProver::<F, EF>::from_witness(witness);
+        let mut ch = challenger();
+        // Record concrete openings; `eval` samples points and absorbs evals internally.
+        // These tests exercise current openings only, so the next group stays empty.
+        for (table_idx, polys) in schedule {
+            prover.eval(
+                *table_idx,
+                &OpeningBatch::new(polys.clone(), Vec::new()),
+                &mut ch,
+            );
+        }
+        // Record virtual claims; they continue the alpha sequence after concrete ones.
+        for _ in 0..num_virtual {
+            let _ = prover.add_virtual_eval(&mut ch);
+        }
+        // Random batching challenge and SVO folding point.
+        let alpha: EF = ch.sample_algebra_element();
+        let rs = Point::expand_from_univariate(ch.sample_algebra_element(), FOLDING);
+        // The packed path must equal the scalar reference followed by packing.
+        let scalar = prover.combine_weights(&rs, alpha).pack::<F, EF>();
+        let packed = prover.combine_weights_packed(&rs, alpha);
+        assert_eq!(scalar, packed);
+        // The adaptive dispatcher must return that same polynomial on either branch.
+        assert_eq!(prover.residual_weights_packed(&rs, alpha), packed);
+    }
+
+    #[test]
+    fn scatter_beats_pack_routes_on_occupancy() {
+        let mut ch = challenger();
+        let rs = Point::expand_from_univariate(ch.sample_algebra_element(), FOLDING);
+
+        // Builds a four-column table and opens the first `open` of them.
+        // Four columns tile a power-of-two space, so `open` columns is `open/4` occupancy.
+        let mut routed = |open: usize| {
+            let mut prover = PrefixProver::<F, EF>::from_witness(
+                PrefixProver::<F, EF>::new_witness(vec![Table::zero(4, 8)], FOLDING),
+            );
+            let cols: Vec<usize> = (0..open).collect();
+            prover.eval(0, &OpeningBatch::new(cols, Vec::new()), &mut ch);
+            prover.scatter_beats_pack(&rs)
+        };
+
+        // The threshold routes to the scatter only below a third occupancy.
+        assert!(routed(1), "25% occupancy must pick scatter");
+        assert!(!routed(2), "50% occupancy must fall back to pack");
+        assert!(!routed(4), "100% occupancy must fall back to pack");
+
+        // A holey layout (one of five columns) sits far below the threshold.
+        let mut sparse = PrefixProver::<F, EF>::from_witness(PrefixProver::<F, EF>::new_witness(
+            vec![Table::zero(5, 8)],
+            FOLDING,
+        ));
+        sparse.eval(0, &OpeningBatch::new(vec![2], Vec::new()), &mut ch);
+        assert!(
+            sparse.scatter_beats_pack(&rs),
+            "holey layout must pick scatter"
+        );
+    }
+
+    #[test]
+    fn combine_weights_packed_no_claims_is_zero() {
+        // No claims at all: the scatter is skipped and every weight is zero.
+        let witness = PrefixProver::<F, EF>::new_witness(build_tables(), FOLDING);
+        let prover = PrefixProver::<F, EF>::from_witness(witness);
+        let mut ch = challenger();
+        let alpha: EF = ch.sample_algebra_element();
+        let rs = Point::expand_from_univariate(ch.sample_algebra_element(), FOLDING);
+        let packed = prover.combine_weights_packed(&rs, alpha);
+        assert!(
+            packed
+                .iter()
+                .all(|&w| w == <EF as ExtensionField<F>>::ExtensionPacking::ZERO)
+        );
+    }
+
+    #[test]
+    fn combine_weights_packed_virtual_claims_only() {
+        // No concrete openings: only the virtual-claim accumulation contributes.
+        let witness = PrefixProver::<F, EF>::new_witness(build_tables(), FOLDING);
+        assert_packed_matches_scalar(witness, &[], 2);
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: 32, ..ProptestConfig::default() })]
+
+        // Invariant: the packed scatter equals the scalar build followed by pack.
+        //
+        //     fixed two-table witness: mixed selector widths, padding holes
+        //     coverage: openings sharing a slot, plus 0..=2 virtual claims
+        #[test]
+        fn combine_weights_packed_matches_scalar(
+            schedule in arb_opening_schedule(),
+            num_virtual in 0usize..=2,
+        ) {
+            let witness = PrefixProver::<F, EF>::new_witness(build_tables(), FOLDING);
+            assert_packed_matches_scalar(witness, &schedule, num_virtual);
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: 16, ..ProptestConfig::default() })]
+
+        // Invariant: packed and scalar agree on random witness shapes.
+        //
+        //     includes single-table layouts with zero selector bits
+        #[test]
+        fn combine_weights_packed_matches_scalar_shapes(
+            (shape, schedule) in arb_witness_and_schedule(),
+            num_virtual in 0usize..=1,
+        ) {
+            let witness = PrefixProver::<F, EF>::new_witness(tables_from_shape(&shape), FOLDING);
+            // Packing needs at least one full SIMD lane in the residual space.
+            let k_pack = log2_strict_usize(<F as Field>::Packing::WIDTH);
+            prop_assume!(witness.num_variables() >= FOLDING + k_pack);
+            assert_packed_matches_scalar(witness, &schedule, num_virtual);
+        }
+    }
+}

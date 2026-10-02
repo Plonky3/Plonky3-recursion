@@ -1347,8 +1347,6 @@ dependencies = [
 [[package]]
 name = "p3-sumcheck"
 version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "afcc26cd496671e2d01c89d18a637bad0a4ef2e3b8e56f0b23cb34cf3e943c4b"
 dependencies = [
  "itertools 0.15.0",
  "p3-binary-field",

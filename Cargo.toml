@@ -109,6 +109,7 @@ unroll = { version = "0.1.5", default-features = false }
 
 [patch.crates-io]
 p3-fri = { path = "vendor/p3-fri" }
+p3-sumcheck = { path = "vendor/p3-sumcheck" }
 
 [profile.profiling]
 inherits = "release"
