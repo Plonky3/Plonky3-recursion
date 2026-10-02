@@ -1,0 +1,477 @@
+use alloc::vec;
+use alloc::vec::Vec;
+
+use itertools::{Itertools, izip};
+use p3_challenger::{CanObserve, FieldChallenger, GrindingChallenger};
+use p3_commit::{Mmcs, OpeningRequest};
+use p3_dft::{Radix2DFTSmallBatch, TwoAdicSubgroupDft};
+use p3_field::{ExtensionField, Field, PrimeField64, TwoAdicField};
+use p3_matrix::dense::RowMajorMatrix;
+use p3_maybe_rayon::prelude::*;
+use p3_util::{log2_strict_usize, reverse_slice_index_bits};
+use tracing::{debug_span, info_span, instrument};
+
+use crate::{
+    BatchMultiOpening, CommitPhaseMultiStep, FriFoldingStrategy, FriParameters, FriProof,
+    FriProverError, FriShape, ProverDataWithOpeningPoints, ProverTranscript,
+};
+
+/// Create a proof that an opening `f(zeta)` is correct by proving that the
+/// function `(f(x) - f(zeta))/(x - zeta)` is low degree.
+///
+/// This further supports proving a batch of these claims for a collection of polynomials of shrinking degrees.
+/// Polynomials of equal degree can be combined using randomness before calling this function.
+///
+/// The Soundness error from prove_fri comes from the paper:
+/// Proximity Gaps for Reed-Solomon Codes (<https://eprint.iacr.org/2020/654>)
+/// and is either `rate^{num_queries}` or `rate^{num_queries/2}` depending on if you rely on conjectured or
+/// proven soundness. Particularly safety conscious users may want to set `num_queries` slightly higher than
+/// this to account for the fact that most implementations batch inputs using a single random challenge
+/// instead of one challenge for each polynomial and due to the birthday paradox,
+/// there is a non trivial chance that two queried indices will be equal.
+///
+/// Arguments:
+/// - `folding`: The FRI folding scheme to use.
+/// - `params`: The parameters for the specific FRI protocol instance.
+/// - `inputs`: The evaluation vectors of all polynomials we are applying FRI to. The function assumes that
+///   commitments to these vectors have been produced and observed by the challenger earlier in the protocol.
+/// - `challenger`: The Fiat-Shamir challenger to use for sampling challenges.
+/// - `log_global_max_height`: The log of the maximum height of the input matrices.
+/// - `prover_data_with_opening_points`: A list of pairs of a batch commitment to a collection
+///   of matrices and a list of points to open those matrices at.
+/// - `batch_pow_witness`: The proof of work guarding the challenge that batched the inputs.
+///   That challenge is consumed in building the inputs, so it is drawn before this call.
+///   The witness still travels in the proof assembled here, which is the proof the caller ships.
+///   A caller that batches nothing passes a zero witness and a zero difficulty.
+///
+/// Returns a terminal-height configuration error before changing the challenger if any
+/// input is too short. A constant final polynomial permits the zero-fold boundary.
+#[instrument(name = "FRI prover", skip_all)]
+// The argument list is the protocol's own shape: the folding strategy, the parameters, the inputs,
+// the transcript, the instance height, the committed data, its MMCS, and the caller's batch witness.
+// Grouping any of them into a struct would only move the same fields behind another name.
+#[allow(clippy::too_many_arguments)]
+pub fn prove_fri<Folding, Val, Challenge, InputMmcs, FriMmcs, Challenger>(
+    folding: &Folding,
+    params: &FriParameters<FriMmcs>,
+    inputs: Vec<Vec<Challenge>>,
+    challenger: &mut Challenger,
+    log_global_max_height: usize,
+    prover_data_with_opening_points: &[ProverDataWithOpeningPoints<
+        '_,
+        Challenge,
+        InputMmcs::ProverData<RowMajorMatrix<Val>>,
+    >],
+    input_mmcs: &InputMmcs,
+    batch_pow_witness: Val,
+) -> Result<FriProof<Challenge, FriMmcs, Val, Folding::InputProof>, FriProverError>
+where
+    Val: TwoAdicField + PrimeField64,
+    Challenge: ExtensionField<Val>,
+    InputMmcs: Mmcs<Val>,
+    FriMmcs: Mmcs<Challenge>,
+    Challenger:
+        FieldChallenger<Val> + GrindingChallenger<Witness = Val> + CanObserve<FriMmcs::Commitment>,
+    Folding:
+        FriFoldingStrategy<Val, Challenge, InputProof = Vec<BatchMultiOpening<Val, InputMmcs>>>,
+{
+    prove_fri_with_schedule(
+        folding,
+        params,
+        inputs,
+        challenger,
+        log_global_max_height,
+        prover_data_with_opening_points,
+        input_mmcs,
+        batch_pow_witness,
+        None,
+    )
+}
+
+/// Prove with a caller-supplied folding schedule.
+///
+/// An honest prover passes `None` and the schedule is derived.
+///
+/// A test passes `Some` to forge a schedule the verifier will not derive.
+/// Every commitment, opening and transcript value then agrees with the forgery.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn prove_fri_with_schedule<Folding, Val, Challenge, InputMmcs, FriMmcs, Challenger>(
+    folding: &Folding,
+    params: &FriParameters<FriMmcs>,
+    inputs: Vec<Vec<Challenge>>,
+    challenger: &mut Challenger,
+    log_global_max_height: usize,
+    prover_data_with_opening_points: &[ProverDataWithOpeningPoints<
+        '_,
+        Challenge,
+        InputMmcs::ProverData<RowMajorMatrix<Val>>,
+    >],
+    input_mmcs: &InputMmcs,
+    batch_pow_witness: Challenger::Witness,
+    schedule: Option<Vec<usize>>,
+) -> Result<FriProof<Challenge, FriMmcs, Val, Folding::InputProof>, FriProverError>
+where
+    Val: TwoAdicField + PrimeField64,
+    Challenge: ExtensionField<Val>,
+    InputMmcs: Mmcs<Val>,
+    FriMmcs: Mmcs<Challenge>,
+    Challenger:
+        FieldChallenger<Val> + GrindingChallenger<Witness = Val> + CanObserve<FriMmcs::Commitment>,
+    Folding:
+        FriFoldingStrategy<Val, Challenge, InputProof = Vec<BatchMultiOpening<Val, InputMmcs>>>,
+{
+    assert!(!inputs.is_empty());
+    assert!(
+        params.num_queries > 0,
+        "num_queries must be at least 1 for FRI soundness"
+    );
+    assert!(
+        params.log_blowup > 0,
+        "log_blowup must be at least 1 for FRI soundness"
+    );
+    assert!(
+        params.max_log_arity > 0,
+        "max_log_arity must be at least 1 to guarantee folding progress"
+    );
+    assert!(
+        inputs
+            .iter()
+            .tuple_windows()
+            .all(|(l, r)| l.len() >= r.len()),
+        "Inputs are not sorted in descending order of length."
+    );
+
+    // Index sampling and `open_input` must agree on the height; the caller's value is canonical.
+    assert_eq!(
+        log_global_max_height,
+        log2_strict_usize(inputs[0].len()),
+        "log_global_max_height must match the largest input length"
+    );
+    let log_min_height = log2_strict_usize(inputs.last().unwrap().len());
+    params.validate_input_height(log_min_height)?;
+
+    // Describe the transcript before running it.
+    //
+    // Every number comes from the parameters and the input heights.
+    // The verifier builds the identical description from its own configuration.
+    let input_log_heights: Vec<usize> = inputs
+        .iter()
+        .map(|input| log2_strict_usize(input.len()))
+        .collect();
+    let index_bits = log_global_max_height + folding.extra_query_index_bits();
+
+    // A forged schedule stands in for the derived one, so no derivation runs.
+    //
+    // `fold_schedule` asserts strictly decreasing heights.
+    // Inputs of equal length clear this function's own sort check but not that one.
+    //
+    // Folding, the described transcript and the proof all agree with whichever wins.
+    let shape = schedule.map_or_else(
+        || FriShape::new(params, &input_log_heights, index_bits),
+        |log_arities| FriShape::with_schedule(params, log_arities, index_bits),
+    );
+
+    // Folding walks the described schedule, so the two cannot drift apart.
+    let log_arities = shape.log_arities.clone();
+
+    let mut transcript = ProverTranscript::<Challenger, Val, Challenge>::new(challenger, shape);
+
+    // Fold the inputs down until the degree reaches the final polynomial's.
+    // Every commitment and folding challenge passes through the transcript.
+    let commit_phase_result = commit_phase(folding, params, inputs, &log_arities, &mut transcript);
+
+    // Bind the final polynomial, grind, and draw every query index.
+    //
+    // Indices are drawn in one block, so the birthday bound applies.
+    // At 100 queries over 2^20 positions, two collide about 0.5% of the time.
+    let (indices, pow_witness) = transcript.query_phase(&commit_phase_result.final_poly);
+    let pow_witness = pow_witness.unwrap_or(Val::ZERO);
+
+    // Every described step has now been played.
+    transcript.finish();
+
+    let (input_openings, commit_phase_openings) = info_span!("query phase").in_scope(|| {
+        // Openings of the inputs and of every commit-phase codeword at all
+        // queried locations. Queries into one tree share a single proof, so
+        // overlapping authentication paths are deduplicated instead of being
+        // shipped once per query.
+        let input_openings = open_inputs(
+            log_global_max_height,
+            &indices,
+            prover_data_with_opening_points,
+            input_mmcs,
+        );
+        let domain_indices: Vec<usize> = indices
+            .iter()
+            .map(|&index| index >> folding.extra_query_index_bits())
+            .collect();
+        let commit_phase_openings = answer_queries(
+            params,
+            &commit_phase_result.log_arities,
+            &commit_phase_result.data,
+            &domain_indices,
+        );
+        (input_openings, commit_phase_openings)
+    });
+
+    Ok(FriProof {
+        batch_pow_witness,
+        commit_phase_commits: commit_phase_result.commits,
+        commit_pow_witnesses: commit_phase_result.pow_witnesses,
+        input_openings,
+        commit_phase_openings,
+        final_poly: commit_phase_result.final_poly,
+        query_pow_witness: pow_witness,
+    })
+}
+
+struct CommitPhaseResult<F: Field, M: Mmcs<F>, Witness> {
+    commits: Vec<M::Commitment>,
+    data: Vec<M::ProverData<RowMajorMatrix<F>>>,
+    log_arities: Vec<usize>,
+    pow_witnesses: Vec<Witness>,
+    final_poly: Vec<F>,
+}
+
+/// Perform the commit phase of the FRI protocol.
+///
+/// In each round we reduce our evaluations over `H` to evaluations over `H^k` (where k is the arity)
+/// by folding with a random challenge. For instance, for arity 2, we have:
+/// ```text
+///     f_{i + 1}(x^2) = (f_i(x) + f_i(-x))/2 + beta_i (f_i(x) - f_i(-x))/2x
+/// ```
+/// We then commit to the evaluation vector over the smaller domain, i.e. `f_{i + 1}` over `H^2` for arity 2.
+///
+/// The arity for each round is dynamically computed to ensure we always commit at each input height level.
+///
+/// Once the degree of our polynomial falls below `final_poly_degree`, we compute the coefficients of our
+/// polynomial and return them along with all intermediate evaluations and corresponding commitments.
+///
+/// Arguments:
+/// - `folding`: The FRI folding scheme used by the prover.
+/// - `params`: The parameters for the specific FRI protocol instance.
+/// - `inputs`: The evaluation vectors of the polynomials. These must be sorted in descending order of length and each
+///   evaluation vector must be in bit reversed order. This function assumes that commitments to these vectors
+///   have already been produced and observed by the challenger.
+/// - `log_arities`: The log2 of the arity each round folds by, in round order.
+/// - `transcript`: The described transcript every commitment and challenge passes through.
+#[instrument(name = "commit phase", skip_all)]
+fn commit_phase<Folding, Val, Challenge, M, Challenger>(
+    folding: &Folding,
+    params: &FriParameters<M>,
+    inputs: Vec<Vec<Challenge>>,
+    log_arities: &[usize],
+    transcript: &mut ProverTranscript<'_, Challenger, Val, Challenge>,
+) -> CommitPhaseResult<Challenge, M, Val>
+where
+    Val: TwoAdicField + PrimeField64,
+    Challenge: ExtensionField<Val>,
+    M: Mmcs<Challenge>,
+    Challenger:
+        FieldChallenger<Val> + GrindingChallenger<Witness = Val> + CanObserve<M::Commitment>,
+    Folding: FriFoldingStrategy<Val, Challenge>,
+{
+    assert!(
+        params.max_log_arity > 0,
+        "max_log_arity must be at least 1 to guarantee folding progress"
+    );
+
+    let mut inputs_iter = inputs.into_iter().peekable();
+    let mut folded = inputs_iter.next().unwrap();
+    let mut commits = vec![];
+    let mut data = vec![];
+    let mut pow_witnesses = vec![];
+
+    for &log_arity in log_arities {
+        let arity = 1 << log_arity;
+
+        // As folded is in bit reversed order, the evaluations at conjugate points are adjacent.
+        // We reinterpret the vector as a matrix of width `arity`.
+        let leaves = RowMajorMatrix::new(folded, arity);
+
+        // Commit to these evaluations.
+        let (commit, prover_data) = params.mmcs.commit_matrix(leaves);
+
+        // One call binds the commitment, grinds, and draws the folding challenge.
+        let (beta, witness) = transcript.commit_round(commit.clone());
+        commits.push(commit);
+        // A zero difficulty still occupies a slot, keeping the proof shape fixed.
+        pow_witnesses.push(witness.unwrap_or(Val::ZERO));
+
+        // We passed ownership of `leaves` to the MMCS, so get a reference to it
+        let leaves = params.mmcs.get_matrices(&prover_data).pop().unwrap();
+        // Do the folding operation with the computed arity
+        folded = folding.fold_matrix(beta, log_arity, leaves.as_view());
+
+        data.push(prover_data);
+
+        // If we have reached the size of the next input vector, we can add it to the current vector.
+        if let Some(v) = inputs_iter.next_if(|v| v.len() == folded.len()) {
+            // Each element of `inputs_iter` is a reduced opening polynomial, which is itself a
+            // random linear combination `f_{i, 0} + alpha f_{i, 1} + ...`, when we add it
+            // to the current folded polynomial, we need to multiply by a random factor.
+            // We use beta^arity as the random factor to maintain independence.
+            let beta_pow = beta.exp_power_of_2(log_arity);
+            // One item reads the running coefficient and the incoming one.
+            // It rewrites the running coefficient in place, so it moves three elements.
+            //
+            // Each round folds the vector down by the arity.
+            // The last rounds are therefore short enough that a dispatch outweighs the pass.
+            let item_bytes = 3 * size_of::<Challenge>();
+            folded
+                .par_iter_mut()
+                .zip(v.par_iter())
+                .for_each_min_task_bytes(item_bytes, |(c, &x)| *c += beta_pow * x);
+        }
+    }
+
+    // Now we need to get the coefficients of the final polynomial. As we know that the degree
+    // is `<= params.final_poly_len()` and the evaluations are stored in bit-reversed order,
+    // we can just truncate the folded vector, bit-reverse again and run an IDFT.
+    folded.truncate(params.final_poly_len());
+    reverse_slice_index_bits(&mut folded);
+    let final_poly = debug_span!("idft final poly")
+        .in_scope(|| Radix2DFTSmallBatch::default().idft_algebra(folded));
+
+    CommitPhaseResult {
+        commits,
+        data,
+        log_arities: log_arities.to_vec(),
+        pow_witnesses,
+        final_poly,
+    }
+}
+
+/// Given the query indices, produce a proof that every chain of folds is correct.
+/// This is the prover's complement to the verifier's fold-and-verify pass.
+///
+/// In addition to the output of this function, the prover must also supply the verifier with the input values
+/// (with associated opening proofs). These are produced by the `open_inputs` function passed into `prove_fri`.
+///
+/// For each round, this returns the sibling values of every query (all values in the group
+/// except the queried one) along with one shared opening proof covering all queries.
+/// The verifier can then reconstruct each full group, verify the round's openings together,
+/// and fold to get the value at the parent index.
+///
+/// With variable arity, the index shifts by `log_arities[i]` each round instead of always by 1
+/// (i.e. when arity is fixed to 2).
+///
+/// Arguments:
+/// - `params`: The parameters for the specific FRI protocol instance.
+/// - `log_arities`: The log2 of the arity used for each round.
+/// - `folded_polynomial_commits`: A slice of commitments to the intermediate stage polynomials.
+/// - `start_indices`: The opening indices for the unfolded polynomial, one per query.
+#[inline]
+fn answer_queries<F, M>(
+    config: &FriParameters<M>,
+    log_arities: &[usize],
+    folded_polynomial_commits: &[M::ProverData<RowMajorMatrix<F>>],
+    start_indices: &[usize],
+) -> Vec<CommitPhaseMultiStep<F, M>>
+where
+    F: Field,
+    M: Mmcs<F>,
+{
+    let mut current_indices = start_indices.to_vec();
+
+    folded_polynomial_commits
+        .iter()
+        .enumerate()
+        .map(|(i, commit)| {
+            let log_arity = log_arities[i];
+            let arity = 1 << log_arity;
+
+            // Index of each query's group (row in the committed matrix).
+            let group_indices: Vec<usize> = current_indices
+                .iter()
+                .map(|&index| index >> log_arity)
+                .collect();
+
+            // One shared proof that all queried groups are correct.
+            let (opened_rows, opening_proof) = config.mmcs.open_multi_batch(&group_indices, commit);
+
+            // For each query, keep all siblings (exclude the queried element).
+            let sibling_values: Vec<Vec<F>> = izip!(&current_indices, opened_rows)
+                .map(|(&index, mut rows)| {
+                    // Each group opening should contain just the values in this group.
+                    assert_eq!(rows.len(), 1);
+                    let opened_row = rows.pop().unwrap();
+                    assert_eq!(
+                        opened_row.len(),
+                        arity,
+                        "Committed data should have arity {} elements",
+                        arity
+                    );
+                    let index_in_group = index % arity;
+                    opened_row
+                        .into_iter()
+                        .enumerate()
+                        .filter(|(j, _)| *j != index_in_group)
+                        .map(|(_, v)| v)
+                        .collect()
+                })
+                .collect();
+
+            current_indices = group_indices;
+
+            // Add the siblings and the shared proof to the vector.
+            CommitPhaseMultiStep {
+                sibling_values,
+                opening_proof,
+            }
+        })
+        .collect()
+}
+
+/// Given the query indices, produce one batch multi-opening proof for each collection
+/// of matrices combined into a single mmcs commitment.
+///
+/// In cases where the maximum height of a batch of matrices is smaller than the
+/// global max height, shift the indices down to compensate.
+///
+/// Arguments:
+/// - `log_global_max_height`: The log of the maximum height of the input matrices.
+/// - `indices`: The indices to open the matrices at, one per query.
+/// - `prover_data_with_opening_points`: A list of pairs of a batch commitment to a collection
+///   of matrices and a list of points to open those matrices at.
+/// - `mmcs`: The mixed matrix commitment scheme used to produce the batch commitments.
+#[inline]
+fn open_inputs<Val, Challenge, InputMmcs>(
+    log_global_max_height: usize,
+    indices: &[usize],
+    prover_data_with_opening_points: &[ProverDataWithOpeningPoints<
+        '_,
+        Challenge,
+        InputMmcs::ProverData<RowMajorMatrix<Val>>,
+    >],
+    mmcs: &InputMmcs,
+) -> Vec<BatchMultiOpening<Val, InputMmcs>>
+where
+    Val: TwoAdicField,
+    Challenge: ExtensionField<Val>,
+    InputMmcs: Mmcs<Val>,
+{
+    // This gives the verifier access to evaluations `f(x)` from which it can compute
+    // `(f(zeta) - f(x))/(zeta - x)` and then combine them together and roll into FRI
+    // as appropriate.
+    prover_data_with_opening_points
+        .iter()
+        .map(
+            |OpeningRequest {
+                 prover_data: data, ..
+             }| {
+                let log_max_height = log2_strict_usize(mmcs.get_max_height(data));
+                let bits_reduced = log_global_max_height - log_max_height;
+                // If a matrix is smaller than global max height, we roll it into
+                // fri in a later round.
+                let reduced_indices: Vec<usize> =
+                    indices.iter().map(|&index| index >> bits_reduced).collect();
+                let (opened_values, opening_proof) = mmcs.open_multi_batch(&reduced_indices, data);
+                BatchMultiOpening {
+                    opened_values,
+                    opening_proof,
+                }
+            },
+        )
+        .collect()
+}
