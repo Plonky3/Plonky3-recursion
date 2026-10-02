@@ -43,7 +43,8 @@ pub struct PoseidonPermCall<V: PoseidonVariant> {
     pub mmcs_index_sum: Option<ExprId>,
     /// Prefix-free duplex-sponge length tag: the number of rate elements absorbed on this row.
     ///
-    /// The caller has already added it to the first capacity limb; the AIR re-applies it when
+    /// The executor adds it to the first capacity element of a fresh or chained capacity (a
+    /// capacity limb fed over CTL carries it in its witness instead); the AIR re-applies it when
     /// chaining that limb to the previous row's output. Zero on every non-sponge row.
     pub absorb_len: usize,
 }

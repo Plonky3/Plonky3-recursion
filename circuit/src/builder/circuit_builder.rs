@@ -2198,19 +2198,21 @@ where
     /// duplex rows and so keeps consecutive steps on adjacent trace rows.
     ///
     /// # CTL Verification
-    /// - All `width_ext` inputs: CTL-verified against the witness table.
+    /// - `Some` inputs: CTL-verified against the witness table.
+    /// - `None` inputs: bound by the challenger table's AIR instead. A chain start's capacity
+    ///   is pinned to zero plus `absorb_len`; on a continuation row the sponge chain constraint
+    ///   ties each capacity input to the previous row's capacity output plus `absorb_len`, and
+    ///   each `None` rate input to the previous row's rate output. A chain start's rate has no
+    ///   such constraint, so it must be `Some`.
     /// - Outputs `0..rate_ext`: CTL-verified against the witness table (rate elements).
-    /// - Outputs `rate_ext..width_ext`: not exposed (capacity elements). On a continuation row
-    ///   the AIR's sponge chain constraint ties each capacity input to the previous row's
-    ///   capacity output, so the CTL-fed capacity witness cannot be re-chosen.
+    /// - Outputs `rate_ext..width_ext`: not exposed (capacity elements).
     ///
     /// # Parameters
     /// - `config`: The Poseidon2 configuration to use (must be D>=2)
     /// - `new_start`: `true` for the first duplex of a challenger instance, `false` for every
-    ///   continuation, which is what turns the capacity chain constraint on
-    /// - `inputs`: width_ext extension element targets (the sponge state)
-    /// - `absorb_len`: the prefix-free length tag the caller already added to the first
-    ///   capacity limb, which the chain constraint re-applies
+    ///   continuation, which is what turns the chain constraint on
+    /// - `inputs`: width_ext slots of the sponge state, `Some` for a limb fed over CTL
+    /// - `absorb_len`: the prefix-free length tag bound into the first capacity element
     ///
     /// # Returns
     /// width_ext extension element targets (the permuted state)
@@ -2221,13 +2223,13 @@ where
         &mut self,
         config: crate::ops::Poseidon2Config,
         new_start: bool,
-        inputs: &[ExprId],
+        inputs: &[Option<ExprId>],
         absorb_len: usize,
     ) -> Result<Vec<ExprId>, CircuitBuilderError> {
         self.push_scope("poseidon2_perm_for_challenger");
 
-        // All input limbs are CTL-verified; only the rate outputs are exposed on the bus.
-        // The capacity outputs are returned to the caller but carry no CTL exposure.
+        // Only the rate outputs are exposed on the bus. The capacity outputs are returned to
+        // the caller but carry no CTL exposure.
         let config = config.for_challenger();
         let width_ext = config.width_ext();
         let (_op_id, outputs) = self.add_poseidon2_perm(&Poseidon2PermCall {
@@ -2236,7 +2238,7 @@ where
             merkle_path: false,
             mmcs_bit: None,
             mmcs_bit2: None,
-            inputs: inputs.iter().map(|&x| Some(x)).collect(),
+            inputs: inputs.to_vec(),
             out_ctl: vec![true; config.rate_ext()],
             return_all_outputs: true,
             mmcs_index_sum: None,
@@ -2304,13 +2306,14 @@ where
     /// Poseidon1 challenger permutation (extension field, D>=2).
     ///
     /// Mirrors [`Self::add_poseidon2_perm_for_challenger`]: the row is keyed to `config`'s
-    /// challenger table and, on a continuation row, its capacity is chained to the previous
-    /// row's capacity output plus `absorb_len`.
+    /// challenger table, a chain start's capacity is pinned to zero plus `absorb_len`, and on a
+    /// continuation row each `None` input is chained to the previous row's output (plus
+    /// `absorb_len` on the first capacity element).
     pub fn add_poseidon1_perm_for_challenger(
         &mut self,
         config: crate::ops::Poseidon1Config,
         new_start: bool,
-        inputs: &[ExprId],
+        inputs: &[Option<ExprId>],
         absorb_len: usize,
     ) -> Result<Vec<ExprId>, CircuitBuilderError> {
         self.push_scope("poseidon1_perm_for_challenger");
@@ -2323,7 +2326,7 @@ where
             merkle_path: false,
             mmcs_bit: None,
             mmcs_bit2: None,
-            inputs: inputs.iter().map(|&x| Some(x)).collect(),
+            inputs: inputs.to_vec(),
             out_ctl: vec![true; config.rate_ext()],
             return_all_outputs: true,
             mmcs_index_sum: None,

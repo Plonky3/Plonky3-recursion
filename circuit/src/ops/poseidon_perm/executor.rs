@@ -33,7 +33,8 @@ pub(crate) struct PoseidonPermExecutor<V: PoseidonVariant> {
     /// and conditionally swaps left/right halves based on the direction bit.
     pub(crate) merkle_path: bool,
     /// Prefix-free duplex-sponge length tag: the number of rate elements absorbed on this row,
-    /// bound into the first capacity element by the compact-D1 AIR. Zero for non-sponge rows.
+    /// bound into the first capacity element by the compact-D1 AIR and by the challenger
+    /// table's chain constraints. Zero for non-sponge rows.
     pub(crate) absorb_len: usize,
     _variant: PhantomData<V>,
 }
@@ -793,15 +794,19 @@ impl<V: PoseidonVariant> PoseidonPermExecutor<V> {
             return Ok(());
         }
 
+        // A challenger limb left off the bus must be one the AIR binds by itself: every
+        // capacity limb (the chain start pins it to zero plus the tag, a continuation chains it
+        // to the previous output plus the tag) and the rate limbs of a continuation (chained to
+        // the previous output). Nothing binds the rate of a chain start, so it is fed over CTL.
         let challenger = self.config.is_challenger();
-        if challenger {
-            for (limb, inp) in inputs[0..width_ext].iter().enumerate() {
+        if challenger && self.new_start {
+            for (limb, inp) in inputs[0..rate_ext].iter().enumerate() {
                 if !Self::limb_ctl_enabled(inp) {
                     return Err(CircuitError::NonPrimitiveOpLayoutMismatch {
                         op: self.op_type.clone(),
                         expected: format!(
-                            "challenger sponge limb {limb} fed over CTL: chain starts carry the \
-                             zero state and continuations carry the previous output plus the tag"
+                            "challenger chain-start rate limb {limb} fed over CTL: no chain \
+                             constraint binds the rate of a chain start"
                         ),
                         got: inp.len(),
                     });
@@ -832,8 +837,8 @@ impl<V: PoseidonVariant> PoseidonPermExecutor<V> {
                 preprocessed.register_non_primitive_witness_reads(&self.op_type, inp)?;
                 preprocessed.register_non_primitive_preprocessed_no_read(&self.op_type, &[F::ONE]);
             }
-            // Challenger rows feed every limb over CTL, so the capacity chain selector cannot be
-            // inferred from an empty slot; it is on for every continuation row.
+            // A challenger row's capacity is chained on every continuation row, including a
+            // limb that is also fed over CTL, so the selector is not inferred from an empty slot.
             let capacity_chain = challenger && limb >= rate_ext;
             let normal_chain_sel = F::from_bool(
                 !self.new_start && !self.merkle_path && (capacity_chain || inp.is_empty()),
@@ -1004,6 +1009,13 @@ impl<V: PoseidonVariant, F: Field + Send + Sync + 'static> NonPrimitiveExecutor<
         // Build the permutation input state:
         // 1. Start from zeros (new chain) or the previous output (continuation).
         let mut state = self.init_chain_state(chain_output, ctx)?;
+        // 1b. Prefix-free sponge length tag: bind the absorbed length into the first capacity
+        //     element, as the challenger table's chain and chain-start constraints expect. A
+        //     capacity limb fed over CTL carries the tag in its witness and replaces this in
+        //     step 3. Zero on every non-challenger row.
+        if self.absorb_len > 0 {
+            state[self.config.rate_ext()] += F::from_u8(self.absorb_len as u8);
+        }
         // 2a. Arity-4: place the running-hash digest into chunk `pos`.
         self.place_arity4_running_hash(&mut state, chain_output, mmcs_bit, mmcs_bit2);
         // 2b. In Merkle mode, place sibling limbs in the non-running chunk(s).
@@ -1618,6 +1630,39 @@ mod tests {
 
         assert!(!row.mmcs_ctl_enabled);
         assert_eq!(row.mmcs_index_sum, F::ZERO);
+    }
+
+    #[test]
+    fn challenger_rows_leave_only_chained_limbs_off_the_bus() {
+        let config = CONFIG_D4_W16.for_challenger();
+        let width_ext = config.width_ext();
+        let row = |new_start| {
+            PoseidonPermExecutor::<Poseidon2Variant>::new(
+                NpoTypeId::poseidon2_perm(config),
+                config,
+                new_start,
+                false,
+                0,
+            )
+        };
+        let mut rate_only: Vec<Vec<WitnessId>> = vec![vec![]; width_ext + 2];
+        rate_only[0] = vec![WitnessId(1)];
+        rate_only[1] = vec![WitnessId(2)];
+        let empty: Vec<Vec<WitnessId>> = vec![vec![]; width_ext + 2];
+        let mut prep = crate::PreprocessedColumns::<F, 4>::new();
+
+        // The chain-start constraint pins a fresh sponge's capacity, but nothing binds its rate.
+        row(true)
+            .preprocess_inputs(&rate_only, &mut prep)
+            .expect("a chain start may leave its capacity off the bus");
+        assert!(
+            row(true).preprocess_inputs(&empty, &mut prep).is_err(),
+            "a chain start must feed its rate over CTL"
+        );
+        // A continuation chains every limb it leaves off the bus to the previous output.
+        row(false)
+            .preprocess_inputs(&empty, &mut prep)
+            .expect("a continuation may leave every limb off the bus");
     }
 
     #[test]

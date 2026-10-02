@@ -885,8 +885,9 @@ pub fn extract_preprocessed_from_operations_with_role<
             let row = Poseidon2PreprocessedRow::<IL, OL, F> {
                 input_limbs: core::array::from_fn(|i| {
                     let ctl = in_ctl[i];
-                    // Challenger rows feed every limb over CTL, so the capacity chain selector
-                    // cannot be inferred from an empty slot; it is on for every continuation row.
+                    // A challenger row's capacity is chained on every continuation row,
+                    // including a limb that is also fed over CTL, so the selector is not
+                    // inferred from an empty slot.
                     let capacity_chain = row_challenger && i >= OL;
                     Poseidon2PrepInputLimb {
                         idx: F::from_u32(input_indices[i] * d),
@@ -1188,8 +1189,8 @@ pub(crate) fn eval<
         // active on continuation rows in sponge mode. On chain boundaries and
         // Merkle rows the selector is zero and the constraint is trivially
         // satisfied. It is also zero on a limb whose value arrives over CTL,
-        // except on the challenger's own table, where the capacity is both
-        // looked up and chained.
+        // except on the challenger's own table, where the capacity is chained
+        // even when it is also looked up.
 
         // Prefix-free sponge length tag, carried in the first capacity limb's Merkle-chain
         // slot (Merkle rows never take the sponge chain selector). Only a challenger row

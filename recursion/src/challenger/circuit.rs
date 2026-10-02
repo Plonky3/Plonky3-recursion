@@ -12,11 +12,14 @@
 //!
 //! - `duplexing_base` (`D == 1`) leaves the capacity slots empty and threads `new_start`, so the
 //!   compact D=1 AIR binds each row's capacity input to the previous row's capacity output.
-//! - `duplexing_ext` (`D >= 2`) packs the whole state into extension limbs and feeds every limb
-//!   over CTL, and threads `new_start` as well. The permutation rows go to the challenger's own
-//!   table, so consecutive duplex steps are adjacent rows and the AIR's sponge chain constraint
-//!   binds each row's capacity input to the previous row's capacity output plus the prefix-free
-//!   length tag.
+//! - `duplexing_ext` (`D >= 2`) threads `new_start` as well and sends its permutation rows to
+//!   the challenger's own table, so consecutive duplex steps are adjacent rows. It leaves every
+//!   capacity slot empty: the AIR pins a chain start's capacity to zero plus the prefix-free
+//!   length tag, and its sponge chain constraint binds each later row's capacity input to the
+//!   previous row's capacity output plus the tag. An absorb packs the rate into extension limbs
+//!   fed over CTL; a squeeze that continues the chain leaves the rate slots empty too, and the
+//!   same chain constraint binds them to the previous row's rate output. The rate outputs stay
+//!   packed until a sample reads them.
 //!
 //! Every packing and unpacking the challenger performs goes through the `recompose/coeff` table
 //! (`recompose_base_coeffs_to_ext_with_coeff_lookups` /
@@ -58,13 +61,22 @@ pub struct CircuitChallenger<const WIDTH: usize, const RATE: usize, C: Challenge
 
     /// Sponge state: WIDTH base field coefficient targets.
     /// Each target represents a base field element embedded in EF.
+    ///
+    /// The `D >= 2` path tracks only the rate slots here, and a rate slot whose limb is still in
+    /// `packed_rate` is stale until a sample unpacks it.
     state: Vec<Target>,
 
     /// Buffered inputs not yet absorbed into state.
     input_buffer: Vec<Target>,
 
-    /// Buffered outputs from last duplexing.
-    output_buffer: Vec<Target>,
+    /// Number of rate slots, `state[..output_len]`, that the last duplexing produced and no
+    /// sample has read yet. Samples read them from the last one down, like the native output
+    /// buffer.
+    output_len: usize,
+
+    /// Rate output limbs of the last `D >= 2` permutation that no sample has unpacked into
+    /// `state` yet, by limb index. Always empty on the `D == 1` path.
+    packed_rate: Vec<Option<Target>>,
 
     /// Whether the challenger has been initialized with zero state.
     initialized: bool,
@@ -94,7 +106,8 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
             config,
             state: Vec::new(),
             input_buffer: Vec::new(),
-            output_buffer: Vec::new(),
+            output_len: 0,
+            packed_rate: Vec::new(),
             initialized: false,
             duplexed_once: false,
             alu_state_packing: false,
@@ -179,26 +192,17 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
             self.state[i] = val;
         }
 
-        // The compact-D1 (base) path feeds capacity as `None` and binds the length tag inside the
-        // AIR via `absorb_len`; the extension-field path feeds the full state over CTL, so it
-        // applies the tag to the tracked capacity element here and passes the length on so the
-        // AIR's chain constraint expects it there too.
-        let is_base =
-            p2_config.map_or_else(|| p1_config.is_some_and(|c| c.d() == 1), |c| c.d() == 1);
-
         // 2. Prefix-free padding (matches native `DuplexChallenger` 0.6): on an absorb
-        // (`num_absorbed > 0`) zero the rate slots the inputs did not overwrite and bind the
-        // absorbed length into the first capacity element. An empty buffer is a squeeze: the
-        // state is permuted untouched.
+        // (`num_absorbed > 0`) zero the rate slots the inputs did not overwrite, which together
+        // replace every rate limb the previous permutation left packed. The permutation row
+        // binds the absorbed length into the first capacity element (`absorb_len`). An empty
+        // buffer is a squeeze: the state is permuted untouched.
         if num_absorbed > 0 {
             let zero = circuit.define_const(EF::ZERO);
             for slot in self.state.iter_mut().take(RATE).skip(num_absorbed) {
                 *slot = zero;
             }
-            if !is_base {
-                let length_tag = circuit.define_const(EF::from_u8(num_absorbed as u8));
-                self.state[RATE] = circuit.add(self.state[RATE], length_tag);
-            }
+            self.packed_rate.clear();
         }
 
         // Branch by NPO packing (`config.d()`), not `EF::DIMENSION`, so a quintic
@@ -219,9 +223,8 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
             panic!("unsupported challenger permutation");
         }
 
-        // 5. Fill output buffer from state[0..RATE]
-        self.output_buffer.clear();
-        self.output_buffer.extend_from_slice(&self.state[..RATE]);
+        // 5. Every rate slot is a fresh output.
+        self.output_len = RATE;
     }
 
     /// Duplexing for D=1 (base field): permutation operates directly on 16 elements.
@@ -260,9 +263,11 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
 
     /// Duplexing for D>=2: the state is packed into `WIDTH / D` extension limbs.
     ///
-    /// Every limb, capacity included, is CTL-verified. `new_start` is `true` only for the first
-    /// permutation of this instance, so the challenger table's AIR chains the capacity of each
-    /// later row to the previous row's capacity output plus `absorb_len`.
+    /// No capacity limb is fed over CTL. `new_start` is `true` only for the first permutation
+    /// of this instance, and the challenger table's AIR pins that row's capacity to zero plus
+    /// `absorb_len`; on every later row its sponge chain constraint binds the capacity to the
+    /// previous row's capacity output plus `absorb_len`. See [`Self::ext_perm_inputs`] for the
+    /// rate. The rate outputs stay packed in `packed_rate` until a sample reads them.
     fn duplexing_ext<BF, EF>(
         &mut self,
         circuit: &mut CircuitBuilder<EF>,
@@ -275,26 +280,65 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
         let new_start = !self.duplexed_once;
         self.duplexed_once = true;
 
-        let num_ext_limbs = WIDTH / EF::DIMENSION;
-        let mut ext_inputs = Vec::with_capacity(num_ext_limbs);
-        for i in 0..num_ext_limbs {
-            let start = i * EF::DIMENSION;
-            let end = start + EF::DIMENSION;
-            let ext = self.pack_limb::<BF, EF>(circuit, &self.state[start..end]);
-            ext_inputs.push(ext);
-        }
-
+        let ext_inputs = self.ext_perm_inputs::<BF, EF>(circuit, new_start, absorb_len);
         let ext_outputs = circuit
             .add_poseidon2_perm_for_challenger(poseidon2_config, new_start, &ext_inputs, absorb_len)
             .expect("poseidon2 permutation should succeed");
 
-        for (limb, &ext_out) in ext_outputs.iter().enumerate() {
-            let coeffs = self.unpack_limb::<BF, EF>(circuit, ext_out);
-            let start = limb * EF::DIMENSION;
-            for (i, coeff) in coeffs.into_iter().enumerate() {
-                self.state[start + i] = coeff;
-            }
+        self.packed_rate = ext_outputs[..RATE / EF::DIMENSION]
+            .iter()
+            .copied()
+            .map(Some)
+            .collect();
+    }
+
+    /// Input slots of a `D >= 2` duplex step.
+    ///
+    /// Every capacity slot is empty (see [`Self::duplexing_ext`]). A squeeze that continues the
+    /// chain leaves its rate slots empty as well: the sponge chain constraint binds an empty rate
+    /// limb to the previous row's rate output, which is exactly the state a squeeze permutes.
+    /// Otherwise each rate limb is packed from `state` and fed over CTL, since no chain
+    /// constraint binds the rate of an absorb (the observed values and their zero padding) or of
+    /// a chain start.
+    fn ext_perm_inputs<BF, EF>(
+        &self,
+        circuit: &mut CircuitBuilder<EF>,
+        new_start: bool,
+        absorb_len: usize,
+    ) -> Vec<Option<Target>>
+    where
+        BF: PrimeField64,
+        EF: ExtensionField<BF>,
+    {
+        let d = EF::DIMENSION;
+        let chained_squeeze = absorb_len == 0 && !new_start;
+        debug_assert!(
+            chained_squeeze || self.packed_rate.is_empty(),
+            "a rate limb fed over CTL must be packed from unpacked coefficients"
+        );
+        (0..WIDTH / d)
+            .map(|limb| {
+                (limb < RATE / d && !chained_squeeze).then(|| {
+                    self.pack_limb::<BF, EF>(circuit, &self.state[limb * d..(limb + 1) * d])
+                })
+            })
+            .collect()
+    }
+
+    /// Base coefficient in rate slot `i`, unpacking its limb from `packed_rate` the first time a
+    /// sample reads it.
+    fn rate_slot<BF, EF>(&mut self, circuit: &mut CircuitBuilder<EF>, i: usize) -> Target
+    where
+        BF: PrimeField64,
+        EF: ExtensionField<BF>,
+    {
+        let d = EF::DIMENSION;
+        let limb = i / d;
+        if let Some(packed) = self.packed_rate.get_mut(limb).and_then(Option::take) {
+            let coeffs = self.unpack_limb::<BF, EF>(circuit, packed);
+            self.state[limb * d..(limb + 1) * d].copy_from_slice(&coeffs);
         }
+        self.state[i]
     }
 
     /// Poseidon1 D=1 duplexing.
@@ -331,26 +375,16 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
         let new_start = !self.duplexed_once;
         self.duplexed_once = true;
 
-        let num_ext_limbs = WIDTH / EF::DIMENSION;
-        let mut ext_inputs = Vec::with_capacity(num_ext_limbs);
-        for i in 0..num_ext_limbs {
-            let start = i * EF::DIMENSION;
-            let end = start + EF::DIMENSION;
-            let ext = self.pack_limb::<BF, EF>(circuit, &self.state[start..end]);
-            ext_inputs.push(ext);
-        }
-
+        let ext_inputs = self.ext_perm_inputs::<BF, EF>(circuit, new_start, absorb_len);
         let ext_outputs = circuit
             .add_poseidon1_perm_for_challenger(poseidon1_config, new_start, &ext_inputs, absorb_len)
             .expect("poseidon1 permutation should succeed");
 
-        for (limb, &ext_out) in ext_outputs.iter().enumerate() {
-            let coeffs = self.unpack_limb::<BF, EF>(circuit, ext_out);
-            let start = limb * EF::DIMENSION;
-            for (i, coeff) in coeffs.into_iter().enumerate() {
-                self.state[start + i] = coeff;
-            }
-        }
+        self.packed_rate = ext_outputs[..RATE / EF::DIMENSION]
+            .iter()
+            .copied()
+            .map(Some)
+            .collect();
     }
 }
 
@@ -413,7 +447,7 @@ where
         self.init::<BF, EF>(circuit);
 
         // Any buffered output is now invalid (matches native behavior)
-        self.output_buffer.clear();
+        self.output_len = 0;
 
         self.input_buffer.push(value);
 
@@ -428,13 +462,15 @@ where
 
         // If we have buffered inputs or ran out of outputs, duplex
         // (matches native DuplexChallenger::sample behavior)
-        if !self.input_buffer.is_empty() || self.output_buffer.is_empty() {
+        if !self.input_buffer.is_empty() || self.output_len == 0 {
             self.duplexing::<BF, EF>(circuit);
         }
 
-        self.output_buffer
-            .pop()
-            .expect("Output buffer should be non-empty after duplexing")
+        self.output_len = self
+            .output_len
+            .checked_sub(1)
+            .expect("Output buffer should be non-empty after duplexing");
+        self.rate_slot::<BF, EF>(circuit, self.output_len)
     }
 
     fn observe_ext(&mut self, circuit: &mut CircuitBuilder<EF>, value: Target) {
@@ -503,7 +539,8 @@ where
         let zero = circuit.define_const(EF::ZERO);
         self.state = vec![zero; WIDTH];
         self.input_buffer.clear();
-        self.output_buffer.clear();
+        self.output_len = 0;
+        self.packed_rate.clear();
         self.initialized = true;
         self.duplexed_once = false;
     }
