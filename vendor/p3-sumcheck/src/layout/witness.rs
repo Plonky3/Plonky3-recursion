@@ -22,6 +22,9 @@ use crate::table::TableShape;
 /// Enough that each task outweighs the fork-join overhead, so short columns copy in one piece.
 const STACK_COPY_CHUNK: usize = 1 << 16;
 
+/// Minimum destination chunk, in cells, gathered by one task when stacking with local bits first.
+const INTERLEAVE_CHUNK: usize = 1 << 14;
+
 /// Identifies one slot inside the stacked polynomial.
 #[derive(Debug, Clone, Copy)]
 pub struct Selector {
@@ -1054,17 +1057,42 @@ impl<F: Field> Witness<F> {
 
         let mut stacked = Poly::<F>::zero(num_variables);
 
-        for placement in &placements {
-            let table = &tables[placement.idx()];
-            for (poly_idx, selector) in placement.selectors().iter().enumerate() {
-                let poly = table.poly(poly_idx);
+        // Column slots as (values, selector variables, selector index).
+        let slots: Vec<(PolyView<'_, F>, usize, usize)> = placements
+            .iter()
+            .flat_map(|placement| {
+                let table = &tables[placement.idx()];
+                placement
+                    .selectors()
+                    .iter()
+                    .enumerate()
+                    .map(move |(poly_idx, selector)| {
+                        (table.poly(poly_idx), selector.num_variables, selector.index)
+                    })
+            })
+            .collect();
 
-                for (local_idx, &value) in poly.as_slice().iter().enumerate() {
-                    let dst = (local_idx << selector.num_variables) | selector.index;
-                    stacked.as_mut_slice()[dst] = value;
+        // Each destination chunk is gathered independently. A chunk spans whole
+        // selector periods, so every slot writes `chunk >> selector_vars` of its
+        // column values into it.
+        let max_selector_vars = slots.iter().map(|&(_, vars, _)| vars).max().unwrap_or(0);
+        let chunk = (1usize << max_selector_vars)
+            .max(INTERLEAVE_CHUNK)
+            .min(1 << num_variables);
+        stacked
+            .as_mut_slice()
+            .par_chunks_mut(chunk)
+            .enumerate()
+            .for_each(|(chunk_idx, dst)| {
+                for (view, vars, index) in &slots {
+                    let (column, vars, index) = (view.as_slice(), *vars, *index);
+                    let start = (chunk_idx * chunk) >> vars;
+                    let len = (chunk >> vars).min(column.len().saturating_sub(start));
+                    for (local_idx, &value) in column[start..start + len].iter().enumerate() {
+                        dst[(local_idx << vars) | index] = value;
+                    }
                 }
-            }
-        }
+            });
 
         Self {
             tables,
@@ -1777,6 +1805,38 @@ mod tests {
             witness.stacked_poly().as_slice(),
             &[a0, b0, a1, F::ZERO, a2, b1, a3, F::ZERO],
         );
+    }
+
+    #[test]
+    fn witness_new_interleaved_matches_scalar_scatter_across_chunks() {
+        // Invariant:
+        //     The chunked gather writes every column value to the cell a plain
+        //     per-column strided scatter would, with unused cells left zero.
+        //
+        // Fixture state:
+        //     Tables of 3 columns x 2^14 and 2 columns x 2^12 stack into a
+        //     hypercube spanning several gather chunks.
+        let make = |polys: usize, len: usize, salt: u64| {
+            let values = (0..polys * len)
+                .map(|i| F::from_u64(salt + 7 * i as u64 + 1))
+                .collect::<Vec<_>>();
+            Table::new(RowMajorMatrix::new(values, len))
+        };
+        let witness =
+            Witness::new_interleaved(vec![make(3, 1 << 14, 0), make(2, 1 << 12, 1 << 40)], 3);
+
+        let mut expected = vec![F::ZERO; 1 << witness.num_variables()];
+        for placement in &witness.placements {
+            let table = &witness.tables[placement.idx()];
+            for (poly_idx, selector) in placement.selectors().iter().enumerate() {
+                for (local_idx, &value) in table.poly(poly_idx).as_slice().iter().enumerate() {
+                    expected[(local_idx << selector.num_variables) | selector.index] = value;
+                }
+            }
+        }
+
+        assert!(witness.num_variables() > 15);
+        assert_eq!(witness.stacked_poly().as_slice(), expected.as_slice());
     }
 
     #[test]

@@ -190,19 +190,30 @@ impl<F: Field, EF: ExtensionField<F>> Layout<F, EF> for PrefixProver<F, EF> {
         //     eval    : running stacked evaluation
         //     openings: one virtual opening per column, carrying its residuals
         //     weights : per-column selector-equality scalars
-        let mut eval = EF::ZERO;
-        let mut openings = Vec::new();
-        let mut weights = Vec::new();
 
-        for placement in &self.claims.placements {
-            let table = &self.claims.tables[placement.idx()];
-            for (poly_idx, selector) in placement.selectors().iter().enumerate() {
+        // Prefix binding puts the local bits first.
+        //
+        // The split therefore takes them first.
+        let slots: Vec<_> = self
+            .claims
+            .placements
+            .iter()
+            .flat_map(|placement| {
+                let table = &self.claims.tables[placement.idx()];
+                placement
+                    .selectors()
+                    .iter()
+                    .enumerate()
+                    .map(move |(poly_idx, selector)| (table, poly_idx, selector))
+            })
+            .collect();
+
+        // Columns evaluate independently; collection preserves slot order.
+        let per_column: Vec<_> = slots
+            .into_par_iter()
+            .map(|(table, poly_idx, selector)| {
                 // Source column behind this slot.
                 let poly = table.poly(poly_idx);
-
-                // Prefix binding puts the local bits first.
-                //
-                // The split therefore takes them first.
                 let (local_part, selector_part) = point.split_at(table.num_variables());
 
                 // Scalar weight picking this slot out of the stacked space.
@@ -213,19 +224,27 @@ impl<F: Field, EF: ExtensionField<F>> Layout<F, EF> for PrefixProver<F, EF> {
                 let local_svo = SvoPoint::new_packed(self.claims.folding, &local_part);
                 let (column_eval, partial_evals) = local_svo.eval(poly);
 
-                // Add the weighted column evaluation into the stacked total.
-                eval += weight * column_eval;
+                // Virtual opening: no source column tag, residuals attached.
+                (
+                    weight,
+                    Opening {
+                        poly_idx: None,
+                        eval: column_eval,
+                        data: partial_evals,
+                    },
+                )
+            })
+            .collect();
 
-                // Record a virtual opening: no source column tag, residuals attached.
-                openings.push(Opening {
-                    poly_idx: None,
-                    eval: column_eval,
-                    data: partial_evals,
-                });
-
-                // Stash the weight for the accumulator-batcher call below.
-                weights.push(weight);
-            }
+        // Weighted column evaluations add into the stacked total, and the
+        // weights go to the accumulator-batcher call below.
+        let mut eval = EF::ZERO;
+        let mut openings = Vec::with_capacity(per_column.len());
+        let mut weights = Vec::with_capacity(per_column.len());
+        for (weight, opening) in per_column {
+            eval += weight * opening.eval;
+            weights.push(weight);
+            openings.push(opening);
         }
 
         // Batch every per-column opening into per-round preprocessing accumulators.
