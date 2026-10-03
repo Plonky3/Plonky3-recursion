@@ -23,12 +23,17 @@ mod trace_native;
 mod trace_plan;
 mod verifier;
 mod whir_gadgets;
+mod whir_input;
+mod whir_plan;
 mod whir_queries;
+mod whir_verifier;
 pub use boolean::{
     BinaryBooleanInputShape, BinaryBooleanPcsVerifier, BinaryBooleanProofTargets,
     NativeBinaryBooleanInput,
 };
-pub use fields::{RecursiveBinaryChallengeField, RecursiveBinaryTowerField};
+pub use fields::{
+    RecursiveBinaryChallengeField, RecursiveBinaryTowerField, RecursiveBinaryWhirTowerField,
+};
 pub use gadgets::{
     binary128_eq_eval, binary128_fold_pair, binary128_next_eval, binary128_reduce_sumcheck_claim,
 };
@@ -50,7 +55,12 @@ pub use whir_gadgets::{
     binary_whir_query_point, binary128_eval_coefficients, binary128_eval_multilinear,
     binary128_select_eval,
 };
+pub use whir_input::{
+    BinaryWhirInputShape, BinaryWhirProofTargets, BinaryWhirRoundTargets,
+    BinaryWhirSumcheckTargets, NativeBinaryWhirInput,
+};
 pub use whir_queries::BinaryWhirQueryPlan;
+pub use whir_verifier::BinaryWhirVerifier;
 
 /// Verifies terminal binary PCS query sampling against a native configuration.
 /// The challenger must already have absorbed the final codeword and checked

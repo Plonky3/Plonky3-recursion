@@ -8,6 +8,7 @@ use p3_challenger::fs::TranscriptField;
 mod sealed {
     pub trait Tower {}
     pub trait Challenge {}
+    pub trait Whir {}
 }
 
 /// Released byte-aligned Wiedemann tower fields supported by the recursive PCS.
@@ -42,3 +43,13 @@ impl sealed::Challenge for BinaryField64 {}
 impl sealed::Challenge for BinaryField128 {}
 impl RecursiveBinaryChallengeField for BinaryField64 {}
 impl RecursiveBinaryChallengeField for BinaryField128 {}
+
+/// Released tower alphabets with an additive WHIR evaluation domain.
+pub trait RecursiveBinaryWhirTowerField:
+    RecursiveBinaryTowerField + p3_binary_pcs::whir::BinaryWhirAlphabet + sealed::Whir
+{
+}
+impl sealed::Whir for BinaryField32 {}
+impl sealed::Whir for BinaryField128 {}
+impl RecursiveBinaryWhirTowerField for BinaryField32 {}
+impl RecursiveBinaryWhirTowerField for BinaryField128 {}

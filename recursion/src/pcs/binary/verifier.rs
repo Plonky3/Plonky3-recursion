@@ -755,7 +755,7 @@ where
         .collect()
 }
 
-fn observe_cap<BF, EF>(
+pub(super) fn observe_cap<BF, EF>(
     circuit: &mut CircuitBuilder<EF>,
     challenger: &mut BinaryTower128Challenger,
     cap: &[Vec<ExprId>],
@@ -774,7 +774,7 @@ where
     Ok(())
 }
 
-fn tower_bytes<BF, EF>(
+pub(super) fn tower_bytes<BF, EF>(
     circuit: &mut CircuitBuilder<EF>,
     value: &BinaryTower128Target,
     width: usize,
