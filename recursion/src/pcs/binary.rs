@@ -17,9 +17,11 @@ mod fields;
 mod gadgets;
 mod generic_sumcheck;
 mod generic_sumcheck_verifier;
+mod grouped_boolean;
 mod grouped_input;
 mod grouped_oracle;
 mod grouped_pcs;
+mod grouped_trace;
 mod input;
 mod nonzero;
 mod poly_whir_gadgets;
@@ -58,11 +60,19 @@ pub use generic_sumcheck_verifier::{
     BinaryGenericSumcheckInputShape, BinaryGenericSumcheckOutput, BinaryGenericSumcheckProofTargets,
     BinaryGenericSumcheckVerifier, NativeBinaryGenericSumcheckInput,
 };
+pub use grouped_boolean::{
+    BinaryGroupedBooleanInputShape, BinaryGroupedBooleanPcsVerifier,
+    BinaryGroupedBooleanProofTargets, NativeBinaryGroupedBooleanInput,
+};
 pub use grouped_input::NativeBinaryGroupedPcsInput;
 pub use grouped_oracle::BinaryGroupedOraclePlan;
 pub use grouped_pcs::{
     BinaryCodewordGrouping, BinaryGroupedOpeningTargets, BinaryGroupedPcsInputShape,
     BinaryGroupedPcsProofTargets, BinaryGroupedPcsVerifier,
+};
+pub use grouped_trace::{
+    BinaryGroupedBooleanTraceInputShape, BinaryGroupedBooleanTraceProofTargets,
+    BinaryGroupedBooleanTraceVerifier, NativeBinaryGroupedBooleanTraceInput,
 };
 pub use input::{BinaryPcsInputShape, NativeBinaryPcsInput};
 pub use nonzero::{
