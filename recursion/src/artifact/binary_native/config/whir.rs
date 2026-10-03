@@ -81,68 +81,20 @@ where
         cap_height: usize,
         limits: &VerifierLimits,
     ) -> Result<Self, VerificationError> {
-        let invalid = |message: &'static str| VerificationError::InvalidProofShape(message.into());
-        let mut usage = InputResourceUsage::default();
-        usage.add_rounds(limits, num_variables)?;
-        if num_variables == 0 || parameters.starting_log_inv_rate == 0 {
-            return Err(invalid(
-                "binary native WHIR arity and initial rate must be positive",
-            ));
-        }
-        let domain_bits = num_variables
-            .checked_add(parameters.starting_log_inv_rate)
-            .ok_or(VerificationError::ResourceArithmeticOverflow {
-                component: "binary native WHIR domain",
-            })?;
-        let bound = limits
-            .max_log_domain_or_degree
-            .min(usize::BITS as usize - 1);
-        if domain_bits > bound {
-            return Err(VerificationError::ResourceLimitExceeded {
-                component: "binary native WHIR domain bits",
-                actual: domain_bits,
-                limit: bound,
-            });
-        }
-        if parameters.round_log_inv_rates.len() > num_variables - 1 {
-            return Err(invalid(
-                "binary native WHIR explicit rate count exceeds arity",
-            ));
-        }
-        let factors = if let FoldingFactor::PerRound(factors) = &parameters.folding_factor {
-            if factors.is_empty() || factors.len() > num_variables {
-                return Err(invalid(
-                    "binary native WHIR explicit fold count exceeds arity",
-                ));
-            }
-            factors.len()
-        } else {
-            0
-        };
-        usage.add_metadata_entries(limits, parameters.round_log_inv_rates.len())?;
-        usage.add_metadata_entries(limits, factors)?;
-        let grind_limit = F::RAW_BITS
-            .min(64)
-            .saturating_sub(8)
-            .min(usize::BITS as usize - 1);
-        if parameters.security_level == 0
-            || parameters.pow_bits >= parameters.security_level
-            || parameters.security_level > 127 + grind_limit
-        {
-            return Err(invalid(
-                "binary native WHIR security parameters exceed the supported challenge and grinding budget",
-            ));
-        }
-        if cap_height >= usize::BITS as usize || cap_height > domain_bits {
-            return Err(invalid("binary native WHIR cap height exceeds its domain"));
-        }
-        usage.add_cap_roots(limits, 1usize << cap_height)?;
+        let grind_limit = validate_parameters(
+            num_variables,
+            &parameters,
+            cap_height,
+            F::RAW_BITS,
+            128,
+            limits,
+        )?;
         let config = WhirConfig::new_with_domain(
             num_variables,
             parameters,
             &BinaryWhirDomain::<F>::default(),
         )
-        .map_err(|_| invalid("binary native WHIR configuration rejected"))?;
+        .map_err(|_| super::super::invalid("binary native WHIR configuration rejected"))?;
         if config.max_pow_bits() > grind_limit {
             return Err(VerificationError::ResourceLimitExceeded {
                 component: "binary native WHIR grinding bits",
@@ -216,4 +168,71 @@ where
     ) -> &'a Table<F> {
         data.table(index)
     }
+}
+
+pub(super) fn validate_parameters(
+    num_variables: usize,
+    parameters: &ProtocolParameters,
+    cap_height: usize,
+    base_bits: usize,
+    challenge_bits: usize,
+    limits: &VerifierLimits,
+) -> Result<usize, VerificationError> {
+    let invalid = |message: &'static str| VerificationError::InvalidProofShape(message.into());
+    let mut usage = InputResourceUsage::default();
+    usage.add_rounds(limits, num_variables)?;
+    if num_variables == 0 || parameters.starting_log_inv_rate == 0 {
+        return Err(invalid(
+            "binary native WHIR arity and initial rate must be positive",
+        ));
+    }
+    let domain_bits = num_variables
+        .checked_add(parameters.starting_log_inv_rate)
+        .ok_or(VerificationError::ResourceArithmeticOverflow {
+            component: "binary native WHIR domain",
+        })?;
+    let bound = limits
+        .max_log_domain_or_degree
+        .min(usize::BITS as usize - 1);
+    if domain_bits > bound {
+        return Err(VerificationError::ResourceLimitExceeded {
+            component: "binary native WHIR domain bits",
+            actual: domain_bits,
+            limit: bound,
+        });
+    }
+    if parameters.round_log_inv_rates.len() > num_variables - 1 {
+        return Err(invalid(
+            "binary native WHIR explicit rate count exceeds arity",
+        ));
+    }
+    let factors = if let FoldingFactor::PerRound(factors) = &parameters.folding_factor {
+        if factors.is_empty() || factors.len() > num_variables {
+            return Err(invalid(
+                "binary native WHIR explicit fold count exceeds arity",
+            ));
+        }
+        factors.len()
+    } else {
+        0
+    };
+    usage.add_metadata_entries(limits, parameters.round_log_inv_rates.len())?;
+    usage.add_metadata_entries(limits, factors)?;
+    let grind_limit = base_bits
+        .min(64)
+        .saturating_sub(8)
+        .min(usize::BITS as usize - 1);
+    if parameters.security_level == 0
+        || parameters.pow_bits >= parameters.security_level
+        || parameters.security_level > challenge_bits - 1 + grind_limit
+    {
+        return Err(invalid(
+            "binary native WHIR security parameters exceed the supported challenge and grinding budget",
+        ));
+    }
+    if cap_height >= usize::BITS as usize || cap_height > domain_bits {
+        return Err(invalid("binary native WHIR cap height exceeds its domain"));
+    }
+    usage.add_cap_roots(limits, 1usize << cap_height)?;
+    Ok(grind_limit)
 }

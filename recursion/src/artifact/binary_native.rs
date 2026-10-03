@@ -24,6 +24,10 @@ pub use grouped_boolean::{
     VerifiedBinaryNativeGroupedBooleanTraceProof,
 };
 mod lifecycle;
+mod poly_whir;
+pub use poly_whir::{
+    BinaryNativePolyWhirAuthority, BinaryNativePolyWhirProver, VerifiedBinaryNativePolyWhirProof,
+};
 mod whir;
 pub use whir::{BinaryNativeWhirAuthority, BinaryNativeWhirProver, VerifiedBinaryNativeWhirProof};
 pub use codec::CanonicalBinaryStatement;
@@ -34,6 +38,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use p3_binary_dft::EncodableLevel;
+use p3_challenger::fs::TranscriptField;
 use p3_binary_pcs::{BinaryPcsConfig, ChallengeField, FoldAlphabet};
 use p3_circuit::ops::ByteHash;
 use p3_field::{ExtensionField, PackedValue};
@@ -50,12 +55,13 @@ use crate::verifier::{
     NativeBinaryMultiStarkInput, VerificationError, VerifierLimits,
 };
 pub use config::{
+    BinaryNativePolyWhirConfig, BinaryNativePolyWhirLayout, BinaryNativePolyWhirPcsParameters,
     BinaryNativeBooleanWhirTraceConfig,
     BinaryNativeBooleanTraceConfig, BinaryNativeChallenger, BinaryNativeConfig, BinaryNativeGroupedBooleanTraceConfig,
     BinaryNativeGroupedConfig, BinaryNativeHash,
     BinaryNativeWhirConfig, BinaryNativeWhirLayout, BinaryNativeWhirPcsParameters,
 };
-use config::{NativeMmcs, tree};
+use config::{NativeAlphabet, NativeMmcs, tree};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BinaryNativePcsParameters {
@@ -292,12 +298,8 @@ fn identity<F, E, K>(
     limits: &ArtifactLimits,
 ) -> Result<Vec<u8>, ArtifactError>
 where
-    F: RecursiveBinaryTowerField + EncodableLevel + FoldAlphabet<E> + PackedValue<Value = F>,
-    E: RecursiveBinaryChallengeField
-        + ExtensionField<F>
-        + ChallengeField<F>
-        + FoldAlphabet<E>
-        + PackedValue<Value = E>,
+    F: NativeAlphabet + TranscriptField + PackedValue<Value = F>,
+    E: ExtensionField<F> + PackedValue<Value = E>,
     K: NativeFamily<F, E>,
 {
     encode_framed(

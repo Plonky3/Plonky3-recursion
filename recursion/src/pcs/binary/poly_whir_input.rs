@@ -4,7 +4,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::hash::Hash;
 
-use p3_binary_field::{Poly64, Poly192};
+use p3_binary_field::{Poly64, Poly192, TowerLevel};
 use p3_challenger::{CanObserve, CanSampleUniformBits, FieldChallenger, GrindingChallenger};
 use p3_circuit::ops::{BinaryPoly64Target, BinaryPoly192Target, ByteHash, bytes_to_limbs};
 use p3_circuit::{CircuitBuilder, ExprId};
@@ -70,6 +70,76 @@ pub struct BinaryPolyWhirInputShape {
 }
 
 impl BinaryPolyWhirInputShape {
+    pub(crate) fn native_decode_shape(&self) -> crate::artifact::binary_native::codec::WhirDecode {
+        use crate::artifact::binary_native::codec::{
+            OracleDecode, WhirDecode, WhirFoldDecode, WhirSiteDecode,
+        };
+        let fold = |shape: &FoldShape| WhirFoldDecode {
+            rounds: shape.rounds,
+            pow_count: if shape.pow_bits > 0 { shape.rounds } else { 0 },
+        };
+        WhirDecode {
+            eval_widths: self
+                .protocol
+                .iter_openings()
+                .map(|(_, batch)| (batch.current().len(), batch.next().len()))
+                .collect(),
+            cap_roots: 1usize << self.cap_height,
+            initial_ood: self.initial_ood,
+            initial_fold: fold(&self.initial_fold),
+            sites: self
+                .sites
+                .iter()
+                .map(|site| WhirSiteDecode {
+                    width: site.width,
+                    oracle: OracleDecode {
+                        rows: site.queries.num_queries(),
+                        path_len: site.log_height - self.cap_height,
+                    },
+                    query_pow_bits: site.query_pow_bits,
+                    ood: site.ood,
+                    fold: fold(&site.fold),
+                })
+                .collect(),
+            final_poly_len: self.final_len,
+        }
+    }
+
+    pub(crate) fn write_identity(
+        &self,
+        w: &mut crate::artifact::wire::Writer,
+    ) -> Result<(), crate::artifact::ArtifactError> {
+        w.write_vec(
+            "binary WHIR configuration seed",
+            &self.contract,
+            |w, value| w.write_bytes(&value.to_repr().to_le_bytes()),
+        )?;
+        w.write_u8(match self.order {
+            VariableOrder::Prefix => 0,
+            VariableOrder::Suffix => 1,
+        })?;
+        w.write_u8(match self.hash {
+            ByteHash::Keccak256 => 0,
+            ByteHash::Blake3 => 1,
+        })?;
+        w.write_count("binary WHIR cap height", self.cap_height)?;
+        let shapes = self.protocol.table_shapes();
+        w.write_vec("binary WHIR tables", &shapes, |w, shape| {
+            w.write_count("binary WHIR table height", shape.num_variables())?;
+            w.write_count("binary WHIR table width", shape.width())
+        })?;
+        w.write_count("binary WHIR openings", self.protocol.num_openings())?;
+        for (table, batch) in self.protocol.iter_openings() {
+            w.write_count("binary WHIR opening table", table)?;
+            for columns in [batch.current(), batch.next()] {
+                w.write_vec("binary WHIR opening columns", columns, |w, &column| {
+                    w.write_count("binary WHIR opening column", column)
+                })?;
+            }
+        }
+        Ok(())
+    }
+
     pub fn allocate_targets<BF, EF>(
         &self,
         b: &mut CircuitBuilder<EF>,

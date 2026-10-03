@@ -898,6 +898,13 @@ pub struct BinaryPolyAirConstraintPlan {
 }
 
 impl BinaryPolyAirConstraintPlan {
+    pub(crate) fn write_identity(
+        &self,
+        w: &mut crate::artifact::wire::Writer,
+    ) -> Result<(), crate::artifact::ArtifactError> {
+        self.program.write_identity(64, w)
+    }
+
     pub fn from_air<A>(air: &A, log_height: usize) -> Result<Self, VerificationError>
     where
         A: Air<InteractionSymbolicBuilder<p3_binary_field::Poly64, p3_binary_field::Poly192>>

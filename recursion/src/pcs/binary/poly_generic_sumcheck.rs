@@ -39,6 +39,16 @@ pub struct BinaryPolyGenericSumcheckInputShape {
     shape: GenericDegreeShape,
 }
 impl BinaryPolyGenericSumcheckInputShape {
+    pub(crate) fn native_decode_shape(
+        &self,
+    ) -> crate::artifact::binary_native::codec::GenericDecode {
+        crate::artifact::binary_native::codec::GenericDecode {
+            rounds: self.shape.num_rounds,
+            degree: self.shape.degree,
+            pow_count: self.pow_count(),
+        }
+    }
+
     fn pow_count(&self) -> usize {
         if self.shape.pow_bits > 0 {
             self.shape.num_rounds

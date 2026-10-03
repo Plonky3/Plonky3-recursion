@@ -75,11 +75,32 @@ where
     }
 }
 
-type NativeWhirProof<F> = PcsProof<F, BinaryField128, NativeMmcs<F>>;
+type NativeWhirProof<F, E = BinaryField128> = PcsProof<F, E, NativeMmcs<F>>;
 
 pub(super) fn write_whir<F>(w: &mut Writer, p: &NativeWhirProof<F>) -> Result<(), ArtifactError>
 where
     F: RecursiveBinaryTowerField + PackedValue<Value = F>,
+{
+    write_whir_with::<F, BinaryField128>(w, p)
+}
+pub(super) fn read_whir<F>(
+    r: &mut Reader<'_>,
+    s: &WhirDecode,
+    total: &mut usize,
+) -> Result<NativeWhirProof<F>, ArtifactError>
+where
+    F: RecursiveBinaryTowerField + PackedValue<Value = F>,
+{
+    read_whir_with::<F, BinaryField128>(r, s, total)
+}
+
+pub(super) fn write_whir_with<F, E>(
+    w: &mut Writer,
+    p: &NativeWhirProof<F, E>,
+) -> Result<(), ArtifactError>
+where
+    F: ScalarWire + PackedValue<Value = F>,
+    E: ScalarWire,
 {
     for batch in &p.evals {
         write_fields(w, batch.current())?;
@@ -115,18 +136,18 @@ where
     }
     Ok(())
 }
-fn write_fold<F: RecursiveBinaryTowerField>(
+fn write_fold<F: ScalarWire, E: ScalarWire>(
     w: &mut Writer,
-    p: &SumcheckData<F, BinaryField128>,
+    p: &SumcheckData<F, E>,
 ) -> Result<(), ArtifactError> {
     for pair in &p.polynomial_evaluations {
         write_fields(w, pair)?;
     }
     write_fields(w, &p.pow_witnesses)
 }
-fn write_opening<F: RecursiveBinaryTowerField>(
+fn write_opening<F: ScalarWire, E: ScalarWire>(
     w: &mut Writer,
-    p: &QueryOpenings<F, BinaryField128, PrunedMerklePaths<u8, 32>>,
+    p: &QueryOpenings<F, E, PrunedMerklePaths<u8, 32>>,
 ) -> Result<(), ArtifactError> {
     match p {
         QueryOpenings::Base(o) => {
@@ -143,34 +164,34 @@ fn write_opening<F: RecursiveBinaryTowerField>(
         }
     }
 }
-fn read_fold<F: RecursiveBinaryTowerField>(
+fn read_fold<F: ScalarWire, E: ScalarWire>(
     r: &mut Reader<'_>,
     s: &WhirFoldDecode,
-) -> Result<SumcheckData<F, BinaryField128>, ArtifactError> {
+) -> Result<SumcheckData<F, E>, ArtifactError> {
     Ok(SumcheckData {
         polynomial_evaluations: r.read_exact_items(
             "binary WHIR fold rounds",
             s.rounds,
-            32,
-            read_array::<BinaryField128, 2>,
+            checked_product(2, E::WIRE_BYTES)?,
+            read_array::<E, 2>,
         )?,
         pow_witnesses: read_fields(r, s.pow_count)?,
     })
 }
-fn read_opening<F: RecursiveBinaryTowerField>(
+fn read_opening<F: ScalarWire, E: ScalarWire>(
     r: &mut Reader<'_>,
     s: &WhirSiteDecode,
     base: bool,
     total: &mut usize,
-) -> Result<QueryOpenings<F, BinaryField128, PrunedMerklePaths<u8, 32>>, ArtifactError> {
-    fn rows<T: RecursiveBinaryTowerField>(
+) -> Result<QueryOpenings<F, E, PrunedMerklePaths<u8, 32>>, ArtifactError> {
+    fn rows<T: ScalarWire>(
         r: &mut Reader<'_>,
         s: &WhirSiteDecode,
     ) -> Result<Vec<Vec<T>>, ArtifactError> {
         r.read_exact_items(
             "binary WHIR query rows",
             s.oracle.rows,
-            checked_product(s.width, T::RAW_BITS / 8)?,
+            checked_product(s.width, T::WIRE_BYTES)?,
             |r| read_fields(r, s.width),
         )
     }
@@ -186,7 +207,7 @@ fn read_opening<F: RecursiveBinaryTowerField>(
         }))
     }
 }
-fn read_query_pow<F: RecursiveBinaryTowerField>(
+fn read_query_pow<F: ScalarWire>(
     r: &mut Reader<'_>,
     site: &WhirSiteDecode,
 ) -> Result<F, ArtifactError> {
@@ -196,13 +217,14 @@ fn read_query_pow<F: RecursiveBinaryTowerField>(
     }
     Ok(witness)
 }
-pub(super) fn read_whir<F>(
+pub(super) fn read_whir_with<F, E>(
     r: &mut Reader<'_>,
     s: &WhirDecode,
     total: &mut usize,
-) -> Result<NativeWhirProof<F>, ArtifactError>
+) -> Result<NativeWhirProof<F, E>, ArtifactError>
 where
-    F: RecursiveBinaryTowerField + PackedValue<Value = F>,
+    F: ScalarWire + PackedValue<Value = F>,
+    E: ScalarWire,
 {
     let evals = r.read_exact_items("binary WHIR opening batches", s.eval_widths.len(), 0, {
         let mut index = 0;
@@ -266,6 +288,71 @@ mod tests {
     use p3_binary_field::{BinaryField32, BinaryField128, TowerLevel};
     use p3_field::PrimeCharacteristicRing;
     use p3_whir::pcs::proof::{PcsProof, QueryOpenings, SharedProofOpening, WhirProof};
+
+    #[test]
+    fn polynomial_folds_and_extension_rows_preserve_all_three_coefficients() {
+        use p3_binary_field::{Poly64, Poly192};
+        let x = Poly192::new([
+            Poly64::new(0x0123_4567_89ab_cdef),
+            Poly64::new(0xfedc_ba98_7654_3210),
+            Poly64::new(0xdead_beef_cafe_9876),
+        ]);
+        let y = x + Poly192::new([Poly64::ZERO, Poly64::ZERO, Poly64::ONE]);
+        let fold = SumcheckData {
+            polynomial_evaluations: vec![[x, y]],
+            pow_witnesses: vec![Poly64::new(0x8765_4321)],
+        };
+        let opening = QueryOpenings::<Poly64, Poly192, _>::Extension(SharedProofOpening {
+            rows: vec![vec![x, y], vec![y, x]],
+            proof: PrunedMerklePaths {
+                sibling_hashes: vec![[7; 32], [9; 32]],
+            },
+        });
+        let shape = WhirSiteDecode {
+            width: 2,
+            oracle: OracleDecode {
+                rows: 2,
+                path_len: 1,
+            },
+            query_pow_bits: 1,
+            ood: 0,
+            fold: WhirFoldDecode {
+                rounds: 1,
+                pow_count: 1,
+            },
+        };
+        let limits = ArtifactLimits::default();
+        let mut writer = Writer::new(limits.max_proof_bytes);
+        write_fold(&mut writer, &fold).unwrap();
+        write_opening(&mut writer, &opening).unwrap();
+        let bytes = writer.finish().unwrap();
+        let mut expected_pair = Vec::new();
+        for value in [x, y] {
+            for coefficient in value.coefficients() {
+                expected_pair.extend(coefficient.to_repr().to_le_bytes());
+            }
+        }
+        assert_eq!(&bytes[..48], expected_pair);
+        let mut reader = Reader::new(&bytes, &limits);
+        let decoded = read_fold::<Poly64, Poly192>(&mut reader, &shape.fold).unwrap();
+        assert_eq!(decoded.polynomial_evaluations, fold.polynomial_evaluations);
+        assert_eq!(decoded.pow_witnesses, fold.pow_witnesses);
+        let mut total = 0;
+        let decoded =
+            read_opening::<Poly64, Poly192>(&mut reader, &shape, false, &mut total).unwrap();
+        let QueryOpenings::Extension(decoded) = decoded else {
+            panic!("wrong field variant")
+        };
+        assert_eq!(decoded.rows, vec![vec![x, y], vec![y, x]]);
+        assert_eq!(total, 2);
+        reader.finish().unwrap();
+        for length in 0..bytes.len() {
+            let mut reader = Reader::new(&bytes[..length], &limits);
+            let result = read_fold::<Poly64, Poly192>(&mut reader, &shape.fold)
+                .and_then(|_| read_opening::<Poly64, Poly192>(&mut reader, &shape, false, &mut 0));
+            assert!(result.is_err());
+        }
+    }
 
     fn fixture() -> (
         WhirDecode,

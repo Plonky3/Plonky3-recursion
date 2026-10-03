@@ -77,6 +77,42 @@ pub struct BinaryPolyWhirMultiStarkProofTargets {
 }
 
 impl BinaryPolyWhirMultiStarkInputShape {
+    pub(crate) fn native_decode_shape(
+        &self,
+    ) -> crate::artifact::binary_native::codec::MultiDecode<
+        crate::artifact::binary_native::codec::WhirDecode,
+    > {
+        crate::artifact::binary_native::codec::MultiDecode {
+            public_counts: self.public_value_counts().collect(),
+            cap_roots: 1usize << self.cap_height,
+            bus: None,
+            sumcheck: self.relation.sumcheck.native_decode_shape(),
+            indexed: None,
+            opening: self.opening.native_decode_shape(),
+            preprocessed: self
+                .preprocessed
+                .as_ref()
+                .map(|p| p.opening.native_decode_shape()),
+        }
+    }
+    pub(crate) fn write_identity(
+        &self,
+        w: &mut crate::artifact::wire::Writer,
+    ) -> Result<(), crate::artifact::ArtifactError> {
+        self.relation.write_identity(w)?;
+        self.opening.write_identity(w)?;
+        w.write_u8(u8::from(self.preprocessed.is_some()))?;
+        if let Some(pp) = &self.preprocessed {
+            pp.opening.write_identity(w)?;
+            w.write_vec(
+                "binary native WHIR preprocessing cap",
+                &pp.commitment,
+                |w, root| w.write_bytes(root),
+            )?;
+        }
+        Ok(())
+    }
+
     /// Trusted public-value counts in the original AIR instance order.
     pub fn public_value_counts(&self) -> impl ExactSizeIterator<Item = usize> + '_ {
         self.relation
@@ -178,6 +214,34 @@ pub struct BinaryPolyWhirMultiStarkVerifier {
 }
 
 impl BinaryPolyWhirMultiStarkVerifier {
+    /// Installs the exact cap captured from the factory's matched native setup.
+    /// Geometry was validated before setup, with a placeholder cap of this size.
+    pub(crate) fn bind_native_preprocessing_cap(
+        &mut self,
+        cap: Vec<[u8; 32]>,
+    ) -> Result<(), VerificationError> {
+        let Some(pp) = &mut self.input.preprocessed else {
+            return Err(invalid(
+                "binary native WHIR setup produced an unexpected preprocessing cap",
+            ));
+        };
+        if cap.len() != pp.commitment.len() {
+            return Err(invalid(
+                "binary native WHIR setup preprocessing cap shape mismatch",
+            ));
+        }
+        pp.commitment = cap;
+        Ok(())
+    }
+
+    pub(crate) fn retain_native_parameter_metadata(
+        &mut self,
+        entries: usize,
+        limits: &VerifierLimits,
+    ) -> Result<(), VerificationError> {
+        self.usage.add_metadata_entries(limits, entries)
+    }
+
     pub fn new<A, PC>(
         airs: &[&A],
         heights: &[usize],

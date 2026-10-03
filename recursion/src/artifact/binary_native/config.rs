@@ -3,6 +3,11 @@
 mod boolean_whir;
 pub use boolean_whir::BinaryNativeBooleanWhirTraceConfig;
 pub(super) use boolean_whir::NativeBooleanWhirTracePcs;
+mod poly_whir;
+pub use poly_whir::{
+    BinaryNativePolyWhirConfig, BinaryNativePolyWhirLayout, BinaryNativePolyWhirPcsParameters,
+};
+pub(super) use poly_whir::NativePolyWhirPcs;
 mod whir;
 pub use whir::{BinaryNativeWhirConfig, BinaryNativeWhirLayout, BinaryNativeWhirPcsParameters};
 pub(super) use whir::NativeWhirPcs;
@@ -10,7 +15,7 @@ pub(super) use whir::NativeWhirPcs;
 use alloc::vec::Vec;
 
 use p3_binary_dft::EncodableLevel;
-use p3_binary_field::BinaryChallenger;
+use p3_binary_field::{BinaryChallenger, TowerLevel};
 use p3_binary_pcs::{BinaryPcs, ChallengeField, FoldAlphabet, GroupedCodewordMmcs};
 use p3_challenger::{
     CanObserve, CanSample, CanSampleBits, CanSampleUniformBits, FieldChallenger,
@@ -107,12 +112,17 @@ impl<F> BinaryNativeChallenger<F> {
     }
 }
 
-impl<F: RecursiveBinaryTowerField> CanObserve<F> for BinaryNativeChallenger<F> {
+// Local closed alphabet avoids overlapping scalar/cap observation impls.
+pub(super) trait NativeAlphabet: TowerLevel {}
+impl<F: RecursiveBinaryTowerField> NativeAlphabet for F {}
+impl NativeAlphabet for p3_binary_field::Poly64 {}
+
+impl<F: NativeAlphabet> CanObserve<F> for BinaryNativeChallenger<F> {
     fn observe(&mut self, value: F) {
         self.inner.observe(value);
     }
 }
-impl<F: RecursiveBinaryTowerField, G> CanObserve<MerkleCap<G, [u8; 32]>>
+impl<F: NativeAlphabet, G> CanObserve<MerkleCap<G, [u8; 32]>>
     for BinaryNativeChallenger<F>
 {
     fn observe(&mut self, cap: MerkleCap<G, [u8; 32]>) {
@@ -120,19 +130,19 @@ impl<F: RecursiveBinaryTowerField, G> CanObserve<MerkleCap<G, [u8; 32]>>
         self.inner.observe(cap);
     }
 }
-impl<F: RecursiveBinaryTowerField, T: BasedVectorSpace<F>> CanSample<T>
+impl<F: NativeAlphabet, T: BasedVectorSpace<F>> CanSample<T>
     for BinaryNativeChallenger<F>
 {
     fn sample(&mut self) -> T {
         <Inner<F> as CanSample<T>>::sample(&mut self.inner)
     }
 }
-impl<F: RecursiveBinaryTowerField> CanSampleBits<usize> for BinaryNativeChallenger<F> {
+impl<F: NativeAlphabet> CanSampleBits<usize> for BinaryNativeChallenger<F> {
     fn sample_bits(&mut self, bits: usize) -> usize {
         self.inner.sample_bits(bits)
     }
 }
-impl<F: RecursiveBinaryTowerField> CanSampleUniformBits<F> for BinaryNativeChallenger<F> {
+impl<F: NativeAlphabet> CanSampleUniformBits<F> for BinaryNativeChallenger<F> {
     fn sample_uniform_bits<const RESAMPLE: bool>(
         &mut self,
         bits: usize,
@@ -140,7 +150,7 @@ impl<F: RecursiveBinaryTowerField> CanSampleUniformBits<F> for BinaryNativeChall
         self.inner.sample_uniform_bits::<RESAMPLE>(bits)
     }
 }
-impl<F: RecursiveBinaryTowerField> GrindingChallenger for BinaryNativeChallenger<F> {
+impl<F: NativeAlphabet> GrindingChallenger for BinaryNativeChallenger<F> {
     type Witness = F;
     fn grind(&mut self, bits: usize) -> F {
         self.inner.grind(bits)
@@ -149,7 +159,7 @@ impl<F: RecursiveBinaryTowerField> GrindingChallenger for BinaryNativeChallenger
         self.inner.check_witness(bits, witness)
     }
 }
-impl<F: RecursiveBinaryTowerField> FieldChallenger<F> for BinaryNativeChallenger<F> {}
+impl<F: NativeAlphabet> FieldChallenger<F> for BinaryNativeChallenger<F> {}
 
 /// Opaque native configuration appearing in the factory's proof type. Its
 /// fields and constructor are private; callers cannot replace the PCS or hash.

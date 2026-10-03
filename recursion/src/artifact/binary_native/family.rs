@@ -2,6 +2,8 @@
 
 mod boolean_whir;
 pub(super) use boolean_whir::BooleanWhirTraceFamily;
+mod poly_whir;
+pub(super) use poly_whir::PolyWhirFamily;
 mod whir;
 pub(super) use whir::WhirFamily;
 
@@ -12,12 +14,8 @@ use p3_sumcheck::PrescribedPointPcs;
 
 pub(super) trait NativeFamily<F, E>
 where
-    F: RecursiveBinaryTowerField + EncodableLevel + FoldAlphabet<E> + PackedValue<Value = F>,
-    E: RecursiveBinaryChallengeField
-        + ExtensionField<F>
-        + ChallengeField<F>
-        + FoldAlphabet<E>
-        + PackedValue<Value = E>,
+    F: NativeAlphabet + TranscriptField + PackedValue<Value = F>,
+    E: ExtensionField<F> + PackedValue<Value = E>,
 {
     type Parameters;
     type Pcs: PrescribedPointPcs<

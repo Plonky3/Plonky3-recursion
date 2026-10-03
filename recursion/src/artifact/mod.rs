@@ -5,6 +5,8 @@ pub(crate) mod native;
 pub(crate) mod wire;
 
 pub use binary_native::{
+    BinaryNativePolyWhirAuthority, BinaryNativePolyWhirConfig, BinaryNativePolyWhirLayout,
+    BinaryNativePolyWhirPcsParameters, BinaryNativePolyWhirProver, VerifiedBinaryNativePolyWhirProof,
     BinaryNativeBooleanWhirTraceAuthority, BinaryNativeBooleanWhirTraceConfig,
     BinaryNativeBooleanWhirTraceProver, VerifiedBinaryNativeBooleanWhirTraceProof,
     BinaryNativeAuthority, BinaryNativeBooleanTraceAuthority, BinaryNativeBooleanTraceConfig,

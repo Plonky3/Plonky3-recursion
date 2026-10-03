@@ -2,6 +2,8 @@
 //! dynamic lengths are bounded before their allocation.
 
 use alloc::vec::Vec;
+mod scalar;
+use scalar::ScalarWire;
 
 use p3_binary_dft::EncodableLevel;
 use p3_binary_pcs::{BinaryPcsProof, ChallengeField, FoldAlphabet, RoundProof};
@@ -27,7 +29,7 @@ use crate::pcs::binary::{RecursiveBinaryChallengeField, RecursiveBinaryTowerFiel
 use crate::verifier::InputResourceUsage;
 
 /// Independent binary values in AIR order, then public-value order, encoded
-/// using the base tower field's exact raw little-endian width. No length prefix.
+/// using the base field's exact raw little-endian width. No length prefix.
 #[derive(Clone, Copy, Debug)]
 pub struct CanonicalBinaryStatement<'a> {
     bytes: &'a [u8],
@@ -144,6 +146,7 @@ mod boolean_whir;
 mod grouped;
 mod grouped_boolean;
 mod grouped_shell;
+mod poly_whir;
 mod whir;
 
 type PcsProof<F, E> = BinaryPcsProof<F, E, NativeMmcs<F>, NativeMmcs<E>>;
@@ -226,8 +229,8 @@ pub(super) fn encode_multi<C>(
 ) -> Result<Vec<u8>, ArtifactError>
 where
     C: MultiStarkConfig,
-    C::Val: RecursiveBinaryTowerField,
-    C::Challenge: RecursiveBinaryChallengeField,
+    C::Val: ScalarWire,
+    C::Challenge: ScalarWire,
     C::Pcs: MultilinearPcs<C::Challenge, C::Challenger, Commitment = MerkleCap<C::Val, [u8; 32]>>,
 {
     encode_framed(ArtifactKind::Proof, suite, limits.max_proof_bytes, |w| {
@@ -272,8 +275,8 @@ impl<O> DecodeAuthority<'_, O> {
     ) -> Result<(MultiStarkProof<C>, Vec<Vec<C::Val>>), ArtifactError>
     where
         C: MultiStarkConfig,
-        C::Val: RecursiveBinaryTowerField,
-        C::Challenge: RecursiveBinaryChallengeField,
+        C::Val: ScalarWire,
+        C::Challenge: ScalarWire,
         C::Pcs:
             MultilinearPcs<C::Challenge, C::Challenger, Commitment = MerkleCap<C::Val, [u8; 32]>>,
     {
@@ -285,8 +288,7 @@ impl<O> DecodeAuthority<'_, O> {
             n.checked_add(m).ok_or(ArtifactError::LengthOverflow)
         })?;
         if statement.element_count != count
-            || statement.bytes.len()
-                != checked_product(count, <C::Val as RecursiveBinaryTowerField>::RAW_BITS / 8)?
+            || statement.bytes.len() != checked_product(count, <C::Val as ScalarWire>::WIRE_BYTES)?
         {
             return Err(malformed("binary independent statement"));
         }
@@ -363,44 +365,29 @@ fn suite<F: RecursiveBinaryTowerField, E: RecursiveBinaryChallengeField>() -> u1
 fn malformed(component: &'static str) -> ArtifactError {
     ArtifactError::MalformedProof { component }
 }
-fn write_field<F: RecursiveBinaryTowerField>(
-    w: &mut Writer,
-    value: F,
-) -> Result<(), ArtifactError> {
-    w.write_bytes(&value.raw_coordinates().to_le_bytes()[..F::RAW_BITS / 8])
+fn write_field<F: ScalarWire>(w: &mut Writer, value: F) -> Result<(), ArtifactError> {
+    value.write_le(w)
 }
-fn read_field<F: RecursiveBinaryTowerField>(r: &mut Reader<'_>) -> Result<F, ArtifactError> {
-    r.charge_binary_scalars(8)?;
-    // Exact width is checked before the native constructor, which assumes it.
-    Ok(F::from_le_byte_iter(
-        r.read_bytes(F::RAW_BITS / 8)?.iter().copied(),
-    ))
+fn read_field<F: ScalarWire>(r: &mut Reader<'_>) -> Result<F, ArtifactError> {
+    r.charge_binary_scalars(F::INPUT_LIMBS)?;
+    F::read_le(r)
 }
-fn write_fields<F: RecursiveBinaryTowerField>(
-    w: &mut Writer,
-    values: &[F],
-) -> Result<(), ArtifactError> {
+fn write_fields<F: ScalarWire>(w: &mut Writer, values: &[F]) -> Result<(), ArtifactError> {
     for &value in values {
         write_field(w, value)?;
     }
     Ok(())
 }
-fn read_fields<F: RecursiveBinaryTowerField>(
-    r: &mut Reader<'_>,
-    count: usize,
-) -> Result<Vec<F>, ArtifactError> {
-    r.read_exact_items("binary fields", count, F::RAW_BITS / 8, read_field::<F>)
+fn read_fields<F: ScalarWire>(r: &mut Reader<'_>, count: usize) -> Result<Vec<F>, ArtifactError> {
+    r.read_exact_items("binary fields", count, F::WIRE_BYTES, read_field::<F>)
 }
-fn write_public<F: RecursiveBinaryTowerField>(
-    w: &mut Writer,
-    values: &[Vec<F>],
-) -> Result<(), ArtifactError> {
+fn write_public<F: ScalarWire>(w: &mut Writer, values: &[Vec<F>]) -> Result<(), ArtifactError> {
     for row in values {
         write_fields(w, row)?;
     }
     Ok(())
 }
-fn read_public<F: RecursiveBinaryTowerField>(
+fn read_public<F: ScalarWire>(
     r: &mut Reader<'_>,
     counts: &[usize],
 ) -> Result<Vec<Vec<F>>, ArtifactError> {
@@ -425,7 +412,7 @@ fn read_digest(r: &mut Reader<'_>) -> Result<[u8; 32], ArtifactError> {
     r.charge_binary_scalars(16)?;
     Ok(r.read_bytes(32)?.try_into().unwrap())
 }
-fn write_generic<F: RecursiveBinaryTowerField, E: RecursiveBinaryChallengeField>(
+fn write_generic<F: ScalarWire, E: ScalarWire>(
     w: &mut Writer,
     p: &GenericDegreeProof<F, E>,
 ) -> Result<(), ArtifactError> {
@@ -435,7 +422,7 @@ fn write_generic<F: RecursiveBinaryTowerField, E: RecursiveBinaryChallengeField>
     }
     write_fields(w, &p.pow_witnesses)
 }
-fn read_generic<F: RecursiveBinaryTowerField, E: RecursiveBinaryChallengeField>(
+fn read_generic<F: ScalarWire, E: ScalarWire>(
     r: &mut Reader<'_>,
     s: &GenericDecode,
 ) -> Result<GenericDegreeProof<F, E>, ArtifactError> {
@@ -444,13 +431,13 @@ fn read_generic<F: RecursiveBinaryTowerField, E: RecursiveBinaryChallengeField>(
         round_polys: r.read_exact_items(
             "binary generic rounds",
             s.rounds,
-            checked_product(s.degree, E::RAW_BITS / 8)?,
+            checked_product(s.degree, E::WIRE_BYTES)?,
             |r| read_fields(r, s.degree),
         )?,
         pow_witnesses: read_fields(r, s.pow_count)?,
     })
 }
-fn write_product<E: RecursiveBinaryChallengeField>(
+fn write_product<E: ScalarWire>(
     w: &mut Writer,
     p: &ProductGkrProof<E>,
 ) -> Result<(), ArtifactError> {
@@ -477,16 +464,14 @@ fn write_product<E: RecursiveBinaryChallengeField>(
     }
     Ok(())
 }
-fn read_array<F: RecursiveBinaryTowerField, const N: usize>(
-    r: &mut Reader<'_>,
-) -> Result<[F; N], ArtifactError> {
+fn read_array<F: ScalarWire, const N: usize>(r: &mut Reader<'_>) -> Result<[F; N], ArtifactError> {
     let mut values = [F::ZERO; N];
     for value in &mut values {
         *value = read_field(r)?;
     }
     Ok(values)
 }
-fn read_product<E: RecursiveBinaryChallengeField>(
+fn read_product<E: ScalarWire>(
     r: &mut Reader<'_>,
     s: &ProductDecode,
 ) -> Result<ProductGkrProof<E>, ArtifactError> {
@@ -500,7 +485,7 @@ fn read_product<E: RecursiveBinaryChallengeField>(
                 children: r.read_exact_items(
                     "binary product children",
                     s.trees,
-                    E::RAW_BITS / 4,
+                    2 * E::WIRE_BYTES,
                     read_array,
                 )?,
             })
@@ -509,13 +494,13 @@ fn read_product<E: RecursiveBinaryChallengeField>(
                 round_polys: r.read_exact_items(
                     "binary product rounds",
                     rounds,
-                    5 * (E::RAW_BITS / 8),
+                    5 * E::WIRE_BYTES,
                     read_array,
                 )?,
                 children: r.read_exact_items(
                     "binary product children",
                     s.trees,
-                    E::RAW_BITS / 2,
+                    4 * E::WIRE_BYTES,
                     read_array,
                 )?,
             })
@@ -523,7 +508,7 @@ fn read_product<E: RecursiveBinaryChallengeField>(
     })?;
     Ok(ProductGkrProof { roots, layers })
 }
-fn write_fraction<E: RecursiveBinaryChallengeField>(
+fn write_fraction<E: ScalarWire>(
     w: &mut Writer,
     p: &FractionGkrProof<E>,
 ) -> Result<(), ArtifactError> {
@@ -537,17 +522,17 @@ fn write_fraction<E: RecursiveBinaryChallengeField>(
     }
     Ok(())
 }
-fn read_fraction<E: RecursiveBinaryChallengeField>(
+fn read_fraction<E: ScalarWire>(
     r: &mut Reader<'_>,
     height: usize,
 ) -> Result<FractionGkrProof<E>, ArtifactError> {
     let root_denominator = read_field(r)?;
     let mut round = 0;
-    let layers = r.read_exact_items("binary fraction layers", height, E::RAW_BITS / 2, |r| {
+    let layers = r.read_exact_items("binary fraction layers", height, 4 * E::WIRE_BYTES, |r| {
         let round_polys = r.read_exact_items(
             "binary fraction rounds",
             round,
-            3 * (E::RAW_BITS / 8),
+            3 * E::WIRE_BYTES,
             read_array,
         )?;
         round += 1;
@@ -562,7 +547,7 @@ fn read_fraction<E: RecursiveBinaryChallengeField>(
         layers,
     })
 }
-fn write_indexed<F: RecursiveBinaryTowerField, E: RecursiveBinaryChallengeField>(
+fn write_indexed<F: ScalarWire, E: ScalarWire>(
     w: &mut Writer,
     p: &IndexedLookupProof<F, E>,
 ) -> Result<(), ArtifactError> {
@@ -581,7 +566,7 @@ fn write_indexed<F: RecursiveBinaryTowerField, E: RecursiveBinaryChallengeField>
     }
     Ok(())
 }
-fn read_indexed<F: RecursiveBinaryTowerField, E: RecursiveBinaryChallengeField>(
+fn read_indexed<F: ScalarWire, E: ScalarWire>(
     r: &mut Reader<'_>,
     s: &IndexedDecode,
 ) -> Result<IndexedLookupProof<F, E>, ArtifactError> {

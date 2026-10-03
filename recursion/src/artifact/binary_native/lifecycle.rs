@@ -12,12 +12,8 @@ use p3_sumcheck::layout::Table;
 
 pub(super) struct State<F, E, A, K = RawFamily>
 where
-    F: RecursiveBinaryTowerField + EncodableLevel + FoldAlphabet<E> + PackedValue<Value = F>,
-    E: RecursiveBinaryChallengeField
-        + ExtensionField<F>
-        + ChallengeField<F>
-        + FoldAlphabet<E>
-        + PackedValue<Value = E>,
+    F: NativeAlphabet + TranscriptField + PackedValue<Value = F>,
+    E: ExtensionField<F> + PackedValue<Value = E>,
     K: NativeFamily<F, E>,
 {
     pub(super) config: K::Config,
@@ -41,12 +37,8 @@ pub(super) fn setup<F, E, A, K>(
     limits: ArtifactLimits,
 ) -> Result<(Arc<State<F, E, A, K>>, ProvingKey<K::Config>), VerificationError>
 where
-    F: RecursiveBinaryTowerField + EncodableLevel + FoldAlphabet<E> + PackedValue<Value = F>,
-    E: RecursiveBinaryChallengeField
-        + ExtensionField<F>
-        + ChallengeField<F>
-        + FoldAlphabet<E>
-        + PackedValue<Value = E>,
+    F: NativeAlphabet + TranscriptField + PackedValue<Value = F>,
+    E: ExtensionField<F> + PackedValue<Value = E>,
     A: VerifierAir<F, E>,
     K: NativeFamily<F, E>,
 {
@@ -58,7 +50,7 @@ where
             "binary native security target must be within 1..=128",
         ));
     }
-    let grind_limit = F::RAW_BITS
+    let grind_limit = (1usize << F::LOG_BITS)
         .min(64)
         .saturating_sub(8)
         .min(usize::BITS as usize - 1);
@@ -161,12 +153,8 @@ where
 
 impl<F, E, A, K> State<F, E, A, K>
 where
-    F: RecursiveBinaryTowerField + EncodableLevel + FoldAlphabet<E> + PackedValue<Value = F>,
-    E: RecursiveBinaryChallengeField
-        + ExtensionField<F>
-        + ChallengeField<F>
-        + FoldAlphabet<E>
-        + PackedValue<Value = E>,
+    F: NativeAlphabet + TranscriptField + PackedValue<Value = F>,
+    E: ExtensionField<F> + PackedValue<Value = E>,
     K: NativeFamily<F, E>,
 {
     fn challenger(&self) -> BinaryNativeChallenger<F> {

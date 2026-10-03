@@ -49,6 +49,24 @@ pub(super) struct NativeReduction {
     pub(super) preprocessed_points: Option<Vec<Point<Poly192>>>,
 }
 
+impl PolyMultiStarkRelationShape {
+    pub(super) fn write_identity(
+        &self,
+        w: &mut crate::artifact::wire::Writer,
+    ) -> Result<(), crate::artifact::ArtifactError> {
+        use p3_binary_field::TowerLevel;
+        w.write_vec("polynomial native AIRs", &self.airs, |w, air| {
+            air.write_identity(w)
+        })?;
+        for seed in [&self.outer_seed, &self.zerocheck_seed] {
+            w.write_vec("polynomial native transcript seed", seed, |w, value| {
+                w.write_bytes(&value.to_repr().to_le_bytes())
+            })?;
+        }
+        Ok(())
+    }
+}
+
 impl PolyMultiStarkRelation {
     pub(super) fn build<A>(
         airs: &[&A],
