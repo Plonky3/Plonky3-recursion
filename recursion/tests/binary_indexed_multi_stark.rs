@@ -4,6 +4,7 @@ use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 use p3_baby_bear::BabyBear;
 use p3_binary_field::{BinaryField8, BinaryField64, BinaryField128};
 use p3_binary_pcs::{BinaryPcs, BinaryPcsConfig, BinaryPcsParams, BinaryPcsProverData};
+use p3_bus::{BusActivation, BusDirection, BusInteractionBuilder, BusName};
 use p3_challenger::{CanObserve, FieldChallenger};
 use p3_circuit::ops::{BinaryTower128Target, ByteHash};
 use p3_circuit::{Circuit, CircuitBuilder, StatementExport};
@@ -31,6 +32,7 @@ struct IndexedAir {
     read: Option<(&'static str, usize, Vec<usize>)>,
     provide: Option<(&'static str, Vec<usize>)>,
     preprocessed: bool,
+    bus: Option<BusDirection>,
 }
 
 impl<F: RecursiveBinaryTowerField> BaseAir<F> for IndexedAir {
@@ -55,7 +57,7 @@ impl<F: RecursiveBinaryTowerField> BaseAir<F> for IndexedAir {
     }
 }
 
-impl<AB: AirBuilder + IndexedLookupBuilder> Air<AB> for IndexedAir
+impl<AB: AirBuilder + IndexedLookupBuilder + BusInteractionBuilder> Air<AB> for IndexedAir
 where
     AB::F: RecursiveBinaryTowerField,
 {
@@ -77,6 +79,16 @@ where
                 columns.iter().copied(),
             );
         }
+        if let Some(direction) = self.bus {
+            let column = self.read.as_ref().map_or(0, |(_, _, payload)| payload[0]);
+            let payload = b.main().current_slice()[column];
+            b.push_bus_interaction(
+                BusName::new("indexed-payload"),
+                direction,
+                [payload],
+                BusActivation::Always,
+            );
+        }
     }
 }
 
@@ -89,30 +101,35 @@ fn airs() -> Vec<IndexedAir> {
             read: Some(("z", 0, vec![1])),
             provide: None,
             preprocessed: false,
+            bus: None,
         },
         IndexedAir {
             width: 2,
             read: None,
             provide: Some(("a", vec![1, 0])),
             preprocessed: false,
+            bus: None,
         },
         IndexedAir {
             width: 3,
             read: Some(("a", 0, vec![1, 2])),
             provide: None,
             preprocessed: false,
+            bus: None,
         },
         IndexedAir {
             width: 1,
             read: None,
             provide: Some(("z", vec![0])),
             preprocessed: false,
+            bus: None,
         },
         IndexedAir {
             width: 2,
             read: Some(("z", 0, vec![1])),
             provide: None,
             preprocessed: false,
+            bus: None,
         },
     ]
 }
@@ -143,6 +160,9 @@ macro_rules! check {
         check!($base, $extension, $params, $hash, $small, false)
     }};
     ($base:ty, $extension:ty, $params:ident, $hash:expr, $small:expr, $preprocessed:expr) => {{
+        check!($base, $extension, $params, $hash, $small, $preprocessed, false)
+    }};
+    ($base:ty, $extension:ty, $params:ident, $hash:expr, $small:expr, $preprocessed:expr, $bus:expr) => {{
         type F = $base;
         type E = $extension;
         type M = $params::LevelMmcs<F>;
@@ -187,18 +207,25 @@ macro_rules! check {
                     read: Some(("a", 0, vec![1])),
                     provide: None,
                     preprocessed: false,
+                    bus: None,
                 },
                 IndexedAir {
                     width: 1,
                     read: None,
                     provide: Some(("a", vec![0])),
                     preprocessed: false,
+                    bus: None,
                 },
             ]
         } else {
             airs()
         };
         airs[1].preprocessed = $preprocessed;
+        if $bus {
+            assert!($small && !$preprocessed);
+            airs[0].bus = Some(BusDirection::Push);
+            airs[1].bus = Some(BusDirection::Pull);
+        }
         let cells: usize = airs
             .iter()
             .zip(&heights)
@@ -417,7 +444,13 @@ macro_rules! check {
             let fields = |polys: &[Vec<BinaryTower128Target>], pow: &[BinaryTower128Target]| {
                 1 + polys.iter().map(Vec::len).sum::<usize>() + pow.len()
             };
-            let reader_start = 16
+            let bus_fields = targets.bus.as_ref().map_or(0, |bus| {
+                bus.roots.len() + bus.layers.iter().map(|layer| {
+                    layer.round_polys.iter().map(Vec::len).sum::<usize>()
+                        + layer.children.iter().map(Vec::len).sum::<usize>()
+                }).sum::<usize>()
+            });
+            let reader_start = 16 + 8 * bus_fields
                 + 8 * fields(
                     &targets.sumcheck.round_polys,
                     &targets.sumcheck.pow_witnesses,
@@ -469,7 +502,7 @@ macro_rules! check {
                 commitment: proof.commitment.clone(),
                 lookup: None,
                 indexed: proof.indexed.clone(),
-                bus: None,
+                bus: proof.bus.clone(),
                 sumcheck: proof.sumcheck.clone(),
                 opening: proof.opening.clone(),
                 preprocessed_opening: proof.preprocessed_opening.clone(),
@@ -661,6 +694,28 @@ fn indexed_authority_and_combined_resource_limits_are_checked() {
         ..defaults
     };
     assert!(prepare(&airs, &heights, &exact).is_ok());
+}
+
+#[test]
+fn bus_and_indexed_reductions_share_the_native_transcript_and_air_point() {
+    check!(
+        BinaryField8,
+        BinaryField64,
+        blake3,
+        ByteHash::Blake3,
+        true,
+        false,
+        true
+    );
+    check!(
+        BinaryField128,
+        BinaryField128,
+        keccak,
+        ByteHash::Keccak256,
+        true,
+        false,
+        true
+    );
 }
 
 #[test]
