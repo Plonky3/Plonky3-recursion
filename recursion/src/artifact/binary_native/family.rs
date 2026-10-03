@@ -220,7 +220,7 @@ where
     type Config = config::BinaryNativeGroupedConfig<F, E>;
     type Recursive = crate::verifier::BinaryGroupedMultiStarkVerifier<F, E>;
     type Input = crate::verifier::NativeBinaryGroupedMultiStarkInput<F, E>;
-    type Decode = Vec<usize>;
+    type Decode = codec::MultiDecode<codec::PcsDecode<codec::GroupedOracleDecode>>;
 
     fn hash(p: &Self::Parameters) -> ByteHash {
         p.pcs.hash
@@ -322,10 +322,10 @@ where
         recursive.input_resource_usage()
     }
     fn public_counts(decode: &Self::Decode) -> &[usize] {
-        decode.as_slice()
+        &decode.public_counts
     }
     fn decode_shape(recursive: &Self::Recursive) -> Self::Decode {
-        recursive.input_shape().public_value_counts().collect()
+        recursive.input_shape().native_decode_shape()
     }
     fn import_native(
         recursive: &Self::Recursive,

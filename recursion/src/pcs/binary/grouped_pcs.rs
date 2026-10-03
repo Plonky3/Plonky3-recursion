@@ -84,6 +84,34 @@ pub struct BinaryGroupedPcsInputShape {
 }
 
 impl BinaryGroupedPcsInputShape {
+    pub(crate) fn native_decode_shape(
+        &self,
+    ) -> crate::artifact::binary_native::codec::PcsDecode<
+        crate::artifact::binary_native::codec::GroupedOracleDecode,
+    > {
+        use crate::artifact::binary_native::codec::{GroupedOracleDecode, PcsDecode};
+        let core = self.core.native_scalar_geometry();
+        let log_domain = self.core.config.num_variables() + self.core.config.log_inv_rate();
+        let mut oracles = batches(&self.core.config).zip(&self.geometry).map(
+            |((start, arity), &(rows, group_size, path_len))| GroupedOracleDecode {
+                rows,
+                group_size,
+                path_len,
+                symbol_bits: log_domain - start,
+                coset_width: 1usize << arity,
+            },
+        );
+        let base = oracles.next().expect("validated nonempty grouped PCS");
+        PcsDecode {
+            cap_roots: core.cap_roots,
+            sumcheck_rounds: core.sumcheck_rounds,
+            eval_widths: core.eval_widths,
+            rounds: oracles.collect(),
+            base,
+            final_codeword: core.final_codeword,
+        }
+    }
+
     pub fn allocate_targets<BF, EF>(
         &self,
         b: &mut CircuitBuilder<EF>,

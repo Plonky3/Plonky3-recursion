@@ -91,6 +91,38 @@ pub struct BinaryGroupedMultiStarkProofTargets {
 impl<F: RecursiveBinaryTowerField, E: RecursiveBinaryChallengeField>
     BinaryGroupedMultiStarkInputShape<F, E>
 {
+    pub(crate) fn native_decode_shape(
+        &self,
+    ) -> crate::artifact::binary_native::codec::MultiDecode<
+        crate::artifact::binary_native::codec::PcsDecode<
+            crate::artifact::binary_native::codec::GroupedOracleDecode,
+        >,
+    >
+    where
+        E: ExtensionField<F>,
+    {
+        crate::artifact::binary_native::codec::MultiDecode {
+            public_counts: self.public_value_counts().collect(),
+            cap_roots: 1usize << self.cap_height,
+            bus: self
+                .relation
+                .bus
+                .as_ref()
+                .map(|b| b.product.native_decode_shape()),
+            sumcheck: self.relation.sumcheck.native_decode_shape(),
+            indexed: self
+                .relation
+                .indexed
+                .as_ref()
+                .map(|i| i.native_decode_shape()),
+            opening: self.opening.native_decode_shape(),
+            preprocessed: self
+                .preprocessed
+                .as_ref()
+                .map(|p| p.opening.native_decode_shape()),
+        }
+    }
+
     pub(crate) fn write_identity(
         &self,
         w: &mut crate::artifact::wire::Writer,

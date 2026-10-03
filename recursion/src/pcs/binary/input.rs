@@ -40,11 +40,17 @@ pub struct BinaryPcsInputShape {
 
 impl BinaryPcsInputShape {
     pub(crate) fn native_decode_shape(&self) -> crate::artifact::binary_native::codec::PcsDecode {
-        use crate::artifact::binary_native::codec::{OracleDecode, PcsDecode};
         debug_assert!(
             self.grouping.is_none(),
             "closed native authority uses ordinary PCS"
         );
+        self.native_scalar_geometry()
+    }
+
+    pub(super) fn native_scalar_geometry(
+        &self,
+    ) -> crate::artifact::binary_native::codec::PcsDecode {
+        use crate::artifact::binary_native::codec::{OracleDecode, PcsDecode};
         let shape = BinaryPcsShape::new(&self.config);
         let log_domain = self.config.num_variables() + self.config.log_inv_rate();
         PcsDecode {

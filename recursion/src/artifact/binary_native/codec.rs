@@ -6,7 +6,7 @@ use alloc::vec::Vec;
 use p3_binary_dft::EncodableLevel;
 use p3_binary_pcs::{BinaryPcsProof, ChallengeField, FoldAlphabet, RoundProof};
 use p3_bus::{BusProof, ProductGkrLayerProof, ProductGkrProof};
-use p3_commit::MultilinearPcs;
+use p3_commit::{Mmcs, MultilinearPcs};
 use p3_field::{ExtensionField, PackedValue};
 use p3_merkle_tree::{MerkleCap, PrunedMerklePaths};
 use p3_multi_stark::MultiStarkProof;
@@ -67,12 +67,34 @@ pub(crate) struct OracleDecode {
     pub rows: usize,
     pub path_len: usize,
 }
-pub(crate) struct PcsDecode {
+pub(crate) struct GroupedOracleDecode {
+    pub rows: usize,
+    pub symbol_bits: usize,
+    pub group_size: usize,
+    pub coset_width: usize,
+    pub path_len: usize,
+}
+
+pub(super) trait OracleRows {
+    fn rows(&self) -> usize;
+}
+impl OracleRows for OracleDecode {
+    fn rows(&self) -> usize {
+        self.rows
+    }
+}
+impl OracleRows for GroupedOracleDecode {
+    fn rows(&self) -> usize {
+        self.rows
+    }
+}
+
+pub(crate) struct PcsDecode<O = OracleDecode> {
     pub cap_roots: usize,
     pub sumcheck_rounds: usize,
     pub eval_widths: Vec<(usize, usize)>,
-    pub rounds: Vec<OracleDecode>,
-    pub base: OracleDecode,
+    pub rounds: Vec<O>,
+    pub base: O,
     pub final_codeword: usize,
 }
 pub(crate) struct MultiDecode<O = PcsDecode> {
@@ -84,6 +106,9 @@ pub(crate) struct MultiDecode<O = PcsDecode> {
     pub opening: O,
     pub preprocessed: Option<O>,
 }
+
+mod grouped;
+mod grouped_shell;
 
 type PcsProof<F, E> = BinaryPcsProof<F, E, NativeMmcs<F>, NativeMmcs<E>>;
 
@@ -569,6 +594,20 @@ fn write_pcs<F: RecursiveBinaryTowerField, E: RecursiveBinaryChallengeField>(
     w: &mut Writer,
     p: &PcsProof<F, E>,
 ) -> Result<(), ArtifactError> {
+    write_pcs_with(w, p, write_frontier, write_frontier)
+}
+pub(super) fn write_pcs_with<F, E, M, MX>(
+    w: &mut Writer,
+    p: &BinaryPcsProof<F, E, M, MX>,
+    write_base: fn(&mut Writer, &M::MultiProof) -> Result<(), ArtifactError>,
+    write_round: fn(&mut Writer, &MX::MultiProof) -> Result<(), ArtifactError>,
+) -> Result<(), ArtifactError>
+where
+    F: RecursiveBinaryTowerField,
+    E: RecursiveBinaryChallengeField,
+    M: Mmcs<F, Commitment = MerkleCap<F, [u8; 32]>>,
+    MX: Mmcs<E, Commitment = MerkleCap<E, [u8; 32]>>,
+{
     for pair in &p.sumcheck.polynomial_evaluations {
         write_fields(w, pair)?;
     }
@@ -581,12 +620,12 @@ fn write_pcs<F: RecursiveBinaryTowerField, E: RecursiveBinaryChallengeField>(
         for row in &round.opened_values {
             write_fields(w, row)?;
         }
-        write_frontier(w, &round.multi_proof)?;
+        write_round(w, &round.multi_proof)?;
     }
     for row in &p.base_opened_values {
         write_fields(w, row)?;
     }
-    write_frontier(w, &p.base_multi_proof)?;
+    write_base(w, &p.base_multi_proof)?;
     write_fields(w, p.final_codeword.as_slice())?;
     write_field(w, p.pow_witness)
 }
@@ -595,6 +634,28 @@ fn read_pcs<F: RecursiveBinaryTowerField, E: RecursiveBinaryChallengeField>(
     s: &PcsDecode,
     total: &mut usize,
 ) -> Result<PcsProof<F, E>, ArtifactError> {
+    read_pcs_with::<F, E, NativeMmcs<F>, NativeMmcs<E>, _>(
+        r,
+        s,
+        total,
+        read_frontier,
+        read_frontier,
+    )
+}
+pub(super) fn read_pcs_with<F, E, M, MX, O>(
+    r: &mut Reader<'_>,
+    s: &PcsDecode<O>,
+    total: &mut usize,
+    read_base: fn(&mut Reader<'_>, &O, &mut usize) -> Result<M::MultiProof, ArtifactError>,
+    read_round: fn(&mut Reader<'_>, &O, &mut usize) -> Result<MX::MultiProof, ArtifactError>,
+) -> Result<BinaryPcsProof<F, E, M, MX>, ArtifactError>
+where
+    F: RecursiveBinaryTowerField,
+    E: RecursiveBinaryChallengeField,
+    M: Mmcs<F, Commitment = MerkleCap<F, [u8; 32]>>,
+    MX: Mmcs<E, Commitment = MerkleCap<E, [u8; 32]>>,
+    O: OracleRows,
+{
     let sumcheck = SumcheckData {
         polynomial_evaluations: r.read_exact_items(
             "binary PCS rounds",
@@ -631,18 +692,20 @@ fn read_pcs<F: RecursiveBinaryTowerField, E: RecursiveBinaryChallengeField>(
             commitment: read_cap(r, s.cap_roots)?,
             opened_values: r.read_exact_items(
                 "binary PCS intermediate rows",
-                oracle.rows,
+                oracle.rows(),
                 E::RAW_BITS / 8,
                 |r| read_fields(r, 1),
             )?,
-            multi_proof: read_frontier(r, oracle, total)?,
+            multi_proof: read_round(r, oracle, total)?,
         })
     })?;
-    let base_opened_values =
-        r.read_exact_items("binary PCS base rows", s.base.rows, F::RAW_BITS / 8, |r| {
-            read_fields(r, 1)
-        })?;
-    let base_multi_proof = read_frontier(r, &s.base, total)?;
+    let base_opened_values = r.read_exact_items(
+        "binary PCS base rows",
+        s.base.rows(),
+        F::RAW_BITS / 8,
+        |r| read_fields(r, 1),
+    )?;
+    let base_multi_proof = read_base(r, &s.base, total)?;
     let final_codeword = Poly::new(read_fields(r, s.final_codeword)?);
     let pow_witness = read_field(r)?;
     Ok(BinaryPcsProof {

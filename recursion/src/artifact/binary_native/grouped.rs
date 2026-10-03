@@ -28,7 +28,7 @@ where
         + FoldAlphabet<E>
         + PackedValue<Value = E>,
 {
-    state: Arc<State<F, E, A, GroupedFamily>>,
+    pub(super) state: Arc<State<F, E, A, GroupedFamily>>,
 }
 
 impl<F, E, A> Clone for BinaryNativeGroupedAuthority<F, E, A>

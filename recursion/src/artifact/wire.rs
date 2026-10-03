@@ -315,6 +315,17 @@ impl<'a> Reader<'a> {
     }
 
     fn charge_container<T>(&mut self, count: usize) -> Result<(), ArtifactError> {
+        self.charge_streamed_vec::<T>(count, count)
+    }
+
+    pub(crate) fn charge_streamed_vec<T>(
+        &mut self,
+        count: usize,
+        capacity: usize,
+    ) -> Result<(), ArtifactError> {
+        if capacity < count {
+            return Err(ArtifactError::LengthOverflow);
+        }
         let entries = count.checked_add(1).ok_or(ArtifactError::LengthOverflow)?;
         let actual_entries = self
             .container_entries
@@ -328,7 +339,7 @@ impl<'a> Reader<'a> {
             });
         }
 
-        let storage = checked_product(count, size_of::<T>())?;
+        let storage = checked_product(capacity, size_of::<T>())?;
         let allocation = size_of::<Vec<T>>()
             .checked_add(storage)
             .ok_or(ArtifactError::LengthOverflow)?;

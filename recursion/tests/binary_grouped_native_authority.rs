@@ -10,8 +10,9 @@ use p3_lookup::IndexedLookupBuilder;
 use p3_lookup::indexed::TraceWindow;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_recursion::artifact::{
-    BinaryNativeGroupedAuthority, BinaryNativeGroupedPcsParameters,
-    BinaryNativeGroupedVerifierSpec, BinaryNativePcsParameters,
+    ArtifactError, BinaryNativeGroupedAuthority, BinaryNativeGroupedPcsParameters,
+    BinaryNativeGroupedVerifierSpec, BinaryNativePcsParameters, CanonicalBinaryStatement,
+    ExpectedVerifierArtifact,
 };
 use p3_recursion::pcs::binary::{BinaryCodewordGrouping, RecursiveBinaryTowerField};
 use p3_recursion::verifier::{VerificationError, VerifierLimits};
@@ -70,13 +71,115 @@ macro_rules! check {
             )
             .unwrap();
             for raw in [0xabu128, u128::MAX] {
-                let value =
-                    F::from_le_byte_iter(raw.to_le_bytes().into_iter().take(F::RAW_BITS / 8));
+                let value = F::from_le_byte_iter(raw.to_le_bytes().into_iter().take(F::RAW_BITS / 8));
                 let public = vec![vec![value]];
                 let proof = prover
                     .prove(&public, vec![RowMajorMatrix::new(vec![value; 2], 1)])
                     .unwrap();
-                let token = authority.verify_native(&proof, &public).unwrap();
+                let encoded = authority.encode_native_proof(&proof, &public).unwrap();
+                let statement = authority.encode_statement(&public).unwrap();
+                let identity = authority.canonical_verifier_bytes();
+                let anchor = ExpectedVerifierArtifact::from_trusted_bytes(identity);
+                let expected = CanonicalBinaryStatement::new(&statement, 1);
+                let token = authority
+                    .decode_and_verify(identity, anchor, &encoded, expected)
+                    .unwrap();
+                assert_eq!(
+                    encoded,
+                    authority.encode_native_proof(&proof, &public).unwrap()
+                );
+                for len in 0..encoded.len() {
+                    assert!(
+                        authority
+                            .decode_and_verify(identity, anchor, &encoded[..len], expected)
+                            .is_err()
+                    );
+                    if len >= 17 {
+                        let mut truncation = encoded[..len].to_vec();
+                        truncation[13..17].copy_from_slice(&((len - 17) as u32).to_le_bytes());
+                        assert!(
+                            authority
+                                .decode_and_verify(identity, anchor, &truncation, expected)
+                                .is_err()
+                        );
+                    }
+                }
+                assert_eq!(
+                    authority
+                        .decode_and_verify(&[], anchor, &[], expected)
+                        .err(),
+                    Some(ArtifactError::TrustedArtifactMismatch)
+                );
+                let mut wrong_statement = statement.clone();
+                wrong_statement[0] ^= 1;
+                assert_eq!(
+                    authority
+                        .decode_and_verify(
+                            identity,
+                            anchor,
+                            &encoded,
+                            CanonicalBinaryStatement::new(&wrong_statement, 1)
+                        )
+                        .err(),
+                    Some(ArtifactError::VerificationRejected)
+                );
+                let frontier_offset = 19
+                    + F::RAW_BITS / 8
+                    + proof.commitment.roots().len() * 32
+                    + E::RAW_BITS / 8
+                        * (1 + proof
+                            .sumcheck
+                            .round_polys
+                            .iter()
+                            .map(Vec::len)
+                            .sum::<usize>())
+                    + F::RAW_BITS / 8 * proof.sumcheck.pow_witnesses.len()
+                    + E::RAW_BITS / 8
+                        * (2 * proof.opening.sumcheck.polynomial_evaluations.len()
+                            + proof
+                                .opening
+                                .evals
+                                .iter()
+                                .map(|e| e.current().len() + e.next().len())
+                                .sum::<usize>())
+                    + F::RAW_BITS / 8 * proof.opening.base_opened_values.len();
+                let mut oversized = encoded.clone();
+                oversized[frontier_offset..frontier_offset + 4]
+                    .copy_from_slice(&u32::MAX.to_le_bytes());
+                assert!(matches!(
+                    authority.decode_and_verify(identity, anchor, &oversized, expected),
+                    Err(ArtifactError::DecodeLimitExceeded {
+                        component: "binary compressed frontier",
+                        ..
+                    })
+                ));
+                let missing_offset = frontier_offset + 4;
+                let mut oversized = encoded.clone();
+                oversized[missing_offset..missing_offset + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+                assert!(matches!(
+                    authority.decode_and_verify(identity, anchor, &oversized, expected),
+                    Err(ArtifactError::DecodeLimitExceeded {
+                        component: "binary grouped supplements",
+                        ..
+                    })
+                ));
+                // Upper bounds permit a supplement here, but exhaustive queries
+                // already read every lane. Complete native authentication rejects it.
+                let mut extra = encoded.clone();
+                extra[missing_offset..missing_offset + 4].copy_from_slice(&1u32.to_le_bytes());
+                extra.splice(
+                    missing_offset + 4..missing_offset + 4,
+                    vec![0; F::RAW_BITS / 8],
+                );
+                let body_len = (extra.len() - 17) as u32;
+                extra[13..17].copy_from_slice(&body_len.to_le_bytes());
+                assert_eq!(
+                    authority
+                        .decode_and_verify(identity, anchor, &extra, expected)
+                        .err(),
+                    Some(ArtifactError::VerificationRejected)
+                );
+
                 assert_eq!(token.public_values(), public);
                 assert_eq!(
                     token.canonical_verifier_bytes(),
@@ -152,11 +255,11 @@ struct GroupedView<T> {
     inner: p3_merkle_tree::PrunedMerklePaths<u8, 32>,
     missing_symbols: Vec<T>,
 }
-fn frontier_count<T: serde::de::DeserializeOwned>(p: &impl serde::Serialize) -> usize {
+fn grouped_counts<T: serde::de::DeserializeOwned>(p: &impl serde::Serialize) -> (usize, usize) {
     let bytes = postcard::to_allocvec(p).unwrap();
     let view: GroupedView<T> = postcard::from_bytes(&bytes).unwrap();
     assert!(view.missing_symbols.len() <= 256);
-    view.inner.sibling_hashes.len()
+    (view.inner.sibling_hashes.len(), view.missing_symbols.len())
 }
 
 #[test]
@@ -222,22 +325,37 @@ fn native_grouped_authority_authenticates_bus_indexed_and_independent_preprocess
         )
         .unwrap();
     assert!(proof.bus.is_some() && proof.indexed.is_some() && proof.preprocessed_opening.is_some());
-    let token = authority.verify_native(&proof, &public).unwrap();
+    let encoded = authority.encode_native_proof(&proof, &public).unwrap();
+    let statement = authority.encode_statement(&public).unwrap();
+    let identity = authority.canonical_verifier_bytes();
+    let token = authority
+        .decode_and_verify(
+            identity,
+            ExpectedVerifierArtifact::from_trusted_bytes(identity),
+            &encoded,
+            CanonicalBinaryStatement::new(&statement, 2),
+        )
+        .unwrap();
     assert_eq!(token.public_values(), public);
     let count = |p: &p3_multi_stark::config::PcsProof<
         p3_recursion::artifact::BinaryNativeGroupedConfig<F, E>,
     >| {
-        frontier_count::<F>(&p.base_multi_proof)
-            + p.rounds
-                .iter()
-                .map(|r| frontier_count::<E>(&r.multi_proof))
-                .sum::<usize>()
+        p.rounds
+            .iter()
+            .map(|r| grouped_counts::<E>(&r.multi_proof))
+            .fold(grouped_counts::<F>(&p.base_multi_proof), |a, b| {
+                (a.0 + b.0, a.1 + b.1)
+            })
     };
-    let main = count(&proof.opening);
-    let pp = count(proof.preprocessed_opening.as_ref().unwrap());
+    let (main, main_supplements) = count(&proof.opening);
+    let (pp, pp_supplements) = count(proof.preprocessed_opening.as_ref().unwrap());
     assert!(
         main > 0 && pp > 0,
         "main frontiers: {main}, preprocessing frontiers: {pp}"
+    );
+    assert!(
+        main_supplements > 0 && pp_supplements > 0,
+        "main supplements: {main_supplements}, preprocessing supplements: {pp_supplements}"
     );
     let limits = VerifierLimits {
         max_compressed_frontier_hashes: main + pp - 1,
@@ -249,6 +367,19 @@ fn native_grouped_authority_authenticates_bus_indexed_and_independent_preprocess
         bounded.verify_native(&proof, &public),
         Err(VerificationError::ResourceLimitExceeded {
             component: "compressed frontier hashes",
+            ..
+        })
+    ));
+    let identity = bounded.canonical_verifier_bytes();
+    assert!(matches!(
+        bounded.decode_and_verify(
+            identity,
+            ExpectedVerifierArtifact::from_trusted_bytes(identity),
+            &encoded,
+            CanonicalBinaryStatement::new(&statement, 2)
+        ),
+        Err(ArtifactError::DecodeLimitExceeded {
+            component: "binary compressed frontier",
             ..
         })
     ));

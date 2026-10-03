@@ -9,9 +9,9 @@ use p3_field::{PrimeCharacteristicRing, PrimeField64};
 use p3_matrix::dense::RowMajorMatrix;
 use p3_recursion::artifact::{
     ArtifactLimits, BinaryNativeGroupedAuthority, BinaryNativeGroupedPcsParameters,
-    BinaryNativeGroupedVerifierSpec, BinaryNativePcsParameters, CanonicalStatement,
-    ExpectedVerifierArtifact, PortableArtifactExport, PortableArtifactImport, PortableVerifier,
-    TypedArtifactVerifier,
+    BinaryNativeGroupedVerifierSpec, BinaryNativePcsParameters, CanonicalBinaryStatement,
+    CanonicalStatement, ExpectedVerifierArtifact, PortableArtifactExport, PortableArtifactImport,
+    PortableVerifier, TypedArtifactVerifier,
 };
 use p3_recursion::backend::fri::FriRecursionBackend;
 use p3_recursion::builtin_config::{
@@ -121,7 +121,17 @@ fn checked_grouped_native_chain(hash: ByteHash) {
         let proof = prover
             .prove(&public, vec![RowMajorMatrix::new(vec![value; 2], 1)])
             .unwrap();
-        let checked = authority.verify_native(&proof, &public).unwrap();
+        let encoded = authority.encode_native_proof(&proof, &public).unwrap();
+        let statement = authority.encode_statement(&public).unwrap();
+        let identity = authority.canonical_verifier_bytes();
+        let checked = authority
+            .decode_and_verify(
+                identity,
+                ExpectedVerifierArtifact::from_trusted_bytes(identity),
+                &encoded,
+                CanonicalBinaryStatement::new(&statement, 1),
+            )
+            .unwrap();
         assert_eq!(checked.public_values(), public);
         assert_eq!(
             checked.canonical_verifier_bytes(),
