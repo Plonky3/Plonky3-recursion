@@ -17,6 +17,7 @@ use p3_circuit::ops::BinaryTower128Target;
 use p3_circuit::{CircuitBuilder, ExprId};
 use p3_field::{ExtensionField, Field};
 use p3_lookup::InteractionSymbolicBuilder;
+use p3_lookup::indexed::{IndexedLookups, IndexedRead, IndexedTable};
 
 use super::{InputResourceUsage, VerificationError, VerifierLimits};
 use crate::pcs::binary::{
@@ -62,6 +63,7 @@ pub struct BinaryAirConstraintPlan<F = BinaryField128, E = BinaryField128> {
     nodes: Vec<Node>,
     constraints: Vec<usize>,
     bus: Vec<CompiledBusDeclaration>,
+    indexed: IndexedLookups,
     width: usize,
     public_count: usize,
     next_columns: Vec<usize>,
@@ -98,8 +100,8 @@ where
     }
 
     /// Internal entry point for a surrounding verifier that also consumes the
-    /// retained bus obligations. The public plain-AIR constructor rejects them.
-    pub(super) fn with_bus_limits<A>(
+    /// retained bus and indexed obligations. The public AIR constructor rejects them.
+    pub(super) fn with_interaction_limits<A>(
         air: &A,
         log_height: usize,
         limits: &VerifierLimits,
@@ -110,11 +112,29 @@ where
         Self::build(air, log_height, limits, true)
     }
 
+    #[cfg(test)]
+    pub(super) fn with_bus_limits<A>(
+        air: &A,
+        log_height: usize,
+        limits: &VerifierLimits,
+    ) -> Result<(Self, Vec<SymbolicBusInteraction<F>>), VerificationError>
+    where
+        A: Air<InteractionSymbolicBuilder<F, E>> + Air<BusSymbolicBuilder<F, E>>,
+    {
+        let output = Self::with_interaction_limits(air, log_height, limits)?;
+        if !output.0.indexed.is_empty() {
+            return Err(invalid(
+                "binary AIR interactions require a supported reduction",
+            ));
+        }
+        Ok(output)
+    }
+
     fn build<A>(
         air: &A,
         log_height: usize,
         limits: &VerifierLimits,
-        allow_bus: bool,
+        allow_interactions: bool,
     ) -> Result<(Self, Vec<SymbolicBusInteraction<F>>), VerificationError>
     where
         A: Air<InteractionSymbolicBuilder<F, E>> + Air<BusSymbolicBuilder<F, E>>,
@@ -189,19 +209,36 @@ where
         if !symbolic.global_interactions().is_empty()
             || !symbolic.local_interactions().is_empty()
             || !symbolic.exclusive_interactions().is_empty()
-            || !symbolic.indexed_reads().is_empty()
-            || !symbolic.indexed_tables().is_empty()
+            || (!allow_interactions
+                && (!symbolic.indexed_reads().is_empty() || !symbolic.indexed_tables().is_empty()))
         {
             return Err(invalid(
                 "binary AIR interactions require a supported reduction",
             ));
         }
         let bus_symbolic = BusSymbolicBuilder::<F, E>::from_air(air, layout);
-        if !allow_bus && !bus_symbolic.interactions().is_empty() {
+        if !allow_interactions && !bus_symbolic.interactions().is_empty() {
             return Err(invalid(
                 "binary AIR interactions require a supported reduction",
             ));
         }
+        // Bound declaration-owned lists before cloning or resolving names.
+        usage.add_metadata_entries(limits, symbolic.indexed_reads().len())?;
+        usage.add_metadata_entries(limits, symbolic.indexed_tables().len())?;
+        for read in symbolic.indexed_reads() {
+            usage.add_metadata_entries(limits, read.payload.len())?;
+            usage.add_metadata_string_bytes(limits, read.table.len())?;
+        }
+        for table in symbolic.indexed_tables() {
+            usage.add_metadata_entries(limits, table.columns.len())?;
+            usage.add_metadata_string_bytes(limits, table.name.len())?;
+        }
+        let indexed = IndexedLookups::new(
+            symbolic.indexed_reads().to_vec(),
+            symbolic.indexed_tables().to_vec(),
+            &layout,
+        )
+        .map_err(|_| invalid("binary AIR indexed declaration is invalid"))?;
         usage.add_metadata_entries(limits, bus_symbolic.interactions().len())?;
         for declaration in bus_symbolic.interactions() {
             usage.add_metadata_entries(limits, declaration.fields.len())?;
@@ -330,6 +367,7 @@ where
                 nodes,
                 constraints,
                 bus,
+                indexed,
                 width: layout.main_width,
                 public_count: layout.num_public_values,
                 next_columns,
@@ -347,6 +385,12 @@ where
 
     pub fn main_width(&self) -> usize {
         self.width
+    }
+    pub(super) fn indexed_reads(&self) -> &[IndexedRead] {
+        self.indexed.reads()
+    }
+    pub(super) fn indexed_tables(&self) -> &[IndexedTable] {
+        self.indexed.tables()
     }
     pub fn public_value_count(&self) -> usize {
         self.public_count
