@@ -2,6 +2,7 @@
 
 mod batch_stark;
 mod binary_air;
+mod binary_multi_stark;
 mod errors;
 mod limits;
 mod observable;
@@ -15,8 +16,12 @@ pub use batch_stark::{
     trusted_batch_tables, verify_batch_circuit, verify_p3_batch_proof_circuit,
     verify_trusted_p3_batch_proof_circuit,
 };
-pub use errors::VerificationError;
 pub use binary_air::BinaryAirConstraintPlan;
+pub use binary_multi_stark::{
+    BinaryMultiStarkInputShape, BinaryMultiStarkProofTargets, BinaryMultiStarkVerifier,
+    NativeBinaryMultiStarkInput,
+};
+pub use errors::VerificationError;
 pub use limits::{InputResourceUsage, VerifierLimits};
 pub use observable::ObservableCommitment;
 pub(crate) use periodic::evaluate_periodic_columns_circuit;

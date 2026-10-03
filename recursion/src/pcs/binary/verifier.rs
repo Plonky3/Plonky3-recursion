@@ -325,6 +325,10 @@ where
         observe_cap::<BF, EF>(circuit, challenger, cap)
     }
 
+    pub fn input_resource_usage(&self) -> InputResourceUsage {
+        self.usage
+    }
+
     /// Samples the configured native challenge width, zero-extended into the
     /// 128-bit tower gadget. This consumes exactly the bytes native extension
     /// sampling uses, including when the committed alphabet is narrower.
@@ -648,7 +652,7 @@ where
         Ok(())
     }
 
-    pub(super) fn check_targets(
+    pub(crate) fn check_targets(
         &self,
         cap: &[Vec<ExprId>],
         points: &[Vec<BinaryTower128Target>],
@@ -724,7 +728,7 @@ pub(super) fn batches(config: &BinaryPcsConfig) -> impl Iterator<Item = (usize, 
         })
 }
 
-pub(super) fn observe_seed<F, BF, EF>(
+pub(crate) fn observe_seed<F, BF, EF>(
     circuit: &mut CircuitBuilder<EF>,
     challenger: &mut BinaryTower128Challenger,
     seed: &[F],
@@ -789,7 +793,7 @@ where
         .collect::<Result<_, _>>()?)
 }
 
-pub(super) fn observe_values<BF, EF>(
+pub(crate) fn observe_values<BF, EF>(
     circuit: &mut CircuitBuilder<EF>,
     challenger: &mut BinaryTower128Challenger,
     values: &[BinaryTower128Target],
@@ -818,7 +822,7 @@ pub(super) fn constrain_width<F: Field + Eq + Hash>(
     }
 }
 
-pub(super) fn assert_equal<F: Field + Eq + Hash>(
+pub(crate) fn assert_equal<F: Field + Eq + Hash>(
     circuit: &mut CircuitBuilder<F>,
     a: &BinaryTower128Target,
     b: &BinaryTower128Target,

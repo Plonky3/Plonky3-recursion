@@ -283,7 +283,7 @@ where
         })
     }
 
-    fn check_targets(
+    pub(crate) fn check_targets(
         &self,
         proof: &BinaryGenericSumcheckProofTargets,
     ) -> Result<(), VerificationError> {
@@ -305,11 +305,19 @@ where
     pub fn import_native<Ch>(
         &self,
         proof: &GenericDegreeProof<F, E>,
-        mut ch: Ch,
+        ch: Ch,
     ) -> Result<NativeBinaryGenericSumcheckInput<F, E>, VerificationError>
     where
         Ch: FieldChallenger<F> + GrindingChallenger<Witness = F>,
     {
+        self.import_native_with_reduction(proof, ch)
+            .map(|(input, _, _)| input)
+    }
+
+    pub(crate) fn check_native(
+        &self,
+        proof: &GenericDegreeProof<F, E>,
+    ) -> Result<(), VerificationError> {
         if proof.round_polys.len() != self.input.shape.num_rounds
             || proof
                 .round_polys
@@ -319,7 +327,26 @@ where
         {
             return Err(invalid("binary generic sumcheck native shape mismatch"));
         }
-        let _ = proof
+        Ok(())
+    }
+
+    pub(crate) fn import_native_with_reduction<Ch>(
+        &self,
+        proof: &GenericDegreeProof<F, E>,
+        mut ch: Ch,
+    ) -> Result<
+        (
+            NativeBinaryGenericSumcheckInput<F, E>,
+            p3_multilinear_util::point::Point<E>,
+            E,
+        ),
+        VerificationError,
+    >
+    where
+        Ch: FieldChallenger<F> + GrindingChallenger<Witness = F>,
+    {
+        self.check_native(proof)?;
+        let (point, claim) = proof
             .verify(
                 &mut ch,
                 self.input.shape.num_rounds,
@@ -338,9 +365,13 @@ where
                 .map(|v| v.raw_coordinates()),
         );
         fields.extend(proof.pow_witnesses.iter().copied().map(F::raw_coordinates));
-        Ok(NativeBinaryGenericSumcheckInput {
-            shape: self.input.clone(),
-            fields,
-        })
+        Ok((
+            NativeBinaryGenericSumcheckInput {
+                shape: self.input.clone(),
+                fields,
+            },
+            point,
+            claim,
+        ))
     }
 }

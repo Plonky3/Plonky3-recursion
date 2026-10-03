@@ -217,7 +217,7 @@ where
         }
     }
 
-    pub(super) fn check_native<H0, C0, H1, C1>(
+    pub(crate) fn check_native<H0, C0, H1, C1>(
         &self,
         base_mmcs: &MerkleTreeMmcs<F, u8, H0, C0, 2, 32>,
         round_mmcs: &MerkleTreeMmcs<E, u8, H1, C1, 2, 32>,
