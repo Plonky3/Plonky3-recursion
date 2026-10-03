@@ -4,6 +4,7 @@ mod batch_stark;
 mod binary_air;
 mod binary_bus;
 mod binary_fraction;
+mod binary_logup;
 mod binary_multi_stark;
 mod binary_product;
 mod errors;
@@ -23,6 +24,11 @@ pub use binary_air::BinaryAirConstraintPlan;
 pub use binary_fraction::{
     BinaryFractionGkrInputShape, BinaryFractionGkrLayerTargets, BinaryFractionGkrOutput,
     BinaryFractionGkrProofTargets, BinaryFractionGkrVerifier, NativeBinaryFractionGkrInput,
+};
+pub use binary_logup::{
+    BinaryLogupStarInputShape, BinaryLogupStarOutput, BinaryLogupStarProofTargets,
+    BinaryLogupStarReaderTargets, BinaryLogupStarTableOutput, BinaryLogupStarVerifier,
+    NativeBinaryLogupStarInput,
 };
 pub use binary_multi_stark::{
     BinaryMultiStarkInputShape, BinaryMultiStarkPreprocessing, BinaryMultiStarkProofTargets,
