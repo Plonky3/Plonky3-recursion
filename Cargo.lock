@@ -760,6 +760,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "p3-binary-dft"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d647038292e71df507cb4c4de9b4259ab8bcdc2a661e37712adda9e7e9b458f6"
+dependencies = [
+ "p3-binary-field",
+ "p3-commit",
+ "p3-field",
+ "p3-matrix",
+ "p3-maybe-rayon",
+ "p3-util",
+]
+
+[[package]]
 name = "p3-binary-field"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -772,6 +786,29 @@ dependencies = [
  "p3-symmetric",
  "rand 0.10.1",
  "serde",
+ "tracing",
+]
+
+[[package]]
+name = "p3-binary-pcs"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "48ba861b833138bb2df22dfe438693aa2dba647c6abc1a6c9281cb5d77610ad2"
+dependencies = [
+ "p3-binary-dft",
+ "p3-binary-field",
+ "p3-challenger",
+ "p3-commit",
+ "p3-field",
+ "p3-matrix",
+ "p3-maybe-rayon",
+ "p3-multilinear-util",
+ "p3-security",
+ "p3-sumcheck",
+ "p3-util",
+ "p3-whir",
+ "serde",
+ "thiserror",
  "tracing",
 ]
 
@@ -1292,6 +1329,7 @@ dependencies = [
  "p3-baby-bear",
  "p3-batch-stark",
  "p3-binary-field",
+ "p3-binary-pcs",
  "p3-blake3",
  "p3-challenger",
  "p3-circuit",

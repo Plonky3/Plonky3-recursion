@@ -19,6 +19,7 @@ itertools.workspace = true
 p3-air.workspace = true
 p3-baby-bear.workspace = true
 p3-batch-stark.workspace = true
+p3-binary-pcs.workspace = true
 p3-challenger.workspace = true
 
 # Local dependencies

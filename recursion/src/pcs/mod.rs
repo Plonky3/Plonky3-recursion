@@ -1,5 +1,6 @@
 //! Polynomial Commitment Scheme (PCS) implementations for recursive verification.
 
+pub mod binary;
 pub mod fri;
 pub mod mmcs;
 pub mod whir;
