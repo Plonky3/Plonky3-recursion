@@ -19,7 +19,7 @@ use p3_multilinear_util::point::Point;
 use p3_recursion::BinaryTower128Challenger;
 use p3_recursion::pcs::binary::{
     BinaryOracleOpeningTargets, BinaryPcs128ProofTargets, BinaryPcs128Verifier, BinaryPcsVerifier,
-    RecursiveBinaryChallengeField, RecursiveBinaryTowerField,
+    NativeBinaryPcsInput, RecursiveBinaryChallengeField, RecursiveBinaryTowerField,
 };
 use p3_sumcheck::layout::{Layout, SuffixProver, Table, Verifier};
 use p3_sumcheck::strategy::Basis;
@@ -45,6 +45,7 @@ fn batches(config: &BinaryPcsConfig) -> impl Iterator<Item = (usize, usize)> + '
 }
 
 struct Fixture {
+    imported: NativeBinaryPcsInput,
     config: BinaryPcsConfig,
     protocol: OpeningProtocol,
     cap: Vec<[u8; 32]>,
@@ -163,6 +164,21 @@ macro_rules! fixture {
                 )
             })
             .collect();
+        let recursive = BinaryPcs128Verifier::new(
+            config,
+            protocol.clone(),
+            if stringify!($params) == "keccak" {
+                ByteHash::Keccak256
+            } else {
+                ByteHash::Blake3
+            },
+            $cap_height,
+            64,
+        )
+        .unwrap();
+        let imported = recursive
+            .import_native(&mmcs, &mmcs, &cap, &points, &proof, replay.clone())
+            .unwrap();
         let mut layout = Verifier::<Native, Native>::new(
             &protocol.table_shapes(),
             SuffixProver::<Native, Native>::strategy(),
@@ -245,6 +261,7 @@ macro_rules! fixture {
             })
             .collect();
         Fixture {
+            imported,
             config,
             protocol,
             cap: cap.roots().to_vec(),
@@ -433,6 +450,14 @@ where
         pow_witness,
         query_indices,
     };
+    assert_eq!(
+        values,
+        fixture
+            .imported
+            .private_values::<Host>(&verifier.input_shape())
+            .unwrap()
+    );
+    assert_eq!(fixture.queries, fixture.imported.query_indices());
     verifier
         .verify_at::<BabyBear, Host>(&mut builder, challenger, &root, &points, &proof)
         .unwrap();
@@ -685,6 +710,28 @@ macro_rules! narrow_fixture {
                 .map(|_| replay.sample_algebra_element::<E>())
                 .collect(),
         );
+        let recursive = BinaryPcsVerifier::<F, E>::new(
+            config,
+            protocol.clone(),
+            if stringify!($params) == "keccak" {
+                ByteHash::Keccak256
+            } else {
+                ByteHash::Blake3
+            },
+            0,
+            64,
+        )
+        .unwrap();
+        let imported = recursive
+            .import_native(
+                &base,
+                &rounds,
+                &root,
+                core::slice::from_ref(&point),
+                &proof,
+                replay.clone(),
+            )
+            .unwrap();
         let mut layout =
             Verifier::<F, E>::new(&protocol.table_shapes(), SuffixProver::<F, E>::strategy());
         layout
@@ -782,6 +829,7 @@ macro_rules! narrow_fixture {
             })
             .collect();
         Fixture {
+            imported,
             config,
             protocol,
             cap: root.roots().to_vec(),

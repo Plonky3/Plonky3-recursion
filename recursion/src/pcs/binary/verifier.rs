@@ -65,11 +65,12 @@ pub struct BinaryPcs128ProofTargets {
 /// binding, just as native `PrescribedPointPcs::verify_at` does.
 #[derive(Clone, Debug)]
 pub struct BinaryPcsVerifier<F, E> {
-    config: BinaryPcsConfig,
-    protocol: OpeningProtocol,
-    hash: ByteHash,
-    cap_height: usize,
-    max_query_draws: usize,
+    pub(super) config: BinaryPcsConfig,
+    pub(super) protocol: OpeningProtocol,
+    pub(super) hash: ByteHash,
+    pub(super) cap_height: usize,
+    pub(super) max_query_draws: usize,
+    pub(super) limits: VerifierLimits,
     opening_seeds: Vec<Vec<F>>,
     batching_seed: Vec<F>,
     challenge_field: PhantomData<E>,
@@ -293,6 +294,7 @@ where
             hash,
             cap_height,
             max_query_draws,
+            limits: *limits,
             opening_seeds,
             batching_seed: tap.binary_seed(),
             challenge_field: PhantomData,
@@ -645,7 +647,7 @@ where
     }
 }
 
-fn batches(config: &BinaryPcsConfig) -> impl Iterator<Item = (usize, usize)> + '_ {
+pub(super) fn batches(config: &BinaryPcsConfig) -> impl Iterator<Item = (usize, usize)> + '_ {
     (0..config.num_variables())
         .step_by(config.log_folding_factor())
         .map(|start| {
