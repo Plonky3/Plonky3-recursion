@@ -30,6 +30,63 @@ pub struct BinaryTower128Challenger {
 }
 
 impl BinaryTower128Challenger {
+    /// Selects one equal-shape continuation under constrained one-hot selectors.
+    /// Every branch must use the same builder and hash.
+    pub(crate) fn select_same_shape<EF: p3_field::Field + Eq + Hash>(
+        circuit: &mut CircuitBuilder<EF>,
+        branches: &[(ExprId, Self)],
+    ) -> Result<Self, CircuitBuilderError> {
+        let Some((_, first)) = branches.first() else {
+            return Err(CircuitBuilderError::NonPrimitiveOpArity {
+                op: "BinaryChallengerSelect",
+                expected: "at least one branch".into(),
+                got: 0,
+            });
+        };
+        if branches.iter().any(|(_, branch)| {
+            branch.hash != first.hash
+                || branch.input_buffer.len() != first.input_buffer.len()
+                || branch.output_buffer.len() != first.output_buffer.len()
+        }) {
+            return Err(CircuitBuilderError::NonPrimitiveOpArity {
+                op: "BinaryChallengerSelect",
+                expected: "matching hashes and buffer lengths".into(),
+                got: branches.len(),
+            });
+        }
+        let mut total = ExprId::ZERO;
+        for (selector, _) in branches {
+            circuit.assert_bool(*selector);
+            total = circuit.add(total, *selector);
+        }
+        let one = circuit.define_const(EF::ONE);
+        let difference = circuit.sub(one, total);
+        circuit.assert_zero(difference);
+        let mut select = |output: bool, len: usize| {
+            (0..len)
+                .map(|i| {
+                    branches
+                        .iter()
+                        .fold(ExprId::ZERO, |sum, (selector, branch)| {
+                            let byte = if output {
+                                branch.output_buffer[i]
+                            } else {
+                                branch.input_buffer[i]
+                            };
+                            circuit.mul_add(*selector, byte, sum)
+                        })
+                })
+                .collect()
+        };
+        let input_buffer = select(false, first.input_buffer.len());
+        let output_buffer = select(true, first.output_buffer.len());
+        Ok(Self {
+            hash: first.hash,
+            input_buffer,
+            output_buffer,
+        })
+    }
+
     /// Starts an empty byte transcript with the fixed hash choice.
     ///
     /// `Keccak256` matches `p3_keccak::Keccak256Hash`; `Blake3` matches

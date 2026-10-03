@@ -660,7 +660,7 @@ pub(super) fn batches(config: &BinaryPcsConfig) -> impl Iterator<Item = (usize, 
         })
 }
 
-fn observe_seed<F, BF, EF>(
+pub(super) fn observe_seed<F, BF, EF>(
     circuit: &mut CircuitBuilder<EF>,
     challenger: &mut BinaryTower128Challenger,
     seed: &[F],
@@ -718,7 +718,7 @@ where
         .collect::<Result<_, _>>()?)
 }
 
-fn observe_values<BF, EF>(
+pub(super) fn observe_values<BF, EF>(
     circuit: &mut CircuitBuilder<EF>,
     challenger: &mut BinaryTower128Challenger,
     values: &[BinaryTower128Target],
@@ -736,7 +736,7 @@ where
     Ok(())
 }
 
-fn constrain_width<F: Field + Eq + Hash>(
+pub(super) fn constrain_width<F: Field + Eq + Hash>(
     circuit: &mut CircuitBuilder<F>,
     value: &BinaryTower128Target,
     width: usize,
@@ -747,7 +747,7 @@ fn constrain_width<F: Field + Eq + Hash>(
     }
 }
 
-fn assert_equal<F: Field + Eq + Hash>(
+pub(super) fn assert_equal<F: Field + Eq + Hash>(
     circuit: &mut CircuitBuilder<F>,
     a: &BinaryTower128Target,
     b: &BinaryTower128Target,
