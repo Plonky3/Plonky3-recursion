@@ -619,7 +619,7 @@ mod tests {
 pub mod binary_field_params {
     pub use p3_binary_field::{
         BinaryChallenger, BinaryField8, BinaryField16, BinaryField32, BinaryField64,
-        BinaryField128, Gf2, Ghash128, TowerLevel,
+        BinaryField128, Gf2, Ghash128, Poly64, Poly192, TowerLevel,
     };
 
     /// The widest tower level, the field binary proofs draw their challenges from.
