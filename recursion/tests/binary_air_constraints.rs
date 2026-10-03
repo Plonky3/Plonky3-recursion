@@ -476,8 +476,6 @@ fn unsupported_obligations_and_invalid_declarations_are_rejected() {
         Unsupported::MissingNext,
         Unsupported::DuplicateNext,
         Unsupported::OutOfRangeNext,
-        Unsupported::Preprocessed,
-        Unsupported::Periodic,
         Unsupported::Boolean,
         Unsupported::BadPin,
         Unsupported::Empty,
@@ -485,6 +483,11 @@ fn unsupported_obligations_and_invalid_declarations_are_rejected() {
     ] {
         assert!(
             BinaryAirConstraintPlan::<BinaryField128>::from_air(&UnsupportedAir(kind), 1).is_err()
+        );
+    }
+    for kind in [Unsupported::Preprocessed, Unsupported::Periodic] {
+        assert!(
+            BinaryAirConstraintPlan::<BinaryField128>::from_air(&UnsupportedAir(kind), 1).is_ok()
         );
     }
     assert!(BinaryAirConstraintPlan::<BinaryField128>::from_air(&BusAir, 1).is_err());

@@ -16,13 +16,18 @@ use p3_field::{ExtensionField, Field};
 use p3_lookup::InteractionSymbolicBuilder;
 
 use super::{InputResourceUsage, VerificationError, VerifierLimits};
-use crate::pcs::binary::{RecursiveBinaryChallengeField, RecursiveBinaryTowerField};
+use crate::pcs::binary::{
+    RecursiveBinaryChallengeField, RecursiveBinaryTowerField, binary128_eval_multilinear,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Node {
     Constant(u128),
     Current(usize),
     Next(usize),
+    PreprocessedCurrent(usize),
+    PreprocessedNext(usize),
+    Periodic(usize),
     Public(usize),
     First,
     Last,
@@ -41,6 +46,9 @@ pub struct BinaryAirConstraintPlan<F = BinaryField128, E = BinaryField128> {
     width: usize,
     public_count: usize,
     next_columns: Vec<usize>,
+    preprocessed_width: usize,
+    preprocessed_next_columns: Vec<usize>,
+    periods: Vec<Vec<u128>>,
     log_height: usize,
     degree: usize,
     usage: InputResourceUsage,
@@ -71,27 +79,20 @@ where
         let mut usage = InputResourceUsage::default();
         usage.check_log_degree(limits, log_height)?;
         usage.check_matrix_width(limits, layout.main_width)?;
+        usage.check_matrix_width(limits, layout.preprocessed_width)?;
         if layout.main_width == 0 {
             return Err(invalid("binary AIR has no main columns"));
         }
         let columns = layout
             .main_width
-            .checked_mul(2)
+            .checked_add(layout.preprocessed_width)
+            .and_then(|n| n.checked_mul(2))
             .and_then(|n| n.checked_add(layout.num_public_values))
+            .and_then(|n| n.checked_add(layout.num_periodic_columns))
             .ok_or(VerificationError::ResourceArithmeticOverflow {
                 component: "binary AIR symbolic columns",
             })?;
         usage.add_metadata_entries(limits, columns)?;
-        if layout.preprocessed_width != 0
-            || layout.num_periodic_columns != 0
-            || !air.preprocessed_next_row_columns().is_empty()
-            || air.preprocessed_trace().is_some()
-            || !air.periodic_columns().is_empty()
-        {
-            return Err(invalid(
-                "binary AIR auxiliary columns require a supported plan",
-            ));
-        }
         if air.assumes_boolean_trace() {
             return Err(invalid("binary AIR requires a Boolean trace commitment"));
         }
@@ -102,6 +103,31 @@ where
                 return Err(invalid("binary AIR successor columns are invalid"));
             }
         }
+        let preprocessed_next_columns = air.preprocessed_next_row_columns();
+        usage.add_metadata_entries(limits, preprocessed_next_columns.len())?;
+        for (i, &column) in preprocessed_next_columns.iter().enumerate() {
+            if column >= layout.preprocessed_width
+                || preprocessed_next_columns[..i].contains(&column)
+            {
+                return Err(invalid(
+                    "binary AIR preprocessed successor columns are invalid",
+                ));
+            }
+        }
+        let periods = air.periodic_columns();
+        if periods.len() != layout.num_periodic_columns {
+            return Err(invalid("binary AIR periodic column count mismatch"));
+        }
+        for period in periods.iter() {
+            if !period.len().is_power_of_two() || period.len().ilog2() as usize > log_height {
+                return Err(invalid("binary AIR periodic column has invalid length"));
+            }
+            usage.add_metadata_entries(limits, period.len())?;
+        }
+        let periods: Vec<Vec<u128>> = periods
+            .iter()
+            .map(|period| period.iter().copied().map(F::raw_coordinates).collect())
+            .collect();
         let pins = air.public_boundary_io();
         let pin_nodes =
             pins.len()
@@ -153,6 +179,9 @@ where
             width: layout.main_width,
             public_count: layout.num_public_values,
             next_columns: &next_columns,
+            preprocessed_width: layout.preprocessed_width,
+            preprocessed_next_columns: &preprocessed_next_columns,
+            periodic_count: layout.num_periodic_columns,
             usage,
             limits,
         };
@@ -198,6 +227,9 @@ where
             width: layout.main_width,
             public_count: layout.num_public_values,
             next_columns,
+            preprocessed_width: layout.preprocessed_width,
+            preprocessed_next_columns,
+            periods,
             log_height,
             degree,
             usage,
@@ -213,6 +245,12 @@ where
     }
     pub fn next_columns(&self) -> &[usize] {
         &self.next_columns
+    }
+    pub fn preprocessed_width(&self) -> usize {
+        self.preprocessed_width
+    }
+    pub fn preprocessed_next_columns(&self) -> &[usize] {
+        &self.preprocessed_next_columns
     }
     pub fn log_height(&self) -> usize {
         self.log_height
@@ -239,14 +277,40 @@ where
         public: &[BinaryTower128Target],
         alpha: &BinaryTower128Target,
     ) -> Result<BinaryTower128Target, VerificationError> {
+        self.evaluate_with_auxiliary(b, point, current, next, &[], &[], public, alpha)
+    }
+
+    /// Evaluates the AIR with authenticated preprocessing openings. Successor
+    /// values follow their own declared order; periodic values are recomputed
+    /// from trusted vectors on the trailing coordinates of `point`.
+    pub fn evaluate_with_auxiliary<EF: Field + Eq + Hash>(
+        &self,
+        b: &mut CircuitBuilder<EF>,
+        point: &[BinaryTower128Target],
+        current: &[BinaryTower128Target],
+        next: &[BinaryTower128Target],
+        preprocessed_current: &[BinaryTower128Target],
+        preprocessed_next: &[BinaryTower128Target],
+        public: &[BinaryTower128Target],
+        alpha: &BinaryTower128Target,
+    ) -> Result<BinaryTower128Target, VerificationError> {
         if point.len() != self.log_height
             || current.len() != self.width
             || next.len() != self.next_columns.len()
             || public.len() != self.public_count
+            || preprocessed_current.len() != self.preprocessed_width
+            || preprocessed_next.len() != self.preprocessed_next_columns.len()
         {
             return Err(invalid("binary AIR evaluation target shape mismatch"));
         }
-        for value in point.iter().chain(current).chain(next).chain([alpha]) {
+        for value in point
+            .iter()
+            .chain(current)
+            .chain(next)
+            .chain(preprocessed_current)
+            .chain(preprocessed_next)
+            .chain([alpha])
+        {
             constrain_width(b, value, E::RAW_BITS);
         }
         for value in public {
@@ -261,12 +325,28 @@ where
             last = b.binary128_mul(&last, r);
         }
         let transition = b.binary128_add(&one, &last);
+        let mut periodic_values = Vec::with_capacity(self.periods.len());
+        for period in &self.periods {
+            let coordinates = period.len().ilog2() as usize;
+            let evaluations = period
+                .iter()
+                .map(|&raw| b.binary128_constant(raw))
+                .collect::<Result<Vec<_>, _>>()?;
+            periodic_values.push(binary128_eval_multilinear(
+                b,
+                &evaluations,
+                &point[point.len() - coordinates..],
+            )?);
+        }
         let mut values: Vec<BinaryTower128Target> = Vec::with_capacity(self.nodes.len());
         for node in &self.nodes {
             let value = match *node {
                 Node::Constant(raw) => b.binary128_constant(raw)?,
                 Node::Current(i) => current[i].clone(),
                 Node::Next(i) => next[i].clone(),
+                Node::PreprocessedCurrent(i) => preprocessed_current[i].clone(),
+                Node::PreprocessedNext(i) => preprocessed_next[i].clone(),
+                Node::Periodic(i) => periodic_values[i].clone(),
                 Node::Public(i) => public[i].clone(),
                 Node::First => first.clone(),
                 Node::Last => last.clone(),
@@ -292,6 +372,9 @@ struct Compiler<'a, F> {
     width: usize,
     public_count: usize,
     next_columns: &'a [usize],
+    preprocessed_width: usize,
+    preprocessed_next_columns: &'a [usize],
+    periodic_count: usize,
     usage: InputResourceUsage,
     limits: &'a VerifierLimits,
 }
@@ -355,6 +438,24 @@ impl<F: RecursiveBinaryTowerField> Compiler<'_, F> {
                         }
                         BaseEntry::Public if v.index < self.public_count => {
                             (Node::Public(v.index), 0)
+                        }
+                        BaseEntry::Preprocessed { offset: 0 }
+                            if v.index < self.preprocessed_width =>
+                        {
+                            (Node::PreprocessedCurrent(v.index), 1)
+                        }
+                        BaseEntry::Preprocessed { offset: 1 }
+                            if v.index < self.preprocessed_width =>
+                        {
+                            let slot = self.preprocessed_next_columns.iter()
+                                .position(|&column| column == v.index)
+                                .ok_or_else(|| invalid("binary AIR reads an undeclared preprocessed successor column"))?;
+                            (Node::PreprocessedNext(slot), 1)
+                        }
+                        BaseEntry::Periodic if v.index < self.periodic_count => {
+                            // MultiStark scores declared periodic leaves as
+                            // degree one, including periods of length one.
+                            (Node::Periodic(v.index), 1)
                         }
                         _ => {
                             return Err(invalid(

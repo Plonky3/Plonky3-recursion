@@ -200,6 +200,11 @@ where
         let mut plans = Vec::with_capacity(airs.len());
         for (&air, &height) in airs.iter().zip(heights) {
             let plan = BinaryAirConstraintPlan::<F, E>::with_limits(air, height, limits)?;
+            if plan.preprocessed_width() != 0 {
+                return Err(invalid(
+                    "binary MultiStark preprocessing requires a trusted commitment plan",
+                ));
+            }
             usage.merge(limits, plan.input_resource_usage())?;
             let public_limbs = plan.public_value_count().checked_mul(8).ok_or(
                 VerificationError::ResourceArithmeticOverflow {
