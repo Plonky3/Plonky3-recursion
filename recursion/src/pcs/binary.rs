@@ -89,7 +89,10 @@ pub use poly_generic_sumcheck::{
     BinaryPolyGenericSumcheckProofTargets, BinaryPolyGenericSumcheckVerifier,
     NativeBinaryPolyGenericSumcheckInput,
 };
-pub use poly_nonzero::{BinaryPolyNonzeroChallengeOutput, BinaryPolyNonzeroChallengePlan};
+pub use poly_nonzero::{
+    BinaryPolyNonzeroChallengeOutput, BinaryPolyNonzeroChallengePlan,
+    BinaryPolyNonzeroChallengeTailOutput, BinaryPolyNonzeroChallengeTailPlan,
+};
 pub use poly_whir_input::{
     BinaryPolyWhirInputShape, BinaryPolyWhirProofTargets, BinaryPolyWhirRoundTargets,
     BinaryPolyWhirSumcheckTargets, NativeBinaryPolyWhirInput,
