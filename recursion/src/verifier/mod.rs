@@ -4,6 +4,7 @@ mod batch_stark;
 mod binary_air;
 mod binary_bus;
 mod binary_fraction;
+mod binary_grouped_boolean_multi_stark;
 mod binary_grouped_multi_stark;
 mod binary_indexed;
 mod binary_logup;
@@ -26,6 +27,11 @@ pub use binary_air::BinaryAirConstraintPlan;
 pub use binary_fraction::{
     BinaryFractionGkrInputShape, BinaryFractionGkrLayerTargets, BinaryFractionGkrOutput,
     BinaryFractionGkrProofTargets, BinaryFractionGkrVerifier, NativeBinaryFractionGkrInput,
+};
+pub use binary_grouped_boolean_multi_stark::{
+    BinaryGroupedBooleanTraceMultiStarkInputShape, BinaryGroupedBooleanTraceMultiStarkPreprocessing,
+    BinaryGroupedBooleanTraceMultiStarkProofTargets, BinaryGroupedBooleanTraceMultiStarkVerifier,
+    NativeBinaryGroupedBooleanTraceMultiStarkInput,
 };
 pub use binary_grouped_multi_stark::{
     BinaryGroupedMultiStarkInputShape, BinaryGroupedMultiStarkPreprocessing,

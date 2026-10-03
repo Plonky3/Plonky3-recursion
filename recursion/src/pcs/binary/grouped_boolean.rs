@@ -340,18 +340,58 @@ impl<E: RecursiveBinaryChallengeField + ExtensionField<E>> BinaryGroupedBooleanP
             + GrindingChallenger<Witness = E>
             + CanObserve<MerkleCap<E, [u8; 32]>>,
     {
+        self.import_native_with_usage(
+            base_mmcs,
+            round_mmcs,
+            commitment,
+            points,
+            readings,
+            proof,
+            challenger,
+            &core::cell::RefCell::new(InputResourceUsage::default()),
+        )
+    }
+
+    pub(crate) fn import_native_with_usage<H0, C0, H1, C1, Ch>(
+        &self,
+        base_mmcs: &MerkleTreeMmcs<E, u8, H0, C0, 2, 32>,
+        round_mmcs: &MerkleTreeMmcs<E, u8, H1, C1, 2, 32>,
+        commitment: &MerkleCap<E, [u8; 32]>,
+        points: &[Point<E>],
+        readings: &[(Option<E>, Option<E>)],
+        proof: &BooleanProof<
+            E,
+            GroupedCodewordMmcs<MerkleTreeMmcs<E, u8, H0, C0, 2, 32>>,
+            GroupedCodewordMmcs<MerkleTreeMmcs<E, u8, H1, C1, 2, 32>>,
+        >,
+        challenger: &mut Ch,
+        usage: &core::cell::RefCell<InputResourceUsage>,
+    ) -> Result<NativeBinaryGroupedBooleanInput<E>, VerificationError>
+    where
+        E: PackedValue<Value = E>,
+        H0: CryptographicHasher<E, [u8; 32]> + Sync,
+        H1: CryptographicHasher<E, [u8; 32]> + Sync,
+        C0: PseudoCompressionFunction<[u8; 32], 2> + Sync,
+        C1: PseudoCompressionFunction<[u8; 32], 2> + Sync,
+        Ch: Clone
+            + FieldChallenger<E>
+            + CanSampleUniformBits<E>
+            + GrindingChallenger<Witness = E>
+            + CanObserve<MerkleCap<E, [u8; 32]>>,
+    {
         self.check_native_structure(base_mmcs, round_mmcs, commitment, proof)?;
         let mut staged = challenger.clone();
         let (reduction, point, _) =
             self.reduction
                 .import_native(points, readings, &proof.reduction, &mut staged)?;
-        let opening = self.opening.import_native(
+        let opening = self.opening.import_native_with_usage(
             base_mmcs,
             round_mmcs,
             commitment,
             &[point],
             &proof.opening,
             &mut staged,
+            usage,
         )?;
         *challenger = staged;
         Ok(NativeBinaryGroupedBooleanInput {

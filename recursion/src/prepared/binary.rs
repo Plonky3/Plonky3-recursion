@@ -1,6 +1,8 @@
 //! Prepared binary MultiStark circuits with an independent prime output field.
 
+mod grouped_boolean;
 mod lifecycle;
+pub use grouped_boolean::PreparedBinaryGroupedBooleanTraceMultiStarkLayer;
 use lifecycle::BinaryPreparedCore;
 
 use alloc::boxed::Box;
