@@ -18,8 +18,8 @@ pub use batch_stark::{
 };
 pub use binary_air::BinaryAirConstraintPlan;
 pub use binary_multi_stark::{
-    BinaryMultiStarkInputShape, BinaryMultiStarkProofTargets, BinaryMultiStarkVerifier,
-    NativeBinaryMultiStarkInput,
+    BinaryMultiStarkInputShape, BinaryMultiStarkPreprocessing, BinaryMultiStarkProofTargets,
+    BinaryMultiStarkVerifier, NativeBinaryMultiStarkInput,
 };
 pub use errors::VerificationError;
 pub use limits::{InputResourceUsage, VerifierLimits};

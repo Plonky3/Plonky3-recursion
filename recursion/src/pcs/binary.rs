@@ -81,7 +81,7 @@ pub use whir_input::{
 };
 pub use whir_queries::BinaryWhirQueryPlan;
 pub use whir_verifier::BinaryWhirVerifier;
-pub(crate) use verifier::{assert_equal, observe_seed, observe_values};
+pub(crate) use verifier::{assert_equal, observe_cap, observe_seed, observe_values};
 
 /// Verifies terminal binary PCS query sampling against a native configuration.
 /// The challenger must already have absorbed the final codeword and checked

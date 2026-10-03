@@ -32,7 +32,7 @@ use crate::pcs::binary::{
     BinaryGenericSumcheckVerifier, BinaryNonzeroChallengePlan, BinaryPcs128ProofTargets,
     BinaryPcsInputShape, BinaryPcsVerifier, NativeBinaryGenericSumcheckInput, NativeBinaryPcsInput,
     RecursiveBinaryChallengeField, RecursiveBinaryTowerField, assert_equal, binary128_eq_eval,
-    observe_seed, observe_values,
+    observe_cap, observe_seed, observe_values,
 };
 use crate::transcript::domain_separator_seed;
 use crate::{BinaryQueryContinuation, BinaryTower128Challenger};
@@ -45,8 +45,42 @@ pub struct BinaryMultiStarkInputShape<F = BinaryField128, E = BinaryField128> {
     zerocheck_seed: Vec<F>,
     sumcheck: BinaryGenericSumcheckInputShape<F, E>,
     opening: BinaryPcsInputShape,
+    preprocessed: Option<PreprocessedInputShape>,
     cap_height: usize,
     max_tau_draws: usize,
+}
+
+/// Trusted preprocessing authority, supplied independently of every proof.
+/// The commitment must belong to the ordered nonempty preprocessing tables
+/// at the fixed AIR heights. Its PCS geometry may differ from the main trace.
+#[derive(Clone, Debug)]
+pub struct BinaryMultiStarkPreprocessing<F = BinaryField128> {
+    pub config: BinaryPcsConfig,
+    pub hash: ByteHash,
+    pub cap_height: usize,
+    pub max_query_draws: usize,
+    pub commitment: MerkleCap<F, [u8; 32]>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PreprocessedInputShape {
+    opening: BinaryPcsInputShape,
+    commitment: Vec<[u8; 32]>,
+    air_indices: Vec<usize>,
+}
+
+impl PreprocessedInputShape {
+    fn constant_cap<EF: Field + Eq + Hash>(&self, b: &mut CircuitBuilder<EF>) -> Vec<Vec<ExprId>> {
+        self.commitment
+            .iter()
+            .map(|root| {
+                bytes_to_limbs(root)
+                    .into_iter()
+                    .map(|limb| b.define_const(EF::from_u16(limb)))
+                    .collect()
+            })
+            .collect()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -54,6 +88,7 @@ pub struct BinaryMultiStarkProofTargets {
     pub commitment: Vec<Vec<ExprId>>,
     pub sumcheck: BinaryGenericSumcheckProofTargets,
     pub opening: BinaryPcs128ProofTargets,
+    pub preprocessed_opening: Option<BinaryPcs128ProofTargets>,
 }
 
 impl<F: RecursiveBinaryTowerField, E: RecursiveBinaryChallengeField>
@@ -77,10 +112,16 @@ impl<F: RecursiveBinaryTowerField, E: RecursiveBinaryChallengeField>
             .collect();
         let sumcheck = self.sumcheck.allocate_targets::<BF, EF>(b)?;
         let opening = self.opening.allocate_targets::<BF, EF>(b)?;
+        let preprocessed_opening = self
+            .preprocessed
+            .as_ref()
+            .map(|preprocessed| preprocessed.opening.allocate_targets::<BF, EF>(b))
+            .transpose()?;
         Ok(BinaryMultiStarkProofTargets {
             commitment,
             sumcheck,
             opening,
+            preprocessed_opening,
         })
     }
 }
@@ -92,6 +133,7 @@ pub struct NativeBinaryMultiStarkInput<F = BinaryField128, E = BinaryField128> {
     commitment: Vec<[u8; 32]>,
     sumcheck: NativeBinaryGenericSumcheckInput<F, E>,
     opening: NativeBinaryPcsInput,
+    preprocessed_opening: Option<NativeBinaryPcsInput>,
 }
 
 impl<F: RecursiveBinaryTowerField, E: RecursiveBinaryChallengeField>
@@ -117,20 +159,32 @@ impl<F: RecursiveBinaryTowerField, E: RecursiveBinaryChallengeField>
             .collect();
         values.extend(self.sumcheck.private_values::<EF>(&expected.sumcheck)?);
         values.extend(self.opening.private_values::<EF>(&expected.opening)?);
+        match (&expected.preprocessed, &self.preprocessed_opening) {
+            (Some(shape), Some(input)) => {
+                values.extend(input.private_values::<EF>(&shape.opening)?)
+            }
+            (None, None) => {}
+            _ => {
+                return Err(invalid(
+                    "binary MultiStark preprocessing input shape mismatch",
+                ));
+            }
+        }
         Ok(values)
     }
 }
 
 /// Trusted plain-AIR binary MultiStark verifier with ordinary byte MMCS.
 /// Binds caller-owned public values through the complete AIR, sumcheck, and
-/// authenticated PCS relation. Auxiliary and interaction families require
-/// separate supported plans and are rejected by the trusted AIR compiler.
+/// authenticated PCS relation. Periodic constants and preprocessing authority
+/// are fixed by construction. Interaction families require separate plans.
 #[derive(Clone, Debug)]
 pub struct BinaryMultiStarkVerifier<F = BinaryField128, E = BinaryField128> {
     input: BinaryMultiStarkInputShape<F, E>,
     sumcheck: BinaryGenericSumcheckVerifier<F, E>,
     tau: BinaryNonzeroChallengePlan<E>,
     opening: BinaryPcsVerifier<F, E>,
+    preprocessed: Option<BinaryPcsVerifier<F, E>>,
     usage: InputResourceUsage,
 }
 
@@ -179,6 +233,66 @@ where
     where
         A: Air<InteractionSymbolicBuilder<F, E>> + Air<BusSymbolicBuilder<F, E>>,
     {
+        Self::build(
+            airs,
+            heights,
+            config,
+            hash,
+            cap_height,
+            pow_bits,
+            max_tau_draws,
+            max_query_draws,
+            None,
+            limits,
+        )
+    }
+
+    /// Builds a verifier retaining an independent trusted preprocessing cap.
+    /// No proof can provide or replace this authority.
+    pub fn with_preprocessing<A>(
+        airs: &[&A],
+        heights: &[usize],
+        config: BinaryPcsConfig,
+        hash: ByteHash,
+        cap_height: usize,
+        pow_bits: usize,
+        max_tau_draws: usize,
+        max_query_draws: usize,
+        preprocessing: BinaryMultiStarkPreprocessing<F>,
+        limits: &VerifierLimits,
+    ) -> Result<Self, VerificationError>
+    where
+        A: Air<InteractionSymbolicBuilder<F, E>> + Air<BusSymbolicBuilder<F, E>>,
+    {
+        Self::build(
+            airs,
+            heights,
+            config,
+            hash,
+            cap_height,
+            pow_bits,
+            max_tau_draws,
+            max_query_draws,
+            Some(preprocessing),
+            limits,
+        )
+    }
+
+    fn build<A>(
+        airs: &[&A],
+        heights: &[usize],
+        config: BinaryPcsConfig,
+        hash: ByteHash,
+        cap_height: usize,
+        pow_bits: usize,
+        max_tau_draws: usize,
+        max_query_draws: usize,
+        preprocessing: Option<BinaryMultiStarkPreprocessing<F>>,
+        limits: &VerifierLimits,
+    ) -> Result<Self, VerificationError>
+    where
+        A: Air<InteractionSymbolicBuilder<F, E>> + Air<BusSymbolicBuilder<F, E>>,
+    {
         if airs.is_empty() || airs.len() != heights.len() || heights.contains(&0) {
             return Err(invalid("binary MultiStark trusted instance shape mismatch"));
         }
@@ -200,7 +314,7 @@ where
         let mut plans = Vec::with_capacity(airs.len());
         for (&air, &height) in airs.iter().zip(heights) {
             let plan = BinaryAirConstraintPlan::<F, E>::with_limits(air, height, limits)?;
-            if plan.preprocessed_width() != 0 {
+            if plan.preprocessed_width() != 0 && preprocessing.is_none() {
                 return Err(invalid(
                     "binary MultiStark preprocessing requires a trusted commitment plan",
                 ));
@@ -255,16 +369,67 @@ where
         let mut opening_usage = opening.input_resource_usage();
         opening_usage.instances = 0;
         usage.merge(limits, opening_usage)?;
+        let preprocessed_indices: Vec<_> = plans
+            .iter()
+            .enumerate()
+            .filter_map(|(index, air)| (air.preprocessed_width() != 0).then_some(index))
+            .collect();
+        usage.add_metadata_entries(limits, preprocessed_indices.len())?;
+        if preprocessed_indices.is_empty() && preprocessing.is_some() {
+            return Err(invalid(
+                "binary MultiStark has an unused preprocessing authority",
+            ));
+        }
+        let (preprocessed, preprocessed_input) = if let Some(preprocessing) = preprocessing {
+            let tables = preprocessed_indices
+                .iter()
+                .map(|&index| {
+                    let air = &plans[index];
+                    TableSpec::new(
+                        TableShape::new(air.log_height(), air.preprocessed_width()),
+                        vec![OpeningBatch::new(
+                            (0..air.preprocessed_width()).collect(),
+                            air.preprocessed_next_columns().to_vec(),
+                        )],
+                    )
+                })
+                .collect();
+            let verifier = BinaryPcsVerifier::<F, E>::with_limits(
+                preprocessing.config,
+                OpeningProtocol::new(tables),
+                preprocessing.hash,
+                preprocessing.cap_height,
+                preprocessing.max_query_draws,
+                limits,
+            )?;
+            if preprocessing.commitment.num_roots() != 1usize << preprocessing.cap_height {
+                return Err(invalid(
+                    "binary MultiStark trusted preprocessing cap shape mismatch",
+                ));
+            }
+            let mut preprocessed_usage = verifier.input_resource_usage();
+            preprocessed_usage.instances = 0;
+            usage.merge(limits, preprocessed_usage)?;
+            usage.add_metadata_entries(limits, preprocessing.commitment.num_roots())?;
+            let input = PreprocessedInputShape {
+                opening: verifier.input_shape(),
+                commitment: preprocessing.commitment.roots().to_vec(),
+                air_indices: preprocessed_indices,
+            };
+            (Some(verifier), Some(input))
+        } else {
+            (None, None)
+        };
         let outer = MultiStarkShape {
             instances: plans
                 .iter()
                 .map(|air| MultiStarkInstanceShape {
                     num_variables: air.log_height(),
                     main_width: air.main_width(),
-                    preprocessed_width: 0,
+                    preprocessed_width: air.preprocessed_width(),
                     num_public_values: air.public_value_count(),
                     main_next_row_columns: air.next_columns().to_vec(),
-                    preprocessed_next_row_columns: vec![],
+                    preprocessed_next_row_columns: air.preprocessed_next_columns().to_vec(),
                 })
                 .collect(),
             pow_bits,
@@ -285,6 +450,7 @@ where
             zerocheck_seed: domain_separator_seed(&zerocheck.domain_separator::<F, E>()),
             sumcheck: sumcheck.input_shape(),
             opening: opening.input_shape(),
+            preprocessed: preprocessed_input,
             cap_height,
             max_tau_draws,
         };
@@ -293,6 +459,7 @@ where
             sumcheck,
             tau,
             opening,
+            preprocessed,
             usage,
         })
     }
@@ -329,7 +496,34 @@ where
             .collect();
         self.opening
             .check_targets(&proof.commitment, &points, &proof.opening)?;
+        let preprocessed_cap = match (
+            &self.preprocessed,
+            &self.input.preprocessed,
+            &proof.preprocessed_opening,
+        ) {
+            (Some(verifier), Some(shape), Some(proof)) => {
+                let cap = shape.constant_cap(b);
+                let points: Vec<_> = shape
+                    .air_indices
+                    .iter()
+                    .map(|&index| points[index].clone())
+                    .collect();
+                verifier.check_targets(&cap, &points, proof)?;
+                Some(cap)
+            }
+            (None, None, None) => None,
+            _ => {
+                return Err(invalid(
+                    "binary MultiStark preprocessed opening shape mismatch",
+                ));
+            }
+        };
         observe_seed::<F, BF, EF>(b, &mut ch, &self.input.outer_seed)?;
+        if let Some(cap) = &preprocessed_cap {
+            // Native MultiStark absorbs this trusted VK cap directly, without
+            // the seed used by the throwaway setup commitment transcript.
+            observe_cap::<BF, EF>(b, &mut ch, cap)?;
+        }
         self.opening
             .observe_commitment::<BF, EF>(b, &mut ch, &proof.commitment)?;
         for values in public {
@@ -355,22 +549,46 @@ where
             .iter()
             .map(|air| reduction.point[reduction.point.len() - air.log_height()..].to_vec())
             .collect();
-        let continuation = self.opening.verify_at_with_continuation::<BF, EF>(
+        let mut continuation = self.opening.verify_at_with_continuation::<BF, EF>(
             b,
             reduction.challenger,
             &proof.commitment,
             &points,
             &proof.opening,
         )?;
+        if let (Some(verifier), Some(shape), Some(cap), Some(proof)) = (
+            &self.preprocessed,
+            &self.input.preprocessed,
+            &preprocessed_cap,
+            &proof.preprocessed_opening,
+        ) {
+            let points: Vec<_> = shape
+                .air_indices
+                .iter()
+                .map(|&index| points[index].clone())
+                .collect();
+            continuation =
+                verifier.verify_at_after_queries::<BF, EF>(b, continuation, cap, &points, proof)?;
+        }
         let mut folded = zero;
         let mut weight = b.binary128_constant(1)?;
+        let mut preprocessed_slot = 0;
         for (i, air) in self.input.airs.iter().enumerate() {
             let values = &proof.opening.evals[i];
-            let own = air.evaluate(
+            let (preprocessed_current, preprocessed_next) = if air.preprocessed_width() != 0 {
+                let values = &proof.preprocessed_opening.as_ref().unwrap().evals[preprocessed_slot];
+                preprocessed_slot += 1;
+                (values.current(), values.next())
+            } else {
+                (&[][..], &[][..])
+            };
+            let own = air.evaluate_with_auxiliary(
                 b,
                 &points[i],
                 values.current(),
                 values.next(),
+                preprocessed_current,
+                preprocessed_next,
                 &public[i],
                 &alpha,
             )?;
@@ -433,11 +651,61 @@ where
             + CanObserve<MerkleCap<E, [u8; 32]>>
             + Clone,
     {
+        let preprocessing = self.preprocessed.as_ref().map(|_| (base_mmcs, round_mmcs));
+        self.import_native_with_preprocessing(
+            base_mmcs,
+            round_mmcs,
+            preprocessing,
+            public,
+            proof,
+            ch,
+        )
+    }
+
+    /// Imports a proof whose preprocessing uses independently configured MMCS
+    /// instances, including a cap height distinct from the main trace.
+    pub fn import_native_with_preprocessing<C, H0, C0, H1, C1, Ch>(
+        &self,
+        base_mmcs: &MerkleTreeMmcs<F, u8, H0, C0, 2, 32>,
+        round_mmcs: &MerkleTreeMmcs<E, u8, H1, C1, 2, 32>,
+        preprocessed_mmcs: Option<(
+            &MerkleTreeMmcs<F, u8, H0, C0, 2, 32>,
+            &MerkleTreeMmcs<E, u8, H1, C1, 2, 32>,
+        )>,
+        public: &[Vec<F>],
+        proof: &MultiStarkProof<C>,
+        ch: &mut Ch,
+    ) -> Result<NativeBinaryMultiStarkInput<F, E>, VerificationError>
+    where
+        C: MultiStarkConfig<Val = F, Challenge = E>,
+        C::Pcs: MultilinearPcs<
+                E,
+                C::Challenger,
+                Commitment = MerkleCap<F, [u8; 32]>,
+                Proof = BinaryPcsProof<
+                    F,
+                    E,
+                    MerkleTreeMmcs<F, u8, H0, C0, 2, 32>,
+                    MerkleTreeMmcs<E, u8, H1, C1, 2, 32>,
+                >,
+            >,
+        F: PackedValue<Value = F>,
+        E: PackedValue<Value = E>,
+        H0: CryptographicHasher<F, [u8; 32]> + Sync,
+        H1: CryptographicHasher<E, [u8; 32]> + Sync,
+        C0: PseudoCompressionFunction<[u8; 32], 2> + Sync,
+        C1: PseudoCompressionFunction<[u8; 32], 2> + Sync,
+        Ch: FieldChallenger<F>
+            + CanSampleUniformBits<F>
+            + GrindingChallenger<Witness = F>
+            + CanObserve<MerkleCap<F, [u8; 32]>>
+            + CanObserve<MerkleCap<E, [u8; 32]>>
+            + Clone,
+    {
         self.check_public(public)?;
         if proof.lookup.is_some()
             || proof.indexed.is_some()
             || proof.bus.is_some()
-            || proof.preprocessed_opening.is_some()
             || proof.sumcheck.claimed_sum != E::ZERO
         {
             return Err(invalid(
@@ -458,8 +726,34 @@ where
             &points,
             &proof.opening,
         )?;
+        let preprocessing = match (
+            &self.preprocessed,
+            &self.input.preprocessed,
+            preprocessed_mmcs,
+            &proof.preprocessed_opening,
+        ) {
+            (Some(verifier), Some(shape), Some((base, round)), Some(proof)) => {
+                let cap = MerkleCap::<F, _>::new(shape.commitment.clone());
+                let points: Vec<_> = shape
+                    .air_indices
+                    .iter()
+                    .map(|&index| points[index].clone())
+                    .collect();
+                verifier.check_native(base, round, &cap, &points, proof)?;
+                Some((verifier, shape, base, round, proof, cap))
+            }
+            (None, None, None, None) => None,
+            _ => {
+                return Err(invalid(
+                    "binary MultiStark native preprocessed opening shape mismatch",
+                ));
+            }
+        };
         let mut staged = ch.clone();
         staged.observe_slice(&self.input.outer_seed);
+        if let Some((_, _, _, _, _, cap)) = &preprocessing {
+            staged.observe(cap.clone());
+        }
         layout::observe_commitment::<F, _, _>(&mut staged, proof.commitment.clone());
         for values in public {
             staged.observe_slice(values);
@@ -487,12 +781,23 @@ where
             &proof.opening,
             &mut staged,
         )?;
+        let preprocessed_opening = preprocessing
+            .map(|(verifier, shape, base, round, proof, cap)| {
+                let points: Vec<_> = shape
+                    .air_indices
+                    .iter()
+                    .map(|&index| points[index].clone())
+                    .collect();
+                verifier.import_native(base, round, &cap, &points, proof, &mut staged)
+            })
+            .transpose()?;
         *ch = staged;
         Ok(NativeBinaryMultiStarkInput {
             shape: self.input.clone(),
             commitment: proof.commitment.roots().to_vec(),
             sumcheck,
             opening,
+            preprocessed_opening,
         })
     }
 }

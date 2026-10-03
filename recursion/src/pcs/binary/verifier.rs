@@ -759,7 +759,7 @@ where
         .collect()
 }
 
-pub(super) fn observe_cap<BF, EF>(
+pub(crate) fn observe_cap<BF, EF>(
     circuit: &mut CircuitBuilder<EF>,
     challenger: &mut BinaryTower128Challenger,
     cap: &[Vec<ExprId>],
