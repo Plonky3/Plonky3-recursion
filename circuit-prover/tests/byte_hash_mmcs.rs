@@ -15,7 +15,7 @@ use p3_field::PrimeCharacteristicRing;
 use p3_field::extension::BinomialExtensionField;
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
-use p3_test_utils::binary_field_params::{blake3, keccak};
+use p3_test_utils::binary_field_params::{BinaryField128, TowerLevel, blake3, keccak};
 
 type EF = BinomialExtensionField<BabyBear, 4>;
 const D: usize = 4;
@@ -199,6 +199,11 @@ fn unreachable_heights_are_rejected() {
 fn prove(hash: ByteHash) {
     let shape = NOT_POWERS_OF_TWO;
     let circuit = circuit(hash, shape, 1);
+    let values = public(&opening(hash, shape, 1, 5), log_max(shape), 5);
+    prove_opening(hash, &circuit, &values);
+}
+
+fn prove_opening(hash: ByteHash, circuit: &Circuit<EF>, values: &[EF]) {
     let mut preprocessors: Vec<Box<dyn NpoPreprocessor<BabyBear>>> = Vec::new();
     let mut air_builders: Vec<Box<dyn NpoAirBuilder<config::BabyBearConfig, D>>> = Vec::new();
     match hash {
@@ -218,16 +223,14 @@ fn prove(hash: ByteHash) {
     }
     let prepared = prover
         .prepare_circuit::<EF, D>(
-            &circuit,
+            circuit,
             &preprocessors,
             &air_builders,
             ConstraintProfile::Standard,
         )
         .unwrap();
     let mut runner = circuit.runner();
-    runner
-        .set_public_inputs(&public(&opening(hash, shape, 1, 5), log_max(shape), 5))
-        .unwrap();
+    runner.set_public_inputs(values).unwrap();
     let traces = runner.run().unwrap();
     let proof = prepared.prove(&traces).unwrap();
     prepared.verifier().verify(&proof, &[]).unwrap();
@@ -241,4 +244,124 @@ fn a_keccak_mixed_height_opening_proves() {
 #[test]
 fn a_blake3_mixed_height_opening_proves() {
     prove(ByteHash::Blake3);
+}
+
+/// The leaves carry binary coordinates, so serializing each limb as a host field element
+/// would hash a different byte string than the native binary commitment.
+fn binary_opening_values(hash: ByteHash, shape: Shape, cap_height: usize, index: usize) -> Vec<EF> {
+    macro_rules! open {
+        ($params:ident) => {{
+            let mmcs = $params::LevelMmcs::<BinaryField128>::new(
+                $params::FieldHash::new($params::byte_hash()),
+                $params::Compress::new($params::byte_hash()),
+                cap_height,
+            );
+            let matrices: Vec<_> = shape
+                .iter()
+                .enumerate()
+                .map(|(matrix, &(height, width))| {
+                    RowMajorMatrix::new(
+                        (0..height * width)
+                            .map(|cell| {
+                                BinaryField128::from_repr(
+                                    0x21bade026a6ae768f2ed66ffdcc99396u128
+                                        .wrapping_mul((cell + 1) as u128)
+                                        ^ ((matrix as u128) << 96),
+                                )
+                            })
+                            .collect(),
+                        width,
+                    )
+                })
+                .collect();
+            let dims: Vec<_> = matrices.iter().map(Matrix::dimensions).collect();
+            let (commitment, data) = mmcs.commit(matrices);
+            let opening = mmcs.open_batch(index, &data);
+            mmcs.verify_batch(&commitment, &dims, index, (&opening).into())
+                .unwrap();
+            let digest = |d: &[u8; 32]| bytes_to_limbs(d).into_iter().map(EF::from_u16);
+            opening
+                .opened_values
+                .iter()
+                .flatten()
+                .flat_map(|value| {
+                    let raw = value.to_repr();
+                    (0..8).map(move |limb| EF::from_u16((raw >> (16 * limb)) as u16))
+                })
+                .chain((0..log_max(shape)).map(|bit| EF::from_bool(index >> bit & 1 == 1)))
+                .chain(opening.opening_proof.iter().flat_map(digest))
+                .chain(commitment.roots().iter().flat_map(digest))
+                .collect::<Vec<_>>()
+        }};
+    }
+    match hash {
+        ByteHash::Keccak256 => open!(keccak),
+        ByteHash::Blake3 => open!(blake3),
+    }
+}
+
+fn binary_circuit(hash: ByteHash, shape: Shape, cap_height: usize) -> Circuit<EF> {
+    let mut builder = CircuitBuilder::<EF>::new();
+    match hash {
+        ByteHash::Keccak256 => builder.enable_keccak_f1600::<BabyBear>(),
+        ByteHash::Blake3 => builder.enable_blake3_compress::<BabyBear>(),
+    }
+    let mut inputs = |n: usize| -> Vec<ExprId> { (0..n).map(|_| builder.public_input()).collect() };
+    let rows: Vec<_> = shape.iter().map(|&(_, width)| inputs(8 * width)).collect();
+    let bits = inputs(log_max(shape));
+    let siblings: Vec<_> = (0..log_max(shape) - cap_height)
+        .map(|_| inputs(DIGEST_LIMBS))
+        .collect();
+    let cap: Vec<_> = (0..1 << cap_height).map(|_| inputs(DIGEST_LIMBS)).collect();
+    let heights: Vec<_> = shape.iter().map(|&(height, _)| height).collect();
+    builder
+        .verify_byte_hash_mmcs_opening_limbs::<BabyBear>(
+            hash, &rows, &heights, &bits, &siblings, &cap,
+        )
+        .unwrap();
+    builder.build().unwrap()
+}
+
+#[test]
+fn binary_tower_mixed_height_openings_match_native() {
+    for hash in [ByteHash::Keccak256, ByteHash::Blake3] {
+        for shape in [POWERS_OF_TWO, NOT_POWERS_OF_TWO] {
+            for cap_height in [0, 1] {
+                let circuit = binary_circuit(hash, shape, cap_height);
+                for index in 0..max_height(shape) {
+                    let values = binary_opening_values(hash, shape, cap_height, index);
+                    assert!(runs(&circuit, &values), "{hash:?}, index {index}");
+
+                    let mut wrong_row = values.clone();
+                    wrong_row[0] += EF::ONE;
+                    assert!(!runs(&circuit, &wrong_row));
+
+                    let mut wrong_root = values.clone();
+                    let selected_root = index >> (log_max(shape) - cap_height);
+                    let root_start = values.len() - (1 << cap_height) * DIGEST_LIMBS;
+                    wrong_root[root_start + selected_root * DIGEST_LIMBS] += EF::ONE;
+                    assert!(!runs(&circuit, &wrong_root));
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn binary_opening_limbs_are_range_checked() {
+    for hash in [ByteHash::Keccak256, ByteHash::Blake3] {
+        let circuit = binary_circuit(hash, NOT_POWERS_OF_TWO, 1);
+        let mut values = binary_opening_values(hash, NOT_POWERS_OF_TWO, 1, 5);
+        values[0] = EF::from_u32(1 << 16);
+        assert!(!runs(&circuit, &values));
+    }
+}
+
+#[test]
+fn binary_tower_openings_prove() {
+    for hash in [ByteHash::Keccak256, ByteHash::Blake3] {
+        let circuit = binary_circuit(hash, NOT_POWERS_OF_TWO, 1);
+        let values = binary_opening_values(hash, NOT_POWERS_OF_TWO, 1, 5);
+        prove_opening(hash, &circuit, &values);
+    }
 }

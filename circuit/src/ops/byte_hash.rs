@@ -194,6 +194,76 @@ where
         BF: PrimeField64,
         F: ExtensionField<BF>,
     {
+        self.verify_byte_hash_mmcs_opening_with::<BF>(
+            hash,
+            rows,
+            heights,
+            index_bits,
+            siblings,
+            cap,
+            |builder, row| builder.byte_hash_field_elements::<BF>(hash, row),
+        )
+    }
+
+    /// Constrains a byte-hash MMCS opening whose rows are already serialized as
+    /// little-endian 16-bit limbs.
+    ///
+    /// Each row's limbs are concatenated directly, without host-field serialization.
+    /// This is the leaf encoding for represented binary tower elements: a
+    /// `BinaryField128` contributes eight limbs in raw coordinate order. Every
+    /// supplied row limb is constrained to a base-field integer in `0..=65535`.
+    /// Heights, index bits, siblings and caps follow [`Self::verify_byte_hash_mmcs_opening`].
+    /// The caller must check each row's serialized width against its native matrix.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::verify_byte_hash_mmcs_opening`], [`Self::decompose_to_bits`] and
+    /// [`Self::byte_hash_limbs`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn verify_byte_hash_mmcs_opening_limbs<BF>(
+        &mut self,
+        hash: ByteHash,
+        rows: &[Vec<ExprId>],
+        heights: &[usize],
+        index_bits: &[ExprId],
+        siblings: &[Vec<ExprId>],
+        cap: &[Vec<ExprId>],
+    ) -> Result<(), CircuitBuilderError>
+    where
+        BF: PrimeField64,
+        F: ExtensionField<BF>,
+    {
+        self.verify_byte_hash_mmcs_opening_with::<BF>(
+            hash,
+            rows,
+            heights,
+            index_bits,
+            siblings,
+            cap,
+            |builder, row| {
+                for &limb in row {
+                    builder.decompose_to_bits::<BF>(limb, LIMB_BITS)?;
+                }
+                builder.byte_hash_limbs::<BF>(hash, row)
+            },
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn verify_byte_hash_mmcs_opening_with<BF>(
+        &mut self,
+        hash: ByteHash,
+        rows: &[Vec<ExprId>],
+        heights: &[usize],
+        index_bits: &[ExprId],
+        siblings: &[Vec<ExprId>],
+        cap: &[Vec<ExprId>],
+        mut hash_rows: impl FnMut(&mut Self, &[ExprId]) -> Result<Vec<ExprId>, CircuitBuilderError>,
+    ) -> Result<(), CircuitBuilderError>
+    where
+        BF: PrimeField64,
+        F: ExtensionField<BF>,
+    {
         let shape_error = |expected: alloc::string::String, got: usize| {
             CircuitBuilderError::NonPrimitiveOpArity {
                 op: "MmcsOpening",
@@ -270,7 +340,7 @@ where
         }
 
         let leaf = rows_at(log_max);
-        let mut node = self.byte_hash_field_elements::<BF>(hash, &leaf)?;
+        let mut node = hash_rows(self, &leaf)?;
         for (level, (&bit, sibling)) in index_bits.iter().zip(siblings).enumerate() {
             let (left, right): (Vec<ExprId>, Vec<ExprId>) = node
                 .iter()
@@ -287,7 +357,7 @@ where
             let reached = log_max - level - 1;
             if log_heights.contains(&reached) {
                 let injected = rows_at(reached);
-                let digest = self.byte_hash_field_elements::<BF>(hash, &injected)?;
+                let digest = hash_rows(self, &injected)?;
                 node = self.byte_hash_compress::<BF>(hash, &node, &digest)?;
             }
         }
