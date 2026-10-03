@@ -17,6 +17,7 @@ pub use aggregation::{PreparedAggregation, PreparedAggregationCross};
 pub use binary::{
     BinaryStatementLayout, PreparedBinaryMultiStarkLayer, PreparedBinaryGroupedMultiStarkLayer,
     PreparedBinaryBooleanTraceMultiStarkLayer, PreparedBinaryGroupedBooleanTraceMultiStarkLayer,
+    PreparedBinaryWhirMultiStarkLayer,
 };
 pub use input::{NativeCommitment, PreparedInput, PreparedSource};
 pub use layer::PreparedLayer;

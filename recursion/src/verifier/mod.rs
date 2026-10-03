@@ -11,6 +11,7 @@ mod binary_indexed;
 mod binary_logup;
 mod binary_multi_stark;
 mod binary_product;
+mod binary_whir_multi_stark;
 mod errors;
 mod limits;
 mod observable;
@@ -57,6 +58,11 @@ pub use binary_multi_stark::{
 pub use binary_product::{
     BinaryProductGkrInputShape, BinaryProductGkrLayerTargets, BinaryProductGkrOutput,
     BinaryProductGkrProofTargets, BinaryProductGkrVerifier, NativeBinaryProductGkrInput,
+};
+pub use binary_whir_multi_stark::{
+    BinaryWhirMultiStarkInputShape, BinaryWhirMultiStarkPreprocessing,
+    BinaryWhirMultiStarkProofTargets, BinaryWhirMultiStarkVerifier,
+    NativeBinaryWhirMultiStarkInput,
 };
 pub use errors::VerificationError;
 pub use limits::{InputResourceUsage, VerifierLimits};

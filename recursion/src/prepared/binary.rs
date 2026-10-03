@@ -3,8 +3,10 @@
 mod boolean;
 mod grouped_boolean;
 mod lifecycle;
+mod whir;
 pub use boolean::PreparedBinaryBooleanTraceMultiStarkLayer;
 pub use grouped_boolean::PreparedBinaryGroupedBooleanTraceMultiStarkLayer;
+pub use whir::PreparedBinaryWhirMultiStarkLayer;
 use lifecycle::BinaryPreparedCore;
 
 use alloc::boxed::Box;
