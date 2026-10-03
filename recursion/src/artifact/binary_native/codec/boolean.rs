@@ -84,7 +84,7 @@ where
 }
 fn read_trace<E>(
     r: &mut Reader<'_>,
-    s: &BooleanTraceDecode<OracleDecode>,
+    s: &BooleanTraceDecode<PcsDecode<OracleDecode>>,
     total: &mut usize,
 ) -> Result<TraceProof<E>, ArtifactError>
 where

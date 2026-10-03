@@ -51,6 +51,42 @@ pub struct BinaryBooleanWhirTraceInputShape {
 }
 
 impl BinaryBooleanWhirTraceInputShape {
+    pub(crate) fn native_decode_shape(
+        &self,
+    ) -> crate::artifact::binary_native::codec::BooleanTraceDecode<
+        crate::artifact::binary_native::codec::WhirDecode,
+    > {
+        let (ring, packed) = self.opening.native_decode_shape();
+        crate::artifact::binary_native::codec::BooleanTraceDecode {
+            value_count: self.value_count,
+            ring,
+            packed,
+        }
+    }
+
+    pub(crate) fn write_identity(
+        &self,
+        w: &mut crate::artifact::wire::Writer,
+    ) -> Result<(), crate::artifact::ArtifactError> {
+        let shapes = self.protocol.table_shapes();
+        w.write_vec("binary WHIR trace tables", &shapes, |w, shape| {
+            w.write_count("binary WHIR trace table height", shape.num_variables())?;
+            w.write_count("binary WHIR trace table width", shape.width())
+        })?;
+        w.write_count("binary WHIR trace openings", self.protocol.num_openings())?;
+        for (table, batch) in self.protocol.iter_openings() {
+            w.write_count("binary WHIR trace opening table", table)?;
+            for columns in [batch.current(), batch.next()] {
+                w.write_vec(
+                    "binary WHIR trace opening columns",
+                    columns,
+                    |w, &column| w.write_count("binary WHIR trace opening column", column),
+                )?;
+            }
+        }
+        self.opening.write_identity(w)
+    }
+
     pub fn allocate_targets<BF, EF>(
         &self,
         b: &mut CircuitBuilder<EF>,
@@ -166,6 +202,17 @@ impl BinaryBooleanWhirTraceVerifier {
         }
     }
 
+    pub(crate) fn check_targets(
+        &self,
+        cap: &[Vec<ExprId>],
+        points: &[Vec<BinaryTower128Target>],
+        proof: &BinaryBooleanWhirTraceProofTargets,
+    ) -> Result<(), VerificationError> {
+        self.routing
+            .check_points(points.iter().map(Vec::len), proof.values.len())?;
+        self.child.check_targets(cap, &proof.opening)
+    }
+
     pub fn observe_commitment<BF, EF>(
         &self,
         b: &mut CircuitBuilder<EF>,
@@ -249,9 +296,7 @@ impl BinaryBooleanWhirTraceVerifier {
         BF: PrimeField64,
         EF: ExtensionField<BF> + Eq + Hash,
     {
-        self.routing
-            .check_points(points.iter().map(Vec::len), proof.values.len())?;
-        self.child.check_targets(cap, &proof.opening)?;
+        self.check_targets(cap, points, proof)?;
         let entry = self.routing.bind::<BF, EF>(
             b,
             entry,
@@ -270,6 +315,34 @@ impl BinaryBooleanWhirTraceVerifier {
             }
         };
         Ok((self.routing.evals(&proof.values), ch))
+    }
+
+    pub(crate) fn check_native_structure_with_usage<C, H, Co>(
+        &self,
+        config: &WhirConfig<BinaryField128, BinaryField128, C>,
+        mmcs: &MerkleTreeMmcs<BinaryField128, u8, H, Co, 2, 32>,
+        commitment: &MerkleCap<BinaryField128, [u8; 32]>,
+        points: &[Point<BinaryField128>],
+        proof: &BooleanTraceCommitmentProof<
+            BinaryField128,
+            BooleanWhirProof<BinaryField128, MerkleTreeMmcs<BinaryField128, u8, H, Co, 2, 32>>,
+        >,
+        usage: &mut InputResourceUsage,
+    ) -> Result<(), VerificationError>
+    where
+        C: FieldChallenger<BinaryField128> + GrindingChallenger<Witness = BinaryField128>,
+        H: CryptographicHasher<BinaryField128, [u8; 32]> + Sync,
+        Co: PseudoCompressionFunction<[u8; 32], 2> + Sync,
+    {
+        self.routing
+            .check_points(points.iter().map(Point::num_variables), proof.values.len())?;
+        self.child.check_native_structure_with_usage(
+            config,
+            mmcs,
+            commitment,
+            &proof.opening,
+            usage,
+        )
     }
 
     /// Checks both child proof shapes before replaying the native column route.
@@ -295,10 +368,14 @@ impl BinaryBooleanWhirTraceVerifier {
             + GrindingChallenger<Witness = BinaryField128>
             + CanObserve<MerkleCap<BinaryField128, [u8; 32]>>,
     {
-        self.routing
-            .check_points(points.iter().map(Point::num_variables), proof.values.len())?;
-        self.child
-            .check_native_structure(config, mmcs, commitment, &proof.opening)?;
+        self.check_native_structure_with_usage(
+            config,
+            mmcs,
+            commitment,
+            points,
+            proof,
+            &mut InputResourceUsage::default(),
+        )?;
         let plan = &self.routing.plan;
         let captured = route(
             plan.num_variables,
@@ -331,5 +408,93 @@ impl BinaryBooleanWhirTraceVerifier {
             values: proof.values.iter().map(|v| v.to_repr()).collect(),
             opening,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::vec;
+    use p3_binary_pcs::BooleanTraceCommitment;
+    use p3_binary_pcs::whir::{BinaryWhirDomain, BooleanWhirPcs};
+    use p3_commit::MultilinearPcs;
+    use p3_field::PrimeCharacteristicRing;
+    use p3_matrix::dense::RowMajorMatrix;
+    use p3_sumcheck::layout::{SuffixProver, Table};
+    use p3_sumcheck::{PrescribedPointPcs, TableShape, TableSpec};
+    use p3_test_utils::binary_field_params::keccak;
+    use p3_whir::{FoldingFactor, ProtocolParameters, SecurityAssumption, WhirProver};
+
+    #[test]
+    fn native_boolean_whir_trace_preflight_forwards_the_shared_frontier_counter() {
+        type E = BinaryField128;
+        type Ch = keccak::LevelChallenger<E>;
+        let config = WhirConfig::<E, E, Ch>::new_with_domain(
+            1,
+            ProtocolParameters {
+                starting_log_inv_rate: 3,
+                round_log_inv_rates: vec![],
+                folding_factor: FoldingFactor::Constant(1),
+                soundness_type: SecurityAssumption::JohnsonBound,
+                security_level: 8,
+                pow_bits: 0,
+            },
+            &BinaryWhirDomain::<E>::default(),
+        )
+        .unwrap();
+        let mmcs = keccak::LevelMmcs::<E>::new(
+            keccak::FieldHash::new(keccak::byte_hash()),
+            keccak::Compress::new(keccak::byte_hash()),
+            0,
+        );
+        let pcs = BooleanTraceCommitment::from_commitment(
+            BooleanWhirPcs::new(
+                WhirProver::<E, E, _, _, Ch, SuffixProver<E, E>>::new(
+                    config.clone(),
+                    BinaryWhirDomain::<E>::default(),
+                    mmcs.clone(),
+                ),
+                8,
+            )
+            .unwrap(),
+        );
+        let protocol = OpeningProtocol::new(vec![TableSpec::new(
+            TableShape::new(8, 1),
+            vec![OpeningBatch::new(vec![0], vec![])],
+        )]);
+        let points = vec![Point::new(vec![E::from_repr(19); 8])];
+        let mut ch = Ch::from_hasher(vec![7, 19, 13], keccak::byte_hash());
+        let (cap, data) = pcs
+            .commit(
+                vec![Table::new(RowMajorMatrix::new(vec![E::ONE; 256], 256))],
+                &mut ch,
+            )
+            .unwrap();
+        let proof = pcs.open_at(data, &protocol, &points, &mut ch).unwrap();
+        let recursive =
+            BinaryBooleanWhirTraceVerifier::new(&config, protocol, ByteHash::Keccak256, 0).unwrap();
+        let count = match &proof.opening.opening.whir.final_openings {
+            p3_whir::pcs::proof::QueryOpenings::Base(o) => o.proof.sibling_hashes.len(),
+            p3_whir::pcs::proof::QueryOpenings::Extension(o) => o.proof.sibling_hashes.len(),
+        };
+        assert!(count > 0);
+        let limit = VerifierLimits::default().max_compressed_frontier_hashes;
+        let mut usage = InputResourceUsage {
+            compressed_frontier_hashes: limit - count,
+            ..Default::default()
+        };
+        recursive
+            .check_native_structure_with_usage(&config, &mmcs, &cap, &points, &proof, &mut usage)
+            .unwrap();
+        assert_eq!(usage.compressed_frontier_hashes, limit);
+        assert!(matches!(
+            recursive.check_native_structure_with_usage(
+                &config, &mmcs, &cap, &points, &proof, &mut usage
+            ),
+            Err(VerificationError::ResourceLimitExceeded {
+                component: "compressed frontier hashes",
+                ..
+            })
+        ));
     }
 }

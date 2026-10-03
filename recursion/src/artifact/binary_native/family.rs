@@ -539,7 +539,8 @@ where
     type Config = config::BinaryNativeBooleanTraceConfig<E>;
     type Recursive = crate::verifier::BinaryBooleanTraceMultiStarkVerifier<E>;
     type Input = crate::verifier::NativeBinaryBooleanTraceMultiStarkInput<E>;
-    type Decode = codec::MultiDecode<codec::BooleanTraceDecode<codec::OracleDecode>>;
+    type Decode =
+        codec::MultiDecode<codec::BooleanTraceDecode<codec::PcsDecode<codec::OracleDecode>>>;
 
     fn hash(p: &Self::Parameters) -> ByteHash {
         p.hash

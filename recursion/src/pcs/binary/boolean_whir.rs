@@ -50,6 +50,26 @@ pub struct BinaryBooleanWhirInputShape {
 }
 
 impl BinaryBooleanWhirInputShape {
+    pub(crate) fn native_decode_shape(
+        &self,
+    ) -> (
+        crate::artifact::binary_native::codec::RingDecode,
+        crate::artifact::binary_native::codec::WhirDecode,
+    ) {
+        (
+            self.reduction.native_decode_shape(),
+            self.opening.native_decode_shape(),
+        )
+    }
+
+    pub(crate) fn write_identity(
+        &self,
+        w: &mut crate::artifact::wire::Writer,
+    ) -> Result<(), crate::artifact::ArtifactError> {
+        self.reduction.write_identity(w)?;
+        self.opening.write_identity(w)
+    }
+
     pub fn allocate_targets<BF, EF>(
         &self,
         b: &mut CircuitBuilder<EF>,
@@ -246,10 +266,38 @@ impl BinaryBooleanWhirVerifier {
         H: CryptographicHasher<BinaryField128, [u8; 32]> + Sync,
         Co: PseudoCompressionFunction<[u8; 32], 2> + Sync,
     {
+        self.check_native_structure_with_usage(
+            config,
+            mmcs,
+            commitment,
+            proof,
+            &mut InputResourceUsage::default(),
+        )
+    }
+
+    pub(super) fn check_native_structure_with_usage<C, H, Co>(
+        &self,
+        config: &WhirConfig<BinaryField128, BinaryField128, C>,
+        mmcs: &MerkleTreeMmcs<BinaryField128, u8, H, Co, 2, 32>,
+        commitment: &MerkleCap<BinaryField128, [u8; 32]>,
+        proof: &BooleanWhirProof<BinaryField128, MerkleTreeMmcs<BinaryField128, u8, H, Co, 2, 32>>,
+        usage: &mut InputResourceUsage,
+    ) -> Result<(), VerificationError>
+    where
+        C: FieldChallenger<BinaryField128> + GrindingChallenger<Witness = BinaryField128>,
+        H: CryptographicHasher<BinaryField128, [u8; 32]> + Sync,
+        Co: PseudoCompressionFunction<[u8; 32], 2> + Sync,
+    {
         self.reduction.check_native_structure(&proof.reduction)?;
         let placeholder = Point::new(vec![BinaryField128::ZERO; self.opening.plan.variables]);
-        self.opening
-            .check_native(config, mmcs, commitment, &[placeholder], &proof.opening)?;
+        self.opening.check_native_with_usage(
+            config,
+            mmcs,
+            commitment,
+            &[placeholder],
+            &proof.opening,
+            usage,
+        )?;
         if proof.opening.evals[0].current()[0] != proof.reduction.final_eval {
             return Err(invalid(
                 "binary Boolean WHIR surviving value differs from the packed opening",

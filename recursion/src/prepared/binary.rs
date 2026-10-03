@@ -1,6 +1,8 @@
 //! Prepared binary MultiStark circuits with an independent prime output field.
 
 mod boolean;
+mod boolean_whir;
+pub use boolean_whir::PreparedBinaryBooleanWhirTraceMultiStarkLayer;
 mod grouped_boolean;
 mod lifecycle;
 mod whir;

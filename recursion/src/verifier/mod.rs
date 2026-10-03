@@ -12,6 +12,12 @@ mod binary_logup;
 mod binary_multi_stark;
 mod binary_product;
 mod binary_whir_multi_stark;
+mod binary_boolean_whir_multi_stark;
+pub use binary_boolean_whir_multi_stark::{
+    BinaryBooleanWhirTraceMultiStarkInputShape, BinaryBooleanWhirTraceMultiStarkPreprocessing,
+    BinaryBooleanWhirTraceMultiStarkProofTargets, BinaryBooleanWhirTraceMultiStarkVerifier,
+    NativeBinaryBooleanWhirTraceMultiStarkInput,
+};
 mod errors;
 mod limits;
 mod observable;

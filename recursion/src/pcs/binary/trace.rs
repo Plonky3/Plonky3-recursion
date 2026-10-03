@@ -54,7 +54,9 @@ impl<E: RecursiveBinaryChallengeField> BinaryBooleanTraceInputShape<E> {
     pub(crate) fn native_decode_shape(
         &self,
     ) -> crate::artifact::binary_native::codec::BooleanTraceDecode<
-        crate::artifact::binary_native::codec::OracleDecode,
+        crate::artifact::binary_native::codec::PcsDecode<
+            crate::artifact::binary_native::codec::OracleDecode,
+        >,
     > {
         let (ring, packed) = self.opening.native_decode_shape();
         crate::artifact::binary_native::codec::BooleanTraceDecode {

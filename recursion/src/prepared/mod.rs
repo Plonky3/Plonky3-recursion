@@ -15,6 +15,7 @@ use alloc::vec::Vec;
 
 pub use aggregation::{PreparedAggregation, PreparedAggregationCross};
 pub use binary::{
+    PreparedBinaryBooleanWhirTraceMultiStarkLayer,
     BinaryStatementLayout, PreparedBinaryMultiStarkLayer, PreparedBinaryGroupedMultiStarkLayer,
     PreparedBinaryBooleanTraceMultiStarkLayer, PreparedBinaryGroupedBooleanTraceMultiStarkLayer,
     PreparedBinaryWhirMultiStarkLayer,

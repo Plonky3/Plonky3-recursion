@@ -113,10 +113,10 @@ pub(crate) struct RingDecode {
     pub max_rounds: usize,
 }
 
-pub(crate) struct BooleanTraceDecode<O = GroupedOracleDecode> {
+pub(crate) struct BooleanTraceDecode<P = PcsDecode<GroupedOracleDecode>> {
     pub value_count: usize,
     pub ring: RingDecode,
-    pub packed: PcsDecode<O>,
+    pub packed: P,
 }
 
 pub(crate) struct WhirFoldDecode {
