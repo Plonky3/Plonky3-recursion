@@ -60,8 +60,8 @@ pub struct BinaryRingOutput {
 
 #[derive(Clone, Debug)]
 pub struct BinaryBitRingVerifier<E> {
-    num_variables: usize,
-    specs: Vec<BinaryRingClaimSpec>,
+    pub(super) num_variables: usize,
+    pub(super) specs: Vec<BinaryRingClaimSpec>,
     prefix_limit: usize,
     seed: Vec<E>,
     field: PhantomData<E>,

@@ -12,8 +12,8 @@ use p3_multilinear_util::point::Point;
 use p3_multilinear_util::poly::Poly;
 use p3_recursion::BinaryTower128Challenger;
 use p3_recursion::pcs::binary::{
-    BinaryBitRingVerifier, BinaryRingClaimSpec, BinaryRingClaimTargets, BinaryRingProofTargets,
-    BinaryTowerTensorTarget, RecursiveBinaryChallengeField,
+    BinaryBitRingVerifier, BinaryRingClaimSpec, BinaryRingProofTargets, NativeBinaryRingInput,
+    RecursiveBinaryChallengeField,
 };
 use p3_sumcheck::ring_switch::bits::{
     BitPacking, BitRingSwitch, BitRingSwitchClaims, BitRingSwitchClaimsProof,
@@ -27,6 +27,7 @@ fn val(i: u128) -> Native {
 }
 
 struct Fixture<E> {
+    imported: NativeBinaryRingInput<E>,
     hash: ByteHash,
     points: Vec<Vec<E>>,
     readings: Vec<(Option<E>, Option<E>)>,
@@ -105,13 +106,22 @@ where
     let mut ch = make();
     let (restored, _) = setup.verify_readings(&proof, &readings, &mut ch).unwrap();
     assert_eq!(restored, survivor);
+    let recursive = BinaryBitRingVerifier::<E>::new(h + absorbed, specs.to_vec()).unwrap();
+    let native_points = points.iter().cloned().map(Point::new).collect::<Vec<_>>();
+    let (imported, imported_point, mut imported_ch) = recursive
+        .import_native(&native_points, &readings, &proof, make())
+        .unwrap();
+    assert_eq!(imported_point, survivor);
+    let next_challenge = ch.sample_algebra_element();
+    assert_eq!(imported_ch.sample_algebra_element::<E>(), next_challenge);
     Fixture {
+        imported,
         hash: circuit_hash,
         points,
         readings,
         proof,
         survivor: survivor.as_slice().to_vec(),
-        next_challenge: ch.sample_algebra_element(),
+        next_challenge,
     }
 }
 
@@ -137,71 +147,11 @@ fn build<E: RecursiveBinaryChallengeField>(
         ByteHash::Keccak256 => builder.enable_keccak_f1600::<BabyBear>(),
         ByteHash::Blake3 => builder.enable_blake3_compress::<BabyBear>(),
     }
-    let mut values = Vec::new();
-    let claims = fixture
-        .proof
-        .claims
-        .iter()
-        .enumerate()
-        .map(|(i, claim)| {
-            let point = fixture.points[i]
-                .iter()
-                .map(|&x| field(&mut builder, &mut values, x))
-                .collect();
-            let current = fixture.readings[i]
-                .0
-                .map(|x| field(&mut builder, &mut values, x));
-            let next = fixture.readings[i]
-                .1
-                .map(|x| field(&mut builder, &mut values, x));
-            let rows = claim
-                .tensor
-                .rows()
-                .iter()
-                .map(|&x| field(&mut builder, &mut values, x))
-                .collect();
-            let tensor = BinaryTowerTensorTarget::from_rows(&mut builder, rows).unwrap();
-            let successor = claim.successor.as_ref().map(|extra| {
-                let carry = extra
-                    .carry
-                    .rows()
-                    .iter()
-                    .map(|&x| field(&mut builder, &mut values, x))
-                    .collect();
-                let carry = BinaryTowerTensorTarget::from_rows(&mut builder, carry).unwrap();
-                let last = extra
-                    .last
-                    .rows()
-                    .iter()
-                    .map(|&x| field(&mut builder, &mut values, x))
-                    .collect();
-                (
-                    carry,
-                    BinaryTowerTensorTarget::from_rows(&mut builder, last).unwrap(),
-                )
-            });
-            BinaryRingClaimTargets {
-                point,
-                current,
-                next,
-                tensor,
-                successor,
-            }
-        })
-        .collect();
-    let sumcheck = (0..h)
-        .map(|i| {
-            fixture
-                .proof
-                .sumcheck
-                .polynomial_evaluations
-                .get(i)
-                .copied()
-                .unwrap_or([E::ZERO; 2])
-                .map(|x| field(&mut builder, &mut values, x))
-        })
-        .collect();
-    let final_eval = field(&mut builder, &mut values, fixture.proof.final_eval);
+    let shape = verifier.input_shape();
+    let mut values = fixture.imported.private_values::<BabyBear>(&shape).unwrap();
+    let proof = shape
+        .allocate_targets::<BabyBear, BabyBear>(&mut builder)
+        .unwrap();
     let initial = (0..3)
         .map(|_| builder.define_const(BabyBear::from_u8(6)))
         .collect::<Vec<_>>();
@@ -211,11 +161,6 @@ fn build<E: RecursiveBinaryChallengeField>(
         &initial,
     )
     .unwrap();
-    let proof = BinaryRingProofTargets {
-        claims,
-        sumcheck,
-        final_eval,
-    };
     let mut output = verifier
         .verify::<BabyBear, BabyBear>(&mut builder, challenger, &proof)
         .unwrap();
@@ -412,4 +357,66 @@ fn eight_byte_challenges_and_dynamic_continuations_match_both_hashes() {
     );
     let (circuit, values) = build(&specs, &fixture);
     assert!(run(&circuit, &values));
+}
+
+#[test]
+fn native_import_rejects_noncanonical_and_mismatched_inputs() {
+    let specs = [BinaryRingClaimSpec {
+        current: true,
+        next_rows: None,
+    }];
+    let fixture = native(&specs, vec![vec![Native::ONE, val(2)]], 7);
+    let verifier = BinaryBitRingVerifier::<Native>::new(9, specs.to_vec()).unwrap();
+    let points = fixture
+        .points
+        .iter()
+        .cloned()
+        .map(Point::new)
+        .collect::<Vec<_>>();
+    let make = || BinaryChallenger::<Native, _>::from_hasher(vec![6; 3], Keccak256Hash);
+    let mut malformed = vec![fixture.proof.clone(); 4];
+    malformed[0].sumcheck.pow_witnesses.push(Native::ZERO);
+    malformed[1]
+        .sumcheck
+        .polynomial_evaluations
+        .push([Native::ZERO; 2]);
+    malformed[2].claims.clear();
+    malformed[3].claims[0].successor = Some(p3_sumcheck::ring_switch::bits::SuccessorTensors {
+        carry: malformed[3].claims[0].tensor.clone(),
+        last: malformed[3].claims[0].tensor.clone(),
+    });
+    for proof in malformed {
+        let mut ch = make();
+        assert!(
+            verifier
+                .import_native(&points, &fixture.readings, &proof, &mut ch)
+                .is_err()
+        );
+        assert_eq!(
+            ch.sample_algebra_element::<Native>(),
+            make().sample_algebra_element::<Native>(),
+            "structural rejection must precede transcript replay"
+        );
+    }
+    let mut wrong = fixture.readings.clone();
+    wrong[0].0 = Some(wrong[0].0.unwrap() + Native::ONE);
+    assert!(
+        verifier
+            .import_native(&points, &wrong, &fixture.proof, make())
+            .is_err()
+    );
+    let other = BinaryBitRingVerifier::<Native>::new(
+        9,
+        vec![BinaryRingClaimSpec {
+            current: true,
+            next_rows: Some(0),
+        }],
+    )
+    .unwrap();
+    assert!(
+        fixture
+            .imported
+            .private_values::<BabyBear>(&other.input_shape())
+            .is_err()
+    );
 }

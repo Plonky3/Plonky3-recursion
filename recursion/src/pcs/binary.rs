@@ -15,6 +15,7 @@ mod fields;
 mod gadgets;
 mod input;
 mod ring;
+mod ring_input;
 mod tensor;
 mod verifier;
 pub use fields::{RecursiveBinaryChallengeField, RecursiveBinaryTowerField};
@@ -26,6 +27,7 @@ pub use ring::{
     BinaryBitRingVerifier, BinaryRingClaimSpec, BinaryRingClaimTargets, BinaryRingOutput,
     BinaryRingProofTargets,
 };
+pub use ring_input::{BinaryRingInputShape, NativeBinaryRingInput};
 pub use tensor::{BinaryTowerTensorTarget, binary_tensor_closing_weight};
 pub use verifier::{
     BinaryOracleOpeningTargets, BinaryPcs128ProofTargets, BinaryPcs128Verifier, BinaryPcsVerifier,
