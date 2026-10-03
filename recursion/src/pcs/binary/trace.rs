@@ -1,6 +1,5 @@
 //! Released Boolean trace column routing followed by a checked bit opening.
 
-use alloc::vec;
 use alloc::vec::Vec;
 use core::hash::Hash;
 
@@ -19,21 +18,19 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use super::trace_native::route;
-use super::trace_plan::{Route, TracePlan};
-use super::verifier::{assert_equal, constrain_width, observe_seed, observe_values, seed_bytes};
+use super::trace_plan::TracePlan;
+use super::trace_routing::{TraceEntry as Entry, TraceRouting};
 use super::{
     BinaryBooleanInputShape, BinaryBooleanPcsVerifier, BinaryBooleanProofTargets,
     NativeBinaryBooleanInput, RecursiveBinaryChallengeField,
 };
-use crate::transcript::SeedTap;
 use crate::verifier::{VerificationError, VerifierLimits};
 use crate::{BinaryQueryContinuation, BinaryTower128Challenger};
 
 #[derive(Clone, Debug)]
 pub struct BinaryBooleanTraceVerifier<E> {
-    plan: TracePlan,
+    routing: TraceRouting<E>,
     child: BinaryBooleanPcsVerifier<E>,
-    column_seed: Vec<E>,
 }
 
 #[derive(Clone, Debug)]
@@ -104,11 +101,6 @@ impl<E: RecursiveBinaryChallengeField> NativeBinaryBooleanTraceInput<E> {
     }
 }
 
-enum Entry {
-    Ready(BinaryTower128Challenger),
-    AfterQueries(BinaryQueryContinuation),
-}
-
 impl<E> BinaryBooleanTraceVerifier<E>
 where
     E: RecursiveBinaryChallengeField
@@ -161,38 +153,16 @@ where
         )?;
         let mut usage = plan.usage;
         usage.merge(limits, child.usage)?;
-        let column_seed = if matches!(plan.route, Route::Batched { .. }) {
-            let points = plan
-                .point_arities
-                .iter()
-                .map(|&n| Point::new(vec![E::ZERO; n]))
-                .collect::<Vec<_>>();
-            let mut tap = SeedTap::new();
-            let captured = route(
-                num_variables,
-                &plan.protocol,
-                &points,
-                &vec![E::ZERO; plan.value_count],
-                &mut tap,
-            )?;
-            if captured.openings.len() != plan.specs.len() {
-                return Err(invalid("binary trace route disagrees with native planning"));
-            }
-            tap.binary_seed()
-        } else {
-            vec![]
-        };
         Ok(Self {
-            plan,
+            routing: TraceRouting::new(plan)?,
             child,
-            column_seed,
         })
     }
 
     pub fn input_shape(&self) -> BinaryBooleanTraceInputShape<E> {
         BinaryBooleanTraceInputShape {
-            protocol: self.plan.protocol.clone(),
-            value_count: self.plan.value_count,
+            protocol: self.routing.plan.protocol.clone(),
+            value_count: self.routing.plan.value_count,
             opening: self.child.input_shape(),
         }
     }
@@ -296,92 +266,16 @@ where
         BF: PrimeField64,
         EF: ExtensionField<BF> + Eq + Hash,
     {
-        self.check_points(points.iter().map(Vec::len), proof.values.len())?;
+        self.routing
+            .check_points(points.iter().map(Vec::len), proof.values.len())?;
         self.child.check_targets(cap, &proof.opening)?;
-        for value in points.iter().flatten().chain(&proof.values) {
-            constrain_width(circuit, value, E::RAW_BITS);
-        }
-        let entry = match &self.plan.route {
-            Route::Batched {
-                width,
-                columns,
-                next,
-            } => {
-                let mut challenger = match entry {
-                    Entry::Ready(mut ch) => {
-                        observe_seed::<E, BF, EF>(circuit, &mut ch, &self.column_seed)?;
-                        ch
-                    }
-                    Entry::AfterQueries(token) => {
-                        let bytes = seed_bytes(circuit, &self.column_seed);
-                        token.resume_with_observation::<BF, EF>(circuit, &bytes)?
-                    }
-                };
-                let run = width * (1 + usize::from(*next));
-                for ((point, values), claim) in points
-                    .iter()
-                    .zip(proof.values.chunks_exact(run))
-                    .zip(&proof.opening.reduction.claims)
-                {
-                    let (current, successor) = values.split_at(*width);
-                    observe_values::<BF, EF>(circuit, &mut challenger, point, E::RAW_BITS)?;
-                    observe_values::<BF, EF>(circuit, &mut challenger, current, E::RAW_BITS)?;
-                    if *next {
-                        observe_values::<BF, EF>(circuit, &mut challenger, successor, E::RAW_BITS)?;
-                    }
-                    let column_point = (0..*columns)
-                        .map(|_| {
-                            self.child
-                                .sample_challenge::<BF, EF>(circuit, &mut challenger)
-                        })
-                        .collect::<Result<Vec<_>, _>>()?;
-                    let mut lifted = column_point.clone();
-                    lifted.extend_from_slice(point);
-                    bind_point(circuit, &claim.point, &lifted)?;
-                    let current_value = combine_columns(circuit, current, &column_point)?;
-                    assert_equal(
-                        circuit,
-                        claim.current.as_ref().expect("checked current request"),
-                        &current_value,
-                    );
-                    if *next {
-                        let next_value = combine_columns(circuit, successor, &column_point)?;
-                        assert_equal(
-                            circuit,
-                            claim.next.as_ref().expect("checked next request"),
-                            &next_value,
-                        );
-                    }
-                }
-                Entry::Ready(challenger)
-            }
-            Route::Columns(claims) => {
-                for (route, claim) in claims.iter().zip(&proof.opening.reduction.claims) {
-                    let mut lifted = route
-                        .selector
-                        .iter()
-                        .map(|&bit| circuit.binary128_constant(u128::from(bit)))
-                        .collect::<Result<Vec<_>, _>>()?;
-                    lifted.extend_from_slice(&points[route.opening]);
-                    bind_point(circuit, &claim.point, &lifted)?;
-                    if let Some(at) = route.current_at {
-                        assert_equal(
-                            circuit,
-                            claim.current.as_ref().expect("checked current request"),
-                            &proof.values[at],
-                        );
-                    }
-                    if let Some(at) = route.next_at {
-                        assert_equal(
-                            circuit,
-                            claim.next.as_ref().expect("checked next request"),
-                            &proof.values[at],
-                        );
-                    }
-                }
-                entry
-            }
-        };
+        let entry = self.routing.bind::<BF, EF>(
+            circuit,
+            entry,
+            points,
+            &proof.values,
+            &proof.opening.reduction.claims,
+        )?;
         let continuation = match entry {
             Entry::Ready(ch) => self.child.verify_readings_with_continuation::<BF, EF>(
                 circuit,
@@ -396,31 +290,7 @@ where
                 &proof.opening,
             )?,
         };
-        let mut cursor = 0;
-        let evals = self
-            .plan
-            .protocol
-            .iter_openings()
-            .map(|(_, batch)| {
-                let current = proof.values[cursor..cursor + batch.current().len()].to_vec();
-                cursor += batch.current().len();
-                let next = proof.values[cursor..cursor + batch.next().len()].to_vec();
-                cursor += batch.next().len();
-                OpeningBatch::new(current, next)
-            })
-            .collect();
-        Ok((evals, continuation))
-    }
-
-    fn check_points(
-        &self,
-        arities: impl Iterator<Item = usize>,
-        values: usize,
-    ) -> Result<(), VerificationError> {
-        if values != self.plan.value_count || !arities.eq(self.plan.point_arities.iter().copied()) {
-            return Err(invalid("binary trace row point or value count mismatch"));
-        }
-        Ok(())
+        Ok((self.routing.evals(&proof.values), continuation))
     }
 
     /// Native routing is witness extraction. It never replaces the child ring,
@@ -450,12 +320,13 @@ where
             + GrindingChallenger<Witness = E>
             + CanObserve<MerkleCap<E, [u8; 32]>>,
     {
-        self.check_points(points.iter().map(Point::num_variables), proof.values.len())?;
+        self.routing
+            .check_points(points.iter().map(Point::num_variables), proof.values.len())?;
         self.child
             .check_native_structure(base_mmcs, round_mmcs, commitment, &proof.opening)?;
         let captured = route(
-            self.plan.num_variables,
-            &self.plan.protocol,
+            self.routing.plan.num_variables,
+            &self.routing.plan.protocol,
             points,
             &proof.values,
             &mut challenger,
@@ -490,41 +361,6 @@ where
             opening,
         })
     }
-}
-
-fn combine_columns<EF: Field + Eq + Hash>(
-    circuit: &mut CircuitBuilder<EF>,
-    values: &[BinaryTower128Target],
-    point: &[BinaryTower128Target],
-) -> Result<BinaryTower128Target, VerificationError> {
-    let zero = circuit.binary128_constant(0)?;
-    let mut layer = values.to_vec();
-    layer.resize(1usize << point.len(), zero);
-    for coordinate in point.iter().rev() {
-        layer = layer
-            .chunks_exact(2)
-            .map(|pair| {
-                let difference = circuit.binary128_add(&pair[0], &pair[1]);
-                let product = circuit.binary128_mul(coordinate, &difference);
-                circuit.binary128_add(&pair[0], &product)
-            })
-            .collect();
-    }
-    Ok(layer[0].clone())
-}
-
-fn bind_point<EF: Field + Eq + Hash>(
-    circuit: &mut CircuitBuilder<EF>,
-    actual: &[BinaryTower128Target],
-    expected: &[BinaryTower128Target],
-) -> Result<(), VerificationError> {
-    if actual.len() != expected.len() {
-        return Err(invalid("binary trace lifted point arity mismatch"));
-    }
-    for (actual, expected) in actual.iter().zip(expected) {
-        assert_equal(circuit, actual, expected);
-    }
-    Ok(())
 }
 
 fn invalid(message: &'static str) -> VerificationError {

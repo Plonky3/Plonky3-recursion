@@ -152,18 +152,6 @@ impl<E: RecursiveBinaryChallengeField + ExtensionField<E>> BinaryBooleanPcsVerif
         }
     }
 
-    pub(super) fn sample_challenge<BF, EF>(
-        &self,
-        circuit: &mut CircuitBuilder<EF>,
-        challenger: &mut BinaryTower128Challenger,
-    ) -> Result<p3_circuit::ops::BinaryTower128Target, VerificationError>
-    where
-        BF: PrimeField64,
-        EF: ExtensionField<BF> + Eq + Hash,
-    {
-        self.opening.sample_challenge::<BF, EF>(circuit, challenger)
-    }
-
     /// Binds the packed commitment at its native transcript position.
     pub fn observe_commitment<BF, EF>(
         &self,
