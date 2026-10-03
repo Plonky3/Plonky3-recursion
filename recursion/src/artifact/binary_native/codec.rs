@@ -140,6 +140,7 @@ pub(crate) struct WhirDecode {
 }
 
 mod boolean;
+mod boolean_whir;
 mod grouped;
 mod grouped_boolean;
 mod grouped_shell;

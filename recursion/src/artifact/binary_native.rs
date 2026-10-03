@@ -2,9 +2,14 @@
 
 pub(crate) mod codec;
 mod boolean;
+mod boolean_whir;
 pub use boolean::{
     BinaryNativeBooleanTraceAuthority, BinaryNativeBooleanTraceProver,
     VerifiedBinaryNativeBooleanTraceProof,
+};
+pub use boolean_whir::{
+    BinaryNativeBooleanWhirTraceAuthority, BinaryNativeBooleanWhirTraceProver,
+    VerifiedBinaryNativeBooleanWhirTraceProof,
 };
 mod config;
 mod family;
@@ -45,6 +50,7 @@ use crate::verifier::{
     NativeBinaryMultiStarkInput, VerificationError, VerifierLimits,
 };
 pub use config::{
+    BinaryNativeBooleanWhirTraceConfig,
     BinaryNativeBooleanTraceConfig, BinaryNativeChallenger, BinaryNativeConfig, BinaryNativeGroupedBooleanTraceConfig,
     BinaryNativeGroupedConfig, BinaryNativeHash,
     BinaryNativeWhirConfig, BinaryNativeWhirLayout, BinaryNativeWhirPcsParameters,

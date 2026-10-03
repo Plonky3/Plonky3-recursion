@@ -1,5 +1,7 @@
 //! Private closed-family boundary for matched native binary proof owners.
 
+mod boolean_whir;
+pub(super) use boolean_whir::BooleanWhirTraceFamily;
 mod whir;
 pub(super) use whir::WhirFamily;
 

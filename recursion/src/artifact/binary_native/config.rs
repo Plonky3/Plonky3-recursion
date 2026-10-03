@@ -1,5 +1,8 @@
 //! Closed native cryptographic configuration and setup-only cap capture.
 
+mod boolean_whir;
+pub use boolean_whir::BinaryNativeBooleanWhirTraceConfig;
+pub(super) use boolean_whir::NativeBooleanWhirTracePcs;
 mod whir;
 pub use whir::{BinaryNativeWhirConfig, BinaryNativeWhirLayout, BinaryNativeWhirPcsParameters};
 pub(super) use whir::NativeWhirPcs;

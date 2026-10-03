@@ -2,6 +2,9 @@
 
 use super::lifecycle::ClosedBinaryCircuit;
 use super::*;
+use crate::artifact::{
+    BinaryNativeBooleanWhirTraceAuthority, VerifiedBinaryNativeBooleanWhirTraceProof,
+};
 use crate::verifier::{
     BinaryBooleanWhirTraceMultiStarkInputShape, BinaryBooleanWhirTraceMultiStarkProofTargets,
     BinaryBooleanWhirTraceMultiStarkVerifier, NativeBinaryBooleanWhirTraceMultiStarkInput,
@@ -92,6 +95,28 @@ where
     KeccakF1600Preprocessor: NpoPreprocessor<Val<SC>>,
     Blake3CompressPreprocessor: NpoPreprocessor<Val<SC>>,
 {
+    /// Retain the factory's exact relation identity and transcript for proving
+    /// with independently verified native tokens.
+    pub fn from_native_authority<A>(
+        authority: &BinaryNativeBooleanWhirTraceAuthority<A>,
+        output_config: SC,
+        params: ProveNextLayerParams,
+    ) -> Result<Self, VerificationError>
+    where
+        A: VerifierAir<BinaryField128, BinaryField128>,
+    {
+        let mut layer = Self::with_limits(
+            authority.recursive_verifier().clone(),
+            authority.transcript_hash(),
+            authority.initial_bytes(),
+            output_config,
+            params,
+            &authority.artifact_limits().verifier,
+        )?;
+        layer.core.native_identity = Some(authority.shared_identity());
+        Ok(layer)
+    }
+
     pub fn new(
         binary: BinaryBooleanWhirTraceMultiStarkVerifier,
         hash: ByteHash,
@@ -154,5 +179,22 @@ where
         p3_batch_stark::BatchProof<SC>: ProvingMaybeSend,
     {
         self.core.prove(input, public)
+    }
+
+    /// Check identity before statement packing or witness allocation, then use
+    /// only the token's independently verified statement and retained input.
+    pub fn prove_verified(
+        &self,
+        proof: &VerifiedBinaryNativeBooleanWhirTraceProof,
+    ) -> Result<RecursionOutput<SC>, VerificationError>
+    where
+        p3_batch_stark::BatchProof<SC>: ProvingMaybeSend,
+    {
+        if self.core.native_identity.as_deref() != Some(&*proof.identity) {
+            return Err(invalid(
+                "binary verified input belongs to another native authority",
+            ));
+        }
+        self.prove(&proof.input, &proof.public)
     }
 }
