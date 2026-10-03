@@ -62,6 +62,10 @@ pub struct BinaryFractionGkrInputShape<F = BinaryField128, E = BinaryField128> {
 impl<F: RecursiveBinaryTowerField, E: RecursiveBinaryChallengeField>
     BinaryFractionGkrInputShape<F, E>
 {
+    pub(crate) fn native_decode_height(&self) -> usize {
+        self.height
+    }
+
     pub fn allocate_targets<BF, EF>(
         &self,
         b: &mut CircuitBuilder<EF>,

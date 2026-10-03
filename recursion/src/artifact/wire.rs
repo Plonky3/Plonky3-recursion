@@ -205,7 +205,7 @@ impl<'a> Reader<'a> {
         self.bytes.len() - self.position
     }
 
-    fn read_bytes(&mut self, count: usize) -> Result<&'a [u8], ArtifactError> {
+    pub(crate) fn read_bytes(&mut self, count: usize) -> Result<&'a [u8], ArtifactError> {
         let end = self
             .position
             .checked_add(count)
@@ -220,6 +220,24 @@ impl<'a> Reader<'a> {
 
     pub(crate) fn read_u8(&mut self) -> Result<u8, ArtifactError> {
         Ok(self.read_bytes(1)?[0])
+    }
+
+    /// Charge binary fields and byte digests in their prime-circuit limb units.
+    pub(crate) fn charge_binary_scalars(&mut self, count: usize) -> Result<(), ArtifactError> {
+        let actual = self
+            .scalar_elements
+            .checked_add(count)
+            .ok_or(ArtifactError::LengthOverflow)?;
+        let limit = self.limits.verifier.max_total_scalar_elements;
+        if actual > limit {
+            return Err(ArtifactError::DecodeLimitExceeded {
+                component: "scalar elements",
+                actual,
+                limit,
+            });
+        }
+        self.scalar_elements = actual;
+        Ok(())
     }
 
     pub(crate) fn read_u16(&mut self) -> Result<u16, ArtifactError> {

@@ -47,6 +47,16 @@ pub struct BinaryGenericSumcheckInputShape<F, E = BinaryField128> {
 impl<F: RecursiveBinaryTowerField, E: RecursiveBinaryChallengeField>
     BinaryGenericSumcheckInputShape<F, E>
 {
+    pub(crate) fn native_decode_shape(
+        &self,
+    ) -> crate::artifact::binary_native::codec::GenericDecode {
+        crate::artifact::binary_native::codec::GenericDecode {
+            rounds: self.shape.num_rounds,
+            degree: self.shape.degree,
+            pow_count: self.pow_count(),
+        }
+    }
+
     pub fn allocate_targets<BF, EF>(
         &self,
         b: &mut CircuitBuilder<EF>,

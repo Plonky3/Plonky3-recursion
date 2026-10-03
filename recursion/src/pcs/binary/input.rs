@@ -39,6 +39,37 @@ pub struct BinaryPcsInputShape {
 }
 
 impl BinaryPcsInputShape {
+    pub(crate) fn native_decode_shape(&self) -> crate::artifact::binary_native::codec::PcsDecode {
+        use crate::artifact::binary_native::codec::{OracleDecode, PcsDecode};
+        debug_assert!(
+            self.grouping.is_none(),
+            "closed native authority uses ordinary PCS"
+        );
+        let shape = BinaryPcsShape::new(&self.config);
+        let log_domain = self.config.num_variables() + self.config.log_inv_rate();
+        PcsDecode {
+            cap_roots: 1usize << self.cap_height,
+            sumcheck_rounds: self.config.num_variables(),
+            eval_widths: self
+                .protocol
+                .iter_openings()
+                .map(|(_, b)| (b.current().len(), b.next().len()))
+                .collect(),
+            rounds: batches(&self.config)
+                .skip(1)
+                .map(|(start, arity)| OracleDecode {
+                    rows: shape.num_pairs << arity,
+                    path_len: log_domain - start - self.cap_height,
+                })
+                .collect(),
+            base: OracleDecode {
+                rows: shape.num_pairs << self.config.log_folding_factor(),
+                path_len: log_domain - self.cap_height,
+            },
+            final_codeword: shape.final_codeword_len,
+        }
+    }
+
     /// Allocates only proof witnesses. The caller allocates and binds the
     /// commitment and prescribed points at their surrounding transcript sites.
     pub fn allocate_targets<BF, EF>(

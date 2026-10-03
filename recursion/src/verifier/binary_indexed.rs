@@ -39,6 +39,19 @@ pub(super) struct IndexedInputShape<F = BinaryField128, E = BinaryField128> {
 }
 
 impl<F: RecursiveBinaryTowerField, E: RecursiveBinaryChallengeField> IndexedInputShape<F, E> {
+    pub(crate) fn native_decode_shape(
+        &self,
+    ) -> crate::artifact::binary_native::codec::IndexedDecode {
+        crate::artifact::binary_native::codec::IndexedDecode {
+            reader_widths: self
+                .tables
+                .iter()
+                .flat_map(|t| t.readers.iter().map(|r| r.payload.len()))
+                .collect(),
+            reduction: self.reduction.native_decode_shape(),
+        }
+    }
+
     pub(super) fn allocate_targets<BF, EF>(
         &self,
         b: &mut CircuitBuilder<EF>,

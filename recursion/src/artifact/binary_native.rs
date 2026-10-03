@@ -1,6 +1,8 @@
 //! Factory-owned native binary proof authority with a frozen recursive relation.
 
+pub(crate) mod codec;
 mod config;
+pub use codec::CanonicalBinaryStatement;
 
 use alloc::boxed::Box;
 use alloc::sync::Arc;
@@ -72,6 +74,7 @@ where
     base: NativeMmcs<F>,
     round: NativeMmcs<E>,
     preprocessed: Option<(NativeMmcs<F>, NativeMmcs<E>)>,
+    decode: codec::MultiDecode,
 }
 
 /// Owned trusted AIRs, matched native verifying key, closed cryptography and
@@ -310,6 +313,7 @@ where
         let identity = identity::<F, E>(&binary, &spec, &limits)
             .map_err(identity_error)?
             .into_boxed_slice();
+        let decode = binary.input_shape().native_decode_shape();
         let state = Arc::new(State {
             config,
             airs: airs.into_boxed_slice(),
@@ -322,6 +326,7 @@ where
             base,
             round,
             preprocessed,
+            decode,
         });
         Ok((
             BinaryNativeProver {

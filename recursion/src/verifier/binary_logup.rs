@@ -87,6 +87,21 @@ pub struct BinaryLogupStarInputShape<F = BinaryField128, E = BinaryField128> {
 impl<F: RecursiveBinaryTowerField, E: RecursiveBinaryChallengeField>
     BinaryLogupStarInputShape<F, E>
 {
+    pub(crate) fn native_decode_shape(&self) -> crate::artifact::binary_native::codec::LogupDecode {
+        crate::artifact::binary_native::codec::LogupDecode {
+            pushforward_lengths: self
+                .native
+                .tables
+                .iter()
+                .map(|t| 1usize << t.num_variables)
+                .collect(),
+            fraction_height: self.fraction.native_decode_height(),
+            position_claims: self.reader_count(),
+            product: self.product.native_decode_shape(),
+            column_widths: self.native.tables.iter().map(|t| t.width).collect(),
+        }
+    }
+
     fn reader_count(&self) -> usize {
         self.native
             .tables

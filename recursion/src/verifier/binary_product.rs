@@ -60,6 +60,16 @@ pub struct BinaryProductGkrInputShape<F = BinaryField128, E = BinaryField128> {
 impl<F: RecursiveBinaryTowerField, E: RecursiveBinaryChallengeField>
     BinaryProductGkrInputShape<F, E>
 {
+    pub(crate) fn native_decode_shape(
+        &self,
+    ) -> crate::artifact::binary_native::codec::ProductDecode {
+        crate::artifact::binary_native::codec::ProductDecode {
+            roots: self.root_count(),
+            trees: self.native.num_trees(),
+            layers: self.layers.clone(),
+        }
+    }
+
     fn root_count(&self) -> usize {
         self.native.num_trees()
             - usize::from(self.native.root_shape() == ProductGkrRootShape::FirstTwoShared)

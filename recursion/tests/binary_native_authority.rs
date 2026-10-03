@@ -8,6 +8,7 @@ use p3_field::PrimeCharacteristicRing;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_recursion::artifact::{
     BinaryNativeAuthority, BinaryNativePcsParameters, BinaryNativeVerifierSpec,
+    CanonicalBinaryStatement, ExpectedVerifierArtifact,
 };
 use p3_recursion::verifier::VerifierLimits;
 
@@ -101,6 +102,17 @@ fn owned_native_authority_verifies_all_caps_and_independent_statements() {
                     .unwrap();
                 let verified = authority.verify_native(&proof, &public).unwrap();
                 assert_eq!(verified.public_values(), public);
+                let encoded = authority.encode_native_proof(&proof, &public).unwrap();
+                let statement = authority.encode_statement(&public).unwrap();
+                let imported = authority
+                    .decode_and_verify(
+                        &retained,
+                        ExpectedVerifierArtifact::from_trusted_bytes(&retained),
+                        &encoded,
+                        CanonicalBinaryStatement::new(&statement, 1),
+                    )
+                    .unwrap();
+                assert_eq!(imported.public_values(), public);
                 assert_eq!(authority.canonical_verifier_bytes(), retained);
                 let mut wrong_statement = public.clone();
                 wrong_statement[0][0] += F::ONE;
