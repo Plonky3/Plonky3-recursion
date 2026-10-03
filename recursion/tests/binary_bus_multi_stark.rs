@@ -4,7 +4,7 @@ use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 use p3_baby_bear::BabyBear;
 use p3_binary_field::{BinaryField8, BinaryField64, BinaryField128, TowerLevel};
 use p3_binary_pcs::{BinaryPcs, BinaryPcsConfig, BinaryPcsParams, BinaryPcsProverData};
-use p3_bus::{BusActivation, BusDirection, BusInteractionBuilder, BusName};
+use p3_bus::{BusActivation, BusBoundary, BusDirection, BusInteractionBuilder, BusName};
 use p3_challenger::{CanObserve, FieldChallenger};
 use p3_circuit::ops::{BinaryTower128Target, ByteHash};
 use p3_circuit::{Circuit, CircuitBuilder, StatementExport};
@@ -21,8 +21,17 @@ use p3_sumcheck::layout::{Layout, SuffixProver, Table, Witness};
 use p3_test_utils::binary_field_params::{blake3, keccak};
 
 #[derive(Clone, Copy)]
+enum Activation {
+    Boolean,
+    Always,
+    First,
+    Last,
+}
+
+#[derive(Clone, Copy)]
 struct BusAir {
     direction: BusDirection,
+    activation: Activation,
 }
 impl<F> BaseAir<F> for BusAir {
     fn width(&self) -> usize {
@@ -43,6 +52,12 @@ impl<AB: AirBuilder + BusInteractionBuilder> Air<AB> for BusAir {
         let (first, last) = (b.public_values()[0], b.public_values()[1]);
         b.when_first_row().assert_eq(x, first);
         b.when_last_row().assert_eq(x, last);
+        let activation = match self.activation {
+            Activation::Boolean => BusActivation::Boolean(selected.into()),
+            Activation::Always => BusActivation::Always,
+            Activation::First => BusActivation::Boundary(BusBoundary::First),
+            Activation::Last => BusActivation::Boundary(BusBoundary::Last),
+        };
         // Lexicographic domain order differs from declaration order, and the
         // two domains have different payload widths. The selector's repeated
         // Boolean assertions must remain in the ordinary AIR fold.
@@ -50,13 +65,13 @@ impl<AB: AirBuilder + BusInteractionBuilder> Air<AB> for BusAir {
             BusName::new("zeta"),
             self.direction,
             [x * x],
-            BusActivation::Boolean(selected.into()),
+            activation.clone(),
         );
         b.push_bus_interaction(
             BusName::new("alpha"),
             self.direction,
             [x * x, x.into()],
-            BusActivation::Boolean(selected.into()),
+            activation,
         );
     }
 }
@@ -97,7 +112,20 @@ macro_rules! check {
             $cap
         )
     };
-    ($base:ty, $extension:ty, $params:ident, $hash:expr, $heights:expr, $pow:expr, $fold:expr, $cap:expr) => {{
+    ($base:ty, $extension:ty, $params:ident, $hash:expr, $heights:expr, $pow:expr, $fold:expr, $cap:expr) => {
+        check!(
+            $base,
+            $extension,
+            $params,
+            $hash,
+            $heights,
+            $pow,
+            $fold,
+            $cap,
+            Activation::Boolean
+        )
+    };
+    ($base:ty, $extension:ty, $params:ident, $hash:expr, $heights:expr, $pow:expr, $fold:expr, $cap:expr, $activation:expr) => {{
         type F = $base;
         type E = $extension;
         type M = $params::LevelMmcs<F>;
@@ -164,6 +192,7 @@ macro_rules! check {
                 } else {
                     BusDirection::Pull
                 },
+                activation: $activation,
             })
             .collect();
         let refs: Vec<_> = airs.iter().collect();
@@ -235,7 +264,8 @@ macro_rules! check {
             for (i, &height) in heights.iter().enumerate() {
                 let mut values = Vec::new();
                 for row in 0..1usize << height {
-                    let slot = if i == 1 && row < active_count {
+                    let reverse = matches!($activation, Activation::Boolean | Activation::Always);
+                    let slot = if i == 1 && row < active_count && reverse {
                         active_count - 1 - row
                     } else {
                         row
@@ -293,6 +323,7 @@ macro_rules! check {
                     } else {
                         BusDirection::Push
                     },
+                    activation: air.activation,
                 })
                 .collect();
             let other_refs: Vec<_> = other_airs.iter().collect();
@@ -425,6 +456,34 @@ fn disabled_one_sided_bus_declarations_balance_the_identity_tree() {
         0,
         2,
         0
+    );
+}
+
+#[test]
+fn unconditional_and_boundary_bus_declarations_match_native_reductions() {
+    for activation in [Activation::Always, Activation::First, Activation::Last] {
+        check!(
+            BinaryField8,
+            BinaryField64,
+            blake3,
+            ByteHash::Blake3,
+            vec![1, 1],
+            0,
+            2,
+            0,
+            activation
+        );
+    }
+    check!(
+        BinaryField128,
+        BinaryField128,
+        keccak,
+        ByteHash::Keccak256,
+        vec![1, 1],
+        0,
+        2,
+        0,
+        Activation::First
     );
 }
 
