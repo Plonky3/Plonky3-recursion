@@ -492,6 +492,7 @@ where
     fn blake3_chunk(
         &mut self,
         chunk: &[ExprId],
+        chunk_bytes: usize,
         index: u64,
         root: bool,
     ) -> Result<Vec<ExprId>, CircuitBuilderError> {
@@ -512,7 +513,12 @@ where
                     flags |= blake3_flags::ROOT;
                 }
             }
-            cv = self.blake3_compress_block(block, &cv, index, 2 * block.len() as u32, flags)?;
+            let block_len = if i + 1 == blocks.len() {
+                chunk_bytes - i * BLAKE3_BLOCK_BYTES
+            } else {
+                BLAKE3_BLOCK_BYTES
+            };
+            cv = self.blake3_compress_block(block, &cv, index, block_len as u32, flags)?;
         }
         Ok(cv)
     }
@@ -523,15 +529,21 @@ where
     fn blake3_subtree(
         &mut self,
         chunks: &[&[ExprId]],
+        last_chunk_bytes: usize,
         first: u64,
         root: bool,
     ) -> Result<Vec<ExprId>, CircuitBuilderError> {
         if let [chunk] = chunks {
-            return self.blake3_chunk(chunk, first, root);
+            return self.blake3_chunk(chunk, last_chunk_bytes, first, root);
         }
         let left_len = 1 << (chunks.len() - 1).ilog2();
-        let left = self.blake3_subtree(&chunks[..left_len], first, false)?;
-        let right = self.blake3_subtree(&chunks[left_len..], first + left_len as u64, false)?;
+        let left = self.blake3_subtree(&chunks[..left_len], BLAKE3_CHUNK_BYTES, first, false)?;
+        let right = self.blake3_subtree(
+            &chunks[left_len..],
+            last_chunk_bytes,
+            first + left_len as u64,
+            false,
+        )?;
         let mut block = left;
         block.extend(right);
         let key = self.blake3_constant_words(&BLAKE3_IV);
@@ -565,12 +577,23 @@ where
         BF: PrimeField64,
         F: ExtensionField<BF>,
     {
+        self.blake3_packed_bytes(message, 2 * message.len())
+    }
+
+    /// `message` has `message_bytes.div_ceil(2)` limbs, with a zero high byte
+    /// in its last limb when the byte length is odd.
+    pub(crate) fn blake3_packed_bytes(
+        &mut self,
+        message: &[ExprId],
+        message_bytes: usize,
+    ) -> Result<Vec<ExprId>, CircuitBuilderError> {
         let chunks: Vec<&[ExprId]> = if message.is_empty() {
             vec![&[]]
         } else {
             message.chunks(BLAKE3_CHUNK_BYTES / 2).collect()
         };
-        self.blake3_subtree(&chunks, 0, true)
+        let last_chunk_bytes = message_bytes - (chunks.len() - 1) * BLAKE3_CHUNK_BYTES;
+        self.blake3_subtree(&chunks, last_chunk_bytes, 0, true)
     }
 
     /// `CompressionFunctionFromHasher<Blake3, 2, 32>`: BLAKE3 of the 64-byte concatenation of two

@@ -532,21 +532,29 @@ where
         BF: PrimeField64,
         F: ExtensionField<BF>,
     {
+        self.keccak256_packed_bytes::<BF>(message, 2 * message.len())
+    }
+
+    /// `message` has `message_bytes.div_ceil(2)` limbs, with a zero high byte
+    /// in its last limb when the byte length is odd.
+    pub(crate) fn keccak256_packed_bytes<BF>(
+        &mut self,
+        message: &[ExprId],
+        message_bytes: usize,
+    ) -> Result<Vec<ExprId>, CircuitBuilderError>
+    where
+        BF: PrimeField64,
+        F: ExtensionField<BF>,
+    {
         const RATE_LIMBS: usize = KECCAK256_RATE_BYTES / 2;
 
         // The padded tail: `0x01` right after the message, `0x80` in the last byte of its block.
-        let message_bytes = 2 * message.len();
         let padded_bytes = (message_bytes / KECCAK256_RATE_BYTES + 1) * KECCAK256_RATE_BYTES;
-        let mut tail = vec![0u8; padded_bytes - message_bytes];
-        tail[0] = 0x01;
-        *tail.last_mut().expect("a padded message has a tail") |= 0x80;
-
         let mut padded: Vec<Option<ExprId>> = message.iter().copied().map(Some).collect();
-        let mut constants: Vec<u16> = vec![0; message.len()];
-        for limb in bytes_to_limbs(&tail) {
-            padded.push(None);
-            constants.push(limb);
-        }
+        padded.resize(padded_bytes / 2, None);
+        let mut constants = vec![0u16; padded_bytes / 2];
+        constants[message_bytes / 2] = 0x01 << (8 * (message_bytes % 2));
+        *constants.last_mut().expect("a padded message has a tail") |= 0x8000;
 
         let zero = self.define_const(F::ZERO);
         let mut state: Vec<ExprId> = Vec::new();
@@ -559,6 +567,16 @@ where
         {
             let mut next = Vec::with_capacity(KECCAK_STATE_LIMBS);
             for (j, (&limb, &constant)) in limbs.iter().zip(consts).enumerate() {
+                // An odd tail has the message's last byte in the low half
+                // and padding in its zero high half.
+                let limb = limb.map(|expr| {
+                    if constant == 0 {
+                        expr
+                    } else {
+                        let padding = self.define_const(F::from_u16(constant));
+                        self.add(expr, padding)
+                    }
+                });
                 let absorbed = match (limb, block) {
                     // A zero padding limb leaves the permuted state unchanged.
                     (None, _) if constant == 0 && block > 0 => state[j],

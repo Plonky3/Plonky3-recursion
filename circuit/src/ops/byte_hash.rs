@@ -112,6 +112,40 @@ where
         }
     }
 
+    /// `hash` of an exact byte string, including an odd number of bytes.
+    /// Returns the 32-byte digest as [`DIGEST_LIMBS`] little-endian limbs.
+    /// Each input is constrained to a base-field integer in `0..=255`.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::decompose_to_bits`] and the selected hash gadget.
+    pub fn byte_hash_bytes<BF>(
+        &mut self,
+        hash: ByteHash,
+        message: &[ExprId],
+    ) -> Result<Vec<ExprId>, CircuitBuilderError>
+    where
+        BF: PrimeField64,
+        F: ExtensionField<BF>,
+    {
+        for &byte in message {
+            self.decompose_to_bits::<BF>(byte, 8)?;
+        }
+        let scale = self.define_const(F::from_u16(256));
+        let limbs: Vec<_> = message
+            .chunks(2)
+            .map(|pair| match pair {
+                &[low, high] => self.mul_add(high, scale, low),
+                &[low] => low,
+                _ => unreachable!("nonempty byte pairs"),
+            })
+            .collect();
+        match hash {
+            ByteHash::Keccak256 => self.keccak256_packed_bytes::<BF>(&limbs, message.len()),
+            ByteHash::Blake3 => self.blake3_packed_bytes(&limbs, message.len()),
+        }
+    }
+
     /// `SerializingHasher<hash>` of base-field elements, the leaf hash of a `hash` Merkle tree.
     ///
     /// # Errors
@@ -246,6 +280,41 @@ where
                 }
                 builder.byte_hash_limbs::<BF>(hash, row)
             },
+        )
+    }
+
+    /// Constrains a byte-hash MMCS opening whose rows are serialized as exact
+    /// byte strings. Each row byte is constrained to `0..=255`, and the rows
+    /// at one height are concatenated in commitment order before hashing.
+    /// This supports odd-width rows, including `BinaryField8` commitments.
+    /// The caller must check each row's byte width against its native matrix.
+    /// Heights and digests follow [`Self::verify_byte_hash_mmcs_opening`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::verify_byte_hash_mmcs_opening`] and [`Self::byte_hash_bytes`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn verify_byte_hash_mmcs_opening_bytes<BF>(
+        &mut self,
+        hash: ByteHash,
+        rows: &[Vec<ExprId>],
+        heights: &[usize],
+        index_bits: &[ExprId],
+        siblings: &[Vec<ExprId>],
+        cap: &[Vec<ExprId>],
+    ) -> Result<(), CircuitBuilderError>
+    where
+        BF: PrimeField64,
+        F: ExtensionField<BF>,
+    {
+        self.verify_byte_hash_mmcs_opening_with::<BF>(
+            hash,
+            rows,
+            heights,
+            index_bits,
+            siblings,
+            cap,
+            |builder, row| builder.byte_hash_bytes::<BF>(hash, row),
         )
     }
 
