@@ -279,6 +279,38 @@ where
         C0: PseudoCompressionFunction<[u8; 32], 2> + Sync,
         C1: PseudoCompressionFunction<[u8; 32], 2> + Sync,
     {
+        self.check_native_with_usage(
+            base_mmcs,
+            round_mmcs,
+            commitment,
+            points,
+            proof,
+            &mut InputResourceUsage::default(),
+        )
+    }
+
+    pub(crate) fn check_native_with_usage<H0, C0, H1, C1>(
+        &self,
+        base_mmcs: &MerkleTreeMmcs<F, u8, H0, C0, 2, 32>,
+        round_mmcs: &MerkleTreeMmcs<E, u8, H1, C1, 2, 32>,
+        commitment: &MerkleCap<F, [u8; 32]>,
+        points: &[Point<E>],
+        proof: &BinaryPcsProof<
+            F,
+            E,
+            MerkleTreeMmcs<F, u8, H0, C0, 2, 32>,
+            MerkleTreeMmcs<E, u8, H1, C1, 2, 32>,
+        >,
+        usage: &mut InputResourceUsage,
+    ) -> Result<(), VerificationError>
+    where
+        F: PackedValue<Value = F>,
+        E: PackedValue<Value = E>,
+        H0: CryptographicHasher<F, [u8; 32]> + Sync,
+        H1: CryptographicHasher<E, [u8; 32]> + Sync,
+        C0: PseudoCompressionFunction<[u8; 32], 2> + Sync,
+        C1: PseudoCompressionFunction<[u8; 32], 2> + Sync,
+    {
         let shape = BinaryPcsShape::new(&self.config);
         if base_mmcs.cap_height() != self.cap_height
             || round_mmcs.cap_height() != self.cap_height
@@ -302,7 +334,6 @@ where
                 return Err(invalid("binary PCS native opening shape mismatch"));
             }
         }
-        let mut usage = InputResourceUsage::default();
         for (batch, (_, arity)) in batches(&self.config).enumerate() {
             let (rows, frontier) = if batch == 0 {
                 (proof.base_opened_values.len(), &proof.base_multi_proof)

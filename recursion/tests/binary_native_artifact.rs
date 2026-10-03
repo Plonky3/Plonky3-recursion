@@ -219,7 +219,7 @@ fn native_artifact_authenticates_combined_bus_indexed_and_preprocessed_parts() {
         config: BinaryPcsConfig::try_new::<F, E>(
             n,
             BinaryPcsParams {
-                log_inv_rate: 2,
+                log_inv_rate: if n == 3 { 4 } else { 2 },
                 pow_bits: 0,
                 security_level: 24,
             },
@@ -231,21 +231,22 @@ fn native_artifact_authenticates_combined_bus_indexed_and_preprocessed_parts() {
         cap_height,
         max_query_draws: 512,
     };
+    let spec = BinaryNativeVerifierSpec {
+        main: pcs(6, ByteHash::Keccak256, 1),
+        preprocessed: Some(pcs(3, ByteHash::Blake3, 1)),
+        transcript_hash: ByteHash::Blake3,
+        initial_bytes: vec![7, 19, 13],
+        sumcheck_pow_bits: 0,
+        max_tau_draws: 8,
+        security_bits: 16,
+    };
     let (prover, authority) = BinaryNativeAuthority::<F, E, _>::setup(
         vec![
             CoupledAir { provider: false },
             CoupledAir { provider: true },
         ],
         vec![3, 3],
-        BinaryNativeVerifierSpec {
-            main: pcs(6, ByteHash::Keccak256, 1),
-            preprocessed: Some(pcs(3, ByteHash::Blake3, 1)),
-            transcript_hash: ByteHash::Blake3,
-            initial_bytes: vec![7, 19, 13],
-            sumcheck_pow_bits: 0,
-            max_tau_draws: 8,
-            security_bits: 16,
-        },
+        spec.clone(),
         &VerifierLimits::default(),
     )
     .unwrap();
@@ -266,6 +267,42 @@ fn native_artifact_authenticates_combined_bus_indexed_and_preprocessed_parts() {
         )
         .unwrap();
     assert!(proof.bus.is_some() && proof.indexed.is_some() && proof.preprocessed_opening.is_some());
+    let count =
+        |p: &p3_multi_stark::config::PcsProof<p3_recursion::artifact::BinaryNativeConfig<F, E>>| {
+            p.base_multi_proof.sibling_hashes.len()
+                + p.rounds
+                    .iter()
+                    .map(|r| r.multi_proof.sibling_hashes.len())
+                    .sum::<usize>()
+        };
+    let (main_frontiers, pp_frontiers) = (
+        count(&proof.opening),
+        count(proof.preprocessed_opening.as_ref().unwrap()),
+    );
+    assert!(main_frontiers > 0 && pp_frontiers > 0);
+    let limits = VerifierLimits {
+        max_compressed_frontier_hashes: main_frontiers + pp_frontiers - 1,
+        ..VerifierLimits::default()
+    };
+    let (_, bounded) = BinaryNativeAuthority::<F, E, _>::setup(
+        vec![
+            CoupledAir { provider: false },
+            CoupledAir { provider: true },
+        ],
+        vec![3, 3],
+        spec,
+        &limits,
+    )
+    .unwrap();
+    assert!(matches!(
+        bounded.verify_native(&proof, &public),
+        Err(
+            p3_recursion::verifier::VerificationError::ResourceLimitExceeded {
+                component: "compressed frontier hashes",
+                ..
+            }
+        )
+    ));
     let identity = authority.canonical_verifier_bytes();
     let statement = authority.encode_statement(&public).unwrap();
     let expected = CanonicalBinaryStatement::new(&statement, 2);

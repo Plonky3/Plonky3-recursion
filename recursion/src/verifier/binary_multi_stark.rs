@@ -1,7 +1,7 @@
 //! Complete native binary MultiStark verification with supported AIR reductions.
 
 pub(crate) mod relation;
-use relation::{BinaryMultiStarkRelation, BinaryMultiStarkRelationShape};
+use relation::{BinaryMultiStarkRelation, BinaryMultiStarkRelationShape, BinaryRelationProof};
 
 use alloc::vec;
 use alloc::vec::Vec;
@@ -497,31 +497,14 @@ where
         BF: PrimeField64,
         EF: ExtensionField<BF> + Eq + Hash,
     {
-        self.check_public(public)?;
-        match (&self.relation.bus, &proof.bus) {
-            (Some(verifier), Some(proof)) => verifier.check_targets(proof)?,
-            (None, None) => {}
-            _ => return Err(invalid("binary MultiStark bus proof shape mismatch")),
-        }
-        self.relation.sumcheck.check_targets(&proof.sumcheck)?;
-        match (&self.relation.indexed, &proof.indexed) {
-            (Some(verifier), Some(proof)) => verifier.check_proof_targets(proof)?,
-            (None, None) => {}
-            _ => return Err(invalid("binary MultiStark indexed proof shape mismatch")),
-        }
+        let common = BinaryRelationProof {
+            bus: proof.bus.as_ref(),
+            sumcheck: &proof.sumcheck,
+            indexed: proof.indexed.as_ref(),
+        };
+        self.relation.check_targets(public, &common)?;
         let zero = b.binary128_constant(0)?;
-        let heights: Vec<_> = self
-            .input
-            .relation
-            .airs
-            .iter()
-            .map(|air| air.log_height())
-            .collect();
-        let points = self
-            .input
-            .relation
-            .main_schedule
-            .zero_points(&heights, zero.clone());
+        let points = self.relation.zero_points(false, zero.clone());
         self.opening
             .check_targets(&proof.commitment, &points, &proof.opening)?;
         let preprocessed_cap = match (
@@ -531,13 +514,7 @@ where
         ) {
             (Some(verifier), Some(shape), Some(proof)) => {
                 let cap = shape.constant_cap(b);
-                let points = self
-                    .relation
-                    .input
-                    .preprocessed_schedule
-                    .as_ref()
-                    .unwrap()
-                    .zero_points(&heights, zero.clone());
+                let points = self.relation.zero_points(true, zero.clone());
                 verifier.check_targets(&cap, &points, proof)?;
                 Some(cap)
             }
@@ -548,184 +525,46 @@ where
                 ));
             }
         };
-        observe_seed::<F, BF, EF>(b, &mut ch, &self.input.relation.outer_seed)?;
-        if let Some(cap) = &preprocessed_cap {
-            // Native MultiStark absorbs this trusted VK cap directly, without
-            // the seed used by the throwaway setup commitment transcript.
-            observe_cap::<BF, EF>(b, &mut ch, cap)?;
-        }
+        self.relation
+            .observe_prefix::<BF, EF>(b, &mut ch, preprocessed_cap.as_deref())?;
         self.opening
             .observe_commitment::<BF, EF>(b, &mut ch, &proof.commitment)?;
-        for values in public {
-            for value in values {
-                constrain_width(b, value, F::RAW_BITS);
-            }
-            observe_values::<BF, EF>(b, &mut ch, values, F::RAW_BITS)?;
-        }
-        let bus_claims = if let (Some(verifier), Some(proof)) = (&self.relation.bus, &proof.bus) {
-            let (claims, next) = verifier.verify::<BF, EF>(b, ch, proof)?;
-            ch = next;
-            Some(claims)
-        } else {
-            None
-        };
-        observe_seed::<F, BF, EF>(b, &mut ch, &self.input.relation.zerocheck_seed)?;
-        let alpha = self.opening.sample_challenge::<BF, EF>(b, &mut ch)?;
-        let beta = self.opening.sample_challenge::<BF, EF>(b, &mut ch)?;
-        let lambda = if bus_claims.is_some() {
-            Some(self.opening.sample_challenge::<BF, EF>(b, &mut ch)?)
-        } else {
-            None
-        };
-        let initial = if let (Some(claims), Some(lambda)) = (&bus_claims, &lambda) {
-            let one = b.binary128_constant(1)?;
-            let push = b.binary128_add(&claims.values[0], &one);
-            let pull = b.binary128_add(&claims.values[1], &one);
-            let pull = b.binary128_mul(lambda, &pull);
-            let batched = b.binary128_add(&push, &pull);
-            b.binary128_mul(lambda, &batched)
-        } else {
-            zero.clone()
-        };
-        let output = self.relation.tau.sample::<BF, EF>(b, ch)?;
-        let reduction = self
-            .relation
-            .sumcheck
-            .verify_reduction_after_queries::<BF, EF>(
-                b,
-                output.continuation,
-                &initial,
-                &proof.sumcheck,
-            )?;
-        let tau = output.values;
-        let indexed =
-            if let (Some(verifier), Some(proof)) = (&self.relation.indexed, &proof.indexed) {
-                Some(verifier.verify::<BF, EF>(
-                    b,
-                    reduction.challenger.clone(),
-                    &reduction.point,
-                    proof,
-                )?)
-            } else {
-                None
-            };
-        let indexed_points = indexed.as_ref().map(|output| {
-            (
-                output.position_point.as_slice(),
-                output.table_point.as_slice(),
-            )
-        });
-        let points =
-            self.input
-                .relation
-                .main_schedule
-                .points(&heights, &reduction.point, indexed_points);
-        let challenger = indexed
-            .as_ref()
-            .map(|output| output.challenger.clone())
-            .unwrap_or(reduction.challenger);
+        let reduction = self.relation.reduce::<BF, EF>(b, ch, public, &common)?;
         let mut continuation = self.opening.verify_at_with_continuation::<BF, EF>(
             b,
-            challenger,
+            reduction.challenger.clone(),
             &proof.commitment,
-            &points,
+            &reduction.main_points,
             &proof.opening,
         )?;
-        if let (Some(verifier), Some(_shape), Some(cap), Some(proof)) = (
+        if let (Some(verifier), Some(cap), Some(proof)) = (
             &self.preprocessed,
-            &self.input.preprocessed,
             &preprocessed_cap,
             &proof.preprocessed_opening,
         ) {
-            let points = self
-                .relation
-                .input
-                .preprocessed_schedule
-                .as_ref()
-                .unwrap()
-                .points(&heights, &reduction.point, indexed_points);
-            continuation =
-                verifier.verify_at_after_queries::<BF, EF>(b, continuation, cap, &points, proof)?;
-        }
-        if let (Some(verifier), Some(indexed_proof), Some(output)) =
-            (&self.relation.indexed, &proof.indexed, &indexed)
-        {
-            let preprocessing = self
-                .input
-                .preprocessed
-                .as_ref()
-                .zip(proof.preprocessed_opening.as_ref())
-                .map(|(_shape, opening)| {
-                    (
-                        self.relation.input.preprocessed_schedule.as_ref().unwrap(),
-                        opening.evals.as_slice(),
-                    )
-                });
-            verifier.authenticate(
+            continuation = verifier.verify_at_after_queries::<BF, EF>(
                 b,
-                indexed_proof,
-                output,
-                &self.input.relation.main_schedule,
-                &proof.opening.evals,
-                preprocessing,
-            );
-        }
-        let mut folded = zero;
-        let mut weight = b.binary128_constant(1)?;
-        let mut air_evaluations = Vec::with_capacity(self.input.relation.airs.len());
-        for (i, air) in self.input.relation.airs.iter().enumerate() {
-            let values = &proof.opening.evals[self.input.relation.main_schedule.air_batch(i)];
-            let (preprocessed_current, preprocessed_next) = if air.preprocessed_width() != 0 {
-                let slot = self
-                    .relation
-                    .input
-                    .preprocessed_schedule
+                continuation,
+                cap,
+                reduction
+                    .preprocessed_points
                     .as_ref()
-                    .unwrap()
-                    .air_batch(i);
-                let values = &proof.preprocessed_opening.as_ref().unwrap().evals[slot];
-                (values.current(), values.next())
-            } else {
-                (&[][..], &[][..])
-            };
-            let evaluation = air.evaluate_with_bus(
-                b,
-                &reduction.point[reduction.point.len() - air.log_height()..],
-                values.current(),
-                values.next(),
-                preprocessed_current,
-                preprocessed_next,
-                &public[i],
-                &alpha,
+                    .expect("checked preprocessing points"),
+                proof,
             )?;
-            let term = b.binary128_mul(&weight, &evaluation.folded);
-            folded = b.binary128_add(&folded, &term);
-            weight = b.binary128_mul(&weight, &beta);
-            air_evaluations.push(evaluation);
         }
-        let equality = binary128_eq_eval(b, &tau, &reduction.point)?;
-        let mut terminal = b.binary128_mul(&equality, &folded);
-        if let (Some(verifier), Some(claims), Some(lambda)) =
-            (&self.relation.bus, &bus_claims, &lambda)
-        {
-            let bus = verifier.terminal(b, claims, &air_evaluations, &reduction.point, lambda)?;
-            let weighted = b.binary128_mul(lambda, &bus);
-            terminal = b.binary128_add(&terminal, &weighted);
-        }
-        assert_equal(b, &reduction.claim, &terminal);
+        self.relation.finish(
+            b,
+            public,
+            &common,
+            &reduction,
+            &proof.opening.evals,
+            proof
+                .preprocessed_opening
+                .as_ref()
+                .map(|p| p.evals.as_slice()),
+        )?;
         Ok(continuation)
-    }
-
-    fn check_public<T>(&self, public: &[Vec<T>]) -> Result<(), VerificationError> {
-        if public.len() != self.input.relation.airs.len()
-            || public
-                .iter()
-                .zip(&self.input.relation.airs)
-                .any(|(values, air)| values.len() != air.public_value_count())
-        {
-            return Err(invalid("binary MultiStark public value shape mismatch"));
-        }
-        Ok(())
     }
 
     /// Imports ordinary-byte-tree native proofs with finite transcript replay.
@@ -816,53 +655,21 @@ where
             + CanObserve<MerkleCap<E, [u8; 32]>>
             + Clone,
     {
-        self.check_public(public)?;
-        if proof.lookup.is_some()
-            || (self.relation.bus.is_none() && proof.sumcheck.claimed_sum != E::ZERO)
-        {
-            return Err(invalid(
-                "binary MultiStark proof has unsupported parts or a nonzero initial sum",
-            ));
-        }
-        match (&self.relation.bus, &proof.bus) {
-            (Some(verifier), Some(proof)) => verifier.check_native(proof)?,
-            (None, None) => {}
-            _ => return Err(invalid("binary MultiStark native bus proof shape mismatch")),
-        }
-        self.relation.sumcheck.check_native(&proof.sumcheck)?;
-        let heights: Vec<_> = self
-            .input
-            .relation
-            .airs
-            .iter()
-            .map(|air| air.log_height())
-            .collect();
-        let height = *heights.iter().max().unwrap();
-        match (&self.relation.indexed, &proof.indexed) {
-            (Some(verifier), Some(proof)) => {
-                verifier.check_native(&Point::new(vec![E::ZERO; height]), proof)?
-            }
-            (None, None) => {}
-            _ => {
-                return Err(invalid(
-                    "binary MultiStark native indexed proof shape mismatch",
-                ));
-            }
-        }
+        self.relation.check_native(public, proof)?;
         let points: Vec<_> = self
-            .input
             .relation
-            .main_schedule
-            .zero_points(&heights, E::ZERO)
+            .zero_points(false, E::ZERO)
             .into_iter()
             .map(Point::new)
             .collect();
-        self.opening.check_native(
+        let mut frontier_usage = InputResourceUsage::default();
+        self.opening.check_native_with_usage(
             base_mmcs,
             round_mmcs,
             &proof.commitment,
             &points,
             &proof.opening,
+            &mut frontier_usage,
         )?;
         let preprocessing = match (
             &self.preprocessed,
@@ -874,15 +681,18 @@ where
                 let cap = MerkleCap::<F, _>::new(shape.commitment.clone());
                 let points: Vec<_> = self
                     .relation
-                    .input
-                    .preprocessed_schedule
-                    .as_ref()
-                    .unwrap()
-                    .zero_points(&heights, E::ZERO)
+                    .zero_points(true, E::ZERO)
                     .into_iter()
                     .map(Point::new)
                     .collect();
-                verifier.check_native(base, round, &cap, &points, proof)?;
+                verifier.check_native_with_usage(
+                    base,
+                    round,
+                    &cap,
+                    &points,
+                    proof,
+                    &mut frontier_usage,
+                )?;
                 Some((verifier, shape, base, round, proof, cap))
             }
             (None, None, None, None) => None,
@@ -893,85 +703,36 @@ where
             }
         };
         let mut staged = ch.clone();
-        staged.observe_slice(&self.input.relation.outer_seed);
-        if let Some((_, _, _, _, _, cap)) = &preprocessing {
-            staged.observe(cap.clone());
-        }
+        self.relation.observe_native_prefix(
+            &mut staged,
+            preprocessing.as_ref().map(|(_, _, _, _, _, cap)| cap),
+        );
         layout::observe_commitment::<F, _, _>(&mut staged, proof.commitment.clone());
-        for values in public {
-            staged.observe_slice(values);
-        }
-        let bus_reduction = if let (Some(verifier), Some(proof)) = (&self.relation.bus, &proof.bus)
-        {
-            Some(verifier.import_native(proof, &mut staged)?)
-        } else {
-            None
-        };
-        staged.observe_slice(&self.input.relation.zerocheck_seed);
-        let _alpha = staged.sample_algebra_element::<E>();
-        let _beta = staged.sample_algebra_element::<E>();
-        if let Some((_, values)) = &bus_reduction {
-            let lambda = staged.sample_algebra_element::<E>();
-            let expected = lambda * ((values[0] + E::ONE) + lambda * (values[1] + E::ONE));
-            if proof.sumcheck.claimed_sum != expected {
-                return Err(invalid("binary MultiStark bus initial sum mismatch"));
-            }
-        }
-        let _ = self.relation.tau.sample_native::<F, _>(&mut staged)?;
-        let (sumcheck, point, _) = self
-            .relation
-            .sumcheck
-            .import_native_with_reduction(&proof.sumcheck, &mut staged)?;
-        let indexed =
-            if let (Some(verifier), Some(proof)) = (&self.relation.indexed, &proof.indexed) {
-                Some(verifier.import_native(&point, proof, &mut staged)?)
-            } else {
-                None
-            };
-        let indexed_points = indexed.as_ref().map(|(_, output)| {
-            (
-                output.position_point.as_slice(),
-                output.table_point.as_slice(),
-            )
-        });
-        let points: Vec<_> = self
-            .input
-            .relation
-            .main_schedule
-            .points(&heights, point.as_slice(), indexed_points)
-            .into_iter()
-            .map(Point::new)
-            .collect();
+        let reduction = self.relation.reduce_native(public, proof, &mut staged)?;
         let opening = self.opening.import_native(
             base_mmcs,
             round_mmcs,
             &proof.commitment,
-            &points,
+            &reduction.main_points,
             &proof.opening,
             &mut staged,
         )?;
         let preprocessed_opening = preprocessing
             .map(|(verifier, _shape, base, round, proof, cap)| {
-                let points: Vec<_> = self
-                    .relation
-                    .input
-                    .preprocessed_schedule
+                let points = reduction
+                    .preprocessed_points
                     .as_ref()
-                    .unwrap()
-                    .points(&heights, point.as_slice(), indexed_points)
-                    .into_iter()
-                    .map(Point::new)
-                    .collect();
-                verifier.import_native(base, round, &cap, &points, proof, &mut staged)
+                    .expect("checked preprocessing points");
+                verifier.import_native(base, round, &cap, points, proof, &mut staged)
             })
             .transpose()?;
         *ch = staged;
         Ok(NativeBinaryMultiStarkInput {
             shape: self.input.clone(),
             commitment: proof.commitment.roots().to_vec(),
-            bus: bus_reduction.map(|(input, _)| input),
-            sumcheck,
-            indexed: indexed.map(|(input, _)| input),
+            bus: reduction.bus,
+            sumcheck: reduction.sumcheck,
+            indexed: reduction.indexed,
             opening,
             preprocessed_opening,
         })
