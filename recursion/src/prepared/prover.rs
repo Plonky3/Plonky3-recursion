@@ -135,7 +135,7 @@ where
     )
 }
 
-fn prepare_prover_from_parts<SC, const D: usize>(
+pub(crate) fn prepare_prover_from_parts<SC, const D: usize>(
     circuit: &Circuit<SC::Challenge>,
     config: &SC,
     params: &ProveNextLayerParams,

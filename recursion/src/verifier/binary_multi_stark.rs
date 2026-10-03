@@ -107,6 +107,16 @@ pub struct BinaryMultiStarkProofTargets {
 impl<F: RecursiveBinaryTowerField, E: RecursiveBinaryChallengeField>
     BinaryMultiStarkInputShape<F, E>
 {
+    /// Trusted public-value counts in the original AIR instance order.
+    pub fn public_value_counts(&self) -> impl ExactSizeIterator<Item = usize> + '_
+    where
+        E: ExtensionField<F>,
+    {
+        self.airs
+            .iter()
+            .map(BinaryAirConstraintPlan::public_value_count)
+    }
+
     /// Allocates cap, bus, sumcheck, indexed reduction and PCS witnesses in order.
     /// Public values are allocated and bound separately by the caller.
     pub fn allocate_targets<BF, EF>(

@@ -1,6 +1,7 @@
 //! Prepared-verifier native input contracts and borrowed input views.
 
 mod aggregation;
+mod binary;
 pub(crate) mod input;
 mod layer;
 pub(crate) mod prover;
@@ -13,6 +14,7 @@ pub(crate) mod test_common;
 use alloc::vec::Vec;
 
 pub use aggregation::{PreparedAggregation, PreparedAggregationCross};
+pub use binary::{BinaryStatementLayout, PreparedBinaryMultiStarkLayer};
 pub use input::{NativeCommitment, PreparedInput, PreparedSource};
 pub use layer::PreparedLayer;
 pub use p3_circuit::VerifiedStatementTargets;
