@@ -1,21 +1,25 @@
 //! Full native binary PCS openings verified by a prime-field circuit.
 
 use p3_baby_bear::BabyBear;
-use p3_binary_field::{BinaryChallenger, BinaryField128, TowerLevel};
+use p3_binary_field::{
+    BinaryChallenger, BinaryField8, BinaryField16, BinaryField32, BinaryField64, BinaryField128,
+    TowerLevel,
+};
 use p3_binary_pcs::transcript::{BinaryPcsShape, BinaryPcsVerifierTranscript};
 use p3_binary_pcs::{BinaryPcs, BinaryPcsConfig, BinaryPcsParams};
 use p3_challenger::FieldChallenger;
 use p3_circuit::ops::{BinaryTower128Target, ByteHash, bytes_to_limbs};
 use p3_circuit::{Circuit, CircuitBuilder, ExprId};
 use p3_commit::MultilinearPcs;
-use p3_field::PrimeCharacteristicRing;
 use p3_field::extension::BinomialExtensionField;
+use p3_field::{ExtensionField, Field, PrimeCharacteristicRing};
 use p3_matrix::Dimensions;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_multilinear_util::point::Point;
 use p3_recursion::BinaryTower128Challenger;
 use p3_recursion::pcs::binary::{
-    BinaryOracleOpeningTargets, BinaryPcs128ProofTargets, BinaryPcs128Verifier,
+    BinaryOracleOpeningTargets, BinaryPcs128ProofTargets, BinaryPcs128Verifier, BinaryPcsVerifier,
+    RecursiveBinaryChallengeField, RecursiveBinaryTowerField,
 };
 use p3_sumcheck::layout::{Layout, SuffixProver, Table, Verifier};
 use p3_sumcheck::strategy::Basis;
@@ -281,7 +285,19 @@ fn build(
     cap_height: usize,
     fixture: &Fixture,
 ) -> (Circuit<Host>, Vec<Host>, Vec<Host>) {
-    let verifier = BinaryPcs128Verifier::new(
+    build_as::<Native, Native>(hash, cap_height, fixture)
+}
+
+fn build_as<F, E>(
+    hash: ByteHash,
+    cap_height: usize,
+    fixture: &Fixture,
+) -> (Circuit<Host>, Vec<Host>, Vec<Host>)
+where
+    F: RecursiveBinaryTowerField,
+    E: RecursiveBinaryChallengeField + ExtensionField<F>,
+{
+    let verifier = BinaryPcsVerifier::<F, E>::new(
         fixture.config,
         fixture.protocol.clone(),
         hash,
@@ -322,7 +338,11 @@ fn build(
         .iter_openings()
         .map(|(table, _)| {
             (0..fixture.protocol.table_shapes()[table].num_variables())
-                .map(|_| challenger.sample::<BabyBear, Host>(&mut builder).unwrap())
+                .map(|_| {
+                    verifier
+                        .sample_challenge::<BabyBear, Host>(&mut builder, &mut challenger)
+                        .unwrap()
+                })
                 .collect()
         })
         .collect();
@@ -597,4 +617,328 @@ fn a_complete_binary_opening_proves_in_a_prime_field_circuit() {
     runner.set_private_inputs(&private).unwrap();
     let proof = prepared.prove(&runner.run().unwrap()).unwrap();
     prepared.verifier().verify(&proof, &[]).unwrap();
+}
+
+macro_rules! narrow_fixture {
+    ($f:ty, $e:ty, $params:ident) => {
+        narrow_fixture!($f, $e, $params, 0)
+    };
+    ($f:ty, $e:ty, $params:ident, $pow:expr) => {{ narrow_fixture!($f, $e, $params, $pow, 1) }};
+    ($f:ty, $e:ty, $params:ident, $pow:expr, $n:expr) => {{
+        type F = $f;
+        type E = $e;
+        let config = BinaryPcsConfig::try_new::<F, E>(
+            $n,
+            BinaryPcsParams {
+                log_inv_rate: 1,
+                pow_bits: $pow,
+                security_level: 40,
+            },
+        )
+        .unwrap();
+        let base = $params::LevelMmcs::<F>::new(
+            $params::FieldHash::new($params::byte_hash()),
+            $params::Compress::new($params::byte_hash()),
+            0,
+        );
+        let rounds = $params::LevelMmcs::<E>::new(
+            $params::FieldHash::new($params::byte_hash()),
+            $params::Compress::new($params::byte_hash()),
+            0,
+        );
+        let pcs = BinaryPcs::<F, E, _, _>::new(config, base.clone(), rounds.clone()).unwrap();
+        let protocol = OpeningProtocol::new(vec![TableSpec::new(
+            TableShape::new($n, 1),
+            vec![OpeningBatch::new(vec![0], vec![0])],
+        )]);
+        let make = || BinaryChallenger::<F, _>::from_hasher(vec![7; 7], $params::byte_hash());
+        let mut pc = make();
+        let table = Table::new(RowMajorMatrix::new(
+            (0..1 << $n)
+                .map(|i| F::from_repr((0x93u128 + 0x54 * i as u128) as _))
+                .collect(),
+            1 << $n,
+        ));
+        let (root, data) = pcs
+            .commit(SuffixProver::<F, E>::new_witness(vec![table], 0), &mut pc)
+            .unwrap();
+        let point = Point::new((0..$n).map(|_| pc.sample_algebra_element::<E>()).collect());
+        let proof = pcs
+            .try_open_at(data, &protocol, core::slice::from_ref(&point), &mut pc)
+            .unwrap();
+        let mut vc = make();
+        pcs.observe_commitment(&root, &mut vc);
+        let point = Point::new((0..$n).map(|_| vc.sample_algebra_element::<E>()).collect());
+        pcs.verify_at(
+            &root,
+            &proof,
+            &protocol,
+            core::slice::from_ref(&point),
+            &mut vc,
+        )
+        .unwrap();
+
+        let mut replay = make();
+        pcs.observe_commitment(&root, &mut replay);
+        let point = Point::new(
+            (0..$n)
+                .map(|_| replay.sample_algebra_element::<E>())
+                .collect(),
+        );
+        let mut layout =
+            Verifier::<F, E>::new(&protocol.table_shapes(), SuffixProver::<F, E>::strategy());
+        layout
+            .add_claim_at(
+                0,
+                &protocol.iter_openings().next().unwrap().1,
+                &point,
+                &proof.evals[0],
+                &mut replay,
+            )
+            .unwrap();
+        let mut transcript =
+            BinaryPcsVerifierTranscript::<F, E, _>::new(&mut replay, BinaryPcsShape::new(&config));
+        let alpha = transcript.fold_batch(|ch| layout.batching_challenge(ch));
+        let mut claim = layout.sum(alpha);
+        for r in 0..$n {
+            let message = SumcheckData {
+                polynomial_evaluations: vec![proof.sumcheck.polynomial_evaluations[r]],
+                pow_witnesses: vec![],
+            };
+            let _ = transcript
+                .fold_batch(|ch| message.verify_rounds(ch, &mut claim, 1, 0, Basis::Evaluation))
+                .unwrap();
+            if r + 1 < $n {
+                transcript.oracle_commitment(proof.rounds[r].commitment.clone());
+            }
+        }
+        transcript
+            .final_codeword(proof.final_codeword.as_slice())
+            .unwrap();
+        transcript.query_pow(proof.pow_witness).unwrap();
+        let pair_positions = transcript.query_pairs();
+        transcript.finish();
+        let queries: Vec<_> = pair_positions
+            .iter()
+            .map(|&position| position >> 1)
+            .collect();
+        let indices: Vec<_> = pair_positions
+            .iter()
+            .flat_map(|&position| [position, position + 1])
+            .collect();
+        let rows: Vec<_> = proof
+            .base_opened_values
+            .iter()
+            .map(|r| vec![r.as_slice()])
+            .collect();
+        let paths = base
+            .restore_and_recompute_paths(
+                &[Dimensions {
+                    width: 1,
+                    height: 1 << ($n + 1),
+                }],
+                &indices,
+                &rows,
+                &proof.base_multi_proof,
+            )
+            .unwrap();
+        let round_inputs = proof
+            .rounds
+            .iter()
+            .enumerate()
+            .map(|(r, round)| {
+                let indices: Vec<_> = pair_positions
+                    .iter()
+                    .flat_map(|&position| {
+                        let first = (position >> (r + 1)) & !1;
+                        [first, first + 1]
+                    })
+                    .collect();
+                let rows: Vec<_> = round
+                    .opened_values
+                    .iter()
+                    .map(|r| vec![r.as_slice()])
+                    .collect();
+                let paths = rounds
+                    .restore_and_recompute_paths(
+                        &[Dimensions {
+                            width: 1,
+                            height: (1 << ($n + 1)) >> (r + 1),
+                        }],
+                        &indices,
+                        &rows,
+                        &round.multi_proof,
+                    )
+                    .unwrap();
+                (
+                    round.commitment.roots().to_vec(),
+                    round
+                        .opened_values
+                        .iter()
+                        .map(|r| Native::from_repr(r[0].to_repr() as u128))
+                        .collect(),
+                    paths.into_iter().map(|p| p.siblings).collect(),
+                )
+            })
+            .collect();
+        Fixture {
+            config,
+            protocol,
+            cap: root.roots().to_vec(),
+            sumcheck: proof
+                .sumcheck
+                .polynomial_evaluations
+                .iter()
+                .map(|pair| pair.map(|x| Native::from_repr(x.to_repr() as u128)))
+                .collect(),
+            evals: proof
+                .evals
+                .iter()
+                .map(|e| {
+                    OpeningBatch::new(
+                        e.current()
+                            .iter()
+                            .map(|x| Native::from_repr(x.to_repr() as u128))
+                            .collect(),
+                        e.next()
+                            .iter()
+                            .map(|x| Native::from_repr(x.to_repr() as u128))
+                            .collect(),
+                    )
+                })
+                .collect(),
+            rounds: round_inputs,
+            base_rows: proof
+                .base_opened_values
+                .iter()
+                .map(|r| Native::from_repr(r[0].to_repr() as u128))
+                .collect(),
+            base_paths: paths.into_iter().map(|p| p.siblings).collect(),
+            final_word: proof
+                .final_codeword
+                .as_slice()
+                .iter()
+                .map(|x| Native::from_repr(x.to_repr() as u128))
+                .collect(),
+            pow_witness: Native::from_repr(proof.pow_witness.to_repr() as u128),
+            queries,
+        }
+    }};
+}
+
+#[test]
+fn narrow_tower_alphabets_and_challenge_widths_match_native() {
+    macro_rules! check {
+        ($f:ty, $e:ty) => {{
+            for hash in [ByteHash::Blake3, ByteHash::Keccak256] {
+                let fixture = match hash {
+                    ByteHash::Blake3 => narrow_fixture!($f, $e, blake3),
+                    ByteHash::Keccak256 => narrow_fixture!($f, $e, keccak),
+                };
+                let (circuit, public, private) = build_as::<$f, $e>(hash, 0, &fixture);
+                assert!(
+                    runs(&circuit, &public, &private),
+                    "{hash:?}, {} -> {}",
+                    stringify!($f),
+                    stringify!($e)
+                );
+                // An unused upper coordinate is forbidden by the native field width.
+                if <$e>::bits() < 128 {
+                    let mut wrong = private.clone();
+                    wrong[4] = Host::ONE;
+                    assert!(!runs(&circuit, &public, &wrong));
+                }
+                if <$f>::bits() < 128 {
+                    let mut wrong = private;
+                    wrong[32 + <$f>::bits() / 16] +=
+                        Host::from_u16(if <$f>::bits() == 8 { 256 } else { 1 });
+                    assert!(!runs(&circuit, &public, &wrong));
+                }
+            }
+        }};
+    }
+    check!(BinaryField8, BinaryField64);
+    check!(BinaryField16, BinaryField64);
+    check!(BinaryField32, BinaryField64);
+    check!(BinaryField64, BinaryField64);
+    check!(BinaryField8, BinaryField128);
+    check!(BinaryField16, BinaryField128);
+    check!(BinaryField32, BinaryField128);
+    check!(BinaryField64, BinaryField128);
+}
+
+#[test]
+fn narrow_pow_witness_uses_its_native_byte_width() {
+    let fixture = narrow_fixture!(BinaryField16, BinaryField64, blake3, 1);
+    let (circuit, public, private) =
+        build_as::<BinaryField16, BinaryField64>(ByteHash::Blake3, 0, &fixture);
+    assert!(runs(&circuit, &public, &private));
+    let mut wrong = private;
+    let pow_start = wrong.len() - fixture.queries.len() - 8;
+    wrong[pow_start + 1] += Host::ONE;
+    assert!(!runs(&circuit, &public, &wrong));
+}
+
+#[test]
+fn narrow_folded_oracles_hash_eight_byte_challenge_symbols() {
+    for hash in [ByteHash::Blake3, ByteHash::Keccak256] {
+        let fixture = match hash {
+            ByteHash::Blake3 => narrow_fixture!(BinaryField8, BinaryField64, blake3, 0, 2),
+            ByteHash::Keccak256 => narrow_fixture!(BinaryField8, BinaryField64, keccak, 0, 2),
+        };
+        assert_eq!(fixture.rounds.len(), 1);
+        let (circuit, public, private) = build_as::<BinaryField8, BinaryField64>(hash, 0, &fixture);
+        assert!(runs(&circuit, &public, &private));
+    }
+}
+
+#[test]
+fn a_narrow_binary_opening_proves_with_exact_one_byte_leaves() {
+    use p3_circuit_prover::batch_stark_prover::{
+        BatchStarkProver, KeccakF1600AirBuilder, KeccakF1600Preprocessor, KeccakF1600Prover,
+    };
+    use p3_circuit_prover::{ConstraintProfile, config};
+    let fixture = narrow_fixture!(BinaryField8, BinaryField64, keccak);
+    let (circuit, public, private) =
+        build_as::<BinaryField8, BinaryField64>(ByteHash::Keccak256, 0, &fixture);
+    let mut prover = BatchStarkProver::new(config::baby_bear());
+    prover.register_table_prover(Box::new(KeccakF1600Prover::<4>));
+    let prepared = prover
+        .prepare_circuit::<Host, 4>(
+            &circuit,
+            &[Box::new(KeccakF1600Preprocessor)],
+            &[Box::new(KeccakF1600AirBuilder::<4>)],
+            ConstraintProfile::Standard,
+        )
+        .unwrap();
+    let mut runner = circuit.runner();
+    runner.set_public_inputs(&public).unwrap();
+    runner.set_private_inputs(&private).unwrap();
+    let proof = prepared.prove(&runner.run().unwrap()).unwrap();
+    prepared.verifier().verify(&proof, &[]).unwrap();
+}
+
+#[test]
+fn binary_pcs_configuration_must_match_both_native_field_types() {
+    let fixture = narrow_fixture!(BinaryField8, BinaryField64, blake3);
+    assert!(
+        BinaryPcsVerifier::<BinaryField16, BinaryField64>::new(
+            fixture.config,
+            fixture.protocol.clone(),
+            ByteHash::Blake3,
+            0,
+            64
+        )
+        .is_err()
+    );
+    assert!(
+        BinaryPcsVerifier::<BinaryField8, BinaryField128>::new(
+            fixture.config,
+            fixture.protocol,
+            ByteHash::Blake3,
+            0,
+            64
+        )
+        .is_err()
+    );
 }

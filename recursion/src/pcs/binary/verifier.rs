@@ -1,15 +1,16 @@
-//! Full opening relation for the released 128-bit tower PCS and byte Merkle trees.
+//! Full opening relation for the released binary tower PCS and byte Merkle trees.
 
 use alloc::vec;
 use alloc::vec::Vec;
 use core::hash::Hash;
+use core::marker::PhantomData;
 
 use p3_binary_field::{BinaryField128, TowerLevel};
 use p3_binary_pcs::BinaryPcsConfig;
 use p3_binary_pcs::transcript::BinaryPcsShape;
 use p3_circuit::ops::{BinaryTower128Target, ByteHash};
 use p3_circuit::{CircuitBuilder, ExprId};
-use p3_field::{ExtensionField, Field, PrimeCharacteristicRing, PrimeField64};
+use p3_field::{ExtensionField, Field, PrimeField64};
 use p3_multilinear_util::point::Point;
 use p3_sumcheck::layout::{
     Layout, SuffixProver, Verifier, commitment_domain_separator, plan_stacked_layout,
@@ -19,7 +20,8 @@ use p3_sumcheck::transcript::SumcheckShape;
 use p3_sumcheck::{OpeningBatch, OpeningProtocol};
 
 use super::{
-    binary128_eq_eval, binary128_fold_pair, binary128_next_eval, binary128_reduce_sumcheck_claim,
+    RecursiveBinaryChallengeField, RecursiveBinaryTowerField, binary128_eq_eval,
+    binary128_fold_pair, binary128_next_eval, binary128_reduce_sumcheck_claim,
     verify_binary_pcs_query_indices,
 };
 use crate::BinaryTower128Challenger;
@@ -36,7 +38,8 @@ pub struct BinaryOracleOpeningTargets {
     pub paths: Vec<Vec<Vec<ExprId>>>,
 }
 
-/// Checked-symbol witnesses of a native `BinaryPcsProof<BinaryField128, BinaryField128, ..>`.
+/// Native binary PCS witnesses widened into checked 128-bit tower targets.
+/// The verifier constrains upper coordinates outside each native field to zero.
 /// Pruned paths must be expanded before building this input; authentication is
 /// performed in the circuit using the constrained query bits. The native
 /// sumcheck PoW vector must be checked empty by a native proof importer.
@@ -56,22 +59,30 @@ pub struct BinaryPcs128ProofTargets {
 }
 
 /// Verifier-owned binary PCS geometry, transcript seeds, hash and query budget.
-/// Supports the released 128-bit tower alphabet and challenge field with
+/// Supports the released byte-aligned tower alphabets and 64/128-bit challenges with
 /// ordinary binary-arity Keccak-256 or BLAKE3 Merkle trees. This is an opening
 /// relation; its caller owns the commitment and prescribed points' statement
 /// binding, just as native `PrescribedPointPcs::verify_at` does.
 #[derive(Clone, Debug)]
-pub struct BinaryPcs128Verifier {
+pub struct BinaryPcsVerifier<F, E> {
     config: BinaryPcsConfig,
     protocol: OpeningProtocol,
     hash: ByteHash,
     cap_height: usize,
     max_query_draws: usize,
-    opening_seeds: Vec<Vec<BinaryField128>>,
-    batching_seed: Vec<BinaryField128>,
+    opening_seeds: Vec<Vec<F>>,
+    batching_seed: Vec<F>,
+    challenge_field: PhantomData<E>,
 }
 
-impl BinaryPcs128Verifier {
+/// Same-field 128-bit tower PCS verifier.
+pub type BinaryPcs128Verifier = BinaryPcsVerifier<BinaryField128, BinaryField128>;
+
+impl<F, E> BinaryPcsVerifier<F, E>
+where
+    F: RecursiveBinaryTowerField,
+    E: RecursiveBinaryChallengeField + ExtensionField<F>,
+{
     /// Builds a verifier with finite default limits. The query draw budget is
     /// explicit and independent of the proof's rejection pattern.
     pub fn new(
@@ -101,9 +112,11 @@ impl BinaryPcs128Verifier {
         max_query_draws: usize,
         limits: &VerifierLimits,
     ) -> Result<Self, VerificationError> {
-        if config.committed_field_bits() != 128 || config.challenge_field_bits() != 128 {
+        if config.committed_field_bits() != F::RAW_BITS
+            || config.challenge_field_bits() != E::RAW_BITS
+        {
             return Err(shape_error(
-                "binary PCS verifier requires the 128-bit tower alphabets",
+                "binary PCS configuration does not match its native tower alphabets",
             ));
         }
         let log_domain = config
@@ -258,16 +271,13 @@ impl BinaryPcs128Verifier {
         // Public native calls capture private layout seeds without copying
         // upstream protocol descriptions. Values and prescribed points are
         // dummy zeros; only verifier-owned shapes enter these seeds.
-        let mut layout = Verifier::<BinaryField128, BinaryField128>::new(
-            &shapes,
-            SuffixProver::<BinaryField128, BinaryField128>::strategy(),
-        );
+        let mut layout = Verifier::<F, E>::new(&shapes, SuffixProver::<F, E>::strategy());
         let mut opening_seeds = Vec::new();
         for (table, batch) in protocol.iter_openings() {
-            let point = Point::new(vec![BinaryField128::ZERO; shapes[table].num_variables()]);
+            let point = Point::new(vec![E::ZERO; shapes[table].num_variables()]);
             let evals = OpeningBatch::new(
-                vec![BinaryField128::ZERO; batch.current().len()],
-                vec![BinaryField128::ZERO; batch.next().len()],
+                vec![E::ZERO; batch.current().len()],
+                vec![E::ZERO; batch.next().len()],
             );
             let mut tap = SeedTap::new();
             layout
@@ -285,6 +295,7 @@ impl BinaryPcs128Verifier {
             max_query_draws,
             opening_seeds,
             batching_seed: tap.binary_seed(),
+            challenge_field: PhantomData,
         })
     }
 
@@ -302,12 +313,33 @@ impl BinaryPcs128Verifier {
         EF: ExtensionField<BF> + Eq + Hash,
     {
         self.check_cap(cap)?;
-        observe_seed::<BF, EF>(
+        observe_seed::<F, BF, EF>(
             circuit,
             challenger,
-            &domain_separator_seed(&commitment_domain_separator::<BinaryField128>()),
+            &domain_separator_seed(&commitment_domain_separator::<F>()),
         )?;
         observe_cap::<BF, EF>(circuit, challenger, cap)
+    }
+
+    /// Samples the configured native challenge width, zero-extended into the
+    /// 128-bit tower gadget. This consumes exactly the bytes native extension
+    /// sampling uses, including when the committed alphabet is narrower.
+    pub fn sample_challenge<BF, EF>(
+        &self,
+        circuit: &mut CircuitBuilder<EF>,
+        challenger: &mut BinaryTower128Challenger,
+    ) -> Result<BinaryTower128Target, VerificationError>
+    where
+        BF: PrimeField64,
+        EF: ExtensionField<BF> + Eq + Hash,
+    {
+        let bytes = challenger.sample_bytes::<BF, EF>(circuit, E::RAW_BITS / 8)?;
+        let mut bits = [ExprId::ZERO; 128];
+        for (i, byte) in bytes.into_iter().enumerate() {
+            let byte_bits = circuit.decompose_to_bits::<BF>(byte, 8)?;
+            bits[8 * i..8 * i + 8].copy_from_slice(&byte_bits);
+        }
+        Ok(circuit.binary128_from_bits(bits)?)
     }
 
     /// Constrains the complete native prescribed-point opening relation.
@@ -328,18 +360,40 @@ impl BinaryPcs128Verifier {
         EF: ExtensionField<BF> + Eq + Hash,
     {
         self.check_targets(cap, points, proof)?;
+        for value in points
+            .iter()
+            .flatten()
+            .chain(proof.sumcheck.iter().flatten())
+            .chain(
+                proof
+                    .evals
+                    .iter()
+                    .flat_map(|e| e.current().iter().chain(e.next())),
+            )
+            .chain(&proof.final_codeword)
+            .chain(proof.rounds.iter().flat_map(|r| &r.rows))
+        {
+            constrain_width(circuit, value, E::RAW_BITS);
+        }
+        for value in proof
+            .base_rows
+            .iter()
+            .chain(core::slice::from_ref(&proof.pow_witness))
+        {
+            constrain_width(circuit, value, F::RAW_BITS);
+        }
         for (i, evals) in proof.evals.iter().enumerate() {
-            observe_seed::<BF, EF>(circuit, &mut challenger, &self.opening_seeds[i])?;
-            challenger.observe_slice::<BF, EF>(circuit, &evals.to_vec())?;
+            observe_seed::<F, BF, EF>(circuit, &mut challenger, &self.opening_seeds[i])?;
+            observe_values::<BF, EF>(circuit, &mut challenger, &evals.to_vec(), E::RAW_BITS)?;
         }
         let shape = BinaryPcsShape::new(&self.config);
-        observe_seed::<BF, EF>(
+        observe_seed::<F, BF, EF>(
             circuit,
             &mut challenger,
-            &domain_separator_seed(&shape.domain_separator::<BinaryField128, BinaryField128>()),
+            &domain_separator_seed(&shape.domain_separator::<F, E>()),
         )?;
-        observe_seed::<BF, EF>(circuit, &mut challenger, &self.batching_seed)?;
-        let alpha = challenger.sample::<BF, EF>(circuit)?;
+        observe_seed::<F, BF, EF>(circuit, &mut challenger, &self.batching_seed)?;
+        let alpha = self.sample_challenge::<BF, EF>(circuit, &mut challenger)?;
         let shapes = self.protocol.table_shapes();
         let (_, placements) = plan_stacked_layout(&shapes);
         let one = circuit.binary128_constant(1)?;
@@ -359,15 +413,14 @@ impl BinaryPcs128Verifier {
             }
         }
         let round_seed = domain_separator_seed(
-            &SumcheckShape::new(1, 0, Basis::Evaluation)
-                .domain_separator::<BinaryField128, BinaryField128>(),
+            &SumcheckShape::new(1, 0, Basis::Evaluation).domain_separator::<F, E>(),
         );
         let mut betas = Vec::with_capacity(self.config.num_variables());
         for (batch, (start, arity)) in batches(&self.config).enumerate() {
             for message in &proof.sumcheck[start..start + arity] {
-                observe_seed::<BF, EF>(circuit, &mut challenger, &round_seed)?;
-                challenger.observe_slice::<BF, EF>(circuit, message)?;
-                let beta = challenger.sample::<BF, EF>(circuit)?;
+                observe_seed::<F, BF, EF>(circuit, &mut challenger, &round_seed)?;
+                observe_values::<BF, EF>(circuit, &mut challenger, message, E::RAW_BITS)?;
+                let beta = self.sample_challenge::<BF, EF>(circuit, &mut challenger)?;
                 claim = binary128_reduce_sumcheck_claim(
                     circuit,
                     &claim,
@@ -424,16 +477,21 @@ impl BinaryPcs128Verifier {
         }
         let expected_claim = circuit.binary128_mul(&weight, final_value);
         assert_equal(circuit, &claim, &expected_claim);
-        challenger.observe_slice::<BF, EF>(circuit, &proof.final_codeword)?;
+        observe_values::<BF, EF>(circuit, &mut challenger, &proof.final_codeword, E::RAW_BITS)?;
         if self.config.pow_bits() == 0 {
             let zero = circuit.binary128_constant(0)?;
             assert_equal(circuit, &proof.pow_witness, &zero);
         } else {
-            challenger.check_witness::<BF, EF>(
+            observe_values::<BF, EF>(
                 circuit,
-                self.config.pow_bits(),
-                &proof.pow_witness,
+                &mut challenger,
+                core::slice::from_ref(&proof.pow_witness),
+                F::RAW_BITS,
             )?;
+            for bit in challenger.sample_bits::<BF, EF>(circuit, self.config.pow_bits())? {
+                let difference = circuit.sub(ExprId::ZERO, bit);
+                circuit.assert_zero(difference);
+            }
         }
         verify_binary_pcs_query_indices::<BF, EF>(
             circuit,
@@ -463,16 +521,17 @@ impl BinaryPcs128Verifier {
                     for (b, bit) in leaf_index[..arity].iter_mut().enumerate() {
                         *bit = if offset >> b & 1 == 1 { one } else { zero };
                     }
-                    let limbs = circuit.binary128_to_limbs::<BF>(row)?;
+                    let width = if batch == 0 { F::RAW_BITS } else { E::RAW_BITS };
+                    let bytes = tower_bytes::<BF, EF>(circuit, row, width)?;
                     // A fixed coset offset can send a sibling limb straight
                     // into the hash NPO. Range checks also give each private
                     // digest limb an ALU creator on the witness bus.
                     for &limb in paths[q * size + offset].iter().flatten() {
                         let _ = circuit.decompose_to_bits::<BF>(limb, 16)?;
                     }
-                    circuit.verify_byte_hash_mmcs_opening_limbs::<BF>(
+                    circuit.verify_byte_hash_mmcs_opening_bytes::<BF>(
                         self.hash,
-                        &[limbs.to_vec()],
+                        &[bytes],
                         &[1usize << (log_domain - start)],
                         &leaf_index,
                         &paths[q * size + offset],
@@ -599,18 +658,24 @@ fn batches(config: &BinaryPcsConfig) -> impl Iterator<Item = (usize, usize)> + '
         })
 }
 
-fn observe_seed<BF, EF>(
+fn observe_seed<F, BF, EF>(
     circuit: &mut CircuitBuilder<EF>,
     challenger: &mut BinaryTower128Challenger,
-    seed: &[BinaryField128],
+    seed: &[F],
 ) -> Result<(), VerificationError>
 where
+    F: RecursiveBinaryTowerField,
     BF: PrimeField64,
     EF: ExtensionField<BF> + Eq + Hash,
 {
     let bytes: Vec<_> = seed
         .iter()
-        .flat_map(|x| x.to_repr().to_le_bytes())
+        .flat_map(|x| {
+            x.raw_coordinates()
+                .to_le_bytes()
+                .into_iter()
+                .take(F::RAW_BITS / 8)
+        })
         .map(|b| circuit.define_const(EF::from_u8(b)))
         .collect();
     challenger.observe_bytes::<BF, EF>(circuit, &bytes)?;
@@ -634,6 +699,50 @@ where
         challenger.observe_digest::<BF, EF>(circuit, &digest)?;
     }
     Ok(())
+}
+
+fn tower_bytes<BF, EF>(
+    circuit: &mut CircuitBuilder<EF>,
+    value: &BinaryTower128Target,
+    width: usize,
+) -> Result<Vec<ExprId>, VerificationError>
+where
+    BF: PrimeField64,
+    EF: ExtensionField<BF> + Eq + Hash,
+{
+    Ok(value.bits()[..width]
+        .chunks_exact(8)
+        .map(|bits| circuit.reconstruct_index_from_bits::<BF>(bits))
+        .collect::<Result<_, _>>()?)
+}
+
+fn observe_values<BF, EF>(
+    circuit: &mut CircuitBuilder<EF>,
+    challenger: &mut BinaryTower128Challenger,
+    values: &[BinaryTower128Target],
+    width: usize,
+) -> Result<(), VerificationError>
+where
+    BF: PrimeField64,
+    EF: ExtensionField<BF> + Eq + Hash,
+{
+    let mut bytes = Vec::new();
+    for value in values {
+        bytes.extend(tower_bytes::<BF, EF>(circuit, value, width)?);
+    }
+    challenger.observe_bytes::<BF, EF>(circuit, &bytes)?;
+    Ok(())
+}
+
+fn constrain_width<F: Field + Eq + Hash>(
+    circuit: &mut CircuitBuilder<F>,
+    value: &BinaryTower128Target,
+    width: usize,
+) {
+    for &bit in &value.bits()[width..] {
+        let difference = circuit.sub(ExprId::ZERO, bit);
+        circuit.assert_zero(difference);
+    }
 }
 
 fn assert_equal<F: Field + Eq + Hash>(

@@ -11,12 +11,16 @@ use p3_field::{ExtensionField, PrimeField64};
 
 use crate::BinaryTower128Challenger;
 
+mod fields;
 mod gadgets;
 mod verifier;
+pub use fields::{RecursiveBinaryChallengeField, RecursiveBinaryTowerField};
 pub use gadgets::{
     binary128_eq_eval, binary128_fold_pair, binary128_next_eval, binary128_reduce_sumcheck_claim,
 };
-pub use verifier::{BinaryOracleOpeningTargets, BinaryPcs128ProofTargets, BinaryPcs128Verifier};
+pub use verifier::{
+    BinaryOracleOpeningTargets, BinaryPcs128ProofTargets, BinaryPcs128Verifier, BinaryPcsVerifier,
+};
 
 /// Verifies terminal binary PCS query sampling against a native configuration.
 /// The challenger must already have absorbed the final codeword and checked
