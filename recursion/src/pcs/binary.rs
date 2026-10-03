@@ -18,6 +18,7 @@ mod gadgets;
 mod generic_sumcheck;
 mod generic_sumcheck_verifier;
 mod input;
+mod nonzero;
 mod ring;
 mod ring_input;
 mod tensor;
@@ -52,6 +53,7 @@ pub use generic_sumcheck_verifier::{
     BinaryGenericSumcheckVerifier, NativeBinaryGenericSumcheckInput,
 };
 pub use input::{BinaryPcsInputShape, NativeBinaryPcsInput};
+pub use nonzero::{BinaryNonzeroChallengeOutput, BinaryNonzeroChallengePlan};
 pub use ring::{
     BinaryBitRingVerifier, BinaryRingClaimSpec, BinaryRingClaimTargets, BinaryRingOutput,
     BinaryRingProofTargets,

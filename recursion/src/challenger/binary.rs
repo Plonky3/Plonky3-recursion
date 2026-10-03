@@ -29,8 +29,8 @@ pub struct BinaryTower128Challenger {
     output_buffer: Vec<ExprId>,
 }
 
-/// The exact retained hash input at native query completion. The varying number
-/// of unsampled output bytes is deliberately inaccessible: a nonempty next
+/// The exact retained hash input at native rejection-sampling completion.
+/// The varying number of unsampled output bytes is inaccessible: a nonempty next
 /// observation discards them in both native and circuit transcripts.
 #[derive(Debug)]
 pub struct BinaryQueryContinuation {
@@ -73,8 +73,8 @@ impl BinaryQueryContinuation {
 }
 
 impl BinaryTower128Challenger {
-    /// Every uniform-bit query draw consumes eight bytes, leaving the full
-    /// forward digest as the retained input, including when no output remains.
+    /// A positive-width field draw or uniform-bit draw leaves the full forward
+    /// digest as the retained input, including when no output remains.
     pub(crate) fn retained_query_digest(
         &self,
     ) -> Result<(ByteHash, [ExprId; 32]), CircuitBuilderError> {
