@@ -53,7 +53,10 @@ pub use generic_sumcheck_verifier::{
     BinaryGenericSumcheckVerifier, NativeBinaryGenericSumcheckInput,
 };
 pub use input::{BinaryPcsInputShape, NativeBinaryPcsInput};
-pub use nonzero::{BinaryNonzeroChallengeOutput, BinaryNonzeroChallengePlan};
+pub use nonzero::{
+    BinaryNonzeroChallengeOutput, BinaryNonzeroChallengePlan, BinaryNonzeroChallengeTailOutput,
+    BinaryNonzeroChallengeTailPlan,
+};
 pub use ring::{
     BinaryBitRingVerifier, BinaryRingClaimSpec, BinaryRingClaimTargets, BinaryRingOutput,
     BinaryRingProofTargets,
