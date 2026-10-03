@@ -1,5 +1,8 @@
 //! Prepared binary MultiStark circuits with an independent prime output field.
 
+mod lifecycle;
+use lifecycle::BinaryPreparedCore;
+
 use alloc::boxed::Box;
 use alloc::string::ToString;
 use alloc::sync::Arc;
@@ -35,7 +38,8 @@ use super::prover::{PreparedProver, prepare_prover_from_parts};
 use crate::artifact::{BinaryNativeAuthority, VerifiedBinaryNativeProof};
 use crate::pcs::binary::{RecursiveBinaryChallengeField, RecursiveBinaryTowerField};
 use crate::verifier::{
-    BinaryMultiStarkInputShape, BinaryMultiStarkVerifier, InputResourceUsage,
+    BinaryGroupedMultiStarkInputShape, BinaryGroupedMultiStarkVerifier, BinaryMultiStarkInputShape,
+    BinaryMultiStarkVerifier, InputResourceUsage, NativeBinaryGroupedMultiStarkInput,
     NativeBinaryMultiStarkInput, VerificationError, VerifierLimits,
 };
 use crate::{BinaryTower128Challenger, ProveNextLayerParams, RecursionOutput};
@@ -128,13 +132,14 @@ impl<F: RecursiveBinaryTowerField> BinaryStatementLayout<F> {
 /// Construction uses only the trusted plan and transcript configuration;
 /// proving accepts bounded witness material and the original binary statement.
 pub struct PreparedBinaryMultiStarkLayer<F, E, SC: StarkGenericConfig + 'static, const D: usize> {
-    binary: BinaryMultiStarkVerifier<F, E>,
-    shape: BinaryMultiStarkInputShape<F, E>,
-    layout: BinaryStatementLayout<F>,
-    circuit: Circuit<SC::Challenge>,
-    prepared: PreparedProver<SC>,
-    params: ProveNextLayerParams,
-    native_identity: Option<Arc<[u8]>>,
+    core: BinaryPreparedCore<
+        F,
+        E,
+        SC,
+        D,
+        BinaryMultiStarkVerifier<F, E>,
+        BinaryMultiStarkInputShape<F, E>,
+    >,
 }
 
 impl<F, E, SC, const D: usize> PreparedBinaryMultiStarkLayer<F, E, SC, D>
@@ -180,7 +185,7 @@ where
             params,
             &authority.artifact_limits().verifier,
         )?;
-        layer.native_identity = Some(authority.shared_identity());
+        layer.core.native_identity = Some(authority.shared_identity());
         Ok(layer)
     }
 
@@ -209,104 +214,32 @@ where
         params: ProveNextLayerParams,
         limits: &VerifierLimits,
     ) -> Result<Self, VerificationError> {
-        if D != <SC::Challenge as BasedVectorSpace<Val<SC>>>::DIMENSION {
-            return Err(invalid("binary prepared circuit extension degree mismatch"));
-        }
-        let mut usage = binary.input_resource_usage();
-        usage.check(limits)?;
-        usage.add_metadata_entries(limits, initial_bytes.len())?;
-        let shape = binary.input_shape();
-        let counts: Vec<_> = shape.public_value_counts().collect();
-        let layout = BinaryStatementLayout::<F>::with_limits(&counts, limits)?;
-        usage.add_metadata_entries(limits, layout.schema.base_len())?;
-        let mut b = CircuitBuilder::<SC::Challenge>::new();
-        // Main PCS, preprocessing PCS and transcript hashes are independently
-        // configured. Register both closed byte-hash implementations.
-        b.enable_keccak_f1600::<Val<SC>>();
-        b.enable_blake3_compress::<Val<SC>>();
-        let mut original_limbs = Vec::with_capacity(layout.schema.base_len());
-        let public = counts
-            .iter()
-            .map(|&count| {
-                (0..count)
-                    .map(|_| {
-                        let limbs = core::array::from_fn(|_| b.public_input());
-                        original_limbs.extend(limbs);
-                        b.binary128_from_limbs::<Val<SC>>(limbs)
-                            .map_err(VerificationError::from)
-                    })
-                    .collect::<Result<Vec<_>, _>>()
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let targets = shape.allocate_targets::<Val<SC>, SC::Challenge>(&mut b)?;
-        let initial = initial_bytes
-            .iter()
-            .map(|&byte| b.define_const(SC::Challenge::from_u8(byte)))
-            .collect::<Vec<_>>();
-        let ch = BinaryTower128Challenger::with_initial_bytes::<Val<SC>, SC::Challenge>(
-            &mut b, hash, &initial,
-        )?;
-        let _completion = binary.verify::<Val<SC>, SC::Challenge>(&mut b, ch, &public, &targets)?;
-        // SAFETY: These are the exact original limb IDs used above to build
-        // each AIR public value consumed by the complete binary verifier.
-        // The layout fixes their instance/value/limb order and Base encoding.
-        unsafe {
-            VerifiedStatementTargets::new_unchecked(&b, layout.schema.clone(), original_limbs)
-        }?
-        .install::<Val<SC>>(&mut b)?;
-        let circuit = b.build()?;
-        let mut preprocessors: Vec<Box<dyn NpoPreprocessor<Val<SC>>>> = vec![
-            Box::new(KeccakF1600Preprocessor),
-            Box::new(Blake3CompressPreprocessor),
-        ];
-        let mut builders: Vec<Box<dyn NpoAirBuilder<SC, D>>> = vec![
-            Box::new(KeccakF1600AirBuilder::<D>),
-            Box::new(Blake3CompressAirBuilder::<D>),
-        ];
-        let mut provers: Vec<Box<dyn TableProver<SC>>> = vec![
-            Box::new(KeccakF1600Prover::<D>),
-            Box::new(Blake3CompressProver::<D>),
-        ];
-        if layout.schema.base_len() != 0 {
-            preprocessors.push(Box::new(StatementPreprocessor::new(layout.schema.clone())));
-            builders.push(Box::new(StatementAirBuilder::<D>::new(
-                layout.schema.clone(),
-            )));
-            provers.push(Box::new(StatementProver::<D>::new(layout.schema.clone())));
-        }
-        let prepared = prepare_prover_from_parts::<SC, D>(
-            &circuit,
-            &output_config,
-            &params,
-            &preprocessors,
-            &builders,
-            provers,
-        )?;
         Ok(Self {
-            binary,
-            shape,
-            layout,
-            circuit,
-            prepared,
-            params,
-            native_identity: None,
+            core: BinaryPreparedCore::with_limits(
+                binary,
+                hash,
+                initial_bytes,
+                output_config,
+                params,
+                limits,
+            )?,
         })
     }
 
     pub fn binary_verifier(&self) -> &BinaryMultiStarkVerifier<F, E> {
-        &self.binary
+        &self.core.binary
     }
     pub fn native_verifier_identity(&self) -> Option<&[u8]> {
-        self.native_identity.as_deref()
+        self.core.native_identity.as_deref()
     }
     pub fn statement_layout(&self) -> &BinaryStatementLayout<F> {
-        &self.layout
+        &self.core.layout
     }
     pub fn params(&self) -> &ProveNextLayerParams {
-        &self.params
+        &self.core.params
     }
     pub fn verifier(&self) -> CircuitVerifier<SC> {
-        self.prepared.verifier()
+        self.core.prepared.verifier()
     }
 
     pub fn prove(
@@ -317,18 +250,7 @@ where
     where
         p3_batch_stark::BatchProof<SC>: ProvingMaybeSend,
     {
-        let public: Vec<_> = self
-            .layout
-            .pack::<Val<SC>>(public)?
-            .into_iter()
-            .map(SC::Challenge::from)
-            .collect();
-        let private = input.private_values::<SC::Challenge>(&self.shape)?;
-        let mut runner = self.circuit.runner();
-        runner.set_public_inputs(&public)?;
-        runner.set_private_inputs(&private)?;
-        let traces = runner.run()?;
-        self.prepared.prove(&traces)
+        self.core.prove(input, public)
     }
 
     /// Check identity before statement packing or witness allocation, then use
@@ -340,12 +262,118 @@ where
     where
         p3_batch_stark::BatchProof<SC>: ProvingMaybeSend,
     {
-        if self.native_identity.as_deref() != Some(&*proof.identity) {
+        if self.core.native_identity.as_deref() != Some(&*proof.identity) {
             return Err(invalid(
                 "binary verified input belongs to another native authority",
             ));
         }
         self.prove(&proof.input, &proof.public)
+    }
+}
+
+/// Owns one trusted binary relation and its prepared prime-field prover.
+/// Construction uses only the trusted plan and transcript configuration;
+/// proving accepts bounded witness material and the original binary statement.
+pub struct PreparedBinaryGroupedMultiStarkLayer<
+    F,
+    E,
+    SC: StarkGenericConfig + 'static,
+    const D: usize,
+> {
+    core: BinaryPreparedCore<
+        F,
+        E,
+        SC,
+        D,
+        BinaryGroupedMultiStarkVerifier<F, E>,
+        BinaryGroupedMultiStarkInputShape<F, E>,
+    >,
+}
+
+impl<F, E, SC, const D: usize> PreparedBinaryGroupedMultiStarkLayer<F, E, SC, D>
+where
+    F: RecursiveBinaryTowerField,
+    E: RecursiveBinaryChallengeField + ExtensionField<F>,
+    SC: StarkGenericConfig + Send + Sync + Clone + 'static,
+    Val<SC>: PrimeField64 + StarkField,
+    SC::Challenge: BasedVectorSpace<Val<SC>>
+        + From<Val<SC>>
+        + ExtensionField<Val<SC>>
+        + ExtractBinomialW<Val<SC>>,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>:
+        Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
+    SC::Challenger: p3_challenger::GrindingChallenger<Witness = Val<SC>>,
+    p3_uni_stark::PcsProverError<SC>: Send,
+    <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Domain: Send + Sync,
+    SC::Pcs: Sync,
+    <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::ProverData: Sync,
+    <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment: Sync,
+    StatementPreprocessor: NpoPreprocessor<Val<SC>>,
+    KeccakF1600Preprocessor: NpoPreprocessor<Val<SC>>,
+    Blake3CompressPreprocessor: NpoPreprocessor<Val<SC>>,
+{
+    pub fn new(
+        binary: BinaryGroupedMultiStarkVerifier<F, E>,
+        hash: ByteHash,
+        initial_bytes: &[u8],
+        output_config: SC,
+        params: ProveNextLayerParams,
+    ) -> Result<Self, VerificationError> {
+        Self::with_limits(
+            binary,
+            hash,
+            initial_bytes,
+            output_config,
+            params,
+            &VerifierLimits::default(),
+        )
+    }
+
+    pub fn with_limits(
+        binary: BinaryGroupedMultiStarkVerifier<F, E>,
+        hash: ByteHash,
+        initial_bytes: &[u8],
+        output_config: SC,
+        params: ProveNextLayerParams,
+        limits: &VerifierLimits,
+    ) -> Result<Self, VerificationError> {
+        Ok(Self {
+            core: BinaryPreparedCore::with_limits(
+                binary,
+                hash,
+                initial_bytes,
+                output_config,
+                params,
+                limits,
+            )?,
+        })
+    }
+
+    pub fn binary_verifier(&self) -> &BinaryGroupedMultiStarkVerifier<F, E> {
+        &self.core.binary
+    }
+    pub fn native_verifier_identity(&self) -> Option<&[u8]> {
+        self.core.native_identity.as_deref()
+    }
+    pub fn statement_layout(&self) -> &BinaryStatementLayout<F> {
+        &self.core.layout
+    }
+    pub fn params(&self) -> &ProveNextLayerParams {
+        &self.core.params
+    }
+    pub fn verifier(&self) -> CircuitVerifier<SC> {
+        self.core.prepared.verifier()
+    }
+
+    pub fn prove(
+        &self,
+        input: &NativeBinaryGroupedMultiStarkInput<F, E>,
+        public: &[Vec<F>],
+    ) -> Result<RecursionOutput<SC>, VerificationError>
+    where
+        p3_batch_stark::BatchProof<SC>: ProvingMaybeSend,
+    {
+        self.core.prove(input, public)
     }
 }
 

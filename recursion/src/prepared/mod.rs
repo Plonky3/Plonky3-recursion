@@ -14,7 +14,9 @@ pub(crate) mod test_common;
 use alloc::vec::Vec;
 
 pub use aggregation::{PreparedAggregation, PreparedAggregationCross};
-pub use binary::{BinaryStatementLayout, PreparedBinaryMultiStarkLayer};
+pub use binary::{
+    BinaryStatementLayout, PreparedBinaryMultiStarkLayer, PreparedBinaryGroupedMultiStarkLayer,
+};
 pub use input::{NativeCommitment, PreparedInput, PreparedSource};
 pub use layer::PreparedLayer;
 pub use p3_circuit::VerifiedStatementTargets;
