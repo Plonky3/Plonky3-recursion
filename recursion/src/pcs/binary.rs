@@ -11,6 +11,11 @@ use p3_field::{ExtensionField, PrimeField64};
 
 use crate::BinaryTower128Challenger;
 
+mod gadgets;
+pub use gadgets::{
+    binary128_eq_eval, binary128_fold_pair, binary128_next_eval, binary128_reduce_sumcheck_claim,
+};
+
 /// Verifies terminal binary PCS query sampling against a native configuration.
 /// The challenger must already have absorbed the final codeword and checked
 /// the query PoW, as in native `BinaryPcs::verify_at`. Query width and count

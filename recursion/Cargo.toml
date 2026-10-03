@@ -19,6 +19,7 @@ itertools.workspace = true
 p3-air.workspace = true
 p3-baby-bear.workspace = true
 p3-batch-stark.workspace = true
+p3-binary-field.workspace = true
 p3-binary-pcs.workspace = true
 p3-challenger.workspace = true
 
@@ -54,7 +55,6 @@ clap.workspace = true
 libmimalloc-sys.workspace = true
 mimalloc.workspace = true
 p3-air.workspace = true
-p3-binary-field.workspace = true
 p3-blake3.workspace = true
 p3-challenger.workspace = true
 p3-dft.workspace = true
