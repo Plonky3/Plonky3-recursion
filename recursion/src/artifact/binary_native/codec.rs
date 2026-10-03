@@ -6,9 +6,11 @@ use alloc::vec::Vec;
 use p3_binary_dft::EncodableLevel;
 use p3_binary_pcs::{BinaryPcsProof, ChallengeField, FoldAlphabet, RoundProof};
 use p3_bus::{BusProof, ProductGkrLayerProof, ProductGkrProof};
+use p3_commit::MultilinearPcs;
 use p3_field::{ExtensionField, PackedValue};
 use p3_merkle_tree::{MerkleCap, PrunedMerklePaths};
 use p3_multi_stark::MultiStarkProof;
+use p3_multi_stark::config::{MultiStarkConfig, PcsProof as ConfigPcsProof};
 use p3_multi_stark::folder::VerifierAir;
 use p3_multi_stark::fractional_gkr::{FractionGkrLayerProof, FractionGkrProof, SplitFraction};
 use p3_multi_stark::logup_star::LogupStarProof;
@@ -20,8 +22,9 @@ use p3_sumcheck::{OpeningBatch, SumcheckData};
 use super::config::NativeMmcs;
 use super::{BinaryNativeAuthority, BinaryNativeConfig, VerifiedBinaryNativeProof};
 use crate::artifact::wire::{Reader, Writer, checked_product, decode_framed, encode_framed};
-use crate::artifact::{ArtifactError, ArtifactKind, ExpectedVerifierArtifact};
+use crate::artifact::{ArtifactError, ArtifactKind, ArtifactLimits, ExpectedVerifierArtifact};
 use crate::pcs::binary::{RecursiveBinaryChallengeField, RecursiveBinaryTowerField};
+use crate::verifier::InputResourceUsage;
 
 /// Independent binary values in AIR order, then public-value order, encoded
 /// using the base tower field's exact raw little-endian width. No length prefix.
@@ -72,14 +75,14 @@ pub(crate) struct PcsDecode {
     pub base: OracleDecode,
     pub final_codeword: usize,
 }
-pub(crate) struct MultiDecode {
+pub(crate) struct MultiDecode<O = PcsDecode> {
     pub public_counts: Vec<usize>,
     pub cap_roots: usize,
     pub bus: Option<ProductDecode>,
     pub sumcheck: GenericDecode,
     pub indexed: Option<IndexedDecode>,
-    pub opening: PcsDecode,
-    pub preprocessed: Option<PcsDecode>,
+    pub opening: O,
+    pub preprocessed: Option<O>,
 }
 
 type PcsProof<F, E> = BinaryPcsProof<F, E, NativeMmcs<F>, NativeMmcs<E>>;
@@ -112,27 +115,12 @@ where
     ) -> Result<Vec<u8>, ArtifactError> {
         self.verify_native(proof, public)
             .map_err(|_| ArtifactError::VerificationRejected)?;
-        encode_framed(
-            ArtifactKind::Proof,
+        encode_multi::<BinaryNativeConfig<F, E>>(
+            proof,
+            public,
             suite::<F, E>(),
-            self.state.limits.max_proof_bytes,
-            |w| {
-                w.write_u16(1)?;
-                write_public(w, public)?;
-                write_cap(w, &proof.commitment)?;
-                if let Some(bus) = &proof.bus {
-                    write_product(w, &bus.product)?;
-                }
-                write_generic(w, &proof.sumcheck)?;
-                if let Some(indexed) = &proof.indexed {
-                    write_indexed(w, indexed)?;
-                }
-                write_pcs(w, &proof.opening)?;
-                if let Some(pp) = &proof.preprocessed_opening {
-                    write_pcs(w, pp)?;
-                }
-                Ok(())
-            },
+            &self.state.limits,
+            write_pcs::<F, E>,
         )
     }
 
@@ -147,37 +135,119 @@ where
         proof_bytes: &[u8],
         statement: CanonicalBinaryStatement<'_>,
     ) -> Result<VerifiedBinaryNativeProof<F, E>, ArtifactError> {
-        if candidate != expected.canonical_bytes || candidate != &*self.state.identity {
+        let authority = DecodeAuthority {
+            identity: &self.state.identity,
+            shape: &self.state.decode,
+            limits: &self.state.limits,
+            usage: self.state.binary.input_resource_usage(),
+            suite: suite::<F, E>(),
+        };
+        let (proof, public) = authority.decode::<BinaryNativeConfig<F, E>>(
+            candidate,
+            expected,
+            proof_bytes,
+            statement,
+            read_pcs::<F, E>,
+        )?;
+        self.verify_native(&proof, &public)
+            .map_err(|_| ArtifactError::VerificationRejected)
+    }
+}
+
+/// Shared outer framing for the closed native opening frontends. Encoding
+/// callers first run their complete retained native verification authority.
+pub(super) fn encode_multi<C>(
+    proof: &MultiStarkProof<C>,
+    public: &[Vec<C::Val>],
+    suite: u16,
+    limits: &ArtifactLimits,
+    write_opening: fn(&mut Writer, &ConfigPcsProof<C>) -> Result<(), ArtifactError>,
+) -> Result<Vec<u8>, ArtifactError>
+where
+    C: MultiStarkConfig,
+    C::Val: RecursiveBinaryTowerField,
+    C::Challenge: RecursiveBinaryChallengeField,
+    C::Pcs: MultilinearPcs<C::Challenge, C::Challenger, Commitment = MerkleCap<C::Val, [u8; 32]>>,
+{
+    encode_framed(ArtifactKind::Proof, suite, limits.max_proof_bytes, |w| {
+        w.write_u16(1)?;
+        write_public(w, public)?;
+        write_cap(w, &proof.commitment)?;
+        if let Some(bus) = &proof.bus {
+            write_product(w, &bus.product)?;
+        }
+        write_generic(w, &proof.sumcheck)?;
+        if let Some(indexed) = &proof.indexed {
+            write_indexed(w, indexed)?;
+        }
+        write_opening(w, &proof.opening)?;
+        if let Some(pp) = &proof.preprocessed_opening {
+            write_opening(w, pp)?;
+        }
+        Ok(())
+    })
+}
+
+/// Retained authority only: no proof-derived geometry or caller verifier hooks.
+pub(super) struct DecodeAuthority<'a, O> {
+    pub(super) identity: &'a [u8],
+    pub(super) shape: &'a MultiDecode<O>,
+    pub(super) limits: &'a ArtifactLimits,
+    pub(super) usage: InputResourceUsage,
+    pub(super) suite: u16,
+}
+impl<O> DecodeAuthority<'_, O> {
+    pub(super) fn decode<C>(
+        &self,
+        candidate: &[u8],
+        expected: ExpectedVerifierArtifact<'_>,
+        proof_bytes: &[u8],
+        statement: CanonicalBinaryStatement<'_>,
+        mut read_opening: impl FnMut(
+            &mut Reader<'_>,
+            &O,
+            &mut usize,
+        ) -> Result<ConfigPcsProof<C>, ArtifactError>,
+    ) -> Result<(MultiStarkProof<C>, Vec<Vec<C::Val>>), ArtifactError>
+    where
+        C: MultiStarkConfig,
+        C::Val: RecursiveBinaryTowerField,
+        C::Challenge: RecursiveBinaryChallengeField,
+        C::Pcs:
+            MultilinearPcs<C::Challenge, C::Challenger, Commitment = MerkleCap<C::Val, [u8; 32]>>,
+    {
+        if candidate != expected.canonical_bytes || candidate != self.identity {
             return Err(ArtifactError::TrustedArtifactMismatch);
         }
-        let shape = &self.state.decode;
+        let shape = self.shape;
         let count = shape.public_counts.iter().try_fold(0usize, |n, &m| {
             n.checked_add(m).ok_or(ArtifactError::LengthOverflow)
         })?;
         if statement.element_count != count
-            || statement.bytes.len() != checked_product(count, F::RAW_BITS / 8)?
+            || statement.bytes.len()
+                != checked_product(count, <C::Val as RecursiveBinaryTowerField>::RAW_BITS / 8)?
         {
             return Err(malformed("binary independent statement"));
         }
         let (proof, public) = decode_framed(
             proof_bytes,
             ArtifactKind::Proof,
-            &self.state.limits,
-            |tag| tag == suite::<F, E>(),
+            self.limits,
+            |tag| tag == self.suite,
             |_, r| {
                 if r.read_u16()? != 1 {
                     return Err(malformed("binary proof revision"));
                 }
                 let expected = r.read_alternate_slice(statement.bytes, |r| {
-                    read_public::<F>(r, &shape.public_counts)
+                    read_public::<C::Val>(r, &shape.public_counts)
                 })?;
-                let attached = read_public::<F>(r, &shape.public_counts)?;
+                let attached = read_public::<C::Val>(r, &shape.public_counts)?;
                 if attached != expected {
                     return Err(ArtifactError::VerificationRejected);
                 }
                 // Native replay produces additional shape-bounded witness storage.
                 // Charge a conservative limb-sized conversion before invoking it.
-                let usage = self.state.binary.input_resource_usage();
+                let usage = self.usage;
                 r.charge_conversion_vec::<u128>(usage.scalar_elements)?;
                 // The returned witness retains deep copies of trusted shape
                 // metadata, including nested reduction shapes. Charge those
@@ -199,18 +269,17 @@ where
                         .as_ref()
                         .map(|s| read_indexed(r, s))
                         .transpose()?,
-                    opening: read_pcs(r, &shape.opening, &mut frontiers)?,
+                    opening: read_opening(r, &shape.opening, &mut frontiers)?,
                     preprocessed_opening: shape
                         .preprocessed
                         .as_ref()
-                        .map(|s| read_pcs(r, s, &mut frontiers))
+                        .map(|s| read_opening(r, s, &mut frontiers))
                         .transpose()?,
                 };
                 Ok((proof, expected))
             },
         )?;
-        self.verify_native(&proof, &public)
-            .map_err(|_| ArtifactError::VerificationRejected)
+        Ok((proof, public))
     }
 }
 
