@@ -7,7 +7,7 @@ use core::hash::Hash;
 use p3_binary_field::{BinaryField128, TowerLevel};
 use p3_circuit::CircuitBuilder;
 use p3_circuit::ops::BinaryTower128Target;
-use p3_field::{Field, PrimeCharacteristicRing};
+use p3_field::Field;
 
 use super::whir_plan::invalid;
 use crate::verifier::{InputResourceUsage, VerificationError, VerifierLimits};
@@ -28,56 +28,9 @@ impl Binary128SumcheckInterpolator {
 
     /// Checks finite degree and coefficient-storage budgets before allocation.
     pub fn with_limits(degree: usize, limits: &VerifierLimits) -> Result<Self, VerificationError> {
-        if degree == 0 {
-            return Err(invalid("binary generic sumcheck degree must be positive"));
-        }
-        if degree > limits.max_log_domain_or_degree {
-            return Err(VerificationError::ResourceLimitExceeded {
-                component: "binary generic sumcheck degree",
-                actual: degree,
-                limit: limits.max_log_domain_or_degree,
-            });
-        }
-        let count = degree
-            .checked_add(1)
-            .ok_or(VerificationError::ResourceArithmeticOverflow {
-                component: "binary generic sumcheck nodes",
-            })?;
-        let entries =
-            count
-                .checked_mul(count)
-                .ok_or(VerificationError::ResourceArithmeticOverflow {
-                    component: "binary generic sumcheck coefficients",
-                })?;
-        let mut usage = InputResourceUsage::default();
-        usage.add_metadata_entries(limits, entries)?;
-        let nodes = (0..count)
-            .map(BinaryField128::interpolation_node)
-            .collect::<Vec<_>>();
-        let coefficients = nodes
-            .iter()
-            .enumerate()
-            .map(|(i, &node)| {
-                let mut polynomial = vec![BinaryField128::ONE];
-                let mut denominator = BinaryField128::ONE;
-                for (j, &other) in nodes.iter().enumerate() {
-                    if i == j {
-                        continue;
-                    }
-                    denominator *= node + other;
-                    let mut next = vec![BinaryField128::ZERO; polynomial.len() + 1];
-                    for (k, &coefficient) in polynomial.iter().enumerate() {
-                        next[k] += coefficient * other;
-                        next[k + 1] += coefficient;
-                    }
-                    polynomial = next;
-                }
-                let inverse = denominator.inverse();
-                polynomial
-                    .into_iter()
-                    .map(|v| (v * inverse).to_repr())
-                    .collect()
-            })
+        let coefficients = lagrange_coefficients::<BinaryField128>(degree, limits)?
+            .into_iter()
+            .map(|basis| basis.into_iter().map(|value| value.to_repr()).collect())
             .collect();
         Ok(Self { coefficients })
     }
@@ -128,4 +81,59 @@ impl Binary128SumcheckInterpolator {
         }
         Ok(result)
     }
+}
+
+/// Native interpolation constants shared by the closed binary field adapters.
+/// The complete coefficient storage is bounded before constructing the nodes.
+pub(super) fn lagrange_coefficients<E: Field>(
+    degree: usize,
+    limits: &VerifierLimits,
+) -> Result<Vec<Vec<E>>, VerificationError> {
+    if degree == 0 {
+        return Err(invalid("binary generic sumcheck degree must be positive"));
+    }
+    if degree > limits.max_log_domain_or_degree {
+        return Err(VerificationError::ResourceLimitExceeded {
+            component: "binary generic sumcheck degree",
+            actual: degree,
+            limit: limits.max_log_domain_or_degree,
+        });
+    }
+    let count = degree
+        .checked_add(1)
+        .ok_or(VerificationError::ResourceArithmeticOverflow {
+            component: "binary generic sumcheck nodes",
+        })?;
+    let entries =
+        count
+            .checked_mul(count)
+            .ok_or(VerificationError::ResourceArithmeticOverflow {
+                component: "binary generic sumcheck coefficients",
+            })?;
+    let mut usage = InputResourceUsage::default();
+    usage.add_metadata_entries(limits, entries)?;
+    let nodes = (0..count).map(E::interpolation_node).collect::<Vec<_>>();
+    let coefficients = nodes
+        .iter()
+        .enumerate()
+        .map(|(i, &node)| {
+            let mut polynomial = vec![E::ONE];
+            let mut denominator = E::ONE;
+            for (j, &other) in nodes.iter().enumerate() {
+                if i == j {
+                    continue;
+                }
+                denominator *= node + other;
+                let mut next = vec![E::ZERO; polynomial.len() + 1];
+                for (k, &coefficient) in polynomial.iter().enumerate() {
+                    next[k] += coefficient * other;
+                    next[k + 1] += coefficient;
+                }
+                polynomial = next;
+            }
+            let inverse = denominator.inverse();
+            polynomial.into_iter().map(|v| v * inverse).collect()
+        })
+        .collect();
+    Ok(coefficients)
 }

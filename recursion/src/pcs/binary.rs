@@ -24,6 +24,7 @@ mod grouped_pcs;
 mod grouped_trace;
 mod input;
 mod nonzero;
+mod poly_generic_sumcheck;
 mod poly_whir_gadgets;
 mod poly_whir_input;
 mod poly_whir_verifier;
@@ -78,6 +79,11 @@ pub use input::{BinaryPcsInputShape, NativeBinaryPcsInput};
 pub use nonzero::{
     BinaryNonzeroChallengeOutput, BinaryNonzeroChallengePlan, BinaryNonzeroChallengeTailOutput,
     BinaryNonzeroChallengeTailPlan,
+};
+pub use poly_generic_sumcheck::{
+    BinaryPolyGenericSumcheckInputShape, BinaryPolyGenericSumcheckOutput,
+    BinaryPolyGenericSumcheckProofTargets, BinaryPolyGenericSumcheckVerifier,
+    NativeBinaryPolyGenericSumcheckInput,
 };
 pub use poly_whir_input::{
     BinaryPolyWhirInputShape, BinaryPolyWhirProofTargets, BinaryPolyWhirRoundTargets,
