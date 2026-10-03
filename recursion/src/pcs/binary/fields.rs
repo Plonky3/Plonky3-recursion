@@ -1,9 +1,11 @@
 //! Native fields whose raw coordinates embed in the 128-bit Wiedemann tower.
 
 use p3_binary_field::{
-    BinaryField8, BinaryField16, BinaryField32, BinaryField64, BinaryField128, TowerLevel,
+    BinaryField8, BinaryField16, BinaryField32, BinaryField64, BinaryField128, Poly64, Poly192,
+    TowerLevel,
 };
 use p3_challenger::fs::TranscriptField;
+use p3_field::ExtensionField;
 
 mod sealed {
     pub trait Tower {}
@@ -53,3 +55,31 @@ impl sealed::Whir for BinaryField32 {}
 impl sealed::Whir for BinaryField128 {}
 impl RecursiveBinaryWhirTowerField for BinaryField32 {}
 impl RecursiveBinaryWhirTowerField for BinaryField128 {}
+
+/// Closed internal pairing used only for WHIR geometry and separator capture.
+/// Circuit input widths include the adapter's representation padding.
+pub(super) trait WhirFieldPair<E>:
+    p3_binary_pcs::whir::BinaryWhirAlphabet + TranscriptField
+where
+    E: ExtensionField<Self>,
+{
+    const ALPHABET_BITS: usize;
+    const BASE_INPUT_LIMBS: usize;
+    const CHALLENGE_INPUT_LIMBS: usize;
+}
+
+impl<F> WhirFieldPair<BinaryField128> for F
+where
+    F: RecursiveBinaryWhirTowerField,
+    BinaryField128: ExtensionField<F>,
+{
+    const ALPHABET_BITS: usize = F::RAW_BITS;
+    const BASE_INPUT_LIMBS: usize = 8;
+    const CHALLENGE_INPUT_LIMBS: usize = 8;
+}
+
+impl WhirFieldPair<Poly192> for Poly64 {
+    const ALPHABET_BITS: usize = 64;
+    const BASE_INPUT_LIMBS: usize = 4;
+    const CHALLENGE_INPUT_LIMBS: usize = 12;
+}

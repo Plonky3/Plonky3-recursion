@@ -1,12 +1,13 @@
-//! Trusted geometry and native separators for additive tower WHIR.
+//! Trusted geometry and native separators for released additive WHIR pairs.
 
 use alloc::vec;
 use alloc::vec::Vec;
+use core::marker::PhantomData;
 
 use p3_binary_field::BinaryField128;
 use p3_challenger::{FieldChallenger, GrindingChallenger};
 use p3_circuit::ops::ByteHash;
-use p3_field::{BasedVectorSpace, ExtensionField, PrimeCharacteristicRing};
+use p3_field::{BasedVectorSpace, ExtensionField};
 use p3_multilinear_util::point::Point;
 use p3_sumcheck::layout::{
     LayoutStrategy, TablePlacement, Verifier, commitment_domain_separator, plan_stacked_layout,
@@ -17,7 +18,8 @@ use p3_sumcheck::{OpeningBatch, OpeningProtocol};
 use p3_whir::WhirConfig;
 use p3_whir::transcript::WhirShape;
 
-use super::{BinaryWhirQueryPlan, RecursiveBinaryWhirTowerField};
+use super::BinaryWhirQueryPlan;
+use super::fields::WhirFieldPair;
 use crate::transcript::{SeedTap, domain_separator_seed};
 use crate::verifier::{InputResourceUsage, VerificationError, VerifierLimits};
 
@@ -39,7 +41,8 @@ pub(super) struct OracleSite {
 }
 
 #[derive(Clone, Debug)]
-pub(super) struct WhirPlan<F> {
+pub(super) struct WhirPlan<F, E = BinaryField128> {
+    _challenge: PhantomData<E>,
     pub protocol: OpeningProtocol,
     pub order: VariableOrder,
     pub hash: ByteHash,
@@ -60,13 +63,13 @@ pub(super) struct WhirPlan<F> {
     pub fold_seeds: Vec<Vec<F>>,
 }
 
-impl<F> WhirPlan<F>
+impl<F, E> WhirPlan<F, E>
 where
-    F: RecursiveBinaryWhirTowerField,
-    BinaryField128: ExtensionField<F>,
+    F: WhirFieldPair<E>,
+    E: ExtensionField<F>,
 {
     pub fn new<Ch>(
-        config: &WhirConfig<BinaryField128, F, Ch>,
+        config: &WhirConfig<E, F, Ch>,
         protocol: OpeningProtocol,
         order: VariableOrder,
         hash: ByteHash,
@@ -77,6 +80,16 @@ where
         Ch: FieldChallenger<F> + GrindingChallenger<Witness = F>,
     {
         let variables = config.num_variables();
+        // The released binary challenger searches a 64-bit counter with eight
+        // bits of headroom, even when the base alphabet is wider than 64 bits.
+        limit(
+            "binary WHIR native grinding bits",
+            config.max_pow_bits(),
+            F::ALPHABET_BITS
+                .min(64)
+                .saturating_sub(8)
+                .min(usize::BITS as usize - 1),
+        )?;
         let log_domain = variables
             .checked_add(config.params().starting_log_inv_rate)
             .ok_or(VerificationError::ResourceArithmeticOverflow {
@@ -135,7 +148,10 @@ where
                     return Err(invalid("binary WHIR opening repeats a column"));
                 }
             }
-            usage.add_scalar_elements(limits, mul(shapes[table].num_variables(), 8)?)?;
+            usage.add_scalar_elements(
+                limits,
+                mul(shapes[table].num_variables(), F::CHALLENGE_INPUT_LIMBS)?,
+            )?;
         }
         limit(
             "binary WHIR intermediate rounds",
@@ -163,8 +179,8 @@ where
             rounds: shape.initial_sumcheck.rounds,
             pow_bits: shape.initial_sumcheck.pow_bits,
         };
-        fold_usage::<F>(&mut usage, limits, &initial_fold)?;
-        usage.add_scalar_elements(limits, mul(initial_claims, 8)?)?;
+        fold_usage::<F, E>(&mut usage, limits, &initial_fold)?;
+        usage.add_scalar_elements(limits, mul(initial_claims, F::CHALLENGE_INPUT_LIMBS)?)?;
         let final_config = config.final_round_config();
         let mut sites = Vec::new();
         for (i, params) in config
@@ -199,7 +215,7 @@ where
                     },
                 )
             };
-            if cap_height > bits || bits > F::RAW_BITS {
+            if cap_height > bits || bits > F::ALPHABET_BITS {
                 return Err(invalid(
                     "binary WHIR cap or query width exceeds its tree or alphabet",
                 ));
@@ -220,7 +236,7 @@ where
                 if i == 0 {
                     1
                 } else {
-                    <BinaryField128 as BasedVectorSpace<F>>::DIMENSION
+                    <E as BasedVectorSpace<F>>::DIMENSION
                 },
             )?;
             limit(
@@ -236,15 +252,23 @@ where
             usage.add_metadata_entries(limits, ood)?;
             usage.add_scalar_elements(
                 limits,
+                mul(ood, F::CHALLENGE_INPUT_LIMBS)?
+                    .checked_add(F::BASE_INPUT_LIMBS)
+                    .ok_or(VerificationError::ResourceArithmeticOverflow {
+                        component: "binary WHIR OOD values",
+                    })?,
+            )?;
+            usage.add_scalar_elements(
+                limits,
                 mul(
-                    ood.checked_add(1)
-                        .ok_or(VerificationError::ResourceArithmeticOverflow {
-                            component: "binary WHIR OOD values",
-                        })?,
-                    8,
+                    mul(q, width)?,
+                    if i == 0 {
+                        F::BASE_INPUT_LIMBS
+                    } else {
+                        F::CHALLENGE_INPUT_LIMBS
+                    },
                 )?,
             )?;
-            usage.add_scalar_elements(limits, mul(mul(q, width)?, 8)?)?;
             let paths = mul(q, bits - cap_height)?;
             usage.add_restored_authentication_path_hashes(limits, q, bits - cap_height)?;
             usage.add_compressed_frontier_hashes(limits, paths)?;
@@ -252,7 +276,7 @@ where
             let roots = 1usize << cap_height;
             usage.add_cap_roots(limits, roots)?;
             usage.add_scalar_elements(limits, mul(roots, 16)?)?;
-            fold_usage::<F>(&mut usage, limits, &fold)?;
+            fold_usage::<F, E>(&mut usage, limits, &fold)?;
             if params.pow_bits >= usize::BITS as usize {
                 return Err(invalid("binary WHIR query grinding width is invalid"));
             }
@@ -267,7 +291,7 @@ where
             });
         }
         usage.add_final_poly_evaluations(limits, shape.final_poly_len)?;
-        usage.add_scalar_elements(limits, mul(shape.final_poly_len, 8)?)?;
+        usage.add_scalar_elements(limits, mul(shape.final_poly_len, F::CHALLENGE_INPUT_LIMBS)?)?;
         let strategy = LayoutStrategy::new(order == VariableOrder::Prefix, order);
         let (_, mut placements) = plan_stacked_layout(&shapes);
         if order == VariableOrder::Prefix {
@@ -275,19 +299,19 @@ where
                 .iter_mut()
                 .for_each(TablePlacement::reverse_selectors);
         }
-        let mut native_layout = Verifier::<F, BinaryField128>::new(&shapes, strategy);
+        let mut native_layout = Verifier::<F, E>::new(&shapes, strategy);
         let mut virtual_seeds = Vec::new();
         for _ in 0..initial_ood {
             let mut tap = SeedTap::new();
-            native_layout.add_virtual_eval(BinaryField128::ZERO, &mut tap);
+            native_layout.add_virtual_eval(E::ZERO, &mut tap);
             virtual_seeds.push(tap.binary_seed());
         }
         let mut opening_seeds = Vec::new();
         for (table, batch) in protocol.iter_openings() {
-            let point = Point::new(vec![BinaryField128::ZERO; shapes[table].num_variables()]);
+            let point = Point::new(vec![E::ZERO; shapes[table].num_variables()]);
             let evals = OpeningBatch::new(
-                vec![BinaryField128::ZERO; batch.current().len()],
-                vec![BinaryField128::ZERO; batch.next().len()],
+                vec![E::ZERO; batch.current().len()],
+                vec![E::ZERO; batch.next().len()],
             );
             let mut tap = SeedTap::new();
             native_layout
@@ -306,12 +330,13 @@ where
                 } else {
                     domain_separator_seed(
                         &SumcheckShape::new(fold.rounds, fold.pow_bits, Basis::Evaluation)
-                            .domain_separator::<F, BinaryField128>(),
+                            .domain_separator::<F, E>(),
                     )
                 }
             })
             .collect();
         Ok(Self {
+            _challenge: PhantomData,
             protocol,
             order,
             hash,
@@ -328,23 +353,35 @@ where
             virtual_seeds,
             opening_seeds,
             batching_seed,
-            engine_seed: domain_separator_seed(&shape.domain_separator::<F, BinaryField128>()),
+            engine_seed: domain_separator_seed(&shape.domain_separator::<F, E>()),
             fold_seeds,
         })
     }
 }
 
-fn fold_usage<F: RecursiveBinaryWhirTowerField>(
+fn fold_usage<F, E>(
     usage: &mut InputResourceUsage,
     limits: &VerifierLimits,
     fold: &FoldShape,
-) -> Result<(), VerificationError> {
+) -> Result<(), VerificationError>
+where
+    F: WhirFieldPair<E>,
+    E: ExtensionField<F>,
+{
     if fold.pow_bits >= usize::BITS as usize {
         return Err(invalid("binary WHIR folding grinding width is invalid"));
     }
     usage.add_scalar_elements(
         limits,
-        mul(fold.rounds, if fold.pow_bits > 0 { 24 } else { 16 })?,
+        mul(
+            fold.rounds,
+            2 * F::CHALLENGE_INPUT_LIMBS
+                + if fold.pow_bits > 0 {
+                    F::BASE_INPUT_LIMBS
+                } else {
+                    0
+                },
+        )?,
     )
 }
 fn mul(a: usize, b: usize) -> Result<usize, VerificationError> {
