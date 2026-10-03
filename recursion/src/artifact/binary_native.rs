@@ -4,9 +4,14 @@ pub(crate) mod codec;
 mod config;
 mod family;
 mod grouped;
+mod grouped_boolean;
 pub use grouped::{
     BinaryNativeGroupedAuthority, BinaryNativeGroupedPcsParameters, BinaryNativeGroupedProver,
     BinaryNativeGroupedVerifierSpec, VerifiedBinaryNativeGroupedProof,
+};
+pub use grouped_boolean::{
+    BinaryNativeGroupedBooleanTraceAuthority, BinaryNativeGroupedBooleanTraceProver,
+    VerifiedBinaryNativeGroupedBooleanTraceProof,
 };
 mod lifecycle;
 pub use codec::CanonicalBinaryStatement;
@@ -33,7 +38,8 @@ use crate::verifier::{
     NativeBinaryMultiStarkInput, VerificationError, VerifierLimits,
 };
 pub use config::{
-    BinaryNativeChallenger, BinaryNativeConfig, BinaryNativeGroupedConfig, BinaryNativeHash,
+    BinaryNativeChallenger, BinaryNativeConfig, BinaryNativeGroupedBooleanTraceConfig,
+    BinaryNativeGroupedConfig, BinaryNativeHash,
 };
 use config::{NativeMmcs, tree};
 

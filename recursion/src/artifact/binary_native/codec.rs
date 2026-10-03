@@ -1,5 +1,5 @@
 //! Closed native 0.8 proof wire layout. All geometry is retained authority;
-//! only compressed frontiers carry lengths, bounded before their allocation.
+//! dynamic lengths are bounded before their allocation.
 
 use alloc::vec::Vec;
 
@@ -107,7 +107,20 @@ pub(crate) struct MultiDecode<O = PcsDecode> {
     pub preprocessed: Option<O>,
 }
 
+pub(crate) struct RingDecode {
+    pub successor: Vec<bool>,
+    pub min_rounds: usize,
+    pub max_rounds: usize,
+}
+
+pub(crate) struct BooleanTraceDecode {
+    pub value_count: usize,
+    pub ring: RingDecode,
+    pub packed: PcsDecode<GroupedOracleDecode>,
+}
+
 mod grouped;
+mod grouped_boolean;
 mod grouped_shell;
 
 type PcsProof<F, E> = BinaryPcsProof<F, E, NativeMmcs<F>, NativeMmcs<E>>;

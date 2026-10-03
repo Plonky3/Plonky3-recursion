@@ -75,14 +75,17 @@ where
     }
 }
 
-fn write_grouped_pcs<F, E>(w: &mut Writer, p: &GroupedPcsProof<F, E>) -> Result<(), ArtifactError>
+pub(super) fn write_grouped_pcs<F, E>(
+    w: &mut Writer,
+    p: &GroupedPcsProof<F, E>,
+) -> Result<(), ArtifactError>
 where
     F: RecursiveBinaryTowerField + PackedValue<Value = F>,
     E: RecursiveBinaryChallengeField + PackedValue<Value = E>,
 {
     write_pcs_with(w, p, grouped_shell::write::<F>, grouped_shell::write::<E>)
 }
-fn read_grouped_pcs<F, E>(
+pub(super) fn read_grouped_pcs<F, E>(
     r: &mut Reader<'_>,
     s: &PcsDecode<GroupedOracleDecode>,
     total: &mut usize,

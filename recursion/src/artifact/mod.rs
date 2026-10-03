@@ -6,10 +6,13 @@ pub(crate) mod wire;
 
 pub use binary_native::{
     BinaryNativeAuthority, BinaryNativeChallenger, BinaryNativeConfig,
-    BinaryNativeGroupedAuthority, BinaryNativeGroupedConfig, BinaryNativeGroupedPcsParameters,
-    BinaryNativeGroupedProver, BinaryNativeGroupedVerifierSpec, BinaryNativeHash,
-    BinaryNativePcsParameters, BinaryNativeProver, BinaryNativeVerifierSpec, CanonicalBinaryStatement,
-    VerifiedBinaryNativeGroupedProof, VerifiedBinaryNativeProof,
+    BinaryNativeGroupedAuthority, BinaryNativeGroupedBooleanTraceAuthority,
+    BinaryNativeGroupedBooleanTraceConfig, BinaryNativeGroupedBooleanTraceProver,
+    BinaryNativeGroupedConfig, BinaryNativeGroupedPcsParameters, BinaryNativeGroupedProver,
+    BinaryNativeGroupedVerifierSpec, BinaryNativeHash, BinaryNativePcsParameters,
+    BinaryNativeProver, BinaryNativeVerifierSpec, CanonicalBinaryStatement,
+    VerifiedBinaryNativeGroupedBooleanTraceProof, VerifiedBinaryNativeGroupedProof,
+    VerifiedBinaryNativeProof,
 };
 
 use alloc::boxed::Box;

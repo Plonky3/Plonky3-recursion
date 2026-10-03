@@ -29,6 +29,41 @@ pub struct BinaryRingInputShape<E> {
 }
 
 impl<E: RecursiveBinaryChallengeField> BinaryRingInputShape<E> {
+    pub(crate) fn native_decode_shape(&self) -> crate::artifact::binary_native::codec::RingDecode {
+        let absorbed = E::RAW_BITS.ilog2() as usize;
+        let high = self.num_variables - absorbed;
+        let prefix_limit = self.specs.iter().fold(high, |limit, spec| {
+            limit.min(
+                spec.next_rows
+                    .map_or(high, |rows| self.num_variables - rows),
+            )
+        });
+        crate::artifact::binary_native::codec::RingDecode {
+            successor: self
+                .specs
+                .iter()
+                .map(|s| s.next_rows.is_some_and(|r| r > absorbed))
+                .collect(),
+            min_rounds: high - prefix_limit,
+            max_rounds: high,
+        }
+    }
+
+    pub(crate) fn write_identity(
+        &self,
+        w: &mut crate::artifact::wire::Writer,
+    ) -> Result<(), crate::artifact::ArtifactError> {
+        w.write_count("binary ring variables", self.num_variables)?;
+        w.write_vec("binary ring claims", &self.specs, |w, spec| {
+            w.write_u8(u8::from(spec.current))?;
+            w.write_u8(u8::from(spec.next_rows.is_some()))?;
+            if let Some(rows) = spec.next_rows {
+                w.write_count("binary ring successor rows", rows)?;
+            }
+            Ok(())
+        })
+    }
+
     pub fn allocate_targets<BF, EF>(
         &self,
         circuit: &mut CircuitBuilder<EF>,

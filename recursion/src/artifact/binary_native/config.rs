@@ -231,6 +231,57 @@ where
     }
 }
 
+pub(super) type NativeGroupedBooleanTracePcs<E> = p3_binary_pcs::BooleanTracePcs<
+    E,
+    GroupedCodewordMmcs<NativeMmcs<E>>,
+    GroupedCodewordMmcs<NativeMmcs<E>>,
+>;
+
+/// Factory-owned Boolean trace configuration with independent main and
+/// preprocessing commitment schedules.
+pub struct BinaryNativeGroupedBooleanTraceConfig<E: EncodableLevel> {
+    pub(super) main: NativeGroupedBooleanTracePcs<E>,
+    pub(super) preprocessed: Option<NativeGroupedBooleanTracePcs<E>>,
+}
+
+impl<E> MultiStarkConfig for BinaryNativeGroupedBooleanTraceConfig<E>
+where
+    E: RecursiveBinaryChallengeField
+        + EncodableLevel
+        + ExtensionField<E>
+        + ChallengeField<E>
+        + FoldAlphabet<E>
+        + p3_binary_pcs::Coordinates
+        + PackedValue<Value = E>
+        + serde::Serialize
+        + serde::de::DeserializeOwned,
+{
+    type Val = E;
+    type Challenge = E;
+    type Challenger = BinaryNativeChallenger<E>;
+    type Pcs = NativeGroupedBooleanTracePcs<E>;
+    fn pcs(&self) -> &Self::Pcs {
+        &self.main
+    }
+    fn preprocessed_pcs(&self) -> &Self::Pcs {
+        self.preprocessed
+            .as_ref()
+            .expect("factory checked preprocessing configuration")
+    }
+    fn min_num_variables(&self) -> usize {
+        1
+    }
+    fn collision_resistance_bits(&self) -> Option<usize> {
+        Some(128)
+    }
+    fn build_witness(&self, tables: Vec<Table<E>>) -> Vec<Table<E>> {
+        tables
+    }
+    fn committed_table<'a>(&self, data: &'a ProverData<Self>, index: usize) -> &'a Table<E> {
+        data.table(index)
+    }
+}
+
 pub(super) fn tree<F>(hash: ByteHash, cap_height: usize) -> NativeMmcs<F> {
     NativeMmcs::new(
         SerializingHasher::new(BinaryNativeHash(hash)),

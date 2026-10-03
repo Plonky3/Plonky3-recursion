@@ -48,6 +48,27 @@ pub struct BinaryGroupedBooleanInputShape<E> {
 }
 
 impl<E: RecursiveBinaryChallengeField> BinaryGroupedBooleanInputShape<E> {
+    pub(crate) fn native_decode_shape(
+        &self,
+    ) -> (
+        crate::artifact::binary_native::codec::RingDecode,
+        crate::artifact::binary_native::codec::PcsDecode<
+            crate::artifact::binary_native::codec::GroupedOracleDecode,
+        >,
+    ) {
+        (
+            self.reduction.native_decode_shape(),
+            self.opening.native_decode_shape(),
+        )
+    }
+
+    pub(crate) fn write_identity(
+        &self,
+        w: &mut crate::artifact::wire::Writer,
+    ) -> Result<(), crate::artifact::ArtifactError> {
+        self.reduction.write_identity(w)
+    }
+
     pub fn allocate_targets<BF, EF>(
         &self,
         circuit: &mut CircuitBuilder<EF>,

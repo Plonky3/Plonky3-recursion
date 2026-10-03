@@ -53,6 +53,38 @@ pub struct BinaryGroupedBooleanTraceInputShape<E> {
 }
 
 impl<E: RecursiveBinaryChallengeField> BinaryGroupedBooleanTraceInputShape<E> {
+    pub(crate) fn native_decode_shape(
+        &self,
+    ) -> crate::artifact::binary_native::codec::BooleanTraceDecode {
+        let (ring, packed) = self.opening.native_decode_shape();
+        crate::artifact::binary_native::codec::BooleanTraceDecode {
+            value_count: self.value_count,
+            ring,
+            packed,
+        }
+    }
+
+    pub(crate) fn write_identity(
+        &self,
+        w: &mut crate::artifact::wire::Writer,
+    ) -> Result<(), crate::artifact::ArtifactError> {
+        let shapes = self.protocol.table_shapes();
+        w.write_vec("binary trace tables", &shapes, |w, shape| {
+            w.write_count("binary trace table height", shape.num_variables())?;
+            w.write_count("binary trace table width", shape.width())
+        })?;
+        w.write_count("binary trace openings", self.protocol.num_openings())?;
+        for (table, batch) in self.protocol.iter_openings() {
+            w.write_count("binary trace opening table", table)?;
+            for columns in [batch.current(), batch.next()] {
+                w.write_vec("binary trace opening columns", columns, |w, &column| {
+                    w.write_count("binary trace opening column", column)
+                })?;
+            }
+        }
+        self.opening.write_identity(w)
+    }
+
     pub fn allocate_targets<BF, EF>(
         &self,
         circuit: &mut CircuitBuilder<EF>,
