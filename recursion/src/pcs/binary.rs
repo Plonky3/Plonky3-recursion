@@ -22,6 +22,8 @@ mod trace;
 mod trace_native;
 mod trace_plan;
 mod verifier;
+mod whir_gadgets;
+mod whir_queries;
 pub use boolean::{
     BinaryBooleanInputShape, BinaryBooleanPcsVerifier, BinaryBooleanProofTargets,
     NativeBinaryBooleanInput,
@@ -44,6 +46,11 @@ pub use trace::{
 pub use verifier::{
     BinaryOracleOpeningTargets, BinaryPcs128ProofTargets, BinaryPcs128Verifier, BinaryPcsVerifier,
 };
+pub use whir_gadgets::{
+    binary_whir_query_point, binary128_eval_coefficients, binary128_eval_multilinear,
+    binary128_select_eval,
+};
+pub use whir_queries::BinaryWhirQueryPlan;
 
 /// Verifies terminal binary PCS query sampling against a native configuration.
 /// The challenger must already have absorbed the final codeword and checked
