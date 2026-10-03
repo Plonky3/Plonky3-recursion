@@ -76,19 +76,14 @@ where
     F: RecursiveBinaryTowerField,
     E: RecursiveBinaryChallengeField + ExtensionField<F>,
 {
-    /// Replays only bounded native sampling, then lets the released grouping
-    /// implementation reconstruct complete leaves. The private recorder checks
-    /// frontier and restoration budgets before retaining any native paths.
-    /// Every failure leaves the caller's challenger unchanged.
-    pub fn import_native<H0, C0, H1, C1, Ch>(
+    pub(crate) fn check_native<H0, C0, H1, C1>(
         &self,
         base_tree: &Tree<F, H0, C0>,
         round_tree: &Tree<E, H1, C1>,
         commitment: &MerkleCap<F, [u8; 32]>,
         points: &[Point<E>],
         proof: &BinaryPcsProof<F, E, Grouped<F, H0, C0>, Grouped<E, H1, C1>>,
-        challenger: &mut Ch,
-    ) -> Result<NativeBinaryGroupedPcsInput, VerificationError>
+    ) -> Result<(), VerificationError>
     where
         F: PackedValue<Value = F>,
         E: PackedValue<Value = E>,
@@ -96,11 +91,6 @@ where
         H1: CryptographicHasher<E, [u8; 32]> + Sync,
         C0: PseudoCompressionFunction<[u8; 32], 2> + Sync,
         C1: PseudoCompressionFunction<[u8; 32], 2> + Sync,
-        Ch: Clone
-            + FieldChallenger<F>
-            + CanSampleUniformBits<F>
-            + GrindingChallenger<Witness = F>
-            + CanObserve<MerkleCap<E, [u8; 32]>>,
     {
         let inner = &self.inner;
         let shape = BinaryPcsShape::new(&inner.config);
@@ -142,6 +132,72 @@ where
                 }
             }
         }
+        Ok(())
+    }
+
+    /// Replays only bounded native sampling, then lets the released grouping
+    /// implementation reconstruct complete leaves. The private recorder checks
+    /// frontier and restoration budgets before retaining any native paths.
+    /// Every failure leaves the caller's challenger unchanged.
+    pub fn import_native<H0, C0, H1, C1, Ch>(
+        &self,
+        base_tree: &Tree<F, H0, C0>,
+        round_tree: &Tree<E, H1, C1>,
+        commitment: &MerkleCap<F, [u8; 32]>,
+        points: &[Point<E>],
+        proof: &BinaryPcsProof<F, E, Grouped<F, H0, C0>, Grouped<E, H1, C1>>,
+        challenger: &mut Ch,
+    ) -> Result<NativeBinaryGroupedPcsInput, VerificationError>
+    where
+        F: PackedValue<Value = F>,
+        E: PackedValue<Value = E>,
+        H0: CryptographicHasher<F, [u8; 32]> + Sync,
+        H1: CryptographicHasher<E, [u8; 32]> + Sync,
+        C0: PseudoCompressionFunction<[u8; 32], 2> + Sync,
+        C1: PseudoCompressionFunction<[u8; 32], 2> + Sync,
+        Ch: Clone
+            + FieldChallenger<F>
+            + CanSampleUniformBits<F>
+            + GrindingChallenger<Witness = F>
+            + CanObserve<MerkleCap<E, [u8; 32]>>,
+    {
+        self.import_native_with_usage(
+            base_tree,
+            round_tree,
+            commitment,
+            points,
+            proof,
+            challenger,
+            &RefCell::new(InputResourceUsage::default()),
+        )
+    }
+
+    pub(crate) fn import_native_with_usage<H0, C0, H1, C1, Ch>(
+        &self,
+        base_tree: &Tree<F, H0, C0>,
+        round_tree: &Tree<E, H1, C1>,
+        commitment: &MerkleCap<F, [u8; 32]>,
+        points: &[Point<E>],
+        proof: &BinaryPcsProof<F, E, Grouped<F, H0, C0>, Grouped<E, H1, C1>>,
+        challenger: &mut Ch,
+        usage: &RefCell<InputResourceUsage>,
+    ) -> Result<NativeBinaryGroupedPcsInput, VerificationError>
+    where
+        F: PackedValue<Value = F>,
+        E: PackedValue<Value = E>,
+        H0: CryptographicHasher<F, [u8; 32]> + Sync,
+        H1: CryptographicHasher<E, [u8; 32]> + Sync,
+        C0: PseudoCompressionFunction<[u8; 32], 2> + Sync,
+        C1: PseudoCompressionFunction<[u8; 32], 2> + Sync,
+        Ch: Clone
+            + FieldChallenger<F>
+            + CanSampleUniformBits<F>
+            + GrindingChallenger<Witness = F>
+            + CanObserve<MerkleCap<E, [u8; 32]>>,
+    {
+        self.check_native(base_tree, round_tree, commitment, points, proof)?;
+        let inner = &self.inner;
+        let input_shape = self.input_shape();
         let mut staged = challenger.clone();
         let caps = proof
             .rounds
@@ -158,7 +214,6 @@ where
             &mut staged,
         )?;
         let log_domain = inner.config.num_variables() + inner.config.log_inv_rate();
-        let usage = RefCell::new(InputResourceUsage::default());
         let mut oracles = Vec::new();
         for (batch, (start, arity)) in batches(&inner.config).enumerate() {
             let size = 1usize << arity;
@@ -180,7 +235,7 @@ where
                     &proof.base_opened_values,
                     &proof.base_multi_proof,
                     &inner.limits,
-                    &usage,
+                    usage,
                 )?
             } else {
                 let round = &proof.rounds[batch - 1];
@@ -193,7 +248,7 @@ where
                     &round.opened_values,
                     &round.multi_proof,
                     &inner.limits,
-                    &usage,
+                    usage,
                 )?
             };
             oracles.push(opening);
