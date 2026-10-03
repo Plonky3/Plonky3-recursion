@@ -3,7 +3,7 @@
 use core::hash::Hash as StdHash;
 
 use p3_baby_bear::BabyBear;
-use p3_binary_field::{BinaryChallenger, BinaryField128, Gf2, TowerLevel};
+use p3_binary_field::{BinaryChallenger, BinaryField8, BinaryField128, Gf2, TowerLevel};
 use p3_blake3::Blake3;
 use p3_challenger::{CanObserve, CanSample, CanSampleBits, GrindingChallenger, HashChallenger};
 use p3_circuit::ops::{BinaryTower128Target, ByteHash};
@@ -18,6 +18,69 @@ use p3_symmetric::{CryptographicHasher, Hash};
 type Native<H> = BinaryChallenger<BinaryField128, HashChallenger<u8, H, 32>>;
 type BabyD4 = BinomialExtensionField<BabyBear, 4>;
 type GoldD2 = BinomialExtensionField<Goldilocks, 2>;
+
+fn byte_stream_script<H>(hash: ByteHash, hasher: H)
+where
+    H: CryptographicHasher<u8, [u8; 32]>,
+{
+    let initial = [3u8, 251, 7, 129, 11, 17, 193];
+    let mut native = BinaryChallenger::<BinaryField8, _>::from_hasher(initial.to_vec(), hasher);
+    let mut builder = CircuitBuilder::<BabyD4>::new();
+    match hash {
+        ByteHash::Keccak256 => builder.enable_keccak_f1600::<BabyBear>(),
+        ByteHash::Blake3 => builder.enable_blake3_compress::<BabyBear>(),
+    }
+    let supplied: Vec<_> = initial.iter().map(|_| builder.public_input()).collect();
+    let mut circuit = BinaryTower128Challenger::with_initial_bytes::<BabyBear, BabyD4>(
+        &mut builder,
+        hash,
+        &supplied,
+    )
+    .unwrap();
+    for count in [1, 16, 7, 24, 17, 0] {
+        let drawn = circuit
+            .sample_bytes::<BabyBear, BabyD4>(&mut builder, count)
+            .unwrap();
+        for actual in drawn {
+            let expected: BinaryField8 = native.sample();
+            let expected = builder.define_const(BabyD4::from_u8(expected.to_repr()));
+            builder.connect(actual, expected);
+        }
+        // Bit draws keep consuming eight bytes even from an odd stack position.
+        let expected = native.sample_bits(23);
+        let bits = circuit
+            .sample_bits::<BabyBear, BabyD4>(&mut builder, 23)
+            .unwrap();
+        bind_bits::<BabyBear, BabyD4>(&mut builder, &bits, expected);
+    }
+    for bytes in [&[][..], &supplied[..3], &supplied[..1]] {
+        for &byte in &initial[..bytes.len()] {
+            native.observe(BinaryField8::from_repr(byte));
+        }
+        circuit
+            .observe_bytes::<BabyBear, BabyD4>(&mut builder, bytes)
+            .unwrap();
+        let expected: BinaryField128 = native.sample();
+        let sample = circuit.sample::<BabyBear, BabyD4>(&mut builder).unwrap();
+        bind_raw::<BabyBear, BabyD4>(&mut builder, &sample, expected.to_repr());
+    }
+    let built = builder.build().unwrap();
+    let values: Vec<_> = initial.into_iter().map(BabyD4::from_u8).collect();
+    let mut runner = built.runner();
+    runner.set_public_inputs(&values).unwrap();
+    runner.run().unwrap();
+    let mut out_of_range = values;
+    out_of_range[6] = BabyD4::from_u16(256);
+    let mut runner = built.runner();
+    runner.set_public_inputs(&out_of_range).unwrap();
+    assert!(runner.run().is_err());
+}
+
+#[test]
+fn odd_byte_transcripts_and_partial_samples_match_native() {
+    byte_stream_script(ByteHash::Keccak256, Keccak256Hash);
+    byte_stream_script(ByteHash::Blake3, Blake3);
+}
 
 const DENSE: u128 = 0x21bade026a6ae768f2ed66ffdcc99396;
 const DIGEST: [u8; 32] = [

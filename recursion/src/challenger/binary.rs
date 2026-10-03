@@ -2,8 +2,8 @@
 //!
 //! This matches `BinaryChallenger<BinaryField128, HashChallenger<u8, H, 32>>`
 //! with `H = p3_keccak::Keccak256Hash` or `H = p3_blake3::Blake3`.
-//! Transcript bytes are represented by little-endian 16-bit limbs, so an
-//! initial transcript must have an even number of bytes. All methods must use
+//! Transcript buffers hold individual bytes, supporting observations and
+//! samples of any byte length. All methods must use
 //! one [`CircuitBuilder`] expression graph: [`ExprId`] has no graph owner to
 //! let this type detect targets copied from another builder.
 
@@ -16,7 +16,7 @@ use p3_field::{ExtensionField, PrimeField64};
 
 /// A circuit transcript for raw binary-tower observations and byte-hash samples.
 ///
-/// Both private buffers hold natural-order, little-endian 16-bit byte limbs.
+/// Both private buffers hold natural-order bytes, constrained to eight bits.
 /// The fixed [`ByteHash`] choice is part of the circuit relation, and its
 /// corresponding Keccak-f or BLAKE3 non-primitive operation must be enabled
 /// before a sample needs a refill. A failed fallible method preserves this
@@ -61,8 +61,33 @@ impl BinaryTower128Challenger {
         EF: ExtensionField<BF> + Eq + Hash,
     {
         Self::check_limb_field::<BF, EF>("binary128_challenger_with_initial_limbs")?;
-        for &limb in initial {
-            circuit.decompose_to_bits::<BF>(limb, 16)?;
+        let bytes = Self::bytes_from_limbs::<BF, EF>(circuit, initial)?;
+        Ok(Self {
+            hash,
+            input_buffer: bytes,
+            output_buffer: Vec::new(),
+        })
+    }
+
+    /// Starts with an exact byte string, without a length tag or padding.
+    /// Every input is constrained to a base-field integer in `0..=255`.
+    /// IDs must belong to `circuit`'s expression graph.
+    ///
+    /// # Errors
+    /// Rejects an unsupported host field before adding constraints, then
+    /// propagates byte decomposition errors.
+    pub fn with_initial_bytes<BF, EF>(
+        circuit: &mut CircuitBuilder<EF>,
+        hash: ByteHash,
+        initial: &[ExprId],
+    ) -> Result<Self, CircuitBuilderError>
+    where
+        BF: PrimeField64,
+        EF: ExtensionField<BF> + Eq + Hash,
+    {
+        Self::check_limb_field::<BF, EF>("binary_challenger_with_initial_bytes")?;
+        for &byte in initial {
+            circuit.decompose_to_bits::<BF>(byte, 8)?;
         }
         Ok(Self {
             hash,
@@ -71,8 +96,61 @@ impl BinaryTower128Challenger {
         })
     }
 
+    /// Observes an exact byte string. Every byte is constrained to `0..=255`.
+    /// A nonempty observation discards unsampled output and appends to the
+    /// next hash input. An empty observation leaves the transcript unchanged.
+    /// IDs must belong to `circuit`'s expression graph.
+    ///
+    /// # Errors
+    /// Rejects an unsupported host field before adding constraints, then
+    /// propagates decomposition errors. On error, challenger state is unchanged.
+    pub fn observe_bytes<BF, EF>(
+        &mut self,
+        circuit: &mut CircuitBuilder<EF>,
+        bytes: &[ExprId],
+    ) -> Result<(), CircuitBuilderError>
+    where
+        BF: PrimeField64,
+        EF: ExtensionField<BF> + Eq + Hash,
+    {
+        Self::check_limb_field::<BF, EF>("binary_challenger_observe_bytes")?;
+        for &byte in bytes {
+            circuit.decompose_to_bits::<BF>(byte, 8)?;
+        }
+        if !bytes.is_empty() {
+            self.output_buffer.clear();
+            self.input_buffer.extend_from_slice(bytes);
+        }
+        Ok(())
+    }
+
+    /// Draws `count` bytes from the back of the digest, spanning chained
+    /// refills when necessary. This matches native sampling of binary elements
+    /// whose serialized widths total `count`. A zero count consumes nothing.
+    /// Returned expressions are constrained to `0..=255`.
+    ///
+    /// # Errors
+    /// Rejects an unsupported host field before adding constraints, then
+    /// propagates hash and decomposition errors. On error, challenger state
+    /// is unchanged; expressions already emitted by the builder may remain.
+    pub fn sample_bytes<BF, EF>(
+        &mut self,
+        circuit: &mut CircuitBuilder<EF>,
+        count: usize,
+    ) -> Result<Vec<ExprId>, CircuitBuilderError>
+    where
+        BF: PrimeField64,
+        EF: ExtensionField<BF> + Eq + Hash,
+    {
+        Self::check_limb_field::<BF, EF>("binary_challenger_sample_bytes")?;
+        let mut staged = self.clone();
+        let result = staged.sample_stream_bytes::<BF, EF>(circuit, count)?;
+        *self = staged;
+        Ok(result)
+    }
+
     /// Observes a checked tower target as its 16 raw little-endian bytes.
-    /// This appends eight low-first limbs to the next hash input and discards
+    /// This appends sixteen low-first bytes to the next hash input and discards
     /// any unsampled output. The target must belong to `circuit`'s graph.
     ///
     /// # Errors
@@ -139,11 +217,9 @@ impl BinaryTower128Challenger {
     {
         Self::check_limb_field::<BF, EF>("binary128_challenger_observe_digest")?;
         let mut staged = self.clone();
-        for &limb in digest {
-            circuit.decompose_to_bits::<BF>(limb, 16)?;
-        }
+        let bytes = Self::bytes_from_limbs::<BF, EF>(circuit, digest)?;
         staged.output_buffer.clear();
-        staged.input_buffer.extend_from_slice(digest);
+        staged.input_buffer.extend(bytes);
         *self = staged;
         Ok(())
     }
@@ -167,11 +243,15 @@ impl BinaryTower128Challenger {
     {
         Self::check_limb_field::<BF, EF>("binary128_challenger_sample")?;
         let mut staged = self.clone();
-        let stream = staged.sample_stream_limbs::<BF, EF>(circuit, 8)?;
-        let limbs: [ExprId; 8] = stream
-            .try_into()
-            .expect("eight sampled limbs form one binary tower element");
-        let result = circuit.binary128_from_limbs::<BF>(limbs)?;
+        let stream = staged.sample_stream_bytes::<BF, EF>(circuit, 16)?;
+        let mut bits = Vec::with_capacity(128);
+        for byte in stream {
+            bits.extend(circuit.decompose_to_bits::<BF>(byte, 8)?);
+        }
+        let result = circuit.binary128_from_bits(
+            bits.try_into()
+                .expect("sixteen sampled bytes form one binary tower element"),
+        )?;
         *self = staged;
         Ok(result)
     }
@@ -244,9 +324,13 @@ impl BinaryTower128Challenger {
         BF: PrimeField64,
         EF: ExtensionField<BF> + Eq + Hash,
     {
-        let limbs = circuit.binary128_to_limbs::<BF>(value)?;
+        let bytes: Vec<_> = value
+            .bits()
+            .chunks(8)
+            .map(|bits| circuit.reconstruct_index_from_bits::<BF>(bits))
+            .collect::<Result<_, _>>()?;
         self.output_buffer.clear();
-        self.input_buffer.extend_from_slice(&limbs);
+        self.input_buffer.extend(bytes);
         Ok(())
     }
 
@@ -259,16 +343,16 @@ impl BinaryTower128Challenger {
         BF: PrimeField64,
         EF: ExtensionField<BF> + Eq + Hash,
     {
-        let stream = self.sample_stream_limbs::<BF, EF>(circuit, 4)?;
+        let stream = self.sample_stream_bytes::<BF, EF>(circuit, 8)?;
         let mut result = Vec::with_capacity(bits);
-        for limb in stream {
-            result.extend(circuit.decompose_to_bits::<BF>(limb, 16)?);
+        for byte in stream {
+            result.extend(circuit.decompose_to_bits::<BF>(byte, 8)?);
         }
         result.truncate(bits);
         Ok(result)
     }
 
-    fn sample_stream_limbs<BF, EF>(
+    fn sample_stream_bytes<BF, EF>(
         &mut self,
         circuit: &mut CircuitBuilder<EF>,
         count: usize,
@@ -282,25 +366,36 @@ impl BinaryTower128Challenger {
             if self.output_buffer.is_empty() {
                 // Native HashChallenger hashes the whole forward message and
                 // retains that complete digest for the next chained refill.
-                let digest = circuit.byte_hash_limbs::<BF>(self.hash, &self.input_buffer)?;
-                self.input_buffer.clone_from(&digest);
-                self.output_buffer = digest;
+                let digest = circuit.byte_hash_bytes::<BF>(self.hash, &self.input_buffer)?;
+                let bytes = Self::bytes_from_limbs::<BF, EF>(circuit, &digest)?;
+                self.input_buffer.clone_from(&bytes);
+                self.output_buffer = bytes;
             }
-            let natural = self
-                .output_buffer
-                .pop()
-                .expect("a byte hash refill yields sixteen digest limbs");
-            let natural_bits = circuit.decompose_to_bits::<BF>(natural, 16)?;
-            // Popping a two-byte limb from the back samples its high byte
-            // first, then its low byte, exactly like a native byte stack.
-            let swapped: Vec<_> = natural_bits[8..]
-                .iter()
-                .chain(&natural_bits[..8])
-                .copied()
-                .collect();
-            stream.push(circuit.reconstruct_index_from_bits::<BF>(&swapped)?);
+            stream.push(
+                self.output_buffer
+                    .pop()
+                    .expect("a byte hash refill yields thirty-two digest bytes"),
+            );
         }
         Ok(stream)
+    }
+
+    fn bytes_from_limbs<BF, EF>(
+        circuit: &mut CircuitBuilder<EF>,
+        limbs: &[ExprId],
+    ) -> Result<Vec<ExprId>, CircuitBuilderError>
+    where
+        BF: PrimeField64,
+        EF: ExtensionField<BF> + Eq + Hash,
+    {
+        let mut bytes = Vec::with_capacity(2 * limbs.len());
+        for &limb in limbs {
+            let bits = circuit.decompose_to_bits::<BF>(limb, 16)?;
+            for byte in bits.chunks(8) {
+                bytes.push(circuit.reconstruct_index_from_bits::<BF>(byte)?);
+            }
+        }
+        Ok(bytes)
     }
 
     const fn check_bit_count(bits: usize) -> Result<(), CircuitBuilderError> {
