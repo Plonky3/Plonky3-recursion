@@ -839,6 +839,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "p3-bus"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a0eb51f53a7148ab3f84f65121a7182202b8b9c7840733e77ddd1d65cf096cd2"
+dependencies = [
+ "hashbrown 0.17.1",
+ "num-bigint",
+ "p3-air",
+ "p3-challenger",
+ "p3-field",
+ "p3-lookup",
+ "p3-multilinear-util",
+ "p3-security",
+ "p3-sumcheck",
+ "p3-util",
+ "serde",
+ "thiserror",
+]
+
+[[package]]
 name = "p3-challenger"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1190,6 +1210,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "p3-multi-stark"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0437304b3289d7a0fe3e758e5998cb909fc7d2131f6f1fee9ed78c679f8c70fa"
+dependencies = [
+ "hashbrown 0.17.1",
+ "itertools 0.15.0",
+ "p3-air",
+ "p3-bus",
+ "p3-challenger",
+ "p3-commit",
+ "p3-field",
+ "p3-lookup",
+ "p3-matrix",
+ "p3-maybe-rayon",
+ "p3-multilinear-util",
+ "p3-security",
+ "p3-sumcheck",
+ "p3-symmetric",
+ "p3-util",
+ "postcard",
+ "serde",
+ "thiserror",
+ "tracing",
+]
+
+[[package]]
 name = "p3-multilinear-util"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1331,6 +1378,7 @@ dependencies = [
  "p3-binary-field",
  "p3-binary-pcs",
  "p3-blake3",
+ "p3-bus",
  "p3-challenger",
  "p3-circuit",
  "p3-circuit-prover",
@@ -1346,6 +1394,7 @@ dependencies = [
  "p3-matrix",
  "p3-maybe-rayon",
  "p3-merkle-tree",
+ "p3-multi-stark",
  "p3-multilinear-util",
  "p3-poseidon2",
  "p3-poseidon2-air",

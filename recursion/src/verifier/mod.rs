@@ -1,6 +1,7 @@
 //! STARK verification within recursive circuits.
 
 mod batch_stark;
+mod binary_air;
 mod errors;
 mod limits;
 mod observable;
@@ -15,6 +16,7 @@ pub use batch_stark::{
     verify_trusted_p3_batch_proof_circuit,
 };
 pub use errors::VerificationError;
+pub use binary_air::BinaryAirConstraintPlan;
 pub use limits::{InputResourceUsage, VerifierLimits};
 pub use observable::ObservableCommitment;
 pub(crate) use periodic::evaluate_periodic_columns_circuit;
