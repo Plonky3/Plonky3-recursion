@@ -125,6 +125,27 @@ pub(super) struct BinaryOpeningSchedule {
 }
 
 impl BinaryOpeningSchedule {
+    /// Ordinary batches for a closed scalar relation without indexed claims.
+    pub(super) fn plain<'a>(
+        geometry: impl ExactSizeIterator<Item = (usize, usize, &'a [usize])>,
+    ) -> (Vec<TableSpec>, Self) {
+        let mut air_batches = vec![None; geometry.len()];
+        let mut roles = Vec::new();
+        let mut tables = Vec::new();
+        for (air, (height, width, next)) in geometry.enumerate() {
+            if width == 0 {
+                continue;
+            }
+            air_batches[air] = Some(roles.len());
+            roles.push(Role::Air(air));
+            tables.push(TableSpec::new(
+                TableShape::new(height, width),
+                vec![OpeningBatch::new((0..width).collect(), next.to_vec())],
+            ));
+        }
+        (tables, Self { roles, air_batches })
+    }
+
     pub(super) fn len(&self) -> usize {
         self.roles.len()
     }

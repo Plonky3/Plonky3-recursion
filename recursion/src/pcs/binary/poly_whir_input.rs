@@ -169,13 +169,14 @@ impl BinaryPolyWhirVerifier {
         }
     }
 
-    pub(super) fn check_native<C, H, Co>(
+    pub(crate) fn check_native_with_usage<C, H, Co>(
         &self,
         config: &WhirConfig<Poly192, Poly64, C>,
         mmcs: &MerkleTreeMmcs<Poly64, u8, H, Co, 2, 32>,
         commitment: &MerkleCap<Poly64, [u8; 32]>,
         points: &[Point<Poly192>],
         proof: &PcsProof<Poly64, Poly192, MerkleTreeMmcs<Poly64, u8, H, Co, 2, 32>>,
+        usage: &mut InputResourceUsage,
     ) -> Result<(), VerificationError>
     where
         H: CryptographicHasher<Poly64, [u8; 32]> + Sync,
@@ -223,7 +224,6 @@ impl BinaryPolyWhirVerifier {
                 &last.fold,
             )?;
         }
-        let mut usage = InputResourceUsage::default();
         for (i, site) in p.sites.iter().enumerate() {
             let (openings, pow) = if let Some(round) = proof.whir.rounds.get(i) {
                 if round
@@ -308,7 +308,14 @@ impl BinaryPolyWhirVerifier {
             + GrindingChallenger<Witness = Poly64>
             + CanObserve<MerkleCap<Poly64, [u8; 32]>>,
     {
-        self.check_native(config, mmcs, commitment, points, proof)?;
+        self.check_native_with_usage(
+            config,
+            mmcs,
+            commitment,
+            points,
+            proof,
+            &mut InputResourceUsage::default(),
+        )?;
         let mut challenger = target_challenger.clone();
         let p = &self.plan;
         let shape = WhirShape::new(config, p.protocol.num_openings());

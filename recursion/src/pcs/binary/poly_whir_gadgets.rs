@@ -20,7 +20,7 @@ use crate::verifier::VerificationError;
 ///
 /// # Panics
 /// Panics if the points have different lengths.
-pub(super) fn poly192_eq_eval<F: Field + Eq + Hash>(
+pub(crate) fn poly192_eq_eval<F: Field + Eq + Hash>(
     circuit: &mut CircuitBuilder<F>,
     a: &[BinaryPoly192Target],
     b: &[BinaryPoly192Target],
@@ -244,7 +244,7 @@ fn arity(op: &'static str, expected: usize, got: usize) -> CircuitBuilderError {
     }
 }
 
-pub(super) fn assert_equal<EF: Field + Eq + Hash>(
+pub(crate) fn assert_equal<EF: Field + Eq + Hash>(
     b: &mut CircuitBuilder<EF>,
     a: &BinaryPoly192Target,
     e: &BinaryPoly192Target,
@@ -311,7 +311,7 @@ where
     Ok(())
 }
 
-pub(super) fn observe_seed<BF, EF>(
+pub(crate) fn observe_seed<BF, EF>(
     b: &mut CircuitBuilder<EF>,
     ch: &mut BinaryTower128Challenger,
     seed: &[Poly64],

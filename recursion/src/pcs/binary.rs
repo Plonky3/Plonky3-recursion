@@ -29,6 +29,9 @@ mod poly_nonzero;
 mod poly_whir_gadgets;
 mod poly_whir_input;
 mod poly_whir_verifier;
+pub(crate) use poly_whir_gadgets::{
+    assert_equal as poly_assert_equal, observe_seed as poly_observe_seed, poly192_eq_eval,
+};
 mod ring;
 mod ring_input;
 mod tensor;
