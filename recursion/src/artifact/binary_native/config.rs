@@ -39,7 +39,7 @@ pub(super) type NativeMmcs<F> = MerkleTreeMmcs<
     2,
     32,
 >;
-type NativePcs<F, E> = BinaryPcs<F, E, NativeMmcs<F>, NativeMmcs<E>>;
+pub(super) type NativePcs<F, E> = BinaryPcs<F, E, NativeMmcs<F>, NativeMmcs<E>>;
 type Inner<F> = BinaryChallenger<F, HashChallenger<u8, BinaryNativeHash, 32>>;
 
 #[derive(Clone)]
