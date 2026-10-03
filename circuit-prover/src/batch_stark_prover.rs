@@ -1087,6 +1087,8 @@ fn builtin_artifact_op_type(air: BuiltinArtifactAir) -> Result<NpoTypeId, BatchS
         BuiltinArtifactAir::RecomposeWithCoefficientLookups => {
             Ok(NpoTypeId::recompose_with_coeff_lookups())
         }
+        BuiltinArtifactAir::KeccakF1600 => Ok(NpoTypeId::keccak_f1600()),
+        BuiltinArtifactAir::Blake3Compress => Ok(NpoTypeId::blake3_compress()),
         BuiltinArtifactAir::Poseidon1(config) if supported_poseidon1(config) => {
             Ok(NpoTypeId::poseidon1_perm(config))
         }
@@ -1111,6 +1113,29 @@ where
         Algebra<SymbolicExpression<Val<SC>>> + Algebra<SC::Challenge>,
 {
     match air {
+        BuiltinArtifactAir::KeccakF1600 | BuiltinArtifactAir::Blake3Compress => {
+            if lanes != 1 {
+                return Err(BatchStarkProverError::RelationMismatch(
+                    "byte-hash artifact AIR must use one lane".into(),
+                ));
+            }
+            Ok(match air {
+                BuiltinArtifactAir::KeccakF1600 => {
+                    DynamicAirEntry::new(Box::new(crate::air::keccak_air::KeccakF1600Air::<
+                        Val<SC>,
+                        D,
+                    >::new_with_preprocessed(
+                        Vec::new(), min_height
+                    )))
+                }
+                _ => DynamicAirEntry::new(Box::new(crate::air::blake3_air::Blake3CompressAir::<
+                    Val<SC>,
+                    D,
+                >::new_with_preprocessed(
+                    Vec::new(), min_height
+                ))),
+            })
+        }
         BuiltinArtifactAir::Recompose | BuiltinArtifactAir::RecomposeWithCoefficientLookups => Ok(
             DynamicAirEntry::new(Box::new(RecomposeAir::<Val<SC>, D>::new_with_preprocessed(
                 lanes,

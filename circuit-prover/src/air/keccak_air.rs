@@ -42,6 +42,8 @@ pub const KECCAK_PREP_OP_WIDTH: usize = 1 + KECCAK_STATE_LIMBS + 2 * KECCAK_STAT
 pub const KECCAK_PREP_ROW_WIDTH: usize = 1 + 2 * KECCAK_STATE_LIMBS;
 /// Trace rows per Keccak-f call.
 pub const KECCAK_ROWS_PER_OP: usize = NUM_ROUNDS;
+/// Main trace width of the circuit's Keccak-f AIR.
+pub const KECCAK_F1600_WIDTH: usize = NUM_KECCAK_COLS;
 
 /// `(y, x, k)` of limb `j` in `KeccakCols`' y-major state layout.
 const fn limb_position(j: usize) -> (usize, usize, usize) {
@@ -109,7 +111,7 @@ impl<F: PrimeField64, const D: usize> KeccakF1600Air<F, D> {
 
 impl<F: PrimeField64, const D: usize> BaseAir<F> for KeccakF1600Air<F, D> {
     fn width(&self) -> usize {
-        NUM_KECCAK_COLS
+        KECCAK_F1600_WIDTH
     }
 
     fn preprocessed_width(&self) -> usize {

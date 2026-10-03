@@ -274,6 +274,8 @@ pub struct StatementLayout {
 pub enum BuiltinArtifactAir {
     Recompose,
     RecomposeWithCoefficientLookups,
+    KeccakF1600,
+    Blake3Compress,
     Poseidon1(p3_circuit::ops::Poseidon1Config),
     Poseidon2(p3_circuit::ops::Poseidon2Config),
 }

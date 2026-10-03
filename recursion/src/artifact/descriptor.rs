@@ -24,6 +24,8 @@ pub(crate) enum BuiltinNpoV1 {
     Statement,
     Recompose,
     RecomposeWithCoefficientLookups,
+    KeccakF1600,
+    Blake3Compress,
     Poseidon1(Poseidon1Config),
     Poseidon2(Poseidon2Config),
 }
@@ -78,6 +80,12 @@ impl BuiltinNpoV1 {
         if op_type.as_str() == "recompose/coeff" {
             return Ok(Self::RecomposeWithCoefficientLookups);
         }
+        if op_type.as_str() == "keccak_f1600" {
+            return Ok(Self::KeccakF1600);
+        }
+        if op_type.as_str() == "blake3_compress" {
+            return Ok(Self::Blake3Compress);
+        }
         for config in POSEIDON1_CONFIGS {
             if op_type
                 .as_str()
@@ -104,6 +112,8 @@ impl BuiltinNpoV1 {
             1 => Ok(Self::Statement),
             2 => Ok(Self::Recompose),
             3 => Ok(Self::RecomposeWithCoefficientLookups),
+            4 => Ok(Self::KeccakF1600),
+            5 => Ok(Self::Blake3Compress),
             0x0100..=0x010b => Ok(Self::Poseidon1(
                 POSEIDON1_CONFIGS[usize::from(tag - 0x0100)],
             )),
@@ -119,6 +129,8 @@ impl BuiltinNpoV1 {
             Self::Statement => 1,
             Self::Recompose => 2,
             Self::RecomposeWithCoefficientLookups => 3,
+            Self::KeccakF1600 => 4,
+            Self::Blake3Compress => 5,
             Self::Poseidon1(config) => {
                 0x0100
                     + POSEIDON1_CONFIGS
@@ -143,6 +155,8 @@ impl BuiltinNpoV1 {
             Self::Statement => ("statement", ""),
             Self::Recompose => ("recompose", ""),
             Self::RecomposeWithCoefficientLookups => ("recompose/coeff", ""),
+            Self::KeccakF1600 => ("keccak_f1600", ""),
+            Self::Blake3Compress => ("blake3_compress", ""),
             Self::Poseidon1(config) => ("poseidon1_perm/", config.variant_name()),
             Self::Poseidon2(config) => ("poseidon2_perm/", config.variant_name()),
         }
@@ -260,6 +274,12 @@ impl<F: Copy> RelationDescriptorV1<F> {
                         BuiltinNpoV1::Recompose => p3_circuit_prover::BuiltinArtifactAir::Recompose,
                         BuiltinNpoV1::RecomposeWithCoefficientLookups => {
                             p3_circuit_prover::BuiltinArtifactAir::RecomposeWithCoefficientLookups
+                        }
+                        BuiltinNpoV1::KeccakF1600 => {
+                            p3_circuit_prover::BuiltinArtifactAir::KeccakF1600
+                        }
+                        BuiltinNpoV1::Blake3Compress => {
+                            p3_circuit_prover::BuiltinArtifactAir::Blake3Compress
                         }
                         BuiltinNpoV1::Poseidon1(config) => {
                             p3_circuit_prover::BuiltinArtifactAir::Poseidon1(config)
@@ -862,6 +882,15 @@ fn validate_relation_geometry<F: Copy>(
             return Err(ArtifactError::NonCanonicalMetadata);
         }
         check_geometry_limit("NPO rows", npo.rows, limits.max_total_scalar_elements)?;
+        if matches!(
+            npo.kind,
+            BuiltinNpoV1::KeccakF1600 | BuiltinNpoV1::Blake3Compress
+        ) && (npo.lanes != 1
+            || npo.air_variant != AirVariant::Baseline
+            || !matches!(&npo.public_values, NpoPublicValuesV1::Static(values) if values.is_empty()))
+        {
+            return Err(ArtifactError::NonCanonicalMetadata);
+        }
         let per_lane_width = match npo.kind {
             BuiltinNpoV1::Statement => match npo.public_values {
                 NpoPublicValuesV1::Statement { width } => {
@@ -874,6 +903,12 @@ fn validate_relation_geometry<F: Copy>(
                 .checked_mul(2)
                 .and_then(|width| width.checked_add(2))
                 .ok_or(ArtifactError::LengthOverflow)?,
+            BuiltinNpoV1::KeccakF1600 => p3_circuit_prover::air::keccak_air::KECCAK_F1600_WIDTH
+                .max(p3_circuit_prover::air::keccak_air::KECCAK_PREP_ROW_WIDTH),
+            BuiltinNpoV1::Blake3Compress => {
+                p3_circuit_prover::air::blake3_air::BLAKE3_COMPRESS_WIDTH
+                    .max(p3_circuit_prover::air::blake3_air::BLAKE3_PREP_ROW_WIDTH)
+            }
             BuiltinNpoV1::Poseidon1(config) => {
                 if npo.lanes != 1 {
                     return Err(ArtifactError::NonCanonicalMetadata);
@@ -900,7 +935,17 @@ fn validate_relation_geometry<F: Copy>(
             .npo_min_heights()
             .find_map(|(op_type, height)| npo.kind.matches_op_type(op_type).then_some(height))
             .unwrap_or_else(|| packing.min_trace_height());
-        validate_table_height(npo.rows, npo.lanes, minimum, degree, limits)?;
+        // A Keccak operation occupies 24 trace rows; its retained `rows` is
+        // the call count, just as for the single-row byte-hash prover.
+        let trace_rows = if npo.kind == BuiltinNpoV1::KeccakF1600 {
+            checked_geometry_product(
+                npo.rows,
+                p3_circuit_prover::air::keccak_air::KECCAK_ROWS_PER_OP,
+            )?
+        } else {
+            npo.rows
+        };
+        validate_table_height(trace_rows, npo.lanes, minimum, degree, limits)?;
     }
     Ok(())
 }
@@ -1511,6 +1556,87 @@ mod tests {
         assert_eq!(
             BuiltinNpoV1::from_wire(0xffff),
             Err(ArtifactError::UnsupportedBuiltinAir(0xffff))
+        );
+    }
+
+    #[test]
+    fn byte_hash_registry_adds_stable_tags_without_reordering_existing_airs() {
+        for (tag, kind, op_type) in [
+            (1, BuiltinNpoV1::Statement, NpoTypeId::statement()),
+            (2, BuiltinNpoV1::Recompose, NpoTypeId::recompose()),
+            (
+                3,
+                BuiltinNpoV1::RecomposeWithCoefficientLookups,
+                NpoTypeId::recompose_with_coeff_lookups(),
+            ),
+            (4, BuiltinNpoV1::KeccakF1600, NpoTypeId::keccak_f1600()),
+            (
+                5,
+                BuiltinNpoV1::Blake3Compress,
+                NpoTypeId::blake3_compress(),
+            ),
+        ] {
+            assert_eq!(kind.wire_tag(), tag);
+            assert_eq!(BuiltinNpoV1::from_wire(tag), Ok(kind));
+            assert_eq!(BuiltinNpoV1::from_native(&op_type), Ok(kind));
+            assert!(kind.matches_op_type(&op_type));
+        }
+    }
+
+    #[test]
+    fn byte_hash_geometry_requires_canonical_lanes_public_values_and_air() {
+        for kind in [BuiltinNpoV1::KeccakF1600, BuiltinNpoV1::Blake3Compress] {
+            let mut descriptor = relation();
+            descriptor.non_primitives[0] = NpoDescriptorV1 {
+                kind,
+                rows: 2,
+                lanes: 1,
+                air_variant: AirVariant::Baseline,
+                public_values: NpoPublicValuesV1::Static(vec![]),
+            };
+            descriptor.trace_degree_bits[3] = 6;
+            let limits = crate::VerifierLimits::default();
+            super::validate_relation_geometry(&descriptor, &limits).unwrap();
+            for lanes in [0, 2] {
+                let mut wrong = descriptor.clone();
+                wrong.non_primitives[0].lanes = lanes;
+                assert!(super::validate_relation_geometry(&wrong, &limits).is_err());
+            }
+            let mut wrong = descriptor.clone();
+            wrong.non_primitives[0].air_variant = AirVariant::Optimized;
+            assert!(super::validate_relation_geometry(&wrong, &limits).is_err());
+            let mut wrong = descriptor;
+            wrong.non_primitives[0].public_values = NpoPublicValuesV1::Static(vec![BabyBear::ONE]);
+            assert!(super::validate_relation_geometry(&wrong, &limits).is_err());
+        }
+    }
+
+    #[test]
+    fn keccak_artifact_geometry_charges_every_round_row_and_checked_products() {
+        let mut descriptor = relation();
+        descriptor.non_primitives[0] = NpoDescriptorV1 {
+            kind: BuiltinNpoV1::KeccakF1600,
+            rows: 2,
+            lanes: 1,
+            air_variant: AirVariant::Baseline,
+            public_values: NpoPublicValuesV1::Static(vec![]),
+        };
+        let limits = crate::VerifierLimits::default();
+        descriptor.trace_degree_bits[3] = 5; // 32 rows cannot hold two 24-row calls.
+        assert_eq!(
+            super::validate_relation_geometry(&descriptor, &limits),
+            Err(ArtifactError::NonCanonicalMetadata)
+        );
+        descriptor.trace_degree_bits[3] = 6;
+        super::validate_relation_geometry(&descriptor, &limits).unwrap();
+        descriptor.non_primitives[0].rows = usize::MAX;
+        let wide = crate::VerifierLimits {
+            max_total_scalar_elements: usize::MAX,
+            ..limits
+        };
+        assert_eq!(
+            super::validate_relation_geometry(&descriptor, &wide),
+            Err(ArtifactError::LengthOverflow)
         );
     }
 
