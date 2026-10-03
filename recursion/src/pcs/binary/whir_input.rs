@@ -174,29 +174,19 @@ where
         }
     }
 
-    /// Imports through public native layout, WHIR transcript and byte-tree
-    /// restoration APIs. The commitment must already be observed. Passing a
-    /// mutable challenger retains its exact native continuation. All visible
-    /// shapes and frontier budgets are checked before transcript replay. A
-    /// zero-round closing sumcheck must omit the native optional proof slot.
-    pub fn import_native<C, Ch, H, Co>(
+    pub(super) fn check_native<C, H, Co>(
         &self,
         config: &WhirConfig<BinaryField128, F, C>,
         mmcs: &MerkleTreeMmcs<F, u8, H, Co, 2, 32>,
         commitment: &MerkleCap<F, [u8; 32]>,
         points: &[Point<BinaryField128>],
         proof: &PcsProof<F, BinaryField128, MerkleTreeMmcs<F, u8, H, Co, 2, 32>>,
-        mut challenger: Ch,
-    ) -> Result<NativeBinaryWhirInput<F>, VerificationError>
+    ) -> Result<(), VerificationError>
     where
         F: PackedValue<Value = F>,
         H: CryptographicHasher<F, [u8; 32]> + Sync,
         Co: PseudoCompressionFunction<[u8; 32], 2> + Sync,
         C: FieldChallenger<F> + GrindingChallenger<Witness = F>,
-        Ch: FieldChallenger<F>
-            + CanSampleUniformBits<F>
-            + GrindingChallenger<Witness = F>
-            + CanObserve<MerkleCap<F, [u8; 32]>>,
     {
         let p = &self.plan;
         let shape = WhirShape::new(config, p.protocol.num_openings());
@@ -283,6 +273,37 @@ where
             };
             usage.add_compressed_frontier_hashes(&p.limits, frontier.sibling_hashes.len())?;
         }
+        Ok(())
+    }
+
+    /// Imports through public native layout, WHIR transcript and byte-tree
+    /// restoration APIs. The commitment must already be observed. Passing a
+    /// mutable challenger retains its exact native continuation. All visible
+    /// shapes and frontier budgets are checked before transcript replay. A
+    /// zero-round closing sumcheck must omit the native optional proof slot.
+    pub fn import_native<C, Ch, H, Co>(
+        &self,
+        config: &WhirConfig<BinaryField128, F, C>,
+        mmcs: &MerkleTreeMmcs<F, u8, H, Co, 2, 32>,
+        commitment: &MerkleCap<F, [u8; 32]>,
+        points: &[Point<BinaryField128>],
+        proof: &PcsProof<F, BinaryField128, MerkleTreeMmcs<F, u8, H, Co, 2, 32>>,
+        mut challenger: Ch,
+    ) -> Result<NativeBinaryWhirInput<F>, VerificationError>
+    where
+        F: PackedValue<Value = F>,
+        H: CryptographicHasher<F, [u8; 32]> + Sync,
+        Co: PseudoCompressionFunction<[u8; 32], 2> + Sync,
+        C: FieldChallenger<F> + GrindingChallenger<Witness = F>,
+        Ch: FieldChallenger<F>
+            + CanSampleUniformBits<F>
+            + GrindingChallenger<Witness = F>
+            + CanObserve<MerkleCap<F, [u8; 32]>>,
+    {
+        self.check_native(config, mmcs, commitment, points, proof)?;
+        let p = &self.plan;
+        let shape = WhirShape::new(config, p.protocol.num_openings());
+        let last = p.sites.last().expect("checked final site");
         let strategy = LayoutStrategy::new(p.order == VariableOrder::Prefix, p.order);
         let mut layout = Verifier::<F, BinaryField128>::new(&p.protocol.table_shapes(), strategy);
         for &answer in &proof.whir.initial_ood_answers {

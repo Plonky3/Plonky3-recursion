@@ -12,6 +12,7 @@ use p3_field::{ExtensionField, PrimeField64};
 use crate::{BinaryQueryContinuation, BinaryTower128Challenger};
 
 mod boolean;
+mod boolean_whir;
 mod fields;
 mod gadgets;
 mod input;
@@ -30,6 +31,10 @@ mod whir_verifier;
 pub use boolean::{
     BinaryBooleanInputShape, BinaryBooleanPcsVerifier, BinaryBooleanProofTargets,
     NativeBinaryBooleanInput,
+};
+pub use boolean_whir::{
+    BinaryBooleanWhirInputShape, BinaryBooleanWhirProofTargets, BinaryBooleanWhirVerifier,
+    NativeBinaryBooleanWhirInput,
 };
 pub use fields::{
     RecursiveBinaryChallengeField, RecursiveBinaryTowerField, RecursiveBinaryWhirTowerField,

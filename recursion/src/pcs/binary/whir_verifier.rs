@@ -445,7 +445,7 @@ where
             Ok(())
         }
     }
-    fn check_targets(
+    pub(super) fn check_targets(
         &self,
         cap: &[Vec<ExprId>],
         points: &[Vec<BinaryTower128Target>],
