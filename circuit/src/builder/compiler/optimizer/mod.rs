@@ -43,7 +43,9 @@ impl<F: Field> Optimizer<F> {
         ops: Vec<Op<F>>,
         preinitialized: &[WitnessId],
     ) -> (Vec<Op<F>>, HashMap<WitnessId, WitnessId>) {
-        let (ops, rewrite) = Deduplicator::with_capacity(ops.len()).run(ops);
+        let (ops, rewrite) = Deduplicator::with_capacity(ops.len())
+            .preserving_inputs(preinitialized)
+            .run(ops);
         let preinitialized: Vec<_> = preinitialized
             .iter()
             .map(|id| id.resolve(&rewrite))
@@ -59,8 +61,9 @@ impl<F: Field> Optimizer<F> {
         origins: Vec<Vec<ExprId>>,
         preinitialized: &[WitnessId],
     ) -> OptimizedWithOrigins<F> {
-        let (ops, rewrite, origins) =
-            Deduplicator::with_capacity(ops.len()).run_with_origins(ops, origins);
+        let (ops, rewrite, origins) = Deduplicator::with_capacity(ops.len())
+            .preserving_inputs(preinitialized)
+            .run_with_origins(ops, origins);
         let preinitialized: Vec<_> = preinitialized
             .iter()
             .map(|id| id.resolve(&rewrite))
@@ -88,6 +91,27 @@ mod tests {
     use crate::ops::AluOpKind;
 
     type F = BabyBear;
+
+    #[test]
+    fn zero_decompositions_keep_earlier_hint_inputs_initialized() {
+        let mut builder = CircuitBuilder::<F>::new();
+        for _ in 0..2 {
+            let limb = builder.alloc_private_input("zero limb");
+            for bit in builder.decompose_to_bits::<F>(limb, 16).unwrap() {
+                builder.assert_zero(bit);
+            }
+        }
+        let circuit = builder.build().unwrap();
+        let run = |inputs: &[F]| {
+            let mut runner = circuit.runner();
+            runner.set_private_inputs(inputs)?;
+            runner.run()
+        };
+        run(&[F::ZERO, F::ZERO]).unwrap();
+        assert!(run(&[F::ZERO, F::ONE]).is_err());
+        assert!(run(&[F::ONE, F::ZERO]).is_err());
+        assert!(run(&[F::ONE, F::ONE]).is_err());
+    }
 
     #[test]
     fn test_passthrough() {

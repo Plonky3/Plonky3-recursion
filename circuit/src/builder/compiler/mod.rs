@@ -228,7 +228,7 @@ mod assurance_tests {
     }
 
     #[test]
-    fn assurance_connected_private_duplicate_rewrites_to_canonical_output() {
+    fn assurance_connected_private_duplicate_preserves_its_input_slot() {
         let mut builder = CircuitBuilder::<F>::new();
         let lhs = builder.alloc_public_input("lhs");
         let lhs_alias = builder.alloc_public_input("lhs-alias");
@@ -248,14 +248,15 @@ mod assurance_tests {
 
         let circuit = builder.build().unwrap();
         let canonical_witness = circuit.tag_to_witness["canonical-output"];
-        assert_eq!(
-            circuit.tag_to_witness["duplicate-output"], canonical_witness,
-            "duplicate tag must resolve to the retained canonical output"
+        let duplicate_witness = circuit.tag_to_witness["duplicate-output"];
+        assert_ne!(
+            duplicate_witness, canonical_witness,
+            "a constraint on an initialized slot must retain that slot"
         );
         assert_eq!(
             circuit.private_input_rows,
-            vec![canonical_witness],
-            "the preinitialized private row must resolve through the dedup rewrite"
+            vec![duplicate_witness],
+            "the private row must stay connected to its supplied-output constraint"
         );
 
         let mut runner = circuit.runner();
@@ -266,6 +267,10 @@ mod assurance_tests {
         let traces = runner.run().unwrap();
         assert_eq!(traces.probe("canonical-output"), Some(&F::from_u64(13)));
         assert_eq!(traces.probe("duplicate-output"), Some(&F::from_u64(13)));
+        let mut runner = circuit.runner();
+        runner.set_public_inputs(&[F::from_u64(4); 2]).unwrap();
+        runner.set_private_inputs(&[F::from_u64(14)]).unwrap();
+        assert!(runner.run().is_err());
     }
 
     #[test]

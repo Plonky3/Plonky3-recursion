@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 
-use hashbrown::HashMap;
+use hashbrown::{HashMap, HashSet};
 use p3_field::Field;
 
 #[cfg(feature = "debugging")]
@@ -29,7 +29,8 @@ struct Duplicate {
 /// Later ops see the canonical ID through `apply_witness_rewrite`.
 pub(super) struct Deduplicator {
     rewrite: HashMap<WitnessId, WitnessId>,
-    seen: HashMap<(AluKey, Option<WitnessId>), SeenOperation>,
+    seen: HashMap<(AluKey, Option<WitnessId>, Option<WitnessId>), SeenOperation>,
+    protected: HashSet<WitnessId>,
 }
 
 impl Deduplicator {
@@ -39,7 +40,13 @@ impl Deduplicator {
         Self {
             rewrite: HashMap::with_capacity(capacity),
             seen: HashMap::with_capacity(capacity),
+            protected: HashSet::new(),
         }
+    }
+
+    pub(super) fn preserving_inputs(mut self, inputs: &[WitnessId]) -> Self {
+        self.protected.extend(inputs.iter().copied());
+        self
     }
 
     /// Consumes the op list and returns deduplicated ops + the rewrite map.
@@ -70,6 +77,12 @@ impl Deduplicator {
         ops: Vec<Op<F>>,
         #[cfg(feature = "debugging")] origins: Option<Vec<Vec<ExprId>>>,
     ) -> DedupResult<F> {
+        // Source slots are initialized by setters or producer rows. An ALU
+        // constrained into one may be deduplicated only within that same slot.
+        self.protected.extend(ops.iter().filter_map(|op| match op {
+            Op::Const { out, .. } | Op::Public { out, .. } => Some(*out),
+            _ => None,
+        }));
         let mut result = Vec::with_capacity(ops.len());
         #[cfg(feature = "debugging")]
         let mut source_iter = origins.map(Vec::into_iter);
@@ -86,6 +99,7 @@ impl Deduplicator {
             let duplicate = self.detect_duplicate(&op, result.len());
             #[cfg(not(feature = "debugging"))]
             let duplicate = self.detect_duplicate(&op);
+            self.protect_occurrences(&op);
             if let Some(duplicate) = duplicate {
                 let root = duplicate.canonical_output.resolve(&self.rewrite);
                 if duplicate.duplicate_output != root {
@@ -110,6 +124,39 @@ impl Deduplicator {
             rewrite: self.rewrite,
             #[cfg(feature = "debugging")]
             origins: result_origins,
+        }
+    }
+
+    // Rewriting a slot used by an earlier operation would disconnect its
+    // existing constraint or producer. Only a fresh result may be redirected.
+    fn protect_occurrences<F>(&mut self, op: &Op<F>) {
+        match op {
+            Op::Const { out, .. } | Op::Public { out, .. } => {
+                self.protected.insert(*out);
+            }
+            Op::Alu {
+                a,
+                b,
+                c,
+                out,
+                intermediate_out,
+                ..
+            } => {
+                self.protected.extend([*a, *b, *out]);
+                self.protected.extend(c.iter().copied());
+                self.protected.extend(intermediate_out.iter().copied());
+            }
+            Op::Hint {
+                inputs, outputs, ..
+            } => {
+                self.protected.extend(inputs.iter().chain(outputs).copied());
+            }
+            Op::NonPrimitiveOpWithExecutor {
+                inputs, outputs, ..
+            } => {
+                self.protected
+                    .extend(inputs.iter().chain(outputs).flatten().copied());
+            }
         }
     }
 
@@ -147,7 +194,17 @@ impl Deduplicator {
             _ => None,
         };
 
-        let retained = self.seen.get(&(key, acc)).copied();
+        let protected_output = self.protected.contains(out).then_some(*out);
+        let discriminator = (key, acc, protected_output);
+        let retained = self.seen.get(&discriminator).copied().or_else(|| {
+            let same_slot = self.seen.get(&(key, acc, None)).copied()?;
+            #[cfg(feature = "debugging")]
+            let canonical = same_slot.0;
+            #[cfg(not(feature = "debugging"))]
+            let canonical = same_slot;
+            (protected_output.is_some() && canonical.resolve(&self.rewrite) == *out)
+                .then_some(same_slot)
+        });
         if let Some(retained) = retained {
             #[cfg(feature = "debugging")]
             let (canonical_output, retained_index) = retained;
@@ -161,9 +218,9 @@ impl Deduplicator {
             })
         } else {
             #[cfg(feature = "debugging")]
-            self.seen.insert((key, acc), (*out, retained_len));
+            self.seen.insert(discriminator, (*out, retained_len));
             #[cfg(not(feature = "debugging"))]
-            self.seen.insert((key, acc), *out);
+            self.seen.insert(discriminator, *out);
             None
         }
     }
@@ -187,6 +244,15 @@ mod tests {
     use crate::CircuitBuilder;
 
     type F = BabyBear;
+
+    #[test]
+    fn an_existing_output_slot_keeps_both_of_its_constraints() {
+        let [u, v, a, b, x, y] = core::array::from_fn(|i| WitnessId(i as u32));
+        let ops: Vec<Op<F>> = vec![Op::add(u, v, x), Op::add(a, b, y), Op::add(a, b, x)];
+        let (deduped, rewrite) = Deduplicator::with_capacity(ops.len()).run(ops.clone());
+        assert_eq!(deduped, ops);
+        assert!(!rewrite.contains_key(&x));
+    }
 
     #[test]
     fn test_duplicated_op_fusion() {
