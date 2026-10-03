@@ -15,6 +15,7 @@ mod boolean;
 mod boolean_whir;
 mod fields;
 mod gadgets;
+mod generic_sumcheck;
 mod input;
 mod ring;
 mod ring_input;
@@ -44,6 +45,7 @@ pub use fields::{
 pub use gadgets::{
     binary128_eq_eval, binary128_fold_pair, binary128_next_eval, binary128_reduce_sumcheck_claim,
 };
+pub use generic_sumcheck::Binary128SumcheckInterpolator;
 pub use input::{BinaryPcsInputShape, NativeBinaryPcsInput};
 pub use ring::{
     BinaryBitRingVerifier, BinaryRingClaimSpec, BinaryRingClaimTargets, BinaryRingOutput,
