@@ -88,7 +88,7 @@ where
     write_ring(w, &p.opening.reduction)?;
     grouped::write_grouped_pcs(w, &p.opening.opening)
 }
-fn write_ring<E: RecursiveBinaryChallengeField>(
+pub(super) fn write_ring<E: RecursiveBinaryChallengeField>(
     w: &mut Writer,
     p: &BitRingSwitchClaimsProof<E>,
 ) -> Result<(), ArtifactError> {
@@ -131,7 +131,7 @@ fn read_tensor<E: RecursiveBinaryChallengeField>(
     // no generic serde value or second tensor projection is allocated.
     BitTensor::try_from(read_fields(r, E::RAW_BITS)?).map_err(|_| malformed("binary ring tensor"))
 }
-fn read_ring<E: RecursiveBinaryChallengeField>(
+pub(super) fn read_ring<E: RecursiveBinaryChallengeField>(
     r: &mut Reader<'_>,
     s: &RingDecode,
 ) -> Result<BitRingSwitchClaimsProof<E>, ArtifactError> {

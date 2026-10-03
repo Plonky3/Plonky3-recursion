@@ -5,7 +5,9 @@ pub(crate) mod native;
 pub(crate) mod wire;
 
 pub use binary_native::{
-    BinaryNativeAuthority, BinaryNativeChallenger, BinaryNativeConfig,
+    BinaryNativeAuthority, BinaryNativeBooleanTraceAuthority, BinaryNativeBooleanTraceConfig,
+    BinaryNativeBooleanTraceProver, VerifiedBinaryNativeBooleanTraceProof,
+    BinaryNativeChallenger, BinaryNativeConfig,
     BinaryNativeGroupedAuthority, BinaryNativeGroupedBooleanTraceAuthority,
     BinaryNativeGroupedBooleanTraceConfig, BinaryNativeGroupedBooleanTraceProver,
     BinaryNativeGroupedConfig, BinaryNativeGroupedPcsParameters, BinaryNativeGroupedProver,

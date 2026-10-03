@@ -1,6 +1,11 @@
 //! Factory-owned native binary proof authority with a frozen recursive relation.
 
 pub(crate) mod codec;
+mod boolean;
+pub use boolean::{
+    BinaryNativeBooleanTraceAuthority, BinaryNativeBooleanTraceProver,
+    VerifiedBinaryNativeBooleanTraceProof,
+};
 mod config;
 mod family;
 mod grouped;
@@ -38,7 +43,7 @@ use crate::verifier::{
     NativeBinaryMultiStarkInput, VerificationError, VerifierLimits,
 };
 pub use config::{
-    BinaryNativeChallenger, BinaryNativeConfig, BinaryNativeGroupedBooleanTraceConfig,
+    BinaryNativeBooleanTraceConfig, BinaryNativeChallenger, BinaryNativeConfig, BinaryNativeGroupedBooleanTraceConfig,
     BinaryNativeGroupedConfig, BinaryNativeHash,
 };
 use config::{NativeMmcs, tree};

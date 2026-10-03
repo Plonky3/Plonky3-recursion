@@ -88,6 +88,58 @@ pub struct BinaryBooleanTraceMultiStarkProofTargets<E = BinaryField128> {
 impl<E: RecursiveBinaryChallengeField + ExtensionField<E>>
     BinaryBooleanTraceMultiStarkInputShape<E>
 {
+    pub(crate) fn native_decode_shape(
+        &self,
+    ) -> crate::artifact::binary_native::codec::MultiDecode<
+        crate::artifact::binary_native::codec::BooleanTraceDecode<
+            crate::artifact::binary_native::codec::OracleDecode,
+        >,
+    >
+    where
+        E: ExtensionField<E>,
+    {
+        crate::artifact::binary_native::codec::MultiDecode {
+            public_counts: self.public_value_counts().collect(),
+            cap_roots: 1usize << self.cap_height,
+            bus: self
+                .relation
+                .bus
+                .as_ref()
+                .map(|b| b.product.native_decode_shape()),
+            sumcheck: self.relation.sumcheck.native_decode_shape(),
+            indexed: self
+                .relation
+                .indexed
+                .as_ref()
+                .map(|i| i.native_decode_shape()),
+            opening: self.opening.native_decode_shape(),
+            preprocessed: self
+                .preprocessed
+                .as_ref()
+                .map(|p| p.opening.native_decode_shape()),
+        }
+    }
+
+    pub(crate) fn write_identity(
+        &self,
+        w: &mut crate::artifact::wire::Writer,
+    ) -> Result<(), crate::artifact::ArtifactError>
+    where
+        E: ExtensionField<E>,
+    {
+        self.relation.write_identity(w)?;
+        self.opening.write_identity(w)?;
+        if let Some(pp) = &self.preprocessed {
+            pp.opening.write_identity(w)?;
+            w.write_vec(
+                "binary native preprocessing cap",
+                &pp.commitment,
+                |w, root| w.write_bytes(root),
+            )?;
+        }
+        Ok(())
+    }
+
     /// Trusted public-value counts in the original AIR instance order.
     pub fn public_value_counts(&self) -> impl ExactSizeIterator<Item = usize> + '_
     where
@@ -245,6 +297,26 @@ where
         + serde::Serialize
         + serde::de::DeserializeOwned,
 {
+    /// Installs the exact cap captured from the factory's matched native setup.
+    /// Geometry was validated before setup, with a placeholder cap of this size.
+    pub(crate) fn bind_native_preprocessing_cap(
+        &mut self,
+        cap: Vec<[u8; 32]>,
+    ) -> Result<(), VerificationError> {
+        let Some(pp) = &mut self.input.preprocessed else {
+            return Err(invalid(
+                "binary native setup produced an unexpected preprocessing cap",
+            ));
+        };
+        if cap.len() != pp.commitment.len() {
+            return Err(invalid(
+                "binary native setup preprocessing cap shape mismatch",
+            ));
+        }
+        pp.commitment = cap;
+        Ok(())
+    }
+
     pub fn new<A>(
         airs: &[&A],
         heights: &[usize],

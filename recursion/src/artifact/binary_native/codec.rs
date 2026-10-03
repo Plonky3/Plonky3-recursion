@@ -113,12 +113,13 @@ pub(crate) struct RingDecode {
     pub max_rounds: usize,
 }
 
-pub(crate) struct BooleanTraceDecode {
+pub(crate) struct BooleanTraceDecode<O = GroupedOracleDecode> {
     pub value_count: usize,
     pub ring: RingDecode,
-    pub packed: PcsDecode<GroupedOracleDecode>,
+    pub packed: PcsDecode<O>,
 }
 
+mod boolean;
 mod grouped;
 mod grouped_boolean;
 mod grouped_shell;
