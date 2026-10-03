@@ -2,7 +2,7 @@
 
 use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 use p3_baby_bear::BabyBear;
-use p3_binary_field::{BinaryField128, TowerLevel};
+use p3_binary_field::{BinaryField8, BinaryField16, BinaryField64, BinaryField128, TowerLevel};
 use p3_binary_pcs::{BinaryPcs, BinaryPcsConfig, BinaryPcsParams, BinaryPcsProverData};
 use p3_challenger::{CanObserve, FieldChallenger};
 use p3_circuit::ops::{BinaryTower128Target, ByteHash};
@@ -14,6 +14,7 @@ use p3_multi_stark::{
     ProverInstance, ProverInstances, VerifierInstance, VerifierInstances, prove, setup, verify,
 };
 use p3_recursion::BinaryTower128Challenger;
+use p3_recursion::pcs::binary::RecursiveBinaryTowerField;
 use p3_recursion::verifier::{BinaryMultiStarkVerifier, VerificationError, VerifierLimits};
 use p3_sumcheck::layout::{Layout, SuffixProver, Table, Witness};
 use p3_test_utils::binary_field_params::{blake3, keccak};
@@ -56,8 +57,9 @@ fn private_field(b: &mut CircuitBuilder<BabyBear>) -> BinaryTower128Target {
     let limbs = b.alloc_private_input_array::<8>("binary MultiStark continuation");
     b.binary128_from_limbs::<BabyBear>(limbs).unwrap()
 }
-fn limbs(value: BinaryField128) -> impl Iterator<Item = BabyBear> {
-    (0..8).map(move |i| BabyBear::from_u16((value.to_repr() >> (16 * i)) as u16))
+fn limbs<F: RecursiveBinaryTowerField>(value: F) -> impl Iterator<Item = BabyBear> {
+    let raw = value.raw_coordinates();
+    (0..8).map(move |i| BabyBear::from_u16((raw >> (16 * i)) as u16))
 }
 fn run(circuit: &Circuit<BabyBear>, private: &[BabyBear], public: &[BabyBear]) -> bool {
     let mut runner = circuit.runner();
@@ -67,18 +69,32 @@ fn run(circuit: &Circuit<BabyBear>, private: &[BabyBear], public: &[BabyBear]) -
 }
 
 macro_rules! check {
-    ($params:ident, $hash:expr, $heights:expr, $pow:expr, $fold:expr, $cap:expr) => {{
-        type F = BinaryField128;
+    ($params:ident, $hash:expr, $heights:expr, $pow:expr, $fold:expr, $cap:expr) => {
+        check!(
+            BinaryField128,
+            BinaryField128,
+            $params,
+            $hash,
+            $heights,
+            $pow,
+            $fold,
+            $cap
+        )
+    };
+    ($base:ty, $extension:ty, $params:ident, $hash:expr, $heights:expr, $pow:expr, $fold:expr, $cap:expr) => {{
+        type F = $base;
+        type E = $extension;
         type M = $params::LevelMmcs<F>;
+        type ME = $params::LevelMmcs<E>;
         type Ch = $params::LevelChallenger<F>;
         struct Config {
-            pcs: BinaryPcs<F, F, M, M>,
+            pcs: BinaryPcs<F, E, M, ME>,
         }
         impl MultiStarkConfig for Config {
             type Val = F;
-            type Challenge = F;
+            type Challenge = E;
             type Challenger = Ch;
-            type Pcs = BinaryPcs<F, F, M, M>;
+            type Pcs = BinaryPcs<F, E, M, ME>;
             fn pcs(&self) -> &Self::Pcs {
                 &self.pcs
             }
@@ -86,11 +102,11 @@ macro_rules! check {
                 1
             }
             fn build_witness(&self, tables: Vec<Table<F>>) -> Witness<F> {
-                SuffixProver::<F, F>::new_witness(tables, 0)
+                SuffixProver::<F, E>::new_witness(tables, 0)
             }
             fn committed_table<'a>(
                 &self,
-                data: &'a BinaryPcsProverData<F, F, M>,
+                data: &'a BinaryPcsProverData<F, E, M>,
                 index: usize,
             ) -> &'a Table<F> {
                 data.table(index)
@@ -99,7 +115,7 @@ macro_rules! check {
         let heights: Vec<usize> = $heights;
         let cells: usize = heights.iter().map(|&h| 2usize << h).sum();
         let n = p3_util::log2_ceil_usize(cells);
-        let config = BinaryPcsConfig::try_new::<F, F>(
+        let config = BinaryPcsConfig::try_new::<F, E>(
             n,
             BinaryPcsParams {
                 log_inv_rate: 2,
@@ -115,12 +131,17 @@ macro_rules! check {
             $params::Compress::new($params::byte_hash()),
             $cap,
         );
+        let round_mmcs = ME::new(
+            $params::FieldHash::new($params::byte_hash()),
+            $params::Compress::new($params::byte_hash()),
+            $cap,
+        );
         let native = Config {
-            pcs: BinaryPcs::new(config, mmcs.clone(), mmcs.clone()).unwrap(),
+            pcs: BinaryPcs::new(config, mmcs.clone(), round_mmcs.clone()).unwrap(),
         };
         let airs: Vec<_> = heights.iter().map(|_| RecurrenceAir).collect();
         let refs: Vec<_> = airs.iter().collect();
-        let verifier = BinaryMultiStarkVerifier::<F>::new(
+        let verifier = BinaryMultiStarkVerifier::<F, E>::new(
             &refs,
             &heights,
             config,
@@ -158,13 +179,21 @@ macro_rules! check {
         let token = verifier
             .verify::<BabyBear, BabyBear>(&mut b, ch, &public_targets, &targets)
             .unwrap();
-        let observation: Vec<_> = (0..16)
+        let observation: Vec<_> = (0..F::RAW_BITS / 8)
             .map(|i| b.define_const(BabyBear::from_u8(if i == 0 { 9 } else { 0 })))
             .collect();
         let mut ch = token
             .resume_with_observation::<BabyBear, BabyBear>(&mut b, &observation)
             .unwrap();
-        let next = ch.sample::<BabyBear, BabyBear>(&mut b).unwrap();
+        let next_bytes = ch
+            .sample_bytes::<BabyBear, BabyBear>(&mut b, E::RAW_BITS / 8)
+            .unwrap();
+        let mut next_bits = [p3_circuit::ExprId::ZERO; 128];
+        for (i, byte) in next_bytes.into_iter().enumerate() {
+            let bits = b.decompose_to_bits::<BabyBear>(byte, 8).unwrap();
+            next_bits[8 * i..8 * i + 8].copy_from_slice(&bits);
+        }
+        let next = b.binary128_from_bits(next_bits).unwrap();
         let expected = private_field(&mut b);
         for (&a, &e) in next.bits().iter().zip(expected.bits()) {
             let diff = b.sub(a, e);
@@ -177,11 +206,17 @@ macro_rules! check {
             let mut tables = Vec::new();
             let mut public = Vec::new();
             for (i, &height) in heights.iter().enumerate() {
-                let a = F::from_repr(
-                    0x0123_4567_89ab_cdef_fedc_ba98_7654_3210 ^ (seed + 37 * i as u128),
+                let a = F::from_le_byte_iter(
+                    (0x0123_4567_89ab_cdef_fedc_ba98_7654_3210u128 ^ (seed + 37 * i as u128))
+                        .to_le_bytes()
+                        .into_iter()
+                        .take(F::RAW_BITS / 8),
                 );
-                let c = F::from_repr(
-                    0xfedc_ba98_7654_3210_0123_4567_89ab_cdef ^ (seed + 71 * i as u128),
+                let c = F::from_le_byte_iter(
+                    (0xfedc_ba98_7654_3210_0123_4567_89ab_cdefu128 ^ (seed + 71 * i as u128))
+                        .to_le_bytes()
+                        .into_iter()
+                        .take(F::RAW_BITS / 8),
                 );
                 let (mut x, mut y) = (a, c);
                 let mut values = Vec::new();
@@ -216,12 +251,14 @@ macro_rules! check {
             .unwrap();
             let mut imported_ch = make();
             let imported = verifier
-                .import_native(&mmcs, &mmcs, &public, &proof, &mut imported_ch)
+                .import_native(&mmcs, &round_mmcs, &public, &proof, &mut imported_ch)
                 .unwrap();
-            expected_ch.observe(F::from_repr(9));
-            imported_ch.observe(F::from_repr(9));
-            let next = expected_ch.sample_algebra_element::<F>();
-            assert_eq!(next, imported_ch.sample_algebra_element::<F>());
+            let observation =
+                F::from_le_byte_iter((0..F::RAW_BITS / 8).map(|i| if i == 0 { 9 } else { 0 }));
+            expected_ch.observe(observation);
+            imported_ch.observe(observation);
+            let next = expected_ch.sample_algebra_element::<E>();
+            assert_eq!(next, imported_ch.sample_algebra_element::<E>());
             let mut private = imported.private_values::<BabyBear>(&shape).unwrap();
             let commitment_limbs = (1usize << $cap) * 16;
             private.extend(limbs(next));
@@ -244,6 +281,12 @@ macro_rules! check {
             let mut wrong = public_limbs.clone();
             wrong[16] += BabyBear::ONE;
             assert!(!run(&circuit, &private, &wrong));
+            if F::RAW_BITS < 128 {
+                let mut wrong = public_limbs.clone();
+                wrong[F::RAW_BITS / 16] +=
+                    BabyBear::from_u16(if F::RAW_BITS == 8 { 256 } else { 1 });
+                assert!(!run(&circuit, &private, &wrong));
+            }
             let mut wrong = private.clone();
             let last = wrong.len() - 8;
             wrong[last] += BabyBear::ONE;
@@ -263,12 +306,12 @@ macro_rules! check {
                 let mut expected = ch.clone();
                 assert!(
                     verifier
-                        .import_native(&mmcs, &mmcs, &public, &bad, &mut ch)
+                        .import_native(&mmcs, &round_mmcs, &public, &bad, &mut ch)
                         .is_err()
                 );
                 assert_eq!(
-                    ch.sample_algebra_element::<F>(),
-                    expected.sample_algebra_element::<F>()
+                    ch.sample_algebra_element::<E>(),
+                    expected.sample_algebra_element::<E>()
                 );
             };
             let mut bad = duplicate();
@@ -304,13 +347,70 @@ fn mixed_trace_heights_and_positive_sumcheck_grinding_match_native() {
 }
 
 #[test]
+fn tower64_native_proofs_match_narrow_public_and_pow_encodings() {
+    check!(
+        BinaryField8,
+        BinaryField64,
+        keccak,
+        ByteHash::Keccak256,
+        vec![1],
+        0,
+        2,
+        0
+    );
+    check!(
+        BinaryField8,
+        BinaryField64,
+        blake3,
+        ByteHash::Blake3,
+        vec![1],
+        0,
+        1,
+        1
+    );
+    check!(
+        BinaryField16,
+        BinaryField64,
+        keccak,
+        ByteHash::Keccak256,
+        vec![1],
+        3,
+        2,
+        0
+    );
+}
+
+#[test]
 fn a_complete_native_binary_air_proof_verifies_in_a_prime_field_proof() {
+    let (circuit, private, public) = check!(keccak, ByteHash::Keccak256, vec![1], 0, 2, 0);
+    prove_bound_statement(circuit, private, public);
+}
+
+#[test]
+fn a_tower64_native_proof_verifies_in_a_prime_field_proof() {
+    let (circuit, private, public) = check!(
+        BinaryField8,
+        BinaryField64,
+        keccak,
+        ByteHash::Keccak256,
+        vec![1],
+        0,
+        2,
+        0
+    );
+    prove_bound_statement(circuit, private, public);
+}
+
+fn prove_bound_statement(
+    circuit: Circuit<BabyBear>,
+    private: Vec<BabyBear>,
+    public: Vec<BabyBear>,
+) {
     use p3_circuit_prover::batch_stark_prover::{
         BatchStarkProver, KeccakF1600AirBuilder, KeccakF1600Preprocessor, KeccakF1600Prover,
         StatementAirBuilder, StatementPreprocessor, StatementProver,
     };
     use p3_circuit_prover::{ConstraintProfile, config};
-    let (circuit, private, public) = check!(keccak, ByteHash::Keccak256, vec![1], 0, 2, 0);
     let mut prover = BatchStarkProver::new(config::baby_bear());
     let schema = circuit.statement_schema().unwrap().clone();
     prover.register_table_prover(Box::new(KeccakF1600Prover::<1>));
