@@ -19,10 +19,9 @@ use p3_field::{ExtensionField, Field};
 use p3_lookup::InteractionSymbolicBuilder;
 use p3_lookup::indexed::{IndexedLookups, IndexedRead, IndexedTable};
 
+use super::binary_field_policy::{BinaryRelationPolicy, Poly64Relation, TowerRelation};
 use super::{InputResourceUsage, VerificationError, VerifierLimits};
-use crate::pcs::binary::{
-    RecursiveBinaryChallengeField, RecursiveBinaryTowerField, binary128_eval_multilinear,
-};
+use crate::pcs::binary::{RecursiveBinaryChallengeField, RecursiveBinaryTowerField};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Node {
@@ -49,10 +48,10 @@ pub(super) struct CompiledBusDeclaration {
     pub factor_degree: usize,
 }
 
-pub(super) struct BinaryAirEvaluation {
-    pub folded: BinaryTower128Target,
-    pub bus_fields: Vec<Vec<BinaryTower128Target>>,
-    pub bus_activations: Vec<Option<BinaryTower128Target>>,
+pub(super) struct BinaryAirEvaluation<T = BinaryTower128Target> {
+    pub folded: T,
+    pub bus_fields: Vec<Vec<T>>,
+    pub bus_activations: Vec<Option<T>>,
 }
 
 /// A private expression program compiled from a trusted, field-element AIR.
@@ -60,6 +59,12 @@ pub(super) struct BinaryAirEvaluation {
 /// supply or replace its expressions, geometry, or successor-column map.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BinaryAirConstraintPlan<F = BinaryField128, E = BinaryField128> {
+    program: AirProgram,
+    fields: PhantomData<(F, E)>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AirProgram {
     nodes: Vec<Node>,
     constraints: Vec<usize>,
     bus: Vec<CompiledBusDeclaration>,
@@ -73,7 +78,6 @@ pub struct BinaryAirConstraintPlan<F = BinaryField128, E = BinaryField128> {
     log_height: usize,
     degree: usize,
     usage: InputResourceUsage,
-    fields: PhantomData<(F, E)>,
 }
 
 impl<F, E> BinaryAirConstraintPlan<F, E>
@@ -85,6 +89,199 @@ where
     /// No user callback, pointer identity or Debug formatting enters this key.
     pub(crate) fn write_identity(
         &self,
+        w: &mut crate::artifact::wire::Writer,
+    ) -> Result<(), crate::artifact::ArtifactError> {
+        self.program
+            .write_identity(TowerRelation::<F, E>::BASE_BITS, w)
+    }
+
+    pub fn from_air<A>(air: &A, log_height: usize) -> Result<Self, VerificationError>
+    where
+        A: Air<InteractionSymbolicBuilder<F, E>> + Air<BusSymbolicBuilder<F, E>>,
+    {
+        Self::with_limits(air, log_height, &VerifierLimits::default())
+    }
+
+    pub fn with_limits<A>(
+        air: &A,
+        log_height: usize,
+        limits: &VerifierLimits,
+    ) -> Result<Self, VerificationError>
+    where
+        A: Air<InteractionSymbolicBuilder<F, E>> + Air<BusSymbolicBuilder<F, E>>,
+    {
+        Self::build(air, log_height, limits, false).map(|(plan, _)| plan)
+    }
+
+    /// Internal entry point for a surrounding verifier that also consumes the
+    /// retained bus and indexed obligations. The public AIR constructor rejects them.
+    pub(super) fn with_interaction_limits<A>(
+        air: &A,
+        log_height: usize,
+        limits: &VerifierLimits,
+    ) -> Result<(Self, Vec<SymbolicBusInteraction<F>>), VerificationError>
+    where
+        A: Air<InteractionSymbolicBuilder<F, E>> + Air<BusSymbolicBuilder<F, E>>,
+    {
+        Self::build(air, log_height, limits, true)
+    }
+
+    #[cfg(test)]
+    pub(super) fn with_bus_limits<A>(
+        air: &A,
+        log_height: usize,
+        limits: &VerifierLimits,
+    ) -> Result<(Self, Vec<SymbolicBusInteraction<F>>), VerificationError>
+    where
+        A: Air<InteractionSymbolicBuilder<F, E>> + Air<BusSymbolicBuilder<F, E>>,
+    {
+        let output = Self::with_interaction_limits(air, log_height, limits)?;
+        if !output.0.program.indexed.is_empty() {
+            return Err(invalid(
+                "binary AIR interactions require a supported reduction",
+            ));
+        }
+        Ok(output)
+    }
+
+    fn build<A>(
+        air: &A,
+        log_height: usize,
+        limits: &VerifierLimits,
+        allow_interactions: bool,
+    ) -> Result<(Self, Vec<SymbolicBusInteraction<F>>), VerificationError>
+    where
+        A: Air<InteractionSymbolicBuilder<F, E>> + Air<BusSymbolicBuilder<F, E>>,
+    {
+        AirProgram::build::<F, E, A>(
+            air,
+            log_height,
+            limits,
+            allow_interactions,
+            F::raw_coordinates,
+        )
+        .map(|(program, bus)| {
+            (
+                Self {
+                    program,
+                    fields: PhantomData,
+                },
+                bus,
+            )
+        })
+    }
+
+    pub fn main_width(&self) -> usize {
+        self.program.width
+    }
+    pub(super) fn indexed_reads(&self) -> &[IndexedRead] {
+        self.program.indexed.reads()
+    }
+    pub(super) fn indexed_tables(&self) -> &[IndexedTable] {
+        self.program.indexed.tables()
+    }
+    pub fn public_value_count(&self) -> usize {
+        self.program.public_count
+    }
+    pub fn next_columns(&self) -> &[usize] {
+        &self.program.next_columns
+    }
+    pub fn preprocessed_width(&self) -> usize {
+        self.program.preprocessed_width
+    }
+    pub fn preprocessed_next_columns(&self) -> &[usize] {
+        &self.program.preprocessed_next_columns
+    }
+    pub fn log_height(&self) -> usize {
+        self.program.log_height
+    }
+    pub fn constraint_degree(&self) -> usize {
+        self.program.degree
+    }
+    pub fn constraint_count(&self) -> usize {
+        self.program.constraints.len()
+    }
+    pub fn input_resource_usage(&self) -> InputResourceUsage {
+        self.program.usage
+    }
+
+    pub(super) fn bus_declarations(&self) -> &[CompiledBusDeclaration] {
+        &self.program.bus
+    }
+
+    /// Computes the native assertion-order Horner fold at an authenticated
+    /// multilinear point. `next` follows the declared successor-column order.
+    /// This arithmetic alone does not authenticate openings or verify a STARK.
+    pub fn evaluate<EF: Field + Eq + Hash>(
+        &self,
+        b: &mut CircuitBuilder<EF>,
+        point: &[BinaryTower128Target],
+        current: &[BinaryTower128Target],
+        next: &[BinaryTower128Target],
+        public: &[BinaryTower128Target],
+        alpha: &BinaryTower128Target,
+    ) -> Result<BinaryTower128Target, VerificationError> {
+        self.evaluate_with_auxiliary(b, point, current, next, &[], &[], public, alpha)
+    }
+
+    /// Evaluates the AIR with authenticated preprocessing openings. Successor
+    /// values follow their own declared order; periodic values are recomputed
+    /// from trusted vectors on the trailing coordinates of `point`.
+    pub fn evaluate_with_auxiliary<EF: Field + Eq + Hash>(
+        &self,
+        b: &mut CircuitBuilder<EF>,
+        point: &[BinaryTower128Target],
+        current: &[BinaryTower128Target],
+        next: &[BinaryTower128Target],
+        preprocessed_current: &[BinaryTower128Target],
+        preprocessed_next: &[BinaryTower128Target],
+        public: &[BinaryTower128Target],
+        alpha: &BinaryTower128Target,
+    ) -> Result<BinaryTower128Target, VerificationError> {
+        self.evaluate_with_bus(
+            b,
+            point,
+            current,
+            next,
+            preprocessed_current,
+            preprocessed_next,
+            public,
+            alpha,
+        )
+        .map(|evaluation| evaluation.folded)
+    }
+
+    /// Evaluates the ordinary assertion fold and retained bus payloads through
+    /// one private program at the same authenticated openings. The surrounding
+    /// verifier must consume both results in its terminal reduction equation.
+    pub(super) fn evaluate_with_bus<EF: Field + Eq + Hash>(
+        &self,
+        b: &mut CircuitBuilder<EF>,
+        point: &[BinaryTower128Target],
+        current: &[BinaryTower128Target],
+        next: &[BinaryTower128Target],
+        preprocessed_current: &[BinaryTower128Target],
+        preprocessed_next: &[BinaryTower128Target],
+        public: &[BinaryTower128Target],
+        alpha: &BinaryTower128Target,
+    ) -> Result<BinaryAirEvaluation, VerificationError> {
+        self.program.evaluate::<TowerRelation<F, E>, EF>(
+            b,
+            point,
+            current,
+            next,
+            preprocessed_current,
+            preprocessed_next,
+            public,
+            alpha,
+        )
+    }
+}
+
+impl AirProgram {
+    fn write_identity(
+        &self,
+        base_bits: usize,
         w: &mut crate::artifact::wire::Writer,
     ) -> Result<(), crate::artifact::ArtifactError> {
         use p3_lookup::TraceWindow;
@@ -108,14 +305,14 @@ where
         }
         w.write_vec("binary AIR periods", &self.periods, |w, period| {
             w.write_vec("binary AIR period values", period, |w, &raw| {
-                w.write_bytes(&raw.to_le_bytes()[..F::RAW_BITS / 8])
+                w.write_bytes(&raw.to_le_bytes()[..base_bits / 8])
             })
         })?;
         w.write_vec("binary AIR nodes", &self.nodes, |w, node| {
             let (tag, operands): (u8, &[usize]) = match node {
                 Node::Constant(raw) => {
                     w.write_u8(0)?;
-                    return w.write_bytes(&raw.to_le_bytes()[..F::RAW_BITS / 8]);
+                    return w.write_bytes(&raw.to_le_bytes()[..base_bits / 8]);
                 }
                 Node::Current(i) => (1, core::slice::from_ref(i)),
                 Node::Next(i) => (2, core::slice::from_ref(i)),
@@ -184,62 +381,16 @@ where
         )
     }
 
-    pub fn from_air<A>(air: &A, log_height: usize) -> Result<Self, VerificationError>
-    where
-        A: Air<InteractionSymbolicBuilder<F, E>> + Air<BusSymbolicBuilder<F, E>>,
-    {
-        Self::with_limits(air, log_height, &VerifierLimits::default())
-    }
-
-    pub fn with_limits<A>(
-        air: &A,
-        log_height: usize,
-        limits: &VerifierLimits,
-    ) -> Result<Self, VerificationError>
-    where
-        A: Air<InteractionSymbolicBuilder<F, E>> + Air<BusSymbolicBuilder<F, E>>,
-    {
-        Self::build(air, log_height, limits, false).map(|(plan, _)| plan)
-    }
-
-    /// Internal entry point for a surrounding verifier that also consumes the
-    /// retained bus and indexed obligations. The public AIR constructor rejects them.
-    pub(super) fn with_interaction_limits<A>(
-        air: &A,
-        log_height: usize,
-        limits: &VerifierLimits,
-    ) -> Result<(Self, Vec<SymbolicBusInteraction<F>>), VerificationError>
-    where
-        A: Air<InteractionSymbolicBuilder<F, E>> + Air<BusSymbolicBuilder<F, E>>,
-    {
-        Self::build(air, log_height, limits, true)
-    }
-
-    #[cfg(test)]
-    pub(super) fn with_bus_limits<A>(
-        air: &A,
-        log_height: usize,
-        limits: &VerifierLimits,
-    ) -> Result<(Self, Vec<SymbolicBusInteraction<F>>), VerificationError>
-    where
-        A: Air<InteractionSymbolicBuilder<F, E>> + Air<BusSymbolicBuilder<F, E>>,
-    {
-        let output = Self::with_interaction_limits(air, log_height, limits)?;
-        if !output.0.indexed.is_empty() {
-            return Err(invalid(
-                "binary AIR interactions require a supported reduction",
-            ));
-        }
-        Ok(output)
-    }
-
-    fn build<A>(
+    fn build<F, E, A>(
         air: &A,
         log_height: usize,
         limits: &VerifierLimits,
         allow_interactions: bool,
+        base_raw: fn(F) -> u128,
     ) -> Result<(Self, Vec<SymbolicBusInteraction<F>>), VerificationError>
     where
+        F: Field,
+        E: ExtensionField<F>,
         A: Air<InteractionSymbolicBuilder<F, E>> + Air<BusSymbolicBuilder<F, E>>,
     {
         let layout = AirLayout::from_air::<F>(air);
@@ -293,7 +444,7 @@ where
         }
         let periods: Vec<Vec<u128>> = periods
             .iter()
-            .map(|period| period.iter().copied().map(F::raw_coordinates).collect())
+            .map(|period| period.iter().copied().map(base_raw).collect())
             .collect();
         let pins = air.public_boundary_io();
         let pin_nodes =
@@ -368,6 +519,7 @@ where
             return Err(invalid("binary AIR assertion order is unsupported"));
         }
         let mut compiler = Compiler {
+            base_raw,
             nodes: Vec::new(),
             degrees: Vec::new(),
             bus_valid: Vec::new(),
@@ -480,106 +632,22 @@ where
                 log_height,
                 degree,
                 usage,
-                fields: PhantomData,
             },
             bus_symbolic.interactions().to_vec(),
         ))
     }
 
-    pub fn main_width(&self) -> usize {
-        self.width
-    }
-    pub(super) fn indexed_reads(&self) -> &[IndexedRead] {
-        self.indexed.reads()
-    }
-    pub(super) fn indexed_tables(&self) -> &[IndexedTable] {
-        self.indexed.tables()
-    }
-    pub fn public_value_count(&self) -> usize {
-        self.public_count
-    }
-    pub fn next_columns(&self) -> &[usize] {
-        &self.next_columns
-    }
-    pub fn preprocessed_width(&self) -> usize {
-        self.preprocessed_width
-    }
-    pub fn preprocessed_next_columns(&self) -> &[usize] {
-        &self.preprocessed_next_columns
-    }
-    pub fn log_height(&self) -> usize {
-        self.log_height
-    }
-    pub fn constraint_degree(&self) -> usize {
-        self.degree
-    }
-    pub fn constraint_count(&self) -> usize {
-        self.constraints.len()
-    }
-    pub fn input_resource_usage(&self) -> InputResourceUsage {
-        self.usage
-    }
-
-    pub(super) fn bus_declarations(&self) -> &[CompiledBusDeclaration] {
-        &self.bus
-    }
-
-    /// Computes the native assertion-order Horner fold at an authenticated
-    /// multilinear point. `next` follows the declared successor-column order.
-    /// This arithmetic alone does not authenticate openings or verify a STARK.
-    pub fn evaluate<EF: Field + Eq + Hash>(
+    fn evaluate<P: BinaryRelationPolicy, EF: Field + Eq + Hash>(
         &self,
         b: &mut CircuitBuilder<EF>,
-        point: &[BinaryTower128Target],
-        current: &[BinaryTower128Target],
-        next: &[BinaryTower128Target],
-        public: &[BinaryTower128Target],
-        alpha: &BinaryTower128Target,
-    ) -> Result<BinaryTower128Target, VerificationError> {
-        self.evaluate_with_auxiliary(b, point, current, next, &[], &[], public, alpha)
-    }
-
-    /// Evaluates the AIR with authenticated preprocessing openings. Successor
-    /// values follow their own declared order; periodic values are recomputed
-    /// from trusted vectors on the trailing coordinates of `point`.
-    pub fn evaluate_with_auxiliary<EF: Field + Eq + Hash>(
-        &self,
-        b: &mut CircuitBuilder<EF>,
-        point: &[BinaryTower128Target],
-        current: &[BinaryTower128Target],
-        next: &[BinaryTower128Target],
-        preprocessed_current: &[BinaryTower128Target],
-        preprocessed_next: &[BinaryTower128Target],
-        public: &[BinaryTower128Target],
-        alpha: &BinaryTower128Target,
-    ) -> Result<BinaryTower128Target, VerificationError> {
-        self.evaluate_with_bus(
-            b,
-            point,
-            current,
-            next,
-            preprocessed_current,
-            preprocessed_next,
-            public,
-            alpha,
-        )
-        .map(|evaluation| evaluation.folded)
-    }
-
-    /// Evaluates the ordinary assertion fold and retained bus payloads through
-    /// one private program at the same authenticated openings. The surrounding
-    /// verifier must consume both results in its terminal reduction equation.
-    pub(super) fn evaluate_with_bus<EF: Field + Eq + Hash>(
-        &self,
-        b: &mut CircuitBuilder<EF>,
-        point: &[BinaryTower128Target],
-        current: &[BinaryTower128Target],
-        next: &[BinaryTower128Target],
-        preprocessed_current: &[BinaryTower128Target],
-        preprocessed_next: &[BinaryTower128Target],
-        public: &[BinaryTower128Target],
-        alpha: &BinaryTower128Target,
-    ) -> Result<BinaryAirEvaluation, VerificationError> {
+        point: &[P::ChallengeTarget],
+        current: &[P::ChallengeTarget],
+        next: &[P::ChallengeTarget],
+        preprocessed_current: &[P::ChallengeTarget],
+        preprocessed_next: &[P::ChallengeTarget],
+        public: &[P::BaseTarget],
+        alpha: &P::ChallengeTarget,
+    ) -> Result<BinaryAirEvaluation<P::ChallengeTarget>, VerificationError> {
         if point.len() != self.log_height
             || current.len() != self.width
             || next.len() != self.next_columns.len()
@@ -597,55 +665,55 @@ where
             .chain(preprocessed_next)
             .chain([alpha])
         {
-            constrain_width(b, value, E::RAW_BITS);
+            P::constrain_challenge(b, value);
         }
         for value in public {
-            constrain_width(b, value, F::RAW_BITS);
+            P::constrain_base(b, value);
         }
-        let one = b.binary128_constant(1)?;
+        let one = P::constant(b, 1)?;
         let mut first = one.clone();
         let mut last = one.clone();
         for r in point {
-            let complement = b.binary128_add(&one, r);
-            first = b.binary128_mul(&first, &complement);
-            last = b.binary128_mul(&last, r);
+            let complement = P::add(b, &one, r);
+            first = P::mul(b, &first, &complement);
+            last = P::mul(b, &last, r);
         }
-        let transition = b.binary128_add(&one, &last);
+        let transition = P::add(b, &one, &last);
         let mut periodic_values = Vec::with_capacity(self.periods.len());
         for period in &self.periods {
             let coordinates = period.len().ilog2() as usize;
             let evaluations = period
                 .iter()
-                .map(|&raw| b.binary128_constant(raw))
+                .map(|&raw| P::constant(b, raw))
                 .collect::<Result<Vec<_>, _>>()?;
-            periodic_values.push(binary128_eval_multilinear(
+            periodic_values.push(evaluate_table::<P, EF>(
                 b,
                 &evaluations,
                 &point[point.len() - coordinates..],
             )?);
         }
-        let mut values: Vec<BinaryTower128Target> = Vec::with_capacity(self.nodes.len());
+        let mut values: Vec<P::ChallengeTarget> = Vec::with_capacity(self.nodes.len());
         for node in &self.nodes {
             let value = match *node {
-                Node::Constant(raw) => b.binary128_constant(raw)?,
+                Node::Constant(raw) => P::constant(b, raw)?,
                 Node::Current(i) => current[i].clone(),
                 Node::Next(i) => next[i].clone(),
                 Node::PreprocessedCurrent(i) => preprocessed_current[i].clone(),
                 Node::PreprocessedNext(i) => preprocessed_next[i].clone(),
                 Node::Periodic(i) => periodic_values[i].clone(),
-                Node::Public(i) => public[i].clone(),
+                Node::Public(i) => P::lift(b, &public[i])?,
                 Node::First => first.clone(),
                 Node::Last => last.clone(),
                 Node::Transition => transition.clone(),
-                Node::Add(x, y) => b.binary128_add(&values[x], &values[y]),
-                Node::Mul(x, y) => b.binary128_mul(&values[x], &values[y]),
+                Node::Add(x, y) => P::add(b, &values[x], &values[y]),
+                Node::Mul(x, y) => P::mul(b, &values[x], &values[y]),
             };
             values.push(value);
         }
-        let mut folded = b.binary128_constant(0)?;
+        let mut folded = P::constant(b, 0)?;
         for &root in &self.constraints {
-            let weighted = b.binary128_mul(&folded, alpha);
-            folded = b.binary128_add(&weighted, &values[root]);
+            let weighted = P::mul(b, &folded, alpha);
+            folded = P::add(b, &weighted, &values[root]);
         }
         let bus_fields = self
             .bus
@@ -672,6 +740,7 @@ where
 }
 
 struct Compiler<'a, F> {
+    base_raw: fn(F) -> u128,
     nodes: Vec<Node>,
     degrees: Vec<usize>,
     bus_valid: Vec<bool>,
@@ -686,7 +755,7 @@ struct Compiler<'a, F> {
     limits: &'a VerifierLimits,
 }
 
-impl<F: RecursiveBinaryTowerField> Compiler<'_, F> {
+impl<F: Field> Compiler<'_, F> {
     fn push(&mut self, node: Node, degree: usize) -> usize {
         let bus_valid = match node {
             Node::Next(_) | Node::PreprocessedNext(_) | Node::Periodic(_) => false,
@@ -731,7 +800,7 @@ impl<F: RecursiveBinaryTowerField> Compiler<'_, F> {
             let child = |x: &SymbolicExpression<F>| self.cache[&core::ptr::from_ref(x)];
             let (node, degree) = match expression {
                 SymbolicExpression::Leaf(leaf) => match leaf {
-                    BaseLeaf::Constant(c) => (Node::Constant(c.raw_coordinates()), 0),
+                    BaseLeaf::Constant(c) => (Node::Constant((self.base_raw)(*c)), 0),
                     BaseLeaf::IsFirstRow => (Node::First, 1),
                     BaseLeaf::IsLastRow => (Node::Last, 1),
                     BaseLeaf::IsTransition => (Node::Transition, 1),
@@ -818,6 +887,135 @@ pub(super) fn constrain_width<EF: Field + Eq + Hash>(
 
 fn invalid(message: &'static str) -> VerificationError {
     VerificationError::InvalidProofShape(message.into())
+}
+
+/// Trusted Poly64 AIR program evaluated with full Poly192 challenges.
+/// Public values retain their base-field representation and are lifted into
+/// the cubic extension only when the compiled expression consumes them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BinaryPolyAirConstraintPlan {
+    program: AirProgram,
+}
+
+impl BinaryPolyAirConstraintPlan {
+    pub fn from_air<A>(air: &A, log_height: usize) -> Result<Self, VerificationError>
+    where
+        A: Air<InteractionSymbolicBuilder<p3_binary_field::Poly64, p3_binary_field::Poly192>>
+            + Air<BusSymbolicBuilder<p3_binary_field::Poly64, p3_binary_field::Poly192>>,
+    {
+        Self::with_limits(air, log_height, &VerifierLimits::default())
+    }
+
+    pub fn with_limits<A>(
+        air: &A,
+        log_height: usize,
+        limits: &VerifierLimits,
+    ) -> Result<Self, VerificationError>
+    where
+        A: Air<InteractionSymbolicBuilder<p3_binary_field::Poly64, p3_binary_field::Poly192>>
+            + Air<BusSymbolicBuilder<p3_binary_field::Poly64, p3_binary_field::Poly192>>,
+    {
+        AirProgram::build::<p3_binary_field::Poly64, p3_binary_field::Poly192, A>(
+            air,
+            log_height,
+            limits,
+            false,
+            Poly64Relation::base_raw,
+        )
+        .map(|(program, _)| Self { program })
+    }
+
+    pub fn main_width(&self) -> usize {
+        self.program.width
+    }
+    pub fn public_value_count(&self) -> usize {
+        self.program.public_count
+    }
+    pub fn next_columns(&self) -> &[usize] {
+        &self.program.next_columns
+    }
+    pub fn preprocessed_width(&self) -> usize {
+        self.program.preprocessed_width
+    }
+    pub fn preprocessed_next_columns(&self) -> &[usize] {
+        &self.program.preprocessed_next_columns
+    }
+    pub fn log_height(&self) -> usize {
+        self.program.log_height
+    }
+    pub fn constraint_degree(&self) -> usize {
+        self.program.degree
+    }
+    pub fn constraint_count(&self) -> usize {
+        self.program.constraints.len()
+    }
+    pub fn input_resource_usage(&self) -> InputResourceUsage {
+        self.program.usage
+    }
+
+    /// Arithmetic folding only; the caller must authenticate the openings and
+    /// close the surrounding sumcheck relation before accepting a statement.
+    pub fn evaluate<EF: Field + Eq + Hash>(
+        &self,
+        b: &mut CircuitBuilder<EF>,
+        point: &[p3_circuit::ops::BinaryPoly192Target],
+        current: &[p3_circuit::ops::BinaryPoly192Target],
+        next: &[p3_circuit::ops::BinaryPoly192Target],
+        public: &[p3_circuit::ops::BinaryPoly64Target],
+        alpha: &p3_circuit::ops::BinaryPoly192Target,
+    ) -> Result<p3_circuit::ops::BinaryPoly192Target, VerificationError> {
+        self.evaluate_with_auxiliary(b, point, current, next, &[], &[], public, alpha)
+    }
+
+    pub fn evaluate_with_auxiliary<EF: Field + Eq + Hash>(
+        &self,
+        b: &mut CircuitBuilder<EF>,
+        point: &[p3_circuit::ops::BinaryPoly192Target],
+        current: &[p3_circuit::ops::BinaryPoly192Target],
+        next: &[p3_circuit::ops::BinaryPoly192Target],
+        preprocessed_current: &[p3_circuit::ops::BinaryPoly192Target],
+        preprocessed_next: &[p3_circuit::ops::BinaryPoly192Target],
+        public: &[p3_circuit::ops::BinaryPoly64Target],
+        alpha: &p3_circuit::ops::BinaryPoly192Target,
+    ) -> Result<p3_circuit::ops::BinaryPoly192Target, VerificationError> {
+        self.program
+            .evaluate::<Poly64Relation, EF>(
+                b,
+                point,
+                current,
+                next,
+                preprocessed_current,
+                preprocessed_next,
+                public,
+                alpha,
+            )
+            .map(|evaluation| evaluation.folded)
+    }
+}
+
+fn evaluate_table<P: BinaryRelationPolicy, EF: Field + Eq + Hash>(
+    b: &mut CircuitBuilder<EF>,
+    values: &[P::ChallengeTarget],
+    point: &[P::ChallengeTarget],
+) -> Result<P::ChallengeTarget, VerificationError> {
+    let count = u32::try_from(point.len())
+        .ok()
+        .and_then(|n| 1usize.checked_shl(n));
+    if count != Some(values.len()) {
+        return Err(invalid("binary AIR periodic evaluation shape mismatch"));
+    }
+    let mut layer = values.to_vec();
+    for r in point.iter().rev() {
+        layer = layer
+            .chunks_exact(2)
+            .map(|pair| {
+                let slope = P::add(b, &pair[0], &pair[1]);
+                let product = P::mul(b, r, &slope);
+                P::add(b, &pair[0], &product)
+            })
+            .collect();
+    }
+    Ok(layer[0].clone())
 }
 
 #[cfg(test)]

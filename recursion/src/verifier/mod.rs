@@ -2,6 +2,7 @@
 
 mod batch_stark;
 mod binary_air;
+pub(crate) mod binary_field_policy;
 mod binary_bus;
 mod binary_fraction;
 mod binary_boolean_multi_stark;
@@ -31,7 +32,7 @@ pub use batch_stark::{
     trusted_batch_tables, verify_batch_circuit, verify_p3_batch_proof_circuit,
     verify_trusted_p3_batch_proof_circuit,
 };
-pub use binary_air::BinaryAirConstraintPlan;
+pub use binary_air::{BinaryAirConstraintPlan, BinaryPolyAirConstraintPlan};
 pub use binary_fraction::{
     BinaryFractionGkrInputShape, BinaryFractionGkrLayerTargets, BinaryFractionGkrOutput,
     BinaryFractionGkrProofTargets, BinaryFractionGkrVerifier, NativeBinaryFractionGkrInput,
