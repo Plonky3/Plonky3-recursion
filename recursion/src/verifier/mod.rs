@@ -3,6 +3,7 @@
 mod batch_stark;
 mod binary_air;
 mod binary_multi_stark;
+mod binary_product;
 mod errors;
 mod limits;
 mod observable;
@@ -20,6 +21,10 @@ pub use binary_air::BinaryAirConstraintPlan;
 pub use binary_multi_stark::{
     BinaryMultiStarkInputShape, BinaryMultiStarkPreprocessing, BinaryMultiStarkProofTargets,
     BinaryMultiStarkVerifier, NativeBinaryMultiStarkInput,
+};
+pub use binary_product::{
+    BinaryProductGkrInputShape, BinaryProductGkrLayerTargets, BinaryProductGkrOutput,
+    BinaryProductGkrProofTargets, BinaryProductGkrVerifier, NativeBinaryProductGkrInput,
 };
 pub use errors::VerificationError;
 pub use limits::{InputResourceUsage, VerifierLimits};
