@@ -15,6 +15,7 @@ use p3_circuit::ops::BinaryTower128Target;
 impl ClosedBinaryCircuit<BinaryField128, BinaryField128>
     for BinaryBooleanWhirTraceMultiStarkVerifier
 {
+    type Statement = BinaryStatementLayout<BinaryField128>;
     type Shape = BinaryBooleanWhirTraceMultiStarkInputShape;
     type Targets = BinaryBooleanWhirTraceMultiStarkProofTargets;
     type Input = NativeBinaryBooleanWhirTraceMultiStarkInput;

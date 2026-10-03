@@ -1,5 +1,6 @@
 //! Shared prepared prover lifecycle for complete private binary relations.
 
+use super::statement::ClosedStatement;
 use super::*;
 use crate::verifier::{
     BinaryGroupedMultiStarkInputShape, BinaryGroupedMultiStarkProofTargets,
@@ -11,6 +12,7 @@ use p3_circuit::ops::BinaryTower128Target;
 
 /// Only complete built-in relations can populate this shared prepared lifecycle.
 pub(super) trait ClosedBinaryCircuit<F, E> {
+    type Statement: ClosedStatement<F>;
     type Shape;
     type Targets;
     type Input;
@@ -28,7 +30,7 @@ pub(super) trait ClosedBinaryCircuit<F, E> {
         &self,
         b: &mut CircuitBuilder<EF>,
         ch: BinaryTower128Challenger,
-        public: &[Vec<BinaryTower128Target>],
+        public: &[Vec<<Self::Statement as ClosedStatement<F>>::Target>],
         targets: &Self::Targets,
     ) -> Result<(), VerificationError>
     where
@@ -47,6 +49,7 @@ macro_rules! circuit_relation {
             F: RecursiveBinaryTowerField,
             E: RecursiveBinaryChallengeField + ExtensionField<F>,
         {
+            type Statement = BinaryStatementLayout<F>;
             type Shape = $shape<F, E>;
             type Targets = $targets;
             type Input = $input<F, E>;
@@ -104,22 +107,29 @@ circuit_relation!(
     NativeBinaryGroupedMultiStarkInput
 );
 
-pub(super) struct BinaryPreparedCore<F, E, SC: StarkGenericConfig + 'static, const D: usize, R, S> {
+pub(super) struct BinaryPreparedCore<
+    F,
+    E,
+    SC: StarkGenericConfig + 'static,
+    const D: usize,
+    R,
+    S,
+    SL = BinaryStatementLayout<F>,
+> {
     pub(super) binary: R,
     shape: S,
-    field: PhantomData<E>,
-    pub(super) layout: BinaryStatementLayout<F>,
+    field: PhantomData<(F, E)>,
+    pub(super) layout: SL,
     circuit: Circuit<SC::Challenge>,
     pub(super) prepared: PreparedProver<SC>,
     pub(super) params: ProveNextLayerParams,
     pub(super) native_identity: Option<Arc<[u8]>>,
 }
 
-impl<F, E, SC, const D: usize, R, S> BinaryPreparedCore<F, E, SC, D, R, S>
+impl<F, E, SC, const D: usize, R, S, SL> BinaryPreparedCore<F, E, SC, D, R, S, SL>
 where
-    R: ClosedBinaryCircuit<F, E, Shape = S>,
-    F: RecursiveBinaryTowerField,
-    E: RecursiveBinaryChallengeField + ExtensionField<F>,
+    R: ClosedBinaryCircuit<F, E, Shape = S, Statement = SL>,
+    SL: ClosedStatement<F>,
     SC: StarkGenericConfig + Send + Sync + Clone + 'static,
     Val<SC>: PrimeField64 + StarkField,
     SC::Challenge: BasedVectorSpace<Val<SC>>
@@ -154,27 +164,14 @@ where
         usage.add_metadata_entries(limits, initial_bytes.len())?;
         let shape = binary.shape();
         let counts: Vec<_> = R::public_counts(&shape);
-        let layout = BinaryStatementLayout::<F>::with_limits(&counts, limits)?;
-        usage.add_metadata_entries(limits, layout.schema.base_len())?;
+        let layout = SL::with_limits(&counts, limits)?;
+        usage.add_metadata_entries(limits, layout.schema().base_len())?;
         let mut b = CircuitBuilder::<SC::Challenge>::new();
         // Main PCS, preprocessing PCS and transcript hashes are independently
         // configured. Register both closed byte-hash implementations.
         b.enable_keccak_f1600::<Val<SC>>();
         b.enable_blake3_compress::<Val<SC>>();
-        let mut original_limbs = Vec::with_capacity(layout.schema.base_len());
-        let public = counts
-            .iter()
-            .map(|&count| {
-                (0..count)
-                    .map(|_| {
-                        let limbs = core::array::from_fn(|_| b.public_input());
-                        original_limbs.extend(limbs);
-                        b.binary128_from_limbs::<Val<SC>>(limbs)
-                            .map_err(VerificationError::from)
-                    })
-                    .collect::<Result<Vec<_>, _>>()
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+        let (public, original_limbs) = layout.allocate_public::<Val<SC>, SC::Challenge>(&mut b)?;
         let targets = R::allocate_targets::<Val<SC>, SC::Challenge>(&shape, &mut b)?;
         let initial = initial_bytes
             .iter()
@@ -189,7 +186,7 @@ where
         // each AIR public value consumed by the complete binary verifier.
         // The layout fixes their instance/value/limb order and Base encoding.
         unsafe {
-            VerifiedStatementTargets::new_unchecked(&b, layout.schema.clone(), original_limbs)
+            VerifiedStatementTargets::new_unchecked(&b, layout.schema().clone(), original_limbs)
         }?
         .install::<Val<SC>>(&mut b)?;
         let circuit = b.build()?;
@@ -205,12 +202,14 @@ where
             Box::new(KeccakF1600Prover::<D>),
             Box::new(Blake3CompressProver::<D>),
         ];
-        if layout.schema.base_len() != 0 {
-            preprocessors.push(Box::new(StatementPreprocessor::new(layout.schema.clone())));
-            builders.push(Box::new(StatementAirBuilder::<D>::new(
-                layout.schema.clone(),
+        if layout.schema().base_len() != 0 {
+            preprocessors.push(Box::new(StatementPreprocessor::new(
+                layout.schema().clone(),
             )));
-            provers.push(Box::new(StatementProver::<D>::new(layout.schema.clone())));
+            builders.push(Box::new(StatementAirBuilder::<D>::new(
+                layout.schema().clone(),
+            )));
+            provers.push(Box::new(StatementProver::<D>::new(layout.schema().clone())));
         }
         let prepared = prepare_prover_from_parts::<SC, D>(
             &circuit,

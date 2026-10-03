@@ -17,6 +17,7 @@ where
     F: crate::pcs::binary::RecursiveBinaryWhirTowerField,
     BinaryField128: ExtensionField<F>,
 {
+    type Statement = BinaryStatementLayout<F>;
     type Shape = BinaryWhirMultiStarkInputShape<F>;
     type Targets = BinaryWhirMultiStarkProofTargets;
     type Input = NativeBinaryWhirMultiStarkInput<F>;

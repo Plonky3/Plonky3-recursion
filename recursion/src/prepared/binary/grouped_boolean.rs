@@ -22,6 +22,7 @@ where
         + serde::Serialize
         + serde::de::DeserializeOwned,
 {
+    type Statement = BinaryStatementLayout<E>;
     type Shape = BinaryGroupedBooleanTraceMultiStarkInputShape<E>;
     type Targets = BinaryGroupedBooleanTraceMultiStarkProofTargets<E>;
     type Input = NativeBinaryGroupedBooleanTraceMultiStarkInput<E>;

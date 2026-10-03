@@ -1,29 +1,24 @@
-//! Prepared prover for the complete ordinary Boolean trace MultiStark relation.
+//! Prepared prover for complete released additive WHIR MultiStark relations.
 
 use super::lifecycle::ClosedBinaryCircuit;
+use super::statement::BinaryPolyStatementLayout;
 use super::*;
-use crate::artifact::{BinaryNativeBooleanTraceAuthority, VerifiedBinaryNativeBooleanTraceProof};
+use crate::artifact::{
+    BinaryNativePolyWhirAuthority, BinaryNativePolyWhirLayout, VerifiedBinaryNativePolyWhirProof,
+};
 use crate::verifier::{
-    BinaryBooleanTraceMultiStarkInputShape, BinaryBooleanTraceMultiStarkProofTargets,
-    BinaryBooleanTraceMultiStarkVerifier, NativeBinaryBooleanTraceMultiStarkInput,
+    BinaryPolyWhirMultiStarkInputShape, BinaryPolyWhirMultiStarkProofTargets,
+    BinaryPolyWhirMultiStarkVerifier, NativeBinaryPolyWhirMultiStarkInput,
 };
 use core::hash::Hash;
-use p3_circuit::ops::BinaryTower128Target;
+use p3_binary_field::{Poly64, Poly192};
+use p3_circuit::ops::BinaryPoly64Target;
 
-impl<E> ClosedBinaryCircuit<E, E> for BinaryBooleanTraceMultiStarkVerifier<E>
-where
-    E: RecursiveBinaryChallengeField
-        + ExtensionField<E>
-        + p3_binary_pcs::ChallengeField<E>
-        + p3_binary_pcs::FoldAlphabet<E>
-        + p3_binary_pcs::Coordinates
-        + serde::Serialize
-        + serde::de::DeserializeOwned,
-{
-    type Statement = BinaryStatementLayout<E>;
-    type Shape = BinaryBooleanTraceMultiStarkInputShape<E>;
-    type Targets = BinaryBooleanTraceMultiStarkProofTargets<E>;
-    type Input = NativeBinaryBooleanTraceMultiStarkInput<E>;
+impl ClosedBinaryCircuit<Poly64, Poly192> for BinaryPolyWhirMultiStarkVerifier {
+    type Statement = BinaryPolyStatementLayout;
+    type Shape = BinaryPolyWhirMultiStarkInputShape;
+    type Targets = BinaryPolyWhirMultiStarkProofTargets;
+    type Input = NativeBinaryPolyWhirMultiStarkInput;
     fn usage(&self) -> InputResourceUsage {
         self.input_resource_usage()
     }
@@ -47,7 +42,7 @@ where
         &self,
         b: &mut CircuitBuilder<EF>,
         ch: BinaryTower128Challenger,
-        public: &[Vec<BinaryTower128Target>],
+        public: &[Vec<BinaryPoly64Target>],
         targets: &Self::Targets,
     ) -> Result<(), VerificationError>
     where
@@ -67,30 +62,20 @@ where
 /// Owns one trusted binary relation and its prepared prime-field prover.
 /// Construction uses only the trusted plan and transcript configuration;
 /// proving accepts bounded witness material and the original binary statement.
-pub struct PreparedBinaryBooleanTraceMultiStarkLayer<
-    E,
-    SC: StarkGenericConfig + 'static,
-    const D: usize,
-> {
+pub struct PreparedBinaryPolyWhirMultiStarkLayer<SC: StarkGenericConfig + 'static, const D: usize> {
     core: BinaryPreparedCore<
-        E,
-        E,
+        Poly64,
+        Poly192,
         SC,
         D,
-        BinaryBooleanTraceMultiStarkVerifier<E>,
-        BinaryBooleanTraceMultiStarkInputShape<E>,
+        BinaryPolyWhirMultiStarkVerifier,
+        BinaryPolyWhirMultiStarkInputShape,
+        BinaryPolyStatementLayout,
     >,
 }
 
-impl<E, SC, const D: usize> PreparedBinaryBooleanTraceMultiStarkLayer<E, SC, D>
+impl<SC, const D: usize> PreparedBinaryPolyWhirMultiStarkLayer<SC, D>
 where
-    E: RecursiveBinaryChallengeField
-        + ExtensionField<E>
-        + p3_binary_pcs::ChallengeField<E>
-        + p3_binary_pcs::FoldAlphabet<E>
-        + p3_binary_pcs::Coordinates
-        + serde::Serialize
-        + serde::de::DeserializeOwned,
     SC: StarkGenericConfig + Send + Sync + Clone + 'static,
     Val<SC>: PrimeField64 + StarkField,
     SC::Challenge: BasedVectorSpace<Val<SC>>
@@ -109,16 +94,16 @@ where
     KeccakF1600Preprocessor: NpoPreprocessor<Val<SC>>,
     Blake3CompressPreprocessor: NpoPreprocessor<Val<SC>>,
 {
-    /// Retain the factory's exact ordinary relation identity and transcript for
-    /// proving with independently verified native tokens.
-    pub fn from_native_authority<A>(
-        authority: &BinaryNativeBooleanTraceAuthority<E, A>,
+    /// Retain the factory's exact relation identity and transcript for proving
+    /// with independently verified native tokens.
+    pub fn from_native_authority<A, L>(
+        authority: &BinaryNativePolyWhirAuthority<A, L>,
         output_config: SC,
         params: ProveNextLayerParams,
     ) -> Result<Self, VerificationError>
     where
-        E: EncodableLevel + PackedValue<Value = E>,
-        A: VerifierAir<E, E>,
+        L: BinaryNativePolyWhirLayout,
+        A: VerifierAir<Poly64, Poly192>,
     {
         let mut layer = Self::with_limits(
             authority.recursive_verifier().clone(),
@@ -133,7 +118,7 @@ where
     }
 
     pub fn new(
-        binary: BinaryBooleanTraceMultiStarkVerifier<E>,
+        binary: BinaryPolyWhirMultiStarkVerifier,
         hash: ByteHash,
         initial_bytes: &[u8],
         output_config: SC,
@@ -150,7 +135,7 @@ where
     }
 
     pub fn with_limits(
-        binary: BinaryBooleanTraceMultiStarkVerifier<E>,
+        binary: BinaryPolyWhirMultiStarkVerifier,
         hash: ByteHash,
         initial_bytes: &[u8],
         output_config: SC,
@@ -169,13 +154,13 @@ where
         })
     }
 
-    pub fn binary_verifier(&self) -> &BinaryBooleanTraceMultiStarkVerifier<E> {
+    pub fn binary_verifier(&self) -> &BinaryPolyWhirMultiStarkVerifier {
         &self.core.binary
     }
     pub fn native_verifier_identity(&self) -> Option<&[u8]> {
         self.core.native_identity.as_deref()
     }
-    pub fn statement_layout(&self) -> &BinaryStatementLayout<E> {
+    pub fn statement_layout(&self) -> &BinaryPolyStatementLayout {
         &self.core.layout
     }
     pub fn params(&self) -> &ProveNextLayerParams {
@@ -187,8 +172,8 @@ where
 
     pub fn prove(
         &self,
-        input: &NativeBinaryBooleanTraceMultiStarkInput<E>,
-        public: &[Vec<E>],
+        input: &NativeBinaryPolyWhirMultiStarkInput,
+        public: &[Vec<Poly64>],
     ) -> Result<RecursionOutput<SC>, VerificationError>
     where
         p3_batch_stark::BatchProof<SC>: ProvingMaybeSend,
@@ -200,7 +185,7 @@ where
     /// only the token's independently verified statement and retained input.
     pub fn prove_verified(
         &self,
-        proof: &VerifiedBinaryNativeBooleanTraceProof<E>,
+        proof: &VerifiedBinaryNativePolyWhirProof,
     ) -> Result<RecursionOutput<SC>, VerificationError>
     where
         p3_batch_stark::BatchProof<SC>: ProvingMaybeSend,
