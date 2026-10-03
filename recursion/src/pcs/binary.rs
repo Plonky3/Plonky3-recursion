@@ -14,12 +14,14 @@ use crate::BinaryTower128Challenger;
 mod fields;
 mod gadgets;
 mod input;
+mod tensor;
 mod verifier;
 pub use fields::{RecursiveBinaryChallengeField, RecursiveBinaryTowerField};
 pub use gadgets::{
     binary128_eq_eval, binary128_fold_pair, binary128_next_eval, binary128_reduce_sumcheck_claim,
 };
 pub use input::{BinaryPcsInputShape, NativeBinaryPcsInput};
+pub use tensor::{BinaryTowerTensorTarget, binary_tensor_closing_weight};
 pub use verifier::{
     BinaryOracleOpeningTargets, BinaryPcs128ProofTargets, BinaryPcs128Verifier, BinaryPcsVerifier,
 };
