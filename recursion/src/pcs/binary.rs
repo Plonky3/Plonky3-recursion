@@ -19,6 +19,9 @@ mod generic_sumcheck;
 mod generic_sumcheck_verifier;
 mod input;
 mod nonzero;
+mod poly_whir_gadgets;
+mod poly_whir_input;
+mod poly_whir_verifier;
 mod ring;
 mod ring_input;
 mod tensor;
@@ -57,6 +60,11 @@ pub use nonzero::{
     BinaryNonzeroChallengeOutput, BinaryNonzeroChallengePlan, BinaryNonzeroChallengeTailOutput,
     BinaryNonzeroChallengeTailPlan,
 };
+pub use poly_whir_input::{
+    BinaryPolyWhirInputShape, BinaryPolyWhirProofTargets, BinaryPolyWhirRoundTargets,
+    BinaryPolyWhirSumcheckTargets, NativeBinaryPolyWhirInput,
+};
+pub use poly_whir_verifier::BinaryPolyWhirVerifier;
 pub use ring::{
     BinaryBitRingVerifier, BinaryRingClaimSpec, BinaryRingClaimTargets, BinaryRingOutput,
     BinaryRingProofTargets,
