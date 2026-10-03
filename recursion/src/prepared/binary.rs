@@ -2,12 +2,15 @@
 
 use alloc::boxed::Box;
 use alloc::string::ToString;
+use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::marker::PhantomData;
 
 use p3_air::{SymbolicExpression, SymbolicExpressionExt};
+use p3_binary_dft::EncodableLevel;
 use p3_binary_field::BinaryField128;
+use p3_binary_pcs::{ChallengeField, FoldAlphabet};
 use p3_circuit::ops::ByteHash;
 use p3_circuit::{
     Circuit, CircuitBuilder, StatementField, StatementSchema, VerifiedStatementTargets,
@@ -22,10 +25,14 @@ use p3_circuit_prover::common::{NpoAirBuilder, NpoPreprocessor};
 use p3_circuit_prover::config::StarkField;
 use p3_circuit_prover::field_params::ExtractBinomialW;
 use p3_commit::Pcs;
-use p3_field::{Algebra, BasedVectorSpace, ExtensionField, PrimeCharacteristicRing, PrimeField64};
+use p3_field::{
+    Algebra, BasedVectorSpace, ExtensionField, PackedValue, PrimeCharacteristicRing, PrimeField64,
+};
+use p3_multi_stark::folder::VerifierAir;
 use p3_uni_stark::{StarkGenericConfig, Val};
 
 use super::prover::{PreparedProver, prepare_prover_from_parts};
+use crate::artifact::{BinaryNativeAuthority, VerifiedBinaryNativeProof};
 use crate::pcs::binary::{RecursiveBinaryChallengeField, RecursiveBinaryTowerField};
 use crate::verifier::{
     BinaryMultiStarkInputShape, BinaryMultiStarkVerifier, InputResourceUsage,
@@ -127,6 +134,7 @@ pub struct PreparedBinaryMultiStarkLayer<F, E, SC: StarkGenericConfig + 'static,
     circuit: Circuit<SC::Challenge>,
     prepared: PreparedProver<SC>,
     params: ProveNextLayerParams,
+    native_identity: Option<Arc<[u8]>>,
 }
 
 impl<F, E, SC, const D: usize> PreparedBinaryMultiStarkLayer<F, E, SC, D>
@@ -151,6 +159,31 @@ where
     KeccakF1600Preprocessor: NpoPreprocessor<Val<SC>>,
     Blake3CompressPreprocessor: NpoPreprocessor<Val<SC>>,
 {
+    /// Prepare directly from factory-owned native authority. The exact native
+    /// relation identity and transcript configuration are retained independently
+    /// of every proof, enabling checked token reuse through `prove_verified`.
+    pub fn from_native_authority<A>(
+        authority: &BinaryNativeAuthority<F, E, A>,
+        output_config: SC,
+        params: ProveNextLayerParams,
+    ) -> Result<Self, VerificationError>
+    where
+        F: EncodableLevel + FoldAlphabet<E> + PackedValue<Value = F>,
+        E: ChallengeField<F> + FoldAlphabet<E> + PackedValue<Value = E>,
+        A: VerifierAir<F, E>,
+    {
+        let mut layer = Self::with_limits(
+            authority.recursive_verifier().clone(),
+            authority.transcript_hash(),
+            authority.initial_bytes(),
+            output_config,
+            params,
+            &authority.artifact_limits().verifier,
+        )?;
+        layer.native_identity = Some(authority.shared_identity());
+        Ok(layer)
+    }
+
     pub fn new(
         binary: BinaryMultiStarkVerifier<F, E>,
         hash: ByteHash,
@@ -256,11 +289,15 @@ where
             circuit,
             prepared,
             params,
+            native_identity: None,
         })
     }
 
     pub fn binary_verifier(&self) -> &BinaryMultiStarkVerifier<F, E> {
         &self.binary
+    }
+    pub fn native_verifier_identity(&self) -> Option<&[u8]> {
+        self.native_identity.as_deref()
     }
     pub fn statement_layout(&self) -> &BinaryStatementLayout<F> {
         &self.layout
@@ -292,6 +329,23 @@ where
         runner.set_private_inputs(&private)?;
         let traces = runner.run()?;
         self.prepared.prove(&traces)
+    }
+
+    /// Check identity before statement packing or witness allocation, then use
+    /// only the token's independently verified statement and retained input.
+    pub fn prove_verified(
+        &self,
+        proof: &VerifiedBinaryNativeProof<F, E>,
+    ) -> Result<RecursionOutput<SC>, VerificationError>
+    where
+        p3_batch_stark::BatchProof<SC>: ProvingMaybeSend,
+    {
+        if self.native_identity.as_deref() != Some(&*proof.identity) {
+            return Err(invalid(
+                "binary verified input belongs to another native authority",
+            ));
+        }
+        self.prove(&proof.input, &proof.public)
     }
 }
 
