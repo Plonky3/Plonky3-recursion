@@ -22,11 +22,11 @@ use p3_sumcheck::{OpeningBatch, OpeningProtocol};
 use super::{
     RecursiveBinaryChallengeField, RecursiveBinaryTowerField, binary128_eq_eval,
     binary128_fold_pair, binary128_next_eval, binary128_reduce_sumcheck_claim,
-    verify_binary_pcs_query_indices,
+    verify_binary_pcs_query_indices_with_continuation,
 };
-use crate::BinaryTower128Challenger;
 use crate::transcript::{SeedTap, domain_separator_seed};
 use crate::verifier::{InputResourceUsage, VerificationError, VerifierLimits};
+use crate::{BinaryQueryContinuation, BinaryTower128Challenger};
 
 /// One authenticated folded oracle. Digests are sixteen natural-order u16
 /// limbs. Rows and paths have native query order, including projected duplicates.
@@ -346,19 +346,77 @@ where
         Ok(circuit.binary128_from_bits(bits)?)
     }
 
-    /// Constrains the complete native prescribed-point opening relation.
-    /// Consumes the challenger because query rejection sampling is terminal;
-    /// the circuit's bounded overdrawn state cannot continue the native transcript.
-    /// The caller must bind prescribed points and the commitment to its statement.
-    /// Shape checks precede any transcript work. Targets must share this builder.
+    /// Constrains the complete native prescribed-point opening relation and
+    /// drops its query continuation. The caller binds the commitment and points
+    /// to its statement. Use [`Self::verify_at_with_continuation`] when another
+    /// nonempty observation follows this opening in the native transcript.
     pub fn verify_at<BF, EF>(
+        &self,
+        circuit: &mut CircuitBuilder<EF>,
+        challenger: BinaryTower128Challenger,
+        cap: &[Vec<ExprId>],
+        points: &[Vec<BinaryTower128Target>],
+        proof: &BinaryPcs128ProofTargets,
+    ) -> Result<(), VerificationError>
+    where
+        BF: PrimeField64,
+        EF: ExtensionField<BF> + Eq + Hash,
+    {
+        self.verify_at_with_continuation::<BF, EF>(circuit, challenger, cap, points, proof)
+            .map(|_| ())
+    }
+
+    /// Returns the exact native query-completion digest after installing all
+    /// opening and authentication constraints. It can only resume through the
+    /// next nonempty native observation. All targets must share this builder.
+    pub fn verify_at_with_continuation<BF, EF>(
+        &self,
+        circuit: &mut CircuitBuilder<EF>,
+        challenger: BinaryTower128Challenger,
+        cap: &[Vec<ExprId>],
+        points: &[Vec<BinaryTower128Target>],
+        proof: &BinaryPcs128ProofTargets,
+    ) -> Result<BinaryQueryContinuation, VerificationError>
+    where
+        BF: PrimeField64,
+        EF: ExtensionField<BF> + Eq + Hash,
+    {
+        self.verify_at_impl::<BF, EF>(circuit, challenger, cap, points, proof, false)
+    }
+
+    /// Verifies an opening immediately after another opening's bounded query
+    /// phase. Absorbs this verifier's first native seed exactly once, including
+    /// schedules with no opening batches, before exposing any sampling state.
+    pub fn verify_at_after_queries<BF, EF>(
+        &self,
+        circuit: &mut CircuitBuilder<EF>,
+        continuation: BinaryQueryContinuation,
+        cap: &[Vec<ExprId>],
+        points: &[Vec<BinaryTower128Target>],
+        proof: &BinaryPcs128ProofTargets,
+    ) -> Result<BinaryQueryContinuation, VerificationError>
+    where
+        BF: PrimeField64,
+        EF: ExtensionField<BF> + Eq + Hash,
+    {
+        self.check_targets(cap, points, proof)?;
+        let seed = self.opening_seeds.first().cloned().unwrap_or_else(|| {
+            domain_separator_seed(&BinaryPcsShape::new(&self.config).domain_separator::<F, E>())
+        });
+        let bytes = seed_bytes(circuit, &seed);
+        let challenger = continuation.resume_with_observation::<BF, EF>(circuit, &bytes)?;
+        self.verify_at_impl::<BF, EF>(circuit, challenger, cap, points, proof, true)
+    }
+
+    fn verify_at_impl<BF, EF>(
         &self,
         circuit: &mut CircuitBuilder<EF>,
         mut challenger: BinaryTower128Challenger,
         cap: &[Vec<ExprId>],
         points: &[Vec<BinaryTower128Target>],
         proof: &BinaryPcs128ProofTargets,
-    ) -> Result<(), VerificationError>
+        first_seed_observed: bool,
+    ) -> Result<BinaryQueryContinuation, VerificationError>
     where
         BF: PrimeField64,
         EF: ExtensionField<BF> + Eq + Hash,
@@ -387,15 +445,19 @@ where
             constrain_width(circuit, value, F::RAW_BITS);
         }
         for (i, evals) in proof.evals.iter().enumerate() {
-            observe_seed::<F, BF, EF>(circuit, &mut challenger, &self.opening_seeds[i])?;
+            if i != 0 || !first_seed_observed {
+                observe_seed::<F, BF, EF>(circuit, &mut challenger, &self.opening_seeds[i])?;
+            }
             observe_values::<BF, EF>(circuit, &mut challenger, &evals.to_vec(), E::RAW_BITS)?;
         }
         let shape = BinaryPcsShape::new(&self.config);
-        observe_seed::<F, BF, EF>(
-            circuit,
-            &mut challenger,
-            &domain_separator_seed(&shape.domain_separator::<F, E>()),
-        )?;
+        if !first_seed_observed || !self.opening_seeds.is_empty() {
+            observe_seed::<F, BF, EF>(
+                circuit,
+                &mut challenger,
+                &domain_separator_seed(&shape.domain_separator::<F, E>()),
+            )?;
+        }
         observe_seed::<F, BF, EF>(circuit, &mut challenger, &self.batching_seed)?;
         let alpha = self.sample_challenge::<BF, EF>(circuit, &mut challenger)?;
         let shapes = self.protocol.table_shapes();
@@ -497,7 +559,7 @@ where
                 circuit.assert_zero(difference);
             }
         }
-        verify_binary_pcs_query_indices::<BF, EF>(
+        let continuation = verify_binary_pcs_query_indices_with_continuation::<BF, EF>(
             circuit,
             challenger,
             &self.config,
@@ -574,7 +636,7 @@ where
                 assert_equal(circuit, &folded[0], &expected);
             }
         }
-        Ok(())
+        Ok(continuation)
     }
 
     fn check_cap(&self, cap: &[Vec<ExprId>]) -> Result<(), VerificationError> {
@@ -672,8 +734,17 @@ where
     BF: PrimeField64,
     EF: ExtensionField<BF> + Eq + Hash,
 {
-    let bytes: Vec<_> = seed
-        .iter()
+    let bytes = seed_bytes(circuit, seed);
+    challenger.observe_bytes::<BF, EF>(circuit, &bytes)?;
+    Ok(())
+}
+
+pub(super) fn seed_bytes<F, EF>(circuit: &mut CircuitBuilder<EF>, seed: &[F]) -> Vec<ExprId>
+where
+    F: RecursiveBinaryTowerField,
+    EF: Field + Eq + Hash,
+{
+    seed.iter()
         .flat_map(|x| {
             x.raw_coordinates()
                 .to_le_bytes()
@@ -681,9 +752,7 @@ where
                 .take(F::RAW_BITS / 8)
         })
         .map(|b| circuit.define_const(EF::from_u8(b)))
-        .collect();
-    challenger.observe_bytes::<BF, EF>(circuit, &bytes)?;
-    Ok(())
+        .collect()
 }
 
 fn observe_cap<BF, EF>(

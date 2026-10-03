@@ -59,6 +59,29 @@ where
     BF: PrimeField64,
     EF: ExtensionField<BF> + Eq + Hash,
 {
+    verify_binary_pcs_query_indices_with_continuation::<BF, EF>(
+        circuit,
+        challenger,
+        config,
+        sorted_indices,
+        max_draws,
+    )
+    .map(|_| ())
+}
+
+/// Uses the trusted native PCS query geometry and retains its exact completion
+/// digest. The result supports only a nonempty next native observation.
+pub fn verify_binary_pcs_query_indices_with_continuation<BF, EF>(
+    circuit: &mut CircuitBuilder<EF>,
+    challenger: BinaryTower128Challenger,
+    config: &BinaryPcsConfig,
+    sorted_indices: &[Vec<ExprId>],
+    max_draws: usize,
+) -> Result<BinaryQueryContinuation, CircuitBuilderError>
+where
+    BF: PrimeField64,
+    EF: ExtensionField<BF> + Eq + Hash,
+{
     let shape = BinaryPcsShape::new(config);
     if sorted_indices.len() != shape.num_pairs {
         return Err(CircuitBuilderError::NonPrimitiveOpArity {
@@ -67,7 +90,7 @@ where
             got: sorted_indices.len(),
         });
     }
-    verify_binary_query_indices::<BF, EF>(
+    verify_binary_query_indices_with_continuation::<BF, EF>(
         circuit,
         challenger,
         shape.pair_bits,

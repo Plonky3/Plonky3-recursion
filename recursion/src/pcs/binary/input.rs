@@ -287,8 +287,9 @@ where
 
     /// Imports released ordinary byte-tree proofs. `challenger` must be at the
     /// native `verify_at` entry, after commitment and prescribed-point binding.
-    /// It is consumed: bounded query replay is terminal and exposes no state
-    /// for continuing a surrounding protocol. No native unbounded sampler runs.
+    /// Stops exactly at native query completion within the explicit draw budget.
+    /// Passing a mutable challenger reference preserves that native continuation
+    /// for importing a following opening. No native unbounded sampler runs.
     pub fn import_native<H0, C0, H1, C1, Ch>(
         &self,
         base_mmcs: &MerkleTreeMmcs<F, u8, H0, C0, 2, 32>,

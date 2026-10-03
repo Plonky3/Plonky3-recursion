@@ -298,3 +298,279 @@ fn allocated_native_inputs_authenticate_and_reuse_one_circuit() {
     ));
     assert!(!run(&public(&cap), &second.private_values(&shape).unwrap()));
 }
+
+#[test]
+fn consecutive_openings_preserve_native_transcript_for_both_entry_seeds() {
+    use p3_circuit_prover::batch_stark_prover::{
+        BatchStarkProver, KeccakF1600AirBuilder, KeccakF1600Preprocessor, KeccakF1600Prover,
+    };
+    use p3_circuit_prover::{ConstraintProfile, config as host_config};
+
+    for (num_variables, cap_height, prove) in [(5usize, 1usize, false), (1, 0, true)] {
+        let config = || {
+            BinaryPcsConfig::try_new::<Native, Native>(
+                num_variables,
+                BinaryPcsParams {
+                    log_inv_rate: 2,
+                    pow_bits: 0,
+                    security_level: 8,
+                },
+            )
+            .unwrap()
+            .try_with_folding(num_variables.min(2))
+            .unwrap()
+        };
+        let protocol = || {
+            OpeningProtocol::new(vec![TableSpec::new(
+                TableShape::new(num_variables, 1),
+                vec![OpeningBatch::new(vec![0], vec![0])],
+            )])
+        };
+        let mmcs = || {
+            Mmcs::new(
+                keccak::FieldHash::new(keccak::byte_hash()),
+                keccak::Compress::new(keccak::byte_hash()),
+                cap_height,
+            )
+        };
+        for second_empty in [false, true] {
+            let second_protocol = if second_empty {
+                OpeningProtocol::new(vec![TableSpec::new(
+                    TableShape::new(num_variables, 1),
+                    vec![],
+                )])
+            } else {
+                protocol()
+            };
+            let first = BinaryPcs128Verifier::new(
+                config(),
+                protocol(),
+                ByteHash::Keccak256,
+                cap_height,
+                128,
+            )
+            .unwrap();
+            let second = BinaryPcs128Verifier::new(
+                config(),
+                second_protocol.clone(),
+                ByteHash::Keccak256,
+                cap_height,
+                128,
+            )
+            .unwrap();
+            let first_shape = first.input_shape();
+            let second_shape = second.input_shape();
+            let mmcs = mmcs();
+            let pcs = BinaryPcs::<Native, Native, _, _>::new(config(), mmcs.clone(), mmcs.clone())
+                .unwrap();
+            let mut builder = CircuitBuilder::<Host>::new();
+            builder.enable_keccak_f1600::<BabyBear>();
+            let caps = (0..2)
+                .map(|_| {
+                    (0..1usize << cap_height)
+                        .map(|_| {
+                            builder
+                                .alloc_public_input_array::<16>("consecutive PCS cap")
+                                .to_vec()
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>();
+            let expected = builder.alloc_public_input_array::<8>("continued PCS challenge");
+            let expected = builder.binary128_from_limbs::<BabyBear>(expected).unwrap();
+            let initial = (0..5)
+                .map(|_| builder.define_const(Host::from_u8(13)))
+                .collect::<Vec<_>>();
+            let mut ch = BinaryTower128Challenger::with_initial_bytes::<BabyBear, Host>(
+                &mut builder,
+                ByteHash::Keccak256,
+                &initial,
+            )
+            .unwrap();
+            first
+                .observe_commitment::<BabyBear, Host>(&mut builder, &mut ch, &caps[0])
+                .unwrap();
+            second
+                .observe_commitment::<BabyBear, Host>(&mut builder, &mut ch, &caps[1])
+                .unwrap();
+            let points = vec![
+                (0..num_variables)
+                    .map(|_| {
+                        first
+                            .sample_challenge::<BabyBear, Host>(&mut builder, &mut ch)
+                            .unwrap()
+                    })
+                    .collect::<Vec<_>>(),
+            ];
+            let first_targets = first_shape
+                .allocate_targets::<BabyBear, Host>(&mut builder)
+                .unwrap();
+            let second_targets = second_shape
+                .allocate_targets::<BabyBear, Host>(&mut builder)
+                .unwrap();
+            let continuation = first
+                .verify_at_with_continuation::<BabyBear, Host>(
+                    &mut builder,
+                    ch,
+                    &caps[0],
+                    &points,
+                    &first_targets,
+                )
+                .unwrap();
+            let second_points = if second_empty { vec![] } else { points.clone() };
+            let continuation = second
+                .verify_at_after_queries::<BabyBear, Host>(
+                    &mut builder,
+                    continuation,
+                    &caps[1],
+                    &second_points,
+                    &second_targets,
+                )
+                .unwrap();
+            let observation = 41u128
+                .to_le_bytes()
+                .map(|b| builder.define_const(Host::from_u8(b)));
+            let mut ch = continuation
+                .resume_with_observation::<BabyBear, Host>(&mut builder, &observation)
+                .unwrap();
+            let actual = first
+                .sample_challenge::<BabyBear, Host>(&mut builder, &mut ch)
+                .unwrap();
+            for (&a, &b) in actual.bits().iter().zip(expected.bits()) {
+                let difference = builder.sub(a, b);
+                builder.assert_zero(difference);
+            }
+            let circuit = builder.build().unwrap();
+            for seed in [7u128, 97] {
+                let make = || Ch::from_hasher(vec![13; 5], keccak::byte_hash());
+                let table = |offset: u128| {
+                    Table::new(RowMajorMatrix::new(
+                        (0..1u128 << num_variables)
+                            .map(|i| Native::from_repr(seed + offset + 19 * i))
+                            .collect(),
+                        1usize << num_variables,
+                    ))
+                };
+                let mut prover = make();
+                let (first_cap, first_data) = pcs
+                    .commit(
+                        SuffixProver::<Native, Native>::new_witness(vec![table(0)], 0),
+                        &mut prover,
+                    )
+                    .unwrap();
+                let (second_cap, second_data) = pcs
+                    .commit(
+                        SuffixProver::<Native, Native>::new_witness(vec![table(313)], 0),
+                        &mut prover,
+                    )
+                    .unwrap();
+                let point = Point::new(
+                    (0..num_variables)
+                        .map(|_| prover.sample_algebra_element())
+                        .collect(),
+                );
+                let first_points = vec![point];
+                let second_points = if second_empty {
+                    vec![]
+                } else {
+                    first_points.clone()
+                };
+                let first_proof = pcs
+                    .try_open_at(first_data, &protocol(), &first_points, &mut prover)
+                    .unwrap();
+                let second_proof = pcs
+                    .try_open_at(second_data, &second_protocol, &second_points, &mut prover)
+                    .unwrap();
+                let mut entry = make();
+                pcs.observe_commitment(&first_cap, &mut entry);
+                pcs.observe_commitment(&second_cap, &mut entry);
+                let replayed = Point::new(
+                    (0..num_variables)
+                        .map(|_| entry.sample_algebra_element())
+                        .collect(),
+                );
+                assert_eq!(replayed, first_points[0]);
+                let mut native_verifier = entry.clone();
+                pcs.verify_at(
+                    &first_cap,
+                    &first_proof,
+                    &protocol(),
+                    &first_points,
+                    &mut native_verifier,
+                )
+                .unwrap();
+                pcs.verify_at(
+                    &second_cap,
+                    &second_proof,
+                    &second_protocol,
+                    &second_points,
+                    &mut native_verifier,
+                )
+                .unwrap();
+                let first_input = first
+                    .import_native(
+                        &mmcs,
+                        &mmcs,
+                        &first_cap,
+                        &first_points,
+                        &first_proof,
+                        &mut entry,
+                    )
+                    .unwrap();
+                let second_input = second
+                    .import_native(
+                        &mmcs,
+                        &mmcs,
+                        &second_cap,
+                        &second_points,
+                        &second_proof,
+                        &mut entry,
+                    )
+                    .unwrap();
+                native_verifier.observe(Native::from_repr(41));
+                entry.observe(Native::from_repr(41));
+                let expected = native_verifier.sample_algebra_element::<Native>();
+                assert_eq!(entry.sample_algebra_element::<Native>(), expected);
+                let mut public = first_cap
+                    .roots()
+                    .iter()
+                    .chain(second_cap.roots())
+                    .flat_map(|d| bytes_to_limbs(d).into_iter().map(Host::from_u16))
+                    .collect::<Vec<_>>();
+                public.extend(
+                    (0..8).map(|i| Host::from_u16((expected.to_repr() >> (16 * i)) as u16)),
+                );
+                let mut private = first_input.private_values::<Host>(&first_shape).unwrap();
+                private.extend(second_input.private_values::<Host>(&second_shape).unwrap());
+                let run = |public: &[Host], private: &[Host]| {
+                    let mut runner = circuit.runner();
+                    runner.set_public_inputs(public).unwrap();
+                    runner.set_private_inputs(private).unwrap();
+                    runner.run().is_ok()
+                };
+                assert!(run(&public, &private));
+                let last = public.len() - 8;
+                let mut wrong = public.clone();
+                wrong[last] += Host::ONE;
+                assert!(!run(&wrong, &private));
+                if prove && seed == 7 {
+                    let mut prover = BatchStarkProver::new(host_config::baby_bear());
+                    prover.register_table_prover(Box::new(KeccakF1600Prover::<4>));
+                    let prepared = prover
+                        .prepare_circuit::<Host, 4>(
+                            &circuit,
+                            &[Box::new(KeccakF1600Preprocessor)],
+                            &[Box::new(KeccakF1600AirBuilder::<4>)],
+                            ConstraintProfile::Standard,
+                        )
+                        .unwrap();
+                    let mut runner = circuit.runner();
+                    runner.set_public_inputs(&public).unwrap();
+                    runner.set_private_inputs(&private).unwrap();
+                    let proof = prepared.prove(&runner.run().unwrap()).unwrap();
+                    prepared.verifier().verify(&proof, &[]).unwrap();
+                }
+            }
+        }
+    }
+}
