@@ -1,5 +1,8 @@
 //! Private closed-family boundary for matched native binary proof owners.
 
+mod whir;
+pub(super) use whir::WhirFamily;
+
 use super::*;
 use alloc::vec;
 use p3_binary_pcs::BinaryPcs;

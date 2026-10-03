@@ -2,6 +2,9 @@
 
 use super::lifecycle::ClosedBinaryCircuit;
 use super::*;
+use crate::artifact::{
+    BinaryNativeWhirAuthority, BinaryNativeWhirLayout, VerifiedBinaryNativeWhirProof,
+};
 use crate::verifier::{
     BinaryWhirMultiStarkInputShape, BinaryWhirMultiStarkProofTargets, BinaryWhirMultiStarkVerifier,
     NativeBinaryWhirMultiStarkInput,
@@ -93,6 +96,32 @@ where
     KeccakF1600Preprocessor: NpoPreprocessor<Val<SC>>,
     Blake3CompressPreprocessor: NpoPreprocessor<Val<SC>>,
 {
+    /// Retain the factory's exact relation identity and transcript for proving
+    /// with independently verified native tokens.
+    pub fn from_native_authority<A, L>(
+        authority: &BinaryNativeWhirAuthority<F, A, L>,
+        output_config: SC,
+        params: ProveNextLayerParams,
+    ) -> Result<Self, VerificationError>
+    where
+        F: EncodableLevel + FoldAlphabet<BinaryField128> + PackedValue<Value = F> + Ord,
+        BinaryField128: ChallengeField<F>,
+        p3_binary_pcs::whir::BinaryWhirDomain<F>: p3_whir::WhirDomain<F, BinaryField128>,
+        L: BinaryNativeWhirLayout<F>,
+        A: VerifierAir<F, BinaryField128>,
+    {
+        let mut layer = Self::with_limits(
+            authority.recursive_verifier().clone(),
+            authority.transcript_hash(),
+            authority.initial_bytes(),
+            output_config,
+            params,
+            &authority.artifact_limits().verifier,
+        )?;
+        layer.core.native_identity = Some(authority.shared_identity());
+        Ok(layer)
+    }
+
     pub fn new(
         binary: BinaryWhirMultiStarkVerifier<F>,
         hash: ByteHash,
@@ -133,6 +162,9 @@ where
     pub fn binary_verifier(&self) -> &BinaryWhirMultiStarkVerifier<F> {
         &self.core.binary
     }
+    pub fn native_verifier_identity(&self) -> Option<&[u8]> {
+        self.core.native_identity.as_deref()
+    }
     pub fn statement_layout(&self) -> &BinaryStatementLayout<F> {
         &self.core.layout
     }
@@ -152,5 +184,22 @@ where
         p3_batch_stark::BatchProof<SC>: ProvingMaybeSend,
     {
         self.core.prove(input, public)
+    }
+
+    /// Check identity before statement packing or witness allocation, then use
+    /// only the token's independently verified statement and retained input.
+    pub fn prove_verified(
+        &self,
+        proof: &VerifiedBinaryNativeWhirProof<F>,
+    ) -> Result<RecursionOutput<SC>, VerificationError>
+    where
+        p3_batch_stark::BatchProof<SC>: ProvingMaybeSend,
+    {
+        if self.core.native_identity.as_deref() != Some(&*proof.identity) {
+            return Err(invalid(
+                "binary verified input belongs to another native authority",
+            ));
+        }
+        self.prove(&proof.input, &proof.public)
     }
 }

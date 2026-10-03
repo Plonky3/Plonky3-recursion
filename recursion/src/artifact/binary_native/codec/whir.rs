@@ -4,6 +4,77 @@ use super::*;
 use p3_binary_field::BinaryField128;
 use p3_whir::pcs::proof::{PcsProof, QueryOpenings, SharedProofOpening, WhirProof, WhirRoundProof};
 
+use super::super::{
+    BinaryNativeWhirAuthority, BinaryNativeWhirConfig, BinaryNativeWhirLayout,
+    VerifiedBinaryNativeWhirProof,
+};
+use crate::pcs::binary::RecursiveBinaryWhirTowerField;
+use p3_binary_pcs::whir::BinaryWhirDomain;
+use p3_whir::WhirDomain;
+
+impl<F, A, L> BinaryNativeWhirAuthority<F, A, L>
+where
+    F: RecursiveBinaryWhirTowerField
+        + EncodableLevel
+        + FoldAlphabet<BinaryField128>
+        + PackedValue<Value = F>
+        + Ord,
+    BinaryField128: ExtensionField<F> + ChallengeField<F>,
+    BinaryWhirDomain<F>: WhirDomain<F, BinaryField128>,
+    L: BinaryNativeWhirLayout<F>,
+    A: VerifierAir<F, BinaryField128>,
+{
+    pub fn encode_statement(&self, public: &[Vec<F>]) -> Result<Vec<u8>, ArtifactError> {
+        self.state
+            .check_public(public)
+            .map_err(|_| ArtifactError::VerificationRejected)?;
+        let mut writer = Writer::new(self.state.limits.max_proof_bytes);
+        write_public(&mut writer, public)?;
+        writer.finish()
+    }
+    pub fn encode_native_proof(
+        &self,
+        proof: &MultiStarkProof<BinaryNativeWhirConfig<F, L>>,
+        public: &[Vec<F>],
+    ) -> Result<Vec<u8>, ArtifactError> {
+        self.verify_native(proof, public)
+            .map_err(|_| ArtifactError::VerificationRejected)?;
+        encode_multi::<BinaryNativeWhirConfig<F, L>>(
+            proof,
+            public,
+            suite::<F, BinaryField128>() | 0x400,
+            &self.state.limits,
+            write_whir::<F>,
+        )
+    }
+    /// Match the application's independent identity and statement before bounded
+    /// decoding, then perform complete verification under retained native keys.
+    pub fn decode_and_verify(
+        &self,
+        candidate: &[u8],
+        expected: ExpectedVerifierArtifact<'_>,
+        proof_bytes: &[u8],
+        statement: CanonicalBinaryStatement<'_>,
+    ) -> Result<VerifiedBinaryNativeWhirProof<F>, ArtifactError> {
+        let authority = DecodeAuthority {
+            identity: &self.state.identity,
+            shape: &self.state.decode,
+            limits: &self.state.limits,
+            usage: self.state.binary.input_resource_usage(),
+            suite: suite::<F, BinaryField128>() | 0x400,
+        };
+        let (proof, public) = authority.decode::<BinaryNativeWhirConfig<F, L>>(
+            candidate,
+            expected,
+            proof_bytes,
+            statement,
+            read_whir::<F>,
+        )?;
+        self.verify_native(&proof, &public)
+            .map_err(|_| ArtifactError::VerificationRejected)
+    }
+}
+
 type NativeWhirProof<F> = PcsProof<F, BinaryField128, NativeMmcs<F>>;
 
 pub(super) fn write_whir<F>(w: &mut Writer, p: &NativeWhirProof<F>) -> Result<(), ArtifactError>

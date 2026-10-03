@@ -1,5 +1,9 @@
 //! Closed native cryptographic configuration and setup-only cap capture.
 
+mod whir;
+pub use whir::{BinaryNativeWhirConfig, BinaryNativeWhirLayout, BinaryNativeWhirPcsParameters};
+pub(super) use whir::NativeWhirPcs;
+
 use alloc::vec::Vec;
 
 use p3_binary_dft::EncodableLevel;

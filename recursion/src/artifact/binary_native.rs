@@ -19,6 +19,8 @@ pub use grouped_boolean::{
     VerifiedBinaryNativeGroupedBooleanTraceProof,
 };
 mod lifecycle;
+mod whir;
+pub use whir::{BinaryNativeWhirAuthority, BinaryNativeWhirProver, VerifiedBinaryNativeWhirProof};
 pub use codec::CanonicalBinaryStatement;
 use family::{NativeFamily, RawFamily};
 use lifecycle::State;
@@ -45,6 +47,7 @@ use crate::verifier::{
 pub use config::{
     BinaryNativeBooleanTraceConfig, BinaryNativeChallenger, BinaryNativeConfig, BinaryNativeGroupedBooleanTraceConfig,
     BinaryNativeGroupedConfig, BinaryNativeHash,
+    BinaryNativeWhirConfig, BinaryNativeWhirLayout, BinaryNativeWhirPcsParameters,
 };
 use config::{NativeMmcs, tree};
 

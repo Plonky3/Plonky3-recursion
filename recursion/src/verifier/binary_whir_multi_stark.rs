@@ -479,6 +479,14 @@ where
         self.usage
     }
 
+    pub(crate) fn retain_native_parameter_metadata(
+        &mut self,
+        entries: usize,
+        limits: &VerifierLimits,
+    ) -> Result<(), VerificationError> {
+        self.usage.add_metadata_entries(limits, entries)
+    }
+
     /// Checks all AIR obligations and authenticates their committed openings.
     /// Public targets are the caller's actual statement, in instance order.
     /// Returns the exact ordinary challenger after the fixed stratified query schedule.

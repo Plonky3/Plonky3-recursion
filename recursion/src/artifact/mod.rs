@@ -13,6 +13,8 @@ pub use binary_native::{
     BinaryNativeGroupedConfig, BinaryNativeGroupedPcsParameters, BinaryNativeGroupedProver,
     BinaryNativeGroupedVerifierSpec, BinaryNativeHash, BinaryNativePcsParameters,
     BinaryNativeProver, BinaryNativeVerifierSpec, CanonicalBinaryStatement,
+    BinaryNativeWhirAuthority, BinaryNativeWhirConfig, BinaryNativeWhirLayout,
+    BinaryNativeWhirPcsParameters, BinaryNativeWhirProver, VerifiedBinaryNativeWhirProof,
     VerifiedBinaryNativeGroupedBooleanTraceProof, VerifiedBinaryNativeGroupedProof,
     VerifiedBinaryNativeProof,
 };
