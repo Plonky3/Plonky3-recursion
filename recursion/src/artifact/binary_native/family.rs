@@ -203,3 +203,208 @@ where
         field_suite::<F, E>()
     }
 }
+
+pub(super) struct GroupedFamily;
+
+impl<F, E> NativeFamily<F, E> for GroupedFamily
+where
+    F: RecursiveBinaryTowerField + EncodableLevel + FoldAlphabet<E> + PackedValue<Value = F>,
+    E: RecursiveBinaryChallengeField
+        + ExtensionField<F>
+        + ChallengeField<F>
+        + FoldAlphabet<E>
+        + PackedValue<Value = E>,
+{
+    type Parameters = BinaryNativeGroupedPcsParameters;
+    type Pcs = config::NativeGroupedPcs<F, E>;
+    type Config = config::BinaryNativeGroupedConfig<F, E>;
+    type Recursive = crate::verifier::BinaryGroupedMultiStarkVerifier<F, E>;
+    type Input = crate::verifier::NativeBinaryGroupedMultiStarkInput<F, E>;
+    type Decode = Vec<usize>;
+
+    fn hash(p: &Self::Parameters) -> ByteHash {
+        p.pcs.hash
+    }
+    fn cap_height(p: &Self::Parameters) -> usize {
+        p.pcs.cap_height
+    }
+    fn pow_bits(p: &Self::Parameters) -> usize {
+        p.pcs.config.pow_bits()
+    }
+    fn build_recursive<A: VerifierAir<F, E>>(
+        airs: &[&A],
+        heights: &[usize],
+        spec: &BinaryNativeGroupedVerifierSpec,
+        roots: usize,
+        limits: &VerifierLimits,
+    ) -> Result<Self::Recursive, VerificationError> {
+        let main = spec.main.pcs;
+        if let Some(pp) = spec.preprocessed {
+            crate::verifier::BinaryGroupedMultiStarkVerifier::with_preprocessing(
+                airs,
+                heights,
+                main.config,
+                main.hash,
+                main.cap_height,
+                spec.sumcheck_pow_bits,
+                spec.max_tau_draws,
+                main.max_query_draws,
+                spec.main.base_grouping,
+                spec.main.round_grouping,
+                crate::verifier::BinaryGroupedMultiStarkPreprocessing {
+                    config: pp.pcs.config,
+                    hash: pp.pcs.hash,
+                    cap_height: pp.pcs.cap_height,
+                    max_query_draws: pp.pcs.max_query_draws,
+                    base_grouping: pp.base_grouping,
+                    round_grouping: pp.round_grouping,
+                    commitment: MerkleCap::new(vec![[0; 32]; roots]),
+                },
+                limits,
+            )
+        } else {
+            crate::verifier::BinaryGroupedMultiStarkVerifier::with_limits(
+                airs,
+                heights,
+                main.config,
+                main.hash,
+                main.cap_height,
+                spec.sumcheck_pow_bits,
+                spec.max_tau_draws,
+                main.max_query_draws,
+                spec.main.base_grouping,
+                spec.main.round_grouping,
+                limits,
+            )
+        }
+    }
+    fn build_config(
+        spec: &BinaryNativeGroupedVerifierSpec,
+        base: &NativeMmcs<F>,
+        round: &NativeMmcs<E>,
+        preprocessed: Option<&(NativeMmcs<F>, NativeMmcs<E>)>,
+    ) -> Result<Self::Config, VerificationError> {
+        // Native constructors validate both adapters even when a short PCS
+        // never commits an intermediate oracle. Check unused round policies too.
+        for p in core::iter::once(&spec.main).chain(spec.preprocessed.iter()) {
+            for grouping in [p.base_grouping, p.round_grouping] {
+                use crate::pcs::binary::BinaryCodewordGrouping;
+                if matches!(grouping,
+                    BinaryCodewordGrouping::Codeword(size) | BinaryCodewordGrouping::Message(size)
+                        if !size.is_power_of_two())
+                {
+                    return Err(invalid("binary grouping size must be a power of two"));
+                }
+            }
+        }
+        Ok(config::BinaryNativeGroupedConfig {
+            main: grouped_pcs(&spec.main, base, round)
+                .map_err(|_| invalid("binary native main PCS configuration rejected"))?,
+            preprocessed: spec
+                .preprocessed
+                .as_ref()
+                .zip(preprocessed)
+                .map(|(pp, (base, round))| {
+                    grouped_pcs(pp, base, round).map_err(|_| {
+                        invalid("binary native preprocessing PCS configuration rejected")
+                    })
+                })
+                .transpose()?,
+        })
+    }
+    fn bind_preprocessing(
+        recursive: &mut Self::Recursive,
+        cap: Vec<[u8; 32]>,
+    ) -> Result<(), VerificationError> {
+        recursive.bind_native_preprocessing_cap(cap)
+    }
+    fn usage(recursive: &Self::Recursive) -> InputResourceUsage {
+        recursive.input_resource_usage()
+    }
+    fn public_counts(decode: &Self::Decode) -> &[usize] {
+        decode.as_slice()
+    }
+    fn decode_shape(recursive: &Self::Recursive) -> Self::Decode {
+        recursive.input_shape().public_value_counts().collect()
+    }
+    fn import_native(
+        recursive: &Self::Recursive,
+        _config: &Self::Config,
+        base: &NativeMmcs<F>,
+        round: &NativeMmcs<E>,
+        preprocessed: Option<&(NativeMmcs<F>, NativeMmcs<E>)>,
+        public: &[Vec<F>],
+        proof: &MultiStarkProof<Self::Config>,
+        ch: &mut BinaryNativeChallenger<F>,
+    ) -> Result<Self::Input, VerificationError> {
+        recursive.import_native_with_preprocessing(
+            base,
+            round,
+            preprocessed.map(|(base, round)| (base, round)),
+            public,
+            proof,
+            ch,
+        )
+    }
+    fn write_parameters(w: &mut Writer, p: &Self::Parameters) -> Result<(), ArtifactError> {
+        write_pcs(w, p.pcs)?;
+        write_grouping(w, p.base_grouping)?;
+        write_grouping(w, p.round_grouping)
+    }
+    fn write_shape(w: &mut Writer, recursive: &Self::Recursive) -> Result<(), ArtifactError> {
+        recursive.input_shape().write_identity(w)
+    }
+    fn suite() -> u16 {
+        field_suite::<F, E>() | 0x100
+    }
+}
+
+fn write_grouping(
+    w: &mut Writer,
+    p: crate::pcs::binary::BinaryCodewordGrouping,
+) -> Result<(), ArtifactError> {
+    use crate::pcs::binary::BinaryCodewordGrouping;
+    let (tag, size) = match p {
+        BinaryCodewordGrouping::Codeword(size) => (1, size),
+        BinaryCodewordGrouping::Message(size) => (2, size),
+        BinaryCodewordGrouping::Folding => (3, 0),
+    };
+    w.write_u8(tag)?;
+    w.write_count("binary native grouping", size)
+}
+
+fn grouped_tree<F: Clone>(
+    tree: &NativeMmcs<F>,
+    config: &BinaryPcsConfig,
+    grouping: crate::pcs::binary::BinaryCodewordGrouping,
+) -> p3_binary_pcs::GroupedCodewordMmcs<NativeMmcs<F>> {
+    use crate::pcs::binary::BinaryCodewordGrouping;
+    use p3_binary_pcs::GroupedCodewordMmcs;
+    match grouping {
+        BinaryCodewordGrouping::Codeword(size) => GroupedCodewordMmcs::new(tree.clone(), size),
+        BinaryCodewordGrouping::Message(size) => {
+            GroupedCodewordMmcs::with_group_size(tree.clone(), config, size)
+        }
+        BinaryCodewordGrouping::Folding => GroupedCodewordMmcs::for_folding(tree.clone(), config),
+    }
+}
+
+fn grouped_pcs<F, E>(
+    p: &BinaryNativeGroupedPcsParameters,
+    base: &NativeMmcs<F>,
+    round: &NativeMmcs<E>,
+) -> Result<config::NativeGroupedPcs<F, E>, p3_binary_pcs::BinaryPcsConfigError>
+where
+    F: RecursiveBinaryTowerField + EncodableLevel + FoldAlphabet<E> + PackedValue<Value = F>,
+    E: RecursiveBinaryChallengeField
+        + ExtensionField<F>
+        + ChallengeField<F>
+        + FoldAlphabet<E>
+        + PackedValue<Value = E>,
+{
+    BinaryPcs::new(
+        p.pcs.config,
+        grouped_tree(base, &p.pcs.config, p.base_grouping),
+        grouped_tree(round, &p.pcs.config, p.round_grouping),
+    )
+}

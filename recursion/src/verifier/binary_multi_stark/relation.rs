@@ -54,6 +54,27 @@ pub(in crate::verifier) struct NativeBinaryMultiStarkReduction<F, E> {
     pub(in crate::verifier) preprocessed_points: Option<Vec<Point<E>>>,
 }
 
+impl<F, E> BinaryMultiStarkRelationShape<F, E>
+where
+    F: RecursiveBinaryTowerField,
+    E: RecursiveBinaryChallengeField + ExtensionField<F>,
+{
+    pub(in crate::verifier) fn write_identity(
+        &self,
+        w: &mut crate::artifact::wire::Writer,
+    ) -> Result<(), crate::artifact::ArtifactError> {
+        w.write_vec("binary native AIRs", &self.airs, |w, air| {
+            air.write_identity(w)
+        })?;
+        for seed in [&self.outer_seed, &self.zerocheck_seed] {
+            w.write_vec("binary native transcript seed", seed, |w, value| {
+                w.write_bytes(&value.raw_coordinates().to_le_bytes()[..F::RAW_BITS / 8])
+            })?;
+        }
+        Ok(())
+    }
+}
+
 impl<F, E> BinaryMultiStarkRelation<F, E>
 where
     F: RecursiveBinaryTowerField,

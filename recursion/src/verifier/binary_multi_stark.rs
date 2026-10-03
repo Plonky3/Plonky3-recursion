@@ -135,14 +135,7 @@ impl<F: RecursiveBinaryTowerField, E: RecursiveBinaryChallengeField>
     where
         E: ExtensionField<F>,
     {
-        w.write_vec("binary native AIRs", &self.relation.airs, |w, air| {
-            air.write_identity(w)
-        })?;
-        for seed in [&self.relation.outer_seed, &self.relation.zerocheck_seed] {
-            w.write_vec("binary native transcript seed", seed, |w, value| {
-                w.write_bytes(&value.raw_coordinates().to_le_bytes()[..F::RAW_BITS / 8])
-            })?;
-        }
+        self.relation.write_identity(w)?;
         if let Some(pp) = &self.preprocessed {
             w.write_vec(
                 "binary native preprocessing cap",

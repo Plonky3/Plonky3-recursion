@@ -3,6 +3,11 @@
 pub(crate) mod codec;
 mod config;
 mod family;
+mod grouped;
+pub use grouped::{
+    BinaryNativeGroupedAuthority, BinaryNativeGroupedPcsParameters, BinaryNativeGroupedProver,
+    BinaryNativeGroupedVerifierSpec, VerifiedBinaryNativeGroupedProof,
+};
 mod lifecycle;
 pub use codec::CanonicalBinaryStatement;
 use family::{NativeFamily, RawFamily};
@@ -27,7 +32,9 @@ use crate::verifier::{
     BinaryMultiStarkPreprocessing, BinaryMultiStarkVerifier, InputResourceUsage,
     NativeBinaryMultiStarkInput, VerificationError, VerifierLimits,
 };
-pub use config::{BinaryNativeChallenger, BinaryNativeConfig, BinaryNativeHash};
+pub use config::{
+    BinaryNativeChallenger, BinaryNativeConfig, BinaryNativeGroupedConfig, BinaryNativeHash,
+};
 use config::{NativeMmcs, tree};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

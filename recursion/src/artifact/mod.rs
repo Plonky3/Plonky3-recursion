@@ -5,9 +5,11 @@ pub(crate) mod native;
 pub(crate) mod wire;
 
 pub use binary_native::{
-    BinaryNativeAuthority, BinaryNativeChallenger, BinaryNativeConfig, BinaryNativeHash,
+    BinaryNativeAuthority, BinaryNativeChallenger, BinaryNativeConfig,
+    BinaryNativeGroupedAuthority, BinaryNativeGroupedConfig, BinaryNativeGroupedPcsParameters,
+    BinaryNativeGroupedProver, BinaryNativeGroupedVerifierSpec, BinaryNativeHash,
     BinaryNativePcsParameters, BinaryNativeProver, BinaryNativeVerifierSpec, CanonicalBinaryStatement,
-    VerifiedBinaryNativeProof,
+    VerifiedBinaryNativeGroupedProof, VerifiedBinaryNativeProof,
 };
 
 use alloc::boxed::Box;

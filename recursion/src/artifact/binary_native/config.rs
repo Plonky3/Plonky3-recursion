@@ -4,7 +4,7 @@ use alloc::vec::Vec;
 
 use p3_binary_dft::EncodableLevel;
 use p3_binary_field::BinaryChallenger;
-use p3_binary_pcs::{BinaryPcs, ChallengeField, FoldAlphabet};
+use p3_binary_pcs::{BinaryPcs, ChallengeField, FoldAlphabet, GroupedCodewordMmcs};
 use p3_challenger::{
     CanObserve, CanSample, CanSampleBits, CanSampleUniformBits, FieldChallenger,
     GrindingChallenger, HashChallenger, ResamplingError,
@@ -164,6 +164,51 @@ where
     type Challenge = E;
     type Challenger = BinaryNativeChallenger<F>;
     type Pcs = NativePcs<F, E>;
+    fn pcs(&self) -> &Self::Pcs {
+        &self.main
+    }
+    fn preprocessed_pcs(&self) -> &Self::Pcs {
+        self.preprocessed
+            .as_ref()
+            .expect("factory checked preprocessing configuration")
+    }
+    fn min_num_variables(&self) -> usize {
+        1
+    }
+    fn collision_resistance_bits(&self) -> Option<usize> {
+        Some(128)
+    }
+    fn build_witness(&self, tables: Vec<Table<F>>) -> Witness<F> {
+        SuffixProver::<F, E>::new_witness(tables, 0)
+    }
+    fn committed_table<'a>(&self, data: &'a ProverData<Self>, index: usize) -> &'a Table<F> {
+        data.table(index)
+    }
+}
+
+pub(super) type NativeGroupedPcs<F, E> =
+    BinaryPcs<F, E, GroupedCodewordMmcs<NativeMmcs<F>>, GroupedCodewordMmcs<NativeMmcs<E>>>;
+
+/// Opaque native configuration appearing in the factory's proof type. Its
+/// fields and constructor are private; callers cannot replace the PCS or hash.
+pub struct BinaryNativeGroupedConfig<F: EncodableLevel, E> {
+    pub(super) main: NativeGroupedPcs<F, E>,
+    pub(super) preprocessed: Option<NativeGroupedPcs<F, E>>,
+}
+
+impl<F, E> MultiStarkConfig for BinaryNativeGroupedConfig<F, E>
+where
+    F: RecursiveBinaryTowerField + EncodableLevel + FoldAlphabet<E> + PackedValue<Value = F>,
+    E: RecursiveBinaryChallengeField
+        + ExtensionField<F>
+        + ChallengeField<F>
+        + FoldAlphabet<E>
+        + PackedValue<Value = E>,
+{
+    type Val = F;
+    type Challenge = E;
+    type Challenger = BinaryNativeChallenger<F>;
+    type Pcs = NativeGroupedPcs<F, E>;
     fn pcs(&self) -> &Self::Pcs {
         &self.main
     }
