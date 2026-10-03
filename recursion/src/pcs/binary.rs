@@ -17,7 +17,9 @@ mod fields;
 mod gadgets;
 mod generic_sumcheck;
 mod generic_sumcheck_verifier;
+mod grouped_input;
 mod grouped_oracle;
+mod grouped_pcs;
 mod input;
 mod nonzero;
 mod poly_whir_gadgets;
@@ -56,8 +58,13 @@ pub use generic_sumcheck_verifier::{
     BinaryGenericSumcheckInputShape, BinaryGenericSumcheckOutput, BinaryGenericSumcheckProofTargets,
     BinaryGenericSumcheckVerifier, NativeBinaryGenericSumcheckInput,
 };
-pub use input::{BinaryPcsInputShape, NativeBinaryPcsInput};
+pub use grouped_input::NativeBinaryGroupedPcsInput;
 pub use grouped_oracle::BinaryGroupedOraclePlan;
+pub use grouped_pcs::{
+    BinaryCodewordGrouping, BinaryGroupedOpeningTargets, BinaryGroupedPcsInputShape,
+    BinaryGroupedPcsProofTargets, BinaryGroupedPcsVerifier,
+};
+pub use input::{BinaryPcsInputShape, NativeBinaryPcsInput};
 pub use nonzero::{
     BinaryNonzeroChallengeOutput, BinaryNonzeroChallengePlan, BinaryNonzeroChallengeTailOutput,
     BinaryNonzeroChallengeTailPlan,

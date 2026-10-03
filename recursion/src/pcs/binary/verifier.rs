@@ -72,6 +72,7 @@ pub struct BinaryPcsVerifier<F, E> {
     pub(super) max_query_draws: usize,
     pub(super) limits: VerifierLimits,
     pub(super) usage: InputResourceUsage,
+    pub(super) grouping: Option<[super::grouped_pcs::BinaryCodewordGrouping; 2]>,
     opening_seeds: Vec<Vec<F>>,
     batching_seed: Vec<F>,
     challenge_field: PhantomData<E>,
@@ -113,6 +114,26 @@ where
         cap_height: usize,
         max_query_draws: usize,
         limits: &VerifierLimits,
+    ) -> Result<Self, VerificationError> {
+        Self::with_grouping(
+            config,
+            protocol,
+            hash,
+            cap_height,
+            max_query_draws,
+            limits,
+            None,
+        )
+    }
+
+    pub(super) fn with_grouping(
+        config: BinaryPcsConfig,
+        protocol: OpeningProtocol,
+        hash: ByteHash,
+        cap_height: usize,
+        max_query_draws: usize,
+        limits: &VerifierLimits,
+        grouping: Option<[super::grouped_pcs::BinaryCodewordGrouping; 2]>,
     ) -> Result<Self, VerificationError> {
         if config.committed_field_bits() != F::RAW_BITS
             || config.challenge_field_bits() != E::RAW_BITS
@@ -223,8 +244,17 @@ where
             )?;
         }
         let cap_roots = 1usize << cap_height;
-        for (start, arity) in batches(&config) {
-            if cap_height > log_domain - start {
+        for (batch, (start, arity)) in batches(&config).enumerate() {
+            let group_size = grouping.map_or(Ok(1), |g| {
+                g[usize::from(batch != 0)].effective(&config, log_domain - start)
+            })?;
+            limit(
+                "binary grouped leaf width",
+                group_size,
+                limits.max_matrix_width,
+            )?;
+            let group_bits = group_size.ilog2() as usize;
+            if cap_height > log_domain - start - group_bits {
                 return Err(shape_error(
                     "binary PCS cap height exceeds a committed tree's depth",
                 ));
@@ -251,16 +281,23 @@ where
                         component: "binary PCS row limbs",
                     })?,
             )?;
-            let paths = rows.checked_mul(log_domain - start - cap_height).ok_or(
-                VerificationError::ResourceArithmeticOverflow {
-                    component: "binary PCS restored paths",
-                },
-            )?;
-            usage.add_restored_authentication_path_hashes(
-                limits,
-                rows,
-                log_domain - start - cap_height,
-            )?;
+            if grouping.is_some() {
+                usage.add_scalar_elements(
+                    limits,
+                    rows.checked_mul(group_size)
+                        .and_then(|n| n.checked_mul(8))
+                        .ok_or(VerificationError::ResourceArithmeticOverflow {
+                            component: "binary grouped leaf limbs",
+                        })?,
+                )?;
+            }
+            let depth = log_domain - start - group_bits - cap_height;
+            let paths =
+                rows.checked_mul(depth)
+                    .ok_or(VerificationError::ResourceArithmeticOverflow {
+                        component: "binary PCS restored paths",
+                    })?;
+            usage.add_restored_authentication_path_hashes(limits, rows, depth)?;
             usage.add_scalar_elements(
                 limits,
                 paths
@@ -297,6 +334,7 @@ where
             max_query_draws,
             limits: *limits,
             usage,
+            grouping,
             opening_seeds,
             batching_seed: tap.binary_seed(),
             challenge_field: PhantomData,
@@ -586,7 +624,7 @@ where
                 };
                 let size = 1usize << arity;
                 let coset = &rows[q * size..(q + 1) * size];
-                for (offset, row) in coset.iter().enumerate() {
+                for (offset, row) in coset.iter().enumerate().filter(|_| self.grouping.is_none()) {
                     let mut leaf_index = index[start..].to_vec();
                     for (b, bit) in leaf_index[..arity].iter_mut().enumerate() {
                         *bit = if offset >> b & 1 == 1 { one } else { zero };
@@ -699,7 +737,11 @@ where
                 )
             };
             let count = shape.num_pairs << arity;
-            let depth = log_domain - start - self.cap_height;
+            let depth = if self.grouping.is_some() {
+                0
+            } else {
+                log_domain - start - self.cap_height
+            };
             if rows.len() != count
                 || paths.len() != count
                 || paths

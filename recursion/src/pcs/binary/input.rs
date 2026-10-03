@@ -30,11 +30,12 @@ use crate::verifier::{InputResourceUsage, VerificationError};
 /// resource-checked verifier, and reusable across native proofs of that verifier.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BinaryPcsInputShape {
-    config: BinaryPcsConfig,
+    pub(super) config: BinaryPcsConfig,
     protocol: OpeningProtocol,
     hash: ByteHash,
     cap_height: usize,
     max_query_draws: usize,
+    pub(super) grouping: Option<[super::grouped_pcs::BinaryCodewordGrouping; 2]>,
 }
 
 impl BinaryPcsInputShape {
@@ -80,14 +81,22 @@ impl BinaryPcsInputShape {
             let (rows, paths) = alloc_oracle::<BF, EF>(
                 circuit,
                 shape.num_pairs << arity,
-                log_domain - start - self.cap_height,
+                if self.grouping.is_some() {
+                    0
+                } else {
+                    log_domain - start - self.cap_height
+                },
             )?;
             rounds.push(BinaryOracleOpeningTargets { cap, rows, paths });
         }
         let (base_rows, base_paths) = alloc_oracle::<BF, EF>(
             circuit,
             shape.num_pairs << self.config.log_folding_factor(),
-            log_domain - self.cap_height,
+            if self.grouping.is_some() {
+                0
+            } else {
+                log_domain - self.cap_height
+            },
         )?;
         let final_codeword = (0..shape.final_codeword_len)
             .map(|_| alloc_field::<BF, EF>(circuit))
@@ -118,22 +127,22 @@ impl BinaryPcsInputShape {
 /// circuit still authenticates every path and checks the complete PCS relation.
 #[derive(Clone, Debug)]
 pub struct NativeBinaryPcsInput {
-    shape: BinaryPcsInputShape,
-    sumcheck: Vec<[u128; 2]>,
-    evals: Vec<OpeningBatch<u128>>,
-    rounds: Vec<NativeOracle>,
-    base_rows: Vec<u128>,
-    base_paths: Vec<Vec<[u8; 32]>>,
-    final_codeword: Vec<u128>,
-    pow_witness: u128,
-    queries: Vec<usize>,
+    pub(super) shape: BinaryPcsInputShape,
+    pub(super) sumcheck: Vec<[u128; 2]>,
+    pub(super) evals: Vec<OpeningBatch<u128>>,
+    pub(super) rounds: Vec<NativeOracle>,
+    pub(super) base_rows: Vec<u128>,
+    pub(super) base_paths: Vec<Vec<[u8; 32]>>,
+    pub(super) final_codeword: Vec<u128>,
+    pub(super) pow_witness: u128,
+    pub(super) queries: Vec<usize>,
 }
 
 #[derive(Clone, Debug)]
-struct NativeOracle {
-    cap: Vec<[u8; 32]>,
-    rows: Vec<u128>,
-    paths: Vec<Vec<[u8; 32]>>,
+pub(super) struct NativeOracle {
+    pub(super) cap: Vec<[u8; 32]>,
+    pub(super) rows: Vec<u128>,
+    pub(super) paths: Vec<Vec<[u8; 32]>>,
 }
 
 impl NativeBinaryPcsInput {
@@ -214,6 +223,7 @@ where
             hash: self.hash,
             cap_height: self.cap_height,
             max_query_draws: self.max_query_draws,
+            grouping: self.grouping,
         }
     }
 
@@ -317,70 +327,20 @@ where
             + CanObserve<MerkleCap<E, [u8; 32]>>,
     {
         self.check_native(base_mmcs, round_mmcs, commitment, points, proof)?;
-        let shape = BinaryPcsShape::new(&self.config);
-        let shapes = self.protocol.table_shapes();
-        let mut layout = Verifier::<F, E>::new(&shapes, SuffixProver::<F, E>::strategy());
-        for (i, (table, batch)) in self.protocol.iter_openings().enumerate() {
-            layout
-                .add_claim_at(table, batch, &points[i], &proof.evals[i], &mut challenger)
-                .map_err(|_| invalid("binary PCS native layout replay failed"))?;
-        }
-        {
-            let mut transcript =
-                BinaryPcsVerifierTranscript::<F, E, _>::new(&mut challenger, shape);
-            let replay = (|| {
-                let alpha = transcript.fold_batch(|ch| layout.batching_challenge(ch));
-                let mut claim = layout.sum(alpha);
-                for (batch, (start, arity)) in batches(&self.config).enumerate() {
-                    for r in start..start + arity {
-                        let message = SumcheckData {
-                            polynomial_evaluations: vec![proof.sumcheck.polynomial_evaluations[r]],
-                            pow_witnesses: vec![],
-                        };
-                        let _ = transcript
-                            .fold_batch(|ch| {
-                                message.verify_rounds(ch, &mut claim, 1, 0, Basis::Evaluation)
-                            })
-                            .map_err(|_| invalid("binary PCS native sumcheck replay failed"))?;
-                    }
-                    if batch < shape.num_oracles {
-                        transcript.oracle_commitment(proof.rounds[batch].commitment.clone());
-                    }
-                }
-                transcript
-                    .final_codeword(proof.final_codeword.as_slice())
-                    .map_err(|_| invalid("binary PCS native final codeword replay failed"))?;
-                transcript
-                    .query_pow(proof.pow_witness)
-                    .map_err(|_| invalid("binary PCS native query grinding failed"))?;
-                Ok::<_, VerificationError>(())
-            })();
-            // The final described query step is implemented below with an
-            // explicit bound; release the native driver's unfinished-step guard.
-            transcript.abort();
-            replay?;
-        }
-        let mut queries = Vec::with_capacity(shape.num_pairs);
-        for _ in 0..self.max_query_draws {
-            let candidate = challenger
-                .sample_uniform_bits::<true>(shape.pair_bits)
-                .map_err(|_| invalid("binary PCS native query sampling failed"))?;
-            if candidate >= 1usize << shape.pair_bits {
-                return Err(invalid(
-                    "binary PCS native query sampler returned an out-of-range index",
-                ));
-            }
-            if !queries.contains(&candidate) {
-                queries.push(candidate);
-            }
-            if queries.len() == shape.num_pairs {
-                break;
-            }
-        }
-        if queries.len() != shape.num_pairs {
-            return Err(invalid("binary PCS native query draw budget exhausted"));
-        }
-        queries.sort_unstable();
+        let caps = proof
+            .rounds
+            .iter()
+            .map(|r| r.commitment.clone())
+            .collect::<Vec<_>>();
+        let queries = self.replay_native_queries(
+            points,
+            &proof.sumcheck,
+            &proof.evals,
+            &caps,
+            proof.final_codeword.as_slice(),
+            proof.pow_witness,
+            &mut challenger,
+        )?;
         let log_domain = self.config.num_variables() + self.config.log_inv_rate();
         let indices = |start: usize, arity: usize| {
             let size = 1usize << arity;
@@ -463,6 +423,91 @@ where
             queries,
         })
     }
+
+    /// Transcript-only replay shared by ordinary and grouped byte-tree imports.
+    /// Callers validate all retained counts before entering this bounded sampler.
+    pub(super) fn replay_native_queries<Ch>(
+        &self,
+        points: &[Point<E>],
+        sumcheck: &SumcheckData<F, E>,
+        evals: &[OpeningBatch<E>],
+        round_caps: &[MerkleCap<E, [u8; 32]>],
+        final_codeword: &[E],
+        pow_witness: F,
+        challenger: &mut Ch,
+    ) -> Result<Vec<usize>, VerificationError>
+    where
+        Ch: FieldChallenger<F>
+            + CanSampleUniformBits<F>
+            + GrindingChallenger<Witness = F>
+            + CanObserve<MerkleCap<E, [u8; 32]>>,
+    {
+        let shape = BinaryPcsShape::new(&self.config);
+        let shapes = self.protocol.table_shapes();
+        let mut layout = Verifier::<F, E>::new(&shapes, SuffixProver::<F, E>::strategy());
+        for (i, (table, batch)) in self.protocol.iter_openings().enumerate() {
+            layout
+                .add_claim_at(table, batch, &points[i], &evals[i], &mut *challenger)
+                .map_err(|_| invalid("binary PCS native layout replay failed"))?;
+        }
+        {
+            let mut transcript =
+                BinaryPcsVerifierTranscript::<F, E, _>::new(&mut *challenger, shape);
+            let replay = (|| {
+                let alpha = transcript.fold_batch(|ch| layout.batching_challenge(ch));
+                let mut claim = layout.sum(alpha);
+                for (batch, (start, arity)) in batches(&self.config).enumerate() {
+                    for r in start..start + arity {
+                        let message = SumcheckData {
+                            polynomial_evaluations: vec![sumcheck.polynomial_evaluations[r]],
+                            pow_witnesses: vec![],
+                        };
+                        let _ = transcript
+                            .fold_batch(|ch| {
+                                message.verify_rounds(ch, &mut claim, 1, 0, Basis::Evaluation)
+                            })
+                            .map_err(|_| invalid("binary PCS native sumcheck replay failed"))?;
+                    }
+                    if batch < shape.num_oracles {
+                        transcript.oracle_commitment(round_caps[batch].clone());
+                    }
+                }
+                transcript
+                    .final_codeword(final_codeword)
+                    .map_err(|_| invalid("binary PCS native final codeword replay failed"))?;
+                transcript
+                    .query_pow(pow_witness)
+                    .map_err(|_| invalid("binary PCS native query grinding failed"))?;
+                Ok::<_, VerificationError>(())
+            })();
+            // The final described query step is implemented below with an
+            // explicit bound; release the native driver's unfinished-step guard.
+            transcript.abort();
+            replay?;
+        }
+        let mut queries = Vec::with_capacity(shape.num_pairs);
+        for _ in 0..self.max_query_draws {
+            let candidate = challenger
+                .sample_uniform_bits::<true>(shape.pair_bits)
+                .map_err(|_| invalid("binary PCS native query sampling failed"))?;
+            if candidate >= 1usize << shape.pair_bits {
+                return Err(invalid(
+                    "binary PCS native query sampler returned an out-of-range index",
+                ));
+            }
+            if !queries.contains(&candidate) {
+                queries.push(candidate);
+            }
+            if queries.len() == shape.num_pairs {
+                break;
+            }
+        }
+        if queries.len() != shape.num_pairs {
+            return Err(invalid("binary PCS native query draw budget exhausted"));
+        }
+        queries.sort_unstable();
+        Ok(queries)
+    }
 }
 
 fn restore<F, H, C>(
@@ -500,7 +545,7 @@ where
     Ok(paths.into_iter().map(|path| path.siblings).collect())
 }
 
-fn alloc_field<BF, EF>(
+pub(super) fn alloc_field<BF, EF>(
     circuit: &mut CircuitBuilder<EF>,
 ) -> Result<BinaryTower128Target, VerificationError>
 where
@@ -511,7 +556,7 @@ where
     Ok(circuit.binary128_from_limbs::<BF>(limbs)?)
 }
 
-fn alloc_digest<EF: Field + Eq + Hash>(circuit: &mut CircuitBuilder<EF>) -> Vec<ExprId> {
+pub(super) fn alloc_digest<EF: Field + Eq + Hash>(circuit: &mut CircuitBuilder<EF>) -> Vec<ExprId> {
     circuit
         .alloc_private_input_array::<16>("binary PCS digest")
         .to_vec()
