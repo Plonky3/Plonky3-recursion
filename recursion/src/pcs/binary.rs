@@ -18,6 +18,9 @@ mod input;
 mod ring;
 mod ring_input;
 mod tensor;
+mod trace;
+mod trace_native;
+mod trace_plan;
 mod verifier;
 pub use boolean::{
     BinaryBooleanInputShape, BinaryBooleanPcsVerifier, BinaryBooleanProofTargets,
@@ -34,6 +37,10 @@ pub use ring::{
 };
 pub use ring_input::{BinaryRingInputShape, NativeBinaryRingInput};
 pub use tensor::{BinaryTowerTensorTarget, binary_tensor_closing_weight};
+pub use trace::{
+    BinaryBooleanTraceInputShape, BinaryBooleanTraceProofTargets, BinaryBooleanTraceVerifier,
+    NativeBinaryBooleanTraceInput,
+};
 pub use verifier::{
     BinaryOracleOpeningTargets, BinaryPcs128ProofTargets, BinaryPcs128Verifier, BinaryPcsVerifier,
 };

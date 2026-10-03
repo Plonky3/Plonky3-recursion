@@ -121,6 +121,29 @@ impl<E: RecursiveBinaryChallengeField> NativeBinaryRingInput<E> {
 }
 
 impl<E: RecursiveBinaryChallengeField> BinaryBitRingVerifier<E> {
+    pub(super) fn check_native_structure(
+        &self,
+        proof: &BitRingSwitchClaimsProof<E>,
+    ) -> Result<(), VerificationError> {
+        let absorbed = E::RAW_BITS.ilog2() as usize;
+        if proof.claims.len() != self.specs.len()
+            || !proof.sumcheck.pow_witnesses.is_empty()
+            || proof.sumcheck.polynomial_evaluations.len() > self.num_variables - absorbed
+            || proof.claims.iter().zip(&self.specs).any(|(claim, spec)| {
+                !claim.tensor.is_well_formed()
+                    || claim.successor.is_some()
+                        != spec.next_rows.is_some_and(|rows| rows > absorbed)
+                    || claim
+                        .successor
+                        .as_ref()
+                        .is_some_and(|s| !s.carry.is_well_formed() || !s.last.is_well_formed())
+            })
+        {
+            return Err(invalid("binary ring-switch native structural mismatch"));
+        }
+        Ok(())
+    }
+
     /// Performs pure shape inspection, without a proof or transcript replay.
     pub fn input_shape(&self) -> BinaryRingInputShape<E> {
         BinaryRingInputShape {
@@ -143,6 +166,7 @@ impl<E: RecursiveBinaryChallengeField> BinaryBitRingVerifier<E> {
     where
         Ch: FieldChallenger<E> + GrindingChallenger<Witness = E>,
     {
+        self.check_native_structure(proof)?;
         let absorbed = E::RAW_BITS.ilog2() as usize;
         let high = self.num_variables - absorbed;
         if points.len() != self.specs.len()

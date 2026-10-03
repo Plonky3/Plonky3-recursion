@@ -20,7 +20,7 @@ use super::{
     BinaryRingClaimSpec, BinaryRingInputShape, BinaryRingOutput, BinaryRingProofTargets,
     NativeBinaryPcsInput, NativeBinaryRingInput, RecursiveBinaryChallengeField,
 };
-use crate::verifier::{VerificationError, VerifierLimits};
+use crate::verifier::{InputResourceUsage, VerificationError, VerifierLimits};
 use crate::{BinaryQueryContinuation, BinaryTower128Challenger};
 
 /// Verifier-owned schedule for a released Boolean PCS opening. The ring switch
@@ -30,6 +30,7 @@ use crate::{BinaryQueryContinuation, BinaryTower128Challenger};
 pub struct BinaryBooleanPcsVerifier<E> {
     reduction: BinaryBitRingVerifier<E>,
     opening: BinaryPcsVerifier<E, E>,
+    pub(super) usage: InputResourceUsage,
 }
 
 #[derive(Clone, Debug)]
@@ -137,7 +138,11 @@ impl<E: RecursiveBinaryChallengeField + ExtensionField<E>> BinaryBooleanPcsVerif
         )?;
         let mut usage = reduction.usage;
         usage.merge(limits, opening.usage)?;
-        Ok(Self { reduction, opening })
+        Ok(Self {
+            reduction,
+            opening,
+            usage,
+        })
     }
 
     pub fn input_shape(&self) -> BinaryBooleanInputShape<E> {
@@ -145,6 +150,18 @@ impl<E: RecursiveBinaryChallengeField + ExtensionField<E>> BinaryBooleanPcsVerif
             reduction: self.reduction.input_shape(),
             opening: self.opening.input_shape(),
         }
+    }
+
+    pub(super) fn sample_challenge<BF, EF>(
+        &self,
+        circuit: &mut CircuitBuilder<EF>,
+        challenger: &mut BinaryTower128Challenger,
+    ) -> Result<p3_circuit::ops::BinaryTower128Target, VerificationError>
+    where
+        BF: PrimeField64,
+        EF: ExtensionField<BF> + Eq + Hash,
+    {
+        self.opening.sample_challenge::<BF, EF>(circuit, challenger)
     }
 
     /// Binds the packed commitment at its native transcript position.
@@ -222,7 +239,7 @@ impl<E: RecursiveBinaryChallengeField + ExtensionField<E>> BinaryBooleanPcsVerif
         self.verify_reduced::<BF, EF>(circuit, cap, proof, output)
     }
 
-    fn check_targets(
+    pub(super) fn check_targets(
         &self,
         cap: &[Vec<ExprId>],
         proof: &BinaryBooleanProofTargets<E>,
@@ -257,6 +274,41 @@ impl<E: RecursiveBinaryChallengeField + ExtensionField<E>> BinaryBooleanPcsVerif
         )
     }
 
+    pub(super) fn check_native_structure<H0, C0, H1, C1>(
+        &self,
+        base_mmcs: &MerkleTreeMmcs<E, u8, H0, C0, 2, 32>,
+        round_mmcs: &MerkleTreeMmcs<E, u8, H1, C1, 2, 32>,
+        commitment: &MerkleCap<E, [u8; 32]>,
+        proof: &BooleanProof<
+            E,
+            MerkleTreeMmcs<E, u8, H0, C0, 2, 32>,
+            MerkleTreeMmcs<E, u8, H1, C1, 2, 32>,
+        >,
+    ) -> Result<(), VerificationError>
+    where
+        E: PackedValue<Value = E>,
+        H0: CryptographicHasher<E, [u8; 32]> + Sync,
+        H1: CryptographicHasher<E, [u8; 32]> + Sync,
+        C0: PseudoCompressionFunction<[u8; 32], 2> + Sync,
+        C1: PseudoCompressionFunction<[u8; 32], 2> + Sync,
+    {
+        self.reduction.check_native_structure(&proof.reduction)?;
+        let placeholder = Point::new(vec![E::ZERO; self.opening.config.num_variables()]);
+        self.opening.check_native(
+            base_mmcs,
+            round_mmcs,
+            commitment,
+            &[placeholder],
+            &proof.opening,
+        )?;
+        if proof.opening.evals[0].current()[0] != proof.reduction.final_eval {
+            return Err(invalid(
+                "binary Boolean surviving value does not match the packed opening",
+            ));
+        }
+        Ok(())
+    }
+
     /// Checks both native proof shapes before replay, verifies the ring readings,
     /// and imports the remaining opening with a finite query draw budget. Path
     /// restoration supplies witnesses; it does not replace circuit verification.
@@ -285,19 +337,7 @@ impl<E: RecursiveBinaryChallengeField + ExtensionField<E>> BinaryBooleanPcsVerif
             + GrindingChallenger<Witness = E>
             + CanObserve<MerkleCap<E, [u8; 32]>>,
     {
-        let placeholder = Point::new(vec![E::ZERO; self.opening.config.num_variables()]);
-        self.opening.check_native(
-            base_mmcs,
-            round_mmcs,
-            commitment,
-            &[placeholder],
-            &proof.opening,
-        )?;
-        if proof.opening.evals[0].current()[0] != proof.reduction.final_eval {
-            return Err(invalid(
-                "binary Boolean surviving value does not match the packed opening",
-            ));
-        }
+        self.check_native_structure(base_mmcs, round_mmcs, commitment, proof)?;
         let (reduction, point, _) =
             self.reduction
                 .import_native(points, readings, &proof.reduction, &mut challenger)?;
