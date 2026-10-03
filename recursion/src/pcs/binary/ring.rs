@@ -62,6 +62,7 @@ pub struct BinaryRingOutput {
 pub struct BinaryBitRingVerifier<E> {
     pub(super) num_variables: usize,
     pub(super) specs: Vec<BinaryRingClaimSpec>,
+    pub(super) usage: InputResourceUsage,
     prefix_limit: usize,
     seed: Vec<E>,
     field: PhantomData<E>,
@@ -155,10 +156,34 @@ impl<E: RecursiveBinaryChallengeField> BinaryBitRingVerifier<E> {
         Ok(Self {
             num_variables,
             specs,
+            usage,
             prefix_limit,
             seed,
             field: PhantomData,
         })
+    }
+
+    pub(super) fn check_targets(
+        &self,
+        proof: &BinaryRingProofTargets<E>,
+    ) -> Result<(), VerificationError> {
+        let absorbed = E::RAW_BITS.ilog2() as usize;
+        let high = self.num_variables - absorbed;
+        if proof.claims.len() != self.specs.len()
+            || proof.sumcheck.len() != high
+            || proof.claims.iter().zip(&self.specs).any(|(claim, spec)| {
+                claim.point.len() != self.num_variables
+                    || claim.current.is_some() != spec.current
+                    || claim.next.is_some() != spec.next_rows.is_some()
+                    || claim.successor.is_some()
+                        != spec.next_rows.is_some_and(|rows| rows > absorbed)
+            })
+        {
+            return Err(invalid(
+                "binary ring-switch targets do not match the verifier shape",
+            ));
+        }
+        Ok(())
     }
 
     /// Installs the complete ring-switch relation. Points, tensor elements and
@@ -176,22 +201,9 @@ impl<E: RecursiveBinaryChallengeField> BinaryBitRingVerifier<E> {
         BF: PrimeField64,
         EF: ExtensionField<BF> + Eq + Hash,
     {
+        self.check_targets(proof)?;
         let absorbed = E::RAW_BITS.ilog2() as usize;
         let high = self.num_variables - absorbed;
-        if proof.claims.len() != self.specs.len()
-            || proof.sumcheck.len() != high
-            || proof.claims.iter().zip(&self.specs).any(|(claim, spec)| {
-                claim.point.len() != self.num_variables
-                    || claim.current.is_some() != spec.current
-                    || claim.next.is_some() != spec.next_rows.is_some()
-                    || claim.successor.is_some()
-                        != spec.next_rows.is_some_and(|rows| rows > absorbed)
-            })
-        {
-            return Err(invalid(
-                "binary ring-switch targets do not match the verifier shape",
-            ));
-        }
         for value in proof
             .claims
             .iter()

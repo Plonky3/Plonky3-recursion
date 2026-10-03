@@ -71,6 +71,7 @@ pub struct BinaryPcsVerifier<F, E> {
     pub(super) cap_height: usize,
     pub(super) max_query_draws: usize,
     pub(super) limits: VerifierLimits,
+    pub(super) usage: InputResourceUsage,
     opening_seeds: Vec<Vec<F>>,
     batching_seed: Vec<F>,
     challenge_field: PhantomData<E>,
@@ -295,6 +296,7 @@ where
             cap_height,
             max_query_draws,
             limits: *limits,
+            usage,
             opening_seeds,
             batching_seed: tap.binary_seed(),
             challenge_field: PhantomData,
@@ -584,7 +586,7 @@ where
         Ok(())
     }
 
-    fn check_targets(
+    pub(super) fn check_targets(
         &self,
         cap: &[Vec<ExprId>],
         points: &[Vec<BinaryTower128Target>],

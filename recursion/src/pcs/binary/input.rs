@@ -217,11 +217,7 @@ where
         }
     }
 
-    /// Imports released ordinary byte-tree proofs. `challenger` must be at the
-    /// native `verify_at` entry, after commitment and prescribed-point binding.
-    /// It is consumed: bounded query replay is terminal and exposes no state
-    /// for continuing a surrounding protocol. No native unbounded sampler runs.
-    pub fn import_native<H0, C0, H1, C1, Ch>(
+    pub(super) fn check_native<H0, C0, H1, C1>(
         &self,
         base_mmcs: &MerkleTreeMmcs<F, u8, H0, C0, 2, 32>,
         round_mmcs: &MerkleTreeMmcs<E, u8, H1, C1, 2, 32>,
@@ -233,8 +229,7 @@ where
             MerkleTreeMmcs<F, u8, H0, C0, 2, 32>,
             MerkleTreeMmcs<E, u8, H1, C1, 2, 32>,
         >,
-        mut challenger: Ch,
-    ) -> Result<NativeBinaryPcsInput, VerificationError>
+    ) -> Result<(), VerificationError>
     where
         F: PackedValue<Value = F>,
         E: PackedValue<Value = E>,
@@ -242,10 +237,6 @@ where
         H1: CryptographicHasher<E, [u8; 32]> + Sync,
         C0: PseudoCompressionFunction<[u8; 32], 2> + Sync,
         C1: PseudoCompressionFunction<[u8; 32], 2> + Sync,
-        Ch: FieldChallenger<F>
-            + CanSampleUniformBits<F>
-            + GrindingChallenger<Witness = F>
-            + CanObserve<MerkleCap<E, [u8; 32]>>,
     {
         let shape = BinaryPcsShape::new(&self.config);
         if base_mmcs.cap_height() != self.cap_height
@@ -291,6 +282,42 @@ where
         if proof.base_opened_values.iter().any(|r| r.len() != 1) {
             return Err(invalid("binary PCS native base row width mismatch"));
         }
+        Ok(())
+    }
+
+    /// Imports released ordinary byte-tree proofs. `challenger` must be at the
+    /// native `verify_at` entry, after commitment and prescribed-point binding.
+    /// It is consumed: bounded query replay is terminal and exposes no state
+    /// for continuing a surrounding protocol. No native unbounded sampler runs.
+    pub fn import_native<H0, C0, H1, C1, Ch>(
+        &self,
+        base_mmcs: &MerkleTreeMmcs<F, u8, H0, C0, 2, 32>,
+        round_mmcs: &MerkleTreeMmcs<E, u8, H1, C1, 2, 32>,
+        commitment: &MerkleCap<F, [u8; 32]>,
+        points: &[Point<E>],
+        proof: &BinaryPcsProof<
+            F,
+            E,
+            MerkleTreeMmcs<F, u8, H0, C0, 2, 32>,
+            MerkleTreeMmcs<E, u8, H1, C1, 2, 32>,
+        >,
+        mut challenger: Ch,
+    ) -> Result<NativeBinaryPcsInput, VerificationError>
+    where
+        F: PackedValue<Value = F>,
+        E: PackedValue<Value = E>,
+        H0: CryptographicHasher<F, [u8; 32]> + Sync,
+        H1: CryptographicHasher<E, [u8; 32]> + Sync,
+        C0: PseudoCompressionFunction<[u8; 32], 2> + Sync,
+        C1: PseudoCompressionFunction<[u8; 32], 2> + Sync,
+        Ch: FieldChallenger<F>
+            + CanSampleUniformBits<F>
+            + GrindingChallenger<Witness = F>
+            + CanObserve<MerkleCap<E, [u8; 32]>>,
+    {
+        self.check_native(base_mmcs, round_mmcs, commitment, points, proof)?;
+        let shape = BinaryPcsShape::new(&self.config);
+        let shapes = self.protocol.table_shapes();
         let mut layout = Verifier::<F, E>::new(&shapes, SuffixProver::<F, E>::strategy());
         for (i, (table, batch)) in self.protocol.iter_openings().enumerate() {
             layout

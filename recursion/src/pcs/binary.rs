@@ -11,6 +11,7 @@ use p3_field::{ExtensionField, PrimeField64};
 
 use crate::BinaryTower128Challenger;
 
+mod boolean;
 mod fields;
 mod gadgets;
 mod input;
@@ -18,6 +19,10 @@ mod ring;
 mod ring_input;
 mod tensor;
 mod verifier;
+pub use boolean::{
+    BinaryBooleanInputShape, BinaryBooleanPcsVerifier, BinaryBooleanProofTargets,
+    NativeBinaryBooleanInput,
+};
 pub use fields::{RecursiveBinaryChallengeField, RecursiveBinaryTowerField};
 pub use gadgets::{
     binary128_eq_eval, binary128_fold_pair, binary128_next_eval, binary128_reduce_sumcheck_claim,
