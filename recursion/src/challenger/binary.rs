@@ -10,7 +10,7 @@
 use alloc::vec::Vec;
 use core::hash::Hash;
 
-use p3_circuit::ops::{BinaryTower128Target, ByteHash};
+use p3_circuit::ops::{BinaryPoly64Target, BinaryPoly192Target, BinaryTower128Target, ByteHash};
 use p3_circuit::{CircuitBuilder, CircuitBuilderError, ExprId};
 use p3_field::{ExtensionField, PrimeField64};
 
@@ -260,6 +260,76 @@ impl BinaryTower128Challenger {
         Self::check_limb_field::<BF, EF>("binary_challenger_sample_bytes")?;
         let mut staged = self.clone();
         let result = staged.sample_stream_bytes::<BF, EF>(circuit, count)?;
+        *self = staged;
+        Ok(result)
+    }
+
+    /// Observes the eight raw little-endian bytes of a checked Poly64 target.
+    /// This uses its polynomial basis without converting to tower coordinates.
+    pub fn observe_poly64<BF, EF>(
+        &mut self,
+        circuit: &mut CircuitBuilder<EF>,
+        value: &BinaryPoly64Target,
+    ) -> Result<(), CircuitBuilderError>
+    where
+        BF: PrimeField64,
+        EF: ExtensionField<BF> + Eq + Hash,
+    {
+        let bytes = value
+            .bits()
+            .chunks_exact(8)
+            .map(|bits| circuit.reconstruct_index_from_bits::<BF>(bits))
+            .collect::<Result<Vec<_>, _>>()?;
+        self.observe_bytes::<BF, EF>(circuit, &bytes)
+    }
+
+    /// Observes all three Poly64 coefficients in ascending degree of `y`.
+    /// Each coefficient contributes eight raw little-endian bytes.
+    pub fn observe_poly192<BF, EF>(
+        &mut self,
+        circuit: &mut CircuitBuilder<EF>,
+        value: &BinaryPoly192Target,
+    ) -> Result<(), CircuitBuilderError>
+    where
+        BF: PrimeField64,
+        EF: ExtensionField<BF> + Eq + Hash,
+    {
+        let mut staged = self.clone();
+        for coefficient in value.coefficients() {
+            staged.observe_poly64::<BF, EF>(circuit, coefficient)?;
+        }
+        *self = staged;
+        Ok(())
+    }
+
+    /// Draws 24 bytes as the three checked polynomial coefficients of Poly192.
+    /// This matches `BinaryChallenger<Poly64, _>::sample_algebra_element`,
+    /// including a partial or empty digest refill between coefficients.
+    pub fn sample_poly192<BF, EF>(
+        &mut self,
+        circuit: &mut CircuitBuilder<EF>,
+    ) -> Result<BinaryPoly192Target, CircuitBuilderError>
+    where
+        BF: PrimeField64,
+        EF: ExtensionField<BF> + Eq + Hash,
+    {
+        let mut staged = self.clone();
+        let bytes = staged.sample_bytes::<BF, EF>(circuit, 24)?;
+        let coefficients = bytes
+            .chunks_exact(8)
+            .map(|bytes| {
+                let mut bits = Vec::with_capacity(64);
+                for &byte in bytes {
+                    bits.extend(circuit.decompose_to_bits::<BF>(byte, 8)?);
+                }
+                circuit.binary_poly64_from_bits(bits.try_into().expect("eight bytes have 64 bits"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let result = circuit.binary_poly192_from_coefficients(
+            coefficients
+                .try_into()
+                .expect("Poly192 has three coefficients"),
+        );
         *self = staged;
         Ok(result)
     }
