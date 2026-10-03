@@ -17,6 +17,7 @@ mod fields;
 mod gadgets;
 mod generic_sumcheck;
 mod generic_sumcheck_verifier;
+mod grouped_oracle;
 mod input;
 mod nonzero;
 mod poly_whir_gadgets;
@@ -56,6 +57,7 @@ pub use generic_sumcheck_verifier::{
     BinaryGenericSumcheckVerifier, NativeBinaryGenericSumcheckInput,
 };
 pub use input::{BinaryPcsInputShape, NativeBinaryPcsInput};
+pub use grouped_oracle::BinaryGroupedOraclePlan;
 pub use nonzero::{
     BinaryNonzeroChallengeOutput, BinaryNonzeroChallengePlan, BinaryNonzeroChallengeTailOutput,
     BinaryNonzeroChallengeTailPlan,
