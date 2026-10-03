@@ -301,3 +301,219 @@ fn composed_boolean_opening_proves_in_a_prime_field_circuit() {
     let proof = prepared.prove(&runner.run().unwrap()).unwrap();
     prepared.verifier().verify(&proof, &[]).unwrap();
 }
+
+#[test]
+fn consecutive_boolean_openings_reuse_the_native_ring_entry() {
+    type E = BinaryField64;
+    let config = BinaryPcsConfig::try_new::<E, E>(
+        1,
+        BinaryPcsParams {
+            log_inv_rate: 1,
+            pow_bits: 0,
+            security_level: 8,
+        },
+    )
+    .unwrap();
+    let mmcs = keccak::LevelMmcs::<E>::new(
+        keccak::FieldHash::new(keccak::byte_hash()),
+        keccak::Compress::new(keccak::byte_hash()),
+        0,
+    );
+    let pcs = BooleanPcs::<E, _, _>::new(config, mmcs.clone(), mmcs.clone(), 7).unwrap();
+    let verifier = BinaryBooleanPcsVerifier::<E>::new(
+        config,
+        vec![BinaryRingClaimSpec {
+            current: true,
+            next_rows: None,
+        }],
+        ByteHash::Keccak256,
+        0,
+        32,
+    )
+    .unwrap();
+    let shape = verifier.input_shape();
+    let mut builder = CircuitBuilder::<BabyBear>::new();
+    builder.enable_keccak_f1600::<BabyBear>();
+    let caps = (0..2)
+        .map(|_| {
+            vec![
+                builder
+                    .alloc_private_input_array::<16>("Boolean cap")
+                    .to_vec(),
+            ]
+        })
+        .collect::<Vec<_>>();
+    let first = shape
+        .allocate_targets::<BabyBear, BabyBear>(&mut builder)
+        .unwrap();
+    let second = shape
+        .allocate_targets::<BabyBear, BabyBear>(&mut builder)
+        .unwrap();
+    let expected = builder.alloc_private_input_array::<8>("continued Boolean challenge");
+    let expected = builder.binary128_from_limbs::<BabyBear>(expected).unwrap();
+    let initial = (0..3)
+        .map(|_| builder.define_const(BabyBear::from_u8(9)))
+        .collect::<Vec<_>>();
+    let mut ch = BinaryTower128Challenger::with_initial_bytes::<BabyBear, BabyBear>(
+        &mut builder,
+        ByteHash::Keccak256,
+        &initial,
+    )
+    .unwrap();
+    for cap in &caps {
+        verifier
+            .observe_commitment::<BabyBear, BabyBear>(&mut builder, &mut ch, cap)
+            .unwrap();
+    }
+    let continuation = verifier
+        .verify_readings_with_continuation::<BabyBear, BabyBear>(&mut builder, ch, &caps[0], &first)
+        .unwrap();
+    let continuation = verifier
+        .verify_readings_after_queries::<BabyBear, BabyBear>(
+            &mut builder,
+            continuation,
+            &caps[1],
+            &second,
+        )
+        .unwrap();
+    let observation = 29u64
+        .to_le_bytes()
+        .map(|b| builder.define_const(BabyBear::from_u8(b)));
+    let mut ch = continuation
+        .resume_with_observation::<BabyBear, BabyBear>(&mut builder, &observation)
+        .unwrap();
+    let bytes = ch
+        .sample_bytes::<BabyBear, BabyBear>(&mut builder, 8)
+        .unwrap();
+    let mut bits = [p3_circuit::ExprId::ZERO; 128];
+    for (i, byte) in bytes.into_iter().enumerate() {
+        bits[8 * i..8 * i + 8]
+            .copy_from_slice(&builder.decompose_to_bits::<BabyBear>(byte, 8).unwrap());
+    }
+    let actual = builder.binary128_from_bits(bits).unwrap();
+    for (&a, &b) in actual.bits().iter().zip(expected.bits()) {
+        let difference = if b == p3_circuit::ExprId::ZERO {
+            builder.sub(b, a)
+        } else {
+            builder.sub(a, b)
+        };
+        builder.assert_zero(difference);
+    }
+    let circuit = builder.build().unwrap();
+    for (seed, prefixes) in [(2u64, [0, 1]), (19, [1, 0])] {
+        let make = || keccak::LevelChallenger::<E>::from_hasher(vec![9; 3], keccak::byte_hash());
+        let mut prover = make();
+        let mut native_caps = Vec::new();
+        let mut data = Vec::new();
+        for i in 0..2u64 {
+            let bits = [
+                PackedGf2x64::new(0x39244dfadb79d227u64.wrapping_mul(seed + i)),
+                PackedGf2x64::new(0x9731364faf895fc7u64.wrapping_mul(seed + i)),
+            ];
+            let (cap, retained) = pcs.commit_bits(&bits, &mut prover).unwrap();
+            native_caps.push(cap);
+            data.push(retained);
+        }
+        let openings = prefixes.map(|prefix| {
+            vec![BitOpening {
+                point: Point::new(
+                    (0..7)
+                        .map(|j| {
+                            if j < prefix {
+                                E::ONE
+                            } else {
+                                E::from_repr(
+                                    0x63914fcd278be173u64.wrapping_mul(1 + j as u64 + seed),
+                                )
+                            }
+                        })
+                        .collect(),
+                ),
+                row_variables: 7,
+                current: true,
+                next: false,
+            }]
+        });
+        let mut proofs = Vec::new();
+        let mut readings = Vec::new();
+        for (retained, opening) in data.into_iter().zip(&openings) {
+            let (values, proof) = pcs.open_readings(retained, opening, &mut prover).unwrap();
+            readings.push(values);
+            proofs.push(proof);
+        }
+        let mut entry = make();
+        for cap in &native_caps {
+            pcs.observe_commitment(cap, &mut entry);
+        }
+        let mut native_verifier = entry.clone();
+        let mut inputs = Vec::new();
+        for i in 0..2 {
+            pcs.verify_readings(
+                &native_caps[i],
+                &openings[i],
+                &readings[i],
+                &proofs[i],
+                &mut native_verifier,
+            )
+            .unwrap();
+            inputs.push(
+                verifier
+                    .import_native(
+                        &mmcs,
+                        &mmcs,
+                        &native_caps[i],
+                        &[openings[i][0].point.clone()],
+                        &[(readings[i][0].current, readings[i][0].next)],
+                        &proofs[i],
+                        &mut entry,
+                    )
+                    .unwrap(),
+            );
+        }
+        use p3_challenger::CanObserve;
+        native_verifier.observe(E::from_repr(29));
+        entry.observe(E::from_repr(29));
+        let expected = native_verifier.sample_algebra_element::<E>().to_repr() as u128;
+        assert_eq!(
+            entry.sample_algebra_element::<E>().to_repr() as u128,
+            expected
+        );
+        let mut values = native_caps
+            .iter()
+            .flat_map(|cap| {
+                bytes_to_limbs(&cap.roots()[0])
+                    .into_iter()
+                    .map(BabyBear::from_u16)
+            })
+            .collect::<Vec<_>>();
+        for input in inputs {
+            values.extend(input.private_values::<BabyBear>(&shape).unwrap());
+        }
+        values.extend((0..8).map(|i| BabyBear::from_u16((expected >> (16 * i)) as u16)));
+        assert!(run(&circuit, &values));
+        let mut wrong = values.clone();
+        let last = wrong.len() - 8;
+        wrong[last] += BabyBear::ONE;
+        assert!(!run(&circuit, &wrong));
+        if seed == 2 {
+            use p3_circuit_prover::batch_stark_prover::{
+                BatchStarkProver, KeccakF1600AirBuilder, KeccakF1600Preprocessor, KeccakF1600Prover,
+            };
+            use p3_circuit_prover::{ConstraintProfile, config};
+            let mut prover = BatchStarkProver::new(config::baby_bear());
+            prover.register_table_prover(Box::new(KeccakF1600Prover::<1>));
+            let prepared = prover
+                .prepare_circuit::<BabyBear, 1>(
+                    &circuit,
+                    &[Box::new(KeccakF1600Preprocessor)],
+                    &[Box::new(KeccakF1600AirBuilder::<1>)],
+                    ConstraintProfile::Standard,
+                )
+                .unwrap();
+            let mut runner = circuit.runner();
+            runner.set_private_inputs(&values).unwrap();
+            let proof = prepared.prove(&runner.run().unwrap()).unwrap();
+            prepared.verifier().verify(&proof, &[]).unwrap();
+        }
+    }
+}

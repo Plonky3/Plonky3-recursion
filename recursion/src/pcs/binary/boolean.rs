@@ -17,11 +17,11 @@ use p3_symmetric::{CryptographicHasher, PseudoCompressionFunction};
 use super::verifier::assert_equal;
 use super::{
     BinaryBitRingVerifier, BinaryPcs128ProofTargets, BinaryPcsInputShape, BinaryPcsVerifier,
-    BinaryRingClaimSpec, BinaryRingInputShape, BinaryRingProofTargets, NativeBinaryPcsInput,
-    NativeBinaryRingInput, RecursiveBinaryChallengeField,
+    BinaryRingClaimSpec, BinaryRingInputShape, BinaryRingOutput, BinaryRingProofTargets,
+    NativeBinaryPcsInput, NativeBinaryRingInput, RecursiveBinaryChallengeField,
 };
-use crate::BinaryTower128Challenger;
 use crate::verifier::{VerificationError, VerifierLimits};
+use crate::{BinaryQueryContinuation, BinaryTower128Challenger};
 
 /// Verifier-owned schedule for a released Boolean PCS opening. The ring switch
 /// binds each incoming point and reduces all requested readings to one packed
@@ -163,8 +163,8 @@ impl<E: RecursiveBinaryChallengeField + ExtensionField<E>> BinaryBooleanPcsVerif
     }
 
     /// Constrains the complete bit-reading relation, including equality of the
-    /// reduced value and the authenticated opening at the derived point. Query
-    /// rejection sampling consumes the transcript as a terminal operation.
+    /// reduced value and the authenticated opening at the derived point, and
+    /// drops the terminal query continuation.
     pub fn verify_readings<BF, EF>(
         &self,
         circuit: &mut CircuitBuilder<EF>,
@@ -176,18 +176,79 @@ impl<E: RecursiveBinaryChallengeField + ExtensionField<E>> BinaryBooleanPcsVerif
         BF: PrimeField64,
         EF: ExtensionField<BF> + Eq + Hash,
     {
-        self.reduction.check_targets(&proof.reduction)?;
-        // Only the point shape matters to this preflight. Its actual value is
-        // subsequently derived by the constrained ring-switch transcript.
-        let placeholder =
-            proof.reduction.claims[0].point[..self.opening.config.num_variables()].to_vec();
-        self.opening
-            .check_targets(cap, &[placeholder], &proof.opening)?;
+        self.verify_readings_with_continuation::<BF, EF>(circuit, challenger, cap, proof)
+            .map(|_| ())
+    }
+
+    /// Verifies all bit readings and returns the exact packed PCS query
+    /// completion for a following nonempty protocol observation.
+    pub fn verify_readings_with_continuation<BF, EF>(
+        &self,
+        circuit: &mut CircuitBuilder<EF>,
+        challenger: BinaryTower128Challenger,
+        cap: &[Vec<ExprId>],
+        proof: &BinaryBooleanProofTargets<E>,
+    ) -> Result<BinaryQueryContinuation, VerificationError>
+    where
+        BF: PrimeField64,
+        EF: ExtensionField<BF> + Eq + Hash,
+    {
+        self.check_targets(cap, proof)?;
         let output = self
             .reduction
             .verify::<BF, EF>(circuit, challenger, &proof.reduction)?;
+        self.verify_reduced::<BF, EF>(circuit, cap, proof, output)
+    }
+
+    /// Resumes a following Boolean opening through its ring-switch seed. The
+    /// commitment must already be bound at the surrounding native protocol site.
+    pub fn verify_readings_after_queries<BF, EF>(
+        &self,
+        circuit: &mut CircuitBuilder<EF>,
+        continuation: BinaryQueryContinuation,
+        cap: &[Vec<ExprId>],
+        proof: &BinaryBooleanProofTargets<E>,
+    ) -> Result<BinaryQueryContinuation, VerificationError>
+    where
+        BF: PrimeField64,
+        EF: ExtensionField<BF> + Eq + Hash,
+    {
+        self.check_targets(cap, proof)?;
+        let output = self.reduction.verify_after_queries::<BF, EF>(
+            circuit,
+            continuation,
+            &proof.reduction,
+        )?;
+        self.verify_reduced::<BF, EF>(circuit, cap, proof, output)
+    }
+
+    fn check_targets(
+        &self,
+        cap: &[Vec<ExprId>],
+        proof: &BinaryBooleanProofTargets<E>,
+    ) -> Result<(), VerificationError> {
+        self.reduction.check_targets(&proof.reduction)?;
+        // The preflight only needs the point shape. The transcript derives its
+        // actual value before the packed opening relation is installed.
+        let placeholder =
+            proof.reduction.claims[0].point[..self.opening.config.num_variables()].to_vec();
+        self.opening
+            .check_targets(cap, &[placeholder], &proof.opening)
+    }
+
+    fn verify_reduced<BF, EF>(
+        &self,
+        circuit: &mut CircuitBuilder<EF>,
+        cap: &[Vec<ExprId>],
+        proof: &BinaryBooleanProofTargets<E>,
+        output: BinaryRingOutput,
+    ) -> Result<BinaryQueryContinuation, VerificationError>
+    where
+        BF: PrimeField64,
+        EF: ExtensionField<BF> + Eq + Hash,
+    {
         assert_equal(circuit, &output.value, &proof.opening.evals[0].current()[0]);
-        self.opening.verify_at::<BF, EF>(
+        self.opening.verify_at_with_continuation::<BF, EF>(
             circuit,
             output.challenger,
             cap,

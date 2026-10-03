@@ -12,14 +12,14 @@ use p3_sumcheck::ring_switch::bits::transcript::{BitRingSwitchClaimsShape, BitRi
 use p3_sumcheck::strategy::Basis;
 use p3_sumcheck::transcript::SumcheckShape;
 
-use super::verifier::{assert_equal, constrain_width, observe_seed, observe_values};
+use super::verifier::{assert_equal, constrain_width, observe_seed, observe_values, seed_bytes};
 use super::{
     BinaryTowerTensorTarget, RecursiveBinaryChallengeField, binary_tensor_closing_weight,
     binary128_reduce_sumcheck_claim,
 };
-use crate::BinaryTower128Challenger;
 use crate::transcript::domain_separator_seed;
 use crate::verifier::{InputResourceUsage, VerificationError, VerifierLimits};
+use crate::{BinaryQueryContinuation, BinaryTower128Challenger};
 
 /// Verifier-owned readings requested from one Boolean claim.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -194,8 +194,40 @@ impl<E: RecursiveBinaryChallengeField> BinaryBitRingVerifier<E> {
     pub fn verify<BF, EF>(
         &self,
         circuit: &mut CircuitBuilder<EF>,
+        challenger: BinaryTower128Challenger,
+        proof: &BinaryRingProofTargets<E>,
+    ) -> Result<BinaryRingOutput, VerificationError>
+    where
+        BF: PrimeField64,
+        EF: ExtensionField<BF> + Eq + Hash,
+    {
+        self.verify_impl::<BF, EF>(circuit, challenger, proof, false)
+    }
+
+    /// Resumes from a preceding bounded query phase through this ring-switch
+    /// schedule's nonempty native seed, absorbing that seed exactly once.
+    pub fn verify_after_queries<BF, EF>(
+        &self,
+        circuit: &mut CircuitBuilder<EF>,
+        continuation: BinaryQueryContinuation,
+        proof: &BinaryRingProofTargets<E>,
+    ) -> Result<BinaryRingOutput, VerificationError>
+    where
+        BF: PrimeField64,
+        EF: ExtensionField<BF> + Eq + Hash,
+    {
+        self.check_targets(proof)?;
+        let bytes = seed_bytes(circuit, &self.seed);
+        let challenger = continuation.resume_with_observation::<BF, EF>(circuit, &bytes)?;
+        self.verify_impl::<BF, EF>(circuit, challenger, proof, true)
+    }
+
+    fn verify_impl<BF, EF>(
+        &self,
+        circuit: &mut CircuitBuilder<EF>,
         mut challenger: BinaryTower128Challenger,
         proof: &BinaryRingProofTargets<E>,
+        seed_observed: bool,
     ) -> Result<BinaryRingOutput, VerificationError>
     where
         BF: PrimeField64,
@@ -219,7 +251,9 @@ impl<E: RecursiveBinaryChallengeField> BinaryBitRingVerifier<E> {
         {
             constrain_width(circuit, value, E::RAW_BITS);
         }
-        observe_seed::<E, BF, EF>(circuit, &mut challenger, &self.seed)?;
+        if !seed_observed {
+            observe_seed::<E, BF, EF>(circuit, &mut challenger, &self.seed)?;
+        }
         for claim in &proof.claims {
             observe_values::<BF, EF>(circuit, &mut challenger, &claim.point, E::RAW_BITS)?;
             observe_values::<BF, EF>(circuit, &mut challenger, claim.tensor.rows(), E::RAW_BITS)?;
