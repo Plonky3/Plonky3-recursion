@@ -72,6 +72,76 @@ pub struct BinaryWhirInputShape<F> {
 }
 
 impl<F: RecursiveBinaryWhirTowerField> BinaryWhirInputShape<F> {
+    pub(crate) fn native_decode_shape(&self) -> crate::artifact::binary_native::codec::WhirDecode {
+        use crate::artifact::binary_native::codec::{
+            OracleDecode, WhirDecode, WhirFoldDecode, WhirSiteDecode,
+        };
+        let fold = |shape: &FoldShape| WhirFoldDecode {
+            rounds: shape.rounds,
+            pow_count: if shape.pow_bits > 0 { shape.rounds } else { 0 },
+        };
+        WhirDecode {
+            eval_widths: self
+                .protocol
+                .iter_openings()
+                .map(|(_, batch)| (batch.current().len(), batch.next().len()))
+                .collect(),
+            cap_roots: 1usize << self.cap_height,
+            initial_ood: self.initial_ood,
+            initial_fold: fold(&self.initial_fold),
+            sites: self
+                .sites
+                .iter()
+                .map(|site| WhirSiteDecode {
+                    width: site.width,
+                    oracle: OracleDecode {
+                        rows: site.queries.num_queries(),
+                        path_len: site.log_height - self.cap_height,
+                    },
+                    query_pow_bits: site.query_pow_bits,
+                    ood: site.ood,
+                    fold: fold(&site.fold),
+                })
+                .collect(),
+            final_poly_len: self.final_len,
+        }
+    }
+
+    pub(crate) fn write_identity(
+        &self,
+        w: &mut crate::artifact::wire::Writer,
+    ) -> Result<(), crate::artifact::ArtifactError> {
+        w.write_vec(
+            "binary WHIR configuration seed",
+            &self.contract,
+            |w, value| w.write_bytes(&value.raw_coordinates().to_le_bytes()[..F::RAW_BITS / 8]),
+        )?;
+        w.write_u8(match self.order {
+            VariableOrder::Prefix => 0,
+            VariableOrder::Suffix => 1,
+        })?;
+        w.write_u8(match self.hash {
+            ByteHash::Keccak256 => 0,
+            ByteHash::Blake3 => 1,
+        })?;
+        w.write_count("binary WHIR cap height", self.cap_height)?;
+        let shapes = self.protocol.table_shapes();
+        w.write_vec("binary WHIR tables", &shapes, |w, shape| {
+            w.write_count("binary WHIR table height", shape.num_variables())?;
+            w.write_count("binary WHIR table width", shape.width())
+        })?;
+        w.write_count("binary WHIR openings", self.protocol.num_openings())?;
+        for (table, batch) in self.protocol.iter_openings() {
+            w.write_count("binary WHIR opening table", table)?;
+            for columns in [batch.current(), batch.next()] {
+                w.write_vec("binary WHIR opening columns", columns, |w, &column| {
+                    w.write_count("binary WHIR opening column", column)
+                })?;
+            }
+        }
+        Ok(())
+    }
+
     pub fn allocate_targets<BF, EF>(
         &self,
         b: &mut CircuitBuilder<EF>,
@@ -174,13 +244,38 @@ where
         }
     }
 
-    pub(super) fn check_native<C, H, Co>(
+    pub(crate) fn check_native<C, H, Co>(
         &self,
         config: &WhirConfig<BinaryField128, F, C>,
         mmcs: &MerkleTreeMmcs<F, u8, H, Co, 2, 32>,
         commitment: &MerkleCap<F, [u8; 32]>,
         points: &[Point<BinaryField128>],
         proof: &PcsProof<F, BinaryField128, MerkleTreeMmcs<F, u8, H, Co, 2, 32>>,
+    ) -> Result<(), VerificationError>
+    where
+        F: PackedValue<Value = F>,
+        H: CryptographicHasher<F, [u8; 32]> + Sync,
+        Co: PseudoCompressionFunction<[u8; 32], 2> + Sync,
+        C: FieldChallenger<F> + GrindingChallenger<Witness = F>,
+    {
+        self.check_native_with_usage(
+            config,
+            mmcs,
+            commitment,
+            points,
+            proof,
+            &mut InputResourceUsage::default(),
+        )
+    }
+
+    pub(crate) fn check_native_with_usage<C, H, Co>(
+        &self,
+        config: &WhirConfig<BinaryField128, F, C>,
+        mmcs: &MerkleTreeMmcs<F, u8, H, Co, 2, 32>,
+        commitment: &MerkleCap<F, [u8; 32]>,
+        points: &[Point<BinaryField128>],
+        proof: &PcsProof<F, BinaryField128, MerkleTreeMmcs<F, u8, H, Co, 2, 32>>,
+        usage: &mut InputResourceUsage,
     ) -> Result<(), VerificationError>
     where
         F: PackedValue<Value = F>,
@@ -229,7 +324,6 @@ where
                 &last.fold,
             )?;
         }
-        let mut usage = InputResourceUsage::default();
         for (i, site) in p.sites.iter().enumerate() {
             let (openings, pow) = if let Some(round) = proof.whir.rounds.get(i) {
                 if round

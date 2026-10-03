@@ -119,10 +119,31 @@ pub(crate) struct BooleanTraceDecode<O = GroupedOracleDecode> {
     pub packed: PcsDecode<O>,
 }
 
+pub(crate) struct WhirFoldDecode {
+    pub rounds: usize,
+    pub pow_count: usize,
+}
+pub(crate) struct WhirSiteDecode {
+    pub width: usize,
+    pub oracle: OracleDecode,
+    pub query_pow_bits: usize,
+    pub ood: usize,
+    pub fold: WhirFoldDecode,
+}
+pub(crate) struct WhirDecode {
+    pub eval_widths: Vec<(usize, usize)>,
+    pub cap_roots: usize,
+    pub initial_ood: usize,
+    pub initial_fold: WhirFoldDecode,
+    pub sites: Vec<WhirSiteDecode>,
+    pub final_poly_len: usize,
+}
+
 mod boolean;
 mod grouped;
 mod grouped_boolean;
 mod grouped_shell;
+mod whir;
 
 type PcsProof<F, E> = BinaryPcsProof<F, E, NativeMmcs<F>, NativeMmcs<E>>;
 
