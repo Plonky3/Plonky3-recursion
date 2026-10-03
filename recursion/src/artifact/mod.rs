@@ -1,7 +1,13 @@
 mod assembly;
+mod binary_native;
 mod descriptor;
 pub(crate) mod native;
 pub(crate) mod wire;
+
+pub use binary_native::{
+    BinaryNativeAuthority, BinaryNativeChallenger, BinaryNativeConfig, BinaryNativeHash,
+    BinaryNativePcsParameters, BinaryNativeProver, BinaryNativeVerifierSpec, VerifiedBinaryNativeProof,
+};
 
 use alloc::boxed::Box;
 use alloc::rc::Rc;

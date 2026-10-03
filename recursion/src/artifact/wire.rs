@@ -67,7 +67,7 @@ impl Writer {
         }
     }
 
-    fn write_bytes(&mut self, bytes: &[u8]) -> Result<(), ArtifactError> {
+    pub(crate) fn write_bytes(&mut self, bytes: &[u8]) -> Result<(), ArtifactError> {
         let actual = self
             .bytes
             .len()

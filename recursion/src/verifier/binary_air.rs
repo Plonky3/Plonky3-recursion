@@ -81,6 +81,109 @@ where
     F: RecursiveBinaryTowerField,
     E: RecursiveBinaryChallengeField + ExtensionField<F>,
 {
+    /// Canonical, explicitly tagged identity of the frozen constraint program.
+    /// No user callback, pointer identity or Debug formatting enters this key.
+    pub(crate) fn write_identity(
+        &self,
+        w: &mut crate::artifact::wire::Writer,
+    ) -> Result<(), crate::artifact::ArtifactError> {
+        use p3_lookup::TraceWindow;
+        for count in [
+            self.width,
+            self.public_count,
+            self.preprocessed_width,
+            self.log_height,
+            self.degree,
+        ] {
+            w.write_count("binary AIR geometry", count)?;
+        }
+        for columns in [
+            &self.next_columns,
+            &self.preprocessed_next_columns,
+            &self.constraints,
+        ] {
+            w.write_vec("binary AIR indices", columns, |w, &i| {
+                w.write_count("binary AIR index", i)
+            })?;
+        }
+        w.write_vec("binary AIR periods", &self.periods, |w, period| {
+            w.write_vec("binary AIR period values", period, |w, &raw| {
+                w.write_bytes(&raw.to_le_bytes()[..F::RAW_BITS / 8])
+            })
+        })?;
+        w.write_vec("binary AIR nodes", &self.nodes, |w, node| {
+            let (tag, operands): (u8, &[usize]) = match node {
+                Node::Constant(raw) => {
+                    w.write_u8(0)?;
+                    return w.write_bytes(&raw.to_le_bytes()[..F::RAW_BITS / 8]);
+                }
+                Node::Current(i) => (1, core::slice::from_ref(i)),
+                Node::Next(i) => (2, core::slice::from_ref(i)),
+                Node::PreprocessedCurrent(i) => (3, core::slice::from_ref(i)),
+                Node::PreprocessedNext(i) => (4, core::slice::from_ref(i)),
+                Node::Periodic(i) => (5, core::slice::from_ref(i)),
+                Node::Public(i) => (6, core::slice::from_ref(i)),
+                Node::First => (7, &[]),
+                Node::Last => (8, &[]),
+                Node::Transition => (9, &[]),
+                Node::Add(a, b) => {
+                    w.write_u8(10)?;
+                    w.write_count("binary AIR operand", *a)?;
+                    return w.write_count("binary AIR operand", *b);
+                }
+                Node::Mul(a, b) => {
+                    w.write_u8(11)?;
+                    w.write_count("binary AIR operand", *a)?;
+                    return w.write_count("binary AIR operand", *b);
+                }
+            };
+            w.write_u8(tag)?;
+            for &i in operands {
+                w.write_count("binary AIR operand", i)?;
+            }
+            Ok(())
+        })?;
+        w.write_vec("binary AIR bus declarations", &self.bus, |w, bus| {
+            w.write_count("binary bus name", bus.name.len())?;
+            w.write_bytes(bus.name.as_bytes())?;
+            w.write_u8(match bus.direction {
+                BusDirection::Push => 0,
+                BusDirection::Pull => 1,
+            })?;
+            w.write_vec("binary bus fields", &bus.fields, |w, &i| {
+                w.write_count("binary bus node", i)
+            })?;
+            w.write_bool(bus.activation.is_some())?;
+            if let Some(i) = bus.activation {
+                w.write_count("binary bus activation", i)?;
+            }
+            w.write_count("binary bus degree", bus.factor_degree)
+        })?;
+        w.write_vec("binary indexed reads", self.indexed.reads(), |w, read| {
+            w.write_count("binary indexed table name", read.table.len())?;
+            w.write_bytes(read.table.as_bytes())?;
+            w.write_count("binary indexed position", read.position)?;
+            w.write_vec("binary indexed payload", &read.payload, |w, &i| {
+                w.write_count("binary indexed column", i)
+            })
+        })?;
+        w.write_vec(
+            "binary indexed providers",
+            self.indexed.tables(),
+            |w, table| {
+                w.write_count("binary indexed table name", table.name.len())?;
+                w.write_bytes(table.name.as_bytes())?;
+                w.write_u8(match table.window {
+                    TraceWindow::Main => 0,
+                    TraceWindow::Preprocessed => 1,
+                })?;
+                w.write_vec("binary indexed columns", &table.columns, |w, &i| {
+                    w.write_count("binary indexed column", i)
+                })
+            },
+        )
+    }
+
     pub fn from_air<A>(air: &A, log_height: usize) -> Result<Self, VerificationError>
     where
         A: Air<InteractionSymbolicBuilder<F, E>> + Air<BusSymbolicBuilder<F, E>>,

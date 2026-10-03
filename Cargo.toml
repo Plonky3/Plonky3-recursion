@@ -56,6 +56,7 @@ mimalloc = { version = "0.1", default-features = false }
 p3-air = "0.8.0"
 p3-baby-bear = "0.8.0"
 p3-batch-stark = "0.8.0"
+p3-binary-dft = "0.8.0"
 p3-binary-field = "0.8.0"
 p3-binary-pcs = "0.8.0"
 p3-blake3 = "0.8.0"

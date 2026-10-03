@@ -107,6 +107,31 @@ pub struct BinaryMultiStarkProofTargets {
 impl<F: RecursiveBinaryTowerField, E: RecursiveBinaryChallengeField>
     BinaryMultiStarkInputShape<F, E>
 {
+    pub(crate) fn write_identity(
+        &self,
+        w: &mut crate::artifact::wire::Writer,
+    ) -> Result<(), crate::artifact::ArtifactError>
+    where
+        E: ExtensionField<F>,
+    {
+        w.write_vec("binary native AIRs", &self.airs, |w, air| {
+            air.write_identity(w)
+        })?;
+        for seed in [&self.outer_seed, &self.zerocheck_seed] {
+            w.write_vec("binary native transcript seed", seed, |w, value| {
+                w.write_bytes(&value.raw_coordinates().to_le_bytes()[..F::RAW_BITS / 8])
+            })?;
+        }
+        if let Some(pp) = &self.preprocessed {
+            w.write_vec(
+                "binary native preprocessing cap",
+                &pp.commitment,
+                |w, root| w.write_bytes(root),
+            )?;
+        }
+        Ok(())
+    }
+
     /// Trusted public-value counts in the original AIR instance order.
     pub fn public_value_counts(&self) -> impl ExactSizeIterator<Item = usize> + '_
     where
@@ -246,6 +271,26 @@ where
     F: RecursiveBinaryTowerField,
     E: RecursiveBinaryChallengeField + ExtensionField<F>,
 {
+    /// Installs the exact cap captured from the factory's matched native setup.
+    /// Geometry was validated before setup, with a placeholder cap of this size.
+    pub(crate) fn bind_native_preprocessing_cap(
+        &mut self,
+        cap: Vec<[u8; 32]>,
+    ) -> Result<(), VerificationError> {
+        let Some(pp) = &mut self.input.preprocessed else {
+            return Err(invalid(
+                "binary native setup produced an unexpected preprocessing cap",
+            ));
+        };
+        if cap.len() != pp.commitment.len() {
+            return Err(invalid(
+                "binary native setup preprocessing cap shape mismatch",
+            ));
+        }
+        pp.commitment = cap;
+        Ok(())
+    }
+
     pub fn new<A>(
         airs: &[&A],
         heights: &[usize],

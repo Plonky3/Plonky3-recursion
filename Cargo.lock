@@ -1375,6 +1375,7 @@ dependencies = [
  "p3-air",
  "p3-baby-bear",
  "p3-batch-stark",
+ "p3-binary-dft",
  "p3-binary-field",
  "p3-binary-pcs",
  "p3-blake3",
