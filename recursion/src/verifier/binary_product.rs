@@ -205,24 +205,11 @@ where
         // The native shape's seed is private. A bounded, internally consistent
         // zero reduction captures it through the public verifier, including
         // the height-zero case, without allocating a tree's leaf table.
-        let dummy = ProductGkrProof {
-            roots: vec![E::ZERO; trees - usize::from(roots == ProductGkrRootShape::FirstTwoShared)],
-            layers: layers
-                .iter()
-                .map(|&(arity, rounds)| {
-                    if arity == 2 {
-                        ProductGkrLayerProof::Binary {
-                            children: vec![[E::ZERO; 2]; trees],
-                        }
-                    } else {
-                        ProductGkrLayerProof::RadixFour {
-                            round_polys: vec![[E::ZERO; 5]; rounds],
-                            children: vec![[E::ZERO; 4]; trees],
-                        }
-                    }
-                })
-                .collect(),
-        };
+        let dummy = zero_proof::<E>(
+            trees - usize::from(roots == ProductGkrRootShape::FirstTwoShared),
+            trees,
+            &layers,
+        );
         let mut tap = SeedTap::<F>::new();
         let _ = dummy
             .verify::<F, _>(native, &mut tap)
@@ -246,6 +233,14 @@ where
     }
     pub fn input_resource_usage(&self) -> InputResourceUsage {
         self.usage
+    }
+
+    pub(super) fn zero_native_proof(&self) -> ProductGkrProof<E> {
+        zero_proof(
+            self.input.root_count(),
+            self.input.native.num_trees(),
+            &self.input.layers,
+        )
     }
 
     /// Checks every message shape before adding constraints. Targets must
@@ -477,7 +472,7 @@ fn combine<EF: Field + Eq + Hash>(
     Ok(result)
 }
 
-fn sample<E, BF, EF>(
+pub(super) fn sample<E, BF, EF>(
     b: &mut CircuitBuilder<EF>,
     ch: &mut BinaryTower128Challenger,
 ) -> Result<BinaryTower128Target, VerificationError>
@@ -497,4 +492,29 @@ where
 
 fn invalid(message: &str) -> VerificationError {
     VerificationError::InvalidProofShape(message.into())
+}
+
+fn zero_proof<E: Field>(
+    roots: usize,
+    trees: usize,
+    layers: &[(usize, usize)],
+) -> ProductGkrProof<E> {
+    ProductGkrProof {
+        roots: vec![E::ZERO; roots],
+        layers: layers
+            .iter()
+            .map(|&(arity, rounds)| {
+                if arity == 2 {
+                    ProductGkrLayerProof::Binary {
+                        children: vec![[E::ZERO; 2]; trees],
+                    }
+                } else {
+                    ProductGkrLayerProof::RadixFour {
+                        round_polys: vec![[E::ZERO; 5]; rounds],
+                        children: vec![[E::ZERO; 4]; trees],
+                    }
+                }
+            })
+            .collect(),
+    }
 }

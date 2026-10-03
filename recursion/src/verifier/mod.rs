@@ -2,6 +2,7 @@
 
 mod batch_stark;
 mod binary_air;
+mod binary_bus;
 mod binary_multi_stark;
 mod binary_product;
 mod errors;

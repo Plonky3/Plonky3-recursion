@@ -1,4 +1,4 @@
-//! Complete native binary MultiStark verification for plain AIR constraints.
+//! Complete native binary MultiStark verification with supported AIR reductions.
 
 use alloc::vec;
 use alloc::vec::Vec;
@@ -7,7 +7,7 @@ use core::hash::Hash;
 use p3_air::Air;
 use p3_binary_field::BinaryField128;
 use p3_binary_pcs::{BinaryPcsConfig, BinaryPcsProof};
-use p3_bus::BusSymbolicBuilder;
+use p3_bus::{BusPlan, BusPlanInput, BusSymbolicBuilder};
 use p3_challenger::{CanObserve, CanSampleUniformBits, FieldChallenger, GrindingChallenger};
 use p3_circuit::ops::{BinaryTower128Target, ByteHash, bytes_to_limbs};
 use p3_circuit::{CircuitBuilder, ExprId};
@@ -26,7 +26,11 @@ use p3_sumcheck::{OpeningBatch, OpeningProtocol, TableShape, TableSpec};
 use p3_symmetric::{CryptographicHasher, PseudoCompressionFunction};
 
 use super::binary_air::constrain_width;
-use super::{BinaryAirConstraintPlan, InputResourceUsage, VerificationError, VerifierLimits};
+use super::binary_bus::{BinaryBusInputShape, BinaryBusVerifier};
+use super::{
+    BinaryAirConstraintPlan, BinaryProductGkrProofTargets, InputResourceUsage,
+    NativeBinaryProductGkrInput, VerificationError, VerifierLimits,
+};
 use crate::pcs::binary::{
     BinaryGenericSumcheckInputShape, BinaryGenericSumcheckProofTargets,
     BinaryGenericSumcheckVerifier, BinaryNonzeroChallengePlan, BinaryPcs128ProofTargets,
@@ -46,6 +50,7 @@ pub struct BinaryMultiStarkInputShape<F = BinaryField128, E = BinaryField128> {
     sumcheck: BinaryGenericSumcheckInputShape<F, E>,
     opening: BinaryPcsInputShape,
     preprocessed: Option<PreprocessedInputShape>,
+    bus: Option<BinaryBusInputShape<F, E>>,
     cap_height: usize,
     max_tau_draws: usize,
 }
@@ -86,6 +91,7 @@ impl PreprocessedInputShape {
 #[derive(Clone, Debug)]
 pub struct BinaryMultiStarkProofTargets {
     pub commitment: Vec<Vec<ExprId>>,
+    pub bus: Option<BinaryProductGkrProofTargets>,
     pub sumcheck: BinaryGenericSumcheckProofTargets,
     pub opening: BinaryPcs128ProofTargets,
     pub preprocessed_opening: Option<BinaryPcs128ProofTargets>,
@@ -94,7 +100,7 @@ pub struct BinaryMultiStarkProofTargets {
 impl<F: RecursiveBinaryTowerField, E: RecursiveBinaryChallengeField>
     BinaryMultiStarkInputShape<F, E>
 {
-    /// Allocates cap, generic sumcheck and PCS witnesses in this order.
+    /// Allocates cap, optional bus, generic sumcheck and PCS witnesses in order.
     /// Public values are allocated and bound separately by the caller.
     pub fn allocate_targets<BF, EF>(
         &self,
@@ -110,6 +116,11 @@ impl<F: RecursiveBinaryTowerField, E: RecursiveBinaryChallengeField>
                     .to_vec()
             })
             .collect();
+        let bus = self
+            .bus
+            .as_ref()
+            .map(|bus| bus.product.allocate_targets::<BF, EF>(b))
+            .transpose()?;
         let sumcheck = self.sumcheck.allocate_targets::<BF, EF>(b)?;
         let opening = self.opening.allocate_targets::<BF, EF>(b)?;
         let preprocessed_opening = self
@@ -119,6 +130,7 @@ impl<F: RecursiveBinaryTowerField, E: RecursiveBinaryChallengeField>
             .transpose()?;
         Ok(BinaryMultiStarkProofTargets {
             commitment,
+            bus,
             sumcheck,
             opening,
             preprocessed_opening,
@@ -131,6 +143,7 @@ impl<F: RecursiveBinaryTowerField, E: RecursiveBinaryChallengeField>
 pub struct NativeBinaryMultiStarkInput<F = BinaryField128, E = BinaryField128> {
     shape: BinaryMultiStarkInputShape<F, E>,
     commitment: Vec<[u8; 32]>,
+    bus: Option<NativeBinaryProductGkrInput<F, E>>,
     sumcheck: NativeBinaryGenericSumcheckInput<F, E>,
     opening: NativeBinaryPcsInput,
     preprocessed_opening: Option<NativeBinaryPcsInput>,
@@ -157,6 +170,13 @@ impl<F: RecursiveBinaryTowerField, E: RecursiveBinaryChallengeField>
             .iter()
             .flat_map(|root| bytes_to_limbs(root).into_iter().map(EF::from_u16))
             .collect();
+        match (&expected.bus, &self.bus) {
+            (Some(shape), Some(input)) => {
+                values.extend(input.private_values::<EF>(&shape.product)?)
+            }
+            (None, None) => {}
+            _ => return Err(invalid("binary MultiStark bus input shape mismatch")),
+        }
         values.extend(self.sumcheck.private_values::<EF>(&expected.sumcheck)?);
         values.extend(self.opening.private_values::<EF>(&expected.opening)?);
         match (&expected.preprocessed, &self.preprocessed_opening) {
@@ -174,10 +194,11 @@ impl<F: RecursiveBinaryTowerField, E: RecursiveBinaryChallengeField>
     }
 }
 
-/// Trusted plain-AIR binary MultiStark verifier with ordinary byte MMCS.
+/// Trusted binary MultiStark verifier with ordinary byte MMCS.
 /// Binds caller-owned public values through the complete AIR, sumcheck, and
 /// authenticated PCS relation. Periodic constants and preprocessing authority
-/// are fixed by construction. Interaction families require separate plans.
+/// are fixed by construction. Native binary buses are reduced through the
+/// authenticated AIR sumcheck; indexed and classical lookups require other plans.
 #[derive(Clone, Debug)]
 pub struct BinaryMultiStarkVerifier<F = BinaryField128, E = BinaryField128> {
     input: BinaryMultiStarkInputShape<F, E>,
@@ -185,6 +206,7 @@ pub struct BinaryMultiStarkVerifier<F = BinaryField128, E = BinaryField128> {
     tau: BinaryNonzeroChallengePlan<E>,
     opening: BinaryPcsVerifier<F, E>,
     preprocessed: Option<BinaryPcsVerifier<F, E>>,
+    bus: Option<BinaryBusVerifier<F, E>>,
     usage: InputResourceUsage,
 }
 
@@ -312,8 +334,10 @@ where
         // Check the axis before compiling any trusted callback or cloning lists.
         usage.add_instances(limits, airs.len())?;
         let mut plans = Vec::with_capacity(airs.len());
+        let mut bus_declarations = Vec::with_capacity(airs.len());
         for (&air, &height) in airs.iter().zip(heights) {
-            let plan = BinaryAirConstraintPlan::<F, E>::with_limits(air, height, limits)?;
+            let (plan, declarations) =
+                BinaryAirConstraintPlan::<F, E>::with_bus_limits(air, height, limits)?;
             if plan.preprocessed_width() != 0 && preprocessing.is_none() {
                 return Err(invalid(
                     "binary MultiStark preprocessing requires a trusted commitment plan",
@@ -327,6 +351,24 @@ where
             )?;
             usage.add_scalar_elements(limits, public_limbs)?;
             plans.push(plan);
+            bus_declarations.push(declarations);
+        }
+        let bus_inputs: Vec<_> = bus_declarations
+            .iter()
+            .zip(heights)
+            .map(|(interactions, &log_height)| BusPlanInput {
+                log_height,
+                interactions,
+            })
+            .collect();
+        let bus = BusPlan::build(&bus_inputs)
+            .map_err(|_| invalid("binary MultiStark bus geometry is invalid"))?
+            .map(|plan| BinaryBusVerifier::<F, E>::with_limits(plan, &plans, limits))
+            .transpose()?;
+        if let Some(bus) = &bus {
+            let mut bus_usage = bus.input_resource_usage();
+            bus_usage.instances = 0;
+            usage.merge(limits, bus_usage)?;
         }
         let height = *heights.iter().max().unwrap();
         let degree = plans
@@ -340,6 +382,7 @@ where
                 .ok_or(VerificationError::ResourceArithmeticOverflow {
                     component: "binary MultiStark sumcheck degree",
                 })?;
+        let degree = degree.max(bus.as_ref().map(|bus| bus.degree()).unwrap_or(0));
         let sumcheck =
             BinaryGenericSumcheckVerifier::<F, E>::with_limits(height, degree, pow_bits, limits)?;
         usage.merge(limits, sumcheck.input_resource_usage())?;
@@ -434,7 +477,7 @@ where
                 .collect(),
             pow_bits,
             has_indexed: false,
-            has_bus: false,
+            has_bus: bus.is_some(),
         };
         let degrees: Vec<_> = plans
             .iter()
@@ -443,7 +486,10 @@ where
                 interactions: 0,
             })
             .collect();
-        let zerocheck = ZerocheckShape::new(&degrees, height, 0, pow_bits);
+        let mut zerocheck = ZerocheckShape::new(&degrees, height, 0, pow_bits);
+        if let Some(bus) = &bus {
+            zerocheck = zerocheck.with_bus(bus.degree());
+        }
         let input = BinaryMultiStarkInputShape {
             airs: plans,
             outer_seed: domain_separator_seed(&outer.domain_separator::<F>()),
@@ -451,6 +497,7 @@ where
             sumcheck: sumcheck.input_shape(),
             opening: opening.input_shape(),
             preprocessed: preprocessed_input,
+            bus: bus.as_ref().map(|bus| bus.input_shape()),
             cap_height,
             max_tau_draws,
         };
@@ -460,6 +507,7 @@ where
             tau,
             opening,
             preprocessed,
+            bus,
             usage,
         })
     }
@@ -486,6 +534,11 @@ where
         EF: ExtensionField<BF> + Eq + Hash,
     {
         self.check_public(public)?;
+        match (&self.bus, &proof.bus) {
+            (Some(verifier), Some(proof)) => verifier.check_targets(proof)?,
+            (None, None) => {}
+            _ => return Err(invalid("binary MultiStark bus proof shape mismatch")),
+        }
         self.sumcheck.check_targets(&proof.sumcheck)?;
         let zero = b.binary128_constant(0)?;
         let points: Vec<_> = self
@@ -532,14 +585,36 @@ where
             }
             observe_values::<BF, EF>(b, &mut ch, values, F::RAW_BITS)?;
         }
+        let bus_claims = if let (Some(verifier), Some(proof)) = (&self.bus, &proof.bus) {
+            let (claims, next) = verifier.verify::<BF, EF>(b, ch, proof)?;
+            ch = next;
+            Some(claims)
+        } else {
+            None
+        };
         observe_seed::<F, BF, EF>(b, &mut ch, &self.input.zerocheck_seed)?;
         let alpha = self.opening.sample_challenge::<BF, EF>(b, &mut ch)?;
         let beta = self.opening.sample_challenge::<BF, EF>(b, &mut ch)?;
+        let lambda = if bus_claims.is_some() {
+            Some(self.opening.sample_challenge::<BF, EF>(b, &mut ch)?)
+        } else {
+            None
+        };
+        let initial = if let (Some(claims), Some(lambda)) = (&bus_claims, &lambda) {
+            let one = b.binary128_constant(1)?;
+            let push = b.binary128_add(&claims.values[0], &one);
+            let pull = b.binary128_add(&claims.values[1], &one);
+            let pull = b.binary128_mul(lambda, &pull);
+            let batched = b.binary128_add(&push, &pull);
+            b.binary128_mul(lambda, &batched)
+        } else {
+            zero.clone()
+        };
         let output = self.tau.sample::<BF, EF>(b, ch)?;
         let reduction = self.sumcheck.verify_reduction_after_queries::<BF, EF>(
             b,
             output.continuation,
-            &zero,
+            &initial,
             &proof.sumcheck,
         )?;
         let tau = output.values;
@@ -573,6 +648,7 @@ where
         let mut folded = zero;
         let mut weight = b.binary128_constant(1)?;
         let mut preprocessed_slot = 0;
+        let mut air_evaluations = Vec::with_capacity(self.input.airs.len());
         for (i, air) in self.input.airs.iter().enumerate() {
             let values = &proof.opening.evals[i];
             let (preprocessed_current, preprocessed_next) = if air.preprocessed_width() != 0 {
@@ -582,7 +658,7 @@ where
             } else {
                 (&[][..], &[][..])
             };
-            let own = air.evaluate_with_auxiliary(
+            let evaluation = air.evaluate_with_bus(
                 b,
                 &points[i],
                 values.current(),
@@ -592,12 +668,18 @@ where
                 &public[i],
                 &alpha,
             )?;
-            let term = b.binary128_mul(&weight, &own);
+            let term = b.binary128_mul(&weight, &evaluation.folded);
             folded = b.binary128_add(&folded, &term);
             weight = b.binary128_mul(&weight, &beta);
+            air_evaluations.push(evaluation);
         }
         let equality = binary128_eq_eval(b, &tau, &reduction.point)?;
-        let terminal = b.binary128_mul(&equality, &folded);
+        let mut terminal = b.binary128_mul(&equality, &folded);
+        if let (Some(verifier), Some(claims), Some(lambda)) = (&self.bus, &bus_claims, &lambda) {
+            let bus = verifier.terminal(b, claims, &air_evaluations, &reduction.point, lambda)?;
+            let weighted = b.binary128_mul(lambda, &bus);
+            terminal = b.binary128_add(&terminal, &weighted);
+        }
         assert_equal(b, &reduction.claim, &terminal);
         Ok(continuation)
     }
@@ -705,12 +787,16 @@ where
         self.check_public(public)?;
         if proof.lookup.is_some()
             || proof.indexed.is_some()
-            || proof.bus.is_some()
-            || proof.sumcheck.claimed_sum != E::ZERO
+            || (self.bus.is_none() && proof.sumcheck.claimed_sum != E::ZERO)
         {
             return Err(invalid(
                 "binary MultiStark proof has unsupported parts or a nonzero initial sum",
             ));
+        }
+        match (&self.bus, &proof.bus) {
+            (Some(verifier), Some(proof)) => verifier.check_native(proof)?,
+            (None, None) => {}
+            _ => return Err(invalid("binary MultiStark native bus proof shape mismatch")),
         }
         self.sumcheck.check_native(&proof.sumcheck)?;
         let points: Vec<_> = self
@@ -758,9 +844,21 @@ where
         for values in public {
             staged.observe_slice(values);
         }
+        let bus_reduction = if let (Some(verifier), Some(proof)) = (&self.bus, &proof.bus) {
+            Some(verifier.import_native(proof, &mut staged)?)
+        } else {
+            None
+        };
         staged.observe_slice(&self.input.zerocheck_seed);
         let _alpha = staged.sample_algebra_element::<E>();
         let _beta = staged.sample_algebra_element::<E>();
+        if let Some((_, values)) = &bus_reduction {
+            let lambda = staged.sample_algebra_element::<E>();
+            let expected = lambda * ((values[0] + E::ONE) + lambda * (values[1] + E::ONE));
+            if proof.sumcheck.claimed_sum != expected {
+                return Err(invalid("binary MultiStark bus initial sum mismatch"));
+            }
+        }
         let _ = self.tau.sample_native::<F, _>(&mut staged)?;
         let (sumcheck, point, _) = self
             .sumcheck
@@ -795,6 +893,7 @@ where
         Ok(NativeBinaryMultiStarkInput {
             shape: self.input.clone(),
             commitment: proof.commitment.roots().to_vec(),
+            bus: bus_reduction.map(|(input, _)| input),
             sumcheck,
             opening,
             preprocessed_opening,

@@ -1,6 +1,7 @@
 //! Trusted binary AIR expressions evaluated at a multilinear opening point.
 
 use alloc::collections::BTreeMap;
+use alloc::string::String;
 use alloc::vec::Vec;
 use core::hash::Hash;
 use core::marker::PhantomData;
@@ -9,7 +10,9 @@ use p3_air::Air;
 use p3_air::boundary::{self, BoundaryEnd};
 use p3_air::symbolic::{AirLayout, BaseEntry, BaseLeaf, SymbolicExpression};
 use p3_binary_field::BinaryField128;
-use p3_bus::BusSymbolicBuilder;
+use p3_bus::{
+    BusActivation, BusBoundary, BusDirection, BusName, BusSymbolicBuilder, SymbolicBusInteraction,
+};
 use p3_circuit::ops::BinaryTower128Target;
 use p3_circuit::{CircuitBuilder, ExprId};
 use p3_field::{ExtensionField, Field};
@@ -36,6 +39,21 @@ enum Node {
     Mul(usize, usize),
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct CompiledBusDeclaration {
+    pub name: String,
+    pub direction: BusDirection,
+    fields: Vec<usize>,
+    activation: Option<usize>,
+    pub factor_degree: usize,
+}
+
+pub(super) struct BinaryAirEvaluation {
+    pub folded: BinaryTower128Target,
+    pub bus_fields: Vec<Vec<BinaryTower128Target>>,
+    pub bus_activations: Vec<Option<BinaryTower128Target>>,
+}
+
 /// A private expression program compiled from a trusted, field-element AIR.
 /// Its ordered assertions include native public-boundary pins. Proofs cannot
 /// supply or replace its expressions, geometry, or successor-column map.
@@ -43,6 +61,7 @@ enum Node {
 pub struct BinaryAirConstraintPlan<F = BinaryField128, E = BinaryField128> {
     nodes: Vec<Node>,
     constraints: Vec<usize>,
+    bus: Vec<CompiledBusDeclaration>,
     width: usize,
     public_count: usize,
     next_columns: Vec<usize>,
@@ -72,6 +91,31 @@ where
         log_height: usize,
         limits: &VerifierLimits,
     ) -> Result<Self, VerificationError>
+    where
+        A: Air<InteractionSymbolicBuilder<F, E>> + Air<BusSymbolicBuilder<F, E>>,
+    {
+        Self::build(air, log_height, limits, false).map(|(plan, _)| plan)
+    }
+
+    /// Internal entry point for a surrounding verifier that also consumes the
+    /// retained bus obligations. The public plain-AIR constructor rejects them.
+    pub(super) fn with_bus_limits<A>(
+        air: &A,
+        log_height: usize,
+        limits: &VerifierLimits,
+    ) -> Result<(Self, Vec<SymbolicBusInteraction<F>>), VerificationError>
+    where
+        A: Air<InteractionSymbolicBuilder<F, E>> + Air<BusSymbolicBuilder<F, E>>,
+    {
+        Self::build(air, log_height, limits, true)
+    }
+
+    fn build<A>(
+        air: &A,
+        log_height: usize,
+        limits: &VerifierLimits,
+        allow_bus: bool,
+    ) -> Result<(Self, Vec<SymbolicBusInteraction<F>>), VerificationError>
     where
         A: Air<InteractionSymbolicBuilder<F, E>> + Air<BusSymbolicBuilder<F, E>>,
     {
@@ -139,21 +183,32 @@ where
         boundary::validate(pins, layout.main_width, layout.num_public_values)
             .map_err(|_| invalid("binary AIR public boundary declarations are invalid"))?;
 
-        // The lookup recorder deliberately discards binary bus declarations;
-        // a separate recorder is necessary before accepting a plain AIR plan.
+        // The lookup recorder retains the automatic Booleanity constraints
+        // while discarding only bus metadata. Use its assertion order once.
         let symbolic = InteractionSymbolicBuilder::<F, E>::from_air(air, layout);
         if !symbolic.global_interactions().is_empty()
             || !symbolic.local_interactions().is_empty()
             || !symbolic.exclusive_interactions().is_empty()
             || !symbolic.indexed_reads().is_empty()
             || !symbolic.indexed_tables().is_empty()
-            || !BusSymbolicBuilder::<F, E>::from_air(air, layout)
-                .interactions()
-                .is_empty()
         {
             return Err(invalid(
                 "binary AIR interactions require a supported reduction",
             ));
+        }
+        let bus_symbolic = BusSymbolicBuilder::<F, E>::from_air(air, layout);
+        if !allow_bus && !bus_symbolic.interactions().is_empty() {
+            return Err(invalid(
+                "binary AIR interactions require a supported reduction",
+            ));
+        }
+        usage.add_metadata_entries(limits, bus_symbolic.interactions().len())?;
+        for declaration in bus_symbolic.interactions() {
+            usage.add_metadata_entries(limits, declaration.fields.len())?;
+            usage.add_metadata_string_bytes(limits, declaration.bus_name.len())?;
+            if declaration.fields.is_empty() || BusName::try_new(&declaration.bus_name).is_err() {
+                return Err(invalid("binary AIR bus declaration is invalid"));
+            }
         }
         if !symbolic.extension_constraints().is_empty() {
             return Err(invalid("binary AIR extension assertions are unsupported"));
@@ -175,6 +230,7 @@ where
         let mut compiler = Compiler {
             nodes: Vec::new(),
             degrees: Vec::new(),
+            bus_valid: Vec::new(),
             cache: BTreeMap::new(),
             width: layout.main_width,
             public_count: layout.num_public_values,
@@ -219,22 +275,74 @@ where
             return Err(invalid("binary AIR has no nonconstant constraint family"));
         }
         compiler.usage.check_log_degree(limits, degree)?;
+        let mut bus = Vec::with_capacity(bus_symbolic.interactions().len());
+        for declaration in bus_symbolic.interactions() {
+            let mut fields = Vec::with_capacity(declaration.fields.len());
+            let mut payload_degree = 0;
+            for expression in &declaration.fields {
+                let root = compiler.compile(expression)?;
+                if !compiler.bus_valid[root] {
+                    return Err(invalid("binary AIR bus reads an unsupported column"));
+                }
+                payload_degree = payload_degree.max(compiler.degrees[root]);
+                fields.push(root);
+            }
+            let activation = match &declaration.activation {
+                BusActivation::Always => None,
+                BusActivation::Boundary(boundary) => {
+                    compiler.usage.add_metadata_entries(limits, 1)?;
+                    Some(compiler.push(
+                        match boundary {
+                            BusBoundary::First => Node::First,
+                            BusBoundary::Last => Node::Last,
+                        },
+                        1,
+                    ))
+                }
+                BusActivation::Boolean(expression) => {
+                    let root = compiler.compile(expression)?;
+                    if !compiler.bus_valid[root] {
+                        return Err(invalid(
+                            "binary AIR bus activation reads an unsupported column",
+                        ));
+                    }
+                    Some(root)
+                }
+            };
+            let factor_degree = payload_degree
+                .checked_add(activation.map(|root| compiler.degrees[root]).unwrap_or(0))
+                .ok_or(VerificationError::ResourceArithmeticOverflow {
+                    component: "binary AIR bus factor degree",
+                })?;
+            compiler.usage.check_log_degree(limits, factor_degree)?;
+            bus.push(CompiledBusDeclaration {
+                name: declaration.bus_name.clone(),
+                direction: declaration.direction,
+                fields,
+                activation,
+                factor_degree,
+            });
+        }
         let usage = compiler.usage;
         let nodes = compiler.nodes;
-        Ok(Self {
-            nodes,
-            constraints,
-            width: layout.main_width,
-            public_count: layout.num_public_values,
-            next_columns,
-            preprocessed_width: layout.preprocessed_width,
-            preprocessed_next_columns,
-            periods,
-            log_height,
-            degree,
-            usage,
-            fields: PhantomData,
-        })
+        Ok((
+            Self {
+                nodes,
+                constraints,
+                bus,
+                width: layout.main_width,
+                public_count: layout.num_public_values,
+                next_columns,
+                preprocessed_width: layout.preprocessed_width,
+                preprocessed_next_columns,
+                periods,
+                log_height,
+                degree,
+                usage,
+                fields: PhantomData,
+            },
+            bus_symbolic.interactions().to_vec(),
+        ))
     }
 
     pub fn main_width(&self) -> usize {
@@ -263,6 +371,10 @@ where
     }
     pub fn input_resource_usage(&self) -> InputResourceUsage {
         self.usage
+    }
+
+    pub(super) fn bus_declarations(&self) -> &[CompiledBusDeclaration] {
+        &self.bus
     }
 
     /// Computes the native assertion-order Horner fold at an authenticated
@@ -294,6 +406,33 @@ where
         public: &[BinaryTower128Target],
         alpha: &BinaryTower128Target,
     ) -> Result<BinaryTower128Target, VerificationError> {
+        self.evaluate_with_bus(
+            b,
+            point,
+            current,
+            next,
+            preprocessed_current,
+            preprocessed_next,
+            public,
+            alpha,
+        )
+        .map(|evaluation| evaluation.folded)
+    }
+
+    /// Evaluates the ordinary assertion fold and retained bus payloads through
+    /// one private program at the same authenticated openings. The surrounding
+    /// verifier must consume both results in its terminal reduction equation.
+    pub(super) fn evaluate_with_bus<EF: Field + Eq + Hash>(
+        &self,
+        b: &mut CircuitBuilder<EF>,
+        point: &[BinaryTower128Target],
+        current: &[BinaryTower128Target],
+        next: &[BinaryTower128Target],
+        preprocessed_current: &[BinaryTower128Target],
+        preprocessed_next: &[BinaryTower128Target],
+        public: &[BinaryTower128Target],
+        alpha: &BinaryTower128Target,
+    ) -> Result<BinaryAirEvaluation, VerificationError> {
         if point.len() != self.log_height
             || current.len() != self.width
             || next.len() != self.next_columns.len()
@@ -361,13 +500,34 @@ where
             let weighted = b.binary128_mul(&folded, alpha);
             folded = b.binary128_add(&weighted, &values[root]);
         }
-        Ok(folded)
+        let bus_fields = self
+            .bus
+            .iter()
+            .map(|declaration| {
+                declaration
+                    .fields
+                    .iter()
+                    .map(|&root| values[root].clone())
+                    .collect()
+            })
+            .collect();
+        let bus_activations = self
+            .bus
+            .iter()
+            .map(|declaration| declaration.activation.map(|root| values[root].clone()))
+            .collect();
+        Ok(BinaryAirEvaluation {
+            folded,
+            bus_fields,
+            bus_activations,
+        })
     }
 }
 
 struct Compiler<'a, F> {
     nodes: Vec<Node>,
     degrees: Vec<usize>,
+    bus_valid: Vec<bool>,
     cache: BTreeMap<*const SymbolicExpression<F>, usize>,
     width: usize,
     public_count: usize,
@@ -381,9 +541,15 @@ struct Compiler<'a, F> {
 
 impl<F: RecursiveBinaryTowerField> Compiler<'_, F> {
     fn push(&mut self, node: Node, degree: usize) -> usize {
+        let bus_valid = match node {
+            Node::Next(_) | Node::PreprocessedNext(_) | Node::Periodic(_) => false,
+            Node::Add(x, y) | Node::Mul(x, y) => self.bus_valid[x] && self.bus_valid[y],
+            _ => true,
+        };
         let id = self.nodes.len();
         self.nodes.push(node);
         self.degrees.push(degree);
+        self.bus_valid.push(bus_valid);
         id
     }
 
@@ -506,3 +672,7 @@ pub(super) fn constrain_width<EF: Field + Eq + Hash>(
 fn invalid(message: &'static str) -> VerificationError {
     VerificationError::InvalidProofShape(message.into())
 }
+
+#[cfg(test)]
+#[path = "binary_bus_air_tests.rs"]
+mod bus_tests;
