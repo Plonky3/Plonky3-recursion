@@ -284,55 +284,15 @@ fn select_nonzero_with_tail<EF: p3_field::Field + Eq + Hash>(
     ),
     VerificationError,
 > {
-    if count == 0
-        || count > max_draws
-        || !matches!(bits, 64 | 128)
-        || max_draws.checked_add(following_count) != Some(candidates.len())
-    {
+    if !matches!(bits, 64 | 128) {
         return Err(invalid("binary nonzero selection shape"));
     }
-    let one = b.define_const(EF::ONE);
-    let mut states = vec![ExprId::ZERO; count + 1];
-    states[0] = one;
-    let mut selected = vec![[ExprId::ZERO; 128]; count];
-    let mut following = vec![[ExprId::ZERO; 128]; following_count];
-    let mut retained = [ExprId::ZERO; 32];
-    for (index, (candidate, _)) in candidates[..max_draws].iter().enumerate() {
-        let factors: Vec<_> = candidate.bits()[..bits]
-            .iter()
-            .map(|&bit| b.sub(one, bit))
-            .collect();
-        let zero = b.mul_many(&factors);
-        let accepted = b.sub(one, zero);
-        let mut next = vec![ExprId::ZERO; count + 1];
-        next[count] = states[count];
-        for j in 0..count {
-            let take = b.mul(states[j], accepted);
-            let stay = b.mul(states[j], zero);
-            next[j] = b.add(next[j], stay);
-            next[j + 1] = b.add(next[j + 1], take);
-            for (out, &bit) in selected[j].iter_mut().zip(candidate.bits()) {
-                *out = b.mul_add(take, bit, *out);
-            }
-            if j + 1 == count {
-                let digest = &candidates[index + following_count].1;
-                for (out, &byte) in retained.iter_mut().zip(digest) {
-                    *out = b.mul_add(take, byte, *out);
-                }
-                for (offset, output) in following.iter_mut().enumerate() {
-                    for (out, &bit) in output
-                        .iter_mut()
-                        .zip(candidates[index + offset + 1].0.bits())
-                    {
-                        *out = b.mul_add(take, bit, *out);
-                    }
-                }
-            }
-        }
-        states = next;
-    }
-    let incomplete = b.sub(states[count], one);
-    b.assert_zero(incomplete);
+    let candidates = candidates
+        .iter()
+        .map(|(value, digest)| (*value.bits(), *digest))
+        .collect::<Vec<_>>();
+    let (selected, following, retained) =
+        select_nonzero_words(b, count, bits, max_draws, following_count, &candidates)?;
     let values = selected
         .into_iter()
         .map(|bits| b.binary128_from_bits(bits).map_err(VerificationError::from))
@@ -342,6 +302,72 @@ fn select_nonzero_with_tail<EF: p3_field::Field + Eq + Hash>(
         .map(|bits| b.binary128_from_bits(bits).map_err(VerificationError::from))
         .collect::<Result<_, _>>()?;
     Ok((values, following, retained))
+}
+
+/// Selects bounded binary words without imposing a field representation.
+/// Callers supply already constrained bits and reconstruct checked targets.
+pub(super) fn select_nonzero_words<const W: usize, EF: p3_field::Field + Eq + Hash>(
+    b: &mut CircuitBuilder<EF>,
+    count: usize,
+    bits: usize,
+    max_draws: usize,
+    following_count: usize,
+    candidates: &[([ExprId; W], [ExprId; 32])],
+) -> Result<(Vec<[ExprId; W]>, Vec<[ExprId; W]>, [ExprId; 32]), VerificationError> {
+    if count == 0
+        || count > max_draws
+        || bits == 0
+        || bits > W
+        || max_draws.checked_add(following_count) != Some(candidates.len())
+    {
+        return Err(invalid("binary nonzero selection shape"));
+    }
+    let state_count =
+        count
+            .checked_add(1)
+            .ok_or(VerificationError::ResourceArithmeticOverflow {
+                component: "binary nonzero selection states",
+            })?;
+    let one = b.define_const(EF::ONE);
+    let mut states = vec![ExprId::ZERO; state_count];
+    states[0] = one;
+    let mut selected = vec![[ExprId::ZERO; W]; count];
+    let mut following = vec![[ExprId::ZERO; W]; following_count];
+    let mut retained = [ExprId::ZERO; 32];
+    for (index, (candidate, _)) in candidates[..max_draws].iter().enumerate() {
+        let factors: Vec<_> = candidate[..bits]
+            .iter()
+            .map(|&bit| b.sub(one, bit))
+            .collect();
+        let zero = b.mul_many(&factors);
+        let accepted = b.sub(one, zero);
+        let mut next = vec![ExprId::ZERO; state_count];
+        next[count] = states[count];
+        for j in 0..count {
+            let take = b.mul(states[j], accepted);
+            let stay = b.mul(states[j], zero);
+            next[j] = b.add(next[j], stay);
+            next[j + 1] = b.add(next[j + 1], take);
+            for (out, &bit) in selected[j].iter_mut().zip(candidate) {
+                *out = b.mul_add(take, bit, *out);
+            }
+            if j + 1 == count {
+                let digest = &candidates[index + following_count].1;
+                for (out, &byte) in retained.iter_mut().zip(digest) {
+                    *out = b.mul_add(take, byte, *out);
+                }
+                for (offset, output) in following.iter_mut().enumerate() {
+                    for (out, &bit) in output.iter_mut().zip(&candidates[index + offset + 1].0) {
+                        *out = b.mul_add(take, bit, *out);
+                    }
+                }
+            }
+        }
+        states = next;
+    }
+    let incomplete = b.sub(states[count], one);
+    b.assert_zero(incomplete);
+    Ok((selected, following, retained))
 }
 
 #[cfg(test)]
