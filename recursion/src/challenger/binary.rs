@@ -29,7 +29,65 @@ pub struct BinaryTower128Challenger {
     output_buffer: Vec<ExprId>,
 }
 
+/// The exact retained hash input at native query completion. The varying number
+/// of unsampled output bytes is deliberately inaccessible: a nonempty next
+/// observation discards them in both native and circuit transcripts.
+#[derive(Debug)]
+pub struct BinaryQueryContinuation {
+    hash: ByteHash,
+    digest: [ExprId; 32],
+}
+
+impl BinaryQueryContinuation {
+    pub(crate) const fn from_digest(hash: ByteHash, digest: [ExprId; 32]) -> Self {
+        Self { hash, digest }
+    }
+
+    /// Resumes by absorbing the next protocol observation exactly once. Empty
+    /// observations are rejected because they would retain a proof-dependent
+    /// native output buffer. All targets must belong to this builder.
+    pub fn resume_with_observation<BF, EF>(
+        self,
+        circuit: &mut CircuitBuilder<EF>,
+        bytes: &[ExprId],
+    ) -> Result<BinaryTower128Challenger, CircuitBuilderError>
+    where
+        BF: PrimeField64,
+        EF: ExtensionField<BF> + Eq + Hash,
+    {
+        if bytes.is_empty() {
+            return Err(CircuitBuilderError::NonPrimitiveOpArity {
+                op: "BinaryQueryContinuation",
+                expected: "a nonempty next observation".into(),
+                got: 0,
+            });
+        }
+        let mut challenger = BinaryTower128Challenger {
+            hash: self.hash,
+            input_buffer: self.digest.to_vec(),
+            output_buffer: Vec::new(),
+        };
+        challenger.observe_bytes::<BF, EF>(circuit, bytes)?;
+        Ok(challenger)
+    }
+}
+
 impl BinaryTower128Challenger {
+    /// Every uniform-bit query draw consumes eight bytes, leaving the full
+    /// forward digest as the retained input, including when no output remains.
+    pub(crate) fn retained_query_digest(
+        &self,
+    ) -> Result<(ByteHash, [ExprId; 32]), CircuitBuilderError> {
+        let digest = self.input_buffer.as_slice().try_into().map_err(|_| {
+            CircuitBuilderError::NonPrimitiveOpArity {
+                op: "BinaryQueryDigest",
+                expected: "32 retained bytes after a query draw".into(),
+                got: self.input_buffer.len(),
+            }
+        })?;
+        Ok((self.hash, digest))
+    }
+
     /// Selects one equal-shape continuation under constrained one-hot selectors.
     /// Every branch must use the same builder and hash.
     pub(crate) fn select_same_shape<EF: p3_field::Field + Eq + Hash>(

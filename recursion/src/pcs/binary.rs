@@ -9,7 +9,7 @@ use p3_binary_pcs::transcript::BinaryPcsShape;
 use p3_circuit::{CircuitBuilder, CircuitBuilderError, ExprId};
 use p3_field::{ExtensionField, PrimeField64};
 
-use crate::BinaryTower128Challenger;
+use crate::{BinaryQueryContinuation, BinaryTower128Challenger};
 
 mod boolean;
 mod fields;
@@ -96,11 +96,37 @@ where
 /// count before adding constraints. Otherwise propagates challenger errors.
 pub fn verify_binary_query_indices<BF, EF>(
     circuit: &mut CircuitBuilder<EF>,
-    mut challenger: BinaryTower128Challenger,
+    challenger: BinaryTower128Challenger,
     bits: usize,
     sorted_indices: &[Vec<ExprId>],
     max_draws: usize,
 ) -> Result<(), CircuitBuilderError>
+where
+    BF: PrimeField64,
+    EF: ExtensionField<BF> + Eq + Hash,
+{
+    verify_binary_query_indices_with_continuation::<BF, EF>(
+        circuit,
+        challenger,
+        bits,
+        sorted_indices,
+        max_draws,
+    )
+    .map(|_| ())
+}
+
+/// Verifies the same bounded query relation and retains the native completion
+/// digest under the derived first-completion selector. The opaque result can
+/// only resume through a nonempty next observation; it cannot sample the
+/// overdrawn transcript or expose its variable-length native output buffer.
+/// Shape checks and errors match [`verify_binary_query_indices`].
+pub fn verify_binary_query_indices_with_continuation<BF, EF>(
+    circuit: &mut CircuitBuilder<EF>,
+    mut challenger: BinaryTower128Challenger,
+    bits: usize,
+    sorted_indices: &[Vec<ExprId>],
+    max_draws: usize,
+) -> Result<BinaryQueryContinuation, CircuitBuilderError>
 where
     BF: PrimeField64,
     EF: ExtensionField<BF> + Eq + Hash,
@@ -152,6 +178,8 @@ where
     }
 
     let mut seen = alloc::vec![zero; count];
+    let mut retained = [zero; 32];
+    let mut stop_total = zero;
     for _ in 0..max_draws {
         // Native uniform-bit sampling consumes eight bytes even for bits=0.
         let candidate = challenger.sample_bits::<BF, EF>(circuit, bits)?;
@@ -174,11 +202,21 @@ where
         let outside = circuit.sub(one, membership);
         let invalid = circuit.mul(active, outside);
         circuit.assert_zero(invalid);
+        let complete_after = circuit.mul_many(&seen);
+        let stop = circuit.sub(complete_after, complete);
+        circuit.assert_bool(stop);
+        stop_total = circuit.add(stop_total, stop);
+        let (_, digest) = challenger.retained_query_digest()?;
+        for (selected, byte) in retained.iter_mut().zip(digest) {
+            *selected = circuit.mul_add(stop, byte, *selected);
+        }
     }
     for present in seen {
         circuit.connect(present, one);
     }
-    Ok(())
+    circuit.connect(stop_total, one);
+    let (hash, _) = challenger.retained_query_digest()?;
+    Ok(BinaryQueryContinuation::from_digest(hash, retained))
 }
 
 fn equal_bit<EF: p3_field::Field + Eq + Hash>(
