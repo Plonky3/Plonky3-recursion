@@ -12,11 +12,11 @@
 
 use alloc::vec::Vec;
 
-use p3_challenger::fs::{DomainSeparator, FieldUnit};
+use p3_challenger::fs::{DomainSeparator, FieldUnit, TranscriptField, TypeTag};
 use p3_challenger::{
     CanObserve, CanSample, CanSampleBits, CanSampleUniformBits, FieldChallenger, GrindingChallenger,
 };
-use p3_field::{ExtensionField, PrimeField64};
+use p3_field::{ExtensionField, Field, PrimeField64};
 use p3_lookup::LookupProtocol;
 use p3_uni_stark::StarkShape;
 
@@ -33,7 +33,9 @@ impl<F> CanObserve<F> for SeedRecorder<F> {
 
 /// The base-field elements `separator` absorbs when it seeds a native challenger, in order.
 #[must_use]
-pub fn domain_separator_seed<F: PrimeField64>(separator: &DomainSeparator<FieldUnit<F>>) -> Vec<F> {
+pub fn domain_separator_seed<F: TranscriptField>(
+    separator: &DomainSeparator<FieldUnit<F>>,
+) -> Vec<F> {
     let mut recorder = SeedRecorder(Vec::new());
     separator.seed(&mut recorder);
     recorder.0
@@ -43,16 +45,17 @@ pub fn domain_separator_seed<F: PrimeField64>(separator: &DomainSeparator<FieldU
 ///
 /// Some native sub-transcripts (p3-sumcheck's layout claims and batching) keep their shapes
 /// crate-private, so their domain-separator seeds cannot be built directly. Every seed is
-/// self-delimiting — its first element is its byte length — so running the public native step on
-/// this tap with dummy data and cutting the recorded prefix at that length recovers the seed
-/// exactly, without restating upstream internals.
+/// self-delimiting, so running the public native step on this tap with dummy data and cutting
+/// the recorded prefix at that length recovers the seed exactly, without restating upstream
+/// internals. Prime alphabets use [`Self::seed`]; byte-aligned binary alphabets use
+/// [`Self::binary_seed`], whose length prefix can span several narrow elements.
 #[derive(Clone, Debug, Default)]
 pub struct SeedTap<F> {
     observed: Vec<F>,
     sampled: bool,
 }
 
-impl<F: PrimeField64> SeedTap<F> {
+impl<F> SeedTap<F> {
     /// An empty tap.
     #[must_use]
     pub const fn new() -> Self {
@@ -61,7 +64,9 @@ impl<F: PrimeField64> SeedTap<F> {
             sampled: false,
         }
     }
+}
 
+impl<F: PrimeField64> SeedTap<F> {
     /// The domain-separator seed the recorded step opened with.
     ///
     /// # Panics
@@ -84,6 +89,53 @@ impl<F: PrimeField64> SeedTap<F> {
     }
 }
 
+impl<F: TranscriptField> SeedTap<F> {
+    /// The seed captured from a native byte-aligned binary alphabet.
+    /// The native encoding places an eight-byte little-endian length first,
+    /// padded to a whole number of alphabet elements, then its packed payload.
+    ///
+    /// # Panics
+    /// Panics for another alphabet or if no complete native seed was recorded.
+    #[must_use]
+    pub fn binary_seed(&self) -> Vec<F> {
+        assert!(
+            matches!(
+                F::algebra_tag(1, [0; 32]),
+                TypeTag::BinaryTower { .. } | TypeTag::BinaryPolynomial { .. }
+            ),
+            "binary seed capture requires a native binary alphabet"
+        );
+        let width = F::wire_len();
+        assert!(matches!(width, 1 | 2 | 4 | 8 | 16));
+        let prefix_len = 8usize.div_ceil(width);
+        assert!(
+            self.observed.len() >= prefix_len,
+            "the tap recorded a truncated binary length prefix"
+        );
+        // These native alphabets use big-endian wire encodings and raw
+        // little-endian seed packing. Read the complete length prefix, even
+        // when its low byte alone would wrap at a narrow tower level.
+        let mut length_bytes = Vec::with_capacity(prefix_len * width);
+        for element in &self.observed[..prefix_len] {
+            let mut encoded = Vec::with_capacity(width);
+            F::encode(element, &mut encoded);
+            length_bytes.extend(encoded.into_iter().rev());
+        }
+        let byte_len = usize::try_from(u64::from_le_bytes(
+            length_bytes[..8].try_into().expect("eight length bytes"),
+        ))
+        .expect("a recorded native seed length fits usize");
+        let len = prefix_len
+            .checked_add(byte_len.div_ceil(width))
+            .expect("a recorded native seed length fits usize");
+        assert!(
+            self.observed.len() >= len,
+            "the tap recorded a truncated seed"
+        );
+        self.observed[..len].to_vec()
+    }
+}
+
 impl<F: Clone> CanObserve<F> for SeedTap<F> {
     fn observe(&mut self, value: F) {
         if !self.sampled {
@@ -92,7 +144,7 @@ impl<F: Clone> CanObserve<F> for SeedTap<F> {
     }
 }
 
-impl<F: PrimeField64> CanSample<F> for SeedTap<F> {
+impl<F: Field> CanSample<F> for SeedTap<F> {
     fn sample(&mut self) -> F {
         self.sampled = true;
         F::ZERO
@@ -106,7 +158,7 @@ impl<F> CanSampleBits<usize> for SeedTap<F> {
     }
 }
 
-impl<F: PrimeField64> CanSampleUniformBits<F> for SeedTap<F> {
+impl<F: Field> CanSampleUniformBits<F> for SeedTap<F> {
     fn sample_uniform_bits<const RESAMPLE: bool>(
         &mut self,
         _bits: usize,
@@ -116,9 +168,9 @@ impl<F: PrimeField64> CanSampleUniformBits<F> for SeedTap<F> {
     }
 }
 
-impl<F: PrimeField64> FieldChallenger<F> for SeedTap<F> {}
+impl<F: Field> FieldChallenger<F> for SeedTap<F> {}
 
-impl<F: PrimeField64> GrindingChallenger for SeedTap<F> {
+impl<F: Field> GrindingChallenger for SeedTap<F> {
     type Witness = F;
 
     fn grind(&mut self, _bits: usize) -> F {
@@ -216,5 +268,42 @@ mod tests {
             tap.seed(),
             domain_separator_seed(&shape.domain_separator::<F, EF>())
         );
+    }
+
+    #[test]
+    fn tapped_binary_seeds_match_native_at_narrow_and_wide_levels() {
+        use p3_binary_field::{BinaryField8, BinaryField128};
+        use p3_sumcheck::strategy::Basis;
+        use p3_sumcheck::transcript::{SumcheckShape, VerifierTranscript};
+
+        fn check<F>()
+        where
+            F: p3_challenger::fs::TranscriptField + p3_field::AlgebraIdentity<F>,
+        {
+            let shape = SumcheckShape::new(1, 0, Basis::Evaluation);
+            let mut tap = SeedTap::<F>::new();
+            let mut transcript = VerifierTranscript::<_, F, F>::new(&mut tap, shape);
+            let _ = transcript.round(F::ONE, F::ZERO, None).unwrap();
+            transcript.finish();
+            assert_eq!(
+                tap.binary_seed(),
+                domain_separator_seed(&shape.domain_separator::<F, F>())
+            );
+        }
+        check::<BinaryField8>();
+        check::<BinaryField128>();
+    }
+
+    #[test]
+    fn binary_tap_reads_the_entire_eight_byte_length_prefix() {
+        use p3_binary_field::{BinaryField8, TowerLevel};
+        use p3_challenger::fs::TranscriptField;
+
+        let mut tap = SeedTap::<BinaryField8>::new();
+        BinaryField8::observe_seed(&mut tap, &alloc::vec![251; 1025]);
+        tap.observe(BinaryField8::ONE);
+        let seed = tap.binary_seed();
+        assert_eq!(seed.len(), 8 + 1025);
+        assert_eq!(seed[1], BinaryField8::from_repr(4));
     }
 }
