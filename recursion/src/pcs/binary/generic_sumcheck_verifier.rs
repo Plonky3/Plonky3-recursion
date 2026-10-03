@@ -2,6 +2,7 @@
 
 use alloc::vec::Vec;
 use core::hash::Hash;
+use core::marker::PhantomData;
 
 use p3_binary_field::BinaryField128;
 use p3_challenger::{FieldChallenger, GrindingChallenger};
@@ -12,7 +13,9 @@ use p3_sumcheck::generic_degree::{GenericDegreeProof, GenericDegreeShape};
 
 use super::verifier::{assert_equal, constrain_width, observe_seed, observe_values, seed_bytes};
 use super::whir_plan::invalid;
-use super::{Binary128SumcheckInterpolator, RecursiveBinaryTowerField};
+use super::{
+    Binary128SumcheckInterpolator, RecursiveBinaryChallengeField, RecursiveBinaryTowerField,
+};
 use crate::transcript::domain_separator_seed;
 use crate::verifier::{InputResourceUsage, VerificationError, VerifierLimits};
 use crate::{BinaryQueryContinuation, BinaryTower128Challenger};
@@ -35,12 +38,15 @@ pub struct BinaryGenericSumcheckOutput {
 
 /// Pins native base/challenge encodings and the complete degree/round/PoW shape.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct BinaryGenericSumcheckInputShape<F> {
+pub struct BinaryGenericSumcheckInputShape<F, E = BinaryField128> {
     seed: Vec<F>,
     shape: GenericDegreeShape,
+    challenge: PhantomData<E>,
 }
 
-impl<F: RecursiveBinaryTowerField> BinaryGenericSumcheckInputShape<F> {
+impl<F: RecursiveBinaryTowerField, E: RecursiveBinaryChallengeField>
+    BinaryGenericSumcheckInputShape<F, E>
+{
     pub fn allocate_targets<BF, EF>(
         &self,
         b: &mut CircuitBuilder<EF>,
@@ -77,19 +83,21 @@ impl<F: RecursiveBinaryTowerField> BinaryGenericSumcheckInputShape<F> {
 }
 
 #[derive(Clone, Debug)]
-pub struct NativeBinaryGenericSumcheckInput<F> {
-    shape: BinaryGenericSumcheckInputShape<F>,
+pub struct NativeBinaryGenericSumcheckInput<F, E = BinaryField128> {
+    shape: BinaryGenericSumcheckInputShape<F, E>,
     fields: Vec<u128>,
 }
 
-impl<F: RecursiveBinaryTowerField> NativeBinaryGenericSumcheckInput<F> {
-    pub fn shape(&self) -> &BinaryGenericSumcheckInputShape<F> {
+impl<F: RecursiveBinaryTowerField, E: RecursiveBinaryChallengeField>
+    NativeBinaryGenericSumcheckInput<F, E>
+{
+    pub fn shape(&self) -> &BinaryGenericSumcheckInputShape<F, E> {
         &self.shape
     }
 
     pub fn private_values<EF: Field>(
         &self,
-        expected: &BinaryGenericSumcheckInputShape<F>,
+        expected: &BinaryGenericSumcheckInputShape<F, E>,
     ) -> Result<Vec<EF>, VerificationError> {
         if &self.shape != expected {
             return Err(invalid(
@@ -104,19 +112,19 @@ impl<F: RecursiveBinaryTowerField> NativeBinaryGenericSumcheckInput<F> {
     }
 }
 
-/// Verifier-owned schedule for released generic-degree sumcheck over Tower128,
+/// Verifier-owned schedule for released generic-degree sumcheck over Tower64 or Tower128,
 /// with a byte-aligned tower base field for transcript seeds and grinding.
 #[derive(Clone, Debug)]
-pub struct BinaryGenericSumcheckVerifier<F = BinaryField128> {
-    input: BinaryGenericSumcheckInputShape<F>,
+pub struct BinaryGenericSumcheckVerifier<F = BinaryField128, E = BinaryField128> {
+    input: BinaryGenericSumcheckInputShape<F, E>,
     interpolator: Binary128SumcheckInterpolator,
     usage: InputResourceUsage,
 }
 
-impl<F> BinaryGenericSumcheckVerifier<F>
+impl<F, E> BinaryGenericSumcheckVerifier<F, E>
 where
     F: RecursiveBinaryTowerField,
-    BinaryField128: ExtensionField<F>,
+    E: RecursiveBinaryChallengeField + ExtensionField<F>,
 {
     pub fn new(rounds: usize, degree: usize, pow_bits: usize) -> Result<Self, VerificationError> {
         Self::with_limits(rounds, degree, pow_bits, &VerifierLimits::default())
@@ -157,15 +165,19 @@ where
         let count = degree + 1; // Interpolator checked this addition and square.
         usage.add_metadata_entries(limits, count * count)?;
         let shape = GenericDegreeShape::new(rounds, degree, pow_bits);
-        let seed = domain_separator_seed(&shape.domain_separator::<F, BinaryField128>());
+        let seed = domain_separator_seed(&shape.domain_separator::<F, E>());
         Ok(Self {
-            input: BinaryGenericSumcheckInputShape { seed, shape },
+            input: BinaryGenericSumcheckInputShape {
+                seed,
+                shape,
+                challenge: PhantomData,
+            },
             interpolator,
             usage,
         })
     }
 
-    pub fn input_shape(&self) -> BinaryGenericSumcheckInputShape<F> {
+    pub fn input_shape(&self) -> BinaryGenericSumcheckInputShape<F, E> {
         self.input.clone()
     }
     pub fn input_resource_usage(&self) -> InputResourceUsage {
@@ -221,15 +233,24 @@ where
         EF: ExtensionField<BF> + Eq + Hash,
     {
         self.check_targets(proof)?;
+        constrain_width(b, &proof.claimed_sum, E::RAW_BITS);
         assert_equal(b, &proof.claimed_sum, expected_sum);
         if !seeded {
             observe_seed::<F, BF, EF>(b, &mut ch, &self.input.seed)?;
         }
-        observe_values::<BF, EF>(b, &mut ch, core::slice::from_ref(&proof.claimed_sum), 128)?;
+        observe_values::<BF, EF>(
+            b,
+            &mut ch,
+            core::slice::from_ref(&proof.claimed_sum),
+            E::RAW_BITS,
+        )?;
         let mut claim = proof.claimed_sum.clone();
         let mut point = Vec::new();
         for (i, polynomial) in proof.round_polys.iter().enumerate() {
-            observe_values::<BF, EF>(b, &mut ch, polynomial, 128)?;
+            for value in polynomial {
+                constrain_width(b, value, E::RAW_BITS);
+            }
+            observe_values::<BF, EF>(b, &mut ch, polynomial, E::RAW_BITS)?;
             if self.input.shape.pow_bits > 0 {
                 constrain_width(b, &proof.pow_witnesses[i], F::RAW_BITS);
                 observe_values::<BF, EF>(
@@ -243,7 +264,13 @@ where
                     b.assert_zero(difference);
                 }
             }
-            let challenge = ch.sample::<BF, EF>(b)?;
+            let bytes = ch.sample_bytes::<BF, EF>(b, E::RAW_BITS / 8)?;
+            let mut bits = [ExprId::ZERO; 128];
+            for (i, byte) in bytes.into_iter().enumerate() {
+                let byte_bits = b.decompose_to_bits::<BF>(byte, 8)?;
+                bits[8 * i..8 * i + 8].copy_from_slice(&byte_bits);
+            }
+            let challenge = b.binary128_from_bits(bits)?;
             claim = self
                 .interpolator
                 .reduce_claim(b, &claim, polynomial, &challenge)?;
@@ -277,9 +304,9 @@ where
     /// witnesses; it does not close the surrounding protocol's terminal claim.
     pub fn import_native<Ch>(
         &self,
-        proof: &GenericDegreeProof<F, BinaryField128>,
+        proof: &GenericDegreeProof<F, E>,
         mut ch: Ch,
-    ) -> Result<NativeBinaryGenericSumcheckInput<F>, VerificationError>
+    ) -> Result<NativeBinaryGenericSumcheckInput<F, E>, VerificationError>
     where
         Ch: FieldChallenger<F> + GrindingChallenger<Witness = F>,
     {
