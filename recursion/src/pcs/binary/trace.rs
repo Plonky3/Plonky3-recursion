@@ -24,13 +24,14 @@ use super::{
     BinaryBooleanInputShape, BinaryBooleanPcsVerifier, BinaryBooleanProofTargets,
     NativeBinaryBooleanInput, RecursiveBinaryChallengeField,
 };
-use crate::verifier::{VerificationError, VerifierLimits};
+use crate::verifier::{InputResourceUsage, VerificationError, VerifierLimits};
 use crate::{BinaryQueryContinuation, BinaryTower128Challenger};
 
 #[derive(Clone, Debug)]
 pub struct BinaryBooleanTraceVerifier<E> {
     routing: TraceRouting<E>,
     child: BinaryBooleanPcsVerifier<E>,
+    usage: InputResourceUsage,
 }
 
 #[derive(Clone, Debug)]
@@ -156,7 +157,23 @@ where
         Ok(Self {
             routing: TraceRouting::new(plan)?,
             child,
+            usage,
         })
+    }
+
+    pub fn input_resource_usage(&self) -> InputResourceUsage {
+        self.usage
+    }
+
+    pub(crate) fn check_targets(
+        &self,
+        cap: &[Vec<ExprId>],
+        points: &[Vec<BinaryTower128Target>],
+        proof: &BinaryBooleanTraceProofTargets<E>,
+    ) -> Result<(), VerificationError> {
+        self.routing
+            .check_points(points.iter().map(Vec::len), proof.values.len())?;
+        self.child.check_targets(cap, &proof.opening)
     }
 
     pub fn input_shape(&self) -> BinaryBooleanTraceInputShape<E> {
@@ -266,9 +283,7 @@ where
         BF: PrimeField64,
         EF: ExtensionField<BF> + Eq + Hash,
     {
-        self.routing
-            .check_points(points.iter().map(Vec::len), proof.values.len())?;
-        self.child.check_targets(cap, &proof.opening)?;
+        self.check_targets(cap, points, proof)?;
         let entry = self.routing.bind::<BF, EF>(
             circuit,
             entry,
@@ -291,6 +306,38 @@ where
             )?,
         };
         Ok((self.routing.evals(&proof.values), continuation))
+    }
+
+    pub(crate) fn check_native_structure_with_usage<H0, C0, H1, C1>(
+        &self,
+        base_mmcs: &MerkleTreeMmcs<E, u8, H0, C0, 2, 32>,
+        round_mmcs: &MerkleTreeMmcs<E, u8, H1, C1, 2, 32>,
+        commitment: &MerkleCap<E, [u8; 32]>,
+        points: &[Point<E>],
+        proof: &BooleanTraceProof<
+            E,
+            MerkleTreeMmcs<E, u8, H0, C0, 2, 32>,
+            MerkleTreeMmcs<E, u8, H1, C1, 2, 32>,
+        >,
+        usage: &mut InputResourceUsage,
+    ) -> Result<(), VerificationError>
+    where
+        E: PackedValue<Value = E>,
+        H0: CryptographicHasher<E, [u8; 32]> + Sync,
+        H1: CryptographicHasher<E, [u8; 32]> + Sync,
+        C0: PseudoCompressionFunction<[u8; 32], 2> + Sync,
+        C1: PseudoCompressionFunction<[u8; 32], 2> + Sync,
+    {
+        self.routing
+            .check_points(points.iter().map(Point::num_variables), proof.values.len())?;
+        self.child.check_native_structure_with_usage(
+            base_mmcs,
+            round_mmcs,
+            commitment,
+            &proof.opening,
+            usage,
+        )?;
+        Ok(())
     }
 
     /// Native routing is witness extraction. It never replaces the child ring,

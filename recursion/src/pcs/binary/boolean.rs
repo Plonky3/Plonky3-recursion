@@ -280,14 +280,43 @@ impl<E: RecursiveBinaryChallengeField + ExtensionField<E>> BinaryBooleanPcsVerif
         C0: PseudoCompressionFunction<[u8; 32], 2> + Sync,
         C1: PseudoCompressionFunction<[u8; 32], 2> + Sync,
     {
+        self.check_native_structure_with_usage(
+            base_mmcs,
+            round_mmcs,
+            commitment,
+            proof,
+            &mut InputResourceUsage::default(),
+        )
+    }
+
+    pub(super) fn check_native_structure_with_usage<H0, C0, H1, C1>(
+        &self,
+        base_mmcs: &MerkleTreeMmcs<E, u8, H0, C0, 2, 32>,
+        round_mmcs: &MerkleTreeMmcs<E, u8, H1, C1, 2, 32>,
+        commitment: &MerkleCap<E, [u8; 32]>,
+        proof: &BooleanProof<
+            E,
+            MerkleTreeMmcs<E, u8, H0, C0, 2, 32>,
+            MerkleTreeMmcs<E, u8, H1, C1, 2, 32>,
+        >,
+        usage: &mut InputResourceUsage,
+    ) -> Result<(), VerificationError>
+    where
+        E: PackedValue<Value = E>,
+        H0: CryptographicHasher<E, [u8; 32]> + Sync,
+        H1: CryptographicHasher<E, [u8; 32]> + Sync,
+        C0: PseudoCompressionFunction<[u8; 32], 2> + Sync,
+        C1: PseudoCompressionFunction<[u8; 32], 2> + Sync,
+    {
         self.reduction.check_native_structure(&proof.reduction)?;
         let placeholder = Point::new(vec![E::ZERO; self.opening.config.num_variables()]);
-        self.opening.check_native(
+        self.opening.check_native_with_usage(
             base_mmcs,
             round_mmcs,
             commitment,
             &[placeholder],
             &proof.opening,
+            usage,
         )?;
         if proof.opening.evals[0].current()[0] != proof.reduction.final_eval {
             return Err(invalid(
