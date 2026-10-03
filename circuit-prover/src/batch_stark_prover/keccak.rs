@@ -202,16 +202,28 @@ where
         return Err(CircuitError::InvalidPreprocessedValues);
     }
 
-    let dups = prep.dup_npo_outputs.get(&op_type);
+    let roles = prep
+        .npo_output_is_creator
+        .get(&op_type)
+        .ok_or(CircuitError::InvalidPreprocessedValues)?;
+    let output_count = (prep_base.len() / KECCAK_PREP_OP_WIDTH)
+        .checked_mul(p3_circuit::ops::KECCAK_STATE_LIMBS)
+        .ok_or(CircuitError::InvalidPreprocessedValues)?;
+    if roles.len() != output_count {
+        return Err(CircuitError::InvalidPreprocessedValues);
+    }
+    let mut roles = roles.iter();
     for call in prep_base.as_chunks_mut::<KECCAK_PREP_OP_WIDTH>().0 {
         let outputs = &mut call[1 + p3_circuit::ops::KECCAK_STATE_LIMBS..];
         for pair in outputs.as_chunks_mut::<2>().0 {
             let wid = pair[0].as_canonical_u64() as usize / D;
-            let is_dup = dups.and_then(|d| d.get(wid).copied()).unwrap_or(false);
-            pair[1] = if is_dup {
-                F::NEG_ONE
-            } else {
+            pair[1] = if *roles
+                .next()
+                .ok_or(CircuitError::InvalidPreprocessedValues)?
+            {
                 F::from_u32(prep.ext_reads.get(wid).copied().unwrap_or(0))
+            } else {
+                F::NEG_ONE
             };
         }
     }

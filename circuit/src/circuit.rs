@@ -38,10 +38,15 @@ pub struct PreprocessedColumns<F, const D: usize> {
     /// as an extension-field value. This is used by creator tables to set their
     /// signed multiplicity on the `WitnessChecks` bus.
     pub ext_reads: Vec<u32>,
-    /// Per-NPO duplicate-output flags: `dup_npo_outputs[op_type][wid] == true` means
-    /// `WitnessId(wid)` was already defined by an earlier op and this NPO occurrence is
-    /// a reader, not the creator. Populated by `generate_preprocessed_columns`.
+    /// Legacy per-witness duplicate-output flags. A flag is set when any output
+    /// occurrence of that witness is a reader; it does not identify the creator.
     pub dup_npo_outputs: HashMap<NpoTypeId, Vec<bool>>,
+    /// Creator roles for each exposed NPO output occurrence, in operation emission
+    /// order for each type, flattening exposed output groups and their limbs.
+    ///
+    /// Unlike the per-witness duplicate flags, this preserves the first creator
+    /// when later outputs are connected to the same witness.
+    pub npo_output_is_creator: HashMap<NpoTypeId, Vec<bool>>,
     /// WitnessId.0 values for all `Op::Hint` outputs in the circuit.
     ///
     /// A hint output is emitted by no AIR table, so it takes its `WitnessChecks` creator role
@@ -69,6 +74,7 @@ impl<F: PartialEq, const D: usize> PartialEq for PreprocessedColumns<F, D> {
             && self.ext_reads == other.ext_reads
             && self.non_primitive == other.non_primitive
             && self.dup_npo_outputs == other.dup_npo_outputs
+            && self.npo_output_is_creator == other.npo_output_is_creator
             && self.hint_output_wids == other.hint_output_wids
             && self.recompose_coeff_creator_wids == other.recompose_coeff_creator_wids
     }
@@ -84,6 +90,7 @@ impl<F: Field + Clone, const D: usize> Clone for PreprocessedColumns<F, D> {
             non_primitive: self.non_primitive.clone(),
             ext_reads: self.ext_reads.clone(),
             dup_npo_outputs: self.dup_npo_outputs.clone(),
+            npo_output_is_creator: self.npo_output_is_creator.clone(),
             hint_output_wids: self.hint_output_wids.clone(),
             recompose_coeff_creator_wids: self.recompose_coeff_creator_wids.clone(),
         }
@@ -100,6 +107,7 @@ impl<F: Field, const D: usize> PreprocessedColumns<F, D> {
             non_primitive: NonPrimitivePreprocessedMap::new(),
             ext_reads: Vec::new(),
             dup_npo_outputs: HashMap::new(),
+            npo_output_is_creator: HashMap::new(),
             hint_output_wids: hashbrown::HashSet::new(),
             recompose_coeff_creator_wids: hashbrown::HashSet::new(),
         }
@@ -572,7 +580,13 @@ impl<F: Field> Circuit<F> {
                     for out_limb in outputs.iter().take(n_exposed) {
                         for wid in out_limb {
                             let wid_idx = wid.0 as usize;
-                            if wid_idx < defined.len() && defined[wid_idx] {
+                            let is_creator = !(wid_idx < defined.len() && defined[wid_idx]);
+                            preprocessed
+                                .npo_output_is_creator
+                                .entry(op_type.clone())
+                                .or_default()
+                                .push(is_creator);
+                            if !is_creator {
                                 let dup = preprocessed
                                     .dup_npo_outputs
                                     .entry(op_type.clone())
@@ -836,6 +850,7 @@ mod tests {
                 non_primitive: HashMap::new(),
                 ext_reads: vec![0],
                 dup_npo_outputs: HashMap::new(),
+                npo_output_is_creator: HashMap::new(),
                 hint_output_wids: hashbrown::HashSet::new(),
                 recompose_coeff_creator_wids: hashbrown::HashSet::new(),
             }
@@ -927,6 +942,7 @@ mod tests {
                 // ext_reads: op1 reads a=0,b=1; op2 reads a=3,b=2; op3 reads a=4,b=2
                 ext_reads: vec![1, 1, 2, 1, 1],
                 dup_npo_outputs: HashMap::new(),
+                npo_output_is_creator: HashMap::new(),
                 hint_output_wids: hashbrown::HashSet::new(),
                 recompose_coeff_creator_wids: hashbrown::HashSet::new(),
             }
@@ -976,6 +992,7 @@ mod tests {
                 //                    0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15
                 ext_reads: vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
                 dup_npo_outputs: HashMap::new(),
+                npo_output_is_creator: HashMap::new(),
                 hint_output_wids: hashbrown::HashSet::new(),
                 recompose_coeff_creator_wids: hashbrown::HashSet::new(),
             }
@@ -1034,6 +1051,7 @@ mod tests {
                 // ext_reads: 0(a)=1, 1(b)=1, 2(c)=1
                 ext_reads: vec![1, 1, 1],
                 dup_npo_outputs: HashMap::new(),
+                npo_output_is_creator: HashMap::new(),
                 hint_output_wids: hashbrown::HashSet::new(),
                 recompose_coeff_creator_wids: hashbrown::HashSet::new(),
             }

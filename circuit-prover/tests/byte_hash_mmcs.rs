@@ -301,6 +301,15 @@ fn binary_opening_values(hash: ByteHash, shape: Shape, cap_height: usize, index:
 }
 
 fn binary_circuit(hash: ByteHash, shape: Shape, cap_height: usize) -> Circuit<EF> {
+    binary_circuit_repeated(hash, shape, cap_height, 1)
+}
+
+fn binary_circuit_repeated(
+    hash: ByteHash,
+    shape: Shape,
+    cap_height: usize,
+    repetitions: usize,
+) -> Circuit<EF> {
     let mut builder = CircuitBuilder::<EF>::new();
     match hash {
         ByteHash::Keccak256 => builder.enable_keccak_f1600::<BabyBear>(),
@@ -314,11 +323,13 @@ fn binary_circuit(hash: ByteHash, shape: Shape, cap_height: usize) -> Circuit<EF
         .collect();
     let cap: Vec<_> = (0..1 << cap_height).map(|_| inputs(DIGEST_LIMBS)).collect();
     let heights: Vec<_> = shape.iter().map(|&(height, _)| height).collect();
-    builder
-        .verify_byte_hash_mmcs_opening_limbs::<BabyBear>(
-            hash, &rows, &heights, &bits, &siblings, &cap,
-        )
-        .unwrap();
+    for _ in 0..repetitions {
+        builder
+            .verify_byte_hash_mmcs_opening_limbs::<BabyBear>(
+                hash, &rows, &heights, &bits, &siblings, &cap,
+            )
+            .unwrap();
+    }
     builder.build().unwrap()
 }
 
@@ -363,5 +374,18 @@ fn binary_tower_openings_prove() {
         let circuit = binary_circuit(hash, NOT_POWERS_OF_TWO, 1);
         let values = binary_opening_values(hash, NOT_POWERS_OF_TWO, 1, 5);
         prove_opening(hash, &circuit, &values);
+    }
+}
+
+#[test]
+fn repeated_binary_openings_keep_one_hash_output_creator() {
+    let shape: Shape = &[(2, 1)];
+    for hash in [ByteHash::Keccak256, ByteHash::Blake3] {
+        for cap_height in [0, 1] {
+            let circuit = binary_circuit_repeated(hash, shape, cap_height, 2);
+            let values = binary_opening_values(hash, shape, cap_height, 0);
+            assert!(runs(&circuit, &values));
+            prove_opening(hash, &circuit, &values);
+        }
     }
 }
