@@ -176,6 +176,14 @@ pub(crate) trait BinaryProtocolPolicy: BinaryRelationPolicy {
     where
         BF: PrimeField64,
         EF: ExtensionField<BF> + Eq + Hash;
+    fn observe_after_queries<BF, EF>(
+        b: &mut CircuitBuilder<EF>,
+        token: crate::BinaryQueryContinuation,
+        values: &[Self::ChallengeTarget],
+    ) -> Result<BinaryTower128Challenger, VerificationError>
+    where
+        BF: PrimeField64,
+        EF: ExtensionField<BF> + Eq + Hash;
     fn sample<BF, EF>(
         b: &mut CircuitBuilder<EF>,
         ch: &mut BinaryTower128Challenger,
@@ -210,6 +218,22 @@ where
         EF: ExtensionField<BF> + Eq + Hash,
     {
         crate::pcs::binary::observe_values::<BF, EF>(b, ch, values, E::RAW_BITS)
+    }
+    fn observe_after_queries<BF, EF>(
+        b: &mut CircuitBuilder<EF>,
+        token: crate::BinaryQueryContinuation,
+        values: &[BinaryTower128Target],
+    ) -> Result<BinaryTower128Challenger, VerificationError>
+    where
+        BF: PrimeField64,
+        EF: ExtensionField<BF> + Eq + Hash,
+    {
+        let bytes = values
+            .iter()
+            .flat_map(|value| value.bits()[..E::RAW_BITS].chunks_exact(8))
+            .map(|bits| b.reconstruct_index_from_bits::<BF>(bits))
+            .collect::<Result<alloc::vec::Vec<_>, _>>()?;
+        Ok(token.resume_with_observation::<BF, EF>(b, &bytes)?)
     }
     fn sample<BF, EF>(
         b: &mut CircuitBuilder<EF>,
@@ -251,6 +275,27 @@ impl BinaryProtocolPolicy for Poly64Relation {
             ch.observe_poly192::<BF, EF>(b, value)?;
         }
         Ok(())
+    }
+    fn observe_after_queries<BF, EF>(
+        b: &mut CircuitBuilder<EF>,
+        token: crate::BinaryQueryContinuation,
+        values: &[BinaryPoly192Target],
+    ) -> Result<BinaryTower128Challenger, VerificationError>
+    where
+        BF: PrimeField64,
+        EF: ExtensionField<BF> + Eq + Hash,
+    {
+        let bytes = values
+            .iter()
+            .flat_map(|value| {
+                value
+                    .coefficients()
+                    .iter()
+                    .flat_map(|coefficient| coefficient.bits().chunks_exact(8))
+            })
+            .map(|bits| b.reconstruct_index_from_bits::<BF>(bits))
+            .collect::<Result<alloc::vec::Vec<_>, _>>()?;
+        Ok(token.resume_with_observation::<BF, EF>(b, &bytes)?)
     }
     fn sample<BF, EF>(
         b: &mut CircuitBuilder<EF>,

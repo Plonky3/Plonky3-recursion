@@ -1,83 +1,72 @@
-//! Bounded binary FractionGKR reductions with an observed continuation.
+//! Bounded Poly64/Poly192 Fraction-GKR and its exact observed continuation.
 
-use alloc::vec;
 use alloc::vec::Vec;
 use core::hash::Hash;
-use core::marker::PhantomData;
 
-use p3_binary_field::BinaryField128;
+use p3_binary_field::{Poly64, Poly192};
 use p3_challenger::FieldChallenger;
 use p3_circuit::CircuitBuilder;
-use p3_circuit::ops::BinaryTower128Target;
-use p3_field::{ExtensionField, Field, PrimeField64};
+use p3_circuit::ops::BinaryPoly192Target;
+use p3_field::{ExtensionField, Field, PrimeCharacteristicRing, PrimeField64};
 use p3_multi_stark::fractional_gkr::{FractionGkrOutput, FractionGkrProof, FractionGkrShape};
 use p3_multilinear_util::point::Point;
 use p3_sumcheck::generic_degree::RoundPolyInterpolator;
 
-use super::binary_air::constrain_width;
-use super::binary_field_policy::TowerRelation;
+use super::binary_field_policy::Poly64Relation;
+use super::binary_fraction::kernel::{FractionDraw, FractionLayerView, verify_layers};
 use super::{InputResourceUsage, VerificationError, VerifierLimits};
 use crate::pcs::binary::{
-    Binary128SumcheckInterpolator, BinaryNonzeroChallengePlan, BinaryNonzeroChallengeTailPlan,
-    RecursiveBinaryChallengeField, RecursiveBinaryTowerField, observe_seed,
+    BinaryPolyNonzeroChallengePlan, BinaryPolyNonzeroChallengeTailPlan,
+    Poly192SumcheckInterpolator, poly_observe_seed,
 };
 use crate::transcript::domain_separator_seed;
 use crate::{BinaryQueryContinuation, BinaryTower128Challenger};
-pub(crate) mod kernel;
-use kernel::{FractionDraw, FractionLayerView, verify_layers};
 
 #[derive(Clone, Debug)]
-pub struct BinaryFractionGkrLayerTargets {
-    pub round_polys: Vec<[BinaryTower128Target; 3]>,
+pub struct BinaryPolyFractionGkrLayerTargets {
+    pub round_polys: Vec<[BinaryPoly192Target; 3]>,
     /// Native wire order: numerator zero, denominator zero, numerator one,
     /// denominator one.
-    pub claims: [BinaryTower128Target; 4],
+    pub claims: [BinaryPoly192Target; 4],
 }
 
 #[derive(Clone, Debug)]
-pub struct BinaryFractionGkrProofTargets {
-    pub root_denominator: BinaryTower128Target,
-    pub layers: Vec<BinaryFractionGkrLayerTargets>,
+pub struct BinaryPolyFractionGkrProofTargets {
+    pub root_denominator: BinaryPoly192Target,
+    pub layers: Vec<BinaryPolyFractionGkrLayerTargets>,
 }
 
 /// An internally consistent reduction awaiting authentication of both input
 /// polynomials by the surrounding protocol. This is not a verified statement.
 #[must_use = "fraction numerator and denominator must be authenticated by the surrounding protocol"]
 #[derive(Debug)]
-pub struct BinaryFractionGkrOutput {
+pub struct BinaryPolyFractionGkrOutput {
     /// Most-significant-variable-first multilinear point.
-    pub point: Vec<BinaryTower128Target>,
-    pub numerator: BinaryTower128Target,
-    pub denominator: BinaryTower128Target,
+    pub point: Vec<BinaryPoly192Target>,
+    pub numerator: BinaryPoly192Target,
+    pub denominator: BinaryPoly192Target,
     pub continuation: BinaryQueryContinuation,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct BinaryFractionGkrInputShape<F = BinaryField128, E = BinaryField128> {
-    seed: Vec<F>,
+pub struct BinaryPolyFractionGkrInputShape {
+    seed: Vec<Poly64>,
     height: usize,
     max_nonzero_draws: usize,
-    challenge: PhantomData<E>,
 }
 
-impl<F: RecursiveBinaryTowerField, E: RecursiveBinaryChallengeField>
-    BinaryFractionGkrInputShape<F, E>
-{
-    pub(crate) fn native_decode_height(&self) -> usize {
-        self.height
-    }
-
+impl BinaryPolyFractionGkrInputShape {
     pub fn allocate_targets<BF, EF>(
         &self,
         b: &mut CircuitBuilder<EF>,
-    ) -> Result<BinaryFractionGkrProofTargets, VerificationError>
+    ) -> Result<BinaryPolyFractionGkrProofTargets, VerificationError>
     where
         BF: PrimeField64,
         EF: ExtensionField<BF> + Eq + Hash,
     {
-        let mut field = || -> Result<BinaryTower128Target, VerificationError> {
-            let limbs = b.alloc_private_input_array::<8>("binary fraction GKR field");
-            Ok(b.binary128_from_limbs::<BF>(limbs)?)
+        let mut field = || -> Result<BinaryPoly192Target, VerificationError> {
+            let limbs = b.alloc_private_input_array::<12>("binary fraction GKR field");
+            Ok(b.binary_poly192_from_limbs::<BF>(limbs)?)
         };
         let root_denominator = field()?;
         let layers = (0..self.height)
@@ -85,13 +74,13 @@ impl<F: RecursiveBinaryTowerField, E: RecursiveBinaryChallengeField>
                 let round_polys = (0..layer)
                     .map(|_| Ok([field()?, field()?, field()?]))
                     .collect::<Result<_, VerificationError>>()?;
-                Ok(BinaryFractionGkrLayerTargets {
+                Ok(BinaryPolyFractionGkrLayerTargets {
                     round_polys,
                     claims: [field()?, field()?, field()?, field()?],
                 })
             })
             .collect::<Result<_, VerificationError>>()?;
-        Ok(BinaryFractionGkrProofTargets {
+        Ok(BinaryPolyFractionGkrProofTargets {
             root_denominator,
             layers,
         })
@@ -100,49 +89,39 @@ impl<F: RecursiveBinaryTowerField, E: RecursiveBinaryChallengeField>
 
 /// Bounded witness data carrying no independent input-polynomial authority.
 #[derive(Clone, Debug)]
-pub struct NativeBinaryFractionGkrInput<F = BinaryField128, E = BinaryField128> {
-    shape: BinaryFractionGkrInputShape<F, E>,
-    fields: Vec<u128>,
+pub struct NativeBinaryPolyFractionGkrInput {
+    shape: BinaryPolyFractionGkrInputShape,
+    limbs: Vec<u16>,
 }
 
-impl<F: RecursiveBinaryTowerField, E: RecursiveBinaryChallengeField>
-    NativeBinaryFractionGkrInput<F, E>
-{
-    pub fn shape(&self) -> &BinaryFractionGkrInputShape<F, E> {
+impl NativeBinaryPolyFractionGkrInput {
+    pub fn shape(&self) -> &BinaryPolyFractionGkrInputShape {
         &self.shape
     }
 
     pub fn private_values<EF: Field>(
         &self,
-        expected: &BinaryFractionGkrInputShape<F, E>,
+        expected: &BinaryPolyFractionGkrInputShape,
     ) -> Result<Vec<EF>, VerificationError> {
         if &self.shape != expected {
             return Err(invalid("binary fraction input belongs to another verifier"));
         }
-        Ok(self
-            .fields
-            .iter()
-            .flat_map(|&value| (0..8).map(move |i| EF::from_u16((value >> (16 * i)) as u16)))
-            .collect())
+        Ok(self.limbs.iter().copied().map(EF::from_u16).collect())
     }
 }
 
-/// Released degree-three FractionGKR over Tower64 or Tower128. Geometry and
+/// Released degree-three Fraction-GKR over Poly64 and Poly192. Geometry and
 /// every rejection budget are fixed independently of the proof.
 #[derive(Clone, Debug)]
-pub struct BinaryFractionGkrVerifier<F = BinaryField128, E = BinaryField128> {
-    input: BinaryFractionGkrInputShape<F, E>,
-    interpolator: Binary128SumcheckInterpolator,
-    nonzero: BinaryNonzeroChallengePlan<E>,
-    branch_tail: Option<BinaryNonzeroChallengeTailPlan<E>>,
+pub struct BinaryPolyFractionGkrVerifier {
+    input: BinaryPolyFractionGkrInputShape,
+    interpolator: Poly192SumcheckInterpolator,
+    nonzero: BinaryPolyNonzeroChallengePlan,
+    branch_tail: Option<BinaryPolyNonzeroChallengeTailPlan>,
     usage: InputResourceUsage,
 }
 
-impl<F, E> BinaryFractionGkrVerifier<F, E>
-where
-    F: RecursiveBinaryTowerField,
-    E: RecursiveBinaryChallengeField + ExtensionField<F>,
-{
+impl BinaryPolyFractionGkrVerifier {
     pub fn new(height: usize, max_nonzero_draws: usize) -> Result<Self, VerificationError> {
         Self::with_limits(height, max_nonzero_draws, &VerifierLimits::default())
     }
@@ -168,7 +147,7 @@ where
             .ok_or_else(overflow)?;
         usage.add_rounds(limits, challenges)?;
         usage.add_query_round(limits, 1)?; // Initial unrestricted batching draw.
-        usage.add_metadata_entries(limits, E::RAW_BITS)?;
+        usage.add_metadata_entries(limits, 192)?;
         let fields = rounds
             .checked_mul(3)
             .and_then(|n| {
@@ -178,14 +157,14 @@ where
             })
             .and_then(|n| n.checked_add(1))
             .ok_or_else(overflow)?;
-        usage.add_scalar_elements(limits, fields.checked_mul(8).ok_or_else(overflow)?)?;
+        usage.add_scalar_elements(limits, fields.checked_mul(12).ok_or_else(overflow)?)?;
         let steps = height
             .checked_mul(height)
             .and_then(|n| height.checked_mul(4).and_then(|fixed| n.checked_add(fixed)))
             .and_then(|n| n.checked_add(1))
             .ok_or_else(overflow)?;
         usage.add_metadata_entries(limits, steps)?;
-        let nonzero = BinaryNonzeroChallengePlan::with_limits(1, max_nonzero_draws, limits)?;
+        let nonzero = BinaryPolyNonzeroChallengePlan::with_limits(1, max_nonzero_draws, limits)?;
         let mut prefix_usage = nonzero.input_resource_usage();
         prefix_usage.rounds = 0; // All challenges were charged above.
         for _ in 0..rounds + 1 {
@@ -193,7 +172,7 @@ where
         }
         let branch_tail = if height > 1 {
             let tail =
-                BinaryNonzeroChallengeTailPlan::with_limits(1, max_nonzero_draws, 1, limits)?;
+                BinaryPolyNonzeroChallengeTailPlan::with_limits(1, max_nonzero_draws, 1, limits)?;
             let mut tail_usage = tail.input_resource_usage();
             tail_usage.rounds = 0;
             for _ in 0..height - 1 {
@@ -203,19 +182,18 @@ where
         } else {
             None
         };
-        let interpolator = Binary128SumcheckInterpolator::with_limits(3, limits)?;
+        let interpolator = Poly192SumcheckInterpolator::with_limits(3, limits)?;
         usage.add_metadata_entries(limits, 16)?;
         let native = FractionGkrShape {
             num_variables: height,
         };
-        let seed = domain_separator_seed(&native.domain_separator::<F, E>());
+        let seed = domain_separator_seed(&native.domain_separator::<Poly64, Poly192>());
         usage.add_metadata_entries(limits, seed.len())?;
         Ok(Self {
-            input: BinaryFractionGkrInputShape {
+            input: BinaryPolyFractionGkrInputShape {
                 seed,
                 height,
                 max_nonzero_draws,
-                challenge: PhantomData,
             },
             interpolator,
             nonzero,
@@ -224,7 +202,7 @@ where
         })
     }
 
-    pub fn input_shape(&self) -> BinaryFractionGkrInputShape<F, E> {
+    pub fn input_shape(&self) -> BinaryPolyFractionGkrInputShape {
         self.input.clone()
     }
     pub fn input_resource_usage(&self) -> InputResourceUsage {
@@ -237,8 +215,8 @@ where
         &self,
         b: &mut CircuitBuilder<EF>,
         ch: BinaryTower128Challenger,
-        proof: &BinaryFractionGkrProofTargets,
-    ) -> Result<BinaryFractionGkrOutput, VerificationError>
+        proof: &BinaryPolyFractionGkrProofTargets,
+    ) -> Result<BinaryPolyFractionGkrOutput, VerificationError>
     where
         BF: PrimeField64,
         EF: ExtensionField<BF> + Eq + Hash,
@@ -252,8 +230,8 @@ where
         &self,
         b: &mut CircuitBuilder<EF>,
         token: BinaryQueryContinuation,
-        proof: &BinaryFractionGkrProofTargets,
-    ) -> Result<BinaryFractionGkrOutput, VerificationError>
+        proof: &BinaryPolyFractionGkrProofTargets,
+    ) -> Result<BinaryPolyFractionGkrOutput, VerificationError>
     where
         BF: PrimeField64,
         EF: ExtensionField<BF> + Eq + Hash,
@@ -263,10 +241,7 @@ where
             .input
             .seed
             .iter()
-            .flat_map(|&value| {
-                let raw = value.raw_coordinates();
-                (0..F::RAW_BITS / 8).map(move |i| (raw >> (8 * i)) as u8)
-            })
+            .flat_map(|value| value.to_bits().to_le_bytes())
             .map(|byte| b.define_const(EF::from_u8(byte)))
             .collect::<Vec<_>>();
         let ch = token.resume_with_observation::<BF, EF>(b, &bytes)?;
@@ -277,31 +252,26 @@ where
         &self,
         b: &mut CircuitBuilder<EF>,
         mut ch: BinaryTower128Challenger,
-        proof: &BinaryFractionGkrProofTargets,
+        proof: &BinaryPolyFractionGkrProofTargets,
         seeded: bool,
-    ) -> Result<BinaryFractionGkrOutput, VerificationError>
+    ) -> Result<BinaryPolyFractionGkrOutput, VerificationError>
     where
         BF: PrimeField64,
         EF: ExtensionField<BF> + Eq + Hash,
     {
         self.check_targets(proof)?;
-        for value in core::iter::once(&proof.root_denominator).chain(
-            proof
-                .layers
-                .iter()
-                .flat_map(|layer| layer.round_polys.iter().flatten().chain(&layer.claims)),
-        ) {
-            constrain_width(b, value, E::RAW_BITS);
-        }
         let one = b.define_const(EF::ONE);
-        let zero_factors = proof.root_denominator.bits()[..E::RAW_BITS]
+        let zero_factors = proof
+            .root_denominator
+            .coefficients()
             .iter()
+            .flat_map(|coefficient| coefficient.bits())
             .map(|&bit| b.sub(one, bit))
             .collect::<Vec<_>>();
         let zero = b.mul_many(&zero_factors);
         b.assert_zero(zero);
         if !seeded {
-            observe_seed::<F, BF, EF>(b, &mut ch, &self.input.seed)?;
+            poly_observe_seed::<BF, EF>(b, &mut ch, &self.input.seed)?;
         }
         let layers = proof
             .layers
@@ -311,7 +281,7 @@ where
                 claims: &layer.claims,
             })
             .collect::<Vec<_>>();
-        let output = verify_layers::<TowerRelation<F, E>, BF, EF>(
+        let output = verify_layers::<Poly64Relation, BF, EF>(
             b,
             ch,
             &proof.root_denominator,
@@ -342,7 +312,7 @@ where
                 }
             },
         )?;
-        Ok(BinaryFractionGkrOutput {
+        Ok(BinaryPolyFractionGkrOutput {
             point: output.point,
             numerator: output.numerator,
             denominator: output.denominator,
@@ -352,7 +322,7 @@ where
 
     pub(crate) fn check_targets(
         &self,
-        proof: &BinaryFractionGkrProofTargets,
+        proof: &BinaryPolyFractionGkrProofTargets,
     ) -> Result<(), VerificationError> {
         if proof.layers.len() != self.input.height
             || proof
@@ -368,7 +338,7 @@ where
 
     pub(crate) fn check_native(
         &self,
-        proof: &FractionGkrProof<E>,
+        proof: &FractionGkrProof<Poly192>,
     ) -> Result<(), VerificationError> {
         if proof.layers.len() != self.input.height
             || proof
@@ -379,7 +349,7 @@ where
         {
             return Err(invalid("binary fraction native shape mismatch"));
         }
-        if proof.root_denominator == E::ZERO {
+        if proof.root_denominator == Poly192::ZERO {
             return Err(invalid("binary fraction root denominator is zero"));
         }
         Ok(())
@@ -389,11 +359,11 @@ where
     /// rejection loops. Every failure preserves the caller's challenger.
     pub fn import_native<Ch>(
         &self,
-        proof: &FractionGkrProof<E>,
+        proof: &FractionGkrProof<Poly192>,
         ch: &mut Ch,
-    ) -> Result<NativeBinaryFractionGkrInput<F, E>, VerificationError>
+    ) -> Result<NativeBinaryPolyFractionGkrInput, VerificationError>
     where
-        Ch: FieldChallenger<F> + Clone,
+        Ch: FieldChallenger<Poly64> + Clone,
     {
         self.import_native_with_reduction(proof, ch)
             .map(|(input, _)| input)
@@ -401,49 +371,49 @@ where
 
     pub(crate) fn import_native_with_reduction<Ch>(
         &self,
-        proof: &FractionGkrProof<E>,
+        proof: &FractionGkrProof<Poly192>,
         ch: &mut Ch,
-    ) -> Result<(NativeBinaryFractionGkrInput<F, E>, FractionGkrOutput<E>), VerificationError>
+    ) -> Result<(NativeBinaryPolyFractionGkrInput, FractionGkrOutput<Poly192>), VerificationError>
     where
-        Ch: FieldChallenger<F> + Clone,
+        Ch: FieldChallenger<Poly64> + Clone,
     {
         self.check_native(proof)?;
         let mut staged = ch.clone();
         FractionGkrShape {
             num_variables: self.input.height,
         }
-        .domain_separator::<F, E>()
+        .domain_separator::<Poly64, Poly192>()
         .seed(&mut staged);
         staged.observe_algebra_element(proof.root_denominator);
-        let mut lambda = staged.sample_algebra_element::<E>();
-        let mut numerator = E::ZERO;
+        let mut lambda = staged.sample_algebra_element::<Poly192>();
+        let mut numerator = Poly192::ZERO;
         let mut denominator = proof.root_denominator;
-        let mut point = Point::<E>::new(Vec::new());
-        let interpolator = RoundPolyInterpolator::<E>::new(3);
+        let mut point = Point::<Poly192>::new(Vec::new());
+        let interpolator = RoundPolyInterpolator::<Poly192>::new(3);
         for (index, layer) in proof.layers.iter().enumerate() {
             let mut claim = numerator + lambda * denominator;
             let mut round_point = Vec::with_capacity(index + 1);
             for polynomial in &layer.round_polys {
                 staged.observe_algebra_slice(polynomial);
-                let challenge = self.nonzero.sample_native::<F, _>(&mut staged)?[0];
+                let challenge = self.nonzero.sample_native(&mut staged)?[0];
                 claim = interpolator.eval(polynomial, claim, challenge);
                 round_point.push(challenge);
             }
             let c = layer.claims;
-            let expected = Point::<E>::eval_eq(point.as_slice(), &round_point)
+            let expected = Point::<Poly192>::eval_eq(point.as_slice(), &round_point)
                 * (c.d1 * c.n0 + c.d0 * c.n1 + lambda * c.d0 * c.d1);
             if claim != expected {
                 return Err(invalid("binary fraction native layer consistency failed"));
             }
             staged.observe_algebra_slice(&[c.n0, c.d0, c.n1, c.d1]);
             let branch = if index + 1 == self.input.height {
-                self.nonzero.sample_native::<F, _>(&mut staged)?[0]
+                self.nonzero.sample_native(&mut staged)?[0]
             } else {
                 let (values, following) = self
                     .branch_tail
                     .as_ref()
                     .expect("trusted nonfinal layer")
-                    .sample_native::<F, _>(&mut staged)?;
+                    .sample_native(&mut staged)?;
                 lambda = following[0];
                 values[0]
             };
@@ -452,24 +422,27 @@ where
             round_point.insert(0, branch);
             point = Point::new(round_point);
         }
-        let mut fields = vec![proof.root_denominator.raw_coordinates()];
+        let mut limbs = Vec::new();
+        let mut append = |value: Poly192| {
+            for coefficient in value.coefficients() {
+                limbs.extend((0..4).map(|i| (coefficient.to_bits() >> (16 * i)) as u16));
+            }
+        };
+        append(proof.root_denominator);
         for layer in &proof.layers {
-            fields.extend(
-                layer
-                    .round_polys
-                    .iter()
-                    .flatten()
-                    .copied()
-                    .map(E::raw_coordinates),
-            );
+            for &value in layer.round_polys.iter().flatten() {
+                append(value);
+            }
             let c = layer.claims;
-            fields.extend([c.n0, c.d0, c.n1, c.d1].map(E::raw_coordinates));
+            for value in [c.n0, c.d0, c.n1, c.d1] {
+                append(value);
+            }
         }
         *ch = staged;
         Ok((
-            NativeBinaryFractionGkrInput {
+            NativeBinaryPolyFractionGkrInput {
                 shape: self.input.clone(),
-                fields,
+                limbs,
             },
             FractionGkrOutput {
                 point,

@@ -6,6 +6,11 @@ pub(crate) mod binary_field_policy;
 mod binary_bus;
 mod binary_poly_bus;
 mod binary_fraction;
+mod binary_poly_fraction;
+pub use binary_poly_fraction::{
+    BinaryPolyFractionGkrInputShape, BinaryPolyFractionGkrLayerTargets, BinaryPolyFractionGkrOutput,
+    BinaryPolyFractionGkrProofTargets, BinaryPolyFractionGkrVerifier, NativeBinaryPolyFractionGkrInput,
+};
 mod binary_boolean_multi_stark;
 mod binary_grouped_boolean_multi_stark;
 mod binary_grouped_multi_stark;
