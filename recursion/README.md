@@ -31,3 +31,6 @@ The [configuration guide](../book/src/user_guide/configuration.md#choosing-a-bui
 maps built-in suites to backends and describes recursive parameter limits.
 The [binary-field guide](../book/src/advanced_topics/binary_fields.md)
 describes the separate binary byte-hash challenger and its proof-table registration.
+The [binary prover example](examples/binary_prover.rs) proves successive Poly64
+squarings with native WHIR, then proves and verifies a BabyBear recursion layer:
+`cargo run -p p3-recursion --release --example binary_prover`.
