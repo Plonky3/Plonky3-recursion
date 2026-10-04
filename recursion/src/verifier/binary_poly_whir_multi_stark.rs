@@ -72,6 +72,7 @@ impl WhirPreprocessedInputShape {
 pub struct BinaryPolyWhirMultiStarkProofTargets {
     pub commitment: Vec<Vec<ExprId>>,
     pub sumcheck: BinaryPolyGenericSumcheckProofTargets,
+    pub bus: Option<super::BinaryPolyProductGkrProofTargets>,
     pub opening: BinaryPolyWhirProofTargets,
     pub preprocessed_opening: Option<BinaryPolyWhirProofTargets>,
 }
@@ -85,7 +86,11 @@ impl BinaryPolyWhirMultiStarkInputShape {
         crate::artifact::binary_native::codec::MultiDecode {
             public_counts: self.public_value_counts().collect(),
             cap_roots: 1usize << self.cap_height,
-            bus: None,
+            bus: self
+                .relation
+                .bus
+                .as_ref()
+                .map(|bus| bus.product.native_decode_shape()),
             sumcheck: self.relation.sumcheck.native_decode_shape(),
             indexed: None,
             opening: self.opening.native_decode_shape(),
@@ -137,6 +142,12 @@ impl BinaryPolyWhirMultiStarkInputShape {
                     .to_vec()
             })
             .collect();
+        let bus = self
+            .relation
+            .bus
+            .as_ref()
+            .map(|bus| bus.product.allocate_targets::<BF, EF>(b))
+            .transpose()?;
         let sumcheck = self.relation.sumcheck.allocate_targets::<BF, EF>(b)?;
         let opening = self.opening.allocate_targets::<BF, EF>(b)?;
         let preprocessed_opening = self
@@ -146,6 +157,7 @@ impl BinaryPolyWhirMultiStarkInputShape {
             .transpose()?;
         Ok(BinaryPolyWhirMultiStarkProofTargets {
             commitment,
+            bus,
             sumcheck,
             opening,
             preprocessed_opening,
@@ -159,6 +171,7 @@ pub struct NativeBinaryPolyWhirMultiStarkInput {
     shape: BinaryPolyWhirMultiStarkInputShape,
     commitment: Vec<[u8; 32]>,
     sumcheck: NativeBinaryPolyGenericSumcheckInput,
+    bus: Option<super::NativeBinaryPolyProductGkrInput>,
     opening: NativeBinaryPolyWhirInput,
     preprocessed_opening: Option<NativeBinaryPolyWhirInput>,
 }
@@ -182,6 +195,13 @@ impl NativeBinaryPolyWhirMultiStarkInput {
             .iter()
             .flat_map(|root| bytes_to_limbs(root).into_iter().map(EF::from_u16))
             .collect();
+        match (&expected.relation.bus, &self.bus) {
+            (Some(shape), Some(input)) => {
+                values.extend(input.private_values::<EF>(&shape.product)?)
+            }
+            (None, None) => {}
+            _ => return Err(invalid("binary Poly MultiStark bus input shape mismatch")),
+        }
         values.extend(
             self.sumcheck
                 .private_values::<EF>(&expected.relation.sumcheck)?,
@@ -202,7 +222,7 @@ impl NativeBinaryPolyWhirMultiStarkInput {
     }
 }
 
-/// Complete plain polynomial AIR, zerocheck and additive WHIR relation.
+/// Complete polynomial AIR, optional product bus, zerocheck and additive WHIR relation.
 /// The caller supplies the statement and independent preprocessing authority.
 #[derive(Clone, Debug)]
 pub struct BinaryPolyWhirMultiStarkVerifier {
@@ -447,7 +467,7 @@ impl BinaryPolyWhirMultiStarkVerifier {
         BF: PrimeField64,
         EF: ExtensionField<BF> + Eq + Hash,
     {
-        self.relation.check_targets(public, &proof.sumcheck)?;
+        self.relation.check_targets(public, proof)?;
         let zero = b.binary_poly192_constant([0; 3])?;
         let points = self.relation.zero_points(false, zero.clone());
         self.opening
@@ -474,9 +494,7 @@ impl BinaryPolyWhirMultiStarkVerifier {
             .observe_prefix::<BF, EF>(b, &mut ch, preprocessed_cap.as_deref())?;
         self.opening
             .observe_commitment::<BF, EF>(b, &mut ch, &proof.commitment)?;
-        let reduction = self
-            .relation
-            .reduce::<BF, EF>(b, ch, public, &proof.sumcheck)?;
+        let reduction = self.relation.reduce::<BF, EF>(b, ch, public, proof)?;
         let (main_evals, mut continuation) = self.opening.verify_at::<BF, EF>(
             b,
             reduction.challenger.clone(),
@@ -650,6 +668,7 @@ impl BinaryPolyWhirMultiStarkVerifier {
             shape: self.input.clone(),
             commitment: proof.commitment.roots().to_vec(),
             sumcheck: reduction.sumcheck,
+            bus: reduction.bus,
             opening,
             preprocessed_opening,
         })

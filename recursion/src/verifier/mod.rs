@@ -4,6 +4,7 @@ mod batch_stark;
 mod binary_air;
 pub(crate) mod binary_field_policy;
 mod binary_bus;
+mod binary_poly_bus;
 mod binary_fraction;
 mod binary_boolean_multi_stark;
 mod binary_grouped_boolean_multi_stark;

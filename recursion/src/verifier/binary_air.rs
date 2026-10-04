@@ -898,6 +898,59 @@ pub struct BinaryPolyAirConstraintPlan {
 }
 
 impl BinaryPolyAirConstraintPlan {
+    /// Internal constructor for a relation that closes every retained bus claim.
+    /// Indexed claims still require their own supported reduction.
+    pub(super) fn with_bus_limits<A>(
+        air: &A,
+        log_height: usize,
+        limits: &VerifierLimits,
+    ) -> Result<(Self, Vec<SymbolicBusInteraction<p3_binary_field::Poly64>>), VerificationError>
+    where
+        A: Air<InteractionSymbolicBuilder<p3_binary_field::Poly64, p3_binary_field::Poly192>>
+            + Air<BusSymbolicBuilder<p3_binary_field::Poly64, p3_binary_field::Poly192>>,
+    {
+        let (program, declarations) = AirProgram::build::<
+            p3_binary_field::Poly64,
+            p3_binary_field::Poly192,
+            A,
+        >(
+            air, log_height, limits, true, Poly64Relation::base_raw
+        )?;
+        if !program.indexed.is_empty() {
+            return Err(invalid(
+                "binary Poly AIR indexed claims require a supported reduction",
+            ));
+        }
+        Ok((Self { program }, declarations))
+    }
+
+    pub(super) fn bus_declarations(&self) -> &[CompiledBusDeclaration] {
+        &self.program.bus
+    }
+
+    pub(super) fn evaluate_with_bus<EF: Field + Eq + Hash>(
+        &self,
+        b: &mut CircuitBuilder<EF>,
+        point: &[p3_circuit::ops::BinaryPoly192Target],
+        current: &[p3_circuit::ops::BinaryPoly192Target],
+        next: &[p3_circuit::ops::BinaryPoly192Target],
+        preprocessed_current: &[p3_circuit::ops::BinaryPoly192Target],
+        preprocessed_next: &[p3_circuit::ops::BinaryPoly192Target],
+        public: &[p3_circuit::ops::BinaryPoly64Target],
+        alpha: &p3_circuit::ops::BinaryPoly192Target,
+    ) -> Result<BinaryAirEvaluation<p3_circuit::ops::BinaryPoly192Target>, VerificationError> {
+        self.program.evaluate::<Poly64Relation, EF>(
+            b,
+            point,
+            current,
+            next,
+            preprocessed_current,
+            preprocessed_next,
+            public,
+            alpha,
+        )
+    }
+
     pub(crate) fn write_identity(
         &self,
         w: &mut crate::artifact::wire::Writer,

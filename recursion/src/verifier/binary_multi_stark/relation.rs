@@ -142,9 +142,7 @@ where
             .map(|plan| BinaryBusVerifier::<F, E>::with_limits(plan, &plans, limits))
             .transpose()?;
         if let Some(bus) = &bus {
-            let mut bus_usage = bus.input_resource_usage();
-            bus_usage.instances = 0;
-            usage.merge(limits, bus_usage)?;
+            usage.merge(limits, bus.input_resource_usage())?;
         }
         let indexed = BinaryIndexedVerifier::<F, E>::build(&plans, max_tau_draws, limits)?;
         if let Some(indexed) = &indexed {

@@ -171,11 +171,33 @@ where
         roots: ProductGkrRootShape,
         limits: &VerifierLimits,
     ) -> Result<Self, VerificationError> {
+        Self::with_limits_impl(height, trees, roots, limits, true)
+    }
+
+    /// Embedded push/pull trees are derived channels of already-counted AIRs.
+    pub(super) fn with_embedded_bus_limits(
+        height: usize,
+        trees: usize,
+        roots: ProductGkrRootShape,
+        limits: &VerifierLimits,
+    ) -> Result<Self, VerificationError> {
+        Self::with_limits_impl(height, trees, roots, limits, false)
+    }
+
+    fn with_limits_impl(
+        height: usize,
+        trees: usize,
+        roots: ProductGkrRootShape,
+        limits: &VerifierLimits,
+        account_instances: bool,
+    ) -> Result<Self, VerificationError> {
         let native = ProductGkrShape::new(height, trees, roots)
             .map_err(|_| invalid("binary product geometry is invalid"))?;
         let mut usage = InputResourceUsage::default();
         usage.check_log_degree(limits, height)?;
-        usage.add_instances(limits, trees)?;
+        if account_instances {
+            usage.add_instances(limits, trees)?;
+        }
         usage.add_metadata_entries(limits, trees)?;
         let mut layers = Vec::new();
         let mut remaining = height;

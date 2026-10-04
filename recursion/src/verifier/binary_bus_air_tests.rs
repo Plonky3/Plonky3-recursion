@@ -176,3 +176,54 @@ fn unsupported_bus_accesses_and_retained_metadata_are_bounded() {
         BinaryAirConstraintPlan::<BinaryField128>::with_bus_limits(&BusAir, 2, &limits).is_err()
     );
 }
+
+#[test]
+fn embedded_bus_products_charge_no_additional_air_instances() {
+    let limits = VerifierLimits {
+        max_instances: 1,
+        ..VerifierLimits::default()
+    };
+    let (tower, declarations) =
+        BinaryAirConstraintPlan::<BinaryField128>::with_bus_limits(&BusAir, 2, &limits).unwrap();
+    let plan = BusPlan::build(&[BusPlanInput {
+        log_height: 2,
+        interactions: &declarations,
+    }])
+    .unwrap()
+    .unwrap();
+    let bus = crate::verifier::binary_bus::BinaryBusVerifier::<BinaryField128, BinaryField128>::with_limits(plan, &[tower], &limits).unwrap();
+    assert_eq!(bus.input_resource_usage().instances, 0);
+    let (poly, declarations) =
+        BinaryPolyAirConstraintPlan::with_bus_limits(&BusAir, 2, &limits).unwrap();
+    let plan = BusPlan::build(&[BusPlanInput {
+        log_height: 2,
+        interactions: &declarations,
+    }])
+    .unwrap()
+    .unwrap();
+    let bus = crate::verifier::binary_poly_bus::BinaryPolyBusVerifier::with_limits(
+        plan,
+        &[poly],
+        &limits,
+    )
+    .unwrap();
+    assert_eq!(bus.input_resource_usage().instances, 0);
+    assert!(
+        crate::verifier::BinaryProductGkrVerifier::<BinaryField128>::with_limits(
+            2,
+            2,
+            p3_bus::ProductGkrRootShape::FirstTwoShared,
+            &limits
+        )
+        .is_err()
+    );
+    assert!(
+        crate::verifier::BinaryPolyProductGkrVerifier::with_limits(
+            2,
+            2,
+            p3_bus::ProductGkrRootShape::FirstTwoShared,
+            &limits
+        )
+        .is_err()
+    );
+}

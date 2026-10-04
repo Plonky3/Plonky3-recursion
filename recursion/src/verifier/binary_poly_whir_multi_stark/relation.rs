@@ -1,6 +1,9 @@
 //! Plain Poly64 AIR and full Poly192 zerocheck reduction.
 
 use super::super::binary_indexed::BinaryOpeningSchedule;
+use super::super::binary_poly_bus::{
+    BinaryPolyBusClaims, BinaryPolyBusInputShape, BinaryPolyBusVerifier,
+};
 use super::*;
 use crate::pcs::binary::{
     BinaryPolyGenericSumcheckInputShape, BinaryPolyGenericSumcheckVerifier,
@@ -8,6 +11,7 @@ use crate::pcs::binary::{
 };
 use crate::transcript::domain_separator_seed;
 use alloc::sync::Arc;
+use p3_bus::{BusPlan, BusPlanInput};
 use p3_multi_stark::rounds::AirDegrees;
 use p3_multi_stark::transcript::{MultiStarkInstanceShape, MultiStarkShape};
 use p3_multi_stark::zerocheck::transcript::ZerocheckShape;
@@ -19,6 +23,7 @@ pub(super) struct PolyMultiStarkRelationShape {
     outer_seed: Vec<Poly64>,
     zerocheck_seed: Vec<Poly64>,
     pub(super) sumcheck: BinaryPolyGenericSumcheckInputShape,
+    pub(super) bus: Option<BinaryPolyBusInputShape>,
     main_schedule: BinaryOpeningSchedule,
     preprocessed_schedule: Option<BinaryOpeningSchedule>,
     max_tau_draws: usize,
@@ -29,12 +34,15 @@ pub(super) struct PolyMultiStarkRelation {
     pub(super) input: Arc<PolyMultiStarkRelationShape>,
     sumcheck: BinaryPolyGenericSumcheckVerifier,
     tau: BinaryPolyNonzeroChallengePlan,
+    bus: Option<BinaryPolyBusVerifier>,
     pub(super) usage: InputResourceUsage,
 }
 
 pub(super) struct Reduction {
     alpha: BinaryPoly192Target,
     beta: BinaryPoly192Target,
+    lambda: Option<BinaryPoly192Target>,
+    bus_claims: Option<BinaryPolyBusClaims>,
     tau: Vec<BinaryPoly192Target>,
     point: Vec<BinaryPoly192Target>,
     claim: BinaryPoly192Target,
@@ -44,6 +52,7 @@ pub(super) struct Reduction {
 }
 
 pub(super) struct NativeReduction {
+    pub(super) bus: Option<super::super::NativeBinaryPolyProductGkrInput>,
     pub(super) sumcheck: NativeBinaryPolyGenericSumcheckInput,
     pub(super) main_points: Vec<Point<Poly192>>,
     pub(super) preprocessed_points: Option<Vec<Point<Poly192>>>,
@@ -98,8 +107,10 @@ impl PolyMultiStarkRelation {
         let mut usage = InputResourceUsage::default();
         usage.add_instances(limits, airs.len())?;
         let mut plans = Vec::with_capacity(airs.len());
+        let mut declarations = Vec::with_capacity(airs.len());
         for (&air, &height) in airs.iter().zip(heights) {
-            let plan = BinaryPolyAirConstraintPlan::with_limits(air, height, limits)?;
+            let (plan, bus) = BinaryPolyAirConstraintPlan::with_bus_limits(air, height, limits)?;
+            declarations.push(bus);
             if plan.preprocessed_width() != 0 && !has_preprocessing {
                 return Err(invalid(
                     "polynomial MultiStark preprocessing requires trusted authority",
@@ -114,6 +125,21 @@ impl PolyMultiStarkRelation {
             usage.add_scalar_elements(limits, public_limbs)?;
             plans.push(plan);
         }
+        let bus_inputs: Vec<_> = declarations
+            .iter()
+            .zip(heights)
+            .map(|(interactions, &log_height)| BusPlanInput {
+                log_height,
+                interactions,
+            })
+            .collect();
+        let bus = BusPlan::build(&bus_inputs)
+            .map_err(|_| invalid("binary Poly MultiStark bus geometry is invalid"))?
+            .map(|plan| BinaryPolyBusVerifier::with_limits(plan, &plans, limits))
+            .transpose()?;
+        if let Some(bus) = &bus {
+            usage.merge(limits, bus.input_resource_usage())?;
+        }
         let height = *heights.iter().max().unwrap();
         let degree = plans
             .iter()
@@ -124,6 +150,7 @@ impl PolyMultiStarkRelation {
             .ok_or(VerificationError::ResourceArithmeticOverflow {
                 component: "polynomial MultiStark sumcheck degree",
             })?;
+        let degree = degree.max(bus.as_ref().map(|bus| bus.degree()).unwrap_or(0));
         let sumcheck =
             BinaryPolyGenericSumcheckVerifier::with_limits(height, degree, pow_bits, limits)?;
         usage.merge(limits, sumcheck.input_resource_usage())?;
@@ -180,7 +207,7 @@ impl PolyMultiStarkRelation {
                 .collect(),
             pow_bits,
             has_indexed: false,
-            has_bus: false,
+            has_bus: bus.is_some(),
         };
         let degrees: Vec<_> = plans
             .iter()
@@ -189,12 +216,16 @@ impl PolyMultiStarkRelation {
                 interactions: 0,
             })
             .collect();
-        let zerocheck = ZerocheckShape::new(&degrees, height, 0, pow_bits);
+        let mut zerocheck = ZerocheckShape::new(&degrees, height, 0, pow_bits);
+        if let Some(bus) = &bus {
+            zerocheck = zerocheck.with_bus(bus.degree());
+        }
         let input = Arc::new(PolyMultiStarkRelationShape {
             airs: plans,
             outer_seed: domain_separator_seed(&outer.domain_separator::<Poly64>()),
             zerocheck_seed: domain_separator_seed(&zerocheck.domain_separator::<Poly64, Poly192>()),
             sumcheck: sumcheck.input_shape(),
+            bus: bus.as_ref().map(|bus| bus.input_shape()),
             main_schedule,
             preprocessed_schedule,
             max_tau_draws,
@@ -204,6 +235,7 @@ impl PolyMultiStarkRelation {
                 input,
                 sumcheck,
                 tau,
+                bus,
                 usage,
             },
             OpeningProtocol::new(tables),
@@ -214,10 +246,15 @@ impl PolyMultiStarkRelation {
     pub(super) fn check_targets<T>(
         &self,
         public: &[Vec<T>],
-        proof: &BinaryPolyGenericSumcheckProofTargets,
+        proof: &BinaryPolyWhirMultiStarkProofTargets,
     ) -> Result<(), VerificationError> {
         self.check_public(public)?;
-        self.sumcheck.check_targets(proof)
+        match (&self.bus, &proof.bus) {
+            (Some(verifier), Some(proof)) => verifier.check_targets(proof)?,
+            (None, None) => {}
+            _ => return Err(invalid("binary Poly MultiStark bus target shape mismatch")),
+        }
+        self.sumcheck.check_targets(&proof.sumcheck)
     }
 
     pub(super) fn check_public<T>(&self, public: &[Vec<T>]) -> Result<(), VerificationError> {
@@ -264,7 +301,7 @@ impl PolyMultiStarkRelation {
         b: &mut CircuitBuilder<EF>,
         mut ch: BinaryTower128Challenger,
         public: &[Vec<BinaryPoly64Target>],
-        proof: &BinaryPolyGenericSumcheckProofTargets,
+        proof: &BinaryPolyWhirMultiStarkProofTargets,
     ) -> Result<Reduction, VerificationError>
     where
         BF: PrimeField64,
@@ -275,16 +312,37 @@ impl PolyMultiStarkRelation {
                 ch.observe_poly64::<BF, EF>(b, value)?;
             }
         }
+        let bus_claims = if let (Some(verifier), Some(proof)) = (&self.bus, &proof.bus) {
+            let (claims, next) = verifier.verify::<BF, EF>(b, ch, proof)?;
+            ch = next;
+            Some(claims)
+        } else {
+            None
+        };
         poly_observe_seed::<BF, EF>(b, &mut ch, &self.input.zerocheck_seed)?;
         let alpha = ch.sample_poly192::<BF, EF>(b)?;
         let beta = ch.sample_poly192::<BF, EF>(b)?;
-        let zero = b.binary_poly192_constant([0; 3])?;
+        let lambda = if bus_claims.is_some() {
+            Some(ch.sample_poly192::<BF, EF>(b)?)
+        } else {
+            None
+        };
+        let initial = if let (Some(claims), Some(lambda)) = (&bus_claims, &lambda) {
+            let one = b.binary_poly192_constant([1, 0, 0])?;
+            let push = b.binary_poly192_add(&claims.values[0], &one);
+            let pull = b.binary_poly192_add(&claims.values[1], &one);
+            let pull = b.binary_poly192_mul(lambda, &pull);
+            let batched = b.binary_poly192_add(&push, &pull);
+            b.binary_poly192_mul(lambda, &batched)
+        } else {
+            b.binary_poly192_constant([0; 3])?
+        };
         let sampled = self.tau.sample::<BF, EF>(b, ch)?;
         let reduced = self.sumcheck.verify_reduction_after_queries::<BF, EF>(
             b,
             sampled.continuation,
-            &zero,
-            proof,
+            &initial,
+            &proof.sumcheck,
         )?;
         let heights: Vec<_> = self.input.airs.iter().map(|a| a.log_height()).collect();
         let main_points = self
@@ -299,6 +357,8 @@ impl PolyMultiStarkRelation {
         Ok(Reduction {
             alpha,
             beta,
+            lambda,
+            bus_claims,
             tau: sampled.values,
             point: reduced.point,
             claim: reduced.claim,
@@ -318,6 +378,7 @@ impl PolyMultiStarkRelation {
     ) -> Result<(), VerificationError> {
         let mut folded = b.binary_poly192_constant([0; 3])?;
         let mut weight = b.binary_poly192_constant([1, 0, 0])?;
+        let mut air_evaluations = Vec::with_capacity(self.input.airs.len());
         for (i, air) in self.input.airs.iter().enumerate() {
             let values = &evals[self.input.main_schedule.air_batch(i)];
             let (pp_current, pp_next) = if air.preprocessed_width() != 0 {
@@ -332,7 +393,7 @@ impl PolyMultiStarkRelation {
             } else {
                 (&[][..], &[][..])
             };
-            let evaluation = air.evaluate_with_auxiliary(
+            let evaluation = air.evaluate_with_bus(
                 b,
                 &reduction.point[reduction.point.len() - air.log_height()..],
                 values.current(),
@@ -342,12 +403,20 @@ impl PolyMultiStarkRelation {
                 &public[i],
                 &reduction.alpha,
             )?;
-            let term = b.binary_poly192_mul(&weight, &evaluation);
+            let term = b.binary_poly192_mul(&weight, &evaluation.folded);
             folded = b.binary_poly192_add(&folded, &term);
             weight = b.binary_poly192_mul(&weight, &reduction.beta);
+            air_evaluations.push(evaluation);
         }
         let eq = poly192_eq_eval(b, &reduction.tau, &reduction.point)?;
-        let terminal = b.binary_poly192_mul(&eq, &folded);
+        let mut terminal = b.binary_poly192_mul(&eq, &folded);
+        if let (Some(verifier), Some(claims), Some(lambda)) =
+            (&self.bus, &reduction.bus_claims, &reduction.lambda)
+        {
+            let bus = verifier.terminal(b, claims, &air_evaluations, &reduction.point, lambda)?;
+            let weighted = b.binary_poly192_mul(lambda, &bus);
+            terminal = b.binary_poly192_add(&terminal, &weighted);
+        }
         poly_assert_equal(b, &reduction.claim, &terminal);
         Ok(())
     }
@@ -362,13 +431,17 @@ impl PolyMultiStarkRelation {
     {
         self.check_public(public)?;
         if proof.lookup.is_some()
-            || proof.bus.is_some()
             || proof.indexed.is_some()
-            || proof.sumcheck.claimed_sum != Poly192::ZERO
+            || (self.bus.is_none() && proof.sumcheck.claimed_sum != Poly192::ZERO)
         {
             return Err(invalid(
                 "polynomial MultiStark proof has unsupported reductions or initial sum",
             ));
+        }
+        match (&self.bus, &proof.bus) {
+            (Some(verifier), Some(proof)) => verifier.check_native(proof)?,
+            (None, None) => {}
+            _ => return Err(invalid("binary Poly MultiStark native bus shape mismatch")),
         }
         self.sumcheck.check_native(&proof.sumcheck)
     }
@@ -399,9 +472,22 @@ impl PolyMultiStarkRelation {
         for values in public {
             ch.observe_slice(values);
         }
+        let bus_reduction = if let (Some(verifier), Some(proof)) = (&self.bus, &proof.bus) {
+            Some(verifier.import_native(proof, ch)?)
+        } else {
+            None
+        };
         ch.observe_slice(&self.input.zerocheck_seed);
         let _alpha = ch.sample_algebra_element::<Poly192>();
         let _beta = ch.sample_algebra_element::<Poly192>();
+        if let Some((_, values)) = &bus_reduction {
+            let lambda = ch.sample_algebra_element::<Poly192>();
+            let expected =
+                lambda * ((values[0] + Poly192::ONE) + lambda * (values[1] + Poly192::ONE));
+            if proof.sumcheck.claimed_sum != expected {
+                return Err(invalid("binary Poly MultiStark bus initial sum mismatch"));
+            }
+        }
         let _ = self.tau.sample_native(ch)?;
         let (sumcheck, point, _) = self
             .sumcheck
@@ -421,6 +507,7 @@ impl PolyMultiStarkRelation {
                 .collect()
         });
         Ok(NativeReduction {
+            bus: bus_reduction.map(|(input, _)| input),
             sumcheck,
             main_points,
             preprocessed_points,

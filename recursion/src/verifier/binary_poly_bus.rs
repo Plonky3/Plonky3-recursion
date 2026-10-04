@@ -3,59 +3,53 @@
 use alloc::vec::Vec;
 use core::hash::Hash;
 
+use p3_binary_field::{Poly64, Poly192};
 use p3_bus::{BusDirection, BusPlan, BusProof, BusTupleSlot};
 use p3_challenger::FieldChallenger;
 use p3_circuit::CircuitBuilder;
-use p3_circuit::ops::BinaryTower128Target;
+use p3_circuit::ops::BinaryPoly192Target;
 use p3_field::{ExtensionField, Field, PrimeField64};
 
 use super::binary_air::BinaryAirEvaluation;
-use super::binary_product::sample;
 use super::{
-    BinaryAirConstraintPlan, BinaryProductGkrInputShape, BinaryProductGkrProofTargets,
-    BinaryProductGkrVerifier, InputResourceUsage, NativeBinaryProductGkrInput, VerificationError,
-    VerifierLimits,
+    BinaryPolyAirConstraintPlan, BinaryPolyProductGkrInputShape, BinaryPolyProductGkrProofTargets,
+    BinaryPolyProductGkrVerifier, InputResourceUsage, NativeBinaryPolyProductGkrInput,
+    VerificationError, VerifierLimits,
 };
 use crate::BinaryTower128Challenger;
-use crate::pcs::binary::{
-    RecursiveBinaryChallengeField, RecursiveBinaryTowerField, binary128_eq_eval, observe_seed,
-};
+use crate::pcs::binary::{poly_observe_seed, poly192_eq_eval};
 use crate::transcript::SeedTap;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct BinaryBusInputShape<F, E> {
-    pub product: BinaryProductGkrInputShape<F, E>,
-    seed: Vec<F>,
+pub(super) struct BinaryPolyBusInputShape {
+    pub product: BinaryPolyProductGkrInputShape,
+    seed: Vec<Poly64>,
     plan: BusPlan,
 }
 
-pub(super) struct BinaryBusClaims {
-    pub point: Vec<BinaryTower128Target>,
-    pub values: Vec<BinaryTower128Target>,
-    weights: Vec<BinaryTower128Target>,
-    offset: BinaryTower128Target,
+pub(super) struct BinaryPolyBusClaims {
+    pub point: Vec<BinaryPoly192Target>,
+    pub values: Vec<BinaryPoly192Target>,
+    weights: Vec<BinaryPoly192Target>,
+    offset: BinaryPoly192Target,
 }
 
 #[derive(Clone, Debug)]
-pub(super) struct BinaryBusVerifier<F, E> {
-    input: BinaryBusInputShape<F, E>,
-    product: BinaryProductGkrVerifier<F, E>,
+pub(super) struct BinaryPolyBusVerifier {
+    input: BinaryPolyBusInputShape,
+    product: BinaryPolyProductGkrVerifier,
     degree: usize,
     usage: InputResourceUsage,
 }
 
-impl<F, E> BinaryBusVerifier<F, E>
-where
-    F: RecursiveBinaryTowerField,
-    E: RecursiveBinaryChallengeField + ExtensionField<F>,
-{
+impl BinaryPolyBusVerifier {
     pub fn with_limits(
         plan: BusPlan,
-        airs: &[BinaryAirConstraintPlan<F, E>],
+        airs: &[BinaryPolyAirConstraintPlan],
         limits: &VerifierLimits,
     ) -> Result<Self, VerificationError> {
         let geometry = plan.product_shape();
-        let product = BinaryProductGkrVerifier::<F, E>::with_embedded_bus_limits(
+        let product = BinaryPolyProductGkrVerifier::with_embedded_bus_limits(
             geometry.log_height(),
             geometry.num_trees(),
             geometry.root_shape(),
@@ -93,9 +87,9 @@ where
             }
         }
         usage.check_log_degree(limits, degree)?;
-        let mut tap = SeedTap::<F>::new();
+        let mut tap = SeedTap::<Poly64>::new();
         let _ = plan
-            .verify::<F, E, _>(
+            .verify::<Poly64, Poly192, _>(
                 &BusProof {
                     product: product.zero_native_proof(),
                 },
@@ -105,7 +99,7 @@ where
         let seed = tap.binary_seed();
         usage.add_metadata_entries(limits, seed.len())?;
         Ok(Self {
-            input: BinaryBusInputShape {
+            input: BinaryPolyBusInputShape {
                 product: product.input_shape(),
                 seed,
                 plan,
@@ -116,7 +110,7 @@ where
         })
     }
 
-    pub fn input_shape(&self) -> BinaryBusInputShape<F, E> {
+    pub fn input_shape(&self) -> BinaryPolyBusInputShape {
         self.input.clone()
     }
     pub fn degree(&self) -> usize {
@@ -127,11 +121,11 @@ where
     }
     pub fn check_targets(
         &self,
-        proof: &BinaryProductGkrProofTargets,
+        proof: &BinaryPolyProductGkrProofTargets,
     ) -> Result<(), VerificationError> {
         self.product.check_targets(proof)
     }
-    pub fn check_native(&self, proof: &BusProof<E>) -> Result<(), VerificationError> {
+    pub fn check_native(&self, proof: &BusProof<Poly192>) -> Result<(), VerificationError> {
         self.product.check_native(&proof.product)
     }
 
@@ -139,32 +133,32 @@ where
         &self,
         b: &mut CircuitBuilder<EF>,
         mut ch: BinaryTower128Challenger,
-        proof: &BinaryProductGkrProofTargets,
-    ) -> Result<(BinaryBusClaims, BinaryTower128Challenger), VerificationError>
+        proof: &BinaryPolyProductGkrProofTargets,
+    ) -> Result<(BinaryPolyBusClaims, BinaryTower128Challenger), VerificationError>
     where
         BF: PrimeField64,
         EF: ExtensionField<BF> + Eq + Hash,
     {
         self.check_targets(proof)?;
-        observe_seed::<F, BF, EF>(b, &mut ch, &self.input.seed)?;
+        poly_observe_seed::<BF, EF>(b, &mut ch, &self.input.seed)?;
         let fingerprint = (0..self.input.plan.security_geometry().tuple_variables())
-            .map(|_| sample::<E, BF, EF>(b, &mut ch))
+            .map(|_| ch.sample_poly192::<BF, EF>(b))
             .collect::<Result<Vec<_>, _>>()?;
-        let offset = sample::<E, BF, EF>(b, &mut ch)?;
+        let offset = ch.sample_poly192::<BF, EF>(b)?;
         let output = self.product.verify_reduction::<BF, EF>(b, ch, proof)?;
-        let one = b.binary128_constant(1)?;
+        let one = b.binary_poly192_constant([1, 0, 0])?;
         let mut weights = alloc::vec![one.clone()];
         for r in &fingerprint {
-            let complement = b.binary128_add(&one, r);
+            let complement = b.binary_poly192_add(&one, r);
             let mut next = Vec::with_capacity(weights.len() * 2);
             for weight in weights {
-                next.push(b.binary128_mul(&weight, &complement));
-                next.push(b.binary128_mul(&weight, r));
+                next.push(b.binary_poly192_mul(&weight, &complement));
+                next.push(b.binary_poly192_mul(&weight, r));
             }
             weights = next;
         }
         Ok((
-            BinaryBusClaims {
+            BinaryPolyBusClaims {
                 point: output.point,
                 values: output.values,
                 weights,
@@ -179,19 +173,19 @@ where
     pub fn terminal<EF: Field + Eq + Hash>(
         &self,
         b: &mut CircuitBuilder<EF>,
-        claims: &BinaryBusClaims,
-        evaluations: &[BinaryAirEvaluation],
-        point: &[BinaryTower128Target],
-        lambda: &BinaryTower128Target,
-    ) -> Result<BinaryTower128Target, VerificationError> {
+        claims: &BinaryPolyBusClaims,
+        evaluations: &[BinaryAirEvaluation<BinaryPoly192Target>],
+        point: &[BinaryPoly192Target],
+        lambda: &BinaryPoly192Target,
+    ) -> Result<BinaryPoly192Target, VerificationError> {
         if claims.point.len() != self.input.plan.product_shape().log_height()
             || claims.weights.len() != self.input.plan.fingerprint_width()
             || claims.values.len() != 2
         {
             return Err(invalid("binary bus terminal geometry mismatch"));
         }
-        let one = b.binary128_constant(1)?;
-        let mut terminal = b.binary128_constant(0)?;
+        let one = b.binary_poly192_constant([1, 0, 0])?;
+        let mut terminal = b.binary_poly192_constant([0; 3])?;
         for direction in BusDirection::ALL {
             for share in self.input.plan.terminal_shares(direction) {
                 let evaluation = evaluations
@@ -218,7 +212,7 @@ where
                         .tuple_slot(share.bus, slot)
                         .ok_or_else(|| invalid("binary bus tuple slot mismatch"))?
                     {
-                        BusTupleSlot::Payload(i) => b.binary128_mul(
+                        BusTupleSlot::Payload(i) => b.binary_poly192_mul(
                             fields
                                 .get(i)
                                 .ok_or_else(|| invalid("binary bus payload width mismatch"))?,
@@ -227,11 +221,11 @@ where
                         BusTupleSlot::DomainBit(true) => weight.clone(),
                         BusTupleSlot::DomainBit(false) | BusTupleSlot::Zero => continue,
                     };
-                    live = b.binary128_add(&live, &term);
+                    live = b.binary_poly192_add(&live, &term);
                 }
-                let mut shifted = b.binary128_add(&live, &one);
+                let mut shifted = b.binary_poly192_add(&live, &one);
                 if let Some(activation) = activation {
-                    shifted = b.binary128_mul(activation, &shifted);
+                    shifted = b.binary_poly192_mul(activation, &shifted);
                 }
                 let mut weight = one.clone();
                 for (bit, r) in claims.point[..share.prefix_variables].iter().enumerate() {
@@ -239,25 +233,22 @@ where
                         if share.prefix_index >> (share.prefix_variables - 1 - bit) & 1 == 1 {
                             r.clone()
                         } else {
-                            b.binary128_add(&one, r)
+                            b.binary_poly192_add(&one, r)
                         };
-                    weight = b.binary128_mul(&weight, &selector);
+                    weight = b.binary_poly192_mul(&weight, &selector);
                 }
                 let unused = point.len() - share.row_variables;
                 for r in &point[..unused] {
-                    weight = b.binary128_mul(&weight, r);
+                    weight = b.binary_poly192_mul(&weight, r);
                 }
-                let equality = binary128_eq_eval(
-                    b,
-                    &claims.point[share.prefix_variables..],
-                    &point[unused..],
-                )?;
-                weight = b.binary128_mul(&weight, &equality);
+                let equality =
+                    poly192_eq_eval(b, &claims.point[share.prefix_variables..], &point[unused..])?;
+                weight = b.binary_poly192_mul(&weight, &equality);
                 if direction == BusDirection::Pull {
-                    weight = b.binary128_mul(&weight, lambda);
+                    weight = b.binary_poly192_mul(&weight, lambda);
                 }
-                let term = b.binary128_mul(&weight, &shifted);
-                terminal = b.binary128_add(&terminal, &term);
+                let term = b.binary_poly192_mul(&weight, &shifted);
+                terminal = b.binary_poly192_add(&terminal, &term);
             }
         }
         Ok(terminal)
@@ -267,19 +258,19 @@ where
     /// leaf values. The surrounding verifier closes the AIR/PCS relation.
     pub fn import_native<Ch>(
         &self,
-        proof: &BusProof<E>,
+        proof: &BusProof<Poly192>,
         ch: &mut Ch,
-    ) -> Result<(NativeBinaryProductGkrInput<F, E>, Vec<E>), VerificationError>
+    ) -> Result<(NativeBinaryPolyProductGkrInput, Vec<Poly192>), VerificationError>
     where
-        Ch: FieldChallenger<F> + Clone,
+        Ch: FieldChallenger<Poly64> + Clone,
     {
         self.check_native(proof)?;
         let mut staged = ch.clone();
         staged.observe_slice(&self.input.seed);
         for _ in 0..self.input.plan.security_geometry().tuple_variables() {
-            let _ = staged.sample_algebra_element::<E>();
+            let _ = staged.sample_algebra_element::<Poly192>();
         }
-        let _ = staged.sample_algebra_element::<E>();
+        let _ = staged.sample_algebra_element::<Poly192>();
         let (input, output) = self
             .product
             .import_native_with_reduction(&proof.product, &mut staged)?;

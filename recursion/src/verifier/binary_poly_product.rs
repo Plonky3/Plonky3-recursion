@@ -56,6 +56,16 @@ pub struct BinaryPolyProductGkrInputShape {
 }
 
 impl BinaryPolyProductGkrInputShape {
+    pub(crate) fn native_decode_shape(
+        &self,
+    ) -> crate::artifact::binary_native::codec::ProductDecode {
+        crate::artifact::binary_native::codec::ProductDecode {
+            roots: self.root_count(),
+            trees: self.native.num_trees(),
+            layers: self.layers.clone(),
+        }
+    }
+
     fn root_count(&self) -> usize {
         self.native.num_trees()
             - usize::from(self.native.root_shape() == ProductGkrRootShape::FirstTwoShared)
@@ -144,11 +154,33 @@ impl BinaryPolyProductGkrVerifier {
         roots: ProductGkrRootShape,
         limits: &VerifierLimits,
     ) -> Result<Self, VerificationError> {
+        Self::with_limits_impl(height, trees, roots, limits, true)
+    }
+
+    /// Embedded push/pull trees are derived channels of already-counted AIRs.
+    pub(super) fn with_embedded_bus_limits(
+        height: usize,
+        trees: usize,
+        roots: ProductGkrRootShape,
+        limits: &VerifierLimits,
+    ) -> Result<Self, VerificationError> {
+        Self::with_limits_impl(height, trees, roots, limits, false)
+    }
+
+    fn with_limits_impl(
+        height: usize,
+        trees: usize,
+        roots: ProductGkrRootShape,
+        limits: &VerifierLimits,
+        account_instances: bool,
+    ) -> Result<Self, VerificationError> {
         let native = ProductGkrShape::new(height, trees, roots)
             .map_err(|_| invalid("binary product geometry is invalid"))?;
         let mut usage = InputResourceUsage::default();
         usage.check_log_degree(limits, height)?;
-        usage.add_instances(limits, trees)?;
+        if account_instances {
+            usage.add_instances(limits, trees)?;
+        }
         usage.add_metadata_entries(limits, trees)?;
         let mut layers = Vec::new();
         let mut remaining = height;
@@ -218,6 +250,14 @@ impl BinaryPolyProductGkrVerifier {
     }
     pub fn input_resource_usage(&self) -> InputResourceUsage {
         self.usage
+    }
+
+    pub(super) fn zero_native_proof(&self) -> ProductGkrProof<Poly192> {
+        zero_proof(
+            self.input.root_count(),
+            self.input.native.num_trees(),
+            &self.input.layers,
+        )
     }
 
     /// Checks every message shape before adding constraints. Targets must
