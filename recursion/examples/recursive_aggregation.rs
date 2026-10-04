@@ -1,25 +1,29 @@
-//! 2-to-1 proof aggregation example (binary tree).
+//! N-to-1 proof aggregation example (N-ary tree, binary by default).
 //!
-//! Builds a full binary aggregation tree from distinct base proofs:
-//! 1. **Leaves**: `2^(N+1)` dummy circuits (each a single distinct constant),
+//! Builds a full aggregation tree from distinct base proofs:
+//! 1. **Leaves**: `arity^depth` dummy circuits (each a single distinct constant),
 //!    each proved independently with batch STARK.
-//! 2. **Levels 1..N+1**: Pairwise 2-to-1 aggregation up the tree until a
+//! 2. **Levels 1..depth**: `arity`-to-1 aggregation up the tree until a
 //!    single root proof remains.
 //!
-//! `N` is the `--num-recursive-layers` argument (default 1).
+//! `arity` is `--aggregation-arity` (default 2), and `depth` is
+//! `--num-recursive-layers` (default 1).
 //!
 //! ## What this proves
 //!
 //! The root proof attests that every base proof in the tree is valid.  All
 //! base proofs are genuinely distinct (different constant values) so the
-//! circuit optimizer cannot collapse the two verifications inside an
+//! circuit optimizer cannot collapse the verifications inside an
 //! aggregation node.
 //!
 //! ## Usage
 //!
 //! ```bash
-//! # 4 base proofs, 2 aggregation levels (default)
+//! # 2 base proofs, 1 aggregation level (default)
 //! cargo run --release --example recursive_aggregation -- --field koala-bear
+//!
+//! # 7 distinct proofs verified inside one aggregation circuit
+//! cargo run --release --example recursive_aggregation -- --aggregation-arity 7
 //!
 //! # KoalaBear with quintic challenge extension (D = 5)
 //! cargo run --release --example recursive_aggregation -- --field koala-bear --quintic
@@ -27,7 +31,7 @@
 //! # WHIR with the same dummy circuit leaves
 //! cargo run --release --example recursive_aggregation -- --pcs whir --num-recursive-layers 2
 //!
-//! # 8 base proofs, 3 aggregation levels, custom FRI parameters
+//! # 4 base proofs, 2 aggregation levels, custom FRI parameters
 //! cargo run --release --example recursive_aggregation -- \
 //!     --field koala-bear \
 //!     --num-recursive-layers 2 \
@@ -37,24 +41,78 @@
 //!     --query-pow-bits 16
 //! ```
 
+#[cfg(test)]
+mod aggregation_cli_tests {
+    use super::*;
+
+    #[test]
+    fn accepts_non_binary_aggregation_with_existing_options() {
+        let args = Args::try_parse_from([
+            "recursive_aggregation",
+            "--aggregation-arity",
+            "3",
+            "--num-recursive-layers",
+            "2",
+            "--field",
+            "koala-bear",
+            "--pcs",
+            "whir",
+            "--quintic",
+            "--alu-lanes",
+            "4",
+        ]);
+        let args = args.unwrap();
+        assert_eq!(
+            checked_num_leaves(args.aggregation_arity, args.num_recursive_layers),
+            Ok(9)
+        );
+    }
+
+    #[test]
+    fn rejects_aggregation_arity_below_two() {
+        for arity in ["0", "1"] {
+            assert!(
+                Args::try_parse_from(["recursive_aggregation", "--aggregation-arity", arity,])
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn validates_tree_size_without_overflow() {
+        assert_eq!(checked_num_leaves(2, 1), Ok(2));
+        assert_eq!(checked_num_leaves(7, 1), Ok(7));
+        assert!(checked_num_leaves(2, 0).is_err());
+        assert!(checked_num_leaves(2, usize::BITS as usize).is_err());
+        assert!(checked_num_leaves(usize::MAX, 2).is_err());
+    }
+}
+
 #[macro_use]
 mod common;
+
+#[path = "common/n_to_one.rs"]
+mod n_to_one;
 
 use common::*;
 use p3_batch_stark::ProverData;
 use p3_maybe_rayon::prelude::*;
 
 #[derive(Parser, Debug)]
-#[command(version, about = "2-to-1 proof aggregation example")]
+#[command(version, about = "N-to-1 proof aggregation example")]
 struct Args {
     #[command(flatten)]
     pub pcs_options: PcsOptions,
 
-    /// Tree depth (total base proofs = 2^(tree_depth)).  (1 = single pair, 2 = 4 leaves, …)
+    /// Number of proofs verified in each aggregation circuit (at least 2).
+    #[arg(long, default_value_t = 2, value_parser = parse_aggregation_arity)]
+    aggregation_arity: usize,
+
+    /// Tree depth (total base proofs = aggregation_arity^tree_depth).
     #[arg(
         long,
         default_value_t = 1,
-        help = "Tree depth (total base proofs = 2^(tree_depth))"
+        help = "Tree depth (total base proofs = aggregation_arity^tree_depth)"
     )]
     num_recursive_layers: usize,
 
@@ -162,12 +220,30 @@ struct Args {
     )]
     pub profile: bool,
 
-    /// Prove the pairs of each aggregation level concurrently against one shared preparation.
+    /// Prove the groups of each aggregation level concurrently against one shared preparation.
     ///
     /// This raises throughput for the whole tree; each individual proof then shares the cores,
     /// so its own reported proving time grows.
     #[arg(long, default_value_t = false)]
     pub concurrent_pairs: bool,
+}
+
+fn parse_aggregation_arity(value: &str) -> Result<usize, String> {
+    let arity = value.parse::<usize>().map_err(|e| e.to_string())?;
+    if arity < 2 {
+        return Err("aggregation arity must be at least 2".into());
+    }
+    Ok(arity)
+}
+
+fn checked_num_leaves(arity: usize, depth: usize) -> Result<usize, &'static str> {
+    if depth == 0 {
+        return Err("--num-recursive-layers must be at least 1");
+    }
+    let depth = u32::try_from(depth).map_err(|_| "aggregation tree is too large")?;
+    arity
+        .checked_pow(depth)
+        .ok_or("aggregation tree is too large")
 }
 
 impl Args {
@@ -215,13 +291,29 @@ fn main() {
     let fri_params = args.to_fri_params();
     let table_packing = args.table_packing();
 
-    assert!(args.num_recursive_layers >= 1);
+    let num_leaves = checked_num_leaves(args.aggregation_arity, args.num_recursive_layers)
+        .unwrap_or_else(|message| {
+            clap::Error::raw(clap::error::ErrorKind::ValueValidation, message).exit()
+        });
+    let max_constant = match args.field {
+        FieldOption::KoalaBear => p3_koala_bear::KoalaBear::ORDER_U64 - 1,
+        FieldOption::BabyBear => p3_baby_bear::BabyBear::ORDER_U64 - 1,
+        FieldOption::Goldilocks => u64::from(u32::MAX),
+    };
+    if num_leaves as u64 > max_constant {
+        clap::Error::raw(
+            clap::error::ErrorKind::ValueValidation,
+            "aggregation tree has too many leaves for distinct base constants",
+        )
+        .exit();
+    }
 
     assert_quintic_field(args.field, args.quintic);
     assert_arity4_supported(args.arity4, args.field, args.hash);
 
     info!(
-        "2-to-1 aggregation with field {:?}, quintic {}, hash {:?}, pcs {:?}, arity4 {}, {} aggregation recursive layers",
+        "{}-to-1 aggregation with field {:?}, quintic {}, hash {:?}, pcs {:?}, arity4 {}, {} aggregation recursive layers",
+        args.aggregation_arity,
         args.field,
         args.quintic,
         args.hash,
@@ -242,6 +334,7 @@ fn main() {
         match (args.field, args.quintic) {
             (FieldOption::KoalaBear, true) => koala_bear_quintic_arity4::run(
                 args.num_recursive_layers,
+                args.aggregation_arity,
                 &fri_params,
                 &table_packing,
                 security_level,
@@ -249,6 +342,7 @@ fn main() {
             ),
             (FieldOption::KoalaBear, false) => koala_bear_arity4::run(
                 args.num_recursive_layers,
+                args.aggregation_arity,
                 &fri_params,
                 &table_packing,
                 security_level,
@@ -256,6 +350,7 @@ fn main() {
             ),
             (FieldOption::BabyBear, _) => baby_bear_arity4::run(
                 args.num_recursive_layers,
+                args.aggregation_arity,
                 &fri_params,
                 &table_packing,
                 security_level,
@@ -263,6 +358,7 @@ fn main() {
             ),
             (FieldOption::Goldilocks, _) => goldilocks_arity4::run(
                 args.num_recursive_layers,
+                args.aggregation_arity,
                 &fri_params,
                 &table_packing,
                 security_level,
@@ -275,6 +371,7 @@ fn main() {
     match (args.hash, args.field, args.quintic) {
         (HashOption::Poseidon2, FieldOption::KoalaBear, true) => koala_bear_quintic::run(
             args.num_recursive_layers,
+            args.aggregation_arity,
             &fri_params,
             &table_packing,
             security_level,
@@ -286,6 +383,7 @@ fn main() {
         ),
         (HashOption::Poseidon2, FieldOption::KoalaBear, false) => koala_bear::run(
             args.num_recursive_layers,
+            args.aggregation_arity,
             &fri_params,
             &table_packing,
             security_level,
@@ -297,6 +395,7 @@ fn main() {
         ),
         (HashOption::Poseidon2, FieldOption::BabyBear, _) => baby_bear::run(
             args.num_recursive_layers,
+            args.aggregation_arity,
             &fri_params,
             &table_packing,
             security_level,
@@ -308,6 +407,7 @@ fn main() {
         ),
         (HashOption::Poseidon2, FieldOption::Goldilocks, _) => goldilocks::run(
             args.num_recursive_layers,
+            args.aggregation_arity,
             &fri_params,
             &table_packing,
             security_level,
@@ -319,6 +419,7 @@ fn main() {
         ),
         (HashOption::Poseidon1, FieldOption::KoalaBear, true) => koala_bear_quintic_poseidon1::run(
             args.num_recursive_layers,
+            args.aggregation_arity,
             &fri_params,
             &table_packing,
             security_level,
@@ -330,6 +431,7 @@ fn main() {
         ),
         (HashOption::Poseidon1, FieldOption::KoalaBear, false) => koala_bear_poseidon1::run(
             args.num_recursive_layers,
+            args.aggregation_arity,
             &fri_params,
             &table_packing,
             security_level,
@@ -341,6 +443,7 @@ fn main() {
         ),
         (HashOption::Poseidon1, FieldOption::BabyBear, _) => baby_bear_poseidon1::run(
             args.num_recursive_layers,
+            args.aggregation_arity,
             &fri_params,
             &table_packing,
             security_level,
@@ -352,6 +455,7 @@ fn main() {
         ),
         (HashOption::Poseidon1, FieldOption::Goldilocks, _) => goldilocks_poseidon1::run(
             args.num_recursive_layers,
+            args.aggregation_arity,
             &fri_params,
             &table_packing,
             security_level,
@@ -468,6 +572,7 @@ macro_rules! define_field_module_aggregation_quintic {
             #[allow(clippy::too_many_arguments)]
             pub fn run(
                 num_recursive_layers: usize,
+            aggregation_arity: usize,
                 fri_params: &FriParams,
                 table_packing: &TablePacking,
                 security_level: usize,
@@ -488,8 +593,8 @@ macro_rules! define_field_module_aggregation_quintic {
                     .with_pcs_params(pcs_options, fri_params, security_level);
 
                 let tree_depth = num_recursive_layers;
-                let num_leaves = 1usize << tree_depth;
-                info!("Binary aggregation tree: {num_leaves} base proofs, {tree_depth} levels");
+                let num_leaves = checked_num_leaves(aggregation_arity, tree_depth).unwrap();
+                info!("{aggregation_arity}-ary aggregation tree: {num_leaves} base proofs, {tree_depth} levels");
 
                 macro_rules! run_aggregation {
                     ($cfg_type:ident, $config_base:expr, $config_agg:expr, $prove_base_fn:ident, $backend:expr) => {{
@@ -518,11 +623,44 @@ macro_rules! define_field_module_aggregation_quintic {
                             let mut level = 0u32;
                             while proofs.len() > 1 {
                                 level += 1;
-                                let pairs = proofs.len() / 2;
+                                let pairs = proofs.len() / aggregation_arity;
                                 info!(
                                     "Aggregation level {level}: {} proofs -> {pairs}",
                                     proofs.len()
                                 );
+
+                                if aggregation_arity != 2 {
+                                    let config = if profile && level >= 2 {
+                                        agg_profile_config.get_or_insert_with(|| $config_agg(0)).clone()
+                                    } else {
+                                        $config_agg(level as u64)
+                                    };
+                                    let params = ProveNextLayerParams {
+                                        table_packing: if level == 1 {
+                                            TablePacking::new(2, 2).with_whir_horner_packing(pcs_options, table_packing)
+                                        } else {
+                                            table_packing.clone()
+                                        }.with_pcs_params(pcs_options, fri_params, security_level),
+                                        constraint_profile: ConstraintProfile::Standard,
+                                    };
+                                    let seed = (profile && level >= 2).then(|| {
+                                        agg_current_profile.clone().unwrap_or_else(|| RecursionLayerProfile {
+                                            table_packing: table_packing.clone().with_pcs_params(pcs_options, fri_params, security_level),
+                                            hash: HashProfile::default(),
+                                            transcript: TranscriptKind::BaseDuplex,
+                                            constraint_profile: ConstraintProfile::Standard,
+                                        })
+                                    });
+                                    let (next, resolved) = n_to_one::aggregate_level::<$cfg_type, $cfg_type, _, D>(
+                                        &proofs, aggregation_arity, &config, &config, &backend,
+                                        &params, concurrent_pairs, seed.as_ref(),
+                                    ).unwrap_or_else(|e| panic!("Failed at level {level}: {e:?}"));
+                                    if let Some(resolved) = resolved {
+                                        agg_current_profile = Some(resolved);
+                                    }
+                                    proofs = next;
+                                    continue;
+                                }
 
                                 if profile && level >= 2 {
                                     let config = agg_profile_config.get_or_insert_with(|| $config_agg(0));
@@ -973,6 +1111,7 @@ macro_rules! define_field_module {
             #[allow(clippy::too_many_arguments)]
             pub fn run(
                 num_recursive_layers: usize,
+            aggregation_arity: usize,
                 fri_params: &FriParams,
                 table_packing: &TablePacking,
                 security_level: usize,
@@ -990,8 +1129,8 @@ macro_rules! define_field_module {
                 .for_extension_degree::<$d>();
 
                 let tree_depth = num_recursive_layers;
-                let num_leaves = 1usize << tree_depth;
-                info!("Binary aggregation tree: {num_leaves} base proofs, {tree_depth} levels");
+                let num_leaves = checked_num_leaves(aggregation_arity, tree_depth).unwrap();
+                info!("{aggregation_arity}-ary aggregation tree: {num_leaves} base proofs, {tree_depth} levels");
 
                 macro_rules! run_aggregation {
                     ($cfg_type:ident, $config_base:expr, $config_agg:expr, $prove_base_fn:ident, $backend:expr) => {{
@@ -1020,11 +1159,44 @@ macro_rules! define_field_module {
                         let mut level = 0u32;
                         while proofs.len() > 1 {
                             level += 1;
-                            let pairs = proofs.len() / 2;
+                            let pairs = proofs.len() / aggregation_arity;
                             info!(
                                 "Aggregation level {level}: {} proofs -> {pairs}",
                                 proofs.len()
                             );
+
+                            if aggregation_arity != 2 {
+                                let config = if profile && level >= 2 {
+                                    agg_profile_config.get_or_insert_with(|| $config_agg(0)).clone()
+                                } else {
+                                    $config_agg(level as u64)
+                                };
+                                let params = ProveNextLayerParams {
+                                    table_packing: if level == 1 {
+                                        TablePacking::new(2, 3).with_whir_horner_packing(pcs_options, table_packing)
+                                    } else {
+                                        table_packing.clone()
+                                    }.with_pcs_params(pcs_options, fri_params, security_level),
+                                    constraint_profile: ConstraintProfile::Standard,
+                                };
+                                let seed = (profile && level >= 2).then(|| {
+                                    agg_current_profile.clone().unwrap_or_else(|| RecursionLayerProfile {
+                                        table_packing: table_packing.clone().with_pcs_params(pcs_options, fri_params, security_level),
+                                        hash: HashProfile::default(),
+                                        transcript: TranscriptKind::BaseDuplex,
+                                        constraint_profile: ConstraintProfile::Standard,
+                                    })
+                                });
+                                let (next, resolved) = n_to_one::aggregate_level::<$cfg_type, $cfg_type, _, D>(
+                                    &proofs, aggregation_arity, &config, &config, &backend,
+                                    &params, concurrent_pairs, seed.as_ref(),
+                                ).unwrap_or_else(|e| panic!("Failed at level {level}: {e:?}"));
+                                if let Some(resolved) = resolved {
+                                    agg_current_profile = Some(resolved);
+                                }
+                                proofs = next;
+                                continue;
+                            }
 
                             if profile && level >= 2 {
                                 let config = agg_profile_config.get_or_insert_with(|| $config_agg(0));
@@ -1723,6 +1895,7 @@ macro_rules! arity4_run {
     ) => {
         pub fn run(
             num_recursive_layers: usize,
+            aggregation_arity: usize,
             fri_params: &FriParams,
             table_packing: &TablePacking,
             security_level: usize,
@@ -1737,9 +1910,9 @@ macro_rules! arity4_run {
                 .without_extra_poseidon2_input_tables();
 
             let tree_depth = num_recursive_layers;
-            let num_leaves = 1usize << tree_depth;
+            let num_leaves = checked_num_leaves(aggregation_arity, tree_depth).unwrap();
             info!(
-                "Binary aggregation tree: {num_leaves} base proofs, {tree_depth} levels (arity-4)"
+                "{aggregation_arity}-ary aggregation tree: {num_leaves} base proofs, {tree_depth} levels (arity-4)"
             );
 
             let agg_params_for_level = |level: u32| ProveNextLayerParams {
@@ -1760,6 +1933,27 @@ macro_rules! arity4_run {
                     prove_dummy_circuit(val, &config_base, &base_table_packing)
                 })
                 .collect();
+
+            if aggregation_arity != 2 {
+                let input_config = config_with_fri_params(fri_params, security_level, disable_recompose_npo);
+                let output_config = config_with_fri_params_arity4(fri_params, security_level, disable_recompose_npo);
+                info!("Aggregation level 1: {} proofs -> {}", base_proofs.len(), base_proofs.len() / aggregation_arity);
+                let (mut proofs, _) = n_to_one::aggregate_level::<ConfigWithFriParams, ConfigWithFriParamsArity4, _, D>(
+                    &base_proofs, aggregation_arity, &input_config, &output_config, &backend,
+                    &agg_params_for_level(1), false, None,
+                ).unwrap_or_else(|e| panic!("Failed at level 1: {e:?}"));
+                for level in 2..=tree_depth {
+                    info!("Aggregation level {level}: {} proofs -> {}", proofs.len(), proofs.len() / aggregation_arity);
+                    let config = config_with_fri_params_arity4(fri_params, security_level, disable_recompose_npo);
+                    let input_backend = if level == 2 { &bridge_backend_arity4 } else { &backend_arity4 };
+                    proofs = n_to_one::aggregate_level::<ConfigWithFriParamsArity4, ConfigWithFriParamsArity4, _, D>(
+                        &proofs, aggregation_arity, &config, &config, input_backend,
+                        &agg_params_for_level(level as u32), false, None,
+                    ).unwrap_or_else(|e| panic!("Failed at level {level}: {e:?}")).0;
+                }
+                info!("All levels verified successfully");
+                return;
+            }
 
             // Level 1: verify arity-2 base proofs, emit an arity-4 (mixed-config) proof.
             let mut level = 1u32;
