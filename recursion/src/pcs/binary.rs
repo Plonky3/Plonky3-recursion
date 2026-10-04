@@ -33,6 +33,7 @@ mod poly_whir_input;
 mod poly_whir_verifier;
 pub(crate) use poly_whir_gadgets::{
     assert_equal as poly_assert_equal, observe_seed as poly_observe_seed, poly192_eq_eval,
+    observe_values as poly_observe_values, poly192_eval_multilinear as poly_eval_multilinear,
 };
 mod ring;
 mod ring_input;

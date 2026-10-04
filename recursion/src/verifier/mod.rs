@@ -7,9 +7,15 @@ mod binary_bus;
 mod binary_poly_bus;
 mod binary_fraction;
 mod binary_poly_fraction;
+mod binary_poly_logup;
 pub use binary_poly_fraction::{
     BinaryPolyFractionGkrInputShape, BinaryPolyFractionGkrLayerTargets, BinaryPolyFractionGkrOutput,
     BinaryPolyFractionGkrProofTargets, BinaryPolyFractionGkrVerifier, NativeBinaryPolyFractionGkrInput,
+};
+pub use binary_poly_logup::{
+    BinaryPolyLogupStarInputShape, BinaryPolyLogupStarOutput, BinaryPolyLogupStarProofTargets,
+    BinaryPolyLogupStarReaderTargets, BinaryPolyLogupStarTableOutput, BinaryPolyLogupStarVerifier,
+    NativeBinaryPolyLogupStarInput,
 };
 mod binary_boolean_multi_stark;
 mod binary_grouped_boolean_multi_stark;

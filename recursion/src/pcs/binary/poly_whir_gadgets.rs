@@ -138,7 +138,7 @@ pub(super) fn poly192_eval_coefficients<EF: Field + Eq + Hash>(
 /// WHIR rows and its closing polynomial. Adjacent entries fold by
 /// `lo + r * (hi + lo)`, from the last coordinate to the first. The caller
 /// reverses the sumcheck point first for a suffix binding strategy.
-pub(super) fn poly192_eval_multilinear<EF: Field + Eq + Hash>(
+pub(crate) fn poly192_eval_multilinear<EF: Field + Eq + Hash>(
     circuit: &mut CircuitBuilder<EF>,
     evaluations: &[BinaryPoly192Target],
     point: &[BinaryPoly192Target],
@@ -294,7 +294,7 @@ where
         .collect()
 }
 
-pub(super) fn observe_values<BF, EF>(
+pub(crate) fn observe_values<BF, EF>(
     b: &mut CircuitBuilder<EF>,
     ch: &mut BinaryTower128Challenger,
     values: &[BinaryPoly192Target],
