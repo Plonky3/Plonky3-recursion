@@ -898,9 +898,8 @@ pub struct BinaryPolyAirConstraintPlan {
 }
 
 impl BinaryPolyAirConstraintPlan {
-    /// Internal constructor for a relation that closes every retained bus claim.
-    /// Indexed claims still require their own supported reduction.
-    pub(super) fn with_bus_limits<A>(
+    /// Internal constructor for a relation that closes retained bus and indexed claims.
+    pub(super) fn with_interaction_limits<A>(
         air: &A,
         log_height: usize,
         limits: &VerifierLimits,
@@ -916,12 +915,33 @@ impl BinaryPolyAirConstraintPlan {
         >(
             air, log_height, limits, true, Poly64Relation::base_raw
         )?;
-        if !program.indexed.is_empty() {
+        Ok((Self { program }, declarations))
+    }
+
+    #[cfg(test)]
+    pub(super) fn with_bus_limits<A>(
+        air: &A,
+        log_height: usize,
+        limits: &VerifierLimits,
+    ) -> Result<(Self, Vec<SymbolicBusInteraction<p3_binary_field::Poly64>>), VerificationError>
+    where
+        A: Air<InteractionSymbolicBuilder<p3_binary_field::Poly64, p3_binary_field::Poly192>>
+            + Air<BusSymbolicBuilder<p3_binary_field::Poly64, p3_binary_field::Poly192>>,
+    {
+        let output = Self::with_interaction_limits(air, log_height, limits)?;
+        if !output.0.program.indexed.is_empty() {
             return Err(invalid(
                 "binary Poly AIR indexed claims require a supported reduction",
             ));
         }
-        Ok((Self { program }, declarations))
+        Ok(output)
+    }
+
+    pub(super) fn indexed_reads(&self) -> &[IndexedRead] {
+        self.program.indexed.reads()
+    }
+    pub(super) fn indexed_tables(&self) -> &[IndexedTable] {
+        self.program.indexed.tables()
     }
 
     pub(super) fn bus_declarations(&self) -> &[CompiledBusDeclaration] {

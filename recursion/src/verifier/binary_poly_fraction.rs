@@ -56,6 +56,10 @@ pub struct BinaryPolyFractionGkrInputShape {
 }
 
 impl BinaryPolyFractionGkrInputShape {
+    pub(crate) fn native_decode_height(&self) -> usize {
+        self.height
+    }
+
     pub fn allocate_targets<BF, EF>(
         &self,
         b: &mut CircuitBuilder<EF>,
@@ -131,12 +135,32 @@ impl BinaryPolyFractionGkrVerifier {
         max_nonzero_draws: usize,
         limits: &VerifierLimits,
     ) -> Result<Self, VerificationError> {
+        Self::with_limits_impl(height, max_nonzero_draws, limits, true)
+    }
+
+    /// The enclosing indexed relation already accounts for its AIR instances.
+    pub(crate) fn with_embedded_logup_limits(
+        height: usize,
+        max_nonzero_draws: usize,
+        limits: &VerifierLimits,
+    ) -> Result<Self, VerificationError> {
+        Self::with_limits_impl(height, max_nonzero_draws, limits, false)
+    }
+
+    fn with_limits_impl(
+        height: usize,
+        max_nonzero_draws: usize,
+        limits: &VerifierLimits,
+        account_instances: bool,
+    ) -> Result<Self, VerificationError> {
         if height == 0 {
             return Err(invalid("binary fraction height must be positive"));
         }
         let mut usage = InputResourceUsage::default();
         usage.check_log_degree(limits, height)?;
-        usage.add_instances(limits, 1)?;
+        if account_instances {
+            usage.add_instances(limits, 1)?;
+        }
         let overflow = || VerificationError::ResourceArithmeticOverflow {
             component: "binary fraction geometry",
         };

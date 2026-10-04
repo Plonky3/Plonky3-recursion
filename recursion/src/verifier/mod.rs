@@ -8,6 +8,8 @@ mod binary_poly_bus;
 mod binary_fraction;
 mod binary_poly_fraction;
 mod binary_poly_logup;
+mod binary_poly_indexed;
+pub use binary_poly_indexed::BinaryPolyIndexedLookupProofTargets;
 pub use binary_poly_fraction::{
     BinaryPolyFractionGkrInputShape, BinaryPolyFractionGkrLayerTargets, BinaryPolyFractionGkrOutput,
     BinaryPolyFractionGkrProofTargets, BinaryPolyFractionGkrVerifier, NativeBinaryPolyFractionGkrInput,

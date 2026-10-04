@@ -203,11 +203,31 @@ where
         max_nonzero_draws: usize,
         limits: &VerifierLimits,
     ) -> Result<Self, VerificationError> {
+        Self::with_limits_impl(tables, max_nonzero_draws, limits, true)
+    }
+
+    /// Counts only the work of an indexed reduction embedded in retained AIRs.
+    pub(crate) fn with_embedded_indexed_limits(
+        tables: &[LogupStarTableShape],
+        max_nonzero_draws: usize,
+        limits: &VerifierLimits,
+    ) -> Result<Self, VerificationError> {
+        Self::with_limits_impl(tables, max_nonzero_draws, limits, false)
+    }
+
+    fn with_limits_impl(
+        tables: &[LogupStarTableShape],
+        max_nonzero_draws: usize,
+        limits: &VerifierLimits,
+        account_instances: bool,
+    ) -> Result<Self, VerificationError> {
         if tables.is_empty() {
             return Err(invalid("binary indexed reduction requires a table"));
         }
         let mut usage = InputResourceUsage::default();
-        usage.add_instances(limits, tables.len())?;
+        if account_instances {
+            usage.add_instances(limits, tables.len())?;
+        }
         let overflow = || VerificationError::ResourceArithmeticOverflow {
             component: "binary indexed geometry",
         };
@@ -228,7 +248,9 @@ where
             }
             usage.check_log_degree(limits, table.num_variables)?;
             usage.check_matrix_width(limits, table.width)?;
-            usage.add_instances(limits, table.readers.len())?;
+            if account_instances {
+                usage.add_instances(limits, table.readers.len())?;
+            }
             reader_count = reader_count
                 .checked_add(table.readers.len())
                 .ok_or_else(overflow)?;
@@ -300,7 +322,15 @@ where
         let entries =
             BinaryNonzeroChallengePlan::with_limits(tables.len(), max_nonzero_draws, limits)?;
         usage.merge(limits, entries.input_resource_usage())?;
-        let fraction = BinaryFractionGkrVerifier::with_limits(height, max_nonzero_draws, limits)?;
+        let fraction = if account_instances {
+            BinaryFractionGkrVerifier::with_limits(height, max_nonzero_draws, limits)?
+        } else {
+            BinaryFractionGkrVerifier::with_embedded_logup_limits(
+                height,
+                max_nonzero_draws,
+                limits,
+            )?
+        };
         usage.merge(limits, fraction.input_resource_usage())?;
         let product = BinaryGenericSumcheckVerifier::with_limits(max_table, 2, 0, limits)?;
         usage.merge(limits, product.input_resource_usage())?;

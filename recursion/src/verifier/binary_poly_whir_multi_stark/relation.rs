@@ -1,8 +1,12 @@
-//! Plain Poly64 AIR and full Poly192 zerocheck reduction.
+//! Poly64 AIR, bus and indexed claims with full Poly192 reductions.
 
+use super::super::BinaryPolyLogupStarOutput;
 use super::super::binary_indexed::BinaryOpeningSchedule;
 use super::super::binary_poly_bus::{
     BinaryPolyBusClaims, BinaryPolyBusInputShape, BinaryPolyBusVerifier,
+};
+use super::super::binary_poly_indexed::{
+    BinaryPolyIndexedVerifier, NativePolyIndexedInput, PolyIndexedInputShape,
 };
 use super::*;
 use crate::pcs::binary::{
@@ -24,6 +28,7 @@ pub(super) struct PolyMultiStarkRelationShape {
     zerocheck_seed: Vec<Poly64>,
     pub(super) sumcheck: BinaryPolyGenericSumcheckInputShape,
     pub(super) bus: Option<BinaryPolyBusInputShape>,
+    pub(super) indexed: Option<PolyIndexedInputShape>,
     main_schedule: BinaryOpeningSchedule,
     preprocessed_schedule: Option<BinaryOpeningSchedule>,
     max_tau_draws: usize,
@@ -35,6 +40,7 @@ pub(super) struct PolyMultiStarkRelation {
     sumcheck: BinaryPolyGenericSumcheckVerifier,
     tau: BinaryPolyNonzeroChallengePlan,
     bus: Option<BinaryPolyBusVerifier>,
+    indexed: Option<BinaryPolyIndexedVerifier>,
     pub(super) usage: InputResourceUsage,
 }
 
@@ -43,6 +49,7 @@ pub(super) struct Reduction {
     beta: BinaryPoly192Target,
     lambda: Option<BinaryPoly192Target>,
     bus_claims: Option<BinaryPolyBusClaims>,
+    indexed: Option<BinaryPolyLogupStarOutput>,
     tau: Vec<BinaryPoly192Target>,
     point: Vec<BinaryPoly192Target>,
     claim: BinaryPoly192Target,
@@ -54,6 +61,7 @@ pub(super) struct Reduction {
 pub(super) struct NativeReduction {
     pub(super) bus: Option<super::super::NativeBinaryPolyProductGkrInput>,
     pub(super) sumcheck: NativeBinaryPolyGenericSumcheckInput,
+    pub(super) indexed: Option<NativePolyIndexedInput>,
     pub(super) main_points: Vec<Point<Poly192>>,
     pub(super) preprocessed_points: Option<Vec<Point<Poly192>>>,
 }
@@ -109,7 +117,8 @@ impl PolyMultiStarkRelation {
         let mut plans = Vec::with_capacity(airs.len());
         let mut declarations = Vec::with_capacity(airs.len());
         for (&air, &height) in airs.iter().zip(heights) {
-            let (plan, bus) = BinaryPolyAirConstraintPlan::with_bus_limits(air, height, limits)?;
+            let (plan, bus) =
+                BinaryPolyAirConstraintPlan::with_interaction_limits(air, height, limits)?;
             declarations.push(bus);
             if plan.preprocessed_width() != 0 && !has_preprocessing {
                 return Err(invalid(
@@ -139,6 +148,10 @@ impl PolyMultiStarkRelation {
             .transpose()?;
         if let Some(bus) = &bus {
             usage.merge(limits, bus.input_resource_usage())?;
+        }
+        let indexed = BinaryPolyIndexedVerifier::build(&plans, max_tau_draws, limits)?;
+        if let Some(indexed) = &indexed {
+            usage.merge(limits, indexed.usage())?;
         }
         let height = *heights.iter().max().unwrap();
         let degree = plans
@@ -173,7 +186,11 @@ impl PolyMultiStarkRelation {
                 )
             })
         };
-        let (tables, main_schedule) = BinaryOpeningSchedule::plain(geometry(false));
+        let (tables, main_schedule) = BinaryOpeningSchedule::with_indexed(
+            geometry(false),
+            indexed.as_ref().map(|i| i.tables()).unwrap_or(&[]),
+            false,
+        );
         usage.add_metadata_entries(limits, main_schedule.len())?;
         let indices: Vec<_> = plans
             .iter()
@@ -187,7 +204,11 @@ impl PolyMultiStarkRelation {
             ));
         }
         let (preprocessed_protocol, preprocessed_schedule) = if has_preprocessing {
-            let (tables, schedule) = BinaryOpeningSchedule::plain(geometry(true));
+            let (tables, schedule) = BinaryOpeningSchedule::with_indexed(
+                geometry(true),
+                indexed.as_ref().map(|i| i.tables()).unwrap_or(&[]),
+                true,
+            );
             usage.add_metadata_entries(limits, schedule.len())?;
             (Some(OpeningProtocol::new(tables)), Some(schedule))
         } else {
@@ -206,7 +227,7 @@ impl PolyMultiStarkRelation {
                 })
                 .collect(),
             pow_bits,
-            has_indexed: false,
+            has_indexed: indexed.is_some(),
             has_bus: bus.is_some(),
         };
         let degrees: Vec<_> = plans
@@ -226,6 +247,7 @@ impl PolyMultiStarkRelation {
             zerocheck_seed: domain_separator_seed(&zerocheck.domain_separator::<Poly64, Poly192>()),
             sumcheck: sumcheck.input_shape(),
             bus: bus.as_ref().map(|bus| bus.input_shape()),
+            indexed: indexed.as_ref().map(|i| i.input_shape()),
             main_schedule,
             preprocessed_schedule,
             max_tau_draws,
@@ -236,6 +258,7 @@ impl PolyMultiStarkRelation {
                 sumcheck,
                 tau,
                 bus,
+                indexed,
                 usage,
             },
             OpeningProtocol::new(tables),
@@ -253,6 +276,15 @@ impl PolyMultiStarkRelation {
             (Some(verifier), Some(proof)) => verifier.check_targets(proof)?,
             (None, None) => {}
             _ => return Err(invalid("binary Poly MultiStark bus target shape mismatch")),
+        }
+        match (&self.indexed, &proof.indexed) {
+            (Some(verifier), Some(proof)) => verifier.check_proof_targets(proof)?,
+            (None, None) => {}
+            _ => {
+                return Err(invalid(
+                    "binary Poly MultiStark indexed target shape mismatch",
+                ));
+            }
         }
         self.sumcheck.check_targets(&proof.sumcheck)
     }
@@ -344,16 +376,28 @@ impl PolyMultiStarkRelation {
             &initial,
             &proof.sumcheck,
         )?;
+        let indexed = if let (Some(verifier), Some(proof)) = (&self.indexed, &proof.indexed) {
+            Some(verifier.verify::<BF, EF>(b, reduced.challenger.clone(), &reduced.point, proof)?)
+        } else {
+            None
+        };
+        let indexed_points = indexed
+            .as_ref()
+            .map(|o| (o.position_point.as_slice(), o.table_point.as_slice()));
+        let challenger = indexed
+            .as_ref()
+            .map(|o| o.challenger.clone())
+            .unwrap_or(reduced.challenger);
         let heights: Vec<_> = self.input.airs.iter().map(|a| a.log_height()).collect();
         let main_points = self
             .input
             .main_schedule
-            .points(&heights, &reduced.point, None);
+            .points(&heights, &reduced.point, indexed_points);
         let preprocessed_points = self
             .input
             .preprocessed_schedule
             .as_ref()
-            .map(|s| s.points(&heights, &reduced.point, None));
+            .map(|s| s.points(&heights, &reduced.point, indexed_points));
         Ok(Reduction {
             alpha,
             beta,
@@ -362,7 +406,8 @@ impl PolyMultiStarkRelation {
             tau: sampled.values,
             point: reduced.point,
             claim: reduced.claim,
-            challenger: reduced.challenger,
+            indexed,
+            challenger,
             main_points,
             preprocessed_points,
         })
@@ -372,15 +417,33 @@ impl PolyMultiStarkRelation {
         &self,
         b: &mut CircuitBuilder<EF>,
         public: &[Vec<BinaryPoly64Target>],
+        proof: &BinaryPolyWhirMultiStarkProofTargets,
         reduction: &Reduction,
         evals: &[p3_sumcheck::OpeningBatch<BinaryPoly192Target>],
         preprocessed: Option<&[p3_sumcheck::OpeningBatch<BinaryPoly192Target>]>,
     ) -> Result<(), VerificationError> {
+        if let (Some(verifier), Some(indexed_proof), Some(output)) =
+            (&self.indexed, &proof.indexed, &reduction.indexed)
+        {
+            verifier.authenticate(
+                b,
+                indexed_proof,
+                output,
+                &self.input.main_schedule,
+                evals,
+                self.input.preprocessed_schedule.as_ref().zip(preprocessed),
+            );
+        }
         let mut folded = b.binary_poly192_constant([0; 3])?;
         let mut weight = b.binary_poly192_constant([1, 0, 0])?;
         let mut air_evaluations = Vec::with_capacity(self.input.airs.len());
         for (i, air) in self.input.airs.iter().enumerate() {
-            let values = &evals[self.input.main_schedule.air_batch(i)];
+            let (current, next) = if air.main_width() != 0 {
+                let values = &evals[self.input.main_schedule.air_batch(i)];
+                (values.current(), values.next())
+            } else {
+                (&[][..], &[][..])
+            };
             let (pp_current, pp_next) = if air.preprocessed_width() != 0 {
                 let slot = self
                     .input
@@ -396,8 +459,8 @@ impl PolyMultiStarkRelation {
             let evaluation = air.evaluate_with_bus(
                 b,
                 &reduction.point[reduction.point.len() - air.log_height()..],
-                values.current(),
-                values.next(),
+                current,
+                next,
                 pp_current,
                 pp_next,
                 &public[i],
@@ -431,7 +494,6 @@ impl PolyMultiStarkRelation {
     {
         self.check_public(public)?;
         if proof.lookup.is_some()
-            || proof.indexed.is_some()
             || (self.bus.is_none() && proof.sumcheck.claimed_sum != Poly192::ZERO)
         {
             return Err(invalid(
@@ -442,6 +504,24 @@ impl PolyMultiStarkRelation {
             (Some(verifier), Some(proof)) => verifier.check_native(proof)?,
             (None, None) => {}
             _ => return Err(invalid("binary Poly MultiStark native bus shape mismatch")),
+        }
+        match (&self.indexed, &proof.indexed) {
+            (Some(verifier), Some(indexed)) => {
+                let height = self
+                    .input
+                    .airs
+                    .iter()
+                    .map(|a| a.log_height())
+                    .max()
+                    .unwrap();
+                verifier.check_native(&Point::new(alloc::vec![Poly192::ZERO; height]), indexed)?;
+            }
+            (None, None) => {}
+            _ => {
+                return Err(invalid(
+                    "binary Poly MultiStark native indexed shape mismatch",
+                ));
+            }
         }
         self.sumcheck.check_native(&proof.sumcheck)
     }
@@ -492,16 +572,24 @@ impl PolyMultiStarkRelation {
         let (sumcheck, point, _) = self
             .sumcheck
             .import_native_with_reduction(&proof.sumcheck, ch)?;
+        let indexed = if let (Some(verifier), Some(proof)) = (&self.indexed, &proof.indexed) {
+            Some(verifier.import_native(&point, proof, ch)?)
+        } else {
+            None
+        };
+        let indexed_points = indexed
+            .as_ref()
+            .map(|(_, o)| (o.position_point.as_slice(), o.table_point.as_slice()));
         let heights: Vec<_> = self.input.airs.iter().map(|a| a.log_height()).collect();
         let main_points = self
             .input
             .main_schedule
-            .points(&heights, point.as_slice(), None)
+            .points(&heights, point.as_slice(), indexed_points)
             .into_iter()
             .map(Point::new)
             .collect();
         let preprocessed_points = self.input.preprocessed_schedule.as_ref().map(|s| {
-            s.points(&heights, point.as_slice(), None)
+            s.points(&heights, point.as_slice(), indexed_points)
                 .into_iter()
                 .map(Point::new)
                 .collect()
@@ -509,6 +597,7 @@ impl PolyMultiStarkRelation {
         Ok(NativeReduction {
             bus: bus_reduction.map(|(input, _)| input),
             sumcheck,
+            indexed: indexed.map(|(input, _)| input),
             main_points,
             preprocessed_points,
         })

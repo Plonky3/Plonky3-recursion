@@ -1,5 +1,6 @@
 //! Complete released Poly64/Poly192 WHIR MultiStark relations.
 mod relation;
+use super::binary_poly_indexed::NativePolyIndexedInput;
 use super::{BinaryPolyAirConstraintPlan, InputResourceUsage, VerificationError, VerifierLimits};
 use crate::BinaryTower128Challenger;
 use crate::pcs::binary::{
@@ -73,6 +74,7 @@ pub struct BinaryPolyWhirMultiStarkProofTargets {
     pub commitment: Vec<Vec<ExprId>>,
     pub sumcheck: BinaryPolyGenericSumcheckProofTargets,
     pub bus: Option<super::BinaryPolyProductGkrProofTargets>,
+    pub indexed: Option<super::BinaryPolyIndexedLookupProofTargets>,
     pub opening: BinaryPolyWhirProofTargets,
     pub preprocessed_opening: Option<BinaryPolyWhirProofTargets>,
 }
@@ -92,7 +94,11 @@ impl BinaryPolyWhirMultiStarkInputShape {
                 .as_ref()
                 .map(|bus| bus.product.native_decode_shape()),
             sumcheck: self.relation.sumcheck.native_decode_shape(),
-            indexed: None,
+            indexed: self
+                .relation
+                .indexed
+                .as_ref()
+                .map(|i| i.native_decode_shape()),
             opening: self.opening.native_decode_shape(),
             preprocessed: self
                 .preprocessed
@@ -149,6 +155,12 @@ impl BinaryPolyWhirMultiStarkInputShape {
             .map(|bus| bus.product.allocate_targets::<BF, EF>(b))
             .transpose()?;
         let sumcheck = self.relation.sumcheck.allocate_targets::<BF, EF>(b)?;
+        let indexed = self
+            .relation
+            .indexed
+            .as_ref()
+            .map(|i| i.allocate_targets::<BF, EF>(b))
+            .transpose()?;
         let opening = self.opening.allocate_targets::<BF, EF>(b)?;
         let preprocessed_opening = self
             .preprocessed
@@ -159,6 +171,7 @@ impl BinaryPolyWhirMultiStarkInputShape {
             commitment,
             bus,
             sumcheck,
+            indexed,
             opening,
             preprocessed_opening,
         })
@@ -172,6 +185,7 @@ pub struct NativeBinaryPolyWhirMultiStarkInput {
     commitment: Vec<[u8; 32]>,
     sumcheck: NativeBinaryPolyGenericSumcheckInput,
     bus: Option<super::NativeBinaryPolyProductGkrInput>,
+    indexed: Option<NativePolyIndexedInput>,
     opening: NativeBinaryPolyWhirInput,
     preprocessed_opening: Option<NativeBinaryPolyWhirInput>,
 }
@@ -206,6 +220,15 @@ impl NativeBinaryPolyWhirMultiStarkInput {
             self.sumcheck
                 .private_values::<EF>(&expected.relation.sumcheck)?,
         );
+        match (&expected.relation.indexed, &self.indexed) {
+            (Some(shape), Some(input)) => values.extend(input.private_values::<EF>(shape)?),
+            (None, None) => {}
+            _ => {
+                return Err(invalid(
+                    "binary Poly MultiStark indexed input shape mismatch",
+                ));
+            }
+        }
         values.extend(self.opening.private_values::<EF>(&expected.opening)?);
         match (&expected.preprocessed, &self.preprocessed_opening) {
             (Some(shape), Some(input)) => {
@@ -222,7 +245,7 @@ impl NativeBinaryPolyWhirMultiStarkInput {
     }
 }
 
-/// Complete polynomial AIR, optional product bus, zerocheck and additive WHIR relation.
+/// Complete polynomial AIR, optional bus and indexed reductions, and additive WHIR relation.
 /// The caller supplies the statement and independent preprocessing authority.
 #[derive(Clone, Debug)]
 pub struct BinaryPolyWhirMultiStarkVerifier {
@@ -524,6 +547,7 @@ impl BinaryPolyWhirMultiStarkVerifier {
         self.relation.finish(
             b,
             public,
+            proof,
             &reduction,
             &main_evals,
             preprocessed_evals.as_deref(),
@@ -669,6 +693,7 @@ impl BinaryPolyWhirMultiStarkVerifier {
             commitment: proof.commitment.roots().to_vec(),
             sumcheck: reduction.sumcheck,
             bus: reduction.bus,
+            indexed: reduction.indexed,
             opening,
             preprocessed_opening,
         })

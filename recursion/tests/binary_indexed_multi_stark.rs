@@ -644,6 +644,29 @@ fn indexed_authority_and_combined_resource_limits_are_checked() {
     let defaults = VerifierLimits::default();
     let verifier = prepare(&airs, &heights, &defaults).unwrap();
     let usage = verifier.input_resource_usage();
+    assert_eq!(usage.instances, airs.len());
+    assert!(
+        prepare(
+            &airs,
+            &heights,
+            &VerifierLimits {
+                max_instances: airs.len(),
+                ..defaults.clone()
+            }
+        )
+        .is_ok()
+    );
+    assert!(
+        prepare(
+            &airs,
+            &heights,
+            &VerifierLimits {
+                max_instances: airs.len() - 1,
+                ..defaults.clone()
+            }
+        )
+        .is_err()
+    );
     let mut bad = airs.clone();
     bad[1].provide = None;
     assert!(prepare(&bad, &heights, &defaults).is_err());

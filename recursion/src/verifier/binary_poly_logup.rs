@@ -84,6 +84,21 @@ pub struct BinaryPolyLogupStarInputShape {
 }
 
 impl BinaryPolyLogupStarInputShape {
+    pub(crate) fn native_decode_shape(&self) -> crate::artifact::binary_native::codec::LogupDecode {
+        crate::artifact::binary_native::codec::LogupDecode {
+            pushforward_lengths: self
+                .native
+                .tables
+                .iter()
+                .map(|t| 1usize << t.num_variables)
+                .collect(),
+            fraction_height: self.fraction.native_decode_height(),
+            position_claims: self.reader_count(),
+            product: self.product.native_decode_shape(),
+            column_widths: self.native.tables.iter().map(|t| t.width).collect(),
+        }
+    }
+
     fn reader_count(&self) -> usize {
         self.native
             .tables
@@ -179,11 +194,30 @@ impl BinaryPolyLogupStarVerifier {
         max_nonzero_draws: usize,
         limits: &VerifierLimits,
     ) -> Result<Self, VerificationError> {
+        Self::with_limits_impl(tables, max_nonzero_draws, limits, true)
+    }
+
+    pub(crate) fn with_embedded_indexed_limits(
+        tables: &[LogupStarTableShape],
+        max_nonzero_draws: usize,
+        limits: &VerifierLimits,
+    ) -> Result<Self, VerificationError> {
+        Self::with_limits_impl(tables, max_nonzero_draws, limits, false)
+    }
+
+    fn with_limits_impl(
+        tables: &[LogupStarTableShape],
+        max_nonzero_draws: usize,
+        limits: &VerifierLimits,
+        account_instances: bool,
+    ) -> Result<Self, VerificationError> {
         if tables.is_empty() {
             return Err(invalid("binary indexed reduction requires a table"));
         }
         let mut usage = InputResourceUsage::default();
-        usage.add_instances(limits, tables.len())?;
+        if account_instances {
+            usage.add_instances(limits, tables.len())?;
+        }
         let overflow = || VerificationError::ResourceArithmeticOverflow {
             component: "binary indexed geometry",
         };
@@ -204,7 +238,9 @@ impl BinaryPolyLogupStarVerifier {
             }
             usage.check_log_degree(limits, table.num_variables)?;
             usage.check_matrix_width(limits, table.width)?;
-            usage.add_instances(limits, table.readers.len())?;
+            if account_instances {
+                usage.add_instances(limits, table.readers.len())?;
+            }
             reader_count = reader_count
                 .checked_add(table.readers.len())
                 .ok_or_else(overflow)?;
@@ -276,8 +312,15 @@ impl BinaryPolyLogupStarVerifier {
         let entries =
             BinaryPolyNonzeroChallengePlan::with_limits(tables.len(), max_nonzero_draws, limits)?;
         usage.merge(limits, entries.input_resource_usage())?;
-        let fraction =
-            BinaryPolyFractionGkrVerifier::with_limits(height, max_nonzero_draws, limits)?;
+        let fraction = if account_instances {
+            BinaryPolyFractionGkrVerifier::with_limits(height, max_nonzero_draws, limits)?
+        } else {
+            BinaryPolyFractionGkrVerifier::with_embedded_logup_limits(
+                height,
+                max_nonzero_draws,
+                limits,
+            )?
+        };
         usage.merge(limits, fraction.input_resource_usage())?;
         let product = BinaryPolyGenericSumcheckVerifier::with_limits(max_table, 2, 0, limits)?;
         usage.merge(limits, product.input_resource_usage())?;
