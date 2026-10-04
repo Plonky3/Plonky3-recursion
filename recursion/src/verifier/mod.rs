@@ -12,6 +12,11 @@ mod binary_indexed;
 mod binary_logup;
 mod binary_multi_stark;
 mod binary_product;
+mod binary_poly_product;
+pub use binary_poly_product::{
+    BinaryPolyProductGkrInputShape, BinaryPolyProductGkrLayerTargets, BinaryPolyProductGkrOutput,
+    BinaryPolyProductGkrProofTargets, BinaryPolyProductGkrVerifier, NativeBinaryPolyProductGkrInput,
+};
 mod binary_whir_multi_stark;
 mod binary_poly_whir_multi_stark;
 pub use binary_poly_whir_multi_stark::{

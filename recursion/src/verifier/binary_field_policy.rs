@@ -6,9 +6,10 @@ use core::marker::PhantomData;
 use p3_binary_field::{Poly64, Poly192};
 use p3_circuit::ops::{BinaryPoly64Target, BinaryPoly192Target, BinaryTower128Target};
 use p3_circuit::{CircuitBuilder, CircuitBuilderError, ExprId};
-use p3_field::{ExtensionField, Field};
+use p3_field::{ExtensionField, Field, PrimeField64};
 
 use crate::pcs::binary::{RecursiveBinaryChallengeField, RecursiveBinaryTowerField};
+use crate::{BinaryTower128Challenger, verifier::VerificationError};
 
 mod sealed {
     pub trait Relation {}
@@ -162,5 +163,117 @@ fn constrain_tower_width<EF: Field + Eq + Hash>(
     for &bit in &value.bits()[bits..] {
         let difference = b.sub(ExprId::ZERO, bit);
         b.assert_zero(difference);
+    }
+}
+
+/// Closed transcript and equality operations used by binary GKR kernels.
+pub(crate) trait BinaryProtocolPolicy: BinaryRelationPolicy {
+    fn observe<BF, EF>(
+        b: &mut CircuitBuilder<EF>,
+        ch: &mut BinaryTower128Challenger,
+        values: &[Self::ChallengeTarget],
+    ) -> Result<(), VerificationError>
+    where
+        BF: PrimeField64,
+        EF: ExtensionField<BF> + Eq + Hash;
+    fn sample<BF, EF>(
+        b: &mut CircuitBuilder<EF>,
+        ch: &mut BinaryTower128Challenger,
+    ) -> Result<Self::ChallengeTarget, VerificationError>
+    where
+        BF: PrimeField64,
+        EF: ExtensionField<BF> + Eq + Hash;
+    fn assert_equal<EF: Field + Eq + Hash>(
+        b: &mut CircuitBuilder<EF>,
+        a: &Self::ChallengeTarget,
+        c: &Self::ChallengeTarget,
+    );
+    fn eq_eval<EF: Field + Eq + Hash>(
+        b: &mut CircuitBuilder<EF>,
+        a: &[Self::ChallengeTarget],
+        c: &[Self::ChallengeTarget],
+    ) -> Result<Self::ChallengeTarget, CircuitBuilderError>;
+}
+
+impl<F, E> BinaryProtocolPolicy for TowerRelation<F, E>
+where
+    F: RecursiveBinaryTowerField,
+    E: RecursiveBinaryChallengeField + ExtensionField<F>,
+{
+    fn observe<BF, EF>(
+        b: &mut CircuitBuilder<EF>,
+        ch: &mut BinaryTower128Challenger,
+        values: &[BinaryTower128Target],
+    ) -> Result<(), VerificationError>
+    where
+        BF: PrimeField64,
+        EF: ExtensionField<BF> + Eq + Hash,
+    {
+        crate::pcs::binary::observe_values::<BF, EF>(b, ch, values, E::RAW_BITS)
+    }
+    fn sample<BF, EF>(
+        b: &mut CircuitBuilder<EF>,
+        ch: &mut BinaryTower128Challenger,
+    ) -> Result<BinaryTower128Target, VerificationError>
+    where
+        BF: PrimeField64,
+        EF: ExtensionField<BF> + Eq + Hash,
+    {
+        super::binary_product::sample::<E, BF, EF>(b, ch)
+    }
+    fn assert_equal<EF: Field + Eq + Hash>(
+        b: &mut CircuitBuilder<EF>,
+        a: &BinaryTower128Target,
+        c: &BinaryTower128Target,
+    ) {
+        crate::pcs::binary::assert_equal(b, a, c);
+    }
+    fn eq_eval<EF: Field + Eq + Hash>(
+        b: &mut CircuitBuilder<EF>,
+        a: &[BinaryTower128Target],
+        c: &[BinaryTower128Target],
+    ) -> Result<BinaryTower128Target, CircuitBuilderError> {
+        crate::pcs::binary::binary128_eq_eval(b, a, c)
+    }
+}
+
+impl BinaryProtocolPolicy for Poly64Relation {
+    fn observe<BF, EF>(
+        b: &mut CircuitBuilder<EF>,
+        ch: &mut BinaryTower128Challenger,
+        values: &[BinaryPoly192Target],
+    ) -> Result<(), VerificationError>
+    where
+        BF: PrimeField64,
+        EF: ExtensionField<BF> + Eq + Hash,
+    {
+        for value in values {
+            ch.observe_poly192::<BF, EF>(b, value)?;
+        }
+        Ok(())
+    }
+    fn sample<BF, EF>(
+        b: &mut CircuitBuilder<EF>,
+        ch: &mut BinaryTower128Challenger,
+    ) -> Result<BinaryPoly192Target, VerificationError>
+    where
+        BF: PrimeField64,
+        EF: ExtensionField<BF> + Eq + Hash,
+    {
+        Ok(ch.sample_poly192::<BF, EF>(b)?)
+    }
+    fn assert_equal<EF: Field + Eq + Hash>(
+        b: &mut CircuitBuilder<EF>,
+        a: &BinaryPoly192Target,
+        c: &BinaryPoly192Target,
+    ) {
+        crate::pcs::binary::poly_assert_equal(b, a, c);
+    }
+    fn eq_eval<EF: Field + Eq + Hash>(
+        b: &mut CircuitBuilder<EF>,
+        a: &[BinaryPoly192Target],
+        c: &[BinaryPoly192Target],
+    ) -> Result<BinaryPoly192Target, CircuitBuilderError> {
+        crate::pcs::binary::poly192_eq_eval(b, a, c)
     }
 }

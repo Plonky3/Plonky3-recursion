@@ -1,78 +1,61 @@
-//! Trusted binary product-tree GKR reductions.
+//! Released product-tree GKR with Poly64 seeds and full Poly192 challenges.
 
-use alloc::vec;
 use alloc::vec::Vec;
 use core::hash::Hash;
-use core::marker::PhantomData;
 
-use p3_binary_field::BinaryField128;
+use p3_binary_field::{Poly64, Poly192};
 use p3_bus::{
     ProductGkrLayerProof, ProductGkrOutput, ProductGkrProof, ProductGkrRootShape, ProductGkrShape,
 };
 use p3_challenger::FieldChallenger;
-use p3_circuit::ops::BinaryTower128Target;
-use p3_circuit::{CircuitBuilder, ExprId};
+use p3_circuit::CircuitBuilder;
+use p3_circuit::ops::BinaryPoly192Target;
 use p3_field::{ExtensionField, Field, PrimeField64};
 
-use super::binary_air::constrain_width;
-use super::binary_field_policy::TowerRelation;
+use super::binary_field_policy::Poly64Relation;
+use super::binary_product::{
+    kernel::{ProductLayerView, verify_layers},
+    zero_proof,
+};
 use super::{InputResourceUsage, VerificationError, VerifierLimits};
 use crate::BinaryTower128Challenger;
-use crate::pcs::binary::{
-    Binary128SumcheckInterpolator, RecursiveBinaryChallengeField, RecursiveBinaryTowerField,
-    observe_seed,
-};
+use crate::pcs::binary::{Poly192SumcheckInterpolator, poly_observe_seed};
 use crate::transcript::SeedTap;
-pub(crate) mod kernel;
-use kernel::{ProductLayerView, verify_layers};
 
 /// One shape-derived layer, with tree-major child evaluations.
 #[derive(Clone, Debug)]
-pub struct BinaryProductGkrLayerTargets {
-    pub round_polys: Vec<Vec<BinaryTower128Target>>,
-    pub children: Vec<Vec<BinaryTower128Target>>,
+pub struct BinaryPolyProductGkrLayerTargets {
+    pub round_polys: Vec<Vec<BinaryPoly192Target>>,
+    pub children: Vec<Vec<BinaryPoly192Target>>,
 }
 
 #[derive(Clone, Debug)]
-pub struct BinaryProductGkrProofTargets {
-    pub roots: Vec<BinaryTower128Target>,
-    pub layers: Vec<BinaryProductGkrLayerTargets>,
+pub struct BinaryPolyProductGkrProofTargets {
+    pub roots: Vec<BinaryPoly192Target>,
+    pub layers: Vec<BinaryPolyProductGkrLayerTargets>,
 }
 
 /// Internally consistent product claims awaiting authentication by the caller's
 /// committed-polynomial or AIR relation. This is not a verified statement.
 #[must_use = "product leaf evaluations must be authenticated by the surrounding protocol"]
 #[derive(Clone, Debug)]
-pub struct BinaryProductGkrOutput {
-    pub roots: Vec<BinaryTower128Target>,
+pub struct BinaryPolyProductGkrOutput {
+    pub roots: Vec<BinaryPoly192Target>,
     /// Most-significant-variable-first multilinear point.
-    pub point: Vec<BinaryTower128Target>,
-    pub values: Vec<BinaryTower128Target>,
+    pub point: Vec<BinaryPoly192Target>,
+    pub values: Vec<BinaryPoly192Target>,
     pub challenger: BinaryTower128Challenger,
 }
 
 /// The complete verifier-owned product schedule and native field encodings.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct BinaryProductGkrInputShape<F = BinaryField128, E = BinaryField128> {
-    seed: Vec<F>,
+pub struct BinaryPolyProductGkrInputShape {
+    seed: Vec<Poly64>,
     native: ProductGkrShape,
     layers: Vec<(usize, usize)>,
-    challenge: PhantomData<E>,
 }
 
-impl<F: RecursiveBinaryTowerField, E: RecursiveBinaryChallengeField>
-    BinaryProductGkrInputShape<F, E>
-{
-    pub(crate) fn native_decode_shape(
-        &self,
-    ) -> crate::artifact::binary_native::codec::ProductDecode {
-        crate::artifact::binary_native::codec::ProductDecode {
-            roots: self.root_count(),
-            trees: self.native.num_trees(),
-            layers: self.layers.clone(),
-        }
-    }
-
+impl BinaryPolyProductGkrInputShape {
     fn root_count(&self) -> usize {
         self.native.num_trees()
             - usize::from(self.native.root_shape() == ProductGkrRootShape::FirstTwoShared)
@@ -81,14 +64,14 @@ impl<F: RecursiveBinaryTowerField, E: RecursiveBinaryChallengeField>
     pub fn allocate_targets<BF, EF>(
         &self,
         b: &mut CircuitBuilder<EF>,
-    ) -> Result<BinaryProductGkrProofTargets, VerificationError>
+    ) -> Result<BinaryPolyProductGkrProofTargets, VerificationError>
     where
         BF: PrimeField64,
         EF: ExtensionField<BF> + Eq + Hash,
     {
         let mut field = || {
-            let limbs = b.alloc_private_input_array::<8>("binary product GKR field");
-            Ok(b.binary128_from_limbs::<BF>(limbs)?)
+            let limbs = b.alloc_private_input_array::<12>("binary product GKR field");
+            Ok(b.binary_poly192_from_limbs::<BF>(limbs)?)
         };
         let roots = (0..self.root_count())
             .map(|_| field())
@@ -103,60 +86,50 @@ impl<F: RecursiveBinaryTowerField, E: RecursiveBinaryChallengeField>
                 let children = (0..self.native.num_trees())
                     .map(|_| (0..arity).map(|_| field()).collect())
                     .collect::<Result<_, VerificationError>>()?;
-                Ok(BinaryProductGkrLayerTargets {
+                Ok(BinaryPolyProductGkrLayerTargets {
                     round_polys,
                     children,
                 })
             })
             .collect::<Result<_, VerificationError>>()?;
-        Ok(BinaryProductGkrProofTargets { roots, layers })
+        Ok(BinaryPolyProductGkrProofTargets { roots, layers })
     }
 }
 
 /// Bounded witness data carrying no independent leaf-authentication authority.
 #[derive(Clone, Debug)]
-pub struct NativeBinaryProductGkrInput<F = BinaryField128, E = BinaryField128> {
-    shape: BinaryProductGkrInputShape<F, E>,
-    fields: Vec<u128>,
+pub struct NativeBinaryPolyProductGkrInput {
+    shape: BinaryPolyProductGkrInputShape,
+    limbs: Vec<u16>,
 }
 
-impl<F: RecursiveBinaryTowerField, E: RecursiveBinaryChallengeField>
-    NativeBinaryProductGkrInput<F, E>
-{
-    pub fn shape(&self) -> &BinaryProductGkrInputShape<F, E> {
+impl NativeBinaryPolyProductGkrInput {
+    pub fn shape(&self) -> &BinaryPolyProductGkrInputShape {
         &self.shape
     }
 
     pub fn private_values<EF: Field>(
         &self,
-        expected: &BinaryProductGkrInputShape<F, E>,
+        expected: &BinaryPolyProductGkrInputShape,
     ) -> Result<Vec<EF>, VerificationError> {
         if &self.shape != expected {
             return Err(invalid("binary product input belongs to another verifier"));
         }
-        Ok(self
-            .fields
-            .iter()
-            .flat_map(|&value| (0..8).map(move |i| EF::from_u16((value >> (16 * i)) as u16)))
-            .collect())
+        Ok(self.limbs.iter().copied().map(EF::from_u16).collect())
     }
 }
 
-/// Released radix-four product GKR over Tower64 or Tower128. Tree geometry and
+/// Released radix-four product GKR over Poly64 and Poly192. Tree geometry and
 /// root sharing are fixed independently of the proof. Returned leaf values
 /// must be closed by the surrounding authenticated reduction.
 #[derive(Clone, Debug)]
-pub struct BinaryProductGkrVerifier<F = BinaryField128, E = BinaryField128> {
-    input: BinaryProductGkrInputShape<F, E>,
-    interpolator: Binary128SumcheckInterpolator,
+pub struct BinaryPolyProductGkrVerifier {
+    input: BinaryPolyProductGkrInputShape,
+    interpolator: Poly192SumcheckInterpolator,
     usage: InputResourceUsage,
 }
 
-impl<F, E> BinaryProductGkrVerifier<F, E>
-where
-    F: RecursiveBinaryTowerField,
-    E: RecursiveBinaryChallengeField + ExtensionField<F>,
-{
+impl BinaryPolyProductGkrVerifier {
     pub fn new(
         height: usize,
         trees: usize,
@@ -208,52 +181,43 @@ where
         usage.add_scalar_elements(
             limits,
             fields
-                .checked_mul(8)
+                .checked_mul(12)
                 .ok_or(VerificationError::ResourceArithmeticOverflow {
                     component: "binary product input limbs",
                 })?,
         )?;
-        let interpolator = Binary128SumcheckInterpolator::with_limits(5, limits)?;
+        let interpolator = Poly192SumcheckInterpolator::with_limits(5, limits)?;
         usage.add_metadata_entries(limits, 36)?;
         // The native shape's seed is private. A bounded, internally consistent
         // zero reduction captures it through the public verifier, including
         // the height-zero case, without allocating a tree's leaf table.
-        let dummy = zero_proof::<E>(
+        let dummy = zero_proof::<Poly192>(
             trees - usize::from(roots == ProductGkrRootShape::FirstTwoShared),
             trees,
             &layers,
         );
-        let mut tap = SeedTap::<F>::new();
+        let mut tap = SeedTap::<Poly64>::new();
         let _ = dummy
-            .verify::<F, _>(native, &mut tap)
+            .verify::<Poly64, _>(native, &mut tap)
             .map_err(|_| invalid("binary product seed capture failed"))?;
         let seed = tap.binary_seed();
         usage.add_metadata_entries(limits, seed.len())?;
         Ok(Self {
-            input: BinaryProductGkrInputShape {
+            input: BinaryPolyProductGkrInputShape {
                 seed,
                 native,
                 layers,
-                challenge: PhantomData,
             },
             interpolator,
             usage,
         })
     }
 
-    pub fn input_shape(&self) -> BinaryProductGkrInputShape<F, E> {
+    pub fn input_shape(&self) -> BinaryPolyProductGkrInputShape {
         self.input.clone()
     }
     pub fn input_resource_usage(&self) -> InputResourceUsage {
         self.usage
-    }
-
-    pub(super) fn zero_native_proof(&self) -> ProductGkrProof<E> {
-        zero_proof(
-            self.input.root_count(),
-            self.input.native.num_trees(),
-            &self.input.layers,
-        )
     }
 
     /// Checks every message shape before adding constraints. Targets must
@@ -263,22 +227,14 @@ where
         &self,
         b: &mut CircuitBuilder<EF>,
         mut ch: BinaryTower128Challenger,
-        proof: &BinaryProductGkrProofTargets,
-    ) -> Result<BinaryProductGkrOutput, VerificationError>
+        proof: &BinaryPolyProductGkrProofTargets,
+    ) -> Result<BinaryPolyProductGkrOutput, VerificationError>
     where
         BF: PrimeField64,
         EF: ExtensionField<BF> + Eq + Hash,
     {
         self.check_targets(proof)?;
-        for value in proof.roots.iter().chain(
-            proof
-                .layers
-                .iter()
-                .flat_map(|layer| layer.round_polys.iter().chain(&layer.children).flatten()),
-        ) {
-            constrain_width(b, value, E::RAW_BITS);
-        }
-        observe_seed::<F, BF, EF>(b, &mut ch, &self.input.seed)?;
+        poly_observe_seed::<BF, EF>(b, &mut ch, &self.input.seed)?;
         let layers = proof
             .layers
             .iter()
@@ -287,7 +243,7 @@ where
                 children: &layer.children,
             })
             .collect::<Vec<_>>();
-        let output = verify_layers::<TowerRelation<F, E>, BF, EF>(
+        let output = verify_layers::<Poly64Relation, BF, EF>(
             b,
             ch,
             &proof.roots,
@@ -299,7 +255,7 @@ where
                     .reduce_claim(b, claim, polynomial, challenge)
             },
         )?;
-        Ok(BinaryProductGkrOutput {
+        Ok(BinaryPolyProductGkrOutput {
             roots: output.roots,
             point: output.point,
             values: output.values,
@@ -309,7 +265,7 @@ where
 
     pub(crate) fn check_targets(
         &self,
-        proof: &BinaryProductGkrProofTargets,
+        proof: &BinaryPolyProductGkrProofTargets,
     ) -> Result<(), VerificationError> {
         if proof.roots.len() != self.input.root_count()
             || proof.layers.len() != self.input.layers.len()
@@ -328,7 +284,10 @@ where
         Ok(())
     }
 
-    pub(crate) fn check_native(&self, proof: &ProductGkrProof<E>) -> Result<(), VerificationError> {
+    pub(crate) fn check_native(
+        &self,
+        proof: &ProductGkrProof<Poly192>,
+    ) -> Result<(), VerificationError> {
         if proof.roots.len() != self.input.root_count()
             || proof.layers.len() != self.input.layers.len()
         {
@@ -360,11 +319,11 @@ where
     /// authentication by the surrounding protocol.
     pub fn import_native<Ch>(
         &self,
-        proof: &ProductGkrProof<E>,
+        proof: &ProductGkrProof<Poly192>,
         ch: &mut Ch,
-    ) -> Result<NativeBinaryProductGkrInput<F, E>, VerificationError>
+    ) -> Result<NativeBinaryPolyProductGkrInput, VerificationError>
     where
-        Ch: FieldChallenger<F> + Clone,
+        Ch: FieldChallenger<Poly64> + Clone,
     {
         self.import_native_with_reduction(proof, ch)
             .map(|(input, _)| input)
@@ -372,97 +331,58 @@ where
 
     pub(crate) fn import_native_with_reduction<Ch>(
         &self,
-        proof: &ProductGkrProof<E>,
+        proof: &ProductGkrProof<Poly192>,
         ch: &mut Ch,
-    ) -> Result<(NativeBinaryProductGkrInput<F, E>, ProductGkrOutput<E>), VerificationError>
+    ) -> Result<(NativeBinaryPolyProductGkrInput, ProductGkrOutput<Poly192>), VerificationError>
     where
-        Ch: FieldChallenger<F> + Clone,
+        Ch: FieldChallenger<Poly64> + Clone,
     {
         self.check_native(proof)?;
         let mut staged = ch.clone();
         let output = proof
-            .verify::<F, _>(self.input.native, &mut staged)
+            .verify::<Poly64, _>(self.input.native, &mut staged)
             .map_err(|_| invalid("binary product native replay failed"))?;
-        let mut fields: Vec<_> = proof
-            .roots
-            .iter()
-            .copied()
-            .map(E::raw_coordinates)
-            .collect();
+        let mut limbs = Vec::new();
+        let mut append = |value: Poly192| {
+            for coefficient in value.coefficients() {
+                limbs.extend((0..4).map(|i| (coefficient.to_bits() >> (16 * i)) as u16));
+            }
+        };
+        for &root in &proof.roots {
+            append(root);
+        }
         for layer in &proof.layers {
             match layer {
                 ProductGkrLayerProof::Binary { children } => {
-                    fields.extend(children.iter().flatten().copied().map(E::raw_coordinates))
+                    for &value in children.iter().flatten() {
+                        append(value);
+                    }
                 }
                 ProductGkrLayerProof::RadixFour {
                     round_polys,
                     children,
                 } => {
-                    fields.extend(
-                        round_polys
-                            .iter()
-                            .flatten()
-                            .copied()
-                            .map(E::raw_coordinates),
-                    );
-                    fields.extend(children.iter().flatten().copied().map(E::raw_coordinates));
+                    for &value in round_polys
+                        .iter()
+                        .flatten()
+                        .chain(children.iter().flatten())
+                    {
+                        append(value);
+                    }
                 }
             }
         }
         *ch = staged;
         Ok((
-            NativeBinaryProductGkrInput {
+            NativeBinaryPolyProductGkrInput {
                 shape: self.input.clone(),
-                fields,
+                limbs,
             },
             output,
         ))
     }
 }
 
-pub(super) fn sample<E, BF, EF>(
-    b: &mut CircuitBuilder<EF>,
-    ch: &mut BinaryTower128Challenger,
-) -> Result<BinaryTower128Target, VerificationError>
-where
-    E: RecursiveBinaryChallengeField,
-    BF: PrimeField64,
-    EF: ExtensionField<BF> + Eq + Hash,
-{
-    let bytes = ch.sample_bytes::<BF, EF>(b, E::RAW_BITS / 8)?;
-    let mut bits = [ExprId::ZERO; 128];
-    for (i, byte) in bytes.into_iter().enumerate() {
-        let byte = b.decompose_to_bits::<BF>(byte, 8)?;
-        bits[8 * i..8 * i + 8].copy_from_slice(&byte);
-    }
-    Ok(b.binary128_from_bits(bits)?)
-}
-
 fn invalid(message: &str) -> VerificationError {
     VerificationError::InvalidProofShape(message.into())
-}
-
-pub(super) fn zero_proof<E: Field>(
-    roots: usize,
-    trees: usize,
-    layers: &[(usize, usize)],
-) -> ProductGkrProof<E> {
-    ProductGkrProof {
-        roots: vec![E::ZERO; roots],
-        layers: layers
-            .iter()
-            .map(|&(arity, rounds)| {
-                if arity == 2 {
-                    ProductGkrLayerProof::Binary {
-                        children: vec![[E::ZERO; 2]; trees],
-                    }
-                } else {
-                    ProductGkrLayerProof::RadixFour {
-                        round_polys: vec![[E::ZERO; 5]; rounds],
-                        children: vec![[E::ZERO; 4]; trees],
-                    }
-                }
-            })
-            .collect(),
-    }
 }

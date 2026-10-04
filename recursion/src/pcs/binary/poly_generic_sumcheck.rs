@@ -1,6 +1,5 @@
 //! Released generic-degree sumcheck with Poly64 seeds and Poly192 messages.
 
-use alloc::vec;
 use alloc::vec::Vec;
 use core::hash::Hash;
 
@@ -8,10 +7,10 @@ use p3_binary_field::{Poly64, Poly192};
 use p3_challenger::{FieldChallenger, GrindingChallenger};
 use p3_circuit::ops::{BinaryPoly64Target, BinaryPoly192Target};
 use p3_circuit::{CircuitBuilder, ExprId};
-use p3_field::{ExtensionField, Field, PrimeCharacteristicRing, PrimeField64};
+use p3_field::{ExtensionField, Field, PrimeField64};
 use p3_sumcheck::generic_degree::{GenericDegreeProof, GenericDegreeShape};
 
-use super::generic_sumcheck::lagrange_coefficients;
+use super::poly_interpolation::Poly192SumcheckInterpolator;
 use super::poly_whir_gadgets::{assert_equal, observe_seed};
 use super::whir_plan::invalid;
 use crate::transcript::domain_separator_seed;
@@ -114,7 +113,7 @@ impl NativeBinaryPolyGenericSumcheckInput {
 #[derive(Clone, Debug)]
 pub struct BinaryPolyGenericSumcheckVerifier {
     input: BinaryPolyGenericSumcheckInputShape,
-    coefficients: Vec<Vec<u64>>,
+    interpolator: Poly192SumcheckInterpolator,
     usage: InputResourceUsage,
 }
 
@@ -152,31 +151,14 @@ impl BinaryPolyGenericSumcheckVerifier {
                 component: "binary Poly generic sumcheck input limbs",
             })?;
         usage.add_scalar_elements(limits, limbs)?;
-        let native = lagrange_coefficients::<Poly192>(degree, limits)?;
-        let count = native.len();
-        usage.add_metadata_entries(limits, count * count)?;
-        // Native Poly192 interpolation nodes lie in Poly64. Their Lagrange
-        // coefficients do too, allowing exact base scaling in the circuit.
-        let mut coefficients = Vec::with_capacity(count);
-        for basis in native {
-            let mut row = Vec::with_capacity(count);
-            for coefficient in basis {
-                let [base, c1, c2] = coefficient.coefficients();
-                if c1 != Poly64::ZERO || c2 != Poly64::ZERO {
-                    return Err(invalid(
-                        "binary Poly sumcheck interpolation left the base field",
-                    ));
-                }
-                row.push(base.to_bits());
-            }
-            coefficients.push(row);
-        }
+        let interpolator = Poly192SumcheckInterpolator::with_limits(degree, limits)?;
+        usage.add_metadata_entries(limits, interpolator.metadata_entries())?;
         let shape = GenericDegreeShape::new(rounds, degree, pow_bits);
         let seed = domain_separator_seed(&shape.domain_separator::<Poly64, Poly192>());
         usage.add_metadata_entries(limits, seed.len())?;
         Ok(Self {
             input: BinaryPolyGenericSumcheckInputShape { seed, shape },
-            coefficients,
+            interpolator,
             usage,
         })
     }
@@ -258,7 +240,7 @@ impl BinaryPolyGenericSumcheckVerifier {
                 }
             }
             let r = ch.sample_poly192::<BF, EF>(b)?;
-            claim = self.reduce(b, &claim, polynomial, &r)?;
+            claim = self.interpolator.reduce_claim(b, &claim, polynomial, &r)?;
             point.push(r);
         }
         Ok(BinaryPolyGenericSumcheckOutput {
@@ -266,42 +248,6 @@ impl BinaryPolyGenericSumcheckVerifier {
             claim,
             challenger: ch,
         })
-    }
-
-    fn reduce<EF: Field + Eq + Hash>(
-        &self,
-        b: &mut CircuitBuilder<EF>,
-        claim: &BinaryPoly192Target,
-        evaluations: &[BinaryPoly192Target],
-        challenge: &BinaryPoly192Target,
-    ) -> Result<BinaryPoly192Target, VerificationError> {
-        let mut values = Vec::with_capacity(self.coefficients.len());
-        values.push(evaluations[0].clone());
-        values.push(b.binary_poly192_add(claim, &evaluations[0]));
-        values.extend_from_slice(&evaluations[1..]);
-        let zero = b.binary_poly192_constant([0; 3])?;
-        let mut polynomial = vec![zero; self.coefficients.len()];
-        for (value, basis) in values.iter().zip(&self.coefficients) {
-            for (coefficient, &constant) in polynomial.iter_mut().zip(basis) {
-                if constant == 0 {
-                    continue;
-                }
-                let term = if constant == 1 {
-                    value.clone()
-                } else {
-                    let constant = b.binary_poly64_constant(constant)?;
-                    b.binary_poly192_scale(value, &constant)
-                };
-                *coefficient = b.binary_poly192_add(coefficient, &term);
-            }
-        }
-        let mut iter = polynomial.into_iter().rev();
-        let mut result = iter.next().expect("checked positive degree");
-        for coefficient in iter {
-            let product = b.binary_poly192_mul(&result, challenge);
-            result = b.binary_poly192_add(&product, &coefficient);
-        }
-        Ok(result)
     }
 
     pub(crate) fn check_targets(

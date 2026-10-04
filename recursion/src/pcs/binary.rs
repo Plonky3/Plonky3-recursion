@@ -26,6 +26,8 @@ mod input;
 mod nonzero;
 mod poly_generic_sumcheck;
 mod poly_nonzero;
+mod poly_interpolation;
+pub(crate) use poly_interpolation::Poly192SumcheckInterpolator;
 mod poly_whir_gadgets;
 mod poly_whir_input;
 mod poly_whir_verifier;
