@@ -4,30 +4,28 @@ mod descriptor;
 pub(crate) mod native;
 pub(crate) mod wire;
 
-pub use binary_native::{
-    BinaryNativePolyWhirAuthority, BinaryNativePolyWhirConfig, BinaryNativePolyWhirLayout,
-    BinaryNativePolyWhirPcsParameters, BinaryNativePolyWhirProver, VerifiedBinaryNativePolyWhirProof,
-    BinaryNativeBooleanWhirTraceAuthority, BinaryNativeBooleanWhirTraceConfig,
-    BinaryNativeBooleanWhirTraceProver, VerifiedBinaryNativeBooleanWhirTraceProof,
-    BinaryNativeAuthority, BinaryNativeBooleanTraceAuthority, BinaryNativeBooleanTraceConfig,
-    BinaryNativeBooleanTraceProver, VerifiedBinaryNativeBooleanTraceProof,
-    BinaryNativeChallenger, BinaryNativeConfig,
-    BinaryNativeGroupedAuthority, BinaryNativeGroupedBooleanTraceAuthority,
-    BinaryNativeGroupedBooleanTraceConfig, BinaryNativeGroupedBooleanTraceProver,
-    BinaryNativeGroupedConfig, BinaryNativeGroupedPcsParameters, BinaryNativeGroupedProver,
-    BinaryNativeGroupedVerifierSpec, BinaryNativeHash, BinaryNativePcsParameters,
-    BinaryNativeProver, BinaryNativeVerifierSpec, CanonicalBinaryStatement,
-    BinaryNativeWhirAuthority, BinaryNativeWhirConfig, BinaryNativeWhirLayout,
-    BinaryNativeWhirPcsParameters, BinaryNativeWhirProver, VerifiedBinaryNativeWhirProof,
-    VerifiedBinaryNativeGroupedBooleanTraceProof, VerifiedBinaryNativeGroupedProof,
-    VerifiedBinaryNativeProof,
-};
-
 use alloc::boxed::Box;
 use alloc::rc::Rc;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
+pub use binary_native::{
+    BinaryNativeAuthority, BinaryNativeBooleanTraceAuthority, BinaryNativeBooleanTraceConfig,
+    BinaryNativeBooleanTraceProver, BinaryNativeBooleanWhirTraceAuthority,
+    BinaryNativeBooleanWhirTraceConfig, BinaryNativeBooleanWhirTraceProver, BinaryNativeChallenger,
+    BinaryNativeConfig, BinaryNativeGroupedAuthority, BinaryNativeGroupedBooleanTraceAuthority,
+    BinaryNativeGroupedBooleanTraceConfig, BinaryNativeGroupedBooleanTraceProver,
+    BinaryNativeGroupedConfig, BinaryNativeGroupedPcsParameters, BinaryNativeGroupedProver,
+    BinaryNativeGroupedVerifierSpec, BinaryNativeHash, BinaryNativePcsParameters,
+    BinaryNativePolyWhirAuthority, BinaryNativePolyWhirConfig, BinaryNativePolyWhirLayout,
+    BinaryNativePolyWhirPcsParameters, BinaryNativePolyWhirProver, BinaryNativeProver,
+    BinaryNativeVerifierSpec, BinaryNativeWhirAuthority, BinaryNativeWhirConfig,
+    BinaryNativeWhirLayout, BinaryNativeWhirPcsParameters, BinaryNativeWhirProver,
+    CanonicalBinaryStatement, VerifiedBinaryNativeBooleanTraceProof,
+    VerifiedBinaryNativeBooleanWhirTraceProof, VerifiedBinaryNativeGroupedBooleanTraceProof,
+    VerifiedBinaryNativeGroupedProof, VerifiedBinaryNativePolyWhirProof, VerifiedBinaryNativeProof,
+    VerifiedBinaryNativeWhirProof,
+};
 use p3_circuit::{StatementError, StatementSchema};
 use p3_circuit_prover::{BatchStarkProof, CircuitVerifier};
 use p3_uni_stark::{StarkGenericConfig, Val};

@@ -1,14 +1,16 @@
 //! Shared lifecycle for the private, complete native binary proof families.
 
-use super::*;
 use alloc::boxed::Box;
 use alloc::vec;
+
 use p3_matrix::Matrix;
 use p3_multi_stark::config::ProverData;
 use p3_multi_stark::{
     ProverInstance, ProverInstances, VerifierInstance, VerifierInstances, VerifyingKey,
 };
 use p3_sumcheck::layout::Table;
+
+use super::*;
 
 pub(super) struct State<F, E, A, K = RawFamily>
 where

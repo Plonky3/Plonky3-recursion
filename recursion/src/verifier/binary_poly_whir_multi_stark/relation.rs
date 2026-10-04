@@ -1,5 +1,13 @@
 //! Poly64 AIR, bus and indexed claims with full Poly192 reductions.
 
+use alloc::sync::Arc;
+
+use p3_bus::{BusPlan, BusPlanInput};
+use p3_multi_stark::rounds::AirDegrees;
+use p3_multi_stark::transcript::{MultiStarkInstanceShape, MultiStarkShape};
+use p3_multi_stark::zerocheck::transcript::ZerocheckShape;
+use p3_sumcheck::OpeningProtocol;
+
 use super::super::BinaryPolyLogupStarOutput;
 use super::super::binary_indexed::BinaryOpeningSchedule;
 use super::super::binary_poly_bus::{
@@ -14,12 +22,6 @@ use crate::pcs::binary::{
     BinaryPolyNonzeroChallengePlan, poly_assert_equal, poly_observe_seed, poly192_eq_eval,
 };
 use crate::transcript::domain_separator_seed;
-use alloc::sync::Arc;
-use p3_bus::{BusPlan, BusPlanInput};
-use p3_multi_stark::rounds::AirDegrees;
-use p3_multi_stark::transcript::{MultiStarkInstanceShape, MultiStarkShape};
-use p3_multi_stark::zerocheck::transcript::ZerocheckShape;
-use p3_sumcheck::OpeningProtocol;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct PolyMultiStarkRelationShape {

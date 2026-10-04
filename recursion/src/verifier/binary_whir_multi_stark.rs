@@ -1,20 +1,7 @@
 //! Complete released tower WHIR MultiStark relations in prime-field circuits.
-use super::binary_indexed::{BinaryIndexedLookupProofTargets, NativeIndexedInput};
-use super::binary_multi_stark::relation::{
-    BinaryMultiStarkRelation, BinaryMultiStarkRelationShape, BinaryRelationProof,
-};
-use super::{
-    BinaryAirConstraintPlan, BinaryProductGkrProofTargets, InputResourceUsage,
-    NativeBinaryProductGkrInput, VerificationError, VerifierLimits,
-};
-use crate::BinaryTower128Challenger;
-use crate::pcs::binary::{
-    BinaryGenericSumcheckProofTargets, BinaryWhirInputShape, BinaryWhirProofTargets,
-    BinaryWhirVerifier, NativeBinaryGenericSumcheckInput, NativeBinaryWhirInput,
-    RecursiveBinaryWhirTowerField,
-};
 use alloc::vec::Vec;
 use core::hash::Hash;
+
 use p3_air::Air;
 use p3_binary_field::BinaryField128;
 use p3_bus::BusSymbolicBuilder;
@@ -33,6 +20,21 @@ use p3_sumcheck::strategy::VariableOrder;
 use p3_symmetric::{CryptographicHasher, PseudoCompressionFunction};
 use p3_whir::WhirConfig;
 use p3_whir::pcs::proof::PcsProof as WhirPcsProof;
+
+use super::binary_indexed::{BinaryIndexedLookupProofTargets, NativeIndexedInput};
+use super::binary_multi_stark::relation::{
+    BinaryMultiStarkRelation, BinaryMultiStarkRelationShape, BinaryRelationProof,
+};
+use super::{
+    BinaryAirConstraintPlan, BinaryProductGkrProofTargets, InputResourceUsage,
+    NativeBinaryProductGkrInput, VerificationError, VerifierLimits,
+};
+use crate::BinaryTower128Challenger;
+use crate::pcs::binary::{
+    BinaryGenericSumcheckProofTargets, BinaryWhirInputShape, BinaryWhirProofTargets,
+    BinaryWhirVerifier, NativeBinaryGenericSumcheckInput, NativeBinaryWhirInput,
+    RecursiveBinaryWhirTowerField,
+};
 /// Proof-independent input shape including the trusted AIR program.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BinaryWhirMultiStarkInputShape<F = BinaryField128> {

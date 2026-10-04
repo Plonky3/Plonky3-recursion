@@ -8,8 +8,9 @@ use p3_circuit::ops::{BinaryPoly64Target, BinaryPoly192Target, BinaryTower128Tar
 use p3_circuit::{CircuitBuilder, CircuitBuilderError, ExprId};
 use p3_field::{ExtensionField, Field, PrimeField64};
 
+use crate::BinaryTower128Challenger;
 use crate::pcs::binary::{RecursiveBinaryChallengeField, RecursiveBinaryTowerField};
-use crate::{BinaryTower128Challenger, verifier::VerificationError};
+use crate::verifier::VerificationError;
 
 mod sealed {
     pub trait Relation {}

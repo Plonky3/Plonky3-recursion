@@ -1,8 +1,9 @@
 //! Closed Tower128 Boolean trace commitments over additive WHIR.
-use super::*;
 use p3_binary_field::BinaryField128;
 use p3_binary_pcs::whir::{BinaryWhirDomain, BooleanWhirData, BooleanWhirPcs};
 use p3_binary_pcs::{BooleanTraceCommitment, BooleanTraceCommitmentData};
+
+use super::*;
 type E = BinaryField128;
 pub(in crate::artifact::binary_native) type NativeBooleanWhirTracePcs = BooleanTraceCommitment<
     E,

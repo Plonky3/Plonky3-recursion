@@ -1,7 +1,8 @@
 //! PCS-independent trusted AIR and reduction planning.
 
-use super::*;
 use alloc::sync::Arc;
+
+use super::*;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(in crate::verifier) struct BinaryMultiStarkRelationShape<F, E> {

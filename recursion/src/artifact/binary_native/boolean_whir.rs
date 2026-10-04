@@ -1,14 +1,15 @@
 //! Factory-owned native Boolean WHIR trace proofs and checked recursion input.
+use p3_air::Air;
+use p3_binary_field::BinaryField128;
+use p3_multi_stark::folder::{InteractionMultilinearFolder, MultilinearFolder};
+use p3_multi_stark::packed_ext::PackedExt;
+
 use super::config::{BinaryNativeBooleanWhirTraceConfig, BinaryNativeWhirPcsParameters};
 use super::family::BooleanWhirTraceFamily;
 use super::*;
 use crate::verifier::{
     BinaryBooleanWhirTraceMultiStarkVerifier, NativeBinaryBooleanWhirTraceMultiStarkInput,
 };
-use p3_air::Air;
-use p3_binary_field::BinaryField128;
-use p3_multi_stark::folder::{InteractionMultilinearFolder, MultilinearFolder};
-use p3_multi_stark::packed_ext::PackedExt;
 type E = BinaryField128;
 
 /// Trusted AIRs, matched native key and exact bit/packed commitment relation.

@@ -1,9 +1,10 @@
 //! Bounded grouped proof bytes, authenticated under retained native authority.
+use p3_binary_pcs::GroupedCodewordMmcs;
+
 use super::super::{
     BinaryNativeGroupedAuthority, BinaryNativeGroupedConfig, VerifiedBinaryNativeGroupedProof,
 };
 use super::*;
-use p3_binary_pcs::GroupedCodewordMmcs;
 
 type GroupedTree<F> = GroupedCodewordMmcs<NativeMmcs<F>>;
 type GroupedPcsProof<F, E> = BinaryPcsProof<F, E, GroupedTree<F>, GroupedTree<E>>;

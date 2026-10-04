@@ -1,5 +1,9 @@
 //! Prepared prover for the complete grouped Boolean trace MultiStark relation.
 
+use core::hash::Hash;
+
+use p3_circuit::ops::BinaryTower128Target;
+
 use super::lifecycle::ClosedBinaryCircuit;
 use super::*;
 use crate::artifact::{
@@ -9,8 +13,6 @@ use crate::verifier::{
     BinaryGroupedBooleanTraceMultiStarkInputShape, BinaryGroupedBooleanTraceMultiStarkProofTargets,
     BinaryGroupedBooleanTraceMultiStarkVerifier, NativeBinaryGroupedBooleanTraceMultiStarkInput,
 };
-use core::hash::Hash;
-use p3_circuit::ops::BinaryTower128Target;
 
 impl<E> ClosedBinaryCircuit<E, E> for BinaryGroupedBooleanTraceMultiStarkVerifier<E>
 where

@@ -2,18 +2,19 @@
 
 mod batch_stark;
 mod binary_air;
-pub(crate) mod binary_field_policy;
 mod binary_bus;
-mod binary_poly_bus;
+pub(crate) mod binary_field_policy;
 mod binary_fraction;
+mod binary_poly_bus;
 mod binary_poly_fraction;
-mod binary_poly_logup;
 mod binary_poly_indexed;
-pub use binary_poly_indexed::BinaryPolyIndexedLookupProofTargets;
+mod binary_poly_logup;
 pub use binary_poly_fraction::{
-    BinaryPolyFractionGkrInputShape, BinaryPolyFractionGkrLayerTargets, BinaryPolyFractionGkrOutput,
-    BinaryPolyFractionGkrProofTargets, BinaryPolyFractionGkrVerifier, NativeBinaryPolyFractionGkrInput,
+    BinaryPolyFractionGkrInputShape, BinaryPolyFractionGkrLayerTargets,
+    BinaryPolyFractionGkrOutput, BinaryPolyFractionGkrProofTargets, BinaryPolyFractionGkrVerifier,
+    NativeBinaryPolyFractionGkrInput,
 };
+pub use binary_poly_indexed::BinaryPolyIndexedLookupProofTargets;
 pub use binary_poly_logup::{
     BinaryPolyLogupStarInputShape, BinaryPolyLogupStarOutput, BinaryPolyLogupStarProofTargets,
     BinaryPolyLogupStarReaderTargets, BinaryPolyLogupStarTableOutput, BinaryPolyLogupStarVerifier,
@@ -25,14 +26,15 @@ mod binary_grouped_multi_stark;
 mod binary_indexed;
 mod binary_logup;
 mod binary_multi_stark;
-mod binary_product;
 mod binary_poly_product;
+mod binary_product;
 pub use binary_poly_product::{
     BinaryPolyProductGkrInputShape, BinaryPolyProductGkrLayerTargets, BinaryPolyProductGkrOutput,
-    BinaryPolyProductGkrProofTargets, BinaryPolyProductGkrVerifier, NativeBinaryPolyProductGkrInput,
+    BinaryPolyProductGkrProofTargets, BinaryPolyProductGkrVerifier,
+    NativeBinaryPolyProductGkrInput,
 };
-mod binary_whir_multi_stark;
 mod binary_poly_whir_multi_stark;
+mod binary_whir_multi_stark;
 pub use binary_poly_whir_multi_stark::{
     BinaryPolyWhirMultiStarkInputShape, BinaryPolyWhirMultiStarkPreprocessing,
     BinaryPolyWhirMultiStarkProofTargets, BinaryPolyWhirMultiStarkVerifier,
@@ -58,17 +60,18 @@ pub use batch_stark::{
     verify_trusted_p3_batch_proof_circuit,
 };
 pub use binary_air::{BinaryAirConstraintPlan, BinaryPolyAirConstraintPlan};
-pub use binary_fraction::{
-    BinaryFractionGkrInputShape, BinaryFractionGkrLayerTargets, BinaryFractionGkrOutput,
-    BinaryFractionGkrProofTargets, BinaryFractionGkrVerifier, NativeBinaryFractionGkrInput,
-};
 pub use binary_boolean_multi_stark::{
     BinaryBooleanTraceMultiStarkInputShape, BinaryBooleanTraceMultiStarkPreprocessing,
     BinaryBooleanTraceMultiStarkProofTargets, BinaryBooleanTraceMultiStarkVerifier,
     NativeBinaryBooleanTraceMultiStarkInput,
 };
+pub use binary_fraction::{
+    BinaryFractionGkrInputShape, BinaryFractionGkrLayerTargets, BinaryFractionGkrOutput,
+    BinaryFractionGkrProofTargets, BinaryFractionGkrVerifier, NativeBinaryFractionGkrInput,
+};
 pub use binary_grouped_boolean_multi_stark::{
-    BinaryGroupedBooleanTraceMultiStarkInputShape, BinaryGroupedBooleanTraceMultiStarkPreprocessing,
+    BinaryGroupedBooleanTraceMultiStarkInputShape,
+    BinaryGroupedBooleanTraceMultiStarkPreprocessing,
     BinaryGroupedBooleanTraceMultiStarkProofTargets, BinaryGroupedBooleanTraceMultiStarkVerifier,
     NativeBinaryGroupedBooleanTraceMultiStarkInput,
 };

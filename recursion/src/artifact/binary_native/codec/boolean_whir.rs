@@ -1,12 +1,13 @@
 //! Trusted-shape bounded trace and bit-ring WHIR proof bytes.
+use p3_binary_field::BinaryField128;
+use p3_binary_pcs::BooleanTraceCommitmentProof;
+use p3_binary_pcs::whir::BooleanWhirProof;
+
 use super::super::{
     BinaryNativeBooleanWhirTraceAuthority, BinaryNativeBooleanWhirTraceConfig,
     VerifiedBinaryNativeBooleanWhirTraceProof,
 };
 use super::*;
-use p3_binary_field::BinaryField128;
-use p3_binary_pcs::BooleanTraceCommitmentProof;
-use p3_binary_pcs::whir::BooleanWhirProof;
 type E = BinaryField128;
 
 type TraceProof = BooleanTraceCommitmentProof<E, BooleanWhirProof<E, NativeMmcs<E>>>;

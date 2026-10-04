@@ -1,10 +1,11 @@
 //! Retained polynomial WHIR proof authority and coefficient wire encoding.
+use p3_binary_field::{Poly64, Poly192};
+
 use super::super::{
     BinaryNativePolyWhirAuthority, BinaryNativePolyWhirConfig, BinaryNativePolyWhirLayout,
     VerifiedBinaryNativePolyWhirProof,
 };
 use super::*;
-use p3_binary_field::{Poly64, Poly192};
 
 impl<A, L> BinaryNativePolyWhirAuthority<A, L>
 where

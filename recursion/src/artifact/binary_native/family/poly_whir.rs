@@ -1,4 +1,8 @@
 //! Closed additive WHIR family behind the retained native setup lifecycle.
+use p3_binary_field::{Poly64, Poly192};
+use p3_binary_pcs::whir::BinaryWhirDomain;
+use p3_whir::{FoldingFactor, SecurityAssumption, WhirProver};
+
 use super::super::config::{
     BinaryNativePolyWhirConfig, BinaryNativePolyWhirLayout, BinaryNativePolyWhirPcsParameters,
     NativePolyWhirPcs,
@@ -8,9 +12,6 @@ use crate::verifier::{
     BinaryPolyWhirMultiStarkPreprocessing, BinaryPolyWhirMultiStarkVerifier,
     NativeBinaryPolyWhirMultiStarkInput,
 };
-use p3_binary_field::{Poly64, Poly192};
-use p3_binary_pcs::whir::BinaryWhirDomain;
-use p3_whir::{FoldingFactor, SecurityAssumption, WhirProver};
 
 pub(in crate::artifact::binary_native) struct PolyWhirFamily<L>(core::marker::PhantomData<L>);
 impl<L> NativeFamily<Poly64, Poly192> for PolyWhirFamily<L>

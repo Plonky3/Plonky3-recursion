@@ -1,14 +1,8 @@
 //! Complete released Poly64/Poly192 WHIR MultiStark relations.
 mod relation;
-use super::binary_poly_indexed::NativePolyIndexedInput;
-use super::{BinaryPolyAirConstraintPlan, InputResourceUsage, VerificationError, VerifierLimits};
-use crate::BinaryTower128Challenger;
-use crate::pcs::binary::{
-    BinaryPolyGenericSumcheckProofTargets, BinaryPolyWhirInputShape, BinaryPolyWhirProofTargets,
-    BinaryPolyWhirVerifier, NativeBinaryPolyGenericSumcheckInput, NativeBinaryPolyWhirInput,
-};
 use alloc::vec::Vec;
 use core::hash::Hash;
+
 use p3_air::Air;
 use p3_binary_field::{Poly64, Poly192};
 use p3_bus::BusSymbolicBuilder;
@@ -28,6 +22,14 @@ use p3_symmetric::{CryptographicHasher, PseudoCompressionFunction};
 use p3_whir::WhirConfig;
 use p3_whir::pcs::proof::PcsProof as WhirPcsProof;
 use relation::{PolyMultiStarkRelation, PolyMultiStarkRelationShape};
+
+use super::binary_poly_indexed::NativePolyIndexedInput;
+use super::{BinaryPolyAirConstraintPlan, InputResourceUsage, VerificationError, VerifierLimits};
+use crate::BinaryTower128Challenger;
+use crate::pcs::binary::{
+    BinaryPolyGenericSumcheckProofTargets, BinaryPolyWhirInputShape, BinaryPolyWhirProofTargets,
+    BinaryPolyWhirVerifier, NativeBinaryPolyGenericSumcheckInput, NativeBinaryPolyWhirInput,
+};
 /// Proof-independent input shape including the trusted AIR program.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BinaryPolyWhirMultiStarkInputShape {

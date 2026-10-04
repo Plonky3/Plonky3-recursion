@@ -1,5 +1,9 @@
 //! Prepared prover for the complete ordinary Boolean trace MultiStark relation.
 
+use core::hash::Hash;
+
+use p3_circuit::ops::BinaryTower128Target;
+
 use super::lifecycle::ClosedBinaryCircuit;
 use super::*;
 use crate::artifact::{BinaryNativeBooleanTraceAuthority, VerifiedBinaryNativeBooleanTraceProof};
@@ -7,8 +11,6 @@ use crate::verifier::{
     BinaryBooleanTraceMultiStarkInputShape, BinaryBooleanTraceMultiStarkProofTargets,
     BinaryBooleanTraceMultiStarkVerifier, NativeBinaryBooleanTraceMultiStarkInput,
 };
-use core::hash::Hash;
-use p3_circuit::ops::BinaryTower128Target;
 
 impl<E> ClosedBinaryCircuit<E, E> for BinaryBooleanTraceMultiStarkVerifier<E>
 where

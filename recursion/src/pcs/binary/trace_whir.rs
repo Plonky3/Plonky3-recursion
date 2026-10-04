@@ -413,8 +413,8 @@ impl BinaryBooleanWhirTraceVerifier {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use alloc::vec;
+
     use p3_binary_pcs::BooleanTraceCommitment;
     use p3_binary_pcs::whir::{BinaryWhirDomain, BooleanWhirPcs};
     use p3_commit::MultilinearPcs;
@@ -424,6 +424,8 @@ mod tests {
     use p3_sumcheck::{PrescribedPointPcs, TableShape, TableSpec};
     use p3_test_utils::binary_field_params::keccak;
     use p3_whir::{FoldingFactor, ProtocolParameters, SecurityAssumption, WhirProver};
+
+    use super::*;
 
     #[test]
     fn native_boolean_whir_trace_preflight_forwards_the_shared_frontier_counter() {

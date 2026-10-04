@@ -431,11 +431,12 @@ fn invalid(message: &'static str) -> VerificationError {
 
 #[cfg(test)]
 mod tests {
+    use p3_binary_field::BinaryField128;
+
     use super::*;
     use crate::verifier::{
         BinaryFractionGkrVerifier, BinaryLogupStarVerifier, BinaryPolyFractionGkrVerifier,
     };
-    use p3_binary_field::BinaryField128;
 
     fn check(
         standalone: impl Fn(&VerifierLimits) -> Result<InputResourceUsage, VerificationError>,

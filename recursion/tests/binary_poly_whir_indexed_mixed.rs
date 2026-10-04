@@ -3,9 +3,11 @@ use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 use p3_baby_bear::BabyBear;
 use p3_binary_field::{Poly64, Poly192};
 use p3_bus::BusInteractionBuilder;
-use p3_circuit::{CircuitBuilder, ops::ByteHash};
+use p3_circuit::CircuitBuilder;
+use p3_circuit::ops::ByteHash;
 use p3_field::PrimeCharacteristicRing;
-use p3_lookup::{IndexedLookupBuilder, indexed::TraceWindow};
+use p3_lookup::IndexedLookupBuilder;
+use p3_lookup::indexed::TraceWindow;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_recursion::artifact::{
     BinaryNativePolyWhirAuthority, BinaryNativePolyWhirLayout, BinaryNativePolyWhirPcsParameters,

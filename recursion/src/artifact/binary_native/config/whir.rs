@@ -1,12 +1,13 @@
 //! Validated released WHIR configurations and sealed native table layouts.
-use super::*;
-use crate::pcs::binary::RecursiveBinaryWhirTowerField;
-use crate::verifier::{InputResourceUsage, VerifierLimits};
 use p3_binary_field::BinaryField128;
 use p3_binary_pcs::whir::BinaryWhirDomain;
 use p3_sumcheck::layout::PrefixProver;
 use p3_whir::pcs::WhirProverData;
 use p3_whir::{FoldingFactor, ProtocolParameters, WhirConfig, WhirDomain, WhirProver};
+
+use super::*;
+use crate::pcs::binary::RecursiveBinaryWhirTowerField;
+use crate::verifier::{InputResourceUsage, VerifierLimits};
 
 mod sealed {
     pub trait Layout {}

@@ -9,7 +9,8 @@ use p3_circuit::CircuitBuilder;
 use p3_field::{ExtensionField, Field, PrimeField64};
 
 use super::super::binary_field_policy::BinaryProtocolPolicy;
-use crate::{BinaryTower128Challenger, verifier::VerificationError};
+use crate::BinaryTower128Challenger;
+use crate::verifier::VerificationError;
 
 pub(crate) struct ProductLayerView<'a, T> {
     pub messages: &'a [Vec<T>],

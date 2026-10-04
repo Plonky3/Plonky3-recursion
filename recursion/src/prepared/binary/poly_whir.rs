@@ -1,5 +1,10 @@
 //! Prepared prover for complete released additive WHIR MultiStark relations.
 
+use core::hash::Hash;
+
+use p3_binary_field::{Poly64, Poly192};
+use p3_circuit::ops::BinaryPoly64Target;
+
 use super::lifecycle::ClosedBinaryCircuit;
 use super::statement::BinaryPolyStatementLayout;
 use super::*;
@@ -10,9 +15,6 @@ use crate::verifier::{
     BinaryPolyWhirMultiStarkInputShape, BinaryPolyWhirMultiStarkProofTargets,
     BinaryPolyWhirMultiStarkVerifier, NativeBinaryPolyWhirMultiStarkInput,
 };
-use core::hash::Hash;
-use p3_binary_field::{Poly64, Poly192};
-use p3_circuit::ops::BinaryPoly64Target;
 
 impl ClosedBinaryCircuit<Poly64, Poly192> for BinaryPolyWhirMultiStarkVerifier {
     type Statement = BinaryPolyStatementLayout;

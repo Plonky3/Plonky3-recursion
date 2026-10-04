@@ -1,15 +1,16 @@
 //! Trusted-shape bounded trace and bit-ring proof bytes.
-use super::super::{
-    BinaryNativeGroupedBooleanTraceAuthority, BinaryNativeGroupedBooleanTraceConfig,
-    VerifiedBinaryNativeGroupedBooleanTraceProof,
-};
-use super::*;
 use p3_binary_pcs::{
     BooleanProof, BooleanTraceCommitmentProof, BooleanTraceProof, GroupedCodewordMmcs,
 };
 use p3_sumcheck::ring_switch::bits::{
     BitRingSwitchClaimsProof, BitTensor, ClaimElements, SuccessorTensors,
 };
+
+use super::super::{
+    BinaryNativeGroupedBooleanTraceAuthority, BinaryNativeGroupedBooleanTraceConfig,
+    VerifiedBinaryNativeGroupedBooleanTraceProof,
+};
+use super::*;
 
 type GroupedTree<E> = GroupedCodewordMmcs<NativeMmcs<E>>;
 type TraceProof<E> = BooleanTraceProof<E, GroupedTree<E>, GroupedTree<E>>;
@@ -184,8 +185,9 @@ pub(super) fn read_ring<E: RecursiveBinaryChallengeField>(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use p3_binary_field::{BinaryField64, BinaryField128};
+
+    use super::*;
 
     fn round_trip<E: RecursiveBinaryChallengeField>() {
         let shape = RingDecode {

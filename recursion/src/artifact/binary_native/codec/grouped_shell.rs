@@ -1,6 +1,9 @@
 //! Closed streaming serde bridge for the released opaque grouped multiproof.
 
-use core::{fmt, marker::PhantomData, mem::size_of};
+use core::fmt;
+use core::marker::PhantomData;
+use core::mem::size_of;
+
 use p3_binary_pcs::GroupedCodewordMmcs;
 use p3_commit::Mmcs;
 use p3_field::PackedValue;
@@ -536,11 +539,14 @@ impl<'de, F: RecursiveBinaryTowerField> serde::Deserializer<'de> for Decoder<'_,
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::artifact::ArtifactLimits;
-    use alloc::{vec, vec::Vec};
+    use alloc::vec;
+    use alloc::vec::Vec;
+
     use p3_binary_field::{BinaryField8, BinaryField64, BinaryField128};
     use p3_merkle_tree::PrunedMerklePaths;
+
+    use super::*;
+    use crate::artifact::ArtifactLimits;
 
     #[derive(Serialize)]
     #[serde(rename = "GroupedCodewordProof")]

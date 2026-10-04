@@ -4,14 +4,11 @@ mod boolean_whir;
 pub use boolean_whir::BinaryNativeBooleanWhirTraceConfig;
 pub(super) use boolean_whir::NativeBooleanWhirTracePcs;
 mod poly_whir;
+pub(super) use poly_whir::NativePolyWhirPcs;
 pub use poly_whir::{
     BinaryNativePolyWhirConfig, BinaryNativePolyWhirLayout, BinaryNativePolyWhirPcsParameters,
 };
-pub(super) use poly_whir::NativePolyWhirPcs;
 mod whir;
-pub use whir::{BinaryNativeWhirConfig, BinaryNativeWhirLayout, BinaryNativeWhirPcsParameters};
-pub(super) use whir::NativeWhirPcs;
-
 use alloc::vec::Vec;
 
 use p3_binary_dft::EncodableLevel;
@@ -27,6 +24,8 @@ use p3_merkle_tree::{MerkleCap, MerkleTreeMmcs};
 use p3_multi_stark::config::{MultiStarkConfig, ProverData};
 use p3_sumcheck::layout::{Layout, SuffixProver, Table, Witness};
 use p3_symmetric::{CompressionFunctionFromHasher, CryptographicHasher, SerializingHasher};
+pub(super) use whir::NativeWhirPcs;
+pub use whir::{BinaryNativeWhirConfig, BinaryNativeWhirLayout, BinaryNativeWhirPcsParameters};
 
 use crate::pcs::binary::{RecursiveBinaryChallengeField, RecursiveBinaryTowerField};
 use crate::verifier::VerificationError;
@@ -122,17 +121,13 @@ impl<F: NativeAlphabet> CanObserve<F> for BinaryNativeChallenger<F> {
         self.inner.observe(value);
     }
 }
-impl<F: NativeAlphabet, G> CanObserve<MerkleCap<G, [u8; 32]>>
-    for BinaryNativeChallenger<F>
-{
+impl<F: NativeAlphabet, G> CanObserve<MerkleCap<G, [u8; 32]>> for BinaryNativeChallenger<F> {
     fn observe(&mut self, cap: MerkleCap<G, [u8; 32]>) {
         self.record_cap(cap.roots());
         self.inner.observe(cap);
     }
 }
-impl<F: NativeAlphabet, T: BasedVectorSpace<F>> CanSample<T>
-    for BinaryNativeChallenger<F>
-{
+impl<F: NativeAlphabet, T: BasedVectorSpace<F>> CanSample<T> for BinaryNativeChallenger<F> {
     fn sample(&mut self) -> T {
         <Inner<F> as CanSample<T>>::sample(&mut self.inner)
     }

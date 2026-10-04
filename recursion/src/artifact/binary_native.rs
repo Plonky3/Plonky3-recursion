@@ -1,8 +1,8 @@
 //! Factory-owned native binary proof authority with a frozen recursive relation.
 
-pub(crate) mod codec;
 mod boolean;
 mod boolean_whir;
+pub(crate) mod codec;
 pub use boolean::{
     BinaryNativeBooleanTraceAuthority, BinaryNativeBooleanTraceProver,
     VerifiedBinaryNativeBooleanTraceProof,
@@ -29,23 +29,30 @@ pub use poly_whir::{
     BinaryNativePolyWhirAuthority, BinaryNativePolyWhirProver, VerifiedBinaryNativePolyWhirProof,
 };
 mod whir;
-pub use whir::{BinaryNativeWhirAuthority, BinaryNativeWhirProver, VerifiedBinaryNativeWhirProof};
-pub use codec::CanonicalBinaryStatement;
-use family::{NativeFamily, RawFamily};
-use lifecycle::State;
-
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
+pub use codec::CanonicalBinaryStatement;
+pub use config::{
+    BinaryNativeBooleanTraceConfig, BinaryNativeBooleanWhirTraceConfig, BinaryNativeChallenger,
+    BinaryNativeConfig, BinaryNativeGroupedBooleanTraceConfig, BinaryNativeGroupedConfig,
+    BinaryNativeHash, BinaryNativePolyWhirConfig, BinaryNativePolyWhirLayout,
+    BinaryNativePolyWhirPcsParameters, BinaryNativeWhirConfig, BinaryNativeWhirLayout,
+    BinaryNativeWhirPcsParameters,
+};
+use config::{NativeAlphabet, NativeMmcs, tree};
+use family::{NativeFamily, RawFamily};
+use lifecycle::State;
 use p3_binary_dft::EncodableLevel;
-use p3_challenger::fs::TranscriptField;
 use p3_binary_pcs::{BinaryPcsConfig, ChallengeField, FoldAlphabet};
+use p3_challenger::fs::TranscriptField;
 use p3_circuit::ops::ByteHash;
 use p3_field::{ExtensionField, PackedValue};
 use p3_matrix::dense::RowMajorMatrix;
 use p3_merkle_tree::MerkleCap;
 use p3_multi_stark::folder::{ProverAir, VerifierAir};
 use p3_multi_stark::{MultiStarkProof, ProvingKey};
+pub use whir::{BinaryNativeWhirAuthority, BinaryNativeWhirProver, VerifiedBinaryNativeWhirProof};
 
 use super::wire::{Writer, encode_framed};
 use super::{ArtifactError, ArtifactKind, ArtifactLimits};
@@ -54,14 +61,6 @@ use crate::verifier::{
     BinaryMultiStarkPreprocessing, BinaryMultiStarkVerifier, InputResourceUsage,
     NativeBinaryMultiStarkInput, VerificationError, VerifierLimits,
 };
-pub use config::{
-    BinaryNativePolyWhirConfig, BinaryNativePolyWhirLayout, BinaryNativePolyWhirPcsParameters,
-    BinaryNativeBooleanWhirTraceConfig,
-    BinaryNativeBooleanTraceConfig, BinaryNativeChallenger, BinaryNativeConfig, BinaryNativeGroupedBooleanTraceConfig,
-    BinaryNativeGroupedConfig, BinaryNativeHash,
-    BinaryNativeWhirConfig, BinaryNativeWhirLayout, BinaryNativeWhirPcsParameters,
-};
-use config::{NativeAlphabet, NativeMmcs, tree};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BinaryNativePcsParameters {

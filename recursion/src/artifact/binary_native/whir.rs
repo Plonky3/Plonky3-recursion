@@ -1,15 +1,17 @@
 //! Factory-owned native additive WHIR proofs and checked recursion input.
 
-use super::config::BinaryNativeWhirConfig;
-use super::config::{BinaryNativeWhirLayout, BinaryNativeWhirPcsParameters};
-use super::family::WhirFamily;
-use super::*;
-use crate::pcs::binary::RecursiveBinaryWhirTowerField;
-use crate::verifier::{BinaryWhirMultiStarkVerifier, NativeBinaryWhirMultiStarkInput};
 use p3_binary_field::BinaryField128;
 use p3_binary_pcs::whir::BinaryWhirDomain;
 use p3_sumcheck::layout::SuffixProver;
 use p3_whir::WhirDomain;
+
+use super::config::{
+    BinaryNativeWhirConfig, BinaryNativeWhirLayout, BinaryNativeWhirPcsParameters,
+};
+use super::family::WhirFamily;
+use super::*;
+use crate::pcs::binary::RecursiveBinaryWhirTowerField;
+use crate::verifier::{BinaryWhirMultiStarkVerifier, NativeBinaryWhirMultiStarkInput};
 
 /// Trusted AIRs, matched native key and exact additive domain and layout.
 pub struct BinaryNativeWhirAuthority<F, A, L = SuffixProver<F, BinaryField128>>

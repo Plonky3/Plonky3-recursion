@@ -1,4 +1,8 @@
 //! Closed additive WHIR family behind the retained native setup lifecycle.
+use p3_binary_field::BinaryField128;
+use p3_binary_pcs::whir::BinaryWhirDomain;
+use p3_whir::{FoldingFactor, SecurityAssumption, WhirDomain, WhirProver};
+
 use super::super::config::{
     BinaryNativeWhirConfig, BinaryNativeWhirLayout, BinaryNativeWhirPcsParameters, NativeWhirPcs,
 };
@@ -8,9 +12,6 @@ use crate::verifier::{
     BinaryWhirMultiStarkPreprocessing, BinaryWhirMultiStarkVerifier,
     NativeBinaryWhirMultiStarkInput,
 };
-use p3_binary_field::BinaryField128;
-use p3_binary_pcs::whir::BinaryWhirDomain;
-use p3_whir::{FoldingFactor, SecurityAssumption, WhirDomain, WhirProver};
 
 pub(in crate::artifact::binary_native) struct WhirFamily<L>(core::marker::PhantomData<L>);
 impl<F, L> NativeFamily<F, BinaryField128> for WhirFamily<L>

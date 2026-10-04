@@ -1,11 +1,13 @@
-use super::*;
 use alloc::borrow::Cow;
 use alloc::vec;
+
 use p3_air::{AirBuilder, BaseAir, WindowAccess};
 use p3_baby_bear::BabyBear;
 use p3_binary_field::TowerLevel;
 use p3_bus::{BusActivation, BusDirection, BusInteractionBuilder, BusName, BusPlan, BusPlanInput};
 use p3_field::PrimeCharacteristicRing;
+
+use super::*;
 
 #[derive(Clone, Copy)]
 struct BusAir;

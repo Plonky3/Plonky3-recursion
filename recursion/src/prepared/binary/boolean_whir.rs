@@ -1,5 +1,9 @@
 //! Prepared prover for the complete Boolean WHIR trace MultiStark relation.
 
+use core::hash::Hash;
+
+use p3_circuit::ops::BinaryTower128Target;
+
 use super::lifecycle::ClosedBinaryCircuit;
 use super::*;
 use crate::artifact::{
@@ -9,8 +13,6 @@ use crate::verifier::{
     BinaryBooleanWhirTraceMultiStarkInputShape, BinaryBooleanWhirTraceMultiStarkProofTargets,
     BinaryBooleanWhirTraceMultiStarkVerifier, NativeBinaryBooleanWhirTraceMultiStarkInput,
 };
-use core::hash::Hash;
-use p3_circuit::ops::BinaryTower128Target;
 
 impl ClosedBinaryCircuit<BinaryField128, BinaryField128>
     for BinaryBooleanWhirTraceMultiStarkVerifier

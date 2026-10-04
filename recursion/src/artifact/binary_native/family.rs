@@ -5,12 +5,13 @@ pub(super) use boolean_whir::BooleanWhirTraceFamily;
 mod poly_whir;
 pub(super) use poly_whir::PolyWhirFamily;
 mod whir;
+use alloc::vec;
+
+use p3_binary_pcs::BinaryPcs;
+use p3_sumcheck::PrescribedPointPcs;
 pub(super) use whir::WhirFamily;
 
 use super::*;
-use alloc::vec;
-use p3_binary_pcs::BinaryPcs;
-use p3_sumcheck::PrescribedPointPcs;
 
 pub(super) trait NativeFamily<F, E>
 where
@@ -677,8 +678,9 @@ fn grouped_tree<F: Clone>(
     config: &BinaryPcsConfig,
     grouping: crate::pcs::binary::BinaryCodewordGrouping,
 ) -> p3_binary_pcs::GroupedCodewordMmcs<NativeMmcs<F>> {
-    use crate::pcs::binary::BinaryCodewordGrouping;
     use p3_binary_pcs::GroupedCodewordMmcs;
+
+    use crate::pcs::binary::BinaryCodewordGrouping;
     match grouping {
         BinaryCodewordGrouping::Codeword(size) => GroupedCodewordMmcs::new(tree.clone(), size),
         BinaryCodewordGrouping::Message(size) => {

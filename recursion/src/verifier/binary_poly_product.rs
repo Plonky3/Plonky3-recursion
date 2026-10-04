@@ -13,10 +13,8 @@ use p3_circuit::ops::BinaryPoly192Target;
 use p3_field::{ExtensionField, Field, PrimeField64};
 
 use super::binary_field_policy::Poly64Relation;
-use super::binary_product::{
-    kernel::{ProductLayerView, verify_layers},
-    zero_proof,
-};
+use super::binary_product::kernel::{ProductLayerView, verify_layers};
+use super::binary_product::zero_proof;
 use super::{InputResourceUsage, VerificationError, VerifierLimits};
 use crate::BinaryTower128Challenger;
 use crate::pcs::binary::{Poly192SumcheckInterpolator, poly_observe_seed};

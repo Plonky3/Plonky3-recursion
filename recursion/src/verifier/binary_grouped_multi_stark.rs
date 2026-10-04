@@ -3,6 +3,7 @@
 use alloc::vec::Vec;
 use core::cell::RefCell;
 use core::hash::Hash;
+
 use p3_air::Air;
 use p3_binary_field::BinaryField128;
 use p3_binary_pcs::{BinaryPcsConfig, BinaryPcsProof, GroupedCodewordMmcs};

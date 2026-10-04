@@ -1,8 +1,7 @@
 //! Bit tensors for Boolean ring switching, in the native tower coordinate basis.
 
-use alloc::format;
-use alloc::vec;
 use alloc::vec::Vec;
+use alloc::{format, vec};
 use core::hash::Hash;
 use core::marker::PhantomData;
 

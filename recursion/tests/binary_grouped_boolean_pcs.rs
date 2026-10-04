@@ -62,8 +62,7 @@ macro_rules! fixture {
             BinaryCodewordGrouping::Codeword(8),
         )
         .unwrap();
-        let make =
-            || $params::LevelChallenger::<E>::from_hasher(vec![9; 3], $params::byte_hash());
+        let make = || $params::LevelChallenger::<E>::from_hasher(vec![9; 3], $params::byte_hash());
         let bits = (0..1usize << (n - 6))
             .map(|i| PackedGf2x64::new(0xb273ca07846def19u64.wrapping_mul(i as u64 + $seed)))
             .collect::<Vec<_>>();

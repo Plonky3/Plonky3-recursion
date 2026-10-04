@@ -1,5 +1,9 @@
 //! Prepared prover for complete released additive WHIR MultiStark relations.
 
+use core::hash::Hash;
+
+use p3_circuit::ops::BinaryTower128Target;
+
 use super::lifecycle::ClosedBinaryCircuit;
 use super::*;
 use crate::artifact::{
@@ -9,8 +13,6 @@ use crate::verifier::{
     BinaryWhirMultiStarkInputShape, BinaryWhirMultiStarkProofTargets, BinaryWhirMultiStarkVerifier,
     NativeBinaryWhirMultiStarkInput,
 };
-use core::hash::Hash;
-use p3_circuit::ops::BinaryTower128Target;
 
 impl<F> ClosedBinaryCircuit<F, BinaryField128> for BinaryWhirMultiStarkVerifier<F>
 where

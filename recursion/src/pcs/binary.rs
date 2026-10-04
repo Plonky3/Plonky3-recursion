@@ -25,15 +25,16 @@ mod grouped_trace;
 mod input;
 mod nonzero;
 mod poly_generic_sumcheck;
-mod poly_nonzero;
 mod poly_interpolation;
+mod poly_nonzero;
 pub(crate) use poly_interpolation::Poly192SumcheckInterpolator;
 mod poly_whir_gadgets;
 mod poly_whir_input;
 mod poly_whir_verifier;
 pub(crate) use poly_whir_gadgets::{
-    assert_equal as poly_assert_equal, observe_seed as poly_observe_seed, poly192_eq_eval,
-    observe_values as poly_observe_values, poly192_eval_multilinear as poly_eval_multilinear,
+    assert_equal as poly_assert_equal, observe_seed as poly_observe_seed,
+    observe_values as poly_observe_values, poly192_eq_eval,
+    poly192_eval_multilinear as poly_eval_multilinear,
 };
 mod ring;
 mod ring_input;
@@ -65,8 +66,9 @@ pub use gadgets::{
 };
 pub use generic_sumcheck::Binary128SumcheckInterpolator;
 pub use generic_sumcheck_verifier::{
-    BinaryGenericSumcheckInputShape, BinaryGenericSumcheckOutput, BinaryGenericSumcheckProofTargets,
-    BinaryGenericSumcheckVerifier, NativeBinaryGenericSumcheckInput,
+    BinaryGenericSumcheckInputShape, BinaryGenericSumcheckOutput,
+    BinaryGenericSumcheckProofTargets, BinaryGenericSumcheckVerifier,
+    NativeBinaryGenericSumcheckInput,
 };
 pub use grouped_boolean::{
     BinaryGroupedBooleanInputShape, BinaryGroupedBooleanPcsVerifier,
@@ -118,6 +120,7 @@ pub use trace_whir::{
 pub use verifier::{
     BinaryOracleOpeningTargets, BinaryPcs128ProofTargets, BinaryPcs128Verifier, BinaryPcsVerifier,
 };
+pub(crate) use verifier::{assert_equal, observe_cap, observe_seed, observe_values};
 pub use whir_gadgets::{
     binary_whir_query_point, binary128_eval_coefficients, binary128_eval_multilinear,
     binary128_select_eval,
@@ -128,7 +131,6 @@ pub use whir_input::{
 };
 pub use whir_queries::BinaryWhirQueryPlan;
 pub use whir_verifier::BinaryWhirVerifier;
-pub(crate) use verifier::{assert_equal, observe_cap, observe_seed, observe_values};
 
 /// Verifies terminal binary PCS query sampling against a native configuration.
 /// The challenger must already have absorbed the final codeword and checked

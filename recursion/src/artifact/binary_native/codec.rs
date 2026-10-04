@@ -3,8 +3,6 @@
 
 use alloc::vec::Vec;
 mod scalar;
-use scalar::ScalarWire;
-
 use p3_binary_dft::EncodableLevel;
 use p3_binary_pcs::{BinaryPcsProof, ChallengeField, FoldAlphabet, RoundProof};
 use p3_bus::{BusProof, ProductGkrLayerProof, ProductGkrProof};
@@ -20,6 +18,7 @@ use p3_multi_stark::proof::IndexedLookupProof;
 use p3_multilinear_util::poly::Poly;
 use p3_sumcheck::generic_degree::GenericDegreeProof;
 use p3_sumcheck::{OpeningBatch, SumcheckData};
+use scalar::ScalarWire;
 
 use super::config::NativeMmcs;
 use super::{BinaryNativeAuthority, BinaryNativeConfig, VerifiedBinaryNativeProof};

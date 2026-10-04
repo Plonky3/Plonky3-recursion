@@ -1,9 +1,11 @@
 //! Closed statement representations used by complete binary prepared circuits.
-use super::*;
 use core::hash::Hash;
+
 use p3_binary_field::{Poly64, TowerLevel};
 use p3_circuit::ExprId;
 use p3_circuit::ops::{BinaryPoly64Target, BinaryTower128Target};
+
+use super::*;
 
 pub(super) trait ClosedStatement<F>: Sized {
     type Target;

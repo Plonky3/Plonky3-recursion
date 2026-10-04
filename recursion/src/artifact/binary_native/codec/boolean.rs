@@ -1,10 +1,11 @@
 //! Trusted-shape bounded trace and bit-ring proof bytes.
+use p3_binary_pcs::{BooleanProof, BooleanTraceCommitmentProof, BooleanTraceProof};
+
 use super::super::{
     BinaryNativeBooleanTraceAuthority, BinaryNativeBooleanTraceConfig,
     VerifiedBinaryNativeBooleanTraceProof,
 };
 use super::*;
-use p3_binary_pcs::{BooleanProof, BooleanTraceCommitmentProof, BooleanTraceProof};
 
 type TraceProof<E> = BooleanTraceProof<E, NativeMmcs<E>, NativeMmcs<E>>;
 

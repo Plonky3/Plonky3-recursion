@@ -1,11 +1,14 @@
 //! Closed binary Fraction-GKR layer arithmetic and continuation handling.
-use super::super::binary_field_policy::BinaryProtocolPolicy;
-use crate::{BinaryQueryContinuation, BinaryTower128Challenger, verifier::VerificationError};
 use alloc::vec;
 use alloc::vec::Vec;
 use core::hash::Hash;
+
 use p3_circuit::CircuitBuilder;
 use p3_field::{ExtensionField, Field, PrimeField64};
+
+use super::super::binary_field_policy::BinaryProtocolPolicy;
+use crate::verifier::VerificationError;
+use crate::{BinaryQueryContinuation, BinaryTower128Challenger};
 
 pub(crate) struct FractionLayerView<'a, T> {
     pub messages: &'a [[T; 3]],

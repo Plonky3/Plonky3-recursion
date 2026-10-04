@@ -8,9 +8,8 @@ use p3_challenger::{FieldChallenger, GrindingChallenger};
 use p3_circuit::ops::{BinaryPoly64Target, BinaryPoly192Target, ByteHash};
 use p3_circuit::{CircuitBuilder, ExprId};
 use p3_field::{ExtensionField, Field, PrimeField64};
-use p3_sumcheck::OpeningBatch;
-use p3_sumcheck::OpeningProtocol;
 use p3_sumcheck::strategy::VariableOrder;
+use p3_sumcheck::{OpeningBatch, OpeningProtocol};
 use p3_whir::WhirConfig;
 
 use super::poly_whir_gadgets::{

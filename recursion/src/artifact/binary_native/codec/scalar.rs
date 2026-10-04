@@ -1,8 +1,9 @@
 //! Closed native scalar encodings, independent of recursive limb widths.
 
-use super::*;
 use p3_binary_field::{Poly64, Poly192, TowerLevel};
 use p3_field::{Field, PrimeCharacteristicRing};
+
+use super::*;
 
 pub(in crate::artifact::binary_native) trait ScalarWire:
     Field
@@ -59,8 +60,9 @@ impl ScalarWire for Poly192 {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use p3_binary_field::{BinaryField8, BinaryField32, BinaryField128};
+
+    use super::*;
 
     fn check<T: ScalarWire>(value: T, expected: &[u8], limbs: usize) {
         let mut writer = Writer::new(64);

@@ -1,12 +1,14 @@
 //! Factory-owned native additive WHIR proofs and checked recursion input.
 
-use super::config::BinaryNativePolyWhirConfig;
-use super::config::{BinaryNativePolyWhirLayout, BinaryNativePolyWhirPcsParameters};
+use p3_binary_field::{Poly64, Poly192};
+use p3_sumcheck::layout::SuffixProver;
+
+use super::config::{
+    BinaryNativePolyWhirConfig, BinaryNativePolyWhirLayout, BinaryNativePolyWhirPcsParameters,
+};
 use super::family::PolyWhirFamily;
 use super::*;
 use crate::verifier::{BinaryPolyWhirMultiStarkVerifier, NativeBinaryPolyWhirMultiStarkInput};
-use p3_binary_field::{Poly64, Poly192};
-use p3_sumcheck::layout::SuffixProver;
 
 /// Trusted AIRs, matched native key and exact additive domain and layout.
 pub struct BinaryNativePolyWhirAuthority<A, L = SuffixProver<Poly64, Poly192>>

@@ -1,5 +1,9 @@
 //! Shared prepared prover lifecycle for complete private binary relations.
 
+use core::hash::Hash;
+
+use p3_circuit::ops::BinaryTower128Target;
+
 use super::statement::ClosedStatement;
 use super::*;
 use crate::verifier::{
@@ -7,8 +11,6 @@ use crate::verifier::{
     BinaryGroupedMultiStarkVerifier, BinaryMultiStarkProofTargets,
     NativeBinaryGroupedMultiStarkInput,
 };
-use core::hash::Hash;
-use p3_circuit::ops::BinaryTower128Target;
 
 /// Only complete built-in relations can populate this shared prepared lifecycle.
 pub(super) trait ClosedBinaryCircuit<F, E> {

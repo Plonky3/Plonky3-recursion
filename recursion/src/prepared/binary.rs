@@ -10,11 +10,6 @@ pub use statement::BinaryPolyStatementLayout;
 mod poly_whir;
 pub use poly_whir::PreparedBinaryPolyWhirMultiStarkLayer;
 mod whir;
-pub use boolean::PreparedBinaryBooleanTraceMultiStarkLayer;
-pub use grouped_boolean::PreparedBinaryGroupedBooleanTraceMultiStarkLayer;
-pub use whir::PreparedBinaryWhirMultiStarkLayer;
-use lifecycle::BinaryPreparedCore;
-
 use alloc::boxed::Box;
 use alloc::string::ToString;
 use alloc::sync::Arc;
@@ -22,6 +17,9 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::marker::PhantomData;
 
+pub use boolean::PreparedBinaryBooleanTraceMultiStarkLayer;
+pub use grouped_boolean::PreparedBinaryGroupedBooleanTraceMultiStarkLayer;
+use lifecycle::BinaryPreparedCore;
 use p3_air::{SymbolicExpression, SymbolicExpressionExt};
 use p3_binary_dft::EncodableLevel;
 use p3_binary_field::BinaryField128;
@@ -45,6 +43,7 @@ use p3_field::{
 };
 use p3_multi_stark::folder::VerifierAir;
 use p3_uni_stark::{StarkGenericConfig, Val};
+pub use whir::PreparedBinaryWhirMultiStarkLayer;
 
 use super::prover::{PreparedProver, prepare_prover_from_parts};
 use crate::artifact::{

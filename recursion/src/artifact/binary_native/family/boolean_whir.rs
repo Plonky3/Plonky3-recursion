@@ -1,4 +1,10 @@
 //! Private closed Boolean WHIR trace family behind native setup.
+use p3_binary_field::BinaryField128;
+use p3_binary_pcs::BooleanTraceCommitment;
+use p3_binary_pcs::whir::{BinaryWhirDomain, BooleanWhirPcs};
+use p3_sumcheck::layout::SuffixProver;
+use p3_whir::{FoldingFactor, WhirProver};
+
 use super::super::config::{
     BinaryNativeBooleanWhirTraceConfig, BinaryNativeWhirPcsParameters, NativeBooleanWhirTracePcs,
 };
@@ -7,11 +13,6 @@ use crate::verifier::{
     BinaryBooleanWhirTraceMultiStarkPreprocessing, BinaryBooleanWhirTraceMultiStarkVerifier,
     NativeBinaryBooleanWhirTraceMultiStarkInput,
 };
-use p3_binary_field::BinaryField128;
-use p3_binary_pcs::BooleanTraceCommitment;
-use p3_binary_pcs::whir::{BinaryWhirDomain, BooleanWhirPcs};
-use p3_sumcheck::layout::SuffixProver;
-use p3_whir::{FoldingFactor, WhirProver};
 type E = BinaryField128;
 pub(in crate::artifact::binary_native) struct BooleanWhirTraceFamily;
 impl NativeFamily<E, E> for BooleanWhirTraceFamily {

@@ -11,7 +11,8 @@ use p3_field::PrimeCharacteristicRing;
 use p3_lookup::{IndexedLookupBuilder, InteractionSymbolicBuilder};
 use p3_multi_stark::folder::MultilinearFolder;
 use p3_multi_stark::selectors::BoundaryEvals;
-use p3_multilinear_util::{point::Point, poly::Poly};
+use p3_multilinear_util::point::Point;
+use p3_multilinear_util::poly::Poly;
 use p3_recursion::verifier::{BinaryPolyAirConstraintPlan, VerificationError};
 
 struct RecurrenceAir;

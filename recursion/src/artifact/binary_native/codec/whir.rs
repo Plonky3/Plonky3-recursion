@@ -1,16 +1,16 @@
 //! Fixed retained geometry for public released additive WHIR proof fields.
 
-use super::*;
 use p3_binary_field::BinaryField128;
+use p3_binary_pcs::whir::BinaryWhirDomain;
+use p3_whir::WhirDomain;
 use p3_whir::pcs::proof::{PcsProof, QueryOpenings, SharedProofOpening, WhirProof, WhirRoundProof};
 
 use super::super::{
     BinaryNativeWhirAuthority, BinaryNativeWhirConfig, BinaryNativeWhirLayout,
     VerifiedBinaryNativeWhirProof,
 };
+use super::*;
 use crate::pcs::binary::RecursiveBinaryWhirTowerField;
-use p3_binary_pcs::whir::BinaryWhirDomain;
-use p3_whir::WhirDomain;
 
 impl<F, A, L> BinaryNativeWhirAuthority<F, A, L>
 where
@@ -283,11 +283,13 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use alloc::vec;
+
     use p3_binary_field::{BinaryField32, BinaryField128, TowerLevel};
     use p3_field::PrimeCharacteristicRing;
     use p3_whir::pcs::proof::{PcsProof, QueryOpenings, SharedProofOpening, WhirProof};
+
+    use super::*;
 
     #[test]
     fn polynomial_folds_and_extension_rows_preserve_all_three_coefficients() {
@@ -468,8 +470,6 @@ mod tests {
     }
     #[test]
     fn released_native_whir_proofs_roundtrip_both_alphabets_orders_and_hashes() {
-        use crate::artifact::binary_native::{BinaryNativeChallenger, BinaryNativeHash};
-        use crate::pcs::binary::BinaryWhirVerifier;
         use p3_binary_pcs::whir::BinaryWhirDomain;
         use p3_challenger::FieldChallenger;
         use p3_commit::MultilinearPcs;
@@ -481,6 +481,9 @@ mod tests {
         use p3_whir::{
             FoldingFactor, ProtocolParameters, SecurityAssumption, WhirConfig, WhirProver,
         };
+
+        use crate::artifact::binary_native::{BinaryNativeChallenger, BinaryNativeHash};
+        use crate::pcs::binary::BinaryWhirVerifier;
         macro_rules! check {
             ($field:ty, $layout:ident, $height:expr, $cap:expr) => {{
                 type F = $field;

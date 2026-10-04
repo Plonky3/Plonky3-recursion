@@ -1,11 +1,12 @@
 //! Closed released polynomial WHIR configuration and native layouts.
-use super::*;
-use crate::verifier::VerifierLimits;
 use p3_binary_field::{Poly64, Poly192};
 use p3_binary_pcs::whir::BinaryWhirDomain;
 use p3_sumcheck::layout::PrefixProver;
 use p3_whir::pcs::WhirProverData;
 use p3_whir::{ProtocolParameters, WhirConfig, WhirProver};
+
+use super::*;
+use crate::verifier::VerifierLimits;
 
 mod sealed {
     pub trait Layout {}

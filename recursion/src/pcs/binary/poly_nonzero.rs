@@ -258,9 +258,11 @@ fn target_from_bits<EF: p3_field::Field + Eq + Hash>(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use alloc::vec;
+
     use p3_baby_bear::BabyBear;
+
+    use super::*;
 
     #[test]
     fn forced_zeros_and_high_coefficients_select_the_actual_completion_digest() {

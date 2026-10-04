@@ -1,8 +1,6 @@
 //! Complete native binary MultiStark verification with supported AIR reductions.
 
 pub(crate) mod relation;
-use relation::{BinaryMultiStarkRelation, BinaryMultiStarkRelationShape, BinaryRelationProof};
-
 use alloc::vec;
 use alloc::vec::Vec;
 use core::hash::Hash;
@@ -24,9 +22,9 @@ use p3_multi_stark::rounds::AirDegrees;
 use p3_multi_stark::transcript::{MultiStarkInstanceShape, MultiStarkShape};
 use p3_multi_stark::zerocheck::transcript::ZerocheckShape;
 use p3_multilinear_util::point::Point;
-use p3_sumcheck::OpeningProtocol;
-use p3_sumcheck::layout;
+use p3_sumcheck::{OpeningProtocol, layout};
 use p3_symmetric::{CryptographicHasher, PseudoCompressionFunction};
+use relation::{BinaryMultiStarkRelation, BinaryMultiStarkRelationShape, BinaryRelationProof};
 
 use super::binary_air::constrain_width;
 use super::binary_bus::{BinaryBusInputShape, BinaryBusVerifier};
