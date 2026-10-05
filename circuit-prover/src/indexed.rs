@@ -9,6 +9,7 @@
 use alloc::{vec, vec::Vec};
 
 use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
+use p3_circuit::ops::NpoTypeId;
 use p3_circuit::{Circuit, tables::WitnessTrace, types::WitnessId};
 use p3_field::Field;
 use p3_lookup::{IndexedLookupBuilder, TraceWindow};
@@ -80,7 +81,15 @@ impl<F: Field> IndexedCircuit<F> {
         circuit: &Circuit<F>,
         limits: DirectCircuitLimits,
     ) -> Result<Self, IndexedCircuitError> {
-        let plan = PrimitivePlan::new(circuit, limits)?;
+        Self::with_supported_npos(circuit, limits, &[])
+    }
+
+    pub(crate) fn with_supported_npos(
+        circuit: &Circuit<F>,
+        limits: DirectCircuitLimits,
+        supported: &[NpoTypeId],
+    ) -> Result<Self, IndexedCircuitError> {
+        let plan = PrimitivePlan::with_supported_npos(circuit, limits, supported)?;
         let witness_height = padded_height(
             plan.width
                 .checked_add(1)
@@ -250,17 +259,17 @@ impl<F: Field> IndexedCircuit<F> {
     }
 }
 
-fn padded_height(rows: usize) -> Result<usize, IndexedCircuitError> {
+pub(crate) fn padded_height(rows: usize) -> Result<usize, IndexedCircuitError> {
     rows.max(2)
         .checked_next_power_of_two()
         .ok_or(IndexedCircuitError::AllocationOverflow)
 }
-fn cells(height: usize, width: usize) -> Result<usize, IndexedCircuitError> {
+pub(crate) fn cells(height: usize, width: usize) -> Result<usize, IndexedCircuitError> {
     height
         .checked_mul(width)
         .ok_or(IndexedCircuitError::AllocationOverflow)
 }
-fn variables(cells: usize) -> Result<usize, IndexedCircuitError> {
+pub(crate) fn variables(cells: usize) -> Result<usize, IndexedCircuitError> {
     Ok(cells
         .checked_next_power_of_two()
         .ok_or(IndexedCircuitError::AllocationOverflow)?
@@ -268,7 +277,7 @@ fn variables(cells: usize) -> Result<usize, IndexedCircuitError> {
 }
 
 // Match p3-multi-stark's position::embed for prime and binary fields alike.
-fn position<F: Field>(index: usize) -> F {
+pub(crate) fn position<F: Field>(index: usize) -> F {
     (0..usize::BITS)
         .filter(|&i| index >> i & 1 != 0)
         .map(|i| F::interpolation_node(1 << i))

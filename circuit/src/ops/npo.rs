@@ -66,6 +66,11 @@ impl NpoTypeId {
         Self::new("keccak_f1600")
     }
 
+    /// Keccak-f over raw binary-coordinate limbs, for the native indexed backend.
+    pub fn native_keccak_f1600() -> Self {
+        Self::new("native_keccak_f1600")
+    }
+
     /// Reserved identifier for the built-in statement export sink.
     pub fn statement() -> Self {
         Self::new("statement")

@@ -71,6 +71,17 @@ followed by a prime-field recursion layer. It does not demonstrate binary-in/bin
   computed from their complete stacked layouts. The native tower and polynomial
   tests in `recursion/tests/native_indexed_circuit.rs` exercise real indexed proofs.
   This path remains non-hiding and rejects custom non-primitive tables.
+- **Native Keccak circuit tables.** `p3_circuit_prover::native_binary::NativeBinaryCircuit`
+  extends the compact indexed relation with the explicitly enabled
+  `native_keccak_f1600` operation. `native_keccak256_bytes` accepts checked raw
+  eight-coordinate bytes and returns 32 bytes in natural digest order. The
+  default upstream binary Keccak AIR retains its Boolean constraints; fixed
+  preprocessing pins each permutation's schedule, and indexed reads bind all
+  100 input and output limbs to canonical circuit witnesses. Other custom
+  operations still fail closed. `recursion/tests/native_keccak_circuit.rs`
+  exercises native proof verification and rejection of changed digest values
+  and bridge payloads. This is a hash foundation for binary recursion, not yet
+  a complete binary-host recursive verifier.
 - **Non-native binary byte-hash transcript.** `BinaryTower128Challenger` has a separate,
   fallible inherent API (`new`, `with_initial_limbs`, `observe`, `observe_slice`,
   `observe_digest`, `sample`, `sample_bits`, `check_witness`). It matches native

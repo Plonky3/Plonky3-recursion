@@ -166,6 +166,12 @@ WHIR debug logs include the composed prescribed-opening bound for each commitmen
 WHIR also supports KoalaBear's quintic extension with `--pcs whir --quintic`,
 using either hash family.
 
+Binary-field support includes native circuit proofs with fixed indexed wiring
+and native Keccak tables. The current `binary_prover` example verifies a binary
+proof inside a prime-field recursion layer; a complete binary-host recursive
+verifier is still being implemented. See the [binary-field guide](book/src/advanced_topics/binary_fields.md)
+for the supported paths and their current limits.
+
 ```bash
 cargo run --profile optimized --example recursive_fibonacci -- --pcs whir --n 1000 --num-recursive-layers 2
 cargo run --profile optimized --example recursive_keccak -- --pcs whir --num-hashes 100 --num-recursive-layers 2

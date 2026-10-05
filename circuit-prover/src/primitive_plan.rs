@@ -3,7 +3,7 @@
 use alloc::vec::Vec;
 
 use p3_circuit::Circuit;
-use p3_circuit::ops::{AluOpKind, Op};
+use p3_circuit::ops::{AluOpKind, NpoTypeId, Op};
 use p3_circuit::types::WitnessId;
 use p3_field::Field;
 
@@ -56,6 +56,15 @@ impl<F: Field> PrimitivePlan<F> {
         circuit: &Circuit<F>,
         limits: DirectCircuitLimits,
     ) -> Result<Self, DirectCircuitError> {
+        Self::with_supported_npos(circuit, limits, &[])
+    }
+
+    /// Only a backend supplying the corresponding AIRs may allow these NPOs.
+    pub(crate) fn with_supported_npos(
+        circuit: &Circuit<F>,
+        limits: DirectCircuitLimits,
+        supported: &[NpoTypeId],
+    ) -> Result<Self, DirectCircuitError> {
         let width = circuit.witness_count as usize;
         if width == 0 {
             return Err(DirectCircuitError::EmptyRelation);
@@ -90,6 +99,7 @@ impl<F: Field> PrimitivePlan<F> {
             check(id)?;
         }
         let mut constraints = Vec::with_capacity(circuit.ops.len());
+        let mut has_supported_npo = false;
         for (operation, op) in circuit.ops.iter().enumerate() {
             match op {
                 Op::Const { out, val } => constraints.push(PrimitiveConstraint::Constant {
@@ -109,8 +119,19 @@ impl<F: Field> PrimitivePlan<F> {
                         check(id)?;
                     }
                 }
-                Op::NonPrimitiveOpWithExecutor { .. } => {
-                    return Err(DirectCircuitError::UnsupportedOperation { operation });
+                Op::NonPrimitiveOpWithExecutor {
+                    inputs,
+                    outputs,
+                    executor,
+                    ..
+                } => {
+                    if !supported.contains(executor.op_type()) {
+                        return Err(DirectCircuitError::UnsupportedOperation { operation });
+                    }
+                    for &id in inputs.iter().chain(outputs).flatten() {
+                        check(id)?;
+                    }
+                    has_supported_npo = true;
                 }
                 Op::Alu {
                     kind,
@@ -164,7 +185,7 @@ impl<F: Field> PrimitivePlan<F> {
                 }
             }
         }
-        if constraints.is_empty() && public.is_empty() {
+        if constraints.is_empty() && public.is_empty() && !has_supported_npo {
             return Err(DirectCircuitError::EmptyRelation);
         }
         Ok(Self {

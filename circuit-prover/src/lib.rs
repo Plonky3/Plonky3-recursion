@@ -55,6 +55,7 @@ pub mod direct;
 pub mod field_params;
 pub mod indexed;
 pub mod manifest;
+pub mod native_binary;
 mod primitive_plan;
 pub mod tuning;
 
