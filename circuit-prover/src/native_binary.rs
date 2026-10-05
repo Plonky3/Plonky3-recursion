@@ -241,7 +241,11 @@ impl<F: BinaryCoordinateField> NativeBinaryCircuit<F> {
                 .get_value(WitnessId(w as u32))
                 .expect("validated witness length and call IDs")
         };
-        traces.push(keccak_trace(&self.calls, witness)?);
+        traces.push(keccak_trace(
+            &self.calls,
+            witness,
+            1usize << self.log_heights[traces.len()],
+        )?);
         let NativeTable::Bridge { positions } = &self.airs[traces.len()].kind else {
             unreachable!()
         };
@@ -375,6 +379,7 @@ pub(crate) fn keccak_calls<F: Field>(
 pub(crate) fn keccak_trace<F: BinaryCoordinateField>(
     calls: &[KeccakCall],
     witness: &WitnessTrace<F>,
+    target_height: usize,
 ) -> Result<RowMajorMatrix<F>, NativeBinaryCircuitError> {
     let read = |w: usize| {
         *witness
@@ -399,8 +404,11 @@ pub(crate) fn keccak_trace<F: BinaryCoordinateField>(
         F::from_raw_coordinates(1 << i).expect("validated limb width")
     });
     let height = hash.values.len() / NUM_KECCAK_BINARY_COLS;
+    if !target_height.is_power_of_two() || target_height < height {
+        return Err(IndexedCircuitError::AllocationOverflow.into());
+    }
     let mut values = hash.values;
-    let final_len = cells(height, HASH_WIDTH)?;
+    let final_len = cells(target_height, HASH_WIDTH)?;
     values.reserve_exact(final_len - values.len());
     values.resize(final_len, F::ZERO);
     // Expand backwards so destinations cannot overwrite an unprocessed row.
@@ -418,6 +426,11 @@ pub(crate) fn keccak_trace<F: BinaryCoordinateField>(
                 .sum();
             values[destination + NUM_KECCAK_BINARY_COLS + limb] = packed;
         }
+    }
+    // Repeat-last output rows satisfy the round-flag recurrence. Zero rows
+    // would fail it, even though preprocessing disables every bus boundary.
+    for row in values.chunks_exact_mut(HASH_WIDTH).skip(height) {
+        row[KECCAK_BINARY_ROWS_PER_PERM - 1] = F::ONE;
     }
     Ok(RowMajorMatrix::new(values, HASH_WIDTH))
 }

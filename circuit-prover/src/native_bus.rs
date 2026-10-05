@@ -99,6 +99,23 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
         namespace: &str,
         limits: DirectCircuitLimits,
     ) -> Result<Self, NativeBusCircuitError> {
+        Self::with_min_log_height_and_limits(circuit, namespace, 1, limits)
+    }
+
+    /// Floors every present table at `2^max(1, min_log_height)` rows. Trusted
+    /// padding preserves the live bus occurrences while allowing larger initial
+    /// PCS folds. The final padded geometry is charged before allocation.
+    pub fn with_min_log_height_and_limits(
+        circuit: &Circuit<F>,
+        namespace: &str,
+        min_log_height: usize,
+        limits: DirectCircuitLimits,
+    ) -> Result<Self, NativeBusCircuitError> {
+        let shift = u32::try_from(min_log_height.max(1))
+            .map_err(|_| IndexedCircuitError::AllocationOverflow)?;
+        let minimum_height = 1usize
+            .checked_shl(shift)
+            .ok_or(IndexedCircuitError::AllocationOverflow)?;
         if namespace.is_empty() || namespace.len() > MAX_NAMESPACE_BYTES {
             return Err(NativeBusCircuitError::InvalidNamespace {
                 length: namespace.len(),
@@ -133,21 +150,21 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
             add(gate_occurrences, plan.public.len())?,
             cells(calls.len(), 200)?,
         )?;
-        let witness_height = padded_height(n)?;
+        let witness_height = padded_height(n.max(minimum_height))?;
         let gate_height = if plan.constraints.is_empty() {
             0
         } else {
-            padded_height(plan.constraints.len())?
+            padded_height(plan.constraints.len().max(minimum_height))?
         };
         let hash_height = if calls.is_empty() {
             0
         } else {
-            padded_height(cells(calls.len(), KECCAK_BINARY_ROWS_PER_PERM)?)?
+            padded_height(cells(calls.len(), KECCAK_BINARY_ROWS_PER_PERM)?.max(minimum_height))?
         };
         let bridge_height = if calls.is_empty() {
             0
         } else {
-            padded_height(cells(calls.len(), 2)?)?
+            padded_height(cells(calls.len(), 2)?.max(minimum_height))?
         };
         if !calls.is_empty() && F::COORDINATE_BITS < 16 {
             return Err(NativeBinaryCircuitError::CoordinateWidth {
@@ -160,7 +177,7 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
         let main_cells = add(
             add(witness_height, cells(gate_height, 5)?)?,
             add(
-                cells(plan.public.len(), 2)?,
+                cells(plan.public.len(), minimum_height)?,
                 add(cells(hash_height, HASH_WIDTH)?, cells(bridge_height, 100)?)?,
             )?,
         )?;
@@ -232,7 +249,7 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
                 .map(|&w| label::<F>(w + 1))
                 .collect::<Result<_, _>>()?;
             airs.push(air(Table::Public(ids)));
-            log_heights.push(1);
+            log_heights.push(minimum_height.ilog2() as usize);
         }
         if !calls.is_empty() {
             let mut pp = vec![F::ZERO; cells(hash_height, 3)?];
@@ -356,7 +373,7 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
                         .collect();
                     RowMajorMatrix::new(values, self.plan.public.len())
                 }
-                Table::Keccak { .. } => keccak_trace(&self.calls, witness)?,
+                Table::Keccak { .. } => keccak_trace(&self.calls, witness, height)?,
                 Table::Bridge(_) => {
                     let mut values = vec![F::ZERO; cells(height, 100)?];
                     for (row, output) in values.chunks_exact_mut(100).enumerate() {

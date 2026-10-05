@@ -16,6 +16,52 @@ use p3_test_utils::binary_field_params::{BinaryField8, BinaryField128};
 type F = BinaryField128;
 
 #[test]
+fn trusted_minimum_height_repeats_public_values_and_bounds_all_tables() {
+    let mut b = CircuitBuilder::<F>::new();
+    b.public_input();
+    let circuit = b.build().unwrap();
+    let prepared = NativeBusCircuit::with_min_log_height_and_limits(
+        &circuit,
+        "floor",
+        4,
+        DirectCircuitLimits::default(),
+    )
+    .unwrap();
+    assert!(prepared.log_heights().iter().all(|&log| log >= 4));
+    let public = [F::from_raw_coordinates(0x8912).unwrap()];
+    let mut runner = circuit.runner();
+    runner.set_public_inputs(&public).unwrap();
+    let traces = prepared
+        .traces(&runner.run().unwrap().witness_trace)
+        .unwrap();
+    let public = prepared.public_values(&public).unwrap();
+    for ((air, trace), public) in prepared.airs().iter().zip(&traces).zip(&public) {
+        check_constraints(air, trace, public);
+    }
+    assert!(
+        NativeBusCircuit::with_min_log_height_and_limits(
+            &circuit,
+            "floor",
+            usize::BITS as usize,
+            DirectCircuitLimits::default(),
+        )
+        .is_err()
+    );
+    assert!(
+        NativeBusCircuit::with_min_log_height_and_limits(
+            &circuit,
+            "floor",
+            4,
+            DirectCircuitLimits {
+                max_trace_cells: 10,
+                ..Default::default()
+            },
+        )
+        .is_err()
+    );
+}
+
+#[test]
 fn fanout_copies_and_unused_gate_slots_are_constrained() {
     let mut b = CircuitBuilder::<F>::new();
     let input = b.public_input();
@@ -132,7 +178,14 @@ fn three_native_hash_calls_have_fixed_schedules_and_unique_boundary_tags() {
         b.connect(state[i], expected[i]);
     }
     let circuit = b.build().unwrap();
-    let prepared = NativeBusCircuit::new(&circuit, "local").unwrap();
+    let prepared = NativeBusCircuit::with_min_log_height_and_limits(
+        &circuit,
+        "local",
+        8,
+        DirectCircuitLimits::default(),
+    )
+    .unwrap();
+    assert!(prepared.log_heights().iter().all(|&log| log >= 8));
     let input: [u64; 25] =
         core::array::from_fn(|i| 0x8123456789abcdefu64.rotate_left(3 * i as u32));
     let mut output = input;
@@ -175,6 +228,14 @@ fn three_native_hash_calls_have_fixed_schedules_and_unique_boundary_tags() {
     }
     for row in bridge_pp.values.chunks_exact(102).skip(6) {
         assert_eq!(row[101], F::ZERO);
+    }
+    for row in traces[hash].values.chunks_exact(1725).skip(128) {
+        assert_eq!(row[24], F::ONE);
+        assert!(
+            row.iter()
+                .enumerate()
+                .all(|(i, &value)| i == 24 || value == F::ZERO)
+        );
     }
     let mut missing = traces[hash].clone();
     missing.values[25 * 1725] = F::ZERO;
