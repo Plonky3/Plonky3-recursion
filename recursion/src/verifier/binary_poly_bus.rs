@@ -163,6 +163,7 @@ impl BinaryPolyBusVerifier {
             for weight in weights {
                 next.push(P::mul(b, &weight, &complement));
                 next.push(P::mul(b, &weight, r));
+                b.check_construction_limits()?;
             }
             weights = next;
         }
@@ -236,6 +237,7 @@ impl BinaryPolyBusVerifier {
                         BusTupleSlot::DomainBit(false) | BusTupleSlot::Zero => continue,
                     };
                     live = P::add(b, &live, &term);
+                    b.check_construction_limits()?;
                 }
                 let mut shifted = P::add(b, &live, &one);
                 if let Some(activation) = activation {
@@ -263,6 +265,7 @@ impl BinaryPolyBusVerifier {
                 }
                 let term = P::mul(b, &weight, &shifted);
                 terminal = P::add(b, &terminal, &term);
+                b.check_construction_limits()?;
             }
         }
         Ok(terminal)

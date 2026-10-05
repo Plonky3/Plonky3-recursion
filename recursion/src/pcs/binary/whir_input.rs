@@ -176,8 +176,12 @@ impl<F: RecursiveBinaryWhirTowerField> BinaryWhirInputShape<F> {
         let mut rounds = Vec::new();
         for site in self.sites.iter().take(self.sites.len() - 1) {
             let cap = (0..1usize << self.cap_height)
-                .map(|_| b.alloc_private_input_array::<16>("WHIR round cap").to_vec())
-                .collect();
+                .map(|_| {
+                    let digest = b.alloc_private_input_array::<16>("WHIR round cap").to_vec();
+                    b.check_construction_limits()?;
+                    Ok(digest)
+                })
+                .collect::<Result<_, VerificationError>>()?;
             let ood_answers = fields(b, site.ood, &mut field)?;
             let pow_witness = field(b)?;
             let (rows, paths) = opening(b, site, self.cap_height, &mut field)?;
@@ -676,12 +680,15 @@ where
         .map(|_| {
             (0..site.log_height - cap)
                 .map(|_| {
-                    b.alloc_private_input_array::<16>("WHIR path digest")
-                        .to_vec()
+                    let digest = b
+                        .alloc_private_input_array::<16>("WHIR path digest")
+                        .to_vec();
+                    b.check_construction_limits()?;
+                    Ok(digest)
                 })
-                .collect()
+                .collect::<Result<_, VerificationError>>()
         })
-        .collect();
+        .collect::<Result<_, VerificationError>>()?;
     Ok((rows, paths))
 }
 fn check_fold<F: Field>(
@@ -721,6 +728,7 @@ where
     ) -> Result<BinaryWhirProofTargets<NativeTower128Target>, VerificationError> {
         self.allocate_with(b, |b| {
             let value = b.alloc_private_input("native WHIR field");
+            b.check_construction_limits()?;
             Ok(b.native_tower128_from_expr(value))
         })
     }

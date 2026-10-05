@@ -532,6 +532,7 @@ where
     ) -> Result<BinaryProductGkrProofTargets<NativeTower128Target>, VerificationError> {
         self.allocate_with(|| {
             let value = b.alloc_private_input("native product GKR field");
+            b.check_construction_limits()?;
             Ok(b.native_tower128_from_expr(value))
         })
     }

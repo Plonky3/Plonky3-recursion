@@ -2,7 +2,7 @@
 
 use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 use p3_binary_field::Poly64;
-use p3_circuit::{CircuitBuilder, ops::ByteHash};
+use p3_circuit::{CircuitBuilder, CircuitConstructionLimits, ops::ByteHash};
 use p3_circuit_prover::direct::{DirectCircuitAir, DirectCircuitLimits};
 use p3_recursion::{
     artifact::{
@@ -109,9 +109,18 @@ fn native_poly_layer_proves_and_binds_the_original_statement() {
         max_trace_cells: 1 << 27,
         ..Default::default()
     };
-    let layer =
-        PreparedNativeBinaryPolyWhirLayer::from_native_authority(&authority, options(), &limits)
-            .unwrap();
+    let layer = PreparedNativeBinaryPolyWhirLayer::from_native_authority_with_construction_limits(
+        &authority,
+        options(),
+        &limits,
+        &CircuitConstructionLimits {
+            max_expression_nodes: 1 << 22,
+            max_pending_connects: 1 << 22,
+            max_non_primitive_calls: 1 << 20,
+            max_non_primitive_slots: 1 << 27,
+        },
+    )
+    .unwrap();
     assert!(matches!(
         layer.prove_verified(&foreign),
         Err(p3_recursion::verifier::VerificationError::PreparedInputMismatch { .. })

@@ -6,7 +6,7 @@ use p3_binary_dft::EncodableLevel;
 use p3_binary_field::{BinaryField128, TowerLevel};
 use p3_binary_pcs::{ChallengeField, FoldAlphabet, whir::BinaryWhirDomain};
 use p3_circuit::{
-    Circuit, CircuitBuilder,
+    Circuit, CircuitBuilder, CircuitConstructionLimits,
     ops::{
         ByteHash,
         binary_encoding::{BinaryCircuitEncoding, NativeBinaryEncoding},
@@ -93,6 +93,46 @@ where
         A: VerifierAir<Base, F>,
         L: BinaryNativeWhirLayout<Base>,
     {
+        Self::prepare(authority, options, circuit_limits, None)
+    }
+
+    /// Stops verifier construction at periodic entry-count checkpoints before
+    /// lowering. A checkpoint can overshoot by its local unit of work; these
+    /// counts are separate from final circuit limits and memory in bytes.
+    pub fn from_native_authority_with_construction_limits<A, L>(
+        authority: &BinaryNativeWhirAuthority<Base, A, L>,
+        options: NativeBinaryRecursionOptions,
+        circuit_limits: &DirectCircuitLimits,
+        construction_limits: &CircuitConstructionLimits,
+    ) -> Result<Self, VerificationError>
+    where
+        Base: EncodableLevel + FoldAlphabet<F> + PackedValue<Value = Base> + Ord,
+        F: ChallengeField<Base>,
+        BinaryWhirDomain<Base>: WhirDomain<Base, F>,
+        A: VerifierAir<Base, F>,
+        L: BinaryNativeWhirLayout<Base>,
+    {
+        Self::prepare(
+            authority,
+            options,
+            circuit_limits,
+            Some(*construction_limits),
+        )
+    }
+
+    fn prepare<A, L>(
+        authority: &BinaryNativeWhirAuthority<Base, A, L>,
+        options: NativeBinaryRecursionOptions,
+        circuit_limits: &DirectCircuitLimits,
+        construction_limits: Option<CircuitConstructionLimits>,
+    ) -> Result<Self, VerificationError>
+    where
+        Base: EncodableLevel + FoldAlphabet<F> + PackedValue<Value = Base> + Ord,
+        F: ChallengeField<Base>,
+        BinaryWhirDomain<Base>: WhirDomain<Base, F>,
+        A: VerifierAir<Base, F>,
+        L: BinaryNativeWhirLayout<Base>,
+    {
         let minimum_log_height = first_fold(&options.main)?;
         if first_fold(&options.preprocessed)? != minimum_log_height {
             return Err(VerificationError::InvalidProofShape(
@@ -104,7 +144,10 @@ where
         verifier.check_native_circuit_support()?;
         let input_shape = verifier.input_shape();
         let public_counts: Vec<_> = input_shape.public_value_counts().collect();
-        let mut builder = CircuitBuilder::<F>::new();
+        let mut builder = match construction_limits {
+            Some(limits) => CircuitBuilder::<F>::with_construction_limits(limits)?,
+            None => CircuitBuilder::<F>::new(),
+        };
         builder.enable_native_keccak_f1600()?;
         let public: Vec<Vec<_>> = public_counts
             .iter()
@@ -112,17 +155,20 @@ where
                 (0..count)
                     .map(|_| {
                         let value = builder.public_input();
-                        builder.native_tower128_from_expr(value)
+                        builder.check_construction_limits()?;
+                        Ok(builder.native_tower128_from_expr(value))
                     })
-                    .collect()
+                    .collect::<Result<_, VerificationError>>()
             })
-            .collect();
+            .collect::<Result<_, VerificationError>>()?;
         let proof = input_shape.allocate_native_targets(&mut builder)?;
         let initial: Vec<_> = authority
             .initial_bytes()
             .iter()
             .map(|&byte| {
-                H::encode_u16(u16::from(byte)).map(|constant| builder.define_const(constant))
+                let value = builder.define_const(H::encode_u16(u16::from(byte))?);
+                builder.check_construction_limits()?;
+                Ok::<_, VerificationError>(value)
             })
             .collect::<Result<_, _>>()?;
         let challenger = BinaryTower128Challenger::with_initial_bytes_with_host::<H, F>(
@@ -131,6 +177,7 @@ where
             &initial,
         )?;
         verifier.verify_native(&mut builder, challenger, &public, &proof)?;
+        builder.check_construction_limits()?;
         let circuit = builder.build()?;
         let bus = NativeBusCircuit::with_min_log_height_and_limits(
             &circuit,

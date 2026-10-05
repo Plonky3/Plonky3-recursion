@@ -510,6 +510,7 @@ impl BinaryPolyFractionGkrInputShape {
     ) -> Result<BinaryPolyFractionGkrProofTargets<NativePoly192Target>, VerificationError> {
         self.allocate_with(|| {
             let coefficients = b.alloc_private_input_array::<3>("native Poly fraction GKR field");
+            b.check_construction_limits()?;
             Ok(b.native_poly192_from_coefficients(coefficients))
         })
     }

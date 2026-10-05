@@ -323,11 +323,19 @@ fn select_nonzero_with_tail<EF: p3_field::Field + Eq + Hash>(
         select_nonzero_words(b, count, bits, max_draws, following_count, &candidates)?;
     let values = selected
         .into_iter()
-        .map(|bits| b.binary128_from_bits(bits).map_err(VerificationError::from))
+        .map(|bits| {
+            let value = b.binary128_from_bits(bits)?;
+            b.check_construction_limits()?;
+            Ok::<_, VerificationError>(value)
+        })
         .collect::<Result<_, _>>()?;
     let following = following
         .into_iter()
-        .map(|bits| b.binary128_from_bits(bits).map_err(VerificationError::from))
+        .map(|bits| {
+            let value = b.binary128_from_bits(bits)?;
+            b.check_construction_limits()?;
+            Ok::<_, VerificationError>(value)
+        })
         .collect::<Result<_, _>>()?;
     Ok((values, following, retained))
 }
@@ -356,6 +364,7 @@ pub(super) fn select_nonzero_words<const W: usize, EF: p3_field::Field + Eq + Ha
             .ok_or(VerificationError::ResourceArithmeticOverflow {
                 component: "binary nonzero selection states",
             })?;
+    b.check_construction_limits()?;
     let one = b.define_const(EF::ONE);
     let mut states = vec![ExprId::ZERO; state_count];
     states[0] = one;
@@ -367,8 +376,10 @@ pub(super) fn select_nonzero_words<const W: usize, EF: p3_field::Field + Eq + Ha
             .iter()
             .map(|&bit| b.sub(one, bit))
             .collect();
+        b.check_construction_limits()?;
         let zero = b.mul_many(&factors);
         let accepted = b.sub(one, zero);
+        b.check_construction_limits()?;
         let mut next = vec![ExprId::ZERO; state_count];
         next[count] = states[count];
         for j in 0..count {
@@ -388,13 +399,16 @@ pub(super) fn select_nonzero_words<const W: usize, EF: p3_field::Field + Eq + Ha
                     for (out, &bit) in output.iter_mut().zip(&candidates[index + offset + 1].0) {
                         *out = b.mul_add(take, bit, *out);
                     }
+                    b.check_construction_limits()?;
                 }
             }
+            b.check_construction_limits()?;
         }
         states = next;
     }
     let incomplete = b.sub(states[count], one);
     b.assert_zero(incomplete);
+    b.check_construction_limits()?;
     Ok((selected, following, retained))
 }
 
@@ -645,5 +659,33 @@ mod tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod construction_tests {
+    use super::*;
+    use p3_circuit::{CircuitBuilderError, CircuitConstructionLimits};
+
+    #[test]
+    fn nonzero_word_selection_stops_before_the_remaining_candidates() {
+        let mut b =
+            CircuitBuilder::<BinaryField128>::with_construction_limits(CircuitConstructionLimits {
+                max_expression_nodes: 160,
+                max_pending_connects: 1024,
+                max_non_primitive_calls: 1024,
+                max_non_primitive_slots: 1024,
+            })
+            .unwrap();
+        let bits = b.alloc_private_input_array::<128>("candidate bits");
+        let candidates = vec![(bits, [ExprId::ZERO; 32]); 3];
+        assert!(matches!(
+            select_nonzero_words(&mut b, 2, 128, 3, 0, &candidates),
+            Err(VerificationError::CircuitBuilder(
+                CircuitBuilderError::ConstructionLimitExceeded { .. }
+            ))
+        ));
+        assert!(b.construction_usage().unwrap().expression_nodes <= 288);
+        assert!(b.build().is_err());
     }
 }

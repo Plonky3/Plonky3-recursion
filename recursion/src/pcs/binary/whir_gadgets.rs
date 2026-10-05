@@ -40,6 +40,7 @@ where
         let product = P::mul(circuit, r, &shifted);
         let factor = P::add(circuit, &one, &product);
         weight = P::mul(circuit, &weight, &factor);
+        circuit.check_construction_limits()?;
     }
     Ok(weight)
 }
@@ -117,6 +118,7 @@ where
             got: values.len(),
         });
     }
+    circuit.check_construction_limits()?;
     let mut layer = values.to_vec();
     for coordinate in point.iter().rev() {
         layer = layer
@@ -128,9 +130,11 @@ where
                     pair[1].clone()
                 };
                 let product = P::mul(circuit, coordinate, &slope);
-                P::add(circuit, &pair[0], &product)
+                let value = P::add(circuit, &pair[0], &product);
+                circuit.check_construction_limits()?;
+                Ok(value)
             })
-            .collect();
+            .collect::<Result<_, CircuitBuilderError>>()?;
     }
     Ok(layer[0].clone())
 }
@@ -191,5 +195,38 @@ fn arity(op: &'static str, expected: usize, got: usize) -> CircuitBuilderError {
         op,
         expected: alloc::format!("{expected} point coordinates"),
         got,
+    }
+}
+
+#[cfg(test)]
+mod construction_tests {
+    use super::*;
+    use crate::verifier::binary_field_policy::NativeTower128Relation;
+    use p3_circuit::CircuitConstructionLimits;
+
+    #[test]
+    fn native_whir_fold_checks_each_pair_in_a_large_layer() {
+        let mut b =
+            CircuitBuilder::<BinaryField128>::with_construction_limits(CircuitConstructionLimits {
+                max_expression_nodes: 15,
+                max_pending_connects: 1024,
+                max_non_primitive_calls: 1024,
+                max_non_primitive_slots: 1024,
+            })
+            .unwrap();
+        let mut scalar = || {
+            let value = b.alloc_private_input("fold field");
+            b.native_tower128_from_expr(value)
+        };
+        let values = (0..8).map(|_| scalar()).collect::<Vec<_>>();
+        let point = (0..3).map(|_| scalar()).collect::<Vec<_>>();
+        assert!(matches!(
+            eval_multilinear_using::<NativeTower128Relation, BinaryField128>(
+                &mut b, &values, &point
+            ),
+            Err(CircuitBuilderError::ConstructionLimitExceeded { .. })
+        ));
+        assert!(b.construction_usage().unwrap().expression_nodes <= 18);
+        assert!(b.build().is_err());
     }
 }

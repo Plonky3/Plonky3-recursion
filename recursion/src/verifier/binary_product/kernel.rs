@@ -64,6 +64,7 @@ where
             let challenge = P::sample::<H>(b, &mut ch)?;
             claim = interpolate(b, &claim, polynomial, &challenge)?;
             round_point.push(challenge);
+            b.check_construction_limits()?;
         }
         let products: Vec<_> = layer
             .children
@@ -72,10 +73,12 @@ where
                 let mut product = children[0].clone();
                 for child in &children[1..] {
                     product = P::mul(b, &product, child);
+                    b.check_construction_limits()?;
                 }
-                product
+                b.check_construction_limits()?;
+                Ok(product)
             })
-            .collect();
+            .collect::<Result<_, VerificationError>>()?;
         let mut expected = combine::<P, EF>(b, &products, &batching)?;
         if arity == 4 {
             let equality = P::eq_eval(b, &point, &round_point)?;
@@ -92,14 +95,16 @@ where
             .iter()
             .map(|children| {
                 let low = pair::<P, EF>(b, &children[0], &children[1], &branches[0]);
-                if arity == 2 {
+                let value = if arity == 2 {
                     low
                 } else {
                     let high = pair::<P, EF>(b, &children[2], &children[3], &branches[0]);
                     pair::<P, EF>(b, &low, &high, &branches[1])
-                }
+                };
+                b.check_construction_limits()?;
+                Ok(value)
             })
-            .collect();
+            .collect::<Result<_, VerificationError>>()?;
         point = branches;
         point.extend(round_point);
     }
@@ -132,6 +137,7 @@ fn combine<P: BinaryProtocolPolicy<EF>, EF: Field + Eq + Hash>(
     for value in values.iter().rev() {
         result = P::mul(b, &result, batching);
         result = P::add(b, &result, value);
+        b.check_construction_limits()?;
     }
     Ok(result)
 }

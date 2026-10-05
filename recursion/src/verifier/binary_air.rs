@@ -737,9 +737,11 @@ impl AirProgram {
             .chain([alpha])
         {
             P::constrain_challenge(b, value);
+            b.check_construction_limits()?;
         }
         for value in public {
             P::constrain_base(b, value)?;
+            b.check_construction_limits()?;
         }
         let one = P::constant(b, 1)?;
         let mut first = one.clone();
@@ -748,6 +750,7 @@ impl AirProgram {
             let complement = P::add(b, &one, r);
             first = P::mul(b, &first, &complement);
             last = P::mul(b, &last, r);
+            b.check_construction_limits()?;
         }
         let transition = P::add(b, &one, &last);
         let mut periodic_values = Vec::with_capacity(self.periods.len());
@@ -755,7 +758,11 @@ impl AirProgram {
             let coordinates = period.len().ilog2() as usize;
             let evaluations = period
                 .iter()
-                .map(|&raw| P::constant(b, raw))
+                .map(|&raw| {
+                    let value = P::constant(b, raw)?;
+                    b.check_construction_limits()?;
+                    Ok::<_, VerificationError>(value)
+                })
                 .collect::<Result<Vec<_>, _>>()?;
             periodic_values.push(evaluate_table::<P, EF>(
                 b,
@@ -763,6 +770,7 @@ impl AirProgram {
                 &point[point.len() - coordinates..],
             )?);
         }
+        b.check_construction_limits()?;
         let mut values: Vec<P::ChallengeTarget> = Vec::with_capacity(self.nodes.len());
         for node in &self.nodes {
             let value = match *node {
@@ -780,11 +788,13 @@ impl AirProgram {
                 Node::Mul(x, y) => P::mul(b, &values[x], &values[y]),
             };
             values.push(value);
+            b.check_construction_limits()?;
         }
         let mut folded = P::constant(b, 0)?;
         for &root in &self.constraints {
             let weighted = P::mul(b, &folded, alpha);
             folded = P::add(b, &weighted, &values[root]);
+            b.check_construction_limits()?;
         }
         let bus_fields = self
             .bus
@@ -1132,6 +1142,7 @@ fn evaluate_table<P: BinaryRelationPolicy<EF>, EF: Field + Eq + Hash>(
     if count != Some(values.len()) {
         return Err(invalid("binary AIR periodic evaluation shape mismatch"));
     }
+    b.check_construction_limits()?;
     let mut layer = values.to_vec();
     for r in point.iter().rev() {
         layer = layer
@@ -1139,9 +1150,11 @@ fn evaluate_table<P: BinaryRelationPolicy<EF>, EF: Field + Eq + Hash>(
             .map(|pair| {
                 let slope = P::add(b, &pair[0], &pair[1]);
                 let product = P::mul(b, r, &slope);
-                P::add(b, &pair[0], &product)
+                let value = P::add(b, &pair[0], &product);
+                b.check_construction_limits()?;
+                Ok(value)
             })
-            .collect();
+            .collect::<Result<_, VerificationError>>()?;
     }
     Ok(layer[0].clone())
 }

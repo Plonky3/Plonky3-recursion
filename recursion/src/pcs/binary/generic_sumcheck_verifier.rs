@@ -310,6 +310,7 @@ where
                 .interpolator
                 .reduce_claim_using::<P, CF>(b, &claim, polynomial, &challenge)?;
             point.push(challenge);
+            b.check_construction_limits()?;
         }
         Ok(BinaryGenericSumcheckOutput {
             point,
@@ -422,6 +423,7 @@ where
     ) -> Result<BinaryGenericSumcheckProofTargets<NativeTower128Target>, VerificationError> {
         self.allocate_with(|| {
             let value = b.alloc_private_input("native generic sumcheck field");
+            b.check_construction_limits()?;
             Ok(b.native_tower128_from_expr(value))
         })
     }

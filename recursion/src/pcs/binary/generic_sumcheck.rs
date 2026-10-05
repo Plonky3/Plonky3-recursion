@@ -111,6 +111,7 @@ impl Binary128SumcheckInterpolator {
                     P::mul(b, value, &constant)
                 };
                 *coefficient = P::add(b, coefficient, &term);
+                b.check_construction_limits()?;
             }
         }
         let mut iter = polynomial.into_iter().rev();
@@ -118,6 +119,7 @@ impl Binary128SumcheckInterpolator {
         for coefficient in iter {
             let product = P::mul(b, &result, challenge);
             result = P::add(b, &product, &coefficient);
+            b.check_construction_limits()?;
         }
         Ok(result)
     }

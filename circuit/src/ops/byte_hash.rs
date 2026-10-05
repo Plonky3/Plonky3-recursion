@@ -481,17 +481,20 @@ where
                 .0
                 .iter()
                 .map(|pair| {
-                    pair[0]
+                    let digest = pair[0]
                         .iter()
                         .zip(&pair[1])
                         .map(|(&even, &odd)| self.select(bit, odd, even))
-                        .collect()
+                        .collect();
+                    self.check_construction_limits()?;
+                    Ok(digest)
                 })
-                .collect();
+                .collect::<Result<_, CircuitBuilderError>>()?;
         }
         for (&computed, &expected) in node.iter().zip(&candidates[0]) {
             self.connect(computed, expected);
         }
+        self.check_construction_limits()?;
         Ok(())
     }
 
@@ -598,11 +601,45 @@ where
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec;
     use p3_baby_bear::BabyBear;
     use p3_field::PrimeCharacteristicRing;
 
     use super::*;
     use crate::CircuitBuilder;
+
+    #[test]
+    fn cap_selection_checks_each_digest_pair() {
+        use crate::CircuitConstructionLimits;
+        use p3_binary_field::Poly64;
+
+        let mut b = CircuitBuilder::<Poly64>::with_construction_limits(CircuitConstructionLimits {
+            max_expression_nodes: 600,
+            max_pending_connects: 1024,
+            max_non_primitive_calls: 1024,
+            max_non_primitive_slots: 4096,
+        })
+        .unwrap();
+        let bits = b.alloc_private_input_array::<5>("cap index");
+        let cap: Vec<_> = (0..32)
+            .map(|_| b.alloc_private_input_array::<16>("cap root").to_vec())
+            .collect();
+        let result = b.verify_byte_hash_mmcs_opening_with(
+            &[vec![ExprId::ZERO]],
+            &[32],
+            &bits,
+            &[],
+            &cap,
+            |_, _| Ok(vec![ExprId::ZERO; 16]),
+            |_, _, _| unreachable!("leaf-layer cap has no sibling compression"),
+        );
+        assert!(matches!(
+            result,
+            Err(CircuitBuilderError::ConstructionLimitExceeded { .. })
+        ));
+        assert!(b.construction_usage().unwrap().expression_nodes <= 648);
+        assert!(b.build().is_err());
+    }
 
     #[test]
     fn the_index_bound_admits_exactly_the_indices_up_to_it() {

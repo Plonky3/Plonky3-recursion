@@ -522,6 +522,7 @@ where
         for &bit in index_bits {
             b.assert_bool(bit);
         }
+        b.check_construction_limits()?;
         (0..num_variables)
             .rev()
             .map(|shift| {
@@ -531,6 +532,7 @@ where
                         Self::constant_times_bit(b, bit, F::cantor_basis(j).raw_coordinates())?;
                     value = b.native_tower128_add(&value, &term);
                 }
+                b.check_construction_limits()?;
                 Ok(value)
             })
             .collect()

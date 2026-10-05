@@ -190,6 +190,7 @@ impl BinaryWhirPolicy<Poly64> for NativePoly64Relation {
         for &bit in index_bits {
             b.assert_bool(bit);
         }
+        b.check_construction_limits()?;
         (0..num_variables)
             .rev()
             .map(|shift| {
@@ -199,6 +200,7 @@ impl BinaryWhirPolicy<Poly64> for NativePoly64Relation {
                     let term = b.mul(bit, basis);
                     value = b.add(value, term);
                 }
+                b.check_construction_limits()?;
                 Ok(b.native_poly192_from_coefficients([value, ExprId::ZERO, ExprId::ZERO]))
             })
             .collect()
@@ -215,6 +217,35 @@ mod tests {
     use p3_circuit::ops::binary_encoding::{BinaryCircuitEncoding, NativeBinaryEncoding};
     use p3_circuit_prover::direct::DirectCircuitAir;
     use p3_field::PrimeCharacteristicRing;
+
+    #[test]
+    fn native_query_points_check_between_coordinates() {
+        let limits = p3_circuit::CircuitConstructionLimits {
+            max_expression_nodes: 64,
+            max_pending_connects: 1024,
+            max_non_primitive_calls: 1024,
+            max_non_primitive_slots: 4096,
+        };
+        let mut tower = CircuitBuilder::<BinaryField128>::with_construction_limits(limits).unwrap();
+        let bits = tower.alloc_private_input_array::<16>("query index");
+        assert!(matches!(
+            <NativeTower128Relation<BinaryField128> as BinaryWhirPolicy<BinaryField128>>::query_point(
+                &mut tower, &bits, 16
+            ),
+            Err(CircuitBuilderError::ConstructionLimitExceeded { .. })
+        ));
+        assert!(tower.construction_usage().unwrap().expression_nodes <= 112);
+        assert!(tower.build().is_err());
+
+        let mut poly = CircuitBuilder::<Poly64>::with_construction_limits(limits).unwrap();
+        let bits = poly.alloc_private_input_array::<16>("query index");
+        assert!(matches!(
+            NativePoly64Relation::query_point(&mut poly, &bits, 16),
+            Err(CircuitBuilderError::ConstructionLimitExceeded { .. })
+        ));
+        assert!(poly.construction_usage().unwrap().expression_nodes <= 112);
+        assert!(poly.build().is_err());
+    }
 
     #[test]
     fn native_poly_base_oracle_rejects_manually_supplied_upper_coefficients() {

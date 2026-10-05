@@ -75,10 +75,12 @@ impl WhirPreprocessedInputShape {
         self.commitment
             .iter()
             .map(|root| {
-                bytes_to_limbs(root)
+                let digest = bytes_to_limbs(root)
                     .into_iter()
                     .map(|limb| Ok(b.define_const(H::encode_u16(limb)?)))
-                    .collect::<Result<Vec<_>, VerificationError>>()
+                    .collect::<Result<Vec<_>, VerificationError>>()?;
+                b.check_construction_limits()?;
+                Ok(digest)
             })
             .collect()
     }
@@ -733,10 +735,13 @@ impl BinaryPolyWhirMultiStarkInputShape {
         }
         let commitment = (0..1usize << self.cap_height)
             .map(|_| {
-                b.alloc_private_input_array::<16>("native WHIR MultiStark commitment")
-                    .to_vec()
+                let digest = b
+                    .alloc_private_input_array::<16>("native WHIR MultiStark commitment")
+                    .to_vec();
+                b.check_construction_limits()?;
+                Ok(digest)
             })
-            .collect();
+            .collect::<Result<_, VerificationError>>()?;
         let bus = self
             .relation
             .bus

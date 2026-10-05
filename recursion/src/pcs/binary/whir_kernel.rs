@@ -57,11 +57,12 @@ where
 {
     H::check_hash(p.hash)?;
     check_targets(p, cap, points, proof)?;
+    b.check_construction_limits()?;
     let mut virtual_points = Vec::new();
     for (seed, answer) in p.virtual_seeds.iter().zip(&proof.initial_ood_answers) {
         P::observe_seed::<H>(b, &mut ch, seed)?;
         let z = P::sample::<H>(b, &mut ch)?;
-        virtual_points.push(expand::<P, CF>(b, &z, p.variables));
+        virtual_points.push(expand::<P, CF>(b, &z, p.variables)?);
         P::observe::<H>(b, &mut ch, core::slice::from_ref(answer))?;
     }
     for (seed, evals) in p.opening_seeds.iter().zip(&proof.evals) {
@@ -115,6 +116,7 @@ where
                         weight,
                     });
                     power = P::mul(b, &power, &alpha);
+                    b.check_construction_limits()?;
                 }
             }
             // The table index determines placement order; the prescribed
@@ -131,6 +133,7 @@ where
             weight: Weight::Eq(point),
         });
         power = P::mul(b, &power, &alpha);
+        b.check_construction_limits()?;
     }
     let (mut claim, mut last_r) = fold_using::<P, H, CF>(
         b,
@@ -148,7 +151,7 @@ where
         let mut ood_points = Vec::new();
         for answer in &round.ood_answers {
             let z = P::sample::<H>(b, &mut ch)?;
-            ood_points.push(expand::<P, CF>(b, &z, site.variables));
+            ood_points.push(expand::<P, CF>(b, &z, site.variables)?);
             P::observe::<H>(b, &mut ch, core::slice::from_ref(answer))?;
         }
         pow_using::<P, H, CF>(b, &mut ch, site.query_pow_bits, &round.pow_witness)?;
@@ -161,7 +164,11 @@ where
             .collect::<Result<Vec<_>, _>>()?;
         let query_points = indices
             .iter()
-            .map(|index| P::query_point(b, index, site.variables))
+            .map(|index| {
+                let point = P::query_point(b, index, site.variables)?;
+                b.check_construction_limits()?;
+                Ok::<_, VerificationError>(point)
+            })
             .collect::<Result<Vec<_>, _>>()?;
         checks.push(Authentication {
             site,
@@ -200,6 +207,7 @@ where
                 },
             });
             power = P::mul(b, &power, &gamma);
+            b.check_construction_limits()?;
         }
         (claim, last_r) = fold_using::<P, H, CF>(
             b,
@@ -222,6 +230,7 @@ where
         let point = P::query_point(b, index, site.variables)?;
         let expected = eval_coefficients_using::<P, CF>(b, &proof.final_poly, &point)?;
         P::assert_equal(b, &folded, &expected);
+        b.check_construction_limits()?;
     }
     checks.push(Authentication {
         site,
@@ -272,6 +281,7 @@ where
         };
         let scaled = P::mul(b, &term.coefficient, &value);
         weight = P::add(b, &weight, &scaled);
+        b.check_construction_limits()?;
     }
     let closing_r = oriented(&closing_r, p.order);
     let final_value = eval_multilinear_using::<P, CF>(b, &proof.final_poly, &closing_r)?;
@@ -282,6 +292,7 @@ where
             let mut bytes = Vec::new();
             for value in row {
                 bytes.extend(P::oracle_bytes::<H>(b, value, check.mode)?);
+                b.check_construction_limits()?;
             }
             for &limb in path.iter().flatten() {
                 H::decompose_word(b, limb, 16)?;
@@ -294,6 +305,7 @@ where
                 path,
                 &check.cap,
             )?;
+            b.check_construction_limits()?;
         }
     }
     Ok((proof.evals.clone(), ch))
@@ -325,6 +337,7 @@ where
         let beta = P::sample::<H>(b, ch)?;
         claim = reduce_sumcheck_using::<P, CF>(b, &claim, h0, hinf, &beta)?;
         randomness.push(beta);
+        b.check_construction_limits()?;
     }
     Ok((claim, randomness))
 }
@@ -404,7 +417,7 @@ fn expand<P, CF>(
     b: &mut CircuitBuilder<CF>,
     z: &P::ChallengeTarget,
     n: usize,
-) -> Vec<P::ChallengeTarget>
+) -> Result<Vec<P::ChallengeTarget>, VerificationError>
 where
     CF: Field + Eq + Hash,
     P: BinaryWhirPolicy<CF>,
@@ -414,9 +427,10 @@ where
     for _ in 0..n {
         point.push(power.clone());
         power = P::square(b, &power);
+        b.check_construction_limits()?;
     }
     point.reverse();
-    point
+    Ok(point)
 }
 fn oriented<T: Clone>(point: &[T], order: VariableOrder) -> Vec<T> {
     if order == VariableOrder::Suffix {

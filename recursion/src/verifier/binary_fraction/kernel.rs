@@ -66,6 +66,7 @@ where
             claim = interpolate(b, &claim, polynomial, &output.value)?;
             round_point.push(output.value);
             state = MessageState::Waiting(output.continuation);
+            b.check_construction_limits()?;
         }
         let [n0, d0, n1, d1] = layer.claims;
         let left = P::mul(b, d1, n0);
@@ -87,6 +88,7 @@ where
         denominator = pair::<P, EF>(b, d0, d1, &output.value);
         point = vec![output.value];
         point.extend(round_point);
+        b.check_construction_limits()?;
         if final_layer {
             // Fraction points already use MSB-first order, unlike Product-GKR.
             return Ok(FractionKernelOutput {

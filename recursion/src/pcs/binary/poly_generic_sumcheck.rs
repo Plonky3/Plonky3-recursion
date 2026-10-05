@@ -282,6 +282,7 @@ impl BinaryPolyGenericSumcheckVerifier {
                 .interpolator
                 .reduce_claim_using::<P, CF>(b, &claim, polynomial, &r)?;
             point.push(r);
+            b.check_construction_limits()?;
         }
         Ok(BinaryPolyGenericSumcheckOutput {
             point,
@@ -402,9 +403,14 @@ impl BinaryPolyGenericSumcheckInputShape {
             b,
             |b| {
                 let coefficients = b.alloc_private_input_array::<3>("native Poly sumcheck field");
+                b.check_construction_limits()?;
                 Ok(b.native_poly192_from_coefficients(coefficients))
             },
-            |b| Ok(b.alloc_private_input("native Poly sumcheck grinding witness")),
+            |b| {
+                let value = b.alloc_private_input("native Poly sumcheck grinding witness");
+                b.check_construction_limits()?;
+                Ok(value)
+            },
         )
     }
 }
