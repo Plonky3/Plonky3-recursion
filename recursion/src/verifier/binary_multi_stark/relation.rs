@@ -378,7 +378,7 @@ where
         for values in public {
             let mut bytes = Vec::new();
             for value in values {
-                P::constrain_base(b, value);
+                P::constrain_base(b, value)?;
                 let value = P::lift(b, value)?;
                 bytes.extend(P::word_bytes::<H>(b, &value, F::RAW_BITS)?);
             }

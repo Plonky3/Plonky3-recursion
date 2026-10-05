@@ -521,7 +521,10 @@ pub(super) fn zero_proof<E: Field>(
     }
 }
 
-impl BinaryProductGkrInputShape<BinaryField128, BinaryField128> {
+impl<F: RecursiveBinaryTowerField> BinaryProductGkrInputShape<F, BinaryField128>
+where
+    BinaryField128: ExtensionField<F>,
+{
     /// Allocates one native carrier cell per field in the frozen proof schedule.
     pub fn allocate_native_targets(
         &self,
@@ -533,11 +536,14 @@ impl BinaryProductGkrInputShape<BinaryField128, BinaryField128> {
         })
     }
 }
-impl NativeBinaryProductGkrInput<BinaryField128, BinaryField128> {
+impl<F: RecursiveBinaryTowerField> NativeBinaryProductGkrInput<F, BinaryField128>
+where
+    BinaryField128: ExtensionField<F>,
+{
     /// Raw native scalars, in the same order as `allocate_native_targets`.
     pub fn private_native_values(
         &self,
-        expected: &BinaryProductGkrInputShape<BinaryField128, BinaryField128>,
+        expected: &BinaryProductGkrInputShape<F, BinaryField128>,
     ) -> Result<Vec<BinaryField128>, VerificationError> {
         if &self.shape != expected {
             return Err(invalid("binary product input belongs to another verifier"));
@@ -550,7 +556,10 @@ impl NativeBinaryProductGkrInput<BinaryField128, BinaryField128> {
             .collect())
     }
 }
-impl BinaryProductGkrVerifier<BinaryField128, BinaryField128> {
+impl<F: RecursiveBinaryTowerField> BinaryProductGkrVerifier<F, BinaryField128>
+where
+    BinaryField128: ExtensionField<F>,
+{
     /// A scalar reduction requiring the caller to authenticate all returned leaves.
     pub fn verify_reduction_native(
         &self,
@@ -558,6 +567,6 @@ impl BinaryProductGkrVerifier<BinaryField128, BinaryField128> {
         ch: BinaryTower128Challenger,
         proof: &BinaryProductGkrProofTargets<NativeTower128Target>,
     ) -> Result<BinaryProductGkrOutput<NativeTower128Target>, VerificationError> {
-        self.verify_using::<NativeTower128Relation, p3_circuit::ops::binary_encoding::NativeBinaryEncoding, BinaryField128>(b,ch,proof)
+        self.verify_using::<NativeTower128Relation<F>, p3_circuit::ops::binary_encoding::NativeBinaryEncoding, BinaryField128>(b,ch,proof)
     }
 }

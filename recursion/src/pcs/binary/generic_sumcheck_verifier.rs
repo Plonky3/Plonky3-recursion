@@ -411,7 +411,10 @@ where
     }
 }
 
-impl BinaryGenericSumcheckInputShape<BinaryField128, BinaryField128> {
+impl<F: RecursiveBinaryTowerField> BinaryGenericSumcheckInputShape<F, BinaryField128>
+where
+    BinaryField128: ExtensionField<F>,
+{
     /// One scalar input per field word, retaining the native traversal order.
     pub fn allocate_native_targets(
         &self,
@@ -423,10 +426,13 @@ impl BinaryGenericSumcheckInputShape<BinaryField128, BinaryField128> {
         })
     }
 }
-impl NativeBinaryGenericSumcheckInput<BinaryField128, BinaryField128> {
+impl<F: RecursiveBinaryTowerField> NativeBinaryGenericSumcheckInput<F, BinaryField128>
+where
+    BinaryField128: ExtensionField<F>,
+{
     pub fn private_native_values(
         &self,
-        expected: &BinaryGenericSumcheckInputShape<BinaryField128, BinaryField128>,
+        expected: &BinaryGenericSumcheckInputShape<F, BinaryField128>,
     ) -> Result<Vec<BinaryField128>, VerificationError> {
         if &self.shape != expected {
             return Err(invalid(
@@ -441,7 +447,10 @@ impl NativeBinaryGenericSumcheckInput<BinaryField128, BinaryField128> {
             .collect())
     }
 }
-impl BinaryGenericSumcheckVerifier<BinaryField128, BinaryField128> {
+impl<F: RecursiveBinaryTowerField> BinaryGenericSumcheckVerifier<F, BinaryField128>
+where
+    BinaryField128: ExtensionField<F>,
+{
     /// Native scalar reduction; its terminal claim still needs authentication.
     pub fn verify_reduction_native(
         &self,
@@ -450,7 +459,7 @@ impl BinaryGenericSumcheckVerifier<BinaryField128, BinaryField128> {
         expected_sum: &NativeTower128Target,
         proof: &BinaryGenericSumcheckProofTargets<NativeTower128Target>,
     ) -> Result<BinaryGenericSumcheckOutput<NativeTower128Target>, VerificationError> {
-        self.verify_using::<NativeTower128Relation, NativeBinaryEncoding, BinaryField128>(
+        self.verify_using::<NativeTower128Relation<F>, NativeBinaryEncoding, BinaryField128>(
             b,
             ch,
             expected_sum,
@@ -465,6 +474,6 @@ impl BinaryGenericSumcheckVerifier<BinaryField128, BinaryField128> {
         expected_sum: &NativeTower128Target,
         proof: &BinaryGenericSumcheckProofTargets<NativeTower128Target>,
     ) -> Result<BinaryGenericSumcheckOutput<NativeTower128Target>, VerificationError> {
-        self.verify_after_queries_using::<NativeTower128Relation, NativeBinaryEncoding, BinaryField128>(b, token, expected_sum, proof)
+        self.verify_after_queries_using::<NativeTower128Relation<F>, NativeBinaryEncoding, BinaryField128>(b, token, expected_sum, proof)
     }
 }

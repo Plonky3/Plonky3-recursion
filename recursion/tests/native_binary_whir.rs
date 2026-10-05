@@ -1,6 +1,6 @@
 //! Full additive WHIR openings verified in the exact native Tower128 carrier.
 
-use p3_binary_field::{BinaryField128, TowerLevel};
+use p3_binary_field::{BinaryField32, BinaryField128, TowerLevel};
 use p3_binary_pcs::whir::BinaryWhirDomain;
 use p3_challenger::FieldChallenger;
 use p3_circuit::{
@@ -51,13 +51,13 @@ fn protocol(rows: usize, width: usize, next: bool) -> OpeningProtocol {
 }
 
 macro_rules! check {
-    ($layout:ident, $protocol:expr, $cap_height:expr, $pow:expr) => {{
-        type Ch = keccak::LevelChallenger<F>;
-        type L = $layout<F, F>;
+    ($base:ty, $layout:ident, $protocol:expr, $cap_height:expr, $pow:expr) => {{
+        type Ch = keccak::LevelChallenger<$base>;
+        type L = $layout<$base, F>;
         let protocol = $protocol;
         let n = p3_sumcheck::layout::plan_stacked_layout(&protocol.table_shapes()).0;
-        let domain = BinaryWhirDomain::<F>::default();
-        let config = WhirConfig::<F, F, Ch>::new_with_domain(
+        let domain = BinaryWhirDomain::<$base>::default();
+        let config = WhirConfig::<F, $base, Ch>::new_with_domain(
             n,
             ProtocolParameters {
                 security_level: 8,
@@ -70,13 +70,13 @@ macro_rules! check {
             &domain,
         )
         .unwrap();
-        let mmcs = keccak::LevelMmcs::<F>::new(
+        let mmcs = keccak::LevelMmcs::<$base>::new(
             keccak::FieldHash::new(keccak::byte_hash()),
             keccak::Compress::new(keccak::byte_hash()),
             $cap_height,
         );
-        let pcs = WhirProver::<F, F, _, _, Ch, L>::new(config.clone(), domain, mmcs.clone());
-        let recursive = BinaryWhirVerifier::<F>::new(
+        let pcs = WhirProver::<F, $base, _, _, Ch, L>::new(config.clone(), domain, mmcs.clone());
+        let recursive = BinaryWhirVerifier::<$base>::new(
             &config,
             protocol.clone(),
             L::variable_order(),
@@ -96,7 +96,11 @@ macro_rules! check {
             .map(|(table, shape)| {
                 Table::new(RowMajorMatrix::new(
                     (0..shape.width() * (1 << shape.num_variables()))
-                        .map(|i| dense(i + 17 * table))
+                        .map(|i| {
+                            let raw = dense(i + 17 * table).to_repr();
+                            let bits = <$base as p3_recursion::pcs::binary::RecursiveBinaryTowerField>::RAW_BITS;
+                            <$base as p3_circuit::ops::binary_native::BinaryCoordinateField>::from_raw_coordinates(raw & (u128::MAX >> (128 - bits))).unwrap()
+                        })
                         .collect(),
                     1 << shape.num_variables(),
                 ))
@@ -211,7 +215,7 @@ macro_rules! check {
             wrong[index] += F::ONE;
             assert!(!run(&circuit, &public, &wrong));
         }
-        let other = BinaryWhirVerifier::<F>::new(
+        let other = BinaryWhirVerifier::<$base>::new(
             &config,
             protocol,
             if L::variable_order() == p3_sumcheck::strategy::VariableOrder::Prefix {
@@ -233,11 +237,11 @@ macro_rules! check {
 
 #[test]
 fn native_initial_and_closing_folds_bind_prefix_openings() {
-    check!(PrefixProver, protocol(3, 1, false), 0, 0);
+    check!(F, PrefixProver, protocol(3, 1, false), 0, 0);
 }
 #[test]
 fn native_intermediate_rounds_and_grinding_bind_suffix_successors() {
-    check!(SuffixProver, protocol(9, 1, true), 0, 2);
+    check!(F, SuffixProver, protocol(9, 1, true), 0, 2);
 }
 #[test]
 fn native_mixed_height_and_column_batches_bind_every_prescribed_reading() {
@@ -255,9 +259,14 @@ fn native_mixed_height_and_column_batches_bind_every_prescribed_reading() {
         ),
         TableSpec::new(TableShape::new(3, 1), vec![]),
     ]);
-    check!(SuffixProver, protocol, 0, 0);
+    check!(F, SuffixProver, protocol, 0, 0);
 }
 #[test]
 fn native_zero_closing_rounds_and_leaf_caps_preserve_transcript() {
-    check!(SuffixProver, protocol(2, 1, true), 1, 0);
+    check!(F, SuffixProver, protocol(2, 1, true), 1, 0);
+}
+
+#[test]
+fn tower32_whir_keeps_base_rows_narrow_and_challenges_wide() {
+    check!(BinaryField32, SuffixProver, protocol(2, 2, true), 0, 1);
 }

@@ -711,7 +711,10 @@ fn push_fold<F: RecursiveBinaryWhirTowerField>(
     }
 }
 
-impl BinaryWhirInputShape<BinaryField128> {
+impl<F: RecursiveBinaryWhirTowerField> BinaryWhirInputShape<F>
+where
+    BinaryField128: ExtensionField<F>,
+{
     pub fn allocate_native_targets(
         &self,
         b: &mut CircuitBuilder<BinaryField128>,
@@ -722,11 +725,14 @@ impl BinaryWhirInputShape<BinaryField128> {
         })
     }
 }
-impl NativeBinaryWhirInput<BinaryField128> {
+impl<F: RecursiveBinaryWhirTowerField> NativeBinaryWhirInput<F>
+where
+    BinaryField128: ExtensionField<F>,
+{
     /// Shape-directed packing of scalar fields and ungrouped digest words.
     pub fn private_native_values(
         &self,
-        expected: &BinaryWhirInputShape<BinaryField128>,
+        expected: &BinaryWhirInputShape<F>,
     ) -> Result<Vec<BinaryField128>, VerificationError> {
         if &self.shape != expected {
             return Err(invalid("binary WHIR input belongs to a different verifier"));

@@ -3,7 +3,7 @@
 use core::hash::Hash;
 use core::marker::PhantomData;
 
-use p3_binary_field::{BinaryField128, Poly64, Poly192, TowerLevel};
+use p3_binary_field::{BinaryField128, Poly64, Poly192};
 use p3_circuit::ops::{
     BinaryPoly64Target, BinaryPoly192Target, BinaryTower128Target, NativeTower128Target,
     binary_host::BinaryCircuitHost,
@@ -32,7 +32,10 @@ pub(crate) trait BinaryRelationPolicy<EF: Field + Eq + Hash>: sealed::Relation {
         b: &mut CircuitBuilder<EF>,
         value: &Self::BaseTarget,
     ) -> Result<Self::ChallengeTarget, CircuitBuilderError>;
-    fn constrain_base(b: &mut CircuitBuilder<EF>, value: &Self::BaseTarget);
+    fn constrain_base(
+        b: &mut CircuitBuilder<EF>,
+        value: &Self::BaseTarget,
+    ) -> Result<(), CircuitBuilderError>;
     fn constrain_challenge(b: &mut CircuitBuilder<EF>, value: &Self::ChallengeTarget);
     fn add(
         b: &mut CircuitBuilder<EF>,
@@ -70,8 +73,12 @@ where
     ) -> Result<BinaryTower128Target, CircuitBuilderError> {
         Ok(value.clone())
     }
-    fn constrain_base(b: &mut CircuitBuilder<EF>, value: &BinaryTower128Target) {
+    fn constrain_base(
+        b: &mut CircuitBuilder<EF>,
+        value: &BinaryTower128Target,
+    ) -> Result<(), CircuitBuilderError> {
         constrain_tower_width(b, value, F::RAW_BITS);
+        Ok(())
     }
     fn constrain_challenge(b: &mut CircuitBuilder<EF>, value: &BinaryTower128Target) {
         constrain_tower_width(b, value, E::RAW_BITS);
@@ -114,7 +121,12 @@ impl<EF: Field + Eq + Hash> BinaryRelationPolicy<EF> for Poly64Relation {
         let zero = b.binary_poly64_constant(0)?;
         Ok(b.binary_poly192_from_coefficients([value.clone(), zero.clone(), zero]))
     }
-    fn constrain_base(_b: &mut CircuitBuilder<EF>, _value: &BinaryPoly64Target) {}
+    fn constrain_base(
+        _b: &mut CircuitBuilder<EF>,
+        _value: &BinaryPoly64Target,
+    ) -> Result<(), CircuitBuilderError> {
+        Ok(())
+    }
     fn constrain_challenge(_b: &mut CircuitBuilder<EF>, _value: &BinaryPoly192Target) {}
     fn add(
         b: &mut CircuitBuilder<EF>,
@@ -267,10 +279,14 @@ impl<EF: Field + Eq + Hash> BinaryProtocolPolicy<EF> for Poly64Relation {
 }
 
 /// Arithmetic in the exact native Wiedemann carrier; no basis reinterpretation.
-pub(crate) struct NativeTower128Relation;
-impl sealed::Relation for NativeTower128Relation {}
-impl BinaryRelationPolicy<BinaryField128> for NativeTower128Relation {
-    type Base = BinaryField128;
+pub(crate) struct NativeTower128Relation<F = BinaryField128>(PhantomData<F>);
+impl<F> sealed::Relation for NativeTower128Relation<F> {}
+impl<F: RecursiveBinaryTowerField> BinaryRelationPolicy<BinaryField128>
+    for NativeTower128Relation<F>
+where
+    BinaryField128: ExtensionField<F>,
+{
+    type Base = F;
     type Challenge = BinaryField128;
     type BaseTarget = NativeTower128Target;
     type ChallengeTarget = NativeTower128Target;
@@ -286,7 +302,15 @@ impl BinaryRelationPolicy<BinaryField128> for NativeTower128Relation {
     ) -> Result<NativeTower128Target, CircuitBuilderError> {
         Ok(*value)
     }
-    fn constrain_base(_b: &mut CircuitBuilder<BinaryField128>, _value: &NativeTower128Target) {}
+    fn constrain_base(
+        b: &mut CircuitBuilder<BinaryField128>,
+        value: &NativeTower128Target,
+    ) -> Result<(), CircuitBuilderError> {
+        if F::RAW_BITS < 128 {
+            b.binary_decompose_coordinates(value.as_expr(), F::RAW_BITS)?;
+        }
+        Ok(())
+    }
     fn constrain_challenge(_b: &mut CircuitBuilder<BinaryField128>, _value: &NativeTower128Target) {
     }
     fn add(
@@ -304,7 +328,11 @@ impl BinaryRelationPolicy<BinaryField128> for NativeTower128Relation {
         b.native_tower128_mul(a, c)
     }
 }
-impl BinaryProtocolPolicy<BinaryField128> for NativeTower128Relation {
+impl<F: RecursiveBinaryTowerField> BinaryProtocolPolicy<BinaryField128>
+    for NativeTower128Relation<F>
+where
+    BinaryField128: ExtensionField<F>,
+{
     fn observe<H: BinaryCircuitHost<BinaryField128>>(
         b: &mut CircuitBuilder<BinaryField128>,
         ch: &mut BinaryTower128Challenger,
@@ -443,7 +471,10 @@ where
         Ok(value.clone())
     }
 }
-impl BinaryTowerPolicy<BinaryField128> for NativeTower128Relation {
+impl<F: RecursiveBinaryTowerField> BinaryTowerPolicy<BinaryField128> for NativeTower128Relation<F>
+where
+    BinaryField128: ExtensionField<F>,
+{
     fn word_bytes<H: BinaryCircuitHost<BinaryField128>>(
         b: &mut CircuitBuilder<BinaryField128>,
         value: &NativeTower128Target,
@@ -473,9 +504,9 @@ impl BinaryTowerPolicy<BinaryField128> for NativeTower128Relation {
         index_bits: &[ExprId],
         num_variables: usize,
     ) -> Result<alloc::vec::Vec<NativeTower128Target>, CircuitBuilderError> {
-        if index_bits.len() > 128 || num_variables > 128 {
+        if index_bits.len() > F::RAW_BITS || num_variables > F::RAW_BITS {
             return Err(CircuitBuilderError::BinaryDecompositionTooManyBits {
-                expected: 128,
+                expected: F::RAW_BITS,
                 n_bits: index_bits.len().max(num_variables),
             });
         }
@@ -487,11 +518,8 @@ impl BinaryTowerPolicy<BinaryField128> for NativeTower128Relation {
             .map(|shift| {
                 let mut value = b.native_tower128_constant(0);
                 for (j, &bit) in index_bits.iter().skip(shift).enumerate() {
-                    let term = Self::constant_times_bit(
-                        b,
-                        bit,
-                        BinaryField128::cantor_basis(j).to_repr(),
-                    )?;
+                    let term =
+                        Self::constant_times_bit(b, bit, F::cantor_basis(j).raw_coordinates())?;
                     value = b.native_tower128_add(&value, &term);
                 }
                 Ok(value)

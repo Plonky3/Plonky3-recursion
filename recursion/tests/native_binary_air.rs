@@ -4,7 +4,7 @@ use p3_air::{
     Air, AirBuilder, BaseAir, WindowAccess,
     boundary::{BoundaryEnd, BoundaryPublic},
 };
-use p3_binary_field::{BinaryField128, TowerLevel};
+use p3_binary_field::{BinaryField32, BinaryField128, TowerLevel};
 use p3_binary_pcs::{BinaryPcsConfig, BinaryPcsParams};
 use p3_circuit::{
     CircuitBuilder,
@@ -20,6 +20,72 @@ use p3_recursion::{
 use std::borrow::Cow;
 
 type F = BinaryField128;
+
+struct NarrowAir;
+impl BaseAir<BinaryField32> for NarrowAir {
+    fn width(&self) -> usize {
+        1
+    }
+    fn num_public_values(&self) -> usize {
+        1
+    }
+    fn main_next_row_columns(&self) -> Vec<usize> { vec![] }
+}
+impl<AB: AirBuilder<F = BinaryField32>> Air<AB> for NarrowAir {
+    fn eval(&self, b: &mut AB) {
+        let main = b.main();
+        let value = main.current_slice()[0];
+        let public = b.public_values()[0];
+        b.when_first_row().assert_eq(value * value, public);
+    }
+}
+
+#[test]
+fn tower32_air_uses_native_challenges_and_rejects_high_base_coordinates() {
+    let plan = BinaryAirConstraintPlan::<BinaryField32, F>::from_air(&NarrowAir, 1).unwrap();
+    let mut b = CircuitBuilder::<F>::new();
+    let current = [scalar(&mut b)];
+    let public = [scalar(&mut b)];
+    let point = [scalar(&mut b)];
+    let alpha = scalar(&mut b);
+    let folded = plan
+        .evaluate_native(&mut b, &point, &current, &[], &public, &alpha)
+        .unwrap();
+    let expected = scalar(&mut b);
+    let difference = b.sub(folded.as_expr(), expected.as_expr());
+    b.assert_zero(difference);
+    let circuit = b.build().unwrap();
+    let current = F::from_repr(0xfedcba98765432108123456789abcdef);
+    let public = F::from_repr(0x8912);
+    let point = F::from_repr(0x8123456789abcdeffedcba9876543210);
+    let alpha = F::from_repr(0x9876543210abcdef0123456789abcdef);
+    let expected = (F::ONE + point) * (current * current + public);
+    let values = [current, public, point, alpha, expected];
+    let mut runner = circuit.runner();
+    runner.set_public_inputs(&values).unwrap();
+    runner.run().unwrap();
+    for high in [1u128 << 32, 1u128 << 127] {
+        let mut wrong = values;
+        wrong[1] += F::from_repr(high);
+        // Keep the folded equation satisfied so only base-field membership
+        // rejects the assignment.
+        wrong[4] = (F::ONE + point) * (current * current + wrong[1]);
+        let mut runner = circuit.runner();
+        assert!(
+            runner
+                .set_public_inputs(&wrong)
+                .and_then(|()| runner.run())
+                .is_err()
+        );
+    }
+    let mut b = CircuitBuilder::<F>::new();
+    let zero = b.native_tower128_constant(0);
+    let invalid = b.native_tower128_constant(1u128 << 32);
+    assert!(
+        plan.evaluate_native(&mut b, &[zero], &[zero], &[], &[invalid], &zero)
+            .is_err()
+    );
+}
 
 struct DenseAir {
     periods: Vec<Vec<F>>,

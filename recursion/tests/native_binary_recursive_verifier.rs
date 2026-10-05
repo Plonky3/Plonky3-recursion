@@ -1,6 +1,7 @@
 //! A complete native verifier binds the product bus, AIR and both PCS openings.
 
-use p3_binary_field::{BinaryField128, TowerLevel};
+use p3_binary_field::{BinaryField32, BinaryField128, TowerLevel};
+use p3_circuit::ops::binary_native::BinaryCoordinateField;
 use p3_circuit::{
     Circuit, CircuitBuilder,
     ops::{
@@ -9,7 +10,8 @@ use p3_circuit::{
     },
 };
 use p3_circuit_prover::native_bus::NativeBusCircuit;
-use p3_field::PrimeCharacteristicRing;
+use p3_field::{ExtensionField, PrimeCharacteristicRing};
+use p3_recursion::pcs::binary::RecursiveBinaryWhirTowerField;
 use p3_recursion::{
     BinaryTower128Challenger,
     artifact::{
@@ -32,8 +34,29 @@ fn run(circuit: &Circuit<F>, public: &[F], private: &[F]) -> bool {
 
 #[test]
 fn native_verifier_closes_a_bus_proof_with_trusted_preprocessing() {
-    let [a, factor, constant] = [0x8123456789abcdef, 0xfedcba9876543210, 0x8912].map(F::from_repr);
-    let mut b = CircuitBuilder::<F>::new();
+    close_bus_proof::<F>();
+}
+
+#[test]
+fn tower32_child_is_closed_in_a_tower128_verifier() {
+    close_bus_proof::<BinaryField32>();
+}
+
+fn close_bus_proof<B>()
+where
+    B: RecursiveBinaryWhirTowerField
+        + BinaryCoordinateField
+        + p3_binary_dft::EncodableLevel
+        + p3_binary_pcs::FoldAlphabet<F>
+        + p3_field::PackedValue<Value = B>
+        + Ord,
+    F: ExtensionField<B> + p3_binary_pcs::ChallengeField<B>,
+    p3_binary_pcs::whir::BinaryWhirDomain<B>: p3_whir::WhirDomain<B, F>,
+{
+    let mask = u128::MAX >> (128 - B::RAW_BITS);
+    let [a, factor, constant] = [0x8123456789abcdef, 0xfedcba9876543210, 0x8912]
+        .map(|raw| B::from_raw_coordinates(raw & mask).unwrap());
+    let mut b = CircuitBuilder::<B>::new();
     let input = b.public_input();
     let expected = b.public_input();
     let private = b.alloc_private_input("factor");
@@ -45,7 +68,7 @@ fn native_verifier_closes_a_bus_proof_with_trusted_preprocessing() {
     let circuit = b.build().unwrap();
     let prepared = NativeBusCircuit::new(&circuit, "native").unwrap();
     let parameters = |n| {
-        BinaryNativeWhirPcsParameters::<F>::new(
+        BinaryNativeWhirPcsParameters::<B>::new(
             n,
             ProtocolParameters {
                 security_level: 8,
@@ -69,7 +92,7 @@ fn native_verifier_closes_a_bus_proof_with_trusted_preprocessing() {
         max_tau_draws: 8,
         security_bits: 4,
     };
-    let (prover, authority) = BinaryNativeWhirAuthority::<F, _>::setup(
+    let (prover, authority) = BinaryNativeWhirAuthority::<B, _>::setup(
         prepared.airs().to_vec(),
         prepared.log_heights().to_vec(),
         spec,
@@ -125,11 +148,20 @@ fn native_verifier_closes_a_bus_proof_with_trusted_preprocessing() {
         .unwrap();
     let recursive = b.build().unwrap();
     let private = token.native_input().private_native_values(&shape).unwrap();
-    let flat: Vec<_> = public.iter().flatten().copied().collect();
+    let flat: Vec<_> = public
+        .iter()
+        .flatten()
+        .map(|value| F::from_repr(value.raw_coordinates()))
+        .collect();
     assert!(run(&recursive, &flat, &private));
     let mut wrong = flat.clone();
     wrong[1] += F::ONE;
     assert!(!run(&recursive, &wrong, &private));
+    if B::RAW_BITS < 128 {
+        let mut high = flat.clone();
+        high[0] += F::from_repr(1u128 << B::RAW_BITS);
+        assert!(!run(&recursive, &high, &private));
+    }
     for index in [0, 16, private.len() - 1] {
         let mut wrong = private.clone();
         wrong[index] += F::ONE;

@@ -737,7 +737,10 @@ fn invalid(message: &'static str) -> VerificationError {
     VerificationError::InvalidProofShape(message.into())
 }
 
-impl BinaryWhirMultiStarkInputShape<BinaryField128> {
+impl<F: RecursiveBinaryWhirTowerField> BinaryWhirMultiStarkInputShape<F>
+where
+    BinaryField128: ExtensionField<F>,
+{
     /// Scalar input traversal for the bus/AIR native backend. Indexed plans
     /// require a different native reduction and are rejected before allocation.
     pub fn allocate_native_targets(
@@ -778,10 +781,13 @@ impl BinaryWhirMultiStarkInputShape<BinaryField128> {
         })
     }
 }
-impl NativeBinaryWhirMultiStarkInput<BinaryField128> {
+impl<F: RecursiveBinaryWhirTowerField> NativeBinaryWhirMultiStarkInput<F>
+where
+    BinaryField128: ExtensionField<F>,
+{
     pub fn private_native_values(
         &self,
-        expected: &BinaryWhirMultiStarkInputShape<BinaryField128>,
+        expected: &BinaryWhirMultiStarkInputShape<F>,
     ) -> Result<Vec<BinaryField128>, VerificationError> {
         if &self.shape != expected {
             return Err(invalid(
@@ -828,7 +834,10 @@ impl NativeBinaryWhirMultiStarkInput<BinaryField128> {
         Ok(values)
     }
 }
-impl BinaryWhirMultiStarkVerifier<BinaryField128> {
+impl<F: RecursiveBinaryWhirTowerField> BinaryWhirMultiStarkVerifier<F>
+where
+    BinaryField128: ExtensionField<F>,
+{
     pub(crate) fn check_native_circuit_support(&self) -> Result<(), VerificationError> {
         if self.relation.indexed.is_some() {
             return Err(invalid(
@@ -900,7 +909,7 @@ impl BinaryWhirMultiStarkVerifier<BinaryField128> {
             )?;
         let mut reduction = self
             .relation
-            .reduce_common::<NativeTower128Relation, NativeBinaryEncoding, BinaryField128>(
+            .reduce_common::<NativeTower128Relation<F>, NativeBinaryEncoding, BinaryField128>(
                 b, ch, public, &common,
             )?;
         let heights: Vec<_> = self
@@ -948,7 +957,7 @@ impl BinaryWhirMultiStarkVerifier<BinaryField128> {
             continuation = next;
         }
         self.relation
-            .finish_common::<NativeTower128Relation, BinaryField128>(
+            .finish_common::<NativeTower128Relation<F>, BinaryField128>(
                 b,
                 public,
                 &reduction,

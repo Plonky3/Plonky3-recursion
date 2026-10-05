@@ -590,7 +590,10 @@ fn check_opening<T>(
     }
 }
 
-impl BinaryWhirVerifier<BinaryField128> {
+impl<F: RecursiveBinaryWhirTowerField> BinaryWhirVerifier<F>
+where
+    BinaryField128: ExtensionField<F>,
+{
     /// Complete authenticated additive WHIR relation over native scalar cells.
     pub fn verify_at_native(
         &self,
@@ -606,7 +609,7 @@ impl BinaryWhirVerifier<BinaryField128> {
         ),
         VerificationError,
     > {
-        self.verify_at_using::<NativeTower128Relation, NativeBinaryEncoding, BinaryField128>(
+        self.verify_at_using::<NativeTower128Relation<F>, NativeBinaryEncoding, BinaryField128>(
             b, ch, cap, points, proof,
         )
     }

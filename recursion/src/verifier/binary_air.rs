@@ -305,7 +305,10 @@ where
     }
 }
 
-impl BinaryAirConstraintPlan<BinaryField128, BinaryField128> {
+impl<F: RecursiveBinaryTowerField> BinaryAirConstraintPlan<F, BinaryField128>
+where
+    BinaryField128: ExtensionField<F>,
+{
     /// Computes only the scalar AIR fold; the caller authenticates every opening.
     pub fn evaluate_native(
         &self,
@@ -330,7 +333,7 @@ impl BinaryAirConstraintPlan<BinaryField128, BinaryField128> {
         public: &[NativeTower128Target],
         alpha: &NativeTower128Target,
     ) -> Result<NativeTower128Target, VerificationError> {
-        self.evaluate_using::<NativeTower128Relation, BinaryField128>(
+        self.evaluate_using::<NativeTower128Relation<F>, BinaryField128>(
             b,
             point,
             current,
@@ -734,7 +737,7 @@ impl AirProgram {
             P::constrain_challenge(b, value);
         }
         for value in public {
-            P::constrain_base(b, value);
+            P::constrain_base(b, value)?;
         }
         let one = P::constant(b, 1)?;
         let mut first = one.clone();
