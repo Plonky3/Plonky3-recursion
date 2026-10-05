@@ -52,6 +52,10 @@ pub enum VerificationError {
     #[error("Circuit builder error: {0}")]
     CircuitBuilder(#[from] CircuitBuilderError),
 
+    /// Error preparing or tracing the native binary output circuit.
+    #[error(transparent)]
+    NativeBusCircuit(#[from] p3_circuit_prover::native_bus::NativeBusCircuitError),
+
     /// Invalid state-transition layout or runtime child statements.
     #[error(transparent)]
     StateTransition(#[from] StateTransitionError),

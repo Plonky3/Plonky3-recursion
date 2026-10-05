@@ -4,6 +4,7 @@ mod aggregation;
 mod binary;
 pub(crate) mod input;
 mod layer;
+mod native_binary;
 pub(crate) mod prover;
 mod trusted;
 
@@ -23,6 +24,9 @@ pub use binary::{
 };
 pub use input::{NativeCommitment, PreparedInput, PreparedSource};
 pub use layer::PreparedLayer;
+pub use native_binary::{
+    NativeBinaryRecursionOptions, NativeBinaryRecursiveProof, PreparedNativeBinaryWhirLayer,
+};
 pub use p3_circuit::VerifiedStatementTargets;
 use p3_circuit::{
     CircuitBuilder, CircuitRunner, NonPrimitiveOpId, StatementField, StatementSchema,
