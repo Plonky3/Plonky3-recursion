@@ -80,12 +80,12 @@ fn dense(i: u64) -> Poly192 {
 }
 
 fn compare<A>(
-    air: A,
+    air: &A,
     height: usize,
-    current: Vec<Poly192>,
-    next: Vec<Poly192>,
-    public: Vec<Poly64>,
-    point: Vec<Poly192>,
+    current: &[Poly192],
+    next: &[Poly192],
+    public: &[Poly64],
+    point: &[Poly192],
     alpha: Poly192,
 ) -> (
     BinaryPolyAirConstraintPlan,
@@ -97,9 +97,9 @@ where
         + Air<BusSymbolicBuilder<Poly64, Poly192>>
         + for<'a> Air<MultilinearFolder<'a, Poly64, Poly192, Poly192>>,
 {
-    let plan = BinaryPolyAirConstraintPlan::from_air(&air, height).unwrap();
-    let native = MultilinearFolder::new(&current, &next, BoundaryEvals::at(&point), &public, alpha)
-        .eval_air(&air);
+    let plan = BinaryPolyAirConstraintPlan::from_air(air, height).unwrap();
+    let native = MultilinearFolder::new(current, next, BoundaryEvals::at(point), public, alpha)
+        .eval_air(air);
     let mut b = CircuitBuilder::<BabyBear>::new();
     let current_targets = (0..current.len())
         .map(|_| extension_input(&mut b))
@@ -155,16 +155,16 @@ where
 #[test]
 fn recurrence_fold_matches_native_with_all_three_challenge_coefficients() {
     let (plan, circuit, values) = compare(
-        RecurrenceAir,
+        &RecurrenceAir,
         2,
-        vec![dense(3), dense(7)],
-        vec![dense(11), dense(19)],
-        vec![
+        &[dense(3), dense(7)],
+        &[dense(11), dense(19)],
+        &[
             Poly64::new(0x9012_3456_789a_bcde),
             Poly64::new(0x57a9_83b1_de02_1365),
             Poly64::new(0xfefd_fcfb_faf9_f8f7),
         ],
-        vec![dense(53), dense(61)],
+        &[dense(53), dense(61)],
         dense(71),
     );
     assert_eq!(plan.constraint_degree(), 3);
@@ -181,12 +181,12 @@ fn recurrence_fold_matches_native_with_all_three_challenge_coefficients() {
 #[test]
 fn ordinary_boolean_assertions_remain_polynomial_constraints() {
     let (plan, _, _) = compare(
-        BooleanAir,
+        &BooleanAir,
         1,
-        vec![dense(11)],
-        vec![dense(13)],
-        vec![],
-        vec![dense(17)],
+        &[dense(11)],
+        &[dense(13)],
+        &[],
+        &[dense(17)],
         dense(19),
     );
     assert_eq!(plan.constraint_degree(), 2);

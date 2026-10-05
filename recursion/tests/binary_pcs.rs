@@ -44,6 +44,8 @@ fn batches(config: &BinaryPcsConfig) -> impl Iterator<Item = (usize, usize)> + '
         })
 }
 
+type RoundOpening = (Vec<[u8; 32]>, Vec<Native>, Vec<Vec<[u8; 32]>>);
+
 struct Fixture {
     imported: NativeBinaryPcsInput,
     config: BinaryPcsConfig,
@@ -51,7 +53,7 @@ struct Fixture {
     cap: Vec<[u8; 32]>,
     sumcheck: Vec<[Native; 2]>,
     evals: Vec<OpeningBatch<Native>>,
-    rounds: Vec<(Vec<[u8; 32]>, Vec<Native>, Vec<Vec<[u8; 32]>>)>,
+    rounds: Vec<RoundOpening>,
     base_rows: Vec<Native>,
     base_paths: Vec<Vec<[u8; 32]>>,
     final_word: Vec<Native>,
@@ -515,7 +517,7 @@ fn native_selectors_and_varied_table_arities_reuse_one_circuit() {
 
 #[test]
 fn native_query_grinding_is_replayed() {
-    let fixture = fixture!(keccak, 7, 1, 1, 0, vec![(1, 1)], 3);
+    let fixture = fixture!(keccak, 7, 1, 1, 0, [(1, 1)], 3);
     let (circuit, public, private) = build(ByteHash::Keccak256, 0, &fixture);
     assert!(runs(&circuit, &public, &private));
     let mut wrong = private.clone();

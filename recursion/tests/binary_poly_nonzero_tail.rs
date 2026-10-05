@@ -18,7 +18,8 @@ macro_rules! differential {
         type E = Poly192;
         let plan = BinaryPolyNonzeroChallengeTailPlan::new(2, 5, $tail).unwrap();
         let mut inner = HashChallenger::new(vec![7; 3], $params::byte_hash());
-        for _ in 0..$skip {
+        let skip = $skip;
+        for _ in 0..skip {
             let _: u8 = inner.sample();
         }
         let mut native = BinaryChallenger::<F, _>::new(inner);

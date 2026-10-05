@@ -18,7 +18,7 @@ const fn limits(nodes: usize) -> CircuitConstructionLimits {
         max_non_primitive_slots: 65536,
     }
 }
-fn budget_error<T>(result: Result<T, VerificationError>) -> bool {
+const fn budget_error<T>(result: &Result<T, VerificationError>) -> bool {
     matches!(
         result,
         Err(VerificationError::CircuitBuilder(
@@ -33,21 +33,21 @@ fn native_input_allocators_stop_at_individual_field_boundaries() {
         BinaryProductGkrVerifier::<F, F>::new(3, 3, ProductGkrRootShape::Distinct).unwrap();
     let mut b = CircuitBuilder::<F>::with_construction_limits(limits(4)).unwrap();
     assert!(budget_error(
-        product.input_shape().allocate_native_targets(&mut b)
+        &product.input_shape().allocate_native_targets(&mut b)
     ));
     assert_eq!(b.construction_usage().unwrap().expression_nodes, 5);
 
     let sumcheck = BinaryGenericSumcheckVerifier::<F, F>::new(4, 5, 0).unwrap();
     let mut b = CircuitBuilder::<F>::with_construction_limits(limits(4)).unwrap();
     assert!(budget_error(
-        sumcheck.input_shape().allocate_native_targets(&mut b)
+        &sumcheck.input_shape().allocate_native_targets(&mut b)
     ));
     assert_eq!(b.construction_usage().unwrap().expression_nodes, 5);
 
     let product = BinaryPolyProductGkrVerifier::new(3, 3, ProductGkrRootShape::Distinct).unwrap();
     let mut b = CircuitBuilder::<Poly64>::with_construction_limits(limits(4)).unwrap();
     assert!(budget_error(
-        product.input_shape().allocate_native_targets(&mut b)
+        &product.input_shape().allocate_native_targets(&mut b)
     ));
     assert_eq!(b.construction_usage().unwrap().expression_nodes, 7);
 }
@@ -82,7 +82,7 @@ fn native_air_stops_inside_the_program_before_build() {
     let point = [scalar(), scalar()];
     let current = [scalar(), scalar(), scalar(), scalar()];
     let alpha = scalar();
-    assert!(budget_error(plan.evaluate_native(
+    assert!(budget_error(&plan.evaluate_native(
         &mut b,
         &point,
         &current,

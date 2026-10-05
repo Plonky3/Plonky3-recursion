@@ -216,7 +216,7 @@ fn malformed_tensor_and_point_shapes_return_errors() {
     assert!(
         binary_tensor_closing_weight::<BinaryField128, BabyBear>(
             &mut builder,
-            &[zero.clone()],
+            std::slice::from_ref(&zero),
             &[],
             &vec![zero.clone(); 7],
             None
@@ -226,8 +226,8 @@ fn malformed_tensor_and_point_shapes_return_errors() {
     assert!(
         binary_tensor_closing_weight::<BinaryField128, BabyBear>(
             &mut builder,
-            &[zero.clone()],
-            &[zero.clone()],
+            std::slice::from_ref(&zero),
+            std::slice::from_ref(&zero),
             &vec![zero.clone(); 7],
             Some((2, &zero))
         )

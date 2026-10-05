@@ -41,14 +41,14 @@ fn native<E: RecursiveBinaryChallengeField>(
     high: Vec<Vec<E>>,
     seed: u128,
 ) -> Fixture<E> {
-    native_hash(specs, high, seed, Keccak256Hash, ByteHash::Keccak256)
+    native_hash(specs, high, seed, &Keccak256Hash, ByteHash::Keccak256)
 }
 
 fn native_hash<E, H>(
     specs: &[BinaryRingClaimSpec],
     high: Vec<Vec<E>>,
     seed: u128,
-    hash: H,
+    hash: &H,
     circuit_hash: ByteHash,
 ) -> Fixture<E>
 where
@@ -71,11 +71,12 @@ where
         .zip(specs)
         .map(|(point, spec)| {
             let point = Point::new(point.clone());
-            match spec.next_rows {
-                Some(rows) => BitRingSwitch::with_successor(&point, rows),
-                None => BitRingSwitch::new(&point),
-            }
-            .unwrap()
+            spec.next_rows
+                .map_or_else(
+                    || BitRingSwitch::new(&point),
+                    |rows| BitRingSwitch::with_successor(&point, rows),
+                )
+                .unwrap()
         })
         .collect();
     let setup = BitRingSwitchClaims::new(reductions.clone()).unwrap();
@@ -322,8 +323,8 @@ fn eight_byte_challenges_and_dynamic_continuations_match_both_hashes() {
         let mut shared_circuit = None;
         for high in [vec![val(1)], vec![BinaryField64::ONE]] {
             let fixture = match hash {
-                ByteHash::Keccak256 => native_hash(&specs, vec![high], 7, Keccak256Hash, hash),
-                ByteHash::Blake3 => native_hash(&specs, vec![high], 7, Blake3, hash),
+                ByteHash::Keccak256 => native_hash(&specs, vec![high], 7, &Keccak256Hash, hash),
+                ByteHash::Blake3 => native_hash(&specs, vec![high], 7, &Blake3, hash),
             };
             let (circuit, values) = build(&specs, &fixture);
             let circuit = shared_circuit.get_or_insert(circuit);
@@ -338,8 +339,8 @@ fn eight_byte_challenges_and_dynamic_continuations_match_both_hashes() {
         }];
         let high = vec![vec![BinaryField64::ONE, val(2)]];
         let fixture = match hash {
-            ByteHash::Keccak256 => native_hash(&specs, high, 7, Keccak256Hash, hash),
-            ByteHash::Blake3 => native_hash(&specs, high, 7, Blake3, hash),
+            ByteHash::Keccak256 => native_hash(&specs, high, 7, &Keccak256Hash, hash),
+            ByteHash::Blake3 => native_hash(&specs, high, 7, &Blake3, hash),
         };
         let (circuit, values) = build(&specs, &fixture);
         assert!(run(&circuit, &values));
@@ -352,7 +353,7 @@ fn eight_byte_challenges_and_dynamic_continuations_match_both_hashes() {
         &specs,
         vec![vec![Native::from(val(1))]],
         7,
-        Blake3,
+        &Blake3,
         ByteHash::Blake3,
     );
     let (circuit, values) = build(&specs, &fixture);

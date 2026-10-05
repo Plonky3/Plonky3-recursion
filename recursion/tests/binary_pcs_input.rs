@@ -60,7 +60,9 @@ const fn mmcs() -> Mmcs {
     )
 }
 
-fn native(seed: u128) -> (MerkleCap<Native, [u8; 32]>, Vec<Point<Native>>, Proof, Ch) {
+type NativeOpening = (MerkleCap<Native, [u8; 32]>, Vec<Point<Native>>, Proof, Ch);
+
+fn native(seed: u128) -> NativeOpening {
     let mmcs = mmcs();
     let pcs = BinaryPcs::<Native, Native, _, _>::new(config(), mmcs.clone(), mmcs).unwrap();
     let table = Table::new(RowMajorMatrix::new(

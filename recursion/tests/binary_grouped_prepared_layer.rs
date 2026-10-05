@@ -251,7 +251,6 @@ macro_rules! check {
             .encode_verifier_artifact(artifact_limits)
             .unwrap();
         drop(layer);
-        drop(native);
         drop(pk);
         let portable = PortableVerifier::decode(
             &verifier_bytes,

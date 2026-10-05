@@ -285,6 +285,7 @@ fn bounded_queries_resume_at_the_exact_native_completion_digest() {
             let bits = $bits;
             let count = $count;
             let pow_bits = $pow;
+            let pre_samples = $pre_samples;
             let mut builder = CircuitBuilder::<EF>::new();
             match $hash {
                 ByteHash::Keccak256 => builder.enable_keccak_f1600::<BabyBear>(),
@@ -308,7 +309,7 @@ fn bounded_queries_resume_at_the_exact_native_completion_digest() {
                 &initial,
             )
             .unwrap();
-            for _ in 0..$pre_samples {
+            for _ in 0..pre_samples {
                 let _ = ch.sample::<BabyBear, EF>(&mut builder).unwrap();
             }
             ch.check_witness::<BabyBear, EF>(&mut builder, pow_bits, &pow)
@@ -338,7 +339,7 @@ fn bounded_queries_resume_at_the_exact_native_completion_digest() {
             for seed in 0..10u8 {
                 let mut ch =
                     BinaryChallenger::<BinaryField128, _>::from_hasher(vec![seed; 7], $native_hash);
-                for _ in 0..$pre_samples {
+                for _ in 0..pre_samples {
                     let _ = ch.sample_algebra_element::<BinaryField128>();
                 }
                 let pow = if pow_bits == 0 {

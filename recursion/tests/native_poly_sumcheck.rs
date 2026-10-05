@@ -130,8 +130,7 @@ fn native_poly_sumcheck_matches_claims_grinding_and_resumed_draws() {
             bind(&mut b, &actual);
             let circuit = b.build().unwrap();
             let private = imported.private_native_values(&shape).unwrap();
-            let public: Vec<_> = [claimed_sum]
-                .into_iter()
+            let public: Vec<_> = std::iter::once(claimed_sum)
                 .chain(point.iter().copied())
                 .chain([claim, next])
                 .flat_map(|value| value.coefficients())

@@ -114,8 +114,7 @@ fn scalar_sumcheck_matches_native_claims_grinding_and_resumed_draws() {
             bind(&mut b, &actual);
             let circuit = b.build().unwrap();
             let private = imported.private_native_values(&shape).unwrap();
-            let public: Vec<_> = [claimed_sum]
-                .into_iter()
+            let public: Vec<_> = std::iter::once(claimed_sum)
                 .chain(point.iter().copied())
                 .chain([claim, next])
                 .collect();

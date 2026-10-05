@@ -161,7 +161,10 @@ fn malformed_evaluation_geometry_is_rejected() {
     let mut b = CircuitBuilder::<BabyBear>::new();
     let zero = b.binary128_constant(0).unwrap();
     assert!(binary128_eval_multilinear(&mut b, &[], &[]).is_err());
-    assert!(binary128_eval_coefficients(&mut b, &vec![zero.clone(); 3], &[zero.clone()]).is_err());
+    assert!(
+        binary128_eval_coefficients(&mut b, &vec![zero.clone(); 3], std::slice::from_ref(&zero))
+            .is_err()
+    );
     assert!(binary128_select_eval(&mut b, &[zero], &[]).is_err());
     assert!(
         binary_whir_query_point::<BinaryField32, BabyBear>(
