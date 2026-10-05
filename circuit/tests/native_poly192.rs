@@ -5,6 +5,59 @@ use p3_circuit::CircuitBuilder;
 use p3_field::{Field, PrimeCharacteristicRing};
 
 #[test]
+fn native_cubic_coordinates_bind_all_three_coefficients() {
+    let mut builder = CircuitBuilder::<Poly64>::new();
+    let coefficients = builder.alloc_public_input_array::<3>("coefficients");
+    let expected = builder.alloc_public_input_array::<192>("coordinates");
+    let value = builder.native_poly192_from_coefficients(coefficients);
+    let bits = builder.native_poly192_to_bits(&value).unwrap();
+    for (&actual, &expected) in bits.iter().zip(&expected) {
+        builder.connect(actual, expected);
+    }
+    let recomposed = builder.native_poly192_from_bits(expected).unwrap();
+    for (&actual, &expected) in recomposed.coefficients().iter().zip(&coefficients) {
+        builder.connect(actual, expected);
+    }
+    let circuit = builder.build().unwrap();
+    for raw in [
+        [0, 0, 1 << 63],
+        [u64::MAX, 0x8123456789abcdef, 0xfedcba9876543210],
+    ] {
+        let public: Vec<_> = raw
+            .into_iter()
+            .map(Poly64::new)
+            .chain(
+                raw.into_iter()
+                    .flat_map(|word| (0..64).map(move |i| Poly64::from_bool(word >> i & 1 != 0))),
+            )
+            .collect();
+        let mut runner = circuit.runner();
+        runner.set_public_inputs(&public).unwrap();
+        runner.run().unwrap();
+        for index in [0, 1, 2, 3 + 64, 3 + 191] {
+            let mut wrong = public.clone();
+            wrong[index] += Poly64::ONE;
+            let mut runner = circuit.runner();
+            assert!(
+                runner
+                    .set_public_inputs(&wrong)
+                    .and_then(|()| runner.run())
+                    .is_err()
+            );
+        }
+        let mut non_boolean = public;
+        non_boolean[3] = Poly64::new(2);
+        let mut runner = circuit.runner();
+        assert!(
+            runner
+                .set_public_inputs(&non_boolean)
+                .and_then(|()| runner.run())
+                .is_err()
+        );
+    }
+}
+
+#[test]
 fn native_cubic_arithmetic_matches_the_released_field() {
     let mut builder = CircuitBuilder::<Poly64>::new();
     let a = builder.alloc_public_input_array("a");

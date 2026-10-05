@@ -3,7 +3,7 @@
 use p3_binary_field::Poly64;
 use p3_field::PrimeCharacteristicRing;
 
-use crate::{CircuitBuilder, ExprId};
+use crate::{CircuitBuilder, CircuitBuilderError, ExprId};
 
 /// `a0 + a1*y + a2*y²`, with native Poly64 coefficients and `y³ = y + 1`.
 ///
@@ -21,6 +21,31 @@ impl NativePoly192Target {
 }
 
 impl CircuitBuilder<Poly64> {
+    /// Low-first raw coordinates of coefficient 0, then 1, then 2. Each
+    /// coordinate is Boolean and reconstructed in the coefficient's own basis.
+    pub fn native_poly192_from_bits(
+        &mut self,
+        bits: [ExprId; 192],
+    ) -> Result<NativePoly192Target, CircuitBuilderError> {
+        let mut coefficients = [ExprId::ZERO; 3];
+        for (coefficient, bits) in coefficients.iter_mut().zip(bits.chunks_exact(64)) {
+            *coefficient = self.binary_recompose_coordinates(bits)?;
+        }
+        Ok(self.native_poly192_from_coefficients(coefficients))
+    }
+
+    /// Materializes checked raw bits only at a serialization boundary.
+    pub fn native_poly192_to_bits(
+        &mut self,
+        value: &NativePoly192Target,
+    ) -> Result<[ExprId; 192], CircuitBuilderError> {
+        let mut bits = [ExprId::ZERO; 192];
+        for (&coefficient, output) in value.coefficients.iter().zip(bits.chunks_exact_mut(64)) {
+            output.copy_from_slice(&self.binary_decompose_coordinates(coefficient, 64)?);
+        }
+        Ok(bits)
+    }
+
     pub const fn native_poly192_from_coefficients(
         &self,
         coefficients: [ExprId; 3],
