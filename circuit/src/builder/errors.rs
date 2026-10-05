@@ -9,6 +9,18 @@ use crate::types::NonPrimitiveOpId;
 /// Errors that can occur during circuit building/lowering.
 #[derive(Debug, Error)]
 pub enum CircuitBuilderError {
+    /// Retained construction entries exceed the caller's independent budget.
+    #[error("circuit construction {component} requires {actual} entries, exceeding limit {limit}")]
+    ConstructionLimitExceeded {
+        component: &'static str,
+        actual: usize,
+        limit: usize,
+    },
+
+    /// Construction resource accounting cannot fit in usize.
+    #[error("circuit construction {component} count overflowed")]
+    ConstructionResourceOverflow { component: &'static str },
+
     /// Expression not found in the witness mapping during lowering.
     #[error("Expression {expr_id:?} not found in witness mapping: {context}")]
     MissingExprMapping { expr_id: ExprId, context: String },

@@ -27,8 +27,8 @@ pub mod types;
 #[cfg(feature = "debugging")]
 pub use alloc_entry::{AllocationEntry, AllocationLog, AllocationType};
 pub use builder::{
-    CircuitBuilder, CircuitBuilderError, NonPrimitiveOperationData, NpoCircuitPlugin,
-    NpoLoweringContext, VerifiedStatementTargets,
+    CircuitBuilder, CircuitBuilderError, CircuitConstructionLimits, CircuitConstructionUsage,
+    NonPrimitiveOperationData, NpoCircuitPlugin, NpoLoweringContext, VerifiedStatementTargets,
 };
 pub use circuit::{Circuit, PreprocessedColumns};
 #[cfg(feature = "debugging")]

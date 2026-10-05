@@ -3,6 +3,7 @@
 mod circuit_builder;
 pub mod compiler;
 mod config;
+mod construction;
 mod errors;
 mod expression_builder;
 pub(crate) mod npo;
@@ -10,6 +11,7 @@ mod public_input_tracker;
 
 pub use circuit_builder::{CircuitBuilder, VerifiedStatementTargets};
 pub use config::BuilderConfig;
+pub use construction::{CircuitConstructionLimits, CircuitConstructionUsage};
 pub use errors::CircuitBuilderError;
 pub use expression_builder::ExpressionBuilder;
 #[cfg(feature = "profiling")]

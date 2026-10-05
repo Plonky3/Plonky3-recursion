@@ -17,7 +17,10 @@ use p3_symmetric::Permutation;
 use super::OpCounts;
 use super::compiler::{ExpressionLowerer, LoweringResult, Optimizer};
 use super::npo::{NonPrimitiveOpParams, NonPrimitiveOperationData, NpoCircuitPlugin};
-use super::{BuilderConfig, ExpressionBuilder, PublicInputTracker};
+use super::{
+    BuilderConfig, CircuitConstructionLimits, CircuitConstructionUsage, ExpressionBuilder,
+    PublicInputTracker,
+};
 use crate::circuit::Circuit;
 use crate::ops::poseidon_perm::PoseidonPermExec;
 use crate::ops::poseidon1_perm::{
@@ -206,6 +209,9 @@ pub struct CircuitBuilder<F: Field> {
 
     /// Non-primitive operations (complex constraints that don't produce `ExprId`s)
     non_primitive_ops: Vec<NonPrimitiveOperationData<F>>,
+    construction_limits: Option<CircuitConstructionLimits>,
+    // None retains arithmetic overflow; checkpoints never rescan prior calls.
+    non_primitive_slots: Option<usize>,
 
     /// Builder configuration
     config: BuilderConfig,
@@ -296,6 +302,41 @@ impl<F> CircuitBuilder<F>
 where
     F: Field + PrimeCharacteristicRing + Eq + Hash,
 {
+    /// Creates a builder with immutable construction budgets. The initial ZERO
+    /// node is included. Final witness/operation limits remain independent.
+    pub fn with_construction_limits(
+        limits: CircuitConstructionLimits,
+    ) -> Result<Self, CircuitBuilderError> {
+        let mut builder = Self::new();
+        builder.construction_limits = Some(limits);
+        builder.check_construction_limits()?;
+        Ok(builder)
+    }
+
+    /// Returns exact retained construction entry counts in constant time.
+    pub fn construction_usage(&self) -> Result<CircuitConstructionUsage, CircuitBuilderError> {
+        Ok(CircuitConstructionUsage {
+            expression_nodes: self.expr_builder.graph().nodes().len(),
+            pending_connects: self.expr_builder.pending_connects().len(),
+            non_primitive_calls: self.non_primitive_ops.len(),
+            non_primitive_slots: self.non_primitive_slots.ok_or(
+                CircuitBuilderError::ConstructionResourceOverflow {
+                    component: "non-primitive slots",
+                },
+            )?,
+        })
+    }
+
+    /// Checks optional construction limits. Counts are monotone, so an ignored
+    /// checkpoint error also prevents either build entry point from succeeding.
+    #[inline]
+    pub fn check_construction_limits(&self) -> Result<(), CircuitBuilderError> {
+        match self.construction_limits {
+            Some(limits) => limits.check(self.construction_usage()?),
+            None => Ok(()),
+        }
+    }
+
     /// Creates a new circuit builder.
     pub fn new() -> Self {
         Self {
@@ -304,6 +345,8 @@ where
             private_input_tracker: PublicInputTracker::new(),
             witness_alloc: WitnessAllocator::new(),
             non_primitive_ops: Vec::new(),
+            construction_limits: None,
+            non_primitive_slots: Some(0),
             config: BuilderConfig::new(),
             non_primitive_trace_generators: HashMap::new(),
             npo_registry: HashMap::new(),
@@ -1166,6 +1209,18 @@ where
         params: Option<NonPrimitiveOpParams<F>>,
         label: &'static str,
     ) -> (NonPrimitiveOpId, ExprId, Vec<Option<ExprId>>) {
+        self.non_primitive_slots = self
+            .non_primitive_slots
+            .and_then(|count| count.checked_add(input_exprs.len()))
+            .and_then(|count| {
+                input_exprs
+                    .iter()
+                    .try_fold(count, |sum, slot| sum.checked_add(slot.len()))
+            })
+            .and_then(|count| count.checked_add(output_labels.len()))
+            .and_then(|count| {
+                count.checked_add(output_labels.iter().filter(|label| label.is_some()).count())
+            });
         let op_id = NonPrimitiveOpId(self.non_primitive_ops.len() as u32);
 
         #[cfg(feature = "debugging")]
@@ -1370,6 +1425,7 @@ where
     /// Builds the circuit into a Circuit with separate lowering and IR transformation stages.
     /// Returns an error if lowering fails due to an internal inconsistency.
     pub fn build(self) -> Result<Circuit<F>, CircuitBuilderError> {
+        self.check_construction_limits()?;
         self.profile();
 
         let (circuit, _) = self.build_with_public_mapping()?;
@@ -1382,6 +1438,7 @@ where
     pub fn build_with_public_mapping(
         mut self,
     ) -> Result<(Circuit<F>, HashMap<ExprId, WitnessId>), CircuitBuilderError> {
+        self.check_construction_limits()?;
         // Stage 1: Lower expressions and non-primitives into a single op list
         for data in &self.non_primitive_ops {
             self.ensure_op_enabled(&data.op_type)?;
