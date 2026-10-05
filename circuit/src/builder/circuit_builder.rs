@@ -229,6 +229,9 @@ pub struct CircuitBuilder<F: Field> {
     /// Lets `decompose_ext_to_base_coeffs` return those nodes without extra decomposition hints.
     ext_recompose_coeffs: HashMap<ExprId, Vec<ExprId>>,
 
+    /// Fully Boolean, reconstructed native binary coordinates in this graph.
+    native_coordinate_bits: HashMap<ExprId, Vec<ExprId>>,
+
     /// Coefficient wires a constraint pins to a base-field element: the inputs of a
     /// `recompose/coeff` row, whose per-coefficient bus tuple is zero-padded, and `Const`s
     /// holding a base-field element embedded in `F`.
@@ -308,6 +311,7 @@ where
             tag_to_op: HashMap::new(),
             recompose_npo_enabled: false,
             ext_recompose_coeffs: HashMap::new(),
+            native_coordinate_bits: HashMap::new(),
             base_bound_coeffs: HashSet::new(),
             coefficient_normalization_sources: HashMap::new(),
             ext_select_sources: HashMap::new(),
@@ -318,6 +322,25 @@ where
             statement_target_capability: Arc::new(()),
             aggregation_statement_layout: None,
             statement_source_exprs: Vec::new(),
+        }
+    }
+
+    pub(crate) fn constant_value(&self, value: ExprId) -> Option<F> {
+        self.expr_builder.get_const_value(value)
+    }
+
+    pub(crate) fn native_coordinates(&self, value: ExprId) -> Option<&[ExprId]> {
+        self.native_coordinate_bits.get(&value).map(Vec::as_slice)
+    }
+
+    /// Record only after Booleanity and reconstruction have both been constrained.
+    pub(crate) fn record_native_coordinates(&mut self, value: ExprId, bits: &[ExprId]) {
+        if self
+            .native_coordinate_bits
+            .get(&value)
+            .is_none_or(|known| bits.len() < known.len())
+        {
+            self.native_coordinate_bits.insert(value, bits.to_vec());
         }
     }
 

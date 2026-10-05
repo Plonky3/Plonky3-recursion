@@ -115,3 +115,84 @@ fn oversized_coordinates_and_bit_counts_are_rejected_without_truncation() {
     runner.set_public_inputs(&[Poly64::ONE]).unwrap();
     runner.run().unwrap();
 }
+
+#[test]
+fn repeated_and_recomposed_coordinates_reuse_their_checked_bits() {
+    let mut builder = CircuitBuilder::<BinaryField128>::new();
+    let input = builder.public_input();
+    let bits = builder.binary_decompose_coordinates(input, 16).unwrap();
+    assert_eq!(
+        builder.binary_decompose_coordinates(input, 16).unwrap(),
+        bits
+    );
+    let low = builder.binary_recompose_coordinates(&bits[..8]).unwrap();
+    assert_eq!(
+        builder.binary_decompose_coordinates(low, 8).unwrap(),
+        bits[..8]
+    );
+    let widened = builder.binary_decompose_coordinates(low, 16).unwrap();
+    assert_eq!(widened[..8], bits[..8]);
+    assert!(
+        widened[8..]
+            .iter()
+            .all(|&bit| bit == p3_circuit::ExprId::ZERO)
+    );
+    // A narrower request must still enforce the tighter span after a cache hit.
+    assert_eq!(
+        builder.binary_decompose_coordinates(input, 8).unwrap(),
+        bits[..8]
+    );
+    let circuit = builder.build().unwrap();
+    for (raw, accepted) in [(0xa5, true), (0x1a5, false)] {
+        let mut runner = circuit.runner();
+        runner
+            .set_public_inputs(&[BinaryField128::from_raw_coordinates(raw).unwrap()])
+            .unwrap();
+        assert_eq!(runner.run().is_ok(), accepted);
+    }
+}
+
+#[test]
+fn constant_coordinates_fold_without_hints_and_reject_high_bits() {
+    let mut builder = CircuitBuilder::<Poly64>::new();
+    let byte = builder.define_const(Poly64::new(0xa5));
+    let bits = builder.binary_decompose_coordinates(byte, 8).unwrap();
+    for (i, &bit) in bits.iter().enumerate() {
+        let expected = builder.define_const(Poly64::from_bool(0xa5 >> i & 1 != 0));
+        builder.connect(bit, expected);
+    }
+    assert!(builder.binary_decompose_coordinates(byte, 7).is_err());
+    assert!(builder.binary_decompose_coordinates(byte, 0).is_err());
+    let full = builder.define_const(Poly64::new(u64::MAX));
+    assert_eq!(
+        builder
+            .binary_decompose_coordinates(full, 64)
+            .unwrap()
+            .len(),
+        64
+    );
+    let zero = builder.define_const(Poly64::ZERO);
+    assert!(
+        builder
+            .binary_decompose_coordinates(zero, 0)
+            .unwrap()
+            .is_empty()
+    );
+    let circuit = builder.build().unwrap();
+    assert!(
+        circuit
+            .ops
+            .iter()
+            .all(|op| !matches!(op, p3_circuit::ops::Op::Hint { .. }))
+    );
+    let mut builder = CircuitBuilder::<BinaryField128>::new();
+    let full = builder.define_const(BinaryField128::from_raw_coordinates(u128::MAX).unwrap());
+    assert_eq!(
+        builder
+            .binary_decompose_coordinates(full, 128)
+            .unwrap()
+            .len(),
+        128
+    );
+    assert!(builder.binary_decompose_coordinates(full, 127).is_err());
+}

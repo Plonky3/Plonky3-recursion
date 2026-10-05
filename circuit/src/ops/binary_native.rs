@@ -86,6 +86,33 @@ impl<F: BinaryCoordinateField> CircuitBuilder<F> {
         n_bits: usize,
     ) -> Result<Vec<ExprId>, CircuitBuilderError> {
         check_width::<F>(n_bits)?;
+        if let Some(constant) = self.constant_value(value) {
+            let raw = constant.to_raw_coordinates();
+            if n_bits < 128 && raw >> n_bits != 0 {
+                return Err(CircuitBuilderError::InvalidDimension {
+                    expected: n_bits,
+                    actual: 128 - raw.leading_zeros() as usize,
+                });
+            }
+            return Ok((0..n_bits)
+                .map(|i| {
+                    if raw >> i & 1 != 0 {
+                        self.define_const(F::ONE)
+                    } else {
+                        ExprId::ZERO
+                    }
+                })
+                .collect());
+        }
+        if let Some(known) = self.native_coordinates(value) {
+            let mut bits = known.to_vec();
+            for &high in bits.iter().skip(n_bits) {
+                self.connect(high, ExprId::ZERO);
+            }
+            bits.resize(n_bits, ExprId::ZERO);
+            self.record_native_coordinates(value, &bits);
+            return Ok(bits);
+        }
         // A zero-output hint has no DAG anchor and is unnecessary.
         let bits = if n_bits == 0 {
             Vec::new()
@@ -103,6 +130,7 @@ impl<F: BinaryCoordinateField> CircuitBuilder<F> {
         };
         let reconstructed = self.binary_recompose_coordinates(&bits)?;
         self.connect(value, reconstructed);
+        self.record_native_coordinates(value, &bits);
         Ok(bits)
     }
 
@@ -122,6 +150,7 @@ impl<F: BinaryCoordinateField> CircuitBuilder<F> {
                 .define_const(F::from_raw_coordinates(1 << i).expect("validated coordinate width"));
             sum = self.mul_add(bit, weight, sum);
         }
+        self.record_native_coordinates(sum, bits);
         Ok(sum)
     }
 }
