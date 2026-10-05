@@ -25,6 +25,7 @@ impl<F: BinaryCoordinateField> CircuitBuilder<F> {
     /// Requires at least 16 independent coordinates in the carrier field.
     pub fn enable_native_keccak_f1600(&mut self) -> Result<(), CircuitBuilderError> {
         check_field::<F>()?;
+        self.check_construction_limits()?;
         self.register_npo(NativeKeccakPlugin);
         Ok(())
     }
@@ -37,6 +38,7 @@ impl<F: BinaryCoordinateField> CircuitBuilder<F> {
         state: &[ExprId],
     ) -> Result<[ExprId; KECCAK_STATE_LIMBS], CircuitBuilderError> {
         check_field::<F>()?;
+        self.check_construction_limits()?;
         let op = NpoTypeId::native_keccak_f1600();
         self.ensure_op_enabled(&op)?;
         if state.len() != KECCAK_STATE_LIMBS {
@@ -58,6 +60,7 @@ impl<F: BinaryCoordinateField> CircuitBuilder<F> {
             .into_iter()
             .collect::<Option<Vec<_>>>()
             .ok_or(CircuitBuilderError::MissingOutput)?;
+        self.check_construction_limits()?;
         Ok(outputs
             .try_into()
             .expect("requested 100 native Keccak outputs"))
@@ -73,6 +76,7 @@ impl<F: BinaryCoordinateField> CircuitBuilder<F> {
         message: &[ExprId],
     ) -> Result<[ExprId; 32], CircuitBuilderError> {
         check_field::<F>()?;
+        self.check_construction_limits()?;
         self.ensure_op_enabled(&NpoTypeId::native_keccak_f1600())?;
         let blocks = message.len() / KECCAK256_RATE_BYTES + 1;
         let padded_len = blocks.checked_mul(KECCAK256_RATE_BYTES).ok_or(
@@ -95,6 +99,7 @@ impl<F: BinaryCoordinateField> CircuitBuilder<F> {
                 bits.extend(self.binary_decompose_coordinates(bytes[1], 8)?);
                 let limb = self.binary_recompose_coordinates(&bits)?;
                 state[i] = self.add(state[i], limb);
+                self.check_construction_limits()?;
             }
             state = self.add_native_keccak_f1600(&state)?;
         }
