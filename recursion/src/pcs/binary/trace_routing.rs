@@ -5,7 +5,7 @@ use alloc::vec::Vec;
 use core::hash::Hash;
 
 use p3_binary_pcs::{ChallengeField, Coordinates, FoldAlphabet};
-use p3_circuit::ops::BinaryTower128Target;
+use p3_circuit::ops::{BinaryTower128Target, binary_encoding::PrimeBinaryEncoding};
 use p3_circuit::{CircuitBuilder, ExprId};
 use p3_field::{ExtensionField, Field, PrimeField64};
 use p3_multilinear_util::point::Point;
@@ -15,7 +15,9 @@ use serde::de::DeserializeOwned;
 
 use super::trace_native::route;
 use super::trace_plan::{Route, TracePlan};
-use super::verifier::{assert_equal, constrain_width, observe_seed, observe_values, seed_bytes};
+use super::verifier::{
+    assert_equal, constrain_width, observe_seed, observe_values, seed_bytes_with_host,
+};
 use super::{BinaryRingClaimTargets, RecursiveBinaryChallengeField};
 use crate::transcript::SeedTap;
 use crate::verifier::VerificationError;
@@ -106,7 +108,10 @@ where
                         ch
                     }
                     TraceEntry::AfterQueries(token) => {
-                        let bytes = seed_bytes(circuit, &self.column_seed);
+                        let bytes = seed_bytes_with_host::<E, PrimeBinaryEncoding<BF>, EF>(
+                            circuit,
+                            &self.column_seed,
+                        )?;
                         token.resume_with_observation::<BF, EF>(circuit, &bytes)?
                     }
                 };

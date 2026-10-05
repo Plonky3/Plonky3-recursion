@@ -120,7 +120,9 @@ pub use trace_whir::{
 pub use verifier::{
     BinaryOracleOpeningTargets, BinaryPcs128ProofTargets, BinaryPcs128Verifier, BinaryPcsVerifier,
 };
-pub(crate) use verifier::{assert_equal, observe_cap, observe_seed, observe_values};
+pub(crate) use verifier::{
+    assert_equal, observe_cap, observe_seed, observe_values, seed_bytes_with_host,
+};
 pub use whir_gadgets::{
     binary_whir_query_point, binary128_eval_coefficients, binary128_eval_multilinear,
     binary128_select_eval,

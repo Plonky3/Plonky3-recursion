@@ -5,14 +5,16 @@ use alloc::vec::Vec;
 use core::hash::Hash;
 use core::marker::PhantomData;
 
-use p3_circuit::ops::BinaryTower128Target;
+use p3_circuit::ops::{BinaryTower128Target, binary_encoding::PrimeBinaryEncoding};
 use p3_circuit::{CircuitBuilder, ExprId};
 use p3_field::{ExtensionField, Field, PrimeField64};
 use p3_sumcheck::ring_switch::bits::transcript::{BitRingSwitchClaimsShape, BitRingSwitchShape};
 use p3_sumcheck::strategy::Basis;
 use p3_sumcheck::transcript::SumcheckShape;
 
-use super::verifier::{assert_equal, constrain_width, observe_seed, observe_values, seed_bytes};
+use super::verifier::{
+    assert_equal, constrain_width, observe_seed, observe_values, seed_bytes_with_host,
+};
 use super::{
     BinaryTowerTensorTarget, RecursiveBinaryChallengeField, binary_tensor_closing_weight,
     binary128_reduce_sumcheck_claim,
@@ -217,7 +219,7 @@ impl<E: RecursiveBinaryChallengeField> BinaryBitRingVerifier<E> {
         EF: ExtensionField<BF> + Eq + Hash,
     {
         self.check_targets(proof)?;
-        let bytes = seed_bytes(circuit, &self.seed);
+        let bytes = seed_bytes_with_host::<E, PrimeBinaryEncoding<BF>, EF>(circuit, &self.seed)?;
         let challenger = continuation.resume_with_observation::<BF, EF>(circuit, &bytes)?;
         self.verify_impl::<BF, EF>(circuit, challenger, proof, true)
     }

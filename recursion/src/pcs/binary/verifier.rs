@@ -8,7 +8,11 @@ use core::marker::PhantomData;
 use p3_binary_field::{BinaryField128, TowerLevel};
 use p3_binary_pcs::BinaryPcsConfig;
 use p3_binary_pcs::transcript::BinaryPcsShape;
-use p3_circuit::ops::{BinaryTower128Target, ByteHash};
+use p3_circuit::ops::{
+    BinaryTower128Target, ByteHash,
+    binary_encoding::{BinaryCircuitEncoding, PrimeBinaryEncoding},
+    binary_host::BinaryCircuitHost,
+};
 use p3_circuit::{CircuitBuilder, ExprId};
 use p3_field::{ExtensionField, Field, PrimeField64};
 use p3_multilinear_util::point::Point;
@@ -445,7 +449,7 @@ where
         let seed = self.opening_seeds.first().cloned().unwrap_or_else(|| {
             domain_separator_seed(&BinaryPcsShape::new(&self.config).domain_separator::<F, E>())
         });
-        let bytes = seed_bytes(circuit, &seed);
+        let bytes = seed_bytes_with_host::<F, PrimeBinaryEncoding<BF>, EF>(circuit, &seed)?;
         let challenger = continuation.resume_with_observation::<BF, EF>(circuit, &bytes)?;
         self.verify_at_impl::<BF, EF>(circuit, challenger, cap, points, proof, true)
     }
@@ -780,16 +784,34 @@ where
     BF: PrimeField64,
     EF: ExtensionField<BF> + Eq + Hash,
 {
-    let bytes = seed_bytes(circuit, seed);
-    challenger.observe_bytes::<BF, EF>(circuit, &bytes)?;
+    observe_seed_with_host::<F, PrimeBinaryEncoding<BF>, EF>(circuit, challenger, seed)
+}
+
+pub(crate) fn observe_seed_with_host<F, H, EF>(
+    circuit: &mut CircuitBuilder<EF>,
+    challenger: &mut BinaryTower128Challenger,
+    seed: &[F],
+) -> Result<(), VerificationError>
+where
+    F: RecursiveBinaryTowerField,
+    H: BinaryCircuitHost<EF>,
+    EF: Field + Eq + Hash,
+{
+    let bytes = seed_bytes_with_host::<F, H, EF>(circuit, seed)?;
+    challenger.observe_bytes_with_host::<H, EF>(circuit, &bytes)?;
     Ok(())
 }
 
-pub(super) fn seed_bytes<F, EF>(circuit: &mut CircuitBuilder<EF>, seed: &[F]) -> Vec<ExprId>
+pub(crate) fn seed_bytes_with_host<F, H, EF>(
+    circuit: &mut CircuitBuilder<EF>,
+    seed: &[F],
+) -> Result<Vec<ExprId>, VerificationError>
 where
     F: RecursiveBinaryTowerField,
+    H: BinaryCircuitEncoding<EF>,
     EF: Field + Eq + Hash,
 {
+    H::check_carrier()?;
     seed.iter()
         .flat_map(|x| {
             x.raw_coordinates()
@@ -797,7 +819,7 @@ where
                 .into_iter()
                 .take(F::RAW_BITS / 8)
         })
-        .map(|b| circuit.define_const(EF::from_u8(b)))
+        .map(|byte| Ok(circuit.define_const(H::encode_u16(u16::from(byte))?)))
         .collect()
 }
 
@@ -810,12 +832,24 @@ where
     BF: PrimeField64,
     EF: ExtensionField<BF> + Eq + Hash,
 {
+    observe_cap_with_host::<PrimeBinaryEncoding<BF>, EF>(circuit, challenger, cap)
+}
+
+pub(crate) fn observe_cap_with_host<H, EF>(
+    circuit: &mut CircuitBuilder<EF>,
+    challenger: &mut BinaryTower128Challenger,
+    cap: &[Vec<ExprId>],
+) -> Result<(), VerificationError>
+where
+    H: BinaryCircuitHost<EF>,
+    EF: Field + Eq + Hash,
+{
+    if cap.iter().any(|digest| digest.len() != 16) {
+        return Err(shape_error("binary PCS digest width mismatch"));
+    }
     for digest in cap {
-        let digest: [ExprId; 16] = digest
-            .as_slice()
-            .try_into()
-            .map_err(|_| shape_error("binary PCS digest width mismatch"))?;
-        challenger.observe_digest::<BF, EF>(circuit, &digest)?;
+        let digest = digest.as_slice().try_into().expect("checked digest width");
+        challenger.observe_digest_with_host::<H, EF>(circuit, digest)?;
     }
     Ok(())
 }
@@ -829,9 +863,24 @@ where
     BF: PrimeField64,
     EF: ExtensionField<BF> + Eq + Hash,
 {
+    tower_bytes_with_host::<PrimeBinaryEncoding<BF>, EF>(circuit, value, width)
+}
+
+pub(crate) fn tower_bytes_with_host<H, EF>(
+    circuit: &mut CircuitBuilder<EF>,
+    value: &BinaryTower128Target,
+    width: usize,
+) -> Result<Vec<ExprId>, VerificationError>
+where
+    H: BinaryCircuitEncoding<EF>,
+    EF: Field + Eq + Hash,
+{
+    if width > 128 || !width.is_multiple_of(8) {
+        return Err(shape_error("binary tower byte width mismatch"));
+    }
     Ok(value.bits()[..width]
         .chunks_exact(8)
-        .map(|bits| circuit.reconstruct_index_from_bits::<BF>(bits))
+        .map(|bits| H::recompose_word(circuit, bits))
         .collect::<Result<_, _>>()?)
 }
 
@@ -845,11 +894,27 @@ where
     BF: PrimeField64,
     EF: ExtensionField<BF> + Eq + Hash,
 {
+    observe_values_with_host::<PrimeBinaryEncoding<BF>, EF>(circuit, challenger, values, width)
+}
+
+pub(crate) fn observe_values_with_host<H, EF>(
+    circuit: &mut CircuitBuilder<EF>,
+    challenger: &mut BinaryTower128Challenger,
+    values: &[BinaryTower128Target],
+    width: usize,
+) -> Result<(), VerificationError>
+where
+    H: BinaryCircuitHost<EF>,
+    EF: Field + Eq + Hash,
+{
+    if width > 128 || !width.is_multiple_of(8) {
+        return Err(shape_error("binary tower byte width mismatch"));
+    }
     let mut bytes = Vec::new();
     for value in values {
-        bytes.extend(tower_bytes::<BF, EF>(circuit, value, width)?);
+        bytes.extend(tower_bytes_with_host::<H, EF>(circuit, value, width)?);
     }
-    challenger.observe_bytes::<BF, EF>(circuit, &bytes)?;
+    challenger.observe_bytes_with_host::<H, EF>(circuit, &bytes)?;
     Ok(())
 }
 
@@ -917,5 +982,92 @@ fn limit(component: &'static str, actual: usize, limit: usize) -> Result<(), Ver
         })
     } else {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod host_tests {
+    use super::*;
+    use p3_binary_field::{BinaryChallenger, BinaryField32, Poly64};
+    use p3_challenger::{CanObserve, FieldChallenger};
+    use p3_circuit::ops::{
+        binary_encoding::{BinaryCircuitEncoding, NativeBinaryEncoding},
+        binary_native::BinaryCoordinateField,
+    };
+    use p3_field::BasedVectorSpace;
+    use p3_keccak::Keccak256Hash;
+    use p3_symmetric::Hash as Digest;
+
+    type H = NativeBinaryEncoding;
+
+    fn transcript<CF: BinaryCoordinateField>() {
+        let seed = [0x81234567, 0xfedcba98].map(BinaryField32::from_repr);
+        let dense = BinaryField128::from_repr(0x8123456789abcdeffedcba9876543210);
+        let digest: [u8; 32] = core::array::from_fn(|i| 129u8.wrapping_add(i as u8 * 3));
+        let mut native = BinaryChallenger::<BinaryField32, _>::from_hasher(vec![], Keccak256Hash);
+        let mut b = CircuitBuilder::<CF>::new();
+        b.enable_native_keccak_f1600().unwrap();
+        let mut ch = BinaryTower128Challenger::new(ByteHash::Keccak256);
+        native.observe_slice(&seed);
+        observe_seed_with_host::<BinaryField32, H, CF>(&mut b, &mut ch, &seed).unwrap();
+        let first = ch.sample_with_host::<H, CF>(&mut b).unwrap();
+        let expected_first = native.sample_algebra_element::<BinaryField128>();
+        let cap = b.alloc_public_input_array::<16>("cap words");
+        assert!(
+            observe_cap_with_host::<H, CF>(&mut b, &mut ch, &[cap.to_vec(), cap[..15].to_vec()],)
+                .is_err()
+        );
+        let target = b.binary128_constant(dense.to_repr()).unwrap();
+        for width in [7, 129, 136] {
+            assert!(tower_bytes_with_host::<H, CF>(&mut b, &target, width).is_err());
+            assert!(observe_values_with_host::<H, CF>(&mut b, &mut ch, &[], width).is_err());
+        }
+        native.observe(Digest::<BinaryField32, u8, 32>::from(digest));
+        observe_cap_with_host::<H, CF>(&mut b, &mut ch, &[cap.to_vec()]).unwrap();
+        native.observe_slice(
+            <BinaryField128 as BasedVectorSpace<BinaryField32>>::as_basis_coefficients_slice(
+                &dense,
+            ),
+        );
+        observe_values_with_host::<H, CF>(&mut b, &mut ch, &[target], 128).unwrap();
+        let second = ch.sample_with_host::<H, CF>(&mut b).unwrap();
+        let expected_second = native.sample_algebra_element::<BinaryField128>();
+        let mut public: Vec<CF> = digest
+            .chunks_exact(2)
+            .map(|word| H::encode_u16(u16::from_le_bytes(word.try_into().unwrap())).unwrap())
+            .collect();
+        for (actual, expected) in [first, second]
+            .iter()
+            .zip([expected_first, expected_second])
+        {
+            let words = b.alloc_public_input_array::<8>("expected raw sample");
+            for (i, word) in words.into_iter().enumerate() {
+                let bits = H::decompose_word(&mut b, word, 16).unwrap();
+                for (&actual, expected) in actual.bits()[16 * i..16 * i + 16].iter().zip(bits) {
+                    b.connect(actual, expected);
+                }
+                public.push(H::encode_u16((expected.to_repr() >> (16 * i)) as u16).unwrap());
+            }
+        }
+        let circuit = b.build().unwrap();
+        let run = |public: &[CF]| {
+            let mut runner = circuit.runner();
+            runner
+                .set_public_inputs(public)
+                .and_then(|()| runner.run())
+                .is_ok()
+        };
+        assert!(run(&public));
+        for index in [0, 16, 24] {
+            let mut wrong = public.clone();
+            wrong[index] += CF::ONE;
+            assert!(!run(&wrong));
+        }
+    }
+
+    #[test]
+    fn native_protocol_seeds_caps_and_observations_preserve_all_bytes() {
+        transcript::<BinaryField128>();
+        transcript::<Poly64>();
     }
 }

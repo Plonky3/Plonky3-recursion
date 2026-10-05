@@ -6,12 +6,14 @@ use core::marker::PhantomData;
 
 use p3_binary_field::BinaryField128;
 use p3_challenger::{FieldChallenger, GrindingChallenger};
-use p3_circuit::ops::BinaryTower128Target;
+use p3_circuit::ops::{BinaryTower128Target, binary_encoding::PrimeBinaryEncoding};
 use p3_circuit::{CircuitBuilder, ExprId};
 use p3_field::{ExtensionField, Field, PrimeField64};
 use p3_sumcheck::generic_degree::{GenericDegreeProof, GenericDegreeShape};
 
-use super::verifier::{assert_equal, constrain_width, observe_seed, observe_values, seed_bytes};
+use super::verifier::{
+    assert_equal, constrain_width, observe_seed, observe_values, seed_bytes_with_host,
+};
 use super::whir_plan::invalid;
 use super::{
     Binary128SumcheckInterpolator, RecursiveBinaryChallengeField, RecursiveBinaryTowerField,
@@ -225,7 +227,7 @@ where
         EF: ExtensionField<BF> + Eq + Hash,
     {
         self.check_targets(proof)?;
-        let bytes = seed_bytes(b, &self.input.seed);
+        let bytes = seed_bytes_with_host::<F, PrimeBinaryEncoding<BF>, EF>(b, &self.input.seed)?;
         let ch = token.resume_with_observation::<BF, EF>(b, &bytes)?;
         self.verify_impl::<BF, EF>(b, ch, expected_sum, proof, true)
     }

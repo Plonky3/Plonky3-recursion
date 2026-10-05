@@ -8,7 +8,7 @@ use core::marker::PhantomData;
 use p3_binary_field::BinaryField128;
 use p3_challenger::FieldChallenger;
 use p3_circuit::CircuitBuilder;
-use p3_circuit::ops::BinaryTower128Target;
+use p3_circuit::ops::{BinaryTower128Target, binary_encoding::PrimeBinaryEncoding};
 use p3_field::{ExtensionField, Field, PrimeField64};
 use p3_multi_stark::fractional_gkr::{FractionGkrOutput, FractionGkrProof, FractionGkrShape};
 use p3_multilinear_util::point::Point;
@@ -19,7 +19,7 @@ use super::binary_field_policy::TowerRelation;
 use super::{InputResourceUsage, VerificationError, VerifierLimits};
 use crate::pcs::binary::{
     Binary128SumcheckInterpolator, BinaryNonzeroChallengePlan, BinaryNonzeroChallengeTailPlan,
-    RecursiveBinaryChallengeField, RecursiveBinaryTowerField, observe_seed,
+    RecursiveBinaryChallengeField, RecursiveBinaryTowerField, observe_seed, seed_bytes_with_host,
 };
 use crate::transcript::domain_separator_seed;
 use crate::{BinaryQueryContinuation, BinaryTower128Challenger};
@@ -279,16 +279,7 @@ where
         EF: ExtensionField<BF> + Eq + Hash,
     {
         self.check_targets(proof)?;
-        let bytes = self
-            .input
-            .seed
-            .iter()
-            .flat_map(|&value| {
-                let raw = value.raw_coordinates();
-                (0..F::RAW_BITS / 8).map(move |i| (raw >> (8 * i)) as u8)
-            })
-            .map(|byte| b.define_const(EF::from_u8(byte)))
-            .collect::<Vec<_>>();
+        let bytes = seed_bytes_with_host::<F, PrimeBinaryEncoding<BF>, EF>(b, &self.input.seed)?;
         let ch = token.resume_with_observation::<BF, EF>(b, &bytes)?;
         self.verify_impl::<BF, EF>(b, ch, proof, true)
     }
