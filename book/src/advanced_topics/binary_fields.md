@@ -63,6 +63,14 @@ followed by a prime-field recursion layer. It does not demonstrate binary-in/bin
   assignment on every row, so its width and openings grow with the circuit's witness count.
   It is a non-hiding correctness baseline, rejects custom non-primitive tables, and does
   not yet provide an efficient recursive binary prover.
+- **Compact native primitive tables.** `p3_circuit_prover::indexed::IndexedCircuit` stores
+  one canonical witness table and proves every gate operand and output with indexed
+  reads. Trusted preprocessing pins the graph's positions, constants and selectors;
+  public values bind in caller order, including aliases. No field-valued integer read
+  counts or creator-role tags are used. Main and preprocessing PCS dimensions are
+  computed from their complete stacked layouts. The native tower and polynomial
+  tests in `recursion/tests/native_indexed_circuit.rs` exercise real indexed proofs.
+  This path remains non-hiding and rejects custom non-primitive tables.
 - **Non-native binary byte-hash transcript.** `BinaryTower128Challenger` has a separate,
   fallible inherent API (`new`, `with_initial_limbs`, `observe`, `observe_slice`,
   `observe_digest`, `sample`, `sample_bits`, `check_witness`). It matches native
@@ -163,8 +171,8 @@ followed by a prime-field recursion layer. It does not demonstrate binary-in/bin
 
 - Full binary-in/binary-out recursion. Binary-proof verification currently runs in a prime
   host circuit; its transcript and serialization gadgets use prime-field integer limbs.
-  Native binary primitive circuit proofs are supported by the direct AIR above, but the
-  compact circuit tables and their count-based wiring still assume a prime field. Native
-  binary recursion requires fixed indexed wiring, coordinate-based serialization, and
-  hash/transcript gadgets that can themselves be proved over a binary field.
+  Native binary primitive circuit proofs and compact indexed wiring are supported above.
+  The existing `BatchStarkProver` tables still use prime-field count-based wiring. Native
+  binary recursion also requires binary hash tables, a transcript built from the native
+  coordinate codecs, and integration of those components with the complete verifier.
 - MMCS trees of arity above two.

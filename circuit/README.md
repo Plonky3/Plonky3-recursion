@@ -32,9 +32,12 @@ do not encode builder identity. No new custom table or AIR is needed for this ar
 `BinaryPoly64Target` and `BinaryPoly192Target` have the same distinction between
 field-generic Boolean coordinates and prime-only integer limbs. Primitive circuits
 can be proved over native binary fields with `p3_circuit_prover::direct::DirectCircuitAir`.
-That AIR repeats the complete assignment on every row and is a correctness baseline;
-the compact circuit prover and recursive binary-proof verifier still require prime
-host fields.
+That AIR repeats the complete assignment on every row and is a correctness baseline.
+`p3_circuit_prover::indexed::IndexedCircuit` provides compact native primitive tables
+with canonical witness reads and fixed preprocessed wiring. It requires a backend
+that enforces indexed lookups; row-local AIR checks do not verify the wiring.
+Both native paths reject custom non-primitive tables. The existing `BatchStarkProver`
+and recursive binary-proof verifier still require prime host fields.
 
 For native binary values, `binary_decompose_coordinates` and
 `binary_recompose_coordinates` use checked raw basis weights through the sealed

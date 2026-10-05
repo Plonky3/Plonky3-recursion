@@ -53,6 +53,7 @@ pub mod config;
 pub mod constraint_profile;
 pub mod direct;
 pub mod field_params;
+pub mod indexed;
 pub mod manifest;
 mod primitive_plan;
 pub mod tuning;
