@@ -442,6 +442,16 @@ fn check_preprocessed(
     let expected = expected_ch.sample_algebra_element::<E>();
     assert_eq!(expected, imported_ch.sample_algebra_element::<E>());
     let shape = recursive.input_shape();
+    if interactions {
+        let mut native = CircuitBuilder::<E>::new();
+        let public = native.public_input();
+        let private = native.alloc_private_input("retained");
+        native.connect(public, private);
+        assert!(shape.allocate_native_targets(&mut native).is_err());
+        let unchanged = native.build().unwrap();
+        assert_eq!(unchanged.public_flat_len, 1);
+        assert_eq!(unchanged.private_flat_len, 1);
+    }
     let mut b = CircuitBuilder::<BabyBear>::new();
     b.enable_keccak_f1600::<BabyBear>();
     let public_targets = vec![

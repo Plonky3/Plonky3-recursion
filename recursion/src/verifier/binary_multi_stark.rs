@@ -26,7 +26,6 @@ use p3_sumcheck::{OpeningProtocol, layout};
 use p3_symmetric::{CryptographicHasher, PseudoCompressionFunction};
 use relation::{BinaryMultiStarkRelation, BinaryMultiStarkRelationShape, BinaryRelationProof};
 
-use super::binary_air::constrain_width;
 use super::binary_bus::{BinaryBusInputShape, BinaryBusVerifier};
 use super::binary_indexed::{
     BinaryIndexedLookupProofTargets, BinaryIndexedVerifier, BinaryOpeningSchedule,
@@ -40,8 +39,7 @@ use crate::pcs::binary::{
     BinaryGenericSumcheckInputShape, BinaryGenericSumcheckProofTargets,
     BinaryGenericSumcheckVerifier, BinaryNonzeroChallengePlan, BinaryPcs128ProofTargets,
     BinaryPcsInputShape, BinaryPcsVerifier, NativeBinaryGenericSumcheckInput, NativeBinaryPcsInput,
-    RecursiveBinaryChallengeField, RecursiveBinaryTowerField, assert_equal, binary128_eq_eval,
-    observe_cap, observe_seed, observe_values,
+    RecursiveBinaryChallengeField, RecursiveBinaryTowerField,
 };
 use crate::transcript::domain_separator_seed;
 use crate::{BinaryQueryContinuation, BinaryTower128Challenger};

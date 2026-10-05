@@ -7,10 +7,10 @@ use p3_bus::{BusDirection, BusPlan, BusProof, BusTupleSlot};
 use p3_challenger::FieldChallenger;
 use p3_circuit::CircuitBuilder;
 use p3_circuit::ops::BinaryTower128Target;
-use p3_field::{ExtensionField, Field, PrimeField64};
+use p3_field::{ExtensionField, Field};
 
 use super::binary_air::BinaryAirEvaluation;
-use super::binary_product::sample;
+use super::binary_field_policy::BinaryProtocolPolicy;
 use super::{
     BinaryAirConstraintPlan, BinaryProductGkrInputShape, BinaryProductGkrProofTargets,
     BinaryProductGkrVerifier, InputResourceUsage, NativeBinaryProductGkrInput, VerificationError,
@@ -18,9 +18,10 @@ use super::{
 };
 use crate::BinaryTower128Challenger;
 use crate::pcs::binary::{
-    RecursiveBinaryChallengeField, RecursiveBinaryTowerField, binary128_eq_eval, observe_seed,
+    RecursiveBinaryChallengeField, RecursiveBinaryTowerField, observe_seed_with_host,
 };
 use crate::transcript::SeedTap;
+use p3_circuit::ops::binary_host::BinaryCircuitHost;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct BinaryBusInputShape<F, E> {
@@ -29,11 +30,11 @@ pub(super) struct BinaryBusInputShape<F, E> {
     plan: BusPlan,
 }
 
-pub(super) struct BinaryBusClaims {
-    pub point: Vec<BinaryTower128Target>,
-    pub values: Vec<BinaryTower128Target>,
-    weights: Vec<BinaryTower128Target>,
-    offset: BinaryTower128Target,
+pub(super) struct BinaryBusClaims<T = BinaryTower128Target> {
+    pub point: Vec<T>,
+    pub values: Vec<T>,
+    weights: Vec<T>,
+    offset: T,
 }
 
 #[derive(Clone, Debug)]
@@ -125,9 +126,9 @@ where
     pub fn input_resource_usage(&self) -> InputResourceUsage {
         self.usage
     }
-    pub fn check_targets(
+    pub fn check_targets<T>(
         &self,
-        proof: &BinaryProductGkrProofTargets,
+        proof: &BinaryProductGkrProofTargets<T>,
     ) -> Result<(), VerificationError> {
         self.product.check_targets(proof)
     }
@@ -135,31 +136,38 @@ where
         self.product.check_native(&proof.product)
     }
 
-    pub fn verify<BF, EF>(
+    pub fn verify_using<P, H, CF>(
         &self,
-        b: &mut CircuitBuilder<EF>,
+        b: &mut CircuitBuilder<CF>,
         mut ch: BinaryTower128Challenger,
-        proof: &BinaryProductGkrProofTargets,
-    ) -> Result<(BinaryBusClaims, BinaryTower128Challenger), VerificationError>
+        proof: &BinaryProductGkrProofTargets<P::ChallengeTarget>,
+    ) -> Result<
+        (
+            BinaryBusClaims<P::ChallengeTarget>,
+            BinaryTower128Challenger,
+        ),
+        VerificationError,
+    >
     where
-        BF: PrimeField64,
-        EF: ExtensionField<BF> + Eq + Hash,
+        CF: Field + Eq + Hash,
+        H: BinaryCircuitHost<CF>,
+        P: BinaryProtocolPolicy<CF, Base = F, Challenge = E>,
     {
         self.check_targets(proof)?;
-        observe_seed::<F, BF, EF>(b, &mut ch, &self.input.seed)?;
+        observe_seed_with_host::<F, H, CF>(b, &mut ch, &self.input.seed)?;
         let fingerprint = (0..self.input.plan.security_geometry().tuple_variables())
-            .map(|_| sample::<E, BF, EF>(b, &mut ch))
+            .map(|_| P::sample::<H>(b, &mut ch))
             .collect::<Result<Vec<_>, _>>()?;
-        let offset = sample::<E, BF, EF>(b, &mut ch)?;
-        let output = self.product.verify_reduction::<BF, EF>(b, ch, proof)?;
-        let one = b.binary128_constant(1)?;
+        let offset = P::sample::<H>(b, &mut ch)?;
+        let output = self.product.verify_using::<P, H, CF>(b, ch, proof)?;
+        let one = P::constant(b, 1)?;
         let mut weights = alloc::vec![one.clone()];
         for r in &fingerprint {
-            let complement = b.binary128_add(&one, r);
+            let complement = P::add(b, &one, r);
             let mut next = Vec::with_capacity(weights.len() * 2);
             for weight in weights {
-                next.push(b.binary128_mul(&weight, &complement));
-                next.push(b.binary128_mul(&weight, r));
+                next.push(P::mul(b, &weight, &complement));
+                next.push(P::mul(b, &weight, r));
             }
             weights = next;
         }
@@ -176,22 +184,26 @@ where
 
     /// Adds the shifted, eq-weighted bus factors at the authenticated AIR
     /// sumcheck point. Product padding vanishes only after subtracting one.
-    pub fn terminal<EF: Field + Eq + Hash>(
+    pub fn terminal_using<P, CF>(
         &self,
-        b: &mut CircuitBuilder<EF>,
-        claims: &BinaryBusClaims,
-        evaluations: &[BinaryAirEvaluation],
-        point: &[BinaryTower128Target],
-        lambda: &BinaryTower128Target,
-    ) -> Result<BinaryTower128Target, VerificationError> {
+        b: &mut CircuitBuilder<CF>,
+        claims: &BinaryBusClaims<P::ChallengeTarget>,
+        evaluations: &[BinaryAirEvaluation<P::ChallengeTarget>],
+        point: &[P::ChallengeTarget],
+        lambda: &P::ChallengeTarget,
+    ) -> Result<P::ChallengeTarget, VerificationError>
+    where
+        CF: Field + Eq + Hash,
+        P: BinaryProtocolPolicy<CF, Base = F, Challenge = E>,
+    {
         if claims.point.len() != self.input.plan.product_shape().log_height()
             || claims.weights.len() != self.input.plan.fingerprint_width()
             || claims.values.len() != 2
         {
             return Err(invalid("binary bus terminal geometry mismatch"));
         }
-        let one = b.binary128_constant(1)?;
-        let mut terminal = b.binary128_constant(0)?;
+        let one = P::constant(b, 1)?;
+        let mut terminal = P::constant(b, 0)?;
         for direction in BusDirection::ALL {
             for share in self.input.plan.terminal_shares(direction) {
                 let evaluation = evaluations
@@ -218,7 +230,8 @@ where
                         .tuple_slot(share.bus, slot)
                         .ok_or_else(|| invalid("binary bus tuple slot mismatch"))?
                     {
-                        BusTupleSlot::Payload(i) => b.binary128_mul(
+                        BusTupleSlot::Payload(i) => P::mul(
+                            b,
                             fields
                                 .get(i)
                                 .ok_or_else(|| invalid("binary bus payload width mismatch"))?,
@@ -227,11 +240,11 @@ where
                         BusTupleSlot::DomainBit(true) => weight.clone(),
                         BusTupleSlot::DomainBit(false) | BusTupleSlot::Zero => continue,
                     };
-                    live = b.binary128_add(&live, &term);
+                    live = P::add(b, &live, &term);
                 }
-                let mut shifted = b.binary128_add(&live, &one);
+                let mut shifted = P::add(b, &live, &one);
                 if let Some(activation) = activation {
-                    shifted = b.binary128_mul(activation, &shifted);
+                    shifted = P::mul(b, activation, &shifted);
                 }
                 let mut weight = one.clone();
                 for (bit, r) in claims.point[..share.prefix_variables].iter().enumerate() {
@@ -239,25 +252,22 @@ where
                         if share.prefix_index >> (share.prefix_variables - 1 - bit) & 1 == 1 {
                             r.clone()
                         } else {
-                            b.binary128_add(&one, r)
+                            P::add(b, &one, r)
                         };
-                    weight = b.binary128_mul(&weight, &selector);
+                    weight = P::mul(b, &weight, &selector);
                 }
                 let unused = point.len() - share.row_variables;
                 for r in &point[..unused] {
-                    weight = b.binary128_mul(&weight, r);
+                    weight = P::mul(b, &weight, r);
                 }
-                let equality = binary128_eq_eval(
-                    b,
-                    &claims.point[share.prefix_variables..],
-                    &point[unused..],
-                )?;
-                weight = b.binary128_mul(&weight, &equality);
+                let equality =
+                    P::eq_eval(b, &claims.point[share.prefix_variables..], &point[unused..])?;
+                weight = P::mul(b, &weight, &equality);
                 if direction == BusDirection::Pull {
-                    weight = b.binary128_mul(&weight, lambda);
+                    weight = P::mul(b, &weight, lambda);
                 }
-                let term = b.binary128_mul(&weight, &shifted);
-                terminal = b.binary128_add(&terminal, &term);
+                let term = P::mul(b, &weight, &shifted);
+                terminal = P::add(b, &terminal, &term);
             }
         }
         Ok(terminal)

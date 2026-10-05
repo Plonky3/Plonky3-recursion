@@ -3,6 +3,9 @@
 use alloc::sync::Arc;
 
 use super::*;
+use crate::pcs::binary::{observe_cap_with_host, observe_seed_with_host};
+use crate::verifier::binary_field_policy::{BinaryTowerPolicy, TowerRelation};
+use p3_circuit::ops::{binary_encoding::PrimeBinaryEncoding, binary_host::BinaryCircuitHost};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(in crate::verifier) struct BinaryMultiStarkRelationShape<F, E> {
@@ -27,24 +30,24 @@ pub(in crate::verifier) struct BinaryMultiStarkRelation<F, E> {
     pub(in crate::verifier) usage: InputResourceUsage,
 }
 
-pub(in crate::verifier) struct BinaryRelationProof<'a> {
-    pub(in crate::verifier) bus: Option<&'a BinaryProductGkrProofTargets>,
-    pub(in crate::verifier) sumcheck: &'a BinaryGenericSumcheckProofTargets,
+pub(in crate::verifier) struct BinaryRelationProof<'a, T = BinaryTower128Target> {
+    pub(in crate::verifier) bus: Option<&'a BinaryProductGkrProofTargets<T>>,
+    pub(in crate::verifier) sumcheck: &'a BinaryGenericSumcheckProofTargets<T>,
     pub(in crate::verifier) indexed: Option<&'a BinaryIndexedLookupProofTargets>,
 }
 
-pub(in crate::verifier) struct BinaryMultiStarkReduction {
-    alpha: BinaryTower128Target,
-    beta: BinaryTower128Target,
-    lambda: Option<BinaryTower128Target>,
-    bus_claims: Option<super::super::binary_bus::BinaryBusClaims>,
-    tau: Vec<BinaryTower128Target>,
-    point: Vec<BinaryTower128Target>,
-    claim: BinaryTower128Target,
+pub(in crate::verifier) struct BinaryMultiStarkReduction<T = BinaryTower128Target> {
+    alpha: T,
+    beta: T,
+    lambda: Option<T>,
+    bus_claims: Option<super::super::binary_bus::BinaryBusClaims<T>>,
+    tau: Vec<T>,
+    pub(in crate::verifier) point: Vec<T>,
+    claim: T,
     indexed: Option<super::super::BinaryLogupStarOutput>,
     pub(in crate::verifier) challenger: BinaryTower128Challenger,
-    pub(in crate::verifier) main_points: Vec<Vec<BinaryTower128Target>>,
-    pub(in crate::verifier) preprocessed_points: Option<Vec<Vec<BinaryTower128Target>>>,
+    pub(in crate::verifier) main_points: Vec<Vec<T>>,
+    pub(in crate::verifier) preprocessed_points: Option<Vec<Vec<T>>>,
 }
 
 pub(in crate::verifier) struct NativeBinaryMultiStarkReduction<F, E> {
@@ -239,10 +242,10 @@ where
         ))
     }
 
-    pub(in crate::verifier) fn check_targets<T>(
+    pub(in crate::verifier) fn check_targets<Public, T>(
         &self,
-        public: &[Vec<T>],
-        proof: &BinaryRelationProof<'_>,
+        public: &[Vec<Public>],
+        proof: &BinaryRelationProof<'_, T>,
     ) -> Result<(), VerificationError> {
         self.check_public(public)?;
         match (&self.bus, proof.bus) {
@@ -269,9 +272,21 @@ where
         BF: PrimeField64,
         EF: ExtensionField<BF> + Eq + Hash,
     {
-        observe_seed::<F, BF, EF>(b, ch, &self.input.outer_seed)?;
+        self.observe_prefix_with_host::<PrimeBinaryEncoding<BF>, EF>(b, ch, preprocessed)
+    }
+    pub(in crate::verifier) fn observe_prefix_with_host<H, CF>(
+        &self,
+        b: &mut CircuitBuilder<CF>,
+        ch: &mut BinaryTower128Challenger,
+        preprocessed: Option<&[Vec<ExprId>]>,
+    ) -> Result<(), VerificationError>
+    where
+        CF: Field + Eq + Hash,
+        H: BinaryCircuitHost<CF>,
+    {
+        observe_seed_with_host::<F, H, CF>(b, ch, &self.input.outer_seed)?;
         if let Some(cap) = preprocessed {
-            observe_cap::<BF, EF>(b, ch, cap)?;
+            observe_cap_with_host::<H, CF>(b, ch, cap)?;
         }
         Ok(())
     }
@@ -296,7 +311,7 @@ where
     pub(in crate::verifier) fn reduce<BF, EF>(
         &self,
         b: &mut CircuitBuilder<EF>,
-        mut ch: BinaryTower128Challenger,
+        ch: BinaryTower128Challenger,
         public: &[Vec<BinaryTower128Target>],
         proof: &BinaryRelationProof<'_>,
     ) -> Result<BinaryMultiStarkReduction, VerificationError>
@@ -304,49 +319,11 @@ where
         BF: PrimeField64,
         EF: ExtensionField<BF> + Eq + Hash,
     {
-        let zero = b.binary128_constant(0)?;
+        let mut reduction = self
+            .reduce_common::<TowerRelation<F, E>, PrimeBinaryEncoding<BF>, EF>(
+                b, ch, public, proof,
+            )?;
         let heights: Vec<_> = self.input.airs.iter().map(|air| air.log_height()).collect();
-        for values in public {
-            for value in values {
-                constrain_width(b, value, F::RAW_BITS);
-            }
-            observe_values::<BF, EF>(b, &mut ch, values, F::RAW_BITS)?;
-        }
-        let bus_claims = if let (Some(verifier), Some(proof)) = (&self.bus, proof.bus) {
-            let (claims, next) = verifier.verify::<BF, EF>(b, ch, proof)?;
-            ch = next;
-            Some(claims)
-        } else {
-            None
-        };
-        observe_seed::<F, BF, EF>(b, &mut ch, &self.input.zerocheck_seed)?;
-        let alpha = super::super::binary_product::sample::<E, BF, EF>(b, &mut ch)?;
-        let beta = super::super::binary_product::sample::<E, BF, EF>(b, &mut ch)?;
-        let lambda = if bus_claims.is_some() {
-            Some(super::super::binary_product::sample::<E, BF, EF>(
-                b, &mut ch,
-            )?)
-        } else {
-            None
-        };
-        let initial = if let (Some(claims), Some(lambda)) = (&bus_claims, &lambda) {
-            let one = b.binary128_constant(1)?;
-            let push = b.binary128_add(&claims.values[0], &one);
-            let pull = b.binary128_add(&claims.values[1], &one);
-            let pull = b.binary128_mul(lambda, &pull);
-            let batched = b.binary128_add(&push, &pull);
-            b.binary128_mul(lambda, &batched)
-        } else {
-            zero.clone()
-        };
-        let output = self.tau.sample::<BF, EF>(b, ch)?;
-        let reduction = self.sumcheck.verify_reduction_after_queries::<BF, EF>(
-            b,
-            output.continuation,
-            &initial,
-            proof.sumcheck,
-        )?;
-        let tau = output.values;
         let indexed = if let (Some(verifier), Some(proof)) = (&self.indexed, proof.indexed) {
             Some(verifier.verify::<BF, EF>(
                 b,
@@ -370,12 +347,80 @@ where
         let challenger = indexed
             .as_ref()
             .map(|output| output.challenger.clone())
-            .unwrap_or(reduction.challenger);
+            .unwrap_or(reduction.challenger.clone());
         let preprocessed_points = self
             .input
             .preprocessed_schedule
             .as_ref()
             .map(|schedule| schedule.points(&heights, &reduction.point, indexed_points));
+        reduction.indexed = indexed;
+        reduction.challenger = challenger;
+        reduction.main_points = main_points;
+        reduction.preprocessed_points = preprocessed_points;
+        Ok(reduction)
+    }
+
+    /// Common AIR/bus reduction. The prime caller closes indexed obligations;
+    /// the native caller rejects them before entering this kernel.
+    pub(in crate::verifier) fn reduce_common<P, H, CF>(
+        &self,
+        b: &mut CircuitBuilder<CF>,
+        mut ch: BinaryTower128Challenger,
+        public: &[Vec<P::BaseTarget>],
+        proof: &BinaryRelationProof<'_, P::ChallengeTarget>,
+    ) -> Result<BinaryMultiStarkReduction<P::ChallengeTarget>, VerificationError>
+    where
+        CF: Field + Eq + Hash,
+        H: BinaryCircuitHost<CF>,
+        P: BinaryTowerPolicy<CF, Base = F, Challenge = E>,
+    {
+        let zero = P::constant(b, 0)?;
+        for values in public {
+            let mut bytes = Vec::new();
+            for value in values {
+                P::constrain_base(b, value);
+                let value = P::lift(b, value)?;
+                bytes.extend(P::word_bytes::<H>(b, &value, F::RAW_BITS)?);
+            }
+            ch.observe_bytes_with_host::<H, CF>(b, &bytes)?;
+        }
+        let bus_claims = if let (Some(verifier), Some(proof)) = (&self.bus, proof.bus) {
+            let (claims, next) = verifier.verify_using::<P, H, CF>(b, ch, proof)?;
+            ch = next;
+            Some(claims)
+        } else {
+            None
+        };
+        observe_seed_with_host::<F, H, CF>(b, &mut ch, &self.input.zerocheck_seed)?;
+        let alpha = P::sample::<H>(b, &mut ch)?;
+        let beta = P::sample::<H>(b, &mut ch)?;
+        let lambda = if bus_claims.is_some() {
+            Some(P::sample::<H>(b, &mut ch)?)
+        } else {
+            None
+        };
+        let initial = if let (Some(claims), Some(lambda)) = (&bus_claims, &lambda) {
+            let one = P::constant(b, 1)?;
+            let push = P::add(b, &claims.values[0], &one);
+            let pull = P::add(b, &claims.values[1], &one);
+            let pull = P::mul(b, lambda, &pull);
+            let batched = P::add(b, &push, &pull);
+            P::mul(b, lambda, &batched)
+        } else {
+            zero.clone()
+        };
+        let output = self.tau.sample_with_host::<H, CF>(b, ch)?;
+        let reduction = self.sumcheck.verify_after_queries_using::<P, H, CF>(
+            b,
+            output.continuation,
+            &initial,
+            proof.sumcheck,
+        )?;
+        let tau = output
+            .values
+            .iter()
+            .map(|value| P::from_checked_bits(b, value))
+            .collect::<Result<_, _>>()?;
         Ok(BinaryMultiStarkReduction {
             alpha,
             beta,
@@ -384,10 +429,10 @@ where
             tau,
             point: reduction.point,
             claim: reduction.claim,
-            indexed,
-            challenger,
-            main_points,
-            preprocessed_points,
+            indexed: None,
+            challenger: reduction.challenger,
+            main_points: Vec::new(),
+            preprocessed_points: None,
         })
     }
 
@@ -416,8 +461,22 @@ where
                 preprocessing,
             );
         }
-        let mut folded = b.binary128_constant(0)?;
-        let mut weight = b.binary128_constant(1)?;
+        self.finish_common::<TowerRelation<F, E>, EF>(b, public, reduction, evals, preprocessed)
+    }
+    pub(in crate::verifier) fn finish_common<P, CF>(
+        &self,
+        b: &mut CircuitBuilder<CF>,
+        public: &[Vec<P::BaseTarget>],
+        reduction: &BinaryMultiStarkReduction<P::ChallengeTarget>,
+        evals: &[p3_sumcheck::OpeningBatch<P::ChallengeTarget>],
+        preprocessed: Option<&[p3_sumcheck::OpeningBatch<P::ChallengeTarget>]>,
+    ) -> Result<(), VerificationError>
+    where
+        CF: Field + Eq + Hash,
+        P: BinaryTowerPolicy<CF, Base = F, Challenge = E>,
+    {
+        let mut folded = P::constant(b, 0)?;
+        let mut weight = P::constant(b, 1)?;
         let mut air_evaluations = Vec::with_capacity(self.input.airs.len());
         for (i, air) in self.input.airs.iter().enumerate() {
             let values = &evals[self.input.main_schedule.air_batch(i)];
@@ -433,7 +492,7 @@ where
             } else {
                 (&[][..], &[][..])
             };
-            let evaluation = air.evaluate_with_bus(
+            let evaluation = air.evaluate_using::<P, CF>(
                 b,
                 &reduction.point[reduction.point.len() - air.log_height()..],
                 values.current(),
@@ -443,21 +502,27 @@ where
                 &public[i],
                 &reduction.alpha,
             )?;
-            let term = b.binary128_mul(&weight, &evaluation.folded);
-            folded = b.binary128_add(&folded, &term);
-            weight = b.binary128_mul(&weight, &reduction.beta);
+            let term = P::mul(b, &weight, &evaluation.folded);
+            folded = P::add(b, &folded, &term);
+            weight = P::mul(b, &weight, &reduction.beta);
             air_evaluations.push(evaluation);
         }
-        let equality = binary128_eq_eval(b, &reduction.tau, &reduction.point)?;
-        let mut terminal = b.binary128_mul(&equality, &folded);
+        let equality = P::eq_eval(b, &reduction.tau, &reduction.point)?;
+        let mut terminal = P::mul(b, &equality, &folded);
         if let (Some(verifier), Some(claims), Some(lambda)) =
             (&self.bus, &reduction.bus_claims, &reduction.lambda)
         {
-            let bus = verifier.terminal(b, claims, &air_evaluations, &reduction.point, lambda)?;
-            let weighted = b.binary128_mul(lambda, &bus);
-            terminal = b.binary128_add(&terminal, &weighted);
+            let bus = verifier.terminal_using::<P, CF>(
+                b,
+                claims,
+                &air_evaluations,
+                &reduction.point,
+                lambda,
+            )?;
+            let weighted = P::mul(b, lambda, &bus);
+            terminal = P::add(b, &terminal, &weighted);
         }
-        assert_equal(b, &reduction.claim, &terminal);
+        P::assert_equal(b, &reduction.claim, &terminal);
         Ok(())
     }
 
