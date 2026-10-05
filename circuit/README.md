@@ -36,6 +36,12 @@ That AIR repeats the complete assignment on every row and is a correctness basel
 the compact circuit prover and recursive binary-proof verifier still require prime
 host fields.
 
+For native binary values, `binary_decompose_coordinates` and
+`binary_recompose_coordinates` use checked raw basis weights through the sealed
+`BinaryCoordinateField` trait. Full decompositions are unique; partial
+decompositions constrain all omitted coordinates to zero. These codecs preserve
+each field's own tower or polynomial basis and do not use integer embeddings.
+
 Enable `p3-circuit/debugging` to retain builder allocation labels, scopes, and
 source expressions through compilation. A runner failure can then be inspected
 without a tracing subscriber:

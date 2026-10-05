@@ -3,6 +3,7 @@ mod executor;
 mod npo;
 mod op;
 
+pub mod binary_native;
 pub mod binary_poly;
 pub mod binary_tower;
 pub mod blake3_compress;

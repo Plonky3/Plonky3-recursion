@@ -29,6 +29,11 @@ followed by a prime-field recursion layer. It does not demonstrate binary-in/bin
     for a characteristic-2 base field. The decomposition and recomposition gadgets require
     `BF: PrimeField64` with `F: ExtensionField<BF>`, and the binary tower only extends its
     byte-aligned levels, so they cannot be instantiated over it at all.
+  - The separate `binary_decompose_coordinates` / `binary_recompose_coordinates` APIs
+    use the field's raw basis through `BinaryCoordinateField`. Every coordinate is
+    constrained Boolean, and requesting fewer than the full width also constrains
+    the omitted coordinates to zero. These APIs preserve each field's own basis;
+    they do not reinterpret a polynomial element as a tower element.
 - **Bit-oriented `BinaryField128` arithmetic.** `BinaryTower128Target` represents the Wiedemann
   tower type `p3_binary_field::BinaryField128` as 128 Boolean coordinates in a prime or binary
   circuit field. It does not use the GHASH polynomial coordinates of `Ghash128`.
