@@ -3,8 +3,9 @@
 use alloc::vec::Vec;
 use core::hash::Hash;
 
+use p3_circuit::ops::{binary_encoding::PrimeBinaryEncoding, binary_host::BinaryCircuitHost};
 use p3_circuit::{CircuitBuilder, ExprId};
-use p3_field::{ExtensionField, PrimeField64};
+use p3_field::{ExtensionField, Field, PrimeField64};
 
 use crate::BinaryTower128Challenger;
 use crate::verifier::{InputResourceUsage, VerificationError, VerifierLimits};
@@ -100,8 +101,21 @@ impl BinaryWhirQueryPlan {
         BF: PrimeField64,
         EF: ExtensionField<BF> + Eq + Hash,
     {
-        let zero = circuit.define_const(EF::ZERO);
-        let one = circuit.define_const(EF::ONE);
+        self.sample_with_host::<PrimeBinaryEncoding<BF>, EF>(circuit, challenger)
+    }
+
+    pub fn sample_with_host<H, CF>(
+        &self,
+        circuit: &mut CircuitBuilder<CF>,
+        challenger: &mut BinaryTower128Challenger,
+    ) -> Result<Vec<Vec<ExprId>>, VerificationError>
+    where
+        CF: Field + Eq + Hash,
+        H: BinaryCircuitHost<CF>,
+    {
+        H::check_carrier()?;
+        let zero = circuit.define_const(CF::ZERO);
+        let one = circuit.define_const(CF::ONE);
         if self.query_draws == 0 {
             return Ok((0..self.num_queries)
                 .map(|index| {
@@ -118,7 +132,7 @@ impl BinaryWhirQueryPlan {
             for stratum in 0..1usize << depth {
                 // Native uniform sampling consumes eight bytes even if the
                 // width is zero; no duplicate rejection or sorting follows.
-                let mut bits = staged.sample_bits::<BF, EF>(circuit, low_bits)?;
+                let mut bits = staged.sample_bits_with_host::<H, CF>(circuit, low_bits)?;
                 bits.extend((0..depth).map(
                     |bit| {
                         if (stratum >> bit) & 1 == 0 { zero } else { one }

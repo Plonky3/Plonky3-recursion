@@ -6,7 +6,7 @@ use core::hash::Hash;
 
 use p3_binary_field::{BinaryField128, TowerLevel};
 use p3_challenger::{CanObserve, CanSampleUniformBits, FieldChallenger, GrindingChallenger};
-use p3_circuit::ops::{BinaryTower128Target, ByteHash, bytes_to_limbs};
+use p3_circuit::ops::{BinaryTower128Target, ByteHash, NativeTower128Target, bytes_to_limbs};
 use p3_circuit::{CircuitBuilder, ExprId};
 use p3_field::{
     BasedVectorSpace, ExtensionField, Field, PackedValue, PrimeCharacteristicRing, PrimeField64,
@@ -28,32 +28,32 @@ use crate::transcript::domain_separator_seed;
 use crate::verifier::{InputResourceUsage, VerificationError};
 
 #[derive(Clone, Debug)]
-pub struct BinaryWhirSumcheckTargets {
-    pub messages: Vec<[BinaryTower128Target; 2]>,
-    pub pow_witnesses: Vec<BinaryTower128Target>,
+pub struct BinaryWhirSumcheckTargets<T = BinaryTower128Target> {
+    pub messages: Vec<[T; 2]>,
+    pub pow_witnesses: Vec<T>,
 }
 
 #[derive(Clone, Debug)]
-pub struct BinaryWhirRoundTargets {
+pub struct BinaryWhirRoundTargets<T = BinaryTower128Target> {
     pub cap: Vec<Vec<ExprId>>,
-    pub ood_answers: Vec<BinaryTower128Target>,
-    pub pow_witness: BinaryTower128Target,
-    pub rows: Vec<Vec<BinaryTower128Target>>,
+    pub ood_answers: Vec<T>,
+    pub pow_witness: T,
+    pub rows: Vec<Vec<T>>,
     pub paths: Vec<Vec<Vec<ExprId>>>,
-    pub sumcheck: BinaryWhirSumcheckTargets,
+    pub sumcheck: BinaryWhirSumcheckTargets<T>,
 }
 
 #[derive(Clone, Debug)]
-pub struct BinaryWhirProofTargets {
-    pub evals: Vec<OpeningBatch<BinaryTower128Target>>,
-    pub initial_ood_answers: Vec<BinaryTower128Target>,
-    pub initial_sumcheck: BinaryWhirSumcheckTargets,
-    pub rounds: Vec<BinaryWhirRoundTargets>,
-    pub final_poly: Vec<BinaryTower128Target>,
-    pub final_pow_witness: BinaryTower128Target,
-    pub final_rows: Vec<Vec<BinaryTower128Target>>,
+pub struct BinaryWhirProofTargets<T = BinaryTower128Target> {
+    pub evals: Vec<OpeningBatch<T>>,
+    pub initial_ood_answers: Vec<T>,
+    pub initial_sumcheck: BinaryWhirSumcheckTargets<T>,
+    pub rounds: Vec<BinaryWhirRoundTargets<T>>,
+    pub final_poly: Vec<T>,
+    pub final_pow_witness: T,
+    pub final_rows: Vec<Vec<T>>,
     pub final_paths: Vec<Vec<Vec<ExprId>>>,
-    pub final_sumcheck: BinaryWhirSumcheckTargets,
+    pub final_sumcheck: BinaryWhirSumcheckTargets<T>,
 }
 
 /// Exact trusted contract, including native configuration seed and the whole
@@ -150,27 +150,38 @@ impl<F: RecursiveBinaryWhirTowerField> BinaryWhirInputShape<F> {
         BF: PrimeField64,
         EF: ExtensionField<BF> + Eq + Hash,
     {
+        self.allocate_with(b, field::<BF, EF>)
+    }
+
+    fn allocate_with<CF, T>(
+        &self,
+        b: &mut CircuitBuilder<CF>,
+        mut field: impl FnMut(&mut CircuitBuilder<CF>) -> Result<T, VerificationError>,
+    ) -> Result<BinaryWhirProofTargets<T>, VerificationError>
+    where
+        CF: Field + Eq + Hash,
+    {
         let evals = self
             .protocol
             .iter_openings()
             .map(|(_, batch)| {
                 Ok(OpeningBatch::new(
-                    fields::<BF, EF>(b, batch.current().len())?,
-                    fields::<BF, EF>(b, batch.next().len())?,
+                    fields(b, batch.current().len(), &mut field)?,
+                    fields(b, batch.next().len(), &mut field)?,
                 ))
             })
             .collect::<Result<_, VerificationError>>()?;
-        let initial_ood_answers = fields::<BF, EF>(b, self.initial_ood)?;
-        let initial_sumcheck = fold::<BF, EF>(b, &self.initial_fold)?;
+        let initial_ood_answers = fields(b, self.initial_ood, &mut field)?;
+        let initial_sumcheck = fold(b, &self.initial_fold, &mut field)?;
         let mut rounds = Vec::new();
         for site in self.sites.iter().take(self.sites.len() - 1) {
             let cap = (0..1usize << self.cap_height)
                 .map(|_| b.alloc_private_input_array::<16>("WHIR round cap").to_vec())
                 .collect();
-            let ood_answers = fields::<BF, EF>(b, site.ood)?;
-            let pow_witness = field::<BF, EF>(b)?;
-            let (rows, paths) = opening::<BF, EF>(b, site, self.cap_height)?;
-            let sumcheck = fold::<BF, EF>(b, &site.fold)?;
+            let ood_answers = fields(b, site.ood, &mut field)?;
+            let pow_witness = field(b)?;
+            let (rows, paths) = opening(b, site, self.cap_height, &mut field)?;
+            let sumcheck = fold(b, &site.fold, &mut field)?;
             rounds.push(BinaryWhirRoundTargets {
                 cap,
                 ood_answers,
@@ -180,14 +191,14 @@ impl<F: RecursiveBinaryWhirTowerField> BinaryWhirInputShape<F> {
                 sumcheck,
             });
         }
-        let final_poly = fields::<BF, EF>(b, self.final_len)?;
-        let final_pow_witness = field::<BF, EF>(b)?;
+        let final_poly = fields(b, self.final_len, &mut field)?;
+        let final_pow_witness = field(b)?;
         let site = self
             .sites
             .last()
             .expect("a checked WHIR plan has a final query site");
-        let (final_rows, final_paths) = opening::<BF, EF>(b, site, self.cap_height)?;
-        let final_sumcheck = fold::<BF, EF>(b, &site.fold)?;
+        let (final_rows, final_paths) = opening(b, site, self.cap_height, &mut field)?;
+        let final_sumcheck = fold(b, &site.fold, &mut field)?;
         Ok(BinaryWhirProofTargets {
             evals,
             initial_ood_answers,
@@ -365,6 +376,20 @@ where
                 }
                 _ => return Err(invalid("binary WHIR native query field variant mismatch")),
             };
+            let max_frontier = site
+                .queries
+                .num_queries()
+                .checked_mul(site.log_height - p.cap_height)
+                .ok_or(VerificationError::ResourceArithmeticOverflow {
+                    component: "binary WHIR frontier",
+                })?;
+            if frontier.sibling_hashes.len() > max_frontier {
+                return Err(VerificationError::ResourceLimitExceeded {
+                    component: "binary WHIR frontier",
+                    actual: frontier.sibling_hashes.len(),
+                    limit: max_frontier,
+                });
+            }
             usage.add_compressed_frontier_hashes(&p.limits, frontier.sibling_hashes.len())?;
         }
         Ok(())
@@ -373,7 +398,8 @@ where
     /// Imports through public native layout, WHIR transcript and byte-tree
     /// restoration APIs. The commitment must already be observed. Passing a
     /// mutable challenger retains its exact native continuation. All visible
-    /// shapes and frontier budgets are checked before transcript replay. A
+    /// shapes and frontier budgets are checked before transcript replay. Errors
+    /// leave the caller's challenger unchanged, including restoration failures. A
     /// zero-round closing sumcheck must omit the native optional proof slot.
     pub fn import_native<C, Ch, H, Co>(
         &self,
@@ -382,19 +408,21 @@ where
         commitment: &MerkleCap<F, [u8; 32]>,
         points: &[Point<BinaryField128>],
         proof: &PcsProof<F, BinaryField128, MerkleTreeMmcs<F, u8, H, Co, 2, 32>>,
-        mut challenger: Ch,
+        target_challenger: &mut Ch,
     ) -> Result<NativeBinaryWhirInput<F>, VerificationError>
     where
         F: PackedValue<Value = F>,
         H: CryptographicHasher<F, [u8; 32]> + Sync,
         Co: PseudoCompressionFunction<[u8; 32], 2> + Sync,
         C: FieldChallenger<F> + GrindingChallenger<Witness = F>,
-        Ch: FieldChallenger<F>
+        Ch: Clone
+            + FieldChallenger<F>
             + CanSampleUniformBits<F>
             + GrindingChallenger<Witness = F>
             + CanObserve<MerkleCap<F, [u8; 32]>>,
     {
         self.check_native(config, mmcs, commitment, points, proof)?;
+        let mut challenger = target_challenger.clone();
         let p = &self.plan;
         let shape = WhirShape::new(config, p.protocol.num_openings());
         let last = p.sites.last().expect("checked final site");
@@ -589,6 +617,7 @@ where
                 push_fold(&mut limbs, fold);
             }
         }
+        *target_challenger = challenger;
         Ok(NativeBinaryWhirInput {
             shape: self.input_shape(),
             limbs,
@@ -604,44 +633,44 @@ where
     let limbs = b.alloc_private_input_array::<8>("binary WHIR field");
     Ok(b.binary128_from_limbs::<BF>(limbs)?)
 }
-fn fields<BF, EF>(
-    b: &mut CircuitBuilder<EF>,
+fn fields<CF, T>(
+    b: &mut CircuitBuilder<CF>,
     n: usize,
-) -> Result<Vec<BinaryTower128Target>, VerificationError>
+    field: &mut impl FnMut(&mut CircuitBuilder<CF>) -> Result<T, VerificationError>,
+) -> Result<Vec<T>, VerificationError>
 where
-    BF: PrimeField64,
-    EF: ExtensionField<BF> + Eq + Hash,
+    CF: Field + Eq + Hash,
 {
-    (0..n).map(|_| field::<BF, EF>(b)).collect()
+    (0..n).map(|_| field(b)).collect()
 }
-fn fold<BF, EF>(
-    b: &mut CircuitBuilder<EF>,
+fn fold<CF, T>(
+    b: &mut CircuitBuilder<CF>,
     shape: &FoldShape,
-) -> Result<BinaryWhirSumcheckTargets, VerificationError>
+    field: &mut impl FnMut(&mut CircuitBuilder<CF>) -> Result<T, VerificationError>,
+) -> Result<BinaryWhirSumcheckTargets<T>, VerificationError>
 where
-    BF: PrimeField64,
-    EF: ExtensionField<BF> + Eq + Hash,
+    CF: Field + Eq + Hash,
 {
     let messages = (0..shape.rounds)
-        .map(|_| Ok([field::<BF, EF>(b)?, field::<BF, EF>(b)?]))
+        .map(|_| Ok([field(b)?, field(b)?]))
         .collect::<Result<_, VerificationError>>()?;
-    let pow_witnesses = fields::<BF, EF>(b, if shape.pow_bits == 0 { 0 } else { shape.rounds })?;
+    let pow_witnesses = fields(b, if shape.pow_bits == 0 { 0 } else { shape.rounds }, field)?;
     Ok(BinaryWhirSumcheckTargets {
         messages,
         pow_witnesses,
     })
 }
-fn opening<BF, EF>(
-    b: &mut CircuitBuilder<EF>,
+fn opening<CF, T>(
+    b: &mut CircuitBuilder<CF>,
     site: &OracleSite,
     cap: usize,
-) -> Result<(Vec<Vec<BinaryTower128Target>>, Vec<Vec<Vec<ExprId>>>), VerificationError>
+    field: &mut impl FnMut(&mut CircuitBuilder<CF>) -> Result<T, VerificationError>,
+) -> Result<(Vec<Vec<T>>, Vec<Vec<Vec<ExprId>>>), VerificationError>
 where
-    BF: PrimeField64,
-    EF: ExtensionField<BF> + Eq + Hash,
+    CF: Field + Eq + Hash,
 {
     let rows = (0..site.queries.num_queries())
-        .map(|_| fields::<BF, EF>(b, site.width))
+        .map(|_| fields(b, site.width, field))
         .collect::<Result<_, _>>()?;
     let paths = (0..site.queries.num_queries())
         .map(|_| {
@@ -679,5 +708,116 @@ fn push_fold<F: RecursiveBinaryWhirTowerField>(
     }
     for &v in &proof.pow_witnesses {
         push(values, v.raw_coordinates());
+    }
+}
+
+impl BinaryWhirInputShape<BinaryField128> {
+    pub fn allocate_native_targets(
+        &self,
+        b: &mut CircuitBuilder<BinaryField128>,
+    ) -> Result<BinaryWhirProofTargets<NativeTower128Target>, VerificationError> {
+        self.allocate_with(b, |b| {
+            let value = b.alloc_private_input("native WHIR field");
+            Ok(b.native_tower128_from_expr(value))
+        })
+    }
+}
+impl NativeBinaryWhirInput<BinaryField128> {
+    /// Shape-directed packing of scalar fields and ungrouped digest words.
+    pub fn private_native_values(
+        &self,
+        expected: &BinaryWhirInputShape<BinaryField128>,
+    ) -> Result<Vec<BinaryField128>, VerificationError> {
+        if &self.shape != expected {
+            return Err(invalid("binary WHIR input belongs to a different verifier"));
+        }
+        let mut cursor = NativeWhirCursor {
+            limbs: &self.limbs,
+            position: 0,
+            values: Vec::new(),
+        };
+        for (_, batch) in expected.protocol.iter_openings() {
+            cursor.fields(batch.current().len())?;
+            cursor.fields(batch.next().len())?;
+        }
+        cursor.fields(expected.initial_ood)?;
+        cursor.fold(&expected.initial_fold)?;
+        for site in expected.sites.iter().take(expected.sites.len() - 1) {
+            for _ in 0..1usize << expected.cap_height {
+                cursor.words(16)?;
+            }
+            cursor.fields(site.ood)?;
+            cursor.fields(1)?;
+            cursor.opening(site, expected.cap_height)?;
+            cursor.fold(&site.fold)?;
+        }
+        cursor.fields(expected.final_len)?;
+        cursor.fields(1)?;
+        let site = expected.sites.last().expect("checked final WHIR site");
+        cursor.opening(site, expected.cap_height)?;
+        cursor.fold(&site.fold)?;
+        if cursor.position != self.limbs.len() {
+            return Err(invalid("native WHIR coordinate packing has trailing words"));
+        }
+        Ok(cursor.values)
+    }
+}
+struct NativeWhirCursor<'a> {
+    limbs: &'a [u16],
+    position: usize,
+    values: Vec<BinaryField128>,
+}
+impl NativeWhirCursor<'_> {
+    fn take(&mut self, count: usize) -> Result<&[u16], VerificationError> {
+        let end = self
+            .position
+            .checked_add(count)
+            .ok_or(invalid("native WHIR coordinate cursor overflow"))?;
+        let words = self
+            .limbs
+            .get(self.position..end)
+            .ok_or(invalid("native WHIR coordinate packing is truncated"))?;
+        self.position = end;
+        Ok(words)
+    }
+    fn words(&mut self, count: usize) -> Result<(), VerificationError> {
+        for _ in 0..count {
+            let raw = self.take(1)?[0] as u128;
+            self.values.push(BinaryField128::from_repr(raw));
+        }
+        Ok(())
+    }
+    fn fields(&mut self, count: usize) -> Result<(), VerificationError> {
+        for _ in 0..count {
+            let raw = self
+                .take(8)?
+                .iter()
+                .enumerate()
+                .fold(0u128, |raw, (i, &word)| {
+                    raw | (u128::from(word) << (16 * i))
+                });
+            self.values.push(BinaryField128::from_repr(raw));
+        }
+        Ok(())
+    }
+    fn fold(&mut self, shape: &FoldShape) -> Result<(), VerificationError> {
+        for _ in 0..shape.rounds {
+            self.fields(2)?;
+        }
+        if shape.pow_bits > 0 {
+            self.fields(shape.rounds)?;
+        }
+        Ok(())
+    }
+    fn opening(&mut self, site: &OracleSite, cap: usize) -> Result<(), VerificationError> {
+        for _ in 0..site.queries.num_queries() {
+            self.fields(site.width)?;
+        }
+        for _ in 0..site.queries.num_queries() {
+            for _ in 0..site.log_height - cap {
+                self.words(16)?;
+            }
+        }
+        Ok(())
     }
 }

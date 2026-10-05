@@ -317,24 +317,32 @@ impl BinaryBooleanWhirVerifier {
         points: &[Point<BinaryField128>],
         readings: &[(Option<BinaryField128>, Option<BinaryField128>)],
         proof: &BooleanWhirProof<BinaryField128, MerkleTreeMmcs<BinaryField128, u8, H, Co, 2, 32>>,
-        mut ch: Ch,
+        target_challenger: &mut Ch,
     ) -> Result<NativeBinaryBooleanWhirInput, VerificationError>
     where
         C: FieldChallenger<BinaryField128> + GrindingChallenger<Witness = BinaryField128>,
         H: CryptographicHasher<BinaryField128, [u8; 32]> + Sync,
         Co: PseudoCompressionFunction<[u8; 32], 2> + Sync,
-        Ch: FieldChallenger<BinaryField128>
+        Ch: Clone
+            + FieldChallenger<BinaryField128>
             + CanSampleUniformBits<BinaryField128>
             + GrindingChallenger<Witness = BinaryField128>
             + CanObserve<MerkleCap<BinaryField128, [u8; 32]>>,
     {
         self.check_native_structure(config, mmcs, commitment, proof)?;
+        let mut ch = target_challenger.clone();
         let (reduction, point, _) =
             self.reduction
                 .import_native(points, readings, &proof.reduction, &mut ch)?;
-        let opening =
-            self.opening
-                .import_native(config, mmcs, commitment, &[point], &proof.opening, ch)?;
+        let opening = self.opening.import_native(
+            config,
+            mmcs,
+            commitment,
+            &[point],
+            &proof.opening,
+            &mut ch,
+        )?;
+        *target_challenger = ch;
         Ok(NativeBinaryBooleanWhirInput {
             shape: self.input_shape(),
             reduction,

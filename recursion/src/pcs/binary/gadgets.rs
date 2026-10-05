@@ -2,6 +2,7 @@
 
 use core::hash::Hash;
 
+use crate::verifier::binary_field_policy::{BinaryRelationPolicy, TowerRelation};
 use p3_binary_field::{BinaryField128, TowerLevel};
 use p3_circuit::ops::BinaryTower128Target;
 use p3_circuit::{CircuitBuilder, CircuitBuilderError, ExprId};
@@ -47,29 +48,40 @@ pub fn binary128_next_eval<F: Field + Eq + Hash>(
     point: &[BinaryTower128Target],
     row: &[BinaryTower128Target],
 ) -> Result<BinaryTower128Target, CircuitBuilderError> {
+    next_eval_using::<TowerRelation<BinaryField128, BinaryField128>, F>(circuit, point, row)
+}
+pub(crate) fn next_eval_using<P, CF>(
+    circuit: &mut CircuitBuilder<CF>,
+    point: &[P::ChallengeTarget],
+    row: &[P::ChallengeTarget],
+) -> Result<P::ChallengeTarget, CircuitBuilderError>
+where
+    CF: Field + Eq + Hash,
+    P: BinaryRelationPolicy<CF>,
+{
     assert_eq!(
         point.len(),
         row.len(),
         "binary successor point lengths differ"
     );
-    let one = circuit.binary128_constant(1)?;
+    let one = P::constant(circuit, 1)?;
     let mut carry = one.clone();
-    let mut done = circuit.binary128_constant(0)?;
+    let mut done = P::constant(circuit, 0)?;
     let mut omega = one.clone();
     for (point, row) in point.iter().zip(row).rev() {
-        let joint = circuit.binary128_mul(point, row);
-        let point_not_row = circuit.binary128_add(point, &joint);
-        let not_point_row = circuit.binary128_add(row, &joint);
-        let sum = circuit.binary128_add(point, row);
-        let equal = circuit.binary128_add(&one, &sum);
+        let joint = P::mul(circuit, point, row);
+        let point_not_row = P::add(circuit, point, &joint);
+        let not_point_row = P::add(circuit, row, &joint);
+        let sum = P::add(circuit, point, row);
+        let equal = P::add(circuit, &one, &sum);
         let previous_carry = carry;
-        carry = circuit.binary128_mul(&previous_carry, &point_not_row);
-        let settled = circuit.binary128_mul(&previous_carry, &not_point_row);
-        let already_settled = circuit.binary128_mul(&done, &equal);
-        done = circuit.binary128_add(&already_settled, &settled);
-        omega = circuit.binary128_mul(&omega, &joint);
+        carry = P::mul(circuit, &previous_carry, &point_not_row);
+        let settled = P::mul(circuit, &previous_carry, &not_point_row);
+        let already_settled = P::mul(circuit, &done, &equal);
+        done = P::add(circuit, &already_settled, &settled);
+        omega = P::mul(circuit, &omega, &joint);
     }
-    Ok(circuit.binary128_add(&done, &omega))
+    Ok(P::add(circuit, &done, &omega))
 }
 
 /// Reduces a compact evaluation-basis quadratic sumcheck claim at `beta`.
@@ -89,12 +101,27 @@ pub fn binary128_reduce_sumcheck_claim<F: Field + Eq + Hash>(
     hinf: &BinaryTower128Target,
     beta: &BinaryTower128Target,
 ) -> Result<BinaryTower128Target, CircuitBuilderError> {
-    let one = circuit.binary128_constant(1)?;
-    let beta_plus_one = circuit.binary128_add(beta, &one);
-    let leading = circuit.binary128_mul(hinf, &beta_plus_one);
-    let slope = circuit.binary128_add(claim, &leading);
-    let increment = circuit.binary128_mul(beta, &slope);
-    Ok(circuit.binary128_add(h0, &increment))
+    reduce_sumcheck_using::<TowerRelation<BinaryField128, BinaryField128>, F>(
+        circuit, claim, h0, hinf, beta,
+    )
+}
+pub(crate) fn reduce_sumcheck_using<P, CF>(
+    circuit: &mut CircuitBuilder<CF>,
+    claim: &P::ChallengeTarget,
+    h0: &P::ChallengeTarget,
+    hinf: &P::ChallengeTarget,
+    beta: &P::ChallengeTarget,
+) -> Result<P::ChallengeTarget, CircuitBuilderError>
+where
+    CF: Field + Eq + Hash,
+    P: BinaryRelationPolicy<CF>,
+{
+    let one = P::constant(circuit, 1)?;
+    let beta_plus_one = P::add(circuit, beta, &one);
+    let leading = P::mul(circuit, hinf, &beta_plus_one);
+    let slope = P::add(circuit, claim, &leading);
+    let increment = P::mul(circuit, beta, &slope);
+    Ok(P::add(circuit, h0, &increment))
 }
 
 /// Folds adjacent symbols of a Cantor-domain codeword at `beta`, matching

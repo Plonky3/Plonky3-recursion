@@ -357,13 +357,14 @@ impl BinaryBooleanWhirTraceVerifier {
             BinaryField128,
             BooleanWhirProof<BinaryField128, MerkleTreeMmcs<BinaryField128, u8, H, Co, 2, 32>>,
         >,
-        mut ch: Ch,
+        target_challenger: &mut Ch,
     ) -> Result<NativeBinaryBooleanWhirTraceInput, VerificationError>
     where
         C: FieldChallenger<BinaryField128> + GrindingChallenger<Witness = BinaryField128>,
         H: CryptographicHasher<BinaryField128, [u8; 32]> + Sync,
         Co: PseudoCompressionFunction<[u8; 32], 2> + Sync,
-        Ch: FieldChallenger<BinaryField128>
+        Ch: Clone
+            + FieldChallenger<BinaryField128>
             + CanSampleUniformBits<BinaryField128>
             + GrindingChallenger<Witness = BinaryField128>
             + CanObserve<MerkleCap<BinaryField128, [u8; 32]>>,
@@ -376,6 +377,7 @@ impl BinaryBooleanWhirTraceVerifier {
             proof,
             &mut InputResourceUsage::default(),
         )?;
+        let mut ch = target_challenger.clone();
         let plan = &self.routing.plan;
         let captured = route(
             plan.num_variables,
@@ -401,8 +403,9 @@ impl BinaryBooleanWhirTraceVerifier {
             &lifted,
             &readings,
             &proof.opening,
-            ch,
+            &mut ch,
         )?;
+        *target_challenger = ch;
         Ok(NativeBinaryBooleanWhirTraceInput {
             shape: self.input_shape(),
             values: proof.values.iter().map(|v| v.to_repr()).collect(),
@@ -480,6 +483,66 @@ mod tests {
             p3_whir::pcs::proof::QueryOpenings::Extension(o) => o.proof.sibling_hashes.len(),
         };
         assert!(count > 0);
+        for oversized in [false, true] {
+            let mut malformed = proof.clone();
+            let frontier = match &mut malformed.opening.opening.whir.final_openings {
+                p3_whir::pcs::proof::QueryOpenings::Base(o) => &mut o.proof.sibling_hashes,
+                p3_whir::pcs::proof::QueryOpenings::Extension(o) => &mut o.proof.sibling_hashes,
+            };
+            if oversized {
+                frontier.resize(4096, [0; 32]);
+            } else {
+                frontier.clear();
+            }
+            let mut unchanged = Ch::from_hasher(vec![7, 19, 13], keccak::byte_hash());
+            pcs.observe_commitment(&cap, &mut unchanged);
+            let mut before = unchanged.clone();
+            assert!(
+                recursive
+                    .import_native(&config, &mmcs, &cap, &points, &malformed, &mut unchanged)
+                    .is_err()
+            );
+            assert_eq!(
+                unchanged.sample_algebra_element::<E>(),
+                before.sample_algebra_element::<E>()
+            );
+            // Also isolate the Boolean wrapper's checkpoint, before ring replay.
+            let mut entry = Ch::from_hasher(vec![7, 19, 13], keccak::byte_hash());
+            pcs.observe_commitment(&cap, &mut entry);
+            let captured = route(
+                recursive.routing.plan.num_variables,
+                &recursive.routing.plan.protocol,
+                &points,
+                &proof.values,
+                &mut entry,
+            )
+            .unwrap();
+            let lifted: Vec<_> = captured.openings.iter().map(|o| o.point.clone()).collect();
+            let readings: Vec<_> = captured
+                .readings
+                .iter()
+                .map(|r| (r.current, r.next))
+                .collect();
+            let mut before = entry.clone();
+            assert!(
+                recursive
+                    .child
+                    .import_native(
+                        &config,
+                        &mmcs,
+                        &cap,
+                        &lifted,
+                        &readings,
+                        &malformed.opening,
+                        &mut entry
+                    )
+                    .is_err()
+            );
+            assert_eq!(
+                entry.sample_algebra_element::<E>(),
+                before.sample_algebra_element::<E>()
+            );
+        }
         let limit = VerifierLimits::default().max_compressed_frontier_hashes;
         let mut usage = InputResourceUsage {
             compressed_frontier_hashes: limit - count,

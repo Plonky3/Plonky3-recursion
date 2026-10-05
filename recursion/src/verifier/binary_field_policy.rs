@@ -3,7 +3,7 @@
 use core::hash::Hash;
 use core::marker::PhantomData;
 
-use p3_binary_field::{BinaryField128, Poly64, Poly192};
+use p3_binary_field::{BinaryField128, Poly64, Poly192, TowerLevel};
 use p3_circuit::ops::{
     BinaryPoly64Target, BinaryPoly192Target, BinaryTower128Target, NativeTower128Target,
     binary_host::BinaryCircuitHost,
@@ -377,6 +377,20 @@ pub(crate) trait BinaryTowerPolicy<CF: Field + Eq + Hash>: BinaryProtocolPolicy<
         value: &Self::ChallengeTarget,
         width: usize,
     ) -> Result<alloc::vec::Vec<ExprId>, VerificationError>;
+    fn constant_times_bit(
+        b: &mut CircuitBuilder<CF>,
+        bit: ExprId,
+        raw: u128,
+    ) -> Result<Self::ChallengeTarget, CircuitBuilderError>;
+    fn query_point(
+        b: &mut CircuitBuilder<CF>,
+        index_bits: &[ExprId],
+        num_variables: usize,
+    ) -> Result<alloc::vec::Vec<Self::ChallengeTarget>, CircuitBuilderError>;
+    fn from_checked_bits(
+        b: &mut CircuitBuilder<CF>,
+        value: &BinaryTower128Target,
+    ) -> Result<Self::ChallengeTarget, CircuitBuilderError>;
 }
 fn check_word_width(width: usize) -> Result<(), VerificationError> {
     if width > 128 || width % 8 != 0 {
@@ -405,6 +419,29 @@ where
             .map(|bits| H::recompose_word(b, bits))
             .collect::<Result<_, _>>()?)
     }
+    fn constant_times_bit(
+        b: &mut CircuitBuilder<CF>,
+        bit: ExprId,
+        raw: u128,
+    ) -> Result<BinaryTower128Target, CircuitBuilderError> {
+        b.assert_bool(bit);
+        let bits = core::array::from_fn(|i| if raw >> i & 1 != 0 { bit } else { ExprId::ZERO });
+        b.binary128_from_bits(bits)
+    }
+    fn query_point(
+        b: &mut CircuitBuilder<CF>,
+        index_bits: &[ExprId],
+        num_variables: usize,
+    ) -> Result<alloc::vec::Vec<BinaryTower128Target>, CircuitBuilderError> {
+        crate::pcs::binary::binary_whir_query_point::<F, CF>(b, index_bits, num_variables)
+    }
+    fn from_checked_bits(
+        b: &mut CircuitBuilder<CF>,
+        value: &BinaryTower128Target,
+    ) -> Result<BinaryTower128Target, CircuitBuilderError> {
+        Self::constrain_challenge(b, value);
+        Ok(value.clone())
+    }
 }
 impl BinaryTowerPolicy<BinaryField128> for NativeTower128Relation {
     fn word_bytes<H: BinaryCircuitHost<BinaryField128>>(
@@ -420,5 +457,51 @@ impl BinaryTowerPolicy<BinaryField128> for NativeTower128Relation {
             .chunks_exact(8)
             .map(|bits| H::recompose_word(b, bits))
             .collect::<Result<_, _>>()?)
+    }
+    fn constant_times_bit(
+        b: &mut CircuitBuilder<BinaryField128>,
+        bit: ExprId,
+        raw: u128,
+    ) -> Result<NativeTower128Target, CircuitBuilderError> {
+        b.assert_bool(bit);
+        let constant = b.native_tower128_constant(raw);
+        let bit = b.native_tower128_from_expr(bit);
+        Ok(b.native_tower128_mul(&constant, &bit))
+    }
+    fn query_point(
+        b: &mut CircuitBuilder<BinaryField128>,
+        index_bits: &[ExprId],
+        num_variables: usize,
+    ) -> Result<alloc::vec::Vec<NativeTower128Target>, CircuitBuilderError> {
+        if index_bits.len() > 128 || num_variables > 128 {
+            return Err(CircuitBuilderError::BinaryDecompositionTooManyBits {
+                expected: 128,
+                n_bits: index_bits.len().max(num_variables),
+            });
+        }
+        for &bit in index_bits {
+            b.assert_bool(bit);
+        }
+        (0..num_variables)
+            .rev()
+            .map(|shift| {
+                let mut value = b.native_tower128_constant(0);
+                for (j, &bit) in index_bits.iter().skip(shift).enumerate() {
+                    let term = Self::constant_times_bit(
+                        b,
+                        bit,
+                        BinaryField128::cantor_basis(j).to_repr(),
+                    )?;
+                    value = b.native_tower128_add(&value, &term);
+                }
+                Ok(value)
+            })
+            .collect()
+    }
+    fn from_checked_bits(
+        b: &mut CircuitBuilder<BinaryField128>,
+        value: &BinaryTower128Target,
+    ) -> Result<NativeTower128Target, CircuitBuilderError> {
+        b.native_tower128_from_bits(*value.bits())
     }
 }
