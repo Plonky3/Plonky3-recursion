@@ -9,6 +9,9 @@ use p3_multi_stark::zerocheck::transcript::ZerocheckShape;
 use p3_sumcheck::OpeningProtocol;
 
 use super::super::BinaryPolyLogupStarOutput;
+use super::super::binary_field_policy::{
+    BinaryPolyPolicy, BinaryProtocolPolicy, Poly64Relation, poly_observe_seed_with_host,
+};
 use super::super::binary_indexed::BinaryOpeningSchedule;
 use super::super::binary_poly_bus::{
     BinaryPolyBusClaims, BinaryPolyBusInputShape, BinaryPolyBusVerifier,
@@ -19,9 +22,10 @@ use super::super::binary_poly_indexed::{
 use super::*;
 use crate::pcs::binary::{
     BinaryPolyGenericSumcheckInputShape, BinaryPolyGenericSumcheckVerifier,
-    BinaryPolyNonzeroChallengePlan, poly_assert_equal, poly_observe_seed, poly192_eq_eval,
+    BinaryPolyNonzeroChallengePlan,
 };
 use crate::transcript::domain_separator_seed;
+use p3_circuit::ops::{binary_encoding::PrimeBinaryEncoding, binary_host::BinaryCircuitHost};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct PolyMultiStarkRelationShape {
@@ -31,8 +35,8 @@ pub(super) struct PolyMultiStarkRelationShape {
     pub(super) sumcheck: BinaryPolyGenericSumcheckInputShape,
     pub(super) bus: Option<BinaryPolyBusInputShape>,
     pub(super) indexed: Option<PolyIndexedInputShape>,
-    main_schedule: BinaryOpeningSchedule,
-    preprocessed_schedule: Option<BinaryOpeningSchedule>,
+    pub(super) main_schedule: BinaryOpeningSchedule,
+    pub(super) preprocessed_schedule: Option<BinaryOpeningSchedule>,
     max_tau_draws: usize,
 }
 
@@ -42,22 +46,22 @@ pub(super) struct PolyMultiStarkRelation {
     sumcheck: BinaryPolyGenericSumcheckVerifier,
     tau: BinaryPolyNonzeroChallengePlan,
     bus: Option<BinaryPolyBusVerifier>,
-    indexed: Option<BinaryPolyIndexedVerifier>,
+    pub(super) indexed: Option<BinaryPolyIndexedVerifier>,
     pub(super) usage: InputResourceUsage,
 }
 
-pub(super) struct Reduction {
-    alpha: BinaryPoly192Target,
-    beta: BinaryPoly192Target,
-    lambda: Option<BinaryPoly192Target>,
-    bus_claims: Option<BinaryPolyBusClaims>,
+pub(super) struct Reduction<T = BinaryPoly192Target> {
+    alpha: T,
+    beta: T,
+    lambda: Option<T>,
+    bus_claims: Option<BinaryPolyBusClaims<T>>,
     indexed: Option<BinaryPolyLogupStarOutput>,
-    tau: Vec<BinaryPoly192Target>,
-    point: Vec<BinaryPoly192Target>,
-    claim: BinaryPoly192Target,
+    tau: Vec<T>,
+    pub(super) point: Vec<T>,
+    claim: T,
     pub(super) challenger: BinaryTower128Challenger,
-    pub(super) main_points: Vec<Vec<BinaryPoly192Target>>,
-    pub(super) preprocessed_points: Option<Vec<Vec<BinaryPoly192Target>>>,
+    pub(super) main_points: Vec<Vec<T>>,
+    pub(super) preprocessed_points: Option<Vec<Vec<T>>>,
 }
 
 pub(super) struct NativeReduction {
@@ -268,10 +272,10 @@ impl PolyMultiStarkRelation {
         ))
     }
 
-    pub(super) fn check_targets<T>(
+    pub(super) fn check_targets<Public, T, B>(
         &self,
-        public: &[Vec<T>],
-        proof: &BinaryPolyWhirMultiStarkProofTargets,
+        public: &[Vec<Public>],
+        proof: &BinaryPolyWhirMultiStarkProofTargets<T, B>,
     ) -> Result<(), VerificationError> {
         self.check_public(public)?;
         match (&self.bus, &proof.bus) {
@@ -323,9 +327,22 @@ impl PolyMultiStarkRelation {
         BF: PrimeField64,
         EF: ExtensionField<BF> + Eq + Hash,
     {
-        poly_observe_seed::<BF, EF>(b, ch, &self.input.outer_seed)?;
+        self.observe_prefix_with_host::<PrimeBinaryEncoding<BF>, EF>(b, ch, preprocessed)
+    }
+
+    pub(super) fn observe_prefix_with_host<H, CF>(
+        &self,
+        b: &mut CircuitBuilder<CF>,
+        ch: &mut BinaryTower128Challenger,
+        preprocessed: Option<&[Vec<ExprId>]>,
+    ) -> Result<(), VerificationError>
+    where
+        CF: Field + Eq + Hash,
+        H: BinaryCircuitHost<CF>,
+    {
+        poly_observe_seed_with_host::<H, CF>(b, ch, &self.input.outer_seed)?;
         if let Some(cap) = preprocessed {
-            crate::pcs::binary::observe_cap::<BF, EF>(b, ch, cap)?;
+            crate::pcs::binary::observe_cap_with_host::<H, CF>(b, ch, cap)?;
         }
         Ok(())
     }
@@ -333,7 +350,7 @@ impl PolyMultiStarkRelation {
     pub(super) fn reduce<BF, EF>(
         &self,
         b: &mut CircuitBuilder<EF>,
-        mut ch: BinaryTower128Challenger,
+        ch: BinaryTower128Challenger,
         public: &[Vec<BinaryPoly64Target>],
         proof: &BinaryPolyWhirMultiStarkProofTargets,
     ) -> Result<Reduction, VerificationError>
@@ -341,45 +358,15 @@ impl PolyMultiStarkRelation {
         BF: PrimeField64,
         EF: ExtensionField<BF> + Eq + Hash,
     {
-        for values in public {
-            for value in values {
-                ch.observe_poly64::<BF, EF>(b, value)?;
-            }
-        }
-        let bus_claims = if let (Some(verifier), Some(proof)) = (&self.bus, &proof.bus) {
-            let (claims, next) = verifier.verify::<BF, EF>(b, ch, proof)?;
-            ch = next;
-            Some(claims)
-        } else {
-            None
-        };
-        poly_observe_seed::<BF, EF>(b, &mut ch, &self.input.zerocheck_seed)?;
-        let alpha = ch.sample_poly192::<BF, EF>(b)?;
-        let beta = ch.sample_poly192::<BF, EF>(b)?;
-        let lambda = if bus_claims.is_some() {
-            Some(ch.sample_poly192::<BF, EF>(b)?)
-        } else {
-            None
-        };
-        let initial = if let (Some(claims), Some(lambda)) = (&bus_claims, &lambda) {
-            let one = b.binary_poly192_constant([1, 0, 0])?;
-            let push = b.binary_poly192_add(&claims.values[0], &one);
-            let pull = b.binary_poly192_add(&claims.values[1], &one);
-            let pull = b.binary_poly192_mul(lambda, &pull);
-            let batched = b.binary_poly192_add(&push, &pull);
-            b.binary_poly192_mul(lambda, &batched)
-        } else {
-            b.binary_poly192_constant([0; 3])?
-        };
-        let sampled = self.tau.sample::<BF, EF>(b, ch)?;
-        let reduced = self.sumcheck.verify_reduction_after_queries::<BF, EF>(
-            b,
-            sampled.continuation,
-            &initial,
-            &proof.sumcheck,
-        )?;
+        let mut reduction = self
+            .reduce_common::<Poly64Relation, PrimeBinaryEncoding<BF>, EF>(b, ch, public, proof)?;
         let indexed = if let (Some(verifier), Some(proof)) = (&self.indexed, &proof.indexed) {
-            Some(verifier.verify::<BF, EF>(b, reduced.challenger.clone(), &reduced.point, proof)?)
+            Some(verifier.verify::<BF, EF>(
+                b,
+                reduction.challenger.clone(),
+                &reduction.point,
+                proof,
+            )?)
         } else {
             None
         };
@@ -389,17 +376,71 @@ impl PolyMultiStarkRelation {
         let challenger = indexed
             .as_ref()
             .map(|o| o.challenger.clone())
-            .unwrap_or(reduced.challenger);
+            .unwrap_or(reduction.challenger);
         let heights: Vec<_> = self.input.airs.iter().map(|a| a.log_height()).collect();
-        let main_points = self
-            .input
-            .main_schedule
-            .points(&heights, &reduced.point, indexed_points);
+        let main_points =
+            self.input
+                .main_schedule
+                .points(&heights, &reduction.point, indexed_points);
         let preprocessed_points = self
             .input
             .preprocessed_schedule
             .as_ref()
-            .map(|s| s.points(&heights, &reduced.point, indexed_points));
+            .map(|s| s.points(&heights, &reduction.point, indexed_points));
+        reduction.indexed = indexed;
+        reduction.challenger = challenger;
+        reduction.main_points = main_points;
+        reduction.preprocessed_points = preprocessed_points;
+        Ok(reduction)
+    }
+
+    pub(super) fn reduce_common<P, H, CF>(
+        &self,
+        b: &mut CircuitBuilder<CF>,
+        mut ch: BinaryTower128Challenger,
+        public: &[Vec<P::BaseTarget>],
+        proof: &BinaryPolyWhirMultiStarkProofTargets<P::ChallengeTarget, P::BaseTarget>,
+    ) -> Result<Reduction<P::ChallengeTarget>, VerificationError>
+    where
+        CF: Field + Eq + Hash,
+        H: BinaryCircuitHost<CF>,
+        P: BinaryPolyPolicy<CF> + BinaryProtocolPolicy<CF>,
+    {
+        for values in public {
+            P::observe_base::<H>(b, &mut ch, values)?;
+        }
+        let bus_claims = if let (Some(verifier), Some(proof)) = (&self.bus, &proof.bus) {
+            let (claims, next) = verifier.verify_using::<P, H, CF>(b, ch, proof)?;
+            ch = next;
+            Some(claims)
+        } else {
+            None
+        };
+        poly_observe_seed_with_host::<H, CF>(b, &mut ch, &self.input.zerocheck_seed)?;
+        let alpha = P::sample::<H>(b, &mut ch)?;
+        let beta = P::sample::<H>(b, &mut ch)?;
+        let lambda = if bus_claims.is_some() {
+            Some(P::sample::<H>(b, &mut ch)?)
+        } else {
+            None
+        };
+        let initial = if let (Some(claims), Some(lambda)) = (&bus_claims, &lambda) {
+            let one = P::constant(b, 1)?;
+            let push = P::add(b, &claims.values[0], &one);
+            let pull = P::add(b, &claims.values[1], &one);
+            let pull = P::mul(b, lambda, &pull);
+            let batched = P::add(b, &push, &pull);
+            P::mul(b, lambda, &batched)
+        } else {
+            P::constant(b, 0)?
+        };
+        let sampled = self.tau.sample_using::<P, H, CF>(b, ch)?;
+        let reduced = self.sumcheck.verify_after_queries_using::<P, H, CF>(
+            b,
+            sampled.continuation,
+            &initial,
+            &proof.sumcheck,
+        )?;
         Ok(Reduction {
             alpha,
             beta,
@@ -408,10 +449,10 @@ impl PolyMultiStarkRelation {
             tau: sampled.values,
             point: reduced.point,
             claim: reduced.claim,
-            indexed,
-            challenger,
-            main_points,
-            preprocessed_points,
+            indexed: None,
+            challenger: reduced.challenger,
+            main_points: Vec::new(),
+            preprocessed_points: None,
         })
     }
 
@@ -436,8 +477,23 @@ impl PolyMultiStarkRelation {
                 self.input.preprocessed_schedule.as_ref().zip(preprocessed),
             );
         }
-        let mut folded = b.binary_poly192_constant([0; 3])?;
-        let mut weight = b.binary_poly192_constant([1, 0, 0])?;
+        self.finish_common::<Poly64Relation, EF>(b, public, reduction, evals, preprocessed)
+    }
+
+    pub(super) fn finish_common<P, CF>(
+        &self,
+        b: &mut CircuitBuilder<CF>,
+        public: &[Vec<P::BaseTarget>],
+        reduction: &Reduction<P::ChallengeTarget>,
+        evals: &[p3_sumcheck::OpeningBatch<P::ChallengeTarget>],
+        preprocessed: Option<&[p3_sumcheck::OpeningBatch<P::ChallengeTarget>]>,
+    ) -> Result<(), VerificationError>
+    where
+        CF: Field + Eq + Hash,
+        P: BinaryPolyPolicy<CF> + BinaryProtocolPolicy<CF>,
+    {
+        let mut folded = P::constant(b, 0)?;
+        let mut weight = P::constant(b, 1)?;
         let mut air_evaluations = Vec::with_capacity(self.input.airs.len());
         for (i, air) in self.input.airs.iter().enumerate() {
             let (current, next) = if air.main_width() != 0 {
@@ -458,7 +514,7 @@ impl PolyMultiStarkRelation {
             } else {
                 (&[][..], &[][..])
             };
-            let evaluation = air.evaluate_with_bus(
+            let evaluation = air.evaluate_using::<P, CF>(
                 b,
                 &reduction.point[reduction.point.len() - air.log_height()..],
                 current,
@@ -468,21 +524,27 @@ impl PolyMultiStarkRelation {
                 &public[i],
                 &reduction.alpha,
             )?;
-            let term = b.binary_poly192_mul(&weight, &evaluation.folded);
-            folded = b.binary_poly192_add(&folded, &term);
-            weight = b.binary_poly192_mul(&weight, &reduction.beta);
+            let term = P::mul(b, &weight, &evaluation.folded);
+            folded = P::add(b, &folded, &term);
+            weight = P::mul(b, &weight, &reduction.beta);
             air_evaluations.push(evaluation);
         }
-        let eq = poly192_eq_eval(b, &reduction.tau, &reduction.point)?;
-        let mut terminal = b.binary_poly192_mul(&eq, &folded);
+        let eq = P::eq_eval(b, &reduction.tau, &reduction.point)?;
+        let mut terminal = P::mul(b, &eq, &folded);
         if let (Some(verifier), Some(claims), Some(lambda)) =
             (&self.bus, &reduction.bus_claims, &reduction.lambda)
         {
-            let bus = verifier.terminal(b, claims, &air_evaluations, &reduction.point, lambda)?;
-            let weighted = b.binary_poly192_mul(lambda, &bus);
-            terminal = b.binary_poly192_add(&terminal, &weighted);
+            let bus = verifier.terminal_using::<P, CF>(
+                b,
+                claims,
+                &air_evaluations,
+                &reduction.point,
+                lambda,
+            )?;
+            let weighted = P::mul(b, lambda, &bus);
+            terminal = P::add(b, &terminal, &weighted);
         }
-        poly_assert_equal(b, &reduction.claim, &terminal);
+        P::assert_equal(b, &reduction.claim, &terminal);
         Ok(())
     }
 

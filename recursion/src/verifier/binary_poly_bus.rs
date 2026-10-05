@@ -7,17 +7,19 @@ use p3_binary_field::{Poly64, Poly192};
 use p3_bus::{BusDirection, BusPlan, BusProof, BusTupleSlot};
 use p3_challenger::FieldChallenger;
 use p3_circuit::CircuitBuilder;
-use p3_circuit::ops::BinaryPoly192Target;
-use p3_field::{ExtensionField, Field, PrimeField64};
+use p3_circuit::ops::{BinaryPoly192Target, binary_host::BinaryCircuitHost};
+use p3_field::Field;
 
 use super::binary_air::BinaryAirEvaluation;
+use super::binary_field_policy::{
+    BinaryPolyPolicy, BinaryProtocolPolicy, poly_observe_seed_with_host,
+};
 use super::{
     BinaryPolyAirConstraintPlan, BinaryPolyProductGkrInputShape, BinaryPolyProductGkrProofTargets,
     BinaryPolyProductGkrVerifier, InputResourceUsage, NativeBinaryPolyProductGkrInput,
     VerificationError, VerifierLimits,
 };
 use crate::BinaryTower128Challenger;
-use crate::pcs::binary::{poly_observe_seed, poly192_eq_eval};
 use crate::transcript::SeedTap;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -27,11 +29,11 @@ pub(super) struct BinaryPolyBusInputShape {
     plan: BusPlan,
 }
 
-pub(super) struct BinaryPolyBusClaims {
-    pub point: Vec<BinaryPoly192Target>,
-    pub values: Vec<BinaryPoly192Target>,
-    weights: Vec<BinaryPoly192Target>,
-    offset: BinaryPoly192Target,
+pub(super) struct BinaryPolyBusClaims<T = BinaryPoly192Target> {
+    pub point: Vec<T>,
+    pub values: Vec<T>,
+    weights: Vec<T>,
+    offset: T,
 }
 
 #[derive(Clone, Debug)]
@@ -119,9 +121,9 @@ impl BinaryPolyBusVerifier {
     pub fn input_resource_usage(&self) -> InputResourceUsage {
         self.usage
     }
-    pub fn check_targets(
+    pub fn check_targets<T>(
         &self,
-        proof: &BinaryPolyProductGkrProofTargets,
+        proof: &BinaryPolyProductGkrProofTargets<T>,
     ) -> Result<(), VerificationError> {
         self.product.check_targets(proof)
     }
@@ -129,31 +131,38 @@ impl BinaryPolyBusVerifier {
         self.product.check_native(&proof.product)
     }
 
-    pub fn verify<BF, EF>(
+    pub(super) fn verify_using<P, H, CF>(
         &self,
-        b: &mut CircuitBuilder<EF>,
+        b: &mut CircuitBuilder<CF>,
         mut ch: BinaryTower128Challenger,
-        proof: &BinaryPolyProductGkrProofTargets,
-    ) -> Result<(BinaryPolyBusClaims, BinaryTower128Challenger), VerificationError>
+        proof: &BinaryPolyProductGkrProofTargets<P::ChallengeTarget>,
+    ) -> Result<
+        (
+            BinaryPolyBusClaims<P::ChallengeTarget>,
+            BinaryTower128Challenger,
+        ),
+        VerificationError,
+    >
     where
-        BF: PrimeField64,
-        EF: ExtensionField<BF> + Eq + Hash,
+        CF: Field + Eq + Hash,
+        H: BinaryCircuitHost<CF>,
+        P: BinaryPolyPolicy<CF> + BinaryProtocolPolicy<CF>,
     {
         self.check_targets(proof)?;
-        poly_observe_seed::<BF, EF>(b, &mut ch, &self.input.seed)?;
+        poly_observe_seed_with_host::<H, CF>(b, &mut ch, &self.input.seed)?;
         let fingerprint = (0..self.input.plan.security_geometry().tuple_variables())
-            .map(|_| ch.sample_poly192::<BF, EF>(b))
+            .map(|_| P::sample::<H>(b, &mut ch))
             .collect::<Result<Vec<_>, _>>()?;
-        let offset = ch.sample_poly192::<BF, EF>(b)?;
-        let output = self.product.verify_reduction::<BF, EF>(b, ch, proof)?;
-        let one = b.binary_poly192_constant([1, 0, 0])?;
+        let offset = P::sample::<H>(b, &mut ch)?;
+        let output = self.product.verify_using::<P, H, CF>(b, ch, proof)?;
+        let one = P::constant(b, 1)?;
         let mut weights = alloc::vec![one.clone()];
         for r in &fingerprint {
-            let complement = b.binary_poly192_add(&one, r);
+            let complement = P::add(b, &one, r);
             let mut next = Vec::with_capacity(weights.len() * 2);
             for weight in weights {
-                next.push(b.binary_poly192_mul(&weight, &complement));
-                next.push(b.binary_poly192_mul(&weight, r));
+                next.push(P::mul(b, &weight, &complement));
+                next.push(P::mul(b, &weight, r));
             }
             weights = next;
         }
@@ -170,22 +179,26 @@ impl BinaryPolyBusVerifier {
 
     /// Adds the shifted, eq-weighted bus factors at the authenticated AIR
     /// sumcheck point. Product padding vanishes only after subtracting one.
-    pub fn terminal<EF: Field + Eq + Hash>(
+    pub(super) fn terminal_using<P, CF>(
         &self,
-        b: &mut CircuitBuilder<EF>,
-        claims: &BinaryPolyBusClaims,
-        evaluations: &[BinaryAirEvaluation<BinaryPoly192Target>],
-        point: &[BinaryPoly192Target],
-        lambda: &BinaryPoly192Target,
-    ) -> Result<BinaryPoly192Target, VerificationError> {
+        b: &mut CircuitBuilder<CF>,
+        claims: &BinaryPolyBusClaims<P::ChallengeTarget>,
+        evaluations: &[BinaryAirEvaluation<P::ChallengeTarget>],
+        point: &[P::ChallengeTarget],
+        lambda: &P::ChallengeTarget,
+    ) -> Result<P::ChallengeTarget, VerificationError>
+    where
+        CF: Field + Eq + Hash,
+        P: BinaryPolyPolicy<CF> + BinaryProtocolPolicy<CF>,
+    {
         if claims.point.len() != self.input.plan.product_shape().log_height()
             || claims.weights.len() != self.input.plan.fingerprint_width()
             || claims.values.len() != 2
         {
             return Err(invalid("binary bus terminal geometry mismatch"));
         }
-        let one = b.binary_poly192_constant([1, 0, 0])?;
-        let mut terminal = b.binary_poly192_constant([0; 3])?;
+        let one = P::constant(b, 1)?;
+        let mut terminal = P::constant(b, 0)?;
         for direction in BusDirection::ALL {
             for share in self.input.plan.terminal_shares(direction) {
                 let evaluation = evaluations
@@ -212,7 +225,8 @@ impl BinaryPolyBusVerifier {
                         .tuple_slot(share.bus, slot)
                         .ok_or_else(|| invalid("binary bus tuple slot mismatch"))?
                     {
-                        BusTupleSlot::Payload(i) => b.binary_poly192_mul(
+                        BusTupleSlot::Payload(i) => P::mul(
+                            b,
                             fields
                                 .get(i)
                                 .ok_or_else(|| invalid("binary bus payload width mismatch"))?,
@@ -221,11 +235,11 @@ impl BinaryPolyBusVerifier {
                         BusTupleSlot::DomainBit(true) => weight.clone(),
                         BusTupleSlot::DomainBit(false) | BusTupleSlot::Zero => continue,
                     };
-                    live = b.binary_poly192_add(&live, &term);
+                    live = P::add(b, &live, &term);
                 }
-                let mut shifted = b.binary_poly192_add(&live, &one);
+                let mut shifted = P::add(b, &live, &one);
                 if let Some(activation) = activation {
-                    shifted = b.binary_poly192_mul(activation, &shifted);
+                    shifted = P::mul(b, activation, &shifted);
                 }
                 let mut weight = one.clone();
                 for (bit, r) in claims.point[..share.prefix_variables].iter().enumerate() {
@@ -233,22 +247,22 @@ impl BinaryPolyBusVerifier {
                         if share.prefix_index >> (share.prefix_variables - 1 - bit) & 1 == 1 {
                             r.clone()
                         } else {
-                            b.binary_poly192_add(&one, r)
+                            P::add(b, &one, r)
                         };
-                    weight = b.binary_poly192_mul(&weight, &selector);
+                    weight = P::mul(b, &weight, &selector);
                 }
                 let unused = point.len() - share.row_variables;
                 for r in &point[..unused] {
-                    weight = b.binary_poly192_mul(&weight, r);
+                    weight = P::mul(b, &weight, r);
                 }
                 let equality =
-                    poly192_eq_eval(b, &claims.point[share.prefix_variables..], &point[unused..])?;
-                weight = b.binary_poly192_mul(&weight, &equality);
+                    P::eq_eval(b, &claims.point[share.prefix_variables..], &point[unused..])?;
+                weight = P::mul(b, &weight, &equality);
                 if direction == BusDirection::Pull {
-                    weight = b.binary_poly192_mul(&weight, lambda);
+                    weight = P::mul(b, &weight, lambda);
                 }
-                let term = b.binary_poly192_mul(&weight, &shifted);
-                terminal = b.binary_poly192_add(&terminal, &term);
+                let term = P::mul(b, &weight, &shifted);
+                terminal = P::add(b, &terminal, &term);
             }
         }
         Ok(terminal)

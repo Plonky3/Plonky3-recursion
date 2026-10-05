@@ -35,6 +35,15 @@ pub struct BinaryPolyWhirVerifier {
 }
 
 impl BinaryPolyWhirVerifier {
+    pub(crate) fn check_host<H, CF>(&self) -> Result<(), VerificationError>
+    where
+        CF: Field + Eq + Hash,
+        H: BinaryCircuitHost<CF>,
+    {
+        H::check_hash(self.plan.hash)?;
+        Ok(())
+    }
+
     /// Conservative checked input counters retained by the trusted plan.
     pub fn input_resource_usage(&self) -> InputResourceUsage {
         self.plan.usage

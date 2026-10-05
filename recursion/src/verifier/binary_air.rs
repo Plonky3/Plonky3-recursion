@@ -1019,29 +1019,6 @@ impl BinaryPolyAirConstraintPlan {
         &self.program.bus
     }
 
-    pub(super) fn evaluate_with_bus<EF: Field + Eq + Hash>(
-        &self,
-        b: &mut CircuitBuilder<EF>,
-        point: &[p3_circuit::ops::BinaryPoly192Target],
-        current: &[p3_circuit::ops::BinaryPoly192Target],
-        next: &[p3_circuit::ops::BinaryPoly192Target],
-        preprocessed_current: &[p3_circuit::ops::BinaryPoly192Target],
-        preprocessed_next: &[p3_circuit::ops::BinaryPoly192Target],
-        public: &[p3_circuit::ops::BinaryPoly64Target],
-        alpha: &p3_circuit::ops::BinaryPoly192Target,
-    ) -> Result<BinaryAirEvaluation<p3_circuit::ops::BinaryPoly192Target>, VerificationError> {
-        self.program.evaluate::<Poly64Relation, EF>(
-            b,
-            point,
-            current,
-            next,
-            preprocessed_current,
-            preprocessed_next,
-            public,
-            alpha,
-        )
-    }
-
     pub(crate) fn write_identity(
         &self,
         w: &mut crate::artifact::wire::Writer,

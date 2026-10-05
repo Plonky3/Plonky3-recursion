@@ -3,11 +3,17 @@ mod relation;
 use alloc::vec::Vec;
 use core::hash::Hash;
 
+use super::binary_field_policy::NativePoly64Relation;
 use p3_air::Air;
 use p3_binary_field::{Poly64, Poly192};
 use p3_bus::BusSymbolicBuilder;
 use p3_challenger::{CanObserve, CanSampleUniformBits, FieldChallenger, GrindingChallenger};
-use p3_circuit::ops::{BinaryPoly64Target, BinaryPoly192Target, ByteHash, bytes_to_limbs};
+use p3_circuit::ops::{
+    BinaryPoly64Target, BinaryPoly192Target, ByteHash, NativePoly192Target,
+    binary_encoding::{BinaryCircuitEncoding, NativeBinaryEncoding, PrimeBinaryEncoding},
+    binary_host::BinaryCircuitHost,
+    bytes_to_limbs,
+};
 use p3_circuit::{CircuitBuilder, ExprId};
 use p3_commit::MultilinearPcs;
 use p3_field::{ExtensionField, Field, PrimeCharacteristicRing, PrimeField64};
@@ -58,27 +64,34 @@ struct WhirPreprocessedInputShape {
 }
 
 impl WhirPreprocessedInputShape {
-    fn constant_cap<EF: Field + Eq + Hash>(&self, b: &mut CircuitBuilder<EF>) -> Vec<Vec<ExprId>> {
+    fn constant_cap<H, CF>(
+        &self,
+        b: &mut CircuitBuilder<CF>,
+    ) -> Result<Vec<Vec<ExprId>>, VerificationError>
+    where
+        CF: Field + Eq + Hash,
+        H: BinaryCircuitHost<CF>,
+    {
         self.commitment
             .iter()
             .map(|root| {
                 bytes_to_limbs(root)
                     .into_iter()
-                    .map(|limb| b.define_const(EF::from_u16(limb)))
-                    .collect()
+                    .map(|limb| Ok(b.define_const(H::encode_u16(limb)?)))
+                    .collect::<Result<Vec<_>, VerificationError>>()
             })
             .collect()
     }
 }
 
 #[derive(Clone, Debug)]
-pub struct BinaryPolyWhirMultiStarkProofTargets {
+pub struct BinaryPolyWhirMultiStarkProofTargets<T = BinaryPoly192Target, B = BinaryPoly64Target> {
     pub commitment: Vec<Vec<ExprId>>,
-    pub sumcheck: BinaryPolyGenericSumcheckProofTargets,
-    pub bus: Option<super::BinaryPolyProductGkrProofTargets>,
+    pub sumcheck: BinaryPolyGenericSumcheckProofTargets<T, B>,
+    pub bus: Option<super::BinaryPolyProductGkrProofTargets<T>>,
     pub indexed: Option<super::BinaryPolyIndexedLookupProofTargets>,
-    pub opening: BinaryPolyWhirProofTargets,
-    pub preprocessed_opening: Option<BinaryPolyWhirProofTargets>,
+    pub opening: BinaryPolyWhirProofTargets<T, B>,
+    pub preprocessed_opening: Option<BinaryPolyWhirProofTargets<T, B>>,
 }
 
 impl BinaryPolyWhirMultiStarkInputShape {
@@ -503,7 +516,7 @@ impl BinaryPolyWhirMultiStarkVerifier {
             &proof.preprocessed_opening,
         ) {
             (Some(verifier), Some(shape), Some(proof)) => {
-                let cap = shape.constant_cap(b);
+                let cap = shape.constant_cap::<PrimeBinaryEncoding<BF>, EF>(b)?;
                 let points = self.relation.zero_points(true, zero.clone());
                 verifier.check_targets(&cap, &points, proof)?;
                 Some(cap)
@@ -703,4 +716,225 @@ impl BinaryPolyWhirMultiStarkVerifier {
 }
 fn invalid(message: &'static str) -> VerificationError {
     VerificationError::InvalidProofShape(message.into())
+}
+
+impl BinaryPolyWhirMultiStarkInputShape {
+    /// Scalar input traversal for the bus/AIR native backend. Indexed plans
+    /// require a different native reduction and are rejected before allocation.
+    pub fn allocate_native_targets(
+        &self,
+        b: &mut CircuitBuilder<Poly64>,
+    ) -> Result<BinaryPolyWhirMultiStarkProofTargets<NativePoly192Target, ExprId>, VerificationError>
+    {
+        if self.relation.indexed.is_some() {
+            return Err(invalid(
+                "native polynomial WHIR verifier does not support indexed relations",
+            ));
+        }
+        let commitment = (0..1usize << self.cap_height)
+            .map(|_| {
+                b.alloc_private_input_array::<16>("native WHIR MultiStark commitment")
+                    .to_vec()
+            })
+            .collect();
+        let bus = self
+            .relation
+            .bus
+            .as_ref()
+            .map(|bus| bus.product.allocate_native_targets(b))
+            .transpose()?;
+        let sumcheck = self.relation.sumcheck.allocate_native_targets(b)?;
+        let opening = self.opening.allocate_native_targets(b)?;
+        let preprocessed_opening = self
+            .preprocessed
+            .as_ref()
+            .map(|pp| pp.opening.allocate_native_targets(b))
+            .transpose()?;
+        Ok(BinaryPolyWhirMultiStarkProofTargets {
+            commitment,
+            bus,
+            sumcheck,
+            indexed: None,
+            opening,
+            preprocessed_opening,
+        })
+    }
+}
+impl NativeBinaryPolyWhirMultiStarkInput {
+    pub fn private_native_values(
+        &self,
+        expected: &BinaryPolyWhirMultiStarkInputShape,
+    ) -> Result<Vec<Poly64>, VerificationError> {
+        if &self.shape != expected {
+            return Err(invalid(
+                "polynomial WHIR MultiStark input belongs to another verifier",
+            ));
+        }
+        if expected.relation.indexed.is_some() || self.indexed.is_some() {
+            return Err(invalid(
+                "native polynomial WHIR verifier does not support indexed relations",
+            ));
+        }
+        let mut values: Vec<_> = self
+            .commitment
+            .iter()
+            .flat_map(|root| {
+                bytes_to_limbs(root)
+                    .into_iter()
+                    .map(|word| NativeBinaryEncoding::encode_u16(word))
+            })
+            .collect::<Result<_, _>>()?;
+        match (&expected.relation.bus, &self.bus) {
+            (Some(shape), Some(input)) => {
+                values.extend(input.private_native_values(&shape.product)?)
+            }
+            (None, None) => {}
+            _ => {
+                return Err(invalid(
+                    "polynomial WHIR MultiStark bus input shape mismatch",
+                ));
+            }
+        }
+        values.extend(
+            self.sumcheck
+                .private_native_values(&expected.relation.sumcheck)?,
+        );
+        values.extend(self.opening.private_native_values(&expected.opening)?);
+        match (&expected.preprocessed, &self.preprocessed_opening) {
+            (Some(shape), Some(input)) => {
+                values.extend(input.private_native_values(&shape.opening)?)
+            }
+            (None, None) => {}
+            _ => {
+                return Err(invalid(
+                    "polynomial WHIR MultiStark preprocessing input shape mismatch",
+                ));
+            }
+        }
+        Ok(values)
+    }
+}
+impl BinaryPolyWhirMultiStarkVerifier {
+    pub(crate) fn check_native_circuit_support(&self) -> Result<(), VerificationError> {
+        if self.relation.indexed.is_some() {
+            return Err(invalid(
+                "native polynomial WHIR verifier does not support indexed relations",
+            ));
+        }
+        self.opening.check_host::<NativeBinaryEncoding, Poly64>()?;
+        if let Some(pp) = &self.preprocessed {
+            pp.check_host::<NativeBinaryEncoding, Poly64>()?;
+        }
+        Ok(())
+    }
+
+    /// Complete native Poly64/Poly192 relation, including product buses and trusted
+    /// preprocessing. Caller-supplied public scalars bind the expected statement.
+    pub fn verify_native(
+        &self,
+        b: &mut CircuitBuilder<Poly64>,
+        mut ch: BinaryTower128Challenger,
+        public: &[Vec<ExprId>],
+        proof: &BinaryPolyWhirMultiStarkProofTargets<NativePoly192Target, ExprId>,
+    ) -> Result<BinaryTower128Challenger, VerificationError> {
+        self.check_native_circuit_support()?;
+        if proof.indexed.is_some() {
+            return Err(invalid(
+                "native polynomial WHIR verifier does not support indexed relations",
+            ));
+        }
+        self.relation.check_targets(public, proof)?;
+        let zero = b.native_poly192_constant([0; 3]);
+        let points = self.relation.zero_points(false, zero.clone());
+        self.opening
+            .check_targets(&proof.commitment, &points, &proof.opening)?;
+        let preprocessed_cap = match (
+            &self.preprocessed,
+            &self.input.preprocessed,
+            &proof.preprocessed_opening,
+        ) {
+            (Some(verifier), Some(shape), Some(proof)) => {
+                let cap = shape.constant_cap::<NativeBinaryEncoding, Poly64>(b)?;
+                let points = self.relation.zero_points(true, zero.clone());
+                verifier.check_targets(&cap, &points, proof)?;
+                Some(cap)
+            }
+            (None, None, None) => None,
+            _ => {
+                return Err(invalid(
+                    "polynomial WHIR MultiStark preprocessed opening shape mismatch",
+                ));
+            }
+        };
+        self.relation
+            .observe_prefix_with_host::<NativeBinaryEncoding, Poly64>(
+                b,
+                &mut ch,
+                preprocessed_cap.as_deref(),
+            )?;
+        self.opening
+            .observe_commitment_with_host::<NativeBinaryEncoding, Poly64>(
+                b,
+                &mut ch,
+                &proof.commitment,
+            )?;
+        let mut reduction = self
+            .relation
+            .reduce_common::<NativePoly64Relation, NativeBinaryEncoding, Poly64>(
+                b, ch, public, proof,
+            )?;
+        let heights: Vec<_> = self
+            .relation
+            .input
+            .airs
+            .iter()
+            .map(|air| air.log_height())
+            .collect();
+        reduction.main_points =
+            self.relation
+                .input
+                .main_schedule
+                .points(&heights, &reduction.point, None);
+        reduction.preprocessed_points = self
+            .relation
+            .input
+            .preprocessed_schedule
+            .as_ref()
+            .map(|schedule| schedule.points(&heights, &reduction.point, None));
+        let (main_evals, mut continuation) = self.opening.verify_at_native(
+            b,
+            reduction.challenger.clone(),
+            &proof.commitment,
+            &reduction.main_points,
+            &proof.opening,
+        )?;
+        let mut preprocessed_evals = None;
+        if let (Some(verifier), Some(cap), Some(proof)) = (
+            &self.preprocessed,
+            &preprocessed_cap,
+            &proof.preprocessed_opening,
+        ) {
+            let (evals, next) = verifier.verify_at_native(
+                b,
+                continuation,
+                cap,
+                reduction
+                    .preprocessed_points
+                    .as_ref()
+                    .expect("checked preprocessing points"),
+                proof,
+            )?;
+            preprocessed_evals = Some(evals);
+            continuation = next;
+        }
+        self.relation
+            .finish_common::<NativePoly64Relation, Poly64>(
+                b,
+                public,
+                &reduction,
+                &main_evals,
+                preprocessed_evals.as_deref(),
+            )?;
+        Ok(continuation)
+    }
 }
