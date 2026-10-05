@@ -28,7 +28,7 @@ impl CircuitBuilder<Poly64> {
         bits: [ExprId; 192],
     ) -> Result<NativePoly192Target, CircuitBuilderError> {
         let mut coefficients = [ExprId::ZERO; 3];
-        for (coefficient, bits) in coefficients.iter_mut().zip(bits.chunks_exact(64)) {
+        for (coefficient, bits) in coefficients.iter_mut().zip(bits.as_chunks::<64>().0) {
             *coefficient = self.binary_recompose_coordinates(bits)?;
         }
         Ok(self.native_poly192_from_coefficients(coefficients))
@@ -40,7 +40,7 @@ impl CircuitBuilder<Poly64> {
         value: &NativePoly192Target,
     ) -> Result<[ExprId; 192], CircuitBuilderError> {
         let mut bits = [ExprId::ZERO; 192];
-        for (&coefficient, output) in value.coefficients.iter().zip(bits.chunks_exact_mut(64)) {
+        for (&coefficient, output) in value.coefficients.iter().zip(bits.as_chunks_mut::<64>().0) {
             output.copy_from_slice(&self.binary_decompose_coordinates(coefficient, 64)?);
         }
         Ok(bits)

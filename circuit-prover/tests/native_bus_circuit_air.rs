@@ -86,12 +86,14 @@ fn fanout_copies_and_unused_gate_slots_are_constrained() {
     assert_eq!(prepared.airs()[0].main_next_row_columns(), vec![0]);
     let adjacent = pp
         .values
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .position(|row| row[0] != F::ZERO && row[2] == F::ONE)
         .unwrap();
-    for row in [adjacent] {
+    {
         let mut wrong = traces[0].clone();
-        wrong.values[row] += F::ONE;
+        wrong.values[adjacent] += F::ONE;
         assert!(
             std::panic::catch_unwind(|| check_constraints(&prepared.airs()[0], &wrong, &[]))
                 .is_err()
@@ -107,7 +109,9 @@ fn fanout_copies_and_unused_gate_slots_are_constrained() {
     let expected_occurrences = public.iter().map(Vec::len).sum::<usize>()
         + gate_pp
             .values
-            .chunks_exact(12)
+            .as_chunks::<12>()
+            .0
+            .iter()
             .map(|row| {
                 row[6..12]
                     .iter()
@@ -118,18 +122,22 @@ fn fanout_copies_and_unused_gate_slots_are_constrained() {
             .sum::<usize>();
     assert_eq!(
         pp.values
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .filter(|row| row[1] == F::ONE)
             .count(),
         expected_occurrences
     );
     let last_live = pp
         .values
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .rposition(|row| row[1] == F::ONE)
         .unwrap();
     assert_eq!(pp.values[4 * last_live + 2], F::ZERO);
-    for row in pp.values.chunks_exact(4).skip(last_live + 1) {
+    for row in pp.values.as_chunks::<4>().0.iter().skip(last_live + 1) {
         assert_eq!(row, &[F::ZERO; 4]);
     }
     assert!(prepared.public_values(&[a]).is_err());
@@ -214,8 +222,10 @@ fn three_native_hash_calls_have_fixed_schedules_and_unique_boundary_tags() {
     let indexed_hash = &indexed_traces[indexed_traces.len() - 2];
     for (row, indexed) in traces[hash]
         .values
-        .chunks_exact(1625)
-        .zip(indexed_hash.values.chunks_exact(1725))
+        .as_chunks::<1625>()
+        .0
+        .iter()
+        .zip(indexed_hash.values.as_chunks::<1725>().0.iter())
     {
         for limb in 0..100 {
             let value: F = (0..16)
@@ -240,10 +250,10 @@ fn three_native_hash_calls_have_fixed_schedules_and_unique_boundary_tags() {
             );
         }
     }
-    for row in bridge_pp.values.chunks_exact(102).skip(6) {
+    for row in bridge_pp.values.as_chunks::<102>().0.iter().skip(6) {
         assert_eq!(row[101], F::ZERO);
     }
-    for row in traces[hash].values.chunks_exact(1625).skip(128) {
+    for row in traces[hash].values.as_chunks::<1625>().0.iter().skip(128) {
         assert_eq!(row[24], F::ONE);
         assert!(
             row.iter()

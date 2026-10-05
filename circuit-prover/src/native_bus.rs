@@ -369,7 +369,12 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
                 }
                 Table::Gates(_) => {
                     let mut values = vec![F::ZERO; cells(height, 5)?];
-                    for (row, ids) in values.chunks_exact_mut(5).zip(&self.gate_positions) {
+                    for (row, ids) in values
+                        .as_chunks_mut::<5>()
+                        .0
+                        .iter_mut()
+                        .zip(&self.gate_positions)
+                    {
                         for i in 0..5 {
                             row[i] = read(ids[i]);
                         }
@@ -385,7 +390,7 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
                 Table::Keccak { .. } => keccak_bit_trace(&self.calls, witness, height)?,
                 Table::Bridge(_) => {
                     let mut values = vec![F::ZERO; cells(height, 100)?];
-                    for (row, output) in values.chunks_exact_mut(100).enumerate() {
+                    for (row, output) in values.as_chunks_mut::<100>().0.iter_mut().enumerate() {
                         if let Some(call) = self.calls.get(row / 2) {
                             let ids = if row % 2 == 0 {
                                 &call.input

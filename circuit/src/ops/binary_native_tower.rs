@@ -27,7 +27,7 @@ impl NativeTower128Target {
 }
 
 impl CircuitBuilder<BinaryField128> {
-    pub fn native_tower128_from_expr(&self, value: ExprId) -> NativeTower128Target {
+    pub const fn native_tower128_from_expr(&self, value: ExprId) -> NativeTower128Target {
         NativeTower128Target { value }
     }
 
@@ -105,7 +105,9 @@ impl CircuitBuilder<BinaryField128> {
     ) -> Result<[ExprId; 8], CircuitBuilderError> {
         let bits = self.native_tower128_to_bits(value)?;
         let words = bits
-            .chunks_exact(16)
+            .as_chunks::<16>()
+            .0
+            .iter()
             .map(|word| self.binary_recompose_coordinates(word))
             .collect::<Result<Vec<_>, _>>()?;
         Ok(words.try_into().expect("128 bits have eight words"))

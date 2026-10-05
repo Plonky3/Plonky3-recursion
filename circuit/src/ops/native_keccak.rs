@@ -82,13 +82,13 @@ impl<F: BinaryCoordinateField> CircuitBuilder<F> {
         self.check_construction_limits()?;
         self.ensure_op_enabled(&NpoTypeId::native_keccak_f1600())?;
         let blocks = message.len() / KECCAK256_RATE_BYTES + 1;
-        let padded_len = blocks.checked_mul(KECCAK256_RATE_BYTES).ok_or(
+        let padded_len = blocks.checked_mul(KECCAK256_RATE_BYTES).ok_or_else(|| {
             CircuitBuilderError::NonPrimitiveOpArity {
                 op: "NativeKeccak256",
                 expected: "a representable padded message length".into(),
                 got: message.len(),
-            },
-        )?;
+            }
+        })?;
         let mut padded = message.to_vec();
         padded.push(self.define_const(F::from_raw_coordinates(1).expect("native one")));
         padded.resize(padded_len, ExprId::ZERO);
@@ -96,8 +96,8 @@ impl<F: BinaryCoordinateField> CircuitBuilder<F> {
         let last = padded.last_mut().expect("at least one padding block");
         *last = self.add(*last, high);
         let mut state = [ExprId::ZERO; KECCAK_STATE_LIMBS];
-        for block in padded.chunks_exact(KECCAK256_RATE_BYTES) {
-            for (i, bytes) in block.chunks_exact(2).enumerate() {
+        for block in padded.as_chunks::<KECCAK256_RATE_BYTES>().0 {
+            for (i, bytes) in block.as_chunks::<2>().0.iter().enumerate() {
                 let mut bits = self.binary_decompose_coordinates(bytes[0], 8)?;
                 bits.extend(self.binary_decompose_coordinates(bytes[1], 8)?);
                 let limb = self.binary_recompose_coordinates(&bits)?;
@@ -118,7 +118,7 @@ impl<F: BinaryCoordinateField> CircuitBuilder<F> {
     }
 }
 
-fn check_field<F: BinaryCoordinateField>() -> Result<(), CircuitBuilderError> {
+const fn check_field<F: BinaryCoordinateField>() -> Result<(), CircuitBuilderError> {
     if F::COORDINATE_BITS < 16 {
         Err(CircuitBuilderError::InvalidDimension {
             expected: 16,

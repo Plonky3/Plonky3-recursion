@@ -143,7 +143,7 @@ impl<F: Field + Eq + Hash> CircuitBuilder<F> {
     }
 
     /// Assembles three already checked coefficient targets from this graph.
-    pub fn binary_poly192_from_coefficients(
+    pub const fn binary_poly192_from_coefficients(
         &mut self,
         coefficients: [BinaryPoly64Target; 3],
     ) -> BinaryPoly192Target {

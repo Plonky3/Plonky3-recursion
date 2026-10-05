@@ -135,9 +135,9 @@ where
         let scale = self.define_const(F::from_u16(256));
         let limbs: Vec<_> = message
             .chunks(2)
-            .map(|pair| match pair {
-                &[low, high] => self.mul_add(high, scale, low),
-                &[low] => low,
+            .map(|pair| match *pair {
+                [low, high] => self.mul_add(high, scale, low),
+                [low] => low,
                 _ => unreachable!("nonempty byte pairs"),
             })
             .collect();

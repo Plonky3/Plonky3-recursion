@@ -37,7 +37,7 @@ impl Default for DirectCircuitLimits {
 }
 
 impl DirectCircuitLimits {
-    pub(crate) fn check(
+    pub(crate) const fn check(
         self,
         component: &'static str,
         actual: usize,
@@ -167,10 +167,10 @@ where
             match *constraint {
                 PrimitiveConstraint::Constant { out, value } => builder.assert_eq(row[out], value),
                 PrimitiveConstraint::Add { a, b, out } => {
-                    builder.assert_eq(row[out], row[a] + row[b])
+                    builder.assert_eq(row[out], row[a] + row[b]);
                 }
                 PrimitiveConstraint::Mul { a, b, out } => {
-                    builder.assert_eq(row[out], row[a] * row[b])
+                    builder.assert_eq(row[out], row[a] * row[b]);
                 }
                 PrimitiveConstraint::Boolean { value, out } => {
                     builder.assert_bool(row[value]);

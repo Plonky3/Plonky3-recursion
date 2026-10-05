@@ -33,7 +33,7 @@ pub trait BinaryCircuitHost<F: Field + Eq + Hash>: BinaryCircuitEncoding<F> + Si
         let mut bytes = Vec::new();
         for &word in words {
             let bits = Self::decompose_word(builder, word, 16)?;
-            for byte in bits.chunks_exact(8) {
+            for byte in bits.as_chunks::<8>().0 {
                 bytes.push(Self::recompose_word(builder, byte)?);
             }
         }

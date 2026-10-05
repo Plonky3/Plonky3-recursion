@@ -4,7 +4,7 @@ use p3_baby_bear::BabyBear as F;
 use p3_circuit::{CircuitBuilder, CircuitBuilderError, CircuitConstructionLimits, NpoTypeId};
 use p3_field::PrimeCharacteristicRing;
 
-fn generous() -> CircuitConstructionLimits {
+const fn generous() -> CircuitConstructionLimits {
     CircuitConstructionLimits {
         max_expression_nodes: 1024,
         max_pending_connects: 1024,

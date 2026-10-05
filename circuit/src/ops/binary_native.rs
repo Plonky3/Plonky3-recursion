@@ -165,7 +165,7 @@ impl<F: BinaryCoordinateField> CircuitBuilder<F> {
     }
 }
 
-fn check_width<F: BinaryCoordinateField>(n_bits: usize) -> Result<(), CircuitBuilderError> {
+const fn check_width<F: BinaryCoordinateField>(n_bits: usize) -> Result<(), CircuitBuilderError> {
     if n_bits > F::COORDINATE_BITS {
         Err(CircuitBuilderError::BinaryDecompositionTooManyBits {
             expected: F::COORDINATE_BITS,

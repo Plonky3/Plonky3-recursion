@@ -169,7 +169,7 @@ impl<F: BinaryCoordinateField> NativeBinaryCircuit<F> {
             });
             log_heights.push(hash_log);
             let mut positions = vec![F::ZERO; cells(bridge_height, PAYLOAD)?];
-            for row in positions.chunks_exact_mut(PAYLOAD) {
+            for row in positions.as_chunks_mut::<PAYLOAD>().0.iter_mut() {
                 row[HASH_POSITION] = position::<F>(real_hash_rows);
             }
             for (i, call) in calls.iter().enumerate() {
@@ -250,7 +250,7 @@ impl<F: BinaryCoordinateField> NativeBinaryCircuit<F> {
         };
         let height = positions.values.len() / PAYLOAD;
         let mut values = vec![F::ZERO; cells(height, BRIDGE_WIDTH)?];
-        for (row, prep) in positions.values.chunks_exact(PAYLOAD).enumerate() {
+        for (row, prep) in positions.values.as_chunks::<PAYLOAD>().0.iter().enumerate() {
             let output = &mut values[row * BRIDGE_WIDTH..(row + 1) * BRIDGE_WIDTH];
             output[..PAYLOAD].copy_from_slice(prep);
             if let Some(call) = self.calls.get(row / 2) {
@@ -409,7 +409,12 @@ pub(crate) fn keccak_bit_trace<F: BinaryCoordinateField>(
         values.reserve_exact(final_len - values.len());
         values.resize(final_len, F::ZERO);
         // Repeat-last output rows satisfy the round-flag recurrence.
-        for row in values.chunks_exact_mut(NUM_KECCAK_BINARY_COLS).skip(height) {
+        for row in values
+            .as_chunks_mut::<NUM_KECCAK_BINARY_COLS>()
+            .0
+            .iter_mut()
+            .skip(height)
+        {
             row[KECCAK_BINARY_ROWS_PER_PERM - 1] = F::ONE;
         }
     }

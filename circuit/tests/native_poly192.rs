@@ -116,8 +116,8 @@ fn native_inverse_candidate_and_raw_constants_are_constrained() {
     let inverse = builder.native_poly192_from_coefficients(inverse);
     builder.assert_native_poly192_inverse(&value, &inverse);
     let constant = builder.native_poly192_constant([0xdead_beef, 0xfedc_ba98_7654_3210, 1 << 63]);
-    for i in 0..3 {
-        builder.connect(constant.coefficients()[i], expected_constant[i]);
+    for (&coefficient, &expected) in constant.coefficients().iter().zip(&expected_constant) {
+        builder.connect(coefficient, expected);
     }
     let circuit = builder.build().unwrap();
     let value = Poly192::new([0xdead_beef, 0xfedc_ba98_7654_3210, 1 << 63].map(Poly64::new));

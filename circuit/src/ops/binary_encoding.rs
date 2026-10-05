@@ -135,7 +135,7 @@ where
     }
 }
 
-fn check_width(n_bits: usize) -> Result<(), CircuitBuilderError> {
+const fn check_width(n_bits: usize) -> Result<(), CircuitBuilderError> {
     if n_bits > 16 {
         Err(CircuitBuilderError::BinaryDecompositionTooManyBits {
             expected: 16,

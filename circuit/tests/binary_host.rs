@@ -40,8 +40,10 @@ fn check<F: Field + Eq + Hash, H: BinaryCircuitHost<F>>(mut b: CircuitBuilder<F>
         .collect();
     public.extend(
         digest
-            .chunks_exact(2)
-            .map(|pair| H::encode_u16(u16::from_le_bytes(pair.try_into().unwrap())).unwrap()),
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|pair| H::encode_u16(u16::from_le_bytes(*pair)).unwrap()),
     );
     public.extend([0xd3, 0x92, 0xf7].map(|word| H::encode_u16(word).unwrap()));
     let mut runner = circuit.runner();
