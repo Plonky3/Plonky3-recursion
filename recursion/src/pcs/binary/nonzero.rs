@@ -7,9 +7,11 @@ use core::marker::PhantomData;
 
 use p3_binary_field::BinaryField128;
 use p3_challenger::FieldChallenger;
-use p3_circuit::ops::BinaryTower128Target;
+use p3_circuit::ops::{
+    BinaryTower128Target, binary_encoding::PrimeBinaryEncoding, binary_host::BinaryCircuitHost,
+};
 use p3_circuit::{CircuitBuilder, ExprId};
-use p3_field::{ExtensionField, PrimeField64};
+use p3_field::{ExtensionField, Field, PrimeField64};
 
 use super::RecursiveBinaryChallengeField;
 use super::whir_plan::invalid;
@@ -99,7 +101,20 @@ impl<E: RecursiveBinaryChallengeField> BinaryNonzeroChallengePlan<E> {
         BF: PrimeField64,
         EF: ExtensionField<BF> + Eq + Hash,
     {
-        let (candidates, hash) = sample_words::<E, BF, EF>(b, ch, self.max_draws)?;
+        self.sample_with_host::<PrimeBinaryEncoding<BF>, EF>(b, ch)
+    }
+
+    /// Uses explicit carrier coordinates and native or prime byte hashing.
+    pub fn sample_with_host<H, EF>(
+        &self,
+        b: &mut CircuitBuilder<EF>,
+        ch: BinaryTower128Challenger,
+    ) -> Result<BinaryNonzeroChallengeOutput, VerificationError>
+    where
+        H: BinaryCircuitHost<EF>,
+        EF: Field + Eq + Hash,
+    {
+        let (candidates, hash) = sample_words::<E, H, EF>(b, ch, self.max_draws)?;
         let (values, digest) = select_nonzero(b, self.count, E::RAW_BITS, &candidates)?;
         Ok(BinaryNonzeroChallengeOutput {
             values,
@@ -194,7 +209,20 @@ impl<E: RecursiveBinaryChallengeField> BinaryNonzeroChallengeTailPlan<E> {
         BF: PrimeField64,
         EF: ExtensionField<BF> + Eq + Hash,
     {
-        let (candidates, hash) = sample_words::<E, BF, EF>(b, ch, self.total_draws)?;
+        self.sample_with_host::<PrimeBinaryEncoding<BF>, EF>(b, ch)
+    }
+
+    /// Uses explicit carrier coordinates and keeps the selected post-tail digest.
+    pub fn sample_with_host<H, EF>(
+        &self,
+        b: &mut CircuitBuilder<EF>,
+        ch: BinaryTower128Challenger,
+    ) -> Result<BinaryNonzeroChallengeTailOutput, VerificationError>
+    where
+        H: BinaryCircuitHost<EF>,
+        EF: Field + Eq + Hash,
+    {
+        let (candidates, hash) = sample_words::<E, H, EF>(b, ch, self.total_draws)?;
         let (values, following, digest) = select_nonzero_with_tail(
             b,
             self.prefix.count,
@@ -230,22 +258,22 @@ impl<E: RecursiveBinaryChallengeField> BinaryNonzeroChallengeTailPlan<E> {
 
 type Candidate = (BinaryTower128Target, [ExprId; 32]);
 
-fn sample_words<E, BF, EF>(
+fn sample_words<E, H, EF>(
     b: &mut CircuitBuilder<EF>,
     mut ch: BinaryTower128Challenger,
     count: usize,
 ) -> Result<(Vec<Candidate>, p3_circuit::ops::ByteHash), VerificationError>
 where
     E: RecursiveBinaryChallengeField,
-    BF: PrimeField64,
-    EF: ExtensionField<BF> + Eq + Hash,
+    H: BinaryCircuitHost<EF>,
+    EF: Field + Eq + Hash,
 {
     let mut candidates = Vec::with_capacity(count);
     for _ in 0..count {
-        let bytes = ch.sample_bytes::<BF, EF>(b, E::RAW_BITS / 8)?;
+        let bytes = ch.sample_bytes_with_host::<H, EF>(b, E::RAW_BITS / 8)?;
         let mut bits = [ExprId::ZERO; 128];
         for (i, byte) in bytes.into_iter().enumerate() {
-            let byte_bits = b.decompose_to_bits::<BF>(byte, 8)?;
+            let byte_bits = H::decompose_word(b, byte, 8)?;
             bits[8 * i..8 * i + 8].copy_from_slice(&byte_bits);
         }
         let value = b.binary128_from_bits(bits)?;
@@ -501,6 +529,55 @@ mod tests {
         assert_eq!(actual, expected);
         assert!(following.is_empty());
         assert_eq!(other.position, ch.position);
+    }
+
+    #[test]
+    fn native_carrier_skips_forced_zeros_and_selects_a_zero_tail() {
+        use p3_circuit::ops::binary_encoding::{BinaryCircuitEncoding, NativeBinaryEncoding};
+        type H = NativeBinaryEncoding;
+        for width in [64, 128] {
+            let mut b = CircuitBuilder::<BinaryField128>::new();
+            let mut candidates = Vec::new();
+            for index in 0..6 {
+                let words = b.alloc_public_input_array::<8>("candidate coordinates");
+                let mut bits = [ExprId::ZERO; 128];
+                for (i, word) in words.into_iter().enumerate() {
+                    bits[16 * i..16 * i + 16]
+                        .copy_from_slice(&H::decompose_word(&mut b, word, 16).unwrap());
+                }
+                let value = b.binary128_from_bits(bits).unwrap();
+                let digest = core::array::from_fn(|byte| {
+                    b.define_const(H::encode_u16(128 + 16 * index + byte as u16).unwrap())
+                });
+                candidates.push((value, digest));
+            }
+            let (values, following, digest) =
+                select_nonzero_with_tail(&mut b, 2, width, 4, 2, &candidates).unwrap();
+            for (actual, raw) in values.iter().chain(&following).zip([7, 11, 0, 19]) {
+                let expected = b.binary128_constant(raw).unwrap();
+                crate::pcs::binary::assert_equal(&mut b, actual, &expected);
+            }
+            for (byte, actual) in digest.into_iter().enumerate() {
+                let expected = b.define_const(H::encode_u16(208 + byte as u16).unwrap());
+                b.connect(actual, expected);
+            }
+            let circuit = b.build().unwrap();
+            let run = |draws: [u128; 6]| {
+                let inputs: Vec<BinaryField128> = draws
+                    .into_iter()
+                    .flat_map(|raw| {
+                        (0..8).map(move |i| H::encode_u16((raw >> (16 * i)) as u16).unwrap())
+                    })
+                    .collect();
+                let mut runner = circuit.runner();
+                runner.set_public_inputs(&inputs).unwrap();
+                runner.run().is_ok()
+            };
+            assert!(run([0, 7, 0, 11, 0, 19]));
+            assert!(!run([0, 7, 0, 0, 11, 19]));
+            assert!(!run([7, 11, 0, 19, 23, 0]));
+            assert!(!run([0, 7, 0, 11, 19, 0]));
+        }
     }
 
     #[test]
