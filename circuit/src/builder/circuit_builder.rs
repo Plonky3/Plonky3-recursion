@@ -1024,6 +1024,31 @@ where
         self.connect(b, check);
     }
 
+    /// Constrains exactly one Boolean selector to be active, over any field.
+    ///
+    /// Each selector is disjoint from the accumulated prefix. This prevents
+    /// multiple active selectors even when their sum is one in the field's
+    /// characteristic. An empty list is rejected before changing the builder.
+    /// All IDs must belong to this builder's expression graph.
+    pub fn assert_exactly_one(&mut self, selectors: &[ExprId]) -> Result<(), CircuitBuilderError> {
+        if selectors.is_empty() {
+            return Err(CircuitBuilderError::InvalidDimension {
+                expected: 1,
+                actual: 0,
+            });
+        }
+        let mut prefix = ExprId::ZERO;
+        for &selector in selectors {
+            self.assert_bool(selector);
+            let overlap = self.mul(prefix, selector);
+            self.assert_zero(overlap);
+            prefix = self.add(prefix, selector);
+        }
+        let one = self.define_const(F::ONE);
+        self.connect(prefix, one);
+        Ok(())
+    }
+
     /// Connects two expressions, enforcing a == b (by aliasing outputs).
     ///
     /// Cost: Free in proving (handled by IR optimization layer via witness slot aliasing).

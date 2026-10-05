@@ -112,14 +112,8 @@ impl BinaryTower128Challenger {
                 got: branches.len(),
             });
         }
-        let mut total = ExprId::ZERO;
-        for (selector, _) in branches {
-            circuit.assert_bool(*selector);
-            total = circuit.add(total, *selector);
-        }
-        let one = circuit.define_const(EF::ONE);
-        let difference = circuit.sub(one, total);
-        circuit.assert_zero(difference);
+        let selectors: Vec<_> = branches.iter().map(|(selector, _)| *selector).collect();
+        circuit.assert_exactly_one(&selectors)?;
         let mut select = |output: bool, len: usize| {
             (0..len)
                 .map(|i| {
