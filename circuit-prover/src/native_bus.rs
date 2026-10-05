@@ -30,14 +30,15 @@ use crate::{
     direct::{DirectCircuitError, DirectCircuitLimits},
     indexed::{IndexedCircuitError, cells, gate, padded_height, variables},
     native_binary::{
-        KeccakCall, NativeBinaryCircuitError, eval_keccak, keccak_calls, keccak_trace,
+        KeccakCall, NativeBinaryCircuitError, eval_keccak_bits, keccak_bit_trace, keccak_calls,
+        keccak_limb_expression,
     },
     primitive_plan::PrimitivePlan,
 };
 
 const MAX_NAMESPACE_BYTES: usize = BusName::MAX_LEN - ".witness".len();
 const GATE_PP: usize = 12;
-const HASH_WIDTH: usize = NUM_KECCAK_BINARY_COLS + 100;
+const HASH_WIDTH: usize = NUM_KECCAK_BINARY_COLS;
 
 #[derive(Debug, Error)]
 pub enum NativeBusCircuitError {
@@ -185,10 +186,19 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
             add(cells(witness_height, 4)?, cells(gate_height, GATE_PP)?)?,
             add(cells(hash_height, 3)?, cells(bridge_height, 102)?)?,
         )?;
-        let bounded = add(
-            add(main_cells, pp_cells)?,
-            cells(hash_height, NUM_KECCAK_BINARY_COLS)?,
-        )?;
+        // The bus uses the bit matrix directly. Only an enlarged minimum
+        // height needs an old allocation alongside the final one.
+        let natural_hash_height = if calls.is_empty() {
+            0
+        } else {
+            padded_height(cells(calls.len(), KECCAK_BINARY_ROWS_PER_PERM)?)?
+        };
+        let hash_temporary = if hash_height > natural_hash_height {
+            cells(natural_hash_height, NUM_KECCAK_BINARY_COLS)?
+        } else {
+            0
+        };
+        let bounded = add(add(main_cells, pp_cells)?, hash_temporary)?;
         limits.check(
             "native bus traces, preprocessing and temporary cells",
             bounded,
@@ -373,7 +383,7 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
                         .collect();
                     RowMajorMatrix::new(values, self.plan.public.len())
                 }
-                Table::Keccak { .. } => keccak_trace(&self.calls, witness, height)?,
+                Table::Keccak { .. } => keccak_bit_trace(&self.calls, witness, height)?,
                 Table::Bridge(_) => {
                     let mut values = vec![F::ZERO; cells(height, 100)?];
                     for (row, output) in values.chunks_exact_mut(100).enumerate() {
@@ -473,8 +483,8 @@ where
     AB::F: Field,
 {
     fn eval(&self, b: &mut AB) {
-        if let Table::Keccak { weights, .. } = &self.table {
-            eval_keccak(b, weights);
+        if let Table::Keccak { .. } = &self.table {
+            eval_keccak_bits(b);
         }
         let main = b.main();
         let row = main.current_slice();
@@ -529,12 +539,9 @@ where
                 b.when(pp[11]).assert_eq(out, accumulator * c + addend - a);
             }
             Table::Public(_) => unreachable!("public tables have no preprocessing window"),
-            Table::Keccak { .. } => {
-                let fields = core::iter::once(pp[1].into()).chain(
-                    row[NUM_KECCAK_BINARY_COLS..HASH_WIDTH]
-                        .iter()
-                        .map(|&x| x.into()),
-                );
+            Table::Keccak { weights, .. } => {
+                let fields = core::iter::once(pp[1].into())
+                    .chain((0..100).map(|limb| keccak_limb_expression::<AB>(row, weights, limb)));
                 b.push_bus_interaction(
                     BusName::new(self.hash_bus.as_ref()),
                     BusDirection::Push,

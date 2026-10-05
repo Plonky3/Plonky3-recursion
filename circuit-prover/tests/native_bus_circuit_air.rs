@@ -6,7 +6,8 @@ use p3_circuit::{
     ops::{binary_native::BinaryCoordinateField, keccak_state_to_limbs},
 };
 use p3_circuit_prover::{
-    direct::DirectCircuitLimits, indexed::IndexedCircuit, native_bus::NativeBusCircuit,
+    direct::DirectCircuitLimits, indexed::IndexedCircuit, native_binary::NativeBinaryCircuit,
+    native_bus::NativeBusCircuit,
 };
 use p3_field::PrimeCharacteristicRing;
 use p3_keccak::KeccakF;
@@ -199,17 +200,31 @@ fn three_native_hash_calls_have_fixed_schedules_and_unique_boundary_tags() {
         .collect();
     let mut runner = circuit.runner();
     runner.set_public_inputs(&public).unwrap();
-    let traces = prepared
-        .traces(&runner.run().unwrap().witness_trace)
-        .unwrap();
+    let witness = runner.run().unwrap().witness_trace;
+    let traces = prepared.traces(&witness).unwrap();
+    let indexed = NativeBinaryCircuit::new(&circuit).unwrap();
+    let indexed_traces = indexed.traces(&witness).unwrap();
     let public = prepared.public_values(&public).unwrap();
     for ((air, trace), public) in prepared.airs().iter().zip(&traces).zip(&public) {
         check_constraints(air, trace, public);
     }
     let hash = traces.len() - 2;
     let bridge = traces.len() - 1;
-    assert_eq!(traces[hash].width, 1725);
+    assert_eq!(traces[hash].width, 1625);
     assert_eq!(traces[bridge].width, 100);
+    let indexed_hash = &indexed_traces[indexed_traces.len() - 2];
+    for (row, indexed) in traces[hash]
+        .values
+        .chunks_exact(1625)
+        .zip(indexed_hash.values.chunks_exact(1725))
+    {
+        for limb in 0..100 {
+            let value: F = (0..16)
+                .map(|bit| row[25 + 16 * limb + bit] * F::from_raw_coordinates(1 << bit).unwrap())
+                .sum();
+            assert_eq!(value, indexed[1625 + limb]);
+        }
+    }
     let hash_pp = prepared.airs()[hash].preprocessed_trace().unwrap();
     let bridge_pp = prepared.airs()[bridge].preprocessed_trace().unwrap();
     for call in 0..3 {
@@ -229,7 +244,7 @@ fn three_native_hash_calls_have_fixed_schedules_and_unique_boundary_tags() {
     for row in bridge_pp.values.chunks_exact(102).skip(6) {
         assert_eq!(row[101], F::ZERO);
     }
-    for row in traces[hash].values.chunks_exact(1725).skip(128) {
+    for row in traces[hash].values.chunks_exact(1625).skip(128) {
         assert_eq!(row[24], F::ONE);
         assert!(
             row.iter()
@@ -238,7 +253,7 @@ fn three_native_hash_calls_have_fixed_schedules_and_unique_boundary_tags() {
         );
     }
     let mut missing = traces[hash].clone();
-    missing.values[25 * 1725] = F::ZERO;
+    missing.values[25 * 1625] = F::ZERO;
     assert!(
         std::panic::catch_unwind(|| check_constraints(&prepared.airs()[hash], &missing, &[]))
             .is_err()

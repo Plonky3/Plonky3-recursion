@@ -375,8 +375,8 @@ pub(crate) fn keccak_calls<F: Field>(
     Ok(calls)
 }
 
-/// Callers validate the witness length and bound the expanded and temporary matrices first.
-pub(crate) fn keccak_trace<F: BinaryCoordinateField>(
+/// Callers validate witness IDs and bound the planned trace geometry first.
+pub(crate) fn keccak_bit_trace<F: BinaryCoordinateField>(
     calls: &[KeccakCall],
     witness: &WitnessTrace<F>,
     target_height: usize,
@@ -400,20 +400,39 @@ pub(crate) fn keccak_trace<F: BinaryCoordinateField>(
         inputs.push(keccak_limbs_to_state(&limbs));
     }
     let hash = generate_binary_trace_rows::<F>(inputs, 0);
-    let weights = core::array::from_fn::<_, 16, _>(|i| {
-        F::from_raw_coordinates(1 << i).expect("validated limb width")
-    });
     let height = hash.values.len() / NUM_KECCAK_BINARY_COLS;
     if !target_height.is_power_of_two() || target_height < height {
         return Err(IndexedCircuitError::AllocationOverflow.into());
     }
     let mut values = hash.values;
+    let final_len = cells(target_height, NUM_KECCAK_BINARY_COLS)?;
+    if final_len > values.len() {
+        values.reserve_exact(final_len - values.len());
+        values.resize(final_len, F::ZERO);
+        // Repeat-last output rows satisfy the round-flag recurrence.
+        for row in values.chunks_exact_mut(NUM_KECCAK_BINARY_COLS).skip(height) {
+            row[KECCAK_BINARY_ROWS_PER_PERM - 1] = F::ONE;
+        }
+    }
+    Ok(RowMajorMatrix::new(values, NUM_KECCAK_BINARY_COLS))
+}
+
+/// Indexed hash tables retain explicit limbs as their lookup payload columns.
+pub(crate) fn keccak_trace<F: BinaryCoordinateField>(
+    calls: &[KeccakCall],
+    witness: &WitnessTrace<F>,
+    target_height: usize,
+) -> Result<RowMajorMatrix<F>, NativeBinaryCircuitError> {
+    let hash = keccak_bit_trace(calls, witness, target_height)?;
+    let weights = core::array::from_fn::<_, 16, _>(|i| {
+        F::from_raw_coordinates(1 << i).expect("validated limb width")
+    });
+    let mut values = hash.values;
     let final_len = cells(target_height, HASH_WIDTH)?;
     values.reserve_exact(final_len - values.len());
     values.resize(final_len, F::ZERO);
     // Expand backwards so destinations cannot overwrite an unprocessed row.
-    // This reuses the hash allocation instead of retaining two full matrices.
-    for index in (0..height).rev() {
+    for index in (0..target_height).rev() {
         let source = index * NUM_KECCAK_BINARY_COLS;
         let destination = index * HASH_WIDTH;
         values.copy_within(source..source + NUM_KECCAK_BINARY_COLS, destination);
@@ -427,15 +446,10 @@ pub(crate) fn keccak_trace<F: BinaryCoordinateField>(
             values[destination + NUM_KECCAK_BINARY_COLS + limb] = packed;
         }
     }
-    // Repeat-last output rows satisfy the round-flag recurrence. Zero rows
-    // would fail it, even though preprocessing disables every bus boundary.
-    for row in values.chunks_exact_mut(HASH_WIDTH).skip(height) {
-        row[KECCAK_BINARY_ROWS_PER_PERM - 1] = F::ONE;
-    }
     Ok(RowMajorMatrix::new(values, HASH_WIDTH))
 }
 
-pub(crate) fn eval_keccak<AB: AirBuilder>(builder: &mut AB, weights: &[AB::F; 16])
+pub(crate) fn eval_keccak_bits<AB: AirBuilder>(builder: &mut AB)
 where
     AB::F: Field,
 {
@@ -443,12 +457,36 @@ where
         SubAirBuilder::<AB, KeccakBinaryAir, AB::Var>::new(builder, 0..NUM_KECCAK_BINARY_COLS);
     KeccakBinaryAir::default().eval(&mut sub);
     let main = builder.main();
+    builder.assert_eq(
+        main.current_slice()[0],
+        builder.preprocessed().current_slice()[0],
+    );
+}
+
+pub(crate) fn keccak_limb_expression<AB: AirBuilder>(
+    row: &[AB::Var],
+    weights: &[AB::F; 16],
+    limb: usize,
+) -> AB::Expr
+where
+    AB::F: Field,
+{
+    (0..16)
+        .map(|bit| row[KECCAK_BINARY_ROWS_PER_PERM + 16 * limb + bit] * weights[bit])
+        .sum()
+}
+
+pub(crate) fn eval_keccak<AB: AirBuilder>(builder: &mut AB, weights: &[AB::F; 16])
+where
+    AB::F: Field,
+{
+    eval_keccak_bits(builder);
+    let main = builder.main();
     let row = main.current_slice();
-    builder.assert_eq(row[0], builder.preprocessed().current_slice()[0]);
     for limb in 0..KECCAK_STATE_LIMBS {
-        let value: AB::Expr = (0..16)
-            .map(|bit| row[KECCAK_BINARY_ROWS_PER_PERM + 16 * limb + bit] * weights[bit])
-            .sum();
-        builder.assert_eq(row[NUM_KECCAK_BINARY_COLS + limb], value);
+        builder.assert_eq(
+            row[NUM_KECCAK_BINARY_COLS + limb],
+            keccak_limb_expression::<AB>(row, weights, limb),
+        );
     }
 }
