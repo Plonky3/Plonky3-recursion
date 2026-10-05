@@ -131,7 +131,7 @@ macro_rules! compare {
         let alpha = dense(733);
         let periodic_values: Vec<E> = air.periods.iter()
             .map(|period| periodic_mle::<F, E>(period, &point)).collect();
-        let expected = MultilinearFolder::new(&current, &[], BoundaryEvals::at(&point), &[], alpha)
+        let expected = MultilinearFolder::new(&current, &current, BoundaryEvals::at(&point), &[], alpha)
             .with_preprocessed(&preprocessed, &next)
             .with_periodic(&periodic_values).eval_air(&air);
         let plan = BinaryAirConstraintPlan::<F, E>::from_air(&air, 3).unwrap();
