@@ -13,9 +13,10 @@ prime fields this repository is built on:
 
 ## What this repository supports today
 
-This is groundwork toward a binary-proof verifier. Prime-field circuits can prove and recursively
-verify arithmetic on a represented binary-tower value, but nothing here proves or recursively
-verifies a complete binary-field proof.
+The repository verifies native binary-field proofs inside prime-field recursion circuits.
+The supported families include binary PCS and additive WHIR, with product-bus and indexed
+lookup variants. `recursion/examples/binary_prover.rs` demonstrates a native binary proof
+followed by a prime-field recursion layer. It does not demonstrate binary-in/binary-out recursion.
 
 - **Circuits over binary fields.** The primitive circuit layer (constants, public and private
   inputs, ALU ops, connections, tags) needs only field arithmetic, and runs unchanged over every
@@ -28,9 +29,9 @@ verifies a complete binary-field proof.
     for a characteristic-2 base field. The decomposition and recomposition gadgets require
     `BF: PrimeField64` with `F: ExtensionField<BF>`, and the binary tower only extends its
     byte-aligned levels, so they cannot be instantiated over it at all.
-- **Non-native `BinaryField128` arithmetic.** `BinaryTower128Target` represents the Wiedemann
-  tower type `p3_binary_field::BinaryField128` as 128 Boolean coordinates in a supported
-  odd-characteristic circuit. It does not use the GHASH polynomial coordinates of `Ghash128`.
+- **Bit-oriented `BinaryField128` arithmetic.** `BinaryTower128Target` represents the Wiedemann
+  tower type `p3_binary_field::BinaryField128` as 128 Boolean coordinates in a prime or binary
+  circuit field. It does not use the GHASH polynomial coordinates of `Ghash128`.
   At each level, `a = a0 + a1 X_k` stores the lower coefficient first and uses
   `X_k² + X_(k-1) X_k + 1 = 0`, with `X_(-1) = 1`. Bit 0 is one; bit `j` is the product of
   tower roots selected by the set bits of `j`. Every 128-bit pattern is a valid tower element.
@@ -46,8 +47,17 @@ verifies a complete binary-field proof.
     and zero has no satisfying inverse. There are no new tables, AIRs, or native-field hints.
   - All `ExprId`s passed to these methods must come from the same `CircuitBuilder` expression
     graph. The target's read-only bits do not carry a builder identity. A circuit using this
-    arithmetic can be proved and carried into the next recursion layer over the supported
-    odd-prime host fields.
+    arithmetic can be proved with the compact circuit prover and carried into the next
+    recursion layer over the supported prime host fields. Bits-only arithmetic also runs
+    over binary fields; integer-limb import/export remains prime-only.
+- **Native primitive circuit proofs.** `p3_circuit_prover::direct::DirectCircuitAir` freezes
+  a circuit's primitive relation and binds public values in caller order. It accepts native
+  binary carrier fields without integer witness addresses or count-based lookups.
+  `recursion/tests/native_binary_circuit.rs` proves and verifies circuits over both
+  `BinaryField128` and `Poly64` (with `Poly192` challenges). The AIR repeats the entire
+  assignment on every row, so its width and openings grow with the circuit's witness count.
+  It is a non-hiding correctness baseline, rejects custom non-primitive tables, and does
+  not yet provide an efficient recursive binary prover.
 - **Non-native binary byte-hash transcript.** `BinaryTower128Challenger` has a separate,
   fallible inherent API (`new`, `with_initial_limbs`, `observe`, `observe_slice`,
   `observe_digest`, `sample`, `sample_bits`, `check_witness`). It matches native
@@ -146,9 +156,10 @@ verifies a complete binary-field proof.
 
 ## Not yet supported
 
-- Proving circuits over a binary field. The circuit prover's tables, lookups and Poseidon
-  permutations assume a two-adic prime field, as do FRI and the prime-field WHIR.
-- Recursively verifying binary-PCS or multi-stark proofs. The non-native `BinaryField128`
-  arithmetic and the byte-hash challenger above supply components, but binary PCS verification,
-  multi-STARK verification and their wire/transcript integration are still missing.
+- Full binary-in/binary-out recursion. Binary-proof verification currently runs in a prime
+  host circuit; its transcript and serialization gadgets use prime-field integer limbs.
+  Native binary primitive circuit proofs are supported by the direct AIR above, but the
+  compact circuit tables and their count-based wiring still assume a prime field. Native
+  binary recursion requires fixed indexed wiring, coordinate-based serialization, and
+  hash/transcript gadgets that can themselves be proved over a binary field.
 - MMCS trees of arity above two.

@@ -4,7 +4,7 @@ use core::hash::Hash;
 
 use p3_baby_bear::BabyBear;
 use p3_binary_field::{BinaryField128, Ghash128, TowerLevel};
-use p3_circuit::{CircuitBuilder, CircuitBuilderError, CircuitError, ExprId, Traces};
+use p3_circuit::{CircuitBuilder, CircuitError, ExprId, Traces};
 use p3_field::extension::BinomialExtensionField;
 use p3_field::{ExtensionField, Field, PrimeCharacteristicRing, PrimeField64};
 use p3_goldilocks::Goldilocks;
@@ -428,29 +428,29 @@ fn inverse_check_accepts_native_inverses_and_rejects_wrong_or_zero_candidates() 
 }
 
 #[test]
-fn raw_bit_constructor_refuses_characteristic_two() {
+fn raw_bit_constructor_accepts_characteristic_two() {
     let mut builder = CircuitBuilder::<BinaryField128>::new();
     let bits = builder.alloc_public_input_array::<128>("bit");
-    let mut baseline = CircuitBuilder::<BinaryField128>::new();
-    let baseline_bits = baseline.alloc_public_input_array::<128>("bit");
-    assert!(matches!(
-        builder.binary128_from_bits(bits),
-        Err(CircuitBuilderError::CharacteristicTwoUnsupported { .. })
-    ));
+    let target = builder.binary128_from_bits(bits).unwrap();
+    assert_eq!(target.bits(), &bits);
     assert_eq!(builder.public_input_count(), 128);
-    assert!(matches!(
-        builder.binary128_constant(1),
-        Err(CircuitBuilderError::CharacteristicTwoUnsupported { .. })
-    ));
-
-    // A failed guard must not consume expression IDs or leave ALU/hint operations behind.
-    let next = builder.add(bits[0], bits[1]);
-    let baseline_next = baseline.add(baseline_bits[0], baseline_bits[1]);
-    assert_eq!(next, baseline_next);
+    let constant = builder.binary128_constant(1 << 127).unwrap();
+    builder
+        .tag(constant.bits()[127], "high constant bit")
+        .unwrap();
+    builder.tag(constant.bits()[0], "low constant bit").unwrap();
     let circuit = builder.build().unwrap();
-    let baseline_circuit = baseline.build().unwrap();
-    assert_eq!(circuit.witness_count, baseline_circuit.witness_count);
-    assert_eq!(circuit.ops, baseline_circuit.ops);
-    assert_eq!(circuit.public_rows, baseline_circuit.public_rows);
-    assert_eq!(circuit.expr_to_widx, baseline_circuit.expr_to_widx);
+    let mut runner = circuit.runner();
+    runner
+        .set_public_inputs(&[BinaryField128::ONE; 128])
+        .unwrap();
+    let traces = runner.run().unwrap();
+    assert_eq!(
+        traces.probe("high constant bit"),
+        Some(&BinaryField128::ONE)
+    );
+    assert_eq!(
+        traces.probe("low constant bit"),
+        Some(&BinaryField128::ZERO)
+    );
 }

@@ -21,15 +21,20 @@ low-first Boolean tower coordinates. The eight limbs are little-endian 16-bit ch
 with `TowerLevel::from_repr`, not the ring's `from_u128` embedding. This is the Wiedemann
 tower representation, distinct from `Ghash128` polynomial coordinates.
 
-Raw input bits are constrained Boolean. Limb import constrains each limb to 16 bits
-in the base field; the limb methods require base-field order above 65535. The raw-bit
-and constant constructors, as well as both limb methods, reject characteristic-two
-circuit fields. Derived add/multiply/square bits stay Boolean
+Raw input bits are constrained Boolean. The raw-bit and constant constructors work
+over prime and binary circuit fields. Limb import constrains each limb to 16 bits
+in the base field; both integer-limb methods require odd characteristic and
+base-field order above 65535. Derived add/multiply/square bits stay Boolean
 through the existing ALU relations. The inverse method checks a caller-supplied
 candidate by constraining its product with the value to tower one, so zero has no
 satisfying candidate. Pass targets and `ExprId`s from the same builder graph; the IDs
 do not encode builder identity. No new custom table or AIR is needed for this arithmetic.
-This does not implement native binary-field proving or a complete binary-PCS verifier.
+`BinaryPoly64Target` and `BinaryPoly192Target` have the same distinction between
+field-generic Boolean coordinates and prime-only integer limbs. Primitive circuits
+can be proved over native binary fields with `p3_circuit_prover::direct::DirectCircuitAir`.
+That AIR repeats the complete assignment on every row and is a correctness baseline;
+the compact circuit prover and recursive binary-proof verifier still require prime
+host fields.
 
 Enable `p3-circuit/debugging` to retain builder allocation labels, scopes, and
 source expressions through compilation. A runner failure can then be inspected

@@ -1,4 +1,4 @@
-//! Non-native arithmetic for Plonky3's 128-bit Wiedemann binary tower.
+//! Coordinate arithmetic for Plonky3's 128-bit Wiedemann binary tower.
 //!
 //! The coordinate at bit zero is one. At each quadratic level the low half
 //! precedes the high half: `a = a0 + a1 * X`, where `X² = alpha * X + 1` and
@@ -6,9 +6,9 @@
 //! `p3_binary_field::BinaryField128` tower representation, not GHASH's
 //! polynomial basis. Every 128-bit string is a valid tower element.
 //!
-//! Bits live in an odd-characteristic circuit field. Ingress constrains them
-//! to zero or one; XOR is `(a - b)²` and AND is `a * b`. All arithmetic uses
-//! existing ALU operations, so it needs no binary-field prover tables.
+//! Bits can live in prime or binary circuit fields. Ingress constrains them
+//! to zero or one; XOR is `(a - b)²` in odd characteristic and `a + b` in
+//! characteristic two. AND is `a * b`. Integer-limb codecs remain prime-only.
 
 use alloc::vec::Vec;
 use core::hash::Hash;
@@ -54,19 +54,11 @@ where
     ///
     /// The input IDs must belong to this builder's expression graph.
     ///
-    /// # Errors
-    ///
-    /// Returns [`CircuitBuilderError::CharacteristicTwoUnsupported`] when
-    /// the circuit field has characteristic two, before changing the builder.
+    /// Supports both prime and binary carrier fields.
     pub fn binary128_from_bits(
         &mut self,
         bits: [ExprId; BINARY_TOWER128_BITS],
     ) -> Result<BinaryTower128Target, CircuitBuilderError> {
-        if F::TWO == F::ZERO {
-            return Err(CircuitBuilderError::CharacteristicTwoUnsupported {
-                operation: "binary128_from_bits",
-            });
-        }
         for bit in bits {
             self.assert_bool(bit);
         }
@@ -106,19 +98,11 @@ where
     /// least significant first. This is a coordinate constructor, not a
     /// prime-subfield integer embedding.
     ///
-    /// # Errors
-    ///
-    /// Returns [`CircuitBuilderError::CharacteristicTwoUnsupported`] before
-    /// changing the builder when the circuit field has characteristic two.
+    /// Supports both prime and binary carrier fields.
     pub fn binary128_constant(
         &mut self,
         raw: u128,
     ) -> Result<BinaryTower128Target, CircuitBuilderError> {
-        if F::TWO == F::ZERO {
-            return Err(CircuitBuilderError::CharacteristicTwoUnsupported {
-                operation: "binary128_constant",
-            });
-        }
         let zero = self.define_const(F::ZERO);
         let one = self.define_const(F::ONE);
         Ok(BinaryTower128Target {
@@ -227,9 +211,11 @@ where
         Ok(())
     }
 
-    /// XOR of already-constrained bits. `(a-b)²` has exactly the GF(2)
-    /// truth table for any odd-characteristic carrier field.
+    /// XOR of constrained bits, in either characteristic.
     fn binary_xor(&mut self, a: ExprId, b: ExprId) -> ExprId {
+        if F::TWO == F::ZERO {
+            return self.add(a, b);
+        }
         let difference = self.sub(a, b);
         self.mul(difference, difference)
     }

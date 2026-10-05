@@ -4,7 +4,7 @@ use core::hash::Hash;
 
 use p3_baby_bear::BabyBear;
 use p3_binary_field::{Gf2, Poly64, Poly192};
-use p3_circuit::{CircuitBuilder, CircuitBuilderError};
+use p3_circuit::CircuitBuilder;
 use p3_field::extension::BinomialExtensionField;
 use p3_field::{ExtensionField, Field, PrimeCharacteristicRing, PrimeField64};
 use p3_goldilocks::Goldilocks;
@@ -217,22 +217,17 @@ fn inverse_candidates_are_unique_and_zero_has_none() {
 }
 
 #[test]
-fn polynomial_constructors_reject_characteristic_two_without_mutation() {
+fn polynomial_constants_preserve_raw_coordinates_in_characteristic_two() {
     let mut b = CircuitBuilder::<Gf2>::new();
-    let mut baseline = CircuitBuilder::<Gf2>::new();
-    let values = b.alloc_public_input_array::<2>("characteristic two");
-    let baseline_values = baseline.alloc_public_input_array::<2>("characteristic two");
-    assert!(matches!(
-        b.binary_poly64_constant(1),
-        Err(CircuitBuilderError::CharacteristicTwoUnsupported { .. })
-    ));
-    assert!(matches!(
-        b.binary_poly192_constant([1, 2, 3]),
-        Err(CircuitBuilderError::CharacteristicTwoUnsupported { .. })
-    ));
-    assert_eq!(
-        b.add(values[0], values[1]),
-        baseline.add(baseline_values[0], baseline_values[1])
-    );
-    assert_eq!(b.build().unwrap().ops, baseline.build().unwrap().ops);
+    let value = b.binary_poly64_constant(2).unwrap();
+    b.tag(value.bits()[1], "poly64 bit one").unwrap();
+    b.tag(value.bits()[0], "poly64 bit zero").unwrap();
+    let value = b.binary_poly192_constant([1, 2, 3]).unwrap();
+    b.tag(value.coefficients()[2].bits()[1], "coefficient two bit one")
+        .unwrap();
+    let circuit = b.build().unwrap();
+    let traces = circuit.runner().run().unwrap();
+    assert_eq!(traces.probe("poly64 bit one"), Some(&Gf2::ONE));
+    assert_eq!(traces.probe("poly64 bit zero"), Some(&Gf2::ZERO));
+    assert_eq!(traces.probe("coefficient two bit one"), Some(&Gf2::ONE));
 }

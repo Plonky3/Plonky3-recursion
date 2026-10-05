@@ -1,4 +1,4 @@
-//! Non-native Poly64 and Poly192 arithmetic in their released polynomial bases.
+//! Coordinate Poly64 and Poly192 arithmetic in their released polynomial bases.
 //!
 //! Poly64 reduces modulo `x^64 + x^4 + x^3 + x + 1`. Poly192 has three
 //! Poly64 coefficients in ascending degree of `y`, with `y^3 = y + 1`.
@@ -44,13 +44,12 @@ impl BinaryPoly192Target {
 }
 
 impl<F: Field + Eq + Hash> CircuitBuilder<F> {
-    /// Constrains every input coordinate to zero or one. Rejects characteristic
-    /// two before changing the builder. Input IDs must belong to this graph.
+    /// Constrains every input coordinate to zero or one in either a prime or
+    /// binary carrier field. Input IDs must belong to this graph.
     pub fn binary_poly64_from_bits(
         &mut self,
         bits: [ExprId; BINARY_POLY64_BITS],
     ) -> Result<BinaryPoly64Target, CircuitBuilderError> {
-        Self::check_poly_characteristic("binary_poly64_from_bits")?;
         for bit in bits {
             self.assert_bool(bit);
         }
@@ -79,7 +78,6 @@ impl<F: Field + Eq + Hash> CircuitBuilder<F> {
         &mut self,
         raw: u64,
     ) -> Result<BinaryPoly64Target, CircuitBuilderError> {
-        Self::check_poly_characteristic("binary_poly64_constant")?;
         let zero = self.define_const(F::ZERO);
         let one = self.define_const(F::ONE);
         Ok(BinaryPoly64Target {
@@ -176,7 +174,6 @@ impl<F: Field + Eq + Hash> CircuitBuilder<F> {
         &mut self,
         raw: [u64; 3],
     ) -> Result<BinaryPoly192Target, CircuitBuilderError> {
-        Self::check_poly_characteristic("binary_poly192_constant")?;
         Ok(BinaryPoly192Target {
             coefficients: [
                 self.binary_poly64_constant(raw[0])?,
@@ -310,6 +307,9 @@ impl<F: Field + Eq + Hash> CircuitBuilder<F> {
         }
         if b == ExprId::ZERO {
             return a;
+        }
+        if F::TWO == F::ZERO {
+            return self.add(a, b);
         }
         let difference = self.sub(a, b);
         self.mul(difference, difference)
