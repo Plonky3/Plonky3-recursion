@@ -29,6 +29,7 @@ mod poly_interpolation;
 mod poly_nonzero;
 pub(crate) use poly_interpolation::Poly192SumcheckInterpolator;
 mod poly_whir_gadgets;
+pub(crate) use poly_whir_gadgets::poly_whir_query_point;
 mod poly_whir_input;
 mod poly_whir_verifier;
 pub(crate) use poly_whir_gadgets::{
@@ -47,6 +48,7 @@ mod trace_whir;
 mod verifier;
 mod whir_gadgets;
 mod whir_input;
+mod whir_kernel;
 mod whir_plan;
 mod whir_queries;
 mod whir_verifier;
@@ -121,8 +123,8 @@ pub use verifier::{
     BinaryOracleOpeningTargets, BinaryPcs128ProofTargets, BinaryPcs128Verifier, BinaryPcsVerifier,
 };
 pub(crate) use verifier::{
-    assert_equal, observe_cap, observe_cap_with_host, observe_seed, observe_seed_with_host, observe_values,
-    observe_values_with_host, seed_bytes_with_host,
+    assert_equal, observe_cap, observe_cap_with_host, observe_seed, observe_seed_with_host,
+    observe_values, observe_values_with_host, seed_bytes_with_host,
 };
 pub use whir_gadgets::{
     binary_whir_query_point, binary128_eval_coefficients, binary128_eval_multilinear,

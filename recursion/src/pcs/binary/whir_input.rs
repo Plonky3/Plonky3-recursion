@@ -28,32 +28,32 @@ use crate::transcript::domain_separator_seed;
 use crate::verifier::{InputResourceUsage, VerificationError};
 
 #[derive(Clone, Debug)]
-pub struct BinaryWhirSumcheckTargets<T = BinaryTower128Target> {
+pub struct BinaryWhirSumcheckTargets<T = BinaryTower128Target, B = T> {
     pub messages: Vec<[T; 2]>,
-    pub pow_witnesses: Vec<T>,
+    pub pow_witnesses: Vec<B>,
 }
 
 #[derive(Clone, Debug)]
-pub struct BinaryWhirRoundTargets<T = BinaryTower128Target> {
+pub struct BinaryWhirRoundTargets<T = BinaryTower128Target, B = T> {
     pub cap: Vec<Vec<ExprId>>,
     pub ood_answers: Vec<T>,
-    pub pow_witness: T,
+    pub pow_witness: B,
     pub rows: Vec<Vec<T>>,
     pub paths: Vec<Vec<Vec<ExprId>>>,
-    pub sumcheck: BinaryWhirSumcheckTargets<T>,
+    pub sumcheck: BinaryWhirSumcheckTargets<T, B>,
 }
 
 #[derive(Clone, Debug)]
-pub struct BinaryWhirProofTargets<T = BinaryTower128Target> {
+pub struct BinaryWhirProofTargets<T = BinaryTower128Target, B = T> {
     pub evals: Vec<OpeningBatch<T>>,
     pub initial_ood_answers: Vec<T>,
-    pub initial_sumcheck: BinaryWhirSumcheckTargets<T>,
-    pub rounds: Vec<BinaryWhirRoundTargets<T>>,
+    pub initial_sumcheck: BinaryWhirSumcheckTargets<T, B>,
+    pub rounds: Vec<BinaryWhirRoundTargets<T, B>>,
     pub final_poly: Vec<T>,
-    pub final_pow_witness: T,
+    pub final_pow_witness: B,
     pub final_rows: Vec<Vec<T>>,
     pub final_paths: Vec<Vec<Vec<ExprId>>>,
-    pub final_sumcheck: BinaryWhirSumcheckTargets<T>,
+    pub final_sumcheck: BinaryWhirSumcheckTargets<T, B>,
 }
 
 /// Exact trusted contract, including native configuration seed and the whole

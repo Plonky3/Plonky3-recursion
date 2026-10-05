@@ -6,7 +6,9 @@ use core::hash::Hash;
 
 use p3_binary_field::{Poly64, Poly192, TowerLevel};
 use p3_challenger::{CanObserve, CanSampleUniformBits, FieldChallenger, GrindingChallenger};
-use p3_circuit::ops::{BinaryPoly64Target, BinaryPoly192Target, ByteHash, bytes_to_limbs};
+use p3_circuit::ops::{
+    BinaryPoly64Target, BinaryPoly192Target, ByteHash, NativePoly192Target, bytes_to_limbs,
+};
 use p3_circuit::{CircuitBuilder, ExprId};
 use p3_field::{BasedVectorSpace, ExtensionField, Field, PrimeCharacteristicRing, PrimeField64};
 use p3_matrix::Dimensions;
@@ -23,36 +25,17 @@ use p3_whir::transcript::{WhirShape, WhirVerifierTranscript};
 use super::BinaryPolyWhirVerifier;
 use super::whir_plan::{FoldShape, OracleSite, invalid, limit};
 use crate::transcript::domain_separator_seed;
+use crate::verifier::binary_field_policy::{
+    BinaryRelationPolicy, NativePoly64Relation, Poly64Relation,
+};
 use crate::verifier::{InputResourceUsage, VerificationError};
 
-#[derive(Clone, Debug)]
-pub struct BinaryPolyWhirSumcheckTargets {
-    pub messages: Vec<[BinaryPoly192Target; 2]>,
-    pub pow_witnesses: Vec<BinaryPoly64Target>,
-}
-
-#[derive(Clone, Debug)]
-pub struct BinaryPolyWhirRoundTargets {
-    pub cap: Vec<Vec<ExprId>>,
-    pub ood_answers: Vec<BinaryPoly192Target>,
-    pub pow_witness: BinaryPoly64Target,
-    pub rows: Vec<Vec<BinaryPoly192Target>>,
-    pub paths: Vec<Vec<Vec<ExprId>>>,
-    pub sumcheck: BinaryPolyWhirSumcheckTargets,
-}
-
-#[derive(Clone, Debug)]
-pub struct BinaryPolyWhirProofTargets {
-    pub evals: Vec<OpeningBatch<BinaryPoly192Target>>,
-    pub initial_ood_answers: Vec<BinaryPoly192Target>,
-    pub initial_sumcheck: BinaryPolyWhirSumcheckTargets,
-    pub rounds: Vec<BinaryPolyWhirRoundTargets>,
-    pub final_poly: Vec<BinaryPoly192Target>,
-    pub final_pow_witness: BinaryPoly64Target,
-    pub final_rows: Vec<Vec<BinaryPoly192Target>>,
-    pub final_paths: Vec<Vec<Vec<ExprId>>>,
-    pub final_sumcheck: BinaryPolyWhirSumcheckTargets,
-}
+pub type BinaryPolyWhirSumcheckTargets<T = BinaryPoly192Target, B = BinaryPoly64Target> =
+    super::BinaryWhirSumcheckTargets<T, B>;
+pub type BinaryPolyWhirRoundTargets<T = BinaryPoly192Target, B = BinaryPoly64Target> =
+    super::BinaryWhirRoundTargets<T, B>;
+pub type BinaryPolyWhirProofTargets<T = BinaryPoly192Target, B = BinaryPoly64Target> =
+    super::BinaryWhirProofTargets<T, B>;
 
 /// Exact trusted contract, including native configuration seed and the whole
 /// opening schedule. Query indices are derived in-circuit, not allocated.
@@ -148,27 +131,40 @@ impl BinaryPolyWhirInputShape {
         BF: PrimeField64,
         EF: ExtensionField<BF> + Eq + Hash,
     {
+        self.allocate_with::<Poly64Relation, EF>(b, field::<BF, EF>, base_field::<BF, EF>)
+    }
+    fn allocate_with<P, CF>(
+        &self,
+        b: &mut CircuitBuilder<CF>,
+        mut field: impl FnMut(&mut CircuitBuilder<CF>) -> Result<P::ChallengeTarget, VerificationError>,
+        mut base: impl FnMut(&mut CircuitBuilder<CF>) -> Result<P::BaseTarget, VerificationError>,
+    ) -> Result<BinaryPolyWhirProofTargets<P::ChallengeTarget, P::BaseTarget>, VerificationError>
+    where
+        CF: Field + Eq + Hash,
+        P: BinaryRelationPolicy<CF, Base = Poly64, Challenge = Poly192>,
+    {
         let evals = self
             .protocol
             .iter_openings()
             .map(|(_, batch)| {
                 Ok(OpeningBatch::new(
-                    fields::<BF, EF>(b, batch.current().len())?,
-                    fields::<BF, EF>(b, batch.next().len())?,
+                    fields(b, batch.current().len(), &mut field)?,
+                    fields(b, batch.next().len(), &mut field)?,
                 ))
             })
             .collect::<Result<_, VerificationError>>()?;
-        let initial_ood_answers = fields::<BF, EF>(b, self.initial_ood)?;
-        let initial_sumcheck = fold::<BF, EF>(b, &self.initial_fold)?;
+        let initial_ood_answers = fields(b, self.initial_ood, &mut field)?;
+        let initial_sumcheck = fold(b, &self.initial_fold, &mut field, &mut base)?;
         let mut rounds = Vec::new();
         for (i, site) in self.sites.iter().take(self.sites.len() - 1).enumerate() {
             let cap = (0..1usize << self.cap_height)
                 .map(|_| b.alloc_private_input_array::<16>("WHIR round cap").to_vec())
                 .collect();
-            let ood_answers = fields::<BF, EF>(b, site.ood)?;
-            let pow_witness = base_field::<BF, EF>(b)?;
-            let (rows, paths) = opening::<BF, EF>(b, site, self.cap_height, i == 0)?;
-            let sumcheck = fold::<BF, EF>(b, &site.fold)?;
+            let ood_answers = fields(b, site.ood, &mut field)?;
+            let pow_witness = base(b)?;
+            let (rows, paths) =
+                opening::<P, CF>(b, site, self.cap_height, i == 0, &mut field, &mut base)?;
+            let sumcheck = fold(b, &site.fold, &mut field, &mut base)?;
             rounds.push(BinaryPolyWhirRoundTargets {
                 cap,
                 ood_answers,
@@ -178,15 +174,21 @@ impl BinaryPolyWhirInputShape {
                 sumcheck,
             });
         }
-        let final_poly = fields::<BF, EF>(b, self.final_len)?;
-        let final_pow_witness = base_field::<BF, EF>(b)?;
+        let final_poly = fields(b, self.final_len, &mut field)?;
+        let final_pow_witness = base(b)?;
         let site = self
             .sites
             .last()
             .expect("a checked WHIR plan has a final query site");
-        let (final_rows, final_paths) =
-            opening::<BF, EF>(b, site, self.cap_height, self.sites.len() == 1)?;
-        let final_sumcheck = fold::<BF, EF>(b, &site.fold)?;
+        let (final_rows, final_paths) = opening::<P, CF>(
+            b,
+            site,
+            self.cap_height,
+            self.sites.len() == 1,
+            &mut field,
+            &mut base,
+        )?;
+        let final_sumcheck = fold(b, &site.fold, &mut field, &mut base)?;
         Ok(BinaryPolyWhirProofTargets {
             evals,
             initial_ood_answers,
@@ -593,55 +595,51 @@ where
     let limbs = b.alloc_private_input_array::<12>("binary Poly WHIR challenge");
     Ok(b.binary_poly192_from_limbs::<BF>(limbs)?)
 }
-fn fields<BF, EF>(
-    b: &mut CircuitBuilder<EF>,
+fn fields<CF: Field + Eq + Hash, T>(
+    b: &mut CircuitBuilder<CF>,
     n: usize,
-) -> Result<Vec<BinaryPoly192Target>, VerificationError>
-where
-    BF: PrimeField64,
-    EF: ExtensionField<BF> + Eq + Hash,
-{
-    (0..n).map(|_| field::<BF, EF>(b)).collect()
+    field: &mut impl FnMut(&mut CircuitBuilder<CF>) -> Result<T, VerificationError>,
+) -> Result<Vec<T>, VerificationError> {
+    (0..n).map(|_| field(b)).collect()
 }
-fn fold<BF, EF>(
-    b: &mut CircuitBuilder<EF>,
+fn fold<CF: Field + Eq + Hash, T, B>(
+    b: &mut CircuitBuilder<CF>,
     shape: &FoldShape,
-) -> Result<BinaryPolyWhirSumcheckTargets, VerificationError>
-where
-    BF: PrimeField64,
-    EF: ExtensionField<BF> + Eq + Hash,
-{
+    field: &mut impl FnMut(&mut CircuitBuilder<CF>) -> Result<T, VerificationError>,
+    base: &mut impl FnMut(&mut CircuitBuilder<CF>) -> Result<B, VerificationError>,
+) -> Result<BinaryPolyWhirSumcheckTargets<T, B>, VerificationError> {
     let messages = (0..shape.rounds)
-        .map(|_| Ok([field::<BF, EF>(b)?, field::<BF, EF>(b)?]))
+        .map(|_| Ok([field(b)?, field(b)?]))
         .collect::<Result<_, VerificationError>>()?;
     let pow_witnesses = (0..if shape.pow_bits == 0 { 0 } else { shape.rounds })
-        .map(|_| base_field::<BF, EF>(b))
+        .map(|_| base(b))
         .collect::<Result<_, VerificationError>>()?;
     Ok(BinaryPolyWhirSumcheckTargets {
         messages,
         pow_witnesses,
     })
 }
-fn opening<BF, EF>(
-    b: &mut CircuitBuilder<EF>,
+fn opening<P, CF>(
+    b: &mut CircuitBuilder<CF>,
     site: &OracleSite,
     cap: usize,
-    base: bool,
-) -> Result<(Vec<Vec<BinaryPoly192Target>>, Vec<Vec<Vec<ExprId>>>), VerificationError>
+    is_base: bool,
+    field: &mut impl FnMut(&mut CircuitBuilder<CF>) -> Result<P::ChallengeTarget, VerificationError>,
+    base: &mut impl FnMut(&mut CircuitBuilder<CF>) -> Result<P::BaseTarget, VerificationError>,
+) -> Result<(Vec<Vec<P::ChallengeTarget>>, Vec<Vec<Vec<ExprId>>>), VerificationError>
 where
-    BF: PrimeField64,
-    EF: ExtensionField<BF> + Eq + Hash,
+    CF: Field + Eq + Hash,
+    P: BinaryRelationPolicy<CF>,
 {
     let rows = (0..site.queries.num_queries())
         .map(|_| {
             (0..site.width)
                 .map(|_| {
-                    if base {
-                        let coefficient = base_field::<BF, EF>(b)?;
-                        let zero = b.binary_poly64_constant(0)?;
-                        Ok(b.binary_poly192_from_coefficients([coefficient, zero.clone(), zero]))
+                    if is_base {
+                        let value = base(b)?;
+                        Ok(P::lift(b, &value)?)
                     } else {
-                        field::<BF, EF>(b)
+                        field(b)
                     }
                 })
                 .collect::<Result<_, VerificationError>>()
@@ -693,5 +691,142 @@ fn push_fold(values: &mut Vec<u16>, proof: &SumcheckData<Poly64, Poly192>) {
     }
     for &v in &proof.pow_witnesses {
         push_base(values, v);
+    }
+}
+
+impl BinaryPolyWhirInputShape {
+    /// Three native coefficients for extension words, one cell for base words.
+    pub fn allocate_native_targets(
+        &self,
+        b: &mut CircuitBuilder<Poly64>,
+    ) -> Result<BinaryPolyWhirProofTargets<NativePoly192Target, ExprId>, VerificationError> {
+        self.allocate_with::<NativePoly64Relation, Poly64>(
+            b,
+            |b| {
+                let coefficients = b.alloc_private_input_array::<3>("native Poly WHIR challenge");
+                Ok(b.native_poly192_from_coefficients(coefficients))
+            },
+            |b| Ok(b.alloc_private_input("native Poly WHIR base")),
+        )
+    }
+}
+impl NativeBinaryPolyWhirInput {
+    /// Frozen traversal distinguishes coefficient blocks from individual digest words.
+    pub fn private_native_values(
+        &self,
+        expected: &BinaryPolyWhirInputShape,
+    ) -> Result<Vec<Poly64>, VerificationError> {
+        if &self.shape != expected {
+            return Err(invalid("binary WHIR input belongs to a different verifier"));
+        }
+        let mut cursor = NativePolyWhirCursor {
+            limbs: &self.limbs,
+            position: 0,
+            values: Vec::new(),
+        };
+        for (_, batch) in expected.protocol.iter_openings() {
+            cursor.fields(batch.current().len())?;
+            cursor.fields(batch.next().len())?;
+        }
+        cursor.fields(expected.initial_ood)?;
+        cursor.fold(&expected.initial_fold)?;
+        for (i, site) in expected
+            .sites
+            .iter()
+            .take(expected.sites.len() - 1)
+            .enumerate()
+        {
+            for _ in 0..1usize << expected.cap_height {
+                cursor.words(16)?;
+            }
+            cursor.fields(site.ood)?;
+            cursor.coefficients(1)?;
+            cursor.opening(site, expected.cap_height, i == 0)?;
+            cursor.fold(&site.fold)?;
+        }
+        cursor.fields(expected.final_len)?;
+        cursor.coefficients(1)?;
+        let site = expected.sites.last().expect("checked final WHIR site");
+        cursor.opening(site, expected.cap_height, expected.sites.len() == 1)?;
+        cursor.fold(&site.fold)?;
+        if cursor.position != self.limbs.len() {
+            return Err(invalid(
+                "native Poly WHIR coordinate packing has trailing words",
+            ));
+        }
+        Ok(cursor.values)
+    }
+}
+struct NativePolyWhirCursor<'a> {
+    limbs: &'a [u16],
+    position: usize,
+    values: Vec<Poly64>,
+}
+impl NativePolyWhirCursor<'_> {
+    fn take(&mut self, count: usize) -> Result<&[u16], VerificationError> {
+        let end = self
+            .position
+            .checked_add(count)
+            .ok_or(invalid("native Poly WHIR coordinate cursor overflow"))?;
+        let words = self
+            .limbs
+            .get(self.position..end)
+            .ok_or(invalid("native Poly WHIR coordinate packing is truncated"))?;
+        self.position = end;
+        Ok(words)
+    }
+    fn words(&mut self, count: usize) -> Result<(), VerificationError> {
+        for _ in 0..count {
+            let raw = self.take(1)?[0];
+            self.values.push(Poly64::new(u64::from(raw)));
+        }
+        Ok(())
+    }
+    fn coefficients(&mut self, count: usize) -> Result<(), VerificationError> {
+        for _ in 0..count {
+            let raw = self
+                .take(4)?
+                .iter()
+                .enumerate()
+                .fold(0u64, |raw, (i, &word)| raw | (u64::from(word) << (16 * i)));
+            self.values.push(Poly64::new(raw));
+        }
+        Ok(())
+    }
+    fn fields(&mut self, count: usize) -> Result<(), VerificationError> {
+        self.coefficients(
+            count
+                .checked_mul(3)
+                .ok_or(invalid("native Poly WHIR coefficient cursor overflow"))?,
+        )
+    }
+    fn fold(&mut self, shape: &FoldShape) -> Result<(), VerificationError> {
+        for _ in 0..shape.rounds {
+            self.fields(2)?;
+        }
+        if shape.pow_bits > 0 {
+            self.coefficients(shape.rounds)?;
+        }
+        Ok(())
+    }
+    fn opening(
+        &mut self,
+        site: &OracleSite,
+        cap: usize,
+        base: bool,
+    ) -> Result<(), VerificationError> {
+        for _ in 0..site.queries.num_queries() {
+            if base {
+                self.coefficients(site.width)?;
+            } else {
+                self.fields(site.width)?;
+            }
+        }
+        for _ in 0..site.queries.num_queries() {
+            for _ in 0..site.log_height - cap {
+                self.words(16)?;
+            }
+        }
+        Ok(())
     }
 }
