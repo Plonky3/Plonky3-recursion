@@ -124,6 +124,12 @@ followed by a prime-field recursion layer. It does not demonstrate binary-in/bin
   coefficient serialization are tested across tower and polynomial carriers.
   Native BLAKE3 hashing is not yet available through this host. These APIs do
   not by themselves implement a complete binary-host proof verifier.
+- **Native byte Merkle verification.**
+  `verify_byte_hash_mmcs_opening_bytes_with_host` authenticates serialized rows
+  with the chosen host, sharing the prime API's mixed-height injection, index
+  bounds and cap selection. Native tests cover odd-width rows, non-power-of-two
+  heights, tower/polynomial carriers and a cap at the leaf layer. The caller
+  still supplies trusted row widths, heights and serialization rules.
 - **Binary hash configurations.** `p3_test_utils::binary_field_params` provides the
   configuration `p3-binary-pcs` tests with, once per hash (`keccak` and `blake3` submodules
   with identical item names):

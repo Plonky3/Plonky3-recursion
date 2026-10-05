@@ -10,6 +10,8 @@ use alloc::vec::Vec;
 use p3_field::{ExtensionField, Field, PrimeField64};
 use p3_util::log2_ceil_usize;
 
+use super::binary_host::BinaryCircuitHost;
+
 use crate::builder::CircuitBuilderError;
 use crate::types::ExprId;
 
@@ -228,14 +230,14 @@ where
         BF: PrimeField64,
         F: ExtensionField<BF>,
     {
-        self.verify_byte_hash_mmcs_opening_with::<BF>(
-            hash,
+        self.verify_byte_hash_mmcs_opening_with(
             rows,
             heights,
             index_bits,
             siblings,
             cap,
             |builder, row| builder.byte_hash_field_elements::<BF>(hash, row),
+            |builder, left, right| builder.byte_hash_compress::<BF>(hash, left, right),
         )
     }
 
@@ -267,8 +269,7 @@ where
         BF: PrimeField64,
         F: ExtensionField<BF>,
     {
-        self.verify_byte_hash_mmcs_opening_with::<BF>(
-            hash,
+        self.verify_byte_hash_mmcs_opening_with(
             rows,
             heights,
             index_bits,
@@ -280,6 +281,7 @@ where
                 }
                 builder.byte_hash_limbs::<BF>(hash, row)
             },
+            |builder, left, right| builder.byte_hash_compress::<BF>(hash, left, right),
         )
     }
 
@@ -307,19 +309,25 @@ where
         BF: PrimeField64,
         F: ExtensionField<BF>,
     {
-        self.verify_byte_hash_mmcs_opening_with::<BF>(
-            hash,
+        self.verify_byte_hash_mmcs_opening_with(
             rows,
             heights,
             index_bits,
             siblings,
             cap,
             |builder, row| builder.byte_hash_bytes::<BF>(hash, row),
+            |builder, left, right| builder.byte_hash_compress::<BF>(hash, left, right),
         )
     }
 
+    /// Authenticates exact serialized byte rows using an explicit circuit host.
+    ///
+    /// Row widths and native serialization belong to the caller's trusted
+    /// matrix geometry. Each byte is checked by the host encoding. Digests
+    /// retain sixteen low-first words; all mixed-height injection, index and
+    /// cap checks are shared with the prime-field API above.
     #[allow(clippy::too_many_arguments)]
-    fn verify_byte_hash_mmcs_opening_with<BF>(
+    pub fn verify_byte_hash_mmcs_opening_bytes_with_host<H>(
         &mut self,
         hash: ByteHash,
         rows: &[Vec<ExprId>],
@@ -327,12 +335,40 @@ where
         index_bits: &[ExprId],
         siblings: &[Vec<ExprId>],
         cap: &[Vec<ExprId>],
-        mut hash_rows: impl FnMut(&mut Self, &[ExprId]) -> Result<Vec<ExprId>, CircuitBuilderError>,
     ) -> Result<(), CircuitBuilderError>
     where
-        BF: PrimeField64,
-        F: ExtensionField<BF>,
+        H: BinaryCircuitHost<F>,
     {
+        H::check_hash(hash)?;
+        self.verify_byte_hash_mmcs_opening_with(
+            rows,
+            heights,
+            index_bits,
+            siblings,
+            cap,
+            |builder, row| {
+                let digest = H::hash_bytes(builder, hash, row)?;
+                H::words_from_bytes(builder, &digest)
+            },
+            |builder, left, right| H::compress(builder, hash, left, right),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn verify_byte_hash_mmcs_opening_with(
+        &mut self,
+        rows: &[Vec<ExprId>],
+        heights: &[usize],
+        index_bits: &[ExprId],
+        siblings: &[Vec<ExprId>],
+        cap: &[Vec<ExprId>],
+        mut hash_rows: impl FnMut(&mut Self, &[ExprId]) -> Result<Vec<ExprId>, CircuitBuilderError>,
+        mut compress: impl FnMut(
+            &mut Self,
+            &[ExprId],
+            &[ExprId],
+        ) -> Result<Vec<ExprId>, CircuitBuilderError>,
+    ) -> Result<(), CircuitBuilderError> {
         let shape_error = |expected: alloc::string::String, got: usize| {
             CircuitBuilderError::NonPrimitiveOpArity {
                 op: "MmcsOpening",
@@ -341,6 +377,12 @@ where
             }
         };
         let log_max = index_bits.len();
+        if log_max >= usize::BITS as usize {
+            return Err(shape_error(
+                format!("fewer than {} index bits", usize::BITS),
+                log_max,
+            ));
+        }
         if rows.is_empty() || rows.len() != heights.len() {
             return Err(shape_error(
                 format!("one height per opened row ({})", rows.len()),
@@ -421,13 +463,13 @@ where
                     )
                 })
                 .unzip();
-            node = self.byte_hash_compress::<BF>(hash, &left, &right)?;
+            node = compress(self, &left, &right)?;
 
             let reached = log_max - level - 1;
             if log_heights.contains(&reached) {
                 let injected = rows_at(reached);
                 let digest = hash_rows(self, &injected)?;
-                node = self.byte_hash_compress::<BF>(hash, &node, &digest)?;
+                node = compress(self, &node, &digest)?;
             }
         }
 
@@ -492,6 +534,13 @@ where
         BF: PrimeField64,
         F: ExtensionField<BF>,
     {
+        if index_bits.len() >= usize::BITS as usize {
+            return Err(CircuitBuilderError::NonPrimitiveOpArity {
+                op: "MmcsOpening",
+                expected: format!("fewer than {} index bits", usize::BITS),
+                got: index_bits.len(),
+            });
+        }
         self.verify_byte_hash_mmcs_opening::<BF>(
             hash,
             &[leaf.to_vec()],

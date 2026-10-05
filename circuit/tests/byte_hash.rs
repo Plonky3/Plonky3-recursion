@@ -2,8 +2,8 @@
 
 use p3_baby_bear::BabyBear;
 use p3_blake3::Blake3;
-use p3_circuit::CircuitBuilder;
 use p3_circuit::ops::{ByteHash, bytes_to_limbs};
+use p3_circuit::{CircuitBuilder, ExprId};
 use p3_commit::Mmcs;
 use p3_field::PrimeCharacteristicRing;
 use p3_field::extension::BinomialExtensionField;
@@ -141,4 +141,28 @@ fn odd_width_binary_byte_leaves_match_native_mmcs() {
             }
         }
     }
+}
+
+#[test]
+fn unrepresentable_merkle_height_returns_an_error_without_panicking() {
+    let mut builder = CircuitBuilder::<EF>::new();
+    let leaf = builder.public_input();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        builder.verify_byte_hash_merkle_path::<BabyBear>(
+            ByteHash::Keccak256,
+            &[leaf],
+            &vec![ExprId::ZERO; usize::BITS as usize],
+            &[],
+            &[ExprId::ZERO; 16],
+        )
+    }));
+    assert!(result.is_ok(), "unrepresentable height must not panic");
+    assert!(result.unwrap().is_err());
+    let rejected = builder.build().unwrap();
+    let mut control = CircuitBuilder::<EF>::new();
+    control.public_input();
+    let control = control.build().unwrap();
+    assert_eq!(rejected.witness_count, control.witness_count);
+    assert_eq!(rejected.expr_to_widx, control.expr_to_widx);
+    assert_eq!(format!("{:?}", rejected.ops), format!("{:?}", control.ops));
 }
