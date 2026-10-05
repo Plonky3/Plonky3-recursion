@@ -70,9 +70,9 @@ pub struct NativeBinaryCircuitAir<F> {
 }
 
 #[derive(Clone, Debug)]
-struct KeccakCall {
-    input: [usize; KECCAK_STATE_LIMBS],
-    output: [usize; KECCAK_STATE_LIMBS],
+pub(crate) struct KeccakCall {
+    pub(crate) input: [usize; KECCAK_STATE_LIMBS],
+    pub(crate) output: [usize; KECCAK_STATE_LIMBS],
 }
 
 /// Compact native primitives and supported binary hash tables.
@@ -102,27 +102,7 @@ impl<F: BinaryCoordinateField> NativeBinaryCircuit<F> {
             limits,
             &[NpoTypeId::native_keccak_f1600()],
         )?;
-        let mut calls = Vec::new();
-        for (operation, op) in circuit.ops.iter().enumerate() {
-            if let Op::NonPrimitiveOpWithExecutor {
-                inputs, outputs, ..
-            } = op
-            {
-                // The primitive plan has already rejected unrecognized identities
-                // and validated all witness IDs. Validate the supported shape too.
-                if inputs.len() != 1
-                    || outputs.len() != 1
-                    || inputs[0].len() != KECCAK_STATE_LIMBS
-                    || outputs[0].len() != KECCAK_STATE_LIMBS
-                {
-                    return Err(NativeBinaryCircuitError::KeccakLayout { operation });
-                }
-                calls.push(KeccakCall {
-                    input: core::array::from_fn(|i| inputs[0][i].0 as usize),
-                    output: core::array::from_fn(|i| outputs[0][i].0 as usize),
-                });
-            }
-        }
+        let calls = keccak_calls(circuit)?;
         let mut airs: Vec<_> = primitive
             .airs()
             .iter()
@@ -261,40 +241,7 @@ impl<F: BinaryCoordinateField> NativeBinaryCircuit<F> {
                 .get_value(WitnessId(w as u32))
                 .expect("validated witness length and call IDs")
         };
-        let mut inputs = Vec::with_capacity(self.calls.len());
-        for call in &self.calls {
-            let mut limbs = [0u16; KECCAK_STATE_LIMBS];
-            for (i, &w) in call.input.iter().enumerate() {
-                limbs[i] = u16::try_from(read(w).to_raw_coordinates())
-                    .map_err(|_| NativeBinaryCircuitError::InvalidLimb { witness: w })?;
-            }
-            for &w in &call.output {
-                u16::try_from(read(w).to_raw_coordinates())
-                    .map_err(|_| NativeBinaryCircuitError::InvalidLimb { witness: w })?;
-            }
-            inputs.push(keccak_limbs_to_state(&limbs));
-        }
-        let hash = generate_binary_trace_rows::<F>(inputs, 0);
-        let NativeTable::Keccak { weights, .. } = &self.airs[traces.len()].kind else {
-            unreachable!()
-        };
-        let mut values = Vec::with_capacity(cells(
-            hash.values.len() / NUM_KECCAK_BINARY_COLS,
-            HASH_WIDTH,
-        )?);
-        for row in hash.values.chunks_exact(NUM_KECCAK_BINARY_COLS) {
-            values.extend_from_slice(row);
-            for limb in 0..KECCAK_STATE_LIMBS {
-                values.push(
-                    (0..16)
-                        .map(|bit| {
-                            row[KECCAK_BINARY_ROWS_PER_PERM + 16 * limb + bit] * weights[bit]
-                        })
-                        .sum(),
-                );
-            }
-        }
-        traces.push(RowMajorMatrix::new(values, HASH_WIDTH));
+        traces.push(keccak_trace(&self.calls, witness)?);
         let NativeTable::Bridge { positions } = &self.airs[traces.len()].kind else {
             unreachable!()
         };
@@ -372,22 +319,7 @@ where
         match &self.kind {
             NativeTable::Primitive(air) => air.eval(builder),
             NativeTable::Keccak { weights, .. } => {
-                let mut sub = SubAirBuilder::<AB, KeccakBinaryAir, AB::Var>::new(
-                    builder,
-                    0..NUM_KECCAK_BINARY_COLS,
-                );
-                KeccakBinaryAir::default().eval(&mut sub);
-                let main = builder.main();
-                let row = main.current_slice();
-                builder.assert_eq(row[0], builder.preprocessed().current_slice()[0]);
-                for limb in 0..KECCAK_STATE_LIMBS {
-                    let value: AB::Expr = (0..16)
-                        .map(|bit| {
-                            row[KECCAK_BINARY_ROWS_PER_PERM + 16 * limb + bit] * weights[bit]
-                        })
-                        .sum();
-                    builder.assert_eq(row[NUM_KECCAK_BINARY_COLS + limb], value);
-                }
+                eval_keccak(builder, weights);
                 builder.push_indexed_table(
                     HASH_TABLE,
                     TraceWindow::Main,
@@ -408,5 +340,95 @@ where
                 builder.push_indexed_read(HASH_TABLE, HASH_POSITION, PAYLOAD..BRIDGE_WIDTH);
             }
         }
+    }
+}
+
+/// Called only after the primitive plan has validated operation identities and IDs.
+pub(crate) fn keccak_calls<F: Field>(
+    circuit: &Circuit<F>,
+) -> Result<Vec<KeccakCall>, NativeBinaryCircuitError> {
+    let mut calls = Vec::new();
+    for (operation, op) in circuit.ops.iter().enumerate() {
+        if let Op::NonPrimitiveOpWithExecutor {
+            inputs, outputs, ..
+        } = op
+        {
+            // The primitive plan has already rejected unrecognized identities
+            // and validated all witness IDs. Validate the supported shape too.
+            if inputs.len() != 1
+                || outputs.len() != 1
+                || inputs[0].len() != KECCAK_STATE_LIMBS
+                || outputs[0].len() != KECCAK_STATE_LIMBS
+            {
+                return Err(NativeBinaryCircuitError::KeccakLayout { operation });
+            }
+            calls.push(KeccakCall {
+                input: core::array::from_fn(|i| inputs[0][i].0 as usize),
+                output: core::array::from_fn(|i| outputs[0][i].0 as usize),
+            });
+        }
+    }
+    Ok(calls)
+}
+
+/// Callers validate the witness length and bound the expanded and temporary matrices first.
+pub(crate) fn keccak_trace<F: BinaryCoordinateField>(
+    calls: &[KeccakCall],
+    witness: &WitnessTrace<F>,
+) -> Result<RowMajorMatrix<F>, NativeBinaryCircuitError> {
+    let read = |w: usize| {
+        *witness
+            .get_value(WitnessId(w as u32))
+            .expect("validated witness length and call IDs")
+    };
+    let mut inputs = Vec::with_capacity(calls.len());
+    for call in calls {
+        let mut limbs = [0u16; KECCAK_STATE_LIMBS];
+        for (i, &w) in call.input.iter().enumerate() {
+            limbs[i] = u16::try_from(read(w).to_raw_coordinates())
+                .map_err(|_| NativeBinaryCircuitError::InvalidLimb { witness: w })?;
+        }
+        for &w in &call.output {
+            u16::try_from(read(w).to_raw_coordinates())
+                .map_err(|_| NativeBinaryCircuitError::InvalidLimb { witness: w })?;
+        }
+        inputs.push(keccak_limbs_to_state(&limbs));
+    }
+    let hash = generate_binary_trace_rows::<F>(inputs, 0);
+    let weights = core::array::from_fn::<_, 16, _>(|i| {
+        F::from_raw_coordinates(1 << i).expect("validated limb width")
+    });
+    let mut values = Vec::with_capacity(cells(
+        hash.values.len() / NUM_KECCAK_BINARY_COLS,
+        HASH_WIDTH,
+    )?);
+    for row in hash.values.chunks_exact(NUM_KECCAK_BINARY_COLS) {
+        values.extend_from_slice(row);
+        for limb in 0..KECCAK_STATE_LIMBS {
+            values.push(
+                (0..16)
+                    .map(|bit| row[KECCAK_BINARY_ROWS_PER_PERM + 16 * limb + bit] * weights[bit])
+                    .sum(),
+            );
+        }
+    }
+    Ok(RowMajorMatrix::new(values, HASH_WIDTH))
+}
+
+pub(crate) fn eval_keccak<AB: AirBuilder>(builder: &mut AB, weights: &[AB::F; 16])
+where
+    AB::F: Field,
+{
+    let mut sub =
+        SubAirBuilder::<AB, KeccakBinaryAir, AB::Var>::new(builder, 0..NUM_KECCAK_BINARY_COLS);
+    KeccakBinaryAir::default().eval(&mut sub);
+    let main = builder.main();
+    let row = main.current_slice();
+    builder.assert_eq(row[0], builder.preprocessed().current_slice()[0]);
+    for limb in 0..KECCAK_STATE_LIMBS {
+        let value: AB::Expr = (0..16)
+            .map(|bit| row[KECCAK_BINARY_ROWS_PER_PERM + 16 * limb + bit] * weights[bit])
+            .sum();
+        builder.assert_eq(row[NUM_KECCAK_BINARY_COLS + limb], value);
     }
 }

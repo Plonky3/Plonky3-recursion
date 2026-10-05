@@ -89,6 +89,17 @@ followed by a prime-field recursion layer. It does not demonstrate binary-in/bin
   exercises native proof verification and rejection of changed digest values
   and bridge payloads. This is a hash foundation for binary recursion, not yet
   a complete binary-host recursive verifier.
+- **Native product-bus wiring.** `p3_circuit_prover::native_bus::NativeBusCircuit`
+  binds gates, public inputs and Keccak boundaries through fixed witness
+  occurrences. Adjacent copies of each witness agree; native product buses
+  authenticate their reads without sending a provider-sized pushforward vector.
+  Each circuit requires a trusted, distinct bus namespace when composed with
+  other circuits under one authority. The complete AIR/preprocessing bundle
+  must be retained together. `recursion/tests/native_bus_circuit.rs` checks
+  native tower and polynomial proofs, including rejection of cross-circuit
+  public swaps and locally valid forged gate/hash payloads. This non-hiding
+  backend prepares the output relation for binary recursion; the complete
+  binary-host verifier still needs integration.
 - **Non-native binary byte-hash transcript.** `BinaryTower128Challenger` has a separate,
   fallible inherent API (`new`, `with_initial_limbs`, `observe`, `observe_slice`,
   `observe_digest`, `sample`, `sample_bits`, `check_witness`). It matches native

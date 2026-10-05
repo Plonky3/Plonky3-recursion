@@ -284,7 +284,7 @@ pub(crate) fn position<F: Field>(index: usize) -> F {
         .sum()
 }
 
-fn gate<F: Field>(constraint: &PrimitiveConstraint<F>) -> ([usize; SLOTS], usize, F) {
+pub(crate) fn gate<F: Field>(constraint: &PrimitiveConstraint<F>) -> ([usize; SLOTS], usize, F) {
     let (slots, selector, constant) = match *constraint {
         PrimitiveConstraint::Constant { out, value } => {
             ([None, None, None, None, Some(out)], 0, value)

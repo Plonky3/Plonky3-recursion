@@ -1,0 +1,509 @@
+//! Compact native binary circuits with a product-bus wiring argument.
+//!
+//! A frozen fanout table repeats each canonical witness once per declared read.
+//! Adjacent copies with the same fixed ID must agree. Gate, public and Keccak
+//! boundaries exchange exactly those occurrences through native product buses;
+//! no integer multiplicities or indexed pushforward vectors are used. Supply
+//! every AIR and its preprocessing to one native multi-STARK authority. Local
+//! AIR checks alone do not establish bus balance. These proofs are not hiding.
+//! The caller must assign distinct trusted namespaces to separate circuits
+//! composed under the same authority. Bus names are part of its verifier identity.
+
+use alloc::{format, sync::Arc, vec, vec::Vec};
+
+use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
+use p3_bus::{
+    BusActivation, BusBoundary, BusDirection, BusInteractionBuilder, BusName, BusNameError,
+};
+use p3_circuit::{
+    Circuit,
+    ops::{NpoTypeId, binary_native::BinaryCoordinateField},
+    tables::WitnessTrace,
+    types::WitnessId,
+};
+use p3_field::Field;
+use p3_keccak_air::{KECCAK_BINARY_ROWS_PER_PERM, NUM_KECCAK_BINARY_COLS};
+use p3_matrix::dense::RowMajorMatrix;
+use thiserror::Error;
+
+use crate::{
+    direct::{DirectCircuitError, DirectCircuitLimits},
+    indexed::{IndexedCircuitError, cells, gate, padded_height, variables},
+    native_binary::{
+        KeccakCall, NativeBinaryCircuitError, eval_keccak, keccak_calls, keccak_trace,
+    },
+    primitive_plan::PrimitivePlan,
+};
+
+const MAX_NAMESPACE_BYTES: usize = BusName::MAX_LEN - ".witness".len();
+const GATE_PP: usize = 12;
+const HASH_WIDTH: usize = NUM_KECCAK_BINARY_COLS + 100;
+
+#[derive(Debug, Error)]
+pub enum NativeBusCircuitError {
+    #[error("native circuit bus namespace must contain 1..=56 bytes, got {length}")]
+    InvalidNamespace { length: usize },
+    #[error(transparent)]
+    Namespace(#[from] BusNameError),
+    #[error(transparent)]
+    Primitive(#[from] DirectCircuitError),
+    #[error(transparent)]
+    Layout(#[from] IndexedCircuitError),
+    #[error(transparent)]
+    Hash(#[from] NativeBinaryCircuitError),
+    #[error("raw bus label {label} does not fit the carrier's {bits} coordinates")]
+    LabelCapacity { label: usize, bits: usize },
+    #[error("expected {expected} circuit public values, got {actual}")]
+    PublicLength { expected: usize, actual: usize },
+}
+
+#[derive(Clone, Debug)]
+enum Table<F> {
+    Witness(RowMajorMatrix<F>),
+    Gates(RowMajorMatrix<F>),
+    Public(Vec<F>),
+    Keccak {
+        pp: RowMajorMatrix<F>,
+        weights: [F; 16],
+    },
+    Bridge(RowMajorMatrix<F>),
+}
+
+#[derive(Clone, Debug)]
+pub struct NativeBusCircuitAir<F> {
+    table: Table<F>,
+    witness_bus: Arc<str>,
+    hash_bus: Arc<str>,
+}
+
+#[derive(Clone, Debug)]
+pub struct NativeBusCircuit<F> {
+    plan: PrimitivePlan<F>,
+    calls: Vec<KeccakCall>,
+    occurrences: Vec<usize>,
+    gate_positions: Vec<[usize; 5]>,
+    airs: Vec<NativeBusCircuitAir<F>>,
+    log_heights: Vec<usize>,
+    main_variables: usize,
+    preprocessed_variables: usize,
+}
+
+impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
+    /// `namespace` must be unique among separate circuits in a combined authority.
+    pub fn new(circuit: &Circuit<F>, namespace: &str) -> Result<Self, NativeBusCircuitError> {
+        Self::with_limits(circuit, namespace, DirectCircuitLimits::default())
+    }
+
+    pub fn with_limits(
+        circuit: &Circuit<F>,
+        namespace: &str,
+        limits: DirectCircuitLimits,
+    ) -> Result<Self, NativeBusCircuitError> {
+        if namespace.is_empty() || namespace.len() > MAX_NAMESPACE_BYTES {
+            return Err(NativeBusCircuitError::InvalidNamespace {
+                length: namespace.len(),
+            });
+        }
+        BusName::try_new(namespace)?;
+        let witness_bus: Arc<str> = format!("{namespace}.witness").into();
+        let hash_bus: Arc<str> = format!("{namespace}.keccak").into();
+        BusName::try_new(&witness_bus)?;
+        BusName::try_new(&hash_bus)?;
+        let air = |table| NativeBusCircuitAir {
+            table,
+            witness_bus: witness_bus.clone(),
+            hash_bus: hash_bus.clone(),
+        };
+        let plan = PrimitivePlan::with_supported_npos(
+            circuit,
+            limits,
+            &[NpoTypeId::native_keccak_f1600()],
+        )?;
+        let calls = keccak_calls(circuit)?;
+        let n = add(
+            add(cells(plan.constraints.len(), 5)?, plan.public.len())?,
+            cells(calls.len(), 200)?,
+        )?;
+        let witness_height = padded_height(n)?;
+        let gate_height = if plan.constraints.is_empty() {
+            0
+        } else {
+            padded_height(plan.constraints.len())?
+        };
+        let hash_height = if calls.is_empty() {
+            0
+        } else {
+            padded_height(cells(calls.len(), KECCAK_BINARY_ROWS_PER_PERM)?)?
+        };
+        let bridge_height = if calls.is_empty() {
+            0
+        } else {
+            padded_height(cells(calls.len(), 2)?)?
+        };
+        if !calls.is_empty() && F::COORDINATE_BITS < 16 {
+            return Err(NativeBinaryCircuitError::CoordinateWidth {
+                bits: F::COORDINATE_BITS,
+            }
+            .into());
+        }
+        // IDs and boundary tags, rather than fanout row numbers, are bus labels.
+        label::<F>(plan.width.max(cells(calls.len(), 2)?))?;
+        let main_cells = add(
+            add(witness_height, cells(gate_height, 5)?)?,
+            add(
+                cells(plan.public.len(), 2)?,
+                add(cells(hash_height, HASH_WIDTH)?, cells(bridge_height, 100)?)?,
+            )?,
+        )?;
+        let pp_cells = add(
+            add(cells(witness_height, 4)?, cells(gate_height, GATE_PP)?)?,
+            add(cells(hash_height, 3)?, cells(bridge_height, 102)?)?,
+        )?;
+        let bounded = add(
+            add(main_cells, pp_cells)?,
+            cells(hash_height, NUM_KECCAK_BINARY_COLS)?,
+        )?;
+        limits.check(
+            "native bus traces, preprocessing and temporary cells",
+            bounded,
+            limits.max_trace_cells,
+        )?;
+        let main_variables = variables(main_cells)?;
+        let preprocessed_variables = variables(pp_cells)?;
+
+        let gate_positions: Vec<_> = plan
+            .constraints
+            .iter()
+            .map(|constraint| gate(constraint).0)
+            .collect();
+        let mut occurrences = Vec::with_capacity(n);
+        occurrences.extend(gate_positions.iter().flatten().copied());
+        occurrences.extend(plan.public.iter().map(|&w| w + 1));
+        for call in &calls {
+            occurrences.extend(call.input.iter().chain(&call.output).map(|&w| w + 1));
+        }
+        occurrences.sort_unstable();
+        let mut pp = vec![F::ZERO; cells(witness_height, 4)?];
+        for (i, &id) in occurrences.iter().enumerate() {
+            let row = &mut pp[4 * i..4 * (i + 1)];
+            row[0] = label::<F>(id)?;
+            row[1] = F::ONE;
+            row[2] = F::from_bool(occurrences.get(i + 1) == Some(&id));
+            row[3] = F::from_bool(id == 0);
+        }
+        let mut airs = vec![air(Table::Witness(RowMajorMatrix::new(pp, 4)))];
+        let mut log_heights = vec![witness_height.ilog2() as usize];
+        if gate_height != 0 {
+            let mut pp = vec![F::ZERO; cells(gate_height, GATE_PP)?];
+            for (i, constraint) in plan.constraints.iter().enumerate() {
+                let (ids, selector, constant) = gate(constraint);
+                let row = &mut pp[GATE_PP * i..GATE_PP * (i + 1)];
+                for j in 0..5 {
+                    row[j] = label::<F>(ids[j])?;
+                }
+                row[5] = constant;
+                row[6 + selector] = F::ONE;
+            }
+            airs.push(air(Table::Gates(RowMajorMatrix::new(pp, GATE_PP))));
+            log_heights.push(gate_height.ilog2() as usize);
+        }
+        if !plan.public.is_empty() {
+            let ids = plan
+                .public
+                .iter()
+                .map(|&w| label::<F>(w + 1))
+                .collect::<Result<_, _>>()?;
+            airs.push(air(Table::Public(ids)));
+            log_heights.push(1);
+        }
+        if !calls.is_empty() {
+            let mut pp = vec![F::ZERO; cells(hash_height, 3)?];
+            for c in 0..calls.len() {
+                pp[3 * c * KECCAK_BINARY_ROWS_PER_PERM] = F::ONE;
+                for boundary in 0..2 {
+                    let row = c * KECCAK_BINARY_ROWS_PER_PERM
+                        + boundary * (KECCAK_BINARY_ROWS_PER_PERM - 1);
+                    pp[3 * row + 1] = label::<F>(2 * c + boundary + 1)?;
+                    pp[3 * row + 2] = F::ONE;
+                }
+            }
+            let weights = core::array::from_fn(|i| {
+                F::from_raw_coordinates(1 << i).expect("validated limb width")
+            });
+            airs.push(air(Table::Keccak {
+                pp: RowMajorMatrix::new(pp, 3),
+                weights,
+            }));
+            log_heights.push(hash_height.ilog2() as usize);
+            let mut pp = vec![F::ZERO; cells(bridge_height, 102)?];
+            for (c, call) in calls.iter().enumerate() {
+                for (boundary, ids) in [&call.input, &call.output].into_iter().enumerate() {
+                    let row = &mut pp[(2 * c + boundary) * 102..(2 * c + boundary + 1) * 102];
+                    for i in 0..100 {
+                        row[i] = label::<F>(ids[i] + 1)?;
+                    }
+                    row[100] = label::<F>(2 * c + boundary + 1)?;
+                    row[101] = F::ONE;
+                }
+            }
+            airs.push(air(Table::Bridge(RowMajorMatrix::new(pp, 102))));
+            log_heights.push(bridge_height.ilog2() as usize);
+        }
+        Ok(Self {
+            plan,
+            calls,
+            occurrences,
+            gate_positions,
+            airs,
+            log_heights,
+            main_variables,
+            preprocessed_variables,
+        })
+    }
+
+    pub fn airs(&self) -> &[NativeBusCircuitAir<F>] {
+        &self.airs
+    }
+    pub fn log_heights(&self) -> &[usize] {
+        &self.log_heights
+    }
+    pub const fn main_variables(&self) -> usize {
+        self.main_variables
+    }
+    pub const fn preprocessed_variables(&self) -> Option<usize> {
+        Some(self.preprocessed_variables)
+    }
+
+    pub fn public_values(&self, public: &[F]) -> Result<Vec<Vec<F>>, NativeBusCircuitError> {
+        if public.len() != self.plan.public.len() {
+            return Err(NativeBusCircuitError::PublicLength {
+                expected: self.plan.public.len(),
+                actual: public.len(),
+            });
+        }
+        Ok(self
+            .airs
+            .iter()
+            .map(|air| {
+                if matches!(air.table, Table::Public(_)) {
+                    public.to_vec()
+                } else {
+                    Vec::new()
+                }
+            })
+            .collect())
+    }
+
+    pub fn traces(
+        &self,
+        witness: &WitnessTrace<F>,
+    ) -> Result<Vec<RowMajorMatrix<F>>, NativeBusCircuitError> {
+        if witness.num_rows() != self.plan.width {
+            return Err(DirectCircuitError::WitnessLength {
+                expected: self.plan.width,
+                actual: witness.num_rows(),
+            }
+            .into());
+        }
+        let read = |id: usize| {
+            if id == 0 {
+                F::ZERO
+            } else {
+                *witness
+                    .get_value(WitnessId((id - 1) as u32))
+                    .expect("validated witness length and IDs")
+            }
+        };
+        let mut traces = Vec::with_capacity(self.airs.len());
+        for (air, &log) in self.airs.iter().zip(&self.log_heights) {
+            let height = 1usize << log;
+            let trace = match &air.table {
+                Table::Witness(_) => {
+                    let mut values: Vec<_> = self.occurrences.iter().map(|&id| read(id)).collect();
+                    values.resize(height, F::ZERO);
+                    RowMajorMatrix::new(values, 1)
+                }
+                Table::Gates(_) => {
+                    let mut values = vec![F::ZERO; cells(height, 5)?];
+                    for (row, ids) in values.chunks_exact_mut(5).zip(&self.gate_positions) {
+                        for i in 0..5 {
+                            row[i] = read(ids[i]);
+                        }
+                    }
+                    RowMajorMatrix::new(values, 5)
+                }
+                Table::Public(_) => {
+                    let values: Vec<_> = (0..height)
+                        .flat_map(|_| self.plan.public.iter().map(|&w| read(w + 1)))
+                        .collect();
+                    RowMajorMatrix::new(values, self.plan.public.len())
+                }
+                Table::Keccak { .. } => keccak_trace(&self.calls, witness)?,
+                Table::Bridge(_) => {
+                    let mut values = vec![F::ZERO; cells(height, 100)?];
+                    for (row, output) in values.chunks_exact_mut(100).enumerate() {
+                        if let Some(call) = self.calls.get(row / 2) {
+                            let ids = if row % 2 == 0 {
+                                &call.input
+                            } else {
+                                &call.output
+                            };
+                            for i in 0..100 {
+                                output[i] = read(ids[i] + 1);
+                            }
+                        }
+                    }
+                    RowMajorMatrix::new(values, 100)
+                }
+            };
+            traces.push(trace);
+        }
+        Ok(traces)
+    }
+}
+
+fn add(a: usize, b: usize) -> Result<usize, IndexedCircuitError> {
+    a.checked_add(b)
+        .ok_or(IndexedCircuitError::AllocationOverflow)
+}
+fn label<F: BinaryCoordinateField>(label: usize) -> Result<F, NativeBusCircuitError> {
+    F::from_raw_coordinates(label as u128).ok_or(NativeBusCircuitError::LabelCapacity {
+        label,
+        bits: F::COORDINATE_BITS,
+    })
+}
+
+impl<F: Field> BaseAir<F> for NativeBusCircuitAir<F> {
+    fn width(&self) -> usize {
+        match &self.table {
+            Table::Witness(_) => 1,
+            Table::Gates(_) => 5,
+            Table::Public(ids) => ids.len(),
+            Table::Keccak { .. } => HASH_WIDTH,
+            Table::Bridge(_) => 100,
+        }
+    }
+    fn num_public_values(&self) -> usize {
+        match &self.table {
+            Table::Public(ids) => ids.len(),
+            _ => 0,
+        }
+    }
+    fn preprocessed_width(&self) -> usize {
+        match self.table {
+            Table::Witness(_) => 4,
+            Table::Gates(_) => GATE_PP,
+            Table::Public(_) => 0,
+            Table::Keccak { .. } => 3,
+            Table::Bridge(_) => 102,
+        }
+    }
+    fn preprocessed_trace(&self) -> Option<RowMajorMatrix<F>> {
+        match &self.table {
+            Table::Witness(pp)
+            | Table::Gates(pp)
+            | Table::Bridge(pp)
+            | Table::Keccak { pp, .. } => Some(pp.clone()),
+            Table::Public(_) => None,
+        }
+    }
+    fn main_next_row_columns(&self) -> Vec<usize> {
+        match self.table {
+            Table::Witness(_) => vec![0],
+            Table::Keccak { .. } => (0..NUM_KECCAK_BINARY_COLS).collect(),
+            _ => Vec::new(),
+        }
+    }
+    fn preprocessed_next_row_columns(&self) -> Vec<usize> {
+        Vec::new()
+    }
+}
+
+impl<AB: AirBuilder + BusInteractionBuilder> Air<AB> for NativeBusCircuitAir<AB::F>
+where
+    AB::F: Field,
+{
+    fn eval(&self, b: &mut AB) {
+        if let Table::Keccak { weights, .. } = &self.table {
+            eval_keccak(b, weights);
+        }
+        let main = b.main();
+        let row = main.current_slice();
+        if let Table::Public(ids) = &self.table {
+            for (i, &id) in ids.iter().enumerate() {
+                b.assert_eq(row[i], b.public_values()[i]);
+                b.push_bus_interaction(
+                    BusName::new(self.witness_bus.as_ref()),
+                    BusDirection::Push,
+                    [AB::Expr::from(id), row[i].into()],
+                    BusActivation::Boundary(BusBoundary::First),
+                );
+            }
+            return;
+        }
+        let preprocessed = b.preprocessed().clone();
+        let pp = preprocessed.current_slice();
+        match &self.table {
+            Table::Witness(_) => {
+                b.when(pp[2]).assert_eq(row[0], main.next_slice()[0]);
+                b.when(pp[3]).assert_zero(row[0]);
+                b.push_bus_interaction(
+                    BusName::new(self.witness_bus.as_ref()),
+                    BusDirection::Pull,
+                    [pp[0].into(), row[0].into()],
+                    BusActivation::Boolean(pp[1].into()),
+                );
+            }
+            Table::Gates(_) => {
+                let active: AB::Expr = pp[6..12].iter().map(|&x| x.into()).sum();
+                for i in 0..5 {
+                    b.push_bus_interaction(
+                        BusName::new(self.witness_bus.as_ref()),
+                        BusDirection::Push,
+                        [pp[i].into(), row[i].into()],
+                        BusActivation::Boolean(active.clone()),
+                    );
+                }
+                let [a, c, addend, accumulator, out] = core::array::from_fn::<_, 5, _>(|i| row[i]);
+                b.when(pp[6]).assert_eq(out, pp[5]);
+                b.when(pp[7]).assert_eq(out, a + c);
+                b.when(pp[8]).assert_eq(out, a * c);
+                b.when(pp[9]).assert_bool(a);
+                b.when(pp[9]).assert_eq(out, a);
+                b.when(pp[10]).assert_eq(out, a * c + addend);
+                b.when(pp[11]).assert_eq(out, accumulator * c + addend - a);
+            }
+            Table::Public(_) => unreachable!("public tables have no preprocessing window"),
+            Table::Keccak { .. } => {
+                let fields = core::iter::once(pp[1].into()).chain(
+                    row[NUM_KECCAK_BINARY_COLS..HASH_WIDTH]
+                        .iter()
+                        .map(|&x| x.into()),
+                );
+                b.push_bus_interaction(
+                    BusName::new(self.hash_bus.as_ref()),
+                    BusDirection::Push,
+                    fields,
+                    BusActivation::Boolean(pp[2].into()),
+                );
+            }
+            Table::Bridge(_) => {
+                for i in 0..100 {
+                    b.push_bus_interaction(
+                        BusName::new(self.witness_bus.as_ref()),
+                        BusDirection::Push,
+                        [pp[i].into(), row[i].into()],
+                        BusActivation::Boolean(pp[101].into()),
+                    );
+                }
+                let fields = core::iter::once(pp[100].into()).chain(row.iter().map(|&x| x.into()));
+                b.push_bus_interaction(
+                    BusName::new(self.hash_bus.as_ref()),
+                    BusDirection::Pull,
+                    fields,
+                    BusActivation::Boolean(pp[101].into()),
+                );
+            }
+        }
+    }
+}

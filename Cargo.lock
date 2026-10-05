@@ -947,6 +947,7 @@ dependencies = [
  "p3-batch-stark",
  "p3-blake3",
  "p3-blake3-air",
+ "p3-bus",
  "p3-challenger",
  "p3-circle",
  "p3-circuit",
