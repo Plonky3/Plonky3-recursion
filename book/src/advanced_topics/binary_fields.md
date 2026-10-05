@@ -63,6 +63,13 @@ followed by a prime-field recursion layer. It does not demonstrate binary-in/bin
   assignment on every row, so its width and openings grow with the circuit's witness count.
   It is a non-hiding correctness baseline, rejects custom non-primitive tables, and does
   not yet provide an efficient recursive binary prover.
+- **Native challenge scalars.** `NativeTower128Target` keeps one expression per
+  scalar and uses native addition, multiplication and squaring only on
+  `CircuitBuilder<BinaryField128>`. Checked conversions materialize Boolean
+  coordinates or raw words at serialization boundaries. It does not treat
+  GHASH or polynomial carriers as the Wiedemann tower. `NativePoly192Target`
+  separately represents the polynomial challenge as three `Poly64` scalars,
+  with reduction by `y³ = y + 1`.
 - **Compact native primitive tables.** `p3_circuit_prover::indexed::IndexedCircuit` stores
   one canonical witness table and proves every gate operand and output with indexed
   reads. Trusted preprocessing pins the graph's positions, constants and selectors;

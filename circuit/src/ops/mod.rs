@@ -7,6 +7,7 @@ pub mod binary_encoding;
 pub mod binary_host;
 pub mod binary_native;
 pub mod binary_native_poly;
+pub mod binary_native_tower;
 pub mod binary_poly;
 pub mod binary_tower;
 pub mod blake3_compress;
@@ -23,6 +24,7 @@ pub mod recompose;
 pub mod statement;
 
 pub use binary_native_poly::NativePoly192Target;
+pub use binary_native_tower::NativeTower128Target;
 pub use binary_poly::{
     BINARY_POLY64_BITS, BINARY_POLY64_LIMBS, BINARY_POLY192_LIMBS, BinaryPoly64Target,
     BinaryPoly192Target,
