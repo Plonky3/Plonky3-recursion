@@ -6,10 +6,79 @@ use p3_circuit::ops::NativePoly192Target;
 
 use super::*;
 
+/// Captured Poly64 domain seeds use raw little-endian transcript bytes.
+pub(crate) fn poly_seed_bytes_with_host<H, CF>(
+    b: &mut CircuitBuilder<CF>,
+    seed: &[Poly64],
+) -> Result<Vec<ExprId>, CircuitBuilderError>
+where
+    CF: Field + Eq + Hash,
+    H: BinaryCircuitHost<CF>,
+{
+    seed.iter()
+        .flat_map(|value| value.to_bits().to_le_bytes())
+        .map(|byte| Ok(b.define_const(H::encode_u16(u16::from(byte))?)))
+        .collect()
+}
+
+pub(crate) fn poly_observe_seed_with_host<H, CF>(
+    b: &mut CircuitBuilder<CF>,
+    ch: &mut BinaryTower128Challenger,
+    seed: &[Poly64],
+) -> Result<(), VerificationError>
+where
+    CF: Field + Eq + Hash,
+    H: BinaryCircuitHost<CF>,
+{
+    let bytes = poly_seed_bytes_with_host::<H, CF>(b, seed)?;
+    Ok(ch.observe_bytes_with_host::<H, CF>(b, &bytes)?)
+}
+
+/// Uniform coefficient blocks; callers derive the exact cell count from their
+/// trusted schedule, including any base-field grinding witnesses.
+pub(crate) fn poly_native_values(
+    limbs: &[u16],
+    cells: usize,
+) -> Result<Vec<Poly64>, VerificationError> {
+    let expected = cells
+        .checked_mul(4)
+        .ok_or(VerificationError::ResourceArithmeticOverflow {
+            component: "native polynomial coefficient limbs",
+        })?;
+    if limbs.len() != expected {
+        return Err(VerificationError::InvalidProofShape(
+            "native polynomial coefficient count mismatch".into(),
+        ));
+    }
+    Ok(limbs
+        .chunks_exact(4)
+        .map(|limbs| {
+            let raw = limbs
+                .iter()
+                .enumerate()
+                .fold(0u64, |raw, (i, &limb)| raw | (u64::from(limb) << (16 * i)));
+            Poly64::new(raw)
+        })
+        .collect())
+}
+
 /// Preserves direct coefficient scaling in the shared interpolation kernel.
 pub(crate) trait BinaryPolyPolicy<CF: Field + Eq + Hash>:
     BinaryRelationPolicy<CF, Base = Poly64, Challenge = Poly192>
 {
+    fn challenge_bits(
+        b: &mut CircuitBuilder<CF>,
+        value: &Self::ChallengeTarget,
+    ) -> Result<[ExprId; 192], CircuitBuilderError>;
+    fn from_checked_bits(
+        b: &mut CircuitBuilder<CF>,
+        bits: [ExprId; 192],
+    ) -> Result<Self::ChallengeTarget, CircuitBuilderError>;
+    fn observe_base<H: BinaryCircuitHost<CF>>(
+        b: &mut CircuitBuilder<CF>,
+        ch: &mut BinaryTower128Challenger,
+        values: &[Self::BaseTarget],
+    ) -> Result<(), VerificationError>;
     fn scale_base_constant(
         b: &mut CircuitBuilder<CF>,
         value: &Self::ChallengeTarget,
@@ -18,6 +87,35 @@ pub(crate) trait BinaryPolyPolicy<CF: Field + Eq + Hash>:
 }
 
 impl<CF: Field + Eq + Hash> BinaryPolyPolicy<CF> for Poly64Relation {
+    fn challenge_bits(
+        _b: &mut CircuitBuilder<CF>,
+        value: &BinaryPoly192Target,
+    ) -> Result<[ExprId; 192], CircuitBuilderError> {
+        Ok(core::array::from_fn(|i| {
+            value.coefficients()[i / 64].bits()[i % 64]
+        }))
+    }
+    fn from_checked_bits(
+        b: &mut CircuitBuilder<CF>,
+        bits: [ExprId; 192],
+    ) -> Result<BinaryPoly192Target, CircuitBuilderError> {
+        let a0 = b.binary_poly64_from_bits(bits[..64].try_into().expect("fixed coefficient"))?;
+        let a1 = b.binary_poly64_from_bits(bits[64..128].try_into().expect("fixed coefficient"))?;
+        let a2 = b.binary_poly64_from_bits(bits[128..].try_into().expect("fixed coefficient"))?;
+        Ok(b.binary_poly192_from_coefficients([a0, a1, a2]))
+    }
+    fn observe_base<H: BinaryCircuitHost<CF>>(
+        b: &mut CircuitBuilder<CF>,
+        ch: &mut BinaryTower128Challenger,
+        values: &[BinaryPoly64Target],
+    ) -> Result<(), VerificationError> {
+        let bytes = values
+            .iter()
+            .flat_map(|value| value.bits().chunks_exact(8))
+            .map(|bits| H::recompose_word(b, bits))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(ch.observe_bytes_with_host::<H, CF>(b, &bytes)?)
+    }
     fn scale_base_constant(
         b: &mut CircuitBuilder<CF>,
         value: &BinaryPoly192Target,
@@ -78,6 +176,32 @@ impl BinaryRelationPolicy<Poly64> for NativePoly64Relation {
 }
 
 impl BinaryPolyPolicy<Poly64> for NativePoly64Relation {
+    fn challenge_bits(
+        b: &mut CircuitBuilder<Poly64>,
+        value: &NativePoly192Target,
+    ) -> Result<[ExprId; 192], CircuitBuilderError> {
+        b.native_poly192_to_bits(value)
+    }
+    fn from_checked_bits(
+        b: &mut CircuitBuilder<Poly64>,
+        bits: [ExprId; 192],
+    ) -> Result<NativePoly192Target, CircuitBuilderError> {
+        b.native_poly192_from_bits(bits)
+    }
+    fn observe_base<H: BinaryCircuitHost<Poly64>>(
+        b: &mut CircuitBuilder<Poly64>,
+        ch: &mut BinaryTower128Challenger,
+        values: &[ExprId],
+    ) -> Result<(), VerificationError> {
+        let mut bytes = Vec::new();
+        for &value in values {
+            let bits = b.binary_decompose_coordinates(value, 64)?;
+            for bits in bits.chunks_exact(8) {
+                bytes.push(H::recompose_word(b, bits)?);
+            }
+        }
+        Ok(ch.observe_bytes_with_host::<H, Poly64>(b, &bytes)?)
+    }
     fn scale_base_constant(
         b: &mut CircuitBuilder<Poly64>,
         value: &NativePoly192Target,

@@ -1,5 +1,8 @@
 //! Released product-tree GKR with Poly64 seeds and full Poly192 challenges.
-use p3_circuit::ops::binary_encoding::PrimeBinaryEncoding;
+use p3_circuit::ops::{
+    binary_encoding::{NativeBinaryEncoding, PrimeBinaryEncoding},
+    binary_host::BinaryCircuitHost,
+};
 
 use alloc::vec::Vec;
 use core::hash::Hash;
@@ -10,39 +13,42 @@ use p3_bus::{
 };
 use p3_challenger::FieldChallenger;
 use p3_circuit::CircuitBuilder;
-use p3_circuit::ops::BinaryPoly192Target;
+use p3_circuit::ops::{BinaryPoly192Target, NativePoly192Target};
 use p3_field::{ExtensionField, Field, PrimeField64};
 
-use super::binary_field_policy::Poly64Relation;
+use super::binary_field_policy::{
+    BinaryPolyPolicy, BinaryProtocolPolicy, NativePoly64Relation, Poly64Relation,
+    poly_native_values, poly_observe_seed_with_host,
+};
 use super::binary_product::kernel::{ProductLayerView, verify_layers};
 use super::binary_product::zero_proof;
 use super::{InputResourceUsage, VerificationError, VerifierLimits};
 use crate::BinaryTower128Challenger;
-use crate::pcs::binary::{Poly192SumcheckInterpolator, poly_observe_seed};
+use crate::pcs::binary::Poly192SumcheckInterpolator;
 use crate::transcript::SeedTap;
 
 /// One shape-derived layer, with tree-major child evaluations.
 #[derive(Clone, Debug)]
-pub struct BinaryPolyProductGkrLayerTargets {
-    pub round_polys: Vec<Vec<BinaryPoly192Target>>,
-    pub children: Vec<Vec<BinaryPoly192Target>>,
+pub struct BinaryPolyProductGkrLayerTargets<T = BinaryPoly192Target> {
+    pub round_polys: Vec<Vec<T>>,
+    pub children: Vec<Vec<T>>,
 }
 
 #[derive(Clone, Debug)]
-pub struct BinaryPolyProductGkrProofTargets {
-    pub roots: Vec<BinaryPoly192Target>,
-    pub layers: Vec<BinaryPolyProductGkrLayerTargets>,
+pub struct BinaryPolyProductGkrProofTargets<T = BinaryPoly192Target> {
+    pub roots: Vec<T>,
+    pub layers: Vec<BinaryPolyProductGkrLayerTargets<T>>,
 }
 
 /// Internally consistent product claims awaiting authentication by the caller's
 /// committed-polynomial or AIR relation. This is not a verified statement.
 #[must_use = "product leaf evaluations must be authenticated by the surrounding protocol"]
 #[derive(Clone, Debug)]
-pub struct BinaryPolyProductGkrOutput {
-    pub roots: Vec<BinaryPoly192Target>,
+pub struct BinaryPolyProductGkrOutput<T = BinaryPoly192Target> {
+    pub roots: Vec<T>,
     /// Most-significant-variable-first multilinear point.
-    pub point: Vec<BinaryPoly192Target>,
-    pub values: Vec<BinaryPoly192Target>,
+    pub point: Vec<T>,
+    pub values: Vec<T>,
     pub challenger: BinaryTower128Challenger,
 }
 
@@ -78,10 +84,16 @@ impl BinaryPolyProductGkrInputShape {
         BF: PrimeField64,
         EF: ExtensionField<BF> + Eq + Hash,
     {
-        let mut field = || {
+        self.allocate_with(|| {
             let limbs = b.alloc_private_input_array::<12>("binary product GKR field");
             Ok(b.binary_poly192_from_limbs::<BF>(limbs)?)
-        };
+        })
+    }
+
+    fn allocate_with<T>(
+        &self,
+        mut field: impl FnMut() -> Result<T, VerificationError>,
+    ) -> Result<BinaryPolyProductGkrProofTargets<T>, VerificationError> {
         let roots = (0..self.root_count())
             .map(|_| field())
             .collect::<Result<_, VerificationError>>()?;
@@ -265,15 +277,29 @@ impl BinaryPolyProductGkrVerifier {
     pub fn verify_reduction<BF, EF>(
         &self,
         b: &mut CircuitBuilder<EF>,
-        mut ch: BinaryTower128Challenger,
+        ch: BinaryTower128Challenger,
         proof: &BinaryPolyProductGkrProofTargets,
     ) -> Result<BinaryPolyProductGkrOutput, VerificationError>
     where
         BF: PrimeField64,
         EF: ExtensionField<BF> + Eq + Hash,
     {
+        self.verify_using::<Poly64Relation, PrimeBinaryEncoding<BF>, EF>(b, ch, proof)
+    }
+
+    pub(super) fn verify_using<P, H, CF>(
+        &self,
+        b: &mut CircuitBuilder<CF>,
+        mut ch: BinaryTower128Challenger,
+        proof: &BinaryPolyProductGkrProofTargets<P::ChallengeTarget>,
+    ) -> Result<BinaryPolyProductGkrOutput<P::ChallengeTarget>, VerificationError>
+    where
+        CF: Field + Eq + Hash,
+        H: BinaryCircuitHost<CF>,
+        P: BinaryPolyPolicy<CF> + BinaryProtocolPolicy<CF>,
+    {
         self.check_targets(proof)?;
-        poly_observe_seed::<BF, EF>(b, &mut ch, &self.input.seed)?;
+        poly_observe_seed_with_host::<H, CF>(b, &mut ch, &self.input.seed)?;
         let layers = proof
             .layers
             .iter()
@@ -282,7 +308,7 @@ impl BinaryPolyProductGkrVerifier {
                 children: &layer.children,
             })
             .collect::<Vec<_>>();
-        let output = verify_layers::<Poly64Relation, PrimeBinaryEncoding<BF>, EF>(
+        let output = verify_layers::<P, H, CF>(
             b,
             ch,
             &proof.roots,
@@ -291,7 +317,7 @@ impl BinaryPolyProductGkrVerifier {
             &layers,
             |b, claim, polynomial, challenge| {
                 self.interpolator
-                    .reduce_claim(b, claim, polynomial, challenge)
+                    .reduce_claim_using::<P, CF>(b, claim, polynomial, challenge)
             },
         )?;
         Ok(BinaryPolyProductGkrOutput {
@@ -302,9 +328,9 @@ impl BinaryPolyProductGkrVerifier {
         })
     }
 
-    pub(crate) fn check_targets(
+    pub(crate) fn check_targets<T>(
         &self,
-        proof: &BinaryPolyProductGkrProofTargets,
+        proof: &BinaryPolyProductGkrProofTargets<T>,
     ) -> Result<(), VerificationError> {
         if proof.roots.len() != self.input.root_count()
             || proof.layers.len() != self.input.layers.len()
@@ -424,4 +450,48 @@ impl BinaryPolyProductGkrVerifier {
 
 fn invalid(message: &str) -> VerificationError {
     VerificationError::InvalidProofShape(message.into())
+}
+
+impl BinaryPolyProductGkrInputShape {
+    /// Three native Poly64 coefficient cells per Poly192 message.
+    pub fn allocate_native_targets(
+        &self,
+        b: &mut CircuitBuilder<Poly64>,
+    ) -> Result<BinaryPolyProductGkrProofTargets<NativePoly192Target>, VerificationError> {
+        self.allocate_with(|| {
+            let coefficients = b.alloc_private_input_array::<3>("native Poly product GKR field");
+            Ok(b.native_poly192_from_coefficients(coefficients))
+        })
+    }
+}
+impl NativeBinaryPolyProductGkrInput {
+    /// Raw coefficients in the frozen allocator's order.
+    pub fn private_native_values(
+        &self,
+        expected: &BinaryPolyProductGkrInputShape,
+    ) -> Result<Vec<Poly64>, VerificationError> {
+        if &self.shape != expected {
+            return Err(invalid("binary product input belongs to another verifier"));
+        }
+        // Construction has already bounded every schedule product and sum.
+        let fields = self.shape.root_count()
+            + self
+                .shape
+                .layers
+                .iter()
+                .map(|&(arity, rounds)| 5 * rounds + self.shape.native.num_trees() * arity)
+                .sum::<usize>();
+        poly_native_values(&self.limbs, fields * 3)
+    }
+}
+impl BinaryPolyProductGkrVerifier {
+    /// Native reduction; the surrounding authenticated relation closes its leaves.
+    pub fn verify_reduction_native(
+        &self,
+        b: &mut CircuitBuilder<Poly64>,
+        ch: BinaryTower128Challenger,
+        proof: &BinaryPolyProductGkrProofTargets<NativePoly192Target>,
+    ) -> Result<BinaryPolyProductGkrOutput<NativePoly192Target>, VerificationError> {
+        self.verify_using::<NativePoly64Relation, NativeBinaryEncoding, Poly64>(b, ch, proof)
+    }
 }

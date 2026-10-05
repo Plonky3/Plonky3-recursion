@@ -6,12 +6,11 @@ use core::hash::Hash;
 
 use p3_binary_field::{Poly64, Poly192};
 use p3_circuit::CircuitBuilder;
-use p3_circuit::ops::BinaryPoly192Target;
 use p3_field::{Field, PrimeCharacteristicRing};
 
 use super::generic_sumcheck::lagrange_coefficients;
 use super::whir_plan::invalid;
-use crate::verifier::binary_field_policy::{BinaryPolyPolicy, Poly64Relation};
+use crate::verifier::binary_field_policy::BinaryPolyPolicy;
 use crate::verifier::{VerificationError, VerifierLimits};
 
 #[derive(Clone, Debug)]
@@ -130,16 +129,6 @@ impl Poly192SumcheckInterpolator {
     pub(crate) fn metadata_entries(&self) -> usize {
         // The checked native constructor bounds this square before allocation.
         self.coefficients.len() * self.coefficients.len()
-    }
-
-    pub(crate) fn reduce_claim<EF: Field + Eq + Hash>(
-        &self,
-        b: &mut CircuitBuilder<EF>,
-        claim: &BinaryPoly192Target,
-        evaluations: &[BinaryPoly192Target],
-        challenge: &BinaryPoly192Target,
-    ) -> Result<BinaryPoly192Target, VerificationError> {
-        self.reduce_claim_using::<Poly64Relation, EF>(b, claim, evaluations, challenge)
     }
 
     pub(crate) fn reduce_claim_using<P, EF>(

@@ -5,12 +5,21 @@ use core::hash::Hash;
 
 use p3_binary_field::{Poly64, Poly192};
 use p3_challenger::FieldChallenger;
-use p3_circuit::ops::BinaryPoly192Target;
-use p3_circuit::{CircuitBuilder, ExprId};
-use p3_field::{ExtensionField, PrimeCharacteristicRing, PrimeField64};
+use p3_circuit::CircuitBuilder;
+#[cfg(test)]
+use p3_circuit::ExprId;
+use p3_circuit::ops::{
+    BinaryPoly192Target, NativePoly192Target,
+    binary_encoding::{NativeBinaryEncoding, PrimeBinaryEncoding},
+    binary_host::BinaryCircuitHost,
+};
+use p3_field::{ExtensionField, Field, PrimeCharacteristicRing, PrimeField64};
 
 use super::nonzero::select_nonzero_words;
 use super::whir_plan::invalid;
+use crate::verifier::binary_field_policy::{
+    BinaryPolyPolicy, NativePoly64Relation, Poly64Relation,
+};
 use crate::verifier::{InputResourceUsage, VerificationError, VerifierLimits};
 use crate::{BinaryQueryContinuation, BinaryTower128Challenger};
 
@@ -23,8 +32,8 @@ pub struct BinaryPolyNonzeroChallengePlan {
 }
 
 #[derive(Debug)]
-pub struct BinaryPolyNonzeroChallengeOutput {
-    pub values: Vec<BinaryPoly192Target>,
+pub struct BinaryPolyNonzeroChallengeOutput<T = BinaryPoly192Target> {
+    pub values: Vec<T>,
     /// Resumes after the next nonempty native protocol observation.
     pub continuation: BinaryQueryContinuation,
 }
@@ -68,15 +77,28 @@ impl BinaryPolyNonzeroChallengePlan {
     pub fn sample<BF, EF>(
         &self,
         b: &mut CircuitBuilder<EF>,
-        mut ch: BinaryTower128Challenger,
+        ch: BinaryTower128Challenger,
     ) -> Result<BinaryPolyNonzeroChallengeOutput, VerificationError>
     where
         BF: PrimeField64,
         EF: ExtensionField<BF> + Eq + Hash,
     {
+        self.sample_using::<Poly64Relation, PrimeBinaryEncoding<BF>, EF>(b, ch)
+    }
+
+    pub(crate) fn sample_using<P, H, CF>(
+        &self,
+        b: &mut CircuitBuilder<CF>,
+        mut ch: BinaryTower128Challenger,
+    ) -> Result<BinaryPolyNonzeroChallengeOutput<P::ChallengeTarget>, VerificationError>
+    where
+        CF: Field + Eq + Hash,
+        H: BinaryCircuitHost<CF>,
+        P: BinaryPolyPolicy<CF>,
+    {
         let mut candidates = Vec::with_capacity(self.max_draws);
         for _ in 0..self.max_draws {
-            let value = ch.sample_poly192::<BF, EF>(b)?;
+            let value = ch.sample_poly192_with_host::<H, CF>(b)?;
             let bits = core::array::from_fn(|i| value.coefficients()[i / 64].bits()[i % 64]);
             let (_, digest) = ch.retained_query_digest()?;
             candidates.push((bits, digest));
@@ -86,7 +108,7 @@ impl BinaryPolyNonzeroChallengePlan {
             select_nonzero_words::<192, _>(b, self.count, 192, self.max_draws, 0, &candidates)?;
         let values = selected
             .into_iter()
-            .map(|bits| target_from_bits(b, bits))
+            .map(|bits| P::from_checked_bits(b, bits))
             .collect::<Result<_, _>>()?;
         Ok(BinaryPolyNonzeroChallengeOutput {
             values,
@@ -129,9 +151,9 @@ pub struct BinaryPolyNonzeroChallengeTailPlan {
 }
 
 #[derive(Debug)]
-pub struct BinaryPolyNonzeroChallengeTailOutput {
-    pub values: Vec<BinaryPoly192Target>,
-    pub following: Vec<BinaryPoly192Target>,
+pub struct BinaryPolyNonzeroChallengeTailOutput<T = BinaryPoly192Target> {
+    pub values: Vec<T>,
+    pub following: Vec<T>,
     pub continuation: BinaryQueryContinuation,
 }
 
@@ -190,15 +212,28 @@ impl BinaryPolyNonzeroChallengeTailPlan {
     pub fn sample<BF, EF>(
         &self,
         b: &mut CircuitBuilder<EF>,
-        mut ch: BinaryTower128Challenger,
+        ch: BinaryTower128Challenger,
     ) -> Result<BinaryPolyNonzeroChallengeTailOutput, VerificationError>
     where
         BF: PrimeField64,
         EF: ExtensionField<BF> + Eq + Hash,
     {
+        self.sample_using::<Poly64Relation, PrimeBinaryEncoding<BF>, EF>(b, ch)
+    }
+
+    pub(crate) fn sample_using<P, H, CF>(
+        &self,
+        b: &mut CircuitBuilder<CF>,
+        mut ch: BinaryTower128Challenger,
+    ) -> Result<BinaryPolyNonzeroChallengeTailOutput<P::ChallengeTarget>, VerificationError>
+    where
+        CF: Field + Eq + Hash,
+        H: BinaryCircuitHost<CF>,
+        P: BinaryPolyPolicy<CF>,
+    {
         let mut candidates = Vec::with_capacity(self.total_draws);
         for _ in 0..self.total_draws {
-            let value = ch.sample_poly192::<BF, EF>(b)?;
+            let value = ch.sample_poly192_with_host::<H, CF>(b)?;
             let bits = core::array::from_fn(|i| value.coefficients()[i / 64].bits()[i % 64]);
             let (_, digest) = ch.retained_query_digest()?;
             candidates.push((bits, digest));
@@ -214,11 +249,11 @@ impl BinaryPolyNonzeroChallengeTailPlan {
         )?;
         let values = values
             .into_iter()
-            .map(|bits| target_from_bits(b, bits))
+            .map(|bits| P::from_checked_bits(b, bits))
             .collect::<Result<_, _>>()?;
         let following = following
             .into_iter()
-            .map(|bits| target_from_bits(b, bits))
+            .map(|bits| P::from_checked_bits(b, bits))
             .collect::<Result<_, _>>()?;
         Ok(BinaryPolyNonzeroChallengeTailOutput {
             values,
@@ -246,6 +281,7 @@ impl BinaryPolyNonzeroChallengeTailPlan {
     }
 }
 
+#[cfg(test)]
 fn target_from_bits<EF: p3_field::Field + Eq + Hash>(
     b: &mut CircuitBuilder<EF>,
     bits: [ExprId; 192],
@@ -254,6 +290,27 @@ fn target_from_bits<EF: p3_field::Field + Eq + Hash>(
     let a1 = b.binary_poly64_from_bits(bits[64..128].try_into().expect("fixed coefficient"))?;
     let a2 = b.binary_poly64_from_bits(bits[128..].try_into().expect("fixed coefficient"))?;
     Ok(b.binary_poly192_from_coefficients([a0, a1, a2]))
+}
+
+impl BinaryPolyNonzeroChallengePlan {
+    /// Selects full-width Poly192 challenges represented by native coefficients.
+    pub fn sample_native_targets(
+        &self,
+        b: &mut CircuitBuilder<Poly64>,
+        ch: BinaryTower128Challenger,
+    ) -> Result<BinaryPolyNonzeroChallengeOutput<NativePoly192Target>, VerificationError> {
+        self.sample_using::<NativePoly64Relation, NativeBinaryEncoding, Poly64>(b, ch)
+    }
+}
+impl BinaryPolyNonzeroChallengeTailPlan {
+    /// Keeps the immediate unrestricted tail and exact completion digest.
+    pub fn sample_native_targets(
+        &self,
+        b: &mut CircuitBuilder<Poly64>,
+        ch: BinaryTower128Challenger,
+    ) -> Result<BinaryPolyNonzeroChallengeTailOutput<NativePoly192Target>, VerificationError> {
+        self.sample_using::<NativePoly64Relation, NativeBinaryEncoding, Poly64>(b, ch)
+    }
 }
 
 #[cfg(test)]

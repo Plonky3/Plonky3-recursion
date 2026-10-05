@@ -1,5 +1,8 @@
 //! Bounded Poly64/Poly192 Fraction-GKR and its exact observed continuation.
-use p3_circuit::ops::binary_encoding::PrimeBinaryEncoding;
+use p3_circuit::ops::{
+    binary_encoding::{NativeBinaryEncoding, PrimeBinaryEncoding},
+    binary_host::BinaryCircuitHost,
+};
 
 use alloc::vec::Vec;
 use core::hash::Hash;
@@ -7,45 +10,47 @@ use core::hash::Hash;
 use p3_binary_field::{Poly64, Poly192};
 use p3_challenger::FieldChallenger;
 use p3_circuit::CircuitBuilder;
-use p3_circuit::ops::BinaryPoly192Target;
+use p3_circuit::ops::{BinaryPoly192Target, NativePoly192Target};
 use p3_field::{ExtensionField, Field, PrimeCharacteristicRing, PrimeField64};
 use p3_multi_stark::fractional_gkr::{FractionGkrOutput, FractionGkrProof, FractionGkrShape};
 use p3_multilinear_util::point::Point;
 use p3_sumcheck::generic_degree::RoundPolyInterpolator;
 
-use super::binary_field_policy::Poly64Relation;
+use super::binary_field_policy::{
+    BinaryPolyPolicy, BinaryProtocolPolicy, NativePoly64Relation, Poly64Relation,
+    poly_native_values, poly_observe_seed_with_host, poly_seed_bytes_with_host,
+};
 use super::binary_fraction::kernel::{FractionDraw, FractionLayerView, verify_layers};
 use super::{InputResourceUsage, VerificationError, VerifierLimits};
 use crate::pcs::binary::{
-    BinaryPolyNonzeroChallengePlan, BinaryPolyNonzeroChallengeTailPlan,
-    Poly192SumcheckInterpolator, poly_observe_seed,
+    BinaryPolyNonzeroChallengePlan, BinaryPolyNonzeroChallengeTailPlan, Poly192SumcheckInterpolator,
 };
 use crate::transcript::domain_separator_seed;
 use crate::{BinaryQueryContinuation, BinaryTower128Challenger};
 
 #[derive(Clone, Debug)]
-pub struct BinaryPolyFractionGkrLayerTargets {
-    pub round_polys: Vec<[BinaryPoly192Target; 3]>,
+pub struct BinaryPolyFractionGkrLayerTargets<T = BinaryPoly192Target> {
+    pub round_polys: Vec<[T; 3]>,
     /// Native wire order: numerator zero, denominator zero, numerator one,
     /// denominator one.
-    pub claims: [BinaryPoly192Target; 4],
+    pub claims: [T; 4],
 }
 
 #[derive(Clone, Debug)]
-pub struct BinaryPolyFractionGkrProofTargets {
-    pub root_denominator: BinaryPoly192Target,
-    pub layers: Vec<BinaryPolyFractionGkrLayerTargets>,
+pub struct BinaryPolyFractionGkrProofTargets<T = BinaryPoly192Target> {
+    pub root_denominator: T,
+    pub layers: Vec<BinaryPolyFractionGkrLayerTargets<T>>,
 }
 
 /// An internally consistent reduction awaiting authentication of both input
 /// polynomials by the surrounding protocol. This is not a verified statement.
 #[must_use = "fraction numerator and denominator must be authenticated by the surrounding protocol"]
 #[derive(Debug)]
-pub struct BinaryPolyFractionGkrOutput {
+pub struct BinaryPolyFractionGkrOutput<T = BinaryPoly192Target> {
     /// Most-significant-variable-first multilinear point.
-    pub point: Vec<BinaryPoly192Target>,
-    pub numerator: BinaryPoly192Target,
-    pub denominator: BinaryPoly192Target,
+    pub point: Vec<T>,
+    pub numerator: T,
+    pub denominator: T,
     pub continuation: BinaryQueryContinuation,
 }
 
@@ -69,10 +74,16 @@ impl BinaryPolyFractionGkrInputShape {
         BF: PrimeField64,
         EF: ExtensionField<BF> + Eq + Hash,
     {
-        let mut field = || -> Result<BinaryPoly192Target, VerificationError> {
+        self.allocate_with(|| {
             let limbs = b.alloc_private_input_array::<12>("binary fraction GKR field");
             Ok(b.binary_poly192_from_limbs::<BF>(limbs)?)
-        };
+        })
+    }
+
+    fn allocate_with<T>(
+        &self,
+        mut field: impl FnMut() -> Result<T, VerificationError>,
+    ) -> Result<BinaryPolyFractionGkrProofTargets<T>, VerificationError> {
         let root_denominator = field()?;
         let layers = (0..self.height)
             .map(|layer| {
@@ -246,7 +257,7 @@ impl BinaryPolyFractionGkrVerifier {
         BF: PrimeField64,
         EF: ExtensionField<BF> + Eq + Hash,
     {
-        self.verify_impl::<BF, EF>(b, ch, proof, false)
+        self.verify_using::<Poly64Relation, PrimeBinaryEncoding<BF>, EF>(b, ch, proof, false)
     }
 
     /// Resumes a bounded rejection phase through this reduction's nonempty
@@ -261,42 +272,51 @@ impl BinaryPolyFractionGkrVerifier {
         BF: PrimeField64,
         EF: ExtensionField<BF> + Eq + Hash,
     {
-        self.check_targets(proof)?;
-        let bytes = self
-            .input
-            .seed
-            .iter()
-            .flat_map(|value| value.to_bits().to_le_bytes())
-            .map(|byte| b.define_const(EF::from_u8(byte)))
-            .collect::<Vec<_>>();
-        let ch = token.resume_with_observation::<BF, EF>(b, &bytes)?;
-        self.verify_impl::<BF, EF>(b, ch, proof, true)
+        self.verify_after_queries_using::<Poly64Relation, PrimeBinaryEncoding<BF>, EF>(
+            b, token, proof,
+        )
     }
 
-    fn verify_impl<BF, EF>(
+    pub(super) fn verify_after_queries_using<P, H, CF>(
         &self,
-        b: &mut CircuitBuilder<EF>,
-        mut ch: BinaryTower128Challenger,
-        proof: &BinaryPolyFractionGkrProofTargets,
-        seeded: bool,
-    ) -> Result<BinaryPolyFractionGkrOutput, VerificationError>
+        b: &mut CircuitBuilder<CF>,
+        token: BinaryQueryContinuation,
+        proof: &BinaryPolyFractionGkrProofTargets<P::ChallengeTarget>,
+    ) -> Result<BinaryPolyFractionGkrOutput<P::ChallengeTarget>, VerificationError>
     where
-        BF: PrimeField64,
-        EF: ExtensionField<BF> + Eq + Hash,
+        CF: Field + Eq + Hash,
+        H: BinaryCircuitHost<CF>,
+        P: BinaryPolyPolicy<CF> + BinaryProtocolPolicy<CF>,
     {
         self.check_targets(proof)?;
-        let one = b.define_const(EF::ONE);
-        let zero_factors = proof
-            .root_denominator
-            .coefficients()
+        let bytes = poly_seed_bytes_with_host::<H, CF>(b, &self.input.seed)?;
+        let ch = token.resume_with_observation_with_host::<H, CF>(b, &bytes)?;
+        self.verify_using::<P, H, CF>(b, ch, proof, true)
+    }
+
+    pub(super) fn verify_using<P, H, CF>(
+        &self,
+        b: &mut CircuitBuilder<CF>,
+        mut ch: BinaryTower128Challenger,
+        proof: &BinaryPolyFractionGkrProofTargets<P::ChallengeTarget>,
+        seeded: bool,
+    ) -> Result<BinaryPolyFractionGkrOutput<P::ChallengeTarget>, VerificationError>
+    where
+        CF: Field + Eq + Hash,
+        H: BinaryCircuitHost<CF>,
+        P: BinaryPolyPolicy<CF> + BinaryProtocolPolicy<CF>,
+    {
+        self.check_targets(proof)?;
+        let one = b.define_const(CF::ONE);
+        let root_bits = P::challenge_bits(b, &proof.root_denominator)?;
+        let zero_factors = root_bits
             .iter()
-            .flat_map(|coefficient| coefficient.bits())
             .map(|&bit| b.sub(one, bit))
             .collect::<Vec<_>>();
         let zero = b.mul_many(&zero_factors);
         b.assert_zero(zero);
         if !seeded {
-            poly_observe_seed::<BF, EF>(b, &mut ch, &self.input.seed)?;
+            poly_observe_seed_with_host::<H, CF>(b, &mut ch, &self.input.seed)?;
         }
         let layers = proof
             .layers
@@ -306,14 +326,14 @@ impl BinaryPolyFractionGkrVerifier {
                 claims: &layer.claims,
             })
             .collect::<Vec<_>>();
-        let output = verify_layers::<Poly64Relation, PrimeBinaryEncoding<BF>, EF>(
+        let output = verify_layers::<P, H, CF>(
             b,
             ch,
             &proof.root_denominator,
             &layers,
             |b, claim, polynomial, challenge| {
                 self.interpolator
-                    .reduce_claim(b, claim, polynomial, challenge)
+                    .reduce_claim_using::<P, CF>(b, claim, polynomial, challenge)
             },
             |b, ch, with_batching| {
                 if with_batching {
@@ -321,14 +341,14 @@ impl BinaryPolyFractionGkrVerifier {
                         .branch_tail
                         .as_ref()
                         .expect("trusted nonfinal layer")
-                        .sample::<BF, EF>(b, ch)?;
+                        .sample_using::<P, H, CF>(b, ch)?;
                     Ok(FractionDraw {
                         value: output.values[0].clone(),
                         following: Some(output.following[0].clone()),
                         continuation: output.continuation,
                     })
                 } else {
-                    let output = self.nonzero.sample::<BF, EF>(b, ch)?;
+                    let output = self.nonzero.sample_using::<P, H, CF>(b, ch)?;
                     Ok(FractionDraw {
                         value: output.values[0].clone(),
                         following: None,
@@ -345,9 +365,9 @@ impl BinaryPolyFractionGkrVerifier {
         })
     }
 
-    pub(crate) fn check_targets(
+    pub(crate) fn check_targets<T>(
         &self,
-        proof: &BinaryPolyFractionGkrProofTargets,
+        proof: &BinaryPolyFractionGkrProofTargets<T>,
     ) -> Result<(), VerificationError> {
         if proof.layers.len() != self.input.height
             || proof
@@ -480,4 +500,51 @@ impl BinaryPolyFractionGkrVerifier {
 
 fn invalid(message: &str) -> VerificationError {
     VerificationError::InvalidProofShape(message.into())
+}
+
+impl BinaryPolyFractionGkrInputShape {
+    /// Allocates exactly three native coefficient cells per challenge message.
+    pub fn allocate_native_targets(
+        &self,
+        b: &mut CircuitBuilder<Poly64>,
+    ) -> Result<BinaryPolyFractionGkrProofTargets<NativePoly192Target>, VerificationError> {
+        self.allocate_with(|| {
+            let coefficients = b.alloc_private_input_array::<3>("native Poly fraction GKR field");
+            Ok(b.native_poly192_from_coefficients(coefficients))
+        })
+    }
+}
+impl NativeBinaryPolyFractionGkrInput {
+    pub fn private_native_values(
+        &self,
+        expected: &BinaryPolyFractionGkrInputShape,
+    ) -> Result<Vec<Poly64>, VerificationError> {
+        if &self.shape != expected {
+            return Err(invalid("binary fraction input belongs to another verifier"));
+        }
+        let rounds = self.shape.height * (self.shape.height - 1) / 2;
+        let cells = 3 * (1 + 3 * rounds + 4 * self.shape.height);
+        poly_native_values(&self.limbs, cells)
+    }
+}
+impl BinaryPolyFractionGkrVerifier {
+    /// Native reduction; both returned polynomials require authentication.
+    pub fn verify_reduction_native(
+        &self,
+        b: &mut CircuitBuilder<Poly64>,
+        ch: BinaryTower128Challenger,
+        proof: &BinaryPolyFractionGkrProofTargets<NativePoly192Target>,
+    ) -> Result<BinaryPolyFractionGkrOutput<NativePoly192Target>, VerificationError> {
+        self.verify_using::<NativePoly64Relation, NativeBinaryEncoding, Poly64>(b, ch, proof, false)
+    }
+    pub fn verify_reduction_after_queries_native(
+        &self,
+        b: &mut CircuitBuilder<Poly64>,
+        token: BinaryQueryContinuation,
+        proof: &BinaryPolyFractionGkrProofTargets<NativePoly192Target>,
+    ) -> Result<BinaryPolyFractionGkrOutput<NativePoly192Target>, VerificationError> {
+        self.verify_after_queries_using::<NativePoly64Relation, NativeBinaryEncoding, Poly64>(
+            b, token, proof,
+        )
+    }
 }

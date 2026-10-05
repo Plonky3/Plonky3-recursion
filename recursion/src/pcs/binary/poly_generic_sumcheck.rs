@@ -5,30 +5,37 @@ use core::hash::Hash;
 
 use p3_binary_field::{Poly64, Poly192};
 use p3_challenger::{FieldChallenger, GrindingChallenger};
-use p3_circuit::ops::{BinaryPoly64Target, BinaryPoly192Target};
+use p3_circuit::ops::{
+    BinaryPoly64Target, BinaryPoly192Target, NativePoly192Target,
+    binary_encoding::{NativeBinaryEncoding, PrimeBinaryEncoding},
+    binary_host::BinaryCircuitHost,
+};
 use p3_circuit::{CircuitBuilder, ExprId};
 use p3_field::{ExtensionField, Field, PrimeField64};
 use p3_sumcheck::generic_degree::{GenericDegreeProof, GenericDegreeShape};
 
 use super::poly_interpolation::Poly192SumcheckInterpolator;
-use super::poly_whir_gadgets::{assert_equal, observe_seed};
 use super::whir_plan::invalid;
 use crate::transcript::domain_separator_seed;
+use crate::verifier::binary_field_policy::{
+    BinaryPolyPolicy, BinaryProtocolPolicy, NativePoly64Relation, Poly64Relation,
+    poly_native_values, poly_observe_seed_with_host, poly_seed_bytes_with_host,
+};
 use crate::verifier::{InputResourceUsage, VerificationError, VerifierLimits};
 use crate::{BinaryQueryContinuation, BinaryTower128Challenger};
 
 #[derive(Clone, Debug)]
-pub struct BinaryPolyGenericSumcheckProofTargets {
-    pub claimed_sum: BinaryPoly192Target,
-    pub round_polys: Vec<Vec<BinaryPoly192Target>>,
-    pub pow_witnesses: Vec<BinaryPoly64Target>,
+pub struct BinaryPolyGenericSumcheckProofTargets<T = BinaryPoly192Target, B = BinaryPoly64Target> {
+    pub claimed_sum: T,
+    pub round_polys: Vec<Vec<T>>,
+    pub pow_witnesses: Vec<B>,
 }
 
 /// An unclosed reduction; its caller must authenticate the terminal AIR claim.
 #[derive(Clone, Debug)]
-pub struct BinaryPolyGenericSumcheckOutput {
-    pub point: Vec<BinaryPoly192Target>,
-    pub claim: BinaryPoly192Target,
+pub struct BinaryPolyGenericSumcheckOutput<T = BinaryPoly192Target> {
+    pub point: Vec<T>,
+    pub claim: T,
     pub challenger: BinaryTower128Challenger,
 }
 
@@ -63,21 +70,33 @@ impl BinaryPolyGenericSumcheckInputShape {
         BF: PrimeField64,
         EF: ExtensionField<BF> + Eq + Hash,
     {
-        let mut field = || {
-            let limbs = b.alloc_private_input_array::<12>("binary Poly generic sumcheck field");
-            Ok(b.binary_poly192_from_limbs::<BF>(limbs)?)
-        };
-        let claimed_sum = field()?;
-        let round_polys = (0..self.shape.num_rounds)
-            .map(|_| (0..self.shape.degree).map(|_| field()).collect())
-            .collect::<Result<_, VerificationError>>()?;
-        let pow_witnesses = (0..self.pow_count())
-            .map(|_| {
+        self.allocate_with(
+            b,
+            |b| {
+                let limbs = b.alloc_private_input_array::<12>("binary Poly generic sumcheck field");
+                Ok(b.binary_poly192_from_limbs::<BF>(limbs)?)
+            },
+            |b| {
                 let limbs = b.alloc_private_input_array::<4>(
                     "binary Poly generic sumcheck grinding witness",
                 );
                 Ok(b.binary_poly64_from_limbs::<BF>(limbs)?)
-            })
+            },
+        )
+    }
+
+    fn allocate_with<CF: Field + Eq + Hash, T, B>(
+        &self,
+        b: &mut CircuitBuilder<CF>,
+        mut field: impl FnMut(&mut CircuitBuilder<CF>) -> Result<T, VerificationError>,
+        mut base: impl FnMut(&mut CircuitBuilder<CF>) -> Result<B, VerificationError>,
+    ) -> Result<BinaryPolyGenericSumcheckProofTargets<T, B>, VerificationError> {
+        let claimed_sum = field(b)?;
+        let round_polys = (0..self.shape.num_rounds)
+            .map(|_| (0..self.shape.degree).map(|_| field(b)).collect())
+            .collect::<Result<_, VerificationError>>()?;
+        let pow_witnesses = (0..self.pow_count())
+            .map(|_| base(b))
             .collect::<Result<_, VerificationError>>()?;
         Ok(BinaryPolyGenericSumcheckProofTargets {
             claimed_sum,
@@ -181,7 +200,13 @@ impl BinaryPolyGenericSumcheckVerifier {
         BF: PrimeField64,
         EF: ExtensionField<BF> + Eq + Hash,
     {
-        self.verify_impl::<BF, EF>(b, ch, expected_sum, proof, false)
+        self.verify_using::<Poly64Relation, PrimeBinaryEncoding<BF>, EF>(
+            b,
+            ch,
+            expected_sum,
+            proof,
+            false,
+        )
     }
 
     /// Resume bounded sampling only through this run's nonempty native seed.
@@ -196,51 +221,66 @@ impl BinaryPolyGenericSumcheckVerifier {
         BF: PrimeField64,
         EF: ExtensionField<BF> + Eq + Hash,
     {
-        self.check_targets(proof)?;
-        let bytes = self
-            .input
-            .seed
-            .iter()
-            .flat_map(|v| v.to_bits().to_le_bytes())
-            .map(|v| b.define_const(EF::from_u8(v)))
-            .collect::<Vec<_>>();
-        let ch = token.resume_with_observation::<BF, EF>(b, &bytes)?;
-        self.verify_impl::<BF, EF>(b, ch, expected_sum, proof, true)
+        self.verify_after_queries_using::<Poly64Relation, PrimeBinaryEncoding<BF>, EF>(
+            b,
+            token,
+            expected_sum,
+            proof,
+        )
     }
 
-    fn verify_impl<BF, EF>(
+    pub(crate) fn verify_after_queries_using<P, H, CF>(
         &self,
-        b: &mut CircuitBuilder<EF>,
-        mut ch: BinaryTower128Challenger,
-        expected_sum: &BinaryPoly192Target,
-        proof: &BinaryPolyGenericSumcheckProofTargets,
-        seeded: bool,
-    ) -> Result<BinaryPolyGenericSumcheckOutput, VerificationError>
+        b: &mut CircuitBuilder<CF>,
+        token: BinaryQueryContinuation,
+        expected_sum: &P::ChallengeTarget,
+        proof: &BinaryPolyGenericSumcheckProofTargets<P::ChallengeTarget, P::BaseTarget>,
+    ) -> Result<BinaryPolyGenericSumcheckOutput<P::ChallengeTarget>, VerificationError>
     where
-        BF: PrimeField64,
-        EF: ExtensionField<BF> + Eq + Hash,
+        CF: Field + Eq + Hash,
+        H: BinaryCircuitHost<CF>,
+        P: BinaryPolyPolicy<CF> + BinaryProtocolPolicy<CF>,
     {
         self.check_targets(proof)?;
-        assert_equal(b, &proof.claimed_sum, expected_sum);
+        let bytes = poly_seed_bytes_with_host::<H, CF>(b, &self.input.seed)?;
+        let ch = token.resume_with_observation_with_host::<H, CF>(b, &bytes)?;
+        self.verify_using::<P, H, CF>(b, ch, expected_sum, proof, true)
+    }
+
+    pub(crate) fn verify_using<P, H, CF>(
+        &self,
+        b: &mut CircuitBuilder<CF>,
+        mut ch: BinaryTower128Challenger,
+        expected_sum: &P::ChallengeTarget,
+        proof: &BinaryPolyGenericSumcheckProofTargets<P::ChallengeTarget, P::BaseTarget>,
+        seeded: bool,
+    ) -> Result<BinaryPolyGenericSumcheckOutput<P::ChallengeTarget>, VerificationError>
+    where
+        CF: Field + Eq + Hash,
+        H: BinaryCircuitHost<CF>,
+        P: BinaryPolyPolicy<CF> + BinaryProtocolPolicy<CF>,
+    {
+        self.check_targets(proof)?;
+        P::assert_equal(b, &proof.claimed_sum, expected_sum);
         if !seeded {
-            observe_seed::<BF, EF>(b, &mut ch, &self.input.seed)?;
+            poly_observe_seed_with_host::<H, CF>(b, &mut ch, &self.input.seed)?;
         }
-        ch.observe_poly192::<BF, EF>(b, &proof.claimed_sum)?;
+        P::observe::<H>(b, &mut ch, core::slice::from_ref(&proof.claimed_sum))?;
         let mut claim = proof.claimed_sum.clone();
         let mut point = Vec::with_capacity(self.input.shape.num_rounds);
         for (i, polynomial) in proof.round_polys.iter().enumerate() {
-            for value in polynomial {
-                ch.observe_poly192::<BF, EF>(b, value)?;
-            }
+            P::observe::<H>(b, &mut ch, polynomial)?;
             if self.input.shape.pow_bits > 0 {
-                ch.observe_poly64::<BF, EF>(b, &proof.pow_witnesses[i])?;
-                for bit in ch.sample_bits::<BF, EF>(b, self.input.shape.pow_bits)? {
+                P::observe_base::<H>(b, &mut ch, core::slice::from_ref(&proof.pow_witnesses[i]))?;
+                for bit in ch.sample_bits_with_host::<H, CF>(b, self.input.shape.pow_bits)? {
                     let difference = b.sub(ExprId::ZERO, bit);
                     b.assert_zero(difference);
                 }
             }
-            let r = ch.sample_poly192::<BF, EF>(b)?;
-            claim = self.interpolator.reduce_claim(b, &claim, polynomial, &r)?;
+            let r = P::sample::<H>(b, &mut ch)?;
+            claim = self
+                .interpolator
+                .reduce_claim_using::<P, CF>(b, &claim, polynomial, &r)?;
             point.push(r);
         }
         Ok(BinaryPolyGenericSumcheckOutput {
@@ -250,9 +290,9 @@ impl BinaryPolyGenericSumcheckVerifier {
         })
     }
 
-    pub(crate) fn check_targets(
+    pub(crate) fn check_targets<T, B>(
         &self,
-        proof: &BinaryPolyGenericSumcheckProofTargets,
+        proof: &BinaryPolyGenericSumcheckProofTargets<T, B>,
     ) -> Result<(), VerificationError> {
         if proof.round_polys.len() != self.input.shape.num_rounds
             || proof
@@ -349,4 +389,70 @@ impl BinaryPolyGenericSumcheckVerifier {
 
 fn append_base(limbs: &mut Vec<u16>, value: Poly64) {
     limbs.extend((0..4).map(|i| (value.to_bits() >> (16 * i)) as u16));
+}
+
+impl BinaryPolyGenericSumcheckInputShape {
+    /// Native coefficients for messages and one Poly64 cell per PoW witness.
+    pub fn allocate_native_targets(
+        &self,
+        b: &mut CircuitBuilder<Poly64>,
+    ) -> Result<BinaryPolyGenericSumcheckProofTargets<NativePoly192Target, ExprId>, VerificationError>
+    {
+        self.allocate_with(
+            b,
+            |b| {
+                let coefficients = b.alloc_private_input_array::<3>("native Poly sumcheck field");
+                Ok(b.native_poly192_from_coefficients(coefficients))
+            },
+            |b| Ok(b.alloc_private_input("native Poly sumcheck grinding witness")),
+        )
+    }
+}
+impl NativeBinaryPolyGenericSumcheckInput {
+    /// Exact coefficient order followed by base-field grinding witnesses.
+    pub fn private_native_values(
+        &self,
+        expected: &BinaryPolyGenericSumcheckInputShape,
+    ) -> Result<Vec<Poly64>, VerificationError> {
+        if &self.shape != expected {
+            return Err(invalid(
+                "binary Poly generic sumcheck input belongs to another verifier",
+            ));
+        }
+        let cells = 3 * (1 + self.shape.shape.num_rounds * self.shape.shape.degree)
+            + self.shape.pow_count();
+        poly_native_values(&self.limbs, cells)
+    }
+}
+impl BinaryPolyGenericSumcheckVerifier {
+    pub fn verify_reduction_native(
+        &self,
+        b: &mut CircuitBuilder<Poly64>,
+        ch: BinaryTower128Challenger,
+        expected_sum: &NativePoly192Target,
+        proof: &BinaryPolyGenericSumcheckProofTargets<NativePoly192Target, ExprId>,
+    ) -> Result<BinaryPolyGenericSumcheckOutput<NativePoly192Target>, VerificationError> {
+        self.verify_using::<NativePoly64Relation, NativeBinaryEncoding, Poly64>(
+            b,
+            ch,
+            expected_sum,
+            proof,
+            false,
+        )
+    }
+    /// Observes this protocol's nonempty seed exactly once after bounded queries.
+    pub fn verify_reduction_after_queries_native(
+        &self,
+        b: &mut CircuitBuilder<Poly64>,
+        token: BinaryQueryContinuation,
+        expected_sum: &NativePoly192Target,
+        proof: &BinaryPolyGenericSumcheckProofTargets<NativePoly192Target, ExprId>,
+    ) -> Result<BinaryPolyGenericSumcheckOutput<NativePoly192Target>, VerificationError> {
+        self.verify_after_queries_using::<NativePoly64Relation, NativeBinaryEncoding, Poly64>(
+            b,
+            token,
+            expected_sum,
+            proof,
+        )
+    }
 }

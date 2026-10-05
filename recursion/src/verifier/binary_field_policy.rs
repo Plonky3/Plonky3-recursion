@@ -16,7 +16,10 @@ use crate::pcs::binary::{RecursiveBinaryChallengeField, RecursiveBinaryTowerFiel
 use crate::verifier::VerificationError;
 
 mod native_poly;
-pub(crate) use native_poly::{BinaryPolyPolicy, NativePoly64Relation};
+pub(crate) use native_poly::{
+    BinaryPolyPolicy, NativePoly64Relation, poly_native_values, poly_observe_seed_with_host,
+    poly_seed_bytes_with_host,
+};
 
 mod sealed {
     pub trait Relation {}
