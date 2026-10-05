@@ -1,7 +1,7 @@
-//! Native Tower128 proving followed by native Tower128 recursion.
+//! Native Poly64 proving and recursion with Poly192 challenges.
 //!
 //! cargo run -p p3-recursion --profile optimized --features parallel \
-//!     --example native_binary_recursion -- --layers 1
+//!     --example native_poly_recursion -- --layers 1
 //!
 //! Requests four bits of composed security and uses non-hiding proofs. Deeper
 //! layers can exceed the explicit trace/codeword budgets of this demonstration.
@@ -10,22 +10,22 @@ use std::{error::Error, time::Instant};
 
 use clap::Parser;
 use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
-use p3_binary_field::{BinaryField128, TowerLevel};
+use p3_binary_field::Poly64;
 use p3_circuit::CircuitConstructionLimits;
 use p3_circuit::ops::ByteHash;
 use p3_circuit_prover::direct::DirectCircuitLimits;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_recursion::{
     artifact::{
-        ArtifactLimits, BinaryNativeVerifierSpec, BinaryNativeWhirAuthority,
-        BinaryNativeWhirPcsParameters,
+        ArtifactLimits, BinaryNativePolyWhirAuthority, BinaryNativePolyWhirPcsParameters,
+        BinaryNativeVerifierSpec,
     },
-    prepared::{NativeBinaryRecursionOptions, PreparedNativeBinaryWhirLayer},
+    prepared::{NativeBinaryRecursionOptions, PreparedNativeBinaryPolyWhirLayer},
     verifier::VerifierLimits,
 };
 use p3_whir::{FoldingFactor, ProtocolParameters, SecurityAssumption};
 
-type F = BinaryField128;
+type F = Poly64;
 #[derive(Parser)]
 struct Args {
     #[arg(long, default_value_t = 1)]
@@ -83,7 +83,7 @@ fn options(depth: usize) -> NativeBinaryRecursionOptions {
         main: recursive_protocol(),
         preprocessed: recursive_protocol(),
         cap_height: 0,
-        initial_bytes: format!("native-binary-recursion-layer-{depth}").into_bytes(),
+        initial_bytes: format!("native-poly-recursion-layer-{depth}").into_bytes(),
         sumcheck_pow_bits: 0,
         max_tau_draws: 32,
         security_bits: 4,
@@ -103,7 +103,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     if args.layers == 0 {
         return Err("--layers must be positive".into());
     }
-    let input = F::from_repr(0xfedcba98765432108123456789abcdef);
+    let input = F::new(0xfedcba9876543210);
     let mut values = vec![input];
     for _ in 0..3 {
         let value = *values.last().unwrap();
@@ -112,15 +112,15 @@ fn main() -> Result<(), Box<dyn Error>> {
     let output = *values.last().unwrap();
     let mut expected = vec![vec![input, output]];
     let spec = BinaryNativeVerifierSpec {
-        main: BinaryNativeWhirPcsParameters::<F>::new(2, protocol(), ByteHash::Keccak256, 0)?,
+        main: BinaryNativePolyWhirPcsParameters::new(2, protocol(), ByteHash::Keccak256, 0)?,
         preprocessed: None,
         transcript_hash: ByteHash::Keccak256,
-        initial_bytes: b"native-binary-recursion-source-v1".to_vec(),
+        initial_bytes: b"native-poly-recursion-source-v1".to_vec(),
         sumcheck_pow_bits: 0,
         max_tau_draws: 8,
         security_bits: 4,
     };
-    let (prover, authority) = BinaryNativeWhirAuthority::<F, _>::setup(
+    let (prover, authority) = BinaryNativePolyWhirAuthority::<_>::setup(
         vec![SquaringAir],
         vec![2],
         spec,
@@ -129,9 +129,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     let proof = prover.prove(&expected, vec![RowMajorMatrix::new(values, 1)])?;
     let mut checked = authority.verify_native(&proof, &expected)?;
     println!(
-        "Tower128 source verified: {:#034x} -> {:#034x}",
-        input.to_repr(),
-        output.to_repr()
+        "Poly64 source verified: {:#018x} -> {:#018x}",
+        input.to_bits(),
+        output.to_bits()
     );
     let limits = DirectCircuitLimits {
         max_witnesses: args.max_witnesses,
@@ -145,12 +145,13 @@ fn main() -> Result<(), Box<dyn Error>> {
         max_non_primitive_slots: 1 << 27,
     };
     println!("Preparing native recursion layer 1...");
-    let mut layer = PreparedNativeBinaryWhirLayer::from_native_authority_with_construction_limits(
-        &authority,
-        options(1),
-        &limits,
-        &construction_limits,
-    )?;
+    let mut layer =
+        PreparedNativeBinaryPolyWhirLayer::from_native_authority_with_construction_limits(
+            &authority,
+            options(1),
+            &limits,
+            &construction_limits,
+        )?;
     drop(prover);
     for depth in 1..=args.layers {
         let start = Instant::now();
@@ -163,19 +164,20 @@ fn main() -> Result<(), Box<dyn Error>> {
         let recursive = layer.prove_verified(&checked)?;
         checked = layer.verify(&recursive, &expected)?;
         println!(
-            "Native Tower128 layer {depth} proved and verified in {:.2?}",
+            "Native Poly64/Poly192 layer {depth} proved and verified in {:.2?}",
             start.elapsed()
         );
         expected = next_expected;
         if depth < args.layers {
             println!("Preparing native recursion layer {}...", depth + 1);
             let authority = layer.into_authority();
-            layer = PreparedNativeBinaryWhirLayer::from_native_authority_with_construction_limits(
-                &authority,
-                options(depth + 1),
-                &limits,
-                &construction_limits,
-            )?;
+            layer =
+                PreparedNativeBinaryPolyWhirLayer::from_native_authority_with_construction_limits(
+                    &authority,
+                    options(depth + 1),
+                    &limits,
+                    &construction_limits,
+                )?;
         }
     }
     Ok(())

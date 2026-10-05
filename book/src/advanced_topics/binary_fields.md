@@ -13,10 +13,13 @@ prime fields this repository is built on:
 
 ## What this repository supports today
 
-The repository verifies native binary-field proofs inside prime-field recursion circuits.
-The supported families include binary PCS and additive WHIR, with product-bus and indexed
-lookup variants. `recursion/examples/binary_prover.rs` demonstrates a native binary proof
-followed by a prime-field recursion layer. It does not demonstrate binary-in/binary-out recursion.
+The repository supports complete native binary recursion for Tower128, and for
+Poly64 with Poly192 challenges, using additive WHIR, product buses and native Keccak.
+The Tower128 owner also accepts Tower32 children. It separately verifies binary
+PCS and additive-WHIR proofs inside prime-field circuits, including indexed
+lookup variants. `recursion/examples/native_binary_recursion.rs` and
+`recursion/examples/native_poly_recursion.rs` demonstrate binary-in/binary-out
+proofs. `recursion/examples/binary_prover.rs` demonstrates the prime-field outer path.
 
 - **Circuits over binary fields.** The primitive circuit layer (constants, public and private
   inputs, ALU ops, connections, tags) needs only field arithmetic, and runs unchanged over every
@@ -100,6 +103,8 @@ followed by a prime-field recursion layer. It does not demonstrate binary-in/bin
   backend proves the complete native recursive verifier described below. Its
   minimum-height constructor pads trusted inactive rows for larger initial PCS
   folds, without adding bus occurrences.
+  Its Keccak table uses the upstream 1,625 bit columns and computes bus limbs
+  from constrained bits, avoiding the indexed backend's 100 extra limb columns.
 - **Full native Tower128 recursion.**
   `prepared::PreparedNativeBinaryWhirLayer` builds a complete native scalar
   verifier for a trusted Tower32 or Tower128 additive-WHIR MultiStark authority, including product
@@ -114,6 +119,27 @@ followed by a prime-field recursion layer. It does not demonstrate binary-in/bin
   codeword limits are explicit; codeword counts exclude Merkle trees and
   proving workspaces. Dense Keccak openings currently cause substantial growth
   in later layers. These proofs are non-hiding.
+- **Full native polynomial recursion.**
+  `prepared::PreparedNativeBinaryPolyWhirLayer` verifies a trusted Poly64
+  additive-WHIR MultiStark proof in a Poly64 circuit, with Poly192 challenges
+  represented by three coefficient cells. Product GKR, generic sumcheck, AIR
+  evaluation, main openings and independently committed preprocessing openings
+  all use native polynomial arithmetic. Base oracle rows serialize as eight
+  bytes, while challenge oracle rows serialize as 24 coefficient-order bytes;
+  base rows constrain the upper two coefficients to zero. Public values remain
+  native Poly64 cells. The prepared owner checks authority identity, binds the
+  caller's expected statement and exposes its output authority for another layer.
+  `recursion/examples/native_poly_recursion.rs` produces an actual native outer
+  proof; integration tests also reject changed statements and foreign tokens.
+  The same non-hiding and resource limits as the Tower128 path apply.
+- **Construction budgets for native owners.** Both prepared owners expose
+  `from_native_authority_with_construction_limits`. `CircuitConstructionLimits`
+  bounds retained expression nodes, pending connections, non-primitive calls
+  and their slots at periodic checkpoints. A checkpoint can exceed a bound by
+  its local group of work; the final builder also checks before lowering. These
+  counts are separate from final witness/operation limits, trace cells and
+  initial codeword cells, and do not bound bytes or process memory. The examples
+  expose `--max-expression-nodes` and apply all four entry budgets.
 - **Non-native binary byte-hash transcript.** `BinaryTower128Challenger` has a separate,
   fallible inherent API (`new`, `with_initial_limbs`, `observe`, `observe_slice`,
   `observe_digest`, `sample`, `sample_bits`, `check_witness`). It matches native
@@ -226,8 +252,10 @@ followed by a prime-field recursion layer. It does not demonstrate binary-in/bin
 
 ## Not yet supported
 
-- Native scalar recursion for indexed lookup relations, polynomial WHIR or a
-  BLAKE3 circuit host. The complete Tower128 native path currently uses product
-  buses, Keccak and additive WHIR; those other binary input adapters still use
-  prime-host recursive verifiers.
+- Native scalar recursion for indexed lookup relations or a BLAKE3 circuit
+  host. The complete native Tower128 and Poly64 paths use product buses,
+  Keccak and additive WHIR; those other input adapters still use prime hosts.
+- Efficient bounded-size composition across many native layers. Output
+  authorities can prepare subsequent layers, but dense Keccak oracle openings
+  currently make those verifier circuits grow substantially.
 - MMCS trees of arity above two.
