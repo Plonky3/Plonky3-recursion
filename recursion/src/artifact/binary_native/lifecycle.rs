@@ -132,7 +132,11 @@ where
     );
     p3_multi_stark::security_report(&config, &instances)
         .and_then(|report| report.require_security(spec.security_bits))
-        .map_err(|_| invalid("binary native statement security target is not met"))?;
+        .map_err(|error| {
+            VerificationError::InvalidProofShape(alloc::format!(
+                "binary native statement security target is not met: {error}",
+            ))
+        })?;
     let identity = identity::<F, E, K>(&binary, &spec, &limits)
         .map_err(identity_error)?
         .into_boxed_slice();
