@@ -1,4 +1,4 @@
-//! Byte-hash challenger for the 128-bit Wiedemann binary tower.
+//! Byte-hash challenger for binary protocols with an explicit circuit carrier.
 //!
 //! This matches `BinaryChallenger<BinaryField128, HashChallenger<u8, H, 32>>`
 //! with `H = p3_keccak::Keccak256Hash` or `H = p3_blake3::Blake3`.
@@ -11,8 +11,9 @@ use alloc::vec::Vec;
 use core::hash::Hash;
 
 use p3_circuit::ops::{BinaryPoly64Target, BinaryPoly192Target, BinaryTower128Target, ByteHash};
+use p3_circuit::ops::{binary_encoding::PrimeBinaryEncoding, binary_host::BinaryCircuitHost};
 use p3_circuit::{CircuitBuilder, CircuitBuilderError, ExprId};
-use p3_field::{ExtensionField, PrimeField64};
+use p3_field::{ExtensionField, Field, PrimeField64};
 
 /// A circuit transcript for raw binary-tower observations and byte-hash samples.
 ///
@@ -55,6 +56,20 @@ impl BinaryQueryContinuation {
         BF: PrimeField64,
         EF: ExtensionField<BF> + Eq + Hash,
     {
+        self.resume_with_observation_with_host::<PrimeBinaryEncoding<BF>, EF>(circuit, bytes)
+    }
+
+    /// Uses the explicit carrier encoding and byte-hash implementation.
+    pub fn resume_with_observation_with_host<H, EF>(
+        self,
+        circuit: &mut CircuitBuilder<EF>,
+        bytes: &[ExprId],
+    ) -> Result<BinaryTower128Challenger, CircuitBuilderError>
+    where
+        H: BinaryCircuitHost<EF>,
+        EF: Field + Eq + Hash,
+    {
+        H::check_hash(self.hash)?;
         if bytes.is_empty() {
             return Err(CircuitBuilderError::NonPrimitiveOpArity {
                 op: "BinaryQueryContinuation",
@@ -67,7 +82,7 @@ impl BinaryQueryContinuation {
             input_buffer: self.digest.to_vec(),
             output_buffer: Vec::new(),
         };
-        challenger.observe_bytes::<BF, EF>(circuit, bytes)?;
+        challenger.observe_bytes_with_host::<H, EF>(circuit, bytes)?;
         Ok(challenger)
     }
 }
@@ -169,8 +184,21 @@ impl BinaryTower128Challenger {
         BF: PrimeField64,
         EF: ExtensionField<BF> + Eq + Hash,
     {
-        Self::check_limb_field::<BF, EF>("binary128_challenger_with_initial_limbs")?;
-        let bytes = Self::bytes_from_limbs::<BF, EF>(circuit, initial)?;
+        Self::with_initial_limbs_with_host::<PrimeBinaryEncoding<BF>, EF>(circuit, hash, initial)
+    }
+
+    /// Uses the explicit carrier encoding and byte-hash implementation.
+    pub fn with_initial_limbs_with_host<H, EF>(
+        circuit: &mut CircuitBuilder<EF>,
+        hash: ByteHash,
+        initial: &[ExprId],
+    ) -> Result<Self, CircuitBuilderError>
+    where
+        H: BinaryCircuitHost<EF>,
+        EF: Field + Eq + Hash,
+    {
+        H::check_hash(hash)?;
+        let bytes = Self::bytes_from_limbs::<H, EF>(circuit, initial)?;
         Ok(Self {
             hash,
             input_buffer: bytes,
@@ -194,9 +222,22 @@ impl BinaryTower128Challenger {
         BF: PrimeField64,
         EF: ExtensionField<BF> + Eq + Hash,
     {
-        Self::check_limb_field::<BF, EF>("binary_challenger_with_initial_bytes")?;
+        Self::with_initial_bytes_with_host::<PrimeBinaryEncoding<BF>, EF>(circuit, hash, initial)
+    }
+
+    /// Uses the explicit carrier encoding and byte-hash implementation.
+    pub fn with_initial_bytes_with_host<H, EF>(
+        circuit: &mut CircuitBuilder<EF>,
+        hash: ByteHash,
+        initial: &[ExprId],
+    ) -> Result<Self, CircuitBuilderError>
+    where
+        H: BinaryCircuitHost<EF>,
+        EF: Field + Eq + Hash,
+    {
+        H::check_hash(hash)?;
         for &byte in initial {
-            circuit.decompose_to_bits::<BF>(byte, 8)?;
+            H::decompose_word(circuit, byte, 8)?;
         }
         Ok(Self {
             hash,
@@ -222,9 +263,22 @@ impl BinaryTower128Challenger {
         BF: PrimeField64,
         EF: ExtensionField<BF> + Eq + Hash,
     {
-        Self::check_limb_field::<BF, EF>("binary_challenger_observe_bytes")?;
+        self.observe_bytes_with_host::<PrimeBinaryEncoding<BF>, EF>(circuit, bytes)
+    }
+
+    /// Uses the explicit carrier encoding and byte-hash implementation.
+    pub fn observe_bytes_with_host<H, EF>(
+        &mut self,
+        circuit: &mut CircuitBuilder<EF>,
+        bytes: &[ExprId],
+    ) -> Result<(), CircuitBuilderError>
+    where
+        H: BinaryCircuitHost<EF>,
+        EF: Field + Eq + Hash,
+    {
+        H::check_hash(self.hash)?;
         for &byte in bytes {
-            circuit.decompose_to_bits::<BF>(byte, 8)?;
+            H::decompose_word(circuit, byte, 8)?;
         }
         if !bytes.is_empty() {
             self.output_buffer.clear();
@@ -251,9 +305,22 @@ impl BinaryTower128Challenger {
         BF: PrimeField64,
         EF: ExtensionField<BF> + Eq + Hash,
     {
-        Self::check_limb_field::<BF, EF>("binary_challenger_sample_bytes")?;
+        self.sample_bytes_with_host::<PrimeBinaryEncoding<BF>, EF>(circuit, count)
+    }
+
+    /// Uses the explicit carrier encoding and byte-hash implementation.
+    pub fn sample_bytes_with_host<H, EF>(
+        &mut self,
+        circuit: &mut CircuitBuilder<EF>,
+        count: usize,
+    ) -> Result<Vec<ExprId>, CircuitBuilderError>
+    where
+        H: BinaryCircuitHost<EF>,
+        EF: Field + Eq + Hash,
+    {
+        H::check_hash(self.hash)?;
         let mut staged = self.clone();
-        let result = staged.sample_stream_bytes::<BF, EF>(circuit, count)?;
+        let result = staged.sample_stream_bytes::<H, EF>(circuit, count)?;
         *self = staged;
         Ok(result)
     }
@@ -269,12 +336,26 @@ impl BinaryTower128Challenger {
         BF: PrimeField64,
         EF: ExtensionField<BF> + Eq + Hash,
     {
+        self.observe_poly64_with_host::<PrimeBinaryEncoding<BF>, EF>(circuit, value)
+    }
+
+    /// Uses the explicit carrier encoding and byte-hash implementation.
+    pub fn observe_poly64_with_host<H, EF>(
+        &mut self,
+        circuit: &mut CircuitBuilder<EF>,
+        value: &BinaryPoly64Target,
+    ) -> Result<(), CircuitBuilderError>
+    where
+        H: BinaryCircuitHost<EF>,
+        EF: Field + Eq + Hash,
+    {
+        H::check_hash(self.hash)?;
         let bytes = value
             .bits()
             .chunks_exact(8)
-            .map(|bits| circuit.reconstruct_index_from_bits::<BF>(bits))
+            .map(|bits| H::recompose_word(circuit, bits))
             .collect::<Result<Vec<_>, _>>()?;
-        self.observe_bytes::<BF, EF>(circuit, &bytes)
+        self.observe_bytes_with_host::<H, EF>(circuit, &bytes)
     }
 
     /// Observes all three Poly64 coefficients in ascending degree of `y`.
@@ -288,9 +369,23 @@ impl BinaryTower128Challenger {
         BF: PrimeField64,
         EF: ExtensionField<BF> + Eq + Hash,
     {
+        self.observe_poly192_with_host::<PrimeBinaryEncoding<BF>, EF>(circuit, value)
+    }
+
+    /// Uses the explicit carrier encoding and byte-hash implementation.
+    pub fn observe_poly192_with_host<H, EF>(
+        &mut self,
+        circuit: &mut CircuitBuilder<EF>,
+        value: &BinaryPoly192Target,
+    ) -> Result<(), CircuitBuilderError>
+    where
+        H: BinaryCircuitHost<EF>,
+        EF: Field + Eq + Hash,
+    {
+        H::check_hash(self.hash)?;
         let mut staged = self.clone();
         for coefficient in value.coefficients() {
-            staged.observe_poly64::<BF, EF>(circuit, coefficient)?;
+            staged.observe_poly64_with_host::<H, EF>(circuit, coefficient)?;
         }
         *self = staged;
         Ok(())
@@ -307,14 +402,27 @@ impl BinaryTower128Challenger {
         BF: PrimeField64,
         EF: ExtensionField<BF> + Eq + Hash,
     {
+        self.sample_poly192_with_host::<PrimeBinaryEncoding<BF>, EF>(circuit)
+    }
+
+    /// Uses the explicit carrier encoding and byte-hash implementation.
+    pub fn sample_poly192_with_host<H, EF>(
+        &mut self,
+        circuit: &mut CircuitBuilder<EF>,
+    ) -> Result<BinaryPoly192Target, CircuitBuilderError>
+    where
+        H: BinaryCircuitHost<EF>,
+        EF: Field + Eq + Hash,
+    {
+        H::check_hash(self.hash)?;
         let mut staged = self.clone();
-        let bytes = staged.sample_bytes::<BF, EF>(circuit, 24)?;
+        let bytes = staged.sample_bytes_with_host::<H, EF>(circuit, 24)?;
         let coefficients = bytes
             .chunks_exact(8)
             .map(|bytes| {
                 let mut bits = Vec::with_capacity(64);
                 for &byte in bytes {
-                    bits.extend(circuit.decompose_to_bits::<BF>(byte, 8)?);
+                    bits.extend(H::decompose_word(circuit, byte, 8)?);
                 }
                 circuit.binary_poly64_from_bits(bits.try_into().expect("eight bytes have 64 bits"))
             })
@@ -344,9 +452,22 @@ impl BinaryTower128Challenger {
         BF: PrimeField64,
         EF: ExtensionField<BF> + Eq + Hash,
     {
-        Self::check_limb_field::<BF, EF>("binary128_challenger_observe")?;
+        self.observe_with_host::<PrimeBinaryEncoding<BF>, EF>(circuit, value)
+    }
+
+    /// Uses the explicit carrier encoding and byte-hash implementation.
+    pub fn observe_with_host<H, EF>(
+        &mut self,
+        circuit: &mut CircuitBuilder<EF>,
+        value: &BinaryTower128Target,
+    ) -> Result<(), CircuitBuilderError>
+    where
+        H: BinaryCircuitHost<EF>,
+        EF: Field + Eq + Hash,
+    {
+        H::check_hash(self.hash)?;
         let mut staged = self.clone();
-        staged.observe_inner::<BF, EF>(circuit, value)?;
+        staged.observe_inner::<H, EF>(circuit, value)?;
         *self = staged;
         Ok(())
     }
@@ -367,10 +488,23 @@ impl BinaryTower128Challenger {
         BF: PrimeField64,
         EF: ExtensionField<BF> + Eq + Hash,
     {
-        Self::check_limb_field::<BF, EF>("binary128_challenger_observe_slice")?;
+        self.observe_slice_with_host::<PrimeBinaryEncoding<BF>, EF>(circuit, values)
+    }
+
+    /// Uses the explicit carrier encoding and byte-hash implementation.
+    pub fn observe_slice_with_host<H, EF>(
+        &mut self,
+        circuit: &mut CircuitBuilder<EF>,
+        values: &[BinaryTower128Target],
+    ) -> Result<(), CircuitBuilderError>
+    where
+        H: BinaryCircuitHost<EF>,
+        EF: Field + Eq + Hash,
+    {
+        H::check_hash(self.hash)?;
         let mut staged = self.clone();
         for value in values {
-            staged.observe_inner::<BF, EF>(circuit, value)?;
+            staged.observe_inner::<H, EF>(circuit, value)?;
         }
         *self = staged;
         Ok(())
@@ -394,9 +528,22 @@ impl BinaryTower128Challenger {
         BF: PrimeField64,
         EF: ExtensionField<BF> + Eq + Hash,
     {
-        Self::check_limb_field::<BF, EF>("binary128_challenger_observe_digest")?;
+        self.observe_digest_with_host::<PrimeBinaryEncoding<BF>, EF>(circuit, digest)
+    }
+
+    /// Uses the explicit carrier encoding and byte-hash implementation.
+    pub fn observe_digest_with_host<H, EF>(
+        &mut self,
+        circuit: &mut CircuitBuilder<EF>,
+        digest: &[ExprId; 16],
+    ) -> Result<(), CircuitBuilderError>
+    where
+        H: BinaryCircuitHost<EF>,
+        EF: Field + Eq + Hash,
+    {
+        H::check_hash(self.hash)?;
         let mut staged = self.clone();
-        let bytes = Self::bytes_from_limbs::<BF, EF>(circuit, digest)?;
+        let bytes = Self::bytes_from_limbs::<H, EF>(circuit, digest)?;
         staged.output_buffer.clear();
         staged.input_buffer.extend(bytes);
         *self = staged;
@@ -420,12 +567,24 @@ impl BinaryTower128Challenger {
         BF: PrimeField64,
         EF: ExtensionField<BF> + Eq + Hash,
     {
-        Self::check_limb_field::<BF, EF>("binary128_challenger_sample")?;
+        self.sample_with_host::<PrimeBinaryEncoding<BF>, EF>(circuit)
+    }
+
+    /// Uses the explicit carrier encoding and byte-hash implementation.
+    pub fn sample_with_host<H, EF>(
+        &mut self,
+        circuit: &mut CircuitBuilder<EF>,
+    ) -> Result<BinaryTower128Target, CircuitBuilderError>
+    where
+        H: BinaryCircuitHost<EF>,
+        EF: Field + Eq + Hash,
+    {
+        H::check_hash(self.hash)?;
         let mut staged = self.clone();
-        let stream = staged.sample_stream_bytes::<BF, EF>(circuit, 16)?;
+        let stream = staged.sample_stream_bytes::<H, EF>(circuit, 16)?;
         let mut bits = Vec::with_capacity(128);
         for byte in stream {
-            bits.extend(circuit.decompose_to_bits::<BF>(byte, 8)?);
+            bits.extend(H::decompose_word(circuit, byte, 8)?);
         }
         let result = circuit.binary128_from_bits(
             bits.try_into()
@@ -452,10 +611,23 @@ impl BinaryTower128Challenger {
         BF: PrimeField64,
         EF: ExtensionField<BF> + Eq + Hash,
     {
+        self.sample_bits_with_host::<PrimeBinaryEncoding<BF>, EF>(circuit, bits)
+    }
+
+    /// Uses the explicit carrier encoding and byte-hash implementation.
+    pub fn sample_bits_with_host<H, EF>(
+        &mut self,
+        circuit: &mut CircuitBuilder<EF>,
+        bits: usize,
+    ) -> Result<Vec<ExprId>, CircuitBuilderError>
+    where
+        H: BinaryCircuitHost<EF>,
+        EF: Field + Eq + Hash,
+    {
         Self::check_bit_count(bits)?;
-        Self::check_limb_field::<BF, EF>("binary128_challenger_sample_bits")?;
+        H::check_hash(self.hash)?;
         let mut staged = self.clone();
-        let result = staged.sample_bits_inner::<BF, EF>(circuit, bits)?;
+        let result = staged.sample_bits_inner::<H, EF>(circuit, bits)?;
         *self = staged;
         Ok(result)
     }
@@ -480,73 +652,86 @@ impl BinaryTower128Challenger {
         BF: PrimeField64,
         EF: ExtensionField<BF> + Eq + Hash,
     {
+        self.check_witness_with_host::<PrimeBinaryEncoding<BF>, EF>(circuit, bits, witness)
+    }
+
+    /// Uses the explicit carrier encoding and byte-hash implementation.
+    pub fn check_witness_with_host<H, EF>(
+        &mut self,
+        circuit: &mut CircuitBuilder<EF>,
+        bits: usize,
+        witness: &BinaryTower128Target,
+    ) -> Result<(), CircuitBuilderError>
+    where
+        H: BinaryCircuitHost<EF>,
+        EF: Field + Eq + Hash,
+    {
         if bits == 0 {
             return Ok(());
         }
         Self::check_bit_count(bits)?;
-        Self::check_limb_field::<BF, EF>("binary128_challenger_check_witness")?;
+        H::check_hash(self.hash)?;
         let mut staged = self.clone();
-        staged.observe_inner::<BF, EF>(circuit, witness)?;
-        for bit in staged.sample_bits_inner::<BF, EF>(circuit, bits)? {
+        staged.observe_inner::<H, EF>(circuit, witness)?;
+        for bit in staged.sample_bits_inner::<H, EF>(circuit, bits)? {
             circuit.assert_zero(bit);
         }
         *self = staged;
         Ok(())
     }
 
-    fn observe_inner<BF, EF>(
+    fn observe_inner<H, EF>(
         &mut self,
         circuit: &mut CircuitBuilder<EF>,
         value: &BinaryTower128Target,
     ) -> Result<(), CircuitBuilderError>
     where
-        BF: PrimeField64,
-        EF: ExtensionField<BF> + Eq + Hash,
+        H: BinaryCircuitHost<EF>,
+        EF: Field + Eq + Hash,
     {
         let bytes: Vec<_> = value
             .bits()
             .chunks(8)
-            .map(|bits| circuit.reconstruct_index_from_bits::<BF>(bits))
+            .map(|bits| H::recompose_word(circuit, bits))
             .collect::<Result<_, _>>()?;
         self.output_buffer.clear();
         self.input_buffer.extend(bytes);
         Ok(())
     }
 
-    fn sample_bits_inner<BF, EF>(
+    fn sample_bits_inner<H, EF>(
         &mut self,
         circuit: &mut CircuitBuilder<EF>,
         bits: usize,
     ) -> Result<Vec<ExprId>, CircuitBuilderError>
     where
-        BF: PrimeField64,
-        EF: ExtensionField<BF> + Eq + Hash,
+        H: BinaryCircuitHost<EF>,
+        EF: Field + Eq + Hash,
     {
-        let stream = self.sample_stream_bytes::<BF, EF>(circuit, 8)?;
+        let stream = self.sample_stream_bytes::<H, EF>(circuit, 8)?;
         let mut result = Vec::with_capacity(bits);
         for byte in stream {
-            result.extend(circuit.decompose_to_bits::<BF>(byte, 8)?);
+            result.extend(H::decompose_word(circuit, byte, 8)?);
         }
         result.truncate(bits);
         Ok(result)
     }
 
-    fn sample_stream_bytes<BF, EF>(
+    fn sample_stream_bytes<H, EF>(
         &mut self,
         circuit: &mut CircuitBuilder<EF>,
         count: usize,
     ) -> Result<Vec<ExprId>, CircuitBuilderError>
     where
-        BF: PrimeField64,
-        EF: ExtensionField<BF> + Eq + Hash,
+        H: BinaryCircuitHost<EF>,
+        EF: Field + Eq + Hash,
     {
         let mut stream = Vec::with_capacity(count);
         while stream.len() < count {
             if self.output_buffer.is_empty() {
                 // Native HashChallenger hashes the whole forward message and
                 // retains that complete digest for the next chained refill.
-                let digest = circuit.byte_hash_bytes::<BF>(self.hash, &self.input_buffer)?;
-                let bytes = Self::bytes_from_limbs::<BF, EF>(circuit, &digest)?;
+                let bytes = H::hash_bytes(circuit, self.hash, &self.input_buffer)?.to_vec();
                 self.input_buffer.clone_from(&bytes);
                 self.output_buffer = bytes;
             }
@@ -559,22 +744,15 @@ impl BinaryTower128Challenger {
         Ok(stream)
     }
 
-    fn bytes_from_limbs<BF, EF>(
+    fn bytes_from_limbs<H, EF>(
         circuit: &mut CircuitBuilder<EF>,
         limbs: &[ExprId],
     ) -> Result<Vec<ExprId>, CircuitBuilderError>
     where
-        BF: PrimeField64,
-        EF: ExtensionField<BF> + Eq + Hash,
+        H: BinaryCircuitHost<EF>,
+        EF: Field + Eq + Hash,
     {
-        let mut bytes = Vec::with_capacity(2 * limbs.len());
-        for &limb in limbs {
-            let bits = circuit.decompose_to_bits::<BF>(limb, 16)?;
-            for byte in bits.chunks(8) {
-                bytes.push(circuit.reconstruct_index_from_bits::<BF>(byte)?);
-            }
-        }
-        Ok(bytes)
+        H::bytes_from_words(circuit, limbs)
     }
 
     const fn check_bit_count(bits: usize) -> Result<(), CircuitBuilderError> {
@@ -582,23 +760,6 @@ impl BinaryTower128Challenger {
             return Err(CircuitBuilderError::BinaryDecompositionTooManyBits {
                 expected: usize::BITS as usize - 1,
                 n_bits: bits,
-            });
-        }
-        Ok(())
-    }
-
-    fn check_limb_field<BF, EF>(operation: &'static str) -> Result<(), CircuitBuilderError>
-    where
-        BF: PrimeField64,
-        EF: ExtensionField<BF>,
-    {
-        if EF::TWO == EF::ZERO {
-            return Err(CircuitBuilderError::CharacteristicTwoUnsupported { operation });
-        }
-        if BF::ORDER_U64 <= u64::from(u16::MAX) {
-            return Err(CircuitBuilderError::BinaryDecompositionTooManyBits {
-                expected: BF::ORDER_U64.ilog2() as usize,
-                n_bits: 16,
             });
         }
         Ok(())

@@ -116,6 +116,14 @@ followed by a prime-field recursion layer. It does not demonstrate binary-in/bin
     `StatementExport::Base` in an agreed order. An error leaves the challenger's transcript
     state unchanged for retry, although expressions or constraints already added to the
     builder by a fallible gadget may remain.
+- **Native binary transcript hosts.** The challenger's `_with_host` methods
+  share the same transcript implementation with an explicit
+  `BinaryCircuitHost`. `PrimeBinaryEncoding<BF>` preserves integer words;
+  `NativeBinaryEncoding` uses checked raw coordinates and native Keccak tables.
+  Word packing, digest compression, refill order, partial samples and Poly192
+  coefficient serialization are tested across tower and polynomial carriers.
+  Native BLAKE3 hashing is not yet available through this host. These APIs do
+  not by themselves implement a complete binary-host proof verifier.
 - **Binary hash configurations.** `p3_test_utils::binary_field_params` provides the
   configuration `p3-binary-pcs` tests with, once per hash (`keccak` and `blake3` submodules
   with identical item names):
