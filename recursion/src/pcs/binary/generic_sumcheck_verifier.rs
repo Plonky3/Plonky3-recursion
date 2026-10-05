@@ -4,37 +4,43 @@ use alloc::vec::Vec;
 use core::hash::Hash;
 use core::marker::PhantomData;
 
-use p3_binary_field::BinaryField128;
+use p3_binary_field::{BinaryField128, TowerLevel};
 use p3_challenger::{FieldChallenger, GrindingChallenger};
-use p3_circuit::ops::{BinaryTower128Target, binary_encoding::PrimeBinaryEncoding};
+use p3_circuit::ops::{
+    BinaryTower128Target, NativeTower128Target,
+    binary_encoding::{NativeBinaryEncoding, PrimeBinaryEncoding},
+    binary_host::BinaryCircuitHost,
+};
 use p3_circuit::{CircuitBuilder, ExprId};
 use p3_field::{ExtensionField, Field, PrimeField64};
 use p3_sumcheck::generic_degree::{GenericDegreeProof, GenericDegreeShape};
 
-use super::verifier::{
-    assert_equal, constrain_width, observe_seed, observe_values, seed_bytes_with_host,
-};
+use super::verifier::{observe_seed_with_host, seed_bytes_with_host};
 use super::whir_plan::invalid;
 use super::{
     Binary128SumcheckInterpolator, RecursiveBinaryChallengeField, RecursiveBinaryTowerField,
 };
 use crate::transcript::domain_separator_seed;
+use crate::verifier::binary_field_policy::{
+    BinaryTowerPolicy, NativeTower128Relation, TowerRelation,
+};
 use crate::verifier::{InputResourceUsage, VerificationError, VerifierLimits};
 use crate::{BinaryQueryContinuation, BinaryTower128Challenger};
 
 #[derive(Clone, Debug)]
-pub struct BinaryGenericSumcheckProofTargets {
-    pub claimed_sum: BinaryTower128Target,
-    pub round_polys: Vec<Vec<BinaryTower128Target>>,
-    pub pow_witnesses: Vec<BinaryTower128Target>,
+pub struct BinaryGenericSumcheckProofTargets<T = BinaryTower128Target> {
+    pub claimed_sum: T,
+    pub round_polys: Vec<Vec<T>>,
+    pub pow_witnesses: Vec<T>,
 }
 
 /// A reduction awaiting its caller's terminal committed-polynomial or AIR
 /// constraint. This output alone does not establish a verified statement.
 #[derive(Clone, Debug)]
-pub struct BinaryGenericSumcheckOutput {
-    pub point: Vec<BinaryTower128Target>,
-    pub claim: BinaryTower128Target,
+#[must_use = "the terminal sumcheck claim must be authenticated"]
+pub struct BinaryGenericSumcheckOutput<T = BinaryTower128Target> {
+    pub point: Vec<T>,
+    pub claim: T,
     pub challenger: BinaryTower128Challenger,
 }
 
@@ -67,10 +73,16 @@ impl<F: RecursiveBinaryTowerField, E: RecursiveBinaryChallengeField>
         BF: PrimeField64,
         EF: ExtensionField<BF> + Eq + Hash,
     {
-        let mut field = || {
+        self.allocate_with(|| {
             let limbs = b.alloc_private_input_array::<8>("binary generic sumcheck field");
             Ok(b.binary128_from_limbs::<BF>(limbs)?)
-        };
+        })
+    }
+
+    fn allocate_with<T>(
+        &self,
+        mut field: impl FnMut() -> Result<T, VerificationError>,
+    ) -> Result<BinaryGenericSumcheckProofTargets<T>, VerificationError> {
         let claimed_sum = field()?;
         let round_polys = (0..self.shape.num_rounds)
             .map(|_| (0..self.shape.degree).map(|_| field()).collect())
@@ -210,7 +222,13 @@ where
         BF: PrimeField64,
         EF: ExtensionField<BF> + Eq + Hash,
     {
-        self.verify_impl::<BF, EF>(b, ch, expected_sum, proof, false)
+        self.verify_using::<TowerRelation<F, E>, PrimeBinaryEncoding<BF>, EF>(
+            b,
+            ch,
+            expected_sum,
+            proof,
+            false,
+        )
     }
 
     /// Resumes a bounded rejection phase through this run's nonempty seed,
@@ -226,66 +244,71 @@ where
         BF: PrimeField64,
         EF: ExtensionField<BF> + Eq + Hash,
     {
-        self.check_targets(proof)?;
-        let bytes = seed_bytes_with_host::<F, PrimeBinaryEncoding<BF>, EF>(b, &self.input.seed)?;
-        let ch = token.resume_with_observation::<BF, EF>(b, &bytes)?;
-        self.verify_impl::<BF, EF>(b, ch, expected_sum, proof, true)
+        self.verify_after_queries_using::<TowerRelation<F, E>, PrimeBinaryEncoding<BF>, EF>(
+            b,
+            token,
+            expected_sum,
+            proof,
+        )
     }
-
-    fn verify_impl<BF, EF>(
+    pub(crate) fn verify_after_queries_using<P, H, CF>(
         &self,
-        b: &mut CircuitBuilder<EF>,
-        mut ch: BinaryTower128Challenger,
-        expected_sum: &BinaryTower128Target,
-        proof: &BinaryGenericSumcheckProofTargets,
-        seeded: bool,
-    ) -> Result<BinaryGenericSumcheckOutput, VerificationError>
+        b: &mut CircuitBuilder<CF>,
+        token: BinaryQueryContinuation,
+        expected_sum: &P::ChallengeTarget,
+        proof: &BinaryGenericSumcheckProofTargets<P::ChallengeTarget>,
+    ) -> Result<BinaryGenericSumcheckOutput<P::ChallengeTarget>, VerificationError>
     where
-        BF: PrimeField64,
-        EF: ExtensionField<BF> + Eq + Hash,
+        CF: Field + Eq + Hash,
+        H: BinaryCircuitHost<CF>,
+        P: BinaryTowerPolicy<CF, Base = F, Challenge = E>,
     {
         self.check_targets(proof)?;
-        constrain_width(b, &proof.claimed_sum, E::RAW_BITS);
-        assert_equal(b, &proof.claimed_sum, expected_sum);
+        let bytes = seed_bytes_with_host::<F, H, CF>(b, &self.input.seed)?;
+        let ch = token.resume_with_observation_with_host::<H, CF>(b, &bytes)?;
+        self.verify_using::<P, H, CF>(b, ch, expected_sum, proof, true)
+    }
+
+    pub(crate) fn verify_using<P, H, CF>(
+        &self,
+        b: &mut CircuitBuilder<CF>,
+        mut ch: BinaryTower128Challenger,
+        expected_sum: &P::ChallengeTarget,
+        proof: &BinaryGenericSumcheckProofTargets<P::ChallengeTarget>,
+        seeded: bool,
+    ) -> Result<BinaryGenericSumcheckOutput<P::ChallengeTarget>, VerificationError>
+    where
+        CF: Field + Eq + Hash,
+        H: BinaryCircuitHost<CF>,
+        P: BinaryTowerPolicy<CF, Base = F, Challenge = E>,
+    {
+        self.check_targets(proof)?;
+        P::constrain_challenge(b, &proof.claimed_sum);
+        P::assert_equal(b, &proof.claimed_sum, expected_sum);
         if !seeded {
-            observe_seed::<F, BF, EF>(b, &mut ch, &self.input.seed)?;
+            observe_seed_with_host::<F, H, CF>(b, &mut ch, &self.input.seed)?;
         }
-        observe_values::<BF, EF>(
-            b,
-            &mut ch,
-            core::slice::from_ref(&proof.claimed_sum),
-            E::RAW_BITS,
-        )?;
+        P::observe::<H>(b, &mut ch, core::slice::from_ref(&proof.claimed_sum))?;
         let mut claim = proof.claimed_sum.clone();
         let mut point = Vec::new();
         for (i, polynomial) in proof.round_polys.iter().enumerate() {
             for value in polynomial {
-                constrain_width(b, value, E::RAW_BITS);
+                P::constrain_challenge(b, value);
             }
-            observe_values::<BF, EF>(b, &mut ch, polynomial, E::RAW_BITS)?;
+            P::observe::<H>(b, &mut ch, polynomial)?;
             if self.input.shape.pow_bits > 0 {
-                constrain_width(b, &proof.pow_witnesses[i], F::RAW_BITS);
-                observe_values::<BF, EF>(
-                    b,
-                    &mut ch,
-                    core::slice::from_ref(&proof.pow_witnesses[i]),
-                    F::RAW_BITS,
-                )?;
-                for bit in ch.sample_bits::<BF, EF>(b, self.input.shape.pow_bits)? {
+                // Native grinding witnesses are base-field words, even when E is wider.
+                let bytes = P::word_bytes::<H>(b, &proof.pow_witnesses[i], F::RAW_BITS)?;
+                ch.observe_bytes_with_host::<H, CF>(b, &bytes)?;
+                for bit in ch.sample_bits_with_host::<H, CF>(b, self.input.shape.pow_bits)? {
                     let difference = b.sub(ExprId::ZERO, bit);
                     b.assert_zero(difference);
                 }
             }
-            let bytes = ch.sample_bytes::<BF, EF>(b, E::RAW_BITS / 8)?;
-            let mut bits = [ExprId::ZERO; 128];
-            for (i, byte) in bytes.into_iter().enumerate() {
-                let byte_bits = b.decompose_to_bits::<BF>(byte, 8)?;
-                bits[8 * i..8 * i + 8].copy_from_slice(&byte_bits);
-            }
-            let challenge = b.binary128_from_bits(bits)?;
+            let challenge = P::sample::<H>(b, &mut ch)?;
             claim = self
                 .interpolator
-                .reduce_claim(b, &claim, polynomial, &challenge)?;
+                .reduce_claim_using::<P, CF>(b, &claim, polynomial, &challenge)?;
             point.push(challenge);
         }
         Ok(BinaryGenericSumcheckOutput {
@@ -295,9 +318,9 @@ where
         })
     }
 
-    pub(crate) fn check_targets(
+    pub(crate) fn check_targets<T>(
         &self,
-        proof: &BinaryGenericSumcheckProofTargets,
+        proof: &BinaryGenericSumcheckProofTargets<T>,
     ) -> Result<(), VerificationError> {
         if proof.round_polys.len() != self.input.shape.num_rounds
             || proof
@@ -385,5 +408,63 @@ where
             point,
             claim,
         ))
+    }
+}
+
+impl BinaryGenericSumcheckInputShape<BinaryField128, BinaryField128> {
+    /// One scalar input per field word, retaining the native traversal order.
+    pub fn allocate_native_targets(
+        &self,
+        b: &mut CircuitBuilder<BinaryField128>,
+    ) -> Result<BinaryGenericSumcheckProofTargets<NativeTower128Target>, VerificationError> {
+        self.allocate_with(|| {
+            let value = b.alloc_private_input("native generic sumcheck field");
+            Ok(b.native_tower128_from_expr(value))
+        })
+    }
+}
+impl NativeBinaryGenericSumcheckInput<BinaryField128, BinaryField128> {
+    pub fn private_native_values(
+        &self,
+        expected: &BinaryGenericSumcheckInputShape<BinaryField128, BinaryField128>,
+    ) -> Result<Vec<BinaryField128>, VerificationError> {
+        if &self.shape != expected {
+            return Err(invalid(
+                "binary generic sumcheck input belongs to another verifier",
+            ));
+        }
+        Ok(self
+            .fields
+            .iter()
+            .copied()
+            .map(BinaryField128::from_repr)
+            .collect())
+    }
+}
+impl BinaryGenericSumcheckVerifier<BinaryField128, BinaryField128> {
+    /// Native scalar reduction; its terminal claim still needs authentication.
+    pub fn verify_reduction_native(
+        &self,
+        b: &mut CircuitBuilder<BinaryField128>,
+        ch: BinaryTower128Challenger,
+        expected_sum: &NativeTower128Target,
+        proof: &BinaryGenericSumcheckProofTargets<NativeTower128Target>,
+    ) -> Result<BinaryGenericSumcheckOutput<NativeTower128Target>, VerificationError> {
+        self.verify_using::<NativeTower128Relation, NativeBinaryEncoding, BinaryField128>(
+            b,
+            ch,
+            expected_sum,
+            proof,
+            false,
+        )
+    }
+    pub fn verify_reduction_after_queries_native(
+        &self,
+        b: &mut CircuitBuilder<BinaryField128>,
+        token: BinaryQueryContinuation,
+        expected_sum: &NativeTower128Target,
+        proof: &BinaryGenericSumcheckProofTargets<NativeTower128Target>,
+    ) -> Result<BinaryGenericSumcheckOutput<NativeTower128Target>, VerificationError> {
+        self.verify_after_queries_using::<NativeTower128Relation, NativeBinaryEncoding, BinaryField128>(b, token, expected_sum, proof)
     }
 }

@@ -369,3 +369,56 @@ fn native_tower_bytes<H: BinaryCircuitHost<BinaryField128>>(
     }
     Ok(bytes)
 }
+
+/// Raw tower-word boundaries shared by grinding and additive WHIR.
+pub(crate) trait BinaryTowerPolicy<CF: Field + Eq + Hash>: BinaryProtocolPolicy<CF> {
+    fn word_bytes<H: BinaryCircuitHost<CF>>(
+        b: &mut CircuitBuilder<CF>,
+        value: &Self::ChallengeTarget,
+        width: usize,
+    ) -> Result<alloc::vec::Vec<ExprId>, VerificationError>;
+}
+fn check_word_width(width: usize) -> Result<(), VerificationError> {
+    if width > 128 || width % 8 != 0 {
+        return Err(VerificationError::InvalidProofShape(
+            "invalid tower transcript word width".into(),
+        ));
+    }
+    Ok(())
+}
+impl<CF, F, E> BinaryTowerPolicy<CF> for TowerRelation<F, E>
+where
+    CF: Field + Eq + Hash,
+    F: RecursiveBinaryTowerField,
+    E: RecursiveBinaryChallengeField + ExtensionField<F>,
+{
+    fn word_bytes<H: BinaryCircuitHost<CF>>(
+        b: &mut CircuitBuilder<CF>,
+        value: &BinaryTower128Target,
+        width: usize,
+    ) -> Result<alloc::vec::Vec<ExprId>, VerificationError> {
+        check_word_width(width)?;
+        H::check_carrier()?;
+        constrain_tower_width(b, value, width);
+        Ok(value.bits()[..width]
+            .chunks_exact(8)
+            .map(|bits| H::recompose_word(b, bits))
+            .collect::<Result<_, _>>()?)
+    }
+}
+impl BinaryTowerPolicy<BinaryField128> for NativeTower128Relation {
+    fn word_bytes<H: BinaryCircuitHost<BinaryField128>>(
+        b: &mut CircuitBuilder<BinaryField128>,
+        value: &NativeTower128Target,
+        width: usize,
+    ) -> Result<alloc::vec::Vec<ExprId>, VerificationError> {
+        check_word_width(width)?;
+        H::check_carrier()?;
+        // Decomposition reconstructs the entire scalar from exactly this width.
+        let bits = b.binary_decompose_coordinates(value.as_expr(), width)?;
+        Ok(bits
+            .chunks_exact(8)
+            .map(|bits| H::recompose_word(b, bits))
+            .collect::<Result<_, _>>()?)
+    }
+}
