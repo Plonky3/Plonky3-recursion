@@ -5,7 +5,6 @@ use core::hash::Hash;
 use p3_circuit::ops::binary_host::BinaryCircuitHost;
 use p3_circuit::{CircuitBuilder, ExprId};
 use p3_field::Field;
-use p3_sumcheck::OpeningBatch;
 use p3_sumcheck::strategy::VariableOrder;
 
 use super::gadgets::{next_eval_using, reduce_sumcheck_using};
@@ -46,13 +45,7 @@ pub(super) fn verify_using<P, H, CF>(
     cap: &[Vec<ExprId>],
     points: &[Vec<P::ChallengeTarget>],
     proof: &BinaryWhirProofTargets<P::ChallengeTarget, P::BaseTarget>,
-) -> Result<
-    (
-        Vec<OpeningBatch<P::ChallengeTarget>>,
-        BinaryTower128Challenger,
-    ),
-    VerificationError,
->
+) -> Result<super::WhirVerificationOutput<P::ChallengeTarget>, VerificationError>
 where
     CF: Field + Eq + Hash,
     H: BinaryCircuitHost<CF>,

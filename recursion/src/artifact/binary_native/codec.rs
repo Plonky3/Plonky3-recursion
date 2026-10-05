@@ -27,6 +27,8 @@ use crate::artifact::{ArtifactError, ArtifactKind, ArtifactLimits, ExpectedVerif
 use crate::pcs::binary::{RecursiveBinaryChallengeField, RecursiveBinaryTowerField};
 use crate::verifier::InputResourceUsage;
 
+type DecodedNativeProof<C> = (MultiStarkProof<C>, Vec<Vec<<C as MultiStarkConfig>::Val>>);
+
 /// Independent binary values in AIR order, then public-value order, encoded
 /// using the base field's exact raw little-endian width. No length prefix.
 #[derive(Clone, Copy, Debug)]
@@ -271,7 +273,7 @@ impl<O> DecodeAuthority<'_, O> {
             &O,
             &mut usize,
         ) -> Result<ConfigPcsProof<C>, ArtifactError>,
-    ) -> Result<(MultiStarkProof<C>, Vec<Vec<C::Val>>), ArtifactError>
+    ) -> Result<DecodedNativeProof<C>, ArtifactError>
     where
         C: MultiStarkConfig,
         C::Val: ScalarWire,

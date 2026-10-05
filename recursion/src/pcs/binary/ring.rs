@@ -134,11 +134,10 @@ impl<E: RecursiveBinaryChallengeField> BinaryBitRingVerifier<E> {
         let shapes: Vec<_> = specs
             .iter()
             .map(|spec| {
-                if let Some(rows) = spec.next_rows.filter(|&rows| rows > absorbed) {
-                    BitRingSwitchShape::with_successor_rows(num_variables, rows)
-                } else {
-                    BitRingSwitchShape::new(num_variables)
-                }
+                spec.next_rows.filter(|&rows| rows > absorbed).map_or_else(
+                    || BitRingSwitchShape::new(num_variables),
+                    |rows| BitRingSwitchShape::with_successor_rows(num_variables, rows),
+                )
             })
             .collect();
         let seed = if shapes.len() == 1 {

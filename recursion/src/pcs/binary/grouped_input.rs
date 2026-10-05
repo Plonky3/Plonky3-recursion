@@ -4,8 +4,8 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::cell::RefCell;
 
+use p3_binary_pcs::GroupedCodewordMmcs;
 use p3_binary_pcs::transcript::BinaryPcsShape;
-use p3_binary_pcs::{BinaryPcsProof, GroupedCodewordMmcs};
 use p3_challenger::{CanObserve, CanSampleUniformBits, FieldChallenger, GrindingChallenger};
 use p3_circuit::ops::bytes_to_limbs;
 use p3_commit::{BatchOpening, BatchOpeningRef, Mmcs};
@@ -24,7 +24,6 @@ use super::{RecursiveBinaryChallengeField, RecursiveBinaryTowerField};
 use crate::verifier::{InputResourceUsage, VerificationError, VerifierLimits};
 
 type Tree<F, H, C> = MerkleTreeMmcs<F, u8, H, C, 2, 32>;
-type Grouped<F, H, C> = GroupedCodewordMmcs<Tree<F, H, C>>;
 
 #[derive(Clone, Debug)]
 struct NativeGroupedOpening {
@@ -82,7 +81,7 @@ where
         round_tree: &Tree<E, H1, C1>,
         commitment: &MerkleCap<F, [u8; 32]>,
         points: &[Point<E>],
-        proof: &BinaryPcsProof<F, E, Grouped<F, H0, C0>, Grouped<E, H1, C1>>,
+        proof: &super::GroupedByteMerklePcsProof<F, E, H0, C0, H1, C1>,
     ) -> Result<(), VerificationError>
     where
         F: PackedValue<Value = F>,
@@ -145,7 +144,7 @@ where
         round_tree: &Tree<E, H1, C1>,
         commitment: &MerkleCap<F, [u8; 32]>,
         points: &[Point<E>],
-        proof: &BinaryPcsProof<F, E, Grouped<F, H0, C0>, Grouped<E, H1, C1>>,
+        proof: &super::GroupedByteMerklePcsProof<F, E, H0, C0, H1, C1>,
         challenger: &mut Ch,
     ) -> Result<NativeBinaryGroupedPcsInput, VerificationError>
     where
@@ -172,13 +171,17 @@ where
         )
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "The verifier keeps protocol inputs explicit."
+    )]
     pub(crate) fn import_native_with_usage<H0, C0, H1, C1, Ch>(
         &self,
         base_tree: &Tree<F, H0, C0>,
         round_tree: &Tree<E, H1, C1>,
         commitment: &MerkleCap<F, [u8; 32]>,
         points: &[Point<E>],
-        proof: &BinaryPcsProof<F, E, Grouped<F, H0, C0>, Grouped<E, H1, C1>>,
+        proof: &super::GroupedByteMerklePcsProof<F, E, H0, C0, H1, C1>,
         challenger: &mut Ch,
         usage: &RefCell<InputResourceUsage>,
     ) -> Result<NativeBinaryGroupedPcsInput, VerificationError>
@@ -451,6 +454,10 @@ where
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "The verifier keeps protocol inputs explicit."
+)]
 fn extract<F, H, C>(
     tree: &Tree<F, H, C>,
     cap: &MerkleCap<F, [u8; 32]>,
@@ -458,7 +465,7 @@ fn extract<F, H, C>(
     geometry: (usize, usize, usize),
     indices: &[usize],
     rows: &[Vec<F>],
-    proof: &<Grouped<F, H, C> as Mmcs<F>>::MultiProof,
+    proof: &<super::GroupedByteMerkleMmcs<F, H, C> as Mmcs<F>>::MultiProof,
     limits: &VerifierLimits,
     usage: &RefCell<InputResourceUsage>,
 ) -> Result<NativeGroupedOpening, VerificationError>

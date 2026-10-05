@@ -174,6 +174,10 @@ where
         )
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "The verifier keeps protocol inputs explicit."
+    )]
     pub fn with_limits(
         config: BinaryPcsConfig,
         protocol: OpeningProtocol,

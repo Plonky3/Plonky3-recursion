@@ -230,6 +230,10 @@ where
     /// Evaluates the AIR with authenticated preprocessing openings. Successor
     /// values follow their own declared order; periodic values are recomputed
     /// from trusted vectors on the trailing coordinates of `point`.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "The verifier keeps protocol inputs explicit."
+    )]
     pub fn evaluate_with_auxiliary<EF: Field + Eq + Hash>(
         &self,
         b: &mut CircuitBuilder<EF>,
@@ -257,6 +261,10 @@ where
     /// Evaluates the ordinary assertion fold and retained bus payloads through
     /// one private program at the same authenticated openings. The surrounding
     /// verifier must consume both results in its terminal reduction equation.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "The verifier keeps protocol inputs explicit."
+    )]
     pub(super) fn evaluate_with_bus<EF: Field + Eq + Hash>(
         &self,
         b: &mut CircuitBuilder<EF>,
@@ -279,6 +287,10 @@ where
             alpha,
         )
     }
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "The verifier keeps protocol inputs explicit."
+    )]
     pub(super) fn evaluate_using<P, EF>(
         &self,
         b: &mut CircuitBuilder<EF>,
@@ -324,6 +336,10 @@ where
         self.evaluate_native_with_auxiliary(b, point, current, next, &[], &[], public, alpha)
     }
     /// Evaluates trusted preprocessing and periodic vectors in the native carrier.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "The verifier keeps protocol inputs explicit."
+    )]
     pub fn evaluate_native_with_auxiliary(
         &self,
         b: &mut CircuitBuilder<BinaryField128>,
@@ -708,6 +724,10 @@ impl AirProgram {
         ))
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "The verifier keeps protocol inputs explicit."
+    )]
     fn evaluate<P: BinaryRelationPolicy<EF>, EF: Field + Eq + Hash>(
         &self,
         b: &mut CircuitBuilder<EF>,
@@ -1105,6 +1125,10 @@ impl BinaryPolyAirConstraintPlan {
         self.evaluate_with_auxiliary(b, point, current, next, &[], &[], public, alpha)
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "The verifier keeps protocol inputs explicit."
+    )]
     pub fn evaluate_with_auxiliary<EF: Field + Eq + Hash>(
         &self,
         b: &mut CircuitBuilder<EF>,

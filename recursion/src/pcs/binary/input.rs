@@ -4,8 +4,8 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::hash::Hash;
 
+use p3_binary_pcs::BinaryPcsConfig;
 use p3_binary_pcs::transcript::{BinaryPcsShape, BinaryPcsVerifierTranscript};
-use p3_binary_pcs::{BinaryPcsConfig, BinaryPcsProof};
 use p3_challenger::{CanObserve, CanSampleUniformBits, FieldChallenger, GrindingChallenger};
 use p3_circuit::ops::{BinaryTower128Target, ByteHash, bytes_to_limbs};
 use p3_circuit::{CircuitBuilder, ExprId};
@@ -270,12 +270,7 @@ where
         round_mmcs: &MerkleTreeMmcs<E, u8, H1, C1, 2, 32>,
         commitment: &MerkleCap<F, [u8; 32]>,
         points: &[Point<E>],
-        proof: &BinaryPcsProof<
-            F,
-            E,
-            MerkleTreeMmcs<F, u8, H0, C0, 2, 32>,
-            MerkleTreeMmcs<E, u8, H1, C1, 2, 32>,
-        >,
+        proof: &super::ByteMerklePcsProof<F, E, H0, C0, H1, C1>,
     ) -> Result<(), VerificationError>
     where
         F: PackedValue<Value = F>,
@@ -301,12 +296,7 @@ where
         round_mmcs: &MerkleTreeMmcs<E, u8, H1, C1, 2, 32>,
         commitment: &MerkleCap<F, [u8; 32]>,
         points: &[Point<E>],
-        proof: &BinaryPcsProof<
-            F,
-            E,
-            MerkleTreeMmcs<F, u8, H0, C0, 2, 32>,
-            MerkleTreeMmcs<E, u8, H1, C1, 2, 32>,
-        >,
+        proof: &super::ByteMerklePcsProof<F, E, H0, C0, H1, C1>,
         usage: &mut InputResourceUsage,
     ) -> Result<(), VerificationError>
     where
@@ -374,12 +364,7 @@ where
         round_mmcs: &MerkleTreeMmcs<E, u8, H1, C1, 2, 32>,
         commitment: &MerkleCap<F, [u8; 32]>,
         points: &[Point<E>],
-        proof: &BinaryPcsProof<
-            F,
-            E,
-            MerkleTreeMmcs<F, u8, H0, C0, 2, 32>,
-            MerkleTreeMmcs<E, u8, H1, C1, 2, 32>,
-        >,
+        proof: &super::ByteMerklePcsProof<F, E, H0, C0, H1, C1>,
         mut challenger: Ch,
     ) -> Result<NativeBinaryPcsInput, VerificationError>
     where
@@ -494,6 +479,10 @@ where
 
     /// Transcript-only replay shared by ordinary and grouped byte-tree imports.
     /// Callers validate all retained counts before entering this bounded sampler.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "The verifier keeps protocol inputs explicit."
+    )]
     pub(super) fn replay_native_queries<Ch>(
         &self,
         points: &[Point<E>],
@@ -634,7 +623,7 @@ fn alloc_oracle<BF, EF>(
     circuit: &mut CircuitBuilder<EF>,
     count: usize,
     depth: usize,
-) -> Result<(Vec<BinaryTower128Target>, Vec<Vec<Vec<ExprId>>>), VerificationError>
+) -> Result<super::OracleOpeningTargets<BinaryTower128Target>, VerificationError>
 where
     BF: PrimeField64,
     EF: ExtensionField<BF> + Eq + Hash,

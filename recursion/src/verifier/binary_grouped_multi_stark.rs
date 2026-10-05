@@ -312,6 +312,10 @@ where
         Ok(())
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "The verifier keeps protocol inputs explicit."
+    )]
     pub fn new<A>(
         airs: &[&A],
         heights: &[usize],
@@ -342,6 +346,10 @@ where
         )
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "The verifier keeps protocol inputs explicit."
+    )]
     pub fn with_limits<A>(
         airs: &[&A],
         heights: &[usize],
@@ -376,6 +384,10 @@ where
 
     /// Builds a verifier retaining an independent trusted preprocessing cap.
     /// No proof can provide or replace this authority.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "The verifier keeps protocol inputs explicit."
+    )]
     pub fn with_preprocessing<A>(
         airs: &[&A],
         heights: &[usize],
@@ -409,6 +421,10 @@ where
         )
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "The verifier keeps protocol inputs explicit."
+    )]
     fn build<A>(
         airs: &[&A],
         heights: &[usize],
@@ -636,10 +652,9 @@ where
         &self,
         base_mmcs: &MerkleTreeMmcs<F, u8, H0, C0, 2, 32>,
         round_mmcs: &MerkleTreeMmcs<E, u8, H1, C1, 2, 32>,
-        preprocessed_mmcs: Option<(
-            &MerkleTreeMmcs<F, u8, H0, C0, 2, 32>,
-            &MerkleTreeMmcs<E, u8, H1, C1, 2, 32>,
-        )>,
+        preprocessed_mmcs: Option<
+            crate::pcs::binary::ByteMerkleMmcsPair<'_, '_, F, E, H0, C0, H1, C1>,
+        >,
         public: &[Vec<F>],
         proof: &MultiStarkProof<C>,
         ch: &mut Ch,

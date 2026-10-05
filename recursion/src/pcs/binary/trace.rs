@@ -3,9 +3,7 @@
 use alloc::vec::Vec;
 use core::hash::Hash;
 
-use p3_binary_pcs::{
-    BinaryPcsConfig, BooleanTraceProof, ChallengeField, Coordinates, FoldAlphabet,
-};
+use p3_binary_pcs::{BinaryPcsConfig, ChallengeField, Coordinates, FoldAlphabet};
 use p3_challenger::{CanObserve, CanSampleUniformBits, FieldChallenger, GrindingChallenger};
 use p3_circuit::ops::{BinaryTower128Target, ByteHash};
 use p3_circuit::{CircuitBuilder, ExprId};
@@ -350,11 +348,7 @@ where
         round_mmcs: &MerkleTreeMmcs<E, u8, H1, C1, 2, 32>,
         commitment: &MerkleCap<E, [u8; 32]>,
         points: &[Point<E>],
-        proof: &BooleanTraceProof<
-            E,
-            MerkleTreeMmcs<E, u8, H0, C0, 2, 32>,
-            MerkleTreeMmcs<E, u8, H1, C1, 2, 32>,
-        >,
+        proof: &super::ByteMerkleBooleanTraceProof<E, H0, C0, H1, C1>,
         usage: &mut InputResourceUsage,
     ) -> Result<(), VerificationError>
     where
@@ -385,11 +379,7 @@ where
         round_mmcs: &MerkleTreeMmcs<E, u8, H1, C1, 2, 32>,
         commitment: &MerkleCap<E, [u8; 32]>,
         points: &[Point<E>],
-        proof: &BooleanTraceProof<
-            E,
-            MerkleTreeMmcs<E, u8, H0, C0, 2, 32>,
-            MerkleTreeMmcs<E, u8, H1, C1, 2, 32>,
-        >,
+        proof: &super::ByteMerkleBooleanTraceProof<E, H0, C0, H1, C1>,
         mut challenger: Ch,
     ) -> Result<NativeBinaryBooleanTraceInput<E>, VerificationError>
     where

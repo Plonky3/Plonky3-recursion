@@ -346,7 +346,7 @@ where
         },
     )
 }
-fn identity_error(error: ArtifactError) -> VerificationError {
+fn identity_error(error: &ArtifactError) -> VerificationError {
     match error {
         ArtifactError::DecodeLimitExceeded {
             component,
@@ -354,8 +354,8 @@ fn identity_error(error: ArtifactError) -> VerificationError {
             limit,
         } => VerificationError::ResourceLimitExceeded {
             component,
-            actual,
-            limit,
+            actual: *actual,
+            limit: *limit,
         },
         ArtifactError::LengthOverflow => VerificationError::ResourceArithmeticOverflow {
             component: "binary native verifier identity",

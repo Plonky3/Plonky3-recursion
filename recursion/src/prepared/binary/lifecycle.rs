@@ -150,6 +150,10 @@ where
     KeccakF1600Preprocessor: NpoPreprocessor<Val<SC>>,
     Blake3CompressPreprocessor: NpoPreprocessor<Val<SC>>,
 {
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "Keep the owned configuration used by prepared-layer constructors."
+    )]
     pub(super) fn with_limits(
         binary: R,
         hash: ByteHash,

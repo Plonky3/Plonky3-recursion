@@ -4,8 +4,6 @@ use alloc::vec::Vec;
 use core::hash::Hash;
 
 use p3_binary_field::{BinaryField128, TowerLevel};
-use p3_binary_pcs::BooleanTraceCommitmentProof;
-use p3_binary_pcs::whir::BooleanWhirProof;
 use p3_challenger::{CanObserve, CanSampleUniformBits, FieldChallenger, GrindingChallenger};
 use p3_circuit::ops::{BinaryTower128Target, ByteHash};
 use p3_circuit::{CircuitBuilder, ExprId};
@@ -323,10 +321,7 @@ impl BinaryBooleanWhirTraceVerifier {
         mmcs: &MerkleTreeMmcs<BinaryField128, u8, H, Co, 2, 32>,
         commitment: &MerkleCap<BinaryField128, [u8; 32]>,
         points: &[Point<BinaryField128>],
-        proof: &BooleanTraceCommitmentProof<
-            BinaryField128,
-            BooleanWhirProof<BinaryField128, MerkleTreeMmcs<BinaryField128, u8, H, Co, 2, 32>>,
-        >,
+        proof: &super::ByteMerkleBooleanWhirTraceProof<BinaryField128, H, Co>,
         usage: &mut InputResourceUsage,
     ) -> Result<(), VerificationError>
     where
@@ -353,10 +348,7 @@ impl BinaryBooleanWhirTraceVerifier {
         mmcs: &MerkleTreeMmcs<BinaryField128, u8, H, Co, 2, 32>,
         commitment: &MerkleCap<BinaryField128, [u8; 32]>,
         points: &[Point<BinaryField128>],
-        proof: &BooleanTraceCommitmentProof<
-            BinaryField128,
-            BooleanWhirProof<BinaryField128, MerkleTreeMmcs<BinaryField128, u8, H, Co, 2, 32>>,
-        >,
+        proof: &super::ByteMerkleBooleanWhirTraceProof<BinaryField128, H, Co>,
         target_challenger: &mut Ch,
     ) -> Result<NativeBinaryBooleanWhirTraceInput, VerificationError>
     where

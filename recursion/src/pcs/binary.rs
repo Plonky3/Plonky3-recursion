@@ -11,6 +11,42 @@ use p3_field::{ExtensionField, PrimeField64};
 
 use crate::{BinaryQueryContinuation, BinaryTower128Challenger};
 
+type ByteMerkleMmcs<F, H, C> = p3_merkle_tree::MerkleTreeMmcs<F, u8, H, C, 2, 32>;
+type GroupedByteMerkleMmcs<F, H, C> = p3_binary_pcs::GroupedCodewordMmcs<ByteMerkleMmcs<F, H, C>>;
+type ByteMerklePcsProof<F, E, H0, C0, H1, C1> =
+    p3_binary_pcs::BinaryPcsProof<F, E, ByteMerkleMmcs<F, H0, C0>, ByteMerkleMmcs<E, H1, C1>>;
+type GroupedByteMerklePcsProof<F, E, H0, C0, H1, C1> = p3_binary_pcs::BinaryPcsProof<
+    F,
+    E,
+    GroupedByteMerkleMmcs<F, H0, C0>,
+    GroupedByteMerkleMmcs<E, H1, C1>,
+>;
+type ByteMerkleBooleanProof<E, H0, C0, H1, C1> =
+    p3_binary_pcs::BooleanProof<E, ByteMerkleMmcs<E, H0, C0>, ByteMerkleMmcs<E, H1, C1>>;
+type GroupedByteMerkleBooleanProof<E, H0, C0, H1, C1> = p3_binary_pcs::BooleanProof<
+    E,
+    GroupedByteMerkleMmcs<E, H0, C0>,
+    GroupedByteMerkleMmcs<E, H1, C1>,
+>;
+type ByteMerkleBooleanTraceProof<E, H0, C0, H1, C1> =
+    p3_binary_pcs::BooleanTraceCommitmentProof<E, ByteMerkleBooleanProof<E, H0, C0, H1, C1>>;
+type GroupedByteMerkleBooleanTraceProof<E, H0, C0, H1, C1> =
+    p3_binary_pcs::BooleanTraceCommitmentProof<E, GroupedByteMerkleBooleanProof<E, H0, C0, H1, C1>>;
+type ByteMerkleBooleanWhirTraceProof<E, H, C> = p3_binary_pcs::BooleanTraceCommitmentProof<
+    E,
+    p3_binary_pcs::whir::BooleanWhirProof<E, ByteMerkleMmcs<E, H, C>>,
+>;
+pub(crate) type ByteMerkleMmcsPair<'base, 'round, F, E, H0, C0, H1, C1> = (
+    &'base ByteMerkleMmcs<F, H0, C0>,
+    &'round ByteMerkleMmcs<E, H1, C1>,
+);
+pub(crate) type ByteMerkleWhirParameters<'config, 'mmcs, F, E, Ch, H, C> = (
+    &'config p3_whir::WhirConfig<E, F, Ch>,
+    &'mmcs ByteMerkleMmcs<F, H, C>,
+);
+type OracleOpeningTargets<Row> = (Vec<Row>, Vec<Vec<Vec<ExprId>>>);
+type WhirVerificationOutput<T> = (Vec<p3_sumcheck::OpeningBatch<T>>, BinaryTower128Challenger);
+
 mod boolean;
 mod boolean_whir;
 mod fields;

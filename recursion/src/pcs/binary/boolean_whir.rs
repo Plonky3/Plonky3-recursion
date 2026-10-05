@@ -309,6 +309,10 @@ impl BinaryBooleanWhirVerifier {
     /// Preflights both proof components before replay, verifies the native
     /// readings, and imports the WHIR opening at the surviving point. Passing
     /// a mutable challenger preserves its exact native continuation.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "The verifier keeps protocol inputs explicit."
+    )]
     pub fn import_native<C, Ch, H, Co>(
         &self,
         config: &WhirConfig<BinaryField128, BinaryField128, C>,

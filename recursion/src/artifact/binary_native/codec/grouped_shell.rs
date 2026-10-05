@@ -672,8 +672,10 @@ mod tests {
             coset_width: 2,
             path_len: 1,
         };
-        let mut limits = ArtifactLimits::default();
-        limits.max_decoded_bytes = 1 << 21;
+        let mut limits = ArtifactLimits {
+            max_decoded_bytes: 1 << 21,
+            ..ArtifactLimits::default()
+        };
         let mut r = Reader::new(&bytes, &limits);
         let mut total = 0;
         assert!(matches!(

@@ -303,6 +303,10 @@ impl BinaryPolyWhirMultiStarkVerifier {
         self.usage.add_metadata_entries(limits, entries)
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "The verifier keeps protocol inputs explicit."
+    )]
     pub fn new<A, PC>(
         airs: &[&A],
         heights: &[usize],
@@ -331,6 +335,10 @@ impl BinaryPolyWhirMultiStarkVerifier {
         )
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "The verifier keeps protocol inputs explicit."
+    )]
     pub fn with_limits<A, PC>(
         airs: &[&A],
         heights: &[usize],
@@ -363,6 +371,10 @@ impl BinaryPolyWhirMultiStarkVerifier {
 
     /// Builds a verifier retaining an independent trusted preprocessing cap.
     /// No proof can provide or replace this authority.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "The verifier keeps protocol inputs explicit."
+    )]
     pub fn with_preprocessing<A, PC>(
         airs: &[&A],
         heights: &[usize],
@@ -394,6 +406,10 @@ impl BinaryPolyWhirMultiStarkVerifier {
         )
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "The verifier keeps protocol inputs explicit."
+    )]
     fn build<A, PC>(
         airs: &[&A],
         heights: &[usize],
@@ -610,10 +626,17 @@ impl BinaryPolyWhirMultiStarkVerifier {
         &self,
         config: &WhirConfig<Poly192, Poly64, C::Challenger>,
         mmcs: &MerkleTreeMmcs<Poly64, u8, H, Co, 2, 32>,
-        preprocessed: Option<(
-            &WhirConfig<Poly192, Poly64, C::Challenger>,
-            &MerkleTreeMmcs<Poly64, u8, H, Co, 2, 32>,
-        )>,
+        preprocessed: Option<
+            crate::pcs::binary::ByteMerkleWhirParameters<
+                '_,
+                '_,
+                Poly64,
+                Poly192,
+                C::Challenger,
+                H,
+                Co,
+            >,
+        >,
         public: &[Vec<Poly64>],
         proof: &MultiStarkProof<C>,
         ch: &mut Ch,

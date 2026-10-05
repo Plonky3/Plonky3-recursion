@@ -3,10 +3,7 @@
 use alloc::vec::Vec;
 use core::hash::Hash;
 
-use p3_binary_pcs::{
-    BinaryPcsConfig, BooleanTraceProof, ChallengeField, Coordinates, FoldAlphabet,
-    GroupedCodewordMmcs,
-};
+use p3_binary_pcs::{BinaryPcsConfig, ChallengeField, Coordinates, FoldAlphabet};
 use p3_challenger::{CanObserve, CanSampleUniformBits, FieldChallenger, GrindingChallenger};
 use p3_circuit::ops::{BinaryTower128Target, ByteHash};
 use p3_circuit::{CircuitBuilder, ExprId};
@@ -167,6 +164,10 @@ where
         )
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "The verifier keeps protocol inputs explicit."
+    )]
     pub fn with_limits(
         config: BinaryPcsConfig,
         protocol: OpeningProtocol,
@@ -360,11 +361,7 @@ where
         round_mmcs: &MerkleTreeMmcs<E, u8, H1, C1, 2, 32>,
         commitment: &MerkleCap<E, [u8; 32]>,
         points: &[Point<E>],
-        proof: &BooleanTraceProof<
-            E,
-            GroupedCodewordMmcs<MerkleTreeMmcs<E, u8, H0, C0, 2, 32>>,
-            GroupedCodewordMmcs<MerkleTreeMmcs<E, u8, H1, C1, 2, 32>>,
-        >,
+        proof: &super::GroupedByteMerkleBooleanTraceProof<E, H0, C0, H1, C1>,
         challenger: &mut Ch,
     ) -> Result<NativeBinaryGroupedBooleanTraceInput<E>, VerificationError>
     where
@@ -396,11 +393,7 @@ where
         round_mmcs: &MerkleTreeMmcs<E, u8, H1, C1, 2, 32>,
         commitment: &MerkleCap<E, [u8; 32]>,
         points: &[Point<E>],
-        proof: &BooleanTraceProof<
-            E,
-            GroupedCodewordMmcs<MerkleTreeMmcs<E, u8, H0, C0, 2, 32>>,
-            GroupedCodewordMmcs<MerkleTreeMmcs<E, u8, H1, C1, 2, 32>>,
-        >,
+        proof: &super::GroupedByteMerkleBooleanTraceProof<E, H0, C0, H1, C1>,
     ) -> Result<(), VerificationError>
     where
         E: PackedValue<Value = E>,
@@ -416,17 +409,17 @@ where
         Ok(())
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "The verifier keeps protocol inputs explicit."
+    )]
     pub(crate) fn import_native_with_usage<H0, C0, H1, C1, Ch>(
         &self,
         base_mmcs: &MerkleTreeMmcs<E, u8, H0, C0, 2, 32>,
         round_mmcs: &MerkleTreeMmcs<E, u8, H1, C1, 2, 32>,
         commitment: &MerkleCap<E, [u8; 32]>,
         points: &[Point<E>],
-        proof: &BooleanTraceProof<
-            E,
-            GroupedCodewordMmcs<MerkleTreeMmcs<E, u8, H0, C0, 2, 32>>,
-            GroupedCodewordMmcs<MerkleTreeMmcs<E, u8, H1, C1, 2, 32>>,
-        >,
+        proof: &super::GroupedByteMerkleBooleanTraceProof<E, H0, C0, H1, C1>,
         challenger: &mut Ch,
         usage: &core::cell::RefCell<InputResourceUsage>,
     ) -> Result<NativeBinaryGroupedBooleanTraceInput<E>, VerificationError>

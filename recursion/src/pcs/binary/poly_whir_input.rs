@@ -630,7 +630,7 @@ fn opening<P, CF>(
     is_base: bool,
     field: &mut impl FnMut(&mut CircuitBuilder<CF>) -> Result<P::ChallengeTarget, VerificationError>,
     base: &mut impl FnMut(&mut CircuitBuilder<CF>) -> Result<P::BaseTarget, VerificationError>,
-) -> Result<(Vec<Vec<P::ChallengeTarget>>, Vec<Vec<Vec<ExprId>>>), VerificationError>
+) -> Result<super::OracleOpeningTargets<Vec<P::ChallengeTarget>>, VerificationError>
 where
     CF: Field + Eq + Hash,
     P: BinaryRelationPolicy<CF>,
@@ -779,11 +779,11 @@ impl NativePolyWhirCursor<'_> {
         let end = self
             .position
             .checked_add(count)
-            .ok_or(invalid("native Poly WHIR coordinate cursor overflow"))?;
+            .ok_or_else(|| invalid("native Poly WHIR coordinate cursor overflow"))?;
         let words = self
             .limbs
             .get(self.position..end)
-            .ok_or(invalid("native Poly WHIR coordinate packing is truncated"))?;
+            .ok_or_else(|| invalid("native Poly WHIR coordinate packing is truncated"))?;
         self.position = end;
         Ok(words)
     }
@@ -809,7 +809,7 @@ impl NativePolyWhirCursor<'_> {
         self.coefficients(
             count
                 .checked_mul(3)
-                .ok_or(invalid("native Poly WHIR coefficient cursor overflow"))?,
+                .ok_or_else(|| invalid("native Poly WHIR coefficient cursor overflow"))?,
         )
     }
     fn fold(&mut self, shape: &FoldShape) -> Result<(), VerificationError> {

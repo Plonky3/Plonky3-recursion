@@ -349,7 +349,7 @@ where
         let challenger = indexed
             .as_ref()
             .map(|output| output.challenger.clone())
-            .unwrap_or(reduction.challenger.clone());
+            .unwrap_or_else(|| reduction.challenger.clone());
         let preprocessed_points = self
             .input
             .preprocessed_schedule

@@ -146,13 +146,7 @@ where
         cap: &[Vec<ExprId>],
         points: &[Vec<P::ChallengeTarget>],
         proof: &BinaryWhirProofTargets<P::ChallengeTarget, P::BaseTarget>,
-    ) -> Result<
-        (
-            Vec<OpeningBatch<P::ChallengeTarget>>,
-            BinaryTower128Challenger,
-        ),
-        VerificationError,
-    >
+    ) -> Result<super::WhirVerificationOutput<P::ChallengeTarget>, VerificationError>
     where
         CF: Field + Eq + Hash,
         H: BinaryCircuitHost<CF>,

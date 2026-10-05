@@ -7,6 +7,8 @@ use p3_circuit::ops::{BinaryPoly64Target, BinaryTower128Target};
 
 use super::*;
 
+type PublicStatementTargets<T> = (Vec<Vec<T>>, Vec<ExprId>);
+
 pub(super) trait ClosedStatement<F>: Sized {
     type Target;
     fn with_limits(counts: &[usize], limits: &VerifierLimits) -> Result<Self, VerificationError>;
@@ -14,7 +16,7 @@ pub(super) trait ClosedStatement<F>: Sized {
     fn allocate_public<BF, EF>(
         &self,
         b: &mut CircuitBuilder<EF>,
-    ) -> Result<(Vec<Vec<Self::Target>>, Vec<ExprId>), VerificationError>
+    ) -> Result<PublicStatementTargets<Self::Target>, VerificationError>
     where
         BF: PrimeField64,
         EF: ExtensionField<BF> + Eq + Hash;
@@ -118,7 +120,7 @@ impl<F: RecursiveBinaryTowerField> ClosedStatement<F> for BinaryStatementLayout<
     fn allocate_public<BF, EF>(
         &self,
         b: &mut CircuitBuilder<EF>,
-    ) -> Result<(Vec<Vec<Self::Target>>, Vec<ExprId>), VerificationError>
+    ) -> Result<PublicStatementTargets<Self::Target>, VerificationError>
     where
         BF: PrimeField64,
         EF: ExtensionField<BF> + Eq + Hash,
@@ -156,7 +158,7 @@ impl ClosedStatement<Poly64> for BinaryPolyStatementLayout {
     fn allocate_public<BF, EF>(
         &self,
         b: &mut CircuitBuilder<EF>,
-    ) -> Result<(Vec<Vec<Self::Target>>, Vec<ExprId>), VerificationError>
+    ) -> Result<PublicStatementTargets<Self::Target>, VerificationError>
     where
         BF: PrimeField64,
         EF: ExtensionField<BF> + Eq + Hash,

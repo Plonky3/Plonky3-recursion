@@ -25,6 +25,12 @@ use crate::verifier::binary_field_policy::{
 use crate::verifier::{InputResourceUsage, VerificationError, VerifierLimits};
 use crate::{BinaryQueryContinuation, BinaryTower128Challenger};
 
+type NativeSumcheckReduction<F, E> = (
+    NativeBinaryGenericSumcheckInput<F, E>,
+    p3_multilinear_util::point::Point<E>,
+    E,
+);
+
 #[derive(Clone, Debug)]
 pub struct BinaryGenericSumcheckProofTargets<T = BinaryTower128Target> {
     pub claimed_sum: T,
@@ -368,14 +374,7 @@ where
         &self,
         proof: &GenericDegreeProof<F, E>,
         mut ch: Ch,
-    ) -> Result<
-        (
-            NativeBinaryGenericSumcheckInput<F, E>,
-            p3_multilinear_util::point::Point<E>,
-            E,
-        ),
-        VerificationError,
-    >
+    ) -> Result<NativeSumcheckReduction<F, E>, VerificationError>
     where
         Ch: FieldChallenger<F> + GrindingChallenger<Witness = F>,
     {

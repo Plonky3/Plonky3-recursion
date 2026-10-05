@@ -13,6 +13,13 @@ pub(super) use whir::WhirFamily;
 
 use super::*;
 
+type NativeBooleanTraceError<E> =
+    p3_binary_pcs::BooleanTraceError<E, <NativeMmcs<E> as p3_commit::Mmcs<E>>::Error>;
+type NativeGroupedBooleanTraceError<E> = p3_binary_pcs::BooleanTraceError<
+    E,
+    <p3_binary_pcs::GroupedCodewordMmcs<NativeMmcs<E>> as p3_commit::Mmcs<E>>::Error,
+>;
+
 pub(super) trait NativeFamily<F, E>
 where
     F: NativeAlphabet + TranscriptField + PackedValue<Value = F>,
@@ -59,6 +66,10 @@ where
     fn usage(recursive: &Self::Recursive) -> InputResourceUsage;
     fn public_counts(decode: &Self::Decode) -> &[usize];
     fn decode_shape(recursive: &Self::Recursive) -> Self::Decode;
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "The verifier keeps protocol inputs explicit."
+    )]
     fn import_native(
         recursive: &Self::Recursive,
         config: &Self::Config,
@@ -110,38 +121,41 @@ where
         limits: &VerifierLimits,
     ) -> Result<Self::Recursive, VerificationError> {
         let main = spec.main;
-        if let Some(pp) = spec.preprocessed {
-            BinaryMultiStarkVerifier::with_preprocessing(
-                airs,
-                heights,
-                main.config,
-                main.hash,
-                main.cap_height,
-                spec.sumcheck_pow_bits,
-                spec.max_tau_draws,
-                main.max_query_draws,
-                BinaryMultiStarkPreprocessing {
-                    config: pp.config,
-                    hash: pp.hash,
-                    cap_height: pp.cap_height,
-                    max_query_draws: pp.max_query_draws,
-                    commitment: MerkleCap::new(vec![[0; 32]; roots]),
-                },
-                limits,
-            )
-        } else {
-            BinaryMultiStarkVerifier::with_limits(
-                airs,
-                heights,
-                main.config,
-                main.hash,
-                main.cap_height,
-                spec.sumcheck_pow_bits,
-                spec.max_tau_draws,
-                main.max_query_draws,
-                limits,
-            )
-        }
+        spec.preprocessed.map_or_else(
+            || {
+                BinaryMultiStarkVerifier::with_limits(
+                    airs,
+                    heights,
+                    main.config,
+                    main.hash,
+                    main.cap_height,
+                    spec.sumcheck_pow_bits,
+                    spec.max_tau_draws,
+                    main.max_query_draws,
+                    limits,
+                )
+            },
+            |pp| {
+                BinaryMultiStarkVerifier::with_preprocessing(
+                    airs,
+                    heights,
+                    main.config,
+                    main.hash,
+                    main.cap_height,
+                    spec.sumcheck_pow_bits,
+                    spec.max_tau_draws,
+                    main.max_query_draws,
+                    BinaryMultiStarkPreprocessing {
+                        config: pp.config,
+                        hash: pp.hash,
+                        cap_height: pp.cap_height,
+                        max_query_draws: pp.max_query_draws,
+                        commitment: MerkleCap::new(vec![[0; 32]; roots]),
+                    },
+                    limits,
+                )
+            },
+        )
     }
     fn build_config(
         spec: &BinaryNativeVerifierSpec,
@@ -243,44 +257,47 @@ where
         limits: &VerifierLimits,
     ) -> Result<Self::Recursive, VerificationError> {
         let main = spec.main.pcs;
-        if let Some(pp) = spec.preprocessed {
-            crate::verifier::BinaryGroupedMultiStarkVerifier::with_preprocessing(
-                airs,
-                heights,
-                main.config,
-                main.hash,
-                main.cap_height,
-                spec.sumcheck_pow_bits,
-                spec.max_tau_draws,
-                main.max_query_draws,
-                spec.main.base_grouping,
-                spec.main.round_grouping,
-                crate::verifier::BinaryGroupedMultiStarkPreprocessing {
-                    config: pp.pcs.config,
-                    hash: pp.pcs.hash,
-                    cap_height: pp.pcs.cap_height,
-                    max_query_draws: pp.pcs.max_query_draws,
-                    base_grouping: pp.base_grouping,
-                    round_grouping: pp.round_grouping,
-                    commitment: MerkleCap::new(vec![[0; 32]; roots]),
-                },
-                limits,
-            )
-        } else {
-            crate::verifier::BinaryGroupedMultiStarkVerifier::with_limits(
-                airs,
-                heights,
-                main.config,
-                main.hash,
-                main.cap_height,
-                spec.sumcheck_pow_bits,
-                spec.max_tau_draws,
-                main.max_query_draws,
-                spec.main.base_grouping,
-                spec.main.round_grouping,
-                limits,
-            )
-        }
+        spec.preprocessed.map_or_else(
+            || {
+                crate::verifier::BinaryGroupedMultiStarkVerifier::with_limits(
+                    airs,
+                    heights,
+                    main.config,
+                    main.hash,
+                    main.cap_height,
+                    spec.sumcheck_pow_bits,
+                    spec.max_tau_draws,
+                    main.max_query_draws,
+                    spec.main.base_grouping,
+                    spec.main.round_grouping,
+                    limits,
+                )
+            },
+            |pp| {
+                crate::verifier::BinaryGroupedMultiStarkVerifier::with_preprocessing(
+                    airs,
+                    heights,
+                    main.config,
+                    main.hash,
+                    main.cap_height,
+                    spec.sumcheck_pow_bits,
+                    spec.max_tau_draws,
+                    main.max_query_draws,
+                    spec.main.base_grouping,
+                    spec.main.round_grouping,
+                    crate::verifier::BinaryGroupedMultiStarkPreprocessing {
+                        config: pp.pcs.config,
+                        hash: pp.pcs.hash,
+                        cap_height: pp.pcs.cap_height,
+                        max_query_draws: pp.pcs.max_query_draws,
+                        base_grouping: pp.base_grouping,
+                        round_grouping: pp.round_grouping,
+                        commitment: MerkleCap::new(vec![[0; 32]; roots]),
+                    },
+                    limits,
+                )
+            },
+        )
     }
     fn build_config(
         spec: &BinaryNativeGroupedVerifierSpec,
@@ -401,44 +418,47 @@ where
         limits: &VerifierLimits,
     ) -> Result<Self::Recursive, VerificationError> {
         let main = spec.main.pcs;
-        if let Some(pp) = spec.preprocessed {
-            crate::verifier::BinaryGroupedBooleanTraceMultiStarkVerifier::with_preprocessing(
-                airs,
-                heights,
-                main.config,
-                main.hash,
-                main.cap_height,
-                spec.sumcheck_pow_bits,
-                spec.max_tau_draws,
-                main.max_query_draws,
-                spec.main.base_grouping,
-                spec.main.round_grouping,
-                crate::verifier::BinaryGroupedBooleanTraceMultiStarkPreprocessing {
-                    config: pp.pcs.config,
-                    hash: pp.pcs.hash,
-                    cap_height: pp.pcs.cap_height,
-                    max_query_draws: pp.pcs.max_query_draws,
-                    base_grouping: pp.base_grouping,
-                    round_grouping: pp.round_grouping,
-                    commitment: MerkleCap::new(vec![[0; 32]; roots]),
-                },
-                limits,
-            )
-        } else {
-            crate::verifier::BinaryGroupedBooleanTraceMultiStarkVerifier::with_limits(
-                airs,
-                heights,
-                main.config,
-                main.hash,
-                main.cap_height,
-                spec.sumcheck_pow_bits,
-                spec.max_tau_draws,
-                main.max_query_draws,
-                spec.main.base_grouping,
-                spec.main.round_grouping,
-                limits,
-            )
-        }
+        spec.preprocessed.map_or_else(
+            || {
+                crate::verifier::BinaryGroupedBooleanTraceMultiStarkVerifier::with_limits(
+                    airs,
+                    heights,
+                    main.config,
+                    main.hash,
+                    main.cap_height,
+                    spec.sumcheck_pow_bits,
+                    spec.max_tau_draws,
+                    main.max_query_draws,
+                    spec.main.base_grouping,
+                    spec.main.round_grouping,
+                    limits,
+                )
+            },
+            |pp| {
+                crate::verifier::BinaryGroupedBooleanTraceMultiStarkVerifier::with_preprocessing(
+                    airs,
+                    heights,
+                    main.config,
+                    main.hash,
+                    main.cap_height,
+                    spec.sumcheck_pow_bits,
+                    spec.max_tau_draws,
+                    main.max_query_draws,
+                    spec.main.base_grouping,
+                    spec.main.round_grouping,
+                    crate::verifier::BinaryGroupedBooleanTraceMultiStarkPreprocessing {
+                        config: pp.pcs.config,
+                        hash: pp.pcs.hash,
+                        cap_height: pp.pcs.cap_height,
+                        max_query_draws: pp.pcs.max_query_draws,
+                        base_grouping: pp.base_grouping,
+                        round_grouping: pp.round_grouping,
+                        commitment: MerkleCap::new(vec![[0; 32]; roots]),
+                    },
+                    limits,
+                )
+            },
+        )
     }
     fn build_config(
         spec: &BinaryNativeGroupedVerifierSpec,
@@ -560,38 +580,41 @@ where
         limits: &VerifierLimits,
     ) -> Result<Self::Recursive, VerificationError> {
         let main = spec.main;
-        if let Some(pp) = spec.preprocessed {
-            crate::verifier::BinaryBooleanTraceMultiStarkVerifier::with_preprocessing(
-                airs,
-                heights,
-                main.config,
-                main.hash,
-                main.cap_height,
-                spec.sumcheck_pow_bits,
-                spec.max_tau_draws,
-                main.max_query_draws,
-                crate::verifier::BinaryBooleanTraceMultiStarkPreprocessing {
-                    config: pp.config,
-                    hash: pp.hash,
-                    cap_height: pp.cap_height,
-                    max_query_draws: pp.max_query_draws,
-                    commitment: MerkleCap::new(vec![[0; 32]; roots]),
-                },
-                limits,
-            )
-        } else {
-            crate::verifier::BinaryBooleanTraceMultiStarkVerifier::with_limits(
-                airs,
-                heights,
-                main.config,
-                main.hash,
-                main.cap_height,
-                spec.sumcheck_pow_bits,
-                spec.max_tau_draws,
-                main.max_query_draws,
-                limits,
-            )
-        }
+        spec.preprocessed.map_or_else(
+            || {
+                crate::verifier::BinaryBooleanTraceMultiStarkVerifier::with_limits(
+                    airs,
+                    heights,
+                    main.config,
+                    main.hash,
+                    main.cap_height,
+                    spec.sumcheck_pow_bits,
+                    spec.max_tau_draws,
+                    main.max_query_draws,
+                    limits,
+                )
+            },
+            |pp| {
+                crate::verifier::BinaryBooleanTraceMultiStarkVerifier::with_preprocessing(
+                    airs,
+                    heights,
+                    main.config,
+                    main.hash,
+                    main.cap_height,
+                    spec.sumcheck_pow_bits,
+                    spec.max_tau_draws,
+                    main.max_query_draws,
+                    crate::verifier::BinaryBooleanTraceMultiStarkPreprocessing {
+                        config: pp.config,
+                        hash: pp.hash,
+                        cap_height: pp.cap_height,
+                        max_query_draws: pp.max_query_draws,
+                        commitment: MerkleCap::new(vec![[0; 32]; roots]),
+                    },
+                    limits,
+                )
+            },
+        )
     }
     fn build_config(
         spec: &BinaryNativeVerifierSpec,
@@ -714,13 +737,7 @@ fn grouped_boolean_trace_pcs<E>(
     p: &BinaryNativeGroupedPcsParameters,
     base: &NativeMmcs<E>,
     round: &NativeMmcs<E>,
-) -> Result<
-    config::NativeGroupedBooleanTracePcs<E>,
-    p3_binary_pcs::BooleanTraceError<
-        E,
-        <p3_binary_pcs::GroupedCodewordMmcs<NativeMmcs<E>> as p3_commit::Mmcs<E>>::Error,
-    >,
->
+) -> Result<config::NativeGroupedBooleanTracePcs<E>, NativeGroupedBooleanTraceError<E>>
 where
     E: RecursiveBinaryChallengeField
         + EncodableLevel
@@ -742,10 +759,7 @@ fn boolean_trace_pcs<E>(
     p: &BinaryNativePcsParameters,
     base: &NativeMmcs<E>,
     round: &NativeMmcs<E>,
-) -> Result<
-    config::NativeBooleanTracePcs<E>,
-    p3_binary_pcs::BooleanTraceError<E, <NativeMmcs<E> as p3_commit::Mmcs<E>>::Error>,
->
+) -> Result<config::NativeBooleanTracePcs<E>, NativeBooleanTraceError<E>>
 where
     E: RecursiveBinaryChallengeField
         + EncodableLevel

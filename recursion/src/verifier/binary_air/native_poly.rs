@@ -28,6 +28,10 @@ impl BinaryPolyAirConstraintPlan {
         self.evaluate_native_with_auxiliary(b, point, current, next, &[], &[], public, alpha)
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "The verifier keeps protocol inputs explicit."
+    )]
     pub fn evaluate_native_with_auxiliary(
         &self,
         b: &mut CircuitBuilder<Poly64>,
@@ -52,6 +56,10 @@ impl BinaryPolyAirConstraintPlan {
         .map(|evaluation| evaluation.folded)
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "The verifier keeps protocol inputs explicit."
+    )]
     pub(in crate::verifier) fn evaluate_using<P, CF>(
         &self,
         b: &mut CircuitBuilder<CF>,

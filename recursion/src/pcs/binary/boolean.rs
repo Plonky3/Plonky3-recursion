@@ -4,7 +4,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::hash::Hash;
 
-use p3_binary_pcs::{BinaryPcsConfig, BooleanProof};
+use p3_binary_pcs::BinaryPcsConfig;
 use p3_challenger::{CanObserve, CanSampleUniformBits, FieldChallenger, GrindingChallenger};
 use p3_circuit::ops::ByteHash;
 use p3_circuit::{CircuitBuilder, ExprId};
@@ -288,11 +288,7 @@ impl<E: RecursiveBinaryChallengeField + ExtensionField<E>> BinaryBooleanPcsVerif
         base_mmcs: &MerkleTreeMmcs<E, u8, H0, C0, 2, 32>,
         round_mmcs: &MerkleTreeMmcs<E, u8, H1, C1, 2, 32>,
         commitment: &MerkleCap<E, [u8; 32]>,
-        proof: &BooleanProof<
-            E,
-            MerkleTreeMmcs<E, u8, H0, C0, 2, 32>,
-            MerkleTreeMmcs<E, u8, H1, C1, 2, 32>,
-        >,
+        proof: &super::ByteMerkleBooleanProof<E, H0, C0, H1, C1>,
     ) -> Result<(), VerificationError>
     where
         E: PackedValue<Value = E>,
@@ -315,11 +311,7 @@ impl<E: RecursiveBinaryChallengeField + ExtensionField<E>> BinaryBooleanPcsVerif
         base_mmcs: &MerkleTreeMmcs<E, u8, H0, C0, 2, 32>,
         round_mmcs: &MerkleTreeMmcs<E, u8, H1, C1, 2, 32>,
         commitment: &MerkleCap<E, [u8; 32]>,
-        proof: &BooleanProof<
-            E,
-            MerkleTreeMmcs<E, u8, H0, C0, 2, 32>,
-            MerkleTreeMmcs<E, u8, H1, C1, 2, 32>,
-        >,
+        proof: &super::ByteMerkleBooleanProof<E, H0, C0, H1, C1>,
         usage: &mut InputResourceUsage,
     ) -> Result<(), VerificationError>
     where
@@ -350,6 +342,10 @@ impl<E: RecursiveBinaryChallengeField + ExtensionField<E>> BinaryBooleanPcsVerif
     /// Checks both native proof shapes before replay, verifies the ring readings,
     /// and imports the remaining opening with a finite query draw budget. Path
     /// restoration supplies witnesses; it does not replace circuit verification.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "The verifier keeps protocol inputs explicit."
+    )]
     pub fn import_native<H0, C0, H1, C1, Ch>(
         &self,
         base_mmcs: &MerkleTreeMmcs<E, u8, H0, C0, 2, 32>,
@@ -357,11 +353,7 @@ impl<E: RecursiveBinaryChallengeField + ExtensionField<E>> BinaryBooleanPcsVerif
         commitment: &MerkleCap<E, [u8; 32]>,
         points: &[Point<E>],
         readings: &[(Option<E>, Option<E>)],
-        proof: &BooleanProof<
-            E,
-            MerkleTreeMmcs<E, u8, H0, C0, 2, 32>,
-            MerkleTreeMmcs<E, u8, H1, C1, 2, 32>,
-        >,
+        proof: &super::ByteMerkleBooleanProof<E, H0, C0, H1, C1>,
         mut challenger: Ch,
     ) -> Result<NativeBinaryBooleanInput<E>, VerificationError>
     where

@@ -176,14 +176,14 @@ where
         batch.len(),
         E::RAW_BITS.ilog2() as usize,
     )?;
-    if let Some((kept, _)) = successor {
-        if kept == 0 || kept > high.len() {
-            return Err(CircuitBuilderError::NonPrimitiveOpArity {
-                op: "BinaryTensorSuccessor",
-                expected: format!("1..={} kept row variables", high.len()),
-                got: kept,
-            });
-        }
+    if let Some((kept, _)) = successor
+        && (kept == 0 || kept > high.len())
+    {
+        return Err(CircuitBuilderError::NonPrimitiveOpArity {
+            op: "BinaryTensorSuccessor",
+            expected: format!("1..={} kept row variables", high.len()),
+            got: kept,
+        });
     }
     constrain_width::<E, F>(circuit, high);
     constrain_width::<E, F>(circuit, survivor);

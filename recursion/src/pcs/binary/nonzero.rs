@@ -18,6 +18,8 @@ use super::whir_plan::invalid;
 use crate::verifier::{InputResourceUsage, VerificationError, VerifierLimits};
 use crate::{BinaryQueryContinuation, BinaryTower128Challenger};
 
+type NonzeroSelection<T> = (Vec<T>, Vec<T>, [ExprId; 32]);
+
 /// Verifier-owned count and draw budget for a rejection-sampled nonzero point.
 /// The field identity pins the native sample width and Wiedemann coordinates.
 #[derive(Clone, Debug)]
@@ -304,14 +306,7 @@ fn select_nonzero_with_tail<EF: p3_field::Field + Eq + Hash>(
     max_draws: usize,
     following_count: usize,
     candidates: &[Candidate],
-) -> Result<
-    (
-        Vec<BinaryTower128Target>,
-        Vec<BinaryTower128Target>,
-        [ExprId; 32],
-    ),
-    VerificationError,
-> {
+) -> Result<NonzeroSelection<BinaryTower128Target>, VerificationError> {
     if !matches!(bits, 64 | 128) {
         return Err(invalid("binary nonzero selection shape"));
     }
@@ -349,7 +344,7 @@ pub(super) fn select_nonzero_words<const W: usize, EF: p3_field::Field + Eq + Ha
     max_draws: usize,
     following_count: usize,
     candidates: &[([ExprId; W], [ExprId; 32])],
-) -> Result<(Vec<[ExprId; W]>, Vec<[ExprId; W]>, [ExprId; 32]), VerificationError> {
+) -> Result<NonzeroSelection<[ExprId; W]>, VerificationError> {
     if count == 0
         || count > max_draws
         || bits == 0

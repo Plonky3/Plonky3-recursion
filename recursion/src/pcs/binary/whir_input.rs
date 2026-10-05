@@ -669,7 +669,7 @@ fn opening<CF, T>(
     site: &OracleSite,
     cap: usize,
     field: &mut impl FnMut(&mut CircuitBuilder<CF>) -> Result<T, VerificationError>,
-) -> Result<(Vec<Vec<T>>, Vec<Vec<Vec<ExprId>>>), VerificationError>
+) -> Result<super::OracleOpeningTargets<Vec<T>>, VerificationError>
 where
     CF: Field + Eq + Hash,
 {
@@ -786,11 +786,11 @@ impl NativeWhirCursor<'_> {
         let end = self
             .position
             .checked_add(count)
-            .ok_or(invalid("native WHIR coordinate cursor overflow"))?;
+            .ok_or_else(|| invalid("native WHIR coordinate cursor overflow"))?;
         let words = self
             .limbs
             .get(self.position..end)
-            .ok_or(invalid("native WHIR coordinate packing is truncated"))?;
+            .ok_or_else(|| invalid("native WHIR coordinate packing is truncated"))?;
         self.position = end;
         Ok(words)
     }

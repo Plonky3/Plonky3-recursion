@@ -321,6 +321,10 @@ impl BinaryBooleanWhirTraceMultiStarkVerifier {
         )
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "The verifier keeps protocol inputs explicit."
+    )]
     pub fn with_limits<A, PC>(
         airs: &[&A],
         heights: &[usize],
@@ -351,6 +355,10 @@ impl BinaryBooleanWhirTraceMultiStarkVerifier {
 
     /// Builds a verifier retaining an independent trusted preprocessing cap.
     /// No proof can provide or replace this authority.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "The verifier keeps protocol inputs explicit."
+    )]
     pub fn with_preprocessing<A, PC>(
         airs: &[&A],
         heights: &[usize],
@@ -380,6 +388,10 @@ impl BinaryBooleanWhirTraceMultiStarkVerifier {
         )
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "The verifier keeps protocol inputs explicit."
+    )]
     fn build<A, PC>(
         airs: &[&A],
         heights: &[usize],
@@ -608,10 +620,17 @@ impl BinaryBooleanWhirTraceMultiStarkVerifier {
         &self,
         config: &WhirConfig<BinaryField128, F, C::Challenger>,
         mmcs: &MerkleTreeMmcs<F, u8, H, Co, 2, 32>,
-        preprocessed: Option<(
-            &WhirConfig<BinaryField128, F, C::Challenger>,
-            &MerkleTreeMmcs<F, u8, H, Co, 2, 32>,
-        )>,
+        preprocessed: Option<
+            crate::pcs::binary::ByteMerkleWhirParameters<
+                '_,
+                '_,
+                F,
+                BinaryField128,
+                C::Challenger,
+                H,
+                Co,
+            >,
+        >,
         public: &[Vec<F>],
         proof: &MultiStarkProof<C>,
         ch: &mut Ch,

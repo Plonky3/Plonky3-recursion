@@ -12,6 +12,11 @@ use p3_sumcheck::layout::Table;
 
 use super::*;
 
+type SetupOutput<F, E, A, K> = (
+    Arc<State<F, E, A, K>>,
+    ProvingKey<<K as NativeFamily<F, E>>::Config>,
+);
+
 pub(super) struct State<F, E, A, K = RawFamily>
 where
     F: NativeAlphabet + TranscriptField + PackedValue<Value = F>,
@@ -37,7 +42,7 @@ pub(super) fn setup<F, E, A, K>(
     heights: Vec<usize>,
     spec: BinaryNativeVerifierSpec<K::Parameters>,
     limits: ArtifactLimits,
-) -> Result<(Arc<State<F, E, A, K>>, ProvingKey<K::Config>), VerificationError>
+) -> Result<SetupOutput<F, E, A, K>, VerificationError>
 where
     F: NativeAlphabet + TranscriptField + PackedValue<Value = F>,
     E: ExtensionField<F> + PackedValue<Value = E>,
@@ -138,7 +143,7 @@ where
             ))
         })?;
     let identity = identity::<F, E, K>(&binary, &spec, &limits)
-        .map_err(identity_error)?
+        .map_err(|error| identity_error(&error))?
         .into_boxed_slice();
     let state = Arc::new(State {
         config,

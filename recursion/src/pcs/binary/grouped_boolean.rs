@@ -4,7 +4,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::hash::Hash;
 
-use p3_binary_pcs::{BinaryPcsConfig, BooleanProof, GroupedCodewordMmcs};
+use p3_binary_pcs::BinaryPcsConfig;
 use p3_challenger::{CanObserve, CanSampleUniformBits, FieldChallenger, GrindingChallenger};
 use p3_circuit::ops::ByteHash;
 use p3_circuit::{CircuitBuilder, ExprId};
@@ -135,6 +135,10 @@ impl<E: RecursiveBinaryChallengeField + ExtensionField<E>> BinaryGroupedBooleanP
     }
 
     /// Checks the combined operational budget before constructing any inputs.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "The verifier keeps protocol inputs explicit."
+    )]
     pub fn with_limits(
         config: BinaryPcsConfig,
         specs: Vec<BinaryRingClaimSpec>,
@@ -301,11 +305,7 @@ impl<E: RecursiveBinaryChallengeField + ExtensionField<E>> BinaryGroupedBooleanP
         base_mmcs: &MerkleTreeMmcs<E, u8, H0, C0, 2, 32>,
         round_mmcs: &MerkleTreeMmcs<E, u8, H1, C1, 2, 32>,
         commitment: &MerkleCap<E, [u8; 32]>,
-        proof: &BooleanProof<
-            E,
-            GroupedCodewordMmcs<MerkleTreeMmcs<E, u8, H0, C0, 2, 32>>,
-            GroupedCodewordMmcs<MerkleTreeMmcs<E, u8, H1, C1, 2, 32>>,
-        >,
+        proof: &super::GroupedByteMerkleBooleanProof<E, H0, C0, H1, C1>,
     ) -> Result<(), VerificationError>
     where
         E: PackedValue<Value = E>,
@@ -335,6 +335,10 @@ impl<E: RecursiveBinaryChallengeField + ExtensionField<E>> BinaryGroupedBooleanP
     /// and imports the remaining opening with a finite query draw budget. Every
     /// failure leaves the caller's challenger unchanged. Path
     /// restoration supplies witnesses; it does not replace circuit verification.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "The verifier keeps protocol inputs explicit."
+    )]
     pub fn import_native<H0, C0, H1, C1, Ch>(
         &self,
         base_mmcs: &MerkleTreeMmcs<E, u8, H0, C0, 2, 32>,
@@ -342,11 +346,7 @@ impl<E: RecursiveBinaryChallengeField + ExtensionField<E>> BinaryGroupedBooleanP
         commitment: &MerkleCap<E, [u8; 32]>,
         points: &[Point<E>],
         readings: &[(Option<E>, Option<E>)],
-        proof: &BooleanProof<
-            E,
-            GroupedCodewordMmcs<MerkleTreeMmcs<E, u8, H0, C0, 2, 32>>,
-            GroupedCodewordMmcs<MerkleTreeMmcs<E, u8, H1, C1, 2, 32>>,
-        >,
+        proof: &super::GroupedByteMerkleBooleanProof<E, H0, C0, H1, C1>,
         challenger: &mut Ch,
     ) -> Result<NativeBinaryGroupedBooleanInput<E>, VerificationError>
     where
@@ -373,6 +373,10 @@ impl<E: RecursiveBinaryChallengeField + ExtensionField<E>> BinaryGroupedBooleanP
         )
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "The verifier keeps protocol inputs explicit."
+    )]
     pub(crate) fn import_native_with_usage<H0, C0, H1, C1, Ch>(
         &self,
         base_mmcs: &MerkleTreeMmcs<E, u8, H0, C0, 2, 32>,
@@ -380,11 +384,7 @@ impl<E: RecursiveBinaryChallengeField + ExtensionField<E>> BinaryGroupedBooleanP
         commitment: &MerkleCap<E, [u8; 32]>,
         points: &[Point<E>],
         readings: &[(Option<E>, Option<E>)],
-        proof: &BooleanProof<
-            E,
-            GroupedCodewordMmcs<MerkleTreeMmcs<E, u8, H0, C0, 2, 32>>,
-            GroupedCodewordMmcs<MerkleTreeMmcs<E, u8, H1, C1, 2, 32>>,
-        >,
+        proof: &super::GroupedByteMerkleBooleanProof<E, H0, C0, H1, C1>,
         challenger: &mut Ch,
         usage: &core::cell::RefCell<InputResourceUsage>,
     ) -> Result<NativeBinaryGroupedBooleanInput<E>, VerificationError>
