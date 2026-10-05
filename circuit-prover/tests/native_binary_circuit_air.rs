@@ -1,12 +1,11 @@
 //! Native custom hash tables must bind both sides to the canonical witness.
 
 use p3_air::{BaseAir, check_constraints};
-use p3_circuit::{CircuitBuilder, ops::binary_native::BinaryCoordinateField};
-use p3_circuit_prover::{
-    direct::{DirectCircuitAir, DirectCircuitLimits},
-    indexed::IndexedCircuit,
-    native_binary::NativeBinaryCircuit,
-};
+use p3_circuit::CircuitBuilder;
+use p3_circuit::ops::binary_native::BinaryCoordinateField;
+use p3_circuit_prover::direct::{DirectCircuitAir, DirectCircuitLimits};
+use p3_circuit_prover::indexed::IndexedCircuit;
+use p3_circuit_prover::native_binary::NativeBinaryCircuit;
 use p3_field::PrimeCharacteristicRing;
 use p3_keccak::KeccakF;
 use p3_symmetric::Permutation;

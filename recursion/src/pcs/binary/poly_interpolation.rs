@@ -20,10 +20,11 @@ pub(crate) struct Poly192SumcheckInterpolator {
 
 #[cfg(test)]
 mod native_tests {
-    use super::*;
-    use crate::verifier::binary_field_policy::NativePoly64Relation;
     use p3_circuit::ops::NativePoly192Target;
     use p3_sumcheck::generic_degree::RoundPolyInterpolator;
+
+    use super::*;
+    use crate::verifier::binary_field_policy::NativePoly64Relation;
 
     fn scalar(b: &mut CircuitBuilder<Poly64>) -> NativePoly192Target {
         let coefficients = b.alloc_public_input_array::<3>("native Poly192 interpolation value");

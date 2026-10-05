@@ -7,7 +7,8 @@ use p3_binary_field::{Poly64, Poly192};
 use p3_bus::{BusDirection, BusPlan, BusProof, BusTupleSlot};
 use p3_challenger::FieldChallenger;
 use p3_circuit::CircuitBuilder;
-use p3_circuit::ops::{BinaryPoly192Target, binary_host::BinaryCircuitHost};
+use p3_circuit::ops::BinaryPoly192Target;
+use p3_circuit::ops::binary_host::BinaryCircuitHost;
 use p3_field::Field;
 
 use super::binary_air::BinaryAirEvaluation;

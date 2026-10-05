@@ -1,17 +1,13 @@
 //! Native binary carriers authenticate the same mixed-height byte Merkle trees.
 
 use p3_binary_field::{BinaryField8, BinaryField128, Poly64, TowerLevel};
-use p3_circuit::{
-    CircuitBuilder, ExprId,
-    ops::{
-        ByteHash,
-        binary_encoding::{BinaryCircuitEncoding, NativeBinaryEncoding},
-        binary_native::BinaryCoordinateField,
-        bytes_to_limbs,
-    },
-};
+use p3_circuit::ops::binary_encoding::{BinaryCircuitEncoding, NativeBinaryEncoding};
+use p3_circuit::ops::binary_native::BinaryCoordinateField;
+use p3_circuit::ops::{ByteHash, bytes_to_limbs};
+use p3_circuit::{CircuitBuilder, ExprId};
 use p3_commit::Mmcs;
-use p3_matrix::{Matrix, dense::RowMajorMatrix};
+use p3_matrix::Matrix;
+use p3_matrix::dense::RowMajorMatrix;
 use p3_test_utils::binary_field_params::keccak;
 
 fn check<F: BinaryCoordinateField>(heights: &[usize], cap_height: usize, index: usize) {

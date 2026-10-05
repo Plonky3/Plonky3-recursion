@@ -212,11 +212,12 @@ impl BinaryWhirPolicy<Poly64> for NativePoly64Relation {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use p3_air::check_constraints;
     use p3_circuit::ops::binary_encoding::{BinaryCircuitEncoding, NativeBinaryEncoding};
     use p3_circuit_prover::direct::DirectCircuitAir;
     use p3_field::PrimeCharacteristicRing;
+
+    use super::*;
 
     #[test]
     fn native_query_points_check_between_coordinates() {

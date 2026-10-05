@@ -6,14 +6,10 @@ use p3_binary_field::{
 use p3_challenger::{
     CanObserve, CanSample, CanSampleBits, FieldChallenger, GrindingChallenger, HashChallenger,
 };
-use p3_circuit::{
-    CircuitBuilder, ExprId,
-    ops::{
-        ByteHash,
-        binary_encoding::{BinaryCircuitEncoding, NativeBinaryEncoding},
-        binary_native::BinaryCoordinateField,
-    },
-};
+use p3_circuit::ops::ByteHash;
+use p3_circuit::ops::binary_encoding::{BinaryCircuitEncoding, NativeBinaryEncoding};
+use p3_circuit::ops::binary_native::BinaryCoordinateField;
+use p3_circuit::{CircuitBuilder, ExprId};
 use p3_keccak::Keccak256Hash;
 use p3_recursion::BinaryTower128Challenger;
 use p3_symmetric::Hash;

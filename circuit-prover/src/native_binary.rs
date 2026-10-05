@@ -6,17 +6,16 @@
 //! and all read positions. The native authority must retain the complete AIR
 //! list and preprocessing commitments. These proofs do not hide witnesses.
 
-use alloc::{vec, vec::Vec};
+use alloc::vec;
+use alloc::vec::Vec;
 
 use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
+use p3_circuit::Circuit;
 use p3_circuit::ops::binary_native::BinaryCoordinateField;
 use p3_circuit::ops::keccak_perm::{KECCAK_STATE_LIMBS, keccak_limbs_to_state};
-use p3_circuit::{
-    Circuit,
-    ops::{NpoTypeId, Op},
-    tables::WitnessTrace,
-    types::WitnessId,
-};
+use p3_circuit::ops::{NpoTypeId, Op};
+use p3_circuit::tables::WitnessTrace;
+use p3_circuit::types::WitnessId;
 use p3_field::Field;
 use p3_keccak_air::{
     KECCAK_BINARY_ROWS_PER_PERM, KeccakBinaryAir, NUM_KECCAK_BINARY_COLS,

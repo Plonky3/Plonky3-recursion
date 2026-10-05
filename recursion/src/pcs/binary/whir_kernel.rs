@@ -1,4 +1,13 @@
 //! Field-neutral released non-hiding additive WHIR relation.
+use alloc::vec::Vec;
+use core::hash::Hash;
+
+use p3_circuit::ops::binary_host::BinaryCircuitHost;
+use p3_circuit::{CircuitBuilder, ExprId};
+use p3_field::Field;
+use p3_sumcheck::OpeningBatch;
+use p3_sumcheck::strategy::VariableOrder;
+
 use super::gadgets::{next_eval_using, reduce_sumcheck_using};
 use super::verifier::observe_cap_with_host;
 use super::whir_gadgets::{eval_coefficients_using, eval_multilinear_using, select_eval_using};
@@ -7,12 +16,6 @@ use super::{BinaryWhirProofTargets, BinaryWhirSumcheckTargets};
 use crate::BinaryTower128Challenger;
 use crate::verifier::VerificationError;
 use crate::verifier::binary_field_policy::{BinaryOracleWord, BinaryWhirPolicy};
-use alloc::vec::Vec;
-use core::hash::Hash;
-use p3_circuit::ops::binary_host::BinaryCircuitHost;
-use p3_circuit::{CircuitBuilder, ExprId};
-use p3_field::Field;
-use p3_sumcheck::{OpeningBatch, strategy::VariableOrder};
 enum Weight<T> {
     Eq(Vec<T>),
     Next {

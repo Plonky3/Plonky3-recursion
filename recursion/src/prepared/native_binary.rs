@@ -1,36 +1,31 @@
 //! Prepared Tower32/Tower128 verifier circuits proved over Tower128.
 
-use alloc::{sync::Arc, vec::Vec};
+use alloc::sync::Arc;
+use alloc::vec::Vec;
 
 use p3_binary_dft::EncodableLevel;
 use p3_binary_field::{BinaryField128, TowerLevel};
-use p3_binary_pcs::{ChallengeField, FoldAlphabet, whir::BinaryWhirDomain};
-use p3_circuit::{
-    Circuit, CircuitBuilder, CircuitConstructionLimits,
-    ops::{
-        ByteHash,
-        binary_encoding::{BinaryCircuitEncoding, NativeBinaryEncoding},
-        binary_host::BinaryCircuitHost,
-    },
-};
-use p3_circuit_prover::{
-    direct::DirectCircuitLimits,
-    native_bus::{NativeBusCircuit, NativeBusCircuitAir},
-};
+use p3_binary_pcs::whir::BinaryWhirDomain;
+use p3_binary_pcs::{ChallengeField, FoldAlphabet};
+use p3_circuit::ops::ByteHash;
+use p3_circuit::ops::binary_encoding::{BinaryCircuitEncoding, NativeBinaryEncoding};
+use p3_circuit::ops::binary_host::BinaryCircuitHost;
+use p3_circuit::{Circuit, CircuitBuilder, CircuitConstructionLimits};
+use p3_circuit_prover::direct::DirectCircuitLimits;
+use p3_circuit_prover::native_bus::{NativeBusCircuit, NativeBusCircuitAir};
 use p3_field::{ExtensionField, PackedValue};
-use p3_multi_stark::{MultiStarkProof, folder::VerifierAir};
+use p3_multi_stark::MultiStarkProof;
+use p3_multi_stark::folder::VerifierAir;
 use p3_whir::{FoldingFactor, ProtocolParameters, WhirDomain};
 
-use crate::{
-    BinaryTower128Challenger,
-    artifact::{
-        ArtifactLimits, BinaryNativeVerifierSpec, BinaryNativeWhirAuthority,
-        BinaryNativeWhirConfig, BinaryNativeWhirLayout, BinaryNativeWhirPcsParameters,
-        BinaryNativeWhirProver, VerifiedBinaryNativeWhirProof,
-    },
-    pcs::binary::RecursiveBinaryWhirTowerField,
-    verifier::{BinaryWhirMultiStarkInputShape, VerificationError},
+use crate::BinaryTower128Challenger;
+use crate::artifact::{
+    ArtifactLimits, BinaryNativeVerifierSpec, BinaryNativeWhirAuthority, BinaryNativeWhirConfig,
+    BinaryNativeWhirLayout, BinaryNativeWhirPcsParameters, BinaryNativeWhirProver,
+    VerifiedBinaryNativeWhirProof,
 };
+use crate::pcs::binary::RecursiveBinaryWhirTowerField;
+use crate::verifier::{BinaryWhirMultiStarkInputShape, VerificationError};
 
 type F = BinaryField128;
 type H = NativeBinaryEncoding;

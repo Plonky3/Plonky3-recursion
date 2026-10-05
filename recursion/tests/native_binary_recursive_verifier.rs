@@ -1,24 +1,18 @@
 //! A complete native verifier binds the product bus, AIR and both PCS openings.
 
 use p3_binary_field::{BinaryField32, BinaryField128, TowerLevel};
+use p3_circuit::ops::ByteHash;
+use p3_circuit::ops::binary_encoding::{BinaryCircuitEncoding, NativeBinaryEncoding};
 use p3_circuit::ops::binary_native::BinaryCoordinateField;
-use p3_circuit::{
-    Circuit, CircuitBuilder,
-    ops::{
-        ByteHash,
-        binary_encoding::{BinaryCircuitEncoding, NativeBinaryEncoding},
-    },
-};
+use p3_circuit::{Circuit, CircuitBuilder};
 use p3_circuit_prover::native_bus::NativeBusCircuit;
 use p3_field::{ExtensionField, PrimeCharacteristicRing};
-use p3_recursion::pcs::binary::RecursiveBinaryWhirTowerField;
-use p3_recursion::{
-    BinaryTower128Challenger,
-    artifact::{
-        BinaryNativeVerifierSpec, BinaryNativeWhirAuthority, BinaryNativeWhirPcsParameters,
-    },
-    verifier::VerifierLimits,
+use p3_recursion::BinaryTower128Challenger;
+use p3_recursion::artifact::{
+    BinaryNativeVerifierSpec, BinaryNativeWhirAuthority, BinaryNativeWhirPcsParameters,
 };
+use p3_recursion::pcs::binary::RecursiveBinaryWhirTowerField;
+use p3_recursion::verifier::VerifierLimits;
 use p3_whir::{FoldingFactor, ProtocolParameters, SecurityAssumption};
 
 type F = BinaryField128;

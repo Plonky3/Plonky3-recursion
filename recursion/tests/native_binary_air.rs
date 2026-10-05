@@ -1,23 +1,21 @@
 //! Native scalar AIR folding agrees with the native multilinear folder.
 
-use p3_air::{
-    Air, AirBuilder, BaseAir, WindowAccess,
-    boundary::{BoundaryEnd, BoundaryPublic},
-};
+use std::borrow::Cow;
+
+use p3_air::boundary::{BoundaryEnd, BoundaryPublic};
+use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 use p3_binary_field::{BinaryField32, BinaryField128, TowerLevel};
 use p3_binary_pcs::{BinaryPcsConfig, BinaryPcsParams};
-use p3_circuit::{
-    CircuitBuilder,
-    ops::{ByteHash, NativeTower128Target},
-};
+use p3_circuit::CircuitBuilder;
+use p3_circuit::ops::{ByteHash, NativeTower128Target};
 use p3_circuit_prover::native_bus::NativeBusCircuit;
 use p3_field::PrimeCharacteristicRing;
-use p3_multi_stark::{folder::MultilinearFolder, selectors::BoundaryEvals};
-use p3_recursion::{
-    artifact::{BinaryNativeAuthority, BinaryNativePcsParameters, BinaryNativeVerifierSpec},
-    verifier::{BinaryAirConstraintPlan, VerifierLimits},
+use p3_multi_stark::folder::MultilinearFolder;
+use p3_multi_stark::selectors::BoundaryEvals;
+use p3_recursion::artifact::{
+    BinaryNativeAuthority, BinaryNativePcsParameters, BinaryNativeVerifierSpec,
 };
-use std::borrow::Cow;
+use p3_recursion::verifier::{BinaryAirConstraintPlan, VerifierLimits};
 
 type F = BinaryField128;
 
@@ -29,7 +27,9 @@ impl BaseAir<BinaryField32> for NarrowAir {
     fn num_public_values(&self) -> usize {
         1
     }
-    fn main_next_row_columns(&self) -> Vec<usize> { vec![] }
+    fn main_next_row_columns(&self) -> Vec<usize> {
+        vec![]
+    }
 }
 impl<AB: AirBuilder<F = BinaryField32>> Air<AB> for NarrowAir {
     fn eval(&self, b: &mut AB) {

@@ -10,8 +10,9 @@
 use alloc::vec::Vec;
 use core::hash::Hash;
 
+use p3_circuit::ops::binary_encoding::PrimeBinaryEncoding;
+use p3_circuit::ops::binary_host::BinaryCircuitHost;
 use p3_circuit::ops::{BinaryPoly64Target, BinaryPoly192Target, BinaryTower128Target, ByteHash};
-use p3_circuit::ops::{binary_encoding::PrimeBinaryEncoding, binary_host::BinaryCircuitHost};
 use p3_circuit::{CircuitBuilder, CircuitBuilderError, ExprId};
 use p3_field::{ExtensionField, Field, PrimeField64};
 

@@ -3,16 +3,13 @@
 use p3_binary_field::{BinaryChallenger, BinaryField128, TowerLevel};
 use p3_bus::{ProductGkrProof, ProductGkrRootShape, ProductGkrShape};
 use p3_challenger::FieldChallenger;
-use p3_circuit::{
-    Circuit, CircuitBuilder,
-    ops::{
-        ByteHash, NativeTower128Target,
-        binary_encoding::{BinaryCircuitEncoding, NativeBinaryEncoding},
-    },
-};
+use p3_circuit::ops::binary_encoding::{BinaryCircuitEncoding, NativeBinaryEncoding};
+use p3_circuit::ops::{ByteHash, NativeTower128Target};
+use p3_circuit::{Circuit, CircuitBuilder};
 use p3_field::PrimeCharacteristicRing;
 use p3_keccak::Keccak256Hash;
-use p3_recursion::{BinaryTower128Challenger, verifier::BinaryProductGkrVerifier};
+use p3_recursion::BinaryTower128Challenger;
+use p3_recursion::verifier::BinaryProductGkrVerifier;
 
 type F = BinaryField128;
 type H = NativeBinaryEncoding;

@@ -3,6 +3,8 @@
 use alloc::sync::Arc;
 
 use p3_bus::{BusPlan, BusPlanInput};
+use p3_circuit::ops::binary_encoding::PrimeBinaryEncoding;
+use p3_circuit::ops::binary_host::BinaryCircuitHost;
 use p3_multi_stark::rounds::AirDegrees;
 use p3_multi_stark::transcript::{MultiStarkInstanceShape, MultiStarkShape};
 use p3_multi_stark::zerocheck::transcript::ZerocheckShape;
@@ -25,7 +27,6 @@ use crate::pcs::binary::{
     BinaryPolyNonzeroChallengePlan,
 };
 use crate::transcript::domain_separator_seed;
-use p3_circuit::ops::{binary_encoding::PrimeBinaryEncoding, binary_host::BinaryCircuitHost};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct PolyMultiStarkRelationShape {

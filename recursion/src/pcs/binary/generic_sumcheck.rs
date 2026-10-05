@@ -4,16 +4,16 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::hash::Hash;
 
-use super::RecursiveBinaryChallengeField;
-use crate::verifier::binary_field_policy::{
-    BinaryRelationPolicy, NativeTower128Relation, TowerRelation,
-};
 use p3_binary_field::{BinaryField128, TowerLevel};
 use p3_circuit::CircuitBuilder;
 use p3_circuit::ops::{BinaryTower128Target, NativeTower128Target};
 use p3_field::Field;
 
+use super::RecursiveBinaryChallengeField;
 use super::whir_plan::invalid;
+use crate::verifier::binary_field_policy::{
+    BinaryRelationPolicy, NativeTower128Relation, TowerRelation,
+};
 use crate::verifier::{InputResourceUsage, VerificationError, VerifierLimits};
 
 /// Trusted Lagrange basis for one generic-degree binary sumcheck schedule.

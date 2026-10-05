@@ -1,8 +1,10 @@
 //! Native Poly64 AIR expressions with full three-coefficient challenges.
 
 use core::hash::Hash;
+
 use p3_binary_field::{Poly64, Poly192};
-use p3_circuit::{CircuitBuilder, ExprId, ops::NativePoly192Target};
+use p3_circuit::ops::NativePoly192Target;
+use p3_circuit::{CircuitBuilder, ExprId};
 use p3_field::Field;
 
 use super::{

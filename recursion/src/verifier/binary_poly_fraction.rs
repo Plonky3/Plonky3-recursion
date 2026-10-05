@@ -1,15 +1,12 @@
 //! Bounded Poly64/Poly192 Fraction-GKR and its exact observed continuation.
-use p3_circuit::ops::{
-    binary_encoding::{NativeBinaryEncoding, PrimeBinaryEncoding},
-    binary_host::BinaryCircuitHost,
-};
-
 use alloc::vec::Vec;
 use core::hash::Hash;
 
 use p3_binary_field::{Poly64, Poly192};
 use p3_challenger::FieldChallenger;
 use p3_circuit::CircuitBuilder;
+use p3_circuit::ops::binary_encoding::{NativeBinaryEncoding, PrimeBinaryEncoding};
+use p3_circuit::ops::binary_host::BinaryCircuitHost;
 use p3_circuit::ops::{BinaryPoly192Target, NativePoly192Target};
 use p3_field::{ExtensionField, Field, PrimeCharacteristicRing, PrimeField64};
 use p3_multi_stark::fractional_gkr::{FractionGkrOutput, FractionGkrProof, FractionGkrShape};

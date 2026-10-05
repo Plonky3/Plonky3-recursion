@@ -3,16 +3,16 @@ mod relation;
 use alloc::vec::Vec;
 use core::hash::Hash;
 
-use super::binary_field_policy::NativePoly64Relation;
 use p3_air::Air;
 use p3_binary_field::{Poly64, Poly192};
 use p3_bus::BusSymbolicBuilder;
 use p3_challenger::{CanObserve, CanSampleUniformBits, FieldChallenger, GrindingChallenger};
+use p3_circuit::ops::binary_encoding::{
+    BinaryCircuitEncoding, NativeBinaryEncoding, PrimeBinaryEncoding,
+};
+use p3_circuit::ops::binary_host::BinaryCircuitHost;
 use p3_circuit::ops::{
-    BinaryPoly64Target, BinaryPoly192Target, ByteHash, NativePoly192Target,
-    binary_encoding::{BinaryCircuitEncoding, NativeBinaryEncoding, PrimeBinaryEncoding},
-    binary_host::BinaryCircuitHost,
-    bytes_to_limbs,
+    BinaryPoly64Target, BinaryPoly192Target, ByteHash, NativePoly192Target, bytes_to_limbs,
 };
 use p3_circuit::{CircuitBuilder, ExprId};
 use p3_commit::MultilinearPcs;
@@ -29,6 +29,7 @@ use p3_whir::WhirConfig;
 use p3_whir::pcs::proof::PcsProof as WhirPcsProof;
 use relation::{PolyMultiStarkRelation, PolyMultiStarkRelationShape};
 
+use super::binary_field_policy::NativePoly64Relation;
 use super::binary_poly_indexed::NativePolyIndexedInput;
 use super::{BinaryPolyAirConstraintPlan, InputResourceUsage, VerificationError, VerifierLimits};
 use crate::BinaryTower128Challenger;

@@ -6,7 +6,8 @@
 //! Requests four bits of composed security and uses non-hiding proofs. Deeper
 //! layers can exceed the explicit trace/codeword budgets of this demonstration.
 
-use std::{error::Error, time::Instant};
+use std::error::Error;
+use std::time::Instant;
 
 use clap::Parser;
 use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
@@ -15,14 +16,12 @@ use p3_circuit::CircuitConstructionLimits;
 use p3_circuit::ops::ByteHash;
 use p3_circuit_prover::direct::DirectCircuitLimits;
 use p3_matrix::dense::RowMajorMatrix;
-use p3_recursion::{
-    artifact::{
-        ArtifactLimits, BinaryNativeVerifierSpec, BinaryNativeWhirAuthority,
-        BinaryNativeWhirPcsParameters,
-    },
-    prepared::{NativeBinaryRecursionOptions, PreparedNativeBinaryWhirLayer},
-    verifier::VerifierLimits,
+use p3_recursion::artifact::{
+    ArtifactLimits, BinaryNativeVerifierSpec, BinaryNativeWhirAuthority,
+    BinaryNativeWhirPcsParameters,
 };
+use p3_recursion::prepared::{NativeBinaryRecursionOptions, PreparedNativeBinaryWhirLayer};
+use p3_recursion::verifier::VerifierLimits;
 use p3_whir::{FoldingFactor, ProtocolParameters, SecurityAssumption};
 
 type F = BinaryField128;

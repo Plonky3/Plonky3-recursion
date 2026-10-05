@@ -6,12 +6,11 @@ use p3_air::Air;
 use p3_binary_field::BinaryField128;
 use p3_bus::BusSymbolicBuilder;
 use p3_challenger::{CanObserve, CanSampleUniformBits, FieldChallenger, GrindingChallenger};
-use p3_circuit::ops::{
-    BinaryTower128Target, ByteHash, NativeTower128Target,
-    binary_encoding::{BinaryCircuitEncoding, NativeBinaryEncoding, PrimeBinaryEncoding},
-    binary_host::BinaryCircuitHost,
-    bytes_to_limbs,
+use p3_circuit::ops::binary_encoding::{
+    BinaryCircuitEncoding, NativeBinaryEncoding, PrimeBinaryEncoding,
 };
+use p3_circuit::ops::binary_host::BinaryCircuitHost;
+use p3_circuit::ops::{BinaryTower128Target, ByteHash, NativeTower128Target, bytes_to_limbs};
 use p3_circuit::{CircuitBuilder, ExprId};
 use p3_commit::MultilinearPcs;
 use p3_field::{ExtensionField, Field, PackedValue, PrimeCharacteristicRing, PrimeField64};

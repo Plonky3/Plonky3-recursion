@@ -5,11 +5,9 @@ use core::hash::Hash;
 
 use p3_binary_field::BinaryField128;
 use p3_challenger::{FieldChallenger, GrindingChallenger};
-use p3_circuit::ops::{
-    BinaryTower128Target, ByteHash, NativeTower128Target,
-    binary_encoding::{NativeBinaryEncoding, PrimeBinaryEncoding},
-    binary_host::BinaryCircuitHost,
-};
+use p3_circuit::ops::binary_encoding::{NativeBinaryEncoding, PrimeBinaryEncoding};
+use p3_circuit::ops::binary_host::BinaryCircuitHost;
+use p3_circuit::ops::{BinaryTower128Target, ByteHash, NativeTower128Target};
 use p3_circuit::{CircuitBuilder, ExprId};
 use p3_field::{ExtensionField, Field, PrimeField64};
 use p3_sumcheck::strategy::VariableOrder;
@@ -19,11 +17,10 @@ use p3_whir::WhirConfig;
 use super::verifier::{observe_cap_with_host, observe_seed_with_host};
 use super::whir_plan::WhirPlan;
 use super::{BinaryWhirProofTargets, RecursiveBinaryWhirTowerField};
+use crate::BinaryTower128Challenger;
 use crate::verifier::binary_field_policy::{
     BinaryTowerPolicy, BinaryWhirPolicy, NativeTower128Relation, TowerRelation,
 };
-
-use crate::BinaryTower128Challenger;
 use crate::verifier::{InputResourceUsage, VerificationError, VerifierLimits};
 
 /// Verifier-owned native domain, schedule, separators and finite input bounds.

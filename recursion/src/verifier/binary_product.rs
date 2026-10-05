@@ -1,6 +1,4 @@
 //! Trusted binary product-tree GKR reductions.
-use p3_circuit::ops::{binary_encoding::PrimeBinaryEncoding, binary_host::BinaryCircuitHost};
-
 use alloc::vec;
 use alloc::vec::Vec;
 use core::hash::Hash;
@@ -11,6 +9,8 @@ use p3_bus::{
     ProductGkrLayerProof, ProductGkrOutput, ProductGkrProof, ProductGkrRootShape, ProductGkrShape,
 };
 use p3_challenger::FieldChallenger;
+use p3_circuit::ops::binary_encoding::PrimeBinaryEncoding;
+use p3_circuit::ops::binary_host::BinaryCircuitHost;
 use p3_circuit::ops::{BinaryTower128Target, NativeTower128Target};
 use p3_circuit::{CircuitBuilder, ExprId};
 use p3_field::{ExtensionField, Field, PrimeField64};

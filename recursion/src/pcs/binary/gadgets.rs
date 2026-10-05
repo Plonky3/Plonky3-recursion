@@ -2,11 +2,12 @@
 
 use core::hash::Hash;
 
-use crate::verifier::binary_field_policy::{BinaryRelationPolicy, TowerRelation};
 use p3_binary_field::{BinaryField128, TowerLevel};
 use p3_circuit::ops::BinaryTower128Target;
 use p3_circuit::{CircuitBuilder, CircuitBuilderError, ExprId};
 use p3_field::Field;
+
+use crate::verifier::binary_field_policy::{BinaryRelationPolicy, TowerRelation};
 
 /// Evaluates the binary multilinear equality weight at two points.
 /// In characteristic two each equality factor is `1 + a + b`.

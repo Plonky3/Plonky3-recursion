@@ -6,11 +6,14 @@
 //! multi-STARK; row-local constraint checks alone do not prove the wiring.
 //! These traces are binding, not hiding.
 
-use alloc::{vec, vec::Vec};
+use alloc::vec;
+use alloc::vec::Vec;
 
 use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
+use p3_circuit::Circuit;
 use p3_circuit::ops::NpoTypeId;
-use p3_circuit::{Circuit, tables::WitnessTrace, types::WitnessId};
+use p3_circuit::tables::WitnessTrace;
+use p3_circuit::types::WitnessId;
 use p3_field::Field;
 use p3_lookup::{IndexedLookupBuilder, TraceWindow};
 use p3_matrix::dense::RowMajorMatrix;

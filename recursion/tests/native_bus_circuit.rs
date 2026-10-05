@@ -3,15 +3,16 @@
 use p3_air::{BaseAir, check_constraints};
 use p3_binary_field::{BinaryField128, TowerLevel};
 use p3_binary_pcs::{BinaryPcsConfig, BinaryPcsParams};
+use p3_circuit::CircuitBuilder;
+use p3_circuit::ops::ByteHash;
 use p3_circuit::ops::binary_native::BinaryCoordinateField;
-use p3_circuit::{CircuitBuilder, ops::ByteHash};
 use p3_circuit_prover::native_bus::NativeBusCircuit;
 use p3_field::PrimeCharacteristicRing;
 use p3_keccak::Keccak256Hash;
-use p3_recursion::{
-    artifact::{BinaryNativeAuthority, BinaryNativePcsParameters, BinaryNativeVerifierSpec},
-    verifier::VerifierLimits,
+use p3_recursion::artifact::{
+    BinaryNativeAuthority, BinaryNativePcsParameters, BinaryNativeVerifierSpec,
 };
+use p3_recursion::verifier::VerifierLimits;
 use p3_symmetric::CryptographicHasher;
 
 type F = BinaryField128;

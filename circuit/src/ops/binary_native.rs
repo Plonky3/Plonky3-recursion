@@ -4,7 +4,9 @@
 //! integer ring embedding of `2^i`. Each field keeps its own basis: this module
 //! does not convert between tower, GHASH and polynomial representations.
 
-use alloc::{boxed::Box, format, vec, vec::Vec};
+use alloc::boxed::Box;
+use alloc::vec::Vec;
+use alloc::{format, vec};
 use core::hash::Hash;
 
 use p3_binary_field::{

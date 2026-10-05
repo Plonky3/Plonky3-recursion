@@ -1,7 +1,8 @@
 //! Compact circuit wiring must be pinned to the compiled graph.
 
 use p3_air::{BaseAir, check_constraints};
-use p3_circuit::{CircuitBuilder, tables::WitnessTrace};
+use p3_circuit::CircuitBuilder;
+use p3_circuit::tables::WitnessTrace;
 use p3_circuit_prover::direct::DirectCircuitLimits;
 use p3_circuit_prover::indexed::{IndexedCircuit, IndexedCircuitError};
 use p3_field::PrimeCharacteristicRing;
@@ -88,11 +89,9 @@ fn unsupported_indexed_position_capacity_is_rejected() {
 
 #[test]
 fn fused_intermediate_and_horner_use_the_canonical_witness_assignment() {
-    use p3_circuit::{
-        Circuit,
-        ops::{AluOpKind, Op},
-        types::WitnessId,
-    };
+    use p3_circuit::Circuit;
+    use p3_circuit::ops::{AluOpKind, Op};
+    use p3_circuit::types::WitnessId;
     let mut circuit = Circuit::<F>::new(7, Default::default());
     circuit.ops = vec![
         Op::Alu {
@@ -157,7 +156,9 @@ fn fused_intermediate_and_horner_use_the_canonical_witness_assignment() {
 
 #[test]
 fn public_only_relation_omits_the_gate_and_preprocessing_tables() {
-    use p3_circuit::{Circuit, ops::Op, types::WitnessId};
+    use p3_circuit::Circuit;
+    use p3_circuit::ops::Op;
+    use p3_circuit::types::WitnessId;
     let mut circuit = Circuit::<F>::new(1, Default::default());
     circuit.public_rows = vec![WitnessId(0)];
     circuit.public_flat_len = 1;

@@ -4,7 +4,10 @@
 //! Keccak. Its native AIR and fixed indexed wiring are supplied by the native
 //! binary circuit backend; the legacy count-based preprocessor is not used.
 
-use alloc::{boxed::Box, format, string::ToString, vec, vec::Vec};
+use alloc::boxed::Box;
+use alloc::string::ToString;
+use alloc::vec::Vec;
+use alloc::{format, vec};
 
 use p3_keccak::KeccakF;
 use p3_symmetric::Permutation;

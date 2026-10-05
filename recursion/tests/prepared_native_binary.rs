@@ -2,19 +2,18 @@
 
 use p3_air::BaseAir;
 use p3_binary_field::{BinaryField32, BinaryField128, TowerLevel};
+use p3_circuit::ops::ByteHash;
 use p3_circuit::ops::binary_native::BinaryCoordinateField;
-use p3_circuit::{CircuitBuilder, CircuitConstructionLimits, ops::ByteHash};
+use p3_circuit::{CircuitBuilder, CircuitConstructionLimits};
 use p3_circuit_prover::direct::{DirectCircuitAir, DirectCircuitLimits};
 use p3_field::ExtensionField;
-use p3_recursion::pcs::binary::RecursiveBinaryWhirTowerField;
-use p3_recursion::{
-    artifact::{
-        ArtifactLimits, BinaryNativeVerifierSpec, BinaryNativeWhirAuthority,
-        BinaryNativeWhirPcsParameters,
-    },
-    prepared::{NativeBinaryRecursionOptions, PreparedNativeBinaryWhirLayer},
-    verifier::VerifierLimits,
+use p3_recursion::artifact::{
+    ArtifactLimits, BinaryNativeVerifierSpec, BinaryNativeWhirAuthority,
+    BinaryNativeWhirPcsParameters,
 };
+use p3_recursion::pcs::binary::RecursiveBinaryWhirTowerField;
+use p3_recursion::prepared::{NativeBinaryRecursionOptions, PreparedNativeBinaryWhirLayer};
+use p3_recursion::verifier::VerifierLimits;
 use p3_whir::{FoldingFactor, ProtocolParameters, SecurityAssumption};
 
 type F = BinaryField128;

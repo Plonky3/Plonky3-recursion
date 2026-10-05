@@ -1,7 +1,8 @@
 //! Native scalar interpolation uses the released binary sumcheck nodes.
 
 use p3_binary_field::{BinaryField128, TowerLevel};
-use p3_circuit::{CircuitBuilder, ops::NativeTower128Target};
+use p3_circuit::CircuitBuilder;
+use p3_circuit::ops::NativeTower128Target;
 use p3_field::{Field, PrimeCharacteristicRing};
 use p3_recursion::pcs::binary::Binary128SumcheckInterpolator;
 use p3_sumcheck::generic_degree::RoundPolyInterpolator;

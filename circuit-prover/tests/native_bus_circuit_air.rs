@@ -1,14 +1,13 @@
 //! Fanout adjacency, sentinel values and native hash schedules are local AIR relations.
 
 use p3_air::{BaseAir, check_constraints};
-use p3_circuit::{
-    CircuitBuilder,
-    ops::{binary_native::BinaryCoordinateField, keccak_state_to_limbs},
-};
-use p3_circuit_prover::{
-    direct::DirectCircuitLimits, indexed::IndexedCircuit, native_binary::NativeBinaryCircuit,
-    native_bus::NativeBusCircuit,
-};
+use p3_circuit::CircuitBuilder;
+use p3_circuit::ops::binary_native::BinaryCoordinateField;
+use p3_circuit::ops::keccak_state_to_limbs;
+use p3_circuit_prover::direct::DirectCircuitLimits;
+use p3_circuit_prover::indexed::IndexedCircuit;
+use p3_circuit_prover::native_binary::NativeBinaryCircuit;
+use p3_circuit_prover::native_bus::NativeBusCircuit;
 use p3_field::PrimeCharacteristicRing;
 use p3_keccak::KeccakF;
 use p3_symmetric::Permutation;

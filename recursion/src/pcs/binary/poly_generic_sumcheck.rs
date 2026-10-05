@@ -5,11 +5,9 @@ use core::hash::Hash;
 
 use p3_binary_field::{Poly64, Poly192};
 use p3_challenger::{FieldChallenger, GrindingChallenger};
-use p3_circuit::ops::{
-    BinaryPoly64Target, BinaryPoly192Target, NativePoly192Target,
-    binary_encoding::{NativeBinaryEncoding, PrimeBinaryEncoding},
-    binary_host::BinaryCircuitHost,
-};
+use p3_circuit::ops::binary_encoding::{NativeBinaryEncoding, PrimeBinaryEncoding};
+use p3_circuit::ops::binary_host::BinaryCircuitHost;
+use p3_circuit::ops::{BinaryPoly64Target, BinaryPoly192Target, NativePoly192Target};
 use p3_circuit::{CircuitBuilder, ExprId};
 use p3_field::{ExtensionField, Field, PrimeField64};
 use p3_sumcheck::generic_degree::{GenericDegreeProof, GenericDegreeShape};

@@ -1,10 +1,9 @@
 //! Native hash inputs and outputs use raw byte/limb coordinates.
 
 use p3_binary_field::{BinaryField8, BinaryField128, Poly64};
-use p3_circuit::{
-    CircuitBuilder,
-    ops::{binary_native::BinaryCoordinateField, keccak_state_to_limbs},
-};
+use p3_circuit::CircuitBuilder;
+use p3_circuit::ops::binary_native::BinaryCoordinateField;
+use p3_circuit::ops::keccak_state_to_limbs;
 use p3_field::PrimeCharacteristicRing;
 use p3_keccak::{Keccak256Hash, KeccakF};
 use p3_symmetric::{CryptographicHasher, Permutation};

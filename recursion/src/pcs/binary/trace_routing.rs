@@ -5,7 +5,8 @@ use alloc::vec::Vec;
 use core::hash::Hash;
 
 use p3_binary_pcs::{ChallengeField, Coordinates, FoldAlphabet};
-use p3_circuit::ops::{BinaryTower128Target, binary_encoding::PrimeBinaryEncoding};
+use p3_circuit::ops::BinaryTower128Target;
+use p3_circuit::ops::binary_encoding::PrimeBinaryEncoding;
 use p3_circuit::{CircuitBuilder, ExprId};
 use p3_field::{ExtensionField, Field, PrimeField64};
 use p3_multilinear_util::point::Point;

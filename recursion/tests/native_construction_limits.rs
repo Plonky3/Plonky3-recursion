@@ -4,12 +4,10 @@ use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 use p3_binary_field::{BinaryField128 as F, Poly64, TowerLevel};
 use p3_bus::ProductGkrRootShape;
 use p3_circuit::{CircuitBuilder, CircuitBuilderError, CircuitConstructionLimits};
-use p3_recursion::{
-    pcs::binary::BinaryGenericSumcheckVerifier,
-    verifier::{
-        BinaryAirConstraintPlan, BinaryPolyProductGkrVerifier, BinaryProductGkrVerifier,
-        VerificationError,
-    },
+use p3_recursion::pcs::binary::BinaryGenericSumcheckVerifier;
+use p3_recursion::verifier::{
+    BinaryAirConstraintPlan, BinaryPolyProductGkrVerifier, BinaryProductGkrVerifier,
+    VerificationError,
 };
 
 fn limits(nodes: usize) -> CircuitConstructionLimits {
@@ -117,14 +115,12 @@ impl<AB: AirBuilder<F = Poly64>> Air<AB> for ConstantAir {
 fn prepared_poly_budget_stops_input_allocation_before_lowering_and_keys() {
     use p3_circuit::ops::ByteHash;
     use p3_circuit_prover::direct::DirectCircuitLimits;
-    use p3_recursion::{
-        artifact::{
-            ArtifactLimits, BinaryNativePolyWhirAuthority, BinaryNativePolyWhirPcsParameters,
-            BinaryNativeVerifierSpec,
-        },
-        prepared::{NativeBinaryRecursionOptions, PreparedNativeBinaryPolyWhirLayer},
-        verifier::VerifierLimits,
+    use p3_recursion::artifact::{
+        ArtifactLimits, BinaryNativePolyWhirAuthority, BinaryNativePolyWhirPcsParameters,
+        BinaryNativeVerifierSpec,
     };
+    use p3_recursion::prepared::{NativeBinaryRecursionOptions, PreparedNativeBinaryPolyWhirLayer};
+    use p3_recursion::verifier::VerifierLimits;
     use p3_whir::{FoldingFactor, ProtocolParameters, SecurityAssumption};
     let protocol = || ProtocolParameters {
         security_level: 8,

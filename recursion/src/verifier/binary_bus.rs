@@ -7,6 +7,7 @@ use p3_bus::{BusDirection, BusPlan, BusProof, BusTupleSlot};
 use p3_challenger::FieldChallenger;
 use p3_circuit::CircuitBuilder;
 use p3_circuit::ops::BinaryTower128Target;
+use p3_circuit::ops::binary_host::BinaryCircuitHost;
 use p3_field::{ExtensionField, Field};
 
 use super::binary_air::BinaryAirEvaluation;
@@ -21,7 +22,6 @@ use crate::pcs::binary::{
     RecursiveBinaryChallengeField, RecursiveBinaryTowerField, observe_seed_with_host,
 };
 use crate::transcript::SeedTap;
-use p3_circuit::ops::binary_host::BinaryCircuitHost;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct BinaryBusInputShape<F, E> {

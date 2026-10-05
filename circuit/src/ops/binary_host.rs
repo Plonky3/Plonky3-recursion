@@ -5,11 +5,9 @@ use core::hash::Hash;
 
 use p3_field::{ExtensionField, Field, PrimeField64};
 
-use super::{
-    ByteHash, NpoTypeId,
-    binary_encoding::{BinaryCircuitEncoding, NativeBinaryEncoding, PrimeBinaryEncoding},
-    binary_native::BinaryCoordinateField,
-};
+use super::binary_encoding::{BinaryCircuitEncoding, NativeBinaryEncoding, PrimeBinaryEncoding};
+use super::binary_native::BinaryCoordinateField;
+use super::{ByteHash, NpoTypeId};
 use crate::{CircuitBuilder, CircuitBuilderError, ExprId};
 
 /// The byte-hash boundary of a binary verifier circuit.

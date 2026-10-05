@@ -4,14 +4,12 @@ use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 use p3_binary_field::BinaryField128;
 use p3_circuit::ops::ByteHash;
 use p3_circuit_prover::direct::DirectCircuitLimits;
-use p3_recursion::{
-    artifact::{
-        ArtifactLimits, BinaryNativeVerifierSpec, BinaryNativeWhirAuthority,
-        BinaryNativeWhirPcsParameters,
-    },
-    prepared::{NativeBinaryRecursionOptions, PreparedNativeBinaryWhirLayer},
-    verifier::{VerificationError, VerifierLimits},
+use p3_recursion::artifact::{
+    ArtifactLimits, BinaryNativeVerifierSpec, BinaryNativeWhirAuthority,
+    BinaryNativeWhirPcsParameters,
 };
+use p3_recursion::prepared::{NativeBinaryRecursionOptions, PreparedNativeBinaryWhirLayer};
+use p3_recursion::verifier::{VerificationError, VerifierLimits};
 use p3_whir::{FoldingFactor, ProtocolParameters, SecurityAssumption};
 
 type F = BinaryField128;

@@ -2,10 +2,8 @@
 
 use p3_binary_field::{BinaryChallenger, Poly64, Poly192};
 use p3_challenger::FieldChallenger;
-use p3_circuit::ops::{
-    ByteHash, NativePoly192Target,
-    binary_encoding::{BinaryCircuitEncoding, NativeBinaryEncoding},
-};
+use p3_circuit::ops::binary_encoding::{BinaryCircuitEncoding, NativeBinaryEncoding};
+use p3_circuit::ops::{ByteHash, NativePoly192Target};
 use p3_keccak::Keccak256Hash;
 type H = NativeBinaryEncoding;
 use p3_circuit::{Circuit, CircuitBuilder};

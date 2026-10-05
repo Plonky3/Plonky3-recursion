@@ -3,19 +3,15 @@
 use p3_binary_field::{BinaryField32, BinaryField128, TowerLevel};
 use p3_binary_pcs::whir::BinaryWhirDomain;
 use p3_challenger::FieldChallenger;
-use p3_circuit::{
-    Circuit, CircuitBuilder,
-    ops::{
-        ByteHash, NativeTower128Target,
-        binary_encoding::{BinaryCircuitEncoding, NativeBinaryEncoding},
-        bytes_to_limbs,
-    },
-};
+use p3_circuit::ops::binary_encoding::{BinaryCircuitEncoding, NativeBinaryEncoding};
+use p3_circuit::ops::{ByteHash, NativeTower128Target, bytes_to_limbs};
+use p3_circuit::{Circuit, CircuitBuilder};
 use p3_commit::MultilinearPcs;
 use p3_field::PrimeCharacteristicRing;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_multilinear_util::point::Point;
-use p3_recursion::{BinaryTower128Challenger, pcs::binary::BinaryWhirVerifier};
+use p3_recursion::BinaryTower128Challenger;
+use p3_recursion::pcs::binary::BinaryWhirVerifier;
 use p3_sumcheck::layout::{Layout, PrefixProver, SuffixProver, Table};
 use p3_sumcheck::{OpeningBatch, OpeningProtocol, PrescribedPointPcs, TableShape, TableSpec};
 use p3_test_utils::binary_field_params::keccak;

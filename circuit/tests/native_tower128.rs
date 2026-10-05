@@ -1,7 +1,8 @@
 //! Native tower arithmetic keeps scalar products in the exact Wiedemann field.
 
 use p3_binary_field::{BinaryField128, TowerLevel};
-use p3_circuit::{CircuitBuilder, ops::binary_native::BinaryCoordinateField};
+use p3_circuit::CircuitBuilder;
+use p3_circuit::ops::binary_native::BinaryCoordinateField;
 use p3_field::{Field, PrimeCharacteristicRing};
 
 type F = BinaryField128;

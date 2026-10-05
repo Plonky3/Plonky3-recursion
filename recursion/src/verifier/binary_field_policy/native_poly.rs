@@ -284,15 +284,14 @@ fn native_bytes<H: BinaryCircuitHost<Poly64>>(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use p3_binary_field::BinaryChallenger;
     use p3_challenger::{CanObserve, CanSampleBits, FieldChallenger, HashChallenger};
-    use p3_circuit::ops::{
-        ByteHash,
-        binary_encoding::{BinaryCircuitEncoding, NativeBinaryEncoding},
-    };
+    use p3_circuit::ops::ByteHash;
+    use p3_circuit::ops::binary_encoding::{BinaryCircuitEncoding, NativeBinaryEncoding};
     use p3_field::PrimeCharacteristicRing;
     use p3_keccak::Keccak256Hash;
+
+    use super::*;
 
     type H = NativeBinaryEncoding;
     type P = NativePoly64Relation;

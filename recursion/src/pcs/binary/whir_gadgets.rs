@@ -3,13 +3,13 @@
 use alloc::vec::Vec;
 use core::hash::Hash;
 
+use p3_binary_field::BinaryField128;
 use p3_circuit::ops::BinaryTower128Target;
 use p3_circuit::{CircuitBuilder, CircuitBuilderError, ExprId};
 use p3_field::Field;
 
 use super::RecursiveBinaryTowerField;
 use crate::verifier::binary_field_policy::{BinaryRelationPolicy, TowerRelation};
-use p3_binary_field::BinaryField128;
 
 /// Direct coefficient-selector weight `prod(1 + r * (s + 1))` used by
 /// released additive WHIR. Both points use the native big-endian coordinate
@@ -200,9 +200,10 @@ fn arity(op: &'static str, expected: usize, got: usize) -> CircuitBuilderError {
 
 #[cfg(test)]
 mod construction_tests {
+    use p3_circuit::CircuitConstructionLimits;
+
     use super::*;
     use crate::verifier::binary_field_policy::NativeTower128Relation;
-    use p3_circuit::CircuitConstructionLimits;
 
     #[test]
     fn native_whir_fold_checks_each_pair_in_a_large_layer() {

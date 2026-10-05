@@ -1,16 +1,13 @@
 //! Hash boundaries preserve natural bytes and low-first digest words.
 
 use core::hash::Hash;
+
 use p3_baby_bear::BabyBear;
 use p3_binary_field::{BinaryField128, Poly64};
-use p3_circuit::{
-    CircuitBuilder, ExprId,
-    ops::{
-        ByteHash,
-        binary_encoding::{NativeBinaryEncoding, PrimeBinaryEncoding},
-        binary_host::BinaryCircuitHost,
-    },
-};
+use p3_circuit::ops::ByteHash;
+use p3_circuit::ops::binary_encoding::{NativeBinaryEncoding, PrimeBinaryEncoding};
+use p3_circuit::ops::binary_host::BinaryCircuitHost;
+use p3_circuit::{CircuitBuilder, ExprId};
 use p3_field::Field;
 use p3_keccak::Keccak256Hash;
 use p3_symmetric::CryptographicHasher;

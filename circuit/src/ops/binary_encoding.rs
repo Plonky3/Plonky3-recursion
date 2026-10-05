@@ -4,7 +4,8 @@
 //! integer value; native binary carriers use their own raw coordinate basis.
 
 use alloc::vec::Vec;
-use core::{hash::Hash, marker::PhantomData};
+use core::hash::Hash;
+use core::marker::PhantomData;
 
 use p3_field::{ExtensionField, Field, PrimeField64};
 

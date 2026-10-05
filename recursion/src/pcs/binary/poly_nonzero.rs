@@ -8,11 +8,9 @@ use p3_challenger::FieldChallenger;
 use p3_circuit::CircuitBuilder;
 #[cfg(test)]
 use p3_circuit::ExprId;
-use p3_circuit::ops::{
-    BinaryPoly192Target, NativePoly192Target,
-    binary_encoding::{NativeBinaryEncoding, PrimeBinaryEncoding},
-    binary_host::BinaryCircuitHost,
-};
+use p3_circuit::ops::binary_encoding::{NativeBinaryEncoding, PrimeBinaryEncoding};
+use p3_circuit::ops::binary_host::BinaryCircuitHost;
+use p3_circuit::ops::{BinaryPoly192Target, NativePoly192Target};
 use p3_field::{ExtensionField, Field, PrimeCharacteristicRing, PrimeField64};
 
 use super::nonzero::select_nonzero_words;

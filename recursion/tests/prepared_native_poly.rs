@@ -2,16 +2,15 @@
 
 use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 use p3_binary_field::Poly64;
-use p3_circuit::{CircuitBuilder, CircuitConstructionLimits, ops::ByteHash};
+use p3_circuit::ops::ByteHash;
+use p3_circuit::{CircuitBuilder, CircuitConstructionLimits};
 use p3_circuit_prover::direct::{DirectCircuitAir, DirectCircuitLimits};
-use p3_recursion::{
-    artifact::{
-        ArtifactLimits, BinaryNativePolyWhirAuthority, BinaryNativePolyWhirPcsParameters,
-        BinaryNativeVerifierSpec,
-    },
-    prepared::{NativeBinaryRecursionOptions, PreparedNativeBinaryPolyWhirLayer},
-    verifier::{VerificationError, VerifierLimits},
+use p3_recursion::artifact::{
+    ArtifactLimits, BinaryNativePolyWhirAuthority, BinaryNativePolyWhirPcsParameters,
+    BinaryNativeVerifierSpec,
 };
+use p3_recursion::prepared::{NativeBinaryRecursionOptions, PreparedNativeBinaryPolyWhirLayer};
+use p3_recursion::verifier::{VerificationError, VerifierLimits};
 use p3_whir::{FoldingFactor, ProtocolParameters, SecurityAssumption};
 
 type F = Poly64;

@@ -1,9 +1,4 @@
 //! Released product-tree GKR with Poly64 seeds and full Poly192 challenges.
-use p3_circuit::ops::{
-    binary_encoding::{NativeBinaryEncoding, PrimeBinaryEncoding},
-    binary_host::BinaryCircuitHost,
-};
-
 use alloc::vec::Vec;
 use core::hash::Hash;
 
@@ -13,6 +8,8 @@ use p3_bus::{
 };
 use p3_challenger::FieldChallenger;
 use p3_circuit::CircuitBuilder;
+use p3_circuit::ops::binary_encoding::{NativeBinaryEncoding, PrimeBinaryEncoding};
+use p3_circuit::ops::binary_host::BinaryCircuitHost;
 use p3_circuit::ops::{BinaryPoly192Target, NativePoly192Target};
 use p3_field::{ExtensionField, Field, PrimeField64};
 

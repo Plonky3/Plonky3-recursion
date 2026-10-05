@@ -7,9 +7,9 @@ use core::marker::PhantomData;
 
 use p3_binary_field::BinaryField128;
 use p3_challenger::FieldChallenger;
-use p3_circuit::ops::{
-    BinaryTower128Target, binary_encoding::PrimeBinaryEncoding, binary_host::BinaryCircuitHost,
-};
+use p3_circuit::ops::BinaryTower128Target;
+use p3_circuit::ops::binary_encoding::PrimeBinaryEncoding;
+use p3_circuit::ops::binary_host::BinaryCircuitHost;
 use p3_circuit::{CircuitBuilder, ExprId};
 use p3_field::{ExtensionField, Field, PrimeField64};
 
@@ -664,8 +664,9 @@ mod tests {
 
 #[cfg(test)]
 mod construction_tests {
-    use super::*;
     use p3_circuit::{CircuitBuilderError, CircuitConstructionLimits};
+
+    use super::*;
 
     #[test]
     fn nonzero_word_selection_stops_before_the_remaining_candidates() {

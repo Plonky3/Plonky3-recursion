@@ -1,30 +1,26 @@
 //! Prepared Poly64 verifier circuits with the released Poly192 challenge extension.
 
-use super::native_binary::{NativeBinaryRecursionOptions, codeword_cells, first_fold};
-use crate::{
-    BinaryTower128Challenger,
-    artifact::{
-        BinaryNativePolyWhirAuthority, BinaryNativePolyWhirConfig, BinaryNativePolyWhirLayout,
-        BinaryNativePolyWhirPcsParameters, BinaryNativePolyWhirProver, BinaryNativeVerifierSpec,
-        VerifiedBinaryNativePolyWhirProof,
-    },
-    verifier::{BinaryPolyWhirMultiStarkInputShape, VerificationError},
-};
-use alloc::{sync::Arc, vec::Vec};
+use alloc::sync::Arc;
+use alloc::vec::Vec;
+
 use p3_binary_field::{Poly64, Poly192};
-use p3_circuit::{
-    Circuit, CircuitBuilder, CircuitConstructionLimits,
-    ops::{
-        ByteHash,
-        binary_encoding::{BinaryCircuitEncoding, NativeBinaryEncoding},
-        binary_host::BinaryCircuitHost,
-    },
+use p3_circuit::ops::ByteHash;
+use p3_circuit::ops::binary_encoding::{BinaryCircuitEncoding, NativeBinaryEncoding};
+use p3_circuit::ops::binary_host::BinaryCircuitHost;
+use p3_circuit::{Circuit, CircuitBuilder, CircuitConstructionLimits};
+use p3_circuit_prover::direct::DirectCircuitLimits;
+use p3_circuit_prover::native_bus::{NativeBusCircuit, NativeBusCircuitAir};
+use p3_multi_stark::MultiStarkProof;
+use p3_multi_stark::folder::VerifierAir;
+
+use super::native_binary::{NativeBinaryRecursionOptions, codeword_cells, first_fold};
+use crate::BinaryTower128Challenger;
+use crate::artifact::{
+    BinaryNativePolyWhirAuthority, BinaryNativePolyWhirConfig, BinaryNativePolyWhirLayout,
+    BinaryNativePolyWhirPcsParameters, BinaryNativePolyWhirProver, BinaryNativeVerifierSpec,
+    VerifiedBinaryNativePolyWhirProof,
 };
-use p3_circuit_prover::{
-    direct::DirectCircuitLimits,
-    native_bus::{NativeBusCircuit, NativeBusCircuitAir},
-};
-use p3_multi_stark::{MultiStarkProof, folder::VerifierAir};
+use crate::verifier::{BinaryPolyWhirMultiStarkInputShape, VerificationError};
 
 type F = Poly64;
 type H = NativeBinaryEncoding;

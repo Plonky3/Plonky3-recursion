@@ -6,11 +6,9 @@ use core::marker::PhantomData;
 
 use p3_binary_field::{BinaryField128, TowerLevel};
 use p3_challenger::{FieldChallenger, GrindingChallenger};
-use p3_circuit::ops::{
-    BinaryTower128Target, NativeTower128Target,
-    binary_encoding::{NativeBinaryEncoding, PrimeBinaryEncoding},
-    binary_host::BinaryCircuitHost,
-};
+use p3_circuit::ops::binary_encoding::{NativeBinaryEncoding, PrimeBinaryEncoding};
+use p3_circuit::ops::binary_host::BinaryCircuitHost;
+use p3_circuit::ops::{BinaryTower128Target, NativeTower128Target};
 use p3_circuit::{CircuitBuilder, ExprId};
 use p3_field::{ExtensionField, Field, PrimeField64};
 use p3_sumcheck::generic_degree::{GenericDegreeProof, GenericDegreeShape};

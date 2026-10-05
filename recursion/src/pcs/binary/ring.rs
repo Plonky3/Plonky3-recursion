@@ -5,7 +5,8 @@ use alloc::vec::Vec;
 use core::hash::Hash;
 use core::marker::PhantomData;
 
-use p3_circuit::ops::{BinaryTower128Target, binary_encoding::PrimeBinaryEncoding};
+use p3_circuit::ops::BinaryTower128Target;
+use p3_circuit::ops::binary_encoding::PrimeBinaryEncoding;
 use p3_circuit::{CircuitBuilder, ExprId};
 use p3_field::{ExtensionField, Field, PrimeField64};
 use p3_sumcheck::ring_switch::bits::transcript::{BitRingSwitchClaimsShape, BitRingSwitchShape};

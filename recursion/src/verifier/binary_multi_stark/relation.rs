@@ -2,10 +2,12 @@
 
 use alloc::sync::Arc;
 
+use p3_circuit::ops::binary_encoding::PrimeBinaryEncoding;
+use p3_circuit::ops::binary_host::BinaryCircuitHost;
+
 use super::*;
 use crate::pcs::binary::{observe_cap_with_host, observe_seed_with_host};
 use crate::verifier::binary_field_policy::{BinaryTowerPolicy, TowerRelation};
-use p3_circuit::ops::{binary_encoding::PrimeBinaryEncoding, binary_host::BinaryCircuitHost};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(in crate::verifier) struct BinaryMultiStarkRelationShape<F, E> {

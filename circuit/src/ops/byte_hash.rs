@@ -11,7 +11,6 @@ use p3_field::{ExtensionField, Field, PrimeField64};
 use p3_util::log2_ceil_usize;
 
 use super::binary_host::BinaryCircuitHost;
-
 use crate::builder::CircuitBuilderError;
 use crate::types::ExprId;
 
@@ -602,6 +601,7 @@ where
 #[cfg(test)]
 mod tests {
     use alloc::vec;
+
     use p3_baby_bear::BabyBear;
     use p3_field::PrimeCharacteristicRing;
 
@@ -610,8 +610,9 @@ mod tests {
 
     #[test]
     fn cap_selection_checks_each_digest_pair() {
-        use crate::CircuitConstructionLimits;
         use p3_binary_field::Poly64;
+
+        use crate::CircuitConstructionLimits;
 
         let mut b = CircuitBuilder::<Poly64>::with_construction_limits(CircuitConstructionLimits {
             max_expression_nodes: 600,

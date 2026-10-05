@@ -2,9 +2,11 @@
 
 use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 use p3_binary_field::{Poly64, Poly192};
-use p3_circuit::{CircuitBuilder, ops::NativePoly192Target};
+use p3_circuit::CircuitBuilder;
+use p3_circuit::ops::NativePoly192Target;
 use p3_field::PrimeCharacteristicRing;
-use p3_multi_stark::{folder::MultilinearFolder, selectors::BoundaryEvals};
+use p3_multi_stark::folder::MultilinearFolder;
+use p3_multi_stark::selectors::BoundaryEvals;
 use p3_recursion::verifier::BinaryPolyAirConstraintPlan;
 
 struct DenseAir;

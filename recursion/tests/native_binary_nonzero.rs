@@ -2,22 +2,16 @@
 
 use p3_binary_field::{BinaryChallenger, BinaryField32, BinaryField64, BinaryField128, Poly64};
 use p3_challenger::{CanObserve, CanSampleBits, FieldChallenger};
-use p3_circuit::{
-    Circuit, CircuitBuilder, ExprId,
-    ops::{
-        BinaryTower128Target, ByteHash,
-        binary_encoding::{BinaryCircuitEncoding, NativeBinaryEncoding},
-        binary_native::BinaryCoordinateField,
-    },
-};
+use p3_circuit::ops::binary_encoding::{BinaryCircuitEncoding, NativeBinaryEncoding};
+use p3_circuit::ops::binary_native::BinaryCoordinateField;
+use p3_circuit::ops::{BinaryTower128Target, ByteHash};
+use p3_circuit::{Circuit, CircuitBuilder, ExprId};
 use p3_field::ExtensionField;
 use p3_keccak::Keccak256Hash;
-use p3_recursion::{
-    BinaryTower128Challenger,
-    pcs::binary::{
-        BinaryNonzeroChallengePlan, BinaryNonzeroChallengeTailPlan, RecursiveBinaryChallengeField,
-        RecursiveBinaryTowerField,
-    },
+use p3_recursion::BinaryTower128Challenger;
+use p3_recursion::pcs::binary::{
+    BinaryNonzeroChallengePlan, BinaryNonzeroChallengeTailPlan, RecursiveBinaryChallengeField,
+    RecursiveBinaryTowerField,
 };
 
 type H = NativeBinaryEncoding;

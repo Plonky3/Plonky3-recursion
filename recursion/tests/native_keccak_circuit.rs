@@ -2,10 +2,9 @@
 
 use p3_binary_field::BinaryField128;
 use p3_binary_pcs::{BinaryPcsConfig, BinaryPcsParams};
-use p3_circuit::{
-    CircuitBuilder,
-    ops::{ByteHash, binary_native::BinaryCoordinateField},
-};
+use p3_circuit::CircuitBuilder;
+use p3_circuit::ops::ByteHash;
+use p3_circuit::ops::binary_native::BinaryCoordinateField;
 use p3_circuit_prover::native_binary::NativeBinaryCircuit;
 use p3_field::PrimeCharacteristicRing;
 use p3_keccak::Keccak256Hash;

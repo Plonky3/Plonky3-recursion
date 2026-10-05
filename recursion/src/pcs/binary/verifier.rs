@@ -8,11 +8,9 @@ use core::marker::PhantomData;
 use p3_binary_field::{BinaryField128, TowerLevel};
 use p3_binary_pcs::BinaryPcsConfig;
 use p3_binary_pcs::transcript::BinaryPcsShape;
-use p3_circuit::ops::{
-    BinaryTower128Target, ByteHash,
-    binary_encoding::{BinaryCircuitEncoding, PrimeBinaryEncoding},
-    binary_host::BinaryCircuitHost,
-};
+use p3_circuit::ops::binary_encoding::{BinaryCircuitEncoding, PrimeBinaryEncoding};
+use p3_circuit::ops::binary_host::BinaryCircuitHost;
+use p3_circuit::ops::{BinaryTower128Target, ByteHash};
 use p3_circuit::{CircuitBuilder, ExprId};
 use p3_field::{ExtensionField, Field, PrimeField64};
 use p3_multilinear_util::point::Point;
@@ -987,16 +985,15 @@ fn limit(component: &'static str, actual: usize, limit: usize) -> Result<(), Ver
 
 #[cfg(test)]
 mod host_tests {
-    use super::*;
     use p3_binary_field::{BinaryChallenger, BinaryField32, Poly64};
     use p3_challenger::{CanObserve, FieldChallenger};
-    use p3_circuit::ops::{
-        binary_encoding::{BinaryCircuitEncoding, NativeBinaryEncoding},
-        binary_native::BinaryCoordinateField,
-    };
+    use p3_circuit::ops::binary_encoding::{BinaryCircuitEncoding, NativeBinaryEncoding};
+    use p3_circuit::ops::binary_native::BinaryCoordinateField;
     use p3_field::BasedVectorSpace;
     use p3_keccak::Keccak256Hash;
     use p3_symmetric::Hash as Digest;
+
+    use super::*;
 
     type H = NativeBinaryEncoding;
 

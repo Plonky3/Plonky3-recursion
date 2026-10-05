@@ -3,7 +3,8 @@
 use p3_air::BaseAir;
 use p3_binary_field::{BinaryField128, TowerLevel};
 use p3_binary_pcs::{BinaryPcsConfig, BinaryPcsParams};
-use p3_circuit::{Circuit, CircuitBuilder, ops::ByteHash};
+use p3_circuit::ops::ByteHash;
+use p3_circuit::{Circuit, CircuitBuilder};
 use p3_circuit_prover::indexed::IndexedCircuit;
 use p3_field::PrimeCharacteristicRing;
 use p3_recursion::artifact::{

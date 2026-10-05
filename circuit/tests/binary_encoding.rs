@@ -1,13 +1,15 @@
 //! The protocol's byte/limb shape is independent of its circuit carrier.
 
 use core::hash::Hash;
+
 use p3_baby_bear::BabyBear;
 use p3_binary_field::{BinaryField8, BinaryField128, Poly64};
-use p3_circuit::{
-    CircuitBuilder,
-    ops::binary_encoding::{BinaryCircuitEncoding, NativeBinaryEncoding, PrimeBinaryEncoding},
+use p3_circuit::CircuitBuilder;
+use p3_circuit::ops::binary_encoding::{
+    BinaryCircuitEncoding, NativeBinaryEncoding, PrimeBinaryEncoding,
 };
-use p3_field::{Field, extension::BinomialExtensionField};
+use p3_field::Field;
+use p3_field::extension::BinomialExtensionField;
 
 fn roundtrip<F: Field + Eq + Hash, E: BinaryCircuitEncoding<F>>() {
     let mut builder = CircuitBuilder::<F>::new();

@@ -9,32 +9,31 @@
 //! The caller must assign distinct trusted namespaces to separate circuits
 //! composed under the same authority. Bus names are part of its verifier identity.
 
-use alloc::{format, sync::Arc, vec, vec::Vec};
+use alloc::sync::Arc;
+use alloc::vec::Vec;
+use alloc::{format, vec};
 
 use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 use p3_bus::{
     BusActivation, BusBoundary, BusDirection, BusInteractionBuilder, BusName, BusNameError,
 };
-use p3_circuit::{
-    Circuit,
-    ops::{NpoTypeId, binary_native::BinaryCoordinateField},
-    tables::WitnessTrace,
-    types::WitnessId,
-};
+use p3_circuit::Circuit;
+use p3_circuit::ops::NpoTypeId;
+use p3_circuit::ops::binary_native::BinaryCoordinateField;
+use p3_circuit::tables::WitnessTrace;
+use p3_circuit::types::WitnessId;
 use p3_field::{Field, PrimeCharacteristicRing};
 use p3_keccak_air::{KECCAK_BINARY_ROWS_PER_PERM, NUM_KECCAK_BINARY_COLS};
 use p3_matrix::dense::RowMajorMatrix;
 use thiserror::Error;
 
-use crate::{
-    direct::{DirectCircuitError, DirectCircuitLimits},
-    indexed::{IndexedCircuitError, cells, gate, padded_height, variables},
-    native_binary::{
-        KeccakCall, NativeBinaryCircuitError, eval_keccak_bits, keccak_bit_trace, keccak_calls,
-        keccak_limb_expression,
-    },
-    primitive_plan::PrimitivePlan,
+use crate::direct::{DirectCircuitError, DirectCircuitLimits};
+use crate::indexed::{IndexedCircuitError, cells, gate, padded_height, variables};
+use crate::native_binary::{
+    KeccakCall, NativeBinaryCircuitError, eval_keccak_bits, keccak_bit_trace, keccak_calls,
+    keccak_limb_expression,
 };
+use crate::primitive_plan::PrimitivePlan;
 
 const MAX_NAMESPACE_BYTES: usize = BusName::MAX_LEN - ".witness".len();
 const GATE_PP: usize = 12;
