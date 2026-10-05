@@ -87,8 +87,7 @@ followed by a prime-field recursion layer. It does not demonstrate binary-in/bin
   100 input and output limbs to canonical circuit witnesses. Other custom
   operations still fail closed. `recursion/tests/native_keccak_circuit.rs`
   exercises native proof verification and rejection of changed digest values
-  and bridge payloads. This is a hash foundation for binary recursion, not yet
-  a complete binary-host recursive verifier.
+  and bridge payloads. The product-bus backend below also uses these hash tables.
 - **Native product-bus wiring.** `p3_circuit_prover::native_bus::NativeBusCircuit`
   binds gates, public inputs and Keccak boundaries through fixed witness
   occurrences. Adjacent copies of each witness agree; native product buses
@@ -98,8 +97,23 @@ followed by a prime-field recursion layer. It does not demonstrate binary-in/bin
   must be retained together. `recursion/tests/native_bus_circuit.rs` checks
   native tower and polynomial proofs, including rejection of cross-circuit
   public swaps and locally valid forged gate/hash payloads. This non-hiding
-  backend prepares the output relation for binary recursion; the complete
-  binary-host verifier still needs integration.
+  backend proves the complete native recursive verifier described below. Its
+  minimum-height constructor pads trusted inactive rows for larger initial PCS
+  folds, without adding bus occurrences.
+- **Full native Tower128 recursion.**
+  `prepared::PreparedNativeBinaryWhirLayer` builds a complete native scalar
+  verifier for a trusted additive-WHIR MultiStark authority, including product
+  GKR, generic sumcheck, AIR evaluation and both main/preprocessing openings.
+  It proves that verifier over Tower128 using native Keccak and product buses,
+  and verifies against independently supplied child public values. Checked
+  child tokens must match the retained authority identity before packing or
+  witness execution. The output authority can be used as the next layer's
+  trusted child. `recursion/examples/native_binary_recursion.rs` demonstrates
+  one actual native outer proof; the prepared integration test covers wrong
+  statements and foreign-authority rejection. Graph, trace and initial
+  codeword limits are explicit; codeword counts exclude Merkle trees and
+  proving workspaces. Dense Keccak openings currently cause substantial growth
+  in later layers. These proofs are non-hiding.
 - **Non-native binary byte-hash transcript.** `BinaryTower128Challenger` has a separate,
   fallible inherent API (`new`, `with_initial_limbs`, `observe`, `observe_slice`,
   `observe_digest`, `sample`, `sample_bits`, `check_witness`). It matches native
@@ -212,10 +226,8 @@ followed by a prime-field recursion layer. It does not demonstrate binary-in/bin
 
 ## Not yet supported
 
-- Full binary-in/binary-out recursion. Binary-proof verification currently runs in a prime
-  host circuit; its transcript and serialization gadgets use prime-field integer limbs.
-  Native binary primitive circuit proofs and compact indexed wiring are supported above.
-  The existing `BatchStarkProver` tables still use prime-field count-based wiring. Native
-  binary recursion also requires binary hash tables, a transcript built from the native
-  coordinate codecs, and integration of those components with the complete verifier.
+- Native scalar recursion for indexed lookup relations, polynomial WHIR or a
+  BLAKE3 circuit host. The complete Tower128 native path currently uses product
+  buses, Keccak and additive WHIR; those other binary input adapters still use
+  prime-host recursive verifiers.
 - MMCS trees of arity above two.
