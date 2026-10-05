@@ -16,7 +16,7 @@ use p3_test_utils::binary_field_params::{BinaryField8, BinaryField128};
 type F = BinaryField128;
 
 #[test]
-fn fanout_copies_and_zero_sentinels_are_constrained() {
+fn fanout_copies_and_unused_gate_slots_are_constrained() {
     let mut b = CircuitBuilder::<F>::new();
     let input = b.public_input();
     let expected = b.public_input();
@@ -43,12 +43,7 @@ fn fanout_copies_and_zero_sentinels_are_constrained() {
         .chunks_exact(4)
         .position(|row| row[0] != F::ZERO && row[2] == F::ONE)
         .unwrap();
-    let sentinel = pp
-        .values
-        .chunks_exact(4)
-        .position(|row| row[3] == F::ONE)
-        .unwrap();
-    for row in [adjacent, sentinel] {
+    for row in [adjacent] {
         let mut wrong = traces[0].clone();
         wrong.values[row] += F::ONE;
         assert!(
@@ -56,6 +51,32 @@ fn fanout_copies_and_zero_sentinels_are_constrained() {
                 .is_err()
         );
     }
+    let mut unused = traces[1].clone();
+    // The accumulator slot is unused by the addition/multiplication fixture.
+    unused.values[3] += F::ONE;
+    assert!(
+        std::panic::catch_unwind(|| check_constraints(&prepared.airs()[1], &unused, &[])).is_err()
+    );
+    let gate_pp = prepared.airs()[1].preprocessed_trace().unwrap();
+    let expected_occurrences = public.iter().map(Vec::len).sum::<usize>()
+        + gate_pp
+            .values
+            .chunks_exact(12)
+            .map(|row| {
+                row[6..12]
+                    .iter()
+                    .zip([1, 3, 3, 2, 4, 5])
+                    .filter_map(|(&selector, count)| (selector == F::ONE).then_some(count))
+                    .sum::<usize>()
+            })
+            .sum::<usize>();
+    assert_eq!(
+        pp.values
+            .chunks_exact(4)
+            .filter(|row| row[1] == F::ONE)
+            .count(),
+        expected_occurrences
+    );
     let last_live = pp
         .values
         .chunks_exact(4)

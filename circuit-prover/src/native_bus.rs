@@ -21,7 +21,7 @@ use p3_circuit::{
     tables::WitnessTrace,
     types::WitnessId,
 };
-use p3_field::Field;
+use p3_field::{Field, PrimeCharacteristicRing};
 use p3_keccak_air::{KECCAK_BINARY_ROWS_PER_PERM, NUM_KECCAK_BINARY_COLS};
 use p3_matrix::dense::RowMajorMatrix;
 use thiserror::Error;
@@ -59,14 +59,14 @@ pub enum NativeBusCircuitError {
 
 #[derive(Clone, Debug)]
 enum Table<F> {
-    Witness(RowMajorMatrix<F>),
-    Gates(RowMajorMatrix<F>),
+    Witness(Arc<RowMajorMatrix<F>>),
+    Gates(Arc<RowMajorMatrix<F>>),
     Public(Vec<F>),
     Keccak {
-        pp: RowMajorMatrix<F>,
+        pp: Arc<RowMajorMatrix<F>>,
         weights: [F; 16],
     },
-    Bridge(RowMajorMatrix<F>),
+    Bridge(Arc<RowMajorMatrix<F>>),
 }
 
 #[derive(Clone, Debug)]
@@ -120,8 +120,17 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
             &[NpoTypeId::native_keccak_f1600()],
         )?;
         let calls = keccak_calls(circuit)?;
+        let gate_occurrences = plan.constraints.iter().try_fold(0, |total, constraint| {
+            let (_, selector, _) = gate(constraint);
+            add(
+                total,
+                (0..5)
+                    .filter(|&slot| gate_slot_used(selector, slot))
+                    .count(),
+            )
+        })?;
         let n = add(
-            add(cells(plan.constraints.len(), 5)?, plan.public.len())?,
+            add(gate_occurrences, plan.public.len())?,
             cells(calls.len(), 200)?,
         )?;
         let witness_height = padded_height(n)?;
@@ -177,7 +186,14 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
             .map(|constraint| gate(constraint).0)
             .collect();
         let mut occurrences = Vec::with_capacity(n);
-        occurrences.extend(gate_positions.iter().flatten().copied());
+        for (ids, constraint) in gate_positions.iter().zip(&plan.constraints) {
+            let (_, selector, _) = gate(constraint);
+            occurrences.extend(
+                ids.iter()
+                    .enumerate()
+                    .filter_map(|(slot, &id)| gate_slot_used(selector, slot).then_some(id)),
+            );
+        }
         occurrences.extend(plan.public.iter().map(|&w| w + 1));
         for call in &calls {
             occurrences.extend(call.input.iter().chain(&call.output).map(|&w| w + 1));
@@ -191,7 +207,7 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
             row[2] = F::from_bool(occurrences.get(i + 1) == Some(&id));
             row[3] = F::from_bool(id == 0);
         }
-        let mut airs = vec![air(Table::Witness(RowMajorMatrix::new(pp, 4)))];
+        let mut airs = vec![air(Table::Witness(Arc::new(RowMajorMatrix::new(pp, 4))))];
         let mut log_heights = vec![witness_height.ilog2() as usize];
         if gate_height != 0 {
             let mut pp = vec![F::ZERO; cells(gate_height, GATE_PP)?];
@@ -204,7 +220,9 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
                 row[5] = constant;
                 row[6 + selector] = F::ONE;
             }
-            airs.push(air(Table::Gates(RowMajorMatrix::new(pp, GATE_PP))));
+            airs.push(air(Table::Gates(Arc::new(RowMajorMatrix::new(
+                pp, GATE_PP,
+            )))));
             log_heights.push(gate_height.ilog2() as usize);
         }
         if !plan.public.is_empty() {
@@ -231,7 +249,7 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
                 F::from_raw_coordinates(1 << i).expect("validated limb width")
             });
             airs.push(air(Table::Keccak {
-                pp: RowMajorMatrix::new(pp, 3),
+                pp: Arc::new(RowMajorMatrix::new(pp, 3)),
                 weights,
             }));
             log_heights.push(hash_height.ilog2() as usize);
@@ -246,7 +264,7 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
                     row[101] = F::ONE;
                 }
             }
-            airs.push(air(Table::Bridge(RowMajorMatrix::new(pp, 102))));
+            airs.push(air(Table::Bridge(Arc::new(RowMajorMatrix::new(pp, 102)))));
             log_heights.push(bridge_height.ilog2() as usize);
         }
         Ok(Self {
@@ -373,6 +391,20 @@ fn label<F: BinaryCoordinateField>(label: usize) -> Result<F, NativeBusCircuitEr
     })
 }
 
+// Slot order and selectors come from the shared frozen primitive gate codec.
+// MulAdd retains its optional addend slot: an absent addend uses the checked
+// zero sentinel. Every other inactive slot can be omitted from the product bus.
+fn gate_slot_used(selector: usize, slot: usize) -> bool {
+    match selector {
+        0 => slot == 4,
+        1 | 2 => matches!(slot, 0 | 1 | 4),
+        3 => matches!(slot, 0 | 4),
+        4 => slot != 3,
+        5 => true,
+        _ => unreachable!("frozen primitive gate selector"),
+    }
+}
+
 impl<F: Field> BaseAir<F> for NativeBusCircuitAir<F> {
     fn width(&self) -> usize {
         match &self.table {
@@ -403,7 +435,7 @@ impl<F: Field> BaseAir<F> for NativeBusCircuitAir<F> {
             Table::Witness(pp)
             | Table::Gates(pp)
             | Table::Bridge(pp)
-            | Table::Keccak { pp, .. } => Some(pp.clone()),
+            | Table::Keccak { pp, .. } => Some(pp.as_ref().clone()),
             Table::Public(_) => None,
         }
     }
@@ -455,8 +487,14 @@ where
                 );
             }
             Table::Gates(_) => {
-                let active: AB::Expr = pp[6..12].iter().map(|&x| x.into()).sum();
                 for i in 0..5 {
+                    let active: AB::Expr = pp[6..12]
+                        .iter()
+                        .enumerate()
+                        .filter(|&(selector, _)| gate_slot_used(selector, i))
+                        .map(|(_, &value)| value.into())
+                        .sum();
+                    b.when(AB::Expr::ONE - active.clone()).assert_zero(row[i]);
                     b.push_bus_interaction(
                         BusName::new(self.witness_bus.as_ref()),
                         BusDirection::Push,

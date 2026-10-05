@@ -398,18 +398,25 @@ pub(crate) fn keccak_trace<F: BinaryCoordinateField>(
     let weights = core::array::from_fn::<_, 16, _>(|i| {
         F::from_raw_coordinates(1 << i).expect("validated limb width")
     });
-    let mut values = Vec::with_capacity(cells(
-        hash.values.len() / NUM_KECCAK_BINARY_COLS,
-        HASH_WIDTH,
-    )?);
-    for row in hash.values.chunks_exact(NUM_KECCAK_BINARY_COLS) {
-        values.extend_from_slice(row);
+    let height = hash.values.len() / NUM_KECCAK_BINARY_COLS;
+    let mut values = hash.values;
+    let final_len = cells(height, HASH_WIDTH)?;
+    values.reserve_exact(final_len - values.len());
+    values.resize(final_len, F::ZERO);
+    // Expand backwards so destinations cannot overwrite an unprocessed row.
+    // This reuses the hash allocation instead of retaining two full matrices.
+    for index in (0..height).rev() {
+        let source = index * NUM_KECCAK_BINARY_COLS;
+        let destination = index * HASH_WIDTH;
+        values.copy_within(source..source + NUM_KECCAK_BINARY_COLS, destination);
         for limb in 0..KECCAK_STATE_LIMBS {
-            values.push(
-                (0..16)
-                    .map(|bit| row[KECCAK_BINARY_ROWS_PER_PERM + 16 * limb + bit] * weights[bit])
-                    .sum(),
-            );
+            let packed = (0..16)
+                .map(|bit| {
+                    values[destination + KECCAK_BINARY_ROWS_PER_PERM + 16 * limb + bit]
+                        * weights[bit]
+                })
+                .sum();
+            values[destination + NUM_KECCAK_BINARY_COLS + limb] = packed;
         }
     }
     Ok(RowMajorMatrix::new(values, HASH_WIDTH))
