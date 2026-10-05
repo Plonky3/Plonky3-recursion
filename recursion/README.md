@@ -39,7 +39,8 @@ The [native binary recursion example](examples/native_binary_recursion.rs) prove
 and verifies a Tower128 verifier circuit over Tower128 again, using native Keccak,
 product-bus wiring and additive WHIR:
 `cargo run -p p3-recursion --profile optimized --features parallel --example native_binary_recursion -- --layers 1`.
-`prepared::PreparedNativeBinaryWhirLayer` retains the trusted child authority and
+`prepared::PreparedNativeBinaryWhirLayer` accepts Tower32 or Tower128 children,
+retains the trusted child authority and
 binds the recursive proof to the caller's original expected public values. Its
 output authority can prepare another binary layer. The example uses development
 security parameters, non-hiding proofs and explicit allocation limits; deeper

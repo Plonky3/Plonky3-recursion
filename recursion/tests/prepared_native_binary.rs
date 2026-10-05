@@ -1,10 +1,12 @@
 //! Binary-in, binary-out recursion with an independently supplied statement.
 
 use p3_air::BaseAir;
-use p3_binary_field::{BinaryField128, TowerLevel};
+use p3_binary_field::{BinaryField32, BinaryField128, TowerLevel};
+use p3_circuit::ops::binary_native::BinaryCoordinateField;
 use p3_circuit::{CircuitBuilder, ops::ByteHash};
 use p3_circuit_prover::direct::{DirectCircuitAir, DirectCircuitLimits};
-use p3_field::PrimeCharacteristicRing;
+use p3_field::ExtensionField;
+use p3_recursion::pcs::binary::RecursiveBinaryWhirTowerField;
 use p3_recursion::{
     artifact::{
         ArtifactLimits, BinaryNativeVerifierSpec, BinaryNativeWhirAuthority,
@@ -57,9 +59,29 @@ fn options() -> NativeBinaryRecursionOptions {
 #[test]
 #[ignore = "proves a full native binary verifier; run explicitly"]
 fn native_layer_proves_and_binds_the_original_statement() {
-    let [input, factor, constant] =
-        [0xfedcba9876543210, 0x8123456789abcdef, 0x8912].map(F::from_repr);
-    let mut builder = CircuitBuilder::<F>::new();
+    prove_native_layer::<F>();
+}
+
+#[test]
+#[ignore = "proves a complete Tower32 child verifier over Tower128; run explicitly"]
+fn tower32_child_is_proved_over_tower128() {
+    prove_native_layer::<BinaryField32>();
+}
+
+fn prove_native_layer<B>()
+where
+    B: RecursiveBinaryWhirTowerField
+        + BinaryCoordinateField
+        + p3_binary_dft::EncodableLevel
+        + p3_binary_pcs::FoldAlphabet<F>
+        + p3_field::PackedValue<Value = B>
+        + Ord,
+    F: ExtensionField<B> + p3_binary_pcs::ChallengeField<B>,
+    p3_binary_pcs::whir::BinaryWhirDomain<B>: p3_whir::WhirDomain<B, F>,
+{
+    let [input, factor, constant] = [0xfedcba9876543210, 0x8123456789abcdef, 0x8912]
+        .map(|raw| B::from_raw_coordinates(raw & (u128::MAX >> (128 - B::RAW_BITS))).unwrap());
+    let mut builder = CircuitBuilder::<B>::new();
     let a = builder.public_input();
     let expected = builder.public_input();
     let private = builder.alloc_private_input("factor");
@@ -70,7 +92,7 @@ fn native_layer_proves_and_binds_the_original_statement() {
     let air = DirectCircuitAir::new(&circuit).unwrap();
     let variables = 1 + air.width().next_power_of_two().ilog2() as usize;
     let spec = BinaryNativeVerifierSpec {
-        main: BinaryNativeWhirPcsParameters::<F>::new(
+        main: BinaryNativeWhirPcsParameters::<B>::new(
             variables,
             protocol(),
             ByteHash::Keccak256,
@@ -86,7 +108,7 @@ fn native_layer_proves_and_binds_the_original_statement() {
     };
     let mut foreign_spec = spec.clone();
     foreign_spec.initial_bytes.push(99);
-    let (prover, authority) = BinaryNativeWhirAuthority::<F, _>::setup(
+    let (prover, authority) = BinaryNativeWhirAuthority::<B, _>::setup(
         vec![air.clone()],
         vec![1],
         spec,
@@ -100,7 +122,7 @@ fn native_layer_proves_and_binds_the_original_statement() {
     let trace = air.trace(&runner.run().unwrap().witness_trace, 1).unwrap();
     let proof = prover.prove(&public, vec![trace.clone()]).unwrap();
     let checked = authority.verify_native(&proof, &public).unwrap();
-    let (foreign_prover, foreign_authority) = BinaryNativeWhirAuthority::<F, _>::setup(
+    let (foreign_prover, foreign_authority) = BinaryNativeWhirAuthority::<B, _>::setup(
         vec![air.clone()],
         vec![1],
         foreign_spec,
@@ -137,9 +159,12 @@ fn native_layer_proves_and_binds_the_original_statement() {
             .copied()
             .collect::<Vec<_>>(),
         public[0]
+            .iter()
+            .map(|value| F::from_repr(value.raw_coordinates()))
+            .collect::<Vec<_>>()
     );
     let mut wrong = public.clone();
-    wrong[0][1] += F::ONE;
+    wrong[0][1] += B::ONE;
     assert!(layer.verify(&outer, &wrong).is_err());
     assert!(layer.verify(&outer, &[]).is_err());
     // The output authority is a native binary input for another recursion layer.

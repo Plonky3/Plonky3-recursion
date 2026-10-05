@@ -102,7 +102,7 @@ followed by a prime-field recursion layer. It does not demonstrate binary-in/bin
   folds, without adding bus occurrences.
 - **Full native Tower128 recursion.**
   `prepared::PreparedNativeBinaryWhirLayer` builds a complete native scalar
-  verifier for a trusted additive-WHIR MultiStark authority, including product
+  verifier for a trusted Tower32 or Tower128 additive-WHIR MultiStark authority, including product
   GKR, generic sumcheck, AIR evaluation and both main/preprocessing openings.
   It proves that verifier over Tower128 using native Keccak and product buses,
   and verifies against independently supplied child public values. Checked

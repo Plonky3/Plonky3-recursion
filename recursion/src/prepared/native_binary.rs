@@ -1,8 +1,10 @@
-//! Prepared Tower128 verifier circuits proved over Tower128 again.
+//! Prepared Tower32/Tower128 verifier circuits proved over Tower128.
 
 use alloc::{sync::Arc, vec::Vec};
 
-use p3_binary_field::BinaryField128;
+use p3_binary_dft::EncodableLevel;
+use p3_binary_field::{BinaryField128, TowerLevel};
+use p3_binary_pcs::{ChallengeField, FoldAlphabet, whir::BinaryWhirDomain};
 use p3_circuit::{
     Circuit, CircuitBuilder,
     ops::{
@@ -15,8 +17,9 @@ use p3_circuit_prover::{
     direct::DirectCircuitLimits,
     native_bus::{NativeBusCircuit, NativeBusCircuitAir},
 };
+use p3_field::{ExtensionField, PackedValue};
 use p3_multi_stark::{MultiStarkProof, folder::VerifierAir};
-use p3_whir::{FoldingFactor, ProtocolParameters};
+use p3_whir::{FoldingFactor, ProtocolParameters, WhirDomain};
 
 use crate::{
     BinaryTower128Challenger,
@@ -25,6 +28,7 @@ use crate::{
         BinaryNativeWhirConfig, BinaryNativeWhirLayout, BinaryNativeWhirPcsParameters,
         BinaryNativeWhirProver, VerifiedBinaryNativeWhirProof,
     },
+    pcs::binary::RecursiveBinaryWhirTowerField,
     verifier::{BinaryWhirMultiStarkInputShape, VerificationError},
 };
 
@@ -54,9 +58,12 @@ pub struct NativeBinaryRecursionOptions {
 
 /// Retains the child authority's identity, native verifier graph, product-bus
 /// relation, and matched native proving/verification keys for repeatable proving.
-pub struct PreparedNativeBinaryWhirLayer {
+pub struct PreparedNativeBinaryWhirLayer<Base = F>
+where
+    Base: RecursiveBinaryWhirTowerField,
+{
     input_identity: Arc<[u8]>,
-    input_shape: BinaryWhirMultiStarkInputShape<F>,
+    input_shape: BinaryWhirMultiStarkInputShape<Base>,
     public_counts: Vec<usize>,
     circuit: Circuit<F>,
     bus: NativeBusCircuit<F>,
@@ -65,20 +72,26 @@ pub struct PreparedNativeBinaryWhirLayer {
     initial_codeword_cells: usize,
 }
 
-impl PreparedNativeBinaryWhirLayer {
+impl<Base: RecursiveBinaryWhirTowerField> PreparedNativeBinaryWhirLayer<Base>
+where
+    F: ExtensionField<Base>,
+{
     /// Builds a full binary verifier and its native output authority. All child
     /// plans and preprocessing come from `authority`, independently of any proof.
     /// Native Keccak is required; indexed child relations are rejected before
     /// graph allocation. Limits cover the graph and trace preparation; native
     /// PCS codewords and proving workspaces require additional memory.
     pub fn from_native_authority<A, L>(
-        authority: &BinaryNativeWhirAuthority<F, A, L>,
+        authority: &BinaryNativeWhirAuthority<Base, A, L>,
         options: NativeBinaryRecursionOptions,
         circuit_limits: &DirectCircuitLimits,
     ) -> Result<Self, VerificationError>
     where
-        A: VerifierAir<F, F>,
-        L: BinaryNativeWhirLayout<F>,
+        Base: EncodableLevel + FoldAlphabet<F> + PackedValue<Value = Base> + Ord,
+        F: ChallengeField<Base>,
+        BinaryWhirDomain<Base>: WhirDomain<Base, F>,
+        A: VerifierAir<Base, F>,
+        L: BinaryNativeWhirLayout<Base>,
     {
         let minimum_log_height = first_fold(&options.main)?;
         if first_fold(&options.preprocessed)? != minimum_log_height {
@@ -152,7 +165,7 @@ impl PreparedNativeBinaryWhirLayer {
             });
         }
         let limits = &options.artifact_limits;
-        let main = BinaryNativeWhirPcsParameters::with_limits(
+        let main = BinaryNativeWhirPcsParameters::<F>::with_limits(
             bus.main_variables(),
             options.main,
             ByteHash::Keccak256,
@@ -162,7 +175,7 @@ impl PreparedNativeBinaryWhirLayer {
         let preprocessed = bus
             .preprocessed_variables()
             .map(|variables| {
-                BinaryNativeWhirPcsParameters::with_limits(
+                BinaryNativeWhirPcsParameters::<F>::with_limits(
                     variables,
                     options.preprocessed,
                     ByteHash::Keccak256,
@@ -180,12 +193,13 @@ impl PreparedNativeBinaryWhirLayer {
             max_tau_draws: options.max_tau_draws,
             security_bits: options.security_bits,
         };
-        let (prover, output_authority) = BinaryNativeWhirAuthority::setup_with_artifact_limits(
-            bus.airs().to_vec(),
-            bus.log_heights().to_vec(),
-            spec,
-            *limits,
-        )?;
+        let (prover, output_authority) =
+            BinaryNativeWhirAuthority::<F, OutputAir>::setup_with_artifact_limits(
+                bus.airs().to_vec(),
+                bus.log_heights().to_vec(),
+                spec,
+                *limits,
+            )?;
         Ok(Self {
             input_identity: authority.shared_identity(),
             input_shape,
@@ -221,12 +235,12 @@ impl PreparedNativeBinaryWhirLayer {
     /// Maps an independently expected child statement to output AIR order.
     pub fn output_public_values(
         &self,
-        expected: &[Vec<F>],
+        expected: &[Vec<Base>],
     ) -> Result<Vec<Vec<F>>, VerificationError> {
         Ok(self.bus.public_values(&self.flatten_statement(expected)?)?)
     }
 
-    fn flatten_statement(&self, public: &[Vec<F>]) -> Result<Vec<F>, VerificationError> {
+    fn flatten_statement(&self, public: &[Vec<Base>]) -> Result<Vec<F>, VerificationError> {
         if public.len() != self.public_counts.len()
             || public
                 .iter()
@@ -237,7 +251,11 @@ impl PreparedNativeBinaryWhirLayer {
                 "native recursive child public value shape mismatch".into(),
             ));
         }
-        Ok(public.iter().flatten().copied().collect())
+        Ok(public
+            .iter()
+            .flatten()
+            .map(|value| F::from_repr(value.raw_coordinates()))
+            .collect())
     }
 
     /// Accepts only a token checked under the retained child authority. Identity
@@ -245,7 +263,7 @@ impl PreparedNativeBinaryWhirLayer {
     /// statement is exported as native scalars by the output product-bus AIR.
     pub fn prove_verified(
         &self,
-        checked: &VerifiedBinaryNativeWhirProof<F>,
+        checked: &VerifiedBinaryNativeWhirProof<Base>,
     ) -> Result<NativeBinaryRecursiveProof, VerificationError> {
         if checked.identity.as_ref() != self.input_identity.as_ref() {
             return Err(VerificationError::PreparedInputMismatch {
@@ -269,7 +287,7 @@ impl PreparedNativeBinaryWhirLayer {
     pub fn verify(
         &self,
         proof: &NativeBinaryRecursiveProof,
-        expected: &[Vec<F>],
+        expected: &[Vec<Base>],
     ) -> Result<VerifiedBinaryNativeWhirProof<F>, VerificationError> {
         self.authority
             .verify_native(proof, &self.output_public_values(expected)?)
