@@ -44,6 +44,9 @@ For native binary values, `binary_decompose_coordinates` and
 `BinaryCoordinateField` trait. Full decompositions are unique; partial
 decompositions constrain all omitted coordinates to zero. These codecs preserve
 each field's own tower or polynomial basis and do not use integer embeddings.
+`NativePoly192Target` uses three native `Poly64` cells for cubic challenge
+arithmetic with `y³ = y + 1`; its add, multiply, square and inverse-check methods
+retain all three coefficients without converting them to a tower basis.
 
 Enable `p3-circuit/debugging` to retain builder allocation labels, scopes, and
 source expressions through compilation. A runner failure can then be inspected

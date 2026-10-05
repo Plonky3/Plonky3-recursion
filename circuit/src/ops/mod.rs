@@ -4,6 +4,7 @@ mod npo;
 mod op;
 
 pub mod binary_native;
+pub mod binary_native_poly;
 pub mod binary_poly;
 pub mod binary_tower;
 pub mod blake3_compress;
@@ -22,6 +23,7 @@ pub use binary_poly::{
     BINARY_POLY64_BITS, BINARY_POLY64_LIMBS, BINARY_POLY192_LIMBS, BinaryPoly64Target,
     BinaryPoly192Target,
 };
+pub use binary_native_poly::NativePoly192Target;
 pub use binary_tower::{BINARY_TOWER128_BITS, BINARY_TOWER128_LIMBS, BinaryTower128Target};
 pub use blake3_compress::{
     BLAKE3_BLOCK_BYTES, BLAKE3_CHUNK_BYTES, BLAKE3_INPUT_LIMBS, BLAKE3_INPUT_WORDS, BLAKE3_IV,
