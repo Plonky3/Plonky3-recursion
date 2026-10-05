@@ -5,6 +5,7 @@ mod binary;
 pub(crate) mod input;
 mod layer;
 mod native_binary;
+mod native_poly;
 pub(crate) mod prover;
 mod trusted;
 
@@ -27,6 +28,7 @@ pub use layer::PreparedLayer;
 pub use native_binary::{
     NativeBinaryRecursionOptions, NativeBinaryRecursiveProof, PreparedNativeBinaryWhirLayer,
 };
+pub use native_poly::{NativeBinaryPolyRecursiveProof, PreparedNativeBinaryPolyWhirLayer};
 pub use p3_circuit::VerifiedStatementTargets;
 use p3_circuit::{
     CircuitBuilder, CircuitRunner, NonPrimitiveOpId, StatementField, StatementSchema,
