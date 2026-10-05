@@ -15,6 +15,9 @@ use crate::BinaryTower128Challenger;
 use crate::pcs::binary::{RecursiveBinaryChallengeField, RecursiveBinaryTowerField};
 use crate::verifier::VerificationError;
 
+mod native_poly;
+pub(crate) use native_poly::{BinaryPolyPolicy, NativePoly64Relation};
+
 mod sealed {
     pub trait Relation {}
 }

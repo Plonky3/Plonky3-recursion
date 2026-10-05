@@ -25,6 +25,8 @@ use super::binary_field_policy::{
 use super::{InputResourceUsage, VerificationError, VerifierLimits};
 use crate::pcs::binary::{RecursiveBinaryChallengeField, RecursiveBinaryTowerField};
 
+mod native_poly;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Node {
     Constant(u128),
